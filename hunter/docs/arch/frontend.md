@@ -357,7 +357,7 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   fingerprint's saved `ix_patterns`, and that saved row is the only set any
   surface classifies from — so the vol / non-vol split a reader sums by hand and the
   exit beside it can never be classified differently. Editing from the trades table's
-  Vol badge stays available (it is how a misclassified bot tx gets found) and writes
+  Tagged badge stays available (it is how a misclassified bot tx gets found) and writes
   straight to the fingerprint.
   A disarmed row never fills: the fold is skipping that req, not failing it.
   Lanes thin down rather than vanish as a ladder grows, and the empty ones matter —
@@ -560,12 +560,17 @@ next load (no per-metric frontend work).
   open at a time**; a capped scrolling list, a label filter past 6 rows, and a
   **Delete all** confirming via the shared `clearPrompt` the flow-discovery cart also
   uses. Rows stay mounted while collapsed or filtered out, because a row holds the
-  draft text that has not parsed yet. Below the rows sit `m_flow_ix`'s two wallet
-  rules — `wallet_contagion` and `creator_is_tagged` — as checkboxes; the whole
-  `m_flow_ix` object round-trips through `metricConfigWithIxPatterns`, so a save that
-  touches only the name preserves the marker masks and both flags, and
-  `withFlowWalletRules` writes the pair explicitly rather than leaving it to the
-  backend default). Each numeric axis is ONE
+  draft text that has not parsed yet. `FlowClassifierEditor` renders the WHOLE
+  `m_flow_ix` key from the group's declared `fingerprint_config`: the pattern rows, a
+  marker picker over the served `ix_markers` vocabulary with a tagged/untagged side
+  toggle, and the two wallet rules — so a field or a marker added in Rust appears with
+  its own definition as the tooltip and no frontend change. Reads and writes go
+  through `flowClassifierFromConfig` / `metricConfigWithFlowClassifier`, the **one**
+  writer of the key: a PUT replaces the row, so a writer that rebuilds `m_flow_ix` from
+  a subset of its fields lands as a full write. Clearing the pattern rows drops the
+  group **unless the row is a marker classifier**, which legitimately carries no
+  patterns — dropping it there deleted the whole classifier on every save from a
+  pattern-only surface). Each numeric axis is ONE
   `AxisConditionInput` — a condition expression (`3`, `1..5`, `>=2`, `!=3`,
   `<=2 | >=7`) read through `fingerprintGrammar`, the TS mirror of the Rust
   grammar, echoed as the predicate it parsed to and snapped to the canonical
@@ -744,11 +749,15 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 `SelectedSweepHistory`, `FingerprintGroupPicker`) with `strategy_id = "generic"`.
 
 - `sweep/genericAxes.ts` — the registry-driven axis model: `AxisSpec[]`
-  (`{side, group, metric, operator, values[, window]}`), value parse (comma list +
-  `lo..hi step s` ranges), per-row validation, combo-count. Distinct windows on the
-  same (side, group) are allowed — they assemble into one `GroupConditions` instance
-  per `window_size_sec` (the engine's multi-window-per-group model), so there is no
-  cross-row window-conflict check. Unit-tested.
+  (`{side, group, metric, operator, values[, window][, slice]}`), value parse (comma
+  list + `lo..hi step s` ranges), per-row validation, combo-count. Distinct windows on
+  the same (side, group) are allowed — they assemble into one `GroupConditions`
+  instance per span (the engine's multi-window-per-group model), so there is no
+  cross-row window-conflict check. `slice` is required exactly when the METRIC reads it
+  (`axisRowNeedsSlice`, off the registry's `two_window` flag) and refused otherwise —
+  the same per-metric rule `validate_group` applies, so a sweep cannot be launched on
+  combos the engine rejects one by one, which is a run that starts and scores nothing.
+  Unit-tested.
 - `sweep/GenericAxisBuilder.tsx` — axis-row UI + projected-combo badge; `GenericSweepConfigForm`
   wraps it with corpus/method/caps + `FingerprintGroupPicker`, emitting `{axes:[...]}`.
   When axes reference `m_flow_*`, the form requires `ix_patterns` (corpus-wide
@@ -834,7 +843,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     per half independently. A grid and its rows' inspect modals read the same hook, so a card
     and its modal cannot disagree. Omit/empty is not a blank chart — the overlay falls back to
     a creator-vs-rest split and only goes dark on a token with no creator wallet either.
-    Clicking a Vol badge **persists**: `useVolumePatternTarget` writes that row's ordered
+    Clicking a Tagged badge **persists**: `useVolumePatternTarget` writes that row's ordered
     `instruction_labels` (`lib/flow/volumePatterns.togglePattern`, shared with Flow Discovery)
     straight into the target fingerprint's `metric_config`, and the engine picks it up on its
     next rules reload. There is no staging copy — it would be a second answer to "what counts
@@ -1031,11 +1040,11 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   the second owner of that same fact: a named `ix_pattern_sets` row (lab-only table, CRUD at
   `/api/ix-pattern-sets`) holding `[{ group, ix_labels }]`, picked once above the grid and applied to
   every card. Keys ride the existing `flowPatternKeys` prop path; the classifier options and the
-  Vol-badge write target ride `context/FlowLensContext`, which the page provides and
+  Tagged-badge write target ride `context/FlowLensContext`, which the page provides and
   `TokenPriceChart` / `TokenTradeChart` / `BarTradesPanel` consume — absent everywhere else, where the
   chart stack classifies exactly as the engine does. A lens defaults to **contagion off** (each trade
   judged by its own `ix_labels`, no forward wallet tagging) and **excludes the studied wallet**, because
-  it answers "which structures surround this moment", not "who is in the volume crew". A Vol badge under
+  it answers "which structures surround this moment", not "who is in the volume crew". A Tagged badge under
   a lens writes to the pattern set, never a fingerprint; the one path into the engine is the explicit
   **Copy to fingerprint**. Paste accepts a `{ "patterns": [...] }` study file, a `[{ tool, ix_labels }]`
   list, bare label arrays, or one JSON array per line, and reports accepted / duplicate / skipped counts

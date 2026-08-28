@@ -299,9 +299,9 @@ impl ClockHorizons {
 }
 
 /// A [`LoadedRule`] pre-chewed for the hot path. Metric reads are flattened, the
-/// distinct windows are listed (split flow vs price) for
-/// [`TokenTrack::ensure_window`] / [`TokenTrack::ensure_price_window`], and the
-/// entry monotonic kills are precomputed for derived-unsatisfiability disarm.
+/// distinct windows are listed **one bucket per backing buffer** — see
+/// [`flow_windows`](CompiledRule::flow_windows) — and the entry monotonic kills are
+/// precomputed for derived-unsatisfiability disarm.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledRule {
     pub id: RuleId,
@@ -333,13 +333,30 @@ pub struct CompiledRule {
     /// Ordered scale-out stages (empty = legacy full-close only). Evaluated via
     /// [`stage_fired`](Self::stage_fired) only when no global exit fired.
     pub scale_out: Vec<CompiledStage>,
-    /// Distinct **flow** `window_size_sec` values this rule reads across both sides
-    /// (`m_flow_window` + `m_flow_ix_window`) — drive `ensure_window` / `ensure_flow`.
+    /// Distinct `m_flow_window` spans this rule reads across both sides — drive
+    /// [`TokenTrack::ensure_window`].
+    ///
+    /// **One bucket per backing buffer**, because a span registered on the wrong one
+    /// is a deque folded on every trade for a metric nobody reads. The four are
+    /// disjoint by group, and a rule pays only for the ones its metrics select.
+    ///
+    /// [`TokenTrack::ensure_window`]: crate::metrics::track::TokenTrack::ensure_window
     pub flow_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
-    /// Distinct **price** `window_size_sec` values (`m_price_window`) — drive
-    /// `ensure_price_window`. Split from [`flow_windows`](Self::flow_windows) so a
-    /// rule pays only for the deques its metrics actually read.
+    /// Distinct `m_crowd_window` spans — drive
+    /// [`TokenTrack::ensure_crowd_window`](crate::metrics::track::TokenTrack::ensure_crowd_window).
+    /// Separate from [`flow_windows`](Self::flow_windows) because the crowd deque
+    /// carries the WALLET column and nothing else needs it.
+    pub crowd_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
+    /// Distinct `m_price_window` spans — drive
+    /// [`TokenTrack::ensure_price_window`](crate::metrics::track::TokenTrack::ensure_price_window).
     pub price_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
+    /// Distinct `m_flow_ix_window` spans — drive
+    /// [`TokenTrack::ensure_flow`](crate::metrics::track::TokenTrack::ensure_flow),
+    /// which opens one deque **per fingerprint**. Passing the aggregate-flow spans
+    /// here instead multiplied that: every configured fingerprint opened a buffer for
+    /// every `m_flow_window` span in the whole rule set, folded on every trade, read
+    /// by nothing.
+    pub ix_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
     /// Per entry-metric mono kills (for derived-unsatisfiability disarm).
     pub mono_kills: SmallVec<[MonoMetricKill; 2]>,
     /// How long this rule's readings can still move without a trade — see
@@ -422,19 +439,24 @@ impl CompiledRule {
             .unwrap_or_default();
 
         // Distinct windows across both sides + every scale-out stage (dynamic
-        // metrics only), split by which buffer they drive.
+        // metrics only), bucketed by which buffer they drive. The routing is by
+        // GROUP, off the registry, so a new dynamic group lands in its own bucket
+        // rather than silently in the flow one.
         let mut flow_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
+        let mut crowd_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut price_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
+        let mut ix_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let stage_reqs = scale_out.iter().flat_map(|s| s.reqs.iter());
         for r in entry_reqs.iter().chain(exit_reqs.iter()).chain(stage_reqs) {
+            let bucket = match group_of(r.metric).id {
+                MetricGroupId::PriceWindow => &mut price_windows,
+                MetricGroupId::CrowdWindow => &mut crowd_windows,
+                MetricGroupId::FlowIxWindow => &mut ix_windows,
+                _ => &mut flow_windows,
+            };
             // Both axes: a two-window group needs a buffer for each of them, and
             // registering only the primary would leave the second read as NaN.
             for w in [r.window.primary, r.window.secondary].into_iter().flatten() {
-                let bucket = if group_of(r.metric).id == MetricGroupId::PriceWindow {
-                    &mut price_windows
-                } else {
-                    &mut flow_windows
-                };
                 if !bucket.contains(&w) {
                     bucket.push(w);
                 }
@@ -494,7 +516,9 @@ impl CompiledRule {
             exit_reqs,
             scale_out,
             flow_windows,
+            crowd_windows,
             price_windows,
+            ix_windows,
             mono_kills,
             clock_horizons,
             reentry: rule.params.reentry,
@@ -989,6 +1013,78 @@ mod tests {
         assert_eq!(c.flow_windows.len(), 2);
         assert!(c.flow_windows.contains(&WindowSpec::secs(30.0)) && c.flow_windows.contains(&WindowSpec::secs(2.0)));
         assert!(c.price_windows.is_empty());
+    }
+
+    /// Each dynamic group registers on ITS OWN buffer and no other.
+    ///
+    /// The buckets are how a rule pays only for the deques it reads, so a span in the
+    /// wrong one is either a fold for nothing (`m_crowd_window`'s wallet map on a
+    /// `gross_flow` rule) or, for `ix_windows`, that fold multiplied by every
+    /// configured fingerprint — `ensure_flow` opens one deque each.
+    #[test]
+    fn every_dynamic_group_registers_on_its_own_buffer_alone() {
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": {
+                "m_flow_window":    { "window_size_sec": 10, "gross_flow": [{"operator": ">=", "value": 1}] },
+                "m_crowd_window":   { "window_size_sec": 20, "unique_wallets": [{"operator": ">=", "value": 3}] },
+                "m_price_window":   { "window_size_sec": 30, "trail": [{"operator": ">=", "value": 5}] },
+                "m_flow_ix_window": { "window_size_sec": 40, "tagged_buy": [{"operator": ">=", "value": 1}] }
+            }
+        })));
+        assert_eq!(c.flow_windows.as_slice(), &[WindowSpec::secs(10.0)]);
+        assert_eq!(c.crowd_windows.as_slice(), &[WindowSpec::secs(20.0)]);
+        assert_eq!(c.price_windows.as_slice(), &[WindowSpec::secs(30.0)]);
+        assert_eq!(c.ix_windows.as_slice(), &[WindowSpec::secs(40.0)]);
+    }
+
+    /// A crowd gate reads through the buffer it registered — the end-to-end property
+    /// the split has to preserve. A `m_flow_window` registration alone must NOT serve
+    /// it: that would mean the wallet column is still riding the flow deque.
+    #[test]
+    fn a_crowd_gate_reads_only_through_the_crowd_buffer_it_registered() {
+        use crate::metrics::track::TokenTrack;
+        use crate::metrics::{Side, TradeLite};
+        use chrono::{Duration, TimeZone, Utc};
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let at = |s: f64| t0 + Duration::milliseconds((s * 1000.0) as i64);
+
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": { "m_crowd_window": {
+                "window_size_sec": 10,
+                "unique_wallets": [{"operator": ">=", "value": 3}]
+            } }
+        })));
+        assert!(c.flow_windows.is_empty(), "a crowd gate opens no flow deque");
+
+        let fold = |track: &mut TokenTrack| {
+            for (i, wallet) in [7u64, 7, 8, 9].into_iter().enumerate() {
+                track.on_trade(TradeLite {
+                    side: Side::Buy,
+                    sol: 1.0,
+                    price: 1.0,
+                    reserve_sol: 100.0,
+                    at: at(i as f64),
+                    wallet_hash: wallet,
+                    ..Default::default()
+                });
+            }
+        };
+        let r = &c.entry_reqs[0];
+
+        let mut registered = TokenTrack::new(t0);
+        for &w in &c.crowd_windows {
+            registered.ensure_crowd_window(w);
+        }
+        fold(&mut registered);
+        assert_eq!(registered.value(r.metric, r.window, r.fingerprint, at(3.0)), 3.0);
+
+        // The same span on the FLOW buffer answers nothing here.
+        let mut wrong_buffer = TokenTrack::new(t0);
+        for &w in &c.crowd_windows {
+            wrong_buffer.ensure_window(w);
+        }
+        fold(&mut wrong_buffer);
+        assert!(wrong_buffer.value(r.metric, r.window, r.fingerprint, at(3.0)).is_nan());
     }
 
     /// A two-window group must reach the track with BOTH axes, and must register a

@@ -111,6 +111,7 @@ fn fixed_axis(kind: &str, value: f64) -> AxisSpec {
         metric: None,
         operator: None,
         window: None,
+        slice: None,
         values: vec![Some(value)],
     }
 }

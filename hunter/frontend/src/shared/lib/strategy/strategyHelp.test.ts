@@ -89,8 +89,12 @@ describe('the help text speaks the registry vocabulary', () => {
   )[0];
 
   const groups = new Set([...rust.matchAll(/^\s*name: "(m_[a-z_]+)",$/gm)].map((m) => m[1]));
+  // Every metric name, taken from the `MetricSpec` block it is declared in rather than
+  // from its indentation: a `\s{16}` match is a guard that silently stops guarding the
+  // day rustfmt or a nesting change moves the column, and an empty metric set makes
+  // every assertion below vacuously pass.
   const metrics = new Set(
-    [...rust.matchAll(/^\s{16}name: "([a-z_]+)",$/gm)].map((m) => m[1]),
+    [...rust.matchAll(/MetricSpec\s*\{[\s\S]*?\bname:\s*"([a-z_]+)"/g)].map((m) => m[1]),
   );
 
   const bodies = (): [string, string][] =>
@@ -105,6 +109,10 @@ describe('the help text speaks the registry vocabulary', () => {
     expect(rust).toBeTruthy();
     expect(groups.has('m_flow_window')).toBe(true);
     expect(metrics.has('tagged_share')).toBe(true);
+    // A regex that stops matching makes every assertion below vacuously pass, so the
+    // lock asserts it actually harvested a registry-sized vocabulary.
+    expect(groups.size).toBeGreaterThanOrEqual(8);
+    expect(metrics.size).toBeGreaterThanOrEqual(30);
   });
 
   it('names no group the registry does not declare', () => {

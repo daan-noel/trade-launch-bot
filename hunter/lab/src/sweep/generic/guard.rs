@@ -1521,6 +1521,7 @@ fn metric_axis(
         metric: Some(metric.to_string()),
         operator: Some(operator),
         window: None,
+        slice: None,
         values,
     }
 }

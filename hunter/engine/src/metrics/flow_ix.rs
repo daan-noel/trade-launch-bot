@@ -19,6 +19,14 @@ use crate::hash::{fnv1a_byte, fnv1a_bytes, HashedSet, FNV_OFFSET};
 ///
 /// Empty input still returns a defined hash; callers that mean "missing labels"
 /// should set `TradeLite::ix_hash = None` instead of hashing an empty slice.
+/// The config key this group reads, inside `fingerprints.metric_config`.
+pub const CONFIG_KEY: &str = "m_flow_ix";
+
+/// [`flow_window::push_sorted`] re-exported for the sibling ix-structure group, so
+/// the position-sorted insert has ONE implementation rather than a second copy that
+/// is free to disagree about where a regressed `block_time` lands.
+pub use super::flow_window::push_sorted as push_sorted_pub;
+
 pub fn ix_hash(labels: &[impl AsRef<str>]) -> u64 {
     let mut h = FNV_OFFSET;
     let mut first = true;
@@ -351,7 +359,7 @@ impl FlowPatterns {
     /// flow metrics stay `NaN`). `Some` = configured (patterns may be empty —
     /// only contagion + creator classify as volume).
     pub fn from_metric_config(cfg: &Value) -> Option<Self> {
-        let obj = cfg.get("m_flow_ix")?;
+        let obj = cfg.get(CONFIG_KEY)?;
         if !obj.is_object() {
             return None;
         }
@@ -454,7 +462,7 @@ impl FlowPatterns {
                 for other in ["tagged_ix_markers", "ix_patterns"] {
                     if flow_obj.contains_key(other) {
                         return Err(format!(
-                            "m_flow_ix: untagged_ix_markers and {other} name opposite sides                              of the same split - configure exactly one"
+                            "m_flow_ix: untagged_ix_markers and {other} name opposite                              sides of the same split - configure exactly one"
                         ));
                     }
                 }

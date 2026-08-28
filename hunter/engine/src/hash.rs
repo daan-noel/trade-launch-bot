@@ -57,3 +57,12 @@ impl std::hash::Hasher for IdentityHasher {
 /// stream may iterate one — membership only. (`PartialEq` on a hash set is
 /// order-independent, so derived equality stays meaningful.)
 pub type HashedSet = std::collections::HashSet<u64, std::hash::BuildHasherDefault<IdentityHasher>>;
+
+/// Map from an already-hashed `u64` key to `V` — the [`HashedSet`] counterpart, and
+/// the same argument for it: the key is an FNV-1a digest this module produced, so
+/// the default `SipHash` pass over it is pure overhead paid once per trade per
+/// window on `m_crowd_window`'s fold.
+///
+/// Same iteration-order caveat as [`HashedSet`]: unspecified, so nothing feeding a
+/// deterministic effect stream may iterate one.
+pub type HashedMap<V> = std::collections::HashMap<u64, V, std::hash::BuildHasherDefault<IdentityHasher>>;

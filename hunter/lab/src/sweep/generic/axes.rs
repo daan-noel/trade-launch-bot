@@ -68,6 +68,16 @@ pub struct AxisSpec {
     /// its basis in the same spelling a chart legend and an exit reason use.
     #[serde(default)]
     pub window: Option<WindowField>,
+    /// The nested SLICE span, for the two-window metrics alone
+    /// (`m_flow_window.trade_share` / `.sol_share`).
+    ///
+    /// Required exactly when the metric reads it (`is_two_window`) and rejected when it
+    /// does not — the same per-metric rule `rule_params::validate_group` enforces, so a
+    /// combo this builds cannot be one the engine refuses. Without it these two metrics
+    /// were unsweepable: every assembled rule failed validation at run time, which is a
+    /// whole sweep that starts and produces nothing.
+    #[serde(default)]
+    pub slice: Option<WindowField>,
     /// The swept values. Must be non-empty; deduped + sorted on resolve. On a
     /// metric axis a `null` is the **off** sentinel (combo omits the condition);
     /// TP/SL axes reject it (absent TP/SL is authored by omitting the axis).
@@ -122,6 +132,10 @@ pub enum ResolvedAxis {
         /// span — a bare size cannot tell 30 slots from 30 seconds, and the two
         /// sweep different rules.
         window: Option<WindowSpec>,
+        /// The nested slice, present iff the METRIC reads it (`is_two_window`) — the
+        /// second half of a two-window read's identity, so two axes differing only
+        /// here open two group instances rather than merging into one.
+        slice: Option<WindowSpec>,
         values: Vec<Option<f64>>,
     },
     /// Take-profit %.
@@ -360,7 +374,15 @@ impl AxesModel {
             match axis {
                 ResolvedAxis::TakeProfit { values } => rp.take_profit = Some(values[pick]),
                 ResolvedAxis::StopLoss { values } => rp.stop_loss = Some(values[pick]),
-                ResolvedAxis::Metric { side, group, metric, operator, window, values } => {
+                ResolvedAxis::Metric {
+                    side,
+                    group,
+                    metric,
+                    operator,
+                    window,
+                    slice,
+                    values,
+                } => {
                     // The off pick: no condition, no group entry, no window —
                     // this combo behaves as if the axis were never authored.
                     let Some(val) = values[pick] else { continue };
@@ -380,7 +402,14 @@ impl AxesModel {
                     // metric so an all-off group leaves no window-only instance behind.
                     let instances = sc.0.entry(*group).or_default();
                     let gc = match instances.iter().position(|g| {
+                        // BOTH axes are instance identity: two `trade_share` axes over
+                        // one reference window and different slices are two different
+                        // reads, and merging them would drop one from every rule.
                         same_window(g.window_spec(&hunter_engine::metrics::WINDOW_AXIS), *window)
+                            && same_window(
+                                g.window_spec(&hunter_engine::metrics::flow_slice::SLICE_AXIS),
+                                *slice,
+                            )
                     }) {
                         Some(i) => &mut instances[i],
                         None => {
@@ -398,6 +427,16 @@ impl AxesModel {
                                         w.lag,
                                     );
                                 }
+                            }
+                            if let Some(b) = slice {
+                                // The slice rides the reference's lag (that pair IS the
+                                // two-window basis), so only its size is written.
+                                g.strict.insert(
+                                    hunter_engine::metrics::flow_slice::SLICE_AXIS
+                                        .size_param(b.unit)
+                                        .to_string(),
+                                    b.size,
+                                );
                             }
                             instances.push(g);
                             instances.last_mut().expect("just pushed")
@@ -500,6 +539,39 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
                 ),
                 MetricKind::Static => None, // a window on a static metric is ignored
             };
+            // The slice axis, required exactly when the METRIC reads it. Asking the
+            // group would demand one of every `m_flow_window` axis, since the group
+            // declares the axis for every instance; asking the metric is the rule
+            // `validate_group` applies, so the two cannot disagree.
+            let reads_slice = hunter_engine::metrics::is_two_window(mspec.id);
+            let slice = match (reads_slice, spec.slice.as_ref().and_then(WindowField::spec)) {
+                (true, Some(b)) => {
+                    let w = window.expect("a two-window metric is in a dynamic group");
+                    if b.unit != w.unit {
+                        return Err(format!(
+                            "metric `{metric_name}`: the slice and the window must count                              in the same unit — a ratio across two clocks is not a share                              of anything"
+                        ));
+                    }
+                    if b.size > w.size {
+                        return Err(format!(
+                            "metric `{metric_name}`: the slice must nest INSIDE the                              window (slice {} > window {})",
+                            b.size, w.size,
+                        ));
+                    }
+                    Some(b)
+                }
+                (true, None) => {
+                    return Err(format!(
+                        "metric `{metric_name}` is a ratio across a NESTED pair —                          `slice` is required: a number of seconds, or a span like                          \"3sl\" / \"4p\""
+                    ))
+                }
+                (false, Some(_)) => {
+                    return Err(format!(
+                        "metric `{metric_name}` does not read a slice — a span nothing                          reads is a silent no-op"
+                    ))
+                }
+                (false, None) => None,
+            };
             // Off first (pick 0), then the numbers ascending.
             let mut values: Vec<Option<f64>> = Vec::with_capacity(numbers.len() + 1);
             if has_off {
@@ -512,6 +584,7 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
                 metric: mspec.id,
                 operator,
                 window,
+                slice,
                 values,
             })
         }
@@ -547,8 +620,98 @@ mod tests {
             metric: Some(metric.to_string()),
             operator: Some(serde_json::from_str(&format!("\"{op}\"")).unwrap()),
             window: window.map(WindowField::Secs),
+            slice: None,
             values: vals.into_iter().map(Some).collect(),
         }
+    }
+
+    /// A two-window metric is a ratio ACROSS a nested pair, so an axis on it carries
+    /// both spans into the assembled rule.
+    ///
+    /// Without the slice these two metrics were unsweepable in a way that failed
+    /// nowhere visible: the builder assembled a rule missing a required strict param,
+    /// the engine gate rejected every combo, and the sweep ran to completion having
+    /// scored nothing.
+    #[test]
+    fn a_two_window_axis_carries_both_spans_into_the_assembled_rule() {
+        let mut spec =
+            metric_axis(AxisSide::Entry, "m_flow_window", "trade_share", ">=", None, vec![40.0]);
+        spec.window = Some(WindowField::Span("60s".to_string()));
+        spec.slice = Some(WindowField::Span("3s".to_string()));
+        let model = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).expect("resolves");
+        let rp = model.assemble(&[0]);
+        let g = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
+        assert_eq!(g.strict_param("window_size_sec"), Some(60.0));
+        assert_eq!(g.strict_param("slice_size_sec"), Some(3.0));
+        // ...and the assembled params are what the engine itself accepts.
+        RuleParams::parse(&rp.to_value()).expect("the assembled rule passes the engine gate");
+    }
+
+    /// The slice is required exactly when the METRIC reads it, and rejected when it
+    /// does not - the same per-metric rule `validate_group` applies, so the builder
+    /// cannot assemble a combo the engine refuses.
+    #[test]
+    fn the_slice_is_required_by_the_metric_and_refused_by_the_others() {
+        let mut missing =
+            metric_axis(AxisSide::Entry, "m_flow_window", "sol_share", ">=", None, vec![40.0]);
+        missing.window = Some(WindowField::Span("60s".to_string()));
+        let err = AxesModel::resolve(&AxesRequest { axes: vec![missing] }).unwrap_err();
+        assert!(err.contains("slice"), "{err}");
+
+        let mut spurious =
+            metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", ">=", None, vec![5.0]);
+        spurious.window = Some(WindowField::Span("60s".to_string()));
+        spurious.slice = Some(WindowField::Span("3s".to_string()));
+        let err = AxesModel::resolve(&AxesRequest { axes: vec![spurious] }).unwrap_err();
+        assert!(err.contains("does not read a slice"), "{err}");
+    }
+
+    /// Both axes must count in the same unit and the slice must nest inside the
+    /// window - a ratio across two clocks is not a share of anything, and a slice
+    /// wider than its reference is not a slice.
+    #[test]
+    fn a_slice_that_cannot_nest_is_refused_rather_than_assembled() {
+        for (window, slice, needle) in [("60s", "3sl", "same unit"), ("10s", "30s", "nest INSIDE")]
+        {
+            let mut spec = metric_axis(
+                AxisSide::Entry,
+                "m_flow_window",
+                "trade_share",
+                ">=",
+                None,
+                vec![40.0],
+            );
+            spec.window = Some(WindowField::Span(window.to_string()));
+            spec.slice = Some(WindowField::Span(slice.to_string()));
+            let err = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap_err();
+            assert!(err.contains(needle), "{window}/{slice}: {err}");
+        }
+    }
+
+    /// Two `trade_share` axes over one reference window and DIFFERENT slices are two
+    /// different reads, so they open two group instances. Merging them on the
+    /// reference alone would drop one from every assembled rule.
+    #[test]
+    fn two_slices_over_one_window_open_two_instances() {
+        let axis = |slice: &str, value: f64| {
+            let mut spec = metric_axis(
+                AxisSide::Entry,
+                "m_flow_window",
+                "trade_share",
+                ">=",
+                None,
+                vec![value],
+            );
+            spec.window = Some(WindowField::Span("60s".to_string()));
+            spec.slice = Some(WindowField::Span(slice.to_string()));
+            spec
+        };
+        let model = AxesModel::resolve(&AxesRequest { axes: vec![axis("3s", 40.0), axis("10s", 70.0)] })
+            .expect("resolves");
+        let rp = model.assemble(&[0, 0]);
+        let instances = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow];
+        assert_eq!(instances.len(), 2, "one instance per slice");
+        RuleParams::parse(&rp.to_value()).expect("engine gate");
     }
 
     /// A metric axis on a discrete basis must assemble the size param that basis
@@ -642,6 +805,7 @@ mod tests {
             metric: None,
             operator: None,
             window: None,
+            slice: None,
             values: vals.into_iter().map(Some).collect(),
         }
     }

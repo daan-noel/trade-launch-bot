@@ -6,20 +6,24 @@
 //! conditions on. Metrics live in **groups** (one file per group):
 //! * `m_state` (static) — `time`, `liquidity`
 //! * `m_price_lifetime` (static) — `stall`, `trail`, `rise` (lifetime peak/trough)
-//! * `m_price_window` (dynamic, strict param `window_size_sec`) — `trail`, `rise`
-//!   (rolling-window extrema; the dip trigger)
-//! * `m_flow_lifetime` (static) — `gross_flow`, `net_flow`, `buy`, `sell`
-//!   (lifetime SOL totals; no classifier)
-//! * `m_flow_window` (dynamic, strict param `window_size_sec`) — same metrics
-//!   over a trailing window, plus `buy_count` / `sell_count` / `buy_share`, plus
-//!   the two-window `trade_share` / `sol_share` (a `slice_size_sec` nested inside
-//!   the window; see [`is_two_window`])
-//! * `m_crowd_window` (dynamic, strict param `window_size_sec`) — `unique_wallets`,
-//!   `trades_per_wallet` — the metrics that need the WALLET column
+//! * `m_price_window` (dynamic) — `trail`, `rise` (rolling-window extrema; the dip
+//!   trigger)
+//! * `m_flow_lifetime` (static) — `gross_flow`, `net_flow`, `buy`, `sell`,
+//!   `trade_count` (lifetime totals; no classifier)
+//! * `m_flow_window` (dynamic) — the same flow metrics over a trailing window, plus
+//!   `buy_count` / `sell_count` / `trade_count` / `buy_share`, plus the two-window
+//!   `trade_share` / `sol_share` (a `slice_size_*` nested inside the window; see
+//!   [`is_two_window`])
+//! * `m_crowd_window` (dynamic) — `unique_wallets`, `trades_per_wallet` — the metrics
+//!   that need the WALLET column, and its own deque for exactly that reason
 //! * `m_flow_ix` (static, fingerprint-scoped) — tagged/untagged lifetime totals
 //! * `m_flow_ix_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `bounce`,
 //!   `pnl`, `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
+//!
+//! Every dynamic group's span is one of `window_size_sec` / `_slots` / `_prints`
+//! plus an optional `window_lag` ([`WindowUnit`]); `m_flow_window` adds the nested
+//! `slice_size_*` its two-window metrics read.
 //!
 //! The **registry** below is the single source of truth for group/metric names,
 //! units, `=`-tolerances, static/dynamic kind, monotonicity, and required strict
@@ -27,9 +31,11 @@
 //! all read it — adding a metric here (plus its compute logic in the group file)
 //! makes it immediately usable everywhere, with no schema change.
 
+pub mod crowd_window;
 pub mod evaluator;
 pub mod flow_slice;
 pub mod flow_lifetime;
+pub mod dump_ix;
 pub mod flow_ix;
 pub mod flow_window;
 pub mod grid;
@@ -157,6 +163,18 @@ pub struct TradeLite {
     /// only layer holding the label strings; the engine compares bits.
     #[serde(default)]
     pub marker_bits: u16,
+    /// Which instruction of its TRANSACTION this trade is, `0` for the first.
+    ///
+    /// One Solana transaction can carry several `Pump.Fun: Sell` instructions — a
+    /// bundle selling four different wallets' bags at once is a real and common
+    /// shape — and each becomes its own trade here. Every leg of a transaction
+    /// carries the same `ix_labels`, so a metric that counts events counts the
+    /// bundle four times; counting `leg_index == 0` counts TRANSACTIONS.
+    ///
+    /// `0` when a source does not supply it, which reads as "every trade is its own
+    /// transaction" — the behaviour that existed before the field.
+    #[serde(default)]
+    pub leg_index: u8,
 }
 
 impl Default for TradeLite {
@@ -172,6 +190,7 @@ impl Default for TradeLite {
             wallet_hash: 0,
             slot: 0,
             marker_bits: 0,
+            leg_index: 0,
         }
     }
 }
@@ -476,6 +495,11 @@ pub enum MetricGroupId {
     FlowIx,
     /// `m_flow_ix_window` — tagged/untagged trailing-window totals (fingerprint-scoped).
     FlowIxWindow,
+    /// `m_dump_ix` — lifetime totals over sells built from a named list
+    /// (fingerprint-scoped).
+    DumpIx,
+    /// `m_dump_ix_window` — the same over a trailing window (fingerprint-scoped).
+    DumpIxWindow,
     /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
     Position,
 }
@@ -532,7 +556,7 @@ pub enum MetricId {
     Buy,
     /// Sell SOL over the trailing window (`m_flow_window`).
     Sell,
-    /// Distinct trading wallets over the trailing window (`m_flow_window`) — how many
+    /// Distinct trading wallets over the trailing window (`m_crowd_window`) — how many
     /// people are in the token, as against `gross_flow`'s how much SOL. One wallet
     /// churning and a crowd arriving look identical in SOL and different here.
     UniqueWallets,
@@ -547,10 +571,10 @@ pub enum MetricId {
     /// window sibling on the same tape.
     LifeTradeCount,
     /// Trades over the trailing window (`m_flow_window`) — how BUSY the tape is, as
-    /// against `unique_wallets`' how many people are on it. One wallet re-entering ten
-    /// times reads 10 here and 1 there.
+    /// against `m_crowd_window.unique_wallets`' how many people are on it. One wallet
+    /// re-entering ten times reads 10 here and 1 there.
     ///
-    /// Unlike `unique_wallets` this needs no wallet column, so it survives an offline
+    /// Unlike the crowd metrics this needs no wallet column, so it survives an offline
     /// load that did not request wallet identity (see [`needs_wallet_identity`]).
     TradeCount,
     /// Buys (not trades) in the window - the slice's transaction count. Distinct
@@ -573,7 +597,8 @@ pub enum MetricId {
     /// satisfies no condition (evaluator contract).
     BuyShare,
     /// Trades per distinct wallet over the trailing window —
-    /// `trade_count / unique_wallets` (`m_flow_window`).
+    /// `m_flow_window.trade_count / unique_wallets` over the same span
+    /// (`m_crowd_window`).
     ///
     /// How hard each wallet is working the tape. `<= 2` is a crowd arriving; a large
     /// value is one wallet re-entering, which `trade_count` and `gross_flow` cannot
@@ -639,6 +664,16 @@ pub enum MetricId {
     /// Tagged SELL transactions over the trailing window - the metric a dump
     /// signature is read with, on a window narrow enough to mean "at once".
     WinTaggedSellCount,
+    // ── m_dump_ix (lifetime; JSON names shared with m_dump_ix_window) ─
+    /// SOL sold through a listed build since birth - every LEG.
+    DumpSell,
+    /// Sell TRANSACTIONS built from a listed build since birth - leg 0 only.
+    DumpSellCount,
+    // ── m_dump_ix_window (trailing) ─
+    /// SOL sold through a listed build over the trailing window - every LEG.
+    WinDumpSell,
+    /// Sell TRANSACTIONS built from a listed build over the trailing window.
+    WinDumpSellCount,
     // ── m_position (position-scoped; anchored on the entry fill; exit-only) ──
     /// Percent below the since-entry peak — the trailing stop.
     Retrace,
@@ -676,14 +711,17 @@ pub fn is_two_window(id: MetricId) -> bool {
 /// True for metrics whose **state** is keyed by fingerprint, and which therefore
 /// need a `FingerprintId` to read a value.
 ///
-/// Identical to [`is_flow_metric`] while flow split is the only fingerprint-scoped
-/// family, and kept separate because the two mean different things: this one asks
+/// Wider than [`is_flow_metric`], and the two mean different things: this one asks
 /// "does the read need a fingerprint", while [`is_flow_metric`] additionally selects
-/// a *flow* series column offline. A future fingerprint-scoped group that is not a
-/// flow group belongs here and NOT there — conflating them routes its reads at a flow
-/// column.
+/// a *flow* series column offline. `m_dump_ix` is the case that separated them — it
+/// is fingerprint-scoped but is not a flow split, so it belongs here and NOT there;
+/// conflating them would route its reads at a flow column.
 pub fn is_fingerprint_scoped(id: MetricId) -> bool {
     is_flow_metric(id)
+        || matches!(
+            group_of(id).id,
+            MetricGroupId::DumpIx | MetricGroupId::DumpIxWindow
+        )
 }
 
 
@@ -824,13 +862,37 @@ pub struct StrictParamSpec {
 
 /// A fingerprint-side config field declared by a metric group (stored under
 /// `fingerprints.metric_config[group_name]`). Mirrored into `registry_json` so
-/// the FE can render editors without hardcoding keys.
+/// the FE renders editors without hardcoding keys.
+///
+/// **Every** field a group reads out of `metric_config` is declared here, not just
+/// the first one anyone built a control for. A field the group reads but does not
+/// declare is a setting with no editor and no tooltip: it can only be written by
+/// hand-posting JSON, and the form that does not know about it overwrites it on the
+/// next save. That is how `m_flow_ix`'s marker masks — the classifier a structural
+/// gate is stated in — stayed unreachable from the UI.
 #[derive(Debug, Clone, Copy)]
 pub struct FpConfigFieldSpec {
     pub name: &'static str,
-    /// JSON type hint for the FE (`"string[][]"` for ordered label sequences).
+    /// JSON type hint for the FE: `"string[][]"` (ordered label sequences),
+    /// `"marker[]"` (a subset of [`flow_ix::MARKERS`], rendered as a picker), or
+    /// `"bool"`.
     pub value_type: &'static str,
     pub required: bool,
+    /// **The one definition of this field**, rendered into the UI from this text —
+    /// the fingerprint-side twin of [`MetricSpec::description`].
+    pub description: &'static str,
+    /// The value the group assumes when the field is ABSENT, spelled as JSON, or
+    /// `None` where absent means "unconfigured" rather than a value.
+    ///
+    /// Load-bearing for the two booleans: [`flow_ix::FlowPatterns`] defaults them to
+    /// `true`, so a UI that renders an absent field as unchecked shows the opposite
+    /// of what the engine does — and these two decide what the classifier measures,
+    /// not how tightly.
+    pub default_json: Option<&'static str>,
+    /// Fields that name the OPPOSITE side of the same split, and therefore cannot be
+    /// configured together. `validate_metric_config` rejects the combination; the FE
+    /// reads this to disable the controls rather than let a save fail.
+    pub conflicts_with: &'static [&'static str],
 }
 
 /// The **interaction family** a group belongs to.
@@ -1359,11 +1421,52 @@ pub const REGISTRY: &[GroupSpec] = &[
         scope: MetricScope::Token,
         family: MetricFamily::FlowIx,
         strict_params: &[],
-        fingerprint_config: &[FpConfigFieldSpec {
-            name: "ix_patterns",
-            value_type: "string[][]",
-            required: true,
-        }],
+        // Every key the classifier reads, so the editor is registry-driven rather than
+        // a hand-kept list — see [`FpConfigFieldSpec`]. `required: false` throughout:
+        // a classifier may be stated by patterns, by markers, or by the wallet rules
+        // alone, and `validate_metric_config` owns which combinations are legal.
+        fingerprint_config: &[
+            FpConfigFieldSpec {
+                name: "ix_patterns",
+                value_type: "string[][]",
+                required: false,
+                description: "Exact ordered instruction-label sequences that TAG a trade.                               An exact list, so a build that ships a new variant is booked                               untagged until the variant is added.",
+                default_json: None,
+                conflicts_with: &["untagged_ix_markers"],
+            },
+            FpConfigFieldSpec {
+                name: "tagged_ix_markers",
+                value_type: "marker[]",
+                required: false,
+                description: "Structural markers that TAG a trade, matched as a substring                               of any instruction label. A marker is a mechanism rather than                               a build, so it keeps identifying the same thing as new                               variants ship.",
+                default_json: None,
+                conflicts_with: &["untagged_ix_markers"],
+            },
+            FpConfigFieldSpec {
+                name: "untagged_ix_markers",
+                value_type: "marker[]",
+                required: false,
+                description: "Structural markers that leave a trade UNTAGGED, tagging                               everything without one. The inverse claim, not a                               convenience: `carries a throwaway account` identifies                               machines and judges nothing else, while `came through a                               named router` identifies people and judges everything else                               a machine.",
+                default_json: None,
+                conflicts_with: &["tagged_ix_markers", "ix_patterns"],
+            },
+            FpConfigFieldSpec {
+                name: "wallet_contagion",
+                value_type: "bool",
+                required: false,
+                description: "Keep a wallet tagged for the rest of the token once it                               trades that way. Turns a tag into a property of the                               sender's history instead of the transaction, so a purely                               structural gate needs it off.",
+                default_json: Some("true"),
+                conflicts_with: &[],
+            },
+            FpConfigFieldSpec {
+                name: "creator_is_tagged",
+                value_type: "bool",
+                required: false,
+                description: "Tag the creator wallet whatever it sends. The dev buy and                               the dev dump are usually a token's two largest single                               flows, so this moves every share metric.",
+                default_json: Some("true"),
+                conflicts_with: &[],
+            },
+        ],
         // Teal family (~93–109) — clear of price-path (≤62) and candle green (170).
         metrics: &[
             MetricSpec {
@@ -1592,6 +1695,79 @@ pub const REGISTRY: &[GroupSpec] = &[
         ],
     },
     GroupSpec {
+        id: MetricGroupId::DumpIx,
+        name: "m_dump_ix",
+        kind: MetricKind::Static,
+        scope: MetricScope::Token,
+        family: MetricFamily::FlowIx,
+        strict_params: &[],
+        // Its OWN list, not `m_flow_ix`'s: the two name different things and a build
+        // may sit in exactly one of them (`DumpPatterns::validate_metric_config`).
+        fingerprint_config: &[FpConfigFieldSpec {
+            name: "ix_patterns",
+            value_type: "string[][]",
+            required: true,
+        }],
+        // Teal, continuing the ix-structure family — `m_flow_ix` and this group read
+        // the same `ix_labels` vocabulary through different lists, and the
+        // cross-group hue guard exempts the family.
+        metrics: &[
+            MetricSpec {
+                id: MetricId::DumpSell,
+                name: "dump_sell",
+                description: "SOL sold since birth through a build on this fingerprint's `m_dump_ix.ix_patterns` - every LEG of every matching transaction, because every leg moves SOL out of the curve.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: 115,
+            },
+            MetricSpec {
+                id: MetricId::DumpSellCount,
+                name: "dump_sell_count",
+                description: "Number of sell TRANSACTIONS built from a listed build since birth. One transaction selling four wallets' bags counts ONCE here and four times in `dump_sell`'s SOL, so `dump_sell / dump_sell_count` is SOL per transaction.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: true,
+                hue: 117,
+            },
+        ],
+    },
+    GroupSpec {
+        id: MetricGroupId::DumpIxWindow,
+        name: "m_dump_ix_window",
+        kind: MetricKind::Dynamic,
+        scope: MetricScope::Token,
+        family: MetricFamily::FlowIx,
+        strict_params: &[
+            StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_PRINT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
+        ],
+        // Reads the same `m_dump_ix` key as the lifetime group (one list, two views).
+        fingerprint_config: &[],
+        metrics: &[
+            MetricSpec {
+                id: MetricId::WinDumpSell,
+                name: "dump_sell",
+                description: "SOL sold through a listed build over the trailing window - every LEG.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 115,
+            },
+            MetricSpec {
+                id: MetricId::WinDumpSellCount,
+                name: "dump_sell_count",
+                description: "Number of sell TRANSACTIONS built from a listed build over the trailing window. On a ONE-SLOT window this is how many landed at once - `dump_sell_count(1sl) >= 2` is two dump-built transactions in the same slot.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 117,
+            },
+        ],
+    },
+    GroupSpec {
         id: MetricGroupId::Position,
         name: "m_position",
         kind: MetricKind::Static,
@@ -1760,6 +1936,12 @@ pub fn registry_json() -> serde_json::Value {
                         "name": p.name,
                         "value_type": p.value_type,
                         "required": p.required,
+                        "description": p.description,
+                        // Parsed, not re-typed: the FE reads the engine's own default so
+                        // an absent boolean cannot render as the opposite of what the
+                        // classifier does.
+                        "default": p.default_json.and_then(|d| serde_json::from_str::<Value>(d).ok()),
+                        "conflicts_with": p.conflicts_with,
                     })
                 })
                 .collect();
@@ -1774,8 +1956,18 @@ pub fn registry_json() -> serde_json::Value {
             })
         })
         .collect();
+    // The structural-marker vocabulary a `marker[]` field is picked from. Served
+    // rather than mirrored so a marker added to `flow_ix::MARKERS` appears in the
+    // picker with no frontend change — the same contract the metric list has. `router`
+    // splits the two kinds the vocabulary holds: what the transaction DOES, versus the
+    // retail front-end a person clicked through.
+    let markers: Vec<Value> = flow_ix::MARKERS
+        .iter()
+        .map(|&(name, bit)| json!({ "name": name, "router": bit & flow_ix::ROUTER_MARKERS != 0 }))
+        .collect();
     json!({
         "operators": ["<", "<=", ">", ">=", "=", "!="],
+        "ix_markers": markers,
         "groups": groups,
     })
 }
@@ -1897,6 +2089,145 @@ mod tests {
         }
     }
 
+    /// A group declares EVERY key it reads out of `metric_config`.
+    ///
+    /// The declaration is what the editor is generated from, so an undeclared key is a
+    /// setting with no control and no tooltip — writable only by hand-posting JSON, and
+    /// then overwritten by the next save from a form that does not know it exists. Read
+    /// off `from_metric_config`'s own source so the list cannot be kept by hand.
+    #[test]
+    fn every_metric_config_key_the_classifier_reads_is_declared() {
+        let src = include_str!("flow_ix.rs");
+        let body = src
+            .split_once("pub fn from_metric_config")
+            .expect("the classifier parses metric_config here")
+            .1;
+        let body = &body[..body.find("
+    }
+").expect("the fn closes")];
+        let declared: Vec<&str> = group_spec(MetricGroupId::FlowIx)
+            .fingerprint_config
+            .iter()
+            .map(|f| f.name)
+            .collect();
+        for (_, tail) in body.match_indices("obj.get(\"").map(|(i, _)| (i, &body[i + 9..])) {
+            let key = &tail[..tail.find('"').expect("the key closes")];
+            assert!(
+                declared.contains(&key),
+                "m_flow_ix reads `{key}` but does not declare it: {declared:?}",
+            );
+        }
+        // ...and nothing is declared that the classifier ignores.
+        for name in &declared {
+            assert!(
+                body.contains(&format!("\"{name}\"")),
+                "m_flow_ix declares `{name}` but never reads it",
+            );
+        }
+    }
+
+    /// A declared conflict is symmetric and names a real sibling field — the FE
+    /// disables a control off this, and `validate_metric_config` rejects the same
+    /// pairs, so a one-sided entry means one order of clicks is refused at save.
+    #[test]
+    fn declared_field_conflicts_are_symmetric() {
+        for g in REGISTRY {
+            for f in g.fingerprint_config {
+                for other in f.conflicts_with {
+                    let peer = g
+                        .fingerprint_config
+                        .iter()
+                        .find(|p| p.name == *other)
+                        .unwrap_or_else(|| panic!("{}.{} conflicts with unknown {other}", g.name, f.name));
+                    assert!(
+                        peer.conflicts_with.contains(&f.name),
+                        "{}.{} conflicts with {other}, but not the other way round",
+                        g.name,
+                        f.name,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every fingerprint-side field explains itself, on the same terms a metric does —
+    /// one definition, at the point of declaration, rendered into the UI from there.
+    #[test]
+    fn every_fingerprint_config_field_carries_its_own_definition() {
+        for g in REGISTRY {
+            for f in g.fingerprint_config {
+                assert!(
+                    f.description.len() >= 30 && f.description.ends_with('.'),
+                    "{}.{}: description is a sentence, not a label: {:?}",
+                    g.name,
+                    f.name,
+                    f.description,
+                );
+                if let Some(d) = f.default_json {
+                    serde_json::from_str::<serde_json::Value>(d)
+                        .unwrap_or_else(|e| panic!("{}.{} default is not JSON: {e}", g.name, f.name));
+                }
+            }
+        }
+    }
+
+    /// A `MetricId` variant's doc-comment names the group it belongs to, and must name
+    /// the right one.
+    ///
+    /// These parentheticals are the second place a metric's group is written — the
+    /// registry is the first — and only the registry is compile-checked, so a metric
+    /// MOVED between groups strands them silently. It happened: `unique_wallets` and
+    /// `trades_per_wallet` still read `(m_flow_window)` after they became
+    /// `m_crowd_window`, which is the group a reader would then look in for their
+    /// buffer. Parsed out of this file's own source, so the check needs no list.
+    #[test]
+    fn variant_docs_name_the_group_the_registry_puts_the_metric_in() {
+        let src = include_str!("mod.rs");
+        let body = src
+            .split_once("pub enum MetricId {")
+            .expect("the id enum is declared here")
+            .1;
+        let body = &body[..body.find("
+}
+").expect("the enum closes")];
+
+        // Walk the enum: doc lines accumulate, a bare `Variant,` line consumes them.
+        let mut doc = String::new();
+        for line in body.lines() {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("///") {
+                doc.push_str(rest);
+                continue;
+            }
+            let Some(variant) = t.strip_suffix(',').filter(|v| {
+                !v.is_empty() && v.chars().all(|c| c.is_alphanumeric()) && v.starts_with(char::is_uppercase)
+            }) else {
+                if !t.starts_with("//") && !t.is_empty() {
+                    doc.clear();
+                }
+                continue;
+            };
+            // The group the doc CLAIMS: the first `(`m_…`)` parenthetical.
+            let claimed = doc.split("(`m_").nth(1).map(|tail| {
+                format!("m_{}", &tail[..tail.find('`').expect("the group name closes")])
+            });
+            doc.clear();
+            let Some(claimed) = claimed else { continue };
+            let id = REGISTRY
+                .iter()
+                .flat_map(|g| g.metrics.iter())
+                .find(|m| format!("{:?}", m.id) == variant)
+                .unwrap_or_else(|| panic!("{variant} is not in the REGISTRY"))
+                .id;
+            assert_eq!(
+                group_of(id).name,
+                claimed,
+                "MetricId::{variant} documents itself as {claimed}, but the registry puts it in {}",
+                group_of(id).name,
+            );
+        }
+    }
+
     #[test]
     fn tolerances_are_positive_and_finite() {
         for g in REGISTRY {
@@ -1941,6 +2272,8 @@ mod tests {
             MetricId::UntaggedGross,
             MetricId::TaggedBuyCount,
             MetricId::TaggedSellCount,
+            MetricId::DumpSell,
+            MetricId::DumpSellCount,
         ];
         for g in REGISTRY {
             for m in g.metrics {
@@ -1954,6 +2287,29 @@ mod tests {
     fn registry_json_mirrors_the_registry() {
         let j = registry_json();
         assert_eq!(j["operators"].as_array().unwrap().len(), 6);
+        // The marker vocabulary is served, not mirrored — a marker added to
+        // `flow_ix::MARKERS` must reach the picker without a frontend edit.
+        let markers = j["ix_markers"].as_array().unwrap();
+        assert_eq!(markers.len(), flow_ix::MARKERS.len());
+        assert_eq!(markers[0]["name"], flow_ix::MARKERS[0].0);
+        assert_eq!(markers[0]["router"], false);
+        assert!(markers.iter().any(|m| m["router"] == true), "the vocabulary has routers");
+        // Every declared fp-config field reaches the payload with its definition.
+        let ix = j["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["name"] == "m_flow_ix")
+            .unwrap();
+        let fields = ix["fingerprint_config"].as_array().unwrap();
+        assert_eq!(fields.len(), group_spec(MetricGroupId::FlowIx).fingerprint_config.len());
+        let contagion = fields.iter().find(|f| f["name"] == "wallet_contagion").unwrap();
+        // The engine's own default, parsed — not a boolean the FE re-types.
+        assert_eq!(contagion["default"], true);
+        assert!(contagion["description"].as_str().unwrap().len() >= 30);
+        let untagged = fields.iter().find(|f| f["name"] == "untagged_ix_markers").unwrap();
+        assert_eq!(untagged["value_type"], "marker[]");
+        assert_eq!(untagged["conflicts_with"].as_array().unwrap().len(), 2);
         let groups = j["groups"].as_array().unwrap();
         assert_eq!(groups.len(), REGISTRY.len());
         for (jg, g) in groups.iter().zip(REGISTRY) {
@@ -2116,7 +2472,10 @@ mod tests {
     /// Metrics from different groups must not collide either — otherwise a
     /// `m_state` chip and a `m_flow_window` chip read as the same thing.
     /// **Sibling families** share a hue band on purpose and are exempt:
-    /// * split flow — `m_flow_ix` / `m_flow_ix_window` (one classifier, two views);
+    /// * ix structure — `m_flow_ix` / `m_flow_ix_window` (one classifier, two views)
+    ///   and `m_dump_ix` / `m_dump_ix_window` (one build list, two views). All four
+    ///   read the same `ix_labels` vocabulary, and the palette has no fourth band
+    ///   that clears every other group by `MIN_CROSS_GROUP_GAP` anyway;
     /// * aggregate flow — `m_flow_lifetime` / `m_flow_window` / `m_flow_window`
     ///   (lifetime, trailing, and the share of a trailing window that is recent);
     /// * price — `m_price_lifetime` / `m_price_window` / `m_position` (lifetime
@@ -2127,7 +2486,7 @@ mod tests {
         // Which family a group belongs to (`None` = its own group, never exempt).
         let family = |g: MetricGroupId| -> Option<u8> {
             match g {
-                FlowIx | FlowIxWindow => Some(0),
+                FlowIx | FlowIxWindow | DumpIx | DumpIxWindow => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
                 FlowLifetime | FlowWindow | CrowdWindow => Some(2),
                 _ => None,

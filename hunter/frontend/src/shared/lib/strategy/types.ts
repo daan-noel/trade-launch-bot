@@ -316,6 +316,11 @@ export interface MetricSeriesColumn {
    *  null for static ones (`m_flow_lifetime`, …). Prefer this over
    *  {@link MetricSeriesColumn.window_size_sec}. */
   window?: WindowSpec | null;
+  /** The nested SLICE span, for the two-window metrics alone
+   *  (`m_flow_window.trade_share` / `.sol_share`). Their reading is a ratio ACROSS the
+   *  pair, so a column labelled by `window` alone names a different number than it
+   *  holds. Null everywhere else. */
+  slice?: WindowSpec | null;
   /** Legacy seconds scalar, for readers that predate `window`. Null on a slot or
    *  print span — neither has seconds to report, so a reader that only knows this key
    *  drops the column rather than calling 30 slots 30 seconds. */

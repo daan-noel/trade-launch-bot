@@ -18,6 +18,7 @@ import {
   formatWindowSpec,
   sameWindowSpec,
   unitSuffix,
+  sliceSpecFromStrict,
   windowSpecFromStrict,
   windowSpecKey,
   readWindow,
@@ -41,14 +42,38 @@ const DEFAULT_WINDOWS: WindowSpec[] = [10, 30, 60].map((size) => ({
  * 30-slot read and a 30-second read are two panes rather than one, and a lag makes
  * a third.
  */
-export function metricColKey(metric: string, window: WindowSpec | number | null): string {
-  if (window == null) return metric;
-  if (typeof window === 'number') return `${metric}@${window}`;
+/** Every ORDERED pair of spans that can NEST — same unit, slice strictly narrower.
+ *
+ *  The frontend mirror of the endpoint's own pairing (`nested_pairs`), so the pane
+ *  list offers exactly the two-window columns the series carries. A pair that cannot
+ *  nest is not a stricter reading, it is a `NaN` one: a cross-unit ratio is not a
+ *  share of anything, and a slice equal to its reference reads 100 on every token. */
+export function nestedWindowPairs(windows: WindowSpec[]): [WindowSpec, WindowSpec][] {
+  const out: [WindowSpec, WindowSpec][] = [];
+  for (const reference of windows) {
+    for (const slice of windows) {
+      if (slice.unit === reference.unit && slice.size < reference.size) out.push([reference, slice]);
+    }
+  }
+  return out;
+}
+
+export function metricColKey(
+  metric: string,
+  window: WindowSpec | number | null,
+  slice?: WindowSpec | null,
+): string {
+  // The nested slice is part of the key, because it is part of the READING: two
+  // `trade_share` columns over one reference window and different slices are two
+  // different numbers, and a key that ignores it collapses them onto one pane.
+  const nested = slice ? `/${slice.size}${unitSuffix(slice.unit)}` : '';
+  if (window == null) return `${metric}${nested}`;
+  if (typeof window === 'number') return `${metric}@${window}${nested}`;
   // An unlagged seconds span keeps its bare-number key, byte-for-byte, so pane
   // preferences saved before the other bases existed still resolve.
-  if (window.unit === 'sec' && window.lag === 0) return `${metric}@${window.size}`;
+  if (window.unit === 'sec' && window.lag === 0) return `${metric}@${window.size}${nested}`;
   const lag = window.lag > 0 ? `@${window.lag}` : '';
-  return `${metric}@${window.size}${unitSuffix(window.unit)}${lag}`;
+  return `${metric}@${window.size}${unitSuffix(window.unit)}${lag}${nested}`;
 }
 
 export interface RuleMetricPrefs {
@@ -122,15 +147,21 @@ export function metricPrefsFromParams(
   for (const side of [params.entry, params.exit]) {
     if (!side) continue;
     for (const [groupName, group] of sideInstances(side)) {
-      const kind = registry?.groups.find((g) => g.name === groupName)?.kind;
+      const gSpec = registry?.groups.find((g) => g.name === groupName);
+      const kind = gSpec?.kind;
       const w = windowSpecFromStrict(group.strict);
+      const slice = sliceSpecFromStrict(group.strict);
       // Every basis is requestable: `/metric-series` folds the span it is given, so
       // the pane a rule opens is the reading that rule actually gates on.
       if (w != null) windows.set(windowSpecKey(w), w);
       for (const [metric, arms] of Object.entries(group.metrics)) {
         if (!arms?.length) continue;
         metrics.add(metric);
-        const key = metricColKey(metric, kind === 'dynamic' ? w : null);
+        const key = metricColKey(
+          metric,
+          kind === 'dynamic' ? w : null,
+          gSpec?.metrics.find((m) => m.name === metric)?.two_window ? slice : null,
+        );
         if (!paneKeys.includes(key)) paneKeys.push(key);
       }
     }
@@ -190,7 +221,7 @@ function seriesLookup(series: MetricSeriesColumn[]): Map<string, MetricSeriesCol
   // Through `readWindow`, which prefers the span object and falls back to the legacy
   // seconds scalar — so a slot or print column keys by its own span instead of
   // collapsing onto the metric's window-less key.
-  for (const s of series) map.set(metricColKey(s.metric, readWindow(s)), s);
+  for (const s of series) map.set(metricColKey(s.metric, readWindow(s), s.slice), s);
   return map;
 }
 
@@ -204,6 +235,9 @@ interface SideMetricRow {
   /** The WHOLE span the instance runs at (`null` for a lifetime/static group) —
    *  size, lag and unit, since a bare size cannot tell 30 slots from 30 seconds. */
   window: WindowSpec | null;
+  /** The nested slice, for the two-window metrics alone — the other half of the
+   *  reading, so a row without it would match the wrong series column. */
+  slice: WindowSpec | null;
 }
 
 /** Collect authored (group, metric, arms) rows for one side. */
@@ -216,6 +250,7 @@ function sideMetricRows(
   for (const [groupName, group] of sideInstances(side)) {
     const gSpec = registry?.groups.find((g) => g.name === groupName);
     const w = windowSpecFromStrict(group.strict);
+    const b = sliceSpecFromStrict(group.strict);
     for (const [metric, arms] of Object.entries(group.metrics)) {
       if (!arms?.length) continue;
       out.push({
@@ -224,6 +259,10 @@ function sideMetricRows(
         arms,
         dynamic: gSpec?.kind === 'dynamic',
         window: w,
+        // Per METRIC: the group declares the slice for every instance, but only the
+        // two-window metrics read it, so attaching it to a `gross_flow` row would key
+        // that row to a column the series never emits.
+        slice: gSpec?.metrics.find((m) => m.name === metric)?.two_window ? b : null,
       });
     }
   }
@@ -257,7 +296,7 @@ function rowTolerance(row: SideMetricRow, registry: StrategyRegistry | undefined
  *  group instance reads the windowed column; a lifetime group reads the unwindowed
  *  one, and the two share a metric name. */
 function rowColumnKey(row: SideMetricRow): string {
-  return metricColKey(row.metric, row.dynamic ? row.window : null);
+  return metricColKey(row.metric, row.dynamic ? row.window : null, row.slice);
 }
 
 /** The atom that satisfies `row` at `idx`, or `null` when the row does not hold

@@ -264,8 +264,14 @@ pub fn replay_readout(
     at: Ts,
 ) -> RuleReadout {
     let mut track = TokenTrack::new(ctx.created_at);
+    // One bucket per backing buffer, exactly as `EngineState::new_track` registers
+    // them — a span put on the wrong buffer reads NaN and the readout would show a
+    // condition the live engine evaluates as a blank row.
     for &w in &rule.flow_windows {
         track.ensure_window(w);
+    }
+    for &w in &rule.crowd_windows {
+        track.ensure_crowd_window(w);
     }
     for &w in &rule.price_windows {
         track.ensure_price_window(w);
@@ -273,7 +279,7 @@ pub fn replay_readout(
     if let Some(f) = &ctx.flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
         // the seed back-fills every flow state already registered.
-        track.ensure_flow(f.fingerprint, f.patterns, &rule.flow_windows);
+        track.ensure_flow(f.fingerprint, f.patterns, &rule.ix_windows);
         if let Some(h) = f.creator_wallet_hash {
             track.seed_creator(h);
         }
@@ -445,11 +451,14 @@ pub fn replay_series(
     for &w in &rule.flow_windows {
         series.ensure_window(w);
     }
+    for &w in &rule.crowd_windows {
+        series.ensure_crowd_window(w);
+    }
     for &w in &rule.price_windows {
         series.ensure_price_window(w);
     }
     if let Some(f) = &ctx.flow {
-        series.ensure_flow(f.fingerprint, f.patterns, &rule.flow_windows);
+        series.ensure_flow(f.fingerprint, f.patterns, &rule.ix_windows);
         if let Some(h) = f.creator_wallet_hash {
             series.seed_creator(h);
         }

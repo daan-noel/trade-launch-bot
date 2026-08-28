@@ -8,6 +8,7 @@ import { Badge } from 'components/ui/Badge';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
 import {
   SWEEP_FIELD_HELP,
+  STRICT_PARAM_HELP,
   METRIC_HELP,
   metricHelpBody,
   GROUP_HELP,
@@ -19,6 +20,7 @@ import { metricColorStyle } from 'lib/strategy/metricColors';
 import { isPnlAdvancedMetric } from 'lib/strategy/validate';
 import {
   isDiscreteUnit,
+  sliceSizeParam,
   unitSuffix as windowUnitSuffix,
   WINDOW_UNITS,
   type WindowUnit,
@@ -29,6 +31,7 @@ import {
   newAxisRow,
   pnlAxisSugarDuplicateError,
   axisRowUnit,
+  axisRowNeedsSlice,
   rowNeedsWindow,
   type AxisKind,
   type GenericAxisRow,
@@ -517,6 +520,10 @@ function AxisRow({
   const group = registry?.groups.find((g) => g.name === row.group);
   const metric = group?.metrics.find((m) => m.name === row.metric);
   const needsWindow = rowNeedsWindow(row, registry);
+  // Per METRIC, not per group: `m_flow_window` declares the slice axis for every
+  // instance while only `trade_share` / `sol_share` read it, so asking the group would
+  // put this control on a `gross_flow` row and the backend would then reject the axis.
+  const needsSlice = axisRowNeedsSlice(row, registry);
   const valueUnit = metric ? unitSuffix(metric.unit) : row.kind !== 'metric' ? '%' : '';
   // Both window controls count in the ONE unit the row picks. A discrete axis
   // (slots, prints) counts whole buckets, so its inputs step by 1 from 1.
@@ -686,6 +693,21 @@ function AxisRow({
                 onChange={(e) => onPatch({ lag: e.target.value })}
                 placeholder="0"
                 className="w-14"
+              />
+            </Cell>
+          )}
+
+          {needsSlice && (
+            <Cell label={`slice ${uSuffix}`} tip={STRICT_PARAM_HELP[sliceSizeParam(windowUnit)]}>
+              <Input
+                fieldSize="sm"
+                type="number"
+                min={uStep}
+                step={uStep}
+                value={row.slice ?? ''}
+                onChange={(e) => onPatch({ slice: e.target.value })}
+                placeholder={windowHint}
+                className="w-16"
               />
             </Cell>
           )}

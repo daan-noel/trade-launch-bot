@@ -1,16 +1,24 @@
 //! `m_flow_window` — trailing-window flow aggregates (dynamic metrics).
 //!
-//! Strict param `window_size_sec` (`w`): the trailing window is `[now − w, now]`.
-//! Over the trades in that window:
-//! * `buy` — sum of buy SOL,
-//! * `sell` — sum of sell SOL,
-//! * `gross_flow` — `buy + sell` (total churn),
-//! * `net_flow` — `buy − sell` (directional pressure).
+//! One of three window size params (`window_size_sec` / `_slots` / `_prints`) plus
+//! an optional `window_lag` fixes the span; over the trades in it:
+//! * `buy` / `sell` — SOL by side, and `gross_flow` / `net_flow` over the pair,
+//! * `buy_count` / `sell_count` / `trade_count` — the same tape tallied,
+//! * `buy_share` — the direction of the tape, independent of its size,
+//! * `trade_share` / `sol_share` — the two-window reads over a nested
+//!   `slice_size_*` (see [`flow_slice`](super::flow_slice)).
 //!
-//! **Dynamic** = the value depends on a per-rule strict param, so state is
-//! **deduped by `window_size_sec`**: every rule asking for a 10 s window shares
-//! one buffer. A ring buffer of `(ts, signed_sol)` with running `buy`/`sell`
-//! sums keeps both fold and read O(1) amortized, no per-event allocation.
+//! **This deque carries SOL and nothing else.** Who traded is
+//! [`m_crowd_window`](super::crowd_window)'s subject and its own buffer: carrying
+//! wallet hashes here made every `gross_flow` rule pay a second deque push and a
+//! hash-map entry per trade for a column it never reads.
+//!
+//! **Dynamic** = the value depends on per-rule strict params, so state is
+//! **deduped by the whole span** ([`WindowKey`](super::WindowKey)): every rule
+//! asking for the same window shares one buffer, and a 30-second and a 30-slot
+//! window are correctly two. A ring buffer of `(pos, signed_sol)` with running
+//! `buy`/`sell` sums keeps both fold and read O(1) amortized, no per-event
+//! allocation.
 //!
 //! **The read really is O(1)** — not an O(1) claim wrapped around a full-deque
 //! rescan inside [`WindowState::value`], and not a window width re-derived per
@@ -22,17 +30,25 @@
 //!   regressed `block_time` — legal, since canonical order is slot → tx_index → leg
 //!   — walks back from the tail, which is `O(1)` whenever times are monotone);
 //! * `buy`/`sell` are running sums over **all of `buf`**, so a read starts from them
-//!   and subtracts only the two ends that fall outside `[now − w, now]`: entries not
+//!   and subtracts only the two ends that fall outside the span: entries not
 //!   yet evicted at the front, and future-dated entries at the back. Both loops are
 //!   normally zero iterations, and neither can miss an entry because the deque is
 //!   sorted.
 //!
 //! The window width is precomputed once per aggregator rather than per element.
 
-use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use super::{MetricId, Side, WindowSpec};
+
+/// Whether a trade is admitted to a window at all — the ONE guard against a poisoned
+/// feed value, shared with [`m_crowd_window`](super::crowd_window) so the two groups
+/// cannot disagree about what a trade in a window is. A dropped trade is counted by
+/// neither deque, which is what keeps `trades_per_wallet` a ratio over one tape.
+#[inline]
+pub(super) fn is_foldable(sol: f64) -> bool {
+    sol.is_finite() && sol >= 0.0
+}
 
 /// True when `pos` lies inside `spec`'s window at `now_pos` - the same closed
 /// bounds [`WindowState::evict`] and [`WindowState::value`] use, exposed for the
@@ -78,15 +94,6 @@ pub struct WindowState {
     sell: f64,
     /// Running count of buy entries in `buf`, corrected at the ends the same way.
     buy_n: u32,
-    /// Wallet hash per entry of `buf`, same order - the distinct count's payload.
-    ///
-    /// Parallel to `buf` rather than a third tuple field so the SOL-only reads keep
-    /// their exact cache-linear layout: `unique_wallets` is the rare metric and must
-    /// not make `gross_flow` pay for it.
-    wallet_buf: VecDeque<(i64, u64)>,
-    /// Occurrence count per wallet over **all** of `wallet_buf`, so the distinct count
-    /// is `len()` - maintained on push/evict, never recomputed by scanning.
-    wallets: HashMap<u64, u32>,
 }
 
 impl WindowState {
@@ -97,8 +104,6 @@ impl WindowState {
             buy: 0.0,
             sell: 0.0,
             buy_n: 0,
-            wallet_buf: VecDeque::new(),
-            wallets: HashMap::new(),
         }
     }
 
@@ -108,9 +113,10 @@ impl WindowState {
     }
 
     /// Fold one trade at `pos`, then drop anything that fell out of the window as of
-    /// `now_pos`. Non-finite or negative SOL is ignored (guards a poisoned feed value).
-    pub fn on_trade(&mut self, side: Side, sol: f64, pos: i64, now_pos: i64, wallet: u64) {
-        if !sol.is_finite() || sol < 0.0 {
+    /// `now_pos`. A trade [`is_foldable`] refuses is ignored (guards a poisoned feed
+    /// value), and refused identically by `m_crowd_window`'s deque.
+    pub fn on_trade(&mut self, side: Side, sol: f64, pos: i64, now_pos: i64) {
+        if !is_foldable(sol) {
             return;
         }
         match side {
@@ -124,8 +130,6 @@ impl WindowState {
                 self.sell += sol;
             }
         }
-        push_sorted(&mut self.wallet_buf, pos, wallet);
-        *self.wallets.entry(wallet).or_insert(0) += 1;
         self.evict(now_pos);
     }
 
@@ -147,20 +151,6 @@ impl WindowState {
             // decision written twice and free to drift from it. It did - the sign
             // test was fixed in one and not the other.
             drop_entry(signed, &mut self.buy, &mut self.sell, &mut self.buy_n);
-        }
-        while let Some(&(pos, wallet)) = self.wallet_buf.front() {
-            if pos >= lo {
-                break;
-            }
-            self.wallet_buf.pop_front();
-            // The map holds occurrences, so a wallet leaves the distinct count only on
-            // its LAST entry falling out - remove at zero, or `len()` counts ghosts.
-            if let Some(n) = self.wallets.get_mut(&wallet) {
-                *n -= 1;
-                if *n == 0 {
-                    self.wallets.remove(&wallet);
-                }
-            }
         }
     }
 
@@ -207,24 +197,7 @@ impl WindowState {
                     f64::NAN
                 }
             }
-            MetricId::UniqueWallets => self.unique_wallets(now_pos),
             MetricId::TradeCount => self.trade_count(now_pos),
-            // How hard each wallet in the window is working the tape. `<= 2` is a
-            // crowd; a large value is one wallet re-entering, which `trade_count` and
-            // `gross_flow` cannot tell apart. A COUNT ratio, never an identity, so
-            // wallet rotation does not defeat it.
-            //
-            // `NaN` on an empty window rather than `0.0`: no wallets means no churn to
-            // report, and a `0.0` would let `trades_per_wallet <= 2` pass on a dead
-            // tape - the exact reading the gate exists to exclude.
-            MetricId::TradesPerWallet => {
-                let wallets = self.unique_wallets(now_pos);
-                if wallets > 0.0 {
-                    self.trade_count(now_pos) / wallets
-                } else {
-                    f64::NAN
-                }
-            }
             _ => f64::NAN,
         }
     }
@@ -244,39 +217,6 @@ impl WindowState {
         n as f64
     }
 
-    /// Distinct wallets in the window at `now_pos`.
-    ///
-    /// Same contract as the SOL reads: start from state maintained on push/evict and
-    /// correct only the two ends. A distinct count cannot subtract the way a sum can -
-    /// a wallet leaves the count only when its **last** occurrence leaves the window -
-    /// so the correction tallies the out-of-window occurrences per wallet and drops
-    /// only the wallets whose whole tally is out. Both ends are normally empty, and
-    /// then this is a `len()`.
-    fn unique_wallets(&self, now_pos: i64) -> f64 {
-        let (lo, hi) = self.spec.bounds(now_pos);
-        let front_out = self.wallet_buf.iter().take_while(|&&(p, _)| p < lo).count();
-        let back_out = self.wallet_buf.iter().rev().take_while(|&&(p, _)| p > hi).count();
-        if front_out == 0 && back_out == 0 {
-            return self.wallets.len() as f64;
-        }
-        // The two ends meet when nothing is in the window at all - without this they
-        // would double-count the overlap and under-report what leaves.
-        if front_out + back_out >= self.wallet_buf.len() {
-            return 0.0;
-        }
-        let mut out: HashMap<u64, u32> = HashMap::new();
-        for &(_, w) in self.wallet_buf.iter().take(front_out) {
-            *out.entry(w).or_insert(0) += 1;
-        }
-        for &(_, w) in self.wallet_buf.iter().rev().take(back_out) {
-            *out.entry(w).or_insert(0) += 1;
-        }
-        let gone = out
-            .iter()
-            .filter(|(w, n)| self.wallets.get(w).is_some_and(|live| live == *n))
-            .count();
-        (self.wallets.len() - gone) as f64
-    }
 }
 
 /// Remove one buffer entry's contribution from a read's running triple.
@@ -308,13 +248,13 @@ mod tests {
     #[test]
     fn a_zero_sol_sell_does_not_decrement_the_buy_count_when_it_leaves() {
         let mut w = WindowState::new(WindowSpec::secs(10.0));
-        w.on_trade(Side::Buy, 1.0, p(0.0), p(0.0), 1);
-        w.on_trade(Side::Sell, 0.0, p(1.0), p(1.0), 2);
+        w.on_trade(Side::Buy, 1.0, p(0.0), p(0.0));
+        w.on_trade(Side::Sell, 0.0, p(1.0), p(1.0));
         assert_eq!(w.value(MetricId::BuyCount, p(1.0)), 1.0);
         assert_eq!(w.value(MetricId::SellCount, p(1.0)), 1.0);
 
         // Push both out of the window; the eviction is where the sign is read again.
-        w.on_trade(Side::Buy, 1.0, p(30.0), p(30.0), 3);
+        w.on_trade(Side::Buy, 1.0, p(30.0), p(30.0));
         assert_eq!(w.value(MetricId::BuyCount, p(30.0)), 1.0);
         assert_eq!(w.value(MetricId::SellCount, p(30.0)), 0.0);
         assert_eq!(
@@ -339,8 +279,8 @@ mod tests {
             (Side::Sell, 4.0, 3.0),
             (Side::Sell, 5.0, 4.0),
         ];
-        for (i, &(side, sol, at)) in script.iter().enumerate() {
-            w.on_trade(side, sol, p(at), p(at), i as u64);
+        for &(side, sol, at) in script.iter() {
+            w.on_trade(side, sol, p(at), p(at));
         }
         let now = p(4.0);
         assert_eq!(w.value(MetricId::BuyCount, now), 2.0);
@@ -396,7 +336,7 @@ mod tests {
         assert!(!in_window(w10, p(10.001), p(10.0)), "the future is out");
         // And the sums agree with the predicate at that exact edge.
         let mut w = WindowState::new(WindowSpec::secs(10.0));
-        w.on_trade(Side::Buy, 7.0, p(0.0), p(0.0), 1);
+        w.on_trade(Side::Buy, 7.0, p(0.0), p(0.0));
         assert_eq!(w.value(MetricId::Buy, p(10.0)), 7.0, "still summed at exactly w");
         assert_eq!(w.value(MetricId::Buy, p(10.001)), 0.0, "dropped a hair later");
     }
@@ -431,13 +371,13 @@ mod tests {
         assert_eq!(quiet.bounds(100), (70, 99), "30 slots, none of them slot 100");
 
         let mut w = WindowState::new(burst);
-        w.on_trade(Side::Buy, 2.0, 100, 100, 1);
+        w.on_trade(Side::Buy, 2.0, 100, 100);
         assert_eq!(w.value(MetricId::Buy, 100), 2.0, "in the current slot");
         assert_eq!(w.value(MetricId::BuyCount, 100), 1.0);
         assert_eq!(w.value(MetricId::Buy, 101), 0.0, "gone once the slot rolls");
 
         let mut q = WindowState::new(quiet);
-        q.on_trade(Side::Buy, 2.0, 100, 100, 1);
+        q.on_trade(Side::Buy, 2.0, 100, 100);
         assert_eq!(q.value(MetricId::Buy, 100), 0.0, "the current slot is excluded");
         assert_eq!(q.value(MetricId::Buy, 101), 2.0, "and enters once it is behind");
     }
@@ -447,9 +387,9 @@ mod tests {
     #[test]
     fn buy_count_ignores_sells_where_trade_count_does_not() {
         let mut w = WindowState::new(WindowSpec::slots(1.0, 0.0));
-        w.on_trade(Side::Buy, 1.0, 7, 7, 1);
-        w.on_trade(Side::Sell, 1.0, 7, 7, 2);
-        w.on_trade(Side::Buy, 1.0, 7, 7, 3);
+        w.on_trade(Side::Buy, 1.0, 7, 7);
+        w.on_trade(Side::Sell, 1.0, 7, 7);
+        w.on_trade(Side::Buy, 1.0, 7, 7);
         assert_eq!(w.value(MetricId::BuyCount, 7), 2.0);
         assert_eq!(w.value(MetricId::TradeCount, 7), 3.0);
     }
@@ -457,9 +397,9 @@ mod tests {
     #[test]
     fn flows_sum_over_the_window() {
         let mut w = WindowState::new(WindowSpec::secs(10.0));
-        w.on_trade(Side::Buy, 3.0, p(0.0), p(0.0), 1);
-        w.on_trade(Side::Sell, 1.0, p(1.0), p(1.0), 1);
-        w.on_trade(Side::Buy, 2.0, p(2.0), p(2.0), 1);
+        w.on_trade(Side::Buy, 3.0, p(0.0), p(0.0));
+        w.on_trade(Side::Sell, 1.0, p(1.0), p(1.0));
+        w.on_trade(Side::Buy, 2.0, p(2.0), p(2.0));
         assert_eq!(w.value(MetricId::Buy, p(2.0)), 5.0);
         assert_eq!(w.value(MetricId::Sell, p(2.0)), 1.0);
         assert_eq!(w.value(MetricId::GrossFlow, p(2.0)), 6.0);
@@ -469,7 +409,7 @@ mod tests {
     #[test]
     fn old_trades_fall_out_of_the_window() {
         let mut w = WindowState::new(WindowSpec::secs(10.0));
-        w.on_trade(Side::Buy, 5.0, p(0.0), p(0.0), 1);
+        w.on_trade(Side::Buy, 5.0, p(0.0), p(0.0));
         // Boundary: an entry exactly 10 s old is still in (cutoff is exclusive).
         w.evict(p(10.0));
         assert_eq!(w.value(MetricId::Buy, p(10.0)), 5.0);
@@ -482,10 +422,10 @@ mod tests {
     #[test]
     fn eviction_keeps_running_sums_correct() {
         let mut w = WindowState::new(WindowSpec::secs(5.0));
-        w.on_trade(Side::Buy, 1.0, p(0.0), p(0.0), 1);
-        w.on_trade(Side::Sell, 2.0, p(3.0), p(3.0), 1);
+        w.on_trade(Side::Buy, 1.0, p(0.0), p(0.0));
+        w.on_trade(Side::Sell, 2.0, p(3.0), p(3.0));
         // A new trade at t=6 pushes t=0 out of the 5 s window.
-        w.on_trade(Side::Buy, 4.0, p(6.0), p(6.0), 1);
+        w.on_trade(Side::Buy, 4.0, p(6.0), p(6.0));
         assert_eq!(w.value(MetricId::Buy, p(6.0)), 4.0); // t=0 buy gone
         assert_eq!(w.value(MetricId::Sell, p(6.0)), 2.0); // t=3 sell still in
         assert_eq!(w.value(MetricId::NetFlow, p(6.0)), 2.0);
@@ -494,17 +434,17 @@ mod tests {
     #[test]
     fn non_finite_or_negative_sol_ignored() {
         let mut w = WindowState::new(WindowSpec::secs(10.0));
-        w.on_trade(Side::Buy, f64::NAN, p(0.0), p(0.0), 1);
-        w.on_trade(Side::Buy, -1.0, p(0.0), p(0.0), 1);
-        w.on_trade(Side::Buy, 2.0, p(0.0), p(0.0), 1);
+        w.on_trade(Side::Buy, f64::NAN, p(0.0), p(0.0));
+        w.on_trade(Side::Buy, -1.0, p(0.0), p(0.0));
+        w.on_trade(Side::Buy, 2.0, p(0.0), p(0.0));
         assert_eq!(w.value(MetricId::Buy, p(0.0)), 2.0);
     }
 
     #[test]
     fn future_dated_entries_excluded_at_regressed_now() {
         let mut w = WindowState::new(WindowSpec::secs(30.0));
-        w.on_trade(Side::Buy, 5.0, p(54.0), p(54.0), 1);
-        w.on_trade(Side::Buy, 1.0, p(51.0), p(51.0), 1);
+        w.on_trade(Side::Buy, 5.0, p(54.0), p(54.0));
+        w.on_trade(Side::Buy, 1.0, p(51.0), p(51.0));
         // At now=51 the t=54 print is future-dated — must not count.
         assert_eq!(w.value(MetricId::Buy, p(51.0)), 1.0);
         assert_eq!(w.value(MetricId::Buy, p(54.0)), 6.0);
@@ -518,7 +458,7 @@ mod tests {
     fn out_of_order_inserts_keep_the_buffer_sorted() {
         let mut w = WindowState::new(WindowSpec::secs(60.0));
         for secs in [10.0, 40.0, 20.0, 5.0, 30.0, 20.0] {
-            w.on_trade(Side::Buy, 1.0, p(secs), p(secs), 1);
+            w.on_trade(Side::Buy, 1.0, p(secs), p(secs));
         }
         let times: Vec<_> = w.buf.iter().map(|&(t, _)| t).collect();
         let mut sorted = times.clone();
@@ -526,82 +466,24 @@ mod tests {
         assert_eq!(times, sorted, "buffer must stay time-sorted");
     }
 
+    /// `trade_count` counts TRADES — one entry per fold, whatever the side — and it
+    /// must survive the same adversarial read instants as every other window read.
+    /// `m_crowd_window` divides by this count, so a drift here moves that group too.
     #[test]
-    fn unique_wallets_counts_people_not_trades() {
-        let mut w = WindowState::new(WindowSpec::secs(10.0));
-        w.on_trade(Side::Buy, 1.0, p(0.0), p(0.0), 7);
-        w.on_trade(Side::Buy, 1.0, p(1.0), p(1.0), 7); // same wallet again
-        w.on_trade(Side::Sell, 1.0, p(2.0), p(2.0), 8);
-        assert_eq!(w.value(MetricId::UniqueWallets, p(2.0)), 2.0);
-        // Churn is invisible to gross_flow's shape but not here: three trades, two
-        // wallets. That separation is the whole reason for the metric.
-        assert_eq!(w.value(MetricId::GrossFlow, p(2.0)), 3.0);
-    }
-
-    /// A wallet leaves the count on its LAST occurrence, not its first — the failure
-    /// mode a naive `remove()` on eviction would produce.
-    #[test]
-    fn a_wallet_leaves_the_count_only_when_its_last_trade_does() {
-        let mut w = WindowState::new(WindowSpec::secs(10.0));
-        w.on_trade(Side::Buy, 1.0, p(0.0), p(0.0), 7);
-        w.on_trade(Side::Buy, 1.0, p(8.0), p(8.0), 7);
-        w.evict(p(10.5)); // the t=0 entry drops, the t=8 one stays
-        assert_eq!(w.value(MetricId::UniqueWallets, p(10.5)), 1.0);
-        w.evict(p(18.5)); // now the last one goes too
-        assert_eq!(w.value(MetricId::UniqueWallets, p(18.5)), 0.0);
-    }
-
-    /// `trades_per_wallet` is the ratio the other two cannot express: one wallet
-    /// re-entering and a crowd arriving look identical in `trade_count` and in
-    /// `gross_flow`, and differ here.
-    #[test]
-    fn trades_per_wallet_separates_a_crowd_from_one_wallet_churning() {
-        // Same trade count, same SOL, same window — only the wallet spread differs.
-        let mut crowd = WindowState::new(WindowSpec::secs(10.0));
-        let mut churn = WindowState::new(WindowSpec::secs(10.0));
-        for i in 0..6u64 {
-            crowd.on_trade(Side::Buy, 1.0, p(i as f64), p(i as f64), i); // six people, one trade each
-            churn.on_trade(Side::Buy, 1.0, p(i as f64), p(i as f64), 1); // one person, six trades
-        }
-        let now = p(6.0);
-        assert_eq!(crowd.value(MetricId::TradeCount, now), churn.value(MetricId::TradeCount, now));
-        assert_eq!(crowd.value(MetricId::GrossFlow, now), churn.value(MetricId::GrossFlow, now));
-        assert_eq!(crowd.value(MetricId::TradesPerWallet, now), 1.0);
-        assert_eq!(churn.value(MetricId::TradesPerWallet, now), 6.0);
-    }
-
-    /// The trap the `NaN` exists for: a dead tape must not satisfy `<= 2`.
-    #[test]
-    fn trades_per_wallet_is_nan_on_an_empty_window_not_zero() {
-        let mut w = WindowState::new(WindowSpec::secs(5.0));
-        w.on_trade(Side::Buy, 1.0, p(0.0), p(0.0), 1);
-        // Read far enough ahead that the trade has aged out of the window.
-        let empty = p(60.0);
-        assert_eq!(w.value(MetricId::UniqueWallets, empty), 0.0);
-        assert_eq!(w.value(MetricId::TradeCount, empty), 0.0);
-        assert!(
-            w.value(MetricId::TradesPerWallet, empty).is_nan(),
-            "0.0 here would let `trades_per_wallet <= 2` pass on a dead tape"
-        );
-    }
-
-    /// `trade_count` counts TRADES where `unique_wallets` counts PEOPLE, and it must
-    /// survive the same adversarial read instants as every other window read.
-    #[test]
-    fn trade_count_counts_trades_not_wallets() {
-        let script: &[(Side, f64, f64, u64)] = &[
-            (Side::Buy, 3.0, 0.0, 1),
-            (Side::Sell, 1.0, 4.0, 2),
-            (Side::Buy, 2.0, 9.0, 1), // wallet 1 again - a second TRADE, same person
-            (Side::Buy, 5.0, 7.0, 3), // regressed
-            (Side::Sell, 4.0, 12.0, 2),
-            (Side::Buy, 1.5, 11.0, 4), // regressed
-            (Side::Sell, 0.5, 25.0, 1),
+    fn trade_count_counts_every_fold_across_adversarial_reads() {
+        let script: &[(Side, f64, f64)] = &[
+            (Side::Buy, 3.0, 0.0),
+            (Side::Sell, 1.0, 4.0),
+            (Side::Buy, 2.0, 9.0),
+            (Side::Buy, 5.0, 7.0), // regressed
+            (Side::Sell, 4.0, 12.0),
+            (Side::Buy, 1.5, 11.0), // regressed
+            (Side::Sell, 0.5, 25.0),
         ];
         for window in [1.0_f64, 5.0, 10.0, 60.0] {
             let mut w = WindowState::new(WindowSpec::secs(window));
-            for &(side, sol, at, wallet) in script {
-                w.on_trade(side, sol, p(at), p(at), wallet);
+            for &(side, sol, at) in script {
+                w.on_trade(side, sol, p(at), p(at));
                 for probe in [-30.0, -3.0, 0.0, 0.5, 3.0, 12.0] {
                     let now = p(at + probe);
                     let brute = w
@@ -612,53 +494,6 @@ mod tests {
                     assert_eq!(
                         w.value(MetricId::TradeCount, now),
                         brute,
-                        "w={window} at={at} probe={probe}",
-                    );
-                }
-            }
-        }
-
-        // One wallet churning is 1 wallet and 3 trades - the whole reason this metric
-        // is not a rename of `unique_wallets`.
-        let mut w = WindowState::new(WindowSpec::secs(60.0));
-        for at in [0.0, 1.0, 2.0] {
-            w.on_trade(Side::Buy, 1.0, p(at), p(at), 7);
-        }
-        assert_eq!(w.value(MetricId::UniqueWallets, p(2.0)), 1.0);
-        assert_eq!(w.value(MetricId::TradeCount, p(2.0)), 3.0);
-    }
-
-    /// The distinct count must survive the same adversarial read instants the SOL
-    /// reads do — un-evicted fronts, future-dated backs, and a `now` with nothing in
-    /// the window at all (where the two correction ends overlap).
-    #[test]
-    fn unique_wallets_read_equals_a_brute_force_scan() {
-        let script: &[(Side, f64, f64, u64)] = &[
-            (Side::Buy, 3.0, 0.0, 1),
-            (Side::Sell, 1.0, 4.0, 2),
-            (Side::Buy, 2.0, 9.0, 1), // wallet 1 again
-            (Side::Buy, 5.0, 7.0, 3), // regressed
-            (Side::Sell, 4.0, 12.0, 2),
-            (Side::Buy, 1.5, 11.0, 4), // regressed
-            (Side::Sell, 0.5, 25.0, 1),
-        ];
-        for window in [1.0_f64, 5.0, 10.0, 60.0] {
-            let mut w = WindowState::new(WindowSpec::secs(window));
-            for &(side, sol, at, wallet) in script {
-                w.on_trade(side, sol, p(at), p(at), wallet);
-                for probe in [-30.0, -3.0, 0.0, 0.5, 3.0, 12.0] {
-                    let now = p(at + probe);
-                    let mut seen: Vec<u64> = w
-                        .wallet_buf
-                        .iter()
-                        .filter(|&&(t, _)| in_window(WindowSpec::secs(window), t, now))
-                        .map(|&(_, wallet)| wallet)
-                        .collect();
-                    seen.sort_unstable();
-                    seen.dedup();
-                    assert_eq!(
-                        w.value(MetricId::UniqueWallets, now),
-                        seen.len() as f64,
                         "w={window} at={at} probe={probe}",
                     );
                 }
@@ -684,7 +519,7 @@ mod tests {
         for window in [1.0_f64, 5.0, 10.0, 60.0] {
             let mut w = WindowState::new(WindowSpec::secs(window));
             for &(side, sol, at) in script {
-                w.on_trade(side, sol, p(at), p(at), 1);
+                w.on_trade(side, sol, p(at), p(at));
                 // Read at a spread of instants — before, at, and after the fold —
                 // so both correction loops are exercised.
                 for probe in [-3.0, 0.0, 0.5, 3.0, 12.0] {
@@ -732,16 +567,16 @@ mod tests {
         assert!(w.value(MetricId::BuyShare, p(0.0)).is_nan(), "empty window is undefined");
 
         // 6 SOL of turnover, 5 of it buys.
-        w.on_trade(Side::Buy, 5.0, p(1.0), p(1.0), 1);
-        w.on_trade(Side::Sell, 1.0, p(2.0), p(2.0), 2);
+        w.on_trade(Side::Buy, 5.0, p(1.0), p(1.0));
+        w.on_trade(Side::Sell, 1.0, p(2.0), p(2.0));
         let small = w.value(MetricId::BuyShare, p(3.0));
         assert!((small - 500.0 / 6.0).abs() < 1e-9, "got {small}");
 
         // Same 5:1 direction at 100x the size reads identically - which `net_flow`
         // cannot do (+4 SOL against +400 SOL).
         let mut big = WindowState::new(WindowSpec::secs(60.0));
-        big.on_trade(Side::Buy, 500.0, p(1.0), p(1.0), 1);
-        big.on_trade(Side::Sell, 100.0, p(2.0), p(2.0), 2);
+        big.on_trade(Side::Buy, 500.0, p(1.0), p(1.0));
+        big.on_trade(Side::Sell, 100.0, p(2.0), p(2.0));
         assert!((big.value(MetricId::BuyShare, p(3.0)) - small).abs() < 1e-9);
         assert!(
             (big.value(MetricId::NetFlow, p(3.0)) - w.value(MetricId::NetFlow, p(3.0))).abs()
@@ -751,7 +586,7 @@ mod tests {
 
         // All buys, no sells - a full 100%, not a divide-by-zero.
         let mut one = WindowState::new(WindowSpec::secs(60.0));
-        one.on_trade(Side::Buy, 2.0, p(1.0), p(1.0), 1);
+        one.on_trade(Side::Buy, 2.0, p(1.0), p(1.0));
         assert!((one.value(MetricId::BuyShare, p(2.0)) - 100.0).abs() < 1e-9);
     }
 }

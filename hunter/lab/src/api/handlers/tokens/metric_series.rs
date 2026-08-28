@@ -45,7 +45,8 @@ use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid
 use hunter_engine::metrics::position::PositionCtx;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{
-    group_spec, metric_spec, MetricGroupId, MetricId, MetricKind, Ts, WindowSpec, REGISTRY,
+    group_of, group_spec, is_two_window, metric_spec, MetricGroupId, MetricId, MetricKind, Ts,
+    WindowSpec, Windows, REGISTRY,
 };
 
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
@@ -112,6 +113,12 @@ struct SeriesOut {
     /// The whole span this column was computed over. Present only for dynamic
     /// metrics. Readers should prefer this over [`window_size_sec`](Self::window_size_sec).
     window: Option<hunter_engine::metrics::WindowSpec>,
+    /// The nested SLICE span, for the two-window metrics alone
+    /// (`m_flow_window.trade_share` / `.sol_share`). Their reading is a ratio ACROSS
+    /// the pair, so a column labelled by `window` alone names a different number than
+    /// it holds — and computing them without it left both metrics all-`null` at every
+    /// window, a chart pane that could never draw.
+    slice: Option<hunter_engine::metrics::WindowSpec>,
     /// Legacy seconds scalar, kept for readers that predate `window`. `None` on a
     /// slot or print span — neither has seconds to report, so a reader that only
     /// knows this key drops the column rather than calling 30 slots 30 seconds.
@@ -158,9 +165,9 @@ pub async fn token_metric_series(
     };
     // Wallet identity is a LOAD-time decision: the lake leaves the wallet column out
     // unless asked, and a fold over rows without it sees every trade as one anonymous
-    // wallet — `unique_wallets` then reads 1 for a hundred traders, silently. This
-    // endpoint records every registry column, so it needs the wallet column whenever
-    // any recorded metric is wallet-keyed, not only on the flow path.
+    // wallet — `m_crowd_window.unique_wallets` then reads 1 for a hundred traders,
+    // silently. This endpoint records every registry column, so it needs the wallet
+    // column whenever any recorded metric is wallet-keyed, not only on the flow path.
     let with_flow = flow_ctx.is_some() || records_wallet_keyed_metric();
 
     let trades =
@@ -239,9 +246,9 @@ async fn load_token_facts(state: &LocalState, mint: &str) -> TokenFacts {
     TokenFacts { creator_wallet_hash: Some(wallet_hash(&token.creator_wallet)) }
 }
 
-/// Whether any column this endpoint records outside the flow groups is wallet-keyed
-/// (`m_flow_window.unique_wallets` today). Registry-derived rather than a name list,
-/// so the answer follows `MetricId::needs_wallet_identity` instead of drifting from it.
+/// Whether any column this endpoint records outside the split-flow groups is
+/// wallet-keyed (`m_crowd_window` today). Registry-derived rather than a name list, so
+/// the answer follows `MetricId::needs_wallet_identity` instead of drifting from it.
 fn records_wallet_keyed_metric() -> bool {
     REGISTRY
         .iter()
@@ -321,6 +328,30 @@ fn max_window_secs(windows: &[WindowSpec]) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
+/// The nested `(reference, slice)` pairs the two-window metrics are read over: every
+/// ORDERED pair of requested spans that can nest — same unit, slice strictly narrower.
+///
+/// No new query param, because a caller asking for `10,30,60` has already named the
+/// spans it wants compared, and `trade_share(60s/10s)` is exactly that comparison.
+/// The alternative shipped for a while and was worse than useless: computing these
+/// metrics at a bare window produced a column of `NaN` on every row of every token, so
+/// the chart offered two panes that could never draw.
+fn nested_pairs(windows: &[WindowSpec]) -> Vec<(WindowSpec, WindowSpec)> {
+    windows
+        .iter()
+        .flat_map(|&reference| {
+            windows
+                .iter()
+                // Same unit, because a ratio across two clocks is not a share of
+                // anything (`rule_params::validate_group` rejects the same pair), and
+                // strictly narrower, because a slice equal to its reference reads 100
+                // on every token.
+                .filter(move |b| b.unit == reference.unit && b.size < reference.size)
+                .map(move |&slice| (reference, slice))
+        })
+        .collect()
+}
+
 /// Parse the `windows` CSV into a deduped, positive, finite list; fall back to the
 /// default set when absent/empty.
 fn parse_windows(raw: Option<&str>) -> Vec<WindowSpec> {
@@ -354,7 +385,10 @@ fn build_series(
     entry: Option<(Ts, f64)>,
 ) -> serde_json::Value {
     let mut columns: Vec<SeriesColumn> = Vec::new();
-    let mut labels: Vec<(SeriesColumn, Option<WindowSpec>)> = Vec::new();
+    // `(column, reference span, slice span)` — the slice is set for the two-window
+    // metrics alone, and it is what makes their columns computable at all.
+    let mut labels: Vec<(SeriesColumn, Option<WindowSpec>, Option<WindowSpec>)> = Vec::new();
+    let nested = nested_pairs(windows);
     for group in REGISTRY {
         // Flow groups need a fingerprint pattern context — skip when absent.
         let is_flow_group =
@@ -374,24 +408,35 @@ fn build_series(
                     let fp = flow.unwrap().fp_id;
                     let col = SeriesColumn::Flow(m.id, None, fp);
                     columns.push(col);
-                    labels.push((col, None));
+                    labels.push((col, None, None));
                 }
                 MetricKind::Static => {
                     columns.push(SeriesColumn::Static(m.id));
-                    labels.push((SeriesColumn::Static(m.id), None));
+                    labels.push((SeriesColumn::Static(m.id), None, None));
                 }
                 MetricKind::Dynamic if is_flow_group => {
                     let fp = flow.unwrap().fp_id;
                     for &w in windows {
                         let col = SeriesColumn::Flow(m.id, Some(w), fp);
                         columns.push(col);
-                        labels.push((col, Some(w)));
+                        labels.push((col, Some(w), None));
+                    }
+                }
+                // A two-window metric is a ratio ACROSS a nested pair, so one span is
+                // not a column of it — asking for `trade_share` at a bare window built
+                // a column that read `NaN` on every row of every token.
+                MetricKind::Dynamic if is_two_window(m.id) => {
+                    for &(reference, slice) in &nested {
+                        let col =
+                            SeriesColumn::Window(m.id, Windows::two(reference, slice));
+                        columns.push(col);
+                        labels.push((col, Some(reference), Some(slice)));
                     }
                 }
                 MetricKind::Dynamic => {
                     for &w in windows {
                         columns.push(SeriesColumn::window(m.id, w));
-                        labels.push((SeriesColumn::window(m.id, w), Some(w)));
+                        labels.push((SeriesColumn::window(m.id, w), Some(w), None));
                     }
                 }
             }
@@ -435,7 +480,7 @@ fn build_series(
 
     let mut out: Vec<SeriesOut> = labels
         .iter()
-        .filter_map(|&(col, window)| {
+        .filter_map(|&(col, window, slice)| {
             let id = match col {
                 SeriesColumn::Static(id) => id,
                 SeriesColumn::Window(id, _) => id,
@@ -444,7 +489,8 @@ fn build_series(
             let values = series.column_values(col)?;
             Some(SeriesOut {
                 metric: metric_spec(id).name,
-                group: group_for(id),
+                group: group_of(id).name,
+                slice,
                 unit: metric_spec(id).unit.as_str(),
                 window,
                 // Seconds only: a slot or print span has none to report.
@@ -479,16 +525,6 @@ fn build_series(
         "truncated": fold.truncated,
         "covered_until": fold.covered_until,
     })
-}
-
-/// The group name owning a metric id (walks the registry).
-fn group_for(id: MetricId) -> &'static str {
-    for group in REGISTRY {
-        if group.metrics.iter().any(|m| m.id == id) {
-            return group_spec(group.id).name;
-        }
-    }
-    "unknown"
 }
 
 /// The `m_position` columns (`retrace`/`bounce`/`pnl`/`held`) over a series,
@@ -537,8 +573,9 @@ fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64
                 metric: m.name,
                 group: group.name,
                 unit: m.unit.as_str(),
-                // Position metrics are static: no span on either key.
+                // Position metrics are static: no span on any key.
                 window: None,
+                slice: None,
                 window_size_sec: None,
                 values,
             }
@@ -565,6 +602,49 @@ mod tests {
 
     fn trade(price: f64, secs: i64) -> TradeLite {
         TradeLite { side: Side::Buy, sol: 1.0, price, reserve_sol: 30.0, at: ts(secs), ..Default::default() }
+    }
+
+    /// The two-window metrics are read over NESTED pairs of the requested spans, and
+    /// only over pairs that can actually nest. A pair that cannot is not a stricter
+    /// column, it is a `NaN` one — which is what a bare window produced for every row
+    /// of every token before these metrics were paired here at all.
+    #[test]
+    fn the_two_window_metrics_are_read_over_nestable_pairs_only() {
+        let secs = |n: f64| WindowSpec::secs(n);
+        assert_eq!(
+            nested_pairs(&[secs(10.0), secs(30.0), secs(60.0)]),
+            vec![
+                (secs(30.0), secs(10.0)),
+                (secs(60.0), secs(10.0)),
+                (secs(60.0), secs(30.0)),
+            ],
+        );
+        // A single span nests in nothing, so it yields no column rather than a NaN one.
+        assert!(nested_pairs(&[secs(30.0)]).is_empty());
+        // Equal sizes read 100 on every token; a cross-unit ratio is not a share at all
+        // and the rule validator rejects the same pair.
+        assert!(nested_pairs(&[secs(30.0), WindowSpec::slots(10.0, 0.0)]).is_empty());
+    }
+
+    /// Every dynamic metric the endpoint offers must be COMPUTABLE at the spans it is
+    /// offered at. A column that is `NaN` by construction is a chart pane that can
+    /// never draw, and the registry-driven builder will happily emit one.
+    #[test]
+    fn every_dynamic_column_the_endpoint_builds_is_computable() {
+        let windows = parse_windows(None);
+        for g in REGISTRY {
+            if g.kind != MetricKind::Dynamic {
+                continue;
+            }
+            for m in g.metrics {
+                let n = if is_two_window(m.id) {
+                    nested_pairs(&windows).len()
+                } else {
+                    windows.len()
+                };
+                assert!(n > 0, "{}.{} would be offered with no computable span", g.name, m.name);
+            }
+        }
     }
 
     /// The values of one `m_position` metric out of a position series.
@@ -722,19 +802,22 @@ mod tests {
             creator_wallet_hash: Some(wallet_hash("dev")),
         };
         let trades = [corpus_trade(5.0, "dev", None, 0), corpus_trade(3.0, "normie", None, 1)];
-        let grid = SparseGrid::for_windows(&[10.0]);
+        let grid = SparseGrid::for_windows(&[10.0, 30.0]);
+        // TWO spans, because the two-window metrics are a ratio across a nested pair:
+        // one span names no such pair, and the honest answer there is no column at all
+        // rather than a column of `NaN`.
+        let windows = [WindowSpec::secs(30.0), WindowSpec::secs(10.0)];
         let out = build_series(
             "mint",
             &trades,
-            &[WindowSpec::secs(10.0)],
+            &windows,
             &grid,
             Some(&ctx),
             // An entry context, so the position-scoped group is computed too.
             Some((ts(0), 1.0)),
         );
-        let cols: Vec<(String, String)> = out["series"]
-            .as_array()
-            .expect("series array")
+        let series = out["series"].as_array().expect("series array");
+        let cols: Vec<(String, String)> = series
             .iter()
             .map(|c| (c["group"].as_str().unwrap().to_string(), c["metric"].as_str().unwrap().to_string()))
             .collect();
@@ -748,9 +831,15 @@ mod tests {
                 );
             }
         }
+        // A two-window column carries BOTH spans. Without the slice the value is `NaN`
+        // by construction and the label names a window the number is not read over.
+        for c in series.iter().filter(|c| c["metric"] == "trade_share" || c["metric"] == "sol_share") {
+            assert!(!c["window"].is_null(), "{c:?} has no reference span");
+            assert!(!c["slice"].is_null(), "{c:?} has no slice span");
+        }
     }
 
-    /// `unique_wallets` is wallet-keyed, so this endpoint must load the wallet column
+    /// `m_crowd_window` is wallet-keyed, so this endpoint must load the wallet column
     /// on every request — not only when a fingerprint puts it on the flow path.
     #[test]
     fn the_endpoint_declares_it_needs_wallet_identity() {

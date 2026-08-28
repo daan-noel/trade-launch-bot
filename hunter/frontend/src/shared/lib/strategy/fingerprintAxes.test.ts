@@ -31,10 +31,10 @@ describe('the registry', () => {
    * save. Reading the Rust file directly means adding an axis in one place fails
    * here until it is added in the other.
    */
-  it('carries the same axes, in the same order, as the Rust registry', () => {
-    // Raw source of the Rust registry, via Vite's glob (vitest runs through Vite).
-    // Keeps the guard dependency-free — no `node:fs`, no `@types/node` — the same
-    // way `DataTable.boundary.test.ts` reads its siblings.
+  /** Raw source of the Rust registry, via Vite's glob (vitest runs through Vite).
+   *  Keeps the guard dependency-free - no `node:fs`, no `@types/node` - the same way
+   *  `DataTable.boundary.test.ts` reads its siblings. */
+  const rustSource = (): string => {
     const sources = (
       import.meta as unknown as {
         glob(
@@ -47,21 +47,83 @@ describe('the registry', () => {
       query: '?raw',
       import: 'default',
     });
-    const rust = Object.values(sources)[0];
+    return Object.values(sources)[0];
+  };
+
+  /** The `AXES` table alone - the file also names the same identifiers in tests. */
+  const rustTable = (rust: string): string => {
+    const from = rust.indexOf('pub static AXES');
+    expect(from, 'the Rust registry declares AXES').toBeGreaterThan(-1);
+    return rust.slice(from, rust.indexOf('\n];', from));
+  };
+
+  /** One field of every entry, in declaration order. */
+  const fieldValues = (table: string, re: RegExp): string[] =>
+    [...table.matchAll(re)].map((m) => m[1]);
+
+  /** A Rust string literal, unwrapped: line continuations joined, whitespace
+   *  collapsed, and the punctuation each language prefers normalised - what must
+   *  agree is the SENTENCE, not how the two files wrap it. */
+  const normalise = (v: string): string =>
+    v
+      .replace(/\\\s*\n\s*/g, '')
+      .replace(/\\"/g, '"')
+      .replace(/\\'/g, "'")
+      .replace(/\s+/g, ' ')
+      .replace(/[‘’]/g, "'")
+      .replace(/[“”]/g, '"')
+      .replace(/[—–]/g, '-')
+      .trim();
+
+  /**
+   * **The lock.** This table is a mirror of the Rust `AXES`, and a mirror that
+   * drifts is worse than no mirror: an axis the backend matches on but the UI does
+   * not render is invisible, one the UI offers but the backend rejects fails on
+   * save, and a DEFINITION that drifts is the silent one — `prior_launches` read
+   * "how many tokens this creator launched before" here while the engine counted
+   * them over a trailing 30-day window, so a threshold authored against the tooltip
+   * gated on a different number.
+   *
+   * Every field is checked, not the identifiers alone. Reading the Rust file
+   * directly means adding or editing an axis in one place fails here until the other
+   * follows.
+   */
+  it('mirrors the Rust registry field for field, in order', () => {
+    const rust = rustSource();
     expect(rust, 'the Rust registry must be readable — this guard is the lock').toBeTruthy();
-    const keys = [...rust.matchAll(/^\s*key: "([a-z_]+)",$/gm)].map((m) => m[1]);
+    const table = rustTable(rust);
+
+    const keys = fieldValues(table, /^\s*key: "([a-z_]+)",$/gm);
     expect(keys.length).toBeGreaterThan(0);
     expect(AXES.map((a) => a.id)).toEqual(keys);
+    expect(AXES.map((a) => a.chip)).toEqual(fieldValues(table, /^\s*chip: "([a-z_]+)",$/gm));
 
-    const chips = [...rust.matchAll(/^\s*chip: "([a-z_]+)",$/gm)].map((m) => m[1]);
-    expect(AXES.map((a) => a.chip)).toEqual(chips);
+    // The label names the axis in the form and in every summary chip.
+    expect(AXES.map((a) => a.label)).toEqual(fieldValues(table, /^\s*label: "([^"]+)",$/gm));
+
+    // Kind and unit decide how a bound is parsed and shown; a mismatch shows SOL for
+    // a compute-unit count, or offers a numeric box for a label sequence.
+    expect(AXES.map((a) => a.kind)).toEqual(
+      fieldValues(table, /^\s*kind: AxisKind::(\w+),$/gm).map((k) => k.toLowerCase()),
+    );
+    expect(AXES.map((a) => a.unit)).toEqual(
+      fieldValues(table, /^\s*unit: AxisUnit::(\w+),$/gm).map((u) =>
+        u.replace(/(?<!^)([A-Z])/g, '_$1').toLowerCase(),
+      ),
+    );
 
     // Deferral drives whether a rule can fire at birth, so a mismatch here shows a
     // gate as available when it cannot be read yet.
-    const phases = [...rust.matchAll(/^\s*phase: AxisPhase::(\w+),$/gm)].map((m) =>
-      m[1] === 'FirstSlot' ? 'first_slot' : 'instant',
+    expect(AXES.map((a) => a.phase)).toEqual(
+      fieldValues(table, /^\s*phase: AxisPhase::(\w+),$/gm).map((p) =>
+        p === 'FirstSlot' ? 'first_slot' : 'instant',
+      ),
     );
-    expect(AXES.map((a) => a.phase)).toEqual(phases);
+
+    // THE definition, which is what a rule author actually reads.
+    const rustDefs = fieldValues(table, /definition: "((?:[^"\\]|\\[\s\S])*)"/g).map(normalise);
+    expect(rustDefs).toHaveLength(AXES.length);
+    expect(AXES.map((a) => normalise(a.definition))).toEqual(rustDefs);
   });
 
   it('keys every axis uniquely and explains every one', () => {

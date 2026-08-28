@@ -211,6 +211,7 @@ fn bracket_model(b: &ScreenBaseline) -> Result<AxesModel, String> {
                 metric: None,
                 operator: None,
                 window: None,
+                slice: None,
                 values: vec![Some(v)],
             });
         }

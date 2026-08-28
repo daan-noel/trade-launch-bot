@@ -129,8 +129,8 @@ mod tests {
         let mut a = WindowState::new(WindowSpec::secs(widths[0]));
         let mut b = WindowState::new(WindowSpec::secs(widths[1]));
         for (i, &t) in at.iter().enumerate() {
-            a.on_trade(Side::Buy, 1.0, p(t), p(t), i as u64);
-            b.on_trade(Side::Buy, 1.0, p(t), p(t), i as u64);
+            a.on_trade(Side::Buy, 1.0, p(t), p(t));
+            b.on_trade(Side::Buy, 1.0, p(t), p(t));
         }
         (a, b)
     }
@@ -170,8 +170,8 @@ mod tests {
             let mut slice = WindowState::new(WindowSpec::secs(3.0));
             let mut reference = WindowState::new(WindowSpec::secs(60.0));
             for (i, (&sol, at)) in sols.iter().zip([10.0, 20.0, 30.0]).enumerate() {
-                slice.on_trade(Side::Buy, sol, p(at), p(30.0), i as u64);
-                reference.on_trade(Side::Buy, sol, p(at), p(30.0), i as u64);
+                slice.on_trade(Side::Buy, sol, p(at), p(30.0));
+                reference.on_trade(Side::Buy, sol, p(at), p(30.0));
             }
             (slice, reference)
         };
@@ -200,8 +200,8 @@ mod tests {
         for (i, (side, sol, at)) in
             [(Side::Buy, 5.0, 10.0), (Side::Sell, 5.0, 30.0)].into_iter().enumerate()
         {
-            slice.on_trade(side, sol, p(at), p(30.0), i as u64);
-            reference.on_trade(side, sol, p(at), p(30.0), i as u64);
+            slice.on_trade(side, sol, p(at), p(30.0));
+            reference.on_trade(side, sol, p(at), p(30.0));
         }
         let now = p(30.0);
         // 5 of 10 SOL gross moved in the slice, even though net flow over the

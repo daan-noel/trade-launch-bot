@@ -291,6 +291,7 @@ mod tests {
             metric: Some(metric.to_string()),
             operator: Some(hunter_engine::metrics::evaluator::Operator::Gte),
             window: window.map(WindowField::Secs),
+            slice: None,
             // `off` first, then the values — the with-vs-without sentinel.
             values: std::iter::once(None).chain(vals.into_iter().map(Some)).collect(),
         }
@@ -304,6 +305,7 @@ mod tests {
             metric: None,
             operator: None,
             window: None,
+            slice: None,
             values: vec![Some(v)],
         }
     }

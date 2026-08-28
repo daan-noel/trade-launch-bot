@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 
 use crate::fingerprint::FingerprintId;
 
+use super::crowd_window::CrowdWindowState;
 use super::flow_lifetime::FlowLifetimeState;
 use super::flow_ix::{FlowPatterns, FlowState};
 use super::flow_window::WindowState;
@@ -49,9 +50,14 @@ pub struct TokenTrack {
     windows: BTreeMap<super::WindowKey, WindowState>,
     /// Dynamic price-extrema windows, keyed by [`window_key`]. Kept apart from
     /// `windows` so a rule using only `m_flow_window` pays for no price deque (and
-    /// vice versa) — the two dynamic groups share the `window_size_sec` param name
-    /// but not the buffers.
+    /// vice versa) — the dynamic groups share the window size param names but not the
+    /// buffers.
     price_windows: BTreeMap<super::WindowKey, PriceWindowState>,
+    /// Dynamic wallet windows (`m_crowd_window`), keyed by [`window_key`]. Apart from
+    /// `windows` for the same reason `price_windows` is: this group's obligation is the
+    /// WALLET column, and a rule that reads no crowd metric must not pay a second deque
+    /// push and a hash-map entry on every trade of every window to carry it.
+    crowd_windows: BTreeMap<super::WindowKey, CrowdWindowState>,
     /// Flow classifier state, keyed by fingerprint (pattern sets differ).
     flow: BTreeMap<FingerprintId, FlowState>,
     /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
@@ -72,6 +78,7 @@ impl TokenTrack {
             flow_lifetime: FlowLifetimeState::default(),
             windows: BTreeMap::new(),
             price_windows: BTreeMap::new(),
+            crowd_windows: BTreeMap::new(),
             cur_slot: 0,
             n_prints: 0,
             priced_reserves: f64::NAN,
@@ -87,10 +94,17 @@ impl TokenTrack {
         self.windows.entry(spec.key()).or_insert_with(|| WindowState::new(spec));
     }
 
-    /// Register a trailing price-extrema window (idempotent; deduped by
-    /// `window_size_sec`). The `m_price_window` counterpart of [`ensure_window`].
+    /// Register a trailing price-extrema window (idempotent; deduped by the whole
+    /// span). The `m_price_window` counterpart of [`ensure_window`].
     pub fn ensure_price_window(&mut self, spec: super::WindowSpec) {
         self.price_windows.entry(spec.key()).or_insert_with(|| PriceWindowState::new(spec));
+    }
+
+    /// Register a trailing wallet window (idempotent; deduped by the whole span). The
+    /// `m_crowd_window` counterpart of [`ensure_window`] — a separate call because it
+    /// opens a separate buffer, so a rule reading no crowd metric never pays for one.
+    pub fn ensure_crowd_window(&mut self, spec: super::WindowSpec) {
+        self.crowd_windows.entry(spec.key()).or_insert_with(|| CrowdWindowState::new(spec));
     }
 
     /// Register fingerprint-scoped flow state (idempotent). `windows` are the
@@ -151,13 +165,11 @@ impl TokenTrack {
         let at = cur.at_trade(&t);
         for w in self.windows.values_mut() {
             let spec = w.spec();
-            w.on_trade(
-                t.side,
-                t.sol,
-                spec.pos(t.at, at),
-                spec.now_pos(t.at, cur),
-                t.wallet_hash,
-            );
+            w.on_trade(t.side, t.sol, spec.pos(t.at, at), spec.now_pos(t.at, cur));
+        }
+        for cw in self.crowd_windows.values_mut() {
+            let spec = cw.spec();
+            cw.on_trade(t.sol, t.wallet_hash, spec.pos(t.at, at), spec.now_pos(t.at, cur));
         }
         for pw in self.price_windows.values_mut() {
             let spec = pw.spec();
@@ -189,6 +201,10 @@ impl TokenTrack {
         for pw in self.price_windows.values_mut() {
             let now_pos = pw.spec().now_pos(now, cur);
             pw.evict(now_pos);
+        }
+        for cw in self.crowd_windows.values_mut() {
+            let now_pos = cw.spec().now_pos(now, cur);
+            cw.evict(now_pos);
         }
         for flow in self.flow.values_mut() {
             flow.on_tick(now, cur);
@@ -257,9 +273,16 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
-            GrossFlow | NetFlow | Buy | Sell | UniqueWallets | TradeCount | BuyCount | SellCount
-            | BuyShare | TradesPerWallet => {
+            GrossFlow | NetFlow | Buy | Sell | TradeCount | BuyCount | SellCount | BuyShare => {
                 match window.and_then(|sp| self.windows.get(&sp.key()).map(|w| (sp, w))) {
+                    Some((sp, w)) => w.value(id, sp.now_pos(now, cur)),
+                    None => f64::NAN,
+                }
+            }
+            // `m_crowd_window` reads its OWN deque — the wallet column is its subject,
+            // not `m_flow_window`'s payload.
+            UniqueWallets | TradesPerWallet => {
+                match window.and_then(|sp| self.crowd_windows.get(&sp.key()).map(|w| (sp, w))) {
                     Some((sp, w)) => w.value(id, sp.now_pos(now, cur)),
                     None => f64::NAN,
                 }
@@ -852,6 +875,9 @@ mod tests {
             let mut track = TokenTrack::new(ts(0.0));
             for w in [3.0, 5.0, 10.0, 60.0] {
                 track.ensure_window(WindowSpec::secs(w));
+                // The crowd metrics read their own deque, so the parity harness has to
+                // register it - exactly as a rule gating on them does.
+                track.ensure_crowd_window(WindowSpec::secs(w));
             }
             for &(at, is_buy, sol, wallet) in c.trades {
                 track.on_trade(TradeLite {

@@ -97,6 +97,7 @@ impl FamilyMember {
             metric: Some(self.metric.metric.name().to_string()),
             operator: Some(self.operator),
             window: self.metric.window.map(|w| WindowField::Span(w.label())),
+            slice: None,
             values: std::iter::once(None).chain(self.values.iter().copied().map(Some)).collect(),
         }
     }
@@ -770,6 +771,7 @@ fn rescue_model(
         metric: Some(r.metric.metric.name().to_string()),
         operator: Some(r.operator),
         window: r.metric.window.map(|w| WindowField::Span(w.label())),
+        slice: None,
         values: r.menu_values(),
     });
     axes.extend(baseline_axes(baseline));
@@ -819,6 +821,7 @@ fn baseline_axes(b: &ScreenBaseline) -> Vec<AxisSpec> {
                 metric: None,
                 operator: None,
                 window: None,
+                slice: None,
                 values: vec![Some(v)],
             });
         }

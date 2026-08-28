@@ -96,18 +96,17 @@ pub struct MetricSeries {
     record_from: Option<Ts>,
 }
 
-/// Register a windowed column's backing deque on `track`, routed to the buffer its
-/// metric actually reads: `m_price_window` (`WinTrail`/`WinRise`) needs the
-/// price-extrema deque (`ensure_price_window`), every other windowed group the flow
-/// deque (`ensure_window`). They share the `window_size_sec` param but not the state,
-/// so registering only one — as the old blanket `ensure_window` did — left the price
-/// windows unregistered and every `m_price_window` column reading `NaN`. This mirrors
-/// the live engine's split registration in `state.rs`.
+/// Register a windowed column's backing deque on `track`, routed **by group** to the
+/// buffer its metric actually reads. The dynamic groups share the window size param
+/// names but not the state, so registering only one — as the old blanket
+/// `ensure_window` did — leaves the others unregistered and every one of their columns
+/// reading `NaN`. Mirrors the live engine's split registration in `state.rs`, off the
+/// same registry, so a new dynamic group is routed here the day it is added.
 fn register_window(track: &mut TokenTrack, id: MetricId, ws: super::WindowSpec) {
-    if group_of(id).id == MetricGroupId::PriceWindow {
-        track.ensure_price_window(ws);
-    } else {
-        track.ensure_window(ws);
+    match group_of(id).id {
+        MetricGroupId::PriceWindow => track.ensure_price_window(ws),
+        MetricGroupId::CrowdWindow => track.ensure_crowd_window(ws),
+        _ => track.ensure_window(ws),
     }
 }
 
@@ -163,13 +162,17 @@ impl MetricSeries {
     ///
     /// [`new`](Self::new) already registers whatever a [`SeriesColumn::Window`]
     /// needs, so this is for a caller that registers off a *rule* rather than off
-    /// its column set — `CompiledRule::flow_windows` covers `m_flow_ix_window`
-    /// too, whose columns are [`SeriesColumn::Flow`] and so are registered by
-    /// [`ensure_flow`](Self::ensure_flow) instead. Registering the same width twice
-    /// is a no-op, which is what lets a caller mirror the live track's setup
-    /// verbatim rather than reasoning about which half owns which width.
+    /// its column set (`CompiledRule::flow_windows`). Registering the same span twice
+    /// is a no-op, which is what lets such a caller mirror the live track's setup
+    /// verbatim.
     pub fn ensure_window(&mut self, spec: super::WindowSpec) {
         self.track.ensure_window(spec);
+    }
+
+    /// Register a trailing **wallet** window (`m_crowd_window`) — the twin of
+    /// [`ensure_window`](Self::ensure_window) for the wallet-keyed deque.
+    pub fn ensure_crowd_window(&mut self, spec: super::WindowSpec) {
+        self.track.ensure_crowd_window(spec);
     }
 
     /// Register a rolling **price-extrema** window (`m_price_window`) — the twin of

@@ -786,14 +786,17 @@ pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
 /// `time`/`stall` condition ceilings (+ tolerance) and largest flow window, so the
 /// sparse series it drives records every tick this rule's scan could branch on.
 pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
-    // BOTH window families: a `m_price_window` rolling high decays as old prints age
+    // EVERY window family: a `m_price_window` rolling high decays as old prints age
     // out of the window, so `trail`/`rise` keep changing between trades exactly like a
-    // flow window does. Counting only `flow_windows` here would drop the decay-region
-    // ticks and let the scan miss a dip trigger a full replay sees.
+    // flow window does, and so do the crowd and split-flow windows. Counting only one
+    // bucket here drops the decay-region ticks and lets the scan miss a trigger a full
+    // replay sees.
     let max_window_secs = compiled
         .flow_windows
         .iter()
+        .chain(compiled.crowd_windows.iter())
         .chain(compiled.price_windows.iter())
+        .chain(compiled.ix_windows.iter())
         .cloned()
         // The grid is a WALL clock, so a slot span converts at the nominal slot time
         // and a PRINT span contributes nothing - its cursor moves only on a trade, and

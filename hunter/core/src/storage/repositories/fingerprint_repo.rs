@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use hunter_engine::fingerprint::Criteria;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 
 use crate::models::Fingerprint;
 
@@ -75,12 +76,12 @@ impl FingerprintRepo {
         Self { pool }
     }
 
-    /// Persist a new fingerprint. [`Fingerprint::validate`] runs first as the
-    /// backstop for non-HTTP writers (sweep promotion via [`Self::find_or_create`]),
-    /// so an unsatisfiable or criterion-less row can't reach the matcher through a
-    /// side door.
+    /// Persist a new fingerprint. [`validate_row`] runs first as the backstop for
+    /// non-HTTP writers (sweep promotion via [`Self::find_or_create`]), so an
+    /// unsatisfiable, criterion-less or mis-configured row can't reach the matcher
+    /// through a side door.
     pub async fn insert(&self, fp: &Fingerprint) -> anyhow::Result<()> {
-        fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
+        validate_row(fp)?;
         let name = stored_name(fp);
         sqlx::query(
             r#"
@@ -104,7 +105,7 @@ impl FingerprintRepo {
     /// — an edit can otherwise strip a live fingerprint to zero criteria (silently
     /// killing every rule bound to it) or to an unsatisfiable range.
     pub async fn update(&self, fp: &Fingerprint) -> anyhow::Result<()> {
-        fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
+        validate_row(fp)?;
         let name = stored_name(fp);
         sqlx::query(
             r#"
@@ -210,6 +211,21 @@ impl FingerprintRepo {
         fp.name = new_name;
         Ok(())
     }
+}
+
+/// Every gate a stored row must pass, in ONE place.
+///
+/// Both halves, not just the criteria half. `metric_config` selects no token, so it
+/// reads like a label — but it compiles into the fingerprint's live `m_flow_ix`
+/// classifier, and an unknown marker name or a malformed pattern list degrades that to
+/// "unconfigured", which reads every flow metric as `NaN`: a rule that silently never
+/// fires rather than an error. The HTTP edge checks both for a 400; a non-HTTP writer
+/// (sweep promotion) reaches the table through here.
+fn validate_row(fp: &Fingerprint) -> anyhow::Result<()> {
+    fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
+    FlowPatterns::validate_metric_config(&fp.metric_config)
+        .map_err(|e| anyhow::anyhow!("invalid fingerprint metric_config: {e}"))?;
+    Ok(())
 }
 
 /// Name written on insert/update: auto-name when the submitted label is blank

@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  flowClassifierFromConfig,
   flowWalletRules,
   ixPatternsFromConfig,
+  metricConfigWithFlowClassifier,
   metricConfigWithIxPatterns,
   withFlowWalletRules,
+  type FlowClassifier,
 } from './registry';
+
+/** The writer spells both wallet rules ALWAYS — a row that omits them says nothing
+ *  about which classifier it meant, which is how they came to be reverted unnoticed. */
+const DEFAULT_RULES = { wallet_contagion: true, creator_is_tagged: true };
 
 /** A PUT replaces the fingerprint row, so whatever this helper omits is DELETED.
  *
@@ -44,10 +51,10 @@ describe('metricConfigWithIxPatterns', () => {
 
   it('trims and drops empty rows and labels', () => {
     const out = metricConfigWithIxPatterns([['  A  ', ''], [], ['B']], {});
-    expect(out.m_flow_ix).toEqual({ ix_patterns: [['A'], ['B']] });
+    expect(out.m_flow_ix).toEqual({ ...DEFAULT_RULES, ix_patterns: [['A'], ['B']] });
   });
 
-  it('drops the group when no pattern survives, keeping the other groups', () => {
+  it('drops a PATTERN classifier when no pattern survives, keeping the other groups', () => {
     const out = metricConfigWithIxPatterns([[], ['   ']], {
       m_flow_ix: { ix_patterns: [['old']], wallet_contagion: false },
       m_state: { something: 1 },
@@ -55,15 +62,167 @@ describe('metricConfigWithIxPatterns', () => {
     expect(out).toEqual({ m_state: { something: 1 } });
   });
 
+  /** The bug this pins deleted a live classifier on every save.
+   *
+   *  A MARKER classifier legitimately carries no patterns — the backend rejects
+   *  `untagged_ix_markers` alongside `ix_patterns`, so an empty list is the only shape
+   *  it can have. Dropping the group on an empty pattern list therefore wiped the whole
+   *  `m_flow_ix` key whenever a pattern-only surface saved the fingerprint, and every
+   *  rule bound to it silently fell to `NaN` on every flow metric. */
+  it('keeps a MARKER classifier when the pattern list is empty', () => {
+    const marker = {
+      m_flow_ix: {
+        untagged_ix_markers: ['Axiom Trade'],
+        wallet_contagion: false,
+        creator_is_tagged: false,
+      },
+      m_state: { something: 1 },
+    };
+    expect(metricConfigWithIxPatterns([], marker)).toEqual(marker);
+  });
+
   it('defaults to an empty base, so a caller with nothing to preserve is unchanged', () => {
-    expect(metricConfigWithIxPatterns(patterns)).toEqual({ m_flow_ix: { ix_patterns: patterns } });
+    expect(metricConfigWithIxPatterns(patterns)).toEqual({
+      m_flow_ix: { ...DEFAULT_RULES, ix_patterns: patterns },
+    });
   });
 
   it('ignores a malformed m_flow_ix rather than spreading it', () => {
     for (const bad of [null, 'x', 42, [['a']]]) {
       const out = metricConfigWithIxPatterns(patterns, { m_flow_ix: bad });
-      expect(out.m_flow_ix).toEqual({ ix_patterns: patterns });
+      expect(out.m_flow_ix).toEqual({ ...DEFAULT_RULES, ix_patterns: patterns });
     }
+  });
+});
+
+/** The one writer, exercised on the shapes only the full editor can produce. */
+describe('metricConfigWithFlowClassifier', () => {
+  const base: FlowClassifier = {
+    configured: true,
+    ix_patterns: [],
+    markers: [],
+    markers_side: 'tagged',
+    wallet_contagion: true,
+    creator_is_tagged: true,
+  };
+
+  it('writes a marker classifier under the key for its side', () => {
+    expect(
+      metricConfigWithFlowClassifier({}, {
+        ...base,
+        markers: ['Axiom Trade', 'Photon'],
+        markers_side: 'untagged',
+        wallet_contagion: false,
+        creator_is_tagged: false,
+      }),
+    ).toEqual({
+      m_flow_ix: {
+        untagged_ix_markers: ['Axiom Trade', 'Photon'],
+        wallet_contagion: false,
+        creator_is_tagged: false,
+      },
+    });
+  });
+
+  /** The backend rejects a row carrying both masks — they name opposite sides of one
+   *  split — so switching sides must REMOVE the other key, not leave it for the save to
+   *  fail on. */
+  it('removes the other side rather than carrying both masks', () => {
+    const prev = metricConfigWithFlowClassifier({}, {
+      ...base,
+      markers: ['Photon'],
+      markers_side: 'untagged',
+    });
+    const flipped = metricConfigWithFlowClassifier(prev, {
+      ...base,
+      markers: ['Memo Program'],
+      markers_side: 'tagged',
+    });
+    expect(flipped.m_flow_ix).toEqual({
+      tagged_ix_markers: ['Memo Program'],
+      ...DEFAULT_RULES,
+    });
+  });
+
+  it('carries across m_flow_ix keys this model does not own', () => {
+    const out = metricConfigWithFlowClassifier(
+      { m_flow_ix: { future_key: 7 }, m_state: { x: 1 } },
+      { ...base, ix_patterns: [['A']] },
+    );
+    expect(out).toEqual({
+      m_state: { x: 1 },
+      m_flow_ix: { future_key: 7, ix_patterns: [['A']], ...DEFAULT_RULES },
+    });
+  });
+
+  it('drops the group when the classifier is unconfigured', () => {
+    expect(
+      metricConfigWithFlowClassifier(
+        { m_flow_ix: { ix_patterns: [['A']] }, m_state: { x: 1 } },
+        { ...base, configured: false },
+      ),
+    ).toEqual({ m_state: { x: 1 } });
+  });
+});
+
+/** The reader is the writer's inverse, on every shape the editor can produce. */
+describe('flowClassifierFromConfig', () => {
+  it('round-trips every classifier shape', () => {
+    const shapes: FlowClassifier[] = [
+      {
+        configured: true,
+        ix_patterns: [['A', 'B']],
+        markers: [],
+        markers_side: 'tagged',
+        wallet_contagion: true,
+        creator_is_tagged: false,
+      },
+      {
+        configured: true,
+        ix_patterns: [],
+        markers: ['Photon'],
+        markers_side: 'untagged',
+        wallet_contagion: false,
+        creator_is_tagged: false,
+      },
+      {
+        configured: true,
+        ix_patterns: [],
+        markers: ['CreateAccountWithSeed'],
+        markers_side: 'tagged',
+        wallet_contagion: false,
+        creator_is_tagged: true,
+      },
+    ];
+    for (const c of shapes) {
+      expect(flowClassifierFromConfig(metricConfigWithFlowClassifier({}, c))).toEqual(c);
+    }
+  });
+
+  it('reads an absent key as unconfigured, not as a classifier that tags nothing', () => {
+    expect(flowClassifierFromConfig({}).configured).toBe(false);
+    expect(flowClassifierFromConfig({ m_flow_ix: {} }).configured).toBe(true);
+  });
+
+  /** The registry carries the engine's own default, so the two cannot drift. */
+  it('takes the boolean defaults from the registry when it has one', () => {
+    const reg = {
+      operators: [],
+      groups: [
+        {
+          name: 'm_flow_ix',
+          kind: 'static' as const,
+          strict_params: [],
+          metrics: [],
+          fingerprint_config: [
+            { name: 'wallet_contagion', value_type: 'bool', required: false, default: false },
+          ],
+        },
+      ],
+    };
+    expect(flowClassifierFromConfig({ m_flow_ix: {} }, reg).wallet_contagion).toBe(false);
+    // No registry entry falls back to the documented engine default.
+    expect(flowClassifierFromConfig({ m_flow_ix: {} }).wallet_contagion).toBe(true);
   });
 });
 
@@ -126,7 +285,7 @@ describe('withFlowWalletRules', () => {
     });
   });
 
-  it('has nothing to attach to when no pattern configures the group', () => {
+  it('has nothing to attach to when nothing configures the group', () => {
     const cfg = metricConfigWithIxPatterns([], { m_state: { x: 1 } });
     expect(withFlowWalletRules(cfg, rules)).toEqual({ m_state: { x: 1 } });
   });

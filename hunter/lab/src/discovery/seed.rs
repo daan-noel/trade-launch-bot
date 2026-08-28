@@ -202,6 +202,7 @@ fn metric_axis(r: &MetricResponse, values: &[f64]) -> AxisSpec {
         metric: Some(r.metric.metric.name().to_string()),
         operator: Some(r.operator),
         window: r.metric.window.map(|w| WindowField::Span(w.label())),
+        slice: None,
         values: std::iter::once(None)
             .chain(values.iter().copied().map(Some))
             .collect(),
@@ -220,6 +221,7 @@ fn tpsl_seed_axes(baseline: &ScreenBaseline, notes: &mut Vec<String>) -> Vec<Axi
             metric: None,
             operator: None,
             window: None,
+            slice: None,
             values: vals.into_iter().map(Some).collect(),
         });
     }
@@ -233,6 +235,7 @@ fn tpsl_seed_axes(baseline: &ScreenBaseline, notes: &mut Vec<String>) -> Vec<Axi
             metric: None,
             operator: None,
             window: None,
+            slice: None,
             values: vals.into_iter().map(Some).collect(),
         });
     }

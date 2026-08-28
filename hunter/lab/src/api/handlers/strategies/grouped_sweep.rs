@@ -2095,12 +2095,13 @@ pub async fn promote_group(
 /// Cheap pre-resolve check: does the axes JSON reference anything that needs the
 /// lake's wallet / label columns?
 ///
-/// Group name alone is not the test. A wallet-keyed metric can live in an otherwise
-/// SOL-only group (`m_flow_window.unique_wallets`), and loading without the wallet
-/// column makes every trade one anonymous wallet — a gate that silently never fires
-/// rather than an error. So the group check stays for the flow-split families (whose
-/// every metric is fingerprint-keyed) and the metric name is checked against the
-/// registry's own answer, `MetricId::needs_wallet_identity`.
+/// Group name alone is not the test, and must not become one even though the
+/// wallet-keyed metrics currently sit together in `m_crowd_window`: loading without
+/// the wallet column makes every trade one anonymous wallet — a gate that silently
+/// never fires rather than an error — so the answer has to follow the registry rather
+/// than a group list someone remembers to extend. The group check stays for the
+/// flow-split families (whose every metric is fingerprint-keyed) and the metric name
+/// is checked against the registry's own answer, `MetricId::needs_wallet_identity`.
 fn axes_json_references_flow(axes: &serde_json::Value) -> bool {
     use hunter_engine::metrics::{group_spec, MetricGroupId, REGISTRY};
 

@@ -151,7 +151,7 @@ No fingerprint config — unlike the ix-split groups below.
 
 | group | kind | strict params | state |
 | --- | --- | --- | --- |
-| `m_crowd_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints` | the same ring buffer, plus a per-wallet occurrence map |
+| `m_crowd_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints` | **its own** ring buffer of `(pos, wallet)`, plus a per-wallet occurrence map |
 
 | metric | meaning | unit | eq-tol |
 | --- | --- | --- | --- |
@@ -165,14 +165,35 @@ request the wallet column folds every trade as one anonymous wallet: `unique_wal
 reads `1` forever and the gate looks strict instead of broken. One group, one
 obligation, so a loader answers the question by group instead of by metric list.
 
+**Its buffer is its own, not `m_flow_window`'s.** A group's buffer is an obligation,
+and only this group's is the wallet column, so carrying wallet hashes on the flow deque
+made every `gross_flow` rule pay a second deque push and a hash-map entry per trade per
+window for a column it never reads. The split also removes the only way the pair could
+disagree: a crowd window registered mid-life now starts empty like any newly registered
+window, where upgrading a flow window in place would have left `unique_wallets` reading a
+partial buffer while `trade_count` on the same deque read a complete one.
+
 A rule wanting both flow and crowd gates over one window authors two instances at the
-same `window_size_sec`. They are ANDed like any two groups, and they share the buffer —
-`TokenTrack` dedupes by the whole span, so the second instance costs nothing.
+same size. They are ANDed like any two groups, and each opens its own deque — the price
+of the obligation being per-group. Both admit a trade through the one
+`flow_window::is_foldable` guard, so `m_crowd_window(w).trades_per_wallet` and
+`m_flow_window(w).trade_count / m_crowd_window(w).unique_wallets` are the same number by
+construction rather than by agreement.
+
+Registration is **one bucket per backing buffer** — `CompiledRule` collects
+`flow_windows` / `crowd_windows` / `price_windows` / `ix_windows` separately, and
+`EngineState` keeps a union of each. `ix_windows` is the one that mattered most: it
+drives `ensure_flow`, which opens a deque **per configured fingerprint**, so handing it
+the aggregate-flow union multiplied that fold by the number of fingerprints for spans no
+`m_flow_ix_window` metric reads.
 
 `unique_wallets` counts **people, not SOL**: one wallet churning and a crowd arriving are
 identical in `gross_flow` and different here. It keeps a per-wallet occurrence map beside
 the SOL deque, so a wallet leaves the count only when its **last** entry leaves the window
-— eviction that `remove()`s on the first drops a wallet that is still trading. Its `=`
+— eviction that `remove()`s on the first drops a wallet that is still trading. The
+read corrects the two out-of-window ends from an inline scratch rather than a fresh
+`HashMap`: both ends are normally empty, but a **lagged** window's back end never is, so
+allocating there was a per-read allocation on every tick. Its `=`
 tolerance is half a wallet: a tally has no sub-unit, and anything wider would make `== 5`
 also match 6.
 
@@ -275,6 +296,15 @@ What keeps the axis honest is that it is required **per metric**, not per group:
   slice nothing reads changes no value and no requirement identity, so it would sit in
   the params looking like a gate. Same principle as an `arm_above_pct` with no trailing
   metric.
+* The **sweep axis builder** and the **metric-series** endpoint ask the same question.
+  A sweep axis on one of these metrics carries a `slice` beside its `window`, required
+  and refused by the same per-metric rule; without it the builder assembled a rule
+  missing a required strict param, the engine gate rejected every combo, and the sweep
+  ran to completion having scored nothing. `/metric-series` computes them over every
+  requested pair of spans that can NEST — same unit, slice strictly narrower — rather
+  than at a bare window, which produced a column of `NaN` on every row of every token
+  and two chart panes that could never draw. A single requested span names no pair, so
+  it yields no column, which is the honest answer rather than an empty one.
 * `arm::build_reqs` attaches `Windows::secondary` to those metrics alone. Attaching it
   to the instance would give a `gross_flow(30s)` requirement a different IDENTITY
   depending on whether a sibling clause happened to read a slice — and two rules on
@@ -407,12 +437,34 @@ that token, and the creator rule adds an identity term. Leaving them on does not
 the one the rule was derived on. Wallet-keyed rules are also the axis a
 [wallet-free](wallet-8dtx-derived-rule.md) derivation is not allowed to use.
 
-Both are checkboxes on the fingerprint form, under the pattern rows. The form writes
-them **explicitly** on every save rather than leaving them to the backend default: a row
-that omits them says nothing about which classifier it meant, and the whole `m_flow_ix`
-object round-trips through `metricConfigWithIxPatterns`, so a save that touches only the
-name still preserves the marker masks and both flags. Write the key from any other
-caller the same way - the PUT replaces the row, so a partial write lands as a full one.
+### The editor is generated from the registry
+
+`m_flow_ix` declares **every** key it reads as an `FpConfigFieldSpec` — the pattern
+list, both marker masks, and both wallet rules — each with its own definition, its
+engine default, and the sibling fields it conflicts with. The fingerprint form renders
+its controls from that declaration and the marker picker from the served
+`ix_markers` vocabulary, so a field or a marker added in Rust reaches the UI with no
+frontend change. `every_metric_config_key_the_classifier_reads_is_declared` reads
+`from_metric_config`'s own source and fails when the two drift.
+
+An undeclared key is not a small gap: it is a setting with no control and no tooltip,
+writable only by hand-posting JSON and then deleted by the next save from a form that
+does not know it exists.
+
+There is **one writer** of the key, `metricConfigWithFlowClassifier`, and every other
+caller routes through it. A PUT replaces the row, so a writer that rebuilds `m_flow_ix`
+from a subset of its fields reads as a partial write and lands as a full one. Three
+things survive a write: the other groups, the `m_flow_ix` keys the model does not own,
+and — deliberately removed rather than carried — the marker side that is not selected,
+since a row holding both masks is rejected. The wallet rules are written **explicitly**
+on every save rather than left to the backend default: a row that omits them says
+nothing about which classifier it meant.
+
+Clearing the pattern rows drops the group **unless the row is a marker classifier**. A
+marker classifier legitimately carries no patterns (an untagged mask cannot coexist with
+`ix_patterns`), so dropping the group on an empty list deleted the whole classifier on
+every save from a pattern-only surface, and every rule bound to it fell to `NaN` on
+every flow metric.
 
 ```json
 "m_flow_ix": {

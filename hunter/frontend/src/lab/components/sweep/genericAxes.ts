@@ -50,6 +50,10 @@ export interface GenericAxisRow {
    *  What lets a sweep search a CAUSAL gate — the tape before the trigger, with no
    *  way for the trigger's own slot or print to leak into it. */
   lag?: string;
+  /** The nested SLICE size, for the two-window metrics alone; '' = unset. Rides the
+   *  row's unit and lag — that pair IS the two-window basis — so only the size is
+   *  authored here, exactly as the rule editor does it. */
+  slice?: string;
   /** Swept values: a comma list (`5, 10, 15`), ranges (`10..40 step 10`), and —
    *  on metric axes — the `off` sentinel (that combo omits the condition). */
   valuesText: string;
@@ -67,6 +71,9 @@ export interface AxisSpecWire {
    *  field has always meant. A string is a full span (`"30sl@1"`, `"20p"`) in the
    *  same grammar a chart legend and a persisted exit reason use. */
   window?: number | string;
+  /** The nested slice span, in the same grammar as `window`. Required exactly when the
+   *  METRIC reads it and rejected otherwise, mirroring the backend `AxisSpec`. */
+  slice?: number | string;
   values: (number | null)[];
 }
 
@@ -156,6 +163,30 @@ export function rowNeedsWindow(row: GenericAxisRow, reg: StrategyRegistry | unde
   return row.kind === 'metric' && rowGroup(row, reg)?.kind === 'dynamic';
 }
 
+/** True when this row's METRIC reads the nested slice axis — the mirror of the backend
+ *  `is_two_window`, off the same registry flag the rule editor reads.
+ *
+ *  Per-metric, not per-group: `m_flow_window` declares the axis for every instance
+ *  while only `trade_share` / `sol_share` read it, so asking the group would demand a
+ *  slice of every flow axis. Without this the two metrics were selectable and
+ *  unsweepable — every assembled combo failed the engine's own gate at run time. */
+export function axisRowNeedsSlice(
+  row: GenericAxisRow,
+  reg: StrategyRegistry | undefined,
+): boolean {
+  if (!rowNeedsWindow(row, reg)) return false;
+  return rowGroup(row, reg)?.metrics.find((m) => m.name === row.metric)?.two_window ?? false;
+}
+
+/** The parsed, positive slice span a row carries, or `null`. It rides the row's unit
+ *  and lag and differs only in size. */
+export function axisRowSliceSpec(row: GenericAxisRow): WindowSpec | null {
+  const size = Number(row.slice);
+  if ((row.slice ?? '').trim() === '' || !Number.isFinite(size) || size <= 0) return null;
+  const window = axisRowWindowSpec(row);
+  return window ? { ...window, size } : null;
+}
+
 /** What a row's window counts in. Absent ⇒ seconds, so a row authored before the
  *  other bases existed keeps its meaning. */
 export function axisRowUnit(row: GenericAxisRow): WindowUnit {
@@ -215,6 +246,17 @@ export function axisRowError(
     if (lagText !== '') {
       const lag = Number(lagText);
       if (!Number.isFinite(lag) || lag < 0) return `lag (${u}) must be a number ≥ 0`;
+    }
+    // The slice is required exactly when the METRIC reads it, and refused otherwise —
+    // the same per-metric rule the engine's `validate_group` applies, so a sweep can
+    // never be launched on combos the engine will reject one by one.
+    const slice = Number(row.slice);
+    const hasSlice = (row.slice ?? '').trim() !== '' && Number.isFinite(slice) && slice > 0;
+    if (axisRowNeedsSlice(row, reg)) {
+      if (!hasSlice) return `${row.metric} is a ratio across a nested pair — slice (${u}) > 0 required`;
+      if (slice > w) return `slice (${u}) must nest inside the window (${slice} > ${w})`;
+    } else if ((row.slice ?? '').trim() !== '') {
+      return `${row.metric} does not read a slice — a span nothing reads is a no-op`;
     }
   }
   return null;
@@ -282,12 +324,15 @@ export function serializeAxisRows(
       const w = axisRowWindowSpec(row);
       // An unlagged wall-clock span stays a bare NUMBER on the wire, so a config
       // saved before the other bases existed round-trips byte-identically.
-      spec.window =
-        w == null
-          ? undefined
-          : w.unit === 'sec' && w.lag === 0
-            ? w.size
-            : formatWindowSpec(w);
+      const wire = (spanValue: WindowSpec) =>
+        spanValue.unit === 'sec' && spanValue.lag === 0 ? spanValue.size : formatWindowSpec(spanValue);
+      spec.window = w == null ? undefined : wire(w);
+      if (axisRowNeedsSlice(row, reg)) {
+        // The slice carries no lag of its own — it rides the reference's, and the
+        // backend reads only its size — so it is written unlagged.
+        const b = axisRowSliceSpec(row);
+        spec.slice = b == null ? undefined : wire({ ...b, lag: 0 });
+      }
     }
     out.push(spec);
   }
@@ -317,10 +362,12 @@ export function axesSpecToRows(spec: { axes?: AxisSpecWire[] } | AxisSpecWire[] 
     // leaves the row blank rather than inventing a span the config never named.
     ...(() => {
       const w = a.window == null ? null : parseWindowSpec(String(a.window));
+      const b = a.slice == null ? null : parseWindowSpec(String(a.slice));
       return {
         window: w ? String(w.size) : '',
         windowUnit: w?.unit ?? ('sec' as const),
         lag: w && w.lag > 0 ? String(w.lag) : '',
+        slice: b ? String(b.size) : '',
       };
     })(),
     valuesText: (a.values ?? []).map((v) => (v == null ? 'off' : v)).join(', '),
@@ -347,6 +394,7 @@ export function newAxisRow(
     window: '',
     windowUnit: 'sec',
     lag: '',
+    slice: '',
     valuesText: kind === 'take_profit' ? '50, 100, 200' : kind === 'stop_loss' ? '30, 50' : '',
   };
 }

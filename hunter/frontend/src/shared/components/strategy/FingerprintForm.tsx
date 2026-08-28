@@ -18,12 +18,15 @@ import {
 } from 'lib/strategy/fingerprintAxes';
 import { axisPredicateText } from 'lib/strategy/fingerprintGrammar';
 import {
-  groupsWithFingerprintConfig,
-  metricConfigWithIxPatterns,
+  findGroup,
+  flowClassifierFromConfig,
+  ixMarkers,
+  metricConfigWithFlowClassifier,
   useStrategyRegistry,
-  ixPatternsFromConfig,
-  flowWalletRules,
-  withFlowWalletRules,
+  type FlowClassifier,
+  type FpConfigFieldSpec,
+  type MarkerSide,
+  type StrategyRegistry,
 } from 'lib/strategy/registry';
 import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { FINGERPRINT_FIELD_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
@@ -58,24 +61,21 @@ interface FormState {
    *  (backend `validate` + the `fingerprints_wildcard_excludes_axes` CHECK), so
    *  turning it on clears them rather than leaving a contradiction on screen. */
   wildcard: boolean;
-  /** `m_flow_ix.ix_patterns` rows. */
-  ix_patterns: string[][];
-  /** `m_flow_ix.wallet_contagion` — tag a wallet for the rest of the token once it
-   *  trades tagged. Backend default TRUE, so absent reads as on. */
-  wallet_contagion: boolean;
-  /** `m_flow_ix.creator_is_tagged` — the creator is tagged whatever he sends.
-   *  Backend default TRUE, so absent reads as on. */
-  creator_is_tagged: boolean;
+  /** The WHOLE `m_flow_ix` classifier — patterns, marker mask and side, and the two
+   *  wallet rules. One value rather than a field per key, because the group is written
+   *  as a whole: a save that rebuilds it from a subset lands as a full write and drops
+   *  the rest, which is how the marker masks used to be deleted on every edit. */
+  flow: FlowClassifier;
   /** The ORIGINAL metric_config, whole. The save merges into this rather than
    *  rebuilding from the fields above, so every key the form does not render — other
-   *  groups, and `m_flow_ix`'s marker masks — survives an edit. */
+   *  groups, and any `m_flow_ix` key added later — survives an edit. */
   metric_config_prev: Record<string, unknown>;
 }
 
 
 const NUMERIC_AXES: readonly AxisDef[] = AXES.filter((a) => a.kind === 'numeric');
 
-function fromFingerprint(fp?: Fingerprint): FormState {
+function fromFingerprint(fp?: Fingerprint, reg?: StrategyRegistry): FormState {
   const cfg = fp?.metric_config ?? {};
   const criteria = fp?.criteria ?? {};
   const conditions: Partial<Record<AxisId, string>> = {};
@@ -88,8 +88,7 @@ function fromFingerprint(fp?: Fingerprint): FormState {
     conditions,
     ix_labels: formatIxLabelsText(labels?.kind === 'sequence' ? labels.labels : null),
     wildcard: fp?.wildcard ?? false,
-    ix_patterns: ixPatternsFromConfig(cfg),
-    ...flowWalletRules(cfg),
+    flow: flowClassifierFromConfig(cfg, reg),
     metric_config_prev: cfg,
   };
 }
@@ -134,11 +133,147 @@ function toDraft(s: FormState): FingerprintDraft {
     name: s.name.trim(),
     wildcard: s.wildcard,
     criteria: toCriteria(s).criteria,
-    metric_config: withFlowWalletRules(
-      metricConfigWithIxPatterns(s.ix_patterns, s.metric_config_prev),
-      { wallet_contagion: s.wallet_contagion, creator_is_tagged: s.creator_is_tagged },
-    ),
+    metric_config: metricConfigWithFlowClassifier(s.metric_config_prev, s.flow),
   };
+}
+
+/** The `m_flow_ix` editor — the whole classifier, generated from the group's declared
+ *  fields.
+ *
+ *  Every key the classifier reads gets a control here. It used to render `ix_patterns`
+ *  alone, which left the marker masks — the vocabulary a purely STRUCTURAL gate is
+ *  stated in, and the one the routers live in — reachable only by hand-posting JSON,
+ *  and then deleted by the next save from this form. The two wallet rules were shown
+ *  only when a pattern row existed, so a classifier made of markers, or of the creator
+ *  and contagion alone, had no editor either.
+ *
+ *  A field the registry does not declare renders nothing, and a field it adds renders
+ *  with its own definition as the tooltip. */
+function FlowClassifierEditor({
+  value,
+  fields,
+  markers,
+  disabled,
+  onChange,
+}: {
+  value: FlowClassifier;
+  fields: FpConfigFieldSpec[];
+  markers: { name: string; router: boolean }[];
+  disabled?: boolean;
+  onChange: (patch: Partial<FlowClassifier>) => void;
+}) {
+  const field = (name: string) => fields.find((f) => f.name === name);
+  const tip = (name: string, fallback: HelpTip): HelpTip => {
+    const body = field(name)?.description;
+    // The registry definition wins, with the frontend copy BELOW it — the same
+    // resolution a metric tooltip uses, so the definition can never say something the
+    // engine does not while the worked guidance still gets to be long.
+    return body ? { title: fallback.title, body: `${body}
+
+${fallback.body}` } : fallback;
+  };
+  // The masks name opposite sides of one split, so the row picks a side and the OTHER
+  // key is never written. Declared in the registry (`conflicts_with`) rather than
+  // assumed, and the backend rejects the combination the same way.
+  const markerField = field('untagged_ix_markers') ?? field('tagged_ix_markers');
+  const patternsBlocked =
+    value.markers_side === 'untagged' &&
+    value.markers.length > 0 &&
+    (field('untagged_ix_markers')?.conflicts_with ?? []).includes('ix_patterns');
+
+  const toggleMarker = (name: string) =>
+    onChange({
+      markers: value.markers.includes(name)
+        ? value.markers.filter((m) => m !== name)
+        : [...value.markers, name],
+    });
+
+  return (
+    <div className="flex flex-col gap-2 text-[11px] text-text-dim">
+      <div className="flex flex-col gap-1">
+        <LabelTip tip={tip('ix_patterns', FINGERPRINT_FIELD_HELP.ix_patterns)}>
+          ix_patterns (m_flow_ix)
+        </LabelTip>
+        <IxPatternsEditor
+          patterns={value.ix_patterns}
+          onChange={(p) => onChange({ ix_patterns: p })}
+          disabled={disabled || patternsBlocked}
+        />
+        {patternsBlocked && (
+          <span className="text-text-dim/80">
+            an untagged-marker mask already judges every build, so a pattern list has
+            nothing left to say — switch the side to add one
+          </span>
+        )}
+      </div>
+
+      {markerField && markers.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <LabelTip tip={tip(markerField.name, FINGERPRINT_FIELD_HELP.ix_markers)}>
+            ix markers (m_flow_ix)
+          </LabelTip>
+          <div className="flex items-center gap-2">
+            {(['tagged', 'untagged'] as MarkerSide[]).map((side) => (
+              <label key={side} className="flex cursor-pointer items-center gap-1 text-text-mid">
+                <input
+                  type="radio"
+                  name="marker-side"
+                  checked={value.markers_side === side}
+                  disabled={disabled}
+                  onChange={() => onChange({ markers_side: side })}
+                />
+                <span>{side === 'tagged' ? 'a marker TAGS' : 'a marker leaves UNTAGGED'}</span>
+              </label>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {markers.map((m) => (
+              <button
+                key={m.name}
+                type="button"
+                disabled={disabled}
+                onClick={() => toggleMarker(m.name)}
+                className={
+                  'rounded border px-1.5 py-0.5 font-mono text-[10px] ' +
+                  (value.markers.includes(m.name)
+                    ? 'border-accent/60 bg-accent/15 text-text-hi'
+                    : 'border-white/10 text-text-dim hover:text-text-mid')
+                }
+                title={m.router ? 'a retail router - a person clicked through it' : 'machinery'}
+              >
+                {m.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-1 pl-1">
+        {(['wallet_contagion', 'creator_is_tagged'] as const).map((name) =>
+          field(name) ? (
+            <label key={name} className="flex cursor-pointer items-start gap-1.5 text-text-mid">
+              <Checkbox
+                boxSize="sm"
+                className="mt-0.5"
+                checked={value[name]}
+                disabled={disabled}
+                onChange={() => onChange({ [name]: !value[name] })}
+              />
+              <LabelTip tip={tip(name, FINGERPRINT_FIELD_HELP[name])}>
+                {name.replace(/_/g, ' ')}
+              </LabelTip>
+            </label>
+          ) : null,
+        )}
+        {(value.wallet_contagion || value.creator_is_tagged) && (
+          <span className="text-text-dim/80">
+            a tag is a property of the WALLET here — untick both for a purely structural
+            gate
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /** Why every axis input greys out under the wildcard. */
@@ -217,7 +352,11 @@ export function FingerprintForm({
     setS((p) => ({ ...p, conditions: { ...p.conditions, [id]: v } }));
 
   const { data: registry } = useStrategyRegistry();
-  const fpConfigGroups = groupsWithFingerprintConfig(registry);
+  // The `m_flow_ix` editor is generated from the group's declared fields, so a field
+  // added to the registry gets its control and its tooltip with no change here.
+  const flowFields = findGroup(registry, 'm_flow_ix')?.fingerprint_config ?? [];
+  const setFlow = (patch: Partial<FlowClassifier>) =>
+    setS((p) => ({ ...p, flow: { ...p.flow, ...patch, configured: true } }));
   const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
   const { criteria, badAxes } = useMemo(() => toCriteria(s), [s]);
   const draft = useMemo(() => toDraft(s), [s]);
@@ -325,47 +464,14 @@ export function FingerprintForm({
         />
       </label>
 
-      {fpConfigGroups.some((g) =>
-        (g.fingerprint_config ?? []).some((f) => f.name === 'ix_patterns'),
-      ) && (
-        <div className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={FINGERPRINT_FIELD_HELP.ix_patterns}>ix_patterns (m_flow_ix)</LabelTip>
-          <IxPatternsEditor
-            patterns={s.ix_patterns}
-            onChange={(p) => set('ix_patterns', p)}
-            disabled={submitting}
-          />
-          {s.ix_patterns.length > 0 && (
-            <div className="flex flex-col gap-1 pl-1">
-              <label className="flex cursor-pointer items-start gap-1.5 text-text-mid">
-                <Checkbox
-                  boxSize="sm"
-                  className="mt-0.5"
-                  checked={s.wallet_contagion}
-                  disabled={submitting}
-                  onChange={() => set('wallet_contagion', !s.wallet_contagion)}
-                />
-                <LabelTip tip={FINGERPRINT_FIELD_HELP.wallet_contagion}>wallet contagion</LabelTip>
-              </label>
-              <label className="flex cursor-pointer items-start gap-1.5 text-text-mid">
-                <Checkbox
-                  boxSize="sm"
-                  className="mt-0.5"
-                  checked={s.creator_is_tagged}
-                  disabled={submitting}
-                  onChange={() => set('creator_is_tagged', !s.creator_is_tagged)}
-                />
-                <LabelTip tip={FINGERPRINT_FIELD_HELP.creator_is_tagged}>creator is tagged</LabelTip>
-              </label>
-              {(s.wallet_contagion || s.creator_is_tagged) && (
-                <span className="text-text-dim/80">
-                  a tag is a property of the WALLET here — untick both for a purely
-                  structural gate
-                </span>
-              )}
-            </div>
-          )}
-        </div>
+      {flowFields.length > 0 && (
+        <FlowClassifierEditor
+          value={s.flow}
+          fields={flowFields}
+          markers={ixMarkers(registry)}
+          disabled={submitting}
+          onChange={setFlow}
+        />
       )}
 
       <div className="flex items-center justify-between gap-2">

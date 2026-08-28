@@ -24,6 +24,7 @@ import {
   findRuleFireMarkers,
   metricClockHorizons,
   metricColKey,
+  nestedWindowPairs,
   metricConditionBands,
   metricConditionStatesAt,
   metricPrefsFromParams,
@@ -255,6 +256,9 @@ function useMetricPanesModel({
       metric: string;
       unit: MetricUnit;
       window: WindowSpec | null;
+      /** The nested slice, for the two-window metrics alone — their reading is a
+       *  ratio across the pair, so the pane is named by both spans. */
+      slice?: WindowSpec | null;
       group: string;
     }> = [];
     for (const g of registry?.groups ?? []) {
@@ -263,12 +267,29 @@ function useMetricPanesModel({
       // than surface an all-empty pane set.
       if (g.scope === 'position' && !positionEntry) continue;
       for (const m of g.metrics) {
-        if (g.kind === 'dynamic') {
-          for (const w of windows) {
-            cols.push({ key: metricColKey(m.name, w), metric: m.name, unit: m.unit, window: w, group: g.name });
-          }
-        } else {
+        if (g.kind !== 'dynamic') {
           cols.push({ key: metricColKey(m.name, null), metric: m.name, unit: m.unit, window: null, group: g.name });
+          continue;
+        }
+        // A two-window metric is a ratio ACROSS a nested pair, so its panes are the
+        // pairs the endpoint computes — one per (reference, slice) — not one per
+        // window. Offering it at a bare window listed a pane whose column the series
+        // never emits, and which would read `NaN` on every row if it did.
+        if (m.two_window) {
+          for (const [w, b] of nestedWindowPairs(windows)) {
+            cols.push({
+              key: metricColKey(m.name, w, b),
+              metric: m.name,
+              unit: m.unit,
+              window: w,
+              slice: b,
+              group: g.name,
+            });
+          }
+          continue;
+        }
+        for (const w of windows) {
+          cols.push({ key: metricColKey(m.name, w), metric: m.name, unit: m.unit, window: w, group: g.name });
         }
       }
     }
@@ -543,9 +564,19 @@ function MetricPanesSelector() {
                             />
                             <span
                               className="font-mono whitespace-nowrap"
-                              title={`${c.metric}${c.window ? `@${formatWindowSpec(c.window)}` : ''}`}
+                              title={`${c.metric}${c.window ? `@${formatWindowSpec(c.window)}` : ''}${
+                                c.slice ? ` / ${formatWindowSpec(c.slice)} slice` : ''
+                              }`}
                             >
+                              {/* The bucket already names the reference window, so a
+                                  two-window metric shows only what distinguishes it
+                                  from its siblings: the nested slice. Without it the
+                                  same bucket lists `trade_share` several times with no
+                                  way to tell which reading each one is. */}
                               {c.metric}
+                              {c.slice ? (
+                                <span className="text-text-dim">/{formatWindowSpec(c.slice)}</span>
+                              ) : null}
                             </span>
                           </label>
                         ))}

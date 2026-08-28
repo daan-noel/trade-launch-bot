@@ -37,10 +37,23 @@ const REG: StrategyRegistry = {
     {
       name: 'm_flow_window',
       kind: 'dynamic',
-      strict_params: [{ name: 'window_size_sec', required: true }],
+      strict_params: [
+        { name: 'window_size_sec', required: true },
+        // The group declares the slice axis for every instance; only the metrics
+        // flagged `two_window` may set it.
+        { name: 'slice_size_sec', required: false },
+      ],
       metrics: [
         { name: 'net_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 285 },
         { name: 'gross_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 290 },
+        {
+          name: 'trade_share',
+          unit: 'percent',
+          eq_tolerance: 0.5,
+          monotonic: false,
+          hue: 306,
+          two_window: true,
+        },
       ],
     },
     {
@@ -151,6 +164,82 @@ describe('axisRowError', () => {
     expect(
       axisRowError(metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: '5, of' }), REG),
     ).toBe('unrecognized value: of');
+  });
+});
+
+/** A two-window metric is a ratio ACROSS a nested pair, so an axis on one carries
+ *  both spans — and the builder has to say so BEFORE the sweep launches.
+ *
+ *  Selecting `trade_share` without a slice used to be silently accepted here and then
+ *  rejected by the engine on every assembled combo, which is a sweep that starts, runs
+ *  and scores nothing. The rule is per METRIC: the group declares the axis for every
+ *  instance, so asking the group would demand a slice of `gross_flow` too. */
+describe('the nested slice axis', () => {
+  const shareRow = (over: Partial<GenericAxisRow> = {}) =>
+    metricRow({
+      group: 'm_flow_window',
+      metric: 'trade_share',
+      operator: '>=',
+      window: '60',
+      valuesText: '40',
+      ...over,
+    });
+
+  it('requires a slice on a two-window metric', () => {
+    expect(axisRowError(shareRow(), REG)).toMatch(/slice/);
+    expect(axisRowError(shareRow({ slice: '3' }), REG)).toBeNull();
+  });
+
+  it('refuses a slice on a metric that reads none', () => {
+    const row = metricRow({
+      group: 'm_flow_window',
+      metric: 'gross_flow',
+      operator: '>=',
+      window: '60',
+      slice: '3',
+      valuesText: '5',
+    });
+    expect(axisRowError(row, REG)).toMatch(/does not read a slice/);
+  });
+
+  it('requires the slice to nest inside the window', () => {
+    expect(axisRowError(shareRow({ window: '10', slice: '30' }), REG)).toMatch(/nest inside/);
+  });
+
+  it('serializes and restores both spans', () => {
+    const [wire] = serializeAxisRows([shareRow({ slice: '3' })], REG);
+    expect(wire.window).toBe(60);
+    expect(wire.slice).toBe(3);
+    const [back] = axesSpecToRows([wire]);
+    expect(back.window).toBe('60');
+    expect(back.slice).toBe('3');
+  });
+
+  it('carries the slice in the window UNIT the row chose', () => {
+    const [wire] = serializeAxisRows(
+      [shareRow({ windowUnit: 'slot', window: '30', lag: '1', slice: '3' })],
+      REG,
+    );
+    expect(wire.window).toBe('30sl@1');
+    // The slice rides the reference's lag rather than carrying one of its own.
+    expect(wire.slice).toBe('3sl');
+  });
+
+  it('sends no slice for a metric that does not read one', () => {
+    const [wire] = serializeAxisRows(
+      [
+        metricRow({
+          group: 'm_flow_window',
+          metric: 'gross_flow',
+          operator: '>=',
+          window: '60',
+          slice: '3',
+          valuesText: '5',
+        }),
+      ],
+      REG,
+    );
+    expect(wire.slice).toBeUndefined();
   });
 });
 

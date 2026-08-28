@@ -98,7 +98,7 @@ Each was measured and each separates cleanly, at a fill the engine cannot delive
 
 * **`first_slot_buy = 8.94` (exact).** The preset separator. 641 trades at +1.33% below the
   threshold, 177 at +4.53% above — a cliff, not a slope.
-* **`m_flow_window.unique_wallets <= 4 @2s`.** Exactly the dev plus three bundle insiders and
+* **`m_crowd_window.unique_wallets <= 4 @2s`.** Exactly the dev plus three bundle insiders and
   nobody else. Outcome falls monotonically with creation-slot buyer count: 3 legs −0.3%,
   4 legs −3.3%, 5 legs −5.2%, 6 legs −10.4%. An outside buyer raises the price we pay the
   bundle *and* becomes a second seller into the same thin follow-on demand.
@@ -111,7 +111,7 @@ Each was measured and each separates cleanly, at a fill the engine cannot delive
 Everything above comes from a standalone path simulator. Run through
 `hunter-engine::reduce` (rule `6b1d2c3e`, fingerprint `5c9a4e10` =
 `first_slot_buy_lamports 8_940_000_000` + `bkt=exact`, 0.25 SOL, TP +10 / SL −12 /
-`m_position.held >= 4`, entry `m_state.time <= 3` + `m_flow_window.unique_wallets
+`m_position.held >= 4`, entry `m_state.time <= 3` + `m_crowd_window.unique_wallets
 <= 4 @2s`), the same rule reads:
 
 | fill model | cost model | trades | mean | median | win | PF | total |

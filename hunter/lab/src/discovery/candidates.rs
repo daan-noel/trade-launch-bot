@@ -115,6 +115,15 @@ pub struct ScreenConfig {
     pub entry_window: WindowSpec,
     /// `window_size_sec` for dynamic groups on the **exit** side.
     pub exit_window: WindowSpec,
+    /// The nested SLICE the two-window metrics (`trade_share` / `sol_share`) are
+    /// screened over, as a fraction of the side's own window.
+    ///
+    /// One fraction rather than a span per side, because the slice only means anything
+    /// relative to the window it nests in — and because both sides must stay in the
+    /// window's own UNIT, which a fixed span cannot promise. Screening these metrics at
+    /// a bare window instead produced a column of `NaN` for every token, so they were
+    /// enumerated, scored on nothing, and silently never surfaced as candidates.
+    pub slice_fraction: f64,
     /// Compiled `ix_patterns` for the run. `None` ⇒ `m_flow_ix*` metrics
     /// are skipped ([`SkipReason::FlowPatternsMissing`]) — their values are
     /// pattern-dependent, so a corpus-wide menu would be meaningless.
@@ -130,6 +139,9 @@ impl Default for ScreenConfig {
         Self {
             entry_window: WindowSpec::secs(30.0),
             exit_window: WindowSpec::secs(10.0),
+            // A tenth of the window: wide enough that the ratio is not dominated by a
+            // single print, narrow enough that "recent" still means recent.
+            slice_fraction: 0.1,
             flow_patterns: None,
             // 200k samples per metric ⇒ ~1.6 MB/column; the p10..p90 rungs the menu
             // reads are stable long before this.
@@ -161,6 +173,11 @@ pub struct ScreenMetric {
     /// WHOLE span. A bare size cannot tell 30 slots from 30 seconds, and a screen
     /// that reads the wrong one scores a different metric than it names.
     pub window: Option<WindowSpec>,
+    /// `Some` iff the METRIC reads a nested slice ([`is_two_window`]) — the other half
+    /// of its basis, without which its column is `NaN` on every row.
+    ///
+    /// [`is_two_window`]: hunter_engine::metrics::is_two_window
+    pub slice: Option<WindowSpec>,
     pub source: ValueSource,
 }
 
@@ -222,9 +239,9 @@ impl ScreenPlan {
 
 /// Enumerate every screenable metric off [`REGISTRY`] for `cfg`.
 ///
-/// Registry-driven end to end: `kind` picks the side's window, `scope` forces
-/// exit-only, and a fingerprint-configured group needs its patterns. Adding a
-/// metric to the registry surfaces it here with no edit.
+/// Registry-driven end to end: `kind` picks the side's window, `is_two_window` adds
+/// its nested slice, `scope` forces exit-only, and a fingerprint-configured group
+/// needs its patterns. Adding a metric to the registry surfaces it here with no edit.
 pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
     let mut plan = ScreenPlan::default();
     for group in REGISTRY {
@@ -238,6 +255,15 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
             };
             for m in group.metrics {
                 let skip = |reason| Skipped { side, group: group.id, metric: m.id, reason };
+                // A two-window metric is a ratio ACROSS a nested pair, so the side's
+                // window alone does not name a reading of it.
+                let slice = window.filter(|_| hunter_engine::metrics::is_two_window(m.id)).map(|w| {
+                    WindowSpec {
+                        size: (w.size * cfg.slice_fraction).max(1.0),
+                        lag: w.lag,
+                        unit: w.unit,
+                    }
+                });
                 // Position-scoped: exit-only, and its values are declared.
                 if group.scope == MetricScope::Position {
                     if side == AxisSide::Entry {
@@ -254,6 +280,8 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
                             group: group.id,
                             metric: m.id,
                             window,
+                            // Position metrics are static and read no slice.
+                            slice: None,
                             source: ValueSource::Declared(menu),
                         }),
                         None => plan.skipped.push(skip(SkipReason::NoDeclaredMenu)),
@@ -268,9 +296,12 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
                     }
                     SeriesColumn::Flow(m.id, window, SWEEP_FLOW_FP)
                 } else {
-                    match window {
-                        Some(w) => SeriesColumn::window(m.id, w),
-                        None => SeriesColumn::Static(m.id),
+                    match (window, slice) {
+                        (Some(w), Some(b)) => {
+                            SeriesColumn::Window(m.id, hunter_engine::metrics::Windows::two(w, b))
+                        }
+                        (Some(w), None) => SeriesColumn::window(m.id, w),
+                        _ => SeriesColumn::Static(m.id),
                     }
                 };
                 plan.metrics.push(ScreenMetric {
@@ -278,6 +309,7 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
                     group: group.id,
                     metric: m.id,
                     window,
+                    slice,
                     source: ValueSource::Series(column),
                 });
             }
@@ -469,6 +501,7 @@ impl MetricCandidates {
             metric: Some(self.metric.metric.name().to_string()),
             operator: Some(operator),
             window: self.metric.window.map(|w| WindowField::Span(w.label())),
+            slice: None,
             values: self.values.clone(),
         }
     }
@@ -821,6 +854,7 @@ mod tests {
             group: MetricGroupId::PriceLifetime,
             metric: MetricId::Trail,
             window: None,
+            slice: None,
             source: ValueSource::Series(col),
         };
         let menu = candidate_menu(m, &table, &ScreenConfig::default()).unwrap();
@@ -840,6 +874,7 @@ mod tests {
             group: MetricGroupId::State,
             metric: MetricId::Liquidity,
             window: None,
+            slice: None,
             source: ValueSource::Series(col),
         };
         // A constant metric: every rung rounds onto the same gate.
@@ -871,6 +906,7 @@ mod tests {
             group: MetricGroupId::Position,
             metric: MetricId::Retrace,
             window: None,
+            slice: None,
             source: ValueSource::Declared(&[5.0, 10.0, 25.0]),
         };
         let menu = candidate_menu(m, &PercentileTable::default(), &ScreenConfig::default()).unwrap();
@@ -889,6 +925,7 @@ mod tests {
             group: MetricGroupId::FlowWindow,
             metric: MetricId::NetFlow,
             window: Some(WindowSpec::secs(30.0)),
+            slice: None,
             source: ValueSource::Series(col),
         };
         let menu = candidate_menu(m, &table, &ScreenConfig::default()).unwrap();

@@ -131,6 +131,23 @@ impl TokenState {
     }
 }
 
+/// The four window unions a track is registered from, one per backing buffer.
+///
+/// A named carrier rather than four positional slices: they are all
+/// `&[WindowSpec]`, so a swapped pair compiles and then registers every span on a
+/// buffer no metric reads — a whole group silently reading `NaN`.
+#[derive(Debug, Clone, Copy)]
+struct WindowSets<'a> {
+    /// `m_flow_window`.
+    flow: &'a [crate::metrics::WindowSpec],
+    /// `m_crowd_window`.
+    crowd: &'a [crate::metrics::WindowSpec],
+    /// `m_price_window`.
+    price: &'a [crate::metrics::WindowSpec],
+    /// `m_flow_ix_window` — opened per fingerprint.
+    ix: &'a [crate::metrics::WindowSpec],
+}
+
 /// The engine's whole world. Construct with [`EngineState::new`], feed it events
 /// through [`crate::reduce::reduce`].
 #[derive(Debug, Clone, Default)]
@@ -145,12 +162,20 @@ pub struct EngineState {
     pub manual_rules: BTreeMap<PositionId, CompiledRule>,
     /// Loaded fingerprints (input order preserved for multi-match).
     pub fps: Vec<Fingerprint>,
-    /// Union of every rule's distinct **flow** `window_size_sec` (`m_flow_window` +
-    /// `m_flow_ix_window`) — ensured on each new track.
+    /// Union of every rule's `m_flow_window` spans — ensured on each new track.
+    ///
+    /// One union per BUFFER, mirroring [`CompiledRule`]'s buckets: a span registered
+    /// on a buffer no metric reads is a deque folded on every trade for nothing, and
+    /// the `m_flow_ix_window` union is worse than that because `ensure_flow` opens one
+    /// deque per configured fingerprint.
     pub all_windows: Vec<crate::metrics::WindowSpec>,
-    /// Union of every rule's distinct **price** `window_size_sec`
-    /// (`m_price_window`) — ensured on each new track alongside `all_windows`.
+    /// Union of every rule's `m_crowd_window` spans (the wallet-keyed buffer).
+    pub all_crowd_windows: Vec<crate::metrics::WindowSpec>,
+    /// Union of every rule's `m_price_window` spans.
     pub all_price_windows: Vec<crate::metrics::WindowSpec>,
+    /// Union of every rule's `m_flow_ix_window` spans — the only ones `ensure_flow`
+    /// opens per fingerprint.
+    pub all_ix_windows: Vec<crate::metrics::WindowSpec>,
     /// Union of every loaded rule's [`ClockHorizons`] — how long *any* rule's
     /// readings can still move without a trade. Drives [`Settled`].
     pub tick_horizons: ClockHorizons,
@@ -379,37 +404,49 @@ impl EngineState {
         self.fps = fps.to_vec();
 
         let mut all_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
+        let mut all_crowd_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_price_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
+        let mut all_ix_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut horizons = ClockHorizons::default();
         let mut any_priority = false;
         for r in self.rules.values() {
             horizons = horizons.widen(r.clock_horizons);
             any_priority |= r.priority != 0;
-            for &w in &r.flow_windows {
-                if !all_windows.contains(&w) {
-                    all_windows.push(w);
-                }
-            }
-            for &w in &r.price_windows {
-                if !all_price_windows.contains(&w) {
-                    all_price_windows.push(w);
+            for (src, dst) in [
+                (&r.flow_windows, &mut all_windows),
+                (&r.crowd_windows, &mut all_crowd_windows),
+                (&r.price_windows, &mut all_price_windows),
+                (&r.ix_windows, &mut all_ix_windows),
+            ] {
+                for &w in src {
+                    if !dst.contains(&w) {
+                        dst.push(w);
+                    }
                 }
             }
         }
         self.all_windows = all_windows;
+        self.all_crowd_windows = all_crowd_windows;
         self.all_price_windows = all_price_windows;
+        self.all_ix_windows = all_ix_windows;
         self.tick_horizons = horizons;
         self.any_priority = any_priority;
         // A different rule set means different horizons, different priorities and a
         // different arming answer — nothing settled under the old set may stay settled.
         self.bump_cross_epoch();
+        // Borrowed out before the loop: `window_sets` reads `self`, which the
+        // `values_mut` iteration has mutably borrowed.
+        let (sets, fps) = (
+            WindowSets {
+                flow: &self.all_windows,
+                crowd: &self.all_crowd_windows,
+                price: &self.all_price_windows,
+                ix: &self.all_ix_windows,
+            },
+            &self.fps,
+        );
         for token in self.tokens.values_mut() {
-            Self::ensure_track_windows_and_flow(
-                &mut token.track,
-                &self.all_windows,
-                &self.all_price_windows,
-                &self.fps,
-            );
+            Self::ensure_track_windows_and_flow(&mut token.track, sets, fps);
         }
     }
 
@@ -417,12 +454,7 @@ impl EngineState {
     /// window (flow + price) and every configured flow fingerprint.
     pub fn new_track(&self, at: Ts) -> TokenTrack {
         let mut track = TokenTrack::new(at);
-        Self::ensure_track_windows_and_flow(
-            &mut track,
-            &self.all_windows,
-            &self.all_price_windows,
-            &self.fps,
-        );
+        Self::ensure_track_windows_and_flow(&mut track, self.window_sets(), &self.fps);
         track
     }
 
@@ -435,21 +467,41 @@ impl EngineState {
             .or_else(|| position.and_then(|p| self.manual_rules.get(&p)))
     }
 
+    /// The four window unions, in the order [`ensure_track_windows_and_flow`] reads
+    /// them. One accessor so a caller cannot pass them in the wrong order — the
+    /// failure that would be is silent, not a compile error: every union is the same
+    /// type, and a swapped pair registers each span on a buffer nothing reads.
+    ///
+    /// [`ensure_track_windows_and_flow`]: Self::ensure_track_windows_and_flow
+    fn window_sets(&self) -> WindowSets<'_> {
+        WindowSets {
+            flow: &self.all_windows,
+            crowd: &self.all_crowd_windows,
+            price: &self.all_price_windows,
+            ix: &self.all_ix_windows,
+        }
+    }
+
     fn ensure_track_windows_and_flow(
         track: &mut TokenTrack,
-        windows: &[crate::metrics::WindowSpec],
-        price_windows: &[crate::metrics::WindowSpec],
+        windows: WindowSets<'_>,
         fps: &[Fingerprint],
     ) {
-        for &w in windows {
+        for &w in windows.flow {
             track.ensure_window(w);
         }
-        for &w in price_windows {
+        for &w in windows.crowd {
+            track.ensure_crowd_window(w);
+        }
+        for &w in windows.price {
             track.ensure_price_window(w);
         }
         for fp in fps {
             if let Some(patterns) = FlowPatterns::from_metric_config(&fp.metric_config) {
-                track.ensure_flow(fp.id, &patterns, windows);
+                // Only the `m_flow_ix_window` spans: this call opens a deque PER
+                // FINGERPRINT, so handing it the aggregate-flow union multiplied the
+                // fold by the number of configured fingerprints for nothing.
+                track.ensure_flow(fp.id, &patterns, windows.ix);
             }
         }
     }

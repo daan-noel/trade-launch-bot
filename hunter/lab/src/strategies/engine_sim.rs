@@ -776,22 +776,22 @@ mod flow_column_needs {
         }
     }
 
-    /// A wallet-keyed metric must pull the lake's flow columns even when its GROUP is
-    /// otherwise SOL-only.
+    /// A wallet-keyed metric must pull the lake's flow columns, and the answer comes
+    /// from `MetricId::needs_wallet_identity` rather than a group name.
     ///
     /// The bug this pins is silent and looks like a strategy result, not a load error:
     /// without the `wallet` column every trade folds as one anonymous wallet, so
-    /// `unique_wallets >= N` reads 1 forever and the run reports zero entries — which
-    /// is indistinguishable from "the gate is simply strict".
+    /// `m_crowd_window.unique_wallets >= N` reads 1 forever and the run reports zero
+    /// entries — which is indistinguishable from "the gate is simply strict".
     #[test]
-    fn unique_wallets_forces_the_flow_columns() {
+    fn a_crowd_metric_forces_the_flow_columns() {
         let uw = rule_with(serde_json::json!({
             "entry": { "m_crowd_window": {
                 "window_size_sec": 60,
                 "unique_wallets": [{ "operator": ">=", "value": 20 }]
             } }
         }));
-        assert!(rule_needs_flow(&uw), "unique_wallets needs the wallet column");
+        assert!(rule_needs_flow(&uw), "m_crowd_window needs the wallet column");
 
         let sol_only = rule_with(serde_json::json!({
             "entry": { "m_flow_window": {

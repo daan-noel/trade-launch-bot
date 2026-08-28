@@ -152,7 +152,7 @@ export const AXES: readonly AxisDef[] = [
     unit: 'count',
     phase: 'instant',
     definition:
-      'How many tokens this creator launched BEFORE this one. A strictly-prior tally, so a first-time creator reads 0; unknown when the creator wallet is not on the creation event.',
+      'How many tokens this creator launched BEFORE this one, over a trailing 30-day window. A strictly-prior tally, so a first-time creator reads 0; unknown when the creator wallet is not on the creation event.',
   },
 ] as const;
 

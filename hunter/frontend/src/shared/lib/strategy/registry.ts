@@ -40,12 +40,37 @@ export interface StrictParamSpec {
   allows_zero?: boolean;
 }
 
-/** Fingerprint-side config field for a group (e.g. `ix_patterns`). */
+/** Fingerprint-side config field for a group (e.g. `ix_patterns`).
+ *
+ *  A group declares EVERY key it reads out of `metric_config`, so the editors are
+ *  generated from this rather than hardcoded — an undeclared key is a setting with no
+ *  control, writable only by hand-posting JSON and then overwritten by the next save. */
 export interface FpConfigFieldSpec {
   name: string;
-  /** Wire type hint — currently `"string[][]"` for volume-ix patterns. */
+  /** Wire type hint: `"string[][]"` (ordered label sequences), `"marker[]"` (a subset
+   *  of {@link StrategyRegistry.ix_markers}), or `"bool"`. */
   value_type: string;
   required: boolean;
+  /** THE definition of the field, authored on the backend `FpConfigFieldSpec` and
+   *  rendered straight into the tooltip. Optional only so a pre-description payload
+   *  still parses. */
+  description?: string;
+  /** The value the group assumes when the key is ABSENT, as the engine spells it.
+   *  Load-bearing for the booleans: their default is `true`, so a control that renders
+   *  an absent field as unchecked says the opposite of what the classifier does. */
+  default?: unknown;
+  /** Fields naming the OPPOSITE side of the same split — configuring both is rejected
+   *  at save, so the editor disables them against each other instead. */
+  conflicts_with?: string[];
+}
+
+/** One structural marker in the engine's vocabulary (`flow_ix::MARKERS`), served with
+ *  the registry so a marker added in Rust reaches the picker with no frontend change.
+ *  `router` splits the two kinds: what the transaction DOES, versus the retail
+ *  front-end a person clicked through. */
+export interface IxMarkerSpec {
+  name: string;
+  router: boolean;
 }
 
 /** One metric within a group. `eq_tolerance` is its own `=`/`!=` bucket width.
@@ -84,96 +109,207 @@ export interface GroupSpec {
   metrics: MetricSpec[];
 }
 
-/** Groups that declare fingerprint-side config (drives FingerprintForm sections). */
-export function groupsWithFingerprintConfig(reg: StrategyRegistry | undefined): GroupSpec[] {
-  return (reg?.groups ?? []).filter((g) => (g.fingerprint_config?.length ?? 0) > 0);
+/** Which side of the split a marker mask names.
+ *
+ *  Not a convenience flag - the two are opposite claims. "Carries a throwaway account"
+ *  identifies machines and leaves everything else unjudged; "came through a named
+ *  router" identifies people and judges everything else a machine. */
+export type MarkerSide = 'tagged' | 'untagged';
+
+/** The `m_flow_ix` classifier a fingerprint configures, as the editor holds it - the
+ *  frontend mirror of the engine's `FlowPatterns`.
+ *
+ *  ONE model for the whole key, because it is written as a whole: a PUT replaces the
+ *  row, so any writer that rebuilds `m_flow_ix` from a subset of its fields lands as a
+ *  full write and silently drops the rest. */
+export interface FlowClassifier {
+  /** Whether the fingerprint configures `m_flow_ix` at all. `false` means the key is
+   *  absent and every flow metric reads NaN - a different state from a classifier that
+   *  tags nothing. */
+  configured: boolean;
+  /** Exact ordered label sequences that TAG a trade. */
+  ix_patterns: string[][];
+  /** Structural marker names, from {@link StrategyRegistry.ix_markers}. */
+  markers: string[];
+  /** Which side {@link FlowClassifier.markers} names. */
+  markers_side: MarkerSide;
+  wallet_contagion: boolean;
+  creator_is_tagged: boolean;
+}
+
+/** The key each marker side is stored under. */
+const MARKER_KEY: Record<MarkerSide, string> = {
+  tagged: 'tagged_ix_markers',
+  untagged: 'untagged_ix_markers',
+};
+
+/** Keys this model owns, so a write carries every OTHER key across untouched. */
+const OWNED_KEYS = [
+  'ix_patterns',
+  MARKER_KEY.tagged,
+  MARKER_KEY.untagged,
+  'wallet_contagion',
+  'creator_is_tagged',
+];
+
+function flowObject(
+  cfg: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  const flow = cfg?.m_flow_ix;
+  return flow && typeof flow === 'object' && !Array.isArray(flow)
+    ? (flow as Record<string, unknown>)
+    : null;
+}
+
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 }
 
 /** Read `m_flow_ix.ix_patterns` from a fingerprint's `metric_config`. */
 export function ixPatternsFromConfig(
   cfg: Record<string, unknown> | null | undefined,
 ): string[][] {
-  const flow = cfg?.m_flow_ix;
-  if (!flow || typeof flow !== 'object') return [];
-  const pats = (flow as { ix_patterns?: unknown }).ix_patterns;
+  const pats = flowObject(cfg)?.ix_patterns;
   if (!Array.isArray(pats)) return [];
   return pats.filter(
     (p): p is string[] => Array.isArray(p) && p.every((x) => typeof x === 'string'),
   );
 }
 
-/** The `m_flow_ix` wallet rules, as booleans, defaulting the way the BACKEND defaults
- *  them: absent means `true` (`FlowPatterns::default`).
+/** The whole `m_flow_ix` classifier a `metric_config` carries.
  *
- *  Reading absent as `false` shows a control saying the opposite of what the engine
- *  does — and these two decide what the classifier measures, not how tightly.
+ *  The booleans default the way the BACKEND defaults them - absent means `true`
+ *  (`FlowPatterns::default`), and the registry payload carries that default so the two
+ *  cannot drift. Reading absent as `false` shows a control saying the opposite of what
+ *  the engine does, and these two decide what the classifier measures, not how tightly.
  */
+export function flowClassifierFromConfig(
+  cfg: Record<string, unknown> | null | undefined,
+  reg?: StrategyRegistry,
+): FlowClassifier {
+  const obj = flowObject(cfg);
+  const fallback = (name: string) => {
+    const d = findGroup(reg, 'm_flow_ix')?.fingerprint_config?.find((f) => f.name === name)
+      ?.default;
+    return typeof d === 'boolean' ? d : true;
+  };
+  const bool = (name: string) =>
+    typeof obj?.[name] === 'boolean' ? (obj[name] as boolean) : fallback(name);
+  // A row cannot legally carry both masks (the backend rejects it), so the side is
+  // whichever key is PRESENT; `tagged` is the reading of a row carrying neither.
+  const hasUntagged = obj !== null && obj[MARKER_KEY.untagged] !== undefined;
+  const side: MarkerSide = hasUntagged ? 'untagged' : 'tagged';
+  return {
+    configured: obj !== null,
+    ix_patterns: ixPatternsFromConfig(cfg),
+    markers: stringList(obj?.[MARKER_KEY[side]]),
+    markers_side: side,
+    wallet_contagion: bool('wallet_contagion'),
+    creator_is_tagged: bool('creator_is_tagged'),
+  };
+}
+
+/** The `m_flow_ix` wallet rules alone - {@link flowClassifierFromConfig} narrowed for
+ *  callers that only toggle those two. */
 export function flowWalletRules(cfg: Record<string, unknown> | null | undefined): {
   wallet_contagion: boolean;
   creator_is_tagged: boolean;
 } {
-  const flow = cfg?.m_flow_ix;
-  const obj =
-    flow && typeof flow === 'object' && !Array.isArray(flow)
-      ? (flow as Record<string, unknown>)
-      : {};
-  const read = (k: string) => (typeof obj[k] === 'boolean' ? (obj[k] as boolean) : true);
-  return { wallet_contagion: read('wallet_contagion'), creator_is_tagged: read('creator_is_tagged') };
+  const { wallet_contagion, creator_is_tagged } = flowClassifierFromConfig(cfg);
+  return { wallet_contagion, creator_is_tagged };
 }
 
-/** Write the two wallet rules into a config produced by {@link metricConfigWithIxPatterns}.
+/** **The one writer** of `fingerprints.metric_config.m_flow_ix`.
  *
- *  Always EXPLICIT, never left to the backend default: a row that omits them says
- *  nothing about which classifier it meant, which is how they came to be reverted
- *  unnoticed. No `m_flow_ix` group (no patterns) ⇒ nothing to attach them to.
- */
-export function withFlowWalletRules(
-  cfg: Record<string, unknown>,
-  rules: { wallet_contagion: boolean; creator_is_tagged: boolean },
+ *  A PUT replaces the row, so every field of the classifier is written together and
+ *  everything else has to survive. Three levels do:
+ *
+ *  * the other GROUPS - `prev` is the base rather than the result;
+ *  * the other `m_flow_ix` keys this model does not own, carried across verbatim;
+ *  * the side NOT selected - its key is removed, because the backend rejects a row
+ *    carrying both masks rather than picking one.
+ *
+ *  `configured: false` drops the group, which is the only spelling of "no classifier"
+ *  (unconfigured means every flow metric reads NaN). Every other writer routes through
+ *  here: rebuilding the key from a subset of its fields reads as a partial write and
+ *  lands as a full one, which is how both wallet rules were once reverted to their
+ *  defaults - a DIFFERENT classifier - on any save that touched the fingerprint. */
+export function metricConfigWithFlowClassifier(
+  prev: Record<string, unknown>,
+  classifier: FlowClassifier,
 ): Record<string, unknown> {
-  const flow = cfg.m_flow_ix as Record<string, unknown> | undefined;
-  return flow ? { ...cfg, m_flow_ix: { ...flow, ...rules } } : cfg;
+  const { m_flow_ix: prevFlow, ...otherGroups } = prev;
+  if (!classifier.configured) return otherGroups;
+  const keep: Record<string, unknown> = {};
+  if (prevFlow && typeof prevFlow === 'object' && !Array.isArray(prevFlow)) {
+    for (const [k, v] of Object.entries(prevFlow as Record<string, unknown>)) {
+      if (!OWNED_KEYS.includes(k)) keep[k] = v;
+    }
+  }
+  const patterns = classifier.ix_patterns
+    .map((p) => p.map((x) => x.trim()).filter(Boolean))
+    .filter((p) => p.length > 0);
+  const markers = classifier.markers.map((m) => m.trim()).filter(Boolean);
+  const flow: Record<string, unknown> = {
+    ...keep,
+    // Always EXPLICIT: a row that omits them says nothing about which classifier it
+    // meant, which is how they came to be reverted unnoticed.
+    wallet_contagion: classifier.wallet_contagion,
+    creator_is_tagged: classifier.creator_is_tagged,
+  };
+  if (patterns.length > 0) flow.ix_patterns = patterns;
+  if (markers.length > 0) flow[MARKER_KEY[classifier.markers_side]] = markers;
+  return { ...otherGroups, m_flow_ix: flow };
 }
 
 /** Write flow patterns into `prev`, an existing `metric_config`, and return the WHOLE
- *  config — everything else preserved.
+ *  config - everything else preserved, through {@link metricConfigWithFlowClassifier}.
  *
- *  A PUT replaces the row, so this is the only safe way to write the key. Two levels
- *  have to survive and both used to be lost:
- *
- *  * the other GROUPS — `prev` is the base rather than the result;
- *  * the other `m_flow_ix` KEYS — `wallet_contagion`, `creator_is_tagged`, and the
- *    marker masks are carried across one level down.
- *
- *  Rebuilding `m_flow_ix` from patterns alone reads as a partial write and lands as a
- *  full one: it reverted both wallet rules to their `true` defaults, silently, on any
- *  save that touched the fingerprint at all. Those defaults are a DIFFERENT
- *  classifier — contagion makes a tag a property of the sender's history instead of
- *  the transaction — so the fingerprint stopped measuring what its rule was derived on.
- *
- *  No patterns ⇒ the `m_flow_ix` group is dropped (unconfigured ⇒ every flow metric
- *  reads NaN), which is what an empty editor means.
+ *  Clearing the patterns drops the group **unless the row is a marker classifier**. A
+ *  marker classifier legitimately has no patterns - the backend rejects
+ *  `untagged_ix_markers` alongside `ix_patterns`, so an empty list is the only shape it
+ *  can have - and dropping the group there deleted the whole classifier on every save
+ *  from a pattern-only surface, silently reclassifying flow for every rule bound to it.
  */
 export function metricConfigWithIxPatterns(
   patterns: string[][],
   prev: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  const cleaned = patterns.map((p) => p.map((s) => s.trim()).filter(Boolean)).filter((p) => p.length > 0);
-  const { m_flow_ix: prevFlow, ...otherGroups } = prev;
-  if (cleaned.length === 0) return otherGroups;
-  const keep: Record<string, unknown> = {};
-  if (prevFlow && typeof prevFlow === 'object' && !Array.isArray(prevFlow)) {
-    for (const [k, v] of Object.entries(prevFlow as Record<string, unknown>)) {
-      if (k !== 'ix_patterns') keep[k] = v;
-    }
-  }
-  return { ...otherGroups, m_flow_ix: { ...keep, ix_patterns: cleaned } };
+  const current = flowClassifierFromConfig(prev);
+  const cleaned = patterns
+    .map((p) => p.map((x) => x.trim()).filter(Boolean))
+    .filter((p) => p.length > 0);
+  return metricConfigWithFlowClassifier(prev, {
+    ...current,
+    ix_patterns: cleaned,
+    configured: cleaned.length > 0 || current.markers.length > 0,
+  });
+}
+
+/** Write the two wallet rules into a config, through the one writer. No `m_flow_ix`
+ *  group means nothing to attach them to. */
+export function withFlowWalletRules(
+  cfg: Record<string, unknown>,
+  rules: { wallet_contagion: boolean; creator_is_tagged: boolean },
+): Record<string, unknown> {
+  const current = flowClassifierFromConfig(cfg);
+  if (!current.configured) return cfg;
+  return metricConfigWithFlowClassifier(cfg, { ...current, ...rules });
 }
 
 /** The whole registry payload. */
 export interface StrategyRegistry {
   operators: Operator[];
+  /** The structural-marker vocabulary a `marker[]` field is picked from, served with
+   *  the payload so a marker added to the engine reaches the picker with no frontend
+   *  change. Optional only so a pre-marker payload still parses. */
+  ix_markers?: IxMarkerSpec[];
   groups: GroupSpec[];
+}
+
+/** The marker vocabulary, routers last so the two kinds read as two blocks. */
+export function ixMarkers(reg: StrategyRegistry | undefined): IxMarkerSpec[] {
+  return [...(reg?.ix_markers ?? [])].sort((a, b) => Number(a.router) - Number(b.router));
 }
 
 /** Short unit suffix for labels/hints (`◎` for SOL, `s`, `%`). */

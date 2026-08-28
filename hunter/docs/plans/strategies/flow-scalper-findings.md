@@ -114,7 +114,7 @@ bucketing result, and never write one into a rule doc first.
 `unique_wallets` is now settled by the ladder rather than by argument, and it is the
 strongest form of that rule so far: the gate had *in-sample precision-and-recall evidence*
 (a recall-swept sweep on a fixed base, not a best-of-N bucket pick — the better of the two
-designs) and it still failed out of sample. Built as `m_flow_window.unique_wallets` and run
+designs) and it still failed out of sample. Built as `m_crowd_window.unique_wallets` and run
 on the untouched 07-29..08-09 window against `fs3-00`, **tightening it anti-selects
 monotonically**: replacing `gross_flow >= 45` scores −0.75 %/ep at `>= 20`, −1.22 at 40,
 −1.97 at 60, −2.04 at 80; adding it on top is inert below ~30 (it does not bind — the same
