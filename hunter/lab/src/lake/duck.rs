@@ -222,7 +222,7 @@ const DUCKDB_USABLE_SHARE_DIVISOR: u64 = 2;
 /// scan at all (DuckDB spills below it rather than failing); the ceiling stops a
 /// roomy box from letting a window operator balloon far past what the load needs —
 /// the corpus load is 6% of a sweep's wall-clock, so extra buffer pool buys nothing.
-const DUCKDB_MEMORY_FLOOR_MB: u64 = 512;
+const DUCKDB_MEMORY_FLOOR_MB: u64 = 2048;
 const DUCKDB_MEMORY_CAP_MB: u64 = 4096;
 
 /// One DuckDB connection plus the spill directory it owns, so the two are freed in

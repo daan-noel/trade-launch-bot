@@ -53,6 +53,19 @@ pub async fn fetch_sim_histories(
     curve_only: bool,
     with_flow: bool,
 ) -> Result<HashMap<String, Arc<Vec<CorpusTrade>>>> {
+    fetch_sim_histories_from(mints, curve_only, with_flow, None).await
+}
+
+/// Like [`fetch_sim_histories`], with a creation-time floor so DuckDB can prune
+/// older `dt=` partitions. Tokens created at-or-after `created_after` have no
+/// trades in earlier day files; without the floor the scan still opens every
+/// day in the lake. No upper bound: a token created in-window keeps trading after it.
+pub async fn fetch_sim_histories_from(
+    mints: &[String],
+    curve_only: bool,
+    with_flow: bool,
+    created_after: Option<chrono::DateTime<Utc>>,
+) -> Result<HashMap<String, Arc<Vec<CorpusTrade>>>> {
     if mints.is_empty() {
         return Ok(HashMap::new());
     }
@@ -64,7 +77,7 @@ pub async fn fetch_sim_histories(
         // No token clip: every requested mint must load (`resolve_candidates` `.take`s
         // `token_cap`). Candidate selection already happened upstream on PG.
         token_cap: mints.len(),
-        created_after: None,
+        created_after,
         created_before: None,
         per_mint_cap: SIM_PER_MINT_CAP,
         window: TradeWindow::LaunchWindow,

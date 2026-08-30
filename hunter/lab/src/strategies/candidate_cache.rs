@@ -10,7 +10,7 @@ use anyhow::Result;
 use crate::models::Token;
 use crate::state::analysis_cache::{AnalysisCacheKey, AnalysisCache};
 use crate::state::local_state::LocalState;
-use crate::strategies::sim_fetch::fetch_sim_histories;
+use crate::strategies::sim_fetch::fetch_sim_histories_from;
 use crate::sweep::projection::CorpusTrade;
 
 /// Return the materialized candidate `Token` rows for `key`, running `scan` on a
@@ -64,6 +64,7 @@ pub async fn get_or_fetch_histories(
     key: AnalysisCacheKey,
     tokens: &Arc<Vec<Token>>,
     with_flow: bool,
+    created_after: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Arc<HashMap<String, Arc<Vec<CorpusTrade>>>>> {
     if let Some(cached) = cache.get_histories(&key) {
         tracing::debug!(
@@ -79,7 +80,8 @@ pub async fn get_or_fetch_histories(
     let result = cell
         .get_or_try_init(|| async move {
             let mints: Vec<String> = tokens.iter().map(|t| t.mint_address.clone()).collect();
-            let histories = fetch_sim_histories(&mints, false, with_flow).await?;
+            let histories =
+                fetch_sim_histories_from(&mints, false, with_flow, created_after).await?;
             tracing::info!(
                 strategy = %insert_key.strategy_id,
                 n = histories.len(),
@@ -110,8 +112,10 @@ pub async fn get_or_fetch_histories_state(
     key: AnalysisCacheKey,
     tokens: &Arc<Vec<Token>>,
     with_flow: bool,
+    created_after: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Arc<HashMap<String, Arc<Vec<CorpusTrade>>>>> {
-    get_or_fetch_histories(&state.analysis_cache, key, tokens, with_flow).await
+    get_or_fetch_histories(&state.analysis_cache, key, tokens, with_flow, created_after)
+        .await
 }
 
 #[cfg(test)]
