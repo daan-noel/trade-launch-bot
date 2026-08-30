@@ -830,6 +830,7 @@ mod tests {
         ixs: Vec<scb::CompiledInstruction>,
         inner: Vec<scb::InnerInstructions>,
         logs: Vec<String>,
+        fee_lamports: u64,
     }
 
     impl Tx {
@@ -847,6 +848,16 @@ mod tests {
                 accounts: vec![],
                 data,
             });
+            self
+        }
+        /// A top-level ix that names accounts - a transfer's `[from, to]` is the
+        /// only thing separating a tip from a router's own rake.
+        fn ix_with(mut self, program_id_index: u32, accounts: Vec<u8>, data: Vec<u8>) -> Self {
+            self.ixs.push(scb::CompiledInstruction { program_id_index, accounts, data });
+            self
+        }
+        fn fee(mut self, lamports: u64) -> Self {
+            self.fee_lamports = lamports;
             self
         }
         fn inner_ix(mut self, program_id_index: u32, data: Vec<u8>) -> Self {
@@ -882,6 +893,7 @@ mod tests {
                     }),
                 }),
                 meta: Some(scb::TransactionStatusMeta {
+                    fee: self.fee_lamports,
                     log_messages: self.logs,
                     inner_instructions: self.inner,
                     loaded_writable_addresses: self.loaded_writable,
@@ -1103,5 +1115,260 @@ mod tests {
         // (hot-path fast path — most txs land here).
         assert!(!should_consult_inner_events(3, false));
         assert!(!should_consult_inner_events(1, false));
+    }
+
+    mod fee_budget {
+        //! What a sender paid to be early, read off the same instruction walk that
+        //! labels the transaction.
+        //!
+        //! These drive the real [`build_labels_pb`] against protobuf messages shaped
+        //! like the ones on the feed, because every interesting case here is a
+        //! DISCRIMINATION - tip vs router rake, top-level vs CPI, transfer vs some other
+        //! system instruction - and a unit test on the byte decoder alone would pass
+        //! while the walk fed it the wrong instructions.
+
+        // `super` is `tests` (the shared `Tx` builder); `super::super`
+        // is the decode module under test.
+        use super::super::*;
+        use super::Tx;
+        use crate::protocol::Protocol;
+
+        /// `SetComputeUnitLimit(u32)` - borsh enum tag 2, then the limit.
+        fn cu_limit_ix(limit: u32) -> Vec<u8> {
+            let mut d = vec![2u8];
+            d.extend_from_slice(&limit.to_le_bytes());
+            d
+        }
+
+        /// `SetComputeUnitPrice(u64)` - borsh enum tag 3, then micro-lamports per CU.
+        fn cu_price_ix(price: u64) -> Vec<u8> {
+            let mut d = vec![3u8];
+            d.extend_from_slice(&price.to_le_bytes());
+            d
+        }
+
+        /// `SystemInstruction::Transfer` - a FOUR-byte bincode tag, then the lamports.
+        fn transfer_ix(lamports: u64) -> Vec<u8> {
+            let mut d = vec![2u8, 0, 0, 0];
+            d.extend_from_slice(&lamports.to_le_bytes());
+            d
+        }
+
+        /// `AdvanceNonceAccount` - tag 4, and deliberately as long as a transfer. Its
+        /// low byte is not 2, but a decoder reading only one byte of the tag (the way
+        /// `system_ix_name` can afford to) would still have to get here to be wrong.
+        fn advance_nonce_ix() -> Vec<u8> {
+            let mut d = vec![4u8, 0, 0, 0];
+            d.extend_from_slice(&99_999u64.to_le_bytes());
+            d
+        }
+
+        fn budget_of(info: &SubscribeUpdateTransactionInfo, p: &Protocol) -> FeeBudget {
+            let tx = info.transaction.as_ref().unwrap();
+            let message = tx.message.as_ref().unwrap();
+            let meta = info.meta.as_ref().unwrap();
+            let keys = LazyKeys::new(message, meta);
+            build_labels_pb(message, meta, &keys, p).1
+        }
+
+        /// Index 0 = ComputeBudget, 1 = System, 2 = the fee payer, 3 = a real tip
+        /// account, 4 = a stranger. Fixed so every test below reads the same way.
+        fn tx_with(p: &Protocol) -> Tx {
+            Tx::default()
+                .key(p.programs.compute_budget.bytes.to_vec())
+                .key(p.programs.system.bytes.to_vec())
+                .key(vec![0xAA; 32])
+                .key(p.tip_accounts[0].to_vec())
+                .key(vec![0xBB; 32])
+        }
+
+        /// The compute rail's share of the priority spend, as the chain bills it.
+        fn compute_rail(b: &FeeBudget) -> u128 {
+            (u128::from(b.cu_limit.unwrap()) * u128::from(b.cu_price.unwrap())).div_ceil(1_000_000)
+        }
+
+        // -- the compute rail -----------------------------------------------------
+
+        #[test]
+        fn both_compute_budget_instructions_are_read() {
+            let p = Protocol::pump_fun();
+            let info = tx_with(&p)
+                .ix(0, cu_limit_ix(300_000))
+                .ix(0, cu_price_ix(3_333_333))
+                .build();
+
+            let b = budget_of(&info, &p);
+            assert_eq!(b.cu_limit, Some(300_000));
+            assert_eq!(b.cu_price, Some(3_333_333));
+        }
+
+        /// The reason `cu_price` is never read alone. All three of these are one
+        /// decision - "spend 0.001 SOL to be early" - and they agree in no part.
+        #[test]
+        fn different_pairs_encode_the_same_spend() {
+            let p = Protocol::pump_fun();
+            let spend = |limit: u32, price: u64| {
+                let info = tx_with(&p)
+                    .ix(0, cu_limit_ix(limit))
+                    .ix(0, cu_price_ix(price))
+                    .build();
+                compute_rail(&budget_of(&info, &p))
+            };
+            // The most common cu_price on the live tape, and this is why: it is
+            // "0.001 SOL" divided by the 300k limit beside it.
+            assert_eq!(spend(300_000, 3_333_333), 1_000_000);
+            assert_eq!(spend(100_000, 10_000_000), 1_000_000);
+            assert_eq!(spend(1_000_000, 1_000_000), 1_000_000);
+        }
+
+        #[test]
+        fn a_transaction_that_sets_no_compute_budget_reads_none() {
+            let p = Protocol::pump_fun();
+            let info = tx_with(&p).ix_with(1, vec![2, 3], transfer_ix(5_000)).build();
+            let b = budget_of(&info, &p);
+            assert_eq!(b.cu_limit, None);
+            assert_eq!(b.cu_price, None);
+        }
+
+        // -- the tip rail ---------------------------------------------------------
+
+        #[test]
+        fn a_transfer_to_a_known_tip_account_is_a_tip() {
+            let p = Protocol::pump_fun();
+            // accounts = [from = payer(2), to = tip(3)]
+            let info = tx_with(&p)
+                .ix_with(1, vec![2, 3], transfer_ix(1_500_000))
+                .build();
+            assert_eq!(budget_of(&info, &p).tip_lamports, Some(1_500_000));
+        }
+
+        #[test]
+        fn a_transfer_to_a_stranger_reads_zero_not_none() {
+            let p = Protocol::pump_fun();
+            // A router paying its own rake, or a tip rail the list does not know yet.
+            // Zero is a READING: "transfers happened, none were tips" - the bucket that
+            // measures how far behind TIP_ACCOUNT_IDS has fallen.
+            let info = tx_with(&p)
+                .ix_with(1, vec![2, 4], transfer_ix(900_000))
+                .build();
+            assert_eq!(budget_of(&info, &p).tip_lamports, Some(0));
+        }
+
+        #[test]
+        fn no_transfer_at_all_reads_none() {
+            let p = Protocol::pump_fun();
+            let info = tx_with(&p).ix(0, cu_limit_ix(200_000)).build();
+            assert_eq!(budget_of(&info, &p).tip_lamports, None);
+        }
+
+        /// The shape the live tape is full of: a router tx carrying TWO transfers, one
+        /// buying priority and one paying the router itself. Only the first is urgency.
+        #[test]
+        fn a_rake_beside_a_tip_counts_only_the_tip() {
+            let p = Protocol::pump_fun();
+            let info = tx_with(&p)
+                .ix_with(1, vec![2, 3], transfer_ix(1_000_000)) // -> tip account
+                .ix_with(1, vec![2, 4], transfer_ix(7_000_000)) // -> the router's own wallet
+                .build();
+            assert_eq!(budget_of(&info, &p).tip_lamports, Some(1_000_000));
+        }
+
+        #[test]
+        fn two_tips_in_one_transaction_sum() {
+            let p = Protocol::pump_fun();
+            let info = tx_with(&p)
+                .ix_with(1, vec![2, 3], transfer_ix(400_000))
+                .ix_with(1, vec![2, 3], transfer_ix(600_000))
+                .build();
+            assert_eq!(budget_of(&info, &p).tip_lamports, Some(1_000_000));
+        }
+
+        /// An inner transfer is the VENUE moving its own protocol fee, not the sender
+        /// buying priority - counting it would book the curve's rake as urgency.
+        #[test]
+        fn an_inner_transfer_is_never_a_tip() {
+            let p = Protocol::pump_fun();
+            let info = tx_with(&p)
+                .ix(0, cu_limit_ix(200_000))
+                .inner_ix(1, transfer_ix(2_000_000))
+                .build();
+            assert_eq!(budget_of(&info, &p).tip_lamports, None);
+        }
+
+        /// The four-byte tag is checked in full. A system instruction that merely
+        /// shares a low tag byte must not have its bytes read as money.
+        #[test]
+        fn another_system_instruction_is_not_a_transfer() {
+            let p = Protocol::pump_fun();
+            let info = tx_with(&p)
+                .ix_with(1, vec![2, 3], advance_nonce_ix())
+                .build();
+            assert_eq!(budget_of(&info, &p).tip_lamports, None);
+        }
+
+        /// A transfer whose destination index is missing decodes to "not a tip" - never
+        /// a panic, and never a tip by default.
+        #[test]
+        fn a_transfer_with_no_destination_is_not_a_tip() {
+            let p = Protocol::pump_fun();
+            let info = tx_with(&p)
+                .ix_with(1, vec![2], transfer_ix(1_000_000))
+                .build();
+            assert_eq!(budget_of(&info, &p).tip_lamports, Some(0));
+        }
+
+        /// A tip is only a tip because of WHERE it lands, so the whole registry has to
+        /// be reachable - not just the first entry every other test here uses.
+        #[test]
+        fn every_registered_tip_account_is_recognised() {
+            let p = Protocol::pump_fun();
+            assert_eq!(p.tip_accounts.len(), 20);
+            for (i, acct) in p.tip_accounts.iter().enumerate() {
+                let info = Tx::default()
+                    .key(p.programs.compute_budget.bytes.to_vec())
+                    .key(p.programs.system.bytes.to_vec())
+                    .key(vec![0xAA; 32])
+                    .key(acct.to_vec())
+                    .ix_with(1, vec![2, 3], transfer_ix(1_000))
+                    .build();
+                assert_eq!(
+                    budget_of(&info, &p).tip_lamports,
+                    Some(1_000),
+                    "tip account #{i} is in the registry but does not read as one",
+                );
+            }
+        }
+
+        // -- the charged fee, beside the chosen budget ----------------------------
+
+        #[test]
+        fn the_charged_fee_comes_from_meta_and_zero_means_unknown() {
+            let p = Protocol::pump_fun();
+            let paid = tx_with(&p).ix(0, cu_limit_ix(200_000)).fee(5_000).build();
+            assert_eq!(budget_of(&paid, &p).fee_lamports, Some(5_000));
+
+            // A landed tx always pays the base fee, so 0 is "not captured" - the whole
+            // reason `fee_lamports_opt` exists.
+            let unknown = tx_with(&p).ix(0, cu_limit_ix(200_000)).build();
+            assert_eq!(budget_of(&unknown, &p).fee_lamports, None);
+        }
+
+        /// Both rails at once, which is what the sum is for.
+        #[test]
+        fn a_sender_can_pay_on_both_rails() {
+            let p = Protocol::pump_fun();
+            let info = tx_with(&p)
+                .ix(0, cu_limit_ix(300_000))
+                .ix(0, cu_price_ix(3_333_333))
+                .ix_with(1, vec![2, 3], transfer_ix(2_000_000))
+                .fee(1_005_000)
+                .build();
+
+            let b = budget_of(&info, &p);
+            assert_eq!(compute_rail(&b), 1_000_000);
+            assert_eq!(b.tip_lamports, Some(2_000_000));
+            // priority spend = compute rail + tip rail = 0.003 SOL.
+            assert_eq!(compute_rail(&b) + u128::from(b.tip_lamports.unwrap()), 3_000_000);
+        }
     }
 }
