@@ -107,6 +107,7 @@ A **strict param on `m_position`**, not a new metric and not a grammar change:
 | `lab/src/sweep/generic/strategy.rs` | `exit_req_fires` mirrors the skip; `classify_exit_req` sends an armed trailing req to `ExitClass::General` |
 | `frontend/.../registry.ts`, `validate.ts` | `allows_zero` mirrored so the FE does not reject `0` |
 | `frontend/.../ruleConditionRows.ts` | the row model carries the whole non-window `strict` bag |
+| `live/.../orphan_exit.rs` | `adopt_holding_into_engine` seeds the latch from the rule (`rule_for(...).trail_arm_pct`) through `EnteredCtx::at_fill` — see *A restart does not remember the latch* |
 
 ### The sweep must not use its fast path
 
@@ -121,6 +122,18 @@ trail never arms and the stop-loss has to close the position).
 Per the root rule: the scalar walk is the SSOT, and a correct scalar walk beats a
 clever wrong index. Do not "optimise" this back onto the hull without an index that
 can see the gate.
+
+### A restart does not remember the latch
+
+`armed` is RAM-only: an adopted `Holding` row records an entry price and a stage, not
+whether `pnl` ever crossed the gate. Adoption therefore re-seeds the position exactly
+as a fresh fill does — `EnteredCtx::at_fill` with the rule's `trail_arm_pct`, so a
+gated trail comes back **unarmed** and an ungated one comes back armed. That pairs
+with the peak, which adoption also re-seeds from entry: a peak with no history is no
+evidence the gate was crossed, and re-arming on it would trail from a price the
+position never reached. The rule must be compiled before the adopt pass for the lookup
+to find the gate — boot and `reseed_from_db` both `reload_rules` first, and a manual
+position's one-off rule is installed inside the adopt fn ahead of the read.
 
 ### Frontend status
 

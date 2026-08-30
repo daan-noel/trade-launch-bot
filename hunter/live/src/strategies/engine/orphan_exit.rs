@@ -550,24 +550,19 @@ pub fn adopt_holding_into_engine(
     // Adoption rewrites this token's arms outside the fold, so the engine must
     // forget any settled verdict that predates it.
     state.touch_token(&mint);
-    let token = state.tokens.get_mut(&mint)?;
     // Seed the position context from the adopted fill: `held` counts from the entry
     // time, `retrace` from the entry price (the peak is re-established as live trades
     // fold in — a conservative restart baseline). Mid-ladder `stage`/`sold_bps`
-    // resume from PG aggregates (mig 0018).
-    let sold_bps = pos.sold_bps();
-    token.arms.insert(
-        rule_id,
-        ArmState::Entered(EnteredCtx {
-            position,
-            entry_price,
-            entered_at: created_at,
-            peak_price: entry_price,
-            trough_price: entry_price,
-            stage: pos.scale_stage,
-            sold_bps,
-        }),
-    );
+    // resume from PG aggregates (mig 0018). The trail latch re-seeds the way a fresh
+    // fill does — unarmed under an `arm_above_pct` gate, armed without one — because a
+    // peak taken from entry carries no evidence the gate was ever crossed.
+    let trail_arm_pct =
+        state.rule_for(rule_id, Some(position)).and_then(|c| c.trail_arm_pct);
+    let token = state.tokens.get_mut(&mint)?;
+    let mut ctx = EnteredCtx::at_fill(position, entry_price, created_at, trail_arm_pct);
+    ctx.stage = pos.scale_stage;
+    ctx.sold_bps = pos.sold_bps();
+    token.arms.insert(rule_id, ArmState::Entered(ctx));
 
     let ctr = state.counters.entry(rule_id).or_insert(RuleCounters::default());
     ctr.open = ctr.open.saturating_add(1);
