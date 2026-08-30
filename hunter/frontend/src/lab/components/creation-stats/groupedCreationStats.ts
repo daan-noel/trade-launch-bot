@@ -15,6 +15,7 @@ import {
 } from '@lab/components/sweep/groupedTypes';
 import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
 import { ixLabelsCountTail } from 'lib/ixLabels';
+import { groupValueLabels, groupValueText } from 'lib/strategy/matchGroupFingerprint';
 import { WALLET_MARKER_COLORS } from 'components/token-price-chart/constants';
 import {
   DOW_ROWS,
@@ -44,10 +45,13 @@ export const RANK_BY_OPTIONS: { value: GroupRankBy; label: string }[] = [
 ];
 
 /** One ranked group: `g` = 0-based rank (0 = largest), `group_key` = the
- *  fingerprint values (e.g. `{cu_limit:"200000", ix_labels:"A | B"}`). */
+ *  fingerprint values as backend `GroupValue` PREDICATES, keyed by field tag
+ *  (`{cu_limit: {kind:'window', min:'200000', max:'200000'},
+ *    ix_labels: {kind:'labels', labels:['A','B']}}`) — never rendered strings.
+ *  Read one with `groupValueText` / `groupValueLabels`. */
 export interface GroupedCreationGroup {
   g: number;
-  group_key: Record<string, string>;
+  group_key: Record<string, unknown>;
   total: number;
   /** Lifetime-to-last-sync trade count summed over the group. */
   trades: number;
@@ -145,8 +149,10 @@ export interface GroupedCreationTokensArgs {
    *  When set, `groupBy`/`fieldFilters`/`ixLabelsFilter`/`groupKey` are all
    *  ignored (there's only ever one group, `g = 0`). */
   fingerprintId?: string;
-  /** The exact group to drill into — echoes {@link GroupedCreationGroup.group_key} verbatim. */
-  groupKey: Record<string, string>;
+  /** The exact group to drill into — echoes {@link GroupedCreationGroup.group_key}
+   *  verbatim, predicate values included (the backend parses it with
+   *  `GroupKey::from_json`, which reads those and skips anything else). */
+  groupKey: Record<string, unknown>;
   /** Recurring weekly slot (a heatmap-tile click): 0=Sun..6=Sat / 0..23. Both set,
    *  or both omitted for the whole group. */
   dow?: number;
@@ -288,22 +294,10 @@ export function groupedCreationArgsEqual(
   return true;
 }
 
-/** The `∅` sentinel the backend renders for a missing fingerprint value. */
-export const MISSING_VALUE = '∅';
-
 /** Stable per-group color (rank-indexed) shared by the trend series + legend +
  *  heatmap card accents so a group reads as the same color everywhere. */
 export function groupColor(g: number): string {
   return WALLET_MARKER_COLORS[g % WALLET_MARKER_COLORS.length];
-}
-
-/**
- * Render one group-key field value for display. `ix_labels` arrives as a
- * `" | "`-joined list — split it so the caller can stack each label; everything
- * else is a scalar. Returns the list (length 1 for scalars).
- */
-export function groupValueParts(field: string, value: string): string[] {
-  return field === 'ix_labels' ? value.split(' | ') : [value];
 }
 
 /** A short one-line label for a group (used as a chart series name / card title).
@@ -317,10 +311,11 @@ export function groupShortLabel(group: GroupedCreationGroup): string {
       if (k === 'ix_labels') {
         // Count alone collides — two same-length sequences would produce the
         // same series name on the trend chart. Tail keeps them apart.
-        if (v === MISSING_VALUE) return `${label}=0 ix`;
-        return `${label}=${ixLabelsCountTail(groupValueParts(k, v))}`;
+        const labels = groupValueLabels(v);
+        if (!labels) return `${label}=0 ix`;
+        return `${label}=${ixLabelsCountTail(labels)}`;
       }
-      return `${label}=${v}`;
+      return `${label}=${groupValueText(k, v)}`;
     })
     .join(' · ');
 }

@@ -38,8 +38,9 @@ import { CREATION_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { useGetFingerprintsQuery, useCreateFingerprintMutation } from 'store/sharedEndpoints';
 import {
   fingerprintIdentityFromGroupKey,
+  groupValueLabels,
+  groupValueText,
   matchFingerprintsForGroups,
-  renderGroupKey,
   withIxLabelsFilter,
 } from 'lib/strategy/matchGroupFingerprint';
 import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
@@ -644,7 +645,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
               const gk = withIxLabelsFilter(g.group_key, appliedIxLabels);
               // The card carries a real label sequence — not merely the key, whose
               // `missing` value means the group's tokens have none.
-              const hasIxLabels = keyLabels(gk.ix_labels) != null;
+              const hasIxLabels = groupValueLabels(gk.ix_labels) != null;
               return (
                 <div
                   key={g.g}
@@ -823,32 +824,16 @@ function GroupKeyInline({
             // Tail, not a bare count — this legend line is how two groups in the
             // same chart are told apart, and same-length sequences are the common
             // case (a buy-variant swap).
-            <span className="font-mono" title={keyLabels(v) ? undefined : keyText(k, v)}>
-              {keyLabels(v) ? ixLabelsCountTail(keyLabels(v)!) : '∅'}
+            <span className="font-mono" title={groupValueLabels(v) ? undefined : groupValueText(k, v)}>
+              {groupValueLabels(v) ? ixLabelsCountTail(groupValueLabels(v)!) : '∅'}
             </span>
           ) : (
-            <span className="font-mono">{keyText(k, v)}</span>
+            <span className="font-mono">{groupValueText(k, v)}</span>
           )}
         </Fragment>
       ))}
     </span>
   );
-}
-
-/** One group-key value as display text.
- *
- *  Rendering only — nothing parses this back. The key itself carries the predicate
- *  ([`renderGroupKey`] is the shared formatter), which is why a chip is free to be
- *  as readable as it likes without a second parser having to agree with it. */
-function keyText(field: string, value: unknown): string {
-  const [, text] = renderGroupKey({ [field]: value })[0] ?? [field, ''];
-  return text;
-}
-
-/** The label sequence a key value carries, or `null` when it is not one. */
-function keyLabels(value: unknown): string[] | null {
-  const v = value as { kind?: string; labels?: string[] } | null;
-  return v && v.kind === 'labels' && v.labels?.length ? v.labels : null;
 }
 
 /** Full group-key block for a heatmap card (label/value grid; ix_labels shown
@@ -868,8 +853,8 @@ function GroupKeyBlock({
     <div className="grid grid-cols-[auto_1fr] items-start gap-x-2 gap-y-0.5 text-left">
       {entries.map(([k, v]) => {
         const label = GROUP_FIELD_LABELS[k as GroupField] ?? k;
-        const text = keyText(k, v);
-        const parts = k === 'ix_labels' ? keyLabels(v) ?? [] : null;
+        const text = groupValueText(k, v);
+        const parts = k === 'ix_labels' ? groupValueLabels(v) ?? [] : null;
         return (
           <Fragment key={k}>
             <span className="text-[11px] leading-tight text-text-dim" title={`${label}: ${text}`}>

@@ -10,6 +10,7 @@ import { ruleParamsCell } from 'components/strategy/RuleParamsSummary';
 import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { cn } from 'lib/cn';
 import { fingerprintsHref, rulesHref } from 'lib/strategy/nav';
+import { renderGroupKey } from 'lib/strategy/matchGroupFingerprint';
 import { ruleParamsJsonEqual } from 'lib/strategy/ruleParams';
 import type { Fingerprint, StrategyRule } from 'lib/strategy/types';
 import { formatDecimalTrim } from 'utils/format';
@@ -408,7 +409,7 @@ function keyParts(
       origin: c.origin,
     }));
   }
-  return Object.entries(group.group_key).map(([k, v]) => ({
+  return renderGroupKey(group.group_key).map(([k, v]) => ({
     label: GROUP_FIELD_LABELS[k as GroupField] ?? k,
     value: v,
   }));

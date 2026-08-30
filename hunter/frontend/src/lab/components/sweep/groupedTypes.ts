@@ -191,8 +191,11 @@ export interface GroupedSweepRunRecord {
 export interface GroupedSweepGroupRecord {
   id: string;
   group_index: number;
-  /** `{ "cu_price": "1000", "max_cost_lamports": "1.0–1.1" }`; `{}` = the ALL group. */
-  group_key: Record<string, string>;
+  /** Backend `GroupValue` predicates keyed by field tag
+   *  (`{ cu_price: {kind:'window', min:'1000', max:'1000'} }`), never rendered
+   *  strings; `{}` = the ALL group. Read one with `renderGroupKey` /
+   *  `groupValueText`. */
+  group_key: Record<string, unknown>;
   token_count: number;
   /** The best combo's `n_fired` — sample size behind the headline pick. */
   fired_count: number;

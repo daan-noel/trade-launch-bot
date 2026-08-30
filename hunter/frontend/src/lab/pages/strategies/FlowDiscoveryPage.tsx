@@ -90,7 +90,9 @@ import type {
 } from 'types';
 import {
   findFingerprintForGroupKey,
+  groupValueLabels,
   indexFingerprintsByIdentity,
+  renderGroupKey,
   withIxLabelsFilter,
 } from 'lib/strategy/matchGroupFingerprint';
 import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
@@ -168,8 +170,8 @@ function fmt(n: number, digits = 1): string {
   return n.toFixed(digits);
 }
 
-function groupKeyLabel(gk: Record<string, string>): string {
-  const parts = Object.entries(gk).map(([k, v]) => `${k}=${v}`);
+function groupKeyLabel(gk: Record<string, unknown>): string {
+  const parts = renderGroupKey(gk).map(([k, v]) => `${k}=${v}`);
   return parts.length ? parts.join(' · ') : 'ALL';
 }
 
@@ -188,10 +190,6 @@ const GROUP_FIELD_AXIS: Partial<Record<GroupField, string>> = {
   first_slot_sell_lamports: 'fs_sell',
 };
 
-/** Backend sentinel for "field absent on this fingerprint" — mirrors
- *  `engine::grouping::MISSING`. */
-const MISSING_GROUP_VALUE = '∅';
-
 /** Selected-group header — reuses `fingerprintParamsCell`'s chip style +
  *  `axisTint` hue table so the group-key header reads consistently with the
  *  fingerprint-param chips shown a few lines below it on this same page,
@@ -203,14 +201,13 @@ const MISSING_GROUP_VALUE = '∅';
  *  though — the shared `IxLabelsChip`, so the count, the hashed ribbon, and
  *  the click-to-copy tooltip read exactly as they do for a fingerprint's own
  *  `ix_labels` axis a few lines below. */
-function groupKeyChips(gk: Record<string, string>) {
-  const entries = Object.entries(gk);
+function groupKeyChips(gk: Record<string, unknown>) {
+  const entries = renderGroupKey(gk);
   if (entries.length === 0) {
     return <span className="text-sm font-bold text-text">ALL tokens</span>;
   }
-  const ixValue = gk.ix_labels;
-  const ixParts =
-    ixValue != null && ixValue !== MISSING_GROUP_VALUE ? ixValue.split(' | ') : null;
+  const hasIxValue = Object.prototype.hasOwnProperty.call(gk, 'ix_labels');
+  const ixParts = groupValueLabels(gk.ix_labels);
   const chipEntries = entries.filter(([k]) => k !== 'ix_labels');
   return (
     <div className="flex flex-col gap-1.5">
@@ -234,16 +231,12 @@ function groupKeyChips(gk: Record<string, string>) {
           {ixParts && <IxLabelsChip labels={ixParts} />}
         </div>
       )}
-      {ixValue != null && (
+      {hasIxValue && (
         <div className="flex items-start gap-1.5">
           <span className="pt-0.5 text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
             {GROUP_FIELD_LABELS.ix_labels}:
           </span>
-          <IxLabelsDisplay
-            labels={ixValue === MISSING_GROUP_VALUE ? [] : ixValue.split(' | ')}
-            copyJson
-            empty={MISSING_GROUP_VALUE}
-          />
+          <IxLabelsDisplay labels={ixParts ?? []} copyJson empty="∅" />
         </div>
       )}
     </div>

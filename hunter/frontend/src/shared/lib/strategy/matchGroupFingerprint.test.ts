@@ -11,6 +11,8 @@ import {
   indexFingerprintsByIdentity,
   matchFingerprintsForGroups,
   predicatesEqual,
+  groupValueLabels,
+  groupValueText,
   renderGroupKey,
   withIxLabelsFilter,
 } from './matchGroupFingerprint';
@@ -261,5 +263,24 @@ describe('renderGroupKey', () => {
     expect(rendered.token_program_id).toBe('Tokenkeg');
     expect(rendered.is_cashback_enabled).toBe('true');
     expect(rendered.spendable_lamports_in).toBe('∅');
+  });
+});
+
+describe('single-value readers', () => {
+  // The regression: every one of these values is an object, so a reader that
+  // treated a key value as pre-rendered text threw `value.split is not a
+  // function` the moment a fingerprint-scoped card carried an `ix_labels` axis.
+  it('renders one value exactly as renderGroupKey does', () => {
+    expect(groupValueText('max_cost_lamports', window('1515000000', '1515000000'))).toBe('1.515');
+    expect(groupValueText('ix_labels', { kind: 'labels', labels: ['A', 'B'] })).toBe('A | B');
+    expect(groupValueText('spendable_lamports_in', { kind: 'missing' })).toBe('∅');
+  });
+
+  it('reads a label sequence only off a labels value', () => {
+    expect(groupValueLabels({ kind: 'labels', labels: ['A', 'B'] })).toEqual(['A', 'B']);
+    expect(groupValueLabels({ kind: 'labels', labels: [] })).toBeNull();
+    expect(groupValueLabels({ kind: 'missing' })).toBeNull();
+    expect(groupValueLabels(window('3'))).toBeNull();
+    expect(groupValueLabels('A | B')).toBeNull();
   });
 });

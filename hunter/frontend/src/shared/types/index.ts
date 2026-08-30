@@ -600,7 +600,9 @@ export interface FlowDiscoveryTokenGross {
 
 /** One fingerprint group in a flow-discovery result. */
 export interface FlowDiscoveryGroup {
-  group_key: Record<string, string>;
+  /** Backend `GroupValue` predicates keyed by field tag, never rendered strings —
+   *  read one with `groupValueText` / `groupValueLabels`. */
+  group_key: Record<string, unknown>;
   n_tokens: number;
   n_trades_scored: number;
   ambiguity: boolean;

@@ -400,3 +400,26 @@ export function renderGroupKey(gk: Record<string, unknown>): [string, string][] 
     }
   });
 }
+
+/**
+ * One group-key value as display text — the single-field form of
+ * {@link renderGroupKey}, for a surface that lays its own chips out and needs the
+ * value alone.
+ *
+ * A key value is a PREDICATE, never a rendered string: every reader goes through
+ * here (or `renderGroupKey`), because a caller that treats one as text reads
+ * `[object Object]` at best and throws at worst.
+ */
+export function groupValueText(field: string, value: unknown): string {
+  const [, text] = renderGroupKey({ [field]: value })[0] ?? [field, ''];
+  return text;
+}
+
+/** The ordered label sequence a group-key value carries, or `null` when it is not
+ *  one (a window, a missing field, a legacy string). What lets `ix_labels` render
+ *  as a stacked/copyable sequence instead of the `" | "`-joined line
+ *  {@link groupValueText} gives it. */
+export function groupValueLabels(value: unknown): string[] | null {
+  const v = asGroupValue(value);
+  return v && v.kind === 'labels' && v.labels.length > 0 ? v.labels : null;
+}
