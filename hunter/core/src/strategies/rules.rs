@@ -20,6 +20,7 @@ use crate::storage::repositories::rule_repo::RuleRepo;
 
 use super::rule_params::RuleParams;
 
+pub use hunter_engine::metrics::fee::fee_pin_warning;
 pub use hunter_engine::metrics::flow_ix::flow_unconfigured_warning;
 
 /// Outcome of a rule CRUD write, mapped to an HTTP status by the calling edge.
@@ -399,7 +400,11 @@ async fn flow_warning_for(
         // Fingerprint-scoped metrics fail silently (NaN reads, the rule never fires),
         // so an unconfigured fingerprint is reported at write time rather than found
         // later as a rule that simply never arms.
-        Ok(Some(fp)) => flow_unconfigured_warning(params, &fp.metric_config),
+        Ok(Some(fp)) => flow_unconfigured_warning(params, &fp.metric_config)
+            // An unconfigured group is the louder problem (every metric reads NaN),
+            // so it wins the one slot; a pinned budget is reported when there is no
+            // such gap to report first.
+            .or_else(|| fee_pin_warning(&fp.metric_config)),
         _ => None,
     }
 }

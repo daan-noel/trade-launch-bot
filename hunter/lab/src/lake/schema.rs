@@ -27,14 +27,22 @@ pub const T_TX_SIGNATURE: &str = "tx_signature";
 pub const T_IX_LABELS: &str = "ix_labels";
 /// Wallet address (LEFT JOIN `wallet_dict`; `unknown:{id}` on dict gap).
 pub const T_WALLET: &str = "wallet";
+/// Requested compute-unit limit (`SetComputeUnitLimit`). Nullable: the column is
+/// forward-only (core migration `0013`), and a transaction may set no budget at all.
+pub const T_CU_LIMIT: &str = "cu_limit";
+/// Requested compute-unit price, **micro-lamports per CU** (`SetComputeUnitPrice`).
+pub const T_CU_PRICE: &str = "cu_price";
+/// Lamports transferred to a known tip account. `0` is a reading ("transfers landed,
+/// none were tips"), NULL is "not captured" — see core migration `0013`.
+pub const T_TIP_LAMPORTS: &str = "tip_lamports";
 
 /// The trades columns in the exact order the writer's Arrow schema + `finish()` vec
 /// build them. A guard test pins `trades_schema()` to this, so a reorder/rename in
 /// either the schema or the builder vec fails loudly instead of silently mis-mapping.
-pub const TRADE_WRITE_COLS: [&str; 15] = [
+pub const TRADE_WRITE_COLS: [&str; 18] = [
     T_MINT, T_IS_BUY, T_SOL_AMOUNT, T_TOKEN_AMOUNT, T_PRICE, T_SLOT, T_BLOCK_TIME,
     T_LEG_INDEX, T_VSOL, T_VTOK, T_VENUE, T_TX_INDEX, T_TX_SIGNATURE,
-    T_IX_LABELS, T_WALLET,
+    T_IX_LABELS, T_WALLET, T_CU_LIMIT, T_CU_PRICE, T_TIP_LAMPORTS,
 ];
 
 // --- tokens dimension columns (physical write order) ---

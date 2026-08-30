@@ -569,9 +569,9 @@ construction. See hunter/CLAUDE.md Gotchas.
 
 | group | kind | strict params | fingerprint config |
 | --- | --- | --- | --- |
-| `m_flow_ix` | static (fingerprint-scoped) | none | `ix_patterns: string[][]` (required when key present) |
+| `m_flow_ix` | static (fingerprint-scoped) | none | `ix_patterns: ix_pattern[]` (required when key present) |
 | `m_flow_ix_window` | dynamic | `window_size_sec` | none (reads `m_flow_ix`) |
-| `m_dump_ix` | static (fingerprint-scoped) | none | `ix_patterns: string[][]` — its OWN list |
+| `m_dump_ix` | static (fingerprint-scoped) | none | `ix_patterns: ix_pattern[]` — its OWN list |
 | `m_dump_ix_window` | dynamic | `window_size_sec` | none (reads `m_dump_ix`) |
 | `m_burst_slot` | static (fingerprint-scoped) | none | `working_templates: string[]` — template grain ids. Mapping: [ix-live-rule.md](ix-live-rule.md) |
 
@@ -628,6 +628,53 @@ sells to `untagged_*` and changes what every `tagged_sell` rule measures.
 }
 ```
 
+### A list entry may pin the fee budget its client compiles
+
+A list entry is an ix shape, and **optionally** the compute budget the sending client
+declared. Both row shapes are current and sit in one list:
+
+```json
+{
+  "m_dump_ix": { "ix_patterns": [
+    ["Pump.Fun: Sell", "Token Program: CloseAccount"],
+    { "labels": ["Pump.Fun: Sell", "System Program: Transfer",
+                 "Token Program: CloseAccount", "ComputeBudget: SetComputeUnitPrice"],
+      "cu_limit": 300000, "cu_price": 3333333 }
+  ] }
+}
+```
+
+A field left out is a **wildcard**; a field pinned must match exactly. So a bare label
+array behaves exactly as it always did, and ix-only and ix+fee entries need no mode
+switch to coexist. The budget sits **beside** the hash, never inside it: `ix_hash` is
+stored identity, and hashing a budget into it would fork one shape into one identity
+per budget and put every stored hash on the far side of a one-way break.
+
+**A pinned field never matches an absent reading**, in either direction. Fee capture is
+forward-only (core migration `0013`), so a pinned entry matches nothing in history
+older than it — that is the honest answer, not a gap to work around.
+
+**Pin only what is a constant.** `cu_limit` is usually a preset compiled into the
+operator's tool and pins well. `cu_price` is often computed per transaction off a fee
+oracle: pinning such a value matches the one transaction it was copied from and then
+silently never fires again, which looks exactly like the cohort going quiet. A tip is
+an auction bid and almost never pins. The **Budget** column in flow discovery reports
+each build's distinct budgets with their trade shares — read that cardinality before
+pinning anything.
+
+A `cu_limit` above 1,400,000 is rejected at save: the chain refuses a larger request,
+so no landed trade can carry one, and the entry would be empty by arithmetic rather
+than by intent.
+
+Equality, never a band. This list answers *is this the same machine*. "How urgent is
+this sender, in money" is a different question whose quantity is
+`ceil(cu_limit * cu_price / 1e6) + tip_lamports` — see
+[ingest](../../arch/ingest.md) — and `cu_price` alone is not comparable between
+transactions because it is priced per compute unit.
+
+`m_flow_ix.ix_patterns` takes the identical row shape, through the same
+`BuildPatterns` parser.
+
 **No wallet rules.** A build is a property of the transaction, so contagion and the
 creator rule do not apply and the group deliberately has no knob for them. Contagion
 would make every later sell from a wallet that once sold with a listed build count as
@@ -671,6 +718,7 @@ transactions in the same slot.
 | Trade `ix_hash = None`, wallet not tagged, not creator | counts as organic |
 | Token row missing / no `creator_wallet` | creator unseeded (logged `warn`); creator trades classify by pattern/contagion only |
 | Pre-V0 sealed lake days (NULL `ix_labels`) | organic in runtime; **excluded** from discovery score denominators |
+| Trade carries no fee reading (pre-`0013`, or no budget set) | matches no entry that pins a fee field, in either direction |
 
 Rule save **warns** (does not reject) when params reference flow groups but the
 fingerprint is unconfigured.

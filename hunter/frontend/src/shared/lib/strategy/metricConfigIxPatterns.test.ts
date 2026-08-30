@@ -175,11 +175,25 @@ describe('flowClassifierFromConfig', () => {
     const shapes: FlowClassifier[] = [
       {
         configured: true,
-        ix_patterns: [['A', 'B']],
+        ix_patterns: [{ labels: ['A', 'B'] }],
         markers: [],
         markers_side: 'tagged',
         wallet_contagion: true,
         creator_is_tagged: false,
+      },
+      // A pinned row is a classifier shape like any other, and must survive the
+      // round trip with its budget — a reader that dropped it would widen the fire
+      // set on the next save with nothing on screen to say so.
+      {
+        configured: true,
+        ix_patterns: [
+          { labels: ['A', 'B'], cu_limit: 300_000, cu_price: 3_333_333 },
+          { labels: ['C'] },
+        ],
+        markers: [],
+        markers_side: 'tagged',
+        wallet_contagion: true,
+        creator_is_tagged: true,
       },
       {
         configured: true,

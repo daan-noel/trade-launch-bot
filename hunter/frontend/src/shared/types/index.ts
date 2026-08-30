@@ -522,6 +522,23 @@ export interface FlowDiscoveryWalletGross {
   gross_sol: number;
 }
 
+/** One distinct fee budget observed on a build, with how much of that build it
+ *  accounts for.
+ *
+ *  Plain numbers, not the stringified form `wallet_hash` uses: a CU limit caps at
+ *  1.4M and neither a cu_price nor a tip approaches `Number.MAX_SAFE_INTEGER`. */
+export interface FlowDiscoveryFeeVariant {
+  cu_limit: number | null;
+  /** Micro-lamports per compute unit. */
+  cu_price: number | null;
+  tip_lamports: number | null;
+  /** Compute rail plus tip, in lamports — the money the pair encodes. `null` when
+   *  neither rail was captured. */
+  priority_lamports: number | null;
+  n_trades: number;
+  gross_sol: number;
+}
+
 /** One ranked ix-structure from a flow-discovery group. */
 export interface FlowDiscoveryStructure {
   ix_labels: string[];
@@ -545,6 +562,21 @@ export interface FlowDiscoveryStructure {
    *  `isFirstSlotPresent` (the *Launch shapes · group* predicate: `> 0`). Same
    *  unknown-vs-zero contract — `null` selects nothing rather than guessing. */
   first_slot_trades?: number | null;
+  /** The distinct fee budgets this build was sent with, most-traded first and
+   *  clipped by the backend (`fee_variant_count` carries the true total).
+   *
+   *  This is the field that decides whether a budget is identity or noise. One
+   *  variant covering nearly every trade is a compiled-in preset and pins well; a
+   *  long tail is a client reading a fee oracle per transaction, and pinning any
+   *  single value there matches the one transaction it was copied from and then
+   *  never fires again. Absent on a result cached before the backend computed it. */
+  fee_variants?: FlowDiscoveryFeeVariant[];
+  /** Distinct budgets observed, before the clip. */
+  fee_variant_count?: number;
+  /** Trades of this build carrying no fee reading at all — every trade older than
+   *  core migration `0013`. A build that is all-unknown cannot be pinned yet,
+   *  however stable it looks. */
+  fee_unknown_trades?: number;
   wallets: FlowDiscoveryWalletGross[];
 }
 

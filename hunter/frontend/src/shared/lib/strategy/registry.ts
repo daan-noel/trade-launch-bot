@@ -7,6 +7,12 @@
 
 import { REGISTRY_STALE_SECS, useGetStrategyRegistryQuery } from 'store/sharedEndpoints';
 import type { CompareOp } from 'components/table/numericFilter';
+import {
+  parseIxPatternRows,
+  serializeIxPatternRows,
+  withPreservedFees,
+  type IxPatternRow,
+} from 'lib/strategy/ixPatternRows';
 
 /** The six comparison operators, shared with the condition grammar. */
 export type Operator = CompareOp;
@@ -127,8 +133,11 @@ export interface FlowClassifier {
    *  absent and every flow metric reads NaN - a different state from a classifier that
    *  tags nothing. */
   configured: boolean;
-  /** Exact ordered label sequences that TAG a trade. */
-  ix_patterns: string[][];
+  /** Exact ordered label sequences that TAG a trade, each optionally pinned to the
+   *  fee budget its sending client compiles. Whole ROWS, not bare label lists: the
+   *  classifier is written as a whole, so a model that dropped the pins would land
+   *  as a full write that widens every pinned entry back to ix-only. */
+  ix_patterns: (IxPatternRow | string[])[];
   /** Structural marker names, from {@link StrategyRegistry.ix_markers}. */
   markers: string[];
   /** Which side {@link FlowClassifier.markers} names. */
@@ -165,15 +174,24 @@ function stringList(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 }
 
-/** Read `m_flow_ix.ix_patterns` from a fingerprint's `metric_config`. */
+/** Read `m_flow_ix.ix_patterns` from a fingerprint's `metric_config` as label
+ *  sequences — what every surface but the pin editor wants.
+ *
+ *  A row that pins a fee budget contributes its LABELS here, so the chart, the lens
+ *  and the chips all classify by shape exactly as they did. The pin itself is read
+ *  with {@link ixPatternRowsFromConfig} and carried across a labels-only save by
+ *  {@link withPreservedFees}. */
 export function ixPatternsFromConfig(
   cfg: Record<string, unknown> | null | undefined,
 ): string[][] {
-  const pats = flowObject(cfg)?.ix_patterns;
-  if (!Array.isArray(pats)) return [];
-  return pats.filter(
-    (p): p is string[] => Array.isArray(p) && p.every((x) => typeof x === 'string'),
-  );
+  return ixPatternRowsFromConfig(cfg).map((r) => r.labels);
+}
+
+/** The same list with each row's pinned fee budget intact. */
+export function ixPatternRowsFromConfig(
+  cfg: Record<string, unknown> | null | undefined,
+): IxPatternRow[] {
+  return parseIxPatternRows(flowObject(cfg)?.ix_patterns);
 }
 
 /** The whole `m_flow_ix` classifier a `metric_config` carries.
@@ -201,7 +219,7 @@ export function flowClassifierFromConfig(
   const side: MarkerSide = hasUntagged ? 'untagged' : 'tagged';
   return {
     configured: obj !== null,
-    ix_patterns: ixPatternsFromConfig(cfg),
+    ix_patterns: ixPatternRowsFromConfig(cfg),
     markers: stringList(obj?.[MARKER_KEY[side]]),
     markers_side: side,
     wallet_contagion: bool('wallet_contagion'),
@@ -246,9 +264,7 @@ export function metricConfigWithFlowClassifier(
       if (!OWNED_KEYS.includes(k)) keep[k] = v;
     }
   }
-  const patterns = classifier.ix_patterns
-    .map((p) => p.map((x) => x.trim()).filter(Boolean))
-    .filter((p) => p.length > 0);
+  const patterns = serializeIxPatternRows(classifier.ix_patterns);
   const markers = classifier.markers.map((m) => m.trim()).filter(Boolean);
   const flow: Record<string, unknown> = {
     ...keep,
@@ -268,19 +284,24 @@ export function metricConfigWithFlowClassifier(
  *  present in both, so the two are disjoint by construction. */
 export const DUMP_GROUP = 'm_dump_ix';
 
-/** Read `m_dump_ix.ix_patterns` from a fingerprint's `metric_config`. */
+/** Read `m_dump_ix.ix_patterns` as label sequences — see
+ *  {@link ixPatternsFromConfig} for why a pinned row reads as its labels here. */
 export function dumpPatternsFromConfig(
   cfg: Record<string, unknown> | null | undefined,
 ): string[][] {
+  return dumpPatternRowsFromConfig(cfg).map((r) => r.labels);
+}
+
+/** The same list with each row's pinned fee budget intact. */
+export function dumpPatternRowsFromConfig(
+  cfg: Record<string, unknown> | null | undefined,
+): IxPatternRow[] {
   const obj = cfg?.[DUMP_GROUP];
   const pats =
     obj && typeof obj === 'object' && !Array.isArray(obj)
       ? (obj as Record<string, unknown>).ix_patterns
       : undefined;
-  if (!Array.isArray(pats)) return [];
-  return pats.filter(
-    (p): p is string[] => Array.isArray(p) && p.every((x) => typeof x === 'string'),
-  );
+  return parseIxPatternRows(pats);
 }
 
 /** **The one writer** of `fingerprints.metric_config.m_dump_ix`.
@@ -292,12 +313,15 @@ export function dumpPatternsFromConfig(
  *  spelling of "no dump list" (both dump metrics then read NaN, never 0). */
 export function metricConfigWithDumpPatterns(
   prev: Record<string, unknown>,
-  patterns: string[][],
+  patterns: string[][] | IxPatternRow[],
 ): Record<string, unknown> {
   const { [DUMP_GROUP]: prevDump, ...otherGroups } = prev;
-  const cleaned = patterns
-    .map((p) => p.map((x) => x.trim()).filter(Boolean))
-    .filter((p) => p.length > 0);
+  // A labels-only caller keeps whatever pins the shapes it kept already had; a
+  // caller that edits rows states them outright. Either way the write is total.
+  const rows = isRowList(patterns)
+    ? patterns
+    : withPreservedFees(patterns, dumpPatternRowsFromConfig(prev));
+  const cleaned = serializeIxPatternRows(rows);
   if (cleaned.length === 0) return otherGroups;
   const keep: Record<string, unknown> = {};
   if (prevDump && typeof prevDump === 'object' && !Array.isArray(prevDump)) {
@@ -331,7 +355,7 @@ export function patternsForList(
  *  row, so a partial write lands as a full one. */
 export function metricConfigWithList(
   prev: Record<string, unknown>,
-  patterns: string[][],
+  patterns: string[][] | IxPatternRow[],
   list: IxPatternList,
 ): Record<string, unknown> {
   return list === 'dump'
@@ -349,18 +373,28 @@ export function metricConfigWithList(
  *  from a pattern-only surface, silently reclassifying flow for every rule bound to it.
  */
 export function metricConfigWithIxPatterns(
-  patterns: string[][],
+  patterns: string[][] | IxPatternRow[],
   prev: Record<string, unknown> = {},
 ): Record<string, unknown> {
   const current = flowClassifierFromConfig(prev);
-  const cleaned = patterns
-    .map((p) => p.map((x) => x.trim()).filter(Boolean))
-    .filter((p) => p.length > 0);
+  const rows = isRowList(patterns)
+    ? patterns
+    : withPreservedFees(patterns, ixPatternRowsFromConfig(prev));
+  // `configured` counts what SURVIVES serialization, not what was handed in: a list
+  // of blank rows is not a classifier, and reading it as one keeps the group alive
+  // with nothing in it.
+  const surviving = serializeIxPatternRows(rows).length;
   return metricConfigWithFlowClassifier(prev, {
     ...current,
-    ix_patterns: cleaned,
-    configured: cleaned.length > 0 || current.markers.length > 0,
+    ix_patterns: rows,
+    configured: surviving > 0 || current.markers.length > 0,
   });
+}
+
+/** Whether a caller handed us whole rows or plain label sequences. An empty list is
+ *  the same write either way. */
+function isRowList(v: string[][] | IxPatternRow[]): v is IxPatternRow[] {
+  return v.length > 0 && !Array.isArray(v[0]);
 }
 
 /** Write the two wallet rules into a config, through the one writer. No `m_flow_ix`

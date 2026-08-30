@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use hunter_engine::metrics::fee::FeeKeys;
 use tracing::{info, warn};
 
 use crate::config::constants::{
@@ -87,6 +88,11 @@ pub struct CachedTrade {
     pub template_hash: Option<u64>,
     pub is_launch: bool,
     pub on_curve: bool,
+    /// The transaction's declared fee budget, copied straight off the [`Trade`] —
+    /// three integers, no hashing, no string work. Read beside `ix_hash` by the
+    /// build-list classifiers, which is why it rides on the cache row rather than
+    /// being fetched when a rule asks.
+    pub fee: FeeKeys,
 }
 
 impl CachedTrade {
@@ -143,6 +149,14 @@ impl CachedTrade {
             template_hash,
             is_launch,
             on_curve: t.venue != "amm",
+            // `cu_limit` is a `u64` on the model but a `u32` on the chain (the
+            // request caps at 1.4M), so a value past `u32::MAX` is a corrupt reading
+            // rather than a big budget - clamped, never wrapped.
+            fee: FeeKeys::new(
+                t.cu_limit.map(|v| v.min(u32::MAX as u64) as u32),
+                t.cu_price,
+                t.tip_lamports,
+            ),
         }
     }
 }

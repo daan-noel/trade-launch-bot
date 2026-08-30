@@ -101,6 +101,17 @@ fn trades_schema() -> Schema {
         // pre-V0 sealed days via DuckDB `union_by_name`).
         Field::new(col::T_IX_LABELS, DataType::Utf8, true),
         Field::new(col::T_WALLET, DataType::Utf8, true),
+        // What the sender declared it would pay to be early. Loaded with the flow
+        // columns (same `Selection::with_flow` gate) because the same classifiers
+        // read them: an ix build plus a compute budget is one identity.
+        //
+        // `Int64` for all three even though the chain's widths are u32/u64 — Parquet
+        // has no unsigned Arrow round-trip the DuckDB reader decodes as cheaply, and
+        // every value fits: the CU limit caps at 1.4M, and a cu_price or tip beyond
+        // `i64::MAX` micro-lamports is not a transaction anyone lands.
+        Field::new(col::T_CU_LIMIT, DataType::Int64, true),
+        Field::new(col::T_CU_PRICE, DataType::Int64, true),
+        Field::new(col::T_TIP_LAMPORTS, DataType::Int64, true),
     ])
 }
 
@@ -362,6 +373,12 @@ struct LakeTradeRow {
     /// Parquet null (same as empty label array).
     ix_labels: Option<serde_json::Value>,
     wallet_address: String,
+    /// Fee budget of the row's TRANSACTION, denormalized onto every leg. Nullable
+    /// for the same reason `ix_labels` is: core migration `0013` is forward-only, so
+    /// every trade older than it stays NULL forever.
+    cu_limit: Option<i64>,
+    cu_price: Option<i64>,
+    tip_lamports: Option<i64>,
 }
 
 /// Stream one sealed day's trades and write them to the immutable day file. Returns
@@ -394,7 +411,8 @@ async fn export_day(pool: &PgPool, root: &Path, day: NaiveDate) -> Result<usize>
                t.amount_lamports, t.token_amount, t.reserve_lamports, t.reserve_token,
                t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature,
                t.ix_labels,
-               COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address
+               COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address,
+               t.cu_limit, t.cu_price, t.tip_lamports
         FROM trades t
         LEFT JOIN wallet_dict w ON w.id = t.wallet_id
         WHERE t.block_time >= $1 AND t.block_time < $2
@@ -443,6 +461,9 @@ struct TradeBuilders {
     tx_signature: StringBuilder,
     ix_labels: StringBuilder,
     wallet: StringBuilder,
+    cu_limit: Int64Builder,
+    cu_price: Int64Builder,
+    tip_lamports: Int64Builder,
 }
 
 impl TradeBuilders {
@@ -484,6 +505,13 @@ impl TradeBuilders {
                 .append_option(serde_json::to_string(&labels).ok().as_deref());
         }
         self.wallet.append_value(&r.wallet_address);
+        // Passed through unscaled: `cu_limit` is compute units, `cu_price` is
+        // MICRO-lamports per CU, `tip_lamports` is lamports. None of the three is a
+        // SOL amount, so none takes the ÷1e9 the amount columns above do — and
+        // `tip_lamports` in particular must keep a real `0` distinct from NULL.
+        self.cu_limit.append_option(r.cu_limit);
+        self.cu_price.append_option(r.cu_price);
+        self.tip_lamports.append_option(r.tip_lamports);
     }
 
     fn finish(&mut self, schema: &Arc<Schema>) -> Result<RecordBatch> {
@@ -505,6 +533,9 @@ impl TradeBuilders {
                 Arc::new(self.tx_signature.finish()),
                 Arc::new(self.ix_labels.finish()),
                 Arc::new(self.wallet.finish()),
+                Arc::new(self.cu_limit.finish()),
+                Arc::new(self.cu_price.finish()),
+                Arc::new(self.tip_lamports.finish()),
             ],
         )?)
     }
@@ -726,6 +757,9 @@ mod tests {
             tx_signature: vec![7u8; 64], // valid 64-byte sig → non-empty base58
             ix_labels: Some(serde_json::json!(["Pump.Fun: Buy"])),
             wallet_address: "Wallet111".into(),
+            cu_limit: Some(300_000),
+            cu_price: Some(3_333_333),
+            tip_lamports: Some(0),
         }
     }
 

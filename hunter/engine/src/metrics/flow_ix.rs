@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde_json::Value;
 
+use super::fee::{BuildPatterns, FeeKeys};
 use super::flow_window::push_sorted;
 use super::{MetricId, Side, TradeLite, Ts, WindowKey, WindowSpec};
 
@@ -241,8 +242,9 @@ pub fn wallet_hash(addr: &str) -> u64 {
 /// the one the rule was derived on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowPatterns {
-    /// FNV-1a of each configured label sequence.
-    hashes: BTreeSet<u64>,
+    /// The configured build list: each label sequence, optionally pinned to the
+    /// compute budget its client compiles. See [`BuildPatterns`].
+    builds: BuildPatterns,
     /// Structural marker mask ([`MARKERS`]); `0` = no marker rule.
     markers: u16,
     /// Which SIDE the mask names. `false` (default): a marker means volume-side.
@@ -264,7 +266,7 @@ pub struct FlowPatterns {
 impl Default for FlowPatterns {
     fn default() -> Self {
         Self {
-            hashes: BTreeSet::new(),
+            builds: BuildPatterns::default(),
             markers: 0,
             markers_are_organic: false,
             wallet_contagion: true,
@@ -275,14 +277,14 @@ impl Default for FlowPatterns {
 
 impl FlowPatterns {
     pub fn new(hashes: BTreeSet<u64>) -> Self {
-        Self { hashes, ..Self::default() }
+        Self { builds: BuildPatterns::from_hashes(hashes), ..Self::default() }
     }
 
     /// A purely structural classifier: markers only, both wallet rules off. The mask
     /// names the VOLUME side.
     pub fn markers_only(markers: u16) -> Self {
         Self {
-            hashes: BTreeSet::new(),
+            builds: BuildPatterns::default(),
             markers,
             markers_are_organic: false,
             wallet_contagion: false,
@@ -295,7 +297,7 @@ impl FlowPatterns {
     /// the burst came through a named retail router" is stated.
     pub fn organic_markers_only(markers: u16) -> Self {
         Self {
-            hashes: BTreeSet::new(),
+            builds: BuildPatterns::default(),
             markers,
             markers_are_organic: true,
             wallet_contagion: false,
@@ -308,8 +310,16 @@ impl FlowPatterns {
         self.markers_are_organic
     }
 
-    pub fn contains(&self, h: u64) -> bool {
-        self.hashes.contains(&h)
+    /// Whether a trade's build is on the configured list — its ix shape listed and,
+    /// where an entry pins one, its fee budget matching. A trade with no fee reading
+    /// fails every pinned entry, never passes it.
+    pub fn contains(&self, h: Option<u64>, fee: FeeKeys) -> bool {
+        self.builds.matches(h, fee)
+    }
+
+    /// The compiled build list.
+    pub fn builds(&self) -> &BuildPatterns {
+        &self.builds
     }
 
     /// True when the trade's structural markers say VOLUME under the configured mask:
@@ -335,19 +345,13 @@ impl FlowPatterns {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.hashes.is_empty() && self.markers == 0
+        self.builds.is_empty() && self.markers == 0
     }
 
     /// Compile an ordered list of label sequences (the sweep run's
     /// `ix_patterns` / fingerprint config array).
     pub fn from_label_sequences(patterns: &[Vec<String>]) -> Self {
-        let mut hashes = BTreeSet::new();
-        for p in patterns {
-            if !p.is_empty() {
-                hashes.insert(ix_hash(p));
-            }
-        }
-        Self { hashes, ..Self::default() }
+        Self { builds: BuildPatterns::from_label_sequences(patterns), ..Self::default() }
     }
 
     /// Parse `metric_config["m_flow_ix"]`. `None` = key absent (unconfigured ⇒
@@ -384,19 +388,7 @@ impl FlowPatterns {
         let Value::Array(patterns) = arr else {
             return None;
         };
-        for p in patterns {
-            let Value::Array(labels) = p else {
-                return None;
-            };
-            let mut strs: Vec<&str> = Vec::with_capacity(labels.len());
-            for lab in labels {
-                let s = lab.as_str()?;
-                strs.push(s);
-            }
-            if !strs.is_empty() {
-                out.hashes.insert(ix_hash(&strs));
-            }
-        }
+        out.builds = BuildPatterns::parse(patterns)?;
         Some(out)
     }
 
@@ -418,20 +410,7 @@ impl FlowPatterns {
                 let Some(arr) = patterns.as_array() else {
                     return Err("m_flow_ix.ix_patterns must be an array".into());
                 };
-                for (i, p) in arr.iter().enumerate() {
-                    let Some(labels) = p.as_array() else {
-                        return Err(format!(
-                            "m_flow_ix.ix_patterns[{i}] must be an array of strings"
-                        ));
-                    };
-                    for (j, lab) in labels.iter().enumerate() {
-                        if !lab.is_string() {
-                            return Err(format!(
-                                "m_flow_ix.ix_patterns[{i}][{j}] must be a string"
-                            ));
-                        }
-                    }
-                }
+                BuildPatterns::validate(arr, "m_flow_ix.ix_patterns")?;
             }
             for key in ["tagged_ix_markers", "untagged_ix_markers"] {
                 let Some(markers) = flow_obj.get(key) else { continue };
@@ -764,10 +743,8 @@ impl FlowState {
         if self.patterns.wallet_contagion() && self.tagged_wallets.contains(&t.wallet_hash) {
             return true;
         }
-        if let Some(h) = t.ix_hash {
-            if self.patterns.contains(h) {
-                return true;
-            }
+        if self.patterns.contains(t.ix_hash, t.fee) {
+            return true;
         }
         false
     }
@@ -922,9 +899,9 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(p.contains(ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"])));
-        assert!(p.contains(ix_hash(&["Pump.Fun: Buy"])));
-        assert!(!p.contains(ix_hash(&["Pump.Fun: Sell"])));
+        assert!(p.contains(Some(ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"])), FeeKeys::default()));
+        assert!(p.contains(Some(ix_hash(&["Pump.Fun: Buy"])), FeeKeys::default()));
+        assert!(!p.contains(Some(ix_hash(&["Pump.Fun: Sell"])), FeeKeys::default()));
     }
 
     #[test]

@@ -45,6 +45,7 @@ use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::ConditionExpr;
 use hunter_engine::metrics::burst_slot::BurstPatterns;
 use hunter_engine::metrics::dump_ix::DumpPatterns;
+use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::flow_ix::{
     ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash, FlowPatterns,
 };
@@ -607,6 +608,14 @@ fn trade_lite(t: &Trade) -> TradeLite {
             &t.instruction_labels,
         ),
         on_curve: t.venue != "amm",
+        // The stored budget, three integers off the same row. `None` on every trade
+        // older than core migration `0013`, so a replay over that history classifies
+        // a fee-pinned build list as no match - which is the honest answer, not a gap.
+        fee: FeeKeys::new(
+            t.cu_limit.map(|v| v.min(u32::MAX as u64) as u32),
+            t.cu_price,
+            t.tip_lamports,
+        ),
     }
 }
 

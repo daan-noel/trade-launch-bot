@@ -42,7 +42,7 @@ use serde_json::Value;
 
 // `push_sorted` is shared rather than re-implemented: where a regressed `block_time`
 // lands in the deque is one decision, and a second copy of it is free to disagree.
-use super::flow_ix::ix_hash;
+use super::fee::BuildPatterns;
 use super::flow_window::push_sorted;
 use super::{Cursor, MetricId, Side, TradeLite, Ts, WindowKey, WindowSpec};
 
@@ -53,28 +53,29 @@ pub const CONFIG_KEY: &str = "m_dump_ix";
 
 /// Compiled build list for one fingerprint (`m_dump_ix.ix_patterns`).
 ///
-/// A bare hash set — there is nothing else to configure. Every knob `FlowPatterns`
-/// carries (markers, contagion, creator) is a statement about who sent a trade, and
-/// this group only asks what the transaction was built from.
+/// A list of build identities and nothing else. Every knob `FlowPatterns` carries
+/// (markers, contagion, creator) is a statement about who sent a trade, and this
+/// group only asks what the transaction was built from — an ix shape, optionally
+/// pinned to the compute budget the sender's client compiled. See
+/// [`BuildPatterns`] for why the budget sits beside the hash rather than inside it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DumpPatterns {
-    hashes: BTreeSet<u64>,
+    builds: BuildPatterns,
 }
 
 impl DumpPatterns {
     pub fn new(hashes: BTreeSet<u64>) -> Self {
-        Self { hashes }
+        Self { builds: BuildPatterns::from_hashes(hashes) }
     }
 
-    /// Compile an ordered list of label sequences.
+    /// Compile an ordered list of label sequences, each matching any fee budget.
     pub fn from_label_sequences(patterns: &[Vec<String>]) -> Self {
-        let mut hashes = BTreeSet::new();
-        for p in patterns {
-            if !p.is_empty() {
-                hashes.insert(ix_hash(p));
-            }
-        }
-        Self { hashes }
+        Self { builds: BuildPatterns::from_label_sequences(patterns) }
+    }
+
+    /// The compiled list, for callers that need to ask about a shape directly.
+    pub fn builds(&self) -> &BuildPatterns {
+        &self.builds
     }
 
     /// Parse `metric_config["m_dump_ix"]`. `None` = key absent or unusable ⇒ the
@@ -90,18 +91,7 @@ impl DumpPatterns {
             return None;
         }
         let arr = obj.get("ix_patterns")?.as_array()?;
-        let mut hashes = BTreeSet::new();
-        for row in arr {
-            let labels = row.as_array()?;
-            let mut seq: Vec<&str> = Vec::with_capacity(labels.len());
-            for l in labels {
-                seq.push(l.as_str()?);
-            }
-            if !seq.is_empty() {
-                hashes.insert(ix_hash(&seq));
-            }
-        }
-        Some(Self { hashes })
+        Some(Self { builds: BuildPatterns::parse(arr)? })
     }
 
     /// Shape errors in `metric_config["m_dump_ix"]`. Shape only — there is no
@@ -120,26 +110,21 @@ impl DumpPatterns {
         let Some(rows) = arr.as_array() else {
             return Err(format!("{CONFIG_KEY}.ix_patterns must be an array of label arrays"));
         };
-        for row in rows {
-            let Some(labels) = row.as_array() else {
-                return Err(format!("{CONFIG_KEY}.ix_patterns row must be an array of strings"));
-            };
-            for l in labels {
-                if !l.is_string() {
-                    return Err(format!("{CONFIG_KEY}.ix_patterns label must be a string"));
-                }
-            }
-        }
-        Ok(())
+        BuildPatterns::validate(rows, &format!("{CONFIG_KEY}.ix_patterns"))
     }
 
     pub fn is_empty(&self) -> bool {
-        self.hashes.is_empty()
+        self.builds.is_empty()
     }
 
     /// Whether this trade is a sell built from a listed shape — the whole classifier.
+    ///
+    /// A listed shape whose entry pins a fee field must ALSO carry that budget. A
+    /// trade with no fee reading therefore fails every pinned entry, which is why a
+    /// list written with `cu_limit` matches nothing on history predating core
+    /// migration `0013`.
     fn matches(&self, t: &TradeLite) -> bool {
-        t.side == Side::Sell && t.ix_hash.is_some_and(|h| self.hashes.contains(&h))
+        t.side == Side::Sell && self.builds.matches(t.ix_hash, t.fee)
     }
 }
 
@@ -308,6 +293,8 @@ impl DumpState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fee::FeeKeys;
+    use super::super::flow_ix::ix_hash;
     use super::*;
     use chrono::{TimeZone, Utc};
     use serde_json::json;
@@ -321,6 +308,12 @@ mod tests {
     }
 
     const DUMP: &[&str] = &["Pump.Fun: Sell", "Token Program: CloseAccount"];
+
+    /// A sell carrying a fee budget — slot/leg fixed, since every fee case below is
+    /// about the classifier rather than about windowing.
+    fn sell_with(sol: f64, ix: Option<u64>, fee: FeeKeys) -> TradeLite {
+        TradeLite { fee, ..sell(sol, ix, 100, 0) }
+    }
 
     fn sell(sol: f64, ix: Option<u64>, slot: u64, leg: u8) -> TradeLite {
         TradeLite {
@@ -432,6 +425,65 @@ mod tests {
         // quietly dropped on the way in either.
         let p = DumpPatterns::from_metric_config(&cfg).expect("configured");
         assert!(p.matches(&sell(1.0, Some(ix_hash(DUMP)), 100, 0)));
+    }
+
+    /// A dump build pinned to the compute budget its client compiles — the shape the
+    /// list is actually written in. The same four instructions sent with a different
+    /// budget is a different machine, and must not count as this one's dump.
+    #[test]
+    fn a_pinned_budget_narrows_a_dump_build_to_one_client() {
+        let cfg = json!({"m_dump_ix": {"ix_patterns": [
+            {"labels": DUMP, "cu_limit": 300_000, "cu_price": 3_333_333}
+        ]}});
+        assert!(DumpPatterns::validate_metric_config(&cfg).is_ok());
+        let p = DumpPatterns::from_metric_config(&cfg).expect("configured");
+
+        let his = FeeKeys::new(Some(300_000), Some(3_333_333), None);
+        assert!(p.matches(&sell_with(1.0, Some(ix_hash(DUMP)), his)));
+
+        // Same build, another operator's preset.
+        let theirs = FeeKeys::new(Some(200_000), Some(3_333_333), None);
+        assert!(!p.matches(&sell_with(1.0, Some(ix_hash(DUMP)), theirs)));
+
+        // And a buy is never a dump, however exactly its budget matches.
+        let mut buy = sell_with(1.0, Some(ix_hash(DUMP)), his);
+        buy.side = Side::Buy;
+        assert!(!p.matches(&buy));
+    }
+
+    /// The consequence a list author has to know: every trade older than core
+    /// migration `0013` carries no budget, so a pinned entry matches none of them.
+    /// The unpinned entry for the same build still does.
+    #[test]
+    fn a_pinned_entry_matches_no_trade_from_before_fee_capture() {
+        let pinned = DumpPatterns::from_metric_config(
+            &json!({"m_dump_ix": {"ix_patterns": [{"labels": DUMP, "cu_limit": 300_000}]}}),
+        )
+        .expect("configured");
+        let unpinned =
+            DumpPatterns::from_metric_config(&json!({"m_dump_ix": {"ix_patterns": [DUMP]}}))
+                .expect("configured");
+
+        let old = sell(1.0, Some(ix_hash(DUMP)), 100, 0);
+        assert!(old.fee.is_empty(), "a default trade carries no budget");
+        assert!(!pinned.matches(&old));
+        assert!(unpinned.matches(&old));
+    }
+
+    /// The metrics move only for a matching budget — the classifier change reaches
+    /// the numbers, not just the predicate.
+    #[test]
+    fn only_the_pinned_budget_moves_the_dump_metrics() {
+        let p = DumpPatterns::from_metric_config(
+            &json!({"m_dump_ix": {"ix_patterns": [{"labels": DUMP, "cu_limit": 300_000}]}}),
+        )
+        .expect("configured");
+        let mut st = DumpState::new(p);
+        let h = Some(ix_hash(DUMP));
+        st.on_trade(&sell_with(4.0, h, FeeKeys::new(Some(300_000), None, None)), c(100));
+        st.on_trade(&sell_with(9.0, h, FeeKeys::new(Some(200_000), None, None)), c(100));
+        assert_eq!(st.value(MetricId::DumpSell, None, ts(), c(100)), 4.0);
+        assert_eq!(st.value(MetricId::DumpSellCount, None, ts(), c(100)), 1.0);
     }
 
     #[test]

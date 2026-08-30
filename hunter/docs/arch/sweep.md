@@ -188,7 +188,12 @@ semantics themselves are in
 When axes reference a flow group, the corpus loads with `Selection.with_flow`: it
 reads the trade `ix_labels` + `wallet` columns and resolves each row's
 `projection::FlowKeys { ix_hash, wallet_hash }` **at the row decode**, through the
-`flow_ix` SSOT hashers, then drops the strings. `Selection.with_flow_text` keeps
+`flow_ix` SSOT hashers, then drops the strings. The same flag also reads
+`cu_limit` + `cu_price` + `tip_lamports` into that row's `FeeKeys`, because a build
+list entry may pin a budget and the classifier needs both halves or it matches on the
+shape alone. `duck::FLOW_READ_COLS` names all five once — the three fee columns are
+`Int64` neighbours, so a reorder on either side would decode cleanly into the wrong
+field. `Selection.with_flow_text` keeps
 the raw text as well and is set by exactly one caller — flow *discovery*, which
 reports label shapes and groups by wallet address. Everything else (sweep, simulate,
 metric-series, metric-discovery) classifies from the hashes, so its rows are the
@@ -196,7 +201,8 @@ slimmer shape. The start body carries optional
 `ix_patterns: string[][]` — applied **corpus-wide** for that run (not per
 fingerprint). Missing patterns with flow axes ⇒ `400`. **Promote** copies the
 run's patterns into the created fingerprint's
-`metric_config.m_flow_ix.ix_patterns` (`find_or_create` ignores
+`metric_config.m_flow_ix.ix_patterns` as fee-wildcard entries — a run configures
+label sequences only, and a budget pin is a fingerprint edit (`find_or_create` ignores
 `metric_config` for identity, then patches). Discovery (lab
 `/strategies/flow-discovery`) is a separate job that scores structures and writes
 the same key — mutual `409` with sweeps. See

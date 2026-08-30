@@ -1473,6 +1473,26 @@ export const DISCOVERY_COL_HELP = {
       'a common bundler/sniper shape, not an organic manual buy.',
     ].join('\n'),
   },
+  budget: {
+    title: 'Budget — the fee this build was sent with',
+    body: [
+      'The compute budget the sender declared, as distinct (cu_limit, cu_price, tip) triples.',
+      'The cell shows the most-traded one and, when there is more than one, how many exist.',
+      '',
+      'THIS is what decides whether a budget is identity or noise. One triple covering nearly',
+      'every trade is a preset compiled into the operator’s client — pin it and the entry gets',
+      'sharper. A long tail means the client reads a fee oracle per transaction: pinning any',
+      'one value there matches the single transaction you copied it from and then silently',
+      'never fires again.',
+      '',
+      'cu_limit is usually a preset and pins well. A tip is an auction bid and almost never does.',
+      'cu_price is the one to check the count on before trusting.',
+      '',
+      '"unknown" counts trades carrying no fee reading at all — everything older than the',
+      'forward-only fee capture. A build that is all-unknown cannot be pinned yet, however',
+      'stable it looks.',
+    ].join('\n'),
+  },
   side: {
     title: 'Side — which trade direction uses this shape?',
     body: [

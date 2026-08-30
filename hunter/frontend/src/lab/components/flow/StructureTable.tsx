@@ -7,6 +7,13 @@ import { Badge } from 'components/ui/Badge';
 import { Checkbox } from 'components/ui/Checkbox';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import {
+  dominantFeeVariant,
+  feeConcentration,
+  feeSpreadBand,
+  feeVariantTitle,
+  formatFeeVariant,
+} from 'lib/feeVariants';
+import {
   formatIxLabelsText,
   ixLabelsMatchFilter,
   IX_LABELS_FILTER_PLACEHOLDER,
@@ -160,6 +167,50 @@ function buildStructureColumns(opts: {
       filterMatch: (s, raw) => ixLabelsMatchFilter(s.ix_labels, raw),
       filterPlaceholder: IX_LABELS_FILTER_PLACEHOLDER,
       filterTitle: IX_LABELS_FILTER_TITLE,
+    },
+    {
+      key: 'budget',
+      label: 'Budget',
+      tooltip: helpText(DISCOVERY_COL_HELP.budget),
+      render: (s) => {
+        const top = dominantFeeVariant(s);
+        if (!top) {
+          // No variant at all: either the result predates the field, or every trade
+          // of this build carries no reading. Both mean "nothing to pin", and the
+          // unknown count is what tells them apart.
+          return (
+            <span className="text-text-dim/50" title={feeVariantTitle(s)}>
+              {s.fee_unknown_trades ? 'unknown' : '—'}
+            </span>
+          );
+        }
+        const n = s.fee_variant_count ?? 1;
+        return (
+          <span className="whitespace-nowrap" title={feeVariantTitle(s)}>
+            <span className={n === 1 ? 'text-text' : 'text-text-dim'}>
+              {formatFeeVariant(top)}
+            </span>
+            {n > 1 && <span className="ml-1 text-text-dim/60">+{n - 1}</span>}
+          </span>
+        );
+      },
+      // Rank by how concentrated the build's budget is, not by the budget itself: a
+      // single triple covering every trade is the pinnable row, and that is the
+      // question this column exists to answer.
+      sortValue: (s) => feeConcentration(s),
+      filterOptions: [
+        { value: 'single', label: 'one budget' },
+        { value: 'few', label: '2-4 budgets' },
+        { value: 'many', label: '5+ budgets' },
+        { value: 'unknown', label: 'not captured' },
+      ],
+      filterOptionValue: (s) => feeSpreadBand(s),
+      filterTitle:
+        'one budget = a compiled-in preset, safe to pin; 5+ = a fee oracle, where pinning any single value fires once and never again; not captured = no fee reading on any trade of this build yet',
+      searchValue: (s) => {
+        const top = dominantFeeVariant(s);
+        return top ? formatFeeVariant(top) : '';
+      },
     },
     {
       key: 'side',

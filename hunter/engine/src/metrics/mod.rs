@@ -34,6 +34,7 @@
 pub mod burst_slot;
 pub mod crowd_window;
 pub mod evaluator;
+pub mod fee;
 pub mod flow_slice;
 pub mod flow_lifetime;
 pub mod dump_ix;
@@ -52,6 +53,8 @@ use std::fmt;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+use self::fee::FeeKeys;
 
 /// (De)serializes an `f64` that may carry a non-finite `NaN` sentinel ("no value
 /// yet") through formats — like JSON — that have no `NaN`/`Infinity` literal.
@@ -208,6 +211,13 @@ pub struct TradeLite {
     /// but do not join the member prefix.
     #[serde(default)]
     pub is_launch: bool,
+    /// The compute budget and tip this trade's TRANSACTION declared — the second
+    /// half of a build's identity, read beside [`ix_hash`](Self::ix_hash) by the
+    /// two pattern classifiers. Empty ([`FeeKeys::is_empty`]) on every trade
+    /// predating core migration `0013` and on any source without the columns, which
+    /// is why a pinned fee criterion must fail rather than pass against it.
+    #[serde(default)]
+    pub fee: FeeKeys,
 }
 
 fn default_true() -> bool {
@@ -232,6 +242,7 @@ impl Default for TradeLite {
             template_hash: None,
             on_curve: true,
             is_launch: false,
+            fee: FeeKeys::default(),
         }
     }
 }
@@ -1577,9 +1588,9 @@ pub const REGISTRY: &[GroupSpec] = &[
         fingerprint_config: &[
             FpConfigFieldSpec {
                 name: "ix_patterns",
-                value_type: "string[][]",
+                value_type: "ix_pattern[]",
                 required: false,
-                description: "Exact ordered instruction-label sequences that TAG a trade.                               An exact list, so a build that ships a new variant is booked                               untagged until the variant is added.",
+                description: "Builds that TAG a trade. Each entry is an exact ordered                               instruction-label sequence - `[\"A\",\"B\"]` - optionally                               narrowed to one client's compute budget by writing it as                               `{labels, cu_limit?, cu_price?, tip_lamports?}`. A field                               left out matches any value; a field pinned matches that                               value exactly and never matches a trade carrying no fee                               reading. An exact list either way, so a build that ships a                               new variant is booked untagged until the variant is added.",
                 default_json: None,
                 conflicts_with: &["untagged_ix_markers"],
             },
@@ -1854,9 +1865,9 @@ pub const REGISTRY: &[GroupSpec] = &[
         // sit on BOTH, and normally does - see the `dump_ix` module header.
         fingerprint_config: &[FpConfigFieldSpec {
             name: "ix_patterns",
-            value_type: "string[][]",
+            value_type: "ix_pattern[]",
             required: true,
-            description: "Exact ordered instruction-label sequences whose SELLS this                           group counts. Its own list, separate from `m_flow_ix` and                           free to overlap it: the two ask different questions of one                           transaction, so a sell can be tagged flow AND a dump.                           Absent ⇒ both metrics read NaN, never 0.",
+            description: "Builds whose SELLS this group counts. Each entry is an exact                           ordered instruction-label sequence - `[\"A\",\"B\"]` -                           optionally narrowed to one client's compute budget by                           writing it as `{labels, cu_limit?, cu_price?,                           tip_lamports?}`: same four instructions plus the preset                           that operator's tool compiles. A field left out matches any                           value; a field pinned matches that value exactly and never                           matches a trade carrying no fee reading, so a pinned entry                           finds nothing in history predating fee capture. Its own                           list, separate from `m_flow_ix` and free to overlap it: the                           two ask different questions of one transaction, so a sell                           can be tagged flow AND a dump. Absent ⇒ both metrics read                           NaN, never 0.",
             default_json: None,
             conflicts_with: &[],
         }],

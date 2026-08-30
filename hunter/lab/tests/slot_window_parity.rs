@@ -79,7 +79,8 @@ async fn the_engine_fires_where_the_sql_derivation_fires() {
     for mint in &mints {
         let rows = sqlx::query(
             "SELECT t.slot, t.tx_index, t.trade_type, t.amount_lamports,
-                    t.reserve_lamports, t.block_time, t.ix_labels
+                    t.reserve_lamports, t.block_time, t.ix_labels,
+                    t.cu_limit, t.cu_price, t.tip_lamports
              FROM trades t
              WHERE t.mint_address = $1 AND t.leg_index = 0
              ORDER BY t.slot, t.tx_index",
@@ -138,6 +139,20 @@ async fn the_engine_fires_where_the_sql_derivation_fires() {
                     &labels,
                 ),
                 on_curve: true,
+                // Read rather than defaulted, for the same reason the hashes above
+                // are: this literal stands in for what a producer builds, and a fee
+                // this path invents is a fee the parity check stops testing.
+                fee: hunter_engine::metrics::fee::FeeKeys::new(
+                    r.try_get::<Option<i64>, _>("cu_limit")
+                        .ok()
+                        .flatten()
+                        .map(|v| v.clamp(0, u32::MAX as i64) as u32),
+                    r.try_get::<Option<i64>, _>("cu_price").ok().flatten().map(|v| v.max(0) as u64),
+                    r.try_get::<Option<i64>, _>("tip_lamports")
+                        .ok()
+                        .flatten()
+                        .map(|v| v.max(0) as u64),
+                ),
             });
 
             // Evaluate the entry gate exactly where the fold would: after each trade.

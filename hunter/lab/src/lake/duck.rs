@@ -34,10 +34,27 @@ use crate::sweep::corpus::{
     Corpus, CorpusSource, Selection, TradeWindow, SWEEP_DEFAULT_PER_MINT_CAP,
 };
 use crate::sweep::grouping::TokenFingerprint;
+use hunter_engine::metrics::fee::FeeKeys;
+
 use crate::sweep::projection::{CorpusTrade, FlowKeys};
 use crate::sweep::corpus::CorpusToken;
 
 use super::{tokens_file, trades_glob};
+
+/// The optional flow columns, in the exact order the `SELECT` emits them and the
+/// row decode consumes them by ordinal.
+///
+/// One list rather than a literal on each side, because the last three are all
+/// `Int64`: swapping `cu_price` and `tip_lamports` in either half would decode
+/// cleanly and silently attribute one to the other. That is the same failure the
+/// module header warns about for same-typed builders, one layer down.
+const FLOW_READ_COLS: [&str; 5] = [
+    super::schema::T_IX_LABELS,
+    super::schema::T_WALLET,
+    super::schema::T_CU_LIMIT,
+    super::schema::T_CU_PRICE,
+    super::schema::T_TIP_LAMPORTS,
+];
 
 /// Reads a sweep corpus from the Parquet lake at `root` via DuckDB.
 pub struct LakeSource {
@@ -616,7 +633,11 @@ fn load_corpus_tokens(
     // Selecting columns only when asked keeps non-flow / non-sim reads from
     // touching the extra strings. `union_by_name=true` null-fills pre-column days.
     let sig_col = if sel.with_signatures { ", tx_signature" } else { "" };
-    let flow_cols = if sel.with_flow { ", ix_labels, wallet" } else { "" };
+    // The fee trio rides with the flow columns: a dump list matches an ix build AND
+    // the compute budget the sender declared, so the classifier needs both or
+    // neither. Pre-`0013` days null-fill through `union_by_name=true`.
+    let flow_cols =
+        if sel.with_flow { format!(", {}", FLOW_READ_COLS.join(", ")) } else { String::new() };
 
     // The one projection both shapes below emit — the exact column order the row
     // reader decodes by ordinal.
@@ -700,7 +721,18 @@ fn load_corpus_tokens(
             let ix = row.get::<_, Option<String>>(col)?;
             col += 1;
             let w = row.get::<_, Option<String>>(col)?;
-            let keys = FlowKeys::from_stored(ix.as_deref(), w.as_deref());
+            col += 1;
+            // The fee trio is stored `Int64` and read back as the chain's widths.
+            // A negative reading is impossible on the write path, so a saturating
+            // cast is a no-op that keeps a corrupted file from wrapping into a huge
+            // positive budget.
+            let cu_limit = row.get::<_, Option<i64>>(col)?.map(|v| v.max(0) as u32);
+            col += 1;
+            let cu_price = row.get::<_, Option<i64>>(col)?.map(|v| v.max(0) as u64);
+            col += 1;
+            let tip = row.get::<_, Option<i64>>(col)?.map(|v| v.max(0) as u64);
+            let keys = FlowKeys::from_stored(ix.as_deref(), w.as_deref())
+                .with_fee(FeeKeys::new(cu_limit, cu_price, tip));
             if sel.with_flow_text {
                 (keys, ix.map(String::into_boxed_str), w.map(String::into_boxed_str))
             } else {
@@ -915,6 +947,20 @@ mod tests {
         assert_eq!(FP_COLUMNS.split(',').count(), FP_COLUMN_COUNT);
     }
 
+    /// The row decode advances one ordinal per entry of [`FLOW_READ_COLS`] and
+    /// assigns each to a named field. Pinning the order here is what stops a
+    /// reordered `SELECT` from decoding `tip_lamports` into `cu_price`: both are
+    /// `Int64`, so neither DuckDB nor Rust would object.
+    #[test]
+    fn flow_read_columns_are_pinned_to_the_decode_order() {
+        use crate::lake::schema as col;
+        assert_eq!(
+            FLOW_READ_COLS,
+            [col::T_IX_LABELS, col::T_WALLET, col::T_CU_LIMIT, col::T_CU_PRICE, col::T_TIP_LAMPORTS],
+            "the decode in `load_corpus_tokens` reads these five in this order"
+        );
+    }
+
     #[test]
     fn sql_str_escapes_quotes() {
         assert_eq!(sql_str("/a/b"), "'/a/b'");
@@ -992,6 +1038,12 @@ mod tests {
             "leg_index", "vsol", "vtok", "venue", "tx_index", "tx_signature",
         ] {
             assert!(TRADE_WRITE_COLS.contains(&c), "reader trade col `{c}` is not a canonical write column");
+        }
+        for c in FLOW_READ_COLS {
+            assert!(
+                TRADE_WRITE_COLS.contains(&c),
+                "reader flow col `{c}` is not a canonical write column"
+            );
         }
         // Columns the candidate + fingerprint queries reference.
         for c in [

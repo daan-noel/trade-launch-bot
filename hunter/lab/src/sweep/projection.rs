@@ -23,6 +23,7 @@ use hunter_engine::metrics::template_grain::{
     grain_hash_from_labels_json, grain_hash_from_labels_value, is_launch_from_labels_json,
     is_launch_from_labels_value,
 };
+use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::{Side, TradeLite};
 
 use trading_core::config::constants::approx_real_sol_reserves;
@@ -105,6 +106,13 @@ pub struct FlowKeys {
     pub template_hash: Option<u64>,
     /// `Pump.Fun: Create*` present on the labels.
     pub is_launch: bool,
+    /// The transaction's declared fee budget, carried beside `ix_hash` because the
+    /// two are read together: a build list entry may pin a compute budget, and the
+    /// classifier needs both halves or it silently matches on the shape alone.
+    /// Empty on every day exported before the lake carried the columns —
+    /// `union_by_name` null-fills those, which reads as "not captured", which no
+    /// pinned criterion accepts.
+    pub fee: FeeKeys,
 }
 
 impl FlowKeys {
@@ -122,19 +130,29 @@ impl FlowKeys {
                 .unwrap_or(0),
             template_hash: ix_labels.and_then(grain_hash_from_labels_json),
             is_launch: ix_labels.is_some_and(is_launch_from_labels_json),
+            fee: FeeKeys::default(),
         }
+    }
+
+    /// Attach the row's fee budget. Separate from [`from_stored`](Self::from_stored)
+    /// because the budget arrives as three already-typed integers off the Parquet
+    /// row, not as text this type has to hash.
+    pub fn with_fee(mut self, fee: FeeKeys) -> Self {
+        self.fee = fee;
+        self
     }
 
     /// Same contract for a row holding `ix_labels` as a decoded `Value` — the
     /// Postgres `Trade` shape, which (unlike the lake's export) still carries
     /// **either** persisted shape, so it must go through the shape-complete reader.
-    pub fn from_value(ix_labels: &Value, wallet: Option<&str>) -> Self {
+    pub fn from_value(ix_labels: &Value, wallet: Option<&str>, fee: FeeKeys) -> Self {
         Self {
             ix_hash: ix_hash_from_labels_value(ix_labels),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
             marker_bits: marker_bits_from_labels_value(ix_labels),
             template_hash: grain_hash_from_labels_value(ix_labels),
             is_launch: is_launch_from_labels_value(ix_labels),
+            fee,
         }
     }
 }
@@ -220,6 +238,7 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
         template_hash: ct.flow.template_hash,
         is_launch: ct.flow.is_launch,
         on_curve: true,
+        fee: ct.flow.fee,
     }
 }
 
@@ -339,7 +358,18 @@ pub fn project_pg_tail(trades: &[Trade], with_flow: bool) -> Vec<CorpusTrade> {
             is_buy: t.is_buy(),
             tx_signature: None,
             flow: if with_flow {
-                FlowKeys::from_value(&t.instruction_labels, Some(t.wallet_address.as_str()))
+                // The PG tail must classify like the lake days it continues: a build
+                // list pinning a budget would otherwise match inside the lake window
+                // and stop at the seam, which reads as the cohort going quiet.
+                FlowKeys::from_value(
+                    &t.instruction_labels,
+                    Some(t.wallet_address.as_str()),
+                    FeeKeys::new(
+                        t.cu_limit.map(|v| v.min(u32::MAX as u64) as u32),
+                        t.cu_price,
+                        t.tip_lamports,
+                    ),
+                )
             } else {
                 FlowKeys::default()
             },

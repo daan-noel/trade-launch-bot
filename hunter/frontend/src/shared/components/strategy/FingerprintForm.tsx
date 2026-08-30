@@ -19,7 +19,7 @@ import {
 import { axisPredicateText } from 'lib/strategy/fingerprintGrammar';
 import {
   findGroup,
-  dumpPatternsFromConfig,
+  dumpPatternRowsFromConfig,
   flowClassifierFromConfig,
   ixMarkers,
   metricConfigWithDumpPatterns,
@@ -34,7 +34,9 @@ import {
 import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { FINGERPRINT_FIELD_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
 import { LabelTip } from './LabelTip';
-import { IxPatternsEditor } from './IxPatternsEditor';
+import type { IxPatternRow } from 'lib/strategy/ixPatternRows';
+
+import { IxPatternRowsEditor } from './IxPatternsEditor';
 import {
   AxisConditionInput,
   axisConditionProblem,
@@ -72,7 +74,7 @@ interface FormState {
   /** `m_dump_ix.ix_patterns` — the builds whose SELLS `dump_sell` / `dump_sell_count`
    *  count. A separate list from the classifier's, and separately optional: a
    *  fingerprint may configure either group, both, or neither. */
-  dump_patterns: string[][];
+  dump_patterns: IxPatternRow[];
   /** The ORIGINAL metric_config, whole. The save merges into this rather than
    *  rebuilding from the fields above, so every key the form does not render — other
    *  groups, and any `m_flow_ix` key added later — survives an edit. */
@@ -96,7 +98,7 @@ function fromFingerprint(fp?: Fingerprint, reg?: StrategyRegistry): FormState {
     ix_labels: formatIxLabelsText(labels?.kind === 'sequence' ? labels.labels : null),
     wildcard: fp?.wildcard ?? false,
     flow: flowClassifierFromConfig(cfg, reg),
-    dump_patterns: dumpPatternsFromConfig(cfg),
+    dump_patterns: dumpPatternRowsFromConfig(cfg),
     metric_config_prev: cfg,
   };
 }
@@ -207,8 +209,8 @@ ${fallback.body}` } : fallback;
         <LabelTip tip={tip('ix_patterns', FINGERPRINT_FIELD_HELP.ix_patterns)}>
           ix_patterns (m_flow_ix)
         </LabelTip>
-        <IxPatternsEditor
-          patterns={value.ix_patterns}
+        <IxPatternRowsEditor
+          rows={value.ix_patterns.map((p) => (Array.isArray(p) ? { labels: p } : p))}
           onChange={(p) => onChange({ ix_patterns: p })}
           disabled={disabled || patternsBlocked}
         />
@@ -503,8 +505,8 @@ ${FINGERPRINT_FIELD_HELP.dump_ix_patterns.body}`
       {dumpField && (
         <div className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[11px] text-text-dim">
           <LabelTip tip={dumpTip}>{DUMP_GROUP} · dump builds</LabelTip>
-          <IxPatternsEditor
-            patterns={s.dump_patterns}
+          <IxPatternRowsEditor
+            rows={s.dump_patterns}
             onChange={(p) => set('dump_patterns', p)}
             disabled={submitting}
           />

@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::flow_ix::ix_hash;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -82,6 +83,24 @@ pub struct StructureScore {
     /// Trade count behind [`Self::first_slot_gross_sol`]. Same `Option` contract.
     #[serde(default)]
     pub first_slot_trades: Option<u64>,
+    /// The distinct fee budgets this build was sent with, most-traded first and
+    /// clipped to [`MAX_FEE_VARIANTS`] (`fee_variant_count` carries the true total).
+    ///
+    /// This is the field that decides whether a budget is identity or noise. One
+    /// variant covering nearly every trade is a compiled-in preset and pins well;
+    /// a long tail is a client reading a fee oracle per transaction, and pinning any
+    /// single value there matches the one transaction it was copied from and then
+    /// never fires again. Read the cardinality BEFORE putting a fee on a list entry.
+    #[serde(default)]
+    pub fee_variants: Vec<FeeVariant>,
+    /// Distinct budgets observed, before the clip.
+    #[serde(default)]
+    pub fee_variant_count: u32,
+    /// Trades of this build carrying no fee reading at all — every trade older than
+    /// core migration `0013`. A structure that is all-unknown cannot be pinned yet,
+    /// however stable it looks.
+    #[serde(default)]
+    pub fee_unknown_trades: u64,
     /// Per-wallet gross SOL on this structure — lets the UI preview live's
     /// wallet-contagion classifier (a wallet tagged by one checked structure
     /// sweeps its trades on OTHER structures into "volume" too, even if those
@@ -89,6 +108,30 @@ pub struct StructureScore {
     /// ix_labels shape fired by the same bot wallet).
     pub wallets: Vec<WalletGross>,
 }
+
+/// One distinct fee budget observed on a build, with how much of that build it
+/// accounts for.
+///
+/// Plain numbers, not the stringified form [`WalletGross`] uses for its hash: a CU
+/// limit caps at 1.4M and neither a cu_price nor a tip approaches 2^53, so no JS
+/// precision is at risk.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FeeVariant {
+    pub cu_limit: Option<u32>,
+    /// Micro-lamports per compute unit.
+    pub cu_price: Option<u64>,
+    pub tip_lamports: Option<u64>,
+    /// Compute rail plus tip, in lamports — the money the pair actually encodes.
+    /// `None` when neither rail was captured.
+    pub priority_lamports: Option<u64>,
+    pub n_trades: u64,
+    pub gross_sol: f64,
+}
+
+/// How many fee variants a structure reports. A build sent with hundreds of
+/// budgets is a dial, and the count alone says so — the rows past this add nothing
+/// but weight.
+pub const MAX_FEE_VARIANTS: usize = 8;
 
 /// One wallet's gross SOL contribution to a `StructureScore`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -321,6 +364,11 @@ fn score_group(
         first_slot_gross: f64,
         first_slot_trades: u64,
         slots: Vec<u64>,
+        /// trade count + gross per distinct fee budget; the empty budget is counted
+        /// separately in `fee_unknown` rather than becoming a variant of its own,
+        /// because "not captured" is not a budget anyone can pin.
+        by_fee: HashMap<FeeKeys, (u64, f64)>,
+        fee_unknown: u64,
     }
 
     let mut by_struct: HashMap<u64, Acc> = HashMap::new();
@@ -368,6 +416,13 @@ fn score_group(
                     .or_insert(0.0) += g;
             }
             acc.slots.push(t.slot);
+            if t.flow.fee.is_empty() {
+                acc.fee_unknown += 1;
+            } else {
+                let e = acc.by_fee.entry(t.flow.fee).or_insert((0, 0.0));
+                e.0 += 1;
+                e.1 += g;
+            }
             *acc.gross_by_token.entry(ti).or_insert(0.0) += g;
             let signed = if t.is_buy { g } else { -g };
             *acc.net_by_token.entry(ti).or_insert(0.0) += signed;
@@ -461,8 +516,33 @@ fn score_group(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        let fee_variant_count = acc.by_fee.len() as u32;
+        let mut fee_variants: Vec<FeeVariant> = acc
+            .by_fee
+            .into_iter()
+            .map(|(f, (n_trades, gross_sol))| FeeVariant {
+                cu_limit: f.cu_limit(),
+                cu_price: f.cu_price(),
+                tip_lamports: f.tip_lamports(),
+                priority_lamports: f.priority_lamports(),
+                n_trades,
+                gross_sol,
+            })
+            .collect();
+        // Most-traded first: the question a reader asks of this list is "does one
+        // budget cover the build", which is answered by the head of it.
+        fee_variants.sort_by(|a, b| {
+            b.n_trades
+                .cmp(&a.n_trades)
+                .then_with(|| b.gross_sol.partial_cmp(&a.gross_sol).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        fee_variants.truncate(MAX_FEE_VARIANTS);
+
         structures.push(StructureScore {
             ix_labels: labels,
+            fee_variants,
+            fee_variant_count,
+            fee_unknown_trades: acc.fee_unknown,
             volume_share,
             wash_symmetry,
             cross_token_recurrence,
