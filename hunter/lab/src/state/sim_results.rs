@@ -105,6 +105,11 @@ pub struct SimMeta {
     /// load as `None`, which is exactly what they were (the guard did not exist).
     #[serde(default)]
     pub dupe_guard_window_hours: Option<u64>,
+    /// Lake-load filter: only bonding-curve trades. CorpusTrade has no venue
+    /// field, so this is the only place the filter can apply. Harvest must
+    /// book `true`. `#[serde(default)]` ⇒ legacy metas load as `false`.
+    #[serde(default)]
+    pub curve_only: bool,
     /// Unfiltered rollup — powers the Simulate page's per-rule columns without
     /// loading rows from disk.
     pub summary: RunSummary,
@@ -217,6 +222,7 @@ impl SimResults {
         fill_model: FillModel,
         cost_model: CostModelKind,
         dupe_guard_window_hours: Option<u64>,
+        curve_only: bool,
         outcome: SimOutcome,
         persist: bool,
     ) {
@@ -252,6 +258,7 @@ impl SimResults {
                     fill_model,
                     cost_model,
                     dupe_guard_window_hours,
+                    curve_only,
                     summary,
                 };
                 if let Err(e) = self.write_durable(&meta, rows) {
@@ -459,6 +466,7 @@ pub fn summary_wire(meta: &SimMeta) -> Value {
             serde_json::json!(meta.dupe_guard_window_hours),
         );
         obj.insert("cost_model".into(), serde_json::json!(meta.cost_model));
+        obj.insert("curve_only".into(), serde_json::json!(meta.curve_only));
     }
     body
 }
@@ -533,6 +541,7 @@ mod tests {
             FillModel::WorstCase,
             CostModelKind::PumpfunImpact,
             None,
+            false,
             SimOutcome::Done(rows.clone()),
             true,
         );
@@ -574,6 +583,7 @@ mod tests {
             FillModel::WorstCase,
             CostModelKind::PumpfunImpact,
             None,
+            false,
             SimOutcome::Done(Arc::new(vec![serde_json::json!({"fired": false})])),
             false,
         );
@@ -598,6 +608,7 @@ mod tests {
             FillModel::WorstCase,
             CostModelKind::PumpfunImpact,
             None,
+            false,
             SimOutcome::Done(Arc::new(vec![])),
             true,
         );

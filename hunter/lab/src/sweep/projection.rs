@@ -20,7 +20,8 @@ use hunter_engine::metrics::flow_ix::{
     wallet_hash,
 };
 use hunter_engine::metrics::template_grain::{
-    grain_hash_from_labels_json, grain_hash_from_labels_value,
+    grain_hash_from_labels_json, grain_hash_from_labels_value, is_launch_from_labels_json,
+    is_launch_from_labels_value,
 };
 use hunter_engine::metrics::{Side, TradeLite};
 
@@ -102,6 +103,8 @@ pub struct FlowKeys {
     pub marker_bits: u16,
     /// FNV-1a of the build-template grain; `None` when labels are missing.
     pub template_hash: Option<u64>,
+    /// `Pump.Fun: Create*` present on the labels.
+    pub is_launch: bool,
 }
 
 impl FlowKeys {
@@ -118,6 +121,7 @@ impl FlowKeys {
                 .map(|v| marker_bits_from_labels_value(&v))
                 .unwrap_or(0),
             template_hash: ix_labels.and_then(grain_hash_from_labels_json),
+            is_launch: ix_labels.is_some_and(is_launch_from_labels_json),
         }
     }
 
@@ -130,6 +134,7 @@ impl FlowKeys {
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
             marker_bits: marker_bits_from_labels_value(ix_labels),
             template_hash: grain_hash_from_labels_value(ix_labels),
+            is_launch: is_launch_from_labels_value(ix_labels),
         }
     }
 }
@@ -213,6 +218,8 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
         leg_index: ct.leg_index.min(u8::MAX as u32) as u8,
         tx_index: Some(ct.tx_index),
         template_hash: ct.flow.template_hash,
+        is_launch: ct.flow.is_launch,
+        on_curve: true,
     }
 }
 

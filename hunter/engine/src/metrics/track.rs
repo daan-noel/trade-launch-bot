@@ -261,6 +261,9 @@ impl TokenTrack {
         for dump in self.dump.values_mut() {
             dump.on_tick(now, cur);
         }
+        if !self.burst_patterns.is_empty() {
+            self.burst.on_tick();
+        }
     }
 
     /// How many matched sells one fingerprint's dump window retains — see
@@ -398,9 +401,10 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
-            WorkingTemplate | TemplateBuyCount | TemplateBuySol | TemplateWalletCount
-            | SlotBuyCount | SlotBuySol | SlotWalletCount | SlotTemplateCount
-            | NewOnMintWallets | Packed | PreSlotLiquidity | PrePrintTrail => {
+            ThisMember | ThisWorking | SameBuyCount | SameBuySol | SameWalletCount
+            | MemberTemplateCount | WorkingBuyCount | WorkingBuySol | WorkingWalletCount
+            | WorkingTemplateCount | HasNew | HasUnknown | Packed | PreSlotLiquidity
+            | PrePrintTrail => {
                 let Some(fp) = fingerprint else {
                     return f64::NAN;
                 };

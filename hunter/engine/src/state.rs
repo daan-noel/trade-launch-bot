@@ -67,6 +67,9 @@ pub struct TokenState {
     /// key), so it stays empty for every legacy rule. Lives beside `arms` and dies
     /// with the token, so no separate lifetime to manage.
     pub episodes: BTreeMap<RuleId, u32>,
+    /// Per-rule slot that already had an `entry_event` candidate (`entry_lock:
+    /// "slot"`). Absent key ⇒ this rule has not locked a slot on this token.
+    pub entry_locks: BTreeMap<RuleId, u64>,
 }
 
 /// A token's "nothing of mine can change on its own any more" verdict, stamped by
@@ -564,6 +567,8 @@ fn compile_manual_exit_rule(rule: RuleId, exit: &ManualExit) -> CompiledRule {
         take_profit: exit.tp_pct.filter(|v| v.is_finite() && *v > 0.0),
         stop_loss: exit.sl_pct.filter(|v| v.is_finite() && *v > 0.0),
         entry: None,
+        entry_event: None,
+        entry_lock: None,
         exit: None,
         scale_out: None,
         reentry: None,

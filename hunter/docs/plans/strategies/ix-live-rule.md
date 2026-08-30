@@ -9,8 +9,10 @@ to add, how packed/bundles and gaps work, the exit DNF, and what not
 to duplicate.
 
 Fill = last print with `ts <= fire + 95 ms`. Cost = 125 bps/leg + own
-`B/vsol` at B = 0.10 SOL. Fire is the completing print (the engine
-already decides per trade). Re-entry when the same gates match.
+`B/vsol` at B = 0.10 SOL. Fire is the completing print: the first buy
+this slot that makes `entry_event` true. `entry_lock: "slot"` spends
+that slot even when the `entry` filters fail. Re-entry when the same
+gates match on a later slot.
 
 Do not author this rule on `m_flow_ix` patterns, `unique_wallets`,
 `stall`, or `held`. Those are different subjects.
@@ -22,12 +24,21 @@ contains ATA; `init_buy_lamports >= 0.2 SOL`; `first_slot_buy_lamports
 >= 0.5 SOL`. Cashback-off is not the door. Working-template list lives
 on this fingerprint.
 
-Entry is AND. Same-template and mixed cannot share one rule, so they
-are **two exclusive rules** on that fingerprint. `packed` is
-unconstrained (hole and tight pack are both in). Solos out. Create
-slot is out (`4sl@1` plus `time >= 20` covers it).
+Same-template and mixed cannot share one rule, so they are **two
+exclusive rules** on that fingerprint. `packed` is unconstrained (hole
+and tight pack are both in). Solos out. Create slot is out (`4sl@1`
+plus `time >= 20` covers it). Simulate with `curve_only: true`.
 
-Shared entry (both rules):
+Shared **event** (both rules) — AND, once per slot:
+
+| Gate | Spelling | Notes |
+| --- | --- | --- |
+| this print joined | `m_burst_slot.this_member == 1` | curve buy, has grain, not launch |
+| this print working | `m_burst_slot.this_working == 1` | grain on the fingerprint list |
+| not all-repeat | `m_burst_slot.has_new == 1` | at least one working-list wallet is first-on-mint |
+| known wallets | `m_burst_slot.has_unknown == 0` | missing wallet rejects the event |
+
+Shared **filters** (both rules) — AND, evaluated only on the completing print:
 
 | Gate | Spelling | Notes |
 | --- | --- | --- |
@@ -35,16 +46,19 @@ Shared entry (both rules):
 | buy quiet | `m_flow_window.buy_count == 0` on **`4sl@1`** | SQL `dslot >= 5`. **Not** `5sl@1` |
 | depth | `m_burst_slot.pre_slot_liquidity < 16` | SQL `vsol_pre < 46`; `liquidity = vsol − 30` |
 | dip | `m_burst_slot.pre_print_trail >= 15` | lifetime trail **before** this print |
-| this print | `m_burst_slot.working_template == 1` | template on the fingerprint list |
-| not all-repeat | `m_burst_slot.new_on_mint_wallets >= 1` | first curve-buy on this mint this slot |
 
-**Rule A — same-template crowd:** shared, plus
-`slot_template_count == 1`, `template_buy_count >= 2`,
-`template_buy_sol` in `[0.9, 4)`, `template_wallet_count >= 2`.
+**Rule A — same-template crowd:** event, plus
+`member_template_count == 1`, `same_buy_count >= 2`,
+`same_buy_sol` in `[0.9, 4)`, `same_wallet_count >= 2`.
+`member_template_count` is distinct grains on the **whole member prefix**
+(SQL `run_ntmpl`), not the working list. Axiom plus Pump.Fun reads 2
+and is not Rule A.
 
-**Rule B — mixed crowd:** shared, plus
-`slot_template_count >= 2`, `slot_buy_sol` in `[0.9, 4)`,
-`slot_wallet_count >= 2`.
+**Rule B — mixed crowd:** shared event, plus
+`working_template_count >= 2`, `working_buy_sol` in `[0.9, 4)`,
+`working_wallet_count >= 2`. Mixed size is the working-list total,
+not every buy in the slot. Organic-padded same-working (Axiom plus
+Pump.Fun, one hunted grain) is neither A nor B.
 
 A later shape split is JSON only (`packed == 0` or `1` on A or B).
 No new group.
@@ -120,34 +134,43 @@ the previous print (`tlag`).
 CU, no GMGN, and they include Trojan. Not the template grain.
 
 `unique_wallets` counts distinct senders in a window. The gate is
-first-on-this-mint in this slot’s template run.
+first-on-this-mint in this slot among **working-list** wallets.
 
 ## `m_burst_slot` — the only new group
 
 One group for every **new** reading this harvest needs. Named for the
-subject (current slot’s buy prefix × this print’s build template), not
+subject (current slot's member prefix × this print's build template), not
 for a strategy. One `on_trade`, one slot buffer, reset when `slot`
 changes. The working-template **list** lives on the fingerprint so the
 group stays reusable. A later shape split (`packed`) is another metric
 on this same group, not a second group.
 
+A **member** is a curve buy with a template grain, not a launch create.
+Unknown wallet (`wallet_hash == 0`) still joins and sets `has_unknown`.
+Every buy with a wallet (including launch / AMM) updates the ever-seen
+set. `member_template_count` is `by_template.len()`. Working-list totals
+are derived at read from `by_template` intersect the fingerprint list.
+
 Template id (producer, one function, same spelling as SQL `tmpl`):
-`program|CU|ATA|N|S|F` from the trade’s labels. Needs `tx_index` on
+`program|CU|ATA|N|S|F` from the trade's labels. Needs `tx_index` on
 `TradeLite` as `Option<u32>`: `0` is a valid first transaction in the
 block, `None` is missing. Missing `tx_index` ⇒ `packed` is `NaN`
-(never fires), not “treat as hole.”
+(never fires), not "treat as hole."
 
 | Metric | Unit | Meaning |
 | --- | --- | --- |
-| `working_template` | 0/1 | this print’s template is on the fingerprint list |
-| `template_buy_count` | count | buys this slot with **this print’s** template |
-| `template_buy_sol` | SOL | their SOL |
-| `template_wallet_count` | count | distinct wallets among those buys |
-| `slot_buy_count` | count | all buys this slot so far |
-| `slot_buy_sol` | SOL | their SOL (mixed size) |
-| `slot_wallet_count` | count | distinct wallets among those buys |
-| `slot_template_count` | count | distinct templates among those buys |
-| `new_on_mint_wallets` | count | of this print’s template buys, first curve-buy on **this mint** this slot |
+| `this_member` | 0/1 | this print just joined the member prefix |
+| `this_working` | 0/1 | this print's grain is on the fingerprint list |
+| `same_buy_count` | count | members this slot with **this print's** grain |
+| `same_buy_sol` | SOL | their SOL (Rule A size) |
+| `same_wallet_count` | count | distinct wallets among those buys |
+| `member_template_count` | count | distinct grains among **all** members this slot. Rule A is 1 |
+| `working_buy_count` | count | members this slot on the working list |
+| `working_buy_sol` | SOL | their SOL (Rule B size). Organic is out |
+| `working_wallet_count` | count | distinct wallets among working-list members |
+| `working_template_count` | count | distinct working-list grains this slot. Rule B is >= 2 |
+| `has_new` | 0/1 | any working-list wallet is first-on-mint |
+| `has_unknown` | 0/1 | some member this slot has no wallet |
 | `packed` | 0/1 | `1` = consecutive `tx_index`; `0` = hole |
 | `pre_slot_liquidity` | SOL | real reserve at last print with `slot < S` |
 | `pre_print_trail` | percent | lifetime trail **before** folding this print |
@@ -183,6 +206,23 @@ metric. Empty labels fail closed (`None`). Init / first-slot axes
 already exist.
 
 **Exit combinator.** See the next section.
+
+## Entry combinator
+
+`entry` stays AND. Optional `entry_event` is a second AND-object: the
+completing-print event. `entry_lock: "slot"` fires that event once per
+slot; `entry` filters that fail still spend it. Absent `entry_lock`
+is today's level-AND on every print. `entry_lock` without a non-empty
+`entry_event` is a parse error.
+
+```json
+"entry_lock": "slot",
+"entry_event": { "m_burst_slot": { "this_member": [{"operator": "=", "value": 1}] } },
+"entry": { "m_state": { "time": [{"operator": ">=", "value": 20}] } }
+```
+
+Sells and ticks clear `this_member`, so leftover gates cannot fire off
+a later print in the same slot once the completing buy has spent it.
 
 ## Exit combinator
 
@@ -275,17 +315,20 @@ That book is in the island ([ix-crowd-island.md](ix-crowd-island.md)):
 
 Exit DNF (array of clauses) + `m_position.armed` latch. Object-form OR
 and trailing skip stay; array-form ANDs `armed` and does not skip
-trailing reqs inside a multi-req clause. Sweep / `can_enter` / readout
-walk clauses. `scale_out` stays object-only.
+trailing reqs inside a multi-req clause. Sweep / `can_enter` /
+`try_enter` / readout walk clauses. `scale_out` stays object-only.
 
-`tx_index` is `Option<u32>` on `TradeLite`. Template helper (guard
-tests vs SQL `tmpl`). Fingerprint working-template list + create-ATA
-axis. `m_burst_slot` is the group. Two exclusive rules as in **The
-rules**, re-entry on (`cooldown_sec: 0`). Compile-pinned in
-`engine/tests/harvest_crowd_rules.rs` — not live DB rows.
+`entry_event` + `entry_lock: "slot"` on `CompiledRule::try_enter`.
+`tx_index` is `Option<u32>` on `TradeLite`. `on_curve` / `is_launch`
+on the tape. Template helper (guard tests vs SQL `tmpl`). Fingerprint
+working-template list + create-ATA axis. `m_burst_slot` is the group.
+Two exclusive rules as in **The rules**, re-entry on (`cooldown_sec: 0`).
+Compile-pinned in `engine/tests/harvest_crowd_rules.rs`. Seed:
+`hunter/scripts/seed-harvest-crowd-rules.sql`.
 
-Simulate on 2026-08-11 .. 2026-08-23 exclusive before paper. Do not
-treat the Python walk as live PnL.
+Simulate on 2026-08-12 .. 2026-08-23 exclusive, `curve_only: true`,
+`fill_model=lag_115`, `cost_model=pumpfun_impact`. Do not treat the
+Python walk as live PnL.
 
 ## Related
 

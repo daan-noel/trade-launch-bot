@@ -3,11 +3,16 @@
 //! Pins parse + compile of the mapping in
 //! `hunter/docs/plans/strategies/ix-live-rule.md`. Does not retune the cell.
 
-use hunter_engine::arm::CompiledRule;
+use chrono::{TimeZone, Utc};
+use hunter_engine::arm::{CompiledRule, EntryVerdict};
 use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, FingerprintId};
-use hunter_engine::metrics::{MetricId, WindowUnit};
-use hunter_engine::rule_params::{ExitSide, ReEntry, RuleParams};
+use hunter_engine::hash::HashedSet;
+use hunter_engine::metrics::burst_slot::BurstPatterns;
+use hunter_engine::metrics::template_grain::grain_id_hash;
+use hunter_engine::metrics::track::TokenTrack;
+use hunter_engine::metrics::{MetricId, Side, TradeLite, Ts, WindowUnit};
+use hunter_engine::rule_params::{EntryLock, ExitSide, ReEntry, RuleParams};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -22,7 +27,18 @@ const WORKING: &[&str] = &[
     "Bloom|CU|F",
 ];
 
-fn shared_entry() -> serde_json::Value {
+fn shared_event() -> serde_json::Value {
+    json!({
+        "m_burst_slot": {
+            "this_member": [{"operator": "=", "value": 1}],
+            "this_working": [{"operator": "=", "value": 1}],
+            "has_new": [{"operator": "=", "value": 1}],
+            "has_unknown": [{"operator": "=", "value": 0}]
+        }
+    })
+}
+
+fn shared_filters() -> serde_json::Value {
     json!({
         "m_state": { "time": [{"operator": ">=", "value": 20}] },
         "m_flow_window": {
@@ -31,8 +47,6 @@ fn shared_entry() -> serde_json::Value {
             "buy_count": [{"operator": "=", "value": 0}]
         },
         "m_burst_slot": {
-            "working_template": [{"operator": "=", "value": 1}],
-            "new_on_mint_wallets": [{"operator": ">=", "value": 1}],
             "pre_slot_liquidity": [{"operator": "<", "value": 16}],
             "pre_print_trail": [{"operator": ">=", "value": 15}]
         }
@@ -56,8 +70,8 @@ fn harvest_exit() -> serde_json::Value {
     ])
 }
 
-fn merge_entry(extra: serde_json::Value) -> serde_json::Value {
-    let mut e = shared_entry();
+fn merge_burst(base: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+    let mut e = base;
     let extra = extra.as_object().expect("object");
     let dst = e.as_object_mut().expect("object");
     for (k, v) in extra {
@@ -74,12 +88,14 @@ fn merge_entry(extra: serde_json::Value) -> serde_json::Value {
     e
 }
 
-fn harvest_params(entry: serde_json::Value) -> serde_json::Value {
+fn harvest_params(event: serde_json::Value) -> serde_json::Value {
     json!({
         "exclusive": true,
         "priority": 10,
         "reentry": { "cooldown_sec": 0, "max_episodes_per_token": 100 },
-        "entry": entry,
+        "entry_lock": "slot",
+        "entry_event": event,
+        "entry": shared_filters(),
         "exit": harvest_exit()
     })
 }
@@ -101,7 +117,7 @@ fn compile(params: serde_json::Value) -> CompiledRule {
 #[test]
 fn working_list_is_the_eight_grain_ids() {
     assert_eq!(WORKING.len(), 8);
-    assert!(WORKING.iter().any(|s| *s == "Bloom Router|CU|F"));
+    assert!(WORKING.contains(&"Bloom Router|CU|F"));
     assert!(WORKING.iter().all(|s| !s.contains("LAUNCH")));
 }
 
@@ -122,19 +138,23 @@ fn door_fingerprint_is_ata_plus_init_and_first_slot() {
 
 #[test]
 fn rule_a_same_template_parses_and_compiles() {
-    let params = harvest_params(merge_entry(json!({
-        "m_burst_slot": {
-            "slot_template_count": [{"operator": "=", "value": 1}],
-            "template_buy_count": [{"operator": ">=", "value": 2}],
-            "template_buy_sol": [
-                {"operator": ">=", "value": 0.9},
-                {"operator": "<", "value": 4}
-            ],
-            "template_wallet_count": [{"operator": ">=", "value": 2}]
-        }
-    })));
+    let params = harvest_params(merge_burst(
+        shared_event(),
+        json!({
+            "m_burst_slot": {
+                "member_template_count": [{"operator": "=", "value": 1}],
+                "same_buy_count": [{"operator": ">=", "value": 2}],
+                "same_buy_sol": [
+                    {"operator": ">=", "value": 0.9},
+                    {"operator": "<", "value": 4}
+                ],
+                "same_wallet_count": [{"operator": ">=", "value": 2}]
+            }
+        }),
+    ));
     let p = RuleParams::parse(&params).unwrap_or_else(|e| panic!("{e}"));
     assert!(p.exclusive);
+    assert_eq!(p.entry_lock, Some(EntryLock::Slot));
     assert_eq!(
         p.reentry,
         Some(ReEntry { cooldown_sec: 0.0, max_episodes_per_token: 100 })
@@ -144,36 +164,43 @@ fn rule_a_same_template_parses_and_compiles() {
 
     let c = compile(params);
     assert!(c.exclusive);
+    assert_eq!(c.entry_lock, Some(EntryLock::Slot));
     assert_eq!(c.exit_clauses.len(), 2, "DNF: trail OR death (no TP/SL)");
     assert_eq!(c.trail_arm_pct, Some(10.0));
     assert!(c.needs_slot, "4sl@1 + m_burst_slot both need the slot column");
     assert!(c.entry_reqs.iter().any(|r| r.metric == MetricId::Time));
     assert!(c.entry_reqs.iter().any(|r| r.metric == MetricId::BuyCount
         && r.window.primary.is_some_and(|w| w.size == 4.0 && w.lag == 1.0 && w.unit == WindowUnit::Slot)));
-    assert!(c.entry_reqs.iter().any(|r| r.metric == MetricId::SlotTemplateCount));
-    assert!(c.entry_reqs.iter().any(|r| r.metric == MetricId::TemplateBuySol));
-    assert!(!c.entry_reqs.iter().any(|r| r.metric == MetricId::Packed));
+    assert!(c.event_reqs.iter().any(|r| r.metric == MetricId::MemberTemplateCount));
+    assert!(!c.event_reqs.iter().any(|r| r.metric == MetricId::WorkingTemplateCount));
+    assert!(c.event_reqs.iter().any(|r| r.metric == MetricId::SameBuySol));
+    assert!(c.event_reqs.iter().any(|r| r.metric == MetricId::ThisMember));
+    assert!(c.event_reqs.iter().any(|r| r.metric == MetricId::HasNew));
+    assert!(!c.event_reqs.iter().any(|r| r.metric == MetricId::Packed));
 }
 
 #[test]
 fn rule_b_mixed_parses_and_compiles() {
-    let params = harvest_params(merge_entry(json!({
-        "m_burst_slot": {
-            "slot_template_count": [{"operator": ">=", "value": 2}],
-            "slot_buy_sol": [
-                {"operator": ">=", "value": 0.9},
-                {"operator": "<", "value": 4}
-            ],
-            "slot_wallet_count": [{"operator": ">=", "value": 2}]
-        }
-    })));
+    let params = harvest_params(merge_burst(
+        shared_event(),
+        json!({
+            "m_burst_slot": {
+                "working_template_count": [{"operator": ">=", "value": 2}],
+                "working_buy_sol": [
+                    {"operator": ">=", "value": 0.9},
+                    {"operator": "<", "value": 4}
+                ],
+                "working_wallet_count": [{"operator": ">=", "value": 2}]
+            }
+        }),
+    ));
     let p = RuleParams::parse(&params).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
     let c = compile(params);
     assert!(c.exclusive);
     assert_eq!(c.exit_clauses.len(), 2);
-    assert!(c.entry_reqs.iter().any(|r| r.metric == MetricId::SlotBuySol));
-    assert!(!c.entry_reqs.iter().any(|r| r.metric == MetricId::TemplateBuySol));
+    assert!(c.event_reqs.iter().any(|r| r.metric == MetricId::WorkingBuySol));
+    assert!(!c.event_reqs.iter().any(|r| r.metric == MetricId::SameBuySol));
 }
 
 #[test]
@@ -195,4 +222,173 @@ fn object_form_exit_still_compiles_to_singleton_clauses() {
 fn dnf_empty_clause_is_rejected() {
     let e = RuleParams::parse(&json!({ "exit": [ {} ] })).unwrap_err();
     assert!(e.contains("empty"), "{e}");
+}
+
+#[test]
+fn entry_lock_without_event_is_rejected() {
+    let e = RuleParams::parse(&json!({ "entry_lock": "slot" })).unwrap_err();
+    assert!(e.contains("entry_lock"), "{e}");
+}
+
+// ── Completing-print lock ──────────────────────────────────────────────────
+
+fn ts(secs: i64) -> Ts {
+    Utc.timestamp_opt(1_700_000_000 + secs, 0).unwrap()
+}
+
+fn patterns(ids: &[&str]) -> BurstPatterns {
+    let mut h = HashedSet::default();
+    for id in ids {
+        h.insert(grain_id_hash(id));
+    }
+    BurstPatterns::new(h)
+}
+
+fn member_buy(
+    slot: u64,
+    tx: u32,
+    wallet: u64,
+    sol: f64,
+    secs: i64,
+    price: f64,
+    grain: &str,
+) -> TradeLite {
+    TradeLite {
+        side: Side::Buy,
+        sol,
+        price,
+        reserve_sol: 10.0,
+        priced_reserve_sol: 40.0,
+        at: ts(secs),
+        slot,
+        tx_index: Some(tx),
+        template_hash: Some(grain_id_hash(grain)),
+        wallet_hash: wallet,
+        on_curve: true,
+        is_launch: false,
+        ..Default::default()
+    }
+}
+
+const AXIOM: &str = "Axiom Trade|CU|ATA|F";
+const PHOTON: &str = "Photon|CU|ATA|F";
+const PUMP: &str = "Pump.Fun";
+
+fn harvest_a_compiled() -> CompiledRule {
+    compile(harvest_params(merge_burst(
+        shared_event(),
+        json!({
+            "m_burst_slot": {
+                "member_template_count": [{"operator": "=", "value": 1}],
+                "same_buy_count": [{"operator": ">=", "value": 2}],
+                "same_buy_sol": [
+                    {"operator": ">=", "value": 0.9},
+                    {"operator": "<", "value": 4}
+                ],
+                "same_wallet_count": [{"operator": ">=", "value": 2}]
+            }
+        }),
+    )))
+}
+
+fn harvest_b_compiled() -> CompiledRule {
+    compile(harvest_params(merge_burst(
+        shared_event(),
+        json!({
+            "m_burst_slot": {
+                "working_template_count": [{"operator": ">=", "value": 2}],
+                "working_buy_sol": [
+                    {"operator": ">=", "value": 0.9},
+                    {"operator": "<", "value": 4}
+                ],
+                "working_wallet_count": [{"operator": ">=", "value": 2}]
+            }
+        }),
+    )))
+}
+
+fn primed(c: &CompiledRule, ids: &[&str]) -> TokenTrack {
+    let mut track = TokenTrack::new(ts(0));
+    track.ensure_burst(FingerprintId(Uuid::nil()), &patterns(ids));
+    for w in &c.flow_windows {
+        track.ensure_window(*w);
+    }
+    track
+}
+
+#[test]
+fn completing_print_is_the_buy_that_crosses_size() {
+    let c = harvest_a_compiled();
+    let mut track = primed(&c, &[AXIOM]);
+    // Quiet 4sl@1: a buy in slot 1, then resume at slot 6 (dslot = 5).
+    track.on_trade(member_buy(1, 1, 9, 0.1, 1, 1.0, AXIOM));
+    // Age 25 s, trail 20 on the first resume buy (0.4 SOL — not yet 0.9).
+    track.on_trade(member_buy(6, 1, 1, 0.4, 25, 0.8, AXIOM));
+    assert_eq!(c.try_enter(&track, ts(25), None), EntryVerdict::No);
+    // Second wallet, tot 1.0 — completing print.
+    track.on_trade(member_buy(6, 2, 2, 0.6, 25, 0.8, AXIOM));
+    assert_eq!(c.try_enter(&track, ts(25), None), EntryVerdict::Enter);
+    // A third buy in the same slot is not a new candidate once locked.
+    track.on_trade(member_buy(6, 3, 3, 0.1, 25, 0.8, AXIOM));
+    assert_eq!(c.try_enter(&track, ts(25), Some(6)), EntryVerdict::No);
+}
+
+#[test]
+fn failed_dip_on_completing_print_spends_the_slot() {
+    let c = harvest_a_compiled();
+    let mut track = primed(&c, &[AXIOM]);
+    track.on_trade(member_buy(1, 1, 9, 0.1, 1, 1.0, AXIOM));
+    // Peak then resume: first two wallets cross 0.9 but trail is 0 (at peak).
+    track.on_trade(member_buy(6, 1, 1, 0.5, 25, 1.0, AXIOM));
+    track.on_trade(member_buy(6, 2, 2, 0.5, 25, 1.0, AXIOM));
+    assert_eq!(c.try_enter(&track, ts(25), None), EntryVerdict::SpendSlot);
+    // A later sell cannot reopen this slot.
+    track.on_trade(TradeLite {
+        side: Side::Sell,
+        sol: 2.0,
+        price: 0.5,
+        reserve_sol: 8.0,
+        slot: 6,
+        at: ts(25),
+        on_curve: true,
+        ..Default::default()
+    });
+    assert_eq!(c.try_enter(&track, ts(25), Some(6)), EntryVerdict::No);
+}
+
+#[test]
+fn pumpfun_padding_does_not_fill_rule_b_band() {
+    let c = harvest_b_compiled();
+    let mut track = primed(&c, &[AXIOM, PHOTON]);
+    track.on_trade(member_buy(1, 1, 9, 0.1, 1, 1.0, AXIOM));
+    track.on_trade(member_buy(6, 1, 1, 0.3, 25, 0.8, AXIOM));
+    track.on_trade(member_buy(6, 2, 2, 0.3, 25, 0.8, PHOTON));
+    track.on_trade(member_buy(6, 3, 3, 5.0, 25, 0.8, PUMP));
+    // Working-list size is 0.6; Pump.Fun is a member but not on the list.
+    assert_eq!(c.try_enter(&track, ts(25), None), EntryVerdict::No);
+    track.on_trade(member_buy(6, 4, 2, 0.4, 25, 0.8, PHOTON));
+    assert_eq!(c.try_enter(&track, ts(25), None), EntryVerdict::Enter);
+}
+
+#[test]
+fn all_repeat_working_list_does_not_fire() {
+    let c = harvest_a_compiled();
+    let mut track = primed(&c, &[AXIOM]);
+    track.on_trade(member_buy(1, 1, 1, 0.1, 1, 1.0, AXIOM));
+    track.on_trade(member_buy(1, 2, 2, 0.1, 1, 1.0, AXIOM));
+    track.on_trade(member_buy(6, 1, 1, 0.5, 25, 0.8, AXIOM));
+    track.on_trade(member_buy(6, 2, 2, 0.5, 25, 0.8, AXIOM));
+    assert_eq!(c.try_enter(&track, ts(25), None), EntryVerdict::No);
+}
+
+#[test]
+fn pumpfun_padding_does_not_fire_rule_a() {
+    let c = harvest_a_compiled();
+    let mut track = primed(&c, &[AXIOM]);
+    track.on_trade(member_buy(1, 1, 9, 0.1, 1, 1.0, AXIOM));
+    track.on_trade(member_buy(6, 1, 1, 0.5, 25, 0.8, AXIOM));
+    track.on_trade(member_buy(6, 2, 3, 3.0, 25, 0.8, PUMP));
+    track.on_trade(member_buy(6, 3, 2, 0.5, 25, 0.8, AXIOM));
+    // same_buy_sol is 1.0 in band; Pump.Fun makes member_template_count 2.
+    assert_eq!(c.try_enter(&track, ts(25), None), EntryVerdict::No);
 }

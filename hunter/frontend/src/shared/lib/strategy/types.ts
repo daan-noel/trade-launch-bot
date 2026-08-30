@@ -515,6 +515,8 @@ export interface EngineSimRequest {
   cost_model?: CostModelId;
   /** Override the box copycat guard for this run. Absent ⇒ inherit Settings. */
   skip_duplicate_identity?: boolean;
+  /** Load only bonding-curve trades. Harvest must pass true. Default false. */
+  curve_only?: boolean;
 }
 
 /** `202` response of `POST /api/strategies/simulate`. `run_id` = the rule id for

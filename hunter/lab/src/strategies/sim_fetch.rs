@@ -46,8 +46,9 @@ const SIM_PER_MINT_CAP: i64 = i64::MAX;
 ///
 /// `curve_only` is a **load-time** filter (`Selection.curve_only`) — the projected
 /// [`CorpusTrade`] drops `venue`, so a venue filter can only be applied before projection.
-/// The single-rule backtests pass `false` (matching the venue-unfiltered
-/// `find_by_mints_all`); the per-token swing1 detect endpoint threads the request's flag.
+/// The single-rule backtests pass `false` unless the request sets
+/// `curve_only` (harvest does: Python is `venue='curve'`). CorpusTrade drops
+/// `venue`, so the filter can only apply at load.
 pub async fn fetch_sim_histories(
     mints: &[String],
     curve_only: bool,

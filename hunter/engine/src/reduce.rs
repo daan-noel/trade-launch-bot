@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use smallvec::SmallVec;
 
-use crate::arm::{ArmState, ClockHorizons, CompiledRule, EnteredCtx, EntryBlockers};
+use crate::arm::{ArmState, ClockHorizons, CompiledRule, EnteredCtx, EntryBlockers, EntryVerdict};
 use crate::cap::Cap;
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS};
 use crate::event::{
@@ -105,6 +105,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 first_slot_settled: false,
                 arms: BTreeMap::new(),
                 episodes: BTreeMap::new(),
+                entry_locks: BTreeMap::new(),
             };
             // Arm every rule whose fingerprint matches the instant axes. A rule whose
             // fingerprint also carries a first-slot axis stays *pending* until the
@@ -510,6 +511,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         first_slot_settled: true,
                         arms: BTreeMap::new(),
                         episodes: BTreeMap::new(),
+                        entry_locks: BTreeMap::new(),
                     },
                 );
             }
@@ -689,6 +691,8 @@ enum ArmDecision {
     /// track is in hand. It is `Some` only for `Unsatisfiable`.
     Disarm(DisarmReason, Option<Box<EntryBlockers>>),
     Enter,
+    /// Completing print whose filters failed — lock the slot, stay Armed.
+    SpendSlot,
     Exit(ExitReason),
     /// Scale-out leg: sell `sell_bps` of the initial bag; fill restores Entered.
     PartialExit { reason: ExitReason, sell_bps: u16 },
@@ -965,10 +969,11 @@ fn decide_arm(
             {
                 return ArmDecision::None;
             }
-            if c.can_enter(&token.track, now) {
-                return ArmDecision::Enter;
+            match c.try_enter(&token.track, now, token.entry_locks.get(&rule_id).copied()) {
+                EntryVerdict::Enter => ArmDecision::Enter,
+                EntryVerdict::SpendSlot => ArmDecision::SpendSlot,
+                EntryVerdict::No => ArmDecision::None,
             }
-            ArmDecision::None
         }
         ArmState::Entered(held) => {
             // Dead stays first and special (liquidity-based, not price). Every
@@ -1047,6 +1052,12 @@ fn apply_decision(
 ) {
     match decision {
         ArmDecision::None => {}
+        ArmDecision::SpendSlot => {
+            let slot = token.track.cur_slot();
+            if slot != 0 {
+                token.entry_locks.insert(rule_id, slot);
+            }
+        }
         ArmDecision::Disarm(reason, detail) => {
             // `ArmState` keeps only the reason: it is per-(token, rule) RAM that
             // outlives the episode, and the detail's one consumer is the effect.
@@ -1054,6 +1065,10 @@ fn apply_decision(
             fx.push(disarmed(mint, rule_id, reason, detail));
         }
         ArmDecision::Enter => {
+            let slot = token.track.cur_slot();
+            if slot != 0 {
+                token.entry_locks.insert(rule_id, slot);
+            }
             // Caps enforced at entry (not arm): concurrency + lifetime. Over a cap ⇒
             // wait (stay armed) and re-check on the next event.
             {

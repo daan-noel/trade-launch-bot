@@ -537,6 +537,7 @@ pub fn adopt_holding_into_engine(
                 first_slot_settled: true,
                 arms: Default::default(),
                 episodes: Default::default(),
+                entry_locks: Default::default(),
             },
         );
     }
@@ -673,6 +674,7 @@ pub fn adopt_buy_submitted_into_engine(
                 first_slot_settled: true,
                 arms: Default::default(),
                 episodes: Default::default(),
+                entry_locks: Default::default(),
             },
         );
     }

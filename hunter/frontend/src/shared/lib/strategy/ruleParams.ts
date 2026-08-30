@@ -111,6 +111,10 @@ export interface RuleParams {
   stop_loss: number | null;
   /** Entry side. `undefined`/empty ⇒ enter on arm (fingerprint alone). */
   entry?: SideConditions;
+  /** Completing-print event (AND). Absent ⇒ no separate event. */
+  entry_event?: SideConditions;
+  /** `"slot"` = fire `entry_event` once per slot. Absent ⇒ level-AND. */
+  entry_lock?: 'slot' | null;
   /** Exit side (object-form). `undefined`/empty ⇒ TP/SL/death only. */
   exit?: SideConditions;
   /** Array-form DNF exit. When set, serializes as `"exit": [clause, …]` and
@@ -147,6 +151,8 @@ export function emptyRuleParams(): RuleParams {
     priority: 0,
     disabled: null,
     buy_pct_of_vsol: null,
+    entry_event: {},
+    entry_lock: null,
   };
 }
 
@@ -158,6 +164,9 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   if (p.stop_loss != null) root.stop_loss = p.stop_loss;
   const entry = sideToJson(p.entry);
   if (entry) root.entry = entry;
+  const entryEvent = sideToJson(p.entry_event);
+  if (entryEvent) root.entry_event = entryEvent;
+  if (p.entry_lock === 'slot') root.entry_lock = 'slot';
   if (p.exitClauses && p.exitClauses.length > 0) {
     const clauses = p.exitClauses.map((c) => sideToJson(c)).filter((c) => c != null);
     if (clauses.length) root.exit = clauses;
@@ -237,6 +246,8 @@ export function ruleParamsFromJson(json: unknown, reg: StrategyRegistry | undefi
     take_profit: numOrNull(obj.take_profit),
     stop_loss: numOrNull(obj.stop_loss),
     entry: sideFromJson(obj.entry, reg) ?? {},
+    entry_event: sideFromJson(obj.entry_event, reg) ?? {},
+    entry_lock: obj.entry_lock === 'slot' ? 'slot' : null,
     ...(Array.isArray(obj.exit)
       ? {
           exit: {},

@@ -134,6 +134,10 @@ async fn the_engine_fires_where_the_sql_derivation_fires() {
                 template_hash: hunter_engine::metrics::template_grain::grain_hash_from_labels_value(
                     &labels,
                 ),
+                is_launch: hunter_engine::metrics::template_grain::is_launch_from_labels_value(
+                    &labels,
+                ),
+                on_curve: true,
             });
 
             // Evaluate the entry gate exactly where the fold would: after each trade.

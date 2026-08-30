@@ -16,8 +16,10 @@
 //!
 //! **Exit combinator.** Object-form `exit` is a flat OR of metrics (every stored
 //! rule). Array-form `exit` is DNF: a list of clause objects, clauses OR, metrics
-//! inside a clause AND. Entry stays a single object (AND). `scale_out` stages
-//! stay object-form. See `docs/plans/strategies/ix-live-rule.md`.
+//! inside a clause AND. Entry stays a single object (AND). Optional `entry_event`
+//! is a second AND-object: the completing-print event. `entry_lock: "slot"` fires
+//! that event once per slot; filters in `entry` that fail spend the slot. `scale_out`
+//! stages stay object-form. See `docs/plans/strategies/ix-live-rule.md`.
 //!
 //! Group objects mix **strict params** (e.g. `window_size_sec`) with **metric
 //! condition lists** at the same level, so parsing is a registry-guided walk
@@ -154,6 +156,29 @@ impl From<SideConditions> for ExitSide {
     }
 }
 
+/// Completing-print lock. JSON `"slot"`: the first print this slot that makes
+/// `entry_event` true is the only candidate; `entry` filters that fail spend it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryLock {
+    Slot,
+}
+
+impl EntryLock {
+    fn parse(v: &Value) -> Result<Self, String> {
+        match v.as_str() {
+            Some("slot") => Ok(Self::Slot),
+            Some(other) => Err(format!("entry_lock: unknown value '{other}'")),
+            None => Err("entry_lock must be a string".into()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Slot => "slot",
+        }
+    }
+}
+
 /// Typed, registry-checked `params`. See module docs for the JSON shape.
 /// `default()` is the legal empty rule (fingerprint-only, no TP/SL/conditions).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -164,6 +189,13 @@ pub struct RuleParams {
     pub stop_loss: Option<f64>,
     /// Entry conditions. `None` = enter on arm (the fingerprint alone decides).
     pub entry: Option<SideConditions>,
+    /// Completing-print event (AND). `None` = no separate event; `entry` is the
+    /// whole gate (today's level-AND). Harvest puts crowd shape here.
+    pub entry_event: Option<SideConditions>,
+    /// When [`Self::entry_event`] first holds this slot, that print is the only
+    /// candidate: `entry` filters run on it, and a fail spends the slot. `None`
+    /// (every stored non-harvest rule) = today's level-AND on every print.
+    pub entry_lock: Option<EntryLock>,
     /// Exit conditions. `None` = TP/SL/death only. Object-form is today's flat
     /// OR of metrics ([`ExitSide::Any`]); array-form is OR of AND-clauses
     /// ([`ExitSide::Dnf`]).
@@ -354,6 +386,12 @@ impl RuleParams {
         if let Some(side) = &self.entry {
             root.insert("entry".into(), side_to_value(side));
         }
+        if let Some(side) = &self.entry_event {
+            root.insert("entry_event".into(), side_to_value(side));
+        }
+        if let Some(lock) = self.entry_lock {
+            root.insert("entry_lock".into(), Value::String(lock.as_str().into()));
+        }
         if let Some(exit) = &self.exit {
             root.insert("exit".into(), exit_to_value(exit));
         }
@@ -416,6 +454,8 @@ impl RuleParams {
                 "take_profit"
                     | "stop_loss"
                     | "entry"
+                    | "entry_event"
+                    | "entry_lock"
                     | "exit"
                     | "scale_out"
                     | "reentry"
@@ -431,6 +471,11 @@ impl RuleParams {
             take_profit: parse_opt_number(obj.get("take_profit"), "take_profit")?,
             stop_loss: parse_opt_number(obj.get("stop_loss"), "stop_loss")?,
             entry: parse_opt_side(obj.get("entry"), "entry")?,
+            entry_event: parse_opt_side(obj.get("entry_event"), "entry_event")?,
+            entry_lock: match obj.get("entry_lock") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(EntryLock::parse(v)?),
+            },
             exit: parse_opt_exit(obj.get("exit"), "exit")?,
             scale_out: parse_opt_scale_out(obj.get("scale_out"), "scale_out")?,
             reentry: parse_opt_reentry(obj.get("reentry"))?,
@@ -471,6 +516,7 @@ impl RuleParams {
         let d = self.disabled.as_ref();
         for (label, is_entry, side) in [
             ("entry", true, self.entry.as_ref()),
+            ("entry_event", true, self.entry_event.as_ref()),
             ("disabled.entry", true, d.and_then(|d| d.entry.as_ref())),
         ] {
             let Some(side) = side else { continue };
@@ -501,6 +547,11 @@ impl RuleParams {
         // rules describe a ladder, and this bag is a shelf).
         for (i, stage) in d.and_then(|d| d.scale_out.as_ref()).into_iter().flatten().enumerate() {
             validate_stage(&format!("disabled.scale_out[{i}]"), stage)?;
+        }
+        if self.entry_lock.is_some()
+            && self.entry_event.as_ref().is_none_or(SideConditions::is_empty)
+        {
+            return Err("entry_lock requires a non-empty entry_event".into());
         }
         Ok(())
     }
@@ -1566,6 +1617,8 @@ mod tests {
             take_profit: None,
             stop_loss: None,
             entry: Some(side),
+            entry_event: None,
+            entry_lock: None,
             exit: None,
             scale_out: None,
             reentry: None,

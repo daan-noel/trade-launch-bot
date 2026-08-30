@@ -4,7 +4,10 @@
 //! the fingerprint so the group stays reusable. One slot prefix on the token,
 //! reset when `slot` changes. Unconfigured fingerprints read `NaN`.
 //!
-//! See `hunter/docs/plans/strategies/ix-live-rule.md`.
+//! A **member** is a curve buy with a template grain, not a launch create, that
+//! joins the current-slot prefix. `member_template_count` is distinct grains on
+//! that prefix (SQL `run_ntmpl`). Working-list totals count only members whose
+//! grain is on the fingerprint list. See `hunter/docs/plans/strategies/ix-live-rule.md`.
 
 use serde_json::Value;
 
@@ -89,53 +92,52 @@ struct TemplateRun {
     count: u32,
     sol: f64,
     wallets: HashedSet,
-    new_wallets: HashedSet,
+    /// True when any wallet in this run is first-on-mint this slot.
+    has_new: bool,
 }
 
 // ── Slot prefix ──────────────────────────────────────────────────────────────
 
-/// One token's current-slot buy prefix + the ever-seen buyer set.
+/// One token's current-slot member prefix + the ever-seen buyer set.
 #[derive(Debug, Clone)]
 pub struct BurstSlotState {
     slot: u64,
-    buy_count: u32,
-    buy_sol: f64,
-    wallets: HashedSet,
-    templates: HashedSet,
-    by_template: HashedMap<TemplateRun>,
-    /// Min tx_index among buys this slot; `None` until a buy with a known index.
+    member_count: u32,
+    /// Min tx_index among members this slot; `None` until a member with a known index.
     first_tx: Option<u32>,
-    /// Last buy's tx_index this slot (packed reads this, not a sell's index).
-    last_buy_tx: Option<u32>,
-    /// Any buy this slot arrived without `tx_index` ⇒ `packed` is NaN.
+    /// Last member's tx_index this slot (packed reads this, not a sell's index).
+    last_member_tx: Option<u32>,
+    /// Any member this slot arrived without `tx_index` ⇒ `packed` is NaN.
     missing_tx: bool,
+    has_unknown: bool,
     /// Wallets that have bought this mint in a *previous* slot.
     ever: HashedSet,
     /// Wallets that bought this mint in the current slot (moved into `ever` on
-    /// the next slot change).
+    /// the next slot change). Updated on every buy with a wallet, members or not.
     this_slot_buyers: HashedSet,
+    by_template: HashedMap<TemplateRun>,
     pre_slot_liquidity: f64,
     pre_print_trail: f64,
     this_template: Option<u64>,
+    this_member: bool,
 }
 
 impl Default for BurstSlotState {
     fn default() -> Self {
         Self {
             slot: 0,
-            buy_count: 0,
-            buy_sol: 0.0,
-            wallets: HashedSet::default(),
-            templates: HashedSet::default(),
-            by_template: HashedMap::default(),
+            member_count: 0,
             first_tx: None,
-            last_buy_tx: None,
+            last_member_tx: None,
             missing_tx: false,
+            has_unknown: false,
             ever: HashedSet::default(),
             this_slot_buyers: HashedSet::default(),
+            by_template: HashedMap::default(),
             pre_slot_liquidity: f64::NAN,
             pre_print_trail: f64::NAN,
             this_template: None,
+            this_member: false,
         }
     }
 }
@@ -146,15 +148,19 @@ impl BurstSlotState {
             self.ever.insert(w);
         }
         self.slot = new_slot;
-        self.buy_count = 0;
-        self.buy_sol = 0.0;
-        self.wallets.clear();
-        self.templates.clear();
-        self.by_template.clear();
+        self.member_count = 0;
         self.first_tx = None;
-        self.last_buy_tx = None;
+        self.last_member_tx = None;
         self.missing_tx = false;
+        self.has_unknown = false;
+        self.by_template.clear();
         self.pre_slot_liquidity = pre_liq;
+    }
+
+    /// A tick is not a print — `this_member` must not survive into a later
+    /// `can_enter` on a clock advance.
+    pub fn on_tick(&mut self) {
+        self.this_member = false;
     }
 
     /// Snapshot trail, maybe roll the slot, then fold this print. `prev_liquidity`
@@ -163,6 +169,7 @@ impl BurstSlotState {
     pub fn on_trade(&mut self, t: &TradeLite, pre_trail: f64, prev_liquidity: f64) {
         self.pre_print_trail = pre_trail;
         self.this_template = t.template_hash;
+        self.this_member = false;
 
         if t.slot != 0 && t.slot != self.slot {
             self.reset_prefix(t.slot, prev_liquidity);
@@ -172,12 +179,26 @@ impl BurstSlotState {
             return;
         }
 
-        self.buy_count = self.buy_count.saturating_add(1);
-        self.buy_sol += t.sol;
-        self.wallets.insert(t.wallet_hash);
-        self.this_slot_buyers.insert(t.wallet_hash);
+        // First-on-mint: every buy with a wallet, including non-members
+        // (launch, AMM, organic). Decide BEFORE inserting this print, or the
+        // current wallet would never count as new. Wallet 0 is unknown, not an
+        // identity.
+        let is_new = t.wallet_hash != 0
+            && !self.ever.contains(&t.wallet_hash)
+            && !self.this_slot_buyers.contains(&t.wallet_hash);
+        if t.wallet_hash != 0 {
+            self.this_slot_buyers.insert(t.wallet_hash);
+        }
 
-        let is_new = !self.ever.contains(&t.wallet_hash);
+        if !is_member(t) {
+            return;
+        }
+
+        self.this_member = true;
+        self.member_count = self.member_count.saturating_add(1);
+        if t.wallet_hash == 0 {
+            self.has_unknown = true;
+        }
 
         match t.tx_index {
             None => self.missing_tx = true,
@@ -185,30 +206,30 @@ impl BurstSlotState {
                 if self.first_tx.is_none() {
                     self.first_tx = Some(idx);
                 }
-                self.last_buy_tx = Some(idx);
+                self.last_member_tx = Some(idx);
             }
         }
 
-        if let Some(h) = t.template_hash {
-            self.templates.insert(h);
-            let run = self.by_template.entry(h).or_default();
-            run.count = run.count.saturating_add(1);
-            run.sol += t.sol;
+        let Some(h) = t.template_hash else {
+            return;
+        };
+        let run = self.by_template.entry(h).or_default();
+        run.count = run.count.saturating_add(1);
+        run.sol += t.sol;
+        if t.wallet_hash != 0 {
             run.wallets.insert(t.wallet_hash);
-            if is_new {
-                run.new_wallets.insert(t.wallet_hash);
-            }
         }
+        run.has_new |= is_new;
     }
 
     fn packed(&self) -> f64 {
         if self.missing_tx {
             return f64::NAN;
         }
-        match (self.first_tx, self.last_buy_tx) {
-            (Some(first), Some(last)) if self.buy_count > 0 => {
+        match (self.first_tx, self.last_member_tx) {
+            (Some(first), Some(last)) if self.member_count > 0 => {
                 f64::from(u8::from(
-                    last.saturating_sub(first).saturating_add(1) == self.buy_count,
+                    last.saturating_sub(first).saturating_add(1) == self.member_count,
                 ))
             }
             _ => f64::NAN,
@@ -227,29 +248,80 @@ impl BurstSlotState {
         };
         use MetricId::*;
         match id {
-            WorkingTemplate => match self.this_template {
+            ThisMember => f64::from(u8::from(self.this_member)),
+            ThisWorking => match self.this_template {
                 Some(h) => f64::from(u8::from(p.contains(h))),
                 None => 0.0,
             },
-            TemplateBuyCount => self.this_run().map(|r| f64::from(r.count)).unwrap_or(f64::NAN),
-            TemplateBuySol => self.this_run().map(|r| r.sol).unwrap_or(f64::NAN),
-            TemplateWalletCount => {
+            SameBuyCount => self.this_run().map(|r| f64::from(r.count)).unwrap_or(f64::NAN),
+            SameBuySol => self.this_run().map(|r| r.sol).unwrap_or(f64::NAN),
+            SameWalletCount => {
                 self.this_run().map(|r| r.wallets.len() as f64).unwrap_or(f64::NAN)
             }
-            SlotBuyCount => f64::from(self.buy_count),
-            SlotBuySol => self.buy_sol,
-            SlotWalletCount => self.wallets.len() as f64,
-            SlotTemplateCount => self.templates.len() as f64,
-            NewOnMintWallets => self
-                .this_run()
-                .map(|r| r.new_wallets.len() as f64)
-                .unwrap_or(f64::NAN),
+            MemberTemplateCount => {
+                if self.member_count == 0 {
+                    f64::NAN
+                } else {
+                    self.by_template.len() as f64
+                }
+            }
+            WorkingBuyCount => self.working_count(p),
+            WorkingBuySol => self.working_sol(p),
+            WorkingWalletCount => self.working_wallets(p),
+            WorkingTemplateCount => self.working_template_count(p),
+            HasNew => f64::from(u8::from(self.has_new(p))),
+            HasUnknown => f64::from(u8::from(self.has_unknown)),
             Packed => self.packed(),
             PreSlotLiquidity => self.pre_slot_liquidity,
             PrePrintTrail => self.pre_print_trail,
             _ => f64::NAN,
         }
     }
+
+    fn working_count(&self, p: &BurstPatterns) -> f64 {
+        let mut n = 0u32;
+        for (h, run) in &self.by_template {
+            if p.contains(*h) {
+                n = n.saturating_add(run.count);
+            }
+        }
+        f64::from(n)
+    }
+
+    fn working_sol(&self, p: &BurstPatterns) -> f64 {
+        let mut s = 0.0;
+        for (h, run) in &self.by_template {
+            if p.contains(*h) {
+                s += run.sol;
+            }
+        }
+        s
+    }
+
+    fn working_wallets(&self, p: &BurstPatterns) -> f64 {
+        let mut w = HashedSet::default();
+        for (h, run) in &self.by_template {
+            if p.contains(*h) {
+                w.extend(run.wallets.iter().copied());
+            }
+        }
+        w.len() as f64
+    }
+
+    fn working_template_count(&self, p: &BurstPatterns) -> f64 {
+        self.by_template
+            .keys()
+            .filter(|h| p.contains(**h))
+            .count() as f64
+    }
+
+    fn has_new(&self, p: &BurstPatterns) -> bool {
+        self.by_template.iter().any(|(h, run)| p.contains(*h) && run.has_new)
+    }
+}
+
+fn is_member(t: &TradeLite) -> bool {
+    t.side == Side::Buy && t.on_curve && !t.is_launch && t.template_hash.is_some()
 }
 
 #[cfg(test)]
@@ -274,6 +346,8 @@ mod tests {
             tx_index: tx,
             template_hash: tmpl,
             wallet_hash: wallet,
+            on_curve: true,
+            is_launch: false,
             ..Default::default()
         }
     }
@@ -316,49 +390,150 @@ mod tests {
         s.on_trade(&buy(10, Some(0), 1, Some(h), 1.0), 0.0, f64::NAN);
         s.on_trade(&buy(10, Some(1), 2, Some(h), 1.0), 0.0, 10.0);
         assert_eq!(s.value(MetricId::Packed, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::SlotBuyCount, Some(&p)), 2.0);
+        assert_eq!(s.value(MetricId::SameBuyCount, Some(&p)), 2.0);
     }
 
     #[test]
-    fn new_on_mint_and_slot_change() {
+    fn has_new_and_slot_change() {
         let p = patterns(&["A|CU|F"]);
         let h = grain_id_hash("A|CU|F");
         let mut s = BurstSlotState::default();
         s.on_trade(&buy(10, Some(1), 7, Some(h), 0.5), 15.0, f64::NAN);
-        assert_eq!(s.value(MetricId::NewOnMintWallets, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 1.0);
         assert_eq!(s.value(MetricId::PrePrintTrail, Some(&p)), 15.0);
         assert!(s.value(MetricId::PreSlotLiquidity, Some(&p)).is_nan());
 
         s.on_trade(&buy(11, Some(1), 7, Some(h), 0.5), 20.0, 12.0);
         // Same wallet, now a repeat — first-on-mint was slot 10.
-        assert_eq!(s.value(MetricId::NewOnMintWallets, Some(&p)), 0.0);
+        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 0.0);
         assert_eq!(s.value(MetricId::PreSlotLiquidity, Some(&p)), 12.0);
-        assert_eq!(s.value(MetricId::SlotBuyCount, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::SameBuyCount, Some(&p)), 1.0);
 
         s.on_trade(&buy(11, Some(2), 8, Some(h), 0.4), 20.0, 12.0);
-        assert_eq!(s.value(MetricId::NewOnMintWallets, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::TemplateWalletCount, Some(&p)), 2.0);
-        assert_eq!(s.value(MetricId::TemplateBuySol, Some(&p)), 0.9);
+        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::SameWalletCount, Some(&p)), 2.0);
+        assert_eq!(s.value(MetricId::SameBuySol, Some(&p)), 0.9);
     }
 
     #[test]
     fn unconfigured_is_nan_not_zero() {
         let mut s = BurstSlotState::default();
         s.on_trade(&buy(10, Some(1), 1, Some(1), 1.0), 0.0, f64::NAN);
-        assert!(s.value(MetricId::SlotBuyCount, None).is_nan());
-        assert!(s.value(MetricId::WorkingTemplate, None).is_nan());
+        assert!(s.value(MetricId::SameBuyCount, None).is_nan());
+        assert!(s.value(MetricId::ThisWorking, None).is_nan());
     }
 
     #[test]
-    fn working_template_is_this_prints_grain() {
+    fn this_working_is_this_prints_grain() {
         let p = patterns(&["Axiom Trade|CU|ATA|F"]);
         let work = grain_id_hash("Axiom Trade|CU|ATA|F");
-        let dead = grain_id_hash("Axiom Trade|CU|F");
+        let dead = grain_id_hash("Pump.Fun");
         let mut s = BurstSlotState::default();
         s.on_trade(&buy(10, Some(1), 1, Some(work), 1.0), 0.0, f64::NAN);
-        assert_eq!(s.value(MetricId::WorkingTemplate, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::ThisWorking, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
         s.on_trade(&buy(10, Some(2), 2, Some(dead), 1.0), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::WorkingTemplate, Some(&p)), 0.0);
-        assert_eq!(s.value(MetricId::SlotTemplateCount, Some(&p)), 2.0);
+        assert_eq!(s.value(MetricId::ThisWorking, Some(&p)), 0.0);
+        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
+        // Organic Pump.Fun is a member but not working — mixed size ignores it.
+        assert_eq!(s.value(MetricId::WorkingTemplateCount, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::MemberTemplateCount, Some(&p)), 2.0);
+        assert_eq!(s.value(MetricId::WorkingBuySol, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::SameBuySol, Some(&p)), 1.0); // this print's grain = Pump.Fun
+    }
+
+    #[test]
+    fn launch_and_amm_do_not_join_the_prefix() {
+        let p = patterns(&["Axiom Trade|CU|ATA|F"]);
+        let h = grain_id_hash("Axiom Trade|CU|ATA|F");
+        let mut s = BurstSlotState::default();
+        let mut launch = buy(10, Some(1), 1, Some(h), 2.0);
+        launch.is_launch = true;
+        s.on_trade(&launch, 0.0, f64::NAN);
+        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 0.0);
+        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 0.0);
+
+        let mut amm = buy(10, Some(2), 2, Some(h), 2.0);
+        amm.on_curve = false;
+        s.on_trade(&amm, 0.0, 10.0);
+        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 0.0);
+        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 0.0);
+
+        s.on_trade(&buy(10, Some(3), 3, Some(h), 1.0), 0.0, 10.0);
+        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 1.0);
+        // Launch/AMM wallets still mark ever — next slot they are repeats.
+        s.on_trade(&buy(11, Some(1), 1, Some(h), 1.0), 0.0, 10.0);
+        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 0.0);
+    }
+
+    #[test]
+    fn same_slot_prior_buy_is_not_new() {
+        let p = patterns(&["Axiom Trade|CU|ATA|F"]);
+        let h = grain_id_hash("Axiom Trade|CU|ATA|F");
+        let mut s = BurstSlotState::default();
+        let mut launch = buy(10, Some(1), 1, Some(h), 2.0);
+        launch.is_launch = true;
+        s.on_trade(&launch, 0.0, f64::NAN);
+        s.on_trade(&buy(10, Some(2), 1, Some(h), 1.0), 0.0, 10.0);
+        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 0.0);
+        s.on_trade(&buy(10, Some(3), 2, Some(h), 1.0), 0.0, 10.0);
+        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 1.0);
+    }
+
+    #[test]
+    fn sell_and_tick_clear_this_member() {
+        let p = patterns(&["A|CU|F"]);
+        let h = grain_id_hash("A|CU|F");
+        let mut s = BurstSlotState::default();
+        s.on_trade(&buy(10, Some(1), 1, Some(h), 1.0), 0.0, f64::NAN);
+        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
+        s.on_tick();
+        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 0.0);
+
+        s.on_trade(&buy(10, Some(2), 2, Some(h), 1.0), 0.0, 10.0);
+        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
+        let sell = TradeLite {
+            side: Side::Sell,
+            sol: 0.5,
+            slot: 10,
+            template_hash: Some(h),
+            on_curve: true,
+            ..Default::default()
+        };
+        s.on_trade(&sell, 20.0, 10.0);
+        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 0.0);
+        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 2.0);
+        assert_eq!(s.value(MetricId::PrePrintTrail, Some(&p)), 20.0);
+    }
+
+    #[test]
+    fn mixed_working_ignores_organic_sol() {
+        let p = patterns(&["Axiom Trade|CU|ATA|F", "Photon|CU|ATA|F"]);
+        let ax = grain_id_hash("Axiom Trade|CU|ATA|F");
+        let ph = grain_id_hash("Photon|CU|ATA|F");
+        let pf = grain_id_hash("Pump.Fun");
+        let mut s = BurstSlotState::default();
+        s.on_trade(&buy(10, Some(1), 1, Some(ax), 0.5), 0.0, f64::NAN);
+        s.on_trade(&buy(10, Some(2), 2, Some(pf), 3.0), 0.0, 10.0);
+        s.on_trade(&buy(10, Some(3), 3, Some(ph), 0.5), 0.0, 10.0);
+        assert_eq!(s.value(MetricId::WorkingTemplateCount, Some(&p)), 2.0);
+        assert_eq!(s.value(MetricId::MemberTemplateCount, Some(&p)), 3.0);
+        assert_eq!(s.value(MetricId::WorkingBuySol, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::WorkingWalletCount, Some(&p)), 2.0);
+        assert_eq!(s.value(MetricId::ThisWorking, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::HasUnknown, Some(&p)), 0.0);
+    }
+
+    #[test]
+    fn unknown_wallet_sets_has_unknown_and_does_not_count_as_new() {
+        let p = patterns(&["A|CU|F"]);
+        let h = grain_id_hash("A|CU|F");
+        let mut s = BurstSlotState::default();
+        s.on_trade(&buy(10, Some(1), 0, Some(h), 1.0), 0.0, f64::NAN);
+        assert_eq!(s.value(MetricId::HasUnknown, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 0.0);
+        assert_eq!(s.value(MetricId::SameWalletCount, Some(&p)), 0.0);
     }
 }

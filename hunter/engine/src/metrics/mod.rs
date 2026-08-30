@@ -200,6 +200,18 @@ pub struct TradeLite {
     /// (full ordered sequence) and from [`marker_bits`](Self::marker_bits).
     #[serde(default)]
     pub template_hash: Option<u64>,
+    /// Curve vs AMM. Default `true` so a pre-field event-log line still joins
+    /// the burst prefix (the harvest universe is the curve). AMM prints do not.
+    #[serde(default = "default_true")]
+    pub on_curve: bool,
+    /// `Pump.Fun: Create*` on the labels. Launch prints update first-on-mint
+    /// but do not join the member prefix.
+    #[serde(default)]
+    pub is_launch: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for TradeLite {
@@ -218,6 +230,8 @@ impl Default for TradeLite {
             leg_index: 0,
             tx_index: None,
             template_hash: None,
+            on_curve: true,
+            is_launch: false,
         }
     }
 }
@@ -719,27 +733,33 @@ pub enum MetricId {
     /// the threshold — `pnl >= 10 AND retrace >= 18` is not that.
     Armed,
     // ── m_burst_slot (this token, this slot so far, this print's template) ──
+    /// 0/1: this print just joined the member prefix.
+    ThisMember,
     /// 0/1: this print's template grain is on the fingerprint working list.
-    WorkingTemplate,
-    /// Buys this slot with this print's template.
-    TemplateBuyCount,
+    ThisWorking,
+    /// Member buys this slot with this print's template grain.
+    SameBuyCount,
     /// Their SOL.
-    TemplateBuySol,
+    SameBuySol,
     /// Distinct wallets among those buys.
-    TemplateWalletCount,
-    /// All buy prints this slot so far.
-    SlotBuyCount,
-    /// Their SOL (mixed size).
-    SlotBuySol,
-    /// Distinct wallets among those buys.
-    SlotWalletCount,
-    /// Distinct templates among those buys.
-    SlotTemplateCount,
-    /// Of this print's template buys, wallets whose first curve-buy on this mint
-    /// is this slot.
-    NewOnMintWallets,
-    /// 0/1: the slot's buy prefix occupies consecutive `tx_index`. NaN if any
-    /// buy in the prefix is missing `tx_index`.
+    SameWalletCount,
+    /// Distinct template grains among members this slot (`m_burst_slot`).
+    /// Working-list or not: SQL `run_ntmpl`. 1 = every member shares one grain.
+    MemberTemplateCount,
+    /// Member buys this slot whose grain is on the working list.
+    WorkingBuyCount,
+    /// Their SOL.
+    WorkingBuySol,
+    /// Distinct wallets among working-list member buys this slot.
+    WorkingWalletCount,
+    /// Distinct working-list grains among members this slot.
+    WorkingTemplateCount,
+    /// 0/1: at least one working-list wallet is first-on-mint this slot.
+    HasNew,
+    /// 0/1: some member this slot has no wallet.
+    HasUnknown,
+    /// 0/1: the slot's member prefix occupies consecutive `tx_index`. NaN if any
+    /// member is missing `tx_index`.
     Packed,
     /// Real reserve at the last print with `slot < S`.
     PreSlotLiquidity,
@@ -858,9 +878,10 @@ impl MetricId {
                 self,
                 MetricId::UniqueWallets
                     | MetricId::TradesPerWallet
-                    | MetricId::TemplateWalletCount
-                    | MetricId::SlotWalletCount
-                    | MetricId::NewOnMintWallets
+                    | MetricId::SameWalletCount
+                    | MetricId::WorkingWalletCount
+                    | MetricId::HasNew
+                    | MetricId::HasUnknown
             )
     }
 
@@ -1915,94 +1936,121 @@ pub const REGISTRY: &[GroupSpec] = &[
         }],
         metrics: &[
             MetricSpec {
-                id: MetricId::WorkingTemplate,
-                name: "working_template",
-                description: "1 when this print's template grain is on this fingerprint's working-templates list, else 0. Missing labels read 0.",
+                id: MetricId::ThisMember,
+                name: "this_member",
+                description: "1 when this print just joined the current-slot member prefix: a curve buy with a template grain, not a launch create. Sells, ticks, AMM, and launch read 0.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 118,
             },
             MetricSpec {
-                id: MetricId::TemplateBuyCount,
-                name: "template_buy_count",
-                description: "Buy prints this slot so far that share this print's template grain.",
+                id: MetricId::ThisWorking,
+                name: "this_working",
+                description: "1 when this print's template grain is on this fingerprint's working-templates list, else 0. Missing labels read 0.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 119,
+            },
+            MetricSpec {
+                id: MetricId::SameBuyCount,
+                name: "same_buy_count",
+                description: "Member buys this slot so far that share this print's template grain.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 120,
             },
             MetricSpec {
-                id: MetricId::TemplateBuySol,
-                name: "template_buy_sol",
-                description: "SOL bought this slot so far by prints that share this print's template grain.",
+                id: MetricId::SameBuySol,
+                name: "same_buy_sol",
+                description: "SOL bought this slot so far by members that share this print's template grain.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 121,
+            },
+            MetricSpec {
+                id: MetricId::SameWalletCount,
+                name: "same_wallet_count",
+                description: "Distinct wallets among this slot's members that share this print's template grain.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 122,
             },
             MetricSpec {
-                id: MetricId::TemplateWalletCount,
-                name: "template_wallet_count",
-                description: "Distinct wallets among this slot's buys that share this print's template grain.",
-                unit: Unit::Count,
-                eq_tolerance: 0.5,
-                monotonic: false,
-                hue: 124,
-            },
-            MetricSpec {
-                id: MetricId::SlotBuyCount,
-                name: "slot_buy_count",
-                description: "Buy prints this slot so far, every template.",
-                unit: Unit::Count,
-                eq_tolerance: 0.5,
-                monotonic: false,
-                hue: 126,
-            },
-            MetricSpec {
-                id: MetricId::SlotBuySol,
-                name: "slot_buy_sol",
-                description: "SOL bought this slot so far, every template.",
-                unit: Unit::Sol,
-                eq_tolerance: 0.1,
-                monotonic: false,
-                hue: 128,
-            },
-            MetricSpec {
-                id: MetricId::SlotWalletCount,
-                name: "slot_wallet_count",
-                description: "Distinct wallets among this slot's buys, every template.",
-                unit: Unit::Count,
-                eq_tolerance: 0.5,
-                monotonic: false,
-                hue: 130,
-            },
-            MetricSpec {
-                id: MetricId::SlotTemplateCount,
-                name: "slot_template_count",
-                description: "Distinct template grains among this slot's buys so far.",
+                id: MetricId::MemberTemplateCount,
+                name: "member_template_count",
+                description: "Distinct template grains among members this slot so far, including grains not on the working list. 1 means every member shares one grain.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 132,
             },
             MetricSpec {
-                id: MetricId::NewOnMintWallets,
-                name: "new_on_mint_wallets",
-                description: "Of this print's template buys this slot, how many wallets are making their first curve-buy on this mint in this slot.",
+                id: MetricId::WorkingBuyCount,
+                name: "working_buy_count",
+                description: "Member buys this slot whose template grain is on the working-templates list.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
-                hue: 134,
+                hue: 123,
+            },
+            MetricSpec {
+                id: MetricId::WorkingBuySol,
+                name: "working_buy_sol",
+                description: "SOL bought this slot by members whose template grain is on the working-templates list. Mixed crowd size. Organic / non-listed templates are not in this total.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 124,
+            },
+            MetricSpec {
+                id: MetricId::WorkingWalletCount,
+                name: "working_wallet_count",
+                description: "Distinct wallets among this slot's working-list member buys.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 125,
+            },
+            MetricSpec {
+                id: MetricId::WorkingTemplateCount,
+                name: "working_template_count",
+                description: "Distinct working-list template grains among members this slot. Rule B mixed is >= 2. Organic and other non-listed grains are not in this count.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 126,
+            },
+            MetricSpec {
+                id: MetricId::HasNew,
+                name: "has_new",
+                description: "1 when at least one working-list wallet this slot is making its first buy on this mint (any venue, including earlier this slot). 0 is all-repeat among working-list wallets. Not all-new: mixed new+repeat still reads 1.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 127,
+            },
+            MetricSpec {
+                id: MetricId::HasUnknown,
+                name: "has_unknown",
+                description: "1 when some member this slot has no wallet. The harvest event requires 0.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 128,
             },
             MetricSpec {
                 id: MetricId::Packed,
                 name: "packed",
-                description: "1 when this slot's buy prefix occupies consecutive tx_index (this minus first plus one equals count), 0 when a hole sits between them. NaN when any buy in the prefix is missing tx_index - 0 is a valid first-in-block index, never a missing sentinel.",
+                description: "1 when this slot's member prefix occupies consecutive tx_index (this minus first plus one equals count), 0 when a hole sits between them. NaN when any member is missing tx_index - 0 is a valid first-in-block index, never a missing sentinel.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
-                hue: 136,
+                hue: 129,
             },
             MetricSpec {
                 id: MetricId::PreSlotLiquidity,
@@ -2011,7 +2059,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
-                hue: 138,
+                hue: 130,
             },
             MetricSpec {
                 id: MetricId::PrePrintTrail,
@@ -2020,7 +2068,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
-                hue: 140,
+                hue: 131,
             },
         ],
     },
@@ -2364,7 +2412,7 @@ mod tests {
     /// off `from_metric_config`'s own source so the list cannot be kept by hand.
     #[test]
     fn every_metric_config_key_the_classifier_reads_is_declared() {
-        let src = include_str!("flow_ix.rs");
+        let src = include_str!("flow_ix.rs").replace('\r', "");
         let body = src
             .split_once("pub fn from_metric_config")
             .expect("the classifier parses metric_config here")
@@ -2449,7 +2497,7 @@ mod tests {
     /// buffer. Parsed out of this file's own source, so the check needs no list.
     #[test]
     fn variant_docs_name_the_group_the_registry_puts_the_metric_in() {
-        let src = include_str!("mod.rs");
+        let src = include_str!("mod.rs").replace('\r', "");
         let body = src
             .split_once("pub enum MetricId {")
             .expect("the id enum is declared here")

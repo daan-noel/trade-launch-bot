@@ -132,7 +132,10 @@ pub fn read_rule(
 /// by construction rather than by two lists agreeing.
 fn rule_reqs(rule: &CompiledRule, stage: Option<u8>) -> Vec<(ReadSide, &MetricReq)> {
     let stage_reqs: usize = rule.scale_out.iter().map(|s| s.reqs.len()).sum();
-    let mut out = Vec::with_capacity(rule.entry_reqs.len() + rule.exit_reqs.len() + stage_reqs);
+    let mut out = Vec::with_capacity(
+        rule.event_reqs.len() + rule.entry_reqs.len() + rule.exit_reqs.len() + stage_reqs,
+    );
+    out.extend(rule.event_reqs.iter().map(|r| (ReadSide::Entry, r)));
     out.extend(rule.entry_reqs.iter().map(|r| (ReadSide::Entry, r)));
     out.extend(rule.exit_reqs.iter().map(|r| (ReadSide::Exit, r)));
     for (i, s) in rule.scale_out.iter().enumerate() {
@@ -859,6 +862,7 @@ mod tests {
                 first_slot_settled: true,
                 arms: [(rule_id, arm)].into_iter().collect(),
                 episodes: Default::default(),
+                entry_locks: Default::default(),
             },
         );
         (state, mint)

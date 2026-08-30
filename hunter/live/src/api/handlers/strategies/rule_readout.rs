@@ -603,6 +603,10 @@ fn trade_lite(t: &Trade) -> TradeLite {
         leg_index: t.leg_index.min(u8::MAX as u32) as u8,
         tx_index: Some(t.tx_index as u32),
         template_hash: grain_hash_from_labels_value(&t.instruction_labels),
+        is_launch: hunter_engine::metrics::template_grain::is_launch_from_labels_value(
+            &t.instruction_labels,
+        ),
+        on_curve: t.venue != "amm",
     }
 }
 

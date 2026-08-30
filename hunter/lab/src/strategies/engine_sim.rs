@@ -104,6 +104,11 @@ pub struct EngineSimRequest {
     /// incomparable.
     #[serde(default)]
     pub skip_duplicate_identity: Option<bool>,
+    /// Load only bonding-curve trades (`venue = 'curve'`). CorpusTrade has no
+    /// venue field, so this is a lake-load filter. Default false keeps existing
+    /// sims on the full tape; harvest must pass `true` (Python is `venue='curve'`).
+    #[serde(default)]
+    pub curve_only: bool,
 }
 
 /// An inline, unsaved rule for a dry-run simulate — the "how it trades" columns
@@ -147,6 +152,7 @@ pub async fn spawn_engine_simulation(
     let fill_model = req.fill_model;
     let cost_model = req.cost_model;
     let mints = req.mints.clone();
+    let curve_only = req.curve_only;
     // Resolve the copycat guard ONCE, here, into `Some(window_hours)` = on. The
     // request wins if it said anything; otherwise the box's own `app_settings`
     // decides — the same row the co-hosted live bin reads (one `DATABASE_URL` per
@@ -197,6 +203,7 @@ pub async fn spawn_engine_simulation(
             cost_model,
             mints,
             dupe_guard_window_hours,
+            curve_only,
             cancel,
             cell,
         )
@@ -214,6 +221,7 @@ pub async fn spawn_engine_simulation(
             fill_model,
             cost_model,
             dupe_guard_window_hours,
+            curve_only,
             outcome,
             persist,
         );
@@ -345,6 +353,7 @@ async fn run_engine_backtest(
     mints: Option<Vec<String>>,
     // Copycat guard, already resolved by the caller: `Some(window_hours)` = on.
     dupe_guard_window_hours: Option<u64>,
+    curve_only: bool,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     progress_cell: Arc<crate::state::job_progress::ProgressCell>,
 ) -> Result<Vec<Value>> {
@@ -396,9 +405,10 @@ async fn run_engine_backtest(
         let _stage = crate::sweep::obs::Stage::start("sim_load");
         crate::strategies::candidate_cache::get_or_fetch_histories_state(
             app_state,
-            history_cache_key(&fp, since, until, with_flow),
+            history_cache_key(&fp, since, until, with_flow, curve_only),
             &tokens,
             with_flow,
+            curve_only,
             since,
         )
         .await
@@ -583,8 +593,14 @@ fn history_cache_key(
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
     with_flow: bool,
+    curve_only: bool,
 ) -> AnalysisCacheKey {
-    let strategy = if with_flow { "engine+flow" } else { "engine" };
+    let strategy = match (with_flow, curve_only) {
+        (true, true) => "engine+flow+curve",
+        (true, false) => "engine+flow",
+        (false, true) => "engine+curve",
+        (false, false) => "engine",
+    };
     AnalysisCacheKey::new(strategy, fp.id.0.to_string(), since, until)
 }
 
@@ -600,6 +616,7 @@ fn history_cache_key(
 fn rule_needs_flow(loaded: &LoadedRule) -> bool {
     let stages = loaded.params.scale_out.iter().flatten().map(|s| &s.conditions);
     let entry = loaded.params.entry.as_ref().into_iter();
+    let event = loaded.params.entry_event.as_ref().into_iter();
     let exit = loaded
         .params
         .exit
@@ -607,6 +624,7 @@ fn rule_needs_flow(loaded: &LoadedRule) -> bool {
         .into_iter()
         .flat_map(|e| e.clauses());
     entry
+        .chain(event)
         .chain(exit)
         .chain(stages)
         .flat_map(|side| side.0.values())

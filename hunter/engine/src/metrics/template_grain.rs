@@ -113,6 +113,25 @@ pub fn grain_hash_from_labels_json(json: &str) -> Option<u64> {
     grain_hash_from_labels_value(&value)
 }
 
+/// True when any label is a pump.fun create (`Pump.Fun: Create` /
+/// `CreateIdempotent`). Those prints update first-on-mint but do not join
+/// the `m_burst_slot` member prefix.
+pub fn is_launch(labels: &[impl AsRef<str>]) -> bool {
+    labels
+        .iter()
+        .any(|l| l.as_ref().starts_with("Pump.Fun: Create"))
+}
+
+pub fn is_launch_from_labels_value(labels: &Value) -> bool {
+    is_launch(&normalize_labels(labels))
+}
+
+pub fn is_launch_from_labels_json(json: &str) -> bool {
+    serde_json::from_str::<Value>(json)
+        .ok()
+        .is_some_and(|v| is_launch_from_labels_value(&v))
+}
+
 /// True when the creation tx's labels include an Associated Token instruction.
 /// Empty labels ⇒ `None` (fail closed — unknown, not "no ATA").
 pub fn create_ata_present(labels: &[impl AsRef<str>]) -> Option<u128> {
@@ -197,6 +216,8 @@ mod tests {
         let labels = ["Pump.Fun: CreateIdempotent", "Pump.Fun: Buy"];
         assert_eq!(program_owned(&labels), "launch");
         assert_eq!(grain(&labels), "launch");
+        assert!(is_launch(&labels));
+        assert!(!is_launch(&["Pump.Fun: Buy"]));
     }
 
     #[test]

@@ -41,6 +41,7 @@ use hunter_engine::metrics::position::{
 };
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{MetricId, TradeLite, Ts};
+use hunter_engine::rule_params::EntryLock;
 use hunter_engine::TICK_MS;
 
 use trading_core::config::constants::sol_to_lamports;
@@ -770,7 +771,13 @@ fn trade_lite(ct: &CorpusTrade) -> TradeLite {
 pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
     let mut cols = Vec::new();
     let stage_reqs = compiled.scale_out.iter().flat_map(|s| s.reqs.iter());
-    for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()).chain(stage_reqs) {
+    for req in compiled
+        .event_reqs
+        .iter()
+        .chain(compiled.entry_reqs.iter())
+        .chain(compiled.exit_reqs.iter())
+        .chain(stage_reqs)
+    {
         // Position-scoped reqs (`m_position`) read the per-entry `PositionCtx` in the
         // exit scan, not a token series column — see `exit_position_metrics_fired`.
         if req.position_scoped {
@@ -818,7 +825,12 @@ pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
         let mut max = 0.0_f64;
         let mut found = false;
         let stage_reqs = compiled.scale_out.iter().flat_map(|s| s.reqs.iter());
-        for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()).chain(stage_reqs)
+        for req in compiled
+            .event_reqs
+            .iter()
+            .chain(compiled.entry_reqs.iter())
+            .chain(compiled.exit_reqs.iter())
+            .chain(stage_reqs)
         {
             if req.metric == metric {
                 for arm in &req.conds {
@@ -922,6 +934,7 @@ fn col_idx_mono(columns: &[SeriesColumn], k: &hunter_engine::arm::MonoMetricKill
 pub struct BoundCombo {
     pub(crate) rule: CompiledRule,
     entry_cols: Vec<usize>,
+    event_cols: Vec<usize>,
     mono_cols: Vec<usize>,
     exit_cols: Vec<usize>,
     /// Per scale-out stage: column indices for that stage's `reqs` (lockstep with
@@ -959,6 +972,7 @@ impl BoundCombo {
     /// Bind `rule` against the run's fixed `columns`.
     pub(crate) fn new(columns: &[SeriesColumn], rule: CompiledRule) -> Self {
         let entry_cols = resolve_cols_in(columns, &rule.entry_reqs);
+        let event_cols = resolve_cols_in(columns, &rule.event_reqs);
         let exit_cols = resolve_cols_in(columns, &rule.exit_reqs);
         let stage_cols: Vec<Vec<usize>> =
             rule.scale_out.iter().map(|s| resolve_cols_in(columns, &s.reqs)).collect();
@@ -982,6 +996,7 @@ impl BoundCombo {
         Self {
             rule,
             entry_cols,
+            event_cols,
             mono_cols,
             exit_cols,
             stage_cols,
@@ -1125,9 +1140,10 @@ fn classify_exit_req(req: &MetricReq) -> ExitClass {
 fn debug_assert_cols_match(series: &MetricSeries, c: &BoundCombo) {
     debug_assert!(
         c.rule
-            .entry_reqs
+            .event_reqs
             .iter()
-            .zip(&c.entry_cols)
+            .zip(&c.event_cols)
+            .chain(c.rule.entry_reqs.iter().zip(&c.entry_cols))
             .chain(c.rule.exit_reqs.iter().zip(&c.exit_cols))
             .all(|(r, &col)| col == col_idx_of(series, r))
             && c
@@ -1307,6 +1323,33 @@ fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usi
         .any(|(k, &col)| k.permanently_false(value_at_col(series, col, row)))
 }
 
+/// Mirror of `CompiledRule::try_enter` without the exit veto: the first print
+/// this slot that makes `event_reqs` true is the only candidate (`entry_lock: slot`).
+/// Filters that fail still spend the slot. `locked` is this token's spent slot.
+fn event_admits(
+    series: &MetricSeries,
+    b: &BoundCombo,
+    i: usize,
+    locked: &mut Option<u64>,
+) -> bool {
+    let event_ok = reqs_satisfied(series, &b.rule.event_reqs, &b.event_cols, i);
+    let entry_ok = reqs_satisfied(series, &b.rule.entry_reqs, &b.entry_cols, i);
+    match b.rule.entry_lock {
+        Some(EntryLock::Slot) => {
+            if !event_ok {
+                return false;
+            }
+            let slot = series.slot.get(i).copied().flatten().unwrap_or(0);
+            if *locked == Some(slot) && slot != 0 {
+                return false;
+            }
+            *locked = Some(slot);
+            entry_ok
+        }
+        None => event_ok && entry_ok,
+    }
+}
+
 /// Walk the series to the entry decision, mirroring the armed-side `decide_arm`:
 /// `Dead > Unsatisfiable > can_enter` (entry conditions hold and exit metrics, if
 /// any, do not). The fill is the buy the run's [`FillModel`] picks out of the window
@@ -1328,9 +1371,10 @@ pub(crate) fn resolve_entry(
     let c = &b.rule;
     let n = series.n_rows();
     // Column indices come pre-resolved from `bind_param` — see `BoundCombo`.
-    let (entry_cols, mono_cols, exit_cols) = (&b.entry_cols, &b.mono_cols, &b.exit_cols);
+    let (mono_cols, exit_cols) = (&b.mono_cols, &b.exit_cols);
     let enter_on_arm = c.enter_on_arm();
     let has_exit_metrics = c.has_exit_metrics();
+    let mut locked_slot = None;
     for i in 0..n {
         if series.dead[i] {
             return EntryResolution::NoEntry;
@@ -1338,7 +1382,8 @@ pub(crate) fn resolve_entry(
         if entry_unsatisfiable(series, c, mono_cols, i) {
             return EntryResolution::NoEntry;
         }
-        if enter_on_arm || reqs_satisfied(series, &c.entry_reqs, entry_cols, i) {
+        if enter_on_arm || event_admits(series, b, i, &mut locked_slot) {
+            // Mirror `CompiledRule::can_enter`: never buy while exit metrics already hold.
             // Mirror `CompiledRule::can_enter`: never buy while exit metrics already hold.
             if has_exit_metrics && clauses_any_satisfied(series, &c.exit_clauses, exit_cols, i) {
                 continue;
@@ -1415,6 +1460,9 @@ pub struct EntryCandidates {
     /// [`resolve_entry`] returns `NoEntry`), or `n_rows` if it ran off the end. `None`
     /// while the walk can still be resumed.
     stopped_at: Option<usize>,
+    /// Slot already spent by `entry_lock: slot` on this token — the completing
+    /// print spends it even when filters fail (mirror of `TokenState.entry_locks`).
+    locked_slot: Option<u64>,
     /// [`entry_fill_at`] memo, keyed by the admissible row that produced it. Combos in
     /// a class overwhelmingly land on the same row, so this is what keeps Stage B at
     /// O(1) once the first combo has paid for the fill. Capacity-capped: past
@@ -1435,6 +1483,7 @@ impl EntryCandidates {
         self.next_row = 0;
         self.rows.clear();
         self.stopped_at = None;
+        self.locked_slot = None;
         self.fills.clear();
     }
 
@@ -1451,7 +1500,7 @@ impl EntryCandidates {
             self.stopped_at = Some(i);
             return;
         }
-        if !self.all_rows && reqs_satisfied(series, &b.rule.entry_reqs, &b.entry_cols, i) {
+        if !self.all_rows && event_admits(series, b, i, &mut self.locked_slot) {
             self.rows.push(i as u32);
         }
         self.next_row = i + 1;

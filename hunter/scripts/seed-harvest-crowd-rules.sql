@@ -52,6 +52,22 @@ SELECT 'hvt-a-same-template', f.id, 'paper', false, true,
   "exclusive": true,
   "priority": 10,
   "reentry": { "cooldown_sec": 0, "max_episodes_per_token": 100 },
+  "entry_lock": "slot",
+  "entry_event": {
+    "m_burst_slot": {
+      "this_member": [{"operator": "=", "value": 1}],
+      "this_working": [{"operator": "=", "value": 1}],
+      "has_new": [{"operator": "=", "value": 1}],
+      "has_unknown": [{"operator": "=", "value": 0}],
+      "member_template_count": [{"operator": "=", "value": 1}],
+      "same_buy_count": [{"operator": ">=", "value": 2}],
+      "same_wallet_count": [{"operator": ">=", "value": 2}],
+      "same_buy_sol": [
+        {"operator": ">=", "value": 0.9},
+        {"operator": "<", "value": 4}
+      ]
+    }
+  },
   "entry": {
     "m_state": { "time": [{"operator": ">=", "value": 20}] },
     "m_flow_window": {
@@ -60,17 +76,8 @@ SELECT 'hvt-a-same-template', f.id, 'paper', false, true,
       "buy_count": [{"operator": "=", "value": 0}]
     },
     "m_burst_slot": {
-      "working_template": [{"operator": "=", "value": 1}],
-      "new_on_mint_wallets": [{"operator": ">=", "value": 1}],
       "pre_slot_liquidity": [{"operator": "<", "value": 16}],
-      "pre_print_trail": [{"operator": ">=", "value": 15}],
-      "slot_template_count": [{"operator": "=", "value": 1}],
-      "template_buy_count": [{"operator": ">=", "value": 2}],
-      "template_buy_sol": [
-        {"operator": ">=", "value": 0.9},
-        {"operator": "<", "value": 4}
-      ],
-      "template_wallet_count": [{"operator": ">=", "value": 2}]
+      "pre_print_trail": [{"operator": ">=", "value": 15}]
     }
   },
   "exit": [
@@ -99,6 +106,21 @@ SELECT 'hvt-b-mixed', f.id, 'paper', false, true,
   "exclusive": true,
   "priority": 10,
   "reentry": { "cooldown_sec": 0, "max_episodes_per_token": 100 },
+  "entry_lock": "slot",
+  "entry_event": {
+    "m_burst_slot": {
+      "this_member": [{"operator": "=", "value": 1}],
+      "this_working": [{"operator": "=", "value": 1}],
+      "has_new": [{"operator": "=", "value": 1}],
+      "has_unknown": [{"operator": "=", "value": 0}],
+      "working_template_count": [{"operator": ">=", "value": 2}],
+      "working_wallet_count": [{"operator": ">=", "value": 2}],
+      "working_buy_sol": [
+        {"operator": ">=", "value": 0.9},
+        {"operator": "<", "value": 4}
+      ]
+    }
+  },
   "entry": {
     "m_state": { "time": [{"operator": ">=", "value": 20}] },
     "m_flow_window": {
@@ -107,16 +129,8 @@ SELECT 'hvt-b-mixed', f.id, 'paper', false, true,
       "buy_count": [{"operator": "=", "value": 0}]
     },
     "m_burst_slot": {
-      "working_template": [{"operator": "=", "value": 1}],
-      "new_on_mint_wallets": [{"operator": ">=", "value": 1}],
       "pre_slot_liquidity": [{"operator": "<", "value": 16}],
-      "pre_print_trail": [{"operator": ">=", "value": 15}],
-      "slot_template_count": [{"operator": ">=", "value": 2}],
-      "slot_buy_sol": [
-        {"operator": ">=", "value": 0.9},
-        {"operator": "<", "value": 4}
-      ],
-      "slot_wallet_count": [{"operator": ">=", "value": 2}]
+      "pre_print_trail": [{"operator": ">=", "value": 15}]
     }
   },
   "exit": [
