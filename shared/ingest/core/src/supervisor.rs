@@ -573,6 +573,14 @@ async fn run_once<V: IngestVenue, F: Feed>(
 
     let sub = build_subscription(venue, caps, scope, from_slot, policy, &lanes.push);
     let n_accounts = sub.account_include.len();
+    // What THIS subscription asked for, not what the host has a hook for. The
+    // idle guard's only liveness signal on a pools-only scope is the block-meta
+    // stream, and `build_subscription` declines to ask for it when there are no
+    // transactions to carry — judging by a stream that was never requested reads
+    // a healthy connection as dead every `idle_reconnect_timeout`, forever.
+    // Re-read on every resubscribe below: the scope decides it, and the scope
+    // moves.
+    let mut sub_blocks_meta = sub.blocks_meta;
     match from_slot {
         Some(slot) => info!(feed = name, ?scope, "ingest: connecting (replay from slot {slot})"),
         None => info!(feed = name, ?scope, "ingest: connecting (live)"),
@@ -669,6 +677,7 @@ async fn run_once<V: IngestVenue, F: Feed>(
                     done!(DisconnectReason::Graceful);
                 }
                 let sub = build_subscription(venue, caps, scope, None, policy, &lanes.push);
+                sub_blocks_meta = sub.blocks_meta;
                 if let Err(e) = conn.resubscribe(sub).await {
                     error!(feed = name, "ingest: resubscribe failed — {e}");
                     done!(DisconnectReason::of(&e));
@@ -706,6 +715,7 @@ async fn run_once<V: IngestVenue, F: Feed>(
                             done!(DisconnectReason::Graceful);
                         }
                         let sub = build_subscription(venue, caps, scope, None, policy, &lanes.push);
+                        sub_blocks_meta = sub.blocks_meta;
                         info!(
                             feed = name, ?scope,
                             "ingest: scope changed — resubscribing ({} account(s))",
@@ -723,7 +733,7 @@ async fn run_once<V: IngestVenue, F: Feed>(
 
             _ = idle_check.tick() => {
                 if let Some((basis, what)) =
-                    idle_basis(caps, scope, lanes.push.wants_blocks_meta())
+                    idle_basis(caps, scope, sub_blocks_meta)
                 {
                     let idle = match basis {
                         IdleBasis::Transactions => last_update.elapsed(),
@@ -876,6 +886,42 @@ mod tests {
         // A broadcast subject applies its filter locally, so an empty account
         // list is not an empty subscription — it still carries the subject.
         assert!(carries_transactions(RELAY, &[]));
+    }
+
+    /// **The two must agree.** `idle_basis` judges a pools-only scope by frames
+    /// that only the block-meta stream supplies, so it has to be told what the
+    /// SUBSCRIPTION asked for — not what the host has a hook for. Feed it
+    /// `PushHooks::wants_blocks_meta()` (always true on a host that bridges block
+    /// metas) while `build_subscription` declines to request them, and the guard
+    /// waits for a stream that was never subscribed: every healthy connection
+    /// reads as dead after `idle_reconnect_timeout`, forever.
+    #[test]
+    fn the_idle_basis_reads_the_subscription_not_the_hook() {
+        let host_has_the_hook = true;
+        for scope in [StreamScope::POOLS, StreamScope::ALL] {
+            let requested = host_has_the_hook && carries_transactions(GRPC, &subscribed(scope));
+            match idle_basis(GRPC, scope, requested) {
+                // A firehose is judged by its transactions either way.
+                Some((basis, _)) if scope.program => assert_eq!(basis, IdleBasis::Transactions),
+                // Pools-only with nothing to watch: no transactions requested, so
+                // no block metas requested, so nothing to judge silence by.
+                verdict => assert!(
+                    verdict.is_none(),
+                    "a subscription with no block metas must have no idle verdict"
+                ),
+            }
+        }
+    }
+
+    /// What `subscription_accounts` yields for a scope, without a venue: the
+    /// program id for a curve scope, and nothing for pools-only with no pool
+    /// tracked — the state this whole path exists for.
+    fn subscribed(scope: StreamScope) -> Vec<String> {
+        if scope.program {
+            vec!["program".to_string()]
+        } else {
+            Vec::new()
+        }
     }
 
     /// A broadcast subject guarantees frames, not content: the publisher decides
