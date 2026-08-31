@@ -104,6 +104,50 @@ impl<'a> LazyKeys<'a> {
     }
 }
 
+/// Who SENT a transaction, resolved once per tx and stamped on every leg it
+/// produces.
+///
+/// The venue tells us who it credited (`TradeEvent.user`); it does not tell us
+/// whether that account is a person. An aggregator buys through a PDA of its own
+/// and forwards the position on, so its users all land on one `user` — the OKX
+/// DEX Router's `ARu4n5…` is a single "wallet" carrying hundreds of thousands of
+/// unrelated traders' fills. The discriminator is signatures: pump.fun's `buy`
+/// requires `user` to sign, so a `user` that signed nothing can only be a PDA
+/// that signed a CPI.
+///
+/// Borrows `LazyKeys`, so resolving the payer costs one memoised base58 encode
+/// per transaction and the proxy test costs one string compare per signer
+/// (`num_required_signatures` is 1 on essentially every trade).
+struct TxSender<'k, 'a> {
+    keys: &'k LazyKeys<'a>,
+    /// `MessageHeader.num_required_signatures`, or `None` when the frame carries
+    /// no header — the signer set is then unknown, not empty.
+    n_signers: Option<usize>,
+}
+
+impl<'k, 'a> TxSender<'k, 'a> {
+    fn new(keys: &'k LazyKeys<'a>, message: &scb::Message) -> Self {
+        let n_signers = message
+            .header
+            .as_ref()
+            .map(|h| h.num_required_signatures as usize);
+        Self { keys, n_signers }
+    }
+
+    /// `account_keys[0]` — the fee payer, by the message format's own definition.
+    fn payer(&self) -> &str {
+        self.keys.get(0)
+    }
+
+    /// `Some(true)` when `actor` put no signature on this transaction. `None`
+    /// when the frame carries no header, because "no signer list" must not read
+    /// as "signed by nobody" — that would flag every trade on such a frame.
+    fn is_proxied(&self, actor: &str) -> Option<bool> {
+        let n = self.n_signers?;
+        Some(!(0..n).any(|i| self.keys.get(i) == actor))
+    }
+}
+
 // ── Decoder entry points ──────────────────────────────────────────────────────
 
 impl Decoder {
@@ -245,6 +289,7 @@ impl Decoder {
         let p = &self.protocol;
         let signature = bs58::encode(&info.signature).into_string();
         let keys = LazyKeys::new(message, meta);
+        let sender = TxSender::new(&keys, message);
         let logs: Vec<&str> = meta.log_messages.iter().map(String::as_str).collect();
 
         // Step 1a: TradeEvents. The primary source is the "Program data:" log lines,
@@ -290,6 +335,8 @@ impl Decoder {
             events.push(IngestEvent::Trade(Trade {
                 mint: ev.mint.clone(),
                 wallet: ev.user.clone(),
+                payer: sender.payer().to_string(),
+                is_proxied: sender.is_proxied(&ev.user),
                 side,
                 sol: ev.sol_amount,
                 sol_lamports: ev.sol_amount_lamports,
@@ -337,6 +384,7 @@ impl Decoder {
                         &meta.pre_token_balances, &meta.post_token_balances,
                         instruction_labels.clone(),
                         fee_budget,
+                        &sender,
                     ) {
                         events.push(ev);
                     }
@@ -404,6 +452,7 @@ impl Decoder {
         };
 
         let keys = LazyKeys::new(message, meta);
+        let sender = TxSender::new(&keys, message);
         let logs: Vec<&str> = meta.log_messages.iter().map(String::as_str).collect();
 
         // Step 1a: PumpSwap Buy/Sell events from the "Program data:" log lines — the
@@ -485,6 +534,7 @@ impl Decoder {
             events.push(IngestEvent::Trade(build_amm_trade(
                 ev, mint, &signature, slot, received_at, received_at,
                 labels.clone(), info.index as u32, i as u32, accounts, fee_budget,
+                sender.payer(), sender.is_proxied(&ev.user),
             )));
         }
 
@@ -539,6 +589,7 @@ impl Decoder {
         post_token_balances: &[scb::TokenBalance],
         instruction_labels: Vec<String>,
         fee_budget: FeeBudget,
+        sender: &TxSender<'_, '_>,
     ) -> Option<IngestEvent> {
         let p = &self.protocol;
         let mint = pump_accounts.get(2).filter(|s| !s.is_empty())?.to_string();
@@ -563,6 +614,8 @@ impl Decoder {
         let price = if token_amount > 0 { sol_amount / token_amount as f64 } else { 0.0 };
 
         Some(IngestEvent::Trade(Trade {
+            is_proxied: sender.is_proxied(&user),
+            payer: sender.payer().to_string(),
             mint,
             wallet: user,
             side,
@@ -831,6 +884,11 @@ mod tests {
         inner: Vec<scb::InnerInstructions>,
         logs: Vec<String>,
         fee_lamports: u64,
+        /// `MessageHeader.num_required_signatures`. `None` builds a message with
+        /// NO header at all — the shape an RPC `jsonParsed` payload without
+        /// per-key flags lowers to, and the one case where the signer set is
+        /// genuinely unknowable.
+        n_signers: Option<u32>,
     }
 
     impl Tx {
@@ -858,6 +916,11 @@ mod tests {
         }
         fn fee(mut self, lamports: u64) -> Self {
             self.fee_lamports = lamports;
+            self
+        }
+        /// Declare the first `n` account keys as the transaction's signers.
+        fn signers(mut self, n: u32) -> Self {
+            self.n_signers = Some(n);
             self
         }
         fn inner_ix(mut self, program_id_index: u32, data: Vec<u8>) -> Self {
@@ -889,6 +952,10 @@ mod tests {
                     message: Some(scb::Message {
                         account_keys: self.keys,
                         instructions: self.ixs,
+                        header: self.n_signers.map(|n| scb::MessageHeader {
+                            num_required_signatures: n,
+                            ..Default::default()
+                        }),
                         ..Default::default()
                     }),
                 }),
@@ -1098,6 +1165,108 @@ mod tests {
         assert_eq!(lazy.raw.len(), 4);
         for i in 0..lazy.raw.len() + 2 {
             assert_eq!(key_at(message, meta, i), lazy.raw(i), "index {i}");
+        }
+    }
+
+    mod sender {
+        //! Who sent a transaction, and whether the account the venue credited is a
+        //! person at all.
+        //!
+        //! The case these guard is real and large: pump.fun's `TradeEvent.user` for
+        //! signature `j1Ubcwo…` names `ARu4n5mFdZogZAravu7CcizaojWnS6oqka37gdLT5SZn`,
+        //! while the transaction's only signature belongs to
+        //! `A83JDx7TgPS2UqUhmWq3NZXQ2s3AcajaQ7DiJMkWRsDX`. The first is a PDA the
+        //! OKX DEX Router buys through and then forwards from; the second is the
+        //! trader. Recording only the first made that PDA the busiest wallet in the
+        //! database, ahead of every real trader, with hundreds of thousands of
+        //! unrelated people's fills collapsed onto it.
+
+        use super::super::*;
+        use super::Tx;
+
+        /// `keys[0]`, `keys[1]`, … as fixed 32-byte accounts, so a test can say
+        /// "the actor is key 3" and read the same base58 back out.
+        fn key(n: u8) -> Vec<u8> {
+            vec![n; 32]
+        }
+        fn addr(n: u8) -> String {
+            bs58::encode(key(n)).into_string()
+        }
+
+        /// Build a 6-key transaction declaring `n_signers` leading signers.
+        fn sender_of(n_signers: Option<u32>) -> SubscribeUpdateTransactionInfo {
+            let mut tx = Tx::default();
+            for i in 0..6u8 {
+                tx = tx.key(key(i));
+            }
+            match n_signers {
+                Some(n) => tx.signers(n).build(),
+                None => tx.build(),
+            }
+        }
+
+        /// Run `f` against a `TxSender` over the built transaction. The borrow
+        /// chain (message → LazyKeys → TxSender) cannot outlive the frame, so the
+        /// assertion happens inside.
+        fn with_sender(info: &SubscribeUpdateTransactionInfo, f: impl FnOnce(&TxSender<'_, '_>)) {
+            let tx = info.transaction.as_ref().unwrap();
+            let message = tx.message.as_ref().unwrap();
+            let meta = info.meta.as_ref().unwrap();
+            let keys = LazyKeys::new(message, meta);
+            f(&TxSender::new(&keys, message));
+        }
+
+        /// The fee payer is `account_keys[0]` by the message format's definition —
+        /// not something to search the instruction list for.
+        #[test]
+        fn the_payer_is_account_key_zero() {
+            let info = sender_of(Some(1));
+            with_sender(&info, |s| assert_eq!(s.payer(), addr(0)));
+        }
+
+        /// The ordinary trade: the venue's actor signed, so it is a trader and the
+        /// row needs no correction.
+        #[test]
+        fn an_actor_that_signed_is_not_proxied() {
+            let info = sender_of(Some(1));
+            with_sender(&info, |s| assert_eq!(s.is_proxied(&addr(0)), Some(false)));
+        }
+
+        /// The router shape. The actor is a real account of the transaction — it
+        /// holds the tokens for an instant — but it signed nothing, which no
+        /// direct pump.fun `buy` can be: the program requires `user` to sign. So a
+        /// non-signing actor is a PDA that signed a CPI.
+        #[test]
+        fn an_actor_that_signed_nothing_is_proxied() {
+            let info = sender_of(Some(1));
+            with_sender(&info, |s| assert_eq!(s.is_proxied(&addr(4)), Some(true)));
+        }
+
+        /// A second signer is still a signer. Bundled and fee-payer-separated
+        /// transactions put the trader at index 1, and flagging those as proxied
+        /// would quarantine a large, entirely legitimate population.
+        #[test]
+        fn a_second_signer_is_still_a_signer() {
+            let info = sender_of(Some(2));
+            with_sender(&info, |s| {
+                assert_eq!(s.is_proxied(&addr(1)), Some(false));
+                assert_eq!(s.is_proxied(&addr(2)), Some(true));
+            });
+        }
+
+        /// The failure this must not have. A frame with no header carries no signer
+        /// count, and treating "no signers listed" as "signed by nobody" would mark
+        /// EVERY trade on that transport as proxied — a silent, total
+        /// mis-attribution in the opposite direction. Unknown stays unknown.
+        #[test]
+        fn a_frame_without_a_header_reports_unknown_not_proxied() {
+            let info = sender_of(None);
+            with_sender(&info, |s| {
+                assert_eq!(s.is_proxied(&addr(0)), None);
+                assert_eq!(s.is_proxied(&addr(4)), None);
+                // The payer is still readable — it is a position, not a flag.
+                assert_eq!(s.payer(), addr(0));
+            });
         }
     }
 

@@ -9,7 +9,27 @@ use crate::config::constants::MIN_TRADE_SOL;
 pub struct Trade {
     pub id: Uuid,
     pub mint_address: String,
+    /// The account the VENUE credited — pump.fun's `TradeEvent.user`. Not always a
+    /// person: an aggregator routes through a PDA of its own, so this names that
+    /// PDA and [`payer_address`](Self::payer_address) names the trader. Check
+    /// [`is_proxied`](Self::is_proxied) before attributing a trade to anyone.
     pub wallet_address: String,
+    /// The transaction's fee payer (`account_keys[0]`). Per-transaction, so every
+    /// leg of a multi-leg tx repeats it — collapse by `tx_signature` before
+    /// counting payers.
+    ///
+    /// Empty on every trade ingested before migration 0014, and on any row read
+    /// back through a query that doesn't project it. Unbackfillable: `raw_txs` has
+    /// 3-day retention, so the payer of an older trade is gone for good.
+    pub payer_address: String,
+    /// `Some(true)` when `wallet_address` signed nothing on this transaction and
+    /// is therefore a router's proxy PDA, not a trader. `None` = not captured
+    /// (pre-0014, or a read that didn't project it) — never read as `false`.
+    ///
+    /// Wallet-level aggregates must EXCLUDE `Some(true)` rows: every user of one
+    /// router collapses onto a single `wallet_address`, so counting it as one
+    /// trader inflates that wallet and deflates unique-wallet breadth at once.
+    pub is_proxied: Option<bool>,
     pub trade_type: TradeType,
     /// SOL amount (human-readable, already divided by lamports).
     pub amount_sol: f64,
@@ -134,6 +154,12 @@ impl Trade {
             id: Uuid::new_v4(),
             mint_address,
             wallet_address,
+            // Not captured by this constructor — it takes the venue's actor and
+            // nothing about the transaction that carried it. The live decoder
+            // fills both (see `trade_from_event`); every other caller leaves the
+            // payer unknown rather than guessing it equals the wallet.
+            payer_address: String::new(),
+            is_proxied: None,
             trade_type,
             amount_sol,
             token_amount,

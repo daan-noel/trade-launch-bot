@@ -111,6 +111,18 @@ Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
   `liquidity 50`, 11x at `liquidity 3`, worst exactly where the shallow-pool rules trade.
   Measured when simulate last got this wrong: 4.62 pp a trade instead of 0.66 pp.
   `replay::impact_denominator_guard` pins it.
+- **A WALLET IS NOT A TRADER UNTIL IT SIGNED.** `trades.wallet_id` is who the venue
+  credited (`TradeEvent.user`), and an aggregator routes its customers through a PDA of
+  its own, so one id can carry hundreds of thousands of unrelated people's fills. Every
+  per-wallet aggregate excludes `wallet_dict.is_proxy`, and a row is classified by
+  `COALESCE(t.is_proxied, w.is_proxy)` - the second half is the only one that reaches
+  pre-0014 history. The real sender is `trades.payer_id`, per-TRANSACTION, so collapse by
+  `tx_signature` before counting payers; it is the answer when `is_proxied` is TRUE and a
+  candidate otherwise, because a bot can pay from one keypair and trade from another.
+  Skipping the exclusion inflates the proxy into the top of every leaderboard AND deflates
+  unique-wallet breadth on the same tokens: 462,483 rows sit behind the flag, one address
+  holding 92.5% of them.
+  [docs/history/2026-08-31-router-proxy-wallet-attribution.md](../docs/history/2026-08-31-router-proxy-wallet-attribution.md)
 - **Every SOL amount names its unit.** `_lamports` = exact integer (`BIGINT`/`i64`/`u64`),
   `_sol` = human `f64`; same base name across layers, converted only at the repo boundary
   through the one shared pair. Ratios keep `_price`/`_pct`. Rules + rationale:

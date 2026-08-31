@@ -14,13 +14,27 @@ use crate::storage::repositories::wallet_dict_repo::WalletDictRepo;
 /// full-table seq scan on a huge array (mirrors `sweep::corpus::DbSource` chunking).
 const SEED_MINT_CHUNK: usize = 1000;
 
+/// Bind parameters `insert_many` pushes per row — one per column in its INSERT
+/// list. The ONE place that number is written down: the chunk size below and the
+/// ceiling guard in `tests` both read it, so adding a bound column cannot leave a
+/// stale copy behind (it did once — the doc said 18 while the guard still asserted
+/// 15, and neither was the truth).
+const TRADE_INSERT_BINDS_PER_ROW: usize = 20;
+
 /// Rows per `insert_many` statement. A single Postgres statement is capped at
-/// 65535 bind parameters (the wire protocol's int16 count); at 18 binds/row the
-/// hard ceiling is 3640 rows, so this stays under it — but the margin is now one
-/// column-add wide, so a 19th bind must come with a smaller chunk. sqlx 0.6 silently
+/// 65535 bind parameters (the wire protocol's int16 count), and sqlx 0.6 silently
 /// wraps `len() as i16` past the cap, corrupting the Parse/Bind message into a
 /// Postgres parse error — exactly what the token_sync backfill hit on busy mints.
-const TRADE_INSERT_CHUNK: usize = 3000;
+///
+/// DERIVED, not chosen: the budget below divided by the binds a row costs. That
+/// makes the chunk shrink on its own when a column is added, instead of relying on
+/// whoever adds it to notice — the failure mode being a wrapped param count and a
+/// "DB parse error" on the backfill path, far from the edit that caused it.
+const TRADE_INSERT_CHUNK: usize = TRADE_INSERT_PARAM_BUDGET / TRADE_INSERT_BINDS_PER_ROW;
+
+/// Bind parameters one statement is allowed to spend. The wire cap is 65,535;
+/// this stops well short so several more columns fit without a re-think.
+const TRADE_INSERT_PARAM_BUDGET: usize = 50_000;
 
 pub struct TradeRepo {
     pool: PgPool,
@@ -90,6 +104,15 @@ struct TradeDbRow {
     cu_price: Option<i64>,
     #[sqlx(default)]
     tip_lamports: Option<i64>,
+    // The 0014 attribution pair. Defaulted like the rest: absent from most SELECTs,
+    // and NULL on every row written before 0014 (unbackfillable — `raw_txs` keeps
+    // 3 days). `is_proxied` must never be coalesced to `false`: that would assert
+    // the wallet signed, which is exactly the claim these columns exist to stop
+    // being made for free.
+    #[sqlx(default)]
+    payer_address: Option<String>,
+    #[sqlx(default)]
+    is_proxied: Option<bool>,
 }
 
 impl TryFrom<TradeDbRow> for Trade {
@@ -112,6 +135,8 @@ impl TryFrom<TradeDbRow> for Trade {
             id: Uuid::new_v4(),
             mint_address: r.mint_address,
             wallet_address: r.wallet_address,
+            payer_address: r.payer_address.unwrap_or_default(),
+            is_proxied: r.is_proxied,
             trade_type,
             amount_sol,
             token_amount,
@@ -178,9 +203,18 @@ impl TradeRepo {
     /// The single wallet is interned into `wallet_dict` first so the row references
     /// it by a compact `wallet_id` (INTEGER) instead of the base58 string.
     pub async fn insert(&self, trade: &Trade) -> anyhow::Result<()> {
-        let wallet_id = WalletDictRepo::new(self.pool.clone())
-            .intern(&trade.wallet_address)
-            .await?;
+        let dict = WalletDictRepo::new(self.pool.clone());
+        let wallet_id = dict.intern(&trade.wallet_address).await?;
+        // The payer is interned into the same dictionary as the wallet — one name
+        // space for account addresses, so a router's customer and that customer's
+        // own direct trades share an id.
+        let payer_id = match trade.payer_address.is_empty() {
+            true => None,
+            false => Some(dict.intern(&trade.payer_address).await?),
+        };
+        if trade.is_proxied == Some(true) {
+            dict.mark_proxy(wallet_id).await?;
+        }
 
         sqlx::query(
             r#"
@@ -189,9 +223,10 @@ impl TradeRepo {
                  amount_lamports, token_amount,
                  reserve_lamports, reserve_token,
                  slot, tx_index, leg_index, block_time, tx_signature, ix_labels,
-                 fee_lamports, cu_limit, cu_price, tip_lamports)
+                 fee_lamports, cu_limit, cu_price, tip_lamports,
+                 payer_id, is_proxied)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                    $16, $17, $18)
+                    $16, $17, $18, $19, $20)
             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
             "#,
         )
@@ -213,6 +248,8 @@ impl TradeRepo {
         .bind(trade.cu_limit.map(|v| v as i64))
         .bind(trade.cu_price.map(|v| v as i64))
         .bind(trade.tip_lamports.map(|v| v as i64))
+        .bind(payer_id)
+        .bind(trade.is_proxied)
         .execute(&self.pool)
         .await?;
 
@@ -249,12 +286,35 @@ impl TradeRepo {
                 if seen.insert(t.wallet_address.as_str()) {
                     out.push(t.wallet_address.clone());
                 }
+                // Wallets AND payers share one dictionary and one intern
+                // round-trip: they are the same kind of thing (an account
+                // address), and a router's customer appears as a payer here and
+                // as a wallet on its own direct trades.
+                if !t.payer_address.is_empty() && seen.insert(t.payer_address.as_str()) {
+                    out.push(t.payer_address.clone());
+                }
             }
             out
         };
-        let wallet_ids = WalletDictRepo::new(self.pool.clone())
-            .intern_many(&unique)
-            .await?;
+        let dict = WalletDictRepo::new(self.pool.clone());
+        let wallet_ids = dict.intern_many(&unique).await?;
+
+        // A wallet the decoder saw sign nothing is a program, and that is a fact
+        // about the ADDRESS, not about this trade - so it belongs on the
+        // dictionary, where history can be excluded by it too. One statement per
+        // flush, and only when a flush actually carries a proxied leg.
+        let proxies: Vec<i32> = {
+            let mut seen: HashSet<i32> = HashSet::new();
+            trades
+                .iter()
+                .filter(|t| t.is_proxied == Some(true))
+                .filter_map(|t| wallet_ids.get(&t.wallet_address).copied())
+                .filter(|id| seen.insert(*id))
+                .collect()
+        };
+        if !proxies.is_empty() {
+            dict.mark_proxies(&proxies).await?;
+        }
 
         // Pre-decode every signature before building the query. `push_values`
         // cannot bubble a Result; binding `unwrap_or_default()` empty BYTEA let
@@ -273,7 +333,7 @@ impl TradeRepo {
                  (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount, \
                   reserve_lamports, reserve_token, slot, tx_index, leg_index, \
                   block_time, tx_signature, ix_labels, fee_lamports, \
-                  cu_limit, cu_price, tip_lamports) ",
+                  cu_limit, cu_price, tip_lamports, payer_id, is_proxied) ",
             );
             qb.push_values(chunk.iter().zip(sig_chunk), |mut b, (t, sig)| {
                 let wallet_id = wallet_ids.get(&t.wallet_address).copied().unwrap_or_default();
@@ -294,7 +354,13 @@ impl TradeRepo {
                     .push_bind(t.fee_sol.map(sol_to_lamports))
                     .push_bind(t.cu_limit.map(|v| v as i64))
                     .push_bind(t.cu_price.map(|v| v as i64))
-                    .push_bind(t.tip_lamports.map(|v| v as i64));
+                    .push_bind(t.tip_lamports.map(|v| v as i64))
+                    .push_bind(
+                        (!t.payer_address.is_empty())
+                            .then(|| wallet_ids.get(&t.payer_address).copied())
+                            .flatten(),
+                    )
+                    .push_bind(t.is_proxied);
             });
             qb.push(" ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING");
             qb.build().execute(&self.pool).await?;
@@ -842,9 +908,17 @@ impl TradeRepo {
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels,
-                   t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports
+                   t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports,
+                   p.address AS payer_address,
+                   -- A row is proxied when the decoder said so, OR when the wallet
+                   -- is a dictionary entry no keypair can sign for. The second half
+                   -- is what reaches HISTORY: rows written before 0014 carry a NULL
+                   -- `is_proxied`, and the flag on `wallet_dict` is the only thing
+                   -- that can still classify them.
+                   COALESCE(t.is_proxied, w.is_proxy) AS is_proxied
             FROM trades t
             LEFT JOIN wallet_dict w ON w.id = t.wallet_id
+            LEFT JOIN wallet_dict p ON p.id = t.payer_id
             WHERE t.mint_address = $1
             ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
             "#,
@@ -882,9 +956,17 @@ impl TradeRepo {
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels,
-                   t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports
+                   t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports,
+                   p.address AS payer_address,
+                   -- A row is proxied when the decoder said so, OR when the wallet
+                   -- is a dictionary entry no keypair can sign for. The second half
+                   -- is what reaches HISTORY: rows written before 0014 carry a NULL
+                   -- `is_proxied`, and the flag on `wallet_dict` is the only thing
+                   -- that can still classify them.
+                   COALESCE(t.is_proxied, w.is_proxy) AS is_proxied
             FROM trades t
             LEFT JOIN wallet_dict w ON w.id = t.wallet_id
+            LEFT JOIN wallet_dict p ON p.id = t.payer_id
             WHERE t.mint_address = $1 AND t.block_time <= $2
             ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
             "#,
@@ -982,9 +1064,17 @@ impl TradeRepo {
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels,
-                   t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports
+                   t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports,
+                   p.address AS payer_address,
+                   -- A row is proxied when the decoder said so, OR when the wallet
+                   -- is a dictionary entry no keypair can sign for. The second half
+                   -- is what reaches HISTORY: rows written before 0014 carry a NULL
+                   -- `is_proxied`, and the flag on `wallet_dict` is the only thing
+                   -- that can still classify them.
+                   COALESCE(t.is_proxied, w.is_proxy) AS is_proxied
             FROM trades t
             LEFT JOIN wallet_dict w ON w.id = t.wallet_id
+            LEFT JOIN wallet_dict p ON p.id = t.payer_id
             WHERE t.mint_address = $1
             ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
             LIMIT $2 OFFSET $3
@@ -1480,14 +1570,14 @@ mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
 
-    /// `insert_many` binds 18 params/row (mint_address, wallet_id, trade_type,
-    /// venue, amount_lamports, token_amount, reserve_lamports, reserve_token,
-    /// slot, tx_index, leg_index, block_time, tx_signature, ix_labels,
-    /// fee_lamports, cu_limit, cu_price, tip_lamports); one Postgres statement is
-    /// capped at 65535 (sqlx 0.6 wraps
-    /// `len() as i16` past it → a Postgres parse error). Pin the chunk so adding a
-    /// bound column re-checks the ceiling here instead of surfacing as a runtime
-    /// parse error on the backfill path.
+    /// `insert_many` binds [`TRADE_INSERT_BINDS_PER_ROW`] params per row
+    /// (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,
+    /// reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time,
+    /// tx_signature, ix_labels, fee_lamports, cu_limit, cu_price, tip_lamports,
+    /// payer_id, is_proxied); one Postgres statement is capped at 65535 (sqlx 0.6
+    /// wraps `len() as i16` past it → a Postgres parse error). Pin the chunk so
+    /// adding a bound column re-checks the ceiling here instead of surfacing as a
+    /// runtime parse error on the backfill path.
     // ── pre_trade_real_sol (Trader Analysis entry/exit curve depth) ─────────
 
     /// A buy's own SOL is already inside its post-trade snapshot, so backing it
@@ -1546,7 +1636,7 @@ mod tests {
 
     #[test]
     fn trade_insert_chunk_stays_under_param_ceiling() {
-        const BINDS_PER_ROW: usize = 15;
+        const BINDS_PER_ROW: usize = TRADE_INSERT_BINDS_PER_ROW;
         assert!(
             TRADE_INSERT_CHUNK * BINDS_PER_ROW <= 65_535,
             "TRADE_INSERT_CHUNK ({TRADE_INSERT_CHUNK}) × {BINDS_PER_ROW} binds exceeds the 65535 ceiling"

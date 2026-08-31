@@ -82,7 +82,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 ### Core trading
 
 - `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_lamports(BIGINT), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), initial_buy_instruction(JSONB; keys `max_cost_lamports`/`spendable_lamports_in`), creation_slot(BIGINT), created_at
-- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral pair), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`), **`ix_labels`(JSONB, migration 0002, forward-only)**, **`fee_lamports`(BIGINT NULL, migration 0005, forward-only)**, **`cu_limit`/`cu_price`/`tip_lamports`(BIGINT NULL, migration 0013, forward-only)**; price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
+- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral pair), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`), **`ix_labels`(JSONB, migration 0002, forward-only)**, **`fee_lamports`(BIGINT NULL, migration 0005, forward-only)**, **`cu_limit`/`cu_price`/`tip_lamports`(BIGINT NULL, migration 0013, forward-only)**, **`payer_id`(INTEGER NULL) / `is_proxied`(BOOLEAN NULL, migration 0014, forward-only)**; price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
   - **`fee_lamports` is per-TRANSACTION, the table is per-LEG.** It is the on-chain
     `meta.fee` (base signature fee + priority fee) read straight off the feed at decode
     — no RPC, no Helius credits — and denormalized onto every leg of its tx, so a bare
@@ -98,6 +98,25 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
     reader that folds the protobuf's ambiguous `0` back to NULL at the source.
   - **Excludes** the Jito tip (a transfer instruction — absent from `meta.fee`) and the
     venue's own protocol/LP fee (already inside `amount_lamports`).
+  - **`wallet_id` is who the VENUE credited, not always who traded.** It is
+    pump.fun's `TradeEvent.user`. An aggregator does not pass its customer through
+    to pump.fun: it buys as a PDA of its own, forwards the tokens, and refunds the
+    change — so the program names the ROUTER and every customer of that router
+    collapses onto one id. `payer_id` is the transaction's fee payer
+    (`account_keys[0]`), interned into the same `wallet_dict`, and `is_proxied`
+    says which of the two to believe.
+  - **`is_proxied` has three states and NULL is not FALSE.** TRUE = the wallet put
+    no signature on its own transaction, so it is a program and the trader is
+    behind `payer_id`. FALSE = the wallet signed. NULL = not captured (pre-0014, or
+    a frame with no message header to read the signer count from). The test is
+    signatures, not a router name list: pump.fun's `buy` requires `user` to sign,
+    so a non-signing `user` can only be a PDA that signed a CPI — which catches a
+    router the day it deploys.
+  - **`payer_id` is per-TRANSACTION on a per-LEG table**, denormalized onto every
+    leg exactly like `fee_lamports`. Collapse by `tx_signature` before counting
+    payers. It REPLACES nothing: a bot can pay from one keypair and trade from
+    another, so the payer is the answer precisely when `is_proxied` is TRUE and a
+    candidate otherwise.
   - **`cu_limit` / `cu_price` / `tip_lamports` are the fee BUDGET the sender chose**,
     beside the fee the chain took. A sender picks one thing — how much to spend to land
     early — and pays it on either of two rails, so the quantity is the SUM and the
@@ -150,6 +169,14 @@ One family — there are no per-strategy sweep tables, only these four:
 
 ### Wallets / settings
 
+- `wallet_dict` — the `address` ↔ `id` interning bijection every high-volume table
+  references (`trades.wallet_id`, `trades.payer_id`). **`is_proxy`(BOOLEAN NOT NULL
+  DEFAULT FALSE, migration 0014)** marks an address that is a PROGRAM, not a
+  trader — a router's proxy PDA, a protocol vault, a pool authority. Live ingest
+  sets it from `trades.is_proxied`; migration 0015 backfills the 930 addresses that
+  are off-curve, which no keypair can sign for. That test is a property of the 32
+  bytes, so it reaches history whose transactions the feed dropped long ago —
+  `is_proxied` alone cannot, because it only ever sees new trades.
 - `wallet_profiles`, `wallets`, `wallet_profile_tags` — profile/wallet/tag CRUD
 - `app_settings` — key/value(JSONB); keys: `ingest.*`, `ui.*`, `trade.*`
 
@@ -176,5 +203,12 @@ One family — there are no per-strategy sweep tables, only these four:
 
 - Always bound queries — paginate/time-window/stream. Never `SELECT *` full `trades`/`raw_txs`.
 - New high-volume tables → TimescaleDB hypertable with `add_compression_policy` + `add_retention_policy` (see `@plans/database/trades-storage.md` for the pattern). Chunk lifecycle is declarative — there is no `maintenance.rs` partition loop to extend. <!-- ref-ok: absence is the rule -->
-- Bulk-insert must chunk by `floor(65535 / binds_per_row)` — sqlx 0.6 has no guard against the 65535 bind-param ceiling.
+- Bulk-insert must chunk by `floor(65535 / binds_per_row)` — sqlx 0.6 has no guard against the 65535 bind-param ceiling. `trade_repo` derives its chunk from one `TRADE_INSERT_BINDS_PER_ROW` constant rather than a hand-copied number, so a column-add shrinks it without anyone remembering to.
+- **A wallet-level aggregate excludes `wallet_dict.is_proxy`.** Those ids are
+  programs, and each one carries many unrelated people's fills — counting one as a
+  trader inflates it and deflates unique-wallet breadth in the same query. 462,483
+  rows sit behind that flag, one address holding 92.5% of them. Read a payer with
+  `LEFT JOIN wallet_dict p ON p.id = t.payer_id`; classify a row with
+  `COALESCE(t.is_proxied, w.is_proxy)`, which is the only form that reaches
+  pre-0014 history.
 - **Server-side table filters are structured + type-checked.** The strategy token tables take a unified `TableRequest` (POST/JSON, `trading_core::api::table_query`); per-column filters are `{op, val}` (`FilterOp`: contains/eq/gt/gte/lt/lte/between). `strategy_repo` splits its whitelist into typed `(sql_expr, FilterKind::{Text,Numeric,Bool})` rows: numeric cols return the **uncast** expr so `gt`/`between` compare numerically (operand bound as `f64`), text cols keep `ILIKE`, and **flag** (All/Yes/No) cols bind a real `bool` for `eq`/`neq` only — never a `::text` compare, which matches only whichever spelling the producer sent. Every flag operand reads through the one `table_query::as_flag` vocabulary (`yes`/`no`, `true`/`false`, `1`/`0`), so the DataTable dropdown and the summary tiles narrow the same column identically; the in-memory twin (`table_eval::ColKind::Bool`) and the Tokens tri-state (`lower_flag`) read it too. `push_filter_predicate` lowers each op to a bound predicate; an illegal pairing (numeric op on a text col, non-number operand, unrecognized flag word) is **dropped**, like an unknown key — every operand `push_bind`s (injection-safe). No user text ever reaches an identifier.

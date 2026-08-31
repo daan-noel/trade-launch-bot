@@ -286,6 +286,35 @@ a tag program would fork one instruction into thousands of labels, which would
 make `ix_hash` unique per trade and dissolve every fingerprint grouping built on
 it.
 
+**Trade attribution (`wallet` / `payer` / `is_proxied`).** The venue tells the
+decoder who it CREDITED, not whether that account is a person. `Trade.wallet` stays
+the venue's own actor — pump.fun's `TradeEvent.user`, pump_swap's `user` — and two
+fields beside it say what that actor is.
+
+`TxSender` resolves both once per transaction, borrowing `LazyKeys`: `payer` is
+`account_keys[0]`, which the message format defines as the first required signer,
+and `is_proxied` is `Some(true)` when the actor is absent from
+`account_keys[..num_required_signatures]`.
+
+The discriminator is **signatures, not a router name list**. pump.fun's `buy`
+requires `user` to sign, so an actor that signed nothing can only be a PDA that
+signed a CPI — an aggregator routing a customer's swap through an account of its
+own, then forwarding the tokens and refunding the change. A name list would need
+maintaining and would miss a router on its first day; this catches one the moment
+it deploys, and it costs one memoised base58 encode per transaction plus one string
+compare per signer.
+
+`is_proxied` is `None` — not `false` — when the frame carries no message header to
+read the signer count from (an RPC `jsonParsed` payload without per-key flags).
+"No signer list" must never read as "signed by nobody": that would flag every trade
+on such a transport, a total mis-attribution in the opposite direction.
+
+The payer does not replace the wallet. A bot can pay from one keypair and trade
+from another, so both are recorded and attribution is resolved downstream — the
+payer is the answer precisely when `is_proxied` says the wallet is a program.
+Why this exists, and how much of the table it reached:
+[`@history/2026-08-31-router-proxy-wallet-attribution.md`](../../../docs/history/2026-08-31-router-proxy-wallet-attribution.md).
+
 Memo is the one program whose data is deliberately *not* read into the label:
 a memo's bytes are its text, and that text is per-transaction unique often enough
 to do exactly that damage. Memos label as `"Memo Program: Memo"`; the payloads

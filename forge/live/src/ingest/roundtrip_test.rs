@@ -80,6 +80,17 @@ async fn pump_fun_events_project_onto_the_schema() {
         // `Some`, never `Some(0)`. Nothing below asserts on it: forge keeps no fee
         // column, so `map` drops it on the floor.
         fee_lamports: Some(5_000),
+        // The fee BUDGET beside the fee charged. Forge keeps no column for these
+        // either, so like `fee_lamports` they exist here only to make the event a
+        // realistic one.
+        cu_limit: Some(200_000),
+        cu_price: Some(1_000),
+        tip_lamports: Some(0),
+        // A direct trade: the venue's actor signed the transaction, so it is its
+        // own payer and nothing is proxied. Forge trades from its own keypairs and
+        // never routes through an aggregator, so this is the shape it always sees.
+        payer: "ROUNDTRIP_wallet".to_string(),
+        is_proxied: Some(false),
         signature: sig_b58,
         tx_index: 3,
         leg_index: 0,

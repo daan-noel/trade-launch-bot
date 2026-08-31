@@ -17,9 +17,19 @@ static WALLET_ID_CACHE: LazyLock<DashMap<String, i32>> = LazyLock::new(DashMap::
 /// Upper bound on cached `address -> id` entries (~48 B/entry → a few MB at the cap).
 const WALLET_ID_CACHE_CAP: usize = 200_000;
 
+/// Ids already written as `is_proxy` by THIS process. A router's proxy PDA is the
+/// busiest account on the tape — the OKX one carries ~5k legs a day — and marking
+/// it is idempotent, so without this every one of those legs would `UPDATE` a row
+/// that already says what we want, leaving a dead tuple behind on the hottest write
+/// path (the exact churn `intern` was rewritten to avoid). The set is the count of
+/// distinct proxies ever seen, not of trades: 930 addresses across the whole
+/// dictionary, so it needs no cap.
+static PROXY_MARKED: LazyLock<DashMap<i32, ()>> = LazyLock::new(DashMap::new);
+
 /// Drop the process-wide interning cache (admin reseed). Cold misses re-hit PG.
 pub fn clear_wallet_id_cache() {
     WALLET_ID_CACHE.clear();
+    PROXY_MARKED.clear();
 }
 
 /// Cache a freshly-resolved `(address, id)` if there's headroom (see cap rationale).
@@ -153,6 +163,59 @@ impl WalletDictRepo {
             cache_put(address, id);
         }
         Ok(id)
+    }
+
+    /// Record that an address is a PROGRAM, not a trader.
+    ///
+    /// The caller's evidence is a trade whose venue-side actor put no signature on
+    /// its own transaction, which can only happen for a PDA signing a CPI — an
+    /// aggregator routing a customer's swap through an account of its own. That
+    /// makes it a fact about the ADDRESS rather than about the trade, so it lives
+    /// here, where a per-wallet study can exclude the address's whole history and
+    /// not just the legs ingested since the flag existed.
+    ///
+    /// Idempotent and near-free on repeat: a process-local set means the second and
+    /// every later sighting of the same proxy costs no round-trip at all, and the
+    /// `NOT is_proxy` predicate means a cold process re-marking a known proxy
+    /// updates zero rows instead of writing a dead tuple.
+    pub async fn mark_proxy(&self, id: i32) -> anyhow::Result<()> {
+        self.mark_proxies(std::slice::from_ref(&id)).await
+    }
+
+    /// Batch [`mark_proxy`](Self::mark_proxy) — one statement for a whole ingest
+    /// flush. Ids already marked by this process are filtered out first, so a
+    /// steady-state flush full of one router's legs issues no query.
+    pub async fn mark_proxies(&self, ids: &[i32]) -> anyhow::Result<()> {
+        let fresh: Vec<i32> = ids
+            .iter()
+            .copied()
+            .filter(|id| !PROXY_MARKED.contains_key(id))
+            .collect();
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        sqlx::query("UPDATE wallet_dict SET is_proxy = TRUE WHERE id = ANY($1) AND NOT is_proxy")
+            .bind(&fresh)
+            .execute(&self.pool)
+            .await?;
+        // Only after the write lands — a failed statement must be retried by the
+        // next flush, not swallowed by an optimistic cache entry.
+        for id in fresh {
+            PROXY_MARKED.insert(id, ());
+        }
+        Ok(())
+    }
+
+    /// The ids in `wallet_dict` that are flagged `is_proxy` — routers' proxy PDAs
+    /// and other program accounts that no keypair can sign for. A wallet-level
+    /// study subtracts these before it counts traders or ranks them; see migration
+    /// `0015_backfill_known_proxy_wallets.sql` for why the set is not empty on a
+    /// database that predates the flag.
+    pub async fn proxy_ids(&self) -> anyhow::Result<Vec<i32>> {
+        let ids: Vec<i32> = sqlx::query_scalar("SELECT id FROM wallet_dict WHERE is_proxy")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(ids)
     }
 
     /// The bare `SELECT id` round-trip, cache-bypassing — the shared miss path for

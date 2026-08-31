@@ -31,7 +31,39 @@ pub fn fee_lamports_opt(fee: u64) -> Option<u64> {
 #[derive(Debug, Clone)]
 pub struct Trade {
     pub mint: String,
+    /// The account the VENUE credits with this swap — pump.fun's `TradeEvent.user`,
+    /// pump_swap's `user`. This is who the program saw, which is not always who
+    /// traded: an aggregator routes the swap through a PDA of its own, so `wallet`
+    /// names that PDA and the real trader appears only as [`payer`](Self::payer).
+    /// [`is_proxied`](Self::is_proxied) is the flag that separates the two cases —
+    /// read it before attributing a trade to a person.
     pub wallet: String,
+    /// The transaction's fee payer — `account_keys[0]`, which Solana's message
+    /// format defines as the first required signer. Always present.
+    ///
+    /// Per-TRANSACTION, so every leg decoded out of one tx repeats it; collapse by
+    /// `signature` before counting payers, exactly as for `fee_lamports`.
+    ///
+    /// The payer is not universally the beneficiary — a bot can pay from one
+    /// keypair and trade from another — so this REPLACES nothing. It is the second
+    /// half of the identity, useful precisely when `is_proxied` says the first half
+    /// names a program.
+    pub payer: String,
+    /// `Some(true)` when [`wallet`](Self::wallet) signed no signature on this
+    /// transaction, i.e. the venue's `user` is not in
+    /// `account_keys[..num_required_signatures]`.
+    ///
+    /// A direct trade requires the user as a signer, so a non-signing `user` can
+    /// only be a PDA that signed a CPI — an aggregator's shared proxy account.
+    /// Every real trader behind that router collapses onto one `wallet`, which is
+    /// why a wallet-level aggregate has to exclude these rows rather than average
+    /// over them.
+    ///
+    /// `None` when the frame carries no message header to read the signer count
+    /// from (`convert::json_tx_to_protobuf` on a `jsonParsed` payload without
+    /// per-key flags). Unknown, never assumed false: a `false` here asserts the
+    /// wallet DID sign, and that assertion has to be earned.
+    pub is_proxied: Option<bool>,
     pub side: Side,
     pub sol: f64,
     /// Exact quote lamports for this trade — the raw on-chain `u64`, never routed

@@ -1435,6 +1435,12 @@ pub(crate) fn trade_from_ingest_event(e: &ingest_pumpfun::event::Trade) -> Trade
         id: Uuid::new_v4(),
         mint_address: e.mint.clone(),
         wallet_address: e.wallet.clone(),
+        // Backfill resolves the same attribution pair as the live lane: the venue's
+        // actor and the transaction's payer. `is_proxied` is `None` on an RPC frame
+        // that carried no message header to read the signer count from — unknown,
+        // which is not the same as "the wallet signed".
+        payer_address: e.payer.clone(),
+        is_proxied: e.is_proxied,
         trade_type: match e.side {
             Side::Buy => TradeType::Buy,
             Side::Sell => TradeType::Sell,

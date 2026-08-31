@@ -313,6 +313,8 @@ pub(super) fn build_amm_trade(
     leg_index: u32,
     amm_swap_accounts: Option<Box<Vec<String>>>,
     fee_budget: FeeBudget,
+    payer: &str,
+    is_proxied: Option<bool>,
 ) -> Trade {
     let side = if ev.is_buy { Side::Buy } else { Side::Sell };
     let price = if ev.base_amount > 0 {
@@ -323,6 +325,8 @@ pub(super) fn build_amm_trade(
     Trade {
         mint: mint.to_string(),
         wallet: ev.user.clone(),
+        payer: payer.to_string(),
+        is_proxied,
         side,
         sol: ev.quote_amount,
         sol_lamports: ev.quote_amount_lamports,

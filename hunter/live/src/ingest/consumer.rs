@@ -667,6 +667,12 @@ fn trade_from_event(e: &IlTrade) -> Trade {
         id: Uuid::new_v4(),
         mint_address: e.mint.clone(),
         wallet_address: e.wallet.clone(),
+        // The other half of the identity: `wallet_address` is who the venue
+        // credited, `payer_address` is who signed and paid. They differ exactly
+        // when an aggregator routed the swap through a PDA of its own, which is
+        // what `is_proxied` records.
+        payer_address: e.payer.clone(),
+        is_proxied: e.is_proxied,
         trade_type: trade_type(e.side),
         amount_sol: e.sol,
         token_amount: e.tokens,
