@@ -1202,9 +1202,8 @@ export function FlowPreviewChart({
       key: 'vol_pattern',
       label: 'Vol',
       tooltip: pinning
-        ? 'Flag this trade’s ix-structure plus the checked fee fields from THIS tx — adds that exact row to the draft ix_patterns. An ix-only row already in the draft still matches (stays checked) because it is a fee wildcard.'
-        : 'Flag this trade’s ix-structure as manufactured volume — adds it to the draft ' +
-          'ix_patterns (applies to EVERY trade with this exact shape, any fee budget).',
+        ? 'Pin this tx’s checked fee fields. If this shape is already a catch-all, the click narrows it to that pin (the two cannot sit together). A second click on the same pin removes it; a different budget of the same shape adds another pin.'
+        : 'Flag this trade’s ix-structure as manufactured volume — a catch-all for EVERY trade with this exact shape, any fee budget. If the draft already has pins of this shape, the click widens them to that catch-all.',
       render: (t) => {
         const labels = t.instruction_labels;
         if (!labels || labels.length === 0) {

@@ -216,9 +216,46 @@ export function formatFeePins(row: IxPatternFee): string {
 }
 
 /**
- * Add or remove one exact row (labels + pins). An unpinned row and a pinned
- * row of the same shape are different entries: toggling one leaves the other.
- * Empty labels are ignored. Surviving rows keep their order.
+ * Per ix-labels sequence the list holds either one catch-all or one-or-more
+ * pins — never both. A catch-all already matches every budget of that shape, so
+ * a pin beside it cannot narrow anything (the engine drops it at compile).
+ *
+ * Replaces every row of `shape` with `insert`, sitting where the first of that
+ * shape was. Empty `insert` deletes the shape. Other shapes keep their order.
+ */
+function spliceShape(
+  patterns: readonly IxPatternRow[],
+  shape: string,
+  insert: readonly IxPatternRow[],
+): IxPatternRow[] {
+  const out: IxPatternRow[] = [];
+  let placed = false;
+  for (const p of patterns) {
+    if (patternKey(p.labels) !== shape) {
+      out.push(cloneRow(p));
+      continue;
+    }
+    if (!placed) {
+      for (const r of insert) out.push(cloneRow(r));
+      placed = true;
+    }
+  }
+  if (!placed) {
+    for (const r of insert) out.push(cloneRow(r));
+  }
+  return out;
+}
+
+/**
+ * Stage or unstage one row, keeping the per-shape invariant.
+ *
+ * * Pins off, no catch-all → widen (drop pins of this shape, one catch-all).
+ * * Pins off, catch-all present → remove the catch-all.
+ * * Pins on, catch-all present → narrow (drop the catch-all, keep this pin).
+ * * Pins on, this exact pin present → remove that pin (other pins of the shape stay).
+ * * Pins on, other pins of the shape → add this pin (OR of budgets).
+ *
+ * Empty labels are ignored.
  */
 export function togglePatternRow(
   patterns: readonly IxPatternRow[],
@@ -227,29 +264,45 @@ export function togglePatternRow(
   const labels = row.labels.map((l) => l.trim()).filter(Boolean);
   if (labels.length === 0) return patterns.map(cloneRow);
   const next: IxPatternRow = { ...cloneRow(row), labels };
-  const key = patternRowKey(next);
-  const kept = patterns.filter((p) => patternRowKey(p) !== key);
-  if (kept.length !== patterns.length) return kept.map(cloneRow);
-  return [...patterns.map(cloneRow), next];
+  const shape = patternKey(labels);
+  const ofShape = patterns.filter((p) => patternKey(p.labels) === shape);
+
+  if (!rowPinsFee(next)) {
+    const hasWild = ofShape.some((p) => !rowPinsFee(p));
+    if (hasWild) {
+      return spliceShape(
+        patterns,
+        shape,
+        ofShape.filter((p) => rowPinsFee(p)),
+      );
+    }
+    return spliceShape(patterns, shape, [{ labels }]);
+  }
+
+  const exactKey = patternRowKey(next);
+  if (ofShape.some((p) => patternRowKey(p) === exactKey)) {
+    return spliceShape(
+      patterns,
+      shape,
+      ofShape.filter((p) => rowPinsFee(p) && patternRowKey(p) !== exactKey),
+    );
+  }
+  return spliceShape(patterns, shape, [...ofShape.filter((p) => rowPinsFee(p)), next]);
 }
 
-/** Append each labels sequence as an unpinned row, skipping ones already in
- *  the list as unpinned. Pinned rows of the same shape are left alone. */
+/** Stage each labels sequence as a catch-all. A shape that already has a
+ *  catch-all is skipped; a shape that only has pins is widened (pins dropped). */
 export function addUnpinnedPatterns(
   patterns: readonly IxPatternRow[],
   labelsList: readonly (readonly string[])[],
 ): IxPatternRow[] {
-  const next = patterns.map(cloneRow);
-  const have = new Set(
-    next.filter((r) => !rowPinsFee(r)).map((r) => patternRowKey(r)),
-  );
+  let next = patterns.map(cloneRow);
   for (const labels of labelsList) {
-    const row: IxPatternRow = { labels: labels.map((l) => l.trim()).filter(Boolean) };
-    if (row.labels.length === 0) continue;
-    const key = patternRowKey(row);
-    if (have.has(key)) continue;
-    have.add(key);
-    next.push(row);
+    const cleaned = labels.map((l) => l.trim()).filter(Boolean);
+    if (cleaned.length === 0) continue;
+    const shape = patternKey(cleaned);
+    if (next.some((r) => patternKey(r.labels) === shape && !rowPinsFee(r))) continue;
+    next = spliceShape(next, shape, [{ labels: cleaned }]);
   }
   return next;
 }

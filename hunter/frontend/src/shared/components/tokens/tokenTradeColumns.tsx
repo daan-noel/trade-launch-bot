@@ -52,8 +52,9 @@ export interface TokenTradeColumnsOpts {
    * Stored rows a click writes. Pressed / Tagged follow engine matching: an
    * unpinned row is a fee wildcard (this tx stays selected whether or not it
    * carries a budget, and whether or not the pin strip is on). A pin-only list
-   * lights only the trades that satisfy that pin. The click still toggles the
-   * exact row the mask would write.
+   * lights only the trades that satisfy that pin. A click with the pin strip on
+   * narrows a catch-all of this shape to that pin (never both); pins off widens
+   * back to a catch-all.
    */
   patternRows?: readonly IxPatternRow[] | null;
   /** Sticky fee-field modifiers — which of this tx's budget fields a click copies. */
@@ -287,7 +288,7 @@ export function tokenTradeColumns(
         const clickTitle = exactClickSaved
           ? `Saved under ${listField} on ${targetLabel} — click to remove${pinClickHint}`
           : isTagged && pinning
-            ? `Covered by the ix-only row (any budget) on ${targetLabel}. Click to also save${pinClickHint}`
+            ? `Catch-all (any budget) on ${targetLabel}. Click to narrow to${pinClickHint}`
             : isWorking
               ? `Click to save this grain under ${listField} on ${targetLabel}`
               : `Click to save${pinClickHint} under ${listField} on ${targetLabel}`;

@@ -1504,9 +1504,9 @@ export const DISCOVERY_FIELD_HELP = {
   draftPatterns: {
     title: 'Draft ix_patterns',
     body: [
-      'Checked structures from the ranked table become unpinned pattern rows (exact ix_labels, any fee budget).',
-      'On the preview trades table, the pin checkboxes (cu_limit / cu_price / tip) copy those fields from the clicked tx onto a separate row — default off, so a tx that has fees still stages structure-only.',
-      'An ix-only row is a wildcard: Vol stays checked on every trade of that shape, including when a pin box is on and when the tx carries fee fields. A pin-only row lights only the trades that match that pin.',
+      'Checked structures from the ranked table become unpinned pattern rows (exact ix_labels, any fee budget). Checking Vol on a shape that already has pins widens those pins to the catch-all.',
+      'On the preview trades table, the pin checkboxes (cu_limit / cu_price / tip) copy those fields from the clicked tx. A pin click on a catch-all of that shape narrows it to that pin — the two never sit together, because the catch-all already matches every budget.',
+      'An ix-only row is a wildcard: Vol stays checked on every trade of that shape. A pin-only row lights only the trades that match that pin.',
       'Edit freely, then Apply to write the list on the target fingerprint (tagged = m_flow_ix, dump = m_dump_ix).',
       '',
       'Those patterns drive tagged_* / untagged_* / tagged_share (or dump_sell / dump_sell_count) on rules that use this fingerprint.',
@@ -1552,10 +1552,11 @@ export const DISCOVERY_COL_HELP = {
     title: 'Vol — include in draft',
     body: [
       'Check this box to add the row’s exact ix_labels sequence to the draft',
-      'ix_patterns list as a catch-all (any fee budget). Unchecked rows are ignored',
-      'on Apply unless you also staged a fee-pinned copy of the same shape from a',
-      'trades table. Only the ranked-table checkbox is structure-only — pin cu_limit',
-      '/ cu_price / tip from a specific tx on the preview trades strip.',
+      'ix_patterns list as a catch-all (any fee budget). If that shape already has',
+      'fee pins, checking Vol widens them to the catch-all. Unchecked rows are ignored',
+      'on Apply unless a fee-pinned copy of the same shape is already in the draft.',
+      'Pin cu_limit / cu_price / tip from a specific tx on the preview trades strip —',
+      'that click narrows a catch-all of this shape rather than adding a second row.',
       '',
       'Example: check the top-ranked ["Pump.Fun: Create","Pump.Fun: Buy"] row to mark',
       'that combo as manufactured volume; leave a low-lift ["Pump.Fun: Buy"] row unchecked',

@@ -218,28 +218,44 @@ describe('patternRowKey', () => {
 });
 
 describe('togglePatternRow', () => {
-  it('adds and removes an exact row, leaving a different pin of the same shape', () => {
-    const unpinned = { labels: DUMP };
-    const pinned = { labels: DUMP, cu_limit: 300_000 };
-    const once = togglePatternRow([], pinned);
-    expect(once).toEqual([pinned]);
-    expect(togglePatternRow(once, pinned)).toEqual([]);
-    const both = togglePatternRow(once, unpinned);
-    expect(both).toEqual([pinned, unpinned]);
-    expect(togglePatternRow(both, pinned)).toEqual([unpinned]);
+  const unpinned = { labels: DUMP };
+  const pin300 = { labels: DUMP, cu_limit: 300_000 };
+  const pin200 = { labels: DUMP, cu_limit: 200_000 };
+  const other = { labels: ['Pump.Fun: Buy'] };
+
+  it('adds and removes a pin', () => {
+    const once = togglePatternRow([], pin300);
+    expect(once).toEqual([pin300]);
+    expect(togglePatternRow(once, pin300)).toEqual([]);
+  });
+
+  it('narrows a catch-all to the clicked pin instead of keeping both', () => {
+    expect(togglePatternRow([unpinned], pin300)).toEqual([pin300]);
+  });
+
+  it('widens pins of a shape to a catch-all', () => {
+    expect(togglePatternRow([pin300, pin200], unpinned)).toEqual([unpinned]);
+  });
+
+  it('removes a catch-all and leaves other shapes', () => {
+    expect(togglePatternRow([other, unpinned], unpinned)).toEqual([other]);
+  });
+
+  it('ORs a second pin of the same shape', () => {
+    expect(togglePatternRow([pin300], pin200)).toEqual([pin300, pin200]);
+    expect(togglePatternRow([pin300, pin200], pin300)).toEqual([pin200]);
   });
 
   it('ignores an empty sequence', () => {
-    const row = { labels: DUMP };
-    expect(togglePatternRow([row], { labels: [] })).toEqual([row]);
+    expect(togglePatternRow([unpinned], { labels: [] })).toEqual([unpinned]);
   });
 });
 
 describe('addUnpinnedPatterns / removeUnpinnedPatterns', () => {
   const pinned = { labels: DUMP, cu_limit: 300_000 };
 
-  it('adds a catch-all without dropping a pin of the same shape', () => {
-    expect(addUnpinnedPatterns([pinned], [DUMP])).toEqual([pinned, { labels: DUMP }]);
+  it('widens pins of a shape to a catch-all', () => {
+    expect(addUnpinnedPatterns([pinned], [DUMP])).toEqual([{ labels: DUMP }]);
   });
 
   it('does not duplicate an unpinned row already in the list', () => {
