@@ -34,7 +34,8 @@ pub fn trade(secs: i64, price: f64, reserve: f64, is_buy: bool) -> CorpusTrade {
         token_amount: 1.0,
         price_per_token: price,
         reserve_sol: Some(reserve),
-        reserve_token: Some(1_000.0),
+        // The pair implies the price - see `TradeRow::fill_basis`.
+        reserve_token: Some(reserve / price),
         real_reserve_sol: Some(reserve),
         real_token_reserves: None,
         slot: secs as u64,

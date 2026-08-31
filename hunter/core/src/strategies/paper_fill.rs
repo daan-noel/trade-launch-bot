@@ -40,7 +40,7 @@ fn paper_fill_from<T: TradeRow>(trades: &[T], idx: usize) -> PaperFill {
     let t = &trades[idx];
     PaperFill {
         trade_idx: idx,
-        price: t.price_per_token(),
+        price: t.fill_basis(),
         token_amount: t.token_amount(),
         slot: t.slot(),
         block_time: t.block_time(),
@@ -268,7 +268,7 @@ fn adverse_median_in<T: TradeRow>(
     }
     let k = if adverse_high { n / 2 } else { (n - 1) / 2 };
     let before = |j: usize, i: usize| {
-        match run[j].price_per_token().total_cmp(&run[i].price_per_token()) {
+        match run[j].fill_basis().total_cmp(&run[i].fill_basis()) {
             std::cmp::Ordering::Less => true,
             std::cmp::Ordering::Equal => j < i,
             std::cmp::Ordering::Greater => false,
@@ -299,7 +299,7 @@ pub fn find_paper_entry_at<T: TradeRow>(
     let trigger_slot = trigger.slot();
     let post = trades.get(target_idx + 1..).unwrap_or(&[]);
     let is_entry_buy = |t: &T| {
-        t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.amount_sol())
+        t.is_buy() && t.fill_basis() > 0.0 && !Trade::is_dust(t.amount_sol())
     };
 
     // First slot > trigger_slot that has a qualifying buy — proximity check only.
@@ -317,7 +317,7 @@ pub fn find_paper_entry_at<T: TradeRow>(
     // Eligibility is fixed across models: a qualifying buy must exist in the
     // window (or the empty-window market-fill fallback below).
     if !post.iter().any(qualifies) {
-        return if market_fill_on_empty_window && trigger.price_per_token() > 0.0 {
+        return if market_fill_on_empty_window && trigger.fill_basis() > 0.0 {
             Some(paper_fill_from(trades, target_idx))
         } else {
             None
@@ -329,7 +329,7 @@ pub fn find_paper_entry_at<T: TradeRow>(
         post.iter()
             .enumerate()
             .filter(|(_, t)| qualifies(t))
-            .max_by(|(_, a), (_, b)| a.price_per_token().total_cmp(&b.price_per_token()))
+            .max_by(|(_, a), (_, b)| a.fill_basis().total_cmp(&b.fill_basis()))
             .map(|(rel, _)| rel)
     };
     let (run_base, run) = next_slot_run(post, trigger_slot, next_slot);
@@ -392,7 +392,7 @@ pub fn find_paper_exit_at<T: TradeRow>(
         Some(ns) if ns <= fire_slot + MAX_FILL_WAIT_SLOTS => s == fire_slot || s == ns,
         _ => s == fire_slot,
     };
-    let priced = |t: &T| in_window(t.slot()) && t.price_per_token() > 0.0;
+    let priced = |t: &T| in_window(t.slot()) && t.fill_basis() > 0.0;
 
     // The lowest price in the window (adverse — the original), and the `NextSlot*`
     // fallback when the window admits no later slot.
@@ -400,14 +400,14 @@ pub fn find_paper_exit_at<T: TradeRow>(
         post.iter()
             .enumerate()
             .filter(|(_, t)| priced(t))
-            .min_by(|(_, a), (_, b)| a.price_per_token().total_cmp(&b.price_per_token()))
+            .min_by(|(_, a), (_, b)| a.fill_basis().total_cmp(&b.fill_basis()))
             .map(|(rel, _)| rel)
     };
     let (run_base, run) = next_slot_run(post, fire_slot, next_slot);
     let fill_idx = if post.iter().any(priced) {
         match model {
             // Zero-slippage: sell at the fire trade's own spot.
-            FillModel::SignalPrice => (fire.price_per_token() > 0.0).then_some(fire_idx),
+            FillModel::SignalPrice => (fire.fill_basis() > 0.0).then_some(fire_idx),
             // The first priced trade in the window.
             FillModel::FirstInWindow => post.iter().position(priced).map(|rel| fire_idx + 1 + rel),
             // The first priced trade at the next slot — the fire's own slot dropped.
@@ -444,7 +444,7 @@ pub fn find_paper_exit_at<T: TradeRow>(
 
     match fill_idx {
         Some(idx) => Some(paper_fill_from(trades, idx)),
-        None if market_fill_on_empty_window && fire.price_per_token() > 0.0 => {
+        None if market_fill_on_empty_window && fire.fill_basis() > 0.0 => {
             Some(paper_fill_from(trades, fire_idx))
         }
         None => None,
@@ -680,7 +680,7 @@ mod tests {
         }
         // The median is a REAL print, not an average — its row prices it.
         let median = at(FillModel::NextSlotMedian);
-        assert_eq!(trades[median.trade_idx].price_per_token(), median.price);
+        assert_eq!(trades[median.trade_idx].fill_basis(), median.price);
         // Worst-case wrapper stays byte-identical to the parameterized WorstCase.
         assert_eq!(
             find_worst_case_paper_entry_at(&trades, 0, false).unwrap(),

@@ -60,7 +60,7 @@ use hunter_engine::rule_params::RuleParams;
 use crate::state::deploy_state::DeployState;
 use crate::strategies::engine::convert::{fp_to_engine, rule_to_loaded};
 use crate::strategies::engine::EngineReloadError;
-use trading_core::models::trade::{Trade, TradeType};
+use trading_core::models::trade::{Trade, TradeRow, TradeType};
 use trading_core::models::wallet::validate_solana_address;
 use trading_core::models::StrategyPosition;
 
@@ -584,7 +584,7 @@ fn trade_lite(t: &Trade) -> TradeLite {
     TradeLite {
         side: if t.trade_type == TradeType::Buy { Side::Buy } else { Side::Sell },
         sol: t.amount_sol,
-        price: t.price_per_token,
+        price: t.chart_spot_price().unwrap_or(t.price_per_token),
         reserve_sol: t.real_reserve_sol.unwrap_or(f64::NAN),
         priced_reserve_sol: t.reserve_sol.unwrap_or(f64::NAN),
         at: t.block_time,

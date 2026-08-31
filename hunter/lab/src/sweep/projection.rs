@@ -218,7 +218,10 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
     TradeLite {
         side: if ct.is_buy { Side::Buy } else { Side::Sell },
         sol: ct.amount_sol,
-        price: ct.price_per_token,
+        // The pool state this print left, not what its trader paid - see
+        // `paper_fill::fill_basis`. Falls back to the execution price only
+        // when the row carries no reserve pair.
+        price: ct.chart_spot_price().unwrap_or(ct.price_per_token),
         reserve_sol: ct.real_reserve_sol.unwrap_or(f64::NAN),
         // `reserve_sol` on the corpus row IS the priced reserve (`vsol`); the lake
         // derives `real_reserve_sol` from it per venue. Impact is charged on the

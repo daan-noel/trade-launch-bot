@@ -60,6 +60,32 @@ and is not Rule A.
 not every buy in the slot. Organic-padded same-working (Axiom plus
 Pump.Fun, one hunted grain) is neither A nor B.
 
+**Purity:** `working_buy_share == 100` - every buy in the prefix is a
+catalogued tool, not only the one being fired on.
+
+### Rule B: the working slice, not the whole prefix
+
+The SQL this rule is derived from sizes the mixed pack on the WHOLE
+prefix (`run_ntmpl` / `run_sol` / `run_nwal`). Those are different
+numbers, so that is a different rule, and only one of the two is priced:
+
+| Rule B spelling | n | mean | days+ | OOS | SOL |
+| --- | ---: | ---: | --- | ---: | ---: |
+| whole prefix (SQL) | 1,978 | +1.02 % | 11/12 | +1.37 | 2.02 |
+| working only (this rule) | 340 | **+3.03 %** | 10/12 | +3.89 | 1.03 |
+| what working-only drops | 1,696 | +0.71 % | 9/12 | +0.96 | 1.21 |
+
+Working-only is right: it keeps the +3.03 % and drops 1,696 fires worth
++0.71 %. It costs half of Rule B's total SOL, which is 8 % of the book.
+
+**Under purity the question dissolves.** A pure pack has no non-working
+members, so the working totals ARE the whole-prefix totals: both
+spellings book the identical 4,868 trades at +2.54 %, 12/12, 12.35 SOL.
+The distinction only matters if purity is ever dropped.
+
+Rule A is the same under either spelling and carries the book: 4,678
+fires, +2.49 %, 12/12, OOS +2.29 %, 11.64 SOL.
+
 A later shape split is JSON only (`packed == 0` or `1` on A or B).
 No new group.
 
@@ -89,22 +115,101 @@ do not change. Entry stays AND. `scale_out` stays object-only (flat
 OR of stage reqs); harvest does not use it. See **Exit combinator**
 below.
 
-Working templates (fingerprint list, template grain — not full
-`ix_hash`):
+Working templates (fingerprint list, template grain - not full
+`ix_hash`). **Three entries, each carrying its own money number:**
 
 ```
 Axiom Trade|CU|ATA|F
 Axiom Trade|CU|ATA|N|F
-Photon|CU|ATA|F
-Terminal|CU|ATA|F
 GMGN Bot|CU|ATA|F
-GMGN|CU|ATA|F
-Bloom Router|CU|F
-Bloom|CU|F
 ```
 
-Bloom’s working shape is `CU|F` (no ATA). Axiom `CU|F` is dead. Do not
-spell this as “router AND CU AND ATA”.
+Axiom `CU|F` is dead. Do not spell this as "router AND CU AND ATA".
+
+### What each entry is worth
+
+Island book at 95 ms, first-per-mint, clock-20, 08-11..08-22, split by
+the brand of the completing print:
+
+| brand | n | mean | days+ | OOS | SOL |
+| --- | ---: | ---: | --- | ---: | ---: |
+| Axiom | 5,465 | +2.23 % | 10/12 | +2.24 | 12.16 |
+| GMGN | 735 | +2.20 % | 11/12 | +1.40 | 1.61 |
+| Bloom | 106 | +4.58 % | 7/12 | +5.55 | 0.49 |
+| Photon | 54 | +5.24 % | 10/12 | +9.15 | 0.28 |
+| Terminal | 58 | +6.55 % | 2 days exist | - | 0.38 |
+
+The last three are 2.6 % of fires; leaving each out moves the union by at
+most 0.04 pp and 0.28 SOL. Bloom's and Photon's medians are negative
+(-0.13 %, -2.48 %) and Terminal's whole mean is one 08-15 day at +191 %.
+`GMGN|CU|ATA|F` and `Bloom|CU|F` never fire at all. Purity recomputed on
+the reduced list is the same book (+2.54 % / 12.35 SOL against +2.56 % /
+12.59 SOL), so they carry nothing as prefix members either.
+
+Fires restricted to the three, plus purity: **4,874 trades, +2.55 %,
+12/12 days, OOS +2.36 %, 12.43 SOL.**
+
+### The grain is the machine, not the brand
+
+The two Axiom entries are not interchangeable:
+
+| template | n | mean | OOS |
+| --- | ---: | ---: | ---: |
+| `Axiom Trade\|CU\|ATA\|F` | 4,849 | +1.75 % | +1.62 |
+| `Axiom Trade\|CU\|ATA\|N\|F` | 985 | **+4.31 %** | **+5.94** |
+
+`N` is `System Program: AdvanceNonceAccount`. Same brand, 2.5x the money
+- which is why the list is a TEMPLATE list and a brand list is the wrong
+shape. A nonce-only rule is a one-entry list, not new code.
+
+### Purity does not apply uniformly
+
+Purity (`working_buy_share == 100`) lifts Axiom (+2.23 to +2.58, 10/12 to
+12/12) and inverts on GMGN:
+
+| GMGN | n | mean | days+ | OOS |
+| --- | ---: | ---: | --- | ---: |
+| all | 735 | +2.20 % | 11/12 | +1.40 |
+| pure | 344 | +0.81 % | 7/12 | -0.01 |
+| not pure | 414 | **+3.46 %** | **12/12** | +2.86 |
+
+Ship purity on everything first (+2.56 %, 12/12, one config). GMGN's
+reversal is the next thing to test, not a foundation: n is 344 against
+414.
+
+## REFUTED on the real universe
+
+> **This rule loses money and does not ship.** Every positive number the study
+> produced for it was measured on the 6,002 mints the SQL derivation had already
+> selected. On the universe the rule actually meets, it is negative - in-sample
+> and out-of-sample alike.
+
+Same rule, same settings (`lag_115`, `pumpfun_impact`, `curve_only`, one episode
+per token, the door-free fingerprint), same fixed binary:
+
+| universe | window | n | mean | PF | win |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 6,002 island mints | 08-11..08-22 (in-sample) | 5,206 | +2.40 % | 1.29 | 31.7 % |
+| 25,000 NON-island mints | 08-11..08-22 (same window) | 612 | **-1.81 %** | 0.84 | 26.8 % |
+| full corpus, 143,246 tokens | 08-26..08-29 (forward) | 5,032 | **-1.76 %** | 0.82 | 27.5 % |
+
+The two honest universes agree with each other and disagree with the restricted
+one. So the gap is SELECTION, not a regime change after 08-22.
+
+**Why the restriction is circular.** `ixg.cm_cand` keeps only slots that already
+passed the quiet gap, the 0.9-4 SOL size band, `vsol_pre < 46`, a crowd
+classification, `trail >= 15` and `age >= 20` - which is most of this rule's own
+entry condition. **87 % of island mints fire the rule; 2.4 % of non-island mints
+do.** The mint list is very nearly "tokens where this rule fires", so a book
+measured on it cannot be evidence for the rule.
+
+**The general rule this cost:** a derivation's candidate table is not a universe.
+Grade a rule on a mint set chosen without reference to the rule, or the entry
+gate is being scored against a population it already selected.
+
+What survives: the ix template grain and the money-checked working list below
+(those are measurements of composition, not of this book), and the pricing fixes
+in [history](../../history/2026-08-31-backtest-price-basis-and-impact-denominator.md).
 
 ## Existing metrics — use these, do not clone
 
@@ -169,6 +274,7 @@ block, `None` is missing. Missing `tx_index` ⇒ `packed` is `NaN`
 | `working_buy_sol` | SOL | their SOL (Rule B size). Organic is out |
 | `working_wallet_count` | count | distinct wallets among working-list members |
 | `working_template_count` | count | distinct working-list grains this slot. Rule B is >= 2 |
+| `working_buy_share` | percent | working buys over the WHOLE prefix. `100` is a pure pack |
 | `has_new` | 0/1 | any working-list wallet is first-on-mint |
 | `has_unknown` | 0/1 | some member this slot has no wallet |
 | `packed` | 0/1 | `1` = consecutive `tx_index`; `0` = hole |

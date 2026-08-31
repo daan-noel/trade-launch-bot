@@ -910,8 +910,14 @@ mod tests {
         let mut s = MetricSeries::new(ts(0), Vec::new());
         s.push_trade(trade(1.0, 0));
         let out = build_position_series(&s, ts(0), 1.0);
-        // The group has exactly its four metrics when an entry IS supplied…
-        assert_eq!(out.len(), 4);
+        // Every `m_position` metric when an entry IS supplied - derived from the
+        // registry so a new one is answered here instead of drifting.
+        let want: usize = REGISTRY
+            .iter()
+            .filter(|g| g.id == MetricGroupId::Position)
+            .map(|g| g.metrics.len())
+            .sum();
+        assert_eq!(out.len(), want);
         assert!(out.iter().all(|c| c.group == "m_position"));
     }
 }

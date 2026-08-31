@@ -76,7 +76,11 @@ const POSITION_MENUS: &[(MetricId, &[f64])] = &[
 /// `pnl` **is** the baseline TP/SL (they desugar into it — see the engine's
 /// `arm.rs`), which every screening combo already carries; screening it again
 /// would just re-sweep the baseline.
-const POSITION_EXCLUDED: &[MetricId] = &[MetricId::Pnl];
+/// `armed` is a 0/1 LATCH, not a threshold: it says whether `retrace` acts as a
+/// trailing stop or as a hard stop from entry, and it is configured by
+/// `arm_above_pct` on the condition that reads `retrace`. There is no menu of
+/// values to sweep, and screening it alone would only split every cohort in two.
+const POSITION_EXCLUDED: &[MetricId] = &[MetricId::Pnl, MetricId::Armed];
 
 // ───────────────────────────── configuration ───────────────────────────────
 
@@ -947,7 +951,10 @@ mod tests {
             token_amount: 1.0,
             price_per_token: price,
             reserve_sol: Some(reserve),
-            reserve_token: Some(1_000.0),
+            // Keep the pair CONSISTENT with the price: a fill prices off
+            // `reserve_sol / reserve_token`, so a constant token side would pin spot
+            // and no fixture price would ever move.
+            reserve_token: Some(reserve / price),
             real_reserve_sol: Some(reserve),
             real_token_reserves: None,
             slot: secs as u64,

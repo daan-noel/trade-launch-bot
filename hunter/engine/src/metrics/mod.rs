@@ -765,6 +765,9 @@ pub enum MetricId {
     WorkingWalletCount,
     /// Distinct working-list grains among members this slot.
     WorkingTemplateCount,
+    /// Percent of this slot's member buys whose grain is on the working list.
+    /// 100 = a pure pack. NaN on an empty prefix.
+    WorkingBuyShare,
     /// 0/1: at least one working-list wallet is first-on-mint this slot.
     HasNew,
     /// 0/1: some member this slot has no wallet.
@@ -2035,6 +2038,15 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 126,
+            },
+            MetricSpec {
+                id: MetricId::WorkingBuyShare,
+                name: "working_buy_share",
+                description: "Percent of this slot's member buys whose grain is on the working-templates list, `working_buy_count / member_buy_count`. 100 is a PURE pack - every buyer in it is a catalogued tool. NaN on an empty prefix.",
+                unit: Unit::Percent,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 116,
             },
             MetricSpec {
                 id: MetricId::HasNew,

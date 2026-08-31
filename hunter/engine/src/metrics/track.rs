@@ -402,9 +402,9 @@ impl TokenTrack {
                 }
             }
             ThisMember | ThisWorking | SameBuyCount | SameBuySol | SameWalletCount
-            | MemberTemplateCount | WorkingBuyCount | WorkingBuySol | WorkingWalletCount
-            | WorkingTemplateCount | HasNew | HasUnknown | Packed | PreSlotLiquidity
-            | PrePrintTrail => {
+            | MemberTemplateCount | WorkingBuyCount | WorkingBuySol | WorkingWalletCount | WorkingTemplateCount
+            | WorkingBuyShare | HasNew | HasUnknown | Packed
+            | PreSlotLiquidity | PrePrintTrail => {
                 let Some(fp) = fingerprint else {
                     return f64::NAN;
                 };

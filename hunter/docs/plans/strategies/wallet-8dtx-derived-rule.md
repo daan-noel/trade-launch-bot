@@ -5,6 +5,14 @@ every number behind it, then what is tunable and what is not. Method, and the mi
 produce earlier wrong answers:
 [trigger-ix-derivation-method.md](trigger-ix-derivation-method.md).
 
+> **REFUTED at our real latency.** Every number here is priced at an IN-SLOT fill. At a
+> 95 ms fill the cohort this rule describes - crowd event, old enough, **no dip term** -
+> reads **+0.05 %** per trade, 4/12 days, OOS **-0.77 %** on 0 of 5 days, and burst purity
+> does not rescue it (+0.18 %). The rule does not survive the latency we have. The gate
+> vocabulary below is confirmed and still load-bearing; the book is not.
+> Measurement: [ix-gate-metrics.md](ix-gate-metrics.md#10-the-95-ms-verdict).
+> What to ship instead: [ix-crowd-island.md](ix-crowd-island.md).
+
 Corpus: full universe 2026-08-01..08-21, 264,289 causal fires / 117,596 mints. Every number
 below is on the **225,010 fires on tokens 8dtx never trades**, so nothing reads a hindsight
 label. Net is after 1.25 % fee plus about 2 % round-trip price impact at 1 % of pool.

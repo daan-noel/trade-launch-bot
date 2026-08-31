@@ -5,6 +5,10 @@ curve firehose (PG `trades`, wallet-attributed). It holds the **surviving conclu
 wallet's logic in one sentence, its net book, the mechanics a rule is calibrated from, and
 the searches that are closed.
 
+Before studying a new wallet as a source of an island, read
+[trader-study-contract.md](trader-study-contract.md): his fills are a thermometer, the
+event is the completing print, leftover is concentration, matching his `n` is not the job.
+
 Per-wallet detail lives one tier down: [wallet-8dtx-logic.md](wallet-8dtx-logic.md) is the
 only full mechanism spec; the rest are in `docs/history/` and linked from their sections. The
 run-by-run investigation for the first four is
@@ -39,7 +43,7 @@ Tips are charged nowhere, so every figure below is an upper bound.
 | `63ot` | Buy a deep dip (-21% off the 30 s high) on a **hot, deep, mature** curve while sellers are still hitting it, then exit on a **fixed bracket** - TP +17% / SL -28% - never a trail. |
 | `FBvx` | Buy the moment a token that has already proven a distributed crowd (10-17 active slots, 13-31 buyers, 15-30 SOL in) **absorbs** the selling that has bled it back to flat, joining the first no-seller buy cluster in that same slot, out in 1.5 s. |
 | `8dtx` | Wait for the tape to go **quiet** (10 s churn 7 SOL against 37 at setups it skips) on a token 5-60% off its lifetime peak, buy the first small buy run into that vacuum, exit on an armed trail ~18% off the in-hold peak. |
-| `3Xk2` | Buy **strength**: at or above the 30 s high, +36% off the 30 s low, into positive 2 s flow, one shot per mint, exit on a single wide ~25% trail. |
+| `3Xk2` | Two last-print families: **(A)** ~1 SOL buy that prints a new 30 s high on a token that already had one, ~2.7 SOL of 2 s net, almost no 10 s selling, age ~55 s; **(B)** ~0.55 SOL buy 10–20% off that high after heavy selling, age ~29 s. Never the token's first high. One shot; wide ~25% trail. |
 | `64hP` | The `8dtx` dip-reversion shape on a younger, shallower curve, but **re-entering the same mint repeatedly** (61% re-entry, improving monotonically with episode index) on a trailing stop with `peak` seeded at entry. |
 | `omego` | Dip-reversion scalping that sells ~81% into the bounce and **lets ~19% ride**; the scalp round trip is a fee-paying wash and the un-closed runner tranche is the whole book. |
 | `trunoest` | Does not scalp someone else's flow - **manufactures it**: one oversized ignition buy into a violently-moving young token, micro-buys painting the tape to hold screener attention, then a full-balance dump on the confirmed reversal. |

@@ -6,8 +6,13 @@
 //!
 //! A **member** is a curve buy with a template grain, not a launch create, that
 //! joins the current-slot prefix. `member_template_count` is distinct grains on
-//! that prefix (SQL `run_ntmpl`). Working-list totals count only members whose
-//! grain is on the fingerprint list. See `hunter/docs/plans/strategies/ix-live-rule.md`.
+//! the WHOLE prefix (SQL `run_ntmpl`); `working_*` counts only members whose
+//! grain is on the fingerprint list; `same_*` only those sharing this print's
+//! grain. `working_buy_share` is the working count over the whole prefix, so
+//! 100 is a PURE pack - and a pure pack makes the working family and the whole
+//! prefix read the same number. The 5-slot buy quiet the rule also needs is NOT here: it is
+//! `m_flow_window.buy_count == 0` on a lagged slot window (`4sl@1`).
+//! See `hunter/docs/plans/strategies/ix-live-rule.md`.
 
 use serde_json::Value;
 
@@ -269,6 +274,13 @@ impl BurstSlotState {
             WorkingBuySol => self.working_sol(p),
             WorkingWalletCount => self.working_wallets(p),
             WorkingTemplateCount => self.working_template_count(p),
+            WorkingBuyShare => {
+                if self.member_count == 0 {
+                    f64::NAN
+                } else {
+                    100.0 * self.working_count(p) / f64::from(self.member_count)
+                }
+            }
             HasNew => f64::from(u8::from(self.has_new(p))),
             HasUnknown => f64::from(u8::from(self.has_unknown)),
             Packed => self.packed(),
@@ -536,4 +548,50 @@ mod tests {
         assert_eq!(s.value(MetricId::HasNew, Some(&p)), 0.0);
         assert_eq!(s.value(MetricId::SameWalletCount, Some(&p)), 0.0);
     }
+
+    #[test]
+    fn the_working_slice_is_not_the_whole_prefix() {
+        let p = patterns(&["A|CU|ATA|F"]);
+        let a = grain_id_hash("A|CU|ATA|F");
+        let x = grain_id_hash("Other|CU|F");
+        let mut s = BurstSlotState::default();
+        s.on_trade(&buy(10, Some(1), 1, Some(a), 1.0), 20.0, 12.0);
+        s.on_trade(&buy(10, Some(2), 2, Some(a), 0.5), 20.0, 12.0);
+        s.on_trade(&buy(10, Some(3), 3, Some(x), 0.25), 20.0, 12.0);
+
+        // The whole pack: two grains, so this is not a same-template pack even
+        // though every working-list buy in it shares one.
+        assert_eq!(s.value(MetricId::MemberTemplateCount, Some(&p)), 2.0);
+        // The working slice of it.
+        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 2.0);
+        assert_eq!(s.value(MetricId::WorkingBuySol, Some(&p)), 1.5);
+        assert_eq!(s.value(MetricId::WorkingWalletCount, Some(&p)), 2.0);
+        // This print's grain only.
+        assert_eq!(s.value(MetricId::SameBuyCount, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::SameBuySol, Some(&p)), 0.25);
+    }
+
+    #[test]
+    fn working_buy_share_is_100_only_on_a_pure_pack() {
+        let p = patterns(&["A|CU|ATA|F"]);
+        let a = grain_id_hash("A|CU|ATA|F");
+        let x = grain_id_hash("Other|CU|F");
+        let mut s = BurstSlotState::default();
+        // Empty prefix has no share.
+        assert!(s.value(MetricId::WorkingBuyShare, Some(&p)).is_nan());
+
+        s.on_trade(&buy(10, Some(1), 1, Some(a), 1.0), 20.0, 12.0);
+        s.on_trade(&buy(10, Some(2), 2, Some(a), 1.0), 20.0, 12.0);
+        assert_eq!(s.value(MetricId::WorkingBuyShare, Some(&p)), 100.0);
+
+        // One uncatalogued buyer joins and the pack stops being pure.
+        s.on_trade(&buy(10, Some(3), 3, Some(x), 1.0), 20.0, 12.0);
+        let share = s.value(MetricId::WorkingBuyShare, Some(&p));
+        assert!((share - 200.0 / 3.0).abs() < 1e-9, "{share}");
+        assert!(share < 100.0);
+    }
+
+
+
+
 }

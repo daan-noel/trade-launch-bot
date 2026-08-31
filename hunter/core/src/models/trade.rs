@@ -258,6 +258,27 @@ pub trait TradeRow {
     /// carries `real_*` but not the `reserve_*` pair. Always returns a finite,
     /// positive number (the execution fallback) unless the row carries no usable
     /// price at all.
+    /// The price a paper fill transacts against: the **pool state** we land into, not
+    /// the counterparty's execution price.
+    ///
+    /// A print's `price_per_token` is what THAT trader paid, averaged along their own
+    /// segment of the curve. For a buy it sits below the post-trade spot they left
+    /// behind, and for a sell above it - so pricing our entry off a buy print and our
+    /// exit off a sell print flatters BOTH legs, by that trader's own impact
+    /// (`their_sol / vsol`), which is 1-3 % a leg on a shallow pool.
+    ///
+    /// What we actually transact against is the reserve pair they left, and the cost
+    /// model then charges OUR impact on top (`notional / vsol` - see
+    /// [`TradeLite::priced_reserve_sol`]), which is exactly the conversion from a spot
+    /// basis to an average paid. So the basis has to be spot or the impact term is
+    /// applied to the wrong number.
+    ///
+    /// [`TradeRow::chart_spot_price`] is that quantity and already the canonical one;
+    /// it falls back to the execution price only when the row carries no reserve pair.
+    fn fill_basis(&self) -> f64 {
+            self.chart_spot_price().unwrap_or(0.0)
+        }
+
     fn chart_spot_price(&self) -> Option<f64> {
         self.spot_price()
             .or_else(|| self.pool_spot_price())

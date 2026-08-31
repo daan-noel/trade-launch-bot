@@ -216,6 +216,52 @@ gate may already remove the over-firing it exists to fix. The order is ship the 
 measured pieces, re-run the engine against the SQL fire set, and add it only if the
 over-firing survives.
 
+## 10. The 95 ms verdict
+
+Every table above is an **in-slot fill**. Re-priced at 95 ms on `ixg.cm_cand`, using the
+shipping island's own fill, cost and exit code (fill = last print with
+`ts <= fire + 95 ms`, 125 bps/leg + own `B/vsol` at B = 0.10 SOL, one episode per mint,
+2026-08-11 .. 08-23):
+
+**The rule this doc supports does not survive.** Its cohort is a crowd event on a token
+old enough, with **no dip term**:
+
+| book | n | clock-20 | days+ | IS | OOS |
+| --- | ---: | ---: | --- | ---: | ---: |
+| no dip, all | 3,350 | **+0.05 %** | 4/12 | +0.65 | **-0.77 (0/5)** |
+| no dip + 100 % purity | 3,046 | +0.18 % | 6/12 | +0.82 | **-0.67 (0/5)** |
+
+Purity moves it 0.13 pp. It does not substitute for the dip.
+
+**Purity does pay, but only inside the dip cohort, and it costs total SOL:**
+
+| book | n | clock-20 | days+ | OOS | SOL |
+| --- | ---: | ---: | --- | ---: | ---: |
+| ALL CROWD (shipping baseline) | 6,002 | +2.31 % | 12/12 | +2.19 | 13.88 |
+| ALL CROWD + purity | 4,918 | **+2.56 %** | 12/12 | **+2.38** | 12.59 |
+| MIXED only | 2,092 | +1.11 % | 12/12 | +1.34 | 2.31 |
+| **MIXED + purity** | 331 | **+3.14 %** | 9/12 | +3.81 | 1.04 |
+| MIXED + NOT pure (control) | 1,824 | +0.84 % | 8/12 | +0.98 | 1.53 |
+
+Same-template shapes are pure by construction (`run_ntmpl = 1` and `this_work`), so purity
+only moves the mixed half - `mixed_gap` is 13.7 % pure, `mixed_tight` 26.3 %. The
+recommendation is Rule B only ([ix-live-rule.md](ix-live-rule.md)).
+
+Purity is `bool_and(working)` over the slot prefix, one aggregate over `ixg.cm_mem`
+(`ixg.pur`).
+
+**What this changes about the terms.** A fill model does not scale the answer, it changes
+**which terms matter**. Purity is the strongest term at an in-slot fill (80 % to 100 % is
+3.6x) and a modest one at 95 ms. The dip is worth +0.12 pp at an in-slot fill and is the
+difference between a book and nothing at 95 ms. A late fill needs price already off the
+peak to absorb the adverse move it pays for - a latency term, invisible to any in-slot
+measurement.
+
+**Method trap.** `run_book` silently skips events whose mint is missing from the loaded
+tape. Loading the tape for `trail >= 15` mints and then booking a no-dip cohort turns
+3,350 first-events into 906 and produces a fake +4.27 %. Print `first-per-mint` against
+`with tape` on every book.
+
 ## 9. Not yet established
 
 - **`gross` is the derivation's fixed hold.** Held constant across every row here, so the

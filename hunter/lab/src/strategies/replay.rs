@@ -233,7 +233,12 @@ struct Replay {
     last_price: HashMap<Mint, f64>,
     /// Per-mint last observed SOL reserves — the pool depth an entry fills against,
     /// which is what [`CostModel::price_impact`] prices our own order against.
-    last_reserve_sol: HashMap<Mint, f64>,
+    /// SOL-side depth the cost model charges price impact against: the **priced**
+    /// reserve (`vsol`), never the real one. Charging the real reserve overcharges
+    /// by `vsol / (vsol - 30)` - 11x at `liquidity 3` - and the sweep already reads
+    /// the priced one, so the two would disagree about the same rule at the same
+    /// size. See [`TradeLite::priced_reserve_sol`].
+    last_priced_reserve_sol: HashMap<Mint, f64>,
     /// Latest trade timestamp across the whole corpus (bounds the tail tick loop).
     last_trade_at: Option<Ts>,
     /// Buys awaiting a first finite price (enter-on-arm before any trade priced the
@@ -309,7 +314,7 @@ impl Replay {
             last_trade_idx: HashMap::new(),
             last_sig: HashMap::new(),
             last_price: HashMap::new(),
-            last_reserve_sol: HashMap::new(),
+            last_priced_reserve_sol: HashMap::new(),
             last_trade_at: None,
             pending_buys: HashMap::new(),
             deferred_fills: HashMap::new(),
@@ -424,7 +429,9 @@ impl Replay {
                     self.last_sig.insert(mint.clone(), sig.into());
                 }
                 self.last_price.insert(mint.clone(), trade.price);
-                self.last_reserve_sol.insert(mint.clone(), trade.reserve_sol);
+                self
+                    .last_priced_reserve_sol
+                    .insert(mint.clone(), trade.priced_reserve_sol);
                 if let Some(idx) = q.trade_idx {
                     self.last_trade_idx.insert(mint.clone(), idx);
                 }
@@ -691,7 +698,7 @@ impl Replay {
                         b.entry_token_amount = fill.token_amount;
                         b.entry_time = fill.at;
                         b.entry_reserve_sol =
-                            self.last_reserve_sol.get(&delta.mint).copied().filter(|r| *r > 0.0);
+                            self.last_priced_reserve_sol.get(&delta.mint).copied().filter(|r| *r > 0.0);
                         // Prefer the fill trade's sig (adverse print); fall back to the
                         // last folded trade's sig when the slim corpus omitted it.
                         b.entry_tx = sig;
@@ -704,7 +711,7 @@ impl Replay {
                             sell_bps,
                             price: fill.price,
                             reserve_sol: self
-                                .last_reserve_sol
+                                .last_priced_reserve_sol
                                 .get(&delta.mint)
                                 .copied()
                                 .filter(|r| *r > 0.0),
@@ -761,7 +768,7 @@ impl Replay {
             b.exit_legs.push(OutcomeExitLeg {
                 sell_bps,
                 price: exit_price,
-                reserve_sol: self.last_reserve_sol.get(&mint).copied().filter(|r| *r > 0.0),
+                reserve_sol: self.last_priced_reserve_sol.get(&mint).copied().filter(|r| *r > 0.0),
                 time: exit_time,
                 tx: exit_tx.clone(),
                 reason,
@@ -1032,7 +1039,8 @@ mod tests {
             token_amount: 1000.0,
             price_per_token: price,
             reserve_sol: Some(real_reserve + 30.0),
-            reserve_token: Some(1_000_000.0),
+            // The pair implies the price - see `TradeRow::fill_basis`.
+            reserve_token: Some((real_reserve + 30.0) / price),
             real_reserve_sol: Some(real_reserve),
             real_token_reserves: None,
             slot: (secs as u64) + 1,
@@ -1386,5 +1394,35 @@ pub fn no_entry_row(mint: &str, symbol: &str, created_at: Ts) -> EngineBacktestR
         pnl_sol: None,
         exit_reason: "NoEntry".to_string(),
         token: crate::strategies::token_enrich::TokenEnrichment::default(),
+    }
+}
+
+#[cfg(test)]
+mod impact_denominator_guard {
+    /// Price impact is `notional / reserve`, so the DENOMINATOR is the answer.
+    /// It must be the **priced** reserve (`vsol`), never the real one - the real
+    /// reserve overcharges by `vsol / (vsol - 30)`, which is 11x at `liquidity 3`
+    /// and worst exactly where the shallow-pool rules trade. The sweep
+    /// (`sweep/generic/strategy.rs`) already reads the priced one, so a regression
+    /// here does not just mis-price: it makes simulate and the sweep disagree
+    /// about the same rule at the same size, each reading the other as wrong.
+    ///
+    /// Measured when this last regressed: crowd-island Rule A, 5,208 entries at
+    /// 0.10 SOL, read +1.66 %/trade against +6.28 % fee-only - a 4.62 pp impact
+    /// charge where the priced reserve gives about 0.66 pp.
+    #[test]
+    fn impact_is_charged_on_the_priced_reserve() {
+        // CRLF-safe: neither needle spans a line break.
+        let src = include_str!("replay.rs");
+        assert!(
+            src.contains(".insert(mint.clone(), trade.priced_reserve_sol);"),
+            "replay must cache `priced_reserve_sol` for the cost model"
+        );
+        // Built from parts: spelled whole, the needle would match this literal.
+        let real = format!("{}{}", "insert(mint.clone(), trade.", "reserve_sol)");
+        assert!(
+            !src.contains(&real),
+            "replay must NOT cache the real reserve as the impact denominator"
+        );
     }
 }

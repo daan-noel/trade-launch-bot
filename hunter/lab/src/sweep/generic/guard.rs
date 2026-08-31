@@ -113,7 +113,8 @@ fn ct_flow(
         token_amount: 1.0,
         price_per_token: price,
         reserve_sol: Some(reserve),
-        reserve_token: Some(1.0),
+        // The pair implies the price - see `TradeRow::fill_basis`.
+        reserve_token: Some(reserve / price),
         real_reserve_sol: Some(reserve),
         real_token_reserves: Some(1.0),
         slot: secs as u64,
@@ -1256,7 +1257,7 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
                 token_amount: 1.0,
                 price_per_token: price,
                 reserve_sol: Some(50.0),
-                reserve_token: Some(1.0),
+                reserve_token: Some(50.0 / price),
                 real_reserve_sol: Some(50.0),
                 real_token_reserves: Some(1.0),
                 slot,

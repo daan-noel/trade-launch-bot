@@ -34,7 +34,8 @@ deliverable.
 **Wallet studies are a thermometer, never the target.** Reconstruct a known-profitable
 wallet only to check that your pipeline reproduces a book you already believe. Then drop it
 and go back to the market. Every hour spent trying to clone a wallet is an hour not spent
-finding the island that wallet is standing on.
+finding the island that wallet is standing on. The contract for that thermometer (completing
+print, leftover, what not to bind): [trader-study-contract.md](trader-study-contract.md).
 
 ---
 
@@ -406,7 +407,8 @@ Every one of these has actually happened.
 - **Selecting on the holdout** - including "how many leaves clear both halves".
 - **Look-ahead features.**
 - **The fancy-index `out=` peak bug** (section 5).
-- **Drifting into wallet studies.** Check the thermometer, then leave it.
+- **Drifting into wallet studies.** Check the thermometer, then leave it. The contract:
+  [trader-study-contract.md](trader-study-contract.md).
 - **Reporting model diagnostics instead of the deliverable**, or skipping a promised step.
 
 ---

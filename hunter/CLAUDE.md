@@ -46,6 +46,11 @@ self-contained guide to the purpose, the method, the measurement rules, the cost
 gate checklist and the pitfalls. It needs no other file. The islands it has produced so far
 are in [island-map.md](docs/plans/strategies/island-map.md).
 
+**Studying a wallet to find that event?** Read
+[trader-study-contract.md](docs/plans/strategies/trader-study-contract.md) first:
+thermometer, completing print, leftover. Do not clone the wallet; do not bind leftover
+cuts to a previous island.
+
 ## Commands
 
 ```powershell
@@ -83,14 +88,29 @@ Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
   the post-trade spot the chart plots, so anything shown next to a bar and derived from
   it (ATH, current price, market cap) silently disagrees with that bar. The frontend twin
   is `tradeSpotPriceSol` (`chartBars.ts`).
-- **What a trade is TRADED at is `price_per_token`, and that is what every metric folds.**
-  `TradeLite::price` and `Fill::price` are execution prices on all three adapters (live
-  `producers`, the lab's `to_trade_lite`, the readout), so `m_price_lifetime`,
-  `m_price_window` and `m_position` read one series — the one a rule can actually
-  transact at, and the one a position is marked against. The two series differ by the
-  trade's own impact (`B/vsol`), so **never mix them**: a gate derived against chart spot
-  does not price the same in the engine, and vice versa. Deriving offline:
+- **What a rule TRANSACTS AGAINST is the pool state, and that is what every metric folds.**
+  `TradeLite::price` and `Fill::price` are [`TradeRow::fill_basis`] - the reserve-pair
+  spot (`chart_spot_price`), falling back to the execution price only when a row carries
+  no reserve pair - on all three adapters (live `producers`, the lab's `to_trade_lite`,
+  the readout), so `m_price_lifetime`, `m_price_window` and `m_position` read one series.
+  A print's own `price_per_token` is what THAT trader paid, averaged along their segment
+  of the curve: below the post-trade spot they left for a buy, above it for a sell. Price
+  an entry off a buy print and an exit off a sell print and BOTH legs flatter by that
+  trader's impact (`their_sol/vsol`) - 1-3 % a leg on a shallow pool, measured at 1.95 pp
+  a round trip on the crowd island. What we land into is the reserve pair they left, and
+  the cost model then charges OUR impact on top (`notional/vsol`), which is exactly the
+  conversion from a spot basis to an average paid - so the basis has to be spot or the
+  impact term is applied to the wrong number. The one exception is a REAL fill
+  (`exec_real`): that is our own transaction and its execution price is what we actually
+  paid. **Never mix the two series.** Deriving offline:
   [island-search.md](docs/plans/strategies/island-search.md).
+- **Price impact is charged on the PRICED reserve (`vsol`), never the real one.**
+  `TradeLite::priced_reserve_sol` is the denominator; `reserve_sol` is `vsol - 30` on the
+  curve because `liquidity` and the deadness verdict mean real deposited SOL. Charging
+  impact against the real reserve overcharges by `vsol/(vsol - 30)` - 1.6x at
+  `liquidity 50`, 11x at `liquidity 3`, worst exactly where the shallow-pool rules trade.
+  Measured when simulate last got this wrong: 4.62 pp a trade instead of 0.66 pp.
+  `replay::impact_denominator_guard` pins it.
 - **Every SOL amount names its unit.** `_lamports` = exact integer (`BIGINT`/`i64`/`u64`),
   `_sol` = human `f64`; same base name across layers, converted only at the repo boundary
   through the one shared pair. Ratios keep `_price`/`_pct`. Rules + rationale:
@@ -182,7 +202,8 @@ The rule is here; the linked doc carries the mechanism. Read the doc before edit
 
 Ship `live` + ingest only — `lab` (sweep/arrow/parquet/rayon + bundled `duckdb` + the lake
 pipeline) stays on the workstation. Sweeps and backtests are local-only; the server keeps a
-7-day rolling ingest buffer and analysis pulls it down with
+**30-day** rolling `trades` buffer (compressed after 7 — the two are different numbers,
+`0001_init.sql` declares both) and analysis pulls it down with
 `scripts/db-incremental-sync.ps1`. Never raise `MAX_TRADES_RETAINED`,
 `SEED_TRACKING_LIMIT`, or cache TTLs there.
 
