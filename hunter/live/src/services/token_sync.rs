@@ -615,8 +615,9 @@ pub async fn run_token_sync(
     ctx.token_cache.insert(mint.clone(), state.clone());
 
     // A synced migrated token is one the user wants to watch — register its pool
-    // so the live WS subscribes immediately (rather than waiting for the periodic
-    // revival sweep). The next reconnect re-prunes it if it's since gone quiet.
+    // so the live feed subscribes immediately. `ingest::pool_reconcile` owns the
+    // other end: the pool is kept for that task's grace window, then dropped
+    // unless an unsettled position or `track_post_migration` still asks for it.
     if is_migrated {
         if let Ok(pool) = derive_pump_swap_pool(&mint, &ctx.pump_program_id) {
             if ctx.pool_index.insert(pool, mint.clone()).is_none() {

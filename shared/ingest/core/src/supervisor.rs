@@ -183,11 +183,16 @@ struct FeedStats {
 }
 
 impl FeedStats {
-    fn log(&self, feed: &str, scope: StreamScope) {
+    /// `accounts` is what the live subscription names right now — the tracked
+    /// pool set, which is what the provider bills against. Without it a rising
+    /// `updates` count has no denominator: you cannot tell a busy pool from a
+    /// leaking pool set.
+    fn log(&self, feed: &str, scope: StreamScope, accounts: usize) {
         info!(
             feed,
             program = scope.program,
             pools = scope.pools,
+            accounts,
             updates = self.updates,
             routed = self.routed,
             duplicates = self.duplicates,
@@ -563,7 +568,7 @@ async fn run_once<V: IngestVenue, F: Feed>(
 
     macro_rules! done {
         ($reason:expr) => {{
-            stats.log(name, scope);
+            stats.log(name, scope, venue.subscription_accounts(scope).len());
             return Attempt {
                 reason: $reason,
                 progress,
@@ -658,7 +663,7 @@ async fn run_once<V: IngestVenue, F: Feed>(
                 }
 
                 if Instant::now() >= next_stats {
-                    stats.log(name, scope);
+                    stats.log(name, scope, venue.subscription_accounts(scope).len());
                     next_stats = Instant::now() + STATS_INTERVAL;
                 }
             }
@@ -678,10 +683,22 @@ async fn run_once<V: IngestVenue, F: Feed>(
                 }
                 let sub = build_subscription(venue, caps, scope, None, policy, &lanes.push);
                 sub_blocks_meta = sub.blocks_meta;
+                // An in-place resubscribe used to be the one subscription change
+                // that logged NOTHING, so `subscribed (N account(s))` stayed the
+                // last word in the log while the account list silently grew or
+                // shrank underneath it. That is the whole tracked-pool set, and
+                // it decides what the provider bills for — say it out loud.
+                let n = sub.account_include.len();
                 if let Err(e) = conn.resubscribe(sub).await {
                     error!(feed = name, "ingest: resubscribe failed — {e}");
                     done!(DisconnectReason::of(&e));
                 }
+                info!(
+                    feed = name,
+                    accounts = n,
+                    blocks_meta = sub_blocks_meta,
+                    "ingest: pool set changed — resubscribed"
+                );
             }
 
             result = lanes.live_rx.changed() => {

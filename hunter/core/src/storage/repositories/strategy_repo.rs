@@ -2643,6 +2643,24 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(|(m,)| m).collect())
     }
 
+    /// Distinct mints with an unsettled position in **any** mode, real or paper.
+    ///
+    /// The real-only sibling above answers "could the wallet be holding a bag for
+    /// this mint" — a money question, and the right one for RPC-warm and
+    /// sell-confirm decisions. This one answers "does anything still need this
+    /// mint's price feed", which a paper position needs just as much: a paper
+    /// exit is resolved from the same `trades` rows a real one is, so dropping a
+    /// migrated mint's pool subscription blinds a paper run exactly like a real
+    /// one. Backs the pool reconciler's retention set.
+    pub async fn distinct_unsettled_mints(&self) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT mint_address FROM strategy_positions              WHERE status IN ('Holding', 'BuySubmitted', 'ExitPending',                               'ExitStuck', 'ExitUnconfirmed')",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(m,)| m).collect())
+    }
+
     /// Per `(rule_id, mode)`, the `config_edits` log of that rule's currently
     /// **`Running`** run, for the runs that have one (mig 0012). Backs the Rules
     /// board's "edited while running" marker.

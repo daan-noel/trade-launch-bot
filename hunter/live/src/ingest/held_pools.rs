@@ -70,6 +70,33 @@ impl HeldPoolGate {
         self.held.contains(mint)
     }
 
+    /// Replace the held set with the authoritative one from the position rows.
+    ///
+    /// The set is otherwise only ever mutated by events — `note` on a fill,
+    /// `release` on a settle — and both can miss: `release` returns early for a
+    /// mint that was never `note`d, a restart between the two loses the entry,
+    /// and a position that settles while the process is down is never released at
+    /// all. A set that drifts DOWN is the dangerous direction: it makes a live
+    /// bag look unheld, and every consumer of `contains` then treats that mint's
+    /// pool as optional.
+    ///
+    /// So the reconciler re-derives it from the DB rather than trusting the
+    /// accumulated event history. Returns the mints that were newly added, which
+    /// is what needs subscribing.
+    pub fn replace(&self, mints: &[String]) -> Vec<String> {
+        let added: Vec<String> = mints
+            .iter()
+            .filter(|m| !self.held.contains(m.as_str()))
+            .cloned()
+            .collect();
+        let want: std::collections::HashSet<&str> = mints.iter().map(String::as_str).collect();
+        self.held.retain(|m| want.contains(m.as_str()));
+        for m in mints {
+            self.held.insert(m.clone());
+        }
+        added
+    }
+
     pub fn snapshot(&self) -> Vec<String> {
         self.held.iter().map(|e| e.key().clone()).collect()
     }

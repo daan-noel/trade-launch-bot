@@ -9,6 +9,7 @@ pub mod consumer;
 pub mod db_writer;
 pub mod feed_lag;
 pub mod held_pools;
+pub mod pool_reconcile;
 pub mod watchdog;
 
 pub use held_pools::HeldPoolGate;
@@ -133,6 +134,11 @@ pub async fn spawn_ingest(
     let handle = Arc::new(handle);
     let held_pools = HeldPoolGate::new(handle.clone(), settings_rx.clone());
 
+    // Cloned before the consumer / DB writer take ownership below — the pool
+    // reconciler needs the same cache and the same pool.
+    let token_cache_for_pools = token_cache.clone();
+    let db_for_pools = db.clone();
+
     let heartbeat = DbHeartbeat::new();
 
     let (consumer, _shed) = IngestConsumer::new(
@@ -173,6 +179,18 @@ pub async fn spawn_ingest(
     // The watchdog trips on "live but no successful DB write within the timeout" —
     // not gated on db_tx queue depth (that proxy misses upstream stalls).
     spawn_watchdog(heartbeat, live_rx, settings_rx.clone(), boot_gate);
+
+    // The one owner of the tracked AMM pool set: re-derives the held mints from
+    // `strategy_positions` and moves the subscription to match. It both SUBSCRIBES
+    // a bag whose pool nothing tracked (exit-path fix) and drops pools no position
+    // or setting asks for (the metered-filter fix). See `pool_reconcile`.
+    pool_reconcile::spawn_pool_reconciler(
+        handle.clone(),
+        held_pools.clone(),
+        token_cache_for_pools,
+        trading_core::storage::repositories::strategy_repo::StrategyRepo::new(db_for_pools),
+        settings_rx.clone(),
+    );
 
     // Forward gap-replay settings to the ingest transport whenever the operator
     // changes them via the settings page. Reads the current value immediately so
