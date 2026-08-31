@@ -1,11 +1,13 @@
 // Row-based rule condition builder — the rule-editor analogue of the sweep's
 // `GenericAxisBuilder`. Conditions are authored one row at a time (add with `+`,
-// remove with `✕`) across an Entry column and an Exit column, instead of the old
-// full-registry wall that painted every group × metric whether used or not.
+// remove with `✕`) across an Entry column (AND) and stacked exit **ways to sell**
+// (OR of AND), instead of the old full-registry wall that painted every group ×
+// metric whether used or not.
 //
 // The trailing **window is a per-row field**, so the same metric at two windows is
 // just two rows — they fold into two `GroupConditions` instances of the one group
-// (`rowsToSide`), the engine's multi-window-per-group model.
+// (`rowsToSide`), the engine's multi-window-per-group model. Scale-out stages pass
+// `sides={['exit']}` and stay a flat object-form OR.
 
 import { type CSSProperties, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
@@ -27,6 +29,9 @@ import {
 import {
   armAbovePctOrphanError,
   duplicateConditionRowError,
+  exitClauseOrder,
+  newExitClauseId,
+  newExitClauseRow,
   newRuleConditionRow,
   parkedSideWarnings,
   ruleConditionRowError,
@@ -68,6 +73,12 @@ export interface ConditionBuilderProps {
   allowToggle?: boolean;
   /** Optional column title override (e.g. exit → "conditions"). */
   sideTitles?: Partial<Record<RuleConditionSide, string>>;
+  /**
+   * Group exit rows into "ways to sell" (OR of AND). Default: on when both
+   * entry and exit columns show (the rule editor); off for scale-out stages
+   * (`sides={['exit']}`), which stay object-form.
+   */
+  exitWays?: boolean;
 }
 
 /**
@@ -86,6 +97,7 @@ export function ConditionBuilder({
   allowFlip,
   allowToggle = true,
   sideTitles,
+  exitWays,
 }: ConditionBuilderProps) {
   const dupErr = duplicateConditionRowError(rows);
   const armErr = armAbovePctOrphanError(rows);
@@ -95,6 +107,7 @@ export function ConditionBuilder({
   // the exit column alone and has its own "stage needs a way to fire" check.)
   const parkedWarnings = parkedSideWarnings(rows.filter((r) => sides.includes(r.side)));
   const canFlip = allowFlip ?? sides.length > 1;
+  const groupExitWays = exitWays ?? (sides.includes('entry') && sides.includes('exit'));
 
   const setRow = (id: string, patch: Partial<RuleConditionRow>) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -107,14 +120,31 @@ export function ConditionBuilder({
   const setInstanceStrict = (id: string, strict: Record<string, number>) =>
     onChange(setRowInstanceStrict(rows, id, strict));
   const removeRow = (id: string) => onChange(rows.filter((r) => r.id !== id));
-  const addRow = (side: RuleConditionSide) => onChange([...rows, newRuleConditionRow(side)]);
+  const addRow = (side: RuleConditionSide) =>
+    onChange([
+      ...rows,
+      side === 'exit' && groupExitWays ? newExitClauseRow() : newRuleConditionRow(side),
+    ]);
+  const addToWay = (clauseId: string) => onChange([...rows, newExitClauseRow(clauseId)]);
   const toggleRow = (id: string) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, enabled: !ruleRowEnabled(r) } : r)));
+  // Park the whole way so an AND group round-trips through `disabled.exit` as one
+  // clause. Per-row ⏻ inside a way still works in-session; save of a mixed way
+  // splits the parked conjunct into its own spare (the wire has no clause id).
+  const toggleWay = (clauseId: string) => {
+    const way = rows.filter((r) => r.clauseId === clauseId);
+    const anyOn = way.some(ruleRowEnabled);
+    onChange(rows.map((r) => (r.clauseId === clauseId ? { ...r, enabled: !anyOn } : r)));
+  };
   const flipSide = (id: string) =>
     onChange(
-      rows.map((r) =>
-        r.id === id ? { ...r, side: r.side === 'entry' ? 'exit' : 'entry' } : r,
-      ),
+      rows.map((r) => {
+        if (r.id !== id) return r;
+        if (r.side === 'entry') {
+          return { ...r, side: 'exit' as const, clauseId: newExitClauseId() };
+        }
+        return { ...r, side: 'entry' as const, clauseId: undefined };
+      }),
     );
 
   const gridCls =
@@ -123,24 +153,44 @@ export function ConditionBuilder({
   return (
     <div className="flex flex-col gap-2">
       <div className={gridCls}>
-        {sides.map((side) => (
-          <ConditionColumn
-            key={side}
-            side={side}
-            title={sideTitles?.[side]}
-            rows={rows.filter((r) => r.side === side)}
-            registry={registry}
-            disabled={disabled}
-            allowFlip={canFlip}
-            allowToggle={allowToggle}
-            onAdd={() => addRow(side)}
-            onPatch={setRow}
-            onPatchStrict={setInstanceStrict}
-            onRemove={removeRow}
-            onFlip={flipSide}
-            onToggle={toggleRow}
-          />
-        ))}
+        {sides.map((side) =>
+          side === 'exit' && groupExitWays ? (
+            <ExitWaysColumn
+              key={side}
+              title={sideTitles?.exit}
+              rows={rows.filter((r) => r.side === 'exit')}
+              registry={registry}
+              disabled={disabled}
+              allowFlip={canFlip}
+              allowToggle={allowToggle}
+              onAddWay={() => addRow('exit')}
+              onAddToWay={addToWay}
+              onPatch={setRow}
+              onPatchStrict={setInstanceStrict}
+              onRemove={removeRow}
+              onFlip={flipSide}
+              onToggle={toggleRow}
+              onToggleWay={toggleWay}
+            />
+          ) : (
+            <ConditionColumn
+              key={side}
+              side={side}
+              title={sideTitles?.[side]}
+              rows={rows.filter((r) => r.side === side)}
+              registry={registry}
+              disabled={disabled}
+              allowFlip={canFlip}
+              allowToggle={allowToggle}
+              onAdd={() => addRow(side)}
+              onPatch={setRow}
+              onPatchStrict={setInstanceStrict}
+              onRemove={removeRow}
+              onFlip={flipSide}
+              onToggle={toggleRow}
+            />
+          ),
+        )}
       </div>
       {dupErr && <p className="text-[11px] text-red">{dupErr}</p>}
       {armErr && <p className="text-[11px] text-red">{armErr}</p>}
@@ -149,6 +199,178 @@ export function ConditionBuilder({
           ⚠ {w}
         </p>
       ))}
+    </div>
+  );
+}
+
+function ExitWaysColumn({
+  title,
+  rows,
+  registry,
+  disabled,
+  allowFlip,
+  allowToggle,
+  onAddWay,
+  onAddToWay,
+  onPatch,
+  onPatchStrict,
+  onRemove,
+  onFlip,
+  onToggle,
+  onToggleWay,
+}: {
+  title?: string;
+  rows: RuleConditionRow[];
+  registry: StrategyRegistry;
+  disabled?: boolean;
+  allowFlip: boolean;
+  allowToggle: boolean;
+  onAddWay: () => void;
+  onAddToWay: (clauseId: string) => void;
+  onPatch: (id: string, patch: Partial<RuleConditionRow>) => void;
+  onPatchStrict: (id: string, strict: Record<string, number>) => void;
+  onRemove: (id: string) => void;
+  onFlip: (id: string) => void;
+  onToggle: (id: string) => void;
+  onToggleWay: (clauseId: string) => void;
+}) {
+  const label = title ?? 'exit';
+  const wayIds = exitClauseOrder(rows);
+  const parked = rows.filter((r) => !ruleRowEnabled(r)).length;
+  const showAndChrome = wayIds.some((id) => rows.filter((r) => r.clauseId === id).length > 1);
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-white/10 bg-white/2 p-2">
+      <div className="flex items-center justify-between gap-1.5">
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
+          {label}
+          <InfoTooltip title={SIDE_HELP.exit.title} body={SIDE_HELP.exit.body} />
+          {parked > 0 && (
+            <span className="font-normal normal-case tracking-normal text-warning/80">
+              {rows.length - parked} live · {parked} off
+            </span>
+          )}
+        </span>
+        <IconButton
+          variant="success"
+          size="md"
+          onClick={onAddWay}
+          disabled={disabled}
+          title="Add another way to sell"
+          aria-label="Add another way to sell"
+        >
+          <PlusIcon />
+        </IconButton>
+      </div>
+
+      {wayIds.length === 0 ? (
+        <div className="rounded border border-dashed border-white/10 px-2 py-3 text-center text-[11px] text-text-dim/50">
+          No exit conditions — + to add a way to sell
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {wayIds.map((id, i) => {
+            const wayRows = rows.filter((r) => r.clauseId === id);
+            const hasTrail = wayRows.some(ruleRowIsTrailing);
+            const hasArmed = wayRows.some((r) => r.metric === 'armed');
+            const hasArmPct = wayRows.some((r) => r.strict?.arm_above_pct != null);
+            const multi = wayRows.length > 1;
+            const anyOn = wayRows.some(ruleRowEnabled);
+            return (
+              <div key={id}>
+                {i > 0 && (
+                  <div className="flex items-center gap-2 py-0.5">
+                    <span className="h-px flex-1 bg-white/10" />
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/55">
+                      or
+                    </span>
+                    <span className="h-px flex-1 bg-white/10" />
+                  </div>
+                )}
+                <div
+                  className={cn(
+                    'flex flex-col gap-1 rounded-md p-1.5',
+                    (showAndChrome || wayIds.length > 1) && 'border border-white/8 bg-black/10',
+                    !anyOn && 'opacity-60',
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/60">
+                      {wayIds.length > 1 || multi
+                        ? `Way ${i + 1}${multi ? ' · all of these' : ''}`
+                        : 'Any of these sells'}
+                    </span>
+                    <span className="inline-flex items-center gap-0.5">
+                      {allowToggle && (
+                        <button
+                          type="button"
+                          onClick={() => onToggleWay(id)}
+                          disabled={disabled}
+                          title={
+                            anyOn
+                              ? 'Turn this way off — keep it but stop evaluating it'
+                              : 'Turn this way on — evaluate it again'
+                          }
+                          aria-label="Toggle way"
+                          aria-pressed={anyOn}
+                          className={cn(
+                            'px-1 text-[11px] transition-colors disabled:opacity-40',
+                            anyOn ? 'text-text-dim/60 hover:text-warning' : 'text-warning hover:text-text',
+                          )}
+                        >
+                          ⏻
+                        </button>
+                      )}
+                      <IconButton
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onAddToWay(id)}
+                        disabled={disabled}
+                        title="AND another condition into this way"
+                        aria-label="Add condition to this way"
+                      >
+                        <PlusIcon />
+                      </IconButton>
+                    </span>
+                  </div>
+                  {wayRows.length === 0 ? (
+                    <div className="rounded border border-dashed border-white/10 px-2 py-2 text-center text-[11px] text-text-dim/50">
+                      Empty way — + to add a condition
+                    </div>
+                  ) : (
+                    wayRows.map((row) => (
+                      <ConditionRow
+                        key={row.id}
+                        row={row}
+                        registry={registry}
+                        disabled={disabled}
+                        allowFlip={allowFlip}
+                        allowToggle={allowToggle}
+                        onPatch={(patch) => onPatch(row.id, patch)}
+                        onPatchStrict={(strict) => onPatchStrict(row.id, strict)}
+                        onRemove={() => onRemove(row.id)}
+                        onFlip={() => onFlip(row.id)}
+                        onToggle={() => onToggle(row.id)}
+                      />
+                    ))
+                  )}
+                  {hasTrail && hasArmPct && multi && !hasArmed && (
+                    <p className="px-1 text-[10px] text-text-dim/70">
+                      Grouped ways do not skip under arm ≥ %. Add <code>armed = 1</code> in
+                      this way to latch the trail after PnL falls.
+                    </p>
+                  )}
+                  {hasTrail && hasArmPct && hasArmed && (
+                    <p className="px-1 text-[10px] text-text-dim/70">
+                      <code>armed</code> latches at arm ≥ % and stays on after PnL falls.
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

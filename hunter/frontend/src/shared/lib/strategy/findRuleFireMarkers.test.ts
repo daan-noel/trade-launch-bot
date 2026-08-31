@@ -193,6 +193,35 @@ describe('findRuleFireMarkers — exit', () => {
     expect(exit.time).toBe(at(4));
     expect(exit.label).toBe('liquidity >= 40');
   });
+
+  it('does not fire a two-metric way until every row in it holds', () => {
+    const dnf = {
+      ...PARAMS,
+      exit: {},
+      exitClauses: [
+        {
+          m_state: [{ strict: {}, metrics: { liquidity: [[{ operator: '>=', value: 40 }]] } }],
+          m_flow_ix: [{ strict: {}, metrics: { untagged_buy: [[{ operator: '>=', value: 9 }]] } }],
+        },
+      ],
+    } as unknown as RuleParams;
+    const exit = findRuleFireMarkers(dnf, DATA, REGISTRY).find((m) => m.kind === 'exit');
+    // Row 4: liquidity 41 holds, untagged_buy 9.1 holds — both true, so it may fire.
+    // Object-form would have fired on liquidity alone at row 4 the same way; the
+    // load-bearing check is that liquidity@row4 would have been enough OR, but AND
+    // still needs untagged_buy. Both hold at row 4 here. Drop untagged_buy:
+    const onlyLiq = {
+      ...DATA,
+      series: [
+        { ...DATA.series[0], values: [1, 1, 1, 1, 1] },
+        DATA.series[1],
+        DATA.series[2],
+        DATA.series[3],
+      ],
+    } as unknown as MetricSeriesResponse;
+    expect(findRuleFireMarkers(dnf, onlyLiq, REGISTRY).find((m) => m.kind === 'exit')).toBeUndefined();
+    expect(exit?.time).toBe(at(4));
+  });
 });
 
 describe('metricConditionStatesAt', () => {

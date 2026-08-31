@@ -64,6 +64,19 @@ describe('pnlSugarDuplicateErrors', () => {
     ).toEqual([]);
   });
 
+  it('flags pnl sugar inside a DNF way', () => {
+    const errs = pnlSugarDuplicateErrors({
+      ...emptyRuleParams(),
+      take_profit: 50,
+      exit: {},
+      exitClauses: [
+        { m_position: [{ strict: {}, metrics: { pnl: [[{ operator: '>=', value: 50 }]] } }] },
+      ],
+    });
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatch(/duplicates take_profit/);
+  });
+
   it('hooks into validateRuleParams', () => {
     const errs = validateRuleParams(
       {
@@ -119,5 +132,15 @@ describe('parked scale-out stages (disabled.scale_out)', () => {
       'disabled.scale_out[0]: stage needs take_profit and/or non-empty conditions',
       'disabled.scale_out[1].sell_bps must be an integer in [1, 9900]',
     ]);
+  });
+});
+
+describe('DNF exit clauses', () => {
+  it('rejects an empty way', () => {
+    const errs = validateRuleParams(
+      { ...emptyRuleParams(), exitClauses: [{}] },
+      undefined,
+    );
+    expect(errs.some((e) => e.includes('exit[0] is empty'))).toBe(true);
   });
 });

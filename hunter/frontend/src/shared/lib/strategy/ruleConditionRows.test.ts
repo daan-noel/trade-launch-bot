@@ -3,6 +3,9 @@ import type { StrategyRegistry } from './registry';
 import {
   armAbovePctOrphanError,
   duplicateConditionRowError,
+  paramsToConditionRows,
+  newExitClauseId,
+  newExitClauseRow,
   newRuleConditionRow,
   parkedSideWarnings,
   ruleConditionRowError,
@@ -298,7 +301,7 @@ describe('parked (disabled) rows', () => {
     expect(back.filter(ruleRowEnabled)).toHaveLength(1);
     // Re-folding the reloaded rows is a fixed point — a save+reload+save cycle must
     // not migrate a parked condition into the live side (or lose it).
-    expect(rowsToSides(back)).toEqual({ entry, exit, disabled });
+    expect(rowsToSides(back)).toEqual({ entry, exit, disabled, exitClauses: undefined });
   });
 
   it('does not flag a parked row as a duplicate of its live twin', () => {
@@ -697,5 +700,116 @@ describe('print windows', () => {
       window_size_prints: 20,
       slice_size_prints: 4,
     });
+  });
+});
+
+describe('exit ways (DNF)', () => {
+  it('collapses singleton ways to object-form', () => {
+    const a = newExitClauseRow();
+    const b = newExitClauseRow();
+    const rows: RuleConditionRow[] = [
+      { ...a, group: 'm_state', metric: 'time', arms: [[{ operator: '>', value: 10 }]] },
+      { ...b, group: 'm_price_window', metric: 'trail', window: '30', arms: [[{ operator: '>=', value: 12 }]] },
+    ];
+    const folded = rowsToSides(rows);
+    expect(folded.exitClauses).toBeUndefined();
+    expect(folded.exit.m_state[0].metrics.time[0][0].value).toBe(10);
+    expect(folded.exit.m_price_window[0].metrics.trail[0][0].value).toBe(12);
+  });
+
+  it('keeps a multi-metric way as array-form', () => {
+    const id = newExitClauseId();
+    const rows: RuleConditionRow[] = [
+      { ...newExitClauseRow(id), group: 'm_state', metric: 'time', arms: [[{ operator: '>', value: 10 }]] },
+      {
+        ...newExitClauseRow(id),
+        group: 'm_price_window',
+        metric: 'trail',
+        window: '30',
+        arms: [[{ operator: '>=', value: 12 }]],
+      },
+    ];
+    const folded = rowsToSides(rows);
+    expect(folded.exitClauses).toHaveLength(1);
+    expect(Object.keys(folded.exit)).toHaveLength(0);
+    expect(folded.exitClauses![0].m_state[0].metrics.time).toBeTruthy();
+    expect(folded.exitClauses![0].m_price_window[0].metrics.trail).toBeTruthy();
+  });
+
+  it('allows the same metric in two different ways', () => {
+    const rows: RuleConditionRow[] = [
+      { ...newExitClauseRow(), group: 'm_state', metric: 'time', arms: [[{ operator: '>', value: 10 }]] },
+      { ...newExitClauseRow(), group: 'm_state', metric: 'time', arms: [[{ operator: '<', value: 3 }]] },
+    ];
+    expect(duplicateConditionRowError(rows)).toBeNull();
+    const folded = rowsToSides(rows);
+    expect(folded.exitClauses).toHaveLength(2);
+  });
+
+  it('round-trips array-form through paramsToConditionRows', () => {
+    const id = newExitClauseId();
+    const rows: RuleConditionRow[] = [
+      { ...newExitClauseRow(id), group: 'm_state', metric: 'time', arms: [[{ operator: '>', value: 10 }]] },
+      {
+        ...newExitClauseRow(id),
+        group: 'm_price_window',
+        metric: 'trail',
+        window: '5',
+        arms: [[{ operator: '>=', value: 8 }]],
+      },
+    ];
+    const folded = rowsToSides(rows);
+    const back = paramsToConditionRows({
+      take_profit: null,
+      stop_loss: null,
+      exclusive: false,
+      priority: 0,
+      entry: folded.entry,
+      exit: folded.exit,
+      exitClauses: folded.exitClauses,
+      disabled: folded.disabled,
+    });
+    const again = rowsToSides(back);
+    expect(again.exitClauses).toHaveLength(1);
+    expect(again.exitClauses![0].m_state[0].metrics.time[0][0].value).toBe(10);
+    expect(again.exitClauses![0].m_price_window[0].metrics.trail[0][0].value).toBe(8);
+  });
+
+  it('round-trips a parked AND way as one parked clause', () => {
+    const id = newExitClauseId();
+    const rows: RuleConditionRow[] = [
+      {
+        ...newExitClauseRow(id),
+        group: 'm_state',
+        metric: 'time',
+        arms: [[{ operator: '>', value: 10 }]],
+        enabled: false,
+      },
+      {
+        ...newExitClauseRow(id),
+        group: 'm_price_window',
+        metric: 'trail',
+        window: '5',
+        arms: [[{ operator: '>=', value: 8 }]],
+        enabled: false,
+      },
+    ];
+    const folded = rowsToSides(rows);
+    expect(folded.disabled?.exitClauses).toHaveLength(1);
+    const back = paramsToConditionRows({
+      take_profit: null,
+      stop_loss: null,
+      exclusive: false,
+      priority: 0,
+      entry: {},
+      exit: {},
+      disabled: folded.disabled,
+    });
+    expect(back.every((r) => !r.enabled)).toBe(true);
+    expect(new Set(back.map((r) => r.clauseId)).size).toBe(1);
+    const again = rowsToSides(back);
+    expect(again.disabled?.exitClauses).toHaveLength(1);
+    expect(again.disabled!.exitClauses![0].m_state[0].metrics.time[0][0].value).toBe(10);
+    expect(again.disabled!.exitClauses![0].m_price_window[0].metrics.trail[0][0].value).toBe(8);
   });
 });

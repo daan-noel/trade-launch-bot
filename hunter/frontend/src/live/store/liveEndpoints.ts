@@ -92,6 +92,9 @@ export interface RuleConditionMeta {
   origin: 'authored' | 'take_profit' | 'stop_loss';
   /** PnL the trailing stop arms at, when gated. */
   arm_above_pct?: number;
+  /** Index into compiled exit clauses. Present on `exit` so the strip ANDs chips
+   *  inside a way and ORs across ways. Absent on entry / scale-out. */
+  exit_clause?: number;
 }
 
 /**

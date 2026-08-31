@@ -8,6 +8,7 @@ import { normalizeConditionExpr, type Condition, type ConditionExpr } from './gr
 import {
   MAX_EXPLICIT_SCALE_STAGES,
   MAX_SCALE_SELL_BPS,
+  authoredExitSides,
   sideInstances,
   type ExitStage,
   type RuleParams,
@@ -29,11 +30,31 @@ export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefi
     }
   }
   validateSide('entry', p.entry, reg, errors);
-  validateSide('exit', p.exit, reg, errors);
+  if (p.exitClauses && p.exitClauses.length > 0) {
+    p.exitClauses.forEach((c, i) => {
+      if (Object.keys(c).length === 0) {
+        errors.push(`exit[${i}] is empty — a DNF clause with no metrics is always true`);
+        return;
+      }
+      validateSide(`exit[${i}]`, c, reg, errors);
+    });
+  } else {
+    validateSide('exit', p.exit, reg, errors);
+  }
   // Parked conditions validate exactly like live ones (backend does the same), so a
   // toggle back on can never turn a saved rule into one that refuses to save.
   validateSide('disabled.entry', p.disabled?.entry, reg, errors);
-  validateSide('disabled.exit', p.disabled?.exit, reg, errors);
+  if (p.disabled?.exitClauses && p.disabled.exitClauses.length > 0) {
+    p.disabled.exitClauses.forEach((c, i) => {
+      if (Object.keys(c).length === 0) {
+        errors.push(`disabled.exit[${i}] is empty — a DNF clause with no metrics is always true`);
+        return;
+      }
+      validateSide(`disabled.exit[${i}]`, c, reg, errors);
+    });
+  } else {
+    validateSide('disabled.exit', p.disabled?.exit, reg, errors);
+  }
   validateScaleOut(p.scale_out, reg, errors);
   // Parked stages get the PER-STAGE rules only — the cross-stage ones (remainder
   // last, stage count, bps sum) describe a ladder, and the bag is a shelf of spares.
@@ -59,35 +80,36 @@ export function isPnlAdvancedMetric(group: string, metric: string): boolean {
  * same bounds — duplicating them is a footgun, not a second exit.
  */
 export function pnlSugarDuplicateErrors(p: RuleParams): string[] {
-  // `m_position` is static (single instance), but read it instance-safely.
-  const arms = p.exit?.m_position?.find((g) => g.metrics.pnl?.length)?.metrics.pnl;
-  if (!arms?.length) return [];
   const errors: string[] = [];
   let sawTp = false;
   let sawSl = false;
-  for (const arm of arms) {
-    for (const c of arm) {
-      if (
-        !sawTp &&
-        p.take_profit != null &&
-        c.operator === '>=' &&
-        nearlyEqual(c.value, p.take_profit)
-      ) {
-        errors.push(
-          'exit.m_position.pnl duplicates take_profit — use the TP % field (or clear it)',
-        );
-        sawTp = true;
-      }
-      if (
-        !sawSl &&
-        p.stop_loss != null &&
-        c.operator === '<=' &&
-        nearlyEqual(c.value, -p.stop_loss)
-      ) {
-        errors.push(
-          'exit.m_position.pnl duplicates stop_loss — use the SL % field (or clear it)',
-        );
-        sawSl = true;
+  for (const side of authoredExitSides(p)) {
+    const arms = side.m_position?.find((g) => g.metrics.pnl?.length)?.metrics.pnl;
+    if (!arms?.length) continue;
+    for (const arm of arms) {
+      for (const c of arm) {
+        if (
+          !sawTp &&
+          p.take_profit != null &&
+          c.operator === '>=' &&
+          nearlyEqual(c.value, p.take_profit)
+        ) {
+          errors.push(
+            'exit.m_position.pnl duplicates take_profit — use the TP % field (or clear it)',
+          );
+          sawTp = true;
+        }
+        if (
+          !sawSl &&
+          p.stop_loss != null &&
+          c.operator === '<=' &&
+          nearlyEqual(c.value, -p.stop_loss)
+        ) {
+          errors.push(
+            'exit.m_position.pnl duplicates stop_loss — use the SL % field (or clear it)',
+          );
+          sawSl = true;
+        }
       }
     }
   }

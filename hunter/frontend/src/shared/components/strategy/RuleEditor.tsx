@@ -15,8 +15,8 @@ import {
   type RuleParams,
 } from 'lib/strategy/ruleParams';
 import {
+  paramsToConditionRows,
   rowsToSides,
-  sidesToRows,
   type RuleConditionRow,
 } from 'lib/strategy/ruleConditionRows';
 import { validateRuleParams } from 'lib/strategy/validate';
@@ -105,7 +105,7 @@ function RuleEditorInner({
     const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
     // Parked conditions come back as rows too (muted, `enabled: false`) — that is the
     // point of storing them in `params.disabled` rather than dropping them on save.
-    return sidesToRows(p.entry, p.exit, p.disabled);
+    return paramsToConditionRows(p);
   });
   const [scaleStages, setScaleStages] = useState<ScaleStageDraft[]>(() => {
     const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
@@ -126,6 +126,8 @@ function RuleEditorInner({
       exclusive: params.exclusive,
       priority: params.priority,
       buy_pct_of_vsol: params.buy_pct_of_vsol,
+      entry_event: params.entry_event,
+      entry_lock: params.entry_lock,
       ...sides,
       disabled:
         sides.disabled || parkedStages
@@ -140,6 +142,8 @@ function RuleEditorInner({
     params.exclusive,
     params.priority,
     params.buy_pct_of_vsol,
+    params.entry_event,
+    params.entry_lock,
     rows,
     scaleStages,
   ]);
@@ -209,8 +213,10 @@ function RuleEditorInner({
         exclusive: parsed.exclusive,
         priority: parsed.priority,
         buy_pct_of_vsol: parsed.buy_pct_of_vsol,
+        entry_event: parsed.entry_event,
+        entry_lock: parsed.entry_lock,
       }));
-      setRows(sidesToRows(parsed.entry, parsed.exit, parsed.disabled));
+      setRows(paramsToConditionRows(parsed));
       setScaleStages(stagesToDrafts(parsed.scale_out, parsed.disabled?.scale_out));
       setJsonError(null);
     } catch (e) {

@@ -12,12 +12,14 @@
 //! bottom of this file:
 //!
 //! * **The two sides use different combinators.** Entry mirrors `reqs_satisfied`
-//!   ([`eval`], so an empty expr is vacuously true); exit and scale-out mirror
-//!   `reqs_exit_fired` ([`first_satisfied_cond`], so an empty expr fires nothing).
-//! * **A disarmed trailing req is skipped, not false.** `reqs_exit_fired` `continue`s
-//!   past a trailing exit while the position is under `m_position.arm_above_pct`, so
-//!   [`ConditionRead::disarmed`] is its own fact — a UI that renders it as a plain
-//!   failing condition shows a stop that looks live when the fold is not evaluating it.
+//!   ([`eval`], so an empty expr is vacuously true); exit walks `exit_clauses`
+//!   (OR of AND); scale-out still mirrors `reqs_exit_fired` (flat OR of stage reqs).
+//! * **A disarmed trailing req is skipped, not false — singleton clause only.**
+//!   Object-form `reqs_exit_fired` `continue`s past a trailing exit while the
+//!   position is under `m_position.arm_above_pct`. A multi-req DNF clause ANDs
+//!   `m_position.armed` and does not skip. [`ConditionRead::disarmed`] is that
+//!   skip, so a UI that renders it as a plain failing condition shows a stop that
+//!   looks live when the fold is not evaluating it.
 //! * **The fold evaluates only the active scale-out stage.** Every stage is returned
 //!   so the ladder is visible, each tagged [`ReadSide::Stage::active`]; an inactive
 //!   stage's `ok` is what the fold *would* read, never a decision it is making.
@@ -46,7 +48,7 @@ use crate::state::EngineState;
 pub enum ReadSide {
     /// Entry conditions — **AND** across reqs (all must hold to enter).
     Entry,
-    /// The global exit side — **OR** across reqs (any one fires the sell).
+    /// The global exit side — OR of AND-clauses (`exit_clauses`).
     Exit,
     /// One scale-out stage, `OR` within it like [`Exit`](Self::Exit).
     Stage {
@@ -94,8 +96,13 @@ pub struct ConditionRead {
     pub arm_above_pct: Option<f64>,
     /// The trailing gate is set and not cleared, so the fold **skips** this req.
     /// Always paired with `ok == false`, and distinct from it: a disarmed trail is
-    /// not being evaluated at all.
+    /// not being evaluated at all. Only a **singleton** trailing clause skips
+    /// (object-form); a DNF way that ANDs `armed` is evaluated.
     pub disarmed: bool,
+    /// Index into [`CompiledRule::exit_clauses`] for an exit read. `None` on entry
+    /// and scale-out stages. The strip groups by this so a multi-req way shows as
+    /// AND, not as a flat OR.
+    pub exit_clause: Option<u8>,
 }
 
 /// Read every condition of `rule` against the token's live fold at `now`.
@@ -119,29 +126,79 @@ pub fn read_rule(
     let price = track.current_price();
     rule_reqs(rule, stage)
         .into_iter()
-        .map(|(side, r)| read_req(r, side, track, side_ctx(side, ctx), price, now))
+        .map(|listed| {
+            read_req(
+                listed.req,
+                listed.side,
+                track,
+                side_ctx(listed.side, ctx),
+                price,
+                now,
+                listed.skip_trailing,
+                listed.exit_clause,
+            )
+        })
         .collect()
 }
 
+struct ListedReq<'a> {
+    side: ReadSide,
+    req: &'a MetricReq,
+    exit_clause: Option<u8>,
+    /// Fold skips this trailing req while under the gate (singleton object-form only).
+    skip_trailing: bool,
+}
+
 /// Every req of `rule` paired with the side that owns it, in the fold's own order:
-/// entry reqs, then exit reqs (desugared stop-loss, take-profit, then authored),
+/// entry reqs, then exit **clauses** (desugared stop-loss, take-profit, then authored),
 /// then each ladder stage.
 ///
 /// The ONE place that order is expressed. [`read_rule`] and [`replay_series`] both
 /// walk it, so a series column and a point read at index `i` are the same condition
 /// by construction rather than by two lists agreeing.
-fn rule_reqs(rule: &CompiledRule, stage: Option<u8>) -> Vec<(ReadSide, &MetricReq)> {
+fn rule_reqs(rule: &CompiledRule, stage: Option<u8>) -> Vec<ListedReq<'_>> {
     let stage_reqs: usize = rule.scale_out.iter().map(|s| s.reqs.len()).sum();
     let mut out = Vec::with_capacity(
         rule.event_reqs.len() + rule.entry_reqs.len() + rule.exit_reqs.len() + stage_reqs,
     );
-    out.extend(rule.event_reqs.iter().map(|r| (ReadSide::Entry, r)));
-    out.extend(rule.entry_reqs.iter().map(|r| (ReadSide::Entry, r)));
-    out.extend(rule.exit_reqs.iter().map(|r| (ReadSide::Exit, r)));
+    out.extend(rule.event_reqs.iter().map(|r| ListedReq {
+        side: ReadSide::Entry,
+        req: r,
+        exit_clause: None,
+        skip_trailing: false,
+    }));
+    out.extend(rule.entry_reqs.iter().map(|r| ListedReq {
+        side: ReadSide::Entry,
+        req: r,
+        exit_clause: None,
+        skip_trailing: false,
+    }));
+    for (ci, clause) in rule.exit_clauses.iter().enumerate() {
+        let skip_trailing = clause.len() == 1 && clause[0].arm_above_pct.is_some();
+        let exit_clause = Some(ci as u8);
+        for r in clause {
+            out.push(ListedReq {
+                side: ReadSide::Exit,
+                req: r,
+                exit_clause,
+                skip_trailing,
+            });
+        }
+    }
     for (i, s) in rule.scale_out.iter().enumerate() {
         let index = i as u8;
-        let side = ReadSide::Stage { index, active: stage == Some(index) };
-        out.extend(s.reqs.iter().map(|r| (side, r)));
+        let side = ReadSide::Stage {
+            index,
+            active: stage == Some(index),
+        };
+        for r in &s.reqs {
+            out.push(ListedReq {
+                side,
+                req: r,
+                exit_clause: None,
+                skip_trailing: r.arm_above_pct.is_some(),
+            });
+        }
     }
     out
 }
@@ -350,14 +407,24 @@ pub struct ConditionSeries {
     /// Whether the fold **skips** the req at each row. Per row, not per series: a
     /// gated trail arms and disarms as the position's PnL crosses `arm_above_pct`,
     /// so collapsing this to one flag would erase exactly the distinction it exists
-    /// to carry. All-`false` unless `req.arm_above_pct` is set.
+    /// to carry. All-`false` unless this column is a singleton trailing clause.
     pub disarmed: Vec<bool>,
+    /// Index into [`CompiledRule::exit_clauses`]. `None` on entry / scale-out.
+    pub exit_clause: Option<u8>,
+    /// Whether this column is a singleton trailing clause the fold may skip.
+    skip_trailing: bool,
 }
 
 impl ConditionSeries {
     /// Row `i` as the point routes' [`ConditionRead`].
     pub fn row(&self, i: usize) -> ConditionRead {
-        judge_req(&self.req, self.side, self.values[i], self.disarmed[i])
+        judge_req(
+            &self.req,
+            self.side,
+            self.values[i],
+            self.disarmed[i],
+            self.exit_clause,
+        )
     }
 
     /// Rows recorded.
@@ -455,8 +522,8 @@ pub fn replay_series(
     let mut columns: Vec<SeriesColumn> = Vec::new();
     let col_of: Vec<Option<usize>> = reqs
         .iter()
-        .map(|(_, r)| {
-            req_column(r).map(|c| {
+        .map(|listed| {
+            req_column(listed.req).map(|c| {
                 columns.iter().position(|x| *x == c).unwrap_or_else(|| {
                     columns.push(c);
                     columns.len() - 1
@@ -519,12 +586,14 @@ pub fn replay_series(
     let n = series.n_rows();
     let mut out: Vec<ConditionSeries> = reqs
         .iter()
-        .map(|(side, r)| ConditionSeries {
-            req: (*r).clone(),
-            side: *side,
+        .map(|listed| ConditionSeries {
+            req: listed.req.clone(),
+            side: listed.side,
             values: Vec::with_capacity(n),
             ok: Vec::with_capacity(n),
             disarmed: Vec::with_capacity(n),
+            exit_clause: listed.exit_clause,
+            skip_trailing: listed.skip_trailing,
         })
         .collect();
 
@@ -551,7 +620,8 @@ pub fn replay_series(
             // `read_req`'s body, with the value coming off a folded column instead of
             // a live track — including the entry side reading with no position.
             let pos = side_ctx(col.side, held);
-            let disarmed = pos.is_some_and(|c| !trailing_armed(col.req.arm_above_pct, c, price));
+            let disarmed = col.skip_trailing
+                && pos.is_some_and(|c| !trailing_armed(col.req.arm_above_pct, c, price));
             let value = match col_of[k] {
                 Some(idx) => series.value_at(i, idx),
                 None => match pos {
@@ -559,7 +629,7 @@ pub fn replay_series(
                     None => f64::NAN,
                 },
             };
-            let read = judge_req(&col.req, col.side, value, disarmed);
+            let read = judge_req(&col.req, col.side, value, disarmed, col.exit_clause);
             col.values.push(read.value);
             col.ok.push(read.ok);
             col.disarmed.push(read.disarmed);
@@ -576,6 +646,7 @@ pub fn replay_series(
 }
 
 /// One req's reading. Mirrors the body of `reqs_exit_fired` / `reqs_satisfied`.
+#[allow(clippy::too_many_arguments)]
 fn read_req(
     r: &MetricReq,
     side: ReadSide,
@@ -583,15 +654,18 @@ fn read_req(
     ctx: Option<&PositionCtx>,
     price: f64,
     now: Ts,
+    skip_trailing: bool,
+    exit_clause: Option<u8>,
 ) -> ConditionRead {
     // `disarmed` means one thing only: **the fold skips this req**. That is a held-side
-    // fact — `reqs_exit_fired` consults `trailing_armed`, but the pre-entry walk
-    // (`exit_metrics_fired` → `reqs_first_fired`, reached through `can_enter`) does
-    // not, so with no position a gated trail is *evaluated*, reads `NaN` as a position
-    // metric, and simply fires nothing. Reporting it as skipped there would describe
-    // behaviour the engine does not have. The gate itself still travels on
+    // fact — singleton trailing clauses `continue` under `arm_above_pct`, but a DNF
+    // way that ANDs `armed` does not skip. The pre-entry walk (`can_enter`) never
+    // skips, so with no position a gated trail is *evaluated*, reads `NaN` as a
+    // position metric, and simply fires nothing. Reporting it as skipped there would
+    // describe behaviour the engine does not have. The gate itself still travels on
     // `arm_above_pct`, so a caller can show "arms at +N%" whether or not it is skipped.
-    let disarmed = ctx.is_some_and(|ctx| !trailing_armed(r.arm_above_pct, ctx, price));
+    let disarmed =
+        skip_trailing && ctx.is_some_and(|ctx| !trailing_armed(r.arm_above_pct, ctx, price));
 
     let value = if r.position_scoped {
         match ctx {
@@ -602,7 +676,7 @@ fn read_req(
         track.value(r.metric, r.window, r.fingerprint, now)
     };
 
-    judge_req(r, side, value, disarmed)
+    judge_req(r, side, value, disarmed, exit_clause)
 }
 
 /// Judge one already-read `value` against its req — the half of [`read_req`] that
@@ -613,7 +687,13 @@ fn read_req(
 /// judges here. Everything a second evaluation gets wrong (the per-side combinator,
 /// the disarmed skip, which condition matched) therefore has exactly one body, and
 /// the point route and the series route cannot disagree about it.
-fn judge_req(r: &MetricReq, side: ReadSide, value: f64, disarmed: bool) -> ConditionRead {
+fn judge_req(
+    r: &MetricReq,
+    side: ReadSide,
+    value: f64,
+    disarmed: bool,
+    exit_clause: Option<u8>,
+) -> ConditionRead {
     let matched = if disarmed {
         None
     } else {
@@ -641,6 +721,7 @@ fn judge_req(r: &MetricReq, side: ReadSide, value: f64, disarmed: bool) -> Condi
         origin: r.origin,
         arm_above_pct: r.arm_above_pct,
         disarmed,
+        exit_clause,
     }
 }
 
@@ -766,6 +847,27 @@ mod tests {
         assert!(!read.disarmed);
         assert!(read.ok);
         assert!(c.exit_fired(&above, &ctx, ts(20)).is_some());
+    }
+
+    /// A DNF trail that ANDs `armed` is evaluated under the gate — the skip is
+    /// singleton-clause only. The readout must not show that retrace as dormant.
+    #[test]
+    fn a_dnf_trail_is_not_disarmed_under_the_gate() {
+        let c = rule(serde_json::json!({
+            "exit": [{ "m_position": {
+                "arm_above_pct": 50,
+                "armed": [{ "operator": "=", "value": 1 }],
+                "retrace": [{ "operator": ">=", "value": 10 }]
+            } }]
+        }));
+        let mut ctx = PositionCtx::at_fill_with_arm(1.0, ts(0), Some(50.0));
+        ctx.fold_price(2.0);
+        // pnl 20 < gate 50. Object-form would skip; DNF must still evaluate.
+        let below = track_at(1.2, 10);
+        let reads = read_rule(&c, &below, Some(&ctx), None, ts(10));
+        let retrace = find(&reads, ReadSide::Exit, MetricId::Retrace);
+        assert!(!retrace.disarmed, "DNF trail is evaluated, not skipped");
+        assert_eq!(retrace.exit_clause, Some(0));
     }
 
     /// Entry is AND-of-reqs with a vacuous empty expr; exit is OR-of-reqs where an
@@ -1200,7 +1302,7 @@ mod tests {
         }));
         let reqs = rule_reqs(&c, None);
         assert_eq!(reqs.len(), 3);
-        let cols: Vec<_> = reqs.iter().filter_map(|(_, r)| req_column(r)).collect();
+        let cols: Vec<_> = reqs.iter().filter_map(|listed| req_column(listed.req)).collect();
         assert_eq!(
             cols,
             vec![

@@ -180,14 +180,32 @@ export function RuleConditionStrip({
           >
             {g.label}
           </span>
-          {g.items.map((c, i) => (
+          {g.items.map((c, i) => {
+            const prev = g.items[i - 1];
+            const hasClauses = g.items.some((x) => x.exit_clause != null);
+            const wayHolds =
+              c.side === 'exit' &&
+              (c.exit_clause == null
+                ? c.ok && !c.disarmed
+                : g.items
+                    .filter((x) => x.exit_clause === c.exit_clause)
+                    .every((x) => x.ok && !x.disarmed));
+            return (
+            <span key={`${c.side}-${c.exit_clause ?? ''}-${c.stage ?? ''}-${c.metric}-${windowSpecKey(readWindow(c))}-${i}`} className="inline-flex items-center gap-1.5">
+              {hasClauses && c.side === 'exit' && i > 0 && c.exit_clause !== prev?.exit_clause ? (
+                <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/55">or</span>
+              ) : hasClauses && c.side === 'exit' && i > 0 && c.exit_clause != null && prev?.exit_clause === c.exit_clause ? (
+                <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/55">and</span>
+              ) : null}
             <ConditionChip
-              key={`${c.side}-${c.stage ?? ''}-${c.metric}-${windowSpecKey(readWindow(c))}-${i}`}
               read={c}
               unit={unitOf.get(c.metric) ?? null}
               preEntry={preEntry}
+              wayHolds={wayHolds}
             />
-          ))}
+            </span>
+            );
+          })}
         </div>
       ))}
     </StripShell>
@@ -320,11 +338,14 @@ function ConditionChip({
   read,
   unit,
   preEntry = false,
+  wayHolds = false,
 }: {
   read: RuleConditionRead;
   unit: MetricUnit | null;
-  /** No fill yet, so a satisfied EXIT condition is holding the buy back. */
+  /** No fill yet, so a satisfied EXIT **way** is holding the buy back. */
   preEntry?: boolean;
+  /** Every chip in this exit clause holds (the engine's can_enter veto). */
+  wayHolds?: boolean;
 }) {
   const suffix = unit ? unitSuffix(unit) : '';
   const label = conditionLabel(read);
@@ -336,9 +357,9 @@ function ConditionChip({
   // `disarmed` = the fold is skipping this req (a held trail under its gate).
   // Dormant, not failing — a dashed chip, never the plain unsatisfied style.
   const dormant = read.disarmed || inactiveStage;
-  // Pre-entry, a satisfied exit metric is the `can_enter` veto — the ✓ alone would
-  // read as progress toward a buy when it is the thing preventing one.
-  const blocksEntry = preEntry && read.side === 'exit' && read.ok && !dormant;
+  // Pre-entry, a fully-true exit way is the `can_enter` veto — a single chip in a
+  // two-row way being true is not enough.
+  const blocksEntry = preEntry && read.side === 'exit' && wayHolds && !dormant;
 
   return (
     <span
@@ -513,10 +534,8 @@ function groupConditions(
               : 'Entry conditions — ALL must hold to buy'
             : c.side === 'exit'
               ? preEntry
-                ? // The pre-entry half of `can_enter`. Stated on the group because it
-                  // is true of the whole row, not only of the members holding now.
-                  'Exit conditions — ANY one fires the sell, and with no fill yet ANY one also BLOCKS the buy'
-                : 'Exit conditions — ANY one fires the sell'
+                ? 'Exit — a way sells when every chip in it holds; any way sells. With no fill yet a fully-true way also BLOCKS the buy'
+                : 'Exit — a way sells when every chip in it holds; any way sells'
               : `Scale-out stage ${(c.stage ?? 0) + 1}${
                 c.stage_active ? ' (active)' : ' (not the active stage)'
               }`,

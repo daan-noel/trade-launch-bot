@@ -89,6 +89,22 @@ describe('ruleParamsJsonEqual', () => {
     expect(ruleParamsJsonEqual(a, b)).toBe(true);
   });
 
+  it('KEEPS DNF exit clause order — first fully-true clause labels the exit', () => {
+    const a = {
+      exit: [
+        { m_state: { time: [{ operator: '>', value: 10 }] } },
+        { m_state: { liquidity: [{ operator: '<', value: 20 }] } },
+      ],
+    };
+    const b = {
+      exit: [
+        { m_state: { liquidity: [{ operator: '<', value: 20 }] } },
+        { m_state: { time: [{ operator: '>', value: 10 }] } },
+      ],
+    };
+    expect(ruleParamsJsonEqual(a, b)).toBe(false);
+  });
+
   it('KEEPS scale_out positional — the ladder executes in authored order', () => {
     const a = { scale_out: [{ sell_bps: 7000, take_profit: 50 }, { sell_bps: null, take_profit: 10 }] };
     const b = { scale_out: [{ sell_bps: null, take_profit: 10 }, { sell_bps: 7000, take_profit: 50 }] };
@@ -233,6 +249,54 @@ describe('disabled (parked conditions) round-trip', () => {
     const form = ruleParamsFromJson({ disabled: { scale_out: [{ take_profit: 40 }] } }, REG);
     expect(form.disabled?.scale_out).toHaveLength(1);
     expect(ruleParamsToJson(form)).toEqual({ disabled: { scale_out: [{ take_profit: 40 }] } });
+  });
+});
+
+describe('array-form DNF exit', () => {
+  const REG2: StrategyRegistry = {
+    operators: ['>', '>=', '<', '<=', '=', '!='],
+    groups: [
+      {
+        name: 'm_price_window',
+        kind: 'dynamic',
+        strict_params: [{ name: 'window_size_sec', required: true }],
+        metrics: [{ name: 'trail', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 45 }],
+      },
+      {
+        name: 'm_state',
+        kind: 'static',
+        strict_params: [],
+        metrics: [{ name: 'time', unit: 'seconds', eq_tolerance: 0.5, monotonic: true, hue: 200 }],
+      },
+    ],
+  };
+
+  it('round-trips a two-metric way as an array', () => {
+    const raw = {
+      exit: [
+        {
+          m_state: { time: [{ operator: '>', value: 10 }] },
+          m_price_window: { window_size_sec: 30, trail: [{ operator: '>=', value: 12 }] },
+        },
+      ],
+    };
+    const form = ruleParamsFromJson(raw, REG2);
+    expect(form.exitClauses).toHaveLength(1);
+    expect(Object.keys(form.exit ?? {})).toHaveLength(0);
+    const json = ruleParamsToJson(form);
+    expect(Array.isArray(json.exit)).toBe(true);
+    expect(ruleParamsJsonEqual(json, raw)).toBe(true);
+  });
+
+  it('parses parked array-form exit instead of dropping it', () => {
+    const raw = {
+      disabled: {
+        exit: [{ m_state: { time: [{ operator: '>', value: 5 }] } }],
+      },
+    };
+    const form = ruleParamsFromJson(raw, REG2);
+    expect(form.disabled?.exitClauses).toHaveLength(1);
+    expect(ruleParamsToJson(form).disabled).toEqual(raw.disabled);
   });
 });
 

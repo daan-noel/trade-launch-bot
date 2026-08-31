@@ -10,7 +10,7 @@
 // sweep two windows of one metric; the rule editor now authors the same shape.
 
 import type { ConditionExpr } from './grammar';
-import type { DisabledConditions, SideConditions } from './ruleParams';
+import type { DisabledConditions, RuleParams, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
 import type { GroupConditions } from './ruleParams';
 import {
@@ -73,6 +73,12 @@ export interface RuleConditionRow {
    *  then opened and re-saved in the UI must come back out unchanged. New registry
    *  strict params round-trip for free; only an editing *control* is per-param work. */
   strict?: Record<string, number>;
+  /**
+   * Exit **way** this row belongs to (OR of ways, AND inside a way). Absent on
+   * entry rows and on scale-out stage rows (those stay object-form / flat OR).
+   * The rule editor always stamps one: object-form load is one way per metric.
+   */
+  clauseId?: string;
 }
 
 let rowSeq = 0;
@@ -90,6 +96,17 @@ export function newRuleConditionRow(side: RuleConditionSide): RuleConditionRow {
     lag: '',
     arms: [],
   };
+}
+
+let clauseSeq = 0;
+/** Fresh id for one exit way. Stable for the editor session; not persisted. */
+export function newExitClauseId(): string {
+  return `way-${clauseSeq++}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** A new empty row that starts (or joins) an exit way. */
+export function newExitClauseRow(clauseId?: string): RuleConditionRow {
+  return { ...newRuleConditionRow('exit'), clauseId: clauseId ?? newExitClauseId() };
 }
 
 /** A row's live/parked state. `undefined` = enabled (rows predate the toggle). */
@@ -166,6 +183,7 @@ export function ruleRowInstanceKey(row: RuleConditionRow): string {
   return [
     on,
     row.side,
+    row.clauseId ?? '',
     row.group,
     windowSpecKey(ruleRowWindowSpec(row)),
     windowSpecKey(ruleRowSliceSpec(row)),
@@ -299,9 +317,9 @@ export function duplicateConditionRowError(rows: RuleConditionRow[]): string | n
     if (!row.group || !row.metric) continue;
     const w = ruleRowWindowSpec(row);
     const on = ruleRowEnabled(row);
-    // Keyed by the instance (so live/parked and each window are their own bag — that
-    // pairing is exactly what the toggle is for: park a value, try another) plus the
-    // metric, which is what actually collides inside one instance.
+    // Keyed by the instance (so live/parked, each window, AND each exit way are
+    // their own bag — two ways may both name `m_position.armed`) plus the metric,
+    // which is what actually collides inside one instance.
     const key = `${ruleRowInstanceKey(row)}|${row.metric}`;
     if (seen.has(key)) {
       const at = w ? `@${formatWindowSpec(w)}` : '';
@@ -385,24 +403,128 @@ export function rowsToSide(
   return out;
 }
 
-/** Both sides folded — the `entry`/`exit`/`disabled` of a `RuleParams`. Parked rows
- *  fold into `disabled` with the identical shape, so nothing is dropped on save and
- *  the live sides stay exactly what the engine will compile. */
+/** Both sides folded — the `entry`/`exit`/`exitClauses`/`disabled` of a `RuleParams`.
+ *  Parked rows fold into `disabled` with the identical shape, so nothing is dropped
+ *  on save and the live sides stay exactly what the engine will compile.
+ *
+ *  Exit rows **without** `clauseId` (scale-out stages, legacy tests) fold as today's
+ *  object-form OR. Rows **with** `clauseId` group into ways: all-singleton ways with
+ *  no metric collision collapse back to object-form so stored rules round-trip;
+ *  any way with two-or-more metrics (or a colliding singleton pair) serializes as
+ *  array-form DNF. */
 export function rowsToSides(rows: RuleConditionRow[]): {
   entry: SideConditions;
   exit: SideConditions;
+  exitClauses?: SideConditions[];
   disabled: DisabledConditions | null;
 } {
+  const liveExit = foldExitRows(rows, true);
+  const parkedExit = foldExitRows(rows, false);
   const off: DisabledConditions = {
     entry: rowsToSide(rows, 'entry', false),
-    exit: rowsToSide(rows, 'exit', false),
+    exit: parkedExit.exit,
+    exitClauses: parkedExit.exitClauses,
   };
-  const parked = Object.keys(off.entry ?? {}).length || Object.keys(off.exit ?? {}).length;
+  const parked =
+    Object.keys(off.entry ?? {}).length ||
+    Object.keys(off.exit ?? {}).length ||
+    (off.exitClauses?.length ?? 0);
   return {
     entry: rowsToSide(rows, 'entry'),
-    exit: rowsToSide(rows, 'exit'),
+    exit: liveExit.exit,
+    exitClauses: liveExit.exitClauses,
     disabled: parked ? off : null,
   };
+}
+
+function sideMetricCount(side: SideConditions): number {
+  let n = 0;
+  for (const insts of Object.values(side)) {
+    for (const g of insts) {
+      n += Object.values(g.metrics).filter((a) => a?.length).length;
+    }
+  }
+  return n;
+}
+
+function exitMergeCollides(clauses: SideConditions[]): boolean {
+  const seen = new Set<string>();
+  for (const side of clauses) {
+    for (const [group, insts] of Object.entries(side)) {
+      for (const inst of insts) {
+        const w = windowSpecKey(windowSpecFromStrict(inst.strict));
+        for (const metric of Object.keys(inst.metrics)) {
+          const key = `${group}|${w}|${metric}`;
+          if (seen.has(key)) return true;
+          seen.add(key);
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/** Fold exit rows: clause-stamped → DNF (or object collapse); unstamped → object. */
+function foldExitRows(
+  rows: RuleConditionRow[],
+  enabled: boolean,
+): { exit: SideConditions; exitClauses?: SideConditions[] } {
+  const ofSide = rows.filter((r) => r.side === 'exit' && ruleRowEnabled(r) === enabled);
+  if (ofSide.length === 0) return { exit: {} };
+  const stamped = ofSide.some((r) => r.clauseId);
+  if (!stamped) return { exit: rowsToSide(rows, 'exit', enabled) };
+
+  const order: string[] = [];
+  const byClause = new Map<string, RuleConditionRow[]>();
+  const unclaused: RuleConditionRow[] = [];
+  for (const r of ofSide) {
+    const id = r.clauseId;
+    if (!id) {
+      unclaused.push(r);
+      continue;
+    }
+    if (!byClause.has(id)) {
+      order.push(id);
+      byClause.set(id, []);
+    }
+    byClause.get(id)!.push(r);
+  }
+  const clauses: SideConditions[] = [];
+  for (const id of order) {
+    const side = rowsToSide(byClause.get(id)!, 'exit', enabled);
+    if (Object.keys(side).length) clauses.push(side);
+  }
+  for (const r of unclaused) {
+    const side = rowsToSide([r], 'exit', enabled);
+    if (Object.keys(side).length) clauses.push(side);
+  }
+  if (clauses.length === 0) return { exit: {} };
+  const allSingletons = clauses.every((c) => sideMetricCount(c) === 1);
+  if (allSingletons && !exitMergeCollides(clauses)) {
+    // Strip clause identity so two singleton ways on `m_position` merge into ONE
+    // static instance (object-form). Leaving the id in the instance key would emit
+    // two instances of a static group, which the backend rejects.
+    return {
+      exit: rowsToSide(
+        ofSide.map((r) => ({ ...r, clauseId: undefined })),
+        'exit',
+        enabled,
+      ),
+    };
+  }
+  return { exit: {}, exitClauses: clauses };
+}
+
+/** First-seen exit way ids, including empty draft ways the user just added. */
+export function exitClauseOrder(rows: RuleConditionRow[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (r.side !== 'exit' || !r.clauseId || seen.has(r.clauseId)) continue;
+    seen.add(r.clauseId);
+    out.push(r.clauseId);
+  }
+  return out;
 }
 
 /** Expand a nested side back into editor rows — one row per (group, window, metric).
@@ -442,6 +564,35 @@ export function sideToRows(
     }
   }
   return rows;
+}
+
+/** Load a parsed `RuleParams` into a single row list — live sides first, then the
+ *  parked bag as rows with `enabled: false`. Inverse of {@link rowsToSides}.
+ *  Object-form exit becomes one way per metric; array-form keeps AND grouping. */
+export function paramsToConditionRows(p: RuleParams): RuleConditionRow[] {
+  return [
+    ...sideToRows(p.entry, 'entry'),
+    ...exitToRows(p.exit, p.exitClauses, true),
+    ...sideToRows(p.disabled?.entry, 'entry', false),
+    ...exitToRows(p.disabled?.exit, p.disabled?.exitClauses, false),
+  ];
+}
+
+function exitToRows(
+  exit: SideConditions | undefined,
+  clauses: SideConditions[] | undefined,
+  enabled: boolean,
+): RuleConditionRow[] {
+  if (clauses && clauses.length > 0) {
+    return clauses.flatMap((c) => {
+      const id = newExitClauseId();
+      return sideToRows(c, 'exit', enabled).map((r) => ({ ...r, clauseId: id }));
+    });
+  }
+  return sideToRows(exit, 'exit', enabled).map((r) => ({
+    ...r,
+    clauseId: newExitClauseId(),
+  }));
 }
 
 /** Load a parsed `RuleParams` into a single row list — live sides first, then the

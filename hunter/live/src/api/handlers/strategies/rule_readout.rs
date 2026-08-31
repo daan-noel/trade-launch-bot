@@ -98,6 +98,11 @@ struct ConditionMetaOut {
     /// PnL the trailing stop arms at, when gated.
     #[serde(skip_serializing_if = "Option::is_none")]
     arm_above_pct: Option<f64>,
+    /// Index into the compiled exit clauses. Present on `exit` reads so the
+    /// strip can AND chips inside a way and OR across ways. Absent on entry
+    /// and scale-out stages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_clause: Option<u8>,
 }
 
 /// One condition read at one instant.
@@ -217,6 +222,7 @@ fn condition_meta(
     conds: &ConditionExpr,
     origin: hunter_engine::arm::ReqOrigin,
     arm_above_pct: Option<f64>,
+    exit_clause: Option<u8>,
 ) -> ConditionMetaOut {
     let spec = metric_spec(metric);
     let (stage, stage_active) = match side {
@@ -239,12 +245,13 @@ fn condition_meta(
         conditions: hunter_engine::metrics::evaluator::condition_expr_to_value(conds),
         origin: origin_name(origin),
         arm_above_pct,
+        exit_clause,
     }
 }
 
 fn condition_out(r: &ConditionRead) -> ConditionOut {
     ConditionOut {
-        meta: condition_meta(r.side, r.metric, r.window, &r.conds, r.origin, r.arm_above_pct),
+        meta: condition_meta(r.side, r.metric, r.window, &r.conds, r.origin, r.arm_above_pct, r.exit_clause),
         value: r.value.is_finite().then_some(r.value),
         ok: r.ok,
         matched_operator: r.matched.map(|c| c.operator.symbol()),
@@ -256,7 +263,7 @@ fn condition_out(r: &ConditionRead) -> ConditionOut {
 fn condition_series_out(c: &ConditionSeries) -> ConditionSeriesOut {
     let r = &c.req;
     ConditionSeriesOut {
-        meta: condition_meta(c.side, r.metric, r.window.primary, &r.conds, r.origin, r.arm_above_pct),
+        meta: condition_meta(c.side, r.metric, r.window.primary, &r.conds, r.origin, r.arm_above_pct, c.exit_clause),
         values: c.values.iter().map(|v| v.is_finite().then_some(*v)).collect(),
         ok: c.ok.clone(),
         // Only a gated trail is ever skipped, so every other condition ships an

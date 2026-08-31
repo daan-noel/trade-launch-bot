@@ -523,13 +523,20 @@ next load (no per-metric frontend work).
   (registry-guided strict/metric split; includes `scale_out: ExitStage[]`);
   `validate.ts` mirrors backend §5 validation (incl. scale-out caps).
 - `components/strategy/` — `ConditionInput` (grammar input + chips + red-underline),
-  `ConditionBuilder` (entry/exit columns; exit-only mode for scale-out stages; the
+  `ConditionBuilder` (entry column AND; exit column is stacked **ways to sell** —
+  any way fires (OR), rows inside a way all must hold (AND). Header + adds a way;
+  per-way + ANDs a condition into it. Default one-row ways collapse to object-form
+  so stored rules round-trip; a way with two metrics serializes as array-form DNF.
+  Scale-out stages pass `sides={['exit']}` and stay object-form / flat OR. The
   per-row `⏻` **parks** a condition — kept, still validated, but folded into
   `params.disabled` instead of the live side, so the engine never compiles it.
-  `lib/strategy/ruleConditionRows.ts` owns the row↔bag fold: `enabled` on the row,
-  `rowsToSides` → `{entry, exit, disabled}`, live/parked keyed separately in the
-  duplicate + `arm_above_pct`-orphan checks, and `parkedSideWarnings` for the case
-  that matters — parking a side's LAST condition rewrites the rule silently
+  A way-level `⏻` parks every row in that way so an AND group round-trips as
+  one parked clause. `lib/strategy/ruleConditionRows.ts` owns the row↔bag fold: `clauseId` on exit
+  rows, `enabled` on the row, `rowsToSides` → `{entry, exit, exitClauses, disabled}`,
+  `paramsToConditionRows` is the editor load path (object-form → one way per metric).
+  Duplicate + `arm_above_pct`-orphan checks are keyed per way so two ways may both
+  name `m_position.armed`. `parkedSideWarnings` still fires when parking a side's
+  LAST condition rewrites the rule silently
   (empty entry ⇒ buys on the fingerprint alone; empty exit ⇒ TP/SL/death only).
   **Scale-out stages pass `allowToggle={false}`**: a stage's `conditions` have no
   `disabled` bag of their own — park the whole stage instead.

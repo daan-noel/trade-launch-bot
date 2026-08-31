@@ -352,9 +352,11 @@ combinator axes. `(a OR b) AND c` is written `(a AND c) OR (b AND c)`.
 
 That is `(buy > 2 AND liquidity < 20) OR (liquidity > 30 AND trail > 20)`.
 
-Object form (no array) stays today’s flat OR. Stored rules round-trip
-unchanged. `can_enter`, sweep, and readout walk clauses, not a flat
-req list. Do not add a one-off `if armed skip death` in `exit_fired`.
+The rule editor authors this as stacked ways to sell (header + = OR, per-way + = AND).
+Singleton ways save as object-form so stored rules round-trip unchanged.
+Object form (no array) stays a flat OR of metrics. `can_enter`, sweep, and
+readout walk clauses, not a flat req list. Do not add a one-off
+`if armed skip death` in `exit_fired`.
 
 ### `m_position.armed`
 

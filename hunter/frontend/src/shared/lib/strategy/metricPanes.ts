@@ -12,7 +12,7 @@ import { formatConditions, type Condition, type ConditionExpr } from './grammar'
 import type { RuleParams, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
 import type { MetricSeriesColumn, MetricSeriesResponse, StrategyRule } from './types';
-import { ruleParamsFromJson, sideInstances } from './ruleParams';
+import { ruleParamsFromJson, sideInstances, authoredExitSides } from './ruleParams';
 import { formatMetricExitLabel, parseMetricExitTarget } from './exitReason';
 import {
   formatWindowSpec,
@@ -114,7 +114,7 @@ const CLOCK_METRICS = { time: 'timeHorizonSec', stall: 'stallHorizonSec' } as co
  */
 export function metricClockHorizons(params: RuleParams): MetricClockHorizons {
   const out: MetricClockHorizons = { timeHorizonSec: 0, stallHorizonSec: 0 };
-  for (const side of [params.entry, params.exit]) {
+  for (const side of [params.entry, ...authoredExitSides(params)]) {
     if (!side) continue;
     for (const [, group] of sideInstances(side)) {
       for (const [metric, arms] of Object.entries(group.metrics)) {
@@ -144,7 +144,7 @@ export function metricPrefsFromParams(
   const windows = new Map<string, WindowSpec>();
   const paneKeys: string[] = [];
 
-  for (const side of [params.entry, params.exit]) {
+  for (const side of [params.entry, ...authoredExitSides(params)]) {
     if (!side) continue;
     for (const [groupName, group] of sideInstances(side)) {
       const gSpec = registry?.groups.find((g) => g.name === groupName);
@@ -240,7 +240,31 @@ interface SideMetricRow {
   slice: WindowSpec | null;
 }
 
-/** Collect authored (group, metric, arms) rows for one side. */
+/** Exit as the engine compiles it: array-form is AND-clauses; object-form is one
+ *  singleton OR-term per metric. */
+function exitClauseRowGroups(
+  params: RuleParams,
+  registry: StrategyRegistry | undefined,
+): SideMetricRow[][] {
+  if (params.exitClauses && params.exitClauses.length > 0) {
+    return params.exitClauses.map((c) => sideMetricRows(c, registry)).filter((g) => g.length > 0);
+  }
+  return sideMetricRows(params.exit, registry).map((r) => [r]);
+}
+
+function anyExitClauseFires(
+  groups: SideMetricRow[][],
+  idx: number,
+  byKey: Map<string, MetricSeriesColumn>,
+  registry: StrategyRegistry | undefined,
+): FiredCondition[] | null {
+  for (const rows of groups) {
+    const fired = firedRowsAt(rows, idx, byKey, registry, 'and');
+    if (fired != null) return fired;
+  }
+  return null;
+}
+
 function sideMetricRows(
   side: SideConditions | undefined,
   registry: StrategyRegistry | undefined,
@@ -322,9 +346,10 @@ interface FiredCondition {
  * The rows that justify a side pass at `idx`, or `null` when the side does not pass.
  *
  * Combinator mirrors the engine (`arm.rs`): entry ANDs across metrics, so a pass
- * returns **every** authored row; exit ORs, so a pass returns the single satisfied
- * one. Within a metric, DNF still applies. An empty side returns `null` — callers
- * that need the engine's vacuous entry-true use {@link sidePassesAt}.
+ * returns **every** authored row; a DNF exit way ANDs too, while object-form exit
+ * ORs (one singleton way per metric). Within a metric, DNF still applies. An empty
+ * side returns `null` (vacuous entry-true is handled by the caller skipping the
+ * walk when there are no entry rows).
  */
 function firedRowsAt(
   rows: SideMetricRow[],
@@ -345,23 +370,6 @@ function firedRowsAt(
     out.push({ row, cond });
   }
   return combinator === 'and' ? out : null;
-}
-
-/**
- * Side combinator mirrors the engine (`arm.rs`): entry ANDs across metrics;
- * exit ORs (any one satisfied metric fires). Within a metric, DNF still applies.
- */
-function sidePassesAt(
-  side: SideConditions | undefined,
-  idx: number,
-  byKey: Map<string, MetricSeriesColumn>,
-  registry: StrategyRegistry | undefined,
-  combinator: 'and' | 'or',
-): boolean {
-  const rows = sideMetricRows(side, registry);
-  // Empty ⇒ vacuous entry-true / exit-false matching the engine.
-  if (rows.length === 0) return combinator === 'and';
-  return firedRowsAt(rows, idx, byKey, registry, combinator) != null;
 }
 
 /** `untagged_buy@2s >= 0.85` — one satisfied condition in the lanes' vocabulary, so a
@@ -435,7 +443,10 @@ export function metricConditionStatesAt(
   const byKey = seriesLookup(data.series);
   const out: MetricConditionState[] = [];
   for (const sideName of ['entry', 'exit'] as const) {
-    for (const row of sideMetricRows(params[sideName], registry)) {
+    const sides =
+      sideName === 'exit' ? authoredExitSides(params) : params.entry ? [params.entry] : [];
+    for (const side of sides) {
+      for (const row of sideMetricRows(side, registry)) {
       const key = rowColumnKey(row);
       const value = byKey.get(key)?.values[idx] ?? null;
       out.push({
@@ -446,6 +457,7 @@ export function metricConditionStatesAt(
         value,
         ok: value != null && evalMetricConditions(row.arms, value, rowTolerance(row, registry)),
       });
+      }
     }
   }
   return out;
@@ -470,14 +482,18 @@ export function metricThresholdsFor(
 ): Array<{ side: 'entry' | 'exit'; value: number }> {
   const key = metricColKey(metric, window);
   const out: Array<{ side: 'entry' | 'exit'; value: number }> = [];
-  for (const side of ['entry', 'exit'] as const) {
-    for (const row of sideMetricRows(params[side], registry)) {
+  for (const sideName of ['entry', 'exit'] as const) {
+    const sides =
+      sideName === 'exit' ? authoredExitSides(params) : params.entry ? [params.entry] : [];
+    for (const side of sides) {
+      for (const row of sideMetricRows(side, registry)) {
       if (rowColumnKey(row) !== key) continue;
       // `arms` is DNF (`Condition[][]`) — flatten arms → atoms.
       for (const arm of row.arms) {
         for (const c of arm) {
-          if (Number.isFinite(c.value)) out.push({ side, value: c.value });
+          if (Number.isFinite(c.value)) out.push({ side: sideName, value: c.value });
         }
+      }
       }
     }
   }
@@ -572,9 +588,10 @@ export function metricConditionBands(
   if (atSec.length === 0) return null;
   const byKey = seriesLookup(data.series);
 
-  const rows = (['entry', 'exit'] as const).flatMap((side) =>
-    sideMetricRows(params[side], registry).map((row) => ({ side, ...row })),
-  );
+  const rows = (['entry', 'exit'] as const).flatMap((side) => {
+    const sides = side === 'exit' ? authoredExitSides(params) : params.entry ? [params.entry] : [];
+    return sides.flatMap((s) => sideMetricRows(s, registry).map((row) => ({ side, ...row })));
+  });
   if (rows.length === 0) return null;
 
   const lanes: ChartTimeBand[] = rows.map((row, idx) => {
@@ -682,9 +699,9 @@ export function findRuleFireMarkers(
   if (n === 0) return [];
   const byKey = seriesLookup(data.series);
   const entryRows = sideMetricRows(params.entry, registry);
-  const exitRows = sideMetricRows(params.exit, registry);
+  const exitGroups = exitClauseRowGroups(params, registry);
   const hasEntry = entryRows.length > 0;
-  const hasExit = exitRows.length > 0;
+  const hasExit = exitGroups.length > 0;
 
   let entryIdx: number | null = null;
   let entryLabel: string | null = null;
@@ -692,8 +709,8 @@ export function findRuleFireMarkers(
     for (let i = 0; i < n; i++) {
       const fired = firedRowsAt(entryRows, i, byKey, registry, 'and');
       if (fired == null) continue;
-      // Engine refuses entry while exit metrics already hold.
-      if (hasExit && sidePassesAt(params.exit, i, byKey, registry, 'or')) continue;
+      // Engine refuses entry while any exit clause already holds.
+      if (hasExit && anyExitClauseFires(exitGroups, i, byKey, registry) != null) continue;
       entryIdx = i;
       // Nothing flipped ⇒ the conjunction was already whole and an exit metric had
       // been vetoing; naming the whole conjunction is then the honest answer.
@@ -708,7 +725,7 @@ export function findRuleFireMarkers(
   if (hasExit) {
     const start = entryIdx != null ? entryIdx + 1 : 0;
     for (let i = start; i < n; i++) {
-      const fired = firedRowsAt(exitRows, i, byKey, registry, 'or');
+      const fired = anyExitClauseFires(exitGroups, i, byKey, registry);
       if (fired != null) {
         exitIdx = i;
         exitLabel = firedLabel(fired);

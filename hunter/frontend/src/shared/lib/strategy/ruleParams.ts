@@ -98,7 +98,10 @@ export const MAX_SCALE_SELL_BPS = 9900;
  */
 export interface DisabledConditions {
   entry?: SideConditions;
+  /** Object-form parked exit. Ignored when {@link exitClauses} is set. */
   exit?: SideConditions;
+  /** Array-form parked exit (same DNF shape as live {@link RuleParams.exitClauses}). */
+  exitClauses?: SideConditions[];
   /** Parked scale-out stages. Order is authoring order only — no execution meaning. */
   scale_out?: ExitStage[] | null;
 }
@@ -167,13 +170,8 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   const entryEvent = sideToJson(p.entry_event);
   if (entryEvent) root.entry_event = entryEvent;
   if (p.entry_lock === 'slot') root.entry_lock = 'slot';
-  if (p.exitClauses && p.exitClauses.length > 0) {
-    const clauses = p.exitClauses.map((c) => sideToJson(c)).filter((c) => c != null);
-    if (clauses.length) root.exit = clauses;
-  } else {
-    const exit = sideToJson(p.exit);
-    if (exit) root.exit = exit;
-  }
+  const liveExit = exitToJson(p.exit, p.exitClauses);
+  if (liveExit) root.exit = liveExit;
   const scaleOut = scaleOutToJson(p.scale_out);
   if (scaleOut) root.scale_out = scaleOut;
   // Re-entry rides along only when fully specified (both a cooldown and an episode
@@ -194,7 +192,7 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   const parked: Record<string, unknown> = {};
   const parkedEntry = sideToJson(p.disabled?.entry);
   if (parkedEntry) parked.entry = parkedEntry;
-  const parkedExit = sideToJson(p.disabled?.exit);
+  const parkedExit = exitToJson(p.disabled?.exit, p.disabled?.exitClauses);
   if (parkedExit) parked.exit = parkedExit;
   const parkedStages = scaleOutToJson(p.disabled?.scale_out);
   if (parkedStages) parked.scale_out = parkedStages;
@@ -206,6 +204,28 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   if (p.exclusive) root.exclusive = true;
   if (Number.isFinite(p.priority) && p.priority !== 0) root.priority = p.priority;
   return root;
+}
+
+/** Authored exit sides the engine compiles. Array-form wins when present. */
+export function authoredExitSides(
+  p: Pick<RuleParams, 'exit' | 'exitClauses'>,
+): SideConditions[] {
+  if (p.exitClauses && p.exitClauses.length > 0) {
+    return p.exitClauses.filter((c) => Object.keys(c).length > 0);
+  }
+  if (p.exit && Object.keys(p.exit).length > 0) return [p.exit];
+  return [];
+}
+
+function exitToJson(
+  exit: SideConditions | undefined,
+  clauses: SideConditions[] | undefined,
+): unknown {
+  if (clauses && clauses.length > 0) {
+    const out = clauses.map((c) => sideToJson(c)).filter((c) => c != null);
+    return out.length ? out : undefined;
+  }
+  return sideToJson(exit);
 }
 
 function sideToJson(side: SideConditions | undefined): Record<string, unknown> | undefined {
@@ -277,13 +297,20 @@ function disabledFromJson(
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   const entry = sideFromJson(o.entry, reg);
-  const parkedExit = Array.isArray(o.exit)
-    ? undefined
-    : sideFromJson(o.exit, reg);
+  const parked = Array.isArray(o.exit)
+    ? {
+        exit: undefined as SideConditions | undefined,
+        exitClauses: o.exit
+          .map((c) => sideFromJson(c, reg) ?? {})
+          .filter((c) => Object.keys(c).length > 0),
+      }
+    : { exit: sideFromJson(o.exit, reg), exitClauses: undefined as SideConditions[] | undefined };
   const scale_out = scaleOutFromJson(o.scale_out, reg);
   const has = (s: SideConditions | undefined) => s != null && Object.keys(s).length > 0;
-  if (!has(entry) && !has(parkedExit) && !scale_out?.length) return null;
-  return { entry, exit: parkedExit, scale_out };
+  if (!has(entry) && !has(parked.exit) && !parked.exitClauses?.length && !scale_out?.length) {
+    return null;
+  }
+  return { entry, exit: parked.exit, exitClauses: parked.exitClauses, scale_out };
 }
 
 /** Empty array folds to `null` (same sentinel as backend `configured_labels`). */
@@ -386,14 +413,15 @@ function numOrNull(v: unknown): number | null {
  * `{take_profit:50,stop_loss:null}` equals `{take_profit:50}` — the same semantic
  * rule the engine treats as identical.
  *
- * Array order carries no meaning anywhere in `params` **except** `scale_out`: a
- * group's window instances (`m_flow_window: [{…@25},{…@50}]`) are a set keyed by
- * window, and a metric's DNF arms / AND atoms are conjunctions and disjunctions —
- * all order-free. Only the scale-out ladder executes in the authored order, so it
- * is the one array kept positional. Without this, a rule that survived an editor
- * round-trip (which re-emits window instances sorted by window) failed to compare
- * equal to the sweep combo it was promoted from — the "best" badge on the sweep's
- * Used-by column silently went missing on every multi-window winner.
+ * Array order carries no meaning anywhere in `params` **except** `scale_out` and
+ * array-form `exit`: a group's window instances (`m_flow_window: [{…@25},{…@50}]`)
+ * are a set keyed by window, and a metric's DNF arms / AND atoms are conjunctions
+ * and disjunctions — all order-free. The scale-out ladder executes in authored
+ * order; DNF exit clauses OR, but the first fully-true clause labels the exit.
+ * Without this, a rule that survived an editor round-trip (which re-emits window
+ * instances sorted by window) failed to compare equal to the sweep combo it was
+ * promoted from — the "best" badge on the sweep's Used-by column silently went
+ * missing on every multi-window winner.
  */
 export function canonicalizeRuleParamsJson(raw: unknown): unknown {
   return canonicalizeJson(raw) ?? {};
@@ -417,7 +445,13 @@ function canonicalizeJson(v: unknown, ordered = false): unknown {
   for (const k of Object.keys(v as object).sort()) {
     // Only the ladder ITSELF is positional — each stage's nested `conditions` are
     // set-like again, which falls out of passing the flag one level deep only.
-    const c = canonicalizeJson((v as Record<string, unknown>)[k], k === 'scale_out');
+    // Clause order on array-form `exit` is first-match labeling (same as the
+    // scale-out ladder's execution order). Window instances inside a clause stay
+    // set-like — the flag is one level deep.
+    const c = canonicalizeJson(
+      (v as Record<string, unknown>)[k],
+      k === 'scale_out' || k === 'exit',
+    );
     if (c === undefined) continue;
     if (typeof c === 'object' && c !== null && !Array.isArray(c) && Object.keys(c).length === 0) {
       continue;

@@ -17,7 +17,8 @@ interface RuleParamsJson {
   take_profit?: number | null;
   stop_loss?: number | null;
   entry?: Record<string, unknown>;
-  exit?: Record<string, unknown>;
+  /** Object-form OR array-form DNF. */
+  exit?: Record<string, unknown> | Record<string, unknown>[];
   scale_out?: Array<{
     sell_bps?: number | null;
     take_profit?: number | null;
@@ -35,6 +36,10 @@ interface SideChip {
   text: string;
   /** When true, render a `|` separator before this chip (OR between arms). */
   orBefore?: boolean;
+  /** When true, render `∧` before this chip (AND inside a DNF clause). */
+  andBefore?: boolean;
+  /** When true, render `∨` before this chip (OR between DNF clauses). */
+  clauseOrBefore?: boolean;
 }
 
 function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
@@ -91,6 +96,26 @@ function sideChips(side: Record<string, unknown> | undefined): SideChip[] {
   return out;
 }
 
+function exitChips(exit: RuleParamsJson['exit']): SideChip[] {
+  if (Array.isArray(exit)) {
+    const out: SideChip[] = [];
+    exit.forEach((clause, ci) => {
+      if (!clause || typeof clause !== 'object' || Array.isArray(clause)) return;
+      const chips = sideChips(clause);
+      chips.forEach((c, i) => {
+        out.push({
+          ...c,
+          clauseOrBefore: ci > 0 && i === 0,
+          andBefore: i > 0,
+          orBefore: c.orBefore,
+        });
+      });
+    });
+    return out;
+  }
+  return sideChips(exit);
+}
+
 function parseParams(raw: unknown): {
   take_profit: number | null;
   stop_loss: number | null;
@@ -119,7 +144,7 @@ function parseParams(raw: unknown): {
     take_profit: typeof p.take_profit === 'number' ? p.take_profit : null,
     stop_loss: typeof p.stop_loss === 'number' ? p.stop_loss : null,
     entry: sideChips(p.entry),
-    exit: sideChips(p.exit),
+    exit: exitChips(p.exit),
     scale_out,
     reentry,
     exclusive: p.exclusive === true,
@@ -139,6 +164,16 @@ function MetricCondChip({ chip: c }: { chip: SideChip }) {
   });
   return (
     <>
+      {c.clauseOrBefore && (
+        <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
+          ∨
+        </span>
+      )}
+      {c.andBefore && (
+        <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
+          ∧
+        </span>
+      )}
       {c.orBefore && (
         <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
           |
@@ -169,6 +204,10 @@ function chipsByGroup(chips: SideChip[]): { group: string; chips: SideChip[] }[]
   return order.map((group) => ({ group, chips: map.get(group)! }));
 }
 
+function isDnfChips(chips: SideChip[]): boolean {
+  return chips.some((c) => c.andBefore || c.clauseOrBefore);
+}
+
 function SideBlock({
   side,
   chips,
@@ -179,6 +218,25 @@ function SideBlock({
   labelCls: string;
 }): ReactNode {
   if (chips.length === 0) return null;
+  // Array-form DNF spans groups inside a way. Grouping by group would pull
+  // liquidity from two clauses onto one row and park ∧ / ∨ on the wrong chip.
+  if (isDnfChips(chips)) {
+    return (
+      <div className="grid grid-cols-[1.5rem_1fr] items-start gap-x-1.5">
+        <span className={cn('pt-0.5 text-[9px] uppercase leading-tight', labelCls)}>{side}</span>
+        <div className="flex flex-wrap items-center gap-1">
+          {chips.map((c, i) => (
+            <Fragment key={`${side}-dnf-${c.group}-${i}`}>
+              <span className="pt-0.5 text-[10px] leading-tight text-text-dim" title={c.group}>
+                {c.group}
+              </span>
+              <MetricCondChip chip={c} />
+            </Fragment>
+          ))}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="grid grid-cols-[1.5rem_auto_1fr] items-start gap-x-1.5 gap-y-0.5">
       {chipsByGroup(chips).map(({ group, chips: groupChips }, gi) => (
@@ -267,6 +325,16 @@ function headerSideChips(side: 'in' | 'out', chips: SideChip[]): ReactNode[] {
     const c = chips[i];
     out.push(
       <Fragment key={`${side}-${c.group}-${i}`}>
+        {c.clauseOrBefore && (
+          <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
+            ∨
+          </span>
+        )}
+        {c.andBefore && (
+          <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
+            ∧
+          </span>
+        )}
         {c.orBefore && (
           <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
             |
@@ -278,7 +346,9 @@ function headerSideChips(side: 'in' | 'out', chips: SideChip[]): ReactNode[] {
         <span className="font-mono text-[10px] text-text-dim/80" title={c.group}>
           {c.group}
         </span>
-        <MetricCondChip chip={c} />
+        <MetricCondChip
+          chip={{ ...c, orBefore: false, andBefore: false, clauseOrBefore: false }}
+        />
       </Fragment>,
     );
     sideShown = true;
