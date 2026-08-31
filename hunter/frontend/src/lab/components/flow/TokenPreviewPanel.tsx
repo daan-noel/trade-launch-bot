@@ -2,10 +2,9 @@ import { useMemo, useState } from 'react';
 
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Input } from 'components/ui/Input';
-import type { FlowDiscoveryTokenGross, TradeRecord } from 'types';
-import type { IxPatternFeeMask, IxPatternRow } from 'lib/strategy/ixPatternRows';
-
-import { LazyFlowPreviewChart } from './LazyFlowPreviewChart';
+import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
+import type { ChartTapeStaging } from 'components/tokens/chartTapeStaging';
+import type { FlowDiscoveryTokenGross, TokenDetailRecord } from 'types';
 
 function fmt(n: number, digits = 1): string {
   if (!Number.isFinite(n)) return '—';
@@ -17,41 +16,22 @@ function fmt(n: number, digits = 1): string {
  *  picked token's full trade history is ever fetched — the roster itself
  *  can't show a real vol/organic split (that needs the trade-level
  *  classifier), which is exactly what picking a token and reading the chart
- *  below gives you instead. */
+ *  below gives you instead.
+ *
+ *  The preview is {@link LazyTokenTradeChart}: overlay, badges and highlight
+ *  follow the cart's selected list via {@link ChartTapeStaging}. */
 export function TokenPreviewPanel({
   tokens,
   selectedMint,
   onSelect,
-  trades,
-  tradesLoading,
-  creatorWallet,
-  athPriceInSol,
-  isMigrated,
-  tokenCreatedAt,
-  patternKeys,
-  patternRows,
-  feePins,
-  onFeePinsChange,
-  onTogglePattern,
+  detail,
+  tape,
 }: {
   tokens: FlowDiscoveryTokenGross[];
   selectedMint: string | null;
   onSelect: (mint: string) => void;
-  trades: TradeRecord[];
-  tradesLoading: boolean;
-  creatorWallet: string | null;
-  athPriceInSol: number | null;
-  isMigrated: boolean;
-  /** Token `created_at` (ISO) — zero point for the chart tooltip's "+age". */
-  tokenCreatedAt: string | null;
-  patternKeys: ReadonlySet<string>;
-  patternRows: readonly IxPatternRow[];
-  feePins: IxPatternFeeMask;
-  onFeePinsChange: (next: IxPatternFeeMask) => void;
-  onTogglePattern: (
-    labels: string[],
-    trade: Pick<TradeRecord, 'cu_limit' | 'cu_price' | 'tip_lamports'>,
-  ) => void;
+  detail: TokenDetailRecord | null | undefined;
+  tape: ChartTapeStaging;
 }) {
   const [mintQuery, setMintQuery] = useState('');
   const filteredTokens = useMemo(() => {
@@ -69,9 +49,6 @@ export function TokenPreviewPanel({
             : tokens.length.toLocaleString()}{' '}
           ranked
         </span>
-        {selectedMint && tradesLoading && (
-          <span className="text-[10px] text-text-dim">Loading trades…</span>
-        )}
       </div>
       <div className="flex flex-wrap gap-3">
         <div className="flex w-56 shrink-0 flex-col gap-1">
@@ -120,18 +97,15 @@ export function TokenPreviewPanel({
         </div>
         <div className="min-w-0 flex-1">
           {selectedMint ? (
-            <LazyFlowPreviewChart
-              trades={trades}
-              patternKeys={patternKeys}
-              patternRows={patternRows}
-              feePins={feePins}
-              onFeePinsChange={onFeePinsChange}
-              onTogglePattern={onTogglePattern}
-              creatorWallet={creatorWallet}
-              athPriceInSol={athPriceInSol}
-              isMigrated={isMigrated}
-              tokenCreatedAt={tokenCreatedAt}
-            />
+            detail ? (
+              <LazyTokenTradeChart
+                detail={detail}
+                tape={tape}
+                tableId="flow_preview_trades"
+              />
+            ) : (
+              <p className="text-[11px] text-text-dim">Loading token…</p>
+            )
           ) : (
             <p className="text-[11px] text-text-dim">
               Pick a token to preview its vol/non-vol split — updates live as you toggle

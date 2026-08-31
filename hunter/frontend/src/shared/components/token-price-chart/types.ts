@@ -29,6 +29,10 @@ export interface ChartTrade {
   wallet_address?: string;
   /** Ordered instruction labels — drives vol/non-vol flow classification. */
   instruction_labels?: string[] | null;
+  /** Per-tx compute budget — overlay matching against a pinned `ix_patterns` row. */
+  cu_limit?: number | null;
+  cu_price?: number | null;
+  tip_lamports?: number | null;
 }
 
 /** A tag attached to a wallet's owning profile. */
@@ -384,6 +388,26 @@ export interface TokenPriceChartProps {
    * gate: it marks a per-trade STRUCTURAL match, which needs patterns.)
    */
   flowPatternKeys?: ReadonlySet<string> | null;
+  /**
+   * Which list {@link flowPatternKeys} is. Tagged (default) is the engine's
+   * volume split (contagion on). Dump and working are structural-only — those
+   * groups have no wallet rule — and working keys are grain ids.
+   */
+  flowList?: 'tagged' | 'dump' | 'working';
+  /** Whole pattern rows when the list carries fee pins. Overlay matching uses
+   *  engine wildcards so an ix-only row still paints every budget of that shape. */
+  flowPatternRows?: readonly {
+    labels: string[];
+    cu_limit?: number | null;
+    cu_price?: number | null;
+    tip_lamports?: number | null;
+  }[] | null;
+  /** Override creator-wallet seeding. Default follows {@link flowList} (on for
+   *  tagged). Staging surfaces pass the fingerprint's `creator_is_tagged`. */
+  flowSeedCreator?: boolean;
+  /** Override wallet contagion. Default follows {@link flowList} (on for tagged).
+   *  Staging surfaces pass the fingerprint's `wallet_contagion`. */
+  flowContagion?: boolean;
   /** Cumulative flow-line basis (default `cost_sol`). */
   flowBasis?: 'cost_sol' | 'token' | 'value_sol';
   /** Ephemeral highlight lenses — see {@link ChartHighlightLens}. */
@@ -436,9 +460,11 @@ export interface ChartToolbarProps {
   /** False only when nothing can classify (no patterns AND no creator wallet)
    *  — toggle disabled. */
   flowLinesAvailable: boolean;
-  /** True when the split comes from fingerprint `ix_patterns`; false ⇒ the
+  /** True when the split comes from the selected list's membership; false ⇒ the
    *  lines are the creator-vs-rest degradation (labelled as such in the tooltip). */
   flowPatternsConfigured: boolean;
+  /** Which list the overlay is classifying — names the tooltip. */
+  flowList?: 'tagged' | 'dump' | 'working';
   /** Range-select (drag-to-highlight) mode is active. */
   rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;

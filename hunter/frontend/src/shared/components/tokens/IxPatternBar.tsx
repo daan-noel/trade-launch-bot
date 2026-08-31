@@ -105,11 +105,15 @@ export function FeePinToggles({
 export function IxPatternBar({
   target,
   readOnly = false,
+  hideTargetPicker = false,
 }: {
   target: IxPatternTarget;
   /** A stored run's frozen snapshot — its numbers were computed under those
    *  patterns, so they are not this chart's to change. */
   readOnly?: boolean;
+  /** Staging surfaces own the write target (the cart). The list toggle and
+   *  fee pins still show; the fingerprint picker does not. */
+  hideTargetPicker?: boolean;
 }) {
   if (readOnly) {
     return (
@@ -155,36 +159,35 @@ export function IxPatternBar({
         options={LISTS}
       />
       {!isWorking && (
-        <FeePinToggles mask={feePins} onChange={setFeePins} disabled={!targetId} />
+        <FeePinToggles mask={feePins} onChange={setFeePins} disabled={!targetId && !hideTargetPicker} />
       )}
       <span className="font-mono text-[11px] text-text-dim">
         {count} {isWorking ? `grain${count === 1 ? '' : 's'}` : `pattern${count === 1 ? '' : 's'}`}
       </span>
 
-      <Select
-        fieldSize="sm"
-        value={targetId ?? ''}
-        onChange={(e) => setTargetId(e.target.value || null)}
-        title="Fingerprint the badges write to"
-        className="max-w-[16rem]"
-      >
-        <option value="">Fingerprint…</option>
-        {fingerprints.map((f) => (
-          <option key={f.id} value={f.id}>
-            {f.name}
-          </option>
-        ))}
-      </Select>
+      {!hideTargetPicker && (
+        <Select
+          fieldSize="sm"
+          value={targetId ?? ''}
+          onChange={(e) => setTargetId(e.target.value || null)}
+          title="Fingerprint the badges write to"
+          className="max-w-[16rem]"
+        >
+          <option value="">Fingerprint…</option>
+          {fingerprints.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.name}
+            </option>
+          ))}
+        </Select>
+      )}
 
       {saving && <span className="text-[11px] text-text-dim">Saving…</span>}
-      {!targetId && (
+      {!hideTargetPicker && !targetId && (
         <span className="text-[11px] text-text-dim">
           Pick a fingerprint to make the badges editable.
         </span>
       )}
-      {/* A guessed target is never presented as a known one: this host had no
-          fingerprint, so the row was found by matching the pattern set — which
-          any number of rows can carry, empty sets most of all. */}
       {inferred && (
         <span
           className="text-[11px] text-text-dim"
@@ -193,15 +196,12 @@ export function IxPatternBar({
           matched by patterns — confirm before editing
         </span>
       )}
-      {/* Editing off-host is allowed but never silent: the badges below now
-          answer for a different row than the chart's own lines. */}
       {offHost && (
         <span className="text-[11px] text-warning">
-          Not this chart&rsquo;s fingerprint — the badges follow the picked one, the chart
-          lines do not.
+          Not this chart&rsquo;s fingerprint — badges and overlay follow the picked one.
         </span>
       )}
-      {activeRuleCount > 0 && (
+      {!hideTargetPicker && activeRuleCount > 0 && (
         <span className="text-[11px] text-warning">
           {activeRuleCount} active rule{activeRuleCount === 1 ? '' : 's'} use this fingerprint —
           editing changes what they read.

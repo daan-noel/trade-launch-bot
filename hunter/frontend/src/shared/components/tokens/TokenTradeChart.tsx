@@ -16,6 +16,9 @@ import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
 import { useFlowLensContext } from 'context/FlowLensContext';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
 import { useTokenHighlight } from 'components/tokens/useTokenHighlight';
+import { useIxPatternTarget, type IxPatternTarget, type TapeList } from 'hooks/useIxPatternTarget';
+import { classifyOptsForTape } from 'lib/flow/tapeClassify';
+import type { ChartTapeStaging } from 'components/tokens/chartTapeStaging';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useFlowReasons } from 'hooks/useFlowReasons';
 import { useProfileWallets } from 'hooks/useProfileWallets';
@@ -26,11 +29,13 @@ import type { TokenDetailRecord, TradeRecord } from 'types';
 /** Stable empty reference so the chart doesn't re-aggregate on every render. */
 const EMPTY_TRADES: TradeRecord[] = [];
 
-/** A selection that lives outside the chart's own bar/range click (e.g. a swing
- *  leg picked in a separate results table) but should drive the trades panel
- *  below the chart the same way. Setting this clears the chart's internal
- *  bar/range selection; clicking a bar/range inside the chart calls `onClear`
- *  to hand control back. */
+/**
+ * A selection that lives outside the chart's own bar/range click (e.g. a swing
+ * leg picked in a separate results table) but should drive the trades panel
+ * below the chart the same way. Setting this clears the chart's internal
+ * bar/range selection; clicking a bar/range inside the chart calls `onClear`
+ * to hand control back.
+ */
 interface TokenTradeChartExternalSelection {
   /** Stable identity for the current selection — used to detect a new pick. */
   key: string;
@@ -41,6 +46,32 @@ interface TokenTradeChartExternalSelection {
   trades: TradeRecord[];
   emptyMessage: string;
   onClear: () => void;
+}
+
+export type { ChartTapeStaging } from 'components/tokens/chartTapeStaging';
+
+function stagingPatternTarget(tape: ChartTapeStaging): IxPatternTarget {
+  return {
+    target: null,
+    fingerprints: [],
+    targetId: null,
+    setTargetId: () => {},
+    list: tape.list,
+    setList: tape.setList,
+    patterns: tape.rows.map((r) => r.labels),
+    workingTemplates: tape.workingTemplates,
+    rows: tape.rows,
+    feePins: tape.feePins,
+    setFeePins: tape.setFeePins,
+    otherKeys: null,
+    keys: tape.keys,
+    activeRuleCount: 0,
+    toggle: tape.toggle,
+    inferred: false,
+    offHost: false,
+    saving: false,
+    error: null,
+  };
 }
 
 interface TokenTradeChartProps {
@@ -81,6 +112,11 @@ interface TokenTradeChartProps {
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
   flowReadOnly?: boolean;
+  /**
+   * Staging tape (Flow Discovery). Overlay, badges and clicks all read this
+   * draft instead of persisting to a fingerprint. The cart owns Apply.
+   */
+  tape?: ChartTapeStaging | null;
   /** Bottom-pane on/off lanes — the inspect's rule-condition timeline. */
   timeBands?: ChartTimeBand[] | null;
   /** The stretch those lanes speak for. */
@@ -109,6 +145,7 @@ export function TokenTradeChart({
   flowPatternKeys = null,
   flowFingerprintId = null,
   flowReadOnly = false,
+  tape = null,
   timeBands = null,
   timeBandCoverage = null,
   valueLane = null,
@@ -225,11 +262,47 @@ export function TokenTradeChart({
   // overlay lines were (structural-only, exclusions) or the badge and the line
   // disagree on the same trade.
   const lens = useFlowLensContext();
-  const flowReasons = useFlowReasons(trades, flowPatternKeys, detail?.creator_wallet, {
-    contagion: lens?.contagion,
-    excludeWallets: lens?.excludeWallets ?? null,
-    side: lens?.side ?? null,
+  const lensTarget = flowReadOnly ? null : (lens?.target ?? null);
+  const persistTarget = useIxPatternTarget({
+    fingerprintId: flowFingerprintId,
+    savedKeys: flowPatternKeys,
+    enabled: !flowReadOnly && !lensTarget && !tape,
   });
+  const patternTarget = useMemo(
+    () => (tape ? stagingPatternTarget(tape) : persistTarget),
+    [tape, persistTarget],
+  );
+  const overlayList: TapeList = tape?.list ?? (lensTarget ? 'tagged' : persistTarget.list);
+  const overlayKeys = tape?.keys ?? (lensTarget ? (flowPatternKeys ?? null) : persistTarget.keys);
+  const overlayRows =
+    overlayList === 'working'
+      ? null
+      : (tape?.rows ?? (lensTarget ? null : persistTarget.rows));
+  const classifyOpts = useMemo(
+    () =>
+      classifyOptsForTape({
+        list: overlayList,
+        keys: overlayKeys,
+        rows: overlayRows,
+        creatorWallet: detail?.creator_wallet,
+        contagion: lens?.contagion ?? tape?.contagion,
+        seedCreator: tape?.seedCreator,
+        excludeWallets: lens?.excludeWallets ?? null,
+        side: lens?.side ?? null,
+      }),
+    [
+      overlayList,
+      overlayKeys,
+      overlayRows,
+      detail?.creator_wallet,
+      lens?.contagion,
+      tape?.contagion,
+      tape?.seedCreator,
+      lens?.excludeWallets,
+      lens?.side,
+    ],
+  );
+  const flowReasons = useFlowReasons(trades, classifyOpts);
 
   const selectionTrades = useMemo(() => {
     if (externalSelection) return externalSelection.trades;
@@ -269,7 +342,11 @@ export function TokenTradeChart({
         onCrosshairTimeChange={onCrosshairTimeChange}
         externalCrosshairTimeSec={externalCrosshairTimeSec}
         onVisibleTimeRangeChange={onVisibleTimeRangeChange}
-        flowPatternKeys={flowPatternKeys}
+        flowPatternKeys={overlayKeys}
+        flowList={overlayList}
+        flowPatternRows={overlayRows}
+        flowSeedCreator={tape?.seedCreator}
+        flowContagion={tape?.contagion}
         highlightLens={highlight.lens}
         onHighlightLensMatch={highlight.onLensMatch}
         timeBands={timeBands}
@@ -287,9 +364,11 @@ export function TokenTradeChart({
         eventMarkers={eventMarkers}
         myWalletAddresses={myWalletAddresses}
         highlightWallet={highlightWallet}
-        flowPatternKeys={flowPatternKeys}
+        flowPatternKeys={overlayKeys}
         flowFingerprintId={flowFingerprintId}
         flowReadOnly={flowReadOnly}
+        patternTarget={patternTarget}
+        hideTargetPicker={!!tape}
         flowReasons={flowReasons}
         highlight={highlight}
       />

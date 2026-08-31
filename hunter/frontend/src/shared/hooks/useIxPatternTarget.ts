@@ -9,8 +9,10 @@ import {
   patternRowsForList,
   patternsForList,
   workingTemplatesFromConfig,
-  type IxPatternList,
+  type TapeList,
 } from 'lib/strategy/registry';
+
+export type { TapeList };
 import { isLaunchGrain, templateGrain, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import {
   togglePatternRow,
@@ -77,8 +79,6 @@ export function resolveIxPatternTarget(input: {
     offHost: targetId != null && hostFingerprintId != null && targetId !== hostFingerprintId,
   };
 }
-
-export type TapeList = IxPatternList | 'working';
 
 /** The write used to rebuild `m_flow_ix` from the pattern rows alone, which deleted
  *  the marker masks and reverted `wallet_contagion` / `creator_is_tagged` to their

@@ -311,6 +311,20 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'Kind: static (fingerprint-scoped).',
     ].join('\n'),
   },
+  m_burst_wave: {
+    title: 'm_burst_wave — this token\'s consecutive-slot buy run',
+    body: [
+      'Token-level (no fingerprint list). A wave is consecutive buy-slots; it resets',
+      'when the next buy is at least 2 slots after the last buy-slot. The gap is empty',
+      'buy-slots BEFORE that run started, not before a later printer in the same run.',
+      'Create slot is not a fireable wave.',
+      '',
+      'Completing print: this_member = 1 and wallet_count crosses 2. all_new is every',
+      'wave wallet first-on-this-mint (not has_new).',
+      '',
+      'Kind: static.',
+    ].join('\n'),
+  },
 };
 
 // ── Per-metric meaning ───────────────────────────────────────────────────────
@@ -1175,7 +1189,7 @@ export const FINGERPRINT_FIELD_HELP = {
     body: [
       'Build-template grain ids (program|CU|ATA|N|S|F), NOT full ix_labels sequences.',
       'm_burst_slot.this_working / working_* / has_new read this list. Absent => every',
-      'burst metric is NaN (never 0).',
+      'm_burst_slot metric is NaN (never 0). m_burst_wave does not read this list.',
       '',
       'Add from the tape: set the chart\'s list toggle to "working" and click a trade',
       'badge. The grain is derived from that trade\'s instruction_labels the same way',
@@ -1502,14 +1516,15 @@ export const DISCOVERY_FIELD_HELP = {
     ].join('\n'),
   },
   draftPatterns: {
-    title: 'Draft ix_patterns',
+    title: 'Draft patterns / grains',
     body: [
-      'Checked structures from the ranked table become unpinned pattern rows (exact ix_labels, any fee budget). Checking Vol on a shape that already has pins widens those pins to the catch-all.',
+      'tagged / dump: checked structures become unpinned pattern rows (exact ix_labels, any fee budget). Checking Vol on a shape that already has pins widens those pins to the catch-all.',
       'On the preview trades table, the pin checkboxes (cu_limit / cu_price / tip) copy those fields from the clicked tx. A pin click on a catch-all of that shape narrows it to that pin — the two never sit together, because the catch-all already matches every budget.',
       'An ix-only row is a wildcard: Vol stays checked on every trade of that shape. A pin-only row lights only the trades that match that pin.',
-      'Edit freely, then Apply to write the list on the target fingerprint (tagged = m_flow_ix, dump = m_dump_ix).',
+      'working: each structure maps to its program|CU|ATA|N|S|F grain. Launch (create) shapes are skipped. No fee pins and no wallet contagion. Bind cannot create a fingerprint from grains — pick a saved row to Update.',
+      'Apply writes the selected list on the target fingerprint (tagged = m_flow_ix, dump = m_dump_ix, working = m_burst_slot.working_templates).',
       '',
-      'Those patterns drive tagged_* / untagged_* / tagged_share (or dump_sell / dump_sell_count) on rules that use this fingerprint.',
+      'Those patterns drive tagged_* / untagged_* / tagged_share (or dump_sell / dump_sell_count, or burst working_templates) on rules that use this fingerprint.',
       'Empty draft cannot Apply — toggle at least one structure (or add a row in the editor).',
     ].join('\n'),
   },

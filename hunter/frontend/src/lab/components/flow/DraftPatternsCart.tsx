@@ -11,9 +11,11 @@ import { CheckIcon, CloseIcon, EditIcon, LinkIcon, SpinnerIcon, TrashIcon } from
 import { DISCOVERY_FIELD_HELP, FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import {
   metricConfigWithList,
+  metricConfigWithWorkingTemplates,
   withFlowWalletRules,
-  type IxPatternList,
+  type TapeList,
 } from 'lib/strategy/registry';
+import { toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import {
   formatFeePins,
   rowPinsFee,
@@ -23,14 +25,22 @@ import {
 import { ToggleGroup } from 'components/ui/ToggleGroup';
 import type { Fingerprint } from 'lib/strategy/types';
 
-/** The two lists the cart can stage into. `tagged` is `m_flow_ix.ix_patterns` (which
+/** The lists the cart can stage into. `tagged` is `m_flow_ix.ix_patterns` (which
  *  trades the flow split calls volume-side); `dump` is `m_dump_ix.ix_patterns` (the
- *  builds whose SELLS `dump_sell_count` counts). A build may sit on BOTH, so the cart
- *  states which list it is about to write rather than leaving Apply ambiguous - the
- *  risk is writing the RIGHT build into the WRONG list, not an illegal overlap. */
-const STAGE_LISTS: { value: IxPatternList; label: string; title: string }[] = [
+ *  builds whose SELLS `dump_sell_count` counts); `working` is
+ *  `m_burst_slot.working_templates` (grain ids). A build may sit on both ix lists,
+ *  so the cart states which list it is about to write rather than leaving Apply
+ *  ambiguous - the risk is writing the RIGHT build into the WRONG list, not an
+ *  illegal overlap. Working grains are a different vocabulary; bind cannot create
+ *  a fingerprint from them. */
+const STAGE_LISTS: { value: TapeList; label: string; title: string }[] = [
   { value: 'tagged', label: 'tagged', title: 'Stage into m_flow_ix.ix_patterns' },
   { value: 'dump', label: 'dump', title: 'Stage into m_dump_ix.ix_patterns' },
+  {
+    value: 'working',
+    label: 'working',
+    title: 'Stage into m_burst_slot.working_templates (grain ids)',
+  },
 ];
 
 /** Staging "cart" for the ix_patterns being assembled: an accent-elevated
@@ -46,6 +56,9 @@ export function DraftPatternsCart({
   draftPatterns,
   onChange,
   currentPatterns,
+  draftWorking,
+  onWorkingChange,
+  currentWorking,
   targetFp,
   stageInto,
   onStageIntoChange,
@@ -58,11 +71,14 @@ export function DraftPatternsCart({
   draftPatterns: IxPatternRow[];
   onChange: (patterns: IxPatternRow[]) => void;
   currentPatterns: IxPatternRow[];
+  draftWorking: string[];
+  onWorkingChange: (grains: string[]) => void;
+  currentWorking: string[];
   targetFp: Fingerprint | null;
   /** Which list Apply writes the draft into. */
-  stageInto: IxPatternList;
+  stageInto: TapeList;
   /** Switching reseeds the draft from the other list — the page owns that. */
-  onStageIntoChange: (list: IxPatternList) => void;
+  onStageIntoChange: (list: TapeList) => void;
   /** `m_flow_ix`'s two wallet rules as staged — Apply writes these. */
   walletRules: FlowWalletRules;
   /** The same pair as SAVED on the target, so the panel can mark them unsaved. */
@@ -73,10 +89,13 @@ export function DraftPatternsCart({
 }) {
   const [rawEdit, setRawEdit] = useState(false);
 
+  const isWorking = stageInto === 'working';
   const draftNorm = serializeIxPatternRows(draftPatterns);
   const savedNorm = serializeIxPatternRows(currentPatterns);
-  const stagedCount = draftNorm.length;
-  const patternsDirty = JSON.stringify(draftNorm) !== JSON.stringify(savedNorm);
+  const stagedCount = isWorking ? draftWorking.length : draftNorm.length;
+  const patternsDirty = isWorking
+    ? JSON.stringify([...draftWorking].sort()) !== JSON.stringify([...currentWorking].sort())
+    : JSON.stringify(draftNorm) !== JSON.stringify(savedNorm);
 
   // Only meaningful against a saved row: bind posts `ix_patterns` alone, so a newly
   // bound fingerprint takes the backend defaults and is edited after.
@@ -88,9 +107,14 @@ export function DraftPatternsCart({
 
   const applyLabel = applying
     ? 'Applying…'
-    : targetFp
-      ? `Update “${targetFp.name}”`
-      : 'Create & bind fingerprint';
+    : isWorking && !targetFp
+      ? 'Pick a fingerprint to save grains'
+      : targetFp
+        ? `Update “${targetFp.name}”`
+        : 'Create & bind fingerprint';
+
+  const applyDisabled =
+    stagedCount === 0 || applying || (isWorking && !targetFp);
 
   return (
     <div className="rounded-lg border border-accent/30 bg-accent/4 p-3 shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-accent)_10%,transparent)]">
@@ -100,7 +124,7 @@ export function DraftPatternsCart({
             tip={DISCOVERY_FIELD_HELP.draftPatterns}
             className="text-xs font-semibold text-text"
           >
-            Draft ix_patterns
+            Draft {isWorking ? 'working grains' : 'ix_patterns'}
           </LabelTip>
           <ToggleGroup
             size="sm"
@@ -113,7 +137,11 @@ export function DraftPatternsCart({
           <Badge variant={stagedCount > 0 ? 'accent' : 'neutral'} size="sm" pill>
             {stagedCount} staged
           </Badge>
-          {targetFp && <span className="text-[10px] text-text-dim">{savedNorm.length} saved</span>}
+          {targetFp && (
+            <span className="text-[10px] text-text-dim">
+              {isWorking ? currentWorking.length : savedNorm.length} saved
+            </span>
+          )}
           {(patternsDirty || rulesDirty) && stagedCount > 0 && (
             <Badge variant="warning" size="sm" pill>
               unsaved
@@ -121,35 +149,72 @@ export function DraftPatternsCart({
           )}
         </span>
         <span className="inline-flex items-center gap-2">
-          {!rawEdit && draftPatterns.length > 0 && (
+          {!rawEdit && stagedCount > 0 && (
             <Button
               variant="link"
               size="xs"
               className="text-red hover:text-red"
               onClick={() => {
-                if (stagedCount > 0 && !window.confirm(clearPrompt(draftPatterns))) return;
-                onChange([]);
+                if (!window.confirm(isWorking ? 'Clear all staged grains?' : clearPrompt(draftPatterns)))
+                  return;
+                if (isWorking) onWorkingChange([]);
+                else onChange([]);
               }}
-              title="Delete all staged structures"
+              title={isWorking ? 'Delete all staged grains' : 'Delete all staged structures'}
             >
               <TrashIcon className="h-3 w-3" />
               Delete all
             </Button>
           )}
-          <Button
-            variant="link"
-            size="xs"
-            onClick={() => setRawEdit((v) => !v)}
-            title={rawEdit ? 'Back to chip view' : 'Edit raw JSON rows (labels + optional fee pins)'}
-          >
-            <EditIcon className="h-3 w-3" />
-            {rawEdit ? 'Done editing' : 'Edit raw'}
-          </Button>
+          {!isWorking && (
+            <Button
+              variant="link"
+              size="xs"
+              onClick={() => setRawEdit((v) => !v)}
+              title={rawEdit ? 'Back to chip view' : 'Edit raw JSON rows (labels + optional fee pins)'}
+            >
+              <EditIcon className="h-3 w-3" />
+              {rawEdit ? 'Done editing' : 'Edit raw'}
+            </Button>
+          )}
         </span>
       </div>
 
-      {rawEdit ? (
-        // The editor caps and scrolls its own list — a wrapper scroller here nests two.
+      {isWorking ? (
+        stagedCount === 0 ? (
+          <EmptyState
+            compact
+            message={
+              <>
+                No working grains staged. Check rows in the ranked table — each
+                structure maps to its program|CU|ATA|N|S|F grain.
+                <br />
+                <span className="text-[10px] text-text-dim/70">
+                  Burst metrics read NaN until at least one grain is staged. Launch
+                  (create) shapes are skipped.
+                </span>
+              </>
+            }
+          />
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {draftWorking.map((id) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onWorkingChange(toggleWorkingTemplate(draftWorking, id))}
+                className="inline-flex items-center gap-1 rounded border border-green/40 bg-green/10 px-1.5 py-0.5 font-mono text-[10px] text-text-hi hover:border-red/50 hover:bg-red/10"
+                title="Remove from working list"
+              >
+                {id}
+                <span aria-hidden className="text-text-dim/60">
+                  ×
+                </span>
+              </button>
+            ))}
+          </div>
+        )
+      ) : rawEdit ? (
         <IxPatternRowsEditor rows={draftPatterns} onChange={onChange} />
       ) : stagedCount === 0 ? (
         <EmptyState
@@ -222,10 +287,11 @@ export function DraftPatternsCart({
         </ul>
       )}
 
-      {stagedCount > 0 && stageInto === 'dump' && (
+      {stagedCount > 0 && stageInto === 'working' && (
         <div className="mt-2 rounded border border-white/8 bg-white/3 px-2 py-1.5 text-[10px] text-text-dim/80">
-          m_dump_ix has no wallet rules: a build is a property of the TRANSACTION, so
-          every sell is judged on its own ix_labels.
+          m_burst_slot.working_templates are grain ids, not full ix sequences. A
+          grain match is structural only — no wallet contagion. Bind-from-group
+          cannot create a fingerprint from grains; pick a saved row to Update.
         </div>
       )}
 
@@ -282,7 +348,7 @@ export function DraftPatternsCart({
         variant="primary"
         size="md"
         className="mt-3 w-full"
-        disabled={stagedCount === 0 || applying}
+        disabled={applyDisabled}
         onClick={onApply}
         title={applyLabel}
       >
@@ -296,15 +362,21 @@ export function DraftPatternsCart({
         {applyLabel}
       </Button>
 
-      {targetFp && currentPatterns.length > 0 && (
+      {targetFp && (isWorking ? currentWorking.length > 0 : currentPatterns.length > 0) && (
         <details className="mt-2 text-[10px] text-text-dim">
           <summary className="cursor-pointer">Saved config</summary>
           <pre className="mt-1 overflow-x-auto rounded bg-black/20 p-2 font-mono">
             {JSON.stringify(
-              withFlowWalletRules(
-                metricConfigWithList(targetFp.metric_config ?? {}, currentPatterns, stageInto),
-                savedWalletRules,
-              ),
+              isWorking
+                ? metricConfigWithWorkingTemplates(targetFp.metric_config ?? {}, currentWorking)
+                : withFlowWalletRules(
+                    metricConfigWithList(
+                      targetFp.metric_config ?? {},
+                      currentPatterns,
+                      stageInto === 'dump' ? 'dump' : 'tagged',
+                    ),
+                    savedWalletRules,
+                  ),
               null,
               2,
             )}

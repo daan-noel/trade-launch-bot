@@ -16,6 +16,10 @@ import {
 } from 'lib/signedTone';
 import { MintBarTradesPanel } from 'components/tokens/MintBarTradesPanel';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
+import { useTokenHighlight } from 'components/tokens/useTokenHighlight';
+import { useIxPatternTarget } from 'hooks/useIxPatternTarget';
+import { useGetTokenTradesQuery } from 'store/apiSlice';
+import type { TradeRecord } from 'types';
 import {
   ConditionBandsProvider,
   useConditionBands,
@@ -24,6 +28,8 @@ import {
 import { CrosshairTimeProvider, useCrosshairTimeStore } from './crosshairTime';
 import { LazyFloorMintChart } from './LazyFloorMintChart';
 import { OpenPositionStatusChips } from './openPositionStatus';
+
+const EMPTY_FLOOR_TRADES: TradeRecord[] = [];
 
 export interface FloorDetailFacts {
   mint: string;
@@ -129,6 +135,15 @@ export function FloorPositionDetail({
   header?: ReactNode;
 }) {
   const barTrades = useBarTradesSelection();
+  const { data: tapeTrades } = useGetTokenTradesQuery(facts.mint, { skip: !facts.mint });
+  const highlight = useTokenHighlight(tapeTrades ?? EMPTY_FLOOR_TRADES, facts.mint);
+  const patternTarget = useIxPatternTarget({
+    fingerprintId: facts.flowFingerprintId ?? null,
+    savedKeys: facts.flowPatternKeys ?? null,
+  });
+  const overlayList = patternTarget.list;
+  const overlayKeys = patternTarget.keys;
+  const overlayRows = overlayList === 'working' ? null : patternTarget.rows;
   // Published to `facts.conditions` (the rule-condition strip) so hovering the chart
   // answers "what did the rule see HERE". A store rather than state: the crosshair
   // moves per frame and must not re-render the chart emitting it.
@@ -162,7 +177,11 @@ export function FloorPositionDetail({
       markers={markers}
       tableId="floor-detail"
       height={chartHeight}
-      flowPatternKeys={facts.flowPatternKeys ?? null}
+      flowPatternKeys={overlayKeys}
+      flowList={overlayList}
+      flowPatternRows={overlayRows}
+      highlightLens={highlight.lens}
+      onHighlightLensMatch={highlight.onLensMatch}
       onCrosshairTimeChange={crosshair.set}
       timeBands={bands?.lanes ?? null}
       timeBandCoverage={bands?.coverage ?? null}
@@ -358,23 +377,23 @@ export function FloorPositionDetail({
       )}
 
       {/* Bar/range trades sit BELOW the chart ∥ aside grid, not inside the chart
-          column — a trades table in ~half a modal's width is unreadable. Mounted
-          only while something is picked, so an unselected detail adds no flex
-          gap; the click guard keeps a click inside the table from collapsing the
-          host's expanded row. */}
-      {barTrades.active ? (
-        <div onClick={(e) => e.stopPropagation()}>
-          <MintBarTradesPanel
-            mint={facts.mint}
-            selection={barTrades}
-            tableId="floor-detail-bar-trades"
-            eventMarkers={markers}
-            flowPatternKeys={facts.flowPatternKeys ?? null}
-            flowFingerprintId={facts.flowFingerprintId ?? null}
-            className="border-t border-white/7 pt-2"
-          />
-        </div>
-      ) : null}
+          column — a trades table in ~half a modal's width is unreadable. Always
+          mounted so an armed highlight lens keeps its chips after the bar is
+          cleared. The click guard keeps a click inside the table from collapsing
+          the host's expanded row. */}
+      <div onClick={(e) => e.stopPropagation()}>
+        <MintBarTradesPanel
+          mint={facts.mint}
+          selection={barTrades}
+          tableId="floor-detail-bar-trades"
+          eventMarkers={markers}
+          flowPatternKeys={facts.flowPatternKeys ?? null}
+          flowFingerprintId={facts.flowFingerprintId ?? null}
+          highlight={highlight}
+          patternTarget={patternTarget}
+          className="border-t border-white/7 pt-2"
+        />
+      </div>
     </div>
   );
 

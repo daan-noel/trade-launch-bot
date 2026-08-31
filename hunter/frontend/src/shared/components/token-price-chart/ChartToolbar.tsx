@@ -120,20 +120,29 @@ export function FlowLineToggles({
   visibility,
   available,
   patternsConfigured,
+  list = 'tagged',
   onChange,
 }: {
   visibility: FlowLineVisibility;
   available: boolean;
-  /** True when the split comes from fingerprint `ix_patterns`; false =>
+  /** True when the split comes from the selected list's membership; false =>
    *  the creator + contagion fallback. Only changes the tooltip wording. */
   patternsConfigured?: boolean;
+  /** Names the membership set the lines classify against. */
+  list?: 'tagged' | 'dump' | 'working';
   onChange: (next: FlowLineVisibility) => void;
 }) {
+  const listName =
+    list === 'working'
+      ? 'working_templates grains (structural, no contagion)'
+      : list === 'dump'
+        ? 'dump ix_patterns (structural, no contagion)'
+        : 'tagged ix_patterns + creator/wallet contagion';
   const basis = !available
-    ? 'Needs a creator wallet or ix_patterns to classify against'
+    ? 'Needs a creator wallet or a pattern list to classify against'
     : patternsConfigured === false
-      ? 'No fingerprint ix_patterns — showing creator + wallets they traded with (red) vs the rest (gold). Configure patterns for the true volume-maker split.'
-      : 'Classified via the fingerprint’s saved ix_patterns + creator/wallet contagion, the same set the engine decides on';
+      ? 'No patterns on this list — showing creator + wallets they traded with (red) vs the rest (gold). Add patterns for the true split.'
+      : `Classified via this chart's selected ${listName}, the same set the badges below report`;
   const scaleNote =
     ' Both curves share the left price scale, so hiding one rescales the axis to the other.';
   return (
@@ -403,6 +412,7 @@ export function ChartToolbar({
   flowLines,
   flowLinesAvailable,
   flowPatternsConfigured,
+  flowList,
   rangeSelectMode,
   crosshair,
   formatFlow,
@@ -732,6 +742,7 @@ export function ChartToolbar({
             visibility={flowLines}
             available={flowLinesAvailable}
             patternsConfigured={flowPatternsConfigured}
+            list={flowList}
             onChange={onFlowLinesChange}
           />
 

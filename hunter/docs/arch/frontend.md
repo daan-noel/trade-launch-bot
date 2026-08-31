@@ -254,8 +254,9 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   passes `chrome="compact"` so the toolbar collapses behind a Tools toggle; the
   candle/range selection is **controlled** — a host wires `useBarTradesSelection` and
   renders the trades table itself, see below) /
-  `LazyLivePositionInspectModal` (live Rules + Rule Analyze) / `LazyFlowPreviewChart` (lab
-  Flow Discovery); all lazy Suspense fallbacks share `LoadingState` (`page` / `panel` /
+  `LazyLivePositionInspectModal` (live Rules + Rule Analyze). Lab Flow Discovery
+  uses `LazyTokenTradeChart` (same host as Simulate / Tokens) with a staging `tape`
+  so overlay, badges and highlight follow the cart's selected list. All lazy Suspense fallbacks share `LoadingState` (`page` / `panel` /
   `inline`). Lab Creation Stats owns `GroupedCreationSection` (lab-only page — no live
   `extraSections` inject).
   - **`token-price-chart/constants.ts` may import `lightweight-charts` as a TYPE only.**
@@ -276,7 +277,9 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   accent). `TokenTradeChart` puts it under its chart and can yield it to an outside pick
   via `externalSelection`; `FloorPositionDetail` uses `MintBarTradesPanel` — same RTK Query
   cache the chart filled, so no extra request — placed **below** the chart ∥ fills grid,
-  which is the only place with the width for a table. A host outside `token-price-chart`
+  which is the only place with the width for a table. Floor overlay and badges follow the
+  selected tape list (`classifyOptsForTape`); wallet/ix highlight lenses sit on
+  `FloorMintChart` the same way they do on `TokenTradeChart`. A host outside `token-price-chart`
   deep-imports (`.../barTrades`, `.../types`), never the barrel, which would drag
   `lightweight-charts` into a statically-mounted chunk. Detail:
   [@plans/token-analysis/token-history-chart-functionalities.md](../plans/token-analysis/token-history-chart-functionalities.md) §6a.
@@ -659,7 +662,7 @@ next load (no per-metric frontend work).
 `IxPatternList` (`tagged` = `m_flow_ix.ix_patterns`, `dump` = `m_dump_ix.ix_patterns`)
 with `patternsForList` / `metricConfigWithList` over it, so every staging surface says
 which list a click means: the fingerprint form renders the dump editor, the
-flow-discovery cart carries a `staging into [tagged|dump]` toggle that reseeds the
+flow-discovery cart carries a `staging into [tagged|dump|working]` toggle that reseeds the
 draft from the list it is about to overwrite. The trades-table badge strip
 (`IxPatternBar` over `useIxPatternTarget`) carries those two **and** a third list,
 `working` — `m_burst_slot.working_templates` grain ids, a different vocabulary, so it
@@ -686,8 +689,10 @@ notes are suppressed under `dump` (the reasons map is the flow split's verdict, 
 marked `also tagged` / `also dump` from `otherListKeys` — information, not a conflict,
 and the one place a reader learns the two groups' numbers are not disjoint.
 On `working` the badge reads `Working`/`Other` against the grain id
-(`templateGrain`), with no contagion notes. Flow discovery stays tagged|dump — the
-cart does not stage grains. `FingerprintsView` gives the dump list
+(`templateGrain`), with no contagion notes. Flow discovery stages all three lists
+— tagged and dump as ix rows, working as grain ids. Bind-from-group creates a
+fingerprint from tagged or dump only; working grains require an existing row
+(`Update`). `FingerprintsView` gives the dump list
 its own **dump builds** column beside `flow patterns`, and `DumpPatternsChip` is the
 `FlowPatternsChip` twin — absent when the list is empty, where the flow chip stays
 visible as `flow✗`, since an empty dump list leaves `dump_*` reading NaN rather than
@@ -699,13 +704,19 @@ absent when empty.
   match SSOT fills the corpus) or manual `FingerprintGroupPicker` → ranked
   ix-structure table → toggle draft patterns → Apply (`PUT` / create-bind). UI split:
   `flowDiscoverySuggest` / `StructureTable` / `DraftPatternsCart` / `TokenPreviewPanel`
-  under `lab/components/flow/`. The ranked table's Vol checkbox stages an unpinned
-  catch-all; the preview trades strip carries the same `FeePinToggles` as chart
-  trades tables. A pin click on a catch-all of that shape narrows it to that tx's
+  under `lab/components/flow/`. Preview is `TokenTradeChart` with a staging `tape`:
+  overlay, badges and highlight follow the selected list through `classifyOptsForTape`
+  (tagged = exact labels + fee wildcard + contagion; dump = labels + fee wildcard, no
+  contagion; working = `templateGrain`, no contagion, no fee pins). `useFlowPatternSource`
+  stays the engine's tagged snapshot for metric panes — it is not the live overlay.
+  The ranked table's Vol checkbox stages an unpinned
+  catch-all (or a grain id on working); the preview trades strip carries the same `FeePinToggles` as chart
+  trades tables (hidden on working). A pin click on a catch-all of that shape narrows it to that tx's
   budget rather than adding a second row. Vol checked state on the preview is
   wildcard matching against the whole draft.
   Apply writes whole rows (`IxPatternRow[]`) through
-  `metricConfigWithList`; bind accepts the mixed stored shape and the list
+  `metricConfigWithList` for tagged/dump, or grain ids through
+  `metricConfigWithWorkingTemplates` for working; bind accepts the mixed stored shape and the list
   (`tagged`/`dump`). Three independent bulk-selects, each paired with what
   explains it: *Auto-select suggested* (`Auto` column — bot-likelihood composite),
   *Launch shapes · group* (`Launch%` column shows creation-slot **purity**, but the
@@ -892,10 +903,13 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     + a resolved `ruleName`, so the `RulePositionRecord` → `FloorDetailFacts` mapping and the
     modal header exist once. The header itself is `PositionModalTitle` in
     `@live/components/floor/openPositionStatus`, shared with the Console's open-row modal.
-    Vol/non-vol overlay SSOT: `hooks/useFlowPatternKeys` (`useFlowPatternSource` /
+    Vol/non-vol overlay SSOT: live overlay classifies through `classifyOptsForTape`
+    (selected list → tagged / dump / working matchers). `hooks/useFlowPatternKeys`
+    (`useFlowPatternSource` /
     `useFlowPatternSourceForRule` / `useResolvedFlowPatternSource`) and
-    `lib/flow/flowPatternKeys` resolve a fingerprint's `ix_patterns` into a
-    `FlowPatternSource` — `{ fingerprintId, keys }`. **Both halves travel together**: the keys
+    `lib/flow/flowPatternKeys` resolve a fingerprint's **tagged** `ix_patterns` into a
+    `FlowPatternSource` — `{ fingerprintId, keys }` — for metric panes and as the
+    persist target when the host has no staging tape. **Both halves travel together**: the keys
     say what to classify with, the id says which row an edit writes to, and a key set alone
     cannot be traced back to one (`metric_config` is not part of fingerprint identity, and
     every unconfigured row carries the same empty set). There is deliberately no keys-only

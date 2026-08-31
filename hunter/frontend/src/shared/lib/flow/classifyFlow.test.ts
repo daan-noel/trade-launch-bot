@@ -127,3 +127,60 @@ describe('patternKeysFrom', () => {
     expect(keys.has(JSON.stringify(['a', 'b']))).toBe(true);
   });
 });
+
+describe('classifyFlowTrades dump / working / fee rows', () => {
+  const A = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy'];
+  const A2 = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Sell'];
+
+  it('contagion off does not forward-tag later trades of the same wallet', () => {
+    const patternKeys = patternKeysFrom([A]);
+    const out = classifyFlowTrades(
+      [
+        { wallet_address: 'w1', sol: 1, ix_labels: A },
+        { wallet_address: 'w1', sol: 3, ix_labels: A2 },
+      ],
+      { patternKeys, contagion: false },
+    );
+    expect(out.map((t) => t.isTagged)).toEqual([true, false]);
+  });
+
+  it('a grain match hits every structure that hashes to that grain, not the exact sequence', () => {
+    // Both A and A2 share program Pump.Fun + CU flag → `Pump.Fun|CU`.
+    const out = classifyFlowTrades(
+      [
+        { wallet_address: 'w1', sol: 1, ix_labels: A },
+        { wallet_address: 'w2', sol: 2, ix_labels: A2 },
+        { wallet_address: 'w3', sol: 3, ix_labels: ['Axiom Trade: buy'] },
+      ],
+      { patternKeys: new Set(['Pump.Fun|CU']), match: 'grain', contagion: false },
+    );
+    expect(out.map((t) => t.isTagged)).toEqual([true, true, false]);
+  });
+
+  it('a pinned row matches only the tx that carries that budget', () => {
+    const rows = [{ labels: [...A], cu_limit: 300_000 }];
+    const patternKeys = patternKeysFrom([A]);
+    const out = classifyFlowTrades(
+      [
+        { wallet_address: 'w1', sol: 1, ix_labels: A, cu_limit: 300_000 },
+        { wallet_address: 'w2', sol: 2, ix_labels: A, cu_limit: 200_000 },
+        { wallet_address: 'w3', sol: 3, ix_labels: A },
+      ],
+      { patternKeys, patternRows: rows, contagion: false },
+    );
+    expect(out.map((t) => t.isTagged)).toEqual([true, false, false]);
+  });
+
+  it('an unpinned row is a fee wildcard — every budget of that shape matches', () => {
+    const rows = [{ labels: [...A] }];
+    const patternKeys = patternKeysFrom([A]);
+    const out = classifyFlowTrades(
+      [
+        { wallet_address: 'w1', sol: 1, ix_labels: A, cu_limit: 300_000 },
+        { wallet_address: 'w2', sol: 2, ix_labels: A },
+      ],
+      { patternKeys, patternRows: rows, contagion: false },
+    );
+    expect(out.map((t) => t.isTagged)).toEqual([true, true]);
+  });
+});

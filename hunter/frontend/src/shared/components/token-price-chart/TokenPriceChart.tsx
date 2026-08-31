@@ -23,6 +23,7 @@ import {
   type FlowBasis,
   type FlowLines,
 } from 'lib/flow/flowChartData';
+import { classifyOptsForTape } from 'lib/flow/tapeClassify';
 import { useFlowLensContext } from 'context/FlowLensContext';
 import { attachDualPriceScaleSync, type DualPriceScaleSync } from './dualPriceScaleSync';
 import {
@@ -324,10 +325,6 @@ function walletGlyph(w: ProfileWalletInfo): string {
  *  exit (fee/rounding dust rarely leaves the balance at exactly zero). */
 const SELL_ALL_DUST_FRACTION = 0.02;
 
-/** Stable empty pattern set — an unconfigured fingerprint classifies on the
- *  creator wallet alone, and a fresh `new Set()` per render would re-run the fold. */
-const EMPTY_FLOW_PATTERN_KEYS: ReadonlySet<string> = new Set();
-
 export function buildWalletMarkerDefs(
   // Must be in canonical order (`slot → tx_index → leg_index`) — position tracking
   // for first_buy/sell_all replays each wallet's trades in execution order.
@@ -549,6 +546,10 @@ export function TokenPriceChart({
   tokenCreatedAt,
   eventMarkers = null,
   flowPatternKeys = null,
+  flowList = 'tagged',
+  flowPatternRows = null,
+  flowSeedCreator,
+  flowContagion,
   flowBasis = 'cost_sol',
   highlightLens = null,
   onHighlightLensMatch,
@@ -572,7 +573,7 @@ export function TokenPriceChart({
 
   // The token's dev/creator as a synthetic tracked wallet — folded into the same
   // marker pipeline so its first_buy/sell_all lifecycle + triangle silhouette
-  // come for free (mirrors `FlowPreviewChart`). No parallel dev-marker path.
+  // come for free. No parallel dev-marker path.
   const devWallet = useMemo<ProfileWalletInfo | null>(
     () =>
       creatorWallet
@@ -648,13 +649,37 @@ export function TokenPriceChart({
   });
   // A page-wide flow lens (Trader Analysis) overrides HOW the split is computed:
   // structural-only reads and excluded wallets. Absent everywhere else, where the
-  // chart classifies exactly as the engine does.
+  // chart classifies from the selected tape list (tagged = engine contagion;
+  // dump/working = structural only).
   const lens = useFlowLensContext();
-  const flowContagion = lens?.contagion ?? true;
   const flowExcludeWallets = lens?.excludeWallets ?? null;
   const flowSide = lens?.side ?? null;
-  /** True once `ix_patterns` are supplied — the split is then the engine's
-   *  own volume-maker vs organic classification. */
+  const classifyOpts = useMemo(
+    () =>
+      classifyOptsForTape({
+        list: flowList,
+        keys: flowPatternKeys,
+        rows: flowPatternRows,
+        creatorWallet,
+        contagion: lens?.contagion ?? flowContagion,
+        seedCreator: flowSeedCreator,
+        excludeWallets: flowExcludeWallets,
+        side: flowSide,
+      }),
+    [
+      flowList,
+      flowPatternKeys,
+      flowPatternRows,
+      creatorWallet,
+      lens?.contagion,
+      flowContagion,
+      flowSeedCreator,
+      flowExcludeWallets,
+      flowSide,
+    ],
+  );
+  /** True once the selected list has membership — the split is then that list's
+   *  own classifier, not the creator-vs-rest fallback. */
   const flowPatternsConfigured = flowPatternKeys != null && flowPatternKeys.size > 0;
   // Adding the first pattern is only feedback if the lines are on screen. The
   // overlay toggle is a persisted pref and the button is dead until something can
@@ -673,7 +698,7 @@ export function TokenPriceChart({
    *  says which of the two you're looking at. A structural-only lens has no
    *  creator rule to fall back on, so with contagion off the overlay needs
    *  patterns or it has nothing to say. */
-  const flowLinesAvailable = flowPatternsConfigured || (!!creatorWallet && flowContagion);
+  const flowLinesAvailable = classifyOpts != null;
   const flowLinesAvailableRef = useRef(flowLinesAvailable);
   flowLinesAvailableRef.current = flowLinesAvailable;
   const { timezone: chartTimezone } = useTimezone();
@@ -1421,28 +1446,11 @@ export function TokenPriceChart({
   // patterns the structural test never fires and the split degrades to
   // creator-vs-rest — still drawn, and labelled as such by the toolbar.
   const flowLines = useMemo(() => {
-    if (!flowLinesAvailable) {
+    if (!classifyOpts) {
       return { tagged: [], untagged: [] } satisfies FlowLines;
     }
-    return buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, {
-      patternKeys: flowPatternKeys ?? EMPTY_FLOW_PATTERN_KEYS,
-      creatorWallet,
-      contagion: flowContagion,
-      excludeWallets: flowExcludeWallets,
-      side: flowSide,
-    });
-  }, [
-    sortedTrades,
-    groupMode,
-    intervalSec,
-    flowBasis,
-    flowLinesAvailable,
-    flowPatternKeys,
-    creatorWallet,
-    flowContagion,
-    flowExcludeWallets,
-    flowSide,
-  ]);
+    return buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, classifyOpts);
+  }, [sortedTrades, groupMode, intervalSec, flowBasis, classifyOpts]);
   const alignedFlowLines = useMemo(() => alignFlowToBars(flowLines, bars), [flowLines, bars]);
   alignedFlowLinesRef.current = alignedFlowLines;
 
@@ -2080,6 +2088,7 @@ export function TokenPriceChart({
         flowLines={flowLineVis}
         flowLinesAvailable={flowLinesAvailable}
         flowPatternsConfigured={flowPatternsConfigured}
+        flowList={flowList}
         rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
         formatFlow={formatFlow}

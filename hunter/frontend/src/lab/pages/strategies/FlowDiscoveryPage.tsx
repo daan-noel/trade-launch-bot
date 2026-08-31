@@ -34,15 +34,17 @@ import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
   useGetTokenDetailQuery,
-  useGetTokenTradesQuery,
   useUpdateFingerprintMutation,
 } from 'store/sharedEndpoints';
 import { fingerprintsHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   flowWalletRules,
   metricConfigWithList,
+  metricConfigWithWorkingTemplates,
   patternRowsForList,
+  workingTemplatesFromConfig,
   type IxPatternList,
+  type TapeList,
   withFlowWalletRules,
 } from 'lib/strategy/registry';
 import {
@@ -60,6 +62,7 @@ import {
 } from '@lab/components/flow/flowDiscoverySuggest';
 import { StructureTable } from '@lab/components/flow/StructureTable';
 import { TokenPreviewPanel } from '@lab/components/flow/TokenPreviewPanel';
+import { keysForTapeDraft } from 'lib/flow/tapeClassify';
 import { patternKeysFrom } from 'lib/flow/classifyFlow';
 import {
   addUnpinnedPatterns,
@@ -69,9 +72,15 @@ import {
   rowPinsFee,
   serializeIxPatternRows,
   togglePatternRow,
+  type IxPatternFee,
   type IxPatternFeeMask,
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
+import {
+  isLaunchGrain,
+  templateGrain,
+  toggleWorkingTemplate,
+} from 'lib/strategy/templateGrain';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, buildFieldFilters } from '@lab/components/sweep/fingerprintFilters';
 import type { Fingerprint } from 'lib/strategy/types';
@@ -254,6 +263,32 @@ function groupKeyChips(gk: Record<string, unknown>) {
 }
 
 
+const EMPTY_CONTAGION = new Map<string, number | null>();
+
+/** Append unique non-launch grains, preserving first-seen order. */
+function addWorkingGrains(prev: string[], labelSets: readonly string[][]): string[] {
+  const seen = new Set(prev);
+  const next = [...prev];
+  for (const labels of labelSets) {
+    if (isLaunchGrain(labels)) continue;
+    const g = templateGrain(labels);
+    if (!g || seen.has(g)) continue;
+    seen.add(g);
+    next.push(g);
+  }
+  return next;
+}
+
+function dropWorkingGrains(prev: string[], labelSets: readonly string[][]): string[] {
+  const drop = new Set<string>();
+  for (const labels of labelSets) {
+    if (isLaunchGrain(labels)) continue;
+    drop.add(templateGrain(labels));
+  }
+  if (drop.size === 0) return prev;
+  return prev.filter((g) => !drop.has(g));
+}
+
 /**
  * Lab page: score trade ix-structures per fingerprint group, toggle volume
  * patterns, apply via fingerprint update or promote-style bind.
@@ -350,6 +385,7 @@ export function FlowDiscoveryPage() {
   /** Apply target — null ⇒ promote-style create/bind from the group key. */
   const [targetFpId, setTargetFpId] = useState<string | null>(seedFingerprintId);
   const [draftPatterns, setDraftPatterns] = useState<IxPatternRow[]>([]);
+  const [draftWorking, setDraftWorking] = useState<string[]>([]);
   /** Sticky fee-field modifiers for the preview trades table. Ranked-table
    *  checkboxes stay structure-only. */
   const [feePins, setFeePins] = useState<IxPatternFeeMask>({});
@@ -359,7 +395,7 @@ export function FlowDiscoveryPage() {
   /** Which list Apply writes the draft into. Switching it reseeds the draft from
    *  that list, so the cart always shows the list it is about to overwrite —
    *  applying a tagged draft onto the dump key would be a silent list swap. */
-  const [stageInto, setStageInto] = useState<IxPatternList>('tagged');
+  const [stageInto, setStageInto] = useState<TapeList>('tagged');
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyOk, setApplyOk] = useState<string | null>(null);
   const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
@@ -367,7 +403,8 @@ export function FlowDiscoveryPage() {
     () => patternKeysFrom(draftPatterns.map((r) => r.labels)),
     [draftPatterns],
   );
-  /** Catch-all (unpinned) rows — what the ranked table's Vol checkbox stages. */
+  /** Catch-all (unpinned) rows — what the ranked table's Vol checkbox stages
+   *  on tagged/dump. Working membership is grain ids instead. */
   const draftUnpinned = useMemo(
     () => draftPatterns.filter((r) => !rowPinsFee(r)).map((r) => r.labels),
     [draftPatterns],
@@ -376,9 +413,18 @@ export function FlowDiscoveryPage() {
     () => new Set(draftUnpinned.map((p) => patternKey(p))),
     [draftUnpinned],
   );
-  const { data: previewTrades = [], isFetching: previewTradesLoading } = useGetTokenTradesQuery(
-    selectedTokenMint ?? '',
-    { skip: !selectedTokenMint },
+  const structureVolKey = useCallback(
+    (s: FlowDiscoveryStructure) =>
+      stageInto === 'working' ? templateGrain(s.ix_labels) : JSON.stringify(s.ix_labels),
+    [stageInto],
+  );
+  const draftVolKeys = useMemo((): ReadonlySet<string> => {
+    if (stageInto === 'working') return new Set(draftWorking);
+    return unpinnedKeys;
+  }, [stageInto, draftWorking, unpinnedKeys]);
+  const overlayKeys = useMemo(
+    () => keysForTapeDraft(stageInto, draftPatterns, draftWorking),
+    [stageInto, draftPatterns, draftWorking],
   );
   const { data: previewDetail } = useGetTokenDetailQuery(selectedTokenMint ?? '', {
     skip: !selectedTokenMint,
@@ -433,20 +479,21 @@ export function FlowDiscoveryPage() {
     let totalGross = 0;
     for (const s of selectedGroup.structures) {
       totalGross += s.gross_sol;
-      if (patternKeys.has(JSON.stringify(s.ix_labels))) volumeGross += s.gross_sol;
+      if (draftVolKeys.has(structureVolKey(s))) volumeGross += s.gross_sol;
     }
     const organicGross = Math.max(0, totalGross - volumeGross);
     const volumePct = totalGross > 0 ? (volumeGross / totalGross) * 100 : 0;
     return { volumeGross, organicGross, totalGross, volumePct };
-  }, [selectedGroup, patternKeys]);
+  }, [selectedGroup, draftVolKeys, structureVolKey]);
   /** % of each UNCHECKED row's gross SOL that comes from wallets already tagged
    *  by a CHECKED row — previews live's wallet-contagion classifier (flow_ix.rs
    *  FlowState::classify), which sweeps a tagged wallet's later trades into
    *  "volume" on ANY structure, not just the one that matched. Null = checked
-   *  already, or nothing checked yet to compare against. */
+   *  already, or nothing checked yet to compare against. Dump and working have
+   *  no wallet rule, so the column stays empty on those lists. */
   const contagionByStructure = useMemo(() => {
     const map = new Map<string, number | null>();
-    if (!selectedGroup) return map;
+    if (!selectedGroup || stageInto !== 'tagged') return map;
     const checkedWalletGross = new Map<string, number>();
     for (const s of selectedGroup.structures) {
       if (!patternKeys.has(JSON.stringify(s.ix_labels))) continue;
@@ -470,7 +517,7 @@ export function FlowDiscoveryPage() {
       map.set(key, (overlap / s.gross_sol) * 100);
     }
     return map;
-  }, [selectedGroup, patternKeys]);
+  }, [selectedGroup, patternKeys, stageInto]);
   /** Whether this run has an out-of-group baseline for `group_lift`. A scoped run
    *  (or any run with no group-by) is one group over the whole corpus, so every
    *  lift is exactly 1.0 — the gate must be skipped, not failed. Absent on a
@@ -499,10 +546,12 @@ export function FlowDiscoveryPage() {
     return selectedGroup.structures
       .filter((s) => {
         const key = JSON.stringify(s.ix_labels);
-        return suggestionByStructure.get(key)?.suggested && !unpinnedKeys.has(key);
+        if (!suggestionByStructure.get(key)?.suggested) return false;
+        if (stageInto === 'working' && isLaunchGrain(s.ix_labels)) return false;
+        return !draftVolKeys.has(structureVolKey(s));
       })
       .map((s) => s.ix_labels);
-  }, [selectedGroup, suggestionByStructure, unpinnedKeys]);
+  }, [selectedGroup, suggestionByStructure, stageInto, draftVolKeys, structureVolKey]);
 
   /** Every row that traded in a matched token's creation slot — a property of THIS
    *  corpus alone, deliberately not differenced against the draft. Independent of
@@ -527,8 +576,14 @@ export function FlowDiscoveryPage() {
   }, [selectedGroup]);
   /** Of those, the ones the click would actually add. */
   const firstSlotUnchecked = useMemo(() => {
-    return firstSlotAll.filter((labels) => !unpinnedKeys.has(JSON.stringify(labels)));
-  }, [firstSlotAll, unpinnedKeys]);
+    return firstSlotAll.filter((labels) => {
+      if (stageInto === 'working') {
+        if (isLaunchGrain(labels)) return false;
+        return !draftVolKeys.has(templateGrain(labels));
+      }
+      return !unpinnedKeys.has(JSON.stringify(labels));
+    });
+  }, [firstSlotAll, stageInto, draftVolKeys, unpinnedKeys]);
   /** No row in the group carries a first-slot count — the run predates the backend
    *  field, so presence is *unknown* for every shape rather than false. Reported, so
    *  an unscored run can't read as "this window had no launch bundle". */
@@ -561,8 +616,14 @@ export function FlowDiscoveryPage() {
   );
   /** Of those, the ones the click would actually add. */
   const tokenLaunchUnchecked = useMemo(() => {
-    return tokenLaunchAll.filter((labels) => !unpinnedKeys.has(JSON.stringify(labels)));
-  }, [tokenLaunchAll, unpinnedKeys]);
+    return tokenLaunchAll.filter((labels) => {
+      if (stageInto === 'working') {
+        if (isLaunchGrain(labels)) return false;
+        return !draftVolKeys.has(templateGrain(labels));
+      }
+      return !unpinnedKeys.has(JSON.stringify(labels));
+    });
+  }, [tokenLaunchAll, stageInto, draftVolKeys, unpinnedKeys]);
   /** The run predates the per-token field — the list is *unknown*, not empty. */
   const tokenLaunchUnscored = !!selectedTokenRow && selectedTokenRow.first_slot_ix_labels == null;
 
@@ -593,15 +654,21 @@ export function FlowDiscoveryPage() {
   /** Filtered rows the stage button would add (staged ones are already there). */
   const filteredUnstaged = useMemo(() => {
     return filteredStructures
-      .filter((s) => !unpinnedKeys.has(JSON.stringify(s.ix_labels)))
+      .filter((s) => {
+        if (stageInto === 'working' && isLaunchGrain(s.ix_labels)) return false;
+        return !draftVolKeys.has(structureVolKey(s));
+      })
       .map((s) => s.ix_labels);
-  }, [filteredStructures, unpinnedKeys]);
+  }, [filteredStructures, stageInto, draftVolKeys, structureVolKey]);
   /** Filtered rows the unstage button would remove. */
   const filteredStaged = useMemo(() => {
     return filteredStructures
-      .filter((s) => unpinnedKeys.has(JSON.stringify(s.ix_labels)))
+      .filter((s) => {
+        if (stageInto === 'working' && isLaunchGrain(s.ix_labels)) return false;
+        return draftVolKeys.has(structureVolKey(s));
+      })
       .map((s) => s.ix_labels);
-  }, [filteredStructures, unpinnedKeys]);
+  }, [filteredStructures, stageInto, draftVolKeys, structureVolKey]);
   /** Every row on screen — what both buttons outline on hover, so the pair marks
    *  the same set whichever one you are about to press. */
   const filteredAll = useMemo(
@@ -615,31 +682,51 @@ export function FlowDiscoveryPage() {
 
   function autoSelectSuggested() {
     if (suggestedUnchecked.length === 0) return;
-    setDraftPatterns((prev) => addUnpinnedPatterns(prev, suggestedUnchecked));
+    if (stageInto === 'working') {
+      setDraftWorking((prev) => addWorkingGrains(prev, suggestedUnchecked));
+    } else {
+      setDraftPatterns((prev) => addUnpinnedPatterns(prev, suggestedUnchecked));
+    }
     setApplyOk(null);
   }
 
   function autoSelectFirstSlot() {
     if (firstSlotUnchecked.length === 0) return;
-    setDraftPatterns((prev) => addUnpinnedPatterns(prev, firstSlotUnchecked));
+    if (stageInto === 'working') {
+      setDraftWorking((prev) => addWorkingGrains(prev, firstSlotUnchecked));
+    } else {
+      setDraftPatterns((prev) => addUnpinnedPatterns(prev, firstSlotUnchecked));
+    }
     setApplyOk(null);
   }
 
   function autoSelectTokenLaunch() {
     if (tokenLaunchUnchecked.length === 0) return;
-    setDraftPatterns((prev) => addUnpinnedPatterns(prev, tokenLaunchUnchecked));
+    if (stageInto === 'working') {
+      setDraftWorking((prev) => addWorkingGrains(prev, tokenLaunchUnchecked));
+    } else {
+      setDraftPatterns((prev) => addUnpinnedPatterns(prev, tokenLaunchUnchecked));
+    }
     setApplyOk(null);
   }
 
   function stageFiltered() {
     if (filteredUnstaged.length === 0) return;
-    setDraftPatterns((prev) => addUnpinnedPatterns(prev, filteredUnstaged));
+    if (stageInto === 'working') {
+      setDraftWorking((prev) => addWorkingGrains(prev, filteredUnstaged));
+    } else {
+      setDraftPatterns((prev) => addUnpinnedPatterns(prev, filteredUnstaged));
+    }
     setApplyOk(null);
   }
 
   function unstageFiltered() {
     if (filteredStaged.length === 0) return;
-    setDraftPatterns((prev) => removeUnpinnedPatterns(prev, filteredStaged));
+    if (stageInto === 'working') {
+      setDraftWorking((prev) => dropWorkingGrains(prev, filteredStaged));
+    } else {
+      setDraftPatterns((prev) => removeUnpinnedPatterns(prev, filteredStaged));
+    }
     setApplyOk(null);
   }
 
@@ -662,7 +749,11 @@ export function FlowDiscoveryPage() {
   const autoMatchedFp = selectedGroup ? resolveGroupFp(selectedGroup.group_key) : null;
   const targetFp: Fingerprint | null =
     (targetFpId && fingerprints.find((f) => f.id === targetFpId)) || null;
-  const currentPatterns = patternRowsForList(targetFp?.metric_config ?? {}, stageInto);
+  const currentPatterns =
+    stageInto === 'working'
+      ? []
+      : patternRowsForList(targetFp?.metric_config ?? {}, stageInto);
+  const currentWorking = workingTemplatesFromConfig(targetFp?.metric_config);
   const savedWalletRules = flowWalletRules(targetFp?.metric_config);
 
   /** Point the apply target at a fingerprint and load its SAVED patterns into the
@@ -676,19 +767,25 @@ export function FlowDiscoveryPage() {
     (id: string | null) => {
       setTargetFpId(id);
       const fp = id ? fingerprints.find((f) => f.id === id) : null;
-      setDraftPatterns(fp ? patternRowsForList(fp.metric_config, stageInto) : []);
+      const taggedOrDump: IxPatternList = stageInto === 'dump' ? 'dump' : 'tagged';
+      setDraftPatterns(fp ? patternRowsForList(fp.metric_config, taggedOrDump) : []);
+      setDraftWorking(fp ? workingTemplatesFromConfig(fp.metric_config) : []);
       setWalletRules(flowWalletRules(fp?.metric_config));
       setApplyOk(null);
     },
     [fingerprints, stageInto],
   );
 
-  /** Point staging at the other list and reseed from it. */
+  /** Point staging at another list and reseed from it. */
   const changeStageInto = useCallback(
-    (list: IxPatternList) => {
+    (list: TapeList) => {
       setStageInto(list);
       const fp = targetFpId ? fingerprints.find((f) => f.id === targetFpId) : null;
-      setDraftPatterns(fp ? patternRowsForList(fp.metric_config, list) : []);
+      if (list === 'working') {
+        setDraftWorking(fp ? workingTemplatesFromConfig(fp.metric_config) : []);
+      } else {
+        setDraftPatterns(fp ? patternRowsForList(fp.metric_config, list) : []);
+      }
       setApplyOk(null);
     },
     [fingerprints, targetFpId],
@@ -796,15 +893,34 @@ export function FlowDiscoveryPage() {
     }
   }
 
-  function toggleStructure(labels: string[]) {
-    setDraftPatterns((prev) => togglePatternRow(prev, { labels: [...labels] }));
-    setApplyOk(null);
-  }
+  const toggleStructure = useCallback(
+    (labels: string[]) => {
+      if (stageInto === 'working') {
+        if (isLaunchGrain(labels)) return;
+        setDraftWorking((prev) => toggleWorkingTemplate(prev, templateGrain(labels)));
+      } else {
+        setDraftPatterns((prev) => togglePatternRow(prev, { labels: [...labels] }));
+      }
+      setApplyOk(null);
+    },
+    [stageInto],
+  );
 
-  function toggleTrade(labels: string[], trade: { cu_limit?: number | null; cu_price?: number | null; tip_lamports?: number | null }) {
-    setDraftPatterns((prev) => togglePatternRow(prev, rowFromTrade(labels, trade, feePins)));
-    setApplyOk(null);
-  }
+  const toggleTrade = useCallback(
+    (labels: readonly string[], fee?: IxPatternFee) => {
+      const arr = [...labels];
+      if (stageInto === 'working') {
+        if (isLaunchGrain(arr)) return;
+        setDraftWorking((prev) => toggleWorkingTemplate(prev, templateGrain(arr)));
+      } else {
+        setDraftPatterns((prev) =>
+          togglePatternRow(prev, rowFromTrade(arr, fee ?? {}, feePins)),
+        );
+      }
+      setApplyOk(null);
+    },
+    [stageInto, feePins],
+  );
 
   function selectTargetFingerprint(id: string) {
     const nextId = id || null;
@@ -819,11 +935,35 @@ export function FlowDiscoveryPage() {
   }
 
   async function handleApply() {
+    if (stageInto === 'working') {
+      if (!targetFp || draftWorking.length === 0) return;
+      setApplyError(null);
+      setApplyOk(null);
+      try {
+        await updateFp({
+          id: targetFp.id,
+          body: {
+            name: targetFp.name,
+            criteria: targetFp.criteria,
+            wildcard: targetFp.wildcard,
+            metric_config: metricConfigWithWorkingTemplates(
+              targetFp.metric_config ?? {},
+              draftWorking,
+            ),
+          },
+        }).unwrap();
+        setApplyOk(`Updated fingerprint “${targetFp.name}”.`);
+      } catch (e) {
+        setApplyError(apiErrorMessage(e as never, 'Failed to apply patterns'));
+      }
+      return;
+    }
     if (!selectedGroup || draftPatterns.length === 0) return;
     setApplyError(null);
     setApplyOk(null);
     const patterns = serializeIxPatternRows(draftPatterns);
     if (patterns.length === 0) return;
+    const list: IxPatternList = stageInto === 'dump' ? 'dump' : 'tagged';
     try {
       if (targetFp) {
         await updateFp({
@@ -841,7 +981,7 @@ export function FlowDiscoveryPage() {
             // Into the list being staged, through that group's own writer. The
             // wallet rules ride along only on the tagged list — `m_dump_ix` has none.
             metric_config: withFlowWalletRules(
-              metricConfigWithList(targetFp.metric_config ?? {}, draftPatterns, stageInto),
+              metricConfigWithList(targetFp.metric_config ?? {}, draftPatterns, list),
               walletRules,
             ),
           },
@@ -860,7 +1000,7 @@ export function FlowDiscoveryPage() {
         const fp = await bindFp({
           group_key: boundKey,
           ix_patterns: patterns,
-          list: stageInto,
+          list,
           name: fingerprintNameFromGroupKey(boundKey),
         }).unwrap();
         setTargetFpId(fp.id);
@@ -872,6 +1012,41 @@ export function FlowDiscoveryPage() {
   }
 
   const applying = bindState.isLoading || updateState.isLoading;
+
+  const previewTape = useMemo(
+    () => ({
+      list: stageInto,
+      setList: changeStageInto,
+      rows: draftPatterns,
+      workingTemplates: draftWorking,
+      keys: overlayKeys,
+      feePins,
+      setFeePins,
+      toggle: toggleTrade,
+      contagion: stageInto === 'tagged' && walletRules.wallet_contagion,
+      seedCreator: stageInto === 'tagged' && walletRules.creator_is_tagged,
+    }),
+    [
+      stageInto,
+      changeStageInto,
+      draftPatterns,
+      draftWorking,
+      overlayKeys,
+      feePins,
+      toggleTrade,
+      walletRules.wallet_contagion,
+      walletRules.creator_is_tagged,
+    ],
+  );
+
+  const splitTitle =
+    stageInto === 'dump' ? 'Dump cover' : stageInto === 'working' ? 'Working cover' : 'Flow split';
+  const splitChecked =
+    stageInto === 'dump' ? 'Dump builds' : stageInto === 'working' ? 'Working' : 'Volume';
+  const splitUnchecked =
+    stageInto === 'dump' || stageInto === 'working' ? 'Everything else' : 'Organic';
+  const splitPctNoun =
+    stageInto === 'dump' ? 'dump' : stageInto === 'working' ? 'working' : 'volume';
 
   return (
     <div className="pt-2">
@@ -1148,10 +1323,10 @@ export function FlowDiscoveryPage() {
                         tip={DISCOVERY_FIELD_HELP.volumeSplit}
                         className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
                       >
-                        {stageInto === 'dump' ? 'Dump cover' : 'Flow split'} · checked structures
+                        {splitTitle} · checked structures
                       </LabelTip>
                       <span className="font-mono text-[11px] text-text-dim">
-                        {fmt(flowIx.volumePct)}% {stageInto === 'dump' ? 'dump' : 'volume'} of{' '}
+                        {fmt(flowIx.volumePct)}% {splitPctNoun} of{' '}
                         {fmt(flowIx.totalGross)}◎ scored
                       </span>
                     </div>
@@ -1175,12 +1350,12 @@ export function FlowDiscoveryPage() {
                     <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[10px] text-text-dim">
                       <span className="inline-flex items-center gap-1">
                         <span className="size-2 rounded-full bg-warning" />{' '}
-                        {stageInto === 'dump' ? 'Dump builds' : 'Volume'} (checked):{' '}
+                        {splitChecked} (checked):{' '}
                         {fmt(flowIx.volumeGross)}◎
                       </span>
                       <span className="inline-flex items-center gap-1">
                         <span className="size-2 rounded-full bg-white/30" />{' '}
-                        {stageInto === 'dump' ? 'Everything else' : 'Organic'} (unchecked):{' '}
+                        {splitUnchecked} (unchecked):{' '}
                         {fmt(flowIx.organicGross)}◎
                       </span>
                     </div>
@@ -1193,17 +1368,8 @@ export function FlowDiscoveryPage() {
                     tokens={selectedGroup.tokens}
                     selectedMint={selectedTokenMint}
                     onSelect={setSelectedTokenMint}
-                    trades={previewTrades}
-                    tradesLoading={previewTradesLoading}
-                    creatorWallet={previewDetail?.creator_wallet ?? null}
-                    athPriceInSol={previewDetail?.ath_price ?? null}
-                    isMigrated={previewDetail?.is_migrated ?? false}
-                    tokenCreatedAt={previewDetail?.created_at ?? null}
-                    patternKeys={patternKeys}
-                    patternRows={draftPatterns}
-                    feePins={feePins}
-                    onFeePinsChange={setFeePins}
-                    onTogglePattern={toggleTrade}
+                    detail={previewDetail}
+                    tape={previewTape}
                   />
                 )}
 
@@ -1213,6 +1379,9 @@ export function FlowDiscoveryPage() {
                 draftPatterns={draftPatterns}
                 onChange={setDraftPatterns}
                 currentPatterns={currentPatterns}
+                draftWorking={draftWorking}
+                onWorkingChange={setDraftWorking}
+                currentWorking={currentWorking}
                 targetFp={targetFp}
                 stageInto={stageInto}
                 onStageIntoChange={changeStageInto}
@@ -1278,12 +1447,14 @@ export function FlowDiscoveryPage() {
                     {selectedTokenRow && (
                       <button
                         type="button"
-                        disabled={tokenLaunchAll.length === 0}
+                        disabled={stageInto === 'working' || tokenLaunchAll.length === 0}
                         onClick={autoSelectTokenLaunch}
                         {...previewProps(tokenLaunchAll)}
                         className="inline-flex items-center gap-1 rounded border border-info/40 px-2 py-1 text-[11px] font-semibold text-info transition hover:bg-info/10 disabled:cursor-not-allowed disabled:opacity-40"
                         title={
-                          tokenLaunchAll.length === 0
+                          stageInto === 'working'
+                            ? 'Launch (create) shapes are skipped on the working list — burst membership is not a create print'
+                            : tokenLaunchAll.length === 0
                             ? tokenLaunchUnscored
                               ? 'This run predates the per-token launch set, so the creation-slot shapes of the previewed token are unknown. Re-run discovery.'
                               : 'No trade in the creation slot of the previewed token carried ix_labels'
@@ -1302,12 +1473,14 @@ export function FlowDiscoveryPage() {
                     )}
                     <button
                       type="button"
-                      disabled={firstSlotAll.length === 0}
+                      disabled={stageInto === 'working' || firstSlotAll.length === 0}
                       onClick={autoSelectFirstSlot}
                       {...previewProps(firstSlotAll)}
                       className="inline-flex items-center gap-1 rounded border border-info/40 px-2 py-1 text-[11px] font-semibold text-info transition hover:bg-info/10 disabled:cursor-not-allowed disabled:opacity-40"
                       title={
-                        firstSlotAll.length === 0
+                        stageInto === 'working'
+                          ? 'Launch (create) shapes are skipped on the working list — burst membership is not a create print'
+                          : firstSlotAll.length === 0
                           ? firstSlotUnscored
                             ? 'No structure in this group carries a first-slot count — the run predates the backend field, so launch presence is unknown. Re-run discovery.'
                             : "No structure in this group traded in a matched token's creation slot"
@@ -1368,8 +1541,11 @@ export function FlowDiscoveryPage() {
                 </div>
                 <StructureTable
                   structures={selectedGroup.structures}
-                  draftPatterns={draftUnpinned}
-                  contagionByStructure={contagionByStructure}
+                  draftKeys={draftVolKeys}
+                  volKey={structureVolKey}
+                  contagionByStructure={
+                    stageInto === 'tagged' ? contagionByStructure : EMPTY_CONTAGION
+                  }
                   suggestionByStructure={suggestionByStructure}
                   liftDefined={liftDefined}
                   previewKeys={previewKeys}

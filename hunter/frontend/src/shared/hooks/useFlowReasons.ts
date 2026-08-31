@@ -1,6 +1,10 @@
 import { useMemo } from 'react';
 import { compareTradesChronologically } from 'components/token-price-chart/chartBars';
-import { flowReasonsById, type FlowReason, type FlowSide } from 'lib/flow/classifyFlow';
+import {
+  flowReasonsById,
+  type FlowClassifyOptions,
+  type FlowReason,
+} from 'lib/flow/classifyFlow';
 import type { TradeRecord } from 'types';
 
 /**
@@ -9,10 +13,10 @@ import type { TradeRecord } from 'types';
  * WHY a row counts as volume instead of only whether its own structure matches.
  *
  * Classifies the host's FULL trade history: contagion is forward-only, so
- * running it over one candle's rows would miss the earlier trade that tagged the
- * wallet. Classifies with the fingerprint's SAVED patterns — the same row the
- * chart lines and the backend's `m_flow_ix` fold read, so the table's reason
- * and the overlay can never disagree.
+ * running it over one candle's rows would miss the earlier trade that tagged
+ * the wallet. Pass the SAME {@link FlowClassifyOptions} the chart's overlay
+ * built (`classifyOptsForTape`), so a dump/working list switch cannot leave the
+ * badge answering a different question from the lines.
  *
  * `null` when nothing can classify — the badge then falls back to structure only.
  *
@@ -22,24 +26,18 @@ import type { TradeRecord } from 'types';
  */
 export function useFlowReasons(
   trades: readonly TradeRecord[],
-  keys: ReadonlySet<string> | null | undefined,
-  creatorWallet?: string | null,
-  /** Lens overrides — structural-only reads and excluded wallets. Omitted ⇒ the
-   *  engine's own behavior (contagion on, nothing excluded). */
-  opts?: {
-    contagion?: boolean;
-    excludeWallets?: ReadonlySet<string> | null;
-    /** Classify one leg only — see `FlowClassifyOptions.side`. */
-    side?: FlowSide | null;
-  },
+  opts: FlowClassifyOptions | null | undefined,
 ): ReadonlyMap<string, FlowReason> | null {
+  const patternKeys = opts?.patternKeys;
+  const patternRows = opts?.patternRows;
+  const match = opts?.match;
+  const creatorWallet = opts?.creatorWallet;
   const contagion = opts?.contagion;
   const excludeWallets = opts?.excludeWallets ?? null;
   const side = opts?.side ?? null;
   return useMemo(() => {
-    const hasPatterns = keys != null && keys.size > 0;
-    // With contagion off the creator is no longer a classification of its own,
-    // so a creator alone is not enough to have anything to report.
+    if (!opts) return null;
+    const hasPatterns = patternKeys != null && patternKeys.size > 0;
     if (!hasPatterns && (contagion === false || !creatorWallet)) return null;
     const sorted = [...trades].sort(compareTradesChronologically);
     return flowReasonsById(
@@ -49,14 +47,19 @@ export function useFlowReasons(
         sol: t.amount_sol ?? 0,
         ix_labels: t.instruction_labels,
         side: t.trade_type,
+        cu_limit: t.cu_limit,
+        cu_price: t.cu_price,
+        tip_lamports: t.tip_lamports,
       })),
       {
-        patternKeys: keys ?? new Set<string>(),
+        patternKeys: patternKeys ?? new Set<string>(),
+        patternRows,
+        match,
         creatorWallet,
         contagion,
         excludeWallets,
         side,
       },
     );
-  }, [trades, keys, creatorWallet, contagion, excludeWallets, side]);
+  }, [trades, opts, patternKeys, patternRows, match, creatorWallet, contagion, excludeWallets, side]);
 }

@@ -119,8 +119,8 @@ this chart is used for — **what a token did in its first seconds**:
 | `showTradeMarkers` | **off** | the per-bar buy/sell count badge is one badge per candle at `1s` — it hides the price action it annotates |
 | `trimEmptyBars` | **off** | no-trade gaps ARE information (a stalled token); dropping them distorts the time axis |
 
-Both apps share this default — it is not split per app. `FlowPreviewChart` keeps its own
-`DEFAULT_FLOW_CHART_PREFS` (different toolbar, own storage key).
+Both apps share this default — it is not split per app. Flow Discovery uses the same
+`TokenTradeChart` host and the same prefs key.
 
 The toolbar **wraps**: the control cluster is shrinkable (no `shrink-0`) and both levels
 carry `flex-wrap`, so in a narrow host — the Console's 380px manual-trade column, the
@@ -355,8 +355,7 @@ twice, since both are on screen simultaneously:
   hovered (timezone/slot-formatted bar time + `+age` since token creation) and its per-bar
   **order flow** via `BarFlowFields`: Net / In / Out / Δ%, then VolMk / NonVol.
 
-A chart that repeats the O/H/L/C block inside its own tooltip is the bug — `FlowPreviewChart`
-did until it was switched onto the shared `BarCrosshairTooltip`.
+A chart that repeats the O/H/L/C block inside its own tooltip is the bug.
 
 Both boxes place horizontally through `tooltipHorizontalStyle` (flip to the cursor's left near
 the panel's right edge), so every chart must pass the live `containerWidth`.

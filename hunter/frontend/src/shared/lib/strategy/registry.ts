@@ -33,7 +33,7 @@ export type MetricScope = 'token' | 'position';
  *  metric-combo discovery pipeline grids over (backend `MetricFamily`). Mirrors the
  *  hue families the registry already keeps, so it also reads as "these chips are
  *  siblings". `standalone` = a group belonging to no established family. */
-export type MetricFamily = 'price' | 'flow' | 'flow_ix' | 'state' | 'standalone';
+export type MetricFamily = 'price' | 'flow' | 'flow_ix' | 'state' | 'standalone' | 'burst';
 
 /** A group's strict (non-condition) parameter, e.g. `window_size_sec`. */
 export interface StrictParamSpec {
@@ -385,6 +385,11 @@ export function metricConfigWithWorkingTemplates(
  *  it means rather than leaving a click ambiguous - a click that lands in the wrong
  *  list is the real risk, since the overlap itself is legal. */
 export type IxPatternList = 'tagged' | 'dump';
+
+/** The three lists a trades-table badge click can write into. Tagged and dump
+ *  are {@link IxPatternList} (ordered `ix_labels`, optional fee pins). Working
+ *  is a different vocabulary — `m_burst_slot.working_templates` grain ids. */
+export type TapeList = IxPatternList | 'working';
 
 /** Read one list off a `metric_config`. */
 export function patternsForList(

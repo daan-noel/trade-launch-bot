@@ -9,9 +9,12 @@ import {
   type ChartTimeSpan,
   type ChartValueLane,
 } from 'components/token-price-chart';
+import type { ChartHighlightLens, ChartLensMatches } from 'components/token-price-chart/types';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
 import { apiErrorMessage, useGetTokenDetailQuery, useGetTokenTradesQuery } from 'store/apiSlice';
+import type { IxPatternRow } from 'lib/strategy/ixPatternRows';
+import type { TapeList } from 'lib/strategy/registry';
 import type { TradeRecord } from 'types';
 
 const EMPTY: TradeRecord[] = [];
@@ -37,6 +40,10 @@ export function FloorMintChart({
   chrome = 'full',
   /** Fingerprint `ix_patterns` keys — enables the vol/non-vol overlay. */
   flowPatternKeys = null,
+  flowList = 'tagged',
+  flowPatternRows = null,
+  highlightLens = null,
+  onHighlightLensMatch,
   selectedBar = null,
   onBarClick,
   onRangeChange,
@@ -52,6 +59,10 @@ export function FloorMintChart({
   tableId?: string;
   chrome?: ChartChrome;
   flowPatternKeys?: ReadonlySet<string> | null;
+  flowList?: TapeList;
+  flowPatternRows?: readonly IxPatternRow[] | null;
+  highlightLens?: ChartHighlightLens | null;
+  onHighlightLensMatch?: (matches: ChartLensMatches) => void;
   selectedBar?: ChartBarSelection | null;
   onBarClick?: (selection: ChartBarSelection | null) => void;
   onRangeChange?: (range: ChartRangeSelectionDetail | null) => void;
@@ -126,6 +137,10 @@ export function FloorMintChart({
         isCashbackEnabled={detail?.is_cashback_enabled}
         creatorWallet={detail?.creator_wallet ?? null}
         flowPatternKeys={flowPatternKeys}
+        flowList={flowList}
+        flowPatternRows={flowPatternRows}
+        highlightLens={highlightLens}
+        onHighlightLensMatch={onHighlightLensMatch}
       />
     </div>
   );

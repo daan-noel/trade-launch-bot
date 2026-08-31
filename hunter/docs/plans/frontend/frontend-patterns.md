@@ -130,12 +130,15 @@ server compare. Percent columns that render `×100` (Win %, Open %) use a local
   `TokenTable`'s `LazyTokenChartsGrid` (Charts toggle). Creation-stats trend charts
   are lazy inside the page/section so the control shell paints first.
 - **Vol/non-vol overlay gate:** `TokenPriceChart` draws the lines whenever *something* can
-  classify — fingerprint `ix_patterns` **or** just the token's creator wallet. With
-  patterns the split is the engine's volume-maker vs organic; without, it degrades to
+  classify — the selected tape list's keys **or** just the token's creator wallet. Overlay
+  options come from `classifyOptsForTape`: tagged = exact labels + fee wildcard + contagion;
+  dump = labels + fee wildcard, no contagion; working = `templateGrain`, no contagion.
+  `useFlowPatternSource` is the engine's tagged snapshot for metric panes, not the live
+  overlay. With patterns the split is that list's membership vs the rest; without, it degrades to
   creator + wallets they traded with vs the rest, and the toolbar tooltip says so. Only a
-  token with neither disables the toggle. The per-trade **Tagged badge keeps the stricter
-  gate** (non-empty patterns) — it asserts a structural match, not a cohort.
-  Resolve through `hooks/useFlowPatternKeys` — `useFlowPatternSource` /
+  token with neither disables the toggle. The per-trade **badge keeps the stricter
+  gate** (non-empty keys) — it asserts a structural match, not a cohort.
+  Resolve persist keys through `hooks/useFlowPatternKeys` — `useFlowPatternSource` /
   `useFlowPatternSourceForRule` / `useResolvedFlowPatternSource` (or
   `lib/flow/flowPatternKeys` for a raw pattern list). Any rule/fingerprint-scoped chart
   (`TokenTable` Charts, Floor inspect, lab inspect) still passes them, or the reader
@@ -329,7 +332,6 @@ the tab, and follow a `storage` event across tabs.
 | `mt:tokens.filters` / `mt:tokens.live` | Tokens page quick filters; live-stream toggle |
 | `mt:form.flowDiscovery` / `mt:form.metricDiscovery` / `mt:form.ruleSearch` / `mt:form.familySearch` / `mt:form.replay` / `mt:form.traderAnalysis` / `mt:sweep.config*` | form drafts — **one blob per page**, every input of that form in it |
 | `mt:simulate.runPrefs` | Simulate run parameters: created window + fill/cost model (what a run scans and how it prices) |
-| `mt:flow.previewChart.prefs` | FlowPreviewChart toolbar |
 | `mt:sweep.sel.*` · `mt:sweep.showNotFired` · `mt:simulate.showNotFired` | run selection; the two **deliberately separate** not-fired toggles (a sweep row is a combo token, a sim row a position — Simulate and Dry-run *do* share theirs) |
 | `mt:filter.tags.<pageId>` / `mt:filter.mode.<pageId>` | URL-mirrored view filters; **the URL stays authoritative**, storage only restores the last-used value when the URL carries no param |
 | `mt:console.tradeLog` | the manual-trade log — data, not a view pref (positions table stays the source of truth) |

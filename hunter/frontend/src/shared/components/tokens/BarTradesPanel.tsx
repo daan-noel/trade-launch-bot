@@ -5,7 +5,7 @@ import { IxPatternBar } from 'components/tokens/IxPatternBar';
 import { Badge } from 'components/ui/Badge';
 import { useTimezone } from 'context/TimezoneContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { useIxPatternTarget } from 'hooks/useIxPatternTarget';
+import { useIxPatternTarget, type IxPatternTarget } from 'hooks/useIxPatternTarget';
 import { useFlowLensContext, type FlowLensTarget } from 'context/FlowLensContext';
 import { formatTimestampMs } from 'utils/date';
 import type { FlowReason } from 'lib/flow/classifyFlow';
@@ -65,6 +65,12 @@ export interface BarTradesPanelProps {
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only, never edited from here. */
   flowReadOnly?: boolean;
+  /** Host-owned tape target (TokenTradeChart / Floor). When passed, this panel
+   *  does not create its own `useIxPatternTarget`, so the overlay above and the
+   *  badges here cannot disagree about which list is selected. */
+  patternTarget?: IxPatternTarget | null;
+  /** Staging surfaces hide the fingerprint picker (see {@link IxPatternBar}). */
+  hideTargetPicker?: boolean;
   /** Effective (contagion-aware) classification per trade id, from the host's
    *  FULL trade history — a bar's rows alone can't reconstruct contagion. Omit
    *  and the badge reports structure only, as it always has. */
@@ -114,6 +120,8 @@ export function BarTradesPanel({
   flowPatternKeys = null,
   flowFingerprintId = null,
   flowReadOnly = false,
+  patternTarget: patternTargetProp = null,
+  hideTargetPicker = false,
   flowReasons = null,
   highlight = null,
   className = 'mt-3 border-t border-white/7 pt-2',
@@ -130,11 +138,14 @@ export function BarTradesPanel({
 
   // Without a lens, a toggle edits the fingerprint's saved patterns directly, so
   // the badge, the chart lines and the engine are always reading the same row.
-  const patternTarget = useIxPatternTarget({
+  // A host that already owns the target (so the overlay can follow the selected
+  // list) passes it in; this hook then no-ops.
+  const createdTarget = useIxPatternTarget({
     fingerprintId: flowFingerprintId,
     savedKeys: flowPatternKeys,
-    enabled: !flowReadOnly && !lensTarget,
+    enabled: !flowReadOnly && !lensTarget && !patternTargetProp,
   });
+  const patternTarget = patternTargetProp ?? createdTarget;
   const onTogglePattern = flowReadOnly
     ? null
     : (lensTarget?.toggle ?? patternTarget.toggle);
@@ -315,7 +326,11 @@ export function BarTradesPanel({
         {lensTarget ? (
           <FlowLensStrip target={lensTarget} patternCount={badgeKeys?.size ?? 0} />
         ) : (
-          <IxPatternBar target={patternTarget} readOnly={flowReadOnly} />
+          <IxPatternBar
+            target={patternTarget}
+            readOnly={flowReadOnly}
+            hideTargetPicker={hideTargetPicker}
+          />
         )}
       </div>
       {highlight && lensActive && <LensChips highlight={highlight} />}

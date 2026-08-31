@@ -3,11 +3,18 @@
  *  token charts (Flow Discovery, Simulate, inspect) to redraw vol/non-vol
  *  lines without a backend round-trip. Visualization only — never wired to
  *  live trading decisions. Equivalence classes match via `JSON.stringify`
- *  of ordered `ix_labels` arrays.
+ *  of ordered `ix_labels` arrays (or `templateGrain` under {@link FlowMatchMode}
+ *  `'grain'`).
  *
  *  Mirrors the Rust classify order: creator wallet → always volume; wallet
  *  already tagged (forward-only contagion) → volume; else structural
- *  `ix_labels` match against the pattern set; else organic. */
+ *  `ix_labels` match against the pattern set; else organic.
+ *
+ *  Dump / working overlays reuse this fold with contagion off (those groups
+ *  have no wallet rule). The structural test then IS the verdict. */
+
+import { anyRowMatchesTrade, type IxPatternRow } from 'lib/strategy/ixPatternRows';
+import { templateGrain } from 'lib/strategy/templateGrain';
 
 export interface FlowTradeLite {
   wallet_address: string;
@@ -18,6 +25,11 @@ export interface FlowTradeLite {
    *  narrowing; absent there, the trade cannot prove it is on the asked side and
    *  is treated as off-side. */
   side?: FlowSide | null;
+  /** Fee budget this tx compiled — used when {@link FlowClassifyOptions.patternRows}
+   *  carries pinned rows. Absent fields are wildcards on the row side. */
+  cu_limit?: number | null;
+  cu_price?: number | null;
+  tip_lamports?: number | null;
 }
 
 /** One leg of a trade. `ix_labels` do NOT encode this — an aggregator's launch
@@ -25,9 +37,22 @@ export interface FlowTradeLite {
  *  a filter over trades, never over patterns. */
 export type FlowSide = 'buy' | 'sell';
 
+/** How {@link FlowClassifyOptions.patternKeys} are compared to a trade.
+ *
+ *  `'labels'` (default) is `m_flow_ix` / `m_dump_ix`: exact ordered `ix_labels`.
+ *  `'grain'` is `m_burst_slot.working_templates`: `templateGrain(ix_labels)`. */
+export type FlowMatchMode = 'labels' | 'grain';
+
 export interface FlowClassifyOptions {
-  /** `JSON.stringify(labels)` keys of the checked ix_patterns. */
+  /** Membership set. Under `'labels'`, `JSON.stringify(ix_labels)`; under
+   *  `'grain'`, `templateGrain(ix_labels)`. */
   patternKeys: ReadonlySet<string>;
+  /** When set (tagged/dump), structural match uses engine row matching — an
+   *  unpinned row is a fee wildcard — instead of `patternKeys.has`. Empty /
+   *  omitted falls back to the key set. Ignored under `'grain'`. */
+  patternRows?: readonly IxPatternRow[] | null;
+  /** Default `'labels'`. */
+  match?: FlowMatchMode;
   /** Token creator wallet address — always classified as volume-side, and
    *  seeds the contagion set (mirrors `FlowState::set_creator`). */
   creatorWallet?: string | null;
@@ -84,6 +109,15 @@ export interface FlowClassified {
   untaggedSol: number;
 }
 
+function isStructuralMatch(t: FlowTradeLite, opts: FlowClassifyOptions): boolean {
+  const labels = t.ix_labels;
+  if (!labels || labels.length === 0) return false;
+  if (opts.match === 'grain') return opts.patternKeys.has(templateGrain(labels));
+  const rows = opts.patternRows;
+  if (rows && rows.length > 0) return anyRowMatchesTrade(rows, labels, t);
+  return opts.patternKeys.has(JSON.stringify(labels));
+}
+
 /** Classify `trades` (must already be in canonical order — slot -> tx_index
  *  -> leg_index) into vol/non-vol, forward-tagging wallets as they're seen. */
 export function classifyFlowTrades<T extends FlowTradeLite>(
@@ -108,10 +142,7 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
       out.push({ ...t, isTagged: false, reason: null, taggedSol: 0, untaggedSol: mag });
       continue;
     }
-    const structuralMatch =
-      !!t.ix_labels &&
-      t.ix_labels.length > 0 &&
-      opts.patternKeys.has(JSON.stringify(t.ix_labels));
+    const structuralMatch = isStructuralMatch(t, opts);
     // Read the contagion set BEFORE this trade can join it, so a wallet's first
     // structural match is reported as `structural` and only its later trades as
     // `wallet` — otherwise every trade of a tagged wallet looks like contagion

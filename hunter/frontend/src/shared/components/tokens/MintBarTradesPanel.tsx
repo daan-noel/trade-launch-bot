@@ -1,8 +1,11 @@
 import { useMemo } from 'react';
 import { tradesInBar, tradesInRange } from 'components/token-price-chart/barTrades';
 import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
+import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
 import { useFlowReasons } from 'hooks/useFlowReasons';
+import type { IxPatternTarget } from 'hooks/useIxPatternTarget';
 import { useProfileWallets } from 'hooks/useProfileWallets';
+import { classifyOptsForTape } from 'lib/flow/tapeClassify';
 import { useGetTokenDetailQuery, useGetTokenTradesQuery } from 'store/apiSlice';
 import type { ChartEventMarker } from 'components/token-price-chart/types';
 import type { TradeRecord } from 'types';
@@ -27,6 +30,8 @@ export function MintBarTradesPanel({
   flowPatternKeys = null,
   flowFingerprintId = null,
   flowReadOnly = false,
+  highlight = null,
+  patternTarget = null,
   className,
 }: {
   mint: string;
@@ -39,13 +44,14 @@ export function MintBarTradesPanel({
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only (see {@link BarTradesPanel}). */
   flowReadOnly?: boolean;
+  highlight?: TokenHighlight | null;
+  /** Host-owned tape so the overlay above classifies the same list. */
+  patternTarget?: IxPatternTarget | null;
   className?: string;
 }) {
-  // Only subscribes once something is picked — an unopened detail row pays
-  // nothing, and by then the chart has already filled these cache entries. The
-  // detail is read for the creator wallet alone: it seeds flow contagion, so
-  // without it the badge's verdict would drift from the lines above it.
-  const skip = !mint || !selection.active;
+  // Fetch whenever the mint is on screen — highlight chips stay mounted after
+  // the bar is cleared, and contagion needs the full history.
+  const skip = !mint;
   const { data } = useGetTokenTradesQuery(mint, { skip });
   const { data: detail } = useGetTokenDetailQuery(mint, { skip });
   const trades = data ?? EMPTY_TRADES;
@@ -56,7 +62,18 @@ export function MintBarTradesPanel({
     [myWalletAddresses],
   );
 
-  const flowReasons = useFlowReasons(trades, flowPatternKeys, detail?.creator_wallet);
+  const classifyOpts = useMemo(
+    () =>
+      classifyOptsForTape({
+        list: patternTarget?.list ?? 'tagged',
+        keys: patternTarget?.keys ?? flowPatternKeys,
+        rows:
+          patternTarget && patternTarget.list !== 'working' ? patternTarget.rows : null,
+        creatorWallet: detail?.creator_wallet,
+      }),
+    [patternTarget, flowPatternKeys, detail?.creator_wallet],
+  );
+  const flowReasons = useFlowReasons(trades, classifyOpts);
 
   const rows = useMemo(() => {
     if (selection.range) return tradesInRange(trades, selection.range);
@@ -76,7 +93,9 @@ export function MintBarTradesPanel({
       flowPatternKeys={flowPatternKeys}
       flowFingerprintId={flowFingerprintId}
       flowReadOnly={flowReadOnly}
+      patternTarget={patternTarget}
       flowReasons={flowReasons}
+      highlight={highlight}
       className={className}
     />
   );

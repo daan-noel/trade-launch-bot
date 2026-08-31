@@ -66,15 +66,15 @@ function suggestOptionValue(sug: StructureSuggestion | undefined): string {
  *  `contagionByStructure` are per-render (selection + checked-structure
  *  dependent), so this is rebuilt via `useMemo` rather than module-level. */
 function buildStructureColumns(opts: {
-  draftPatterns: string[][];
+  draftKeys: ReadonlySet<string>;
+  volKey: (s: FlowDiscoveryStructure) => string;
   contagionByStructure: Map<string, number | null>;
   suggestionByStructure: Map<string, StructureSuggestion>;
   liftDefined: boolean;
   onToggle: (labels: string[]) => void;
 }): ColumnDef<FlowDiscoveryStructure>[] {
-  const { draftPatterns, contagionByStructure, suggestionByStructure, liftDefined, onToggle } =
+  const { draftKeys, volKey, contagionByStructure, suggestionByStructure, liftDefined, onToggle } =
     opts;
-  const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
 
   return [
     {
@@ -83,7 +83,7 @@ function buildStructureColumns(opts: {
       tooltip: helpText(DISCOVERY_COL_HELP.vol),
       render: (s) => (
         <Checkbox
-          checked={draftKeys.has(JSON.stringify(s.ix_labels))}
+          checked={draftKeys.has(volKey(s))}
           onChange={() => onToggle(s.ix_labels)}
         />
       ),
@@ -94,10 +94,10 @@ function buildStructureColumns(opts: {
         { value: 'staged', label: 'staged' },
         { value: 'open', label: 'not staged' },
       ],
-      filterOptionValue: (s) => (draftKeys.has(JSON.stringify(s.ix_labels)) ? 'staged' : 'open'),
+      filterOptionValue: (s) => (draftKeys.has(volKey(s)) ? 'staged' : 'open'),
       filterTitle:
         'Show only the rows already in the draft ix_patterns, or only the ones still open',
-      sortValue: (s) => (draftKeys.has(JSON.stringify(s.ix_labels)) ? 1 : 0),
+      sortValue: (s) => (draftKeys.has(volKey(s)) ? 1 : 0),
       searchValue: () => '',
     },
     {
@@ -420,7 +420,8 @@ function buildStructureColumns(opts: {
  *  selection/checked-pattern changes, not on every `FlowDiscoveryPage` render. */
 export function StructureTable({
   structures,
-  draftPatterns,
+  draftKeys,
+  volKey = structureRowKey,
   contagionByStructure,
   suggestionByStructure,
   liftDefined,
@@ -429,7 +430,10 @@ export function StructureTable({
   onFilteredRowsChange,
 }: {
   structures: FlowDiscoveryStructure[];
-  draftPatterns: string[][];
+  /** Membership the Vol checkbox tests — label keys (tagged/dump) or grain ids (working). */
+  draftKeys: ReadonlySet<string>;
+  /** How a ranked row maps into {@link draftKeys}. Default = exact ix_labels. */
+  volKey?: (s: FlowDiscoveryStructure) => string;
   contagionByStructure: Map<string, number | null>;
   suggestionByStructure: Map<string, StructureSuggestion>;
   /** The group's `lift_defined` — false ⇒ lift is 1.00 by construction, render
@@ -445,26 +449,27 @@ export function StructureTable({
    *  handler. */
   onFilteredRowsChange?: (rows: FlowDiscoveryStructure[]) => void;
 }) {
-  const draftKeysSig = draftPatterns.map((p) => JSON.stringify(p)).join('|');
+  const draftKeysSig = [...draftKeys].join('|');
   const columns = useMemo(
     () =>
       buildStructureColumns({
-        draftPatterns,
+        draftKeys,
+        volKey,
         contagionByStructure,
         suggestionByStructure,
         liftDefined,
         onToggle,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- draftKeysSig/contagion/suggestion maps are the real identities
-    [draftKeysSig, contagionByStructure, suggestionByStructure, liftDefined, onToggle],
+    [draftKeysSig, volKey, contagionByStructure, suggestionByStructure, liftDefined, onToggle],
   );
   const rowClassName = useCallback(
     (s: FlowDiscoveryStructure) => {
       const key = structureRowKey(s);
       if (previewKeys?.has(key)) return 'bg-accent/12 outline outline-1 outline-accent/50';
-      return draftPatterns.some((p) => JSON.stringify(p) === key) ? 'bg-accent/8' : undefined;
+      return draftKeys.has(volKey(s)) ? 'bg-accent/8' : undefined;
     },
-    [previewKeys, draftPatterns],
+    [previewKeys, draftKeys, volKey],
   );
 
   return (
