@@ -15,7 +15,9 @@
     3. Verifies local vs remote column parity (aborts on schema drift).
     4. Per table: INSERT INTO <local> (<named cols>) SELECT <named cols> FROM ec2_sync_src.<t>
        WHERE <watermark predicate>  ON CONFLICT ...
-       (Never `SELECT *` -- local/server column order can diverge after ALTER TABLE.)
+       (Never `SELECT *` -- local/server column order can diverge after ALTER TABLE.
+       The names are read from the local catalog after the parity check, so a new
+       migration column syncs without editing this script.)
        The watermark is a literal, so postgres_fdw PUSHES IT DOWN to the server
        (remote chunk pruning) -- only new rows are fetched.
 
@@ -63,7 +65,7 @@
   pull it into a temp table, drop local rows whose address the server reassigned to a
   different id (server wins), then UPSERT every server row by id. Local-only ids the
   server no longer has are PRESERVED, because the lab retains trade history LONGER than
-  the server's 7-day window and those old trades still need them. Two earlier approaches
+  the server's retention window (trades: 30 days) and those old trades still need them. Two earlier approaches
   were wrong: the original `WHERE id > MAX(local id) ON CONFLICT DO NOTHING` silently
   skipped colliding server rows (after the ~Jul-2026 rebuild re-minted wallet_dict this
   left ~98k ids missing / 58% of trades invisible); and a TRUNCATE+full-replace fixed
@@ -123,6 +125,23 @@
   # One-shot current-day analysis refresh: DB sync (incl. today) then lake-export
   # --include-today so simulate/sweep see today's trades without a second manual hop.
   ./scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake
+
+.EXAMPLE
+  # REPAIR a window the watermark has already passed (server wins on every column).
+  # Use it when a day is SHORT locally (an ingest outage, an interrupted run) or when a
+  # column reads NULL on the lab that the server has: the normal pull is append-only and
+  # can fix neither. Costs the whole window re-transferred, so give it one day at a time
+  # and keep it off the server's busy hours. The server keeps `trades` for 30 days, but
+  # only the last ~7 are worth repairing this way: past that the local chunk is compressed
+  # and a rewrite is refused outright -- use -RepairFillOnly there (next example).
+  ./scripts/db-incremental-sync.ps1 -RepairFrom '2026-08-29 00:00:00+00' -RepairTo '2026-08-30 00:00:00+00'
+
+.EXAMPLE
+  # Repair a day PAST THE COMPRESSION LINE (7 days). -RepairFillOnly inserts the missing
+  # rows and never rewrites an existing one, so it does not decompress: without it the
+  # upsert fails outright with "tuple decompression limit exceeded by operation". It fills
+  # HOLES but cannot heal a column, which is the right trade on an old chunk.
+  ./scripts/db-incremental-sync.ps1 -RepairFrom '2026-08-07 00:00:00+00' -RepairTo '2026-08-08 00:00:00+00' -RepairFillOnly
 #>
 param(
   [string]$SshTarget       = 'ubuntu@35.158.128.131',                      # user@host of the EC2 box
@@ -135,12 +154,16 @@ param(
   [int]   $TunnelLocalPort = 5433,                                        # local end of the SSH tunnel (must be free)
   [string]$FdwTunnelHost   = 'host.docker.internal',                      # how the LOCAL postgres reaches the tunnel: 'host.docker.internal' if it runs in Docker, '127.0.0.1' if native
   [int]   $RemotePgPort    = 0,                                           # 0 = auto-detect from remote .env (default 5555)
+  [string]$RepairFrom      = '',                                          # repair mode: re-pull trades from this UTC timestamp with server-wins upserts (ignores the watermark)
+  [string]$RepairTo        = '',                                          # repair mode upper bound (default: the same cutoff the normal pull uses)
+  [switch]$RepairFillOnly,                                                # repair by inserting MISSING rows only, never rewriting an existing one -- required past the 7-day compression line, where a rewrite hits TimescaleDB's decompression limit
   [switch]$IncludeRawTxs,                                                 # also sync raw_txs (BYTEA payloads, large; off by default)
   [switch]$IncludeToday,                                                  # also pull today's still-open chunk (partial day; default = sealed days only)
   [switch]$ExportLake,                                                    # after sync: run `cargo run -p hunter-lab -- lake-export` (passes --include-today when -IncludeToday)
   [int]   $FdwFetchSize    = 10000,                                       # postgres_fdw fetch_size (smaller = gentler on 4GB EC2 RAM; was 50000)
   [int]   $HypertableChunkHours = 2,                                      # trades/raw_txs pull window size (hours); smaller = safer on EC2 RAM + commits/visible progress sooner (was 6)
   [int]   $ChunkRetries    = 4,                                           # retries per chunk on transient FDW/tunnel drops
+  [int]   $TunnelReopenMinutes = 15,                                      # how long to keep reopening a dropped tunnel before giving up (the box goes unreachable for minutes at a time)
   [int]   $ChunkPreviewTimeoutMs = 8000,                                  # cap on the cheap remote COUNT(*) printed before each chunk (0 = skip preview)
   [string]$LocalPgPassword = $env:PGPASSWORD
 )
@@ -157,6 +180,13 @@ if (-not $LocalPgPassword) { throw "Set the LOCAL DB password: `$env:PGPASSWORD=
 if ($SshTarget -match '^-') {
   throw "SshTarget looks like a flag ('$SshTarget'). Use PowerShell switches, e.g.: .\db-incremental-sync.ps1 -IncludeToday"
 }
+# Fail on an unparseable repair bound HERE, not an hour in at the trades step.
+foreach ($b in @(@{n='RepairFrom'; v=$RepairFrom}, @{n='RepairTo'; v=$RepairTo})) {
+  if ($b.v -and -not [datetimeoffset]::TryParse($b.v, [ref]([datetimeoffset]::MinValue))) {
+    throw "-$($b.n) '$($b.v)' is not a timestamp. Use a UTC literal, e.g. -$($b.n) '2026-08-22 00:00:00+00'."
+  }
+}
+if ($RepairTo -and -not $RepairFrom) { throw "-RepairTo needs -RepairFrom (repair mode is the window, not the upper bound alone)." }
 
 # Force UTC so the sealed-day boundary (start-of-today) is computed in UTC
 # regardless of the workstation's OS timezone.
@@ -288,6 +318,32 @@ function Get-LocalRows([string]$sql) {
   }
   finally { Remove-Item $errf -ErrorAction SilentlyContinue }
 }
+# ---- Column lists come from the SCHEMA, never from a list kept in this file ---
+# Every INSERT below names its columns: a positional `SELECT *` misaligns the
+# moment local and server column ORDER diverge (both sides ALTER TABLE ADD COLUMN
+# at their own pace). A hand-written name list fixes that but rots the other way --
+# a migration that ADDs a column is then silently not synced (it lands NULL
+# locally, no error), and one that DROPs a column fails the run outright. So the
+# lists are read out of the LOCAL catalog once, after the parity guard has proven
+# local and server carry the same column set for every synced table.
+$script:tableCols = @{}
+function Initialize-TableColumns {
+  foreach ($t in $syncTables) {
+    $cols = Get-LocalScalar "SELECT string_agg(column_name, ',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema='public' AND table_name='$t'"
+    if (-not $cols) { throw "Local table '$t' has no columns -- is the local DB migrated?" }
+    $script:tableCols[$t] = @($cols -split ',')
+  }
+}
+function Get-Cols([string]$t) {
+  if (-not $script:tableCols.ContainsKey($t)) { throw "No column list for '$t' (Initialize-TableColumns has not run)" }
+  return $script:tableCols[$t]
+}
+function Get-ColList([string]$t) { (Get-Cols $t) -join ', ' }                                   # INSERT target list
+function Get-SelList([string]$t, [string]$alias) { ((Get-Cols $t) | ForEach-Object { "$alias.$_" }) -join ', ' }  # SELECT list
+function Get-UpsertSet([string]$t, [string[]]$keys) {                                           # DO UPDATE body, conflict key(s) excluded
+  ((Get-Cols $t) | Where-Object { $keys -notcontains $_ } | ForEach-Object { "$_ = EXCLUDED.$_" }) -join ', '
+}
+
 # Cheap remote COUNT(*) for the upcoming chunk window, printed BEFORE the real
 # INSERT so a slow chunk shows "pulling ~N rows" instead of silence that looks
 # hung. Best-effort only: capped by its own statement_timeout (independent of
@@ -319,7 +375,12 @@ function Test-Port([int]$Port) {
   } catch { return $false } finally { $c.Close() }
 }
 function Test-TransientSyncError([string]$msg) {
-  $msg -match '(?i)server closed the connection|no connection to the server|connection reset|could not connect to server|SSL connection has been closed|terminating connection|timeout expired|broken pipe|Connection timed out|server closed the connection unexpectedly|could not receive data from server|FATAL:\s+the database system is (starting|recovering|shutting)'
+  # `relation "ec2_sync_src.*" does not exist` is transient too: the foreign schema is
+  # this script's own scratch, so it means the attach was lost (a re-attach that failed
+  # halfway, or another run's teardown), never that the SERVER lost a table. The retry's
+  # Repair-FdwAttach rebuilds it -- treating it as fatal instead ends the run on
+  # something one statement fixes.
+  $msg -match '(?i)server closed the connection|no connection to the server|connection reset|could not connect to server|SSL connection has been closed|terminating connection|timeout expired|broken pipe|Connection timed out|server closed the connection unexpectedly|could not receive data from server|relation "ec2_sync_src\.[a-z_]+" does not exist|FATAL:\s+the database system is (starting|recovering|shutting)'
 }
 function Wait-Port([int]$Port, [string]$label, [int]$Seconds = 60) {
   foreach ($i in 1..$Seconds) {
@@ -328,15 +389,56 @@ function Wait-Port([int]$Port, [string]$label, [int]$Seconds = 60) {
   }
   throw "$label port $Port never became reachable (waited ${Seconds}s)"
 }
+# A long pull outlives its transport: sustained FDW traffic gets the ssh connection
+# reset ("client_loop: send disconnect") often enough that treating a dead tunnel as
+# fatal throws away hours of committed chunks over a blip that costs seconds to undo.
+# So reopen it. Chunks commit one at a time and the retry re-runs only the failed
+# one, so a reopened tunnel resumes exactly where the drop happened. `$script:tunnel`
+# is rebound to the new process, which the cleanup `finally` then stops.
+function Restart-SyncTunnel {
+  # What drops the tunnel is usually what makes the FIRST reopen fail: the same outage
+  # answers `ssh: connect to host ... port 22: Connection timed out`. Giving up there
+  # ends the run on a blip that clears in under a minute, so reopen on a backoff and
+  # only fail when the box is durably unreachable.
+  # Measured: the box goes unreachable on port 22 for MINUTES at a time (five reopens
+  # over ~4 min all answered "Connection timed out", and it was healthy again right
+  # after), so the retry budget is minutes, not seconds -- a 3-hour repair must ride out
+  # an outage that costs it one chunk, not the whole run.
+  $deadline = (Get-Date).AddMinutes($TunnelReopenMinutes)
+  $attempt = 0
+  # ssh writes its failure to its OWN stderr, which does not reach this script's log
+  # (PowerShell stream redirection does not follow a child process). Without capturing
+  # it, every failure reads as a bare "did not come back" and says nothing about why.
+  $sshErr = Join-Path $env:TEMP "dbsync-tunnel-$PID.err"
+  while ((Get-Date) -lt $deadline) {
+    $attempt++
+    Write-Host ("  reopening the SSH tunnel (attempt {0}, until {1:HH:mm:ss}) ..." -f $attempt, $deadline)
+    if ($script:tunnel -and -not $script:tunnel.HasExited) {
+      Stop-Process -Id $script:tunnel.Id -Force -ErrorAction SilentlyContinue
+    }
+    # The forwarded port lingers in TIME_WAIT for a moment after ssh dies; a new tunnel
+    # binding 0.0.0.0 fails with "Address already in use" if we race it.
+    Start-Sleep -Seconds 2
+    Remove-Item $sshErr -Force -ErrorAction SilentlyContinue
+    $script:tunnel = Start-Process ssh -ArgumentList $tunnelArgs -PassThru -NoNewWindow -RedirectStandardError $sshErr
+    foreach ($i in 1..45) {
+      if ($script:tunnel.HasExited) { break }
+      if (Test-Port $TunnelLocalPort) { Write-Host "  tunnel back up."; return }
+      Start-Sleep -Seconds 1
+    }
+    $why = if (Test-Path $sshErr) { ((Get-Content $sshErr -Raw) -replace '\s+', ' ').Trim() } else { '' }
+    if (-not $why) { $why = 'no ssh output (still connecting?)' }
+    Write-Warning ("  tunnel did not come back: {0}" -f $why)
+    Start-Sleep -Seconds 30
+  }
+  throw "SSH tunnel could not be reopened within $TunnelReopenMinutes min ($attempt attempts) -- the server is unreachable, not just busy."
+}
 function Assert-SyncTransport {
   if (-not (Test-Port $LocalPgPort)) {
     Write-Warning "Local Postgres on :$LocalPgPort is down (OOM restart?). Waiting up to 90s..."
     Wait-Port $LocalPgPort 'Local Postgres' 90 | Out-Null
   }
-  if ($tunnel.HasExited) { throw "SSH tunnel process exited; re-run the script to reopen it." }
-  if (-not (Test-Port $TunnelLocalPort)) {
-    throw "SSH tunnel port $TunnelLocalPort is not accepting connections; re-run the script."
-  }
+  if ($script:tunnel.HasExited -or -not (Test-Port $TunnelLocalPort)) { Restart-SyncTunnel }
 }
 # Recreate the FDW server mapping after a dropped remote connection so the next
 # chunk opens a fresh remote session (stale user mappings / cached conns otherwise
@@ -424,12 +526,28 @@ ORDER BY 1;
   }
   return $chunks
 }
-function Sync-TradesChunks([string]$fromWm, [string]$toCutoff, [string]$windowLabel) {
+# The normal pull is APPEND-ONLY (`DO NOTHING`): a row already local is never
+# touched, which is what keeps a re-run cheap. Repair mode (-RepairFrom) walks a
+# window the watermark has already passed and lets the SERVER WIN on every column,
+# so it both inserts rows the local mirror missed (an ingest outage, an interrupted
+# run) and heals columns that were NULL locally while the server had them. It is
+# the only way to fix either: the watermark never looks back, and `DO NOTHING`
+# never rewrites. Cost is the whole window re-transferred, so it is opt-in.
+function Sync-TradesChunks([string]$fromWm, [string]$toCutoff, [string]$windowLabel, [switch]$Repair, [switch]$FillOnly) {
   $chunks = @(Get-HypertableChunks $fromWm $toCutoff)
   if ($chunks.Count -eq 0) {
     Write-Host "-- trades ($windowLabel): nothing to pull (watermark >= cutoff)"
     return
   }
+  # Two repairs, two costs. `DO UPDATE` heals COLUMNS, and to do that it rewrites every
+  # matched row -- on a COMPRESSED chunk that means decompressing the chunk, which
+  # TimescaleDB refuses outright: "tuple decompression limit exceeded by operation".
+  # `DO NOTHING` fills MISSING ROWS only; it never touches a row that is already there,
+  # so it neither decompresses nor errors, and it is far cheaper even on an uncompressed
+  # chunk. Compression lands at 7 days here, so anything older than that wants -RepairFillOnly.
+  $conflict = if ($Repair -and -not $FillOnly) {
+    "DO UPDATE SET $(Get-UpsertSet 'trades' @('block_time','tx_signature','leg_index'))"
+  } else { 'DO NOTHING' }
   Write-Host ("-- trades ($windowLabel): {0} x {1}h chunk(s) [{2} .. {3})" -f $chunks.Count, $HypertableChunkHours, $chunks[0].From, $toCutoff)
   $i = 0
   foreach ($c in $chunks) {
@@ -439,21 +557,18 @@ function Sync-TradesChunks([string]$fromWm, [string]$toCutoff, [string]$windowLa
     $preview = Get-RemoteChunkPreviewCount 'trades' $c.From $c.To
     if ($null -ne $preview) { Write-Host "    ~$preview row(s) on server for this window -- pulling ..." }
     else { Write-Host "    (row-count preview unavailable/timed out; pulling anyway -- a large/contended window can take minutes)" }
+    $started = Get-Date
     Invoke-LocalSqlFileRetry @"
 \echo '-- $label'
-INSERT INTO trades (
-  mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,
-  reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time, tx_signature,
-  ix_labels
-)
-SELECT
-  tr.mint_address, tr.wallet_id, tr.trade_type, tr.venue, tr.amount_lamports, tr.token_amount,
-  tr.reserve_lamports, tr.reserve_token, tr.slot, tr.tx_index, tr.leg_index, tr.block_time, tr.tx_signature,
-  tr.ix_labels
+INSERT INTO trades ($(Get-ColList 'trades'))
+SELECT $(Get-SelList 'trades' 'tr')
 FROM ec2_sync_src.trades tr
 WHERE block_time >= '$($c.From)'::timestamptz AND block_time < '$($c.To)'::timestamptz
-ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING;
+ON CONFLICT (block_time, tx_signature, leg_index) $conflict;
 "@ $label
+    $secs = [Math]::Round(((Get-Date) - $started).TotalSeconds, 1)
+    $rate = if ($preview -and $secs -gt 0) { "  (~{0:N0} rows/s)" -f ([double]$preview / $secs) } else { '' }
+    Write-Host ("    chunk done in {0}s{1}" -f $secs, $rate)
   }
 }
 function Sync-RawTxsChunks([string]$fromWm, [string]$toCutoff, [string]$windowLabel) {
@@ -473,8 +588,8 @@ function Sync-RawTxsChunks([string]$fromWm, [string]$toCutoff, [string]$windowLa
     else { Write-Host "    (row-count preview unavailable/timed out; pulling anyway -- a large/contended window can take minutes)" }
     Invoke-LocalSqlFileRetry @"
 \echo '-- $label'
-INSERT INTO raw_txs (tx_signature, slot, block_time, tx_index, payload, source)
-SELECT r.tx_signature, r.slot, r.block_time, r.tx_index, r.payload, r.source
+INSERT INTO raw_txs ($(Get-ColList 'raw_txs'))
+SELECT $(Get-SelList 'raw_txs' 'r')
 FROM ec2_sync_src.raw_txs r
 WHERE block_time >= '$($c.From)'::timestamptz AND block_time < '$($c.To)'::timestamptz
 ON CONFLICT (block_time, tx_signature) DO NOTHING;
@@ -489,6 +604,44 @@ if (Test-Path $SshKey) {
     icacls $SshKey /inheritance:r    | Out-Null
     icacls $SshKey /grant:r "$($env:USERNAME):(R)" | Out-Null
   } catch { Write-Warning "Could not tighten key ACLs ($_). If ssh rejects the key, fix perms manually." }
+}
+
+# ---- 0a. One run at a time ----------------------------------------------------
+# Two overlapping runs SHARE one name: `ec2_sync_src`. The second attaches its own
+# foreign schema over the first's, and whichever finishes first drops it in `finally`
+# -- the survivor then dies mid-window on `relation "ec2_sync_src.trades" does not
+# exist`, which reads like schema drift and is really a second copy of this script.
+# The lock is an EXCLUSIVE FILE HANDLE, not a recorded PID: `$PID` is the *host*
+# PowerShell's id, so a run launched from a long-lived shell records a process that
+# outlives it and never looks stale -- the next run then refuses forever. A handle is
+# owned by the run itself and the OS drops it when the process ends, so there is no
+# staleness to reason about.
+$script:lockFile = Join-Path $env:TEMP 'db-incremental-sync.lock'
+try {
+  $script:lockStream = [System.IO.File]::Open($script:lockFile, 'OpenOrCreate', 'ReadWrite', 'None')
+} catch {
+  throw "Another db-incremental-sync holds $($script:lockFile). Wait for it to finish -- two runs share the ec2_sync_src schema and drop each other's. (If one was killed mid-run from an interactive shell, its handle clears when that shell exits.)"
+}
+
+# ---- 0b. Who else is on the local DB ------------------------------------------
+# A running `lab` (or `live`) holds pooled connections and keeps writing while this
+# script upserts the same strategy tables. Nothing here corrupts under that -- every
+# write is a single-statement upsert -- but a long lock wait shows up as an
+# unexplained stall, and a rule edited in the lab mid-run is overwritten by the
+# server's copy seconds later. So name the other sessions instead of leaving the
+# stall unexplained. A warning, never a block: the sync is safe to run alongside.
+$otherSessions = Get-LocalRows @"
+SELECT app || ' x' || n::text FROM (
+  SELECT COALESCE(NULLIF(application_name, ''), 'unnamed') AS app, count(*) AS n
+  FROM pg_stat_activity
+  WHERE datname = '$Database' AND pid <> pg_backend_pid()
+    AND backend_type = 'client backend'          -- not Timescale's own workers
+    AND COALESCE(application_name, '') NOT LIKE 'psql%'
+  GROUP BY 1
+) s ORDER BY app
+"@
+if ($otherSessions.Count -gt 0) {
+  Write-Warning ("Other sessions on {0}: {1}. Stop the local backend for a clean run -- a lab edit made now is overwritten by the server's copy." -f $Database, ($otherSessions -join ', '))
 }
 
 # ---- 1. Read server DB creds from its .env ----------------------------------
@@ -540,7 +693,7 @@ Write-Host "  (if a passphrase prompt appears below, enter the key passphrase to
 $tunnelArgs = $sshOpts + @('-o', 'ExitOnForwardFailure=yes', '-N', '-L', $fwd, $SshTarget)
 # -NoNewWindow: share this console so ssh's passphrase prompt is reachable. A hidden
 # window would leave the prompt invisible and the tunnel stuck forever.
-$tunnel = Start-Process ssh -ArgumentList $tunnelArgs -PassThru -NoNewWindow
+$script:tunnel = Start-Process ssh -ArgumentList $tunnelArgs -PassThru -NoNewWindow
 
 try {
   # ---- 3. Wait for the tunnel + verify end-to-end with remote creds ----------
@@ -619,6 +772,12 @@ BEGIN
 END `$`$;
 "@
 
+  # Safe to read the column lists now: the guard above has proven local and server
+  # hold the same column set for every synced table, so a locally-read list names
+  # only columns the foreign table also has.
+  Initialize-TableColumns
+  Write-Host ("Column lists read from the local catalog: " + (($syncTables | ForEach-Object { "$_ ($((Get-Cols $_).Count))" }) -join ', '))
+
   # ---- 6. Sealed-day boundary + local watermarks -----------------------------
   # The sealed cutoff: midnight UTC today. Hypertable pulls use [watermark, cutoff)
   # so only fully-sealed days move; today is left open for the next run.
@@ -683,9 +842,9 @@ END `$`$;
   # allowed; `lab` never mints its own ids -- no intern() in the lab bin -- so the local
   # dict is meant to track the server's.)
   #
-  # A naive TRUNCATE + full-replace is ALSO wrong: the server has a 7-day rolling
-  # window and RE-MINTED/AGED-OUT old wallet ids, but the LAB retains trade history
-  # LONGER than 7 days. Replacing wholesale discards the old (id,address) rows the
+  # A naive TRUNCATE + full-replace is ALSO wrong: the server rolls its own window
+  # (trades drop after 30 days) and RE-MINTED/AGED-OUT old wallet ids, but the LAB
+  # retains trade history LONGER than that. Replacing wholesale discards the old (id,address) rows the
   # mirror accumulated for those older days -- which the server can no longer supply --
   # re-orphaning historical trades on every run (observed: it fixed Jul+ but re-broke
   # Jun 29-30 to ~90% orphaned).
@@ -739,27 +898,21 @@ END `$`$;
 COMMIT;
 "@ 'wallet_dict merge'
 
+  # Repair mode is about `trades`: tokens carry no fee/leg data a repair heals, and
+  # `trades` has no FK to them, so re-scanning the token tables buys nothing.
+  if ($RepairFrom) { Write-Host "tokens + tokens_info: skipped (repair mode)." } else {
   Invoke-LocalSqlFileRetry @"
 \echo '-- tokens'
 -- created_at>=watermark is the fast path (FDW pushes it down), but server tokens
 -- can arrive with a created_at EARLIER than the local max (out-of-order discovery,
 -- backfills). Those would be skipped, yet their tokens_info row may still be pulled
 -- below -> FK violation. So also pull any server token whose mint is missing locally.
--- Explicit, name-matched column list (not `SELECT t.*`): local and server can hold
--- the SAME columns in a DIFFERENT physical order (e.g. creation_slot was appended
--- last on the server via ALTER TABLE ADD COLUMN, but sits mid-table locally after
--- the migration squash) -- a positional SELECT * would silently misalign columns.
-INSERT INTO tokens (
-  mint_address, creator_wallet, name, symbol, bonding_curve_address, token_program_id,
-  initial_supply_token, total_supply_token, initial_buy_lamports, cu_limit, cu_price, is_mayhem_mode,
-  is_cashback_enabled, creation_slot, creation_tx_signature, ix_labels,
-  initial_buy_instruction, meta, created_at
-)
-SELECT
-  t.mint_address, t.creator_wallet, t.name, t.symbol, t.bonding_curve_address, t.token_program_id,
-  t.initial_supply_token, t.total_supply_token, t.initial_buy_lamports, t.cu_limit, t.cu_price, t.is_mayhem_mode,
-  t.is_cashback_enabled, t.creation_slot, t.creation_tx_signature, t.ix_labels,
-  t.initial_buy_instruction, t.meta, t.created_at
+-- Name-matched column list, read from the catalog (not `SELECT t.*`): local and
+-- server can hold the SAME columns in a DIFFERENT physical order (e.g. creation_slot
+-- was appended last on the server via ALTER TABLE ADD COLUMN, but sits mid-table
+-- locally after the migration squash) -- a positional SELECT * would misalign them.
+INSERT INTO tokens ($(Get-ColList 'tokens'))
+SELECT $(Get-SelList 'tokens' 't')
 FROM ec2_sync_src.tokens t
 WHERE t.created_at >= '$tokensWm'::timestamptz
    OR NOT EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = t.mint_address)
@@ -771,34 +924,32 @@ ON CONFLICT (mint_address) DO NOTHING;
 -- parent that doesn't exist). Only insert info rows whose mint is present in LOCAL
 -- tokens (which by now holds everything pullable); skip server-side orphans instead
 -- of aborting the whole sync on a single tokens_info_mint_address_fkey violation.
--- Explicit, name-matched column list -- same column-order-drift reason as tokens
--- above (first_slot_buy/sell_lamports sit last on the server, mid-table locally).
-INSERT INTO tokens_info (
-  mint_address, current_price, ath_price, ath_timestamp, volume_sol, trade_count,
-  last_trade_at, first_slot_buy_lamports, first_slot_sell_lamports, is_dead,
-  is_migrated, lifetime_secs, updated_at
-)
-SELECT
-  i.mint_address, i.current_price, i.ath_price, i.ath_timestamp, i.volume_sol, i.trade_count,
-  i.last_trade_at, i.first_slot_buy_lamports, i.first_slot_sell_lamports, i.is_dead,
-  i.is_migrated, i.lifetime_secs, i.updated_at
+-- Name-matched column list -- same column-order-drift reason as tokens above
+-- (first_slot_buy/sell_lamports sit last on the server, mid-table locally).
+INSERT INTO tokens_info ($(Get-ColList 'tokens_info'))
+SELECT $(Get-SelList 'tokens_info' 'i')
 FROM ec2_sync_src.tokens_info i
 WHERE i.updated_at >= '$tinfoWm'::timestamptz
   AND EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = i.mint_address)
 ON CONFLICT (mint_address) DO UPDATE SET
-  current_price = EXCLUDED.current_price, ath_price = EXCLUDED.ath_price,
-  ath_timestamp = EXCLUDED.ath_timestamp, volume_sol = EXCLUDED.volume_sol,
-  trade_count = EXCLUDED.trade_count, last_trade_at = EXCLUDED.last_trade_at,
-  is_dead = EXCLUDED.is_dead, is_migrated = EXCLUDED.is_migrated,
-  lifetime_secs = EXCLUDED.lifetime_secs, updated_at = EXCLUDED.updated_at,
-  first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports,
-  first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports
+  $(Get-UpsertSet 'tokens_info' @('mint_address'))
 WHERE EXCLUDED.updated_at >= tokens_info.updated_at;
 "@ 'tokens + tokens_info'
+  }
 
   # Hypertables: fixed-hour chunks + retries. Never one giant INSERT over the full
   # [watermark, cutoff) window -- that OOMs / drops the FDW connection on EC2.
-  Sync-TradesChunks $tradesWm $sealedCutoff $windowLabel
+  if ($RepairFrom) {
+    # Repair replaces the watermark pull for trades: the window is given, not derived,
+    # and it is walked with server-wins upserts. -RepairTo defaults to the same cutoff
+    # the normal pull uses, so a repair also brings the tail current.
+    $repairTo = if ($RepairTo) { $RepairTo } else { $sealedCutoff }
+    $how = if ($RepairFillOnly) { 'filling MISSING ROWS only (existing rows untouched)' } else { 'server-wins upserts (heals columns; rewrites every row)' }
+    Write-Host "REPAIR: re-pulling trades [$RepairFrom .. $repairTo) -- $how, ignoring the watermark ..."
+    Sync-TradesChunks $RepairFrom $repairTo "repair" -Repair -FillOnly:$RepairFillOnly
+  } else {
+    Sync-TradesChunks $tradesWm $sealedCutoff $windowLabel
+  }
   if ($IncludeRawTxs) {
     Sync-RawTxsChunks $rawWm $sealedCutoff $windowLabel
   } else {
@@ -809,11 +960,14 @@ WHERE EXCLUDED.updated_at >= tokens_info.updated_at;
   # The HARD completeness guard (every SERVER id present locally) runs INSIDE the
   # wallet_dict merge transaction above and aborts on a real mirror regression. Here
   # we only REPORT the residual: trades whose wallet_id is absent from BOTH dicts --
-  # wallets the server re-minted/aged out of its 7-day window whose historical trades
+  # wallets the server re-minted/aged out of its retention window whose historical trades
   # the lab still retains. These render as `unknown:<id>` in the UI (the LEFT-join
   # fallback in trade_repo.rs), NOT as dropped rows, and they age out of the lab's own
   # retention over time. Informational only -- a rolling window of old orphans is
   # EXPECTED (server retention < lab retention) and must not fail the sync.
+  # A full-table LEFT JOIN over every retained trade -- minutes on the lab's history,
+  # and it says nothing about the window a repair just rewrote. Skipped in repair mode.
+  if ($RepairFrom) { Write-Host "Orphan report: skipped (repair mode)." } else {
   Write-Host "Reporting residual trade->wallet_dict orphans (informational) ..."
   Invoke-LocalSqlFile @"
 DO `$`$
@@ -830,20 +984,20 @@ BEGIN
   END IF;
 END `$`$;
 "@
+  }
 
   # ---- 7b. Strategy tables (view LIVE positions on the lab) ------------------
   # Full-table copy each run, server wins, NON-DESTRUCTIVE. FK-safe order:
   # fingerprints -> rules -> runs -> run_metrics -> positions. These tables are
   # tiny vs trades, so no watermark: we pull the whole remote table and upsert,
-  # with an explicit name-matched column list on both the INSERT and the DO
-  # UPDATE SET (see the tokens/trades comments above -- a positional SELECT *
-  # would silently misalign columns the moment local/server column order
-  # diverges). Both real + paper rows are pulled.
+  # with a name-matched column list on both the INSERT and the DO UPDATE SET (see
+  # the tokens/trades comments above -- a positional SELECT * would silently
+  # misalign columns the moment local/server column order diverges). Both real +
+  # paper rows are pulled.
   #
-  # Column lists MUST match the post-0004 redesign (fingerprint_id +
-  # buy_amount_lamports + is_enabled on strategy_rules; fingerprints mirrored
-  # first for the FK) -- keep them aligned with fingerprint_repo::FINGERPRINT_COLS
-  # / rule_repo::RULE_COLS / strategy_repo::{RUN,POSITION}_COLS.
+  # The lists come from the local catalog, so a core migration that adds a column
+  # to any of these tables syncs it without an edit here: this script tracks the
+  # SCHEMA, not the repos' *_COLS constants.
   #
   # NON-DESTRUCTIVE by design: the upsert ADDS new server rows and REFRESHES
   # changed ones (server wins), but NEVER deletes a local row. So the lab KEEPS
@@ -855,6 +1009,10 @@ END `$`$;
   # the lab until removed manually -- the accepted cost of retaining old local data.
   # (A former `_ec2_sync_seen_ids` tombstone table propagated those deletes; it was
   # removed, and dropped below so it doesn't linger on existing local DBs.)
+  # Skipped in repair mode: these are a full-table mirror the next normal run redoes,
+  # and a repair is usually long -- no reason to hold the strategy tables' locks at the
+  # end of it. Run the script without -RepairFrom to refresh them.
+  if ($RepairFrom) { Write-Host "Strategy tables: skipped (repair mode)." } else {
   Write-Host "Mirroring strategy tables (fingerprints/rules/runs/run_metrics/positions; server wins, non-destructive upsert) ..."
   # Explicit, plain INSERT..SELECT..ON CONFLICT DO UPDATE per table, in FK-safe
   # order. Server wins. DO UPDATE excludes the PK; EXCLUDED refreshes every other
@@ -870,41 +1028,47 @@ END `$`$;
 DROP TABLE IF EXISTS _ec2_sync_seen_ids;
 
 \echo '-- fingerprints'
--- Must land before strategy_rules (FK fingerprint_id). Column list matches
--- fingerprint_repo::FINGERPRINT_COLS (post-0004 + metric_config + 0005 wildcard).
+-- Must land before strategy_rules (FK fingerprint_id). Every column moves, incl.
+-- `criteria` (the axis registry) and `wildcard` -- both are MATCH IDENTITY, not
+-- decoration: a server wildcard row landing locally with `wildcard` FALSE and an
+-- empty `criteria` reads to the matcher as *matches nothing*, the exact opposite
+-- of the row it copied. The catalog-read list carries them without being told.
 --
--- ORDERING: the SERVER must have run core migrations 0005-0007 (i.e. the live bin
--- must have been redeployed) before this sync runs. `wildcard` is read off the
--- FOREIGN table, so an un-migrated server fails the SELECT on an unknown column;
--- and an un-migrated server's rows would carry an inert `bucket_size_amount`, or
--- restore an axis under a local wildcard, both of which the local
--- `fingerprints_bucket_width_needs_a_sol_axis` (0006) and
--- `fingerprints_wildcard_excludes_axes` (0005) CHECKs reject.
+-- ORDERING: the server must be redeployed onto the same core-migration state as
+-- the lab before this sync runs -- otherwise the two shapes differ and the parity
+-- guard above aborts the run by name. A pre-0009 server also carries per-axis
+-- columns whose values the local `fingerprints_has_a_criterion` /
+-- `fingerprints_wildcard_excludes_axes` CHECKs would reject anyway.
 --
--- `wildcard` is NOT optional here. It is a match criterion, not decoration: a
--- server row carrying it would otherwise land locally as an axis-less row with
--- `wildcard` defaulted FALSE -- which the matcher reads as *matches nothing*,
--- the exact opposite of the row it copied.
-INSERT INTO fingerprints (
-  id, name, cu_limit, cu_price, init_buy_lamports, max_cost_lamports,
-  spendable_lamports_in, first_slot_buy_lamports, first_slot_sell_lamports,
-  bucket_size_amount, ix_labels, wildcard, metric_config, created_at, updated_at
-)
-SELECT
-  f.id, f.name, f.cu_limit, f.cu_price, f.init_buy_lamports, f.max_cost_lamports,
-  f.spendable_lamports_in, f.first_slot_buy_lamports, f.first_slot_sell_lamports,
-  f.bucket_size_amount, f.ix_labels, f.wildcard, f.metric_config, f.created_at, f.updated_at
+-- SECOND unique key: `fingerprints_identity_uniq` (criteria, wildcard, metric_config).
+-- ON CONFLICT (id) resolves only the PK, so a lab-authored fingerprint matching a
+-- server one under a different id would abort the whole insert on the secondary key.
+-- Both sides run find_or_create against the same identity, so this is reachable, not
+-- theoretical. Resolve it first, server wins: re-point every local rule at the SERVER
+-- id, then drop the now-unreferenced local duplicate. Re-pointing is what makes the
+-- delete legal -- the FK is NO ACTION, so a still-referenced row cannot be dropped and
+-- the run would fail loudly rather than take a lab rule's fingerprint with it. The
+-- match uses the SAME md5(jsonb::text) expressions as the index, so a row that would
+-- collide is exactly a row this finds.
+BEGIN;
+CREATE TEMP TABLE _fp_identity_dupes ON COMMIT DROP AS
+SELECT l.id AS local_id, r.id AS server_id
+FROM fingerprints l
+JOIN ec2_sync_src.fingerprints r
+  ON md5(l.criteria::text) = md5(r.criteria::text)
+ AND l.wildcard = r.wildcard
+ AND md5(l.metric_config::text) = md5(r.metric_config::text)
+WHERE l.id <> r.id;
+UPDATE strategy_rules sr SET fingerprint_id = d.server_id, updated_at = now()
+FROM _fp_identity_dupes d WHERE sr.fingerprint_id = d.local_id;
+DELETE FROM fingerprints l USING _fp_identity_dupes d WHERE l.id = d.local_id;
+COMMIT;
+
+INSERT INTO fingerprints ($(Get-ColList 'fingerprints'))
+SELECT $(Get-SelList 'fingerprints' 'f')
 FROM ec2_sync_src.fingerprints f
 ON CONFLICT (id) DO UPDATE SET
-  name = EXCLUDED.name, cu_limit = EXCLUDED.cu_limit, cu_price = EXCLUDED.cu_price,
-  init_buy_lamports = EXCLUDED.init_buy_lamports, max_cost_lamports = EXCLUDED.max_cost_lamports,
-  spendable_lamports_in = EXCLUDED.spendable_lamports_in,
-  first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports,
-  first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports,
-  bucket_size_amount = EXCLUDED.bucket_size_amount, ix_labels = EXCLUDED.ix_labels,
-  wildcard = EXCLUDED.wildcard,
-  metric_config = EXCLUDED.metric_config, created_at = EXCLUDED.created_at,
-  updated_at = EXCLUDED.updated_at;
+  $(Get-UpsertSet 'fingerprints' @('id'));
 
 \echo '-- strategy_rules'
 -- Post-0004 redesign columns + 0002 tags (rule_repo::RULE_COLS) -- NOT the
@@ -915,24 +1079,11 @@ ON CONFLICT (id) DO UPDATE SET
 -- sync runs -- otherwise the SELECT fails on an unknown column. Server wins on
 -- every column here, `tags` included: a tag edited LOCALLY on a rule the server
 -- also owns is overwritten. Tag server-owned rules in the live app.
-INSERT INTO strategy_rules (
-  id, rule_name, fingerprint_id, trade_mode, is_active, is_enabled,
-  buy_amount_lamports, max_concurrent_tokens, max_total_tokens, params, tags,
-  created_at, updated_at
-)
-SELECT
-  r.id, r.rule_name, r.fingerprint_id, r.trade_mode, r.is_active, r.is_enabled,
-  r.buy_amount_lamports, r.max_concurrent_tokens, r.max_total_tokens, r.params, r.tags,
-  r.created_at, r.updated_at
+INSERT INTO strategy_rules ($(Get-ColList 'strategy_rules'))
+SELECT $(Get-SelList 'strategy_rules' 'r')
 FROM ec2_sync_src.strategy_rules r
 ON CONFLICT (id) DO UPDATE SET
-  rule_name = EXCLUDED.rule_name, fingerprint_id = EXCLUDED.fingerprint_id,
-  trade_mode = EXCLUDED.trade_mode, is_active = EXCLUDED.is_active,
-  is_enabled = EXCLUDED.is_enabled, buy_amount_lamports = EXCLUDED.buy_amount_lamports,
-  max_concurrent_tokens = EXCLUDED.max_concurrent_tokens,
-  max_total_tokens = EXCLUDED.max_total_tokens, params = EXCLUDED.params,
-  tags = EXCLUDED.tags,
-  created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at;
+  $(Get-UpsertSet 'strategy_rules' @('id'));
 
 \echo '-- strategy_runs'
 -- strategy_runs has TWO unique constraints: PK(id) and UNIQUE(rule_id, mode, run_seq).
@@ -948,86 +1099,37 @@ USING ec2_sync_src.strategy_runs r
 WHERE l.rule_id IS NOT DISTINCT FROM r.rule_id
   AND l.mode = r.mode AND l.run_seq = r.run_seq
   AND l.id <> r.id;
--- Explicit, name-matched column list -- see the tokens/trades comments above for
--- why positional SELECT * is unsafe once local/server column order can diverge.
-INSERT INTO strategy_runs (
-  id, strategy_id, rule_id, mode, run_seq, status, params_snapshot,
-  max_total_tokens, started_at, finished_at
-)
-SELECT
-  u.id, u.strategy_id, u.rule_id, u.mode, u.run_seq, u.status, u.params_snapshot,
-  u.max_total_tokens, u.started_at, u.finished_at
+-- Name-matched column list -- see the tokens/trades comments above for why a
+-- positional SELECT * is unsafe once local/server column order can diverge.
+INSERT INTO strategy_runs ($(Get-ColList 'strategy_runs'))
+SELECT $(Get-SelList 'strategy_runs' 'u')
 FROM ec2_sync_src.strategy_runs u
 ON CONFLICT (id) DO UPDATE SET
-  strategy_id = EXCLUDED.strategy_id, rule_id = EXCLUDED.rule_id,
-  mode = EXCLUDED.mode, run_seq = EXCLUDED.run_seq, status = EXCLUDED.status,
-  params_snapshot = EXCLUDED.params_snapshot, max_total_tokens = EXCLUDED.max_total_tokens,
-  started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at;
+  $(Get-UpsertSet 'strategy_runs' @('id'));
 
 \echo '-- strategy_run_metrics'
--- Explicit, name-matched column list -- see the tokens/trades comments above for
--- why positional SELECT * is unsafe once local/server column order can diverge.
-INSERT INTO strategy_run_metrics (
-  run_id, rolled_up_at, n_fired, n_open, n_closed, win_rate, total_pnl_sol,
-  expectancy_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct,
-  worst_pnl_pct, std_pnl_pct, profit_factor, avg_holding_secs, median_holding_secs,
-  n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, n_exit_stall, n_exit_time,
-  n_exit_liquidity, n_exit_open
-)
-SELECT
-  m.run_id, m.rolled_up_at, m.n_fired, m.n_open, m.n_closed, m.win_rate, m.total_pnl_sol,
-  m.expectancy_sol, m.mean_pnl_pct, m.median_pnl_pct, m.p90_pnl_pct, m.best_pnl_pct,
-  m.worst_pnl_pct, m.std_pnl_pct, m.profit_factor, m.avg_holding_secs, m.median_holding_secs,
-  m.n_exit_take_profit, m.n_exit_stop_loss, m.n_exit_trailing, m.n_exit_stall, m.n_exit_time,
-  m.n_exit_liquidity, m.n_exit_open
+-- Name-matched column list -- see the tokens/trades comments above for why a
+-- positional SELECT * is unsafe once local/server column order can diverge. The
+-- per-exit-reason counters are a moving set (one column per reason), so reading
+-- them off the catalog is also what keeps a new reason from landing NULL here.
+INSERT INTO strategy_run_metrics ($(Get-ColList 'strategy_run_metrics'))
+SELECT $(Get-SelList 'strategy_run_metrics' 'm')
 FROM ec2_sync_src.strategy_run_metrics m
 ON CONFLICT (run_id) DO UPDATE SET
-  rolled_up_at = EXCLUDED.rolled_up_at, n_fired = EXCLUDED.n_fired,
-  n_open = EXCLUDED.n_open, n_closed = EXCLUDED.n_closed, win_rate = EXCLUDED.win_rate,
-  total_pnl_sol = EXCLUDED.total_pnl_sol, expectancy_sol = EXCLUDED.expectancy_sol,
-  mean_pnl_pct = EXCLUDED.mean_pnl_pct, median_pnl_pct = EXCLUDED.median_pnl_pct,
-  p90_pnl_pct = EXCLUDED.p90_pnl_pct, best_pnl_pct = EXCLUDED.best_pnl_pct,
-  worst_pnl_pct = EXCLUDED.worst_pnl_pct, std_pnl_pct = EXCLUDED.std_pnl_pct,
-  profit_factor = EXCLUDED.profit_factor, avg_holding_secs = EXCLUDED.avg_holding_secs,
-  median_holding_secs = EXCLUDED.median_holding_secs,
-  n_exit_take_profit = EXCLUDED.n_exit_take_profit, n_exit_stop_loss = EXCLUDED.n_exit_stop_loss,
-  n_exit_trailing = EXCLUDED.n_exit_trailing, n_exit_stall = EXCLUDED.n_exit_stall,
-  n_exit_time = EXCLUDED.n_exit_time, n_exit_liquidity = EXCLUDED.n_exit_liquidity,
-  n_exit_open = EXCLUDED.n_exit_open;
+  $(Get-UpsertSet 'strategy_run_metrics' @('run_id'));
 
 \echo '-- strategy_positions'
--- Explicit, name-matched column list -- same column-order-drift reason as tokens
--- above (token_account sits last on the server, mid-table locally).
-INSERT INTO strategy_positions (
-  id, run_id, strategy_id, rule_id, mode, mint_address, wallet, token_program_id,
-  token_account, target_price, target_token_amount, target_time, target_tx,
-  entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures,
-  exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures,
-  submitted_buy_signatures, status, exit_reason, extra, created_at, updated_at
-)
-SELECT
-  p.id, p.run_id, p.strategy_id, p.rule_id, p.mode, p.mint_address, p.wallet, p.token_program_id,
-  p.token_account, p.target_price, p.target_token_amount, p.target_time, p.target_tx,
-  p.entry_price, p.entry_token_amount, p.entry_lamports, p.entry_time, p.entry_tx_signatures,
-  p.exit_price, p.exit_token_amount, p.exit_lamports, p.exit_time, p.exit_tx_signatures,
-  p.submitted_buy_signatures, p.status, p.exit_reason, p.extra, p.created_at, p.updated_at
+-- Name-matched column list -- same column-order-drift reason as tokens above
+-- (token_account sits last on the server, mid-table locally). Slot accounting
+-- (target/entry/exit_slot), park state and the scale-out stage ride along by
+-- being in the catalog: a hand-kept list left them NULL on the lab.
+INSERT INTO strategy_positions ($(Get-ColList 'strategy_positions'))
+SELECT $(Get-SelList 'strategy_positions' 'p')
 FROM ec2_sync_src.strategy_positions p
 ON CONFLICT (id) DO UPDATE SET
-  run_id = EXCLUDED.run_id, strategy_id = EXCLUDED.strategy_id, rule_id = EXCLUDED.rule_id,
-  mode = EXCLUDED.mode, mint_address = EXCLUDED.mint_address, wallet = EXCLUDED.wallet,
-  token_program_id = EXCLUDED.token_program_id, target_price = EXCLUDED.target_price,
-  target_token_amount = EXCLUDED.target_token_amount, target_time = EXCLUDED.target_time,
-  target_tx = EXCLUDED.target_tx, entry_price = EXCLUDED.entry_price,
-  entry_token_amount = EXCLUDED.entry_token_amount, entry_lamports = EXCLUDED.entry_lamports,
-  entry_time = EXCLUDED.entry_time, entry_tx_signatures = EXCLUDED.entry_tx_signatures,
-  exit_price = EXCLUDED.exit_price, exit_token_amount = EXCLUDED.exit_token_amount,
-  exit_lamports = EXCLUDED.exit_lamports, exit_time = EXCLUDED.exit_time,
-  exit_tx_signatures = EXCLUDED.exit_tx_signatures,
-  submitted_buy_signatures = EXCLUDED.submitted_buy_signatures, status = EXCLUDED.status,
-  exit_reason = EXCLUDED.exit_reason, extra = EXCLUDED.extra,
-  created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at,
-  token_account = EXCLUDED.token_account;
+  $(Get-UpsertSet 'strategy_positions' @('id'));
 "@ 'strategy tables'
+  }
 
   # ---- 8. Sync _sqlx_migrations so local backend doesn't re-apply applied migrations ---
   # The server's checksum records are authoritative (same files, same binary --
@@ -1098,6 +1200,9 @@ ON CONFLICT (id) DO UPDATE SET
 }
 finally {
   if ($tunnel -and -not $tunnel.HasExited) { Stop-Process -Id $tunnel.Id -Force -ErrorAction SilentlyContinue }
+  if ($script:lockStream) { $script:lockStream.Dispose(); $script:lockStream = $null }
+  if ($script:lockFile -and (Test-Path $script:lockFile)) { Remove-Item $script:lockFile -Force -ErrorAction SilentlyContinue }
+  Remove-Item (Join-Path $env:TEMP "dbsync-tunnel-$PID.err") -Force -ErrorAction SilentlyContinue
   # Shred the passphrase helper and clear the env so the secret doesn't linger.
   # The file was locked to (RX) for ssh to exec it; restore (F) first or the
   # overwrite/delete is denied (UnauthorizedAccessException).

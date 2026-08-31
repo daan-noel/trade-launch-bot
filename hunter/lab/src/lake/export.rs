@@ -172,7 +172,22 @@ pub async fn export_lake(pool: &PgPool, root: &Path, include_today: bool) -> Res
     // re-export silently keeps a stale snapshot. Always rewrite today's file.
     let today = Utc::now().date_naive();
 
+    // A day older than the retention window would be exported here and deleted by
+    // `prune_lake` at the end of the SAME run — PG keeps `trades` for 30 days and the
+    // lake keeps the same span, so the oldest PG day is always just outside it and paid
+    // for a full re-export on every single run (measured: ~4 min and ~400 MB for one
+    // 1.9M-print day, written and pruned minutes apart). Skip what the pruner will drop.
+    let keep_from = if retention_days() > 0 {
+        Some(today - chrono::Duration::days(retention_days()))
+    } else {
+        None
+    };
+
     for day in sealed_days(pool, include_today).await? {
+        if keep_from.is_some_and(|cutoff| day < cutoff) {
+            summary.days_skipped += 1;
+            continue;
+        }
         let path = trades_day_file(root, day);
         let force = include_today && day == today;
         if path.exists() && !force {

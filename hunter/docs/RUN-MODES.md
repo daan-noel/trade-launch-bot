@@ -119,8 +119,8 @@ cache TTLs on the live box — connection counts and RAM are load-bearing (CLAUD
 ---
 
 ## Data: server → local (for sweeps/backtests)
-Sweeps/backtests run **locally only** (the live box keeps just a ~7-day rolling
-buffer). Pull a fresh corpus from the box over an SSH tunnel — the script reads
+Sweeps/backtests run **locally only** (the live box keeps a 30-day rolling `trades`
+buffer, compressed after 7 days; `raw_txs` is dropped after 3). Pull a fresh corpus from the box over an SSH tunnel — the script reads
 the server's `DB_PORT` from its `.env` automatically:
 
 ```powershell

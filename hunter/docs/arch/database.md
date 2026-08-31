@@ -92,7 +92,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
     write per tx to the hot ingest path (the write-amplification shape that froze
     ingest before), whereas this is one more bind on an insert that already runs.
   - **NULL is load-bearing.** Pre-0005 rows have no fee and cannot get one (`raw_txs`
-    is not persisted and has 7-day retention), so NULL means "not captured" — never
+    is not persisted and is dropped after 3 days), so NULL means "not captured" — never
     coalesce it to 0 or average it in as 0. A landed tx always pays the base fee, so a
     genuine zero does not exist; `ingest_core::event::fee_lamports_opt` is the ONE
     reader that folds the protobuf's ambiguous `0` back to NULL at the source.
