@@ -11,6 +11,7 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeFees';
 import { patternKey } from 'lib/flow/volumePatterns';
+import { templateGrain } from 'lib/strategy/templateGrain';
 // Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
 // colors come along without dragging the charting library into this chunk.
 import { CHART_COLORS } from 'components/token-price-chart/constants';
@@ -61,15 +62,17 @@ export interface TokenTradeColumnsOpts {
   /**
    * WHICH list {@link flowPatternKeys} is and {@link onTogglePattern} writes into.
    * `'tagged'` (the default) is `m_flow_ix.ix_patterns`; `'dump'` is
-   * `m_dump_ix.ix_patterns`.
+   * `m_dump_ix.ix_patterns`; `'working'` is `m_burst_slot.working_templates`
+   * grain ids (a different vocabulary — membership is `templateGrain`, not an
+   * exact `ix_labels` sequence).
    *
-   * The column is otherwise identical and that is the danger: a badge reading
-   * "Tagged" while the click files the build under `m_dump_ix` names the wrong
-   * metric for the row, so the label, the tone and the tooltip all follow this.
-   * Contagion notes are suppressed under `'dump'` - the reasons map is the flow
-   * split's verdict, and `m_dump_ix` has no wallet rule to spread one.
+   * The tagged and dump columns are otherwise identical and that is the danger: a
+   * badge reading "Tagged" while the click files the build under `m_dump_ix` names
+   * the wrong metric for the row, so the label, the tone and the tooltip all follow
+   * this. Contagion notes are suppressed under `'dump'` and `'working'` - the
+   * reasons map is the flow split's verdict.
    */
-  patternList?: 'tagged' | 'dump';
+  patternList?: 'tagged' | 'dump' | 'working';
   /**
    * Keys of the list this column is NOT writing into. A build may sit on BOTH -
    * that is the normal case and nothing rejects it - so the mark is INFORMATION,
@@ -183,10 +186,15 @@ export function tokenTradeColumns(
   const targetLabel = opts?.toggleTargetName ? `“${opts.toggleTargetName}”` : 'the fingerprint';
   const list = opts?.patternList ?? 'tagged';
   const isDump = list === 'dump';
+  const isWorking = list === 'working';
   const otherKeys = opts?.otherListKeys ?? null;
-  const listField = isDump ? 'm_dump_ix.ix_patterns' : 'm_flow_ix.ix_patterns';
-  const inWord = isDump ? 'Dump' : 'Tagged';
-  const outWord = isDump ? 'Not dump' : 'Untagged';
+  const listField = isWorking
+    ? 'm_burst_slot.working_templates'
+    : isDump
+      ? 'm_dump_ix.ix_patterns'
+      : 'm_flow_ix.ix_patterns';
+  const inWord = isWorking ? 'Working' : isDump ? 'Dump' : 'Tagged';
+  const outWord = isWorking ? 'Other' : isDump ? 'Not dump' : 'Untagged';
 
   const leading: ColumnDef<TradeRecord>[] = [];
 
@@ -195,32 +203,41 @@ export function tokenTradeColumns(
       key: 'is_tagged_ix_pattern',
       label: inWord,
       tooltip: onToggle
-        ? `Structural ${listField} match. Clicking SAVES this trade’s ordered ` +
-          `instruction_labels to ${targetLabel} under ${listField} — there is no staging ` +
-          `step, and every active rule bound to it changes meaning from the ` +
-          `engine’s next rules reload on.` +
-          (isDump
-            ? ` The same build may also sit under m_flow_ix - the two groups ask` +
-              ` different questions, so a sell can be tagged flow AND a dump.`
-            : ` “via creator/wallet” = the lines already count this row through` +
-              ` contagion, whatever its own structure is.`)
-        : `Structural ${listField} match — this trade’s ordered instruction_labels ` +
-          `exact-match a row of that list` +
-          (isDump ? '.' : ' (no creator/wallet contagion).'),
+        ? isWorking
+          ? `Template grain match against ${listField}. Clicking SAVES this trade's grain ` +
+            `(program|CU|ATA|N|S|F) to ${targetLabel} — harvest working list, not a full ` +
+            `ix_labels sequence. Active rules bound to it change meaning on the next reload.`
+          : `Structural ${listField} match. Clicking SAVES this trade’s ordered ` +
+            `instruction_labels to ${targetLabel} under ${listField} — there is no staging ` +
+            `step, and every active rule bound to it changes meaning from the ` +
+            `engine’s next rules reload on.` +
+            (isDump
+              ? ` The same build may also sit under m_flow_ix - the two groups ask` +
+                ` different questions, so a sell can be tagged flow AND a dump.`
+              : ` “via creator/wallet” = the lines already count this row through` +
+                ` contagion, whatever its own structure is.`)
+        : isWorking
+          ? `Template grain on ${listField} — this trade's program|CU|ATA|N|S|F grain.`
+          : `Structural ${listField} match — this trade’s ordered instruction_labels ` +
+            `exact-match a row of that list` +
+            (isDump ? '.' : ' (no creator/wallet contagion).'),
       render: (t) => {
         const labels = t.instruction_labels;
         if (!labels || labels.length === 0) {
           return <span className="text-text-dim/40">—</span>;
         }
-        const isTagged = isIxPattern(labels, keys);
+        const isTagged = isWorking
+          ? keys.has(templateGrain(labels))
+          : isIxPattern(labels, keys);
         // The reasons map is the FLOW split's verdict (structure + contagion), so it
-        // says nothing about a dump build and must not decorate one.
-        const reason = isDump ? null : (reasons?.get(t.id) ?? null);
+        // says nothing about a dump build or a working grain and must not decorate either.
+        const reason = isDump || isWorking ? null : (reasons?.get(t.id) ?? null);
         const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : null;
-        const inOther = !isTagged && otherKeys != null && isIxPattern(labels, otherKeys);
+        const inOther =
+          !isTagged && !isWorking && otherKeys != null && isIxPattern(labels, otherKeys);
         const badge = (
           <Badge
-            variant={isTagged ? (isDump ? 'warning' : 'danger') : 'neutral'}
+            variant={isTagged ? (isWorking ? 'success' : isDump ? 'warning' : 'danger') : 'neutral'}
             size="sm"
             className={onToggle ? 'cursor-pointer' : undefined}
           >
@@ -236,7 +253,9 @@ export function tokenTradeColumns(
                 title={
                   isTagged
                     ? `Saved under ${listField} on ${targetLabel} — click to remove it`
-                    : `Click to save this structure under ${listField} on ${targetLabel}`
+                    : isWorking
+                      ? `Click to save this grain under ${listField} on ${targetLabel}`
+                      : `Click to save this structure under ${listField} on ${targetLabel}`
                 }
                 onClick={(e) => {
                   // The row itself is selectable on several hosts; an edit click

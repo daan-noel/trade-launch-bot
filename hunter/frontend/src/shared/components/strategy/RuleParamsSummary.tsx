@@ -17,6 +17,8 @@ interface RuleParamsJson {
   take_profit?: number | null;
   stop_loss?: number | null;
   entry?: Record<string, unknown>;
+  entry_event?: Record<string, unknown>;
+  entry_lock?: 'slot' | null;
   /** Object-form OR array-form DNF. */
   exit?: Record<string, unknown> | Record<string, unknown>[];
   scale_out?: Array<{
@@ -120,6 +122,8 @@ function parseParams(raw: unknown): {
   take_profit: number | null;
   stop_loss: number | null;
   entry: SideChip[];
+  event: SideChip[];
+  entryLock: boolean;
   exit: SideChip[];
   scale_out: Array<{ sellPct: number | null; take_profit: number | null; conds: SideChip[] }>;
   reentry: { cooldown_sec: number; max_episodes_per_token: number } | null;
@@ -144,6 +148,8 @@ function parseParams(raw: unknown): {
     take_profit: typeof p.take_profit === 'number' ? p.take_profit : null,
     stop_loss: typeof p.stop_loss === 'number' ? p.stop_loss : null,
     entry: sideChips(p.entry),
+    event: sideChips(p.entry_event),
+    entryLock: p.entry_lock === 'slot',
     exit: exitChips(p.exit),
     scale_out,
     reentry,
@@ -212,18 +218,29 @@ function SideBlock({
   side,
   chips,
   labelCls,
+  lock,
 }: {
-  side: 'in' | 'out';
+  side: 'in' | 'out' | 'event';
   chips: SideChip[];
   labelCls: string;
+  lock?: boolean;
 }): ReactNode {
   if (chips.length === 0) return null;
+  const label = side === 'event' ? (lock ? 'evt/s' : 'evt') : side;
+  const labelTitle =
+    side === 'event'
+      ? lock
+        ? 'Completing-print event, once per slot'
+        : 'Completing-print event, every print'
+      : undefined;
   // Array-form DNF spans groups inside a way. Grouping by group would pull
   // liquidity from two clauses onto one row and park ∧ / ∨ on the wrong chip.
   if (isDnfChips(chips)) {
     return (
-      <div className="grid grid-cols-[1.5rem_1fr] items-start gap-x-1.5">
-        <span className={cn('pt-0.5 text-[9px] uppercase leading-tight', labelCls)}>{side}</span>
+      <div className="grid grid-cols-[2rem_1fr] items-start gap-x-1.5">
+        <span className={cn('pt-0.5 text-[9px] uppercase leading-tight', labelCls)} title={labelTitle}>
+          {label}
+        </span>
         <div className="flex flex-wrap items-center gap-1">
           {chips.map((c, i) => (
             <Fragment key={`${side}-dnf-${c.group}-${i}`}>
@@ -238,11 +255,11 @@ function SideBlock({
     );
   }
   return (
-    <div className="grid grid-cols-[1.5rem_auto_1fr] items-start gap-x-1.5 gap-y-0.5">
+    <div className="grid grid-cols-[2rem_auto_1fr] items-start gap-x-1.5 gap-y-0.5">
       {chipsByGroup(chips).map(({ group, chips: groupChips }, gi) => (
         <Fragment key={`${side}-${group}`}>
-          <span className={cn('pt-0.5 text-[9px] uppercase leading-tight', labelCls)}>
-            {gi === 0 ? side : ''}
+          <span className={cn('pt-0.5 text-[9px] uppercase leading-tight', labelCls)} title={labelTitle}>
+            {gi === 0 ? label : ''}
           </span>
           <span className="pt-0.5 text-[10px] leading-tight text-text-dim" title={group}>
             {group}
@@ -262,12 +279,13 @@ function SideBlock({
  *  Metric conditions stack one row per metric group; side label on the first
  *  row only so later groups stay indented under it. */
 export function ruleParamsCell(raw: unknown): ReactNode {
-  const { take_profit, stop_loss, entry, exit, scale_out, reentry, exclusive, priority } =
+  const { take_profit, stop_loss, entry, event, entryLock, exit, scale_out, reentry, exclusive, priority } =
     parseParams(raw);
   const hasTpsl = take_profit != null || stop_loss != null;
   const hasFlags = reentry != null || exclusive;
   const hasScale = scale_out.length > 0;
-  const empty = !hasTpsl && !hasFlags && !hasScale && entry.length === 0 && exit.length === 0;
+  const empty =
+    !hasTpsl && !hasFlags && !hasScale && entry.length === 0 && event.length === 0 && exit.length === 0;
   return (
     <div className="flex flex-col items-start gap-1 text-left">
       {hasTpsl && (
@@ -301,6 +319,7 @@ export function ruleParamsCell(raw: unknown): ReactNode {
           })}
         </div>
       )}
+      <SideBlock side="event" chips={event} labelCls="text-accent" lock={entryLock} />
       <SideBlock side="in" chips={entry} labelCls="text-accent/70" />
       <SideBlock side="out" chips={exit} labelCls="text-warning/70" />
       {empty && chip('fingerprint only', 'text-text-dim')}
@@ -316,9 +335,12 @@ function headerSep(): ReactNode {
   );
 }
 
-function headerSideChips(side: 'in' | 'out', chips: SideChip[]): ReactNode[] {
+function headerSideChips(
+  side: string,
+  chips: SideChip[],
+  labelCls = side === 'out' ? 'text-warning/70' : 'text-accent/70',
+): ReactNode[] {
   if (chips.length === 0) return [];
-  const labelCls = side === 'in' ? 'text-accent/70' : 'text-warning/70';
   const out: ReactNode[] = [];
   let sideShown = false;
   for (let i = 0; i < chips.length; i++) {
@@ -359,7 +381,7 @@ function headerSideChips(side: 'in' | 'out', chips: SideChip[]): ReactNode[] {
 /** Single-row chip strip for modal headers — same facts as {@link ruleParamsCell}, laid out
  *  horizontally so params stay visible above a chart. */
 export function ruleParamsHeaderStrip(raw: unknown): ReactNode {
-  const { take_profit, stop_loss, entry, exit, scale_out, reentry, exclusive, priority } =
+  const { take_profit, stop_loss, entry, event, entryLock, exit, scale_out, reentry, exclusive, priority } =
     parseParams(raw);
   const nodes: ReactNode[] = [];
   let needsSep = false;
@@ -390,7 +412,11 @@ export function ruleParamsHeaderStrip(raw: unknown): ReactNode {
     push(<Fragment key={`scale-${i}`}>{chip(`Scale ${pct}${tp}`, 'text-accent')}</Fragment>);
   }
 
-  const condNodes = [...headerSideChips('in', entry), ...headerSideChips('out', exit)];
+  const condNodes = [
+    ...headerSideChips(entryLock ? 'evt/s' : 'evt', event, 'text-accent'),
+    ...headerSideChips('in', entry),
+    ...headerSideChips('out', exit),
+  ];
   if (condNodes.length > 0) {
     if (needsSep) nodes.push(<Fragment key={`sep-${nodes.length}`}>{headerSep()}</Fragment>);
     nodes.push(
@@ -409,7 +435,7 @@ export function ruleParamsHeaderStrip(raw: unknown): ReactNode {
 
 /** Flat searchable text for table filters (metric names, ops, TP/SL). */
 export function ruleParamsSearchText(raw: unknown): string {
-  const { take_profit, stop_loss, entry, exit, scale_out, reentry, exclusive, priority } =
+  const { take_profit, stop_loss, entry, event, entryLock, exit, scale_out, reentry, exclusive, priority } =
     parseParams(raw);
   const parts: string[] = [];
   if (take_profit != null) parts.push(`TP ${formatDecimalTrim(take_profit, 1)}%`);
@@ -421,6 +447,9 @@ export function ruleParamsSearchText(raw: unknown): string {
   for (const s of scale_out) {
     const pct = s.sellPct != null ? `${formatDecimalTrim(s.sellPct, 0)}%` : 'rem';
     parts.push(`Scale ${pct}`);
+  }
+  for (const c of event) {
+    parts.push(`${entryLock ? 'evt/s' : 'evt'} ${c.text}`);
   }
   for (const c of entry) {
     if (c.orBefore) parts.push('|');
@@ -441,11 +470,12 @@ export function ruleParamsSortParts(raw: unknown): {
   entry_count: number | null;
   exit_count: number | null;
 } {
-  const { take_profit, stop_loss, entry, exit } = parseParams(raw);
+  const { take_profit, stop_loss, entry, event, exit } = parseParams(raw);
+  const buy = entry.length + event.length;
   return {
     take_profit,
     stop_loss,
-    entry_count: entry.length > 0 ? entry.length : null,
+    entry_count: buy > 0 ? buy : null,
     exit_count: exit.length > 0 ? exit.length : null,
   };
 }

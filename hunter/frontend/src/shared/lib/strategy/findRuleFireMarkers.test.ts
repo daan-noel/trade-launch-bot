@@ -185,6 +185,33 @@ describe('findRuleFireMarkers — entry', () => {
       false,
     );
   });
+
+  it('ANDs entry_event with filters before marking entry', () => {
+    // Filters hold from row 3 once unique_wallets stays up; the event
+    // (liquidity >= 41) only holds at row 4. Without the event walk the
+    // marker would fire a row early.
+    const withEvent = {
+      ...PARAMS,
+      exit: {},
+      entry_event: {
+        m_state: [{ strict: {}, metrics: { liquidity: [[{ operator: '>=', value: 41 }]] } }],
+      },
+    } as unknown as RuleParams;
+    const data = {
+      ...DATA,
+      series: [
+        DATA.series[0],
+        { ...DATA.series[1], values: [0, 0, 0.74, 0.95, 0.95] },
+        { ...DATA.series[2], values: [1, 1, 2, 3, 3] },
+        DATA.series[3],
+      ],
+    } as unknown as MetricSeriesResponse;
+    const entry = findRuleFireMarkers(withEvent, data, REGISTRY).find((m) => m.kind === 'entry')!;
+    expect(entry.time).toBe(at(4));
+    expect(findRuleFireMarkers(PARAMS, data, REGISTRY).find((m) => m.kind === 'entry')!.time).toBe(
+      at(3),
+    );
+  });
 });
 
 describe('findRuleFireMarkers — exit', () => {

@@ -50,13 +50,14 @@
 //! `exit: None` ⇒ TP/SL/death only; absent TP/SL ⇒ that guard is off.
 //!
 //! **Parked (disabled) conditions.** The optional root key `disabled` holds an
-//! `entry` / `exit` pair in the *same* [`SideConditions`] shape plus a `scale_out`
-//! ladder in the *same* [`ExitStage`] shape, for conditions and stages the author
-//! has toggled off in the editor but wants to keep:
+//! `entry` / `entry_event` / `exit` triple in the *same* [`SideConditions`] shape
+//! plus a `scale_out` ladder in the *same* [`ExitStage`] shape, for conditions
+//! and stages the author has toggled off in the editor but wants to keep:
 //!
 //! ```json
 //! "disabled": {
 //!   "entry": { "m_state": { "liquidity": [{"operator": ">", "value": 30}] } },
+//!   "entry_event": { "m_burst_slot": { "this_member": [{"operator": "=", "value": 1}] } },
 //!   "scale_out": [{ "sell_bps": 5000, "take_profit": 40 }]
 //! }
 //! ```
@@ -240,6 +241,9 @@ pub struct RuleParams {
 pub struct DisabledConditions {
     /// Parked entry-side conditions (`None`/empty = none parked).
     pub entry: Option<SideConditions>,
+    /// Parked completing-print event (`None`/empty = none parked). Same shape as
+    /// live [`RuleParams::entry_event`].
+    pub entry_event: Option<SideConditions>,
     /// Parked exit-side conditions (`None`/empty = none parked). Same object-or-array
     /// grammar as the live [`RuleParams::exit`].
     pub exit: Option<ExitSide>,
@@ -256,6 +260,7 @@ impl DisabledConditions {
         let empty_entry = |s: &Option<SideConditions>| s.as_ref().is_none_or(SideConditions::is_empty);
         let empty_exit = |s: &Option<ExitSide>| s.as_ref().is_none_or(ExitSide::is_empty);
         empty_entry(&self.entry)
+            && empty_entry(&self.entry_event)
             && empty_exit(&self.exit)
             && self.scale_out.as_ref().is_none_or(Vec::is_empty)
     }
@@ -415,7 +420,7 @@ impl RuleParams {
         // An empty parked bag is the same as none — never store the ambiguous state.
         if let Some(d) = self.disabled.as_ref().filter(|d| !d.is_empty()) {
             let mut o = Map::new();
-            for (key, side) in [("entry", &d.entry)] {
+            for (key, side) in [("entry", &d.entry), ("entry_event", &d.entry_event)] {
                 if let Some(side) = side.as_ref().filter(|s| !s.is_empty()) {
                     o.insert(key.into(), side_to_value(side));
                 }
@@ -518,6 +523,11 @@ impl RuleParams {
             ("entry", true, self.entry.as_ref()),
             ("entry_event", true, self.entry_event.as_ref()),
             ("disabled.entry", true, d.and_then(|d| d.entry.as_ref())),
+            (
+                "disabled.entry_event",
+                true,
+                d.and_then(|d| d.entry_event.as_ref()),
+            ),
         ] {
             let Some(side) = side else { continue };
             for (group_id, instances) in &side.0 {
@@ -566,12 +576,13 @@ fn parse_opt_disabled(v: Option<&Value>) -> Result<Option<DisabledConditions>, S
         None | Some(Value::Null) => Ok(None),
         Some(Value::Object(o)) => {
             for k in o.keys() {
-                if !matches!(k.as_str(), "entry" | "exit" | "scale_out") {
+                if !matches!(k.as_str(), "entry" | "entry_event" | "exit" | "scale_out") {
                     return Err(format!("disabled: unknown key '{k}'"));
                 }
             }
             let d = DisabledConditions {
                 entry: parse_opt_side(o.get("entry"), "disabled.entry")?,
+                entry_event: parse_opt_side(o.get("entry_event"), "disabled.entry_event")?,
                 exit: parse_opt_exit(o.get("exit"), "disabled.exit")?,
                 scale_out: parse_opt_scale_out(o.get("scale_out"), "disabled.scale_out")?,
             };
@@ -1768,10 +1779,32 @@ mod tests {
             ),
             (json!({ "disabled": { "entyr": {} } }), "unknown key"),
             (json!({ "disabled": [] }), "must be an object"),
+            (
+                json!({ "disabled": { "entry_event": { "m_position": { "retrace": [{"operator": ">=", "value": 3}] } } } }),
+                "exit side only",
+            ),
         ] {
             let e = RuleParams::parse(&bad).unwrap_err();
             assert!(e.contains(needle), "expected '{needle}' in: {e}");
         }
+    }
+
+    #[test]
+    fn disabled_entry_event_round_trips() {
+        let json = json!({
+            "disabled": {
+                "entry_event": {
+                    "m_burst_slot": { "this_member": [{"operator": "=", "value": 1.0}] }
+                }
+            }
+        });
+        let p = RuleParams::parse(&json).unwrap();
+        let parked = p.disabled.as_ref().expect("bag present");
+        assert!(parked.entry_event.as_ref().is_some_and(|s| !s.is_empty()));
+        assert_eq!(
+            p.to_value().get("disabled").and_then(|d| d.get("entry_event")),
+            json.get("disabled").and_then(|d| d.get("entry_event")),
+        );
     }
 
     #[test]

@@ -11,6 +11,9 @@ import {
   metricConfigWithFlowClassifier,
   metricConfigWithIxPatterns,
   withFlowWalletRules,
+  metricConfigWithWorkingTemplates,
+  workingTemplatesFromConfig,
+  BURST_GROUP,
   type FlowClassifier,
 } from './registry';
 
@@ -376,5 +379,27 @@ describe('dump patterns', () => {
     for (const bad of [null, 'x', 42, [['a']]]) {
       expect(dumpPatternsFromConfig({ m_dump_ix: bad })).toEqual([]);
     }
+  });
+});
+
+describe('metricConfigWithWorkingTemplates', () => {
+  it('keeps the other groups and other burst fields', () => {
+    const prev = {
+      m_state: { x: 1 },
+      [BURST_GROUP]: { working_templates: ['old'], extra: true },
+    };
+    const out = metricConfigWithWorkingTemplates(prev, ['Axiom Trade|CU']);
+    expect(out.m_state).toEqual({ x: 1 });
+    expect(out[BURST_GROUP]).toEqual({ extra: true, working_templates: ['Axiom Trade|CU'] });
+    expect(workingTemplatesFromConfig(out)).toEqual(['Axiom Trade|CU']);
+  });
+
+  it('drops the group when the list is empty, so burst metrics read NaN not 0', () => {
+    const out = metricConfigWithWorkingTemplates(
+      { m_state: { x: 1 }, [BURST_GROUP]: { working_templates: ['old'] } },
+      [],
+    );
+    expect(out).toEqual({ m_state: { x: 1 } });
+    expect(workingTemplatesFromConfig(out)).toEqual([]);
   });
 });

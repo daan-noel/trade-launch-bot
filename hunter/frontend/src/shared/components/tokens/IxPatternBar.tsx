@@ -1,12 +1,17 @@
 import { Badge } from 'components/ui/Badge';
 import { Select } from 'components/ui/Select';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
-import type { IxPatternList, IxPatternTarget } from 'hooks/useIxPatternTarget';
+import type { IxPatternTarget, TapeList } from 'hooks/useIxPatternTarget';
 
-/** The two lists a badge click can write into. They answer different questions
- *  about the same ix structure - and a build may sit on BOTH - so the strip states
- *  which one is live rather than leaving the click ambiguous. */
-const LISTS: { value: IxPatternList; label: string; title: string }[] = [
+/** The three lists a badge click can write into. Tagged and dump are ordered
+ *  `ix_labels` sequences (a build may sit on BOTH). Working is a different
+ *  vocabulary — template grain ids for `m_burst_slot.working_templates`. */
+const LISTS: {
+  value: TapeList;
+  label: string;
+  title: string;
+  activeClassName?: string;
+}[] = [
   {
     value: 'tagged',
     label: 'tagged',
@@ -16,6 +21,13 @@ const LISTS: { value: IxPatternList; label: string; title: string }[] = [
     value: 'dump',
     label: 'dump',
     title: 'm_dump_ix.ix_patterns — the builds whose SELLS dump_sell_count counts',
+    activeClassName: 'bg-warning/20 text-warning',
+  },
+  {
+    value: 'working',
+    label: 'working',
+    title: 'm_burst_slot.working_templates — template grain ids harvest treats as working',
+    activeClassName: 'bg-green/20 text-green',
   },
 ];
 
@@ -60,29 +72,31 @@ export function IxPatternBar({
     list,
     setList,
     patterns,
+    workingTemplates,
     activeRuleCount,
     inferred,
     offHost,
     saving,
     error,
   } = target;
-  const count = patterns.length;
+  const count = list === 'working' ? workingTemplates.length : patterns.length;
+  const isWorking = list === 'working';
 
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <Badge variant={list === 'dump' ? 'warning' : 'info'} size="sm">
-        {list === 'dump' ? 'Dump builds' : 'Tagged patterns'}
+      <Badge variant={isWorking ? 'success' : list === 'dump' ? 'warning' : 'info'} size="sm">
+        {isWorking ? 'Working grains' : list === 'dump' ? 'Dump builds' : 'Tagged patterns'}
       </Badge>
       <ToggleGroup
         size="sm"
         tone="neutral"
-        aria-label="Which pattern list a badge click writes into"
+        aria-label="Which list a badge click writes into"
         value={list}
         onChange={setList}
         options={LISTS}
       />
       <span className="font-mono text-[11px] text-text-dim">
-        {count} pattern{count === 1 ? '' : 's'}
+        {count} {isWorking ? `grain${count === 1 ? '' : 's'}` : `pattern${count === 1 ? '' : 's'}`}
       </span>
 
       <Select
@@ -92,7 +106,7 @@ export function IxPatternBar({
         title="Fingerprint the badges write to"
         className="max-w-[16rem]"
       >
-        <option value="">Edit patterns of…</option>
+        <option value="">Fingerprint…</option>
         {fingerprints.map((f) => (
           <option key={f.id} value={f.id}>
             {f.name}

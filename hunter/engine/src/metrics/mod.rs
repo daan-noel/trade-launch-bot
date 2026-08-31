@@ -1036,9 +1036,9 @@ pub struct StrictParamSpec {
 #[derive(Debug, Clone, Copy)]
 pub struct FpConfigFieldSpec {
     pub name: &'static str,
-    /// JSON type hint for the FE: `"string[][]"` (ordered label sequences),
-    /// `"marker[]"` (a subset of [`flow_ix::MARKERS`], rendered as a picker), or
-    /// `"bool"`.
+    /// JSON type hint for the FE: `"ix_pattern[]"` (ordered label sequences,
+    /// optionally fee-pinned), `"marker[]"` (a subset of [`flow_ix::MARKERS`],
+    /// rendered as a picker), `"bool"`, or `"string[]"` (template grain ids).
     pub value_type: &'static str,
     pub required: bool,
     /// **The one definition of this field**, rendered into the UI from this text —
@@ -1106,6 +1106,13 @@ impl MetricFamily {
 pub struct GroupSpec {
     pub id: MetricGroupId,
     pub name: &'static str,
+    /// **The** definition of this group: what it measures as a whole, plus any
+    /// NaN or scope rule a rule author has to know. One or two sentences, written
+    /// HERE and rendered into the UI from this text — a group carries one
+    /// definition and it lives where the group is defined. Per-metric detail
+    /// belongs on [`MetricSpec::description`]; longer prose may still live in the
+    /// frontend's `GROUP_HELP`, but only BELOW this and never as a second definition.
+    pub description: &'static str,
     pub kind: MetricKind,
     /// Token-scoped (default) or position-scoped (`m_position`, exit-only).
     pub scope: MetricScope,
@@ -1209,6 +1216,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::State,
         name: "m_state",
+        description: "Point-in-time token facts that need no trailing window: age and pool depth.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::State,
@@ -1241,6 +1249,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::PriceLifetime,
         name: "m_price_lifetime",
+        description: "Price position against lifetime extrema - stall since the all-time high, trail below it, rise above the trough.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::Price,
@@ -1282,6 +1291,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::PriceWindow,
         name: "m_price_window",
+        description: "Price position against rolling-window extrema over a trailing span.",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::Price,
@@ -1328,6 +1338,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::FlowLifetime,
         name: "m_flow_lifetime",
+        description: "Unclassified buy and sell SOL since birth - total churn, not a trailing window.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::Flow,
@@ -1393,6 +1404,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::FlowWindow,
         name: "m_flow_window",
+        description: "Unclassified buy and sell SOL over a trailing window - how much is changing hands right now.",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::Flow,
@@ -1531,6 +1543,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::CrowdWindow,
         name: "m_crowd_window",
+        description: "Distinct wallets and trades-per-wallet over a trailing window - who is trading, not how much SOL.",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::Flow,
@@ -1580,6 +1593,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::FlowIx,
         name: "m_flow_ix",
+        description: "Lifetime buy and sell SOL split by whether the fingerprint's classifier TAGS the trade.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::FlowIx,
@@ -1736,6 +1750,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::FlowIxWindow,
         name: "m_flow_ix_window",
+        description: "The same tagged/untagged split as m_flow_ix, over a trailing window.",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::FlowIx,
@@ -1860,6 +1875,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::DumpIx,
         name: "m_dump_ix",
+        description: "Lifetime SOL sold through builds on this fingerprint's dump list, counted independently of the flow split.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::FlowIx,
@@ -1901,6 +1917,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::DumpIxWindow,
         name: "m_dump_ix_window",
+        description: "Dump-list sells over a trailing window - every matching LEG, and a count of transactions.",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::FlowIx,
@@ -1936,6 +1953,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::BurstSlot,
         name: "m_burst_slot",
+        description: "This slot's buy-prefix facts about the completing print's template grain - harvest event and depth gates.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::Standalone,
@@ -2098,6 +2116,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::Position,
         name: "m_position",
+        description: "Metrics anchored on YOUR entry fill. Exist only while holding, so this group is exit-only.",
         kind: MetricKind::Static,
         scope: MetricScope::Position,
         family: MetricFamily::Price,
@@ -2281,6 +2300,7 @@ pub fn registry_json() -> serde_json::Value {
                 .collect();
             json!({
                 "name": g.name,
+                "description": g.description,
                 "kind": g.kind.as_str(),
                 "scope": g.scope.as_str(),
                 "family": g.family.as_str(),
@@ -2398,6 +2418,18 @@ mod tests {
         // `m_burst_slot` is its own subject (this slot's buy prefix × this print's
         // template grain) and grids alone.
         assert_eq!(by_family["standalone"], vec!["m_burst_slot"]);
+    }
+
+    /// A group ships explained, and explained once - the group-level twin of
+    /// [`every_metric_carries_its_own_definition`].
+    #[test]
+    fn every_group_carries_its_own_definition() {
+        for g in REGISTRY {
+            let d = g.description;
+            assert!(!d.trim().is_empty(), "{} has no description", g.name);
+            assert!(d.len() >= 30, "{}: description too thin: {d:?}", g.name);
+            assert!(d.ends_with('.'), "{}: description is a sentence", g.name);
+        }
     }
 
     /// A metric ships explained, and explained once. The definition lives here and the

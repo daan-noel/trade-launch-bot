@@ -33,8 +33,9 @@ import {
 
 export { SLICE_PARAM, SLICE_PRINT_PARAM, SLICE_SLOT_PARAM };
 
-/** Which side a condition row applies to (the column owns it). */
-export type RuleConditionSide = 'entry' | 'exit';
+/** Which side a condition row applies to (the column owns it). `entry_event` is
+ *  the completing-print AND; `entry` is the filter AND evaluated on that print. */
+export type RuleConditionSide = 'entry' | 'entry_event' | 'exit';
 
 /** One editor row of the rule condition builder. */
 export interface RuleConditionRow {
@@ -79,6 +80,19 @@ export interface RuleConditionRow {
    * The rule editor always stamps one: object-form load is one way per metric.
    */
   clauseId?: string;
+}
+
+/** Next column a ⇄ flip lands in: event → filters → exit → event. */
+export function flipConditionSide(side: RuleConditionSide): RuleConditionSide {
+  if (side === 'entry_event') return 'entry';
+  if (side === 'entry') return 'exit';
+  return 'entry_event';
+}
+
+/** Human label for the column a ⇄ flip will move a row into. */
+export function flipSideLabel(side: RuleConditionSide): string {
+  const next = flipConditionSide(side);
+  return next === 'entry_event' ? 'event' : next === 'entry' ? 'filters' : 'exit';
 }
 
 let rowSeq = 0;
@@ -239,9 +253,9 @@ export function ruleConditionRowError(
   if (!row.group) return 'pick a metric group';
   const group = rowGroup(row, reg);
   if (!group) return 'pick a metric group';
-  // Position-scoped groups read NaN before entry — an entry condition can never
-  // fire, so the backend rejects it. Flag it here (mirrors the sweep axis rule).
-  if (row.side === 'entry' && group.scope === 'position')
+  // Position-scoped groups read NaN before entry — an entry or event condition can
+  // never fire, so the backend rejects it. Flag it here (mirrors the sweep axis rule).
+  if (row.side !== 'exit' && group.scope === 'position')
     return `${group.name} is exit-only (no value before entry) — move it to the exit column`;
   if (!row.metric || !group.metrics.some((m) => m.name === row.metric)) return 'pick a metric';
   const unit = ruleRowUnit(row);
@@ -341,14 +355,17 @@ export function duplicateConditionRowError(rows: RuleConditionRow[]): string | n
 export function parkedSideWarnings(rows: RuleConditionRow[]): string[] {
   const out: string[] = [];
   const authored = (r: RuleConditionRow) => r.group && r.metric && r.arms.length > 0;
-  for (const side of ['entry', 'exit'] as const) {
+  const labels: Record<RuleConditionSide, string> = {
+    entry:
+      'every filter is off — the rule now buys on the fingerprint and event alone',
+    entry_event:
+      'every event condition is off — the completing-print gate is gone (and entry_lock will not save)',
+    exit: 'every exit condition is off — only TP / SL / death can close a position',
+  };
+  for (const side of ['entry_event', 'entry', 'exit'] as const) {
     const ofSide = rows.filter((r) => r.side === side && authored(r));
     if (ofSide.length === 0 || ofSide.some(ruleRowEnabled)) continue;
-    out.push(
-      side === 'entry'
-        ? 'every entry condition is off — the rule now buys on the fingerprint alone'
-        : 'every exit condition is off — only TP / SL / death can close a position',
-    );
+    out.push(side === 'entry' ? labels.entry : labels[side]);
   }
   return out;
 }
@@ -403,9 +420,10 @@ export function rowsToSide(
   return out;
 }
 
-/** Both sides folded — the `entry`/`exit`/`exitClauses`/`disabled` of a `RuleParams`.
- *  Parked rows fold into `disabled` with the identical shape, so nothing is dropped
- *  on save and the live sides stay exactly what the engine will compile.
+/** Buy + sell sides folded — the `entry`/`entry_event`/`exit`/`exitClauses`/`disabled`
+ *  of a `RuleParams`. Parked rows fold into `disabled` with the identical shape, so
+ *  nothing is dropped on save and the live sides stay exactly what the engine will
+ *  compile.
  *
  *  Exit rows **without** `clauseId` (scale-out stages, legacy tests) fold as today's
  *  object-form OR. Rows **with** `clauseId` group into ways: all-singleton ways with
@@ -414,6 +432,7 @@ export function rowsToSide(
  *  array-form DNF. */
 export function rowsToSides(rows: RuleConditionRow[]): {
   entry: SideConditions;
+  entry_event: SideConditions;
   exit: SideConditions;
   exitClauses?: SideConditions[];
   disabled: DisabledConditions | null;
@@ -422,15 +441,18 @@ export function rowsToSides(rows: RuleConditionRow[]): {
   const parkedExit = foldExitRows(rows, false);
   const off: DisabledConditions = {
     entry: rowsToSide(rows, 'entry', false),
+    entry_event: rowsToSide(rows, 'entry_event', false),
     exit: parkedExit.exit,
     exitClauses: parkedExit.exitClauses,
   };
   const parked =
     Object.keys(off.entry ?? {}).length ||
+    Object.keys(off.entry_event ?? {}).length ||
     Object.keys(off.exit ?? {}).length ||
     (off.exitClauses?.length ?? 0);
   return {
     entry: rowsToSide(rows, 'entry'),
+    entry_event: rowsToSide(rows, 'entry_event'),
     exit: liveExit.exit,
     exitClauses: liveExit.exitClauses,
     disabled: parked ? off : null,
@@ -571,8 +593,10 @@ export function sideToRows(
  *  Object-form exit becomes one way per metric; array-form keeps AND grouping. */
 export function paramsToConditionRows(p: RuleParams): RuleConditionRow[] {
   return [
+    ...sideToRows(p.entry_event, 'entry_event'),
     ...sideToRows(p.entry, 'entry'),
     ...exitToRows(p.exit, p.exitClauses, true),
+    ...sideToRows(p.disabled?.entry_event, 'entry_event', false),
     ...sideToRows(p.disabled?.entry, 'entry', false),
     ...exitToRows(p.disabled?.exit, p.disabled?.exitClauses, false),
   ];
@@ -601,10 +625,13 @@ export function sidesToRows(
   entry: SideConditions | undefined,
   exit: SideConditions | undefined,
   disabled?: DisabledConditions | null,
+  entryEvent?: SideConditions,
 ): RuleConditionRow[] {
   return [
+    ...sideToRows(entryEvent, 'entry_event'),
     ...sideToRows(entry, 'entry'),
     ...sideToRows(exit, 'exit'),
+    ...sideToRows(disabled?.entry_event, 'entry_event', false),
     ...sideToRows(disabled?.entry, 'entry', false),
     ...sideToRows(disabled?.exit, 'exit', false),
   ];

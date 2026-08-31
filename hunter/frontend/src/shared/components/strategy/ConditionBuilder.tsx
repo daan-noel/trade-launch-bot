@@ -1,8 +1,8 @@
 // Row-based rule condition builder — the rule-editor analogue of the sweep's
 // `GenericAxisBuilder`. Conditions are authored one row at a time (add with `+`,
-// remove with `✕`) across an Entry column (AND) and stacked exit **ways to sell**
-// (OR of AND), instead of the old full-registry wall that painted every group ×
-// metric whether used or not.
+// remove with `✕`). Buy is one decision: **Event** (completing-print AND) beside
+// **Filters** (AND on that print), with **ways to sell** stacked as OR of AND.
+// An empty Event is today's level-AND (filters every print).
 //
 // The trailing **window is a per-row field**, so the same metric at two windows is
 // just two rows — they fold into two `GroupConditions` instances of the one group
@@ -16,13 +16,14 @@ import { Select } from 'components/ui/Select';
 import { IconButton } from 'components/ui/IconButton';
 import { PlusIcon } from 'components/ui/icons';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
+import { ToggleGroup } from 'components/ui/ToggleGroup';
 import { type MetricUnit, type StrategyRegistry } from 'lib/strategy/registry';
 import { metricColorStyle } from 'lib/strategy/metricColors';
 import { isPnlAdvancedMetric } from 'lib/strategy/validate';
 import {
-  GROUP_HELP,
   METRIC_HELP,
   metricHelpBody,
+  groupHelpTip,
   SIDE_HELP,
   STRICT_PARAM_HELP,
 } from 'lib/strategy/strategyHelp';
@@ -30,6 +31,8 @@ import {
   armAbovePctOrphanError,
   duplicateConditionRowError,
   exitClauseOrder,
+  flipConditionSide,
+  flipSideLabel,
   newExitClauseId,
   newExitClauseRow,
   newRuleConditionRow,
@@ -66,6 +69,11 @@ export interface ConditionBuilderProps {
   sides?: RuleConditionSide[];
   /** Allow the ⇄ flip between columns. Default true when both sides are shown. */
   allowFlip?: boolean;
+  /** Completing-print lock. `"slot"` = fire the event once per slot. `null` =
+   *  event AND filters on every print. The builder auto-sets `"slot"` when the
+   *  first event row is added and clears it when the last is removed. */
+  entryLock?: 'slot' | null;
+  onEntryLockChange?: (lock: 'slot' | null) => void;
   /** Allow the ⏻ park toggle. Default true. **Scale-out stages pass `false`**: a
    *  stage's `conditions` are their own nested `SideConditions` with no `disabled`
    *  bag, so a parked row there would be silently dropped on save. Park the whole
@@ -98,14 +106,19 @@ export function ConditionBuilder({
   allowToggle = true,
   sideTitles,
   exitWays,
+  entryLock = null,
+  onEntryLockChange,
 }: ConditionBuilderProps) {
   const dupErr = duplicateConditionRowError(rows);
   const armErr = armAbovePctOrphanError(rows);
-  // Parking the LAST condition of a side silently rewrites the rule (entry ⇒ buys on
-  // the fingerprint alone; exit ⇒ TP/SL/death only) — warn, don't block.
+  // Parking the LAST condition of a side silently rewrites the rule (filters ⇒
+  // fingerprint + event; event ⇒ no completing-print gate; exit ⇒ TP/SL/death) —
+  // warn, don't block.
   // (Only for the columns this builder actually shows — a scale-out stage renders
   // the exit column alone and has its own "stage needs a way to fire" check.)
-  const parkedWarnings = parkedSideWarnings(rows.filter((r) => sides.includes(r.side)));
+  const parkedWarnings = parkedSideWarnings(
+    rows.filter((r) => sides.includes(r.side) || (sides.includes('entry') && r.side === 'entry_event')),
+  );
   const canFlip = allowFlip ?? sides.length > 1;
   const groupExitWays = exitWays ?? (sides.includes('entry') && sides.includes('exit'));
 
@@ -119,12 +132,15 @@ export function ConditionBuilder({
   // that would resurrect the value.
   const setInstanceStrict = (id: string, strict: Record<string, number>) =>
     onChange(setRowInstanceStrict(rows, id, strict));
-  const removeRow = (id: string) => onChange(rows.filter((r) => r.id !== id));
-  const addRow = (side: RuleConditionSide) =>
+  const addRow = (side: RuleConditionSide) => {
+    if (side === 'entry_event' && !rows.some((r) => r.side === 'entry_event')) {
+      onEntryLockChange?.('slot');
+    }
     onChange([
       ...rows,
       side === 'exit' && groupExitWays ? newExitClauseRow() : newRuleConditionRow(side),
     ]);
+  };
   const addToWay = (clauseId: string) => onChange([...rows, newExitClauseRow(clauseId)]);
   const toggleRow = (id: string) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, enabled: !ruleRowEnabled(r) } : r)));
@@ -136,62 +152,165 @@ export function ConditionBuilder({
     const anyOn = way.some(ruleRowEnabled);
     onChange(rows.map((r) => (r.clauseId === clauseId ? { ...r, enabled: !anyOn } : r)));
   };
+  const removeRow = (id: string) => {
+    const next = rows.filter((r) => r.id !== id);
+    if (
+      rows.some((r) => r.id === id && r.side === 'entry_event') &&
+      !next.some((r) => r.side === 'entry_event')
+    ) {
+      onEntryLockChange?.(null);
+    }
+    onChange(next);
+  };
   const flipSide = (id: string) =>
     onChange(
       rows.map((r) => {
         if (r.id !== id) return r;
-        if (r.side === 'entry') {
-          return { ...r, side: 'exit' as const, clauseId: newExitClauseId() };
+        const next = flipConditionSide(r.side);
+        if (next === 'exit') {
+          return { ...r, side: next, clauseId: r.clauseId ?? newExitClauseId() };
         }
-        return { ...r, side: 'entry' as const, clauseId: undefined };
+        return { ...r, side: next, clauseId: undefined };
       }),
     );
 
+  const showEvent = sides.includes('entry');
+  const showBuySell = showEvent && sides.includes('exit') && groupExitWays;
   const gridCls =
-    sides.length === 1 ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-1 gap-2 md:grid-cols-2';
+    sides.length === 1 && !showEvent
+      ? 'grid grid-cols-1 gap-2'
+      : 'grid grid-cols-1 gap-2 md:grid-cols-2';
+
+  const eventColumn = (
+    <ConditionColumn
+      side="entry_event"
+      title={sideTitles?.entry_event ?? 'event'}
+      rows={rows.filter((r) => r.side === 'entry_event')}
+      registry={registry}
+      disabled={disabled}
+      allowFlip={canFlip}
+      allowToggle={allowToggle}
+      emptyHint="No completing-print event — + to fire on a specific print this slot. Empty = every print that passes the filters."
+      headerExtra={
+        rows.some((r) => r.side === 'entry_event' && ruleRowEnabled(r)) ? (
+          <span className={disabled ? 'pointer-events-none opacity-50' : undefined}>
+            <ToggleGroup
+              size="sm"
+              tone="neutral"
+              aria-label="How the event fires"
+              value={entryLock === 'slot' ? 'slot' : 'every'}
+              onChange={(v) => onEntryLockChange?.(v === 'slot' ? 'slot' : null)}
+              options={[
+                {
+                  value: 'slot',
+                  label: 'once / slot',
+                  title: 'First print this slot that makes the event true is the only candidate',
+                },
+                {
+                  value: 'every',
+                  label: 'every print',
+                  title: 'Event AND filters on every print — no slot spend',
+                },
+              ]}
+            />
+          </span>
+        ) : undefined
+      }
+      onAdd={() => addRow('entry_event')}
+      onPatch={setRow}
+      onPatchStrict={setInstanceStrict}
+      onRemove={removeRow}
+      onFlip={flipSide}
+      onToggle={toggleRow}
+    />
+  );
+
+  const filterColumn = (
+    <ConditionColumn
+      side="entry"
+      title={sideTitles?.entry ?? (showEvent ? 'filters' : 'entry')}
+      rows={rows.filter((r) => r.side === 'entry')}
+      registry={registry}
+      disabled={disabled}
+      allowFlip={canFlip}
+      allowToggle={allowToggle}
+      emptyHint={
+        showEvent
+          ? 'AND with the event on that same print — age, depth, crowd shape. Empty = fingerprint + event alone.'
+          : undefined
+      }
+      onAdd={() => addRow('entry')}
+      onPatch={setRow}
+      onPatchStrict={setInstanceStrict}
+      onRemove={removeRow}
+      onFlip={flipSide}
+      onToggle={toggleRow}
+    />
+  );
+
+  const exitColumn =
+    sides.includes('exit') && groupExitWays ? (
+      <ExitWaysColumn
+        title={sideTitles?.exit}
+        rows={rows.filter((r) => r.side === 'exit')}
+        registry={registry}
+        disabled={disabled}
+        allowFlip={canFlip}
+        allowToggle={allowToggle}
+        onAddWay={() => addRow('exit')}
+        onAddToWay={addToWay}
+        onPatch={setRow}
+        onPatchStrict={setInstanceStrict}
+        onRemove={removeRow}
+        onFlip={flipSide}
+        onToggle={toggleRow}
+        onToggleWay={toggleWay}
+      />
+    ) : sides.includes('exit') ? (
+      <ConditionColumn
+        side="exit"
+        title={sideTitles?.exit}
+        rows={rows.filter((r) => r.side === 'exit')}
+        registry={registry}
+        disabled={disabled}
+        allowFlip={canFlip}
+        allowToggle={allowToggle}
+        onAdd={() => addRow('exit')}
+        onPatch={setRow}
+        onPatchStrict={setInstanceStrict}
+        onRemove={removeRow}
+        onFlip={flipSide}
+        onToggle={toggleRow}
+      />
+    ) : null;
 
   return (
     <div className="flex flex-col gap-2">
-      <div className={gridCls}>
-        {sides.map((side) =>
-          side === 'exit' && groupExitWays ? (
-            <ExitWaysColumn
-              key={side}
-              title={sideTitles?.exit}
-              rows={rows.filter((r) => r.side === 'exit')}
-              registry={registry}
-              disabled={disabled}
-              allowFlip={canFlip}
-              allowToggle={allowToggle}
-              onAddWay={() => addRow('exit')}
-              onAddToWay={addToWay}
-              onPatch={setRow}
-              onPatchStrict={setInstanceStrict}
-              onRemove={removeRow}
-              onFlip={flipSide}
-              onToggle={toggleRow}
-              onToggleWay={toggleWay}
-            />
-          ) : (
-            <ConditionColumn
-              key={side}
-              side={side}
-              title={sideTitles?.[side]}
-              rows={rows.filter((r) => r.side === side)}
-              registry={registry}
-              disabled={disabled}
-              allowFlip={canFlip}
-              allowToggle={allowToggle}
-              onAdd={() => addRow(side)}
-              onPatch={setRow}
-              onPatchStrict={setInstanceStrict}
-              onRemove={removeRow}
-              onFlip={flipSide}
-              onToggle={toggleRow}
-            />
-          ),
-        )}
-      </div>
+      {showBuySell ? (
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+          <div className="flex flex-col gap-1.5 rounded-md border border-accent/25 bg-accent/4 p-2">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-accent/80">
+                Buy
+              </span>
+              <span className="text-[10px] font-normal normal-case tracking-normal text-text-dim/50">
+                event AND filters · same print
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              {eventColumn}
+              {filterColumn}
+            </div>
+          </div>
+          {exitColumn}
+        </div>
+      ) : (
+        <div className={gridCls}>
+          {showEvent && eventColumn}
+          {sides.includes('entry') && filterColumn}
+          {exitColumn}
+        </div>
+      )}
       {dupErr && <p className="text-[11px] text-red">{dupErr}</p>}
       {armErr && <p className="text-[11px] text-red">{armErr}</p>}
       {parkedWarnings.map((w) => (
@@ -383,6 +502,8 @@ function ConditionColumn({
   disabled,
   allowFlip,
   allowToggle,
+  emptyHint,
+  headerExtra,
   onAdd,
   onPatch,
   onPatchStrict,
@@ -397,6 +518,8 @@ function ConditionColumn({
   disabled?: boolean;
   allowFlip: boolean;
   allowToggle: boolean;
+  emptyHint?: string;
+  headerExtra?: ReactNode;
   onAdd: () => void;
   onPatch: (id: string, patch: Partial<RuleConditionRow>) => void;
   onPatchStrict: (id: string, strict: Record<string, number>) => void;
@@ -409,9 +532,10 @@ function ConditionColumn({
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-white/10 bg-white/2 p-2">
       <div className="flex items-center justify-between gap-1.5">
-        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
+        <span className="inline-flex flex-wrap items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
           {label}
           <InfoTooltip title={SIDE_HELP[side].title} body={SIDE_HELP[side].body} />
+          {headerExtra}
           {/* A parked row still renders, so say plainly how many of the visible rows
               the engine will actually evaluate. */}
           {parked > 0 && (
@@ -434,7 +558,7 @@ function ConditionColumn({
 
       {rows.length === 0 ? (
         <div className="rounded border border-dashed border-white/10 px-2 py-3 text-center text-[11px] text-text-dim/50">
-          No {label} conditions — + to add one
+          {emptyHint ?? `No ${label} conditions — + to add one`}
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
@@ -594,7 +718,7 @@ function ConditionRow({
       )}
       style={tint}
     >
-      <Cell label="group" tip={row.group && GROUP_HELP[row.group] ? GROUP_HELP[row.group] : undefined}>
+      <Cell label="group" tip={row.group ? groupHelpTip(row.group, group) : undefined}>
         <Select
           fieldSize="sm"
           value={row.group}
@@ -605,7 +729,7 @@ function ConditionRow({
           <option value="">group…</option>
           {registry.groups
             // Hide position-scoped (exit-only) groups from an entry row.
-            .filter((g) => !(row.side === 'entry' && g.scope === 'position'))
+            .filter((g) => !(row.side !== 'exit' && g.scope === 'position'))
             .map((g) => (
               <option key={g.name} value={g.name}>
                 {g.name}
@@ -767,7 +891,7 @@ function ConditionRow({
             type="button"
             onClick={onFlip}
             disabled={disabled}
-            title={`Move to ${row.side === 'entry' ? 'exit' : 'entry'}`}
+            title={`Move to ${flipSideLabel(row.side)}`}
             aria-label="Flip side"
             className="px-1 text-text-dim/60 transition-colors hover:text-text disabled:opacity-40"
           >

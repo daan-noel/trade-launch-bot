@@ -30,6 +30,11 @@ export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefi
     }
   }
   validateSide('entry', p.entry, reg, errors);
+  validateSide('entry_event', p.entry_event, reg, errors);
+  const eventLive = p.entry_event && Object.keys(p.entry_event).length > 0;
+  if (p.entry_lock === 'slot' && !eventLive) {
+    errors.push('entry_lock requires a non-empty entry_event');
+  }
   if (p.exitClauses && p.exitClauses.length > 0) {
     p.exitClauses.forEach((c, i) => {
       if (Object.keys(c).length === 0) {
@@ -44,6 +49,7 @@ export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefi
   // Parked conditions validate exactly like live ones (backend does the same), so a
   // toggle back on can never turn a saved rule into one that refuses to save.
   validateSide('disabled.entry', p.disabled?.entry, reg, errors);
+  validateSide('disabled.entry_event', p.disabled?.entry_event, reg, errors);
   if (p.disabled?.exitClauses && p.disabled.exitClauses.length > 0) {
     p.disabled.exitClauses.forEach((c, i) => {
       if (Object.keys(c).length === 0) {

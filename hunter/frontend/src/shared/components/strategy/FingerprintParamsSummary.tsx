@@ -28,7 +28,7 @@ import {
 } from 'lib/flow/volumePatterns';
 import { cn } from 'lib/cn';
 import { hashHue, metricColorStyle } from 'lib/strategy/metricColors';
-import { dumpPatternsFromConfig, ixPatternsFromConfig } from 'lib/strategy/registry';
+import { dumpPatternsFromConfig, ixPatternsFromConfig, workingTemplatesFromConfig } from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import {
   fingerprintAutoName,
@@ -60,6 +60,8 @@ const AXIS_HUE: Record<string, number> = {
   // dump builds — the `m_dump_ix` group's own registry hue, so the chip and the
   // metric line on a chart are the same colour for the same list.
   dump: 115,
+  // working templates — harvest grains (orange, next to dump's teal)
+  work: 25,
   // bucket width — rose
   bkt: 340,
   // wildcard — its own hue: it is not an axis, it replaces all of them
@@ -228,6 +230,26 @@ export function DumpPatternsChip({ patterns }: { patterns: string[][] }) {
   );
 }
 
+/**
+ * The `work N` chip — `m_burst_slot.working_templates`. Absent when empty: an
+ * empty list leaves burst metrics reading NaN, so a chip on every fingerprint
+ * saying so is noise (same reason {@link DumpPatternsChip} hides).
+ */
+export function WorkingTemplatesChip({ templates }: { templates: string[] }) {
+  const n = templates.length;
+  if (n === 0) return null;
+  const text = templates.join('\n');
+  return (
+    <ContentsChip
+      text={`work ${n}`}
+      identity={templates.slice().sort().join('|')}
+      title={`${n} working template grain${n === 1 ? '' : 's'}\n${text}`}
+      copyText={text}
+      tint={axisTint('work')}
+    />
+  );
+}
+
 /** One axis's chip. The value reads in the axis's own display unit — SOL for a
  *  lamports axis, the integer for a tally — through the ONE formatter, so a chip,
  *  the auto-name and the form all show a bound the same way. */
@@ -263,6 +285,7 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
         })}
         <FlowPatternsChip patterns={ixPatternsFromConfig(fp.metric_config)} />
         <DumpPatternsChip patterns={dumpPatternsFromConfig(fp.metric_config)} />
+        <WorkingTemplatesChip templates={workingTemplatesFromConfig(fp.metric_config)} />
       </div>
     );
   }
@@ -270,6 +293,7 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
     ...configuredAxes(fp.criteria ?? {}).map(([id, pred]) => axisChip(id, pred)),
     <FlowPatternsChip key="flow" patterns={ixPatternsFromConfig(fp.metric_config)} />,
     <DumpPatternsChip key="dump" patterns={dumpPatternsFromConfig(fp.metric_config)} />,
+    <WorkingTemplatesChip key="work" templates={workingTemplatesFromConfig(fp.metric_config)} />,
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;
@@ -323,6 +347,10 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
     parts.push(`dump ${dump.length} dump=${dump.length}`);
     parts.push(ixPatternsActions(dump));
     parts.push(formatVolumePatternsText(dump));
+  }
+  const work = workingTemplatesFromConfig(fp.metric_config);
+  if (work.length > 0) {
+    parts.push(`work ${work.length} work=${work.length}`, work.join(' '));
   }
   return parts.join(' ');
 }
@@ -392,5 +420,6 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
     // The dump list is part of the same row's `metric_config`, so two rows that
     // differ only there are different rows and must not collapse into one sort key.
     ixPatternsIdentity(dumpPatternsFromConfig(fp.metric_config)),
+    workingTemplatesFromConfig(fp.metric_config).slice().sort().join('|'),
   ].join('\u0001');
 }

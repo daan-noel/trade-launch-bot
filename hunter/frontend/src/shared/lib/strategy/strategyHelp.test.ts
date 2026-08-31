@@ -3,6 +3,7 @@ import {
   FINGERPRINT_FIELD_HELP,
   GROUP_HELP,
   METRIC_HELP,
+  groupHelpTip,
   metricHelpBody,
   STRICT_PARAM_HELP,
 } from './strategyHelp';
@@ -59,6 +60,21 @@ describe('metricHelpBody', () => {
     expect(tip).toBeTruthy();
     expect(tip.body).toContain('window_size_sec');
     expect(tip.body).toContain('trade_share');
+  });
+});
+
+describe('groupHelpTip', () => {
+  it('renders the REGISTRY description first, not the frontend copy', () => {
+    const group = Object.keys(GROUP_HELP).find((k) => GROUP_HELP[k]?.body)!;
+    const tip = groupHelpTip(group, { description: 'The one-line registry definition.' });
+    expect(tip?.body.startsWith('The one-line registry definition.')).toBe(true);
+    expect(tip?.body.indexOf(GROUP_HELP[group].body)).toBeGreaterThan(0);
+  });
+
+  it('falls back to GROUP_HELP when the payload carries no description', () => {
+    const group = Object.keys(GROUP_HELP).find((k) => GROUP_HELP[k]?.body)!;
+    const tip = groupHelpTip(group);
+    expect(tip?.body).toBe(GROUP_HELP[group].body);
   });
 });
 

@@ -511,7 +511,9 @@ next load (no per-metric frontend work).
   `groups[]` → metrics w/ unit/eq-tolerance/monotonic + strict params) + the cached
   `useStrategyRegistry()` hook (RTK Query, 1 h). `unitSuffix`/`findGroup`/`findMetric`.
   New engine groups (e.g. `m_flow_lifetime`) appear in rule/sweep pickers from this
-  payload alone; `strategyHelp.ts` `GROUP_HELP` / `METRIC_HELP` supplies the ⓘ copy.
+  payload alone; a group's `description` (and each metric's) is the definition the
+  tooltip renders first (`groupHelpTip` / `metricHelpBody`). `strategyHelp.ts`
+  `GROUP_HELP` / `METRIC_HELP` is extended prose only, below that text.
   The payload is static per backend **process**, not per tab, so the hook passes
   `refetchOnMountOrArgChange: REGISTRY_STALE_SECS` (60 s) over the app-wide `false`:
   a restart that adds a metric group otherwise leaves the pickers rendering the
@@ -523,21 +525,27 @@ next load (no per-metric frontend work).
   (registry-guided strict/metric split; includes `scale_out: ExitStage[]`);
   `validate.ts` mirrors backend §5 validation (incl. scale-out caps).
 - `components/strategy/` — `ConditionInput` (grammar input + chips + red-underline),
-  `ConditionBuilder` (entry column AND; exit column is stacked **ways to sell** —
-  any way fires (OR), rows inside a way all must hold (AND). Header + adds a way;
-  per-way + ANDs a condition into it. Default one-row ways collapse to object-form
-  so stored rules round-trip; a way with two metrics serializes as array-form DNF.
-  Scale-out stages pass `sides={['exit']}` and stay object-form / flat OR. The
+  `ConditionBuilder` (Buy is one decision: **Event** column AND **Filters** column,
+  both AND on the same print; empty Event is today's level-AND. `entry_lock` sits on
+  the Event header — **once / slot** vs **every print** — and hides until a live
+  event row exists; first event row defaults the lock to slot. Exit is stacked
+  **ways to sell** — any way fires (OR), rows inside a way all must hold (AND).
+  Header + adds a way; per-way + ANDs a condition into it. Default one-row ways
+  collapse to object-form so stored rules round-trip; a way with two metrics
+  serializes as array-form DNF. Scale-out stages pass `sides={['exit']}` and stay
+  object-form / flat OR. The
   per-row `⏻` **parks** a condition — kept, still validated, but folded into
   `params.disabled` instead of the live side, so the engine never compiles it.
   A way-level `⏻` parks every row in that way so an AND group round-trips as
   one parked clause. `lib/strategy/ruleConditionRows.ts` owns the row↔bag fold: `clauseId` on exit
-  rows, `enabled` on the row, `rowsToSides` → `{entry, exit, exitClauses, disabled}`,
+  rows, `enabled` on the row, `rowsToSides` → `{entry, entry_event, exit, exitClauses, disabled}`
+  (including `disabled.entry_event`),
   `paramsToConditionRows` is the editor load path (object-form → one way per metric).
   Duplicate + `arm_above_pct`-orphan checks are keyed per way so two ways may both
   name `m_position.armed`. `parkedSideWarnings` still fires when parking a side's
   LAST condition rewrites the rule silently
-  (empty entry ⇒ buys on the fingerprint alone; empty exit ⇒ TP/SL/death only).
+  (empty filters ⇒ fingerprint + event; empty event ⇒ no completing-print gate;
+  empty exit ⇒ TP/SL/death only).
   **Scale-out stages pass `allowToggle={false}`**: a stage's `conditions` have no
   `disabled` bag of their own — park the whole stage instead.
   A dynamic row's window is a **span, not a number**: size + `unit` (sec / slot) +
@@ -567,7 +575,10 @@ next load (no per-metric frontend work).
   open at a time**; a capped scrolling list, a label filter past 6 rows, and a
   **Delete all** confirming via the shared `clearPrompt` the flow-discovery cart also
   uses. Rows stay mounted while collapsed or filtered out, because a row holds the
-  draft text that has not parsed yet. `FlowClassifierEditor` renders the WHOLE
+  draft text that has not parsed yet. `WorkingTemplatesEditor` is the chip list for
+  `m_burst_slot.working_templates` — grain ids (`program|CU|ATA|N|S|F`), not full
+  sequences; empty drops the group so burst metrics read NaN. All three groups
+  chain through one writer on save. `FlowClassifierEditor` renders the WHOLE
   `m_flow_ix` key from the group's declared `fingerprint_config`: the pattern rows, a
   marker picker over the served `ix_markers` vocabulary with a tagged/untagged side
   toggle, and the two wallet rules — so a field or a marker added in Rust appears with
@@ -634,7 +645,8 @@ next load (no per-metric frontend work).
   Rules/Simulate fingerprint cells → Fingerprints; lab Rules → Simulate
   (`linkToSimulate`); Simulate rule name → Rules. Sweep Used-by / matched fp,
   Flow Discovery seed/target badges, and live Armed rule names also deep-link),
-  `RuleParamsSummary` (`ruleParamsCell` — TP/SL + in/out metric chips; used by Rules,
+  `RuleParamsSummary` (`ruleParamsCell` — TP/SL + in/out metric chips, plus `evt` /
+  `evt/s` chips for `entry_event` when authored; used by Rules,
   Simulate, and the generic sweep tables),
   `FingerprintParamsSummary` (`fingerprintParamsCell` — set match-axis chips, plus the
   always-shown bucket and `FlowPatternsChip`; used by Rules, Simulate, and
@@ -643,29 +655,34 @@ next load (no per-metric frontend work).
   count — the tooltip carries the sequences and a click copies them as JSON. An
   unconfigured pattern set stays visible as a dimmed `flow✗`, because an empty set is
   the verdict "every trade classifies organic", not a dropped criterion.
-**Two pattern lists, one vocabulary.** `registry.ts` owns `IxPatternList` (`tagged` =
-`m_flow_ix.ix_patterns`, `dump` = `m_dump_ix.ix_patterns`) with `patternsForList` /
-`metricConfigWithList` over it, so every staging surface says which list a click
-means: the fingerprint form renders the second editor, the flow-discovery cart carries
-a `staging into [tagged|dump]` toggle that reseeds the draft from the list it is about
-to overwrite, and the trades-table badge strip (`IxPatternBar` over
-`useIxPatternTarget`) carries the same toggle — it writes immediately, so it has to
+**Two pattern lists, one vocabulary — plus working grains.** `registry.ts` owns
+`IxPatternList` (`tagged` = `m_flow_ix.ix_patterns`, `dump` = `m_dump_ix.ix_patterns`)
+with `patternsForList` / `metricConfigWithList` over it, so every staging surface says
+which list a click means: the fingerprint form renders the dump editor, the
+flow-discovery cart carries a `staging into [tagged|dump]` toggle that reseeds the
+draft from the list it is about to overwrite. The trades-table badge strip
+(`IxPatternBar` over `useIxPatternTarget`) carries those two **and** a third list,
+`working` — `m_burst_slot.working_templates` grain ids, a different vocabulary, so it
+is not an `IxPatternList` arm. A badge click writes immediately, so the strip has to
 name its target. Each group is written by its OWN writer, and a build may sit on
-BOTH lists — the normal configuration, since the two answer different questions about
-one transaction.
+BOTH ix lists — the normal configuration, since the two answer different questions
+about one transaction.
 
-The list a surface is on renames what it shows, because the two columns are otherwise
+The list a surface is on renames what it shows, because the two ix columns are otherwise
 identical: the trades-table badge reads `Tagged`/`Untagged` on the tagged list and
 `Dump`/`Not dump` on the dump one (`patternList` on `tokenTradeColumns`), contagion
 notes are suppressed under `dump` (the reasons map is the flow split's verdict, and
 `m_dump_ix` has no wallet rule to spread one), and a row the OTHER list also counts is
 marked `also tagged` / `also dump` from `otherListKeys` — information, not a conflict,
 and the one place a reader learns the two groups' numbers are not disjoint.
-Flow discovery's split bar renames the same way. `FingerprintsView` gives the dump list
+On `working` the badge reads `Working`/`Other` against the grain id
+(`templateGrain`), with no contagion notes. Flow discovery stays tagged|dump — the
+cart does not stage grains. `FingerprintsView` gives the dump list
 its own **dump builds** column beside `flow patterns`, and `DumpPatternsChip` is the
 `FlowPatternsChip` twin — absent when the list is empty, where the flow chip stays
 visible as `flow✗`, since an empty dump list leaves `dump_*` reading NaN rather than
-re-pointing another metric.
+re-pointing another metric. `WorkingTemplatesChip` (`work N`) is the grain-list twin,
+absent when empty.
 
 - Lab **Flow discovery** (`/strategies/flow-discovery`, `FlowDiscoveryPage`) — corpus
   window + optional **Scope by saved fingerprint** (sends `fingerprint_id`; engine

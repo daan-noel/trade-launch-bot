@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Input } from 'components/ui/Input';
 import { IconButton } from 'components/ui/IconButton';
-import { SaveIcon, SpinnerIcon, RefreshIcon } from 'components/ui/icons';
+import { SaveIcon, SpinnerIcon, RefreshIcon, PlusIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
@@ -24,16 +24,20 @@ import {
   ixMarkers,
   metricConfigWithDumpPatterns,
   metricConfigWithFlowClassifier,
+  metricConfigWithWorkingTemplates,
   useStrategyRegistry,
+  workingTemplatesFromConfig,
   type FlowClassifier,
   type FpConfigFieldSpec,
   type MarkerSide,
   type StrategyRegistry,
+  BURST_GROUP,
   DUMP_GROUP,
 } from 'lib/strategy/registry';
 import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { FINGERPRINT_FIELD_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
 import { LabelTip } from './LabelTip';
+import { parseGrainIds } from 'lib/strategy/templateGrain';
 import type { IxPatternRow } from 'lib/strategy/ixPatternRows';
 
 import { IxPatternRowsEditor } from './IxPatternsEditor';
@@ -75,6 +79,8 @@ interface FormState {
    *  count. A separate list from the classifier's, and separately optional: a
    *  fingerprint may configure either group, both, or neither. */
   dump_patterns: IxPatternRow[];
+  /** `m_burst_slot.working_templates` — grain ids harvest treats as working. */
+  working_templates: string[];
   /** The ORIGINAL metric_config, whole. The save merges into this rather than
    *  rebuilding from the fields above, so every key the form does not render — other
    *  groups, and any `m_flow_ix` key added later — survives an edit. */
@@ -99,6 +105,7 @@ function fromFingerprint(fp?: Fingerprint, reg?: StrategyRegistry): FormState {
     wildcard: fp?.wildcard ?? false,
     flow: flowClassifierFromConfig(cfg, reg),
     dump_patterns: dumpPatternRowsFromConfig(cfg),
+    working_templates: workingTemplatesFromConfig(cfg),
     metric_config_prev: cfg,
   };
 }
@@ -145,9 +152,12 @@ function toDraft(s: FormState): FingerprintDraft {
     criteria: toCriteria(s).criteria,
     // Each group through its own writer, chained so both land in one config and
     // neither drops what the other owns.
-    metric_config: metricConfigWithDumpPatterns(
-      metricConfigWithFlowClassifier(s.metric_config_prev, s.flow),
-      s.dump_patterns,
+    metric_config: metricConfigWithWorkingTemplates(
+      metricConfigWithDumpPatterns(
+        metricConfigWithFlowClassifier(s.metric_config_prev, s.flow),
+        s.dump_patterns,
+      ),
+      s.working_templates,
     ),
   };
 }
@@ -344,6 +354,97 @@ const WILDCARD_HELP: HelpTip = {
     'Mutually exclusive with the axes: turning it on clears them.',
 };
 
+/** Chip list for `m_burst_slot.working_templates` — grain ids, not ix sequences. */
+function WorkingTemplatesEditor({
+  value,
+  onChange,
+  field,
+  disabled,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  field: FpConfigFieldSpec;
+  disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState('');
+  const tip: HelpTip = {
+    title: `${BURST_GROUP}.working_templates`,
+    body: field.description
+      ? `${field.description}
+
+${FINGERPRINT_FIELD_HELP.working_templates.body}`
+      : FINGERPRINT_FIELD_HELP.working_templates.body,
+  };
+  const add = () => {
+    const ids = parseGrainIds(draft);
+    if (ids.length === 0) return;
+    const seen = new Set(value);
+    onChange([...value, ...ids.filter((id) => !seen.has(id))]);
+    setDraft('');
+  };
+  return (
+    <div className="flex flex-col gap-1.5 rounded border border-white/10 p-2 text-[11px] text-text-dim">
+      <LabelTip tip={tip}>
+        {BURST_GROUP} · working templates
+        {value.length > 0 && (
+          <span className="ml-1 font-normal text-text-dim/70">{value.length}</span>
+        )}
+      </LabelTip>
+      {value.length === 0 ? (
+        <p className="rounded border border-dashed border-white/10 px-2 py-2 text-text-dim/50">
+          No working grains. Paste ids here, or on the tape switch the list to{' '}
+          <span className="font-semibold text-text-dim">working</span> and click a badge.
+          Burst metrics read NaN until this list is set.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {value.map((id) => (
+            <button
+              key={id}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(value.filter((x) => x !== id))}
+              className="inline-flex items-center gap-1 rounded border border-green/40 bg-green/10 px-1.5 py-0.5 font-mono text-[10px] text-text-hi hover:border-red/50 hover:bg-red/10"
+              title="Remove from working list"
+            >
+              {id}
+              <span aria-hidden className="text-text-dim/60">
+                ×
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-1">
+        <Input
+          fieldSize="sm"
+          className="min-w-0 flex-1 font-mono"
+          value={draft}
+          disabled={disabled}
+          placeholder="Axiom Trade|CU|ATA|F"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              add();
+            }
+          }}
+        />
+        <IconButton
+          variant="ghost"
+          size="sm"
+          disabled={disabled || parseGrainIds(draft).length === 0}
+          onClick={add}
+          title="Add grain id"
+          aria-label="Add grain id"
+        >
+          <PlusIcon />
+        </IconButton>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Create / edit a fingerprint.
  *
@@ -374,6 +475,9 @@ export function FingerprintForm({
   // still read from the registry, so a group that stops declaring it stops rendering.
   const dumpField = findGroup(registry, DUMP_GROUP)?.fingerprint_config?.find(
     (f) => f.name === 'ix_patterns',
+  );
+  const workingField = findGroup(registry, BURST_GROUP)?.fingerprint_config?.find(
+    (f) => f.name === 'working_templates',
   );
   const dumpTip: HelpTip = {
     title: `${DUMP_GROUP}.ix_patterns — the builds counted as dumps`,
@@ -511,6 +615,15 @@ ${FINGERPRINT_FIELD_HELP.dump_ix_patterns.body}`
             disabled={submitting}
           />
         </div>
+      )}
+
+      {workingField && (
+        <WorkingTemplatesEditor
+          value={s.working_templates}
+          onChange={(v) => set('working_templates', v)}
+          field={workingField}
+          disabled={submitting}
+        />
       )}
 
       <div className="flex items-center justify-between gap-2">

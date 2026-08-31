@@ -144,3 +144,24 @@ describe('DNF exit clauses', () => {
     expect(errs.some((e) => e.includes('exit[0] is empty'))).toBe(true);
   });
 });
+
+describe('entry_lock', () => {
+  it('rejects a slot lock with no live entry_event', () => {
+    const errs = validateRuleParams({ ...emptyRuleParams(), entry_lock: 'slot' }, undefined);
+    expect(errs.some((e) => e.includes('entry_lock requires a non-empty entry_event'))).toBe(true);
+  });
+
+  it('accepts a slot lock with a live entry_event', () => {
+    const errs = validateRuleParams(
+      {
+        ...emptyRuleParams(),
+        entry_lock: 'slot',
+        entry_event: {
+          m_state: [{ strict: {}, metrics: { time: [[{ operator: '>', value: 1 }]] } }],
+        },
+      },
+      undefined,
+    );
+    expect(errs.filter((e) => e.includes('entry_lock'))).toEqual([]);
+  });
+});

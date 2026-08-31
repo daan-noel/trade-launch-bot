@@ -11,7 +11,7 @@ import {
   STRICT_PARAM_HELP,
   METRIC_HELP,
   metricHelpBody,
-  GROUP_HELP,
+  groupHelpTip,
   SIDE_HELP,
   RULE_FIELD_HELP,
 } from 'lib/strategy/strategyHelp';
@@ -585,7 +585,7 @@ function AxisRow({
         <>
           <Cell
             label="group"
-            tip={row.group && GROUP_HELP[row.group] ? GROUP_HELP[row.group] : undefined}
+            tip={row.group ? groupHelpTip(row.group, group) : undefined}
           >
             <Select
               fieldSize="sm"

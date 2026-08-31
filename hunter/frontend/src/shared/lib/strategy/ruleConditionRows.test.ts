@@ -301,7 +301,13 @@ describe('parked (disabled) rows', () => {
     expect(back.filter(ruleRowEnabled)).toHaveLength(1);
     // Re-folding the reloaded rows is a fixed point — a save+reload+save cycle must
     // not migrate a parked condition into the live side (or lose it).
-    expect(rowsToSides(back)).toEqual({ entry, exit, disabled, exitClauses: undefined });
+    expect(rowsToSides(back)).toEqual({
+      entry,
+      entry_event: {},
+      exit,
+      disabled,
+      exitClauses: undefined,
+    });
   });
 
   it('does not flag a parked row as a duplicate of its live twin', () => {
@@ -329,13 +335,41 @@ describe('parked (disabled) rows', () => {
   it('warns when every condition of a side is parked', () => {
     expect(parkedSideWarnings([live, parked])).toEqual([]);
     expect(parkedSideWarnings([parked])).toEqual([
-      'every entry condition is off — the rule now buys on the fingerprint alone',
+      'every filter is off — the rule now buys on the fingerprint and event alone',
     ]);
     expect(parkedSideWarnings([{ ...parked, side: 'exit' }])).toEqual([
       'every exit condition is off — only TP / SL / death can close a position',
     ]);
+    expect(parkedSideWarnings([{ ...parked, side: 'entry_event' }])).toEqual([
+      'every event condition is off — the completing-print gate is gone (and entry_lock will not save)',
+    ]);
     // A side with no authored conditions at all was never constrained — no warning.
     expect(parkedSideWarnings([row({ group: '', metric: '', arms: [] })])).toEqual([]);
+  });
+});
+
+describe('entry_event rows', () => {
+  it('loads completing-print conditions as event-side rows and round-trips', () => {
+    const params = {
+      take_profit: null,
+      stop_loss: null,
+      exclusive: false,
+      priority: 0,
+      entry_lock: 'slot' as const,
+      entry_event: {
+        m_state: [{ strict: {}, metrics: { time: [[{ operator: '>' as const, value: 2 }]] } }],
+      },
+      entry: {
+        m_state: [{ strict: {}, metrics: { time: [[{ operator: '<' as const, value: 30 }]] } }],
+      },
+      exit: {},
+    };
+    const rows = paramsToConditionRows(params);
+    expect(rows.filter((r) => r.side === 'entry_event')).toHaveLength(1);
+    expect(rows.filter((r) => r.side === 'entry')).toHaveLength(1);
+    const folded = rowsToSides(rows);
+    expect(folded.entry_event.m_state[0].metrics.time[0][0].value).toBe(2);
+    expect(folded.entry.m_state[0].metrics.time[0][0].value).toBe(30);
   });
 });
 

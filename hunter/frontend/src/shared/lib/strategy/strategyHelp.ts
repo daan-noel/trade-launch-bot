@@ -52,16 +52,39 @@ export const CONDITION_GRAMMAR_HELP: HelpTip = {
 // ── Entry / exit sides ───────────────────────────────────────────────────────
 
 export const SIDE_HELP = {
+  entry_event: {
+    title: 'Event — the completing print',
+    body: [
+      'AND of metrics about THIS print: the buy that completes a slot burst.',
+      '',
+      'Harvest puts crowd shape here (this_member, this_working, same_buy_count, has_new…).',
+      'Filters (the other buy column) still have to hold on that same print.',
+      '',
+      'ONCE PER SLOT (entry_lock): the first print this slot that makes the event true',
+      'is the only candidate. Filters that fail spend the slot — later prints this slot',
+      'cannot retry. That is what stops a mixed burst from firing twice.',
+      '',
+      'EVERY PRINT: event AND filters on every print (no lock). Same AND, no spend.',
+      '',
+      'Empty event = today\'s level-AND: filters alone, every print. The lock control',
+      'hides until you add an event row (a lock with no event is a save error).',
+      '',
+      'ACROSS METRICS: AND, same as filters. WITHIN ONE METRIC: , = AND, | = OR.',
+    ].join('\n'),
+  },
   entry: {
-    title: 'Entry side — when to BUY',
+    title: 'Filters — AND with the event',
     body: [
       'Runs after the fingerprint matches and the (token, rule) arm is live.',
+      '',
+      'When an Event is set, these filters evaluate on THAT print (and, with once-per-slot,',
+      'a fail spends the slot). Without an Event they are the whole buy gate, every print.',
       '',
       'ACROSS METRICS: AND — every metric you fill must be true at the same moment. Example: time > 5 AND liquidity > 10 → both required.',
       '',
       'WITHIN ONE METRIC: still use , (AND) / | (OR) / lo..hi as in the condition tip. Example: time 5..30 → enter only while age is between 5 and 30 seconds.',
       '',
-      'Empty metric = ignore that metric. Empty whole entry side = buy as soon as the fingerprint arms (no extra wait).',
+      'Empty metric = ignore that metric. Empty whole filter column + empty event = buy as soon as the fingerprint arms (no extra wait).',
       '',
       'OVERLAP GATE: if any exit metric is already true at the same moment, the engine does not buy (would sell on the next tick). Keep entry and exit bands disjoint.',
       '',
@@ -94,7 +117,7 @@ export const SIDE_HELP = {
       'If an exit metric is already true when entry would fire, entry is refused until that exit clears (see entry overlap gate).',
     ].join('\n'),
   },
-} as const satisfies Record<'entry' | 'exit', HelpTip>;
+} as const satisfies Record<'entry' | 'entry_event' | 'exit', HelpTip>;
 
 // ── Metric groups ────────────────────────────────────────────────────────────
 
@@ -252,6 +275,40 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       '• held — seconds since entry (a time-stop).',
       '',
       'Before entry these read NaN. Kind: static.',
+    ].join('\n'),
+  },
+  m_dump_ix: {
+    title: 'm_dump_ix — dump-list sells (lifetime)',
+    body: [
+      'SOL sold through builds on this fingerprint\'s m_dump_ix.ix_patterns, since birth.',
+      'Its own list, separate from the flow split — a sell can be tagged AND a dump.',
+      '',
+      '• dump_sell — SOL, every LEG.',
+      '• dump_sell_count — TRANSACTIONS (a four-wallet bag counts once).',
+      '',
+      'Unconfigured list ⇒ both NaN (never 0). Kind: static.',
+    ].join('\n'),
+  },
+  m_dump_ix_window: {
+    title: 'm_dump_ix_window — dump-list sells (trailing)',
+    body: [
+      'Same dump list as m_dump_ix, over a trailing window.',
+      'On a ONE-SLOT window dump_sell_count >= 2 is two dump-built transactions at once.',
+      'Kind: dynamic.',
+    ].join('\n'),
+  },
+  m_burst_slot: {
+    title: 'm_burst_slot — this slot\'s buy prefix x this print\'s grain',
+    body: [
+      'Harvest\'s completing-print group. Needs fingerprint working_templates (grain ids,',
+      'not full ix_labels). Absent => every metric reads NaN, never 0.',
+      '',
+      'Event metrics (this print): this_member, this_working, has_new, has_unknown,',
+      'contiguous. Crowd shape: same_* (this grain) and working_* (listed grains).',
+      'Depth gates: pre_slot_liquidity, pre_print_trail (the previous print\'s trail).',
+      '',
+      'Author crowd shape on the Event column; depth/age/quiet-tape on Filters.',
+      'Kind: static (fingerprint-scoped).',
     ].join('\n'),
   },
 };
@@ -639,6 +696,29 @@ export function metricHelpBody(
   // already the base (a registry payload with no description falls back to it).
   const tail = extended && extended !== base ? `\n\n${extended}` : '';
   return `${base}${bits.join('\n')}${tail}`;
+}
+
+/**
+ * The tooltip for one metric group: its **registry definition** first, then
+ * whatever extended prose {@link GROUP_HELP} adds. Same resolution as
+ * {@link metricHelpBody} — a group added in Rust is documented on the next load
+ * even with no frontend copy.
+ */
+export function groupHelpTip(
+  group: string,
+  spec?: { description?: string },
+): HelpTip | undefined {
+  const extended = GROUP_HELP[group];
+  const description = spec?.description;
+  if (!description && !extended) return undefined;
+  return {
+    title: extended?.title ?? group,
+    body: description
+      ? extended?.body && extended.body !== description
+        ? `${description}\n\n${extended.body}`
+        : description
+      : extended!.body,
+  };
 }
 
 // ── Strict params ────────────────────────────────────────────────────────────
@@ -1088,6 +1168,21 @@ export const FINGERPRINT_FIELD_HELP = {
       '',
       'Empty / missing m_dump_ix key ⇒ both metrics read NaN (never 0, so a `<=` bound',
       'cannot fire on an unconfigured fingerprint).',
+    ].join('\n'),
+  },
+  working_templates: {
+    title: 'working_templates — grains harvest treats as working',
+    body: [
+      'Build-template grain ids (program|CU|ATA|N|S|F), NOT full ix_labels sequences.',
+      'm_burst_slot.this_working / working_* / has_new read this list. Absent => every',
+      'burst metric is NaN (never 0).',
+      '',
+      'Add from the tape: set the chart\'s list toggle to "working" and click a trade',
+      'badge. The grain is derived from that trade\'s instruction_labels the same way',
+      'the fold hashes it.',
+      '',
+      'Catalog (harvest): Axiom Trade|CU|ATA|F, Axiom Trade|CU|ATA|N|F, Photon|CU|ATA|F,',
+      'Terminal|CU|ATA|F, GMGN Bot|CU|ATA|F, GMGN|CU|ATA|F, Bloom Router|CU|F, Bloom|CU|F.',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;

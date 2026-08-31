@@ -126,9 +126,8 @@ function RuleEditorInner({
       exclusive: params.exclusive,
       priority: params.priority,
       buy_pct_of_vsol: params.buy_pct_of_vsol,
-      entry_event: params.entry_event,
-      entry_lock: params.entry_lock,
       ...sides,
+      entry_lock: Object.keys(sides.entry_event).length ? params.entry_lock : null,
       disabled:
         sides.disabled || parkedStages
           ? { ...sides.disabled, scale_out: parkedStages }
@@ -142,7 +141,6 @@ function RuleEditorInner({
     params.exclusive,
     params.priority,
     params.buy_pct_of_vsol,
-    params.entry_event,
     params.entry_lock,
     rows,
     scaleStages,
@@ -487,6 +485,8 @@ function RuleEditorInner({
               onChange={setRows}
               registry={registry}
               disabled={conditionsLocked}
+              entryLock={params.entry_lock}
+              onEntryLockChange={(lock) => setParams((p) => ({ ...p, entry_lock: lock }))}
             />
             <ScaleOutBuilder
               stages={scaleStages}

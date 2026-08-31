@@ -53,8 +53,9 @@ export interface StrictParamSpec {
  *  control, writable only by hand-posting JSON and then overwritten by the next save. */
 export interface FpConfigFieldSpec {
   name: string;
-  /** Wire type hint: `"string[][]"` (ordered label sequences), `"marker[]"` (a subset
-   *  of {@link StrategyRegistry.ix_markers}), or `"bool"`. */
+  /** Wire type hint: `"ix_pattern[]"` (ordered label sequences), `"marker[]"` (a
+   *  subset of {@link StrategyRegistry.ix_markers}), `"bool"`, or `"string[]"`
+   *  (template grain ids). */
   value_type: string;
   required: boolean;
   /** THE definition of the field, authored on the backend `FpConfigFieldSpec` and
@@ -100,9 +101,13 @@ export interface MetricSpec {
   hue: number;
 }
 
-/** One metric group (one JSON key under `entry`/`exit`). */
+/** One metric group (one JSON key under `entry`/`exit`/`entry_event`). */
 export interface GroupSpec {
   name: string;
+  /** THE definition of the group, authored on the backend `GroupSpec` and rendered
+   *  straight into the tooltip. Optional only so a pre-description payload still
+   *  parses; when it is present it wins over any frontend copy. */
+  description?: string;
   kind: MetricGroupKind;
   /** Token-scoped (default) or position-scoped (`m_position`, exit-only). Optional
    *  so a pre-scope registry payload still parses. */
@@ -330,6 +335,45 @@ export function metricConfigWithDumpPatterns(
     }
   }
   return { ...otherGroups, [DUMP_GROUP]: { ...keep, ix_patterns: cleaned } };
+}
+
+/** The key `m_burst_slot` stores its working-template grain ids under. Grain ids
+ *  (`program|CU|ATA|N|S|F`), not full `ix_labels` sequences — a different
+ *  vocabulary from {@link IxPatternList}. */
+export const BURST_GROUP = 'm_burst_slot';
+
+/** Read `m_burst_slot.working_templates` as grain-id strings. */
+export function workingTemplatesFromConfig(
+  cfg: Record<string, unknown> | null | undefined,
+): string[] {
+  const obj = cfg?.[BURST_GROUP];
+  const arr =
+    obj && typeof obj === 'object' && !Array.isArray(obj)
+      ? (obj as Record<string, unknown>).working_templates
+      : undefined;
+  return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
+}
+
+/** **The one writer** of `fingerprints.metric_config.m_burst_slot`.
+ *
+ *  Same contract as {@link metricConfigWithDumpPatterns}: a PUT replaces the row, so
+ *  `prev` is the base and every other group survives. An empty list drops the group,
+ *  which is the only spelling of "no working list" (every burst metric then reads
+ *  NaN, never 0). */
+export function metricConfigWithWorkingTemplates(
+  prev: Record<string, unknown>,
+  templates: readonly string[],
+): Record<string, unknown> {
+  const { [BURST_GROUP]: prevBurst, ...otherGroups } = prev;
+  const cleaned = [...new Set(templates.map((t) => t.trim()).filter(Boolean))];
+  if (cleaned.length === 0) return otherGroups;
+  const keep: Record<string, unknown> = {};
+  if (prevBurst && typeof prevBurst === 'object' && !Array.isArray(prevBurst)) {
+    for (const [k, v] of Object.entries(prevBurst as Record<string, unknown>)) {
+      if (k !== 'working_templates') keep[k] = v;
+    }
+  }
+  return { ...otherGroups, [BURST_GROUP]: { ...keep, working_templates: cleaned } };
 }
 
 /** Which of the two ix-structure lists a surface is reading or writing.

@@ -5,9 +5,12 @@ import { patternKey, patternsFromKeys, togglePattern } from 'lib/flow/volumePatt
 import {
   ixPatternsFromConfig,
   metricConfigWithList,
+  metricConfigWithWorkingTemplates,
   patternsForList,
+  workingTemplatesFromConfig,
   type IxPatternList,
 } from 'lib/strategy/registry';
+import { isLaunchGrain, templateGrain, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
@@ -68,7 +71,7 @@ export function resolveIxPatternTarget(input: {
   };
 }
 
-export type { IxPatternList };
+export type TapeList = IxPatternList | 'working';
 
 /** The write used to rebuild `m_flow_ix` from the pattern rows alone, which deleted
  *  the marker masks and reverted `wallet_contagion` / `creator_is_tagged` to their
@@ -85,10 +88,13 @@ export interface IxPatternTarget {
   targetId: string | null;
   setTargetId: (id: string | null) => void;
   /** Which list a toggle writes into. */
-  list: IxPatternList;
-  setList: (list: IxPatternList) => void;
-  /** The ACTIVE list's patterns — what the badge classifies against. */
+  list: TapeList;
+  setList: (list: TapeList) => void;
+  /** The ACTIVE list's patterns — what the badge classifies against. Empty when
+   *  {@link list} is `'working'` (use {@link workingTemplates}). */
   patterns: string[][];
+  /** Grain ids when {@link list} is `'working'`. */
+  workingTemplates: string[];
   /** Keys of the list a toggle is NOT writing into, so a row can show that the
    *  other one also counts it. A build may sit on both - the mark is information,
    *  not a conflict. */
@@ -151,7 +157,7 @@ export function useIxPatternTarget({
   const [updateFingerprint, { isLoading: saving }] = useUpdateFingerprintMutation();
 
   const [pickedId, setPickedId] = useState<string | null>(null);
-  const [list, setList] = useState<IxPatternList>('tagged');
+  const [list, setList] = useState<TapeList>('tagged');
   const [error, setError] = useState<string | null>(null);
 
   const savedPatterns = useMemo(() => patternsFromKeys(savedKeys), [savedKeys]);
@@ -181,15 +187,25 @@ export function useIxPatternTarget({
   );
 
   const patterns = useMemo(
-    () => (target ? patternsOf(target.metric_config, list) : savedPatterns),
+    () =>
+      list === 'working'
+        ? []
+        : target
+          ? patternsOf(target.metric_config, list)
+          : savedPatterns,
     [target, savedPatterns, list],
   );
 
+  const workingTemplates = useMemo(
+    () => (target ? workingTemplatesFromConfig(target.metric_config) : []),
+    [target],
+  );
+
   // The other list, for the "also dump" / "also tagged" marker. Empty without a
-  // target: with nothing to write to there is no second list to be in.
+  // target, and unused on the working list (grain ids are a different vocabulary).
   const otherKeys = useMemo(
     () =>
-      target
+      target && list !== 'working'
         ? flowPatternKeysOf(patternsOf(target.metric_config, list === 'dump' ? 'tagged' : 'dump'))
         : null,
     [target, list],
@@ -199,8 +215,13 @@ export function useIxPatternTarget({
   // own click cannot change. With no target that is the host's set unchanged —
   // reused by reference, since a re-parsed copy would rebuild every column.
   const keys = useMemo(
-    () => (target ? flowPatternKeysOf(patterns) : (savedKeys ?? null)),
-    [target, patterns, savedKeys],
+    () =>
+      list === 'working'
+        ? new Set(workingTemplates)
+        : target
+          ? flowPatternKeysOf(patterns)
+          : (savedKeys ?? null),
+    [target, patterns, savedKeys, list, workingTemplates],
   );
 
   const activeRuleCount = useMemo(
@@ -211,8 +232,22 @@ export function useIxPatternTarget({
   const toggle = useCallback(
     (labels: readonly string[]) => {
       if (!target || labels.length === 0) return;
-      const next = togglePattern(patternsOf(target.metric_config, list), labels);
+      if (list === 'working' && isLaunchGrain(labels)) return;
       setError(null);
+      const metric_config =
+        list === 'working'
+          ? metricConfigWithWorkingTemplates(
+              target.metric_config ?? {},
+              toggleWorkingTemplate(
+                workingTemplatesFromConfig(target.metric_config),
+                templateGrain(labels),
+              ),
+            )
+          : metricConfigWithList(
+              target.metric_config ?? {},
+              togglePattern(patternsOf(target.metric_config, list), labels),
+              list,
+            );
       // Fire-and-report: the mutation invalidates `Fingerprint`, which re-derives the
       // chart's keys AND refetches the metric series, so both redraw from the row
       // that was just written rather than from any local echo of it.
@@ -226,12 +261,17 @@ export function useIxPatternTarget({
           // write edge then rejects as criterion-less.
           criteria: target.criteria,
           wildcard: target.wildcard,
-          metric_config: metricConfigWithList(target.metric_config ?? {}, next, list),
+          metric_config,
         },
       })
         .unwrap()
         .catch((e) =>
-          setError(apiErrorMessage(e as never, `Failed to save ${list} patterns`)),
+          setError(
+            apiErrorMessage(
+              e as never,
+              list === 'working' ? 'Failed to save working templates' : `Failed to save ${list} patterns`,
+            ),
+          ),
         );
     },
     [target, updateFingerprint, list],
@@ -245,6 +285,7 @@ export function useIxPatternTarget({
     list,
     setList,
     patterns,
+    workingTemplates,
     otherKeys,
     keys,
     activeRuleCount,

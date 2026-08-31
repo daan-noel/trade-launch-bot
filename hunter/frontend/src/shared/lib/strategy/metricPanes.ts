@@ -12,7 +12,7 @@ import { formatConditions, type Condition, type ConditionExpr } from './grammar'
 import type { RuleParams, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
 import type { MetricSeriesColumn, MetricSeriesResponse, StrategyRule } from './types';
-import { ruleParamsFromJson, sideInstances, authoredExitSides } from './ruleParams';
+import { ruleParamsFromJson, sideInstances, authoredBuySides, authoredExitSides } from './ruleParams';
 import { formatMetricExitLabel, parseMetricExitTarget } from './exitReason';
 import {
   formatWindowSpec,
@@ -78,7 +78,7 @@ export function metricColKey(
 
 export interface RuleMetricPrefs {
   fingerprintId: string;
-  /** Metric names the rule constrains (entry ∪ exit). */
+  /** Metric names the rule constrains (event ∪ filters ∪ exit). */
   metrics: string[];
   /** Dynamic windows authored on the rule, as WHOLE spans; falls back to defaults
    *  when empty. A bare size cannot tell 30 slots from 30 seconds, and the endpoint
@@ -114,7 +114,7 @@ const CLOCK_METRICS = { time: 'timeHorizonSec', stall: 'stallHorizonSec' } as co
  */
 export function metricClockHorizons(params: RuleParams): MetricClockHorizons {
   const out: MetricClockHorizons = { timeHorizonSec: 0, stallHorizonSec: 0 };
-  for (const side of [params.entry, ...authoredExitSides(params)]) {
+  for (const side of [...authoredBuySides(params), ...authoredExitSides(params)]) {
     if (!side) continue;
     for (const [, group] of sideInstances(side)) {
       for (const [metric, arms] of Object.entries(group.metrics)) {
@@ -144,7 +144,7 @@ export function metricPrefsFromParams(
   const windows = new Map<string, WindowSpec>();
   const paneKeys: string[] = [];
 
-  for (const side of [params.entry, ...authoredExitSides(params)]) {
+  for (const side of [...authoredBuySides(params), ...authoredExitSides(params)]) {
     if (!side) continue;
     for (const [groupName, group] of sideInstances(side)) {
       const gSpec = registry?.groups.find((g) => g.name === groupName);
@@ -444,7 +444,7 @@ export function metricConditionStatesAt(
   const out: MetricConditionState[] = [];
   for (const sideName of ['entry', 'exit'] as const) {
     const sides =
-      sideName === 'exit' ? authoredExitSides(params) : params.entry ? [params.entry] : [];
+      sideName === 'exit' ? authoredExitSides(params) : authoredBuySides(params);
     for (const side of sides) {
       for (const row of sideMetricRows(side, registry)) {
       const key = rowColumnKey(row);
@@ -484,7 +484,7 @@ export function metricThresholdsFor(
   const out: Array<{ side: 'entry' | 'exit'; value: number }> = [];
   for (const sideName of ['entry', 'exit'] as const) {
     const sides =
-      sideName === 'exit' ? authoredExitSides(params) : params.entry ? [params.entry] : [];
+      sideName === 'exit' ? authoredExitSides(params) : authoredBuySides(params);
     for (const side of sides) {
       for (const row of sideMetricRows(side, registry)) {
       if (rowColumnKey(row) !== key) continue;
@@ -589,7 +589,7 @@ export function metricConditionBands(
   const byKey = seriesLookup(data.series);
 
   const rows = (['entry', 'exit'] as const).flatMap((side) => {
-    const sides = side === 'exit' ? authoredExitSides(params) : params.entry ? [params.entry] : [];
+    const sides = side === 'exit' ? authoredExitSides(params) : authoredBuySides(params);
     return sides.flatMap((s) => sideMetricRows(s, registry).map((row) => ({ side, ...row })));
   });
   if (rows.length === 0) return null;
@@ -698,7 +698,7 @@ export function findRuleFireMarkers(
   const n = data.at.length;
   if (n === 0) return [];
   const byKey = seriesLookup(data.series);
-  const entryRows = sideMetricRows(params.entry, registry);
+  const entryRows = authoredBuySides(params).flatMap((s) => sideMetricRows(s, registry));
   const exitGroups = exitClauseRowGroups(params, registry);
   const hasEntry = entryRows.length > 0;
   const hasExit = exitGroups.length > 0;

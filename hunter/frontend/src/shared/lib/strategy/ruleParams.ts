@@ -87,7 +87,7 @@ export const MAX_SCALE_SELL_BPS = 9900;
  * `hunter_engine::rule_params::DisabledConditions`. Same shape as a live side /
  * ladder, so flipping a toggle is a move between the two bags and nothing else. Kept
  * in `params` so a parked condition survives save+reload, but compiled by nothing:
- * the engine reads `entry`/`exit`/`scale_out` only. A parked row MAY duplicate a live
+ * the engine reads `entry` / `entry_event` / `exit` / `scale_out` only. A parked row MAY duplicate a live
  * one on the same (group, window, metric) — that is the point (park `trail >= 12`
  * while trying `trail >= 20`), and separate bags keep them from overwriting each
  * other.
@@ -98,6 +98,8 @@ export const MAX_SCALE_SELL_BPS = 9900;
  */
 export interface DisabledConditions {
   entry?: SideConditions;
+  /** Parked completing-print event. Same shape as live {@link RuleParams.entry_event}. */
+  entry_event?: SideConditions;
   /** Object-form parked exit. Ignored when {@link exitClauses} is set. */
   exit?: SideConditions;
   /** Array-form parked exit (same DNF shape as live {@link RuleParams.exitClauses}). */
@@ -192,6 +194,8 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   const parked: Record<string, unknown> = {};
   const parkedEntry = sideToJson(p.disabled?.entry);
   if (parkedEntry) parked.entry = parkedEntry;
+  const parkedEvent = sideToJson(p.disabled?.entry_event);
+  if (parkedEvent) parked.entry_event = parkedEvent;
   const parkedExit = exitToJson(p.disabled?.exit, p.disabled?.exitClauses);
   if (parkedExit) parked.exit = parkedExit;
   const parkedStages = scaleOutToJson(p.disabled?.scale_out);
@@ -204,6 +208,17 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   if (p.exclusive) root.exclusive = true;
   if (Number.isFinite(p.priority) && p.priority !== 0) root.priority = p.priority;
   return root;
+}
+
+/** Authored buy-side objects the engine ANDs: completing-print event then filters.
+ *  Empty objects are skipped. Order is event then entry, matching `try_enter`. */
+export function authoredBuySides(
+  p: Pick<RuleParams, 'entry' | 'entry_event'>,
+): SideConditions[] {
+  const out: SideConditions[] = [];
+  if (p.entry_event && Object.keys(p.entry_event).length > 0) out.push(p.entry_event);
+  if (p.entry && Object.keys(p.entry).length > 0) out.push(p.entry);
+  return out;
 }
 
 /** Authored exit sides the engine compiles. Array-form wins when present. */
@@ -297,6 +312,7 @@ function disabledFromJson(
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   const entry = sideFromJson(o.entry, reg);
+  const entry_event = sideFromJson(o.entry_event, reg);
   const parked = Array.isArray(o.exit)
     ? {
         exit: undefined as SideConditions | undefined,
@@ -307,10 +323,16 @@ function disabledFromJson(
     : { exit: sideFromJson(o.exit, reg), exitClauses: undefined as SideConditions[] | undefined };
   const scale_out = scaleOutFromJson(o.scale_out, reg);
   const has = (s: SideConditions | undefined) => s != null && Object.keys(s).length > 0;
-  if (!has(entry) && !has(parked.exit) && !parked.exitClauses?.length && !scale_out?.length) {
+  if (
+    !has(entry) &&
+    !has(entry_event) &&
+    !has(parked.exit) &&
+    !parked.exitClauses?.length &&
+    !scale_out?.length
+  ) {
     return null;
   }
-  return { entry, exit: parked.exit, exitClauses: parked.exitClauses, scale_out };
+  return { entry, entry_event, exit: parked.exit, exitClauses: parked.exitClauses, scale_out };
 }
 
 /** Empty array folds to `null` (same sentinel as backend `configured_labels`). */
