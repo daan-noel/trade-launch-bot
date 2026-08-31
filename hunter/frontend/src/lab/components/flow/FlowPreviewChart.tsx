@@ -101,12 +101,12 @@ import { Badge } from 'components/ui/Badge';
 import { Checkbox } from 'components/ui/Checkbox';
 import { FeePinToggles } from 'components/tokens/IxPatternBar';
 import {
+  anyRowMatchesTrade,
   feeFromTrade,
   feeMaskActive,
   formatFeePins,
-  patternRowKey,
-  rowFromTrade,
   type IxPatternFeeMask,
+  type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
 import { cn } from 'lib/cn';
 import { useTimezone } from 'context/TimezoneContext';
@@ -386,13 +386,14 @@ export interface FlowPreviewChartProps {
     trade: { cu_limit?: number | null; cu_price?: number | null; tip_lamports?: number | null },
   ) => void;
   /** Sticky fee-field modifiers for {@link onTogglePattern}. Ranked-table
-   *  checkboxes ignore this. */
+   *  checkboxes ignore this. The Vol checkbox's *checked* state follows engine
+   *  matching against {@link patternRows} — an ix-only draft row stays selected
+   *  on every trade of that shape, pin strip or not. */
   feePins?: IxPatternFeeMask;
   onFeePinsChange?: (next: IxPatternFeeMask) => void;
-  /** Exact-row keys of the draft (`patternRowKey`). The Vol checkbox follows
-   *  these, so a fee-pinned click lights only that pinned row. Overlay lines
-   *  still read {@link patternKeys} (labels only). */
-  patternRowKeys?: ReadonlySet<string>;
+  /** Whole draft rows. Vol checkbox matching; overlay lines still read
+   *  {@link patternKeys} (labels only). */
+  patternRows?: readonly IxPatternRow[];
   /** Token creator wallet address, when known — offered as a toggle since the
    *  real classifier always treats the creator as volume-side. */
   creatorWallet?: string | null;
@@ -427,7 +428,7 @@ export function FlowPreviewChart({
   onTogglePattern,
   feePins = {},
   onFeePinsChange,
-  patternRowKeys,
+  patternRows,
   creatorWallet,
   athPriceInSol = null,
   isMigrated = false,
@@ -1197,21 +1198,22 @@ export function FlowPreviewChart({
   const tradeColumns = useMemo<ColumnDef<TradeRecord>[]>(() => {
     if (!onTogglePattern) return baseTradeColumns;
     const pinning = feeMaskActive(feePins);
-    const rowKeys = patternRowKeys ?? patternKeys;
     const taggedToggle: ColumnDef<TradeRecord> = {
       key: 'vol_pattern',
       label: 'Vol',
       tooltip: pinning
-        ? 'Flag this trade’s ix-structure plus the checked fee fields from THIS tx — adds that exact row to the draft ix_patterns.'
+        ? 'Flag this trade’s ix-structure plus the checked fee fields from THIS tx — adds that exact row to the draft ix_patterns. An ix-only row already in the draft still matches (stays checked) because it is a fee wildcard.'
         : 'Flag this trade’s ix-structure as manufactured volume — adds it to the draft ' +
-          'ix_patterns (applies to EVERY trade with this exact shape, not just this row).',
+          'ix_patterns (applies to EVERY trade with this exact shape, any fee budget).',
       render: (t) => {
         const labels = t.instruction_labels;
         if (!labels || labels.length === 0) {
           return <span className="text-text-dim/40">—</span>;
         }
-        const clickRow = rowFromTrade(labels, t, feePins);
-        const checked = rowKeys.has(patternRowKey(clickRow));
+        const checked =
+          patternRows != null
+            ? anyRowMatchesTrade(patternRows, labels, t)
+            : patternKeys.has(JSON.stringify(labels));
         return (
           <Checkbox
             checked={checked}
@@ -1229,7 +1231,7 @@ export function FlowPreviewChart({
       searchValue: () => '',
     };
     return [taggedToggle, ...baseTradeColumns];
-  }, [baseTradeColumns, patternKeys, patternRowKeys, onTogglePattern, feePins]);
+  }, [baseTradeColumns, patternKeys, patternRows, onTogglePattern, feePins]);
   const selectionLabel = selectedBar
     ? selectedBar.groupMode === 'slot'
       ? `Slot ${selectedBar.slot}`

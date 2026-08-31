@@ -70,7 +70,7 @@ export function FeePinToggles({
   disabled?: boolean;
 }) {
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5" title="Fields copied from the clicked tx onto the staged row. Default off = ix structure only.">
+    <span className="inline-flex flex-wrap items-center gap-1.5" title="Fields copied from the clicked tx onto the staged row. Default off = ix structure only, which matches any budget. Checking a box does not unselect an already-staged ix-only row.">
       <span className="text-[9px] uppercase tracking-wide text-text-dim/60">pin</span>
       {FEE_PIN_TOGGLES.map(({ field, label, title }) => (
         <label key={field} className="inline-flex cursor-pointer items-center gap-0.5" title={title}>

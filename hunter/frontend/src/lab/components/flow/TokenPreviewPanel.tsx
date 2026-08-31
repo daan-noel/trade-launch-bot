@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Input } from 'components/ui/Input';
 import type { FlowDiscoveryTokenGross, TradeRecord } from 'types';
-import type { IxPatternFeeMask } from 'lib/strategy/ixPatternRows';
+import type { IxPatternFeeMask, IxPatternRow } from 'lib/strategy/ixPatternRows';
 
 import { LazyFlowPreviewChart } from './LazyFlowPreviewChart';
 
@@ -29,7 +29,7 @@ export function TokenPreviewPanel({
   isMigrated,
   tokenCreatedAt,
   patternKeys,
-  patternRowKeys,
+  patternRows,
   feePins,
   onFeePinsChange,
   onTogglePattern,
@@ -45,7 +45,7 @@ export function TokenPreviewPanel({
   /** Token `created_at` (ISO) — zero point for the chart tooltip's "+age". */
   tokenCreatedAt: string | null;
   patternKeys: ReadonlySet<string>;
-  patternRowKeys: ReadonlySet<string>;
+  patternRows: readonly IxPatternRow[];
   feePins: IxPatternFeeMask;
   onFeePinsChange: (next: IxPatternFeeMask) => void;
   onTogglePattern: (
@@ -123,7 +123,7 @@ export function TokenPreviewPanel({
             <LazyFlowPreviewChart
               trades={trades}
               patternKeys={patternKeys}
-              patternRowKeys={patternRowKeys}
+              patternRows={patternRows}
               feePins={feePins}
               onFeePinsChange={onFeePinsChange}
               onTogglePattern={onTogglePattern}

@@ -13,7 +13,6 @@ import {
 } from 'lib/strategy/registry';
 import { isLaunchGrain, templateGrain, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import {
-  patternRowKey,
   togglePatternRow,
   type IxPatternFee,
   type IxPatternFeeMask,
@@ -103,10 +102,9 @@ export interface IxPatternTarget {
   patterns: string[][];
   /** Grain ids when {@link list} is `'working'`. */
   workingTemplates: string[];
-  /** The ACTIVE list as whole rows — what a fee-pinning click toggles against. */
+  /** The ACTIVE list as whole rows — what a fee-pinning click toggles against,
+   *  and what the badge matches (an unpinned row is a fee wildcard). */
   rows: IxPatternRow[];
-  /** {@link rows} keyed by {@link patternRowKey} — exact-row membership for the badge. */
-  rowKeys: ReadonlySet<string>;
   /** Sticky fee-field modifiers for the next badge click. All off = ix structure only. */
   feePins: IxPatternFeeMask;
   setFeePins: (mask: IxPatternFeeMask) => void;
@@ -223,8 +221,6 @@ export function useIxPatternTarget({
     [target, savedPatterns, list],
   );
 
-  const rowKeys = useMemo(() => new Set(rows.map(patternRowKey)), [rows]);
-
   const workingTemplates = useMemo(
     () => (target ? workingTemplatesFromConfig(target.metric_config) : []),
     [target],
@@ -317,7 +313,6 @@ export function useIxPatternTarget({
     patterns,
     workingTemplates,
     rows,
-    rowKeys,
     feePins,
     setFeePins,
     otherKeys,

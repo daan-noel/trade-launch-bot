@@ -10,8 +10,10 @@ import {
 } from './registry';
 import {
   addUnpinnedPatterns,
+  anyRowMatchesTrade,
   feeFromTrade,
   feeMaskActive,
+  feeMatchesTrade,
   formatFeePins,
   parseIxPatternRow,
   parseIxPatternRows,
@@ -19,6 +21,7 @@ import {
   patternRowKey,
   removeUnpinnedPatterns,
   rowFromTrade,
+  rowMatchesTrade,
   rowPinsFee,
   serializeIxPatternRow,
   togglePatternRow,
@@ -245,6 +248,42 @@ describe('addUnpinnedPatterns / removeUnpinnedPatterns', () => {
 
   it('unstages the catch-all and keeps the pin', () => {
     expect(removeUnpinnedPatterns([pinned, { labels: DUMP }], [DUMP])).toEqual([pinned]);
+  });
+});
+
+describe('rowMatchesTrade / anyRowMatchesTrade', () => {
+  const tx = { cu_limit: 300_000, cu_price: 3_333_333, tip_lamports: 0 };
+  const other = { cu_limit: 200_000, cu_price: 1, tip_lamports: 1 };
+
+  /** The bug this covers: an ix-only row is a fee wildcard, so a trade that
+   *  carries every budget field still matches it — and so does checking the
+   *  pin strip, which must not make the catch-all look unselected. */
+  it('an unpinned row matches every budget of that shape', () => {
+    const wild = { labels: DUMP };
+    expect(feeMatchesTrade({}, tx)).toBe(true);
+    expect(feeMatchesTrade({}, {})).toBe(true);
+    expect(rowMatchesTrade(wild, DUMP, tx)).toBe(true);
+    expect(rowMatchesTrade(wild, DUMP, other)).toBe(true);
+    expect(rowMatchesTrade(wild, ['Pump.Fun: Buy'], tx)).toBe(false);
+    expect(anyRowMatchesTrade([wild], DUMP, tx)).toBe(true);
+    expect(anyRowMatchesTrade([wild], DUMP, other)).toBe(true);
+  });
+
+  it('a pin matches only that reading and never an absent one', () => {
+    const pin = { labels: DUMP, cu_limit: 300_000 };
+    expect(rowMatchesTrade(pin, DUMP, tx)).toBe(true);
+    expect(rowMatchesTrade(pin, DUMP, other)).toBe(false);
+    expect(rowMatchesTrade(pin, DUMP, {})).toBe(false);
+    expect(anyRowMatchesTrade([pin], DUMP, tx)).toBe(true);
+    expect(anyRowMatchesTrade([pin], DUMP, other)).toBe(false);
+  });
+
+  it('a wildcard in the list covers a trade a pin of the same shape would miss', () => {
+    const rows = [
+      { labels: DUMP, cu_limit: 300_000 },
+      { labels: DUMP },
+    ];
+    expect(anyRowMatchesTrade(rows, DUMP, other)).toBe(true);
   });
 });
 

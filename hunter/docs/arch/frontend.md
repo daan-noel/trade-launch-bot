@@ -667,8 +667,12 @@ is not an `IxPatternList` arm. A badge click writes immediately, so the strip ha
 name its target. Next to tagged/dump, `FeePinToggles` (`cu_limit` / `cu_price` /
 `tip`) are sticky modifiers for the next badge click: all off (the default) writes
 the ix structure only, even when the tx carries a budget; checking `cu_limit` then
-clicking a tx writes `{labels, cu_limit}` from **that** tx. The same click with the
-same boxes on removes that exact row. Hidden on `working` (grain ids) and on a
+clicking a tx writes `{labels, cu_limit}` from **that** tx. Pressed / Vol checked
+state follows engine matching, not the click target: an ix-only row is a fee
+wildcard, so it stays selected on every trade of that shape whether the pin strip
+is on and whether the tx itself carries a budget. The same click with the
+same boxes on removes that exact row (a wildcard already covering the trade stays
+selected). Hidden on `working` (grain ids) and on a
 read-only run snapshot. Trader-analysis lens badges stay labels-only (`ix_pattern_sets`
 has no fee pins). Each group is written by its OWN writer, and a build may sit on
 BOTH ix lists — the normal configuration, since the two answer different questions
@@ -698,7 +702,9 @@ absent when empty.
   under `lab/components/flow/`. The ranked table's Vol checkbox stages an unpinned
   catch-all; the preview trades strip carries the same `FeePinToggles` as chart
   trades tables, so a click there can add a fee-pinned copy of that tx as a
-  separate row. Apply writes whole rows (`IxPatternRow[]`) through
+  separate row. Vol checked state on the preview is wildcard matching against the
+  whole draft — an ix-only row stays checked on every trade of that shape.
+  Apply writes whole rows (`IxPatternRow[]`) through
   `metricConfigWithList`; bind accepts the mixed stored shape and the list
   (`tagged`/`dump`). Three independent bulk-selects, each paired with what
   explains it: *Auto-select suggested* (`Auto` column — bot-likelihood composite),

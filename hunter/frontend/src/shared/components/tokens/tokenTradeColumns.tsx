@@ -13,6 +13,7 @@ import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeF
 import { patternKey } from 'lib/flow/volumePatterns';
 import { templateGrain } from 'lib/strategy/templateGrain';
 import {
+  anyRowMatchesTrade,
   feeFromTrade,
   feeMaskActive,
   formatFeePins,
@@ -20,6 +21,7 @@ import {
   rowFromTrade,
   type IxPatternFee,
   type IxPatternFeeMask,
+  type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
 // Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
 // colors come along without dragging the charting library into this chunk.
@@ -47,11 +49,13 @@ export interface TokenTradeColumnsOpts {
    */
   onTogglePattern?: ((labels: readonly string[], fee?: IxPatternFee) => void) | null;
   /**
-   * Exact-row keys (`patternRowKey`) of the list a click writes. When set, the
-   * badge's pressed state follows THIS row (labels + current fee pins), not
-   * merely whether the structure is in the list.
+   * Stored rows a click writes. Pressed / Tagged follow engine matching: an
+   * unpinned row is a fee wildcard (this tx stays selected whether or not it
+   * carries a budget, and whether or not the pin strip is on). A pin-only list
+   * lights only the trades that satisfy that pin. The click still toggles the
+   * exact row the mask would write.
    */
-  patternRowKeys?: ReadonlySet<string> | null;
+  patternRows?: readonly IxPatternRow[] | null;
   /** Sticky fee-field modifiers — which of this tx's budget fields a click copies. */
   feePinMask?: IxPatternFeeMask | null;
   /** Name of the fingerprint {@link onTogglePattern} writes to — named in the
@@ -209,7 +213,7 @@ export function tokenTradeColumns(
   const isWorking = list === 'working';
   const otherKeys = opts?.otherListKeys ?? null;
   const pinMask = opts?.feePinMask ?? null;
-  const rowKeys = opts?.patternRowKeys ?? null;
+  const patternRows = isWorking ? null : (opts?.patternRows ?? null);
   const pinning = !isWorking && feeMaskActive(pinMask);
   const listField = isWorking
     ? 'm_burst_slot.working_templates'
@@ -242,7 +246,7 @@ export function tokenTradeColumns(
         : isWorking
           ? `Template grain on ${listField} — this trade's program|CU|ATA|N|S|F grain.`
           : `Structural ${listField} match — this trade’s ordered instruction_labels ` +
-            `exact-match a row of that list` +
+            `match a row of that list (an ix-only row is a fee wildcard)` +
             (isDump ? '.' : ' (no creator/wallet contagion).'),
       render: (t) => {
         const labels = t.instruction_labels;
@@ -251,11 +255,14 @@ export function tokenTradeColumns(
         }
         const isTagged = isWorking
           ? keys.has(templateGrain(labels))
-          : isIxPattern(labels, keys);
+          : patternRows != null
+            ? anyRowMatchesTrade(patternRows, labels, t)
+            : isIxPattern(labels, keys);
         const clickRow = pinning ? rowFromTrade(labels, t, pinMask) : { labels: [...labels] };
         const clickFee = feeFromTrade(t, pinMask);
-        const isExact =
-          rowKeys != null ? rowKeys.has(patternRowKey(clickRow)) : isTagged;
+        const exactClickSaved =
+          patternRows != null &&
+          patternRows.some((r) => patternRowKey(r) === patternRowKey(clickRow));
         const pinNote = pinning ? formatFeePins(clickFee) : '';
         // The reasons map is the FLOW split's verdict (structure + contagion), so it
         // says nothing about a dump build or a working grain and must not decorate either.
@@ -277,19 +284,20 @@ export function tokenTradeColumns(
             ? ` this structure + ${pinNote}`
             : ' this structure only (this tx has none of the checked fee fields)'
           : ' this structure';
+        const clickTitle = exactClickSaved
+          ? `Saved under ${listField} on ${targetLabel} — click to remove${pinClickHint}`
+          : isTagged && pinning
+            ? `Covered by the ix-only row (any budget) on ${targetLabel}. Click to also save${pinClickHint}`
+            : isWorking
+              ? `Click to save this grain under ${listField} on ${targetLabel}`
+              : `Click to save${pinClickHint} under ${listField} on ${targetLabel}`;
         const cell = (
           <span className="inline-flex items-center gap-1">
             {onToggle ? (
               <button
                 type="button"
-                aria-pressed={isExact}
-                title={
-                  isExact
-                    ? `Saved under ${listField} on ${targetLabel} — click to remove${pinClickHint}`
-                    : isWorking
-                      ? `Click to save this grain under ${listField} on ${targetLabel}`
-                      : `Click to save${pinClickHint} under ${listField} on ${targetLabel}`
-                }
+                aria-pressed={isTagged}
+                title={clickTitle}
                 onClick={(e) => {
                   // The row itself is selectable on several hosts; an edit click
                   // must not also change the table's selection.
@@ -303,7 +311,7 @@ export function tokenTradeColumns(
             ) : (
               badge
             )}
-            {pinning && isExact && pinNote && (
+            {pinning && exactClickSaved && pinNote && (
               <span className="font-mono text-[9px] text-accent" title={`this exact pin is saved: ${pinNote}`}>
                 {pinNote}
               </span>
@@ -327,14 +335,22 @@ export function tokenTradeColumns(
       },
       // Structure outranks contagion: sorting this column is for finding the rows
       // whose pattern you can actually toggle.
-      sortValue: (t) =>
-        isIxPattern(t.instruction_labels, keys)
-          ? 2
-          : !isDump && reasons?.get(t.id)
-            ? 1
-            : 0,
+      sortValue: (t) => {
+        const labels = t.instruction_labels;
+        const structural = isWorking
+          ? !!labels && keys.has(templateGrain(labels))
+          : patternRows != null
+            ? !!labels && anyRowMatchesTrade(patternRows, labels, t)
+            : isIxPattern(labels, keys);
+        return structural ? 2 : !isDump && reasons?.get(t.id) ? 1 : 0;
+      },
       searchValue: (t) => {
-        const structural = isIxPattern(t.instruction_labels, keys);
+        const labels = t.instruction_labels;
+        const structural = isWorking
+          ? !!labels && keys.has(templateGrain(labels))
+          : patternRows != null
+            ? !!labels && anyRowMatchesTrade(patternRows, labels, t)
+            : isIxPattern(labels, keys);
         const reason = isDump ? null : (reasons?.get(t.id) ?? null);
         const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : '';
         const word = structural ? list : isDump ? 'not dump' : 'untagged';

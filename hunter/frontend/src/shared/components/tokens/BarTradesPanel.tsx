@@ -144,7 +144,7 @@ export function BarTradesPanel({
   const badgeKeys = lensTarget ? (flowPatternKeys ?? null) : patternTarget.keys;
   const toggleTargetName = lensTarget?.name ?? patternTarget.target?.name ?? null;
   const feePinMask = lensTarget ? null : patternTarget.feePins;
-  const patternRowKeys = lensTarget ? null : patternTarget.rowKeys;
+  const patternRows = lensTarget ? null : patternTarget.rows;
 
   // Pulled apart rather than passed as one object: `useTokenHighlight` returns a
   // fresh literal every render, and depending on it would rebuild every column —
@@ -175,7 +175,7 @@ export function BarTradesPanel({
         patternList: lensTarget ? 'tagged' : patternTarget.list,
         otherListKeys: lensTarget ? null : patternTarget.otherKeys,
         feePinMask,
-        patternRowKeys,
+        patternRows,
       }),
     [
       price.unitLabel,
@@ -187,7 +187,7 @@ export function BarTradesPanel({
       patternTarget.list,
       patternTarget.otherKeys,
       feePinMask,
-      patternRowKeys,
+      patternRows,
       onLensWallet,
       onLensStructure,
       armedLensWallet,

@@ -169,6 +169,43 @@ export function feeMaskActive(mask: IxPatternFeeMask | null | undefined): boolea
   return !!mask && FEE_FIELDS.some((f) => mask[f]);
 }
 
+/**
+ * Engine `FeeSpec::matches`: an absent pin is a wildcard on that field; a pin
+ * requires the trade's reading to equal it. A missing reading never satisfies a
+ * pin — same rule as the matcher, so a structure-only row still matches a tx
+ * that carries every fee field.
+ */
+export function feeMatchesTrade(row: IxPatternFee, t: IxPatternFeeSource): boolean {
+  for (const f of FEE_FIELDS) {
+    if (row[f] == null) continue;
+    if (t[f] !== row[f]) return false;
+  }
+  return true;
+}
+
+/** Labels exact-match AND the row's pins accept this tx's budget. */
+export function rowMatchesTrade(
+  row: IxPatternRow,
+  labels: readonly string[],
+  t: IxPatternFeeSource,
+): boolean {
+  return patternKey(row.labels) === patternKey(labels) && feeMatchesTrade(row, t);
+}
+
+/** Whether any stored row accepts this trade — the engine's list match.
+ *
+ *  An unpinned row of this shape matches regardless of the trade's fee fields,
+ *  which is why a structure-only checkbox stays selected when the pin strip is
+ *  on and when the tx itself carries a budget. A pin-only list lights only the
+ *  trades that satisfy that pin. */
+export function anyRowMatchesTrade(
+  rows: readonly IxPatternRow[],
+  labels: readonly string[],
+  t: IxPatternFeeSource,
+): boolean {
+  return rows.some((r) => rowMatchesTrade(r, labels, t));
+}
+
 /** Short readout of a row's pins, for a cart chip. Empty when unpinned. */
 export function formatFeePins(row: IxPatternFee): string {
   const parts: string[] = [];

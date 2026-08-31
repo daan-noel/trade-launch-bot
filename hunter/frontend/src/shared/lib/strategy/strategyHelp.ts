@@ -1506,6 +1506,7 @@ export const DISCOVERY_FIELD_HELP = {
     body: [
       'Checked structures from the ranked table become unpinned pattern rows (exact ix_labels, any fee budget).',
       'On the preview trades table, the pin checkboxes (cu_limit / cu_price / tip) copy those fields from the clicked tx onto a separate row — default off, so a tx that has fees still stages structure-only.',
+      'An ix-only row is a wildcard: Vol stays checked on every trade of that shape, including when a pin box is on and when the tx carries fee fields. A pin-only row lights only the trades that match that pin.',
       'Edit freely, then Apply to write the list on the target fingerprint (tagged = m_flow_ix, dump = m_dump_ix).',
       '',
       'Those patterns drive tagged_* / untagged_* / tagged_share (or dump_sell / dump_sell_count) on rules that use this fingerprint.',

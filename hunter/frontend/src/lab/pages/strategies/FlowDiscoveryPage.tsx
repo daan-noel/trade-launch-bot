@@ -64,7 +64,6 @@ import { patternKeysFrom } from 'lib/flow/classifyFlow';
 import {
   addUnpinnedPatterns,
   patternKey,
-  patternRowKey,
   removeUnpinnedPatterns,
   rowFromTrade,
   rowPinsFee,
@@ -366,10 +365,6 @@ export function FlowDiscoveryPage() {
   const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
   const patternKeys = useMemo(
     () => patternKeysFrom(draftPatterns.map((r) => r.labels)),
-    [draftPatterns],
-  );
-  const draftRowKeys = useMemo(
-    () => new Set(draftPatterns.map((r) => patternRowKey(r))),
     [draftPatterns],
   );
   /** Catch-all (unpinned) rows — what the ranked table's Vol checkbox stages. */
@@ -1205,7 +1200,7 @@ export function FlowDiscoveryPage() {
                     isMigrated={previewDetail?.is_migrated ?? false}
                     tokenCreatedAt={previewDetail?.created_at ?? null}
                     patternKeys={patternKeys}
-                    patternRowKeys={draftRowKeys}
+                    patternRows={draftPatterns}
                     feePins={feePins}
                     onFeePinsChange={setFeePins}
                     onTogglePattern={toggleTrade}
