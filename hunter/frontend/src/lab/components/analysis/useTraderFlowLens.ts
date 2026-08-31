@@ -4,15 +4,25 @@ import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
+  keysForSet,
+  kindOf,
   patternGroups,
-  patternKeysForGroups,
-  toggleIxPattern,
+  patternRowsForGroups,
+  tapeListForKind,
+  toggleExactPattern,
   UNGROUPED,
   type IxPattern,
   type IxPatternSet,
+  type IxPatternSetKind,
 } from 'lib/flow/ixPatternSets';
 import type { FlowSide } from 'lib/flow/classifyFlow';
 import type { FlowLensValue } from 'context/FlowLensContext';
+import {
+  isLaunchGrain,
+  templateGrain,
+  toggleWorkingTemplate,
+} from 'lib/strategy/templateGrain';
+import type { IxPatternFee, IxPatternFeeMask } from 'lib/strategy/ixPatternRows';
 import {
   useCreateIxPatternSetMutation,
   useDeleteIxPatternSetMutation,
@@ -31,6 +41,7 @@ interface LensPrefs {
   /** `null` ⇒ both legs. Absent in prefs written before the knob existed, which
    *  reads as both — the previous behavior. */
   side: FlowSide | null;
+  feePins: IxPatternFeeMask;
 }
 
 const DEFAULT_PREFS: LensPrefs = {
@@ -46,6 +57,7 @@ const DEFAULT_PREFS: LensPrefs = {
   // Both legs by default: narrowing is a deliberate act, and a lens that
   // silently showed one side would misread as "this structure is rare here".
   side: null,
+  feePins: {},
 };
 
 export interface TraderFlowLens {
@@ -69,9 +81,18 @@ export interface TraderFlowLens {
   /** Which leg the split classifies; `null` ⇒ both. */
   side: FlowSide | null;
   setSide: (side: FlowSide | null) => void;
-  /** Replace the selected set's patterns (paste import), or create a new set. */
+  feePins: IxPatternFeeMask;
+  setFeePins: (mask: IxPatternFeeMask) => void;
+  /** Replace the selected set's exact patterns (paste import). */
   savePatterns: (patterns: IxPattern[]) => Promise<void>;
-  createSet: (name: string, patterns: IxPattern[]) => Promise<void>;
+  /** Replace the selected set's grain ids (paste import). */
+  saveTemplates: (grains: string[]) => Promise<void>;
+  createSet: (
+    name: string,
+    kind: IxPatternSetKind,
+    patterns?: IxPattern[],
+    templates?: string[],
+  ) => Promise<void>;
   renameSet: (name: string) => Promise<void>;
   deleteSet: () => Promise<void>;
   saving: boolean;
@@ -87,6 +108,8 @@ export interface TraderFlowLens {
  * fingerprint Tagged badge follows, for the same reason: two copies of "what counts
  * as volume" on screen at once, both looking authoritative. The difference is
  * blast radius — a lens is analysis-only, so no rule changes meaning when it does.
+ *
+ * Kind is insert-only. Switching Exact ↔ Templates is picking a different set.
  *
  * @param wallet the studied address; excluded from classification while
  *               {@link TraderFlowLens.excludeSelf} is on
@@ -111,11 +134,12 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     () => sets.find((s) => s.id === prefs.setId) ?? null,
     [sets, prefs.setId],
   );
+  const kind = kindOf(set);
   const patterns = set?.patterns ?? [];
   const groups = useMemo(() => patternGroups(patterns), [patterns]);
 
   const enabledGroups = useMemo(() => {
-    if (!set) return null;
+    if (!set || kind === 'templates') return null;
     const saved = prefs.groupsBySet[set.id];
     if (!saved) return null; // never narrowed ⇒ every group
     // Intersect with what the set actually carries now: a group can disappear
@@ -123,11 +147,16 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     const live = new Set(groups);
     const kept = saved.filter((g) => live.has(g));
     return kept.length === 0 ? null : new Set(kept);
-  }, [set, prefs.groupsBySet, groups]);
+  }, [set, kind, prefs.groupsBySet, groups]);
 
   const keys = useMemo(
-    () => patternKeysForGroups(patterns, enabledGroups),
-    [patterns, enabledGroups],
+    () => (set ? keysForSet(set, enabledGroups) : null),
+    [set, enabledGroups],
+  );
+
+  const rows = useMemo(
+    () => (kind === 'exact' ? (patternRowsForGroups(patterns, enabledGroups) ?? []) : []),
+    [kind, patterns, enabledGroups],
   );
 
   const excludeWallets = useMemo(
@@ -135,25 +164,35 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     [prefs.excludeSelf, wallet],
   );
 
+  const writeBody = useCallback(
+    (next: { patterns?: IxPattern[]; working_templates?: string[] }) => {
+      if (!set) return null;
+      return {
+        name: set.name,
+        wallet_address: set.wallet_address,
+        notes: set.notes,
+        kind,
+        patterns: next.patterns ?? (kind === 'exact' ? set.patterns : []),
+        working_templates:
+          next.working_templates ?? (kind === 'templates' ? set.working_templates : []),
+      };
+    },
+    [set, kind],
+  );
+
   const writeSet = useCallback(
-    async (next: IxPattern[]) => {
+    async (next: { patterns?: IxPattern[]; working_templates?: string[] }) => {
       if (!set) return;
+      const body = writeBody(next);
+      if (!body) return;
       setError(null);
       try {
-        await updateSetMut({
-          id: set.id,
-          body: {
-            name: set.name,
-            wallet_address: set.wallet_address,
-            notes: set.notes,
-            patterns: next,
-          },
-        }).unwrap();
+        await updateSetMut({ id: set.id, body }).unwrap();
       } catch (e) {
         setError(apiErrorMessage(e as never, 'Failed to save the pattern set'));
       }
     },
-    [set, updateSetMut],
+    [set, writeBody, updateSetMut],
   );
 
   // A badge click files the new pattern under the ONE enabled group when the
@@ -167,11 +206,25 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
       : null;
 
   const toggle = useCallback(
-    (labels: readonly string[]) => {
+    (labels: readonly string[], fee?: IxPatternFee) => {
       if (!set) return;
-      void writeSet(toggleIxPattern(set.patterns, labels, activeGroup));
+      if (kind === 'templates') {
+        if (isLaunchGrain(labels)) return;
+        void writeSet({
+          working_templates: toggleWorkingTemplate(set.working_templates, templateGrain(labels)),
+        });
+        return;
+      }
+      void writeSet({
+        patterns: toggleExactPattern(set.patterns, labels, fee, activeGroup),
+      });
     },
-    [set, writeSet, activeGroup],
+    [set, kind, writeSet, activeGroup],
+  );
+
+  const setFeePins = useCallback(
+    (mask: IxPatternFeeMask) => setPrefs((p) => ({ ...p, feePins: mask })),
+    [setPrefs],
   );
 
   const value = useMemo<FlowLensValue>(
@@ -180,10 +233,36 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
       excludeWallets,
       side: prefs.side ?? null,
       target: set
-        ? { name: set.name, patterns: set.patterns, activeGroup, toggle, saving, error }
+        ? {
+            name: set.name,
+            kind,
+            list: tapeListForKind(kind),
+            patterns: set.patterns,
+            workingTemplates: set.working_templates,
+            rows,
+            activeGroup,
+            toggle,
+            feePins: prefs.feePins ?? {},
+            setFeePins,
+            saving,
+            error,
+          }
         : null,
     }),
-    [prefs.contagion, prefs.side, excludeWallets, set, activeGroup, toggle, saving, error],
+    [
+      prefs.contagion,
+      prefs.side,
+      prefs.feePins,
+      excludeWallets,
+      set,
+      kind,
+      rows,
+      activeGroup,
+      toggle,
+      setFeePins,
+      saving,
+      error,
+    ],
   );
 
   const selectSet = useCallback(
@@ -210,13 +289,20 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
   );
 
   const createSet = useCallback(
-    async (name: string, next: IxPattern[]) => {
+    async (
+      name: string,
+      newKind: IxPatternSetKind,
+      nextPatterns: IxPattern[] = [],
+      nextTemplates: string[] = [],
+    ) => {
       setError(null);
       try {
         const created = await createSetMut({
           name,
           wallet_address: wallet,
-          patterns: next,
+          kind: newKind,
+          patterns: newKind === 'exact' ? nextPatterns : [],
+          working_templates: newKind === 'templates' ? nextTemplates : [],
         }).unwrap();
         setPrefs((p) => ({ ...p, setId: created.id }));
       } catch (e) {
@@ -237,14 +323,16 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
             name: name.trim(),
             wallet_address: set.wallet_address,
             notes: set.notes,
+            kind,
             patterns: set.patterns,
+            working_templates: set.working_templates,
           },
         }).unwrap();
       } catch (e) {
         setError(apiErrorMessage(e as never, 'Failed to rename the pattern set'));
       }
     },
-    [set, updateSetMut],
+    [set, kind, updateSetMut],
   );
 
   const deleteSet = useCallback(async () => {
@@ -277,7 +365,10 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     setExcludeSelf: (on) => setPrefs((p) => ({ ...p, excludeSelf: on })),
     side: prefs.side ?? null,
     setSide: (side) => setPrefs((p) => ({ ...p, side })),
-    savePatterns: writeSet,
+    feePins: prefs.feePins ?? {},
+    setFeePins,
+    savePatterns: (next) => writeSet({ patterns: next }),
+    saveTemplates: (next) => writeSet({ working_templates: next }),
     createSet,
     renameSet,
     deleteSet,

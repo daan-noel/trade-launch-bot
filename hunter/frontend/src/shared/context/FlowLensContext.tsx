@@ -1,19 +1,25 @@
 import { createContext, useContext } from 'react';
 
 import type { FlowSide } from 'lib/flow/classifyFlow';
-import type { IxPattern } from 'lib/flow/ixPatternSets';
+import type { IxPattern, IxPatternSetKind } from 'lib/flow/ixPatternSets';
+import type { TapeList } from 'lib/strategy/registry';
+import type {
+  IxPatternFee,
+  IxPatternFeeMask,
+  IxPatternRow,
+} from 'lib/strategy/ixPatternRows';
 
 /**
- * The **flow lens** a page puts every chart under: which `ix_labels` pattern set
- * classifies vol/non-vol, and how.
+ * The **flow lens** a page puts every chart under: which analysis-owned pattern
+ * set classifies vol/non-vol, and how.
  *
- * The chart stack normally classifies with a fingerprint's saved
- * `ix_patterns`, handed down as `flowPatternKeys` props. A wallet study
- * has no fingerprint, so Trader Analysis owns its set instead (`ix_pattern_sets`)
- * and provides it here. The KEYS still travel as props — that path already
- * exists and every card reads it. What cannot travel as props without threading
- * five component layers is the rest of the lens: the classifier options and the
- * write target a Tagged badge click lands on. Those come through this context.
+ * The chart stack normally classifies with a fingerprint's saved lists, handed
+ * down as `flowPatternKeys` props. A wallet study has no fingerprint, so Trader
+ * Analysis owns its set instead (`ix_pattern_sets`) and provides it here. The
+ * KEYS still travel as props — that path already exists and every card reads
+ * it. What cannot travel as props without threading five component layers is
+ * the rest of the lens: the classifier options, the write target a badge click
+ * lands on, fee pins, and which vocabulary (`exact` vs `templates`) the set is.
  *
  * Absent (every other page) ⇒ the chart stack behaves exactly as before: engine
  * contagion on, no exclusions, Tagged badges writing to a fingerprint.
@@ -21,12 +27,20 @@ import type { IxPattern } from 'lib/flow/ixPatternSets';
 export interface FlowLensTarget {
   /** Set name, for the strip above the trades table. */
   name: string;
-  /** The FULL stored set — a toggle edits this, not the narrowed view. */
+  kind: IxPatternSetKind;
+  /** Overlay list this kind classifies as (`tagged` or `working`). */
+  list: TapeList;
+  /** Exact rows — empty on a templates set. */
   patterns: IxPattern[];
-  /** Group a newly toggled-in pattern is filed under (`null` ⇒ ungrouped). */
+  workingTemplates: string[];
+  /** Group-narrowed exact rows for overlay match. Empty on templates. */
+  rows: IxPatternRow[];
+  /** Group a newly toggled-in exact pattern is filed under (`null` ⇒ ungrouped). */
   activeGroup: string | null;
-  /** Add/remove one ordered `ix_labels` sequence and persist it. */
-  toggle: (labels: readonly string[]) => void;
+  /** Add/remove one trade's structure (exact + optional pins, or grain). */
+  toggle: (labels: readonly string[], fee?: IxPatternFee) => void;
+  feePins: IxPatternFeeMask;
+  setFeePins: (mask: IxPatternFeeMask) => void;
   saving: boolean;
   error: string | null;
 }

@@ -5,16 +5,22 @@ import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Switch } from 'components/ui/Switch';
+import { ToggleGroup } from 'components/ui/ToggleGroup';
 import { cn } from 'lib/cn';
 import {
   formatPatternsJson,
+  kindOf,
+  parsePastedGrains,
   parsePastedPatterns,
   patternGroups,
-  toIxPatterns,
+  toPatternRow,
   UNGROUPED,
   type IxPattern,
+  type IxPatternSetKind,
 } from 'lib/flow/ixPatternSets';
-import { metricConfigWithIxPatterns } from 'lib/strategy/registry';
+import { patternRowKey } from 'lib/strategy/ixPatternRows';
+import { metricConfigWithList, metricConfigWithWorkingTemplates } from 'lib/strategy/registry';
+import { toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
@@ -25,15 +31,28 @@ import type { TraderFlowLens } from './useTraderFlowLens';
 
 const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
 
+const KIND_OPTIONS: { value: IxPatternSetKind; label: string; title: string }[] = [
+  {
+    value: 'templates',
+    label: 'Templates',
+    title: 'Grain ids (program|CU|ATA|N|S|F) — harvest working-template vocabulary',
+  },
+  {
+    value: 'exact',
+    label: 'Exact',
+    title: 'Full ix_labels sequences, optional fee pins — same as tagged/dump',
+  },
+];
+
 /**
  * The Trader Analysis **flow lens** control strip: which analysis-owned pattern
  * set every chart on the page classifies vol/non-vol with, and how.
  *
  * A wallet study has no fingerprint, so the chart stack's usual source for
- * `ix_patterns` is empty and the vol/non-vol overlay never draws. This
- * bar supplies the same fact from `ix_pattern_sets` instead — paste the ordered
- * `ix_labels` sequences you derived for a trader, and every card's overlay plus
- * the Tagged column in each candle's trades table answer against them.
+ * patterns is empty and the vol/non-vol overlay never draws. This bar supplies
+ * that fact from `ix_pattern_sets` instead. Kind is chosen at create (Templates
+ * or Exact); the set picker is the switch. Charts, the Vol column, and badge
+ * clicks all follow the selected set's kind.
  *
  * Nothing here can reach a rule: a set is analysis-only, and the one path into
  * the engine is the explicit copy-to-fingerprint below.
@@ -42,25 +61,55 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [newName, setNewName] = useState('');
-
-  const parsed = useMemo(
-    () => (pasteText.trim() ? parsePastedPatterns(pasteText) : null),
-    [pasteText],
-  );
+  const [newKind, setNewKind] = useState<IxPatternSetKind>('templates');
 
   const { set, sets, groups, enabledGroups, keys } = lens;
+  const kind = set ? kindOf(set) : newKind;
+  const isTemplates = kind === 'templates';
   const classifying = keys?.size ?? 0;
+  const storedCount = isTemplates ? (set?.working_templates.length ?? 0) : (set?.patterns.length ?? 0);
+
+  const parsedPatterns = useMemo(
+    () => (!isTemplates && pasteText.trim() ? parsePastedPatterns(pasteText) : null),
+    [isTemplates, pasteText],
+  );
+  const parsedGrains = useMemo(
+    () => (isTemplates && pasteText.trim() ? parsePastedGrains(pasteText) : null),
+    [isTemplates, pasteText],
+  );
+
+  const pasteReady = isTemplates
+    ? (parsedGrains?.grains.length ?? 0) > 0
+    : (parsedPatterns?.patterns.length ?? 0) > 0;
 
   const applyPaste = async (mode: 'replace' | 'merge') => {
-    if (!parsed || parsed.patterns.length === 0) return;
-    if (!set) {
-      await lens.createSet(newName.trim() || defaultSetName(wallet), parsed.patterns);
+    if (isTemplates) {
+      if (!parsedGrains || parsedGrains.grains.length === 0) return;
+      if (!set) {
+        await lens.createSet(newName.trim() || defaultSetName(wallet, newKind), newKind, [], parsedGrains.grains);
+      } else {
+        const next =
+          mode === 'replace'
+            ? parsedGrains.grains
+            : mergeGrains(set.working_templates, parsedGrains.grains);
+        await lens.saveTemplates(next);
+      }
     } else {
-      const next: IxPattern[] =
-        mode === 'replace'
-          ? parsed.patterns
-          : mergePatterns(set.patterns, parsed.patterns);
-      await lens.savePatterns(next);
+      if (!parsedPatterns || parsedPatterns.patterns.length === 0) return;
+      if (!set) {
+        await lens.createSet(
+          newName.trim() || defaultSetName(wallet, newKind),
+          newKind,
+          parsedPatterns.patterns,
+          [],
+        );
+      } else {
+        const next =
+          mode === 'replace'
+            ? parsedPatterns.patterns
+            : mergeExact(set.patterns, parsedPatterns.patterns);
+        await lens.savePatterns(next);
+      }
     }
     setPasteText('');
     setPasteOpen(false);
@@ -78,38 +127,53 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
           value={lens.setId ?? ''}
           onChange={(e) => lens.selectSet(e.target.value || null)}
           title="Pattern set every chart on this page classifies with"
-          className="max-w-[18rem]"
+          className="max-w-[22rem]"
         >
           <option value="">No lens — charts show no vol/non-vol lines</option>
-          {sets.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name} ({s.patterns.length})
-              {s.wallet_address ? ` · ${shortAddr(s.wallet_address)}` : ''}
-            </option>
-          ))}
+          {sets.map((s) => {
+            const k = kindOf(s);
+            const n = k === 'templates' ? s.working_templates.length : s.patterns.length;
+            return (
+              <option key={s.id} value={s.id}>
+                {s.name} ({n} {k === 'templates' ? 'grain' : 'pattern'}
+                {n === 1 ? '' : 's'} · {k})
+                {s.wallet_address ? ` · ${shortAddr(s.wallet_address)}` : ''}
+              </option>
+            );
+          })}
         </Select>
 
         {set ? (
           <>
+            <Badge variant={isTemplates ? 'success' : 'info'} size="sm">
+              {isTemplates ? 'Templates' : 'Exact'}
+            </Badge>
             <span
               className="font-mono text-[11px] text-text-dim"
-              title="Patterns currently classifying / patterns in the set"
+              title={
+                isTemplates
+                  ? 'Grains currently classifying / grains in the set'
+                  : 'Patterns currently classifying / patterns in the set'
+              }
             >
-              {classifying}/{set.patterns.length} classifying
+              {classifying}/{storedCount} classifying
             </span>
             <Button
               size="xs"
               variant="ghost"
               onClick={() => setPasteOpen((v) => !v)}
-              title="Paste ix_labels sequences into this set"
+              title={isTemplates ? 'Paste grain ids into this set' : 'Paste ix_labels sequences into this set'}
             >
-              {pasteOpen ? 'Close paste' : 'Paste patterns'}
+              {pasteOpen ? 'Close paste' : isTemplates ? 'Paste grains' : 'Paste patterns'}
             </Button>
             <Button
               size="xs"
               variant="ghost"
               onClick={() => {
-                void navigator.clipboard?.writeText(formatPatternsJson(set.patterns));
+                const text = isTemplates
+                  ? JSON.stringify(set.working_templates, null, 2)
+                  : formatPatternsJson(set.patterns);
+                void navigator.clipboard?.writeText(text);
               }}
               title="Copy the whole set as re-pastable JSON"
             >
@@ -127,21 +191,31 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
           </>
         ) : (
           <>
+            <ToggleGroup
+              size="sm"
+              tone="neutral"
+              aria-label="New set vocabulary"
+              value={newKind}
+              onChange={setNewKind}
+              options={KIND_OPTIONS}
+            />
             <Input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder={defaultSetName(wallet)}
+              placeholder={defaultSetName(wallet, newKind)}
               className="w-[220px] font-normal normal-case tracking-normal"
             />
             <Button
               size="xs"
               variant="primary"
-              onClick={() => void lens.createSet(newName.trim() || defaultSetName(wallet), [])}
+              onClick={() =>
+                void lens.createSet(newName.trim() || defaultSetName(wallet, newKind), newKind)
+              }
             >
               New set
             </Button>
             <Button size="xs" variant="ghost" onClick={() => setPasteOpen((v) => !v)}>
-              {pasteOpen ? 'Close paste' : 'Paste patterns'}
+              {pasteOpen ? 'Close paste' : newKind === 'templates' ? 'Paste grains' : 'Paste patterns'}
             </Button>
           </>
         )}
@@ -161,7 +235,7 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
             label="Wallet contagion"
           />
           <span
-            title="ON = the engine's own rule: one structural match tags that wallet, and every later trade of it counts as volume (the creator seeds it). OFF = each trade judged by its own ix_labels alone — what you want when the question is which STRUCTURES surround a moment."
+            title="ON = the engine's own rule: one structural match tags that wallet, and every later trade of it counts as volume (the creator seeds it). OFF = each trade judged by its own ix_labels / grain alone — what you want when the question is which STRUCTURES surround a moment."
           >
             Contagion
           </span>
@@ -182,8 +256,27 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
         {lens.error && <span className="text-[11px] text-red">{lens.error}</span>}
       </div>
 
-      {/* Group narrowing — one launch client at a time, without re-pasting. */}
-      {set && groups.length > 1 && (
+      {set && isTemplates && set.working_templates.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">
+            Grains
+          </span>
+          {set.working_templates.map((g) => (
+            <button
+              key={g}
+              type="button"
+              onClick={() => void lens.saveTemplates(toggleWorkingTemplate(set.working_templates, g))}
+              className="rounded-full border border-green/40 bg-green/15 px-2 py-0.5 font-mono text-[11px] text-green transition-colors hover:border-red/50 hover:bg-red/15 hover:text-red"
+              title="Remove this grain"
+            >
+              {g}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Group narrowing — one launch client at a time, without re-pasting. Exact only. */}
+      {set && !isTemplates && groups.length > 1 && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">
             Groups
@@ -219,28 +312,44 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
             rows={6}
             spellCheck={false}
             placeholder={
-              'Paste [["Compute Budget: SetComputeUnitLimit","…"], …]\n' +
-              'or [{ "tool": "Axiom Trade", "ix_labels": ["…"] }, …]\n' +
-              'or a { "patterns": [ … ] } file'
+              kind === 'templates'
+                ? 'Paste ["Axiom Trade|CU", "GMGN|ATA"]\nor one grain id per line'
+                : 'Paste [["Compute Budget: SetComputeUnitLimit","…"], …]\n' +
+                  'or [{ "tool": "Axiom Trade", "ix_labels": ["…"], "cu_limit": 300000 }, …]\n' +
+                  'or a { "patterns": [ … ] } file'
             }
             className="w-full rounded-md border border-white/10 bg-black/30 p-2 font-mono text-[11px] text-text outline-none focus:border-primary/50"
           />
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
-            {parsed?.error && <span className="text-red">{parsed.error}</span>}
-            {parsed && !parsed.error && (
-              <span className="text-text-dim">
-                {parsed.accepted} pattern{parsed.accepted === 1 ? '' : 's'}
-                {parsed.duplicates > 0 && ` · ${parsed.duplicates} duplicate`}
-                {parsed.skipped > 0 && ` · ${parsed.skipped} skipped`}
-                {parsed.patterns.length > 0 &&
-                  ` · groups: ${patternGroups(parsed.patterns).join(', ')}`}
-              </span>
+            {isTemplates ? (
+              <>
+                {parsedGrains?.error && <span className="text-red">{parsedGrains.error}</span>}
+                {parsedGrains && !parsedGrains.error && (
+                  <span className="text-text-dim">
+                    {parsedGrains.accepted} grain{parsedGrains.accepted === 1 ? '' : 's'}
+                    {parsedGrains.duplicates > 0 && ` · ${parsedGrains.duplicates} duplicate`}
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                {parsedPatterns?.error && <span className="text-red">{parsedPatterns.error}</span>}
+                {parsedPatterns && !parsedPatterns.error && (
+                  <span className="text-text-dim">
+                    {parsedPatterns.accepted} pattern{parsedPatterns.accepted === 1 ? '' : 's'}
+                    {parsedPatterns.duplicates > 0 && ` · ${parsedPatterns.duplicates} duplicate`}
+                    {parsedPatterns.skipped > 0 && ` · ${parsedPatterns.skipped} skipped`}
+                    {parsedPatterns.patterns.length > 0 &&
+                      ` · groups: ${patternGroups(parsedPatterns.patterns).join(', ')}`}
+                  </span>
+                )}
+              </>
             )}
             <span className="grow" />
             <Button
               size="xs"
               variant="primary"
-              disabled={!parsed || parsed.patterns.length === 0}
+              disabled={!pasteReady}
               onClick={() => void applyPaste('replace')}
             >
               {set ? 'Replace set' : 'Create set'}
@@ -249,9 +358,9 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
               <Button
                 size="xs"
                 variant="ghost"
-                disabled={!parsed || parsed.patterns.length === 0}
+                disabled={!pasteReady}
                 onClick={() => void applyPaste('merge')}
-                title="Keep the set's current patterns and add the new ones"
+                title="Keep the set's current entries and add the new ones"
               >
                 Merge in
               </Button>
@@ -260,23 +369,34 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
         </div>
       )}
 
-      {set && set.patterns.length > 0 && <PromoteToFingerprint patterns={set.patterns} />}
+      {set && storedCount > 0 && <PromoteToFingerprint setKind={kind} set={set} />}
     </div>
   );
 }
 
 /** Default name for a set created while studying a wallet. */
-function defaultSetName(wallet: string | null): string {
-  return wallet ? `${shortAddr(wallet)} targets` : 'New pattern set';
+function defaultSetName(wallet: string | null, kind: IxPatternSetKind): string {
+  const who = wallet ? `${shortAddr(wallet)} ` : '';
+  return `${who}${kind === 'templates' ? 'templates' : 'exact'}`;
 }
 
-/** Union by ordered-labels identity, incoming groups winning on a re-paste
- *  (the paste is the newer description of the same structure). */
-function mergePatterns(current: IxPattern[], incoming: IxPattern[]): IxPattern[] {
-  const byKey = new Map(incoming.map((p) => [JSON.stringify(p.ix_labels), p]));
-  const kept = current.map((p) => byKey.get(JSON.stringify(p.ix_labels)) ?? p);
-  const keptKeys = new Set(kept.map((p) => JSON.stringify(p.ix_labels)));
-  return [...kept, ...incoming.filter((p) => !keptKeys.has(JSON.stringify(p.ix_labels)))];
+function mergeGrains(current: string[], incoming: string[]): string[] {
+  const seen = new Set(current);
+  const out = [...current];
+  for (const g of incoming) {
+    if (seen.has(g)) continue;
+    seen.add(g);
+    out.push(g);
+  }
+  return out;
+}
+
+/** Union by labels+pins identity, incoming groups/pins winning on a re-paste. */
+function mergeExact(current: IxPattern[], incoming: IxPattern[]): IxPattern[] {
+  const byKey = new Map(incoming.map((p) => [patternRowKey(toPatternRow(p)), p]));
+  const kept = current.map((p) => byKey.get(patternRowKey(toPatternRow(p))) ?? p);
+  const keptKeys = new Set(kept.map((p) => patternRowKey(toPatternRow(p))));
+  return [...kept, ...incoming.filter((p) => !keptKeys.has(patternRowKey(toPatternRow(p))))];
 }
 
 /** Leg narrowing: Both / Buy / Sell.
@@ -373,26 +493,43 @@ function RenameControl({ lens }: { lens: TraderFlowLens }) {
 }
 
 /**
- * The one path from study to something the engine reads: copy the lens' patterns
- * into a fingerprint's `ix_patterns`.
+ * The one path from study to something the engine reads: copy the lens into the
+ * matching fingerprint field (exact → m_flow_ix.ix_patterns with fees;
+ * templates → m_burst_slot.working_templates).
  *
  * Deliberately explicit and one-directional. A lens is a guess under
- * examination; a fingerprint's patterns are what live rules classify flow with,
- * so the crossing is a decision, never a side effect of editing a lens. Group
- * labels have no home on a fingerprint and are dropped.
+ * examination; a fingerprint's lists are what live rules classify with, so the
+ * crossing is a decision, never a side effect of editing a lens. Group labels
+ * have no home on a fingerprint and are dropped.
  */
-function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
+function PromoteToFingerprint({
+  setKind,
+  set,
+}: {
+  setKind: IxPatternSetKind;
+  set: { patterns: IxPattern[]; working_templates: string[] };
+}) {
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
   const [updateFingerprint, { isLoading }] = useUpdateFingerprintMutation();
   const [targetId, setTargetId] = useState('');
   const [status, setStatus] = useState<string | null>(null);
 
   const target = fingerprints.find((f) => f.id === targetId) ?? null;
+  const isTemplates = setKind === 'templates';
+  const n = isTemplates ? set.working_templates.length : set.patterns.length;
 
   const copy = async () => {
     if (!target) return;
     setStatus(null);
     try {
+      const prev = target.metric_config ?? {};
+      const metric_config = isTemplates
+        ? metricConfigWithWorkingTemplates(prev, set.working_templates)
+        : metricConfigWithList(
+            prev,
+            set.patterns.map(toPatternRow),
+            'tagged',
+          );
       await updateFingerprint({
         id: target.id,
         body: {
@@ -403,15 +540,14 @@ function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
           // match-everything row into a criterion-less one.
           criteria: target.criteria,
           wildcard: target.wildcard,
-          metric_config: metricConfigWithIxPatterns(
-            toIxPatterns(patterns),
-            target.metric_config ?? {},
-          ),
+          metric_config,
         },
       }).unwrap();
-      setStatus(`Copied ${patterns.length} pattern${patterns.length === 1 ? '' : 's'} to ${target.name}`);
+      setStatus(
+        `Copied ${n} ${isTemplates ? 'grain' : 'pattern'}${n === 1 ? '' : 's'} to ${target.name}`,
+      );
     } catch (e) {
-      setStatus(apiErrorMessage(e as never, 'Failed to copy patterns'));
+      setStatus(apiErrorMessage(e as never, 'Failed to copy to fingerprint'));
     }
   };
 
@@ -441,12 +577,18 @@ function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
         variant="ghost"
         disabled={!target || isLoading}
         onClick={() => void copy()}
-        title="Replace that fingerprint's ix_patterns with this lens' patterns. Every active rule bound to it classifies flow differently from the engine's next reload on."
+        title={
+          isTemplates
+            ? "Replace that fingerprint's working_templates with this lens' grains."
+            : "Replace that fingerprint's ix_patterns with this lens' exact rows (fees kept)."
+        }
       >
-        Copy patterns
+        {isTemplates ? 'Copy grains' : 'Copy patterns'}
       </Button>
       <span className="text-[11px] text-warning">
-        Replaces its ix_patterns — every rule bound to it changes meaning.
+        {isTemplates
+          ? 'Replaces its working_templates — harvest rules bound to it change meaning.'
+          : 'Replaces its ix_patterns — every rule bound to it changes meaning.'}
       </span>
       {status && <span className="text-[11px] text-text-dim">{status}</span>}
     </div>

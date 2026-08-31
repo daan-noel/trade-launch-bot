@@ -1,11 +1,12 @@
-//! CRUD for analysis-owned `ix_labels` pattern sets — the Trader Analysis flow
-//! lens. Lab-only (the table is in the lab-private migration set).
+//! CRUD for analysis-owned pattern sets — the Trader Analysis flow lens.
+//! Lab-only (the table is in the lab-private migration set).
 //!
-//! A set is a named list of ordered `ix_labels` sequences with no fingerprint
-//! behind it, so a wallet study can classify vol/non-vol on tokens that belong
-//! to no cohort. Promotion into a fingerprint (the only path to something the
-//! engine trades) is a client-side copy through the existing fingerprint PUT —
-//! nothing here writes `metric_config`.
+//! A set is one vocabulary (`exact` ix_labels + fee pins, or `templates`
+//! grain ids) with no fingerprint behind it, so a wallet study can classify
+//! vol/non-vol on tokens that belong to no cohort. Kind is insert-only; the
+//! picker is the switch. Promotion into a fingerprint (the only path to
+//! something the engine trades) is a client-side copy through the existing
+//! fingerprint PUT — nothing here writes `metric_config`.
 
 use std::sync::Arc;
 
@@ -23,7 +24,8 @@ fn repo(state: &LocalState) -> IxPatternSetRepo {
 
 fn srv_err(ctx: &str, e: impl std::fmt::Display) -> HttpResponse {
     tracing::warn!("{ctx}: {e}");
-    HttpResponse::InternalServerError().json(serde_json::json!({ "error": format!("{ctx} failed") }))
+    HttpResponse::InternalServerError()
+        .json(serde_json::json!({ "error": format!("{ctx} failed") }))
 }
 
 /// A name collision is the one expected write failure (unique index on
@@ -31,8 +33,9 @@ fn srv_err(ctx: &str, e: impl std::fmt::Display) -> HttpResponse {
 fn write_err(ctx: &str, e: sqlx::Error) -> HttpResponse {
     if let sqlx::Error::Database(db) = &e {
         if db.constraint() == Some("idx_ix_pattern_sets_name") {
-            return HttpResponse::Conflict()
-                .json(serde_json::json!({ "error": "a pattern set with this name already exists" }));
+            return HttpResponse::Conflict().json(
+                serde_json::json!({ "error": "a pattern set with this name already exists" }),
+            );
         }
     }
     srv_err(ctx, e)
@@ -52,11 +55,11 @@ pub async fn create_set(
     body: web::Json<IxPatternSetDraft>,
 ) -> impl Responder {
     let draft = body.into_inner();
-    let patterns = match validate(&draft) {
-        Ok(p) => p,
+    let sanitized = match validate(&draft) {
+        Ok(s) => s,
         Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
     };
-    match repo(&app_state).insert(&draft, &patterns).await {
+    match repo(&app_state).insert(&draft, &sanitized).await {
         Ok(set) => HttpResponse::Ok().json(set),
         Err(e) => write_err("create ix pattern set", e),
     }
@@ -68,15 +71,23 @@ pub async fn update_set(
     path: web::Path<Uuid>,
     body: web::Json<IxPatternSetDraft>,
 ) -> impl Responder {
-    let draft = body.into_inner();
-    let patterns = match validate(&draft) {
-        Ok(p) => p,
+    let id = path.into_inner();
+    let mut draft = body.into_inner();
+    // Kind is insert-only. A PUT that omits it (or sends the other vocabulary)
+    // must not re-sanitize the stored list as Exact and wipe templates.
+    match repo(&app_state).find(id).await {
+        Ok(Some(existing)) => draft.kind = existing.kind,
+        Ok(None) => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({ "error": "pattern set not found" }))
+        }
+        Err(e) => return srv_err("load ix pattern set", e),
+    }
+    let sanitized = match validate(&draft) {
+        Ok(s) => s,
         Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
     };
-    match repo(&app_state)
-        .update(path.into_inner(), &draft, &patterns)
-        .await
-    {
+    match repo(&app_state).update(id, &draft, &sanitized).await {
         Ok(Some(set)) => HttpResponse::Ok().json(set),
         Ok(None) => {
             HttpResponse::NotFound().json(serde_json::json!({ "error": "pattern set not found" }))

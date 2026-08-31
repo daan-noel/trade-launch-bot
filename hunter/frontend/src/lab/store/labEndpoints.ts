@@ -530,10 +530,10 @@ export const labApi = baseApi.injectEndpoints({
     getLastFamilySearch: builder.query<FamilySearchResult, void>({
       query: () => '/api/strategies/family-search/last',
     }),
-    // ── Flow lens: analysis-owned ix_labels pattern sets ─────────────────────
-    // The study twin of a fingerprint's `ix_patterns` — same classifier,
-    // different owner, so a wallet study can split vol/non-vol on tokens that
-    // belong to no cohort. Lab-only table; nothing the engine reads.
+    // ── Flow lens: analysis-owned pattern sets (exact ix_labels or templates) ─
+    // The study twin of a fingerprint's lists — same classifier, different
+    // owner, so a wallet study can split vol/non-vol on tokens that belong to
+    // no cohort. Lab-only table; nothing the engine reads.
     getIxPatternSets: builder.query<IxPatternSet[], void>({
       query: () => '/api/ix-pattern-sets',
       providesTags: ['IxPatternSet'],

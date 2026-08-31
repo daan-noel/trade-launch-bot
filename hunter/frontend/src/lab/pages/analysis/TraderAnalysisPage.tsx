@@ -298,9 +298,10 @@ export function TraderAnalysisPage() {
 
   // Tracked wallets from the shared profiles cache (same SSOT the chart markers
   // read) — a picker to fill the wallet input from a saved profile wallet.
-  // The page-wide flow lens: an analysis-owned ix_labels pattern set standing in
+  // The page-wide flow lens: an analysis-owned pattern set standing in
   // for the fingerprint these tokens don't have, so every chart can draw its
-  // vol/non-vol split and every candle's trades table gets its Tagged column.
+  // vol/non-vol split and every candle's trades table gets its Tagged / Working
+  // column. Kind is Exact or Templates; the picker is the switch.
   // Follows the COMMITTED wallet, not the input box — the exclusion it applies
   // must match the wallet the rows on screen belong to.
   const lens = useTraderFlowLens(query?.wallet ?? null);

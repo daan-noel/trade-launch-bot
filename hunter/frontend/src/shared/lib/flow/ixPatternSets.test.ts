@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  keysForSet,
+  kindOf,
+  parsePastedGrains,
   parsePastedPatterns,
   patternGroups,
   patternKeysForGroups,
+  tapeListForKind,
+  toggleExactPattern,
   toggleIxPattern,
   UNGROUPED,
   type IxPattern,
@@ -87,5 +92,63 @@ describe('toggleIxPattern', () => {
       p(null, 'A'),
       p('Axiom', 'B'),
     ]);
+  });
+});
+
+describe('kind + keys', () => {
+  it('treats missing kind as exact and maps templates to the working tape list', () => {
+    expect(kindOf({})).toBe('exact');
+    expect(kindOf({ kind: 'templates' })).toBe('templates');
+    expect(tapeListForKind('exact')).toBe('tagged');
+    expect(tapeListForKind('templates')).toBe('working');
+  });
+
+  it('keys a templates set by grain id, not JSON.stringify(labels)', () => {
+    const keys = keysForSet(
+      { kind: 'templates', patterns: [p(null, 'A')], working_templates: ['Axiom Trade|CU'] },
+      null,
+    );
+    expect(keys).toEqual(new Set(['Axiom Trade|CU']));
+  });
+});
+
+describe('parsePastedPatterns fees', () => {
+  it('keeps a pinned row distinct from the same labels unpinned', () => {
+    const r = parsePastedPatterns(
+      JSON.stringify([
+        { ix_labels: ['A'], cu_limit: 300000 },
+        ['A'],
+      ]),
+    );
+    expect(r.error).toBeNull();
+    expect(r.accepted).toBe(2);
+    expect(r.patterns[0]).toMatchObject({ ix_labels: ['A'], cu_limit: 300000 });
+    expect(r.patterns[1]).toEqual(p(null, 'A'));
+  });
+});
+
+describe('parsePastedGrains', () => {
+  it('takes a JSON string array and a newline list', () => {
+    expect(parsePastedGrains('["Axiom Trade|CU","GMGN|ATA"]').grains).toEqual([
+      'Axiom Trade|CU',
+      'GMGN|ATA',
+    ]);
+    expect(parsePastedGrains('Axiom Trade|CU\nGMGN|ATA').grains).toEqual([
+      'Axiom Trade|CU',
+      'GMGN|ATA',
+    ]);
+  });
+
+  it('rejects an ix_labels payload rather than storing it as a fake grain', () => {
+    const r = parsePastedGrains('[["Compute Budget: SetComputeUnitLimit","Axiom Trade: Buy"]]');
+    expect(r.grains).toEqual([]);
+    expect(r.error).toMatch(/templates/);
+  });
+});
+
+describe('toggleExactPattern fees', () => {
+  it('narrows a catch-all to a pin of the same shape', () => {
+    const next = toggleExactPattern([p('Axiom', 'A')], ['A'], { cu_limit: 300000 }, 'Axiom');
+    expect(next).toEqual([{ group: 'Axiom', ix_labels: ['A'], cu_limit: 300000 }]);
   });
 });

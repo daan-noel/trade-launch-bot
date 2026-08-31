@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
-import { IxPatternBar } from 'components/tokens/IxPatternBar';
+import { IxPatternBar, FeePinToggles } from 'components/tokens/IxPatternBar';
 import { Badge } from 'components/ui/Badge';
 import { useTimezone } from 'context/TimezoneContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
@@ -154,8 +154,16 @@ export function BarTradesPanel({
   // edits the whole stored set, filing new patterns under the lens' active group.
   const badgeKeys = lensTarget ? (flowPatternKeys ?? null) : patternTarget.keys;
   const toggleTargetName = lensTarget?.name ?? patternTarget.target?.name ?? null;
-  const feePinMask = lensTarget ? null : patternTarget.feePins;
-  const patternRows = lensTarget ? null : patternTarget.rows;
+  const feePinMask = lensTarget
+    ? lensTarget.list === 'working'
+      ? null
+      : lensTarget.feePins
+    : patternTarget.feePins;
+  const patternRows = lensTarget
+    ? lensTarget.list === 'working'
+      ? null
+      : lensTarget.rows
+    : patternTarget.rows;
 
   // Pulled apart rather than passed as one object: `useTokenHighlight` returns a
   // fresh literal every render, and depending on it would rebuild every column —
@@ -181,9 +189,9 @@ export function BarTradesPanel({
         onTogglePattern,
         toggleTargetName,
         flowReasons,
-        // A lens only ever edits the tagged set, so the column follows the target's
-        // list exclusively on the fingerprint path.
-        patternList: lensTarget ? 'tagged' : patternTarget.list,
+        // A lens set is one vocabulary; the column follows that list (exact →
+        // tagged, templates → working). Fingerprint path uses the strip's list.
+        patternList: lensTarget ? lensTarget.list : patternTarget.list,
         otherListKeys: lensTarget ? null : patternTarget.otherKeys,
         feePinMask,
         patternRows,
@@ -465,21 +473,27 @@ function FlowLensStrip({
    *  the badges below report against. */
   patternCount: number;
 }) {
-  const total = target.patterns.length;
+  const isTemplates = target.kind === 'templates';
+  const total = isTemplates ? target.workingTemplates.length : target.patterns.length;
+  const unit = isTemplates ? 'grain' : 'pattern';
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <Badge variant="info" size="sm">
-        Flow lens
+      <Badge variant={isTemplates ? 'success' : 'info'} size="sm">
+        Flow lens · {isTemplates ? 'Templates' : 'Exact'}
       </Badge>
       <span className="font-mono text-[11px] text-text">{target.name}</span>
       <span
         className="font-mono text-[11px] text-text-dim"
-        title="Patterns classifying this chart / patterns in the whole set"
+        title={`${unit}s classifying this chart / ${unit}s in the whole set`}
       >
-        {patternCount}/{total} pattern{total === 1 ? '' : 's'}
+        {patternCount}/{total} {unit}
+        {total === 1 ? '' : 's'}
       </span>
+      {!isTemplates && (
+        <FeePinToggles mask={target.feePins} onChange={target.setFeePins} />
+      )}
       <span className="text-[11px] text-text-dim">
-        Tagged badges add/remove here
+        {isTemplates ? 'Working' : 'Tagged'} badges add/remove here
         {target.activeGroup ? ` (group "${target.activeGroup}")` : ''} — analysis only, no
         rule reads it.
       </span>

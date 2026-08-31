@@ -1,21 +1,36 @@
 /**
- * Analysis-owned `ix_labels` pattern sets — the wire types of `ix_pattern_sets`
- * plus the paste parser that fills one.
+ * Analysis-owned pattern sets — the wire types of `ix_pattern_sets` plus the
+ * paste parser that fills one.
  *
- * A fingerprint's `ix_patterns` is what the ENGINE classifies flow with;
- * a pattern set is the same fact owned by a study surface, for tokens that
- * belong to no cohort (Trader Analysis). Both feed the ONE classifier
- * (`lib/flow/classifyFlow`), so a pattern means exactly the same thing in each:
- * an EXACT ordered `ix_labels` sequence, `JSON.stringify`d as its key.
+ * A fingerprint's lists are what the ENGINE classifies with; a pattern set is
+ * the same fact owned by a study surface, for tokens that belong to no cohort
+ * (Trader Analysis). A set is **one vocabulary**, chosen at create:
  *
- * `group` labels a subset (a launch client / aggregator name) so the lens can be
- * narrowed to one of them without re-pasting. It is never matched against.
+ * * `exact` — ordered `ix_labels` plus optional fee pins. Overlay match is
+ *   `'labels'` (same as tagged/dump). `group` labels a subset for narrowing.
+ * * `templates` — grain ids (`program|CU|ATA|N|S|F`). Overlay match is
+ *   `'grain'` (same as working). No fee pins.
+ *
+ * Both feed the ONE classifier (`lib/flow/classifyFlow`) via `classifyOptsForTape`.
  */
 
 import { patternKeysFrom } from 'lib/flow/classifyFlow';
+import type { TapeList } from 'lib/strategy/registry';
+import { parseGrainIds } from 'lib/strategy/templateGrain';
+import {
+  FEE_FIELDS,
+  patternKey,
+  patternRowKey,
+  togglePatternRow,
+  type IxPatternFee,
+  type IxPatternRow,
+} from 'lib/strategy/ixPatternRows';
 
-export interface IxPattern {
-  /** Subset label; `null` ⇒ ungrouped. Display + narrowing only. */
+/** Insert-only vocabulary. The set picker is the switch; kind never changes. */
+export type IxPatternSetKind = 'exact' | 'templates';
+
+export interface IxPattern extends IxPatternFee {
+  /** Subset label; `null` ⇒ ungrouped. Display + narrowing only. Exact sets. */
   group: string | null;
   /** EXACT ordered instruction labels, verbatim from `trades.ix_labels`. */
   ix_labels: string[];
@@ -25,25 +40,55 @@ export interface IxPatternSet {
   id: string;
   name: string;
   wallet_address: string | null;
+  kind: IxPatternSetKind;
   patterns: IxPattern[];
+  working_templates: string[];
   notes: string | null;
   created_at: string;
   updated_at: string;
 }
 
-/** Body of `POST /api/ix-pattern-sets` and its `PUT` twin (full replace). */
+/** Body of `POST /api/ix-pattern-sets` and its `PUT` twin (full replace).
+ *  Kind on PUT is ignored — insert-only on the server. */
 export interface IxPatternSetDraft {
   name: string;
   wallet_address?: string | null;
+  kind?: IxPatternSetKind;
   patterns: IxPattern[];
+  working_templates?: string[];
   notes?: string | null;
 }
 
 /** Bucket name shown for `group: null`. Display only — never persisted. */
 export const UNGROUPED = 'Ungrouped';
 
-/** Identity of one ordered sequence — the same key `classifyFlow` matches on. */
+/** Identity of one ordered sequence — labels only, no pins. */
 export const patternKeyOf = (labels: readonly string[]): string => JSON.stringify(labels);
+
+export function kindOf(set: { kind?: IxPatternSetKind } | null | undefined): IxPatternSetKind {
+  return set?.kind === 'templates' ? 'templates' : 'exact';
+}
+
+/** Overlay list this set's kind classifies as. Never dump. */
+export function tapeListForKind(kind: IxPatternSetKind): TapeList {
+  return kind === 'templates' ? 'working' : 'tagged';
+}
+
+export function toPatternRow(p: IxPattern): IxPatternRow {
+  const row: IxPatternRow = { labels: [...p.ix_labels] };
+  for (const f of FEE_FIELDS) {
+    if (p[f] != null) row[f] = p[f];
+  }
+  return row;
+}
+
+export function fromPatternRow(row: IxPatternRow, group: string | null): IxPattern {
+  const p: IxPattern = { group, ix_labels: [...row.labels] };
+  for (const f of FEE_FIELDS) {
+    if (row[f] != null) p[f] = row[f];
+  }
+  return p;
+}
 
 /** Group names in first-seen order, with {@link UNGROUPED} standing in for null. */
 export function patternGroups(patterns: readonly IxPattern[]): string[] {
@@ -59,33 +104,89 @@ export function patternGroups(patterns: readonly IxPattern[]): string[] {
   return out;
 }
 
+function pickedPatterns(
+  patterns: readonly IxPattern[],
+  enabled: ReadonlySet<string> | null,
+): readonly IxPattern[] {
+  return enabled ? patterns.filter((p) => enabled.has(p.group ?? UNGROUPED)) : patterns;
+}
+
 /**
  * Classification keys for the enabled groups only — how the lens narrows to one
  * launch client without touching the stored set. `null` ⇒ every group.
+ * Keys are labels-only (fee match uses {@link patternRowsForGroups}).
  */
 export function patternKeysForGroups(
   patterns: readonly IxPattern[],
   enabled: ReadonlySet<string> | null,
 ): ReadonlySet<string> | null {
-  const picked = enabled
-    ? patterns.filter((p) => enabled.has(p.group ?? UNGROUPED))
-    : patterns;
-  const keys = patternKeysFrom(picked.map((p) => p.ix_labels));
+  const keys = patternKeysFrom(pickedPatterns(patterns, enabled).map((p) => p.ix_labels));
   return keys.size > 0 ? keys : null;
 }
 
-/** Add/remove one ordered sequence, keeping the rest in place. A re-added
- *  pattern lands at the end under `group` (membership is what matters). */
+/** Whole rows for overlay match (an unpinned row is a fee wildcard). */
+export function patternRowsForGroups(
+  patterns: readonly IxPattern[],
+  enabled: ReadonlySet<string> | null,
+): IxPatternRow[] | null {
+  const rows = pickedPatterns(patterns, enabled).map(toPatternRow);
+  return rows.length > 0 ? rows : null;
+}
+
+/** Overlay key set for the selected set's kind. */
+export function keysForSet(
+  set: Pick<IxPatternSet, 'kind' | 'patterns' | 'working_templates'>,
+  enabled: ReadonlySet<string> | null,
+): ReadonlySet<string> | null {
+  if (kindOf(set) === 'templates') {
+    const grains = set.working_templates ?? [];
+    return grains.length > 0 ? new Set(grains) : null;
+  }
+  return patternKeysForGroups(set.patterns, enabled);
+}
+
+/** Add/remove one exact row (labels + optional pins), keeping groups. */
+export function toggleExactPattern(
+  patterns: readonly IxPattern[],
+  labels: readonly string[],
+  fee: IxPatternFee | undefined,
+  activeGroup: string | null,
+): IxPattern[] {
+  const rows = patterns.map(toPatternRow);
+  const nextRow: IxPatternRow = { labels: [...labels] };
+  if (fee) {
+    for (const f of FEE_FIELDS) {
+      if (fee[f] != null) nextRow[f] = fee[f];
+    }
+  }
+  const next = togglePatternRow(rows, nextRow);
+  const groupByRowKey = new Map(
+    patterns.map((p) => [patternRowKey(toPatternRow(p)), p.group] as const),
+  );
+  const groupByShape = new Map<string, string | null>();
+  for (const p of patterns) {
+    const k = patternKey(p.ix_labels);
+    if (!groupByShape.has(k)) groupByShape.set(k, p.group);
+  }
+  return next.map((row) => {
+    const rowKey = patternRowKey(row);
+    const shape = patternKey(row.labels);
+    const group = groupByRowKey.has(rowKey)
+      ? (groupByRowKey.get(rowKey) ?? null)
+      : groupByShape.has(shape)
+        ? (groupByShape.get(shape) ?? null)
+        : activeGroup;
+    return fromPatternRow(row, group);
+  });
+}
+
+/** Add/remove one ordered sequence as an unpinned row. */
 export function toggleIxPattern(
   patterns: readonly IxPattern[],
   labels: readonly string[],
   group: string | null,
 ): IxPattern[] {
-  if (labels.length === 0) return patterns.map((p) => ({ ...p }));
-  const key = patternKeyOf(labels);
-  const kept = patterns.filter((p) => patternKeyOf(p.ix_labels) !== key);
-  if (kept.length !== patterns.length) return kept.map((p) => ({ ...p }));
-  return [...patterns.map((p) => ({ ...p })), { group, ix_labels: [...labels] }];
+  return toggleExactPattern(patterns, labels, undefined, group);
 }
 
 export interface PatternParseResult {
@@ -104,10 +205,28 @@ export interface PatternParseResult {
 interface RawEntry {
   group: string | null;
   labels: string[];
+  fee: IxPatternFee;
 }
 
 const isStringArray = (v: unknown): v is string[] =>
   Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+function feeOf(o: Record<string, unknown>): IxPatternFee {
+  const fee: IxPatternFee = {};
+  for (const f of FEE_FIELDS) {
+    const v = o[f];
+    if (typeof v === 'number' && Number.isInteger(v) && v >= 0) fee[f] = v;
+  }
+  return fee;
+}
+
+function feeKey(fee: IxPatternFee): string {
+  return FEE_FIELDS.map((f) => (fee[f] != null ? `${f}:${fee[f]}` : '')).join('|');
+}
+
+function entryKey(e: RawEntry): string {
+  return `${patternKeyOf(e.labels)}\u{2}${feeKey(e.fee)}`;
+}
 
 /** Group name off an object entry — `group` is ours, `tool` is what a derived
  *  study file usually calls it, and `label`/`name` are the other two spellings
@@ -129,33 +248,33 @@ function entriesFromJson(value: unknown): RawEntry[] | null {
   }
   if (!Array.isArray(value)) return null;
   // A single sequence pasted bare.
-  if (isStringArray(value)) return [{ group: null, labels: value }];
+  if (isStringArray(value)) return [{ group: null, labels: value, fee: {} }];
   const out: RawEntry[] = [];
   for (const item of value) {
     if (isStringArray(item)) {
-      out.push({ group: null, labels: item });
+      out.push({ group: null, labels: item, fee: {} });
       continue;
     }
     if (item && typeof item === 'object') {
       const o = item as Record<string, unknown>;
       const labels = o.ix_labels ?? o.instruction_labels ?? o.labels;
       if (isStringArray(labels)) {
-        out.push({ group: groupOf(o), labels });
+        out.push({ group: groupOf(o), labels, fee: feeOf(o) });
         continue;
       }
     }
     // Anything else is counted as skipped by the caller (length difference).
-    out.push({ group: null, labels: [] });
+    out.push({ group: null, labels: [], fee: {} });
   }
   return out;
 }
 
 /**
- * Parse a pasted pattern payload.
+ * Parse a pasted exact-pattern payload.
  *
  * Accepts, in order: a `{ "patterns": [...] }` wrapper, an array of
- * `{ ix_labels, group|tool }` objects, an array of label arrays, one bare label
- * array, or one JSON array per line. Deliberately does NOT accept the
+ * `{ ix_labels, group|tool, cu_limit? }` objects, an array of label arrays, one
+ * bare label array, or one JSON array per line. Deliberately does NOT accept the
  * `"A > B > C"` display form: those are shortened ACTION names, and a pattern
  * built from them would match no trade while looking correct.
  */
@@ -183,7 +302,7 @@ export function parsePastedPatterns(text: string): PatternParseResult {
         const parsed: unknown = JSON.parse(line);
         const one = entriesFromJson(parsed);
         if (one) perLine.push(...one);
-        else perLine.push({ group: null, labels: [] });
+        else perLine.push({ group: null, labels: [], fee: {} });
       } catch {
         return {
           ...empty,
@@ -212,13 +331,13 @@ export function parsePastedPatterns(text: string): PatternParseResult {
       skipped += 1;
       continue;
     }
-    const key = patternKeyOf(labels);
+    const key = entryKey({ ...e, labels });
     if (seen.has(key)) {
       duplicates += 1;
       continue;
     }
     seen.add(key);
-    patterns.push({ group: e.group, ix_labels: labels });
+    patterns.push({ group: e.group, ix_labels: labels, ...e.fee });
   }
 
   if (patterns.length === 0 && skipped === 0 && duplicates === 0) {
@@ -227,17 +346,82 @@ export function parsePastedPatterns(text: string): PatternParseResult {
   return { patterns, accepted: patterns.length, duplicates, skipped, error: null };
 }
 
-/** The set as re-pastable JSON, groups preserved. */
+export interface GrainParseResult {
+  grains: string[];
+  accepted: number;
+  duplicates: number;
+  error: string | null;
+}
+
+/**
+ * Parse pasted working-template grain ids. Accepts a JSON string array, or
+ * newline/comma-separated ids. Rejects ix_labels payloads so a templates lens
+ * cannot silently store exact sequences as fake grains.
+ */
+export function parsePastedGrains(text: string): GrainParseResult {
+  const trimmed = text.trim();
+  const empty: GrainParseResult = { grains: [], accepted: 0, duplicates: 0, error: null };
+  if (!trimmed) return empty;
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+      const grains = parseGrainIds(parsed.join('\n'));
+      const raw = parsed.map((s) => s.trim()).filter(Boolean);
+      return {
+        grains,
+        accepted: grains.length,
+        duplicates: Math.max(0, raw.length - grains.length),
+        error: grains.length === 0 ? 'No grain ids in that JSON array.' : null,
+      };
+    }
+    if (parsed !== undefined) {
+      return {
+        ...empty,
+        error:
+          'This set is templates — paste grain ids (program|CU|ATA|N|S|F), not ix_labels sequences.',
+      };
+    }
+  } catch {
+    // not JSON — newline/comma list
+  }
+
+  const grains = parseGrainIds(trimmed);
+  if (grains.length === 0) {
+    return {
+      ...empty,
+      error: 'No grain ids found. Paste program|CU|ATA|N|S|F ids, one per line or as a JSON string array.',
+    };
+  }
+  const rawCount = trimmed.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).length;
+  return {
+    grains,
+    accepted: grains.length,
+    duplicates: Math.max(0, rawCount - grains.length),
+    error: null,
+  };
+}
+
+/** The set as re-pastable JSON, groups and pins preserved. */
 export function formatPatternsJson(patterns: readonly IxPattern[]): string {
   return JSON.stringify(
-    patterns.map((p) => (p.group ? { tool: p.group, ix_labels: p.ix_labels } : p.ix_labels)),
+    patterns.map((p) => {
+      const pinned = FEE_FIELDS.some((f) => p[f] != null);
+      if (!p.group && !pinned) return p.ix_labels;
+      const out: Record<string, unknown> = { ix_labels: p.ix_labels };
+      if (p.group) out.tool = p.group;
+      for (const f of FEE_FIELDS) {
+        if (p[f] != null) out[f] = p[f];
+      }
+      return out;
+    }),
     null,
     2,
   );
 }
 
-/** Bare label arrays — the shape a fingerprint's `ix_patterns` stores,
- *  for promoting a lens into one. Group labels have no home there and drop. */
+/** Bare label arrays — groups and pins drop. Prefer {@link toPatternRow} when
+ *  promoting into a fingerprint so fees survive. */
 export function toIxPatterns(patterns: readonly IxPattern[]): string[][] {
   return patterns.map((p) => [...p.ix_labels]);
 }

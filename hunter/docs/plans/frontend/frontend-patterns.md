@@ -133,6 +133,8 @@ server compare. Percent columns that render `×100` (Win %, Open %) use a local
   classify — the selected tape list's keys **or** just the token's creator wallet. Overlay
   options come from `classifyOptsForTape`: tagged = exact labels + fee wildcard + contagion;
   dump = labels + fee wildcard, no contagion; working = `templateGrain`, no contagion.
+  A trader-analysis lens set is one of those lists (`exact` → tagged, `templates` → working)
+  and supplies contagion/side/exclude through `FlowLensContext`.
   `useFlowPatternSource` is the engine's tagged snapshot for metric panes, not the live
   overlay. With patterns the split is that list's membership vs the rest; without, it degrades to
   creator + wallets they traded with vs the rest, and the toolbar tooltip says so. Only a

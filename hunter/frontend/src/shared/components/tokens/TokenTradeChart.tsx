@@ -272,12 +272,12 @@ export function TokenTradeChart({
     () => (tape ? stagingPatternTarget(tape) : persistTarget),
     [tape, persistTarget],
   );
-  const overlayList: TapeList = tape?.list ?? (lensTarget ? 'tagged' : persistTarget.list);
+  const overlayList: TapeList = tape?.list ?? lensTarget?.list ?? persistTarget.list;
   const overlayKeys = tape?.keys ?? (lensTarget ? (flowPatternKeys ?? null) : persistTarget.keys);
   const overlayRows =
     overlayList === 'working'
       ? null
-      : (tape?.rows ?? (lensTarget ? null : persistTarget.rows));
+      : (tape?.rows ?? (lensTarget ? lensTarget.rows : persistTarget.rows));
   const classifyOpts = useMemo(
     () =>
       classifyOptsForTape({

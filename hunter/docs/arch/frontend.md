@@ -676,8 +676,10 @@ catch-all already matches every budget and a pin beside it cannot narrow. A pin
 click on a catch-all **narrows** (drops the catch-all, keeps the pin); pins off
 on a pinned shape **widens**. Pressed / Vol checked state follows engine matching:
 an ix-only row stays selected on every trade of that shape. Hidden on `working` (grain ids) and on a
-read-only run snapshot. Trader-analysis lens badges stay labels-only (`ix_pattern_sets`
-has no fee pins). Each group is written by its OWN writer, and a build may sit on
+read-only run snapshot. A trader-analysis lens set is one vocabulary, chosen at
+create: `exact` (ix_labels + fee pins, same catch-all-vs-pin rule) or `templates`
+(grain ids, no pins). The set picker is the switch; badges follow that kind
+through `classifyOptsForTape`. Each group is written by its OWN writer, and a build may sit on
 BOTH ix lists — the normal configuration, since the two answer different questions
 about one transaction.
 
@@ -1117,19 +1119,25 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   comment on `kernel::wallet_mint_pnl`).
 - **Trader Analysis flow lens (`lab/components/analysis/FlowLensBar.tsx` +
   `useTraderFlowLens.ts`).** The page's tokens belong to no cohort, so there is no fingerprint to read
-  `ix_patterns` off and the charts' vol/non-vol overlay has nothing to classify with. The lens is
+  lists off and the charts' vol/non-vol overlay has nothing to classify with. The lens is
   the second owner of that same fact: a named `ix_pattern_sets` row (lab-only table, CRUD at
-  `/api/ix-pattern-sets`) holding `[{ group, ix_labels }]`, picked once above the grid and applied to
-  every card. Keys ride the existing `flowPatternKeys` prop path; the classifier options and the
-  Tagged-badge write target ride `context/FlowLensContext`, which the page provides and
+  `/api/ix-pattern-sets`) whose **kind** is insert-only — `exact` (ordered `ix_labels` plus
+  optional fee pins) or `templates` (working-template grain ids). The set picker is the
+  switch; charts, the Vol column, and badge clicks all follow the selected set's kind via
+  `classifyOptsForTape` (`exact` → `'tagged'` / labels+fees, `templates` → `'working'` / grain).
+  Keys ride the existing `flowPatternKeys` prop path; the classifier options, fee pins, and the
+  badge write target ride `context/FlowLensContext`, which the page provides and
   `TokenPriceChart` / `TokenTradeChart` / `BarTradesPanel` consume — absent everywhere else, where the
   chart stack classifies exactly as the engine does. A lens defaults to **contagion off** (each trade
-  judged by its own `ix_labels`, no forward wallet tagging) and **excludes the studied wallet**, because
-  it answers "which structures surround this moment", not "who is in the volume crew". A Tagged badge under
+  judged by its own labels or grain, no forward wallet tagging) and **excludes the studied wallet**, because
+  it answers "which structures surround this moment", not "who is in the volume crew". A badge under
   a lens writes to the pattern set, never a fingerprint; the one path into the engine is the explicit
-  **Copy to fingerprint**. Paste accepts a `{ "patterns": [...] }` study file, a `[{ tool, ix_labels }]`
-  list, bare label arrays, or one JSON array per line, and reports accepted / duplicate / skipped counts
-  (`lib/flow/ixPatternSets.ts`). Group chips narrow which patterns classify (view state, per set).
+  **Copy to fingerprint** (exact → `m_flow_ix.ix_patterns` with fees kept; templates →
+  `m_burst_slot.working_templates`). Paste on an exact set accepts a `{ "patterns": [...] }` study file, a
+  `[{ tool, ix_labels, cu_limit? }]` list, bare label arrays, or one JSON array per line, and reports
+  accepted / duplicate / skipped counts (`lib/flow/ixPatternSets.ts`). Paste on a templates set accepts
+  grain ids (JSON string array or one per line) and rejects ix_labels payloads. Group chips narrow
+  which exact patterns classify (view state, per set); templates have no groups.
   Detail: [@plans/strategies/trader-flow-lens.md](@plans/strategies/trader-flow-lens.md).
 - **One in-memory evaluator, in Rust only.** Token tables whose rows are RAM-resident on the backend (the
   lab Simulated table; the live Holdings composition) page/sort/filter through
