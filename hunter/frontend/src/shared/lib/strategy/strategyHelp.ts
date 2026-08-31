@@ -1504,10 +1504,11 @@ export const DISCOVERY_FIELD_HELP = {
   draftPatterns: {
     title: 'Draft ix_patterns',
     body: [
-      'Checked structures from the table become pattern rows (exact ix_labels sequences).',
-      'Edit freely, then Apply to write m_flow_ix.ix_patterns on the target fingerprint.',
+      'Checked structures from the ranked table become unpinned pattern rows (exact ix_labels, any fee budget).',
+      'On the preview trades table, the pin checkboxes (cu_limit / cu_price / tip) copy those fields from the clicked tx onto a separate row — default off, so a tx that has fees still stages structure-only.',
+      'Edit freely, then Apply to write the list on the target fingerprint (tagged = m_flow_ix, dump = m_dump_ix).',
       '',
-      'Those patterns drive tagged_* / untagged_* / tagged_share on rules that use this fingerprint.',
+      'Those patterns drive tagged_* / untagged_* / tagged_share (or dump_sell / dump_sell_count) on rules that use this fingerprint.',
       'Empty draft cannot Apply — toggle at least one structure (or add a row in the editor).',
     ].join('\n'),
   },
@@ -1550,8 +1551,10 @@ export const DISCOVERY_COL_HELP = {
     title: 'Vol — include in draft',
     body: [
       'Check this box to add the row’s exact ix_labels sequence to the draft',
-      'ix_patterns list below the table. Unchecked rows are ignored on Apply —',
-      'only checked structures get written to the fingerprint.',
+      'ix_patterns list as a catch-all (any fee budget). Unchecked rows are ignored',
+      'on Apply unless you also staged a fee-pinned copy of the same shape from a',
+      'trades table. Only the ranked-table checkbox is structure-only — pin cu_limit',
+      '/ cu_price / tip from a specific tx on the preview trades strip.',
       '',
       'Example: check the top-ranked ["Pump.Fun: Create","Pump.Fun: Buy"] row to mark',
       'that combo as manufactured volume; leave a low-lift ["Pump.Fun: Buy"] row unchecked',

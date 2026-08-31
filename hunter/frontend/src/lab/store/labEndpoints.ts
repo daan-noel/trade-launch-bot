@@ -458,7 +458,9 @@ export const labApi = baseApi.injectEndpoints({
         /// a copy — there is no precision to pass, and so no substituted precision
         /// that could arm the bound rule on a window the card never showed.
         group_key: Record<string, unknown>;
-        ix_patterns: string[][];
+        ix_patterns: (string[] | Record<string, unknown>)[];
+        /** Which list to write. Omit / `tagged` → `m_flow_ix`; `dump` → `m_dump_ix`. */
+        list?: 'tagged' | 'dump';
         name?: string;
       }
     >({

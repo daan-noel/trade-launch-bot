@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react';
 
-import { clearPrompt, IxPatternsEditor } from 'components/strategy/IxPatternsEditor';
+import { clearPrompt, IxPatternRowsEditor } from 'components/strategy/IxPatternsEditor';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -14,7 +14,14 @@ import {
   withFlowWalletRules,
   type IxPatternList,
 } from 'lib/strategy/registry';
+import {
+  formatFeePins,
+  rowPinsFee,
+  serializeIxPatternRows,
+  type IxPatternRow,
+} from 'lib/strategy/ixPatternRows';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
+import type { Fingerprint } from 'lib/strategy/types';
 
 /** The two lists the cart can stage into. `tagged` is `m_flow_ix.ix_patterns` (which
  *  trades the flow split calls volume-side); `dump` is `m_dump_ix.ix_patterns` (the
@@ -25,7 +32,6 @@ const STAGE_LISTS: { value: IxPatternList; label: string; title: string }[] = [
   { value: 'tagged', label: 'tagged', title: 'Stage into m_flow_ix.ix_patterns' },
   { value: 'dump', label: 'dump', title: 'Stage into m_dump_ix.ix_patterns' },
 ];
-import type { Fingerprint } from 'lib/strategy/types';
 
 /** Staging "cart" for the ix_patterns being assembled: an accent-elevated
  *  panel that reads as the page's deliverable, not just another box. Checked rows
@@ -49,9 +55,9 @@ export function DraftPatternsCart({
   applying,
   onApply,
 }: {
-  draftPatterns: string[][];
-  onChange: (patterns: string[][]) => void;
-  currentPatterns: string[][];
+  draftPatterns: IxPatternRow[];
+  onChange: (patterns: IxPatternRow[]) => void;
+  currentPatterns: IxPatternRow[];
   targetFp: Fingerprint | null;
   /** Which list Apply writes the draft into. */
   stageInto: IxPatternList;
@@ -67,10 +73,8 @@ export function DraftPatternsCart({
 }) {
   const [rawEdit, setRawEdit] = useState(false);
 
-  const norm = (ps: string[][]) =>
-    ps.map((p) => p.map((s) => s.trim()).filter(Boolean)).filter((p) => p.length > 0);
-  const draftNorm = norm(draftPatterns);
-  const savedNorm = norm(currentPatterns);
+  const draftNorm = serializeIxPatternRows(draftPatterns);
+  const savedNorm = serializeIxPatternRows(currentPatterns);
   const stagedCount = draftNorm.length;
   const patternsDirty = JSON.stringify(draftNorm) !== JSON.stringify(savedNorm);
 
@@ -136,7 +140,7 @@ export function DraftPatternsCart({
             variant="link"
             size="xs"
             onClick={() => setRawEdit((v) => !v)}
-            title={rawEdit ? 'Back to chip view' : 'Edit raw JSON label sequences'}
+            title={rawEdit ? 'Back to chip view' : 'Edit raw JSON rows (labels + optional fee pins)'}
           >
             <EditIcon className="h-3 w-3" />
             {rawEdit ? 'Done editing' : 'Edit raw'}
@@ -146,7 +150,7 @@ export function DraftPatternsCart({
 
       {rawEdit ? (
         // The editor caps and scrolls its own list — a wrapper scroller here nests two.
-        <IxPatternsEditor patterns={draftPatterns} onChange={onChange} />
+        <IxPatternRowsEditor rows={draftPatterns} onChange={onChange} />
       ) : stagedCount === 0 ? (
         <EmptyState
           compact
@@ -164,7 +168,7 @@ export function DraftPatternsCart({
               type="button"
               className="text-[11px] font-semibold text-accent hover:underline"
               onClick={() => {
-                onChange([...draftPatterns, []]);
+                onChange([...draftPatterns, { labels: [] }]);
                 setRawEdit(true);
               }}
             >
@@ -175,8 +179,9 @@ export function DraftPatternsCart({
       ) : (
         <ul className="flex max-h-64 flex-col gap-1.5 overflow-y-auto pr-1">
           {draftPatterns.map((p, i) => {
-            const labels = p.map((s) => s.trim()).filter(Boolean);
+            const labels = p.labels.map((s) => s.trim()).filter(Boolean);
             if (labels.length === 0) return null;
+            const pin = formatFeePins(p);
             return (
               <li
                 key={i}
@@ -192,6 +197,14 @@ export function DraftPatternsCart({
                       </span>
                     </Fragment>
                   ))}
+                  {rowPinsFee(p) && (
+                    <span
+                      className="shrink-0 rounded bg-accent/15 px-1 font-mono text-[9px] text-accent"
+                      title={`pinned to ${pin} — a trade must carry these exactly`}
+                    >
+                      {pin || 'fee'}
+                    </span>
+                  )}
                 </div>
                 <IconButton
                   variant="danger"

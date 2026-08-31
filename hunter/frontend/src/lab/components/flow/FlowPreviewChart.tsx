@@ -99,6 +99,15 @@ import type { ColumnDef } from 'components/table/types';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
 import { Badge } from 'components/ui/Badge';
 import { Checkbox } from 'components/ui/Checkbox';
+import { FeePinToggles } from 'components/tokens/IxPatternBar';
+import {
+  feeFromTrade,
+  feeMaskActive,
+  formatFeePins,
+  patternRowKey,
+  rowFromTrade,
+  type IxPatternFeeMask,
+} from 'lib/strategy/ixPatternRows';
 import { cn } from 'lib/cn';
 import { useTimezone } from 'context/TimezoneContext';
 import { useProfileWallets } from 'hooks/useProfileWallets';
@@ -370,8 +379,20 @@ export interface FlowPreviewChartProps {
   /** Toggle a trade's ix-structure in/out of the draft ix_patterns —
    *  wired to the same `draftPatterns` the ranked structure table mutates, so
    *  the Bar-Trades table can flag a shape in-context. Omit to hide the Vol
-   *  checkbox (ix_labels stays read-only). */
-  onTogglePattern?: (labels: string[]) => void;
+   *  checkbox (ix_labels stays read-only). A fee pin mask on the strip makes
+   *  the click copy those fields from THIS tx. */
+  onTogglePattern?: (
+    labels: string[],
+    trade: { cu_limit?: number | null; cu_price?: number | null; tip_lamports?: number | null },
+  ) => void;
+  /** Sticky fee-field modifiers for {@link onTogglePattern}. Ranked-table
+   *  checkboxes ignore this. */
+  feePins?: IxPatternFeeMask;
+  onFeePinsChange?: (next: IxPatternFeeMask) => void;
+  /** Exact-row keys of the draft (`patternRowKey`). The Vol checkbox follows
+   *  these, so a fee-pinned click lights only that pinned row. Overlay lines
+   *  still read {@link patternKeys} (labels only). */
+  patternRowKeys?: ReadonlySet<string>;
   /** Token creator wallet address, when known — offered as a toggle since the
    *  real classifier always treats the creator as volume-side. */
   creatorWallet?: string | null;
@@ -404,6 +425,9 @@ export function FlowPreviewChart({
   trades,
   patternKeys,
   onTogglePattern,
+  feePins = {},
+  onFeePinsChange,
+  patternRowKeys,
   creatorWallet,
   athPriceInSol = null,
   isMigrated = false,
@@ -1172,28 +1196,40 @@ export function FlowPreviewChart({
   const baseTradeColumns = useMemo(() => tokenTradeColumns('SOL'), []);
   const tradeColumns = useMemo<ColumnDef<TradeRecord>[]>(() => {
     if (!onTogglePattern) return baseTradeColumns;
+    const pinning = feeMaskActive(feePins);
+    const rowKeys = patternRowKeys ?? patternKeys;
     const taggedToggle: ColumnDef<TradeRecord> = {
       key: 'vol_pattern',
       label: 'Vol',
-      tooltip:
-        'Flag this trade’s ix-structure as manufactured volume — adds it to the draft ' +
-        'ix_patterns (applies to EVERY trade with this exact shape, not just this row).',
+      tooltip: pinning
+        ? 'Flag this trade’s ix-structure plus the checked fee fields from THIS tx — adds that exact row to the draft ix_patterns.'
+        : 'Flag this trade’s ix-structure as manufactured volume — adds it to the draft ' +
+          'ix_patterns (applies to EVERY trade with this exact shape, not just this row).',
       render: (t) => {
         const labels = t.instruction_labels;
         if (!labels || labels.length === 0) {
           return <span className="text-text-dim/40">—</span>;
         }
+        const clickRow = rowFromTrade(labels, t, feePins);
+        const checked = rowKeys.has(patternRowKey(clickRow));
         return (
           <Checkbox
-            checked={patternKeys.has(JSON.stringify(labels))}
-            onChange={() => onTogglePattern(labels)}
+            checked={checked}
+            title={
+              pinning
+                ? formatFeePins(feeFromTrade(t, feePins))
+                  ? `Stage this structure + ${formatFeePins(feeFromTrade(t, feePins))}`
+                  : 'This tx has none of the checked fee fields — click stages the structure only'
+                : undefined
+            }
+            onChange={() => onTogglePattern(labels, t)}
           />
         );
       },
       searchValue: () => '',
     };
     return [taggedToggle, ...baseTradeColumns];
-  }, [baseTradeColumns, patternKeys, onTogglePattern]);
+  }, [baseTradeColumns, patternKeys, patternRowKeys, onTogglePattern, feePins]);
   const selectionLabel = selectedBar
     ? selectedBar.groupMode === 'slot'
       ? `Slot ${selectedBar.slot}`
@@ -1467,6 +1503,9 @@ export function FlowPreviewChart({
             >
               Clear
             </button>
+            {onTogglePattern && onFeePinsChange && (
+              <FeePinToggles mask={feePins} onChange={onFeePinsChange} />
+            )}
           </div>
           <DataTable
             columns={tradeColumns}

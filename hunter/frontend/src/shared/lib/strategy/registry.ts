@@ -394,6 +394,14 @@ export function patternsForList(
   return list === 'dump' ? dumpPatternsFromConfig(cfg) : ixPatternsFromConfig(cfg);
 }
 
+/** The same list with each row's pinned fee budget intact. */
+export function patternRowsForList(
+  cfg: Record<string, unknown> | null | undefined,
+  list: IxPatternList,
+): IxPatternRow[] {
+  return list === 'dump' ? dumpPatternRowsFromConfig(cfg) : ixPatternRowsFromConfig(cfg);
+}
+
 /** Write one list into `prev`, through that group's OWN writer, and return the whole
  *  config. Never rebuild either key from its pattern rows alone: a PUT replaces the
  *  row, so a partial write lands as a full one. */

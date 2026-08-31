@@ -9,10 +9,19 @@ import {
   metricConfigWithIxPatterns,
 } from './registry';
 import {
+  addUnpinnedPatterns,
+  feeFromTrade,
+  feeMaskActive,
+  formatFeePins,
   parseIxPatternRow,
   parseIxPatternRows,
+  patternKey,
+  patternRowKey,
+  removeUnpinnedPatterns,
+  rowFromTrade,
   rowPinsFee,
   serializeIxPatternRow,
+  togglePatternRow,
   withPreservedFees,
 } from './ixPatternRows';
 
@@ -113,8 +122,8 @@ describe('withPreservedFees', () => {
 });
 
 /** The regression this whole module exists to prevent: the fingerprint form, the
- *  flow lens, the sweep config and the discovery cart all edit LABELS, and a save
- *  from any of them must not widen a pinned entry back to ix-only. */
+ *  flow lens and the sweep config all edit LABELS, and a save from any of them must
+ *  not widen a pinned entry back to ix-only. Discovery writes whole rows. */
 describe('a labels-only save preserves the pins it cannot edit', () => {
   it('keeps a flow pin across a labels-only rewrite', () => {
     const before = metricConfigWithIxPatterns([
@@ -158,5 +167,97 @@ describe('a labels-only save preserves the pins it cannot edit', () => {
       DUMP,
       ['Pump.Fun: Buy'],
     ]);
+  });
+});
+
+describe('feeFromTrade / rowFromTrade', () => {
+  const tx = { cu_limit: 300_000, cu_price: 3_333_333, tip_lamports: 0 };
+
+  it('copies nothing when the mask is off — a tx that has every field still stages ix-only', () => {
+    expect(feeFromTrade(tx, {})).toEqual({});
+    expect(feeFromTrade(tx, { cu_limit: false })).toEqual({});
+    expect(rowFromTrade(DUMP, tx, {})).toEqual({ labels: DUMP });
+  });
+
+  it('copies only the fields the mask asks for, off THIS tx', () => {
+    expect(feeFromTrade(tx, { cu_limit: true })).toEqual({ cu_limit: 300_000 });
+    expect(rowFromTrade(DUMP, tx, { cu_limit: true, cu_price: true })).toEqual({
+      labels: DUMP,
+      cu_limit: 300_000,
+      cu_price: 3_333_333,
+    });
+  });
+
+  it('skips a checked field the tx does not carry', () => {
+    expect(feeFromTrade({ cu_limit: null }, { cu_limit: true, cu_price: true })).toEqual({});
+    expect(rowFromTrade(DUMP, { cu_limit: 300_000 }, { cu_limit: true, tip_lamports: true })).toEqual({
+      labels: DUMP,
+      cu_limit: 300_000,
+    });
+  });
+
+  it('copies a pinned zero — the "no tip" reading', () => {
+    expect(feeFromTrade(tx, { tip_lamports: true })).toEqual({ tip_lamports: 0 });
+  });
+});
+
+describe('patternRowKey', () => {
+  it('keys an unpinned row as its label array — the same string a structure click uses', () => {
+    expect(patternRowKey({ labels: DUMP })).toBe(patternKey(DUMP));
+    expect(patternRowKey({ labels: DUMP })).toBe(JSON.stringify(DUMP));
+  });
+
+  it('keys a pinned row as a different entry from the same shape unpinned', () => {
+    expect(patternRowKey({ labels: DUMP, cu_limit: 300_000 })).not.toBe(
+      patternRowKey({ labels: DUMP }),
+    );
+  });
+});
+
+describe('togglePatternRow', () => {
+  it('adds and removes an exact row, leaving a different pin of the same shape', () => {
+    const unpinned = { labels: DUMP };
+    const pinned = { labels: DUMP, cu_limit: 300_000 };
+    const once = togglePatternRow([], pinned);
+    expect(once).toEqual([pinned]);
+    expect(togglePatternRow(once, pinned)).toEqual([]);
+    const both = togglePatternRow(once, unpinned);
+    expect(both).toEqual([pinned, unpinned]);
+    expect(togglePatternRow(both, pinned)).toEqual([unpinned]);
+  });
+
+  it('ignores an empty sequence', () => {
+    const row = { labels: DUMP };
+    expect(togglePatternRow([row], { labels: [] })).toEqual([row]);
+  });
+});
+
+describe('addUnpinnedPatterns / removeUnpinnedPatterns', () => {
+  const pinned = { labels: DUMP, cu_limit: 300_000 };
+
+  it('adds a catch-all without dropping a pin of the same shape', () => {
+    expect(addUnpinnedPatterns([pinned], [DUMP])).toEqual([pinned, { labels: DUMP }]);
+  });
+
+  it('does not duplicate an unpinned row already in the list', () => {
+    expect(addUnpinnedPatterns([{ labels: DUMP }], [DUMP])).toEqual([{ labels: DUMP }]);
+  });
+
+  it('unstages the catch-all and keeps the pin', () => {
+    expect(removeUnpinnedPatterns([pinned, { labels: DUMP }], [DUMP])).toEqual([pinned]);
+  });
+});
+
+describe('feeMaskActive / formatFeePins', () => {
+  it('is off until a field is checked', () => {
+    expect(feeMaskActive({})).toBe(false);
+    expect(feeMaskActive({ cu_limit: true })).toBe(true);
+  });
+
+  it('reads a pin as the fields that are set', () => {
+    expect(formatFeePins({})).toBe('');
+    expect(formatFeePins({ cu_limit: 300_000, cu_price: 3_333_333 })).toBe(
+      'cu 300,000 @ 3,333,333',
+    );
   });
 });

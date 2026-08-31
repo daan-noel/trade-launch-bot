@@ -1,16 +1,24 @@
 import { useCallback, useMemo, useState } from 'react';
 
 import { flowPatternKeysOf } from 'lib/flow/flowPatternKeys';
-import { patternKey, patternsFromKeys, togglePattern } from 'lib/flow/volumePatterns';
+import { patternKey, patternsFromKeys } from 'lib/flow/volumePatterns';
 import {
   ixPatternsFromConfig,
   metricConfigWithList,
   metricConfigWithWorkingTemplates,
+  patternRowsForList,
   patternsForList,
   workingTemplatesFromConfig,
   type IxPatternList,
 } from 'lib/strategy/registry';
 import { isLaunchGrain, templateGrain, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
+import {
+  patternRowKey,
+  togglePatternRow,
+  type IxPatternFee,
+  type IxPatternFeeMask,
+  type IxPatternRow,
+} from 'lib/strategy/ixPatternRows';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
@@ -95,6 +103,13 @@ export interface IxPatternTarget {
   patterns: string[][];
   /** Grain ids when {@link list} is `'working'`. */
   workingTemplates: string[];
+  /** The ACTIVE list as whole rows — what a fee-pinning click toggles against. */
+  rows: IxPatternRow[];
+  /** {@link rows} keyed by {@link patternRowKey} — exact-row membership for the badge. */
+  rowKeys: ReadonlySet<string>;
+  /** Sticky fee-field modifiers for the next badge click. All off = ix structure only. */
+  feePins: IxPatternFeeMask;
+  setFeePins: (mask: IxPatternFeeMask) => void;
   /** Keys of the list a toggle is NOT writing into, so a row can show that the
    *  other one also counts it. A build may sit on both - the mark is information,
    *  not a conflict. */
@@ -104,8 +119,9 @@ export interface IxPatternTarget {
   keys: ReadonlySet<string> | null;
   /** Active rules bound to the target — a write changes what they all mean. */
   activeRuleCount: number;
-  /** Add/remove one ordered `ix_labels` sequence and persist it. No-op with no target. */
-  toggle: ((labels: readonly string[]) => void) | null;
+  /** Add/remove one ordered `ix_labels` sequence (and optional fee pins) and persist
+   *  it. No-op with no target. `fee` omitted or empty ⇒ an ix-only row. */
+  toggle: ((labels: readonly string[], fee?: IxPatternFee) => void) | null;
   /** The target was matched by pattern set, not handed down — it is a guess, and
    *  the picker must say so rather than presenting it as the host's fingerprint. */
   inferred: boolean;
@@ -158,6 +174,7 @@ export function useIxPatternTarget({
 
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [list, setList] = useState<TapeList>('tagged');
+  const [feePins, setFeePins] = useState<IxPatternFeeMask>({});
   const [error, setError] = useState<string | null>(null);
 
   const savedPatterns = useMemo(() => patternsFromKeys(savedKeys), [savedKeys]);
@@ -196,6 +213,18 @@ export function useIxPatternTarget({
     [target, savedPatterns, list],
   );
 
+  const rows = useMemo(
+    () =>
+      list === 'working'
+        ? []
+        : target
+          ? patternRowsForList(target.metric_config, list)
+          : savedPatterns.map((labels) => ({ labels })),
+    [target, savedPatterns, list],
+  );
+
+  const rowKeys = useMemo(() => new Set(rows.map(patternRowKey)), [rows]);
+
   const workingTemplates = useMemo(
     () => (target ? workingTemplatesFromConfig(target.metric_config) : []),
     [target],
@@ -230,10 +259,11 @@ export function useIxPatternTarget({
   );
 
   const toggle = useCallback(
-    (labels: readonly string[]) => {
+    (labels: readonly string[], fee?: IxPatternFee) => {
       if (!target || labels.length === 0) return;
       if (list === 'working' && isLaunchGrain(labels)) return;
       setError(null);
+      const row: IxPatternRow = { labels: [...labels], ...fee };
       const metric_config =
         list === 'working'
           ? metricConfigWithWorkingTemplates(
@@ -245,7 +275,7 @@ export function useIxPatternTarget({
             )
           : metricConfigWithList(
               target.metric_config ?? {},
-              togglePattern(patternsOf(target.metric_config, list), labels),
+              togglePatternRow(patternRowsForList(target.metric_config, list), row),
               list,
             );
       // Fire-and-report: the mutation invalidates `Fingerprint`, which re-derives the
@@ -286,6 +316,10 @@ export function useIxPatternTarget({
     setList,
     patterns,
     workingTemplates,
+    rows,
+    rowKeys,
+    feePins,
+    setFeePins,
     otherKeys,
     keys,
     activeRuleCount,

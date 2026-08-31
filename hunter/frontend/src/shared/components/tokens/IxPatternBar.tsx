@@ -1,7 +1,12 @@
 import { Badge } from 'components/ui/Badge';
+import { Checkbox } from 'components/ui/Checkbox';
 import { Select } from 'components/ui/Select';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
 import type { IxPatternTarget, TapeList } from 'hooks/useIxPatternTarget';
+import {
+  type IxPatternFeeField,
+  type IxPatternFeeMask,
+} from 'lib/strategy/ixPatternRows';
 
 /** The three lists a badge click can write into. Tagged and dump are ordered
  *  `ix_labels` sequences (a build may sit on BOTH). Working is a different
@@ -30,6 +35,58 @@ const LISTS: {
     activeClassName: 'bg-green/20 text-green',
   },
 ];
+
+const FEE_PIN_TOGGLES: { field: IxPatternFeeField; label: string; title: string }[] = [
+  {
+    field: 'cu_limit',
+    label: 'cu_limit',
+    title: 'Copy this tx\'s cu_limit onto the staged row. Off (the default) stages the ix structure only, even when the tx has a limit.',
+  },
+  {
+    field: 'cu_price',
+    label: 'cu_price',
+    title: 'Copy this tx\'s cu_price. Many clients recompute this per transaction — pin it only when you have seen it hold.',
+  },
+  {
+    field: 'tip_lamports',
+    label: 'tip',
+    title: 'Copy this tx\'s tip. A tip is an auction bid and almost never a stable identity.',
+  },
+];
+
+/**
+ * Sticky fee-field modifiers for a trades table. Checking cu_limit then clicking
+ * a tx stages that tx's ix labels plus that tx's cu_limit — not the other two.
+ * All off = structure only. Hidden on the working list (grain ids, not ix+fee)
+ * and on a read-only snapshot.
+ */
+export function FeePinToggles({
+  mask,
+  onChange,
+  disabled = false,
+}: {
+  mask: IxPatternFeeMask;
+  onChange: (next: IxPatternFeeMask) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5" title="Fields copied from the clicked tx onto the staged row. Default off = ix structure only.">
+      <span className="text-[9px] uppercase tracking-wide text-text-dim/60">pin</span>
+      {FEE_PIN_TOGGLES.map(({ field, label, title }) => (
+        <label key={field} className="inline-flex cursor-pointer items-center gap-0.5" title={title}>
+          <Checkbox
+            boxSize="sm"
+            checked={!!mask[field]}
+            disabled={disabled}
+            onChange={() => onChange({ ...mask, [field]: !mask[field] })}
+            aria-label={`Pin ${label} from the clicked tx`}
+          />
+          <span className="font-mono text-[10px] text-text-dim">{label}</span>
+        </label>
+      ))}
+    </span>
+  );
+}
 
 /**
  * The strip above a chart's trades table: which fingerprint's
@@ -73,6 +130,8 @@ export function IxPatternBar({
     setList,
     patterns,
     workingTemplates,
+    feePins,
+    setFeePins,
     activeRuleCount,
     inferred,
     offHost,
@@ -95,6 +154,9 @@ export function IxPatternBar({
         onChange={setList}
         options={LISTS}
       />
+      {!isWorking && (
+        <FeePinToggles mask={feePins} onChange={setFeePins} disabled={!targetId} />
+      )}
       <span className="font-mono text-[11px] text-text-dim">
         {count} {isWorking ? `grain${count === 1 ? '' : 's'}` : `pattern${count === 1 ? '' : 's'}`}
       </span>

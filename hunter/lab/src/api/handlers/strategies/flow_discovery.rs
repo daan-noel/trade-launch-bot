@@ -66,7 +66,12 @@ fn default_token_cap() -> usize {
 #[derive(serde::Deserialize)]
 pub struct BindFlowDiscoveryBody {
     pub group_key: serde_json::Value,
-    pub ix_patterns: Vec<Vec<String>>,
+    /// Mixed `ix_patterns` rows: a bare label array, or `{labels, cu_limit?,
+    /// cu_price?, tip_lamports?}`. Same shapes `metric_config` stores.
+    pub ix_patterns: Vec<serde_json::Value>,
+    /// Which list to write. `"dump"` → `m_dump_ix`; anything else → `m_flow_ix`.
+    #[serde(default)]
+    pub list: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -176,8 +181,13 @@ pub async fn bind_flow_discovery(
 ) -> impl Responder {
     let b = body.into_inner();
     let name = b.name.filter(|s| !s.trim().is_empty()).unwrap_or_default();
+    let group = if b.list.as_deref() == Some("dump") {
+        "m_dump_ix"
+    } else {
+        "m_flow_ix"
+    };
     let metric_config = serde_json::json!({
-        "m_flow_ix": { "ix_patterns": b.ix_patterns }
+        group: { "ix_patterns": b.ix_patterns }
     });
     if let Err(e) = hunter_engine::metrics::validate_fingerprint_metric_config(&metric_config) {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));

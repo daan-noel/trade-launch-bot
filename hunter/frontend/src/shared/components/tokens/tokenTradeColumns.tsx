@@ -12,6 +12,15 @@ import { formatIxLabelsText } from 'lib/ixLabels';
 import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeFees';
 import { patternKey } from 'lib/flow/volumePatterns';
 import { templateGrain } from 'lib/strategy/templateGrain';
+import {
+  feeFromTrade,
+  feeMaskActive,
+  formatFeePins,
+  patternRowKey,
+  rowFromTrade,
+  type IxPatternFee,
+  type IxPatternFeeMask,
+} from 'lib/strategy/ixPatternRows';
 // Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
 // colors come along without dragging the charting library into this chunk.
 import { CHART_COLORS } from 'components/token-price-chart/constants';
@@ -32,8 +41,19 @@ export interface TokenTradeColumnsOpts {
    * There is no staging step — a click PERSISTS, and every active rule bound to
    * that fingerprint classifies flow differently from the engine's next rules
    * reload on. Pass {@link toggleTargetName} so the row says which one.
+   *
+   * The optional `fee` is the pin copied from this tx under the strip's fee-field
+   * checkboxes. Omitted / empty ⇒ an ix-only row, which is the default.
    */
-  onTogglePattern?: ((labels: readonly string[]) => void) | null;
+  onTogglePattern?: ((labels: readonly string[], fee?: IxPatternFee) => void) | null;
+  /**
+   * Exact-row keys (`patternRowKey`) of the list a click writes. When set, the
+   * badge's pressed state follows THIS row (labels + current fee pins), not
+   * merely whether the structure is in the list.
+   */
+  patternRowKeys?: ReadonlySet<string> | null;
+  /** Sticky fee-field modifiers — which of this tx's budget fields a click copies. */
+  feePinMask?: IxPatternFeeMask | null;
   /** Name of the fingerprint {@link onTogglePattern} writes to — named in the
    *  badge tooltip, since the click is an immediate save and not a local edit. */
   toggleTargetName?: string | null;
@@ -188,6 +208,9 @@ export function tokenTradeColumns(
   const isDump = list === 'dump';
   const isWorking = list === 'working';
   const otherKeys = opts?.otherListKeys ?? null;
+  const pinMask = opts?.feePinMask ?? null;
+  const rowKeys = opts?.patternRowKeys ?? null;
+  const pinning = !isWorking && feeMaskActive(pinMask);
   const listField = isWorking
     ? 'm_burst_slot.working_templates'
     : isDump
@@ -229,6 +252,11 @@ export function tokenTradeColumns(
         const isTagged = isWorking
           ? keys.has(templateGrain(labels))
           : isIxPattern(labels, keys);
+        const clickRow = pinning ? rowFromTrade(labels, t, pinMask) : { labels: [...labels] };
+        const clickFee = feeFromTrade(t, pinMask);
+        const isExact =
+          rowKeys != null ? rowKeys.has(patternRowKey(clickRow)) : isTagged;
+        const pinNote = pinning ? formatFeePins(clickFee) : '';
         // The reasons map is the FLOW split's verdict (structure + contagion), so it
         // says nothing about a dump build or a working grain and must not decorate either.
         const reason = isDump || isWorking ? null : (reasons?.get(t.id) ?? null);
@@ -244,24 +272,29 @@ export function tokenTradeColumns(
             {isTagged ? inWord : outWord}
           </Badge>
         );
+        const pinClickHint = pinning
+          ? pinNote
+            ? ` this structure + ${pinNote}`
+            : ' this structure only (this tx has none of the checked fee fields)'
+          : ' this structure';
         const cell = (
           <span className="inline-flex items-center gap-1">
             {onToggle ? (
               <button
                 type="button"
-                aria-pressed={isTagged}
+                aria-pressed={isExact}
                 title={
-                  isTagged
-                    ? `Saved under ${listField} on ${targetLabel} — click to remove it`
+                  isExact
+                    ? `Saved under ${listField} on ${targetLabel} — click to remove${pinClickHint}`
                     : isWorking
                       ? `Click to save this grain under ${listField} on ${targetLabel}`
-                      : `Click to save this structure under ${listField} on ${targetLabel}`
+                      : `Click to save${pinClickHint} under ${listField} on ${targetLabel}`
                 }
                 onClick={(e) => {
                   // The row itself is selectable on several hosts; an edit click
                   // must not also change the table's selection.
                   e.stopPropagation();
-                  onToggle(labels);
+                  onToggle(labels, pinning ? clickFee : undefined);
                 }}
                 className="rounded-md focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
               >
@@ -269,6 +302,11 @@ export function tokenTradeColumns(
               </button>
             ) : (
               badge
+            )}
+            {pinning && isExact && pinNote && (
+              <span className="font-mono text-[9px] text-accent" title={`this exact pin is saved: ${pinNote}`}>
+                {pinNote}
+              </span>
             )}
             {note && (
               <span className="text-[9px] uppercase tracking-wide text-text-dim/70">

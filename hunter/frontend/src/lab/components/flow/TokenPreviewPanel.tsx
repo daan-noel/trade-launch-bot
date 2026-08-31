@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Input } from 'components/ui/Input';
 import type { FlowDiscoveryTokenGross, TradeRecord } from 'types';
+import type { IxPatternFeeMask } from 'lib/strategy/ixPatternRows';
 
 import { LazyFlowPreviewChart } from './LazyFlowPreviewChart';
 
@@ -28,6 +29,9 @@ export function TokenPreviewPanel({
   isMigrated,
   tokenCreatedAt,
   patternKeys,
+  patternRowKeys,
+  feePins,
+  onFeePinsChange,
   onTogglePattern,
 }: {
   tokens: FlowDiscoveryTokenGross[];
@@ -41,7 +45,13 @@ export function TokenPreviewPanel({
   /** Token `created_at` (ISO) — zero point for the chart tooltip's "+age". */
   tokenCreatedAt: string | null;
   patternKeys: ReadonlySet<string>;
-  onTogglePattern: (labels: string[]) => void;
+  patternRowKeys: ReadonlySet<string>;
+  feePins: IxPatternFeeMask;
+  onFeePinsChange: (next: IxPatternFeeMask) => void;
+  onTogglePattern: (
+    labels: string[],
+    trade: Pick<TradeRecord, 'cu_limit' | 'cu_price' | 'tip_lamports'>,
+  ) => void;
 }) {
   const [mintQuery, setMintQuery] = useState('');
   const filteredTokens = useMemo(() => {
@@ -113,6 +123,9 @@ export function TokenPreviewPanel({
             <LazyFlowPreviewChart
               trades={trades}
               patternKeys={patternKeys}
+              patternRowKeys={patternRowKeys}
+              feePins={feePins}
+              onFeePinsChange={onFeePinsChange}
               onTogglePattern={onTogglePattern}
               creatorWallet={creatorWallet}
               athPriceInSol={athPriceInSol}

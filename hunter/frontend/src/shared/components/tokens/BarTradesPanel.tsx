@@ -143,6 +143,8 @@ export function BarTradesPanel({
   // edits the whole stored set, filing new patterns under the lens' active group.
   const badgeKeys = lensTarget ? (flowPatternKeys ?? null) : patternTarget.keys;
   const toggleTargetName = lensTarget?.name ?? patternTarget.target?.name ?? null;
+  const feePinMask = lensTarget ? null : patternTarget.feePins;
+  const patternRowKeys = lensTarget ? null : patternTarget.rowKeys;
 
   // Pulled apart rather than passed as one object: `useTokenHighlight` returns a
   // fresh literal every render, and depending on it would rebuild every column —
@@ -172,6 +174,8 @@ export function BarTradesPanel({
         // list exclusively on the fingerprint path.
         patternList: lensTarget ? 'tagged' : patternTarget.list,
         otherListKeys: lensTarget ? null : patternTarget.otherKeys,
+        feePinMask,
+        patternRowKeys,
       }),
     [
       price.unitLabel,
@@ -182,6 +186,8 @@ export function BarTradesPanel({
       lensTarget,
       patternTarget.list,
       patternTarget.otherKeys,
+      feePinMask,
+      patternRowKeys,
       onLensWallet,
       onLensStructure,
       armedLensWallet,
