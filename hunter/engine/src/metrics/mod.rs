@@ -18,6 +18,8 @@
 //!   that need the WALLET column, and its own deque for exactly that reason
 //! * `m_flow_ix` (static, fingerprint-scoped) — tagged/untagged lifetime totals
 //! * `m_flow_ix_window` (dynamic, fingerprint-scoped) — same metrics over a window
+//! * `m_burst_slot` (static, fingerprint-scoped) — this slot's buy prefix × this print's grain
+//! * `m_burst_wave` (static) — this token's consecutive-slot buy run (gap before the wave)
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `bounce`,
 //!   `pnl`, `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
 //!
@@ -32,6 +34,7 @@
 //! makes it immediately usable everywhere, with no schema change.
 
 pub mod burst_slot;
+pub mod burst_wave;
 pub mod crowd_window;
 pub mod evaluator;
 pub mod fee;
@@ -555,6 +558,8 @@ pub enum MetricGroupId {
     /// `m_burst_slot` — this token, this slot so far, this print's build template
     /// (fingerprint-scoped working list; static).
     BurstSlot,
+    /// `m_burst_wave` — this token's consecutive-slot buy run (token-level; static).
+    BurstWave,
     /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
     Position,
 }
@@ -779,6 +784,19 @@ pub enum MetricId {
     PreSlotLiquidity,
     /// Lifetime trail before folding this print, in percent.
     PrePrintTrail,
+    // ── m_burst_wave (this token's consecutive-slot buy run) ──
+    /// 0/1: this print just joined the current wave.
+    WaveThisMember,
+    /// Distinct wallets among members of this wave so far.
+    WaveWalletCount,
+    /// SOL of those member buys.
+    WaveBuySol,
+    /// Empty buy-slots before this wave started. NaN when the wave is not fireable.
+    WaveGapSlots,
+    /// 0/1: every wave wallet is first-on-this-mint. NaN on an empty wave.
+    WaveAllNew,
+    /// 0/1: some member of this wave has no wallet.
+    WaveHasUnknown,
 }
 
 /// True for metrics whose state is keyed by fingerprint (flow split / window).
@@ -886,8 +904,11 @@ impl MetricId {
     /// silent and reads like a strict gate — `unique_wallets >= 10` simply never fires
     /// — so the answer lives here, next to the registry, rather than as a group list
     /// copied into each loader. A new wallet-keyed metric must be added here too.
+    /// `m_burst_wave` is the whole group: consecutive-slot unique wallets and
+    /// first-on-mint, plus `is_member` which needs the template grain.
     pub fn needs_wallet_identity(self) -> bool {
         is_flow_metric(self)
+            || group_of(self).id == MetricGroupId::BurstWave
             || matches!(
                 self,
                 MetricId::UniqueWallets
@@ -903,7 +924,7 @@ impl MetricId {
     /// (full hash, markers, or the template grain). Offline that is a load-time
     /// question: the lake leaves `ix_labels` out unless a run asks for them.
     pub fn needs_ix_labels(self) -> bool {
-        is_fingerprint_scoped(self)
+        is_fingerprint_scoped(self) || group_of(self).id == MetricGroupId::BurstWave
     }
 
 }
@@ -1086,6 +1107,9 @@ pub enum MetricFamily {
     State,
     /// Default for a group that belongs to no established family.
     Standalone,
+    /// This token's buy burst — this-slot prefix (`m_burst_slot`) and the
+    /// consecutive-slot wave (`m_burst_wave`). One subject, two time bases.
+    Burst,
 }
 
 impl MetricFamily {
@@ -1097,6 +1121,7 @@ impl MetricFamily {
             MetricFamily::FlowIx => "flow_ix",
             MetricFamily::State => "state",
             MetricFamily::Standalone => "standalone",
+            MetricFamily::Burst => "burst",
         }
     }
 }
@@ -1956,7 +1981,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         description: "This slot's buy-prefix facts about the completing print's template grain - harvest event and depth gates.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
-        family: MetricFamily::Standalone,
+        family: MetricFamily::Burst,
         strict_params: &[],
         fingerprint_config: &[FpConfigFieldSpec {
             name: "working_templates",
@@ -2110,6 +2135,72 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 1.0,
                 monotonic: false,
                 hue: 131,
+            },
+        ],
+    },
+    GroupSpec {
+        id: MetricGroupId::BurstWave,
+        name: "m_burst_wave",
+        description: "This token's buys in the current consecutive-slot run. The gap is empty buy-slots before that run started, not before a later printer in the same run. Create slot is not a fireable wave.",
+        kind: MetricKind::Static,
+        scope: MetricScope::Token,
+        family: MetricFamily::Burst,
+        strict_params: &[],
+        fingerprint_config: &[],
+        metrics: &[
+            MetricSpec {
+                id: MetricId::WaveThisMember,
+                name: "this_member",
+                description: "1 when this print just joined the current wave: a curve buy with a template grain, not a launch create. Sells, ticks, AMM, and launch read 0.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 133,
+            },
+            MetricSpec {
+                id: MetricId::WaveWalletCount,
+                name: "wallet_count",
+                description: "Distinct wallets among member buys in this wave so far. The completing print is the one that makes this 2.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 134,
+            },
+            MetricSpec {
+                id: MetricId::WaveBuySol,
+                name: "buy_sol",
+                description: "SOL bought by members of this wave so far.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 135,
+            },
+            MetricSpec {
+                id: MetricId::WaveGapSlots,
+                name: "gap_slots",
+                description: "Empty buy-slots before this wave started (`this_slot - last_buy_slot`). NaN when the wave is not fireable: create slot, no proven gap, or a slot regression.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 136,
+            },
+            MetricSpec {
+                id: MetricId::WaveAllNew,
+                name: "all_new",
+                description: "1 when every wallet in this wave is making its first buy on this mint. 0 when any wave wallet printed earlier. NaN on an empty wave. Not has_new: mixed new+repeat reads 0.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 137,
+            },
+            MetricSpec {
+                id: MetricId::WaveHasUnknown,
+                name: "has_unknown",
+                description: "1 when some member of this wave has no wallet.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 138,
             },
         ],
     },
@@ -2394,8 +2485,9 @@ mod tests {
     /// Families mirror the hue families the registry already keeps — that is the
     /// intuition they were promoted from, and the discovery pipeline's Layer-2 grid
     /// is only meaningful if the two stay aligned. Sibling groups that deliberately
-    /// share a hue band (`m_price_*`/`m_position`, `m_flow_*`, `m_flow_ix*`/`m_dump_ix*`) must
-    /// therefore also share a family, and a group in `Standalone` must be alone.
+    /// share a hue band (`m_price_*`/`m_position`, `m_flow_*`, `m_flow_ix*`/`m_dump_ix*`,
+    /// `m_burst_slot`/`m_burst_wave`) must therefore also share a family, and a group
+    /// in `Standalone` must be alone.
     #[test]
     fn families_group_the_registry_the_way_hues_do() {
         use std::collections::BTreeMap;
@@ -2415,9 +2507,9 @@ mod tests {
             vec!["m_flow_ix", "m_flow_ix_window", "m_dump_ix", "m_dump_ix_window"]
         );
         assert_eq!(by_family["state"], vec!["m_state"]);
-        // `m_burst_slot` is its own subject (this slot's buy prefix × this print's
-        // template grain) and grids alone.
-        assert_eq!(by_family["standalone"], vec!["m_burst_slot"]);
+        // This-slot prefix and consecutive-slot wave: one burst subject, two bases.
+        assert_eq!(by_family["burst"], vec!["m_burst_slot", "m_burst_wave"]);
+        assert!(!by_family.contains_key("standalone"));
     }
 
     /// A group ships explained, and explained once - the group-level twin of
@@ -2856,7 +2948,7 @@ mod tests {
         // Which family a group belongs to (`None` = its own group, never exempt).
         let family = |g: MetricGroupId| -> Option<u8> {
             match g {
-                FlowIx | FlowIxWindow | DumpIx | DumpIxWindow | BurstSlot => Some(0),
+                FlowIx | FlowIxWindow | DumpIx | DumpIxWindow | BurstSlot | BurstWave => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
                 FlowLifetime | FlowWindow | CrowdWindow => Some(2),
                 _ => None,

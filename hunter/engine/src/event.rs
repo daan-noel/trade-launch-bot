@@ -444,12 +444,15 @@ pub enum Event {
     /// `identity` is the `(name, symbol)` key the duplicate-identity guard matches
     /// on ([`crate::identity::token_identity_hash`]); `None` when either half is
     /// blank or the producer has no metadata for the mint.
+    /// `creation_slot` seeds `m_burst_wave` so the create slot is not a fireable
+    /// wave; `None` on old logs (gap is then measured from the first mem buy).
     TokenCreated {
         mint: Mint,
         fp: Box<TokenFingerprint>,
         at: Ts,
         creator_wallet_hash: Option<u64>,
         identity: Option<crate::identity::IdentityHash>,
+        creation_slot: Option<u64>,
     },
     /// The token's creation slot closed; the two first-slot SOL sums are now known.
     /// Resolves any fingerprint whose identity includes a first-slot axis (plan §2.2).

@@ -1791,6 +1791,7 @@ fn sweep_ignores_exclusivity_but_the_engine_enforces_it() {
                 fp: Box::new(replay_tok.tf.clone()),
                 at: replay_tok.created_at,
                 creator_wallet_hash: None, identity: None,
+                creation_slot: None,
             },
         );
         fx.iter()
@@ -1875,6 +1876,7 @@ fn sweep_ignores_the_copycat_guard_but_the_engine_enforces_it() {
                     at: t.created_at,
                     creator_wallet_hash: None,
                     identity,
+                    creation_slot: None,
                 },
             );
             if fx.iter().any(|e| matches!(e, Effect::SubmitBuy { .. })) {

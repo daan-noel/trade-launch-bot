@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 use crate::fingerprint::FingerprintId;
 
 use super::burst_slot::{BurstPatterns, BurstSlotState};
+use super::burst_wave::BurstWaveState;
 use super::crowd_window::CrowdWindowState;
 use super::flow_lifetime::FlowLifetimeState;
 use super::dump_ix::{DumpPatterns, DumpState};
@@ -72,6 +73,8 @@ pub struct TokenTrack {
     /// match differs per list.
     burst_patterns: BTreeMap<FingerprintId, BurstPatterns>,
     burst: BurstSlotState,
+    /// Consecutive-slot buy wave. Token-level, always folded — not fingerprint-scoped.
+    burst_wave: BurstWaveState,
     /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
     creator_wallet_hash: Option<u64>,
     /// Last observed *priced* SOL depth (`vsol`), for price impact only. Not a
@@ -98,6 +101,7 @@ impl TokenTrack {
             dump: BTreeMap::new(),
             burst_patterns: BTreeMap::new(),
             burst: BurstSlotState::default(),
+            burst_wave: BurstWaveState::default(),
             creator_wallet_hash: None,
         }
     }
@@ -185,7 +189,10 @@ impl TokenTrack {
         }
     }
 
-
+    /// Seed the mint's create slot so that slot is not a fireable wave.
+    pub fn seed_creation_slot(&mut self, slot: u64) {
+        self.burst_wave.seed_creation_slot(slot);
+    }
 
     /// Fold one trade into every group.
     pub fn on_trade(&mut self, t: TradeLite) {
@@ -195,6 +202,7 @@ impl TokenTrack {
         if !self.burst_patterns.is_empty() {
             self.burst.on_trade(&t, pre_trail, prev_liq);
         }
+        self.burst_wave.on_trade(&t);
         self.state.on_trade(t.reserve_sol);
         self.priced_reserves = t.priced_reserve_sol;
         // The slot cursor only ever moves forward. Canonical order is
@@ -264,6 +272,7 @@ impl TokenTrack {
         if !self.burst_patterns.is_empty() {
             self.burst.on_tick();
         }
+        self.burst_wave.on_tick();
     }
 
     /// How many matched sells one fingerprint's dump window retains — see
@@ -410,6 +419,8 @@ impl TokenTrack {
                 };
                 self.burst.value(id, self.burst_patterns.get(&fp))
             }
+            WaveThisMember | WaveWalletCount | WaveBuySol | WaveGapSlots | WaveAllNew
+            | WaveHasUnknown => self.burst_wave.value(id),
             // Position-scoped metrics have no token state — they read from a
             // `PositionCtx` (see `metrics::position`), never the track. Before entry
             // (the only place `TokenTrack::value` reaches them, via the `can_enter`

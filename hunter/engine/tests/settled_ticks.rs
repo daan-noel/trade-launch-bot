@@ -193,6 +193,7 @@ fn stream(seed: u64, n_events: usize) -> Vec<Event> {
                 at: ts(now),
                 creator_wallet_hash: Some(7),
                 identity: None,
+                creation_slot: None,
             },
             1..=3 => Event::Trade {
                 mint,
@@ -307,6 +308,7 @@ fn an_undying_quiet_token_settles_then_still_decides_on_a_late_trade() {
             at: ts(0.0),
             creator_wallet_hash: None,
             identity: None,
+            creation_slot: None,
         },
     );
     let intent = fx
@@ -373,6 +375,7 @@ fn a_freed_cap_slot_wakes_a_settled_token() {
         at: ts(at),
         creator_wallet_hash: None,
         identity: None,
+        creation_slot: None,
     };
     // `a` takes the only slot at birth; `b` is refused and stays armed.
     let fx = reduce(&mut s, create("a", 0.0));

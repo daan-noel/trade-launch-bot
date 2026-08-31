@@ -504,7 +504,10 @@ impl CompiledRule {
                 }
             }
             needs_slot |= r.window.needs_slot();
-            needs_slot |= group_of(r.metric).id == MetricGroupId::BurstSlot;
+            needs_slot |= matches!(
+                group_of(r.metric).id,
+                MetricGroupId::BurstSlot | MetricGroupId::BurstWave
+            );
         }
 
         // Tick horizons — every clock this rule reads, on EVERY side (entry, exit,

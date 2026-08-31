@@ -105,7 +105,7 @@ pub fn entry_role(id: MetricId) -> Option<EntryRole> {
                 }
             }
             (_, MetricKind::Static, MetricScope::Token, true) => Some(EntryRole::WaitOnly),
-            (MetricFamily::Standalone, _, _, _) => {
+            (MetricFamily::Standalone | MetricFamily::Burst, _, _, _) => {
                 Some(EntryRole::Trigger(TriggerFamily::Standalone))
             }
             (MetricFamily::FlowIx, MetricKind::Static, _, true) => Some(EntryRole::WaitOnly),

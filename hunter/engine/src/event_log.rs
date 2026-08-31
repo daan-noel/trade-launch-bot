@@ -92,6 +92,9 @@ pub enum LoggedEvent {
         /// duplicate-identity guard neither blocks nor records on replay).
         #[serde(default)]
         identity: Option<crate::identity::IdentityHash>,
+        /// Absent on pre-wave JSONL lines ⇒ `None` (gap starts at the first buy).
+        #[serde(default)]
+        creation_slot: Option<u64>,
     },
     FirstSlotSettled { mint: Mint, buy_lamports: u64, sell_lamports: u64, at: Ts },
     Trade { mint: Mint, trade: TradeLite },
@@ -121,13 +124,14 @@ impl LoggedEvent {
     /// `RulesReloaded`, which are never logged).
     pub fn from_event(event: &Event) -> Option<Self> {
         Some(match event {
-            Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity } => {
+            Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity, creation_slot } => {
                 LoggedEvent::TokenCreated {
                     mint: mint.clone(),
                     fp: fp.clone(),
                     at: *at,
                     creator_wallet_hash: *creator_wallet_hash,
                     identity: *identity,
+                    creation_slot: *creation_slot,
                 }
             }
             Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at } => {
@@ -211,8 +215,8 @@ impl LoggedEvent {
 
     pub fn into_event(self) -> Event {
         match self {
-            LoggedEvent::TokenCreated { mint, fp, at, creator_wallet_hash, identity } => {
-                Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity }
+            LoggedEvent::TokenCreated { mint, fp, at, creator_wallet_hash, identity, creation_slot } => {
+                Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity, creation_slot }
             }
             LoggedEvent::FirstSlotSettled { mint, buy_lamports, sell_lamports, at } => {
                 Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at }

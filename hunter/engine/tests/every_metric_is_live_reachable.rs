@@ -219,6 +219,7 @@ fn drive(state: &mut EngineState, mint: &Mint) -> Vec<Effect> {
             // Seeds `prior_launches`; without a creator it stays NaN by design.
             creator_wallet_hash: Some(flow_ix::wallet_hash("creator-wallet")),
             identity: None,
+            creation_slot: None,
         },
     );
     // Settles the deferred fingerprint axes, which do not exist until the creation

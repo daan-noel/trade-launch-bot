@@ -332,6 +332,7 @@ impl Replay {
             let trades = &t.trades;
             self.trades.insert(mint.clone(), Arc::clone(trades));
 
+            let creation_slot = crate::sweep::projection::creation_slot(trades);
             // TokenCreated at the token's creation time (first-slot axes still None).
             self.queue.push(Queued {
                 at: t.created_at,
@@ -343,12 +344,13 @@ impl Replay {
                     at: t.created_at,
                     creator_wallet_hash: t.creator_wallet_hash,
                     identity: t.identity,
+                    creation_slot,
                 },
                 sig: None,
                 trade_idx: None,
             });
 
-            if let Some(creation_slot) = crate::sweep::projection::creation_slot(trades) {
+            if let Some(creation_slot) = creation_slot {
                 // First-slot SOL sums (buy/sell) from the creation-slot trades — the
                 // same axes the live producer settles from the cache's first-slot
                 // accumulators.

@@ -78,11 +78,14 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             state.reload(&rules, &fps);
         }
 
-        Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity } => {
+        Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity, creation_slot } => {
             if state.tokens.contains_key(&mint) {
                 return fx; // duplicate creation — idempotent
             }
             let mut track = state.new_track(at);
+            if let Some(slot) = creation_slot.filter(|&s| s > 0) {
+                track.seed_creation_slot(slot);
+            }
             let mut tf = *fp;
             if let Some(h) = creator_wallet_hash {
                 track.seed_creator(h);

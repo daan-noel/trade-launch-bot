@@ -332,7 +332,7 @@ impl BurstSlotState {
     }
 }
 
-fn is_member(t: &TradeLite) -> bool {
+pub(crate) fn is_member(t: &TradeLite) -> bool {
     t.side == Side::Buy && t.on_curve && !t.is_launch && t.template_hash.is_some()
 }
 

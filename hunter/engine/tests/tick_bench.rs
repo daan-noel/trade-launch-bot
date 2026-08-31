@@ -79,6 +79,7 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
                 at: ts(0.0),
                 creator_wallet_hash: Some(3),
                 identity: None,
+                creation_slot: None,
             },
         );
         // 40 prints, then silence. Reserves stay above the dead floor, so the token

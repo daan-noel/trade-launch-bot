@@ -828,6 +828,20 @@ mod flow_column_needs {
         assert!(!rule_needs_flow(&sol_only), "a SOL-only window must not pay for flow");
     }
 
+    /// `m_burst_wave` is token-level, not fingerprint-scoped, so it does not ride
+    /// `is_fingerprint_scoped`. Without this, simulate loads the slim lake rows
+    /// (no wallet / no grain) and the event reads 0 forever.
+    #[test]
+    fn a_burst_wave_event_forces_the_flow_columns() {
+        let wave = rule_with(serde_json::json!({
+            "entry_event": { "m_burst_wave": {
+                "this_member": [{ "operator": "=", "value": 1 }],
+                "wallet_count": [{ "operator": ">=", "value": 2 }]
+            } }
+        }));
+        assert!(rule_needs_flow(&wave), "m_burst_wave needs wallet + template grain");
+    }
+
     /// A ladder stage reuses the full exit grammar, so it can be the ONLY part of a
     /// rule that reads a flow metric. Checking `entry`/`exit` alone missed it.
     #[test]

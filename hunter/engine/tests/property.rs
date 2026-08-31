@@ -193,6 +193,7 @@ fn random_streams_preserve_invariants_and_never_panic() {
                     }),
                     at: ts(now),
                     creator_wallet_hash: None, identity: None,
+                    creation_slot: None,
                 },
                 1 => Event::FirstSlotSettled {
                     mint,

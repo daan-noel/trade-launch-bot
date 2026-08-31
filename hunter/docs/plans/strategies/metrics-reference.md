@@ -574,6 +574,7 @@ construction. See hunter/CLAUDE.md Gotchas.
 | `m_dump_ix` | static (fingerprint-scoped) | none | `ix_patterns: ix_pattern[]` — its OWN list |
 | `m_dump_ix_window` | dynamic | `window_size_sec` | none (reads `m_dump_ix`) |
 | `m_burst_slot` | static (fingerprint-scoped) | none | `working_templates: string[]` — template grain ids. Mapping: [ix-live-rule.md](ix-live-rule.md) |
+| `m_burst_wave` | static | none | none. Consecutive-slot buy run; gap is empty buy-slots before that run. Create slot is not fireable. |
 
 **Multi-window per group** (any dynamic group — `m_flow_window`, `m_price_window`,
 `m_flow_ix_window`): a group appears under a side as a single object (one window — the

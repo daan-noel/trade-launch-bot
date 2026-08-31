@@ -27,6 +27,7 @@ use chrono::{DateTime, Utc};
 use smallvec::SmallVec;
 
 use hunter_engine::event::{Event, Mint};
+use trading_core::models::trade::TradeRow;
 use hunter_engine::grouping::LAMPORTS_PER_SOL_F64;
 use hunter_engine::metrics::flow_ix::wallet_hash;
 use hunter_engine::token_identity_hash;
@@ -171,6 +172,7 @@ impl Producer {
             // The copycat key, straight off the create event's metadata — no
             // extra lookup, no RPC. `None` when either half is blank.
             identity: token_identity_hash(&token.name, &token.symbol),
+            creation_slot: token.creation_slot,
         });
         out
     }
@@ -344,7 +346,10 @@ fn trade_lite(ct: &CachedTrade) -> TradeLite {
     TradeLite {
         side: if ct.is_buy { Side::Buy } else { Side::Sell },
         sol: ct.amount_sol,
-        price: ct.price_per_token,
+        // The pool state this print left, not what its trader paid: the cost model
+        // charges OUR impact on top, which is the conversion from a spot basis to
+        // an average paid, so the basis has to be spot. See `TradeRow::fill_basis`.
+        price: ct.chart_spot_price().unwrap_or(ct.price_per_token),
         // Deadness + liquidity read REAL reserves (SSOT parity with the live
         // `is_dead` signal); absent ⇒ NaN (no snapshot ⇒ alive).
         reserve_sol: ct.real_reserve_sol.unwrap_or(f64::NAN),

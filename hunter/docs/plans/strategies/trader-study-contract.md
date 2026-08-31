@@ -58,7 +58,10 @@ the race, not extra confirmation.
 - Do not skip a slot because the *first* buy was a solo. `0.9 + 0.5` is a crowd on the
   second print. The fire is the print that makes it true, not the first print of the slot.
 - Create / launch templates are not burst members. The mint's first slot is not this
-  event. Consecutive buy-slots (no empty slot between them) are not a gap.
+  event. Consecutive buy-slots (no empty slot between them) are not a gap. If he
+  lands in slot 2+ of a consecutive run, the gap is the empty stretch *before that
+  run*, not the 1-slot step into his slot. Prints after the gap and before him are
+  the wave, not proof the gap was absent.
 
 Same-slot and next-slot spill are both measured. Pick the book the thermometer prefers. Do
 not AND both into one leftover.
@@ -140,6 +143,7 @@ Each of these has already happened. Doing it again is the same bug.
 | Report gross price move as PnL | Net, `pumpfun_impact`, both legs lagged. |
 | Clone the wallet / fingerprint / send set | Public event, then leftover, then money. |
 | Treat quiet as a leftover cut on any-slot 2-wallet bursts | Quiet is the event: a gap, then the named burst. Score how long the gap is. Do not leftover-cut a pool that never required a gap. |
+| Measure gap as time/slot since the last print before the trader | That print is the wave after the gap. Gap = empty buy-slots *before this slot* (or before the consecutive-slot wave if he is in slot 2+). Prefix wallets after the gap are expected. Gap-to-him reading ~0 is not "no gap." |
 
 ---
 

@@ -414,9 +414,9 @@ That book is in the island ([ix-crowd-island.md](ix-crowd-island.md)):
   ([ix-crowd-island.md](ix-crowd-island.md)).
 - Do not add a metric that an existing group already states.
 - Do not put these readings in `m_flow_ix` / `m_state` / `m_price_lifetime`
-  as a second copy. New readings stay in `m_burst_slot`.
-- Do not add a windowed twin of `m_burst_slot` until a finding needs
-  a span other than this slot.
+  as a second copy. New harvest readings stay in `m_burst_slot`.
+- Do not fold a consecutive-slot wave into `m_burst_slot`. That is a
+  different time basis (`m_burst_wave`): gap before the run, not this slot.
 - Do not nest `any` / `all` trees. DNF is enough.
 
 ## In the engine

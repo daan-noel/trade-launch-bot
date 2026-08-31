@@ -179,7 +179,7 @@ fn arm_enter_then_take_profit() {
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
 
     // Creation of a matching token → armed + (enter-on-arm) buy.
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     assert_eq!(buys(&fx), vec![(rid(1), BUY)]);
     assert_eq!(statuses(&fx), vec![PositionStatus::BuySubmitted]);
     let entry = buy_intent(&fx);
@@ -205,7 +205,7 @@ fn stop_loss_fires_below_threshold() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "stop_loss": 30 }))], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.5) });
     // −40% (below the −30% floor) → stop-loss.
@@ -221,7 +221,7 @@ fn primed_history_never_fires_an_exit() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "stop_loss": 30 }))], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.5) });
 
@@ -254,7 +254,7 @@ fn primed_history_restores_the_trailing_peak() {
         } }
     });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.5) });
 
@@ -284,7 +284,7 @@ fn primed_history_before_entry_never_inflates_the_peak() {
         "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 20 }] } }
     });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     // The dip entry: filled at 1.0, at t=10.
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 10.0) });
@@ -309,7 +309,7 @@ fn metrics_exit_on_time_condition() {
     let m = Mint::from("tokA");
     let params = json!({ "exit": { "m_state": { "time": [{ "operator": ">", "value": 5 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     // No exit before the deadline.
@@ -344,7 +344,7 @@ fn price_window_dip_trigger_enters_on_rolling_drawdown() {
     });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
     // At creation the window is empty → trail NaN → no entry.
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     assert!(buys(&fx).is_empty(), "empty window: NaN trail never enters");
     // Establish the rolling high at price 1.0 — trail 0, still no entry.
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 40.0, 1.0) });
@@ -362,7 +362,7 @@ fn position_retrace_is_a_trailing_stop_off_the_since_entry_peak() {
     let m = Mint::from("tokTrail");
     let params = json!({ "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 3 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     // Run to +30% (peak 1.3): retrace 0 → hold.
@@ -388,7 +388,7 @@ fn position_held_is_a_time_stop() {
     let m = Mint::from("tokHold");
     let params = json!({ "exit": { "m_position": { "held": [{ "operator": ">=", "value": 5 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     // Entry fills at t=0.5 → held counts from there.
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.5) });
@@ -419,7 +419,7 @@ fn desugared_stop_loss_still_labels_as_stoploss_and_outranks_a_metric_exit() {
         "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 1 }] } }
     });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 0.6, 40.0, 1.0) });
@@ -442,7 +442,7 @@ fn overlapping_entry_exit_metrics_do_not_enter() {
         "take_profit": 100
     });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 60.0, 1.0) });
     assert!(buys(&fx).is_empty(), "must not enter while exit metrics already hold");
 }
@@ -461,7 +461,7 @@ fn enters_once_exit_metrics_clear_while_entry_still_holds() {
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
     reduce(
         &mut s,
-        Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None },
+        Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None},
     );
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 60.0, 1.0) });
     assert!(buys(&fx).is_empty(), "overlap: entry and exit both true");
@@ -475,7 +475,7 @@ fn stall_exit_on_quiet_token_is_tick_driven() {
     let m = Mint::from("tokA");
     let params = json!({ "exit": { "m_price_lifetime": { "stall": [{ "operator": ">", "value": 3 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.0) });
     // A price move at t=1 resets the stall clock; no exit here.
@@ -505,7 +505,7 @@ fn derived_unsatisfiable_disarms_before_entry() {
         "liquidity": [{ "operator": ">", "value": 100 }]
     } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     assert!(buys(&fx).is_empty(), "must not enter with liquidity unmet");
     // Tick past 3 s → derived unsatisfiability disarm.
     let fx = reduce(&mut s, Event::Tick { now: ts(4.0) });
@@ -520,7 +520,7 @@ fn dead_token_disarms_armed_rule() {
     // Entry never satisfied (liquidity > 100) so the token stays armed until death.
     let params = json!({ "entry": { "m_state": { "liquidity": [{ "operator": ">", "value": 100 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     // One meaningful trade with depleted reserves at t=10.
     reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 5.0, 10.0) });
     // 300 s of silence past that trade → dead → disarm.
@@ -534,7 +534,7 @@ fn migration_disarms_armed_rule() {
     let m = Mint::from("tokA");
     let params = json!({ "entry": { "m_state": { "liquidity": [{ "operator": ">", "value": 100 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
-    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let fx = reduce(&mut s, Event::Migrated { mint: m.clone(), at: ts(5.0) });
     assert_eq!(disarms(&fx), vec![DisarmReason::Migrated]);
 }
@@ -549,7 +549,7 @@ fn multi_rule_concurrent_entry_on_one_token() {
         rule(2, 1, json!({ "take_profit": 200 })),
     ];
     reduce(&mut s, reload(rules, vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let mut fired: Vec<RuleId> = buys(&fx).into_iter().map(|(r, _)| r).collect();
     fired.sort();
     assert_eq!(fired, vec![rid(1), rid(2)]);
@@ -567,7 +567,7 @@ fn exclusive_rules_contest_a_token_and_the_loser_stays_armed() {
         rule(2, 1, json!({ "take_profit": 200, "exclusive": true })),
     ];
     reduce(&mut s, reload(rules, vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     assert_eq!(buys(&fx), vec![(rid(1), BUY)], "only the first exclusive rule enters");
     assert_eq!(s.positions.len(), 1);
     // Standing down is NOT a disarm — the loser must still be able to enter later.
@@ -584,7 +584,7 @@ fn higher_priority_wins_the_exclusive_claim_regardless_of_rule_id() {
         rule(2, 1, json!({ "take_profit": 200, "exclusive": true, "priority": 5 })),
     ];
     reduce(&mut s, reload(rules, vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     assert_eq!(buys(&fx), vec![(rid(2), BUY)], "priority beats rule-id order");
 }
 
@@ -599,7 +599,7 @@ fn exclusivity_is_asymmetric_and_clears_when_the_holder_exits() {
         rule(2, 1, json!({ "take_profit": 200, "exclusive": true })),
     ];
     reduce(&mut s, reload(rules, vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     assert_eq!(buys(&fx), vec![(rid(1), BUY)], "the non-exclusive rule holds; rule 2 waits");
 
     // Rule 1's buy fills, then TPs out at 2x and the sell confirms.
@@ -634,7 +634,7 @@ fn a_manual_position_blocks_an_exclusive_rule() {
     reduce(&mut s, Event::FillConfirmed { intent: manual_entry, fill: fill(1.0, 0.1) });
 
     // The token now matches the fingerprint and arms rule 1 — but the manual hold blocks it.
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(1.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(1.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     assert!(buys(&fx).is_empty(), "a manual holding blocks the exclusive rule");
     assert!(disarms(&fx).is_empty(), "blocked, not disarmed");
 }
@@ -650,12 +650,12 @@ fn concurrent_cap_blocks_second_until_slot_frees() {
     );
 
     // Token A enters and fills.
-    let fx = reduce(&mut s, Event::TokenCreated { mint: a.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: a.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let a_entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: a_entry, fill: fill(1.0, 0.1) });
 
     // Token B arrives while A holds → the cap blocks its entry.
-    let fx = reduce(&mut s, Event::TokenCreated { mint: b.clone(), fp: cu_token(), at: ts(1.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: b.clone(), fp: cu_token(), at: ts(1.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     assert!(buys(&fx).is_empty(), "concurrent cap reached — B must wait");
 
     // A exits and confirms, freeing the slot.
@@ -677,7 +677,7 @@ fn total_cap_permanently_stops_new_entries() {
         &mut s,
         reload(vec![rule_capped(1, 1, json!({ "take_profit": 100 }), 10, 1)], vec![cu_fp(1)]),
     );
-    let fx = reduce(&mut s, Event::TokenCreated { mint: a.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: a.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let a_entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: a_entry, fill: fill(1.0, 0.1) });
     let fx = reduce(&mut s, Event::Trade { mint: a.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
@@ -685,7 +685,7 @@ fn total_cap_permanently_stops_new_entries() {
     reduce(&mut s, Event::FillConfirmed { intent: a_exit, fill: fill(2.0, 1.1) });
 
     // Even with the slot free, the lifetime cap blocks B.
-    let fx = reduce(&mut s, Event::TokenCreated { mint: b.clone(), fp: cu_token(), at: ts(2.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: b.clone(), fp: cu_token(), at: ts(2.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     assert!(buys(&fx).is_empty(), "lifetime cap of 1 reached — B never enters");
 }
 
@@ -694,7 +694,7 @@ fn entry_fill_failure_retries_then_gives_up() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let mut intent = buy_intent(&fx);
 
     // Two retries, each re-submitting a buy with a fresh intent.
@@ -739,7 +739,7 @@ fn entry_retry_requalifies_against_entry_conditions() {
             vec![cu_fp(1)],
         ),
     );
-    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     // Liquidity crosses the floor → entry fires.
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 14.65, 1.0) });
     let intent = buy_intent(&fx);
@@ -775,7 +775,7 @@ fn entry_retry_exhausted_ladder_stays_terminal() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let mut intent = buy_intent(&fx);
     for _ in 0..2 {
         let fx = reduce(
@@ -814,7 +814,7 @@ fn entry_retry_resubmits_while_conditions_still_hold() {
             vec![cu_fp(1)],
         ),
     );
-    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 40.0, 1.0) });
     let intent = buy_intent(&fx);
 
@@ -839,7 +839,7 @@ fn entry_retry_refuses_once_the_rule_is_stopped() {
         "take_profit": 100
     });
     reduce(&mut s, reload(vec![rule(1, 1, params.clone())], vec![cu_fp(1)]));
-    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 40.0, 1.0) });
     let intent = buy_intent(&fx);
 
@@ -863,7 +863,7 @@ fn entry_fatal_gives_up_without_retry() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let intent = buy_intent(&fx);
     let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Fatal, at: None });
     assert!(buys(&fx).is_empty(), "Fatal must not retry");
@@ -876,7 +876,7 @@ fn manual_close_sells_held_position() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
 
@@ -894,7 +894,7 @@ fn externally_cleared_closes_without_sell() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
 
@@ -914,7 +914,7 @@ fn unconfirmed_sell_is_terminal_and_never_resold() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     let position = *s.positions.keys().next().unwrap();
@@ -932,7 +932,7 @@ fn dead_outranks_stop_loss_on_open_position() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "stop_loss": 30 }))], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     // A meaningful trade at t=1 depletes reserves but holds price above the SL floor,
@@ -964,7 +964,7 @@ fn first_slot_fingerprint_arms_only_after_settlement() {
     // At creation the first-slot axis is unknown → pending, no buy yet.
     let fx = reduce(
         &mut s,
-        Event::TokenCreated { mint: m.clone(), fp: Box::new(TokenFingerprint::default()), at: ts(0.0) , creator_wallet_hash: None, identity: None},
+        Event::TokenCreated { mint: m.clone(), fp: Box::new(TokenFingerprint::default()), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None},
     );
     assert!(buys(&fx).is_empty(), "first-slot fingerprint stays pending at creation");
 
@@ -994,7 +994,7 @@ fn first_slot_mismatch_drops_the_arm() {
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![fp]));
     reduce(
         &mut s,
-        Event::TokenCreated { mint: m.clone(), fp: Box::new(TokenFingerprint::default()), at: ts(0.0) , creator_wallet_hash: None, identity: None},
+        Event::TokenCreated { mint: m.clone(), fp: Box::new(TokenFingerprint::default()), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None},
     );
     // Settles far outside the window (5 SOL) → never fully matched → dropped, pruned.
     let fx = reduce(
@@ -1030,7 +1030,7 @@ fn non_matching_token_is_never_tracked() {
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
     // cu_limit differs → no fingerprint match → not armed, not tracked.
     let tf = Box::new(TokenFingerprint { cu_limit: Some(999), ..Default::default() });
-    let fx = reduce(&mut s, Event::TokenCreated { mint: Mint::from("nope"), fp: tf, at: ts(0.0) , creator_wallet_hash: None, identity: None});
+    let fx = reduce(&mut s, Event::TokenCreated { mint: Mint::from("nope"), fp: tf, at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
     assert!(fx.is_empty());
     assert!(s.tokens.is_empty());
 }
@@ -1044,7 +1044,7 @@ fn identical_event_vectors_yield_identical_effects() {
         let mut out = Vec::new();
         let script = vec![
             reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]),
-            Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None},
+            Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None},
         ];
         for e in script {
             let fx = reduce(&mut s, e);
@@ -1055,7 +1055,7 @@ fn identical_event_vectors_yield_identical_effects() {
             let mut s2 = EngineState::new();
             reduce(&mut s2, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
             let fx =
-                reduce(&mut s2, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
+                reduce(&mut s2, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None, creation_slot: None});
             buy_intent(&fx)
         };
         out.push(format!("{:?}", reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.5) })));
@@ -1104,6 +1104,7 @@ fn flow_entry_on_tagged_net_and_exit_when_organic_goes_quiet() {
             fp: cu_token(),
             at: ts(0.0),
             creator_wallet_hash: Some(99), identity: None,
+            creation_slot: None,
         },
     );
     // Organic buy first — not enough tagged_net to enter.
@@ -1203,6 +1204,7 @@ fn two_fingerprints_flow_states_diverge() {
             fp: cu_token(),
             at: ts(0.0),
             creator_wallet_hash: None, identity: None,
+            creation_slot: None,
         },
     );
     let fx = reduce(
@@ -1270,7 +1272,7 @@ fn reentry_rearm_after_cooldown_and_reenter() {
     reduce(&mut s, reload(vec![reentry_rule(5.0, 3)], vec![cu_fp(1)]));
 
     // Episode 1: creation enters immediately (enter-on-arm), runs to a TP close.
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
@@ -1311,7 +1313,7 @@ fn reentry_tick_promotes_cooldown() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![reentry_rule(5.0, 3)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
@@ -1333,7 +1335,7 @@ fn reentry_episode_cap_stops_rearm() {
     reduce(&mut s, reload(vec![reentry_rule(0.0, 2)], vec![cu_fp(1)]));
 
     // Episode 1 (from creation).
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
@@ -1354,7 +1356,7 @@ fn reentry_manual_close_never_rearms() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![reentry_rule(0.0, 10)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
 
@@ -1373,7 +1375,7 @@ fn reentry_dead_exit_never_rearms() {
     let m = Mint::from("tokA");
     // Needs a non-enter-on-arm shape? No — enter-on-arm is fine; kill it via deadness.
     reduce(&mut s, reload(vec![reentry_rule(0.0, 10)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     // Deplete reserves at t=1, then a long-quiet dust print → Dead exit (the
@@ -1391,7 +1393,7 @@ fn reentry_cooldown_disarms_on_migration() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     reduce(&mut s, reload(vec![reentry_rule(60.0, 10)], vec![cu_fp(1)]));
-    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None });
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None});
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
@@ -1516,6 +1518,7 @@ fn enter_holding(s: &mut EngineState, m: &Mint) {
             fp: cu_token(),
             at: ts(0.0),
             creator_wallet_hash: None, identity: None,
+            creation_slot: None,
         },
     );
     let entry = buy_intent(&fx);
@@ -1803,6 +1806,7 @@ fn created(mint: &Mint, at: f64, name: &str, symbol: &str) -> Event {
         at: ts(at),
         creator_wallet_hash: None,
         identity: hunter_engine::token_identity_hash(name, symbol),
+        creation_slot: None,
     }
 }
 
@@ -2017,6 +2021,7 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
                 at: ts(i as f64),
                 creator_wallet_hash: Some(9),
                 identity: None,
+                creation_slot: None,
             },
         );
     }
@@ -2033,6 +2038,7 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
             at: ts(9.0),
             creator_wallet_hash: Some(77),
             identity: None,
+            creation_slot: None,
         },
     );
     assert_eq!(read(&s, "d"), Some(4), "primed count must not restart at 0");
@@ -2046,6 +2052,7 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
             at: ts(10.0),
             creator_wallet_hash: None,
             identity: None,
+            creation_slot: None,
         },
     );
     assert_eq!(read(&s, "e"), None, "unknown creator must not read as a first launch");
@@ -2060,6 +2067,7 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
             at: ts(2.0),
             creator_wallet_hash: Some(9),
             identity: None,
+            creation_slot: None,
         },
     );
     reduce(
@@ -2070,6 +2078,7 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
             at: ts(11.0),
             creator_wallet_hash: Some(9),
             identity: None,
+            creation_slot: None,
         },
     );
     assert_eq!(read(&s, "f"), Some(3), "a duplicate creation must not advance the tally");
