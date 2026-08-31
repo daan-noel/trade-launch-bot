@@ -155,8 +155,22 @@ pub struct CacheCfg {
     /// Max age of a WS-fed reserve snapshot still trusted on the trade path (ms).
     pub reserve_max_age_ms: u64,
     /// Background refresh interval for the recent-blockhash cache (ms).
+    ///
+    /// A WATCHDOG interval, not a poll rate: a host bridging a `blocks_meta`
+    /// push feed keeps the cache ~400 ms fresh and every tick exits without an
+    /// RPC. It only spends `getLatestBlockhash` when that feed is absent — which
+    /// is now the steady state whenever no AMM pool is tracked, since a
+    /// subscription carrying no transactions no longer asks for block metas. At
+    /// 2 s that idle state cost 43,200 RPC calls a day to keep a hash warm for a
+    /// path with nothing to buy.
     pub blockhash_refresh_ms: u64,
     /// Max age of a cached recent blockhash still used on the AMM buy path (ms).
+    ///
+    /// Must stay comfortably above [`Self::blockhash_refresh_ms`] — the watchdog
+    /// lets the cache reach one full interval before refreshing it, and a read
+    /// past this bound falls back to a live `getLatestBlockhash` on the hot path,
+    /// which is the latency the cache exists to avoid.
+    /// `refresh_interval_stays_inside_the_read_tolerance` pins the pair.
     pub blockhash_max_age_ms: u64,
 }
 
@@ -164,8 +178,12 @@ impl Default for CacheCfg {
     fn default() -> Self {
         Self {
             reserve_max_age_ms: 3_000,
-            blockhash_refresh_ms: 2_000,
-            blockhash_max_age_ms: 10_000,
+            // A blockhash lives ~150 slots (~60 s). Refreshing every 15 s and
+            // trusting up to 20 s leaves 40 s of validity on the oldest hash a
+            // send can ride, and costs 5,760 RPC calls a day instead of 43,200
+            // when no push feed is filling the cache.
+            blockhash_refresh_ms: 15_000,
+            blockhash_max_age_ms: 20_000,
         }
     }
 }
@@ -304,5 +322,42 @@ impl std::fmt::Debug for TraderConfig {
             .field("slippage", &self.slippage)
             .field("limits", &self.limits)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The blockhash watchdog lets the cache reach one full `blockhash_refresh_ms`
+    /// before it refreshes (it skips a tick only while the value is fresher than
+    /// half an interval). If that age can pass `blockhash_max_age_ms`, every AMM
+    /// buy made while the block-meta push feed is absent falls back to a live
+    /// `getLatestBlockhash` on the hot path — the exact latency the cache exists
+    /// to remove, and silently, since the code still works.
+    ///
+    /// The 2 s of headroom covers the fetch itself.
+    #[test]
+    fn refresh_interval_stays_inside_the_read_tolerance() {
+        let c = CacheCfg::default();
+        assert!(
+            c.blockhash_refresh_ms + 2_000 <= c.blockhash_max_age_ms,
+            "refresh {} ms + fetch headroom must stay under read tolerance {} ms",
+            c.blockhash_refresh_ms,
+            c.blockhash_max_age_ms
+        );
+    }
+
+    /// A recent blockhash is valid for ~150 slots (~60 s). The oldest hash a send
+    /// can ride is `blockhash_max_age_ms`, and it still has to land after that.
+    #[test]
+    fn the_oldest_usable_blockhash_keeps_half_its_validity() {
+        const BLOCKHASH_VALIDITY_MS: u64 = 60_000;
+        let c = CacheCfg::default();
+        assert!(
+            c.blockhash_max_age_ms * 2 <= BLOCKHASH_VALIDITY_MS,
+            "a {} ms old blockhash leaves too little of its {BLOCKHASH_VALIDITY_MS} ms life to land",
+            c.blockhash_max_age_ms
+        );
     }
 }

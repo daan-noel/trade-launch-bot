@@ -115,6 +115,13 @@ property of the **role**, not of the transport.
 | `AmmOnly` + block metas | last **frame of any kind** | Tracked pool PDAs only: 0-14 accounts that go minutes without a trade, and zero right after a boot. Block metas arrive ~2.5/s on any live connection, so their absence still catches a dead stream while quiet pools do not read as one. |
 | `AmmOnly`, no block metas | nothing — guard stands down | No liveness signal exists on a narrow filter; silence proves nothing. HTTP/2 + TCP keepalive police the socket. |
 
+The third row is the **steady state under `CURVE_SOURCE=nats` with no pool tracked**, not
+an edge case: a subscription carrying no transactions does not ask for block metas
+(`supervisor::build_subscription` — they are ~2.5 metered frames/s forever and fill a
+cache only the AMM buy path reads), so what is left is the `accounts` filter, which is
+what holds the stream open at all. There is then nothing whose silence means "dead", and
+the guard says so instead of guessing.
+
 Judging `AmmOnly` by transactions force-reconnects a healthy stream every
 `IDLE_TIMEOUT` forever. It churns the provider connection, drops the block-meta
 stream (which then shows up as a `feed_lag` stale-slot spike), and spends the

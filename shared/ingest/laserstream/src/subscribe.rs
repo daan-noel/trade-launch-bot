@@ -132,7 +132,10 @@ mod tests {
             req.transactions.is_empty(),
             "empty account_include must not send a tx filter"
         );
-        // The push feed still rides the subscription.
+        // This layer only translates: `blocks_meta` is whatever it was handed.
+        // Whether to ASK for block metas on a transaction-less subscription is
+        // the supervisor's call, and it says no — see
+        // `supervisor::build_subscription`.
         assert!(req.blocks_meta.contains_key("pumpfun"));
 
         let req = build_subscribe_request(

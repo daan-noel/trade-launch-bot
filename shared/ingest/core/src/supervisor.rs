@@ -493,6 +493,22 @@ fn resolve_from_slot(
     Some(a.slot + 1)
 }
 
+/// The wire-neutral request for one connection attempt.
+///
+/// **Block metas ride a transaction subscription; they never justify one.** They
+/// are one metered frame per slot — ~2.5/s, every slot, forever — and the host
+/// bridges them into a recent-blockhash cache that only the AMM buy path reads.
+/// A server-filtered feed with no account to watch has no AMM pool tracked, so
+/// that path has nothing to buy and the frames buy nothing: under
+/// `CURVE_SOURCE=nats` with no tracked pool they are the *entire* provider bill.
+/// So they are asked for only when the subscription carries transactions, which
+/// is exactly when the cache they fill is readable.
+///
+/// The `accounts` filter is not gated the same way: those pubkeys are the host's
+/// own (nonce accounts, its wallet), they update only when the bot itself
+/// transacts, and they keep the durable-nonce path armed at feed speed — see
+/// [`crate::push::PushHooks::wants_stream`], which is what holds this
+/// subscription open once the block metas are gone.
 fn build_subscription<V: IngestVenue>(
     venue: &Arc<V>,
     caps: FeedCaps,
@@ -501,19 +517,30 @@ fn build_subscription<V: IngestVenue>(
     policy: &FeedPolicy,
     push: &crate::push::PushHooks,
 ) -> Subscription {
+    // A wire with no server-side filter gets no account list to ignore.
+    let account_include = if caps.server_filter {
+        venue.subscription_accounts(scope)
+    } else {
+        Vec::new()
+    };
     Subscription {
         filter_key: venue.filter_key(),
-        // A wire with no server-side filter gets no account list to ignore.
-        account_include: if caps.server_filter {
-            venue.subscription_accounts(scope)
-        } else {
-            Vec::new()
-        },
+        blocks_meta: push.wants_blocks_meta() && carries_transactions(caps, &account_include),
+        account_include,
         from_slot,
         commitment: policy.commitment,
-        blocks_meta: push.wants_blocks_meta(),
         watch_accounts: push.account_filter(),
     }
+}
+
+/// Whether this subscription asks for any transaction at all.
+///
+/// A broadcast subject always does — it carries whatever the publisher sends and
+/// the filter is applied locally. A server-filtered one does only when it names
+/// at least one account: an empty `account_include` is not sent as a filter (it
+/// would mean "the whole chain"), so the subscription carries no transactions.
+fn carries_transactions(caps: FeedCaps, account_include: &[String]) -> bool {
+    !caps.server_filter || !account_include.is_empty()
 }
 
 // ── Single connection attempt ─────────────────────────────────────────────────
@@ -835,6 +862,20 @@ mod tests {
     #[test]
     fn a_pool_filter_with_no_block_metas_has_no_idle_verdict() {
         assert!(idle_basis(GRPC, StreamScope::POOLS, false).is_none());
+    }
+
+    /// **The provider bill under `CURVE_SOURCE=nats`.** A server-filtered
+    /// subscription with no account to watch carries no transactions, so it must
+    /// not ask for block metas either — one metered frame per slot, forever, to
+    /// fill a blockhash cache only the AMM buy path reads, when no AMM pool is
+    /// tracked to buy on.
+    #[test]
+    fn block_metas_are_not_requested_without_a_transaction_filter() {
+        assert!(!carries_transactions(GRPC, &[]));
+        assert!(carries_transactions(GRPC, &["pool".to_string()]));
+        // A broadcast subject applies its filter locally, so an empty account
+        // list is not an empty subscription — it still carries the subject.
+        assert!(carries_transactions(RELAY, &[]));
     }
 
     /// A broadcast subject guarantees frames, not content: the publisher decides

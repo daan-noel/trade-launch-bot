@@ -360,7 +360,15 @@ impl Engine {
             let handle = tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_millis(refresh_ms)).await;
-                    if cache.is_fresher_than(Duration::from_millis(refresh_ms)) {
+                    // HALF the tick, not the whole one. A live push feed stores
+                    // every ~400 ms, so half an interval separates "the feed
+                    // covered this tick" from "the newest value is our own, and
+                    // it is now a tick old". Testing against the full interval
+                    // makes the age of our own last write borderline-fresh, so
+                    // the fetch is skipped and the cache drifts to TWO intervals
+                    // — past `blockhash_max_age_ms`, which puts a live
+                    // `getLatestBlockhash` back on the AMM buy hot path.
+                    if cache.is_fresher_than(Duration::from_millis(refresh_ms / 2)) {
                         continue; // push feed already covered this tick
                     }
                     info!(

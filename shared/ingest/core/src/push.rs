@@ -51,12 +51,18 @@ impl PushHooks {
     /// Whether the push feeds alone justify holding the subscription open.
     ///
     /// Decides what happens when the venue has no accounts to watch (another
-    /// feed carries the curve and no pool is tracked yet): with push feeds the
-    /// stream stays up carrying only block metas / accounts, without them it
-    /// idles. Losing the block-meta stream silently reverts the host blockhash
-    /// cache to paid `getLatestBlockhash` polling.
+    /// feed carries the curve and no pool is tracked yet): the stream stays up
+    /// carrying only the watched accounts, or it idles.
+    ///
+    /// **Block metas deliberately do not count.** They are one metered frame per
+    /// slot forever, and a subscription with no transaction filter does not
+    /// request them at all (`supervisor::build_subscription`) — so they cannot be
+    /// the reason a stream is open. The watched accounts can: they are the host's
+    /// own pubkeys, they update only when the bot itself transacts, and they keep
+    /// the durable-nonce slots re-armed at feed speed instead of at post-send
+    /// poll speed.
     pub fn wants_stream(&self) -> bool {
-        self.wants_blocks_meta() || !self.account_filter().is_empty()
+        !self.account_filter().is_empty()
     }
 }
 
@@ -64,8 +70,12 @@ impl PushHooks {
 mod tests {
     use super::*;
 
+    /// Only the watched accounts hold an otherwise-empty subscription open.
+    /// Block metas must NOT: they are one metered frame per slot forever, and a
+    /// subscription with no transaction filter does not request them at all — so
+    /// holding a stream open for them bills the provider for nothing.
     #[test]
-    fn push_hooks_decide_whether_an_empty_venue_holds_the_stream() {
+    fn only_watched_accounts_hold_an_empty_venue_stream_open() {
         let none = PushHooks::default();
         assert!(!none.wants_stream());
 
@@ -73,7 +83,10 @@ mod tests {
             on_block_meta: Some(Box::new(|_, _, _| {})),
             ..Default::default()
         };
-        assert!(metas.wants_stream());
+        assert!(
+            !metas.wants_stream(),
+            "block metas must never be the reason a stream is open"
+        );
 
         let accounts = PushHooks {
             watch_accounts: vec!["wallet".into()],

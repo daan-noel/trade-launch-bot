@@ -21,6 +21,28 @@ A broadcast relay publishes one stream to every subscriber, so it cannot carry a
 that depends on which tokens this bot holds. AMM therefore stays on gRPC in every
 configuration, which is also what keeps an open position's feed alive across a switch.
 
+### What gRPC still costs with the curve on NATS
+
+Moving the curve off LaserStream does not take the bot off it. The gRPC subscription
+stays, and carries three things — only one of which scales with anything:
+
+| On the gRPC subscription | Volume | Present when |
+| --- | --- | --- |
+| Tracked pool PDAs (`account_include`) | the AMM trades of 0-14 mints | a position is unsettled, or `track_post_migration` is on |
+| `blocks_meta` | **~2.5 frames/s, every slot, forever** | the subscription carries transactions |
+| `accounts` (nonce accounts + the bot wallet) | one frame per write, i.e. only when the bot itself transacts | always |
+
+`blocks_meta` is the one that can dominate, because its rate is the chain's, not the
+bot's: ~216,000 frames a day whether or not a trade happens. It is gated on the
+transaction filter for exactly that reason — see `supervisor::build_subscription`. With
+no pool tracked the subscription holds only the `accounts` filter, and the provider sees
+near-zero traffic, which is what "the curve costs no credits" is supposed to mean.
+
+The trade-off is stated where it is paid: no block metas means no `FeedLagGauge` samples
+and no pushed blockhash, so the blockhash cache falls back to its watchdog
+(`CacheCfg::blockhash_refresh_ms`). That is correct in that state — the cache is read
+only by the AMM buy path, which with no pool tracked has nothing to buy.
+
 ## Workflow
 
 ```text
