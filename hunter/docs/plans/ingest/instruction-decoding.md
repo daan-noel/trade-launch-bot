@@ -72,6 +72,41 @@ Only top-level invocations (`invoke [1]`) are paired. A CPI into the same progra
 logs a name too, and pairing that with a top-level instruction shifts every later
 pair by one.
 
+## When the feed delivers no data — and how loud that should be
+
+A jsonParsed frame carries `parsed` instead of `data` for the programs the RPC
+node knows (`system`, `spl-token`, `spl-token-2022`, ATA), so
+[`convert::data_from_parsed`](../../../../shared/ingest/core/src/convert.rs)
+re-encodes those bytes before anything labels them. An instruction it cannot cover
+keeps empty data, has no discriminator, and renders `Unknown` — the one case that
+word survives.
+
+Rebuilds are **byte-exact or nothing**. An arm is added only where the parsed view
+carries every argument the program serialises: `getAccountDataSize` rebuilds as the
+bare tag `21`, but a Token-2022 frame listing `extensionTypes` does not, because
+the parsed view spells those extensions by name and the tag mapping would have to
+be invented. A short or guessed payload is worse than an empty one — downstream it
+is indistinguishable from a real instruction.
+
+**A label is only ever built from a top-level instruction.** `decode::protobuf`
+walks `message.instructions`; inner (CPI) instructions are never labeled. The
+rebuild runs on both, so the unrebuilt-instruction alarm reports two numbers and
+only one of them means the tape is degrading:
+
+| counter | meaning |
+| --- | --- |
+| `total` | every rebuild miss, inner included. Dominated by CPI: `spl-token: getAccountDataSize` alone fires ~800k/day as an ATA-creation CPI and reaches ~0 labels. |
+| `top_level` | the misses that cost a label. **This is the blackout number.** |
+
+A large `total` beside a `top_level` of 0 is an uncovered CPI type — worth an arm
+in `data_from_parsed` to quiet the log, but no marker is lost and no window is
+contaminated. A moving `top_level` is the 2026-08-25 failure recurring.
+
+Naming an instruction the rebuild misses means **adding the arm in
+`data_from_parsed`**, not passing a type into `label_instruction`: that function's
+`parsed_type` fallback is `None` on every production path, because the
+jsonParsed→protobuf conversion keeps `data` and drops `parsed`.
+
 ## What the loop cannot reach
 
 A program that suppresses its instruction logs and publishes no IDL yields keys

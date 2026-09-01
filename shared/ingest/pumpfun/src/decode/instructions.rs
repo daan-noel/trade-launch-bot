@@ -163,6 +163,15 @@ pub(super) fn system_transfer_lamports(is_system: bool, data: Option<&[u8]>) -> 
 }
 
 /// Produce a human-readable label for one instruction.
+///
+/// `parsed_type` is the jsonParsed `parsed.type`, used only when `data_bytes`
+/// carries no usable discriminator. **It is `None` on every production path** and
+/// cannot be otherwise: labeling runs on the protobuf message
+/// (`decode::protobuf`), and the jsonParsed→protobuf conversion keeps `data` and
+/// drops `parsed`. So a rebuild `convert::data_from_parsed` cannot cover degrades
+/// to `Unknown` here — naming it means adding the arm THERE, not passing a type
+/// in here. The parameter stays for the gRPC-free tests that exercise the
+/// fallback, and for a future feed that labels before protobuf conversion.
 pub(super) fn label_instruction(
     program_id: &str,
     parsed_type: Option<&str>,

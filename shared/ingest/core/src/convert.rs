@@ -291,7 +291,8 @@ fn transaction_from_json_parsed(
         .as_array()?
         .iter()
         .map(|ix| {
-            let (program_id_index, accounts, data) = compiled_parts(ix, &index)?;
+            let (program_id_index, accounts, data) =
+                compiled_parts(ix, &index, IxSite::TopLevel)?;
             Some(scb::CompiledInstruction {
                 program_id_index,
                 accounts,
@@ -351,7 +352,11 @@ fn transaction_from_json_parsed(
 /// An unresolvable pubkey means the frame is malformed (every instruction account
 /// is by construction a message account); rejecting the whole transaction is the
 /// only safe outcome, since a shifted index decodes into a different wallet.
-fn compiled_parts(ix: &Value, index: &KeyIndex<'_>) -> Option<(u32, Vec<u8>, Vec<u8>)> {
+fn compiled_parts(
+    ix: &Value,
+    index: &KeyIndex<'_>,
+    site: IxSite,
+) -> Option<(u32, Vec<u8>, Vec<u8>)> {
     let program_id_index = match ix.get("programIdIndex").and_then(Value::as_u64) {
         Some(i) => i as u32,
         None => *index.get(ix.get("programId")?.as_str()?)?,
@@ -391,7 +396,7 @@ fn compiled_parts(ix: &Value, index: &KeyIndex<'_>) -> Option<(u32, Vec<u8>, Vec
         None => match data_from_parsed(ix) {
             Some(bytes) => bytes,
             None => {
-                note_unrebuilt_parsed_ix(ix);
+                note_unrebuilt_parsed_ix(ix, site);
                 Vec::new()
             }
         },
@@ -404,10 +409,27 @@ fn compiled_parts(ix: &Value, index: &KeyIndex<'_>) -> Option<(u32, Vec<u8>, Vec
 
 /// jsonParsed instructions whose raw bytes could not be rebuilt, since boot.
 static UNREBUILT_PARSED_IX: AtomicU64 = AtomicU64::new(0);
+/// The subset of [`UNREBUILT_PARSED_IX`] that sat at the TOP level — the only
+/// ones that cost a label. See [`IxSite`].
+static UNREBUILT_PARSED_IX_TOP: AtomicU64 = AtomicU64::new(0);
 /// Unix second of the last warning, so a sustained failure logs once per
 /// [`UNREBUILT_WARN_EVERY_S`] instead of once per instruction.
 static UNREBUILT_LAST_WARN_S: AtomicU64 = AtomicU64::new(0);
 const UNREBUILT_WARN_EVERY_S: u64 = 30;
+
+/// Where an instruction sits in its transaction.
+///
+/// Load-bearing for the alarm, not for the decode: `ix_labels` is built from
+/// `message.instructions` alone (`decode::protobuf`), so an unrebuilt INNER
+/// instruction costs nothing downstream while an unrebuilt TOP-LEVEL one drops a
+/// structural marker. Counting them together makes a harmless gap indistinguishable
+/// from the 2026-08-25 blackout: `spl-token: getAccountDataSize` alone fires ~800k
+/// times a day as an ATA-creation CPI and reaches ~0 labels.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IxSite {
+    TopLevel,
+    Inner,
+}
 
 /// Count — and periodically shout about — a `{program, parsed}` instruction that
 /// arrived with no `data` and could not be re-encoded.
@@ -422,8 +444,17 @@ const UNREBUILT_WARN_EVERY_S: u64 = 30;
 /// it is a silent, one-directional bias in the tape, and the tape cannot be
 /// re-labelled after the fact because `raw_txs` is not persisted.
 /// See `docs/history/2026-08-25-ix-label-blackout.md`.
-fn note_unrebuilt_parsed_ix(ix: &Value) {
+///
+/// **Read `top_level`, not `total`.** Everything above is true of a top-level
+/// instruction only; `compiled_parts` also runs on inner ones, which never reach
+/// a label. A large `total` beside a `top_level` of 0 is an uncovered CPI type —
+/// worth an arm in [`data_from_parsed`], but it is not losing markers.
+fn note_unrebuilt_parsed_ix(ix: &Value, site: IxSite) {
     let total = UNREBUILT_PARSED_IX.fetch_add(1, Ordering::Relaxed) + 1;
+    let top_level = match site {
+        IxSite::TopLevel => UNREBUILT_PARSED_IX_TOP.fetch_add(1, Ordering::Relaxed) + 1,
+        IxSite::Inner => UNREBUILT_PARSED_IX_TOP.load(Ordering::Relaxed),
+    };
 
     let now_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -448,10 +479,20 @@ fn note_unrebuilt_parsed_ix(ix: &Value) {
         .and_then(|p| p.get("type"))
         .and_then(|v| v.as_str())
         .unwrap_or("?");
+    if top_level == 0 {
+        tracing::warn!(
+            program,
+            parsed_type,
+            total,
+            "jsonParsed instruction data could not be rebuilt - inner CPI only, so no ix_label is affected; cover it in data_from_parsed to silence this",
+        );
+        return;
+    }
     tracing::warn!(
         program,
         parsed_type,
         total,
+        top_level,
         "jsonParsed instruction data could not be rebuilt - ix_labels are losing          structural markers for as long as this continues",
     );
 }
@@ -462,6 +503,11 @@ pub fn unrebuilt_parsed_ix_count() -> u64 {
     UNREBUILT_PARSED_IX.load(Ordering::Relaxed)
 }
 
+/// The subset of [`unrebuilt_parsed_ix_count`] that cost a label. This is the
+/// number that means the tape is degrading; the total is dominated by inner CPI.
+pub fn unrebuilt_parsed_ix_top_level_count() -> u64 {
+    UNREBUILT_PARSED_IX_TOP.load(Ordering::Relaxed)
+}
 
 // -- jsonParsed instruction accounts ------------------------------------------
 
@@ -771,6 +817,21 @@ fn token_data(ty: &str, info: &Value) -> Option<Vec<u8>> {
         "initializeAccount2" => e(16).key(pubkey(info, "owner")?),
         "syncNative" => e(17),
         "initializeAccount3" => e(18).key(pubkey(info, "owner")?),
+        // Base spl-token takes no argument here. Token 2022 appends one `u16` LE
+        // per requested `ExtensionType`, with NO length prefix — and the parsed
+        // view spells those extensions by name, so re-encoding them would mean
+        // inventing a name->tag table. Rebuild the argument-free form only; a
+        // frame that lists extensions keeps its empty data, per the byte-exact
+        // rule above. Overwhelmingly an inner CPI from ATA creation, so it costs
+        // few labels but dominates the unrebuilt counter.
+        "getAccountDataSize" => {
+            if let Some(v) = info.get("extensionTypes") {
+                if !v.as_array().is_some_and(|a| a.is_empty()) {
+                    return None;
+                }
+            }
+            e(21)
+        }
         "initializeImmutableOwner" => e(22),
         _ => return None,
     }
@@ -984,7 +1045,8 @@ fn inner_ix_from_json(ix: &Value, index: Option<&KeyIndex<'_>>) -> Option<scb::I
     // base64 frames carry numeric `programIdIndex`/`accounts`; jsonParsed frames
     // carry pubkey strings. `compiled_parts` reads whichever is present.
     let empty = KeyIndex::new();
-    let (program_id_index, accounts, data) = compiled_parts(ix, index.unwrap_or(&empty))?;
+    let (program_id_index, accounts, data) =
+        compiled_parts(ix, index.unwrap_or(&empty), IxSite::Inner)?;
     Some(scb::InnerInstruction {
         program_id_index,
         accounts,
@@ -1163,10 +1225,32 @@ mod tests {
     /// the pre-existing, deliberate behaviour. What must NOT be silent is that it
     /// happened: on 2026-08-25 four hours of it zeroed every machinery marker on
     /// the tape and nothing said so.
+    /// Both counters, in ONE test: they are process-global, so a second test
+    /// asserting a delta on them would race this one under parallel execution.
     #[test]
     fn an_unrebuildable_parsed_instruction_raises_the_alarm() {
-        let before = unrebuilt_parsed_ix_count();
+        // -- an INNER failure counts, but costs no label ------------------------
+        let before_total = unrebuilt_parsed_ix_count();
+        let before_top = unrebuilt_parsed_ix_top_level_count();
 
+        let mut f = parsed_frame();
+        f["transaction"]["meta"]["innerInstructions"][0]["instructions"][0] = json!({
+            "program": "spl-token", "programId": key(3), "accounts": [key(1)],
+            "parsed": {"type": "someUncoveredIx", "info": {"source": key(1)}},
+            "stackHeight": 2
+        });
+        assert!(json_tx_to_protobuf(&f).is_some());
+        assert!(
+            unrebuilt_parsed_ix_count() > before_total,
+            "an inner rebuild failure still counts",
+        );
+        assert_eq!(
+            unrebuilt_parsed_ix_top_level_count(),
+            before_top,
+            "an inner instruction never reaches ix_labels, so it must NOT read as a marker loss",
+        );
+
+        // -- a TOP-LEVEL failure is the one that degrades the tape --------------
         let mut f = parsed_frame();
         // A parsed type `token_data` does not cover: the node consumed the bytes
         // and we cannot put them back.
@@ -1186,8 +1270,8 @@ mod tests {
             .unwrap();
         assert!(m.instructions[1].data.is_empty(), "unrebuilt data stays empty");
         assert!(
-            unrebuilt_parsed_ix_count() > before,
-            "the unrebuilt-instruction counter must move",
+            unrebuilt_parsed_ix_top_level_count() > before_top,
+            "a top-level rebuild failure must move the top-level counter",
         );
     }
 
@@ -1362,6 +1446,33 @@ mod tests {
             json!({"account": key(1), "destination": key(2), "owner": key(1)}),
         );
         assert_eq!(data_from_parsed(&close), Some(vec![9]));
+    }
+
+    /// `getAccountDataSize` is the highest-volume parsed type on the live tape
+    /// (an ATA-creation CPI). Base spl-token takes no argument, so tag 21 alone is
+    /// byte-exact; Token 2022 may append `u16` extension tags the parsed view
+    /// spells by NAME, and inventing that mapping would emit a payload that reads
+    /// as real. Cover the argument-free form, refuse the rest.
+    #[test]
+    fn get_account_data_size_rebuilds_only_without_extensions() {
+        let bare = parsed_ix("spl-token", "getAccountDataSize", json!({"mint": key(2)}));
+        assert_eq!(data_from_parsed(&bare), Some(vec![21]));
+
+        // An explicitly empty list is the same instruction.
+        let empty = parsed_ix(
+            "spl-token-2022",
+            "getAccountDataSize",
+            json!({"mint": key(2), "extensionTypes": []}),
+        );
+        assert_eq!(data_from_parsed(&empty), Some(vec![21]));
+
+        // Named extensions carry bytes we cannot reproduce - stay empty.
+        let extended = parsed_ix(
+            "spl-token-2022",
+            "getAccountDataSize",
+            json!({"mint": key(2), "extensionTypes": ["immutableOwner"]}),
+        );
+        assert_eq!(data_from_parsed(&extended), None);
     }
 
     /// Every ATA variant arrives with an empty jsonParsed `data`, so without the
