@@ -412,6 +412,7 @@ impl TokenTrack {
             }
             ThisMember | ThisWorking | SameBuyCount | SameBuySol | SameWalletCount
             | MemberTemplateCount | WorkingBuyCount | WorkingBuySol | WorkingWalletCount | WorkingTemplateCount
+            | WorkingTemplatesSeen
             | WorkingBuyShare | HasNew | HasUnknown | Packed
             | PreSlotLiquidity | PrePrintTrail => {
                 let Some(fp) = fingerprint else {

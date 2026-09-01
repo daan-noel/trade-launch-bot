@@ -326,6 +326,10 @@ pub struct CompiledRule {
     pub stop_loss: Option<f64>,
     /// Empty ⇒ enter on arm (the fingerprint alone is the entry signal).
     pub entry_reqs: Vec<MetricReq>,
+    /// Leftover gate compiled out of `entry` (`working_templates_seen`). Empty ⇒
+    /// no leftover (parent harvest A/B). Fail + permissions would have entered
+    /// ⇒ [`EntryVerdict::Exhaust`], not [`EntryVerdict::SpendSlot`].
+    pub leftover_reqs: Vec<MetricReq>,
     /// Completing-print event reqs. Empty ⇒ no separate event (`entry_reqs` is
     /// the whole gate). Harvest crowd shape lives here.
     pub event_reqs: Vec<MetricReq>,
@@ -411,12 +415,15 @@ impl CompiledRule {
     /// Pre-chew a loaded rule. Its `params` are already parsed + validated, so this
     /// is a pure structural walk (no failure path).
     pub fn compile(rule: &LoadedRule) -> Self {
-        let entry_reqs = rule
+        let entry_all = rule
             .params
             .entry
             .as_ref()
             .map(|s| build_reqs(s, rule.fingerprint_id))
             .unwrap_or_default();
+        let (leftover_reqs, entry_reqs): (Vec<_>, Vec<_>) = entry_all
+            .into_iter()
+            .partition(|r| r.metric == MetricId::WorkingTemplatesSeen);
         let event_reqs = rule
             .params
             .entry_event
@@ -483,8 +490,9 @@ impl CompiledRule {
         let mut dump_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut needs_slot = false;
         let stage_reqs = scale_out.iter().flat_map(|s| s.reqs.iter());
-        for r in entry_reqs
+        for r in leftover_reqs
             .iter()
+            .chain(entry_reqs.iter())
             .chain(event_reqs.iter())
             .chain(exit_reqs.iter())
             .chain(stage_reqs)
@@ -515,8 +523,9 @@ impl CompiledRule {
         // bare tick. Derived from the same req list the fold evaluates, so a newly
         // authored condition widens the horizon automatically.
         let mut clock_horizons = ClockHorizons::default();
-        for r in entry_reqs
+        for r in leftover_reqs
             .iter()
+            .chain(entry_reqs.iter())
             .chain(event_reqs.iter())
             .chain(exit_reqs.iter())
             .chain(scale_out.iter().flat_map(|s| s.reqs.iter()))
@@ -526,7 +535,11 @@ impl CompiledRule {
 
         // Monotonic entry kills — per metric, OR of arm upper bounds.
         let mut mono_kills: SmallVec<[MonoMetricKill; 2]> = SmallVec::new();
-        for r in entry_reqs.iter().chain(event_reqs.iter()) {
+        for r in leftover_reqs
+            .iter()
+            .chain(entry_reqs.iter())
+            .chain(event_reqs.iter())
+        {
             if !metric_spec(r.metric).monotonic {
                 continue;
             }
@@ -561,6 +574,7 @@ impl CompiledRule {
             take_profit: rule.params.take_profit,
             stop_loss: rule.params.stop_loss,
             entry_reqs,
+            leftover_reqs,
             event_reqs,
             entry_lock,
             exit_reqs,
@@ -584,12 +598,18 @@ impl CompiledRule {
 
     /// Whether arming alone is the entry signal (no entry conditions authored).
     pub fn enter_on_arm(&self) -> bool {
-        self.entry_reqs.is_empty() && self.event_reqs.is_empty()
+        self.entry_reqs.is_empty() && self.leftover_reqs.is_empty() && self.event_reqs.is_empty()
     }
 
     /// Whether every `entry` filter holds at `now` (AND). Vacuous when empty.
+    /// Leftover (`working_templates_seen`) is [`leftover_satisfied`], not here.
     pub fn entry_satisfied(&self, track: &TokenTrack, now: Ts) -> bool {
         reqs_satisfied(&self.entry_reqs, track, now)
+    }
+
+    /// Whether the leftover gate holds at `now`. Vacuous when empty.
+    pub fn leftover_satisfied(&self, track: &TokenTrack, now: Ts) -> bool {
+        reqs_satisfied(&self.leftover_reqs, track, now)
     }
 
     /// Whether the completing-print event holds at `now`. Vacuous when empty.
@@ -674,6 +694,7 @@ impl CompiledRule {
     /// the Armed-side gate that also spends a slot.
     pub fn can_enter(&self, track: &TokenTrack, now: Ts) -> bool {
         self.event_satisfied(track, now)
+            && self.leftover_satisfied(track, now)
             && self.entry_satisfied(track, now)
             && !self.exit_metrics_satisfied(track, now)
     }
@@ -687,10 +708,21 @@ impl CompiledRule {
         locked_slot: Option<u64>,
     ) -> EntryVerdict {
         use crate::rule_params::EntryLock;
+        let leftover_ok = self.leftover_satisfied(track, now);
+        let rest_ok = self.entry_satisfied(track, now);
+        let exit_holds = self.exit_metrics_satisfied(track, now);
+        let would_enter = leftover_ok && rest_ok && !exit_holds;
+        // Leftover fail on a print that would otherwise enter consumes the
+        // episode. Permission / exit-already-true fails still spend the slot.
+        let leftover_blocks = !leftover_ok && rest_ok && !exit_holds;
         match self.entry_lock {
             None => {
-                if self.can_enter(track, now) {
+                if !self.event_satisfied(track, now) {
+                    EntryVerdict::No
+                } else if would_enter {
                     EntryVerdict::Enter
+                } else if leftover_blocks {
+                    EntryVerdict::Exhaust
                 } else {
                     EntryVerdict::No
                 }
@@ -703,8 +735,10 @@ impl CompiledRule {
                 if !self.event_satisfied(track, now) {
                     return EntryVerdict::No;
                 }
-                if self.entry_satisfied(track, now) && !self.exit_metrics_satisfied(track, now) {
+                if would_enter {
                     EntryVerdict::Enter
+                } else if leftover_blocks {
+                    EntryVerdict::Exhaust
                 } else {
                     EntryVerdict::SpendSlot
                 }
@@ -742,6 +776,7 @@ impl CompiledRule {
         let unmet = self
             .event_reqs
             .iter()
+            .chain(self.leftover_reqs.iter())
             .chain(self.entry_reqs.iter())
             .filter(|r| !(r.metric == killed_by.metric && r.window == killed_by.window))
             .filter_map(|r| {
@@ -758,13 +793,16 @@ impl CompiledRule {
     }
 }
 
-/// Armed-side entry result. [`SpendSlot`] is a completing print whose filters
-/// failed — that slot must not retry on a later print.
+/// Armed-side entry result. [`SpendSlot`] is a completing print whose permission
+/// filters failed — that slot must not retry on a later print.
+/// [`Exhaust`] is leftover fail on a print that would otherwise enter: the
+/// episode ends, a later slot does not become the first fire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryVerdict {
     No,
     Enter,
     SpendSlot,
+    Exhaust,
 }
 
 /// Shared exit-req walk for the global side and each scale-out stage.

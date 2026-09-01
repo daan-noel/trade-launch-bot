@@ -774,6 +774,7 @@ pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
     for req in compiled
         .event_reqs
         .iter()
+        .chain(compiled.leftover_reqs.iter())
         .chain(compiled.entry_reqs.iter())
         .chain(compiled.exit_reqs.iter())
         .chain(stage_reqs)
@@ -828,6 +829,7 @@ pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
         for req in compiled
             .event_reqs
             .iter()
+            .chain(compiled.leftover_reqs.iter())
             .chain(compiled.entry_reqs.iter())
             .chain(compiled.exit_reqs.iter())
             .chain(stage_reqs)
@@ -933,6 +935,7 @@ fn col_idx_mono(columns: &[SeriesColumn], k: &hunter_engine::arm::MonoMetricKill
 /// in tests if a future change made the column set vary per token.
 pub struct BoundCombo {
     pub(crate) rule: CompiledRule,
+    leftover_cols: Vec<usize>,
     entry_cols: Vec<usize>,
     event_cols: Vec<usize>,
     mono_cols: Vec<usize>,
@@ -971,6 +974,7 @@ pub struct BoundCombo {
 impl BoundCombo {
     /// Bind `rule` against the run's fixed `columns`.
     pub(crate) fn new(columns: &[SeriesColumn], rule: CompiledRule) -> Self {
+        let leftover_cols = resolve_cols_in(columns, &rule.leftover_reqs);
         let entry_cols = resolve_cols_in(columns, &rule.entry_reqs);
         let event_cols = resolve_cols_in(columns, &rule.event_reqs);
         let exit_cols = resolve_cols_in(columns, &rule.exit_reqs);
@@ -995,6 +999,7 @@ impl BoundCombo {
             .any(|(r, &col)| col != MISSING_COL || eval(&r.conds, f64::NAN, r.tolerance));
         Self {
             rule,
+            leftover_cols,
             entry_cols,
             event_cols,
             mono_cols,
@@ -1143,6 +1148,7 @@ fn debug_assert_cols_match(series: &MetricSeries, c: &BoundCombo) {
             .event_reqs
             .iter()
             .zip(&c.event_cols)
+            .chain(c.rule.leftover_reqs.iter().zip(&c.leftover_cols))
             .chain(c.rule.entry_reqs.iter().zip(&c.entry_cols))
             .chain(c.rule.exit_reqs.iter().zip(&c.exit_cols))
             .all(|(r, &col)| col == col_idx_of(series, r))
@@ -1325,29 +1331,53 @@ fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usi
 
 /// Mirror of `CompiledRule::try_enter` without the exit veto: the first print
 /// this slot that makes `event_reqs` true is the only candidate (`entry_lock: slot`).
-/// Filters that fail still spend the slot. `locked` is this token's spent slot.
+/// Permission filters that fail still spend the slot. Leftover fail on a print
+/// that would otherwise enter ends the walk ([`EventAdmit::Exhaust`]). `locked`
+/// is this token's spent slot.
 fn event_admits(
     series: &MetricSeries,
     b: &BoundCombo,
     i: usize,
     locked: &mut Option<u64>,
-) -> bool {
+) -> EventAdmit {
     let event_ok = reqs_satisfied(series, &b.rule.event_reqs, &b.event_cols, i);
+    let leftover_ok = reqs_satisfied(series, &b.rule.leftover_reqs, &b.leftover_cols, i);
     let entry_ok = reqs_satisfied(series, &b.rule.entry_reqs, &b.entry_cols, i);
     match b.rule.entry_lock {
         Some(EntryLock::Slot) => {
             if !event_ok {
-                return false;
+                return EventAdmit::No;
             }
             let slot = series.slot.get(i).copied().flatten().unwrap_or(0);
             if *locked == Some(slot) && slot != 0 {
-                return false;
+                return EventAdmit::No;
             }
             *locked = Some(slot);
-            entry_ok
+            if leftover_ok && entry_ok {
+                EventAdmit::Yes
+            } else if !leftover_ok && entry_ok {
+                EventAdmit::Exhaust
+            } else {
+                EventAdmit::No
+            }
         }
-        None => event_ok && entry_ok,
+        None => {
+            if event_ok && leftover_ok && entry_ok {
+                EventAdmit::Yes
+            } else if event_ok && !leftover_ok && entry_ok {
+                EventAdmit::Exhaust
+            } else {
+                EventAdmit::No
+            }
+        }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventAdmit {
+    No,
+    Yes,
+    Exhaust,
 }
 
 /// Walk the series to the entry decision, mirroring the armed-side `decide_arm`:
@@ -1382,13 +1412,22 @@ pub(crate) fn resolve_entry(
         if entry_unsatisfiable(series, c, mono_cols, i) {
             return EntryResolution::NoEntry;
         }
-        if enter_on_arm || event_admits(series, b, i, &mut locked_slot) {
-            // Mirror `CompiledRule::can_enter`: never buy while exit metrics already hold.
-            // Mirror `CompiledRule::can_enter`: never buy while exit metrics already hold.
+        if enter_on_arm {
             if has_exit_metrics && clauses_any_satisfied(series, &c.exit_clauses, exit_cols, i) {
                 continue;
             }
             return entry_fill_at(trades, series, i, pricing);
+        }
+        match event_admits(series, b, i, &mut locked_slot) {
+            EventAdmit::Yes => {
+                // Mirror `CompiledRule::can_enter`: never buy while exit metrics already hold.
+                if has_exit_metrics && clauses_any_satisfied(series, &c.exit_clauses, exit_cols, i) {
+                    continue;
+                }
+                return entry_fill_at(trades, series, i, pricing);
+            }
+            EventAdmit::Exhaust => return EntryResolution::NoEntry,
+            EventAdmit::No => {}
         }
     }
     EntryResolution::NoEntry
@@ -1500,8 +1539,15 @@ impl EntryCandidates {
             self.stopped_at = Some(i);
             return;
         }
-        if !self.all_rows && event_admits(series, b, i, &mut self.locked_slot) {
-            self.rows.push(i as u32);
+        if !self.all_rows {
+            match event_admits(series, b, i, &mut self.locked_slot) {
+                EventAdmit::Yes => self.rows.push(i as u32),
+                EventAdmit::Exhaust => {
+                    self.stopped_at = Some(i);
+                    return;
+                }
+                EventAdmit::No => {}
+            }
         }
         self.next_row = i + 1;
     }

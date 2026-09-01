@@ -159,9 +159,19 @@ struct ListedReq<'a> {
 fn rule_reqs(rule: &CompiledRule, stage: Option<u8>) -> Vec<ListedReq<'_>> {
     let stage_reqs: usize = rule.scale_out.iter().map(|s| s.reqs.len()).sum();
     let mut out = Vec::with_capacity(
-        rule.event_reqs.len() + rule.entry_reqs.len() + rule.exit_reqs.len() + stage_reqs,
+        rule.event_reqs.len()
+            + rule.leftover_reqs.len()
+            + rule.entry_reqs.len()
+            + rule.exit_reqs.len()
+            + stage_reqs,
     );
     out.extend(rule.event_reqs.iter().map(|r| ListedReq {
+        side: ReadSide::Entry,
+        req: r,
+        exit_clause: None,
+        skip_trailing: false,
+    }));
+    out.extend(rule.leftover_reqs.iter().map(|r| ListedReq {
         side: ReadSide::Entry,
         req: r,
         exit_clause: None,

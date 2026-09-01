@@ -18,7 +18,8 @@
 //!   that need the WALLET column, and its own deque for exactly that reason
 //! * `m_flow_ix` (static, fingerprint-scoped) — tagged/untagged lifetime totals
 //! * `m_flow_ix_window` (dynamic, fingerprint-scoped) — same metrics over a window
-//! * `m_burst_slot` (static, fingerprint-scoped) — this slot's buy prefix × this print's grain
+//! * `m_burst_slot` (static, fingerprint-scoped) — this slot's buy prefix × this print's grain,
+//!   plus mint-lifetime `working_templates_seen` (survives slot reset)
 //! * `m_burst_wave` (static) — this token's consecutive-slot buy run (gap before the wave)
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `bounce`,
 //!   `pnl`, `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
@@ -770,6 +771,9 @@ pub enum MetricId {
     WorkingWalletCount,
     /// Distinct working-list grains among members this slot.
     WorkingTemplateCount,
+    /// Distinct working-list grains among curve buys on this mint so far,
+    /// including this print. Survives slot reset. Not `working_template_count`.
+    WorkingTemplatesSeen,
     /// Percent of this slot's member buys whose grain is on the working list.
     /// 100 = a pure pack. NaN on an empty prefix.
     WorkingBuyShare,
@@ -2081,6 +2085,15 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 126,
+            },
+            MetricSpec {
+                id: MetricId::WorkingTemplatesSeen,
+                name: "working_templates_seen",
+                description: "Distinct working-list template grains among curve buys on this mint so far, including this print. Lifetime: the set survives a slot reset. Harvest leftover is >= 4. Not this-slot working_template_count.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: true,
+                hue: 133,
             },
             MetricSpec {
                 id: MetricId::WorkingBuyShare,

@@ -696,6 +696,9 @@ enum ArmDecision {
     Enter,
     /// Completing print whose filters failed — lock the slot, stay Armed.
     SpendSlot,
+    /// Leftover fail on a print that would otherwise enter — lock the slot,
+    /// end the episode. A later slot does not become the first fire.
+    Exhaust,
     Exit(ExitReason),
     /// Scale-out leg: sell `sell_bps` of the initial bag; fill restores Entered.
     PartialExit { reason: ExitReason, sell_bps: u16 },
@@ -975,6 +978,7 @@ fn decide_arm(
             match c.try_enter(&token.track, now, token.entry_locks.get(&rule_id).copied()) {
                 EntryVerdict::Enter => ArmDecision::Enter,
                 EntryVerdict::SpendSlot => ArmDecision::SpendSlot,
+                EntryVerdict::Exhaust => ArmDecision::Exhaust,
                 EntryVerdict::No => ArmDecision::None,
             }
         }
@@ -1060,6 +1064,13 @@ fn apply_decision(
             if slot != 0 {
                 token.entry_locks.insert(rule_id, slot);
             }
+        }
+        ArmDecision::Exhaust => {
+            let slot = token.track.cur_slot();
+            if slot != 0 {
+                token.entry_locks.insert(rule_id, slot);
+            }
+            token.arms.insert(rule_id, ArmState::Done);
         }
         ArmDecision::Disarm(reason, detail) => {
             // `ArmState` keeps only the reason: it is per-(token, rule) RAM that

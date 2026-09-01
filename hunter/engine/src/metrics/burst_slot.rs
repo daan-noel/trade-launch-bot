@@ -103,7 +103,8 @@ struct TemplateRun {
 
 // ── Slot prefix ──────────────────────────────────────────────────────────────
 
-/// One token's current-slot member prefix + the ever-seen buyer set.
+/// One token's current-slot member prefix + the ever-seen buyer set
+/// and the mint-lifetime template-grain set (`working_templates_seen`).
 #[derive(Debug, Clone)]
 pub struct BurstSlotState {
     slot: u64,
@@ -120,6 +121,8 @@ pub struct BurstSlotState {
     /// Wallets that bought this mint in the current slot (moved into `ever` on
     /// the next slot change). Updated on every buy with a wallet, members or not.
     this_slot_buyers: HashedSet,
+    /// Template grains on curve buys this mint, surviving slot reset.
+    seen_templates: HashedSet,
     by_template: HashedMap<TemplateRun>,
     pre_slot_liquidity: f64,
     pre_print_trail: f64,
@@ -138,6 +141,7 @@ impl Default for BurstSlotState {
             has_unknown: false,
             ever: HashedSet::default(),
             this_slot_buyers: HashedSet::default(),
+            seen_templates: HashedSet::default(),
             by_template: HashedMap::default(),
             pre_slot_liquidity: f64::NAN,
             pre_print_trail: f64::NAN,
@@ -193,6 +197,14 @@ impl BurstSlotState {
             && !self.this_slot_buyers.contains(&t.wallet_hash);
         if t.wallet_hash != 0 {
             self.this_slot_buyers.insert(t.wallet_hash);
+        }
+
+        // Lifetime working-templates-seen: every curve buy with a grain, including
+        // this print. Slot prefix still resets; this set does not.
+        if t.on_curve {
+            if let Some(h) = t.template_hash {
+                self.seen_templates.insert(h);
+            }
         }
 
         if !is_member(t) {
@@ -274,6 +286,7 @@ impl BurstSlotState {
             WorkingBuySol => self.working_sol(p),
             WorkingWalletCount => self.working_wallets(p),
             WorkingTemplateCount => self.working_template_count(p),
+            WorkingTemplatesSeen => self.working_templates_seen(p),
             WorkingBuyShare => {
                 if self.member_count == 0 {
                     f64::NAN
@@ -323,6 +336,13 @@ impl BurstSlotState {
     fn working_template_count(&self, p: &BurstPatterns) -> f64 {
         self.by_template
             .keys()
+            .filter(|h| p.contains(**h))
+            .count() as f64
+    }
+
+    fn working_templates_seen(&self, p: &BurstPatterns) -> f64 {
+        self.seen_templates
+            .iter()
             .filter(|h| p.contains(**h))
             .count() as f64
     }
@@ -425,6 +445,29 @@ mod tests {
         assert_eq!(s.value(MetricId::HasNew, Some(&p)), 1.0);
         assert_eq!(s.value(MetricId::SameWalletCount, Some(&p)), 2.0);
         assert_eq!(s.value(MetricId::SameBuySol, Some(&p)), 0.9);
+    }
+
+    #[test]
+    fn working_templates_seen_survives_slot_reset() {
+        let p = patterns(&[
+            "Axiom Trade|CU|ATA|F",
+            "Photon|CU|ATA|F",
+            "Terminal|CU|ATA|F",
+            "GMGN|CU|ATA|F",
+        ]);
+        let ax = grain_id_hash("Axiom Trade|CU|ATA|F");
+        let ph = grain_id_hash("Photon|CU|ATA|F");
+        let te = grain_id_hash("Terminal|CU|ATA|F");
+        let gm = grain_id_hash("GMGN|CU|ATA|F");
+        let mut s = BurstSlotState::default();
+        s.on_trade(&buy(10, Some(1), 1, Some(ax), 0.5), 0.0, f64::NAN);
+        s.on_trade(&buy(11, Some(1), 2, Some(ph), 0.5), 0.0, 10.0);
+        s.on_trade(&buy(12, Some(1), 3, Some(te), 0.5), 0.0, 10.0);
+        assert_eq!(s.value(MetricId::WorkingTemplatesSeen, Some(&p)), 3.0);
+        assert_eq!(s.value(MetricId::WorkingTemplateCount, Some(&p)), 1.0);
+        s.on_trade(&buy(13, Some(1), 4, Some(gm), 0.5), 0.0, 10.0);
+        assert_eq!(s.value(MetricId::WorkingTemplatesSeen, Some(&p)), 4.0);
+        assert_eq!(s.value(MetricId::WorkingTemplateCount, Some(&p)), 1.0);
     }
 
     #[test]
