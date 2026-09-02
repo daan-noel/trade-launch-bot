@@ -30,6 +30,10 @@ export const baseApi = createApi({
   tagTypes: [
     'Settings',
     'LiveMode',
+    // Which transport carries curve traffic (`grpc` | `nats`). Its own tag, not
+    // `Settings`: the switch re-points the live feed, so its readback must refresh
+    // on the mutation alone and not wait on the broad settings cache.
+    'CurveSource',
     'WalletHoldings',
     // Closed-trade PnL for the Portfolio page (both real + paper). Split from
     // WalletHoldings so a paper close can refresh performance WITHOUT triggering

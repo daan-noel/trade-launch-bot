@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { AppProviders } from 'context/AppProviders';
 import { AppLayout } from 'components/layout/AppLayout';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
+import { CurveSourceControl } from '@live/components/CurveSourceControl';
 import { LiveModeControl } from '@live/components/LiveModeControl';
 import { RunningTasksIndicator } from '@live/components/RunningTasksIndicator';
 import { usePositionNotifications } from '@live/hooks/usePositionNotifications';
@@ -59,7 +60,12 @@ export default function App() {
               element={
                 <AppLayout
                   nav={liveNav}
-                  rightSlot={<LiveModeControl />}
+                  rightSlot={
+                    <>
+                      <CurveSourceControl />
+                      <LiveModeControl />
+                    </>
+                  }
                   beforeMain={<NotificationMount />}
                   footer={<RunningTasksIndicator />}
                 />

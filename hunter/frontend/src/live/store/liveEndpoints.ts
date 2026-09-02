@@ -445,6 +445,24 @@ export const liveApi = baseApi.injectEndpoints({
       transformResponse: (r: { live: boolean }) => r.live,
       invalidatesTags: ['LiveMode'],
     }),
+    /** Which transport carries bonding-curve traffic — `grpc` (Yellowstone
+     *  LaserStream) or `nats` (the relay). The operator's persisted choice; the
+     *  ingest adapter watches the settings snapshot, so the feed re-points with no
+     *  restart. AMM pool traffic always rides gRPC either way. */
+    getCurveSource: builder.query<string, void>({
+      query: () => '/api/system/curve-source',
+      transformResponse: (r: { curve_source: string }) => r.curve_source,
+      providesTags: ['CurveSource'],
+    }),
+    setCurveSource: builder.mutation<string, string>({
+      query: (curve_source) => ({
+        url: '/api/system/curve-source',
+        method: 'PUT',
+        body: { curve_source },
+      }),
+      transformResponse: (r: { curve_source: string }) => r.curve_source,
+      invalidatesTags: ['CurveSource'],
+    }),
     /** Admin reseed of DB-backed in-memory caches (settings, engine, token seed). */
     reloadCaches: builder.mutation<
       { ok: boolean; steps: { name: string; ok: boolean; detail?: string | null }[] },
@@ -475,5 +493,7 @@ export const {
   useClaimCashbackMutation,
   useGetLiveModeQuery,
   useSetLiveModeMutation,
+  useGetCurveSourceQuery,
+  useSetCurveSourceMutation,
   useReloadCachesMutation,
 } = liveApi;
