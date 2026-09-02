@@ -289,6 +289,10 @@ impl IngestConsumer {
         let fee_sol = core_trade.fee_sol;
         let (cu_limit, cu_price, tip_lamports) =
             (core_trade.cu_limit, core_trade.cu_price, core_trade.tip_lamports);
+        // Same capture-before-move as the fee fields: the frame carries who actually
+        // signed, so a live-appended row attributes the trade the way a refetch does
+        // instead of showing a router PDA as the trader until the next fetch.
+        let (payer, is_proxied) = (core_trade.payer_address.clone(), core_trade.is_proxied);
         let db_trade = {
             let mut t = core_trade.clone();
             t.instruction_labels = labels_json;
@@ -394,6 +398,8 @@ impl IngestConsumer {
         self.emit_sse(SseEvent::TradeExecuted {
             mint_address: mint,
             wallet,
+            payer,
+            is_proxied,
             trade_type,
             amount_sol,
             token_amount,

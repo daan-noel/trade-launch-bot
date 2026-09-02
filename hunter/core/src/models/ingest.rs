@@ -35,6 +35,17 @@ pub enum SseEvent {
     TradeExecuted {
         mint_address: String,
         wallet: String,
+        /// The other half of the trader identity — `wallet` is who the venue credited,
+        /// this is who signed and paid (see `Trade::payer_address`). Carried on the
+        /// live lane for the same reason `fee_sol` is: without it an SSE-appended row
+        /// shows a blank payer and no proxy mark until the next full fetch, which is
+        /// exactly the attribution a reader must not have to wait for. Empty when the
+        /// feed carried no payer.
+        payer: String,
+        /// `Some(true)` when `wallet` signed nothing on this transaction and is a
+        /// router's proxy PDA rather than a trader (see `Trade::is_proxied`). `None`
+        /// = not captured, and must never be read as `false`.
+        is_proxied: Option<bool>,
         trade_type: TradeType,
         amount_sol: f64,
         /// Raw token units — exact `u64` (serializes as a JSON number; the frontend

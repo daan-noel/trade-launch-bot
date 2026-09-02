@@ -999,6 +999,13 @@ export interface TokenLiveStats {
 export interface LiveTrade {
   mint_address: string;
   wallet: string;
+  /** Who signed and paid — see `TradeRecord.payer_address`. Carried on the live lane
+   *  so an appended row attributes the trade the way a refetch does. Absent on frames
+   *  from a bin predating the field. */
+  payer?: string | null;
+  /** Whether `wallet` is a router proxy PDA rather than a trader — see
+   *  `TradeRecord.is_proxied`. Absent/null = not captured, never `false`. */
+  is_proxied?: boolean | null;
   trade_type: string;
   amount_sol: number;
   token_amount: number;
@@ -1056,7 +1063,28 @@ export type SyncStreamEvent = SyncProgressEvent | SyncCompleteEvent | SyncErrorE
 export interface TradeRecord {
   id: string;
   mint_address: string;
+  /** The account the VENUE credited (`TradeEvent.user`) — **not always a person**.
+   *  An aggregator routes its customers through a PDA of its own, so this can name
+   *  that PDA while `payer_address` names the trader. Read `is_proxied` before
+   *  attributing this row to anyone. */
   wallet_address: string;
+  /** The transaction's fee payer (`account_keys[0]`) — the real sender when
+   *  `is_proxied` is true, and a candidate otherwise (a bot can pay from one
+   *  keypair and trade from another).
+   *
+   *  Per-TRANSACTION, so every leg of a multi-leg tx repeats it: collapse by
+   *  `tx_signature` before counting payers. Empty on every trade ingested before
+   *  migration 0014 — unbackfillable, since `raw_txs` has 3-day retention. */
+  payer_address?: string;
+  /** `true` when `wallet_address` signed nothing on this transaction and is
+   *  therefore a router's proxy PDA rather than a trader.
+   *
+   *  Three states, and null is not false: `null`/absent = not captured (pre-0014,
+   *  or a read that didn't project it) and must **never** render as "a real
+   *  wallet". Per-wallet aggregates exclude `true` rows — one router collapses
+   *  hundreds of thousands of unrelated people onto a single address, which
+   *  inflates that wallet and deflates unique-wallet breadth at once. */
+  is_proxied?: boolean | null;
   trade_type: 'buy' | 'sell';
   amount_sol: number;
   token_amount: number;

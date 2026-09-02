@@ -86,6 +86,8 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
         SseEvent::TradeExecuted {
             mint_address: mint,
             wallet,
+            payer,
+            is_proxied,
             trade_type,
             amount_sol,
             token_amount,
@@ -107,6 +109,8 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             let data = json!({
                 "mint_address": mint,
                 "wallet": wallet,
+                "payer": payer,
+                "is_proxied": is_proxied,
                 "trade_type": trade_type,
                 "amount_sol": amount_sol,
                 "token_amount": token_amount,

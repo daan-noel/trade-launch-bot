@@ -171,6 +171,43 @@ function LensButton({
   );
 }
 
+/** What the Wallet column actually holds — stated on the column, because reading it
+ *  as "the trader" is the mistake the badge below exists to stop. */
+const WALLET_IS_VENUE_CREDIT_TIP =
+  'This is who the VENUE credited (TradeEvent.user), not necessarily who signed. An ' +
+  'aggregator routes its customers through a PDA of its own, so a PROXY row is one ' +
+  'router carrying many unrelated people — see the Payer column for the real sender.';
+
+/**
+ * Says whether the Wallet cell names a trader at all.
+ *
+ * Three states, and the middle one is why this renders nothing rather than a green
+ * tick: `true` = a router's proxy PDA (it signed nothing on this transaction),
+ * `false` = it signed, `null`/absent = **not captured** — the trade predates
+ * migration 0014 and `raw_txs` no longer holds the transaction to answer from. A
+ * badge that showed "direct" for an uncaptured row would assert the one thing
+ * nobody can know, so only the two known states are drawn.
+ *
+ * The stakes are per-wallet reads: one router address carries 462,483 rows here,
+ * 92.5% of them behind a single address, so counting it as a trader tops every
+ * leaderboard with a PDA and deflates unique-wallet breadth on the same tokens.
+ */
+function ProxyBadge({ isProxied }: { isProxied?: boolean | null }) {
+  if (isProxied !== true) return null;
+  return (
+    <span
+      title={
+        'PROXY — this address signed nothing on this transaction, so it is a router PDA ' +
+        'and NOT the trader. Every customer that router routed collapses onto this one ' +
+        'address. The real sender is the Payer column.'
+      }
+      className="shrink-0 rounded border border-warning/40 bg-warning/12 px-1 py-px text-[9px] font-semibold uppercase leading-tight tracking-wide text-warning"
+    >
+      proxy
+    </span>
+  );
+}
+
 /** True when ordered `instruction_labels` exact-match a ix_patterns row. */
 export function isIxPattern(
   labels: readonly string[] | null | undefined,
@@ -431,10 +468,11 @@ export function tokenTradeColumns(
     {
       key: 'wallet',
       label: 'Wallet',
-      tooltip: onLensWallet
-        ? 'Click the target to wash every candle this wallet traded in. View-only — ' +
-          'nothing is saved, and it clears with the token.'
-        : undefined,
+      tooltip:
+        (onLensWallet
+          ? 'Click the target to wash every candle this wallet traded in. View-only — ' +
+            'nothing is saved, and it clears with the token.\n\n'
+          : '') + WALLET_IS_VENUE_CREDIT_TIP,
       render: (t) => (
         <span className="flex items-start gap-1">
           {onLensWallet &&
@@ -445,7 +483,10 @@ export function tokenTradeColumns(
                 title={
                   lensWallet === t.wallet_address
                     ? 'Stop highlighting this wallet'
-                    : 'Highlight every candle and row this wallet traded in'
+                    : t.is_proxied === true
+                      ? 'Highlight every row credited to this ROUTER PDA — that is every ' +
+                        'customer it routed, not one trader'
+                      : 'Highlight every candle and row this wallet traded in'
                 }
                 onClick={() => onLensWallet(t.wallet_address)}
               />
@@ -453,10 +494,38 @@ export function tokenTradeColumns(
               <LensSpacer />
             ))}
           <AddressDisplay address={t.wallet_address} kind="account" />
+          <ProxyBadge isProxied={t.is_proxied} />
         </span>
       ),
       sortValue: (t) => t.wallet_address,
-      searchValue: (t) => t.wallet_address,
+      // The flag is searchable by word, so `proxy` selects the router rows and
+      // `direct` the ones that signed — the split every per-wallet read depends on.
+      searchValue: (t) =>
+        `${t.wallet_address} ${t.is_proxied === true ? 'proxy router' : t.is_proxied === false ? 'direct' : ''}`,
+    },
+    {
+      key: 'payer',
+      label: 'Payer',
+      tooltip:
+        'The transaction fee payer (`account_keys[0]`) — the REAL sender when Wallet is ' +
+        'a router proxy, and a candidate otherwise (a bot can pay from one keypair and ' +
+        'trade from another).\n\n' +
+        'Per-TRANSACTION, so every leg of a multi-leg tx repeats it: collapse by signature ' +
+        'before counting payers. Blank on trades ingested before the column existed — ' +
+        'unbackfillable, since raw_txs keeps only 3 days.',
+      render: (t) =>
+        t.payer_address ? (
+          <AddressDisplay address={t.payer_address} kind="account" />
+        ) : (
+          <span
+            className="text-text-dim"
+            title="Not captured — this trade predates the payer column, and raw_txs no longer holds the transaction"
+          >
+            —
+          </span>
+        ),
+      sortValue: (t) => t.payer_address ?? '',
+      searchValue: (t) => t.payer_address ?? '',
     },
     {
       key: 'sol',

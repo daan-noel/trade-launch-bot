@@ -54,6 +54,25 @@ describe('liveTradeToTradeRecord', () => {
     }
   });
 
+  it('carries the attribution pair, so a live row is not read as a trader it is not', () => {
+    // A router routes its customers through a PDA of its own, so `wallet` alone
+    // cannot say who traded. Without these two the newest rows in the table — the
+    // ones an operator is actually watching — attribute every routed swap to the
+    // router until the next full fetch.
+    const row = liveTradeToTradeRecord({ ...sample, payer: 'Payer333', is_proxied: true });
+    expect(row.payer_address).toBe('Payer333');
+    expect(row.is_proxied).toBe(true);
+  });
+
+  it('leaves an uncaptured proxy flag null, never false', () => {
+    // The load-bearing case: a frame from a bin predating the fields says nothing
+    // about who signed. `false` would assert "this IS the trader" — the exact claim
+    // the flag exists to withhold — and would hide the badge on real router rows.
+    const row = liveTradeToTradeRecord(sample);
+    expect(row.is_proxied).toBeNull();
+    expect(row.payer_address).toBeUndefined();
+  });
+
   it('dedupe key is signature + leg', () => {
     const row = liveTradeToTradeRecord(sample);
     expect(tradeDedupeKey(row)).toBe('SigAbc:1');

@@ -16,6 +16,12 @@ export function liveTradeToTradeRecord(t: LiveTrade): TradeRecord {
     id: `${t.tx_signature}:${t.leg_index ?? 0}`,
     mint_address: t.mint_address,
     wallet_address: t.wallet,
+    // The attribution pair. `?? undefined` / `?? null` rather than a default: a
+    // frame from a bin predating the fields says nothing about who signed, and
+    // rendering that as "not a proxy" asserts the one thing it cannot know — which
+    // is how a router PDA reads as a trader.
+    payer_address: t.payer ?? undefined,
+    is_proxied: t.is_proxied ?? null,
     trade_type: side,
     amount_sol: t.amount_sol,
     token_amount: t.token_amount,
