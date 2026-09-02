@@ -131,18 +131,21 @@ fn armed_engine(mint: &Mint) -> EngineState {
             fps: Arc::from(vec![target_fp()]),
         },
     );
-    reduce(
-        &mut state,
-        Event::TokenCreated {
-            mint: mint.clone(),
-            fp: Box::new(TokenFingerprint::default()),
-            at: ts(0.0),
-            creator_wallet_hash: None,
-            identity: None,
-            creation_slot: Some(99),
-        },
-    );
+    reduce(&mut state, created_event(mint, &[]));
     state
+}
+
+/// A `TokenCreated` carrying one launch structure — the axis the structure-scoped
+/// pair matches on. Empty labels for the wildcard cases, which read no axis.
+fn created_event(mint: &Mint, labels: &[&str]) -> Event {
+    Event::TokenCreated {
+        mint: mint.clone(),
+        fp: Box::new(created_with(labels)),
+        at: ts(0.0),
+        creator_wallet_hash: None,
+        identity: None,
+        creation_slot: Some(99),
+    }
 }
 
 fn submitted(fx: &[Effect]) -> Option<hunter_engine::event::IntentId> {
@@ -387,4 +390,117 @@ fn a_fingerprint_with_no_target_list_makes_the_rule_inert() {
         Event::Trade { mint: mint.clone(), trade: print(Side::Buy, TARGET, 5.0, 40.0, 100, true) },
     );
     assert!(submitted(&fx).is_none(), "no list means no signal, never every signal");
+}
+
+// ── The two launch structures the pair is scoped to ──────────────────────────
+
+/// Shape A: `CreateIdempotent` + plain `Buy`.
+const SHAPE_A: [&str; 3] = [
+    "Pump.Fun: Create_v2",
+    "Associated Token: CreateIdempotent",
+    "Pump.Fun: Buy",
+];
+/// Shape B: plain `Create` + `BuyExactSolIn`.
+const SHAPE_B: [&str; 3] = [
+    "Pump.Fun: Create_v2",
+    "Associated Token: Create",
+    "Pump.Fun: BuyExactSolIn",
+];
+
+/// A fingerprint scoped to one launch structure, carrying the target list — the
+/// seeded `copy-7Kgd-a` / `copy-7Kgd-b` rows. The criteria JSON is the wire form
+/// the seed writes, parsed here rather than hand-built, so a serde rename would
+/// fail this test instead of silently storing a criterion the matcher ignores.
+fn shape_fp(id: u128, labels: [&str; 3]) -> Fingerprint {
+    let criteria: Criteria = serde_json::from_value(json!({
+        "ix_labels": { "kind": "sequence", "labels": labels }
+    }))
+    .expect("the seed's criteria JSON");
+    assert!(criteria.problems().is_empty(), "{:?}", criteria.problems());
+    Fingerprint {
+        id: FingerprintId(Uuid::from_u128(id)),
+        wildcard: false,
+        criteria,
+        metric_config: json!({ CONFIG_KEY: { TARGETS_FIELD: [TARGET] } }),
+    }
+}
+
+fn created_with(labels: &[&str]) -> TokenFingerprint {
+    TokenFingerprint {
+        ix_labels: labels.iter().map(|s| (*s).to_string()).collect(),
+        ..Default::default()
+    }
+}
+
+/// **`ix_labels` is EXACT and holds ONE sequence — which is why the pair is two
+/// fingerprints and two rules, not one rule with an alternation.**
+///
+/// Each shape matches itself and nothing else: not the other shape, not a prefix,
+/// not a superset, not a reordering. The two are disjoint, so a token arms at most
+/// one of the pair and they can never double-fire on the same mint.
+#[test]
+fn each_launch_structure_matches_itself_and_nothing_else() {
+    let a = shape_fp(10, SHAPE_A);
+    let b = shape_fp(11, SHAPE_B);
+
+    assert!(hunter_engine::fingerprint::matches(&a, &created_with(&SHAPE_A)));
+    assert!(hunter_engine::fingerprint::matches(&b, &created_with(&SHAPE_B)));
+
+    // Disjoint: no token can arm both rules.
+    assert!(!hunter_engine::fingerprint::matches(&a, &created_with(&SHAPE_B)));
+    assert!(!hunter_engine::fingerprint::matches(&b, &created_with(&SHAPE_A)));
+
+    // Exact means exact — length, position and spelling all count.
+    for near_miss in [
+        &SHAPE_A[..2],
+        &["Pump.Fun: Create_v2", "Pump.Fun: Buy", "Associated Token: CreateIdempotent"][..],
+        &[
+            "Pump.Fun: Create_v2",
+            "Associated Token: CreateIdempotent",
+            "Pump.Fun: Buy",
+            "System: Transfer",
+        ][..],
+        &["Pump.Fun: Create", "Associated Token: CreateIdempotent", "Pump.Fun: Buy"][..],
+    ] {
+        assert!(
+            !hunter_engine::fingerprint::matches(&a, &created_with(near_miss)),
+            "{near_miss:?} is not shape A"
+        );
+    }
+}
+
+/// The structure axis is **Instant-phase**: it resolves at `TokenCreated`, so an
+/// off-structure token never arms and never reaches the target's buy. Without this
+/// the pair would still be correct but would pay a track on every mint on chain.
+#[test]
+fn an_off_structure_token_never_arms_so_his_buy_on_it_is_ignored() {
+    let mut state = EngineState::default();
+    reduce(
+        &mut state,
+        Event::RulesReloaded {
+            rules: Arc::from(vec![LoadedRule {
+                fingerprint_id: FingerprintId(Uuid::from_u128(10)),
+                ..loaded(copy_params())
+            }]),
+            fps: Arc::from(vec![shape_fp(10, SHAPE_A)]),
+        },
+    );
+
+    // On structure: his buy fires.
+    let on = Mint("shape-a".into());
+    reduce(&mut state, created_event(&on, &SHAPE_A));
+    let fx = reduce(
+        &mut state,
+        Event::Trade { mint: on.clone(), trade: print(Side::Buy, TARGET, 0.0988, 5.0, 100, true) },
+    );
+    assert!(submitted(&fx).is_some(), "his preset buy on shape A");
+
+    // Off structure: the same buy is nothing.
+    let off = Mint("shape-b".into());
+    reduce(&mut state, created_event(&off, &SHAPE_B));
+    let fx = reduce(
+        &mut state,
+        Event::Trade { mint: off.clone(), trade: print(Side::Buy, TARGET, 0.0988, 5.0, 100, true) },
+    );
+    assert!(submitted(&fx).is_none(), "the other structure is out of scope");
 }

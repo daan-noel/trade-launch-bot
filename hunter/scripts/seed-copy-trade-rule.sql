@@ -1,4 +1,5 @@
--- Copy one target wallet: buy only on the bonding curve, sell on both venues.
+-- Copy one target wallet, on two named launch structures only.
+-- Buy on the bonding curve, sell on both venues.
 --
 -- Shape (pinned by hunter/engine/tests/copy_trade_rule.rs, explained in
 -- hunter/docs/plans/strategies/copy-trade-plan.md):
@@ -14,9 +15,22 @@
 --            and Event::Migrated disarms the rule while leaving an open position
 --            to ride the AMM out.
 --
+-- TWO fingerprints and TWO rules, because `ix_labels` is an EXACT ORDERED
+-- SEQUENCE and a fingerprint holds exactly one of them - there is no alternation
+-- for a sequence axis, and a rule names one fingerprint. The two sequences are
+-- disjoint, so a token matches at most one and the pair cannot double-fire. The
+-- axis is Instant-phase, so it resolves at TokenCreated with no first-slot wait
+-- and a non-matching token never arms.
+--
+-- Scope cost, measured 08-19..09-02: the two structures are 6,178 + 3,513 of
+-- 429,047 tokens, and cover 190 + 438 of the target's 1,759 bought mints - 36%.
+-- The other 64% of his activity is deliberately out of scope. Both label
+-- spellings exist back to 07-22, so they are on the safe side of the 08-28
+-- ix_labels vocabulary break and history matches them.
+--
 -- The target is matched against the address the VENUE credited, so an aggregator
 -- router PDA here reads as hundreds of thousands of unrelated people (see the
--- wallet attribution rule in hunter/CLAUDE.md). ONE rule per target.
+-- wallet attribution rule in hunter/CLAUDE.md). ONE target per rule.
 --
 -- THE THRESHOLDS BELOW ARE THIS TARGET'S OWN BEHAVIOUR, NOT A RESULT. They are
 -- set so the rule can FIRE on what he actually does; whether firing pays is the
@@ -32,30 +46,63 @@
 -- parked conditions parse and validate like live ones but nothing compiles them,
 -- so the slots stay visible in the editor without gating anything.
 --
+-- max_concurrent_tokens is 2 PER RULE, not 3: the cap is per rule, so a pair
+-- sharing one target would otherwise carry twice the exposure the single rule had.
+--
 -- paper, inactive. Re-running replaces the same-named rows.
 
 BEGIN;
 
-DELETE FROM strategy_rules WHERE rule_name = 'copy-7Kgd';
-DELETE FROM fingerprints   WHERE name      = 'copy-7Kgd';
+DELETE FROM strategy_rules WHERE rule_name IN ('copy-7Kgd', 'copy-7Kgd-a', 'copy-7Kgd-b', 'copy-Kgd-a', 'copy-Kgd-b');
+DELETE FROM fingerprints   WHERE name      IN ('copy-7Kgd', 'copy-7Kgd-a', 'copy-7Kgd-b');
 
--- Wildcard identity: the selectivity of a copy rule is the WALLET, not the
--- token's creation axes. The fingerprint exists to carry the target list.
+-- Identity is the LAUNCH STRUCTURE; the wallet list narrows what fires inside it.
+-- Not a wildcard any more: a fingerprint carrying an axis is matched on that axis.
 INSERT INTO fingerprints (name, wildcard, criteria, metric_config)
-VALUES (
-  'copy-7Kgd',
-  true,
-  '{}'::jsonb,
-  '{
-    "m_copy": { "target_wallets": ["7KgdneuMUaHoFhZULaDq9yLfZSs6zkSzwWwaivvvP3rf"] }
-  }'::jsonb
-);
+VALUES
+  (
+    'copy-7Kgd-a',
+    false,
+    '{
+      "ix_labels": {
+        "kind": "sequence",
+        "labels": [
+          "Pump.Fun: Create_v2",
+          "Associated Token: CreateIdempotent",
+          "Pump.Fun: Buy"
+        ]
+      }
+    }'::jsonb,
+    '{
+      "m_copy": { "target_wallets": ["7KgdneuMUaHoFhZULaDq9yLfZSs6zkSzwWwaivvvP3rf"] }
+    }'::jsonb
+  ),
+  (
+    'copy-7Kgd-b',
+    false,
+    '{
+      "ix_labels": {
+        "kind": "sequence",
+        "labels": [
+          "Pump.Fun: Create_v2",
+          "Associated Token: Create",
+          "Pump.Fun: BuyExactSolIn"
+        ]
+      }
+    }'::jsonb,
+    '{
+      "m_copy": { "target_wallets": ["7KgdneuMUaHoFhZULaDq9yLfZSs6zkSzwWwaivvvP3rf"] }
+    }'::jsonb
+  );
 
+-- One rule per fingerprint, IDENTICAL params: the two differ only in which launch
+-- structure they arm on, so any divergence between them would be a tuning
+-- difference masquerading as a structure difference.
 INSERT INTO strategy_rules (
   rule_name, fingerprint_id, trade_mode, is_active, is_enabled,
   buy_amount_lamports, max_concurrent_tokens, max_total_tokens, tags, params)
-SELECT 'copy-7Kgd', f.id, 'paper', false, true,
-       100000000, 3, 0, ARRAY['fam:copy','stage:candidate'],
+SELECT f.name, f.id, 'paper', false, true,
+       100000000, 2, 0, ARRAY['fam:copy','stage:candidate'],
        $json${
   "exclusive": true,
   "priority": 10,
@@ -86,13 +133,15 @@ SELECT 'copy-7Kgd', f.id, 'paper', false, true,
     }
   }
 }$json$::jsonb
-FROM fingerprints f WHERE f.name = 'copy-7Kgd';
+FROM fingerprints f WHERE f.name IN ('copy-7Kgd-a', 'copy-7Kgd-b');
 
 COMMIT;
 
 SELECT f.name AS fingerprint, f.id AS fingerprint_id,
+       f.criteria -> 'ix_labels' -> 'labels' AS launch_structure,
        f.metric_config -> 'm_copy' -> 'target_wallets' AS targets,
-       r.rule_name, r.id AS rule_id, r.buy_amount_lamports, r.is_active
+       r.rule_name, r.id AS rule_id, r.max_concurrent_tokens, r.is_active
   FROM fingerprints f
   JOIN strategy_rules r ON r.fingerprint_id = f.id
- WHERE f.name = 'copy-7Kgd';
+ WHERE f.name IN ('copy-7Kgd-a', 'copy-7Kgd-b')
+ ORDER BY f.name;
