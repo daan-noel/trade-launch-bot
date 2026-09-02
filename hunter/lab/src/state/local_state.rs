@@ -11,7 +11,6 @@ use super::job_progress::ProgressCell;
 use super::analysis_cache::AnalysisCache;
 use super::discovery_result_cache::DiscoveryResultCache;
 use super::sim_results::SimResults;
-use super::sim_summary::SimSummaryCache;
 use crate::sweep::corpus::CorpusToken;
 
 /// Option A: the fully-loaded corpus (trades + fingerprints) from the most recent
@@ -112,10 +111,6 @@ pub struct LocalState {
     /// `$SWEEP_LAKE_DIR/sim-results/` and survive lab restarts; RAM holds only the
     /// meta index + one working-set row payload. See [`super::sim_results`].
     pub sim_results: Arc<SimResults>,
-    /// Legacy in-RAM rollup slot (unused by the disk-backed path — unfiltered
-    /// summaries now ride on [`SimResults`] meta). Kept so existing wiring
-    /// compiles; prefer `sim_results.cached_summary_json`.
-    pub last_sim_summary: Arc<SimSummaryCache>,
     /// Option A: single-entry in-memory corpus cache. Written after each sweep
     /// completes (trades + fingerprints in hand); read by `list_token_results` to
     /// skip Parquet I/O and `attach_fingerprints` on the warm path. Single entry —
@@ -174,7 +169,6 @@ impl LocalState {
             sweep_progress: Arc::new(ProgressCell::default()),
             sim_progress: Arc::new(DashMap::new()),
             sim_results: Arc::new(SimResults::new()),
-            last_sim_summary: Arc::new(SimSummaryCache::new()),
             sweep_corpus_cache: Arc::new(RwLock::new(None)),
             analysis_cache: Arc::new(AnalysisCache::new()),
             discovery_running: Arc::new(AtomicBool::new(false)),
