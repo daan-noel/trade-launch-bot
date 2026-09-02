@@ -211,6 +211,18 @@ impl MetricSeries {
         self.track.ensure_dump(fp, patterns, windows);
     }
 
+    /// Attach fingerprint-scoped copy state (and optional window sizes) before
+    /// folding trades. Twin of [`ensure_dump`](Self::ensure_dump) for the
+    /// target-wallet list: an `m_copy*` column reads `NaN` without it.
+    pub fn ensure_copy(
+        &mut self,
+        fp: FingerprintId,
+        patterns: &crate::metrics::copy::CopyPatterns,
+        windows: &[super::WindowSpec],
+    ) {
+        self.track.ensure_copy(fp, patterns, windows);
+    }
+
     /// Attach fingerprint-scoped burst state before folding trades. Twin of
     /// [`ensure_dump`](Self::ensure_dump) for `m_burst_slot`.
     pub fn ensure_burst(

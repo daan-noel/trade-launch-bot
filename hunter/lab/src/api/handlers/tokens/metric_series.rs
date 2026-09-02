@@ -41,6 +41,7 @@ use uuid::Uuid;
 
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::burst_slot::BurstPatterns;
+use hunter_engine::metrics::copy::CopyPatterns;
 use hunter_engine::metrics::dump_ix::DumpPatterns;
 use hunter_engine::metrics::flow_ix::{wallet_hash, FlowPatterns};
 use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid};
@@ -274,6 +275,8 @@ struct FlowCtx {
     /// line that reads `NaN` on every row rather than one that is absent.
     dump: Option<DumpPatterns>,
     burst: Option<BurstPatterns>,
+    /// `m_copy.target_wallets`. Independently optional, as `dump` is.
+    copy: Option<CopyPatterns>,
     /// FNV hash of the token's creator wallet — volume-side unconditionally, and the
     /// seed of the contagion set. `None` only when the `tokens` row is missing or
     /// carries no creator. **Load-bearing for parity**: the live engine seeds it on
@@ -308,7 +311,8 @@ async fn resolve_flow_ctx(
     let patterns = FlowPatterns::from_metric_config(&engine_fp.metric_config);
     let dump = DumpPatterns::from_metric_config(&engine_fp.metric_config);
     let burst = BurstPatterns::from_metric_config(&engine_fp.metric_config);
-    if patterns.is_none() && dump.is_none() && burst.is_none() {
+    let copy = CopyPatterns::from_metric_config(&engine_fp.metric_config);
+    if patterns.is_none() && dump.is_none() && burst.is_none() && copy.is_none() {
         // Fingerprint present but unconfigured for any list — omit the
         // fingerprint-scoped columns entirely (same as no id).
         return Ok(None);
@@ -322,6 +326,7 @@ async fn resolve_flow_ctx(
         patterns,
         dump,
         burst,
+        copy,
         creator_wallet_hash: facts.creator_wallet_hash,
     }))
 }
@@ -419,6 +424,9 @@ fn build_series(
             MetricGroupId::BurstSlot => {
                 flow.filter(|c| c.burst.is_some()).map(|c| c.fp_id)
             }
+            MetricGroupId::Copy | MetricGroupId::CopyWindow => {
+                flow.filter(|c| c.copy.is_some()).map(|c| c.fp_id)
+            }
             _ => None,
         };
         let is_flow_group = matches!(
@@ -428,6 +436,8 @@ fn build_series(
                 | MetricGroupId::DumpIx
                 | MetricGroupId::DumpIxWindow
                 | MetricGroupId::BurstSlot
+                | MetricGroupId::Copy
+                | MetricGroupId::CopyWindow
         );
         if is_flow_group && fp_id.is_none() {
             continue;
@@ -494,6 +504,9 @@ fn build_series(
         }
         if let Some(b) = &ctx.burst {
             series.ensure_burst(ctx.fp_id, b);
+        }
+        if let Some(cp) = &ctx.copy {
+            series.ensure_copy(ctx.fp_id, cp, windows);
         }
         if let Some(h) = ctx.creator_wallet_hash {
             series.seed_creator(h);
@@ -810,6 +823,7 @@ mod tests {
             // This one is about the FLOW seed; `m_dump_ix` has no wallet rule to seed.
             dump: None,
             burst: None,
+            copy: None,
             creator_wallet_hash: Some(wallet_hash("dev")),
         };
         // Dev buys 5 (no labels ⇒ classified only by the creator seed), a stranger
@@ -855,6 +869,9 @@ mod tests {
             ])]))),
             burst: BurstPatterns::from_metric_config(&serde_json::json!({
                 "m_burst_slot": { "working_templates": ["Pump.Fun"] }
+            })),
+            copy: CopyPatterns::from_metric_config(&serde_json::json!({
+                "m_copy": { "target_wallets": ["dev"] }
             })),
             creator_wallet_hash: Some(wallet_hash("dev")),
         };

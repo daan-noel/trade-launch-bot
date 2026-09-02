@@ -24,14 +24,17 @@ import {
   ixMarkers,
   metricConfigWithDumpPatterns,
   metricConfigWithFlowClassifier,
+  metricConfigWithTargetWallets,
   metricConfigWithWorkingTemplates,
   useStrategyRegistry,
+  targetWalletsFromConfig,
   workingTemplatesFromConfig,
   type FlowClassifier,
   type FpConfigFieldSpec,
   type MarkerSide,
   type StrategyRegistry,
   BURST_GROUP,
+  COPY_GROUP,
   DUMP_GROUP,
 } from 'lib/strategy/registry';
 import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
@@ -81,6 +84,10 @@ interface FormState {
   dump_patterns: IxPatternRow[];
   /** `m_burst_slot.working_templates` — grain ids harvest treats as working. */
   working_templates: string[];
+  /** `m_copy.target_wallets` — the addresses a copy rule follows. Its own list and
+   *  its own vocabulary: every other fingerprint list names a BUILD, this one names
+   *  who signed. */
+  target_wallets: string[];
   /** The ORIGINAL metric_config, whole. The save merges into this rather than
    *  rebuilding from the fields above, so every key the form does not render — other
    *  groups, and any `m_flow_ix` key added later — survives an edit. */
@@ -106,6 +113,7 @@ function fromFingerprint(fp?: Fingerprint, reg?: StrategyRegistry): FormState {
     flow: flowClassifierFromConfig(cfg, reg),
     dump_patterns: dumpPatternRowsFromConfig(cfg),
     working_templates: workingTemplatesFromConfig(cfg),
+    target_wallets: targetWalletsFromConfig(cfg),
     metric_config_prev: cfg,
   };
 }
@@ -152,12 +160,15 @@ function toDraft(s: FormState): FingerprintDraft {
     criteria: toCriteria(s).criteria,
     // Each group through its own writer, chained so both land in one config and
     // neither drops what the other owns.
-    metric_config: metricConfigWithWorkingTemplates(
-      metricConfigWithDumpPatterns(
-        metricConfigWithFlowClassifier(s.metric_config_prev, s.flow),
-        s.dump_patterns,
+    metric_config: metricConfigWithTargetWallets(
+      metricConfigWithWorkingTemplates(
+        metricConfigWithDumpPatterns(
+          metricConfigWithFlowClassifier(s.metric_config_prev, s.flow),
+          s.dump_patterns,
+        ),
+        s.working_templates,
       ),
-      s.working_templates,
+      s.target_wallets,
     ),
   };
 }
@@ -445,6 +456,117 @@ ${FINGERPRINT_FIELD_HELP.working_templates.body}`
   );
 }
 
+/** Split a paste into addresses. Commas, whitespace and newlines all separate:
+ *  an address never contains any of them, and an operator pasting from a block
+ *  explorer gets whichever one that page used. */
+function parseWalletAddresses(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of text.split(/[\s,]+/)) {
+    const a = raw.trim();
+    if (!a || seen.has(a)) continue;
+    seen.add(a);
+    out.push(a);
+  }
+  return out;
+}
+
+/** Chip list for `m_copy.target_wallets` — addresses, not a build vocabulary. */
+function TargetWalletsEditor({
+  value,
+  onChange,
+  field,
+  disabled,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  field: FpConfigFieldSpec;
+  disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState('');
+  const tip: HelpTip = {
+    title: `${COPY_GROUP}.target_wallets`,
+    body: field.description
+      ? `${field.description}
+
+${FINGERPRINT_FIELD_HELP.target_wallets.body}`
+      : FINGERPRINT_FIELD_HELP.target_wallets.body,
+  };
+  const add = () => {
+    const addrs = parseWalletAddresses(draft);
+    if (addrs.length === 0) return;
+    const seen = new Set(value);
+    onChange([...value, ...addrs.filter((a) => !seen.has(a))]);
+    setDraft('');
+  };
+  return (
+    <div className="flex flex-col gap-1.5 rounded border border-white/10 p-2 text-[11px] text-text-dim">
+      <LabelTip tip={tip}>
+        {COPY_GROUP} · target wallets
+        {value.length > 0 && (
+          <span className="ml-1 font-normal text-text-dim/70">{value.length}</span>
+        )}
+      </LabelTip>
+      {value.length === 0 ? (
+        <p className="rounded border border-dashed border-white/10 px-2 py-2 text-text-dim/50">
+          No target. Copy metrics read NaN until one is set, so a rule on this
+          fingerprint does nothing rather than firing on everyone.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {value.map((addr) => (
+            <button
+              key={addr}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(value.filter((x) => x !== addr))}
+              className="inline-flex items-center gap-1 rounded border border-green/40 bg-green/10 px-1.5 py-0.5 font-mono text-[10px] text-text-hi hover:border-red/50 hover:bg-red/10"
+              title="Remove from target list"
+            >
+              {addr}
+              <span aria-hidden className="text-text-dim/60">
+                ×
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {value.length > 1 && (
+        <p className="text-[10px] text-amber">
+          One target per rule — the seat, the size gate and the exit are per-target
+          questions, and a shared list makes one fire indistinguishable from another's.
+        </p>
+      )}
+      <div className="flex items-center gap-1">
+        <Input
+          fieldSize="sm"
+          className="min-w-0 flex-1 font-mono"
+          value={draft}
+          disabled={disabled}
+          placeholder="target wallet address"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              add();
+            }
+          }}
+        />
+        <IconButton
+          variant="ghost"
+          size="sm"
+          disabled={disabled || parseWalletAddresses(draft).length === 0}
+          onClick={add}
+          title="Add target wallet"
+          aria-label="Add target wallet"
+        >
+          <PlusIcon />
+        </IconButton>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Create / edit a fingerprint.
  *
@@ -478,6 +600,9 @@ export function FingerprintForm({
   );
   const workingField = findGroup(registry, BURST_GROUP)?.fingerprint_config?.find(
     (f) => f.name === 'working_templates',
+  );
+  const targetField = findGroup(registry, COPY_GROUP)?.fingerprint_config?.find(
+    (f) => f.name === 'target_wallets',
   );
   const dumpTip: HelpTip = {
     title: `${DUMP_GROUP}.ix_patterns — the builds counted as dumps`,
@@ -622,6 +747,15 @@ ${FINGERPRINT_FIELD_HELP.dump_ix_patterns.body}`
           value={s.working_templates}
           onChange={(v) => set('working_templates', v)}
           field={workingField}
+          disabled={submitting}
+        />
+      )}
+
+      {targetField && (
+        <TargetWalletsEditor
+          value={s.target_wallets}
+          onChange={(v) => set('target_wallets', v)}
+          field={targetField}
           disabled={submitting}
         />
       )}

@@ -1184,6 +1184,22 @@ export const FINGERPRINT_FIELD_HELP = {
       'cannot fire on an unconfigured fingerprint).',
     ].join('\n'),
   },
+  target_wallets: {
+    title: 'target_wallets — the wallets this rule copies',
+    body: [
+      'Base58 addresses. m_copy / m_copy_window read this list and nothing else:',
+      'they are the only groups keyed on WHO signed a print rather than on what it',
+      'was built from. Absent => every copy metric is NaN (never 0), so a rule on an',
+      'unconfigured fingerprint does nothing at all rather than buying everything.',
+      '',
+      'Matched against the wallet the VENUE credited, so list the wallet the target',
+      'signs with: an aggregator router PDA here reads as hundreds of thousands of',
+      'unrelated fills belonging to its customers.',
+      '',
+      'ONE target per rule. The seat, the size gate and the exit are per-target',
+      'questions, and a shared list makes two targets fires indistinguishable.',
+    ].join('\n'),
+  },
   working_templates: {
     title: 'working_templates — grains harvest treats as working',
     body: [

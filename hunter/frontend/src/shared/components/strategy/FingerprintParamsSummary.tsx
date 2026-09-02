@@ -28,7 +28,12 @@ import {
 } from 'lib/flow/volumePatterns';
 import { cn } from 'lib/cn';
 import { hashHue, metricColorStyle } from 'lib/strategy/metricColors';
-import { dumpPatternsFromConfig, ixPatternsFromConfig, workingTemplatesFromConfig } from 'lib/strategy/registry';
+import {
+  dumpPatternsFromConfig,
+  ixPatternsFromConfig,
+  targetWalletsFromConfig,
+  workingTemplatesFromConfig,
+} from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import {
   fingerprintAutoName,
@@ -62,6 +67,9 @@ const AXIS_HUE: Record<string, number> = {
   dump: 115,
   // working templates — harvest grains (orange, next to dump's teal)
   work: 25,
+  // copy targets — the `m_copy` group's own registry hue, so the chip and the
+  // metric line on a chart are the same colour for the same list.
+  copy: 282,
   // bucket width — rose
   bkt: 340,
   // wildcard — its own hue: it is not an axis, it replaces all of them
@@ -250,6 +258,29 @@ export function WorkingTemplatesChip({ templates }: { templates: string[] }) {
   );
 }
 
+/**
+ * The `copy N` chip — `m_copy.target_wallets`.
+ *
+ * Load-bearing on a copy fingerprint in a way the other contents chips are not: a
+ * copy row is a WILDCARD, so without this its whole summary reads `ALL tokens` and
+ * the one thing that identifies the rule — whose trades it follows — is invisible.
+ * The tooltip carries the addresses; a click copies them.
+ */
+export function TargetWalletsChip({ wallets }: { wallets: string[] }) {
+  const n = wallets.length;
+  if (n === 0) return null;
+  const text = wallets.join('\n');
+  return (
+    <ContentsChip
+      text={n === 1 ? `copy ${wallets[0].slice(0, 4)}` : `copy ${n}`}
+      identity={wallets.slice().sort().join('|')}
+      title={`${n} target wallet${n === 1 ? '' : 's'}\n${text}`}
+      copyText={text}
+      tint={axisTint('copy')}
+    />
+  );
+}
+
 /** One axis's chip. The value reads in the axis's own display unit — SOL for a
  *  lamports axis, the integer for a tally — through the ONE formatter, so a chip,
  *  the auto-name and the form all show a bound the same way. */
@@ -286,6 +317,7 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
         <FlowPatternsChip patterns={ixPatternsFromConfig(fp.metric_config)} />
         <DumpPatternsChip patterns={dumpPatternsFromConfig(fp.metric_config)} />
         <WorkingTemplatesChip templates={workingTemplatesFromConfig(fp.metric_config)} />
+        <TargetWalletsChip wallets={targetWalletsFromConfig(fp.metric_config)} />
       </div>
     );
   }
@@ -294,6 +326,7 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
     <FlowPatternsChip key="flow" patterns={ixPatternsFromConfig(fp.metric_config)} />,
     <DumpPatternsChip key="dump" patterns={dumpPatternsFromConfig(fp.metric_config)} />,
     <WorkingTemplatesChip key="work" templates={workingTemplatesFromConfig(fp.metric_config)} />,
+    <TargetWalletsChip key="copy" wallets={targetWalletsFromConfig(fp.metric_config)} />,
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;

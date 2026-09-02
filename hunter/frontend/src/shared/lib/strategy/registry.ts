@@ -376,6 +376,48 @@ export function metricConfigWithWorkingTemplates(
   return { ...otherGroups, [BURST_GROUP]: { ...keep, working_templates: cleaned } };
 }
 
+/** The key `m_copy` stores its target-wallet list under. Base58 ADDRESSES, not a
+ *  build vocabulary — `m_copy` / `m_copy_window` are the only groups keyed on WHO
+ *  signed a print rather than on what it was built from. */
+export const COPY_GROUP = 'm_copy';
+
+/** Read `m_copy.target_wallets` as addresses. */
+export function targetWalletsFromConfig(
+  cfg: Record<string, unknown> | null | undefined,
+): string[] {
+  const obj = cfg?.[COPY_GROUP];
+  const arr =
+    obj && typeof obj === 'object' && !Array.isArray(obj)
+      ? (obj as Record<string, unknown>).target_wallets
+      : undefined;
+  return Array.isArray(arr)
+    ? arr.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+    : [];
+}
+
+/** **The one writer** of `fingerprints.metric_config.m_copy`.
+ *
+ *  Same contract as {@link metricConfigWithWorkingTemplates}: a PUT replaces the row,
+ *  so `prev` is the base and every other group survives. An empty list drops the
+ *  group, which is the only spelling of "no target" — and the only safe one, since
+ *  every copy metric then reads NaN rather than 0 (a `sell_count <= 0` exit on a
+ *  zero would fire on every position). */
+export function metricConfigWithTargetWallets(
+  prev: Record<string, unknown>,
+  wallets: readonly string[],
+): Record<string, unknown> {
+  const { [COPY_GROUP]: prevCopy, ...otherGroups } = prev;
+  const cleaned = [...new Set(wallets.map((w) => w.trim()).filter(Boolean))];
+  if (cleaned.length === 0) return otherGroups;
+  const keep: Record<string, unknown> = {};
+  if (prevCopy && typeof prevCopy === 'object' && !Array.isArray(prevCopy)) {
+    for (const [k, v] of Object.entries(prevCopy as Record<string, unknown>)) {
+      if (k !== 'target_wallets') keep[k] = v;
+    }
+  }
+  return { ...otherGroups, [COPY_GROUP]: { ...keep, target_wallets: cleaned } };
+}
+
 /** Which of the two ix-structure lists a surface is reading or writing.
  *
  *  `tagged` is `m_flow_ix.ix_patterns` - which trades the flow split calls

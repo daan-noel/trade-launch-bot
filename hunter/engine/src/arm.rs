@@ -379,6 +379,12 @@ pub struct CompiledRule {
     /// from `flow_windows`: the two groups read different lists into different
     /// buffers, and a rule reading one must not open the other.
     pub dump_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
+    /// Distinct `m_copy_window` spans — drive
+    /// [`TokenTrack::ensure_copy`](crate::metrics::track::TokenTrack::ensure_copy),
+    /// which opens one deque per fingerprint on its OWN target-wallet list. Separate
+    /// from [`dump_windows`](Self::dump_windows) for the same reason that bucket is
+    /// separate from `flow_windows`: different list, different buffer.
+    pub copy_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
     /// Whether any condition on this rule reads a window counted in SLOTS.
     ///
     /// A slot window advances only on [`TradeLite::slot`](crate::metrics::TradeLite::slot),
@@ -488,6 +494,7 @@ impl CompiledRule {
         let mut price_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut ix_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut dump_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
+        let mut copy_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut needs_slot = false;
         let stage_reqs = scale_out.iter().flat_map(|s| s.reqs.iter());
         for r in leftover_reqs
@@ -502,6 +509,7 @@ impl CompiledRule {
                 MetricGroupId::CrowdWindow => &mut crowd_windows,
                 MetricGroupId::FlowIxWindow => &mut ix_windows,
                 MetricGroupId::DumpIxWindow => &mut dump_windows,
+                MetricGroupId::CopyWindow => &mut copy_windows,
                 _ => &mut flow_windows,
             };
             // Both axes: a two-window group needs a buffer for each of them, and
@@ -586,6 +594,7 @@ impl CompiledRule {
             price_windows,
             ix_windows,
             dump_windows,
+            copy_windows,
             needs_slot,
             mono_kills,
             clock_horizons,

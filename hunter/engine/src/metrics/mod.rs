@@ -21,6 +21,11 @@
 //! * `m_burst_slot` (static, fingerprint-scoped) — this slot's buy prefix × this print's grain,
 //!   plus mint-lifetime `working_templates_seen` (survives slot reset)
 //! * `m_burst_wave` (static) — this token's consecutive-slot buy run (gap before the wave)
+//! * `m_copy` (static, fingerprint-scoped) — lifetime buy/sell SOL and transaction
+//!   counts of the wallets a fingerprint NAMES (`target_wallets`) — the copy-trade
+//!   vocabulary
+//! * `m_copy_window` (dynamic, fingerprint-scoped) — the same four over a trailing
+//!   window; a `1p`/`1sl` window is the copy TRIGGER (the lifetime side latches)
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `bounce`,
 //!   `pnl`, `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
 //!
@@ -36,6 +41,7 @@
 
 pub mod burst_slot;
 pub mod burst_wave;
+pub mod copy;
 pub mod crowd_window;
 pub mod evaluator;
 pub mod fee;
@@ -561,6 +567,11 @@ pub enum MetricGroupId {
     BurstSlot,
     /// `m_burst_wave` — this token's consecutive-slot buy run (token-level; static).
     BurstWave,
+    /// `m_copy` — lifetime totals over the trades of a NAMED wallet list
+    /// (fingerprint-scoped).
+    Copy,
+    /// `m_copy_window` — the same over a trailing window (fingerprint-scoped).
+    CopyWindow,
     /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
     Position,
 }
@@ -801,6 +812,24 @@ pub enum MetricId {
     WaveAllNew,
     /// 0/1: some member of this wave has no wallet.
     WaveHasUnknown,
+    // ── m_copy (the named wallet list, this token, lifetime) ──
+    /// SOL the target list has bought on this token, every leg.
+    CopyBuySol,
+    /// Transactions in that total (leg 0s).
+    CopyBuyCount,
+    /// SOL the target list has sold on this token, every leg.
+    CopySellSol,
+    /// Transactions in that total (leg 0s).
+    CopySellCount,
+    // ── m_copy_window (the same four over a trailing window) ──
+    /// Target-list buy SOL over the window — the copy TRIGGER at `1p` / `1sl`.
+    WinCopyBuySol,
+    /// Target-list buy transactions over the window.
+    WinCopyBuyCount,
+    /// Target-list sell SOL over the window — the copy EXIT trigger.
+    WinCopySellSol,
+    /// Target-list sell transactions over the window.
+    WinCopySellCount,
 }
 
 /// True for metrics whose state is keyed by fingerprint (flow split / window).
@@ -838,7 +867,11 @@ pub fn is_fingerprint_scoped(id: MetricId) -> bool {
     is_flow_metric(id)
         || matches!(
             group_of(id).id,
-            MetricGroupId::DumpIx | MetricGroupId::DumpIxWindow | MetricGroupId::BurstSlot
+            MetricGroupId::DumpIx
+                | MetricGroupId::DumpIxWindow
+                | MetricGroupId::BurstSlot
+                | MetricGroupId::Copy
+                | MetricGroupId::CopyWindow
         )
 }
 
@@ -853,6 +886,7 @@ pub fn validate_fingerprint_metric_config(cfg: &serde_json::Value) -> Result<(),
     flow_ix::FlowPatterns::validate_metric_config(cfg)?;
     dump_ix::DumpPatterns::validate_metric_config(cfg)?;
     burst_slot::BurstPatterns::validate_metric_config(cfg)?;
+    copy::CopyPatterns::validate_metric_config(cfg)?;
     Ok(())
 }
 
@@ -876,6 +910,8 @@ pub struct FingerprintPatterns {
     pub dump: Option<dump_ix::DumpPatterns>,
     /// `m_burst_slot`. `None` as above.
     pub burst: Option<burst_slot::BurstPatterns>,
+    /// `m_copy` / `m_copy_window`. `None` as above.
+    pub copy: Option<copy::CopyPatterns>,
 }
 
 impl FingerprintPatterns {
@@ -885,13 +921,14 @@ impl FingerprintPatterns {
             flow: flow_ix::FlowPatterns::from_metric_config(cfg),
             dump: dump_ix::DumpPatterns::from_metric_config(cfg),
             burst: burst_slot::BurstPatterns::from_metric_config(cfg),
+            copy: copy::CopyPatterns::from_metric_config(cfg),
         }
     }
 
     /// Whether this fingerprint configures no fingerprint-scoped group at all — the
     /// case that must open no per-fingerprint state on a track.
     pub fn is_empty(&self) -> bool {
-        self.flow.is_none() && self.dump.is_none() && self.burst.is_none()
+        self.flow.is_none() && self.dump.is_none() && self.burst.is_none() && self.copy.is_none()
     }
 }
 
@@ -912,7 +949,10 @@ impl MetricId {
     /// first-on-mint, plus `is_member` which needs the template grain.
     pub fn needs_wallet_identity(self) -> bool {
         is_flow_metric(self)
-            || group_of(self).id == MetricGroupId::BurstWave
+            || matches!(
+                group_of(self).id,
+                MetricGroupId::BurstWave | MetricGroupId::Copy | MetricGroupId::CopyWindow
+            )
             || matches!(
                 self,
                 MetricId::UniqueWallets
@@ -927,8 +967,21 @@ impl MetricId {
     /// Whether this metric's value depends on the trade's instruction labels
     /// (full hash, markers, or the template grain). Offline that is a load-time
     /// question: the lake leaves `ix_labels` out unless a run asks for them.
+    ///
+    /// A group list, not [`is_fingerprint_scoped`]: the two used to be the same set
+    /// and are not. `m_copy` is fingerprint-scoped — its target list lives on the row
+    /// — but it reads the WALLET column and never a label, so riding the other answer
+    /// would make every copy run pull `ix_labels` it does not look at.
     pub fn needs_ix_labels(self) -> bool {
-        is_fingerprint_scoped(self) || group_of(self).id == MetricGroupId::BurstWave
+        matches!(
+            group_of(self).id,
+            MetricGroupId::FlowIx
+                | MetricGroupId::FlowIxWindow
+                | MetricGroupId::DumpIx
+                | MetricGroupId::DumpIxWindow
+                | MetricGroupId::BurstSlot
+                | MetricGroupId::BurstWave
+        )
     }
 
 }
@@ -1616,6 +1669,124 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.05,
                 monotonic: false,
                 hue: 296,
+            },
+        ],
+    },
+    GroupSpec {
+        id: MetricGroupId::Copy,
+        name: "m_copy",
+        description: "Buy and sell SOL, and transaction counts, of the wallets this fingerprint NAMES - what the copy target has done on this token since tracking began.",
+        kind: MetricKind::Static,
+        scope: MetricScope::Token,
+        // Same violet family as the aggregate flow groups, and for the reason
+        // `m_crowd_window` is there: this reads their tape, narrowed to a wallet
+        // list, and is expected to grid against how much the CROWD is doing while
+        // the target acts. Not `flow_ix` - that family is split by an ix-label
+        // classifier and this group never reads a label.
+        family: MetricFamily::Flow,
+        strict_params: &[],
+        fingerprint_config: &[FpConfigFieldSpec {
+            name: copy::TARGETS_FIELD,
+            value_type: "string[]",
+            required: true,
+            description: "Base58 wallet addresses to copy. Matched against the address the VENUE credited, so list the target's own wallet and never an aggregator router PDA. Absent => every metric in both copy groups reads NaN, never 0.",
+            default_json: None,
+            conflicts_with: &[],
+        }],
+        // Lifetime totals only grow, which is what makes an entry upper bound a
+        // one-way door - and what makes every metric here a FILTER. The trigger
+        // lives on `m_copy_window`.
+        metrics: &[
+            MetricSpec {
+                id: MetricId::CopyBuySol,
+                name: "buy_sol",
+                description: "SOL the named wallets have bought on this token since tracking began, summing every leg of every transaction.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.01,
+                monotonic: true,
+                hue: 280,
+            },
+            MetricSpec {
+                id: MetricId::CopyBuyCount,
+                name: "buy_count",
+                description: "Buy TRANSACTIONS by the named wallets since tracking began - leg 0s, so one four-leg bundled buy counts once.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: true,
+                hue: 282,
+            },
+            MetricSpec {
+                id: MetricId::CopySellSol,
+                name: "sell_sol",
+                description: "SOL the named wallets have sold on this token since tracking began, every leg. Still 0 means the target has not taken anything off.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.01,
+                monotonic: true,
+                hue: 285,
+            },
+            MetricSpec {
+                id: MetricId::CopySellCount,
+                name: "sell_count",
+                description: "Sell TRANSACTIONS by the named wallets since tracking began - leg 0s, so one bundled sell counts once.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: true,
+                hue: 287,
+            },
+        ],
+    },
+    GroupSpec {
+        id: MetricGroupId::CopyWindow,
+        name: "m_copy_window",
+        description: "The same four target-wallet quantities over a trailing window - this is where a copy TRIGGER is spelled, because the lifetime group only ever grows.",
+        kind: MetricKind::Dynamic,
+        scope: MetricScope::Token,
+        family: MetricFamily::Flow,
+        strict_params: &[
+            StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_PRINT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
+        ],
+        // The target list is read from `m_copy.target_wallets` - one list, two views,
+        // so this group declares no field of its own.
+        fingerprint_config: &[],
+        metrics: &[
+            MetricSpec {
+                id: MetricId::WinCopyBuySol,
+                name: "buy_sol",
+                description: "Buy SOL by the named wallets over the trailing window, every leg. At `1p` the window is the print being decided on, which is the copy BUY trigger; at `1sl` it is his whole slot, which is what a split buy needs.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.01,
+                monotonic: false,
+                hue: 280,
+            },
+            MetricSpec {
+                id: MetricId::WinCopyBuyCount,
+                name: "buy_count",
+                description: "Buy transactions by the named wallets over the trailing window - leg 0s, so this counts separate buys and not legs.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 282,
+            },
+            MetricSpec {
+                id: MetricId::WinCopySellSol,
+                name: "sell_sol",
+                description: "Sell SOL by the named wallets over the trailing window, every leg. At `1p` this is the copy SELL trigger, and it reads the same on the curve and on the AMM.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.01,
+                monotonic: false,
+                hue: 285,
+            },
+            MetricSpec {
+                id: MetricId::WinCopySellCount,
+                name: "sell_count",
+                description: "Sell transactions by the named wallets over the trailing window - leg 0s, so this counts separate sells and not legs.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 287,
             },
         ],
     },
@@ -2509,9 +2680,11 @@ mod tests {
             by_family.entry(g.family.as_str()).or_default().push(g.name);
         }
         assert_eq!(by_family["price"], vec!["m_price_lifetime", "m_price_window", "m_position"]);
+        // `m_copy*` joins the flow family for the same reason `m_crowd_window` does:
+        // it reads the aggregate flow tape, narrowed to a named wallet list.
         assert_eq!(
             by_family["flow"],
-            vec!["m_flow_lifetime", "m_flow_window", "m_crowd_window"]
+            vec!["m_flow_lifetime", "m_flow_window", "m_crowd_window", "m_copy", "m_copy_window"]
         );
         // `m_dump_ix` reads the same `ix_labels` vocabulary through its own build
         // list, so it grids with the flow-split pair rather than alone.
@@ -2731,8 +2904,9 @@ mod tests {
     #[test]
     fn monotonic_flags_match_contract() {
         // Lifetime accumulators that only grow: time + m_flow_lifetime
-        // buy/sell/gross/trade_count + m_flow_ix vol/nonvol buy/sell/gross and the
-        // two tagged tallies.
+        // buy/sell/gross/trade_count + m_flow_ix vol/nonvol buy/sell/gross, the
+        // two tagged tallies, and both lifetime named-list groups (m_dump_ix,
+        // m_copy).
         // Windowed / net / share / everything else: not monotonic.
         let lifetime_flow_mono = [
             MetricId::LifeBuy,
@@ -2749,6 +2923,12 @@ mod tests {
             MetricId::TaggedSellCount,
             MetricId::DumpSell,
             MetricId::DumpSellCount,
+            // `m_copy` is the target's own lifetime book on this token: it only
+            // grows, so an entry upper bound on it is a one-way door.
+            MetricId::CopyBuySol,
+            MetricId::CopyBuyCount,
+            MetricId::CopySellSol,
+            MetricId::CopySellCount,
         ];
         for g in REGISTRY {
             for m in g.metrics {
@@ -2963,7 +3143,7 @@ mod tests {
             match g {
                 FlowIx | FlowIxWindow | DumpIx | DumpIxWindow | BurstSlot | BurstWave => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
-                FlowLifetime | FlowWindow | CrowdWindow => Some(2),
+                FlowLifetime | FlowWindow | CrowdWindow | Copy | CopyWindow => Some(2),
                 _ => None,
             }
         };

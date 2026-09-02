@@ -47,9 +47,21 @@ const VOL_LABELS: [&str; 1] = ["Pump.Fun: Buy"];
 /// a flow bug looking like a passing dump assertion.
 const NONVOL_LABELS: [&str; 1] = ["Pump.Fun: Sell"];
 
-/// A wildcard fingerprint configured for BOTH ix-structure groups, so neither reads
-/// `NaN` for want of config. Each has its own list: `m_flow_ix` tags the volume
-/// side, `m_dump_ix` counts sells built the other way.
+/// The probe's wallets, as ADDRESSES. `m_copy` matches on the same `wallet_hash`
+/// digest every adapter puts on a print, so the list has to be written the way a
+/// rule author writes it - base58 in, hash out - rather than as bare `u64`s.
+const WALLETS: [&str; 5] = ["w-eleven", "w-twelve", "w-thirteen", "w-fourteen", "w-fifteen"];
+
+/// The two the copy list names. `w-twelve` buys twice in the script and
+/// `w-thirteen` sells, so all four copy metrics get a non-zero reading; a
+/// single-wallet list would leave one side at `0`, which is a reading but not a
+/// demonstration.
+const COPY_TARGETS: [&str; 2] = [WALLETS[1], WALLETS[2]];
+
+/// A wildcard fingerprint configured for every fingerprint-scoped group, so none
+/// reads `NaN` for want of config. Each has its own list: `m_flow_ix` tags the
+/// volume side, `m_dump_ix` counts sells built the other way, `m_copy` names two of
+/// the probe's wallets.
 fn probe_fp() -> Fingerprint {
     Fingerprint {
         id: FingerprintId(Uuid::from_u128(FP)),
@@ -58,7 +70,8 @@ fn probe_fp() -> Fingerprint {
         metric_config: json!({
             "m_flow_ix": { "ix_patterns": [VOL_LABELS] },
             "m_dump_ix": { "ix_patterns": [NONVOL_LABELS] },
-            "m_burst_slot": { "working_templates": ["Pump.Fun"] }
+            "m_burst_slot": { "working_templates": ["Pump.Fun"] },
+            "m_copy": { "target_wallets": COPY_TARGETS }
         }),
     }
 }
@@ -173,7 +186,7 @@ fn trade(
     at: f64,
     slot: u64,
     vol: bool,
-    wallet: u64,
+    wallet: &str,
 ) -> TradeLite {
     TradeLite {
         side,
@@ -187,7 +200,7 @@ fn trade(
         } else {
             flow_ix::ix_hash(&NONVOL_LABELS)
         }),
-        wallet_hash: wallet,
+        wallet_hash: flow_ix::wallet_hash(wallet),
         slot,
         marker_bits: 0,
         leg_index: 0,
@@ -234,11 +247,11 @@ fn drive(state: &mut EngineState, mint: &Mint) -> Vec<Effect> {
         },
     ));
     let script = [
-        (Side::Buy, 1.0, 1.0, 40.0, 1.0, 100u64, true, 11u64),
-        (Side::Buy, 2.0, 1.4, 42.0, 2.0, 102, false, 12),
-        (Side::Sell, 0.5, 1.2, 41.5, 3.0, 104, false, 13),
-        (Side::Buy, 1.5, 1.8, 43.0, 4.0, 106, true, 12),
-        (Side::Sell, 0.8, 1.5, 42.2, 5.0, 108, false, 14),
+        (Side::Buy, 1.0, 1.0, 40.0, 1.0, 100u64, true, WALLETS[0]),
+        (Side::Buy, 2.0, 1.4, 42.0, 2.0, 102, false, WALLETS[1]),
+        (Side::Sell, 0.5, 1.2, 41.5, 3.0, 104, false, WALLETS[2]),
+        (Side::Buy, 1.5, 1.8, 43.0, 4.0, 106, true, WALLETS[1]),
+        (Side::Sell, 0.8, 1.5, 42.2, 5.0, 108, false, WALLETS[3]),
     ];
     for (side, sol, price, reserve, at, slot, vol, wallet) in script {
         fx.extend(reduce(
@@ -280,7 +293,7 @@ fn confirm_entry(state: &mut EngineState, mint: &Mint, mut fx: Vec<Effect>) {
             state,
             Event::Trade {
                 mint: mint.clone(),
-                trade: trade(Side::Buy, 1.0, 2.0, 44.0, 6.0, 110, false, 15),
+                trade: trade(Side::Buy, 1.0, 2.0, 44.0, 6.0, 110, false, WALLETS[4]),
             },
         );
     }

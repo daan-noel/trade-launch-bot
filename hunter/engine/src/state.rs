@@ -151,6 +151,8 @@ struct WindowSets<'a> {
     ix: &'a [crate::metrics::WindowSpec],
     /// `m_dump_ix_window` — opened per fingerprint, on its own buffer.
     dump: &'a [crate::metrics::WindowSpec],
+    /// `m_copy_window` — opened per fingerprint, on its own buffer.
+    copy: &'a [crate::metrics::WindowSpec],
 }
 
 /// The engine's whole world. Construct with [`EngineState::new`], feed it events
@@ -196,6 +198,9 @@ pub struct EngineState {
     /// Union of every rule's `m_dump_ix_window` spans — the only ones `ensure_dump`
     /// opens per fingerprint.
     pub all_dump_windows: Vec<crate::metrics::WindowSpec>,
+    /// Union of every rule's `m_copy_window` spans — the only ones `ensure_copy`
+    /// opens per fingerprint.
+    pub all_copy_windows: Vec<crate::metrics::WindowSpec>,
     /// Union of every loaded rule's [`ClockHorizons`] — how long *any* rule's
     /// readings can still move without a trade. Drives [`Settled`].
     pub tick_horizons: ClockHorizons,
@@ -443,6 +448,7 @@ impl EngineState {
         let mut all_price_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_ix_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_dump_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
+        let mut all_copy_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut horizons = ClockHorizons::default();
         let mut any_priority = false;
         for r in self.rules.values() {
@@ -454,6 +460,7 @@ impl EngineState {
                 (&r.price_windows, &mut all_price_windows),
                 (&r.ix_windows, &mut all_ix_windows),
                 (&r.dump_windows, &mut all_dump_windows),
+                (&r.copy_windows, &mut all_copy_windows),
             ] {
                 for &w in src {
                     if !dst.contains(&w) {
@@ -466,6 +473,7 @@ impl EngineState {
         self.all_crowd_windows = all_crowd_windows;
         self.all_price_windows = all_price_windows;
         self.all_dump_windows = all_dump_windows;
+        self.all_copy_windows = all_copy_windows;
         self.all_ix_windows = all_ix_windows;
         self.tick_horizons = horizons;
         self.any_priority = any_priority;
@@ -481,6 +489,7 @@ impl EngineState {
                 price: &self.all_price_windows,
                 ix: &self.all_ix_windows,
                 dump: &self.all_dump_windows,
+                copy: &self.all_copy_windows,
             },
             &self.fp_patterns,
         );
@@ -519,6 +528,7 @@ impl EngineState {
             price: &self.all_price_windows,
             ix: &self.all_ix_windows,
             dump: &self.all_dump_windows,
+            copy: &self.all_copy_windows,
         }
     }
 
@@ -544,6 +554,9 @@ impl EngineState {
             }
             if let Some(burst) = &p.burst {
                 track.ensure_burst(fp, burst);
+            }
+            if let Some(copy) = &p.copy {
+                track.ensure_copy(fp, copy, windows.copy);
             }
             if let Some(flow) = &p.flow {
                 // Only the `m_flow_ix_window` spans: this call opens a deque PER

@@ -575,6 +575,8 @@ construction. See hunter/CLAUDE.md Gotchas.
 | `m_dump_ix_window` | dynamic | `window_size_sec` | none (reads `m_dump_ix`) |
 | `m_burst_slot` | static (fingerprint-scoped) | none | `working_templates: string[]` — template grain ids. Mapping: [ix-live-rule.md](ix-live-rule.md) |
 | `m_burst_wave` | static | none | none. Consecutive-slot buy run; gap is empty buy-slots before that run. Create slot is not fireable. |
+| `m_copy` | static (fingerprint-scoped) | none | `target_wallets: string[]` — base58 addresses. Mapping: [copy-trade-plan.md](copy-trade-plan.md) |
+| `m_copy_window` | dynamic | `window_size_sec` / `_slots` / `_prints` + `window_lag` | none (reads `m_copy`) |
 
 **Multi-window per group** (any dynamic group — `m_flow_window`, `m_price_window`,
 `m_flow_ix_window`): a group appears under a side as a single object (one window — the
@@ -715,6 +717,8 @@ transactions in the same slot.
 | --- | --- |
 | Fingerprint has no `m_flow_ix` key | all NaN |
 | Fingerprint has no `m_dump_ix` key | `dump_*` NaN — never `0`, or a `<= 0` bound would fire on every unconfigured row |
+| Fingerprint has no `m_copy` key | every `m_copy*` metric NaN — same reason, and here a `sell_count <= 0` exit would fire on every position |
+| Trade carries no wallet (offline load without wallet identity) | not the target, whatever the size — every `m_copy*` metric reads `0` |
 | Pre-first-trade (no classifier state yet) | NaN (existing convention) |
 | Trade `ix_hash = None`, wallet not tagged, not creator | counts as organic |
 | Token row missing / no `creator_wallet` | creator unseeded (logged `warn`); creator trades classify by pattern/contagion only |

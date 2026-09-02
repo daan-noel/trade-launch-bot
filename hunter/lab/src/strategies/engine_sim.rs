@@ -842,6 +842,28 @@ mod flow_column_needs {
         assert!(rule_needs_flow(&wave), "m_burst_wave needs wallet + template grain");
     }
 
+    /// `m_copy*` is keyed on WHO signed a print and on nothing else, so a copy rule
+    /// must pull the wallet column. Without it every trade folds as one anonymous
+    /// wallet, the target matches nothing, and the run reports zero entries - which
+    /// reads as "he never bought on our tokens" rather than as a load error.
+    #[test]
+    fn a_copy_trigger_forces_the_flow_columns() {
+        let copy = rule_with(serde_json::json!({
+            "entry_event": { "m_copy_window": {
+                "window_size_prints": 1,
+                "buy_sol": [{ "operator": ">=", "value": 0.5 }]
+            } }
+        }));
+        assert!(rule_needs_flow(&copy), "m_copy_window needs the wallet column");
+
+        // ...and so does a rule whose ONLY copy term is the lifetime exit filter.
+        let lifetime_only = rule_with(serde_json::json!({
+            "entry": { "m_state": { "time": [{ "operator": ">=", "value": 30 }] } },
+            "exit": { "m_copy": { "sell_count": [{ "operator": ">=", "value": 1 }] } }
+        }));
+        assert!(rule_needs_flow(&lifetime_only), "m_copy needs it on either side");
+    }
+
     /// A ladder stage reuses the full exit grammar, so it can be the ONLY part of a
     /// rule that reads a flow metric. Checking `entry`/`exit` alone missed it.
     #[test]

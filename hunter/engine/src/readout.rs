@@ -303,6 +303,8 @@ pub struct ReplayFlow<'a> {
     pub dump: Option<&'a DumpPatterns>,
     /// `m_burst_slot.working_templates`. Independently optional.
     pub burst: Option<&'a crate::metrics::burst_slot::BurstPatterns>,
+    /// `m_copy.target_wallets`. Independently optional.
+    pub copy: Option<&'a crate::metrics::copy::CopyPatterns>,
     /// Seeds the flow contagion set only — `m_dump_ix` has no wallet rule.
     pub creator_wallet_hash: Option<u64>,
 }
@@ -367,6 +369,9 @@ pub fn replay_readout(
         }
         if let Some(b) = f.burst {
             track.ensure_burst(f.fingerprint, b);
+        }
+        if let Some(cp) = f.copy {
+            track.ensure_copy(f.fingerprint, cp, &rule.copy_windows);
         }
         if let Some(h) = f.creator_wallet_hash {
             track.seed_creator(h);
@@ -564,6 +569,9 @@ pub fn replay_series(
         }
         if let Some(b) = f.burst {
             series.ensure_burst(f.fingerprint, b);
+        }
+        if let Some(cp) = f.copy {
+            series.ensure_copy(f.fingerprint, cp, &rule.copy_windows);
         }
         if let Some(h) = f.creator_wallet_hash {
             series.seed_creator(h);
@@ -1142,6 +1150,7 @@ mod tests {
                 patterns: None,
                 dump: Some(&dump),
                 burst: None,
+                copy: None,
                 creator_wallet_hash: None,
             }),
         };

@@ -44,6 +44,7 @@ use hunter_engine::event::{LoadedRule, RuleId};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::ConditionExpr;
 use hunter_engine::metrics::burst_slot::BurstPatterns;
+use hunter_engine::metrics::copy::CopyPatterns;
 use hunter_engine::metrics::dump_ix::DumpPatterns;
 use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::flow_ix::{
@@ -413,41 +414,76 @@ async fn resolve_rule(
 /// organic. Neither half is fatal on its own: an unconfigured fingerprint just omits
 /// the flow columns, and a missing creator is logged rather than silently folded.
 /// See [`ReplayFlow`].
+/// One fingerprint's compiled lists plus the token's creator wallet — a named
+/// carrier rather than a widening tuple, so adding a fingerprint-scoped group cannot
+/// silently transpose two `Option`s of the same shape at a call site.
+#[derive(Default)]
+struct FlowCtx {
+    patterns: Option<FlowPatterns>,
+    dump: Option<DumpPatterns>,
+    burst: Option<BurstPatterns>,
+    copy: Option<CopyPatterns>,
+    creator_wallet_hash: Option<u64>,
+}
+
+impl FlowCtx {
+    /// Borrow as the engine's replay context. `None` when the fingerprint configures
+    /// no list at all — gating on the flow list alone would leave a dump-, burst- or
+    /// copy-only rule reading `NaN`.
+    fn as_replay(&self, fingerprint: FingerprintId) -> Option<ReplayFlow<'_>> {
+        (self.patterns.is_some()
+            || self.dump.is_some()
+            || self.burst.is_some()
+            || self.copy.is_some())
+        .then_some(ReplayFlow {
+            fingerprint,
+            patterns: self.patterns.as_ref(),
+            dump: self.dump.as_ref(),
+            burst: self.burst.as_ref(),
+            copy: self.copy.as_ref(),
+            creator_wallet_hash: self.creator_wallet_hash,
+        })
+    }
+}
+
 async fn load_flow_ctx(
     app_state: &DeployState,
     mint: &str,
     fingerprint_id: FingerprintId,
-) -> (Option<FlowPatterns>, Option<DumpPatterns>, Option<BurstPatterns>, Option<u64>) {
-    // All three lists come off the ONE row, in one read: they are separate groups on
+) -> FlowCtx {
+    // Every list comes off the ONE row, in one read: they are separate groups on
     // the same fingerprint, so a rule may carry any of them.
-    let (patterns, dump, burst) = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
+    let mut ctx = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
         Ok(Some(fp)) => {
             let cfg = fp_to_engine(&fp).metric_config;
-            (
-                FlowPatterns::from_metric_config(&cfg),
-                DumpPatterns::from_metric_config(&cfg),
-                BurstPatterns::from_metric_config(&cfg),
-            )
+            FlowCtx {
+                patterns: FlowPatterns::from_metric_config(&cfg),
+                dump: DumpPatterns::from_metric_config(&cfg),
+                burst: BurstPatterns::from_metric_config(&cfg),
+                copy: CopyPatterns::from_metric_config(&cfg),
+                creator_wallet_hash: None,
+            }
         }
-        Ok(None) => (None, None, None),
+        Ok(None) => FlowCtx::default(),
         Err(e) => {
             tracing::warn!(fp = %fingerprint_id.0, "readout replay: fingerprint load failed: {e}");
-            (None, None, None)
+            FlowCtx::default()
         }
     };
     // Only pay for the creator lookup on the flow path — the creator seeds the flow
-    // contagion set and nothing else, so a dump-only / burst-only rule never needs it.
-    if patterns.is_none() {
-        return (None, dump, burst, None);
+    // contagion set and nothing else, so a dump-, burst- or copy-only rule never
+    // needs it.
+    if ctx.patterns.is_none() {
+        return ctx;
     }
-    let creator_wallet_hash = match app_state.core.token_repo().find_by_mint(mint).await {
+    ctx.creator_wallet_hash = match app_state.core.token_repo().find_by_mint(mint).await {
         Ok(Some(t)) if !t.creator_wallet.is_empty() => Some(wallet_hash(&t.creator_wallet)),
         _ => {
             tracing::warn!(mint, "readout replay: no creator wallet — flow split unseeded");
             None
         }
     };
-    (patterns, dump, burst, creator_wallet_hash)
+    ctx
 }
 
 /// The token's stored trades up to `until`, as the engine's `TradeLite`.
@@ -543,8 +579,7 @@ async fn replay_for_position(
     };
 
     let trades = load_trades(app_state, &position.mint_address, at).await?;
-    let (patterns, dump, burst, creator_wallet_hash) =
-        load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
+    let flow_ctx = load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -556,15 +591,7 @@ async fn replay_for_position(
     // busy token is tens of thousands of folds. Small next to the lab's full series,
     // still not something to run on an async worker of a 2vCPU box.
     let out = web::block(move || {
-        // Either list configured is enough to need the context — gating on the flow
-        // list alone would leave a dump-only rule reading `NaN`.
-        let flow = (patterns.is_some() || dump.is_some() || burst.is_some()).then_some(ReplayFlow {
-            fingerprint: fingerprint_id,
-            patterns: patterns.as_ref(),
-            dump: dump.as_ref(),
-            burst: burst.as_ref(),
-            creator_wallet_hash,
-        });
+        let flow = flow_ctx.as_replay(fingerprint_id);
         replay_readout(
             &compiled,
             lites,
@@ -791,8 +818,7 @@ async fn series_response(
         Ok(t) => t,
         Err(resp) => return resp,
     };
-    let (patterns, dump, burst, creator_wallet_hash) =
-        load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
+    let flow_ctx = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &mint, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -811,15 +837,7 @@ async fn series_response(
     // Off the reactor, for the same reason the point replay is — more so: this folds
     // the token's whole retained history and evaluates every condition at every row.
     let out = web::block(move || {
-        // Either list configured is enough to need the context — gating on the flow
-        // list alone would leave a dump-only rule reading `NaN`.
-        let flow = (patterns.is_some() || dump.is_some() || burst.is_some()).then_some(ReplayFlow {
-            fingerprint: fingerprint_id,
-            patterns: patterns.as_ref(),
-            dump: dump.as_ref(),
-            burst: burst.as_ref(),
-            creator_wallet_hash,
-        });
+        let flow = flow_ctx.as_replay(fingerprint_id);
         replay_series(
             &compiled,
             lites,

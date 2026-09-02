@@ -23,6 +23,7 @@ use crate::fingerprint::FingerprintId;
 
 use super::burst_slot::{BurstPatterns, BurstSlotState};
 use super::burst_wave::BurstWaveState;
+use super::copy::{CopyPatterns, CopyState};
 use super::crowd_window::CrowdWindowState;
 use super::flow_lifetime::FlowLifetimeState;
 use super::dump_ix::{DumpPatterns, DumpState};
@@ -73,6 +74,11 @@ pub struct TokenTrack {
     /// match differs per list.
     burst_patterns: BTreeMap<FingerprintId, BurstPatterns>,
     burst: BurstSlotState,
+    /// `m_copy` / `m_copy_window` state, keyed by fingerprint. Apart from `flow` for
+    /// the reason `dump` is: it reads a DIFFERENT list (wallets, not builds) and
+    /// stores nothing at all for a print the target did not sign, so a rule reading
+    /// no copy metric must not pay a deque push per trade to carry it.
+    copy: BTreeMap<FingerprintId, CopyState>,
     /// Consecutive-slot buy wave. Token-level, always folded — not fingerprint-scoped.
     burst_wave: BurstWaveState,
     /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
@@ -102,6 +108,7 @@ impl TokenTrack {
             burst_patterns: BTreeMap::new(),
             burst: BurstSlotState::default(),
             burst_wave: BurstWaveState::default(),
+            copy: BTreeMap::new(),
             creator_wallet_hash: None,
         }
     }
@@ -181,6 +188,23 @@ impl TokenTrack {
         self.burst_patterns.insert(fp, patterns.clone());
     }
 
+    /// Register fingerprint-scoped copy state (idempotent). Same adopt-on-reload
+    /// contract as [`ensure_dump`](Self::ensure_dump): swapping the target wallet
+    /// moves a live token's future, never its past. No creator seed — this group's
+    /// only wallet rule is the list itself.
+    pub fn ensure_copy(
+        &mut self,
+        fp: FingerprintId,
+        patterns: &CopyPatterns,
+        windows: &[super::WindowSpec],
+    ) {
+        let state = self.copy.entry(fp).or_insert_with(|| CopyState::new(patterns.clone()));
+        state.set_patterns(patterns);
+        for &w in windows {
+            state.ensure_window(w);
+        }
+    }
+
     /// Seed the creator wallet (volume-side unconditionally) on every flow state.
     pub fn seed_creator(&mut self, hash: u64) {
         self.creator_wallet_hash = Some(hash);
@@ -235,6 +259,9 @@ impl TokenTrack {
         for dump in self.dump.values_mut() {
             dump.on_trade(&t, cur);
         }
+        for copy in self.copy.values_mut() {
+            copy.on_trade(&t, cur);
+        }
     }
 
     /// Advance time to `now` without a trade — evicts stale window entries so a
@@ -268,6 +295,9 @@ impl TokenTrack {
         }
         for dump in self.dump.values_mut() {
             dump.on_tick(now, cur);
+        }
+        for copy in self.copy.values_mut() {
+            copy.on_tick(now, cur);
         }
         if !self.burst_patterns.is_empty() {
             self.burst.on_tick();
@@ -398,6 +428,16 @@ impl TokenTrack {
                 };
                 match self.flow.get(&fp) {
                     Some(f) => f.value(id, window, now, cur),
+                    None => f64::NAN,
+                }
+            }
+            CopyBuySol | CopyBuyCount | CopySellSol | CopySellCount | WinCopyBuySol
+            | WinCopyBuyCount | WinCopySellSol | WinCopySellCount => {
+                let Some(fp) = fingerprint else {
+                    return f64::NAN;
+                };
+                match self.copy.get(&fp) {
+                    Some(c) => c.value(id, window, now, cur),
                     None => f64::NAN,
                 }
             }
