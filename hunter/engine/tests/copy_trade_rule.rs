@@ -39,8 +39,13 @@ fn ts(secs: f64) -> Ts {
     Utc.timestamp_opt(1_700_000_000, 0).unwrap() + Duration::milliseconds((secs * 1000.0) as i64)
 }
 
-/// The seeded rule, verbatim in shape: his buy is the event, the operator's filters
-/// are the AND-gate, and the exit is his sell OR a time backstop.
+/// The seeded rule, verbatim: his buy is the event, the operator's filters are the
+/// AND-gate, and the exit is his sell OR a time backstop.
+///
+/// The age and depth gates sit under `disabled` rather than in `entry`, because the
+/// seeded target snipes at a median token age of 5.4 s and a 30 s floor would drop
+/// almost every buy he makes. Parked conditions parse and validate exactly like live
+/// ones, and nothing compiles them.
 fn copy_params() -> Value {
     json!({
         "exclusive": true,
@@ -50,14 +55,10 @@ fn copy_params() -> Value {
         "entry_event": {
             "m_copy_window": {
                 "window_size_prints": 1,
-                "buy_sol": [{"operator": ">=", "value": 0.5}]
+                "buy_sol": [{"operator": ">=", "value": 0.04}]
             }
         },
         "entry": {
-            "m_state": {
-                "time": [{"operator": ">=", "value": 30}],
-                "liquidity": [{"operator": ">=", "value": 10}]
-            },
             "m_copy": { "sell_count": [{"operator": "=", "value": 0}] }
         },
         "exit": [
@@ -65,8 +66,16 @@ fn copy_params() -> Value {
                 "window_size_prints": 1,
                 "sell_sol": [{"operator": ">", "value": 0}]
             } },
-            { "m_position": { "held": [{"operator": ">=", "value": 600}] } }
-        ]
+            { "m_position": { "held": [{"operator": ">=", "value": 300}] } }
+        ],
+        "disabled": {
+            "entry": {
+                "m_state": {
+                    "time": [{"operator": ">=", "value": 30}],
+                    "liquidity": [{"operator": ">=", "value": 10}]
+                }
+            }
+        }
     })
 }
 
@@ -266,31 +275,46 @@ fn a_migrated_token_never_enters_however_the_target_buys_it() {
     assert!(submitted(&fx).is_none(), "the curve is over; no copy buy may fire");
 }
 
-/// A buy under the operator's SOL floor is not a fire, and neither is one before the
-/// age door — the two filters that hang off the shape.
+/// The SOL floor is a real gate and a failed one does not consume the token — and,
+/// the half that matters for THIS target, the floor sits under his smallest preset
+/// so a 5-second-old snipe still fires. A floor authored at a round 0.5 would have
+/// made the whole rule inert against a wallet whose median buy is 0.0988.
 #[test]
-fn the_filters_gate_the_fire_without_consuming_the_token() {
+fn the_floor_admits_his_presets_and_a_failed_gate_keeps_the_token() {
     let mint = Mint("gated-mint".into());
     let mut state = armed_engine(&mint);
 
     let fx = reduce(
         &mut state,
-        Event::Trade { mint: mint.clone(), trade: print(Side::Buy, TARGET, 0.2, 31.0, 100, true) },
+        Event::Trade { mint: mint.clone(), trade: print(Side::Buy, TARGET, 0.01, 3.0, 100, true) },
     );
-    assert!(submitted(&fx).is_none(), "0.2 SOL is under the 0.5 floor");
+    assert!(submitted(&fx).is_none(), "dust is under the floor");
 
+    // Neither refusal spent the token, and his smallest real preset at 5 s old -
+    // squarely inside his p50 entry age - is a fire.
     let fx = reduce(
         &mut state,
-        Event::Trade { mint: mint.clone(), trade: print(Side::Buy, TARGET, 0.9, 10.0, 101, true) },
+        Event::Trade { mint: mint.clone(), trade: print(Side::Buy, TARGET, 0.0494, 5.0, 101, true) },
     );
-    assert!(submitted(&fx).is_none(), "10 s is inside the 30 s age door");
+    assert!(submitted(&fx).is_some(), "his smallest preset, at his median entry age");
+}
 
-    // Neither refusal spent the token: the next qualifying buy still enters.
-    let fx = reduce(
-        &mut state,
-        Event::Trade { mint: mint.clone(), trade: print(Side::Buy, TARGET, 0.9, 40.0, 102, true) },
-    );
-    assert!(submitted(&fx).is_some(), "a gate that fails must not end the episode");
+/// **A parked condition is authored but not compiled.** The age and depth gates are
+/// in `disabled`, so they must reach neither the entry reqs nor the tick horizons —
+/// re-enabling one is an edit, never something the engine does on its own.
+#[test]
+fn the_parked_age_and_depth_gates_compile_into_nothing() {
+    let p = RuleParams::parse(&copy_params()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(p.disabled.is_some(), "the parked bag round-trips");
+    assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+
+    let c = CompiledRule::compile(&loaded(copy_params()));
+    for m in [MetricId::Time, MetricId::Liquidity] {
+        assert!(
+            !c.entry_reqs.iter().chain(c.event_reqs.iter()).any(|r| r.metric == m),
+            "{m} is parked, so nothing may compile it"
+        );
+    }
 }
 
 /// The trigger releases. A `1p` window is this print, so the print AFTER his buy
