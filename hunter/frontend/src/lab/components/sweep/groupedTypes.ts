@@ -285,8 +285,16 @@ export interface ComboTokenResult {
   pnl_sol: number;
   pnl_pct: number;
   holding_secs: number;
-  /** `"TakeProfit"` | `"StopLoss"` | `"Metrics"` | `"Dead"` | `"Open"` | `"NoEntry"`. */
+  /** `"TakeProfit"` | `"StopLoss"` | `"Metrics"` | `"Dead"` | `"Open"` | `"NoEntry"`.
+   *  A metric exit arrives as the spaced detail label (`"stall > 3"`), not the bare
+   *  code name. */
   exit: string;
+  /** Which of the rule's own authored exit conditions `exit` fired on (0-based) —
+   *  the row-grain join key for the group's `n_exit_metrics_by_slot` histogram.
+   *  `null` for every non-metric exit, and for a metric exit whose way could not be
+   *  resolved. Two authored ways can carry identical text, so this is the only thing
+   *  that tells them apart. */
+  exit_metric_slot: number | null;
   entry_time: string | null;
   entry_price: number | null;
   /** Real base58 tx signature of the entry fill. Null when not fired / unresolved. */

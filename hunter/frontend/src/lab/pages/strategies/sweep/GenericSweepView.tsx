@@ -1045,6 +1045,30 @@ function ComboTokenResults({
         sortValue: (r) => r.exit,
         sortable: true,
       },
+      {
+        // Which authored exit condition fired — the row-grain counterpart of the
+        // group's `n_exit_metrics_by_slot` histogram, which until now could be read
+        // only in aggregate. Filterable, so "every token that left on way 1" is one
+        // number rather than a scan of the Exit text — and two ways whose text is
+        // identical are only separable here.
+        key: 'exit_way',
+        label: 'Way',
+        tooltip:
+          "Which of the rule's own authored exit conditions this token left on " +
+          "(0-based) — the same slot index the group's metric-exit breakdown counts. " +
+          'Blank on a non-metric exit (take profit, stop, dead, open) and on a metric ' +
+          'exit whose way the sweep could not resolve.',
+        render: (r) =>
+          r.exit_metric_slot == null ? (
+            <span className="text-text-dim">—</span>
+          ) : (
+            <span className="font-mono text-xs tabular-nums text-info">#{r.exit_metric_slot}</span>
+          ),
+        searchValue: (r) => (r.exit_metric_slot == null ? '' : `#${r.exit_metric_slot}`),
+        sortValue: (r) => r.exit_metric_slot,
+        filterNumber: (r) => r.exit_metric_slot,
+        sortable: true,
+      },
     ],
     [],
   );
