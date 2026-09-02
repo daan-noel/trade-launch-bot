@@ -652,7 +652,7 @@ next load (no per-metric frontend work).
   `evt/s` chips for `entry_event` when authored; used by Rules,
   Simulate, and the generic sweep tables),
   `FingerprintParamsSummary` (`fingerprintParamsCell` — set match-axis chips, plus the
-  always-shown bucket and `FlowPatternsChip`; used by Rules, Simulate, and
+  always-shown bucket and every fingerprint-scoped list; used by Rules, Simulate, and
   `FingerprintPicker`). `IxLabelsChip` and `FlowPatternsChip` share `ContentsChip`: a
   count body over a `hashHue` ribbon of the **contents**, since neither axis is its
   count — the tooltip carries the sequences and a click copies them as JSON. An
@@ -694,12 +694,31 @@ On `working` the badge reads `Working`/`Other` against the grain id
 (`templateGrain`), with no contagion notes. Flow discovery stages all three lists
 — tagged and dump as ix rows, working as grain ids. Bind-from-group creates a
 fingerprint from tagged or dump only; working grains require an existing row
-(`Update`). `FingerprintsView` gives the dump list
-its own **dump builds** column beside `flow patterns`, and `DumpPatternsChip` is the
+(`Update`). `DumpPatternsChip` is the
 `FlowPatternsChip` twin — absent when the list is empty, where the flow chip stays
 visible as `flow✗`, since an empty dump list leaves `dump_*` reading NaN rather than
-re-pointing another metric. `WorkingTemplatesChip` (`work N`) is the grain-list twin,
-absent when empty.
+re-pointing another metric. `WorkingTemplatesChip` (`work N`) and `TargetWalletsChip`
+(`copy N`) are the grain-list and address-list twins, absent when empty.
+
+**Every fingerprint-scoped list is one table.** `FP_CONFIG_LISTS`
+(`FingerprintParamsSummary`) carries one entry per group that declares
+`fingerprint_config` — `m_flow_ix`, `m_dump_ix`, `m_burst_slot`, `m_copy` — each with
+its chip, its column key and label, its flat search text and its contents identity.
+The four surfaces that show a fingerprint all loop it: `fingerprintParamsCell` (chips),
+`fingerprintParamsSearchText` (picker + rules filter), `fingerprintIdentityKey` (the
+whole-fingerprint sort key) and `FingerprintsView` (one generated column each, plus the
+same-value tint, which keys on the CONTENTS so two rows reading `copy 1` only tint
+together when it is the same wallet).
+
+The table exists because `metric_config` is row identity
+(`fingerprints_identity_uniq` = criteria + wildcard + `metric_config`), so a list the
+UI does not show is a difference the page cannot express. Written out by hand these
+call sites carried `flow` and `dump` only, and the two groups added after them shipped
+with a form control and a chip but no column, no search term and no sort key — a copy
+fingerprint, which is a wildcard and so has no axis chips at all, showed nothing
+whatsoever of the wallet it follows. A guard test beside it (`components/strategy/fingerprintConfigLists.test.ts`) reads
+the Rust registry and fails when a group declares `fingerprint_config` with no entry
+here.
 
 - Lab **Flow discovery** (`/strategies/flow-discovery`, `FlowDiscoveryPage`) — corpus
   window + optional **Scope by saved fingerprint** (sends `fingerprint_id`; engine

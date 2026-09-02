@@ -39,9 +39,7 @@ import {
   ixLabelsMatchFilter,
 } from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
-import { dumpPatternsFromConfig, ixPatternsFromConfig } from 'lib/strategy/registry';
-import { ixPatternsActions } from 'lib/flow/volumePatterns';
-import { DumpPatternsChip, FlowPatternsChip } from './FingerprintParamsSummary';
+import { FP_CONFIG_LISTS } from './FingerprintParamsSummary';
 import { flowDiscoveryHref, rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { fingerprintAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import {
@@ -100,13 +98,24 @@ function axisSortValue(r: Fingerprint, def: AxisDef): number | null {
 const COLOR_COLS: {
   key: string;
   valueOf: (r: Fingerprint) => string | null;
-}[] = AXES.map((def) => ({
-  key: def.id,
-  valueOf: (r: Fingerprint) =>
-    def.kind === 'sequence'
-      ? (rowLabels(r) ? formatIxLabelsText(rowLabels(r)!) : null)
-      : axisText(r, def),
-}));
+}[] = [
+  ...AXES.map((def) => ({
+    key: def.id,
+    valueOf: (r: Fingerprint) =>
+      def.kind === 'sequence'
+        ? (rowLabels(r) ? formatIxLabelsText(rowLabels(r)!) : null)
+        : axisText(r, def),
+  })),
+  // The `metric_config` lists tint on their CONTENTS, not their count — the whole
+  // point on this page is spotting the rows that configure the same list, and two
+  // rows both reading `copy 1` are the same criterion only when it is the same
+  // wallet. Unconfigured stays `null` so a page of empty lists does not tint as
+  // one shared value.
+  ...FP_CONFIG_LISTS.map((s) => ({
+    key: s.columnKey,
+    valueOf: (r: Fingerprint) => (s.count(r) === 0 ? null : s.identity(r)),
+  })),
+];
 
 /** Expanded row detail: rules that reference this fingerprint, with the same
  *  params summary as the Rules table so you can tell them apart at a glance.
@@ -377,44 +386,31 @@ export function FingerprintsView({
         filterTitle: IX_LABELS_FILTER_TITLE,
         cellClassName: cellTint('ix_labels'),
       },
-      {
-        key: 'flow_patterns',
-        label: 'flow patterns',
+      // One column per fingerprint-scoped `metric_config` list, generated — so a
+      // group added to the engine's `fingerprint_config` becomes a column, sortable,
+      // searchable and filterable, with no edit here. Written out by hand this list
+      // carried only `flow` and `dump`, and the two groups added after them
+      // (`m_burst_slot`, `m_copy`) had a form control and a chip but no column: on a
+      // page where every axis cell is a dash, a copy fingerprint showed NOTHING of
+      // the wallet it follows.
+      //
+      // The cell is the chip, never a bare count Badge: `1` and `1` are different
+      // criteria when the contents differ, and the ribbon + tooltip is where that
+      // shows. The numeric sort/filter reads the count.
+      ...FP_CONFIG_LISTS.map((s) => ({
+        key: s.columnKey,
+        label: s.label,
         group: 'ix',
-        render: (r) => {
-          const patterns = ixPatternsFromConfig(r.metric_config);
-          // The chip, not a bare count Badge: `1` and `1` are different criteria
-          // when the sequences differ, and the ribbon + tooltip is where that
-          // shows. The numeric sort/filter below still reads the count.
-          return patterns.length === 0 ? dash() : <FlowPatternsChip patterns={patterns} />;
-        },
-        searchValue: (r) => {
-          const patterns = ixPatternsFromConfig(r.metric_config);
-          return `${patterns.length} ${ixPatternsActions(patterns)}`;
-        },
-        sortValue: (r) => ixPatternsFromConfig(r.metric_config).length,
-        filterNumber: (r) => ixPatternsFromConfig(r.metric_config).length || null,
+        render: (r: Fingerprint) => (s.count(r) === 0 ? dash() : s.chip(r)),
+        // The contents, not just the count — so pasting a wallet address or typing a
+        // build's action name selects the rows that name it.
+        searchValue: (r: Fingerprint) => s.searchText(r),
+        sortValue: (r: Fingerprint) => s.count(r),
+        filterNumber: (r: Fingerprint) => s.count(r) || null,
         sortable: true,
-      },
-      {
-        key: 'dump_patterns',
-        label: 'dump builds',
-        group: 'ix',
-        render: (r) => {
-          const patterns = dumpPatternsFromConfig(r.metric_config);
-          // Same chip engine as `flow patterns` — the count sorts, the ribbon and
-          // tooltip carry which builds, since two rows reading `2` are different
-          // criteria when the sequences differ.
-          return patterns.length === 0 ? dash() : <DumpPatternsChip patterns={patterns} />;
-        },
-        searchValue: (r) => {
-          const patterns = dumpPatternsFromConfig(r.metric_config);
-          return `${patterns.length} ${ixPatternsActions(patterns)}`;
-        },
-        sortValue: (r) => dumpPatternsFromConfig(r.metric_config).length,
-        filterNumber: (r) => dumpPatternsFromConfig(r.metric_config).length || null,
-        sortable: true,
-      },
+        cellClassName: cellTint(s.columnKey),
+        filterTitle: `${s.label} — ${s.definition}`,
+      })),
       {
         key: 'used_by',
         label: 'Used by',

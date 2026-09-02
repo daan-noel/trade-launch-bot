@@ -6,7 +6,7 @@
 // there is shown, searchable and part of the sort key here without an edit. An
 // unconfigured axis is simply absent from the criteria map and so from the row.
 
-import { useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import {
   axisDef,
   configuredAxes,
@@ -281,6 +281,122 @@ export function TargetWalletsChip({ wallets }: { wallets: string[] }) {
   );
 }
 
+/**
+ * One fingerprint-scoped `metric_config` list, in every form the surfaces that
+ * show a fingerprint need it.
+ *
+ * **The reason this table exists.** The criteria axes are generated from the axis
+ * registry, so an axis added there becomes a chip, a column, a search term and part
+ * of the sort key with no edit. The `metric_config` lists had no such table and were
+ * written out by hand at four call sites — so `m_burst_slot` and `m_copy` shipped
+ * with a form control and a chip, but no column, no search text and no identity
+ * term, and two fingerprints differing only in whose wallet they copy rendered
+ * identically on the Fingerprints page. `metric_config` IS row identity
+ * (`fingerprints_identity_uniq`), so that is not cosmetic: it hides the one field
+ * that says the rows are different.
+ *
+ * The engine's own list is hand-kept the same way (`FingerprintPatterns` has one
+ * field per group, `validate_fingerprint_metric_config` one call), so this mirrors
+ * it one-for-one. `fingerprintConfigLists.test.ts` reads the Rust registry and fails
+ * when a group declares `fingerprint_config` with no entry here.
+ */
+export interface FpConfigListSpec {
+  /** Chip prefix and search token (`flow`, `dump`, `work`, `copy`). */
+  key: string;
+  /** The `metric_config` group this list lives under — the guard test's join key. */
+  group: string;
+  /** Fingerprints-table column key. Stable: it keys saved sort/visibility prefs. */
+  columnKey: string;
+  /** Fingerprints-table column header. */
+  label: string;
+  /** Column tooltip — what the list does, one line. */
+  definition: string;
+  /** Configured entries (0 = the group is unconfigured and its metrics read NaN). */
+  count: (fp: Fingerprint) => number;
+  /** The chip. Empty renders per that list's own rule — see {@link FlowPatternsChip}
+   *  for why only `flow` stays visible when empty. */
+  chip: (fp: Fingerprint) => ReactNode;
+  /** Flat text for a table filter or the picker search: the chip's own words plus
+   *  the CONTENTS, so searching a build or a wallet address finds the row that
+   *  names it — a count alone can never answer that. */
+  searchText: (fp: Fingerprint) => string;
+  /** Order-independent identity of the contents, for the whole-fingerprint sort
+   *  key. Two rows with one entry each are the same criterion only if it is the
+   *  same entry. */
+  identity: (fp: Fingerprint) => string;
+}
+
+/** Every fingerprint-scoped `metric_config` list, in registry order. */
+export const FP_CONFIG_LISTS: readonly FpConfigListSpec[] = [
+  {
+    key: 'flow',
+    group: 'm_flow_ix',
+    columnKey: 'flow_patterns',
+    label: 'flow patterns',
+    definition:
+      'm_flow_ix.ix_patterns — the builds the flow split calls volume-side. An empty list re-points every untagged_* metric at EVERY trade, so it shows as flow✗ rather than a dash.',
+    count: (fp) => ixPatternsFromConfig(fp.metric_config).length,
+    chip: (fp) => <FlowPatternsChip patterns={ixPatternsFromConfig(fp.metric_config)} />,
+    searchText: (fp) => {
+      const p = ixPatternsFromConfig(fp.metric_config);
+      // The unconfigured state is searchable here and nowhere else: it is a verdict
+      // ("nothing is tagged"), not a dropped criterion.
+      if (p.length === 0) return 'flow✗';
+      return `flow ${p.length} flow=${p.length} ${ixPatternsActions(p)} ${formatVolumePatternsText(p)}`;
+    },
+    identity: (fp) => ixPatternsIdentity(ixPatternsFromConfig(fp.metric_config)),
+  },
+  {
+    key: 'dump',
+    group: 'm_dump_ix',
+    columnKey: 'dump_patterns',
+    label: 'dump builds',
+    definition:
+      'm_dump_ix.ix_patterns — the builds whose SELLS dump_sell / dump_sell_count count. Its own list, free to overlap the flow one: the two ask different questions of one transaction.',
+    count: (fp) => dumpPatternsFromConfig(fp.metric_config).length,
+    chip: (fp) => <DumpPatternsChip patterns={dumpPatternsFromConfig(fp.metric_config)} />,
+    searchText: (fp) => {
+      const p = dumpPatternsFromConfig(fp.metric_config);
+      if (p.length === 0) return '';
+      return `dump ${p.length} dump=${p.length} ${ixPatternsActions(p)} ${formatVolumePatternsText(p)}`;
+    },
+    identity: (fp) => ixPatternsIdentity(dumpPatternsFromConfig(fp.metric_config)),
+  },
+  {
+    key: 'work',
+    group: 'm_burst_slot',
+    columnKey: 'working_templates',
+    label: 'working templates',
+    definition:
+      'm_burst_slot.working_templates — build-template grain ids (program|CU|ATA|N|S|F) whose prints the burst group treats as working. Grain ids, NOT ix_labels sequences. Absent ⇒ every burst metric reads NaN, never 0.',
+    count: (fp) => workingTemplatesFromConfig(fp.metric_config).length,
+    chip: (fp) => <WorkingTemplatesChip templates={workingTemplatesFromConfig(fp.metric_config)} />,
+    searchText: (fp) => {
+      const t = workingTemplatesFromConfig(fp.metric_config);
+      if (t.length === 0) return '';
+      return `work ${t.length} work=${t.length} ${t.join(' ')}`;
+    },
+    identity: (fp) => workingTemplatesFromConfig(fp.metric_config).slice().sort().join('|'),
+  },
+  {
+    key: 'copy',
+    group: 'm_copy',
+    columnKey: 'target_wallets',
+    label: 'copy targets',
+    definition:
+      "m_copy.target_wallets — base58 wallets both copy groups follow, matched against the address the VENUE credited. A copy fingerprint is a WILDCARD, so this list is the only thing that says whose trades it follows. Absent ⇒ every copy metric reads NaN, never 0.",
+    count: (fp) => targetWalletsFromConfig(fp.metric_config).length,
+    chip: (fp) => <TargetWalletsChip wallets={targetWalletsFromConfig(fp.metric_config)} />,
+    searchText: (fp) => {
+      const w = targetWalletsFromConfig(fp.metric_config);
+      if (w.length === 0) return '';
+      // The whole address, so pasting one selects the fingerprint that follows it.
+      return `copy ${w.length} copy=${w.length} ${w.join(' ')}`;
+    },
+    identity: (fp) => targetWalletsFromConfig(fp.metric_config).slice().sort().join('|'),
+  },
+];
+
 /** One axis's chip. The value reads in the axis's own display unit — SOL for a
  *  lamports axis, the integer for a tally — through the ONE formatter, so a chip,
  *  the auto-name and the form all show a bound the same way. */
@@ -307,6 +423,11 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
   // A wildcard carries no axis, so the chip row is the one chip that says what it
   // matches. Rendering the axis chips too (they would all be absent) would read as
   // "unconfigured" — the opposite of what it does.
+  // Every fingerprint-scoped list, from the ONE table — so a group added to the
+  // engine's `fingerprint_config` shows up here as soon as it has an entry.
+  const listChips = FP_CONFIG_LISTS.map((s) => (
+    <Fragment key={s.key}>{s.chip(fp)}</Fragment>
+  ));
   if (fp.wildcard) {
     return (
       <div className="flex flex-wrap items-center gap-1 text-left">
@@ -314,19 +435,13 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
           style: axisTint('wildcard'),
           title: 'Wildcard — matches every token, ignoring every creation-shape axis',
         })}
-        <FlowPatternsChip patterns={ixPatternsFromConfig(fp.metric_config)} />
-        <DumpPatternsChip patterns={dumpPatternsFromConfig(fp.metric_config)} />
-        <WorkingTemplatesChip templates={workingTemplatesFromConfig(fp.metric_config)} />
-        <TargetWalletsChip wallets={targetWalletsFromConfig(fp.metric_config)} />
+        {listChips}
       </div>
     );
   }
   const chips: ReactNode[] = [
     ...configuredAxes(fp.criteria ?? {}).map(([id, pred]) => axisChip(id, pred)),
-    <FlowPatternsChip key="flow" patterns={ixPatternsFromConfig(fp.metric_config)} />,
-    <DumpPatternsChip key="dump" patterns={dumpPatternsFromConfig(fp.metric_config)} />,
-    <WorkingTemplatesChip key="work" templates={workingTemplatesFromConfig(fp.metric_config)} />,
-    <TargetWalletsChip key="copy" wallets={targetWalletsFromConfig(fp.metric_config)} />,
+    ...listChips,
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;
@@ -360,30 +475,13 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
     }
     parts.push(`${def.chip}=${formatPredicate(id, pred)}`, def.label);
   }
-  const patterns = ixPatternsFromConfig(fp.metric_config);
-  // Match the `FlowPatternsChip` text (`flow N` / `flow✗`) so filtering by what's
-  // actually shown works; the `flow=N` form stays matchable too. The action
-  // sequences go in for the same reason `ixLabelsActions` does — searching
-  // `Transfer` must find the fingerprints that classify it as volume, which a
-  // count alone can never answer.
-  if (patterns.length > 0) {
-    parts.push(`flow ${patterns.length} flow=${patterns.length}`);
-    parts.push(ixPatternsActions(patterns));
-    parts.push(formatVolumePatternsText(patterns));
-  } else {
-    parts.push('flow✗');
-  }
-  // Same reason, for the other list: a search for the build that dumps must find
-  // the fingerprints whose SELLS it counts, not only the ones that tag it.
-  const dump = dumpPatternsFromConfig(fp.metric_config);
-  if (dump.length > 0) {
-    parts.push(`dump ${dump.length} dump=${dump.length}`);
-    parts.push(ixPatternsActions(dump));
-    parts.push(formatVolumePatternsText(dump));
-  }
-  const work = workingTemplatesFromConfig(fp.metric_config);
-  if (work.length > 0) {
-    parts.push(`work ${work.length} work=${work.length}`, work.join(' '));
+  // Each list's own words plus its CONTENTS, from the ONE table. The contents go in
+  // for the same reason `ixLabelsActions` does: searching `Transfer` must find the
+  // fingerprints that classify it as volume, and pasting a wallet address must find
+  // the one that copies it — a count alone can never answer either.
+  for (const s of FP_CONFIG_LISTS) {
+    const text = s.searchText(fp);
+    if (text) parts.push(text);
   }
   return parts.join(' ');
 }
@@ -447,12 +545,11 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
               .join('+')}`,
       )
       .join(''),
-    // The pattern SEQUENCES, not their count: two fingerprints matching one
-    // pattern each are the same criterion only if it is the same pattern.
-    ixPatternsIdentity(ixPatternsFromConfig(fp.metric_config)),
-    // The dump list is part of the same row's `metric_config`, so two rows that
-    // differ only there are different rows and must not collapse into one sort key.
-    ixPatternsIdentity(dumpPatternsFromConfig(fp.metric_config)),
-    workingTemplatesFromConfig(fp.metric_config).slice().sort().join('|'),
+    // Every fingerprint-scoped list's CONTENTS, not their counts: two fingerprints
+    // naming one entry each are the same criterion only if it is the same entry.
+    // `metric_config` is row identity, so two rows differing only in one of these
+    // lists are different rows and must not collapse into one sort key — which is
+    // exactly what a copy fingerprint did while `m_copy` was missing from here.
+    ...FP_CONFIG_LISTS.map((s) => s.identity(fp)),
   ].join('\u0001');
 }
