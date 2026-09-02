@@ -12,7 +12,7 @@
 import { getUtcOffsetMinutes } from 'components/token-price-chart/chartTimezone';
 import { dayKeyInTz } from 'components/analytics/pnlSeries';
 import { isMetricExitReason } from './exitReason';
-import { EXIT_KINDS, type ExitCountKey } from './runSummary';
+import { EXIT_KEY_BY_REASON, EXIT_KINDS } from './runSummary';
 
 /** One fired (or open) outcome with the times the temporal fold needs. */
 export interface TemporalRow {
@@ -217,19 +217,6 @@ export function holdSchemeLabel(scheme: HoldScheme): string {
 /** @deprecated Prefer `holdBinsFor(pickHoldScheme(...))` — mid_30m alias. */
 export const HOLD_BINS: readonly HoldBinDef[] = holdBinsFor('mid_30m');
 
-/** Exit reason → stack segment key (mirrors `EXIT_KEY_BY_REASON` / Rust ExitCode).
- *  `Metrics` is split by PnL in [`tallyExit`]. */
-const EXIT_REASON_KEY: Readonly<Record<string, ExitCountKey>> = {
-  TakeProfit: 'n_exit_take_profit',
-  StopLoss: 'n_exit_stop_loss',
-  Dead: 'n_exit_dead',
-  Manual: 'n_exit_manual',
-  TrailingStop: 'n_exit_trailing',
-  Stall: 'n_exit_stall',
-  TimeStop: 'n_exit_time',
-  LiquidityExit: 'n_exit_liquidity',
-};
-
 export interface HoldBinStats {
   id: string;
   label: string;
@@ -301,7 +288,7 @@ function tallyExit(exits: Record<string, number>, reason: string, pnlSol?: numbe
     exits.n_exit_metrics = (exits.n_exit_metrics ?? 0) + 1;
     return;
   }
-  const key = EXIT_REASON_KEY[reason];
+  const key = EXIT_KEY_BY_REASON[reason];
   if (key) exits[key] = (exits[key] ?? 0) + 1;
   else exits.other = (exits.other ?? 0) + 1;
 }

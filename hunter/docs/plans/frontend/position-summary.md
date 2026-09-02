@@ -64,6 +64,15 @@ metric-condition reason stays as stored (`stall > 300`, `trail >= 20`, …). Seg
 color follows that reason's net SOL. Legacy bare `Metrics` still splits Metric±.
 Until row reasons arrive, the wire summary falls back to Metric+/− counters.
 
+`EXIT_KINDS` is the ONE list the breakdown renders from, and `EXIT_KEY_BY_REASON`
+(exported from the same module) the ONE reason→counter map — the temporal stack's
+hold bins read that same map rather than a copy of it. A reason present in the engine
+but absent from either is a close that vanishes from the display while the bars still
+look complete, which is how `Migrated` (a graduation close, the token leaving the
+curve out from under the rule) went unrendered. `runSummary.exitBreakdown.test.ts`
+reads `ExitCode::from_reason` and the Rust `RunMetrics` counters and fails on the next
+reason that has no row here.
+
 ## Focus
 
 `lib/strategy/positionFocus.ts` — stacked lenses (`status`, `exit`, `outcome`,

@@ -142,6 +142,10 @@ export interface RunMetrics {
   n_exit_time: number;
   n_exit_liquidity: number;
   n_exit_dead: number;
+  /** Closed because the token graduated off the bonding curve — an exit the rule
+   *  did not choose. Optional so a wire payload from before the counter existed
+   *  still parses; absent reads as 0. */
+  n_exit_migrated?: number;
   /** Total metric-condition exits. Prefer the win/loss split when present. */
   n_exit_metrics: number;
   /** Metric exits with positive realized SOL. Optional for older wire payloads. */
@@ -230,6 +234,7 @@ export type ExitCountKey =
   | 'n_exit_metrics'
   | 'n_exit_dead'
   | 'n_exit_manual'
+  | 'n_exit_migrated'
   | 'n_exit_trailing'
   | 'n_exit_stall'
   | 'n_exit_time'
@@ -283,6 +288,11 @@ export const EXIT_KINDS: ReadonlyArray<{
   },
   { key: 'n_exit_dead', label: 'Dead', full: 'Died (liquidity gone)', cls: 'text-accent', bar: 'bg-accent' },
   { key: 'n_exit_manual', label: 'Manual', full: 'Closed by operator', cls: 'text-secondary', bar: 'bg-secondary' },
+  // The token graduated off the bonding curve, which closes the position from
+  // outside the rule. It was the ONE reason the Rust `RunMetrics` emits that this
+  // list never named, so on a graduation-heavy rule the bars silently summed short
+  // of `n_closed` — the exact defect the header above says this list exists to stop.
+  { key: 'n_exit_migrated', label: 'Migrated', full: 'Graduated off the curve', cls: 'text-info', bar: 'bg-info' },
   { key: 'n_exit_trailing', label: 'Trailing', full: 'Trailing stop', cls: 'text-primary', bar: 'bg-primary' },
   { key: 'n_exit_stall', label: 'Stall', full: 'Stalled', cls: 'text-secondary', bar: 'bg-secondary' },
   { key: 'n_exit_time', label: 'Time', full: 'Time stop', cls: 'text-warning', bar: 'bg-warning' },
@@ -291,12 +301,18 @@ export const EXIT_KINDS: ReadonlyArray<{
 
 /** Persisted `ExitReason` string → the `RunMetrics` counter it feeds. Mirrors the
  *  Rust `ExitCode::from_reason`; `Open`/`NoEntry` are not exits and are absent.
- *  `Metrics` is handled in [`countExits`] (PnL split) — not listed here. */
-const EXIT_KEY_BY_REASON: Readonly<Record<string, ExitCountKey>> = {
+ *  `Metrics` is handled in [`countExits`] (PnL split) — not listed here.
+ *
+ *  Exported because the temporal stack needs the same mapping: kept as a second
+ *  private copy there, a reason added to the engine landed in one tally and not the
+ *  other, which is how `Migrated` reached the breakdown while the hold-bin stack
+ *  still counted it as `other`. */
+export const EXIT_KEY_BY_REASON: Readonly<Record<string, ExitCountKey>> = {
   TakeProfit: 'n_exit_take_profit',
   StopLoss: 'n_exit_stop_loss',
   Dead: 'n_exit_dead',
   Manual: 'n_exit_manual',
+  Migrated: 'n_exit_migrated',
   TrailingStop: 'n_exit_trailing',
   Stall: 'n_exit_stall',
   TimeStop: 'n_exit_time',
@@ -331,6 +347,7 @@ export function zeroExitCounts(): Record<ExitCountKey, number> {
     n_exit_metrics: 0,
     n_exit_dead: 0,
     n_exit_manual: 0,
+    n_exit_migrated: 0,
     n_exit_trailing: 0,
     n_exit_stall: 0,
     n_exit_liquidity: 0,

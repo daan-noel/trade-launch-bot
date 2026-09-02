@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  EXIT_KEY_BY_REASON,
+  EXIT_KINDS,
   exitBreakdown,
   exitBreakdownFromRows,
   exitReasonToneClass,
@@ -136,5 +138,79 @@ describe('exitReasonToneClass', () => {
     expect(exitReasonToneClass('Trailing')).toBe('text-primary');
     expect(exitReasonToneClass('Time')).toBe('text-warning');
     expect(exitReasonToneClass('Liquidity')).toBe('text-text-mid');
+  });
+});
+
+/**
+ * **The exit-vocabulary lock.**
+ *
+ * `EXIT_KINDS` is the one list the breakdown renders from, precisely so a reason
+ * cannot be silently dropped — but nothing checked it against the engine, and
+ * `n_exit_migrated` was added to the Rust `RunMetrics` and never reached it. On a
+ * graduation-heavy rule the bars then summed short of `n_closed` while looking
+ * complete, which is the failure the list was introduced to prevent.
+ *
+ * Reading the kernel directly means the next reason fails HERE.
+ */
+describe('the exit vocabulary matches the engine', () => {
+  const rust = Object.values(
+    (
+      import.meta as unknown as {
+        glob(
+          pattern: string,
+          opts: { eager: true; query: string; import: string },
+        ): Record<string, string>;
+      }
+    ).glob('../../../../../core/src/strategies/kernel.rs', {
+      eager: true,
+      query: '?raw',
+      import: 'default',
+    }),
+  )[0];
+
+  /** Every `n_exit_*` counter on the Rust `RunMetrics`. */
+  const counters = new Set(
+    [...rust.matchAll(/^\s*pub (n_exit_[a-z_]+): u32,$/gm)].map((m) => m[1]),
+  );
+  /** Every persisted `ExitReason` string `ExitCode::from_reason` maps. */
+  const reasons = new Set(
+    [...rust.matchAll(/^\s*"([A-Za-z]+)" => ExitCode::/gm)].map((m) => m[1]),
+  );
+
+  it('reads the Rust kernel — this guard is the lock', () => {
+    // A regex that stops matching makes every assertion below vacuously pass.
+    expect(rust).toBeTruthy();
+    expect(counters.has('n_exit_migrated')).toBe(true);
+    expect(reasons.has('Migrated')).toBe(true);
+    expect(counters.size).toBeGreaterThanOrEqual(10);
+  });
+
+  it('renders every exit counter the engine emits', () => {
+    const rendered = new Set<string>(EXIT_KINDS.map((k) => k.key));
+    for (const c of counters) {
+      // `n_exit_open` is the still-open tally, not a way a position left.
+      if (c === 'n_exit_open') continue;
+      expect(rendered, `${c} is an engine exit counter with no EXIT_KINDS row — its closes would vanish from the breakdown`)
+        .toContain(c);
+    }
+  });
+
+  it('maps every persisted exit reason to a counter', () => {
+    for (const r of reasons) {
+      // Neither is an exit: `Open` has not left, `NoEntry` never entered.
+      if (r === 'Open' || r === 'NoEntry') continue;
+      // A metric exit carries the condition text as its label and is split by
+      // realized PnL in `countExits`, so it has no fixed reason string.
+      if (r === 'Metrics') continue;
+      expect(EXIT_KEY_BY_REASON, `ExitCode::from_reason accepts "${r}" but no counter is mapped to it`)
+        .toHaveProperty(r);
+    }
+  });
+
+  it('counts every rendered reason exactly once', () => {
+    // Duplicate keys double-count a close against `n_closed`; duplicate labels
+    // collide as React keys and merge two segments into one.
+    expect(new Set(EXIT_KINDS.map((k) => k.key)).size).toBe(EXIT_KINDS.length);
+    expect(new Set(EXIT_KINDS.map((k) => k.label)).size).toBe(EXIT_KINDS.length);
   });
 });
