@@ -301,7 +301,7 @@ rule's last `window` closes against the `window` before them, and flags `decayin
 
 Requiring both is the load-bearing choice. Win rate alone flips on a single tail trade —
 and the wallet-analysis work found repeatedly that hit rate is the *wrong* ranking signal
-(`docs/plans/strategies/wallet-analysis.md`); expectancy alone flips on one outlier.
+(see the [refuted-lines ledger](../../history/2026-09-03-refuted-lines-ledger.md)); expectancy alone flips on one outlier.
 
 A rule with fewer than `2 × window` closes is reported with `decaying: false`, never
 omitted: a rule silently vanishing from a decay board reads as "healthy". The UI shows `—`

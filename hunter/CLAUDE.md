@@ -41,15 +41,15 @@ Read before trusting any backtest number:
 [`docs/roadmap/`](docs/roadmap/), never in `docs/plans/`.
 
 **Searching for a new trading rule? Start at
-[convexity-search-workflow.md](docs/plans/strategies/convexity-search-workflow.md)** - a
-self-contained guide to the purpose, the method, the measurement rules, the cost model, the
-gate checklist and the pitfalls. It needs no other file. The islands it has produced so far
-are in [island-map.md](docs/plans/strategies/island-map.md).
+[market-model-and-workflow.md](docs/plans/strategies/market-model-and-workflow.md)** —
+actor model first (Phases 1-2), then hypothesis-as-story (Phase 4), then honest money.
+Physics and honesty laws there govern every phase; feature enumeration without a story
+is forbidden.
 
-**Studying a wallet to find that event?** Read
+**Studying a wallet?** Read
 [trader-study-contract.md](docs/plans/strategies/trader-study-contract.md) first:
-thermometer, completing print, leftover. Do not clone the wallet; do not bind leftover
-cuts to a previous island.
+thermometer only (Phase 3), completing print, leftover. Do not clone the wallet; the
+rule is always about the actor's decision, never about the trader.
 
 ## Commands
 
@@ -102,8 +102,8 @@ Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
   conversion from a spot basis to an average paid - so the basis has to be spot or the
   impact term is applied to the wrong number. The one exception is a REAL fill
   (`exec_real`): that is our own transaction and its execution price is what we actually
-  paid. **Never mix the two series.** Deriving offline:
-  [island-search.md](docs/plans/strategies/island-search.md).
+  paid. **Never mix the two series.** Offline derivation follows the honesty laws in
+  [market-model-and-workflow.md](docs/plans/strategies/market-model-and-workflow.md).
 - **Price impact is charged on the PRICED reserve (`vsol`), never the real one.**
   `TradeLite::priced_reserve_sol` is the denominator; `reserve_sol` is `vsol - 30` on the
   curve because `liquidity` and the deadness verdict mean real deposited SOL. Charging
@@ -193,7 +193,7 @@ The rule is here; the linked doc carries the mechanism. Read the doc before edit
 | Landmine | The rule |
 | --- | --- |
 | Backtest honesty | **Two cost models, `pumpfun_impact` is the default** — the only one that charges our own price impact, so the only one whose cost responds to buy size. `pumpfun_fee_only` is the zero-impact upper bound, for the "is there any edge at all?" screen. There is **no flat per-leg slippage knob** and must never be one: a `FillModel` already prices which print we transact against, so a flat term double-counts it, and being size-blind its error changes sign with buy size — which reorders a grid instead of shifting it. Fee **125 bps/leg**; cost is U-shaped, so the optimal fixed buy is `sqrt(fixed_per_leg × vsol)`. An **unrecognized** stored `cost_model` is a hard decode error, never a fallback — a run reporting a model it was not priced under is worse than one that fails to load, and no stored run names a deleted model (they are deleted, not migrated). Runs stored before 2026-07-28 are priced at 100 bps with no impact charge and do not compare. <!-- pt-ok: cutoff, those runs are still in the DB --> [costs](docs/plans/strategies/execution-costs.md) |
-| Exit conditions that lie | `m_price_lifetime.stall` is *seconds since the last all-time high* — it caps every hold and doubles as an entry filter. Use `m_position.held` for a time stop, and `arm_above_pct` to arm a trail (an unarmed `retrace` is a hard stop from entry). [traps](docs/plans/strategies/flow-scalper-findings.md) |
+| Exit conditions that lie | `m_price_lifetime.stall` is *seconds since the last all-time high* — it caps every hold and doubles as an entry filter. Use `m_position.held` for a time stop, and `arm_above_pct` to arm a trail (an unarmed `retrace` is a hard stop from entry). [armed-trailing-stop](docs/plans/strategies/armed-trailing-stop.md) |
 | Restart rebuilds state, never re-decides it | Cached trades older than the loop's `started_at` prime the fold and emit nothing; deciding on them prices at the old trade and fills at the live one. Inversely, an adopted position with no new prints holds `NaN` — which satisfies no exit at all — so priming retries until the seed lands. Only prices the position lived through may move `peak`/`trough`. [restart](docs/plans/strategies/restart-state-restoration.md) |
 | A cleared bag is a landed sell | "Bag gone, feed shows no sell" means the feed MISSED it — never price that as zero. Heal `trades` from the row's `exit_tx_signatures` first; still unresolvable ⇒ **park**, never a `−100%` `End`. An RPC failure in the bag check returns `Unchanged`, never `Cleared`. A row keeps its OWN `exit_reason`; `"Manual"` is only the no-reason fallback. [lifecycle](docs/arch/position-lifecycle.md) |
 | A leaked slot is permanent | Every exit from the buy path MUST emit `FillConfirmed`/`FillFailed` — a bare `return` strands the arm in `EntryPending`, boot re-adopts it, and the concurrency slot is lost across restarts. Keep the send bounded. A retry is a NEW decision: re-check `entry_enabled && can_enter` before re-firing. [lifecycle](docs/arch/position-lifecycle.md) |

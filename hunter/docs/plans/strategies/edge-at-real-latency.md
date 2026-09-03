@@ -1,8 +1,8 @@
 # Edge at real latency — the governing constraints
 
 Every rule this bot runs is graded at the fill it can actually reach. This file states the
-constraints that decide whether an edge is real. It governs
-[convexity-search-workflow.md](convexity-search-workflow.md); where the two disagree, this
+constraints that decide whether an edge is real. It governs the honesty half of
+[market-model-and-workflow.md](market-model-and-workflow.md); where the two disagree, this
 one wins.
 
 ## 1. The bar
@@ -59,33 +59,7 @@ cheap when fast and large when slow.
 trails turn 21% of winners into losers and no width from 2-20 rescues it. See
 [armed-trailing-stop.md](armed-trailing-stop.md).
 
-## 4. Order of work
-
-Order by what each answer depends on. A token that rugs to −90% loses under **every** exit
-at **every** latency, so it can be settled first. "Is this moment convex?" cannot: the same
-16,874 entries price at −65.44 SOL under one exit and −20.66 under another. Settle the
-independent questions before the coupled ones.
-
-1. **Fix costs first.** Size scales with pool depth (`buy_pct_of_vsol`), because impact is
-   exactly `buy / vsol`. Arithmetic, not search — see
-   [execution-costs.md](execution-costs.md).
-2. **Cut the poison tokens.** The never-enter blacklist is the only step whose answer does
-   not move when the exit changes, and the only lever with **zero execution cost** — no
-   fee, no impact, no adverse fill, because the trade never happens. It is also what makes
-   the moment search possible: a greedy search cannot start from a deeply negative
-   universe, and rug/instant-death tokens contaminate every region equally.
-3. **Then fix the exit**, on the cut population. It is worth more than the entry: on one
-   island the exit alone moves expectancy by +0.0028 SOL/trade, more than the entire
-   remaining gap to break-even.
-4. **Then search the moment**, on top of that exit. A moment search wearing a bad exit
-   reports an empty space, because a good entry with a losing exit still loses.
-5. **Tune thresholds last, then re-check the cut once.** The cut and the exit are coupled;
-   the moment is separable.
-
-**Grade every step at 94-115 ms on both legs**, reporting the zero-lag column beside it —
-the ratio is the artifact size.
-
-Two invariants no cut may break:
+## 4. Two invariants no cut may break
 
 - **Decision-time facts only.** What a token did after the decision instant is not a
   filter. 44.5 of 47 percentage points of selection edge land *after* the decision point
@@ -95,6 +69,12 @@ Two invariants no cut may break:
   flat one — reject it. **Blacklists generalise; whitelists do not** (a top-5 identity
   whitelist scores −38.59 OOS where the blacklist pays), and cut sets are chosen on days
   that never see the day being graded.
+
+**Grade every step at 94-115 ms on both legs**, reporting the zero-lag column beside it —
+the ratio is the artifact size.
+
+The order in which doors, events, permissions and the exit are settled belongs to
+[market-model-and-workflow.md](market-model-and-workflow.md) §C, not here.
 
 ## 5. Two search failures that manufacture false answers
 
@@ -106,33 +86,30 @@ Two invariants no cut may break:
   and is an anti-selection — it removes ~20% of trades and 40-63% of the profit, so an
   unpinned ladder is not comparable row to row.
 
-## 6. Known bias in `LagMs` — results are optimistic pending a fix
+## 6. The `LagMs` fill law
 
-`LagMs` selects the **first** print at or after `fire_time + lag` and prices the fill from
-it. A transaction executing at wall-clock `T` actually meets the pool state left by the
-**last** print at or before `T`: `vsol` on a row is the reserve *after* that trade (99.98%
-agreement with the later trade's direction over 2,081,639 same-mint pairs). The selected
-print landed *after* us, so its own impact cannot have touched our fill.
+**A fill is the LAST qualifying print at or before `fire_time + lag`, never the first at or
+after it.** A transaction executing at wall-clock `T` meets the pool state left by the last
+print at or before `T`: `vsol` on a row is the reserve *after* that trade (99.98% agreement
+with the later trade's direction over 2,081,639 same-mint pairs). A print that landed after
+us cannot have touched our fill. When no print intervenes the fill is the firing trade
+itself — a quiet tape costs nothing, because an AMM price moves only when someone trades.
 
-Measured cost: **+8 to +12 pp per trade in our favour**, and it flatters **exits into
-strength** specifically — a rise-triggered exit is usually followed by another buy. The
-correct baseline is the last print with `block_time <= fire_time + lag`, falling back to
-the firing trade itself when none intervenes (a quiet tape costs nothing, because an AMM
-price moves only when someone trades).
+Taking the first print at or after the deadline is a **one-print look-ahead worth +8 to
++12 pp per trade in our favour**, and it flatters **exits into strength** specifically,
+since a rise-triggered exit is usually followed by another buy. `paper_fill.rs` implements
+the law on both legs and pins it with a regression test; results produced before
+2026-08-26 inherit the bias and comparisons between exit shapes made then do not stand.
 
-**What this does and does not invalidate.** A bias in our favour cannot rescue a negative
-result, so every "negative at 115 ms" verdict stands and is understated. **Comparisons
-between exit shapes do not stand** — they inherit the bias unevenly and need re-running.
-Live paper and the grouped sweep are unaffected: they run `WorstCase`.
-
-## 7. Status
+## 7. Status of the laws
 
 | claim | status |
 | --- | --- |
-| the exit-direction law | **proven** — 3 independent corpora, mechanism is structural |
+| the exit-direction law (§2) | **proven** — 3 independent corpora, mechanism is structural |
 | unarmed retrace is a hard stop | **proven** — engine behaviour + counterfactual |
 | pool-fraction sizing | **derivable** — impact is `buy/vsol` exactly |
-| cause-based exits beat reactive ones at latency | **needs re-running** - inherits the LagMs bias (section 6) |
-| ix-structure cuts | **unproven** — validated only at an unreachable fill, never regraded |
-| the three islands (absorption, impulse, quiet accumulation) | **dead** at real latency |
-| entry-side island search | **open** — prior nulls come from greedy searches and bad exits |
+| the `LagMs` fill law (§6) | **shipped** — implemented both legs, regression-tested |
+| same-slot fills are unreachable | **proven** — ordering is a tip auction, not a latency race |
+
+Which *rules* have been tried and refuted under these laws is a research question, not a
+law: [refuted-lines ledger](../../history/2026-09-03-refuted-lines-ledger.md).

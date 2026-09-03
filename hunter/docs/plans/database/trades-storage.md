@@ -255,6 +255,9 @@ roughly highest payoff first:
   fallback, and it's dead when `raw_txs` isn't persisted (disk savings). JSONB matches
   `tokens.ix_labels`, so the `ix_count` / `ix_labels` filter helpers in
   [tokens/sql.rs](../../../core/src/api/handlers/tokens/sql.rs) apply verbatim to `trades`.
+  The label VOCABULARY changes mid-history without the column changing type, so a read
+  spanning that instant compares two spellings of one instruction — the boundary and its
+  guard are in [tape-epochs.md](tape-epochs.md).
 - **`real_*_reserves`** — keep vs drop-and-derive (lever 4).
 - **`tx_signature` / `wallet_address` encoding** — `BYTEA` / interning (levers 1–2).
 - **`mint_address` width** — 44-byte base58 per row; an INT token ref would add a hot-path

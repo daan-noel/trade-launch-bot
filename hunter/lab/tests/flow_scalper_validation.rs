@@ -1,8 +1,8 @@
 //! Phase 3 — one-shot backtest validation for the flow-reversion "dip scalper"
-//! (results + verdict in `docs/history/wallet-research-2026-07.md`). Drives the REAL
+//! (results + verdict in `docs/history/2026-09-03-refuted-lines-ledger.md`). Drives the REAL
 //! engine fold (`run_replay`) over the sealed Parquet lake for two rules — a 2-metric
 //! MINIMAL CORE and a GATED variant — and prints the acceptance-gate stats vs the
-//! family distributions in `docs/plans/strategies/wallet-analysis.md`.
+//! family distributions recorded in `docs/history/2026-09-03-refuted-lines-ledger.md`.
 //!
 //! Ignored by default (reads real lake data + runs the full fold — not a unit test).
 //! Run explicitly, single-threaded, with output:

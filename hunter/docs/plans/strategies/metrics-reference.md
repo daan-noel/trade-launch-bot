@@ -206,8 +206,7 @@ one.
 
 **Where the lifetime floor earns its place is as the *replacement* for a windowed hot gate,
 not an addition to it.** A liveness floor is worth ~12.5 pp of mean PnL by ablation on a
-broad universe (it is what holds the `Dead` exit rate down — see
-[wallet-8dtx-logic.md](wallet-8dtx-logic.md)), but a *windowed* one risks selecting
+broad universe (it is what holds the `Dead` exit rate down), but a *windowed* one risks selecting
 post-move moments created by the very move it gates on, which is what the entry-timing
 diagnostic (`family_search::gates`) exists to catch and what dropping `gross_flow(60) >= 55`
 from the scalp family confirmed. The lifetime floor cannot have that defect: it reads
@@ -328,17 +327,17 @@ Three properties to author against:
 * **Entry side only — these two metrics, not the group.** The persisted exit-reason
   label carries one window qualifier, so two clauses differing only in the slice would
   record the same reason. The save gate rejects the metric rather than write an
-  ambiguous label; its single-window siblings stay perfectly good exits —
-  [roadmap/two-window-exit-labels.md](../../roadmap/two-window-exit-labels.md).
+  ambiguous label; its single-window siblings stay perfectly good exits.
 
 
 
 > **Measured and refuted as an entry gate** (2026-08-10, OOS 07-29..08-09 on `fs3-00`):
+> <!-- pt-ok: cutoff, that OOS window is still the evidence -->
 > tightening it *anti-selects*, monotonically — `>= 20` replacing `gross_flow >= 45` scores
 > −0.75 %/ep against −1.22 at 40, −1.97 at 60 and −2.04 at 80, and stacking it on top of the
 > volume gate is either inert (it does not bind below ~30) or worse (−2.47 at 60, −3.94 at
 > 100). At matched fire count the crowd gate beats the volume gate by 0.43 pp, well inside
-> the ±1.07 pp standard error. See [flow-scalper-findings.md](flow-scalper-findings.md).
+> the ±1.07 pp standard error.
 > The metric stays because it is a real, cheap capability — but do not re-propose it as a
 > selection gate on this family without new evidence.
 
@@ -434,8 +433,9 @@ A structural gate turns them off. "Did this transaction come through a named rou
 a property of the transaction; contagion makes it a property of the sender's history on
 that token, and the creator rule adds an identity term. Leaving them on does not merely
 *tighten* such a gate - it measures a different thing, and the fire set stops matching
-the one the rule was derived on. Wallet-keyed rules are also the axis a
-[wallet-free](wallet-8dtx-derived-rule.md) derivation is not allowed to use.
+the one the rule was derived on. Wallet-keyed rules are also forbidden as the axis of a
+wallet-free derivation (actor identity lives in machinery, never the wallet —
+[market-model-and-workflow.md](market-model-and-workflow.md) T5).
 
 ### The editor is generated from the registry
 
@@ -573,9 +573,9 @@ construction. See hunter/CLAUDE.md Gotchas.
 | `m_flow_ix_window` | dynamic | `window_size_sec` | none (reads `m_flow_ix`) |
 | `m_dump_ix` | static (fingerprint-scoped) | none | `ix_patterns: ix_pattern[]` — its OWN list |
 | `m_dump_ix_window` | dynamic | `window_size_sec` | none (reads `m_dump_ix`) |
-| `m_burst_slot` | static (fingerprint-scoped) | none | `working_templates: string[]` — template grain ids. Mapping: [ix-live-rule.md](ix-live-rule.md) |
+| `m_burst_slot` | static (fingerprint-scoped) | none | `working_templates: string[]` — template grain ids |
 | `m_burst_wave` | static | none | none for wallet/sol/gap/hole/tip. `working_buy_count` and `this_working` read this fingerprint's `m_burst_slot.working_templates` and `working_programs` (same lists, no second config). Consecutive-slot buy run; gap is empty buy-slots before that run. Create slot is not fireable. `hole` / `tip_seen` follow every curve buy in the wave. `hole` is a wave `tx_index` gap, not `m_burst_slot.packed`. |
-| `m_copy` | static (fingerprint-scoped) | none | `target_wallets: string[]` — base58 addresses. Mapping: [copy-trade-plan.md](copy-trade-plan.md) |
+| `m_copy` | static (fingerprint-scoped) | none | `target_wallets: string[]` — base58 addresses |
 | `m_copy_window` | dynamic | `window_size_sec` / `_slots` / `_prints` + `window_lag` | none (reads `m_copy`) |
 
 **Multi-window per group** (any dynamic group — `m_flow_window`, `m_price_window`,
@@ -767,8 +767,8 @@ registry, and each has cost a search run.
 
 Combination semantics: **entry conditions AND together, exit conditions OR together**
 (object-form). Adding an exit condition can only make exits fire earlier or as early,
-never later. The harvest mapping authors a DNF of exit *clauses* (AND inside a clause,
-OR across clauses) plus `m_position.armed`: [ix-live-rule.md](ix-live-rule.md).
+never later. Exit may also be authored as a DNF of clauses (AND inside a clause,
+OR across clauses) plus `m_position.armed` ([armed-trailing-stop.md](armed-trailing-stop.md)).
 Object-form `exit` stays this flat OR.
 
 ## Discovery scoring (lab authoring aid)

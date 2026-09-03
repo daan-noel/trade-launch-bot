@@ -101,7 +101,9 @@ Notes
   pays for the JSONB, so read it explicitly where it is needed.
 - The pointer is unrecoverable after the fact. It lives only in the create transaction,
   and `raw_txs` drops after 3 days — nothing backfills a token created before ingest
-  started capturing it.
+  started capturing it. That instant is registered in
+  [tape-epochs.md](tape-epochs.md); before it, an absent `uri` is a gap, and after it
+  the absence is the launch's own fact.
 - `creation_slot` is a write-once creation fact (known at `TokenCreated`). It is the
   slot key for the same-slot activity sums on `tokens_info` (`first_slot_*_sol`), so
   it lives on `tokens` (creation fact), while the derived-from-trades sums live on

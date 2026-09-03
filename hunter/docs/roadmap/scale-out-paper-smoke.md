@@ -94,5 +94,5 @@ one arrow at the average. Frames arrive over SSE without a refresh.
 
 A ladder whose stages cannot fire leaves the position open and holds its concurrency slot.
 That is the same failure the simulate ladder hit — see the `n_open == max_concurrent_tokens`
-rule in [../plans/strategies/flow-scalper-findings.md](../plans/strategies/flow-scalper-findings.md).
+rule in `flow-scalper-findings.md`.
 Close it manually rather than waiting it out.

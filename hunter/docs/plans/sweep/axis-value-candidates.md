@@ -178,7 +178,7 @@ Notes:
   Pump.Fun.
 - The blueprint's rolling-window dip metric and since-entry-peak retrace have since
   shipped as `m_price_window`/`m_position`. See
-  `docs/plans/strategies/wallet-analysis.md`.
+  the [refuted-lines ledger](../../history/2026-09-03-refuted-lines-ledger.md).
 
 ## Fingerprint grouping set (the partition, not the sweep)
 

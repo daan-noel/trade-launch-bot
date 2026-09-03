@@ -17,6 +17,7 @@ Grain does not change the formula, only the scope of the two sums:
 | Surface | Numerator | Denominator | Field |
 | --- | --- | --- | --- |
 | One position | `realized_pnl_sol` | `entry_sol` | `StrategyPosition::pnl_pct` |
+| One **open** bag | net mark (`mark_open_bag`) | all-in entry cost | `UnrealizedPnl::unrealized_pnl_pct` |
 | One rule / run | `Σ realized_pnl_sol` (closed) | `Σ entry_sol` (closed) | `PositionsSummary::return_pct`, `RuleCounters::return_pct` |
 | A portfolio window | `Σ realized_pnl_sol` | `Σ closed_entry_sol` | `RulePeriodPnlRow::return_pct`, `PortfolioPerformance::return_pct` |
 | Rules TOTAL tile | `Σ total_pnl_sol` across rules | `Σ closed_entry_sol` across rules | derived in `RulesView` |
@@ -79,9 +80,17 @@ percent cannot be re-weighted after the fact, only its numerator and denominator
 charged no execution cost. A round trip pays 125 bps/leg (measured 2026-07-28) + a fixed
 tip per leg + our own impact, so break-even is **roughly a +4 % price move**. Every trade
 between 0 % and break-even rendered a green % beside a red ◎. Now
-`realized_pnl_sol / entry_sol`, which is measured from lamports that actually moved and
-therefore already carries every cost. (Migration `0006` for the view; the model and
-`PNL_PCT_SQL` alongside it.)
+`realized_pnl_sol / entry_sol`, measured from lamports that actually moved. (Migration
+`0006` for the view; the model and `PNL_PCT_SQL` alongside it.)
+
+Those lamports are **curve-side**, which is a live caveat rather than history: both
+`entry_lamports` and `exit_lamports` sum `trades.amount_lamports`, and that column
+excludes the protocol fee by construction ([execution-costs §1](execution-costs.md)) and
+never carried tip or priority. So the realized figure is net of *slippage and impact*
+but not of *fees* — it reads ~4 pp better than the money did at live clip sizes, and
+`is_win` (`exit_lamports > entry_lamports`) calls a sub-break-even trade a win. Open in
+[realized-pnl-is-curve-side.md](../../roadmap/realized-pnl-is-curve-side.md); fixing it
+restates the whole live book, so it is a decision, not a patch.
 
 **2. The same ratio read only the last sell leg.** `exit_price` stamps the final leg
 while `realized_pnl_sol` sums them all via `realized_exit_sol`. On a scale-out the two
@@ -102,6 +111,26 @@ refusal applies: with both modes visible the tile shows the split, not a blend.
 
 `best_pct` / `worst_pct` moved with `pnl_pct` for the same reason — a distribution tail
 the PnL% column cannot reproduce is a tail of some other distribution.
+
+## An open bag's percent
+
+`UnrealizedPnl::unrealized_pnl_pct` obeys the same rule — SOL over the capital that
+produced it — with both halves supplied by `mark_open_bag`:
+
+- **numerator**: what closing the bag right now would leave, net of the exit's fee,
+  fixed cost and impact;
+- **denominator**: the all-in entry cost — curve cost **plus** the entry fee and the
+  entry leg's tip/priority, none of which is inside the executed `entry_price`.
+
+It is therefore directly comparable to the realized `pnl_pct` above rather than being a
+looser cousin of it, and a flat mark correctly reads red: an unmoved price still owes
+both legs. `models::portfolio` is the one compute site; `GET /api/meta/cost-model` hands
+the frontend the same constants so the live mark tip nets a price change the same way
+instead of carrying its own copy of a fee (`netProceedsSol`, pinned to the Rust golden
+vectors by `netProceedsMatchesRust`).
+
+The full derivation, and why a gross mark is wrong by ~4 pp rather than slightly
+optimistic, is [execution-costs §6](execution-costs.md).
 
 ## Naming
 

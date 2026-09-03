@@ -47,7 +47,7 @@ The corrected trail is 38.7% of exits and doubles the book. The dead-exit rate f
 
 ## What it voided
 
-[`2026-08-21-island-search-refuted.md`](2026-08-21-island-search-refuted.md) carries the
+[the refuted-lines ledger](2026-09-03-refuted-lines-ledger.md) carries the
 headline *"the exit shape dominates the entry — fixed bracket +1.14%/episode, armed 18%
 trail −45.8%, wide 25% trail −38.7%; a trail holds a token into its own death."* That
 compared a bracket against **two hard stops wearing trail labels**, with dead booked at
@@ -63,5 +63,5 @@ exits that were wrong in a way that hurts every region equally.
 **Hand-check every exit shape on a handful of positions before quoting a number derived
 from it,** and treat an implausible exit-mix cell (`trail = 0.0%` on a trailing stop) as a
 defect until proven otherwise. The instrument gate already existed —
-[`@plans/strategies/island-search.md`](../plans/strategies/island-search.md) — and was
+the offline-derivation honesty laws — and was
 skipped because the derived column looked authoritative.

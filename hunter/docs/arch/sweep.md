@@ -455,10 +455,8 @@ Lab-only job that finds one champion `RuleParams` for a **single fingerprint** a
 a datetime range. Sibling of grouped sweep / flow discovery / metric discovery — not
 a sweep mode. The form does not expose metrics, windows, or thresholds; those come
 from this range's cuts and the registry. An incumbent rule is compare-only (never a
-seed). Method: [rule-search-method.md](../plans/strategies/rule-search-method.md).
-Job: [rule-search.md](../plans/strategies/rule-search.md).
-Open replacement of the cut-table product:
-[rule-search-habit.md](../roadmap/rule-search-habit.md).
+seed). Governing workflow:
+[market-model-and-workflow.md](../plans/strategies/market-model-and-workflow.md).
 
 | File | Role |
 | --- | --- |
@@ -482,8 +480,7 @@ Lab-only job that grades **one fingerprint's sibling family**: siblings share
 by, so a range-valued axis makes two rows non-siblings rather than collapsing to a
 bound. Rank comes from a pooled fit across the
 family, level from the held-out target cohort alone. Rule search is not modified;
-every change to shared sweep code is additive. Charter + decisions:
-[family-search.md](../roadmap/family-search.md).
+every change to shared sweep code is additive.
 
 | File | Role |
 | --- | --- |

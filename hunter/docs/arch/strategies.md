@@ -37,10 +37,9 @@ the U-shaped optimal buy size) in
 [`plans/strategies/execution-costs.md`](../plans/strategies/execution-costs.md);
 exit-condition traps that are invisible from the rule JSON — the unarmed `retrace`
 and the `stall` hold-cap — in
-[`plans/strategies/armed-trailing-stop.md`](../plans/strategies/armed-trailing-stop.md)
-and [`plans/strategies/flow-scalper-findings.md`](../plans/strategies/flow-scalper-findings.md);
-the external-wallet reverse-engineering behind all of the above in
-[`plans/strategies/wallet-analysis.md`](../plans/strategies/wallet-analysis.md);
+[`plans/strategies/armed-trailing-stop.md`](../plans/strategies/armed-trailing-stop.md);
+the actor-model workflow that governs new rules in
+[`plans/strategies/market-model-and-workflow.md`](../plans/strategies/market-model-and-workflow.md);
 broader redesign history in [`docs/roadmap/`](../roadmap/).
 
 ## The pure engine — `hunter/engine` (crate `hunter-engine`)
@@ -363,8 +362,7 @@ requirement's identity includes both axes, so two instances differing only in th
 cannot collide in the blocker / monotonic-kill maps. It owns **no state** — both readings
 are `m_flow_window`'s own `trade_count` on buffers `CompiledRule` already registers for
 each axis. **Entry side only**: the persisted exit-reason label carries one window
-qualifier ([`roadmap/two-window-exit-labels.md`](../roadmap/two-window-exit-labels.md)).
-Semantics + the young-token reading:
+qualifier. Semantics + the young-token reading:
 [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
 
 [`Windows`]: ../../engine/src/metrics/mod.rs
@@ -446,8 +444,6 @@ unconfigured is **omitted**, not drawn as a column of NaN. Offline series column
 variant is named for the scope and not for one of its groups.
 
 Full contract: [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
-Offline search cannot reach the group yet:
-[`../roadmap/dump-ix-offline-reach.md`](../roadmap/dump-ix-offline-reach.md).
 
 Lab authoring: `POST /api/strategies/flow-discovery` scores ix-structures per
 sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`, and
@@ -456,8 +452,8 @@ its draft cart carries the same two wallet-rule checkboxes as the fingerprint fo
 alone, so a newly bound fingerprint takes the backend defaults.
 `POST /api/strategies/rule-search` fills registry roles for one fingerprint and
 datetime range and boards a champion `RuleParams` (Promote → inactive paper).
-Method: [`rule-search-method.md`](../plans/strategies/rule-search-method.md).
-Job: [`rule-search.md`](../plans/strategies/rule-search.md).
+Governing workflow:
+[`market-model-and-workflow.md`](../plans/strategies/market-model-and-workflow.md).
 
 ## Two-phase first-slot fingerprint gate
 
@@ -474,8 +470,8 @@ has passed. The feed delivers per block, so seeing slot `S+1` anywhere proves ev
 slot-`S` trade has already arrived. Waiting for a later-slot trade *on the token itself*
 instead costs however many slots the launch stays quiet — on a bundled launch that is
 several slots of price movement, and the measured cost is the entire edge
-([fp-4sol-launcher.md](../plans/strategies/fp-4sol-launcher.md): +0.48% vs +3.97% per
-trade on the same rule). `Producer::on_trade` keeps the same-mint path as the fallback
+(+0.48% vs +3.97% per trade on the same rule when settle waited on the token's own
+next print). `Producer::on_trade` keeps the same-mint path as the fallback
 for a token this process never saw created (adopted or log-re-armed), and the two paths
 share one `settle_first_slot` body, so a mint settles exactly once whichever fires first.
 The snipe-freshness rail applies to both — a restart never re-settles a slot that closed

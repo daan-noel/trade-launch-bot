@@ -11,7 +11,7 @@ positions), is deleted with it.
 ## Why
 
 The group produced one rule and that rule was refuted —
-[`2026-08-18-fp108-vet-1-refuted.md`](2026-08-18-fp108-vet-1-refuted.md): the +5.95%/trade
+[the refuted-lines ledger](2026-09-03-refuted-lines-ledger.md): the +5.95%/trade
 headline was roster leak plus unpriced impact, and the left tail it appeared to avoid is
 an entry property, not a bundle property. Nothing else ever used it. It was, however,
 still charging real cost:
@@ -39,6 +39,6 @@ only thing that needed the token's birth instant at track-construction time.
 
 "Who is on the other side" is a real axis; the launch window was the wrong place to read
 it and a wallet roster was the wrong instrument. The instruction-structure work in
-[`plans/strategies/impulse-inception-island.md`](../plans/strategies/impulse-inception-island.md)
+on instruction structure
 asks the same question against the transaction's own ordered `ix_labels`, which is a
 static fact on every token and needs no derived, refreshed, leak-prone side table.

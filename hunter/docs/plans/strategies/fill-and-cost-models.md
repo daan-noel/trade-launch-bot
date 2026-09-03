@@ -271,7 +271,7 @@ at the next print walks straight into the densest bursts, because that is where 
 unearned ordering privilege is worth most. Any entry search reports the
 gap-to-next-print distribution of its selected trades beside the PnL: money concentrated
 under ~50 ms is an artifact, not an edge. See
-[island-fill-artifact.md](../../history/2026-08-22-island-is-a-same-slot-artifact.md)
+[the refuted-lines ledger](../../history/2026-09-03-refuted-lines-ledger.md)
 for the case that established this.
 
 ---

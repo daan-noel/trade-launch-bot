@@ -56,5 +56,4 @@ Two assertions, both cheap, both mechanical:
    A number that moves when that share moves is a pricing artifact, not an edge.
 
 Related: [`fill-and-cost-models.md`](fill-and-cost-models.md),
-[`execution-costs.md`](execution-costs.md),
-[`cohort-entry-rule-anatomy.md`](cohort-entry-rule-anatomy.md).
+[`execution-costs.md`](execution-costs.md).

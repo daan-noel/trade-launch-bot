@@ -155,8 +155,7 @@ Pool depth at entry, measured over 3,160 reference buys: p10 48.5, p25 57.3, **m
 Fee alone is 2.53%/round trip. At the optimal size add ~1.5%, so **a strategy needs
 roughly 4% gross per round trip to break even**, before any market slippage. That is
 the number to check a candidate against first — it kills most ideas before a backtest
-is worth running. See [flow-scalper-findings.md](flow-scalper-findings.md) for a
-worked case where a real, profitable-looking pattern turned out to sit just under it.
+is worth running.
 
 ## 5. Multi-leg (scale-out) round trips
 
@@ -170,3 +169,49 @@ roadmap).
 callers stay byte-identical. Simulate collects confirmed legs on `PositionOutcome`
 and prices through the multi-leg path; the grouped sweep still uses the single-exit
 wrapper until the staged resolver (roadmap step 4) lands.
+
+## 6. An open position is not a round trip with one price swapped
+
+`mark_open_bag` prices a bag that is **still held**: what closing it right now would
+leave, over the capital the entry consumed. Every open-position figure goes through
+it — the Holdings / Home / Console rows (`models::portfolio::unrealized_pnl`), the
+per-rule `PositionsSummary::open_pnl_sol`, and the frontend's live mark tip via
+`GET /api/meta/cost-model`.
+
+It differs from `round_trip_with_costs` in exactly two ways, both because the entry
+has already executed:
+
+- **The bag is known, not derived.** `held_amount` is the tokens still held, so a
+  half-sold position marks its remaining half. `round_trip_with_costs` re-derives a
+  token count from `notional / effective_entry`, which is right for a hypothetical
+  trade and wrong for one that has a fill.
+- **No entry impact is charged.** The fill already paid it, and it is inside the
+  executed average `entry_price` (Σ curve SOL / Σ tokens) by construction. Charging
+  `leg_impact` on the entry again books our own footprint twice.
+
+Both legs' **fee** and **fixed cost** are still charged, and that is the whole point.
+`entry_price` is the curve-side amount (§1), so the entry fee is not in it and neither
+tip nor priority is anywhere near it. The capital a position really consumed is
+
+    cost_basis = entry_price × held × (1 + fee) + fixed_per_leg
+
+and the percent divides by that. Exit impact is sized on the mark's **current** value
+rather than the entry notional — that is the SOL the bag would actually push into the
+pool now, and on a bag that has doubled the entry notional understates it by half.
+
+### Why a gross mark is not a smaller version of the right answer
+
+At live clip sizes the omitted terms are ~4 pp, so a gross mark is green across the
+entire range where the bag is in fact under water — exactly the `+%`-beside-a-red-`◎`
+contradiction `weighted_return_pct` exists to kill. The fixed half dominates, because
+it does not shrink with the clip: at the measured median real entry of **0.0296 SOL**,
+tip + priority is **0.77% of notional per leg** (measured over 30 days of our own
+fills via `trades.fee_lamports` + `tip_lamports`), against 1.25% for the fee. A bag
+needs roughly a +4% move to be worth what it cost, which is the §4 bar restated for an
+open position.
+
+This is also what makes a live row disagree with an on-chain PnL tracker: a tracker
+prices the wallet's actual SOL flow, which is all-in by construction. `+1.6%` gross is
+`≈ −2.5%` all-in on a 0.03 SOL clip, and the difference is not noise — it is the four
+terms above.
+

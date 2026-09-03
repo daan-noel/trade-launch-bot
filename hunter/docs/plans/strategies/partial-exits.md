@@ -6,11 +6,11 @@
 > [../../arch/sweep.md](../../arch/sweep.md); this file is the *why* — the semantics
 > that are easy to break and the alternatives that were rejected.
 >
-> Motivation (measured, see [wallet-analysis.md](wallet-analysis.md) +
-> [flow-scalper-findings.md](flow-scalper-findings.md)): a fixed TP costs
+> Motivation: a fixed TP costs
 > −10..−18%/event because it caps the tail that carries all EV, while a pure trailing
-> stop gives back 25-30% of every winner. omego is net-positive **only** via his ~19%
-> runner tranche. Before this landed, every exit in `reduce.rs` closed 100%.
+> stop gives back 25-30% of every winner. The book shape that follows is negative median
+> with a paying tail ([market-model-and-workflow.md](market-model-and-workflow.md) T8).
+> Before this landed, every exit in `reduce.rs` closed 100%.
 
 ## Design principles (why the shape is what it is)
 

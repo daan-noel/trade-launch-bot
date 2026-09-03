@@ -1,11 +1,10 @@
 # `m_position.arm_above_pct` — the armed trailing stop
 
-Deep-dive reference for the `m_position` strict param added 2026-07-28: what it
+Deep-dive reference for the `m_position` strict param: what it
 does, why the exit grammar needed it, and the measurement that justified it.
 Overview of the group lives in [../../arch/strategies.md](../../arch/strategies.md);
-the investigation it was built for (and its verdict) is
-[flow-scalper-findings.md](flow-scalper-findings.md); the raw wallet mechanics behind
-the measurement below are in [wallet-analysis.md](wallet-analysis.md).
+the honesty laws that grade any exit shape sit in
+[edge-at-real-latency.md](edge-at-real-latency.md).
 
 ## The problem
 
@@ -18,9 +17,9 @@ Two engine facts combine into a trap:
 2. **Exit conditions OR across metrics** (`CompiledRule::exit_fired` returns the
    first req that holds; entry is the AND side). Within one metric the expr is DNF,
    so `pnl` can AND with itself — but `retrace >= 3 AND pnl >= 2` spans two metrics
-   and cannot be authored at all. The harvest mapping authors a DNF of *clauses*
+   and cannot be authored at all. Exit may also be authored as a DNF of *clauses*
    (AND inside a clause, OR across clauses) plus a latch metric
-   `m_position.armed`: [ix-live-rule.md](ix-live-rule.md). Object-form `exit`
+   `m_position.armed`. Object-form `exit`
    (no array) stays this flat OR, so stored rules do not change.
 
 So "trail out, but only once the trade has cleared the fee" was inexpressible, and
