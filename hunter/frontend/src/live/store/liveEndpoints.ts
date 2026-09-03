@@ -1,5 +1,6 @@
 import { baseApi, OVERRIDE_ENDPOINTS_ON_HMR } from 'store/baseApi';
 import type {
+  CostModel,
   WalletHolding,
   WalletPrice,
   PortfolioSummary,
@@ -210,6 +211,12 @@ export const liveApi = baseApi.injectEndpoints({
     getPortfolioHoldings: builder.query<WalletHolding[], void>({
       query: () => '/api/portfolio/holdings',
       providesTags: ['WalletHoldings'],
+    }),
+    // The execution costs every PnL figure is net of. Fetched once and kept: it
+    // changes only with `.env` + a restart. The live mark tip needs it to re-net a
+    // bag between holdings polls without carrying its own copy of the fee.
+    getCostModel: builder.query<CostModel, void>({
+      query: () => '/api/meta/cost-model',
     }),
     // Wallet-wide roll-up for the Home KPI row (value/PnL totals + real-money
     // aggregates). Shares the WalletHoldings tag so a trade refresh invalidates it.

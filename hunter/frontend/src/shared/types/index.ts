@@ -996,6 +996,22 @@ export interface TokenLiveStats {
   last_trade_at: string | null;
 }
 
+/**
+ * Execution costs every PnL number on this box is net of (`GET /api/meta/cost-model`,
+ * serialized straight from `hunter_core::strategies::kernel::CostModel`). Served
+ * rather than hardcoded so the browser cannot hold a second copy of a fee that
+ * lives in Rust and `.env`.
+ */
+export interface CostModel {
+  /** Venue fee charged on EACH leg, in basis points (measured, not assumed). */
+  fee_bps_per_leg: number;
+  /** Tip + priority fee per leg, in SOL. The larger half of the toll at live
+   *  clip sizes: ~0.77% of notional on a 0.03 SOL clip. */
+  fixed_cost_sol_per_leg: number;
+  /** Whether to charge our own `size / reserve` price impact on the leg. */
+  price_impact: boolean;
+}
+
 export interface LiveTrade {
   mint_address: string;
   wallet: string;

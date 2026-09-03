@@ -21,6 +21,10 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/meta/strategy-registry",
                 web::get().to(handlers::strategies::engine::strategy_registry),
             )
+            // The execution costs every PnL number on this box is net of, so the
+            // frontend's live mark tip nets a bag with the same constants the
+            // engine does instead of a hardcoded copy.
+            .route("/meta/cost-model", web::get().to(handlers::strategies::engine::cost_model))
             // Live armed (token, rule) snapshot for the monitor.
             .route("/strategies/armed", web::get().to(handlers::strategies::engine::list_armed))
             // What the fold currently reads for one ARMED (token, rule) — the

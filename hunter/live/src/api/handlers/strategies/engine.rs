@@ -43,6 +43,18 @@ pub async fn strategy_registry() -> impl Responder {
     HttpResponse::Ok().json(hunter_engine::metrics::registry_json())
 }
 
+/// GET /api/meta/cost-model — the execution costs every PnL figure is net of.
+///
+/// Served so the browser never has to hold a second copy of a fee. The live mark
+/// tip (`walletMarksLive`) re-nets an open bag between holdings polls; without
+/// these numbers it can only show a gross mark, which reads ~4 pp high at live
+/// clip sizes and is exactly the defect `mark_open_bag` exists to remove.
+/// `CostModel::pumpfun_with_impact` reads process `FeeTuning`, so the tip and the
+/// engine charge the same tip/priority this box is actually configured with.
+pub async fn cost_model() -> impl Responder {
+    HttpResponse::Ok().json(trading_core::strategies::kernel::CostModel::pumpfun_with_impact())
+}
+
 /// GET /api/strategies/armed — currently-armed (token, rule) pairs (live monitor).
 ///
 /// Filters out any (rule, mint) that already has an unsettled `strategy_positions`

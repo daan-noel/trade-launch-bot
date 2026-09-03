@@ -131,7 +131,12 @@ const FEE_BPS_PER_LEG: f64 = 125.0;
 /// Fixed per-leg cost (tip + priority) comes from process-wide [`FeeTuning`] —
 /// the same `JITO_MIN_TIP_SOL` / `CU_PRICE_MICRO_LAMPORTS` live applies to the
 /// trader. Install via [`FeeTuning::install`] after `dotenvy` in each bin.
-#[derive(Clone, Copy, Debug)]
+///
+/// `Serialize` because the frontend's live mark tip has to net a price change
+/// between holdings polls, and the ONLY honest way for it to do that is to be
+/// handed these numbers (`GET /api/meta/cost-model`) rather than to carry its own
+/// copy of a fee that lives in this file and in `.env`.
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct CostModel {
     pub fee_bps_per_leg: f64,
     pub fixed_cost_sol_per_leg: f64,
@@ -350,6 +355,67 @@ fn leg_impact(costs: &CostModel, size_sol: f64, reserve_sol: Option<f64>) -> f64
         return 0.0;
     }
     reserve_sol.filter(|r| *r > 0.0).map_or(0.0, |r| size_sol / r)
+}
+
+/// Net mark of an **already-filled** bag: what closing `held_amount` tokens at
+/// `mark_price` right now would leave, over the all-in capital the entry consumed.
+/// Returns `(cost_basis_sol, pnl_sol)` in whatever SOL unit `entry_price x
+/// held_amount` yields, so the caller's price/amount convention carries through
+/// unchanged (SOL-per-raw x raw units, or SOL-per-UI x UI units).
+///
+/// The open-bag sibling of [`round_trip_with_costs`]. It exists because an open
+/// position is NOT a round trip with one price swapped: the entry has already
+/// executed, which changes two terms.
+///
+/// * **The token count is known.** `held_amount` is the bag that is actually
+///   still held, not `notional / effective_entry` re-derived from a price. A
+///   partially scaled-out position therefore marks what is left of it, and a
+///   fill that came back light marks what it really got.
+/// * **No entry impact is charged.** The fill already paid it, and it is inside
+///   `entry_price` by construction -- that price is the executed average
+///   (Sigma curve SOL / Sigma tokens), which is where our own footprint landed.
+///   Charging `leg_impact` on the entry again would book it twice.
+///
+/// Both legs' **fee** and **fixed** cost are still charged, and that is the
+/// correction this function exists to make. `entry_price` is the *curve-side*
+/// amount, which excludes the protocol fee ([`FEE_BPS_PER_LEG`], measured) and
+/// carries no tip or priority fee, so the capital a position consumed is the
+/// curve cost plus one entry leg's costs -- that is `cost_basis_sol`, and it is
+/// what a percent must divide by. The exit leg is charged in full because it has
+/// not happened: fee, fixed cost, and impact into the depth it would sell into.
+///
+/// The one deliberate difference from [`round_trip_multi_leg`]: exit impact is
+/// sized on the mark's **current** value, not on the entry notional. It is the
+/// SOL this bag would actually push into the pool now, which is the quantity the
+/// pool responds to -- on a bag that has doubled, the entry notional understates
+/// it by half.
+pub fn mark_open_bag(
+    entry_price: f64,
+    mark_price: f64,
+    held_amount: f64,
+    reserve_sol: Option<f64>,
+    costs: &CostModel,
+) -> (f64, f64) {
+    if !entry_price.is_finite()
+        || entry_price <= 0.0
+        || !held_amount.is_finite()
+        || held_amount <= 0.0
+        || !mark_price.is_finite()
+        || mark_price < 0.0
+    {
+        return (0.0, 0.0);
+    }
+    let fee = costs.fee_bps_per_leg / 10_000.0;
+    // Capital deployed: what the curve took, plus the entry leg's own costs --
+    // neither of which is inside `entry_price`.
+    let cost_basis_sol = entry_price * held_amount * (1.0 + fee) + costs.fixed_cost_sol_per_leg;
+
+    let gross_proceeds = mark_price * held_amount;
+    let exit_impact = leg_impact(costs, gross_proceeds, reserve_sol);
+    let after_impact = gross_proceeds * (1.0 - exit_impact).max(0.0);
+    let net_proceeds = after_impact * (1.0 - fee) - costs.fixed_cost_sol_per_leg;
+
+    (cost_basis_sol, net_proceeds - cost_basis_sol)
 }
 
 /// Round a PnL figure through `f32` precision and back. The sweep's
@@ -1560,5 +1626,64 @@ mod tests {
         assert_eq!(p.avg_sell_price, None);
         assert_eq!(p.realized_pnl_pct, None);
         assert!((p.total_pnl_sol - 0.0).abs() < 1e-12);
+    }
+
+    /// Golden vectors for [`mark_open_bag`], shared with the frontend mirror.
+    ///
+    /// The browser has to net a mark between holdings polls (`walletMarksLive`),
+    /// so `netProceedsSol` in `lib/liveMark.ts` re-implements this arithmetic in
+    /// TS. These four cases are asserted on BOTH sides against the same literals
+    /// — `netProceedsMatchesRust` in `liveMark.test.ts` — so a change to either
+    /// implementation fails the other's test instead of quietly giving two
+    /// answers to "what is this bag worth". Constants are explicit rather than
+    /// `FeeTuning::current()` so the vectors do not move with `.env`.
+    #[test]
+    fn mark_open_bag_golden_vectors() {
+        let costs = CostModel {
+            fee_bps_per_leg: 125.0,
+            fixed_cost_sol_per_leg: 0.00025,
+            price_impact: true,
+        };
+        // (entry, mark, held, reserve) -> (cost_basis, pnl)
+        let cases: [(f64, f64, f64, Option<f64>, f64, f64); 4] = [
+            // Flat mark: still a loss, because both legs are still owed.
+            (1.0, 1.0, 0.05, None, 0.050875000000000004, -0.0017500000000000016),
+            // Doubled, into a 70 SOL pool: impact bites the exit.
+            (1.0, 2.0, 0.05, Some(70.0), 0.050875000000000004, 0.04748392857142858),
+            // +4% on the measured median live clip: still just under break-even.
+            (1.0, 1.04, 0.0296, None, 0.03022, -7.079999999999587e-5),
+            // Impact larger than the pool: proceeds clamp at zero, never negative
+            // (the loss is the whole basis plus the leg's fixed cost, no more).
+            (0.5, 0.25, 120.0, Some(3.0), 60.75025, -60.7505),
+        ];
+        for (entry, mark, held, reserve, want_basis, want_pnl) in cases {
+            let (basis, pnl) = mark_open_bag(entry, mark, held, reserve, &costs);
+            assert!((basis - want_basis).abs() < 1e-12, "basis {basis} != {want_basis}");
+            assert!((pnl - want_pnl).abs() < 1e-12, "pnl {pnl} != {want_pnl}");
+        }
+    }
+
+    /// The entry fill is sunk: marking at the price it filled at is a LOSS of both
+    /// legs' costs, never break-even. This is the whole reason the open mark is not
+    /// `round_trip_with_costs` with one price swapped — that one re-derives the bag
+    /// from the notional and charges the entry impact a second time.
+    #[test]
+    fn mark_open_bag_does_not_recharge_entry_impact() {
+        let costs = CostModel::pumpfun_with_impact();
+        let (_, open) = mark_open_bag(1.0, 1.0, 1.0, Some(10.0), &costs);
+        let (round_trip, _) = round_trip_with_costs(1.0, 1.0, 1.0, Some(10.0), &costs);
+        assert!(open > round_trip, "open mark {open} must not pay entry impact twice ({round_trip})");
+    }
+
+    /// A partially sold bag marks what is LEFT: half the tokens, half the exposure.
+    #[test]
+    fn mark_open_bag_scales_with_the_remaining_bag() {
+        let costs = CostModel::pumpfun_fee_only();
+        let (full_basis, full_pnl) = mark_open_bag(1.0, 2.0, 1.0, None, &costs);
+        let (half_basis, half_pnl) = mark_open_bag(1.0, 2.0, 0.5, None, &costs);
+        // Fixed cost is per leg, not per token, so only the size-scaled part halves.
+        let fixed = costs.fixed_cost_sol_per_leg;
+        assert!(((full_basis - fixed) / 2.0 - (half_basis - fixed)).abs() < 1e-12);
+        assert!(half_pnl < full_pnl && half_pnl > 0.0);
     }
 }

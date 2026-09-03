@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::api::table_query::{as_flag, FilterOp, FilterSpec, MAX_FILTER_IN_VALUES, TableRequest};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
-use crate::strategies::kernel::{round_trip_with_costs, weighted_return_pct, CostModel};
+use crate::strategies::kernel::{mark_open_bag, weighted_return_pct, CostModel};
 use crate::strategies::run_rollup::{self, RunRollup};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
@@ -574,11 +574,31 @@ struct PositionsSummaryRow {
 }
 
 /// One still-open position's basis, for marking to the current cache price.
+///
+/// Carries the token counts, not just the SOL: an open mark is priced on the bag
+/// that is **still held** (`entry_token_amount - sold_token_amount`), so a
+/// half-sold position marks its remaining half instead of its original size.
 #[derive(serde::Deserialize)]
 struct OpenMark {
     mint_address: String,
     entry_price: Option<f64>,
     entry_lamports: i64,
+    /// Raw token units bought. `None` on a legacy row that never stamped one —
+    /// the bag then falls back to `entry_lamports / entry_price`.
+    entry_token_amount: Option<i64>,
+    /// Raw token units already sold (scale-out); 0 on an untouched bag.
+    sold_token_amount: i64,
+}
+
+impl OpenMark {
+    /// Raw token units still held, in the unit `entry_price` is quoted per.
+    fn held_amount(&self, entry_price: f64) -> f64 {
+        match self.entry_token_amount {
+            Some(bought) => (bought - self.sold_token_amount).max(0) as f64,
+            // Legacy row: recover the bag from the money that bought it.
+            None => lamports_to_sol(self.entry_lamports) / entry_price,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2179,7 +2199,9 @@ impl StrategyRepo {
                COALESCE(json_agg(json_build_object( \
                           'mint_address', sp.mint_address, \
                           'entry_price', sp.entry_price, \
-                          'entry_lamports', sp.entry_lamports)) \
+                          'entry_lamports', sp.entry_lamports, \
+                          'entry_token_amount', sp.entry_token_amount, \
+                          'sold_token_amount', sp.sold_token_amount)) \
                         FILTER (WHERE sp.entry_price IS NOT NULL \
                                   AND sp.status NOT IN ('End','EntryFailed')), '[]') AS open_marks \
              FROM strategy_positions sp \
@@ -2209,34 +2231,36 @@ impl StrategyRepo {
         let avg_hold_secs = if closed > 0 { row.sum_hold_secs / closed as f64 } else { 0.0 };
 
         // Mark the open positions to the caller-supplied current price, pricing the
-        // hypothetical round-trip through the **same** `CostModel` the sim and the
-        // sweep default to — so a live rule's unrealized figure is comparable to a
+        // hypothetical close through the **same** `CostModel` the sim and the sweep
+        // default to — so a live rule's unrealized figure is comparable to a
         // backtest's `open_pnl_sol` instead of being a raw price delta. A position
         // whose token has no cached price yet (just entered, no post-entry trade)
         // contributes nothing rather than a fabricated 0-price loss.
         //
+        // `mark_open_bag`, not `round_trip_with_costs`: the entry has already
+        // executed, so its impact is sunk and already inside `entry_price` (the
+        // executed average), and the bag priced is the tokens still held rather
+        // than a count re-derived from the notional — a half-sold position marks
+        // its remaining half. Both legs' fee and fixed cost are still charged:
+        // `entry_price` is the curve-side amount and carries neither.
+        //
         // Depth caveat, since the number is only as honest as what it says it is:
-        // this charges impact off the mint's **current** depth, while a backtest
-        // charges an open position's off its **entry** depth (`round_trip_with_costs`
-        // reuses one reserve for both legs). Neither is exact — one reserve cannot
-        // price two legs struck at different times — but the entry leg's impact is
-        // already sunk, so the leg this figure is actually deciding (the exit) is the
-        // one priced at the depth it would execute into. On a pool that grew during
-        // the hold the two differ by well under the fee, and it is never a guess: no
-        // cached depth ⇒ no impact charged, exactly as `pumpfun_impact` degrades
-        // everywhere else.
+        // impact is charged off the mint's **current** depth. That is the depth the
+        // exit — the only leg this figure is deciding — would execute into, and it
+        // is never a guess: no cached depth ⇒ no impact charged, exactly as
+        // `pumpfun_impact` degrades everywhere else.
         let costs = CostModel::pumpfun_with_impact();
         let open_pnl_sol = serde_json::from_value::<Vec<OpenMark>>(row.open_marks)
             .unwrap_or_default()
             .iter()
             .filter_map(|m| {
                 let entry_price = m.entry_price.filter(|p| *p > 0.0)?;
-                let mark = mark_of(&m.mint_address).filter(|q| q.price.is_finite() && q.price > 0.0)?;
-                let notional = lamports_to_sol(m.entry_lamports);
-                let (pnl_sol, _) = round_trip_with_costs(
+                let mark =
+                    mark_of(&m.mint_address).filter(|q| q.price.is_finite() && q.price > 0.0)?;
+                let (_, pnl_sol) = mark_open_bag(
                     entry_price,
                     mark.price,
-                    notional,
+                    m.held_amount(entry_price),
                     mark.reserve_sol,
                     &costs,
                 );

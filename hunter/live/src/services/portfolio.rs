@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use trading_core::models::portfolio::{unrealized_pnl, ManagedMint};
+use trading_core::strategies::kernel::{mark_open_bag, CostModel};
 use trading_core::models::{cash_symbol, AssetKind, StrategyPosition};
 use trading_core::storage::token_enrichment::{fetch_by_mints, TokenEnrichment, TokenEnrichmentRow};
 
@@ -535,6 +536,13 @@ pub async fn closes_series(
 /// per-UI-token mark. `avg_entry_price` is SOL per raw unit (`AvgEntry`);
 /// `mark_sol_per_ui` is SOL per UI token (Jupiter mark ÷ SOL/USD). Cost basis needs
 /// only the average entry; the mark-to-market fields need a mark too.
+///
+/// `reserve_sol` is the mint's SOL-side pool depth from the live cache, for the
+/// exit leg's impact — `None` charges none rather than guessing. The figure this
+/// returns is **net of the round trip**: `avg_entry_price` is the curve-side fill
+/// price, so neither leg's fee nor either tip is inside it, and at live clip sizes
+/// those are ~4 pp (see the `unrealized_pnl` module header). A gross number here is
+/// what makes a live position read green against an on-chain PnL tracker's red.
 struct HoldingPnl {
     cost_basis_sol: Option<f64>,
     unrealized_pnl_sol: Option<f64>,
@@ -546,21 +554,39 @@ fn holding_pnl(
     mark_sol_per_ui: Option<f64>,
     decimals: u8,
     ui_amount: f64,
+    reserve_sol: Option<f64>,
 ) -> HoldingPnl {
     // SOL/raw → SOL/ui so it shares a unit basis with the per-UI-token mark.
     let avg_entry_per_ui = avg_entry_price.map(|a| a * 10f64.powi(decimals as i32));
     match (avg_entry_per_ui, mark_sol_per_ui) {
         (Some(entry_ui), Some(mark)) => {
-            let p = unrealized_pnl(entry_ui, mark, ui_amount);
+            let p = unrealized_pnl(
+                entry_ui,
+                mark,
+                ui_amount,
+                reserve_sol,
+                &CostModel::pumpfun_with_impact(),
+            );
             HoldingPnl {
                 cost_basis_sol: Some(p.cost_basis_sol),
                 unrealized_pnl_sol: Some(p.unrealized_pnl_sol),
                 unrealized_pnl_pct: Some(p.unrealized_pnl_pct),
             }
         }
-        // No live mark: we can still show what was paid, but not the PnL.
-        _ => HoldingPnl {
-            cost_basis_sol: avg_entry_per_ui.map(|e| e * ui_amount),
+        // No live mark: we can still show what was paid, but not the PnL. The basis
+        // comes from the same SSOT (a zero mark yields the basis and a full loss —
+        // we keep the basis and drop the mark, which we have no price for), so the
+        // field means the same all-in thing on both branches.
+        (Some(entry_ui), None) => HoldingPnl {
+            cost_basis_sol: Some(
+                mark_open_bag(entry_ui, 0.0, ui_amount, None, &CostModel::pumpfun_with_impact()).0,
+            ),
+            unrealized_pnl_sol: None,
+            unrealized_pnl_pct: None,
+        },
+        // No recorded buys: no basis, and nothing to mark against.
+        (None, _) => HoldingPnl {
+            cost_basis_sol: None,
             unrealized_pnl_sol: None,
             unrealized_pnl_pct: None,
         },
@@ -683,6 +709,10 @@ async fn compose(
                         mark_sol_per_ui,
                         h.decimals,
                         h.ui_amount,
+                        cached
+                            .as_ref()
+                            .and_then(|s| s.current_reserve_sol)
+                            .filter(|r| r.is_finite() && *r > 0.0),
                     );
                     (
                         price_usd,
@@ -766,24 +796,61 @@ async fn compose(
 mod tests {
     use super::*;
 
-    /// SSOT guard: the service's PnL composition is the SSOT
-    /// `unrealized_pnl` fed with a UI-space average entry — never a re-implemented
-    /// formula. Fixture: avg entry 1e-9 SOL/raw at 6 decimals = 1e-3 SOL/UI token;
-    /// mark 2e-3 SOL/UI; 1000 UI held ⇒ cost 1.0 SOL, +1.0 SOL, +100%.
+    /// SSOT guard: the service's PnL composition is the SSOT `unrealized_pnl` fed
+    /// with a UI-space average entry — never a re-implemented formula. Fixture: avg
+    /// entry 1e-9 SOL/raw at 6 decimals = 1e-3 SOL/UI token; mark 2e-3 SOL/UI;
+    /// 1000 UI held ⇒ 1.0 SOL of curve-side cost against a 2.0 SOL mark.
+    ///
+    /// The expectation is written from the cost model's own constants rather than
+    /// as literals, because the fixed leg is env-derived (`FeeTuning`) and a literal
+    /// would pin this test to one `.env`.
     #[test]
     fn holding_pnl_matches_known_fixture() {
-        let p = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0);
-        assert!((p.cost_basis_sol.unwrap() - 1.0).abs() < 1e-12);
-        assert!((p.unrealized_pnl_sol.unwrap() - 1.0).abs() < 1e-12);
-        assert!((p.unrealized_pnl_pct.unwrap() - 100.0).abs() < 1e-9);
+        let costs = CostModel::pumpfun_with_impact();
+        let fee = costs.fee_bps_per_leg / 10_000.0;
+        let p = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0, None);
+
+        let want_basis = 1.0 * (1.0 + fee) + costs.fixed_cost_sol_per_leg;
+        let want_pnl = 2.0 * (1.0 - fee) - costs.fixed_cost_sol_per_leg - want_basis;
+        assert!((p.cost_basis_sol.unwrap() - want_basis).abs() < 1e-12);
+        assert!((p.unrealized_pnl_sol.unwrap() - want_pnl).abs() < 1e-12);
+
+        // The regression this replaces: the gross answer was exactly +1.0 SOL /
+        // +100%, and a doubled bag is worth measurably less than that.
+        assert!(p.unrealized_pnl_sol.unwrap() < 1.0);
+        assert!(p.unrealized_pnl_pct.unwrap() < 100.0);
+    }
+
+    /// An unmoved price is a LOSS, not break-even — both legs are still owed. This
+    /// is the whole defect: a gross mark rendered green across the entire band where
+    /// the bag is under water, which is what made a live row disagree with an
+    /// on-chain PnL tracker.
+    #[test]
+    fn a_flat_mark_is_a_loss() {
+        let p = holding_pnl(Some(1e-9), Some(1e-3), 6, 1000.0, None);
+        assert!(p.unrealized_pnl_sol.unwrap() < 0.0);
+        assert!(p.unrealized_pnl_pct.unwrap() < 0.0);
+    }
+
+    /// Depth charges the exit's impact; no depth charges none rather than a guess.
+    #[test]
+    fn shallow_depth_marks_lower_than_none() {
+        let deep = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0, Some(1_000.0));
+        let shallow = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0, Some(10.0));
+        let no_depth = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0, None);
+        assert!(shallow.unrealized_pnl_sol.unwrap() < deep.unrealized_pnl_sol.unwrap());
+        assert!(deep.unrealized_pnl_sol.unwrap() < no_depth.unrealized_pnl_sol.unwrap());
     }
 
     /// No live mark (untracked mint / Jupiter miss): cost basis still resolves from
-    /// the recorded buys, but PnL cannot be marked.
+    /// the recorded buys, but PnL cannot be marked. The basis is the same all-in
+    /// figure the marked branch divides by — one field, one meaning.
     #[test]
     fn no_mark_yields_cost_basis_but_no_pnl() {
-        let p = holding_pnl(Some(1e-9), None, 6, 1000.0);
-        assert!((p.cost_basis_sol.unwrap() - 1.0).abs() < 1e-12);
+        let costs = CostModel::pumpfun_with_impact();
+        let want_basis = 1.0 * (1.0 + costs.fee_bps_per_leg / 10_000.0) + costs.fixed_cost_sol_per_leg;
+        let p = holding_pnl(Some(1e-9), None, 6, 1000.0, None);
+        assert!((p.cost_basis_sol.unwrap() - want_basis).abs() < 1e-12);
         assert!(p.unrealized_pnl_sol.is_none());
         assert!(p.unrealized_pnl_pct.is_none());
     }
@@ -791,7 +858,7 @@ mod tests {
     /// A received/transferred bag with no recorded buys has no cost basis and no PnL.
     #[test]
     fn no_recorded_buys_has_no_basis() {
-        let p = holding_pnl(None, Some(2e-3), 6, 1000.0);
+        let p = holding_pnl(None, Some(2e-3), 6, 1000.0, None);
         assert!(p.cost_basis_sol.is_none());
         assert!(p.unrealized_pnl_sol.is_none());
         assert!(p.unrealized_pnl_pct.is_none());

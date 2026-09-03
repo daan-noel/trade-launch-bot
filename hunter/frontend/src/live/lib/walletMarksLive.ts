@@ -2,12 +2,13 @@ import { isCashHolding } from 'lib/assetKind';
 import {
   liveTradeSpotSolPerRaw,
   spotSolPerRawToUsd,
+  unrealizedFromValue,
   valueSolAtSpot,
 } from 'lib/liveMark';
 import { connectTradeStream } from 'services/sse';
 import type { AppDispatch, RootState } from '@live/store';
 import { liveApi } from '@live/store/liveEndpoints';
-import type { LiveTrade, WalletHolding, WalletPrice } from 'types';
+import type { CostModel, LiveTrade, WalletHolding, WalletPrice } from 'types';
 
 const COALESCE_MS = 250;
 
@@ -22,6 +23,7 @@ function applyWalletMarkFromTrade(
   getState: GetState,
   trade: LiveTrade,
   usdRate: number | null,
+  costs: CostModel | undefined,
 ): void {
   const spot = liveTradeSpotSolPerRaw(trade);
   if (spot == null) return;
@@ -33,7 +35,7 @@ function applyWalletMarkFromTrade(
       const h = draft.find((x) => x.mint_address === trade.mint_address);
       if (!h || isCashHolding(h)) return;
       decimals = h.decimals;
-      patchHoldingMark(h, spot, usdRate);
+      patchHoldingMark(h, spot, usdRate, costs, trade.reserve_sol ?? null);
     }),
   );
 
@@ -68,20 +70,35 @@ function applyWalletMarkFromTrade(
   }
 }
 
+/**
+ * Patch one holding to a fresh spot. `value_sol` is a plain fact of the print, but
+ * the PnL fields are NOT: they are net of the sell that would realize them, so
+ * they are only patched when the served `costs` are in hand. Deriving them here
+ * from `value - cost_basis` is what made a live row read ~4 pp better than the
+ * same bag on an on-chain PnL tracker -- it charges no exit fee, no tip, no
+ * impact, and it divides a gross value by an all-in basis. With no cost model
+ * loaded the server's last net figures stand rather than being overwritten by a
+ * gross one.
+ */
 function patchHoldingMark(
   h: WalletHolding,
   spotSolPerRaw: number,
   usdRate: number | null,
+  costs: CostModel | undefined,
+  reserveSol: number | null,
 ): void {
   const valueSol = valueSolAtSpot(spotSolPerRaw, h.amount);
   if (valueSol != null) {
     h.value_sol = valueSol;
-    if (h.cost_basis_sol != null) {
-      h.unrealized_pnl_sol = valueSol - h.cost_basis_sol;
-      h.unrealized_pnl_pct =
-        h.cost_basis_sol > 0
-          ? ((valueSol - h.cost_basis_sol) / h.cost_basis_sol) * 100
-          : null;
+    if (h.cost_basis_sol != null && costs) {
+      const { pnlSol, pnlPct } = unrealizedFromValue(
+        valueSol,
+        h.cost_basis_sol,
+        reserveSol,
+        costs,
+      );
+      h.unrealized_pnl_sol = pnlSol;
+      h.unrealized_pnl_pct = pnlPct;
     }
   }
   if (usdRate != null) {
@@ -105,14 +122,20 @@ export function startWalletMarksLive(
   const pending = new Map<string, LiveTrade>();
   let timer: number | undefined;
 
+  // Warm the cost model so the first tip can already net its mark.
+  void dispatch(liveApi.endpoints.getCostModel.initiate());
+
   const flush = () => {
     timer = undefined;
     if (pending.size === 0) return;
     const batch = [...pending.values()];
     pending.clear();
     const rate = getUsdRate();
+    // Served once, then read from cache on every tick — the fee and tip belong to
+    // the backend, so the tip nets a bag with the same constants the engine does.
+    const costs = liveApi.endpoints.getCostModel.select()(getState()).data;
     for (const t of batch) {
-      applyWalletMarkFromTrade(dispatch, getState, t, rate);
+      applyWalletMarkFromTrade(dispatch, getState, t, rate, costs);
     }
   };
 
