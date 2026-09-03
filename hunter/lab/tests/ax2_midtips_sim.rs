@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::{
-    match_all, AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId, MatchPhase,
+    AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId,
 };
 use hunter_engine::rule_params::RuleParams;
 
@@ -260,26 +260,33 @@ fn run_window(
         with_oracle: false,
     };
     let src = LakeSource::new(lake_root());
-    let corpus = rt.block_on(src.load(&sel)).expect("lake load");
+    let fp = door_fp();
+    let (mints, capped) = rt
+        .block_on(src.matching_mints(&sel, fp.clone()))
+        .expect("door mints");
     eprintln!(
-        "loaded {} tokens / {} trades from {}  window {} .. {}",
-        corpus.token_count(),
-        corpus.trade_count(),
-        lake_root(),
+        "door-matched mints: {} capped={}  window {} .. {}",
+        mints.len(),
+        capped,
         since,
         until
     );
+    let mut sel = sel;
+    sel.mints = Some(mints);
+    let corpus = rt.block_on(src.load(&sel)).expect("lake load");
+    eprintln!(
+        "loaded {} tokens / {} trades from {}",
+        corpus.token_count(),
+        corpus.trade_count(),
+        lake_root()
+    );
 
-    let fp = door_fp();
     let slots = load_creation_slots(rt, since, until);
     eprintln!("creation_slot from PG: {}", slots.len());
 
     let replay_tokens: Vec<ReplayToken> = corpus
         .tokens
         .into_iter()
-        .filter(|t| {
-            !match_all(std::slice::from_ref(&fp), &t.fp, MatchPhase::Full).is_empty()
-        })
         .map(|t: CorpusToken| ReplayToken {
             creation_slot: slots.get(&t.mint).copied(),
             mint: t.mint,
@@ -380,9 +387,9 @@ fn ax2_midtips_tip_era_stability() {
         .build()
         .expect("tokio");
 
-    let since = env_ts("AX2_SINCE", TIP_ERA);
-    let until = env_ts("AX2_UNTIL", "2026-09-04T00:00:00Z");
-    let all = run_window(&rt, since, until, 2_000_000);
+    let since = env_ts("AX2_SINCE", SINCE);
+    let until = env_ts("AX2_UNTIL", UNTIL);
+    let all = run_window(&rt, since, until, 200_000);
     let tip_era = ts(TIP_ERA);
     let scored: Vec<_> = all.iter().copied().filter(|(t, _, _)| *t >= tip_era).collect();
     let b = book(&scored);
