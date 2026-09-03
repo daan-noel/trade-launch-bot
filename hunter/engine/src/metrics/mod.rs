@@ -213,6 +213,11 @@ pub struct TradeLite {
     /// (full ordered sequence) and from [`marker_bits`](Self::marker_bits).
     #[serde(default)]
     pub template_hash: Option<u64>,
+    /// FNV-1a of this trade's program name (`Axiom Trade`, `Pump.Fun`, …).
+    /// `None` when labels are absent. `m_burst_slot.working_programs` matches
+    /// this, not the grain.
+    #[serde(default)]
+    pub program_hash: Option<u64>,
     /// Curve vs AMM. Default `true` so a pre-field event-log line still joins
     /// the burst prefix (the harvest universe is the curve). AMM prints do not.
     #[serde(default = "default_true")]
@@ -250,6 +255,7 @@ impl Default for TradeLite {
             leg_index: 0,
             tx_index: None,
             template_hash: None,
+            program_hash: None,
             on_curve: true,
             is_launch: false,
             fee: FeeKeys::default(),
@@ -812,6 +818,21 @@ pub enum MetricId {
     WaveAllNew,
     /// 0/1: some member of this wave has no wallet.
     WaveHasUnknown,
+    /// Member prints in this fireable wave whose grain is on this fingerprint's
+    /// `m_burst_slot.working_templates`. NaN when the wave is not fireable or
+    /// the list is missing. Completing print: this crosses 2.
+    WaveWorkingBuyCount,
+    /// 0/1: this member's grain is on this fingerprint's working-template list.
+    /// NaN when the list is missing.
+    WaveThisWorking,
+    /// This print's `tip_lamports` as f64. NaN when the column is absent.
+    WaveThisTip,
+    /// 0/1: a previous wave member exists and `this.tx_index - prev.tx_index > 1`.
+    /// Missing `tx_index` is `-1`. First member of a wave is 0.
+    WaveHole,
+    /// 0/1: this print's tip band already appeared on an earlier member of this
+    /// wave. Bands: absent / 0 / `< 1e5` / `[1e5, 1e6)` / `>= 1e6`.
+    WaveTipSeen,
     // ── m_copy (the named wallet list, this token, lifetime) ──
     /// SOL the target list has bought on this token, every leg.
     CopyBuySol,
@@ -873,6 +894,7 @@ pub fn is_fingerprint_scoped(id: MetricId) -> bool {
                 | MetricGroupId::Copy
                 | MetricGroupId::CopyWindow
         )
+            || matches!(id, MetricId::WaveWorkingBuyCount | MetricId::WaveThisWorking)
 }
 
 /// Validate a fingerprint's WHOLE `metric_config` — every group that declares
@@ -2325,7 +2347,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::BurstWave,
         name: "m_burst_wave",
-        description: "This token's buys in the current consecutive-slot run. The gap is empty buy-slots before that run started, not before a later printer in the same run. Create slot is not a fireable wave.",
+        description: "This token's buys in the current consecutive-slot run. The gap is empty buy-slots before that run started, not before a later printer in the same run. Create slot is not a fireable wave. working_buy_count and this_working read this fingerprint's m_burst_slot.working_templates and working_programs. hole is a wave tx_index gap, not m_burst_slot.packed.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::Burst,
@@ -2385,6 +2407,51 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 138,
+            },
+            MetricSpec {
+                id: MetricId::WaveWorkingBuyCount,
+                name: "working_buy_count",
+                description: "Member prints in this fireable wave whose template grain is on working_templates or whose program is on working_programs. The completing print is the one that makes this 2. NaN when the wave is not fireable or both lists are missing.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 139,
+            },
+            MetricSpec {
+                id: MetricId::WaveThisWorking,
+                name: "this_working",
+                description: "1 when this print just joined the wave and its template grain is on working_templates or its program is on working_programs. 0 when this print is a member off both lists. NaN when both lists are missing. Not m_burst_slot.this_working.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 90,
+            },
+            MetricSpec {
+                id: MetricId::WaveThisTip,
+                name: "this_tip",
+                description: "This print's tip_lamports. NaN when the fee column was not captured. A real 0 is 0, not NaN.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 91,
+            },
+            MetricSpec {
+                id: MetricId::WaveHole,
+                name: "hole",
+                description: "1 when a previous member exists in this wave and this.tx_index minus that index is greater than 1. Missing tx_index is -1. First member of a wave is 0. Not m_burst_slot.packed (that is this-slot prefix consecutive).",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 92,
+            },
+            MetricSpec {
+                id: MetricId::WaveTipSeen,
+                name: "tip_seen",
+                description: "1 when this print's tip band already appeared on an earlier member of this wave (any grain). Bands: absent, 0, below 100000, [100000, 1000000), 1000000 and above. Then this print's band is recorded.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 114,
             },
         ],
     },

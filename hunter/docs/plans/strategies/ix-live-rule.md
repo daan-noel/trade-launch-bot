@@ -3,16 +3,17 @@
 The concentrated harvest to ship. Money and path live in
 [ix-concentrate.md](ix-concentrate.md), [ix-cell-exit.md](ix-cell-exit.md),
 and [ix-crowd-island.md](ix-crowd-island.md) (every crowd spelling).
-This file is the **engine mapping**: two exclusive rules, one door
-fingerprint, which existing metrics are the same quantity, which group
-to add, how packed/bundles and gaps work, the exit DNF, and what not
-to duplicate.
+This file is the **engine mapping**: parent A/B plus leftover A/B,
+one door fingerprint, which existing metrics are the same quantity,
+which group to add, how packed/bundles and gaps work, the exit DNF,
+and what not to duplicate.
 
 Fill = last print with `ts <= fire + 95 ms`. Cost = 125 bps/leg + own
 `B/vsol` at B = 0.10 SOL. Fire is the completing print: the first buy
 this slot that makes `entry_event` true. `entry_lock: "slot"` spends
-that slot even when the `entry` filters fail. Re-entry when the same
-gates match on a later slot.
+that slot when age / quiet / depth fail. Leftover fail on a print that
+would otherwise enter ends the episode (`Done`); a later slot does not
+become the first fire. Cap stays one episode per token.
 
 Do not author this rule on `m_flow_ix` patterns, `unique_wallets`,
 `stall`, or `held`. Those are different subjects.
@@ -25,9 +26,12 @@ contains ATA; `init_buy_lamports >= 0.2 SOL`; `first_slot_buy_lamports
 on this fingerprint.
 
 Same-template and mixed cannot share one rule, so they are **two
-exclusive rules** on that fingerprint. `packed` is unconstrained (hole
-and tight pack are both in). Solos out. Create slot is out (`4sl@1`
-plus `time >= 20` covers it). Simulate with `curve_only: true`.
+exclusive rules** on that fingerprint (`hvt-a-same-template`,
+`hvt-b-mixed`). Leftover A/B (`hvt-a-tools4`, `hvt-b-tools4`) keep
+that event and add `working_templates_seen >= 4` on `entry`. Parent
+A/B stay for comparison. `packed` is unconstrained (hole and tight
+pack are both in). Solos out. Create slot is out (`4sl@1` plus
+`time >= 20` covers it). Simulate with `curve_only: true`.
 
 Shared **event** (both rules) — AND, once per slot:
 
@@ -45,7 +49,20 @@ Shared **filters** (both rules) — AND, evaluated only on the completing print:
 | age | `m_state.time >= 20` | seconds since create |
 | buy quiet | `m_flow_window.buy_count == 0` on **`4sl@1`** | SQL `dslot >= 5`. **Not** `5sl@1` |
 | depth | `m_burst_slot.pre_slot_liquidity < 16` | SQL `vsol_pre < 46`; `liquidity = vsol − 30` |
-| dip | `m_burst_slot.pre_print_trail >= 15` | lifetime trail **before** this print |
+
+Trail (`pre_print_trail`) and purity (`working_buy_share == 100`) are
+not stacked on the candidate event.
+
+**Leftover** (`hvt-a-tools4` / `hvt-b-tools4` only), same completing
+print: `m_burst_slot.working_templates_seen >= 4`. Lifetime distinct
+working-list grains among curve buys on this mint so far, **including
+this print**. The set survives a slot reset. This is not this-slot
+`working_template_count`, and it is not "wait until four tools, then
+burst." If the print would have been a parent Enter and the count is
+under 4, the episode is Done. Age / quiet / depth fails still spend
+the slot and may retry. Seed:
+`hunter/scripts/seed-harvest-tools4-rules.sql` (does not delete parent
+A/B).
 
 **Rule A — same-template crowd:** event, plus
 `member_template_count == 1`, `same_buy_count >= 2`,
@@ -60,8 +77,9 @@ and is not Rule A.
 not every buy in the slot. Organic-padded same-working (Axiom plus
 Pump.Fun, one hunted grain) is neither A nor B.
 
-**Purity:** `working_buy_share == 100` - every buy in the prefix is a
-catalogued tool, not only the one being fired on.
+Purity is a leftover, not a stacked gate. Score `working_buy_share`
+bands on the corpus extract; stack only if dump SOL falls and runner
+SOL stays.
 
 ### Rule B: the working slice, not the whole prefix
 
@@ -116,15 +134,25 @@ OR of stage reqs); harvest does not use it. See **Exit combinator**
 below.
 
 Working templates (fingerprint list, template grain - not full
-`ix_hash`). **Three entries, each carrying its own money number:**
+`ix_hash`). The list is the thermometer grains 8dtx actually fires
+on — several retail `CU|ATA` builds plus Bloom's paying `CU|F` shape,
+not a three-brand money cut:
 
 ```
 Axiom Trade|CU|ATA|F
 Axiom Trade|CU|ATA|N|F
+Photon|CU|ATA|F
+Terminal|CU|ATA|F
 GMGN Bot|CU|ATA|F
+GMGN|CU|ATA|F
+Bloom Router|CU|F
+Bloom|CU|F
 ```
 
-Axiom `CU|F` is dead. Do not spell this as "router AND CU AND ATA".
+Axiom `CU|F` (no ATA) is dead. Do not spell this as "router AND CU AND ATA".
+Do not put his own `Pump.Fun|CU|ATA|N` on the list — that is his send, not
+the burst. Daily n can sit well below 50; that is the leftover, not a
+reject. Do not add a volume floor.
 
 ### What each entry is worth
 
@@ -139,15 +167,10 @@ the brand of the completing print:
 | Photon | 54 | +5.24 % | 10/12 | +9.15 | 0.28 |
 | Terminal | 58 | +6.55 % | 2 days exist | - | 0.38 |
 
-The last three are 2.6 % of fires; leaving each out moves the union by at
-most 0.04 pp and 0.28 SOL. Bloom's and Photon's medians are negative
-(-0.13 %, -2.48 %) and Terminal's whole mean is one 08-15 day at +191 %.
-`GMGN|CU|ATA|F` and `Bloom|CU|F` never fire at all. Purity recomputed on
-the reduced list is the same book (+2.54 % / 12.35 SOL against +2.56 % /
-12.59 SOL), so they carry nothing as prefix members either.
-
-Fires restricted to the three, plus purity: **4,874 trades, +2.55 %,
-12/12 days, OOS +2.36 %, 12.43 SOL.**
+The last three brands are a small share of fires on the restricted
+island cell; they still lift on the thermometer
+([ix-burst-kinds.md](ix-burst-kinds.md)) and they are the variety he
+sends on. The list keeps them. Axiom `CU|F` (no ATA) stays out.
 
 ### The grain is the machine, not the brand
 
@@ -274,6 +297,7 @@ block, `None` is missing. Missing `tx_index` ⇒ `packed` is `NaN`
 | `working_buy_sol` | SOL | their SOL (Rule B size). Organic is out |
 | `working_wallet_count` | count | distinct wallets among working-list members |
 | `working_template_count` | count | distinct working-list grains this slot. Rule B is >= 2 |
+| `working_templates_seen` | count | distinct working-list grains among curve buys this mint so far, including this print. Leftover A/B is >= 4. Survives slot reset. Not `working_template_count` |
 | `working_buy_share` | percent | working buys over the WHOLE prefix. `100` is a pure pack |
 | `has_new` | 0/1 | any working-list wallet is first-on-mint |
 | `has_unknown` | 0/1 | some member this slot has no wallet |
@@ -317,7 +341,8 @@ already exist.
 
 `entry` stays AND. Optional `entry_event` is a second AND-object: the
 completing-print event. `entry_lock: "slot"` fires that event once per
-slot; `entry` filters that fail still spend it. Absent `entry_lock`
+slot; age / quiet / depth that fail still spend it. Leftover fail on a
+print that would otherwise enter ends the episode. Absent `entry_lock`
 is today's level-AND on every print. `entry_lock` without a non-empty
 `entry_event` is a parse error.
 
@@ -412,7 +437,9 @@ That book is in the island ([ix-crowd-island.md](ix-crowd-island.md)):
 - Do not sweep trail width or death seconds on this print.
 - Do not drop mixed-template or `packed == 1` — they are this island
   ([ix-crowd-island.md](ix-crowd-island.md)).
-- Do not add a metric that an existing group already states.
+- Do not raise `working_template_count` to stand in for leftover.
+  Leftover is mint-lifetime `working_templates_seen` at the same
+  completing print.
 - Do not put these readings in `m_flow_ix` / `m_state` / `m_price_lifetime`
   as a second copy. New harvest readings stay in `m_burst_slot`.
 - Do not fold a consecutive-slot wave into `m_burst_slot`. That is a
@@ -427,16 +454,53 @@ trailing reqs inside a multi-req clause. Sweep / `can_enter` /
 `try_enter` / readout walk clauses. `scale_out` stays object-only.
 
 `entry_event` + `entry_lock: "slot"` on `CompiledRule::try_enter`.
+Leftover `working_templates_seen` compiles out of `entry` into
+`leftover_reqs`; fail + permissions would have entered ⇒ `Exhaust` →
+`ArmState::Done`. Age / quiet / depth fail ⇒ `SpendSlot`.
 `tx_index` is `Option<u32>` on `TradeLite`. `on_curve` / `is_launch`
 on the tape. Template helper (guard tests vs SQL `tmpl`). Fingerprint
 working-template list + create-ATA axis. `m_burst_slot` is the group.
-Two exclusive rules as in **The rules**, re-entry on (`cooldown_sec: 0`).
-Compile-pinned in `engine/tests/harvest_crowd_rules.rs`. Seed:
-`hunter/scripts/seed-harvest-crowd-rules.sql`.
+Parent A/B plus leftover A/B as in **The rules**, first episode per
+token (`max_episodes_per_token: 1`, `cooldown_sec: 0`).
+Compile-pinned in `engine/tests/harvest_crowd_rules.rs`. Seeds:
+`hunter/scripts/seed-harvest-crowd-rules.sql`,
+`hunter/scripts/seed-harvest-tools4-rules.sql`.
 
-Simulate on 2026-08-12 .. 2026-08-23 exclusive, `curve_only: true`,
-`fill_model=lag_115`, `cost_model=pumpfun_impact`. Do not treat the
-Python walk as live PnL.
+Simulate on the last sealed week (`curve_only: true`, `fill_model=lag_115`,
+`cost_model=pumpfun_impact`). Leftover scoring is the concatenated
+daily fire extract, not a one-day book. Do not treat the Python walk
+as live PnL.
+
+## Wave leftover (`ax2-midtips`)
+
+A different leftover from harvest A/B. The event is a **wave**, not this
+slot's prefix. Do not author it on `m_burst_slot.same_buy_count`,
+`m_burst_slot.packed`, or the eight-tool harvest list.
+
+**Door** (fingerprint `ax2-midtips-door`): create ATA, `init_buy_lamports
+>= 0.2 SOL`, `first_slot_buy_lamports >= 0.5 SOL`. Working list is the
+Axiom Trade **program** (`m_burst_slot.working_programs`), not the two
+CU+ATA grains: mid-tip Axiom prints are `Axiom Trade|ATA|F`.
+
+**Event** (`m_burst_wave`, completing print): `this_member = 1`,
+`this_working = 1`, `working_buy_count = 2`, `gap_slots >= 2`,
+`this_tip` in `[100000, 1000000)`. Consecutive buy-slots are one wave.
+Create slot is not fireable.
+
+**Leftover** on that same print (fail → `Done`): `hole = 1` (a previous
+curve buy exists in this wave and `this.tx_index - prev.tx_index > 1`;
+missing index is `-1`) and `tip_seen = 1` (this print's tip band already
+appeared on an earlier wave buy). Both read every curve buy in the
+wave, not only template members. Not `m_burst_slot.packed`.
+
+**Exit:** same harvest DNF (arm 10 / trail 18, or unarmed + 8 s buy
+silence). `entry_lock: "slot"`, `max_episodes_per_token: 1`. Simulate
+with `curve_only: true`, `fill_model=lag_95`, `cost_model=pumpfun_impact`,
+B = 0.10 SOL.
+
+Seed: `hunter/scripts/seed-ax2-midtips-rule.sql`. Compile-pinned:
+`hunter/engine/tests/ax2_midtips_rules.rs`. Python book:
+`ix7-forward.json`.
 
 ## Related
 

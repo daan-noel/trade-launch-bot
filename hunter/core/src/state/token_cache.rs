@@ -86,6 +86,8 @@ pub struct CachedTrade {
     /// FNV-1a of the build-template grain (`program|CU|ATA|N|S|F`); `None` when
     /// labels are empty/missing.
     pub template_hash: Option<u64>,
+    /// FNV-1a of the program name; `None` when labels are empty/missing.
+    pub program_hash: Option<u64>,
     pub is_launch: bool,
     pub on_curve: bool,
     /// The transaction's declared fee budget, copied straight off the [`Trade`] —
@@ -111,6 +113,7 @@ impl CachedTrade {
             wallet_hash(&t.wallet_address),
             hunter_engine::metrics::flow_ix::marker_bits(&labels),
             hunter_engine::metrics::template_grain::grain_hash(&labels),
+            hunter_engine::metrics::template_grain::program_hash(&labels),
             hunter_engine::metrics::template_grain::is_launch(&labels),
         )
     }
@@ -124,6 +127,7 @@ impl CachedTrade {
         wallet_hash: u64,
         marker_bits: u16,
         template_hash: Option<u64>,
+        program_hash: Option<u64>,
         is_launch: bool,
     ) -> Self {
         Self {
@@ -147,6 +151,7 @@ impl CachedTrade {
             marker_bits,
             tx_index: t.tx_index,
             template_hash,
+            program_hash,
             is_launch,
             on_curve: t.venue != "amm",
             // `cu_limit` is a `u64` on the model but a `u32` on the chain (the
@@ -404,6 +409,7 @@ impl TokenState {
         wallet_hash: u64,
         marker_bits: u16,
         template_hash: Option<u64>,
+        program_hash: Option<u64>,
         is_launch: bool,
     ) {
         self.apply_aggregates(&trade);
@@ -416,6 +422,7 @@ impl TokenState {
                 wallet_hash,
                 marker_bits,
                 template_hash,
+                program_hash,
                 is_launch,
             );
         self.push_trade_capped(cached);

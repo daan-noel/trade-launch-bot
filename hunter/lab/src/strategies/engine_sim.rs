@@ -434,6 +434,7 @@ async fn run_engine_backtest(
                 // Straight off the PG `tokens` row through the ONE engine hasher —
                 // the same value the live producer stamps on `TokenCreated`.
                 identity: hunter_engine::token_identity_hash(&t.name, &t.symbol),
+                creation_slot: t.creation_slot,
             })
         })
         .collect();

@@ -84,6 +84,9 @@ pub struct ReplayToken {
     /// the lake's tokens dimension, the same value the live producer computes.
     /// `None` ⇒ this token never blocks and is never recorded.
     pub identity: Option<u64>,
+    /// On-chain create slot when known (`tokens.creation_slot`). Absent ⇒ the
+    /// first trade slot, the lake's stand-in.
+    pub creation_slot: Option<u64>,
 }
 
 /// One replayed position's realized lifecycle — the engine-neutral outcome the
@@ -332,7 +335,14 @@ impl Replay {
             let trades = &t.trades;
             self.trades.insert(mint.clone(), Arc::clone(trades));
 
-            let creation_slot = crate::sweep::projection::creation_slot(trades);
+            let creation_slot = t
+                .creation_slot
+                .or_else(|| crate::sweep::projection::creation_slot(trades));
+            // Door first-slot sums live on the tokens dimension. Re-summing lake
+            // trades in `creation_slot` is 0 when that slot has no curve print,
+            // which fails `first_slot_buy_lamports` closed and never arms.
+            let fs_buy_known = t.tf.first_slot_buy_lamports;
+            let fs_sell_known = t.tf.first_slot_sell_lamports;
             // TokenCreated at the token's creation time (first-slot axes still None).
             self.queue.push(Queued {
                 at: t.created_at,
@@ -386,20 +396,22 @@ impl Replay {
                         Some(self.last_trade_at.map_or(ct.block_time, |m| m.max(ct.block_time)));
                 }
 
-                // Settle the first slot immediately after its last creation-slot
-                // trade — the replay twin of live's slot-watermark sweep. A token
-                // that never traded at all still resolves its full identity.
-                let settle_at = settle_at.unwrap_or_else(|| {
-                    trades.last().map(|t| t.block_time).unwrap_or(t.created_at)
-                });
+                // Settle after the last creation-slot trade. No print in that
+                // slot ⇒ the chain has already moved on by `created_at` (live
+                // watermark). Falling back to the last tape print would keep
+                // first-slot rules `PendingFirstSlot` for the whole history.
+                let settle_at = settle_at.unwrap_or(t.created_at);
                 self.queue.push(Queued {
                     at: settle_at,
                     rank: 1,
                     mint: mint.clone(),
                     event: Event::FirstSlotSettled {
                         mint,
-                        buy_lamports: sol_to_lamports(fs_buy),
-                        sell_lamports: sol_to_lamports(fs_sell),
+                        buy_lamports: fs_buy_known
+                            .filter(|&v| v > 0)
+                            .unwrap_or_else(|| sol_to_lamports(fs_buy)),
+                        sell_lamports: fs_sell_known
+                            .unwrap_or_else(|| sol_to_lamports(fs_sell)),
                         at: settle_at,
                     },
                     sig: None,
@@ -1003,6 +1015,49 @@ mod tests {
         base() + Duration::milliseconds((secs * 1000.0) as i64)
     }
 
+    /// First-slot door settles at `created_at` when the create slot has no
+    /// curve print — otherwise the rule stays pending until the last trade.
+    #[test]
+    fn first_slot_settles_at_created_when_create_slot_is_empty() {
+        let fps = [EngineFingerprint {
+            id: FingerprintId(Uuid::from_u128(1)),
+            metric_config: serde_json::json!({}),
+            wildcard: false,
+            criteria: Criteria::new()
+                .with(AxisId::CuLimit, AxisPredicate::exact(200_000))
+                .with(
+                    AxisId::FirstSlotBuyLamports,
+                    AxisPredicate::range(Some(1), None),
+                ),
+        }];
+        let rules = [rule(1, 1, serde_json::json!({ "take_profit": 100 }), 1)];
+        let mut t = token(
+            "fss",
+            0.0,
+            vec![
+                trade(1.0, true, 1.0, 1.0, 100.0),
+                trade(1.4, true, 1.0, 1.1, 100.0),
+                trade(200.0, true, 1.0, 2.5, 100.0),
+            ],
+        );
+        t.creation_slot = Some(9_999);
+        t.tf.first_slot_buy_lamports = Some(500_000_000);
+        let out = run_replay(
+            &rules,
+            &fps,
+            vec![t],
+            ReplayConfig {
+                as_of: at(400.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].entry_price, 1.1,
+            "arm at created_at so the fill is the early window, not the last print"
+        );
+    }
+
     /// A fingerprint keyed on cu_limit only (instant match), so every test token
     /// with the same cu_limit arms.
     fn fp(id: u128) -> EngineFingerprint {
@@ -1062,7 +1117,7 @@ mod tests {
             created_at: at(created),
             tf: tf(),
             trades: Arc::new(trades),
-            creator_wallet_hash: None, identity: None,
+            creator_wallet_hash: None, identity: None, creation_slot: None,
         }
     }
 

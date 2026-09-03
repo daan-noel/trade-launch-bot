@@ -99,6 +99,32 @@ pub fn grain_id_hash(id: &str) -> u64 {
     fnv1a(id.as_bytes())
 }
 
+/// FNV-1a of [`program_owned`]. `None` on empty/missing labels.
+pub fn program_hash(labels: &[impl AsRef<str>]) -> Option<u64> {
+    if labels.is_empty() {
+        None
+    } else {
+        Some(fnv1a(program_owned(labels).as_bytes()))
+    }
+}
+
+/// FNV-1a of a program name (`"Axiom Trade"`). Fingerprint `working_programs`
+/// stores these strings; a folded trade compares the same `u64`.
+pub fn program_id_hash(id: &str) -> u64 {
+    fnv1a(id.as_bytes())
+}
+
+/// [`program_hash`] over labels already decoded into a [`Value`].
+pub fn program_hash_from_labels_value(labels: &Value) -> Option<u64> {
+    program_hash(&normalize_labels(labels))
+}
+
+/// [`program_hash`] over stored JSON text.
+pub fn program_hash_from_labels_json(json: &str) -> Option<u64> {
+    let value: Value = serde_json::from_str(json).ok()?;
+    program_hash_from_labels_value(&value)
+}
+
 /// [`grain_hash`] over labels already decoded into a [`Value`] — both persisted
 /// shapes, via [`normalize_labels`].
 pub fn grain_hash_from_labels_value(labels: &Value) -> Option<u64> {

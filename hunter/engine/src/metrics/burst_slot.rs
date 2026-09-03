@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::hash::{HashedMap, HashedSet};
 
-use super::template_grain::grain_id_hash;
+use super::template_grain::{grain_id_hash, program_id_hash};
 use super::{MetricId, Side, TradeLite};
 
 /// The config key this group reads, inside `fingerprints.metric_config`.
@@ -26,34 +26,56 @@ pub const CONFIG_KEY: &str = "m_burst_slot";
 
 // ── Patterns ─────────────────────────────────────────────────────────────────
 
-/// Compiled working-template list for one fingerprint
-/// (`m_burst_slot.working_templates`).
+/// Compiled working-template and/or working-program lists for one fingerprint
+/// (`m_burst_slot.working_templates` / `working_programs`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BurstPatterns {
     hashes: HashedSet,
+    programs: HashedSet,
 }
 
 impl BurstPatterns {
     pub fn new(hashes: HashedSet) -> Self {
-        Self { hashes }
+        Self {
+            hashes,
+            programs: HashedSet::default(),
+        }
     }
 
-    /// Parse `metric_config["m_burst_slot"]`. `None` = key absent or unusable ⇒
-    /// the group is unconfigured and every metric reads `NaN`.
+    pub fn with_programs(mut self, programs: HashedSet) -> Self {
+        self.programs = programs;
+        self
+    }
+
+    /// Parse `metric_config["m_burst_slot"]`. `None` = key absent or both lists
+    /// empty ⇒ the group is unconfigured and every metric reads `NaN`.
     pub fn from_metric_config(cfg: &Value) -> Option<Self> {
         let obj = cfg.get(CONFIG_KEY)?;
         if !obj.is_object() {
             return None;
         }
-        let arr = obj.get("working_templates")?.as_array()?;
         let mut hashes = HashedSet::default();
-        for row in arr {
-            let id = row.as_str()?;
-            if !id.is_empty() {
-                hashes.insert(grain_id_hash(id));
+        if let Some(arr) = obj.get("working_templates").and_then(|v| v.as_array()) {
+            for row in arr {
+                let id = row.as_str()?;
+                if !id.is_empty() {
+                    hashes.insert(grain_id_hash(id));
+                }
             }
         }
-        Some(Self { hashes })
+        let mut programs = HashedSet::default();
+        if let Some(arr) = obj.get("working_programs").and_then(|v| v.as_array()) {
+            for row in arr {
+                let id = row.as_str()?;
+                if !id.is_empty() {
+                    programs.insert(program_id_hash(id));
+                }
+            }
+        }
+        if hashes.is_empty() && programs.is_empty() {
+            return None;
+        }
+        Some(Self { hashes, programs })
     }
 
     pub fn validate_metric_config(cfg: &Value) -> Result<(), String> {
@@ -63,30 +85,56 @@ impl BurstPatterns {
         let Some(map) = obj.as_object() else {
             return Err(format!("{CONFIG_KEY} must be an object"));
         };
-        let Some(arr) = map.get("working_templates") else {
-            return Err(format!("{CONFIG_KEY} carries no working_templates"));
-        };
-        let Some(rows) = arr.as_array() else {
+        let has_templates = map.contains_key("working_templates");
+        let has_programs = map.contains_key("working_programs");
+        if !has_templates && !has_programs {
             return Err(format!(
-                "{CONFIG_KEY}.working_templates must be an array of grain-id strings"
+                "{CONFIG_KEY} carries no working_templates or working_programs"
             ));
-        };
-        for row in rows {
-            if !row.is_string() {
+        }
+        if has_templates {
+            let Some(rows) = map.get("working_templates").and_then(|v| v.as_array()) else {
                 return Err(format!(
-                    "{CONFIG_KEY}.working_templates entry must be a string"
+                    "{CONFIG_KEY}.working_templates must be an array of grain-id strings"
                 ));
+            };
+            for row in rows {
+                if !row.is_string() {
+                    return Err(format!(
+                        "{CONFIG_KEY}.working_templates entry must be a string"
+                    ));
+                }
+            }
+        }
+        if has_programs {
+            let Some(rows) = map.get("working_programs").and_then(|v| v.as_array()) else {
+                return Err(format!(
+                    "{CONFIG_KEY}.working_programs must be an array of program-name strings"
+                ));
+            };
+            for row in rows {
+                if !row.is_string() {
+                    return Err(format!(
+                        "{CONFIG_KEY}.working_programs entry must be a string"
+                    ));
+                }
             }
         }
         Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.hashes.is_empty()
+        self.hashes.is_empty() && self.programs.is_empty()
     }
 
-    fn contains(&self, hash: u64) -> bool {
+    pub(crate) fn contains(&self, hash: u64) -> bool {
         self.hashes.contains(&hash)
+    }
+
+    /// Grain on `working_templates` or program on `working_programs`.
+    pub(crate) fn matches(&self, grain: Option<u64>, program: Option<u64>) -> bool {
+        grain.is_some_and(|h| self.hashes.contains(&h))
+            || program.is_some_and(|h| self.programs.contains(&h))
     }
 }
 

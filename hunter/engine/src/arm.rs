@@ -326,7 +326,7 @@ pub struct CompiledRule {
     pub stop_loss: Option<f64>,
     /// Empty ⇒ enter on arm (the fingerprint alone is the entry signal).
     pub entry_reqs: Vec<MetricReq>,
-    /// Leftover gate compiled out of `entry` (`working_templates_seen`). Empty ⇒
+    /// Leftover gate compiled out of `entry` (see [`is_leftover_metric`]). Empty ⇒
     /// no leftover (parent harvest A/B). Fail + permissions would have entered
     /// ⇒ [`EntryVerdict::Exhaust`], not [`EntryVerdict::SpendSlot`].
     pub leftover_reqs: Vec<MetricReq>,
@@ -429,7 +429,7 @@ impl CompiledRule {
             .unwrap_or_default();
         let (leftover_reqs, entry_reqs): (Vec<_>, Vec<_>) = entry_all
             .into_iter()
-            .partition(|r| r.metric == MetricId::WorkingTemplatesSeen);
+            .partition(|r| is_leftover_metric(r.metric));
         let event_reqs = rule
             .params
             .entry_event
@@ -611,7 +611,7 @@ impl CompiledRule {
     }
 
     /// Whether every `entry` filter holds at `now` (AND). Vacuous when empty.
-    /// Leftover (`working_templates_seen`) is [`leftover_satisfied`], not here.
+    /// Leftover (`is_leftover_metric`) is [`leftover_satisfied`], not here.
     pub fn entry_satisfied(&self, track: &TokenTrack, now: Ts) -> bool {
         reqs_satisfied(&self.entry_reqs, track, now)
     }
@@ -800,6 +800,16 @@ impl CompiledRule {
             .collect();
         EntryBlockers { killed_by, unmet }
     }
+}
+
+/// Gates compiled out of `entry` into [`CompiledRule::leftover_reqs`]. Fail on a
+/// print that would otherwise enter is [`EntryVerdict::Exhaust`] (`Done`), not a
+/// permission retry.
+pub fn is_leftover_metric(id: MetricId) -> bool {
+    matches!(
+        id,
+        MetricId::WorkingTemplatesSeen | MetricId::WaveHole | MetricId::WaveTipSeen
+    )
 }
 
 /// Armed-side entry result. [`SpendSlot`] is a completing print whose permission

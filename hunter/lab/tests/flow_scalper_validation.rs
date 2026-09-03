@@ -230,6 +230,7 @@ fn to_replay_tokens(tokens: &[CorpusToken]) -> Vec<ReplayToken> {
             trades: Arc::clone(&t.trades),
             creator_wallet_hash: None,
             identity: t.identity,
+            creation_slot: None,
         })
         .collect()
 }

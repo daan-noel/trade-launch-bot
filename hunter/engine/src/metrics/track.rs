@@ -461,7 +461,15 @@ impl TokenTrack {
                 self.burst.value(id, self.burst_patterns.get(&fp))
             }
             WaveThisMember | WaveWalletCount | WaveBuySol | WaveGapSlots | WaveAllNew
-            | WaveHasUnknown => self.burst_wave.value(id),
+            | WaveHasUnknown | WaveThisTip | WaveHole | WaveTipSeen => {
+                self.burst_wave.value(id, None)
+            }
+            WaveWorkingBuyCount | WaveThisWorking => {
+                let Some(fp) = fingerprint else {
+                    return f64::NAN;
+                };
+                self.burst_wave.value(id, self.burst_patterns.get(&fp))
+            }
             // Position-scoped metrics have no token state — they read from a
             // `PositionCtx` (see `metrics::position`), never the track. Before entry
             // (the only place `TokenTrack::value` reaches them, via the `can_enter`

@@ -50,7 +50,9 @@ use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::flow_ix::{
     ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash, FlowPatterns,
 };
-use hunter_engine::metrics::template_grain::grain_hash_from_labels_value;
+use hunter_engine::metrics::template_grain::{
+    grain_hash_from_labels_value, program_hash_from_labels_value,
+};
 use hunter_engine::metrics::{metric_spec, MetricId, Side, TradeLite};
 use hunter_engine::readout::{
     replay_readout, replay_series, ConditionRead, ConditionSeries, ReadSide, ReadoutSource,
@@ -638,6 +640,7 @@ fn trade_lite(t: &Trade) -> TradeLite {
         leg_index: t.leg_index.min(u8::MAX as u32) as u8,
         tx_index: Some(t.tx_index as u32),
         template_hash: grain_hash_from_labels_value(&t.instruction_labels),
+        program_hash: program_hash_from_labels_value(&t.instruction_labels),
         is_launch: hunter_engine::metrics::template_grain::is_launch_from_labels_value(
             &t.instruction_labels,
         ),

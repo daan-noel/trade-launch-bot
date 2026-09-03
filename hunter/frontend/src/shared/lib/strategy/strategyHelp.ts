@@ -319,8 +319,9 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'buy-slots BEFORE that run started, not before a later printer in the same run.',
       'Create slot is not a fireable wave.',
       '',
-      'Completing print: this_member = 1 and wallet_count crosses 2. all_new is every',
-      'wave wallet first-on-this-mint (not has_new).',
+      'Completing print: this_member = 1 and wallet_count crosses 2, or working_buy_count',
+      'crosses 2 on the fingerprint working-template list. all_new is every wave wallet',
+      'first-on-this-mint (not has_new). hole is a wave tx_index gap, not packed.',
       '',
       'Kind: static.',
     ].join('\n'),
@@ -1204,8 +1205,8 @@ export const FINGERPRINT_FIELD_HELP = {
     title: 'working_templates — grains harvest treats as working',
     body: [
       'Build-template grain ids (program|CU|ATA|N|S|F), NOT full ix_labels sequences.',
-      'm_burst_slot.this_working / working_* / has_new read this list. Absent => every',
-      'm_burst_slot metric is NaN (never 0). m_burst_wave does not read this list.',
+      'm_burst_slot.this_working / working_* / has_new and m_burst_wave.this_working /',
+      'working_buy_count read this list. Absent => those metrics are NaN (never 0).',
       '',
       'Add from the tape: set the chart\'s list toggle to "working" and click a trade',
       'badge. The grain is derived from that trade\'s instruction_labels the same way',
@@ -1213,6 +1214,15 @@ export const FINGERPRINT_FIELD_HELP = {
       '',
       'Catalog (harvest): Axiom Trade|CU|ATA|F, Axiom Trade|CU|ATA|N|F, Photon|CU|ATA|F,',
       'Terminal|CU|ATA|F, GMGN Bot|CU|ATA|F, GMGN|CU|ATA|F, Bloom Router|CU|F, Bloom|CU|F.',
+    ].join('\n'),
+  },
+  working_programs: {
+    title: 'working_programs — program names the wave leftover treats as working',
+    body: [
+      'Program names (Axiom Trade), not grain ids. m_burst_wave.this_working /',
+      'working_buy_count match either working_templates or this list. Use this when',
+      'the completing print is any grain of a router (ax2-midtips: Axiom Trade).',
+      'Absent + empty templates => those metrics are NaN (never 0).',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;

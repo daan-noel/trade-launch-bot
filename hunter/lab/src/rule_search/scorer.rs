@@ -445,6 +445,7 @@ pub fn to_replay_tokens(tokens: &[CorpusToken]) -> Vec<crate::strategies::replay
             trades: t.trades.clone(),
             creator_wallet_hash: None,
             identity: t.identity,
+            creation_slot: None,
         })
         .collect()
 }

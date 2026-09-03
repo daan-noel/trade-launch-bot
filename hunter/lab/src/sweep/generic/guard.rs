@@ -155,7 +155,7 @@ fn token_at(mint: &str, created_secs: f64, trades: Vec<CorpusTrade>) -> (CorpusT
         created_at: created,
         tf,
         trades,
-        creator_wallet_hash: None, identity: None,
+        creator_wallet_hash: None, identity: None, creation_slot: None,
     };
     (corpus, replay)
 }

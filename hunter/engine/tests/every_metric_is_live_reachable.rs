@@ -210,6 +210,7 @@ fn trade(
         } else {
             hunter_engine::metrics::template_grain::grain_hash(&NONVOL_LABELS).unwrap()
         }),
+        fee: hunter_engine::metrics::fee::FeeKeys::new(None, None, Some(0)),
         ..Default::default()
     }
 }
