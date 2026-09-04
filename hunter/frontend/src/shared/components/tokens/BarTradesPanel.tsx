@@ -9,6 +9,7 @@ import { useIxPatternTarget, type IxPatternTarget } from 'hooks/useIxPatternTarg
 import { useFlowLensContext, type FlowLensTarget } from 'context/FlowLensContext';
 import { formatTimestampMs } from 'utils/date';
 import type { FlowReason } from 'lib/flow/classifyFlow';
+import { toPatternRow } from 'lib/flow/ixPatternSets';
 import type {
   ChartBarSelection,
   ChartEventMarker,
@@ -164,6 +165,23 @@ export function BarTradesPanel({
       ? null
       : lensTarget.rows
     : patternTarget.rows;
+  // Under a lens the badge reports the NARROWED keys, so it can read "off" for a
+  // structure the set does hold. The whole stored set travels beside them: the
+  // badge's click un-mutes that one instead of saving, and its tooltip says so.
+  const storedPatternIds = useMemo(
+    () =>
+      lensTarget && lensTarget.list === 'working'
+        ? new Set(lensTarget.workingTemplates)
+        : null,
+    [lensTarget],
+  );
+  const storedPatternRows = useMemo(
+    () =>
+      lensTarget && lensTarget.list !== 'working'
+        ? lensTarget.patterns.map(toPatternRow)
+        : null,
+    [lensTarget],
+  );
 
   // Pulled apart rather than passed as one object: `useTokenHighlight` returns a
   // fresh literal every render, and depending on it would rebuild every column —
@@ -193,6 +211,8 @@ export function BarTradesPanel({
         // tagged, templates → working). Fingerprint path uses the strip's list.
         patternList: lensTarget ? lensTarget.list : patternTarget.list,
         otherListKeys: lensTarget ? null : patternTarget.otherKeys,
+        storedPatternIds,
+        storedPatternRows,
         feePinMask,
         patternRows,
       }),
@@ -203,6 +223,8 @@ export function BarTradesPanel({
       onTogglePattern,
       flowReasons,
       lensTarget,
+      storedPatternIds,
+      storedPatternRows,
       patternTarget.list,
       patternTarget.otherKeys,
       feePinMask,

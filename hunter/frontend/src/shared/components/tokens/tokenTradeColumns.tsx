@@ -106,6 +106,16 @@ export interface TokenTradeColumnsOpts {
    * to know before treating them as disjoint.
    */
   otherListKeys?: ReadonlySet<string> | null;
+  /**
+   * What the WRITE TARGET stores, when {@link flowPatternKeys} / {@link patternRows}
+   * are a narrowed view of it (a flow lens with some units muted) — grain ids on
+   * `'working'`, whole rows otherwise. A row that is off because its unit is muted
+   * takes a different click than one that is off because the target never had it —
+   * the first brings the unit back, the second saves — so the badge says which.
+   * Omit both when the badge already shows the whole target.
+   */
+  storedPatternIds?: ReadonlySet<string> | null;
+  storedPatternRows?: readonly IxPatternRow[] | null;
 }
 
 /** Target glyph for a highlight-lens toggle — reads as "find this everywhere". */
@@ -250,6 +260,8 @@ export function tokenTradeColumns(
   const isDump = list === 'dump';
   const isWorking = list === 'working';
   const otherKeys = opts?.otherListKeys ?? null;
+  const storedIds = opts?.storedPatternIds ?? null;
+  const storedRows = isWorking ? null : (opts?.storedPatternRows ?? null);
   const pinMask = opts?.feePinMask ?? null;
   const patternRows = isWorking ? null : (opts?.patternRows ?? null);
   const pinning = !isWorking && feeMaskActive(pinMask);
@@ -322,7 +334,16 @@ export function tokenTradeColumns(
             ? ` this structure + ${pinNote}`
             : ' this structure only (this tx has none of the checked fee fields)'
           : ' this structure';
-        const clickTitle = exactClickSaved
+        // Off because it is MUTED, not because the target lacks it — the click
+        // brings it back rather than saving anything.
+        const muted =
+          !isTagged &&
+          (isWorking
+            ? storedIds != null && workingListHits(storedIds, labels)
+            : storedRows != null && anyRowMatchesTrade(storedRows, labels, t));
+        const clickTitle = muted
+          ? `On ${targetLabel} but MUTED by the lens chips — click to classify with it again`
+          : exactClickSaved
           ? `Saved under ${listField} on ${targetLabel} — click to remove${pinClickHint}`
           : isTagged && pinning
             ? `Catch-all (any budget) on ${targetLabel}. Click to narrow to${pinClickHint}`
@@ -342,7 +363,9 @@ export function tokenTradeColumns(
                   e.stopPropagation();
                   onToggle(labels, pinning ? clickFee : undefined);
                 }}
-                className="rounded-md focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                // inline-flex, so the hit area is the badge itself — an inline
+                // button leaves line-height slack the click falls through.
+                className="inline-flex rounded-md focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
               >
                 {badge}
               </button>

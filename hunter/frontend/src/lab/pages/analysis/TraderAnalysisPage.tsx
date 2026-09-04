@@ -16,6 +16,8 @@ import {
 } from '@lab/components/analysis/coTrade';
 import { coTradeColumns } from '@lab/components/analysis/coTradeColumns';
 import { FlowLensBar } from '@lab/components/analysis/FlowLensBar';
+import { preEntryColumns } from '@lab/components/analysis/preEntryColumns';
+import { usePreEntryProbe } from '@lab/components/analysis/usePreEntryProbe';
 import { TraderChartCardExtra } from '@lab/components/analysis/TraderChartCardExtra';
 import { useTraderFlowLens } from '@lab/components/analysis/useTraderFlowLens';
 import { WalletAnalyticsPanel } from '@lab/components/analysis/WalletAnalyticsPanel';
@@ -88,6 +90,7 @@ const COLUMN_GROUP_LABELS: Record<string, string> = {
   wallet_pos: 'Position',
   wallet_curve: 'Bonding curve',
   co_trade: 'Co-trade',
+  pre_entry: 'Pre-entry ix',
 };
 
 /** Stable empty reference so derived memos don't recompute while loading. */
@@ -375,6 +378,11 @@ export function TraderAnalysisPage() {
   // this page answers "what did this wallet do", and the answer should be
   // readable without scrolling past twenty token fields first. Rows arrive
   // recent-first from the backend, which is the default order.
+  // Did a lens structure land on the tape before each entry? Off by default, so
+  // a study that never opens it costs exactly what it did before. Asked with the
+  // lens' own set + narrowing + side, over the rows already on screen.
+  const probe = usePreEntryProbe(query?.wallet ?? null, rows, lens);
+
   const columns = useMemo(() => {
     const base = tokenColumns() as unknown as ColumnDef<TraderTokenRow>[];
     // One past the LAST identity column (symbol / name / mint / creator /
@@ -392,8 +400,13 @@ export function TraderAnalysisPage() {
     const co = comparisonActive
       ? coTradeColumns(profileWallets, query!.with, coFocus)
       : [];
-    return [...base.slice(0, at), ...walletTokenColumns(), ...co, ...base.slice(at)];
-  }, [comparisonActive, profileWallets, query, coFocus]);
+    // Pre-entry sits beside the position block for the same reason co-trade
+    // does: "what did he do here" and "what was on the tape before he did it"
+    // read as one question. Present only while the probe is on, so the ordinary
+    // page keeps exactly the layout it had.
+    const pre = probe.on ? preEntryColumns(probe.verdicts) : [];
+    return [...base.slice(0, at), ...walletTokenColumns(), ...pre, ...co, ...base.slice(at)];
+  }, [comparisonActive, profileWallets, query, coFocus, probe.on, probe.verdicts]);
 
   const isCustomWindow = daysInput === CUSTOM_PRESET;
   // Seed instant for the day presets. Recomputed only when the preset (or zone)
@@ -471,6 +484,14 @@ export function TraderAnalysisPage() {
     () => (focus.length === 0 ? rows : filterTraderRowsByFocus(rows, focus, focusOpts)),
     [rows, focus, focusOpts],
   );
+  // The pre-entry narrowing, applied to the table's INPUT set rather than inside
+  // DataTable, so the charts grid and every count below follow it too. Inert
+  // while the probe is off or Show is All. The bar's summary is computed over the
+  // whole probed set, so it keeps reporting the denominator this filter hides.
+  const preEntryRows = useMemo(
+    () => (probe.on && probe.show !== 'all' ? lensRows.filter((r) => probe.passes(r.mint_address)) : lensRows),
+    [lensRows, probe.on, probe.show, probe.passes],
+  );
   // The two co-trade narrowings, each as its own predicate. Both are client-side
   // `co_traders` tests — the backend already answered for every token, so every
   // one of these controls is instant and costs no query.
@@ -488,8 +509,8 @@ export function TraderAnalysisPage() {
   // the switch back, and a count blind to the rest would promise rows the click
   // cannot deliver. Column filters stay out of both — the controls preview over the
   // query, the totals below them describe what is on screen.
-  const ladderBase = useMemo(() => lensRows.filter(bucketPass), [lensRows, bucketPass]);
-  const bucketBase = useMemo(() => lensRows.filter(depthPass), [lensRows, depthPass]);
+  const ladderBase = useMemo(() => preEntryRows.filter(bucketPass), [preEntryRows, bucketPass]);
+  const bucketBase = useMemo(() => preEntryRows.filter(depthPass), [preEntryRows, depthPass]);
   const rowsForTable = useMemo(
     () => bucketBase.filter(bucketPass),
     [bucketBase, bucketPass],
@@ -693,7 +714,7 @@ Not queried: a wallet cannot compare against itself, and the read takes the firs
 
       {error && <p className="mb-2 text-sm text-red">{error}</p>}
 
-      <FlowLensBar lens={lens} wallet={query?.wallet ?? null} />
+      <FlowLensBar lens={lens} wallet={query?.wallet ?? null} probe={probe} />
 
       {query && !isFetching && !error && (
         <p className="mb-3 text-xs text-text-dim">

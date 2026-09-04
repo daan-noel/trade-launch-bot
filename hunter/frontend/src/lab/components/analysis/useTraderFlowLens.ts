@@ -6,6 +6,7 @@ import { apiErrorMessage } from 'store/apiSlice';
 import {
   keysForSet,
   kindOf,
+  mutedPatternForClick,
   patternGroups,
   patternRowsForGroups,
   tapeListForKind,
@@ -30,12 +31,20 @@ import {
   useUpdateIxPatternSetMutation,
 } from '@lab/store/labEndpoints';
 
-/** Persisted lens knobs (`mt:form.traderFlowLens`). Group filter is per SET, so a
+/** Persisted lens knobs (`mt:form.traderFlowLens`). Narrowing is per SET, so a
  *  set swap doesn't silently apply the previous set's narrowing. */
 interface LensPrefs {
   setId: string | null;
-  /** Enabled group names per set id; a set absent here means "all groups". */
+  /** Enabled group names per EXACT set id; a set absent here means "all groups".
+   *  A group exists only while some pattern carries its name, so an edit can
+   *  retire one — storing what is ON is the shape that survives that. */
   groupsBySet: Record<string, string[]>;
+  /** Muted grain ids per TEMPLATES set id; absent or empty ⇒ every grain
+   *  classifies. Opposite polarity to {@link groupsBySet} on purpose: a grain is
+   *  an entry the user adds by hand, so a freshly pasted or badge-clicked one has
+   *  to classify at once — under an enabled-list it would land outside the filter
+   *  and read as a failed write. */
+  mutedBySet: Record<string, string[]>;
   contagion: boolean;
   excludeSelf: boolean;
   /** `null` ⇒ both legs. Absent in prefs written before the knob existed, which
@@ -47,6 +56,7 @@ interface LensPrefs {
 const DEFAULT_PREFS: LensPrefs = {
   setId: null,
   groupsBySet: {},
+  mutedBySet: {},
   // Structural-only by DEFAULT, unlike the engine. A lens answers "which
   // STRUCTURES are around this moment"; forward-only wallet tagging turns that
   // into "which wallets ever matched once", which on a busy token is everyone
@@ -70,10 +80,13 @@ export interface TraderFlowLens {
   set: IxPatternSet | null;
   setId: string | null;
   selectSet: (id: string | null) => void;
-  /** Group names in the selected set, and which are currently classifying. */
-  groups: string[];
-  enabledGroups: ReadonlySet<string> | null;
-  toggleGroup: (group: string) => void;
+  /** The selected set's narrowing axis: group names on an exact set, grain ids
+   *  on a templates set. {@link enabledUnits} is which of them classify right now
+   *  (`null` ⇒ all of them); {@link toggleUnit} flips one. View state only —
+   *  narrowing never edits the stored set. */
+  units: string[];
+  enabledUnits: ReadonlySet<string> | null;
+  toggleUnit: (unit: string) => void;
   contagion: boolean;
   setContagion: (on: boolean) => void;
   excludeSelf: boolean;
@@ -136,27 +149,39 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
   );
   const kind = kindOf(set);
   const patterns = set?.patterns ?? [];
-  const groups = useMemo(() => patternGroups(patterns), [patterns]);
+  const templates = useMemo(() => set?.working_templates ?? [], [set]);
+  const units = useMemo(
+    () => (kind === 'templates' ? templates : patternGroups(patterns)),
+    [kind, templates, patterns],
+  );
 
-  const enabledGroups = useMemo(() => {
-    if (!set || kind === 'templates') return null;
+  const enabledUnits = useMemo(() => {
+    if (!set) return null;
+    if (kind === 'templates') {
+      const muted = new Set(prefs.mutedBySet?.[set.id] ?? []);
+      if (muted.size === 0) return null; // nothing muted ⇒ every grain
+      // Muting every grain narrows to nothing, and that stands: the chips all
+      // read off and the bar says "0/N classifying", so it can't be mistaken for
+      // an unconfigured lens the way a silently-emptied group filter could.
+      return new Set(units.filter((g) => !muted.has(g)));
+    }
     const saved = prefs.groupsBySet[set.id];
     if (!saved) return null; // never narrowed ⇒ every group
     // Intersect with what the set actually carries now: a group can disappear
     // under an edit, and a stale name would silently narrow to nothing.
-    const live = new Set(groups);
+    const live = new Set(units);
     const kept = saved.filter((g) => live.has(g));
     return kept.length === 0 ? null : new Set(kept);
-  }, [set, kind, prefs.groupsBySet, groups]);
+  }, [set, kind, prefs.groupsBySet, prefs.mutedBySet, units]);
 
   const keys = useMemo(
-    () => (set ? keysForSet(set, enabledGroups) : null),
-    [set, enabledGroups],
+    () => (set ? keysForSet(set, enabledUnits) : null),
+    [set, enabledUnits],
   );
 
   const rows = useMemo(
-    () => (kind === 'exact' ? (patternRowsForGroups(patterns, enabledGroups) ?? []) : []),
-    [kind, patterns, enabledGroups],
+    () => (kind === 'exact' ? (patternRowsForGroups(patterns, enabledUnits) ?? []) : []),
+    [kind, patterns, enabledUnits],
   );
 
   const excludeWallets = useMemo(
@@ -195,31 +220,104 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     [set, writeBody, updateSetMut],
   );
 
+  const mutedGrains = useMemo(
+    () => (set && kind === 'templates' ? (prefs.mutedBySet?.[set.id] ?? []) : []),
+    [set, kind, prefs.mutedBySet],
+  );
+
+  /** Mute / un-mute ONE grain. Ids the set no longer carries are dropped on every
+   *  write, so a removed-then-re-added grain comes back classifying instead of
+   *  staying silently muted. */
+  const setGrainMuted = useCallback(
+    (grain: string, muted: boolean) => {
+      if (!set) return;
+      setPrefs((p) => {
+        const live = new Set(set.working_templates);
+        const kept = (p.mutedBySet?.[set.id] ?? []).filter((g) => g !== grain && live.has(g));
+        return {
+          ...p,
+          mutedBySet: { ...(p.mutedBySet ?? {}), [set.id]: muted ? [...kept, grain] : kept },
+        };
+      });
+    },
+    [set, setPrefs],
+  );
+
+  const toggleUnit = useCallback(
+    (unit: string) => {
+      if (!set) return;
+      if (kindOf(set) === 'templates') {
+        setGrainMuted(unit, !(prefs.mutedBySet?.[set.id] ?? []).includes(unit));
+        return;
+      }
+      setPrefs((p) => {
+        const live = patternGroups(set.patterns);
+        const current = p.groupsBySet[set.id] ?? live;
+        const next = current.includes(unit)
+          ? current.filter((g) => g !== unit)
+          : [...current, unit];
+        // Turning the last group off means "all" again rather than a blank
+        // chart, which is indistinguishable from an unconfigured lens.
+        const stored = next.length === 0 ? live : next;
+        return { ...p, groupsBySet: { ...p.groupsBySet, [set.id]: stored } };
+      });
+    },
+    [set, prefs.mutedBySet, setGrainMuted, setPrefs],
+  );
+
   // A badge click files the new pattern under the ONE enabled group when the
   // lens is narrowed to exactly one — otherwise it would land in a group that is
   // filtered out and vanish on save, which reads as a failed write.
   const activeGroup =
-    enabledGroups && enabledGroups.size === 1
-      ? [...enabledGroups][0] === UNGROUPED
+    kind === 'exact' && enabledUnits && enabledUnits.size === 1
+      ? [...enabledUnits][0] === UNGROUPED
         ? null
-        : [...enabledGroups][0]
+        : [...enabledUnits][0]
       : null;
 
+  /**
+   * A tape badge reports what the CHART classified with — the NARROWED key set —
+   * so a click has to flip exactly that, or the badge stays put and the click
+   * reads as broken.
+   *
+   * Either vocabulary can be off for two different reasons, and they take
+   * opposite writes: not in the set at all (add it), or in the set but narrowed
+   * out by the chips (bring that unit back). One write for both left the badge
+   * unchanged and quietly dropped a row the reader could not even see.
+   *
+   * The exact side un-mutes the whole GROUP the stored pattern sits in, since
+   * that is the unit there — and only when the muted row provably accepts this
+   * click (unpinned, or its pins equal the pins the click carries). Unprovable
+   * ⇒ fall through to the normal write rather than guess.
+   */
   const toggle = useCallback(
     (labels: readonly string[], fee?: IxPatternFee) => {
       if (!set) return;
       if (kind === 'templates') {
         if (isLaunchGrain(labels)) return;
+        const grain = templateGrain(labels);
+        const muted = mutedGrains.includes(grain);
+        if (muted && set.working_templates.includes(grain)) {
+          setGrainMuted(grain, false);
+          return;
+        }
+        // A mute left over from an earlier removal would swallow the add.
+        if (muted) setGrainMuted(grain, false);
         void writeSet({
-          working_templates: toggleWorkingTemplate(set.working_templates, templateGrain(labels)),
+          working_templates: toggleWorkingTemplate(set.working_templates, grain),
         });
+        return;
+      }
+      const hidden = mutedPatternForClick(set.patterns, enabledUnits, labels, fee);
+      if (hidden) {
+        toggleUnit(hidden.group ?? UNGROUPED);
         return;
       }
       void writeSet({
         patterns: toggleExactPattern(set.patterns, labels, fee, activeGroup),
       });
     },
-    [set, kind, writeSet, activeGroup],
+    [set, kind, writeSet, activeGroup, mutedGrains, setGrainMuted, enabledUnits, toggleUnit],
   );
 
   const setFeePins = useCallback(
@@ -268,24 +366,6 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
   const selectSet = useCallback(
     (id: string | null) => setPrefs((p) => ({ ...p, setId: id })),
     [setPrefs],
-  );
-
-  const toggleGroup = useCallback(
-    (group: string) => {
-      if (!set) return;
-      setPrefs((p) => {
-        const live = patternGroups(set.patterns);
-        const current = p.groupsBySet[set.id] ?? live;
-        const next = current.includes(group)
-          ? current.filter((g) => g !== group)
-          : [...current, group];
-        // Turning the last group off means "all" again rather than a blank
-        // chart, which is indistinguishable from an unconfigured lens.
-        const stored = next.length === 0 ? live : next;
-        return { ...p, groupsBySet: { ...p.groupsBySet, [set.id]: stored } };
-      });
-    },
-    [set, setPrefs],
   );
 
   const createSet = useCallback(
@@ -342,7 +422,8 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
       await deleteSetMut(set.id).unwrap();
       setPrefs((p) => {
         const { [set.id]: _dropped, ...rest } = p.groupsBySet;
-        return { ...p, setId: null, groupsBySet: rest };
+        const { [set.id]: _muted, ...restMuted } = p.mutedBySet ?? {};
+        return { ...p, setId: null, groupsBySet: rest, mutedBySet: restMuted };
       });
     } catch (e) {
       setError(apiErrorMessage(e as never, 'Failed to delete the pattern set'));
@@ -356,9 +437,9 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     set,
     setId: set?.id ?? null,
     selectSet,
-    groups,
-    enabledGroups,
-    toggleGroup,
+    units,
+    enabledUnits,
+    toggleUnit,
     contagion: prefs.contagion,
     setContagion: (on) => setPrefs((p) => ({ ...p, contagion: on })),
     excludeSelf: prefs.excludeSelf,

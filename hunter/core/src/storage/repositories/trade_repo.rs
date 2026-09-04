@@ -898,6 +898,120 @@ impl TradeRepo {
             .collect())
     }
 
+    /// Every leg on each mint inside its own `(lo_slot..=hi_slot)` window, with the
+    /// columns the flow classifiers read and nothing else.
+    ///
+    /// One nested-loop over `idx_trades_mint_order` per window — the index is
+    /// `(mint_address, slot, tx_index, leg_index)`, so each window is one index
+    /// range. The `block_time` bounds are the SPAN of every window (not per-mint):
+    /// slot already filters precisely, and a constant time range is what lets the
+    /// planner exclude chunks before the loop starts instead of per row.
+    ///
+    /// `exclude_wallet` drops one address in SQL rather than in the caller, so its
+    /// legs never reach a count or a sum. Unknown addresses resolve to nothing and
+    /// exclude nothing.
+    ///
+    /// Legs, not transactions: one tx emits several, and callers that mean "one
+    /// print" collapse on `(slot, tx_index)`. Filtering `leg_index = 0` here would
+    /// drop the later-leg buys entirely.
+    pub async fn prints_in_slot_windows(
+        &self,
+        windows: &[SlotWindow],
+        exclude_wallet: Option<&str>,
+    ) -> anyhow::Result<Vec<TapePrint>> {
+        if windows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let exclude_id = match exclude_wallet {
+            Some(w) => WalletDictRepo::new(self.pool.clone()).id_for(w).await?,
+            None => None,
+        };
+        let mints: Vec<String> = windows.iter().map(|w| w.mint_address.clone()).collect();
+        let lo_slots: Vec<i64> = windows.iter().map(|w| w.lo_slot).collect();
+        let hi_slots: Vec<i64> = windows.iter().map(|w| w.hi_slot).collect();
+        // `min`/`max` over a non-empty slice — the early return above guarantees it.
+        let lo_time = windows.iter().map(|w| w.lo_time).min().expect("non-empty");
+        let hi_time = windows.iter().map(|w| w.hi_time).max().expect("non-empty");
+
+        #[derive(sqlx::FromRow)]
+        struct PrintRow {
+            mint_address: String,
+            slot: i64,
+            tx_index: i32,
+            wallet_address: String,
+            trade_type: String,
+            amount_lamports: i64,
+            ix_labels: Option<sqlx::types::Json<serde_json::Value>>,
+            cu_limit: Option<i64>,
+            cu_price: Option<i64>,
+            tip_lamports: Option<i64>,
+        }
+
+        let rows: Vec<PrintRow> = sqlx::query_as(
+            r#"
+            SELECT t.mint_address, t.slot, t.tx_index,
+                   COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address,
+                   t.trade_type, t.amount_lamports, t.ix_labels,
+                   t.cu_limit, t.cu_price, t.tip_lamports
+            FROM UNNEST($1::text[], $2::bigint[], $3::bigint[])
+                 AS win(mint_address, lo_slot, hi_slot)
+            JOIN trades t
+              ON t.mint_address = win.mint_address
+             AND t.slot BETWEEN win.lo_slot AND win.hi_slot
+             AND t.block_time BETWEEN $4 AND $5
+            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
+            WHERE ($6::int IS NULL OR t.wallet_id <> $6)
+            ORDER BY t.mint_address, t.slot, t.tx_index, t.leg_index
+            "#,
+        )
+        .bind(&mints)
+        .bind(&lo_slots)
+        .bind(&hi_slots)
+        .bind(lo_time)
+        .bind(hi_time)
+        .bind(exclude_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| TapePrint {
+                mint_address: r.mint_address,
+                slot: r.slot,
+                tx_index: r.tx_index,
+                wallet_address: r.wallet_address,
+                is_buy: r.trade_type == "buy",
+                amount_lamports: r.amount_lamports,
+                ix_labels: r.ix_labels.map(|j| j.0),
+                cu_limit: r.cu_limit,
+                cu_price: r.cu_price,
+                tip_lamports: r.tip_lamports,
+            })
+            .collect())
+    }
+
+    /// The oldest instant `trades` can still answer for: the start of the oldest
+    /// chunk the retention policy has not dropped.
+    ///
+    /// Read from the chunk catalog (milliseconds) rather than as `MIN(block_time)`
+    /// (seconds, and it grows with the table). Exact for this question because
+    /// retention drops WHOLE chunks: everything from that boundary forward is
+    /// present, and a hole above it is an ingest gap, not retention.
+    ///
+    /// `None` when the hypertable has no chunks at all.
+    pub async fn tape_floor(&self) -> anyhow::Result<Option<DateTime<Utc>>> {
+        let floor: Option<DateTime<Utc>> = sqlx::query_scalar(
+            r#"
+            SELECT MIN(range_start)
+            FROM timescaledb_information.chunks
+            WHERE hypertable_name = 'trades'
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(floor)
+    }
+
     /// Find all trades for a token in execution order (slot, tx_index, leg_index).
     /// LEFT-joins `wallet_dict` to recover each trade's wallet address (orphaned
     /// wallet ids fall back to the `unknown:<id>` sentinel, never dropping a row).
@@ -1401,6 +1515,45 @@ pub struct AvgEntry {
     pub total_cost_lamports: i64,
 }
 
+/// One mint's slot range for [`TradeRepo::prints_in_slot_windows`].
+///
+/// The slot pair is the filter; the time pair only bounds which chunks the read
+/// touches, so it may be wider than the slots imply — never narrower, or the
+/// window loses prints the slot range asks for.
+#[derive(Debug, Clone)]
+pub struct SlotWindow {
+    pub mint_address: String,
+    /// Inclusive, both ends.
+    pub lo_slot: i64,
+    pub hi_slot: i64,
+    pub lo_time: DateTime<Utc>,
+    pub hi_time: DateTime<Utc>,
+}
+
+/// One leg inside a [`SlotWindow`] — the ix shape, the fee budget, the side, the
+/// size, and its tape position. Deliberately not a [`Trade`]: this read fans out
+/// over many mints, and the model's reserves / signature / price reconstruction
+/// are all cost no classifier spends.
+#[derive(Debug, Clone)]
+pub struct TapePrint {
+    pub mint_address: String,
+    /// `(slot, tx_index)` is the tape order AND the transaction identity within a
+    /// mint — `block_time` ties across a whole slot and cannot order two prints.
+    pub slot: i64,
+    pub tx_index: i32,
+    pub wallet_address: String,
+    pub is_buy: bool,
+    pub amount_lamports: i64,
+    /// The tx's ordered instruction labels. `None` on a pre-`0002` row that has no
+    /// labels to read — unknowable, never an empty sequence.
+    pub ix_labels: Option<serde_json::Value>,
+    /// The `0013` fee trio, three-state throughout: `None` is "not captured"
+    /// (every row written before the fee cutover), never a zero budget.
+    pub cu_limit: Option<i64>,
+    pub cu_price: Option<i64>,
+    pub tip_lamports: Option<i64>,
+}
+
 /// One token a wallet traded in the window, with the wallet's interaction stats
 /// on that mint — the recent-first ordering key + the wallet-specific columns for
 /// the Trader Analysis token table ([`TradeRepo::wallet_traded_mints`]).
@@ -1622,6 +1775,71 @@ mod tests {
         )
         .unwrap();
         assert!((sol - 60.0).abs() < 1e-6, "got {sol}");
+    }
+
+    // ── prints_in_slot_windows (pre-entry ix probe) ─────────────────────────
+
+    /// Self-skips without a reachable `DATABASE_URL`, so a keyless run stays green.
+    async fn probe_pool() -> Option<PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        PgPoolOptions::new().max_connections(2).connect(&url).await.ok()
+    }
+
+    /// The per-mint window read against real tape: the binds encode, the UNNEST
+    /// arity holds, and every row lands inside the slot range it was asked for,
+    /// in execution order. Pure read — seeds nothing, deletes nothing.
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn prints_in_slot_windows_reads_each_window_in_order() {
+        let Some(pool) = probe_pool().await else { return };
+        let repo = TradeRepo::new(pool.clone());
+
+        // Anchor on real tape rather than a fixture: the point of this test is the
+        // live column set (`ix_labels` + the fee trio) surviving the round trip.
+        let Some((mint, slot, at)): Option<(String, i64, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT mint_address, slot, block_time FROM trades              WHERE block_time > now() - interval '2 days' ORDER BY block_time DESC LIMIT 1",
+        )
+        .fetch_optional(&pool)
+        .await
+        .expect("anchor read") else {
+            return; // no recent tape on this box
+        };
+
+        let win = SlotWindow {
+            mint_address: mint.clone(),
+            lo_slot: slot - 50,
+            hi_slot: slot,
+            lo_time: at - chrono::Duration::minutes(5),
+            hi_time: at + chrono::Duration::minutes(1),
+        };
+        let prints = repo
+            .prints_in_slot_windows(std::slice::from_ref(&win), None)
+            .await
+            .expect("window read");
+
+        let mut last = (0i64, 0i32);
+        for p in &prints {
+            assert_eq!(p.mint_address, mint);
+            assert!(p.slot >= win.lo_slot && p.slot <= win.hi_slot, "slot {} outside", p.slot);
+            assert!((p.slot, p.tx_index) >= last, "rows must arrive in execution order");
+            last = (p.slot, p.tx_index);
+        }
+
+        // The oldest chunk start is what a truncated probe window runs into.
+        let floor = repo.tape_floor().await.expect("tape floor");
+        assert!(floor.is_some_and(|f| f <= at), "floor must not sit after live tape");
+    }
+
+    /// An empty window list is answered without touching the database — the
+    /// probe's own early return, which a page with no anchors relies on.
+    #[tokio::test]
+    async fn no_windows_is_no_query() {
+        let repo = TradeRepo::new(
+            PgPoolOptions::new()
+                .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
+                .expect("lazy pool"),
+        );
+        assert!(repo.prints_in_slot_windows(&[], None).await.unwrap().is_empty());
     }
 
     /// A row with no reserve snapshot has UNKNOWN depth. Reading it as 0 would

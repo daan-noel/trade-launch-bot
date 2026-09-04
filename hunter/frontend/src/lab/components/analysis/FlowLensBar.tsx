@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -27,6 +27,8 @@ import {
   useUpdateFingerprintMutation,
 } from 'store/sharedEndpoints';
 import type { FlowSide } from 'lib/flow/classifyFlow';
+import { PreEntryProbeControls } from './PreEntryProbeControls';
+import type { PreEntryProbe } from './usePreEntryProbe';
 import type { TraderFlowLens } from './useTraderFlowLens';
 
 const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
@@ -57,13 +59,24 @@ const KIND_OPTIONS: { value: IxPatternSetKind; label: string; title: string }[] 
  * Nothing here can reach a rule: a set is analysis-only, and the one path into
  * the engine is the explicit copy-to-fingerprint below.
  */
-export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: string | null }) {
+export function FlowLensBar({
+  lens,
+  wallet,
+  probe,
+}: {
+  lens: TraderFlowLens;
+  wallet: string | null;
+  /** The pre-entry probe asked WITH this lens — its set, its narrowing, its
+   *  side, the same wallet excluded. Absent ⇒ the bar is the lens alone. */
+  probe?: PreEntryProbe;
+}) {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [newName, setNewName] = useState('');
   const [newKind, setNewKind] = useState<IxPatternSetKind>('templates');
+  const [copied, setCopied] = useState(false);
 
-  const { set, sets, groups, enabledGroups, keys } = lens;
+  const { set, sets, units, enabledUnits, keys } = lens;
   const kind = set ? kindOf(set) : newKind;
   const isTemplates = kind === 'templates';
   const classifying = keys?.size ?? 0;
@@ -81,6 +94,29 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
   const pasteReady = isTemplates
     ? (parsedGrains?.grains.length ?? 0) > 0
     : (parsedPatterns?.patterns.length ?? 0) > 0;
+
+  // The box opens on the STORED set, not empty: a clipboard-only Copy left no way
+  // to read what a lens actually holds. Same text `Copy JSON` writes (one
+  // serializer), and it round-trips back through the parser, so the viewer and the
+  // editor are the same control — read it, change a line, Replace.
+  const togglePaste = () => {
+    const next = !pasteOpen;
+    setPasteOpen(next);
+    if (next && set && storedCount > 0) setPasteText(setJson(set, isTemplates));
+  };
+
+  // A set swap while the box is open would leave another set's JSON on screen
+  // looking like this one's.
+  useEffect(() => {
+    setPasteOpen(false);
+    setPasteText('');
+  }, [lens.setId]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
 
   const applyPaste = async (mode: 'replace' | 'merge') => {
     if (isTemplates) {
@@ -161,23 +197,26 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
             <Button
               size="xs"
               variant="ghost"
-              onClick={() => setPasteOpen((v) => !v)}
-              title={isTemplates ? 'Paste grain ids into this set' : 'Paste ix_labels sequences into this set'}
+              active={pasteOpen}
+              onClick={togglePaste}
+              title={
+                isTemplates
+                  ? "Show this set's grain ids as JSON — edit them there, or paste new ones in"
+                  : "Show this set's ix_labels sequences as JSON — edit them there, or paste new ones in"
+              }
             >
-              {pasteOpen ? 'Close paste' : isTemplates ? 'Paste grains' : 'Paste patterns'}
+              {pasteOpen ? 'Hide JSON' : 'Show JSON'}
             </Button>
             <Button
               size="xs"
               variant="ghost"
               onClick={() => {
-                const text = isTemplates
-                  ? JSON.stringify(set.working_templates, null, 2)
-                  : formatPatternsJson(set.patterns);
-                void navigator.clipboard?.writeText(text);
+                void navigator.clipboard?.writeText(setJson(set, isTemplates));
+                setCopied(true);
               }}
-              title="Copy the whole set as re-pastable JSON"
+              title="Copy the whole set to the clipboard as re-pastable JSON"
             >
-              Copy JSON
+              {copied ? 'Copied ✓' : 'Copy JSON'}
             </Button>
             <RenameControl lens={lens} />
             <Button
@@ -214,7 +253,7 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
             >
               New set
             </Button>
-            <Button size="xs" variant="ghost" onClick={() => setPasteOpen((v) => !v)}>
+            <Button size="xs" variant="ghost" onClick={togglePaste}>
               {pasteOpen ? 'Close paste' : newKind === 'templates' ? 'Paste grains' : 'Paste patterns'}
             </Button>
           </>
@@ -256,49 +295,65 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
         {lens.error && <span className="text-[11px] text-red">{lens.error}</span>}
       </div>
 
-      {set && isTemplates && set.working_templates.length > 0 && (
+      {/* Narrowing chips — one launch client (exact) or one build template
+          (templates) at a time, without re-pasting. A click is VIEW state: the
+          stored set never changes, so a muted chip can be brought back. Removing
+          a grain from the set is the separate × — the two were one click here,
+          which made narrowing a templates lens impossible. */}
+      {set && units.length > (isTemplates ? 0 : 1) && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">
-            Grains
+            {isTemplates ? 'Grains' : 'Groups'}
           </span>
-          {set.working_templates.map((g) => (
-            <button
-              key={g}
-              type="button"
-              onClick={() => void lens.saveTemplates(toggleWorkingTemplate(set.working_templates, g))}
-              className="rounded-full border border-green/40 bg-green/15 px-2 py-0.5 font-mono text-[11px] text-green transition-colors hover:border-red/50 hover:bg-red/15 hover:text-red"
-              title="Remove this grain"
-            >
-              {g}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Group narrowing — one launch client at a time, without re-pasting. Exact only. */}
-      {set && !isTemplates && groups.length > 1 && (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">
-            Groups
-          </span>
-          {groups.map((g) => {
-            const on = !enabledGroups || enabledGroups.has(g);
-            const count = set.patterns.filter((p) => (p.group ?? UNGROUPED) === g).length;
+          {units.map((u) => {
+            const on = !enabledUnits || enabledUnits.has(u);
+            const count = isTemplates
+              ? 0
+              : set.patterns.filter((p) => (p.group ?? UNGROUPED) === u).length;
             return (
-              <button
-                key={g}
-                type="button"
-                onClick={() => lens.toggleGroup(g)}
+              <span
+                key={u}
                 className={cn(
-                  'rounded-full border px-2 py-0.5 text-[11px] transition-colors',
+                  'inline-flex items-center rounded-full border transition-colors',
                   on
-                    ? 'border-primary/50 bg-primary/15 text-primary'
-                    : 'border-white/10 bg-transparent text-text-dim hover:text-text',
+                    ? isTemplates
+                      ? 'border-green/40 bg-green/15 text-green'
+                      : 'border-primary/50 bg-primary/15 text-primary'
+                    : 'border-white/10 bg-transparent text-text-dim',
                 )}
-                title={`${count} pattern${count === 1 ? '' : 's'}`}
               >
-                {g} · {count}
-              </button>
+                <button
+                  type="button"
+                  onClick={() => lens.toggleUnit(u)}
+                  className={cn(
+                    'py-0.5 pl-2.5 text-[11px]',
+                    isTemplates ? 'pr-2 font-mono' : 'pr-2.5',
+                    on ? '' : 'hover:text-text',
+                  )}
+                  title={
+                    on
+                      ? `Classifying${isTemplates ? '' : ` · ${count} pattern${count === 1 ? '' : 's'}`} — click to mute`
+                      : `Muted${isTemplates ? '' : ` · ${count} pattern${count === 1 ? '' : 's'}`} — click to classify with it again`
+                  }
+                >
+                  {isTemplates ? u : `${u} · ${count}`}
+                </button>
+                {isTemplates && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void lens.saveTemplates(toggleWorkingTemplate(set.working_templates, u))
+                    }
+                    className={cn(
+                      'self-stretch border-l px-2 text-[11px] leading-none transition-colors hover:bg-red/20 hover:text-red',
+                      on ? 'border-green/40 text-green/60' : 'border-white/10 text-text-dim/60',
+                    )}
+                    title="Remove this grain from the set — a click on the id itself only mutes it"
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
             );
           })}
         </div>
@@ -306,6 +361,16 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
 
       {pasteOpen && (
         <div className="mt-2">
+          <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-text-dim">
+            <span className="text-[9px] font-bold uppercase tracking-widest">
+              {isTemplates ? 'Grains' : 'Patterns'} JSON
+            </span>
+            <span>
+              {set
+                ? `The whole stored set — ${storedCount} ${isTemplates ? 'grain' : 'pattern'}${storedCount === 1 ? '' : 's'}, narrowing not applied. Edit and Replace to save it back.`
+                : 'Paste a set to create one.'}
+            </span>
+          </div>
           <textarea
             value={pasteText}
             onChange={(e) => setPasteText(e.target.value)}
@@ -348,6 +413,15 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
             <span className="grow" />
             <Button
               size="xs"
+              variant="link"
+              disabled={!pasteText}
+              onClick={() => setPasteText('')}
+              title="Empty the box to paste something else in"
+            >
+              Clear
+            </Button>
+            <Button
+              size="xs"
               variant="primary"
               disabled={!pasteReady}
               onClick={() => void applyPaste('replace')}
@@ -369,9 +443,22 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
         </div>
       )}
 
+      {probe && <PreEntryProbeControls probe={probe} />}
+
       {set && storedCount > 0 && <PromoteToFingerprint setKind={kind} set={set} />}
     </div>
   );
+}
+
+/** The set as re-pastable JSON — the ONE text both `Copy JSON` and the box show,
+ *  so what you read is what the clipboard carries and what the parser accepts. */
+function setJson(
+  set: { patterns: IxPattern[]; working_templates: string[] },
+  isTemplates: boolean,
+): string {
+  return isTemplates
+    ? JSON.stringify(set.working_templates, null, 2)
+    : formatPatternsJson(set.patterns);
 }
 
 /** Default name for a set created while studying a wallet. */

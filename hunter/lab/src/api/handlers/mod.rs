@@ -4,6 +4,7 @@
 //! `configure_local_routes`.
 
 pub mod ix_pattern_sets;
+pub mod pre_entry_ix;
 pub mod replay;
 pub mod strategies;
 pub mod system;

@@ -19,6 +19,7 @@ import type { TapeList } from 'lib/strategy/registry';
 import { parseGrainIds } from 'lib/strategy/templateGrain';
 import {
   FEE_FIELDS,
+  feeMatchesTrade,
   patternKey,
   patternRowKey,
   togglePatternRow,
@@ -133,16 +134,69 @@ export function patternRowsForGroups(
   return rows.length > 0 ? rows : null;
 }
 
-/** Overlay key set for the selected set's kind. */
+/**
+ * Overlay key set for the selected set's kind, narrowed to `enabled`.
+ *
+ * `enabled` is the set's narrowing axis: GROUP names on an exact set, GRAIN ids
+ * on a templates set (a grain is its own bucket — nothing groups it). `null` ⇒
+ * everything the set carries.
+ */
 export function keysForSet(
   set: Pick<IxPatternSet, 'kind' | 'patterns' | 'working_templates'>,
   enabled: ReadonlySet<string> | null,
 ): ReadonlySet<string> | null {
   if (kindOf(set) === 'templates') {
-    const grains = set.working_templates ?? [];
+    const grains = (set.working_templates ?? []).filter((g) => !enabled || enabled.has(g));
     return grains.length > 0 ? new Set(grains) : null;
   }
   return patternKeysForGroups(set.patterns, enabled);
+}
+
+/**
+ * The narrowed set as a server payload: the rows / grain ids that are actually
+ * classifying, in the vocabulary the set was stored in.
+ *
+ * Same `enabled` narrowing {@link keysForSet} applies, from the same helper — a
+ * backend read and the overlay must never disagree about which units are on, or
+ * a filter fires on structures the charts are not drawing.
+ */
+export function narrowedSetPayload(
+  set: Pick<IxPatternSet, 'kind' | 'patterns' | 'working_templates'>,
+  enabled: ReadonlySet<string> | null,
+): { kind: IxPatternSetKind; patterns: IxPattern[]; templates: string[] } {
+  const kind = kindOf(set);
+  if (kind === 'templates') {
+    return {
+      kind,
+      patterns: [],
+      templates: (set.working_templates ?? []).filter((g) => !enabled || enabled.has(g)),
+    };
+  }
+  return { kind, patterns: [...pickedPatterns(set.patterns, enabled)], templates: [] };
+}
+
+/**
+ * The stored pattern a badge click means "bring back", or `null` for every click
+ * that is an ordinary add/remove.
+ *
+ * A lens badge reads off for two different reasons: the set never had the
+ * structure, or every stored row of it sits in a MUTED group. Only the second is
+ * a narrowing question, and it holds only when nothing ENABLED carries the shape
+ * (otherwise the badge is on and the click means remove) and the muted row
+ * provably accepts this click — unpinned, or its pins equal the pins the click
+ * carries. Unprovable ⇒ `null`, and the caller writes rather than guesses.
+ */
+export function mutedPatternForClick(
+  patterns: readonly IxPattern[],
+  enabled: ReadonlySet<string> | null,
+  labels: readonly string[],
+  fee?: IxPatternFee,
+): IxPattern | null {
+  if (!enabled) return null;
+  const shape = patternKey(labels);
+  const sameShape = patterns.filter((p) => patternKey(p.ix_labels) === shape);
+  if (sameShape.some((p) => enabled.has(p.group ?? UNGROUPED))) return null;
+  return sameShape.find((p) => feeMatchesTrade(p, fee ?? {})) ?? null;
 }
 
 /** Add/remove one exact row (labels + optional pins), keeping groups. */

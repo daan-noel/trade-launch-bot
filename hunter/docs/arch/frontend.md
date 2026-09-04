@@ -1157,9 +1157,32 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `m_burst_slot.working_templates`). Paste on an exact set accepts a `{ "patterns": [...] }` study file, a
   `[{ tool, ix_labels, cu_limit? }]` list, bare label arrays, or one JSON array per line, and reports
   accepted / duplicate / skipped counts (`lib/flow/ixPatternSets.ts`). Paste on a templates set accepts
-  grain ids (JSON string array or one per line) and rejects ix_labels payloads. Group chips narrow
-  which exact patterns classify (view state, per set); templates have no groups.
+  grain ids (JSON string array or one per line) and rejects ix_labels payloads. **Show JSON** opens that
+  same box prefilled with the stored set (one serializer with `Copy JSON`, and the text parses back), so
+  the box is the viewer and the editor both. Narrowing chips say
+  which of the set classifies right now — group names on an exact set, one chip per grain on a
+  templates set (a grain is its own bucket). A click is view state, per set, and never edits the
+  stored set; removing a grain is the chip's separate `×`.
   Detail: [@plans/strategies/trader-flow-lens.md](@plans/strategies/trader-flow-lens.md).
+- **Trader Analysis pre-entry probe (`lab/components/analysis/usePreEntryProbe.ts` +
+  `PreEntryProbeControls.tsx` + `preEntryColumns.tsx`, wire types in `lab/lib/preEntryProbeTypes.ts`).**
+  The lens asked across every token at once: did a structure from this set land on the tape
+  BEFORE the trader's first buy on that mint. `POST /api/wallets/:wallet/pre-entry-ix` takes one
+  anchor per row on screen (`wallet_entry_slot`/`_tx_index`/`_at`, already on the row), the window
+  `W` in SLOTS, the two thresholds (min hits / min SOL), the lens' `side`, and the **narrowed** set
+  (`narrowedSetPayload` — the same helper `keysForSet` narrows the overlay with, so filter and
+  charts can never disagree about which units classify). Matching runs in Rust on the engine's own
+  classifiers; nothing is re-derived client-side. Verdicts arrive as a per-mint map and the columns
+  close over it — `TraderTokenRow` stays the server's shape, and the probe re-asks on a window /
+  threshold / narrowing change without refetching rows. A candidate print must be strictly earlier
+  in the tape than the entry, so a same-slot print counts only ahead of his `tx_index` and reads as
+  `same slot`, never `0 slots`. Every answer carries the CONTROL window (`[entry−2W, entry−W)`) and
+  the strip's **Show** chips (All / Before / Absent / Unknown) narrow the table's INPUT set — a
+  view over answers already in hand, so the charts grid follows and nothing re-probes, while the
+  summary keeps counting over every probed row so the denominator stays visible; `unknown`
+  (no buy leg / tape past retention / fee pins with no fee readings) is never folded into a miss.
+  Off by default (`mt:form.traderPreEntryProbe`), debounced 350ms, and only the newest probe may
+  paint. Detail: [@plans/strategies/trader-flow-lens.md](@plans/strategies/trader-flow-lens.md).
 - **One in-memory evaluator, in Rust only.** Token tables whose rows are RAM-resident on the backend (the
   lab Simulated table; the live Holdings composition) page/sort/filter through
   `trading_core::api::table_eval::apply_table_request` with a per-table `ColResolver` grammar; the shared

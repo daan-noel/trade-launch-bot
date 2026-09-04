@@ -82,6 +82,7 @@ export const STORAGE_KEYS = {
   /** Trader-analysis flow lens (pattern set, per-set group filter, classifier
    *  knobs). Separate from the query draft: the lens outlives one wallet. */
   traderFlowLens: `${PREFIX}form.traderFlowLens`,
+  traderPreEntryProbe: `${PREFIX}form.traderPreEntryProbe`,
 
   // ── strategy surfaces ─────────────────────────────────────────────────────
   sweepConfig: `${PREFIX}sweep.config`,

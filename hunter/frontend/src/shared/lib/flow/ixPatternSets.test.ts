@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   keysForSet,
   kindOf,
+  mutedPatternForClick,
   parsePastedGrains,
   parsePastedPatterns,
   patternGroups,
@@ -82,6 +83,35 @@ describe('group narrowing', () => {
   });
 });
 
+describe('mutedPatternForClick', () => {
+  const set = [p('Axiom', 'A'), p('GMGN', 'B')];
+
+  it('is null when the lens is not narrowed — every click is an add/remove', () => {
+    expect(mutedPatternForClick(set, null, ['A'])).toBeNull();
+  });
+
+  it('names the stored pattern when its group is the muted one', () => {
+    expect(mutedPatternForClick(set, new Set(['GMGN']), ['A'])).toEqual(p('Axiom', 'A'));
+  });
+
+  it('is null while an ENABLED group carries the shape — the badge is on, so the click removes', () => {
+    expect(mutedPatternForClick(set, new Set(['Axiom']), ['A'])).toBeNull();
+  });
+
+  it('is null for a shape the set never had', () => {
+    expect(mutedPatternForClick(set, new Set(['GMGN']), ['Z'])).toBeNull();
+  });
+
+  it('only claims a pinned row when the click carries the same pins', () => {
+    const pinned = [{ group: 'Axiom', ix_labels: ['A'], cu_limit: 300000 }];
+    expect(mutedPatternForClick(pinned, new Set(['GMGN']), ['A'])).toBeNull();
+    expect(mutedPatternForClick(pinned, new Set(['GMGN']), ['A'], { cu_limit: 1 })).toBeNull();
+    expect(mutedPatternForClick(pinned, new Set(['GMGN']), ['A'], { cu_limit: 300000 })).toEqual(
+      pinned[0],
+    );
+  });
+});
+
 describe('toggleIxPattern', () => {
   it('removes an existing sequence whatever group it is filed under', () => {
     expect(toggleIxPattern([p('Axiom', 'A'), p(null, 'B')], ['A'], 'other')).toEqual([p(null, 'B')]);
@@ -109,6 +139,16 @@ describe('kind + keys', () => {
       null,
     );
     expect(keys).toEqual(new Set(['Axiom Trade|CU']));
+  });
+
+  it('narrows a templates set by grain — the grain IS the unit', () => {
+    const set = {
+      kind: 'templates' as const,
+      patterns: [],
+      working_templates: ['Axiom Trade|CU', 'GMGN|ATA'],
+    };
+    expect(keysForSet(set, new Set(['GMGN|ATA']))).toEqual(new Set(['GMGN|ATA']));
+    expect(keysForSet(set, new Set())).toBeNull();
   });
 });
 

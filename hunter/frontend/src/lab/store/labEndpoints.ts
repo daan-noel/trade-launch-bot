@@ -41,6 +41,10 @@ import type {
   FamilySearchResult,
   FamilySearchStartArgs,
 } from '@lab/lib/familySearchTypes';
+import type {
+  PreEntryProbeRequest,
+  PreEntryProbeResponse,
+} from '@lab/lib/preEntryProbeTypes';
 
 /** Body for `POST /api/strategies/flow-discovery`. */
 export interface FlowDiscoveryStartArgs {
@@ -553,6 +557,20 @@ export const labApi = baseApi.injectEndpoints({
       }),
       invalidatesTags: ['IxPatternSet'],
     }),
+    // The lens asked across every token at once: did one of its structures land
+    // before the trader's entry, and how often does that happen anyway.
+    //
+    // A read, but a MUTATION on purpose. The body carries one anchor per row on
+    // screen, so caching it by serialized args would key a cache entry on a list
+    // that changes with every re-query — and the page already re-fires this
+    // itself when the window, thresholds or narrowing change.
+    probePreEntryIx: builder.mutation<PreEntryProbeResponse, PreEntryProbeRequest>({
+      query: ({ wallet, ...body }) => ({
+        url: `/api/wallets/${encodeURIComponent(wallet)}/pre-entry-ix`,
+        method: 'POST',
+        body,
+      }),
+    }),
     deleteIxPatternSet: builder.mutation<void, string>({
       query: (id) => ({
         url: `/api/ix-pattern-sets/${encodeURIComponent(id)}`,
@@ -597,4 +615,5 @@ export const {
   useCreateIxPatternSetMutation,
   useUpdateIxPatternSetMutation,
   useDeleteIxPatternSetMutation,
+  useProbePreEntryIxMutation,
 } = labApi;
