@@ -39,6 +39,26 @@ no exit scheme can rescue it. The readers' profit is their ENTRY PRICE inside
 the breaking slots - consistent with the winner-population result that ~93% of
 gross edge is entry price. At break+2 slots the edge does not exist.
 
-**Node 2 is closed at our seat, including the reader-selection branch.** The
-remaining harvestable node on the curve is node 1 (dev campaign push), where
-the up-move develops over minutes, not slots.
+## Racing seat: the edge is being AHEAD of the wave, not in its slot
+
+Same gated universe repriced at every seat (`census.w1_money_race`,
+`w1_money_first`, `w2_money`):
+
+| seat | fill | pnl SOL | win |
+| --- | --- | --- | --- |
+| land first (ahead of every wave buy; uses end-of-slot gates = look-ahead) | pre-break state | +44.41 | 57.0% |
+| land second (trigger = first buy >= 0.5 SOL after gap; nothing later used) | after first print | -24.07 | 41.7% |
+| land last in breaking slot | end-of-slot state | -31.16 | 39.3% |
+| slot +1 | end of slot+1 | -35.98 | 38.1% |
+| slot +2 (original) | first print >= +2 | -35.87 | 37.9% |
+
+The whole edge (~75 SOL / 10k trades) is the wave's own price impact between
+its first and last buy. Beating every follower after seeing the first big buy
+still loses: the first buy already carries the impact we would need. A
+tape-observable trigger cannot be ahead of the print that triggers it, so the
+wave node does not pay at ANY seat - it pays only to whoever IS the wave (or
+sees it before the tape: mempool / leader view).
+
+**Node 2 is closed at every seat, including the reader-selection branch.**
+The remaining harvestable node on the curve is node 1 (dev campaign push),
+where the up-move develops over minutes, not slots.

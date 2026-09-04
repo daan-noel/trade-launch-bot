@@ -82,10 +82,10 @@ Same-slot and next-slot spill are measured separately. Do not AND them into one 
 | Question | when this event prints, does he buy this mint in S or S+1? | if *we* send on that print, do we make money? |
 | Population | full tape, his fills removed | full tape, never "his mints only" |
 | Use | which signatures concentrate his habit | the score: SOL, trades/day, days-positive |
-| Live rule | never a gate | 95 ms fill, both legs, `pumpfun_impact` |
+| Live rule | never a gate | 115 ms fill, both legs, `pumpfun_impact` |
 
 `he1` is look-ahead (his send). A signature that lifts `he1` is a *candidate*, green only
-when money at 95 ms is green with enough trades.
+when money at 115 ms is green with enough trades.
 
 **Rank on total net SOL.** Mean, median and win rate are description. Ranking on mean
 percent selects thin high-percentage pockets; the same event ranked on SOL reads green at
@@ -111,7 +111,7 @@ that is still the same event, with enough trades to be a rule.
 1. **Signature** on this tape: which builds, how many, what size band, new vs repeat.
 2. **Door** on that set: rank candidates by money, one at a time.
 3. **Permissions** on that set: one at a time, ranked by money.
-4. **Money** at 95 ms. Red means no rule.
+4. **Money** at 115 ms. Red means no rule.
 
 A filter is kept only while it **raises total net SOL**, and total SOL is self-limiting: it
 stops rising once a cut removes more good trades than bad. **Never thin the book below ~50
@@ -158,12 +158,16 @@ Re-score everything on **this** tape. Never paste cuts from a previous study.
 | Clone the wallet, fingerprint or send set | Public event, then concentration, then money |
 | Treat quiet as a cut on any-slot bursts | The gap is part of the event, not a filter on a pool that never required one |
 | Conclude "the trader is closed" | Only a hypothesis closes |
+| Price the fill one or two slots after the trigger, or drop the trigger's slot | Last print landed by fire + 115 ms, both legs; real fills land in the trigger's slot half the time |
+| Make a specific actor's landed print the event | A condition on tape state at his decision time, wallet-free; anything inside his reaction time is co-arrival, not trigger |
+| Refute a node on its event alone, or on an unconcentrated pool | Money is read on a story-derived conjunction; a red pool refutes nothing |
+| Search terms at one fill and ship at another | A fill model changes which terms matter; search at the shipping fill |
 
 ---
 
 ## 7. Cost, fill, units
 
-- Fill = the last qualifying print at or before fire + 95 ms, **both legs**.
+- Fill = the last qualifying print at or before fire + 115 ms, **both legs**.
 - **The two clocks do different jobs.** The *fill* uses wall clock deliberately:
   `block_time` is the ingest stamp, the right clock for a reaction lag. Every *metric and
   gate* uses chain order — sort by `(slot, tx_index)`, never by `ts`, and locate the fire
@@ -184,7 +188,7 @@ If the first money pass is ~−100% with 0% wins on every day, stop: the cost un
 
 1. The dev-side story, in one sentence a trader would recognise.
 2. The signature and the cuts, each with why — lift, and trades still left.
-3. Money at 95 ms: n, per day, mean, median, win, SOL, days-positive.
+3. Money at 115 ms: n, per day, mean, median, win, SOL, days-positive.
 4. What it does not claim — families it misses, days it was not tested on.
 
 It is not a keeper table, a comparison to a previous script's `n`, or an engine mapping of

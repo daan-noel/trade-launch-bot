@@ -15,9 +15,11 @@ one wins.
 - **Round-trip cost is ~0.0016 SOL/trade** at 0.05 SOL. Rank expectancy against that bar,
   never against zero — a rule at −0.0005 has real selection edge and a cost problem; a rule
   at −0.0018 has neither.
-- **Same-slot fills are unreachable.** Landing in the signal's slot happens ~52.6% of the
-  time, but *ordering* inside a block is the leader's call. A model that assumes the next
-  print is measuring an ordering privilege no latency buys. See
+- **The signal's slot is reachable; a chosen position inside it is not.** Real fills land
+  in the signal's own slot 52.6% of the time (p50 0 slots late, 81.6% within one), but
+  *ordering* inside a block is the leader's tip auction. A model that assumes the next
+  print is measuring an ordering privilege no latency buys; a model that drops the
+  signal's slot is pessimistic by half a slot. `lag_115` is the verdict. See
   [fill-and-cost-models.md](fill-and-cost-models.md).
 
 ## 2. The law — latency cost is set by which way price moves relative to you
@@ -109,7 +111,7 @@ the law on both legs and pins it with a regression test; results produced before
 | unarmed retrace is a hard stop | **proven** — engine behaviour + counterfactual |
 | pool-fraction sizing | **derivable** — impact is `buy/vsol` exactly |
 | the `LagMs` fill law (§6) | **shipped** — implemented both legs, regression-tested |
-| same-slot fills are unreachable | **proven** — ordering is a tip auction, not a latency race |
+| the signal's slot is reachable, a chosen position in it is not | **measured** — 52.6% of real fills land in it; ordering is a tip auction, not a latency race |
 
 Which *rules* have been tried and refuted under these laws is a research question, not a
 law: [refuted-lines ledger](../../history/2026-09-03-refuted-lines-ledger.md).

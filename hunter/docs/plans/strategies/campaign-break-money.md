@@ -122,6 +122,39 @@ SQL skipped). Exits: 108/154 and 147/215 take-profit, the rest clock or dead -
 the +40% barrier is doing the work, as designed. This is the first rule of the
 rebuilt workflow to pass Phases 5 and 6.
 
+## The rule as the screen: every build, both periods (09-04)
+
+The full rule v0 (event + permissions + exit, honest fills) run on every build
+with >= 200 silence-breaks on >= 20 mints per period - 88 builds post, 59 pre;
+tables `census.screen_post` / `census.screen_pre`. Result:
+
+| | builds | trades | net SOL | builds green |
+| --- | --- | --- | --- | --- |
+| post-cutover | 68 | 11,820 | -34.2 | 1 |
+| pre-cutover | 59 | 9,304 | -21.3 | 1 |
+
+**Exactly one build is green on both periods with real n: `29d9aacb`**
+(+2.46 / 84 mints / 73% pre; +4.13 / 61 mints / 75% post). `d2c86e7a` is green
+both sides on 3 and 6 mints (noise). Every terminal, router and aggregator build
+loses 4-7% per trade under the same rule.
+
+Why that build: its instruction set has a generic-ordered twin, `80b0515a`
+(CU-limit first) with the same 52k buys - spread over 19,632 mints (~2.7 per
+mint, a spray: snipers and retail) and red. `29d9aacb` puts its 52k buys on
+2,535 mints (~21 per mint): concentrated campaigns. The CU-price-first order is
+the fingerprint of one client whose users campaign; concentration (buys per
+mint) is the species, the order is how the tape spells it. The other
+price-first variants (`BuyExactSolIn`, `BuyExactQuoteInV2`, ATA Create) are
+sprays at 2-7 per mint.
+
+Consequences: (1) the silence-break rule is client-specific, not a generic
+curve edge - "more operators" means more *campaign clients*, and today the tape
+has one with volume; (2) the weekly re-screen is this pass (rule money per
+build, both blocks, n in mints), not a look-alike score; (3) the direct
+extraction tell (the client's own sells) is refuted - the client is a tool used
+by ~8.6k wallets, its sells precede 99.9% of qualifying breaks, and its net
+direction flips sign across periods.
+
 ## Open
 
 1. **Extraction tell** (the branch splitter): what marks a harvest-break before
