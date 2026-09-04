@@ -182,6 +182,14 @@ recorded divergences: [docs/arch/strategies.md](docs/arch/strategies.md).
   (`GET /api/tokens/:mint/trades`, `limit<=0` ⇒ no LIMIT) stay on PG — don't re-add a row
   cap. `MAX_TRADES_RETAINED` is the live in-RAM trim, never an analysis bound.
   [lake-pg-read-paths.md](docs/plans/database/lake-pg-read-paths.md).
+- **Study schemas are LOGGED.** `UNLOGGED` study tables (`ix*`) are truncated by any unclean
+  restart while `reltuples` keeps the old estimate — the planner and `\d+` still claim
+  millions of rows, so **`count(*)` is the only honest check** and a wiped study reads as a
+  study that found nothing. Local `docker_data.vhdx` is non-sparse and mounted without
+  `discard`, so a study round's bytes are charged to `C:` at write time and refunded only by
+  an offline compaction — size the round against free space first, and record a dropped
+  schema's DDL in `hunter/_local/dropped-schemas/`.
+  [db-patterns.md](docs/plans/database/db-patterns.md).
 - **`/api/tokens` differs by bin** (same wire contract): `live` pages from Postgres, `lab`
   runs the in-RAM engine over a snapshot. `SEED_TRACKING_LIMIT` is the tracking-cache seed
   cap, not the list cap. [token-list-backend.md](docs/plans/frontend/token-list-backend.md).

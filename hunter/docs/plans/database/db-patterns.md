@@ -114,3 +114,25 @@ persisted — the table never grows unboundedly:
 select existing and future data identically. (The old one-time backfill-compaction probe —
 `vacuum_full_results` / `fetch_combo_metrics_for_group` / `delete_combos_except` and the
 never-wired `compact-sweeps` subcommand — write-time retention makes one moot.)
+
+## Study Schemas — LOGGED, and the disk they cost
+
+Ad-hoc study schemas (`ix*`, `w*`, `census`) are analysis scratch, but two properties of the
+local stack make `UNLOGGED` the wrong default for them.
+
+**`UNLOGGED` does not survive a crash.** Postgres truncates every unlogged relation on
+unclean restart, so the tables come back present and empty. `reltuples` keeps the pre-crash
+estimate, so `\d+` and the planner both still claim millions of rows — **`count(*)` is the
+only honest check.** A truncated study reads as a study that found nothing.
+
+**Every study round ratchets the host disk.** `docker_data.vhdx` on the workstation is a
+non-sparse file mounted without `discard`: it grows to the high-water mark of everything
+ever written and never returns a block to Windows, whatever `fstrim` reports. A 37 GB study
+that is later dropped still costs 37 GB of `C:` until the VHDX is compacted offline
+(`Optimize-VHD -Mode Full` or `diskpart` → `compact vdisk`, both admin, both with the disk
+detached).
+
+So: create study tables **LOGGED**, or export the result and drop the schema in the same
+session. Size the round against free space on `C:` before it runs — the cost is charged to
+the host disk at write time and refunded only by a compaction. Record what a dropped schema
+held in `hunter/_local/dropped-schemas/`, since the DDL is the only trace left.
