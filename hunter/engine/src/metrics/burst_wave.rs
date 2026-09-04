@@ -2,7 +2,8 @@
 //!
 //! Static (no window). Token-level for wallet/sol/gap/hole/tip; `working_buy_count`
 //! and `this_working` intersect this fingerprint's `m_burst_slot.working_templates`
-//! at read (same list, no second config). A **wave** is consecutive buy-slots (no
+//! at read (same list, no second config). A `|` id is a grain; a bare name is a
+//! program. A **wave** is consecutive buy-slots (no
 //! empty buy-slot between them). It resets when the next buy is at least 2 slots
 //! after the last buy-slot. The gap is empty buy-slots *before this wave started*,
 //! not before a later printer in the same run.
@@ -508,5 +509,25 @@ mod tests {
         assert_eq!(s.value(MetricId::WaveThisWorking, Some(&p)), 0.0);
         assert_eq!(s.value(MetricId::WaveThisTip, None), 200_000.0);
         assert_eq!(s.value(MetricId::WaveWorkingBuyCount, Some(&p)), 2.0);
+    }
+
+    #[test]
+    fn bare_program_name_matches_ata_f_grain() {
+        use crate::metrics::template_grain::program_id_hash;
+        let p = BurstPatterns::from_metric_config(&serde_json::json!({
+            "m_burst_slot": { "working_templates": ["Axiom Trade"] }
+        }))
+        .unwrap();
+        let mut mid = buy(20, 3, 0.4);
+        mid.tx_index = Some(4);
+        mid.template_hash = Some(grain_id_hash("Axiom Trade|ATA|F"));
+        mid.program_hash = Some(program_id_hash("Axiom Trade"));
+        let mut s = BurstWaveState::default();
+        s.seed_creation_slot(10);
+        s.on_trade(&buy(10, 1, 1.0));
+        s.on_trade(&axiom(20, 2, 2, Some(150_000)));
+        s.on_trade(&mid);
+        assert_eq!(s.value(MetricId::WaveThisWorking, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::WaveWorkingBuyCount, Some(&p)), 1.0);
     }
 }

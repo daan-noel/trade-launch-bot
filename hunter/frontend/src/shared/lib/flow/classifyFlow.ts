@@ -14,7 +14,7 @@
  *  have no wallet rule). The structural test then IS the verdict. */
 
 import { anyRowMatchesTrade, type IxPatternRow } from 'lib/strategy/ixPatternRows';
-import { templateGrain } from 'lib/strategy/templateGrain';
+import { workingListHits } from 'lib/strategy/templateGrain';
 
 export interface FlowTradeLite {
   wallet_address: string;
@@ -40,7 +40,7 @@ export type FlowSide = 'buy' | 'sell';
 /** How {@link FlowClassifyOptions.patternKeys} are compared to a trade.
  *
  *  `'labels'` (default) is `m_flow_ix` / `m_dump_ix`: exact ordered `ix_labels`.
- *  `'grain'` is `m_burst_slot.working_templates`: `templateGrain(ix_labels)`. */
+ *  `'grain'` is `m_burst_slot.working_templates`: grain or program name. */
 export type FlowMatchMode = 'labels' | 'grain';
 
 export interface FlowClassifyOptions {
@@ -112,7 +112,7 @@ export interface FlowClassified {
 function isStructuralMatch(t: FlowTradeLite, opts: FlowClassifyOptions): boolean {
   const labels = t.ix_labels;
   if (!labels || labels.length === 0) return false;
-  if (opts.match === 'grain') return opts.patternKeys.has(templateGrain(labels));
+  if (opts.match === 'grain') return workingListHits(opts.patternKeys, labels);
   const rows = opts.patternRows;
   if (rows && rows.length > 0) return anyRowMatchesTrade(rows, labels, t);
   return opts.patternKeys.has(JSON.stringify(labels));

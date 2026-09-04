@@ -573,8 +573,8 @@ construction. See hunter/CLAUDE.md Gotchas.
 | `m_flow_ix_window` | dynamic | `window_size_sec` | none (reads `m_flow_ix`) |
 | `m_dump_ix` | static (fingerprint-scoped) | none | `ix_patterns: ix_pattern[]` — its OWN list |
 | `m_dump_ix_window` | dynamic | `window_size_sec` | none (reads `m_dump_ix`) |
-| `m_burst_slot` | static (fingerprint-scoped) | none | `working_templates: string[]` — template grain ids |
-| `m_burst_wave` | static | none | none for wallet/sol/gap/hole/tip. `working_buy_count` and `this_working` read this fingerprint's `m_burst_slot.working_templates` and `working_programs` (same lists, no second config). Consecutive-slot buy run; gap is empty buy-slots before that run. Create slot is not fireable. `hole` / `tip_seen` follow every curve buy in the wave. `hole` is a wave `tx_index` gap, not `m_burst_slot.packed`. |
+| `m_burst_slot` | static (fingerprint-scoped) | none | `working_templates: string[]` — a `\|` id is a grain, a bare name is a program |
+| `m_burst_wave` | static | none | none for wallet/sol/gap/hole/tip. `working_buy_count` and `this_working` read this fingerprint's `m_burst_slot.working_templates` (same list, no second config). Consecutive-slot buy run; gap is empty buy-slots before that run. Create slot is not fireable. `hole` / `tip_seen` follow every curve buy in the wave. `hole` is a wave `tx_index` gap, not `m_burst_slot.packed`. |
 | `m_copy` | static (fingerprint-scoped) | none | `target_wallets: string[]` — base58 addresses |
 | `m_copy_window` | dynamic | `window_size_sec` / `_slots` / `_prints` + `window_lag` | none (reads `m_copy`) |
 

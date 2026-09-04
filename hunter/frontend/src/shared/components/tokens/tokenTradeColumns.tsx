@@ -11,7 +11,7 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeFees';
 import { patternKey } from 'lib/flow/volumePatterns';
-import { templateGrain } from 'lib/strategy/templateGrain';
+import { workingListHits } from 'lib/strategy/templateGrain';
 import {
   anyRowMatchesTrade,
   feeFromTrade,
@@ -88,7 +88,7 @@ export interface TokenTradeColumnsOpts {
    * WHICH list {@link flowPatternKeys} is and {@link onTogglePattern} writes into.
    * `'tagged'` (the default) is `m_flow_ix.ix_patterns`; `'dump'` is
    * `m_dump_ix.ix_patterns`; `'working'` is `m_burst_slot.working_templates`
-   * grain ids (a different vocabulary — membership is `templateGrain`, not an
+   * (a different vocabulary — membership is grain or program, not an
    * exact `ix_labels` sequence).
    *
    * The tagged and dump columns are otherwise identical and that is the danger: a
@@ -269,9 +269,9 @@ export function tokenTradeColumns(
       label: inWord,
       tooltip: onToggle
         ? isWorking
-          ? `Template grain match against ${listField}. Clicking SAVES this trade's grain ` +
-            `(program|CU|ATA|N|S|F) to ${targetLabel} — harvest working list, not a full ` +
-            `ix_labels sequence. Active rules bound to it change meaning on the next reload.`
+          ? `Working-list match against ${listField} (grain or program). Clicking SAVES ` +
+            `this trade's grain or program (the strip's grain|program switch) to ${targetLabel}. ` +
+            `Active rules bound to it change meaning on the next reload.`
           : `Structural ${listField} match. Clicking SAVES this trade’s ordered ` +
             `instruction_labels to ${targetLabel} under ${listField} — there is no staging ` +
             `step, and every active rule bound to it changes meaning from the ` +
@@ -282,7 +282,7 @@ export function tokenTradeColumns(
               : ` “via creator/wallet” = the lines already count this row through` +
                 ` contagion, whatever its own structure is.`)
         : isWorking
-          ? `Template grain on ${listField} — this trade's program|CU|ATA|N|S|F grain.`
+          ? `Working-list match on ${listField} — this trade's grain or program.`
           : `Structural ${listField} match — this trade’s ordered instruction_labels ` +
             `match a row of that list (an ix-only row is a fee wildcard)` +
             (isDump ? '.' : ' (no creator/wallet contagion).'),
@@ -292,7 +292,7 @@ export function tokenTradeColumns(
           return <span className="text-text-dim/40">—</span>;
         }
         const isTagged = isWorking
-          ? keys.has(templateGrain(labels))
+          ? workingListHits(keys, labels)
           : patternRows != null
             ? anyRowMatchesTrade(patternRows, labels, t)
             : isIxPattern(labels, keys);
@@ -327,7 +327,7 @@ export function tokenTradeColumns(
           : isTagged && pinning
             ? `Catch-all (any budget) on ${targetLabel}. Click to narrow to${pinClickHint}`
             : isWorking
-              ? `Click to save this grain under ${listField} on ${targetLabel}`
+              ? `Click to save this grain or program (strip switch) under ${listField} on ${targetLabel}`
               : `Click to save${pinClickHint} under ${listField} on ${targetLabel}`;
         const cell = (
           <span className="inline-flex items-center gap-1">
@@ -376,7 +376,7 @@ export function tokenTradeColumns(
       sortValue: (t) => {
         const labels = t.instruction_labels;
         const structural = isWorking
-          ? !!labels && keys.has(templateGrain(labels))
+          ? !!labels && workingListHits(keys, labels)
           : patternRows != null
             ? !!labels && anyRowMatchesTrade(patternRows, labels, t)
             : isIxPattern(labels, keys);
@@ -385,7 +385,7 @@ export function tokenTradeColumns(
       searchValue: (t) => {
         const labels = t.instruction_labels;
         const structural = isWorking
-          ? !!labels && keys.has(templateGrain(labels))
+          ? !!labels && workingListHits(keys, labels)
           : patternRows != null
             ? !!labels && anyRowMatchesTrade(patternRows, labels, t)
             : isIxPattern(labels, keys);

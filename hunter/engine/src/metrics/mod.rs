@@ -214,8 +214,8 @@ pub struct TradeLite {
     #[serde(default)]
     pub template_hash: Option<u64>,
     /// FNV-1a of this trade's program name (`Axiom Trade`, `Pump.Fun`, …).
-    /// `None` when labels are absent. `m_burst_slot.working_programs` matches
-    /// this, not the grain.
+    /// `None` when labels are absent. A bare name on `working_templates`
+    /// matches this, not the grain.
     #[serde(default)]
     pub program_hash: Option<u64>,
     /// Curve vs AMM. Default `true` so a pre-field event-log line still joins
@@ -2184,7 +2184,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             name: "working_templates",
             value_type: "string[]",
             required: true,
-            description: "Build-template grain ids (`program|CU|ATA|N|S|F`) whose prints this group treats as working. Not full `ix_labels` sequences. Absent ⇒ every metric reads NaN, never 0.",
+            description: "Working-list ids. A `|` spelling is a grain (`Axiom Trade|CU|ATA|F`); a bare name is a program (`Axiom Trade`) and matches every grain of that program. Not full `ix_labels` sequences. Absent ⇒ every metric reads NaN, never 0.",
             default_json: None,
             conflicts_with: &[],
         }],
@@ -2201,7 +2201,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::ThisWorking,
                 name: "this_working",
-                description: "1 when this print's template grain is on this fingerprint's working-templates list, else 0. Missing labels read 0.",
+                description: "1 when this print's grain or program is on this fingerprint's working-templates list, else 0. Missing labels read 0.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
@@ -2347,7 +2347,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::BurstWave,
         name: "m_burst_wave",
-        description: "This token's buys in the current consecutive-slot run. The gap is empty buy-slots before that run started, not before a later printer in the same run. Create slot is not a fireable wave. working_buy_count and this_working read this fingerprint's m_burst_slot.working_templates and working_programs. hole is a wave tx_index gap, not m_burst_slot.packed.",
+        description: "This token's buys in the current consecutive-slot run. The gap is empty buy-slots before that run started, not before a later printer in the same run. Create slot is not a fireable wave. working_buy_count and this_working read this fingerprint's m_burst_slot.working_templates (a `|` id is a grain, a bare name is a program). hole is a wave tx_index gap, not m_burst_slot.packed.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::Burst,
@@ -2411,7 +2411,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WaveWorkingBuyCount,
                 name: "working_buy_count",
-                description: "Member prints in this fireable wave whose template grain is on working_templates or whose program is on working_programs. The completing print is the one that makes this 2. NaN when the wave is not fireable or both lists are missing.",
+                description: "Member prints in this fireable wave whose grain or program is on working_templates. The completing print is the one that makes this 2. NaN when the wave is not fireable or the list is missing.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
@@ -2420,7 +2420,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WaveThisWorking,
                 name: "this_working",
-                description: "1 when this print just joined the wave and its template grain is on working_templates or its program is on working_programs. 0 when this print is a member off both lists. NaN when both lists are missing. Not m_burst_slot.this_working.",
+                description: "1 when this print just joined the wave and its grain or program is on working_templates. 0 when this print is a member off the list. NaN when the list is missing. Not m_burst_slot.this_working.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,

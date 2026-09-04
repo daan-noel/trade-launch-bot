@@ -49,7 +49,7 @@ const IS_END: &str = "2026-09-03T00:00:00Z";
 /// First instant the tape carries `tip_lamports` (tape-epochs).
 const TIP_ERA: &str = "2026-08-30T17:48:13Z";
 
-const WORKING_PROGRAMS: &[&str] = &["Axiom Trade"];
+const WORKING: &[&str] = &["Axiom Trade"];
 
 fn door_fp() -> Fingerprint {
     Fingerprint {
@@ -67,8 +67,7 @@ fn door_fp() -> Fingerprint {
             ),
         metric_config: json!({
             "m_burst_slot": {
-                "working_templates": [],
-                "working_programs": WORKING_PROGRAMS
+                "working_templates": WORKING
             }
         }),
     }

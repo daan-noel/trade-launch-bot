@@ -402,4 +402,13 @@ describe('metricConfigWithWorkingTemplates', () => {
     expect(out).toEqual({ m_state: { x: 1 } });
     expect(workingTemplatesFromConfig(out)).toEqual([]);
   });
+
+  it('reads leftover working_programs into the one list and drops that key on write', () => {
+    const prev = {
+      [BURST_GROUP]: { working_templates: [], working_programs: ['Axiom Trade'] },
+    };
+    expect(workingTemplatesFromConfig(prev)).toEqual(['Axiom Trade']);
+    const out = metricConfigWithWorkingTemplates(prev, ['Axiom Trade']);
+    expect(out[BURST_GROUP]).toEqual({ working_templates: ['Axiom Trade'] });
+  });
 });

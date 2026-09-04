@@ -1,4 +1,4 @@
-import type { TapeList } from 'hooks/useIxPatternTarget';
+import type { TapeList, WorkingWrite } from 'hooks/useIxPatternTarget';
 import type { IxPatternFee, IxPatternFeeMask, IxPatternRow } from 'lib/strategy/ixPatternRows';
 
 /**
@@ -13,6 +13,8 @@ export interface ChartTapeStaging {
   setList: (list: TapeList) => void;
   rows: IxPatternRow[];
   workingTemplates: string[];
+  workingWrite?: WorkingWrite;
+  setWorkingWrite?: (write: WorkingWrite) => void;
   keys: ReadonlySet<string> | null;
   feePins: IxPatternFeeMask;
   setFeePins: (mask: IxPatternFeeMask) => void;

@@ -50,7 +50,18 @@ export function isLaunchGrain(labels: readonly string[]): boolean {
   return labels.some((l) => l.startsWith('Pump.Fun: Create'));
 }
 
-/** Split pasted grain-id text into trimmed unique ids, preserving first-seen order. */
+/** True when `id` is a program name (`Axiom Trade`), not a grain (`Axiom Trade|CU|ATA|F`). */
+export function isProgramWorkingId(id: string): boolean {
+  return id.length > 0 && !id.includes('|');
+}
+
+/** A print is on the working list when its grain or its program is stored. */
+export function workingListHits(keys: ReadonlySet<string>, labels: readonly string[]): boolean {
+  if (labels.length === 0) return false;
+  return keys.has(templateGrain(labels)) || keys.has(templateProgram(labels));
+}
+
+/** Split pasted grain-id / program-name text into trimmed unique ids, preserving first-seen order. */
 export function parseGrainIds(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];

@@ -108,8 +108,8 @@ pub fn program_hash(labels: &[impl AsRef<str>]) -> Option<u64> {
     }
 }
 
-/// FNV-1a of a program name (`"Axiom Trade"`). Fingerprint `working_programs`
-/// stores these strings; a folded trade compares the same `u64`.
+/// FNV-1a of a program name (`"Axiom Trade"`). A bare name on
+/// `working_templates` stores this string; a folded trade compares the same `u64`.
 pub fn program_id_hash(id: &str) -> u64 {
     fnv1a(id.as_bytes())
 }

@@ -3,7 +3,9 @@ import {
   isLaunchGrain,
   parseGrainIds,
   templateGrain,
+  templateProgram,
   toggleWorkingTemplate,
+  workingListHits,
 } from './templateGrain';
 
 describe('templateGrain', () => {
@@ -89,5 +91,23 @@ describe('parseGrainIds / toggleWorkingTemplate', () => {
     expect(toggleWorkingTemplate([a], a)).toEqual([]);
     expect(toggleWorkingTemplate([a, 'Photon|CU|ATA|F'], a)).toEqual(['Photon|CU|ATA|F']);
     expect(toggleWorkingTemplate([a], '  ')).toEqual([a]);
+  });
+
+  it('accepts a bare program name', () => {
+    expect(parseGrainIds('Axiom Trade')).toEqual(['Axiom Trade']);
+    expect(toggleWorkingTemplate([], 'Axiom Trade')).toEqual(['Axiom Trade']);
+  });
+
+  it('hits a print when the list names the grain or the program', () => {
+    const labels = [
+      'Associated Token: CreateIdempotent',
+      'Axiom Trade: Buy',
+      'System Program: Transfer',
+    ];
+    expect(templateProgram(labels)).toBe('Axiom Trade');
+    expect(templateGrain(labels)).toBe('Axiom Trade|ATA|F');
+    expect(workingListHits(new Set(['Axiom Trade|ATA|F']), labels)).toBe(true);
+    expect(workingListHits(new Set(['Axiom Trade']), labels)).toBe(true);
+    expect(workingListHits(new Set(['Photon|CU|ATA|F']), labels)).toBe(false);
   });
 });

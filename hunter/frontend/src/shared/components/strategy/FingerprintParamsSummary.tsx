@@ -251,7 +251,7 @@ export function WorkingTemplatesChip({ templates }: { templates: string[] }) {
     <ContentsChip
       text={`work ${n}`}
       identity={templates.slice().sort().join('|')}
-      title={`${n} working template grain${n === 1 ? '' : 's'}\n${text}`}
+      title={`${n} working id${n === 1 ? '' : 's'} (bare name = program, | = grain)\n${text}`}
       copyText={text}
       tint={axisTint('work')}
     />
@@ -368,7 +368,7 @@ export const FP_CONFIG_LISTS: readonly FpConfigListSpec[] = [
     columnKey: 'working_templates',
     label: 'working templates',
     definition:
-      'm_burst_slot.working_templates — build-template grain ids (program|CU|ATA|N|S|F) whose prints the burst group treats as working. Grain ids, NOT ix_labels sequences. Absent ⇒ every burst metric reads NaN, never 0.',
+      'm_burst_slot.working_templates — a `|` id is a grain, a bare name is a program. Not ix_labels sequences. Absent ⇒ every burst metric reads NaN, never 0.',
     count: (fp) => workingTemplatesFromConfig(fp.metric_config).length,
     chip: (fp) => <WorkingTemplatesChip templates={workingTemplatesFromConfig(fp.metric_config)} />,
     searchText: (fp) => {

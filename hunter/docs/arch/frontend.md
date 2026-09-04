@@ -579,8 +579,8 @@ next load (no per-metric frontend work).
   **Delete all** confirming via the shared `clearPrompt` the flow-discovery cart also
   uses. Rows stay mounted while collapsed or filtered out, because a row holds the
   draft text that has not parsed yet. `WorkingTemplatesEditor` is the chip list for
-  `m_burst_slot.working_templates` — grain ids (`program|CU|ATA|N|S|F`), not full
-  sequences; empty drops the group so burst metrics read NaN. All three groups
+  `m_burst_slot.working_templates` — a `|` id is a grain, a bare name is a
+  program; empty drops the group so burst metrics read NaN. All three groups
   chain through one writer on save. `FlowClassifierEditor` renders the WHOLE
   `m_flow_ix` key from the group's declared `fingerprint_config`: the pattern rows, a
   marker picker over the served `ix_markers` vocabulary with a tagged/untagged side
@@ -665,9 +665,11 @@ which list a click means: the fingerprint form renders the dump editor, the
 flow-discovery cart carries a `staging into [tagged|dump|working]` toggle that reseeds the
 draft from the list it is about to overwrite. The trades-table badge strip
 (`IxPatternBar` over `useIxPatternTarget`) carries those two **and** a third list,
-`working` — `m_burst_slot.working_templates` grain ids, a different vocabulary, so it
-is not an `IxPatternList` arm. A badge click writes immediately, so the strip has to
-name its target. Next to tagged/dump, `FeePinToggles` (`cu_limit` / `cu_price` /
+`working` — `m_burst_slot.working_templates` (a `|` id is a grain, a bare name is a
+program), a different vocabulary, so it is not an `IxPatternList` arm. A badge
+click writes immediately, so the strip has to name its target. On `working` the
+strip's `grain | program` switch chooses which spelling a click writes; default
+is grain. Next to tagged/dump, `FeePinToggles` (`cu_limit` / `cu_price` /
 `tip`) are sticky modifiers for the next badge click: all off (the default) writes
 the ix structure only, even when the tx carries a budget; checking `cu_limit` then
 clicking a tx writes `{labels, cu_limit}` from **that** tx. Per ix-labels sequence
@@ -675,7 +677,7 @@ the list holds either one catch-all or one-or-more pins — never both, because 
 catch-all already matches every budget and a pin beside it cannot narrow. A pin
 click on a catch-all **narrows** (drops the catch-all, keeps the pin); pins off
 on a pinned shape **widens**. Pressed / Vol checked state follows engine matching:
-an ix-only row stays selected on every trade of that shape. Hidden on `working` (grain ids) and on a
+an ix-only row stays selected on every trade of that shape. Hidden on `working` and on a
 read-only run snapshot. A trader-analysis lens set is one vocabulary, chosen at
 create: `exact` (ix_labels + fee pins, same catch-all-vs-pin rule) or `templates`
 (grain ids, no pins). The set picker is the switch; badges follow that kind

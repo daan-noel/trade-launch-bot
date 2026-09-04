@@ -47,6 +47,7 @@ import {
   type TapeList,
   withFlowWalletRules,
 } from 'lib/strategy/registry';
+import type { WorkingWrite } from 'hooks/useIxPatternTarget';
 import {
   DISCOVERY_COL_HELP,
   DISCOVERY_FIELD_HELP,
@@ -79,6 +80,7 @@ import {
 import {
   isLaunchGrain,
   templateGrain,
+  templateProgram,
   toggleWorkingTemplate,
 } from 'lib/strategy/templateGrain';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
@@ -396,6 +398,7 @@ export function FlowDiscoveryPage() {
    *  that list, so the cart always shows the list it is about to overwrite —
    *  applying a tagged draft onto the dump key would be a silent list swap. */
   const [stageInto, setStageInto] = useState<TapeList>('tagged');
+  const [workingWrite, setWorkingWrite] = useState<WorkingWrite>('grain');
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyOk, setApplyOk] = useState<string | null>(null);
   const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
@@ -897,13 +900,14 @@ export function FlowDiscoveryPage() {
     (labels: string[]) => {
       if (stageInto === 'working') {
         if (isLaunchGrain(labels)) return;
-        setDraftWorking((prev) => toggleWorkingTemplate(prev, templateGrain(labels)));
+        const id = workingWrite === 'program' ? templateProgram(labels) : templateGrain(labels);
+        setDraftWorking((prev) => toggleWorkingTemplate(prev, id));
       } else {
         setDraftPatterns((prev) => togglePatternRow(prev, { labels: [...labels] }));
       }
       setApplyOk(null);
     },
-    [stageInto],
+    [stageInto, workingWrite],
   );
 
   const toggleTrade = useCallback(
@@ -911,7 +915,8 @@ export function FlowDiscoveryPage() {
       const arr = [...labels];
       if (stageInto === 'working') {
         if (isLaunchGrain(arr)) return;
-        setDraftWorking((prev) => toggleWorkingTemplate(prev, templateGrain(arr)));
+        const id = workingWrite === 'program' ? templateProgram(arr) : templateGrain(arr);
+        setDraftWorking((prev) => toggleWorkingTemplate(prev, id));
       } else {
         setDraftPatterns((prev) =>
           togglePatternRow(prev, rowFromTrade(arr, fee ?? {}, feePins)),
@@ -919,7 +924,7 @@ export function FlowDiscoveryPage() {
       }
       setApplyOk(null);
     },
-    [stageInto, feePins],
+    [stageInto, feePins, workingWrite],
   );
 
   function selectTargetFingerprint(id: string) {
@@ -1019,6 +1024,8 @@ export function FlowDiscoveryPage() {
       setList: changeStageInto,
       rows: draftPatterns,
       workingTemplates: draftWorking,
+      workingWrite,
+      setWorkingWrite,
       keys: overlayKeys,
       feePins,
       setFeePins,
@@ -1031,6 +1038,7 @@ export function FlowDiscoveryPage() {
       changeStageInto,
       draftPatterns,
       draftWorking,
+      workingWrite,
       overlayKeys,
       feePins,
       toggleTrade,

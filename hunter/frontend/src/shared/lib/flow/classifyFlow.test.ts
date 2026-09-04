@@ -157,6 +157,17 @@ describe('classifyFlowTrades dump / working / fee rows', () => {
     expect(out.map((t) => t.isTagged)).toEqual([true, true, false]);
   });
 
+  it('a bare program name hits every grain of that program', () => {
+    const out = classifyFlowTrades(
+      [
+        { wallet_address: 'w1', sol: 1, ix_labels: A },
+        { wallet_address: 'w2', sol: 2, ix_labels: ['Axiom Trade: buy'] },
+      ],
+      { patternKeys: new Set(['Pump.Fun']), match: 'grain', contagion: false },
+    );
+    expect(out.map((t) => t.isTagged)).toEqual([true, false]);
+  });
+
   it('a pinned row matches only the tx that carries that budget', () => {
     const rows = [{ labels: [...A], cu_limit: 300_000 }];
     const patternKeys = patternKeysFrom([A]);

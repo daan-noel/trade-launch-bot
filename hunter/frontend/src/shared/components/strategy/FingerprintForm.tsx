@@ -82,7 +82,7 @@ interface FormState {
    *  count. A separate list from the classifier's, and separately optional: a
    *  fingerprint may configure either group, both, or neither. */
   dump_patterns: IxPatternRow[];
-  /** `m_burst_slot.working_templates` — grain ids harvest treats as working. */
+  /** `m_burst_slot.working_templates` — grains or program names. */
   working_templates: string[];
   /** `m_copy.target_wallets` — the addresses a copy rule follows. Its own list and
    *  its own vocabulary: every other fingerprint list names a BUILD, this one names
@@ -365,7 +365,7 @@ const WILDCARD_HELP: HelpTip = {
     'Mutually exclusive with the axes: turning it on clears them.',
 };
 
-/** Chip list for `m_burst_slot.working_templates` — grain ids, not ix sequences. */
+/** Chip list for `m_burst_slot.working_templates` — grains or program names. */
 function WorkingTemplatesEditor({
   value,
   onChange,
@@ -403,9 +403,11 @@ ${FINGERPRINT_FIELD_HELP.working_templates.body}`
       </LabelTip>
       {value.length === 0 ? (
         <p className="rounded border border-dashed border-white/10 px-2 py-2 text-text-dim/50">
-          No working grains. Paste ids here, or on the tape switch the list to{' '}
-          <span className="font-semibold text-text-dim">working</span> and click a badge.
-          Burst metrics read NaN until this list is set.
+          No working list. Paste a grain (`Axiom Trade|CU|ATA|F`) or a program
+          name (`Axiom Trade`), or on the tape switch the list to{' '}
+          <span className="font-semibold text-text-dim">working</span> and click a badge
+          (grain by default; flip the strip to program). Burst metrics read NaN
+          until this list is set.
         </p>
       ) : (
         <div className="flex flex-wrap gap-1">
@@ -432,7 +434,7 @@ ${FINGERPRINT_FIELD_HELP.working_templates.body}`
           className="min-w-0 flex-1 font-mono"
           value={draft}
           disabled={disabled}
-          placeholder="Axiom Trade|CU|ATA|F"
+          placeholder="Axiom Trade  or  Axiom Trade|CU|ATA|F"
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {

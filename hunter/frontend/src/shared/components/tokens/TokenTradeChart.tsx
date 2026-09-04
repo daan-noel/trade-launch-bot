@@ -60,6 +60,8 @@ function stagingPatternTarget(tape: ChartTapeStaging): IxPatternTarget {
     setList: tape.setList,
     patterns: tape.rows.map((r) => r.labels),
     workingTemplates: tape.workingTemplates,
+    workingWrite: tape.workingWrite ?? 'grain',
+    setWorkingWrite: tape.setWorkingWrite ?? (() => {}),
     rows: tape.rows,
     feePins: tape.feePins,
     setFeePins: tape.setFeePins,

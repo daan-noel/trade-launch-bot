@@ -2,7 +2,7 @@ import { Badge } from 'components/ui/Badge';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Select } from 'components/ui/Select';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
-import type { IxPatternTarget, TapeList } from 'hooks/useIxPatternTarget';
+import type { IxPatternTarget, TapeList, WorkingWrite } from 'hooks/useIxPatternTarget';
 import {
   type IxPatternFeeField,
   type IxPatternFeeMask,
@@ -31,8 +31,25 @@ const LISTS: {
   {
     value: 'working',
     label: 'working',
-    title: 'm_burst_slot.working_templates — template grain ids harvest treats as working',
+    title: 'm_burst_slot.working_templates — a | id is a grain, a bare name is a program',
     activeClassName: 'bg-green/20 text-green',
+  },
+];
+
+const WORKING_WRITES: {
+  value: WorkingWrite;
+  label: string;
+  title: string;
+}[] = [
+  {
+    value: 'grain',
+    label: 'grain',
+    title: 'Click writes this trade\'s program|CU|ATA|N|S|F grain — harvest working list.',
+  },
+  {
+    value: 'program',
+    label: 'program',
+    title: 'Click writes this trade\'s program name (Axiom Trade) — every grain of that program is working.',
   },
 ];
 
@@ -134,6 +151,8 @@ export function IxPatternBar({
     setList,
     patterns,
     workingTemplates,
+    workingWrite,
+    setWorkingWrite,
     feePins,
     setFeePins,
     activeRuleCount,
@@ -148,7 +167,7 @@ export function IxPatternBar({
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <Badge variant={isWorking ? 'success' : list === 'dump' ? 'warning' : 'info'} size="sm">
-        {isWorking ? 'Working grains' : list === 'dump' ? 'Dump builds' : 'Tagged patterns'}
+        {isWorking ? 'Working list' : list === 'dump' ? 'Dump builds' : 'Tagged patterns'}
       </Badge>
       <ToggleGroup
         size="sm"
@@ -158,11 +177,21 @@ export function IxPatternBar({
         onChange={setList}
         options={LISTS}
       />
+      {isWorking && (
+        <ToggleGroup
+          size="sm"
+          tone="neutral"
+          aria-label="Whether a working badge click writes the grain or the program"
+          value={workingWrite}
+          onChange={setWorkingWrite}
+          options={WORKING_WRITES}
+        />
+      )}
       {!isWorking && (
         <FeePinToggles mask={feePins} onChange={setFeePins} disabled={!targetId && !hideTargetPicker} />
       )}
       <span className="font-mono text-[11px] text-text-dim">
-        {count} {isWorking ? `grain${count === 1 ? '' : 's'}` : `pattern${count === 1 ? '' : 's'}`}
+        {count} {isWorking ? `id${count === 1 ? '' : 's'}` : `pattern${count === 1 ? '' : 's'}`}
       </span>
 
       {!hideTargetPicker && (

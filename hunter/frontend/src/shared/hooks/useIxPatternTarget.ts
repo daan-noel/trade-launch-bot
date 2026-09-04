@@ -13,7 +13,15 @@ import {
 } from 'lib/strategy/registry';
 
 export type { TapeList };
-import { isLaunchGrain, templateGrain, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
+
+/** What a working-list badge click writes. Default grain is harvest. */
+export type WorkingWrite = 'grain' | 'program';
+import {
+  isLaunchGrain,
+  templateGrain,
+  templateProgram,
+  toggleWorkingTemplate,
+} from 'lib/strategy/templateGrain';
 import {
   togglePatternRow,
   type IxPatternFee,
@@ -100,8 +108,11 @@ export interface IxPatternTarget {
   /** The ACTIVE list's patterns — what the badge classifies against. Empty when
    *  {@link list} is `'working'` (use {@link workingTemplates}). */
   patterns: string[][];
-  /** Grain ids when {@link list} is `'working'`. */
+  /** Grain ids or program names when {@link list} is `'working'`. */
   workingTemplates: string[];
+  /** Working-list click writes a grain (default) or the program name. */
+  workingWrite: WorkingWrite;
+  setWorkingWrite: (write: WorkingWrite) => void;
   /** The ACTIVE list as whole rows — what a fee-pinning click toggles against,
    *  and what the badge matches (an unpinned row is a fee wildcard). */
   rows: IxPatternRow[];
@@ -172,6 +183,7 @@ export function useIxPatternTarget({
 
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [list, setList] = useState<TapeList>('tagged');
+  const [workingWrite, setWorkingWrite] = useState<WorkingWrite>('grain');
   const [feePins, setFeePins] = useState<IxPatternFeeMask>({});
   const [error, setError] = useState<string | null>(null);
 
@@ -260,13 +272,15 @@ export function useIxPatternTarget({
       if (list === 'working' && isLaunchGrain(labels)) return;
       setError(null);
       const row: IxPatternRow = { labels: [...labels], ...fee };
+      const workingId =
+        workingWrite === 'program' ? templateProgram(labels) : templateGrain(labels);
       const metric_config =
         list === 'working'
           ? metricConfigWithWorkingTemplates(
               target.metric_config ?? {},
               toggleWorkingTemplate(
                 workingTemplatesFromConfig(target.metric_config),
-                templateGrain(labels),
+                workingId,
               ),
             )
           : metricConfigWithList(
@@ -300,7 +314,7 @@ export function useIxPatternTarget({
           ),
         );
     },
-    [target, updateFingerprint, list],
+    [target, updateFingerprint, list, workingWrite],
   );
 
   return {
@@ -312,6 +326,8 @@ export function useIxPatternTarget({
     setList,
     patterns,
     workingTemplates,
+    workingWrite,
+    setWorkingWrite,
     rows,
     feePins,
     setFeePins,

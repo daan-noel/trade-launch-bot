@@ -26,12 +26,26 @@ pub const CONFIG_KEY: &str = "m_burst_slot";
 
 // ── Patterns ─────────────────────────────────────────────────────────────────
 
-/// Compiled working-template and/or working-program lists for one fingerprint
-/// (`m_burst_slot.working_templates` / `working_programs`).
+/// Compiled `working_templates` for one fingerprint.
+///
+/// One list, two spellings: a `|` id is a grain (`Axiom Trade|CU|ATA|F`); a
+/// bare name is a program (`Axiom Trade`) and matches every grain of that
+/// program. `working_programs` is a read-compat alias for bare names only.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BurstPatterns {
     hashes: HashedSet,
     programs: HashedSet,
+}
+
+fn take_working_id(id: &str, hashes: &mut HashedSet, programs: &mut HashedSet) {
+    if id.is_empty() {
+        return;
+    }
+    if id.contains('|') {
+        hashes.insert(grain_id_hash(id));
+    } else {
+        programs.insert(program_id_hash(id));
+    }
 }
 
 impl BurstPatterns {
@@ -47,7 +61,7 @@ impl BurstPatterns {
         self
     }
 
-    /// Parse `metric_config["m_burst_slot"]`. `None` = key absent or both lists
+    /// Parse `metric_config["m_burst_slot"]`. `None` = key absent or the list
     /// empty ⇒ the group is unconfigured and every metric reads `NaN`.
     pub fn from_metric_config(cfg: &Value) -> Option<Self> {
         let obj = cfg.get(CONFIG_KEY)?;
@@ -55,15 +69,14 @@ impl BurstPatterns {
             return None;
         }
         let mut hashes = HashedSet::default();
+        let mut programs = HashedSet::default();
         if let Some(arr) = obj.get("working_templates").and_then(|v| v.as_array()) {
             for row in arr {
-                let id = row.as_str()?;
-                if !id.is_empty() {
-                    hashes.insert(grain_id_hash(id));
-                }
+                take_working_id(row.as_str()?, &mut hashes, &mut programs);
             }
         }
-        let mut programs = HashedSet::default();
+        // Read-compat: older rows stored bare names here. Writers use
+        // `working_templates` only.
         if let Some(arr) = obj.get("working_programs").and_then(|v| v.as_array()) {
             for row in arr {
                 let id = row.as_str()?;
@@ -88,14 +101,12 @@ impl BurstPatterns {
         let has_templates = map.contains_key("working_templates");
         let has_programs = map.contains_key("working_programs");
         if !has_templates && !has_programs {
-            return Err(format!(
-                "{CONFIG_KEY} carries no working_templates or working_programs"
-            ));
+            return Err(format!("{CONFIG_KEY} carries no working_templates"));
         }
         if has_templates {
             let Some(rows) = map.get("working_templates").and_then(|v| v.as_array()) else {
                 return Err(format!(
-                    "{CONFIG_KEY}.working_templates must be an array of grain-id strings"
+                    "{CONFIG_KEY}.working_templates must be an array of strings"
                 ));
             };
             for row in rows {
@@ -109,7 +120,7 @@ impl BurstPatterns {
         if has_programs {
             let Some(rows) = map.get("working_programs").and_then(|v| v.as_array()) else {
                 return Err(format!(
-                    "{CONFIG_KEY}.working_programs must be an array of program-name strings"
+                    "{CONFIG_KEY}.working_programs must be an array of strings"
                 ));
             };
             for row in rows {
@@ -131,7 +142,7 @@ impl BurstPatterns {
         self.hashes.contains(&hash)
     }
 
-    /// Grain on `working_templates` or program on `working_programs`.
+    /// Grain id on the list, or this print's program on the list.
     pub(crate) fn matches(&self, grain: Option<u64>, program: Option<u64>) -> bool {
         grain.is_some_and(|h| self.hashes.contains(&h))
             || program.is_some_and(|h| self.programs.contains(&h))
@@ -147,6 +158,7 @@ struct TemplateRun {
     wallets: HashedSet,
     /// True when any wallet in this run is first-on-mint this slot.
     has_new: bool,
+    program: Option<u64>,
 }
 
 // ── Slot prefix ──────────────────────────────────────────────────────────────
@@ -171,10 +183,14 @@ pub struct BurstSlotState {
     this_slot_buyers: HashedSet,
     /// Template grains on curve buys this mint, surviving slot reset.
     seen_templates: HashedSet,
+    /// Grain → program for `seen_templates`, so a bare program name on the
+    /// working list counts those grains as seen.
+    seen_program: HashedMap<u64>,
     by_template: HashedMap<TemplateRun>,
     pre_slot_liquidity: f64,
     pre_print_trail: f64,
     this_template: Option<u64>,
+    this_program: Option<u64>,
     this_member: bool,
 }
 
@@ -190,10 +206,12 @@ impl Default for BurstSlotState {
             ever: HashedSet::default(),
             this_slot_buyers: HashedSet::default(),
             seen_templates: HashedSet::default(),
+            seen_program: HashedMap::default(),
             by_template: HashedMap::default(),
             pre_slot_liquidity: f64::NAN,
             pre_print_trail: f64::NAN,
             this_template: None,
+            this_program: None,
             this_member: false,
         }
     }
@@ -226,6 +244,7 @@ impl BurstSlotState {
     pub fn on_trade(&mut self, t: &TradeLite, pre_trail: f64, prev_liquidity: f64) {
         self.pre_print_trail = pre_trail;
         self.this_template = t.template_hash;
+        self.this_program = t.program_hash;
         self.this_member = false;
 
         if t.slot != 0 && t.slot != self.slot {
@@ -252,6 +271,9 @@ impl BurstSlotState {
         if t.on_curve {
             if let Some(h) = t.template_hash {
                 self.seen_templates.insert(h);
+                if let Some(prog) = t.program_hash {
+                    self.seen_program.insert(h, prog);
+                }
             }
         }
 
@@ -281,6 +303,7 @@ impl BurstSlotState {
         let run = self.by_template.entry(h).or_default();
         run.count = run.count.saturating_add(1);
         run.sol += t.sol;
+        run.program = t.program_hash;
         if t.wallet_hash != 0 {
             run.wallets.insert(t.wallet_hash);
         }
@@ -315,7 +338,7 @@ impl BurstSlotState {
         match id {
             ThisMember => f64::from(u8::from(self.this_member)),
             ThisWorking => match self.this_template {
-                Some(h) => f64::from(u8::from(p.contains(h))),
+                Some(h) => f64::from(u8::from(p.matches(Some(h), self.this_program))),
                 None => 0.0,
             },
             SameBuyCount => self.this_run().map(|r| f64::from(r.count)).unwrap_or(f64::NAN),
@@ -354,7 +377,7 @@ impl BurstSlotState {
     fn working_count(&self, p: &BurstPatterns) -> f64 {
         let mut n = 0u32;
         for (h, run) in &self.by_template {
-            if p.contains(*h) {
+            if p.matches(Some(*h), run.program) {
                 n = n.saturating_add(run.count);
             }
         }
@@ -364,7 +387,7 @@ impl BurstSlotState {
     fn working_sol(&self, p: &BurstPatterns) -> f64 {
         let mut s = 0.0;
         for (h, run) in &self.by_template {
-            if p.contains(*h) {
+            if p.matches(Some(*h), run.program) {
                 s += run.sol;
             }
         }
@@ -374,7 +397,7 @@ impl BurstSlotState {
     fn working_wallets(&self, p: &BurstPatterns) -> f64 {
         let mut w = HashedSet::default();
         for (h, run) in &self.by_template {
-            if p.contains(*h) {
+            if p.matches(Some(*h), run.program) {
                 w.extend(run.wallets.iter().copied());
             }
         }
@@ -384,19 +407,24 @@ impl BurstSlotState {
     fn working_template_count(&self, p: &BurstPatterns) -> f64 {
         self.by_template
             .keys()
-            .filter(|h| p.contains(**h))
+            .filter(|h| {
+                let prog = self.by_template.get(*h).and_then(|r| r.program);
+                p.matches(Some(**h), prog)
+            })
             .count() as f64
     }
 
     fn working_templates_seen(&self, p: &BurstPatterns) -> f64 {
         self.seen_templates
             .iter()
-            .filter(|h| p.contains(**h))
+            .filter(|h| p.matches(Some(**h), self.seen_program.get(*h).copied()))
             .count() as f64
     }
 
     fn has_new(&self, p: &BurstPatterns) -> bool {
-        self.by_template.iter().any(|(h, run)| p.contains(*h) && run.has_new)
+        self.by_template
+            .iter()
+            .any(|(h, run)| p.matches(Some(*h), run.program) && run.has_new)
     }
 }
 
@@ -543,6 +571,29 @@ mod tests {
         assert_eq!(s.value(MetricId::MemberTemplateCount, Some(&p)), 2.0);
         assert_eq!(s.value(MetricId::WorkingBuySol, Some(&p)), 1.0);
         assert_eq!(s.value(MetricId::SameBuySol, Some(&p)), 1.0); // this print's grain = Pump.Fun
+    }
+
+    #[test]
+    fn bare_name_is_a_program_and_matches_every_grain() {
+        let p = BurstPatterns::from_metric_config(&serde_json::json!({
+            "m_burst_slot": { "working_templates": ["Axiom Trade"] }
+        }))
+        .expect("configured");
+        let ata = grain_id_hash("Axiom Trade|ATA|F");
+        let cu = grain_id_hash("Axiom Trade|CU|ATA|F");
+        let pump = grain_id_hash("Pump.Fun");
+        let axiom = program_id_hash("Axiom Trade");
+        assert!(p.matches(Some(ata), Some(axiom)));
+        assert!(p.matches(Some(cu), Some(axiom)));
+        assert!(!p.matches(Some(pump), Some(program_id_hash("Pump.Fun"))));
+        assert!(!p.contains(ata));
+
+        let mut t = buy(10, Some(1), 1, Some(ata), 1.0);
+        t.program_hash = Some(axiom);
+        let mut s = BurstSlotState::default();
+        s.on_trade(&t, 0.0, f64::NAN);
+        assert_eq!(s.value(MetricId::ThisWorking, Some(&p)), 1.0);
+        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 1.0);
     }
 
     #[test]

@@ -342,16 +342,29 @@ export function metricConfigWithDumpPatterns(
  *  vocabulary from {@link IxPatternList}. */
 export const BURST_GROUP = 'm_burst_slot';
 
-/** Read `m_burst_slot.working_templates` as grain-id strings. */
+/** Read `m_burst_slot.working_templates`. A `|` id is a grain; a bare name is a
+ *  program. Older rows stored bare names under `working_programs` — those fold
+ *  into this list so the chip and the form show what the engine already matches. */
 export function workingTemplatesFromConfig(
   cfg: Record<string, unknown> | null | undefined,
 ): string[] {
   const obj = cfg?.[BURST_GROUP];
-  const arr =
+  const rec =
     obj && typeof obj === 'object' && !Array.isArray(obj)
-      ? (obj as Record<string, unknown>).working_templates
+      ? (obj as Record<string, unknown>)
       : undefined;
-  return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
+  const names = (key: string): string[] => {
+    const arr = rec?.[key];
+    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
+  };
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of [...names('working_templates'), ...names('working_programs')]) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
 }
 
 /** **The one writer** of `fingerprints.metric_config.m_burst_slot`.
@@ -370,7 +383,7 @@ export function metricConfigWithWorkingTemplates(
   const keep: Record<string, unknown> = {};
   if (prevBurst && typeof prevBurst === 'object' && !Array.isArray(prevBurst)) {
     for (const [k, v] of Object.entries(prevBurst as Record<string, unknown>)) {
-      if (k !== 'working_templates') keep[k] = v;
+      if (k !== 'working_templates' && k !== 'working_programs') keep[k] = v;
     }
   }
   return { ...otherGroups, [BURST_GROUP]: { ...keep, working_templates: cleaned } };
@@ -430,7 +443,7 @@ export type IxPatternList = 'tagged' | 'dump';
 
 /** The three lists a trades-table badge click can write into. Tagged and dump
  *  are {@link IxPatternList} (ordered `ix_labels`, optional fee pins). Working
- *  is a different vocabulary — `m_burst_slot.working_templates` grain ids. */
+ *  is a different vocabulary — `m_burst_slot.working_templates` (grain or program). */
 export type TapeList = IxPatternList | 'working';
 
 /** Read one list off a `metric_config`. */
