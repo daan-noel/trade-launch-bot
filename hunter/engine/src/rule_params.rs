@@ -19,7 +19,8 @@
 //! inside a clause AND. Entry stays a single object (AND). Optional `entry_event`
 //! is a second AND-object: the completing-print event. `entry_lock: "slot"` fires
 //! that event once per slot; filters in `entry` that fail spend the slot. `scale_out`
-//! stages stay object-form. See `docs/plans/strategies/ix-live-rule.md`.
+//! stages stay object-form. See `docs/plans/strategies/metrics-reference.md`
+//! (exit DNF / `m_position.armed`) and `docs/plans/strategies/armed-trailing-stop.md`.
 //!
 //! Group objects mix **strict params** (e.g. `window_size_sec`) with **metric
 //! condition lists** at the same level, so parsing is a registry-guided walk
@@ -1135,7 +1136,7 @@ fn validate_group(
     // that differ only in the slice axis would record the same reason and an operator
     // could not tell which read fired. Entry-side is unaffected — the readout names
     // the whole requirement, not a one-line label. Lift this together with the label,
-    // never on its own: see `docs/roadmap/two-window-exit-labels.md`.
+    // never on its own.
     //
     // Per-METRIC, because the two live on `m_flow_window` beside single-window metrics
     // that are perfectly good exits: rejecting the whole group would take `gross_flow`

@@ -12,7 +12,7 @@
 //! 100 is a PURE pack - and a pure pack makes the working family and the whole
 //! prefix read the same number. The 5-slot buy quiet the rule also needs is NOT here: it is
 //! `m_flow_window.buy_count == 0` on a lagged slot window (`4sl@1`).
-//! See `hunter/docs/plans/strategies/ix-live-rule.md`.
+//! See `hunter/docs/plans/strategies/metrics-reference.md` (`m_burst_slot`).
 
 use serde_json::Value;
 

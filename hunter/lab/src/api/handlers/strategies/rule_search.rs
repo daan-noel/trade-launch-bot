@@ -3,7 +3,7 @@
 //! not a sweep mode.
 //!
 //! Architecture: `hunter/docs/arch/sweep.md` "Rule search".
-//! Method: `hunter/docs/plans/strategies/rule-search-method.md`.
+//! Governing workflow: `hunter/docs/plans/strategies/market-model-and-workflow.md`.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;

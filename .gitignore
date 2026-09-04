@@ -10,6 +10,7 @@
 target/
 target-check/
 target-check*/
+target-check
 **/*.rs.bk
 
 # --- Node / frontend ---
@@ -18,6 +19,7 @@ target-check*/
 # in-sync lockfile for reproducible installs. Ignoring it let forge's lockfile
 # drift incomplete (missing Linux platform binaries) and broke `npm ci`.
 node_modules/
+node_modules
 dist/
 build/
 .vite/
@@ -118,3 +120,13 @@ pnpm-debug.log*
 
 # --- Monorepo migration backup (local only, never commit) ---
 /_monorepo-backup/
+
+# --- Python bytecode ---
+__pycache__/
+*.pyc
+
+# --- Root-only scratch (API dumps, one-off fetch scripts) ---
+# Do NOT blanket-ignore *.py / *.json — that hides tracked fixtures, IDLs,
+# and plan twins. Root JSON dumps are already covered by /*.json above.
+/*.py
+/*.txt

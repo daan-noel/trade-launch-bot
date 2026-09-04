@@ -1,4 +1,4 @@
-//! Report columns are `run_replay` ([rule-search.md] Scorer). Champion is the
+//! Report columns are `run_replay` (see `docs/arch/sweep.md` "Rule search"). Champion is the
 //! replay winner when the fast archive and replay disagree — ranked by
 //! spread-discounted authority SOL among paying, sign-agreeing replays, then
 //! gated by the 1 s latency ladder.

@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 /// The working list this study ships, after the money check: Axiom's two grains
 /// and GMGN Bot. The five the SQL also carried are 2.6 % of fires and contribute
-/// at most 0.28 SOL each, so they are not here - see `ix-live-rule.md`.
+/// at most 0.28 SOL each, so they are not here — see `metrics-reference.md` (`m_burst_slot`).
 const WORKING: [&str; 3] = [
     "Axiom Trade|CU|ATA|F",
     "Axiom Trade|CU|ATA|N|F",

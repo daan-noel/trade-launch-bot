@@ -1,4 +1,4 @@
-//! Entry fillings × exit bags → complete `RuleParams` ([rule-search-method.md] §3).
+//! Entry fillings × exit bags → complete `RuleParams` (`docs/arch/sweep.md` "Rule search").
 //!
 //! No kitchen-sink entry and no greedy add/drop. Empty entry and empty exit are
 //! combos. Entry can-fail is 0–2 (selector + extra pooled); trigger stays 0–1.

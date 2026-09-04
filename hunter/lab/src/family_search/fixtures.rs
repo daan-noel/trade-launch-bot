@@ -1,9 +1,5 @@
-//! Shared no-DB fixtures for the family-search tests. Every constructed test in
-//! [family-search.md] §8 names these, at the same bar as
-//! [rule-search-method.md] §5: no lake, no Postgres, no network.
-//!
-//! [family-search.md]: ../../../docs/roadmap/family-search.md
-//! [rule-search-method.md]: ../../../docs/plans/strategies/rule-search-method.md
+//! Shared no-DB fixtures for the family-search tests: no lake, no Postgres, no network.
+//! Architecture: `hunter/docs/arch/sweep.md` ("Family search").
 
 use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria};
 use std::sync::Arc;

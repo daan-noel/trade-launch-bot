@@ -1,4 +1,4 @@
-//! Cut table from this range's metric paths ([rule-search-method.md] §2).
+//! Cut table from this range's metric paths (`docs/arch/sweep.md` "Rule search").
 //!
 //! Labels are path facts (ran vs never-ran, dumpers), not a rule. Entry uses
 //! peak contrast + winner floor when the split is thick. Run-lead (seconds

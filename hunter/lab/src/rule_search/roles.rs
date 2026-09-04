@@ -1,4 +1,4 @@
-//! Registry → entry roles and exit bags ([rule-search-method.md] §3).
+//! Registry → entry roles and exit bags (`docs/arch/sweep.md` "Rule search").
 //!
 //! A metric is a quantity. Side + operator + cut make the clause. Classification
 //! reads registry flags (`scope`, `monotonic`, `kind`, `family`, unit) plus a
