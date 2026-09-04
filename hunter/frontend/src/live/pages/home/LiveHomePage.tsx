@@ -39,10 +39,9 @@ export function LiveHomePage() {
   const cashUsd = summary?.cash_value_usd ?? 0;
   const posUsd = summary?.positions_value_usd ?? 0;
   const pnlSol = summary?.total_unrealized_pnl_sol ?? null;
-  const pnlPct =
-    summary && summary.total_cost_basis_sol > 0
-      ? (summary.total_unrealized_pnl_sol / summary.total_cost_basis_sol) * 100
-      : null;
+  // Served, not divided here: `models::portfolio` owns every PnL formula, and a
+  // percent the browser re-derives is a second copy of one.
+  const pnlPct = summary?.total_unrealized_pnl_pct ?? null;
   const realizedToday = summary?.realized_pnl_today_sol ?? null;
   void usdRate;
 

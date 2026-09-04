@@ -21,6 +21,7 @@
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::models::MarkQuote;
 use crate::strategies::kernel::{mark_open_bag, weighted_return_pct, CostModel};
 
 /// "Who manages this mint" — one open (unsettled) strategy position, tagged with
@@ -97,6 +98,39 @@ pub fn unrealized_pnl(
         mark_open_bag(avg_entry_price, current_mark, held_amount, reserve_sol, costs);
     let unrealized_pnl_pct = weighted_return_pct(unrealized_pnl_sol, cost_basis_sol);
     UnrealizedPnl { cost_basis_sol, unrealized_pnl_sol, unrealized_pnl_pct }
+}
+
+/// Mark ONE open strategy position's remaining bag to the live cache quote.
+///
+/// **The single entry point for every open-position figure.** The per-rule
+/// `open_pnl_sol` rollup and the Console's per-position PnL column both resolve a
+/// position through here, so an open position's unrealized number cannot mean two
+/// things depending on which surface asked. Before this existed the Console had no
+/// position-scoped mark at all and joined the *wallet holding* by mint instead —
+/// an aggregator USD price over a wallet-wide average-cost basis, which is a
+/// different position, a different price universe, and a different denominator.
+///
+/// Every input comes from the position itself: `entry_price` is its executed fill,
+/// `held_amount` is `entry_token_amount - sold_token_amount` (a scaled-out position
+/// marks the half it still owns), and `quote` is
+/// [`mark_quote`](crate::state::token_cache::mark_quote) — the one definition of
+/// what the live cache says a mint is worth, curve-native in SOL on the same basis
+/// `entry_price` is quoted in.
+///
+/// `None` — never a fabricated zero — when there is nothing honest to mark: no
+/// executed entry, no bag left, or no cached price for the mint yet.
+pub fn mark_bag(
+    entry_price: Option<f64>,
+    held_amount: f64,
+    quote: Option<MarkQuote>,
+    costs: &CostModel,
+) -> Option<UnrealizedPnl> {
+    let entry_price = entry_price.filter(|p| p.is_finite() && *p > 0.0)?;
+    if !(held_amount > 0.0) {
+        return None;
+    }
+    let quote = quote.filter(|q| q.price.is_finite() && q.price > 0.0)?;
+    Some(unrealized_pnl(entry_price, quote.price, held_amount, quote.reserve_sol, costs))
 }
 
 #[cfg(test)]
@@ -189,5 +223,53 @@ mod tests {
                 "sign split at mark {mark}"
             );
         }
+    }
+
+    // ── mark_bag: the one open-position entry point ─────────────────────────────
+
+    /// SSOT: `mark_bag` is `unrealized_pnl` with the guards in front, never a
+    /// second formula. If someone reimplements it, this fails.
+    #[test]
+    fn mark_bag_is_unrealized_pnl() {
+        let costs = CostModel::pumpfun_with_impact();
+        let quote = MarkQuote { price: 2.0, reserve_sol: Some(70.0) };
+        let got = mark_bag(Some(1.0), 0.05, Some(quote), &costs).expect("markable");
+        let want = unrealized_pnl(1.0, 2.0, 0.05, Some(70.0), &costs);
+        assert_eq!(got.cost_basis_sol, want.cost_basis_sol);
+        assert_eq!(got.unrealized_pnl_sol, want.unrealized_pnl_sol);
+        assert_eq!(got.unrealized_pnl_pct, want.unrealized_pnl_pct);
+    }
+
+    /// Nothing honest to mark ⇒ `None`, never a fabricated 0 that would render as
+    /// a break-even the position never had. Each guard checked on its own.
+    #[test]
+    fn mark_bag_declines_rather_than_inventing_a_zero() {
+        let costs = CostModel::pumpfun_with_impact();
+        let quote = || Some(MarkQuote { price: 2.0, reserve_sol: None });
+        // No executed entry price (BuySubmitted, fill not adopted yet).
+        assert!(mark_bag(None, 1.0, quote(), &costs).is_none());
+        assert!(mark_bag(Some(0.0), 1.0, quote(), &costs).is_none());
+        assert!(mark_bag(Some(f64::NAN), 1.0, quote(), &costs).is_none());
+        // Nothing left to mark (fully scaled out, row not yet closed).
+        assert!(mark_bag(Some(1.0), 0.0, quote(), &costs).is_none());
+        // Mint has no cached price yet (just entered, no post-entry trade).
+        assert!(mark_bag(Some(1.0), 1.0, None, &costs).is_none());
+        assert!(mark_bag(Some(1.0), 1.0, Some(MarkQuote { price: 0.0, reserve_sol: None }), &costs)
+            .is_none());
+    }
+
+    /// A scaled-out position marks the bag it STILL holds, not the one it bought.
+    /// The wallet-holdings join this replaced could not express that: it priced the
+    /// whole on-chain balance against a wallet-wide average cost.
+    #[test]
+    fn mark_bag_prices_only_the_remaining_bag() {
+        let costs = CostModel::frictionless();
+        let quote = MarkQuote { price: 2.0, reserve_sol: None };
+        let whole = mark_bag(Some(1.0), 100.0, Some(quote), &costs).expect("markable");
+        let half = mark_bag(Some(1.0), 50.0, Some(quote), &costs).expect("markable");
+        assert_eq!(whole.unrealized_pnl_sol, 100.0);
+        assert_eq!(half.unrealized_pnl_sol, 50.0);
+        // Per-SOL-deployed return is unchanged by the scale-out — only the size is.
+        assert_eq!(whole.unrealized_pnl_pct, half.unrealized_pnl_pct);
     }
 }

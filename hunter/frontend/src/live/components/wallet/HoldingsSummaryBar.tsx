@@ -28,10 +28,9 @@ export const HoldingsSummaryBar = memo(function HoldingsSummaryBar({
   const posSol = summary.positions_value_sol;
   const posUsd = summary.positions_value_usd;
   const unrealizedSol = summary.total_unrealized_pnl_sol;
-  const pnlPct =
-    unrealizedSol != null && summary.total_cost_basis_sol > 0
-      ? (unrealizedSol / summary.total_cost_basis_sol) * 100
-      : null;
+  // Served alongside the SOL figure so the two are sign-locked by the backend
+  // rather than by two independent divisions in two components.
+  const pnlPct = summary.total_unrealized_pnl_pct ?? null;
 
   const hasCash = (cashUsd != null && cashUsd > 0) || (usdc != null && usdc.ui_amount > 0);
   const usdcUsd = hasCash ? (usdc?.value_usd ?? cashUsd) : null;

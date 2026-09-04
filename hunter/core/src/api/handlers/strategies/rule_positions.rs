@@ -27,7 +27,9 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::api::table_query::TableRequest;
+use crate::models::portfolio::mark_bag;
 use crate::models::{MarkQuote, PositionsSummary, StrategyPosition};
+use crate::strategies::kernel::CostModel;
 use crate::storage::repositories::{
     rule_repo::RuleRepo,
     strategy_repo::{PositionQuery, StrategyRepo},
@@ -870,6 +872,73 @@ pub async fn position_fills(strategy_repo: &StrategyRepo, position_id: Uuid) -> 
         Ok(fills) => HttpResponse::Ok().json(fills),
         Err(e) => list_error("list position fills", e),
     }
+}
+
+/// One open position marked to the live cache — the Console's per-position PnL row.
+///
+/// Every field is scoped to the **position**, never to the wallet bag behind it:
+/// the basis is this position's own executed entry over the tokens it still holds,
+/// and `mark_price` is the curve-native SOL spot from
+/// [`mark_quote`](crate::state::token_cache::mark_quote) — the same price universe
+/// `entry_price` is quoted in, so the ratio compares like with like.
+#[derive(Serialize)]
+pub struct OpenPositionMark {
+    pub position_id: Uuid,
+    pub mint_address: String,
+    /// SOL per raw token unit — the spot the bag is marked at.
+    pub mark_price: f64,
+    /// Capital this position consumed: curve cost + the entry leg's fee and fixed cost.
+    pub cost_basis_sol: f64,
+    /// Net of the round trip — what closing the remaining bag right now would leave.
+    pub unrealized_pnl_sol: f64,
+    /// `unrealized_pnl_sol / cost_basis_sol x 100`, sign-locked to the SOL figure.
+    pub unrealized_pnl_pct: f64,
+}
+
+/// `GET /strategies/{strategy}/positions/open/marks` — one marked row per open
+/// position, for the Console's live PnL / PnL% columns.
+///
+/// This endpoint exists because the Console had no position-scoped mark and joined
+/// the **wallet holding** by mint instead. That number answers a different
+/// question: it prices the whole on-chain balance (not this position's remaining
+/// bag) off a Jupiter USD quote divided by a minute-old SOL/USD rate (not the curve
+/// spot the entry filled against), over a basis averaged across every buy the wallet
+/// ever made on the mint (not this position's entry). Three substitutions, all of
+/// them free to drift, and the row read several points richer than an on-chain
+/// tracker for exactly that reason.
+///
+/// A position whose mint has no cached price yet is **omitted**, not zeroed — the UI
+/// renders a dash. Both bins serve this: `live` off its engine's own rows, `lab` off
+/// the synced mirror, through the same [`mark_bag`] the per-rule `open_pnl_sol`
+/// rollup uses.
+pub async fn open_position_marks<F>(strategy_repo: &StrategyRepo, mark_of: F) -> HttpResponse
+where
+    F: Fn(&str) -> Option<MarkQuote>,
+{
+    let bags = match strategy_repo.open_position_bags().await {
+        Ok(bags) => bags,
+        Err(e) => return list_error("load open position marks", e),
+    };
+    let costs = CostModel::pumpfun_with_impact();
+    let marks: Vec<OpenPositionMark> = bags
+        .into_iter()
+        .filter_map(|b| {
+            let position_id = b.position_id?;
+            let entry_price = b.entry_price.filter(|p| p.is_finite() && *p > 0.0)?;
+            let quote = mark_of(&b.mint_address)?;
+            let mark_price = quote.price;
+            let pnl = mark_bag(Some(entry_price), b.held_amount(entry_price), Some(quote), &costs)?;
+            Some(OpenPositionMark {
+                position_id,
+                mint_address: b.mint_address,
+                mark_price,
+                cost_basis_sol: pnl.cost_basis_sol,
+                unrealized_pnl_sol: pnl.unrealized_pnl_sol,
+                unrealized_pnl_pct: pnl.unrealized_pnl_pct,
+            })
+        })
+        .collect();
+    HttpResponse::Ok().json(marks)
 }
 
 #[cfg(test)]

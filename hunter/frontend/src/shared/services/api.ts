@@ -321,6 +321,8 @@ export interface HoldingsTableSummary {
   total_value_usd: number | null;
   total_cost_basis_sol: number;
   total_unrealized_pnl_sol: number | null;
+  /** `pnl / cost_basis x 100`, served so no page owns a copy of the formula. */
+  total_unrealized_pnl_pct: number | null;
   change_24h_pct: number | null;
 }
 

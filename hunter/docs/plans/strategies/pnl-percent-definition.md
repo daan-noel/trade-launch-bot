@@ -132,6 +132,31 @@ vectors by `netProceedsMatchesRust`).
 The full derivation, and why a gross mark is wrong by ~4 pp rather than slightly
 optimistic, is [execution-costs §6](execution-costs.md).
 
+### Which bag, and at which price
+
+The formula is only half the definition; the inputs are the other half. An open
+position's percent is **position-scoped and curve-marked**, and both halves are
+load-bearing:
+
+- **The bag is the position's own remainder** — `entry_token_amount -
+  sold_token_amount`, against the price *that position* filled at. Not the wallet's
+  on-chain balance of the mint, and not an average cost blended across every buy the
+  wallet ever made on it. A scaled-out position marks the half it still holds.
+- **The mark is the curve spot in SOL** — `token_cache::mark_quote`, the same price
+  universe `entry_price` is quoted in. Not a USD quote from an aggregator divided by
+  a separately-polled SOL/USD rate: that puts a third party's price in the numerator
+  and our own fill in the denominator, and the two drift.
+
+`models::portfolio::mark_bag` is the one entry point that applies both. The per-rule
+`open_pnl_sol` rollup and the Console's per-position column call it, so one position
+is one number on every surface.
+
+A wallet holding's `unrealized_pnl_pct` (`services::portfolio`) answers a different
+question — *what is this mint's whole balance worth against what the wallet paid for
+it* — and is marked off Jupiter because a manually-received bag has no position
+behind it. It belongs to the Holdings and Home surfaces. **Never join it to a
+position by mint**: different bag, different price source, different denominator.
+
 ## Naming
 
 The name is **`return_pct`** everywhere (model, repo, wire, TS, columns) — never

@@ -36,10 +36,12 @@ import { useUiToggle } from 'hooks/useUiPrefs';
 import {
   liveTradeSpotSolPerRaw,
   spotSolPerRawToUsd,
+  unrealizedFromValue,
   valueSolAtSpot,
 } from 'lib/liveMark';
 import {
   liveApi,
+  useGetCostModelQuery,
   useGetWalletPricesQuery,
   useManualBuyPositionMutation,
   useSellTokenMutation,
@@ -222,6 +224,13 @@ export function MyWalletPage() {
   const { usdRate } = useUsdRate();
   const usdRateRef = useRef(usdRate);
   usdRateRef.current = usdRate;
+
+  // The execution costs every PnL figure is net of. Served once and cached (it
+  // changes only with `.env` + a restart), so a tip nets a bag with the same fee
+  // and tip the engine charges instead of a copy that drifts.
+  const { data: costModel } = useGetCostModelQuery();
+  const costsRef = useRef(costModel);
+  costsRef.current = costModel;
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
@@ -232,6 +241,7 @@ export function MyWalletPage() {
 
   useMintTradeStream(pageMintSetRef, (batch) => {
     const rate = usdRateRef.current;
+    const costs = costsRef.current;
     setTips((prev) => {
       let next: Record<string, MarkTip> | null = null;
       for (const t of batch) {
@@ -242,18 +252,23 @@ export function MyWalletPage() {
         const valueSol = valueSolAtSpot(spot, h.amount);
         const priceUsd =
           rate != null ? spotSolPerRawToUsd(spot, h.decimals, rate) : null;
+        // `value_sol` is a plain fact of the print; the PnL fields are NOT. They are
+        // net of the sell that would realize them, so they go through the shared
+        // `unrealizedFromValue` and are only tipped when the served cost model is in
+        // hand. `value - cost_basis` — what this used to do — charges no exit fee, no
+        // tip and no impact, then divides a GROSS value by an ALL-IN basis: the
+        // ~4 pp overstatement that makes a row read green while the bag is under
+        // water. With no cost model loaded the scan's net figures stand.
+        const marked =
+          valueSol != null && h.cost_basis_sol != null && costs
+            ? unrealizedFromValue(valueSol, h.cost_basis_sol, t.reserve_sol ?? null, costs)
+            : null;
         const tip: MarkTip = {
           price_usd: priceUsd,
           value_usd: priceUsd != null ? priceUsd * h.ui_amount : null,
           value_sol: valueSol,
-          unrealized_pnl_sol:
-            valueSol != null && h.cost_basis_sol != null
-              ? valueSol - h.cost_basis_sol
-              : null,
-          unrealized_pnl_pct:
-            valueSol != null && h.cost_basis_sol != null && h.cost_basis_sol > 0
-              ? ((valueSol - h.cost_basis_sol) / h.cost_basis_sol) * 100
-              : null,
+          unrealized_pnl_sol: marked?.pnlSol ?? null,
+          unrealized_pnl_pct: marked?.pnlPct ?? null,
         };
         if (!next) next = { ...prev };
         next[t.mint_address] = tip;

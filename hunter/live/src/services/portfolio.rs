@@ -18,7 +18,9 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use trading_core::models::portfolio::{unrealized_pnl, ManagedMint};
-use trading_core::strategies::kernel::{mark_open_bag, CostModel};
+use trading_core::models::MarkQuote;
+use trading_core::state::token_cache::mark_quote;
+use trading_core::strategies::kernel::{mark_open_bag, weighted_return_pct, CostModel};
 use trading_core::models::{cash_symbol, AssetKind, StrategyPosition};
 use trading_core::storage::token_enrichment::{fetch_by_mints, TokenEnrichment, TokenEnrichmentRow};
 
@@ -98,6 +100,12 @@ pub struct PortfolioSummary {
     pub positions_value_usd: f64,
     pub total_cost_basis_sol: f64,
     pub total_unrealized_pnl_sol: f64,
+    /// `total_unrealized_pnl_sol / total_cost_basis_sol x 100`, through the canonical
+    /// [`weighted_return_pct`]. Served rather than divided in the browser: two pages
+    /// showing the same ratio must not each own a copy of the formula, and the sign
+    /// lock to the SOL figure beside it is the backend's guarantee, not the UI's.
+    /// `0.0` when no capital is deployed.
+    pub total_unrealized_pnl_pct: f64,
     /// Number of held **meme** bags (excludes cash / WSOL plumbing).
     pub position_count: usize,
     /// Realized SOL PnL from real positions that cleanly exited since 00:00 UTC.
@@ -173,6 +181,11 @@ pub struct HoldingsTableSummary {
     pub total_value_usd: Option<f64>,
     pub total_cost_basis_sol: f64,
     pub total_unrealized_pnl_sol: Option<f64>,
+    /// `total_unrealized_pnl_sol / total_cost_basis_sol x 100` through the canonical
+    /// [`weighted_return_pct`] — served, not divided in the browser, for the same
+    /// reason as [`PortfolioSummary::total_unrealized_pnl_pct`]. `None` whenever the
+    /// SOL figure is `None` or no capital is deployed.
+    pub total_unrealized_pnl_pct: Option<f64>,
     /// Value-weighted 24h across **meme** rows that have both a value and a 24h.
     pub change_24h_pct: Option<f64>,
 }
@@ -348,6 +361,10 @@ pub async fn summary(state: &DeployState) -> anyhow::Result<PortfolioSummary> {
         positions_value_usd,
         total_cost_basis_sol,
         total_unrealized_pnl_sol,
+        total_unrealized_pnl_pct: weighted_return_pct(
+            total_unrealized_pnl_sol,
+            total_cost_basis_sol,
+        ),
         position_count: positions.len(),
         realized_pnl_today_sol,
         active_rules,
@@ -549,6 +566,33 @@ struct HoldingPnl {
     unrealized_pnl_pct: Option<f64>,
 }
 
+/// The SOL mark for one meme holding, per **UI** token — curve first, Jupiter second.
+///
+/// Kept pure and separate so the preference itself is testable without a wallet
+/// scan, because the preference is the load-bearing part. `mark_quote` prices in
+/// SOL per **raw** unit (the basis `entry_price` uses), so it is lifted by
+/// `10^decimals` to meet the per-UI mark the caller works in.
+///
+/// Jupiter is a fallback, never a peer: it answers in USD, which has to be divided
+/// by a separately-polled SOL/USD rate to become comparable to an on-chain SOL cost
+/// basis. That is two price sources and two vintages on the two legs of one ratio.
+/// It is still the right answer for a bag the engine never tracked — a transferred
+/// or airdropped mint has no curve mark to prefer — and `None` beats a guess.
+fn resolve_mark_sol_per_ui(
+    curve: Option<&MarkQuote>,
+    decimals: u8,
+    jupiter_price_usd: Option<f64>,
+    sol_usd: Option<f64>,
+) -> Option<f64> {
+    if let Some(q) = curve.filter(|q| q.price.is_finite() && q.price > 0.0) {
+        return Some(q.price * 10f64.powi(decimals as i32));
+    }
+    match (jupiter_price_usd, sol_usd) {
+        (Some(pu), Some(su)) if su > 0.0 => Some(pu / su),
+        _ => None,
+    }
+}
+
 fn holding_pnl(
     avg_entry_price: Option<f64>,
     mark_sol_per_ui: Option<f64>,
@@ -642,6 +686,14 @@ async fn compose(
         warn!("Jupiter price fetch failed: {e}");
         Default::default()
     });
+    // Curve-native SOL spot per mint, resolved in ONE pass up front through the
+    // shared `mark_quote`. Resolved here rather than inside the per-holding map so
+    // no `DashMap` read guard is ever live while another shard read is taken — the
+    // spinlock that wedged the runtime once already.
+    let curve_marks: HashMap<String, MarkQuote> = mints
+        .iter()
+        .filter_map(|m| mark_quote(&state.token_cache, m).map(|q| (m.clone(), q)))
+        .collect();
     let avg_entries = avg_entries.unwrap_or_else(|e| {
         warn!("cost-basis fetch failed: {e}");
         Default::default()
@@ -680,9 +732,16 @@ async fn compose(
             let enrich_row = enrich_by_mint.get(&h.mint);
 
             // Cash = face $1 / UI unit (no Jupiter flicker, no trading PnL).
-            // Meme bags use Jupiter marks + avg-entry unrealized PnL.
-            let (price_usd, value_usd, liquidity, price_change_24h, token_created_at, pnl) =
-                if kind == AssetKind::Cash {
+            // Meme bags mark to the curve (Jupiter as fallback) + avg-entry PnL.
+            let (
+                price_usd,
+                value_usd,
+                liquidity,
+                price_change_24h,
+                token_created_at,
+                pnl,
+                mark_sol_per_ui,
+            ) = if kind == AssetKind::Cash {
                     let price_usd = Some(1.0);
                     let value_usd = Some(h.ui_amount);
                     (
@@ -696,23 +755,42 @@ async fn compose(
                             unrealized_pnl_sol: None,
                             unrealized_pnl_pct: None,
                         },
+                        None,
                     )
                 } else {
-                    let price_usd = entry.and_then(|e| e.price_usd);
-                    let value_usd = price_usd.map(|p| p * h.ui_amount);
-                    let mark_sol_per_ui = match (price_usd, sol_usd) {
-                        (Some(pu), Some(su)) if su > 0.0 => Some(pu / su),
-                        _ => None,
+                    // ONE price per holding, in two currencies. The curve spot wins
+                    // whenever the live cache has the mint: the cost basis is an
+                    // on-chain SOL fill, so marking it against a third party's USD
+                    // quote divided by a separately-polled SOL/USD rate puts two
+                    // different price universes on the two legs of one ratio and lets
+                    // them drift. Jupiter is the fallback for a bag the engine never
+                    // tracked (a transferred/airdropped mint), which has no curve
+                    // mark to prefer.
+                    let curve = curve_marks.get(&h.mint);
+                    let mark_sol_per_ui = resolve_mark_sol_per_ui(
+                        curve,
+                        h.decimals,
+                        entry.and_then(|e| e.price_usd),
+                        sol_usd,
+                    );
+                    // USD is a display currency, derived from whichever mark priced
+                    // the PnL so the two columns cannot tell different stories.
+                    let price_usd = match (mark_sol_per_ui, sol_usd, curve.is_some()) {
+                        (Some(m), Some(su), true) => Some(m * su),
+                        _ => entry.and_then(|e| e.price_usd),
                     };
+                    let value_usd = price_usd.map(|p| p * h.ui_amount);
                     let pnl = holding_pnl(
                         avg_entries.get(&h.mint).map(|a| a.avg_entry_price),
                         mark_sol_per_ui,
                         h.decimals,
                         h.ui_amount,
-                        cached
-                            .as_ref()
-                            .and_then(|s| s.current_reserve_sol)
-                            .filter(|r| r.is_finite() && *r > 0.0),
+                        curve.and_then(|q| q.reserve_sol).or_else(|| {
+                            cached
+                                .as_ref()
+                                .and_then(|s| s.current_reserve_sol)
+                                .filter(|r| r.is_finite() && *r > 0.0)
+                        }),
                     );
                     (
                         price_usd,
@@ -721,12 +799,20 @@ async fn compose(
                         entry.and_then(|e| e.price_change_24h),
                         entry.and_then(|e| e.token_created_at.clone()),
                         pnl,
+                        mark_sol_per_ui,
                     )
                 };
 
-            let value_sol = match (value_usd, sol_usd) {
-                (Some(vu), Some(su)) if su > 0.0 => Some(vu / su),
-                _ => None,
+            // Straight off the SOL mark that priced the PnL — not `value_usd / sol_usd`,
+            // which would round-trip a SOL number through USD and back and land a few
+            // basis points away from the basis it is compared against. Cash has no SOL
+            // mark and keeps the USD conversion.
+            let value_sol = match mark_sol_per_ui {
+                Some(m) => Some(m * h.ui_amount),
+                None => match (value_usd, sol_usd) {
+                    (Some(vu), Some(su)) if su > 0.0 => Some(vu / su),
+                    _ => None,
+                },
             };
 
             // Live-authoritative migration/cashback (cache → on-chain fallback).
@@ -922,5 +1008,49 @@ mod tests {
         assert_eq!(lines[0].symbol, "USDC");
         assert!((usd - 250.0).abs() < 1e-9);
         assert!((sol.unwrap() - 2.5).abs() < 1e-9);
+    }
+
+    // -- mark preference -------------------------------------------------------
+
+    /// The curve spot wins whenever the live cache has the mint, lifted from
+    /// SOL/raw to SOL/UI. Jupiter is not consulted at all — a divergent USD quote
+    /// beside a curve mark must not move the number.
+    #[test]
+    fn curve_spot_beats_the_jupiter_quote() {
+        let curve = MarkQuote { price: 1e-7, reserve_sol: Some(30.0) };
+        // A wildly different Jupiter quote is present and must be ignored.
+        let got = resolve_mark_sol_per_ui(Some(&curve), 6, Some(999.0), Some(200.0));
+        assert_eq!(got, Some(1e-7 * 1e6));
+    }
+
+    /// A bag the engine never tracked (transferred / airdropped) has no curve mark,
+    /// so Jupiter's USD over the live SOL/USD rate is the fallback.
+    #[test]
+    fn jupiter_is_the_fallback_with_no_curve_mark() {
+        let got = resolve_mark_sol_per_ui(None, 6, Some(20.0), Some(200.0));
+        assert_eq!(got, Some(0.1));
+    }
+
+    /// A non-positive / non-finite curve price is not a mark. It degrades to the
+    /// fallback rather than poisoning the ratio with a zero.
+    #[test]
+    fn a_junk_curve_price_degrades_to_the_fallback() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let curve = MarkQuote { price: bad, reserve_sol: None };
+            assert_eq!(
+                resolve_mark_sol_per_ui(Some(&curve), 6, Some(20.0), Some(200.0)),
+                Some(0.1),
+                "curve price {bad} should not be used as a mark"
+            );
+        }
+    }
+
+    /// No curve mark and no usable Jupiter pair ⇒ no mark. The row shows its cost
+    /// basis and a dash, never a fabricated PnL.
+    #[test]
+    fn no_price_anywhere_yields_no_mark() {
+        assert_eq!(resolve_mark_sol_per_ui(None, 6, None, Some(200.0)), None);
+        assert_eq!(resolve_mark_sol_per_ui(None, 6, Some(20.0), None), None);
+        assert_eq!(resolve_mark_sol_per_ui(None, 6, Some(20.0), Some(0.0)), None);
     }
 }

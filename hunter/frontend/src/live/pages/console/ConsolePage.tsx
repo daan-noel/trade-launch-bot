@@ -56,6 +56,7 @@ import {
 import {
   useCloseRulePositionMutation,
   useGetPortfolioHoldingsQuery,
+  useGetOpenPositionMarksQuery,
   useManualBuyPositionMutation,
   useSellTokenMutation,
   useSetManualExitConfigMutation,
@@ -69,7 +70,7 @@ import {
   type LiveOpenRow,
 } from '@live/slices/liveStatusSlice';
 import type { RootState } from '@live/store';
-import type { WalletHolding } from 'types';
+import type { OpenPositionMark, WalletHolding } from 'types';
 
 /** Loose base58 mint check — the backend does the real validation. */
 const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -125,6 +126,12 @@ interface LogEntry {
  *  reload). localStorage-backed; the durable source of truth for manual
  *  activity remains the positions table itself (origin='manual' rows). */
 const TRADE_LOG_MAX = 50;
+
+/** How often the open positions are re-marked. The read is one small query plus
+ *  in-memory cache lookups (no RPC), and it is the only thing that moves a live
+ *  MTM column between status transitions — so it polls faster than the wallet
+ *  holdings scan, which is a full RPC sweep behind an 8 s server-side TTL. */
+const POSITION_MARK_POLL_MS = 5_000;
 
 function loadTradeLog(): LogEntry[] {
   const arr = getJSON<LogEntry[]>(STORAGE_KEYS.consoleTradeLog, []);
@@ -241,7 +248,13 @@ export function ConsolePage() {
     });
   }, []);
 
-  // ── Bag marks (SSOT unrealized PnL) — join by mint for real open MTM ────────
+  // ── Wallet bags — the `is_dead` flag ONLY. This feed must never price a
+  //    position: a holding is the whole on-chain balance of a mint, marked off a
+  //    Jupiter USD quote over a wallet-wide average cost. That is a different bag,
+  //    a different price universe, and a different denominator than the position
+  //    the row is showing, and joining the two by mint is what made the Console
+  //    read points richer than an on-chain PnL tracker. Marks come from
+  //    `openMark` below.
   const { data: holdings = [] } = useGetPortfolioHoldingsQuery();
   const holdingByMint = useMemo(() => {
     const m = new Map<string, WalletHolding>();
@@ -252,17 +265,35 @@ export function ConsolePage() {
     return m;
   }, [holdings]);
 
+  // ── Position marks (SSOT unrealized PnL) — keyed by POSITION, not by mint ────
+  //    Each row is this position's own executed entry over the bag it still holds,
+  //    marked to the curve spot it filled against, priced through the same
+  //    `mark_bag` the rule summary folds into `open_pnl_sol`. Polled because a mark
+  //    moves with the price, and the position SSE bus only fires on status changes.
+  const { data: positionMarks = [] } = useGetOpenPositionMarksQuery(undefined, {
+    pollingInterval: POSITION_MARK_POLL_MS,
+    skipPollingIfUnfocused: true,
+  });
+  const markByPositionId = useMemo(() => {
+    const m = new Map<string, OpenPositionMark>();
+    for (const mk of positionMarks) m.set(mk.position_id, mk);
+    return m;
+  }, [positionMarks]);
+
   const openMark = useCallback(
     (row: LiveOpenRow): { mtmSol: number | null; mtmPct: number | null } => {
-      if (row.mode !== 'real') return { mtmSol: null, mtmPct: null };
-      const h = holdingByMint.get(row.mint_address);
-      if (!h) return { mtmSol: null, mtmPct: null };
-      return {
-        mtmSol: h.unrealized_pnl_sol ?? null,
-        mtmPct: h.unrealized_pnl_pct ?? null,
-      };
+      // Paper rows mark too. The old real-only guard was a property of the SOURCE,
+      // not of the question: the on-chain wallet cannot describe a paper bag, so a
+      // holdings join had nothing to show. A position-scoped mark does — a paper
+      // entry is a modeled fill priced through the same cost model as its realized
+      // PnL, which the Console already shows once the row closes.
+      const mk = markByPositionId.get(row.positionId);
+      // Absent = the mint has no cached price yet (just entered, no post-entry
+      // trade). A dash, never a fabricated 0.
+      if (!mk) return { mtmSol: null, mtmPct: null };
+      return { mtmSol: mk.unrealized_pnl_sol, mtmPct: mk.unrealized_pnl_pct };
     },
-    [holdingByMint],
+    [markByPositionId],
   );
 
   /** An Open card's header, so it reads like its table row: live mark-to-market

@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use crate::api::table_query::{as_flag, FilterOp, FilterSpec, MAX_FILTER_IN_VALUES, TableRequest};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
-use crate::strategies::kernel::{mark_open_bag, weighted_return_pct, CostModel};
+use crate::models::portfolio::mark_bag;
+use crate::strategies::kernel::{weighted_return_pct, CostModel};
 use crate::strategies::run_rollup::{self, RunRollup};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
@@ -578,21 +579,32 @@ struct PositionsSummaryRow {
 /// Carries the token counts, not just the SOL: an open mark is priced on the bag
 /// that is **still held** (`entry_token_amount - sold_token_amount`), so a
 /// half-sold position marks its remaining half instead of its original size.
-#[derive(serde::Deserialize)]
-struct OpenMark {
-    mint_address: String,
-    entry_price: Option<f64>,
-    entry_lamports: i64,
+///
+/// SSOT: the ONE row shape an open position is marked from. The per-rule
+/// `open_pnl_sol` rollup reads a JSONB array of these off the summary query;
+/// [`StrategyRepo::open_position_bags`] reads the same columns for the Console's
+/// per-position column. Both then price through
+/// [`mark_bag`](crate::models::portfolio::mark_bag), so the two surfaces cannot
+/// disagree about what one position is worth.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OpenPositionBag {
+    /// `strategy_positions.id`. `None` on the summary's JSONB path, which sums the
+    /// bags and never needs to name one.
+    #[serde(default)]
+    pub position_id: Option<Uuid>,
+    pub mint_address: String,
+    pub entry_price: Option<f64>,
+    pub entry_lamports: i64,
     /// Raw token units bought. `None` on a legacy row that never stamped one —
     /// the bag then falls back to `entry_lamports / entry_price`.
-    entry_token_amount: Option<i64>,
+    pub entry_token_amount: Option<i64>,
     /// Raw token units already sold (scale-out); 0 on an untouched bag.
-    sold_token_amount: i64,
+    pub sold_token_amount: i64,
 }
 
-impl OpenMark {
+impl OpenPositionBag {
     /// Raw token units still held, in the unit `entry_price` is quoted per.
-    fn held_amount(&self, entry_price: f64) -> f64 {
+    pub fn held_amount(&self, entry_price: f64) -> f64 {
         match self.entry_token_amount {
             Some(bought) => (bought - self.sold_token_amount).max(0) as f64,
             // Legacy row: recover the bag from the money that bought it.
@@ -2237,7 +2249,7 @@ impl StrategyRepo {
         // whose token has no cached price yet (just entered, no post-entry trade)
         // contributes nothing rather than a fabricated 0-price loss.
         //
-        // `mark_open_bag`, not `round_trip_with_costs`: the entry has already
+        // `mark_open_bag` (inside `mark_bag`), not `round_trip_with_costs`: the entry has already
         // executed, so its impact is sunk and already inside `entry_price` (the
         // executed average), and the bag priced is the tokens still held rather
         // than a count re-derived from the notional — a half-sold position marks
@@ -2249,22 +2261,19 @@ impl StrategyRepo {
         // exit — the only leg this figure is deciding — would execute into, and it
         // is never a guess: no cached depth ⇒ no impact charged, exactly as
         // `pumpfun_impact` degrades everywhere else.
+        //
+        // Routed through `mark_bag` rather than calling the kernel inline: that is
+        // the ONE place an open position is priced, so this rollup and the Console's
+        // per-position column are the same number by construction instead of by
+        // review.
         let costs = CostModel::pumpfun_with_impact();
-        let open_pnl_sol = serde_json::from_value::<Vec<OpenMark>>(row.open_marks)
+        let open_pnl_sol = serde_json::from_value::<Vec<OpenPositionBag>>(row.open_marks)
             .unwrap_or_default()
             .iter()
             .filter_map(|m| {
-                let entry_price = m.entry_price.filter(|p| *p > 0.0)?;
-                let mark =
-                    mark_of(&m.mint_address).filter(|q| q.price.is_finite() && q.price > 0.0)?;
-                let (_, pnl_sol) = mark_open_bag(
-                    entry_price,
-                    mark.price,
-                    m.held_amount(entry_price),
-                    mark.reserve_sol,
-                    &costs,
-                );
-                Some(pnl_sol)
+                let held = m.entry_price.filter(|p| *p > 0.0).map(|p| m.held_amount(p))?;
+                mark_bag(m.entry_price, held, mark_of(&m.mint_address), &costs)
+                    .map(|p| p.unrealized_pnl_sol)
             })
             .sum();
 
@@ -2302,6 +2311,48 @@ impl StrategyRepo {
                 liquidity: row.n_liquidity,
             },
         })
+    }
+
+    /// Every open-partition position's basis for marking, one row per position.
+    ///
+    /// The per-position twin of the `open_marks` aggregate inside
+    /// [`Self::positions_summary`] — same columns, same
+    /// [`OpenPositionBag`] shape, same open-partition filter (`status NOT IN
+    /// ('End','EntryFailed')` and an executed `entry_price`), so a position priced
+    /// into a rule's `open_pnl_sol` is exactly a position the Console can name.
+    /// Carries `position_id` because this caller marks rows individually.
+    ///
+    /// Unbounded on purpose: the open partition is capped by the rules' own
+    /// concurrency caps (a handful of rows), and the caller polls it — a LIMIT here
+    /// would silently drop a held bag off the cockpit.
+    pub async fn open_position_bags(&self) -> anyhow::Result<Vec<OpenPositionBag>> {
+        let rows: Vec<(Uuid, String, Option<f64>, i64, Option<i64>, i64)> = sqlx::query_as(
+            r#"
+            SELECT id, mint_address, entry_price, entry_lamports,
+                   entry_token_amount, sold_token_amount
+            FROM strategy_positions
+            WHERE status NOT IN ('End', 'EntryFailed')
+              AND entry_price IS NOT NULL
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, mint_address, entry_price, entry_lamports, entry_token_amount, sold_token_amount)| {
+                    OpenPositionBag {
+                        position_id: Some(id),
+                        mint_address,
+                        entry_price,
+                        entry_lamports,
+                        entry_token_amount,
+                        sold_token_amount,
+                    }
+                },
+            )
+            .collect())
     }
 
     /// Batched per-rule position counters for a strategy, each scoped to the rule's

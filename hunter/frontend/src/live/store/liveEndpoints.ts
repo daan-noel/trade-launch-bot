@@ -6,6 +6,7 @@ import type {
   PortfolioSummary,
   PortfolioPerformance,
   OpenStrategyPosition,
+  OpenPositionMark,
   CashbackStatus,
   CashbackClaimResult,
   PositionFill,
@@ -223,6 +224,18 @@ export const liveApi = baseApi.injectEndpoints({
     getPortfolioSummary: builder.query<PortfolioSummary, void>({
       query: () => '/api/portfolio/summary',
       providesTags: ['WalletHoldings'],
+    }),
+    /**
+     * Per-position live mark for the Console PnL / PnL% columns — the position's
+     * own executed entry marked to the curve spot, priced through the same
+     * `mark_bag` the rule summary folds into `open_pnl_sol`.
+     *
+     * Polled, not tagged: a mark goes stale with the price, not with a wallet
+     * change, and the position SSE bus only fires on status transitions. Cheap on
+     * the server (one small query + an in-memory cache read, no RPC).
+     */
+    getOpenPositionMarks: builder.query<OpenPositionMark[], void>({
+      query: () => '/api/strategies/generic/positions/open/marks',
     }),
     // All open strategy positions across every rule (Home per-strategy strip +
     // Live-Trading roll-up). `real` defaults to true (real-money monitor).
@@ -483,6 +496,8 @@ export const liveApi = baseApi.injectEndpoints({
 
 export const {
   useGetPortfolioHoldingsQuery,
+  useGetCostModelQuery,
+  useGetOpenPositionMarksQuery,
   useGetPortfolioSummaryQuery,
   useGetPortfolioPerformanceQuery,
   useGetPortfolioClosesSeriesQuery,

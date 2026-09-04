@@ -157,6 +157,13 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/positions",
                 web::get().to(handlers::strategies::positions::list_positions),
             )
+            // Per-position live mark for the Console PnL columns. Registered before
+            // `positions/{position_id}` — `open/marks` would otherwise be read as a
+            // position id.
+            .route(
+                "/strategies/{strategy}/positions/open/marks",
+                web::get().to(handlers::strategies::positions::get_open_position_marks),
+            )
             // Re-entry history for one mint (chart marker overlay). Registered before
             // the bare `positions/mint/{mint}` open-holdings read: the extra
             // `/episodes` segment makes it strictly more specific.

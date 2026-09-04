@@ -21,7 +21,7 @@ USDC is **working capital**, not a trading bag. Classification SSOT:
 
 | Rule | Cash (USDC) | Meme positions |
 | --- | --- | --- |
-| Pricing | Face $1 / UI unit | Jupiter USD mark |
+| Pricing | Face $1 / UI unit | Curve SOL spot; Jupiter fallback |
 | Cost basis / unrealized PnL | Always `None` | `holding_pnl` → `unrealized_pnl` |
 | Paged Holdings table | Excluded (cash strip) | Included |
 | Summary / Home KPIs | `cash_value_*` / `cash_holdings` | `positions_value_*`, PnL, 24h, `position_count` |
@@ -35,12 +35,23 @@ Wire field: `PortfolioHolding.asset_kind` (`cash` \| `wrapped_sol` \| `meme`). F
 Mirrors `wallet_tokens.rs` (on-chain + Jupiter + cache), not DB-repo-backed for the live
 fields. `compose()` fires five independent reads together (`tokio::join!`): Jupiter marks,
 on-chain curve facts (uncached mints only), cost basis, token enrichment, real
-`managed_mints`. Then per holding:
+`managed_mints`, then resolves the curve marks for the whole mint set in one pass through
+`token_cache::mark_quote` — up front, never inside the per-holding map, so no `DashMap`
+read guard is live while a second shard read is taken. Then per holding:
 
 - **Cash** → face `price_usd = 1`, `value_usd = ui_amount`, SOL via `value_usd / sol_usd`;
   no Jupiter / no PnL / no managed-by / no curve flags.
-- **SOL mark (meme)** = `price_usd / sol_usd` (Jupiter per-UI-token price ÷ live SOL/USD).
-  Same source as the displayed `value_usd`, so value and PnL reconcile. `None` ⇒ no PnL.
+- **SOL mark (meme)** = the **curve spot** from `mark_quote` (`price × 10^decimals`), with
+  Jupiter's `price_usd / sol_usd` as the fallback for a bag the engine never tracked. The
+  curve wins because the cost basis is an on-chain SOL fill: marking it against a third
+  party's USD quote divided by a separately-polled SOL/USD rate puts two price universes on
+  the two legs of one ratio and lets them drift. `None` ⇒ no PnL.
+- **USD and `value_sol` follow that one mark** — `price_usd = mark × sol_usd` and
+  `value_sol = mark × ui_amount` whenever the curve priced the row — so the value column and
+  the PnL column cannot tell different stories. Jupiter still supplies `liquidity`,
+  `price_change_24h` and `token_created_at`, which are not prices.
+- **Percent is served, not divided in the browser**: `total_unrealized_pnl_pct` on both
+  `PortfolioSummary` and `HoldingsTableSummary`, through `weighted_return_pct`.
 - **PnL (meme)** via `holding_pnl()` — the service's single call into `unrealized_pnl`. It
   only lifts the SOL/raw average entry into **UI space** (`× 10^decimals`) to match the
   per-UI mark; the arithmetic is the SSOT helper's. Cost basis needs only the average entry
@@ -48,6 +59,16 @@ on-chain curve facts (uncached mints only), cost basis, token enrichment, real
 - **Enrichment** flattened via `TokenEnrichment` (the strategy-table SSOT). `is_migrated` /
   `is_cashback_enabled` / `symbol` are overwritten with the **live-authoritative** values
   (cache → on-chain fallback), so the live wallet facts win over any stale DB copy.
+
+### What this service does NOT price
+
+A holding is the **wallet's whole balance of a mint**, against an average cost across every
+buy the wallet ever made on it. That is the right answer for the Holdings and Home
+surfaces, and the wrong one for a **position**, which owns a specific bag bought at a
+specific fill. Never join a holding to a position by mint: an open position is priced by
+`models::portfolio::mark_bag` and served per position id by
+`GET /strategies/{strategy}/positions/open/marks`. See
+[pnl-percent-definition](../strategies/pnl-percent-definition.md).
 
 Endpoints: `holdings` (full list incl. cash), `holdings/query` (meme positions only),
 `holdings/summary` (cash strip unfiltered + filtered position metrics), `summary` (Home KPIs

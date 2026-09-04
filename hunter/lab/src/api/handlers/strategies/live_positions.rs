@@ -86,6 +86,22 @@ pub async fn get_positions_summary_by_rule(
     .await
 }
 
+/// GET `/api/strategies/{strategy}/positions/open/marks` (lab twin).
+///
+/// Same shape and same `mark_bag` pricing as the live bin, read off the synced
+/// mirror and the lab's seeded token cache. That cache is a snapshot, so a mark
+/// here is "last synced mark", not a live one; a mint with no cached price is left
+/// out rather than guessed at.
+pub async fn get_open_position_marks(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<String>,
+) -> impl Responder {
+    let _strategy = path.into_inner();
+    let token_cache = app_state.core.token_cache.clone();
+    let mark_of = |mint: &str| trading_core::state::token_cache::mark_quote(&token_cache, mint);
+    rule_positions::open_position_marks(&strategy_repo(&app_state), mark_of).await
+}
+
 /// GET `/api/strategies/{strategy}/positions/mint/{mint}/episodes` (lab twin) —
 /// the mint's re-entry history for the inspect chart's marker overlay.
 pub async fn get_mint_episodes(

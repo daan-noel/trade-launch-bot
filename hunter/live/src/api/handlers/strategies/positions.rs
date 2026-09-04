@@ -132,6 +132,22 @@ pub async fn get_positions_summary_by_rule(
     .await
 }
 
+/// GET /api/strategies/{strategy}/positions/open/marks
+///
+/// Thin adapter over the shared core read. Marks every open position off the live
+/// in-memory token cache (no DB or RPC round-trip beyond the one bag query) —
+/// the same `mark_quote` + `mark_bag` pair `positions/summary` folds into
+/// `open_pnl_sol`, so the Console row and the rule's summary card cannot disagree.
+pub async fn get_open_position_marks(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<String>,
+) -> impl Responder {
+    let _strategy = path.into_inner();
+    let token_cache = app_state.token_cache.clone();
+    let mark_of = |mint: &str| trading_core::state::token_cache::mark_quote(&token_cache, mint);
+    rule_positions::open_position_marks(repo(&app_state), mark_of).await
+}
+
 /// GET /api/strategies/{strategy}/positions
 pub async fn list_positions(
     app_state: web::Data<Arc<DeployState>>,

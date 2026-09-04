@@ -691,6 +691,8 @@ export interface PortfolioSummary {
   positions_value_usd: number;
   total_cost_basis_sol: number;
   total_unrealized_pnl_sol: number;
+  /** `pnl / cost_basis x 100`, served so no page owns a copy of the formula. */
+  total_unrealized_pnl_pct: number;
   /** Held meme bags (excludes cash). */
   position_count: number;
   /** Realized SOL PnL from real positions that cleanly exited since 00:00 UTC. */
@@ -730,6 +732,31 @@ export interface OpenStrategyPosition {
   /** ExitStuck redrive state (mig 0012). */
   exit_parked?: boolean;
   exit_redrive_count?: number;
+}
+
+/**
+ * One open position marked to the live curve price
+ * (`GET …/positions/open/marks`) — the Console's PnL / PnL% columns.
+ *
+ * Position-scoped, never wallet-scoped: the basis is this position's own executed
+ * entry over the bag it still holds, and `mark_price` is the SOL curve spot the
+ * entry filled against. Do NOT substitute the wallet holding's
+ * `unrealized_pnl_*` here — that prices the whole balance off a Jupiter USD quote
+ * over a wallet-wide average cost, which is a different position at a different
+ * price on a different denominator.
+ *
+ * A mint with no cached price is absent from the response; render a dash.
+ */
+export interface OpenPositionMark {
+  position_id: string;
+  mint_address: string;
+  /** SOL per raw token unit. */
+  mark_price: number;
+  /** Curve cost + the entry leg's fee and fixed cost. */
+  cost_basis_sol: number;
+  /** Net of the round trip the close would pay. */
+  unrealized_pnl_sol: number;
+  unrealized_pnl_pct: number;
 }
 
 /** One `position_fills` ledger row (`GET …/positions/{id}/fills`). */

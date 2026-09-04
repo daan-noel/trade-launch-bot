@@ -39,6 +39,12 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/rules/{rule_id}/positions",
                 web::post().to(handlers::strategies::live_positions::get_positions_by_rule),
             )
+            // Per-position live mark. Registered before `positions/{position_id}/…`
+            // so `open/marks` is not read as a position id.
+            .route(
+                "/strategies/{strategy}/positions/open/marks",
+                web::get().to(handlers::strategies::live_positions::get_open_position_marks),
+            )
             .route(
                 "/strategies/{strategy}/positions/{position_id}/fills",
                 web::get().to(handlers::strategies::live_positions::get_position_fills),

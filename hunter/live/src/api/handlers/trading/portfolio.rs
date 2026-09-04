@@ -12,6 +12,7 @@ use trading_core::api::table_eval::{apply_table_request, resolve_token_enrichmen
 use trading_core::api::table_query::{Page, TableRequest};
 
 use crate::services::portfolio::{self, cash_summary, partition_cash, HoldingsTableSummary};
+use trading_core::strategies::kernel::weighted_return_pct;
 use crate::state::deploy_state::DeployState;
 
 /// Column grammar for the server-paged Holdings table: frontend column key → the
@@ -187,6 +188,8 @@ pub async fn portfolio_holdings_summary(
     s.positions_value_usd = has_value.then_some(pos_usd);
     s.positions_value_sol = has_value.then_some(pos_sol);
     s.total_unrealized_pnl_sol = has_pnl.then_some(pnl);
+    s.total_unrealized_pnl_pct = (has_pnl && s.total_cost_basis_sol > 0.0)
+        .then(|| weighted_return_pct(pnl, s.total_cost_basis_sol));
     s.change_24h_pct = (wweight > 0.0).then(|| wchange / wweight);
 
     let has_cash = s.cash_value_usd.is_some();
