@@ -61,6 +61,35 @@ pub fn observed_axes(
         // A caller reconstructing one token out of band (the readout, a replay)
         // seeds it from `TokenRepo::count_prior_launches` instead.
         prior_launches: None,
+        // Also engine-stamped, from the day's `launch_build_day_stats` map — see
+        // `EngineState::launch_build_stats`. `None` here for the same reason.
+        build_prev_day_launches: None,
+        build_prev_day_runner_bps: None,
+    }
+}
+
+/// Stamp the two engine-stamped **launch-build door** axes onto observed axes, from
+/// one UTC day's stats — the offline mirror of what `reduce` does at `TokenCreated`.
+///
+/// It exists because [`observed_axes`] reads token COLUMNS and these two are not
+/// columns: the engine holds the day's map and stamps them itself. An offline caller
+/// that pre-filters candidates by fingerprint (simulate's matched-token scan) has to
+/// reproduce the stamp or every door fingerprint scans to zero tokens — the failure
+/// is silent, and reads exactly like a rule nobody's tokens match.
+///
+/// `stats` is the day's map keyed by the build hash
+/// ([`ix_hash`](hunter_engine::metrics::flow_ix::ix_hash) over the ordered creation
+/// labels), the same key the engine's own map uses. A build the map does not list
+/// leaves both axes `None`, which fails a configured axis closed.
+pub fn stamp_launch_build_axes(
+    tf: &mut TokenFingerprint,
+    stats: &std::collections::HashMap<u64, hunter_engine::event::LaunchBuildStat>,
+) {
+    if let Some(stat) = hunter_engine::metrics::flow_ix::ix_hash_opt(&tf.ix_labels)
+        .and_then(|h| stats.get(&h))
+    {
+        tf.build_prev_day_launches = Some(stat.launches);
+        tf.build_prev_day_runner_bps = Some(stat.runner_bps());
     }
 }
 

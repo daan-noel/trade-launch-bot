@@ -837,6 +837,10 @@ fn fp_from_row(row: &duckdb::Row<'_>, base: usize) -> duckdb::Result<TokenFinger
     // here — the one boundary seam, exactly as `observed_axes` converts the PG ones.
     let sol = |v: Option<f64>| v.map(hunter_engine::grouping::sol_to_lamports);
     Ok(TokenFingerprint {
+        // Engine-stamped at `TokenCreated`, never a lake column — see
+        // `EngineState::launch_build_stats` / `prior_launches`.
+        build_prev_day_launches: None,
+        build_prev_day_runner_bps: None,
         token_program_id: row.get(base)?,
         init_buy_lamports: sol(row.get(base + 1)?),
         cu_limit: row.get(base + 2)?,

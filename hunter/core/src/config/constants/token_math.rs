@@ -35,6 +35,16 @@ pub fn approx_real_sol_reserves(reserve_sol: f64, venue: &str) -> f64 {
     }
 }
 
+/// A **runner**, for the launch-build day stats: a token whose curve reserve
+/// (`vsol`, the priced reserve) peaked at or above this, in whole SOL. 60 vsol is
+/// 30 SOL of real deposited liquidity - a token that drew a crowd, well short of
+/// the graduation wall.
+pub const RUNNER_PEAK_RESERVE_SOL: f64 = 60.0;
+/// ...and whose peak came at or after this many seconds of age. A peak inside the
+/// launch scramble is not a run; the label needs the crowd to have arrived on its
+/// own time.
+pub const RUNNER_MIN_PEAK_AGE_SECS: f64 = 60.0;
+
 /// Real (non-virtual) SOL a pump.fun bonding curve holds when it completes and
 /// the token migrates to the AMM — the denominator of every "curve progress"
 /// figure. THE single definition; do not re-literal 85 at a call site.

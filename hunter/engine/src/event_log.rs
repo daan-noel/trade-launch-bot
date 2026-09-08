@@ -96,7 +96,16 @@ pub enum LoggedEvent {
         #[serde(default)]
         creation_slot: Option<u64>,
     },
-    FirstSlotSettled { mint: Mint, buy_lamports: u64, sell_lamports: u64, at: Ts },
+    FirstSlotSettled {
+        mint: Mint,
+        buy_lamports: u64,
+        sell_lamports: u64,
+        at: Ts,
+        /// Absent on lines written before the creator stand-in existed ⇒ `None`
+        /// (the creator stays the creation event's wallet, as it originally ran).
+        #[serde(default)]
+        creator_stand_in_wallet_hash: Option<u64>,
+    },
     Trade { mint: Mint, trade: TradeLite },
     FillConfirmed { intent: IntentId, fill: Fill },
     FillFailed {
@@ -134,14 +143,19 @@ impl LoggedEvent {
                     creation_slot: *creation_slot,
                 }
             }
-            Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at } => {
-                LoggedEvent::FirstSlotSettled {
-                    mint: mint.clone(),
-                    buy_lamports: *buy_lamports,
-                    sell_lamports: *sell_lamports,
-                    at: *at,
-                }
-            }
+            Event::FirstSlotSettled {
+                mint,
+                buy_lamports,
+                sell_lamports,
+                at,
+                creator_stand_in_wallet_hash,
+            } => LoggedEvent::FirstSlotSettled {
+                mint: mint.clone(),
+                buy_lamports: *buy_lamports,
+                sell_lamports: *sell_lamports,
+                at: *at,
+                creator_stand_in_wallet_hash: *creator_stand_in_wallet_hash,
+            },
             Event::Trade { mint, trade } => {
                 LoggedEvent::Trade { mint: mint.clone(), trade: *trade }
             }
@@ -168,7 +182,11 @@ impl LoggedEvent {
             Event::ExternallyCleared { position, fill } => {
                 LoggedEvent::ExternallyCleared { position: *position, fill: *fill }
             }
-            Event::Tick { .. } | Event::RulesReloaded { .. } => return None,
+            // Regenerable from PG at boot, like the rule set: the stats a replayed
+            // creation is stamped under are the ones loaded before recovery runs.
+            Event::Tick { .. }
+            | Event::RulesReloaded { .. }
+            | Event::LaunchBuildStatsReloaded { .. } => return None,
         })
     }
 
@@ -218,9 +236,19 @@ impl LoggedEvent {
             LoggedEvent::TokenCreated { mint, fp, at, creator_wallet_hash, identity, creation_slot } => {
                 Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity, creation_slot }
             }
-            LoggedEvent::FirstSlotSettled { mint, buy_lamports, sell_lamports, at } => {
-                Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at }
-            }
+            LoggedEvent::FirstSlotSettled {
+                mint,
+                buy_lamports,
+                sell_lamports,
+                at,
+                creator_stand_in_wallet_hash,
+            } => Event::FirstSlotSettled {
+                mint,
+                buy_lamports,
+                sell_lamports,
+                at,
+                creator_stand_in_wallet_hash,
+            },
             LoggedEvent::Trade { mint, trade } => Event::Trade { mint, trade },
             LoggedEvent::FillConfirmed { intent, fill } => Event::FillConfirmed { intent, fill },
             LoggedEvent::FillFailed { intent, reason, at } => {

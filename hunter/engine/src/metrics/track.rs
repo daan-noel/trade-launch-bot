@@ -24,6 +24,7 @@ use crate::fingerprint::FingerprintId;
 use super::burst_slot::{BurstPatterns, BurstSlotState};
 use super::burst_wave::BurstWaveState;
 use super::copy::{CopyPatterns, CopyState};
+use super::crowd_after_age::{AgeAnchor, CrowdAfterAgeState};
 use super::crowd_window::CrowdWindowState;
 use super::flow_lifetime::FlowLifetimeState;
 use super::dump_ix::{DumpPatterns, DumpState};
@@ -62,6 +63,10 @@ pub struct TokenTrack {
     /// WALLET column, and a rule that reads no crowd metric must not pay a second deque
     /// push and a hash-map entry on every trade of every window to carry it.
     crowd_windows: BTreeMap<super::WindowKey, CrowdWindowState>,
+    /// Anchored buyer sets (`m_crowd_after_age`), keyed by age anchor. One small
+    /// capped set per anchor any loaded rule names; a rule reading none pays for
+    /// none.
+    crowd_after_age: BTreeMap<AgeAnchor, CrowdAfterAgeState>,
     /// Flow classifier state, keyed by fingerprint (pattern sets differ).
     flow: BTreeMap<FingerprintId, FlowState>,
     /// `m_dump_ix` state, keyed by fingerprint. Apart from `flow` for the reason
@@ -100,6 +105,7 @@ impl TokenTrack {
             windows: BTreeMap::new(),
             price_windows: BTreeMap::new(),
             crowd_windows: BTreeMap::new(),
+            crowd_after_age: BTreeMap::new(),
             cur_slot: 0,
             n_prints: 0,
             priced_reserves: f64::NAN,
@@ -131,6 +137,17 @@ impl TokenTrack {
     /// opens a separate buffer, so a rule reading no crowd metric never pays for one.
     pub fn ensure_crowd_window(&mut self, spec: super::WindowSpec) {
         self.crowd_windows.entry(spec.key()).or_insert_with(|| CrowdWindowState::new(spec));
+    }
+
+    /// Register an anchored buyer set (`m_crowd_after_age`) for `anchor`, holding at
+    /// most `cap` wallets (idempotent; a re-registration only ever RAISES the cap).
+    /// The counterpart of [`ensure_crowd_window`](Self::ensure_crowd_window) on the
+    /// anchored basis.
+    pub fn ensure_crowd_after_age(&mut self, anchor: AgeAnchor, cap: u32) {
+        self.crowd_after_age
+            .entry(anchor)
+            .and_modify(|s| s.raise_cap(cap))
+            .or_insert_with(|| CrowdAfterAgeState::new(anchor, cap));
     }
 
     /// Register fingerprint-scoped flow state (idempotent). `windows` are the
@@ -173,7 +190,14 @@ impl TokenTrack {
         patterns: &DumpPatterns,
         windows: &[super::WindowSpec],
     ) {
-        let state = self.dump.entry(fp).or_insert_with(|| DumpState::new(patterns.clone()));
+        let creator = self.creator_wallet_hash;
+        let state = self.dump.entry(fp).or_insert_with(|| {
+            let mut s = DumpState::new(patterns.clone());
+            if let Some(h) = creator {
+                s.set_creator(h);
+            }
+            s
+        });
         state.set_patterns(patterns);
         for &w in windows {
             state.ensure_window(w);
@@ -210,6 +234,9 @@ impl TokenTrack {
         self.creator_wallet_hash = Some(hash);
         for flow in self.flow.values_mut() {
             flow.set_creator(hash);
+        }
+        for dump in self.dump.values_mut() {
+            dump.set_creator(hash);
         }
     }
 
@@ -248,6 +275,9 @@ impl TokenTrack {
         for cw in self.crowd_windows.values_mut() {
             let spec = cw.spec();
             cw.on_trade(t.sol, t.wallet_hash, spec.pos(t.at, at), spec.now_pos(t.at, cur));
+        }
+        for ca in self.crowd_after_age.values_mut() {
+            ca.on_trade(&t, self.created_at, self.creator_wallet_hash);
         }
         for pw in self.price_windows.values_mut() {
             let spec = pw.spec();
@@ -289,6 +319,9 @@ impl TokenTrack {
         for cw in self.crowd_windows.values_mut() {
             let now_pos = cw.spec().now_pos(now, cur);
             cw.evict(now_pos);
+        }
+        for ca in self.crowd_after_age.values_mut() {
+            ca.on_tick();
         }
         for flow in self.flow.values_mut() {
             flow.on_tick(now, cur);
@@ -384,6 +417,13 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
+            // `m_crowd_after_age` reads the set registered for the requirement's
+            // anchor; an unregistered anchor reads NaN, the same "no reading" an
+            // unregistered window gives.
+            NonCreatorBuyers | ThisBuyerIsNew => match windows.anchor.and_then(|a| self.crowd_after_age.get(&a)) {
+                Some(s) => s.value(id),
+                None => f64::NAN,
+            },
             // `m_crowd_window` reads its OWN deque — the wallet column is its subject,
             // not `m_flow_window`'s payload.
             UniqueWallets | TradesPerWallet => {

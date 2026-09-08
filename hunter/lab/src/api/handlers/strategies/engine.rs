@@ -196,7 +196,11 @@ pub async fn engine_matched_tokens(
         Ok(fp) => fp,
         Err(resp) => return resp,
     };
-    let mints: Vec<String> = match engine_sim::scan_matched_candidates(&app_state, &fp, from, to).await
+    // The matched-token list is the same scan the backtest runs, so it needs the same
+    // door stamp — an unstamped scan shows a door rule matching nothing.
+    let door_days = engine_sim::load_door_days_for(&app_state, from, to).await;
+    let mints: Vec<String> =
+        match engine_sim::scan_matched_candidates(&app_state, &fp, from, to, &door_days).await
     {
         Ok(tokens) => tokens.iter().map(|t| t.mint_address.clone()).collect(),
         Err(e) => {

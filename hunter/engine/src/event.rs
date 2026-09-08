@@ -375,6 +375,36 @@ pub struct Fill {
 }
 
 /// A rule as the engine consumes it — the DB row's columns plus **parsed**
+/// One creation build's previous-day tally — a row of the daily launch-build
+/// stats, keyed by the build's [`flow_ix::ix_hash`](crate::metrics::flow_ix::ix_hash)
+/// over its exact ordered creation labels. Delivered on a
+/// [`Event::LaunchBuildStatsReloaded`]; `reduce` stamps
+/// `build_prev_day_launches` / `build_prev_day_runner_bps` from it at
+/// `TokenCreated`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaunchBuildStat {
+    /// FNV-1a of the build's ordered creation `ix_labels`.
+    pub build_hash: u64,
+    /// Tokens of this build created on the previous UTC day.
+    pub launches: u32,
+    /// Of those, how many became runners (curve peak reserve at or above the
+    /// runner threshold, reached at or after the minimum age, and before the day).
+    pub runners: u32,
+}
+
+impl LaunchBuildStat {
+    /// The runner share in basis points, integer division — the exact value the
+    /// `build_prev_day_runner_bps` axis carries, so SQL mirrors and the engine agree
+    /// to the unit.
+    pub fn runner_bps(self) -> u32 {
+        if self.launches == 0 {
+            0
+        } else {
+            (u64::from(self.runners) * 10_000 / u64::from(self.launches)) as u32
+        }
+    }
+}
+
 /// [`RuleParams`] (parsed once at load, never per event; plan §5). Delivered on a
 /// [`Event::RulesReloaded`].
 #[derive(Debug, Clone, PartialEq)]
@@ -456,7 +486,21 @@ pub enum Event {
     },
     /// The token's creation slot closed; the two first-slot SOL sums are now known.
     /// Resolves any fingerprint whose identity includes a first-slot axis (plan §2.2).
-    FirstSlotSettled { mint: Mint, buy_lamports: u64, sell_lamports: u64, at: Ts },
+    ///
+    /// `creator_stand_in_wallet_hash` is the creation slot's first buyer, present
+    /// only when the creator wallet did NOT buy in that slot (or is unknown). The
+    /// engine then treats that wallet as the creator for every creator-keyed metric
+    /// (`m_flow_ix.creator_is_tagged`, `m_dump_ix.creator_is_listed`,
+    /// `m_crowd_after_age`): a launch client that creates from a throwaway signer
+    /// and buys from the operator's wallet has its operator, not its signer, as the
+    /// creator. Producers compute it; the engine never guesses it.
+    FirstSlotSettled {
+        mint: Mint,
+        buy_lamports: u64,
+        sell_lamports: u64,
+        at: Ts,
+        creator_stand_in_wallet_hash: Option<u64>,
+    },
     /// A trade printed for the token.
     Trade { mint: Mint, trade: TradeLite },
     /// The clock tick (or a replay's synthetic tick; cadence = `TICK_MS`). Advances every tracked
@@ -479,6 +523,10 @@ pub enum Event {
     /// once at load; the engine recompiles per-rule metric requests + derived
     /// bounds here, never per event.
     RulesReloaded { rules: Arc<[LoadedRule]>, fps: Arc<[Fingerprint]> },
+    /// The launch-build stats the two `build_prev_day_*` fingerprint axes are
+    /// stamped from changed (a new UTC day computed, or a boot load). Replaces the
+    /// whole map; tokens already tracked keep the stamp they were born under.
+    LaunchBuildStatsReloaded { stats: Arc<[LaunchBuildStat]> },
     /// A manual (operator) buy episode injected by the Console. Bypasses
     /// fingerprint arming, entry conditions, and rule caps (they're the user's
     /// call) — but from here on it IS a bot buy: the same `EntryPending` arm,

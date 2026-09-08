@@ -527,7 +527,10 @@ pub fn same_exit_bag(a: &ExitBag, b: &ExitBag) -> bool {
 pub fn clause_legal(c: &Clause) -> bool {
     match group_spec(c.group).kind {
         MetricKind::Dynamic => c.window.is_some(),
+        // An anchored group carries an age anchor the search cannot choose, so a
+        // clause on one is never legal here (the rule editor authors it instead).
         MetricKind::Static => c.window.is_none(),
+        MetricKind::Anchored => false,
     }
 }
 

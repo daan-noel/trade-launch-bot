@@ -1,7 +1,7 @@
 # Roster nodes: N4 and N5
 
 Phase-3 instrument study per
-[market-model-and-workflow.md](market-model-and-workflow.md), read under
+[market-model-and-workflow.md](_!___market-model-and-workflow.md), read under
 [trader-study-contract.md](trader-study-contract.md): the roster locates the
 node, never the rule.
 
@@ -232,7 +232,17 @@ re-entry, and it runs the thinnest margin of the roster at 1.39 %.
 All four are in the two thinnest-margin nodes. Their margins at **their own**
 fill are smaller than the fill degradation a reactive entry pays, which is the
 structural reason every clone of them fails: the logic has no room in it for a
-second trader. 8dtx is not a heavy scalper in this window - 1.35 trades per
+second trader.
+
+**N4 as 3Xk2, 8dtx and 6J1T run it is closed at our seat.** All three are
+durable-nonce racer builds that land about 130 ms behind a terminal buy of
+0.5-1 SOL, one to three prints into the burst it starts, beside other fast
+bots; they respond to size and to other racers' buys (2-5x base) and not to
+silence-breaks, multi-build slots, dips or flushes. On their own picks, fired on
+the print before them and filled at 115 ms both legs, every exit in the fixed
+family is negative; the money exists only when the fill lands inside the swarm.
+The full-tape sentence (router buy with size, mid-tape) is red on four weeks.
+Detail: [2026-09-07-n4-node-at-our-seat](../../../../docs/history/2026-09-07-n4-node-at-our-seat.md). 8dtx is not a heavy scalper in this window - 1.35 trades per
 token, one buy each. 64hP and omego are the genuine repeat traders.
 
 ---

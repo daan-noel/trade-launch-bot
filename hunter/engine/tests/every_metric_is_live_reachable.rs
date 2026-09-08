@@ -122,6 +122,8 @@ fn strict_params(g: &GroupSpec, m: &MetricSpec, basis: Basis, obj: &mut Map<Stri
             // inside it, so an empty window is never what a NaN would be blamed on.
             (hunter_engine::metrics::WINDOW_PRINT_PARAM, Basis::Print) => json!(50.0),
             (flow_slice::SLICE_PRINT_PARAM, Basis::Print) => json!(4.0),
+            // The anchored group: count from birth, so every probe buy is admitted.
+            (hunter_engine::metrics::crowd_after_age::AFTER_AGE_PARAM, _) => json!(0.0),
             // The other bases' size params, plus two optional knobs deliberately left
             // unset: a lag would push the window off the probe's trades, and
             // `arm_above_pct` would report the trailing metrics as `disarmed` rather
@@ -245,6 +247,7 @@ fn drive(state: &mut EngineState, mint: &Mint) -> Vec<Effect> {
             buy_lamports: 500_000_000,
             sell_lamports: 100_000_000,
             at: ts(0.4),
+            creator_stand_in_wallet_hash: None,
         },
     ));
     let script = [

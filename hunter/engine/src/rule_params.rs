@@ -942,12 +942,15 @@ fn validate_group_instances(
             spec.name
         ));
     }
+    // An anchored group dedupes by its anchor the way a dynamic one does by its
+    // window, so two instances on one side are legal exactly when their anchors
+    // differ - the same rule the dynamic branch below enforces over the strict map.
+    if spec.kind == MetricKind::Dynamic || spec.kind == MetricKind::Anchored {
     // Distinct PARAMS within a dynamic group — two clauses that read the same state
     // are ambiguous; combine them into one object instead. The comparison is over the
     // whole strict map, not `window_size_sec` alone, because a two-window group's
     // identity is the pair: `m_flow_window{60, 3}` and `m_flow_window{60, 10}` are
     // different reads and must both be authorable.
-    if spec.kind == MetricKind::Dynamic {
         for (i, a) in instances.iter().enumerate() {
             for b in &instances[i + 1..] {
                 if a.strict.len() == b.strict.len()

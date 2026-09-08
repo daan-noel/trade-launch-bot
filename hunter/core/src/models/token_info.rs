@@ -21,6 +21,11 @@ pub struct TokenInfo {
     pub first_slot_buy_sol: Option<f64>,
     /// Total sell SOL across trades in the token's creation slot, if computed.
     pub first_slot_sell_sol: Option<f64>,
+    /// The highest priced curve reserve (`vsol`) any curve print left, and when.
+    /// The launch-build runner label reads these; `None` before the first curve print
+    /// or on rows written before the columns existed.
+    pub curve_peak_reserve_sol: Option<f64>,
+    pub curve_peak_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Wall-clock time of the last successful manual sync, if any.
@@ -63,6 +68,8 @@ impl TokenInfo {
             is_migrated,
             first_slot_buy_sol,
             first_slot_sell_sol,
+            curve_peak_reserve_sol: None,
+            curve_peak_at: None,
             created_at,
             updated_at,
             last_synced_at,

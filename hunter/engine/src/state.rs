@@ -145,6 +145,8 @@ struct WindowSets<'a> {
     flow: &'a [crate::metrics::WindowSpec],
     /// `m_crowd_window`.
     crowd: &'a [crate::metrics::WindowSpec],
+    /// `m_crowd_after_age` — one capped set per anchor.
+    crowd_anchors: &'a [(crate::metrics::crowd_after_age::AgeAnchor, u32)],
     /// `m_price_window`.
     price: &'a [crate::metrics::WindowSpec],
     /// `m_flow_ix_window` — opened per fingerprint.
@@ -190,6 +192,9 @@ pub struct EngineState {
     pub all_windows: Vec<crate::metrics::WindowSpec>,
     /// Union of every rule's `m_crowd_window` spans (the wallet-keyed buffer).
     pub all_crowd_windows: Vec<crate::metrics::WindowSpec>,
+    /// Union of every rule's `m_crowd_after_age` anchors, each at the largest cap
+    /// any rule needs on it.
+    pub all_crowd_anchors: Vec<(crate::metrics::crowd_after_age::AgeAnchor, u32)>,
     /// Union of every rule's `m_price_window` spans.
     pub all_price_windows: Vec<crate::metrics::WindowSpec>,
     /// Union of every rule's `m_flow_ix_window` spans — the only ones `ensure_flow`
@@ -246,6 +251,11 @@ pub struct EngineState {
     pub tokens: BTreeMap<Mint, TokenState>,
     /// Open positions' owners, for manual-close targeting.
     pub positions: BTreeMap<PositionId, PositionRef>,
+    /// The day's launch-build stats, by build hash — what the two
+    /// `build_prev_day_*` fingerprint axes are stamped from at `TokenCreated`.
+    /// Replaced whole by [`Event::LaunchBuildStatsReloaded`]; empty until a host
+    /// loads one, in which case every door axis fails closed (never arms).
+    pub launch_build_stats: crate::hash::HashedMap<crate::event::LaunchBuildStat>,
     /// Launches seen per creator wallet hash — the tally behind
     /// the `prior_launches` fingerprint axis. Incremented on every `TokenCreated`, read
     /// (strictly before the increment) to seed the new token's metric.
@@ -449,6 +459,8 @@ impl EngineState {
         let mut all_ix_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_dump_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_copy_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
+        let mut all_crowd_anchors: Vec<(crate::metrics::crowd_after_age::AgeAnchor, u32)> =
+            Vec::new();
         let mut horizons = ClockHorizons::default();
         let mut any_priority = false;
         for r in self.rules.values() {
@@ -468,7 +480,14 @@ impl EngineState {
                     }
                 }
             }
+            for &(anchor, cap) in &r.crowd_anchors {
+                match all_crowd_anchors.iter_mut().find(|(a, _)| *a == anchor) {
+                    Some((_, c)) => *c = (*c).max(cap),
+                    None => all_crowd_anchors.push((anchor, cap)),
+                }
+            }
         }
+        self.all_crowd_anchors = all_crowd_anchors;
         self.all_windows = all_windows;
         self.all_crowd_windows = all_crowd_windows;
         self.all_price_windows = all_price_windows;
@@ -486,6 +505,7 @@ impl EngineState {
             WindowSets {
                 flow: &self.all_windows,
                 crowd: &self.all_crowd_windows,
+                crowd_anchors: &self.all_crowd_anchors,
                 price: &self.all_price_windows,
                 ix: &self.all_ix_windows,
                 dump: &self.all_dump_windows,
@@ -525,6 +545,7 @@ impl EngineState {
         WindowSets {
             flow: &self.all_windows,
             crowd: &self.all_crowd_windows,
+            crowd_anchors: &self.all_crowd_anchors,
             price: &self.all_price_windows,
             ix: &self.all_ix_windows,
             dump: &self.all_dump_windows,
@@ -542,6 +563,9 @@ impl EngineState {
         }
         for &w in windows.crowd {
             track.ensure_crowd_window(w);
+        }
+        for &(anchor, cap) in windows.crowd_anchors {
+            track.ensure_crowd_after_age(anchor, cap);
         }
         for &w in windows.price {
             track.ensure_price_window(w);

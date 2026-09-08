@@ -264,7 +264,7 @@ impl Producer {
         if self.first_slot_emitted.contains(mint) {
             return None;
         }
-        let (fresh, buy_sol, sell_sol) = {
+        let (fresh, buy_sol, sell_sol, stand_in) = {
             let entry = self.token_cache.get(mint)?;
             let s = entry.value();
             (
@@ -272,6 +272,7 @@ impl Producer {
                     <= MAX_SNIPE_AGE_SECS,
                 s.first_slot_buy_sol,
                 s.first_slot_sell_sol,
+                s.creator_stand_in_wallet_hash(),
             )
         };
         if !fresh {
@@ -283,6 +284,7 @@ impl Producer {
             buy_lamports: sol_to_lamports_u64(buy_sol),
             sell_lamports: sol_to_lamports_u64(sell_sol),
             at: Utc::now(),
+            creator_stand_in_wallet_hash: stand_in,
         })
     }
 

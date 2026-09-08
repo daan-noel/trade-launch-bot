@@ -486,7 +486,10 @@ fn req_column(r: &MetricReq) -> Option<SeriesColumn> {
     // its second axis here would read NaN at every row and draw as a condition that
     // simply never holds — a blank timeline, not an error. `m_flow_ix*` is
     // single-window by construction, so the flow arm still takes `primary`.
-    Some(match (r.fingerprint, r.window.is_windowed()) {
+    // An anchored read is scoped the way a windowed one is (its anchor rides on
+    // the same carrier), so it takes the windowed column: a bare `Static` would
+    // drop the anchor and read NaN on every row.
+    Some(match (r.fingerprint, r.window.is_windowed() || r.window.anchor.is_some()) {
         (Some(fp), _) => SeriesColumn::Fingerprint(r.metric, r.window.primary, fp),
         (None, true) => SeriesColumn::Window(r.metric, r.window),
         (None, false) => SeriesColumn::Static(r.metric),

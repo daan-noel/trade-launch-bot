@@ -16,6 +16,9 @@
 //!   [`is_two_window`])
 //! * `m_crowd_window` (dynamic) — `unique_wallets`, `trades_per_wallet` — the metrics
 //!   that need the WALLET column, and its own deque for exactly that reason
+//! * `m_crowd_after_age` (anchored) — `non_creator_buyers`, `this_buyer_is_new` —
+//!   distinct buyers since an AGE anchor (`after_age_sec`), the creator excluded;
+//!   the basis no trailing window can spell
 //! * `m_flow_ix` (static, fingerprint-scoped) — tagged/untagged lifetime totals
 //! * `m_flow_ix_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //! * `m_burst_slot` (static, fingerprint-scoped) — this slot's buy prefix × this print's grain,
@@ -42,6 +45,7 @@
 pub mod burst_slot;
 pub mod burst_wave;
 pub mod copy;
+pub mod crowd_after_age;
 pub mod crowd_window;
 pub mod evaluator;
 pub mod fee;
@@ -559,6 +563,8 @@ pub enum MetricGroupId {
     FlowWindow,
     /// `m_crowd_window` — trailing-window wallet counts.
     CrowdWindow,
+    /// `m_crowd_after_age` — distinct non-creator buyers since an age anchor.
+    CrowdAfterAge,
     /// `m_flow_ix` — tagged/untagged lifetime totals (fingerprint-scoped).
     FlowIx,
     /// `m_flow_ix_window` — tagged/untagged trailing-window totals (fingerprint-scoped).
@@ -686,6 +692,15 @@ pub enum MetricId {
     /// `NaN` on an empty window rather than `0.0` — a `0.0` would let
     /// `trades_per_wallet <= 2` pass on a dead tape, the exact reading it excludes.
     TradesPerWallet,
+    // ── m_crowd_after_age (anchored on an age; the creator never counts) ─
+    /// Distinct wallets, other than the creator, whose BUY landed at or after the
+    /// group's `after_age_sec` anchor (`m_crowd_after_age`). Monotonic, capped at
+    /// one above the largest threshold any loaded rule names — see the group module.
+    NonCreatorBuyers,
+    /// 0/1: the print being folded is a buy that just added a wallet to that set —
+    /// the arrival edge (`m_crowd_after_age`). 0 on a tick, on a sell, on a repeat
+    /// buyer, on the creator, before the anchor, and once the set has closed.
+    ThisBuyerIsNew,
     // ── m_flow_window, TWO-window reads (a slice nested in the window) ─
     /// Percent of the reference window's trades that landed in the slice window
     /// nested inside it — `trade_count(slice) / trade_count(window) * 100`
@@ -979,6 +994,8 @@ impl MetricId {
                 self,
                 MetricId::UniqueWallets
                     | MetricId::TradesPerWallet
+                    | MetricId::NonCreatorBuyers
+                    | MetricId::ThisBuyerIsNew
                     | MetricId::SameWalletCount
                     | MetricId::WorkingWalletCount
                     | MetricId::HasNew
@@ -1039,10 +1056,19 @@ impl Unit {
 
 /// Whether a group's metrics are rule-independent (one value per token) or need
 /// per-rule strict params (deduped by those params across rules).
+///
+/// Two flavours of the second: a **dynamic** group's params are a trailing window
+/// (`window_size_*`, `window_lag`), an **anchored** group's params are an age anchor
+/// (`after_age_sec`) — an expanding span from a point in the token's life, which
+/// no trailing window can spell. Both dedupe their state by those params; only the
+/// dynamic one carries a window axis, which is why the two are distinct kinds rather
+/// than one kind with an optional axis: every site that reads "dynamic" as "has a
+/// window" stays true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricKind {
     Static,
     Dynamic,
+    Anchored,
 }
 
 impl MetricKind {
@@ -1051,6 +1077,7 @@ impl MetricKind {
         match self {
             MetricKind::Static => "static",
             MetricKind::Dynamic => "dynamic",
+            MetricKind::Anchored => "anchored",
         }
     }
 }
@@ -1265,19 +1292,31 @@ pub const CANDLE_DOWN_HUE: u16 = 355;
 /// `primary` is the group's `window_size_sec`. `secondary` is `None` for every group
 /// whose basis is a single window — every read but the two-window metrics
 /// [`is_two_window`] selects.
+///
+/// `anchor` is the third scope a read can carry: an **anchored** group's age anchor
+/// (`m_crowd_after_age.after_age_sec`). It rides here rather than as another
+/// argument at every read site because it does the same job a span does — it
+/// selects which of a token's buffers a requirement reads, and so belongs to the
+/// requirement's identity — and it is `None` on every read of every other group.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Windows {
     pub primary: Option<WindowSpec>,
     pub secondary: Option<WindowSpec>,
+    pub anchor: Option<crowd_after_age::AgeAnchor>,
 }
 
 impl Windows {
-    /// A static group's read — no window on either axis.
-    pub const NONE: Self = Self { primary: None, secondary: None };
+    /// A static group's read — no window on either axis, no anchor.
+    pub const NONE: Self = Self { primary: None, secondary: None, anchor: None };
 
     /// A single-window read (the group's own span).
     pub fn one(spec: WindowSpec) -> Self {
-        Self { primary: Some(spec), secondary: None }
+        Self { primary: Some(spec), secondary: None, anchor: None }
+    }
+
+    /// An anchored group's read — no window, one age anchor.
+    pub fn anchored(anchor: crowd_after_age::AgeAnchor) -> Self {
+        Self { primary: None, secondary: None, anchor: Some(anchor) }
     }
 
     /// A single wall-clock window - the shape every pre-slot caller means.
@@ -1287,7 +1326,7 @@ impl Windows {
 
     /// A two-window read: the group's own window plus its second axis.
     pub fn two(primary: WindowSpec, secondary: WindowSpec) -> Self {
-        Self { primary: Some(primary), secondary: Some(secondary) }
+        Self { primary: Some(primary), secondary: Some(secondary), anchor: None }
     }
 
     /// True when either axis counts in slots - the flag a loader must respect,
@@ -1310,7 +1349,7 @@ impl Windows {
 
 impl From<Option<WindowSpec>> for Windows {
     fn from(primary: Option<WindowSpec>) -> Self {
-        Self { primary, secondary: None }
+        Self { primary, secondary: None, anchor: None }
     }
 }
 
@@ -1691,6 +1730,46 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.05,
                 monotonic: false,
                 hue: 296,
+            },
+        ],
+    },
+    GroupSpec {
+        id: MetricGroupId::CrowdAfterAge,
+        name: "m_crowd_after_age",
+        description: "Distinct wallets other than the creator that have BOUGHT this token since it was `after_age_sec` old - who arrived after the launch scramble. Buys before the anchor never count; the creator never counts.",
+        kind: MetricKind::Anchored,
+        scope: MetricScope::Token,
+        // Flow family, beside `m_crowd_window`: the same wallet column read on a
+        // different basis (an expanding span from an age anchor instead of a
+        // trailing window).
+        family: MetricFamily::Flow,
+        strict_params: &[
+            // The anchor. Required: an anchored group with no anchor is
+            // `m_crowd_window` without a window. `0` is a real value (count from
+            // birth) and must stay distinguishable from absent.
+            StrictParamSpec { name: crowd_after_age::AFTER_AGE_PARAM, required: true, allows_zero: true },
+        ],
+        fingerprint_config: &[],
+        // Violet, in the crowd band of the flow family (m_crowd_window sits at
+        // 290/296); the cross-group hue guard exempts family siblings.
+        metrics: &[
+            MetricSpec {
+                id: MetricId::NonCreatorBuyers,
+                name: "non_creator_buyers",
+                description: "Distinct wallets, other than the creator, whose BUY landed at or after `after_age_sec`. Reads at most one above the largest threshold any loaded rule names on it (the set is capped there), so every condition stays exact.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: true,
+                hue: 300,
+            },
+            MetricSpec {
+                id: MetricId::ThisBuyerIsNew,
+                name: "this_buyer_is_new",
+                description: "0/1: the print being decided on is a buy that just added a wallet to `non_creator_buyers` - the arrival edge. Pair it with `non_creator_buyers = N` to fire once, on the N-th arrival. 0 on a tick, a sell, a repeat buyer, the creator, a buy before the anchor, or once the set has closed at its cap.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 304,
             },
         ],
     },
@@ -2104,14 +2183,24 @@ pub const REGISTRY: &[GroupSpec] = &[
         strict_params: &[],
         // Its OWN list, not `m_flow_ix`'s: the two name different things. A build may
         // sit on BOTH, and normally does - see the `dump_ix` module header.
-        fingerprint_config: &[FpConfigFieldSpec {
+        fingerprint_config: &[
+            FpConfigFieldSpec {
             name: "ix_patterns",
             value_type: "ix_pattern[]",
             required: true,
             description: "Builds whose SELLS this group counts. Each entry is an exact                           ordered instruction-label sequence - `[\"A\",\"B\"]` -                           optionally narrowed to one client's compute budget by                           writing it as `{labels, cu_limit?, cu_price?,                           tip_lamports?}`: same four instructions plus the preset                           that operator's tool compiles. A field left out matches any                           value; a field pinned matches that value exactly and never                           matches a trade carrying no fee reading, so a pinned entry                           finds nothing in history predating fee capture. Its own                           list, separate from `m_flow_ix` and free to overlap it: the                           two ask different questions of one transaction, so a sell                           can be tagged flow AND a dump. Absent ⇒ both metrics read                           NaN, never 0.",
             default_json: None,
             conflicts_with: &[],
-        }],
+        },
+            FpConfigFieldSpec {
+                name: dump_ix::CREATOR_IS_LISTED_FIELD,
+                value_type: "bool",
+                required: false,
+                description: "Count the CREATOR wallet's sells as listed, whatever build they carry. `dump_sell <= 0` then reads \"the creator has not sold\" - the permission a rule states about the dump side of a token, which the creator's own build cannot express because it is not a durable list.",
+                default_json: Some("false"),
+                conflicts_with: &[],
+            },
+        ],
         // Teal, continuing the ix-structure family — `m_flow_ix` and this group read
         // the same `ix_labels` vocabulary through different lists, and the
         // cross-group hue guard exempts the family.
@@ -2751,7 +2840,14 @@ mod tests {
         // it reads the aggregate flow tape, narrowed to a named wallet list.
         assert_eq!(
             by_family["flow"],
-            vec!["m_flow_lifetime", "m_flow_window", "m_crowd_window", "m_copy", "m_copy_window"]
+            vec![
+                "m_flow_lifetime",
+                "m_flow_window",
+                "m_crowd_window",
+                "m_crowd_after_age",
+                "m_copy",
+                "m_copy_window"
+            ]
         );
         // `m_dump_ix` reads the same `ix_labels` vocabulary through its own build
         // list, so it grids with the flow-split pair rather than alone.
@@ -2965,7 +3061,7 @@ mod tests {
         // `is_windowed` answers "dynamic read?", so it must see either axis.
         assert!(!Windows::NONE.is_windowed());
         assert!(Windows::secs(5.0).is_windowed());
-        assert!(Windows { primary: None, secondary: Some(WindowSpec::secs(3.0)) }.is_windowed());
+        assert!(Windows { primary: None, secondary: Some(WindowSpec::secs(3.0)), anchor: None }.is_windowed());
     }
 
     #[test]
@@ -2996,6 +3092,9 @@ mod tests {
             MetricId::CopyBuyCount,
             MetricId::CopySellSol,
             MetricId::CopySellCount,
+            // The anchored buyer set only ever grows (it is insert-only, and closes
+            // at its cap), so an entry upper bound on it is a one-way door too.
+            MetricId::NonCreatorBuyers,
         ];
         for g in REGISTRY {
             for m in g.metrics {
@@ -3210,7 +3309,7 @@ mod tests {
             match g {
                 FlowIx | FlowIxWindow | DumpIx | DumpIxWindow | BurstSlot | BurstWave => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
-                FlowLifetime | FlowWindow | CrowdWindow | Copy | CopyWindow => Some(2),
+                FlowLifetime | FlowWindow | CrowdWindow | CrowdAfterAge | Copy | CopyWindow => Some(2),
                 _ => None,
             }
         };

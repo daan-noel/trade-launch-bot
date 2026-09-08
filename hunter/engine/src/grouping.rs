@@ -73,11 +73,13 @@ pub enum GroupField {
     IxCount,
     PriorLaunches,
     CreateAta,
+    BuildPrevDayLaunches,
+    BuildPrevDayRunnerBps,
 }
 
 impl GroupField {
     /// Every field, for exhaustive iteration in guards and request validation.
-    pub const ALL: [GroupField; 13] = [
+    pub const ALL: [GroupField; 15] = [
         GroupField::TokenProgramId,
         GroupField::IsCashbackEnabled,
         GroupField::CuLimit,
@@ -91,6 +93,8 @@ impl GroupField {
         GroupField::IxCount,
         GroupField::PriorLaunches,
         GroupField::CreateAta,
+        GroupField::BuildPrevDayLaunches,
+        GroupField::BuildPrevDayRunnerBps,
     ];
 
     /// The fingerprint axis this field groups on, or `None` for a grouping-only
@@ -109,6 +113,8 @@ impl GroupField {
             GroupField::IxCount => AxisId::IxCount,
             GroupField::PriorLaunches => AxisId::PriorLaunches,
             GroupField::CreateAta => AxisId::CreateAta,
+            GroupField::BuildPrevDayLaunches => AxisId::BuildPrevDayLaunches,
+            GroupField::BuildPrevDayRunnerBps => AxisId::BuildPrevDayRunnerBps,
         })
     }
 
@@ -485,6 +491,8 @@ mod tests {
             first_slot_sell_lamports: None,
             ix_labels: vec!["Pump.Fun: Create".into(), "System: Transfer".into()],
             prior_launches: Some(3),
+            build_prev_day_launches: None,
+            build_prev_day_runner_bps: None,
         }
     }
 

@@ -70,6 +70,11 @@ pub enum AxisId {
     /// 1 when the creation tx carries an Associated Token instruction, 0 when it
     /// does not. Unknown (fails closed) when creation labels are empty.
     CreateAta,
+    /// How many tokens this creation build (its exact ordered `ix_labels`) launched
+    /// on the previous UTC day. Engine-stamped from the day's launch-build stats.
+    BuildPrevDayLaunches,
+    /// Of those, the share that became runners, in basis points. Engine-stamped.
+    BuildPrevDayRunnerBps,
 }
 
 /// The value shape an axis carries — which [`AxisPredicate`] variant is legal on it.
@@ -93,6 +98,9 @@ pub enum AxisUnit {
     ComputeUnits,
     /// A tally, shown as-is.
     Count,
+    /// Basis points of a share; the UI shows a percent and converts at its own
+    /// edge. Integer, so identity never depends on float rounding.
+    Bps,
     /// Instruction labels — no numeric bound.
     Labels,
 }
@@ -259,11 +267,39 @@ pub static AXES: &[AxisDef] = &[
                      instruction, 0 when it does not. Unknown (fails closed) when \
                      the creation labels are empty.",
     },
+    AxisDef {
+        id: AxisId::BuildPrevDayLaunches,
+        key: "build_prev_day_launches",
+        label: "Build launches (prev day)",
+        chip: "bld_n",
+        kind: AxisKind::Numeric,
+        unit: AxisUnit::Count,
+        phase: AxisPhase::Instant,
+        definition: "How many tokens this creation build - the exact ordered \
+                     instruction labels of the creation transaction - launched on \
+                     the previous UTC day. Stamped from the day's launch-build \
+                     stats at creation; unknown (fails closed) for a build the \
+                     stats do not list.",
+    },
+    AxisDef {
+        id: AxisId::BuildPrevDayRunnerBps,
+        key: "build_prev_day_runner_bps",
+        label: "Build runner share (prev day)",
+        chip: "bld_run",
+        kind: AxisKind::Numeric,
+        unit: AxisUnit::Bps,
+        phase: AxisPhase::Instant,
+        definition: "Of this build's previous-day launches, the share whose curve \
+                     reserve peaked at 60 SOL or more, 60 s or more after birth, \
+                     with the peak before the day began - in basis points \
+                     (800 = 8 %). Stamped at creation; unknown (fails closed) for \
+                     a build the stats do not list.",
+    },
 ];
 
 impl AxisId {
     /// Every axis, for exhaustive iteration in guards, forms and SQL builders.
-    pub const ALL: [AxisId; 11] = [
+    pub const ALL: [AxisId; 13] = [
         AxisId::CuLimit,
         AxisId::CuPrice,
         AxisId::InitBuyLamports,
@@ -275,6 +311,8 @@ impl AxisId {
         AxisId::IxCount,
         AxisId::PriorLaunches,
         AxisId::CreateAta,
+        AxisId::BuildPrevDayLaunches,
+        AxisId::BuildPrevDayRunnerBps,
     ];
 
     /// This axis's registry row.
@@ -321,6 +359,8 @@ impl AxisId {
             AxisId::IxCount => tf.ix_labels.len() as u128,
             AxisId::PriorLaunches => u128::from(tf.prior_launches?),
             AxisId::CreateAta => crate::metrics::template_grain::create_ata_present(&tf.ix_labels)?,
+            AxisId::BuildPrevDayLaunches => u128::from(tf.build_prev_day_launches?),
+            AxisId::BuildPrevDayRunnerBps => u128::from(tf.build_prev_day_runner_bps?),
             AxisId::IxLabels => return None,
         };
         Some(v)
@@ -924,6 +964,8 @@ mod tests {
             first_slot_sell_lamports: Some(4),
             ix_labels: vec!["A".into(), "B".into()],
             prior_launches: Some(7),
+            build_prev_day_launches: Some(24),
+            build_prev_day_runner_bps: Some(1250),
             ..TokenFingerprint::default()
         };
         for axis in AxisId::ALL {

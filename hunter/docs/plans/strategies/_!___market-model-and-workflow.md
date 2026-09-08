@@ -779,3 +779,9 @@ time with `work_mem = 128MB`.
 | Attention-arrival four-term gate "at d = 2" | **void as a seat claim** | d = 2 is the reader's seat; ours is `lag_115` |
 | Dump-scalp / turn family at `next_slot_median` | **void as a node verdict** | the model drops the trigger's slot; the reader lands in it |
 | Single-gate closures (23 gates on one cohort, 32 gates at end-of-slot fill) | **stand as single-gate facts, void as node verdicts** | section 5.4 law 6 |
+| N4 mid-tape node as 3Xk2 / 8dtx / 6J1T run it | **closed at our seat** | racer builds ~130 ms behind a terminal buy with size; behind the swarm every exit is negative on their own picks; the full-tape sentence is red on four weeks at `lag_115` both legs |
+| No-initial-buy door + router buy >= 0.5 SOL, clock 45 | **refuted on a disjoint holdout** | the fitting week was one launch machine active two days; the frozen sentence reads red on three earlier weeks |
+| Creator-sold blacklist (creator already sold before a mid-tape buy) | **stands as a permission** | -4 to -8 % a trade, 0 of 7 days in each of four weeks, 36k-89k fires a week; sold < holds < never-bought every week |
+| Mid-tape entry on any tape-state condition (buy and hold, age 10-900 s, reserve 33-60) | **closed at our seat** | every event, permission, exit and band negative on 0 of 7 days at `lag_115` both legs; random fires -5.5 % on a 30 s clock, the toll is -3.5 %, the rest is token decay |
+| Machine cadence as a signal (a bump bot's fixed clip and regular period) | **refuted** | the configuration is readable (next beat within 2x, 70-75 %) but forward arrivals from other machines equal a matched control, and on the same token a random print beats a confirmation print |
+| The extraction tell as a permission ("the push machine has not sold yet") | **refuted, and inverted** | not-sold reads -7.2 % a trade against -4.3 % for has-sold; the unsold state marks a fall that has not happened yet |

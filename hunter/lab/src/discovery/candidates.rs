@@ -209,6 +209,11 @@ pub enum SkipReason {
     /// Position-scoped with no entry in [`POSITION_MENUS`] — a new metric that
     /// needs its declared menu (guarded by `position_metrics_all_declared`).
     NoDeclaredMenu,
+    /// An anchored group (`m_crowd_after_age`) is scoped by an `after_age_sec`
+    /// anchor, which the screen's window vocabulary cannot name — a column built
+    /// without one reads `NaN` on every row, so the group is skipped loudly here
+    /// rather than screened into nothing.
+    AnchorNotAScreenParam,
 }
 
 /// A registry metric the screen left out, with the reason.
@@ -255,8 +260,24 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
                     AxisSide::Entry => cfg.entry_window,
                     AxisSide::Exit => cfg.exit_window,
                 }),
-                MetricKind::Static => None,
+                // An anchored group's scope is an age anchor, which the screen's
+                // window vocabulary cannot name - see the skip below.
+                MetricKind::Static | MetricKind::Anchored => None,
             };
+            if group.kind == MetricKind::Anchored {
+                // Skipped LOUDLY, on the plan's own skip list: an anchored group needs
+                // an `after_age_sec` the screen cannot choose, and a column built
+                // without one reads NaN on every row.
+                for m in group.metrics {
+                    plan.skipped.push(Skipped {
+                        side,
+                        group: group.id,
+                        metric: m.id,
+                        reason: SkipReason::AnchorNotAScreenParam,
+                    });
+                }
+                continue;
+            }
             for m in group.metrics {
                 let skip = |reason| Skipped { side, group: group.id, metric: m.id, reason };
                 // A two-window metric is a ratio ACROSS a nested pair, so the side's

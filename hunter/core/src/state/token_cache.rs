@@ -205,6 +205,12 @@ impl TradeRow for CachedTrade {
     fn wallet(&self) -> &u32 {
         &self.wallet
     }
+    fn on_curve(&self) -> bool {
+        self.on_curve
+    }
+    fn wallet_hash(&self) -> Option<u64> {
+        Some(self.wallet_hash)
+    }
     /// No signature is retained on the cache row — the live paper
     /// resolvers key off the trade index, not the sig. Mirrors `CorpusTrade`.
     fn tx_signature(&self) -> &str {
@@ -259,6 +265,22 @@ pub struct TokenState {
     /// correctness (summing same-slot trades is idempotent), only a cheap early
     /// return so long-lived tokens stop re-checking the condition every trade.
     pub first_slot_window_open: bool,
+    /// FNV-1a of `token.creator_wallet` (`None` when the create carried no creator),
+    /// read by the creation-slot stand-in below.
+    pub creator_wallet_hash: Option<u64>,
+    /// `(tx_index, leg_index, wallet_hash)` of the earliest creation-slot BUY seen -
+    /// the wallet the engine treats as the creator when the creator itself never
+    /// bought in its own slot (`Event::FirstSlotSettled::creator_stand_in_wallet_hash`).
+    pub first_slot_first_buyer: Option<(u32, u32, u64)>,
+    /// Whether the creator wallet bought in the creation slot.
+    pub first_slot_creator_bought: bool,
+    /// The highest priced curve reserve (`vsol`) any CURVE print left, and when.
+    /// One compare per curve print; a write only on a new high. The launch-build
+    /// runner label (`RUNNER_PEAK_RESERVE_SOL` / `RUNNER_MIN_PEAK_AGE_SECS`) reads
+    /// these off `tokens_info`, where the metrics flush lands them. An AMM print
+    /// never moves either.
+    pub curve_peak_reserve_sol: Option<f64>,
+    pub curve_peak_at: Option<DateTime<Utc>>,
 
     pub last_trade_at: Option<DateTime<Utc>>,
     /// Timestamp of the last trade with `amount_sol >= DEAD_MEANINGFUL_TRADE_SOL`.
@@ -311,6 +333,24 @@ pub struct TokenState {
 }
 
 impl TokenState {
+    /// The creation slot's first buyer, and ONLY when the create carried no creator
+    /// wallet at all - the wallet the engine re-points every creator-keyed metric at
+    /// on `FirstSlotSettled`.
+    ///
+    /// The narrow condition is the point. A launch client that signs the create from
+    /// a throwaway and buys from the operator's wallet leaves no creator on the
+    /// event, and its operator is the creator every creator-keyed metric means. A
+    /// creator who simply did not buy in their OWN slot is still the creator, and
+    /// re-pointing there would hand the permission to a stranger: measured at 353 of
+    /// 1,772 fires lost on the door book, every one of them a token whose real
+    /// creator never sold.
+    pub fn creator_stand_in_wallet_hash(&self) -> Option<u64> {
+        if self.creator_wallet_hash.is_some() {
+            return None;
+        }
+        self.first_slot_first_buyer.map(|(_, _, h)| h)
+    }
+
     pub fn new(token: Token) -> Self {
         let ath_timestamp = Some(token.created_at);
         let initial_price = token
@@ -324,6 +364,8 @@ impl TokenState {
                 }
             });
 
+        let creator_wallet_hash = (!token.creator_wallet.is_empty())
+            .then(|| hunter_engine::metrics::flow_ix::wallet_hash(&token.creator_wallet));
         Self {
             token,
             trades: Arc::new(Vec::new()),
@@ -333,6 +375,11 @@ impl TokenState {
             first_slot_buy_sol: 0.0,
             first_slot_sell_sol: 0.0,
             first_slot_window_open: true,
+            creator_wallet_hash,
+            first_slot_first_buyer: None,
+            first_slot_creator_bought: false,
+            curve_peak_reserve_sol: None,
+            curve_peak_at: None,
             last_trade_at: None,
             last_meaningful_trade_at: None,
             initial_virtual_token_reserves: None,
@@ -453,6 +500,17 @@ impl TokenState {
                 Some(creation_slot) if trade.slot() == creation_slot => {
                     if trade.is_buy() {
                         self.first_slot_buy_sol += trade.amount_sol();
+                        if let Some(h) = trade.wallet_hash() {
+                            // Earliest by the canonical intra-slot order, so a
+                            // reordered delivery still names the same wallet.
+                            let key = (trade.tx_index(), trade.leg_index());
+                            if self.first_slot_first_buyer.is_none_or(|(tx, leg, _)| key < (tx, leg)) {
+                                self.first_slot_first_buyer = Some((key.0, key.1, h));
+                            }
+                            if self.creator_wallet_hash == Some(h) {
+                                self.first_slot_creator_bought = true;
+                            }
+                        }
                     } else {
                         self.first_slot_sell_sol += trade.amount_sol();
                     }
@@ -461,6 +519,17 @@ impl TokenState {
                     self.first_slot_window_open = false;
                 }
                 _ => {}
+            }
+        }
+
+        // The curve peak: priced reserve, curve prints only, strictly higher wins so
+        // the time is the FIRST time the peak was reached.
+        if trade.on_curve() {
+            if let Some(r) = trade.reserve_sol() {
+                if r.is_finite() && self.curve_peak_reserve_sol.is_none_or(|p| r > p) {
+                    self.curve_peak_reserve_sol = Some(r);
+                    self.curve_peak_at = Some(trade.block_time());
+                }
             }
         }
 
@@ -631,6 +700,8 @@ struct DeadFlush {
     lifetime_secs: Option<i64>,
     first_slot_buy_sol: f64,
     first_slot_sell_sol: f64,
+    curve_peak_reserve_sol: Option<f64>,
+    curve_peak_at: Option<DateTime<Utc>>,
 }
 
 impl DeadFlush {
@@ -652,6 +723,8 @@ impl DeadFlush {
             lifetime_secs: state.lifetime_secs(now),
             first_slot_buy_sol: state.first_slot_buy_sol,
             first_slot_sell_sol: state.first_slot_sell_sol,
+            curve_peak_reserve_sol: state.curve_peak_reserve_sol,
+            curve_peak_at: state.curve_peak_at,
         }
     }
 }
@@ -760,6 +833,8 @@ where
                         f.lifetime_secs,
                         f.first_slot_buy_sol,
                         f.first_slot_sell_sol,
+                        f.curve_peak_reserve_sol,
+                        f.curve_peak_at,
                     )
                     .await
                 {

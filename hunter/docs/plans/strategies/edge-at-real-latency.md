@@ -2,7 +2,7 @@
 
 Every rule this bot runs is graded at the fill it can actually reach. This file states the
 constraints that decide whether an edge is real. It governs the honesty half of
-[market-model-and-workflow.md](market-model-and-workflow.md); where the two disagree, this
+[market-model-and-workflow.md](_!___market-model-and-workflow.md); where the two disagree, this
 one wins.
 
 ## 1. The bar
@@ -19,7 +19,12 @@ one wins.
   in the signal's own slot 52.6% of the time (p50 0 slots late, 81.6% within one), but
   *ordering* inside a block is the leader's tip auction. A model that assumes the next
   print is measuring an ordering privilege no latency buys; a model that drops the
-  signal's slot is pessimistic by half a slot. `lag_115` is the verdict. See
+  signal's slot is pessimistic by half a slot. `lag_115` is the verdict on a spread tape
+  and a **floor** on a burst: measured on 506 real fills, we land a median of ONE print
+  behind the trigger (none at all in 50 % of fills), while the ingest clock counts 1.6-1.8x
+  that many prints inside 115 ms. Grade a burst entry on the position ladder weighted by
+  the slot's density, `lag_115` beside it; when the burst is a swarm firing on one print,
+  the honest fill is behind the swarm (slot end), not behind the print. See
   [fill-and-cost-models.md](fill-and-cost-models.md).
 
 ## 2. The law — latency cost is set by which way price moves relative to you
@@ -76,7 +81,7 @@ trails turn 21% of winners into losers and no width from 2-20 rescues it. See
 the ratio is the artifact size.
 
 The order in which doors, events, permissions and the exit are settled belongs to
-[market-model-and-workflow.md](market-model-and-workflow.md) §C, not here.
+[market-model-and-workflow.md](_!___market-model-and-workflow.md) §C, not here.
 
 ## 5. Two search failures that manufacture false answers
 

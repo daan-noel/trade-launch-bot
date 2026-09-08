@@ -33,6 +33,7 @@ pub mod exec_real;
 pub mod orphan_exit;
 pub mod producers;
 pub mod reapers;
+pub mod door_refresh;
 pub mod reload_scheduler;
 pub mod run_config;
 pub mod sell_backfill;
@@ -166,6 +167,12 @@ pub enum EngineCommand {
     ReloadRules {
         ack: oneshot::Sender<Result<(), String>>,
     },
+    /// The UTC day rolled over (or the process booted): the loop recomputes today's
+    /// launch-build stats and folds a `LaunchBuildStatsReloaded`. Creation-time input
+    /// only — nothing about a tracked token changes.
+    ReloadLaunchBuildStats {
+        ack: oneshot::Sender<Result<(), String>>,
+    },
     /// A manual "Sell ALL" / "Sell N%" targeting one **PG** position id. The loop
     /// resolves it to the engine `PositionId` via the sink registry, then folds a
     /// `ManualClose` (a no-op if the position isn't a live engine-held one).
@@ -278,6 +285,21 @@ impl EngineHandle {
     }
 
     /// Ask the loop to reload rules from PG and wait until the fold completes.
+    /// Recompute + swap the launch-build door map. Same ack shape as
+    /// [`reload_rules`](Self::reload_rules); the caller is the daily refresh task.
+    pub async fn reload_launch_build_stats(&self) -> Result<(), EngineReloadError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(EngineCommand::ReloadLaunchBuildStats { ack: tx })
+            .await
+            .map_err(|_| EngineReloadError::ChannelClosed)?;
+        match tokio::time::timeout(RELOAD_ACK_TIMEOUT, rx).await {
+            Ok(Ok(result)) => result.map_err(EngineReloadError::Failed),
+            Ok(Err(_)) => Err(EngineReloadError::ChannelClosed),
+            Err(_) => Err(EngineReloadError::TimedOut),
+        }
+    }
+
     pub async fn reload_rules(&self) -> Result<(), EngineReloadError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx

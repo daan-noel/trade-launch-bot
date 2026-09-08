@@ -1404,6 +1404,10 @@ async fn run() -> anyhow::Result<()> {
         task: strategy_task,
     } = engine_handles;
 
+    // The launch-build door's daily refresh: one bounded `GROUP BY` a day, off the
+    // decision loop, swapping the map the `build_prev_day_*` axes are stamped from.
+    tokio::spawn(strategies::engine::door_refresh::run(engine_handle.clone()));
+
     // Recovery reaper is spawned inside the engine loop (needs fill_tx + in-flight
     // guards) — see `strategies::engine::decision_loop`.
 

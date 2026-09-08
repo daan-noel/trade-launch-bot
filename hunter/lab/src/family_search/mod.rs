@@ -22,10 +22,6 @@
 //! ranking, the level, the capture, the attribution and the narrow re-check all read
 //! it); the fit siblings iterate one at a time. The load phase is the RAM spike, and
 //! six concurrent corpora is how a run OOMs.
-//!
-//! Reference: [family-search.md] — purpose, decisions D1-D12, evidence, how to run.
-//!
-//! [family-search.md]: ../../docs/roadmap/family-search.md
 
 pub mod attribution;
 pub mod diagnose;
@@ -133,6 +129,10 @@ impl RunConfig {
             // The lake corpus carries no creator wallet, so the `prior_launches` fingerprint axis
             // cannot be primed here and reads `NaN` (see `LAKE_BLIND_METRICS`).
             creator_launches: Default::default(),
+            // Same reason, one layer up: the launch-build door is a PG feed, so a
+            // lake-only run leaves both `build_prev_day_*` axes unstamped and any
+            // door rule fails closed rather than arming on an unknown build.
+            launch_build_stats: Default::default(),
         }
     }
 }

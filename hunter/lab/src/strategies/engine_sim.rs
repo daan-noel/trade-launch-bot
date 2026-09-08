@@ -372,12 +372,18 @@ async fn run_engine_backtest(
 
     let fp = target.fp.clone();
 
+    // The launch-build door, day by day. Loaded BEFORE the candidate scan, because
+    // the scan filters by fingerprint and the two door axes are engine-stamped: an
+    // unstamped scan matches nothing at all. `load_or_compute_day` is the same repo
+    // fn the live refresh calls, so a day is defined once.
+    let door_days = load_door_days(app_state, since, until).await;
+
     // The matched candidate set — every token whose observed creation axes match the
     // fingerprint's instant axes (see [`scan_matched_candidates`]). Shared, cached,
     // and single-flighted with the matched-tokens endpoint.
     let tokens = {
         let _stage = crate::sweep::obs::Stage::start("sim_scan");
-        scan_matched_candidates(app_state, &fp, since, until).await?
+        scan_matched_candidates(app_state, &fp, since, until, &door_days).await?
     };
     let tokens = if let Some(allow) = mints.filter(|m| !m.is_empty()) {
         let set: std::collections::HashSet<&str> = allow.iter().map(|s| s.as_str()).collect();
@@ -473,6 +479,11 @@ async fn run_engine_backtest(
     };
     let creator_launches: Arc<[(u64, u32)]> = Arc::from(creator_launches);
 
+    // The replay side of the SAME door: one `LaunchBuildStatsReloaded` per UTC day,
+    // folded at that day's 00:00 boundary — a token is graded on the door the live
+    // engine would have had the morning it was born.
+    let launch_build_stats = door_days.ordered.clone();
+
     // Token → (symbol, created_at) for building result rows off the outcomes.
     let meta: std::collections::HashMap<String, (String, DateTime<Utc>)> = tokens
         .iter()
@@ -505,6 +516,7 @@ async fn run_engine_backtest(
                     duplicate_identity_window_hours: dupe_guard_window_hours
                         .unwrap_or(hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS),
                     creator_launches,
+                    launch_build_stats,
                     ..Default::default()
                 },
             );
@@ -651,28 +663,113 @@ pub(crate) async fn scan_matched_candidates(
     fp: &EngineFingerprint,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
+    door_days: &DoorDays,
 ) -> Result<Arc<Vec<crate::models::Token>>> {
     let batch_db = app_state.batch_db.clone();
     let fp_scan = fp.clone();
+    let doors = door_days.by_day.clone();
     crate::strategies::candidate_cache::get_or_scan_candidates_state(
         app_state,
         candidate_cache_key(fp, since, until),
         Box::pin(async move {
             let repo = TokenRepo::new(batch_db);
             crate::strategies::analysis::collect_matching_tokens(&repo, since, until, |t| {
-                !t.is_mayhem_mode
-                    && !match_all(
-                        std::slice::from_ref(&fp_scan),
-                        &observed_axes(t, t.first_slot_buy_sol, t.first_slot_sell_sol),
-                        MatchPhase::Full,
-                    )
-                    .is_empty()
+                if t.is_mayhem_mode {
+                    return false;
+                }
+                let mut tf = observed_axes(t, t.first_slot_buy_sol, t.first_slot_sell_sol);
+                // The engine-stamped door axes, through the ONE offline stamper — an
+                // unstamped scan fails every door axis closed and matches nothing.
+                if let Some(day) = doors.get(&t.created_at.date_naive()) {
+                    trading_core::strategies::fingerprint_axes::stamp_launch_build_axes(
+                        &mut tf, day,
+                    );
+                }
+                !match_all(std::slice::from_ref(&fp_scan), &tf, MatchPhase::Full).is_empty()
             })
             .await
             .map_err(|e| anyhow!("candidate token scan failed: {e}"))
         }),
     )
     .await
+}
+
+/// The launch-build door over a run's window: one snapshot per UTC day, in both the
+/// shapes the run needs — a hash map for the candidate scan's stamp, and the ordered
+/// engine list the replay folds as `LaunchBuildStatsReloaded` at each day boundary.
+/// Built once so the two can never be a different door.
+#[derive(Clone, Default)]
+pub(crate) struct DoorDays {
+    by_day: Arc<
+        std::collections::BTreeMap<
+            chrono::NaiveDate,
+            std::collections::HashMap<u64, hunter_engine::event::LaunchBuildStat>,
+        >,
+    >,
+    ordered: Arc<[(chrono::NaiveDate, Arc<[hunter_engine::event::LaunchBuildStat]>)]>,
+}
+
+/// Load (computing what is missing) every UTC day the run's window spans.
+///
+/// An open-ended window falls back to whatever days the table already holds: a run
+/// with no `since` cannot ask for "every day that will ever exist", and computing a
+/// day nobody asked about would scan `tokens` for nothing.
+/// [`load_door_days`] for a caller outside this module (the matched-token endpoint),
+/// which must stamp the scan exactly as the backtest does or it reports a door rule
+/// as matching nothing.
+pub(crate) async fn load_door_days_for(
+    app_state: &Arc<LocalState>,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> DoorDays {
+    load_door_days(app_state, since, until).await
+}
+
+async fn load_door_days(
+    app_state: &Arc<LocalState>,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> DoorDays {
+    use trading_core::storage::repositories::launch_build_repo::LaunchBuildRepo;
+    let repo = LaunchBuildRepo::new(app_state.core.batch_db.clone());
+    let mut by_day = std::collections::BTreeMap::new();
+    let mut ordered = Vec::new();
+    let days: Vec<chrono::NaiveDate> = match (since, until) {
+        (Some(a), Some(b)) => {
+            let (a, b) = (a.date_naive(), b.date_naive());
+            let mut out = Vec::new();
+            let mut d = a;
+            while d <= b {
+                out.push(d);
+                d = d.succ_opt().expect("a date has a successor");
+            }
+            out
+        }
+        _ => match repo.stored_days().await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!(error = %e, "launch-build door unreadable - door rules fail closed");
+                Vec::new()
+            }
+        },
+    };
+    for day in days {
+        match repo.load_or_compute_day(day).await {
+            Ok(rows) => {
+                let stats = LaunchBuildRepo::to_engine(&rows);
+                by_day.insert(day, stats.iter().map(|s| (s.build_hash, *s)).collect());
+                ordered.push((day, Arc::from(stats)));
+            }
+            // Loud and not fatal: a door rule then fails closed for that day, which
+            // is the safe direction.
+            Err(e) => tracing::error!(
+                %day, error = %e,
+                "launch-build stats unavailable - every door rule fails closed for this day"
+            ),
+        }
+    }
+    tracing::info!(days = ordered.len(), "launch-build door loaded for the run window");
+    DoorDays { by_day: Arc::new(by_day), ordered: Arc::from(ordered) }
 }
 
 /// Resolve a saved rule's fingerprint (engine form) for the matched-tokens scan.

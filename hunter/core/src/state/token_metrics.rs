@@ -31,6 +31,10 @@ pub struct TokenMetricsWrite {
     pub first_slot_buy_sol: f64,
     /// Total sell SOL across trades in the token's creation slot.
     pub first_slot_sell_sol: f64,
+    /// The highest priced curve reserve (`vsol`) any curve print left, and when -
+    /// see `TokenState::curve_peak_reserve_sol`. `None` before the first curve print.
+    pub curve_peak_reserve_sol: Option<f64>,
+    pub curve_peak_at: Option<chrono::DateTime<Utc>>,
 }
 
 /// Replay all trades in chronological order and rebuild aggregate metrics.
@@ -77,5 +81,7 @@ pub fn metrics_from_state(mint: &str, state: &TokenState) -> TokenMetricsWrite {
         lifetime_secs,
         first_slot_buy_sol: state.first_slot_buy_sol,
         first_slot_sell_sol: state.first_slot_sell_sol,
+        curve_peak_reserve_sol: state.curve_peak_reserve_sol,
+        curve_peak_at: state.curve_peak_at,
     }
 }

@@ -34,10 +34,12 @@ export type AxisId =
   | 'ix_labels'
   | 'ix_count'
   | 'prior_launches'
-  | 'create_ata';
+  | 'create_ata'
+  | 'build_prev_day_launches'
+  | 'build_prev_day_runner_bps';
 
 /** What an axis's numbers *are* — drives how a bound is shown and parsed. */
-export type AxisUnit = 'lamports' | 'compute_units' | 'count' | 'labels';
+export type AxisUnit = 'lamports' | 'compute_units' | 'count' | 'bps' | 'labels';
 
 /** When the observed value is known. A `first_slot` axis only settles after the
  *  creation slot closes, so a rule using one cannot fire at birth. */
@@ -164,6 +166,26 @@ export const AXES: readonly AxisDef[] = [
     phase: 'instant',
     definition:
       '1 when the creation transaction carries an Associated Token instruction, 0 when it does not. Unknown (fails closed) when the creation labels are empty.',
+  },
+  {
+    id: 'build_prev_day_launches',
+    label: 'Build launches (prev day)',
+    chip: 'bld_n',
+    kind: 'numeric',
+    unit: 'count',
+    phase: 'instant',
+    definition:
+      'How many tokens this creation build - the exact ordered instruction labels of the creation transaction - launched on the previous UTC day. Stamped from the day\'s launch-build stats at creation; unknown (fails closed) for a build the stats do not list.',
+  },
+  {
+    id: 'build_prev_day_runner_bps',
+    label: 'Build runner share (prev day)',
+    chip: 'bld_run',
+    kind: 'numeric',
+    unit: 'bps',
+    phase: 'instant',
+    definition:
+      'Of this build\'s previous-day launches, the share whose curve reserve peaked at 60 SOL or more, 60 s or more after birth, with the peak before the day began - in basis points (800 = 8 %). Stamped at creation; unknown (fails closed) for a build the stats do not list.',
   },
 ] as const;
 

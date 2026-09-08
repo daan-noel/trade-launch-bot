@@ -340,6 +340,12 @@ fn cut_columns(windows: &[f64], with_flow: bool, flow_fp: FingerprintId) -> Vec<
         if g.scope == MetricScope::Position {
             continue;
         }
+        // An anchored group needs an `after_age_sec` the search has no vocabulary for
+        // (`clause_legal` rejects every clause on one), so precomputing its column
+        // would fold a buffer nothing reads.
+        if g.kind == MetricKind::Anchored {
+            continue;
+        }
         if matches!(g.family, hunter_engine::metrics::MetricFamily::FlowIx) && !with_flow {
             continue;
         }
@@ -361,6 +367,8 @@ fn cut_columns(windows: &[f64], with_flow: bool, flow_fp: FingerprintId) -> Vec<
                         });
                     }
                 }
+                // Filtered out above.
+                MetricKind::Anchored => {}
             }
         }
     }

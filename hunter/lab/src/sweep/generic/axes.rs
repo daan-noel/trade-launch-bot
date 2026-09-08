@@ -544,6 +544,15 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
                     })?,
                 ),
                 MetricKind::Static => None, // a window on a static metric is ignored
+                // An anchored group is scoped by an age anchor, not a window, and a
+                // sweep axis has no vocabulary for one. Reject rather than sweep a
+                // group whose reading would be NaN on every token.
+                MetricKind::Anchored => {
+                    return Err(format!(
+                        "group `{group_name}` is anchored (`after_age_sec`) - not sweepable yet; \
+                         author it on the rule instead"
+                    ))
+                }
             };
             // The slice axis, required exactly when the METRIC reads it. Asking the
             // group would demand one of every `m_flow_window` axis, since the group

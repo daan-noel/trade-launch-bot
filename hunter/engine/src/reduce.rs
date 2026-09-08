@@ -97,6 +97,16 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 // so a replayed event cannot double-count.
                 tf.prior_launches = Some(state.take_prior_launches(h));
             }
+            // The launch-build door axes: one hash over the creation labels, one map
+            // get. Stamped once, here, so a token keeps the door it was born under
+            // even after the day rolls over - which is the term the rule is derived
+            // in (the previous day's stats, as they stood at 00:00 UTC).
+            if let Some(stat) = crate::metrics::flow_ix::ix_hash_opt(&tf.ix_labels)
+                .and_then(|h| state.launch_build_stats.get(&h))
+            {
+                tf.build_prev_day_launches = Some(stat.launches);
+                tf.build_prev_day_runner_bps = Some(stat.runner_bps());
+            }
             let mut token = TokenState {
                 created_at: at,
                 tf,
@@ -140,10 +150,23 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             }
         }
 
-        Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at } => {
+        Event::LaunchBuildStatsReloaded { stats } => {
+            // Creation-time input only: nothing about a tracked token changes, so no
+            // cross-epoch bump and nothing to unsettle.
+            state.launch_build_stats = stats.iter().map(|s| (s.build_hash, *s)).collect();
+        }
+
+        Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at, creator_stand_in_wallet_hash } => {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             if !token.first_slot_settled {
                 token.first_slot_settled = true;
+                // The creator did not buy in its own creation slot: from here on the
+                // slot's first buyer is the creator for every creator-keyed metric.
+                // Re-seeding moves the FUTURE of the track only - prints already
+                // folded keep the verdict they were folded under.
+                if let Some(h) = creator_stand_in_wallet_hash {
+                    token.track.seed_creator(h);
+                }
                 token.tf.first_slot_buy_lamports = Some(buy_lamports);
                 token.tf.first_slot_sell_lamports = Some(sell_lamports);
                 let hits = match_all(&state.fps, &token.tf, MatchPhase::Full);

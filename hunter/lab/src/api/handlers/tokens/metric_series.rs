@@ -485,6 +485,19 @@ fn build_series(
                         labels.push((SeriesColumn::window(m.id, w), Some(w), None));
                     }
                 }
+                // An anchored group is drawn at the anchor that needs no choosing:
+                // 0, the token's whole life. A readout has no rule to take an
+                // `after_age_sec` from, and drawing one arbitrary non-zero anchor
+                // would be a different metric wearing the same label.
+                MetricKind::Anchored => {
+                    let ws = Windows {
+                        anchor: Some(hunter_engine::metrics::crowd_after_age::AgeAnchor::secs(0.0)),
+                        ..Windows::default()
+                    };
+                    let col = SeriesColumn::Window(m.id, ws);
+                    columns.push(col);
+                    labels.push((col, None, None));
+                }
             }
         }
     }

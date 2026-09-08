@@ -259,6 +259,8 @@ impl DbWriter {
                                 m.lifetime_secs,
                                 m.first_slot_buy_sol,
                                 m.first_slot_sell_sol,
+                                m.curve_peak_reserve_sol,
+                                m.curve_peak_at,
                             )
                             .await
                         {

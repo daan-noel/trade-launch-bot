@@ -1422,6 +1422,8 @@ async fn write_metrics(
             m.lifetime_secs,
             m.first_slot_buy_sol,
             m.first_slot_sell_sol,
+            m.curve_peak_reserve_sol,
+            m.curve_peak_at,
         )
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))

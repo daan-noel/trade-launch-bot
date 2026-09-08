@@ -196,6 +196,11 @@ fn build_state(
             state.first_slot_sell_sol = sell;
             state.first_slot_window_open = false;
         }
+        // The curve peak, for the same reason: the seed retains a capped tail of
+        // trades, so re-latching from them alone would under-report a token whose
+        // peak fell off the retained window.
+        state.curve_peak_reserve_sol = info.curve_peak_reserve_sol;
+        state.curve_peak_at = info.curve_peak_at;
     }
 
     if let Some(agg) = agg {

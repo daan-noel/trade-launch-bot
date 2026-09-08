@@ -191,6 +191,33 @@ time, so the decoder stamps `received_at`. That is the correct clock here: it me
 when a print could first have been reacted to, which is exactly what a reaction-time
 model needs.
 
+**On a burst slot the ingest clock overcharges, and by a measured amount.** Prints that
+reach the ingest inside the 115 ms after the trigger are not all ahead of us on chain:
+the leader sequences our transaction against theirs, and it often wins. Measured on 506
+real fills (trigger print located by `target_time`, our fill by our own wallet's buy):
+
+| prints in the trigger slot | fills | d = 0 | d <= 1 | d <= 2 | mean d | mean prints within 115 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1-2 | 102 | 77.5 % | 94.1 % | 98.0 % | 0.32 | 0.56 |
+| 3-4 | 85 | 51.8 % | 82.4 % | 94.1 % | 0.81 | 1.26 |
+| 5-8 | 144 | 33.3 % | 63.2 % | 81.3 % | 1.49 | 2.66 |
+| 9+ | 103 | 16.5 % | 34.0 % | 49.5 % | 2.98 | 4.90 |
+
+`d` is the number of prints between the trigger print and our fill in chain order
+(same-slot and next-slot fills; 54.7 % of all real fills land in the trigger's own slot,
+and stale-trigger fills two or more slots late land into empty tape). The 115 ms window
+counts roughly 1.6-1.8x the prints we actually land behind, so on a burst `lag_115` is a
+**floor**, not the verdict. The honest grade of a burst-triggered entry is the position
+ladder - the trigger's own state (`d = 0`), one print behind, two behind, and the slot's
+end state - weighted by the row above that matches the slot's density, with `lag_115`
+reported beside it as the floor. A candidate whose money lives only at `d = 0` is an
+execution bet, not a rule. When the trigger is the print a swarm of same-slot bots keys
+on (a wallet-feed buy of size on a young token), the fill that counts is behind the swarm
+- the slot's end state - not behind the trigger: a fill at `d = 0..2` rides the swarm's
+own impact, and the responded picks of two such bots swing from +7.6 % at the density
+seat to +0.7 % behind their own print
+([attention-arrival-node.md](attention-arrival-node.md)).
+
 **Fallback and scope.** When the window holds no candidate that late it degrades to
 `worst_case`, exactly as the `next_slot_*` pair does, so eligibility stays identical.
 Serde is `{"lag_ms": 115}` (alias `{"lag": 115}`). Simulate-only: the grouped sweep

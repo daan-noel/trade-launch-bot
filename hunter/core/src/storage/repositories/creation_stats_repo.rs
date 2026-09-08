@@ -343,6 +343,26 @@ fn axis_num_sql(axis: AxisId, ti_alias: &str) -> Option<String> {
                  ELSE (EXISTS (SELECT 1 FROM {elems} e WHERE e LIKE 'Associated Token:%'))::int::numeric END)"
             )
         }
+        // The engine stamps these from the day's `launch_build_day_stats`; the
+        // mirror reads the same row, keyed the same way - the token's creation DAY
+        // and its exact ordered creation labels. A correlated read, not a join, so it
+        // stays one expression the CASE ladders can wrap; the door axes are a
+        // dashboard slice, never a hot path. A build with no row reads NULL, which
+        // fails the predicate exactly as `None` fails the matcher.
+        AxisId::BuildPrevDayLaunches | AxisId::BuildPrevDayRunnerBps => {
+            let arr = crate::storage::ix_labels_sql::ix_labels_array_sql("t.ix_labels");
+            let value = if axis == AxisId::BuildPrevDayLaunches {
+                "s.launches::numeric"
+            } else {
+                // Integer division, the same arithmetic `LaunchBuildStat::runner_bps`
+                // does, so the two can never disagree by a rounding step.
+                "(s.runners::bigint * 10000 / NULLIF(s.launches, 0))::numeric"
+            };
+            format!(
+                "(SELECT {value} FROM launch_build_day_stats s \
+                  WHERE s.day = (t.created_at AT TIME ZONE 'UTC')::date AND s.ix_labels = {arr})"
+            )
+        }
         AxisId::IxLabels => return None,
     })
 }

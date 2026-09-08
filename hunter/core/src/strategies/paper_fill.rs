@@ -90,6 +90,14 @@ pub enum FillModel {
     /// Fill at the trigger/fire trade's own spot — zero feed-reaction slippage, the
     /// optimistic bound approximating a same-slot landing.
     SignalPrice,
+    /// The reference study's convention: entry = the pool state the trigger's slot
+    /// LEAVES BEHIND (the last priced print in slot `S`, the trigger itself when it
+    /// is that print), exit = the fire print's own spot. The entry is what a buy
+    /// landing at the head of the next slot transacts against, whatever side the
+    /// slot ended on - so, unlike every other model, it does not require a
+    /// qualifying BUY in the window. Exists so a rule derived at slot-end pricing
+    /// reconciles against the engine on the same fill, not a neighbouring one.
+    SlotEnd,
     /// Entry/exit = the **last** qualifying trade whose `block_time` is at or before
     /// `ms` milliseconds after the signal's own — the only model keyed to a **measured**
     /// reaction time rather than to slot structure.
@@ -132,6 +140,7 @@ const FILL_MODEL_NAMES: &[(FillModel, &str, &str)] = &[
     (FillModel::NextSlotFirst, "next_slot_first", "next_first"),
     (FillModel::NextSlotMedian, "next_slot_median", "next_median"),
     (FillModel::SignalPrice, "signal_price", "signal"),
+    (FillModel::SlotEnd, "slot_end", "slot_end"),
 ];
 
 /// Prefix of the parameterized wall-clock-lag variant: `lag_115` = 115 ms.
@@ -314,6 +323,22 @@ pub fn find_paper_entry_at<T: TradeRow>(
     };
     let qualifies = |t: &T| in_window(t.slot()) && is_entry_buy(t);
 
+    // Slot end: the last priced print of the trigger's own slot, whatever its side.
+    // Outside the buy-eligibility rule below on purpose - a slot that ends on a sell
+    // still ends at a state the next slot's buy transacts against.
+    if model == FillModel::SlotEnd {
+        let last = post
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.slot() == trigger_slot && t.fill_basis() > 0.0)
+            .map(|(rel, _)| rel)
+            .next_back();
+        return match last {
+            Some(rel) => Some(paper_fill_from(trades, target_idx + 1 + rel)),
+            None => (trigger.fill_basis() > 0.0).then(|| paper_fill_from(trades, target_idx)),
+        };
+    }
+
     // Eligibility is fixed across models: a qualifying buy must exist in the
     // window (or the empty-window market-fill fallback below).
     if !post.iter().any(qualifies) {
@@ -365,6 +390,8 @@ pub fn find_paper_entry_at<T: TradeRow>(
             }
         }
         FillModel::WorstCase => worst(),
+        // Returned above.
+        FillModel::SlotEnd => unreachable!("slot-end entry is resolved before eligibility"),
     };
     rel.map(|rel| paper_fill_from(trades, target_idx + 1 + rel))
 }
@@ -406,8 +433,10 @@ pub fn find_paper_exit_at<T: TradeRow>(
     let (run_base, run) = next_slot_run(post, fire_slot, next_slot);
     let fill_idx = if post.iter().any(priced) {
         match model {
-            // Zero-slippage: sell at the fire trade's own spot.
-            FillModel::SignalPrice => (fire.fill_basis() > 0.0).then_some(fire_idx),
+            // Zero-slippage: sell at the fire trade's own spot. Slot end exits the
+            // same way - the study it mirrors prices every exit at the print that
+            // fired it.
+            FillModel::SignalPrice | FillModel::SlotEnd => (fire.fill_basis() > 0.0).then_some(fire_idx),
             // The first priced trade in the window.
             FillModel::FirstInWindow => post.iter().position(priced).map(|rel| fire_idx + 1 + rel),
             // The first priced trade at the next slot — the fire's own slot dropped.

@@ -5,6 +5,7 @@ pub mod amm_pool_facts_repo;
 pub mod arm_repo;
 pub mod creation_stats_repo;
 pub mod fingerprint_repo;
+pub mod launch_build_repo;
 // `grouped_sweep_repo` stays in `backend`: it depends on the sweep engine's
 // `ComboMetrics` aggregate (local), so it lands in `lab`, not core.
 pub mod raw_tx_repo;

@@ -18,10 +18,12 @@
 //! is two classifiers agreeing, not one event counted twice. Read them as two
 //! answers, never as parts of a whole.
 //!
-//! **No wallet rules.** `m_flow_ix` can tag by contagion or by creator identity;
-//! this cannot, and deliberately has no such knob. A build is a property of the
-//! transaction. Contagion would make every later sell from a wallet that once sold
-//! with a listed build also count as one, which is the opposite of reading the build.
+//! **One wallet rule, and no contagion.** `creator_is_listed` counts the creator's
+//! sells as listed whatever build they carry: "the creator has not sold" is a
+//! statement about the dump side of a token, and the creator's own build is not a
+//! durable list. Contagion has no knob here on purpose - it would make every later
+//! sell from a wallet that once sold with a listed build also count as one, which is
+//! the opposite of reading the build.
 //!
 //! **Legs and transactions.** One Solana transaction can carry several
 //! `Pump.Fun: Sell` instructions — four different wallets' bags sold at once is a
@@ -61,16 +63,31 @@ pub const CONFIG_KEY: &str = "m_dump_ix";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DumpPatterns {
     builds: BuildPatterns,
+    /// Count the creator wallet's sells as listed, whatever build they carry.
+    creator_is_listed: bool,
 }
+
+/// The `metric_config["m_dump_ix"]` key of the creator flag.
+pub const CREATOR_IS_LISTED_FIELD: &str = "creator_is_listed";
 
 impl DumpPatterns {
     pub fn new(hashes: BTreeSet<u64>) -> Self {
-        Self { builds: BuildPatterns::from_hashes(hashes) }
+        Self { builds: BuildPatterns::from_hashes(hashes), creator_is_listed: false }
     }
 
     /// Compile an ordered list of label sequences, each matching any fee budget.
     pub fn from_label_sequences(patterns: &[Vec<String>]) -> Self {
-        Self { builds: BuildPatterns::from_label_sequences(patterns) }
+        Self { builds: BuildPatterns::from_label_sequences(patterns), creator_is_listed: false }
+    }
+
+    /// The same list, with the creator's sells counted as listed.
+    pub fn with_creator_listed(mut self, on: bool) -> Self {
+        self.creator_is_listed = on;
+        self
+    }
+
+    pub fn creator_is_listed(&self) -> bool {
+        self.creator_is_listed
     }
 
     /// The compiled list, for callers that need to ask about a shape directly.
@@ -91,7 +108,11 @@ impl DumpPatterns {
             return None;
         }
         let arr = obj.get("ix_patterns")?.as_array()?;
-        Some(Self { builds: BuildPatterns::parse(arr)? })
+        let creator_is_listed = match obj.get(CREATOR_IS_LISTED_FIELD) {
+            None | Some(Value::Null) => false,
+            Some(v) => v.as_bool()?,
+        };
+        Some(Self { builds: BuildPatterns::parse(arr)?, creator_is_listed })
     }
 
     /// Shape errors in `metric_config["m_dump_ix"]`. Shape only — there is no
@@ -110,7 +131,13 @@ impl DumpPatterns {
         let Some(rows) = arr.as_array() else {
             return Err(format!("{CONFIG_KEY}.ix_patterns must be an array of label arrays"));
         };
-        BuildPatterns::validate(rows, &format!("{CONFIG_KEY}.ix_patterns"))
+        BuildPatterns::validate(rows, &format!("{CONFIG_KEY}.ix_patterns"))?;
+        if let Some(v) = map.get(CREATOR_IS_LISTED_FIELD) {
+            if !v.is_null() && !v.is_boolean() {
+                return Err(format!("{CONFIG_KEY}.{CREATOR_IS_LISTED_FIELD} must be a boolean"));
+            }
+        }
+        Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -123,8 +150,10 @@ impl DumpPatterns {
     /// trade with no fee reading therefore fails every pinned entry, which is why a
     /// list written with `cu_limit` matches nothing on history predating core
     /// migration `0013`.
-    fn matches(&self, t: &TradeLite) -> bool {
-        t.side == Side::Sell && self.builds.matches(t.ix_hash, t.fee)
+    fn matches(&self, t: &TradeLite, creator: Option<u64>) -> bool {
+        t.side == Side::Sell
+            && (self.builds.matches(t.ix_hash, t.fee)
+                || (self.creator_is_listed && creator.is_some_and(|c| c == t.wallet_hash)))
     }
 }
 
@@ -225,11 +254,25 @@ pub struct DumpState {
     patterns: DumpPatterns,
     lifetime: DumpTotals,
     windows: BTreeMap<WindowKey, DumpWindowState>,
+    /// The creator wallet hash, read only when `creator_is_listed` is on. Seeded
+    /// by the track at creation and re-pointed by the creation-slot stand-in.
+    creator_wallet_hash: Option<u64>,
 }
 
 impl DumpState {
     pub fn new(patterns: DumpPatterns) -> Self {
-        Self { patterns, lifetime: DumpTotals::default(), windows: BTreeMap::new() }
+        Self {
+            patterns,
+            lifetime: DumpTotals::default(),
+            windows: BTreeMap::new(),
+            creator_wallet_hash: None,
+        }
+    }
+
+    /// Point the creator rule at a wallet. Same contract as `FlowState::set_creator`:
+    /// moves the future of the fold, never its past.
+    pub fn set_creator(&mut self, hash: u64) {
+        self.creator_wallet_hash = Some(hash);
     }
 
     /// Adopt an edited list. Same contract as `FlowState::set_patterns`: trades
@@ -249,7 +292,7 @@ impl DumpState {
     /// Fold one trade. A non-matching trade costs one hash-set lookup and nothing
     /// else — no push, no eviction, no allocation.
     pub fn on_trade(&mut self, t: &TradeLite, cur: Cursor) {
-        if !t.sol.is_finite() || t.sol < 0.0 || !self.patterns.matches(t) {
+        if !t.sol.is_finite() || t.sol < 0.0 || !self.patterns.matches(t, self.creator_wallet_hash) {
             return;
         }
         let first_leg = t.leg_index == 0;
@@ -293,6 +336,46 @@ impl DumpState {
 
 #[cfg(test)]
 mod tests {
+
+    /// The creator flag is what makes "the creator has not sold" expressible: an
+    /// EMPTY list plus the flag counts the creator's sells and nothing else. Without
+    /// it an empty list matches nothing, and `dump_sell <= 0` would pass on every
+    /// token - a permission-shaped condition that permits everything.
+    #[test]
+    fn the_creator_flag_lists_the_creator_and_an_empty_list_alone_lists_nobody() {
+        let creator = 7u64;
+        let their_sell = sell_with(1.0, Some(ix_hash(&["Other: Sell"])), FeeKeys::default());
+        let creator_sell = TradeLite { wallet_hash: creator, ..their_sell };
+
+        let bare = DumpPatterns::from_label_sequences(&[]);
+        assert!(!bare.matches(&creator_sell, Some(creator)), "no list, no flag: nobody is listed");
+
+        let flagged = DumpPatterns::from_label_sequences(&[]).with_creator_listed(true);
+        assert!(flagged.matches(&creator_sell, Some(creator)), "the creator's sell counts");
+        assert!(!flagged.matches(&their_sell, Some(creator)), "a stranger's does not");
+        assert!(!flagged.matches(&creator_sell, None), "an unknown creator lists nobody");
+        let creator_buy = TradeLite { side: Side::Buy, ..creator_sell };
+        assert!(!flagged.matches(&creator_buy, Some(creator)), "this group reads SELLS only");
+    }
+
+    /// The flag round-trips through `metric_config`, and defaults off so every
+    /// stored fingerprint reads exactly as it did before the field existed.
+    #[test]
+    fn the_creator_flag_parses_and_defaults_off() {
+        let with = DumpPatterns::from_metric_config(
+            &json!({ "m_dump_ix": { "ix_patterns": [], "creator_is_listed": true } }),
+        )
+        .unwrap();
+        assert!(with.creator_is_listed());
+        let without =
+            DumpPatterns::from_metric_config(&json!({ "m_dump_ix": { "ix_patterns": [] } })).unwrap();
+        assert!(!without.creator_is_listed());
+        assert!(DumpPatterns::validate_metric_config(
+            &json!({ "m_dump_ix": { "ix_patterns": [], "creator_is_listed": "yes" } })
+        )
+        .is_err());
+    }
+
     use super::super::fee::FeeKeys;
     use super::super::flow_ix::ix_hash;
     use super::*;
@@ -424,7 +507,7 @@ mod tests {
         // And it compiles into this group's list unchanged: the overlap is not
         // quietly dropped on the way in either.
         let p = DumpPatterns::from_metric_config(&cfg).expect("configured");
-        assert!(p.matches(&sell(1.0, Some(ix_hash(DUMP)), 100, 0)));
+        assert!(p.matches(&sell(1.0, Some(ix_hash(DUMP)), 100, 0), None));
     }
 
     /// A dump build pinned to the compute budget its client compiles — the shape the
@@ -439,16 +522,16 @@ mod tests {
         let p = DumpPatterns::from_metric_config(&cfg).expect("configured");
 
         let his = FeeKeys::new(Some(300_000), Some(3_333_333), None);
-        assert!(p.matches(&sell_with(1.0, Some(ix_hash(DUMP)), his)));
+        assert!(p.matches(&sell_with(1.0, Some(ix_hash(DUMP)), his), None));
 
         // Same build, another operator's preset.
         let theirs = FeeKeys::new(Some(200_000), Some(3_333_333), None);
-        assert!(!p.matches(&sell_with(1.0, Some(ix_hash(DUMP)), theirs)));
+        assert!(!p.matches(&sell_with(1.0, Some(ix_hash(DUMP)), theirs), None));
 
         // And a buy is never a dump, however exactly its budget matches.
         let mut buy = sell_with(1.0, Some(ix_hash(DUMP)), his);
         buy.side = Side::Buy;
-        assert!(!p.matches(&buy));
+        assert!(!p.matches(&buy, None));
     }
 
     /// The consequence a list author has to know: every trade older than core
@@ -466,8 +549,8 @@ mod tests {
 
         let old = sell(1.0, Some(ix_hash(DUMP)), 100, 0);
         assert!(old.fee.is_empty(), "a default trade carries no budget");
-        assert!(!pinned.matches(&old));
-        assert!(unpinned.matches(&old));
+        assert!(!pinned.matches(&old, None));
+        assert!(unpinned.matches(&old, None));
     }
 
     /// The metrics move only for a matching budget — the classifier change reaches

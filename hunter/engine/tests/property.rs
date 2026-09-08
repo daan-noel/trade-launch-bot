@@ -201,6 +201,7 @@ fn random_streams_preserve_invariants_and_never_panic() {
                     buy_lamports: if rng.frac() < 0.5 { 1_050_000_000 } else { 9_000_000_000 },
                     sell_lamports: 0,
                     at: ts(now),
+                    creator_stand_in_wallet_hash: None,
                 },
                 2 | 3 => Event::Trade {
                     mint,

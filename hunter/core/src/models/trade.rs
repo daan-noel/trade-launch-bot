@@ -243,6 +243,18 @@ pub trait TradeRow {
     /// Borrowed wallet identity — borrowed so callers never clone unnecessarily.
     fn wallet(&self) -> &Self::Wallet;
     fn tx_signature(&self) -> &str;
+    /// Whether this is a bonding-curve print (`true`) or an AMM one. Defaults to
+    /// `true` for rows that carry no venue: the curve is the universe every
+    /// curve-only reader assumes.
+    fn on_curve(&self) -> bool {
+        true
+    }
+    /// FNV-1a of the wallet address (the engine's `flow_ix::wallet_hash`), when the
+    /// row carries an address or already carries the digest. `None` for a row whose
+    /// wallet is an interned id with no address in reach.
+    fn wallet_hash(&self) -> Option<u64> {
+        None
+    }
 
     // ── Shared GMGN price (single definition: chart == analyzer == live == sweep) ──
 
@@ -360,6 +372,12 @@ impl TradeRow for Trade {
     }
     fn tx_signature(&self) -> &str {
         &self.tx_signature
+    }
+    fn on_curve(&self) -> bool {
+        self.venue != "amm"
+    }
+    fn wallet_hash(&self) -> Option<u64> {
+        Some(hunter_engine::metrics::flow_ix::wallet_hash(&self.wallet_address))
     }
 }
 

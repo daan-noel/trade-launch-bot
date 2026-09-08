@@ -242,6 +242,23 @@ async fn run_loop(
     };
 
     // Run-lifecycle boot reconcile (two bounded queries, no position rows loaded):
+    // The launch-build door: today's map, before the first rule load, so a rule
+    // armed at boot is stamped against the same door a rule armed a minute later is.
+    // A failure here is loud and not fatal - an unstamped door axis fails closed.
+    {
+        let repo = trading_core::storage::repositories::launch_build_repo::LaunchBuildRepo::new(
+            strategy_repo.pool().clone(),
+        );
+        match super::door_refresh::load_today(&repo).await {
+            Ok(stats) => {
+                let _ = reduce(&mut state, Event::LaunchBuildStatsReloaded { stats });
+            }
+            Err(e) => tracing::error!(
+                error = %e,
+                "launch-build door UNLOADED - every `build_prev_day_*` rule fails closed"
+            ),
+        }
+    }
     // finalize runs left open by a deactivation this process never witnessed, and
     // rebuild the set of finished-but-still-draining runs whose metrics need
     // re-rolling. Both precede the first reload so an early straggler is not missed.
@@ -343,6 +360,20 @@ async fn run_loop(
                     for a in acks {
                         let _ = a.send(result.clone());
                     }
+                    EventBatch::none()
+                } else if let EngineCommand::ReloadLaunchBuildStats { ack } = cmd {
+                    let repo =
+                        trading_core::storage::repositories::launch_build_repo::LaunchBuildRepo::new(
+                            strategy_repo.pool().clone(),
+                        );
+                    let result = match super::door_refresh::load_today(&repo).await {
+                        Ok(stats) => {
+                            let _ = reduce(&mut state, Event::LaunchBuildStatsReloaded { stats });
+                            Ok(())
+                        }
+                        Err(e) => Err(e.to_string()),
+                    };
+                    let _ = ack.send(result);
                     EventBatch::none()
                 } else if let EngineCommand::ReseedFromDb { ack } = cmd {
                     let result = reseed_from_db(
@@ -768,7 +799,9 @@ async fn handle_command(
     sink: &mut Sink,
 ) -> EventBatch {
     match cmd {
-        EngineCommand::ReloadRules { .. } | EngineCommand::ReseedFromDb { .. } => {
+        EngineCommand::ReloadRules { .. }
+        | EngineCommand::ReloadLaunchBuildStats { .. }
+        | EngineCommand::ReseedFromDb { .. } => {
             // Handled in `run_loop` — unreachable through this path.
             EventBatch::none()
         }

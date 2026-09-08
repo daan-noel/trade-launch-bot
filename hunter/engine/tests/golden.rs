@@ -976,6 +976,7 @@ fn first_slot_fingerprint_arms_only_after_settlement() {
             buy_lamports: 2_050_000_000,
             sell_lamports: 0,
             at: ts(1.0),
+            creator_stand_in_wallet_hash: None,
         },
     );
     assert_eq!(buys(&fx), vec![(rid(1), BUY)], "arms + enters once settled in-window");
@@ -1004,6 +1005,7 @@ fn first_slot_mismatch_drops_the_arm() {
             buy_lamports: 5_000_000_000,
             sell_lamports: 0,
             at: ts(1.0),
+            creator_stand_in_wallet_hash: None,
         },
     );
     assert!(buys(&fx).is_empty());

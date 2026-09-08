@@ -26,14 +26,16 @@ pub struct TokenInfoRepo {
 /// New-schema metrics columns, in the order [`row_to_info`] consumes them.
 const INFO_COLS: &str = "mint_address, ath_price, ath_timestamp, volume_sol, trade_count, \
     last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, \
-    first_slot_buy_lamports, first_slot_sell_lamports, updated_at";
+    first_slot_buy_lamports, first_slot_sell_lamports, curve_peak_reserve_sol, curve_peak_at, \
+    updated_at";
 
 /// INSERT column list shared by the single-row [`TokenInfoRepo::upsert_metrics`] and
 /// the batched [`TokenInfoRepo::upsert_metrics_many`]. Bind order must match this list;
-/// `updated_at` is the 13th column (fed `now()` / a bound timestamp).
+/// `updated_at` is the 15th column (fed `now()` / a bound timestamp).
 const METRICS_INSERT_COLS: &str = "mint_address, ath_price, ath_timestamp, volume_sol, \
     trade_count, last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, \
-    first_slot_buy_lamports, first_slot_sell_lamports, updated_at";
+    first_slot_buy_lamports, first_slot_sell_lamports, curve_peak_reserve_sol, curve_peak_at, \
+    updated_at";
 
 /// The `ON CONFLICT … DO UPDATE` tail shared by both metric upsert paths, so the
 /// per-column merge rules (ath preserve-on-null, last_trade_at monotonic, is_migrated
@@ -57,6 +59,16 @@ const METRICS_UPSERT_CONFLICT: &str = " ON CONFLICT (mint_address) DO UPDATE \
             lifetime_secs = COALESCE(EXCLUDED.lifetime_secs, tokens_info.lifetime_secs), \
             first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports, \
             first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports, \
+            curve_peak_reserve_sol = CASE \
+                WHEN EXCLUDED.curve_peak_reserve_sol IS NOT NULL \
+                    AND (tokens_info.curve_peak_reserve_sol IS NULL \
+                         OR EXCLUDED.curve_peak_reserve_sol > tokens_info.curve_peak_reserve_sol) \
+                THEN EXCLUDED.curve_peak_reserve_sol ELSE tokens_info.curve_peak_reserve_sol END, \
+            curve_peak_at = CASE \
+                WHEN EXCLUDED.curve_peak_reserve_sol IS NOT NULL \
+                    AND (tokens_info.curve_peak_reserve_sol IS NULL \
+                         OR EXCLUDED.curve_peak_reserve_sol > tokens_info.curve_peak_reserve_sol) \
+                THEN EXCLUDED.curve_peak_at ELSE tokens_info.curve_peak_at END, \
             updated_at = EXCLUDED.updated_at";
 
 type InfoRow = (
@@ -72,6 +84,8 @@ type InfoRow = (
     Option<i64>,             // lifetime_secs (not on the TokenInfo model; read+dropped)
     Option<i64>,             // first_slot_buy_lamports  (lamports; → human SOL on read)
     Option<i64>,             // first_slot_sell_lamports (lamports; → human SOL on read)
+    Option<f64>,             // curve_peak_reserve_sol
+    Option<DateTime<Utc>>,   // curve_peak_at
     DateTime<Utc>,           // updated_at
 );
 
@@ -92,6 +106,8 @@ fn row_to_info(r: InfoRow) -> TokenInfo {
         _lifetime_secs,
         first_slot_buy_lamports,
         first_slot_sell_lamports,
+        curve_peak_reserve_sol,
+        curve_peak_at,
         updated_at,
     ) = r;
     TokenInfo {
@@ -110,6 +126,8 @@ fn row_to_info(r: InfoRow) -> TokenInfo {
         // Lamports (BIGINT) → human SOL f64 on read (mirrors `initial_buy_sol`).
         first_slot_buy_sol: first_slot_buy_lamports.map(lamports_to_sol),
         first_slot_sell_sol: first_slot_sell_lamports.map(lamports_to_sol),
+        curve_peak_reserve_sol,
+        curve_peak_at,
         created_at: updated_at,
         updated_at,
         last_synced_at: None,
@@ -163,6 +181,8 @@ impl TokenInfoRepo {
         lifetime_secs: Option<i64>,
         first_slot_buy_sol: f64,
         first_slot_sell_sol: f64,
+        curve_peak_reserve_sol: Option<f64>,
+        curve_peak_at: Option<DateTime<Utc>>,
     ) -> anyhow::Result<()> {
         // `first_slot_*` do a plain overwrite (not COALESCE-preserve like ath): the
         // value grows monotonically within the open creation-slot window and freezes
@@ -171,7 +191,7 @@ impl TokenInfoRepo {
         // shared with the batched path so the two can't drift.
         sqlx::query(&format!(
             "INSERT INTO tokens_info ({METRICS_INSERT_COLS}) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now()){METRICS_UPSERT_CONFLICT}"
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now()){METRICS_UPSERT_CONFLICT}"
         ))
         .bind(mint)
         .bind(ath_price)
@@ -186,6 +206,8 @@ impl TokenInfoRepo {
         // Human SOL → lamports (BIGINT) on write.
         .bind(sol_to_lamports(first_slot_buy_sol))
         .bind(sol_to_lamports(first_slot_sell_sol))
+        .bind(curve_peak_reserve_sol)
+        .bind(curve_peak_at)
         .execute(&self.pool)
         .await?;
 
@@ -206,7 +228,7 @@ impl TokenInfoRepo {
         if rows.is_empty() {
             return Ok(());
         }
-        // 13 binds/row; a single statement caps at 65535 bind params (the wire
+        // 15 binds/row; a single statement caps at 65535 bind params (the wire
         // protocol's int16 count) and sqlx 0.6 does not guard it, so chunk well under.
         const METRICS_UPSERT_CHUNK: usize = 2000;
         let now = Utc::now();
@@ -227,6 +249,8 @@ impl TokenInfoRepo {
                     // Human SOL → lamports (BIGINT) on write.
                     .push_bind(sol_to_lamports(m.first_slot_buy_sol))
                     .push_bind(sol_to_lamports(m.first_slot_sell_sol))
+                    .push_bind(m.curve_peak_reserve_sol)
+                    .push_bind(m.curve_peak_at)
                     .push_bind(now);
             });
             qb.push(METRICS_UPSERT_CONFLICT);

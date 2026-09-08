@@ -55,6 +55,18 @@ pub struct TokenFingerprint {
     /// axis fails rather than reading an unknown creator as a first-time launcher.
     #[serde(default)]
     pub prior_launches: Option<u32>,
+    /// How many tokens this creation build launched on the previous UTC day.
+    ///
+    /// **Engine-stamped, like `prior_launches`** — `reduce` reads it off the day's
+    /// launch-build stats at `TokenCreated`, before the match runs. `None` when the
+    /// build is not in the stats (or no stats are loaded), which fails a configured
+    /// axis closed: a build nobody has counted never arms.
+    #[serde(default)]
+    pub build_prev_day_launches: Option<u32>,
+    /// Of those, the runner share in basis points — stamped beside
+    /// [`build_prev_day_launches`](Self::build_prev_day_launches).
+    #[serde(default)]
+    pub build_prev_day_runner_bps: Option<u32>,
 }
 
 /// Read a lamports value from a creation instruction-args object. **The one decode

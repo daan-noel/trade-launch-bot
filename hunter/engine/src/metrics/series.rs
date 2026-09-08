@@ -109,6 +109,12 @@ pub struct MetricSeries {
 /// `ensure_window` did — leaves the others unregistered and every one of their columns
 /// reading `NaN`. Mirrors the live engine's split registration in `state.rs`, off the
 /// same registry, so a new dynamic group is routed here the day it is added.
+/// The buyer-set cap a readout series opens an anchored column at. A series has
+/// no rule to derive the cap from, and it draws the count rather than judging a
+/// threshold, so it takes a fixed cap wide enough for any chart: past it the count
+/// reads the cap, which the chart labels as such.
+pub const SERIES_ANCHOR_CAP: u32 = 64;
+
 fn register_window(track: &mut TokenTrack, id: MetricId, ws: super::WindowSpec) {
     match group_of(id).id {
         MetricGroupId::PriceWindow => track.ensure_price_window(ws),
@@ -128,6 +134,12 @@ impl MetricSeries {
                 // Both axes — registering only the primary leaves a slice column NaN.
                 for w in [ws.primary, ws.secondary].into_iter().flatten() {
                     register_window(&mut track, *id, w);
+                }
+                // An anchored column opens its set at the smallest cap that keeps a
+                // readout exact for the thresholds the series is drawn for; the
+                // series reads the count, so it takes a generous fixed cap.
+                if let Some(anchor) = ws.anchor {
+                    track.ensure_crowd_after_age(anchor, SERIES_ANCHOR_CAP);
                 }
             }
         }

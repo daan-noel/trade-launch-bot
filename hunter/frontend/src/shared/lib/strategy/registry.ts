@@ -22,7 +22,7 @@ export type MetricUnit = 'seconds' | 'sol' | 'percent' | 'count';
 
 /** Whether a group's metrics are rule-independent (`static`) or need per-rule
  *  strict params like `window_size_sec` (`dynamic`). */
-export type MetricGroupKind = 'static' | 'dynamic';
+export type MetricGroupKind = 'static' | 'dynamic' | 'anchored';
 
 /** What a group's metric state anchors on. `token` (default) = one value per token;
  *  `position` = anchored on your entry fill, so it only exists while holding —

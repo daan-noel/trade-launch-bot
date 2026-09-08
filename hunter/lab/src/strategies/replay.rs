@@ -166,6 +166,15 @@ pub struct ReplayConfig {
     /// window is empty books `FillFailed` (nothing printed to fill against); an
     /// exit falls back to the last-spot mark, same as an empty undelayed window.
     pub fill_delay_ms: i64,
+    /// The per-UTC-day launch-build stats the two `build_prev_day_*` fingerprint
+    /// axes are stamped from, ascending by day.
+    ///
+    /// The live engine reloads this map once a day, so the replay does too: it folds
+    /// a [`Event::LaunchBuildStatsReloaded`] at each day's 00:00 UTC, BEFORE that
+    /// day's creations. Empty means every door axis fails closed — which is right for
+    /// a fixture and wrong for a door backtest, so the caller that has the stats is
+    /// the one that must fill this.
+    pub launch_build_stats: Arc<[(chrono::NaiveDate, Arc<[hunter_engine::event::LaunchBuildStat]>)]>,
     /// Launch history to prime the `prior_launches` fingerprint axis with, as
     /// `(creator_wallet_hash, launches strictly before the run window)`.
     ///
@@ -186,6 +195,7 @@ impl Default for ReplayConfig {
             duplicate_identity_window_hours: hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS,
             fill_delay_ms: 0,
             creator_launches: Arc::from(Vec::new()),
+            launch_build_stats: Arc::from(Vec::new()),
         }
     }
 }
@@ -210,6 +220,9 @@ struct Queued {
     at: Ts,
     /// Kind rank for a stable tie-break at equal `(at, mint)`:
     /// `TokenCreated` < `FirstSlotSettled` < `Trade` (creation before its trades).
+    /// The day's `LaunchBuildStatsReloaded` carries an EMPTY mint, which sorts before
+    /// every base58 one, so it lands before any creation of that instant — the order
+    /// live has, where the refresh task runs off the decision loop's own queue.
     rank: u8,
     mint: Mint,
     event: Event,
@@ -330,6 +343,17 @@ impl Replay {
     /// Expand every token into its producer events and merge them into one sorted
     /// stream.
     fn load_tokens(&mut self, tokens: Vec<ReplayToken>) {
+        for (day, stats) in self.cfg.launch_build_stats.clone().iter() {
+            let at = day.and_hms_opt(0, 0, 0).expect("midnight exists").and_utc();
+            self.queue.push(Queued {
+                at,
+                rank: 0,
+                mint: Mint::from(""),
+                event: Event::LaunchBuildStatsReloaded { stats: Arc::clone(stats) },
+                sig: None,
+                trade_idx: None,
+            });
+        }
         for t in tokens {
             let mint = Mint::from(t.mint.as_str());
             let trades = &t.trades;
@@ -346,7 +370,7 @@ impl Replay {
             // TokenCreated at the token's creation time (first-slot axes still None).
             self.queue.push(Queued {
                 at: t.created_at,
-                rank: 0,
+                rank: 1,
                 mint: mint.clone(),
                 event: Event::TokenCreated {
                     mint: mint.clone(),
@@ -367,6 +391,11 @@ impl Replay {
                 let mut fs_buy = 0.0;
                 let mut fs_sell = 0.0;
                 let mut settle_at: Option<Ts> = None;
+                // The creator stand-in: the creation slot's first BUY by canonical
+                // intra-slot order, kept only when the create carried NO creator
+                // wallet. Same rule the live cache applies (`TokenState::
+                // creator_stand_in_wallet_hash`), off the same canonical order.
+                let mut first_slot_first_buyer: Option<((u32, u32), u64)> = None;
                 for (trade_idx, ct) in trades.iter().enumerate() {
                     // The settle point is the LAST creation-slot trade, not the first
                     // later-slot one: live resolves off a feed-wide slot watermark
@@ -375,6 +404,10 @@ impl Replay {
                     if ct.slot == creation_slot {
                         if ct.is_buy {
                             fs_buy += ct.amount_sol;
+                            let key = (ct.tx_index, ct.leg_index);
+                            if first_slot_first_buyer.is_none_or(|(k, _)| key < k) {
+                                first_slot_first_buyer = Some((key, ct.flow.wallet_hash));
+                            }
                         } else {
                             fs_sell += ct.amount_sol;
                         }
@@ -383,7 +416,7 @@ impl Replay {
                     // One Trade event per trade.
                     self.queue.push(Queued {
                         at: ct.block_time,
-                        rank: 2,
+                        rank: 3,
                         mint: mint.clone(),
                         event: Event::Trade {
                             mint: mint.clone(),
@@ -403,7 +436,7 @@ impl Replay {
                 let settle_at = settle_at.unwrap_or(t.created_at);
                 self.queue.push(Queued {
                     at: settle_at,
-                    rank: 1,
+                    rank: 2,
                     mint: mint.clone(),
                     event: Event::FirstSlotSettled {
                         mint,
@@ -413,6 +446,11 @@ impl Replay {
                         sell_lamports: fs_sell_known
                             .unwrap_or_else(|| sol_to_lamports(fs_sell)),
                         at: settle_at,
+                        creator_stand_in_wallet_hash: t
+                            .creator_wallet_hash
+                            .is_none()
+                            .then(|| first_slot_first_buyer.map(|(_, h)| h))
+                            .flatten(),
                     },
                     sig: None,
                     trade_idx: None,
@@ -420,7 +458,8 @@ impl Replay {
             }
         }
 
-        // Deterministic global order: time, then mint, then kind rank.
+        // Deterministic global order: time, then mint, then kind rank. The stats
+        // event's empty mint is what puts it first at its instant.
         self.queue.sort_by(|a, b| {
             a.at.cmp(&b.at).then(a.mint.cmp(&b.mint)).then(a.rank.cmp(&b.rank))
         });

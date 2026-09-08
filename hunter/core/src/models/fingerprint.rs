@@ -364,7 +364,9 @@ fn render_bound(v: u128, unit: AxisUnit) -> String {
     match unit {
         AxisUnit::Lamports => sol_label(v),
         AxisUnit::ComputeUnits => format_compact_int(v),
-        AxisUnit::Count | AxisUnit::Labels => v.to_string(),
+        // Basis points render as the integer they are (`800`), not as `8 %`: the chip
+        // is identity, and a rounded percent would collide two distinct predicates.
+        AxisUnit::Count | AxisUnit::Bps | AxisUnit::Labels => v.to_string(),
     }
 }
 

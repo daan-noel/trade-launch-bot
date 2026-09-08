@@ -134,8 +134,8 @@ fn parse_amount(s: &str, unit: AxisUnit) -> Option<u128> {
     let t = s.trim();
     match unit {
         AxisUnit::Lamports => sol_text_to_lamports(t),
-        // A tally or a compute-unit setting is typed as the integer it is.
-        AxisUnit::Count | AxisUnit::ComputeUnits => {
+        // A tally, a compute-unit setting or a bps share is typed as the integer it is.
+        AxisUnit::Count | AxisUnit::ComputeUnits | AxisUnit::Bps => {
             if t.is_empty() || !t.bytes().all(|b| b.is_ascii_digit()) {
                 return None;
             }

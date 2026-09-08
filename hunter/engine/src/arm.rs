@@ -362,6 +362,12 @@ pub struct CompiledRule {
     /// Separate from [`flow_windows`](Self::flow_windows) because the crowd deque
     /// carries the WALLET column and nothing else needs it.
     pub crowd_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
+    /// Distinct `m_crowd_after_age` anchors this rule reads, each with the set cap
+    /// its conditions need — drive
+    /// [`TokenTrack::ensure_crowd_after_age`](crate::metrics::track::TokenTrack::ensure_crowd_after_age).
+    /// The cap is one above the largest value any condition on `non_creator_buyers`
+    /// names under that anchor, so every operator stays exact at the cap.
+    pub crowd_anchors: SmallVec<[(crate::metrics::crowd_after_age::AgeAnchor, u32); 1]>,
     /// Distinct `m_price_window` spans — drive
     /// [`TokenTrack::ensure_price_window`](crate::metrics::track::TokenTrack::ensure_price_window).
     pub price_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
@@ -495,6 +501,8 @@ impl CompiledRule {
         let mut ix_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut dump_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut copy_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
+        let mut crowd_anchors: SmallVec<[(crate::metrics::crowd_after_age::AgeAnchor, u32); 1]> =
+            SmallVec::new();
         let mut needs_slot = false;
         let stage_reqs = scale_out.iter().flat_map(|s| s.reqs.iter());
         for r in leftover_reqs
@@ -517,6 +525,13 @@ impl CompiledRule {
             for w in [r.window.primary, r.window.secondary].into_iter().flatten() {
                 if !bucket.contains(&w) {
                     bucket.push(w);
+                }
+            }
+            if let Some(anchor) = r.window.anchor {
+                let cap = anchor_cap(r);
+                match crowd_anchors.iter_mut().find(|(a, _)| *a == anchor) {
+                    Some((_, c)) => *c = (*c).max(cap),
+                    None => crowd_anchors.push((anchor, cap)),
                 }
             }
             needs_slot |= r.window.needs_slot();
@@ -591,6 +606,7 @@ impl CompiledRule {
             scale_out,
             flow_windows,
             crowd_windows,
+            crowd_anchors,
             price_windows,
             ix_windows,
             dump_windows,
@@ -959,6 +975,24 @@ fn clauses_first_fired(
     None
 }
 
+/// How many wallets an anchored buyer set must hold for one requirement's
+/// conditions to stay exact: one above the largest value it names on the count
+/// metric (`>= 2` needs 3, `<= 5` needs 6, `= 3` needs 4), and at least one. The
+/// arrival flag names no count, so a requirement on it alone asks for a set of one.
+fn anchor_cap(r: &MetricReq) -> u32 {
+    let mut cap = 1.0_f64;
+    if r.metric == MetricId::NonCreatorBuyers {
+        for arm in &r.conds {
+            for c in arm {
+                if c.value.is_finite() {
+                    cap = cap.max(c.value.ceil() + 1.0);
+                }
+            }
+        }
+    }
+    cap.clamp(1.0, f64::from(u32::MAX)) as u32
+}
+
 /// `m_position.arm_above_pct` from the authored exit, first clause that names it.
 fn extract_trail_arm_pct(exit: &crate::rule_params::ExitSide) -> Option<f64> {
     for side in exit.clauses() {
@@ -1000,6 +1034,7 @@ fn build_reqs(
     let mut out = Vec::new();
     for (group_id, instances) in &side.0 {
         let is_dynamic = group_spec(*group_id).kind == MetricKind::Dynamic;
+        let is_anchored = group_spec(*group_id).kind == MetricKind::Anchored;
         let position_scoped = group_spec(*group_id).scope == MetricScope::Position;
         // One instance per window (static groups carry exactly one, window-less).
         for group in instances {
@@ -1020,6 +1055,16 @@ fn build_reqs(
             let slice = is_dynamic
                 .then(|| group.window_spec(&crate::metrics::flow_slice::SLICE_AXIS))
                 .flatten();
+            // An anchored group's read scope is its age anchor — validated present
+            // at save and at load, so an absent one here is a static read that
+            // finds no set and reads NaN (never a silent default of 0).
+            let anchor = is_anchored
+                .then(|| {
+                    group
+                        .strict_param(crate::metrics::crowd_after_age::AFTER_AGE_PARAM)
+                        .map(crate::metrics::crowd_after_age::AgeAnchor::secs)
+                })
+                .flatten();
             // Attached below to this instance's trailing metrics only.
             let arm_above = group.strict_param("arm_above_pct");
             for (metric_id, conds) in &group.metrics {
@@ -1028,6 +1073,7 @@ fn build_reqs(
                     window: Windows {
                         primary,
                         secondary: is_two_window(*metric_id).then_some(slice).flatten(),
+                        anchor,
                     },
                     fingerprint: is_fingerprint_scoped(*metric_id).then_some(fingerprint_id),
                     tolerance: metric_spec(*metric_id).eq_tolerance,
