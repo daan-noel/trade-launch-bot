@@ -20,7 +20,7 @@ rule now lives).
 | [Refuted search lines, 07 -> 09](2026-09-03-refuted-lines-ledger.md) | The whole pre-2026-09-03 search program in one table: signal rounds 2-11, every wallet clone, the token/crew/fingerprint screens, the island and 6ix lines - what each concluded, and the nine laws that survive |
 
 The methodology that replaced it:
-[market-model-and-workflow.md](../plans/strategies/market-model-and-workflow.md).
+[_!___strategy.md](../plans/strategies/_!___strategy.md).
 
 ## Incidents and RCAs
 

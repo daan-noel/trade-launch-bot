@@ -2,7 +2,7 @@
 //! and a datetime range. Sibling of grouped sweep / flow discovery / metric
 //! discovery, not a sweep mode.
 //!
-//! Method: `hunter/docs/plans/strategies/market-model-and-workflow.md`.
+//! Method: `hunter/docs/plans/strategies/_!___strategy.md`.
 //! Job wiring: `hunter/docs/arch/sweep.md` ("Rule search").
 
 pub mod cuts;

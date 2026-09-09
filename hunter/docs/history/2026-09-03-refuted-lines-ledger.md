@@ -7,7 +7,7 @@ program ran on one honest basis and 32 of 32 entry gates were negative in both h
 the program's own verdict on itself.
 
 The methodology that replaced it is
-[market-model-and-workflow.md](../plans/strategies/market-model-and-workflow.md). Read
+[_!___strategy.md](../plans/strategies/_!___strategy.md). Read
 this ledger for **what has already been tried**, never as a starting point: a refuted
 hypothesis about a trader closes the hypothesis, never the trader.
 
@@ -21,15 +21,15 @@ The only durable products of the whole program. Each is a law, not a result:
 
 | Law | Now lives in |
 | --- | --- |
-| On a curve `price = vsol^2/k`, so windowed flow **is** the price move (corr 0.98) | [curve-flow-is-price.md](../plans/strategies/curve-flow-is-price.md) |
-| Both legs pay the fill lag; a stop or trail is adversely selected at its own fill | [edge-at-real-latency.md](../plans/strategies/edge-at-real-latency.md) |
+| On a curve `price = vsol^2/k`, so windowed flow **is** the price move (corr 0.98) | [_!___strategy.md](../plans/strategies/_!___strategy.md) 7.1 |
+| Both legs pay the fill lag; a stop or trail is adversely selected at its own fill | [_!___strategy.md](../plans/strategies/_!___strategy.md) 7.2 |
 | Impact is charged on the priced reserve `vsol`, never the real one | [execution-costs.md](../plans/strategies/execution-costs.md), `CLAUDE.md` |
 | A fill is the LAST print at or before the deadline, never the first | `paper_fill.rs`, [fill-and-cost-models.md](../plans/strategies/fill-and-cost-models.md) |
-| Silence freezes a price: a no-print hold exits at entry, not -100% | [curve-honest-pricing.md](../plans/strategies/curve-honest-pricing.md) |
-| Rank on total net SOL; mean, median and win rate are description | [market-model-and-workflow.md](../plans/strategies/market-model-and-workflow.md) T10 |
-| Never build a factor on wallet identity — the durable axis is ix structure | [market-model-and-workflow.md](../plans/strategies/market-model-and-workflow.md) T5 |
-| A derivation's candidate table is not a universe | [market-model-and-workflow.md](../plans/strategies/market-model-and-workflow.md) T10 |
-| Position inside a slot is a tip auction, not a latency parameter | [market-model-and-workflow.md](../plans/strategies/market-model-and-workflow.md) §A |
+| Silence freezes a price: a no-print hold exits at entry, not -100% | [_!___strategy.md](../plans/strategies/_!___strategy.md) 7.1 |
+| Rank on total net SOL; mean, median and win rate are description | [_!___strategy.md](../plans/strategies/_!___strategy.md) 7.5 |
+| Never build a factor on wallet identity — the durable axis is ix structure | [_!___strategy.md](../plans/strategies/_!___strategy.md) T5 |
+| A derivation's candidate table is not a universe | [_!___strategy.md](../plans/strategies/_!___strategy.md) 7.5 |
+| Position inside a slot is a tip auction, not a latency parameter | [_!___strategy.md](../plans/strategies/_!___strategy.md) 2.3 |
 
 ## The one live consequence
 

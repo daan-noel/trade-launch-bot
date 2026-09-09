@@ -9,7 +9,7 @@
 > Motivation: a fixed TP costs
 > −10..−18%/event because it caps the tail that carries all EV, while a pure trailing
 > stop gives back 25-30% of every winner. The book shape that follows is negative median
-> with a paying tail ([market-model-and-workflow.md](market-model-and-workflow.md) T8).
+> with a paying tail ([_!___strategy.md](_!___strategy.md) 6, the two exit laws).
 > Before this landed, every exit in `reduce.rs` closed 100%.
 
 ## Design principles (why the shape is what it is)

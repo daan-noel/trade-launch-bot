@@ -28,7 +28,7 @@ interface RankedPnlBarsProps {
  * Values ranked best → worst as horizontal CSS bars (no charting dep — a
  * bar-per-category chart doesn't fit `lightweight-charts`' time-indexed series
  * model). Ranked on realized money, not win rate: see
- * `docs/plans/strategies/wallet-analysis.md` on why a hit-rate ranking can
+ * `hunter/docs/plans/strategies/_!___strategy.md` 6.5 on why a hit-rate ranking can
  * surface the worst-expectancy cohort at the best hit rate.
  */
 export const RankedPnlBars = memo(function RankedPnlBars({

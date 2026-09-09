@@ -39,7 +39,7 @@ exit-condition traps that are invisible from the rule JSON — the unarmed `retr
 and the `stall` hold-cap — in
 [`plans/strategies/armed-trailing-stop.md`](../plans/strategies/armed-trailing-stop.md);
 the actor-model workflow that governs new rules in
-[`plans/strategies/market-model-and-workflow.md`](../plans/strategies/market-model-and-workflow.md);
+[`plans/strategies/_!___strategy.md`](../plans/strategies/_!___strategy.md);
 broader redesign history in [`docs/roadmap/`](../roadmap/).
 
 ## The pure engine — `hunter/engine` (crate `hunter-engine`)
@@ -453,7 +453,7 @@ alone, so a newly bound fingerprint takes the backend defaults.
 `POST /api/strategies/rule-search` fills registry roles for one fingerprint and
 datetime range and boards a champion `RuleParams` (Promote → inactive paper).
 Governing workflow:
-[`market-model-and-workflow.md`](../plans/strategies/market-model-and-workflow.md).
+[`_!___strategy.md`](../plans/strategies/_!___strategy.md).
 
 ## Two-phase first-slot fingerprint gate
 

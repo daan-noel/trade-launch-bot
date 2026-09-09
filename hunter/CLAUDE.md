@@ -40,16 +40,20 @@ Read before trusting any backtest number:
 [fill-and-cost-models.md](docs/plans/strategies/fill-and-cost-models.md). Open work lives in
 [`docs/roadmap/`](docs/roadmap/), never in `docs/plans/`.
 
-**Searching for a new trading rule? Start at
-[market-model-and-workflow.md](docs/plans/strategies/market-model-and-workflow.md)** —
-actor model first (Phases 1-2), then hypothesis-as-story (Phase 4), then honest money.
-Physics and honesty laws there govern every phase; feature enumeration without a story
-is forbidden.
+**Searching for a new trading rule? Three files, in this order.**
+[_!___strategy.md](docs/plans/strategies/_!___strategy.md) is the basis - one equation,
+what price does and does not contain, the seat, what is open and what is closed.
+[_!___workflow.md](docs/plans/strategies/_!___workflow.md) is the method - the six-slot
+coordinate, the eight-phase loop, the three gates and the campaign queue; follow it in
+order and record every result as a coordinate.
+[_!___evidence.md](docs/plans/strategies/_!___evidence.md) is every standing measurement.
+**Money on the whole conjunction is the only score, judged against the cell's own
+break-even, under both exit families.** A red number closes a sentence, never a slot.
 
-**Studying a wallet?** Read
-[trader-study-contract.md](docs/plans/strategies/trader-study-contract.md) first:
-thermometer only (Phase 3), completing print, leftover. Do not clone the wallet; the
-rule is always about the actor's decision, never about the trader.
+**Studying a wallet?** The instrument set is the 26 solo traders, node by node
+([solo-traders.md](docs/plans/strategies/solo-traders.md)). A trader names a decision; he
+is never cloned, his coins are never a gate, and his own prints stay out of the pool. "His
+fill is unreachable" is not "his decision is unreachable".
 
 ## Commands
 
@@ -103,7 +107,7 @@ Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
   impact term is applied to the wrong number. The one exception is a REAL fill
   (`exec_real`): that is our own transaction and its execution price is what we actually
   paid. **Never mix the two series.** Offline derivation follows the honesty laws in
-  [market-model-and-workflow.md](docs/plans/strategies/market-model-and-workflow.md).
+  [_!___strategy.md](docs/plans/strategies/_!___strategy.md).
 - **Price impact is charged on the PRICED reserve (`vsol`), never the real one.**
   `TradeLite::priced_reserve_sol` is the denominator; `reserve_sol` is `vsol - 30` on the
   curve because `liquidity` and the deadness verdict mean real deposited SOL. Charging

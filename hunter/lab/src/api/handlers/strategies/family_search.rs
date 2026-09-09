@@ -10,7 +10,7 @@
 //! it) while the fit siblings iterate one at a time. Six concurrent corpora is how a
 //! run OOMs.
 //!
-//! Charter: `hunter/docs/roadmap/family-search.md`.
+//! Charter: `hunter/docs/arch/sweep.md`.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;

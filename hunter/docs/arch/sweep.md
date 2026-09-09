@@ -456,7 +456,7 @@ a datetime range. Sibling of grouped sweep / flow discovery / metric discovery â
 a sweep mode. The form does not expose metrics, windows, or thresholds; those come
 from this range's cuts and the registry. An incumbent rule is compare-only (never a
 seed). Governing workflow:
-[market-model-and-workflow.md](../plans/strategies/market-model-and-workflow.md).
+[_!___strategy.md](../plans/strategies/_!___strategy.md).
 
 | File | Role |
 | --- | --- |

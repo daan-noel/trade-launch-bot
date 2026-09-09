@@ -216,7 +216,7 @@ on (a wallet-feed buy of size on a young token), the fill that counts is behind 
 - the slot's end state - not behind the trigger: a fill at `d = 0..2` rides the swarm's
 own impact, and the responded picks of two such bots swing from +7.6 % at the density
 seat to +0.7 % behind their own print
-([attention-arrival-node.md](attention-arrival-node.md)).
+([_!___evidence.md](_!___evidence.md) 5.5).
 
 **Fallback and scope.** When the window holds no candidate that late it degrades to
 `worst_case`, exactly as the `next_slot_*` pair does, so eligibility stays identical.

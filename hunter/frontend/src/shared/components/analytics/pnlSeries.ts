@@ -479,7 +479,7 @@ export interface RankedBarRow {
 
 /** Rows sorted by `value`, best first. Ranking on realized money, not win rate:
  *  a hit-rate ranking can surface the worst-expectancy cohort at the best hit
- *  rate (see `docs/plans/strategies/wallet-analysis.md`). */
+ *  rate (see `hunter/docs/plans/strategies/_!___strategy.md` 6.5). */
 export function rankByValue(rows: readonly RankedBarRow[]): RankedBarRow[] {
   return [...rows].sort((a, b) => b.value - a.value);
 }

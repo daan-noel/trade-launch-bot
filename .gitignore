@@ -128,5 +128,8 @@ __pycache__/
 # --- Root-only scratch (API dumps, one-off fetch scripts) ---
 # Do NOT blanket-ignore *.py / *.json — that hides tracked fixtures, IDLs,
 # and plan twins. Root JSON dumps are already covered by /*.json above.
-/*.py
-/*.txt
+*.py
+*.pyc
+*.txt
+*.json
+*.csv

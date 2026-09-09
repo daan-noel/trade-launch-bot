@@ -1,6 +1,6 @@
 # Launch-door rule: shipping rule v2 in the engine
 
-The rule in [machine-census.md](../plans/strategies/machine-census.md) sections 7-8
+The rule in [the evidence ledger](../plans/strategies/_!___evidence.md) 3.1 and 4.5
 (door = launch build whose recent tokens keep running, event = the second independent
 buyer after the launch scramble, permission = the creator has not sold, exit = armed
 trail 10 / 20 / 1200) needs **two** additions before it is authorable in the ONE kernel:

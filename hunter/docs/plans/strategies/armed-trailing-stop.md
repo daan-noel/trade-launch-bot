@@ -4,7 +4,7 @@ Deep-dive reference for the `m_position` strict param: what it
 does, why the exit grammar needed it, and the measurement that justified it.
 Overview of the group lives in [../../arch/strategies.md](../../arch/strategies.md);
 the honesty laws that grade any exit shape sit in
-[edge-at-real-latency.md](edge-at-real-latency.md).
+[_!___strategy.md](_!___strategy.md) 7.2.
 
 ## The problem
 

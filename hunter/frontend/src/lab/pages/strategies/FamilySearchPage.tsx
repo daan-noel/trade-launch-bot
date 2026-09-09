@@ -190,7 +190,7 @@ const TIPS = {
  * reported level from the held-out target cohort. The page ends where the operator
  * needs it to: Promote the draft to an inactive paper rule, or Simulate it unsaved.
  *
- * Charter: `hunter/docs/roadmap/family-search.md`. Job: `hunter/docs/arch/sweep.md`.
+ * Charter and job: `hunter/docs/arch/sweep.md`.
  */
 export function FamilySearchPage() {
   const [stored, setConfig] = useLocalStorage<Config>(STORAGE_KEYS.familySearchConfig, DEFAULTS);

@@ -201,7 +201,7 @@ bad_a=$(git grep -nIE --color=never -e '\]\([^)]+\.md' -- $scope_md 2>/dev/null 
 add_refs "$bad_a"
 
 # 2b. .md paths cited from code comments, resolved by basename anywhere in the repo.
-bad_b=$(git grep -nIE --color=never -e '[A-Za-z0-9_@./-]+\.md' -- $scope_src 2>/dev/null \
+bad_b=$(git grep -nIE --color=never -e '[A-Za-z0-9_@!./-]+\.md' -- $scope_src 2>/dev/null \
     | awk "$awk_parse"'
         { parse() }
         f ~ /\.(rs|ts|tsx)$/ && f !~ /(^|\/)(node_modules|dist)\// && f !~ /(^|\/)target/' \
@@ -213,7 +213,7 @@ bad_b=$(git grep -nIE --color=never -e '[A-Za-z0-9_@./-]+\.md' -- $scope_src 2>/
         }
         {
             parse()
-            while (match(s, /[A-Za-z0-9_@.\/-]+\.md/)) {
+            while (match(s, /[A-Za-z0-9_@!.\/-]+\.md/)) {
                 t = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
                 if (t ~ /\/\//) continue                    # URLs
                 b = t; sub(/^.*\//, "", b)
@@ -234,7 +234,7 @@ add_refs "$bad_b"
 #     roadmap that couldn't name the file it wants written would be useless).
 #
 #     Per-line exemptions are `$citation_prose`, shared with 2a/2b.
-bad_c=$(git grep -nIE --color=never -e '[A-Za-z0-9_@./-]+\.(rs|ts|tsx)' -- $scope_md 2>/dev/null \
+bad_c=$(git grep -nIE --color=never -e '[A-Za-z0-9_@!./-]+\.(rs|ts|tsx)' -- $scope_md 2>/dev/null \
     | awk "$awk_parse"'
         { parse() }
         f ~ /\.md$/ && f !~ /docs\/(history|roadmap)\// &&
@@ -244,7 +244,7 @@ bad_c=$(git grep -nIE --color=never -e '[A-Za-z0-9_@./-]+\.(rs|ts|tsx)' -- $scop
         BEGIN { while ((getline b < bf) > 0) bases[b] }
         {
             parse()
-            while (match(s, /[A-Za-z0-9_@.\/-]+\.(rs|ts|tsx)/)) {
+            while (match(s, /[A-Za-z0-9_@!.\/-]+\.(rs|ts|tsx)/)) {
                 t = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
                 if (t ~ /\/\// || t ~ /\*/) continue         # URLs, globs
                 if (t ~ /\.d\.ts$/) continue                # ambient type decls

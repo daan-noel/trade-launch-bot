@@ -435,7 +435,7 @@ that token, and the creator rule adds an identity term. Leaving them on does not
 *tighten* such a gate - it measures a different thing, and the fire set stops matching
 the one the rule was derived on. Wallet-keyed rules are also forbidden as the axis of a
 wallet-free derivation (actor identity lives in machinery, never the wallet —
-[market-model-and-workflow.md](market-model-and-workflow.md) T5).
+[_!___strategy.md](_!___strategy.md) T5).
 
 ### The editor is generated from the registry
 
