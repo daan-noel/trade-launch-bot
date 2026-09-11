@@ -2,7 +2,8 @@
 
   grain      the LAST leg of each (mint, slot, tx_index), as the study tape's source keeps it;
              --all-legs keeps every leg in leg order (the grain a live engine meets)
-  t_ms       block_time (us) / 1000, rounded
+  t_ms       block_time (us) / 1000, rounded; t_us the block_time itself (the engine's clock)
+  vtok       virtual token reserve after the print (spot = vsol / vtok, the engine's price)
   reserve    vsol after the print, in lamports; curve rows only, rows with no vsol dropped
   side       1 buy / -1 sell
   build      build_core: md5 of the ix_labels joined by "|", after dropping
@@ -32,7 +33,7 @@ import pyarrow.parquet as pq
 
 from .paths import DATA, LAKE
 
-COLS = ["mint", "is_buy", "sol_amount", "slot", "block_time", "leg_index", "vsol", "tx_index",
+COLS = ["mint", "is_buy", "sol_amount", "slot", "block_time", "leg_index", "vsol", "vtok", "tx_index",
         "ix_labels", "wallet", "venue"]
 
 
@@ -61,6 +62,8 @@ def day_frame(day: str, all_legs: bool = False) -> pd.DataFrame:
         "mint": d.mint.values, "slot": d.slot.values, "tx_index": d.tx_index.values,
         "leg_index": d.leg_index.values,
         "t_ms": ((d.block_time.values + 500) // 1000).astype(np.int64),
+        "t_us": d.block_time.values.astype(np.int64),
+        "vtok": d.vtok.values.astype(np.float64),
         "reserve_lamports": np.round(d.vsol.values * 1e9).astype(np.int64),
         "amount_lamports": np.round(d.sol_amount.values * 1e9).astype(np.int64),
         "side": np.where(d.is_buy.values, 1, -1).astype(np.int16),

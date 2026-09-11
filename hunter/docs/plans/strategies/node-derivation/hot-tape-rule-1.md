@@ -4,75 +4,62 @@ The working file for the hot-tape node, the first node derived end to end by
 [method.md](method.md). It holds the sentence that pays (section 1), the chain of measurements
 that produced it, dead ends included (section 2), what every member of the node does (section 3),
 and where the data and code are (section 4). Numbers: [_!___evidence.md](../_!___evidence.md)
-1.4-1.20 and 6.10. Code: [toolkit/](toolkit/README.md) and the step-numbered scripts in
+1.4-1.22 and 6.10. Code: [toolkit/](toolkit/README.md) and the step-numbered scripts in
 [hot-tape/](hot-tape/README.md).
 
 Tapes: the **study tape** is 08-30 17:48 to 09-06 12:00 UTC (12.47 M prints, 6.76 days); every
 threshold below is read off it. The **holdout tape** is the lake's days after it, 09-06 12:00 to
-09-10 (4.50 days), in the study tape's exact format (`toolkit/lake_export.py`).
+09-10 (4.50 days), in the study tape's exact format (`toolkit/lake_export.py`). Section 1's rule is
+read at the engine's grain instead: `study_exact` (lake 09-01 to 09-06 12:00, 5.5 days) and
+`holdout_exact` (09-06 12:00 to 09-10), every leg, the engine's clock and spot (evidence 1.22).
 
 ---
 
 ## 1. Rule 1
 
+Every term is spelled the way the engine computes it (evidence 1.22); every wallet and every leg
+of a transaction counts.
+
 ```
-E  a public sell >= 1 SOL, from a seller who bought this coin <= 30 s ago, landing while
-   >= 15 distinct recipes (build_core) printed on the coin in the last 5 s and the coin
-   made a new high <= 20 s ago; age >= 60 s
-P  age >= 158 s, >= 368 public wallets holding the coin, and the reserve after the sell
-   <= 100 SOL (the take profit fits well under the graduation wall)
-X  take profit +15 %, stop -40 %, clock 90 s; each branch trips on a print, fill 115 ms later
+E  a sell >= 1 SOL (this leg), from a wallet whose last buy of this coin is <= 30 s old, while
+   >= 15 distinct recipes (build_core) printed on the coin in the 5 s up to and including it,
+   and the coin's spot made a new high <= 20 s ago
+P  age >= 158 s, >= 368 distinct wallets other than the creator have bought the coin, and the
+   reserve after the sell <= 100 SOL (liquidity <= 70; the take profit fits under the wall)
+X  take profit +20 %, stop -60 % (a catastrophe guard), clock 90 s on the 200 ms tick
 D  none
-R  one position per coin at a time; re-entry allowed after the exit
-S  flat 0.35 SOL (0.2 booked below; 0.5 is the upper bound, see the clip table)
-seat  both legs fill at the last print landed 115 ms after the decision print
+R  one position per coin at a time; re-entry after the exit fill
+S  flat 0.35 SOL (0.2 booked below)
+seat  both legs fill at the last print of either side landed 115 ms after the decision print, in
+      its slot or the next observed one (the engine's LagMs exit rule; its entry leg needs the fix)
 ```
 
 Plain words: a flipper takes profit into a buying frenzy on an established coin that is not near
-graduation; buy the flipper's sell, take +15 %.
+graduation; buy the flipper's sell, take +20 %.
 
 ### The book
 
-| | study tape | holdout (unseen) | ship bar |
+| at 0.2 SOL, 115 ms | study, every leg | holdout, every leg (unseen) | ship bar |
 | --- | ---: | ---: | ---: |
-| tickets a day | 109 | 96 | - |
-| %/trade | +4.39 % | **+3.44 %** | - |
-| SOL, whole tape | +6.49 | +2.98 | - |
-| SOL a day at 0.2 / 0.35 SOL | 0.96 / 1.58 | 0.66 / 1.07 | - |
-| days positive | 7/7 | **5/5** | >= 5/7 |
-| worst day | +0.38 SOL | +0.32 SOL | - |
-| halves of the days | +4.08 % / +4.86 % | +3.27 % / +3.66 % | both > 0 |
-| body (net without the top 1 %) | +5.86 SOL | +2.59 SOL | > 0 |
-| top 1 % share of net | **9.8 %** | **13.1 %** | <= 15 % |
-| biggest coin's share | 3.4 % | 6.1 % | <= 15 % |
-| exits on the graduation print | 2 | 0 | - |
-| stop-outs | 8.9 % | 7.6 % | - |
-| win rate | 74.3 % | 69.5 % | - |
+| tickets a day | 109.8 | 100.0 | - |
+| %/trade | +4.51 % | **+4.44 %** | - |
+| SOL a day at 0.2 / 0.35 SOL | 0.99 / 1.63 | 0.89 / 1.46 | - |
+| days positive, worst day | 6/6, +0.00 | **5/5**, +0.48 | >= 5/7 |
+| halves of the days | +3.91 % / +6.01 % | +4.46 % / +4.41 % | both > 0 |
+| top 1 % share, biggest coin | 12.8 %, 5.0 % | **9.8 %**, 5.0 % | <= 15 % |
+| 95 % interval, resampling coins | +2.46..+6.34 % | +2.19..+6.58 % | - |
+| 200 / 300 / 500 ms, both legs | +4.12 / +3.78 / +3.52 % | +3.69 / +3.34 / +2.76 % | - |
+| stops, clock exits, take profits | 3.8 % stops | 14 / 166 / 270 tickets | - |
 
-Every ship bar passes on both tapes. Every change is chosen on the study tape and booked once on
-the holdout (1.20); the holdout has been read many times, so the days after 09-10 are the clean
-test.
+The last-leg tapes agree: +4.26 % 7/7 (08-30..09-05) and +4.99 % 5/5 (evidence 1.22).
 
 ### The engine's target
 
-The book above leaves the node's six wallets out of every count ("public"). A live engine cannot:
-leaving them out needs their addresses, and wallet identity is never a term. It also meets every
-leg of a transaction, where the tapes keep only the last leg. The engine reproduces this book
-instead: every wallet counted, every leg, the same seat (`hot-tape/r1_replay.py`, evidence 1.21).
-
-| at 0.2 SOL | study, every wallet | holdout, every wallet | holdout, every wallet, every leg |
-| --- | ---: | ---: | ---: |
-| tickets a day | 116.5 | 101.6 | 103.4 |
-| %/trade | +3.55 % | +3.65 % | **+3.26 %** |
-| SOL, whole tape | +5.58 | +3.34 | +3.03 |
-| days positive, worst day | 7/7, +0.32 | 5/5, +0.35 | 5/5, +0.28 |
-| top 1 % share, biggest coin | 12.7 %, 4.3 % | 14.1 %, 5.4 % | 15.5 %, 6.0 % |
-| 95 % interval, resampling coins | +2.05..+4.97 % | +1.92..+5.37 % | +1.52..+5.01 % |
-| %/trade at a 200 / 300 / 500 ms fill | +3.31 / +2.91 / +2.31 % | +3.04 / +2.46 / +2.47 % | +2.68 / +2.16 / +2.18 % |
-| %/trade at 0.35 SOL | +3.27 % | +3.38 % | +2.99 % |
-
-Paper and the engine are judged against the last column on the holdout days, and against the
-same replay on every day after 09-10.
+`node-derivation/data/r1_ref_{holdout_exact,study_exact}.parquet`: per ticket the trigger, entry-fill
+and exit prints by slot, transaction, leg and time, the reason, and the SOL under the engine kernel.
+The engine reproduces these tickets one for one before paper, and the same code books every day
+after 09-10 (the clean test). The replay is `hot-tape/r1_exact.py`; `hot-tape/r1_exact_check.py`
+rebuilds its tickets with code that shares nothing with it.
 
 ### Each slot, in one line
 
@@ -80,9 +67,9 @@ same replay on every day after 09-10.
 | --- | --- | --- |
 | E, the trigger | 8fStGV buys 25-200 ms after a public SELL >= 1 SOL (excess intensity, lift 8.1) | 1.12 |
 | E, the terms | the sells it buys against those it ignores on the same coin; then re-read off money on rule 1's own pool, where the 2 s buy term drops out | 1.12, 1.20 |
-| P, established | the stop-outs are young, thin coins; each fold picks holders 368 / 369, age 123 / 193 s | 1.14, 1.20 |
+| P, established | the stop-outs are young, thin coins; each fold picks 368 / 369 on a count that turns out to be distinct buyers, age 123 / 193 s | 1.14, 1.20, 1.22 |
 | P, room under the wall | a take profit that needs the graduation print is not priceable; a safety term, not a fit | 1.20 |
-| X | its closing hazard on rule 1's pool (sells hard at +15..+20 %); then one axis at a time by money: the stop widens to -40 %, the clock stays 90 s | 1.13, 1.17, 1.20 |
+| X | its closing hazard on rule 1's pool (sells hard at +15..+20 %); then one axis at a time by money, finally at the engine's grain and fill: +20 %, the stop inert past -60 %, the clock 90 s | 1.13, 1.17, 1.20, 1.22 |
 
 ---
 
@@ -166,6 +153,9 @@ again. The step numbers are the scripts' own; the method phase is [method.md](me
 | G7 | Size? | A share of the reserve books as a flat clip of the same median on the study tape; 0.35 SOL flat keeps every bar on both tapes, 0.5 SOL passes all but the holdout tail (15.5 %) | S: flat 0.35 SOL | `r1u_size.py` | 1.20 |
 | G8 | Does each change hold out of sample, on its own? | See 1.20's table: 2.66 -> 3.02 -> 2.39 -> 2.98 SOL on the holdout, 5/5 at every kept step | The updated rule 1 of section 1 | `r1u_holdout.py` | 1.20 |
 | G9 | Does it hold the way an engine meets the tape? | A print-by-print replay sharing no code with G1 reproduces the G8 tickets one for one (739 / 433, same exits, same SOL); counting every wallet and every leg it books +3.26 % 5/5 on the holdout, positive at a 500 ms fill | The engine's target of section 1; rule 1 unchanged | `r1_replay.py` | 1.21 |
+| G10 | Does each term mean what its name says? | Checked against the lake's exact fields: the holder book is float dust (647 against 96 real holders); the count it makes is distinct buyers | P spells distinct buyers, creator excluded | `r1_terms_audit.py` | 1.21, 1.22 |
+| G11 | What does the engine compute differently? | Recipes counted with the print, raw time, the 200 ms clock, the engine's fills: at the old thresholds the every-leg holdout reads +2.52 %, top 1 % 20.1 %; the buy-only entry fill is the cost, and it prices 29 % of entries at a print our buy cannot meet | The seat takes the exit leg's rule on both legs | `r1_exact.py audit` | 1.22 |
+| G12 | Re-derived at the engine's grain and fill | Every-leg study, keep rule with the chance floor and bars: entry kept, exit +20 % / -60 % / 90 s; +4.44 % 5/5 on the every-leg holdout, top 1 % 9.8 %; a second code rebuilds every ticket | The rule of section 1 | `r1_exact.py derive/confirm`, `r1_exact_check.py` | 1.22 |
 
 ### 2.9 What the chain teaches
 
@@ -186,6 +176,10 @@ again. The step numbers are the scripts' own; the method phase is [method.md](me
 - **Hand the engine a number it can reproduce.** A study that leaves the members out, or keeps one
   leg per transaction, books a sentence no engine can run; replay it print by print with every
   wallet and every leg before any engine work (G9).
+- **Check every term against an exact field, not a second code.** Two replays sharing the
+  bag-from-reserve idea agreed on a holder count that was float dust (G10).
+- **Derive at the grain and fill the engine runs.** The last-leg tape and the buy-only entry fill
+  each moved the answer; only the every-leg study under the corrected fill passes every bar (G12).
 
 ---
 
@@ -231,3 +225,6 @@ print) under a 15 s clock, and their reaction measured by excess intensity.
 | `node-derivation/data/cvx_r1u_final_{study,holdout}.parquet` | the updated rule's tickets (`hot-tape/r1u_holdout.py`) |
 | `node-derivation/data/cvx_holdlegs_*.parquet` | the holdout with every leg of a transaction (`python -m toolkit.lake_export cvx_holdlegs 2026-09-03 ... 2026-09-10 --all-legs`), tape `holdout_legs` |
 | `node-derivation/data/r1_replay_{study,holdout,holdout_legs}_{node,all}.parquet` | the replay's tickets at the 115 ms seat (`hot-tape/r1_replay.py`): the engine's parity reference |
+| `node-derivation/data/cvx_studyexact_*.parquet`, `cvx_holdexact_*.parquet` | the study days and the holdout at the engine's grain: every leg, `t_us` (the engine's clock), `vtok` (its spot); tapes `study_exact`, `holdout_exact` |
+| `node-derivation/data/r1_creators.parquet` | each tape coin's creator (Postgres `tokens.creator_wallet`, the source simulate reads) |
+| `node-derivation/data/r1_ref_{holdout_exact,study_exact}.parquet` | **the engine's parity reference**: rule 1's tickets, print identities and SOL |

@@ -30,6 +30,14 @@ TAPES = {
     "holdout_legs": ("cvx_holdlegs_prints.parquet", "cvx_holdlegs_tok.parquet",
                      "cvx_holdlegs_wallets.parquet",
                      datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc).timestamp()),
+    # the study days re-cut from the lake at the engine's grain: every leg, t_us, vtok. Coins born
+    # before its first print are left out; r1_exact ends its fires at 09-06 12:00
+    "study_exact": ("cvx_studyexact_prints.parquet", "cvx_studyexact_tok.parquet",
+                    "cvx_studyexact_wallets.parquet", None),
+    # the same, carrying the engine's own clock (t_us) and price (vtok): the parity reference
+    "holdout_exact": ("cvx_holdexact_prints.parquet", "cvx_holdexact_tok.parquet",
+                      "cvx_holdexact_wallets.parquet",
+                      datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc).timestamp()),
 }
 
 

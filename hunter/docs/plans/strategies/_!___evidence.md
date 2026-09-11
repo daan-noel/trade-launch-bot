@@ -1300,6 +1300,8 @@ in a same-slot fill:
 | a router credited as a seller | 0.5 % of study prints are proxied |
 | our impact | charged twice (the bag is sold into the tape's reserve, which lacks our SOL): selling into the reserve plus our SOL reads +0.4..+0.5 pp higher |
 
+**The holder book fails.** The replay and the toolkit size each bag from the reserve change (`K/v_before - K/v_after`) and count a wallet while its bag is `> 0`; a full exit leaves a positive float residue almost every time. On 289 busy coins (lake 09-08, end of life) the float book reads a median 647 holders, the exact `token_amount` book 96, and 662 wallets ever traded. `holders >= 368` measures about 368 wallets having bought the coin, which no engine can reproduce and which is not a holder count. The term is re-derived before engine work: [hot-tape-rule-1-engine-plan.md](../../roadmap/hot-tape-rule-1-engine-plan.md).
+
 **What the tapes do not test:** the fixed cost per leg is 0.000225 SOL, and every extra 0.001 SOL a
 leg costs 1.0 pp at 0.2 SOL (0.57 pp at 0.35); a buy that fails its slippage bound inside a frenzy
 is not modelled; the concurrency peak is 2-3 positions. The holdout has been read at every change
@@ -1307,6 +1309,88 @@ is not modelled; the concurrency peak is 2-3 positions. The holdout has been rea
 
 Script: [r1_replay.py](node-derivation/hot-tape/r1_replay.py); tape export
 [toolkit/lake_export.py](node-derivation/toolkit/lake_export.py).
+
+## 1.22 Rule 1 re-derived under the engine's exact semantics (H18)
+
+1.21's holder term was float dust, and a second code sharing the idea could not see it. Here every
+term is first checked against an independent exact field of the lake, then spelled exactly as the
+engine computes it (`node-derivation/hot-tape/r1_exact.py`, each line citing the engine code it
+mirrors), and the rule is re-derived with 1.20's keep rule plus the 5 % chance floor and the ship
+bars. Plan: [hot-tape-rule-1-engine-plan.md](../../roadmap/hot-tape-rule-1-engine-plan.md).
+
+**The raw fields hold** (lake 09-03..09-10, 13,271,539 curve rows, `r1_terms_audit.py`):
+
+| term input | independent field | agreement |
+| --- | --- | --- |
+| the print's SOL | the reserve change to the next print | 99.6 % within 2 lamports; 0.2 % of pairs off by more than 1e-6 SOL |
+| tokens moved | `token_amount` | 99.6 % within 1 unit |
+| spot | `vsol * vtok = K` | every row within 1e-6; a new high by `vsol` and by spot differ on 25 rows |
+| age | first print against `created_at` | median 0 s, p99 13.4 s, never before creation |
+| recipes, wallets | `ix_labels`, `wallet` | never missing |
+| time | `block_time` | microseconds (the tapes round to ms); 72 steps run backward |
+| holders | the exact `token_amount` book | **fails** (1.21): the term becomes distinct buyers, creator excluded |
+
+**What each correction does to rule 1 at its 1.20 thresholds** (0.2 SOL, engine cost kernel):
+
+| | study | holdout | holdout, every leg |
+| --- | ---: | ---: | ---: |
+| the old reading (reproduces 1.21 to the ticket) | +3.61 % 787 | +3.71 % 457 | +3.31 % 465 |
+| holders -> distinct buyers | +3.61 % 787 | +3.70 % 455 | +3.35 % 464 |
+| recipes counted with the trigger print | +3.38 % 828 | +3.45 % 482 | +3.12 % 491 |
+| the engine's entry fill (last BUY by 115 ms) | +2.96 % 814 | +3.06 % 476 | +2.54 % 485 |
+| the engine's 200 ms clock and exit fill | +2.96 % 814 | +3.05 % 476, top 1 % 17.0 % | +2.52 % 485, top 1 % 20.1 % |
+
+The dust count read as a buyer count: swapping it moves at most 2 tickets. The cost sits in the
+entry fill.
+
+**The engine's entry fill prices states our buy cannot meet.** `LagMs` entry takes the last BUY
+landed by the deadline and ignores sells; its exit leg takes the last print of either side. On the
+450 holdout tickets of the final rule, the buy-only fill lands on a different print in 29.1 %, at
+a mean +6.88 % (median +1.45 %) dearer entry, and in 1.8 % it prices a state inside an unfinished
+transaction (a later leg of the same transaction follows). Pricing both legs with the exit leg's
+rule is the fix; the rule below is derived under it.
+
+**The grain the rule is derived on.** The study tape keeps the last leg of each transaction. A
+study re-cut from the lake at the engine's grain (`study_exact`: every leg, `t_us`, `vtok`, fires
+09-01..09-06 12:00, coins born before 09-01 left out) moves the exit:
+
+| derived on | entry fill | the rule it keeps | holdout, every leg | top 1 % | 95 % interval | 200 ms |
+| --- | --- | --- | ---: | ---: | --- | --- |
+| last-leg study | buy only | 1.20 unchanged | +2.51 % 5/5 | 20.3 % | +0.66..+4.33 | CI crosses 0 |
+| last-leg study | either side | seller <= 90 s | +2.31 % 5/5 | 20.7 % | +0.71..+3.87 | +1.96 % |
+| every-leg study | buy only | TP +25 %, clock 180 s | +3.42 % 5/5 | 15.9 % | +0.56..+6.24 | CI crosses 0 |
+| **every-leg study** | **either side** | **TP +20 %, stop -60 %** | **+4.44 % 5/5** | **9.8 %** | **+2.19..+6.58** | **+3.69 % 5/5** |
+
+Only the last row passes every bar. Its full book:
+
+| at 0.2 SOL | study, every leg | holdout, every leg | study, last leg (08-30..09-05) | holdout, last leg |
+| --- | ---: | ---: | ---: | ---: |
+| tickets a day | 109.8 | 100.0 | 110.7 | 98.0 |
+| %/trade | +4.51 % | **+4.44 %** | +4.26 % | +4.99 % |
+| days positive, worst day | 6/6, +0.00 | **5/5, +0.48** | 7/7, +0.44 | 5/5, +0.59 |
+| top 1 %, biggest coin | 12.8 %, 5.0 % | 9.8 %, 5.0 % | 12.6 %, 4.3 % | 8.8 %, 4.5 % |
+| capped at the median take profit | +3.19 SOL | +2.37 SOL | +3.81 SOL | +2.80 SOL |
+| 200 / 300 / 500 ms, both legs | +4.12 / +3.78 / +3.52 % | +3.69 / +3.34 / +2.76 % (4/5) | +3.77 / +3.53 / +3.16 % | +4.20 / +3.79 / +3.18 % |
+| at 0.35 SOL | +4.23 % | +4.17 %, 1.46 SOL a day | - | +4.72 % |
+
+On the holdout, 270 take profits average +20.1 % (they fill at the target, not on gaps), 166 clock
+exits -15.0 %, 14 stops -67.2 %. The stop is inert: -60 %, -75 % and no stop book +4.51 / +4.59 /
++4.55 % on the study. The every-leg study's walk-forward keeps every entry threshold; the reserve
+cap at 110 is refused inside the chance floor.
+
+**A second code agrees to the ticket.** `r1_exact_check.py` rebuilds every fact, fill, exit and
+occupancy per coin from the raw prints with pandas, sharing no code with `r1_exact.py`: all 450
+holdout tickets on 296 coins plus 300 coins without one, and 465 study tickets on 300 coins, with
+no disagreement.
+
+**The engine's target** is `node-derivation/data/r1_ref_{holdout_exact,study_exact}.parquet`: per
+ticket the mint, the slot / transaction / leg / time of the trigger, entry-fill and exit prints,
+the reason and the SOL under the engine kernel. What the tapes still do not test: the tip above
+0.000225 SOL a leg, failed buys, and the untouched days after 09-10.
+
+Scripts: [r1_terms_audit.py](node-derivation/hot-tape/r1_terms_audit.py),
+[r1_exact.py](node-derivation/hot-tape/r1_exact.py),
+[r1_exact_check.py](node-derivation/hot-tape/r1_exact_check.py).
 
 ---
 

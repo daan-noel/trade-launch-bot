@@ -77,6 +77,9 @@ it; the earlier steps are the record as run.
 | G7 | `r1u_size.py` | the clip, flat against a share of the reserve | 1.20 |
 | G8 | `r1u_holdout.py` | the holdout, one change at a time | 1.20 |
 | G9 | `r1_replay.py` | rule 1 replayed print by print, sharing no code with the candidate table: the parity reference for the engine | 1.21 |
+| G10 | `r1_terms_audit.py` | every term's input against an independent exact field of the lake | 1.22 |
+| G11-G12 | `r1_exact.py` | rule 1 spelled exactly as the engine computes it: `audit` (each correction's cost), `derive MODE STUDY`, `confirm MODE STUDY TAPE...`; writes `data/r1x_*` | 1.22 |
+| G12 | `r1_exact_check.py` | an independent rebuild of `r1_exact`'s tickets from the raw prints (`MODE TAPE N [recall]`) | 1.22 |
 | - | `toolkit_check.py` | the toolkit re-runs steps 16, 21, 24 and 39 next to the recorded numbers | - |
 
 Shared helpers other steps import: `cvx_hot_event.py` (`node_ids`, `NODE_NAME`, the

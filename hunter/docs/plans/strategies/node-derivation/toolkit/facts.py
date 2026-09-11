@@ -12,7 +12,10 @@ recipes, buys and sells count every print, as a live rule sees them.
   run.j(w)                 index of the first print inside the last w seconds, per print
   run.recipes(k, w)        distinct build_core recipes printed in the w s before k
   run.bought(k, w)         SOL bought (any wallet) in the w s before k; run.sold(k, w) likewise
-  run.holders()            public wallets holding the coin before each print (cached)
+  run.holders()            public wallets whose reserve-sized bag is above zero before each print
+                           (cached). NOT a holder count: a full exit leaves a positive float
+                           residue, so it reads close to distinct buyers (evidence 1.22). Spell a
+                           holder term from token_amount, or say distinct buyers (r1_exact.py)
   run.holders_and_seller(flag)
                            one pass over the coin: public holders BEFORE each print, and for the
                            flagged prints the seller's seconds since its last buy on the coin, its
