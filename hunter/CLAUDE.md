@@ -40,19 +40,21 @@ Read before trusting any backtest number:
 [fill-and-cost-models.md](docs/plans/strategies/fill-and-cost-models.md). Open work lives in
 [`docs/roadmap/`](docs/roadmap/), never in `docs/plans/`.
 
-**Searching for a new trading rule? Four files, in this order.**
-[_!___strategy.md](docs/plans/strategies/_!___strategy.md) is the basis - one equation,
-what price does and does not contain, the seat, what is open and what is closed.
-[_!___inventory.md](docs/plans/strategies/_!___inventory.md) is every idea, parked in
-Door / Event / Permission / Exit.
-[_!___workflow.md](docs/plans/strategies/_!___workflow.md) is the method - the six-slot
-coordinate, the eight-phase loop, and the campaign queue; follow it in order and record
-every result as a coordinate.
+**Searching for a new trading rule?**
+[_!___strategy.md](docs/plans/strategies/_!___strategy.md) is the basis.
+[_!___derive.md](docs/plans/strategies/_!___derive.md) is the playbook from one paying
+wallet to a sentence (pick, DELAY, event, then D/X/P; inventory search on that parent).
+[_!___inventory.md](docs/plans/strategies/_!___inventory.md) is every idea, used after
+the event is named.
+[_!___workflow.md](docs/plans/strategies/_!___workflow.md) is the gates, the campaign
+queue, and how a result is recorded.
 [_!___evidence.md](docs/plans/strategies/_!___evidence.md) is every standing measurement.
 **Money on the whole conjunction is the only score, judged against the cell's own
 break-even, under both exit families.** A red number closes a sentence, never a slot.
+A 4-tuple of unused inventory ideas is not a parent.
 
-**Studying a wallet?** The instrument set is the 26 solo traders, node by node
+**Studying a wallet?** Follow [_!___derive.md](docs/plans/strategies/_!___derive.md).
+The instrument set is the 26 solo traders, node by node
 ([solo-traders.md](docs/plans/strategies/solo-traders.md)). A trader names a decision; he
 is never cloned, his coins are never a gate, and his own prints stay out of the pool. "His
 fill is unreachable" is not "his decision is unreachable".

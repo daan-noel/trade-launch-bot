@@ -13,6 +13,7 @@
 //! are applied **in the fold** by the engine (global time order), not post-hoc,
 //! so simulate honors them exactly as live does.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -34,6 +35,7 @@ use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::token_repo::TokenRepo;
+use trading_core::storage::token_enrichment::TokenEnrichmentRow;
 use trading_core::strategies::fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded};
 
 use crate::state::analysis_cache::AnalysisCacheKey;
@@ -50,6 +52,23 @@ fn rows_to_json<T: serde::Serialize>(rows: Vec<T>) -> Result<Vec<serde_json::Val
         Ok(serde_json::Value::Array(vals)) => Ok(vals),
         Ok(_) => anyhow::bail!("unexpected sim result shape (not an array)"),
         Err(e) => Err(anyhow::Error::from(e)),
+    }
+}
+
+/// Attach token metadata + the row-owned ATH to every result row whose mint has an
+/// enrichment row. A mint re-entered after an exit yields one row PER POSITION, so
+/// the map is read, never drained: a `remove` enriches only the first of them and
+/// leaves every re-entry row with a blank token (0 ix labels, no name, no creator,
+/// no ATH).
+fn attach_enrichment(
+    rows: &mut [EngineBacktestResult],
+    enrichment: &HashMap<String, TokenEnrichmentRow>,
+) {
+    for r in rows {
+        if let Some(e) = enrichment.get(&r.mint_address) {
+            r.ath_price = e.ath_price;
+            r.token = e.into();
+        }
     }
 }
 
@@ -553,18 +572,13 @@ async fn run_engine_backtest(
     // Enrich every result row (fired + NoEntry), attaching token metadata +
     // row-owned ATH — mirrors the tpsl / sweep drill-in.
     let result_mints: Vec<String> = rows.iter().map(|r| r.mint_address.clone()).collect();
-    let mut enrichment = {
+    let enrichment = {
         let _stage = crate::sweep::obs::Stage::start("sim_enrich");
         crate::strategies::token_enrich::fetch_enrichment(&app_state.batch_db, &result_mints)
             .await
             .map_err(|e| anyhow!("token enrichment fetch failed: {e}"))?
     };
-    for r in &mut rows {
-        if let Some(e) = enrichment.remove(&r.mint_address) {
-            r.ath_price = e.ath_price;
-            r.token = (&e).into();
-        }
-    }
+    attach_enrichment(&mut rows, &enrichment);
 
     // Display order: TakeProfit first, other closed exits, still-Open, NoEntry
     // last; ties by pnl% desc (NoEntry has null pnl → sorts as 0).
@@ -976,5 +990,68 @@ mod flow_column_needs {
             }]
         }));
         assert!(rule_needs_flow(&staged), "a stage's flow metric counts too");
+    }
+}
+
+/// Every position on a re-entered mint carries the same token metadata.
+#[cfg(test)]
+mod enrichment_attach {
+    use super::*;
+    use sqlx::types::Json;
+
+    fn enrichment_row(mint: &str, labels: Value) -> TokenEnrichmentRow {
+        TokenEnrichmentRow {
+            mint_address: mint.to_string(),
+            symbol: "SYM".into(),
+            name: "Name".into(),
+            token_created_at: Utc::now(),
+            creator_wallet: "creator".into(),
+            creation_tx_signature: "sig".into(),
+            initial_supply_token: None,
+            initial_buy_sol: None,
+            initial_buy_instruction: None,
+            cu_limit: None,
+            cu_price: None,
+            is_mayhem_mode: false,
+            is_cashback_enabled: false,
+            ix_labels: Json(labels),
+            ath_price: Some(1e-12),
+            ath_timestamp: None,
+            volume_sol: None,
+            market_cap: None,
+            trade_count: None,
+            last_trade_at: None,
+            current_price: None,
+            is_dead: None,
+            is_migrated: None,
+            last_synced_at: None,
+            first_slot_buy_sol: None,
+            first_slot_sell_sol: None,
+        }
+    }
+
+    /// Three positions on one mint (an entry, then two re-entries) and one on
+    /// another: all four rows get their mint's labels and ATH, not just the first.
+    #[test]
+    fn every_position_on_a_reentered_mint_is_enriched() {
+        let labels = serde_json::json!(["Compute Budget: SetComputeUnitLimit", "Pump.Fun: Create_v2"]);
+        let enrichment: HashMap<String, TokenEnrichmentRow> = [
+            ("A".to_string(), enrichment_row("A", labels.clone())),
+            ("B".to_string(), enrichment_row("B", labels.clone())),
+        ]
+        .into_iter()
+        .collect();
+        let now = Utc::now();
+        let mut rows: Vec<EngineBacktestResult> =
+            ["A", "A", "B", "A"].iter().map(|m| no_entry_row(m, "SYM", now)).collect();
+
+        attach_enrichment(&mut rows, &enrichment);
+
+        for r in &rows {
+            assert_eq!(r.token.ix_labels_count, 2, "{} row left unenriched", r.mint_address);
+            assert_eq!(r.token.instruction_labels, labels);
+            assert_eq!(r.token.creator_wallet, "creator");
+            assert_eq!(r.ath_price, Some(1e-12));
+        }
     }
 }

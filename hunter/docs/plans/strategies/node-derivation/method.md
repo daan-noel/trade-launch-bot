@@ -1,10 +1,12 @@
 # How a rule is derived from the traders who run it
 
-The playbook that turns a node of profitable wallets into a shippable rule: which member pays,
-what it reacts to, which of those moments pay at our seat, how it exits, which coins to refuse,
-and then every slot re-derived on the sentence's own pool. Each step names the question, the
-toolkit call that answers it, the rule that decides, what it returns on the hot-tape node (the
-worked example, [hot-tape-rule-1.md](hot-tape-rule-1.md)), and the trap it guards against.
+The general playbook is [_!___derive.md](../_!___derive.md). This file maps each derive
+phase to a toolkit call and shows what it returns on the hot-tape node (the worked
+example, [hot-tape-rule-1.md](hot-tape-rule-1.md)). Do not start a new node from this
+file's hot-tape numbers.
+
+Each step names the question, the toolkit call that answers it, the rule that decides,
+the hot-tape result, and the trap it guards against.
 
 The basis is [_!___strategy.md](../_!___strategy.md), the loop it plugs into is
 [_!___workflow.md](../_!___workflow.md) (section 8 G1), and every number is

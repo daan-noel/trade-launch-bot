@@ -3,13 +3,14 @@
 The one strategy file. What this market is, who acts in it, the arithmetic every rule obeys,
 what is established, what is open, and why.
 
-Four files, and they do not overlap:
+Five files, and they do not overlap:
 
 | file | carries | edit rule |
 | --- | --- | --- |
 | **this one** | the market, the basis, the verdict | rewritten when a finding lands |
+| [_!___derive.md](_!___derive.md) | from one paying wallet to a parent sentence | rewritten when the derivation method changes |
 | [_!___inventory.md](_!___inventory.md) | every idea, in Door / Event / Permission / Exit | a row is added or its status changes |
-| [_!___workflow.md](_!___workflow.md) | the method, the gates, the campaign queue | rewritten when the method changes |
+| [_!___workflow.md](_!___workflow.md) | the gates, the campaign queue, how a result is recorded | rewritten when the gates or queue change |
 | [_!___evidence.md](_!___evidence.md) | every standing measurement with its coordinate | a result is added, never argued with |
 
 Self-contained on purpose. Section 11 is the only part that names this repository; the rest
@@ -124,8 +125,9 @@ arrive together there is no trade at any speed.
 
 When a story dies, the shape of the failure names which answer was wrong, and that points at the
 next story. Only one failure - the sign and the money being simultaneous - actually kills a line.
-The generator is [_!___inventory.md](_!___inventory.md). The routing table lives in
-[_!___workflow.md](_!___workflow.md) section 8.
+The generator of a parent is one paying wallet ([_!___derive.md](_!___derive.md)).
+[_!___inventory.md](_!___inventory.md) is the idea list on that parent. The routing table
+lives in [_!___workflow.md](_!___workflow.md) section 8.
 
 ## The state of the program
 

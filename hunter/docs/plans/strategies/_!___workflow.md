@@ -1,10 +1,12 @@
 # Workflow: how a rule is found, measured and closed
 
-The method file. [_!___strategy.md](_!___strategy.md) is the market and the basis;
-[_!___inventory.md](_!___inventory.md) is the ideas;
-[_!___evidence.md](_!___evidence.md) is the numbers; this file is **the procedure and the
-campaign queue**. Read it at the start of every strategy session. Follow it in order. A
-result that skips a step is not a result.
+The gates, the campaign queue, and how a result is recorded.
+[_!___strategy.md](_!___strategy.md) is the market and the basis;
+[_!___derive.md](_!___derive.md) is how a parent sentence is derived from one paying
+wallet;
+[_!___inventory.md](_!___inventory.md) is the ideas used on that parent;
+[_!___evidence.md](_!___evidence.md) is the numbers. Read this file for the coordinate,
+the gates, and the queue. A result that skips a step is not a result.
 
 The target is a **shippable harvester**: leftover of real up-moves, 115 ms both legs, net SOL,
 most days positive, enough tickets, re-entry. Latency is not the edge. The edge is remaining
@@ -14,12 +16,12 @@ intent that is still unpriced at fill.
   0.  TARGET           what counts as done
   1.  IDENTITY         E = P.W - (1-P).L - toll; two selection axes
   2.  COORDINATE       six slots plus a frame; a result is an address
-  3.  LOOP             inventory 4-tuple; where a red number routes
+  3.  LOOP             parent from derive.md; inventory on that parent; where a red number routes
   4.  GATES            floor, money, tail, walk-forward, holdout
   5.  EXIT             derived from the sentence, never swept on junk
   6.  CLOSING          the only two ways a slot closes
   7.  RECORDING        the template every result is written in
-  8.  SENTENCES        unused legal 4-tuple, or one new idea in the named short slot
+  8.  SENTENCES        parent from derive.md; inventory on that parent
   9.  INVENTORY        [_!___inventory.md](_!___inventory.md) - one file, not copied here
   10. QUEUE            campaigns in order, with kill conditions
   11. REFUSALS         what is never done again
@@ -102,9 +104,8 @@ Standing clip: 0.2 SOL. Standing re-entry: unlimited, one position per token.
   [0] FRAME              fixed once: seat, cost, full tape, coordinate recording, gates
         |
         v
-  [1] INVENTORY TUPLE    unused legal filling of D, E, P, X from [_!___inventory.md](_!___inventory.md).
-        |                none of the four is frozen. DELAY named. one door.
-        |                the spoken story is the reading of the tuple, not its seed.
+  [1] PARENT             one paying member, DELAY-legal event, then D / X / P
+        |                ([_!___derive.md](_!___derive.md)). Inventory does not invent this.
         v
   [2] SCORE THE WHOLE    money only, on the conjunction, on the full tape
         |                both exit families side by side, every time
@@ -113,21 +114,23 @@ Standing clip: 0.2 SOL. Standing re-entry: unlimited, one position per token.
   [3] ABLATE             drop one term at a time; keep it only if it RAISES total SOL
         |                if nothing lifts, do not cut
         v
-  [4] NEIGHBOURHOOD      vary ONE slot at a time. a one-slot change is a new address.
-        |                this is the search. it does not freeze the other three.
+  [4] INVENTORY          vary ONE slot at a time on this parent, from
+        |                [_!___inventory.md](_!___inventory.md). a one-slot change is a
+        |                new address. add an idea only in the named empty slot.
         v
   [5] GATES              floor, tail share, fit/hold  (section 4)
-        |                fail -> back to [1] naming WHICH SLOT. never "closed"
+        |                fail -> back to [4] naming WHICH SLOT. never "closed"
         v
   [6] FREEZE -> HOLDOUT  a disjoint week, read once, never trimmed
-        |                red = the TUPLE is wrong -> section 8, then [1]
+        |                red = the SENTENCE is wrong -> derive.md phase 10, then [1] or [4]
         v
   [7] ENGINE -> PAPER -> SMALL REAL
 ```
 
 An event is never scored alone. An unconcentrated pool is red by construction. If the
-best legal 4-tuple is still red, the inventory is short in a named slot: add one idea
-there and re-walk the four together. Do not stack ANDs on a frozen parent.
+parent is still red after searching the inventory on its fires, the list is short in a
+named slot: add one idea there from the member's contrast, and re-search that slot. Do
+not replace E to invent a new parent. Do not stack ANDs on a frozen parent.
 
 ---
 
@@ -183,7 +186,7 @@ every book:
 On this tape, full-day births peak/trough at **2.1x** (24,145 / 11,704) and the two fattest
 days hold 36 %. A cell at 26x / 81 % in two days is a client, even when its door's own supply
 is only 5.7x. The walk's **reading** is the best SOL>0 cell that passes TYPE. If none, the
-inventory has no general-type 4-tuple. The SOL leader of a two-day spike is a named client
+inventory on this parent has no general-type cell. The SOL leader of a two-day spike is a named client
 book, not the next parent, and C7 (more days) does not turn it into a type.
 
 **The client gate, and it outranks walk-forward.** Trades are not independent draws. Behind a
@@ -288,11 +291,12 @@ the top 1 % of trades, against the 9-12 % calibration.
 
 ## 8. How a new sentence is found
 
-The generator is [_!___inventory.md](_!___inventory.md). A sentence is one unused legal
-filling of D, E, P, X. None of the four is frozen. DELAY is the veto on a tuple, not a
-spoken seed that produces it.
+The generator of a **parent** is one paying member: [_!___derive.md](_!___derive.md).
+[_!___inventory.md](_!___inventory.md) is the idea list used **on that parent** (derive
+phase 10). DELAY is the veto on the trigger, before any conjunction, not a spoken seed
+that produces a 4-tuple.
 
-A tuple answers four questions. Three of them are easy; the fourth is what makes a
+A parent answers four questions. Three of them are easy; the fourth is what makes a
 sentence possible at all.
 
 ```
@@ -322,11 +326,13 @@ slot. So enumerate delay first - it is the binding constraint, not the tell.
 | habit: the same operator repeats himself across coins | minutes to days | **no** - that is a door (S9), not an event |
 | co-arrival inside one slot | ~0 | yes, repeatedly - and it is why those lines are dead |
 
-Terms are replaceable. Holdout kills the tuple.
+Terms are replaceable. Holdout kills the sentence.
 
 A red frozen sentence is not patched. Ablation names the **dead clause**. The next sentence
-is the next unused legal 4-tuple, or one new idea in the named short slot and a re-walk of
-all four. Neighbourhood is not a new idea.
+is the next unused filling of the named empty slot on the same parent (inventory), or a
+new idea in that slot from the member's contrast ([_!___derive.md](_!___derive.md)
+phase 10). DELAY = 0 on the trigger goes back to a new member or a new trigger, not a new
+inventory E. Neighbourhood is not a new idea.
 
 ```
   frozen sentence RED
@@ -338,7 +344,7 @@ all four. Neighbourhood is not a new idea.
   [B] do not patch             no trim, no extra AND
         |
         v
-  [C] next unused 4-tuple      inventory, then one new idea in the short slot
+  [C] next filling             same parent, named slot; or a new trigger / member
         |
         v
   [D] score the whole conjunction
@@ -361,16 +367,17 @@ a story; the other five hand you the next one.
 ### G1 - the open nodes (a reader is an instrument)
 
 Each of the 26 independent readers answers the one question differently. A node is a story.
-Pick a node open at our seat. Locate his **decision** print (his own reaction time before
-his fill). Read what was true there that is not price. His response rate **names** the
-event. His mint list is never the universe. His own prints stay out. The step-by-step procedure,
-with the guards: [node-derivation/method.md](node-derivation/method.md), and its code
-[node-derivation/toolkit](node-derivation/toolkit/README.md). Hot-tape's working file, rule 1, the
-chain that derived it and every member: [node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md).
+Pick a node open at our seat. Split members first. Locate **one member's** decision print
+(his own reaction time before his fill). Read what was true there that is not price. His
+response rate **names** the event. His mint list is never the universe. His own prints
+stay out. The playbook: [_!___derive.md](_!___derive.md). Toolkit mapping and the hot-tape
+worked example: [node-derivation/method.md](node-derivation/method.md),
+[node-derivation/toolkit](node-derivation/toolkit/README.md),
+[node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md).
 
 | node | story in one line | seat |
 | --- | --- | --- |
-| mid-tape one-shot | an up-move is starting (burst-start print; missing a door) | **open, all seven members measured.** Leftover on 8dtx / 9Uq8GV coins is real (6.9). Four unpriced facts (6.11) and the holder book as tokens (6.12) are red as D on burst START. Public D besides slow-wall is red at mid-tape age on C8 events. After-flush × n_pro>=8 clears the client gate at age>=60 and fails TYPE (6.14, 4.9). C12 second-attempt TYPE-pass clears the floor and fails body, tail, hold, client (6.17, 4.10). C13 live rotation has no SOL>0 TYPE-pass; DELAY = 0 (6.18). C14 sell-run has no SOL>0 TYPE-pass; leftover of the bounce is 81 ms (6.19). C15 first-operator-after-creator+seed is launch DELAY = 0 (6.20). C16 first-run TYPE-pass +2.27 fails floor, body, hold, client (6.21) |
+| mid-tape one-shot | an up-move is starting | **open, split (5.8).** Instrument **9Uq8GV**: buy >= 1 at 75-100 ms lift 13.01; FOLLOW of that print is not reachable; RACE +2.21 % 8/8. Working file [mid-tape-rule-1.md](node-derivation/mid-tape-rule-1.md). 9999hu / 88887Q name sell >= 1 (a second parent). 8dtx2t names burst start; public spelling is C2. Inventory 4-tuple walks C8-C16 do not invent this parent (6.13-6.21) |
 | quiet deep-age | the pusher of an old quiet coin restarted | **red here** (evidence 6.5). Named event is token-silence burst start; the burst lasts ~80 ms so a 115 ms fill is after it. Slow-wall × silence is **-91.95** (6.13) |
 | deep-age big clip | few coins deserve a real size; this is one | **red here** (evidence 6.7). A public size print is not the tell (response = base). He starts the burst half the time |
 | hot-tape re-entry | a pullback inside a live up-move, taken again and again on the same coin | **OPEN, and it is two nodes** (evidence 1.11). Three of the six book **+2.2 to +2.3 %/trade, 8/8 days, body positive, biggest coin 1.8 %** at the RACE seat under a 15 s clock; the pooled node hides them. The ceiling needs a STATE anchor - at our own fill the same decisions are -0.66 %. Public events tried: swing pullback, the up-move portrait, the independent-machine count - all red. E is the frenzy-absorbed sell (1.12); with D earlier-frenzy-sells-failed and the member's own exit tp10 sl25 t60 it books **+1.22 %/trade 5/7, body +1.23** on the full tape and fails the tail (1.13). With P holders >= 368 x age >= 158 s instead of the door: **+2.07 %/trade, 141 a day, 7/7, body +3.26, top 1 % 17.6 %** (1.14), in-sample |
@@ -456,8 +463,8 @@ Stop inventing tape conjunctions when all of these hold:
 - the dead clauses all say the remainder is not on the tape at decision time
 - off-chain fields, stored live, have also been scored
 
-Until then, a red result is a named false clause and the next unused legal 4-tuple, or one
-new idea in the short slot and a re-walk of all four.
+Until then, a red result is a named false clause. Next filling is the named empty slot on
+the same parent, or a new trigger / member ([_!___derive.md](_!___derive.md)).
 
 ---
 
@@ -1033,10 +1040,11 @@ job.
 - **No SOL-leader captioned as the walk's reading when its tickets fail TYPE.** A two-day
   spike is a named client book. Rank among cells whose tickets track the tape; if none, the
   inventory is short, and that is the result. A stub UTC day is not a floor day.
-- **No extra AND as a new sentence.** Neighbourhood is section 3 step [4]. A new sentence is
-  section 8: the next unused 4-tuple, or one new idea in the named short slot and a re-walk.
-- **No frozen slot in a 4-slot walk.** Do not hold D, E, P, or X fixed and caption a one-slot
-  swap as a new story.
+- **No extra AND as a new sentence.** Neighbourhood is section 3 step [4]. A new parent is
+  [_!___derive.md](_!___derive.md). A new filling on a parent is one idea in the named slot.
+- **No parent from an unused D×E×P×X walk.** The parent comes from one paying member
+  ([_!___derive.md](_!___derive.md)). Inventory search varies one slot on that parent.
+  Do not caption a one-slot swap as a new story, and do not replace E to invent one.
 - **No parking the harvester** because survival is the only holdout-plus book. Survival is a
   door. The target in section 0 is still leftover of real up-moves.
 - **No mixing three doors into one sentence.** Slow-wall, documented-project, and

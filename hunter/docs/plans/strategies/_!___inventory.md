@@ -1,9 +1,11 @@
 # Inventory: the ideas
 
 Every idea, as a tree: **slot → family → idea → variant**.
-[_!___strategy.md](_!___strategy.md) is the basis; [_!___workflow.md](_!___workflow.md) is the
-method; [_!___evidence.md](_!___evidence.md) is the numbers. A sentence is one unused filling of
-D, E, P, X (with R and S) taken from this file.
+[_!___strategy.md](_!___strategy.md) is the basis;
+[_!___derive.md](_!___derive.md) is how a parent is derived from one paying wallet;
+[_!___workflow.md](_!___workflow.md) is the gates and the queue;
+[_!___evidence.md](_!___evidence.md) is the numbers. This file is the idea list used
+**on a parent** (derive phase 10). It does not invent the parent.
 
 Editing rules:
 

@@ -1,7 +1,8 @@
 # Evidence: every standing measurement, with its coordinate
 
 The numbers behind [_!___strategy.md](_!___strategy.md). The ideas are
-[_!___inventory.md](_!___inventory.md). The method that produced these numbers is
+[_!___inventory.md](_!___inventory.md). A parent is derived by
+[_!___derive.md](_!___derive.md). The gates and the queue are
 [_!___workflow.md](_!___workflow.md).
 
 **Every result is a coordinate, never a verdict.** A measurement fixes all six slots of a rule
@@ -2366,7 +2367,81 @@ the seed-builder cohort is the racer layer. **A build's instruction name and its
 order separate a campaign client from its generic twin on the same instruction set** - one
 concentrates about 21 buys per coin and is green, the other sprays about 2.7 per coin and is red.
 
+## 5.8 Mid-tape derive, phases 1-5 (instrument 9Uq8GV)
+
+```
+D  none (member coins are a ceiling, never a door)
+E  named by excess intensity, not yet spelled publicly
+P  none
+X  clock 15 (seat probe, not the exit)
+R  one per coin   S  0.2   seat  lag_115 both legs, and RACE (sequenced before its print)
+frame  study tape 2026-08-30 17:48 to 2026-09-06 12:00 UTC, 6.76 days.
+      node "mid-tape one-shot", seven roster wallets. 3Xk2Eu has 0 episodes.
+      node-derivation/mid-tape/mt_p15.py
+```
+
+The node is not one strategy. Split first (derive phase 1, law 27). Every member that prints
+is green at RACE under a 15 s clock and red at FOLLOW. Copying the fill is closed here the
+same way it is on hot-tape.
+
+| member | eps | mints | 2+ % | re % | age p50 | hold p10/p50/p90 | clip | RACE cap15 | days | body | FOLLOW cap15 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | :---: | ---: | ---: |
+| 9999hu | 4,323 | 3,669 | 15.6 | 15.1 | 17.6 s | 3.9 / 25.0 / 69.8 | 1.20 | **+5.94 %** | 7/7 | +34.67 | -2.60 %, 0/7 |
+| 88887Q | 4,933 | 3,674 | 24.4 | 25.5 | 42.7 s | 2.3 / 21.9 / 76.0 | 1.20 | **+5.73 %** | 7/7 | +39.63 | -1.81 %, 0/7 |
+| 8dtx2t | 2,782 | 2,081 | 26.1 | 25.2 | 143 s | 5.4 / 16.1 / 88.4 | 0.66 | +3.16 % | 7/7 | +11.77 | -1.54 %, 0/7 |
+| 9Uq8GV | 1,024 | 849 | 16.3 | 17.1 | **159 s** | **10.7 / 16.0 / 16.2** | 0.59 | +2.21 % | 8/8 | +2.51 | -1.57 %, 3/8 |
+| ApfmkS | 525 | 422 | 18.2 | 19.6 | 181 s | 3.1 / 8.4 / 34.7 | 0.97 | +2.81 % | 7/7 | +2.21 | -1.46 %, 2/7 |
+| 8aaRWu | 753 | 637 | 14.4 | 15.4 | 84.5 s | 2.9 / 25.5 / 116.4 | 0.28 | +1.06 % | 5/7 | **-1.39** | -0.67 %, 3/7 |
+
+**Shape.** All six that print are mostly one episode per mint (re-entry 15-26 %). None is a
+hot-tape re-entry scalper. 9Uq8GV's hold is a clock: p50 16.0 s and p90 16.2 s. 8aaRWu's RACE
+body is red and its top 1 % is 188 % of net: noise under law 28. 9999hu's age p50 is 17.6 s:
+younger than the mid-tape window.
+
+**Trigger (excess intensity, 5 s lookback, same-coin controls).**
+
+| member | peak class | lag bin | lift | cases |
+| --- | --- | --- | ---: | ---: |
+| **9Uq8GV** | **buy >= 1 SOL** | 75-100 ms | **13.01** | 1,048 |
+| 9Uq8GV | burst start | 50-75 ms | 8.14 | 1,048 |
+| 9Uq8GV | sell >= 1 | 50-75 ms | 0.32 | 1,048 |
+| 8dtx2t | burst start | 50-75 ms | 7.49 | 2,859 |
+| 8aaRWu | burst start | 75-100 ms | 9.20 | 759 |
+| **9999hu** | **sell >= 1 SOL** | 50-75 ms | **9.12** | 4,428 |
+| **88887Q** | **sell >= 1 SOL** | 50-75 ms | **8.61** | 5,167 |
+| ApfmkS | (flat, all lifts ~1.3) | 300-400 ms | 1.28 | 535 |
+
+9Uq8GV names a public **buy**. He avoids sells (lift 0.3). 9999hu and 88887Q name a public
+**sell**, the same class as rule 1's 8fStGV. They are not the same strategy as 9Uq8GV. ApfmkS
+does not name a print (derive: a state, or not usable).
+
+**DELAY at 115 ms** (reaction on the member's own episodes, clock 15). On-trig is a ceiling:
+it is his coins, not a door.
+
+| member | trigger | hits | dt p50 | ahead | on-trig | when behind |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 9Uq8GV | buy >= 1 | 92.5 % | 68 ms | 30.2 % | 0.00 % | **-1.66 %** |
+| 9Uq8GV | burst start | 75.1 % | 125 ms | 51.9 % | +4.09 % | **-1.77 %** |
+| 9Uq8GV | sell >= 1 | 13.7 % | 302 ms | 71.4 % | +20.03 % | +0.49 % |
+| 9999hu | sell >= 1 | 79.1 % | 96 ms | 43.1 % | +3.63 % | -0.67 % |
+| 88887Q | sell >= 1 | 76.1 % | 113 ms | 49.4 % | +3.05 % | -0.74 % |
+| 8dtx2t | burst start | 83.0 % | 105 ms | 47.0 % | +2.61 % | -0.90 % |
+
+9Uq8GV's sell >= 1 row is a rare corner (14 % of episodes), not his logic: excess intensity
+on sells is below 1. Drop it.
+
+**Verdict on 9Uq8GV.** FOLLOW of his named print is not reachable: buying into a buy, lag p50
+68 ms, the book is 0 when we fire on it and **-1.66 % when we land behind**. Burst start on
+his coins is the 6.9 ceiling (+4.09 % here at clock 15); when we land behind it is still red.
+RACE +2.21 % 8/8 is the seat that pays. Next is phase 6: which buy >= 1 (or burst starts) he
+takes vs ignores on the same coin, spelled as a **state that has held**, not as a follow of
+the buy. Empty D stays allowed.
+
+9999hu / 88887Q stay a second instrument (sell >= 1), not this parent. Their behind book is
+still slightly red; contrast on that sell is a different sentence.
+
 ---
+
 
 # 6. THE CONJUNCTION SPACE
 

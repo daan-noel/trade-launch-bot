@@ -1,10 +1,11 @@
 # <Node>: rule <n> and the member book
 
 A new node's working file starts as a copy of this one; [hot-tape-rule-1.md](hot-tape-rule-1.md)
-is the filled example. Fill each section as the phase of [method.md](method.md) that produces it
-runs; an empty slot stays written as empty, never dropped. Scripts go in
+is the filled example. Fill each section as the phase of [_!___derive.md](../_!___derive.md)
+that produces it runs; an empty slot stays written as empty, never dropped. Scripts go in
 `node-derivation/<node>/`, one per step, each opening with its step and question, and the
-step-by-step index in `<node>/README.md`.
+step-by-step index in `<node>/README.md`. Toolkit calls for each phase:
+[method.md](method.md).
 
 Numbers: [_!___evidence.md](../_!___evidence.md) <sections>. Code: [toolkit/](toolkit/README.md).
 
