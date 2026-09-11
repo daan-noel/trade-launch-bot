@@ -254,7 +254,8 @@ roughly highest payoff first:
   written at ingest from the in-hand event value. The derive-from-`raw_txs` path is only a
   fallback, and it's dead when `raw_txs` isn't persisted (disk savings). JSONB matches
   `tokens.ix_labels`, so the `ix_count` / `ix_labels` filter helpers in
-  [tokens/sql.rs](../../../core/src/api/handlers/tokens/sql.rs) apply verbatim to `trades`.
+  [ix_labels_sql.rs](../../../core/src/storage/ix_labels_sql.rs) and
+  [ix_label_filter.rs](../../../core/src/api/ix_label_filter.rs) apply verbatim to `trades`.
   The label VOCABULARY changes mid-history without the column changing type, so a read
   spanning that instant compares two spellings of one instruction — the boundary and its
   guard are in [tape-epochs.md](tape-epochs.md).

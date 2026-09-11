@@ -1,4 +1,5 @@
 pub mod handlers;
+pub mod ix_label_filter;
 pub mod table_eval;
 pub mod table_query;
 

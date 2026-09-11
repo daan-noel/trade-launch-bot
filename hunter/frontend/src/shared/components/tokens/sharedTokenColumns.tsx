@@ -10,6 +10,11 @@ import { amountInDisplayUnit, type AmountStorageUnit } from 'lib/priceUnitSnapsh
 import { formatCompact, formatDecimalTrim, formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
 import {
+  IX_LABELS_FILTER_PLACEHOLDER,
+  IX_LABELS_FILTER_TITLE,
+  ixLabelsMatchFilter,
+} from 'lib/ixLabels';
+import {
   isNoLimitLamports,
   u64LamportsToSolText,
   u64Num,
@@ -392,6 +397,12 @@ function tokenInfoColumns(): ColumnDef<any>[] {
         );
       },
       searchValue: (r: { instruction_labels?: unknown }) => ixLabelsText(r),
+      // The one ix-label grammar (JSON = ordered exact, else any-of substring) on
+      // client-side tables; server tables run its Rust twin (`ix_label_filter.rs`).
+      filterMatch: (r: { instruction_labels?: unknown }, raw: string) =>
+        ixLabelsMatchFilter(ixLabelsArray(r), raw),
+      filterPlaceholder: IX_LABELS_FILTER_PLACEHOLDER,
+      filterTitle: IX_LABELS_FILTER_TITLE,
     },
     // flags — enum filter row (All/Yes/No), emitted as `{op:'eq', val:'yes'|'no'}`.
     // Every backend reads that through the one Rust `as_flag` vocabulary (the

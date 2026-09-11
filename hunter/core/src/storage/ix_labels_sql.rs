@@ -19,6 +19,12 @@ pub fn ix_labels_array_sql(col: &str) -> String {
     )
 }
 
+/// Label count of an `ix_labels` column (both shapes; non-array ⇒ 0) - the
+/// `ix_count` column's filter/sort expression on every SQL token table.
+pub fn ix_labels_count_sql(col: &str) -> String {
+    format!("COALESCE(jsonb_array_length({}), 0)", ix_labels_array_sql(col))
+}
+
 /// `jsonb_array_elements_text(...)` over [`ix_labels_array_sql`] — the set/sequence
 /// source for filters and `" | "`-joined group keys.
 pub fn ix_labels_elements_sql(col: &str) -> String {

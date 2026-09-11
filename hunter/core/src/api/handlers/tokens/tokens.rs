@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::{
+    api::ix_label_filter::{label_list, IxLabelFilter},
     api::table_query::{FilterOp, FilterSpec, TableRequest},
     serde_wire::u64_as_string,
     state::{core_state::CoreState, token_cache::TokenState},
@@ -701,7 +702,7 @@ fn build_registry() -> Vec<ColumnSpec> {
             .sortable("t.is_cashback_enabled::int", false,
                 |t| SortKey::Num(Some(if t.is_cashback_enabled { 1.0 } else { 0.0 }))),
         // --- in-RAM-only text filter (JSONB labels; no SQL projection, as before) ---
-        C::new("ix_labels", None, |t| ix_label_list(&t.instruction_labels).join(", ")),
+        C::new("ix_labels", None, |t| label_list(&t.instruction_labels).join(", ")),
     ]
 }
 
@@ -785,12 +786,9 @@ fn buy_arg_sql(field: &str) -> String {
     format!("(CASE WHEN t.initial_buy_instruction->>'{field}' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'{field}')::float8 END)")
 }
 
-/// ix_labels array length - SSOT unwrap via [`crate::storage::ix_labels_sql`].
+/// ix_labels array length - SSOT via [`crate::storage::ix_labels_sql`].
 fn ix_count_sql() -> String {
-    format!(
-        "COALESCE(jsonb_array_length({}), 0)",
-        crate::storage::ix_labels_sql::ix_labels_array_sql("t.ix_labels")
-    )
+    crate::storage::ix_labels_sql::ix_labels_count_sql("t.ix_labels")
 }
 
 /// RFC3339 rendering of a nullable timestamptz as text (matches `to_rfc3339()`),
@@ -1231,7 +1229,7 @@ impl TokenQuery {
             return false;
         }
         let ix_label = g(f, "ix_label");
-        if !ix_label.is_empty() && !ix_label_matches(ix_label, &t.instruction_labels) {
+        if !ix_label.is_empty() && !IxLabelFilter::parse(ix_label).matches(&t.instruction_labels) {
             return false;
         }
 
@@ -1425,96 +1423,6 @@ fn lifetime_minutes(t: &TokenSummary, now: DateTime<Utc>) -> Option<f64> {
     Some((last - t.created_at).num_milliseconds() as f64 / 60_000.0)
 }
 
-// --- ix_label matching (filters.ts parseIxLabelFilter) ---------------------
-
-enum IxFilter {
-    None,
-    Text(Vec<String>),
-    Json(Vec<String>),
-}
-
-/// Token's instruction labels, lowercased. Mirrors JS `String(v)`: bare string
-/// for JSON strings, the JSON text otherwise.
-fn ix_label_list(value: &Value) -> Vec<String> {
-    let arr: &[Value] = match value {
-        Value::Array(a) => a,
-        Value::Object(o) => match o.get("instructions") {
-            Some(Value::Array(a)) => a,
-            _ => &[],
-        },
-        _ => &[],
-    };
-    arr.iter()
-        .map(|v| match v {
-            Value::String(s) => s.to_lowercase(),
-            other => other.to_string().to_lowercase(),
-        })
-        .collect()
-}
-
-fn parse_ix_label_filter(raw: &str) -> IxFilter {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return IxFilter::None;
-    }
-    if trimmed.starts_with('[') || trimmed.starts_with('{') {
-        if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
-            let arr = match &parsed {
-                Value::Array(a) => Some(a.clone()),
-                Value::Object(o) => match o.get("instructions") {
-                    Some(Value::Array(a)) => Some(a.clone()),
-                    _ => None,
-                },
-                _ => None,
-            };
-            if let Some(a) = arr {
-                let needles: Vec<String> = a
-                    .iter()
-                    .map(|v| match v {
-                        Value::String(s) => s.trim().to_string(),
-                        other => other.to_string().trim().to_string(),
-                    })
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if !needles.is_empty() {
-                    return IxFilter::Json(needles);
-                }
-            }
-        }
-        // fall through to text mode
-    }
-    let needles: Vec<String> = trimmed
-        .split(['\n', ','])
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if needles.is_empty() {
-        IxFilter::None
-    } else {
-        IxFilter::Text(needles)
-    }
-}
-
-fn ix_label_matches(raw: &str, value: &Value) -> bool {
-    match parse_ix_label_filter(raw) {
-        IxFilter::None => true,
-        IxFilter::Json(needles) => {
-            let labels = ix_label_list(value);
-            needles.len() == labels.len()
-                && needles
-                    .iter()
-                    .zip(&labels)
-                    .all(|(n, l)| n.to_lowercase() == *l)
-        }
-        IxFilter::Text(needles) => {
-            let labels = ix_label_list(value);
-            needles
-                .iter()
-                .any(|n| labels.iter().any(|l| l.contains(n)))
-        }
-    }
-}
-
 // --- global search ---------------------------------------------------------
 
 fn opt_num_str<T: ToString>(o: Option<T>) -> String {
@@ -1574,22 +1482,6 @@ pub fn parse_numeric_predicate_public(text: &str) -> Option<NumPredPublic> {
         NumPred::Ne(v) => NumPredPublic::Ne(v),
         NumPred::Eq(v) => NumPredPublic::Eq(v),
     })
-}
-
-/// Public mirror of `IxFilter` for the SQL backend.
-pub enum IxFilterPublic {
-    None,
-    Text(Vec<String>),
-    Json(Vec<String>),
-}
-
-/// Parse an ix-label filter (public wrapper — same grammar as the in-RAM path).
-pub fn parse_ix_label_filter_public(raw: &str) -> IxFilterPublic {
-    match parse_ix_label_filter(raw) {
-        IxFilter::None => IxFilterPublic::None,
-        IxFilter::Text(v) => IxFilterPublic::Text(v),
-        IxFilter::Json(v) => IxFilterPublic::Json(v),
-    }
 }
 
 fn parse_numeric_predicate(text: &str) -> Option<NumPred> {

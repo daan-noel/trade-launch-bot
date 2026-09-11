@@ -18,6 +18,7 @@
 
 use serde_json::Value;
 
+use super::ix_label_filter::IxLabelFilter;
 use super::table_query::{as_flag, FilterOp, FilterSpec, SortSpec, TableRequest};
 
 /// Column type for a row field — decides which ops are legal and how a value
@@ -32,6 +33,10 @@ pub enum ColKind {
     /// silently drops `"yes"`, and one filtered as `Text` silently drops
     /// whichever spelling the producer didn't send. Sorts as 0/1.
     Bool,
+    /// Stored `ix_labels` JSON, filtered through the one
+    /// [`IxLabelFilter`](super::ix_label_filter::IxLabelFilter) grammar (mirrors
+    /// the SQL `FilterKind::IxLabels`). Not sortable.
+    IxLabels,
 }
 
 /// Resolves a frontend column key to the JSON field it reads + its type. `None` =
@@ -66,7 +71,7 @@ const SEARCH_FIELDS: [&str; 2] = ["mint_address", "symbol"];
 /// — it's row-owned and diverges per table (a position's vs. a token's date), so
 /// each host maps it itself.
 pub fn resolve_token_enrichment_key(key: &str) -> Option<(&'static str, ColKind)> {
-    use ColKind::{Bool, Number, Text};
+    use ColKind::{Bool, IxLabels, Number, Text};
     Some(match key {
         "name" => ("name", Text),
         "creator" | "creator_wallet" => ("creator_wallet", Text),
@@ -89,6 +94,7 @@ pub fn resolve_token_enrichment_key(key: &str) -> Option<(&'static str, ColKind)
         "cu_limit" => ("cu_limit", Number),
         "cu_price" => ("cu_price", Number),
         "ix_count" | "ix_labels_count" => ("ix_labels_count", Number),
+        "ix_labels" | "instruction_labels" => ("instruction_labels", IxLabels),
         // Flags: equality against the shared yes/no/true/false vocabulary, sorted
         // via the evaluator's bool→0/1 coercion.
         "migrated" | "is_migrated" => ("is_migrated", Bool),
@@ -212,6 +218,16 @@ fn row_matches(row: &Value, field: &str, kind: ColKind, spec: &FilterSpec) -> bo
         // Ordering / set ops on a boolean are meaningless → not a constraint.
         (ColKind::Bool, _) => true,
 
+        // Instruction labels: the one ix-label grammar over the stored JSON. A
+        // non-string operand or other op is not a constraint.
+        (ColKind::IxLabels, FilterOp::Contains | FilterOp::Eq) => match &spec.val {
+            Value::String(raw) => {
+                IxLabelFilter::parse(raw).matches(row.get(field).unwrap_or(&Value::Null))
+            }
+            _ => true,
+        },
+        (ColKind::IxLabels, _) => true,
+
         (ColKind::Number, FilterOp::Between) => {
             match (operand_num(&spec.min), operand_num(&spec.max)) {
                 (Some(min), Some(max)) => {
@@ -273,6 +289,7 @@ fn cmp_by_key(a: &Value, b: &Value, field: &str, kind: ColKind, desc: bool) -> s
         // still puts Yes first exactly as it did when they were `Number` columns.
         ColKind::Number | ColKind::Bool => cmp_opt(field_num(a, field), field_num(b, field), desc),
         ColKind::Text => cmp_opt(field_text(a, field), field_text(b, field), desc),
+        ColKind::IxLabels => std::cmp::Ordering::Equal,
     }
 }
 
@@ -518,6 +535,29 @@ mod tests {
             resolve_token_enrichment_key,
         );
         assert_eq!(page[0]["mint_address"], "b");
+    }
+
+    /// The IX Labels column filter runs the ix-label grammar on the in-memory
+    /// tables too. Unresolved, the key was dropped and every row stayed.
+    #[test]
+    fn ix_labels_filter_uses_the_grammar() {
+        let rows = vec![
+            json!({"mint_address":"a","instruction_labels":["Pump.Fun: Create_v2","Pump.Fun: BuyV2"]}),
+            json!({"mint_address":"b","instruction_labels":{"instructions":["Pump.Fun: Create_v2"]}}),
+            json!({"mint_address":"c","instruction_labels":["Pump.Fun: Create"]}),
+        ];
+        let count = |val: &str| {
+            apply_table_request(
+                &rows,
+                &req(json!({"filters":{"ix_labels":{"op":"contains","val":val}}})),
+                resolve_token_enrichment_key,
+            )
+            .1
+        };
+        assert_eq!(count("buyv2"), 1, "text: any label contains the needle");
+        assert_eq!(count("create_v2, create"), 3, "text: comma list is any-of");
+        assert_eq!(count(r#"["pump.fun: create_v2"]"#), 1, "json: ordered exact, object shape");
+        assert_eq!(count(r#"["Pump.Fun: Create_v2","Pump.Fun: BuyV2"]"#), 1);
     }
 
     #[test]

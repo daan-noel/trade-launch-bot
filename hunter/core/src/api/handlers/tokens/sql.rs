@@ -22,6 +22,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::api::ix_label_filter::IxLabelFilter;
 use crate::storage::token_enrichment::MARKET_CAP_SQL;
 use super::tokens::{
     ath_fep_sql_expr, col_filter_number_sql, col_filter_text_sql, cur_fep_sql_expr,
@@ -273,16 +274,7 @@ fn buy_arg_expr(field: &str) -> String {
 /// jsonb array length of the ix_labels, handling both the bare-array and the
 /// `{instructions:[…]}` object shape; non-array ⇒ 0.
 fn ix_count_expr() -> String {
-    format!(
-        "COALESCE(jsonb_array_length({}), 0)",
-        crate::storage::ix_labels_sql::ix_labels_array_sql("t.ix_labels")
-    )
-}
-
-/// Lowercase text elements of ix_labels (both shapes), as a SQL set expression
-/// usable inside EXISTS / array_agg. SSOT: [`crate::storage::ix_labels_sql`].
-fn ix_labels_elements_sql() -> String {
-    crate::storage::ix_labels_sql::ix_labels_elements_sql("t.ix_labels")
+    crate::storage::ix_labels_sql::ix_labels_count_sql("t.ix_labels")
 }
 
 // ---------------------------------------------------------------------------
@@ -448,40 +440,13 @@ fn numeric_pred_clause(col: &str, pred: &NumPredPublic, a: &mut SqlArgs) -> Stri
     }
 }
 
-/// ix_label filter → SQL (both text and JSON set-equality modes). Returns None when
-/// the filter parses to nothing (matches `IxFilter::None` ⇒ no clause / pass-all).
+/// ix_label filter → SQL through the one grammar ([`IxLabelFilter`]: JSON ordered
+/// exact vs text any-substring). `None` when the filter parses to nothing (no
+/// clause / pass-all).
 fn ix_label_clause(raw: &str, a: &mut SqlArgs) -> Option<String> {
-    use super::tokens::{parse_ix_label_filter_public, IxFilterPublic};
-    match parse_ix_label_filter_public(raw) {
-        IxFilterPublic::None => None,
-        IxFilterPublic::Text(needles) => {
-            // Any label contains any needle.
-            let elems = ix_labels_elements_sql();
-            let ors: Vec<String> = needles
-                .iter()
-                .map(|n| {
-                    let esc = n.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-                    let ph = a.push(SqlArg::Str(esc));
-                    format!("LOWER(e) LIKE '%' || {ph} || '%' ESCAPE '\\'")
-                })
-                .collect();
-            Some(format!(
-                "EXISTS (SELECT 1 FROM {elems} AS e WHERE {})",
-                ors.join(" OR ")
-            ))
-        }
-        IxFilterPublic::Json(needles) => {
-            // Exact set-equality, elementwise + same length (in-RAM compares zipped,
-            // so order matters): the ordered lowercase label array must equal the
-            // ordered lowercase needle array.
-            let elems = ix_labels_elements_sql();
-            let lowered: Vec<String> = needles.iter().map(|n| n.to_lowercase()).collect();
-            let ph = a.push(SqlArg::StrArray(lowered));
-            Some(format!(
-                "(ARRAY(SELECT LOWER(e) FROM {elems} WITH ORDINALITY AS x(e, ord) ORDER BY ord) = {ph})"
-            ))
-        }
-    }
+    let sql = IxLabelFilter::parse(raw).sql("t.ix_labels")?;
+    let ph = a.push(SqlArg::StrArray(sql.bind));
+    Some(format!("{}{ph}{}", sql.before, sql.after))
 }
 
 // ---------------------------------------------------------------------------

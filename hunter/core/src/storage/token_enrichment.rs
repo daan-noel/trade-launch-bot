@@ -31,6 +31,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::PgPool;
+use std::sync::LazyLock;
 
 use crate::serde_wire::u64_as_string;
 
@@ -230,12 +231,22 @@ pub async fn fetch_by_mints(
 /// [`as_flag`][crate::api::table_query::as_flag] vocabulary (`yes`/`no`,
 /// `true`/`false`, `1`/`0`) and bound as a real `bool` — never a `::text` compare,
 /// which only matches whichever spelling the producer happened to send.
+/// `IxLabels` cols are a JSONB `ix_labels` column read through the one
+/// [`IxLabelFilter`][crate::api::ix_label_filter::IxLabelFilter] grammar - an
+/// `ILIKE` over the JSON text cannot express its ordered-exact or any-of modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterKind {
     Text,
     Numeric,
     Bool,
+    IxLabels,
 }
+
+/// `ix_count` over the enrichment `t.ix_labels` - a `static` because the
+/// whitelists hand out `&'static str`, built from the one
+/// [`ix_labels_count_sql`][crate::storage::ix_labels_sql::ix_labels_count_sql].
+static IX_COUNT_SQL: LazyLock<String> =
+    LazyLock::new(|| crate::storage::ix_labels_sql::ix_labels_count_sql("t.ix_labels"));
 
 /// Map a frontend column key to its **trusted** whitelisted `ORDER BY` expression
 /// for the enrichment (`t.`/`i.`) columns. `None` = not a known enrichment sort
@@ -273,6 +284,7 @@ pub fn enrich_sort_sql(key: &str) -> Option<&'static str> {
         "max_cost_lamports" => "(t.initial_buy_instruction->>'max_cost_lamports')::numeric",
         "spendable_lamports_in" => "(t.initial_buy_instruction->>'spendable_lamports_in')::numeric",
         "min_tokens_out" => "(t.initial_buy_instruction->>'min_tokens_out')::numeric",
+        "ix_count" | "ix_labels_count" => IX_COUNT_SQL.as_str(),
         _ => return None,
     })
 }
@@ -285,7 +297,7 @@ pub fn enrich_sort_sql(key: &str) -> Option<&'static str> {
 /// ignored" contract, so the flag dropdown reads as if it filtered while the
 /// server-paged table under it shows everything.
 pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
-    use FilterKind::{Bool, Numeric, Text};
+    use FilterKind::{Bool, IxLabels, Numeric, Text};
     Some(match key {
         // tokens
         "symbol" => ("t.symbol", Text),
@@ -318,6 +330,9 @@ pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "max_cost_lamports" => ("(t.initial_buy_instruction->>'max_cost_lamports')::numeric", Numeric),
         "spendable_lamports_in" => ("(t.initial_buy_instruction->>'spendable_lamports_in')::numeric", Numeric),
         "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
+        "ix_count" | "ix_labels_count" => (IX_COUNT_SQL.as_str(), Numeric),
+        // The raw JSONB column; the ix-label grammar builds the predicate.
+        "ix_labels" | "instruction_labels" => ("t.ix_labels", IxLabels),
         _ => return None,
     })
 }
@@ -361,6 +376,18 @@ mod market_cap_ssot_tests {
             assert_eq!(enrich_filter_sql(display), expected, "{display}");
             assert_eq!(enrich_filter_sql(field), expected, "{field}");
         }
+    }
+
+    /// The IX columns every token table renders are filterable on the SQL-paged
+    /// strategy tables; a missing key is silently ignored, so the filter row
+    /// reads as applied while every row stays.
+    #[test]
+    fn ix_columns_are_filterable() {
+        assert_eq!(enrich_filter_sql("ix_labels"), Some(("t.ix_labels", FilterKind::IxLabels)));
+        let (count, kind) = enrich_filter_sql("ix_count").expect("ix_count whitelisted");
+        assert_eq!(kind, FilterKind::Numeric);
+        assert_eq!(count, crate::storage::ix_labels_sql::ix_labels_count_sql("t.ix_labels"));
+        assert_eq!(enrich_sort_sql("ix_count"), Some(count));
     }
 
     /// COALESCE, not a bare column: the position reads LEFT JOIN `tokens_info`,

@@ -5,6 +5,7 @@ use sqlx::{types::Json, PgPool};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::api::ix_label_filter::IxLabelFilter;
 use crate::api::table_query::{as_flag, FilterOp, FilterSpec, MAX_FILTER_IN_VALUES, TableRequest};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::models::portfolio::mark_bag;
@@ -948,6 +949,15 @@ pub(crate) fn push_filter_predicate(
         }
         // Ordering / set ops on a boolean are meaningless → drop.
         (FilterKind::Bool, _) => {}
+
+        // -- Instruction labels: the one ix-label grammar (JSON ordered-exact vs
+        // text any-substring), one `text[]` bind. Blank input drops the predicate.
+        (FilterKind::IxLabels, FilterOp::Contains | FilterOp::Eq) => {
+            let Some(text) = as_text(&spec.val) else { return };
+            let Some(sql) = IxLabelFilter::parse(&text).sql(col) else { return };
+            qb.push(" AND ").push(sql.before).push_bind(sql.bind).push(sql.after);
+        }
+        (FilterKind::IxLabels, _) => {}
 
         // -- Numeric columns: numeric comparisons -------------------------------
         // `In` is a text-only set op; on a numeric column it's a no-op.

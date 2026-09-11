@@ -59,6 +59,12 @@ Locked semantics (identical across backends):
 - a **numeric op on a text column** is dropped; a **null numeric field** can't satisfy a
   numeric predicate; **`contains` on a number** → equality;
 - **`in`** = set membership on a text column (operand array in `val`);
+- **`ix_labels`** runs the one ix-label grammar
+  ([`api/ix_label_filter.rs`](../../../core/src/api/ix_label_filter.rs), TS twin
+  `ixLabelsMatchFilter`): a JSON array is an ordered exact sequence, anything else a
+  comma/newline any-of substring. Every backend routes the key there (`FilterKind::IxLabels`,
+  `ColKind::IxLabels`, the column's `filterMatch`) - a text `ILIKE` over the JSON never
+  matches a pasted sequence, and an unresolved key shows every row;
 - ties break by **raw (case-sensitive) `mint` ASC** so paging is stable;
 - `!=` has no server op → maps to `eq`.
 

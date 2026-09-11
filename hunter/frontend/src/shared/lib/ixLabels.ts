@@ -144,7 +144,7 @@ export function ixLabelsCountTail(labels: string[]): string {
 }
 
 /**
- * Column / Tokens filter grammar (mirrors hunter-core `ix_label` SQL):
+ * Column / Tokens filter grammar (mirrors hunter-core `api/ix_label_filter.rs`):
  * - starts with `[`/`{` and parses as a JSON array (or `{ instructions: [...] }`)
  *   → ordered exact match (case-insensitive)
  * - otherwise → split on newline/comma; any needle is a substring of any label
