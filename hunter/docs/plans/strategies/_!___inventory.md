@@ -2,8 +2,8 @@
 
 Every idea, as a tree: **slot → family → idea → variant**.
 [_!___strategy.md](_!___strategy.md) is the basis;
-[_!___derive.md](_!___derive.md) is how a parent is derived from one paying wallet;
-[_!___workflow.md](_!___workflow.md) is the gates and the queue;
+[_!___derive.md](_!___derive.md) is the method, the gates and how a result is recorded;
+[_!___workflow.md](_!___workflow.md) is the open queue;
 [_!___evidence.md](_!___evidence.md) is the numbers. This file is the idea list used
 **on a parent** (derive phase 10). It does not invent the parent.
 
@@ -28,7 +28,9 @@ Editing rules:
 
 Status: **keep** (use when the sentence needs it) · **open** (not scored on a whole sentence at
 lag_115) · **red** (red on the sentences already run; not closed) · **dead** (closed by a
-mechanism) · **new** (never scored). `ev N` = [_!___evidence.md](_!___evidence.md) section N.
+mechanism) · **new** (never scored). `ev N` = [_!___evidence.md](_!___evidence.md) section N;
+`ev 7 (C9)` = that rule's row in the evidence ledger; `case N` = step N of
+[node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md) section 2.
 
 ---
 
@@ -158,7 +160,7 @@ A test names the move type, the minimum count of coins, the rate, and the window
 | instant wall | ≥ 10 % of the group's coins reach vsol 60 inside 15 s | red · ev 3.1 |
 | dump factory → exclude | groups whose coins dump once and die | keep (exclude) |
 | another move type | the test counts +100 % hills, or second hills, instead of walls | new |
-| group live now | the same creation fingerprint is trading on another coin right now | red · ev 6.20 |
+| group live now | the same creation fingerprint is trading on another coin right now | red · ev 7 (C15) |
 
 ### D2 Creator's document (metadata URI)
 
@@ -187,13 +189,13 @@ known at age 60 s cannot serve a fire at age 20 s.
 | tools already in | count of distinct tools that have bought this coin | open |
 | distinct wallets | ≥ N distinct wallets have printed on this coin | new |
 | quiet birth | few prints in the first N slots | new |
-| early life | vsol at age 60 s is 50-70 | open · ev 1.8 |
+| early life | vsol at age 60 s is 50-70 | open · ev 1.11 (known only from age 60 s) |
 | already made a hill | at least one completed hill | keep |
 | recovered from a flush | price fell into a flush and came back | new |
 | high peak, not at the wall | peak vsol already ≥ X, and the coin is still mid-curve | new |
 | never under a floor | vsol never fell below a named floor | new |
 | earlier frenzy sells not absorbed | of this coin's earlier sells ≥ 1 SOL inside a frenzy, at most a third were absorbed | red · ev 1.15 (fails out of sample) |
-| operator structures already round-tripped | many operator structures have bought and sold this coin | open · ev 1.13 |
+| operator structures already round-tripped | many operator structures have bought and sold this coin | open · case 28b |
 
 ### D4 Loss door: which coin goes to -50 %
 
@@ -234,7 +236,7 @@ on the trader's own coins.
 | nonce buyers | nonce, no seed account | open |
 | direct buys by instruction | direct pump.fun buys, split by instruction name | open |
 | operator structures | ≤ 50 wallets, ≥ 200 prints this week | open |
-| campaign structure | priority fee set before CU limit: a pusher's own bot | red · ev 6.6 |
+| campaign structure | priority fee set before CU limit: a pusher's own bot | red · ev 7 (campaign-break) |
 | never listed | seed racers and aggregators: they land after the decision | keep (exclude) |
 
 #### E1.2 Trigger forms
@@ -243,7 +245,7 @@ on the trader's own coins.
 | --- | --- | --- |
 | silent coin, then K buys of one listed structure | the coin is silent ≥ N slots, then one listed structure's run holds K buys. Silence and count work together, neither alone | open |
 | K buys from ≥ 2 listed structures in one slot | different actors in one slot. One structure buying near-equal amounts is one actor splitting: count it once | open |
-| first run on this coin | a listed structure's first run here, not its return | red · ev 6.21 |
+| first run on this coin | a listed structure's first run here, not its return | red · ev 7 (C16) |
 | └ any new structure | an ix structure this coin has not seen before | new |
 
 ### E2 Silence, then a spend
@@ -253,8 +255,8 @@ Name whose silence (the coin's, or one ix structure's) and who breaks it. A list
 | idea | meaning | status |
 | --- | --- | --- |
 | burst start | an ix structure's first buy ≥ 0.5 SOL after that structure is silent, on a mid-life coin; tool or router structures | keep (with slow-wall) · ev 6.4 |
-| └ silence ≥ 10 slots, any structure | the same, any ix structure, ≥ 10 silent slots | red · ev 6.5 |
-| first buy after a silent coin | first buy ≥ 0.5 SOL after the coin is silent ≥ 10 slots | red · ev 6.13 |
+| └ silence ≥ 10 slots, any structure | the same, any ix structure, ≥ 10 silent slots | red · ev 7 (C5) |
+| first buy after a silent coin | first buy ≥ 0.5 SOL after the coin is silent ≥ 10 slots | red · ev 7 (C8) |
 | new structure breaks the silence | the breaker is an ix structure this coin has not seen | red |
 
 ### E3 An operator's plan is unfinished
@@ -264,15 +266,15 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 
 | idea | meaning | status |
 | --- | --- | --- |
-| first leg | first buy ≥ 0.5 SOL of an operator structure that buys in 2+ bursts on ≥ 25 % of its coins | red · ev 6.14 |
-| └ later leg | that structure's second-or-later burst on this coin | red · ev 6.16 |
-| this coin's second burst | any ix structure already burst once on this coin, silent >= 10 slots, starts again; one fire per (coin, structure); not a cross-coin class | red · ev 6.17 |
-| clip left | the structure has spent ≥ 0.3 SOL here and is still under 60 % of its median spend per coin | red · ev 6.14 |
-| under its own sell | coin silent, vsol below this structure's last sell here, no buy back yet; the structure sells-then-buys on ≥ 25 % of its coins | red · ev 6.15 |
-| └ operator structures only | the same, operator structures only | red · ev 6.14 |
+| first leg | first buy ≥ 0.5 SOL of an operator structure that buys in 2+ bursts on ≥ 25 % of its coins | red · ev 7 (C9) |
+| └ later leg | that structure's second-or-later burst on this coin | red · ev 7 (C11) |
+| this coin's second burst | any ix structure already burst once on this coin, silent >= 10 slots, starts again; one fire per (coin, structure); not a cross-coin class | red · ev 7 (C12) |
+| clip left | the structure has spent ≥ 0.3 SOL here and is still under 60 % of its median spend per coin | red · ev 7 (C9) |
+| under its own sell | coin silent, vsol below this structure's last sell here, no buy back yet; the structure sells-then-buys on ≥ 25 % of its coins | red · ev 7 (C10) |
+| └ operator structures only | the same, operator structures only | red · ev 7 (C9) |
 | clip step-up | this buy is larger than the structure's last buy here | new |
 | first print here this hour | the structure's first print on this coin in the current UTC hour | new |
-| arrives from another coin | the structure is buying another coin, then prints here | red · ev 6.18 |
+| arrives from another coin | the structure is buying another coin, then prints here | red · ev 7 (C13) |
 
 ### E4 A count crosses a line
 
@@ -280,21 +282,22 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 | --- | --- | --- |
 | second outside buyer | the second non-creator buyer, age 5-300 s | red · ev 7.0 |
 | first outside buyer after the creator | the first non-creator buy after the creator has bought | new |
-| operator structures cross K | the count of operator structures on this coin rises through K | new |
-| first operator structure after only creator and seed racers | first non-creator, non-seed operator-structure buy >= 0.5 SOL; prior prints are only the creator and seed racers; one fire per coin | red · ev 6.20 |
+| operator structures cross K | the count of operator structures on this coin rises through K | open · ev 5.10 occupancy red; leftover unread |
+| recipes in 2 s cross K | distinct recipes in the last 2 s rises through K | open · ev 5.10 occupancy red; leftover unread |
+| first operator structure after only creator and seed racers | first non-creator, non-seed operator-structure buy >= 0.5 SOL; prior prints are only the creator and seed racers; one fire per coin | red · ev 7 (C15) |
 | buy flow spike | a buy lands at ≥ 3x the coin's trailing 30-slot buy rate | open |
 
 ### E5 After sellers
 
 | idea | meaning | status |
 | --- | --- | --- |
-| buy in the dip after a hill | a tool or operator structure buys while price is still down after a hill | red · ev 6.2 |
-| first buy after a flush stops | first buy ≥ 0.5 SOL (not a seed racer) after a flush, once vsol makes no new low for ≥ 10 slots; one fire per flush | red · ev 6.14 |
+| buy in the dip after a hill | a tool or operator structure buys while price is still down after a hill | red · ev 7 (machine print in the dip) |
+| first buy after a flush stops | first buy ≥ 0.5 SOL (not a seed racer) after a flush, once vsol makes no new low for ≥ 10 slots; one fire per flush | red · ev 7 (C9) |
 | sell inside a frenzy | a public sell ≥ 1 SOL inside a frenzy, a new high in the last 20 s, by a seller who bought ≤ 30 s ago; fire on the sell | keep · ev 1.20, 1.22, 1.26, 1.27 (rule 1's event; the frenzy's "≥ 2 SOL bought in 2 s" half drops out; +4.44 % 5/5 out of sample at the engine's grain; every term sits at its break-even margin, loosening adds no money; derive 5.2 passes it, cost 1.41 %, peak +7.46 %) |
 | └ 9999hu sell >= 1 | the same print class on a younger one-shot; leftover on the fires it takes is live; occupancy of every fire at its age is red; working X on the acted pool is tp15 sl40 t70 | open · ev 5.11, 5.12 (parent); do not copy age <= 16 occupancy (launch first-sell); do not copy its close |
 | capitulation cascade | a public sell ≥ 1 SOL from a seller at a loss, with the price down ≥ 5 % in 10 s, a second big sell in 10 s and a busy tape | red · ev 1.16. The second operator's dip leg books +3.50 % 8/8 on its own picks at our seat; no public spelling reaches it |
 | big buy after a dip | a buy ≥ 0.5 SOL opening a burst after ≥ 0.4 s of silence, the price down over 10 s | dead at our seat · ev 1.16: the operator that trades it reacts in 47 ms |
-| first buy after a run of sells | several sells in a row, then a buy | red · ev 6.19 |
+| first buy after a run of sells | several sells in a row, then a buy | red · ev 7 (C14) |
 | first buy after the crowd left | the last hill's crowd holds under 50 % | new |
 | first buy after a structure sold | anyone's first buy after an ix structure sold this coin | new |
 | top holders sold | the largest holders have sold | new |
@@ -303,11 +306,11 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 
 | idea | meaning | status |
 | --- | --- | --- |
-| two ix structures in one slot | two different ix structures print in the same slot | keep (term) · ev 6.1 |
+| two ix structures in one slot | two different ix structures print in the same slot | keep (term) · ev 7 (zigzag turn) |
 | alone in its slot | no other print in the same slot | new |
-| high priority/tip fee | this print pays at or above the 75th percentile | keep (term) · ev 6.1 |
+| high priority/tip fee | this print pays at or above the 75th percentile | keep (term) · ev 7 (zigzag turn) |
 | └ against its own structure | ≥ 5x its ix structure's median priority/tip fee | open |
-| size buy ≥ 1 SOL | a public buy ≥ 1 SOL on a mid-life coin | red · ev 6.7 |
+| size buy ≥ 1 SOL | a public buy ≥ 1 SOL on a mid-life coin | red · ev 7 (G1) |
 | large among recent prints | this print's SOL ≥ the 75th percentile of recent prints | new |
 
 ### E7 Clock
@@ -315,6 +318,7 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 | idea | meaning | status |
 | --- | --- | --- |
 | fixed age | fire when the coin reaches age T | open |
+| └ sell >= 1 at age <= 16 s occupancy | first public sell >= 1 SOL while the coin is still young | red as 9999hu's E · ev 5.11 (fire age p50 2 s, top 1 % 71 %; its own 8-16 s band is -3.74 % 0/7) |
 | first size buy after age T | first buy ≥ 0.5 SOL after age 60 s, no silence cut | new |
 
 ### E8 Graveyard
@@ -346,7 +350,7 @@ pay and where a loss is bounded.
 | age band | age inside a window | keep |
 | └ established coin | age ≥ 158 s and ≥ 368 public wallets holding; a frenzy on a young, thin coin dies | keep · ev 1.14, holds out of sample 1.15; holders re-read in 1.20 and kept |
 | room under the wall | vsol after the fire ≤ 100, so a +15 % target fits well under graduation (115); above 107.2 a trade closes on the completing buy, at a price the curve no longer offers | keep · ev 1.20 (safety term, not a fit) |
-| sell-reactive buyers on the coin | distinct wallets on this coin that bought within 300 ms of a public sell ≥ 1 SOL | red · ev 1.19 (not the arrival of the member's kind) |
+| sell-reactive buyers on the coin | distinct wallets on this coin that bought within 300 ms of a public sell ≥ 1 SOL | red · case 41 (not the arrival of the member's kind) |
 | vsol band | vsol inside a window | keep |
 | headroom | vsol ≤ 81 for a +100 % target | keep |
 | pool alive | real reserve > 0 and the coin still prints | new |
@@ -398,7 +402,7 @@ The permission side of E1.
 | coin already silent | the coin is silent when the print lands | new |
 | operator structures 3-7 | several operator structures here, not a crowd | new |
 | last print was a sell | the print before this one is a sell | new |
-| slow re-entry state | quiet ≥ 60 s, ≥ 2 hills, a returning structure, pullback 40-70 %, vsol 55-80 | red · ev 6.1 |
+| slow re-entry state | quiet ≥ 60 s, ≥ 2 hills, a returning structure, pullback 40-70 %, vsol 55-80 | red · ev 7 (zigzag turn) |
 
 ---
 
@@ -409,16 +413,18 @@ The permission side of E1.
 | idea | meaning | status |
 | --- | --- | --- |
 | clock | close at T, 15-600 s | keep (control) |
+| └ clock 25 on 9999hu acted sell >= 1 | copies its 20-30 s close; that close is the give-back | red · ev 5.12 |
 | take profit | close at +25 / +40 / +100 % | keep (control) |
 | unarmed trail | 20-40 % off the peak, counted from entry, cap 600-1800 s | keep |
 | armed trail with a stop | trail only after +arm, a hard stop until then; shipped as arm +21 %, trail 36 %, stop -43.75 %, cap 1200 s | keep · ev 4.7 |
 | └ no stop | a position that never arms has no stop | red |
 | tp100 / trail50 / cap1200 | keeps the tail; fits a trough entry | keep |
 | bracket | take profit +20 %, stop -60 %, clock 90 s (rule 1 at the engine's grain; +15 % / -40 % on the pool before it, -25 % before the wall term, +10 % / 60 s on the wider pool) | keep · ev 1.22, 1.24 |
+| └ tp15 sl40 t70 on 9999hu acted sell >= 1 | working X: +1.61 % 7/7 body +4.47; top 1 % 43 %, capped red | open · ev 5.12 |
 | └ clock 240 s | the same bracket held longer | red · ev 1.20 (study +0.6 SOL, holdout -1.2 SOL) |
-| └ breakeven after +N | once up +3 / +5 / +7 %, close back at the fill | red · ev 1.13 |
+| └ breakeven after +N | once up +3 / +5 / +7 %, close back at the fill | red · case 31 |
 | └ half out at the target | sell half at the target, ride the rest | red · ev 1.24 (half at +20 %, the rest to 0.6 x the wall: fails a fold) |
-| └ trail after the target | once up +10 %, trail 5-10 % off the peak | red · ev 1.13, 1.24 |
+| └ trail after the target | once up +10 %, trail 5-10 % off the peak | red · ev 1.24 |
 | └ stepped trail | the higher the peak, the set trail off it: peak +10 % -> 5 %, +30 % -> 10 %, ... | red · ev 1.24 (tight: sells the winners' dips; wide: top 1 % 25 %) |
 | headroom target | take profit at a share of the room to the wall: f x ((115 / vsol)^2 - 1) | open · ev 1.24, 1.25 (0.4 x with rule 1's 90 s clock beats rule 1 on every holdout line, read after selection; 0.3 x with 180 s loses it). Rule 1b = `m_position.room_taken >= 40`, engine books the Python tickets |
 | plain hold | a fixed hold, no stop, no target | open |
@@ -434,9 +440,9 @@ fill.
 | --- | --- | --- |
 | new buyers stop arriving | the crowd stops showing up | red · ev 1.24 on rule 1 (open · ev 4.7 elsewhere) |
 | flush resumes | vsol makes a new low after an after-flush entry | keep |
-| back to the pre-event low | vsol revisits the low before the event | red · ev 6.19 |
-| firing structure goes silent | the ix structure we fire on stops printing | red · ev 6.13 |
-| operator structures stop arriving | no new operator structure arrives | red · ev 6.20 |
+| back to the pre-event low | vsol revisits the low before the event | red · ev 7 (C14) |
+| firing structure goes silent | the ix structure we fire on stops printing | red · ev 7 (C8) |
+| operator structures stop arriving | no new operator structure arrives | red · ev 7 (C15) |
 | priority/tip fees fall | later prints stop paying to land | new |
 | give back this burst's peak | trail against this ix structure's own peak, not the coin's | new |
 
@@ -444,12 +450,12 @@ fill.
 
 | idea | meaning | status |
 | --- | --- | --- |
-| firing structure sells | the ix structure we fire on sells | keep · ev 6.16 |
+| firing structure sells | the ix structure we fire on sells | keep · ev 7 (C11) |
 | pusher sells | the last hill's pusher sells | open |
 | creator sells | the creator prints a sell | new |
 | ride the creator | hold while the creator holds, trail after the creator sells | new |
-| firing structure leaves | the ix structure we fire on prints on another coin | red · ev 6.18 |
-| sell into a buy | once up ≥ 10 %, sell on the first public buy ≥ 1 SOL or +3 % print | red · ev 1.13, 1.24 |
+| firing structure leaves | the ix structure we fire on prints on another coin | red · ev 7 (C13) |
+| sell into a buy | once up ≥ 10 %, sell on the first public buy ≥ 1 SOL or +3 % print | red · ev 1.24, 5.12 (does not beat the wide-stop bracket on 9999hu's acted pool) |
 
 ---
 

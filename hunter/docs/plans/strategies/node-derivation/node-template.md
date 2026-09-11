@@ -1,13 +1,14 @@
 # <Node>: rule <n> and the member book
 
-A new node's working file starts as a copy of this one; [hot-tape-rule-1.md](hot-tape-rule-1.md)
+A new node's case file starts as a copy of this one; [hot-tape-rule-1.md](hot-tape-rule-1.md)
 is the filled example. Fill each section as the phase of [_!___derive.md](../_!___derive.md)
 that produces it runs; an empty slot stays written as empty, never dropped. Scripts go in
-`node-derivation/<node>/`, one per step, each opening with its step and question, and the
-step-by-step index in `<node>/README.md`. Toolkit calls for each phase:
-[method.md](method.md).
+`node-derivation/<node>/`, one per step, each opening with its step and question; they stay
+local unless a rule or a gate needs them re-run. Toolkit calls for each phase:
+[toolkit/README.md](toolkit/README.md).
 
-Numbers: [_!___evidence.md](../_!___evidence.md) <sections>. Code: [toolkit/](toolkit/README.md).
+This file is the record of every step (derive section 13). Numbers a rule, a law or an open line
+stands on: [_!___evidence.md](../_!___evidence.md) <sections>.
 
 Tapes: the **study tape** (<from> to <to>, <n> prints, <days> days), where every threshold is read;
 the **holdout tape** (<from> to <to>), where changes are only confirmed.
@@ -59,25 +60,20 @@ Plain words: <one sentence>.
 
 ## 2. How rule <n> was derived: the chain
 
-One row per step, in order, dead ends included.
+One row per step, in order, dead ends included. The phase is [_!___derive.md](../_!___derive.md)'s.
 
 | step | question | what it shows | what it does to the rule | script | ev |
 | --- | --- | --- | --- | --- | --- |
-| A2 | Which members pay, and at which seat? | | | | |
-| B1 | What print does each react to, and at what lag? | | | | |
-| B2 | Does leftover exist at our 115 ms fill on the fires it takes? | | | | |
-| B3 | Which of those prints does it act on? | | | | |
-| B4 | Does it hold as a public sentence on every coin? | | | | |
-| C1-C3 | Which coins? | | | | |
-| D1-D2 | How does it exit, on the selected pool? | | | | |
-| E1 | Which fires die? | | | | |
-| F1 | Does it hold on unseen days? | | | | |
-| G0-G8 | Every slot re-derived on the sentence's own pool | | | | |
-
-### What was tried and did not make it
-
-| idea | result | why it is out |
-| --- | --- | --- |
+| 4 | Which members pay, and at which seat? | | | | |
+| 5.1 | What print does each react to, and at what lag? | | | | |
+| 5.2 | Does leftover exist at our 115 ms fill on the fires it takes? | | | | |
+| 6.1 | Which of those prints does it act on? | | | | |
+| 6.2 | Does it hold as a public sentence on every coin? | | | | |
+| 7 | Which coins? | | | | |
+| 8 | How does it exit, on the selected pool? | | | | |
+| 9 | Which fires die? | | | | |
+| 12.1 | Does it hold on unseen days? | | | | |
+| 12.2-12.11 | Every slot re-derived on the sentence's own pool, then as the engine computes it | | | | |
 
 ---
 
@@ -92,7 +88,7 @@ One row per step, in order, dead ends included.
 
 | where | what |
 | --- | --- |
-| `<node>/README.md` | every script, by step, with its evidence section |
+| `<node>/README.md` | the tracked scripts, and where the step scripts are kept |
 | `node-derivation/data/<prefix>_*.parquet` | the candidate tables and outputs |
 
 ## Open

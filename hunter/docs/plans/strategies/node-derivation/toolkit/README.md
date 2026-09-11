@@ -1,9 +1,10 @@
 # toolkit: the method as functions
 
-Each module answers one step of [../method.md](../method.md). They are generic: a node is named by
-its roster label, a member by its address prefix, a trigger by a function over a coin's facts.
-The hot-tape case runs on them ([../hot-tape/](../hot-tape/README.md), phase G) and
-`hot-tape/toolkit_check.py` re-runs its steps 16, 21, 24 and 39 next to the recorded numbers.
+Each module answers one phase of [../../_!___derive.md](../../_!___derive.md); the step column below
+is that phase. They are generic: a node is named by its roster label, a member by its address
+prefix, a trigger by a function over a coin's facts. Rule 1 runs on them
+([../hot-tape/](../hot-tape/README.md)) and `hot-tape/toolkit_check.py` re-runs the trigger, seat,
+contrast and hazard steps next to the recorded numbers.
 
 ```python
 import sys; sys.path.insert(0, "<path to node-derivation>")
@@ -34,33 +35,33 @@ lines (copy [../hot-tape/_paths.py](../hot-tape/_paths.py)).
 
 | module | step | call | returns |
 | --- | --- | --- | --- |
-| `paths` | 0 | `data(name)`; `ROOT`, `DATA`, `SHARED`, `LAKE`, `LOCAL`, `HUNTER` | where things live |
-| `lake_export` | 0.1 | `export(prefix, days, all_legs=False)`; `python -m toolkit.lake_export PREFIX DAY ... [--all-legs]` | `data/PREFIX_prints/_wallets/_tok.parquet`; register it in `tapes.TAPES`. The default keeps the last leg of each transaction (the study tape's grain); `--all-legs` keeps every leg (the engine's grain, tapes `holdout_legs`, `study_exact`, `holdout_exact`); every export carries `t_us` (the engine's clock) and `vtok` (spot = vsol / vtok) |
-| `tapes` | 0.1-0.2 | `load(name, addresses)`, `roster(node)`, `Session.wallet(prefix)` | a `Session`: `T`, `c_s` (creation s per run), `t_min` (first fire time), `days`, `ids`, `is_node` |
+| `paths` | - | `data(name)`; `ROOT`, `DATA`, `SHARED`, `LAKE`, `LOCAL`, `HUNTER` | where things live |
+| `lake_export` | 2.1 | `export(prefix, days, all_legs=False)`; `python -m toolkit.lake_export PREFIX DAY ... [--all-legs]` | `data/PREFIX_prints/_wallets/_tok.parquet`; register it in `tapes.TAPES`. The default keeps the last leg of each transaction (the study tape's grain); `--all-legs` keeps every leg (the engine's grain, tapes `holdout_legs`, `study_exact`, `holdout_exact`); every export carries `t_us` (the engine's clock) and `vtok` (spot = vsol / vtok) |
+| `tapes` | 2.1-2.2 | `load(name, addresses)`, `roster(node)`, `Session.wallet(prefix)` | a `Session`: `T`, `c_s` (creation s per run), `t_min` (first fire time), `days`, `ids`, `is_node` |
 | `facts` | all | `Run(S, r)`: `.j(w)`, `.recipes(k, w)`, `.wallets(k, w)`, `.bought(k, w)`, `.sold(k, w)`, `.move(k, w)`, `.holders()`, `.holders_and_seller(flag)`, `.pub_bought_incl(w)` | the public tape state at every print. `.holders()` counts reserve-sized bags above zero, and a full exit leaves float residue, so it reads about distinct buyers, not holders (evidence 1.22) |
-| `seat` | A1-A2, B2 | `episodes(S, w)`; `seat_book(S, E, caps)`; `reaction(S, E, trigger_fn, max_trig)`; `leftover(S, w, E, trigger_fn, max_trig=0.3)`, `leftover_summary(L)` | positions (k, ks, pnl, peak, held); RACE / FOLLOW clock books; `reaction`: lag, ahead and a clock (5.3 columns); `leftover`: per acted and ignored ticket the reaction cost, peak leftover at its hold p10 / p50 / p90, missed, break-even first; the summary's **behind** row is the derive 5.2 veto |
-| `trigger` | B1, D1 | `excess_intensity(S, {group: [ids]}, cases="buy"/"close", controls="coin"/"hold", near="node"/"group")`; `peak(lift, cls)` | lift and excess tables, class x lag bin (15 print classes, 14 lag bins to 5 s) |
-| `contrast` | B3 | `label_acted(C, S, w, window)`; `strat_rank(acted, ignored, cols)` | the within-coin rank of each fact (0.50 = nothing) |
-| `candidates` | B3-B4, G1 | `build(S, trigger, floor, exit, actor, extra)` | one row per trigger print: 26 standard facts, the exit outcome (y, x, why, hold, v0, v1), actor diagnostics (act, act_lag, act_pre, act_in) |
-| `book` | every book | `mask`, `occupy(C, m, cool_sl, max_per_coin)`, `fires(C, spec)`, `ledger(F, days)`, `capped(F)`, `reprice(F, b)`, `save` / `load` | the ledger of section 3 of the method |
-| `walkforward` | C3, E1, G2-G5 | `folds`, `thresholds`, `converge(..., veto)`, `new_terms`, `axes`, `cut_noise` | the keep rule's verdicts and logs |
-| `exits` | D2, G5 | `X(name, kind, arm, sl, cap, ...)`, `run_exit(sp, t, v, side, sol, mv, cb3, ei)`, `outcomes(S, C, exits)` | net SOL, exit index, reason, hold; every candidate under each exit |
-| `hazard` | D1 | `closing_hazard(S, w, pool)` | its closes by pool, and the hazard table (profit band x time held) |
-| `graduation` | G3 | `grad_flag(F, T)`, `amm_net(v0, d)` | which tickets exit on the completing print; their price in the migrated pool at a drop d |
+| `seat` | 3-4, 5.2 | `episodes(S, w)`; `seat_book(S, E, caps)`; `reaction(S, E, trigger_fn, max_trig)`; `leftover(S, w, E, trigger_fn, max_trig=0.3)`, `leftover_summary(L)` | positions (k, ks, pnl, peak, held); RACE / FOLLOW clock books; `reaction`: lag, ahead and a clock (5.3 columns); `leftover`: per acted and ignored ticket the reaction cost, peak leftover at its hold p10 / p50 / p90, missed, break-even first; the summary's **behind** row is the derive 5.2 veto |
+| `trigger` | 5.1, 8.1 | `excess_intensity(S, {group: [ids]}, cases="buy"/"close", controls="coin"/"hold", near="node"/"group")`; `peak(lift, cls)` | lift and excess tables, class x lag bin (15 print classes, 14 lag bins to 5 s) |
+| `contrast` | 6.1 | `label_acted(C, S, w, window)`; `strat_rank(acted, ignored, cols)` | the within-coin rank of each fact (0.50 = nothing) |
+| `candidates` | 6.1-6.2, 12.3 | `build(S, trigger, floor, exit, actor, extra)` | one row per trigger print: 26 standard facts, the exit outcome (y, x, why, hold, v0, v1), actor diagnostics (act, act_lag, act_pre, act_in) |
+| `book` | every book | `mask`, `occupy(C, m, cool_sl, max_per_coin)`, `fires(C, spec)`, `ledger(F, days)`, `capped(F)`, `reprice(F, b)`, `save` / `load` | the ledger of derive section 11 |
+| `walkforward` | 7.3, 9, 12.4-12.7 | `folds`, `thresholds`, `converge(..., veto)`, `new_terms`, `axes`, `cut_noise` | the keep rule's verdicts and logs |
+| `exits` | 8.2, 12.7 | `X(name, kind, arm, sl, cap, ...)`, `run_exit(sp, t, v, side, sol, mv, cb3, ei)`, `outcomes(S, C, exits)` | net SOL, exit index, reason, hold; every candidate under each exit |
+| `hazard` | 8.1 | `closing_hazard(S, w, pool)` | its closes by pool, and the hazard table (profit band x time held) |
+| `graduation` | 12.5 | `grad_flag(F, T)`, `amm_net(v0, d)` | which tickets exit on the completing print; their price in the migrated pool at a drop d |
 
 ## A new node in ten calls
 
 ```python
 S = tapes.load("study", tapes.roster(NODE))
 w = {p: S.wallet(p) for p in MEMBERS}
-E = {p: seat.seat_book(S, seat.episodes(S, w[p]), caps=(15.0,)) for p in MEMBERS}       # A2
-lift = trigger.excess_intensity(S, {p: [w[p]] for p in PAYERS})                          # B1
-R = seat.reaction(S, E[p], lambda run: <the trigger class as a mask>)                     # B2
-C = contrast.label_acted(candidates.build(S, <trigger on its coins>), S, w[p], window)   # B3
+E = {p: seat.seat_book(S, seat.episodes(S, w[p]), caps=(15.0,)) for p in MEMBERS}       # 4
+lift = trigger.excess_intensity(S, {p: [w[p]] for p in PAYERS})                          # 5.1
+L = seat.leftover(S, w[p], E[p], lambda run: <the trigger class as a mask>)              # 5.2
+C = contrast.label_acted(candidates.build(S, <trigger on its coins>), S, w[p], window)   # 6.1
 contrast.strat_rank(C[C.act == 1], C[(C.act == 0) & C.run.isin(C[C.act == 1].run)], facts)
 C = candidates.build(S, trigger, floor, exits.X(...), actor=w[p]); book.save(C, S.days, PFX, "study")
-Ecl, hz, cnt = hazard.closing_hazard(S, w[p], pool)                                       # D1
-base, log = walkforward.converge(C, S.days, spec, grid, veto=bars)                        # G2
+Ecl, hz, cnt = hazard.closing_hazard(S, w[p], pool)                                       # 8.1
+base, log = walkforward.converge(C, S.days, spec, grid, veto=bars)                        # 12.4
 ```
 
 Then the holdout: `tapes.load("holdout", ...)`, the same `candidates.build`, and `book.fires` with

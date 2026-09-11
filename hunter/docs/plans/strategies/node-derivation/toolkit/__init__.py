@@ -1,4 +1,4 @@
-"""The node-derivation toolkit: the method of ../method.md as functions, for any wallet.
+"""The node-derivation toolkit: the method of ../../_!___derive.md as functions, for any wallet.
 
 Importing the package puts the shared study kernel (../../study-kernel: kernel.py, tape.py,
 cvx.py) on sys.path, so every module prices through the one kernel.

@@ -232,7 +232,7 @@ p50 39.8 s and p90 209.3 s.
 
 The public leftover of this node at 115 ms is **red on the doors on this tape**: the print they
 follow is the first size buy after token silence, that burst lasts ~80 ms, and a 115 ms fill
-lands after it ([_!___evidence.md](_!___evidence.md) 6.5). The slow-wall door against this
+lands after it ([_!___evidence.md](_!___evidence.md) 7, the C5 rows). The slow-wall door against this
 node's event is the one cell still unrun.
 
 ### 3.5 Deep-age big clip - 3 wallets, 68.2 SOL, and the only node that is not a lottery
@@ -264,7 +264,7 @@ interval of 4.90 to 11.89. The shape is interesting; the level is not establishe
 
 The public leftover of this node at 115 ms is **red**: a size buy on a live mid-life tape
 is not his tell (response equals the base), and he starts the burst himself half the time
-([_!___evidence.md](_!___evidence.md) 6.7). The on-tape remainder is which coin (C6).
+([_!___evidence.md](_!___evidence.md) 7, the G1 row). The on-tape remainder is which coin (C6).
 
 ---
 
@@ -308,9 +308,9 @@ Reachability differs by node, and the seat decides it, not the margin:
 | --- | --- | --- |
 | instant launch | **no** | entry inside 11 s of creation; consumed in about two slots |
 | mid-tape one-shot | **open, and the door is found** | behind the slow-wall launch door with the permission the burst-start print books **+6.97 % a trade** on 986 trades and clears the client gate at 95.9 %, against -3.33 behind the best public door ([_!___evidence.md](_!___evidence.md) 6.4). It fails the tail and the per-day ticket floor - 16/177/210/24/28/9 a day, over fifty twice in six (4.8) |
-| hot-tape re-entry | **red here** at lag_115 | terms that separate their buys from the tape at lift 2.0-2.2 capture a **+0.29 %** price move, where this node's 1.10 % NET margin implies **+3.65 %** (evidence 6.10). At a zero fee the cell still loses. **`margin` in this file is net of the 125 bps fee** (`rb-solo-nodes.py` 140), so convert before comparing: `move = (margin + 2.5)/0.9875`. The lag does NOT pay on the buy leg on an aged coin: mean -0.66 %, cheaper than the decision print only 22.5 % of the time - a direction factor is a property of tape DENSITY, not of a side |
-| quiet deep-age | **red here** at lag_115 | the burst they follow lasts ~80 ms, so the fill is after it. Campaign-break v0 is a different sentence and is red too at 115 ms (6.6) |
-| deep-age big clip | **red here** at lag_115 | a public size print is not the tell (response = base). He starts the burst half the time (6.7) |
+| hot-tape re-entry | **red here** at lag_115 | terms that separate their buys from the tape at lift 2.0-2.2 capture a **+0.29 %** price move, where this node's 1.10 % NET margin implies **+3.65 %** (evidence 7, the H1 row). At a zero fee the cell still loses. **`margin` in this file is net of the 125 bps fee** (`rb-solo-nodes.py` 140), so convert before comparing: `move = (margin + 2.5)/0.9875`. The lag does NOT pay on the buy leg on an aged coin: mean -0.66 %, cheaper than the decision print only 22.5 % of the time - a direction factor is a property of tape DENSITY, not of a side |
+| quiet deep-age | **red here** at lag_115 | the burst they follow lasts ~80 ms, so the fill is after it. Campaign-break v0 is a different sentence and is red too at 115 ms (evidence 7) |
+| deep-age big clip | **red here** at lag_115 | a public size print is not the tell (response = base). He starts the burst half the time (evidence 7) |
 
 **What the 26 are for, measured (C6).** Their creation-sequence set is **not** a door: 143
 sequences covering 95.3 % of coins and 97.3 % of prints, concentration 1.02, and -23.07 SOL

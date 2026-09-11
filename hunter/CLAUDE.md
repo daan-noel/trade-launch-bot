@@ -42,20 +42,24 @@ Read before trusting any backtest number:
 
 **Searching for a new trading rule?**
 [_!___strategy.md](docs/plans/strategies/_!___strategy.md) is the basis.
-[_!___derive.md](docs/plans/strategies/_!___derive.md) is the playbook from one paying
+[_!___derive.md](docs/plans/strategies/_!___derive.md) is the method: from one paying
 wallet to a sentence (pick, leftover existence at 115 ms, event, then D/X/P; inventory
-search on that parent). An event candidate is correct when he pays at RACE, reacts to it,
-and, on the tickets where our fill lands behind his buy, reaction cost is under 2 % and
-peak leftover inside his hold p50 covers round-trip cost (`seat.leftover`). A specific
-exit is how that leftover is eaten later; it is not the 5.2 veto.
+search on that parent), the gates and ship bars, and how a result is recorded. An event
+candidate is graded by leftover existence behind his buy at our fill (derive 5.2), never
+by one exit's P&L.
 [_!___inventory.md](docs/plans/strategies/_!___inventory.md) is every idea, used after
 the event is named.
-[_!___workflow.md](docs/plans/strategies/_!___workflow.md) is the gates, the campaign
-queue, and how a result is recorded.
-[_!___evidence.md](docs/plans/strategies/_!___evidence.md) is every standing measurement.
+[_!___workflow.md](docs/plans/strategies/_!___workflow.md) is the open queue.
+[_!___evidence.md](docs/plans/strategies/_!___evidence.md) is the standing measurements
+and the ledger of every rule booked. The worked example is
+[hot-tape-rule-1.md](docs/plans/strategies/node-derivation/hot-tape-rule-1.md).
 **Money on the whole conjunction is the only score, judged against the cell's own
 break-even, under both exit families.** A red number closes a sentence, never a slot.
 A 4-tuple of unused inventory ideas is not a parent.
+**Record each fact once** (derive 13): a step is one row of its case file's chain; an
+evidence section only for a number a rule, a law or an open line stands on. A study
+script is local scratch - track it only when a rule or a gate needs it re-run, by
+naming it in the root `.gitignore`.
 
 **Studying a wallet?** Follow [_!___derive.md](docs/plans/strategies/_!___derive.md).
 The instrument set is the 26 solo traders, node by node

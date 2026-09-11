@@ -1,9 +1,12 @@
 # Evidence: every standing measurement, with its coordinate
 
 The numbers behind [_!___strategy.md](_!___strategy.md). The ideas are
-[_!___inventory.md](_!___inventory.md). A parent is derived by
-[_!___derive.md](_!___derive.md). The gates and the queue are
-[_!___workflow.md](_!___workflow.md).
+[_!___inventory.md](_!___inventory.md). The method, its gates and how a result is written are
+[_!___derive.md](_!___derive.md). The open queue is [_!___workflow.md](_!___workflow.md).
+
+This file keeps the measurements a rule, a law or an open line stands on. A closed line keeps
+one row in the ledger of section 7; its full write-up is in git at `8b01c18b`. Section numbers
+are never reused, so the gaps are those closed write-ups.
 
 **Every result is a coordinate, never a verdict.** A measurement fixes all six slots of a rule
 whether or not the study thinks about it, so each block below names all six. `none` in a slot is
@@ -181,457 +184,38 @@ available to someone already in before them. PEER assumes we reach the same slot
 seat does 52.6 % of the time (1.1). And the oracle is their wallet list, which never ships
 (7.4 law 20). This is a ceiling on the nodes, not a sentence.
 
-## 1.5 The hot-tape node is SLOW, and that is the whole opening (H2)
-
-Evidence 1.4 makes the seat the dominant term, so before any event work the six hot-tape wallets
-were timed. `node-derivation/hot-tape/cvx_hot_sessions.py` and `cvx_hot_latency.py`.
-
-**First, they share a trigger.** When one opens a position on a coin, another of the six buys
-within 2 s far more often than a same-coin time-shuffled null allows:
-
-| wallet | agrees within 2 s | shuffled null | lift |
-| --- | ---: | ---: | ---: |
-| 49uohd | 43.2 % | 4.7 % | **9.1** |
-| AbQcLH | 36.6 % | 4.5 % | **8.2** |
-| omegoM | 22.0 % | 2.7 % | **8.1** |
-| 64hP97 | 27.8 % | 4.0 % | **7.0** |
-| sssssw | 20.8 % | 3.5 % | **6.0** |
-
-The lift decays 9.1 -> 3.7 -> 2.2 across 2 s / 10 s / 60 s, so the trigger is sharp in time. Six
-independent readers firing inside the same two seconds is evidence that the trigger is **public
-and on the tape**, which is what makes it findable at all.
-
-**Second, their buying is not a burst - it is a refractory period.** Gaps between consecutive
-buys by one wallet on one coin are UNDER-dispersed at short lags and OVER-dispersed at medium
-ones, the opposite of clustering: 64hP puts 1.8 % of gaps under 5 s where an exponential null
-puts 3.9 %, and 56.4 % under 30 s where the null puts 37.9 %. Median gap 48-100 s. At a 5 s
-session break 97 % of sessions hold a single buy. `8fStGV` and `omegoM` are the two that do
-burst. **So the unit is the individual buy, and "I have not bought recently" is part of the
-state** - a term about OUR position, which is shippable.
-
-**Third, and this is the gate: they are slow.** Assumption-free, the spread between first and
-last arrival inside a 2 s agreement cluster (10,707 clusters) is **p50 0.429 s**, over 115 ms in
-**75.6 %** of clusters, over one slot in 51.7 %, over a second in 23.6 %.
-
-Against four public trigger definitions, the delay to their order landing, and the share where a
-115 ms fill from that trigger lands at a print index STRICTLY BEFORE theirs:
-
-| candidate trigger | delay p50 | prints between | **we fill first** |
-| --- | ---: | ---: | ---: |
-| last public buy >= 1 SOL | **1.288 s** | 9 | **85.0 %** |
-| last print that moved price <= -2 % | 0.785 s | 3 | **85.1 %** |
-| last burst start (gap >= 0.4 s) | 0.404 s | 2 | 78.7 % |
-| last print that moved price >= +1 % | 0.266 s | 1 | 67.8 % |
-
-Per wallet, from the nearest big public buy: 64hP97 **p50 2.183 s** (98.6 % over 115 ms), 8fStGV
-1.204, omegoM 1.209, AbQcLH 1.257, 49uohd 0.716, sssssw 0.234.
-
-**So whatever the trigger turns out to be, we land ahead of them 68-85 % of the time.** The
-opening is not that we are fast in absolute terms - it is that this node is 4-19x slower than our
-seat, and it is profitable anyway, which says **the edge survives at least a second of delay**.
-We do not have to be fastest. We have to be right.
-
-*The gate passes. What remains is entirely the event, the door, the permission and the exit.*
-
-## 1.6 The hot-tape event, measured within the mint - and the bind it runs into (H3)
-
-The design that makes this different from every earlier instrument step: **compare their buy
-moments against non-buy moments ON THE SAME MINT.** Repeated buys on one coin share the
-Telegram channel, the narrative, the creator, the launch build, the hour - all of it constant -
-so any surviving difference must be an on-chain timing state. Off-chain data is excluded by
-construction, the door is held fixed, and the event is measured alone. 93,588 cases, 374,339
-controls, 11,367 strata, every feature node-blind including counts and gaps.
-`node-derivation/hot-tape/cvx_hot_event.py`.
-
-**The mint-local basis beats the absolute basis almost everywhere**, which settles how features
-should be built from here: a coin measured against its own prior history, not against one ruler
-for 11,765 coins. `wake` 0.605 -> `wake_z` **0.660**; `vol20` 0.550 -> `vol20_z` 0.591; `n60`
-0.475 -> `n60_z` 0.418; `buy2` 0.614 -> `buy2_z` 0.640.
-
-| feature (mint-local) | rank of a node buy among same-coin non-buys | reads |
-| --- | ---: | --- |
-| `wake_z` | **0.660** HIGH | the last 2 s are busier than this coin's own last 60 s |
-| `buy2_z` | 0.640 HIGH | with real public SOL in them |
-| `gap_z` | 0.365 low | prints arriving fast right now |
-| `quiet60_z` | 0.418 low | but the last minute was unusually QUIET for this coin |
-| `vol20_z` | 0.591 HIGH | and unusually volatile |
-| `dd_peak` | 0.408 low | the coin sits deep below its own peak |
-| `age` | 0.582 HIGH | and it is old |
-
-**LULL, then WAKE.** Not a flush on a busy tape. It also explains how they can be 0.4-2.2 s slow
-(1.5): after a lull there is no crowd to race.
-
-**THE BIND, and it is the result.** The two halves of that story have opposite properties:
-
-| half | features | dwell | reaction cost at 115 ms | within-coin lift |
-| --- | --- | ---: | ---: | ---: |
-| WAKE | `wake_z`, `buy2_z`, `gap_z`, `vol20_z` | **0.216 s** | **+5.98 %** | **4.5** |
-| LULL | `quiet60_z`, `n60_z`, `dd_peak`, `age` | **24-52 s** | **-1.0 %** | ~1 |
-
-Firing on the wake books -1.6 to -5.5 %/trade over eight exit families
-(`cvx_hot_book.py`); firing on the lull books -4.1 to -11 %/trade over seven
-(`cvx_hot_lull.py`), and a control with the lull term removed reads the same, so the lull adds
-nothing on its own. **The half that carries the information has already moved the price by the
-time we can act; the half we can reach in time carries no information.**
-
-That is the time-axis twin of the ticket law: *the term that identifies the moment is the term
-whose move has already happened.* It is measured here, not argued - the +5.98 % is the price
-change between the state a watcher held and our own 115 ms fill.
-
-**And the coverage number says the trigger is still unfound.** The best conjunction covers
-**1.2 %** of their buys at a within-coin lift of 4.2. A term that explains one buy in eighty is
-not their rule; it is a rare corner of it. The reaction cost proves the same thing from the other
-side: if reacting at 115 ms costs 6 %, reacting at their measured 0.4-2.2 s costs more, and they
-are profitable, so **they cannot be firing on lull-then-wake at all**.
-
-**What this leaves.** Hard thresholds on the top two or three features throw away the features
-with modest deviations that apply to ALL of their buys - `wake_z` sits at 0.660 across 93,137
-cases, not across a rare tail. The unused instrument is a **within-mint conditional model on the
-full feature vector**, fitted on one half of the coins and read on the other. That is the next
-job, and it is the first time in this program the data has been arranged so that such a model
-would be measuring the event alone.
-
-## 1.7 The moment IS learnable, imitation is worthless, and the missing slot is the DOOR (H4)
-
-1.6 left hard thresholds throwing the evidence away: `wake_z` sits at 0.660 across ALL 93,137 of
-their buys, and cutting at `wake_z >= 2` kept the 2 % of moments where the price had already
-jumped. So the whole feature vector was fitted at once, on the within-mint design, split by COIN
-(a coin never appears in both halves). `node-derivation/hot-tape/cvx_hot_model.py`, `cvx_hot_model2.py`,
-`cvx_hot_score.py`.
-
-**A control-sampling artifact found and priced first.** With PRINT controls, a control's `gap` is
-the full inter-arrival interval while a node buy sits INSIDE one - about half of one by
-arithmetic. With TIME controls (uniform random seconds, spliced in as zero-size virtual prints),
-the bias runs the other way: a random second is usually quiet, so cases read gap 0.156 s against
-controls 4.163 s. Neither control is neutral, so the test is whether the signal survives with the
-whole gap family deleted:
-
-| fit | within-coin AUC on HELD-OUT coins |
-| --- | ---: |
-| print controls, every feature | 0.7678 |
-| print controls, **gap family removed** | **0.7315** |
-| time controls, gap family removed | 0.8220 |
-| print controls, gap removed, **coin-relative features only** | **0.7212** |
-
-**It survives.** The gap family is worth 0.036 of AUC, and the two opposite biases bracket the
-answer. The last row is the shippable one: every feature is that coin measured against its own
-prior history, so a live rule computes the score from the coin's own tape with no stratum and no
-lookahead. Its top decile inside a coin holds **44.4 %** of their buys against a 20 % base
-(lift 2.22).
-
-**So their moment is learnable, on coins the model has never seen.** That is the first time in
-this program anything has reproduced a professional's timing out of sample.
-
-**And it is worth nothing.** Fired on the whole tape at lag_115, five score thresholds x seven
-exit families, every cell is red: **-4.24 % to -10.62 % a trade, 0 of 8 days** on 2,772 to 105,295
-trades. The reaction cost is **-0.50 % to +1.18 %**, so unlike 1.6 this is not a seat problem -
-the fill is cheap and the moment is still not worth having.
-
-That is the sharp form of the result. **We can stand at their moment, ahead of them (1.5), with a
-clean fill, and lose five percent a trade.** So the edge is not in the moment.
-
-**Where it is instead.** The within-mint design holds the coin constant, which is what makes it
-honest about the event - and blind to the door by construction. Splitting the model's own fires:
-
-| the model fires... | trades | per trade | reaction cost |
-| --- | ---: | ---: | ---: |
-| on a coin the node TOUCHES | 15,754 | **-2.63 %** | +2.64 % |
-| on a coin the node never touches | 8,335 | **-14.21 %** | -2.59 % |
-
-**11.6 points sit in the coin, not the second**, and 54 % of the model's coins are ones they never
-go near. The node's edge is a DOOR effect that the event study was designed not to see.
-
-**Next.** The door, at coin level, on its own data: what separates the 11,765 coins they touch
-from the 116,068 they do not. It is a separate question with separate evidence, and neither slot
-is allowed to borrow the other's.
-
-## 1.8 The door is not a token group - it is THEIR ARRIVAL (H5)
-
-1.7 put 11.6 points in the coin rather than the second. This is the door census that followed,
-at coin level, on data the event study never saw: `node-derivation/hot-tape/cvx_hot_door.py`, universe =
-32,905 coins with at least 30 prints and 60 s of life (not the whole tape, where dead coins
-inflate every concentration), and every outcome field - `mfe`, `his`, `peak_in_first_run`,
-`reply_count`, `ath_mc`, `complete` - excluded, because a door built on one is a lookahead.
-
-**The winning group is not creation structure. It is EARLY LIVELINESS.** Base touch rate 35.04 %:
-
-| group | coins | touch rate | share of coins | share of their trades | concentration |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| reserve at age 60 s in 50-70 | 2,947 | **66.8 %** | 8.96 % | 34.29 % | **3.83** |
-| reserve at age 60 s over 70 | 1,190 | 62.5 % | 3.62 % | 13.97 % | **3.86** |
-| **reserve at age 60 s under 32** | 16,077 | **15.3 %** | 48.86 % | 6.80 % | **0.14** |
-| over 200 prints in the first 60 s | 7,043 | 67.0 % | 21.40 % | 61.95 % | **2.89** |
-| 30-80 prints in the first 60 s | 11,510 | 16.9 % | 34.98 % | 10.13 % | 0.29 |
-| bundler creation group | 2,230 | 17.7 % | 6.78 % | 1.14 % | **0.17** |
-| has a community link | 2,160 | 65.9 % | 6.56 % | 11.54 % | 1.76 |
-| creation cgroup, every large group | - | 23-47 % | - | - | **0.58-1.63** |
-
-Creation structure is again close to the market (6.8 found concentration 1.02 across all 26);
-`5ix:ix#6f` reaches 3.15 but is 2 % of coins. **Half the tape is dead by age 60 s and carries
-7 % of their trades** - that is the real coin filter, and it is a trajectory fact, not a birth
-fact.
-
-**And no public door rescues the book.** Applied to the model's own fires (top 1 % score,
-cap 60, restricted to fires after age 60 s so the door is already knowable):
-
-| door | trades | per trade | days positive |
-| --- | ---: | ---: | :---: |
-| none | 18,744 | -6.68 % | 0/8 |
-| reserve60 > 40 | 11,561 | -7.73 % | 0/8 |
-| over 200 prints in the first 60 s | 7,092 | -7.08 % | 0/8 |
-| reserve60 > 40, prints60 > 80, not bundler | 9,090 | **-6.29 %** | 0/8 |
-| the same plus a website | 3,298 | -5.60 % | 0/8 |
-
-**Because the 11.6 points were never a property of the coin.** Splitting the same fires by
-whether one of the six buys INSIDE our hold:
-
-| | trades | per trade | days positive |
-| --- | ---: | ---: | :---: |
-| **one of them buys during our hold** | 7,258 | **+2.37 %** | **7/8** |
-| they touch the coin but never during our hold | 7,847 | -8.02 % | 0/8 |
-| they never appear on the coin at all | 8,984 | -12.71 % | 0/8 |
-
-*The money is incoming demand, and these six ARE the demand.* Being on "their coin" pays nothing
-unless they actually turn up while we are holding, and it happens on **30.1 %** of fires. With
-arrivals at +2.37 % and non-arrivals at -10.53 %, the book breaks even at an arrival rate of
-**81.6 %**.
-
-**And the exit cannot close that gap.** Seven abort-on-no-response families - `abort=(T, g)`
-closes at T seconds if price has not risen g percent, which is precisely "did anybody come?" -
-across five score thresholds: best **-4.87 %**, none positive on more than 1 of 8 days. Cutting
-the non-arrivals early also cuts the arrivals, and the toll is charged per ticket (4.7).
-
-**RETRACTED, same day, on two measurements and one methodological error (1.9).** The reading
-above - "the node is incoming demand and these six ARE the demand" - is wrong. Their share of the
-SOL that makes the move is **2 % at the median and 5.2 % at the mean**; the public side puts in
-4.59 SOL where they put in 0.19. They are DETECTORS of a move other people make, not the cause of
-it. And a D+E that is negative closes nothing when P is empty and X is a guessed grid: the ceiling
-if every fire exited at its own 120 s peak is **+19.26 %/trade** against the -6.67 % a cap-60 book
-reads. See 1.9.
-
-## 1.9 Three retractions, and the two slots that were never searched (H6)
-
-The user rejected 1.8 on three grounds. All three hold, and two are measurable.
-
-**1. A negative D+E closes nothing.** A sentence is a conjunction of four slots. 1.6-1.8 fixed X
-to a generic grid and never built P at all, then reported "the node closes". That is not a
-verdict, it is an unfinished sentence. *Only a conjunction with all four slots searched can close
-a node* (7.4 law 17 says a red number closes a SENTENCE, never a slot - the same error in the
-other direction).
-
-**2. The latency claim was invalid and is withdrawn.** 1.5 measured "time since the last public
-buy >= 1 SOL" and read p50 1.288 s. On a coin where big buys arrive every couple of seconds that
-statistic reads about a second **whether or not anyone is reacting to it** - it is a WAITING time,
-not a reaction time, and its wide exponential shape (p10 0.08 s to p90 9.41 s) is what no
-relationship looks like. The same file's own `gap` reads **79 ms** from the previous print to
-their buy at the median, and 25 % of their agreement clusters are tighter than 121 ms. **Their
-reaction latency is unmeasured. "They are slow" and "we land ahead of them 68-85 %" are
-withdrawn.** To measure a reaction you must first identify the trigger print; a nearest-event
-waiting time cannot substitute.
-
-**3. They do not ignite the move - they detect it.** Measured on the 7,734 fires where one of the
-six buys inside our hold, decomposing the SOL that entered the pool between our fill and the peak:
-
-| | median SOL into the pool, fill to peak |
-| --- | ---: |
-| the six wallets | **0.188** |
-| everyone else | **4.593** |
-
-Their share of the net move: p25 0.000, **p50 0.020**, p75 0.121, mean 0.052. *Between 95 % and
-98 % of the move is other people.* So the +2.37 %/trade on arrivals is not their impact - their
-arrival is a MARKER that a real up-move is happening. The question that closes or opens this node
-is therefore not "will they turn up" but "is a real move starting", which is the P slot.
-
-**4. And the exit has been leaving everything on the table.** Maximum favourable excursion within
-120 s of our fill, on the model's own fires:
-
-| population | p50 | p75 | p90 | p95 | p99 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| all fires | 4.13 % | 20.96 % | 53.23 % | 84.89 % | **202.85 %** |
-| one of them arrives | 20.73 % | 48.60 % | 96.38 % | 141.32 % | 327.24 % |
-| nobody arrives | 0.85 % | 9.00 % | 26.73 % | 45.07 % | 101.94 % |
-
-Time to that peak: p50 **16.1 s**, p90 103.7 s.
-
-**A cap-60 book on these fires reads -6.67 %/trade. Exiting each fire at its own 120 s peak would
-read +19.26 %.** Every exit tried to this point is a guessed grid rather than a shape fitted to
-that distribution - a payoff where half the fires go nowhere and the top decile runs 53 % to 200 %.
-
-> **RETRACTED, 1.10.** The sentence that followed here read "twenty-six points sit in the exit".
-> A perfect-exit ceiling is not money in a slot: the exit slot is now searched over 480 causal
-> shapes at both seats and the best of them reads **-2.35 %** behind their print and **+0.21 %**
-> ahead of it, against a ceiling of +53 %. The gap is the timing problem, and it does not close.
-> See 1.10 and 7.4 law 23.
-
-**So the node is NOT closed.** D and E are measured and negative on their own, which is the normal
-state of a conjunction before P and X exist. The order that followed from this - X first, then P,
-then E - is what 1.10 executes; X comes back empty, and the two that remain are **P** and a
-re-derivation of **E** from a properly identified trigger.
-
-## 1.10 The exit slot, searched (H6-X): the convexity is real and no exit reaches it
-
-> **THE VERDICT IN THIS SECTION IS WITHDRAWN, 1.11.** The grid below is swept on 95,135 episodes
-> with **D empty and P empty** - no door, no permission, no selection of any kind. Workflow 5
-> refuses exactly that: *an exit swept on an unselected pool returns the shortest clock, because
-> that pool is mostly dying coins*. What it returned - flat clocks beating ladders beating trails,
-> `cap15 > cap30 > cap60`, shorter beating longer everywhere - is that refusal's own signature, so
-> the search measures the pool and not the exit. Two scope errors ride with it. The geometry runs
-> to **1800 s** on a node whose median hold is **19.9 s**, and inside their own hold the peak
-> available is p50 **+7.6 %**, not +33 %. And the six wallets are pooled although `8fStGV` wins
-> 68.3 % of its trades at a median of **+12.02 %** while the other five carry a negative median.
-> **X on this node is not searched.** Every number below stands as a coordinate with D and P
-> empty; the sentence "the slot is empty" does not. See 1.11 and 7.4 laws 26-28.
-
-1.9 put 26 points in the exit slot and named it the largest unsearched thing on this node. The
-slot is now searched - 480 causal shapes, three ladder depths, five flow tells, two seats, on the
-convexity the six wallets themselves enter - and **the slot is empty**. The 26 points were the
-distance to an oracle, not money on the table (7.4 law 23, written from this run).
-
-Basis: an episode is their position, tracked to the token, opening when it leaves zero and closing
-when it returns (the cvx_replay3 builder). **95,135 episodes**, 1.29 % still open at the tape edge
-and reported not dropped, median clip 0.524 SOL, median one buy per episode. Entry is their own
-buy; the exit families are ours; 0.2 SOL; both legs priced through the kernel. Their wallets are
-the instrument (7.4 law 20) - a shape and a ceiling, never a term.
-
-### The shape of what they enter
-
-Our fill 115 ms behind their print, 1800 s of tape after it:
-
-| | p10 | p25 | p50 | p75 | p90 | p95 | p99 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| MFE | 1.26 % | 9.65 % | **33.19 %** | 87.62 % | 180.61 % | 260.19 % | 472.12 % |
-| MAE **before** the peak | -39.77 % | -21.73 % | **-7.39 %** | -0.42 % | 0.67 % | 2.21 % | 5.62 % |
-| MAE over the whole window | -76.77 % | -66.64 % | -50.20 % | -28.76 % | -10.00 % | -3.43 % | 0.79 % |
-| price at the horizon | -75.52 % | -63.95 % | -43.41 % | -4.08 % | 93.40 % | 185.07 % | 416.34 % |
-| seconds to the peak | 1.79 | 12.24 | **82.80** | 343.99 | 798.75 | 1226.03 | 1723.19 |
-
-**The drawdown before the peak is the number every guessed grid was missing.** By how big the peak
-eventually got:
-
-| peak reached | share of entries | MAE-pre p10 | p25 | p50 | t_peak p50 | t_peak p90 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| under 0 % | 5.2 % | -11.6 % | -5.5 % | -1.9 % | 1.3 s | 21.6 s |
-| 0 to 5 % | 12.3 % | -12.5 % | -2.6 % | 0.0 % | 3.2 s | 65.2 s |
-| 10 to 25 % | 17.6 % | -34.8 % | -18.3 % | -6.6 % | 35.3 s | 398.2 s |
-| 50 to 100 % | 17.3 % | -47.5 % | -30.2 % | -13.9 % | 198.9 s | 952.4 s |
-| **over 100 %** | **21.9 %** | **-46.4 %** | **-30.7 %** | -15.0 % | 412.9 s | 1355.4 s |
-
-*A quarter of the entries that eventually double are under water by 31 % first.* Any trail or stop
-tighter than about 30 % is a winner-killer, which is the mechanical reason every trail family in
-1.5-1.8 read red.
-
-### Continuation: the move has momentum, and it is not enough
-
-At each checkpoint, the position's current level against the maximum still ahead of it:
-
-| at 20 s, currently | n | future max p50 | p90 | P(+25 % more) | P(+50 % more) | future MIN p50 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| under -10 % | 23,099 | -2.3 % | 121.5 % | 31.6 % | 22.3 % | -59.3 % |
-| -3 to 0 % | 8,765 | 24.1 % | 151.5 % | 49.2 % | 32.9 % | -46.9 % |
-| +3 to 10 % | 13,531 | 36.6 % | 178.4 % | 61.4 % | 40.8 % | -48.4 % |
-| +10 to 25 % | 13,440 | 56.1 % | 219.1 % | 78.5 % | 54.0 % | -48.4 % |
-| **over +25 %** | 9,084 | **107.3 %** | 310.0 % | 99.3 % | **83.1 %** | -44.3 % |
-
-Monotone at every checkpoint from 5 s to 160 s, and it strengthens with time. **This is a
-continuation process** - a take-profit sells the half that was going to keep running. But the last
-column is the wall: *the median future minimum is -40 to -60 % in every bucket, including the
-winners*. Everything gives it all back. The exit lives between those two facts.
-
-### Their own exit is not the edge
-
-| | p10 | p25 | p50 | p75 | p90 | p99 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| their exit level, our basis | -24.87 % | -11.32 % | -1.97 % | 8.42 % | 25.19 % | 92.69 % |
-| peak already available when they left | -0.05 % | 1.64 % | 7.63 % | 19.74 % | 41.16 % | 122.63 % |
-| **capture ratio** | -2.00 | -1.52 | **0.07** | 0.65 | 0.85 | 1.00 |
-
-They hold 20.8 s at the median, leave before the window peak in **65.5 %** of episodes, and land
-within 10 % of it in **0.6 %**. Their own book is **+0.70 % on spend**. *They are fast, small and
-early - they are not skilled exiters, and there is no exit craft here to copy.*
-
-### The search, and the bug it caught
-
-480 shapes: first rung 5-30 %, rung fraction 0.34/0.50, runner trail 20-40 %, dead cut
-none/stop25/stop35/cap15/cap30/cap60, and two trail modes (armed at the first rung, or live from
-the fill). Fitted on a random 15,000 of half the episodes and re-read on all 47,593 of the other
-half. Three-rung ladders and five flow tells (net flow negative over 3 s or 10 s, buy share under
-half, no buy print in 3 s, each at four arming levels) on top.
-
-**The first version of this grid returned +8.30 %/trade, 8/8 days, top-1 % concentration 27 %,
-leave-one-day-out +599 SOL - and every point of it was a lookahead.** The dead cut was evaluated
-against the whole window ("no rung ever fired") instead of against its own deadline, so it cut
-only the tickets that were never going to work. Corrected to index order, the same shape reads
-**-2.38 %**. Recorded as 7.4 law 24; the corrected result is below.
-
-| seat | best of the 480 | per trade | days | without its top 1 % | perfect-exit ceiling |
-| --- | --- | ---: | ---: | ---: | ---: |
-| FOLLOW, 115 ms behind their print | cap15 flat | **-2.35 %** | 0/8 | -3.38 % | +53.28 %, 8/8 |
-| RACE, sequenced ahead of their print | cap15 flat | **+0.21 %** | 5/8 | **-0.89 %** | +57.52 %, 8/8 |
-
-Every other family is worse, in a strict order: flat clocks beat ladders beat trails beat flow
-tells, and **shorter beats longer everywhere** (cap15 > cap30 > cap60; trail 25 > trail 40). The
-one shape that survived the first, buggy grid - half off at +10 %, trail the rest 25 % - reads
-**-3.49 %** once its trail can no longer become retroactively live.
-
-*The fastest exit wins on a payoff whose median peak is +33 %.* That is the whole finding: the
-convexity is real, its timing is not predictable from the price path, and holding for it costs
-more than it pays.
-
-### Where it is not empty, and why that is the P slot
-
-Split by facts knowable at the decision, cap15 flat, `ex_top1` being the book with its top 1 % of
-tickets removed:
-
-| slice | n | RACE %/trade | days | ex_top1 | FOLLOW %/trade | MFE p50 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| reserve 32-35 | 3,078 | **+1.83 %** | **8/8** | **+0.47 %** | -2.25 % | 11.3 % |
-| reserve under 32 | 1,218 | +2.13 % | 7/8 | +0.87 % | -2.25 % | 2.9 % |
-| age under 30 s | 8,309 | **+1.97 %** | **8/8** | +0.02 % | -1.33 % | 36.5 % |
-| 2+ of the six acting in the last 60 s (not shippable) | 16,203 | +0.70 % | 6/8 | -0.31 % | -1.60 % | 37.4 % |
-| reserve 50-70 | 36,218 | +0.15 % | 3/8 | -0.96 % | -2.19 % | 34.2 % |
-| nobody else acting | 31,892 | -0.33 % | 1/8 | -1.59 % | -3.03 % | 21.6 % |
-
-Two readings, and both matter:
-
-* **At the FOLLOW seat there is no slice at all.** Not one cut of reserve, age, hour, agreement or
-  wallet is positive. Copying this node is closed by the seat, again and now on a searched exit.
-* **At the RACE seat the survivors are the SMALL moves.** Reserve 32-35 has the least convexity of
-  any band (MFE p50 11.3 % against 34.2 % at reserve 50-70) and the best book. The reachable half
-  and the informative half are opposite halves - the same anti-correlation as 1.6, now on the exit
-  side of the trade.
-
-**Verdict.** X is searched and closed as a standalone lever, at both seats, on the best entries
-available. The exit is not where this node's money is, and the "26 points" of 1.9 is withdrawn as
-a quantity. What survives is a **P** candidate in two public terms - *early on the curve
-(reserve under 35) and young (under 30 s)* - and the unchanged requirement that E be re-derived
-from an identified trigger, because the RACE seat is only reachable by deciding when they decide.
-
-The agreement row is a **thermometer, not a term.** "Two of these six named wallets already
-bought" is the roster's mint list used as a gate and is refused outright
-([_!___workflow.md](_!___workflow.md) 11, 7.4 law 20). If concurrency is to enter a sentence it
-has to be re-derived as a public tape fact - distinct payers, distinct routed builds - and
-measured again from scratch; the number above says only that the thermometer reads warm.
-
-Scripts: [node-derivation/hot-tape/cvx_hot_exit.py](node-derivation/hot-tape/cvx_hot_exit.py) (geometry, continuation,
-their capture), [cvx_hot_exit2.py](node-derivation/hot-tape/cvx_hot_exit2.py) (the 480-shape grid, ladders,
-flow tells), [cvx_hot_exit3.py](node-derivation/hot-tape/cvx_hot_exit3.py) (the two seats),
-[cvx_hot_exit4.py](node-derivation/hot-tape/cvx_hot_exit4.py) (the decision-time slices).
+## 1.5 The hot-tape node read as one label: five readings, each withdrawn
+
+Before the split by member (1.11) the six hot-tape wallets were read as one label. Five readings
+followed, each withdrawn, and each left a guard in [_!___derive.md](_!___derive.md). The chain rows
+are [node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md) section 2.1.
+
+| reading | what it measured | why it is withdrawn | the guard it left |
+| --- | --- | --- | --- |
+| "they are slow; we land ahead 68-85 %" | time since the last public buy >= 1 SOL, p50 1.29 s | a waiting time: it reads about a second whether or not anyone reacts; their gap from the previous print is 79 ms | latency is excess intensity from an identified trigger print |
+| lull, then wake, within the mint | `wake_z` 0.660, `quiet60_z` 0.418 on 93,588 buys against same-coin non-buys | the wake half discriminates (lift 4.5) and costs +5.98 % to react to at 115 ms; the lull half is reachable and predicts nothing; the conjunction covers 1.2 % of their buys | reaction cost and coverage beside every lift |
+| their moment, modelled | a within-mint model reads AUC 0.72 on held-out coins | fired on the tape it books -4.2 to -10.6 %/trade, 0/8, on a cheap fill | imitation is bounded by the median trade (strategy law 28) |
+| they are the demand | fires pay +2.37 % 7/8 when one of the six buys inside our hold | they put 2-5 % of the move's SOL in: detectors of a move, not its cause | a member's arrival is a diagnostic split, never a door |
+| the exit, searched | 480 causal shapes on 95,135 episodes: best -2.35 % behind their print, +0.21 % ahead, ceiling +53 % | swept with D and P empty, to 1800 s on a 19.9 s hold, six wallets pooled; its first grid read +8.30 % from a lookahead that index order fixes to -2.38 % | strategy laws 23, 24, 26, 27 |
+
+What carries forward as method: the within-mint control (same coin, buy against non-buy, holds
+every off-chain factor constant) and features in the coin's own units (`wake` 0.605 against
+`wake_z` 0.660).
 
 ## 1.11 The node is two animals, and only one of them pays (H7)
 
-1.10's verdict is withdrawn at the head of that section: its 480-shape grid runs with D and P
-empty, which is the one thing workflow 5 refuses, and "shorter beats longer everywhere" is that
-refusal's signature rather than a fact about exits. This section replaces it. Five runs, on the
-95,135 position-tracked episodes and on the full 12.47 M print tape.
+The exit search of 1.5 ran with D and P empty, which derive phase 8 refuses, and "shorter beats
+longer everywhere" is that refusal's signature rather than a fact about exits. This section
+replaces it. Five runs, on the 95,135 position-tracked episodes and on the full 12.47 M print tape.
 
 ### The question nobody asked
 
 Their own book is a lottery: median trade **-2.07 %**, net margin 1.10 %, and the best 1 % of
 their trades produce **180.6 %** of their net, so the other 99 % collectively lose. A perfect
 reproduction of their decisions reads **-0.14 %/trade** at the PEER seat (1.4). *Imitating this
-node was never going to pay at any AUC*, which is what 1.7 measures at AUC 0.72 and -5 %/trade.
-The only object worth searching is a selector INSIDE their decisions, and 1.6-1.10 all carry the
-93,137 buys as a single label (7.4 law 28).
+node was never going to pay at any AUC*, which is what the within-mint model of 1.5 measures at
+AUC 0.72 and -5 %/trade. The only object worth searching is a selector INSIDE their decisions, and
+every reading in 1.5 carries the 93,137 buys as a single label (7.4 law 28).
 
 ### The split that changes the verdict (7.4 law 27)
 
@@ -677,8 +261,8 @@ The three are a different animal from the other three, and it reads at the decis
 | coin age | 144 s | 244 s |
 | round trips already taken on this coin | 1 | 3 |
 
-*They buy a pullback inside a live up-move; the others buy a deep dip on an old coin.* 1.6 reports
-this node buying deep below the peak (`dd_peak` 0.408) because the deep-dip members outnumber the
+*They buy a pullback inside a live up-move; the others buy a deep dip on an old coin.* The pooled reading
+(1.5) has this node buying deep below the peak (`dd_peak` 0.408) because the deep-dip members outnumber the
 others eight to one on the tape.
 
 ### The re-entry terms replicate, and they are not the edge
@@ -717,7 +301,8 @@ says the same and it survives at this seat.
 
 **Tightening the price state makes the book worse, monotonically.** `m25 st20 dd25 n150` reads
 -8.20 % where the loose `m10` reads -4.95 %. A state that describes their moment more exactly buys
-a worse book - 1.7's result reproduced through a completely different construction.
+a worse book - the within-mint model's result (1.5) reproduced through a completely different
+construction.
 
 **The independent-machine count is the only term with a monotone money gradient that is not
 headroom.** Under five distinct builds printing in the last 5 s books **-4.08 %/trade** over
@@ -729,8 +314,8 @@ low, professional builds in the last 5 s 0.554.
 
 ### The lookahead this run caught
 
-The level rule's one green cell reads **+5.02 %/trade on 8 of 8 days** behind the door 1.8 names,
-reserve at age 60 s of 50 to 70. **All of it is the 15.5 % of its fires that happen before age
+The level rule's one green cell reads **+5.02 %/trade on 8 of 8 days** behind the early-liveliness
+door (reserve at age 60 s of 50 to 70). **All of it is the 15.5 % of its fires that happen before age
 60 s**, where that door fact does not yet exist: those 2,287 tickets book +251.42 SOL at
 **+54.97 %/trade with an 80.8 % win rate**, and the same cell at age >= 60 s reads **-4.12 %,
 1/8**. A door fact dated later than the fire is 7.4 law 24 in the D slot, and the 80.8 % win rate
@@ -745,13 +330,9 @@ yet reaches it: the best public event books -3.0 % where their own decisions at 
 the same clock book -0.66 %, so **about two and a half points sit in selection** and the rest in
 the seat. Measured and empty: the price path in three constructions, the re-entry terms outside one
 reserve band, and the machine count as a standalone threshold. Unmeasured: their trigger print and
-therefore their reaction time (1.9 point 2), and the machine axis as a fitted vector rather than a
+therefore their reaction time (1.5), and the machine axis as a fitted vector rather than a
 threshold.
 
-Scripts: [node-derivation/hot-tape/cvx_hot_sep.py](node-derivation/hot-tape/cvx_hot_sep.py),
-[cvx_hot_sep2.py](node-derivation/hot-tape/cvx_hot_sep2.py), [cvx_hot_lvl.py](node-derivation/hot-tape/cvx_hot_lvl.py),
-[cvx_hot_up.py](node-derivation/hot-tape/cvx_hot_up.py), [cvx_hot_mach.py](node-derivation/hot-tape/cvx_hot_mach.py),
-[cvx_hot_mach2.py](node-derivation/hot-tape/cvx_hot_mach2.py).
 
 ## 1.12 The trigger, found: a flipper's sell inside a buying frenzy (H8)
 
@@ -763,7 +344,7 @@ on a STATE? Five runs answer it and fill the event slot. `node-derivation/hot-ta
 
 For every buy, every public print in the 5 s before it is binned by class and lag, against random
 times on the same coin within 60 s. The control absorbs the coin's own arrival rate, so 1.00 is no
-relationship and a spike at one lag is a reaction at that latency - the measurement 1.9 demanded in
+relationship and a spike at one lag is a reaction at that latency - the measurement 1.5 demands in
 place of a waiting time. Lift at the peak:
 
 | wallet | RACE cap15 (1.11) | reacts to | peak lift | lag | avoids |
@@ -847,7 +428,7 @@ On its coins, split by what happens inside our 15 s hold:
 | it does not | 983 | -0.62 % | 3/7 |
 | none of the six buys inside our hold | 311 | +0.68 % | 5/7 |
 
-The 1.8 mechanism again, on a named event: the fire pays when the professional confirms the move
+The arrival mechanism of 1.5 again, on a named event: the fire pays when the professional confirms the move
 after us. What is left on its coins with nobody from the node arriving is +0.68 % on 311 tickets -
 small, and the part a public door would have to reproduce.
 
@@ -861,129 +442,15 @@ picks. The sentence is red on the full tape at -0.68 % because **D is empty**: p
 busyness and prior-frenzy facts move the book to -0.27 % and no further, and a large part of what
 "its coins" carries is the professional arriving inside our hold, which no door can name.
 
-1.13 corrects the "five points in which coin": the coin list carries the member's future first
-arrival, and on coins it has already traded E books the full-tape -0.68 %.
+The "five points in which coin" are the member's future first arrival: on its coins E books
++4.46 % 7/7 before its first buy there and -0.68 % after, the full-tape number (case step 28).
 
-Scripts: [node-derivation/hot-tape/cvx_hot_trig.py](node-derivation/hot-tape/cvx_hot_trig.py) (reaction by class and lag), [cvx_hot_seat.py](node-derivation/hot-tape/cvx_hot_seat.py), [cvx_hot_dump.py](node-derivation/hot-tape/cvx_hot_dump.py), [cvx_hot_which.py](node-derivation/hot-tape/cvx_hot_which.py), [cvx_hot_dump2.py](node-derivation/hot-tape/cvx_hot_dump2.py), [cvx_hot_door2.py](node-derivation/hot-tape/cvx_hot_door2.py), [cvx_hot_arrive.py](node-derivation/hot-tape/cvx_hot_arrive.py).
-
-## 1.13 The door and the exit, derived: the first positive sentence on this node (H9)
-
-1.12 freezes E and leaves D empty and X a guessed clock. Four runs fill both from the unpriced side
-and from the member's own exit, and correct one reading of 1.12.
-`node-derivation/hot-tape/cvx_hot_door3.py`, `cvx_hot_door3b.py`, `cvx_hot_exit5.py`, `cvx_hot_exit6.py`.
-
-### The coin list carries the member's future arrival
-
-1.12 read "five points in which coin" off the split by 8fStGV's coin list. That list is built
-from the whole tape, so a coin is on it because the member WILL trade it. Split the frozen E's
-fires on its coins by whether the fire comes before or after its first buy on that coin:
-
-| fires of E on its coins | n | %/trade | days |
-| --- | ---: | ---: | :---: |
-| before its first buy on the coin | 534 | **+4.46 %** | 7/7 |
-| after it has already traded the coin | 849 | -0.68 % | 1/7 |
-
-Where it is already on the coin, E books exactly the full-tape number. The "five points" are the
-professional's FIRST ARRIVAL on the coin after our fire (its median is one buy per coin, p90
-four), not a property of the coin that a public fact can name. **The door's target is that
-arrival** - the 1.8 mechanism again. A member's coin list is split by before and after its first
-buy before it is read as a door gap.
-
-### The door, from the unpriced side
-
-Thirty facts at the fire, every one from PUBLIC prints before it with the six node wallets dropped,
-in five families: how this coin's earlier frenzy-sells resolved; who buys in the frenzy
-(professional builds, routers, fresh wallets, build concentration); whether recent buyers still
-hold; re-entry machines on the coin; and the seller.
-
-On the broad event (every frenzy-sell, 15,019 fires, -2.12 %) they are gradients and none crosses
-zero: professional wallets that already round-tripped the coin run -6.25 % in the lowest quintile
-to -0.90 %; the share of the last five minutes' buys still held runs -0.15 % (4/7) when most have
-sold to -5.07 % when all still hold - held tokens are the next sellers.
-
-On E itself (2,219 fires, -0.68 %, 1/7) a one-sided cut chosen on half the days and scored on the
-other half passes both folds for two facts, each fold picking nearly the same threshold alone:
-
-| cut on E | fold A test | fold B test | full sample |
-| --- | --- | --- | --- |
-| few of this coin's earlier frenzy-sells made a new high within 15 s (`abs_rate <= 0.333`) | +0.45 % 3/4 | +2.40 % 3/3 | **+1.13 % 5/7**, 91 a day, body +0.24 |
-| the seller takes 30 %+ profit on the sale | +0.08 % 3/4 | +1.73 % 2/3 | +0.78 % 5/7, body -0.77 |
-
-`abs_rate` is not headroom: its rank correlation with reserve is -0.00, and it holds inside the
-1-2 min and 2-5 min age bands (+2.02 % against -2.46 %, +1.77 % against -0.93 %). It does not
-transfer to the broad event (-1.48 %). The event pays where this coin's earlier frenzies were sold
-into and failed, and this one makes a new high anyway. The seller's profit is the price in
-disguise - a flipper who bought 30 s ago and is up 30 % says the coin rose 30 % in 30 s - and it
-makes the broad event worse (-3.00 %), so it is not a filling.
-
-### Their exit, measured the way their entry was
-
-Closing sells of each member against random public prints of the same holding episode:
-
-| member | sells after | peak lift | at the sell | reading |
-| --- | --- | ---: | --- | --- |
-| 8fStGV | a public BUY >= 1 SOL / a +3 % print | 5.8 at 25-50 ms | +14.4 % since entry, 1.2 % off the in-hold peak, 10 s held | **sells the buy** |
-| 49uohd | a public SELL >= 1 / a -2 % print | 14.9 at 25-50 ms | about break-even, 9 % off the peak | stop on a dump |
-| sssssw | a public SELL >= 1 / a -2 % print | 13.6 at 75-100 ms | -1 % | stop on a dump |
-| AbQcLH | nothing (every lift < 1.1) | - | 19 s held, the tape gone quiet | a timeout |
-
-The member whose trigger E is buys the sell and sells the buy. Its hazard - the chance its next
-print is the closing sell, over every public print of every hold - is a bracket: about 0 between
--20 % and +10 %, 6-20 % a print above +10 %, a second spike between -25 % and -40 % (2.0 to 6.9
-times the in-hold rate; -20..-25 % is 0.23), time stops from 40 s, and nothing held past 80 s.
-**Derived exit: take profit +10 %, stop -25 %, time 60 s.**
-
-### The sentence
-
-Frozen E, each exit with its own occupancy, `cvx_hot_exit6.py`:
-
-| D | X | first/day | %/trade | days | body | top 1 % | biggest coin | win |
-| --- | --- | ---: | ---: | :---: | ---: | ---: | ---: | ---: |
-| none | cap15 | 328 | -0.68 % | 1/7 | -7.17 | - | - | 45.9 % |
-| none | tp10 sl25 t60 | 445 | -0.30 % | 2/7 | -4.33 | - | - | 71.5 % |
-| `abs_rate <= 0.333` | cap15 | 91 | +1.11 % | 5/7 | +0.21 | 84.7 % | 21.6 % | 49.3 % |
-| `abs_rate <= 0.333` | **tp10 sl25 t60** | **124** | **+1.22 %** | **5/7** | **+1.23** | 39.7 % | 11.1 % | 74.8 % |
-
-Days 0-3 +1.66 %/trade, days 4-6 +0.25 %. A hard -20 % stop books +0.56 % and a -15 % stop
--0.22 %: a stop inside the frenzy's own swing cuts trades that recover. The 75 % win rate is the
-bracket's shape (many +10 % exits, few deep losses) and not a lookahead - every exit branch reads
-only prints after our fill and resolves to the first index that trips it.
-
-### Tape-driven exits do not beat the bracket
-
-Behind the door, 69 % of the bracket's take-profits run on to +20 % within 120 s and 48 % of its
-stop-outs were up +5 % first - but those are peaks, and a frenzy's price swings 5-10 % inside a
-few prints. Twelve tape-driven exits, each with its own occupancy (`cvx_hot_exit7.py`):
-
-| exit behind the door | %/trade | days | body |
-| --- | ---: | :---: | ---: |
-| the bracket, take profit +10 %, stop -25 %, 60 s | **+1.22 %** | 5/7 | **+1.23** |
-| half at +10 %, half to +20 %, stop -25 %, 120 s | +1.17 % | 5/7 | +0.95 |
-| sell the next public buy >= 1 once up +10 % | +0.91 % | 5/7 | +0.73 |
-| bracket + close when buying stops, under water only | +0.82 % | 5/7 | +0.62 |
-| bracket + breakeven once up +7 % / +5 % / +3 % | +0.61 / -0.22 / -0.85 % | 6/7 / 3/7 / 1/7 | +0.20 / -1.21 / -2.50 |
-| trail 5 % from the peak once up +10 % | -0.28 % | 3/7 | -1.26 |
-| bracket + close on a public sell >= 1 under water | -1.08 % | 0/7 | -3.16 |
-
-Every tighter reaction trades a recovery for a protection and loses on net; closing on a big sell
-under water contradicts the event itself, which is a frenzy absorbing big sells. The losers are
-not an exit problem on this sentence: they are a do-not-enter problem for D or P.
-
-### Verdict
-
-**The first causal sentence on this node that is positive on the full tape**, with a door chosen
-on held-out days and an exit read off the member's own hazard. It does not ship: the top 1 % carry
-39.7 % of the net against the 9-12 % calibration, the later half of the days fades to +0.25 %, and
-the whole book is about 2 SOL in a week at 0.2 SOL a ticket. The coin-list split survives inside
-the door (+2.58 % on its coins, -1.31 % off them), and 1.13's first table says why: what is left is
-the professional arriving on the coin after us, and the door has to predict that arrival.
-
-Scripts: [cvx_hot_door3.py](node-derivation/hot-tape/cvx_hot_door3.py), [cvx_hot_door3b.py](node-derivation/hot-tape/cvx_hot_door3b.py), [cvx_hot_exit5.py](node-derivation/hot-tape/cvx_hot_exit5.py), [cvx_hot_exit6.py](node-derivation/hot-tape/cvx_hot_exit6.py).
 
 ## 1.14 The permission: a frenzy dies on a young, thin coin (H10)
 
-1.13 leaves the losers as a do-not-enter problem: the stop-outs average -31 % and no exit cuts
-them without cutting more recoveries. `node-derivation/hot-tape/cvx_hot_perm.py` reads 27 facts at the fire -
+Under the member's own bracket (take profit +10 %, stop -25 %, 60 s, read off its closing hazard,
+case step 29) the losers are a do-not-enter problem: the stop-outs average -31 % and no exit cuts
+them without cutting more recoveries; twelve tape-driven exits all book below the bracket. `node-derivation/hot-tape/cvx_hot_perm.py` reads 27 facts at the fire -
 overhang, heat, composition, the seller - on the trades that end at the stop against the trades
 that end at the take profit, public prints only, node wallets dropped. `cvx_hot_perm2.py` books the
 result with every permission applied before occupancy.
@@ -1010,7 +477,7 @@ Frozen before booking: holders >= 368, age >= 158 s (the mean of the two fold cu
 | sentence, bracket | first/day | %/trade | days | worst day | body | top 1 % | biggest coin | days 0-3 | days 4-6 |
 | --- | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | E | 445 | -0.30 % | 2/7 | -1.19 | -4.33 | - | - | -0.05 % | -0.83 % |
-| E x door (1.13) | 124 | +1.22 % | 5/7 | -0.23 | +1.23 | 39.7 % | 11.1 % | +1.66 % | +0.25 % |
+| E x door (earlier frenzy-sells failed) | 124 | +1.22 % | 5/7 | -0.23 | +1.23 | 39.7 % | 11.1 % | +1.66 % | +0.25 % |
 | E x holders | 227 | +0.95 % | 7/7 | +0.14 | +1.87 | 36.1 % | 6.2 % | +0.92 % | +1.02 % |
 | E x age | 210 | +1.25 % | 7/7 | +0.17 | +2.43 | 31.4 % | 5.1 % | +1.33 % | +1.10 % |
 | **E x holders x age** | **141** | **+2.07 %** | **7/7** | **+0.22** | **+3.26** | **17.6 %** | **4.6 %** | **+2.23 %** | **+1.77 %** |
@@ -1030,7 +497,6 @@ is in-sample - the two thresholds were read off these seven days. The tape ends 
 days after it are the holdout. The coin-list split survives (+2.83 % on 8fStGV's coins, -0.15 % off
 them), so the arrival door is still worth building on top.
 
-Scripts: [cvx_hot_perm.py](node-derivation/hot-tape/cvx_hot_perm.py), [cvx_hot_perm2.py](node-derivation/hot-tape/cvx_hot_perm2.py).
 
 ## 1.15 The holdout: the sentence holds on days it has never seen (H11)
 
@@ -1047,7 +513,7 @@ on, the three days before it as warm-up; the six node wallets are dropped by add
 | sentence, bracket | first/day | %/trade | days | worst day | body | top 1 % | biggest coin | stop-outs |
 | --- | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: |
 | E | 467 | -1.25 % | 0/5 | -2.07 | -7.27 | - | - | 21.8 % |
-| E x door (1.13) | 117 | -0.53 % | 2/5 | -0.81 | -0.98 | - | - | 18.3 % |
+| E x door (earlier frenzy-sells failed) | 117 | -0.53 % | 2/5 | -0.81 | -0.98 | - | - | 18.3 % |
 | E x holders | 177 | +1.20 % | 4/5 | -0.37 | +1.19 | 37.8 % | 12.8 % | 13.9 % |
 | E x age | 263 | +0.54 % | 3/5 | -0.17 | +0.00 | 99.9 % | 15.6 % | 15.7 % |
 | **E x holders x age** | **132** | **+1.90 %** | **5/5** | **+0.17** | **+1.73** | **23.2 %** | **7.0 %** | **10.3 %** |
@@ -1055,7 +521,7 @@ on, the three days before it as warm-up; the six node wallets are dropped by add
 In-sample the same cell read +2.07 %, 141 a day, 7/7, top 1 % 17.6 %. Out of sample it keeps
 92 % of its margin, every day is positive (+0.23, +1.02, +0.17, +0.60, +0.23 SOL), both halves of
 the holdout are positive (+2.09 %, +1.64 %), and the stop-out rate is lower than in-sample. The
-earlier-frenzy door of 1.13 does not hold (-0.53 %, 2/5): it was fitted, and 1.14 already found
+earlier-frenzy door does not hold (-0.53 %, 2/5): it was fitted, and 1.14 already found
 it redundant. Neither permission term alone holds as well as the two together.
 
 ### Verdict
@@ -1074,7 +540,6 @@ It does not ship yet on two counts: the tail (top 1 % 23.2 % against the 15 % ba
 the book (about 0.5 SOL a day at 0.2 SOL a ticket). The next work is the tail and the ticket count
 - a second event from the other paying members, and exits scaled by headroom - before paper.
 
-Scripts: [cvx_holdout_export.py](node-derivation/hot-tape/cvx_holdout_export.py), [cvx_hot_holdout.py](node-derivation/hot-tape/cvx_hot_holdout.py).
 
 ## 1.16 The second event: one leg is a race, the other is not yet spelled (H12)
 
@@ -1107,67 +572,6 @@ real at our seat (+3.50 % on its picks, 8/8) and its selection is not in any sin
 tried; the unused form is the within-coin descriptors FITTED as one score (fall, burst, busy tape,
 seller at a loss, size), chosen on half the days.
 
-Scripts: [cvx_hot_which2.py](node-derivation/hot-tape/cvx_hot_which2.py), [cvx_hot_ev2.py](node-derivation/hot-tape/cvx_hot_ev2.py), [cvx_hot_ev2b.py](node-derivation/hot-tape/cvx_hot_ev2b.py), [cvx_hot_ev2c.py](node-derivation/hot-tape/cvx_hot_ev2c.py).
-
-## 1.17 Rule 1's exit, re-read on its own pool (H13)
-
-The bracket of 1.13 was read off 8fStGV's closes on all its holds, before the permission existed.
-Re-read on its 753 holds that pass rule 1's permission and start on a big public sell
-(`node-derivation/hot-tape/cvx_hot_exit8a.py`): it holds through +8..+12 % (0.5-1.8 % a print), sells hard at
-+15..+20 % (12-30 %), stops at -25..-30 % (3-11 %; under 1 % between -20 and -25 %), and the
--20..+5 % band waits for the clock, whose closes land at 60-90 s. Booked on rule 1's fires, each
-exit with its own occupancy (`cvx_hot_exit8.py`):
-
-| exit | study %/trade | study top 1 % | holdout %/trade | holdout top 1 % | holdout SOL |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| take profit +10 %, stop -25 %, 60 s (1.13) | +2.07 % | 17.6 % | +1.90 % | 23.2 % | +2.26 |
-| take profit +15 %, stop -25 %, 60 s | +2.15 % | 17.4 % | +2.33 % | 19.1 % | +2.46 |
-| **take profit +15 %, stop -25 %, 90 s** | **+2.73 %** | **13.9 %** | **+2.53 %** | **17.7 %** | **+2.66** |
-| take profit scaled by headroom (x0.20) | +2.09 % | 30.9 % | +2.10 % | 22.2 % | +2.63 |
-| ride from +15 % while public buying continues | +0.72 % | 86.4 % | +2.18 % | 37.8 % | +1.85 |
-
-The 90 s clock is the study tape's pick inside the derived range and the holdout confirms it:
-+2.53 %/trade, 117 a day, 5/5 days, body +2.19, biggest coin 6.3 %. The tail is 17.7 % against the
-15 % bar.
-
-Scripts: [cvx_hot_exit8a.py](node-derivation/hot-tape/cvx_hot_exit8a.py), [cvx_hot_exit8.py](node-derivation/hot-tape/cvx_hot_exit8.py).
-
-## 1.18 Rule 1's tail and clip
-
-**The tail is upside gaps.** Rule 1 (take profit +15 %, stop -25 %, 90 s): all of the top 1 %
-tickets are take profits whose fill landed past the target, +33..+61 % within 1-7 s of a frenzy
-spike, spread over coins (the biggest carries 4-6 % of net). With every gain capped at the median
-take profit (+12.9 %), the book stays positive - +2.00 SOL study, +1.01 holdout - and the top 1 %
-share is 10.3 % / 12.6 %. The rule does not rest on its gaps. The cost of the book is its
-stop-outs: 148 tickets at -30.4 %, -9.0 SOL against +14.4 from the take profits.
-
-**The clip.** The path does not depend on the clip, so each ticket is re-priced from its entry and
-exit reserves through the kernel (`node-derivation/hot-tape/cvx_hot_size.py`): 0.2 SOL books 0.68 / 0.59 SOL a
-day (study / holdout), 0.35 SOL 1.08 / 0.94, **0.5 SOL 1.36 / 1.16 with every day positive on
-both tapes**, 0.75 SOL 1.55 / 1.29 with a red study day, 1.0 SOL 1.40 / 1.10 and red days on both.
-A replay does not price our buy moving the next prints, so the larger clips are upper bounds.
-
-Script: [cvx_hot_size.py](node-derivation/hot-tape/cvx_hot_size.py).
-
-## 1.19 Rule 1's door and its stop-outs: nothing at the fire separates them (H15)
-
-`node-derivation/hot-tape/cvx_hot_door4.py` reads 20 facts at rule 1's fires, public prints only, on both
-tapes: overhang, heat, frenzy composition, the seller, and a new count aimed at the member's kind
-of buyer - distinct wallets on the coin that bought within 300 ms of a public sell >= 1 SOL.
-
-- **The stop-outs are not separable once the permission is in.** The strongest fact against the
-  take-profits is 0.055 from 0.5 on the study tape and a different fact (0.075) on the holdout.
-- **The sell-reactive buyer count is not the arrival door**: AUC 0.60 study, 0.45 holdout for the
-  member's first arrival within 90 s.
-- **What predicts the member's arrival is the frenzy's size** - public buy SOL in the last 5 s,
-  AUC 0.70 / 0.63 - a stronger E, not a door.
-- **The cuts that pass both study folds are all a bigger frenzy** (>= 16 recipes, >= 11 SOL bought
-  in 5 s, <= 7.75 SOL sold in 5 s). On the holdout they raise the per-ticket margin (+2.96 %,
-  +3.10 % against +2.53 %) and lower the book (2.22-2.32 SOL against 2.66): fewer tickets.
-
-D stays empty; rule 1 stays as it is. The stop-outs are the price of the sentence at this seat.
-
-Script: [cvx_hot_door4.py](node-derivation/hot-tape/cvx_hot_door4.py).
 
 ## 1.20 Rule 1, every slot re-derived on its own pool (H16)
 
@@ -1245,9 +649,7 @@ biggest coin 3.4 %; holdout 96 a day, 5/5, worst day +0.32, body +2.59, top 1 % 
 coin 6.1 %, halves +3.27 / +3.66 %. At 0.35 SOL flat: 1.58 / 1.07 SOL a day, every day positive on
 both tapes. The holdout is now read once more; the days after 09-10 are the clean test.
 
-Scripts: [cvx_r1u_cand.py](node-derivation/hot-tape/cvx_r1u_cand.py), [cvx_r1u.py](node-derivation/hot-tape/cvx_r1u.py),
-[cvx_r1u_step1.py](node-derivation/hot-tape/cvx_r1u_step1.py), [cvx_r1u_step2.py](node-derivation/hot-tape/cvx_r1u_step2.py),
-[cvx_r1u_grad.py](node-derivation/hot-tape/cvx_r1u_grad.py), [cvx_r1u_exit.py](node-derivation/hot-tape/cvx_r1u_exit.py). The engine is
+The engine is
 [node-derivation/toolkit](node-derivation/toolkit/README.md); the chain of every step is
 [hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md) section 2.
 
@@ -1308,8 +710,7 @@ leg costs 1.0 pp at 0.2 SOL (0.57 pp at 0.35); a buy that fails its slippage bou
 is not modelled; the concurrency peak is 2-3 positions. The holdout has been read at every change
 (1.15, 1.20): the days after 09-10, replayed untouched, are the clean test.
 
-Script: [r1_replay.py](node-derivation/hot-tape/r1_replay.py); tape export
-[toolkit/lake_export.py](node-derivation/toolkit/lake_export.py).
+Tape export: [toolkit/lake_export.py](node-derivation/toolkit/lake_export.py).
 
 ## 1.22 Rule 1 re-derived under the engine's exact semantics (H18)
 
@@ -1389,8 +790,7 @@ ticket the mint, the slot / transaction / leg / time of the trigger, entry-fill 
 the reason and the SOL under the engine kernel. What the tapes still do not test: the tip above
 0.000225 SOL a leg, failed buys, and the untouched days after 09-10.
 
-Scripts: [r1_terms_audit.py](node-derivation/hot-tape/r1_terms_audit.py),
-[r1_exact.py](node-derivation/hot-tape/r1_exact.py),
+Scripts: [r1_exact.py](node-derivation/hot-tape/r1_exact.py),
 [r1_exact_check.py](node-derivation/hot-tape/r1_exact_check.py).
 
 ---
@@ -1767,7 +1167,7 @@ that is really 19 builds with one of them carrying four fifths of the money is 1
 1,006, and a day-split puts that one draw entirely inside the fit half. Every day-based
 fit/hold number reported behind this door - including 6.4's and 7.0's - is splitting on the
 wrong axis. The gate that replaces it is in
-[_!___workflow.md](_!___workflow.md) section 4.
+[_!___derive.md](_!___derive.md) section 11.
 
 **A week of prints is about one profitable client.** Thirty days would hold roughly 150
 slow-wall builds. That, and not another AND, is what the door-behind sentences are waiting on.
@@ -2187,7 +1587,7 @@ Door-v3 MONEY itself is clean: 73, 459, 491, 258, 241, 144 - 6 of 6.
 26 named wallets already bought this coin" is the readers' mint list used as a gate. The
 super-root `CLAUDE.md` says "his coins are never a gate"; 7.4 says "never build a factor on
 wallet identity"; 9 says "his mint list is not a gate";
-[_!___workflow.md](_!___workflow.md) 11 says "his mint list is never the universe". The
+[_!___derive.md](_!___derive.md) 14 says "his mint list is never the universe". The
 agreement **measurement** stands (6.8) - it is what establishes that the L axis is real. The
 **gate** comes out of the sentence.
 
@@ -2224,79 +1624,6 @@ floor** (2 of 6).
 signature from 3.1a. So on this tape the money and the tickets are the same two days, and there
 is **no configuration with both**. That is a sharper statement than "short of clients": there is
 not yet a sentence to prove.
-
-## 4.9 Ranking by SOL selects the two-day cohort
-
-The C8-C11 walks rank occupancy cells by total SOL, then caption the leader as "closest".
-On a week where two days carry one launch client, that ranking returns the client. The
-floor and client gates catch the ship decision; they do not catch the search. Runner:
-`study-kernel/cvx_day_skew.py`.
-
-Tape: `cvx_prints.parquet`, 12,467,222 prints, 127,833 tokens, 2026-08-30 17:48 UTC through
-2026-09-06 12:00 (6.76 days). Hours covered per UTC day from `cvx.py` DAY0: **6.2, 24, 24,
-24, 24, 24, 24, 12**. The first and last days are stubs, not missing files. The lake
-(`hunter/lake-data/trades/dt=2026-09-01` .. `09-08`) is complete on those dates and quieter
-mid-week (Sep 4-6) then recovers Sep 7-8, which this tape never sees.
-
-| series | per-day counts | peak/trough | top2 share |
-| --- | --- | --- | --- |
-| tape prints | 701k, 2.12M, 2.52M, 2.16M, 1.99M, 1.55M, 1.10M, 321k | 7.8x (stubs in) | 38 % |
-| token births | 7,712, 21,906, 24,145, 20,838, 19,901, 16,498, 11,704, 5,129 | **2.1x on full days** (24,145 / 11,704) | 36 % |
-| slow-wall births | 0, 1,049, 1,541, 1,140, 1,111, 1,998, 424, 353 | 5.7x | 46 % |
-| documented births | 52, 182, 236, 208, 148, 130, 64, **0** | 4.5x | 44 % |
-| n_pro>=8 ever | 614, 1,829, 2,489, 1,893, 1,656, 1,149, 756, 249 | 3.3x on full days | 41 % |
-| C8 documented × silence × creator | 47, 170, 220, 192, 140, 125, 63 | 4.7x (tracks the door) | 43 % |
-| C9 n_pro>=8 × flush × cr+av+cu age>=60 | 21, 72, 170, 143, 58, 35, 39 | **8.1x** | **58 %** |
-| C10 slow-wall × rebuy × cr+av age>=60 | 0, 16, 179, 210, 34, 33, 8 | **26x** | **81 %** |
-| C11 slow-wall × late × cr+av age>=60 | 0, 2, 78, 93, 11, 3, 2 | **46x** | **90 %** |
-
-**The local tape is not a hole in the middle.** Day 0 of C8 (47 tickets in 6.2 h) is a stub
-at ~182/day, not a type fail. Documented supply is 0 on the last 12 h because `cvx_meta`
-is the keep+ep50 shortlist and does not cover those 5,129 births - a universe filter, not
-a missing day of prints (6.13, strategy 7.4 law 30). "Documented births" in the table
-above are births of that shortlist, so C8 tracking them is circular.
-
-**C10 and C11 are not "slow-wall tokens get created more those days".** Slow-wall births
-peak/trough at 5.7x; the cells are 26x and 46x, with 81-90 % of tickets in two days. The
-conjunction is a client inside the door. C9 is the same shape, milder: n_pro>=8 supply is
-3.3x on full days, the cell is 8.1x.
-
-**Ranking is the method bug.** C8: 256 SOL>0 cells, 15 even-floor, SOL leader is the
-keep+ep50 launch book (illegal D, 6.13). C9: 210 SOL>0, 3 even-floor (D=none × flush × creator+av+cu,
-+3.61, body red). C10: 11 SOL>0, 0 even-floor. C11: 76 SOL>0, 0 even-floor. The SOL
-leaders of C9-C11 fail TYPE (workflow 4). They are not the next parent. C7 adds clients of
-a type that already prints every day; it does not turn these two-day books into a type.
-The TYPE readings (not the SOL leaders) are 4.10.
-
-## 4.10 Re-read C8-C11 under laws 29-31
-
-Runner: `study-kernel/cvx_conj_reread.py`. TYPE pass: on full UTC days (hours
->= 20), tickets every day, peak/trough <= 1.5x the door, top2 <= door + 10 pp.
-`D=documented` is dropped (law 30). Silence cells with k==0 share >= 5 % are
-dropped (law 31).
-
-**Funnel.** `cvx_meta.parquet`: 18,583 rows, 127,833 tape tokens, overlap
-18,583, missing 109,250. Construction is keep+ep50. Website-led documented is
-1,020 tokens, all inside that shortlist. `cvx_swdoor.parquet`: 164,569 rows,
-overlap 119,234, missing 8,599, slow-wall True 7,616.
-
-**k==0.** C8 silence 58,999 / 150,273 (**39.3 %**). C8 size 7.3 %. C8 burst
-0.1 %. C8 restart / dip / two / money, and every C9-C11 event, are 0.0 %.
-
-**The reading is the TYPE-pass, not the SOL leader.**
-
-| walk | slice | TYPE-pass (best SOL>0) | SOL leader (not the reading) |
-| --- | --- | --- | --- |
-| C8 | full tape | slow-wall × burst × creator × shipped **+10.50**, body **-39.00**, pt 3.9x / door 4.7x | documented × silence is illegal (6.13) |
-| C9 | age>=60 | n_pro>=8 × legs × cu_hi × derived **+1.75**, body **-2.08**, pt 4.1x / door 3.3x | after-flush × n_pro>=8 fails TYPE (8.1x, 58 %) |
-| C10 | age>=60 | none | slow-wall × rebuy fails TYPE (26x, 81 %) |
-| C11 | age>=60 | slow-wall × late × av × trail40 **+5.14**, body **+0.75**, pt 5.7x / door 4.7x, top2 50 / 48 | slow-wall × late × creator+av fails TYPE (46x, 90 %) |
-
-No TYPE-pass mid-tape cell clears floor, tail, body and the client gate together.
-C8's TYPE-pass is C2's door on the full tape, body red. C13 arrives-from-another-coin
-has no SOL>0 TYPE-pass (6.18). C14 sell-run has no SOL>0 TYPE-pass (6.19).
-
----
 
 # 5. NODES AND INSTRUMENTS
 
@@ -2528,93 +1855,308 @@ on sells is below 1. Drop it.
 **Verdict on 9Uq8GV.** FOLLOW of his named print is not reachable: buying into a buy, lag p50
 68 ms, the book is 0 when we fire on it and **-1.66 % when we land behind**. Burst start on
 his coins is the 6.9 ceiling (+4.09 % here at clock 15); when we land behind it is still red.
-RACE +2.21 % 8/8 is the seat that pays. Next is phase 6: which buy >= 1 (or burst starts) he
-takes vs ignores on the same coin, spelled as a **state that has held**, not as a follow of
-the buy. Empty D stays allowed.
+RACE +2.21 % 8/8 is the seat that pays. Phase 6 (5.9) spells which buy >= 1 it takes: no public
+DELAY-legal sentence. Empty D stays allowed.
 
 9999hu / 88887Q stay a second instrument (sell >= 1), not this parent. Their behind book is
 still slightly red; contrast on that sell is a different sentence.
 
 ---
 
+## 5.9 Mid-tape derive, phase 6 (9Uq8GV, which buy >= 1)
+
+```
+D  none
+E  public buy >= 1, terms from within-coin contrast; not frozen
+P  none
+X  clock 15 (its hold; not the exit)
+R  one per coin   S  0.2   seat  lag_115
+frame  study tape, 6.76 days. node-derivation/mid-tape/mt_p6.py
+      window check mt_p6_win.py; unpriced re-book mt_p6_unpriced.py
+```
+
+**6.1 Within-coin contrast** (buy >= 1 on its 873 coins, 64,365 triggers, clock 15). Reaction
+window 75 ms matches its lag p50 of 68 ms: 914 acted, **87 % of its 1,050 buys** (its logic, not
+a corner). k==0 is 1.1 %. The same rank holds at 100-300 ms.
+
+| fact | acted | ignored | rank | dir |
+| --- | ---: | ---: | ---: | --- |
+| stall (s since new high) | 72.6 | 27.8 | 0.676 | HIGH |
+| dd (% below high) | -37.2 | -21.7 | 0.339 | low |
+| mv60 | +6.6 | +25.1 | 0.369 | low |
+| buys10 (SOL) | 4.56 | 7.26 | 0.393 | low |
+| hold_n | 216 | 260 | 0.592 | HIGH |
+| nb5 | 6 | 8 | 0.433 | low |
+
+It takes the stalled dip, not the frenzy. Those first three facts are in the price (strategy
+1.4). Reaction cost on the acted print: **+9.21 % p50, +22.2 % p90**. Ignored prints: +0.13 %.
+Clock 15 on its coins: acted **-1.55 %/trade**, ignored **+1.77 %**. Copying which print it
+takes is worse than taking the ones it skips, at our seat.
+
+Burst start: 597 acted (57 % of its buys). The separator is ssize 1.44 vs 0.10 and mvk 6.6 vs
+0.3: the burst it takes is the same >= 1 SOL buy. Reaction cost +11.7 % p50.
+
+**6.2 Public sentence**, every coin, occupancy one per coin, clock 15. Terms added from acted
+medians, price-path first. Each term must lift; none does. Sell >= 1 control is worse, as
+required, and still red. Held buying-state (rising edge of 1 SOL bought in 2 s, no 1 SOL print
+required) is the same shape.
+
+| cell | n | %/trade | days | body | cover of its acted | rcost p50 |
+| --- | ---: | ---: | :---: | ---: | ---: | ---: |
+| buy >= 1, none | 140,384 | -0.06 | 4/8 | -485.8 | 100 % | 0.0 |
+| + dd <= -38.9 | 48,023 | -2.24 | 0/8 | -327.7 | 50 % | 0.0 |
+| + stall >= 69.4 + quieter flow | 18,218 | -2.00 | 0/8 | -99.9 | 8.6 % | 0.0 |
+| sell >= 1 + same terms (control) | 27,376 | -4.87 | 0/8 | -299.7 | - | 0.0 |
+| held buying-state, none | 171,758 | -0.81 | 0/8 | -810.9 | 100 % | 0.0 |
+| held buying-state + same terms | 14,170 | -1.54 | 0/8 | -63.0 | 8.6 % | 0.0 |
+
+Occupancy first-fire hides the +9 % reaction cost of the print it actually takes (rcost p50
+reads 0 on the first buy >= 1 of the coin). k==0 on that first-fire row is 11.8 % (law 31);
+the book is red either way. Coin-list split of the tight conjunction: its coins -1.24 % 2/8,
+every other coin -2.21 % 0/8. Not a door.
+
+**Unpriced terms only** (buys10, holders, recipes, age; dd/stall/mv out). `buys10 <= 4.56` is
++0.82 % 6/8 and a tail: body **-221.5**, top 1 % **217.7 %**. `hold_n >= 216` then **-1.91 %
+0/8**. No legal filling.
+
+**Verdict.** FOLLOW of 9Uq8GV's named buy has no public DELAY-legal sentence: the print it
+takes has already moved ~9 %, its which-terms are price-path or a tail, and the held-state
+spelling of those terms is red. Do not AND onto buy >= 1. This trigger is closed. The RACE
+seat still names a state (5.10).
+
+---
+
+## 5.10 Mid-tape derive, phase 5 again (9Uq8GV, the state)
+
+```
+D  none
+E  rising edge of unpriced state at its buy; not frozen
+P  none
+X  clock 15 (its hold; not the exit)
+R  one per coin   S  0.2   seat  lag_115
+frame  study tape, 6.76 days. node-derivation/mid-tape/mt_p5b.py, mt_p5b_nb2.py
+```
+
+Phase 4 is RACE-only: the event is a state before its print, not FOLLOW of buy >= 1 (5.9).
+5.1 and 5.2 on that print are kept; this run goes back to 5.1 for a state. Price-path is
+not a candidate (strategy 1.4).
+
+**5.1 Full lift.** No unpriced class has peak lag >= 115 ms and lift >= 2. High-lift cells
+are 0-100 ms (buy >= 1 13.01, pro 11.35 at 0-25 ms, burst start 8.14, new_build 5.84).
+Sells stay below 1. Lags past 400 ms are all below 1: it does not fire on a state that has
+held for seconds. The 150-200 ms buy >= 1 cell (12.92) is a second print in the same burst,
+not a second reaction time.
+
+**5.2 Missed print classes** (clock 15, max_trig 1 s).
+
+| class | hits | dt p50 | dt>115 ms | ahead | on-trig | behind |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| pro | 38.5 % | 16 ms | 27 % | 27 % | +2.17 % | **-2.21 %** |
+| new_build | 50.0 % | 24 ms | 28 % | 28 % | +1.29 % | **-2.68 %** |
+| pro < 1 SOL | 33.6 % | 16 ms | 29 % | 29 % | +3.62 % | **-1.69 %** |
+| new_build < 1 SOL | 39.7 % | 25 ms | 31 % | 31 % | +3.34 % | **-1.40 %** |
+
+All four are races. Kill.
+
+**5.1c State contrast** (its 1,048 buys vs 4,188 same-coin random public prints, window
++/- 60 s). Strongest separators are **priced**: buys5 5.64 vs 2.42 (rank 0.714), mv10
++14.2 % vs +0.6 % (0.635). Unpriced: **nb2 5 vs 3** (0.638). last_pro / last_new / npro2
+are weak. It fires into a live 2 s multi-recipe burst; the burst's size and 10 s move are
+already in the price.
+
+**5.2 Rising-edge unpriced states** (max_trig 5 s). Behind stays red on every row. On-trig
+is its subsequent buy (not a ceiling).
+
+| state | hits | dt p50 | dt>115 ms | ahead | on-trig | behind |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| nb2 >= 4 | 63.7 % | 308 ms | 61 % | 61 % | +9.74 % | **-2.41 %** |
+| nb2 >= 5 | 52.3 % | 299 ms | 60 % | 60 % | +9.07 % | **-2.55 %** |
+| nb2 >= 3 | 69.1 % | 309 ms | 61 % | 61 % | +9.24 % | **-3.65 %** |
+| npro5 >= 1 | 42.5 % | 399 ms | 57 % | 57 % | +10.29 % | **-2.70 %** |
+| npro2 >= 1 | 52.8 % | 275 ms | 57 % | 56 % | +9.94 % | **-1.71 %** |
+| nb5 >= 2 / 3 | 27-35 % | 164-187 ms | ~58 % | ~58 % | +6 to +9 | **-6.3 %** |
+
+**5.3 / 6.2** Occupancy one per coin, clock 15. k==0 is 0.0 % on nb2 (law 31); 1.2 % on
+npro5 >= 1.
+
+| cell | n | %/trade | days | body | k==0 |
+| --- | ---: | ---: | :---: | ---: | ---: |
+| nb2 >= 4, every coin | 175,033 | -1.86 | 0/8 | -1,151 | 0.0 |
+| nb2 >= 4, its coins | 23,920 | -0.38 | 2/8 | -80 | 0.0 |
+| nb2 >= 5, every coin | 136,648 | -1.66 | 0/8 | -864 | 0.0 |
+| nb2 >= 5, its coins | 18,656 | +0.03 | 3/8 | -48 | 0.0 |
+| npro5 >= 1, every coin | 169,561 | -1.56 | 0/8 | -1,025 | 1.2 |
+| npro5 >= 1, its coins | 22,450 | -0.46 | 1/8 | -80 | 0.4 |
+| npro2 >= 1, every coin | 180,257 | -1.67 | 0/8 | -1,122 | 1.1 |
+| npro2 >= 1, its coins | 23,930 | -0.49 | 1/8 | -87 | 0.4 |
+
+5.3 occupancy with clock 15 is red on every fire of the class. That column is not leftover
+existence on the fires he takes (derive 5.2).
+
+**Verdict.** 9Uq8GV co-arrives into a 2 s independent-recipe burst. The print neighbor
+(buy >= 1, pro, new_build) is DELAY-dead: reaction cost / race (16-68 ms). The unpriced
+rising edge (nb2, npro) has lag ~300 ms next to its own buy; every-fire clock 15 occupancy
+is red, including on its coins. RACE +2.21 % 8/8 is its fill. Leftover existence on acted
+tickets (peak leftover vs cost, derive 5.2) is unread. Empty D stays allowed on a
+leftover-legal parent.
+
+---
+
+## 5.11 Mid-tape derive, instrument 9999hu (leftover then which sells)
+
+```
+D  none
+E  public sell >= 1; leftover on acted tickets; public occupancy not frozen
+P  none
+X  clock 25 (its hold p50; a prior, not the exit)
+R  one per coin   S  0.2   seat  lag_115
+frame  study tape, 6.76 days. node-derivation/mid-tape/mt_hu_p5.py, mt_hu_p6.py, mt_hu_p6b.py
+      working file node-derivation/mid-tape-rule-2.md
+```
+
+Pick is 9999hu: highest RACE on the node (+5.94 % 7/7, body +34.67), a public tell that is
+not C2 (sell >= 1 lift 9.12 @ 50-75 ms). 88887Q is the same tell and stays off (law 27).
+Shape: 4,323 episodes, age p50 17.6 s, hold 3.9 / 25.0 / 69.8 s (5.8).
+
+**5.2 Leftover existence** on acted tickets (our fill 115 ms after the trigger, MFE through
+hold p10-p90 net of both-leg cost). Sell >= 0.5 is the nearby class.
+
+| class | hits | dt p50 | ahead | rcost p50 (ahead / behind) | missed | leftover median p10/p50/p90 | covers cost | gate |
+| --- | ---: | ---: | ---: | --- | ---: | --- | ---: | --- |
+| sell >= 1 | 79.1 % | 96 ms | 43.1 % | +5.5 % (**0.0** / +9.0) | 0.1 % | **+9.3 / +17.8 / +23.6** | 88.6 % | live |
+| sell >= 0.5 | 88.3 % | 86 ms | 37.9 % | +6.2 % (0.0 / +8.9) | 0.1 % | +8.6 / +16.9 / +22.0 | 87.7 % | live |
+
+Reaction cost when we land **ahead** of its buy is 0. The +5.5 % p50 is filling after its
+print. Missed-episode share is 0.1 %. Not a race (ahead 43 %, lag 96 ms). Leftover after
+our fill covers cost on 88.6 % of tickets. Behind leftover median is still +13.4 %/trade.
+
+**5.3 Diagnostics** (not a veto), sell >= 1 acted.
+
+| column | number |
+| --- | --- |
+| clock mean 1 / 5 / 15 s | +4.81 / +3.17 / +3.61 %/trade |
+| clock 15 **median** | **-2.59 %/trade** |
+| his-exit mean / median | +3.92 / **-2.30** |
+| leftover qs (p10 / p50 / p90) | -0.74 / +17.82 / +79.89 |
+| occupancy on its coins, clock 25 | -0.94 %/trade 0/8, body -219, k==0 0.0 % |
+
+A hold-matched clock and a copy of its close are red in the median. Peak leftover is not.
+
+**6.1 Which sells** (sell >= 1 on its 3,773 coins, reaction window 200 ms, clock 25).
+183,865 triggers; 3,437 acted = **77.4 % of its 4,439 buys**; k==0 0.0 %.
+
+| fact | acted | ignored | rank | dir |
+| --- | ---: | ---: | ---: | --- |
+| nb2 | 9 | 5 | 0.717 | HIGH |
+| buys2 (SOL) | 6.54 | 0.99 | 0.690 | HIGH |
+| age (s) | 16.3 | 145 | 0.368 | low |
+| shold (s) | 4.22 | 20.6 | 0.365 | low |
+| stall (s) | 3.58 | 30.1 | 0.384 | low |
+| hold_n | 64 | 292 | 0.364 | low |
+| mvk (%) | -8.0 | -5.2 | 0.301 | low |
+
+It takes the live frenzy-absorbed sell on a young coin, not a stalled dump. Clock 25 on its
+coins: acted **+1.29 %/trade**, ignored **-0.83 %**. The fires it takes are better at our
+seat; occupancy of the whole class is not.
+
+**6.2 Public occupancy**, every coin, clock 25. Stacked unpriced acted medians do not lift.
+
+| cell | n | %/trade | days | body | cover of acted | k==0 |
+| --- | ---: | ---: | :---: | ---: | ---: | ---: |
+| sell >= 1, none | 135,030 | -3.53 | 0/8 | -1,388 | 100 % | 0.0 |
+| + nb2 >= 9 | 21,829 | -3.70 | 0/7 | -253 | 54 % | 0.0 |
+| + nw5 >= 27 | 13,778 | -5.35 | 0/7 | -197 | 37 % | 0.0 |
+| + ssize >= 1.88 | 8,563 | -5.85 | 0/7 | -130 | 19 % | 0.0 |
+| control buy >= 1, none | 112,831 | +0.07 | 4/8 | -455 | - | 14.7 |
+
+Control buy >= 1 none has k==0 14.7 % (law 31) and a 2,861 % top 1 %. Tight spec on its
+coins -0.78 % 4/7 vs every other coin -8.84 % 0/7: a gap, both red, not a door.
+
+Each term **alone** (occupancy): only age <= 16.3 is green, and that fire is not its fire.
+
+| cell | n | %/trade | days | body | top 1 % | fire age p50 |
+| --- | ---: | ---: | :---: | ---: | ---: | ---: |
+| nb2 >= 9 | 21,829 | -3.70 | 0/7 | -253 | - | 26.4 s |
+| shold <= 4.22 | 34,032 | -0.61 | 1/8 | -202 | - | 32.0 s |
+| buys2 >= 6.54 | 22,051 | -1.96 | 0/8 | -192 | - | 7.8 s |
+| **age <= 16.3** | 18,156 | **+3.85** | **7/7** | +41 | **70.9 %** | **2.0 s** |
+| age 0-8 s | 16,500 | +4.30 | 7/7 | +50 | 64.6 % | 1.8 s |
+| **age 8-16 s** | 12,948 | **-3.74** | **0/7** | -156 | - | 9.6 s |
+| age 10-25 s | 14,376 | -4.41 | 0/7 | -189 | - | 12.5 s |
+| acted-only (not a sentence) | 2,393 | +0.87 | 5/7 | -6 | - | - |
+
+Age <= 16.3 occupancy is the **launch first-sell** (age p50 2 s, top 1 % 71 %). The band
+around 9999hu's own fire (8-16 s, age p50 of the fire 9.6 s) is red. age <= 16.3 and
+nb2 >= 9 is -3.98 % 0/7.
+
+**Verdict.** Leftover exists at our seat on the sells 9999hu takes. The class as occupancy
+does not name those sells: first-fire is a launch sell, and recipe-count terms make that
+book worse. Do not freeze age <= 16 as this sentence. Phase 8 on the acted pool is 5.12.
+Empty D stays allowed.
+
+---
+
+## 5.12 Mid-tape derive, instrument 9999hu (phase 8, acted pool)
+
+```
+D  none
+E  public sell >= 1, the fires 9999hu takes (not occupancy, not a public sentence)
+P  none
+X  hazard-named clock ~25 s, then families against that bracket
+R  one per coin   S  0.2   seat  lag_115
+frame  study tape, 6.76 days. node-derivation/mid-tape/mt_hu_p8.py
+      working file node-derivation/mid-tape-rule-2.md
+```
+
+**8.1 Closing print.** Excess intensity, cases=close, controls=hold: 4,389 closes vs 17,511
+hold prints. No class spikes. Peak lifts: burst_start 1.56 @ 50-75 ms, buy >= 1 1.18 @
+75-100 ms, sell >= 1 0.89. It does not close on a public print.
+
+**8.1 Hazard** on the pool the sentence selects (buy within 200 ms of a public sell >= 1).
+
+| pool | n | close pnl p25/p50/p75 | held p25/p50/p75 | peak p50 | tp (>=+8) | stop (<=-20) | between |
+| --- | ---: | --- | --- | ---: | ---: | ---: | ---: |
+| E | 2,555 | -15.5 / **-0.2** / +18.8 | 7.9 / **23.5** / 41.5 s | **17.8 %** | 36.7 % | 19.2 % | 44.1 % |
+| other | 1,730 | -15.6 / -3.7 / +12.6 | 20.2 / 28.0 / 45.2 s | 12.3 % | 30.1 % | 19.2 % | 50.8 % |
+
+On E, hazard jumps at **20-30 s across every pnl band** (~2-3.5 % a print), not at a profit
+band. The close median is flat against a 17.8 % peak: it gives the leftover back. The
+bracket prior is a clock at its hold p50, a loose stop, not a take profit.
+
+**8.2 Families** on the 3,437 acted sell >= 1 fires, own occupancy, fill 115 ms after the
+sell. Clock 25 is the 6.2 prior.
+
+| cell | n | %/trade | days | body | top 1 % | h1 / h2 | hold | mix |
+| --- | ---: | ---: | :---: | ---: | ---: | --- | ---: | --- |
+| clock 25 (prior) | 2,393 | +0.86 | 5/7 | -6.30 | 253.7 | +0.25 / +2.43 | 24.6 s | time 100 |
+| clock 70 | 2,338 | -0.01 | 5/7 | -16.10 | - | -1.11 / +2.80 | 69.1 s | time 100 |
+| tp10 sl25 t25 | 2,442 | +1.33 | 5/7 | +3.57 | 44.9 | +1.51 / +0.85 | 1.8 s | tp 69 sl 18 |
+| tp10 sl25 t70 | 2,441 | +1.26 | 6/7 | +3.22 | 47.5 | +1.45 / +0.76 | 1.8 s | tp 72 sl 22 |
+| **tp15 sl40 t70** | 2,433 | **+1.61** | **7/7** | **+4.47** | **42.8** | **+1.70 / +1.35** | 6.3 s | tp 67 time 20 sl 14 |
+| tp20 sl25 t70 | 2,434 | +1.25 | 6/7 | +2.73 | 55.1 | +1.44 / +0.74 | 6.4 s | tp 55 sl 32 |
+| sellbuy arm10 sl25 t70 | 2,441 | +1.31 | 5/7 | +3.25 | 49.1 | +1.34 / +1.22 | 2.7 s | tp 70 sl 23 |
+| scale half10 rest20 t70 | 2,434 | +1.36 | 6/7 | +3.68 | 44.6 | +1.55 / +0.87 | 6.5 s | tp+tp 55 |
+| trail arm10 give5 sl25 t70 | 2,438 | +0.12 | 3/7 | -3.94 | 799 | +0.29 / -0.34 | 3.7 s | tp 72 |
+| ride arm10 sl25 t70 | 2,432 | -0.39 | 3/7 | -12.36 | - | -0.83 / +0.80 | 6.6 s | tp 71 |
+| tp15 sl25 t70 + fade | 2,442 | +1.08 | 5/7 | +2.33 | 55.8 | +1.41 / +0.20 | 3.2 s | tp 52 fade 34 |
+| tp15 sl25 t70 + dump | 2,444 | +0.35 | 4/7 | -1.35 | 178 | +0.57 / -0.21 | 1.4 s | dump 50 |
+
+tp15 sl40 t70 per-day n: 123 / 480 / 657 / 505 / 381 / 186 / 101. Capped book -7.42 SOL.
+Trail, ride, dump, and a longer clock are worse than the prior. Sellbuy and scale do not
+beat the wide-stop bracket on days and body together.
+
+**Verdict.** Leftover on the fires it takes is a short bounce (take-profit hold 2-6 s), not
+its 25 s close. A clock copies the give-back. The working X is tp15 sl40 t70: 7/7, both
+halves, body +4.47. Top 1 % 43 % and a negative capped book fail the ship bars. Next is
+phase 9 on this pool (stop-outs vs take-profits at the fire). Do not freeze age <= 16. Do
+not AND nb2 onto occupancy.
+
+---
 
 # 6. THE CONJUNCTION SPACE
 
 What a search over decision-time terms actually produces, on money, at the floor, walked forward.
 This is the measurement that closes or opens an event family.
-
-## 6.1 The zigzag-turn event
-
-```
-D keep-create with one completed >= 50 % episode   E zigzag TURN (+15 % off the new low)
-P every 2- and 3-term conjunction of 16 decision-time, wallet-free terms
-X clock 30 and trail50 c600, both read   R unlimited, one per coin   S 0.2   seat lag_115
-frame  one week, 62,316 fires.  study-kernel/audit_conj.py
-terms  creator_in . crowd_gone . crowd_held . pusher_in . 2bld_slot . terminal . router .
-       not_racer . cu_hi . gap2s . nep2 . age300 . vband . size05 . document . new_species
-```
-
-| exit | cells above the floor | positive SOL | **tail-robust** | positive on both halves | walk-forward: best 10 on days 0-3 -> days 4-7 |
-| --- | ---: | ---: | ---: | ---: | --- |
-| clock 30 | 522 | 8 | **0** | 1 | +23.39 -> **-18.68** (1 of 10 positive) |
-| trail50 c600 | 522 | 17 | **0** | 0 | +74.87 -> **-40.46** (0 of 10 positive) |
-
-Best cells reach about zero, never past it: `creator_in + crowd_gone + size05` books +5.77 SOL
-and -10.43 without its top 1 %; `creator_in + router + nep2` books +4.54 and -15.10.
-
-**A conjunction moves this parent from -4.55 % a trade to about zero and stops there.** It buys
-"this coin is not decaying", which is worth the toll. Nothing clears money, tail and both halves
-together.
-
-## 6.2 The machine-print-in-the-dip event
-
-```
-D keep-create with one confirmed >= 50 % episode   E a buy >= 0.5 SOL, not a racer, in the dip
-P every 1- to 4-term conjunction of 10 terms   X clock 45 and trail40 c600, both read
-R unlimited, one per coin   S 0.2   seat lag_115
-frame  one week, 251,540 fires on 13,544 coins.  study-kernel/cvx_harvest.py, audit_conj2.py,
-       audit_conj3.py
-```
-
-Parent: **-457.29 SOL, -7.08 % a trade, 0/8 days** on trail40 c600.
-
-| scan | cells | positive | tail-robust | both halves | all three |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 2-3 terms, floor applied | 141 | 15 | **0** | 1 | 0 |
-| 2-4 terms, floor removed | 330 | 68 | 7 | 27 | **5** |
-
-Walk-forward on the floored scan: best 5 on days 0-3 book **+57.67**, then **-19.37** on days 4-7.
-
-The five cells that clear money, both halves and the top-1 % removal all sit at **10-29
-first-per-mint a day**, far under the floor, and the tail calibration disqualifies them anyway:
-their top 1 % carries **49-87 %** of net and one coin carries **44-70 %**, against 9-12 % for a
-real book at matched n.
-
-The document ablation on this parent, which settles it as a convexity term:
-
-| cell | n | first/day | SOL | %/trade | days+ | top1 % | one coin % |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| document alone | 1,772 | 104.6 | -18.19 | -5.13 | 0/7 | - | - |
-| creator_in + document | 1,030 | 75.8 | -4.91 | -2.38 | 2/7 | - | - |
-| terminal + creator_in + document | 166 | 15.7 | +2.38 | +7.16 | 5/7 | 72.8 | 57.8 |
-| **terminal + creator_in, document EXCLUDED** | 1,465 | 126.1 | **+8.83** | +3.02 | 4/8 | 196.8 | 19.1 |
-
-Adding the document removes 90 % of the tickets and keeps 27 % of the money. **It does not add on
-this event.**
-
-`creator_in` is in every top cell of both scans and is the only term whose removal always lowers
-total SOL.
-
-## 6.3 What the two scans establish, and what they do not
-
-**Establish:** across two independent event families, 663 conjunctions above the ticket floor
-produce zero cells that are simultaneously positive, tail-robust and positive on both halves; and
-anything chosen in sample collapses out of sample.
-
-**Do not establish:** anything about state-conditional exits - only the static family is
-measured. L-selection on door-v3 MONEY fires is 3.7 and answered; on documented-project it
-is 3.6 and empty. Burst-start behind every door including slow-wall is 6.4. Campaign-break
-is 6.6. Quiet deep-age is 6.5. Slow-wall × token-silence is 6.13 and red (**-91.95 SOL**).
 
 ## 6.4 Door x burst START (C2)
 
@@ -2684,151 +2226,6 @@ The 5 % cell survives its best client leaving, which no earlier cell has done, a
 **C2 does not ship on any door here, and the slow-wall cell is the closest the program has
 come.** What it is short of is builds, not terms - 19 draws on a week against roughly 150 on
 thirty days. Next story is quiet deep-age (G1), not another AND on burst-start.
-
-## 6.5 Quiet deep-age (C5)
-
-```
-D keep-create / documented-project / keep + demonstrated episode, one at a time
-E first buy >= 0.5 SOL after >= 10 silent slots on the TOKEN (not tool silence), not a racer,
-  not the node's own prints. Separate sentence: returning professional after that build's own
-  10-slot silence (the "pusher restarted" spelling).
-P age >= 400 s . vsol 33-81 . prior-minute prints <= 20 . creator not sold
-X trail40 c600 and clock 45
-R unlimited, one per coin   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days.
-      study-kernel/cvx_quiet.py (book) and cvx_quiet_ladder.py (decision print)
-```
-
-On this tape the four wallets buy 7,941 times. They are not the silence-breaker (0.3-1.7 % of
-entries). They land 51-163 ms after a public print, the second print of an 80-240 ms burst that
-opened after 1-5 s of token silence. GZmUDs: prev is a buy 97 %, a buy >= 0.5 SOL 73 %, burst
-gap p50 5.44 s (60.6 % >= 4 s), burst length p50 79 ms. That names E as the first size buy after
-token silence. It is not C2 (C2 is a router run after that *tool* went quiet on a live tape).
-
-The "pusher restarted" spelling does not describe GZmUDs here: 0 % of his buys are professional
-under the week census, 0.1 % are the episode-1 pusher.
-
-Response within 2 s vs a 0.70 % base: token-silence 2.47 %; token-silence + P 9.13 %; returning-pro
-restart + P 6.05 %. The node names the reconstructed event. His mint list is not a gate.
-
-| slice (trail40 c600) | n | first/day | SOL | days+ | top1 % | wo top1 | fit SOL | hold SOL |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| E only: token silence, full tape | 80,598 | 9,508 | **-1758.05** | 0/8 | - | - | -1077.00 | -681.05 |
-| E only: returning-pro restart, full tape | 11,105 | 793 | **-111.70** | 0/8 | - | - | -53.82 | -57.88 |
-| C5 keep + restart + P | 552 | 37.0 | -1.88 | 1/8 | - | - | -0.81 | -1.07 |
-| C5a documented + restart + P | 144 | 7.5 | +0.40 | 4/6 | 93.8 | +0.02 | +0.45 | -0.05 |
-| C5 age>=200 restart + P | 622 | 45.7 | +1.02 | 3/8 | 348.1 | -2.52 | +1.62 | **-0.60** |
-| C5c keep + token silence + P | 2,407 | 200.6 | **-32.46** | 0/8 | - | - | -16.61 | -15.86 |
-| C5d documented + token silence + P | 458 | 32.1 | -3.63 | 1/7 | - | - | -1.25 | -2.38 |
-| C5e keep+ep + token silence + P | 1,750 | 120.3 | -9.46 | 0/8 | - | - | -3.72 | -5.74 |
-
-Clock 45 is red on every cell. Ablating creator, quiet, or age on C5c makes the book worse.
-The two plus cells are under the floor or carried by the top 1 %, and both fail the hold half.
-Slow-wall launch door labels sit on this tape (3.1); that cell is unrun.
-
-The burst they follow lasts ~80 ms. A 115 ms fill lands after it. The leftover of that burst is
-not at this seat (DELAY). Doors on this tape do not recover either spelling of E.
-
-**C5 does not ship.** Next story is C6 (agreement as a door), not another AND on silence-break.
-
----
-
-## 6.6 Campaign-break v0 at lag_115 (C3)
-
-The door is an `ix_patterns` fingerprint, not a `build_core`. Seed
-[`campaign-break-29d9aacb`](../../../../scripts/seed-campaign-break-rule.sql) is the
-four-instruction buy (CU price, CU limit, ATA CreateIdempotent, Pump.Fun Buy). On this
-tape that is `ixh = 29d9aacbcbb4d1a8a8ad0975968a7626`: **42,178 prints**, n_ix 4, tool
-PF.Buy. The same 8-char prefix is 0 of 15,915 `build_core` hashes; that is a different grain.
-
-```
-D  ixh 29d9aacbcbb4d1a8a8ad0975968a7626 (wildcard; the machine, not a wallet)
-E  that buy ends a >= 10-slot buy silence (engine: 10 slots, lag 1, buy_count = 0)
-P  vsol 65-100 . break_idx >= 4 . tagged buys on this coin >= 15 . 120 s buy-share <= 60 %
-   . vsol < 97 % of the 30-minute vsol max
-X  frozen: TP +40 % else 600 s clock. trail40 c600 and clock 45 beside
-R  one per token   S 0.2 (0.05 beside)   seat lag_115; slot_end, lag_0, slot+2 beside
-frame  last-leg week. 42,145 machine buys -> 13,411 quiet fires on 505 coins -> 2,625
-       permissioned fires -> 256 trades.  study-kernel/cvx_c3_frozen.py
-```
-
-| cell (lag_115, B=0.2) | n | first/day | SOL | %/trade | days+ | win | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| E only, frozen exit | 933 | 74.9 | **-20.47** | -10.97 | 2/8 | 53.7 | - | - | - | - |
-| FROZEN D+E+P, TP40 c600 | 256 | **18.6** | **-0.60** | -1.18 | 4/8 | 66.8 | -84.3 | -1.11 | +2.37 | **-2.98** |
-| same fires, trail40 c600 | 199 | **18.5** | +4.18 | +10.50 | 6/8 | 47.7 | 18.5 | +3.41 | +4.19 | **-0.01** |
-| same fires, clock 45 | 874 | 18.6 | -4.52 | -2.59 | 2/8 | 50.8 | - | - | -0.18 | -4.34 |
-
-Every permission is load-bearing on the frozen exit (dropping any one makes the book worse).
-break_idx and tagged>=15 are almost the same cut (256 vs 257 vs 259). A 0.05 clip reads the
-same per trade (-1.45 % / +10.31 % / -2.89 %), so this is not impact.
-
-**Seats on the frozen conjunction, TP40 c600:** lag_0 **-0.34**, slot_end **-0.53**,
-lag_115 **-0.60**, slot+2 **-0.89**. The recorded +2-slot book does not appear on this
-tape. Trail40 at lag_0 is +6.57 / 7/8 and at slot+2 is +0.67; the leftover at 115 ms is
-the trail column, not the derived exit.
-
-**Gates on the frozen exit:** floor fails (18.6 first/day). Money fails. Hold fails.
-Trail40 on the same fires is a neighbourhood, not the sentence: it still sits under the
-floor, hold is **-0.01**, and 89.5 % of its +4.18 is `payer_id = -1` (the column is empty
-before 2026-09-01 16:24). Leave-one-payer-out on trail40 is +0.44; the bootstrap is
-positive in 85.5 %, not 95 %.
-
-**C3 does not ship.** The mint-disjoint holdout at +2 slots (1,278 trades, one machine,
-two windows) is n = 1 under the client gate (3.1a). Re-pricing the same fingerprint at
-`lag_115` does not recover it.
-
-The concentration-species widening of the same event (`cvx_c3_campaign.py`) is a different
-sentence and is also red: 1,330 trades, **-15.57 SOL**, 0/8 days, machine bootstrap 0.7 %.
-Two of those seven machines are 0.1-SOL terminals booking -6.7 % a trade. Do not widen
-the machine class.
-
-## 6.7 Deep-age big clip (G1)
-
-```
-D keep-create / documented-project / slow-wall 5 %, one at a time
-E a non-racer buy >= 1.0 SOL, not the node's own print. Neighbourhood: >= 0.5, and
-  first-of-burst of those.
-P age >= 200 s . vsol 45-80 . prior-minute prints >= 20 (live tape) . creator not sold
-X trail40 c600 and clock 45
-R one per token   S 0.2   seat lag_115
-frame  last-leg week.  study-kernel/cvx_bigclip.py
-```
-
-On this tape the three wallets buy 1,210 times (D9Uite 265, pau23U 675, 9RNZnq 270).
-D9Uite: clip p50 **1.48 SOL**, age p50 **257 s**, n60 p50 **88** (a live tape, not C5's
-quiet 10), **53.6 % burst-start himself**, prev buy >= 0.5 on **12.5 %** of entries,
-prev buy >= 1.0 on **6.0 %**, prev_dt p50 **482 ms**. He is not chasing a public size
-print. Half the time he *is* the burst.
-
-Response within 2 s vs a 0.052 % base on any >= 0.5 non-racer: buy >= 1.0 **0.043 %**;
-E+P (>=1, live, age200, v, creator) **0.052 %** (no lift); E+P >= 0.5 **0.087 %**;
-token-silence (C5's E) **0.029 %** (below base). The node does not name this event.
-
-| slice (trail40 c600) | n | first/day | SOL | days+ | top1 % | wo top1 | fit SOL | hold SOL |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| E only: buy >= 1.0, full tape | 86,892 | 8,731 | **-1963.63** | 0/8 | - | - | - | - |
-| E + P (>= 1) | 1,840 | 136.6 | -12.22 | 1/8 | - | - | - | - |
-| keep + E>=1 + P | 1,706 | 124.7 | **-13.19** | 1/8 | -105.5 | -27.10 | **-7.44** | **-5.75** |
-| keep + E>=1 START + P | 1,429 | 111.9 | -14.37 | 1/8 | - | - | - | - |
-| keep + E>=0.5 + P (widen actor) | 2,047 | 147.7 | -21.55 | 1/8 | - | - | - | - |
-| documented + E>=1 + P | 217 | 16.1 | +1.75 | 4/7 | 77.8 | +0.39 | - | - |
-| slow-wall 5 % + E>=1 + P | 603 | 32.7 | +4.69 | 4/6 | 116.4 | **-0.77** | - | - |
-
-Clock 45 is red on every cell that clears the floor. Ablating creator or live-tape, or
-moving to C5's quiet permission, makes keep + E>=1 worse. Zero-lag on keep + E>=1 + P is
-**-1.91 SOL**: the sentence is red even without the 115 ms seat. lag_115 is **-13.19**.
-
-The two plus cells sit under the floor and are carried by the top 1 %. They are a door
-neighbourhood, not a new story; slow-wall behind burst-start is already C2.
-
-**G1 deep-age big clip does not ship.** WHAT: a public size print is not this node's tell
-(response equals the base). DELAY is not the C5 failure: he starts the burst half the
-time, and when he does not, the previous print is an ordinary live-tape print (~0.5 s
-back), not a size tell. The on-tape version of "few coins deserve size" is **which coin**
-(C6, agreement of 2+ of the 26), not which print. Do not AND more terms onto size-buy.
-
----
 
 ## 6.8 The solo 26 as a door, and as agreement (C6)
 
@@ -2916,7 +2313,7 @@ positive hold half and a lower loser rate. **None of that can be used.**
 **`A >= 2` is refused, not refuted.** It is the readers' mint list used as a gate and a factor
 built on wallet identity: the super-root `CLAUDE.md` says "his coins are never a gate", 7.4 of
 [_!___strategy.md](_!___strategy.md) says "never build a factor on wallet identity", 9 says
-"his mint list is not a gate", and [_!___workflow.md](_!___workflow.md) 11 says the same. The
+"his mint list is not a gate", and [_!___derive.md](_!___derive.md) 14 says the same. The
 "53.9 first-per-mint a day" quoted beside it is also wrong as a gate reading: it is a mean over
 a cell that clears the floor on **two of six days** (4.8).
 
@@ -3207,632 +2604,9 @@ START. sold_back low (still-held supply) is worse than the parent.
 **Verdict:** the fourth fact, measured as tokens, does not fill D. Ep1 holdings do not
 name return coins. Stop adding holder-book or last-side terms onto this event.
 
-## 6.13 Four-slot inventory walk (no slot frozen)
-
-```
-D  none . keep . slow-wall 5 % . documented-project . keep+ep . n_pro>=8 . first-buy>=2
-   one at a time
-E  burst START . token-silence >=10 slots . returning-pro restart . dip print .
-   size>=1 . 2-build slot . MONEY (2nd non-creator buyer, age 5-300 s)
-P  none . creator . age/v . creator+age/v . cu_hi . creator+age/v+cu .
-   crowd_gone . creator+age/v+crowd
-X  clock 45 . trail40 c600 . shipped armed trail . burst-dies g5 + trail40
-R  unlimited, one per token   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days, 2,212,402 fires, 1,528 occupancy cells.
-      study-kernel/cvx_conj4.py, cvx_conj4_diag.py, cvx_conj4_rank.csv
-```
-
-Legal product, not a 16-term AND-grid and not a spoken-story seed. Doors stay one at a
-time. 256 cells print plus.
-
-**Leader:** documented-project × token-silence × creator-in × trail40.
-
-| cell | n | first/day | SOL | %/trade | days+ | worst | d50 | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| documented × silence × creator × trail40 | 1,622 | 141.6 | **+47.54** | 14.65 | **7/7** | **+0.86** | 6/7 | 40.2 | **+28.43** | +34.21 | **+13.33** |
-| same, shipped | 1,438 | 141.6 | +42.75 | 14.86 | 6/7 | -0.44 | 6/7 | 36.9 | +26.96 | +30.56 | +12.19 |
-| same, clock 45 | 3,512 | 141.6 | +21.67 | 3.09 | 7/7 | +0.75 | 6/7 | 72.0 | +6.07 | - | - |
-| documented × silence × none × trail40 | 2,129 | 144.3 | +42.28 | 9.93 | 6/7 | -0.20 | 6/7 | 52.7 | +20.01 | +31.33 | +10.95 |
-| documented × two × creator × trail40 | 1,622 | 143.8 | +35.85 | 11.05 | 7/7 | +0.47 | 7/7 | 47.8 | +18.70 | +22.85 | +13.00 |
-| documented × size × creator × trail40 | 1,574 | 143.2 | +32.68 | 10.38 | 7/7 | +0.47 | 6/7 | 45.9 | +17.67 | +19.40 | +13.28 |
-| documented × MONEY × creator × trail40 | 767 | 113.5 | +22.67 | 14.78 | 6/7 | -1.11 | 6/7 | 35.4 | +14.64 | +15.84 | +6.83 |
-| documented × burst × creator × trail40 | 1,179 | 93.1 | +2.15 | 0.91 | 4/7 | -1.55 | 5/7 | 397.2 | **-6.39** | - | - |
-| slow-wall × burst × creator+age/v × trail40 | 1,006 | 68.7 | +15.51 | 7.71 | 4/6 | -0.55 | **2/6** | 78.3 | +3.37 | - | - |
-| slow-wall × silence × creator × trail40 | 6,631 | 859.3 | **-91.95** | -6.93 | 2/7 | -44.53 | 7/7 | - | -167.77 | - | - |
-
-Tickets on the leader: `47, 170, 220, 192, 140, 125, 63`. Peak/trough 4.7x, top2 43 % -
-tracks documented births (4.5). Day 0 = 47 is a 6.2 h stub (~182/day), not a type fail
-(4.9). Documented supply on the last 12 h is 0 (`cvx_meta` does not cover those births).
-lag_0 trail40 is **+144.85** (gap < 50 ms on 40.7 % of entries, median gap 84 ms).
-Clients (creation build): 36, top share 70.8 %, leave-one-out **+13.90**, bootstrap
-99.7 %. Top token 5.1 %. Trail fires 50 %. Silent fill 0.5 %.
-
-**The plus is age < 60 s.** Split of the same fires, trail40, occupancy:
-
-| slice | n | SOL | %/trade | days+ | wo top1 | LOO | boot |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| age < 60 s | 901 | **+48.23** | 26.77 | 7/7 | +36.15 | +11.73 | 99.7 % |
-| age >= 60 s | 1,006 | **-0.82** | -0.41 | 3/7 | -7.79 | -3.40 | 43.4 % |
-| age >= 300 s | 750 | -1.85 | -1.23 | 3/7 | -7.32 | -3.82 | 42.5 % |
-| clock 45, age >= 60 s | 2,560 | **-10.88** | -2.12 | 0/7 | -15.31 | -11.08 | 0.4 % |
-
-**The door is not the spelled door.** `cvx_meta.parquet` is exactly the 18,583 keep+ep50
-mints from `cvx_tokens.parquet` (`cvx_meta_export.py`). `reindex(tape).ok.fillna(0)` turns
-"not in that file" into "not documented." Every one of the 1,020 documented tokens completes
-a >= 50 % episode later in the week. That fact does not exist at the fire. Same kernel,
-same E/P/X:
-
-| D (silence x creator x trail40) | n | SOL | body (no top 1 %) |
-| --- | ---: | ---: | ---: |
-| spelled documented (`cvx_meta` website cut) | 1,622 | **+47.54** | **+28.43** |
-| all keep+ep50 (the meta file, no website cut) | 19,930 | +150.44 | **-111.44** |
-| keep-create only | 48,710 | **-1,034.87** | -1,455 |
-| keep, age < 60 s only | 44,548 | **-1,007.34** | - |
-
-**The event is not the named event.** `gap_tok = 10**6 if i == 0`. Of the 1,622 occupancy
-trades, 818 are local index 0 (first print of the token) and book **+46.08**; the other 804
-book +1.46. Age < 1 s: 801 trades, +45.33. The 10-slot gap never runs on the half that is
-the result.
-
-Neighbourhood: every other D on silence x creator x trail40 is red or ~0. `age/v` as P
-turns the leader to **-4.13**. Burst-dies as X turns it to **-2.63**. Creator-in is
-load-bearing but not the whole book (dropping it leaves +42.28). Silence, two-build,
-size and MONEY are interchangeable behind documented+creator; burst START is not.
-
-**What this is:** buy-at-create on tokens that later complete a 50 % episode, with a
-website cut inside that file. Not documented-project. Not token-silence.
-
-**What this is not:** a mid-tape harvester, and not a shippable launch rule. Age >= 60 s
-is red under both exit families. The inventory has no mid-tape 4-tuple that pays. The
-short slot for that target is E (or a D that is not this file).
-
-**Does not ship.** The spelled sentence is not what was scored (strategy 7.4 laws 30 and
-31). Tail (top 1 % = 40 % vs 9-12 %) would fail even if the door were legal. Do not
-reuse `cvx_meta.parquet` as documented-project on C9-C11 either: those walks read the
-same file.
-
-## 6.14 Four new events, four-slot walk (C9)
-
-```
-D  none . keep . slow-wall 5 % . documented-project . keep+ep . n_pro>=8 . first-buy>=2
-   one at a time
-E  staged-leg first buy (S1) . unfinished-budget (S3) . price under own exit (S4) .
-   after-flush first buy (S12)
-P  none . creator . age/v . creator+age/v . cu_hi . creator+age/v+cu .
-   crowd_gone . creator+age/v+crowd
-X  clock 45 . trail40 c600 . shipped armed trail . derived tell
-   (firing machine sells for S1/S3/S4; dump resumes a new low for S12)
-R  unlimited, one per token   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days, 61,537 fires, 1,476 occupancy cells
-      (748 full tape + 728 age>=60). study-kernel/cvx_conj5.py, cvx_conj5_diag.py,
-      cvx_conj5_rank.csv
-```
-
-C8 events are not re-walked. Machine census on this tape: 233 professional builds,
-44 staged-leg, 46 campaign, **2 rebuy-bots**. Fire counts: after-flush 53,225
-(age p50 159 s, 70 % age>=60); staged-leg 7,882 (age p50 60 s); unfinished-budget
-338 (age p50 **0 s**); rebuy 92.
-
-Ranking slice is age >= 60 s (the C8 plus is age < 60 s).
-
-| cell | n | first/day | SOL | %/trade | days+ | worst | d50 | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| slow-wall × flush × creator × derived | 1,646 | 81.2 | **+10.22** | 3.11 | 3/6 | -0.29 | **2/6** | 154.3 | **-5.55** | +9.89 | +0.34 |
-| n_pro>=8 × flush × creator+av+cu × trail40 | 693 | 79.6 | +8.73 | 6.30 | **5/7** | -0.79 | 4/7 | 83.9 | **+1.41** | +6.70 | **+2.03** |
-| same, shipped | 687 | 79.6 | +9.05 | 6.59 | 4/7 | -0.58 | 4/7 | 92.6 | +0.67 | +7.38 | +1.68 |
-| slow-wall × legs × creator+av × shipped | 185 | 24.3 | +5.42 | 14.66 | 3/6 | -0.38 | 2/6 | 46.6 | +2.89 | - | - |
-| keep × budget × creator × clock45 (full tape) | 308 | 45.6 | +2.41 | 3.92 | 4/7 | -1.09 | 4/7 | 51.2 | +1.18 | - | - |
-| open2 × rebuy × av × derived | 29 | 4.3 | +0.26 | 4.44 | 3/6 | -0.27 | 0/6 | 247.0 | -0.38 | - | - |
-
-**After-flush × n_pro>=8 × creator+av+cu × trail40** is the first mid-tape cell
-that clears the client gate: 33 creation builds, top **32.0 %**, leave-one-out
-**+5.93**, bootstrap 98.5 %, p5 +1.60. Walk-forward both halves plus. Tickets
-`21, 72, 170, 143, 58, 35, 39` - over fifty on 4 of 7 days. Tail 84 % of net in
-the top 1 % (calibration 9-12 %). Gap p50 82 ms, gap<50 on 41 %. Trail fires 72 %.
-n_pro>=8 as D on burst START is red (6.11); the same door on after-flush is this
-cell. The door is load-bearing: age>=60 none × flush × creator is **-7.91**.
-
-Slow-wall × flush is C2's door on a new event: 21 clients, top **82.1 %**, LOO
-+1.83, boot 88.4 %, tickets `15, 190, 257, 43, 24, 20`. Same rotating-client
-shape. Derived tell (dump resumes) raises SOL vs trail40 (+10.22 vs +7.80) and
-still leaves the body red.
-
-**Per event, age >= 60 s:**
-
-- **S12 after-flush** - the only new E with mid-tape tickets. Pays behind slow-wall
-  and n_pro>=8. Does not ship (floor, tail). Closest cell above.
-- **S1 staged-leg** - plus only behind slow-wall, first/day 24, tickets
-  `3, 64, 83, 10, 3, 1`. C2's door in costume. 12 clients, top 52 %.
-- **S3 unfinished-budget** - launch (age p50 0 s). Mid-tape occupancy is 2 trades.
-- **S4 rebuy-under-exit** - starved under is_pro: 2 machines, 92 fires, ~0 SOL.
-  The professional-build cut (n>=200, nw<=50) ∩ sell-then-buy is empty. C10
-  drops that cut (6.15).
-
-**Does not ship.** Floor (no cell clears every day), tail (closest body is +1.41
-SOL). Client gate and walk-forward both clear on the n_pro>=8 after-flush cell.
-Do not AND onto that parent.
-
-## 6.15 S4 as sell-then-buy, not is_pro (C10)
-
-```
-D  none . keep . slow-wall 5 % . documented-project . keep+ep . n_pro>=8 . first-buy>=2
-   one at a time
-E  price under own exit: first print after >= 10 empty slots with reserve below a
-   rebuy-bot's last sell, that build not having bought back. A rebuy-bot is a
-   build that sells and later buys on >= 25 % of the coins it sells (min 10
-   coins sold). No n>=200 / nw<=50 cut
-P  none . creator . age/v . creator+age/v . cu_hi . creator+age/v+cu .
-   crowd_gone . creator+age/v+crowd
-X  clock 45 . trail40 c600 . shipped armed trail . derived tell (that bot sells)
-R  unlimited, one per token   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days, 272,191 fires, 448 occupancy cells
-      (224 full tape + 224 age>=60). study-kernel/cvx_conj6.py, cvx_conj6_rank.csv
-```
-
-C9's class is 2 machines (6.14). The emptying cut is `nw<=50` on sell-then-buy:
-is_pro 233; is_pro & n_sell>=10 26; is_pro & n_sell>=10 & frac>=0.25 **2**.
-Without is_pro the same rate cut is **30** machines (median 5,009 buy-prints,
-median 958 wallets). `n>=200` alone leaves 21; `nw<=50` alone leaves 11.
-Fires 272,191; age p50 390 s; 86 % age>=60.
-
-Ranking slice is age >= 60 s.
-
-| cell | n | first/day | SOL | %/trade | days+ | worst | d50 | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| slow-wall × rebuy × creator+av × trail40 | 831 | 70.3 | **+4.47** | 2.69 | 3/6 | -0.66 | **2/6** | 181.3 | **-3.63** | +5.60 | **-1.13** |
-| same, shipped | 804 | 70.3 | +4.14 | 2.58 | 3/6 | -0.66 | 2/6 | 210.3 | -4.57 | +3.66 | +0.48 |
-| slow-wall × rebuy × creator+av+crowd × shipped | 265 | 31.7 | +3.85 | 7.27 | 3/6 | -0.59 | 2/6 | 103.7 | -0.14 | +4.54 | -0.68 |
-| none × rebuy × creator+av × trail40 | 4,594 | 515.2 | **-82.70** | -9.00 | 0/8 | -24.14 | 7/8 | -50.0 | -124.03 | - | - |
-| slow-wall × rebuy × creator+av × derived | 1,366 | 70.6 | **-7.17** | -2.63 | 0/6 | -3.55 | 2/6 | -104.0 | -14.63 | - | - |
-
-**Slow-wall × rebuy × creator+av × trail40** is C2's door on this event: 21
-creation builds, top **87.2 %**, leave-one-out **+0.57**, bootstrap 81.8 %,
-p5 -2.86. Tickets `16, 179, 208, 33, 32, 7` - over fifty on 2 of 6 days.
-Body **-3.63**. Gap p50 615 ms, gap<50 on 19 %. Trail fires 61 %. Age p50 204 s.
-The door is load-bearing (none is **-82.70**). Derived tell (that bot sells)
-is red against trail40.
-
-**Does not ship.** Floor, tail, client gate, walk-forward. The plus is the
-slow-wall launch client, not a rebuy leftover. Do not AND onto this parent.
-Do not restore `nw<=50` (that is the emptying cut). Tape-only mid-tape E in
-the backlog (S1, S3, S4, S12) is scored. C11 is the unused S1 moment (late-leg).
-
-## 6.16 Late-leg of a staged-leg machine (C11)
-
-```
-D  none . keep . slow-wall 5 % . documented-project . keep+ep . n_pro>=8 . first-buy>=2
-   one at a time
-E  late-leg: first non-racer buy >= 0.5 SOL of a staged-leg machine's
-   second-or-later buy-cluster on this token. Cluster break = 10 empty slots of
-   that machine. One fire per (token, machine). Not C9 S1 (first cluster)
-P  none . creator . age/v . creator+age/v . cu_hi . creator+age/v+cu .
-   crowd_gone . creator+age/v+crowd
-X  clock 45 . trail40 c600 . shipped armed trail . derived tell (that machine sells)
-R  unlimited, one per token   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days, 6,204 fires, 448 occupancy cells
-      (224 full tape + 224 age>=60). study-kernel/cvx_conj7.py, cvx_conj7_rank.csv
-```
-
-C9 S1 is the first cluster (6.14). This walk is the unused moment of the same
-44 staged-leg machines. Fires 6,204; age p50 195 s; 75 % age>=60; 29 unique
-machines.
-
-Ranking slice is age >= 60 s.
-
-| cell | n | first/day | SOL | %/trade | days+ | worst | d50 | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| slow-wall × late × creator+av × derived | 241 | 27.8 | **+6.93** | 14.38 | 5/6 | -0.25 | **2/6** | 23.1 | **+5.33** | +6.59 | **+0.34** |
-| same, trail40 | 240 | 27.8 | +6.75 | 14.06 | 5/6 | -0.32 | 2/6 | 23.7 | +5.15 | +6.48 | +0.27 |
-| same, shipped | 240 | 27.8 | +4.94 | 10.29 | **6/6** | 0.01 | 2/6 | 33.8 | +3.27 | +4.37 | +0.57 |
-| none × late × creator+av × derived | 651 | 82.4 | +4.72 | 3.62 | 3/7 | -0.79 | 3/7 | 101.2 | **-0.06** | +5.46 | **-0.74** |
-| n_pro>=8 × late × creator+av × derived | 570 | 70.9 | +4.88 | 4.28 | 4/7 | -0.72 | 3/7 | 86.3 | +0.67 | +5.74 | -0.85 |
-
-**Slow-wall × late × creator+av × derived** is C2's door on S1's unused moment:
-11 creation builds, top **68.9 %**, leave-one-out **+2.15**, bootstrap 99.5 %,
-p5 +1.15. Tickets `2, 78, 92, 11, 3, 2` - over fifty on 2 of 6 days. Body
-**+5.33** (top 1 % = 23 %, inside the 9-12 % band's neighbourhood). Gap p50
-176 ms, gap<50 on 28 %. Age p50 219 s. Derived tell raises SOL vs trail40
-(+6.93 vs +6.75). The body of the plus is the door: none's body is **-0.06**.
-
-**Does not ship.** Floor. Client leave-one-out and walk-forward clear; eleven
-clients. TYPE fails on this SOL leader. The TYPE reading of the same walk is
-slow-wall × late × av × trail40 **+5.14**, body **+0.75**, peak/trough 5.7x
-against the door 4.7x, top2 50 % against 48 % (4.10). Do not AND onto either
-cell. Do not move S1's event again.
-
-## 6.17 Second-attempt burst, this coin only (C12)
-
-```
-D  none . keep . slow-wall 5 % . keep+ep . n_pro>=8 . first-buy>=2
-   one at a time. documented is not a door (cvx_meta is keep+ep50)
-E  second-attempt burst: first non-racer buy >= 0.5 SOL of an ix structure's
-   second-or-later burst on this coin. Burst break = that structure silent
-   >= 10 slots. One fire per (coin, structure). Not C8 restart (operator
-   structures, every return). Not C11 (staged-leg class)
-P  none . creator . age/v . creator+age/v . cu_hi . creator+age/v+cu .
-   crowd_gone . creator+age/v+crowd
-X  clock 45 . trail40 c600 . shipped armed trail . derived tell (that structure sells)
-R  unlimited, one per token   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days, 105,497 fires, 384 occupancy cells
-      (192 full tape + 192 age>=60). study-kernel/cvx_conj8.py, cvx_conj8_rank.csv
-```
-
-Census: first-burst buys 1,499,804; second-burst starts 2,068,498; fires 105,497;
-k==0 **0**; 699 distinct structures; age p50 83.8 s; 57.4 % age>=60. Funnel:
-cvx_meta 18,583 / 127,833 not scored; cvx_swdoor overlap 119,234 / 127,833.
-
-Ranking slice is age >= 60 s. Rank TYPE first, then SOL.
-
-| cell | n | first/day | SOL | %/trade | days+ | worst | d50 | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| slow-wall × second × creator+av × trail40 | 817 | 67.6 | **+17.78** | 10.88 | 4/6 | -0.99 | **2/6** | 54.6 | **+8.07** | - | - |
-| same, shipped | 799 | 67.6 | +17.31 | 10.83 | **6/6** | 0.04 | 2/6 | 59.2 | +7.07 | - | - |
-| n_pro>=8 × second × creator × trail40 | 2,936 | - | **+3.12** | 0.53 | 4/8 | - | **7/8** | 935 | **-26.04** | +10.73 | **-7.61** |
-
-**TYPE reading:** n_pro>=8 × creator × trail40. Peak/trough **3.7x** against the
-door 3.3x, top2 54 % against 45 %. Tickets `53, 171, 344, 377, 203, 142, 102, 2`
-(full days all >= 50; day 0 and day 7 are stubs). 48 creation builds, top
-**330 %**, leave-one-out **-7.18**, bootstrap 57.4 %, p5 -16.58. Gap p50 178 ms,
-gap<50 on 29 %. Age p50 372 s. Body **-26.04**. Hold **-7.61**.
-
-**SOL leader** (not the reading): slow-wall × creator+av × trail40 +17.78, d50
-2/6, body +8.07. C2's door on this event.
-
-**Does not ship.** The TYPE-pass clears the floor on full days and fails tail,
-body, hold, and the client gate. Do not AND onto the slow-wall SOL leader. Do
-not restore the staged-leg class (that is C11). Short slot remains E.
-
----
-
-## 6.18 Arrives from another coin (C13)
-
-```
-D  none . keep . slow-wall 5 % . keep+ep . n_pro>=8 . first-buy>=2
-   one at a time. documented is not a door (cvx_meta is keep+ep50)
-E  arrives from another coin: first non-racer buy >= 0.5 SOL on this coin by an
-   ix structure whose latest print is a buy on a different coin, slot gap < 10.
-   One fire per arrival. Not C12, not C11, not the S9 door
-P  none . creator . age/v . creator+age/v . cu_hi . creator+age/v+cu .
-   crowd_gone . creator+age/v+crowd
-X  clock 45 . trail40 c600 . shipped armed trail . derived tell (that structure
-   sells) . leave (sells, or prints on another coin)
-R  unlimited, one per token   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days, 280,791 fires, 480 occupancy cells
-      (240 full tape + 240 age>=60). study-kernel/cvx_conj9.py, cvx_conj9_rank.csv
-```
-
-Census: switches 7,585,976; from-buy 4,195,500; live (gap < 10) 2,397,238;
-live-gap p50 **1.0 slot**; fires 280,791; k==0 **5,443 (1.9 %)**; 300 distinct
-structures; age p50 138.5 s; 63.0 % age>=60; leave-time finite 100 %. Funnel:
-cvx_meta 18,583 / 127,833 not scored; cvx_swdoor overlap 119,234 / 127,833.
-
-Ranking slice is age >= 60 s. Rank TYPE first, then SOL.
-
-| cell | n | first/day | SOL | %/trade | days+ | worst | d50 | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| slow-wall × arrive × creator+av × trail40 | 1,029 | 71.3 | **+16.46** | 8.00 | 4/6 | -1.81 | **2/6** | 73.6 | **+4.35** | - | - |
-| n_pro>=8 × arrive × creator × trail40 | 3,851 | - | **-4.64** | -0.60 | 2/8 | - | **7/8** | - | **-42.07** | - | - |
-| none × arrive × none × trail40 | 28,654 | - | **-436.93** | -7.62 | 0/8 | - | 7/8 | - | **-664.32** | - | - |
-
-**TYPE reading:** none. No SOL>0 cell passes TYPE. Wide TYPE-pass D×P cells
-(none / keep / n_pro>=8 × none or creator or av) are **-4.64 to -437 SOL**.
-The plus is slow-wall × creator+av: fire tickets `0, 18, 180, 211, 36, 30, 8, 0`,
-peak/trough **26.4x** against the door 4.7x, top2 **81 %** against 49 %. C2's
-door. `leave` is red (best **-3.04**).
-
-**Does not ship.** DELAY = 0: live-gap p50 is 1.0 slot. The tell and the SOL
-land together. Do not AND onto the slow-wall SOL leader. Do not walk clip-step-up
-as the next Event (that tell is the extra SOL). Short slot remains E.
-
----
-
-## 6.19 First buy after a run of sells (C14)
-
-```
-D  none . keep . slow-wall 5 % . keep+ep . n_pro>=8 . first-buy>=2
-   one at a time. documented is not a door (cvx_meta is keep+ep50)
-E  first buy after a run of sells: non-racer buy >= 0.5 SOL that breaks
-   >= 3 consecutive sell prints on this coin. Any buy breaks the run; only
-   a qualifying buy fires. One fire per sell-run. Not after-flush, not K=1
-P  none . creator . age/v . creator+age/v . cu_hi . creator+age/v+cu .
-   crowd_gone . creator+age/v+crowd
-X  clock 45 . trail40 c600 . shipped armed trail . derived tell (that
-   structure sells) . low (vsol revisits the sell-run low)
-R  unlimited, one per token   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days, 122,486 fires, 480 occupancy cells
-      (240 full tape + 240 age>=60). study-kernel/cvx_conj10.py, cvx_conj10_rank.csv
-```
-
-Census: sell-runs >=2/3/4/5 = 1,004,972 / 598,709 / 386,838 / 263,653;
-fires 122,486; k==0 **0**; sell-gap p50 **1.0 slot** (37.1 % gap 0); n_sells
-p50 4.0; sell_sol p50 2.18; age p50 92.6 s; 57.6 % age>=60; 1,415 structures;
-next-print gap p50 **81 ms**, gap<50 **41.9 %**. Funnel: cvx_meta 18,583 /
-127,833 not scored; cvx_swdoor overlap 119,234 / 127,833.
-
-Ranking slice is age >= 60 s. Rank TYPE first, then SOL.
-
-| cell | n | first/day | SOL | %/trade | days+ | worst | d50 | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| slow-wall × sellrun × creator+av × shipped | 850 | 64.4 | **+10.40** | 6.12 | 5/6 | -0.22 | **2/6** | 90.2 | **+1.02** | - | - |
-| n_pro>=8 × sellrun × creator × trail40 | 3,164 | - | **-5.40** | -0.85 | 3/8 | - | **6/8** | - | **-34.47** | +2.26 | **-7.65** |
-| slow-wall × sellrun × cu_hi × derived | 2,116 | - | **-5.24** | -1.24 | 2/6 | - | **6/6** | - | **-21.63** | +3.23 | **-8.47** |
-| none × sellrun × none × trail40 | 23,553 | - | **-288.58** | - | 0/8 | - | 7/8 | - | **-480.96** | - | - |
-
-**TYPE reading:** none. No SOL>0 cell passes TYPE. Closest TYPE-shaped cells
-(slow-wall × cu_hi; n_pro>=8 × creator) are **-5.24 to -9.08**, and the n_pro>=8
-cell clears the floor on full days. Wide TYPE cells (none / keep / n_pro>=8 ×
-none × trail40) are **-194 to -289 SOL**. The plus is slow-wall × creator+av:
-fire tickets `0, 23, 159, 189, 35, 25, 5, 0`, peak/trough **37.8x** against the
-door 4.7x, top2 **80 %** against 49 %. C2's door. `low` is red as a TYPE-pass.
-
-**Does not ship.** Leftover of the bounce is 81 ms (next-print p50); 41.9 % of
-next prints land inside 50 ms. The sell-run tell precedes the fire by 1 slot
-(not C13 DELAY = 0). Do not AND onto the slow-wall SOL leader. Short slot
-remains E.
-
----
-
-## 6.20 First operator after only creator and seed racers (C15)
-
-```
-D  none . keep . slow-wall 5 % . keep+ep . n_pro>=8 . first-buy>=2 .
-   group-live-now (sibling of the same creation fingerprint printed in
-   the last 10 slots at this coin's first print)
-   one at a time. documented is not a door (cvx_meta is keep+ep50)
-E  first operator after only creator and seed racers: first >= 0.5 buy
-   of a non-creator, non-seed operator structure (n>=200, nw<=50) on a
-   coin whose prior prints are only the creator and seed racers
-   (CreateAccountWithSeed). One fire per coin. i==0 cannot fire
-P  none . creator . age/v . creator+age/v . cu_hi . creator+age/v+cu .
-   crowd_gone . creator+age/v+crowd
-X  clock 45 . trail40 c600 . shipped armed trail . derived tell (that
-   structure sells) . follow (no new operator for >= 10 slots, below fill)
-R  unlimited, one per token   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days, 1,399 fires, 165 occupancy cells
-      (105 full tape + 60 age>=60). study-kernel/cvx_conj11.py, cvx_conj11_rank.csv
-```
-
-Census: first operator-structure buy 51,170; of which k==0 582; killed by
-another actor first 42,603; first buy < 0.5 SOL 6,586; fires **1,399**;
-fire k==0 **0**. Age p50 **0.0 s**; 0.6 % age>=60. Prior p50 1.0 (creator
-p50 1, seed p50 0). Prior-gap p50 **0 slots** (89.1 % gap 0). 46 structures.
-Next-print gap p50 **2 ms**, gap<50 **74.0 %**. Same-structure next buy
-481/1,399, p50 **1 ms**. Funnel: cvx_meta 18,583 / 127,833 not scored;
-cvx_swdoor / c_build 119,234 / 127,833; group-live-now 78,452 tokens,
-births peak/trough 2.5x, top2 41 % against tape 2.1x / 40 %.
-
-Ranking slice is age >= 60 s. Rank TYPE first, then SOL.
-
-| cell | n | first/day | SOL | %/trade | days+ | worst | d50 | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| none × firstop × creator × clock45 (age>=60) | 7 | 1.0 | **+0.01** | 0.75 | 2/3 | -0.00 | **0/3** | 105.7 | **0.00** | - | - |
-| live × firstop × creator × clock45 (age>=60) | 4 | 0.6 | **+0.01** | 1.26 | 3/3 | 0.00 | **0/3** | 109.7 | **0.00** | - | - |
-| none × firstop × none × clock45 (full tape) | 1,360 | - | **-50.75** | -18.66 | 0/8 | - | **7/8** | -21.2 | **-61.51** | - | - |
-| live × firstop × none × clock45 (full tape) | 829 | - | **-36.17** | -21.81 | 0/7 | - | **5/7** | - | - | - | - |
-
-**TYPE reading:** none. Age>=60 is 8 fires; no cell has tickets on every full
-UTC day. The plus is noise around zero. `follow` is red (best age>=60 **-0.01**).
-`n_pro>=8` is empty (the event is the first operator). group-live-now is a
-TYPE-shaped door and does not save the book.
-
-**Does not ship.** DELAY = 0: the operator lands in the creator's slot, and
-the next print is 2 ms later. The "only creator and seed racers" cut is a
-launch filter (42,603 of 51,170 first-operator arrivals already have another
-actor). Do not AND. Short slot remains E.
-
----
-
-## 6.21 First run of an operator structure on this coin (C16)
-
-```
-D  none . keep . slow-wall 5 % . keep+ep . n_pro>=8 . first-buy>=2 .
-   group-live-now
-   one at a time. documented is not a door (cvx_meta is keep+ep50)
-E  first run of an operator structure: first >= 0.5 buy of a non-creator,
-   non-seed operator structure (n>=200, nw<=50) that has never printed
-   here, after at least one prior print that is neither the creator nor a
-   seed racer. One fire per (coin, structure). i==0 cannot fire.
-   Not C15, not C9 S1, not C12, not C8
-P  none . creator . age/v . creator+age/v . cu_hi . creator+age/v+cu .
-   crowd_gone . creator+age/v+crowd
-X  clock 45 . trail40 c600 . shipped armed trail . derived tell (that
-   structure sells) . follow (no new operator for >= 10 slots, below fill)
-R  unlimited, one per token   S 0.2   seat lag_115
-frame  last-leg week, 6.76 days, 42,893 fires, 560 occupancy cells
-      (280 full tape + 280 age>=60). study-kernel/cvx_conj12.py, cvx_conj12_rank.csv
-```
-
-Census: new operator-here 192,964; of which k==0 582; no-other-yet (C15
-shape) 7,984; first buy < 0.5 SOL 141,505; fires **42,893**; fire k==0 **0**.
-Age p50 **6.4 s**; 22.0 % age>=60. n_other p50 36; n_op_before p50 5.
-Prior-gap p50 **0 slots** (68.7 % gap 0). 118 structures.
-Next-print gap p50 **56 ms**, gap<50 **47.2 %**. Same-structure next buy
-9,666/42,893 (22.5 %), p50 **8,758 ms**. Funnel: cvx_meta 18,583 / 127,833
-not scored; cvx_swdoor / c_build 119,234 / 127,833; group-live-now 78,452.
-
-Ranking slice is age >= 60 s. Rank TYPE first, then SOL.
-
-| cell | n | first/day | SOL | %/trade | days+ | worst | d50 | top1 % | wo top1 | fit | hold |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| slow-wall × firstrun × cu_hi × derived | 491 | 65.8 | **+2.27** | 2.32 | 3/6 | - | **4/6** | 219.2 | **-2.71** | +5.20 | **-2.93** |
-| n_pro>=8 × firstrun × creator+av+cu × derived | 331 | 49.0 | **+9.14** | 13.81 | 4/7 | -0.94 | **2/7** | 39.2 | **+5.56** | - | - |
-| none × firstrun × none × trail40 | 6,899 | - | **-75.51** | - | - | - | **7/8** | - | **-128.36** | - | - |
-
-**TYPE reading:** slow-wall × cu_hi × derived **+2.27**. Tickets
-`40, 101, 120, 75, 92, 17`; peak/trough **7.06x** against door 4.7x (at the
-1.5x bar); top2 **50 %** against 49 %. Floor 4/6. Body **-2.71**. Hold
-**-2.93**. Top client **158 %**, LOO **-1.32**, boot 65.4 %. `follow` on
-the same D×P is **-3.65**.
-
-The SOL leader is n_pro>=8 × creator+av+cu × derived **+9.14**, body
-**+5.56**, tail 39.2 %. Tickets `7, 33, 86, 104, 49, 15, 20`; peak/trough
-**6.9x** against door 3.3x, top2 **62 %** against 45 %. TYPE fails. Floor
-2/7. Not the reading.
-
-**Does not ship.** Remaining spend, when it exists, is 8.8 s (22.5 % of
-fires). Next-print leftover is 56 ms. Do not AND onto the slow-wall TYPE
-reading or the n_pro SOL leader. Short slot remains E.
-
----
-
 # 7. THE BOOKS
 
 Every rule that exists, with the coordinate that produced its number.
-
-## 6.10 Hot-tape re-entry: the flush is real, and it cannot pay the toll (H1)
-
-```
-D none - the ticket supply is thousands of unrelated coins, which is the point
-E state STRICTLY BEFORE the print: dd <= -20 % . fall5 <= -5 % . acc >= 2 . n20 >= 20
-  . age >= 120 s . reserve 42.43-85
-P none, then S1-S3 below
-X eighteen families, from a 10 s clock to the shipped armed trail
-R one per token   S 0.2   seat lag_115, anchored at the print the decision SEES
-frame  last-leg week, 6.76 days.  node-derivation/hot-tape/cvx_hottape.py, cvx_hottape_book.py,
-       cvx_hottape_sel.py
-```
-
-The node is six wallets, 95,645 buys on 11,765 coins on this tape. Their decision moment is
-reconstructed in public tape state only, against an unbiased 2 % sample of every buy.
-
-**Two hypotheses died and one survived a control.**
-
-| term | top-bin lift vs every buy | verdict |
-| --- | ---: | --- |
-| absorption - SOL bought per percent of price given up, 5 s | 1.39 at the LOWEST bin, 0.66 at the highest | **refuted, and inverted** |
-| deceleration - the last 2 s of the fall against the 5 s pace | 0.57 where the fall has stopped, 1.48 where it still accelerates | **refuted, and inverted** |
-| buy-flow ACCELERATION - SOL bought last 5 s over the 5 s before | **2.15**, and **2.16** with the node's own SOL removed | survives |
-| drawdown from the coin's peak so far | 2.04 below -50 %, monotone to 0.28 at the peak | survives |
-| the fall itself, 5 s | 2.02 at -20..-10 %, 0.01 at flat | survives |
-| coin age | 1.83 above 1800 s, monotone from 0.27 under 30 s | survives |
-
-**Why absorption cannot exist here, and it is physics, not a fitting failure.** Absorption is an
-order-book idea: buying that does not move price because there is resting size to eat. A
-constant-product curve has no resting size - every buy moves price by exactly its own arithmetic,
-and windowed flow **is** the price path (7.1). So `buy SOL / (-price fall)` divides the signal by
-itself, and the conjunction "price fell AND buyers were the larger side" is nearly a
-contradiction: it holds on **32 of 95,645** node buys. The whole family is closed on the venue,
-not on this cell.
-
-**Two ways this cell could have been manufactured, both closed before the book was read.**
-
-- The first pass put the node's own buy inside its own 5 s flow window and read a 2.44 lift. Every
-  feature is now built from prints `0..i-1` and the reserve `v[i-1]`.
-- The fire anchor. The state at index `k` is what a watcher holds when print `k-1` lands, so the
-  fill is the last print by `t[k-1] + 115 ms`. Anchoring at `k` fills later, and on a falling tape
-  a later fill is a **cheaper** buy - an optimism of about half a print, pointing exactly the way
-  this cell looks.
-
-**The book. Eighteen exit families, every one negative.**
-
-| exit | trades | SOL | per trade | days positive | hold p50 |
-| --- | ---: | ---: | ---: | :---: | ---: |
-| clock 10 s | 17,204 | -97.02 | **-2.82 %** | 0/8 | 9.7 s |
-| clock 20 s | 14,869 | -91.77 | -3.09 % | 0/8 | 19.7 s |
-| tp 5 / stop 10 / cap 60 | 23,285 | -164.97 | -3.54 % | 1/8 | 3.7 s |
-| trail 15 / cap 60 | 17,790 | -131.60 | -3.70 % | 0/8 | 23.4 s |
-| shipped armed trail | 7,651 | -119.23 | -7.79 % | 0/8 | 164.8 s |
-
-The **ticket floor passes 7 of 8 days** on 3,535 coins and 75 clients, so the supply problem that
-closed the frozen sentence does not exist here. The money is the whole failure.
-
-**The arithmetic that closes it, and it is NOT the toll.** Decompose the clock-20 book into the
-price move and the four cost terms:
-
-| term | per round trip |
-| --- | ---: |
-| the price move we capture | **+0.29 %** |
-| pump.fun protocol fee, 125 bps x 2 | -2.47 % |
-| tip + priority, 0.000225 SOL x 2 at 0.2 SOL | -0.22 % |
-| our own impact, `B/vsol` x 2 | -0.70 % |
-| **booked** | **-3.10 %** |
-
-**At a zero fee this cell still books -0.63 %.** The toll is not what kills it.
-
-The like-for-like comparison has to be on the price move, because the roster's `margin` column is
-already net of the same 125 bps (`rb-solo-nodes.py:140`, `net = sol_out*0.9875 - sol_in*1.0125`).
-The node's 1.10 % net implies a price move of **+3.65 %** a round trip. Ours is **+0.29 %**.
-*We are 3.4 points short on the move itself: the reconstruction does not find what they find.*
-The state terms discriminate their buys from the tape at lift 2.0-2.2, and that is not the same
-thing as capturing their return.
-
-**Selection cannot close a 3x gap, measured once on pre-registered cuts** (`cvx_hottape_sel.py`,
-clock 20 s and clock 60 s, about sixty cells):
-
-| cut | trades | per trade | days positive |
-| --- | ---: | ---: | :---: |
-| all | 14,869 | -3.09 % | 0/8 |
-| slow-wall launch door | 2,880 | -2.91 % | 0/6 |
-| not a bundler cgroup | 14,721 | -2.95 % | 0/8 |
-| creator has not sold | 2,250 | **-2.56 %** | 0/8 |
-| drawdown x acceleration, 20 cells | - | -0.63 % .. -5.25 % | - |
-| busyness, buy share, flush size, hour | - | every bin negative | - |
-
-The only non-negative cells are `n = 11` and `n = 218`. The hour-of-day control is flat, as a
-control should be, which says the red is the cell and not a regime.
-
-**The seat premise that chose this node did not hold.** The node was picked because the recorded
-buy-flush direction factor is 0.889-0.943, a 6-11 % discount at 115 ms. On these fires the buy leg
-fills at **mean -0.66 %**, median **0.00 %**, cheaper than the decision print only **22.5 %** of
-the time. The direction table is measured on dense burst prints; a flush on an aged coin at 20-80
-prints per 20 s does not print densely enough for the lag to pay. **A direction factor is a
-property of a tape density, not of a side.**
-
-**Where the missing move is, and the ceiling that closes the node (`cvx_hottape_near.py`).** The
-event names no wallet and fires on the whole tape, so the first question is whether it lands where
-the node lands. It does, without being told to:
-
-| | |
-| --- | ---: |
-| fires on a coin the node never touches | **3.5 %** |
-| fires within 5 s of one of their buys | **47.2 %** |
-| fires within 60 s | 90.4 % |
-| of THEIR buys, the share the rule fires on at all | **4.28 %** |
-
-*The state is their habitat.* A pure tape-state event reproduces their coin list and roughly half
-their seconds with no wallet named - which is what a public term for a private habit should look
-like, and is the first time in this program it has happened.
-
-The money then grades cleanly by that distance, same clock-20 exit throughout:
-
-| population | trades | price move | per trade | days positive |
-| --- | ---: | ---: | ---: | :---: |
-| every fire | 14,869 | +0.29 % | -3.09 % | 0/8 |
-| on a coin they never touch | 524 | **-20.37 %** | -23.12 % | 0/7 |
-| on a coin they do touch | 14,345 | +1.05 % | -2.35 % | 0/8 |
-| **within 2 s of one of their buys** | 4,921 | **+2.24 %** | **-1.21 %** | 1/8 |
-| 5-30 s away | 4,724 | +0.30 % | -3.08 % | 0/7 |
-| over 120 s away | 563 | -0.22 % | -3.57 % | 0/8 |
-| within 60 s and BEFORE them | 6,894 | +1.09 % | -2.31 % | 0/8 |
-| within 60 s and AFTER them | 5,126 | +0.82 % | -2.58 % | 1/8 |
-
-Two readings. The 3.5 % of fires on coins they avoid carry a **-20 %** move and are most of the
-gap between +0.29 % and +1.05 %, so **coin choice is worth about 0.8 points and moment is worth
-about 1.2 more**. And arriving *before* them beats arriving after by 0.27 points - **front-running
-this node is not a lever**, which also says their impact is not what the trade is made of.
-
-**The ceiling. Give the rule a perfect oracle for both the coin and the second - their own wallets,
-unshippable by 7.4 law 20 - and read every exit family:**
-
-| exit | trades | per trade | days positive |
-| --- | ---: | ---: | :---: |
-| clock 10 s | 4,921 | **-1.17 %** | 1/8 |
-| clock 20 s | 4,921 | -1.20 % | 1/8 |
-| clock 60 s | 4,921 | -1.81 % | 3/8 |
-| tp 10 / cap 60 | 4,921 | -2.16 % | 1/8 |
-| trail 20 / cap 120 | 4,921 | -2.53 % | 1/8 |
-| shipped armed trail | 4,921 | -4.27 % | 1/8 |
-
-**Every one negative.** Even handed their coin and their second, at our size and our seat, this
-node does not pay. Their move at that second is +3.65 % after their own impact; ours is +2.24 %
-gross, +1.54 % after ours. The residual 2.1 points is exit choice - they pick when to sell and we
-read a fixed clock - and no fixed exit in the grid recovers it. *That is the closure: not "we
-cannot find their moment", but "their moment, at our seat, is not worth 3.4 % of toll".*
-
-**Coordinate.** D empty, E named and public, P three tried, X eighteen tried, R and S fixed. The
-sentence is closed, and the ceiling closes the node behind it. What is NOT closed: the same node with a size that is small against the flush,
-and any E that fires seconds AFTER the flush ends rather than inside it - both untested, and both
-need a reason before a run.
 
 ## 7.0 Door-v3 MONEY at lag_115 (C0b)
 
@@ -3890,6 +2664,10 @@ L-axis answer (3.7) and the build-unit correction (3.1a).
 
 | rule | coordinate | book | status |
 | --- | --- | --- | --- |
+| **Rule 1, Flip-Catch - Bracket (hot-tape)** | D none . E public sell >= 1 SOL from a seller who bought <= 30 s ago, >= 15 recipes in 5 s, new high <= 20 s . P age >= 158 s, >= 368 buyers, reserve <= 100 SOL . X +20 % / -60 % / 90 s . R one per coin . S 0.35 . seat lag_115, every leg | every-leg holdout **+4.44 %/trade, 100 a day, 5/5, top 1 % 9.8 %**; simulate books it ticket for ticket | **passes every ship bar** (1.22, 1.23). Rule 1b, the wall target, beside it (1.25). Clean test: the days after 09-10 |
+| Zigzag-turn conjunctions | D keep-create + one >= 50 % episode . E +15 % off the new low . P every 2-3-term conjunction of 16 wallet-free terms . X clock 30, trail50 c600 | 522 cells over the floor: 8 / 17 positive, **0 tail-robust**; best 10 on days 0-3 +74.87 -> **-40.46** on days 4-7 | red. A conjunction buys "not decaying", about the toll |
+| Machine print in the dip | D keep-create + one >= 50 % episode . E non-racer buy >= 0.5 SOL in the dip . P 1-4 terms of 10 . X clock 45, trail40 c600 | parent **-457.29 SOL, 0/8**; 141 floored cells, 0 tail-robust; best 5 +57.67 -> **-19.37** out of sample; the document adds nothing on this event | red |
+| Hot-tape re-entry flush (H1) | D none . E -20 % drawdown, -5 % in 5 s, buyers accelerating . P about 60 pre-registered cuts . X 18 families . seat FOLLOW | captures a +0.29 % move where the node's margin implies +3.65 %; **-0.63 % at a zero fee** | red, and not on cost. Absorption on a curve reads backwards (strategy 7.1) |
 | **Door rule v3 MONEY (C0b)** | D shipped 8 % launch door . E 2nd non-creator buyer at age 5-300 s . P creator in . X arm21/tr36/stop43.75 c1200 . R one per token . S 0.2 | **`lag_115` +5.38 SOL, 3/6 days, 247 first/day, top1 358 %, hold -1.93**; 235 trades at -50 %. lag_0 +38.18 / 6/6. SlotEnd +5.22 | **does not ship.** Floor and money clear; tail and hold fail. Creator-in is load-bearing. L-axis book exists (7.0) |
 | Door rule v3 RATE | same, tighter door | SlotEnd +30.74 SOL / 629 fires; `lag_115` **-0.53 SOL, 3 of 7** | dead at the seat |
 | **Burst-start event** | D none . E burst start . P none . X four families . seat lag_115 | on the traders' coins **+2.6 .. +6.7 %/trade, every exit**; full tape with no door **-1.5 .. -13 %** | **open, blocked on the door** (5.4). Public doors on this tape: 6.4, red |
@@ -3897,23 +2675,23 @@ L-axis answer (3.7) and the build-unit correction (3.1a).
 | C2 keep+ep x burst START | D keep + demonstrated episode . E burst start . P age/v/creator/crowd-gone . X trail40 c600 | **+9.24 SOL, 4/8, 75.2 first/day, top1 78.6 %**; fit +9.59 hold **-0.35** | **does not ship** |
 | C5 quiet deep-age, token-silence burst start | D keep / document / keep+ep . E first buy >= 0.5 after >= 10 token-silent slots . P age>=400 / v / quiet / creator . X trail40 c600 | keep+P **-32.46 SOL, 0/8, 200 first/day**; document **-3.63**; keep+ep **-9.46**; both halves red | **does not ship.** DELAY: the burst lasts ~80 ms |
 | C5 quiet deep-age, returning-pro restart | D keep / document . E returning professional after 10-slot build silence . P age>=400 / v / quiet / creator . X trail40 c600 | keep+P **-1.88 SOL, 1/8, 37/day**; document +0.40 (7.5/day, top1 94 %, hold -0.05) | **does not ship.** Does not describe GZmUDs on this tape |
-| G1 deep-age big clip, public size buy | D keep / document / slow-wall . E non-racer buy >= 1.0 SOL . P age>=200 / v 45-80 / live n60>=20 / creator . X trail40 c600 | keep+P **-13.19 SOL, 1/8, 125 first/day**; document +1.75 (16/day, top1 78 %); slow-wall +4.69 (33/day, top1 116 %, wo-top1 -0.77) | **does not ship** (6.7). Response equals base. Size print is not the tell |
+| G1 deep-age big clip, public size buy | D keep / document / slow-wall . E non-racer buy >= 1.0 SOL . P age>=200 / v 45-80 / live n60>=20 / creator . X trail40 c600 | keep+P **-13.19 SOL, 1/8, 125 first/day**; document +1.75 (16/day, top1 78 %); slow-wall +4.69 (33/day, top1 116 %, wo-top1 -0.77) | **does not ship**. Response equals base. Size print is not the tell |
 | Mid-tape instruments, all seven members | D cgroup / keep / not-dump / not-3ix / sw5 . E named by response . X clock 45 / tp30 / trail40 . seat lag_115 | 9Uq8GV ceiling +4.12 %/trade, names buy>=1; 8aaRWu +1.72 % clock 45 off slow-wall, lift 1.33; ApfmkS names nothing, self-start 45 %, followed +4.90 % unnamed; 9999hu/88887Q leftover ~0 | **does not ship** (6.9). All members measured. Door still missing. Slow-wall cell is C2 |
 | Mid-tape episodes 1/2/3+ four unpriced facts | D n_pro / n_pro_60 / n_hold / creator in / last-pro . E burst START . P age/v . X clock 45 / trail40 . seat lag_115 | all red; closest n_pro_60>=2 + creator in **-0.92 %/trade, 1/8**. Ep1 state does not separate return coins. Gap p50 56 s | **does not ship** (6.11). Four facts are the market on this event |
 | Mid-tape holder book at episode open | D never_sold / dev / sold_back / pro_hold / last_pro_hold / top1 . E burst START . P age/v . X clock 45 / trail40 . seat lag_115 | all red; last_pro_hold>=0.15 lift 3.50 then **-3.57 %/trade**. Ep1 book does not name return coins | **does not ship** (6.12). Tokens remaining is not D on this event |
-| **C8 four-slot inventory walk** | D documented . E token-silence >=10 slots . P creator in . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 | **+47.54 SOL, 7/7, hold +13.33, LOO +13.90, boot 99.7 %**; tickets 47/170/220/192/140/125/63 (tracks documented births, 4.9); plus is **age < 60 s** (+48.23); age>=60 **-0.82** | **does not ship** (6.13). Launch book, not mid-tape. Day 0 = 47 is a 6.2 h stub. Tail 40 %. Inventory has no mid-tape 4-tuple that pays |
-| **C9 four new events** | D n_pro>=8 . E after-flush first buy . P creator+age/v+cu . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+8.73 SOL, 5/7, hold +2.03, LOO +5.93, boot 98.5 %, top client 32 %**; tickets 21/72/170/143/58/35/39; peak/trough 8.1x, top2 58 %; wo top1 **+1.41**; top1 84 % | **does not ship** (6.14, 4.9). TYPE fails. Client gate clears. Floor 4/7. Tail. Not the next parent |
-| **C10 S4 sell-then-buy** | D slow-wall 5 % . E price under own exit (n_sell>=10, rebuy frac>=0.25, no is_pro) . P creator+age/v . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+4.47 SOL, 3/6, hold -1.13, LOO +0.57, boot 81.8 %, top client 87 %**; tickets 16/179/208/33/32/7; peak/trough 26x, top2 81 %; wo top1 **-3.63**; top1 181 % | **does not ship** (6.15, 4.9). TYPE fails: two-day client inside slow-wall. Body red |
-| **C11 late-leg** | D slow-wall 5 % . E first >=0.5 buy of staged-leg cluster 2+ . P creator+age/v . X trail40 + that machine sells . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+6.93 SOL, 5/6, hold +0.34, LOO +2.15, boot 99.5 %, top client 69 %**; tickets 2/78/92/11/3/2; peak/trough 46x, top2 90 %; wo top1 **+5.33**; top1 23 % | **does not ship** (6.16, 4.9, 4.10). TYPE fails. Body pays. Plus is C2's door on two days. TYPE reading: slow-wall × av × trail40 **+5.14**, body **+0.75** |
-| **C12 second-attempt burst** | D n_pro>=8 . E first >=0.5 buy of this ix structure's second burst on this coin . P creator in . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+3.12 SOL, 4/8, hold -7.61, LOO -7.18, boot 57.4 %, top client 330 %**; tickets 53/171/344/377/203/142/102/2; peak/trough 3.7x, top2 54 %; wo top1 **-26.04**; top1 935 % | **does not ship** (6.17, 4.10). TYPE passes. Floor passes on full days. Body, tail, hold, client gate fail. SOL leader is slow-wall (+17.78, d50 2/6), not the reading |
-| **C13 arrives from another coin** | D none / keep / slow-wall / n_pro>=8 . E first >=0.5 buy here after a live buy on a different coin (gap < 10) . P standing . X trail40 / derived / leave . R unlimited . S 0.2 . seat lag_115 . age>=60 | SOL leader slow-wall × creator+av × trail40 **+16.46, 4/6, d50 2/6, top1 73.6 %, body +4.35**; TYPE 26.4x / 81 %. Wide TYPE cells **-4.64 to -437**. leave red | **does not ship** (6.18). READING none. DELAY = 0 (live-gap p50 1.0 slot). k==0 1.9 % |
-| **C14 first buy after a run of sells** | D none / keep / slow-wall / n_pro>=8 . E first >=0.5 non-racer buy after >=3 consecutive sells . P standing . X trail40 / derived / low . R unlimited . S 0.2 . seat lag_115 . age>=60 | SOL leader slow-wall × creator+av × shipped **+10.40, 5/6, d50 2/6, top1 90.2 %, body +1.02**; TYPE 37.8x / 80 %. Closest TYPE cells **-5.24 to -9**. Wide TYPE cells **-194 to -289**. low red | **does not ship** (6.19). READING none. Leftover 81 ms (gap p50). k==0 0 |
-| **C15 first operator after only creator and seed racers** | D none / keep / slow-wall / n_pro>=8 / group-live-now . E first >=0.5 non-creator non-seed operator buy; prior prints only creator and seed racers . P standing . X trail40 / derived / follow . R unlimited . S 0.2 . seat lag_115 . age>=60 | SOL leader none × creator × clock45 **+0.01, 7 trades, d50 0/3**; full-tape none × none × clock45 **-50.75**, 1,360 trades, 0/8. Age p50 0 s. follow red | **does not ship** (6.20). READING none. DELAY = 0 (prior-gap 0 slots, next-print 2 ms). k==0 0 |
-| **C16 first run of an operator structure** | D none / keep / slow-wall / n_pro>=8 / group-live-now . E first >=0.5 operator buy on a coin that already has a non-creator non-seed print . P standing . X trail40 / derived / follow . R unlimited . S 0.2 . seat lag_115 . age>=60 | TYPE reading slow-wall × cu_hi × derived **+2.27, 3/6, d50 4/6, top1 219 %, body -2.71, hold -2.93, LOO -1.32, boot 65 %**. SOL leader n_pro>=8 × creator+av+cu × derived **+9.14**, TYPE fails 6.9x / 62 %. Wide TYPE **-41 to -75** | **does not ship** (6.21). Remaining spend 8.8 s on 22.5 %. Next-print 56 ms. k==0 0 |
+| **C8 four-slot inventory walk** | D documented . E token-silence >=10 slots . P creator in . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 | **+47.54 SOL, 7/7, hold +13.33, LOO +13.90, boot 99.7 %**; tickets 47/170/220/192/140/125/63 (tracks documented births); plus is **age < 60 s** (+48.23); age>=60 **-0.82** | **does not ship**. Launch book, not mid-tape. Day 0 = 47 is a 6.2 h stub. Tail 40 %. Inventory has no mid-tape 4-tuple that pays |
+| **C9 four new events** | D n_pro>=8 . E after-flush first buy . P creator+age/v+cu . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+8.73 SOL, 5/7, hold +2.03, LOO +5.93, boot 98.5 %, top client 32 %**; tickets 21/72/170/143/58/35/39; peak/trough 8.1x, top2 58 %; wo top1 **+1.41**; top1 84 % | **does not ship**. TYPE fails. Client gate clears. Floor 4/7. Tail. Not the next parent |
+| **C10 S4 sell-then-buy** | D slow-wall 5 % . E price under own exit (n_sell>=10, rebuy frac>=0.25, no is_pro) . P creator+age/v . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+4.47 SOL, 3/6, hold -1.13, LOO +0.57, boot 81.8 %, top client 87 %**; tickets 16/179/208/33/32/7; peak/trough 26x, top2 81 %; wo top1 **-3.63**; top1 181 % | **does not ship**. TYPE fails: two-day client inside slow-wall. Body red |
+| **C11 late-leg** | D slow-wall 5 % . E first >=0.5 buy of staged-leg cluster 2+ . P creator+age/v . X trail40 + that machine sells . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+6.93 SOL, 5/6, hold +0.34, LOO +2.15, boot 99.5 %, top client 69 %**; tickets 2/78/92/11/3/2; peak/trough 46x, top2 90 %; wo top1 **+5.33**; top1 23 % | **does not ship**. TYPE fails. Body pays. Plus is C2's door on two days. TYPE reading: slow-wall × av × trail40 **+5.14**, body **+0.75** |
+| **C12 second-attempt burst** | D n_pro>=8 . E first >=0.5 buy of this ix structure's second burst on this coin . P creator in . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+3.12 SOL, 4/8, hold -7.61, LOO -7.18, boot 57.4 %, top client 330 %**; tickets 53/171/344/377/203/142/102/2; peak/trough 3.7x, top2 54 %; wo top1 **-26.04**; top1 935 % | **does not ship**. TYPE passes. Floor passes on full days. Body, tail, hold, client gate fail. SOL leader is slow-wall (+17.78, d50 2/6), not the reading |
+| **C13 arrives from another coin** | D none / keep / slow-wall / n_pro>=8 . E first >=0.5 buy here after a live buy on a different coin (gap < 10) . P standing . X trail40 / derived / leave . R unlimited . S 0.2 . seat lag_115 . age>=60 | SOL leader slow-wall × creator+av × trail40 **+16.46, 4/6, d50 2/6, top1 73.6 %, body +4.35**; TYPE 26.4x / 81 %. Wide TYPE cells **-4.64 to -437**. leave red | **does not ship**. READING none. DELAY = 0 (live-gap p50 1.0 slot). k==0 1.9 % |
+| **C14 first buy after a run of sells** | D none / keep / slow-wall / n_pro>=8 . E first >=0.5 non-racer buy after >=3 consecutive sells . P standing . X trail40 / derived / low . R unlimited . S 0.2 . seat lag_115 . age>=60 | SOL leader slow-wall × creator+av × shipped **+10.40, 5/6, d50 2/6, top1 90.2 %, body +1.02**; TYPE 37.8x / 80 %. Closest TYPE cells **-5.24 to -9**. Wide TYPE cells **-194 to -289**. low red | **does not ship**. READING none. Leftover 81 ms (gap p50). k==0 0 |
+| **C15 first operator after only creator and seed racers** | D none / keep / slow-wall / n_pro>=8 / group-live-now . E first >=0.5 non-creator non-seed operator buy; prior prints only creator and seed racers . P standing . X trail40 / derived / follow . R unlimited . S 0.2 . seat lag_115 . age>=60 | SOL leader none × creator × clock45 **+0.01, 7 trades, d50 0/3**; full-tape none × none × clock45 **-50.75**, 1,360 trades, 0/8. Age p50 0 s. follow red | **does not ship**. READING none. DELAY = 0 (prior-gap 0 slots, next-print 2 ms). k==0 0 |
+| **C16 first run of an operator structure** | D none / keep / slow-wall / n_pro>=8 / group-live-now . E first >=0.5 operator buy on a coin that already has a non-creator non-seed print . P standing . X trail40 / derived / follow . R unlimited . S 0.2 . seat lag_115 . age>=60 | TYPE reading slow-wall × cu_hi × derived **+2.27, 3/6, d50 4/6, top1 219 %, body -2.71, hold -2.93, LOO -1.32, boot 65 %**. SOL leader n_pro>=8 × creator+av+cu × derived **+9.14**, TYPE fails 6.9x / 62 %. Wide TYPE **-41 to -75** | **does not ship**. Remaining spend 8.8 s on 22.5 %. Next-print 56 ms. k==0 0 |
 | Launch-build door | D launch build . E none | 4-6x on all 30 days, 22-day holdout, no decay | **stands as a screen.** A door is not a trade |
 | Documented-project rule | D document . E buy >= 0.5 SOL . P age/reserve/builds . X trail 40 c1800 | fitting week +0.40 %; **holdouts +1.46 % and +0.64 %/trade, 4 of 7 days each, +3.77 SOL on 2,156 tickets** | **weakly positive out of sample** - a lead for paper. Every week under 1 SE from zero |
 | L-door on documented-project (C1) | D document + safety-panel cuts . E buy >= 0.5 SOL . P age/reserve/builds . X trail40 c600 | parent **+1.21 SOL, 4/7, 23.5 first/day, 8/646 trades at -50 %**; creator-in +3.36 SOL (hold +0.14); bundle/fresh/snipe/dev fail hold | **L-axis empty on this book.** Creator-in is a permission, not L-selection. Door-v3 L-door unrun on C0b's 1,667 fires |
-| Campaign-break rule v0 | D ixh 29d9aacb… . E its buy ends a >= 10-slot buy silence . P vsol 65-100, break_idx >= 4, tagged >= 15, tape not buy-heavy, below 97 % of the 30-min vsol max . X TP +40 % else 600 s clock . seat **lag_115** | **`lag_115` -0.60 SOL, 4/8, 18.6 first/day, hold -2.98**; trail40 +4.18 / 6/8 / hold -0.01 / still 18.5/day; slot+2 TP40 **-0.89**. Species widening -15.57 / 0/8 | **does not ship** (6.6). Floor, money and hold fail. The +2-slot mint-disjoint holdout is n = 1 |
+| Campaign-break rule v0 | D ixh 29d9aacb… . E its buy ends a >= 10-slot buy silence . P vsol 65-100, break_idx >= 4, tagged >= 15, tape not buy-heavy, below 97 % of the 30-min vsol max . X TP +40 % else 600 s clock . seat **lag_115** | **`lag_115` -0.60 SOL, 4/8, 18.6 first/day, hold -2.98**; trail40 +4.18 / 6/8 / hold -0.01 / still 18.5/day; slot+2 TP40 **-0.89**. Species widening -15.57 / 0/8 | **does not ship**. Floor, money and hold fail. The +2-slot mint-disjoint holdout is n = 1 |
 | Trough ceiling | D keep . E every real episode low (look-ahead) . X tp100/tr50/c1200 | +26.99 %/trade, 8/8 days, top 1 % = 12.2 % of net | **ceiling, not a rule** - and the tail calibration |
 | Real-time trough detector | D door . E up-tick within 2 % of the trailing 15 s low . X several | -7.33 %/trade; precision 5.6 % against about 45 % needed | refuted as built: a price path cannot tell a turning low from a falling knife |
 | 30-day launch-door rules (MAX SOL / SAFETY / shipped) | D launch door . X reactive trail priced at the breaching print | `lag_115` **-29.06 / -18.94 / -99.70 SOL** | refuted; the edge was the exit fill (4.5) |
@@ -3964,7 +2742,8 @@ visibility-building operation on the same coin.**
 
 | what | where |
 | --- | --- |
-| the method, the gates, the campaign queue | [_!___workflow.md](_!___workflow.md) |
+| the method, the gates, how a result is written | [_!___derive.md](_!___derive.md) |
+| the open queue | [_!___workflow.md](_!___workflow.md) |
 | every idea, in Door / Event / Permission / Exit | [_!___inventory.md](_!___inventory.md) |
 | the market model, the basis, the open/closed ledger | [_!___strategy.md](_!___strategy.md) |
 | the 26 independent traders, ranked, with their five nodes | [solo-traders.md](solo-traders.md) |
@@ -3974,7 +2753,4 @@ visibility-building operation on the same coin.**
 | 44 consolidated refuted study lines | [../../history/2026-09-03-refuted-lines-ledger.md](../../history/2026-09-03-refuted-lines-ledger.md) |
 | the audit that produced the coordinate discipline | [../../../../docs/history/2026-09-09-closure-ledger-audit.md](../../../../docs/history/2026-09-09-closure-ledger-audit.md) |
 
-Reproduce scripts live in this directory and in `study-kernel/`. They resolve the repository root
-by directory depth, so they are not interchangeable between the two locations. Two JSON files are
-**inputs**, not dumps, and must not be deleted: `8dtx-event-structures.json` and
-`ixd-create-door.json`.
+Where study scripts and their inputs live: [_!___strategy.md](_!___strategy.md) 11.3.

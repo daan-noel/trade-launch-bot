@@ -3,7 +3,7 @@
 One rule is frozen and waiting for data. This file is everything needed to re-run it and to
 decide, without reading anything else. **Change nothing in it before the recheck** - trimming a
 frozen sentence because a prefix holds out better is refused
-([_!___workflow.md](../plans/strategies/_!___workflow.md) 11).
+([_!___derive.md](../plans/strategies/_!___derive.md) 14).
 
 Recheck date: **2026-09-30**, or any day the print tape covers 30 days.
 
