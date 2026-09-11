@@ -61,7 +61,7 @@ use trading_core::models::ingest::SseEvent;
 use trading_core::models::strategy_arm::ArmLedgerWrite;
 use trading_core::models::{StrategyPosition, StrategyRun};
 use trading_core::state::token_cache::TokenCache;
-use trading_core::storage::repositories::strategy_repo::{RunFinalize, StrategyRepo};
+use trading_core::storage::repositories::strategy_repo::{FillSigKind, RunFinalize, StrategyRepo};
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 
 use crate::ingest::HeldPoolGate;
@@ -104,17 +104,20 @@ async fn resolve_print_sig(trades: &TradeRepo, mint: &str, print: PrintKey) -> O
     None
 }
 
-/// The signatures a fill row records: the executor's own (a real fill), else the
-/// print a paper fill copied, else none.
+/// The signatures a fill row records and whose they are: the executor's own (a real
+/// fill), else the print a paper fill copied, else none.
 async fn fill_signatures(
     trades: &TradeRepo,
     mint: &str,
     sigs: Vec<String>,
     print: Option<PrintKey>,
-) -> Vec<String> {
+) -> (Vec<String>, FillSigKind) {
     match print {
-        Some(p) if sigs.is_empty() => resolve_print_sig(trades, mint, p).await.into_iter().collect(),
-        _ => sigs,
+        Some(p) if sigs.is_empty() => (
+            resolve_print_sig(trades, mint, p).await.into_iter().collect(),
+            FillSigKind::Print,
+        ),
+        _ => (sigs, FillSigKind::Own),
     }
 }
 
@@ -744,11 +747,10 @@ impl Sink {
             if let Some(h) = prev {
                 let _ = h.await;
             }
-            let entry_tx = fill_signatures(&trades, &mint, entry_sigs, entry_print)
-                .await
-                .into_iter()
-                .next()
-                .unwrap_or_default();
+            // A buy leg is outside `uq_position_fills_sell_tx`, so either kind of
+            // signature goes everywhere the entry records one.
+            let (entry_sigs, _) = fill_signatures(&trades, &mint, entry_sigs, entry_print).await;
+            let entry_tx = entry_sigs.into_iter().next().unwrap_or_default();
             // Persist the trigger (`target_*`) before the entry fill. In paper the
             // gap is the MODELED worst-case slippage; in real it is measured, and
             // `entry_slot - target_slot` is the only latency reading this system
@@ -823,7 +825,7 @@ impl Sink {
             if let Some(h) = prev {
                 let _ = h.await;
             }
-            let sigs = fill_signatures(&trades, &mint, fs.sigs, fs.print).await;
+            let (sigs, sig_kind) = fill_signatures(&trades, &mint, fs.sigs, fs.print).await;
             if let Err(e) = repo
                 .record_sell_fill(
                     pg_id,
@@ -834,6 +836,7 @@ impl Sink {
                     reason.as_deref(),
                     stage,
                     &sigs,
+                    sig_kind,
                     false,
                     fs.slot,
                 )
@@ -901,7 +904,7 @@ impl Sink {
             if let Some(h) = prev {
                 let _ = h.await;
             }
-            let sigs = fill_signatures(&trades, &mint, fs.sigs, fs.print).await;
+            let (sigs, sig_kind) = fill_signatures(&trades, &mint, fs.sigs, fs.print).await;
             if let Err(e) = repo
                 .record_sell_fill(
                     pg_id,
@@ -912,6 +915,7 @@ impl Sink {
                     Some(&reason),
                     stage,
                     &sigs,
+                    sig_kind,
                     true,
                     fs.slot,
                 )

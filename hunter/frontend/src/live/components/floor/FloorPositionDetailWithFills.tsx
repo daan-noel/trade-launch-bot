@@ -66,9 +66,14 @@ export function FloorPositionDetailWithFills({
   }, [fills, facts.entryTokenAmount]);
 
   // The ledger's buy leg also carries the entry signature, which an open lane row
-  // does not; without it the trades table cannot tint the entry print.
+  // does not; without it the trades table cannot tint the entry print. A paper sell
+  // leg carries none (its print is shared, so it stays off the ledger's unique sell
+  // signature): a lone exit leg takes the row's own `exitTx` instead.
   const inspect = useMemo(() => {
-    const exitLegs = fillsToExitLegs(fills, entryTokenAmount);
+    let exitLegs = fillsToExitLegs(fills, entryTokenAmount);
+    if (exitLegs.length === 1 && !exitLegs[0].tx && facts.inspect.exitTx) {
+      exitLegs = [{ ...exitLegs[0], tx: facts.inspect.exitTx }];
+    }
     const ownTx = facts.inspect.entryTx || null;
     const entryTx = ownTx ?? (fills.find((f) => f.side === 'buy')?.tx_signature || null);
     if (exitLegs.length === 0 && entryTx === ownTx) return facts.inspect;

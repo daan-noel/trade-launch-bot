@@ -161,6 +161,9 @@ sentinel bugs: two writers of one fact is how they drift.
 the array holds N sigs — a later leg's sig could collide with another position's first.
 There is no such constraint: uniqueness lives on `position_fills.tx_signature` (partial
 unique, real sells). Entry-side `uq_strategy_positions_entry_sig0` stays — still one buy.
+A paper sell's signature names a copied feed print, which two paper positions can
+share, so it goes only to the position's `exit_tx_signatures` and its ledger leg keeps
+none (`FillSigKind::Print`).
 
 ## Cost kernel
 

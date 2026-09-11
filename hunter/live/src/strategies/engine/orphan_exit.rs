@@ -23,7 +23,7 @@ use trading_core::models::trade::TradeType;
 use trading_core::state::token_cache::TokenCache;
 use trading_core::state::trade_signals::TradeSignals;
 use trading_core::storage::repositories::settings_repo::AppSettings;
-use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use trading_core::storage::repositories::strategy_repo::{FillSigKind, StrategyRepo};
 use trading_core::storage::repositories::token_info_repo::TokenInfoRepo;
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 
@@ -329,6 +329,7 @@ pub async fn book_externally_cleared_pg(
         Some(reason),
         None,
         &[],
+        FillSigKind::Own,
         true,
         // An externally-cleared bag is reconstructed, not observed landing — there
         // is no leg of ours to take a slot from.

@@ -2948,6 +2948,8 @@ impl StrategyRepo {
         reason: Option<&str>,
         stage: Option<u8>,
         tx_signatures: &[String],
+        // Whose transaction `tx_signatures` name: a `Print` stays off the ledger leg.
+        sig_kind: FillSigKind,
         final_close: bool,
         // Slot this sell leg landed in (mig 0004). `None` for a paper fill, and
         // `None` never blanks an already-stamped slot (`COALESCE`) — on a
@@ -2955,7 +2957,10 @@ impl StrategyRepo {
         exit_slot: Option<u64>,
     ) -> anyhow::Result<StrategyPosition> {
         let lamports = sol_to_lamports(sol);
-        let sig0 = tx_signatures.first().map(|s| s.as_str()).filter(|s| !s.is_empty());
+        let sig0 = match sig_kind {
+            FillSigKind::Own => tx_signatures.first().map(|s| s.as_str()).filter(|s| !s.is_empty()),
+            FillSigKind::Print => None,
+        };
         let next_stage = stage.map(|s| s as i16);
         let fill_stage = stage.map(|s| s.saturating_sub(1) as i16);
         let mut db_tx = self.pool.begin().await?;
@@ -3776,6 +3781,18 @@ impl StrategyRepo {
             .map(|(id, (_, legs))| (id, legs))
             .collect())
     }
+}
+
+/// Whose transaction a sell fill's signatures name. Both kinds go into the position
+/// row's `exit_tx_signatures` (what the chart and trades table key on). Only `Own`
+/// goes into the ledger leg: `uq_position_fills_sell_tx` guards OUR sells, and a
+/// copied print is shared: two paper positions can exit on the same one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillSigKind {
+    /// Our own landed transaction (a real fill).
+    Own,
+    /// The feed print a paper fill was priced against.
+    Print,
 }
 
 /// Append one row to `position_fills` inside an open transaction. `seq` is
