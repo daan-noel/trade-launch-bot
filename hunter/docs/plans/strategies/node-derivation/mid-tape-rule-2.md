@@ -4,7 +4,7 @@ The working file for **9999hu**, derived by [_!___derive.md](../_!___derive.md).
 One member, never pooled. 88887Q names the same tell and stays off this file (law 27).
 9Uq8GV is a different tell: [mid-tape-rule-1.md](mid-tape-rule-1.md).
 
-Numbers: [_!___evidence.md](../_!___evidence.md) 5.8, 5.11, 5.12. Code: [toolkit/](toolkit/README.md),
+Numbers: [_!___evidence.md](../_!___evidence.md) 5.8, 5.11, 5.12, 5.13, 1.27. Code: [toolkit/](toolkit/README.md),
 scripts in [mid-tape/](mid-tape/README.md).
 
 Tapes: the **study tape** (2026-08-30 17:48 to 2026-09-06 12:00 UTC, 6.76 days), where every
@@ -16,10 +16,11 @@ are only confirmed. Days after 09-10 are the clean test.
 ## 1. Rule 2
 
 ```
-E  public sell >= 1. Leftover exists on the fires 9999hu takes (derive 5.2). Public occupancy
+E  public sell >= 1: a derive 5.2 kill, reaction cost 8.97 % behind its buy (1.27). Public occupancy
    of that class at its fire time is red. Launch first-sell (age p50 ~2 s) is a different book
    and is not this sentence. Not frozen.
-P  none
+P  none. Keep rule takes no cut on stop-outs vs take-profits at the fire (5.13). Rule 1's
+   established-coin cut is under the floor here (age p50 15 s).
 X  working: take profit +15 %, stop -40 %, clock 70 s on the acted pool (5.12). Hazard is a
    20-30 s clock, close median -0.2 % against peak 17.8 %: it gives the leftover back. A clock
    is the prior, not the eat. Top 1 % 43 % and capped red: not shipped.
@@ -39,9 +40,9 @@ Plain words: (empty until E is a public sentence).
 
 | slot | where it comes from | evidence |
 | --- | --- | --- |
-| E, the trigger | sell >= 1 @ 50-75 ms lift 9.12; 79 % of episodes; leftover median +17.8 %/trade after our fill | 5.8, 5.11 |
+| E, the trigger | sell >= 1 @ 50-75 ms lift 9.12; 79 % of episodes; behind its buy the reaction cost is 8.97 %, a 5.2 kill (the +17.8 % leftover is read on the ahead tickets) | 5.8, 5.11, 1.27 |
 | E, the terms | vs ignored same-coin sells: live frenzy (nb2 9 vs 5, buys2 6.5 vs 1.0), younger (age 16 s vs 145 s). Recipe-count occupancy does not lift. Age <= 16 s occupancy is the launch first-sell (fire age p50 2 s), not its 16 s fire | 5.11 |
-| P | | |
+| P | keep rule takes none. Stop-outs are slightly hotter/thicker (vres AUC 0.63, mv60 0.62), not young-thin (hold_n AUC 0.50). Rule 1's holders x age is under the floor | 5.13 |
 | X | hazard is a 20-30 s clock (close median -0.2 % vs peak 17.8 %). Working family on the acted pool: tp15 sl40 t70 +1.61 % 7/7 body +4.47, top 1 % 43 %, capped -7.42 | 5.12 |
 | D | none | |
 
@@ -58,7 +59,9 @@ Plain words: (empty until E is a public sentence).
 | 6.1 | Which of those sells? | 183,865 sell >= 1 on its coins; 3,437 acted = **77 % of its buys**, k==0 0.0 %. Acted: nb2 9 vs 5, buys2 6.5 vs 1.0, age 16 s vs 145 s, shold 4.2 s vs 20.6 s, stall 3.6 s vs 30 s. Acted clock 25 **+1.29 %**; ignored **-0.83 %** | its logic, not a corner. Class is too wide: add terms to E, do not add D | `mt_hu_p5.py` | 5.11 |
 | 6.2 | Public sentence on every coin? | sell >= 1 occupancy clock 25 **-3.53 % 0/8**. Stacking nb2 / nw5 / ssize makes it worse. Control buy >= 1 none is +0.07 body -455 (k==0 14.7 %). Each term alone: only age <= 16.3 lifts (**+3.85 % 7/7 body +40, top 1 % 71 %**) and that fire's age p50 is **2.0 s**. Age 8-16 s (its fire) **-3.74 % 0/7** | occupancy first-sell is launch, not its decision. Do not freeze age <= 16. Do not AND nb2. Next is phase 8 on the acted pool | `mt_hu_p6.py`, `mt_hu_p6b.py` | 5.11 |
 | 8.1 | How does it close on the selected pool? | No closing print (buy >= 1 lift 1.18). E-kind closes n=2,555, held p50 **23.5 s**, close pnl p50 **-0.2 %**, peak p50 **17.8 %**. Hazard jumps at 20-30 s across every pnl band, not at a take-profit | X prior is a clock at hold p50. It does not eat the leftover; it gives it back. A copy of its close is the wrong family | `mt_hu_p8.py` | 5.12 |
-| 8.2 | Which family eats the leftover? | Clock 25 +0.86 5/7 body -6.3. **tp15 sl40 t70 +1.61 % 7/7 body +4.47**, hold 6.3 s, both halves green. Trail / ride / dump / longer clock worse. Sellbuy and scale do not beat it on days and body. Top 1 % 43 %, capped -7.42 | working X on the acted pool. Ship bars fail on the tail. Next is phase 9 on this pool | `mt_hu_p8.py` | 5.12 |
+| 8.2 | Which family eats the leftover? | Clock 25 +0.86 5/7 body -6.3. **tp15 sl40 t70 +1.61 % 7/7 body +4.47**, hold 6.3 s, both halves green. Trail / ride / dump / longer clock worse. Sellbuy and scale do not beat it on days and body. Top 1 % 43 %, capped -7.42 | working X on the acted pool. Ship bars fail on the tail | `mt_hu_p8.py` | 5.12 |
+| 9.1 | What is true at the fire on stop-outs vs take-profits? | Occupied sl 14 % / tp 67 %. Best AUC vres 0.63, mv60 0.62; hold_n 0.50. Keep rule takes none of 28 facts. Rule 1 established-coin n=131-302, under the floor. Named age / stall / nb2 cuts lose a day or SOL | P stays none. The ship fail is the winner tail, not the stops. Next is D on this parent | `mt_hu_p9.py` | 5.13 |
+| 5.2c | Does leftover exist behind its buy (derive 5.2 as calibrated)? | Behind its buy: reaction cost 8.97 % (93 % of tickets over 2 %), peak +12.61 % at its hold p50 (25 s), lag 58 ms; 88887Q 7.01 % | Killed on the cost line: the 5.2 row above read the ahead tickets, where its own buy is the leftover. No D search on this parent; another class or a state | `../hot-tape/b2_leftover.py` | 1.27 |
 
 ### What was tried and did not make it
 
@@ -68,6 +71,9 @@ Plain words: (empty until E is a public sentence).
 | occupancy of every sell >= 1 | -3.53 % 0/8 clock 25 | class too wide; first-fire is not the sell it takes |
 | copy its close / clock 25 as X | close median -0.2 % vs peak 17.8 %; clock 25 +0.86 body -6.3 | it gives the leftover back |
 | trail / ride / dump on the acted pool | +0.12 / -0.39 / +0.35, days 3/7 or 4/7 | they hold the bounce and eat the give-back |
+| rule 1 established coin as P (age >= 158, hold_n >= 368) | n=302 / 131, under the per-day floor | his fire is age p50 15 s; that P is a hot-tape story |
+| keep-rule P cut (28 facts, before occupancy) | no term taken; folds disagree or the test half loses | stop-outs are not a separable fire-time state |
+| age >= 16.3 / stall <= 5 / nb2 >= 9 as P | 6/7 or worse; SOL at or under the base | they drop the bounce that pays |
 | nb2 >= 9 / nw5 / ssize on that occupancy | -3.70 to -5.85, each worse | recipe-count occupancy is not its leftover |
 | age <= 16.3 occupancy | +3.85 % 7/7, top 1 % 71 %, fire age p50 2.0 s | launch first-sell, not its 16 s fire |
 | age 8-16 / 10-25 occupancy | -3.74 / -4.41 % 0/7 | public occupancy at its fire time is red |
@@ -81,7 +87,7 @@ Plain words: (empty until E is a public sentence).
 
 | member | RACE cap15 | FOLLOW cap15 | days R/F | its trigger (peak lift, lag) | status |
 | --- | ---: | ---: | :---: | --- | --- |
-| **9999hu** | **+5.94 %** | -2.60 % | 7/7 / 0/7 | sell >= 1, 9.12, 50-75 ms | **instrument.** leftover live (5.11); working X tp15 sl40 t70 on the acted pool (5.12); public occupancy red |
+| **9999hu** | **+5.94 %** | -2.60 % | 7/7 / 0/7 | sell >= 1, 9.12, 50-75 ms | **instrument.** sell >= 1 is a 5.2 kill behind its buy (1.27); working X tp15 sl40 t70 (5.12); P none (5.13); public occupancy red |
 | 88887Q | +5.73 % | -1.81 % | 7/7 / 0/7 | sell >= 1, 8.61, 50-75 ms | same tell; off this file |
 | 9Uq8GV | +2.21 % | -1.57 % | 8/8 / 3/8 | buy >= 1 / nb2 | other tell; [mid-tape-rule-1.md](mid-tape-rule-1.md) |
 | 8dtx2t | +3.16 % | -1.54 % | 7/7 / 0/7 | burst start | public burst START is C2 |
@@ -107,9 +113,13 @@ Plain words: (empty until E is a public sentence).
 | `node-derivation/data/mt_hu_p8_closes.parquet` | 8.1 hazard closes |
 | `node-derivation/data/mt_hu_p8_book.csv` | 8.2 family ledgers |
 | `node-derivation/data/mt_hu_p8_outcomes.parquet` | 8.2 per-exit outcomes |
+| `node-derivation/data/mt_hu_p9_auc.csv` | 9.1 stop vs tp AUC |
+| `node-derivation/data/mt_hu_p9_terms.csv` | 9.1 keep-rule new_terms |
+| `node-derivation/data/mt_hu_p9_named.csv` | 9.1 named inventory P cuts |
+| `node-derivation/data/mt_hu_p9_book.csv` | 9.1 P=none ledger |
 
 ## Open
 
-1. Working X on the acted pool is tp15 sl40 t70 (+1.61 % 7/7, body +4.47). Top 1 % 43 % and capped -7.42 fail the ship bars. Next is phase 9 on this pool (permission: stop-outs vs take-profits at the fire). Not a new E. Not age <= 16 as occupancy.
+1. P stays none (5.13). Working X on the acted pool is tp15 sl40 t70 (+1.61 % 7/7, body +4.47). Top 1 % 43 % and capped -7.42 fail the ship bars: the winner tail, not the 13.6 % stops. Derive 5.2 kills sell >= 1 behind its buy (reaction cost 8.97 %, 1.27): next is another class or a state for 9999hu, not D on this parent. Not age <= 16 as occupancy. Not rule 1's holders x age.
 2. Do not AND nb2 / nw5 onto sell >= 1 occupancy. Do not ship launch first-sell (age p50 2 s, top 1 % ~65-71 %) as this member's sentence. Do not copy its close: that close is the give-back.
-3. Empty D stays allowed. 88887Q stays off. Holdout unused. Days after 09-10 are the clean test.
+3. Empty D stays allowed until a door earns it. 88887Q stays off. Holdout unused. Days after 09-10 are the clean test.

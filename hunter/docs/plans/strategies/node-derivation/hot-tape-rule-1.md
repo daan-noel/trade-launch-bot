@@ -196,8 +196,8 @@ print) under a 15 s clock, and their reaction measured by excess intensity.
 | member | RACE cap15 | days | its trigger (peak lift, lag) | its exit | status |
 | --- | ---: | :---: | --- | --- | --- |
 | 8fStGV | +2.28 % | 8/8 | public SELL >= 1 SOL (8.1, 25-200 ms); avoids burst starts | sells a public BUY >= 1 at +14 %; on rule 1's pool sells hard at +15..+20 %, stops at -25..-30 %, clock 60-90 s | **rule 1** |
-| AbQcLH | +2.29 % | 7/7 | public burst start - a ~1 SOL buy after a dip (9.9, 25-50 ms) | sells into a quiet tape after ~19 s (no print trigger) | a race: lag 47 ms, we land ahead 5 %, -1.36 % at our seat |
-| 49uohd | +2.24 % | 6/8 | a node print (6.4, 25-50 ms); public SELL >= 1 / -2 % print (3.3-3.7, 150-300 ms) | sells right after a public sell (lift 14.9), near break-even | reachable, **not spelled**: +3.50 % 8/8 on its picks at our seat, every public spelling red |
+| AbQcLH | +2.29 % | 7/7 | public burst start - a ~1 SOL buy after a dip (9.9, 25-50 ms) | sells into a quiet tape after ~19 s (no print trigger) | a race: lag 47 ms, we land ahead 5 %, -1.36 % at our seat; a 5.2 kill, cost 4.55 % (1.27) |
+| 49uohd | +2.24 % | 6/8 | a node print (6.4, 25-50 ms); public SELL >= 1 / -2 % print (3.3-3.7, 150-300 ms) | sells right after a public sell (lift 14.9), near break-even | **not spelled**: +3.50 % 8/8 on its picks at our seat under a clock, every public spelling red; its sell >= 1 class is a 5.2 kill behind its buy (cost 2.69 %, 1.27) |
 | 64hP97 | +0.98 % | - | nothing under 200 ms (1.8, 300-600 ms) | sells a big buy/sell at 300-600 ms | noise |
 | omegoM | +0.12 % | - | sells and burst starts (5.0, 25-100 ms) | sells after a sell or down print | noise |
 | sssssw | -0.62 % | - | a public burst start (9.2, 75-100 ms; a BUY >= 1 4.4, a +3 % print 5.9); avoids sells | sells right after a public sell (13.6) | loses: the pump side |

@@ -995,6 +995,8 @@ rows are the tickets where our fill lands after the member's buy.
 | sssssw x burst start | kill | 57.9 % | 80 ms | 1.18 % | 46.1 % | +1.01 % (21.5 s) | 57.8 % | +0.12 % |
 | 8fStGV x burst start | kill | 5.8 % | 91 ms | -4.08 % | 22.5 % | +8.46 % (10.3 s) | 67.5 % | +0.38 % |
 | 49uohd x sell >= 1 SOL | read only | 24.8 % | 48 ms | 2.69 % | 62.5 % | +6.42 % (25.4 s) | 54.2 % | +6.95 % |
+| 9999hu x sell >= 1 SOL | applied | 67.2 % | 58 ms | 8.97 % | 93.3 % | +12.61 % (25.0 s) | 59.8 % | +5.67 % |
+| 88887Q x sell >= 1 SOL | applied | 61.6 % | 57 ms | 7.01 % | 91.9 % | +6.83 % (21.9 s) | 50.8 % | +4.40 % |
 
 A driftless price reaches break-even first on 49.1-49.2 % of these tickets. Our fill lands after the
 member's closing sell on 0-0.5 %.
@@ -1015,6 +1017,11 @@ member's closing sell on 0-0.5 %.
   up for a while whether or not it pays.
 - **The horizon is the hold p50.** At the hold p10 (1-4 s) the peak is below zero on every row; at
   the hold p90 the ignored prints cover the cost too (+4..+18 %).
+- **Applied to the mid-tape node, after the calibration** (its own members out of its public
+  prints): 9999hu's and 88887Q's sell >= 1 cost 8.97 % and 7.01 % behind their buy and are killed
+  on the cost line, though peak leftover there stays +12.6 % and +6.8 %: a 7-9 % move leaves a
+  volatile path, and 9999hu's acted book rests on its tail (top 1 % 43 %, capped book red, 5.12).
+  5.11's live read counts the ahead tickets, where its own buy is the leftover.
 - **49uohd's sell >= 1, read only:** behind its buy the cost is 2.69 %, a kill on that class at our
   seat; ahead of it (57.5 % of tickets) its own buy is the leftover. Its 5.1 peak is a node print
   (6.4 at 25-50 ms); the sell class is its second band (3.3-3.7 at 150-300 ms, 1.16).
@@ -2028,7 +2035,9 @@ hold p10-p90 net of both-leg cost). Sell >= 0.5 is the nearby class.
 
 Reaction cost when we land **ahead** of its buy is 0. The +5.5 % p50 is filling after its
 print. Missed-episode share is 0.1 %. Not a race (ahead 43 %, lag 96 ms). Leftover after
-our fill covers cost on 88.6 % of tickets. Behind leftover median is still +13.4 %/trade.
+our fill covers cost on 88.6 % of tickets. Behind leftover median is still +13.4 %/trade. Derive
+5.2 reads the behind row, where the reaction cost is +9.0 % here and 8.97 % in `seat.leftover`: a
+kill (1.27).
 
 **5.3 Diagnostics** (not a veto), sell >= 1 acted.
 
@@ -2147,9 +2156,63 @@ beat the wide-stop bracket on days and body together.
 
 **Verdict.** Leftover on the fires it takes is a short bounce (take-profit hold 2-6 s), not
 its 25 s close. A clock copies the give-back. The working X is tp15 sl40 t70: 7/7, both
-halves, body +4.47. Top 1 % 43 % and a negative capped book fail the ship bars. Next is
-phase 9 on this pool (stop-outs vs take-profits at the fire). Do not freeze age <= 16. Do
-not AND nb2 onto occupancy.
+halves, body +4.47. Top 1 % 43 % and a negative capped book fail the ship bars. Phase 9
+on this pool is 5.13. Do not freeze age <= 16. Do not AND nb2 onto occupancy.
+
+---
+
+## 5.13 Mid-tape derive, instrument 9999hu (phase 9, permission)
+
+```
+D  none
+E  public sell >= 1, the fires 9999hu takes (not occupancy, not a public sentence)
+P  none (keep rule takes no cut)
+X  tp15 sl40 t70 (working, 5.12)
+R  one per coin   S  0.2   seat  lag_115
+frame  study tape, 6.76 days. node-derivation/mid-tape/mt_hu_p9.py
+      working file node-derivation/mid-tape-rule-2.md
+```
+
+Occupied book (reproduces 5.12): n=2,433, +1.61 %/trade, 7/7, body +4.47, top 1 % 42.8 %,
+capped -7.42 SOL. Mix tp 67 / time 20 / sl 14. Per-day first n: 123 / 480 / 657 / 505 /
+381 / 186 / 101. k==0 share 0.0 %. Stop-out median -43.7 %/trade; take-profit median
++14.5 %.
+
+**AUC, stop-outs against take-profits** (> 0.5 = the dying fire has more of it).
+
+| fact | AUC | p50 sl | p50 tp | absdev |
+| --- | ---: | ---: | ---: | ---: |
+| vres | 0.629 | 48.2 | 44.5 | 0.129 |
+| headroom | 0.372 | 4.70 | 5.66 | 0.129 |
+| mv60 | 0.622 | 113 % | 71 % | 0.122 |
+| nw5 | 0.606 | 34 | 26 | 0.106 |
+| age | 0.443 | 7.9 s | 13.4 s | 0.057 |
+| hold_n | 0.501 | 57 | 58 | 0.001 |
+
+Stop-outs sit on slightly thicker, already-up tape, not on young thin coins. Quintiles of
+the farthest facts are not monotone in money.
+
+**Keep rule** (`walkforward.new_terms`, 28 facts, cut before occupancy): no term taken.
+Folds disagree on direction, or the test half loses to P=none. Chance bar 0.51 / 0.87 SOL
+a half at a 20 % ticket cut.
+
+**Named inventory P1 cuts** (before occupancy), vs P=none +1.61 7/7 body +4.47.
+
+| cell | n | %/trade | days | body | top 1 % | capped |
+| --- | ---: | ---: | :---: | ---: | ---: | ---: |
+| age >= 16.3 | 1,184 | +1.11 | 6/7 | +0.83 | 68.6 | -4.15 |
+| age >= 158 (rule 1) | 302 | +3.10 | 6/7 | +1.44 | 23.1 | +0.12 |
+| hold_n >= 368 (rule 1) | 131 | +4.37 | 6/7 | +1.04 | 9.4 | +0.47 |
+| vres <= 100 | 2,431 | +1.65 | 7/7 | +4.66 | 41.8 | -7.24 |
+| stall <= 5 | 1,431 | +1.31 | 6/7 | +1.95 | 48.0 | -5.07 |
+| nb2 >= 9 | 1,357 | +1.80 | 6/7 | +3.01 | 38.5 | -4.06 |
+
+Rule 1's established-coin P is under the per-day floor on this pool (age p50 15 s). Room
+under the wall is already the pool. Age / stall / nb2 cuts lose a day or SOL.
+
+**Verdict.** P stays none. The 13.6 % stops are not a separable fire-time state. The ship
+fail is the winner tail (top 1 % 43 %, capped red), not the stops. Next is D on this
+parent (derive 7 / 10). Do not copy rule 1's holders x age. Do not freeze age <= 16.
 
 ---
 

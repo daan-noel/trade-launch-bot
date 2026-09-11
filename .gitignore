@@ -144,6 +144,7 @@ __pycache__/
 !hunter/docs/plans/strategies/node-derivation/hot-tape/r1_engine_parity.py
 !hunter/docs/plans/strategies/node-derivation/hot-tape/r1b_exit.py
 !hunter/docs/plans/strategies/node-derivation/hot-tape/b2_leftover.py
+!hunter/docs/plans/strategies/node-derivation/hot-tape/r1c_loosen.py
 !hunter/docs/plans/strategies/node-derivation/hot-tape/toolkit_check.py
 hunter/docs/plans/strategies/node-derivation/data/
 !hunter/docs/plans/strategies/study-kernel/kernel.py

@@ -294,8 +294,8 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 | buy in the dip after a hill | a tool or operator structure buys while price is still down after a hill | red · ev 7 (machine print in the dip) |
 | first buy after a flush stops | first buy ≥ 0.5 SOL (not a seed racer) after a flush, once vsol makes no new low for ≥ 10 slots; one fire per flush | red · ev 7 (C9) |
 | sell inside a frenzy | a public sell ≥ 1 SOL inside a frenzy, a new high in the last 20 s, by a seller who bought ≤ 30 s ago; fire on the sell | keep · ev 1.20, 1.22, 1.26, 1.27 (rule 1's event; the frenzy's "≥ 2 SOL bought in 2 s" half drops out; +4.44 % 5/5 out of sample at the engine's grain; every term sits at its break-even margin, loosening adds no money; derive 5.2 passes it, cost 1.41 %, peak +7.46 %) |
-| └ 9999hu sell >= 1 | the same print class on a younger one-shot; leftover on the fires it takes is live; occupancy of every fire at its age is red; working X on the acted pool is tp15 sl40 t70 | open · ev 5.11, 5.12 (parent); do not copy age <= 16 occupancy (launch first-sell); do not copy its close |
-| capitulation cascade | a public sell ≥ 1 SOL from a seller at a loss, with the price down ≥ 5 % in 10 s, a second big sell in 10 s and a busy tape | red · ev 1.16. The second operator's dip leg books +3.50 % 8/8 on its own picks at our seat; no public spelling reaches it |
+| └ 9999hu sell >= 1 | the same print class on a younger one-shot; leftover on the fires it takes is live; occupancy of every fire at its age is red; working X on the acted pool is tp15 sl40 t70; P none | killed at derive 5.2 · ev 1.27 (reaction cost 8.97 % behind its buy; 5.11 read the ahead tickets); 5.11-5.13 stand as the record |
+| capitulation cascade | a public sell ≥ 1 SOL from a seller at a loss, with the price down ≥ 5 % in 10 s, a second big sell in 10 s and a busy tape | red · ev 1.16. The second operator's dip leg books +3.50 % 8/8 on its own picks at our seat under a clock; no public spelling reaches it; its sell >= 1 class is a 5.2 kill behind its buy (cost 2.69 %, ev 1.27) |
 | big buy after a dip | a buy ≥ 0.5 SOL opening a burst after ≥ 0.4 s of silence, the price down over 10 s | dead at our seat · ev 1.16: the operator that trades it reacts in 47 ms |
 | first buy after a run of sells | several sells in a row, then a buy | red · ev 7 (C14) |
 | first buy after the crowd left | the last hill's crowd holds under 50 % | new |
@@ -349,7 +349,9 @@ pay and where a loss is bounded.
 | --- | --- | --- |
 | age band | age inside a window | keep |
 | └ established coin | age ≥ 158 s and ≥ 368 public wallets holding; a frenzy on a young, thin coin dies | keep · ev 1.14, holds out of sample 1.15; holders re-read in 1.20 and kept |
+| └ established coin on 9999hu acted sell >= 1 | the same cut on a 15 s fire | red · ev 5.13 (n=131-302, under the floor; hold_n AUC 0.50) |
 | room under the wall | vsol after the fire ≤ 100, so a +15 % target fits well under graduation (115); above 107.2 a trade closes on the completing buy, at a price the curve no longer offers | keep · ev 1.20 (safety term, not a fit) |
+| └ vres ≤ 100 on 9999hu acted sell >= 1 | already the pool | red · ev 5.13 (2,431 of 2,433 tickets) |
 | sell-reactive buyers on the coin | distinct wallets on this coin that bought within 300 ms of a public sell ≥ 1 SOL | red · case 41 (not the arrival of the member's kind) |
 | vsol band | vsol inside a window | keep |
 | headroom | vsol ≤ 81 for a +100 % target | keep |

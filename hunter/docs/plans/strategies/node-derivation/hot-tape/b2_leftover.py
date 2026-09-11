@@ -11,6 +11,11 @@ Anchors, fixed before this run (study tape, members out of every public print):
   8fStGV  burst start             MUST KILL   the class it avoids (lift 0.01 at 0-25 ms, 1.12)
   49uohd  public SELL >= 1 SOL    no anchor   reachable, unspelled (1.16); read only
 
+Applied after the calibration, on the mid-tape node's roster (its members out of its public prints):
+
+  9999hu  public SELL >= 1 SOL    applied     the open mid-tape instrument (5.11)
+  88887Q  public SELL >= 1 SOL    applied     the same tell (5.8)
+
 Each reading is `toolkit.seat.leftover` on its acted tickets against the same coins' ignored
 prints of the class (up to 4 per acted ticket per coin), at its own hold p10 / p50 / p90:
 
@@ -29,6 +34,8 @@ from __future__ import annotations
 
 import _paths  # noqa: F401  - the toolkit and study-kernel on sys.path
 from _paths import DATA, NODE_NAME
+
+MID_TAPE = "mid-tape one-shot"
 
 import time
 
@@ -53,19 +60,25 @@ def burst_start(R):
     return R.pub & (R.side == 1) & (gap >= BURST_GAP)
 
 
-CASES = [("8fStGV", "sell>=1", sell_ge1, "PASS"),
-         ("AbQcLH", "burst start", burst_start, "KILL"),
-         ("sssssw", "burst start", burst_start, "KILL"),
-         ("8fStGV", "burst start", burst_start, "KILL"),
-         ("49uohd", "sell>=1", sell_ge1, "-")]
+CASES = [(NODE_NAME, "8fStGV", "sell>=1", sell_ge1, "PASS"),
+         (NODE_NAME, "AbQcLH", "burst start", burst_start, "KILL"),
+         (NODE_NAME, "sssssw", "burst start", burst_start, "KILL"),
+         (NODE_NAME, "8fStGV", "burst start", burst_start, "KILL"),
+         (NODE_NAME, "49uohd", "sell>=1", sell_ge1, "-"),
+         (MID_TAPE, "9999hu", "sell>=1", sell_ge1, "applied"),
+         (MID_TAPE, "88887Q", "sell>=1", sell_ge1, "applied")]
 
 
 def main() -> None:
     t0 = time.time()
-    S = tapes.load("study", tapes.roster(NODE_NAME))
-    print("study tape, instruments %s  %ds" % (sorted(S.ids.values()), time.time() - t0), flush=True)
+    sessions = {}
     rows, keep = [], []
-    for p, cls, fn, want in CASES:
+    for node, p, cls, fn, want in CASES:
+        if node not in sessions:
+            sessions[node] = tapes.load("study", tapes.roster(node))
+            print("study tape, %s: instruments %s  %ds"
+                  % (node, sorted(sessions[node].ids.values()), time.time() - t0), flush=True)
+        S = sessions[node]
         w = S.wallet(p)
         E = seat.episodes(S, w)
         L = seat.leftover(S, w, E, fn, max_trig=MAX_TRIG)

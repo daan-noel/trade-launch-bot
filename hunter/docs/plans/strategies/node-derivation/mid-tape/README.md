@@ -3,7 +3,7 @@
 The record behind [../mid-tape-rule-1.md](../mid-tape-rule-1.md) (9Uq8GV) and
 [../mid-tape-rule-2.md](../mid-tape-rule-2.md) (9999hu). Each script opens with its step
 and the question it answers. Evidence: [_!___evidence.md](../../_!___evidence.md)
-5.8, 5.9, 5.10, 5.11, 5.12. Playbook: [_!___derive.md](../../_!___derive.md).
+5.8, 5.9, 5.10, 5.11, 5.12, 5.13. Playbook: [_!___derive.md](../../_!___derive.md).
 
 The scripts are local scratch and not tracked (only `_paths.py` is): each step's record is its
 chain row in the case file and its numbers the evidence section named below.
@@ -14,7 +14,8 @@ tape's wallet ids are `wallet_dict` ids, so scripts that name the node's wallets
 
 5.8-5.10 score a hold-matched clock and every-fire occupancy on 9Uq8GV. Those columns stay
 as diagnostics. 5.11 is leftover existence on 9999hu's acted sell >= 1, then which sells,
-then public occupancy. 5.12 is phase 8 on that acted pool.
+then public occupancy. 5.12 is phase 8 on that acted pool. 5.13 is phase 9 (permission) on
+the same pool.
 
 | step | script | question | evidence |
 | --- | --- | --- | --- |
@@ -28,3 +29,4 @@ then public occupancy. 5.12 is phase 8 on that acted pool.
 | 6.2 | `mt_hu_p6.py` | public sell >= 1 + unpriced terms, every coin, clock 25 | 5.11 |
 | 6.2 | `mt_hu_p6b.py` | each term alone, and age bands (launch first-sell vs its fire) | 5.11 |
 | 8.1-8.2 | `mt_hu_p8.py` | closing hazard on the acted pool; exit families against that bracket | 5.12 |
+| 9.1 | `mt_hu_p9.py` | stop-outs vs take-profits at the fire; keep-rule P cut | 5.13 |

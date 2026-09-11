@@ -17,7 +17,7 @@ nodes. A node is picked here, then derived by [_!___derive.md](_!___derive.md).
 | node | status at our seat | where |
 | --- | --- | --- |
 | hot-tape re-entry | **rule 1 passes every ship bar**; the clean test is next | section 1 |
-| mid-tape one-shot | **open**: instrument 9999hu, phase 9 next | section 2 |
+| mid-tape one-shot | **open**: 9999hu's sell >= 1 is a 5.2 kill; another class or a state next | section 2 |
 | deep-age big clip | red: a public size print is not the tell (response equals the base); the remainder is which coin, not which print | evidence 7, agreement in section 4 |
 | quiet deep-age | red: the token-silence burst it follows lasts ~80 ms, so a 115 ms fill is after it | evidence 7 |
 | instant launch | dead at this seat: consumed inside ~2 slots | strategy 8.1 |
@@ -31,32 +31,40 @@ Count machines, not wallets: 41 of 77 roster addresses are 7 machines (evidence 
 Rule 1 (Flip-Catch - Bracket) passes every ship bar on the every-leg holdout, +4.44 %/trade,
 100 a day, 5/5, top 1 % 9.8 %, and simulate books it ticket for ticket (evidence 1.22, 1.23).
 Rule 1b (Flip-Catch - Room, the wall target) is its entry with the exit the holdout chose, so
-only new days certify it (1.24, 1.25). Working file:
+only new days certify it (1.24, 1.25); it misses the study tail bar (top 1 % 15.5 %), so the clean
+days must pass every bar, the tail included. Working file:
 [node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md).
 
 - **Next:** book the untouched days after 09-10, rule 1 and rule 1b side by side, with the same
   code; then paper at the 115 ms seat (live paper books `worst_case` fills, not this seat); then
   small real.
 - **Kills it:** a ship bar failing on the clean days.
-- **More trades a day need a second event, not a looser rule 1** (1.26). The one reachable
-  candidate is 49uohd's capitulation dip-buy: +3.50 %/trade 8/8 on its picks at our seat, red in
-  every public spelling; the unused form is its descriptors (fall, burst, busy tape, seller at a
-  loss, size) fitted as one within-coin score on half the days (1.16). AbQcLH's burst start is
-  DELAY about zero.
+- **More trades a day need a second event, not a looser rule 1** (1.26). The open candidate is
+  49uohd's capitulation dip-buy: +3.50 %/trade 8/8 on its picks at our seat under a clock (a 5.3
+  column), red in every public spelling (1.16). Its sell >= 1 class is a 5.2 kill behind its buy
+  (cost 2.69 %, 1.27): run 5.2 on the dip-buy picks as 1.16 defines them before its descriptors
+  (fall, burst, busy tape, seller at a loss, size) are fitted as one within-coin score. AbQcLH's
+  burst start is a 5.2 kill (cost 4.55 %).
 
 ---
 
 ## 2. Mid-tape one-shot: instrument 9999hu
 
-Leftover exists on the sells >= 1 SOL it takes (median peak +17.8 %/trade, 88.6 % cover cost,
-5.11); public occupancy of that class at its fire time is red. The working exit on the acted pool
+**Derive 5.2 kills this trigger** (evidence 1.27): behind its buy the reaction cost is 8.97 %, 93 %
+of tickets over 2 % (88887Q 7.01 %). 5.11 read it live on the tickets ahead of its buy (cost 0),
+where its own buy is our leftover: a copied fill. Peak leftover behind its buy is still +12.6 % at
+its hold p50, the volatility of a 9 % move, and the book below agrees with the kill. Public
+occupancy of that class at its fire time is red. The working exit on the acted pool
 is take profit +15 %, stop -40 %, 70 s: +1.61 % 7/7, body +4.47, and it fails the tail (top 1 %
-43 %, capped book red, 5.12). Working file:
+43 %, capped book red, 5.12). P stays none: keep rule takes no cut on stop-outs vs take-profits
+(5.13). Working file:
 [node-derivation/mid-tape-rule-2.md](node-derivation/mid-tape-rule-2.md).
 
-- **Next:** phase 9 on that pool: the stop-outs against the take profits, at the fire.
+- **Next:** another class or a state for 9999hu (derive 5.2: no X, P or D saves a kill); no D
+  search on this parent.
 - **Do not:** freeze age <= 16 s occupancy (it is the launch first-sell, fire age p50 2 s); copy
-  its close (a 20-30 s give-back); AND nb2 onto sell >= 1 occupancy.
+  its close (a 20-30 s give-back); AND nb2 onto sell >= 1 occupancy; copy rule 1's holders x age
+  (under the floor on a 15 s fire).
 - 9Uq8GV's `buy >= 1` is a 5.2 kill (reaction cost +9.2 %,
   [mid-tape-rule-1.md](node-derivation/mid-tape-rule-1.md)); 88887Q is the same tell as 9999hu
   and stays off; 8dtx2t's public burst START is C2 (section 3) and does not ship on its own.
