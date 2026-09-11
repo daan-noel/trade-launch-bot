@@ -31,7 +31,7 @@ D  none
 R  one position per coin at a time; re-entry after the exit fill
 S  flat 0.35 SOL (0.2 booked below)
 seat  both legs fill at the last print of either side landed 115 ms after the decision print, in
-      its slot or the next observed one (the engine's LagMs exit rule; its entry leg needs the fix)
+      its slot or the next observed one (the engine's `LagMs` rule, one rule on both legs)
 ```
 
 Plain words: a flipper takes profit into a buying frenzy on an established coin that is not near
@@ -57,9 +57,10 @@ The last-leg tapes agree: +4.26 % 7/7 (08-30..09-05) and +4.99 % 5/5 (evidence 1
 
 `node-derivation/data/r1_ref_{holdout_exact,study_exact}.parquet`: per ticket the trigger, entry-fill
 and exit prints by slot, transaction, leg and time, the reason, and the SOL under the engine kernel.
-The engine reproduces these tickets one for one before paper, and the same code books every day
-after 09-10 (the clean test). The replay is `hot-tape/r1_exact.py`; `hot-tape/r1_exact_check.py`
-rebuilds its tickets with code that shares nothing with it.
+The replay is `hot-tape/r1_exact.py`; `hot-tape/r1_exact_check.py` rebuilds its tickets with code
+that shares nothing with it. Simulate books them one for one (evidence 1.23): 448 of 450 and 603 of
+604 on the same trigger, fill and exit prints with the same SOL; the other three sit on coins the
+engine had retired as dead. The same code books every day after 09-10 (the clean test).
 
 ### Each slot, in one line
 

@@ -1394,6 +1394,47 @@ Scripts: [r1_terms_audit.py](node-derivation/hot-tape/r1_terms_audit.py),
 
 ---
 
+## 1.23 Rule 1 in the engine: simulate books the reference ticket for ticket (H18)
+
+The engine carries rule 1 in its own vocabulary (`node-derivation/data/r1p_rule.json`): three new
+metrics (`m_build_window.unique_builds`, `m_print_wallet.since_buy`, `m_state.on_curve`), the
+existing ones for every other term, and the `LagMs` fill with the exit leg's rule on both legs. The
+replay is the code simulate runs - the lab's lake load, `run_replay` over one `EngineState`, the
+engine cost kernel (125 bps a leg, 0.000225 SOL a leg from `.env`) - in
+`hunter/lab/examples/hot_tape_rule1_parity.rs`; `hot-tape/r1_engine_parity.py compare` matches its
+positions to the frozen tickets of 1.22 on the trigger print `(slot, tx_index, leg)`.
+
+| corpus | reference tickets | engine positions in the fire window | same trigger print | entry fill, exit print, reason | SOL | reference only | engine only |
+| --- | ---: | ---: | ---: | --- | --- | ---: | ---: |
+| holdout_exact | 450 | 448 | 448 | all equal | equal to 1.5e-16 | 2 | 0 |
+| study_exact | 604 | 603 | 603 | all equal | equal to 1.5e-16 | 1 | 0 |
+
+**The three reference-only tickets cannot happen live.** They sit on two coins the engine retired
+as dead: `7ieEr...` drained to 0 SOL at age 276 s and printed nothing for 384 s; `2Q8tH...` sat at
+0.59 SOL for 300.5 s at age 74 s. The dead verdict (quiet 300 s, liquidity under 30) removes a coin
+and every later trade on it is ignored, in simulate and live alike; the reference has no death, so it
+saw both coins revive and fire 20 minutes later.
+
+**AMM prints change nothing.** Loading every venue, as live sees the tape, gives a byte-identical
+book on both corpora: `on_curve` keeps the rule off graduated pools, and no position was open across
+a graduation.
+
+| holdout_exact, engine vs Python | n | %/trade | SOL | days + | top 1 % | 95 % interval |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 0.2 SOL, 115 ms, engine | 448 | +4.49 % | 4.02 | 5/5 | 9.7 % | +2.27..+6.61 |
+| 0.2 SOL, 115 ms, Python | 450 | +4.44 % | 3.99 | 5/5 | 9.8 % | +2.19..+6.58 |
+| 0.35 SOL, 115 ms, engine | 448 | +4.22 % | 6.61 (1.47 a day) | 5/5 | 10.2 % | +2.00..+6.33 |
+| 0.35 SOL, 115 ms, Python | 450 | +4.17 % | 6.56 (1.46 a day) | 5/5 | 10.3 % | |
+| 0.2 SOL, 200 ms, engine | 445 | +3.74 % | 3.33 | 5/5 | 9.8 % | +1.59..+5.83 |
+| 0.2 SOL, 200 ms, Python | 447 | +3.69 % | 3.30 | 5/5 | 9.9 % | +1.54..+5.80 |
+| 0.2 SOL, 500 ms, engine | 436 | +2.80 % | 2.44 | 4/5 | 13.5 % | +0.55..+4.96 |
+| 0.2 SOL, 500 ms, Python | 438 | +2.76 % | 2.41 | 4/5 | 13.6 % | +0.53..+4.88 |
+
+Study, engine: 603 tickets, +4.47 %, 6/6, top 1 % 12.9 % (Python 604, +4.51 %).
+
+Not measured here: the days after 09-10 (the clean test), a tip above 0.000225 SOL a leg, failed
+buys, and live paper, which books `worst_case` fills rather than this seat.
+
 # 2. THE PRIZE
 
 ## 2.1 The episode census

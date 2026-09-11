@@ -641,6 +641,9 @@ fn trade_lite(t: &Trade) -> TradeLite {
         tx_index: Some(t.tx_index as u32),
         template_hash: grain_hash_from_labels_value(&t.instruction_labels),
         program_hash: program_hash_from_labels_value(&t.instruction_labels),
+        build_hash: hunter_engine::metrics::flow_ix::build_hash_from_labels_value(
+            &t.instruction_labels,
+        ),
         is_launch: hunter_engine::metrics::template_grain::is_launch_from_labels_value(
             &t.instruction_labels,
         ),

@@ -36,6 +36,45 @@ pub fn ix_hash(labels: &[impl AsRef<str>]) -> u64 {
     h
 }
 
+/// Whether a label is account setup, account teardown or a memo: instructions a
+/// sender adds or drops around the same trade without changing what it does. A
+/// build RECIPE is the label sequence without them ([`build_hash`]).
+pub fn is_build_noise(label: &str) -> bool {
+    label.starts_with("Associated Token: Create")
+        || label.ends_with(": CloseAccount")
+        || label.starts_with("Memo Program")
+}
+
+/// The build recipe: [`ix_hash`] over the ordered labels with [`is_build_noise`]
+/// dropped, so two transactions that differ only in a token account opened, closed
+/// or a memo are one recipe. `None` when labels are missing or empty, the same
+/// sentinel as [`ix_hash_opt`].
+///
+/// The offline twin is the node-derivation toolkit's `lake_export.build_core` (the
+/// same drop list, md5 of the kept labels joined by `|`); the two partition label
+/// sequences identically, pinned by `build_hash_partitions_like_the_study_build_core`.
+pub fn build_hash(labels: &[impl AsRef<str>]) -> Option<u64> {
+    if labels.is_empty() {
+        return None;
+    }
+    let mut h = FNV_OFFSET;
+    let mut first = true;
+    for lab in labels.iter().map(AsRef::as_ref).filter(|l| !is_build_noise(l)) {
+        if !first {
+            h = fnv1a_byte(h, 0x1f);
+        }
+        first = false;
+        h = fnv1a_bytes(h, lab.as_bytes());
+    }
+    Some(h)
+}
+
+/// [`build_hash`] over labels decoded into a [`Value`], through [`normalize_labels`]
+/// so both persisted shapes read alike (see [`ix_hash_from_labels_value`]).
+pub fn build_hash_from_labels_value(labels: &Value) -> Option<u64> {
+    build_hash(&normalize_labels(labels))
+}
+
 // ── Structural markers ───────────────────────────────────────────────────────
 
 /// The structural markers a build can carry, one bit each.
@@ -1062,6 +1101,51 @@ mod tests {
     /// The drift this catches is silent: a misclassified trade still yields a
     /// plausible split, so it surfaces as "the chart and the metric pane disagree"
     /// long after the change that caused it.
+    /// Two label sequences are one recipe exactly when the study's `build_core`
+    /// says so. The fixture holds real lake sequences with their `build_core`,
+    /// written by the toolkit function the hot-tape rules were derived with.
+    fn assert_build_partition(raw: &str) {
+        let v: Value = serde_json::from_str(raw).expect("fixture parses");
+        let seqs = v["sequences"].as_array().expect("sequences");
+        let mut by_core: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut by_hash: BTreeMap<u64, &str> = BTreeMap::new();
+        for e in seqs {
+            let core = e["build_core"].as_str().expect("build_core");
+            let h = build_hash_from_labels_value(&e["labels"]).expect("labels present");
+            assert_eq!(*by_core.entry(core).or_insert(h), h, "one build_core, two hashes: {e}");
+            assert_eq!(*by_hash.entry(h).or_insert(core), core, "one hash, two build_cores: {e}");
+        }
+        assert!(by_core.len() < seqs.len(), "the fixture must hold sequences that collapse");
+    }
+
+    #[test]
+    fn build_hash_partitions_like_the_study_build_core() {
+        assert_build_partition(include_str!("../../fixtures/build_core_parity.json"));
+        // The noise is dropped wherever it sits, and only the noise.
+        let core = build_hash(&["Compute Budget: SetComputeUnitLimit", "Pump.Fun: Buy"]);
+        assert_eq!(
+            build_hash(&[
+                "Compute Budget: SetComputeUnitLimit",
+                "Associated Token: CreateIdempotent",
+                "Pump.Fun: Buy",
+                "Token Program: CloseAccount",
+                "Memo Program: Memo",
+            ]),
+            core
+        );
+        assert_ne!(build_hash(&["Pump.Fun: Buy", "Compute Budget: SetComputeUnitLimit"]), core);
+        assert_eq!(build_hash(&[] as &[&str]), None);
+    }
+
+    /// Every distinct sequence in a lake export, not a sample: point
+    /// `BUILD_CORE_ALL` at a file in the fixture's shape and run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn build_hash_partitions_every_exported_sequence() {
+        let path = std::env::var("BUILD_CORE_ALL").expect("BUILD_CORE_ALL names the file");
+        assert_build_partition(&std::fs::read_to_string(path).expect("file reads"));
+    }
+
     #[test]
     fn flow_ix_matches_the_shared_parity_fixture() {
         #[derive(serde::Deserialize)]

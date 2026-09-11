@@ -9,8 +9,12 @@
 //! * **entry** = highest qualifying **buy** price in the window (adverse for us)
 //! * **exit** = lowest price of any trade in the window (adverse for us)
 //!
-//! That pick is what [`FillModel`] varies — and only that; the window, the
-//! eligibility rules and so the taken-position set are the same under every model.
+//! That pick is what [`FillModel`] varies. The window and the eligibility rules are
+//! shared by every model but two: [`FillModel::SlotEnd`] and [`FillModel::LagMs`]
+//! price the entry off the last print of EITHER side, because a buy lands behind
+//! whatever landed before it, sells included. `LagMs` uses one rule on both legs
+//! ([`lag_fill_idx`]). With the analysis fallback on (every caller), the
+//! taken-position set is still the same under every model.
 //!
 //! Analysis paths and live paper entry pass `market_fill_on_empty_window = true`
 //! so a trigger/fire with an empty window still books a market fill at that trade
@@ -289,6 +293,44 @@ fn adverse_median_in<T: TradeRow>(
     })
 }
 
+/// The [`FillModel::LagMs`] pick, ONE rule for both legs: the last priced print of
+/// either side whose `block_time` is at or before `signal + ms`, among the prints
+/// after `signal_idx` in the signal's slot or the next observed slot when it is at
+/// most [`MAX_FILL_WAIT_SLOTS`] on.
+///
+/// `Some(signal_idx)` when the window holds priced prints but none landed by the
+/// deadline: the state is still the signal's own. `None` when the window holds no
+/// priced print at all; the caller then applies its empty-window rule.
+///
+/// Either side, on the entry leg too. A row's price is the pool state after that
+/// trade, and our buy lands behind every print that landed before it - a sell
+/// included. A buy-only pick skips those sells and prices the entry at a state that
+/// was already gone when we landed: on hot-tape rule 1 that was 29 % of entries,
+/// 6.9 % dearer on average (evidence 1.22).
+fn lag_fill_idx<T: TradeRow>(trades: &[T], signal_idx: usize, ms: u32) -> Option<usize> {
+    let signal = trades.get(signal_idx)?;
+    let signal_slot = signal.slot();
+    let post = trades.get(signal_idx + 1..).unwrap_or(&[]);
+    let next_slot = post.iter().map(|t| t.slot()).find(|&s| s > signal_slot);
+    let in_window = |s: u64| match next_slot {
+        Some(ns) if ns <= signal_slot + MAX_FILL_WAIT_SLOTS => s == signal_slot || s == ns,
+        _ => s == signal_slot,
+    };
+    let priced = |t: &T| in_window(t.slot()) && t.fill_basis() > 0.0;
+    if !post.iter().any(priced) {
+        return None;
+    }
+    let deadline = signal.block_time() + chrono::Duration::milliseconds(i64::from(ms));
+    Some(
+        post.iter()
+            .enumerate()
+            .filter(|(_, t)| priced(t) && t.block_time() <= deadline)
+            .map(|(rel, _)| rel)
+            .next_back()
+            .map_or(signal_idx, |rel| signal_idx + 1 + rel),
+    )
+}
+
 /// Paper entry keyed by the trigger trade's index, priced per [`FillModel`].
 ///
 /// Window = trigger slot `S` (always) + the next observed slot after `S` if it's
@@ -339,8 +381,20 @@ pub fn find_paper_entry_at<T: TradeRow>(
         };
     }
 
-    // Eligibility is fixed across models: a qualifying buy must exist in the
-    // window (or the empty-window market-fill fallback below).
+    // The wall-clock lag: the exit leg's rule ([`lag_fill_idx`]), outside the
+    // buy-eligibility rule below for the reason slot end is.
+    if let FillModel::LagMs(ms) = model {
+        return match lag_fill_idx(trades, target_idx, ms) {
+            Some(idx) => Some(paper_fill_from(trades, idx)),
+            None if market_fill_on_empty_window && trigger.fill_basis() > 0.0 => {
+                Some(paper_fill_from(trades, target_idx))
+            }
+            None => None,
+        };
+    }
+
+    // Eligibility is fixed across the remaining models: a qualifying buy must exist
+    // in the window (or the empty-window market-fill fallback below).
     if !post.iter().any(qualifies) {
         return if market_fill_on_empty_window && trigger.fill_basis() > 0.0 {
             Some(paper_fill_from(trades, target_idx))
@@ -371,27 +425,11 @@ pub fn find_paper_entry_at<T: TradeRow>(
         FillModel::NextSlotMedian => adverse_median_in(run, qualifies, true)
             .map(|rel| run_base + rel)
             .or_else(worst),
-        // The pool state a buy landing `ms` after the trigger executes against: the
-        // LAST qualifying buy at or before that instant. A row's price is the state
-        // AFTER that trade, so the FIRST print at or after the deadline is a trade we
-        // could not have landed behind — pricing from it reaches forward past our own
-        // fill. When nothing lands inside the lag the state is still the trigger's own.
-        FillModel::LagMs(ms) => {
-            let deadline = trigger.block_time() + chrono::Duration::milliseconds(i64::from(ms));
-            match post
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| qualifies(t) && t.block_time() <= deadline)
-                .map(|(rel, _)| rel)
-                .next_back()
-            {
-                Some(rel) => Some(rel),
-                None => return Some(paper_fill_from(trades, target_idx)),
-            }
-        }
         FillModel::WorstCase => worst(),
         // Returned above.
-        FillModel::SlotEnd => unreachable!("slot-end entry is resolved before eligibility"),
+        FillModel::SlotEnd | FillModel::LagMs(_) => {
+            unreachable!("slot-end and lag entries are resolved before eligibility")
+        }
     };
     rel.map(|rel| paper_fill_from(trades, target_idx + 1 + rel))
 }
@@ -451,20 +489,12 @@ pub fn find_paper_exit_at<T: TradeRow>(
                 .map(|rel| run_base + rel)
                 .or_else(worst)
                 .map(|rel| fire_idx + 1 + rel),
-            // Same rule as the entry leg: the LAST priced trade at or before
-            // `fire + ms`, never the first one after it. Pricing a sell from the next
-            // print credits us with flow that arrived after we sold — the error is
-            // largest exactly where it hurts, on a take-profit firing into a rise.
-            FillModel::LagMs(ms) => {
-                let deadline = fire.block_time() + chrono::Duration::milliseconds(i64::from(ms));
-                post.iter()
-                    .enumerate()
-                    .filter(|(_, t)| priced(t) && t.block_time() <= deadline)
-                    .map(|(rel, _)| rel)
-                    .next_back()
-                    .map(|rel| fire_idx + 1 + rel)
-                    .or(Some(fire_idx))
-            }
+            // The entry leg's rule ([`lag_fill_idx`]): the LAST priced trade at or
+            // before `fire + ms`, never the first one after it. Pricing a sell from
+            // the next print credits us with flow that arrived after we sold — the
+            // error is largest exactly where it hurts, on a take-profit firing into a
+            // rise.
+            FillModel::LagMs(ms) => lag_fill_idx(trades, fire_idx, ms),
             FillModel::WorstCase => worst().map(|rel| fire_idx + 1 + rel),
         }
     } else {
@@ -825,6 +855,32 @@ mod tests {
         assert_ne!(fill.price, 9.0, "the +900ms print is in our future at fill time");
     }
 
+    /// The entry leg lands behind a SELL that landed first. A row's price is the
+    /// pool state after that trade, so a sell inside the lag lowers the state our
+    /// buy meets; a buy-only pick skips it and prices the entry at a state that was
+    /// already gone. One rule on both legs: the entry fill is the print the exit leg
+    /// would take from the same signal.
+    #[test]
+    fn the_lag_model_entry_lands_behind_a_sell_like_the_exit_leg() {
+        let mut behind = sell(0.8, 1.0, 100, 2, 0);
+        behind.block_time = base_time() + chrono::Duration::milliseconds(90);
+        let trades = vec![
+            leg_ms(1.0, 1.0, 100, 0, 0),
+            leg_ms(1.3, 1.0, 100, 1, 30),
+            behind,
+            leg_ms(1.6, 1.0, 101, 0, 400),
+        ];
+        let entry = find_paper_entry_at(&trades, 0, true, FillModel::LagMs(115)).unwrap();
+        assert_eq!((entry.trade_idx, entry.price), (2, 0.8), "the sell at +90 ms is the state we meet");
+        let exit = find_paper_exit_at(&trades, 0, true, FillModel::LagMs(115)).unwrap();
+        assert_eq!(entry.trade_idx, exit.trade_idx, "both legs take the same print");
+        // A sell alone in the window, landed by the deadline, is still the fill: no
+        // buy has to follow the trigger for the state to have moved.
+        let only_sell = vec![trades[0].clone(), trades[2].clone()];
+        let entry = find_paper_entry_at(&only_sell, 0, false, FillModel::LagMs(115)).unwrap();
+        assert_eq!(entry.trade_idx, 1);
+    }
+
     /// The exit leg charges the same delay from the firing trade.
     #[test]
     fn the_lag_model_charges_the_exit_leg_too() {
@@ -907,11 +963,18 @@ mod tests {
 
     #[test]
     fn fill_models_share_entry_eligibility() {
-        // No qualifying buy after the trigger (only a sell) ⇒ None for EVERY model
-        // when the empty-window fallback is off, so the taken-position set is
-        // identical; models differ only in price.
+        // No qualifying buy after the trigger (only a sell) ⇒ None for every
+        // buy-picking model when the empty-window fallback is off. `LagMs` picks
+        // either side, so a priced sell in the window makes it eligible exactly as
+        // it makes the exit leg eligible - and at 115 ms that sell (+1 s) has not
+        // landed, so the fill is the trigger's own state.
         let trades = vec![leg(1.0, 1.0, 100, 0, 0), sell(0.9, 1.0, 101, 0, 1)];
         for m in ALL_MODELS {
+            if let FillModel::LagMs(_) = m {
+                let fill = find_paper_entry_at(&trades, 0, false, m).expect("a sell is in the window");
+                assert_eq!(fill.trade_idx, 0, "{m:?}");
+                continue;
+            }
             assert!(find_paper_entry_at(&trades, 0, false, m).is_none(), "{m:?}");
         }
         // With the analysis fallback on, every model fills at the SAME trigger

@@ -4,7 +4,7 @@
 //!
 //! A **metric** is a named per-token quantity a rule can put `{operator, value}`
 //! conditions on. Metrics live in **groups** (one file per group):
-//! * `m_state` (static) — `time`, `liquidity`
+//! * `m_state` (static) — `time`, `liquidity`, `on_curve`
 //! * `m_price_lifetime` (static) — `stall`, `trail`, `rise` (lifetime peak/trough)
 //! * `m_price_window` (dynamic) — `trail`, `rise` (rolling-window extrema; the dip
 //!   trigger)
@@ -19,6 +19,11 @@
 //! * `m_crowd_after_age` (anchored) — `non_creator_buyers`, `this_buyer_is_new` —
 //!   distinct buyers since an AGE anchor (`after_age_sec`), the creator excluded;
 //!   the basis no trailing window can spell
+//! * `m_build_window` (dynamic) — `unique_builds` — distinct build recipes over a
+//!   trailing window; the metric that needs the `ix_labels` column without a
+//!   fingerprint
+//! * `m_print_wallet` (static) — `since_buy` — the wallet behind the print being
+//!   decided on: seconds since it last bought this token
 //! * `m_flow_ix` (static, fingerprint-scoped) — tagged/untagged lifetime totals
 //! * `m_flow_ix_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //! * `m_burst_slot` (static, fingerprint-scoped) — this slot's buy prefix × this print's grain,
@@ -42,11 +47,13 @@
 //! all read it — adding a metric here (plus its compute logic in the group file)
 //! makes it immediately usable everywhere, with no schema change.
 
+pub mod build_window;
 pub mod burst_slot;
 pub mod burst_wave;
 pub mod copy;
 pub mod crowd_after_age;
 pub mod crowd_window;
+pub mod distinct_window;
 pub mod evaluator;
 pub mod fee;
 pub mod flow_slice;
@@ -58,6 +65,7 @@ pub mod grid;
 pub mod position;
 pub mod price_lifetime;
 pub mod price_window;
+pub mod print_wallet;
 pub mod series;
 pub mod state;
 pub mod template_grain;
@@ -129,15 +137,14 @@ pub enum Side {
 /// direction lives in `side`. `reserve_sol` is the SOL reserves after the trade
 /// (liquidity).
 ///
-/// **`price` is the trade's EXECUTION price** (`amount_sol / token_amount`), the
-/// average paid along the curve — every adapter feeds `price_per_token` here
-/// (live `producers`, the lab's `to_trade_lite`, the readout). It is deliberately
-/// NOT `TradeRow::chart_spot_price`, the reserve-pair spot the chart and the ATH
-/// plot: a buy fills between the pre- and post-trade spot, so the two series
-/// differ by the trade's own impact. Every price metric — `m_price_lifetime`,
-/// `m_price_window`, `m_position` — is therefore read on the execution series,
-/// which is what a rule can actually transact at. Do not mix the two: a gate
-/// derived against chart spot does not price the same here.
+/// **`price` is the pool state this print LEFT** — `TradeRow::fill_basis`, the
+/// reserve-pair spot (`chart_spot_price`), falling back to the execution price
+/// only when a row carries no reserve pair. Every adapter feeds it this way (live
+/// `producers`, the lab's `to_trade_lite`, the readout), so every price metric —
+/// `m_price_lifetime`, `m_price_window`, `m_position` — reads the spot series, which
+/// is what the next order transacts against; the cost model charges OUR impact on
+/// top. A print's own `price_per_token` is what that trader paid along the curve
+/// and is not this series.
 ///
 /// `ix_hash` / `wallet_hash` feed the volume-flow classifier (V1+); adapters hash
 /// via [`flow_ix`]. Missing fields on old event-log lines default via serde
@@ -222,6 +229,11 @@ pub struct TradeLite {
     /// matches this, not the grain.
     #[serde(default)]
     pub program_hash: Option<u64>,
+    /// FNV-1a of this trade's build RECIPE ([`flow_ix::build_hash`]): the ordered
+    /// labels without account setup, teardown and memos. `None` when labels are
+    /// absent. What `m_build_window` counts distinct values of.
+    #[serde(default)]
+    pub build_hash: Option<u64>,
     /// Curve vs AMM. Default `true` so a pre-field event-log line still joins
     /// the burst prefix (the harvest universe is the curve). AMM prints do not.
     #[serde(default = "default_true")]
@@ -260,6 +272,7 @@ impl Default for TradeLite {
             tx_index: None,
             template_hash: None,
             program_hash: None,
+            build_hash: None,
             on_curve: true,
             is_launch: false,
             fee: FeeKeys::default(),
@@ -565,6 +578,10 @@ pub enum MetricGroupId {
     CrowdWindow,
     /// `m_crowd_after_age` — distinct non-creator buyers since an age anchor.
     CrowdAfterAge,
+    /// `m_build_window` — trailing-window distinct build recipes.
+    BuildWindow,
+    /// `m_print_wallet` — the wallet behind the print being decided on.
+    PrintWallet,
     /// `m_flow_ix` — tagged/untagged lifetime totals (fingerprint-scoped).
     FlowIx,
     /// `m_flow_ix_window` — tagged/untagged trailing-window totals (fingerprint-scoped).
@@ -607,6 +624,8 @@ pub enum MetricId {
     Time,
     /// SOL reserves (`m_state`).
     Liquidity,
+    /// 1 while the last print traded on the bonding curve, 0 on the AMM (`m_state`).
+    OnCurve,
     /// Seconds since the price last set a **new all-time high** (`m_price_lifetime`)
     /// — NOT "since the last trade". Only a strictly higher price resets the clock,
     /// so on a token trading actively below its peak `stall` keeps climbing. Read
@@ -701,6 +720,15 @@ pub enum MetricId {
     /// the arrival edge (`m_crowd_after_age`). 0 on a tick, on a sell, on a repeat
     /// buyer, on the creator, before the anchor, and once the set has closed.
     ThisBuyerIsNew,
+    // ── m_build_window (trailing) ─
+    /// Distinct build recipes printed over the trailing window, the print read
+    /// included (`m_build_window`).
+    UniqueBuilds,
+    // ── m_print_wallet (this print's wallet) ─
+    /// Seconds since the wallet behind this print last bought this token, before
+    /// this print (`m_print_wallet`). `NaN` on a tick and for a wallet that never
+    /// bought it.
+    SinceBuy,
     // ── m_flow_window, TWO-window reads (a slice nested in the window) ─
     /// Percent of the reference window's trades that landed in the slice window
     /// nested inside it — `trade_count(slice) / trade_count(window) * 100`
@@ -996,6 +1024,7 @@ impl MetricId {
                     | MetricId::TradesPerWallet
                     | MetricId::NonCreatorBuyers
                     | MetricId::ThisBuyerIsNew
+                    | MetricId::SinceBuy
                     | MetricId::SameWalletCount
                     | MetricId::WorkingWalletCount
                     | MetricId::HasNew
@@ -1020,6 +1049,7 @@ impl MetricId {
                 | MetricGroupId::DumpIxWindow
                 | MetricGroupId::BurstSlot
                 | MetricGroupId::BurstWave
+                | MetricGroupId::BuildWindow
         )
     }
 
@@ -1359,7 +1389,7 @@ pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
         id: MetricGroupId::State,
         name: "m_state",
-        description: "Point-in-time token facts that need no trailing window: age and pool depth.",
+        description: "Point-in-time token facts that need no trailing window: age, pool depth and venue.",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::State,
@@ -1387,6 +1417,15 @@ pub const REGISTRY: &[GroupSpec] = &[
                 monotonic: false,
                 hue: 236,
             },
+            MetricSpec {
+                id: MetricId::OnCurve,
+                name: "on_curve",
+                description: "1 while the most recent trade was on the pump.fun bonding curve, 0 once it was on the AMM pool the token graduated to. `liquidity` means real SOL on either venue, so a curve-only rule needs this term. NaN before the first trade.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 224,
+            },
         ],
     },
     GroupSpec {
@@ -1405,7 +1444,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Stall,
                 name: "stall",
-                description: "Seconds since the price last set a new ALL-TIME high - not since the last trade. Only a strictly higher price resets it. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
+                description: "Seconds since the price last set a new ALL-TIME high - not since the last trade. Only a strictly higher price resets it. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
                 unit: Unit::Seconds,
                 eq_tolerance: 0.5,
                 monotonic: false,
@@ -1414,7 +1453,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Trail,
                 name: "trail",
-                description: "Percent below the lifetime peak price. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
+                description: "Percent below the lifetime peak price. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1423,7 +1462,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::LifeRise,
                 name: "rise",
-                description: "Percent above the lifetime trough price. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
+                description: "Percent above the lifetime trough price. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1461,7 +1500,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTrail,
                 name: "trail",
-                description: "Percent below the rolling-window high - the dip trigger. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
+                description: "Percent below the rolling-window high - the dip trigger. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1470,7 +1509,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinRise,
                 name: "rise",
-                description: "Percent above the rolling-window low. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
+                description: "Percent above the rolling-window low. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1772,6 +1811,56 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 304,
             },
         ],
+    },
+    GroupSpec {
+        id: MetricGroupId::BuildWindow,
+        name: "m_build_window",
+        description: "Distinct build RECIPES over a trailing window - how many different tools or bots built the prints, not who signed them. A recipe is a transaction's ordered instruction labels without account setup, teardown and memos.",
+        kind: MetricKind::Dynamic,
+        scope: MetricScope::Token,
+        // The ix-structure family: it reads the `ix_labels` column the flow-split
+        // and burst groups read, on a trailing window.
+        family: MetricFamily::FlowIx,
+        strict_params: &[
+            StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_PRINT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
+        ],
+        fingerprint_config: &[],
+        // Green-yellow, in the ix-structure band (90-139); the cross-group hue guard
+        // exempts that family.
+        metrics: &[MetricSpec {
+            id: MetricId::UniqueBuilds,
+            name: "unique_builds",
+            description: "Distinct build recipes among the prints in the trailing window, the print being read included. A print with no labels has no recipe and adds nothing.",
+            unit: Unit::Count,
+            eq_tolerance: 0.5,
+            monotonic: false,
+            hue: 98,
+        }],
+    },
+    GroupSpec {
+        id: MetricGroupId::PrintWallet,
+        name: "m_print_wallet",
+        description: "Facts about the wallet behind the print being decided on, on this token. A print fact: NaN on a tick.",
+        kind: MetricKind::Static,
+        scope: MetricScope::Token,
+        // Flow family, beside the crowd groups: the same wallet column, read for the
+        // one wallet on this print.
+        family: MetricFamily::Flow,
+        strict_params: &[],
+        fingerprint_config: &[],
+        // Violet, in the crowd band of the flow family.
+        metrics: &[MetricSpec {
+            id: MetricId::SinceBuy,
+            name: "since_buy",
+            description: "Seconds since the wallet behind this print last BOUGHT this token, before this print. On a sell, how long the seller held since their last buy. NaN when that wallet never bought it, and on a tick.",
+            unit: Unit::Seconds,
+            eq_tolerance: 0.5,
+            monotonic: false,
+            hue: 298,
+        }],
     },
     GroupSpec {
         id: MetricGroupId::Copy,
@@ -2569,7 +2658,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Retrace,
                 name: "retrace",
-                description: "Percent below the since-entry peak - the trailing stop. With no `arm_above_pct` the peak seeds at your fill, so it doubles as a hard stop from entry. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
+                description: "Percent below the since-entry peak - the trailing stop. With no `arm_above_pct` the peak seeds at your fill, so it doubles as a hard stop from entry. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -2578,7 +2667,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Bounce,
                 name: "bounce",
-                description: "Percent above the since-entry trough - the bounce twin of `retrace`. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
+                description: "Percent above the since-entry trough - the bounce twin of `retrace`. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -2587,7 +2676,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Pnl,
                 name: "pnl",
-                description: "Signed percent against your entry fill price, marked at the last print. Take-profit and stop-loss desugar into this. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
+                description: "Signed percent against your entry fill price, marked at the last print. Take-profit and stop-loss desugar into this. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -2845,15 +2934,17 @@ mod tests {
                 "m_flow_window",
                 "m_crowd_window",
                 "m_crowd_after_age",
+                "m_print_wallet",
                 "m_copy",
                 "m_copy_window"
             ]
         );
         // `m_dump_ix` reads the same `ix_labels` vocabulary through its own build
-        // list, so it grids with the flow-split pair rather than alone.
+        // list, so it grids with the flow-split pair rather than alone; so does
+        // `m_build_window`, which counts the recipes that vocabulary spells.
         assert_eq!(
             by_family["flow_ix"],
-            vec!["m_flow_ix", "m_flow_ix_window", "m_dump_ix", "m_dump_ix_window"]
+            vec!["m_build_window", "m_flow_ix", "m_flow_ix_window", "m_dump_ix", "m_dump_ix_window"]
         );
         assert_eq!(by_family["state"], vec!["m_state"]);
         // This-slot prefix and consecutive-slot wave: one burst subject, two bases.
@@ -3307,9 +3398,9 @@ mod tests {
         // Which family a group belongs to (`None` = its own group, never exempt).
         let family = |g: MetricGroupId| -> Option<u8> {
             match g {
-                FlowIx | FlowIxWindow | DumpIx | DumpIxWindow | BurstSlot | BurstWave => Some(0),
+                FlowIx | FlowIxWindow | DumpIx | DumpIxWindow | BurstSlot | BurstWave | BuildWindow => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
-                FlowLifetime | FlowWindow | CrowdWindow | CrowdAfterAge | Copy | CopyWindow => Some(2),
+                FlowLifetime | FlowWindow | CrowdWindow | CrowdAfterAge | PrintWallet | Copy | CopyWindow => Some(2),
                 _ => None,
             }
         };

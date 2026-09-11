@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 
 use crate::fingerprint::FingerprintId;
 
+use super::build_window::BuildWindowState;
 use super::burst_slot::{BurstPatterns, BurstSlotState};
 use super::burst_wave::BurstWaveState;
 use super::copy::{CopyPatterns, CopyState};
@@ -32,6 +33,7 @@ use super::flow_ix::{FlowPatterns, FlowState};
 use super::flow_window::WindowState;
 use super::price_lifetime::PriceLifetimeState;
 use super::price_window::PriceWindowState;
+use super::print_wallet::PrintWalletState;
 use super::state::StateMetrics;
 use super::{Cursor, MetricId, TradeLite, Ts};
 
@@ -67,6 +69,13 @@ pub struct TokenTrack {
     /// capped set per anchor any loaded rule names; a rule reading none pays for
     /// none.
     crowd_after_age: BTreeMap<AgeAnchor, CrowdAfterAgeState>,
+    /// Dynamic build-recipe windows (`m_build_window`), keyed by [`window_key`].
+    /// Apart from `windows` for the reason `crowd_windows` is: its obligation is the
+    /// `ix_labels` column.
+    build_windows: BTreeMap<super::WindowKey, BuildWindowState>,
+    /// `m_print_wallet` — one wallet -> last-buy map. `None` unless a loaded rule
+    /// reads the group, so a rule set that does not pays nothing per token.
+    print_wallet: Option<PrintWalletState>,
     /// Flow classifier state, keyed by fingerprint (pattern sets differ).
     flow: BTreeMap<FingerprintId, FlowState>,
     /// `m_dump_ix` state, keyed by fingerprint. Apart from `flow` for the reason
@@ -106,6 +115,8 @@ impl TokenTrack {
             price_windows: BTreeMap::new(),
             crowd_windows: BTreeMap::new(),
             crowd_after_age: BTreeMap::new(),
+            build_windows: BTreeMap::new(),
+            print_wallet: None,
             cur_slot: 0,
             n_prints: 0,
             priced_reserves: f64::NAN,
@@ -148,6 +159,19 @@ impl TokenTrack {
             .entry(anchor)
             .and_modify(|s| s.raise_cap(cap))
             .or_insert_with(|| CrowdAfterAgeState::new(anchor, cap));
+    }
+
+    /// Register a trailing build-recipe window (idempotent; deduped by the whole
+    /// span). The `m_build_window` counterpart of
+    /// [`ensure_crowd_window`](Self::ensure_crowd_window).
+    pub fn ensure_build_window(&mut self, spec: super::WindowSpec) {
+        self.build_windows.entry(spec.key()).or_insert_with(|| BuildWindowState::new(spec));
+    }
+
+    /// Open the `m_print_wallet` map (idempotent). A map opened mid-life knows only
+    /// the buys folded after it, like any newly registered window.
+    pub fn ensure_print_wallet(&mut self) {
+        self.print_wallet.get_or_insert_with(PrintWalletState::default);
     }
 
     /// Register fingerprint-scoped flow state (idempotent). `windows` are the
@@ -254,7 +278,7 @@ impl TokenTrack {
             self.burst.on_trade(&t, pre_trail, prev_liq);
         }
         self.burst_wave.on_trade(&t);
-        self.state.on_trade(t.reserve_sol);
+        self.state.on_trade(t.reserve_sol, t.on_curve);
         self.priced_reserves = t.priced_reserve_sol;
         // The slot cursor only ever moves forward. Canonical order is
         // slot -> tx_index -> leg, so a regressed feed row must not rewind every
@@ -278,6 +302,13 @@ impl TokenTrack {
         }
         for ca in self.crowd_after_age.values_mut() {
             ca.on_trade(&t, self.created_at, self.creator_wallet_hash);
+        }
+        for bw in self.build_windows.values_mut() {
+            let spec = bw.spec();
+            bw.on_trade(t.sol, t.build_hash, spec.pos(t.at, at), spec.now_pos(t.at, cur));
+        }
+        if let Some(pw) = self.print_wallet.as_mut() {
+            pw.on_trade(&t);
         }
         for pw in self.price_windows.values_mut() {
             let spec = pw.spec();
@@ -322,6 +353,13 @@ impl TokenTrack {
         }
         for ca in self.crowd_after_age.values_mut() {
             ca.on_tick();
+        }
+        for bw in self.build_windows.values_mut() {
+            let now_pos = bw.spec().now_pos(now, cur);
+            bw.evict(now_pos);
+        }
+        if let Some(pw) = self.print_wallet.as_mut() {
+            pw.on_tick();
         }
         for flow in self.flow.values_mut() {
             flow.on_tick(now, cur);
@@ -400,7 +438,7 @@ impl TokenTrack {
         let window = windows.primary;
         let cur = self.cursor();
         match id {
-            Time | Liquidity => self.state.value(id, self.created_at, now),
+            Time | Liquidity | OnCurve => self.state.value(id, self.created_at, now),
             Stall | Trail | LifeRise => self.price_lifetime.value(id, now),
             LifeGrossFlow | LifeNetFlow | LifeBuy | LifeSell | LifeTradeCount => {
                 self.flow_lifetime.value(id)
@@ -424,6 +462,16 @@ impl TokenTrack {
                 Some(s) => s.value(id),
                 None => f64::NAN,
             },
+            // `m_build_window` reads its own deque, like `m_crowd_window` below.
+            UniqueBuilds => {
+                match window.and_then(|sp| self.build_windows.get(&sp.key()).map(|w| (sp, w))) {
+                    Some((sp, w)) => w.value(id, sp.now_pos(now, cur)),
+                    None => f64::NAN,
+                }
+            }
+            // An unopened map reads NaN, the same "no reading" an unregistered
+            // window gives.
+            SinceBuy => self.print_wallet.as_ref().map_or(f64::NAN, |p| p.value(id)),
             // `m_crowd_window` reads its OWN deque — the wallet column is its subject,
             // not `m_flow_window`'s payload.
             UniqueWallets | TradesPerWallet => {

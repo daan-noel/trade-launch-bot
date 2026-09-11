@@ -374,6 +374,7 @@ fn trade_lite(ct: &CachedTrade) -> TradeLite {
         tx_index: Some(ct.tx_index),
         template_hash: ct.template_hash,
         program_hash: ct.program_hash,
+        build_hash: ct.build_hash,
         is_launch: ct.is_launch,
         on_curve: ct.on_curve,
         // Copied at cache ingest (`CachedTrade::from_trade`), like the hashes above.

@@ -358,6 +358,12 @@ pub fn replay_readout(
     for &w in &rule.price_windows {
         track.ensure_price_window(w);
     }
+    for &w in &rule.build_windows {
+        track.ensure_build_window(w);
+    }
+    if rule.needs_print_wallet {
+        track.ensure_print_wallet();
+    }
     if let Some(f) = &ctx.flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
         // the seed back-fills every flow state already registered.
@@ -562,6 +568,12 @@ pub fn replay_series(
     }
     for &w in &rule.price_windows {
         series.ensure_price_window(w);
+    }
+    for &w in &rule.build_windows {
+        series.ensure_build_window(w);
+    }
+    if rule.needs_print_wallet {
+        series.ensure_print_wallet();
     }
     if let Some(f) = &ctx.flow {
         if let Some(p) = f.patterns {

@@ -1,8 +1,9 @@
 # Metrics reference — flow groups
 
 Deep-dive for aggregate flow (`m_flow_lifetime` / `m_flow_window`), the crowd counts
-(`m_crowd_window`) and the instruction-structure split (`m_flow_ix` /
-`m_flow_ix_window`) — the wallet-keyed groups.
+(`m_crowd_window`), build recipes (`m_build_window`), the print's wallet
+(`m_print_wallet`) and the instruction-structure split (`m_flow_ix` /
+`m_flow_ix_window`) — the wallet- and label-keyed groups.
 High-level map: [`arch/strategies.md`](../../arch/strategies.md). The split's origin roadmap
 (`roadmap/volume-flow-split-plan.md`) is deleted — fully shipped and superseded by
 this file.
@@ -235,6 +236,51 @@ the tape". It is a **count ratio, never an identity**, which is what makes it su
 wallet rotation that renders identity useless. Like `buy_share` it is `NaN` on an empty
 window, and for a sharper reason: `0.0` would let `trades_per_wallet <= 2` pass on a DEAD
 tape, which is the exact reading the gate exists to exclude.
+
+## Build recipes (`m_build_window`)
+
+| group | kind | strict params | state |
+| --- | --- | --- | --- |
+| `m_build_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints` | **its own** ring buffer of `(pos, build_hash)`, plus a per-recipe occurrence map |
+
+| metric | meaning | unit | eq-tol |
+| --- | --- | --- | --- |
+| `unique_builds` | distinct build recipes among the prints in the window, the print read included | count | 0.5 |
+
+A **recipe** is a transaction's ordered instruction labels with account setup, teardown and
+memos dropped (`Associated Token: Create*`, `*: CloseAccount`, `Memo Program*`):
+`flow_ix::build_hash`, carried on every print as `TradeLite::build_hash` and set by all three
+adapters. Two transactions that differ only in a token account opened or closed are one
+recipe; the recipe names the tool or bot that built the transaction, not the wallet that
+signed it, so many recipes at once is many independent machines reacting to one tape. The
+offline twin is the node-derivation toolkit's `lake_export.build_core`; the two partition
+every label sequence identically (`build_hash_partitions_like_the_study_build_core` over a
+fixture, and its `--ignored` twin over every sequence in a lake export: 25,842 sequences,
+20,897 recipes, equal on lake days 09-01..09-10).
+
+**Its own group and buffer, for `m_crowd_window`'s reason:** the obligation is a column, here
+`ix_labels` (`MetricId::needs_ix_labels`). The distinct-count mechanism is not duplicated:
+both groups hold a `distinct_window::DistinctWindow` keyed by their own column, so the O(1)
+two-ended read is written once. A print with no labels has no recipe and adds nothing; the
+admission guard is otherwise `is_foldable`, as on every window.
+
+## The print's wallet (`m_print_wallet`)
+
+| group | kind | strict params | state |
+| --- | --- | --- | --- |
+| `m_print_wallet` | static | none | one wallet -> last-buy map per token, opened only when a loaded rule reads the group |
+
+| metric | meaning | unit | eq-tol |
+| --- | --- | --- | --- |
+| `since_buy` | seconds since the wallet behind this print last BOUGHT this token, before this print | seconds | 0.5 |
+
+On a sell it is how long the seller held since their last buy. **A print fact:** the reading
+belongs to the print folded last and a tick clears it to `NaN`, so a rule using it can never
+fire on a tick; `NaN` also when the wallet never bought this token. The map holds every buyer
+a token ever had, which is why `EngineState` opens it on a track only while some loaded rule
+names the group (`CompiledRule::needs_print_wallet`). It reads the wallet column
+(`needs_wallet_identity`), and a restart's priming must replay the token's buys for the map
+to be complete.
 
 ## Launch size is an AXIS, not a metric
 
@@ -560,7 +606,7 @@ toolbar names which of the two is on screen.
 
 ## Hash SSOT
 
-`hunter_engine::metrics::flow_ix::{ix_hash, wallet_hash, ix_hash_opt}` are the
+`hunter_engine::metrics::flow_ix::{ix_hash, wallet_hash, ix_hash_opt, build_hash}` are the
 **only** hashers. Every adapter (live producer, lake replay, event-log) calls them;
 patterns compile to a hash set at `RulesReloaded`. No interner ⇒ replay parity by
 construction. See hunter/CLAUDE.md Gotchas.
@@ -752,13 +798,14 @@ loader may not have asked for, and the failure looks like a strict gate that nev
 
 ## Semantics that read as one thing and mean another
 
-Seven facts that produce silently wrong rules rather than errors. None is derivable from the
+Eight facts that produce silently wrong rules rather than errors. None is derivable from the
 registry, and each has cost a search run.
 
 | fact | what goes wrong without it |
 | --- | --- |
 | **`m_flow_ix*` is all `NaN` without `ix_patterns`** — on the request *and* in the fingerprint's `metric_config` | `NaN` satisfies nothing, so the conditions read as present and never fire. Rule save warns; the sweep does not. |
 | **`m_state.liquidity` is the REAL SOL reserve** — `TradeLite::reserve_sol` from `real_reserve_sol`, which is `vsol - 30` on the curve. Floors at **0** (empty curve), tops near **85** (migration). | A gate written against the virtual 30/115 scale sits ~30 too high. `liquidity >= 85` fires only on tokens that actually migrate. |
+| **`liquidity` reads either venue** — on an AMM pool it is the pool's SOL, with no 30 taken off | A curve-derived upper bound (`liquidity <= 70`) also passes on a graduated pool that drained. A curve-only rule adds `m_state.on_curve = 1`; replay carries no `Migrated` event, so nothing else stops it there. |
 | **`m_price_lifetime.stall` is seconds since the last ALL-TIME HIGH**, not since the last trade | An exit below ~60 fires on ordinary chop. It caps every hold, so it doubles as an entry filter. `m_position.held` is the time stop. |
 | **`m_position.retrace` without `arm_above_pct` is a hard stop from entry** — the peak seeds at entry | Reads as a trailing stop, behaves as a fixed stop. |
 | **`m_position` is exit-only** | It reads `NaN` before a fill, so it could never fire on entry. The sweep rejects it there. |

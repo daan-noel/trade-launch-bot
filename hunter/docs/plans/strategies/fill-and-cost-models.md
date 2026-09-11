@@ -148,9 +148,20 @@ a gap at an unknown price, so the adverse end is the defensible assumption.
 ## The wall-clock model — `lag_ms`
 
 Every model above is shaped by **slot structure**. `lag_ms` is shaped by the clock: it
-takes the **last** qualifying candidate whose `block_time` is at or before `signal + N` ms
-— the pool state a transaction landing `N` ms out actually executes against. When nothing
-lands inside the lag, the state is still the signal's own and the fill prices there.
+takes the **last** priced print of **either side** whose `block_time` is at or before
+`signal + N` ms, among the prints after the signal in its slot or the next observed slot
+at most `MAX_FILL_WAIT_SLOTS` on — the pool state a transaction landing `N` ms out
+actually executes against. When nothing lands inside the lag, the state is still the
+signal's own and the fill prices there. **One rule on both legs** (`paper_fill::lag_fill_idx`):
+the entry fill is the print the exit leg would take from the same signal.
+
+**Either side on the entry leg too.** A buy lands behind every print that landed before
+it, a sell included, and a sell lowers the state it meets. A buy-only pick skips those
+sells and prices the entry at a state that was already gone: on hot-tape rule 1 it moved
+29 % of entries onto another print, 6.9 % dearer on average and 1.8 % of them inside an
+unfinished transaction ([_!___evidence.md](_!___evidence.md) 1.22). Pinned by
+`the_lag_model_entry_lands_behind_a_sell_like_the_exit_leg`. `lag_*` runs stored before
+2026-09-11 price the entry on the last BUY and do not compare with later ones. <!-- pt-ok: cutoff, those runs are still stored -->
 
 **It must never be the first print at or after the deadline.** A row's price is the state
 *after* that trade, so a print at-or-after `signal + N` is a trade we could not have landed
@@ -218,11 +229,11 @@ own impact, and the responded picks of two such bots swing from +7.6 % at the de
 seat to +0.7 % behind their own print
 ([_!___evidence.md](_!___evidence.md) 5.5).
 
-**Fallback and scope.** When the window holds no candidate that late it degrades to
-`worst_case`, exactly as the `next_slot_*` pair does, so eligibility stays identical.
-Serde is `{"lag_ms": 115}` (alias `{"lag": 115}`). Simulate-only: the grouped sweep
-persists its fill model as a bare string and cannot round-trip a payload variant, and
-books `worst_case` by design regardless.
+**Fallback and scope.** When the window holds no priced print at all, the fill is the
+signal's own print under the analysis fallback every caller sets, so the taken-position
+set is the same under every model. Without that fallback `lag_ms` is eligible wherever the
+exit leg is (a sell in the window counts), where the buy-picking models need a buy. The
+wire form is the bare string (`lag_115`); the legacy `{"lag_ms": 115}` still parses.
 
 ## The differences between entry and exit
 

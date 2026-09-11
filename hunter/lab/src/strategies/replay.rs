@@ -1143,6 +1143,7 @@ mod tests {
             tx_index: 0,
             leg_index: 0,
             is_buy,
+            on_curve: true,
             tx_signature: Some(format!("sig{secs}").into_boxed_str()),
             ix_labels: None,
             wallet: None,

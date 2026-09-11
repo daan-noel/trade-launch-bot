@@ -42,6 +42,7 @@ pub fn trade(secs: i64, price: f64, reserve: f64, is_buy: bool) -> CorpusTrade {
         tx_index: 0,
         leg_index: 0,
         is_buy,
+        on_curve: true,
         tx_signature: None,
         ix_labels: None,
         wallet: None,

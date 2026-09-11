@@ -34,14 +34,14 @@ Holdout at the engine's grain: +4.44 %/trade 5/5, top 1 % 9.8 %, 95 % interval +
 | term | reference (`r1_exact.py`) | engine today | work |
 | --- | --- | --- | --- |
 | trigger: a sell of 1 SOL or more | this leg's SOL | `m_flow_window {window_size_prints: 1}.sell >= 1` | reuse |
-| seller bought 30 s ago or less | now minus the wallet's last buy of this coin | nothing | new: `m_print_wallet.since_buy` (1c) |
-| 15 or more recipes in 5 s | distinct `build_core` in the closed window `[now_ms - 5000, now_ms]`, the print included, floor-ms positions | nothing (the template grain is a different key) | new: `build_hash` (1a) + `m_build_window.unique_builds` (1b) |
-| new high 20 s ago or less | `max(0, now - time of the last strictly higher spot)` | `m_price_lifetime.stall` | reuse; its registry text says EXECUTION prices while the fold reads `fill_basis` spot: fix the text (1e) |
+| seller bought 30 s ago or less | now minus the wallet's last buy of this coin | `m_print_wallet.since_buy` | built (1c) |
+| 15 or more recipes in 5 s | distinct `build_core` in the closed window `[now_ms - 5000, now_ms]`, the print included, floor-ms positions | `m_build_window {window_size_sec: 5}.unique_builds` over `flow_ix::build_hash` | built (1a, 1b); partitions all 25,842 lake label sequences exactly as `build_core` does |
+| new high 20 s ago or less | `max(0, now - time of the last strictly higher spot)` | `m_price_lifetime.stall` | reuse; the registry text now says spot (1e) |
 | age 158 s or more | now minus `created_at` | `m_state.time` | reuse |
-| 368 buyers or more | distinct wallets, not the creator, with a buy at or after creation | `m_crowd_after_age {after_age_sec: 0}.non_creator_buyers` | reuse; fold cost at a cap of 369 (1d) |
+| 368 buyers or more | distinct wallets, not the creator, with a buy at or after creation | `m_crowd_after_age {after_age_sec: 0}.non_creator_buyers` | reuse; the capped scan at 369 costs nothing measurable (a 132,992-coin replay folds in minutes) (1d) |
 | reserve 100 or less | `vsol` after the print | `m_state.liquidity <= 70` | reuse |
-| on the curve | the tapes are curve rows | nothing: on a PumpSwap pool `liquidity <= 70` holds whenever the pool drains 15 SOL, so the rule would fire on graduated coins the reference never saw | new: `m_state.on_curve` (1f) |
-| entry fill | the exit leg's rule (below) | `LagMs` entry: the last BUY by the deadline, sells ignored; prices 29 % of rule 1's entries at a print our buy cannot meet, 6.9 % dearer on average, 1.8 % inside an unfinished transaction | fix: the entry leg takes the exit leg's rule (1g) |
+| on the curve | the tapes are curve rows | `m_state.on_curve`, fed by the venue on all three adapters (the lab row carried no venue and hard-coded the curve) | built (1f) |
+| entry fill | the exit leg's rule (below) | `LagMs`: one helper, `paper_fill::lag_fill_idx`, on both legs | fixed (1g); before it the entry took the last BUY and priced 29 % of rule 1's entries at a print our buy cannot meet |
 | exit fill | last print of either side by fire + 115 ms, fire slot or next observed slot at most 3 on | `LagMs` exit, the same | reuse |
 | take profit, stop | `pnl %` against the entry print's spot, each print after the entry fill | `take_profit 20` / `stop_loss 60` | reuse |
 | clock | `held >= 90` on a print or on the 200 ms tick grid (first event + 200 ms); a tick fires from the last folded print | `m_position.held >= 90`, the replay's tick | reuse; parity aligns the grid's first event |
@@ -50,6 +50,7 @@ Holdout at the engine's grain: +4.44 %/trade 5/5, top 1 % 9.8 %, 95 % interval +
 | caps, guard, universe | none | concurrency cap, copycat guard, fingerprint | cap 0, `skip_duplicate_identity` off, a wildcard fingerprint |
 | cost | the engine kernel: impact `B/vsol` at each leg's print, 125 bps on notional + proceeds, 0.000225 SOL a leg | `pumpfun_impact` | reuse |
 | a coin's history | coins born before the tape's first print are left out | simulate starts at its corpus | parity compares coins born inside the corpus |
+| a coin that dies | no death: a drained, quiet coin that revives can fire later | a coin quiet 300 s with liquidity under 30 is retired, and its later trades are ignored, live and simulate alike | engine semantics stand; 3 of 1,054 reference tickets sit on revived coins and cannot happen live |
 
 ## 3. Steps
 
@@ -60,30 +61,28 @@ book re-read after each correction; the rule re-derived on an every-leg study un
 fill; a second code (`hot-tape/r1_exact_check.py`) rebuilds every ticket. Frozen reference:
 `node-derivation/data/r1_ref_{holdout_exact,study_exact}.parquet` (450 / 604 tickets).
 
-### Step 1: engine extensions
+### Step 1: done (engine extensions)
 
-- 1a. `build_hash`: one hasher beside `flow_ix::ix_hash` (the hash SSOT), its drop list one const
-  (`Associated Token: Create*`, `*: CloseAccount`, `Memo Program*`); on `TradeLite`, set by all
-  three adapters. A shared fixture of label sequences and their equal classes is read by a Rust
-  test and by a Python test of `lake_export.build_core`.
-- 1b. `m_build_window` (dynamic): `unique_builds`, distinct build recipes printed in the window,
-  every window unit, an occupancy map for O(1) reads, arms in `on_trade` and `on_tick`, the
-  `ix_labels` load obligation declared on the metric.
-- 1c. `m_print_wallet` (static): `since_buy`, seconds since the wallet behind this print last
-  bought this token; NaN on a tick and for a wallet that never bought it. One wallet -> last-buy
-  map per token, allocated only when a loaded rule names the group; `needs_wallet_identity`.
-- 1d. `m_crowd_after_age` at a cap of 369 scans its set linearly on each buy: measure, and store a
-  hash set above a size if it costs; the meaning does not change.
-- 1e. The price metrics' registry text says what the fold reads (spot).
-- 1f. `m_state.on_curve`: 1 when the last print traded on the bonding curve (`TradeLite::on_curve`).
-- 1g. `LagMs` entry leg: the last priced print of either side by the deadline, the same window as
-  the exit leg. Every rule's simulate and live paper price entries this way from the change on;
-  runs stored before it are marked as priced under the old entry leg.
-- 1h. `metrics-reference.md` gains the new groups; unit tests on a hand-computed tape;
-  `every_metric_is_live_reachable` covers them; `cargo check` on hunter-live and hunter-lab,
-  clippy, no new warnings.
+- 1a. `flow_ix::build_hash` beside `ix_hash` (the hash SSOT), drop list in `is_build_noise`;
+  `TradeLite::build_hash`, set by all three adapters. `build_hash_partitions_like_the_study_build_core`
+  reads `engine/fixtures/build_core_parity.json` (200 lake sequences with their `build_core`); its
+  `--ignored` twin read all 25,842 sequences of lake days 09-01..09-10: 20,897 recipes, equal.
+- 1b. `m_build_window.unique_builds`, over `metrics/distinct_window.rs`, the distinct-count
+  mechanism now shared with `m_crowd_window`; arms in `on_trade` and `on_tick`; `needs_ix_labels`.
+- 1c. `m_print_wallet.since_buy`: NaN on a tick and for a wallet that never bought; the map opens
+  only when a loaded rule reads the group; `needs_wallet_identity`.
+- 1d. The crowd cap at 369 left as is: the full replays run in minutes.
+- 1e. The price metrics' registry text says spot, and so does the `TradeLite::price` doc.
+- 1f. `m_state.on_curve`; `CorpusTrade` carries the venue from the lake and the PG tail.
+- 1g. `LagMs` entry leg takes the exit leg's rule. It moves simulate and the grouped sweep; live
+  paper books `worst_case` on both legs and is untouched. `lag_*` runs stored before 2026-09-11 price
+  the entry on the last buy and do not compare.
+- 1h. `metrics-reference.md`, `fill-and-cost-models.md`, `arch/strategies.md`; unit tests on each
+  group and on the fill; `every_metric_is_live_reachable` reads all 96 metrics.
 
-### Step 2: the rule, authored
+### Step 2: done (the rule, authored)
+
+`node-derivation/data/r1p_rule.json`, written from the derived rule by `hot-tape/r1_engine_parity.py prep`:
 
 ```json
 { "entry": {
@@ -101,19 +100,29 @@ fill; a second code (`hot-tape/r1_exact_check.py`) rebuilds every ticket. Frozen
   "reentry": { "cooldown_sec": 0, "max_episodes_per_token": 1000 } }
 ```
 
-### Step 3: parity
+### Step 3: done (parity)
 
-- Simulate over the `holdout_exact` corpus (lake 09-03..09-10) and the `study_exact` corpus (lake
-  09-01..09-06), every token, `LagMs(115)`, `fill_delay_ms` 0. Bar: every ticket of
-  `r1_ref_*.parquet` matches on trigger, entry-fill and exit print (slot, transaction, leg) and
-  reason, and the SOL matches. Every mismatch is explained and fixed in the engine or the reference
-  before moving on.
-- Then the untouched days after 09-10, read once, engine and reference together.
+`hunter/lab/examples/hot_tape_rule1_parity.rs` replays the lake through the lab's lake load,
+`run_replay`, `LagMs(115)` and the engine cost kernel, and names every print by
+`(slot, tx_index, leg)`; `hot-tape/r1_engine_parity.py compare` matches it to the frozen tickets
+(evidence 1.23).
+
+| corpus | reference | engine | same trigger | fill, exit, reason, SOL | reference only |
+| --- | --- | --- | --- | --- | --- |
+| holdout_exact | 450 | 448 | 448 | all equal, SOL to 1.5e-16 | 2 |
+| study_exact | 604 | 603 | 603 | all equal, SOL to 1.5e-16 | 1 |
+
+The three reference-only tickets are on two coins the engine retired as dead (drained, quiet 300 s)
+before they revived. The engine book is byte-identical with AMM prints loaded or not. The untouched
+days after 09-10 are still to read, once, engine and reference together.
 
 ### Step 4: paper
 
-Every new coin tracked from birth; a restart rebuilds the buyer set from a complete history; the
-per-token maps fit the 4 GB box. A pass bar is written before the first day; a real
+Open decision first: live paper (`exec_paper`) books `worst_case` on both legs, not the `LagMs(115)`
+seat the rule is validated under, so a paper day would grade a different fill. Either paper gains the
+lag model or the paper book is read against a simulate run under `worst_case`. Then: every new coin
+tracked from birth; a restart rebuilds the buyer set and the wallet -> last-buy map from a complete
+history; the per-token maps fit the 4 GB box. A pass bar is written before the first day; a real
 decide-to-fill delay is logged on every ticket; each paper day is replayed in simulate and must
 reproduce the paper tickets.
 

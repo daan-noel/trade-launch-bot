@@ -23,49 +23,26 @@
 //! `m_flow_window(w).trade_count / m_crowd_window(w).unique_wallets` are the same
 //! number by construction rather than by agreement.
 
-use std::collections::VecDeque;
-
-use smallvec::SmallVec;
-
-use crate::hash::HashedMap;
-
-use super::flow_window::{is_foldable, push_sorted};
+use super::distinct_window::DistinctWindow;
+use super::flow_window::is_foldable;
 use super::{MetricId, WindowSpec};
 
-/// How many out-of-window entries a read corrects without touching the heap.
-///
-/// Both ends are normally EMPTY (eviction clears the front; only a lagged window has
-/// a back at all), so this is a scratch that the common case never fills. It exists
-/// because the correction used to allocate a `HashMap` per read — and a lagged
-/// window's back end is never empty, so `window_lag: 1` allocated on every read of
-/// every tick, which is precisely the per-event allocation the hot path forbids.
-/// A linear scan over a handful of entries also beats hashing them.
-const ENDS_INLINE: usize = 16;
-
-/// One trailing-window wallet aggregator for a single [`WindowSpec`].
-///
-/// Unit-agnostic by construction, same as [`WindowState`](super::flow_window::WindowState):
-/// every entry carries a `pos` already expressed in this window's own unit, so one
-/// implementation serves seconds, slots and prints.
+/// One trailing-window wallet aggregator for a single [`WindowSpec`] — a
+/// [`DistinctWindow`] keyed by wallet hash, one entry per foldable trade, so its
+/// event count is this window's trade count.
 #[derive(Debug, Clone)]
 pub struct CrowdWindowState {
-    spec: WindowSpec,
-    /// `(pos, wallet hash)`, oldest at front, kept position-sorted — one entry per
-    /// folded trade, so `buf.len()` is this window's trade count.
-    buf: VecDeque<(i64, u64)>,
-    /// Occurrence count per wallet over **all** of `buf`, so the distinct count is
-    /// `len()` — maintained on push/evict, never recomputed by scanning.
-    wallets: HashedMap<u32>,
+    win: DistinctWindow,
 }
 
 impl CrowdWindowState {
     pub fn new(spec: WindowSpec) -> Self {
-        Self { spec, buf: VecDeque::new(), wallets: HashedMap::default() }
+        Self { win: DistinctWindow::new(spec) }
     }
 
     /// The span this aggregator tracks.
     pub fn spec(&self) -> WindowSpec {
-        self.spec
+        self.win.spec()
     }
 
     /// Fold one trade at `pos`, then drop anything that fell out of the window as of
@@ -76,42 +53,23 @@ impl CrowdWindowState {
         if !is_foldable(sol) {
             return;
         }
-        push_sorted(&mut self.buf, pos, wallet);
-        *self.wallets.entry(wallet).or_insert(0) += 1;
-        self.evict(now_pos);
+        self.win.push(wallet, pos, now_pos);
     }
 
     /// Drop entries that fell off the low end of the window as of `now_pos`.
-    ///
-    /// Only the LOW end evicts; a lagged window's excluded head is still inside the
-    /// buffer and the read corrects for it — the same contract as the flow deque.
     pub fn evict(&mut self, now_pos: i64) {
-        let (lo, _) = self.spec.bounds(now_pos);
-        while let Some(&(pos, wallet)) = self.buf.front() {
-            if pos >= lo {
-                break;
-            }
-            self.buf.pop_front();
-            // The map holds occurrences, so a wallet leaves the distinct count only on
-            // its LAST entry falling out - remove at zero, or `len()` counts ghosts.
-            if let Some(n) = self.wallets.get_mut(&wallet) {
-                *n -= 1;
-                if *n == 0 {
-                    self.wallets.remove(&wallet);
-                }
-            }
-        }
+        self.win.evict(now_pos);
     }
 
     /// Value of one `m_crowd_window` metric over the window at `now_pos`.
     pub fn value(&self, id: MetricId, now_pos: i64) -> f64 {
         match id {
-            MetricId::UniqueWallets => self.unique_wallets(now_pos),
+            MetricId::UniqueWallets => self.win.distinct(now_pos),
             // `NaN` on an empty window rather than `0.0`: no wallets means no churn to
             // report, and a `0.0` would let `trades_per_wallet <= 2` pass on a dead
             // tape - the exact reading the gate exists to exclude.
             MetricId::TradesPerWallet => {
-                let wallets = self.unique_wallets(now_pos);
+                let wallets = self.win.distinct(now_pos);
                 if wallets > 0.0 {
                     self.trade_count(now_pos) / wallets
                 } else {
@@ -122,67 +80,16 @@ impl CrowdWindowState {
         }
     }
 
-    /// How many out-of-window entries sit at each end at `now_pos`. Both loops stop
-    /// on the first in-window entry, which sortedness guarantees is also the last
-    /// out-of-window one.
-    fn ends(&self, now_pos: i64) -> (usize, usize) {
-        let (lo, hi) = self.spec.bounds(now_pos);
-        (
-            self.buf.iter().take_while(|&&(p, _)| p < lo).count(),
-            self.buf.iter().rev().take_while(|&&(p, _)| p > hi).count(),
-        )
-    }
-
-    /// Trades in the window at `now_pos` — `buf` holds one entry per trade, so this is
-    /// the same two-ended correction the SOL sums use, on a count.
+    /// Trades in the window at `now_pos`.
     fn trade_count(&self, now_pos: i64) -> f64 {
-        let (front_out, back_out) = self.ends(now_pos);
-        (self.buf.len().saturating_sub(front_out + back_out)) as f64
-    }
-
-    /// Distinct wallets in the window at `now_pos`.
-    ///
-    /// Same contract as the flow reads: start from state maintained on push/evict and
-    /// correct only the two ends. A distinct count cannot subtract the way a sum can —
-    /// a wallet leaves the count only when its **last** occurrence leaves the window —
-    /// so the correction tallies the out-of-window occurrences per wallet and drops
-    /// only the wallets whose whole tally is out.
-    ///
-    /// The tally lives in an inline [`SmallVec`], not a `HashMap`: both ends are
-    /// normally empty and never more than a burst, so this allocates nothing on the
-    /// path a lagged window takes on every single read.
-    fn unique_wallets(&self, now_pos: i64) -> f64 {
-        let (front_out, back_out) = self.ends(now_pos);
-        if front_out == 0 && back_out == 0 {
-            return self.wallets.len() as f64;
-        }
-        // The two ends meet when nothing is in the window at all - without this they
-        // would double-count the overlap and under-report what leaves.
-        if front_out + back_out >= self.buf.len() {
-            return 0.0;
-        }
-        let mut out: SmallVec<[(u64, u32); ENDS_INLINE]> = SmallVec::new();
-        let mut tally = |w: u64| match out.iter_mut().find(|(k, _)| *k == w) {
-            Some((_, n)) => *n += 1,
-            None => out.push((w, 1)),
-        };
-        for &(_, w) in self.buf.iter().take(front_out) {
-            tally(w);
-        }
-        for &(_, w) in self.buf.iter().rev().take(back_out) {
-            tally(w);
-        }
-        let gone = out
-            .iter()
-            .filter(|(w, n)| self.wallets.get(w).is_some_and(|live| live == n))
-            .count();
-        (self.wallets.len() - gone) as f64
+        self.win.count(now_pos)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::distinct_window::ENDS_INLINE;
     use crate::metrics::Ts;
     use chrono::{Duration, TimeZone, Utc};
 
@@ -317,6 +224,7 @@ mod tests {
                 for probe in [-30.0, -3.0, 0.0, 0.5, 3.0, 12.0] {
                     let now = p(at + probe);
                     let mut seen: Vec<u64> = w
+                        .win
                         .buf
                         .iter()
                         .filter(|&&(t, _)| super::super::flow_window::in_window(spec, t, now))
@@ -331,7 +239,8 @@ mod tests {
                     );
                     assert_eq!(
                         w.trade_count(now),
-                        w.buf
+                        w.win
+                            .buf
                             .iter()
                             .filter(|&&(t, _)| super::super::flow_window::in_window(spec, t, now))
                             .count() as f64,

@@ -50,6 +50,7 @@ pub fn priced_trade(secs: i64, price: f64) -> CorpusTrade {
         tx_index: 0,
         leg_index: 0,
         is_buy: true,
+        on_curve: true,
         tx_signature: None,
         flow: FlowKeys::default(),
         ix_labels: None,

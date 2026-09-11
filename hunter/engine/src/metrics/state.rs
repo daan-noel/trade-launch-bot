@@ -6,6 +6,10 @@
 //!   `reserve_sol`. Undefined (`NaN`) until the first trade — with no market
 //!   data there is no liquidity to compare, and a `NaN` satisfies no condition
 //!   (evaluator contract), so a rule can never fire on absent data.
+//! * `on_curve` — 1 while the most recent trade was on the bonding curve, 0 once it
+//!   was on the AMM. `liquidity` reads real SOL on either venue, so without this a
+//!   curve-only rule would also pass on a graduated pool that drained. `NaN` until
+//!   the first trade, like `liquidity`.
 //!
 //! `ix_count`, `prior_launches` and `first_slot_buy_lamports` are **fingerprint
 //! axes**, not metrics (`hunter_engine::fingerprint::axis`): each is fixed by the
@@ -17,19 +21,23 @@
 
 use super::{secs_between, MetricId, Ts};
 
-/// Incremental `m_state` state: just the last observed reserves.
+/// Incremental `m_state` state: the last observed reserves and venue.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StateMetrics {
     /// SOL reserves at the most recent trade. `None` until the first trade.
     reserve_sol: Option<f64>,
+    /// Venue of the most recent trade. `None` until the first trade.
+    on_curve: Option<bool>,
 }
 
 impl StateMetrics {
-    /// Fold one trade's reserves into the snapshot (ignores non-finite values).
-    pub fn on_trade(&mut self, reserve_sol: f64) {
+    /// Fold one trade's reserves (ignoring non-finite values) and venue into the
+    /// snapshot.
+    pub fn on_trade(&mut self, reserve_sol: f64, on_curve: bool) {
         if reserve_sol.is_finite() {
             self.reserve_sol = Some(reserve_sol);
         }
+        self.on_curve = Some(on_curve);
     }
 
     /// `time` — seconds since creation. Free function: needs no state.
@@ -48,6 +56,7 @@ impl StateMetrics {
         match id {
             MetricId::Time => Self::time(created_at, now),
             MetricId::Liquidity => self.liquidity(),
+            MetricId::OnCurve => self.on_curve.map_or(f64::NAN, |c| f64::from(u8::from(c))),
             _ => f64::NAN,
         }
     }
@@ -76,18 +85,31 @@ mod tests {
     fn liquidity_is_nan_until_first_trade_then_last_reserves() {
         let mut s = StateMetrics::default();
         assert!(s.liquidity().is_nan());
-        s.on_trade(12.5);
+        s.on_trade(12.5, true);
         assert_eq!(s.liquidity(), 12.5);
-        s.on_trade(9.0); // most recent wins
+        s.on_trade(9.0, true); // most recent wins
         assert_eq!(s.liquidity(), 9.0);
     }
 
     #[test]
     fn non_finite_reserves_ignored() {
         let mut s = StateMetrics::default();
-        s.on_trade(5.0);
-        s.on_trade(f64::NAN);
-        s.on_trade(f64::INFINITY);
+        s.on_trade(5.0, true);
+        s.on_trade(f64::NAN, true);
+        s.on_trade(f64::INFINITY, true);
         assert_eq!(s.liquidity(), 5.0);
+    }
+
+    #[test]
+    fn on_curve_is_the_last_trades_venue_and_nan_before_any() {
+        let mut s = StateMetrics::default();
+        let read = |s: &StateMetrics| s.value(MetricId::OnCurve, ts(0), ts(1));
+        assert!(read(&s).is_nan());
+        s.on_trade(60.0, true);
+        assert_eq!(read(&s), 1.0);
+        // A graduated pool: liquidity can read low again, the venue says why.
+        s.on_trade(40.0, false);
+        assert_eq!(read(&s), 0.0);
+        assert_eq!(s.liquidity(), 40.0);
     }
 }

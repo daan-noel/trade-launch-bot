@@ -769,6 +769,7 @@ fn load_corpus_tokens(
             tx_index: tx_index as u32,
             leg_index: leg_index as u32,
             is_buy,
+            on_curve: venue != "amm",
             tx_signature,
             flow,
             ix_labels,

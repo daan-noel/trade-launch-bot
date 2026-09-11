@@ -212,6 +212,7 @@ fn trade(
         } else {
             hunter_engine::metrics::template_grain::grain_hash(&NONVOL_LABELS).unwrap()
         }),
+        build_hash: if vol { flow_ix::build_hash(&VOL_LABELS) } else { flow_ix::build_hash(&NONVOL_LABELS) },
         fee: hunter_engine::metrics::fee::FeeKeys::new(None, None, Some(0)),
         ..Default::default()
     }
@@ -292,12 +293,14 @@ fn confirm_entry(state: &mut EngineState, mint: &Mint, mut fx: Vec<Effect>) {
             },
         );
         // A trade after the fill moves the position's peak/trough off the entry, so
-        // `retrace` / `bounce` read a real excursion rather than a seeded zero.
+        // `retrace` / `bounce` read a real excursion rather than a seeded zero. It is
+        // a REPEAT buyer: `m_print_wallet.since_buy` is the reading of the print
+        // folded last, and a wallet's first buy honestly has no earlier one.
         reduce(
             state,
             Event::Trade {
                 mint: mint.clone(),
-                trade: trade(Side::Buy, 1.0, 2.0, 44.0, 6.0, 110, false, WALLETS[4]),
+                trade: trade(Side::Buy, 1.0, 2.0, 44.0, 6.0, 110, false, WALLETS[0]),
             },
         );
     }

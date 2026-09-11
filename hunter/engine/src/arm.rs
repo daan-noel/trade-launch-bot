@@ -391,6 +391,15 @@ pub struct CompiledRule {
     /// from [`dump_windows`](Self::dump_windows) for the same reason that bucket is
     /// separate from `flow_windows`: different list, different buffer.
     pub copy_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
+    /// Distinct `m_build_window` spans — drive
+    /// [`TokenTrack::ensure_build_window`](crate::metrics::track::TokenTrack::ensure_build_window).
+    /// Separate from [`crowd_windows`](Self::crowd_windows) for the reason that
+    /// bucket is separate: a different column in a different buffer.
+    pub build_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
+    /// Whether any condition reads `m_print_wallet` — drives
+    /// [`TokenTrack::ensure_print_wallet`](crate::metrics::track::TokenTrack::ensure_print_wallet),
+    /// the per-token wallet map a rule set without the group never opens.
+    pub needs_print_wallet: bool,
     /// Whether any condition on this rule reads a window counted in SLOTS.
     ///
     /// A slot window advances only on [`TradeLite::slot`](crate::metrics::TradeLite::slot),
@@ -501,6 +510,8 @@ impl CompiledRule {
         let mut ix_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut dump_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut copy_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
+        let mut build_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
+        let mut needs_print_wallet = false;
         let mut crowd_anchors: SmallVec<[(crate::metrics::crowd_after_age::AgeAnchor, u32); 1]> =
             SmallVec::new();
         let mut needs_slot = false;
@@ -518,8 +529,10 @@ impl CompiledRule {
                 MetricGroupId::FlowIxWindow => &mut ix_windows,
                 MetricGroupId::DumpIxWindow => &mut dump_windows,
                 MetricGroupId::CopyWindow => &mut copy_windows,
+                MetricGroupId::BuildWindow => &mut build_windows,
                 _ => &mut flow_windows,
             };
+            needs_print_wallet |= group_of(r.metric).id == MetricGroupId::PrintWallet;
             // Both axes: a two-window group needs a buffer for each of them, and
             // registering only the primary would leave the second read as NaN.
             for w in [r.window.primary, r.window.secondary].into_iter().flatten() {
@@ -611,6 +624,8 @@ impl CompiledRule {
             ix_windows,
             dump_windows,
             copy_windows,
+            build_windows,
+            needs_print_wallet,
             needs_slot,
             mono_kills,
             clock_horizons,

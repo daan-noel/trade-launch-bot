@@ -88,6 +88,9 @@ pub struct CachedTrade {
     pub template_hash: Option<u64>,
     /// FNV-1a of the program name; `None` when labels are empty/missing.
     pub program_hash: Option<u64>,
+    /// FNV-1a of the build recipe (engine `flow_ix::build_hash`); `None` when
+    /// labels are empty/missing.
+    pub build_hash: Option<u64>,
     pub is_launch: bool,
     pub on_curve: bool,
     /// The transaction's declared fee budget, copied straight off the [`Trade`] —
@@ -114,12 +117,14 @@ impl CachedTrade {
             hunter_engine::metrics::flow_ix::marker_bits(&labels),
             hunter_engine::metrics::template_grain::grain_hash(&labels),
             hunter_engine::metrics::template_grain::program_hash(&labels),
+            hunter_engine::metrics::flow_ix::build_hash(&labels),
             hunter_engine::metrics::template_grain::is_launch(&labels),
         )
     }
 
     /// Like [`from_trade`] but with hashes precomputed outside the DashMap guard
     /// (ingest hot path). Avoids normalize/hash work while holding the mint shard.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_trade_hashes(
         t: &Trade,
         wallet: u32,
@@ -128,6 +133,7 @@ impl CachedTrade {
         marker_bits: u16,
         template_hash: Option<u64>,
         program_hash: Option<u64>,
+        build_hash: Option<u64>,
         is_launch: bool,
     ) -> Self {
         Self {
@@ -152,6 +158,7 @@ impl CachedTrade {
             tx_index: t.tx_index,
             template_hash,
             program_hash,
+            build_hash,
             is_launch,
             on_curve: t.venue != "amm",
             // `cu_limit` is a `u64` on the model but a `u32` on the chain (the
@@ -449,6 +456,7 @@ impl TokenState {
 
     /// Hot-path variant: hashes prepared outside the DashMap guard; only interning
     /// + aggregates + append run under the mint lock.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_trade_hashed(
         &mut self,
         trade: Trade,
@@ -457,6 +465,7 @@ impl TokenState {
         marker_bits: u16,
         template_hash: Option<u64>,
         program_hash: Option<u64>,
+        build_hash: Option<u64>,
         is_launch: bool,
     ) {
         self.apply_aggregates(&trade);
@@ -470,6 +479,7 @@ impl TokenState {
                 marker_bits,
                 template_hash,
                 program_hash,
+                build_hash,
                 is_launch,
             );
         self.push_trade_capped(cached);

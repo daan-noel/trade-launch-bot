@@ -119,6 +119,7 @@ fn register_window(track: &mut TokenTrack, id: MetricId, ws: super::WindowSpec) 
     match group_of(id).id {
         MetricGroupId::PriceWindow => track.ensure_price_window(ws),
         MetricGroupId::CrowdWindow => track.ensure_crowd_window(ws),
+        MetricGroupId::BuildWindow => track.ensure_build_window(ws),
         _ => track.ensure_window(ws),
     }
 }
@@ -130,6 +131,13 @@ impl MetricSeries {
     pub fn new(created_at: Ts, columns: Vec<SeriesColumn>) -> Self {
         let mut track = TokenTrack::new(created_at);
         for c in &columns {
+            // A static group whose state is opened on demand: the column is what
+            // asks for it, as a rule's condition does on the live track.
+            if let SeriesColumn::Static(id) = c {
+                if group_of(*id).id == MetricGroupId::PrintWallet {
+                    track.ensure_print_wallet();
+                }
+            }
             if let SeriesColumn::Window(id, ws) = c {
                 // Both axes — registering only the primary leaves a slice column NaN.
                 for w in [ws.primary, ws.secondary].into_iter().flatten() {
@@ -192,6 +200,18 @@ impl MetricSeries {
     /// [`ensure_window`](Self::ensure_window) for the wallet-keyed deque.
     pub fn ensure_crowd_window(&mut self, spec: super::WindowSpec) {
         self.track.ensure_crowd_window(spec);
+    }
+
+    /// Register a trailing **build-recipe** window (`m_build_window`) — the twin of
+    /// [`ensure_window`](Self::ensure_window) for the recipe-keyed deque.
+    pub fn ensure_build_window(&mut self, spec: super::WindowSpec) {
+        self.track.ensure_build_window(spec);
+    }
+
+    /// Open the `m_print_wallet` map before folding — the twin of the rule-driven
+    /// registration on the live track.
+    pub fn ensure_print_wallet(&mut self) {
+        self.track.ensure_print_wallet();
     }
 
     /// Register a rolling **price-extrema** window (`m_price_window`) — the twin of

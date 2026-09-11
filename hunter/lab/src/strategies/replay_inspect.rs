@@ -534,6 +534,7 @@ mod tests {
                 buy_lamports: 0,
                 sell_lamports: 0,
                 at: at(0.1),
+                creator_stand_in_wallet_hash: None,
             },
             trade_ev(mint, 0.2, true, 1.0, 1.0, 100.0),
             // The engine's SubmitBuy fill would arrive as a FillConfirmed in a real

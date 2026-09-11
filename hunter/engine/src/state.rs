@@ -155,6 +155,10 @@ struct WindowSets<'a> {
     dump: &'a [crate::metrics::WindowSpec],
     /// `m_copy_window` — opened per fingerprint, on its own buffer.
     copy: &'a [crate::metrics::WindowSpec],
+    /// `m_build_window`.
+    build: &'a [crate::metrics::WindowSpec],
+    /// `m_print_wallet` — one map per token, opened when any rule reads it.
+    print_wallet: bool,
 }
 
 /// The engine's whole world. Construct with [`EngineState::new`], feed it events
@@ -206,6 +210,10 @@ pub struct EngineState {
     /// Union of every rule's `m_copy_window` spans — the only ones `ensure_copy`
     /// opens per fingerprint.
     pub all_copy_windows: Vec<crate::metrics::WindowSpec>,
+    /// Union of every rule's `m_build_window` spans.
+    pub all_build_windows: Vec<crate::metrics::WindowSpec>,
+    /// Whether any loaded rule reads `m_print_wallet`, so every track opens the map.
+    pub any_print_wallet: bool,
     /// Union of every loaded rule's [`ClockHorizons`] — how long *any* rule's
     /// readings can still move without a trade. Drives [`Settled`].
     pub tick_horizons: ClockHorizons,
@@ -459,6 +467,8 @@ impl EngineState {
         let mut all_ix_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_dump_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_copy_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
+        let mut all_build_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
+        let mut any_print_wallet = false;
         let mut all_crowd_anchors: Vec<(crate::metrics::crowd_after_age::AgeAnchor, u32)> =
             Vec::new();
         let mut horizons = ClockHorizons::default();
@@ -466,6 +476,7 @@ impl EngineState {
         for r in self.rules.values() {
             horizons = horizons.widen(r.clock_horizons);
             any_priority |= r.priority != 0;
+            any_print_wallet |= r.needs_print_wallet;
             for (src, dst) in [
                 (&r.flow_windows, &mut all_windows),
                 (&r.crowd_windows, &mut all_crowd_windows),
@@ -473,6 +484,7 @@ impl EngineState {
                 (&r.ix_windows, &mut all_ix_windows),
                 (&r.dump_windows, &mut all_dump_windows),
                 (&r.copy_windows, &mut all_copy_windows),
+                (&r.build_windows, &mut all_build_windows),
             ] {
                 for &w in src {
                     if !dst.contains(&w) {
@@ -493,6 +505,8 @@ impl EngineState {
         self.all_price_windows = all_price_windows;
         self.all_dump_windows = all_dump_windows;
         self.all_copy_windows = all_copy_windows;
+        self.all_build_windows = all_build_windows;
+        self.any_print_wallet = any_print_wallet;
         self.all_ix_windows = all_ix_windows;
         self.tick_horizons = horizons;
         self.any_priority = any_priority;
@@ -510,6 +524,8 @@ impl EngineState {
                 ix: &self.all_ix_windows,
                 dump: &self.all_dump_windows,
                 copy: &self.all_copy_windows,
+                build: &self.all_build_windows,
+                print_wallet: self.any_print_wallet,
             },
             &self.fp_patterns,
         );
@@ -550,6 +566,8 @@ impl EngineState {
             ix: &self.all_ix_windows,
             dump: &self.all_dump_windows,
             copy: &self.all_copy_windows,
+            build: &self.all_build_windows,
+            print_wallet: self.any_print_wallet,
         }
     }
 
@@ -569,6 +587,12 @@ impl EngineState {
         }
         for &w in windows.price {
             track.ensure_price_window(w);
+        }
+        for &w in windows.build {
+            track.ensure_build_window(w);
+        }
+        if windows.print_wallet {
+            track.ensure_print_wallet();
         }
         for (&fp, p) in patterns {
             // Each group opens its own buffers off its own list, so a fingerprint

@@ -16,8 +16,8 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use hunter_engine::metrics::flow_ix::{
-    ix_hash_from_labels_json, ix_hash_from_labels_value, marker_bits_from_labels_value,
-    wallet_hash,
+    build_hash_from_labels_value, ix_hash_from_labels_json, ix_hash_from_labels_value,
+    marker_bits_from_labels_value, wallet_hash,
 };
 use hunter_engine::metrics::template_grain::{
     grain_hash_from_labels_json, grain_hash_from_labels_value, is_launch_from_labels_json,
@@ -66,6 +66,10 @@ pub struct CorpusTrade {
     pub tx_index: u32,
     pub leg_index: u32,
     pub is_buy: bool,
+    /// Bonding-curve print (`true`) or AMM print. Carried because the lake read is
+    /// the only layer holding `venue`, and a curve-only term (`m_state.on_curve`)
+    /// must read the venue the print traded on rather than assume the curve.
+    pub on_curve: bool,
     /// Base58 signature — `None` on the sweep read (slim), `Some` on the simulate read
     /// (Solscan links). See the struct doc. `Box<str>` (16 B) not `String` (24 B) since
     /// it's write-once.
@@ -106,6 +110,9 @@ pub struct FlowKeys {
     pub template_hash: Option<u64>,
     /// FNV-1a of the program name; `None` when labels are missing.
     pub program_hash: Option<u64>,
+    /// FNV-1a of the build recipe (`flow_ix::build_hash`); `None` when labels are
+    /// missing.
+    pub build_hash: Option<u64>,
     /// `Pump.Fun: Create*` present on the labels.
     pub is_launch: bool,
     /// The transaction's declared fee budget, carried beside `ix_hash` because the
@@ -123,13 +130,12 @@ impl FlowKeys {
     /// already funnels the column through `normalize_labels`, so a lake row's text
     /// is always the bare-array form.
     pub fn from_stored(ix_labels: Option<&str>, wallet: Option<&str>) -> Self {
+        let parsed = ix_labels.and_then(|j| serde_json::from_str::<Value>(j).ok());
         Self {
             ix_hash: ix_labels.and_then(ix_hash_from_labels_json),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
-            marker_bits: ix_labels
-                .and_then(|j| serde_json::from_str::<Value>(j).ok())
-                .map(|v| marker_bits_from_labels_value(&v))
-                .unwrap_or(0),
+            marker_bits: parsed.as_ref().map(marker_bits_from_labels_value).unwrap_or(0),
+            build_hash: parsed.as_ref().and_then(build_hash_from_labels_value),
             template_hash: ix_labels.and_then(grain_hash_from_labels_json),
             program_hash: ix_labels.and_then(program_hash_from_labels_json),
             is_launch: ix_labels.is_some_and(is_launch_from_labels_json),
@@ -155,6 +161,7 @@ impl FlowKeys {
             marker_bits: marker_bits_from_labels_value(ix_labels),
             template_hash: grain_hash_from_labels_value(ix_labels),
             program_hash: program_hash_from_labels_value(ix_labels),
+            build_hash: build_hash_from_labels_value(ix_labels),
             is_launch: is_launch_from_labels_value(ix_labels),
             fee,
         }
@@ -205,6 +212,9 @@ impl TradeRow for CorpusTrade {
     fn wallet(&self) -> &() {
         &()
     }
+    fn on_curve(&self) -> bool {
+        self.on_curve
+    }
     /// The stored base58 signature, or `""` when the row was loaded signature-free
     /// (the sweep path — the trigger is resolved by index, not signature). The
     /// `EntryFill`/`ExitFill` strings the shared fns build from this are discarded by
@@ -244,8 +254,9 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
         tx_index: Some(ct.tx_index),
         template_hash: ct.flow.template_hash,
         program_hash: ct.flow.program_hash,
+        build_hash: ct.flow.build_hash,
         is_launch: ct.flow.is_launch,
-        on_curve: true,
+        on_curve: ct.on_curve,
         fee: ct.flow.fee,
     }
 }
@@ -315,6 +326,7 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(trades: &[T]) -> Vec<CorpusT
             tx_index: t.tx_index(),
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
+            on_curve: t.on_curve(),
             tx_signature: None,
             flow: FlowKeys::default(),
             ix_labels: None,
@@ -364,6 +376,7 @@ pub fn project_pg_tail(trades: &[Trade], with_flow: bool) -> Vec<CorpusTrade> {
             tx_index: t.tx_index(),
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
+            on_curve: t.on_curve(),
             tx_signature: None,
             flow: if with_flow {
                 // The PG tail must classify like the lake days it continues: a build
