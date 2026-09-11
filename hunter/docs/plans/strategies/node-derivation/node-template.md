@@ -65,7 +65,7 @@ One row per step, in order, dead ends included.
 | --- | --- | --- | --- | --- | --- |
 | A2 | Which members pay, and at which seat? | | | | |
 | B1 | What print does each react to, and at what lag? | | | | |
-| B2 | Where does our fill land against it? | | | | |
+| B2 | Does leftover exist at our 115 ms fill on the fires it takes? | | | | |
 | B3 | Which of those prints does it act on? | | | | |
 | B4 | Does it hold as a public sentence on every coin? | | | | |
 | C1-C3 | Which coins? | | | | |

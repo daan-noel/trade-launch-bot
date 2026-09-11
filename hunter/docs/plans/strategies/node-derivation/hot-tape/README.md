@@ -44,6 +44,7 @@ it; the earlier steps are the record as run.
 | 21 | `cvx_hot_trig.py` | THEIR TRIGGER PRINT, and therefore their real reaction time | 1.12 |
 | 22 | `cvx_hot_seat.py` | the seat we ACTUALLY get if we fire on their trigger | 1.12 |
 | 23 | `cvx_hot_dump.py` | BUY THE DUMP PRINT inside a live up-move - the event step 21 named | 1.12 |
+| B2c | `b2_leftover.py` | derive 5.2 calibrated: leftover existence on five member x trigger pairs whose fate is known (`toolkit.seat.leftover`) | 1.27 |
 | 24 | `cvx_hot_which.py` | WHICH dump prints does the cleanest member buy? | 1.12 |
 | 25 | `cvx_hot_dump2.py` | the FRENZY-ABSORBED SELL, as a public sentence on the full tape | 1.12 |
 | 26 | `cvx_hot_door2.py` | the DOOR for the frenzy-absorbed sell | 1.12 |
@@ -82,6 +83,7 @@ it; the earlier steps are the record as run.
 | G12 | `r1_exact_check.py` | an independent rebuild of `r1_exact`'s tickets from the raw prints (`MODE TAPE N [recall]`) | 1.22 |
 | G13 | `r1_engine_parity.py` | `prep` writes the inputs of `hunter/lab/examples/hot_tape_rule1_parity.rs` (the engine replay); `compare` matches its positions to the frozen tickets; `book` scores an engine run | 1.23 |
 | G14 | `r1b_exit.py` | rule 1's entry with an exit read the engine's way (prints, ticks, `LagMs` exit leg, partial legs); `check` reproduces rule 1's tickets, `paths`, `alone [2]`, `combine`, `book`; `ref` freezes rule 1b's tickets for the engine parity (`r1_engine_parity.py compare TAPE CSV r1b_ref`) | 1.24, 1.25 |
+| G15 | `r1c_loosen.py` | rule 1's entry loosened one term at a time under both exits, the added trades judged on their own: `book` (every candidate, 115 / 200 ms, cached), `walk`, `combine`, `grid` and `slices` (read only) | 1.26 |
 | - | `toolkit_check.py` | the toolkit re-runs steps 16, 21, 24 and 39 next to the recorded numbers | - |
 
 Shared helpers other steps import: `cvx_hot_event.py` (`node_ids`, `NODE_NAME`, the

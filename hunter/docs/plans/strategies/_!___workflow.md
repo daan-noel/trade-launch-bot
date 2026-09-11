@@ -127,8 +127,10 @@ Standing clip: 0.2 SOL. Standing re-entry: unlimited, one position per token.
   [7] ENGINE -> PAPER -> SMALL REAL
 ```
 
-An event is never scored alone. An unconcentrated pool is red by construction. If the
-parent is still red after searching the inventory on its fires, the list is short in a
+An event **candidate** is graded by leftover existence at `lag_115` ([_!___derive.md](_!___derive.md)
+phase 5.2), not by one exit's P&L. A shippable sentence is never scored on E alone: money
+on the whole conjunction, both exit families. An unconcentrated pool is red by construction.
+If the parent is still red after searching the inventory on its fires, the list is short in a
 named slot: add one idea there from the member's contrast, and re-search that slot. Do
 not replace E to invent a new parent. Do not stack ANDs on a frozen parent.
 
@@ -143,7 +145,8 @@ not replace E to invent a new parent. Do not stack ANDs on a frozen parent.
       v
       |  MONEY      total net SOL > 0 on the whole sentence  (never a proxy label)
       v
-      |  TAIL       top 1 % of trades <= ~20 % of net
+      |  TAIL       top 1 % of trades <= 20 % of net to stay a candidate;
+      |             <= 15 % to ship (_!___derive.md section 11)
       v
       |  CLIENT     positive with its single best CLIENT removed, and positive in
       |             >= 95 % of a bootstrap over clients
@@ -306,7 +309,10 @@ sentence possible at all.
   4  DELAY  why that SOL has not landed yet, and still has not landed 115 ms after we fire
 ```
 
-**Question 4 is the scarce one.** If the tell and the SOL arrive together there is no trade at
+**Question 4 is the scarce one.** Measure it as leftover existence at the 115 ms fill on the
+fires he takes, behind his own buy ([_!___derive.md](_!___derive.md) phase 5.2): reaction cost
+under 2 % and peak leftover at his hold p50 above round-trip cost. A hold-matched clock, a copy of his close, and every-fire
+occupancy are not that veto. If the tell and the SOL arrive together there is no trade at
 any seat, and that is how nearly every dead line here died: the swarm lands in the trigger's own
 slot. So enumerate delay first - it is the binding constraint, not the tell.
 
@@ -380,7 +386,7 @@ worked example: [node-derivation/method.md](node-derivation/method.md),
 | mid-tape one-shot | an up-move is starting | **open, split (5.8).** Instrument **9Uq8GV**: buy >= 1 at 75-100 ms lift 13.01; FOLLOW of that print is not reachable; RACE +2.21 % 8/8. Working file [mid-tape-rule-1.md](node-derivation/mid-tape-rule-1.md). 9999hu / 88887Q name sell >= 1 (a second parent). 8dtx2t names burst start; public spelling is C2. Inventory 4-tuple walks C8-C16 do not invent this parent (6.13-6.21) |
 | quiet deep-age | the pusher of an old quiet coin restarted | **red here** (evidence 6.5). Named event is token-silence burst start; the burst lasts ~80 ms so a 115 ms fill is after it. Slow-wall × silence is **-91.95** (6.13) |
 | deep-age big clip | few coins deserve a real size; this is one | **red here** (evidence 6.7). A public size print is not the tell (response = base). He starts the burst half the time |
-| hot-tape re-entry | a pullback inside a live up-move, taken again and again on the same coin | **OPEN, and it is two nodes** (evidence 1.11). Three of the six book **+2.2 to +2.3 %/trade, 8/8 days, body positive, biggest coin 1.8 %** at the RACE seat under a 15 s clock; the pooled node hides them. The ceiling needs a STATE anchor - at our own fill the same decisions are -0.66 %. Public events tried: swing pullback, the up-move portrait, the independent-machine count - all red. E is the frenzy-absorbed sell (1.12); with D earlier-frenzy-sells-failed and the member's own exit tp10 sl25 t60 it books **+1.22 %/trade 5/7, body +1.23** on the full tape and fails the tail (1.13). With P holders >= 368 x age >= 158 s instead of the door: **+2.07 %/trade, 141 a day, 7/7, body +3.26, top 1 % 17.6 %** (1.14), in-sample |
+| hot-tape re-entry | a pullback inside a live up-move, taken again and again on the same coin | **OPEN, and it is two nodes** (evidence 1.11). Three of the six book **+2.2 to +2.3 %/trade, 8/8 days, body positive, biggest coin 1.8 %** at the RACE seat under a 15 s clock; the pooled node hides them. The ceiling needs a STATE anchor - at our own fill the same decisions are -0.66 %. Public events tried: swing pullback, the up-move portrait, the independent-machine count - all red. E is the frenzy-absorbed sell (1.12); with D earlier-frenzy-sells-failed and the member's own exit tp10 sl25 t60 it books **+1.22 %/trade 5/7, body +1.23** on the full tape and fails the tail (1.13). With P holders >= 368 x age >= 158 s instead of the door: **+2.07 %/trade, 141 a day, 7/7, body +3.26, top 1 % 17.6 %** (1.14), in-sample. **Rule 1**, re-derived at the engine's grain (1.22): **+4.44 %/trade, 100 a day, 5/5 out of sample, top 1 % 9.8 %**; simulate books it ticket for ticket (1.23); rule 1b, the wall target, is its exit candidate (1.24, 1.25); no looser entry adds money (1.26); its event passes derive 5.2 (1.27). Working file [hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md) |
 | 2+ of 26 agree, age > 400 s | two independent readers picked the same living coin | a door those two deep-age nodes share; unmeasured forward |
 | instant launch | snipers and retail at birth | **dead** at this seat (consumed inside ~2 slots) |
 
@@ -455,6 +461,10 @@ The machine census is how the decision is seen: which fingerprint fired at the s
 | C15: none × firstop × creator × clock45 +0.01, 7 trades, d50 0/3; full-tape none × none × clock45 **-50.75**, 1,360 trades, 0/8 | DELAY = 0. Age p50 0 s; prior-gap p50 0 slots (89.1 % same slot); next-print p50 2 ms. Launch co-arrival, not mid-tape. follow X red. Do not AND. Do not walk first-outside-buyer (same launch shape) |
 | C16: slow-wall × firstrun × cu_hi × derived +2.27, d50 4/6, top1 219 %, body -2.71, hold -2.93, LOO -1.32, boot 65 %; tickets 40/101/120/75/92/17, peak/trough 7.06x against door 4.7x | DELAY / WHAT. TYPE passes at the 1.5x bar. Floor, body, hold, client fail. SOL leader n_pro>=8 +9.14 TYPE-fails 6.9x / 62 %. follow red. Do not AND onto either parent. Do not walk operator-cross-K (a count cut on this event) |
 
+| H18: rule 1 re-derived at the engine's grain (every wallet, every leg, the engine's clock and fill): holders is float dust and becomes distinct buyers; the exit becomes +20 % / -60 % / 90 s; +4.51 % study / +4.44 % holdout 5/5, top 1 % 9.8 %; simulate books 603 / 604 and 448 / 450 tickets with the same SOL (1.22, 1.23) | the check - the grain and the fill moved the answer. The reference tickets are the engine's target |
+| H19: rule 1's exit re-read on its own trades: eleven families, nothing beats the bracket out of sample; the wall target 0.4 x with the 90 s clock beats it on every holdout line, read after selection (1.24); built as rule 1b (1.25) | X. Two exits run side by side; the holdout no longer chooses between them |
+| H20: rule 1's entry loosened one term at a time under both exits: every term fails its first step, the added trades earn +1.8..+2.6 % at best against +4.5 % and never every day, and a looser entry displaces rule 1 tickets (1.26) | E is at its break-even margin. More trades a day need a second event, not a looser rule 1 |
+| H21: derive 5.2 calibrated on the known triggers: rule 1's passes behind its buy (cost 1.41 %, peak +7.46 %), AbQcLH's is killed on cost (4.55 %); alone the veto passes sssssw and the class 8fStGV avoids (1.27) | the check - 5.2 is a veto that holds only after phases 4 and 5.1 |
 ### When the generator is empty
 
 Stop inventing tape conjunctions when all of these hold:
@@ -1050,3 +1060,6 @@ job.
 - **No mixing three doors into one sentence.** Slow-wall, documented-project, and
   demonstrated-episode are different stories; they are C2 variants, one at a time.
 - **No Helius spend** without asking.
+- **No event candidate killed by a hold-matched clock, a copy of its close, or every-fire
+  occupancy.** Leftover existence on acted tickets is the 5.2 veto
+  ([_!___derive.md](_!___derive.md) phase 5).

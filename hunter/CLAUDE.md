@@ -43,7 +43,11 @@ Read before trusting any backtest number:
 **Searching for a new trading rule?**
 [_!___strategy.md](docs/plans/strategies/_!___strategy.md) is the basis.
 [_!___derive.md](docs/plans/strategies/_!___derive.md) is the playbook from one paying
-wallet to a sentence (pick, DELAY, event, then D/X/P; inventory search on that parent).
+wallet to a sentence (pick, leftover existence at 115 ms, event, then D/X/P; inventory
+search on that parent). An event candidate is correct when he pays at RACE, reacts to it,
+and, on the tickets where our fill lands behind his buy, reaction cost is under 2 % and
+peak leftover inside his hold p50 covers round-trip cost (`seat.leftover`). A specific
+exit is how that leftover is eaten later; it is not the 5.2 veto.
 [_!___inventory.md](docs/plans/strategies/_!___inventory.md) is every idea, used after
 the event is named.
 [_!___workflow.md](docs/plans/strategies/_!___workflow.md) is the gates, the campaign

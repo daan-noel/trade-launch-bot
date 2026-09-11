@@ -109,13 +109,14 @@ Trap: pooling. The six read red for weeks because three of them are noise (1.11)
 | # | step | how | decides | hot-tape |
 | --- | --- | --- | --- | --- |
 | B1 | **The trigger, by excess intensity** | `trigger.excess_intensity(S, {m: [w]})`: its buys against same-coin controls, every public print in the 5 s before by (class, lag); `trigger.peak(lift, cls)` | A spike of one class at one lag band is the trigger, and its lag is the reaction time. Flat everywhere: the member fires on a state | 8fStGV: public SELL >= 1 SOL at 25-200 ms (lift 8-10), avoids burst starts. AbQcLH: burst start at 25-50 ms (8.8-9.9). sssssw (loses): burst start at 75-100 ms (9.2). Speed does not separate payers from losers; the side does |
-| B2 | **The seat against the trigger** | `seat.reaction(S, E, trigger_fn)`: its lag from the trigger print, the share where our fill on that trigger lands ahead of its buy, and the book at our seat, ahead and behind | Reachable when its lag p50 is well over 115 ms and our book is not red when we land behind. A lag near 50 ms with under 10 % ahead is DELAY about zero: a race, not an event | 8fStGV: lag p50 81 ms, ahead 33.5 %, +0.21 % even behind: reachable. AbQcLH: 47 ms, ahead 5 %, -1.36 %: a race |
+| B2 | **Leftover existence at our fill** | `seat.leftover` on **acted** tickets (the latest trigger print <= 300 ms before each decision), read on the ones where our fill lands behind its buy: `kernel.fill_idx` 115 ms after the trigger; reaction cost from that print to our fill; peak leftover inside its hold p50, net of both-leg cost; share of tickets where our fill is after its sell. `seat.reaction` is a 5.3 column (dt, ahead, a clock), not the veto | **Kill** when, behind its buy, median reaction cost >= 2 %, median peak leftover <= 0, missed >= 50 %, or lag p50 <= 50 ms with ahead < 10 %. A red clock or a red copy of its close does not kill. Run it only on a member that pays at RACE and a class covering >= 10 % of its decisions: alone it passes noise | 8fStGV behind its buy: cost 1.41 %, peak +7.46 % at its hold p50 (10.3 s): leftover exists. AbQcLH: cost 4.55 %: killed, a race (evidence 1.27) |
 | B3 | **Which triggers: within-coin contrast** | On the member's coins, every print of the trigger class (`candidates.build` with that trigger), labelled by whether it acted (`contrast.label_acted`, its reaction window); `contrast.strat_rank(acted, ignored_same_coins, facts)` and the medians | The facts far from 0.50 with a mechanism become the event's terms; the acted medians are the first thresholds | The sells it buys: 15 recipes in 5 s (ignored 7-8), 3.94 SOL bought in 2 s (0.4-0.5), a new high 5.4 s ago (73-80), a seller who bought 20.5 s ago (50) |
-| B4 | **Spell it publicly on the full tape** | Every term in public tape state, on every coin (`candidates.build` + `book.fires`); add the terms one at a time; run the pump-side control (the same terms on the opposite side) | Each term must lift the book monotonically; the control must be worse | The frenzy-absorbed sell: -4.26 % to -0.68 % term by term; the same frenzy on a BUY -2.64 % |
+| B4 | **Spell it publicly on the full tape** | Every term in public tape state, on every coin (`candidates.build` + `book.fires`); add the terms one at a time; run the pump-side control (the same terms on the opposite side) | Each term must lift the book monotonically; the control must be worse | The frenzy-absorbed sell: -4.26 % to -0.68 % term by term under a 15 s clock, a yardstick (the red event carries rule 1 once P and X are filled); the same frenzy on a BUY -2.64 % |
 
 Traps: a waiting time read as latency (1.9); a feature window that contains the member's own
 print (every fact is built from prints before k); a model of the moment that is learnable and
-worthless - the moment reproduced out of sample at AUC 0.72 books -4 to -11 % (1.7).
+worthless - the moment reproduced out of sample at AUC 0.72 books -4 to -11 % (1.7); a
+hold-matched clock or every-fire occupancy used as the leftover veto (derive 5.2 vs 5.3).
 
 ### Phase C - which coin (the door), diagnostics first
 
@@ -176,7 +177,11 @@ each is re-read on the pool the whole sentence trades, in the order E, P, X, R, 
 - **An absurd win rate is a lookahead until shown otherwise** - 80 % on a scalper, or a cell green
   on every column at once.
 - **A ceiling is not money in a slot** (law 23). A perfect-exit or perfect-door number bounds the
-  slot; it does not say the slot can reach it.
+  slot; it does not say the slot can reach it. Peak leftover after our fill is the 5.2 kill
+  when it cannot cover cost; it is never a result.
+- **An event candidate is not graded by one exit.** A hold-matched clock, a copy of its close,
+  and every-fire occupancy are 5.3 / 6.2 columns. The 5.2 veto is leftover existence on acted
+  tickets ([_!___derive.md](../_!___derive.md) phase 5).
 - **A member's coin list is a diagnostic split, never a door**, and it is split at its first buy
   on the coin before any gap is read as a door.
 - **Read a hazard at fine resolution before spelling a stop.** Coarse bins put this member's stop

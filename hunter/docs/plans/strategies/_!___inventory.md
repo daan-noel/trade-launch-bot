@@ -290,7 +290,8 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 | --- | --- | --- |
 | buy in the dip after a hill | a tool or operator structure buys while price is still down after a hill | red · ev 6.2 |
 | first buy after a flush stops | first buy ≥ 0.5 SOL (not a seed racer) after a flush, once vsol makes no new low for ≥ 10 slots; one fire per flush | red · ev 6.14 |
-| sell inside a frenzy | a public sell ≥ 1 SOL inside a frenzy, a new high in the last 20 s, by a seller who bought ≤ 30 s ago; fire on the sell | keep · ev 1.20 (rule 1's event; the frenzy's "≥ 2 SOL bought in 2 s" half drops out there, and the sentence holds +3.44 % 5/5 out of sample) |
+| sell inside a frenzy | a public sell ≥ 1 SOL inside a frenzy, a new high in the last 20 s, by a seller who bought ≤ 30 s ago; fire on the sell | keep · ev 1.20, 1.22, 1.26, 1.27 (rule 1's event; the frenzy's "≥ 2 SOL bought in 2 s" half drops out; +4.44 % 5/5 out of sample at the engine's grain; every term sits at its break-even margin, loosening adds no money; derive 5.2 passes it, cost 1.41 %, peak +7.46 %) |
+| └ 9999hu sell >= 1 | the same print class on a younger one-shot; leftover on the fires it takes is live; occupancy of every fire at its age is red; working X on the acted pool is tp15 sl40 t70 | open · ev 5.11, 5.12 (parent); do not copy age <= 16 occupancy (launch first-sell); do not copy its close |
 | capitulation cascade | a public sell ≥ 1 SOL from a seller at a loss, with the price down ≥ 5 % in 10 s, a second big sell in 10 s and a busy tape | red · ev 1.16. The second operator's dip leg books +3.50 % 8/8 on its own picks at our seat; no public spelling reaches it |
 | big buy after a dip | a buy ≥ 0.5 SOL opening a burst after ≥ 0.4 s of silence, the price down over 10 s | dead at our seat · ev 1.16: the operator that trades it reacts in 47 ms |
 | first buy after a run of sells | several sells in a row, then a buy | red · ev 6.19 |

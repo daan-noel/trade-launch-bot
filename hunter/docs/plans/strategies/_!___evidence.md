@@ -1526,6 +1526,102 @@ The holdout chose rule 1b's exit (1.24), so this table shows the engine books wh
 certifies nothing. The days after 09-10 do, rule 1 and rule 1b side by side. A position the live
 engine adopts on restart reads its entry depth back from `strategy_positions.extra`.
 
+## 1.26 Rule 1's entry loosened for more trades a day: no term adds money
+
+Rule 1's entry, one term loosened at a time on `study_exact`, each step booked with both exits
+(Bracket: +20 %, -60 %, 90 s; Room: 0.4 x the room to the wall, -60 %, 90 s) through `r1b_exit.py`'s
+evaluator, which rebuilds rule 1's 604 study tickets on the same trigger print. The trades a step
+adds are judged on their own; the eight bars sit in `hot-tape/r1c_loosen.py`'s docstring, fixed
+before any step was booked. The holdout is not read (it chose rule 1b's exit, 1.24).
+
+Rule 1 on this tape: Bracket 604 tickets, 109.8 a day, +4.51 %, 0.99 SOL a day; Room 543, 98.7 a
+day, +5.84 %, 1.15 SOL a day.
+
+**Every term fails its first step** (0.2 SOL, 115 ms; Bracket / Room):
+
+| term, rule 1 -> first step | added a day | added %/trade | added days + | rule 1 tickets lost a day | net SOL a day | fails |
+| --- | --- | --- | --- | --- | --- | --- |
+| sell size 1.0 -> 0.75 | 51.3 / 46.0 | +1.75 / +1.47 | 4/6, 4/6 | 23.6 / 22.7 | +0.078 / -0.122 | days, top 1 % 49 / 82 |
+| recipes in 5 s 15 -> 14 | 26.7 / 25.1 | +1.79 / +2.60 | 4/6, 4/6 | 9.5 / 9.5 | +0.022 / -0.042 | days, top 1 %, graduation |
+| new high 20 -> 30 s | 7.8 / 7.5 | -3.78 / -11.00 | 1/6, 0/6 | 0.4 / 0.4 | -0.045 / -0.145 | loses |
+| seller bought 30 -> 45 s | 19.8 / 16.5 | -2.30 / -3.95 | 2/6, 1/6 | 9.8 / 8.5 | -0.052 / -0.148 | loses |
+| age 158 -> 120 s | 17.6 / 16.5 | -3.54 / -7.34 | 3/6, 2/6 | 2.4 / 3.3 | -0.148 / -0.289 | loses |
+| buyers 368 -> 300 | 23.6 / 22.7 | -0.55 / +1.14 | 2/6, 3/6 | 2.7 / 4.2 | -0.055 / +0.046 | loses / days, top 1 % 82 |
+| reserve 100 -> 104 | 25.6 / 30.0 | +1.80 / +2.16 | 5/6, 5/6 | 9.1 / 9.8 | -0.071 / -0.009 | net, graduation 17 / 2 |
+
+**No later step passes either** (`r1c_loosen.py grid`, read past the first failure, chooses
+nothing). Sell size 0.5 adds 92 a day at +1.80 % and costs 42 of rule 1's: net -0.045 / -0.226.
+Recipes down to 8: the added trades fall to -0.16 / +0.30 %. New high to 90 s, seller to 300 s,
+age to 60 s: the added trades lose at nearly every step, to -11 %/trade. Buyers down to 100: the
+best net of the grid, +0.086 / +0.076 SOL a day, on added trades of +0.59 / +0.65 % positive 3 of 6
+days. Reserve 110: added +2.22 %, 6/6 on the Bracket, and 119 of its 256 added trades exit on the
+graduation print, the price 1.20 removed.
+
+**Each first-step band as its own rule** (`slices`: the band only, every other term at rule 1, its
+own occupancy, so it displaces nothing):
+
+| band | a day | %/trade | days + | top 1 % | overlaps a rule 1 position |
+| --- | --- | --- | --- | --- | --- |
+| sell size 0.75-1.0 | 87.5 / 80.4 | +2.90 / +3.06 | 6/6, 6/6 | 24.5 / 28.8 | 70 % / 72 % |
+| reserve 100-104 | 30.5 / 33.5 | +1.53 / +2.12 | 5/6, 5/6 | 21.0 / 12.1 | 46 % / 40 % |
+| the other five | 16-36 | -7.79 .. +1.74 | 2-4 of 6 | 27-92 where net > 0 | 9-75 % |
+
+The sell-size band pays every day and fails the tail bar; 70 % of its tickets sit on a coin rule 1
+already holds, in the same frenzy, so it is mostly a second clip on rule 1's trades (size, not
+volume), and the tape cannot price our first buy's impact on the second. It was read after the
+walk, so it certifies nothing.
+
+**Reading.** Every added slice earns well under rule 1's own trades (+1.8..+2.6 % at best against
++4.5..+5.8 %) and none is positive every day: rule 1's thresholds sit where the marginal trade is
+near break-even, which is why 1.22's walk-forward kept every one. A looser entry also displaces:
+it takes the coin earlier and its position blocks a later rule 1 ticket on the same coin (the sell
+size and recipe steps lose one rule 1 ticket for every two to three they add). There is no rule
+1c; rule 1's volume is set by its event, and more trades a day need a second event (1.16).
+
+## 1.27 Derive 5.2 calibrated on the hot tape's known triggers
+
+`node-derivation/hot-tape/b2_leftover.py` runs derive 5.2 (`toolkit.seat.leftover`) on five member x
+trigger pairs of the study tape whose fate is known, the members out of every public print. Acted
+ticket: the latest print of the class <= 300 ms before each of the member's decisions; our fill
+115 ms after it. Ignored: prints of the class on the same coins that it does not buy within 300 ms,
+up to 4 per acted ticket per coin. The anchors were fixed before the run: rule 1's trigger must
+pass; AbQcLH's race, sssssw's burst start and the class 8fStGV avoids must be killed. The **behind**
+rows are the tickets where our fill lands after the member's buy.
+
+| member x trigger | anchor | covers its decisions | behind: lag p50 | cost p50 | cost >= 2 % | peak at its hold p50 | break-even first | ignored: peak at hold p50 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8fStGV x sell >= 1 SOL | pass | 93.2 % | 56 ms | 1.41 % | 38.5 % | +7.46 % (10.3 s) | 59.3 % | +5.23 % |
+| AbQcLH x burst start | kill | 38.0 % | 44 ms | 4.55 % | 86.2 % | +1.69 % (19.3 s) | 53.8 % | +0.22 % |
+| sssssw x burst start | kill | 57.9 % | 80 ms | 1.18 % | 46.1 % | +1.01 % (21.5 s) | 57.8 % | +0.12 % |
+| 8fStGV x burst start | kill | 5.8 % | 91 ms | -4.08 % | 22.5 % | +8.46 % (10.3 s) | 67.5 % | +0.38 % |
+| 49uohd x sell >= 1 SOL | read only | 24.8 % | 48 ms | 2.69 % | 62.5 % | +6.42 % (25.4 s) | 54.2 % | +6.95 % |
+
+A driftless price reaches break-even first on 49.1-49.2 % of these tickets. Our fill lands after the
+member's closing sell on 0-0.5 %.
+
+- **The absolute read on the behind row passes rule 1's trigger and kills AbQcLH on cost** (4.55 %
+  against 1.41 %). The 2 % line sits between them.
+- **Alone it passes noise.** sssssw (cost 1.18 %, peak +1.01 %) and the burst start 8fStGV avoids
+  both pass. Phase 4 drops sssssw (-0.62 % at RACE, 1/8 days) and 5.1's coverage drops the avoided
+  class (5.8 % of its decisions against 93.2 % for its trigger), so the veto holds only in the
+  derive order. The coverage line is 10 %, between the two.
+- **Ahead tickets count the member's own buy.** On rule 1's trigger 71 % reach break-even first
+  when we land ahead against 59 % behind; AbQcLH 87 % against 54 %. The veto reads the behind row.
+- **The within-coin peak excess over ignored prints is not the veto.** It reads -1.93 (p5 -2.69) on
+  rule 1's trigger: the acted fills pay a rebound, +3.03 % more reaction cost than the ignored prints
+  on the same coin, so as a veto it kills rule 1.
+- **Break-even first is not the veto.** It sits above the null and above the ignored prints on every
+  anchor but the avoided class, sssssw included (57.8 % against 45.2 %): a buy cluster moves price
+  up for a while whether or not it pays.
+- **The horizon is the hold p50.** At the hold p10 (1-4 s) the peak is below zero on every row; at
+  the hold p90 the ignored prints cover the cost too (+4..+18 %).
+- **49uohd's sell >= 1, read only:** behind its buy the cost is 2.69 %, a kill on that class at our
+  seat; ahead of it (57.5 % of tickets) its own buy is the leftover. Its 5.1 peak is a node print
+  (6.4 at 25-50 ms); the sell class is its second band (3.3-3.7 at 150-300 ms, 1.16).
+
+Script: [b2_leftover.py](node-derivation/hot-tape/b2_leftover.py); the function is
+`seat.leftover` in [node-derivation/toolkit](node-derivation/toolkit/README.md).
+
 # 2. THE PRIZE
 
 ## 2.1 The episode census

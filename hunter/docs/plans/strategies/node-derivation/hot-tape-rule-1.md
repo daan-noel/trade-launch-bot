@@ -4,7 +4,7 @@ The working file for the hot-tape node, the first node derived end to end by
 [method.md](method.md). It holds the sentence that pays (section 1), the chain of measurements
 that produced it, dead ends included (section 2), what every member of the node does (section 3),
 and where the data and code are (section 4). Numbers: [_!___evidence.md](../_!___evidence.md)
-1.4-1.22 and 6.10. Code: [toolkit/](toolkit/README.md) and the step-numbered scripts in
+1.4-1.27 and 6.10. Code: [toolkit/](toolkit/README.md) and the step-numbered scripts in
 [hot-tape/](hot-tape/README.md).
 
 The rule runs as **Flip-Catch - Bracket** (this exit: +20 %, -60 %, 90 s). Its entry with the wall
@@ -41,6 +41,9 @@ seat  both legs fill at the last print of either side landed 115 ms after the de
 
 Plain words: a flipper takes profit into a buying frenzy on an established coin that is not near
 graduation; buy the flipper's sell, take +20 %.
+
+The volume is set by the event: loosening any entry term adds trades that earn well under rule 1's
+own and lose on some days, under both exits (evidence 1.26, step G15).
 
 ### The book
 
@@ -110,6 +113,7 @@ again. The step numbers are the scripts' own; the method phase is [method.md](me
 | --- | --- | --- | --- | --- | --- |
 | 21 | What print does each member react to, and at what lag? | Excess intensity against same-coin controls: 8fStGV a public SELL >= 1 SOL at 25-200 ms (8.1), avoiding burst starts; AbQcLH a burst start at 25-50 ms (9.9); sssssw, the one that loses, a burst start at 75-100 ms (9.2) | E's class: a public sell >= 1 SOL, bought within 115 ms. The side separates payers from losers, not the speed | `cvx_hot_trig.py` | 1.12 |
 | 22-23 | Where does our fill land against them? | Firing on each member's trigger at 115 ms: AbQcLH's burst start is a race (lag 47 ms, ahead 5 %); 8fStGV's lag from its sell is p50 81 ms and we land ahead 33.5 % | 8fStGV's event is reachable: the member does not have to be beaten | `cvx_hot_seat.py`, `cvx_hot_dump.py` | 1.12 |
+| B2c | Does leftover exist at our fill on the sells it buys (derive 5.2)? | Behind its buy: cost 1.41 %, peak +7.46 % at its hold p50 (10.3 s); AbQcLH's burst start costs 4.55 %; the veto alone passes sssssw and the class 8fStGV avoids | E passes 5.2 as the derive writes it; the veto's lines are calibrated here and hold only after phases 4 and 5.1 | `b2_leftover.py` | 1.27 |
 | 24 | Which sells does it buy? | It buys 2.2 % of the sells >= 1 on its coins. Our seat on those +0.38 % 5/8 (+0.21 % when behind it); on every sell -4.32 %. Same coin, bought against ignored: 15 recipes in 5 s (7), 3.94 SOL bought in 2 s (0.40), a new high 5.4 s ago (80.3), a seller who bought 20.5 s ago (50.8) | The terms and their first thresholds: >= 15 recipes / 5 s, >= 2 SOL / 2 s, new high <= 20 s, seller <= 30 s | `cvx_hot_which.py` | 1.12 |
 | 25 | Does it hold as a public sentence on every coin? | Each term lifts the book: -4.26 % (every sell) to -0.68 % (the full event); the same frenzy on a BUY -2.64 % | E is filled: the frenzy-absorbed sell. The dump side wins | `cvx_hot_dump2.py` | 1.12 |
 | 26-27 | Does a public coin fact carry the rest? | Size, busyness, prior frenzies: best -0.27 %. On its coins the fire pays +6.04 % when it buys inside our hold, -0.62 % when not | D is the empty slot, and part of it is the member's arrival | `cvx_hot_door2.py`, `cvx_hot_arrive.py` | 1.12 |
@@ -162,6 +166,7 @@ again. The step numbers are the scripts' own; the method phase is [method.md](me
 | G10 | Does each term mean what its name says? | Checked against the lake's exact fields: the holder book is float dust (647 against 96 real holders); the count it makes is distinct buyers | P spells distinct buyers, creator excluded | `r1_terms_audit.py` | 1.21, 1.22 |
 | G11 | What does the engine compute differently? | Recipes counted with the print, raw time, the 200 ms clock, the engine's fills: at the old thresholds the every-leg holdout reads +2.52 %, top 1 % 20.1 %; the buy-only entry fill is the cost, and it prices 29 % of entries at a print our buy cannot meet | The seat takes the exit leg's rule on both legs | `r1_exact.py audit` | 1.22 |
 | G12 | Re-derived at the engine's grain and fill | Every-leg study, keep rule with the chance floor and bars: entry kept, exit +20 % / -60 % / 90 s; +4.44 % 5/5 on the every-leg holdout, top 1 % 9.8 %; a second code rebuilds every ticket | The rule of section 1 | `r1_exact.py derive/confirm`, `r1_exact_check.py` | 1.22 |
+| G15 | Does a looser entry add trades that pay? | Each term loosened alone, both exits, the added trades judged on their own: every term fails its first step (added trades +1.8..+2.6 % at best against +4.5 %, never every day; stall, seller, age lose); a looser entry displaces rule 1 tickets through occupancy; the sell size band 0.75-1 SOL as its own rule pays 6/6 at +2.9 % with a 24.5 % tail, 70 % of it on coins rule 1 holds | No rule 1c; more trades need a second event | `r1c_loosen.py` | 1.26 |
 
 ### 2.9 What the chain teaches
 
@@ -186,6 +191,9 @@ again. The step numbers are the scripts' own; the method phase is [method.md](me
   bag-from-reserve idea agreed on a holder count that was float dust (G10).
 - **Derive at the grain and fill the engine runs.** The last-leg tape and the buy-only entry fill
   each moved the answer; only the every-leg study under the corrected fill passes every bar (G12).
+- **Grade the event by leftover, not by its prior clock.** E was found by three exit-free reads
+  (what it reacts to, how fast, which of those prints) and read -0.68 % under a 15 s clock; it was
+  kept by judgment then. Derive 5.2 now passes it on leftover: cost 1.41 %, peak +7.46 % (B2c).
 
 ---
 

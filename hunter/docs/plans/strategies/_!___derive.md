@@ -66,7 +66,7 @@ How to choose among members (all of this is measured on the study tape, none is 
 | --- | --- |
 | has a positive median, not only a tail | a negative median whose net is the top 1 % |
 | names a public print or a state (excess intensity spikes, or is flat because it fires on a held state) | copies a fill we cannot reach (lag ~50 ms, ahead < 10 %) |
-| leftover on **its coins** is green at `lag_115` (a ceiling, not a door) | leftover on its coins is red at our seat |
+| leftover **exists** at `lag_115` on the fires it takes (phase 5.2) | peak leftover after our fill does not cover round-trip cost |
 | DELAY of that leftover survives 115 ms | the tell and the SOL land in the same slot |
 
 The node's largest book is not automatically the instrument. The largest book often does
@@ -135,7 +135,7 @@ nodes; write two working files.
 
 ---
 
-## 5. Trigger and DELAY — before any conjunction
+## 5. Trigger and DELAY — leftover existence, not an exit P&L
 
 Four questions, in this order. Question 4 is the veto. If it fails, this trigger is dead
 at our seat. Do not walk D×P×X on it.
@@ -147,11 +147,23 @@ at our seat. Do not walk D×P×X on it.
   4  DELAY  why that SOL has not landed yet, and still has not landed 115 ms after we fire
 ```
 
+A P&L number is always E+X. A hold-matched clock, a copy of its close, and every-fire
+occupancy are exit or selection choices. None of them is the 5.2 veto. Its close is not
+the best X for our late fill; a median-hold clock is one X among many. Grade an event
+candidate by whether leftover **exists** at our seat, and whether this is its decision.
+
+**Correct E is two yeses.** (1) His decision: he pays at RACE (phase 4) and reacts to this
+public, unpriced tell (5.1: a lift spike of one class, covering at least 10 % of his
+decisions). (2) Our leftover: after a 115 ms fill on the fires he takes, behind his own buy,
+the path still has enough convexity inside his hold to pay round-trip cost (5.2). (1) without
+(2) is unreachable DELAY. (2) without (1) is noise: 5.2 alone passes a member that loses at
+every seat (evidence 1.27), so 5.2 never runs before (1).
+
 | # | question | how | decide |
 | --- | --- | --- | --- |
-| 5.1 | What does it react to? | `trigger.excess_intensity(S, {m: [w]})`: its buys against same-coin controls; every public print in the 5 s before, by (class, lag); `trigger.peak(lift, cls)` | A spike of one class at one lag band is the trigger, and that lag is the reaction time. Flat everywhere: it fires on a **state** that has been true for seconds, not on a print |
-| 5.2 | Is that leftover at our seat? | `seat.reaction(S, E, trigger_fn)`: its lag from the trigger, the share where our fill on that trigger lands ahead of its buy, the book at our seat, ahead and behind | Reachable when lag p50 is well over 115 ms, **or** we land ahead often enough that the book is not red when we land behind. Lag near 50 ms with under 10 % ahead is DELAY about zero: a race, not an event. Kill this trigger. Try another class, or a state |
-| 5.3 | Ceiling on its coins | Hindsight D = the coins it trades. Fire the trigger at `lag_115` on those coins, own prints out | Green ceiling: leftover of this tell exists. Red ceiling: this tell is not its leftover; go back to 5.1. The ceiling is not money in a slot (law 23) and is not a door |
+| 5.1 | What does it react to? | `trigger.excess_intensity(S, {m: [w]})`: its buys against same-coin controls; every public print in the 5 s before, by (class, lag); `trigger.peak(lift, cls)` | A spike of one class at one lag band is the trigger, and that lag is the reaction time. Flat everywhere: it fires on a **state** that has been true for seconds, not on a print. A class covering under 10 % of its decisions (acted tickets over its episodes, `seat.leftover`) is a corner, not its logic: 8fStGV's trigger covers 93 %, the burst start it avoids 5.8 % (evidence 1.27) |
+| 5.2 | Does leftover exist at our seat? | `seat.leftover(S, w, E, trigger)`, then `seat.leftover_summary`. Acted ticket: the latest print of the class <= 300 ms before each of his decisions (or the rising-edge print of the state). Our fill: `kernel.fill_idx`, 115 ms after that print. Read the **behind** row: the tickets where our fill lands after his buy, so his own fill is already in the price (on an ahead ticket his buy counts as our leftover: a copied fill). Reaction cost = % price move from the print to our fill. Peak leftover = the best net % of an exit decided inside his hold p50, filled 115 ms later, both legs' cost paid (break-even is +3.1..+3.9 % in price). Missed = our fill at or after his closing sell | **Kill** when any of, on the behind row: median reaction cost >= 2 %; median peak leftover <= 0; missed >= 50 %; lag p50 <= 50 ms with ahead < 10 % (the tell and the SOL land together). Calibrated on the hot tape (evidence 1.27): rule 1's trigger reads cost 1.41 %, peak +7.46 %; AbQcLH's burst start costs 4.55 % and is killed. A better X cannot save a kill. Try another class, or a state |
+| 5.3 | Diagnostics, not a veto | `seat.reaction` (dt, ahead, behind). Horizon scan at 1, 2, 5, 15, 30, 60 s clipped to hold p90, and at his sell time, all from the `lag_115` fill. His-exit column: our entry at 115 ms, his sell at RACE (no exit lag). Occupancy column: every fire of the class on its coins, hold-matched clock. From `leftover_summary`: the acted and ignored rows, the peak at hold p10 and p90, the within-coin peak excess over ignored, the share that reaches break-even before the mirror loss | Report every column. **Do not kill** on a red clock, a red copy of his exit, or a red every-fire occupancy. Those mix X or which-fires into E. The within-coin peak excess and the break-even-first share are never the veto: the first reads -1.93 on rule 1's trigger (its fills pay the rebound the ignored prints do not), the second passes every anchor (evidence 1.27). Law 23: peak leftover never ships |
 
 **DELAY is leftover of the move, not gap to the next print.** Next-print p50 of 50-80 ms
 is burst density (the hill is still printing). It is an artifact detector for a one-print
@@ -161,20 +173,30 @@ SOL we wanted arrive together, so a 115 ms fill has nothing left.
 A waiting time is not a reaction time. "Seconds since the last big buy" measures how often
 big buys happen. Latency is measured from the trigger print, by excess intensity.
 
-Do not score a D×P×X grid on a trigger that 5.2 killed.
+Do not score a D×P×X grid on a trigger that 5.2 killed. A red 5.3 occupancy book with
+green 5.2 leftover is a 6.1 problem (which fires), not a dead E.
+
+**5.2 is a veto, not a verdict.** Its lines separate the known triggers only in this order:
+phase 4 drops sssssw (it passes 5.2: cost 1.18 %, peak +1.01 %), and 5.1's coverage drops the
+class 8fStGV avoids. A trigger that passes 5.2 stays open until a finished search closes it:
+6.1 terms, then phases 8 and 9 on that pool, both exit families, walked forward
+([_!___workflow.md](_!___workflow.md) section 6, item 2).
 
 ---
 
 ## 6. Event — which triggers, then spell it publicly
 
+Run 6.1 before treating a class-wide red book as a dead E. Occupancy takes the first fire
+on the coin; the fire he takes can be a later one.
+
 | # | question | how | decide |
 | --- | --- | --- | --- |
-| 6.1 | Which of those prints does it take? | On **its coins**, every print of the trigger class (`candidates.build`); labelled by whether it acted (`contrast.label_acted` in its reaction window); `contrast.strat_rank(acted, ignored_same_coins, facts)` | Facts far from 0.50 with a mechanism become the event's terms. Acted medians are the first thresholds. A conjunction at high lift covering a tiny share of its buys is a rare corner, not its logic |
-| 6.2 | Does it hold as a public sentence? | Every term in public tape state, on **every coin** (`candidates.build` + `book.fires`). Add terms one at a time. Run the opposite-side control (same terms, other side) | Each term must lift the book monotonically. The control must be worse. Own prints stay out |
+| 6.1 | Which of those prints does it take? | On **its coins**, every print of the trigger class (`candidates.build`); labelled by whether it acted (`contrast.label_acted` in its reaction window); `contrast.strat_rank(acted, ignored_same_coins, facts)` | Facts far from 0.50 with a mechanism become the event's terms. Acted medians are the first thresholds. A conjunction at high lift covering a tiny share of its buys is a rare corner, not its logic. If leftover exists only on the fires he takes, the class is too wide: add terms to E, do not add D |
+| 6.2 | Does it hold as a public sentence? | Every term in public tape state, on **every coin** (`candidates.build` + `book.fires`). Add terms one at a time. Run the opposite-side control (same terms, other side). Temporary public X = a hold-matched clock (a prior, not phase 8) | Each term must lift the book monotonically. The control must be worse. Own prints stay out. A red 6.2 with green 5.2 is not "E is wrong": it is this spelling plus this prior X on every coin. Next is 6.1 terms or phase 8 on the acted pool, not a random new E. The prior X is a yardstick: it ranks the terms (each must lift the book under the same X) and its sign decides nothing. Rule 1's event reads -0.68 % under a 15 s clock and carries +4.5 % once P and X are filled (evidence 1.12, 1.22). A term chosen under the prior X is re-read under the real X in phase 12: rule 1's "bought >= 2 SOL in 2 s" was costing money there |
 
 Report coverage and reaction cost beside every lift. An event that costs over about 2 %
 to react to (price move from the state a watcher held to our 115 ms fill) is unreachable
-whatever its lift.
+whatever its lift. That cost is a 5.2 kill, not a 6.2 comment.
 
 Every fact is built from prints before index k. A feature window that contains the
 member's own print is a lookahead.
@@ -206,8 +228,9 @@ arrives, and is rare on the rest) — not from a new event.
 
 ## 8. Exit — on the selected pool, at its hold
 
-Do not sweep X on an unselected pool. That pool is mostly dying coins and returns the
-shortest clock (law 26).
+Phase 5 does not choose X. A specific exit is how the leftover is eaten, not how its
+existence is decided. Do not sweep X on an unselected pool. That pool is mostly dying
+coins and returns the shortest clock (law 26).
 
 | # | question | how | decide |
 | --- | --- | --- | --- |
@@ -290,7 +313,7 @@ tickets carries (`walkforward.cut_noise`) is chance, whatever the folds say.
 | days positive | >= 5/7 on the study tape, every day on the holdout |
 | the two halves of the days | both > 0 |
 | body (net without the top 1 % tickets) | > 0 |
-| top 1 % share of net | <= 15 % |
+| top 1 % share of net | <= 15 % (the ship line; [_!___workflow.md](_!___workflow.md) section 4 keeps a candidate at <= 20 %) |
 | biggest coin's share of net | <= 15 % |
 | capped book (every gain capped at the median take profit) | > 0, and its top 1 % share inside the bar |
 | exits on the graduation print | counted; the SOL must not depend on them |
@@ -313,7 +336,7 @@ clears the client gate is not killed only because campaign activity is uneven ac
 | 12.1 | Does the frozen sentence hold on unseen days? | The same booking code on the holdout tape, nothing re-fitted, the full ledger | Every bar. The holdout confirms; it never chooses. Each change is booked **once** on the holdout, one at a time in the order taken; a change that fails there is dropped |
 | 12.2 | The room | Split the sentence's trades by the member's pick (`act`) and its arrival (`act_in`) | If its picks pay no more than its skips, copying it has no room left: read every threshold off money |
 | 12.3 | Candidate table | `candidates.build` under floors loose enough for every loosening; `book.save` | It must reproduce the current book exactly (`book.fires` against the recorded ledger) before any number off it is trusted |
-| 12.4 | Thresholds by money | `walkforward.converge(C, days, base, grid, veto=bars)` | Keep rule and bars. A term on the grid edge means the table floor is too tight — rebuild looser |
+| 12.4 | Thresholds by money | `walkforward.converge(C, days, base, grid, veto=bars)` | Keep rule and bars. A term on the grid edge means the table floor is too tight — rebuild looser. A looser threshold is judged on the trades it adds, net of the sentence's own trades it displaces through occupancy: on rule 1 every term fails its first step under both exits, so more trades need a second event, not a looser one (evidence 1.26) |
 | 12.5 | Structural checks | `graduation.grad_flag`, the capped book, a lookahead read of any term that looks too good | A book that rests on an unpriceable exit gets a term that keeps the exit priceable |
 | 12.6 | New terms | `walkforward.new_terms`: each fact cut at 12 quantiles from both sides; `cut_noise` beside it | Taken only above chance. Inventory ideas not yet in the sentence enter here |
 | 12.7 | Exit on the new pool | `exits.outcomes` then `walkforward.axes`, one axis at a time | Keep rule, then the holdout |
@@ -347,6 +370,11 @@ time. Empty is a value.
 - **No DELAY read as next-print gap** when the leftover is a hill. Next-print gap is an
   artifact detector for a one-print pop.
 - **No conjunction walk on a trigger 5.2 killed.**
+- **No hold-matched clock as the 5.2 veto.** That clock is one public X prior (6.2 / phase 8).
+- **No copy of its close as the 5.2 veto.** His exit is a diagnostic column (5.3), not leftover existence, and it is not the best X for our late fill.
+- **No every-fire occupancy red as a dead E** when acted leftover (5.2) is green. That is 6.1.
+- **No 5.2 read before phase 4 and 5.1.** The veto alone passes noise (evidence 1.27).
+- **No ahead ticket in the 5.2 veto.** Our leftover on it includes his own buy: a copied fill.
 - **No pooling members.** Split first. Two logics get two working files.
 - **No mint list as a door**, and no factor built on wallet identity.
 - **No copying a fill.** Response rate names the event; the fill is already in the price.
