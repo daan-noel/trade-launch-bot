@@ -189,8 +189,7 @@ The one pricing kernel every offline study in this folder books through, with it
   plus group-live-now as a door. documented is not a door. Age >= 60 s, TYPE then SOL
   ([../_!___evidence.md](../_!___evidence.md) 6.21). Rank file `cvx_conj12_rank.csv`.
 
-* The hot-tape node's scripts (`cvx_hottape*.py`, `cvx_hot_*.py`, the rule 1 update `cvx_r1u*.py`,
-  `r1u_*.py`, `cvx_holdout_export.py`) live in
+* The hot-tape node's scripts live in
   [../node-derivation/hot-tape/](../node-derivation/hot-tape/README.md), beside the method they ran
   ([../node-derivation/method.md](../node-derivation/method.md)) and its toolkit. They import this
   folder's `kernel.py`, `tape.py` and `cvx.py`, and read the study tape here.
@@ -202,8 +201,7 @@ The one pricing kernel every offline study in this folder books through, with it
   115 ms). Episodes are built from the POSITION, tracked to the token from `K = vsol * vtok`,
   open-to-flat, and bags are reported rather than dropped. It reconciles with `margin_pct` across
   25 wallets, which is what makes the seat numbers trustworthy.
-  **Two things it exists to stop you repeating**, both preserved in the superseded versions
-  `cvx_replay2.py` and `../node-derivation/hot-tape/cvx_hottape_replay.py`: `v[k]` is the reserve AFTER print k, so pricing an
+  **Two things it exists to stop you repeating**: `v[k]` is the reserve AFTER print k, so pricing an
   entry at `v[their buy]` charges you THEIR displacement (use `v_before(k) = v[k] - signed
   amount`); and scoring only 1-buy-1-sell episodes takes a re-entry trader's WORST trades.
 

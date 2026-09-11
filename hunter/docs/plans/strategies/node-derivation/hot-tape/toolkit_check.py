@@ -17,6 +17,7 @@ sampling noise, not to the digit.
 from __future__ import annotations
 
 import _paths  # noqa: F401  - the toolkit and study-kernel on sys.path
+from _paths import NODE_NAME
 
 import sys
 import time
@@ -26,7 +27,6 @@ import pandas as pd
 
 from toolkit import candidates, contrast, hazard, seat, tapes, trigger
 from toolkit.book import ledger
-from cvx_hot_event import NODE_NAME
 
 pd.set_option("display.width", 400)
 pd.set_option("display.max_columns", 30)

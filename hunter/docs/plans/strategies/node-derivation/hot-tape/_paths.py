@@ -2,7 +2,7 @@
 
 Every script here imports this first. data_file(name) resolves a data file: node-derivation/data/ first,
 the shared study-kernel/ second (the study tape and its sidecars live there); a new output goes
-to data/.
+to data/. NODE_NAME is the node's roster label (toolkit.tapes.roster).
 """
 from __future__ import annotations
 
@@ -16,3 +16,5 @@ if str(ROOT) not in sys.path:
 import toolkit  # noqa: E402,F401  - puts study-kernel on sys.path
 from toolkit.paths import DATA, HUNTER, LAKE, LOCAL, SHARED  # noqa: E402,F401
 from toolkit.paths import data as data_file  # noqa: E402,F401
+
+NODE_NAME = "hot-tape re-entry"

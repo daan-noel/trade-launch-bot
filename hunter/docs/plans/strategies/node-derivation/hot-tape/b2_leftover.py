@@ -28,7 +28,7 @@ A reading that passes a MUST KILL anchor passes noise and is not the veto.
 from __future__ import annotations
 
 import _paths  # noqa: F401  - the toolkit and study-kernel on sys.path
-from _paths import DATA
+from _paths import DATA, NODE_NAME
 
 import time
 
@@ -36,7 +36,6 @@ import numpy as np
 import pandas as pd
 
 from toolkit import seat, tapes
-from cvx_hot_event import NODE_NAME
 
 MAX_TRIG = 0.3
 BURST_GAP = 0.4

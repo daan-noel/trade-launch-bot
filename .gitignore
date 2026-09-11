@@ -134,9 +134,17 @@ __pycache__/
 *.json
 *.csv
 
-# --- Node derivation: the toolkit, the case scripts and the shared study kernel are tracked ---
-# (hunter/docs/plans/strategies/node-derivation/README.md); their data/ is regenerable and is not.
-!hunter/docs/plans/strategies/node-derivation/**/*.py
+# --- Node derivation: only the toolkit and the scripts a rule or a method gate rests on are tracked ---
+# A step script is scratch and stays local: its number goes to the evidence doc, its step to the
+# case file. Name a script here only when a rule or a gate needs it re-run. data/ is regenerable.
+!hunter/docs/plans/strategies/node-derivation/toolkit/*.py
+!hunter/docs/plans/strategies/node-derivation/*/_paths.py
+!hunter/docs/plans/strategies/node-derivation/hot-tape/r1_exact.py
+!hunter/docs/plans/strategies/node-derivation/hot-tape/r1_exact_check.py
+!hunter/docs/plans/strategies/node-derivation/hot-tape/r1_engine_parity.py
+!hunter/docs/plans/strategies/node-derivation/hot-tape/r1b_exit.py
+!hunter/docs/plans/strategies/node-derivation/hot-tape/b2_leftover.py
+!hunter/docs/plans/strategies/node-derivation/hot-tape/toolkit_check.py
 hunter/docs/plans/strategies/node-derivation/data/
 !hunter/docs/plans/strategies/study-kernel/kernel.py
 !hunter/docs/plans/strategies/study-kernel/tape.py
