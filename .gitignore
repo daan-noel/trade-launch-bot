@@ -133,3 +133,11 @@ __pycache__/
 *.txt
 *.json
 *.csv
+
+# --- Node derivation: the toolkit, the case scripts and the shared study kernel are tracked ---
+# (hunter/docs/plans/strategies/node-derivation/README.md); their data/ is regenerable and is not.
+!hunter/docs/plans/strategies/node-derivation/**/*.py
+hunter/docs/plans/strategies/node-derivation/data/
+!hunter/docs/plans/strategies/study-kernel/kernel.py
+!hunter/docs/plans/strategies/study-kernel/tape.py
+!hunter/docs/plans/strategies/study-kernel/cvx.py

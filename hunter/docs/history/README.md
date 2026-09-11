@@ -26,6 +26,7 @@ The methodology that replaced it:
 
 | Entry | One-line |
 | --- | --- |
+| [2026-09-10 C8 documented door is the ep50 shortlist](2026-09-10-c8-documented-door-is-the-ep50-shortlist.md) | +47.54 on documented x silence is keep+ep50 lookahead plus a vacuous first-print gap; causal keep launch is -1,007 |
 | [2026-08-31 backtest price basis + impact denominator](2026-08-31-backtest-price-basis-and-impact-denominator.md) | Two pricing defects of opposite sign hid each other; every `sim_results` run stored before this date is incomparable |
 | [2026-08-28 TokenCache eviction spinlock](2026-08-28-token-cache-eviction-spinlock.md) | A DashMap guard held across `.await` wedged both workers at 100% CPU; watchdog kills were the symptom |
 | [2026-08-27 fingerprints duplicated by an inert width](2026-08-27-fingerprint-inert-width-duplicates.md) | A bucket width that matched nothing still forked identity and the auto-name |

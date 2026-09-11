@@ -40,12 +40,14 @@ Read before trusting any backtest number:
 [fill-and-cost-models.md](docs/plans/strategies/fill-and-cost-models.md). Open work lives in
 [`docs/roadmap/`](docs/roadmap/), never in `docs/plans/`.
 
-**Searching for a new trading rule? Three files, in this order.**
+**Searching for a new trading rule? Four files, in this order.**
 [_!___strategy.md](docs/plans/strategies/_!___strategy.md) is the basis - one equation,
 what price does and does not contain, the seat, what is open and what is closed.
+[_!___inventory.md](docs/plans/strategies/_!___inventory.md) is every idea, parked in
+Door / Event / Permission / Exit.
 [_!___workflow.md](docs/plans/strategies/_!___workflow.md) is the method - the six-slot
-coordinate, the eight-phase loop, the three gates and the campaign queue; follow it in
-order and record every result as a coordinate.
+coordinate, the eight-phase loop, and the campaign queue; follow it in order and record
+every result as a coordinate.
 [_!___evidence.md](docs/plans/strategies/_!___evidence.md) is every standing measurement.
 **Money on the whole conjunction is the only score, judged against the cell's own
 break-even, under both exit families.** A red number closes a sentence, never a slot.

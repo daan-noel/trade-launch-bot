@@ -145,11 +145,22 @@ say into strength.
 
 **This node is open, and the missing term is the door.** Fired on the burst-start print - the
 router or terminal buy of 0.5-1 SOL that opens the burst - and filled at 115 ms on both legs, it
-books **+2.6 to +6.7 % a trade on every exit family** on the coins these traders pick, and
-**-1.5 to -13 %** on the full tape with no door ([_!___evidence.md](_!___evidence.md) 5.4). The
-seat, the event and the exit are all reachable; coin selection is what is missing. `8dtx` and
-`3Xk2` are two of the seven members and both run it through durable-nonce racer builds, which is a
-fact about their equipment: what is closed is copying their fill, not the decision they make.
+books **+2.6 to +6.7 % a trade on every exit family** on **8dtx's coins**, and
+**-1.5 to -13 %** on the full tape with no door ([_!___evidence.md](_!___evidence.md) 5.4). That
+ceiling does not transfer to the two largest books: on `9999hu` / `88887Q` coins at age >= 15 s
+the same seat is +0.39 %/trade or red, and neither wallet names burst START (lift 1.02 / 1.14).
+Create cgroup include is the market (concentration 0.87-1.16). Their prints stay out; their mint
+list is never a door ([_!___evidence.md](_!___evidence.md) 6.9). `8dtx` and `3Xk2` run durable-nonce
+racer builds: what is closed is copying their fill, not the decision they make. `3Xk2Eu` has no
+prints on the last-leg tape. `9Uq8GV` names the event (buy >= 1 lift 4.75) and leftover on their
+coins is +4.12 %/trade at clock 45; public doors besides slow-wall are red. `8aaRWu` does not
+name burst START (lift 1.33); leftover on their coins is +1.72 %/trade clock 45, on keep and
+**off** slow-wall. `ApfmkS` names nothing (all lifts ~1), self-starts 45 %, and the leftover
+on the bursts they follow is +4.90 % unnamed. All seven members are measured
+([_!___evidence.md](_!___evidence.md) 6.9). Multi-trade is 14-26 % of their mints; the
+close-to-reopen gap is 56 s p50. The four unpriced facts at episode open are the market
+and do not fill D ([_!___evidence.md](_!___evidence.md) 6.11). Token remaining (holder
+book) does not fill D either ([_!___evidence.md](_!___evidence.md) 6.12).
 
 | # | wallet | t | margin | median trade | won | lost > 20 % | net SOL | trades | age s | hold s | clip | reserve |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -219,9 +230,10 @@ p50 39.8 s and p90 209.3 s.
 | 18 | `86ugEi` | 3.74 | 0.56 % | -2.27 % | 35.8 % | 1.3 % | 25.6 | 8,365 | 1,382 | 23 | 0.54 | 51 |
 | 19 | `7Q6RcQ` | 3.59 | 1.05 % | -2.74 % | 37.5 % | 5.5 % | 31.9 | 6,405 | 1,083 | 52 | 0.47 | 46 |
 
-This node's story is the one the repository has validated once, on one machine, and it is **open
-at our seat**: the entry follows silence so the fill is nearly free, and the exit sells into
-strength ([_!___strategy.md](_!___strategy.md) 1.5, direction table).
+The public leftover of this node at 115 ms is **red on the doors on this tape**: the print they
+follow is the first size buy after token silence, that burst lasts ~80 ms, and a 115 ms fill
+lands after it ([_!___evidence.md](_!___evidence.md) 6.5). The slow-wall door against this
+node's event is the one cell still unrun.
 
 ### 3.5 Deep-age big clip - 3 wallets, 68.2 SOL, and the only node that is not a lottery
 
@@ -249,6 +261,10 @@ position behind each one.
 **Read the size of this node before reading its quality.** 1,671 trades across three wallets is
 the thinnest evidence in the file, and `9RNZnq`'s headline 8.25 % rests on 211 trades with a 90 %
 interval of 4.90 to 11.89. The shape is interesting; the level is not established.
+
+The public leftover of this node at 115 ms is **red**: a size buy on a live mid-life tape
+is not his tell (response equals the base), and he starts the burst himself half the time
+([_!___evidence.md](_!___evidence.md) 6.7). The on-tape remainder is which coin (C6).
 
 ---
 
@@ -291,10 +307,21 @@ Reachability differs by node, and the seat decides it, not the margin:
 | node | open to us? | why |
 | --- | --- | --- |
 | instant launch | **no** | entry inside 11 s of creation; consumed in about two slots |
-| mid-tape one-shot | **open, blocked on the door** | the burst-start print books +2.6 to +6.7 % a trade at 115 ms on the coins they pick and -1.5 to -13 % on the full tape with no door |
-| hot-tape re-entry | open by construction | buys flushes and sells into waves, so the lag pays on both legs; thin per ticket |
-| quiet deep-age | open | entry follows silence so the fill is nearly free; validated once |
-| deep-age big clip | open | slow, but the evidence is thin at 1,671 trades on 3 wallets |
+| mid-tape one-shot | **open, and the door is found** | behind the slow-wall launch door with the permission the burst-start print books **+6.97 % a trade** on 986 trades and clears the client gate at 95.9 %, against -3.33 behind the best public door ([_!___evidence.md](_!___evidence.md) 6.4). It fails the tail and the per-day ticket floor - 16/177/210/24/28/9 a day, over fifty twice in six (4.8) |
+| hot-tape re-entry | **red here** at lag_115 | terms that separate their buys from the tape at lift 2.0-2.2 capture a **+0.29 %** price move, where this node's 1.10 % NET margin implies **+3.65 %** (evidence 6.10). At a zero fee the cell still loses. **`margin` in this file is net of the 125 bps fee** (`rb-solo-nodes.py` 140), so convert before comparing: `move = (margin + 2.5)/0.9875`. The lag does NOT pay on the buy leg on an aged coin: mean -0.66 %, cheaper than the decision print only 22.5 % of the time - a direction factor is a property of tape DENSITY, not of a side |
+| quiet deep-age | **red here** at lag_115 | the burst they follow lasts ~80 ms, so the fill is after it. Campaign-break v0 is a different sentence and is red too at 115 ms (6.6) |
+| deep-age big clip | **red here** at lag_115 | a public size print is not the tell (response = base). He starts the burst half the time (6.7) |
+
+**What the 26 are for, measured (C6).** Their creation-sequence set is **not** a door: 143
+sequences covering 95.3 % of coins and 97.3 % of prints, concentration 1.02, and -23.07 SOL
+when traded as one. What they carry is **agreement** - how many of them are already in a coin
+at our decision print - and that is the strongest single term this program has on the **loss**
+axis: a 0.37 lift on the -50 % rate against 0.82 for activity-matched random wallets and 0.98
+for the ten roster wallets that failed the profit cut, holding outside the window the roster
+was fitted on ([_!___evidence.md](_!___evidence.md) 6.8). **It never enters a sentence** - naming their
+coins is wallet identity and their mint list is not a gate - and it never gates an entry, since
+firing after they land is -10.4 % a trade. It is a thermometer: it says the L axis is real, and
+an ix-structure twin has to reproduce it.
 
 The usable question is the one section 4 opens: among these 26, a pair that agrees on a coin is
 two genuinely independent opinions, which a machine's sixteen addresses can never be. Whether that

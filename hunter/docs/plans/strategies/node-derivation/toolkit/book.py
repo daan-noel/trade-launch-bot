@@ -1,0 +1,103 @@
+"""A variant is a set of one-sided cuts over a candidate table; the ledger judges it.
+
+  mask(C, spec)          spec = {column: (">=" or "<=", value)}; a None value is no cut
+  occupy(C, m, ...)      one position per coin at a time, re-entry after the exit fill, applied
+                         AFTER the mask (a cut candidate frees the coin for a later one, as a live
+                         rule would). Optional R terms: cool_sl (no re-entry for N s after a
+                         stop-out), max_per_coin
+  fires(C, spec, ...)    mask + occupy
+  ledger(F, days)        the book: tickets a day, %/trade, SOL, SOL a day, days positive, worst
+                         day, body (net without the top 1 % tickets), top 1 % share, biggest
+                         coin's share, the two halves of the days, stop-out rate, win rate, and
+                         the capped-gain test
+  capped(F)              every gain capped at the median take-profit ticket: does the book rest
+                         on its gaps?
+  reprice(F, b)          each ticket at clip b from its entry and exit reserves (an upper bound:
+                         a replay cannot price our buy moving the next prints)
+  save / load            a candidate table and its day count under data/
+"""
+from __future__ import annotations
+
+import json
+
+import numpy as np
+import pandas as pd
+
+from kernel import B_DEFAULT as B, net
+from .paths import data
+
+
+def save(C, days, prefix, name):
+    C.to_parquet(data("%s_%s.parquet" % (prefix, name)), index=False)
+    data("%s_%s.json" % (prefix, name)).write_text(json.dumps({"days": days}))
+
+
+def load(prefix, name):
+    C = pd.read_parquet(data("%s_%s.parquet" % (prefix, name)))
+    days = json.loads(data("%s_%s.json" % (prefix, name)).read_text())["days"]
+    return C.sort_values(["run", "k"]).reset_index(drop=True), days
+
+
+def mask(C, spec):
+    m = np.ones(len(C), dtype=bool)
+    for col, (op, val) in spec.items():
+        if val is None:
+            continue
+        x = C[col].to_numpy()
+        m &= (x >= val) if op == ">=" else (x <= val)
+    return m
+
+
+def occupy(C, m, cool_sl=0.0, max_per_coin=None):
+    run = C.run.to_numpy(); k = C.k.to_numpy(); x = C.x.to_numpy(); t = C.t.to_numpy()
+    why = C.why.to_numpy(); hold = C.hold.to_numpy()
+    keep = np.zeros(len(C), dtype=bool)
+    cur = -1; last = -1; t_ok = -np.inf; cnt = 0
+    for i in np.nonzero(m)[0]:
+        if run[i] != cur:
+            cur = run[i]; last = -1; t_ok = -np.inf; cnt = 0
+        if k[i] <= last or t[i] < t_ok:
+            continue
+        if max_per_coin is not None and cnt >= max_per_coin:
+            continue
+        keep[i] = True; last = x[i]; cnt += 1
+        if why[i] == "sl" and cool_sl > 0:
+            t_ok = t[i] + hold[i] + cool_sl
+    return C[keep]
+
+
+def fires(C, spec, **r):
+    return occupy(C, mask(C, spec), **r)
+
+
+def capped(F, yc="y"):
+    tp = F[F.why == "tp"][yc]
+    if not len(tp):
+        return dict(cap_sol=np.nan, cap_top1=np.nan)
+    y = np.minimum(F[yc].to_numpy(), float(tp.median()))
+    s = float(y.sum()); top = float(np.sort(y)[::-1][:max(1, int(round(0.01 * len(y))))].sum())
+    return dict(cap_sol=round(s, 2), cap_top1=round(100 * top / s, 1) if s > 0 else np.nan)
+
+
+def ledger(F, days, b=B, yc="y"):
+    y = F[yc]
+    if len(F) == 0:
+        return dict(n=0, nday=0.0, pct=np.nan, sol=0.0, solday=0.0, pos="0/0")
+    s = float(y.sum())
+    ag = F.groupby("day")[yc].sum()
+    top = float(y.nlargest(max(1, int(round(0.01 * len(F))))).sum())
+    dl = np.sort(F.day.unique()); h = (len(dl) + 1) // 2
+    return dict(
+        n=len(F), nday=round(len(F) / days, 1), pct=round(100 * float(y.mean()) / b, 2),
+        sol=round(s, 2), solday=round(s / days, 3),
+        pos="%d/%d" % (int((ag > 0).sum()), ag.size), worst=round(float(ag.min()), 2),
+        body=round(s - top, 2), top1=round(100 * top / s, 1) if s > 0 else np.nan,
+        maxcoin=round(100 * float(F.groupby("run")[yc].sum().max()) / s, 1) if s > 0 else np.nan,
+        h1=round(100 * float(F[F.day.isin(dl[:h])][yc].mean()) / b, 2),
+        h2=round(100 * float(F[F.day.isin(dl[h:])][yc].mean()) / b, 2),
+        sl=round(100 * float((F.why == "sl").mean()), 1), win=round(100 * float((y > 0).mean()), 1),
+        **capped(F, yc))
+
+
+def reprice(F, b):
+    return np.array([net(v0, v1, b) for v0, v1 in zip(F.v0.to_numpy(), F.v1.to_numpy())])
