@@ -85,16 +85,26 @@ export interface BarTradesPanelProps {
   className?: string;
 }
 
-/** Maps tx signature → kind for entry/exit row highlighting. Every inspect source
- *  carries the real fill signature: position/sim results read it off the position,
- *  and the grouped-sweep drill-in resolves it from `trades` by (mint, slot, side). */
-function buildEntryExitMap(
+export type RowEventKind = 'entry' | 'exit' | 'signal';
+
+/** Maps tx signature → kind for entry/exit/signal row highlighting. Every inspect
+ *  source carries the signature of the print each fill sits on: a real position's
+ *  own transaction, the print a paper fill or sim result was priced against, or
+ *  (grouped-sweep drill-in) one resolved from `trades` by (mint, slot, side).
+ *  A signal marker is the trigger print, not a fill, so it keeps its own tint, and
+ *  a fill on the same print outranks it. */
+export function buildEntryExitMap(
   markers: ChartEventMarker[] | null | undefined,
-): Map<string, 'entry' | 'exit'> {
-  const m = new Map<string, 'entry' | 'exit'>();
+): Map<string, RowEventKind> {
+  const m = new Map<string, RowEventKind>();
   if (!markers) return m;
   for (const marker of markers) {
-    if (marker.txSignature) m.set(marker.txSignature, marker.kind);
+    if (!marker.txSignature) continue;
+    if (marker.role === 'signal') {
+      if (!m.has(marker.txSignature)) m.set(marker.txSignature, 'signal');
+    } else {
+      m.set(marker.txSignature, marker.kind);
+    }
   }
   return m;
 }
@@ -271,13 +281,17 @@ export function BarTradesPanel({
       const focused =
         (!!focusAddr && t.wallet_address === focusAddr) ||
         (!!lensWalletAddr && t.wallet_address === lensWalletAddr);
+      // Tints are the chart's marker colors (`CHART_COLORS.entry` / `.exit` /
+      // `.signalEntry`), so a row and the marker above it read as one event.
       const base = focused
         ? 'bg-[#fde047]/16 hover:bg-[#fde047]/24 font-semibold'
         : kind === 'entry'
           ? 'bg-[#02c076]/12 hover:bg-[#02c076]/20'
           : kind === 'exit'
             ? 'bg-[#f6465d]/12 hover:bg-[#f6465d]/20'
-            : '';
+            : kind === 'signal'
+              ? 'bg-[#5dade2]/12 hover:bg-[#5dade2]/20'
+              : '';
       // Left accent: focus (gold, 4px) beats "my trade" (amber, 2px) — a wallet
       // can be both, and only one border fits.
       const accent = focused

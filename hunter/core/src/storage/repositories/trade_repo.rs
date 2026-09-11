@@ -504,6 +504,43 @@ impl TradeRepo {
         Ok(out)
     }
 
+    /// Base58 signature of ONE print, addressed by the canonical trade order key
+    /// `(mint, slot, tx_index, leg_index)`: what the signature-free token cache
+    /// knows about a print it holds. The live paper fill and the trigger snapshot
+    /// are priced off cached prints, so this is how their rows get the signature
+    /// the chart and the trades table key on.
+    ///
+    /// `block_time` bounds the scan to the print's own hypertable chunk (+/- 1 s, so
+    /// sub-microsecond rounding of the stored timestamp cannot miss it); the order key
+    /// alone is unique and rides `idx_trades_mint_order`. `None` = not written yet
+    /// (the ingest writer batches) or already pruned.
+    pub async fn print_signature(
+        &self,
+        mint: &str,
+        slot: u64,
+        tx_index: u32,
+        leg_index: u32,
+        block_time: DateTime<Utc>,
+    ) -> anyhow::Result<Option<String>> {
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar(
+            r#"
+            SELECT tx_signature
+            FROM trades
+            WHERE mint_address = $1 AND slot = $2 AND tx_index = $3 AND leg_index = $4
+              AND block_time BETWEEN $5 - interval '1 second' AND $5 + interval '1 second'
+            LIMIT 1
+            "#,
+        )
+        .bind(mint)
+        .bind(slot as i64)
+        .bind(tx_index as i32)
+        .bind(leg_index as i16)
+        .bind(block_time)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(bytes.map(|b| sig_bytes_to_base58(&b)))
+    }
+
     /// All transaction signatures already saved for a token on a venue
     /// (`"curve"` or `"amm"`). The incremental sync uses this to skip
     /// `getTransaction` for trades it already has, so it doesn't re-spend Helius

@@ -604,7 +604,7 @@ async fn emit_entry_filled(
         order.intent.clone(),
         // Earliest leg — the buy's `entry_slot`, matching `first_block_time`
         // semantics (`legs.last_block_time` is the fill's exit-side stamp).
-        FillSigs { sigs: vec![sig], token_account, slot: legs.first_slot },
+        FillSigs { sigs: vec![sig], token_account, slot: legs.first_slot, print: None },
     );
     let _ = deps
         .fill_tx
@@ -1121,7 +1121,7 @@ async fn fail_exit(
         deps.fill_sigs.put(
             order.intent.clone(),
             // A failed sell has no resolved legs, so no slot to record.
-            FillSigs { sigs: sell_sigs.to_vec(), token_account, slot: None },
+            FillSigs { sigs: sell_sigs.to_vec(), token_account, slot: None, print: None },
         );
     }
     let _ = deps
@@ -1141,7 +1141,7 @@ async fn finish_cleared_sell(
     deps.fill_sigs.put(
         order.intent.clone(),
         // Latest leg — the sell's `exit_slot`, matching `last_block_time` below.
-        FillSigs { sigs: sell_sigs.to_vec(), token_account, slot: legs.last_slot },
+        FillSigs { sigs: sell_sigs.to_vec(), token_account, slot: legs.last_slot, print: None },
     );
     let fill = Fill {
         price: legs.price_per_token(),

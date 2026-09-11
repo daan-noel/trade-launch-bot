@@ -249,6 +249,7 @@ export function legColumns<T>(prefix: LegPrefix, acc: LegAccessors<T>, opts: Leg
         cols.push({
           key: `${prefix}_tx`,
           label: `${cap} Tx`,
+          tooltip: tip.tx,
           group: prefix,
           width: width.tx,
           render: (r) => {
@@ -284,6 +285,7 @@ const TARGET_TOOLTIPS_POSITION: Partial<Record<LegField, string>> = {
   tokens: 'Token count of the trigger trade.',
   size: 'SOL size of the trigger trade (price × tokens).',
   time: 'Block time of the trigger trade. The gap vs. Entry Time is the entry latency.',
+  tx: 'Signature of the trigger trade: a feed print, not ours.',
 };
 const TARGET_TOOLTIPS_SIM: Partial<Record<LegField, string>> = {
   ...TARGET_TOOLTIPS_POSITION,
@@ -293,10 +295,12 @@ const TARGET_TOOLTIPS_SIM: Partial<Record<LegField, string>> = {
 const ENTRY_TOOLTIPS: Partial<Record<LegField, string>> = {
   tokens: 'Tokens bought at entry.',
   size: 'SOL spent at entry (entry price × tokens).',
+  tx: 'Real: our buy transaction. Paper / simulated: the feed print the modeled fill was priced against.',
 };
 const EXIT_TOOLTIPS: Partial<Record<LegField, string>> = {
   tokens: 'Tokens sold at exit.',
   size: 'SOL received at exit (exit price × tokens).',
+  tx: 'Real: our (last) sell transaction. Paper / simulated: the feed print the modeled fill was priced against.',
 };
 
 /**

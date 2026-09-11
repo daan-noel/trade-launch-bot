@@ -678,6 +678,7 @@ fn dispatch_buy(
                 real_deps.fill_tx.clone(),
                 token_cache.clone(),
                 registry.clone(),
+                real_deps.fill_sigs.clone(),
                 position,
                 intent,
                 mint_s,
@@ -803,6 +804,7 @@ fn dispatch_sell(
             tokio::spawn(exec_paper::run_exit(
                 real_deps.fill_tx.clone(),
                 token_cache.clone(),
+                real_deps.fill_sigs.clone(),
                 intent,
                 mint,
                 token_amount,

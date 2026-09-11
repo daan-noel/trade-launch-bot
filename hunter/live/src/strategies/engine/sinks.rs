@@ -1,7 +1,9 @@
 //! Effect sinks (plan 4.5) — the consumers of the engine's *side-effect* effects:
 //! `PositionUpdate` → the `strategy_positions` PG writer, and `ArmedChanged` →
 //! SSE. All PG lifecycle writes and all SSE emission for the generic engine live
-//! here (the executor only stashes fill signatures via [`FillSigStore`]).
+//! here (the executor only stashes fill signatures via [`FillSigStore`], or for a
+//! paper fill the [`PrintKey`] of the print it copied, which the sink resolves to a
+//! signature inside the write task).
 //!
 //! The engine speaks in opaque [`PositionId`]s; the sink owns the mapping to the
 //! durable `strategy_positions.id` (via [`PositionRegistry`]) and lazily creates
@@ -38,12 +40,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use dashmap::DashSet;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use hunter_engine::arm::EntryBlockers;
 use hunter_engine::event::{
@@ -59,13 +62,61 @@ use trading_core::models::strategy_arm::ArmLedgerWrite;
 use trading_core::models::{StrategyPosition, StrategyRun};
 use trading_core::state::token_cache::TokenCache;
 use trading_core::storage::repositories::strategy_repo::{RunFinalize, StrategyRepo};
+use trading_core::storage::repositories::trade_repo::TradeRepo;
 
 use crate::ingest::HeldPoolGate;
 use crate::trader::PumpFunTrader;
 
 use super::arm_ledger::ArmLedger;
 use super::run_config::RunConfigSig;
-use super::{ArmedRegistry, FillSigStore, PositionMeta, PositionRegistry};
+use super::{ArmedRegistry, FillSigStore, PositionMeta, PositionRegistry, PrintKey};
+
+/// Reads of `trades` a cached print's signature gets before its row is written
+/// without one, and the pause between them.
+const PRINT_SIG_ATTEMPTS: u32 = 3;
+const PRINT_SIG_RETRY: Duration = Duration::from_millis(250);
+
+/// Signature of the print a paper fill or a trigger snapshot was priced against.
+///
+/// Runs inside the position's chained write task, never on the decision loop. The
+/// ingest writer batches `trades` on a short interval and a paper fill confirms only
+/// after a later slot's print closes its window, so the first read almost always
+/// hits; the retries cover a lagging writer. A miss returns `None` and the row is
+/// written without a signature: the display loses a highlight, nothing else.
+async fn resolve_print_sig(trades: &TradeRepo, mint: &str, print: PrintKey) -> Option<String> {
+    for attempt in 1..=PRINT_SIG_ATTEMPTS {
+        match trades
+            .print_signature(mint, print.slot, print.tx_index, print.leg_index, print.block_time)
+            .await
+        {
+            Ok(Some(sig)) => return Some(sig),
+            Ok(None) => {}
+            Err(e) => {
+                warn!(mint = %mint, slot = print.slot, "engine sink: print signature lookup failed: {e}");
+                return None;
+            }
+        }
+        if attempt < PRINT_SIG_ATTEMPTS {
+            tokio::time::sleep(PRINT_SIG_RETRY).await;
+        }
+    }
+    debug!(mint = %mint, slot = print.slot, tx_index = print.tx_index, "engine sink: print not in trades yet");
+    None
+}
+
+/// The signatures a fill row records: the executor's own (a real fill), else the
+/// print a paper fill copied, else none.
+async fn fill_signatures(
+    trades: &TradeRepo,
+    mint: &str,
+    sigs: Vec<String>,
+    print: Option<PrintKey>,
+) -> Vec<String> {
+    match print {
+        Some(p) if sigs.is_empty() => resolve_print_sig(trades, mint, p).await.into_iter().collect(),
+        _ => sigs,
+    }
+}
 
 /// Per-rule facts the sink needs when it materializes a position/run (mode, the
 /// lifetime cap for the run row, the frozen params snapshot). Refreshed on every
@@ -156,6 +207,8 @@ impl HeldPoolRelease {
 
 pub struct Sink {
     repo: StrategyRepo,
+    /// Resolves the signature of a print a paper fill / trigger was priced against.
+    trades: TradeRepo,
     token_cache: Arc<TokenCache>,
     sse_tx: broadcast::Sender<SseEvent>,
     registry: PositionRegistry,
@@ -216,6 +269,7 @@ impl Sink {
         held_pools: Option<HeldPoolGate>,
     ) -> Self {
         Self {
+            trades: TradeRepo::new(repo.pool().clone()),
             repo,
             token_cache,
             sse_tx,
@@ -662,10 +716,12 @@ impl Sink {
 
         // Fill signatures + token account stashed by the executor, keyed by intent.
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
-        let entry_tx = fs.sigs.first().cloned().unwrap_or_default();
         let token_account = fs.token_account.clone();
         let entry_slot = fs.slot;
+        let (entry_sigs, entry_print) = (fs.sigs, fs.print);
         let target_snapshot = meta.target_snapshot.clone();
+        let trades = self.trades.clone();
+        let mint = meta.mint.clone();
 
         // Registry first so Pass-2 / next Trade can size a sell without waiting on PG.
         self.registry.update(delta.position, |m| {
@@ -688,20 +744,32 @@ impl Sink {
             if let Some(h) = prev {
                 let _ = h.await;
             }
+            let entry_tx = fill_signatures(&trades, &mint, entry_sigs, entry_print)
+                .await
+                .into_iter()
+                .next()
+                .unwrap_or_default();
             // Persist the trigger (`target_*`) before the entry fill. In paper the
             // gap is the MODELED worst-case slippage; in real it is measured, and
             // `entry_slot - target_slot` is the only latency reading this system
             // produces (mig 0004). Both modes record it — the field is named
             // `target_snapshot` for history, not because real skips it.
             if let Some(target) = target_snapshot {
+                // A paper fill that market-filled at its own trigger copied that very
+                // print: its signature is already in hand.
+                let target_tx = if entry_print == Some(target.print) && !entry_tx.is_empty() {
+                    entry_tx.clone()
+                } else {
+                    resolve_print_sig(&trades, &mint, target.print).await.unwrap_or_default()
+                };
                 if let Err(e) = repo
                     .record_target(
                         pg_id,
                         target.price,
                         target.token_amount,
-                        target.time,
-                        &target.tx,
-                        target.slot,
+                        target.print.block_time,
+                        &target_tx,
+                        Some(target.print.slot),
                     )
                     .await
                 {
@@ -748,11 +816,14 @@ impl Sink {
         });
         let prev = self.pending_pg.remove(&meta.pg_id);
         let repo = self.repo.clone();
+        let trades = self.trades.clone();
+        let mint = meta.mint.clone();
         let pg_id = meta.pg_id;
         let handle = tokio::spawn(async move {
             if let Some(h) = prev {
                 let _ = h.await;
             }
+            let sigs = fill_signatures(&trades, &mint, fs.sigs, fs.print).await;
             if let Err(e) = repo
                 .record_sell_fill(
                     pg_id,
@@ -762,7 +833,7 @@ impl Sink {
                     fill.at,
                     reason.as_deref(),
                     stage,
-                    &fs.sigs,
+                    &sigs,
                     false,
                     fs.slot,
                 )
@@ -821,6 +892,8 @@ impl Sink {
             .unwrap_or_else(|| "Metrics".to_string());
         let prev = self.pending_pg.remove(&meta.pg_id);
         let repo = self.repo.clone();
+        let trades = self.trades.clone();
+        let mint = meta.mint.clone();
         let release = self.held_pool_release(&meta);
         let pg_id = meta.pg_id;
         let stage = delta.stage;
@@ -828,6 +901,7 @@ impl Sink {
             if let Some(h) = prev {
                 let _ = h.await;
             }
+            let sigs = fill_signatures(&trades, &mint, fs.sigs, fs.print).await;
             if let Err(e) = repo
                 .record_sell_fill(
                     pg_id,
@@ -837,7 +911,7 @@ impl Sink {
                     fill.at,
                     Some(&reason),
                     stage,
-                    &fs.sigs,
+                    &sigs,
                     true,
                     fs.slot,
                 )

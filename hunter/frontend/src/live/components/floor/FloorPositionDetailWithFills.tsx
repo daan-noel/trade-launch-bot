@@ -65,10 +65,14 @@ export function FloorPositionDetailWithFills({
     return buy?.token_amount || facts.entryTokenAmount || null;
   }, [fills, facts.entryTokenAmount]);
 
+  // The ledger's buy leg also carries the entry signature, which an open lane row
+  // does not; without it the trades table cannot tint the entry print.
   const inspect = useMemo(() => {
     const exitLegs = fillsToExitLegs(fills, entryTokenAmount);
-    if (exitLegs.length === 0) return facts.inspect;
-    return { ...facts.inspect, exitLegs };
+    const ownTx = facts.inspect.entryTx || null;
+    const entryTx = ownTx ?? (fills.find((f) => f.side === 'buy')?.tx_signature || null);
+    if (exitLegs.length === 0 && entryTx === ownTx) return facts.inspect;
+    return { ...facts.inspect, entryTx, ...(exitLegs.length > 0 ? { exitLegs } : {}) };
   }, [facts.inspect, fills, entryTokenAmount]);
 
   // Widen the chart to every episode on the mint. `inspect` (this position, with the

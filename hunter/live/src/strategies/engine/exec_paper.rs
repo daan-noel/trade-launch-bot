@@ -21,8 +21,12 @@
 //! window cannot price the exit at all the position closes at the token's last
 //! known spot ([`last_known_price_fill`]) rather than never closing.
 //!
-//! There is no on-chain identity for a paper fill, so the executor stashes no
-//! signatures — the sink's `record_entry_fill`/`close` just see an empty sig list.
+//! A paper fill has no transaction of its own, but it is priced against one real
+//! print. The executor stashes that print's [`PrintKey`] under the intent
+//! ([`FillSigStore`]) and the sink resolves its signature from `trades`, so the row
+//! names the print the fill copied: the same meaning simulate's `entry_tx`/`exit_tx`
+//! carry, and what the chart and trades table key on. The last-known-spot fallback
+//! prices off no print, so it stashes nothing.
 //!
 //! `Fill::price` is the feed's `price_per_token` = **SOL per RAW token unit**
 //! (`Trade::new`: `amount_sol / token_amount`, count in raw units), so a paper
@@ -44,9 +48,10 @@ use hunter_engine::event::{Event, Fill, FillFailReason, IntentId};
 use trading_core::state::token_cache::{CachedTrade, TokenCache};
 use trading_core::strategies::paper_fill::{
     exit_fill_window_closed, find_worst_case_paper_entry_at, find_worst_case_paper_exit_at,
+    PaperFill,
 };
 
-use super::{TargetSnapshot, PositionId, PositionRegistry};
+use super::{FillSigStore, FillSigs, PositionId, PositionRegistry, PrintKey, TargetSnapshot};
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
@@ -63,10 +68,12 @@ const FILL_POLL: Duration = Duration::from_millis(100);
 /// `target_*` alongside the worst-case entry fill. Empty window market-fills at
 /// the trigger (`market_fill_on_empty_window = true`) so live paper takes the
 /// same position set as lab replay/sweep.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_entry(
     fill_tx: mpsc::Sender<Event>,
     token_cache: Arc<TokenCache>,
     registry: PositionRegistry,
+    fill_sigs: FillSigStore,
     position: Option<PositionId>,
     intent: IntentId,
     mint: String,
@@ -78,6 +85,7 @@ pub async fn run_entry(
             if let Some(pid) = position {
                 registry.update(pid, |m| m.target_snapshot = Some(trigger));
             }
+            stash_print(&fill_sigs, &intent, fill.print);
             let sol = lamports as f64 / LAMPORTS_PER_SOL;
             // `fill.price` is SOL per RAW unit ⇒ the quotient is already raw units.
             let token_amount = (sol / fill.price).round().max(0.0) as u64;
@@ -111,6 +119,7 @@ pub async fn run_entry(
 pub async fn run_exit(
     fill_tx: mpsc::Sender<Event>,
     token_cache: Arc<TokenCache>,
+    fill_sigs: FillSigStore,
     intent: IntentId,
     mint: String,
     token_amount: u64,
@@ -118,6 +127,7 @@ pub async fn run_exit(
 ) {
     let event = match wait_exit_fill(&token_cache, &mint, fire_abs_idx).await {
         Some(fill) => {
+            stash_print(&fill_sigs, &intent, fill.print);
             let sol = token_amount as f64 * fill.price;
             Event::FillConfirmed {
                 intent,
@@ -141,6 +151,26 @@ pub async fn run_exit(
 struct ResolvedFill {
     price: f64,
     block_time: chrono::DateTime<chrono::Utc>,
+    /// The print that priced this fill; `None` for the last-known-spot fallback.
+    print: Option<PrintKey>,
+}
+
+impl ResolvedFill {
+    fn priced_by(trades: &[CachedTrade], f: &PaperFill) -> Self {
+        Self {
+            price: f.price,
+            block_time: f.block_time,
+            print: trades.get(f.trade_idx).map(PrintKey::of),
+        }
+    }
+}
+
+/// Hand the sink the print a paper fill copied, before the `FillConfirmed` that
+/// makes it look (the sink takes it while folding that event's delta).
+fn stash_print(fill_sigs: &FillSigStore, intent: &IntentId, print: Option<PrintKey>) {
+    if print.is_some() {
+        fill_sigs.put(intent.clone(), FillSigs { print, ..FillSigs::default() });
+    }
 }
 
 fn target_snapshot_from(t: &CachedTrade) -> TargetSnapshot {
@@ -148,11 +178,7 @@ fn target_snapshot_from(t: &CachedTrade) -> TargetSnapshot {
         price: t.price_per_token,
         // `CachedTrade::token_amount` is already raw SPL units (same as entry fill).
         token_amount: t.token_amount.round().max(0.0) as u64,
-        time: t.block_time,
-        // Cache rows are signature-free; sink persists an empty tx (UI still shows
-        // the target↔entry price gap).
-        tx: String::new(),
-        slot: Some(t.slot),
+        print: PrintKey::of(t),
     }
 }
 
@@ -176,14 +202,8 @@ async fn wait_entry_fill(
                     let timed_out = tokio::time::Instant::now() >= deadline;
                     if exit_fill_window_closed(trigger_slot, max_slot) || timed_out {
                         let trigger = target_snapshot_from(&trades[rel]);
-                        return find_worst_case_paper_entry_at(trades.as_slice(), rel, true).map(
-                            |f| {
-                                (
-                                    ResolvedFill { price: f.price, block_time: f.block_time },
-                                    trigger,
-                                )
-                            },
-                        );
+                        return find_worst_case_paper_entry_at(trades.as_slice(), rel, true)
+                            .map(|f| (ResolvedFill::priced_by(&trades, &f), trigger));
                     }
                 } else if t_abs < base {
                     // Trigger trimmed out of the retained window — fail closed.
@@ -198,12 +218,8 @@ async fn wait_entry_fill(
             {
                 if let Some(rel) = abs_to_rel(t_abs, base, trades.len()) {
                     let trigger = target_snapshot_from(&trades[rel]);
-                    return find_worst_case_paper_entry_at(trades.as_slice(), rel, true).map(|f| {
-                        (
-                            ResolvedFill { price: f.price, block_time: f.block_time },
-                            trigger,
-                        )
-                    });
+                    return find_worst_case_paper_entry_at(trades.as_slice(), rel, true)
+                        .map(|f| (ResolvedFill::priced_by(&trades, &f), trigger));
                 }
             }
             return None;
@@ -232,7 +248,7 @@ async fn wait_exit_fill(
                     let max_slot = trades.last().map(|t| t.slot).unwrap_or(fire_slot);
                     if exit_fill_window_closed(fire_slot, max_slot) || timed_out {
                         return find_worst_case_paper_exit_at(trades.as_slice(), rel, true)
-                            .map(|f| ResolvedFill { price: f.price, block_time: f.block_time })
+                            .map(|f| ResolvedFill::priced_by(&trades, &f))
                             .or_else(|| last_known_price_fill(token_cache, mint));
                     }
                 }
@@ -263,6 +279,7 @@ fn last_known_price_fill(token_cache: &TokenCache, mint: &str) -> Option<Resolve
             .map(|price| ResolvedFill {
                 price,
                 block_time: s.last_trade_at.unwrap_or_else(chrono::Utc::now),
+                print: None,
             })
     })
 }
@@ -329,6 +346,13 @@ mod tests {
         )
     }
 
+    /// Place a print at its own intra-slot position, so two prints in one slot have
+    /// distinct `PrintKey`s the way real ones do.
+    fn at_tx(mut t: Trade, tx_index: u32) -> Trade {
+        t.tx_index = tx_index;
+        t
+    }
+
     fn cache_with(trades: Vec<Trade>) -> Arc<TokenCache> {
         let cache = Arc::new(TokenCache::new());
         let mut state = TokenState::new(token());
@@ -353,20 +377,45 @@ mod tests {
         ]);
         let fill = wait_exit_fill(&cache, MINT, Some(0)).await.expect("market fill at fire");
         assert!((fill.price - 1e-6).abs() < 1e-12, "fills at the fire trade's own spot");
+        assert_eq!(fill.print.map(|p| p.slot), Some(100), "and names the fire print");
+    }
+
+    fn populated_window() -> Arc<TokenCache> {
+        cache_with(vec![
+            trade(1.0, 1_000_000, 100, 0),                 // fire  @ 1e-6
+            at_tx(trade(0.5, 1_000_000, 101, 1), 1),       // in window, lowest
+            at_tx(trade(0.9, 1_000_000, 101, 1), 2),       // in window
+            trade(0.1, 1_000_000, 100 + MAX_FILL_WAIT_SLOTS + 1, 5), // closes it, out of window
+        ])
     }
 
     /// Worst-case adversity is unchanged by the market-fill fallback: when the
-    /// window *does* have prints, the exit still takes the lowest of them.
+    /// window *does* have prints, the exit still takes the lowest of them, and the
+    /// fill names THAT print, not the fire print, so the trades table tints the row
+    /// the price came from.
     #[tokio::test]
     async fn exit_still_takes_the_worst_price_in_a_populated_window() {
-        let cache = cache_with(vec![
-            trade(1.0, 1_000_000, 100, 0),   // fire  @ 1e-6
-            trade(0.5, 1_000_000, 101, 1),   // in window, lowest
-            trade(0.9, 1_000_000, 101, 1),   // in window
-            trade(0.1, 1_000_000, 100 + MAX_FILL_WAIT_SLOTS + 1, 5), // closes it, out of window
-        ]);
+        let cache = populated_window();
         let fill = wait_exit_fill(&cache, MINT, Some(0)).await.expect("windowed fill");
         assert!((fill.price - 0.5e-6).abs() < 1e-12, "lowest price in the window");
+        assert_eq!(fill.print.map(|p| (p.slot, p.tx_index)), Some((101, 1)));
+    }
+
+    /// The executor hands the sink the print under the fill's intent, before the
+    /// `FillConfirmed`, and claims no signature or slot of its own, so the latency
+    /// columns stay empty for a simulated fill.
+    #[tokio::test]
+    async fn exit_fill_stashes_the_print_it_copied() {
+        use hunter_engine::event::{Mint, RuleId};
+        let store = FillSigStore::new();
+        let (tx, mut rx) = mpsc::channel(1);
+        let intent = IntentId { rule: RuleId(uuid::Uuid::nil()), mint: Mint::from(MINT), seq: 7 };
+        run_exit(tx, populated_window(), store.clone(), intent.clone(), MINT.into(), 1_000, Some(0))
+            .await;
+        assert!(matches!(rx.recv().await, Some(Event::FillConfirmed { .. })));
+        let fs = store.take(&intent).expect("print stashed under the intent");
+        assert!(fs.sigs.is_empty() && fs.slot.is_none() && fs.token_account.is_none());
+        assert_eq!(fs.print.map(|p| (p.slot, p.tx_index)), Some((101, 1)));
     }
 
     /// A manual close on a mint whose trades are gone (trimmed / never cached) has
@@ -382,6 +431,7 @@ mod tests {
 
         let fill = wait_exit_fill(&cache, MINT, None).await.expect("last known price");
         assert!((fill.price - 2e-6).abs() < 1e-12);
+        assert!(fill.print.is_none(), "no print priced it, so none is named");
     }
 
     /// The one honest failure left: a mint the cache has never priced.

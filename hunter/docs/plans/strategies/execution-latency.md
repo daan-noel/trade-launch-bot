@@ -51,7 +51,9 @@ not do this", which is exactly the wrong inference to invite.
 ## The slot rides the side-channel, not the event
 
 `FillSigs` carries the fill slot from executor to sink, alongside the signatures and
-token account. It does **not** go on `Event::FillConfirmed`'s `Fill`.
+token account. It does **not** go on `Event::FillConfirmed`'s `Fill`. A paper fill
+carries `print` (the print it was priced against) and never `slot`: that print's slot
+is not a landing slot, so `entry_slot` stays NULL on paper rows.
 
 `hunter_engine::reduce` is the pure decision fold, and no decision reads a slot.
 Putting one on the event would widen the kernel's input for a bookkeeping value —

@@ -2834,9 +2834,10 @@ impl StrategyRepo {
     /// signature is stored as a JSONB array. Mirrors the old per-strategy
     /// `update_entry`; the `RETURNING` lets the caller sync the cache without a
     /// follow-up read.
-    /// Persist the trigger-trade (`target_*`) snapshot that armed a paper/sim
-    /// position — distinct from the worst-case `entry_*` fill. No-op fields stay
-    /// null when the caller has no trigger (legacy rows).
+    /// Persist the trigger-trade (`target_*`) snapshot that armed a position,
+    /// distinct from the `entry_*` fill. `tx` is the trigger print's signature, or
+    /// `""` when it could not be resolved from `trades`. No-op fields stay null when
+    /// the caller has no trigger (legacy rows).
     pub async fn record_target(
         &self,
         id: Uuid,

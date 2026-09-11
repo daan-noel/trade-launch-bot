@@ -469,12 +469,29 @@ pub struct PositionMeta {
 pub struct TargetSnapshot {
     pub price: f64,
     pub token_amount: u64,
-    pub time: chrono::DateTime<chrono::Utc>,
-    pub tx: String,
-    /// Slot of the trigger trade (mig 0004 `target_slot`). This one IS knowable in
-    /// paper — the trigger is a real print off the feed, unlike the simulated fill
-    /// it is compared against.
-    pub slot: Option<u64>,
+    /// The trigger print itself: a real print off the feed in both modes, so its
+    /// slot IS knowable (mig 0004 `target_slot`), its block time is `target_time`,
+    /// and the sink resolves `target_tx` from it.
+    pub print: PrintKey,
+}
+
+/// Identity of one feed print: the `trades` order key plus its block time. The
+/// token cache holds no signatures (a 64-byte string per cached row is RAM the EC2
+/// box does not have), so a fill or trigger priced off a cached print carries this
+/// instead and the sink resolves the signature from `trades`, off the decision
+/// loop (`TradeRepo::print_signature`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PrintKey {
+    pub slot: u64,
+    pub tx_index: u32,
+    pub leg_index: u32,
+    pub block_time: chrono::DateTime<chrono::Utc>,
+}
+
+impl PrintKey {
+    pub fn of(t: &trading_core::state::token_cache::CachedTrade) -> Self {
+        Self { slot: t.slot, tx_index: t.tx_index, leg_index: t.leg_index, block_time: t.block_time }
+    }
 }
 
 /// Shared engine-position ↔ PG-row registry. The sink writes it; the executor and
@@ -628,6 +645,11 @@ pub struct FillSigs {
     /// it on the event would widen the kernel's input for a bookkeeping value.
     /// `None` for a paper fill — simulated, so it never lands in a slot.
     pub slot: Option<u64>,
+    /// The print a PAPER fill was priced against (`None` for real: its `sigs` are
+    /// its own). The sink resolves its signature into the same columns a real fill
+    /// writes, which is what lets the chart and trades table find the paper fill.
+    /// It is the print's slot, not ours, so it never feeds `slot` above.
+    pub print: Option<PrintKey>,
 }
 
 /// Shared intent → [`FillSigs`] store (executor writes, sink reads-and-clears).

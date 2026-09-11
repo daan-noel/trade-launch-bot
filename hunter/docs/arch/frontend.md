@@ -273,8 +273,10 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   pick only (`onBarClick` / `onRangeChange`); `useBarTradesSelection` holds it (bar and
   range are mutually exclusive), `token-price-chart/barTrades.ts` (`tradesInBar` /
   `tradesInRange`) is the ONE matcher keying trades exactly as the chart bars them, and
-  `BarTradesPanel` renders the table (entry/exit row tint from `eventMarkers`, own-wallet
-  accent). `TokenTradeChart` puts it under its chart and can yield it to an outside pick
+  `BarTradesPanel` renders the table (entry/exit/signal row tint from `eventMarkers`,
+  matched on `tx_signature` in the chart marker colors, a fill outranking a signal on the
+  same print; own-wallet accent). A paper or sim fill's signature is the print it was priced
+  against, so its rows tint like a real fill's. `TokenTradeChart` puts it under its chart and can yield it to an outside pick
   via `externalSelection`; `FloorPositionDetail` uses `MintBarTradesPanel` — same RTK Query
   cache the chart filled, so no extra request — placed **below** the chart ∥ fills grid,
   which is the only place with the width for a table. Floor overlay and badges follow the
