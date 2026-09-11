@@ -562,7 +562,7 @@ impl TokenTrack {
             // `PositionCtx` (see `metrics::position`), never the track. Before entry
             // (the only place `TokenTrack::value` reaches them, via the `can_enter`
             // exit-gate) they read NaN, so a position exit metric never blocks entry.
-            Retrace | Bounce | Pnl | Held | Armed => f64::NAN,
+            Retrace | Bounce | Pnl | Held | Armed | RoomTaken => f64::NAN,
         }
     }
 

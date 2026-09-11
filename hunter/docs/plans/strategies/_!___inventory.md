@@ -411,12 +411,13 @@ The permission side of E1.
 | armed trail with a stop | trail only after +arm, a hard stop until then; shipped as arm +21 %, trail 36 %, stop -43.75 %, cap 1200 s | keep · ev 4.7 |
 | └ no stop | a position that never arms has no stop | red |
 | tp100 / trail50 / cap1200 | keeps the tail; fits a trough entry | keep |
-| bracket | take profit +15 %, stop -40 %, clock 90 s (rule 1's updated pool; -25 % on the pool before the wall term, +10 % / 60 s on the wider pool) | keep · ev 1.20 |
+| bracket | take profit +20 %, stop -60 %, clock 90 s (rule 1 at the engine's grain; +15 % / -40 % on the pool before it, -25 % before the wall term, +10 % / 60 s on the wider pool) | keep · ev 1.22, 1.24 |
 | └ clock 240 s | the same bracket held longer | red · ev 1.20 (study +0.6 SOL, holdout -1.2 SOL) |
 | └ breakeven after +N | once up +3 / +5 / +7 %, close back at the fill | red · ev 1.13 |
-| └ half out at the target | half at +10 %, the other half to +20 %, stop -25 %, 120 s | open · ev 1.13 |
-| └ trail after the target | once up +10 %, trail 5-10 % off the peak | red · ev 1.13 |
-| headroom target | take profit at the wall: (115 / vsol)^2 - 1 | open |
+| └ half out at the target | sell half at the target, ride the rest | red · ev 1.24 (half at +20 %, the rest to 0.6 x the wall: fails a fold) |
+| └ trail after the target | once up +10 %, trail 5-10 % off the peak | red · ev 1.13, 1.24 |
+| └ stepped trail | the higher the peak, the set trail off it: peak +10 % -> 5 %, +30 % -> 10 %, ... | red · ev 1.24 (tight: sells the winners' dips; wide: top 1 % 25 %) |
+| headroom target | take profit at a share of the room to the wall: f x ((115 / vsol)^2 - 1) | open · ev 1.24, 1.25 (0.4 x with rule 1's 90 s clock beats rule 1 on every holdout line, read after selection; 0.3 x with 180 s loses it). Rule 1b = `m_position.room_taken >= 40`, engine books the Python tickets |
 | plain hold | a fixed hold, no stop, no target | open |
 | exit by payoff shape | pick the family from the group's own payoffs: a positive median wants a small target, a tail wants no target | open |
 | static abort | not up X % by T → sell | dead |
@@ -428,7 +429,7 @@ fill.
 
 | idea | meaning | status |
 | --- | --- | --- |
-| new buyers stop arriving | the crowd stops showing up | open · ev 4.7 |
+| new buyers stop arriving | the crowd stops showing up | red · ev 1.24 on rule 1 (open · ev 4.7 elsewhere) |
 | flush resumes | vsol makes a new low after an after-flush entry | keep |
 | back to the pre-event low | vsol revisits the low before the event | red · ev 6.19 |
 | firing structure goes silent | the ix structure we fire on stops printing | red · ev 6.13 |
@@ -445,7 +446,7 @@ fill.
 | creator sells | the creator prints a sell | new |
 | ride the creator | hold while the creator holds, trail after the creator sells | new |
 | firing structure leaves | the ix structure we fire on prints on another coin | red · ev 6.18 |
-| sell into a buy | once up ≥ 10 %, sell on the first public buy ≥ 1 SOL or +3 % print | red · ev 1.13 |
+| sell into a buy | once up ≥ 10 %, sell on the first public buy ≥ 1 SOL or +3 % print | red · ev 1.13, 1.24 |
 
 ---
 

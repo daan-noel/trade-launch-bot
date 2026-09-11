@@ -597,12 +597,13 @@ fn build_series(
     })
 }
 
-/// The `m_position` columns (`retrace`/`bounce`/`pnl`/`held`) over a series,
-/// anchored on the inspected run's entry fill. Mirrors the live engine's
+/// The `m_position` columns (`retrace`/`bounce`/`pnl`/`held`/`room_taken`) over a
+/// series, anchored on the inspected run's entry fill. Mirrors the live engine's
 /// [`PositionCtx`] fold (`reduce.rs`): peak/trough seed at the entry price and
-/// ratchet on each finite print from the entry event onward, and every metric
-/// reads `NaN` (serialized `null`) at any event *before* the entry — so the panes
-/// draw the position metrics exactly over the held window, blank before it.
+/// ratchet on each finite print from the entry event onward, `room_taken` reads the
+/// depth at the last row at or before the fill, and every metric reads `NaN`
+/// (serialized `null`) at any event *before* the entry, so the panes draw the
+/// position metrics exactly over the held window, blank before it.
 fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64) -> Vec<SeriesOut> {
     let n = series.n_rows();
     let mut ctx = PositionCtx::at_fill(entry_price, entered_at);
@@ -610,13 +611,18 @@ fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64
     let mut bounce = Vec::with_capacity(n);
     let mut pnl = Vec::with_capacity(n);
     let mut held = Vec::with_capacity(n);
+    let mut room_taken = Vec::with_capacity(n);
     for i in 0..n {
         let at = series.at[i];
+        if at <= entered_at {
+            ctx.entry_priced_reserve = series.priced_reserve_sol[i];
+        }
         if at < entered_at {
             retrace.push(None);
             bounce.push(None);
             pnl.push(None);
             held.push(None);
+            room_taken.push(None);
             continue;
         }
         let price = series.price[i];
@@ -625,6 +631,7 @@ fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64
         bounce.push(finite(ctx.bounce(price)));
         pnl.push(finite(ctx.pnl(price)));
         held.push(finite(ctx.held(at)));
+        room_taken.push(finite(ctx.room_taken(price)));
     }
 
     let group = group_spec(MetricGroupId::Position);
@@ -637,6 +644,7 @@ fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64
                 MetricId::Bounce => bounce.clone(),
                 MetricId::Pnl => pnl.clone(),
                 MetricId::Held => held.clone(),
+                MetricId::RoomTaken => room_taken.clone(),
                 _ => vec![None; n],
             };
             SeriesOut {

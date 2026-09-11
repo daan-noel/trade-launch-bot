@@ -809,6 +809,8 @@ pub enum MetricId {
     /// armed). A trail that has armed stays armed after price falls back under
     /// the threshold — `pnl >= 10 AND retrace >= 18` is not that.
     Armed,
+    /// Percent of the entry's room to the graduation wall covered since the fill (`m_position`).
+    RoomTaken,
     // ── m_burst_slot (this token, this slot so far, this print's template) ──
     /// 0/1: this print just joined the member prefix.
     ThisMember,
@@ -2566,7 +2568,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
-                hue: 136,
+                hue: 94,
             },
             MetricSpec {
                 id: MetricId::WaveAllNew,
@@ -2575,7 +2577,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
-                hue: 137,
+                hue: 96,
             },
             MetricSpec {
                 id: MetricId::WaveHasUnknown,
@@ -2584,7 +2586,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
-                hue: 138,
+                hue: 100,
             },
             MetricSpec {
                 id: MetricId::WaveWorkingBuyCount,
@@ -2593,7 +2595,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
-                hue: 139,
+                hue: 102,
             },
             MetricSpec {
                 id: MetricId::WaveThisWorking,
@@ -2699,6 +2701,15 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 60,
+            },
+            MetricSpec {
+                id: MetricId::RoomTaken,
+                name: "room_taken",
+                description: "Percent of the entry's room to the graduation wall that price has covered since your fill: (price - entry) / (wall - entry) x 100, the wall being entry x (115 / vsol at the fill)^2, where the curve graduates. 100 = the graduation price. A take-profit sized by the room left: room_taken >= 40 asks +13 % of an entry at vsol 100 and +68 % of one at vsol 70. NaN with no reserve at the fill (a position adopted on restart) or an entry at the wall. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 46,
             },
         ],
     },
@@ -3186,6 +3197,8 @@ mod tests {
             // The anchored buyer set only ever grows (it is insert-only, and closes
             // at its cap), so an entry upper bound on it is a one-way door too.
             MetricId::NonCreatorBuyers,
+            // The mint-lifetime grain set is insert-only and survives slot resets.
+            MetricId::WorkingTemplatesSeen,
         ];
         for g in REGISTRY {
             for m in g.metrics {

@@ -1,8 +1,9 @@
-//! Does simulate book hot-tape rule 1 the way its Python reference booked it?
+//! Does simulate book hot-tape rule 1 (or 1b) the way its Python reference booked it?
 //!
 //! Rule 1 was re-derived in Python with every term spelled the way the engine
 //! computes it (`node-derivation/hot-tape/r1_exact.py`), and its tickets were frozen
-//! (`r1_ref_{study_exact,holdout_exact}.parquet`). This replays the same lake
+//! (`r1_ref_{study_exact,holdout_exact}.parquet`); rule 1b's are frozen the same way by
+//! `r1b_exit.py ref` (`r1b_ref_*.parquet`). This replays the same lake
 //! through the SAME code simulate runs - the lab's lake load, `run_replay` over one
 //! `EngineState`, the `LagMs` fill (115 ms unless `R1_LAG_MS` says otherwise), the engine cost kernel - and writes one row
 //! per position with its trigger, entry-fill and exit prints named by
@@ -17,13 +18,14 @@
 //!     created at the reference tape's first print, so every batch ticks on the one
 //!     grid the reference used (first event + 200 ms).
 //!
-//! Ignored by default: needs the lake (`SWEEP_LAKE_DIR`, or `hunter/lake-data`) and
-//! the inputs the reference script writes.
+//! Needs the lake (`SWEEP_LAKE_DIR`, or `hunter/lake-data`) and the inputs
+//! `r1_engine_parity.py prep` writes (`r1p_rule.json` or `r1b_rule.json`, the mint,
+//! creator and tick-origin files).
 //!
 //! ```text
 //! R1_RULE=rule.json R1_MINTS=mints.txt R1_CREATORS=creators.csv R1_TICK0_US=... \
 //! R1_OUT=out.csv [R1_CURVE_ONLY=1] [R1_BATCH=20000] [R1_BUY_SOL=0.2] [R1_LAG_MS=115] \
-//! cargo test -p hunter-lab --release --test hot_tape_rule1_parity -- --ignored --nocapture
+//! cargo run -p hunter-lab --release --example hot_tape_rule1_parity
 //! ```
 
 use std::collections::HashMap;

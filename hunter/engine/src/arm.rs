@@ -1120,12 +1120,21 @@ pub struct EnteredCtx {
     /// Trail latch — see [`PositionCtx::armed`](crate::metrics::position::PositionCtx::armed).
     pub armed: bool,
     pub trail_arm_pct: Option<f64>,
+    /// See [`PositionCtx::entry_priced_reserve`](crate::metrics::position::PositionCtx::entry_priced_reserve).
+    pub entry_priced_reserve: f64,
 }
 
 impl EnteredCtx {
     /// Seed a fresh entry fill: peak/trough start at the fill price; stage ladder
-    /// at 0.
-    pub fn at_fill(position: PositionId, fill_price: f64, at: Ts, trail_arm_pct: Option<f64>) -> Self {
+    /// at 0. `entry_priced_reserve` is the `vsol` of the last print folded at the
+    /// fill (`NaN` when unknown).
+    pub fn at_fill(
+        position: PositionId,
+        fill_price: f64,
+        at: Ts,
+        trail_arm_pct: Option<f64>,
+        entry_priced_reserve: f64,
+    ) -> Self {
         Self {
             position,
             entry_price: fill_price,
@@ -1136,6 +1145,7 @@ impl EnteredCtx {
             sold_bps: 0,
             armed: trail_arm_pct.is_none(),
             trail_arm_pct,
+            entry_priced_reserve,
         }
     }
 
@@ -1148,6 +1158,7 @@ impl EnteredCtx {
             entered_at: self.entered_at,
             armed: self.armed,
             trail_arm_pct: self.trail_arm_pct,
+            entry_priced_reserve: self.entry_priced_reserve,
         }
     }
 }
@@ -1630,7 +1641,7 @@ mod tests {
         // and pnl +5% clears the gate → both rules sell.
         let ctx = PositionCtx {
             entry_price: 1.0, peak_price: 1.10, trough_price: 1.0, entered_at: created,
-            armed: true, trail_arm_pct: None,
+            armed: true, trail_arm_pct: None, entry_priced_reserve: f64::NAN,
         };
         track.on_trade(TradeLite {
             side: Side::Sell, sol: 1.0, price: 1.05, reserve_sol: 60.0, at: now,
@@ -1644,7 +1655,7 @@ mod tests {
         // the position to the stop-loss.
         let sunk = PositionCtx {
             entry_price: 1.0, peak_price: 1.0, trough_price: 0.96, entered_at: created,
-            armed: true, trail_arm_pct: None,
+            armed: true, trail_arm_pct: None, entry_priced_reserve: f64::NAN,
         };
         let mut down = TokenTrack::new(created);
         down.on_trade(TradeLite {
@@ -1660,7 +1671,7 @@ mod tests {
         // ...and the stop-loss still fires through the gate at −20%.
         let blown = PositionCtx {
             entry_price: 1.0, peak_price: 1.0, trough_price: 0.75, entered_at: created,
-            armed: true, trail_arm_pct: None,
+            armed: true, trail_arm_pct: None, entry_priced_reserve: f64::NAN,
         };
         let mut crash = TokenTrack::new(created);
         crash.on_trade(TradeLite {
@@ -1707,6 +1718,7 @@ mod tests {
             entered_at: created,
             armed: true,
             trail_arm_pct: Some(10.0),
+            entry_priced_reserve: f64::NAN,
         };
         let mut track = TokenTrack::new(created);
         track.on_trade(TradeLite {

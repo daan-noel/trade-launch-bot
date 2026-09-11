@@ -392,9 +392,14 @@ pub fn replay_readout(
         track.on_trade(t);
         // Ratchet peak/trough only over prices the position actually lived through —
         // mirrors `reduce`'s `fold_entered_extremes`, which runs only on an Entered arm.
+        // `room_taken` reads the depth of the last print folded at the fill, as `reduce`
+        // seeds it on `FillConfirmed`.
         if let (Some(p), Some((entered_at, _))) = (position.as_mut(), ctx.entry) {
             if t.at >= entered_at {
                 p.fold_price(t.price);
+            }
+            if t.at <= entered_at {
+                p.entry_priced_reserve = track.current_priced_reserves();
             }
         }
     }
@@ -639,6 +644,10 @@ pub fn replay_series(
         // tick row carries the last print, so re-folding it is a no-op.
         let mut entered = false;
         if let (Some(p), Some((entered_at, _))) = (position.as_mut(), ctx.entry) {
+            // `room_taken` reads the depth at the last row at or before the fill.
+            if now <= entered_at {
+                p.entry_priced_reserve = series.priced_reserve_sol[i];
+            }
             if now >= entered_at {
                 p.fold_price(price);
                 entered = true;
@@ -1011,7 +1020,7 @@ mod tests {
     fn read_state_resolves_a_manual_episodes_rule_through_its_position() {
         let rule_id = RuleId(Uuid::from_u128(7));
         let position = crate::event::PositionId(42);
-        let held = crate::arm::EnteredCtx::at_fill(position, 1.0, ts(0), None);
+        let held = crate::arm::EnteredCtx::at_fill(position, 1.0, ts(0), None, f64::NAN);
         let (mut state, mint) =
             state_with(rule_id, track_at(1.5, 10), crate::arm::ArmState::Entered(held));
 

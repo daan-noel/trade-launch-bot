@@ -7,6 +7,11 @@ and where the data and code are (section 4). Numbers: [_!___evidence.md](../_!__
 1.4-1.22 and 6.10. Code: [toolkit/](toolkit/README.md) and the step-numbered scripts in
 [hot-tape/](hot-tape/README.md).
 
+The rule runs as **Flip-Catch - Bracket** (this exit: +20 %, -60 %, 90 s). Its entry with the wall
+target, **Flip-Catch - Room** (40 % of the room to graduation, -60 %, 90 s), is rule 1b
+(evidence 1.24, 1.25). The name is what the entry buys: a fast flipper's sell of 1 SOL or more,
+absorbed by a crowded tape.
+
 Tapes: the **study tape** is 08-30 17:48 to 09-06 12:00 UTC (12.47 M prints, 6.76 days); every
 threshold below is read off it. The **holdout tape** is the lake's days after it, 09-06 12:00 to
 09-10 (4.50 days), in the study tape's exact format (`toolkit/lake_export.py`). Section 1's rule is

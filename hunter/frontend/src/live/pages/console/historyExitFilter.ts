@@ -65,6 +65,7 @@ const METRIC_EXITS: readonly HistoryExitFilterOption[] = [
   { value: 'pnl', label: 'pnl', kind: 'metric' },
   { value: 'held', label: 'held', kind: 'metric' },
   { value: 'bounce', label: 'bounce', kind: 'metric' },
+  { value: 'room_taken', label: 'room_taken', kind: 'metric' },
   { value: 'time', label: 'time', kind: 'metric' },
   { value: 'liquidity', label: 'liquidity', kind: 'metric' },
   { value: 'rise', label: 'rise', kind: 'metric' },

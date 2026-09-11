@@ -262,7 +262,9 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 Some(ArmState::EntryPending { intent: pend, position, .. }) if pend == intent => {
                     // Peak/trough start at the fill: before any run-up
                     // `retrace` measures the drop from entry (a soft stop);
-                    // before any dip `bounce` equals `pnl`.
+                    // before any dip `bounce` equals `pnl`. `room_taken` reads the
+                    // depth of the last print folded here: in simulate the fill
+                    // print itself (the replay confirms right after folding it).
                     let trail_arm_pct = state
                         .rule_for(rule_id, Some(position))
                         .and_then(|c| c.trail_arm_pct);
@@ -273,6 +275,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             fill.price,
                             fill.at,
                             trail_arm_pct,
+                            token.track.current_priced_reserves(),
                         )),
                     );
                     fx.push(Effect::PositionUpdate(PositionDelta {

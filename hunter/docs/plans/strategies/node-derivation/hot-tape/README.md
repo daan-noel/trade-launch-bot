@@ -81,6 +81,7 @@ it; the earlier steps are the record as run.
 | G11-G12 | `r1_exact.py` | rule 1 spelled exactly as the engine computes it: `audit` (each correction's cost), `derive MODE STUDY`, `confirm MODE STUDY TAPE...`; writes `data/r1x_*` | 1.22 |
 | G12 | `r1_exact_check.py` | an independent rebuild of `r1_exact`'s tickets from the raw prints (`MODE TAPE N [recall]`) | 1.22 |
 | G13 | `r1_engine_parity.py` | `prep` writes the inputs of `hunter/lab/examples/hot_tape_rule1_parity.rs` (the engine replay); `compare` matches its positions to the frozen tickets; `book` scores an engine run | 1.23 |
+| G14 | `r1b_exit.py` | rule 1's entry with an exit read the engine's way (prints, ticks, `LagMs` exit leg, partial legs); `check` reproduces rule 1's tickets, `paths`, `alone [2]`, `combine`, `book`; `ref` freezes rule 1b's tickets for the engine parity (`r1_engine_parity.py compare TAPE CSV r1b_ref`) | 1.24, 1.25 |
 | - | `toolkit_check.py` | the toolkit re-runs steps 16, 21, 24 and 39 next to the recorded numbers | - |
 
 Shared helpers other steps import: `cvx_hot_event.py` (`node_ids`, `NODE_NAME`, the

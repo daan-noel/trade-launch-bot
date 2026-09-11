@@ -19,12 +19,23 @@
 //!   the ladder and for authored `m_position.pnl` conditions (see `arm.rs`).
 //! * `held` — seconds since the entry fill (floored at zero against block-time
 //!   regression, the `stall` precedent). Gives time-stop exits for free.
+//! * `room_taken`: percent of the entry's room to the graduation wall the price has
+//!   covered: `(price − entry) / (wall − entry) · 100`, where `wall = entry ·
+//!   (GRADUATION_PRICED_RESERVE_SOL / vsol at the fill)²` (spot goes as `vsol²` on the
+//!   curve). A take-profit sized by how far the coin still has to run: `room_taken >= 40`
+//!   asks +13 % of an entry at vsol 100 and +68 % of one at vsol 70.
 //!
 //! Before entry there is no context, so a position metric reads `NaN` (the engine
 //! convention: `NaN` satisfies no condition). That is exactly why the entry-side
 //! `can_enter` gate needs no special case — with no position, these never fire.
 
 use super::{secs_between, MetricId, Ts};
+
+/// Priced SOL reserve (`vsol`) of a pump.fun bonding curve at graduation: the 30
+/// virtual SOL every curve starts with plus the 85 real SOL that completes it. The
+/// `room_taken` wall. Core's `PUMP_INITIAL_VIRTUAL_SOL + PUMP_GRADUATION_REAL_SOL`
+/// is the same number; a core test asserts the two stay equal.
+pub const GRADUATION_PRICED_RESERVE_SOL: f64 = 115.0;
 
 /// The since-entry state a position metric reads. Built from
 /// [`ArmState::Entered`](crate::arm::ArmState) on each open-side evaluation.
@@ -43,6 +54,10 @@ pub struct PositionCtx {
     pub armed: bool,
     /// Threshold that latches [`armed`](Self::armed). `None` ⇒ the metric reads 1.
     pub trail_arm_pct: Option<f64>,
+    /// Priced SOL reserve (`vsol`) of the last print folded when the entry filled
+    /// (`room_taken` reference). `NaN` when unknown (a position adopted on restart),
+    /// and `room_taken` then reads `NaN`.
+    pub entry_priced_reserve: f64,
 }
 
 impl PositionCtx {
@@ -62,7 +77,14 @@ impl PositionCtx {
             entered_at,
             armed: trail_arm_pct.is_none(),
             trail_arm_pct,
+            entry_priced_reserve: f64::NAN,
         }
+    }
+
+    /// The same context with the entry's priced reserve set (`room_taken` reference).
+    pub fn with_entry_priced_reserve(mut self, vsol: f64) -> Self {
+        self.entry_priced_reserve = vsol;
+        self
     }
 
     /// Ratchet peak up / trough down for one finite price, and latch `armed`
@@ -121,6 +143,22 @@ impl PositionCtx {
     pub fn held(&self, now: Ts) -> f64 {
         secs_between(self.entered_at, now).max(0.0)
     }
+
+    /// `room_taken`: `pnl` as a percent of the entry's room to the graduation wall,
+    /// `((GRADUATION_PRICED_RESERVE_SOL / vsol)² − 1) · 100`. `NaN` without a positive
+    /// entry reserve, or with no room left (an entry at or past the wall).
+    pub fn room_taken(&self, price: f64) -> f64 {
+        let v = self.entry_priced_reserve;
+        if !(v.is_finite() && v > 0.0) {
+            return f64::NAN;
+        }
+        let room_pct = ((GRADUATION_PRICED_RESERVE_SOL / v).powi(2) - 1.0) * 100.0;
+        if room_pct > 0.0 {
+            self.pnl(price) / room_pct * 100.0
+        } else {
+            f64::NAN
+        }
+    }
 }
 
 /// Whether a metric is a **trailing** stop — anchored on a since-entry extreme
@@ -156,6 +194,7 @@ pub fn position_value(id: MetricId, ctx: &PositionCtx, price: f64, now: Ts) -> f
         MetricId::Bounce => ctx.bounce(price),
         MetricId::Pnl => ctx.pnl(price),
         MetricId::Held => ctx.held(now),
+        MetricId::RoomTaken => ctx.room_taken(price),
         MetricId::Armed => {
             // No gate authored ⇒ latch is vacuously on. Otherwise the 0/1 flip.
             f64::from(u8::from(ctx.trail_arm_pct.is_none() || ctx.armed))
@@ -182,6 +221,7 @@ mod tests {
             entered_at: ts(entered),
             armed: true,
             trail_arm_pct: None,
+            entry_priced_reserve: f64::NAN,
         }
     }
 
@@ -236,6 +276,32 @@ mod tests {
     }
 
     #[test]
+    fn room_taken_is_pnl_over_the_entrys_room_to_the_wall() {
+        // vsol 57.5 at the fill: the wall price is (115 / 57.5)^2 = 4x the entry, so
+        // the room is +300 % and +120 % covers 40 % of it.
+        let c = PositionCtx::at_fill(1.0, ts(0.0)).with_entry_priced_reserve(57.5);
+        assert!((c.room_taken(2.2) - 40.0).abs() < 1e-9);
+        assert!((c.room_taken(4.0) - 100.0).abs() < 1e-9);
+        assert!((c.room_taken(0.7) - -10.0).abs() < 1e-9);
+        // The rule-1b target, 40 % of the room, at the depths the rule enters.
+        for (vsol, target_pct) in [(100.0, 12.9), (90.0, 25.3), (80.0, 42.7), (70.0, 68.0)] {
+            let c = PositionCtx::at_fill(1.0, ts(0.0)).with_entry_priced_reserve(vsol);
+            let at_target = 1.0 + target_pct / 100.0;
+            assert!((c.room_taken(at_target) - 40.0).abs() < 0.1, "vsol {vsol}");
+        }
+    }
+
+    #[test]
+    fn room_taken_is_nan_without_a_reserve_or_room() {
+        assert!(PositionCtx::at_fill(1.0, ts(0.0)).room_taken(1.2).is_nan());
+        let at_wall = PositionCtx::at_fill(1.0, ts(0.0))
+            .with_entry_priced_reserve(GRADUATION_PRICED_RESERVE_SOL);
+        assert!(at_wall.room_taken(1.2).is_nan());
+        let past = PositionCtx::at_fill(1.0, ts(0.0)).with_entry_priced_reserve(120.0);
+        assert!(past.room_taken(1.2).is_nan());
+    }
+
+    #[test]
     fn non_finite_price_or_bad_reference_is_nan() {
         assert!(ctx(1.0, 1.0, 1.0, 0.0).retrace(f64::NAN).is_nan());
         assert!(ctx(1.0, 1.0, 1.0, 0.0).bounce(f64::NAN).is_nan());
@@ -252,6 +318,8 @@ mod tests {
         assert!((position_value(MetricId::Bounce, &c, 1.0, ts(5.0)) - 25.0).abs() < 1e-9);
         assert!((position_value(MetricId::Pnl, &c, 1.6, ts(5.0)) - 60.0).abs() < 1e-9);
         assert_eq!(position_value(MetricId::Held, &c, 1.6, ts(5.0)), 5.0);
+        let deep = c.with_entry_priced_reserve(57.5);
+        assert!((position_value(MetricId::RoomTaken, &deep, 2.2, ts(5.0)) - 40.0).abs() < 1e-9);
         // A token-scoped id is not a position metric → NaN.
         assert!(position_value(MetricId::Trail, &c, 1.6, ts(5.0)).is_nan());
     }

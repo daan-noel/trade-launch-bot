@@ -141,4 +141,14 @@ mod unit_tests {
         assert_eq!(tidy_sol_decimal(0.1), 0.1);
         assert_eq!(tidy_sol_decimal(f64::from(0.05f32)), 0.05);
     }
+
+    #[test]
+    fn engine_graduation_wall_is_the_curve_virtual_plus_real_sol() {
+        // The engine carries its own copy (it depends on no product crate); the
+        // `room_taken` exit is sized against it.
+        assert_eq!(
+            hunter_engine::metrics::position::GRADUATION_PRICED_RESERVE_SOL,
+            PUMP_INITIAL_VIRTUAL_SOL + PUMP_GRADUATION_REAL_SOL
+        );
+    }
 }

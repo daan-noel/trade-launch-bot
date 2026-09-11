@@ -1435,6 +1435,97 @@ Study, engine: 603 tickets, +4.47 %, 6/6, top 1 % 12.9 % (Python 604, +4.51 %).
 Not measured here: the days after 09-10 (the clean test), a tip above 0.000225 SOL a leg, failed
 buys, and live paper, which books `worst_case` fills rather than this seat.
 
+## 1.24 Rule 1's exit, re-read on its own trades: nothing beats the bracket out of sample
+
+Rule 1's entry frozen, eleven exit families from the inventory and the stepped trail, each read the
+way the engine reads an exit (every print after the fill, the 200 ms tick grid, the `LagMs(115)`
+exit leg, the engine kernel, one position per coin). `hot-tape/r1b_exit.py` reproduces rule 1's
+frozen tickets exactly through the same evaluator (604 / 604 study, 450 / 450 holdout, same
+prints, same SOL), and its docstring carries the bars, fixed ahead of every comparison.
+
+**Where rule 1's book loses (study, 0.2 SOL).** The +20 % take profit books +15.08 SOL on 371
+trades; the 90 s clock -6.66 on 210; the stop -2.98 on 23. 85 % of the clock exits reach +3 %
+first and half reach +10 %, then give it back to a median -5 %; after a take profit, 79 % of
+coins reach +30 % within 120 s. Only 31 trades never rise.
+
+| family (study, 0.2 SOL, 115 ms; rule 1 = 5.44 SOL) | best spec | SOL | fails |
+| --- | --- | ---: | --- |
+| stepped trail, 198 ladders | peak +15 %, trail 8 % | 4.43 | folds, top 1 % |
+| trail while up (`arm_above_pct`) | up 15 %, trail 3 % | 5.52 | folds |
+| sell into a buy | up 15 %, a buy of 3 SOL | 5.77 | folds |
+| wall target | 0.4 x (115 / vsol)^2 - 1 | 6.35 | top 1 % 15.5 |
+| clock | 180 s | 6.19 | fold 1 |
+| tighter stop | -30 % | 5.17 | folds |
+| cuts under water: new buyers stop, SOL bought, recipes, stall, creator sells | | 4.19 - 5.53 | folds |
+| wide stepped trail (round 2) | peak +30 %, trail 30 %, 180 s | 6.83 | top 1 % 25.3 |
+| half out (round 2) | half at +20 %, the rest at 0.6 x the wall, 180 s | 6.07 | fold 1 |
+| wall target + clock (round 2) | 0.3 x the wall, 180 s | **7.51** | passes every bar |
+
+Round 2 follows round 1's results and is marked as such. The stepped trail loses on
+the winners: 192 of them dip 8 % or more after +15 % on the way to +20 %, and the trail sells the
+dip behind our seat (-6.4 SOL against +2.3 kept on the trades that time out). A cut under water
+sells trades that recover: the winners' own trough is -5.8 % at the median.
+
+**The holdout, booked once on the survivor, refutes it.**
+
+| holdout | rule 1 | wall target 0.3, clock 180 s |
+| --- | --- | --- |
+| 115 ms | 450, +4.44 %, 3.99 SOL, 5/5, top 1 % 9.8 | 443, +4.17 %, 3.69 SOL, 5/5, top 1 % 16.2 |
+| 200 ms | +3.69 %, 3.30 SOL | +3.69 %, 3.26 SOL |
+| 500 ms | +2.76 %, 2.41 SOL | +2.77 %, 2.36 SOL |
+| 0.35 SOL | 6.56 SOL | 6.05 SOL |
+
+The study gain (+2.07 SOL) does not carry: the longer clock lets losers run to the stop (26 stops
+against 14) and the book leans on its tail.
+
+**The two tail-bar failures, read on the holdout AFTER the survivor** (so the holdout chooses
+nothing here; the days after 09-10 do):
+
+| book (0.2 SOL, 115 ms) | study | holdout | holdout 200 / 500 ms | holdout at 0.35 SOL |
+| --- | --- | --- | --- | --- |
+| rule 1 | 5.44 SOL, +4.51 %, top 1 % 12.8 | 3.99, +4.44 %, top 1 % 9.8, body 3.60 | 3.30 / 2.41 | 6.56 |
+| wide trail (peak +30 %, trail 30 %, 180 s) | 6.83, +7.53 %, median trade +0.6 %, top 1 % 25.3 | 3.32, +4.96 %, median -0.1 %, top 1 % 23.1 | 3.12 / 2.99 | 5.49 |
+| wall target 0.4, clock 90 s | 6.35, +5.84 %, top 1 % 15.5 | **4.57, +5.55 %, top 1 % 13.0, body 3.98** | **3.98 / 3.37** | **7.61** |
+
+The wide trail is a lottery (half the trades lose, five trades carry a quarter of the net) and loses
+the holdout, as the tail bar said. The wall target at 0.4 with rule 1's 90 s clock misses the study
+tail bar by 0.5 points and beats rule 1 on every holdout line; it differs from the refuted survivor
+only in the clock, and a clock past 90 s fails out of sample for the second time (240 s in 1.20).
+It is the exit candidate for the days after 09-10, next to rule 1's bracket.
+
+## 1.25 Rule 1b in the engine: the wall target, booked ticket for ticket (H18)
+
+Rule 1b (Flip-Catch - Room; rule 1 is Flip-Catch - Bracket) is rule 1's entry with the exit of
+1.24's post-selection read: sell at 40 % of the entry's
+room to the graduation wall, stop at -60 %, clock at 90 s. The engine carries the target as one new
+position metric, `m_position.room_taken` = `pnl / ((115 / vsol at the fill)^2 - 1)`, in percent, so
+the exit is `room_taken >= 40` OR `held >= 90`, with `stop_loss` 60 and no `take_profit`
+(`node-derivation/data/r1b_rule.json`). `vsol at the fill` is the depth of the last print folded when
+the fill confirms; in simulate that is the fill print, the `v0` of `r1b_exit.py`.
+`r1b_exit.py ref` freezes the Python tickets (`r1b_ref_*.parquet`), and the same replay and compare
+as 1.23 read them.
+
+| corpus | reference tickets | engine, same trigger print | fill, exit, reason | SOL | reference only |
+| --- | ---: | ---: | --- | --- | ---: |
+| holdout_exact | 412 | 409 | all equal | equal to 1.4e-16 | 3, all on `7ieEr...` |
+| study_exact | 543 | 542 | all equal | equal to 1.5e-16 | 1, on `2Q8tH...` |
+
+The four reference-only tickets sit on the two coins the engine retires as dead (1.23).
+
+| engine book, all venues | rule 1 | rule 1b |
+| --- | --- | --- |
+| study, 0.2 SOL, 115 ms | 603, +4.47 %, 5.39 SOL, 6/6, top 1 % 12.9 | 542, +5.81 %, 6.30 SOL, 6/6, top 1 % 15.6 |
+| holdout, 0.2 SOL, 115 ms | 448, +4.49 %, 4.02 SOL, 5/5, top 1 % 9.7, body 3.63 | 409, +5.63 %, 4.60 SOL, 5/5, top 1 % 13.0, body 4.01 |
+| holdout, 200 ms | +3.74 %, 3.33 SOL, 5/5 | +4.96 %, 4.01 SOL, 5/5 |
+| holdout, 500 ms | +2.80 %, 2.44 SOL, 4/5 | +4.23 %, 3.40 SOL, 5/5 |
+| holdout, 0.35 SOL | +4.22 %, 6.61 SOL | +5.36 %, 7.67 SOL |
+| holdout 95 % interval, 115 ms | +2.27..+6.61 | +3.07..+8.28 |
+
+The holdout chose rule 1b's exit (1.24), so this table shows the engine books what Python booked; it
+certifies nothing. The days after 09-10 do, rule 1 and rule 1b side by side. A position the live
+engine adopts on restart stores no fill depth: its `room_taken` reads `NaN` and only the stop and
+the clock close it.
+
 # 2. THE PRIZE
 
 ## 2.1 The episode census

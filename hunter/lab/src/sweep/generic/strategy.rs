@@ -1807,7 +1807,8 @@ pub(crate) fn resolve_exit(
     // (`retrace`/`bounce`/`pnl`). Seeded to the fill price — exactly as `reduce.rs`
     // seeds `ArmState::Entered` — and folded forward each event BEFORE that event's
     // exit decision, mirroring `evaluate_token`'s per-event extrema fold.
-    let mut ctx = PositionCtx::at_fill_with_arm(entry_price, entry_at, c.trail_arm_pct);
+    let mut ctx = PositionCtx::at_fill_with_arm(entry_price, entry_at, c.trail_arm_pct)
+        .with_entry_priced_reserve(entry_depth(series, fill_row).unwrap_or(f64::NAN));
     for j in (fill_row + 1)..n {
         if series.dead[j] {
             return close_at_fire(
@@ -1889,7 +1890,8 @@ fn resolve_exit_staged(
     let entry_reserve = entry_depth(series, fill_row);
     let n = series.n_rows();
     let has_exit_reqs = c.has_exit_metrics();
-    let mut ctx = PositionCtx::at_fill_with_arm(entry_price, entry_at, c.trail_arm_pct);
+    let mut ctx = PositionCtx::at_fill_with_arm(entry_price, entry_at, c.trail_arm_pct)
+        .with_entry_priced_reserve(entry_reserve.unwrap_or(f64::NAN));
     let mut stage: usize = 0;
     let mut sold_bps: u16 = 0;
     let mut legs: Vec<ExitLeg> = Vec::new();
@@ -3019,6 +3021,7 @@ unsafe fn first_trailing_row_avx512(
         entered_at: DateTime::UNIX_EPOCH,
         armed: true,
         trail_arm_pct: None,
+        entry_priced_reserve: f64::NAN,
     };
     for (k, &p) in price.iter().enumerate().take(n).skip(j) {
         ctx.fold_price(p);
