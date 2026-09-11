@@ -210,7 +210,7 @@ on the coin; the fire he takes can be a later one.
 | # | question | how | decide |
 | --- | --- | --- | --- |
 | 6.1 | Which of those prints does it take? | On **its coins**, every print of the trigger class (`candidates.build`); labelled by whether it acted (`contrast.label_acted` in its reaction window); `contrast.strat_rank(acted, ignored_same_coins, facts)` | Facts far from 0.50 with a mechanism become the event's terms. Acted medians are the first thresholds. A conjunction at high lift covering a tiny share of its buys is a rare corner, not its logic. If leftover exists only on the fires he takes, the class is too wide: add terms to E, do not add D |
-| 6.2 | Does it hold as a public sentence? | Every term in public tape state, on **every coin** (`candidates.build` + `book.fires`). Add terms one at a time. Run the opposite-side control (same terms, other side). Temporary public X = a hold-matched clock (a prior, not phase 8) | Each term must lift the book monotonically. The control must be worse. Own prints stay out. A red 6.2 with green 5.2 is not "E is wrong": it is this spelling plus this prior X on every coin. Next is 6.1 terms or phase 8 on the acted pool, not a random new E. The prior X is a yardstick: it ranks the terms (each must lift the book under the same X) and its sign decides nothing. Rule 1's event reads -0.68 % under a 15 s clock and carries +4.5 % once P and X are filled (evidence 1.12, 1.22). A term chosen under the prior X is re-read under the real X in phase 12: rule 1's "bought >= 2 SOL in 2 s" was costing money there |
+| 6.2 | Does it hold as a public sentence? | Every term in public tape state, on **every coin** (`candidates.build` + `book.fires`). Add terms one at a time. Run the opposite-side control (same terms, other side). Temporary public X = a hold-matched clock (a prior, not phase 8) | Each term must lift the book monotonically. The control must be worse. Own prints stay out. A red 6.2 with green 5.2 is not "E is wrong": it is this spelling plus this prior X on every coin. Next is 6.1 terms or phase 8 on the acted pool, not a random new E. The prior X is a yardstick: it ranks the terms (each must lift the book under the same X) and its sign decides nothing. Rule 1's event reads -0.68 % under a 15 s clock and carries +4.5 % once P and X are filled (hot-tape case step 25, evidence 1.22). A term chosen under the prior X is re-read under the real X in phase 12: rule 1's "bought >= 2 SOL in 2 s" costs money there (evidence 1.20) |
 
 Report coverage and reaction cost beside every lift. An event that costs over about 2 %
 to react to (price move from the state a watcher held to our 115 ms fill) is unreachable
@@ -374,16 +374,13 @@ tickets carries (`walkforward.cut_noise`) is chance, whatever the folds say. On 
   candidate -> freeze -> disjoint holdout -> engine reconcile -> paper -> small real
 ```
 
-- **The floor is per day, and a mean lies.** Tickets of `16, 177, 210, 24, 28, 9` average 53.9
-  and clear fifty on two days of six; the two big days are the days one client was alive, so
-  the mean launders the client concentration through the gate (law 19). Print the per-day
-  list. A stub UTC day (hours well under 24) is not a floor day: quote tickets/hour x 24.
+- **The floor is per day, and a mean lies** (strategy law 19). Print the per-day list. A stub
+  UTC day (hours well under 24) is not a floor day: quote tickets/hour x 24.
 - **Tail calibration.** A real convex book at this seat puts 9-12 % of its net in its top 1 %
   (evidence 2.3); a cell at 50-270 % is noise around zero. Report the biggest coin's share
   beside it; if one coin carries the result, that is the result.
-- **The client gate outranks walk-forward.** Trades behind a launch door come in clients: one
-  creation build launches many coins over a day or two, and a week holds about 20 of them
-  (evidence 3.1a). The client is the creation build for a launch-door sentence, the machine
+- **The client gate outranks walk-forward.** Trades come in clients, not independent draws
+  (strategy law 18, evidence 3.1a). The client is the creation build for a launch-door sentence, the machine
   (ix structure + payer, never the wallet) for a trader-node sentence, the token for an
   event-only sentence. Report trades and clients side by side, the top client's share, the
   book with each client removed (worst quoted), and a 2,000-draw bootstrap over clients. A
@@ -427,7 +424,7 @@ only because campaign activity is uneven across days.
 | 12.1 | Does the frozen sentence hold on unseen days? | The same booking code on the holdout tape, nothing re-fitted, the full ledger | Every bar. The holdout confirms; it never chooses. Each change is booked **once** on the holdout, one at a time in the order taken; a change that fails there is dropped. A holdout read to choose between survivors is spent for that choice: the change is certified only by later unseen days (rule 1b's exit, evidence 1.24) |
 | 12.2 | The room | Split the sentence's trades by the member's pick (`act`) and its arrival (`act_in`) | If its picks pay no more than its skips, copying it has no room left: read every threshold off money |
 | 12.3 | Candidate table | `candidates.build` under floors loose enough for every loosening; `book.save` | It must reproduce the current book exactly (`book.fires` against the recorded ledger) before any number off it is trusted |
-| 12.4 | Thresholds by money | `walkforward.converge(C, days, base, grid, veto=bars)` | Keep rule and bars. A term on the grid edge means the table floor is too tight - rebuild looser. A looser threshold is judged on the trades it adds, net of the sentence's own trades it displaces through occupancy: on rule 1 every term fails its first step under both exits, so more trades need a second event, not a looser one (evidence 1.26) |
+| 12.4 | Thresholds by money | `walkforward.converge(C, days, base, grid, veto=bars)` | Keep rule and bars. A term on the grid edge means the table floor is too tight - rebuild looser. A looser threshold is judged on the trades it adds, net of the sentence's own trades it displaces through occupancy: on rule 1 every term fails its first step under both exits, so more trades need a second event, not a looser one (evidence 7, rule 1c) |
 | 12.5 | Structural checks | `graduation.grad_flag`, the capped book, a lookahead read of any term that looks too good | A book that rests on an unpriceable exit gets a term that keeps the exit priceable |
 | 12.6 | New terms | `walkforward.new_terms`: each fact cut at 12 quantiles from both sides; `cut_noise` beside it | Taken only above chance. Inventory ideas not yet in the sentence enter here |
 | 12.7 | Exit on the new pool | `exits.outcomes` then `walkforward.axes`, one axis at a time | Keep rule, then the holdout |

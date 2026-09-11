@@ -18,7 +18,7 @@ script that names the node's wallets needs `DATABASE_URL` in `hunter/.env` (a re
 | `r1_exact_check.py` | an independent rebuild of `r1_exact`'s tickets from the raw prints, sharing no code with it (`MODE TAPE N [recall]`) | 1.22 |
 | `r1_engine_parity.py` | `prep` writes the inputs of `hunter/lab/examples/hot_tape_rule1_parity.rs` (the engine replay); `compare` matches its positions to the frozen tickets; `book` scores an engine run | 1.23 |
 | `r1b_exit.py` | rule 1's entry with an exit read the engine's way (prints, ticks, `LagMs` exit leg, partial legs); `check` reproduces rule 1's tickets, `paths`, `alone [2]`, `combine`, `book`; `ref` freezes rule 1b's tickets for the engine parity (`r1_engine_parity.py compare TAPE CSV r1b_ref`) | 1.24, 1.25 |
-| `r1c_loosen.py` | rule 1's entry loosened one term at a time under both exits, the added trades judged on their own net of the rule 1 tickets they displace (derive 12.4); its docstring holds the eight bars: `book`, `walk`, `combine`, `grid`, `slices` | 1.26 |
+| `r1c_loosen.py` | rule 1's entry loosened one term at a time under both exits, the added trades judged on their own net of the rule 1 tickets they displace (derive 12.4); its docstring holds the eight bars: `book`, `walk`, `combine`, `grid`, `slices` | 7 (rule 1c) |
 | `b2_leftover.py` | derive 5.2 calibrated: leftover existence on five member x trigger pairs whose fate is known, then applied to the mid-tape node's 9999hu and 88887Q (`toolkit.seat.leftover`) | 1.27 |
 | `toolkit_check.py` | the toolkit re-runs steps 16, 21, 24 and 39 next to the recorded numbers | - |
 

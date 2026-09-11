@@ -11,7 +11,7 @@ Five files, and they do not overlap:
 | [_!___derive.md](_!___derive.md) | the method: from one paying wallet to a sentence, the gates, how a result is recorded | rewritten when the method changes |
 | [_!___inventory.md](_!___inventory.md) | every idea, in Door / Event / Permission / Exit | a row is added or its status changes |
 | [_!___workflow.md](_!___workflow.md) | the open queue | rewritten when the open list changes |
-| [_!___evidence.md](_!___evidence.md) | the standing measurements with their coordinates, and the ledger of every rule booked | a result is added, never argued with |
+| [_!___evidence.md](_!___evidence.md) | the standing measurements with their coordinates, and the ledger of every rule booked | a standing number is added; a closed line is one ledger row |
 
 Self-contained on purpose. Section 11 is the only part that names this repository; the rest
 travels. A claim here that the evidence file does not support is wrong **here**.
@@ -95,10 +95,11 @@ behind it are in the price before we can act.
 
 - **We can predict which coins survive.** Certain launch builders, plus a website and a telegram,
   give 4-6x - on 30 straight days here, and on an independent study of 832,941 launches.
-- **Nothing yet predicts which coin spikes now.** The crowd that makes a spike arrives through
-  feeds and chat, and none of that is on chain until it is already in the price.
+- **Only one sentence yet names a spike at our seat**: rule 1's frenzy-absorbed sell. The crowd
+  that makes a spike arrives through feeds and chat, and none of that is on chain until it is
+  already in the price.
 - **The prize is real and reachable.** About 1,250 real doubling moves a day, and 90 % of the move
-  is still there 115 ms after it starts. We are fast enough. We cannot yet tell which one.
+  is still there 115 ms after it starts. We are fast enough; telling which one is the problem.
 
 ## What a rule is
 
@@ -172,7 +173,7 @@ about an actor's remaining plan. It is never a claim about a price path.
 Break-even is `p = L / (W + L)`.
 
 **That number is not a market constant.** Measured on one week of the same fires, it moves from
-**29.0 %** under a tail-preserving exit to **46.4 %** under a 30 s clock, and from **14.5 %** at
+**29.0 %** under trail50 c600 to **46.4 %** under a 30 s clock, and from **14.5 %** at
 an arbitrary mid-tape entry to about **0** at an episode trough. A rule is judged against **its
 own realised break-even**, never against a fixed percentage carried over from another cell.
 
@@ -183,23 +184,23 @@ own realised break-even**, never against a fixed percentage carried over from an
    L-selection : which coin goes to -50 %   - ANSWERED: predictable from the launch bundle
 ```
 
-On the unselected mid-tape parent under a tail-preserving exit: `P = .20`, `W = 84.7 %`,
+On the unselected mid-tape parent under trail50 c600: `P = .20`, `W = 84.7 %`,
 `L = 31.6 %`, so `E = -8.8 %` a trade. Holding `W` fixed, the book breaks even at `L <= 16.3`.
 Holding `L` fixed, it breaks even at `P >= .29`. **Halving the loser cost is worth exactly as
 much as lifting the hit rate by nine points**, and the terms that mark a collapse - bundle share,
 dev holding, fresh-wallet share, creator sold, create structure - are already in hand.
 
-The first attempt did not answer it. It ran on the documented-project book, whose door enters at
-age >= 300 s and reserve 50-85 and therefore sits past the window where coins collapse: 1.2 % of
-its trades reach -50 %, against 14.1 % on door-v3 MONEY. **That measured a book with no left
-tail, not a left tail that cannot be predicted** ([_!___evidence.md](_!___evidence.md) 3.6).
+The documented-project book cannot answer it: its door enters at age >= 300 s and reserve 50-85,
+past the window where coins collapse, so 1.2 % of its trades reach -50 %, against 14.1 % on
+door-v3 MONEY. **That book has no left tail; the tail is not unpredictable**
+([_!___evidence.md](_!___evidence.md) 7, the C1 row).
 
 **Run where the tail is, it is answered: the -50 % trade is predictable at decision time, from
 the launch bundle.** On the door-v3 MONEY book, `bundle share < 0.20` - the share of live supply
 held by wallets that bought in the creation slot - takes the -50 % rate from **14.1 % to 2.3 %**
 and the book from **+5.39 to +10.43 SOL**, and it survives the control that kills every other
 term (evidence 3.7). Snipers, fresh-wallet share and buyer count separate only because they
-proxy the reserve, and reserve is reachability, not prediction (7.4 law 19). The creator
+proxy the reserve, and reserve is reachability, not prediction (7.4 law 21). The creator
 permission **inverts** on this axis: it buys survival and it buys the coins whose dev still holds
 the supply.
 
@@ -279,7 +280,7 @@ With no gap there is no trade at any seat, however true the signal is.
                                                          115 ms later
 ```
 
-Every line closed in section 8.1 fails on that gap rather than on the idea: the swarm lands in the
+The market lines closed in 8.1 fail on that gap rather than on the idea: the swarm lands in the
 trigger's own slot, the wave's first buy already carries the impact, a racer bundle after silence
 is confirmation that somebody else has already fired. The tell and the money are simultaneous.
 
@@ -309,8 +310,8 @@ on the toll is telling you its median coin does not move.
 
 1. Profit is someone else's future net inflow while we hold. There is no other source.
 2. `E = P.W - (1-P).L - toll`, and break-even `L/(W+L)` moves with the entry and the exit.
-3. Cutting the loser cost is worth as much as raising the hit rate, and it is still unanswered
-   on any book that has a left tail.
+3. Cutting the loser cost is worth as much as raising the hit rate, and on a book with a left
+   tail it is answered (1.3).
 4. Price contains all landed flow. Only who, how many, and whether they are still in is unpriced.
 5. Our seat is 115 ms on both legs; edges consumed inside it are closed, edges that develop over
    slots are open. A story needs a delay between the tell and the money, and that delay is the
@@ -345,7 +346,7 @@ Consequences every later section uses:
   below entry reserve 42.43**; -25 % is impossible below 34.6. A cheap entry does not merely
   reduce the loss, it forbids it. Measured: 80.4 % of one event's 50,411 fires enter below 42.43
   and **cannot produce a -50 % trade at all**, which is why an L-rate compared across reserves
-  measures headroom rather than prediction (7.4 law 19).
+  measures headroom rather than prediction (7.4 law 21).
 - **A silent coin keeps its price.** No prints means no reserve change; an exit fills at the last
   reserve state. The curve is always the counterparty, so **an exit never needs a later print.**
 - **Liquidating `B` tokens against reserve `V` returns `V*B / (k/V + B)`**, never `B * price`.
@@ -383,7 +384,7 @@ Terminals stage discovery by curve position - New Pairs, Final Stretch, Migrated
 insider holding, dev funding source, fresh-wallet buys, bot detection.
 
 Everything on that panel is a claim about **who holds the supply and who is buying**, never
-about the price path. That is what a reader reads - and it is the vocabulary the untried
+about the price path. That is what a reader reads - and it is the vocabulary the
 L-selection problem (1.3) is built from.
 
 ## 2.5 Actors and their equipment
@@ -555,10 +556,10 @@ used. [solo-traders.md](solo-traders.md) is that set.
 | node | wallets | net SOL | margin | median trade | lose > 20 % | best 1 % of trades = | open to us? | studied? |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | hot-tape re-entry | 6 | 938.2 | 1.10 % | -2.07 % | 13.6 % | 180.6 % of net | **rule 1** ([_!___workflow.md](_!___workflow.md) 1). Three of the six read +2.2 to +2.3 %/trade at the RACE seat; pooled +0.50 % with a 216 % tail (evidence 1.11) | yes |
-| mid-tape one-shot | 7 | 427.9 | 1.73 % | -3.34 % | 15.9 % | 122.9 % | **open** ([_!___workflow.md](_!___workflow.md) 2); the best ceiling with volume, +0.71 %/trade 7/8 at the PEER seat (1.4) | all seven members measured (6.9) |
-| instant launch | 6 | 205.8 | 1.31 % | -2.50 % | 9.1 % | 116.0 % | oracle ceiling -0.25 % at the PEER seat (1.4) | partly |
-| quiet deep-age | 4 | 110.3 | 1.12 % | -2.50 % | 5.9 % | 112.2 % | oracle ceiling -0.16 % at the PEER seat (1.4); red at our seat: the burst it follows lasts ~80 ms | yes |
-| deep-age big clip | 3 | 68.2 | **4.03 %** | **-1.23 %** | **4.5 %** | **32.3 %** | **best ceiling: +2.62 %/trade 6/8 days** at the PEER seat, but only 1,197 episodes (1.4) | yes |
+| mid-tape one-shot | 7 | 427.9 | 1.73 % | -3.34 % | 15.9 % | 122.9 % | **open** ([_!___workflow.md](_!___workflow.md) 2); the best ceiling with volume, +0.71 %/trade 7/8 at the PEER seat (evidence 1.4) | all seven members measured (evidence 7) |
+| instant launch | 6 | 205.8 | 1.31 % | -2.50 % | 9.1 % | 116.0 % | oracle ceiling -0.25 % at the PEER seat (evidence 1.4) | partly |
+| quiet deep-age | 4 | 110.3 | 1.12 % | -2.50 % | 5.9 % | 112.2 % | oracle ceiling -0.16 % at the PEER seat (evidence 1.4); red at our seat: the burst it follows lasts ~80 ms | yes |
+| deep-age big clip | 3 | 68.2 | **4.03 %** | **-1.23 %** | **4.5 %** | **32.3 %** | **best ceiling: +2.62 %/trade 6/8 days** at the PEER seat, but only 1,197 episodes (evidence 1.4) | yes |
 
 Three facts hold across all five:
 
@@ -584,8 +585,8 @@ Co-selection lift between two of the 26, against the geometric mean of the pair'
 | over 400 s | 32 | **3.50** |
 
 A coin's identity carries a shared signal a professional can read only once the coin has some
-life in it. Whether that agreement predicts anything **forward** is unmeasured, and it is the one
-coin-level term that is not saturated: a 1,212-wallet oracle covers 89-98 % of the parent and
+life in it. Agreement predicts the -50 % rate forward, outside the roster's selection window
+(evidence 6.8), and it is the one coin-level term that is not saturated: a 1,212-wallet oracle covers 89-98 % of the parent and
 moves detection by at most 1.1 points, while 26 independent opinions are a different object.
 
 ## 5.4 What a reader is for
@@ -596,7 +597,7 @@ moves the curve, the swarm that follows him lands inside his slot, and both are 
 before a copier can act - truncate the path one slot before he lands and every "before" cell goes
 negative.
 
-Two rules follow, and both have been broken here:
+Two rules follow:
 
 - **A node is not a wallet list.** Do not close a seven-wallet node on two members whose
   equipment happens to be unreachable.
@@ -732,8 +733,7 @@ Section 1.5 is the law. Four corollaries:
 7. **Every term carries one causal sentence.** That is the whole defence against curve-fitting.
 8. **Freeze, then a disjoint holdout, never trimmed.** A red block means the story is wrong.
 9. **Score the worst day, not the best.**
-10. **Report the artifact detectors beside every result**: the zero-lag column, gap-to-next-print,
-    the share of entries with no print in the hold, and the trail fire rate.
+10. **Report the artifact detectors beside every result** (the list: derive 11).
 11. **Lift belongs to the event, money to the gates.**
 12. **Measure lift on the grain the book collapses to.** Per-print and per-coin lift can invert
     (2.68x per print against 0.74x per coin on the same event). **A 4.63x per-coin lift is 1.21x
@@ -752,17 +752,15 @@ Section 1.5 is the law. Four corollaries:
     conjunction search, never on a number.
 18. **Count CLIENTS, not trades.** Trades behind a door are not independent draws: one creation
     build launches many coins over a day or two and every trade on them shares a creator, a
-    machine and a window. Measured: **one build carried 82 % of the best cell's net and 221 % of
-    the next one's**, and a week of prints holds only about 20 builds with a median life of two
-    days. So a 1,006-trade cell is 19 draws. Report the client count, the top client's share,
-    the book with each client removed, and a bootstrap over clients - before any day split. **A
-    cell that dies when its best client leaves is that client's book.** If it survives that and
-    still sits under the bootstrap bar, the answer is more clients, never another term.
+    machine and a window. Measured: **one build carries 82 % of the best cell's net and 221 % of
+    the next one's**, and a week of prints holds 34 slow-wall builds with a median life of two
+    days, so a 1,006-trade cell is 19 draws. **A cell that dies when its best client leaves is
+    that client's book**; the client gate is [_!___derive.md](_!___derive.md) 11.
 19. **A per-day gate is checked per day.** The ticket floor is a refusal on each day, and a
     mean hides exactly the shape that breaks it: tickets of `16, 177, 210, 24, 28, 9` average
     53.9 and clear fifty twice in six days. Because the two big days are the days the single
     carrying client was alive (law 18), the mean **launders the client concentration through the
-    floor** - two failures cancelling into an apparent pass. Print the per-day list.
+    floor** - two failures cancelling into an apparent pass. The gate: derive 11.
 20. **A term must be spellable without a wallet.** If it can only be written as "these named
     wallets did something", it is not a term, however well it measures. It stays a thermometer.
 21. **Compare a rate only where the outcome is reachable.** `price = vsol^2 / k` with the curve
@@ -773,7 +771,7 @@ Section 1.5 is the law. Four corollaries:
 
 22. **A roster margin is NET of the venue fee; a study cell's price move is not.** The solo
     sheet's `margin` is `sol_out*0.9875 - sol_in*1.0125` over spend
-    (`rb-solo-nodes.py` 140, a local script). Comparing it to a cell's gross move is a
+    Comparing it to a cell's gross move is a
     **2.5 pp** error in the flattering direction, and it turns "we did not find their edge"
     into "we found it and the toll ate it" - two findings with opposite next steps. Convert
     one basis to the other before any sentence compares the two: `move = (margin + 2.5)/0.9875`.
@@ -797,12 +795,12 @@ Section 1.5 is the law. Four corollaries:
     extra fixed legs will always look better than the exit it replaces.
 
 26. **An exit is read at the horizon its actor trades, on a pool a door has already selected.**
-    Two ways to make an exit search meaningless, both committed here in one run. Sweeping it with
+    Two ways make an exit search meaningless. Sweeping it with
     D and P empty returns the shortest clock, because an unselected pool is mostly dying coins -
     that is a standing refusal, and its signature is "shorter beats longer everywhere". And
     measuring the excursion over a horizon the actor never holds describes a payoff nobody in the
-    node is exposed to: on the hot-tape node the geometry was read to **1800 s** where the median
-    hold is **19.9 s**, so a "+33 % median MFE" is +7.6 % inside the hold that actually exists.
+    node is exposed to: on the hot-tape node a read to **1800 s** against a median hold of
+    **19.9 s** reports a "+33 % median MFE" that is +7.6 % inside the hold that exists.
     Read the geometry at the actor's own hold, and settle the exit after the gates.
 
 27. **Pooling a node's members averages away the one that is a different animal.** Five of the six
@@ -823,14 +821,14 @@ Section 1.5 is the law. Four corollaries:
     one launch client selects that client every time. A door is a general type only if its
     token-birth supply tracks the tape's births on full UTC days; a cell is a general type only
     if its per-day tickets track that door. Peak/trough and the two-fattest-days share of
-    tickets sit beside every book ([_!___derive.md](_!___derive.md) 11). A stub UTC day (hours covered well under 24)
-    is not a floor day. The SOL leader of a 26x / 81 %-in-two-days book is a named client,
+    tickets sit beside every book ([_!___derive.md](_!___derive.md) 11). The SOL leader of a
+    26x / 81 %-in-two-days book is a named client,
     not the walk's reading, and more calendar days do not turn it into a type.
 
 30. **A sidecar left-join with missing = False is a universe filter.** The file's construction
-    query is a rule term. `reindex(tape).fillna(False)` turns "not in this file" into "fails the
-    door." Print sidecar rows, tape tokens, overlap, and the construction filter before the door
-    is scored. Measured: `cvx_meta.parquet` is the 18,583 keep+ep50 mints; documented x silence x
+    query is a rule term. A left-join that fills missing with False turns "not in this file" into
+    "fails the door." Print sidecar rows, tape tokens, overlap, and the construction filter before the door
+    is scored. Measured: a sidecar holding the 18,583 keep+ep50 mints; documented x silence x
     creator x trail40 books +47.54; the same event on keep-create without that file is -1,034.87
     (age < 60 s: -1,007.34). The last-12 h documented supply of 0 is the same hole.
 
@@ -897,7 +895,7 @@ its slots (law 17).
 
 Not a detection rate. **Any decision-time term that either cuts the loser cost by moving the
 entry toward the trough, or raises the win rate above the book's own realised break-even - 29 %
-under a tail-preserving exit - at n >= 1,000 with a top-1 % share at or under about 20 %.**
+under trail50 c600 - at n >= 1,000 with a top-1 % share at or under about 20 %.**
 
 ---
 
@@ -908,7 +906,7 @@ under a tail-preserving exit - at n >= 1,000 with a top-1 % share at or under ab
 | Close a slot because a sentence is red | A red number is an address. A slot closes on a mechanism or a conjunction search |
 | Score a term alone | Money is read on the conjunction; an unconcentrated pool is red by construction |
 | Score against a proxy label | Money is the score. Detection, graduation and swing rates describe, never rank |
-| Quote a fixed break-even bar | It moves 17 points with the exit and 19 with the entry. Use the cell's own |
+| Quote a fixed break-even bar | It moves 17 points with the exit and 14.5 with the entry. Use the cell's own |
 | Decide a selector's fate under one exit family | Read every cell under both, with tail concentration beside each |
 | Sweep the exit on an unselected pool | It returns the shortest clock every time; the pool is mostly dying coins |
 | Use a 30 s or 45 s clock as the primary exit on a harvester story | Shorter than the 87 s median playable move. That is a scalper exit |
@@ -928,7 +926,7 @@ under a tail-preserving exit - at n >= 1,000 with a top-1 % share at or under ab
 | Take the next print after the signal as the fill | +8 to +12 pp of pure look-ahead |
 | Fill an exit at its trigger level | A stop fills about 3.5 % past the level |
 | Book a silent exit at -100 % | The curve freezes price |
-| Quote a book without naming its fill model | `SlotEnd` +43.56 is `lag_115` +4.80 on the same rule |
+| Quote a book without naming its fill model | `SlotEnd` +43.56 as published is `lag_115` +5.38 on the same rule (evidence 3.7) |
 | Search terms at one fill and ship at another | A fill model changes which terms matter |
 | Treat the slot as the event unit | The event is one tool's run inside the slot |
 | Use the program name as the grain | The instruction name and CU order are the machine |
@@ -1056,14 +1054,17 @@ Workstation PG, LOGGED schema `census`: `tool_census`, `tool_census_sell`, `gap_
 `screen_post`, `screen_pre`, `axiom_push`, `push_money`, `wave_events`, `w1_*`, `rb_ep2`,
 `rb_feat`, `rb_k`, `rb_ctx`, `rb_cslot`. Schema `e8` holds the event-unit study; `aa` holds the
 machine census (`pxf`, `mach_w`, `mach`); `ixd` / `ixp` / `ixq` / `ixr` are the create-door and
-campaign scratch schemas. Study `ix*` schemas are UNLOGGED: a crash truncates them, so `count(*)`
-is the only honest check.
+campaign scratch schemas. Study schemas are LOGGED; why, and the `count(*)` check:
+[hunter/CLAUDE.md](../../../CLAUDE.md).
 
 Offline books all price through [study-kernel/](study-kernel/README.md) (`kernel.py`, `tape.py`,
 `cvx.py`, tracked). Study scripts, their outputs and the kernel's acceptance tests stay local to
-the workstation and are not tracked; they resolve the repository root by directory depth, so a
-script is not interchangeable between this directory and `study-kernel/`. Two local JSON files
-are **inputs**, not dumps - keep them: `8dtx-event-structures.json` and `ixd-create-door.json`.
+the workstation and are not tracked, except the few a rule or a gate needs re-run, named in the
+root `.gitignore`; they resolve the repository root by directory depth, so a
+script is not interchangeable between this directory and `study-kernel/`. These local JSON files
+are **inputs and references**, not dumps - keep them: `8dtx-event-structures.json` and
+`ixd-create-door.json` (read by scripts), `8dtx-event-detail.json` and `8dtx-event-templates.json`
+(8dtx's decision-print ix detail and template list).
 
 ## 11.4 Data quirks that cost time
 

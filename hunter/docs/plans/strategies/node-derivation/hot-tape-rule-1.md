@@ -4,7 +4,7 @@ The case file for the hot-tape node, the first node derived end to end by
 [_!___derive.md](../_!___derive.md), and its worked example. It holds the sentence that pays
 (section 1), the chain of steps that produced it, dead ends included (section 2), what every
 member of the node does (section 3), and where the data and code are (section 4). Numbers:
-[_!___evidence.md](../_!___evidence.md) 1.4, 1.5 and 1.11-1.27. Code: [toolkit/](toolkit/README.md)
+[_!___evidence.md](../_!___evidence.md) 1.4, 1.5, 1.11, 1.14, 1.16 and 1.20-1.27. Code: [toolkit/](toolkit/README.md)
 and [hot-tape/](hot-tape/README.md), which also says where each step's script is kept.
 
 The rule runs as **Flip-Catch - Bracket** (this exit: +20 %, -60 %, 90 s). Its entry with the wall
@@ -43,7 +43,7 @@ Plain words: a flipper takes profit into a buying frenzy on an established coin 
 graduation; buy the flipper's sell, take +20 %.
 
 The volume is set by the event: loosening any entry term adds trades that earn well under rule 1's
-own and lose on some days, under both exits (evidence 1.26, step G15).
+own and lose on some days, under both exits (step G15; evidence 7, rule 1c).
 
 ### The book
 
@@ -72,22 +72,23 @@ engine had retired as dead. The same code books every day after 09-10 (the clean
 
 ### Each slot, in one line
 
-| slot | where it comes from | evidence |
+| slot | where it comes from | step, evidence |
 | --- | --- | --- |
-| E, the trigger | 8fStGV buys 25-200 ms after a public SELL >= 1 SOL (excess intensity, lift 8.1) | 1.12 |
-| E, the terms | the sells it buys against those it ignores on the same coin; then re-read off money on rule 1's own pool, where the 2 s buy term drops out | 1.12, 1.20 |
-| P, established | the stop-outs are young, thin coins; each fold picks 368 / 369 on a count that turns out to be distinct buyers, age 123 / 193 s | 1.14, 1.20, 1.22 |
-| P, room under the wall | a take profit that needs the graduation print is not priceable; a safety term, not a fit | 1.20 |
-| X | its closing hazard on rule 1's pool (sells hard at +15..+20 %); then one axis at a time by money, finally at the engine's grain and fill: +20 %, the stop inert past -60 %, the clock 90 s | 1.20, 1.22 |
+| E, the trigger | 8fStGV buys 25-200 ms after a public SELL >= 1 SOL (excess intensity, lift 8.1) | step 21, ev 1.27 |
+| E, the terms | the sells it buys against those it ignores on the same coin; then re-read off money on rule 1's own pool, where the 2 s buy term drops out | step 24, ev 1.20 |
+| P, established | the stop-outs are young, thin coins; each fold picks 368 / 369 on a count that turns out to be distinct buyers, age 123 / 193 s | steps 32-33, ev 1.20, 1.22 |
+| P, room under the wall | a take profit that needs the graduation print is not priceable; a safety term, not a fit | ev 1.20 |
+| X | its closing hazard on rule 1's pool (sells hard at +15..+20 %); then one axis at a time by money, finally at the engine's grain and fill: +20 %, the stop inert past -60 %, the clock 90 s | ev 1.20, 1.22 |
 
 ---
 
-## 2. How rule 1 was derived: the chain
+## 2. The chain
 
 Each row is one step: the question, what the measurement shows, and what it does to the rule.
-The dead ends stay, because each closed a wrong reading that the next node would otherwise make
-again. The step numbers are the scripts' own; each heading names the derive phase. The chain row is
-the record of a step: `-` in the ev column means no evidence section carries it.
+The dead ends stay: each closes a wrong reading that the next node would otherwise make again.
+The step numbers are the scripts' own; each heading names the derive phase. The chain row is the
+record of a step: `-` in the ev column means no evidence section carries it, and a cut section's
+write-up and every step script are in git at `9f8ce4c5` (or `8b01c18b`).
 
 ### 2.1 The node read as one (derive phases 4-6, before the split)
 
@@ -106,18 +107,18 @@ the record of a step: `-` in the ev column means no evidence section carries it.
 | step | question | what it shows | what it does to the rule | script | ev |
 | --- | --- | --- | --- | --- | --- |
 | 15-16 | Is their tail separable, and at which seat? | Split by member: three book +2.2..+2.3 % 8/8 at RACE cap15 with a positive body and a 1.8 % biggest coin; three are noise. Pooled +0.50 % with a 216 % tail | The node is two strategies: derive the event from the members that pay | `cvx_hot_sep.py`, `cvx_hot_sep2.py` | 1.11 |
-| 17-20 | Is the event in the price path, or in the machine count? | The price path is red in three constructions (-3.35 %, -3.58 %, 0/8); the independent-machine count is a gradient (-4.08 to -2.99 %) that does not cross zero | No price-path event; the machine axis stays a candidate for a fitted vector | `cvx_hot_lvl.py`, `cvx_hot_up.py`, `cvx_hot_mach.py`, `cvx_hot_mach2.py` | 1.11 |
+| 17-20 | Is the event in the price path, or in the machine count? | The price path is red in three constructions (-3.35 %, -3.58 %, 0/8); the independent-machine count is a gradient (-4.08 to -2.99 %) that does not cross zero | No price-path event; the machine axis stays a candidate for a fitted vector | `cvx_hot_lvl.py`, `cvx_hot_up.py`, `cvx_hot_mach.py`, `cvx_hot_mach2.py` | 1.11, 7 (price-path) |
 
 ### 2.3 The event (phases 5-6)
 
 | step | question | what it shows | what it does to the rule | script | ev |
 | --- | --- | --- | --- | --- | --- |
-| 21 | What print does each member react to, and at what lag? | Excess intensity against same-coin controls: 8fStGV a public SELL >= 1 SOL at 25-200 ms (8.1), avoiding burst starts; AbQcLH a burst start at 25-50 ms (9.9); sssssw, the one that loses, a burst start at 75-100 ms (9.2) | E's class: a public sell >= 1 SOL, bought within 115 ms. The side separates payers from losers, not the speed | `cvx_hot_trig.py` | 1.12 |
-| 22-23 | Where does our fill land against them? | Firing on each member's trigger at 115 ms: AbQcLH's burst start is a race (lag 47 ms, ahead 5 %); 8fStGV's lag from its sell is p50 81 ms and we land ahead 33.5 % | 8fStGV's event is reachable: the member does not have to be beaten | `cvx_hot_seat.py`, `cvx_hot_dump.py` | 1.12 |
+| 21 | What print does each member react to, and at what lag? | Excess intensity against same-coin controls: 8fStGV a public SELL >= 1 SOL at 25-200 ms (8.1), avoiding burst starts; AbQcLH a burst start at 25-50 ms (9.9); sssssw, the one that loses, a burst start at 75-100 ms (9.2) | E's class: a public sell >= 1 SOL, bought within 115 ms. The side separates payers from losers, not the speed | `cvx_hot_trig.py` | - |
+| 22-23 | Where does our fill land against them? | Firing on each member's trigger at 115 ms: AbQcLH's burst start is a race (lag 47 ms, ahead 5 %); 8fStGV's lag from its sell is p50 81 ms and we land ahead 33.5 % | 8fStGV's event is reachable: the member does not have to be beaten | `cvx_hot_seat.py`, `cvx_hot_dump.py` | - |
 | B2c | Does leftover exist at our fill on the sells it buys (derive 5.2)? | Behind its buy: cost 1.41 %, peak +7.46 % at its hold p50 (10.3 s); AbQcLH's burst start costs 4.55 %; the veto alone passes sssssw and the class 8fStGV avoids | E passes 5.2 as the derive writes it; the veto's lines are calibrated here and hold only after phases 4 and 5.1 | `b2_leftover.py` | 1.27 |
-| 24 | Which sells does it buy? | It buys 2.2 % of the sells >= 1 on its coins. Our seat on those +0.38 % 5/8 (+0.21 % when behind it); on every sell -4.32 %. Same coin, bought against ignored: 15 recipes in 5 s (7), 3.94 SOL bought in 2 s (0.40), a new high 5.4 s ago (80.3), a seller who bought 20.5 s ago (50.8) | The terms and their first thresholds: >= 15 recipes / 5 s, >= 2 SOL / 2 s, new high <= 20 s, seller <= 30 s | `cvx_hot_which.py` | 1.12 |
-| 25 | Does it hold as a public sentence on every coin? | Each term lifts the book: -4.26 % (every sell) to -0.68 % (the full event); the same frenzy on a BUY -2.64 % | E is filled: the frenzy-absorbed sell. The dump side wins | `cvx_hot_dump2.py` | 1.12 |
-| 26-27 | Does a public coin fact carry the rest? | Size, busyness, prior frenzies: best -0.27 %. On its coins the fire pays +6.04 % when it buys inside our hold, -0.62 % when not | D is the empty slot, and part of it is the member's arrival | `cvx_hot_door2.py`, `cvx_hot_arrive.py` | 1.12 |
+| 24 | Which sells does it buy? | It buys 2.2 % of the sells >= 1 on its coins. Our seat on those +0.38 % 5/8 (+0.21 % when behind it); on every sell -4.32 %. Same coin, bought against ignored: 15 recipes in 5 s (7), 3.94 SOL bought in 2 s (0.40), a new high 5.4 s ago (80.3), a seller who bought 20.5 s ago (50.8) | The terms and their first thresholds: >= 15 recipes / 5 s, >= 2 SOL / 2 s, new high <= 20 s, seller <= 30 s | `cvx_hot_which.py` | - |
+| 25 | Does it hold as a public sentence on every coin? | Each term lifts the book: -4.26 % (every sell) to -0.68 % (the full event); the same frenzy on a BUY -2.64 % | E is filled: the frenzy-absorbed sell. The dump side wins | `cvx_hot_dump2.py` | - |
+| 26-27 | Does a public coin fact carry the rest? | Size, busyness, prior frenzies: best -0.27 %. On its coins the fire pays +6.04 % when it buys inside our hold, -0.62 % when not | D is the empty slot, and part of it is the member's arrival | `cvx_hot_door2.py`, `cvx_hot_arrive.py` | - |
 
 ### 2.4 Door and exit (phases 7-8)
 
@@ -133,8 +134,8 @@ the record of a step: `-` in the ev column means no evidence section carries it.
 | step | question | what it shows | what it does to the rule | script | ev |
 | --- | --- | --- | --- | --- | --- |
 | 32 | Which frenzies die? | The stop-outs against the take profits at the fire: young, thin coins (age AUC 0.40, holders 0.43); heat, composition and the seller do not separate them | P's facts: age and public holders | `cvx_hot_perm.py` | 1.14 |
-| 33 | The permission as a sentence | Each fold picks holders 368 / 369, age 123 / 193 s; holders >= 368 x age >= 158 s: +2.07 % 7/7, the door redundant | P filled | `cvx_hot_perm2.py` | 1.14 |
-| 34 | Does it hold on unseen days? | 4.5 lake days, same code: +1.90 % 5/5, body +1.73, tail 23.2 %; the door -0.53 % | Rule 1 holds out of sample; the door was fitted and is dropped | `cvx_holdout_export.py`, `cvx_hot_holdout.py` | 1.15 |
+| 33 | The permission as a sentence | Each fold picks holders 368 / 369, age 123 / 193 s; holders >= 368 x age >= 158 s: +2.07 % 7/7, the door redundant | P filled | `cvx_hot_perm2.py` | - |
+| 34 | Does it hold on unseen days? | 4.5 lake days, same code: +1.90 % 5/5, body +1.73, tail 23.2 %; the door -0.53 % | Rule 1 holds out of sample; the door was fitted and is dropped | `cvx_holdout_export.py`, `cvx_hot_holdout.py` | - |
 
 ### 2.6 The second event, not found
 
@@ -162,12 +163,12 @@ the record of a step: `-` in the ev column means no evidence section carries it.
 | G5 | Is the exit right on the new pool? | One axis at a time: take profit holds at +15 % (the folds pick 22 and 25 %, the second loses); stop -25 to -40 %; clock 90 to 240 s | Stop -40 % holds out of sample (+0.59 SOL); the 240 s clock fails it (2.98 -> 1.80 SOL, 4/5) and 90 s stays; the take profit re-checked at 90 s holds | `cvx_r1u_exit.py`, `r1u_exit_axes.py`, `r1u_tp_check.py` | 1.20 |
 | G6 | Re-entry? | A 30 s cool-down after a stop adds +0.33 SOL on 14 trades; a five-a-coin cap rests on 8 | R unchanged | `r1u_reentry.py` | 1.20 |
 | G7 | Size? | A share of the reserve books as a flat clip of the same median on the study tape; 0.35 SOL flat keeps every bar on both tapes, 0.5 SOL passes all but the holdout tail (15.5 %) | S: flat 0.35 SOL | `r1u_size.py` | 1.20 |
-| G8 | Does each change hold out of sample, on its own? | See 1.20's table: 2.66 -> 3.02 -> 2.39 -> 2.98 SOL on the holdout, 5/5 at every kept step | The updated rule 1 of section 1 | `r1u_holdout.py` | 1.20 |
+| G8 | Does each change hold out of sample, on its own? | See 1.20's table: 2.66 -> 3.02 -> 2.39 -> 2.98 SOL on the holdout, 5/5 at every kept step | Rule 1 before the engine audit (G9-G12) | `r1u_holdout.py` | 1.20 |
 | G9 | Does it hold the way an engine meets the tape? | A print-by-print replay sharing no code with G1 reproduces the G8 tickets one for one (739 / 433, same exits, same SOL); counting every wallet and every leg it books +3.26 % 5/5 on the holdout, positive at a 500 ms fill | The engine's target of section 1; rule 1 unchanged | `r1_replay.py` | 1.21 |
 | G10 | Does each term mean what its name says? | Checked against the lake's exact fields: the holder book is float dust (647 against 96 real holders); the count it makes is distinct buyers | P spells distinct buyers, creator excluded | `r1_terms_audit.py` | 1.21, 1.22 |
 | G11 | What does the engine compute differently? | Recipes counted with the print, raw time, the 200 ms clock, the engine's fills: at the old thresholds the every-leg holdout reads +2.52 %, top 1 % 20.1 %; the buy-only entry fill is the cost, and it prices 29 % of entries at a print our buy cannot meet | The seat takes the exit leg's rule on both legs | `r1_exact.py audit` | 1.22 |
 | G12 | Re-derived at the engine's grain and fill | Every-leg study, keep rule with the chance floor and bars: entry kept, exit +20 % / -60 % / 90 s; +4.44 % 5/5 on the every-leg holdout, top 1 % 9.8 %; a second code rebuilds every ticket | The rule of section 1 | `r1_exact.py derive/confirm`, `r1_exact_check.py` | 1.22 |
-| G15 | Does a looser entry add trades that pay? | Each term loosened alone, both exits, the added trades judged on their own: every term fails its first step (added trades +1.8..+2.6 % at best against +4.5 %, never every day; stall, seller, age lose); a looser entry displaces rule 1 tickets through occupancy; the sell size band 0.75-1 SOL as its own rule pays 6/6 at +2.9 % with a 24.5 % tail, 70 % of it on coins rule 1 holds | No rule 1c; more trades need a second event | `r1c_loosen.py` | 1.26 |
+| G15 | Does a looser entry add trades that pay? | Each term loosened alone, both exits, the added trades judged on their own: every term fails its first step (added trades +1.8..+2.6 % at best against +4.5 %, never every day; stall, seller, age lose); a looser entry displaces rule 1 tickets through occupancy; the sell size band 0.75-1 SOL as its own rule pays 6/6 at +2.9 % with a 24.5 % tail, 70 % of it on coins rule 1 holds | No rule 1c; more trades need a second event | `r1c_loosen.py` | 7 (rule 1c) |
 
 ### 2.9 What the chain teaches, and where each lesson is now a rule
 

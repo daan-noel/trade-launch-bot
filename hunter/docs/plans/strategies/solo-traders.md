@@ -150,17 +150,17 @@ books **+2.6 to +6.7 % a trade on every exit family** on **8dtx's coins**, and
 ceiling does not transfer to the two largest books: on `9999hu` / `88887Q` coins at age >= 15 s
 the same seat is +0.39 %/trade or red, and neither wallet names burst START (lift 1.02 / 1.14).
 Create cgroup include is the market (concentration 0.87-1.16). Their prints stay out; their mint
-list is never a door ([_!___evidence.md](_!___evidence.md) 6.9). `8dtx` and `3Xk2` run durable-nonce
+list is never a door ([_!___evidence.md](_!___evidence.md) 7, mid-tape rows). `8dtx` and `3Xk2` run durable-nonce
 racer builds: what is closed is copying their fill, not the decision they make. `3Xk2Eu` has no
 prints on the last-leg tape. `9Uq8GV` names the event (buy >= 1 lift 4.75) and leftover on their
 coins is +4.12 %/trade at clock 45; public doors besides slow-wall are red. `8aaRWu` does not
 name burst START (lift 1.33); leftover on their coins is +1.72 %/trade clock 45, on keep and
 **off** slow-wall. `ApfmkS` names nothing (all lifts ~1), self-starts 45 %, and the leftover
 on the bursts they follow is +4.90 % unnamed. All seven members are measured
-([_!___evidence.md](_!___evidence.md) 6.9). Multi-trade is 14-26 % of their mints; the
+([_!___evidence.md](_!___evidence.md) 7, mid-tape rows). Multi-trade is 14-26 % of their mints; the
 close-to-reopen gap is 56 s p50. The four unpriced facts at episode open are the market
-and do not fill D ([_!___evidence.md](_!___evidence.md) 6.11). Token remaining (holder
-book) does not fill D either ([_!___evidence.md](_!___evidence.md) 6.12).
+and do not fill D ([_!___evidence.md](_!___evidence.md) 7, mid-tape episodes row). Token remaining (holder
+book) does not fill D either ([_!___evidence.md](_!___evidence.md) 7, mid-tape holder book row).
 
 | # | wallet | t | margin | median trade | won | lost > 20 % | net SOL | trades | age s | hold s | clip | reserve |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

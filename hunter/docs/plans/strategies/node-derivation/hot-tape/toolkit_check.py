@@ -1,12 +1,12 @@
 """The toolkit against the hot-tape record: each method step re-run through toolkit/, next to the
 number the step-numbered script recorded (evidence 1.11-1.17).
 
-  trigger    8fStGV reacts to a public SELL >= 1 SOL at 25-200 ms (peak lift 8.1, 1.12);
+  trigger    8fStGV reacts to a public SELL >= 1 SOL at 25-200 ms (peak lift 8.1, case step 21);
              AbQcLH to a burst start at 25-50 ms (9.9); sssssw to a BUY >= 1 at 75-100 ms (9.2)
   seat       the members that pay book +2.2..+2.3 %/trade at RACE cap15 (1.11)
   contrast   the sells 8fStGV buys vs those it ignores, same coin: 15 recipes in 5 s against 7,
              3.94 SOL bought in 2 s against 0.40, a new high 5.4 s ago against 80.3, a seller
-             who bought 20.5 s ago against 50.8 (medians, 1.12)
+             who bought 20.5 s ago against 50.8 (medians, case step 24)
   hazard     753 closes of rule 1's kind on the permission's pool; sells hard at +15..+20 % (1.17)
 
 Random controls are drawn in a different order than the original scripts, so lifts agree to

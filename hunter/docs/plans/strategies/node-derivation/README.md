@@ -38,4 +38,4 @@ tape `cvx_prints.parquet` and its sidecars, which the other studies use too.
 
 What is tracked: the toolkit, each case folder's `_paths.py`, the three kernel files, and the
 scripts a rule or a gate needs re-run, named in the root `.gitignore`. A step script is local
-scratch: its step is a chain row and its number an evidence section. `data/` is never tracked.
+scratch: its step and its numbers are a chain row. `data/` is never tracked.

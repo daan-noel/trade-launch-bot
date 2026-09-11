@@ -5,16 +5,16 @@ trigger that became rule 1 and kills the triggers that are known dead, and what 
 
 Anchors, fixed before this run (study tape, members out of every public print):
 
-  8fStGV  public SELL >= 1 SOL    MUST PASS   rule 1's trigger (evidence 1.12, 1.22)
-  AbQcLH  burst start             MUST KILL   a race: lag p50 47 ms, ahead 5 %, -1.36 % (1.12)
+  8fStGV  public SELL >= 1 SOL    MUST PASS   rule 1's trigger (evidence 1.22; case step 21)
+  AbQcLH  burst start             MUST KILL   a race: lag p50 47 ms, ahead 5 %, -1.36 % (1.16)
   sssssw  burst start             MUST KILL   the member that loses at every seat (1.11)
-  8fStGV  burst start             MUST KILL   the class it avoids (lift 0.01 at 0-25 ms, 1.12)
+  8fStGV  burst start             MUST KILL   the class it avoids (lift 0.01 at 0-25 ms, case step 21)
   49uohd  public SELL >= 1 SOL    no anchor   reachable, unspelled (1.16); read only
 
 Applied after the calibration, on the mid-tape node's roster (its members out of its public prints):
 
-  9999hu  public SELL >= 1 SOL    applied     the open mid-tape instrument (5.11)
-  88887Q  public SELL >= 1 SOL    applied     the same tell (5.8)
+  9999hu  public SELL >= 1 SOL    applied     the mid-tape instrument (mid-tape-rule-2.md)
+  88887Q  public SELL >= 1 SOL    applied     the same tell (mid-tape-rule-2.md member book)
 
 Each reading is `toolkit.seat.leftover` on its acted tickets against the same coins' ignored
 prints of the class (up to 4 per acted ticket per coin), at its own hold p10 / p50 / p90:

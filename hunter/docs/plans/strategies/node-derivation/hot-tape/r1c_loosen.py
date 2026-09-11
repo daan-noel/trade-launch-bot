@@ -1,4 +1,4 @@
-"""Rule 1c: rule 1's entry loosened one term at a time, for more trades a day (evidence 1.26).
+"""Rule 1c: rule 1's entry loosened one term at a time, for more trades a day (evidence 7, rule 1c).
 
 The candidates, fills, seat, cost and occupancy are r1b_exit's evaluator (it books rule 1's
 reference ticket for ticket with rule 1's exit); both of rule 1's exits are booked on every step:

@@ -58,7 +58,7 @@ Plain words: <one sentence>.
 
 ---
 
-## 2. How rule <n> was derived: the chain
+## 2. The chain
 
 One row per step, in order, dead ends included. The phase is [_!___derive.md](../_!___derive.md)'s.
 
@@ -93,4 +93,5 @@ One row per step, in order, dead ends included. The phase is [_!___derive.md](..
 
 ## Open
 
-1. <what is left, and the clean test on the days after the holdout>
+The open items are in [_!___workflow.md](../_!___workflow.md), the one queue; this file keeps
+none.
