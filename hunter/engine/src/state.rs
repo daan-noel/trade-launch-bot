@@ -134,6 +134,40 @@ impl TokenState {
     }
 }
 
+/// What a token's track folds under a rule set ([`EngineState::track_requirements`]).
+/// A reload registers new state on tracked tokens going forward only, so a track
+/// holds the whole history of a window only if the window was registered at the
+/// token's birth; [`adds_to`](Self::adds_to) says when a reload broke that.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackRequirements {
+    /// flow, crowd, price, ix, dump, copy, build window unions, in that order.
+    windows: [Vec<crate::metrics::WindowSpec>; 7],
+    crowd_anchors: Vec<(crate::metrics::crowd_after_age::AgeAnchor, u32)>,
+    print_wallet: bool,
+    patterns: BTreeMap<FingerprintId, FingerprintPatterns>,
+}
+
+impl TrackRequirements {
+    /// Whether `self` asks a track for anything `before` did not: a window, an age
+    /// anchor or a larger anchor cap, the wallet map, or a fingerprint classifier.
+    /// A track built under `before` has not folded that from birth.
+    pub fn adds_to(&self, before: &TrackRequirements) -> bool {
+        let new_window = self
+            .windows
+            .iter()
+            .zip(&before.windows)
+            .any(|(now, was)| now.iter().any(|w| !was.contains(w)));
+        let new_anchor = self.crowd_anchors.iter().any(|(a, cap)| {
+            !before.crowd_anchors.iter().any(|(b, was_cap)| a == b && was_cap >= cap)
+        });
+        let new_pattern = self
+            .patterns
+            .iter()
+            .any(|(id, p)| before.patterns.get(id) != Some(p));
+        new_window || new_anchor || new_pattern || (self.print_wallet && !before.print_wallet)
+    }
+}
+
 /// The four window unions a track is registered from, one per backing buffer.
 ///
 /// A named carrier rather than four positional slices: they are all
@@ -531,6 +565,26 @@ impl EngineState {
         );
         for token in self.tokens.values_mut() {
             Self::ensure_track_windows_and_flow(&mut token.track, sets, patterns);
+        }
+    }
+
+    /// What a token's track folds under the loaded rules: every window, anchor, map
+    /// and fingerprint classifier [`new_track`](Self::new_track) registers.
+    pub fn track_requirements(&self) -> TrackRequirements {
+        TrackRequirements {
+            windows: [
+                &self.all_windows,
+                &self.all_crowd_windows,
+                &self.all_price_windows,
+                &self.all_ix_windows,
+                &self.all_dump_windows,
+                &self.all_copy_windows,
+                &self.all_build_windows,
+            ]
+            .map(|w| w.clone()),
+            crowd_anchors: self.all_crowd_anchors.clone(),
+            print_wallet: self.any_print_wallet,
+            patterns: self.fp_patterns.clone(),
         }
     }
 

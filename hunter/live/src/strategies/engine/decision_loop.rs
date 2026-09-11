@@ -201,6 +201,9 @@ async fn run_loop(
     // Everything already cached at this instant is history, not signal — see the
     // `producers` module docs (the restart rail).
     let mut producer = Producer::new(token_cache.clone(), Utc::now());
+    // A rule switched on mid-run is handed every live token born since this loop
+    // started, rebuilt from its whole history (see `hydrate`).
+    let (hydrator, mut hydrate_rx) = super::hydrate::Hydrator::new(trade_repo.clone());
     // The arm ledger's writer. On the `hot` pool (batched strategy writes, same
     // as the position sink) and detached: dropping its handle only detaches the
     // task, and dropping the loop's `ArmLedger` at shutdown is what stops it —
@@ -343,6 +346,7 @@ async fn run_loop(
                     while let Ok(EngineCommand::ReloadRules { ack }) = cmd_rx.try_recv() {
                         acks.push(ack);
                     }
+                    let before = super::hydrate::ReloadSnapshot::of(&state);
                     let result = reload_rules(
                         &rule_repo,
                         &fp_repo,
@@ -350,6 +354,11 @@ async fn run_loop(
                         &registry,
                         &mut state,
                         &mut sink,
+                    )
+                    .await;
+                    let armed = hydrator.after_reload(&before, &mut state, &mut producer, &token_cache);
+                    dispatch(
+                        armed, &state, &mut sink, &registry, &real_deps, &token_cache, &settings,
                     )
                     .await;
                     if acks.len() > 1 {
@@ -376,6 +385,7 @@ async fn run_loop(
                     let _ = ack.send(result);
                     EventBatch::none()
                 } else if let EngineCommand::ReseedFromDb { ack } = cmd {
+                    let before = super::hydrate::ReloadSnapshot::of(&state);
                     let result = reseed_from_db(
                         &rule_repo,
                         &fp_repo,
@@ -384,6 +394,11 @@ async fn run_loop(
                         &mut state,
                         &mut sink,
                         &settings,
+                    )
+                    .await;
+                    let armed = hydrator.after_reload(&before, &mut state, &mut producer, &token_cache);
+                    dispatch(
+                        armed, &state, &mut sink, &registry, &real_deps, &token_cache, &settings,
                     )
                     .await;
                     let _ = ack.send(result);
@@ -416,6 +431,16 @@ async fn run_loop(
                 let produced = producer.on_ping(&ping);
                 prime(&mut state, produced.prime);
                 EventBatch::many(produced.events.into_vec())
+            }
+            // One rebuilt token per turn, below every live lane: a rule switched on
+            // over many tokens folds between pings instead of ahead of them.
+            Some(loaded) = hydrate_rx.recv() => {
+                let armed = hydrator.apply(loaded, &mut state, &mut producer, &token_cache);
+                dispatch(
+                    armed, &state, &mut sink, &registry, &real_deps, &token_cache, &settings,
+                )
+                .await;
+                EventBatch::none()
             }
             _ = tick.tick() => {
                 ticks = ticks.wrapping_add(1);
@@ -518,7 +543,22 @@ async fn dispatch(
     // Pass 1 — registry/SSE (+ background PG for BuySubmitted / ExitPending).
     for fx in &effects {
         match fx {
-            Effect::PositionUpdate(delta) => sink.on_position_update(delta.clone()).await,
+            Effect::PositionUpdate(delta) => {
+                // The entry's depth lives on the engine's held context; the sink
+                // persists it with the entry fill so a restart can read it back.
+                let entry_depth = (delta.status == hunter_engine::event::PositionStatus::Holding)
+                    .then(|| {
+                        state
+                            .tokens
+                            .get(&delta.mint)
+                            .and_then(|t| t.arms.get(&delta.rule))
+                            .and_then(|arm| arm.held())
+                            .map(|held| held.entry_priced_reserve)
+                    })
+                    .flatten()
+                    .filter(|v| v.is_finite());
+                sink.on_position_update(delta.clone(), entry_depth).await
+            }
             Effect::ArmedChanged(delta) => {
                 // A skipped entry is a trade that did not happen, and a silent one
                 // is indistinguishable from a rule that simply never fired — the

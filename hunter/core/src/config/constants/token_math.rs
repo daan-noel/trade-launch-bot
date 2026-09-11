@@ -23,10 +23,11 @@ pub const PUMP_INITIAL_VIRTUAL_SOL: f64 = INITIAL_VIRTUAL_SOL_RESERVES / LAMPORT
 /// `reserve_sol − PUMP_INITIAL_VIRTUAL_SOL`, clamped at 0. This matches the
 /// "true liquidity" the frontend chart already derives (`chartBars.ts`).
 ///
-/// This is the **approximation** used by the sim/backtest corpus, where the
-/// program-emitted `real_sol_reserves` field isn't carried (see
-/// `lab::lake::duck`). The live/paper paths use the program's exact emitted
-/// value instead and must NOT go through this.
+/// This is the **approximation** for every row read back from storage, where the
+/// program-emitted `real_sol_reserves` field isn't carried: the sim/backtest corpus
+/// (see `lab::lake::duck`) and the `trades` history reads, the live cache seed
+/// among them. A freshly decoded live trade carries the program's exact emitted
+/// value and must NOT go through this.
 pub fn approx_real_sol_reserves(reserve_sol: f64, venue: &str) -> f64 {
     if venue == "amm" {
         reserve_sol

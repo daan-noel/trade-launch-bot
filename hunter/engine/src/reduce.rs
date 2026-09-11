@@ -849,6 +849,158 @@ pub fn prime_trade(state: &mut EngineState, mint: &Mint, trade: crate::metrics::
     let Some(token) = state.tokens.get_mut(mint) else { return };
     fold_trade(token, trade);
     fold_entered_extremes(token, trade.at);
+    // Folded outside `reduce`, so the whole-map "settled" memo is stale too: without
+    // this the next tick can skip the token it just moved.
+    state.all_settled_at = None;
+}
+
+/// What `FirstSlotSettled` carried for a token, re-supplied to [`hydrate_token`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FirstSlotFacts {
+    pub buy_lamports: u64,
+    pub sell_lamports: u64,
+    pub creator_stand_in_wallet_hash: Option<u64>,
+}
+
+/// A token's creation facts, re-supplied to build it after the fact
+/// ([`hydrate_token`]): what `TokenCreated` and `FirstSlotSettled` carried.
+#[derive(Debug, Clone)]
+pub struct HydrateFacts {
+    /// The observed creation axes (`TokenCreated::fp`). Read only for a token the
+    /// engine does not track; a tracked token keeps the axes stamped at its birth.
+    pub fp: TokenFingerprint,
+    pub created_at: Ts,
+    pub creator_wallet_hash: Option<u64>,
+    pub identity: Option<crate::identity::IdentityHash>,
+    pub creation_slot: Option<u64>,
+    /// `None` = the creation slot never settled: a rule whose fingerprint reads a
+    /// first-slot axis is not armed.
+    pub first_slot: Option<FirstSlotFacts>,
+}
+
+/// **Rebuild** `mint` from its complete history and arm the rules `may_arm`
+/// admits, without deciding: the path a rule activation takes for a token that was
+/// born while this process ran, so a rule switched on mid-run sees every such token
+/// the way it would have had it been on from the token's birth.
+///
+/// * `history: None` keeps a tracked token's track (it already folded everything the
+///   rules read, from birth) and only arms; an untracked token needs `Some`.
+/// * The track is rebuilt from `history` (every trade since creation, chain order),
+///   the creation slot and creator seeded as `TokenCreated` seeds them, and the
+///   first-slot stand-in applied before the first print past the creation slot, as
+///   the live settle does. A tracked token keeps its arms, positions, episode
+///   counters and birth-stamped axes; only its track is replaced, so windows a new
+///   rule registered read the history they would have read.
+/// * An untracked token is built from `facts`. Its `prior_launches` stays unknown
+///   (the tally at its birth is gone), and its launch-build door is stamped only
+///   when it was born on `now`'s UTC day, the day the loaded door map is for. A rule
+///   reading either axis then does not arm it.
+/// * An arm is added only for a rule `may_arm` admits that is entry-enabled, whose
+///   fingerprint matches, and that holds no arm on the token or holds one
+///   `Disarmed(Paused)` (a rule switched off and on again). Every other arm stays.
+///
+/// Returns only `ArmedChanged` effects: the next `Tick` decides, at the wall clock,
+/// against the rebuilt track.
+pub fn hydrate_token(
+    state: &mut EngineState,
+    mint: &Mint,
+    facts: &HydrateFacts,
+    history: Option<&[crate::metrics::TradeLite]>,
+    now: Ts,
+    may_arm: impl Fn(RuleId) -> bool,
+) -> Effects {
+    let mut fx = Effects::new();
+    state.all_settled_at = None;
+    let mut token = match (state.tokens.remove(mint), history) {
+        (Some(t), None) => t,
+        (Some(mut t), Some(_)) => {
+            t.track = state.new_track(t.created_at);
+            t.last_meaningful_at = None;
+            t.last_trade_at = None;
+            t
+        }
+        (None, None) => return fx,
+        (None, Some(_)) => {
+            let mut tf = facts.fp.clone();
+            tf.prior_launches = None;
+            tf.build_prev_day_launches = None;
+            tf.build_prev_day_runner_bps = None;
+            if facts.created_at.date_naive() == now.date_naive() {
+                if let Some(stat) = crate::metrics::flow_ix::ix_hash_opt(&tf.ix_labels)
+                    .and_then(|h| state.launch_build_stats.get(&h))
+                {
+                    tf.build_prev_day_launches = Some(stat.launches);
+                    tf.build_prev_day_runner_bps = Some(stat.runner_bps());
+                }
+            }
+            if let Some(fs) = facts.first_slot {
+                tf.first_slot_buy_lamports = Some(fs.buy_lamports);
+                tf.first_slot_sell_lamports = Some(fs.sell_lamports);
+            }
+            TokenState {
+                created_at: facts.created_at,
+                tf,
+                identity: facts.identity,
+                track: state.new_track(facts.created_at),
+                last_meaningful_at: None,
+                last_trade_at: None,
+                settled: None,
+                first_slot_settled: facts.first_slot.is_some(),
+                arms: BTreeMap::new(),
+                episodes: BTreeMap::new(),
+                entry_locks: BTreeMap::new(),
+            }
+        }
+    };
+    if let Some(history) = history {
+        if let Some(slot) = facts.creation_slot.filter(|&s| s > 0) {
+            token.track.seed_creation_slot(slot);
+        }
+        if let Some(h) = facts.creator_wallet_hash {
+            token.track.seed_creator(h);
+        }
+        let mut stand_in = facts.first_slot.and_then(|f| f.creator_stand_in_wallet_hash);
+        let creation_slot = facts.creation_slot.unwrap_or(0);
+        for &trade in history {
+            if trade.slot > creation_slot {
+                if let Some(h) = stand_in.take() {
+                    token.track.seed_creator(h);
+                }
+            }
+            fold_trade(&mut token, trade);
+        }
+        if let Some(h) = stand_in {
+            token.track.seed_creator(h);
+        }
+    }
+    token.unsettle();
+
+    let instant = match_all(&state.fps, &token.tf, MatchPhase::Instant);
+    let full = token
+        .first_slot_settled
+        .then(|| match_all(&state.fps, &token.tf, MatchPhase::Full));
+    for (rule_id, compiled) in &state.rules {
+        if !compiled.entry_enabled || !may_arm(*rule_id) {
+            continue;
+        }
+        match token.arms.get(rule_id) {
+            None | Some(ArmState::Disarmed(DisarmReason::Paused)) => {}
+            Some(_) => continue,
+        }
+        let matched = if state.fp_has_first_slot(compiled.fingerprint_id) {
+            full.as_ref().is_some_and(|hits| hits.contains(&compiled.fingerprint_id))
+        } else {
+            instant.contains(&compiled.fingerprint_id)
+        };
+        if matched {
+            token.arms.insert(*rule_id, ArmState::Armed);
+            fx.push(armed(mint, *rule_id, ArmedStateTag::Armed));
+        }
+    }
+    if token.is_active() {
+        state.tokens.insert(mint.clone(), token);
+    }
+    fx
 }
 
 fn evaluate_token(

@@ -2705,7 +2705,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::RoomTaken,
                 name: "room_taken",
-                description: "Percent of the entry's room to the graduation wall that price has covered since your fill: (price - entry) / (wall - entry) x 100, the wall being entry x (115 / vsol at the fill)^2, where the curve graduates. 100 = the graduation price. A take-profit sized by the room left: room_taken >= 40 asks +13 % of an entry at vsol 100 and +68 % of one at vsol 70. NaN with no reserve at the fill (a position adopted on restart) or an entry at the wall. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
+                description: "Percent of the entry's room to the graduation wall that price has covered since your fill: (price - entry) / (wall - entry) x 100, the wall being entry x (115 / vsol at the fill)^2, where the curve graduates. 100 = the graduation price. A take-profit sized by the room left: room_taken >= 40 asks +13 % of an entry at vsol 100 and +68 % of one at vsol 70. NaN with no reserve at the fill or an entry at the wall. Prices are the reserve-pair SPOT each print left (the chart's price), not what its trader paid.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,

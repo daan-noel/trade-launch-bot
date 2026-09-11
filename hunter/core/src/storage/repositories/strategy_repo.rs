@@ -13,7 +13,7 @@ use crate::strategies::kernel::{weighted_return_pct, CostModel};
 use crate::strategies::run_rollup::{self, RunRollup};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
-    MarkQuote,
+    MarkQuote, EXTRA_ENTRY_PRICED_RESERVE,
     ExitReasonCounts, PositionsSummary, StrategyPosition, StrategyRun, StrategyRunMetrics,
 };
 use crate::storage::token_enrichment::{
@@ -2881,6 +2881,10 @@ impl StrategyRepo {
         // fill has no on-chain slot and must not borrow the trigger's, or the
         // latency read would report a fabricated zero.
         entry_slot: Option<u64>,
+        // The engine's entry depth, merged into `extra` under
+        // `EXTRA_ENTRY_PRICED_RESERVE` so a restart can size `room_taken` again.
+        // `None` keeps whatever `extra` holds.
+        entry_priced_reserve: Option<f64>,
     ) -> anyhow::Result<StrategyPosition> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
@@ -2889,6 +2893,9 @@ impl StrategyRepo {
                  entry_lamports = $5, entry_time = $6, \
                  token_account = COALESCE($7, token_account), \
                  entry_slot = $8, \
+                 extra = CASE WHEN $9::float8 IS NULL THEN extra \
+                         ELSE COALESCE(extra, '{{}}'::jsonb) \
+                              || jsonb_build_object('{EXTRA_ENTRY_PRICED_RESERVE}', $9::float8) END, \
                  status = 'Holding', updated_at = now() \
              WHERE id = $1 \
              RETURNING {POSITION_COLS}"
@@ -2901,6 +2908,7 @@ impl StrategyRepo {
         .bind(entry_time)
         .bind(token_account)
         .bind(entry_slot.map(|v| v as i64))
+        .bind(entry_priced_reserve.filter(|v| v.is_finite() && *v > 0.0))
         .fetch_one(&mut *tx)
         .await?;
         append_fill_tx(

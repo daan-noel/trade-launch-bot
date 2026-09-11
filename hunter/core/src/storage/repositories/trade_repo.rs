@@ -59,6 +59,47 @@ impl Clone for TradeRepo {
 // JSONB column (migration 0002), written at ingest and read back where projected.
 // ---------------------------------------------------------------------------
 
+/// The one per-mint trade-history projection: every column a `Trade` carries,
+/// labels and fee trio included, with the payer and the proxy flag resolved, read
+/// `FROM` [`TRADE_HISTORY_FROM`]. The history reads (`find_by_mint_all`,
+/// `find_by_mint_until`, `find_by_mint_before`, `find_by_mint_paged`) append their
+/// own `WHERE` and [`TRADE_HISTORY_ORDER`]; the cache seed (`for_each_seed_mint`)
+/// ranks the same rows, so a seeded cache row is built from what a live one is.
+///
+/// A row is proxied when the decoder said so, OR when the wallet is a dictionary
+/// entry no keypair can sign for. The second half is what reaches HISTORY: rows
+/// written before 0014 carry a NULL `is_proxied`, and the flag on `wallet_dict` is
+/// the only thing that can still classify them.
+const TRADE_HISTORY_COLUMNS: &str = "t.mint_address, \
+    COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue, \
+    t.amount_lamports, t.token_amount, t.reserve_lamports, t.reserve_token, \
+    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels, \
+    t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports, \
+    p.address AS payer_address, \
+    COALESCE(t.is_proxied, w.is_proxy) AS is_proxied";
+
+/// The tables [`TRADE_HISTORY_COLUMNS`] reads.
+const TRADE_HISTORY_FROM: &str = "FROM trades t \
+    LEFT JOIN wallet_dict w ON w.id = t.wallet_id \
+    LEFT JOIN wallet_dict p ON p.id = t.payer_id";
+
+/// Execution order: the chain's own (slot, transaction, leg).
+const TRADE_HISTORY_ORDER: &str = "ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC";
+
+/// A history row as a replay folds it: `real_reserve_sol` rebuilt from the priced
+/// reserve pair ([`approx_real_sol_reserves`]), because the column was dropped from
+/// `trades`. The lake corpus applies the same formula.
+///
+/// [`approx_real_sol_reserves`]: crate::config::constants::approx_real_sol_reserves
+fn replayable_trade(row: TradeDbRow) -> anyhow::Result<Trade> {
+    let mut trade = Trade::try_from(row)?;
+    trade.real_reserve_sol = trade
+        .reserve_sol
+        .map(|s| crate::config::constants::approx_real_sol_reserves(s, &trade.venue));
+    Ok(trade)
+}
+
+
 /// One row read from the new `trades` table LEFT-joined to `wallet_dict`. All
 /// amounts are integers (lamports / raw token units); `tx_signature` is the raw
 /// 64-byte signature; `wallet_address` is the joined-in base58 string, or a
@@ -1017,26 +1058,10 @@ impl TradeRepo {
     /// wallet ids fall back to the `unknown:<id>` sentinel, never dropping a row).
     pub async fn find_by_mint_all(&self, mint: &str) -> anyhow::Result<Vec<Trade>> {
         let rows = sqlx::query_as::<_, TradeDbRow>(
-            r#"
-            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
-                   t.amount_lamports, t.token_amount,
-                   t.reserve_lamports, t.reserve_token,
-                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels,
-                   t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports,
-                   p.address AS payer_address,
-                   -- A row is proxied when the decoder said so, OR when the wallet
-                   -- is a dictionary entry no keypair can sign for. The second half
-                   -- is what reaches HISTORY: rows written before 0014 carry a NULL
-                   -- `is_proxied`, and the flag on `wallet_dict` is the only thing
-                   -- that can still classify them.
-                   COALESCE(t.is_proxied, w.is_proxy) AS is_proxied
-            FROM trades t
-            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
-            LEFT JOIN wallet_dict p ON p.id = t.payer_id
-            WHERE t.mint_address = $1
-            ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
-            "#,
-        )
+            &format!(
+            "SELECT {TRADE_HISTORY_COLUMNS} {TRADE_HISTORY_FROM} WHERE t.mint_address = $1 \
+             {TRADE_HISTORY_ORDER}"
+        ))
         .bind(mint)
         .fetch_all(&self.pool)
         .await?;
@@ -1065,40 +1090,45 @@ impl TradeRepo {
         until: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Vec<Trade>> {
         let rows = sqlx::query_as::<_, TradeDbRow>(
-            r#"
-            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
-                   t.amount_lamports, t.token_amount,
-                   t.reserve_lamports, t.reserve_token,
-                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels,
-                   t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports,
-                   p.address AS payer_address,
-                   -- A row is proxied when the decoder said so, OR when the wallet
-                   -- is a dictionary entry no keypair can sign for. The second half
-                   -- is what reaches HISTORY: rows written before 0014 carry a NULL
-                   -- `is_proxied`, and the flag on `wallet_dict` is the only thing
-                   -- that can still classify them.
-                   COALESCE(t.is_proxied, w.is_proxy) AS is_proxied
-            FROM trades t
-            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
-            LEFT JOIN wallet_dict p ON p.id = t.payer_id
-            WHERE t.mint_address = $1 AND t.block_time <= $2
-            ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
-            "#,
-        )
+            &format!(
+            "SELECT {TRADE_HISTORY_COLUMNS} {TRADE_HISTORY_FROM} WHERE t.mint_address = $1 \
+             AND t.block_time <= $2 {TRADE_HISTORY_ORDER}"
+        ))
         .bind(mint)
         .bind(until)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| {
-                let mut trade = Trade::try_from(row)?;
-                trade.real_reserve_sol = trade
-                    .reserve_sol
-                    .map(|s| crate::config::constants::approx_real_sol_reserves(s, &trade.venue));
-                Ok(trade)
-            })
-            .collect()
+        rows.into_iter().map(replayable_trade).collect()
+    }
+
+    /// A token's trades strictly before the chain position `(slot, tx_index, leg)`,
+    /// in execution order, with `real_reserve_sol` reconstructed as
+    /// [`Self::find_by_mint_until`] does.
+    ///
+    /// The **rebuild** read (`live`'s rule-activation hydration): the in-RAM cache
+    /// keeps the newest trades of a token, and this returns everything before the
+    /// oldest one it still holds, so the two splice into the whole history. `since`
+    /// bounds the scan to the token's own chunks (its creation, less a margin).
+    pub async fn find_by_mint_before(
+        &self,
+        mint: &str,
+        since: chrono::DateTime<chrono::Utc>,
+        before: (u64, u32, u32),
+    ) -> anyhow::Result<Vec<Trade>> {
+        let rows = sqlx::query_as::<_, TradeDbRow>(&format!(
+            "SELECT {TRADE_HISTORY_COLUMNS} {TRADE_HISTORY_FROM} WHERE t.mint_address = $1 \
+             AND t.block_time >= $2 AND (t.slot, t.tx_index, t.leg_index) < ($3, $4, $5) {TRADE_HISTORY_ORDER}"
+        ))
+        .bind(mint)
+        .bind(since)
+        .bind(before.0 as i64)
+        .bind(before.1 as i32)
+        .bind(before.2 as i16)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(replayable_trade).collect()
     }
 
     /// Find all trades for a *batch* of tokens in one round-trip, grouped per
@@ -1173,27 +1203,10 @@ impl TradeRepo {
         // callers without string-building the query.
         let limit_opt: Option<i64> = if limit <= 0 { None } else { Some(limit) };
         let rows = sqlx::query_as::<_, TradeDbRow>(
-            r#"
-            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
-                   t.amount_lamports, t.token_amount,
-                   t.reserve_lamports, t.reserve_token,
-                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels,
-                   t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports,
-                   p.address AS payer_address,
-                   -- A row is proxied when the decoder said so, OR when the wallet
-                   -- is a dictionary entry no keypair can sign for. The second half
-                   -- is what reaches HISTORY: rows written before 0014 carry a NULL
-                   -- `is_proxied`, and the flag on `wallet_dict` is the only thing
-                   -- that can still classify them.
-                   COALESCE(t.is_proxied, w.is_proxy) AS is_proxied
-            FROM trades t
-            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
-            LEFT JOIN wallet_dict p ON p.id = t.payer_id
-            WHERE t.mint_address = $1
-            ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
-            LIMIT $2 OFFSET $3
-            "#,
-        )
+            &format!(
+            "SELECT {TRADE_HISTORY_COLUMNS} {TRADE_HISTORY_FROM} WHERE t.mint_address = $1 \
+             {TRADE_HISTORY_ORDER} LIMIT $2 OFFSET $3"
+        ))
         .bind(mint)
         .bind(limit_opt)
         .bind(offset)
@@ -1329,18 +1342,20 @@ impl TradeRepo {
     /// scan does the work the old two-pass seed needed (full aggregate scan +
     /// full chronological stream):
     ///
-    /// - **Capped** — only the newest `per_mint_cap` trades per mint land in
+    /// - **Capped**: only the newest `per_mint_cap` trades per mint land in
     ///   `trades` (a per-mint `ROW_NUMBER` window), so a high-volume token reads its
     ///   recent window instead of its full unbounded history.
-    /// - **Single pass** — lifetime `count`/`volume` and the newest trade's
-    ///   `block_time`/`price`/`reserves` ride along as window aggregates computed
-    ///   over the *full* partition in the same scan (`SeedAgg`), so the caller never
-    ///   needs a second aggregate query.
+    /// - **Single pass**: the in-window `count`/`volume` ride along as window
+    ///   aggregates computed over the *full* partition in the same scan (`SeedAgg`),
+    ///   so the caller never needs a second aggregate query. The newest trade is
+    ///   always in the capped run (its last row), so nothing else is aggregated.
     ///
-    /// `trades` arrives oldest-first per mint (ready for `push_trade_capped`). The
-    /// seed path doesn't filter by wallet, so it simply JOINs `wallet_dict` for the
-    /// address. Scoped to the seeded set (`mint = ANY($1)`, chunked) and grouped
-    /// while streaming so peak memory is one mint's capped run.
+    /// `trades` arrives oldest-first per mint (ready for `push_trade_capped`), each
+    /// row the history projection ([`TRADE_HISTORY_COLUMNS`]) converted like a
+    /// history read ([`replayable_trade`]): labels, fee trio and real reserve
+    /// included, so a seeded cache row hashes and reads exactly like a live one.
+    /// Scoped to the seeded set (`mint = ANY($1)`, chunked) and grouped while
+    /// streaming so peak memory is one mint's capped run.
     ///
     /// `since` bounds the scan to trades newer than the cutoff
     /// (`SEED_TRADES_MAX_AGE_HOURS` at the caller) so TimescaleDB prunes older
@@ -1368,55 +1383,39 @@ impl TradeRepo {
 
         /// One seed row: the trade columns plus the per-mint (partition-constant)
         /// aggregates carried by the window functions. `lifetime_volume` is in
-        /// lamports (SUM of the integer column) and converted to f64 SOL on read;
-        /// `newest_price` is already a float (sol/token ratio computed in SQL);
-        /// `newest_reserves` is the raw integer reserve_token as f64.
+        /// lamports (SUM of the integer column) and converted to f64 SOL on read.
         #[derive(sqlx::FromRow)]
         struct SeedTradeRow {
             #[sqlx(flatten)]
             trade: TradeDbRow,
             lifetime_count: i64,
             lifetime_volume: i64,
-            newest_block_time: DateTime<Utc>,
-            newest_price: Option<f64>,
-            newest_reserves: Option<f64>,
         }
 
         if mints.is_empty() {
             return Ok(());
         }
         for chunk in mints.chunks(SEED_MINT_CHUNK) {
-            let mut stream = sqlx::query_as::<_, SeedTradeRow>(
+            let sql = format!(
                 r#"
                 WITH ranked AS (
-                    SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
-                           t.amount_lamports, t.token_amount,
-                           t.reserve_lamports, t.reserve_token,
-                           t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature,
+                    SELECT {TRADE_HISTORY_COLUMNS},
                            ROW_NUMBER()                          OVER w  AS rn,
                            COUNT(*)                              OVER wp AS lifetime_count,
-                           COALESCE(SUM(t.amount_lamports) OVER wp, 0)::bigint AS lifetime_volume,
-                           FIRST_VALUE(t.block_time)             OVER w  AS newest_block_time,
-                           FIRST_VALUE(t.amount_lamports::float8 / NULLIF(t.token_amount, 0)) OVER w AS newest_price,
-                           FIRST_VALUE(t.reserve_token::float8) OVER w AS newest_reserves
-                    FROM trades t
-                    LEFT JOIN wallet_dict w ON w.id = t.wallet_id
+                           COALESCE(SUM(t.amount_lamports) OVER wp, 0)::bigint AS lifetime_volume
+                    {TRADE_HISTORY_FROM}
                     WHERE t.mint_address = ANY($1) AND t.block_time >= $3
                     WINDOW
                         w  AS (PARTITION BY t.mint_address
                                ORDER BY t.slot DESC, t.tx_index DESC, t.leg_index DESC),
                         wp AS (PARTITION BY t.mint_address)
                 )
-                SELECT mint_address, wallet_address, trade_type, venue,
-                       amount_lamports, token_amount,
-                       reserve_lamports, reserve_token,
-                       slot, tx_index, leg_index, block_time, tx_signature,
-                       lifetime_count, lifetime_volume, newest_block_time, newest_price, newest_reserves
-                FROM ranked
+                SELECT * FROM ranked
                 WHERE rn <= $2
                 ORDER BY mint_address ASC, slot ASC, tx_index ASC, leg_index ASC
-                "#,
-            )
+                "#
+            );
+            let mut stream = sqlx::query_as::<_, SeedTradeRow>(&sql)
             .bind(chunk)
             .bind(per_mint_cap)
             .bind(since)
@@ -1439,14 +1438,11 @@ impl TradeRepo {
                                 lifetime_count: row.lifetime_count.max(0) as u64,
                                 // lifetime_volume is a lamports SUM → convert to f64 SOL.
                                 lifetime_volume: lamports_to_sol(row.lifetime_volume),
-                                last_trade_at: row.newest_block_time,
-                                current_reserves: row.newest_reserves,
-                                newest_price: row.newest_price,
                             });
                         }
-                        match Trade::try_from(row.trade) {
+                        match replayable_trade(row.trade) {
                             Ok(t) => buf.push(t),
-                            Err(e) => break Err(e.into()),
+                            Err(e) => break Err(e),
                         }
                     }
                     Ok(None) => break Ok(()),
@@ -1658,16 +1654,13 @@ impl SigLegs {
     }
 }
 
-/// Per-mint, lifetime-scoped aggregates the cache seed needs alongside a mint's
-/// (capped) recent trade run — computed in the same single scan as the trades
-/// (see [`TradeRepo::for_each_seed_mint`]). `lifetime_count`/`lifetime_volume`
-/// cover the *full* history; the `newest_*` fields are the most recent trade's.
+/// Per-mint aggregates the cache seed needs alongside a mint's (capped) recent
+/// trade run, computed in the same single scan as the trades (see
+/// [`TradeRepo::for_each_seed_mint`]) over every in-window trade, not only the
+/// capped run. The newest trade's own facts are read off the run's last row.
 pub struct SeedAgg {
     pub lifetime_count: u64,
     pub lifetime_volume: f64,
-    pub last_trade_at: DateTime<Utc>,
-    pub current_reserves: Option<f64>,
-    pub newest_price: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------

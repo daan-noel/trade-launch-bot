@@ -557,12 +557,13 @@ pub fn adopt_holding_into_engine(
     // resume from PG aggregates (mig 0018). The trail latch re-seeds the way a fresh
     // fill does — unarmed under an `arm_above_pct` gate, armed without one — because a
     // peak taken from entry carries no evidence the gate was ever crossed. The fill's
-    // depth is not stored, so `room_taken` reads NaN on an adopted position and the
-    // stop and clock close it.
+    // depth comes back from `extra`; a row written before it was stored reads NaN,
+    // and then only the stop and the clock close it.
     let trail_arm_pct =
         state.rule_for(rule_id, Some(position)).and_then(|c| c.trail_arm_pct);
     let token = state.tokens.get_mut(&mint)?;
-    let mut ctx = EnteredCtx::at_fill(position, entry_price, created_at, trail_arm_pct, f64::NAN);
+    let entry_depth = pos.entry_priced_reserve().unwrap_or(f64::NAN);
+    let mut ctx = EnteredCtx::at_fill(position, entry_price, created_at, trail_arm_pct, entry_depth);
     ctx.stage = pos.scale_stage;
     ctx.sold_bps = pos.sold_bps();
     token.arms.insert(rule_id, ArmState::Entered(ctx));

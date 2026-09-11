@@ -55,8 +55,8 @@ pub struct PositionCtx {
     /// Threshold that latches [`armed`](Self::armed). `None` ⇒ the metric reads 1.
     pub trail_arm_pct: Option<f64>,
     /// Priced SOL reserve (`vsol`) of the last print folded when the entry filled
-    /// (`room_taken` reference). `NaN` when unknown (a position adopted on restart),
-    /// and `room_taken` then reads `NaN`.
+    /// (`room_taken` reference). `NaN` when unknown (an adopted row written before
+    /// the depth was stored), and `room_taken` then reads `NaN`.
     pub entry_priced_reserve: f64,
 }
 

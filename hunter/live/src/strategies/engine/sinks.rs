@@ -420,7 +420,9 @@ impl Sink {
     /// the PG row stays OPEN and the reaper/manual actions own it from here). SSE
     /// is emitted **before** `registry.remove` so clients always get a real
     /// `position_id` (and entry price) on the final frame.
-    pub async fn on_position_update(&mut self, delta: PositionDelta) {
+    /// `entry_depth` is the engine's entry depth (`EnteredCtx::entry_priced_reserve`),
+    /// read on a `Holding` transition; the first-entry write persists it.
+    pub async fn on_position_update(&mut self, delta: PositionDelta, entry_depth: Option<f64>) {
         // Captured before the handlers run: a terminal transition drops the
         // registry row, and the re-roll below needs the run this position belonged
         // to (positions keep writing to the run they were born in).
@@ -431,7 +433,7 @@ impl Sink {
                 false
             }
             PositionStatus::Holding => {
-                self.on_holding(&delta).await;
+                self.on_holding(&delta, entry_depth).await;
                 false
             }
             PositionStatus::ExitPending => {
@@ -644,7 +646,7 @@ impl Sink {
         self.leave_waiting(delta.rule.0, delta.mint.as_str(), Some(pg_id));
     }
 
-    async fn on_holding(&mut self, delta: &PositionDelta) {
+    async fn on_holding(&mut self, delta: &PositionDelta, entry_depth: Option<f64>) {
         // Safety net if BuySubmitted skipped leave_waiting (unknown rule / crash recovery).
         let pg_id = self.registry.get(delta.position).map(|m| m.pg_id);
         self.leave_waiting(delta.rule.0, delta.mint.as_str(), pg_id);
@@ -716,6 +718,7 @@ impl Sink {
                     fill.at,
                     token_account.as_deref(),
                     entry_slot,
+                    entry_depth,
                 )
                 .await
             {

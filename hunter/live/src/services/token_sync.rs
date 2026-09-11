@@ -1923,6 +1923,12 @@ mod backfill_persistence {
         format!("{prefix}{}", Uuid::new_v4().simple())
     }
 
+    /// A unique, valid base58 signature: `trades.tx_signature` is the decoded 64
+    /// bytes, so an arbitrary string fails the insert before the path under test.
+    fn sig() -> String {
+        solana_sdk::signature::Signature::new_unique().to_string()
+    }
+
     fn raw_tx(sig: &str, slot: u64) -> RawTx {
         // raw_txs.tx_signature is opaque BYTEA (no base58 validation), so the
         // test's string sig is stored as its bytes; payload is a small stand-in.
@@ -1976,8 +1982,8 @@ mod backfill_persistence {
 
         let mint = uniq("MINT-pb-");
         let wallet = uniq("W-pb-");
-        let sig_a = uniq("sig-a-");
-        let sig_b = uniq("sig-b-");
+        let sig_a = sig();
+        let sig_b = sig();
 
         let txs = vec![raw_tx(&sig_a, 10), raw_tx(&sig_b, 11)];
         let trades = vec![
@@ -2032,7 +2038,7 @@ mod backfill_persistence {
         let wallet_repo = WalletRepo::new(pool.clone());
 
         let mint = uniq("MINT-pbfail-");
-        let sig = uniq("sig-fail-");
+        let sig = sig();
         let mut bad = trade(&mint, &uniq("W-"), &sig, 10);
         bad.venue = "not-a-real-venue".to_string(); // violates the venue CHECK
 
@@ -2074,7 +2080,7 @@ mod backfill_persistence {
         let mint_empty = uniq("MINT-batchE-");
 
         // Insert out of slot order so the query's ORDER BY is what sorts them.
-        let sigs: Vec<String> = (0..5).map(|i| uniq(&format!("sig-batch-{i}-"))).collect();
+        let sigs: Vec<String> = (0..5).map(|_| sig()).collect();
         let rows = vec![
             trade(&mint_a, "W1", &sigs[0], 30),
             trade(&mint_a, "W1", &sigs[1], 10),

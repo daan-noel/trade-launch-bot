@@ -234,6 +234,9 @@ async fn resolve_buy_submitted_inner(
                     legs.last_block_time,
                     token_account.as_deref(),
                     legs.first_slot,
+                    // The engine's own entry write (on the fill it is sent below)
+                    // carries the depth; `None` keeps whatever `extra` holds.
+                    None,
                 )
                 .await
             {

@@ -1524,8 +1524,7 @@ The four reference-only tickets sit on the two coins the engine retires as dead 
 
 The holdout chose rule 1b's exit (1.24), so this table shows the engine books what Python booked; it
 certifies nothing. The days after 09-10 do, rule 1 and rule 1b side by side. A position the live
-engine adopts on restart stores no fill depth: its `room_taken` reads `NaN` and only the stop and
-the clock close it.
+engine adopts on restart reads its entry depth back from `strategy_positions.extra`.
 
 # 2. THE PRIZE
 

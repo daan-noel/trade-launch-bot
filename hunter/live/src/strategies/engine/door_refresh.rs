@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 
 use super::EngineHandle;
 
@@ -40,7 +40,7 @@ pub async fn run(engine: EngineHandle) {
         );
     }
     loop {
-        tokio::time::sleep(until_next_refresh()).await;
+        tokio::time::sleep(until_next_refresh(Utc::now())).await;
         while let Err(e) = engine.reload_launch_build_stats().await {
             tracing::error!(
                 "launch-build door refresh failed: {e} - holding the previous day's map"
@@ -50,9 +50,8 @@ pub async fn run(engine: EngineHandle) {
     }
 }
 
-/// Time from now until the next 00:00:30 UTC.
-fn until_next_refresh() -> Duration {
-    let now = Utc::now();
+/// Time from `now` until the next 00:00:30 UTC.
+fn until_next_refresh(now: DateTime<Utc>) -> Duration {
     let today = now.date_naive().and_hms_opt(0, 0, 0).expect("midnight exists").and_utc()
         + REFRESH_AFTER_MIDNIGHT;
     let target = if now < today { today } else { today + ChronoDuration::days(1) };
@@ -78,21 +77,28 @@ pub async fn load_today(
 mod tests {
     use super::*;
 
+    use chrono::TimeZone;
+
+    fn at(h: u32, m: u32, s: u32, ms: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 11, h, m, s).unwrap() + ChronoDuration::milliseconds(ms as i64)
+    }
+
     /// The wait is always in the future and never more than a day out - the property
     /// that keeps a boot at 23:59:59 from sleeping through the rollover it exists for.
     #[test]
     fn the_next_refresh_is_within_a_day() {
-        let d = until_next_refresh();
-        assert!(d.as_secs() <= 24 * 3600 + 30);
+        assert_eq!(until_next_refresh(at(23, 59, 59, 0)), Duration::from_secs(31));
+        assert_eq!(until_next_refresh(at(0, 0, 10, 0)), Duration::from_secs(20));
+        // At the refresh instant itself the next one is a full day out.
+        assert_eq!(until_next_refresh(at(0, 0, 30, 0)), Duration::from_secs(24 * 3600));
     }
 
     /// Midnight-relative, so the refresh lands at a fixed wall-clock instant rather
     /// than drifting with process start time.
     #[test]
     fn the_target_is_thirty_seconds_past_a_midnight() {
-        use chrono::Timelike;
-        let now = Utc::now();
-        let target = now + ChronoDuration::from_std(until_next_refresh()).unwrap();
-        assert_eq!(target.num_seconds_from_midnight() % 86_400, 30);
+        let now = at(13, 45, 7, 123);
+        let target = now + ChronoDuration::from_std(until_next_refresh(now)).unwrap();
+        assert_eq!(target, Utc.with_ymd_and_hms(2026, 9, 12, 0, 0, 30).unwrap());
     }
 }

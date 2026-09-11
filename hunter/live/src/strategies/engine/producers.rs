@@ -27,7 +27,11 @@ use chrono::{DateTime, Utc};
 use smallvec::SmallVec;
 
 use hunter_engine::event::{Event, Mint};
-use trading_core::models::trade::TradeRow;
+use hunter_engine::grouping::TokenFingerprint;
+use hunter_engine::identity::IdentityHash;
+use hunter_engine::{FirstSlotFacts, HydrateFacts};
+use trading_core::models::token::Token;
+use trading_core::models::trade::{Trade, TradeRow};
 use hunter_engine::grouping::LAMPORTS_PER_SOL_F64;
 use hunter_engine::metrics::flow_ix::wallet_hash;
 use hunter_engine::token_identity_hash;
@@ -130,6 +134,78 @@ impl Producer {
         self.trade_cursor.contains_key(mint)
     }
 
+    /// When this loop started: a token born at or after it has its whole history in
+    /// the cache and in `trades`; one born before crossed the restart.
+    pub fn started_at(&self) -> DateTime<Utc> {
+        self.started_at
+    }
+
+    /// The facts `TokenCreated` and `FirstSlotSettled` carried for `mint`, read off
+    /// the cache again for a rebuild. `first_slot` is set once the creation slot has
+    /// closed, with the sums and stand-in the settle read. `None` when uncached.
+    pub fn hydrate_facts(&self, mint: &str) -> Option<HydrateFacts> {
+        let (token, first_slot) = {
+            let entry = self.token_cache.get(mint)?;
+            let s = entry.value();
+            let first_slot = (!s.first_slot_window_open).then(|| FirstSlotFacts {
+                buy_lamports: sol_to_lamports_u64(s.first_slot_buy_sol),
+                sell_lamports: sol_to_lamports_u64(s.first_slot_sell_sol),
+                creator_stand_in_wallet_hash: s.creator_stand_in_wallet_hash(),
+            });
+            (s.token.clone(), first_slot)
+        };
+        let (fp, creator_wallet_hash, identity) = creation_facts(&token);
+        Some(HydrateFacts {
+            fp,
+            created_at: token.created_at,
+            creator_wallet_hash,
+            identity,
+            creation_slot: token.creation_slot,
+            first_slot,
+        })
+    }
+
+    /// The cached trades of `mint` this process has already produced (up to the
+    /// cursor), as the rebuild folds them: all of them when `from` is `None`, else
+    /// those at or after the chain position `from` (the trades before it come from
+    /// `trades`). Leaves the cursor where it is, or sets it past every cached trade
+    /// when the mint has none, so the next drain decides only what arrives after.
+    ///
+    /// `None` when uncached, when `from` is `None` but the cache no longer starts at
+    /// the token's first trade, or when the cache has already trimmed a trade at or
+    /// after `from`: the splice would leave a hole.
+    pub fn hydration_history(
+        &mut self,
+        mint: &str,
+        from: Option<ChainKey>,
+    ) -> Option<Vec<TradeLite>> {
+        let (trades, base) = {
+            let entry = self.token_cache.get(mint)?;
+            let s = entry.value();
+            (Arc::clone(&s.trades), s.trades_base)
+        };
+        let total = base + trades.len() as u64;
+        let cursor = match self.trade_cursor.get(mint) {
+            Some(&c) => c,
+            None => {
+                self.trade_cursor.insert(Mint::from(mint), total);
+                total
+            }
+        };
+        let end = cursor.saturating_sub(base).min(trades.len() as u64) as usize;
+        let produced = &trades[..end];
+        match from {
+            None => (base == 0).then(|| produced.iter().map(trade_lite).collect()),
+            Some(k) => {
+                let oldest = trades.iter().map(chain_key).min();
+                if base > 0 && oldest.is_none_or(|o| o > k) {
+                    return None;
+                }
+                Some(produced.iter().filter(|t| chain_key(t) >= k).map(trade_lite).collect())
+            }
+        }
+    }
+
     pub fn prime_tracked(&mut self, mint: &str) -> Produced {
         if self.has_cursor(mint) {
             return Produced::default();
@@ -153,9 +229,7 @@ impl Producer {
         }
 
         let at = token.created_at;
-        let tf = observed_axes(&token, None, None);
-        let creator_wallet_hash = (!token.creator_wallet.is_empty())
-            .then(|| wallet_hash(&token.creator_wallet));
+        let (tf, creator_wallet_hash, identity) = creation_facts(&token);
         // Queue the deferred first-slot resolve. The watermark sweep settles it as
         // soon as any token trades in a later slot, so a quiet launch no longer waits
         // for its own next trade.
@@ -169,9 +243,7 @@ impl Producer {
             fp: Box::new(tf),
             at,
             creator_wallet_hash,
-            // The copycat key, straight off the create event's metadata — no
-            // extra lookup, no RPC. `None` when either half is blank.
-            identity: token_identity_hash(&token.name, &token.symbol),
+            identity,
             creation_slot: token.creation_slot,
         });
         out
@@ -340,6 +412,31 @@ impl Producer {
         self.first_slot_emitted.retain(|m| keep(m));
         self.migrated_emitted.retain(|m| keep(m));
     }
+}
+
+/// A trade's place on the chain: `(slot, tx_index, leg)`, the order `trades` sorts by.
+pub type ChainKey = (u64, u32, u32);
+
+fn chain_key(ct: &CachedTrade) -> ChainKey {
+    (ct.slot, ct.tx_index, ct.leg_index)
+}
+
+/// What `TokenCreated` carries from the cache's token row: the observed axes, the
+/// creator hash, and the copycat key (straight off the create metadata, no lookup;
+/// `None` when either half is blank). The create event and a rebuild both read it.
+fn creation_facts(token: &Token) -> (TokenFingerprint, Option<u64>, Option<IdentityHash>) {
+    let tf = observed_axes(token, None, None);
+    let creator_wallet_hash =
+        (!token.creator_wallet.is_empty()).then(|| wallet_hash(&token.creator_wallet));
+    (tf, creator_wallet_hash, token_identity_hash(&token.name, &token.symbol))
+}
+
+/// A `trades` row as the engine's `TradeLite`, through the same cache projection a
+/// live print takes (`CachedTrade::from_trade` hashes its labels), so a rebuilt
+/// history reads like the prints the loop produced. The wallet index is token-local
+/// and unused here.
+pub fn history_trade_lite(t: &Trade) -> TradeLite {
+    trade_lite(&CachedTrade::from_trade(t, 0))
 }
 
 /// One cached trade as the engine's `TradeLite`. The ONE conversion — the primed
@@ -517,6 +614,61 @@ mod tests {
         assert_eq!(first.prime.len(), 2);
         assert!(first.events.is_empty());
         assert!(p.prime_tracked(MINT).prime.is_empty(), "second call is a no-op");
+    }
+
+    /// A rebuild takes the whole history from a cache that starts at the token's
+    /// first trade, and only what the loop has already produced: a trade past the
+    /// cursor is left to the next drain, which decides it.
+    #[test]
+    fn hydration_history_is_the_produced_prefix() {
+        let cache = cache_with(120, vec![trade(100, 1), trade(90, 2), trade(80, 3)]);
+        let mut p = Producer::new(cache.clone(), Utc::now() - ChronoDuration::seconds(200));
+        assert_eq!(p.on_ping(&ping()).events.len(), 3);
+        cache.get_mut(MINT).unwrap().add_trade(trade(5, 4));
+
+        let h = p.hydration_history(MINT, None).expect("a cache from trade #0");
+        assert_eq!(h.iter().map(|t| t.slot).collect::<Vec<_>>(), vec![1, 2, 3]);
+        let next = p.on_ping(&ping());
+        assert_eq!(next.events.len(), 1, "the unproduced trade is decided, once");
+    }
+
+    /// A mint the loop never produced for: the rebuild takes every cached trade and
+    /// sets the cursor past them, so no drain folds them a second time.
+    #[test]
+    fn hydration_history_latches_the_cursor() {
+        let cache = cache_with(120, vec![trade(100, 1), trade(90, 2)]);
+        let mut p = Producer::new(cache, Utc::now() - ChronoDuration::seconds(200));
+        assert_eq!(p.hydration_history(MINT, None).map(|h| h.len()), Some(2));
+        let out = p.on_ping(&ping());
+        assert!(out.events.is_empty() && out.prime.is_empty());
+    }
+
+    /// The splice: everything at or after the split comes from the cache. A cache
+    /// that no longer starts at trade #0 cannot give the whole history, and one that
+    /// trimmed past the split would leave a hole: both refuse.
+    #[test]
+    fn hydration_history_splices_at_the_split_and_refuses_a_hole() {
+        let cache = cache_with(120, vec![trade(100, 1), trade(90, 2), trade(80, 3)]);
+        let mut p = Producer::new(cache.clone(), Utc::now() - ChronoDuration::seconds(200));
+        let h = p.hydration_history(MINT, Some((2, 0, 0))).expect("split retained");
+        assert_eq!(h.iter().map(|t| t.slot).collect::<Vec<_>>(), vec![2, 3]);
+
+        cache.get_mut(MINT).unwrap().trades_base = 7;
+        assert!(p.hydration_history(MINT, None).is_none(), "not from trade #0");
+        assert!(p.hydration_history(MINT, Some((0, 0, 0))).is_none(), "trimmed past the split");
+        assert!(p.hydration_history(MINT, Some((1, 0, 0))).is_some(), "split still retained");
+    }
+
+    /// The first-slot facts a rebuild re-applies exist only once the creation slot
+    /// has closed, as the live settle only fires then.
+    #[test]
+    fn hydrate_facts_carry_the_first_slot_once_it_closed() {
+        let cache = cache_with(120, vec![]);
+        let p = Producer::new(cache.clone(), Utc::now());
+        cache.get_mut(MINT).unwrap().first_slot_window_open = true;
+        assert!(p.hydrate_facts(MINT).expect("cached").first_slot.is_none());
+        cache.get_mut(MINT).unwrap().first_slot_window_open = false;
+        assert!(p.hydrate_facts(MINT).expect("cached").first_slot.is_some());
     }
 
     /// A mint the cache has not seeded yet must not latch a cursor, or the seed's

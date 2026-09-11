@@ -126,6 +126,60 @@ primed_history_restores_the_trailing_peak}` and the `producers::tests` module
 `prime_tracked_retries_until_the_cache_has_the_mint`,
 `stale_token_does_not_emit_first_slot_settled`).
 
+## What a restart cannot rebuild: the downtime's trades
+
+Trades that print while the process is down reach neither the cache nor `trades`:
+ingest replays a gap only inside a running process (its resume anchor lives in RAM),
+and the NATS feed cannot replay at all. A token alive across a restart therefore has a
+hole in its history, and a lifetime term read over it can be wrong in either direction:
+a buyer count undercounts (a `>=` gate misses, a `<=` gate passes falsely), and a top
+printed inside the hole leaves `stall` reading a new high that is not one. Boot
+therefore rebuilds no such token for a rule: the tokens alive across a restart stay
+out (about 0.6 hot-tape rule 1 tickets a restart). The one exception is the log
+re-arm, which re-arms tokens born within `MAX_SNIPE_AGE_SECS` of the crash and primes
+them across the same hole.
+
+## A rule switched on mid-run is rebuilt from the whole history
+
+A reload arms nothing on existing tokens, and registers a new rule's windows on
+tracked tokens going forward only. `live/src/strategies/engine/hydrate.rs` runs after
+every reload (the `ReloadRules` command, which the scheduler also sends, and the admin
+reseed):
+
+* It takes the rules that just became armable (switched on, or off and on again, whose
+  `Disarmed(Paused)` arms re-arm) and whether the rule set now asks a track for state
+  it never folded (`TrackRequirements::adds_to`: a window, an age anchor or a larger
+  anchor cap, the wallet map, a fingerprint classifier).
+* Every cached, alive token born at or after the loop's `started_at` has its whole
+  history in the cache and in `trades`. Each goes to `hunter_engine::hydrate_token`:
+  arm only when its track needs nothing new, else a rebuild from the cache when it
+  still starts at the token's first trade, or from `trades` up to the oldest cached
+  trade (`TradeRepo::find_by_mint_before`, read off the loop) spliced onto the cache at
+  that trade. A cache that trims past the split meanwhile is read again.
+* The loop folds one rebuilt token per turn, on a lane below every live one, so a
+  switch-on over many tokens never delays a decision.
+
+`hydrate_token` never decides: it returns `ArmedChanged` only, and the next tick
+decides at the wall clock. A rebuild folds the creation-slot prints under the creator
+and then applies the first-slot stand-in, in the live settle's order. What an untracked
+token's rebuild cannot recover fails closed: `prior_launches` reads unknown (the tally
+at its birth is gone), and its launch-build door is stamped only when it was born on
+today's UTC day, the day the loaded door map is for.
+
+## The entry depth survives a restart
+
+`m_position.room_taken` is sized against the entry's `vsol`. The sink writes it with
+the entry fill into `strategy_positions.extra` under `EXTRA_ENTRY_PRICED_RESERVE`, and
+boot adoption reads it back (`StrategyPosition::entry_priced_reserve`), so a position
+held across a restart keeps its room target. A row written before the key existed
+reads `NaN`, and then only the stop and the clock close it.
+
+`prime_trade` also clears the whole-map "settled" memo: it folds outside `reduce`, and
+without that the next tick could skip the token it just moved.
+
+Locked by `engine/tests/hydrate.rs`, the `producers::tests` `hydration_*` and
+`hydrate_facts_*` cases, `hydrate::tests`, and `models::strategy::extra_tests`.
+
 ## Still open
 
 The restarts themselves. The box took **8 boots on 2026-08-06**, most from

@@ -7,10 +7,15 @@ use tracing::info;
 
 use crate::state::token_cache::{TokenCache, TokenState};
 use trading_core::config::constants::{
-    market_cap_sol, INITIAL_VIRTUAL_TOKEN_RESERVES, SEED_ACTIVITY_WINDOW_DAYS,
-    SEED_TRACKING_LIMIT, SEED_TRADES_MAX_AGE_HOURS, SEED_TRADES_PER_MINT,
+    market_cap_sol, DEAD_MEANINGFUL_TRADE_SOL, INITIAL_VIRTUAL_TOKEN_RESERVES,
+    SEED_ACTIVITY_WINDOW_DAYS, SEED_TRACKING_LIMIT, SEED_TRADES_MAX_AGE_HOURS,
+    SEED_TRADES_PER_MINT,
 };
-use trading_core::models::{token::Token, token_info::TokenInfo, trade::Trade};
+use trading_core::models::{
+    token::Token,
+    token_info::TokenInfo,
+    trade::{Trade, TradeRow},
+};
 use trading_core::storage::repositories::{
     strategy_repo::StrategyRepo,
     token_info_repo::TokenInfoRepo,
@@ -206,15 +211,19 @@ fn build_state(
     if let Some(agg) = agg {
         state.trade_count = agg.lifetime_count;
         state.volume_sol_total = agg.lifetime_volume;
-        state.last_trade_at = Some(agg.last_trade_at);
+    }
+    // The newest trade, in chain order, is the run's last row: its time, token
+    // reserve and chart spot, the same price `add_trade` moves the market cap with.
+    if let Some(newest) = trades.last() {
+        state.last_trade_at = Some(newest.block_time);
         state
             .initial_virtual_token_reserves
             .get_or_insert(INITIAL_VIRTUAL_TOKEN_RESERVES);
         if state.current_reserve_token.is_none() {
-            state.current_reserve_token = agg.current_reserves;
+            state.current_reserve_token = newest.reserve_token.map(|v| v as f64);
         }
         if state.market_cap.is_none() {
-            if let Some(price) = agg.newest_price {
+            if let Some(price) = newest.chart_spot_price() {
                 state.market_cap = Some(market_cap_sol(price, state.token.is_mayhem_mode));
             }
         }
@@ -227,16 +236,24 @@ fn build_state(
         state.push_trade_capped(cached);
     }
 
-    // Prime the dead-token liquidity signal from the seeded tail: the newest trade
-    // (by block_time) that carries a real-reserve snapshot. The live path maintains
-    // this field incrementally in `add_trade`, but seed bypasses that via
-    // `push_trade_capped`, so populate it directly here. One-time, off the hot path.
+    // Prime both dead-token signals from the seeded tail: the newest trade (by
+    // block_time) that carries a real-reserve snapshot, and the newest meaningful
+    // (non-dust) trade. The live path maintains them incrementally in `add_trade`,
+    // but seed bypasses that via `push_trade_capped`, so populate them directly
+    // here, together: a reserve without its quiet clock would read a token dead
+    // from its creation time. One-time, off the hot path.
     state.current_real_sol_reserves = state
         .trades
         .iter()
         .filter(|t| t.real_reserve_sol.is_some())
         .max_by_key(|t| t.block_time)
         .and_then(|t| t.real_reserve_sol);
+    state.last_meaningful_trade_at = state
+        .trades
+        .iter()
+        .filter(|t| t.amount_sol >= DEAD_MEANINGFUL_TRADE_SOL)
+        .map(|t| t.block_time)
+        .max();
 
     state
 }
@@ -308,12 +325,21 @@ mod tests {
         let agg = SeedAgg {
             lifetime_count: 50,
             lifetime_volume: 500.0,
-            last_trade_at: Utc::now(),
-            current_reserves: Some(1234.0),
-            newest_price: Some(2.0),
         };
+        let mut newest = Trade::new(
+            "MINT-bs".into(),
+            "W".into(),
+            TradeType::Buy,
+            1.0,
+            1_000,
+            uniq("sig-"),
+            1,
+            Utc::now(),
+        );
+        newest.reserve_sol = Some(40.0);
+        newest.reserve_token = Some(1234);
 
-        let state = build_state(tok, Some(&info), Some(agg), Vec::new());
+        let state = build_state(tok, Some(&info), Some(agg), vec![newest.clone()]);
 
         assert_eq!(state.trade_count, 50, "agg lifetime_count overrides info");
         assert_eq!(state.volume_sol_total, 500.0, "agg volume overrides info");
@@ -322,21 +348,53 @@ mod tests {
         assert!(state.is_migrated, "is_migrated carried from info");
         assert_eq!(state.ath_price, Some(9.0));
 
-        // No persisted market_cap → derive from the newest trade price.
+        // No persisted market_cap → derive from the newest trade's spot, in SOL
+        // per raw unit like the live path (vsol 40 / 1234 raw tokens).
         let mut info2 = info.clone();
         info2.market_cap = None;
         let agg2 = SeedAgg {
             lifetime_count: 1,
             lifetime_volume: 1.0,
-            last_trade_at: Utc::now(),
-            current_reserves: None,
-            newest_price: Some(2.0),
         };
-        let state2 = build_state(token("MINT-bs", Utc::now()), Some(&info2), Some(agg2), Vec::new());
-        assert!(
-            state2.market_cap.is_some(),
-            "market_cap derived from newest price when not persisted"
+        let state2 =
+            build_state(token("MINT-bs", Utc::now()), Some(&info2), Some(agg2), vec![newest]);
+        assert_eq!(
+            state2.market_cap,
+            Some(market_cap_sol(40.0 / 1234.0, false)),
+            "market_cap derived from the newest trade's spot when not persisted"
         );
+    }
+
+    /// The seed primes BOTH dead-token signals from its tail, as `add_trade` does
+    /// live: a low reserve alone, with the quiet clock falling back to creation, would
+    /// read a token dead while it still trades.
+    #[test]
+    fn build_state_primes_the_quiet_clock_with_the_reserve() {
+        let now = Utc::now();
+        let mut t = Trade::new(
+            "MINT-dead".into(),
+            "W".into(),
+            TradeType::Buy,
+            1.0,
+            1_000,
+            uniq("sig-"),
+            1,
+            now - chrono::Duration::seconds(10),
+        );
+        t.real_reserve_sol = Some(5.0);
+        let mut dust = t.clone();
+        dust.amount_sol = 0.001;
+        dust.block_time = now - chrono::Duration::seconds(5);
+        let state = build_state(
+            token("MINT-dead", now - chrono::Duration::hours(1)),
+            None,
+            None,
+            vec![t.clone(), dust],
+        );
+        assert_eq!(state.current_real_sol_reserves, Some(5.0));
+        assert_eq!(state.last_meaningful_trade_at, Some(t.block_time), "dust never moves it");
+        assert!(!state.is_dead(now), "a token that traded 10 s ago is alive");
+        assert!(state.is_dead(now + chrono::Duration::minutes(10)), "and dies once quiet");
     }
 
     async fn test_pool() -> Option<PgPool> {
@@ -364,7 +422,7 @@ mod tests {
         // 5 trades, slot/time ascending: sol_amounts 1..5, reserves 101..105.
         let mut sigs = Vec::new();
         for i in 1..=5i64 {
-            let sig = uniq("sig-cap-");
+            let sig = solana_sdk::signature::Signature::new_unique().to_string();
             sigs.push(sig.clone());
             let mut t = trading_core::models::trade::Trade::new(
                 mint.clone(),
@@ -377,6 +435,8 @@ mod tests {
                 base + chrono::Duration::seconds(i),
             );
             t.reserve_token = Some(100 + i as u64);
+            t.reserve_sol = Some(40.0 + i as f64);
+            t.instruction_labels = serde_json::json!(["Pump.Fun: Buy"]);
             trade_repo.insert(&t).await.expect("insert trade");
         }
 
@@ -401,8 +461,11 @@ mod tests {
         assert_eq!(trades[2].amount_sol, 5.0, "newest kept = trade 5");
         assert_eq!(agg.lifetime_count, 5, "lifetime count spans full history");
         assert_eq!(agg.lifetime_volume, 15.0, "lifetime volume = 1+2+3+4+5");
-        assert_eq!(agg.current_reserves, Some(105.0), "reserves from newest trade");
-        assert_eq!(agg.newest_price, Some(0.5), "newest price = 5/10");
+        assert_eq!(trades[2].reserve_token, Some(105), "the newest trade is the last row");
+        // Each row is the history projection, converted like a history read: the
+        // labels a live row hashes, and the real reserve the dead signal reads.
+        assert_eq!(trades[2].instruction_labels, serde_json::json!(["Pump.Fun: Buy"]));
+        assert_eq!(trades[2].real_reserve_sol, Some(15.0), "vsol 45 less the 30 virtual");
 
         let _ = sqlx::query("DELETE FROM trades WHERE mint_address = $1")
             .bind(&mint)

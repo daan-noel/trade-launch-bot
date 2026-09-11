@@ -401,7 +401,21 @@ pub struct StrategyPosition {
     pub updated_at: DateTime<Utc>,
 }
 
+/// `extra` key holding the priced SOL reserve (`vsol`) of the last print the engine
+/// folded when the entry filled: the depth `m_position.room_taken` is sized against.
+/// Written with the entry fill, read back when a restart adopts the position.
+pub const EXTRA_ENTRY_PRICED_RESERVE: &str = "entry_priced_reserve";
+
 impl StrategyPosition {
+    /// The entry's priced reserve from `extra` ([`EXTRA_ENTRY_PRICED_RESERVE`]);
+    /// `None` when absent or not a positive number.
+    pub fn entry_priced_reserve(&self) -> Option<f64> {
+        self.extra
+            .get(EXTRA_ENTRY_PRICED_RESERVE)
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v > 0.0)
+    }
+
     /// In the runtime holding index: buy in flight or held. These are the states
     /// the exit gate and fill-adopt path scan by mint.
     pub fn is_in_holding_index(&self) -> bool {
@@ -912,5 +926,31 @@ mod pnl_pct_tests {
         open.exit_sol = None;
         open.exit_sol_total = 0.0;
         assert!(open.pnl_pct().is_none(), "an open row has no realized exit");
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    fn pos(extra: Value) -> StrategyPosition {
+        let mut p = StrategyPosition::new(
+            Uuid::new_v4(),
+            "generic".to_string(),
+            Uuid::new_v4(),
+            "paper".to_string(),
+            "MINT".to_string(),
+            "WALLET".to_string(),
+        );
+        p.extra = extra;
+        p
+    }
+
+    #[test]
+    fn entry_priced_reserve_reads_back_from_extra() {
+        assert_eq!(pos(json!({ EXTRA_ENTRY_PRICED_RESERVE: 87.5 })).entry_priced_reserve(), Some(87.5));
+        assert_eq!(pos(json!({})).entry_priced_reserve(), None);
+        assert_eq!(pos(json!({ EXTRA_ENTRY_PRICED_RESERVE: 0.0 })).entry_priced_reserve(), None);
+        assert_eq!(pos(json!({ EXTRA_ENTRY_PRICED_RESERVE: "87.5" })).entry_priced_reserve(), None);
     }
 }

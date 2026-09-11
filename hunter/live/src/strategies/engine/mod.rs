@@ -30,6 +30,7 @@ pub mod decision_loop;
 pub mod event_log;
 pub mod exec_paper;
 pub mod exec_real;
+pub mod hydrate;
 pub mod orphan_exit;
 pub mod producers;
 pub mod reapers;

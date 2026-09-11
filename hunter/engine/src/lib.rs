@@ -44,8 +44,8 @@ pub use dupe_guard::DupeGuard;
 pub use identity::{token_identity_hash, IdentityHash};
 pub use event::{Effect, Event};
 pub use event_log::LoggedEvent;
-pub use reduce::{prime_trade, reduce};
-pub use state::EngineState;
+pub use reduce::{hydrate_token, prime_trade, reduce, FirstSlotFacts, HydrateFacts};
+pub use state::{EngineState, TrackRequirements};
 
 /// The decision-loop clock cadence, in milliseconds — the single source of truth
 /// for the clock tick (plan decision 5). Sized under one Solana slot (~400 ms) so
