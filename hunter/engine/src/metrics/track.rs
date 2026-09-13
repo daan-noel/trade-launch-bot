@@ -33,6 +33,7 @@ use super::flow_ix::{FlowPatterns, FlowState};
 use super::flow_window::WindowState;
 use super::price_lifetime::PriceLifetimeState;
 use super::price_window::PriceWindowState;
+use super::holder_book::HolderBookState;
 use super::print_wallet::PrintWalletState;
 use super::state::StateMetrics;
 use super::{Cursor, MetricId, TradeLite, Ts};
@@ -76,6 +77,9 @@ pub struct TokenTrack {
     /// `m_print_wallet` — one wallet -> last-buy map. `None` unless a loaded rule
     /// reads the group, so a rule set that does not pays nothing per token.
     print_wallet: Option<PrintWalletState>,
+    /// `m_holder_book` — one wallet -> bag book. `None` unless a loaded rule reads the
+    /// group, for the reason `print_wallet` is.
+    holder_book: Option<HolderBookState>,
     /// Flow classifier state, keyed by fingerprint (pattern sets differ).
     flow: BTreeMap<FingerprintId, FlowState>,
     /// `m_dump_ix` state, keyed by fingerprint. Apart from `flow` for the reason
@@ -117,6 +121,7 @@ impl TokenTrack {
             crowd_after_age: BTreeMap::new(),
             build_windows: BTreeMap::new(),
             print_wallet: None,
+            holder_book: None,
             cur_slot: 0,
             n_prints: 0,
             priced_reserves: f64::NAN,
@@ -172,6 +177,12 @@ impl TokenTrack {
     /// the buys folded after it, like any newly registered window.
     pub fn ensure_print_wallet(&mut self) {
         self.print_wallet.get_or_insert_with(PrintWalletState::default);
+    }
+
+    /// Open the `m_holder_book` book (idempotent). A book opened mid-life knows only
+    /// the prints folded after it, like any newly registered window.
+    pub fn ensure_holder_book(&mut self) {
+        self.holder_book.get_or_insert_with(HolderBookState::default);
     }
 
     /// Register fingerprint-scoped flow state (idempotent). `windows` are the
@@ -309,6 +320,9 @@ impl TokenTrack {
         }
         if let Some(pw) = self.print_wallet.as_mut() {
             pw.on_trade(&t);
+        }
+        if let Some(hb) = self.holder_book.as_mut() {
+            hb.on_trade(&t);
         }
         for pw in self.price_windows.values_mut() {
             let spec = pw.spec();
@@ -472,6 +486,7 @@ impl TokenTrack {
             // An unopened map reads NaN, the same "no reading" an unregistered
             // window gives.
             SinceBuy => self.print_wallet.as_ref().map_or(f64::NAN, |p| p.value(id)),
+            PublicAppShare | BundledShare => self.holder_book.as_ref().map_or(f64::NAN, |b| b.value(id)),
             // `m_crowd_window` reads its OWN deque — the wallet column is its subject,
             // not `m_flow_window`'s payload.
             UniqueWallets | TradesPerWallet => {

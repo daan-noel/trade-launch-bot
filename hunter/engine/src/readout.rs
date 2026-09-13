@@ -364,6 +364,9 @@ pub fn replay_readout(
     if rule.needs_print_wallet {
         track.ensure_print_wallet();
     }
+    if rule.needs_holder_book {
+        track.ensure_holder_book();
+    }
     if let Some(f) = &ctx.flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
         // the seed back-fills every flow state already registered.
@@ -579,6 +582,9 @@ pub fn replay_series(
     }
     if rule.needs_print_wallet {
         series.ensure_print_wallet();
+    }
+    if rule.needs_holder_book {
+        series.ensure_holder_book();
     }
     if let Some(f) = &ctx.flow {
         if let Some(p) = f.patterns {

@@ -186,7 +186,8 @@ impl LoggedEvent {
             // creation is stamped under are the ones loaded before recovery runs.
             Event::Tick { .. }
             | Event::RulesReloaded { .. }
-            | Event::LaunchBuildStatsReloaded { .. } => return None,
+            | Event::LaunchBuildStatsReloaded { .. }
+            | Event::BuildBreadthReloaded { .. } => return None,
         })
     }
 

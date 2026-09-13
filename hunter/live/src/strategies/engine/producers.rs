@@ -476,6 +476,10 @@ fn trade_lite(ct: &CachedTrade) -> TradeLite {
         on_curve: ct.on_curve,
         // Copied at cache ingest (`CachedTrade::from_trade`), like the hashes above.
         fee: ct.fee,
+        // Raw token units, what `m_holder_book` keeps each wallet's bag in. The
+        // previous-day build breadth is the engine's to stamp, never an adapter's.
+        token_amount: ct.token_amount,
+        build_day_buyers: None,
     }
 }
 

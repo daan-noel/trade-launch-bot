@@ -1407,6 +1407,12 @@ async fn run() -> anyhow::Result<()> {
     // The launch-build door's daily refresh: one bounded `GROUP BY` a day, off the
     // decision loop, swapping the map the `build_prev_day_*` axes are stamped from.
     tokio::spawn(strategies::engine::door_refresh::run(engine_handle.clone()));
+    // The build-breadth table's daily refresh: one `GROUP BY` over a day of `trades`
+    // on the batch pool, off the decision loop, which only swaps the table.
+    tokio::spawn(strategies::engine::breadth_refresh::run(
+        engine_handle.clone(),
+        core_state.batch_db.clone(),
+    ));
 
     // Recovery reaper is spawned inside the engine loop (needs fill_tx + in-flight
     // guards) — see `strategies::engine::decision_loop`.

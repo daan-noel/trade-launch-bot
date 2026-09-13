@@ -134,8 +134,10 @@ impl MetricSeries {
             // A static group whose state is opened on demand: the column is what
             // asks for it, as a rule's condition does on the live track.
             if let SeriesColumn::Static(id) = c {
-                if group_of(*id).id == MetricGroupId::PrintWallet {
-                    track.ensure_print_wallet();
+                match group_of(*id).id {
+                    MetricGroupId::PrintWallet => track.ensure_print_wallet(),
+                    MetricGroupId::HolderBook => track.ensure_holder_book(),
+                    _ => {}
                 }
             }
             if let SeriesColumn::Window(id, ws) = c {
@@ -212,6 +214,12 @@ impl MetricSeries {
     /// registration on the live track.
     pub fn ensure_print_wallet(&mut self) {
         self.track.ensure_print_wallet();
+    }
+
+    /// Open the `m_holder_book` book before folding — the twin of the rule-driven
+    /// registration on the live track.
+    pub fn ensure_holder_book(&mut self) {
+        self.track.ensure_holder_book();
     }
 
     /// Register a rolling **price-extrema** window (`m_price_window`) — the twin of

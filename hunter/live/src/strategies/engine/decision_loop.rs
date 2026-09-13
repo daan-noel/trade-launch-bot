@@ -262,6 +262,23 @@ async fn run_loop(
             ),
         }
     }
+    // The build-breadth table, for the same reason and before hydration: a holder is
+    // classed at its first buy, so a primed trade stamped with no table would leave
+    // that token's `public_app_share` NaN for as long as the holder keeps its bag.
+    {
+        let repo = trading_core::storage::repositories::build_breadth_repo::BuildBreadthRepo::new(
+            strategy_repo.pool().clone(),
+        );
+        match super::breadth_refresh::load_today(&repo).await {
+            Ok(breadth) => {
+                let _ = reduce(&mut state, Event::BuildBreadthReloaded { breadth });
+            }
+            Err(e) => tracing::error!(
+                error = %e,
+                "build breadth UNLOADED - every `m_holder_book.public_app_share` rule fails closed"
+            ),
+        }
+    }
     // finalize runs left open by a deactivation this process never witnessed, and
     // rebuild the set of finished-but-still-draining runs whose metrics need
     // re-rolling. Both precede the first reload so an early straggler is not missed.
@@ -850,6 +867,9 @@ async fn handle_command(
         // Read-only: answer from the state this loop owns and fold nothing. A miss
         // (untracked token / no arm / tracked-only manual) is `None`, not a warning —
         // a UI polling a position the engine no longer holds is expected, not a fault.
+        EngineCommand::SetBuildBreadth { breadth } => {
+            EventBatch::one(Event::BuildBreadthReloaded { breadth })
+        }
         EngineCommand::ReadRule { mint, rule_id, ack } => {
             let readout =
                 hunter_engine::readout::read_state(state, &Mint::from(mint.as_str()), rule_id, Utc::now());

@@ -503,6 +503,15 @@ async fn run_engine_backtest(
     // engine would have had the morning it was born.
     let launch_build_stats = door_days.ordered.clone();
 
+    // The build-breadth table, day by day, only for a rule that reads the holder
+    // book: each day is one GROUP BY over a day of `trades`, paid once and stored.
+    let build_breadth = if rule_reads_holder_book(&target.loaded) {
+        let from = replay_tokens.iter().map(|t| t.created_at).min().or(since);
+        load_breadth_days(app_state, from, until).await
+    } else {
+        Arc::from(Vec::new())
+    };
+
     // Token → (symbol, created_at) for building result rows off the outcomes.
     let meta: std::collections::HashMap<String, (String, DateTime<Utc>)> = tokens
         .iter()
@@ -536,6 +545,7 @@ async fn run_engine_backtest(
                         .unwrap_or(hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS),
                     creator_launches,
                     launch_build_stats,
+                    build_breadth,
                     ..Default::default()
                 },
             );
@@ -641,6 +651,20 @@ fn history_cache_key(
 /// **Scale-out stages count.** A stage reuses the full exit grammar, so a ladder can
 /// be the only thing in the rule referencing a flow metric.
 fn rule_needs_flow(loaded: &LoadedRule) -> bool {
+    rule_metrics(loaded).any(|m| m.needs_wallet_identity() || m.needs_ix_labels())
+}
+
+/// Whether any condition of the rule reads `m_holder_book` - the one group that needs
+/// the daily build-breadth table in the replay.
+fn rule_reads_holder_book(loaded: &LoadedRule) -> bool {
+    rule_metrics(loaded).any(|m| {
+        hunter_engine::metrics::group_of(m).id == hunter_engine::metrics::MetricGroupId::HolderBook
+    })
+}
+
+/// Every metric a rule's conditions read: entry, entry event, exit clauses and
+/// scale-out stages.
+fn rule_metrics(loaded: &LoadedRule) -> impl Iterator<Item = hunter_engine::metrics::MetricId> + '_ {
     let stages = loaded.params.scale_out.iter().flatten().map(|s| &s.conditions);
     let entry = loaded.params.entry.as_ref().into_iter();
     let event = loaded.params.entry_event.as_ref().into_iter();
@@ -656,8 +680,7 @@ fn rule_needs_flow(loaded: &LoadedRule) -> bool {
         .chain(stages)
         .flat_map(|side| side.0.values())
         .flat_map(|instances| instances.iter())
-        .flat_map(|g| g.metrics.keys())
-        .any(|m| m.needs_wallet_identity() || m.needs_ix_labels())
+        .flat_map(|g| g.metrics.keys().copied())
 }
 
 /// Scan (or reuse) the fingerprint's **matched** candidate set: every token whose
@@ -784,6 +807,35 @@ async fn load_door_days(
     }
     tracing::info!(days = ordered.len(), "launch-build door loaded for the run window");
     DoorDays { by_day: Arc::new(by_day), ordered: Arc::from(ordered) }
+}
+
+/// The build-breadth table for every UTC day from `from` to `until` (today when
+/// open), computing and storing what is missing through the same repo fn the live
+/// refresh calls. A day that cannot be computed is left out, loud: its buys are then
+/// stamped with the previous day's table still loaded, or unknown on the first day.
+pub(crate) async fn load_breadth_days(
+    app_state: &Arc<LocalState>,
+    from: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> Arc<[(chrono::NaiveDate, Arc<[hunter_engine::event::BuildBreadth]>)]> {
+    use trading_core::storage::repositories::build_breadth_repo::BuildBreadthRepo;
+    let repo = BuildBreadthRepo::new(app_state.core.batch_db.clone());
+    let Some(from) = from else {
+        tracing::error!("build breadth: the run has no start - every holder is classed unknown");
+        return Arc::from(Vec::new());
+    };
+    let last = until.unwrap_or_else(Utc::now).date_naive();
+    let mut out = Vec::new();
+    let mut day = from.date_naive();
+    while day <= last {
+        match repo.load_or_compute_day(day).await {
+            Ok(rows) => out.push((day, Arc::from(BuildBreadthRepo::to_engine(&rows)))),
+            Err(e) => tracing::error!(%day, error = %e, "build breadth unavailable for this day"),
+        }
+        day = day.succ_opt().expect("a date has a successor");
+    }
+    tracing::info!(days = out.len(), "build breadth loaded for the run window");
+    Arc::from(out)
 }
 
 /// Resolve a saved rule's fingerprint (engine form) for the matched-tokens scan.

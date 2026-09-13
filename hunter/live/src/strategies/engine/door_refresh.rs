@@ -50,8 +50,9 @@ pub async fn run(engine: EngineHandle) {
     }
 }
 
-/// Time from `now` until the next 00:00:30 UTC.
-fn until_next_refresh(now: DateTime<Utc>) -> Duration {
+/// Time from `now` until the next 00:00:30 UTC. Shared with the build-breadth
+/// refresh, so both daily tables roll at the same instant.
+pub(crate) fn until_next_refresh(now: DateTime<Utc>) -> Duration {
     let today = now.date_naive().and_hms_opt(0, 0, 0).expect("midnight exists").and_utc()
         + REFRESH_AFTER_MIDNIGHT;
     let target = if now < today { today } else { today + ChronoDuration::days(1) };

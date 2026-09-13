@@ -144,12 +144,14 @@ pub struct TrackRequirements {
     windows: [Vec<crate::metrics::WindowSpec>; 7],
     crowd_anchors: Vec<(crate::metrics::crowd_after_age::AgeAnchor, u32)>,
     print_wallet: bool,
+    holder_book: bool,
     patterns: BTreeMap<FingerprintId, FingerprintPatterns>,
 }
 
 impl TrackRequirements {
     /// Whether `self` asks a track for anything `before` did not: a window, an age
-    /// anchor or a larger anchor cap, the wallet map, or a fingerprint classifier.
+    /// anchor or a larger anchor cap, the wallet map, the holder book, or a fingerprint
+    /// classifier.
     /// A track built under `before` has not folded that from birth.
     pub fn adds_to(&self, before: &TrackRequirements) -> bool {
         let new_window = self
@@ -164,7 +166,11 @@ impl TrackRequirements {
             .patterns
             .iter()
             .any(|(id, p)| before.patterns.get(id) != Some(p));
-        new_window || new_anchor || new_pattern || (self.print_wallet && !before.print_wallet)
+        new_window
+            || new_anchor
+            || new_pattern
+            || (self.print_wallet && !before.print_wallet)
+            || (self.holder_book && !before.holder_book)
     }
 }
 
@@ -193,6 +199,8 @@ struct WindowSets<'a> {
     build: &'a [crate::metrics::WindowSpec],
     /// `m_print_wallet` — one map per token, opened when any rule reads it.
     print_wallet: bool,
+    /// `m_holder_book` — one book per token, opened when any rule reads it.
+    holder_book: bool,
 }
 
 /// The engine's whole world. Construct with [`EngineState::new`], feed it events
@@ -248,6 +256,9 @@ pub struct EngineState {
     pub all_build_windows: Vec<crate::metrics::WindowSpec>,
     /// Whether any loaded rule reads `m_print_wallet`, so every track opens the map.
     pub any_print_wallet: bool,
+    /// Whether any loaded rule reads `m_holder_book`, so every track opens the book and
+    /// every buy is stamped from [`build_breadth`](Self::build_breadth).
+    pub any_holder_book: bool,
     /// Union of every loaded rule's [`ClockHorizons`] — how long *any* rule's
     /// readings can still move without a trade. Drives [`Settled`].
     pub tick_horizons: ClockHorizons,
@@ -298,6 +309,12 @@ pub struct EngineState {
     /// Replaced whole by [`Event::LaunchBuildStatsReloaded`]; empty until a host
     /// loads one, in which case every door axis fails closed (never arms).
     pub launch_build_stats: crate::hash::HashedMap<crate::event::LaunchBuildStat>,
+    /// The day's build breadth, by build-recipe hash: distinct wallets that bought
+    /// with each recipe on the previous UTC day. Replaced whole by
+    /// [`Event::BuildBreadthReloaded`](crate::event::Event::BuildBreadthReloaded);
+    /// `None` until a host loads one, in which case every buy is stamped unknown and
+    /// `m_holder_book.public_app_share` reads `NaN` (fails closed).
+    pub build_breadth: Option<crate::hash::HashedMap<u32>>,
     /// Launches seen per creator wallet hash — the tally behind
     /// the `prior_launches` fingerprint axis. Incremented on every `TokenCreated`, read
     /// (strictly before the increment) to seed the new token's metric.
@@ -503,6 +520,7 @@ impl EngineState {
         let mut all_copy_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_build_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut any_print_wallet = false;
+        let mut any_holder_book = false;
         let mut all_crowd_anchors: Vec<(crate::metrics::crowd_after_age::AgeAnchor, u32)> =
             Vec::new();
         let mut horizons = ClockHorizons::default();
@@ -511,6 +529,7 @@ impl EngineState {
             horizons = horizons.widen(r.clock_horizons);
             any_priority |= r.priority != 0;
             any_print_wallet |= r.needs_print_wallet;
+            any_holder_book |= r.needs_holder_book;
             for (src, dst) in [
                 (&r.flow_windows, &mut all_windows),
                 (&r.crowd_windows, &mut all_crowd_windows),
@@ -541,6 +560,7 @@ impl EngineState {
         self.all_copy_windows = all_copy_windows;
         self.all_build_windows = all_build_windows;
         self.any_print_wallet = any_print_wallet;
+        self.any_holder_book = any_holder_book;
         self.all_ix_windows = all_ix_windows;
         self.tick_horizons = horizons;
         self.any_priority = any_priority;
@@ -560,6 +580,7 @@ impl EngineState {
                 copy: &self.all_copy_windows,
                 build: &self.all_build_windows,
                 print_wallet: self.any_print_wallet,
+                holder_book: self.any_holder_book,
             },
             &self.fp_patterns,
         );
@@ -584,8 +605,24 @@ impl EngineState {
             .map(|w| w.clone()),
             crowd_anchors: self.all_crowd_anchors.clone(),
             print_wallet: self.any_print_wallet,
+            holder_book: self.any_holder_book,
             patterns: self.fp_patterns.clone(),
         }
+    }
+
+    /// Stamp a buy with its recipe's previous-day breadth ([`TradeLite::build_day_buyers`])
+    /// when a loaded rule reads `m_holder_book`; any other print passes unchanged. One
+    /// map get per buy, and none at all for a rule set without the group.
+    ///
+    /// [`TradeLite::build_day_buyers`]: crate::metrics::TradeLite::build_day_buyers
+    pub fn stamp_build_breadth(&self, mut t: crate::metrics::TradeLite) -> crate::metrics::TradeLite {
+        if self.any_holder_book && t.side == crate::metrics::Side::Buy {
+            t.build_day_buyers = self
+                .build_breadth
+                .as_ref()
+                .map(|m| t.build_hash.and_then(|h| m.get(&h).copied()).unwrap_or(0));
+        }
+        t
     }
 
     /// A fresh track for a token created at `at`, pre-registering every rule
@@ -622,6 +659,7 @@ impl EngineState {
             copy: &self.all_copy_windows,
             build: &self.all_build_windows,
             print_wallet: self.any_print_wallet,
+            holder_book: self.any_holder_book,
         }
     }
 
@@ -647,6 +685,9 @@ impl EngineState {
         }
         if windows.print_wallet {
             track.ensure_print_wallet();
+        }
+        if windows.holder_book {
+            track.ensure_holder_book();
         }
         for (&fp, p) in patterns {
             // Each group opens its own buffers off its own list, so a fingerprint

@@ -3,6 +3,7 @@ pub mod amm_pool_facts_repo;
 // a retention policy and no FK to `strategy_positions`, so the two tables' write
 // paths and lifetimes are deliberately independent.
 pub mod arm_repo;
+pub mod build_breadth_repo;
 pub mod creation_stats_repo;
 pub mod fingerprint_repo;
 pub mod launch_build_repo;

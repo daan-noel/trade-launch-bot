@@ -656,6 +656,10 @@ fn trade_lite(t: &Trade) -> TradeLite {
             t.cu_price,
             t.tip_lamports,
         ),
+        // Raw token units, what `m_holder_book` keeps each wallet's bag in. The
+        // previous-day build breadth is the engine's to stamp, never an adapter's.
+        token_amount: t.token_amount as f64,
+        build_day_buyers: None,
     }
 }
 

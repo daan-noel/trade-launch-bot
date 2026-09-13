@@ -715,6 +715,92 @@ member's closing sell on 0-0.5 %.
 Script: [b2_leftover.py](node-derivation/hot-tape/b2_leftover.py); the function is
 `seat.leftover` in [node-derivation/toolkit](node-derivation/toolkit/README.md).
 
+## 1.28 Rule 1's left tail: a loss door on who holds the supply
+
+```
+D  public-app share of live supply >= 0.7 (a loss door)
+E  rule 1's        P  rule 1's + bundled-buyer share of live supply <= 0.2857
+X  Bracket (+20 %, -60 %, 90 s) and Room (0.4 x the room to the wall, -60 %, 90 s)
+R  one per coin    S 0.2    seat LagMs(115) both legs    universe study_exact / holdout_exact
+```
+
+Both facts come from the exact holder book (tokens moved = the change in `vtok`, integer; a coin
+opens at 1.073e15), through the trigger print. A wallet's build is the build of its first buy on
+the coin. **Public-app share**: live supply held by wallets whose first buy used a build with more
+than 300 distinct buying wallets on the tape (about 600 builds on each tape; 25-33 sit between 300
+and 500 wallets, so the line is in a gap). **Bundled-buyer share**: live supply held by wallets
+whose first buy landed in a slot where 3 or more wallets bought with the same build. On rule 1's
+coins those groups are public-app builds (98 % of tickets; operator-build groups 23 %), and they act
+as one: within 120 s of the fire a member's sell lands within one slot of another same-group
+member's sell 37.3 % of the time, against 6.4 % with group labels shuffled (538 study tickets). A
+group that enters together leaves together, whether it is copy-trade followers or one operator's
+wallets on a public app (case file L8).
+
+**What the tail is.** Rule 1's trades worse than -40 % are 7.3 % of the study book and -5.04 of its
++5.44 SOL. The members avoid it by which fires they take, never by an exit (their worst drawdown
+equals their realised loss). Most of it is a distribution wave, not a rug (-10 % at 11 s, -40 % at
+49 s over about 250 transactions); once under water, who sells carries nothing beyond price, so no
+exit cuts it (case file L1-L3). One-slot rugs are 4 of its 44.
+
+**The door is learned on the market's rugs, not on rule 1's money.** A one-slot fall of -70 % or
+worse from reserve > 60 lands 119-183 times a day on every day 09-01..09-11. On the 50,913
+rule-1-like candidate sells inside rule 1's band (reserve 60-100, age >= 158 s), the rate of a
+one-slot fall of -50 % within 90 s by public-app share:
+
+| public-app share | < 0.5 | 0.5-0.6 | 0.6-0.7 | 0.7-0.8 | >= 0.8 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| study days 2-4 | 21.7 % | 20.4 % | 8.1 % | 2.3 % | 0.8 % |
+| study days 5-7 | 28.2 % | 43.3 % | 5.8 % | 0.2 % | 1.7 % |
+
+The bundled-buyer cut is read on rule 1's pool (AUC 0.69 on the tail); the keep rule refuses it
+alone (Bracket: one test gain inside chance; Room: the second fold picks tighter and loses), so the
+pair is a post-selection read, frozen and booked once on the holdout
+(`r1t_holdout.py`, its pass bar written before the run):
+
+| 0.2 SOL, 115 ms | a day | %/trade | SOL | worse than -40 % | days + | top 1 % | biggest coin | 200 ms SOL |
+| --- | ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: |
+| study, Bracket: rule 1 / clone | 109.8 / 97.8 | +4.51 / +5.81 % | 5.44 / 6.25 | 44 / 28 | 6/6 / 6/6 | 12.8 / 9.9 | 5.0 / 4.4 | 4.96 / 5.75 |
+| study, Room: rule 1b / clone | 98.7 / 88.0 | +5.84 / +6.98 % | 6.35 / 6.76 | 42 / 27 | 6/6 / 6/6 | 15.5 / 14.6 | 4.3 / 4.1 | 6.11 / 6.53 |
+| **holdout, Bracket: rule 1 / clone** | 100.0 / 89.6 | +4.44 / **+5.53 %** | 3.99 / **4.46** | 22 / **12** | 5/5 / **5/5** | 9.8 / 8.7 | 5.0 / 4.5 | 3.30 / 3.82 |
+| **holdout, Room: rule 1b / clone** | 91.6 / 81.8 | +5.55 / **+6.78 %** | 4.57 / **4.99** | 22 / **12** | 5/5 / **5/5** | 13.0 / 11.7 | 4.3 / 3.9 | 3.98 / 4.44 |
+
+Rule 1 through the same holdout book reproduces its references ticket for ticket (450 / 450,
+412 / 412). The clone passes every line of the frozen bar on both exits. Rule 1's frenzy already
+sits on retail coins (557 of 604 study tickets at public share >= 0.8), so the door alone moves
+little (+0.29 / +0.19 SOL study) and most of the gain is the bundled-buyer cut; two of rule 1's
+four one-slot rugs sit at public share 0.96, which no holder door catches.
+
+**The engine spelling.** The frozen breadth counts the whole tape, future days included, which
+no live engine can read. One app whose instruction order varies per transaction splits into about
+490 recipes of 75-100 buying wallets a day; over a 4.5-6 day tape they sit at the 300 line (study
+100-150, holdout 300-500), so the tape spelling classes that app private on one tape and public on
+the other. Every past-only spelling books the same clone on the holdout (tail 10-12 against rule
+1's 22, SOL 4.19-4.46 against 3.99, 1-3 days, thresholds 50-300). The engine reads: public when
+the recipe of the holder's first buy had more than 100 distinct buying wallets, on any token, on
+the UTC day before that buy; the class fixed at that buy; each bag in the prints' own token amounts
+(`m_holder_book`, `build_breadth_day_stats`). The engine books that spelling's reference ticket for
+ticket on the holdout and on 09-11..09-12 (388/388, 353/353, 95/95, 90/90: same trigger, fill and
+exit prints, SOL to 1.5e-16), and its stored daily table equals the lake's counts:
+
+| 0.2 SOL, 115 ms, engine spelling | tickets | %/trade | SOL | worse than -40 % | days + | top 1 % |
+| --- | ---: | ---: | ---: | ---: | :---: | ---: |
+| holdout, Bracket: rule 1 / clone | 450 / 388 | +4.44 / +5.61 % | 3.99 / 4.35 | 22 / 11 | 5/5 / 5/5 | 9.8 / 8.9 |
+| holdout, Room: rule 1b / clone | 412 / 353 | +5.55 / +6.84 % | 4.57 / 4.83 | 22 / 10 | 5/5 / 5/5 | 13.0 / 12.1 |
+| 09-11..09-12, Bracket: rule 1 / clone | 114 / 95 | +1.30 / +4.01 % | 0.30 / 0.76 | 11 / 7 | 2/2 / 2/2 | 38.9 / 15.1 |
+| 09-11..09-12, Room: rule 1b / clone | 109 / 90 | +0.79 / +3.42 % | 0.17 / 0.62 | 13 / 9 | 2/2 / 2/2 | 92.9 / 26.0 |
+
+On 09-11..09-12 the market prints half the trades of the days before, rule 1 fires 57 a day, and
+live paper matches the replay hour for hour; the clone refuses both paper stops at -80 %.
+
+verdict: the loss door and the bundled-buyer permission cut rule 1's tail by about half on the
+holdout and raise its SOL under both exits, in the engine as in Python. Two days after 09-10
+agree and certify nothing: the clone misses the concentration bar on them.
+empty slots: D (beyond the loss door), R and S unchanged.
+
+Scripts (local): `r1t_members.py`, `r1t_anatomy.py`, `r1t_path.py`, `r1t_rug.py`, `r1t_rugdoor.py`,
+`r1t_perm.py`, `r1t_holdout.py`, `r1e_breadth.py`, `r1e_parity.py`, `r1n_newdays.py` in
+`node-derivation/hot-tape/`; the engine side is `hunter/lab/examples/hot_tape_rule1_parity.rs`.
+
 # 2. THE PRIZE
 
 ## 2.1 The episode census

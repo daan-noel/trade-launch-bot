@@ -39,6 +39,13 @@ days must pass every bar, the tail included. Working file:
   code; then paper at the 115 ms seat (live paper books `worst_case` fills, not this seat); then
   small real.
 - **Kills it:** a ship bar failing on the clean days.
+- **The loss-door clone joins the clean test** (evidence 1.28): rule 1 and rule 1b with
+  `m_holder_book.public_app_share >= 70` and `bundled_share <= 28.57`, holdout +5.61 / +6.84
+  %/trade, trades worse than -40 % 22 -> 11 / 10, simulate equal to Python ticket for ticket. The
+  rules `Flip-Catch - Bracket + Door` / `- Room + Door` are in the DB, paper, inactive; they run
+  once the server has migration 0017 and the new bins
+  ([left-tail plan](../../roadmap/hot-tape-rule-1-left-tail-plan.md)). 09-11..09-12 are read (case
+  file L10); the clean test goes on day by day, all four side by side.
 - **More trades a day need a second event, not a looser rule 1** (evidence 7, rule 1c). The open candidate is
   49uohd's capitulation dip-buy: +3.50 %/trade 8/8 on its picks at our seat under a clock (a 5.3
   column), red in every public spelling (1.16). Its sell >= 1 class is a 5.2 kill behind its buy

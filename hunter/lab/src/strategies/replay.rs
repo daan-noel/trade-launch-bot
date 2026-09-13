@@ -175,6 +175,15 @@ pub struct ReplayConfig {
     /// a fixture and wrong for a door backtest, so the caller that has the stats is
     /// the one that must fill this.
     pub launch_build_stats: Arc<[(chrono::NaiveDate, Arc<[hunter_engine::event::LaunchBuildStat]>)]>,
+    /// The per-UTC-day build-breadth table `m_holder_book` stamps buys from,
+    /// ascending by day.
+    ///
+    /// The live engine reloads it once a day, so the replay folds a
+    /// [`Event::BuildBreadthReloaded`] at each day's 00:00 UTC, BEFORE that day's
+    /// trades. Empty means every holder is classed unknown and `public_app_share`
+    /// reads `NaN` — right for a fixture, wrong for a holder-book backtest, so the
+    /// caller that has the table is the one that must fill this.
+    pub build_breadth: Arc<[(chrono::NaiveDate, Arc<[hunter_engine::event::BuildBreadth]>)]>,
     /// Launch history to prime the `prior_launches` fingerprint axis with, as
     /// `(creator_wallet_hash, launches strictly before the run window)`.
     ///
@@ -196,6 +205,7 @@ impl Default for ReplayConfig {
             fill_delay_ms: 0,
             creator_launches: Arc::from(Vec::new()),
             launch_build_stats: Arc::from(Vec::new()),
+            build_breadth: Arc::from(Vec::new()),
         }
     }
 }
@@ -350,6 +360,17 @@ impl Replay {
                 rank: 0,
                 mint: Mint::from(""),
                 event: Event::LaunchBuildStatsReloaded { stats: Arc::clone(stats) },
+                sig: None,
+                trade_idx: None,
+            });
+        }
+        for (day, breadth) in self.cfg.build_breadth.clone().iter() {
+            let at = day.and_hms_opt(0, 0, 0).expect("midnight exists").and_utc();
+            self.queue.push(Queued {
+                at,
+                rank: 0,
+                mint: Mint::from(""),
+                event: Event::BuildBreadthReloaded { breadth: Arc::clone(breadth) },
                 sig: None,
                 trade_idx: None,
             });

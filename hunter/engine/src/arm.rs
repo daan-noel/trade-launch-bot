@@ -400,6 +400,9 @@ pub struct CompiledRule {
     /// [`TokenTrack::ensure_print_wallet`](crate::metrics::track::TokenTrack::ensure_print_wallet),
     /// the per-token wallet map a rule set without the group never opens.
     pub needs_print_wallet: bool,
+    /// Whether any condition reads `m_holder_book` — drives
+    /// [`TokenTrack::ensure_holder_book`](crate::metrics::track::TokenTrack::ensure_holder_book).
+    pub needs_holder_book: bool,
     /// Whether any condition on this rule reads a window counted in SLOTS.
     ///
     /// A slot window advances only on [`TradeLite::slot`](crate::metrics::TradeLite::slot),
@@ -512,6 +515,7 @@ impl CompiledRule {
         let mut copy_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut build_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut needs_print_wallet = false;
+        let mut needs_holder_book = false;
         let mut crowd_anchors: SmallVec<[(crate::metrics::crowd_after_age::AgeAnchor, u32); 1]> =
             SmallVec::new();
         let mut needs_slot = false;
@@ -533,6 +537,7 @@ impl CompiledRule {
                 _ => &mut flow_windows,
             };
             needs_print_wallet |= group_of(r.metric).id == MetricGroupId::PrintWallet;
+            needs_holder_book |= group_of(r.metric).id == MetricGroupId::HolderBook;
             // Both axes: a two-window group needs a buffer for each of them, and
             // registering only the primary would leave the second read as NaN.
             for w in [r.window.primary, r.window.secondary].into_iter().flatten() {
@@ -626,6 +631,7 @@ impl CompiledRule {
             copy_windows,
             build_windows,
             needs_print_wallet,
+            needs_holder_book,
             needs_slot,
             mono_kills,
             clock_horizons,

@@ -22,10 +22,15 @@
 //! `r1_engine_parity.py prep` writes (`r1p_rule.json` or `r1b_rule.json`, the mint,
 //! creator and tick-origin files).
 //!
+//! A rule that reads `m_holder_book` needs the daily build-breadth table:
+//! `R1_BREADTH_UNTIL=YYYY-MM-DD` loads it from Postgres (`DATABASE_URL`) for every UTC
+//! day from the tick origin's to that one, through the repo fn simulate and the live
+//! refresh call, and the replay folds one `BuildBreadthReloaded` per day at 00:00.
+//!
 //! ```text
 //! R1_RULE=rule.json R1_MINTS=mints.txt R1_CREATORS=creators.csv R1_TICK0_US=... \
 //! R1_OUT=out.csv [R1_CURVE_ONLY=1] [R1_BATCH=20000] [R1_BUY_SOL=0.2] [R1_LAG_MS=115] \
-//! cargo run -p hunter-lab --release --example hot_tape_rule1_parity
+//! [R1_BREADTH_UNTIL=2026-09-12] cargo run -p hunter-lab --release --example hot_tape_rule1_parity
 //! ```
 
 use std::collections::HashMap;
@@ -50,6 +55,30 @@ use uuid::Uuid;
 
 fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"))
+}
+
+/// The build-breadth table for every UTC day from `first` to `last`, loaded (and
+/// computed where missing) through the repo simulate and the live refresh use.
+async fn load_breadth(
+    first: chrono::NaiveDate,
+    last: chrono::NaiveDate,
+) -> Arc<[(chrono::NaiveDate, Arc<[hunter_engine::event::BuildBreadth]>)]> {
+    use trading_core::storage::repositories::build_breadth_repo::BuildBreadthRepo;
+    let pool = sqlx::PgPool::connect(&env("DATABASE_URL")).await.expect("postgres");
+    let repo = BuildBreadthRepo::new(pool);
+    let mut out = Vec::new();
+    let mut day = first;
+    while day <= last {
+        let rows = repo.load_or_compute_day(day).await.expect("build breadth day");
+        let public = rows
+            .iter()
+            .filter(|r| r.buyers as u32 > hunter_engine::metrics::holder_book::PUBLIC_MIN_BUYERS)
+            .count();
+        println!("build breadth {day}: {} recipes, {public} public", rows.len());
+        out.push((day, Arc::from(BuildBreadthRepo::to_engine(&rows))));
+        day = day.succ_opt().expect("a date has a successor");
+    }
+    Arc::from(out)
 }
 
 fn micros(us: i64) -> DateTime<Utc> {
@@ -136,6 +165,11 @@ async fn main() {
         root.display()
     );
 
+    let build_breadth = match std::env::var("R1_BREADTH_UNTIL") {
+        Ok(until) => load_breadth(tick0.date_naive(), until.parse().expect("R1_BREADTH_UNTIL is YYYY-MM-DD")).await,
+        Err(_) => Arc::from(Vec::new()),
+    };
+
     let mut out = std::io::BufWriter::new(std::fs::File::create(env("R1_OUT")).expect("out file"));
     writeln!(
         out,
@@ -200,12 +234,18 @@ async fn main() {
         let outcomes: Vec<PositionOutcome> = tokio::task::spawn_blocking({
             let rule = rule.clone();
             let fp = fp.clone();
+            let build_breadth = Arc::clone(&build_breadth);
             move || {
                 run_replay(
                     std::slice::from_ref(&rule),
                     std::slice::from_ref(&fp),
                     tokens,
-                    ReplayConfig { as_of, fill_model: FillModel::LagMs(lag_ms), ..Default::default() },
+                    ReplayConfig {
+                        as_of,
+                        fill_model: FillModel::LagMs(lag_ms),
+                        build_breadth,
+                        ..Default::default()
+                    },
                 )
             }
         })

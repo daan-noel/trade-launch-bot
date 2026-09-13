@@ -392,6 +392,20 @@ pub struct LaunchBuildStat {
     pub runners: u32,
 }
 
+/// One build recipe's previous-day breadth — a row of the daily build-breadth table,
+/// keyed by [`flow_ix::build_hash`](crate::metrics::flow_ix::build_hash). Delivered
+/// on a [`Event::BuildBreadthReloaded`]; `reduce` stamps
+/// [`TradeLite::build_day_buyers`](crate::metrics::TradeLite::build_day_buyers)
+/// from it on every buy while a loaded rule reads `m_holder_book`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildBreadth {
+    /// FNV-1a of the build recipe (ordered labels without setup, teardown, memos).
+    pub build_hash: u64,
+    /// Distinct wallets that bought with this recipe, on any token, on the previous
+    /// UTC day.
+    pub buyers: u32,
+}
+
 impl LaunchBuildStat {
     /// The runner share in basis points, integer division — the exact value the
     /// `build_prev_day_runner_bps` axis carries, so SQL mirrors and the engine agree
@@ -527,6 +541,10 @@ pub enum Event {
     /// stamped from changed (a new UTC day computed, or a boot load). Replaces the
     /// whole map; tokens already tracked keep the stamp they were born under.
     LaunchBuildStatsReloaded { stats: Arc<[LaunchBuildStat]> },
+    /// The day's build breadth changed (a new UTC day computed, or a boot load).
+    /// Replaces the whole table; a holder already classed keeps the class its first
+    /// buy was stamped with, so no tracked token's reading moves.
+    BuildBreadthReloaded { breadth: Arc<[BuildBreadth]> },
     /// A manual (operator) buy episode injected by the Console. Bypasses
     /// fingerprint arming, entry conditions, and rule caps (they're the user's
     /// call) — but from here on it IS a bot buy: the same `EntryPending` arm,

@@ -156,6 +156,13 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             state.launch_build_stats = stats.iter().map(|s| (s.build_hash, *s)).collect();
         }
 
+        Event::BuildBreadthReloaded { breadth } => {
+            // Fold-time input only: a holder is classed at its first buy against the
+            // table that stood then, so nothing about a tracked token's reading changes
+            // here - no cross-epoch bump and nothing to unsettle.
+            state.build_breadth = Some(breadth.iter().map(|b| (b.build_hash, b.buyers)).collect());
+        }
+
         Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at, creator_stand_in_wallet_hash } => {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             if !token.first_slot_settled {
@@ -201,6 +208,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             // reads `tokens`, so borrowing it away is enough to satisfy the borrow
             // checker, and it turns two keyed `BTreeMap` operations (base58 string
             // compares + rebalancing) per trade into one.
+            let trade = state.stamp_build_breadth(trade);
             let mut tokens = std::mem::take(&mut state.tokens);
             if let Some(token) = tokens.get_mut(&mint) {
                 fold_trade(token, trade);
@@ -846,6 +854,7 @@ fn fold_entered_extremes(token: &mut TokenState, at: Ts) {
 /// Emits no effects **by construction** (no return value to discard) — priming a
 /// closed/untracked mint is a no-op.
 pub fn prime_trade(state: &mut EngineState, mint: &Mint, trade: crate::metrics::TradeLite) {
+    let trade = state.stamp_build_breadth(trade);
     let Some(token) = state.tokens.get_mut(mint) else { return };
     fold_trade(token, trade);
     fold_entered_extremes(token, trade.at);

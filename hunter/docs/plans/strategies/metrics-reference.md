@@ -2,8 +2,8 @@
 
 Deep-dive for aggregate flow (`m_flow_lifetime` / `m_flow_window`), the crowd counts
 (`m_crowd_window`), build recipes (`m_build_window`), the print's wallet
-(`m_print_wallet`) and the instruction-structure split (`m_flow_ix` /
-`m_flow_ix_window`) — the wallet- and label-keyed groups.
+(`m_print_wallet`), who holds the supply (`m_holder_book`) and the instruction-structure
+split (`m_flow_ix` / `m_flow_ix_window`) — the wallet- and label-keyed groups.
 High-level map: [`arch/strategies.md`](../../arch/strategies.md). The split's origin roadmap
 (`roadmap/volume-flow-split-plan.md`) is deleted — fully shipped and superseded by
 this file.
@@ -281,6 +281,41 @@ a token ever had, which is why `EngineState` opens it on a track only while some
 names the group (`CompiledRule::needs_print_wallet`). It reads the wallet column
 (`needs_wallet_identity`), and a restart's priming must replay the token's buys for the map
 to be complete.
+
+## Who holds the supply (`m_holder_book`)
+
+| group | kind | strict params | state |
+| --- | --- | --- | --- |
+| `m_holder_book` | static | none | one wallet -> bag book per token, opened only when a loaded rule reads the group |
+
+| metric | meaning | unit | eq-tol |
+| --- | --- | --- | --- |
+| `public_app_share` | percent of live supply held by wallets whose first buy of this token used a public-app build | percent | 0.01 |
+| `bundled_share` | percent of live supply held by wallets whose first buy landed in a slot where at least 3 wallets first bought with one build | percent | 0.01 |
+
+**The book is exact.** Each print moves its wallet's bag by `TradeLite::token_amount`, every
+leg, never below zero; live supply is the sum of the bags. A print without a token amount
+breaks the book and both metrics read `NaN` from then on. A missed print costs only its own
+tokens, where a reserve-delta book would hand them to the next print's wallet.
+
+**A holder is classed once, at its first buy.** Public app: that buy's build recipe had more
+than `holder_book::PUBLIC_MIN_BUYERS` (100) distinct buying wallets, on any token, on the
+previous UTC day. `reduce` stamps every buy with that count (`TradeLite::build_day_buyers`)
+from `EngineState::build_breadth`, the daily `build_breadth_day_stats` table; with no table
+loaded the stamp is `None`, and `public_app_share` reads `NaN` while such a holder keeps a bag
+(fails closed). Bundled: at least `BUNDLE_MIN_WALLETS` (3) first buys in one `(slot, build)`.
+Because the class is fixed at the buy, a table reload moves no tracked token's reading and
+bumps no `cross_epoch`.
+
+**Why a day before, not the whole tape.** The derivation counted breadth over the whole study
+tape, future days included. The engine spelling reads only the past; on the holdout and the
+days after 09-10 it books the same clone (hot-tape case file L9). One app with a
+per-transaction instruction order splits into hundreds of recipes of ~90 wallets a day, so
+the breadth of a recipe, not of an app, is what the threshold reads.
+
+A replay's grid starts at its first queued event, and with a day table loaded that is 00:00
+UTC of the first day, not the first print: a Python reference of a clock exit must use the
+same origin.
 
 ## Launch size is an AXIS, not a metric
 

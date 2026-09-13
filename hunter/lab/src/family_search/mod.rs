@@ -133,6 +133,9 @@ impl RunConfig {
             // lake-only run leaves both `build_prev_day_*` axes unstamped and any
             // door rule fails closed rather than arming on an unknown build.
             launch_build_stats: Default::default(),
+            // The build-breadth table is a PG feed too: a lake-only run classes every
+            // holder unknown, so `m_holder_book.public_app_share` reads NaN.
+            build_breadth: Default::default(),
         }
     }
 }

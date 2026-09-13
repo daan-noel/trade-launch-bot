@@ -24,6 +24,8 @@
 //!   fingerprint
 //! * `m_print_wallet` (static) — `since_buy` — the wallet behind the print being
 //!   decided on: seconds since it last bought this token
+//! * `m_holder_book` (static) — `public_app_share`, `bundled_share` — who holds
+//!   this token's supply, from an exact per-wallet token book
 //! * `m_flow_ix` (static, fingerprint-scoped) — tagged/untagged lifetime totals
 //! * `m_flow_ix_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //! * `m_burst_slot` (static, fingerprint-scoped) — this slot's buy prefix × this print's grain,
@@ -62,6 +64,7 @@ pub mod dump_ix;
 pub mod flow_ix;
 pub mod flow_window;
 pub mod grid;
+pub mod holder_book;
 pub mod position;
 pub mod price_lifetime;
 pub mod price_window;
@@ -249,6 +252,18 @@ pub struct TradeLite {
     /// is why a pinned fee criterion must fail rather than pass against it.
     #[serde(default)]
     pub fee: FeeKeys,
+    /// Tokens this print moved, in the token's raw units: what a buy received, what a
+    /// sell gave up. The quantity `m_holder_book` keeps each wallet's bag in. `NaN`
+    /// when a source does not carry it.
+    #[serde(with = "finite_f64", default = "finite_f64::nan")]
+    pub token_amount: f64,
+    /// Distinct wallets that bought with this print's build recipe, on any token, on
+    /// the UTC day before this print: the daily build-breadth table. Stamped by
+    /// `reduce` on a buy while a loaded rule reads `m_holder_book` (`Some(0)` for a
+    /// recipe the table does not hold); `None` when no table is loaded, and on every
+    /// row an adapter builds.
+    #[serde(default)]
+    pub build_day_buyers: Option<u32>,
 }
 
 fn default_true() -> bool {
@@ -276,6 +291,8 @@ impl Default for TradeLite {
             on_curve: true,
             is_launch: false,
             fee: FeeKeys::default(),
+            token_amount: f64::NAN,
+            build_day_buyers: None,
         }
     }
 }
@@ -582,6 +599,8 @@ pub enum MetricGroupId {
     BuildWindow,
     /// `m_print_wallet` — the wallet behind the print being decided on.
     PrintWallet,
+    /// `m_holder_book` — who holds this token's supply (an exact per-wallet book).
+    HolderBook,
     /// `m_flow_ix` — tagged/untagged lifetime totals (fingerprint-scoped).
     FlowIx,
     /// `m_flow_ix_window` — tagged/untagged trailing-window totals (fingerprint-scoped).
@@ -729,6 +748,14 @@ pub enum MetricId {
     /// this print (`m_print_wallet`). `NaN` on a tick and for a wallet that never
     /// bought it.
     SinceBuy,
+    // ── m_holder_book (who holds the supply) ─
+    /// Percent of live supply held by wallets whose first buy of this token used a
+    /// public-app build (`m_holder_book`).
+    PublicAppShare,
+    /// Percent of live supply held by wallets whose first buy of this token landed in
+    /// a slot where at least three wallets first bought with one build
+    /// (`m_holder_book`).
+    BundledShare,
     // ── m_flow_window, TWO-window reads (a slice nested in the window) ─
     /// Percent of the reference window's trades that landed in the slice window
     /// nested inside it — `trade_count(slice) / trade_count(window) * 100`
@@ -1027,6 +1054,8 @@ impl MetricId {
                     | MetricId::NonCreatorBuyers
                     | MetricId::ThisBuyerIsNew
                     | MetricId::SinceBuy
+                    | MetricId::PublicAppShare
+                    | MetricId::BundledShare
                     | MetricId::SameWalletCount
                     | MetricId::WorkingWalletCount
                     | MetricId::HasNew
@@ -1052,6 +1081,7 @@ impl MetricId {
                 | MetricGroupId::BurstSlot
                 | MetricGroupId::BurstWave
                 | MetricGroupId::BuildWindow
+                | MetricGroupId::HolderBook
         )
     }
 
@@ -1863,6 +1893,39 @@ pub const REGISTRY: &[GroupSpec] = &[
             monotonic: false,
             hue: 298,
         }],
+    },
+    GroupSpec {
+        id: MetricGroupId::HolderBook,
+        name: "m_holder_book",
+        description: "Who holds this token's supply, from an exact per-wallet token book: each wallet's tokens bought minus sold on this token, every leg, never below zero. A holder is classed once, at its first buy of this token.",
+        kind: MetricKind::Static,
+        scope: MetricScope::Token,
+        // Flow family, beside the crowd groups: the same wallet column, weighted by
+        // the tokens each wallet holds.
+        family: MetricFamily::Flow,
+        strict_params: &[],
+        fingerprint_config: &[],
+        // Violet, at the top of the crowd band of the flow family.
+        metrics: &[
+            MetricSpec {
+                id: MetricId::PublicAppShare,
+                name: "public_app_share",
+                description: "Percent of live supply held by wallets whose first buy of this token used a public-app build: a build recipe more than 100 distinct wallets bought with, on any token, on the UTC day before that buy. NaN when no wallet holds tokens, and while supply classed with no build-breadth table loaded is held.",
+                unit: Unit::Percent,
+                eq_tolerance: 0.01,
+                monotonic: false,
+                hue: 306,
+            },
+            MetricSpec {
+                id: MetricId::BundledShare,
+                name: "bundled_share",
+                description: "Percent of live supply held by wallets whose first buy of this token landed in a slot where at least 3 wallets made their first buy of it with the same build recipe. NaN when no wallet holds tokens.",
+                unit: Unit::Percent,
+                eq_tolerance: 0.01,
+                monotonic: false,
+                hue: 308,
+            },
+        ],
     },
     GroupSpec {
         id: MetricGroupId::Copy,
@@ -2946,6 +3009,7 @@ mod tests {
                 "m_crowd_window",
                 "m_crowd_after_age",
                 "m_print_wallet",
+                "m_holder_book",
                 "m_copy",
                 "m_copy_window"
             ]
@@ -3413,7 +3477,8 @@ mod tests {
             match g {
                 FlowIx | FlowIxWindow | DumpIx | DumpIxWindow | BurstSlot | BurstWave | BuildWindow => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
-                FlowLifetime | FlowWindow | CrowdWindow | CrowdAfterAge | PrintWallet | Copy | CopyWindow => Some(2),
+                FlowLifetime | FlowWindow | CrowdWindow | CrowdAfterAge | PrintWallet | HolderBook | Copy
+                | CopyWindow => Some(2),
                 _ => None,
             }
         };

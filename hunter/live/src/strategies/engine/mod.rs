@@ -34,6 +34,7 @@ pub mod hydrate;
 pub mod orphan_exit;
 pub mod producers;
 pub mod reapers;
+pub mod breadth_refresh;
 pub mod door_refresh;
 pub mod reload_scheduler;
 pub mod run_config;
@@ -174,6 +175,12 @@ pub enum EngineCommand {
     ReloadLaunchBuildStats {
         ack: oneshot::Sender<Result<(), String>>,
     },
+    /// The UTC day rolled over: swap in the day's build-breadth table, computed off
+    /// the loop by the refresh task. The loop folds a `BuildBreadthReloaded` and
+    /// nothing else.
+    SetBuildBreadth {
+        breadth: std::sync::Arc<[hunter_engine::event::BuildBreadth]>,
+    },
     /// A manual "Sell ALL" / "Sell N%" targeting one **PG** position id. The loop
     /// resolves it to the engine `PositionId` via the sink registry, then folds a
     /// `ManualClose` (a no-op if the position isn't a live engine-held one).
@@ -299,6 +306,18 @@ impl EngineHandle {
             Ok(Err(_)) => Err(EngineReloadError::ChannelClosed),
             Err(_) => Err(EngineReloadError::TimedOut),
         }
+    }
+
+    /// Hand the loop the day's build-breadth table (already computed by the caller,
+    /// the daily refresh task). Fire-and-forget: the loop only swaps a map.
+    pub async fn set_build_breadth(
+        &self,
+        breadth: std::sync::Arc<[hunter_engine::event::BuildBreadth]>,
+    ) -> Result<(), EngineReloadError> {
+        self.cmd_tx
+            .send(EngineCommand::SetBuildBreadth { breadth })
+            .await
+            .map_err(|_| EngineReloadError::ChannelClosed)
     }
 
     pub async fn reload_rules(&self) -> Result<(), EngineReloadError> {

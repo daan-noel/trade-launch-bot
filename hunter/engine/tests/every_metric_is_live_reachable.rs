@@ -214,6 +214,8 @@ fn trade(
         }),
         build_hash: if vol { flow_ix::build_hash(&VOL_LABELS) } else { flow_ix::build_hash(&NONVOL_LABELS) },
         fee: hunter_engine::metrics::fee::FeeKeys::new(None, None, Some(0)),
+        // Tokens proportional to SOL at the print's price, so the holder book adds up.
+        token_amount: (sol / price * 1e6).round(),
         ..Default::default()
     }
 }
@@ -313,6 +315,17 @@ fn live_reading(g: &GroupSpec, m: &MetricSpec, basis: Basis) -> f64 {
     let rule = loaded_rule(params_for(g, m, basis), g, m);
 
     let mut state = EngineState::default();
+    // The build-breadth table `m_holder_book` stamps buys from: without one every
+    // holder is classed unknown and `public_app_share` reads NaN by design.
+    reduce(
+        &mut state,
+        Event::BuildBreadthReloaded {
+            breadth: Arc::from(vec![hunter_engine::event::BuildBreadth {
+                build_hash: flow_ix::build_hash(&VOL_LABELS).unwrap(),
+                buyers: 1_000,
+            }]),
+        },
+    );
     reduce(
         &mut state,
         Event::RulesReloaded {

@@ -207,6 +207,9 @@ nothing.
 | idea | meaning | status |
 | --- | --- | --- |
 | bundle share < 0.20 | creation-slot wallets hold under 20 % of live supply | keep · ev 3.7 |
+| └ bundled-buyer share ≤ 0.29 | wallets whose first buy landed in a same-slot, same-build group of ≥ 3, any slot, hold at most 29 % of live supply; a P on rule 1 (creation-slot share reads 0 past age 158 s) | keep · ev 1.28 |
+| public-app share ≥ 0.7 | wallets whose first buy used a public app build (a recipe with > 100 buying wallets the UTC day before) hold at least 70 % of live supply; the rest is a bot swarm that dumps in one slot | keep · ev 1.28 |
+| top holders' share | the largest one or ten holders' share of live supply | red · case L4 |
 | creator share < 0.10 | the creator holds under 10 % of live supply | open · ev 3.7 |
 | snipers, fresh wallets, buyer count | safety-panel counts; they track vsol, not the loss | red · ev 3.7 |
 
