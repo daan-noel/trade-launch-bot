@@ -44,6 +44,8 @@ function toChartTrade(t: TradePriced): ChartTrade {
   const qd = t.quote_decimals;
   const scale = 10 ** qd;
   const spot = t.spot_price_quote ?? t.exec_price_quote ?? 0;
+  const amm = t.market_kind === 'amm';
+  const reserveSol = t.reserve_quote == null ? null : t.reserve_quote / scale;
   return {
     block_time: t.block_time,
     price_per_token: spot / scale,
@@ -54,9 +56,13 @@ function toChartTrade(t: TradePriced): ChartTrade {
     tx_index: t.tx_index,
     tx_signature: typeof t.tx_signature === 'string' ? t.tx_signature : formatSig(t.tx_signature),
     leg_index: t.leg_index,
-    reserve_sol: t.reserve_quote == null ? null : t.reserve_quote / scale,
+    reserve_sol: reserveSol,
     reserve_token: t.reserve_base,
-    venue: t.market_kind === 'amm' ? 'amm' : 'curve',
+    // An AMM row's reserve pair IS the pool's real balances, so it doubles as the
+    // real reserves; the curve's real SOL is derived (`curveLiquiditySol`).
+    real_sol_reserves: amm ? reserveSol : null,
+    real_token_reserves: amm ? t.reserve_base : null,
+    venue: amm ? 'amm' : 'curve',
     wallet_address: t.wallet_address,
   };
 }

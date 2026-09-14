@@ -132,9 +132,10 @@ export function curveLiquiditySol(
 }
 
 /**
- * Real SOL liquidity at a trade: post-migration AMM pool reserves when present,
- * else the curve's depositor SOL. The `trades` table only carries `virtual_*`
- * (no `real_*` columns), so the curve branch is the live path.
+ * Real SOL liquidity at a trade: the AMM pool's real quote reserve when present
+ * (the forge adapter sets `real_sol_reserves` on amm rows, whose reserve pair is
+ * the pool balance), else the curve's depositor SOL. Never subtract the curve's
+ * virtual seed from a pool reserve.
  */
 export function tradeLiquiditySol(trade: ChartTrade): number | null {
   const sol = trade.real_sol_reserves;
