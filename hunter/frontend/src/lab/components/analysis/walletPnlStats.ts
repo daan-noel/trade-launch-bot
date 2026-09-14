@@ -117,7 +117,7 @@ export const WALLET_STATS = {
   },
   maxDrawdownSol: {
     label: 'Max drawdown',
-    def: 'The most lost in one stretch: the deepest fall of the running Net PnL below its highest point so far, starting from 0, each trade added at its closing sell in tape order. Same line as the Equity chart.',
+    def: 'The most lost in one stretch: the deepest fall of the running Net PnL below its highest point so far, starting from 0, each trade added at the time of its closing sell (exit_ms), tape order breaking ties within one instant. Same line as the Equity chart.',
   },
   worstTradeSol: {
     label: 'Worst trade',

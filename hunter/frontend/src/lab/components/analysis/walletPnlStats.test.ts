@@ -268,6 +268,16 @@ describe('computeWalletSummary', () => {
     expect(summarize([row(trades)]).maxDrawdownSol).toBeCloseTo(5, 9);
   });
 
+  it('max drawdown folds by closing-sell time before tape order', () => {
+    // Time order +2, -1, -1 → 2. Tape order alone (-1, +2, -1) would read 1.
+    const trades = [
+      closed(-1, 1, { exit_slot: 1, exit_ms: T0 + 2_000 }),
+      closed(2, 1, { exit_slot: 2, exit_ms: T0 + 1_000 }),
+      closed(-1, 1, { exit_slot: 3, exit_ms: T0 + 3_000 }),
+    ];
+    expect(summarize([row(trades)]).maxDrawdownSol).toBeCloseTo(2, 9);
+  });
+
   it('reads the behavior medians and sums the capital', () => {
     const rows = [
       row([closed(0.1, 1, { entry_ms: T0, exit_ms: T0 + 60_000 })], { wallet_entry_curve_pct: 10 }),
