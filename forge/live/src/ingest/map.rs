@@ -84,7 +84,7 @@ pub fn token_created_to_row(adapter: &PumpFunAdapter, tc: &IlTokenCreated) -> Ne
         symbol: tc.symbol.clone(),
         decimals: PUMP_TOKEN_DECIMALS,
         token_program_id: tc.token_program_id.clone(),
-        initial_supply_base: tc.initial_supply.map(|x| x as i64),
+        initial_supply_base: tc.total_supply.map(|x| x as i64),
         initial_buy_quote: tc.initial_buy_sol.map(sol_to_lamports),
         creation_slot: Some(tc.slot as i64),
         creation_tx_signature: tc.signature.clone(),

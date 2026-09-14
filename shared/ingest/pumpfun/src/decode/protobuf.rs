@@ -627,6 +627,11 @@ impl Decoder {
         let mint = pump_accounts.get(2).filter(|s| !s.is_empty())?.to_string();
         let user = pump_accounts.get(6).filter(|s| !s.is_empty())?.to_string();
         let user_ata = pump_accounts.get(5).cloned().unwrap_or_default();
+        // The curve account receives exactly the curve-side SOL on a buy and pays it
+        // out on a sell (the venue fees are separate transfers), so its delta is the
+        // same pre-fee basis the TradeEvent path records. The user's own delta is
+        // not: it also carries token-account rent, the tx fee and any tip.
+        let bonding_curve = pump_accounts.get(3).filter(|s| !s.is_empty())?;
 
         let side = match kind {
             InstructionKind::Buy => Side::Buy,
@@ -634,9 +639,9 @@ impl Decoder {
             _ => return None,
         };
 
-        let sol_amount = compute_sol_change(&user, account_keys, pre_balances, post_balances);
+        let sol_amount = compute_sol_change(bonding_curve, account_keys, pre_balances, post_balances);
         let sol_lamports =
-            compute_sol_change_lamports(&user, account_keys, pre_balances, post_balances);
+            compute_sol_change_lamports(bonding_curve, account_keys, pre_balances, post_balances);
         let token_amount = compute_token_change_pb(&user_ata, &mint, account_keys, pre_token_balances, post_token_balances);
 
         if sol_amount < p.min_trade_sol {
@@ -655,11 +660,6 @@ impl Decoder {
             sol_lamports,
             tokens: token_amount,
             price,
-            // NOTE: on this fallback `sol_amount` is the payer's own lamport
-            // delta, so it already absorbs the fee — unlike the TradeEvent path,
-            // where `sol` is the program-emitted swap amount. The fee is still
-            // reported as its own value; don't subtract it from `sol` here or the
-            // two paths would price the same trade differently.
             fee_lamports: fee_budget.fee_lamports,
             cu_limit: fee_budget.cu_limit,
             cu_price: fee_budget.cu_price,

@@ -65,6 +65,11 @@ pub struct Trade {
     /// wallet DID sign, and that assertion has to be earned.
     pub is_proxied: Option<bool>,
     pub side: Side,
+    /// SOL of this leg, and its meaning differs per venue. Curve: the event's
+    /// curve-side `sol_amount`, BEFORE the venue fee (the wallet pays more on a
+    /// buy and receives less on a sell). AMM: the user-side quote amount, fee
+    /// INCLUDED. What the wallet actually moved is
+    /// [`payer_net_lamports`](Self::payer_net_lamports).
     pub sol: f64,
     /// Exact quote lamports for this trade — the raw on-chain `u64`, never routed
     /// through `f64`. Hosts whose quote is native SOL (9 decimals) persist this
@@ -78,7 +83,8 @@ pub struct Trade {
     /// per transaction**, so every leg decoded out of the same tx carries the
     /// same value: a host summing it across legs must first collapse by
     /// `signature`. Excludes any Jito tip (that is a transfer instruction, not a
-    /// fee) and the venue's own protocol/LP fee (already inside `sol`).
+    /// fee) and the venue's own protocol/LP fee (inside `sol` on the AMM, outside
+    /// it on the curve - see [`sol`](Self::sol)).
     ///
     /// `None` when the source carried no fee (an RPC-backfill payload without
     /// the field). Never `Some(0)`: a landed transaction always pays at least
@@ -179,7 +185,13 @@ pub struct TokenCreated {
     pub uri: Option<String>,
     pub token_program_id: Option<String>,
     pub bonding_curve: Option<String>,
-    pub initial_supply: Option<u64>,
+    /// The mint's total token supply in raw units, from the create log. `None`
+    /// when the create log was not decoded.
+    pub total_supply: Option<u64>,
+    /// Raw tokens the creation transaction's own first buy received - the dev
+    /// buy, NOT the supply. `None` when the create tx carried no buy.
+    pub initial_buy_tokens: Option<u64>,
+    /// Curve-side SOL of that first buy (pre-fee, like a curve [`Trade::sol`]).
     pub initial_buy_sol: Option<f64>,
     pub initial_buy_instruction: Option<BuyInstructionArgs>,
     pub cu_limit: Option<u64>,

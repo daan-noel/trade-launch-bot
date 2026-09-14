@@ -370,7 +370,7 @@ pub(super) fn compute_sol_change(
     compute_sol_change_lamports(wallet, account_keys, pre, post) as f64 / 1_000_000_000.0
 }
 
-/// The wallet's absolute lamport balance delta (exact `u64`) — the raw basis
+/// An account's absolute lamport balance delta (exact `u64`) — the raw basis
 /// `compute_sol_change` divides to human SOL. Carried alongside so a native-SOL
 /// host persists the exact integer without an `f64` round-trip.
 pub(super) fn compute_sol_change_lamports(

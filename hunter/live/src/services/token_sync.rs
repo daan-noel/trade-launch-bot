@@ -1487,7 +1487,7 @@ fn token_from_ingest_event(e: ingest_pumpfun::event::TokenCreated) -> Token {
         symbol: e.symbol,
         token_program_id: e.token_program_id,
         bonding_curve_address: e.bonding_curve,
-        initial_supply_token: e.initial_supply,
+        initial_supply_token: e.initial_buy_tokens,
         initial_buy_sol: e.initial_buy_sol,
         initial_buy_instruction: e.initial_buy_instruction.as_ref().map(|_| serde_json::Value::Null),
         cu_limit: e.cu_limit,

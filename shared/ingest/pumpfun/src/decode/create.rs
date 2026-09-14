@@ -65,7 +65,8 @@ impl Decoder {
             .iter()
             .find(|ev| ev.is_buy && ev.user == buy_user && ev.mint == mint);
 
-        let initial_supply = initial_create_event.map(|ev| ev.token_amount);
+        let initial_buy_tokens = initial_create_event.map(|ev| ev.token_amount);
+        let total_supply = create_log.map(|e| e.token_total_supply);
         let initial_buy_sol = initial_create_event.map(|ev| ev.sol_amount);
 
         let name = create_log.map(|e| e.name.clone())
@@ -123,7 +124,8 @@ impl Decoder {
                 uri,
                 token_program_id,
                 bonding_curve,
-                initial_supply,
+                total_supply,
+                initial_buy_tokens,
                 initial_buy_sol,
                 initial_buy_instruction,
                 cu_limit,
@@ -160,7 +162,6 @@ struct RawCreateEvent {
     virtual_sol_reserves: u64,
     #[allow(dead_code)]
     real_token_reserves: u64,
-    #[allow(dead_code)]
     token_total_supply: u64,
     token_program: [u8; 32],
     is_mayhem_mode: bool,
@@ -180,6 +181,7 @@ pub(super) struct DecodedCreateEvent {
     pub(super) user: String,
     pub(super) creator: String,
     pub(super) token_program: Option<String>,
+    pub(super) token_total_supply: u64,
     pub(super) is_mayhem_mode: bool,
     pub(super) is_cashback_enabled: bool,
 }
@@ -206,6 +208,7 @@ pub(super) fn decode_create_events_from_logs(logs: &[&str], disc: &[u8; 8]) -> V
                 user: bs58::encode(raw.user).into_string(),
                 creator: bs58::encode(raw.creator).into_string(),
                 token_program: Some(bs58::encode(raw.token_program).into_string()),
+                token_total_supply: raw.token_total_supply,
                 is_mayhem_mode: raw.is_mayhem_mode,
                 is_cashback_enabled: raw.is_cashback_enabled,
             }),
