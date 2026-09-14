@@ -673,7 +673,9 @@ impl Replay {
                 self.pending_targets.insert(
                     mint.clone(),
                     TargetSnap {
-                        price: trigger.price_per_token,
+                        // The trigger's spot - the series `entry_price` is on, so the
+                        // gap between them is the fill model's adverse move alone.
+                        price: trading_core::models::trade::TradeRow::fill_basis(trigger),
                         token_amount: trigger.token_amount,
                         time: trigger.block_time,
                         tx: trigger.tx_signature.as_deref().unwrap_or("").to_string(),
@@ -710,7 +712,10 @@ impl Replay {
                         price: fill.price,
                         sol,
                         token_amount,
-                        at: fill.block_time,
+                        // A clock exit (`held`/`stall`/`time`) decided on a tick fills
+                        // at the last print before it but exits at the tick: the price
+                        // is frozen, the time is not.
+                        at: fill.block_time.max(now),
                     },
                 };
                 self.emit_or_defer(mint, fill.trade_idx, event, work);
@@ -949,8 +954,12 @@ pub struct EngineBacktestResult {
     /// `None` when not fired (`NoEntry`).
     pub entry_price: Option<f64>,
     pub ath_price: Option<f64>,
-    /// SOL notional the rule would deploy; `None` when not fired.
+    /// Raw tokens the modeled buy received (`kernel::buy_fill`); `None` when not
+    /// fired.
     pub entry_token_amount: Option<f64>,
+    /// SOL the modeled buy took from the wallet - the order plus its fixed cost,
+    /// the denominator `pnl_percent` divides by; `None` when not fired.
+    pub entry_sol: Option<f64>,
     pub entry_tx: Option<String>,
     pub entry_time: Option<DateTime<Utc>>,
     pub exit_price: Option<f64>,
@@ -1458,7 +1467,15 @@ pub fn outcome_to_row(
             None => (None, None, None, None, "Open".to_string()),
         };
 
-    let (sol, pct) = outcome.pnl_with_costs(buy_amount_sol, &cost_model.model());
+    let costs = cost_model.model();
+    let (sol, pct) = outcome.pnl_with_costs(buy_amount_sol, &costs);
+    // The same buy the PnL above books: its tokens and what it took from the wallet.
+    let (entry_tokens, entry_paid) = trading_core::strategies::kernel::buy_fill(
+        buy_amount_sol,
+        outcome.entry_price,
+        outcome.entry_reserve_sol,
+        &costs,
+    );
 
     let exit_legs: Vec<EngineExitLeg> = outcome
         .exit_legs
@@ -1483,9 +1500,8 @@ pub fn outcome_to_row(
         target_tx: outcome.target_tx.clone(),
         entry_price: Some(outcome.entry_price),
         ath_price: None,
-        // Match the legacy row: the "entry_token_amount" column carries the SOL
-        // notional the rule deployed (the frontend renders it as size).
-        entry_token_amount: Some(buy_amount_sol),
+        entry_token_amount: Some(entry_tokens),
+        entry_sol: Some(entry_paid),
         entry_tx: Some(outcome.entry_tx.clone()),
         entry_time: Some(outcome.entry_time),
         exit_price,
@@ -1515,6 +1531,7 @@ pub fn no_entry_row(mint: &str, symbol: &str, created_at: Ts) -> EngineBacktestR
         entry_price: None,
         ath_price: None,
         entry_token_amount: None,
+        entry_sol: None,
         entry_tx: None,
         entry_time: None,
         exit_price: None,
@@ -1556,5 +1573,44 @@ mod impact_denominator_guard {
             !src.contains(&real),
             "replay must NOT cache the real reserve as the impact denominator"
         );
+    }
+}
+
+#[cfg(test)]
+mod row_entry_fields {
+    use super::*;
+    use trading_core::strategies::kernel::{buy_fill, CostModelKind};
+
+    /// A fired row's size is what the buy took from the wallet and its tokens are
+    /// what that buy received - the same `buy_fill` the row's PnL books - never
+    /// the SOL notional in the tokens field.
+    #[test]
+    fn a_fired_row_carries_the_kernels_buy() {
+        let o = PositionOutcome {
+            mint: "m".into(),
+            rule: hunter_engine::event::RuleId(uuid::Uuid::nil()),
+            target_price: None,
+            target_token_amount: None,
+            target_time: None,
+            target_tx: None,
+            entry_price: 3.0e-8,
+            entry_token_amount: 1,
+            entry_time: Utc::now(),
+            entry_tx: String::new(),
+            entry_reserve_sol: Some(60.0),
+            exit_price: Some(3.3e-8),
+            exit_time: Some(Utc::now()),
+            exit_tx: None,
+            exit_reason: Some(ExitReason::TakeProfit),
+            exit_legs: Vec::new(),
+            last_price: 3.3e-8,
+            last_reserve_sol: None,
+        };
+        let kind = CostModelKind::default();
+        let row = outcome_to_row(&o, "S", Utc::now(), 0.1, kind);
+        let (tokens, paid) = buy_fill(0.1, 3.0e-8, Some(60.0), &kind.model());
+        assert_eq!(row.entry_token_amount, Some(tokens));
+        assert_eq!(row.entry_sol, Some(paid));
+        assert!(paid > 0.1 && tokens > 1.0e6, "paid {paid}, tokens {tokens}");
     }
 }

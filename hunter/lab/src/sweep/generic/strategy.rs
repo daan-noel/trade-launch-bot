@@ -2307,10 +2307,11 @@ const TICK_SECS: f64 = TICK_MS as f64 / 1000.0;
 /// rule conservatively keeps the legacy bounded-tail `Open` rather than risk a
 /// mis-timed close (documented residual — see the section comment).
 ///
-/// The exit is priced through the shared [`close_at_fire`] at the series' last row, so
-/// its fill (the last trade's market fill on an empty window), time, slot and PnL are
-/// **byte-identical** to the exit `run_replay`'s `queue_exit_fill` books for the same
-/// crossing — this only decides *that* a clock fires and *which* one, never the money.
+/// The exit is priced through the shared [`close_at_fire_at`] at the series' last row
+/// and stamped at the firing tick, so its fill (the last trade's market fill on an
+/// empty window), time, slot and PnL are **byte-identical** to the exit `run_replay`'s
+/// `queue_exit_fill` books for the same crossing — this only decides *that* a clock
+/// fires and *which* one, never the money.
 #[allow(clippy::too_many_arguments)]
 fn resolve_frozen_tail(
     trades: &[CorpusTrade],
@@ -2355,7 +2356,8 @@ fn resolve_frozen_tail(
             best_m = Some(best_m.map_or(m, |b| b.min(m)));
         }
     }
-    let delta = best_m? as f64 * TICK_SECS;
+    let m = best_m?;
+    let delta = m as f64 * TICK_SECS;
     // First req (in `exit_reqs` order) that holds at the firing instant labels the exit
     // — a non-clock req reads the frozen values that left the position Open, so only a
     // clock can hold here; this mirrors `first_exit_req_fired` at one row.
@@ -2371,17 +2373,17 @@ fn resolve_frozen_tail(
     }
     let (exit, req_idx) = exit?;
     let entry_slot = fill_trade_slot(series, fill_row);
-    Some(close_at_fire(
+    // The tick the clock fired on - `run_replay`'s `now` for the same crossing.
+    let fire_at = last_at + chrono::Duration::milliseconds(m * TICK_MS);
+    Some(close_at_fire_at(
         trades,
         series,
         b,
         exit,
         Some(req_idx),
-        entry_price,
-        entry_at,
-        entry_slot,
-        depth_at(series, fill_row),
+        (entry_price, entry_at, entry_slot, depth_at(series, fill_row)),
         last,
+        fire_at,
         pricing,
     ))
 }
@@ -3145,6 +3147,36 @@ fn close_at_fire(
     fire_row: usize,
     pricing: &Pricing,
 ) -> TokenOutcome {
+    close_at_fire_at(
+        trades,
+        series,
+        b,
+        exit,
+        exit_req_idx,
+        (entry_price, entry_at, entry_slot, entry_reserve_sol),
+        fire_row,
+        series.at[fire_row],
+        pricing,
+    )
+}
+
+/// [`close_at_fire`] for an exit decided at `fire_at`, which can lie past the
+/// series' last row (a frozen-tail clock). The fill still prices at the last trade
+/// at or before the decision, but the exit is stamped at the decision instant: a
+/// `held >= 60` that fires on the clock 55 s after the last print exits at 60 s,
+/// not at the print.
+#[allow(clippy::too_many_arguments)]
+fn close_at_fire_at(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    b: &BoundCombo,
+    exit: ExitCode,
+    exit_req_idx: Option<usize>,
+    (entry_price, entry_at, entry_slot, entry_reserve_sol): (f64, DateTime<Utc>, Option<u64>, Option<f64>),
+    fire_row: usize,
+    fire_at: DateTime<Utc>,
+    pricing: &Pricing,
+) -> TokenOutcome {
     let fill = exit_fill(trades, series, fire_row, pricing.fill_model).unwrap_or_else(|| {
         // No mappable fire trade (should be rare): fall back to the series spot.
         PaperFill {
@@ -3168,7 +3200,7 @@ fn close_at_fire(
         entry_reserve_sol,
         depth_at(series, exit_row).or(entry_reserve_sol),
         fill.price,
-        fill.block_time,
+        fill.block_time.max(fire_at),
         fill_trade_slot(series, exit_row),
         pricing,
     )

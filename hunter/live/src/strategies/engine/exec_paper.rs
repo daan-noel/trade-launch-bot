@@ -192,7 +192,9 @@ fn stash_print(fill_sigs: &FillSigStore, intent: &IntentId, print: Option<PrintK
 
 fn target_snapshot_from(t: &CachedTrade) -> TargetSnapshot {
     TargetSnapshot {
-        price: t.price_per_token,
+        // The trigger's spot - the series the paper entry fills on, so the gap
+        // between them is the fill model's adverse move alone.
+        price: trading_core::models::trade::TradeRow::fill_basis(t),
         // `CachedTrade::token_amount` is already raw SPL units (same as entry fill).
         token_amount: t.token_amount.round().max(0.0) as u64,
         print: PrintKey::of(t),
