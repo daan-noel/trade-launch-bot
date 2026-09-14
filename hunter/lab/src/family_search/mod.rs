@@ -722,6 +722,7 @@ mod tests {
             entry_time: Utc::now(),
             entry_tx: String::new(),
             entry_reserve_sol: Some(40.0),
+            entry_venue_fee_bps: None,
             exit_price: Some(1.2),
             exit_time: Some(Utc::now()),
             exit_tx: None,
@@ -734,6 +735,7 @@ mod tests {
             exit_legs: Vec::new(),
             last_price: 1.2,
             last_reserve_sol: None,
+            last_venue_fee_bps: None,
         };
         let cost = CostModel::pumpfun_with_impact();
         let burst = replay_to_outcome(&po(Some(hunter_engine::metrics::WindowSpec::secs(2.0)), 1.6), &labels, 0.01, &cost);

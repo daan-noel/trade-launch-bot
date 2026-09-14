@@ -21,6 +21,9 @@ pub const T_LEG_INDEX: &str = "leg_index";
 pub const T_VSOL: &str = "vsol";
 pub const T_VTOK: &str = "vtok";
 pub const T_VENUE: &str = "venue";
+/// The PumpSwap fee a swap charged, in bps (`trades.venue_fee_bps`); null on curve
+/// rows and on days exported before the column.
+pub const T_VENUE_FEE_BPS: &str = "venue_fee_bps";
 pub const T_TX_INDEX: &str = "tx_index";
 pub const T_TX_SIGNATURE: &str = "tx_signature";
 /// Normalized ix-label JSON array string (same form as token-dim `fp_ix_labels`).
@@ -39,9 +42,9 @@ pub const T_TIP_LAMPORTS: &str = "tip_lamports";
 /// The trades columns in the exact order the writer's Arrow schema + `finish()` vec
 /// build them. A guard test pins `trades_schema()` to this, so a reorder/rename in
 /// either the schema or the builder vec fails loudly instead of silently mis-mapping.
-pub const TRADE_WRITE_COLS: [&str; 18] = [
+pub const TRADE_WRITE_COLS: [&str; 19] = [
     T_MINT, T_IS_BUY, T_SOL_AMOUNT, T_TOKEN_AMOUNT, T_PRICE, T_SLOT, T_BLOCK_TIME,
-    T_LEG_INDEX, T_VSOL, T_VTOK, T_VENUE, T_TX_INDEX, T_TX_SIGNATURE,
+    T_LEG_INDEX, T_VSOL, T_VTOK, T_VENUE, T_VENUE_FEE_BPS, T_TX_INDEX, T_TX_SIGNATURE,
     T_IX_LABELS, T_WALLET, T_CU_LIMIT, T_CU_PRICE, T_TIP_LAMPORTS,
 ];
 

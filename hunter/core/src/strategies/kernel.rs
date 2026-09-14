@@ -326,6 +326,9 @@ pub struct ExitLeg {
     /// [`CostModel::price_impact`] — the leg's OWN depth, not the entry's. `None`
     /// charges no impact on this leg.
     pub reserve_sol: Option<f64>,
+    /// The fee of the pool this leg sells into, when it is a PumpSwap swap that
+    /// recorded one ([`CostModel::at_venue_fee`]); `None` sells at the model's fee.
+    pub venue_fee_bps: Option<f64>,
 }
 
 /// The depth impact is charged against, or `None` for no impact. `filter` (not a
@@ -412,13 +415,19 @@ pub fn round_trip_with_costs(
         entry_price,
         notional_sol,
         entry_reserve_sol,
-        &[ExitLeg { sell_bps: 10_000, price: exit_price, reserve_sol: exit_reserve_sol }],
+        &[ExitLeg {
+            sell_bps: 10_000,
+            price: exit_price,
+            reserve_sol: exit_reserve_sol,
+            venue_fee_bps: None,
+        }],
         costs,
     )
 }
 
 /// Multi-leg sibling of [`round_trip_with_costs`]: one [`buy_fill`] + `exits`
-/// [`sell_proceeds`] legs, each on its own price and depth. Every sell leg pays
+/// [`sell_proceeds`] legs, each on its own price, depth and pool fee
+/// ([`ExitLeg::venue_fee_bps`]; `costs` prices the buy). Every sell leg pays
 /// its own fixed cost, so fixed cost scales with leg count — the real economic
 /// bound on scale-out stage count — and the last leg pays the close.
 ///
@@ -446,7 +455,7 @@ pub fn round_trip_multi_leg(
         .filter(|(_, l)| l.sell_bps > 0)
         .map(|(i, l)| {
             let leg_tokens = tokens * f64::from(l.sell_bps) / 10_000.0;
-            sell_proceeds(leg_tokens, l.price, l.reserve_sol, costs, i == last)
+            sell_proceeds(leg_tokens, l.price, l.reserve_sol, &costs.at_venue_fee(l.venue_fee_bps), i == last)
         })
         .sum();
     let pnl_sol = got - paid;
@@ -1219,7 +1228,7 @@ mod tests {
             1.0,
             0.1,
             depth,
-            &[ExitLeg { sell_bps: 10_000, price: 1.25, reserve_sol: depth }],
+            &[ExitLeg { sell_bps: 10_000, price: 1.25, reserve_sol: depth, venue_fee_bps: None }],
             &m,
         );
         assert!((single.0 - multi.0).abs() < 1e-12, "sol {} vs {}", single.0, multi.0);
@@ -1244,7 +1253,7 @@ mod tests {
             1.0,
             0.1,
             None,
-            &[ExitLeg { sell_bps: 10_000, price: 1.10, reserve_sol: None }],
+            &[ExitLeg { sell_bps: 10_000, price: 1.10, reserve_sol: None, venue_fee_bps: None }],
             &m,
         )
         .0;
@@ -1253,8 +1262,8 @@ mod tests {
             0.1,
             None,
             &[
-                ExitLeg { sell_bps: 5_000, price: 1.10, reserve_sol: None },
-                ExitLeg { sell_bps: 5_000, price: 1.10, reserve_sol: None },
+                ExitLeg { sell_bps: 5_000, price: 1.10, reserve_sol: None, venue_fee_bps: None },
+                ExitLeg { sell_bps: 5_000, price: 1.10, reserve_sol: None, venue_fee_bps: None },
             ],
             &m,
         )
@@ -1274,8 +1283,8 @@ mod tests {
             1.0,
             None,
             &[
-                ExitLeg { sell_bps: 7_000, price: 1.50, reserve_sol: None },
-                ExitLeg { sell_bps: 3_000, price: 1.00, reserve_sol: None },
+                ExitLeg { sell_bps: 7_000, price: 1.50, reserve_sol: None, venue_fee_bps: None },
+                ExitLeg { sell_bps: 3_000, price: 1.00, reserve_sol: None, venue_fee_bps: None },
             ],
             &m,
         );
@@ -1633,6 +1642,19 @@ mod tests {
 
     /// A PumpSwap leg swaps in only the pool's fee; a curve leg (`None`) and a
     /// garbage fee keep the model as it is.
+    /// A curve buy and a PumpSwap exit: the buy pays `costs`' fee, the leg its own.
+    #[test]
+    fn an_exit_leg_sells_at_its_own_pool_fee() {
+        let costs = CostModel::pumpfun_with_impact();
+        let leg = |venue_fee_bps| ExitLeg { sell_bps: 10_000, price: 2.0, reserve_sol: Some(80.0), venue_fee_bps };
+        let (curve_exit, _) = round_trip_multi_leg(1.0, 0.1, Some(40.0), &[leg(None)], &costs);
+        let (amm_exit, _) = round_trip_multi_leg(1.0, 0.1, Some(40.0), &[leg(Some(95.0))], &costs);
+        let (tokens, paid) = buy_fill(0.1, 1.0, Some(40.0), &costs);
+        let want = sell_proceeds(tokens, 2.0, Some(80.0), &costs.at_venue_fee(Some(95.0)), true) - paid;
+        assert!((amm_exit - want).abs() < 1e-15, "{amm_exit} vs {want}");
+        assert!(amm_exit > curve_exit, "a 95 bps pool keeps more than the curve's 125");
+    }
+
     #[test]
     fn at_venue_fee_swaps_only_the_fee() {
         let curve = CostModel::pumpfun_with_impact();

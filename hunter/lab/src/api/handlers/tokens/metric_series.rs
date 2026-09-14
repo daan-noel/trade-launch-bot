@@ -806,6 +806,7 @@ mod tests {
             leg_index: 0,
             is_buy: true,
             on_curve: true,
+            venue_fee_bps: None,
             tx_signature: None,
             ix_labels: labels.map(Box::from),
             wallet: Some(Box::from(wallet)),

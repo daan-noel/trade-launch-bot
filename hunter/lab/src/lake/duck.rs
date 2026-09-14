@@ -607,6 +607,16 @@ fn trade_partition_floor(sel: &Selection) -> Option<String> {
     Some(floor.format("%Y-%m-%d").to_string())
 }
 
+/// Whether any trade day file carries `column`. `union_by_name` null-fills a column
+/// only for the files that lack it while another has it; with no file carrying it
+/// (a lake exported before the column) selecting it is a binder error, so the read
+/// selects NULL instead.
+fn trades_have_column(conn: &Connection, trades_lit: &str, column: &str) -> Result<bool> {
+    let sql = format!("SELECT count(*) FROM parquet_schema({trades_lit}) WHERE name = ?");
+    let n: i64 = conn.query_row(&sql, duckdb::params![column], |r| r.get(0))?;
+    Ok(n > 0)
+}
+
 /// Stream the per-mint capped trades and group them into [`CorpusToken`] — one slim
 /// [`CorpusTrade`] buffer per token, the single row type both sweep and simulate walk.
 fn load_corpus_tokens(
@@ -638,12 +648,16 @@ fn load_corpus_tokens(
     // neither. Pre-`0013` days null-fill through `union_by_name=true`.
     let flow_cols =
         if sel.with_flow { format!(", {}", FLOW_READ_COLS.join(", ")) } else { String::new() };
+    // The PumpSwap fee column, or NULL while no day file carries it yet.
+    let has_fee = trades_have_column(conn, trades_lit, super::schema::T_VENUE_FEE_BPS)?;
+    let fee_col = if has_fee { "venue_fee_bps" } else { "CAST(NULL AS FLOAT) AS venue_fee_bps" };
+    let inner_fee = if has_fee { "t.venue_fee_bps" } else { "CAST(NULL AS FLOAT) AS venue_fee_bps" };
 
     // The one projection both shapes below emit — the exact column order the row
     // reader decodes by ordinal.
     let projection = format!(
         "mint, is_buy, sol_amount, token_amount, price, slot, tx_index, block_time, leg_index, \
-         vsol, vtok, venue{sig_col}{flow_cols}"
+         vsol, vtok, venue, {fee_col}{sig_col}{flow_cols}"
     );
     // Restores execution order so a token's legs arrive contiguous + chronological
     // (single-pass group in the loop below).
@@ -662,7 +676,7 @@ fn load_corpus_tokens(
         format!(
             "WITH ranked AS ( \
                 SELECT t.mint, t.is_buy, t.sol_amount, t.token_amount, t.price, \
-                       t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, t.venue{sig_col}{flow_cols}, \
+                       t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, t.venue, {inner_fee}{sig_col}{flow_cols}, \
                        ROW_NUMBER() OVER (PARTITION BY t.mint ORDER BY {order}) AS rn \
                 FROM read_parquet({trades_lit}, hive_partitioning=true, union_by_name=true) t \
                 WHERE t.mint IN (SELECT mint FROM sel_mints) {curve_filter} {dt_filter}\
@@ -704,9 +718,11 @@ fn load_corpus_tokens(
         let vsol: Option<f64> = row.get(9)?;
         let vtok: Option<f64> = row.get(10)?;
         let venue: String = row.get(11)?;
+        // Null on curve rows and on days exported before the column (`union_by_name`).
+        let venue_fee_bps: Option<f32> = row.get(12)?;
         // Optional trailing columns: signature then flow — ordinal advances only
         // when the matching Selection flag requested them.
-        let mut col = 12usize;
+        let mut col = 13usize;
         let tx_signature: Option<Box<str>> = if sel.with_signatures {
             let v = row.get::<_, Option<String>>(col)?.map(String::into_boxed_str);
             col += 1;
@@ -757,8 +773,9 @@ fn load_corpus_tokens(
             reserve_token: vtok,
             // The program-emitted `real_*_reserves` aren't in the `trades` table
             // (dropped, re-derivable from raw_txs), so the lake **approximates**
-            // real SOL from the priced reserve pair per venue: AMM → reserve_sol,
-            // curve → reserve_sol − 30 (the initial virtual SOL), clamped at 0.
+            // real SOL from the priced reserve pair per venue: the priced reserve
+            // less the venue's virtual SOL (PumpSwap's virtual quote on the AMM, the
+            // curve's initial 30), clamped at 0.
             // Same "true liquidity" the frontend chart shows; lets the sim's
             // real-reserve gates (e.g. tpsl2 `min_liq_sol`) resolve. This is an
             // approximation of the live/paper value, not lamport-identical.
@@ -770,6 +787,7 @@ fn load_corpus_tokens(
             leg_index: leg_index as u32,
             is_buy,
             on_curve: venue != "amm",
+            venue_fee_bps,
             tx_signature,
             flow,
             ix_labels,

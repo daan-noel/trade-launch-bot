@@ -47,6 +47,7 @@ use trading_core::strategies::paper_fill::{
 };
 
 use crate::sweep::projection::CorpusTrade;
+use trading_core::models::trade::TradeRow;
 
 /// The clock tick — derived from the engine's [`hunter_engine::TICK_MS`]
 /// SSOT so the live decision loop and this replay driver tick at the one cadence
@@ -61,6 +62,8 @@ pub struct OutcomeExitLeg {
     pub sell_bps: u16,
     pub price: f64,
     pub reserve_sol: Option<f64>,
+    /// The PumpSwap fee of the pool this leg sold into, when its print recorded one.
+    pub venue_fee_bps: Option<f64>,
     pub time: Ts,
     pub tx: String,
     pub reason: Option<ExitReason>,
@@ -110,6 +113,9 @@ pub struct PositionOutcome {
     /// `None` when no trade had priced the token yet (enter-on-arm before the
     /// first trade), which charges no impact rather than guessing one.
     pub entry_reserve_sol: Option<f64>,
+    /// The PumpSwap fee of the pool the entry filled on, when its print recorded
+    /// one; `None` buys at the cost model's curve fee.
+    pub entry_venue_fee_bps: Option<f64>,
     pub exit_price: Option<f64>,
     pub exit_time: Option<Ts>,
     pub exit_tx: Option<String>,
@@ -123,6 +129,9 @@ pub struct PositionOutcome {
     /// Priced SOL depth at that last print — what the open remainder's mark sells
     /// into. `None` when no print carried a reserve.
     pub last_reserve_sol: Option<f64>,
+    /// The PumpSwap fee at that last print — what the open remainder's mark sells
+    /// at. `None` on the curve.
+    pub last_venue_fee_bps: Option<f64>,
 }
 
 /// Trigger-trade snapshot stashed when a worst-case entry fill is queued, then
@@ -314,6 +323,7 @@ struct Builder {
     entry_time: Ts,
     entry_tx: String,
     entry_reserve_sol: Option<f64>,
+    entry_venue_fee_bps: Option<f64>,
     /// Set once the entry fills (`Holding`); an entry that gives up before filling
     /// stays `false` and produces no row (never entered).
     entered: bool,
@@ -769,11 +779,15 @@ impl Replay {
                         entry_time: Utc::now(),
                         entry_tx: String::new(),
                         entry_reserve_sol: None,
+                        entry_venue_fee_bps: None,
                         entered: false,
                     },
                 );
             }
             PositionStatus::Holding => {
+                // The pool fee of the print this fill lands on, read before the
+                // builder borrow.
+                let fill_fee = self.last_fee_of(&delta.mint);
                 if let (Some(b), Some(fill)) = (self.builders.get_mut(&delta.position), delta.fill) {
                     if !b.entered {
                         // Entry fill.
@@ -784,6 +798,7 @@ impl Replay {
                         b.entry_time = fill.at;
                         b.entry_reserve_sol =
                             self.last_priced_reserve_sol.get(&delta.mint).copied().filter(|r| *r > 0.0);
+                        b.entry_venue_fee_bps = fill_fee;
                         // Prefer the fill trade's sig (adverse print); fall back to the
                         // last folded trade's sig when the slim corpus omitted it.
                         b.entry_tx = sig;
@@ -800,6 +815,7 @@ impl Replay {
                                 .get(&delta.mint)
                                 .copied()
                                 .filter(|r| *r > 0.0),
+                            venue_fee_bps: fill_fee,
                             time: fill.at,
                             tx: sig,
                             reason: delta.reason,
@@ -847,6 +863,7 @@ impl Replay {
         let mint = Mint::from(b.mint.as_str());
         let last_price = self.last_price.get(&mint).copied().unwrap_or(exit_price);
         let last_reserve = self.last_reserve_of(&mint);
+        let last_fee = self.last_fee_of(&mint);
         let remaining = b.entry_token_amount.saturating_sub(b.sold_token_amount);
         let final_tokens = final_token_amount.unwrap_or(remaining).min(remaining);
         if final_tokens > 0 {
@@ -855,6 +872,7 @@ impl Replay {
                 sell_bps,
                 price: exit_price,
                 reserve_sol: last_reserve,
+                venue_fee_bps: last_fee,
                 time: exit_time,
                 tx: exit_tx.clone(),
                 reason,
@@ -867,7 +885,7 @@ impl Replay {
             Some(exit_time),
             Some(exit_tx),
             reason,
-            (last_price, last_reserve),
+            (last_price, last_reserve, last_fee),
         ));
     }
 
@@ -881,8 +899,8 @@ impl Replay {
             }
             let mint = Mint::from(b.mint.as_str());
             let last_price = self.last_price.get(&mint).copied().unwrap_or(b.entry_price);
-            let last_reserve = self.last_reserve_of(&mint);
-            self.done.push(outcome_from_builder(b, None, None, None, None, (last_price, last_reserve)));
+            let mark = (last_price, self.last_reserve_of(&mint), self.last_fee_of(&mint));
+            self.done.push(outcome_from_builder(b, None, None, None, None, mark));
         }
         self.done
     }
@@ -890,6 +908,12 @@ impl Replay {
     /// Priced SOL depth of the mint's last folded print, when it carried one.
     fn last_reserve_of(&self, mint: &Mint) -> Option<f64> {
         self.last_priced_reserve_sol.get(mint).copied().filter(|r| *r > 0.0)
+    }
+
+    /// PumpSwap fee of the mint's last folded print, when it recorded one.
+    fn last_fee_of(&self, mint: &Mint) -> Option<f64> {
+        let idx = *self.last_trade_idx.get(mint)?;
+        self.trades.get(mint)?.get(idx).and_then(TradeRow::venue_fee_bps)
     }
 
     /// The token's current finite spot, or `None` when nothing has priced it yet.
@@ -991,7 +1015,7 @@ fn outcome_from_builder(
     exit_time: Option<Ts>,
     exit_tx: Option<String>,
     exit_reason: Option<ExitReason>,
-    (last_price, last_reserve_sol): (f64, Option<f64>),
+    (last_price, last_reserve_sol, last_venue_fee_bps): (f64, Option<f64>, Option<f64>),
 ) -> PositionOutcome {
     let (target_price, target_token_amount, target_time, target_tx) = match b.target {
         Some(t) => (Some(t.price), Some(t.token_amount), Some(t.time), Some(t.tx)),
@@ -1009,6 +1033,7 @@ fn outcome_from_builder(
         entry_time: b.entry_time,
         entry_tx: b.entry_tx,
         entry_reserve_sol: b.entry_reserve_sol,
+        entry_venue_fee_bps: b.entry_venue_fee_bps,
         exit_price,
         exit_time,
         exit_tx,
@@ -1016,6 +1041,7 @@ fn outcome_from_builder(
         exit_legs: b.exit_legs,
         last_price,
         last_reserve_sol,
+        last_venue_fee_bps,
     }
 }
 
@@ -1041,6 +1067,7 @@ impl PositionOutcome {
                 sell_bps: l.sell_bps,
                 price: l.price,
                 reserve_sol: l.reserve_sol.or(self.entry_reserve_sol),
+                venue_fee_bps: l.venue_fee_bps,
             })
             .collect();
         if self.exit_reason.is_none() {
@@ -1051,6 +1078,7 @@ impl PositionOutcome {
                     sell_bps: rem as u16,
                     price: self.last_price,
                     reserve_sol: self.last_reserve_sol.or(self.entry_reserve_sol),
+                    venue_fee_bps: self.last_venue_fee_bps,
                 });
             }
         }
@@ -1059,12 +1087,14 @@ impl PositionOutcome {
                 sell_bps: 10_000,
                 price: self.exit_price.unwrap_or(self.last_price),
                 reserve_sol: self.last_reserve_sol.or(self.entry_reserve_sol),
+                venue_fee_bps: self.last_venue_fee_bps,
             });
         }
         legs
     }
 
     /// Net PnL after costs via the multi-leg kernel (SSOT with [`outcome_to_row`]).
+    /// The buy pays the entry pool's fee; each leg its own.
     pub fn pnl_with_costs(
         &self,
         buy_amount_sol: f64,
@@ -1075,7 +1105,7 @@ impl PositionOutcome {
             buy_amount_sol,
             self.entry_reserve_sol,
             &self.cost_legs(),
-            costs,
+            &costs.at_venue_fee(self.entry_venue_fee_bps),
         )
     }
 }
@@ -1188,6 +1218,7 @@ mod tests {
             leg_index: 0,
             is_buy,
             on_curve: true,
+            venue_fee_bps: None,
             tx_signature: Some(format!("sig{secs}").into_boxed_str()),
             ix_labels: None,
             wallet: None,
@@ -1474,7 +1505,7 @@ pub fn outcome_to_row(
         buy_amount_sol,
         outcome.entry_price,
         outcome.entry_reserve_sol,
-        &costs,
+        &costs.at_venue_fee(outcome.entry_venue_fee_bps),
     );
 
     let exit_legs: Vec<EngineExitLeg> = outcome
@@ -1598,6 +1629,7 @@ mod row_entry_fields {
             entry_time: Utc::now(),
             entry_tx: String::new(),
             entry_reserve_sol: Some(60.0),
+            entry_venue_fee_bps: None,
             exit_price: Some(3.3e-8),
             exit_time: Some(Utc::now()),
             exit_tx: None,
@@ -1605,6 +1637,7 @@ mod row_entry_fields {
             exit_legs: Vec::new(),
             last_price: 3.3e-8,
             last_reserve_sol: None,
+            last_venue_fee_bps: None,
         };
         let kind = CostModelKind::default();
         let row = outcome_to_row(&o, "S", Utc::now(), 0.1, kind);
@@ -1612,5 +1645,33 @@ mod row_entry_fields {
         assert_eq!(row.entry_token_amount, Some(tokens));
         assert_eq!(row.entry_sol, Some(paid));
         assert!(paid > 0.1 && tokens > 1.0e6, "paid {paid}, tokens {tokens}");
+
+        // Bought on a 90 bps pool, sold on a 60 bps one: each leg pays its own.
+        let amm = PositionOutcome {
+            entry_venue_fee_bps: Some(90.0),
+            exit_legs: vec![OutcomeExitLeg {
+                sell_bps: 10_000,
+                price: 3.3e-8,
+                reserve_sol: Some(70.0),
+                venue_fee_bps: Some(60.0),
+                time: Utc::now(),
+                tx: String::new(),
+                reason: Some(ExitReason::TakeProfit),
+            }],
+            ..o
+        };
+        let costs = kind.model();
+        let (got, _) = amm.pnl_with_costs(0.1, &costs);
+        let (tokens, paid) = buy_fill(0.1, 3.0e-8, Some(60.0), &costs.at_venue_fee(Some(90.0)));
+        let out = trading_core::strategies::kernel::sell_proceeds(
+            tokens,
+            3.3e-8,
+            Some(70.0),
+            &costs.at_venue_fee(Some(60.0)),
+            true,
+        );
+        assert!((got - (out - paid)).abs() < 1e-15, "{got} vs {}", out - paid);
+        let row = outcome_to_row(&amm, "S", Utc::now(), 0.1, kind);
+        assert_eq!(row.entry_sol, Some(paid), "the booked buy pays the entry pool's fee");
     }
 }

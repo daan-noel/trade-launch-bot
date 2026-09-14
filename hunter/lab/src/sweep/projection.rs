@@ -70,6 +70,9 @@ pub struct CorpusTrade {
     /// the only layer holding `venue`, and a curve-only term (`m_state.on_curve`)
     /// must read the venue the print traded on rather than assume the curve.
     pub on_curve: bool,
+    /// The PumpSwap fee this print's swap charged, in bps (`trades.venue_fee_bps`);
+    /// `None` on the curve and on rows written before it was recorded.
+    pub venue_fee_bps: Option<f32>,
     /// Base58 signature — `None` on the sweep read (slim), `Some` on the simulate read
     /// (Solscan links). See the struct doc. `Box<str>` (16 B) not `String` (24 B) since
     /// it's write-once.
@@ -215,6 +218,9 @@ impl TradeRow for CorpusTrade {
     fn on_curve(&self) -> bool {
         self.on_curve
     }
+    fn venue_fee_bps(&self) -> Option<f64> {
+        self.venue_fee_bps.map(f64::from)
+    }
     /// The stored base58 signature, or `""` when the row was loaded signature-free
     /// (the sweep path — the trigger is resolved by index, not signature). The
     /// `EntryFill`/`ExitFill` strings the shared fns build from this are discarded by
@@ -331,6 +337,7 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(trades: &[T]) -> Vec<CorpusT
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
             on_curve: t.on_curve(),
+            venue_fee_bps: t.venue_fee_bps().map(|f| f as f32),
             tx_signature: None,
             flow: FlowKeys::default(),
             ix_labels: None,
@@ -381,6 +388,7 @@ pub fn project_pg_tail(trades: &[Trade], with_flow: bool) -> Vec<CorpusTrade> {
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
             on_curve: t.on_curve(),
+            venue_fee_bps: t.venue_fee_bps().map(|f| f as f32),
             tx_signature: None,
             flow: if with_flow {
                 // The PG tail must classify like the lake days it continues: a build

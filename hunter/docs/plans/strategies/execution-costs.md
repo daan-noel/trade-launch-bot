@@ -209,12 +209,14 @@ its execution price. A sell's `Fill::price` is its execution price; it prices no
 The closed PnL is then `(exit − entry) / entry`, all-in, and a PnL
 tracker that reads the wallet sees the same number.
 
-The PumpSwap fee is read off each swap event (`Trade::venue_fee_bps`: the user-side
-amount against the pool's own constant-product amount), kept per token as the newest
-swap's (`TokenState::current_venue_fee_bps`), and swapped into the model by
-`CostModel::at_venue_fee` for live paper fills, the paper exit-stuck heal and every open
-mark. The lake stores no per-swap fee, so a sweep leg on an AMM print prices the curve's
-125 bps.
+The PumpSwap fee is read off each swap event (`Trade::venue_fee_bps`: the fees the user
+side paid over the pool's own constant-product amount) and stored on the row
+(`trades.venue_fee_bps`, the lake's `venue_fee_bps` column). `CostModel::at_venue_fee`
+swaps it in wherever a leg lands on a pool: live paper fills, the paper exit-stuck heal
+and every open mark read the token's newest swap (`TokenState::current_venue_fee_bps`,
+seeded from `trades` on a restart); the sweep and simulate price the buy at the entry
+print's fee and each sell leg at its own print's (`ExitLeg::venue_fee_bps`). A row stored
+before the column prices at the curve's 125 bps.
 
 What the kernel cannot know, and a real row books anyway: a tip above
 `JITO_MIN_TIP_SOL` from the tip feed.

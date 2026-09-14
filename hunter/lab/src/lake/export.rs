@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use arrow::array::{
-    BooleanBuilder, Float64Builder, Int32Builder, Int64Builder, StringBuilder, UInt64Builder,
+    BooleanBuilder, Float32Builder, Float64Builder, Int32Builder, Int64Builder, StringBuilder, UInt64Builder,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
@@ -87,6 +87,7 @@ fn trades_schema() -> Schema {
         // curve-spot + execution fallback is full parity for the curve phase.
         Field::new(col::T_VTOK, DataType::Float64, true),
         Field::new(col::T_VENUE, DataType::Utf8, false),
+        Field::new(col::T_VENUE_FEE_BPS, DataType::Float32, true),
         // Intra-block execution order. Carried so the lake's per-mint ordering
         // (slot, tx_index, leg_index) reproduces PG's exactly — many trades share a
         // slot, and block_time alone can't break those ties (corpus-parity bug fix).
@@ -373,6 +374,7 @@ struct LakeTradeRow {
     mint_address: String,
     trade_type: String,
     venue: String,
+    venue_fee_bps: Option<f32>,
     amount_lamports: i64,
     token_amount: i64,
     reserve_lamports: Option<i64>,
@@ -422,7 +424,7 @@ async fn export_day(pool: &PgPool, root: &Path, day: NaiveDate) -> Result<usize>
 
     let mut stream = sqlx::query_as::<_, LakeTradeRow>(
         r#"
-        SELECT t.mint_address, t.trade_type, t.venue,
+        SELECT t.mint_address, t.trade_type, t.venue, t.venue_fee_bps,
                t.amount_lamports, t.token_amount, t.reserve_lamports, t.reserve_token,
                t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature,
                t.ix_labels,
@@ -472,6 +474,7 @@ struct TradeBuilders {
     vsol: Float64Builder,
     vtok: Float64Builder,
     venue: StringBuilder,
+    venue_fee_bps: Float32Builder,
     tx_index: Int32Builder,
     tx_signature: StringBuilder,
     ix_labels: StringBuilder,
@@ -507,6 +510,7 @@ impl TradeBuilders {
         self.vsol.append_option(r.reserve_lamports.map(|v| v as f64 / 1_000_000_000.0));
         self.vtok.append_option(r.reserve_token.map(|v| v as f64));
         self.venue.append_value(&r.venue);
+        self.venue_fee_bps.append_option(r.venue_fee_bps);
         self.tx_index.append_value(r.tx_index);
         // BYTEA → base58, the exact encoding `trade_repo` uses on the PG read path,
         // so a lake signature is byte-identical to what simulate showed pre-migration.
@@ -544,6 +548,7 @@ impl TradeBuilders {
                 Arc::new(self.vsol.finish()),
                 Arc::new(self.vtok.finish()),
                 Arc::new(self.venue.finish()),
+                Arc::new(self.venue_fee_bps.finish()),
                 Arc::new(self.tx_index.finish()),
                 Arc::new(self.tx_signature.finish()),
                 Arc::new(self.ix_labels.finish()),
@@ -761,6 +766,7 @@ mod tests {
             mint_address: mint.into(),
             trade_type: if buy { "buy".into() } else { "sell".into() },
             venue: "curve".into(),
+            venue_fee_bps: None,
             amount_lamports: lamports,
             token_amount: raw_tok,
             reserve_lamports: Some(30_000_000_000), // 30 SOL in lamports
@@ -796,6 +802,27 @@ mod tests {
         assert!((price.value(0) - 1.5 / 3_000_000.0).abs() < 1e-18, "price = sol/token");
         assert!((vsol.value(0) - 30.0).abs() < 1e-12, "vsol lamports→SOL ÷1e9");
         assert!((vtok.value(0) - 84.0).abs() < 1e-12, "vtok raw→f64");
+    }
+
+    /// A PumpSwap row's fee lands in its own column; a curve row's is null.
+    #[test]
+    fn venue_fee_column_carries_the_pool_fee() {
+        use arrow::array::{Array, Float32Array};
+        let mut amm = row("m1", false, 1_000_000_000, 1_000);
+        amm.venue = "amm".into();
+        amm.venue_fee_bps = Some(95.0);
+        let mut b = TradeBuilders::default();
+        b.push(&amm);
+        b.push(&row("m1", true, 1_000_000_000, 1_000));
+        let batch = b.finish(&Arc::new(trades_schema())).unwrap();
+        let fee = batch
+            .column_by_name(crate::lake::schema::T_VENUE_FEE_BPS)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .unwrap();
+        assert_eq!(fee.value(0), 95.0);
+        assert!(fee.is_null(1), "curve rows carry no venue fee");
     }
 
     #[test]
