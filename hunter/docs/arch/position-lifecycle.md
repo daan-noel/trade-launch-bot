@@ -162,6 +162,9 @@ shared pro-rata by tokens when one sell cleared several rows.
 immediately; the closes stream over `action_progress` SSE and the Rules row shows
 "Stopping n/N" until a non-`running` frame arrives
 ([action_progress.rs](../../live/src/api/handlers/strategies/action_progress.rs)).
+That terminal frame is sent once, so the watcher re-sends `running` on every resync
+tick and a client drops, `ACTION_REANNOUNCE_GRACE_MS` after an SSE reconnect, every
+action it has not re-heard — a terminal frame lost in the gap never pins the row.
 Three properties that a "stop takes forever" report should be checked against:
 
 - **The watch set is the statuses the engine will emit *again* for** — `BuySubmitted`,

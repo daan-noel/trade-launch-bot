@@ -59,6 +59,7 @@ import {
   refetchAllRuleLists,
 } from 'store/sharedEndpoints';
 import {
+  ACTION_REANNOUNCE_GRACE_MS,
   connectActionProgressStream,
   connectTpslRulesChanged,
   type ActionProgress,
@@ -221,7 +222,7 @@ export function RulesView({
     [modeFilter],
   );
 
-  const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery(
+  const { data: rules = [], isLoading } = useGetStrategyRulesQuery(
     scoreScope || scoreMode !== 'own'
       ? { scope: scoreScope, mode: scoreMode === 'own' ? undefined : scoreMode }
       : undefined,
@@ -374,11 +375,32 @@ export function RulesView({
   useEffect(() => {
     const rulesH = connectTpslRulesChanged(() => {
       setPausingIds(new Set());
+      // Tag invalidation — reaches this board's `{ scope, mode }` key too.
       refetchAllRuleLists(dispatch);
-      void refetch();
     });
+    // A stop's terminal frame is sent once; one lost in an SSE gap would pin the
+    // row on "Stopping x/N" with Stop and Pause disabled. After a reconnect, drop
+    // every entry the server has not re-announced (it heartbeats live stops).
+    const seen = new Map<string, number>();
+    let sweep: ReturnType<typeof setTimeout> | undefined;
+    const reannounced = (at: number) => (p: ActionProgress | undefined) =>
+      p != null && (seen.get(p.action_id) ?? 0) >= at;
+    const onReopen = () => {
+      const at = Date.now();
+      clearTimeout(sweep);
+      sweep = setTimeout(() => {
+        const keep = reannounced(at);
+        setStopByRule((prev) =>
+          Object.fromEntries(Object.entries(prev).filter(([, p]) => keep(p))),
+        );
+        setStopByMode((prev) =>
+          Object.fromEntries(Object.entries(prev).filter(([, p]) => keep(p))),
+        );
+      }, ACTION_REANNOUNCE_GRACE_MS);
+    };
     const progressH = connectActionProgressStream((p) => {
       if (p.kind !== 'stop') return;
+      seen.set(p.action_id, Date.now());
       if (p.rule_id) {
         setStopByRule((prev) => {
           const next = { ...prev };
@@ -404,12 +426,13 @@ export function RulesView({
           return next;
         });
       }
-    });
+    }, onReopen);
     return () => {
       rulesH.close();
       progressH.close();
+      clearTimeout(sweep);
     };
-  }, [dispatch, refetch]);
+  }, [dispatch]);
 
   const run = useCallback(async (fn: () => Promise<unknown>, fail: string) => {
     setOpErr(null);

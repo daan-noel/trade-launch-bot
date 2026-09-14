@@ -112,7 +112,8 @@ function ArmsSectionBody() {
   }, [summaryKey]);
 
   // Live arm/disarm frames invalidate the cohort — coalesced into one refetch of
-  // the funnel and the table's current page.
+  // the funnel and the table's current page. A reconnect / `sse_resync` bumps too:
+  // the gap's frames are gone.
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const bump = () => {
@@ -122,7 +123,7 @@ function ArmsSectionBody() {
         setReloadNonce((n) => n + 1);
       }, COALESCE_MS);
     };
-    const h = connectArmedChanged(() => bump());
+    const h = connectArmedChanged(() => bump(), bump);
     return () => {
       h.close();
       if (timer.current) {

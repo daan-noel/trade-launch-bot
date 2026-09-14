@@ -350,8 +350,8 @@ export const sharedApi = baseApi.injectEndpoints({
     // Soft-unarchive — orthogonal to Active/Idle.
     enableStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/enable`, method: 'POST' }),
-      async onQueryStarted(id, { dispatch, queryFulfilled }) {
-        const undo = patchAllRuleLists(dispatch, (draft) => {
+      async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
+        const undo = patchAllRuleLists(dispatch, getState, (draft) => {
           const row = draft.find((r) => r.id === id);
           if (row) row.is_enabled = true;
         });
@@ -366,8 +366,8 @@ export const sharedApi = baseApi.injectEndpoints({
     // Soft-archive (+ pause if Active). Optimistic Disabled + Idle patch.
     disableStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/disable`, method: 'POST' }),
-      async onQueryStarted(id, { dispatch, queryFulfilled }) {
-        const undo = patchAllRuleLists(dispatch, (draft) => {
+      async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
+        const undo = patchAllRuleLists(dispatch, getState, (draft) => {
           const row = draft.find((r) => r.id === id);
           if (row) {
             row.is_enabled = false;
@@ -382,17 +382,9 @@ export const sharedApi = baseApi.injectEndpoints({
       },
       invalidatesTags: ['StrategyRule'],
     }),
-    // Instant flag flip — server ack + refetch; no optimistic is_active patch.
+    // Instant flag flip — server ack + the tag refetch; no optimistic is_active patch.
     pauseStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/pause`, method: 'POST' }),
-      async onQueryStarted(_id, { dispatch, queryFulfilled }) {
-        try {
-          await queryFulfilled;
-          refetchAllRuleLists(dispatch);
-        } catch {
-          /* RulesView surfaces the error */
-        }
-      },
       invalidatesTags: ['StrategyRule'],
     }),
     // Stop = deactivate AND force-close open positions. Returns 202 + action_id;
@@ -402,27 +394,11 @@ export const sharedApi = baseApi.injectEndpoints({
       string
     >({
       query: (id) => ({ url: `/api/strategy-rules/${id}/stop`, method: 'POST' }),
-      async onQueryStarted(_id, { dispatch, queryFulfilled }) {
-        try {
-          await queryFulfilled;
-          refetchAllRuleLists(dispatch);
-        } catch {
-          /* RulesView surfaces the error */
-        }
-      },
       invalidatesTags: ['StrategyRule'],
     }),
     // Bulk lifecycle scoped to one trade mode — mirror the per-row Pause / Stop.
     pauseAllStrategyRules: builder.mutation<{ paused: number }, TradeMode>({
       query: (mode) => ({ url: `/api/strategy-rules/pause-all?mode=${mode}`, method: 'POST' }),
-      async onQueryStarted(_mode, { dispatch, queryFulfilled }) {
-        try {
-          await queryFulfilled;
-          refetchAllRuleLists(dispatch);
-        } catch {
-          /* RulesView surfaces the error */
-        }
-      },
       invalidatesTags: ['StrategyRule'],
     }),
     stopAllStrategyRules: builder.mutation<
@@ -430,14 +406,6 @@ export const sharedApi = baseApi.injectEndpoints({
       TradeMode
     >({
       query: (mode) => ({ url: `/api/strategy-rules/stop-all?mode=${mode}`, method: 'POST' }),
-      async onQueryStarted(_mode, { dispatch, queryFulfilled }) {
-        try {
-          await queryFulfilled;
-          refetchAllRuleLists(dispatch);
-        } catch {
-          /* RulesView surfaces the error */
-        }
-      },
       invalidatesTags: ['StrategyRule'],
     }),
     updateSettings: builder.mutation<AppSettings, Partial<AppSettings>>({
@@ -469,25 +437,34 @@ export const sharedApi = baseApi.injectEndpoints({
   }),
 });
 
-/** Optimistic lifecycle patches must update every `getStrategyRules` cache key. */
-const RULE_LIST_ARGS: Array<'current' | 'all' | undefined> = [undefined, 'current', 'all'];
-
-/** Refetch every cached strategy-rules list (all score_scope keys). */
+/**
+ * Refetch every strategy-rules list a component is showing, whatever its arg.
+ *
+ * Through the tag, never `initiate()`: an un-released `initiate` is a permanent
+ * subscription, so each call would pin another list that every later
+ * `StrategyRule` invalidation refetches (a full counter fold per rule) with
+ * nothing rendering it — and a fixed arg list cannot name the Control board's
+ * `{ scope, mode }` key anyway.
+ */
 export function refetchAllRuleLists(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dispatch: (action: any) => unknown,
 ): void {
-  for (const arg of RULE_LIST_ARGS) {
-    dispatch(sharedApi.endpoints.getStrategyRules.initiate(arg, { forceRefetch: true }));
-  }
+  dispatch(sharedApi.util.invalidateTags(['StrategyRule']));
 }
 
+/** Optimistic lifecycle patch over every cached `getStrategyRules` key — read from
+ *  the cache, because the board's `{ scope, mode }` object arg and the bare-string
+ *  args serialize to different keys. */
 function patchAllRuleLists(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dispatch: (action: any) => { undo: () => void },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getState: () => any,
   recipe: (draft: StrategyRule[]) => void,
 ): { undo: () => void } {
-  const undos = RULE_LIST_ARGS.map((arg) =>
+  const args = sharedApi.util.selectCachedArgsForQuery(getState(), 'getStrategyRules');
+  const undos = args.map((arg) =>
     dispatch(sharedApi.util.updateQueryData('getStrategyRules', arg, recipe)),
   );
   return {

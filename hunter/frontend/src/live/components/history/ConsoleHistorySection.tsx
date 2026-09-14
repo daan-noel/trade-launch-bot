@@ -52,7 +52,9 @@ import { HistoryFilterBar } from './HistoryFilterBar';
 import { HistorySummaryStrip } from './HistorySummaryStrip';
 import { HistoryTable, historyColumns } from './HistoryTable';
 
-/** A terminal frame means a row entered (or left) the History population. */
+/** The frames that change a close — the only rows the charts walk draws. Every
+ *  other frame still reloads the table + strip: the population is every position,
+ *  open ones included, so a new entry or an `ExitPending` is a row that changed. */
 const TERMINAL_STATUSES = new Set(['End', 'EntryFailed']);
 /** Coalesce a burst of closes into one refetch (mirrors `usePortfolioRealtime`). */
 const COALESCE_MS = 500;
@@ -132,7 +134,10 @@ function HistorySectionBody({
   // render, or the table refetches continuously.
   const [nowMs] = useState(() => Date.now());
   const cohort = useHistoryCohort(nowMs);
+  // Table + strip reload on every position frame; the (up to CHART_SCAN_MAX row)
+  // charts walk only on a close, the one transition that moves a chart.
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [walkNonce, setWalkNonce] = useState(0);
 
   const { data: rules = [] } = useGetStrategyRulesQuery();
   const ruleNameOf = useCallback(
@@ -162,8 +167,8 @@ function HistorySectionBody({
   );
   const parentKey = useMemo(
     () =>
-      `${historyPopulationKey({ cohort, query, timezone }, { includeFocus: false })}|${reloadNonce}`,
-    [cohort, query, timezone, reloadNonce],
+      `${historyPopulationKey({ cohort, query, timezone }, { includeFocus: false })}|${walkNonce}`,
+    [cohort, query, timezone, walkNonce],
   );
 
   const [summary, setSummary] = useState<PositionsSummary | null>(null);
@@ -241,20 +246,35 @@ function HistorySectionBody({
     [clientScan, focusedCloses],
   );
 
-  // Live terminal frames invalidate the cohort — coalesced, one refetch of the
-  // aggregate, the chart walk, and the table's current page.
+  // Live position frames invalidate the cohort — coalesced into one refetch of the
+  // aggregate and the table's current page, plus the chart walk when a burst held
+  // a close. A reconnect / `sse_resync` reloads all three: the gap's frames are gone.
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const walkPending = useRef(false);
+  // Read from the handler without resubscribing: a frame from a rule or mode the
+  // cohort excludes cannot change a row it shows.
+  const scopeRef = useRef({ ruleId: cohort.ruleId, mode: cohort.mode });
+  scopeRef.current = { ruleId: cohort.ruleId, mode: cohort.mode };
   useEffect(() => {
-    const bump = () => {
+    const bump = (withWalk: boolean) => {
+      walkPending.current ||= withWalk;
       if (timer.current) return;
       timer.current = setTimeout(() => {
         timer.current = null;
         setReloadNonce((n) => n + 1);
+        if (walkPending.current) setWalkNonce((n) => n + 1);
+        walkPending.current = false;
       }, COALESCE_MS);
     };
-    const h = connectStrategyPositionUpdate((d) => {
-      if (TERMINAL_STATUSES.has(d.status)) bump();
-    });
+    const h = connectStrategyPositionUpdate(
+      (d) => {
+        const { ruleId, mode } = scopeRef.current;
+        if (ruleId && d.rule_id !== ruleId) return;
+        if (mode !== 'all' && d.trade_mode && d.trade_mode !== mode) return;
+        bump(TERMINAL_STATUSES.has(d.status));
+      },
+      () => bump(true),
+    );
     return () => {
       h.close();
       if (timer.current) {

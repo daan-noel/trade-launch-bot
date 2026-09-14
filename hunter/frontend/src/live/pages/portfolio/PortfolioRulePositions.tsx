@@ -16,7 +16,7 @@
  * land on the same trades.
  */
 
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
@@ -29,6 +29,7 @@ import { CloseIcon } from 'components/ui/icons';
 import type { TableQuery } from 'components/table/types';
 import { numericColKeys } from 'services/tableRequest';
 import { fetchPortfolioPositionsPage } from 'services/api';
+import { connectStrategyPositionUpdate } from 'services/sse';
 import { useFlowPatternSourceForRule } from 'hooks/useFlowPatternKeys';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { formatSigned, signedToneClass } from 'lib/signedTone';
@@ -77,6 +78,9 @@ const rulePositionChartCardExtra = (r: RulePositionRecord) => (
 );
 
 const CLOSED_FIRST_SORT = { col: 'exit_time', dir: 'desc' } as const;
+
+/** One reload per burst of closes (mirrors `usePortfolioRealtime`). */
+const CLOSE_RELOAD_COALESCE_MS = 500;
 
 export const PortfolioRulePositions = memo(function PortfolioRulePositions({
   ruleId,
@@ -152,11 +156,35 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
     [],
   );
 
-  const { items, total, loading, error } = useServerTable<RulePositionRecord>(
+  const { items, total, loading, error, reload } = useServerTable<RulePositionRecord>(
     true,
     body,
     fetchPage,
   );
+
+  // The row above is `PortfolioPerf`-tagged and refetches on every close, so this
+  // table must too or its rows stop summing to the PnL beside them. `End` is the
+  // only transition into the closed lane; a reconnect reloads for the gap.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bump = () => {
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        reload();
+      }, CLOSE_RELOAD_COALESCE_MS);
+    };
+    const h = connectStrategyPositionUpdate(
+      (d) => {
+        if (d.status === 'End' && d.rule_id === ruleId && d.trade_mode === mode) bump();
+      },
+      bump,
+    );
+    return () => {
+      h.close();
+      clearTimeout(timer);
+    };
+  }, [ruleId, mode, reload]);
 
   const inspect = selectedPositionId
     ? (items.find((r) => r.id === selectedPositionId) ?? null)

@@ -149,8 +149,21 @@ of one fact on purpose — the lane must patch per-event with no round trip
 | --- | --- | --- |
 | On-chain trades | `trade_executed` (includes `tx_index`/`leg_index`/reserves/`fee_sol`/`instruction_labels`, plus the cumulative `live` stats snapshot) | Tokens table row patch; chart `getTokenTrades` append via `watchTokenTradesMint` + `liveTradeToTradeRecord`, **and** `getTokenDetail` stats patch via `applyTokenLiveStats`; `useMintTradeStream` for mint-filtered feeds |
 | Strategy inventory | `strategy_position_update` / `strategy_armed_changed` | `liveStatusSlice` only |
+| Rules board scores | counter-moving position events (`BuySubmitted`/`Holding`/`End`/`EntryFailed`) | `useRuleScoresRealtime` invalidates `StrategyRule` (rule list counters + Evidence run chips), coalesced; the board's `Live` column reads `liveStatusSlice` |
+| Position tables | every position event of the table's scope | Rules Evidence + Console History reload page + summary on any status, their chart walks only on a status that moves a point; Portfolio drill-down reloads on its rule's `End` |
+| Stop progress | `action_progress` (`running` re-sent each watcher tick) | `RunningTasksIndicator` + the Rules row; after a reconnect each drops the actions not re-heard within `ACTION_REANNOUNCE_GRACE_MS` |
 | Portfolio money | bag-changing position events + `trade_executed` for `mine` wallets | `usePortfolioRealtime` invalidates `WalletHoldings` **and** fans out via `onPortfolioBagRefresh` (Wallet imperative table — no second SSE filter) |
 | Display marks | `trade_executed` tip (SOL spot → USD) | `useWalletMarksLive` patches Home holdings + Jupiter price cache; Wallet page tips page rows locally. Jupiter oracle (liquidity/24h/cold) refetches on mount / bag refresh / tab focus — no interval |
+
+**A consumer that refetches on a frame refetches on a reconnect too** (the `onReopen`
+argument of the `connect*` helpers, which also fires on `sse_resync`): a frame is sent
+once, and one lost in the gap is otherwise never corrected. **A one-shot RTK read
+releases its subscription** (`initiate(...)` then `.unsubscribe()`), and a rule-list
+refresh goes through `invalidateTags(['StrategyRule'])` — an un-released `initiate`
+pins that cache entry, so every later tag invalidation refetches it with nothing
+rendering it. The rule list's optimistic patches walk `selectCachedArgsForQuery`,
+because the Rules board's `{ scope, mode }` arg and the bare-string args are different
+cache keys.
 
 A pushed frame carries **every field the REST row it patches into carries**, because a
 live append is invisible: `liveTradeToTradeRecord` writes into the same

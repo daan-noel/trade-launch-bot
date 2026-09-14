@@ -3,6 +3,7 @@ import { useSelector } from 'react-redux';
 import { RulesView } from 'components/strategy/RulesView';
 import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
 import { LazyLivePositionInspectModal } from '@live/components/strategy/LazyLivePositionInspectModal';
+import { useRuleScoresRealtime } from '@live/hooks/useRuleScoresRealtime';
 import { selectOpenByRule, selectRuleOpenCounts } from '@live/slices/liveStatusSlice';
 import type { StrategyRule } from 'lib/strategy/types';
 
@@ -12,6 +13,8 @@ import type { StrategyRule } from 'lib/strategy/types';
  */
 export function RulesPage() {
   const ruleLiveCounts = useSelector(selectRuleOpenCounts);
+  // The score columns are server-folded counters, not slice state — see the hook.
+  useRuleScoresRealtime();
   const [scoreScope, setScoreScope] = useState<'current' | 'all'>('current');
   // Which ledger the board scores on is NOT held here: it is the page's one mode
   // picker plus its "score all rules on this ledger" modifier, owned by RulesView.

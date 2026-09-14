@@ -331,18 +331,35 @@ export interface ActionProgress {
   error?: string | null;
 }
 
-/** Listen for `action_progress` — a stop/sell action advanced (start / N of M / terminal). */
+/**
+ * How long after a reconnect an in-flight action may go unannounced before a
+ * consumer drops it. The stop watcher re-sends `running` on every resync tick
+ * (`RESYNC_EVERY` = 3 s in `action_progress.rs`), so two ticks plus slack: a live
+ * action is always re-heard inside it, one that finished in the gap never is.
+ */
+export const ACTION_REANNOUNCE_GRACE_MS = 7_000;
+
+/**
+ * Listen for `action_progress` — a stop/sell action advanced (start / N of M /
+ * terminal). A terminal frame is sent once, so pass `onReopen` and drop, after
+ * {@link ACTION_REANNOUNCE_GRACE_MS}, every in-flight entry not re-heard since the
+ * reconnect — else a terminal frame lost in the gap pins "Stopping x/N" forever.
+ */
 export function connectActionProgressStream(
   onProgress: (p: ActionProgress) => void,
+  onReopen?: () => void,
 ): StreamHandle {
-  const unsub = subscribe('action_progress', (e) => {
-    if (typeof e.data !== 'string') return;
-    try {
-      onProgress(JSON.parse(e.data) as ActionProgress);
-    } catch {
-      /* ignore malformed frames */
-    }
-  });
+  const unsub = combine(
+    subscribe('action_progress', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        onProgress(JSON.parse(e.data) as ActionProgress);
+      } catch {
+        /* ignore malformed frames */
+      }
+    }),
+    onReopen ? onSseReopen(onReopen) : () => {},
+  );
   return { close: unsub };
 }
 

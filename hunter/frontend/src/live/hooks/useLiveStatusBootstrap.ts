@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useDispatch } from 'react-redux';
 import { connectArmedChanged, connectStrategyPositionUpdate } from 'services/sse';
-import { sharedApi, refetchAllRuleLists } from 'store/sharedEndpoints';
+import { sharedApi } from 'store/sharedEndpoints';
 import { liveApi } from '@live/store/liveEndpoints';
 import {
   applyArmedDelta,
@@ -31,16 +31,19 @@ export function useLiveStatusBootstrap(): void {
     const ac = new AbortController();
     inflight.current = ac;
     dispatch(snapshotStart());
+    // One-shot reads, released in `finally`: an un-released `initiate` is a
+    // permanent subscription, so every later tag invalidation (a bag change, a
+    // position frame) would refetch these with nothing rendering them.
+    const armedSub = dispatch(liveApi.endpoints.getArmed.initiate(undefined, { forceRefetch: true }));
+    // `false` = real + paper so the store is mode-complete; UI filters.
+    const posSub = dispatch(
+      liveApi.endpoints.getPortfolioPositions.initiate(false, { forceRefetch: true }),
+    );
+    const rulesSub = dispatch(
+      sharedApi.endpoints.getStrategyRules.initiate(undefined, { forceRefetch: true }),
+    );
     try {
-      const [armedRes, posRes] = await Promise.all([
-        dispatch(liveApi.endpoints.getArmed.initiate(undefined, { forceRefetch: true })),
-        // `false` = real + paper so the store is mode-complete; UI filters.
-        dispatch(liveApi.endpoints.getPortfolioPositions.initiate(false, { forceRefetch: true })),
-      ]);
-      refetchAllRuleLists(dispatch);
-      const rulesRes = await dispatch(
-        sharedApi.endpoints.getStrategyRules.initiate(undefined, { forceRefetch: true }),
-      );
+      const [armedRes, posRes, rulesRes] = await Promise.all([armedSub, posSub, rulesSub]);
       if (ac.signal.aborted) return;
       if (armedRes.error || posRes.error) {
         dispatch(snapshotFailed());
@@ -59,6 +62,10 @@ export function useLiveStatusBootstrap(): void {
       );
     } catch {
       if (!ac.signal.aborted) dispatch(snapshotFailed());
+    } finally {
+      armedSub.unsubscribe();
+      posSub.unsubscribe();
+      rulesSub.unsubscribe();
     }
   }, [dispatch]);
 

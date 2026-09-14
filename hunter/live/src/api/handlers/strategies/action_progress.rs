@@ -185,8 +185,12 @@ pub fn spawn_stop_watcher(
         let deadline = tokio::time::Instant::now() + GIVE_UP_AFTER;
 
         while !tally.remaining.is_empty() {
-            let changed = tokio::select! {
-                frame = rx.recv() => match frame {
+            // `heartbeat`: the resync tick re-sends `running` even when nothing
+            // moved. A client clears its in-flight actions on an SSE reconnect —
+            // the only way it can drop one whose terminal frame it missed — and
+            // this re-announces the stops that are still running within one tick.
+            let (changed, heartbeat) = tokio::select! {
+                frame = rx.recv() => (match frame {
                     Ok(SseEvent::StrategyPositionUpdate { position_id, status, .. }) => {
                         !stop_in_flight(&status) && tally.settle(position_id, status == "End")
                     }
@@ -203,15 +207,15 @@ pub fn spawn_stop_watcher(
                             "stop watcher: SSE lagged — re-syncing from PG");
                         resync(&repo, &mut tally).await
                     }
-                },
-                _ = resync_tick.tick() => resync(&repo, &mut tally).await,
+                }, false),
+                _ = resync_tick.tick() => (resync(&repo, &mut tally).await, true),
                 _ = tokio::time::sleep_until(deadline) => {
                     resync(&repo, &mut tally).await;
                     break;
                 }
             };
 
-            if changed && !tally.remaining.is_empty() {
+            if (changed || heartbeat) && !tally.remaining.is_empty() {
                 let done = tally.done();
                 emit(&sse_tx, action_id, "stop", rule_id, "running", done, tally.total, None);
             }

@@ -5,6 +5,7 @@ import { rulesHref } from 'lib/strategy/nav';
 import { InlineAlert } from 'components/ui/Modal';
 import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
 import { LazyLivePositionInspectModal } from '@live/components/strategy/LazyLivePositionInspectModal';
+import { useRuleScoresRealtime } from '@live/hooks/useRuleScoresRealtime';
 import { selectOpenByRule } from '@live/slices/liveStatusSlice';
 
 /**
@@ -17,6 +18,8 @@ export function RuleAnalyzePage() {
   const { data: rules = [] } = useGetStrategyRulesQuery('current');
   const rule = rules.find((r) => r.id === ruleId);
   const liveOpen = useSelector(selectOpenByRule(ruleId));
+  // The run chips + rule row are server-folded counters, same as the Rules board.
+  useRuleScoresRealtime();
 
   if (!ruleId) {
     return <InlineAlert variant="error">Missing rule id.</InlineAlert>;
