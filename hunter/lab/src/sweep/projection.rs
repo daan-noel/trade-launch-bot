@@ -468,7 +468,8 @@ mod tests {
     /// deadness verdict read. `priced_reserve_sol` is the **priced** reserve (`vsol`) —
     /// the only correct basis for price impact, because spending `B` on a
     /// constant-product curve pays `1 + B/vsol` times spot. They differ by exactly
-    /// `PUMP_INITIAL_VIRTUAL_SOL` on the curve and are equal on the AMM.
+    /// `PUMP_INITIAL_VIRTUAL_SOL` on the curve and `PUMP_SWAP_VIRTUAL_QUOTE_SOL` on
+    /// the AMM.
     ///
     /// Collapsing them (which the sweep did, charging impact on the real reserve)
     /// overcharges by `vsol / (vsol - 30)`: 1.6x at `liquidity 50`, 11x at
@@ -477,7 +478,9 @@ mod tests {
     /// rather than a derivation.
     #[test]
     fn impact_depth_is_the_priced_reserve_not_the_real_one() {
-        use trading_core::config::constants::{approx_real_sol_reserves, PUMP_INITIAL_VIRTUAL_SOL};
+        use trading_core::config::constants::{
+            approx_real_sol_reserves, PUMP_INITIAL_VIRTUAL_SOL, PUMP_SWAP_VIRTUAL_QUOTE_SOL,
+        };
 
         let vsol = 44.89;
         let curve = project_pg_tail(&[curve_trade(1.0, 1_000_000, vsol, 900_000)], false);
@@ -489,12 +492,16 @@ mod tests {
             "curve: the two channels differ by exactly the initial virtual SOL"
         );
 
-        // AMM: no virtual offset, so the two channels agree.
-        let mut amm_t = curve_trade(1.0, 1_000_000, 25.0, 900_000);
+        // AMM: the pool prices with its vault plus PumpSwap's virtual quote.
+        let mut amm_t = curve_trade(1.0, 1_000_000, 25.0 + PUMP_SWAP_VIRTUAL_QUOTE_SOL, 900_000);
         amm_t.venue = "amm".into();
         let amm = project_pg_tail(&[amm_t], false);
         let amm_lite = to_trade_lite(&amm[0]);
-        assert_eq!(amm_lite.priced_reserve_sol, amm_lite.reserve_sol, "amm: real == priced");
+        assert!(
+            (amm_lite.priced_reserve_sol - amm_lite.reserve_sol - PUMP_SWAP_VIRTUAL_QUOTE_SOL).abs()
+                < 1e-9,
+            "amm: the two channels differ by exactly the pool's virtual quote"
+        );
 
         // The bug this guards: charging impact on the real reserve at liquidity 3
         // costs 11x what the curve actually takes.
@@ -520,7 +527,7 @@ mod tests {
         let curve = curve_trade(1.0, 1_000_000, vsol, 900_000);
         assert!(curve.real_reserve_sol().is_none(), "PG rows carry no real reserve");
 
-        // AMM row: real reserve == pool reserve (no virtual offset).
+        // AMM row: real reserve = the priced reserve less PumpSwap's virtual quote.
         let mut amm = curve_trade(1.0, 1_000_000, 25.0, 900_000);
         amm.venue = "amm".into();
 
@@ -533,7 +540,7 @@ mod tests {
         assert!(curve_real >= 10.0, "reconstructed liquidity must satisfy the entry gate");
         assert!(to_trade_lite(&rows[0]).reserve_sol.is_finite(), "liquidity is finite, not NaN");
 
-        // AMM: reconstructed real == the pool reserve itself.
+        // AMM: reconstructed through the same SSOT.
         assert_eq!(rows[1].real_reserve_sol, Some(approx_real_sol_reserves(25.0, "amm")));
 
         // `with_flow=false` keeps the slim shape (no classifier keys resolved).

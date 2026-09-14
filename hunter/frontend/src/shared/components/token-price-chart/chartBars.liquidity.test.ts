@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { curveLiquiditySol, tradeLiquiditySol } from './chartBars';
-import { PUMP_INITIAL_VIRTUAL_SOL } from './constants';
+import { PUMP_INITIAL_VIRTUAL_SOL, PUMP_SWAP_VIRTUAL_QUOTE_SOL } from './constants';
 import type { ChartTrade } from './types';
 
 /**
@@ -34,11 +34,10 @@ describe('tradeLiquiditySol', () => {
     expect(tradeLiquiditySol(t)).toBe(curveLiquiditySol(t));
   });
 
-  it('does NOT subtract the virtual offset on amm rows', () => {
-    // Post-migration `reserve_sol` IS the pool balance. Subtracting 30 here
-    // understated every AMM row, and floored small pools to 0.
-    const t = { ...base, venue: 'amm' as const, reserve_sol: 12 };
-    expect(tradeLiquiditySol(t)).toBe(12);
+  it("subtracts the pool's own virtual quote on amm rows, not the curve's 30", () => {
+    // An amm `reserve_sol` is the vault plus PumpSwap's virtual quote.
+    const t = { ...base, venue: 'amm' as const, reserve_sol: 12 + PUMP_SWAP_VIRTUAL_QUOTE_SOL };
+    expect(tradeLiquiditySol(t)).toBeCloseTo(12, 9);
   });
 
   it('prefers the program-emitted real reserve on either venue', () => {

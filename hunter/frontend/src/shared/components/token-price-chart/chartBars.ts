@@ -2,6 +2,7 @@ import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts';
 import {
   CHART_COLORS,
   PUMP_INITIAL_VIRTUAL_SOL,
+  PUMP_SWAP_VIRTUAL_QUOTE_SOL,
   PUMP_MIGRATION_SPOT_PRICE_SOL,
   TOKEN_TOTAL_SUPPLY,
 } from './constants';
@@ -174,7 +175,8 @@ export const MIN_CHART_SOL = 1e-5;
 
 /**
  * Spot price from the venue-neutral reserve pair: reserve_sol / reserve_token
- * (GMGN-style). Curve virtual reserves on curve rows, pool real reserves on amm
+ * (GMGN-style). Curve virtual reserves on curve rows, the pool's priced reserves
+ * (vault + PumpSwap's virtual quote) on amm
  * rows — the backend stores both in the same `reserve_*` pair.
  */
 export function curveSpotPriceSol(
@@ -268,17 +270,17 @@ export function curveLiquiditySol(
  * The program-emitted real reserve is not persisted (only the live decoder sets
  * it), so a row read back from Postgres arrives without it and the reserve pair is
  * all we have. Reconstructing it is **venue-dependent**: on the curve the real
- * deposited SOL is `reserve_sol − PUMP_INITIAL_VIRTUAL_SOL`, but on the AMM
- * `reserve_sol` *is* the pool balance and there is no virtual offset — subtracting
- * 30 there understates every post-migration row by 30 SOL (and floors small pools
- * to 0). Keep this branch in step with the Rust fn; they are the same formula.
+ * deposited SOL is `reserve_sol − PUMP_INITIAL_VIRTUAL_SOL`; on the AMM it is
+ * `reserve_sol − PUMP_SWAP_VIRTUAL_QUOTE_SOL`, the pool's own virtual quote, never
+ * the curve's 30. Keep this branch in step with the Rust fn; they are the same
+ * formula.
  */
 export function tradeLiquiditySol(trade: ChartTrade): number | null {
   const sol = trade.real_reserve_sol;
   if (sol != null && sol > 0) return sol;
   if (trade.venue === 'amm') {
     const pool = trade.reserve_sol;
-    return pool != null && pool > 0 ? pool : null;
+    return pool != null && pool > 0 ? Math.max(0, pool - PUMP_SWAP_VIRTUAL_QUOTE_SOL) : null;
   }
   return curveLiquiditySol(trade);
 }

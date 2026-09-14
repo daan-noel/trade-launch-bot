@@ -101,8 +101,8 @@ pub struct Trade {
     // ── On-chain state snapshot (from TradeEvent "Program data:" log) ─────────
     /// SOL side of the reserve pair this row prices from (venue-neutral): the
     /// bonding curve's *virtual* SOL reserves on curve rows, the PumpSwap pool's
-    /// *real* SOL reserves on amm rows (the decoder copies pool reserves here for
-    /// migrated tokens). Spot price = `reserve_sol / reserve_token`. SOL stays
+    /// priced quote on amm rows — its vault plus the pool's virtual quote
+    /// (`PUMP_SWAP_VIRTUAL_QUOTE_SOL`). Spot price = `reserve_sol / reserve_token`. SOL stays
     /// `f64` (small magnitude); the exactness lives in the lamports column.
     pub reserve_sol: Option<f64>,
     /// Token side of the reserve pair — raw on-chain integer units (`u64`, near 2^53).
@@ -278,7 +278,8 @@ pub trait TradeRow {
     }
 
     /// Venue-neutral spot from the reserve pair (`reserve_sol / reserve_token`) —
-    /// curve virtual reserves on curve rows, pool real reserves on amm rows. `None`
+    /// curve virtual reserves on curve rows, the pool's priced reserves (vault +
+    /// PumpSwap's virtual quote) on amm rows. `None`
     /// if either reserve is absent or the token reserve is non-positive.
     fn spot_price(&self) -> Option<f64> {
         match (self.reserve_sol(), self.reserve_token()) {

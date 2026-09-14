@@ -14,7 +14,7 @@ use borsh::BorshSerialize;
 
 use super::instructions::FeeBudget;
 use crate::event::{Reserves, Side, Trade, Venue};
-use crate::protocol::Protocol;
+use crate::protocol::{Protocol, PUMP_SWAP_VIRTUAL_QUOTE_LAMPORTS};
 
 // ── Step 1a — TradeEvent from "Program data:" log lines ──────────────────────
 
@@ -163,49 +163,70 @@ pub(super) struct DecodedAmmTrade {
     /// Raw base-token units — exact on-chain `u64`.
     pub(super) base_amount: u64,
     pub(super) quote_amount: f64,
-    /// Exact quote lamports — the raw on-chain `u64`, mirror of `quote_amount`.
+    /// Exact quote lamports the user side moved — the raw on-chain `u64`, mirror
+    /// of `quote_amount`: what a buy paid, fees included; what a sell received,
+    /// fees taken.
     pub(super) quote_amount_lamports: u64,
     pub(super) pool: String,
     pub(super) user: String,
     /// Post-swap base-token reserves — raw `u64` units.
     pub(super) pool_base_reserves: u64,
+    /// Post-swap quote reserve the pool PRICES with: its quote vault plus
+    /// [`PUMP_SWAP_VIRTUAL_QUOTE_LAMPORTS`]. Human SOL.
     pub(super) pool_quote_reserves: f64,
     /// Exact raw-`u64` lamport mirror of `pool_quote_reserves`.
     pub(super) pool_quote_reserves_lamports: u64,
-    /// [`Trade::venue_fee_bps`]: the user-side amount against the pool's own
+    /// Post-swap quote vault balance — the pool's real SOL. Human SOL.
+    pub(super) pool_quote_vault: f64,
+    /// Exact raw-`u64` lamport mirror of `pool_quote_vault`.
+    pub(super) pool_quote_vault_lamports: u64,
+    /// [`Trade::venue_fee_bps`]: the fees the user side paid over the pool's own
     /// constant-product amount.
     pub(super) fee_bps: Option<f64>,
 }
 
-/// Bps the user side paid beyond (buy) or lost against (sell) the pool's own
-/// constant-product quote amount. `None` for a zero pool amount.
-fn venue_fee_bps(pool_amount: u64, user_amount: u64, is_buy: bool) -> Option<f64> {
-    if pool_amount == 0 {
-        return None;
-    }
-    let ratio = user_amount as f64 / pool_amount as f64;
-    Some(if is_buy { ratio - 1.0 } else { 1.0 - ratio } * 10_000.0)
+/// Fees over the pool's own constant-product amount, in bps; `None` for a zero
+/// pool amount.
+fn venue_fee_bps(fees: u64, pool_amount: u64) -> Option<f64> {
+    (pool_amount > 0).then(|| fees as f64 / pool_amount as f64 * 10_000.0)
+}
+
+/// The quote reserve a PumpSwap pool prices with, from its vault balance.
+fn priced_quote(vault_lamports: u64) -> u64 {
+    vault_lamports.saturating_add(PUMP_SWAP_VIRTUAL_QUOTE_LAMPORTS)
 }
 
 /// Turn a decoded PumpSwap `BuyEvent` into the neutral [`DecodedAmmTrade`]. SSOT for
 /// the buy reserve math — shared by the log-line path and the inner-instruction
 /// recovery so the two can't drift.
+///
+/// The two buy instructions fill the event's quote fields the opposite way round:
+/// `buy` (base out) reports the pool's amount as `quote_amount_in` and the user's
+/// fee-inclusive spend as `user_quote_amount_in`; `buy_exact_quote_in` reports the
+/// spend as `quote_amount_in` and the pool's amount as `user_quote_amount_in`. The
+/// fees sit on top of the pool's amount either way, so the spend is the larger of
+/// the two and the pool's amount the smaller.
 fn amm_buy_trade(e: RawPumpSwapBuyEvent, lps: f64) -> DecodedAmmTrade {
+    let paid = e.quote_amount_in.max(e.user_quote_amount_in);
+    let pool_amount = e.quote_amount_in.min(e.user_quote_amount_in);
     let post_base = e.pool_base_token_reserves.saturating_sub(e.base_amount_out);
-    let post_quote = e
+    let post_vault = e
         .pool_quote_token_reserves
         .saturating_add(e.quote_amount_in_with_lp_fee);
+    let post_quote = priced_quote(post_vault);
     DecodedAmmTrade {
         is_buy: true,
         base_amount: e.base_amount_out,
-        quote_amount: e.user_quote_amount_in as f64 / lps,
-        quote_amount_lamports: e.user_quote_amount_in,
+        quote_amount: paid as f64 / lps,
+        quote_amount_lamports: paid,
         pool: bs58::encode(e.pool).into_string(),
         user: bs58::encode(e.user).into_string(),
         pool_base_reserves: post_base,
         pool_quote_reserves: post_quote as f64 / lps,
         pool_quote_reserves_lamports: post_quote,
-        fee_bps: venue_fee_bps(e.quote_amount_in, e.user_quote_amount_in, true),
+        pool_quote_vault: post_vault as f64 / lps,
+        pool_quote_vault_lamports: post_vault,
+        fee_bps: venue_fee_bps(paid - pool_amount, pool_amount),
     }
 }
 
@@ -213,9 +234,10 @@ fn amm_buy_trade(e: RawPumpSwapBuyEvent, lps: f64) -> DecodedAmmTrade {
 /// the sell reserve math — shared by the log-line and inner-instruction paths.
 fn amm_sell_trade(e: RawPumpSwapSellEvent, lps: f64) -> DecodedAmmTrade {
     let post_base = e.pool_base_token_reserves.saturating_add(e.base_amount_in);
-    let post_quote = e
+    let post_vault = e
         .pool_quote_token_reserves
         .saturating_sub(e.quote_amount_out_without_lp_fee);
+    let post_quote = priced_quote(post_vault);
     DecodedAmmTrade {
         is_buy: false,
         base_amount: e.base_amount_in,
@@ -226,7 +248,12 @@ fn amm_sell_trade(e: RawPumpSwapSellEvent, lps: f64) -> DecodedAmmTrade {
         pool_base_reserves: post_base,
         pool_quote_reserves: post_quote as f64 / lps,
         pool_quote_reserves_lamports: post_quote,
-        fee_bps: venue_fee_bps(e.quote_amount_out, e.user_quote_amount_out, false),
+        pool_quote_vault: post_vault as f64 / lps,
+        pool_quote_vault_lamports: post_vault,
+        fee_bps: venue_fee_bps(
+            e.quote_amount_out.saturating_sub(e.user_quote_amount_out),
+            e.quote_amount_out,
+        ),
     }
 }
 
@@ -358,13 +385,15 @@ pub(super) fn build_amm_trade(
         slot,
         block_time,
         received_at,
+        // The priced pair carries the pool's virtual quote, like the curve's; the
+        // real pair is the vault, the SOL a seller can actually take out.
         reserves: Reserves {
             virtual_sol: Some(ev.pool_quote_reserves),
             virtual_token: Some(ev.pool_base_reserves),
-            real_sol: Some(ev.pool_quote_reserves),
+            real_sol: Some(ev.pool_quote_vault),
             real_token: Some(ev.pool_base_reserves),
             virtual_sol_lamports: Some(ev.pool_quote_reserves_lamports),
-            real_sol_lamports: Some(ev.pool_quote_reserves_lamports),
+            real_sol_lamports: Some(ev.pool_quote_vault_lamports),
         },
         venue: Venue::Amm,
         instruction_type: if ev.is_buy { "Buy".to_string() } else { "Sell".to_string() },
@@ -526,6 +555,68 @@ mod tests {
         assert_eq!(from_logs[0].user, from_inner[0].user);
         assert_eq!(from_logs[0].pool_base_reserves, from_inner[0].pool_base_reserves);
         assert!((from_logs[0].quote_amount - from_inner[0].quote_amount).abs() < 1e-9);
+    }
+
+    /// A real `buy_exact_quote_in` and the sell one slot later on the same pool
+    /// (`jAMSvc…`, 2026-09-14, base mint `BP6JJ…pump`). The buy's spend is
+    /// `quote_amount_in` (the payer's WSOL fell by exactly that), its fees 90 bps
+    /// on the pool's amount; the vault after it is the chain's post balance; and
+    /// both legs are constant-product on the vault plus the virtual quote.
+    #[test]
+    fn real_pumpswap_legs_reproduce_the_chain() {
+        let buy = RawPumpSwapBuyEvent {
+            timestamp: 1_789_369_149,
+            base_amount_out: 12_745_168_642,
+            max_quote_amount_in: 220_811_531,
+            user_base_token_reserves: 0,
+            user_quote_token_reserves: 220_811_531,
+            pool_base_token_reserves: 32_035_340_155_435,
+            pool_quote_token_reserves: 532_262_059_461,
+            quote_amount_in: 220_811_531,
+            lp_fee_basis_points: 20,
+            lp_fee: 437_684,
+            protocol_fee_basis_points: 5,
+            protocol_fee: 109_421,
+            quote_amount_in_with_lp_fee: 219_279_637,
+            user_quote_amount_in: 218_841_953,
+            pool: [1; 32],
+            user: [2; 32],
+        };
+        let (b0, q0) = (buy.pool_base_token_reserves, buy.pool_quote_token_reserves);
+        let t = amm_buy_trade(buy, 1e9);
+        assert_eq!(t.quote_amount_lamports, 220_811_531, "what the payer spent");
+        assert!((t.fee_bps.unwrap() - 90.0).abs() < 1e-3, "20 lp + 5 protocol + 65 creator");
+        assert_eq!(t.pool_quote_vault_lamports, 532_481_339_098, "the vault's post balance");
+        assert_eq!(t.pool_quote_reserves_lamports, 532_481_339_098 + PUMP_SWAP_VIRTUAL_QUOTE_LAMPORTS);
+        let priced = u128::from(q0 + PUMP_SWAP_VIRTUAL_QUOTE_LAMPORTS);
+        let cp_tokens = u128::from(b0) * 218_841_953 / (priced + 218_841_953);
+        assert!(cp_tokens.abs_diff(12_745_168_642) < 100, "{cp_tokens}");
+
+        let sell = RawPumpSwapSellEvent {
+            timestamp: 1_789_369_150,
+            base_amount_in: 11_473_905_413,
+            min_quote_amount_out: 175_582_084,
+            user_base_token_reserves: 14_621_664_643,
+            user_quote_token_reserves: 0,
+            pool_base_token_reserves: 32_022_517_675_720,
+            pool_quote_token_reserves: 532_482_672_640,
+            quote_amount_out: 197_022_551,
+            lp_fee_basis_points: 20,
+            lp_fee: 394_046,
+            protocol_fee_basis_points: 5,
+            protocol_fee: 98_512,
+            quote_amount_out_without_lp_fee: 196_628_505,
+            user_quote_amount_out: 195_249_346,
+            pool: [1; 32],
+            user: [2; 32],
+        };
+        let (b0, q0, sold) =
+            (sell.pool_base_token_reserves, sell.pool_quote_token_reserves, sell.base_amount_in);
+        let t = amm_sell_trade(sell, 1e9);
+        assert_eq!(t.quote_amount_lamports, 195_249_346);
+        assert!((t.fee_bps.unwrap() - 90.0).abs() < 1e-3);
+        let priced = u128::from(q0 + PUMP_SWAP_VIRTUAL_QUOTE_LAMPORTS);
+        assert_eq!(priced * u128::from(sold) / u128::from(b0 + sold), 197_022_551, "lamport-exact");
     }
 
     #[test]

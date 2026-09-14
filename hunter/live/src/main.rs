@@ -1648,4 +1648,13 @@ mod tests {
         assert_eq!(COMPUTE_UNIT_LIMIT_CURVE_SELL, executor.curve_sell_cu);
         assert_eq!(COMPUTE_UNIT_LIMIT_AMM, executor.amm_cu);
     }
+
+    /// `trading_core` strips PumpSwap's virtual quote off an amm row's priced
+    /// reserve with its own copy of the decoder's constant.
+    #[test]
+    fn pump_swap_virtual_quote_matches_the_decoder() {
+        let decoder = ingest_pumpfun::protocol::PUMP_SWAP_VIRTUAL_QUOTE_LAMPORTS;
+        let core = trading_core::config::constants::PUMP_SWAP_VIRTUAL_QUOTE_SOL;
+        assert_eq!(trading_core::config::constants::sol_to_lamports(core), decoder as i64);
+    }
 }

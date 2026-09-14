@@ -35,7 +35,8 @@ pub struct Trade {
 
 /// Spot price of a trade's post-trade reserve pair, as a raw ratio (quote base
 /// units per base base unit): `reserve_quote / reserve_base`. Curve rows carry the
-/// curve's virtual reserves, AMM rows the pool's quote/base balances, so the one
+/// curve's virtual reserves, AMM rows the pool's priced reserves (quote vault +
+/// PumpSwap's virtual quote, base vault), so the one
 /// ratio prices both venues. `None` when either side is missing or the base side is
 /// not positive. The Rust twin of the `trades_priced.spot_price_quote` view column
 /// (same expression), for writers that price a row before it is read back.

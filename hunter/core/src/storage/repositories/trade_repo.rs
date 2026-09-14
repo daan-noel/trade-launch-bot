@@ -2078,12 +2078,12 @@ mod tests {
         assert!((sol - 30.0).abs() < 1e-6, "got {sol}");
     }
 
-    /// The AMM carries no virtual seed: subtracting 30 there would understate
-    /// every post-migration pool.
+    /// The AMM's virtual quote is PumpSwap's, not the curve's 30 SOL seed.
     #[test]
-    fn pre_trade_real_sol_skips_the_virtual_offset_on_amm() {
+    fn pre_trade_real_sol_takes_the_pools_virtual_quote_on_amm() {
+        let virtual_quote = crate::config::constants::PUMP_SWAP_VIRTUAL_QUOTE_SOL;
         let sol = pre_trade_real_sol(
-            Some(sol_to_lamports(62.5)),
+            Some(sol_to_lamports(62.5 + virtual_quote)),
             Some(sol_to_lamports(2.5)),
             Some("amm"),
             TradeType::Buy,

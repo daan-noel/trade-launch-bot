@@ -13,15 +13,24 @@ pub const TOKEN_TOTAL_SUPPLY: f64 = 1000000000000000.0;
 
 /// Initial virtual SOL the pump.fun curve is seeded with, in **whole SOL**
 /// (`INITIAL_VIRTUAL_SOL_RESERVES` lamports ÷ `LAMPORTS_PER_SOL` = 30.0). The
-/// curve's *real* deposited SOL is `virtual_sol − this`; on the AMM there is no
-/// virtual offset. Mirrors the frontend chart's `PUMP_INITIAL_VIRTUAL_SOL`.
+/// curve's *real* deposited SOL is `virtual_sol − this`. Mirrors the frontend
+/// chart's `PUMP_INITIAL_VIRTUAL_SOL`.
 pub const PUMP_INITIAL_VIRTUAL_SOL: f64 = INITIAL_VIRTUAL_SOL_RESERVES / LAMPORTS_PER_SOL as f64;
 
+/// Virtual quote reserve a PumpSwap pool prices with on top of its quote vault,
+/// in **whole SOL**: an amm row's priced `reserve_sol` is `vault + this`, so its
+/// real SOL is `reserve_sol − this`. Copy of ingest's
+/// `PUMP_SWAP_VIRTUAL_QUOTE_LAMPORTS` (`live`'s
+/// `pump_swap_virtual_quote_matches_the_decoder` keeps them equal) and the
+/// frontend chart's `PUMP_SWAP_VIRTUAL_QUOTE_SOL`. An amm row written before
+/// the decoder priced with it holds the bare vault and reads this much low.
+pub const PUMP_SWAP_VIRTUAL_QUOTE_SOL: f64 = 17.584_505_288;
+
 /// Approximate the pool's **real** (non-virtual) SOL reserves from the priced
-/// reserve pair, given the row's `venue`. On the AMM the pool balance *is* the
-/// real reserve (`real == reserve_sol`); on the curve the real deposited SOL is
-/// `reserve_sol − PUMP_INITIAL_VIRTUAL_SOL`, clamped at 0. This matches the
-/// "true liquidity" the frontend chart already derives (`chartBars.ts`).
+/// reserve pair, given the row's `venue`: `reserve_sol` less the venue's virtual
+/// SOL — [`PUMP_SWAP_VIRTUAL_QUOTE_SOL`] on the AMM, [`PUMP_INITIAL_VIRTUAL_SOL`]
+/// on the curve — clamped at 0. This matches the "true liquidity" the frontend
+/// chart derives (`chartBars.ts`).
 ///
 /// This is the **approximation** for every row read back from storage, where the
 /// program-emitted `real_sol_reserves` field isn't carried: the sim/backtest corpus
@@ -29,11 +38,9 @@ pub const PUMP_INITIAL_VIRTUAL_SOL: f64 = INITIAL_VIRTUAL_SOL_RESERVES / LAMPORT
 /// among them. A freshly decoded live trade carries the program's exact emitted
 /// value and must NOT go through this.
 pub fn approx_real_sol_reserves(reserve_sol: f64, venue: &str) -> f64 {
-    if venue == "amm" {
-        reserve_sol
-    } else {
-        (reserve_sol - PUMP_INITIAL_VIRTUAL_SOL).max(0.0)
-    }
+    let virtual_sol =
+        if venue == "amm" { PUMP_SWAP_VIRTUAL_QUOTE_SOL } else { PUMP_INITIAL_VIRTUAL_SOL };
+    (reserve_sol - virtual_sol).max(0.0)
 }
 
 /// A **runner**, for the launch-build day stats: a token whose curve reserve

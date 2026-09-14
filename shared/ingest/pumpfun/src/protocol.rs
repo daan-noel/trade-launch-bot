@@ -169,6 +169,14 @@ const TIP_ACCOUNT_IDS: [&str; 20] = [
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 const MIN_TRADE_LAMPORTS: u64 = 10_000;
 
+/// Virtual quote reserve, in lamports, a PumpSwap pool prices with on top of its
+/// quote vault: every swap is constant-product on `(vault + this, base vault)`.
+/// The pool account stores it as the u64 at byte offset 245, past the fields the
+/// published IDL lists; two pool accounts read 17 584 505 288, and seven swaps on
+/// four pools (67-1 033 SOL, 2026-09-13/14) reproduce their token and SOL amounts
+/// with it and miss them by `17.58 SOL / vault` without it.
+pub const PUMP_SWAP_VIRTUAL_QUOTE_LAMPORTS: u64 = 17_584_505_288;
+
 impl Protocol {
     /// Construct the default pump.fun mainnet descriptor.
     ///

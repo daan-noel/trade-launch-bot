@@ -4,6 +4,7 @@ import type { TradePriced, TokenOverview } from '@shared/types';
 import { formatSig } from '@shared/lib/format';
 import { useWalletPoolQuery } from '@shared/store/endpoints';
 import { TokenPriceChart } from './tokenChart';
+import { PUMP_SWAP_VIRTUAL_QUOTE_SOL } from './tokenChart/constants';
 import type {
   ChartMetric,
   ChartTrade,
@@ -58,9 +59,10 @@ function toChartTrade(t: TradePriced): ChartTrade {
     leg_index: t.leg_index,
     reserve_sol: reserveSol,
     reserve_token: t.reserve_base,
-    // An AMM row's reserve pair IS the pool's real balances, so it doubles as the
-    // real reserves; the curve's real SOL is derived (`curveLiquiditySol`).
-    real_sol_reserves: amm ? reserveSol : null,
+    // An AMM row's quote reserve is the pool's vault plus PumpSwap's virtual
+    // quote, so its real SOL is the vault; the curve's is `curveLiquiditySol`.
+    real_sol_reserves:
+      amm && reserveSol != null ? Math.max(0, reserveSol - PUMP_SWAP_VIRTUAL_QUOTE_SOL) : null,
     real_token_reserves: amm ? t.reserve_base : null,
     venue: amm ? 'amm' : 'curve',
     wallet_address: t.wallet_address,

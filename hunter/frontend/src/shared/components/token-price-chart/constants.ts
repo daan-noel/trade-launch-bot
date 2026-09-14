@@ -133,6 +133,12 @@ export const CHART_OHLC_COLORS = {
 
 /** Pump.fun bonding-curve initial reserves (SOL and raw token units). */
 export const PUMP_INITIAL_VIRTUAL_SOL = 30;
+/**
+ * Virtual quote (SOL) a PumpSwap pool prices with on top of its vault: an amm
+ * row's `reserve_sol` is `vault + this`. Mirror of the backend's
+ * `PUMP_SWAP_VIRTUAL_QUOTE_SOL`.
+ */
+export const PUMP_SWAP_VIRTUAL_QUOTE_SOL = 17.584505288;
 const PUMP_INITIAL_VIRTUAL_TOKEN = 1_073_000_000_000_000;
 const PUMP_INITIAL_REAL_TOKEN = 793_100_000_000_000;
 

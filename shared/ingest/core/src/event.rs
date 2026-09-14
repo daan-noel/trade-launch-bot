@@ -164,6 +164,11 @@ pub enum Venue {
     Amm,
 }
 
+/// A swap's post-trade reserves. The `virtual_*` pair is what the venue PRICES
+/// with (spot = `virtual_sol / virtual_token`); the `real_*` pair is what it
+/// holds. Curve: the curve's virtual and real reserves. AMM: the base vault on
+/// both sides; `virtual_sol` is the quote vault plus the pool's virtual quote,
+/// `real_sol` the quote vault alone.
 #[derive(Debug, Clone, Default)]
 pub struct Reserves {
     pub virtual_sol: Option<f64>,

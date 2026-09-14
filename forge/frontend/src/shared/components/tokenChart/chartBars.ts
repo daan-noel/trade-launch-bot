@@ -44,7 +44,8 @@ const MIN_CHART_SOL = 1e-5;
 
 /**
  * Spot price from the venue-neutral reserve pair: reserve_sol / reserve_token
- * (GMGN-style). Curve virtual reserves on curve rows, pool real reserves on amm
+ * (GMGN-style). Curve virtual reserves on curve rows, the pool's priced reserves
+ * (vault + PumpSwap's virtual quote) on amm
  * rows — the backend stores both in the same `reserve_*` pair.
  */
 export function curveSpotPriceSol(
@@ -132,10 +133,10 @@ export function curveLiquiditySol(
 }
 
 /**
- * Real SOL liquidity at a trade: the AMM pool's real quote reserve when present
- * (the forge adapter sets `real_sol_reserves` on amm rows, whose reserve pair is
- * the pool balance), else the curve's depositor SOL. Never subtract the curve's
- * virtual seed from a pool reserve.
+ * Real SOL liquidity at a trade: the AMM pool's quote vault when present (the
+ * forge adapter sets `real_sol_reserves` on amm rows: the priced reserve less
+ * PumpSwap's virtual quote), else the curve's depositor SOL. Never subtract the
+ * curve's virtual seed from a pool reserve.
  */
 export function tradeLiquiditySol(trade: ChartTrade): number | null {
   const sol = trade.real_sol_reserves;
