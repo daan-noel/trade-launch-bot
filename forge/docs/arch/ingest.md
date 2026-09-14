@@ -43,7 +43,7 @@ Helius LaserStream (Yellowstone gRPC)
 │    • try_send → on Full, send_timeout(100ms) retry → else DROPPED_EVENTS counter + warn       │
 │        ▼  event_channel_cap = 4096   (mpsc::Receiver<IngestEvent>)                             │
 └───────────────────────────────────────────────────────────────────────────────────────────────┘
-        │  IngestEvent { TokenCreated | Trade | RawTx | (TokenMigrated|Liquidity|CreatorActivity) }
+        │  IngestEvent { TokenCreated | Trade | TokenMigrated | RawTx | (Liquidity|CreatorActivity) }
         ▼
 ┌──────────────────────────  forge/live/src/ingest/  (host adapter, this doc)  ──────────────────┐
 │  run_consumer               (consumer.rs — hot recv loop, NO DB I/O)                            │
@@ -53,7 +53,8 @@ Helius LaserStream (Yellowstone gRPC)
 │  DbWriter task              (db_writer.rs — ALL DB I/O, interning, mapping)                     │
 │    • batch by FLUSH_EVERY=256 or FLUSH_INTERVAL=500ms                                           │
 │    • map::* → NewToken / NewMarket / NewTrade / RawTx ; wallet_cache interns wallet_dict        │
-│    • TokenRepo / MarketRepo / TradeRepo.insert_batch / RawTxRepo (UNNEST; bulk→per-row retry)   │
+│    • TokenRepo / MarketRepo / TradeRepo.insert_batch_new_keys / RawTxRepo (UNNEST; bulk→per-row)│
+│    • market_state::coalesce → TokenMarketStateRepo::apply_deltas (ONE upsert per flush)         │
 │    • heartbeat.stamp() + events.fetch_add(n)  each flush                                        │
 │    • trades_notify.notify_one()  +  sse.trade_executed / token_created                          │
 │        │                    │                          │                                       │
@@ -75,7 +76,8 @@ main.rs (always-on, feed-based — NO RPC poll):
 | --- | --- |
 | `mod.rs` | Module root + re-exports (`spawn_ingest`, `IngestHandle` from `ingest_pumpfun`, `IngestMetrics`). Documents the pumpfun/map/consumer/db_writer/watchdog split. |
 | `consumer.rs` | `spawn_ingest` (builds the borrowed transport paused, wires consumer→writer channel, spawns DbWriter + watchdog) and `run_consumer` — the hot recv loop. **No DB I/O.** Owns only the per-tx "did this tx produce a semantic event?" flag that gates `RawTx` persistence. Forwards durable work with `tx.send(op).await` (blocking backpressure). |
-| `db_writer.rs` | `DbWriter` task: the sole DB-I/O owner. Drains the `DbWriteOp` channel (`CHANNEL_CAPACITY=16_384`), batches (`FLUSH_EVERY=256` / `FLUSH_INTERVAL=500ms`), maps via `map::*`, interns wallets (memoized `wallet_cache`), and bulk-inserts via `TokenRepo`/`MarketRepo`/`TradeRepo`/`RawTxRepo`. Stamps the heartbeat, bumps the events counter, fires `trades_notify` + SSE per flush. Bulk-insert failure falls back to per-row. |
+| `db_writer.rs` | `DbWriter` task: the sole DB-I/O owner. Drains the `DbWriteOp` channel (`CHANNEL_CAPACITY=16_384`), batches (`FLUSH_EVERY=256` / `FLUSH_INTERVAL=500ms`), maps via `map::*`, interns wallets (memoized `wallet_cache`), and bulk-inserts via `TokenRepo`/`MarketRepo`/`TradeRepo`/`RawTxRepo`. Then folds the flush into `token_market_state` with one `TokenMarketStateRepo::apply_deltas` upsert. Stamps the heartbeat, bumps the events counter, fires `trades_notify` + SSE per flush. Bulk-insert failure falls back to per-row. |
+| `market_state.rs` | Pure coalescer: a flush's mapped trades + `TokenMigrated` mints → one `MarketStateDelta` per mint. Price = spot (`reserve_quote / reserve_base`, post-trade) of the mint's latest row in `slot, tx_index, leg_index` order; ATH = highest spot in the batch; volume/count over the rows that actually landed (`insert_batch_new_keys`), so a replay adds nothing; `is_migrated` on an AMM trade or a migration event. The upsert keeps the price on a `last_trade_at` watermark, raises the ATH only upward, and skips mints with no `tokens` row. The ONLY writer of `token_market_state`. |
 | `map.rs` | Pure `IngestEvent` → platform-core row mappers (no DB/network, unit-testable). `trade_to_row` / `token_created_to_row` / `raw_tx_to_row`. Takes amounts from EXACT raw-`u64` lamport fields (`sol_lamports`, `virtual_sol_lamports`) — no f64 round-trip; decodes base58 sig → BYTEA. `PUMP_TOKEN_DECIMALS = 6`. |
 | `pumpfun.rs` | `PumpFunAdapter` — the `LaunchpadAdapter` (venue) impl. Resolves interned `launchpads.key='pump_fun'` + `quote_assets.symbol='SOL'` ids from the DB at boot (never hardcoded); classifies curve (`CURVE_PROGRAM_ID`) vs PumpSwap AMM (`AMM_PROGRAM_ID`) → `MarketKind`. Everything pump.fun is SOL-quoted. |
 | `watchdog.rs` | OS-thread process watchdog on the `DbHeartbeat`. `is_stalled(live && work_pending && idle ≥ STALL_TIMEOUT=120s)` ⇒ `std::process::exit(1)` so the supervisor restarts + gap-replay refills. Checks every 30s; a paused stream or a drained queue never trips it. Pure `is_stalled` predicate is unit-tested. |
@@ -98,9 +100,10 @@ main.rs (always-on, feed-based — NO RPC poll):
 | `core/src/{config,event,error,push,slot_anchor,convert,dedupe,raw_tx,backfill}.rs`, `generated/` | `IngestConfig` (**wire-neutral** tunables only, no env reads) + `Commitment`; the neutral `IngestEvent` enum; error types; `PushHooks`; slot→time estimation; the ONE JSON→protobuf adapter; the cross-feed dedupe ring; `raw-tx` passthrough builder (feature-gated) + `rpc-backfill` (feature-gated); generated Yellowstone/geyser protobuf **messages** (the gRPC client lives in `laserstream/`). |
 
 **`IngestEvent` variants** (core/event.rs): `TokenCreated`, `Trade`, `TokenMigrated`,
-`Liquidity`, `CreatorActivity`, `RawTx`. Forge's consumer projects only
-`TokenCreated`, `Trade`, and (conditionally) `RawTx`; the other three are decoded
-but dropped in `run_consumer` (`_ => continue`, "not projected yet").
+`Liquidity`, `CreatorActivity`, `RawTx`. Forge's consumer projects `TokenCreated`,
+`Trade`, `TokenMigrated` (into `token_market_state.is_migrated` only) and
+(conditionally) `RawTx`; `Liquidity` / `CreatorActivity` are decoded but dropped in
+`run_consumer` (`_ => continue`, "not projected yet").
 
 ## Bundle-landing confirmation (feed-based, in `main.rs`)
 

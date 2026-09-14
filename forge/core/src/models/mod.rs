@@ -25,5 +25,7 @@ pub use own_launch::{
     NewLaunchTemplate, NewManagedWallet, SellLadder, TokenPosition, UpdateLaunchTemplate,
     VolumeBot,
 };
-pub use token::{NewToken, Token, TokenMarketState, TokenOverview, TokenSyncState};
-pub use trade::{NewTrade, RawTx, Trade, TradePriced};
+pub use token::{
+    MarketStateDelta, NewToken, Token, TokenMarketState, TokenOverview, TokenSyncState,
+};
+pub use trade::{spot_price_quote, NewTrade, RawTx, Trade, TradePriced};

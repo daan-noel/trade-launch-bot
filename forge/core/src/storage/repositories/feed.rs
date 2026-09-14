@@ -66,9 +66,20 @@ pub struct TradeRepo;
 
 impl TradeRepo {
     /// Idempotent batch insert (dedup key = PK `(block_time, tx_signature, leg_index)`).
+    /// Returns the number of rows that actually landed.
     pub async fn insert_batch(pool: &PgPool, rows: &[NewTrade]) -> anyhow::Result<u64> {
+        Ok(Self::insert_batch_new_keys(pool, rows).await?.len() as u64)
+    }
+
+    /// [`Self::insert_batch`], returning the `(tx_signature, leg_index)` of each row
+    /// that actually landed — a row the PK dedup skipped is absent. Lets a caller
+    /// count a replayed feed exactly once (the market-state volume/trade totals).
+    pub async fn insert_batch_new_keys(
+        pool: &PgPool,
+        rows: &[NewTrade],
+    ) -> anyhow::Result<std::collections::HashSet<(Vec<u8>, i16)>> {
         if rows.is_empty() {
-            return Ok(0);
+            return Ok(std::collections::HashSet::new());
         }
         let mint_address: Vec<String> = rows.iter().map(|r| r.mint_address.clone()).collect();
         let wallet_ref: Vec<i32> = rows.iter().map(|r| r.wallet_ref).collect();
@@ -86,7 +97,7 @@ impl TradeRepo {
         let block_time: Vec<_> = rows.iter().map(|r| r.block_time).collect();
         let tx_signature: Vec<Vec<u8>> = rows.iter().map(|r| r.tx_signature.clone()).collect();
 
-        let res = sqlx::query(
+        let landed: Vec<(Vec<u8>, i16)> = sqlx::query_as(
             "INSERT INTO trades \
                 (mint_address, wallet_ref, launchpad_id, market_kind, quote_asset_id, trade_type, \
                  amount_quote, amount_base, reserve_quote, reserve_base, \
@@ -94,7 +105,8 @@ impl TradeRepo {
              SELECT * FROM UNNEST($1::text[], $2::int4[], $3::int2[], $4::text[], $5::int2[], $6::text[], \
                                   $7::int8[], $8::int8[], $9::int8[], $10::int8[], \
                                   $11::int8[], $12::int4[], $13::int2[], $14::timestamptz[], $15::bytea[]) \
-             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING",
+             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING \
+             RETURNING tx_signature, leg_index",
         )
         .bind(&mint_address)
         .bind(&wallet_ref)
@@ -111,9 +123,9 @@ impl TradeRepo {
         .bind(&leg_index)
         .bind(&block_time)
         .bind(&tx_signature)
-        .execute(pool)
+        .fetch_all(pool)
         .await?;
-        Ok(res.rows_affected())
+        Ok(landed.into_iter().collect())
     }
 
     /// Which of `signatures` already appear in `trades` for `mint_address` —

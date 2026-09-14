@@ -27,6 +27,19 @@ pub struct Trade {
     pub tx_signature: Vec<u8>,
 }
 
+/// Spot price of a trade's post-trade reserve pair, as a raw ratio (quote base
+/// units per base base unit): `reserve_quote / reserve_base`. Curve rows carry the
+/// curve's virtual reserves, AMM rows the pool's quote/base balances, so the one
+/// ratio prices both venues. `None` when either side is missing or the base side is
+/// not positive. The Rust twin of the `trades_priced.spot_price_quote` view column
+/// (same expression), for writers that price a row before it is read back.
+pub fn spot_price_quote(reserve_quote: Option<i64>, reserve_base: Option<i64>) -> Option<f64> {
+    match (reserve_quote, reserve_base) {
+        (Some(q), Some(b)) if b > 0 => Some(q as f64 / b as f64),
+        _ => None,
+    }
+}
+
 /// Insert form of [`Trade`]. `wallet_ref` is already interned (call
 /// `WalletDictRepo::intern` first). `leg_index` defaults to 0.
 #[derive(Debug, Clone)]

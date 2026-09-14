@@ -4,7 +4,9 @@ use chrono::Utc;
 use serde_json::json;
 use sqlx::PgPool;
 
-use crate::models::{NewToken, Token, TokenMarketState, TokenOverview, TokenSyncState};
+use crate::models::{
+    MarketStateDelta, NewToken, Token, TokenMarketState, TokenOverview, TokenSyncState,
+};
 
 /// `tokens` — static creation facts (write-once).
 pub struct TokenRepo;
@@ -110,6 +112,67 @@ impl TokenMarketStateRepo {
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    /// Fold one ingest flush into the metrics rows — ONE `UNNEST` upsert for the
+    /// whole batch (the ingest writer's hot-path pattern). `deltas` must hold at most
+    /// one entry per mint (Postgres refuses an upsert that touches a row twice).
+    /// A mint without a `tokens` row is skipped (the FK), not an error. Merge rules:
+    /// the price follows the newest trade (`last_trade_at` watermark, so a late
+    /// batch never rolls it back), the ATH only rises, volume/count add, and
+    /// `is_migrated` is sticky.
+    pub async fn apply_deltas(pool: &PgPool, deltas: &[MarketStateDelta]) -> anyhow::Result<u64> {
+        if deltas.is_empty() {
+            return Ok(0);
+        }
+        let mint: Vec<String> = deltas.iter().map(|d| d.mint_address.clone()).collect();
+        let price: Vec<Option<f64>> = deltas.iter().map(|d| d.current_price_quote).collect();
+        let ath: Vec<Option<f64>> = deltas.iter().map(|d| d.ath_price_quote).collect();
+        let ath_at: Vec<_> = deltas.iter().map(|d| d.ath_at).collect();
+        let volume: Vec<i64> = deltas.iter().map(|d| d.volume_quote).collect();
+        let trades: Vec<i64> = deltas.iter().map(|d| d.trade_count).collect();
+        let last_at: Vec<_> = deltas.iter().map(|d| d.last_trade_at).collect();
+        let migrated: Vec<bool> = deltas.iter().map(|d| d.is_migrated).collect();
+
+        let res = sqlx::query(
+            "INSERT INTO token_market_state AS s \
+                (mint_address, current_price_quote, ath_price_quote, ath_at, volume_quote, \
+                 trade_count, last_trade_at, is_migrated, updated_at) \
+             SELECT v.mint_address, v.price, v.ath, v.ath_at, v.volume, v.trades, v.last_at, \
+                    v.migrated, now() \
+             FROM UNNEST($1::text[], $2::float8[], $3::float8[], $4::timestamptz[], \
+                         $5::int8[], $6::int8[], $7::timestamptz[], $8::bool[]) \
+                  AS v(mint_address, price, ath, ath_at, volume, trades, last_at, migrated) \
+             JOIN tokens t ON t.mint_address = v.mint_address \
+             ON CONFLICT (mint_address) DO UPDATE SET \
+                 current_price_quote = CASE \
+                     WHEN EXCLUDED.current_price_quote IS NULL THEN s.current_price_quote \
+                     WHEN s.last_trade_at IS NULL \
+                          OR EXCLUDED.last_trade_at >= s.last_trade_at \
+                         THEN EXCLUDED.current_price_quote \
+                     ELSE s.current_price_quote END, \
+                 last_trade_at = GREATEST(s.last_trade_at, EXCLUDED.last_trade_at), \
+                 ath_at = CASE \
+                     WHEN EXCLUDED.ath_price_quote > COALESCE(s.ath_price_quote, '-Infinity') \
+                         THEN EXCLUDED.ath_at \
+                     ELSE s.ath_at END, \
+                 ath_price_quote = GREATEST(s.ath_price_quote, EXCLUDED.ath_price_quote), \
+                 volume_quote = s.volume_quote + EXCLUDED.volume_quote, \
+                 trade_count = s.trade_count + EXCLUDED.trade_count, \
+                 is_migrated = s.is_migrated OR EXCLUDED.is_migrated, \
+                 updated_at = now()",
+        )
+        .bind(&mint)
+        .bind(&price)
+        .bind(&ath)
+        .bind(&ath_at)
+        .bind(&volume)
+        .bind(&trades)
+        .bind(&last_at)
+        .bind(&migrated)
+        .execute(pool)
+        .await?;
+        Ok(res.rows_affected())
     }
 
     pub async fn get(pool: &PgPool, mint_address: &str) -> anyhow::Result<Option<TokenMarketState>> {

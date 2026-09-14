@@ -73,7 +73,7 @@ schema, no data).
 | --- | --- |
 | `tokens` | static creation facts, PK `mint_address`; FK → launchpad/quote asset; `is_own_launch`; `initial_supply_base`/`initial_buy_quote` (base units) |
 | `markets` | per-token tradeable venue instance(s); `market_kind` CHECK (`bonding_curve`/`amm`/`clmm`/`orderbook`); BIGINT identity PK `market_id`; UNIQUE(mint,launchpad,kind) |
-| `token_market_state` | 1:1 hot live metrics (PK=FK `mint_address`); `current_price_quote`/`ath_price_quote` RAW ratios, `volume_quote`, `trade_count`, `is_dead`/`is_migrated` |
+| `token_market_state` | 1:1 hot live metrics (PK=FK `mint_address`); `current_price_quote` (spot of the latest trade's post-trade reserves) / `ath_price_quote` RAW ratios, `volume_quote`, `trade_count`, `last_trade_at`, `is_dead`/`is_migrated`. Written only by the ingest writer's batched `apply_deltas` |
 | `token_sync_state` | per-(mint,market) ingest watermark (`last_sig`/`last_slot`); PK(mint,market_id) |
 
 ### Domain C — the feed (high-volume hypertables)
@@ -117,9 +117,9 @@ at this boundary. `dimensions.rs`, `feed.rs`, `metadata.rs`, `token.rs`, `own_la
 | `MarketRepo` | `markets` | `upsert`, `by_mint` |
 | `WalletDictRepo` | `wallet_dict` | `intern` (address → int ref, upsert) |
 | `RawTxRepo` | `raw_txs` | `insert_batch` (UNNEST, ON CONFLICT DO NOTHING) |
-| `TradeRepo` | `trades`/`trades_priced` | `insert_batch`, `find_signatures_present`, `sum_side_quote_by_address`, `sum_sells_by_address_for_mint`, `fills_for_mint_wallets`, `find_priced_by_mint`, `find_priced_page_with_count` |
+| `TradeRepo` | `trades`/`trades_priced` | `insert_batch` / `insert_batch_new_keys` (returns the rows that landed), `find_signatures_present`, `sum_side_quote_by_address`, `sum_sells_by_address_for_mint`, `fills_for_mint_wallets`, `find_priced_by_mint`, `find_priced_page_with_count` |
 | `TokenRepo` | `tokens`/`token_overview` | `insert`, `mark_own_launch`, `get`, `overview` |
-| `TokenMarketStateRepo` | `token_market_state` | `upsert`, `get` |
+| `TokenMarketStateRepo` | `token_market_state` | `apply_deltas` (one `UNNEST` upsert per ingest flush), `upsert`, `get` |
 | `TokenSyncStateRepo` | `token_sync_state` | `upsert`, `get` |
 | `MetadataTemplateRepo` | `metadata_templates` | `insert`, `get`, `all`, `update`, `delete` |
 | `LaunchTemplateRepo` | `launch_templates` | `insert`, `get`, `all`, `update`, `delete` |

@@ -13,12 +13,15 @@
 //! is no metric-shedding tier as in hunter — the bounded channel's awaiting
 //! backpressure is the (correct) overflow behavior for durable writes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ingest_pumpfun::event::{RawTx as IlRawTx, TokenCreated as IlTokenCreated, Trade as IlTrade};
+use ingest_pumpfun::event::{
+    RawTx as IlRawTx, TokenCreated as IlTokenCreated, TokenMigrated as IlTokenMigrated,
+    Trade as IlTrade,
+};
 use sqlx::PgPool;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::Notify;
@@ -26,10 +29,13 @@ use tracing::warn;
 
 use platform_core::models::{NewTrade, RawTx};
 use platform_core::storage::repositories::dimensions::NewMarket;
-use platform_core::storage::repositories::{MarketRepo, RawTxRepo, TokenRepo, TradeRepo, WalletDictRepo};
+use platform_core::storage::repositories::{
+    MarketRepo, RawTxRepo, TokenMarketStateRepo, TokenRepo, TradeRepo, WalletDictRepo,
+};
 use platform_core::venue::{LaunchpadAdapter, MarketKind};
 
 use super::map;
+use super::market_state;
 use super::pumpfun::{PumpFunAdapter, CURVE_PROGRAM_ID};
 use super::watchdog::DbHeartbeat;
 use crate::sse::SseHub;
@@ -50,6 +56,8 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 pub enum DbWriteOp {
     Trade(Box<IlTrade>),
     TokenCreated(Box<IlTokenCreated>),
+    /// A curve graduated to the AMM — flips the mint's `is_migrated`.
+    Migrated(Box<IlTokenMigrated>),
     Raw(Box<IlRawTx>),
 }
 
@@ -133,10 +141,12 @@ impl DbWriter {
         let mut trades: Vec<IlTrade> = Vec::new();
         let mut tokens: Vec<IlTokenCreated> = Vec::new();
         let mut raws: Vec<RawTx> = Vec::new();
+        let mut migrated: Vec<String> = Vec::new();
         for op in batch.drain(..) {
             match op {
                 DbWriteOp::Trade(t) => trades.push(*t),
                 DbWriteOp::TokenCreated(tc) => tokens.push(*tc),
+                DbWriteOp::Migrated(m) => migrated.push(m.mint),
                 DbWriteOp::Raw(r) => raws.push(map::raw_tx_to_row(&r)),
             }
         }
@@ -165,8 +175,9 @@ impl DbWriter {
         }
 
         // Trades: intern wallets (cached), map, then one batch insert.
+        let mut rows: Vec<NewTrade> = Vec::with_capacity(trades.len());
+        let mut landed = HashSet::new();
         if !trades.is_empty() {
-            let mut rows: Vec<NewTrade> = Vec::with_capacity(trades.len());
             for t in &trades {
                 let wid = match self.wallet_ref(&t.wallet).await {
                     Ok(id) => id,
@@ -181,15 +192,21 @@ impl DbWriter {
                 }
             }
             if !rows.is_empty() {
-                match TradeRepo::insert_batch(&self.pool, &rows).await {
-                    Ok(n) => tracing::debug!(rows = n, "flushed trades"),
+                match TradeRepo::insert_batch_new_keys(&self.pool, &rows).await {
+                    Ok(keys) => {
+                        tracing::debug!(rows = keys.len(), "flushed trades");
+                        landed = keys;
+                    }
                     Err(e) => {
                         warn!(?e, count = rows.len(), "trade bulk insert failed — retrying per-row");
                         for row in &rows {
-                            if let Err(e) =
-                                TradeRepo::insert_batch(&self.pool, std::slice::from_ref(row)).await
+                            match TradeRepo::insert_batch_new_keys(&self.pool, std::slice::from_ref(row))
+                                .await
                             {
-                                warn!(?e, "per-row trade insert failed — dropping row for this flush");
+                                Ok(keys) => landed.extend(keys),
+                                Err(e) => {
+                                    warn!(?e, "per-row trade insert failed — dropping row for this flush")
+                                }
                             }
                         }
                     }
@@ -202,6 +219,17 @@ impl DbWriter {
                 for t in &trades {
                     self.sse.trade_executed(t);
                 }
+            }
+        }
+
+        // Market state: the batch coalesced to one delta per mint, folded in with
+        // ONE upsert — spot price, ATH, volume/count of the rows that landed, and
+        // the migration flag. After the trade insert so a mint's totals only count
+        // committed rows.
+        if !rows.is_empty() || !migrated.is_empty() {
+            let deltas = market_state::coalesce(&rows, &landed, &migrated);
+            if let Err(e) = TokenMarketStateRepo::apply_deltas(&self.pool, &deltas).await {
+                warn!(?e, mints = deltas.len(), "market-state upsert failed — prices lag one flush");
             }
         }
 

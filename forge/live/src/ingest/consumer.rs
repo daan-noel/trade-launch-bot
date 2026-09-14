@@ -105,7 +105,10 @@ async fn run_consumer(mut event_rx: Receiver<IngestEvent>, tx: Sender<DbWriteOp>
                 }
                 DbWriteOp::Raw(Box::new(r))
             }
-            // TokenMigrated / Liquidity / CreatorActivity: not projected yet.
+            // A graduation flips the mint's `is_migrated` in `token_market_state`.
+            // Not `tracked_in_tx`: `raw_txs` mirrors what `trades` projects.
+            IngestEvent::TokenMigrated(m) => DbWriteOp::Migrated(Box::new(m)),
+            // Liquidity / CreatorActivity: not projected yet.
             _ => continue,
         };
         // `send().await` is the durable-write backpressure: if the writer is

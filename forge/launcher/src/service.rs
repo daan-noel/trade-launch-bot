@@ -4,10 +4,8 @@ use anyhow::{bail, Context, Result};
 use platform_core::models::{BundleStatus, LaunchStatus, NewLaunch, NewToken, WalletRole};
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo, MetadataTemplateRepo,
-    TokenMarketStateRepo, TokenPositionRepo, TokenRepo,
+    TokenPositionRepo, TokenRepo,
 };
-use platform_core::models::TokenMarketState;
-use chrono::Utc;
 use pump_trader::{
     CreateTokenArgs, CreateTokenV2Args, PumpFunTrader,
 };
@@ -31,6 +29,22 @@ use crate::trader_config::build_launch_trader_config;
 /// live in one shared home without coupling the two decoupled crates. Keep this
 /// value equal to `ingest_host::map::PUMP_TOKEN_DECIMALS`.
 const PUMP_TOKEN_DECIMALS: i16 = 6;
+
+/// A pump.fun mint's total supply in token base units: 1e9 tokens x 10^6 decimals.
+/// Launcher-local for the same reason as [`PUMP_TOKEN_DECIMALS`]; the ingest side
+/// reads the real figure off the create log (`TokenCreated::total_supply`).
+const PUMP_TOTAL_SUPPLY_BASE: i64 = 1_000_000_000_000_000;
+
+/// Total supply our create mints: a mayhem-mode `create_v2` mints twice the
+/// standard supply. Stored as `tokens.initial_supply_base`, the market-cap basis of
+/// the `token_overview` view.
+fn pump_total_supply_base(is_mayhem_mode: bool) -> i64 {
+    if is_mayhem_mode {
+        PUMP_TOTAL_SUPPLY_BASE * 2
+    } else {
+        PUMP_TOTAL_SUPPLY_BASE
+    }
+}
 
 /// Create-side rent-exempt deposits + base/priority fees a launch locks up,
 /// EXCLUDING the Jito tip and the dev-buy spend — keyed by launch **variant**,
@@ -515,7 +529,7 @@ pub async fn execute_launch(
                 symbol: meta_symbol.clone(),
                 decimals: PUMP_TOKEN_DECIMALS,
                 token_program_id: Some(token_program.to_string()),
-                initial_supply_base: None,
+                initial_supply_base: Some(pump_total_supply_base(params.is_mayhem_mode)),
                 initial_buy_quote: if dev_buy_quote > 0 {
                     Some(dev_buy_quote)
                 } else {
@@ -544,23 +558,6 @@ pub async fn execute_launch(
         // feed's `is_own_launch = false`). The create event lands on the feed almost
         // immediately after the tx confirms — often before we reach the insert.
         TokenRepo::mark_own_launch(pool, &mint_address).await?;
-
-        TokenMarketStateRepo::upsert(
-            pool,
-            &TokenMarketState {
-                mint_address: mint_address.clone(),
-                current_price_quote: None,
-                ath_price_quote: None,
-                ath_at: None,
-                volume_quote: dev_buy_quote.max(0),
-                trade_count: if dev_buy_quote > 0 { 1 } else { 0 },
-                last_trade_at: None,
-                is_dead: false,
-                is_migrated: false,
-                updated_at: Utc::now(),
-            },
-        )
-        .await?;
 
         info!(
             launch_id = %launch_id,

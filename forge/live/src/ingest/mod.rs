@@ -11,6 +11,7 @@
 //! - `map`       — pure event → row mappers (unit-testable, no DB/network).
 //! - `consumer`  — `spawn_ingest` + the hot recv loop (no DB I/O).
 //! - `db_writer` — the decoupled batched writer task (all DB I/O + interning).
+//! - `market_state` — pure per-mint coalescer feeding the batched `token_market_state` upsert.
 //! - `watchdog`  — OS-thread process watchdog on the writer heartbeat.
 //!
 //! Dep partition: LIVE only. Must NOT appear in `lab`'s dep graph.
@@ -18,6 +19,7 @@
 pub mod consumer;
 pub mod db_writer;
 pub mod map;
+pub mod market_state;
 pub mod metrics;
 pub mod pumpfun;
 pub mod watchdog;

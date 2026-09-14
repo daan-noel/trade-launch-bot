@@ -64,6 +64,30 @@ pub struct TokenMarketState {
     pub updated_at: DateTime<Utc>,
 }
 
+/// One mint's share of an ingest flush, folded into its `token_market_state` row by
+/// [`crate::storage::repositories::TokenMarketStateRepo::apply_deltas`]. The writer
+/// coalesces a batch to one delta per mint so the upsert touches each row once.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MarketStateDelta {
+    pub mint_address: String,
+    /// Spot after the mint's latest trade in the batch (canonical order `slot,
+    /// tx_index, leg_index`), from its post-trade reserves — never the execution
+    /// price. Applied only when `last_trade_at` is not older than the stored one.
+    pub current_price_quote: Option<f64>,
+    /// `block_time` of that latest trade. `None` for a migration-only delta.
+    pub last_trade_at: Option<DateTime<Utc>>,
+    /// Highest spot in the batch and the `block_time` it printed at; replaces the
+    /// stored ATH only when higher.
+    pub ath_price_quote: Option<f64>,
+    pub ath_at: Option<DateTime<Utc>>,
+    /// Quote volume and count of the batch's NEWLY inserted trades (a replayed row
+    /// adds nothing), added onto the running totals.
+    pub volume_quote: i64,
+    pub trade_count: i64,
+    /// The batch saw an AMM trade or a migration event — sticky once set.
+    pub is_migrated: bool,
+}
+
 /// Per-(mint, market) ingest watermark.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TokenSyncState {
