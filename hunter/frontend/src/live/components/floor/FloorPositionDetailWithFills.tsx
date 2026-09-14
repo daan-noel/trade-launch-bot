@@ -8,6 +8,7 @@ import {
 import { useGetPositionFillsQuery } from '@live/store/liveEndpoints';
 import { useLivePositionFills } from '@live/hooks/useLivePositionFills';
 import { useMintEpisodeMarkers } from 'hooks/useMintEpisodeMarkers';
+import { lamportsToSol } from 'lib/strategy/types';
 
 /**
  * Console / Evidence detail body: hero + fact strip + chart ∥ fills.
@@ -65,6 +66,14 @@ export function FloorPositionDetailWithFills({
     return buy?.token_amount || facts.entryTokenAmount || null;
   }, [fills, facts.entryTokenAmount]);
 
+  // Per-leg PnL% cost basis: the ledger's buy leg is the SOL the wallet paid. A
+  // reconstructed buy leg may be priced from the snapshot, so those rows read the
+  // position's own `entrySol` only.
+  const entrySol = useMemo(() => {
+    const buy = reconstructed ? undefined : fills.find((f) => f.side === 'buy');
+    return (buy ? lamportsToSol(buy.sol_lamports) : null) ?? facts.entrySol ?? null;
+  }, [fills, reconstructed, facts.entrySol]);
+
   // The ledger's buy leg also carries the entry signature, which an open lane row
   // does not; without it the trades table cannot tint the entry print. A paper sell
   // leg carries none (its print is shared, so it stays off the ledger's unique sell
@@ -101,7 +110,7 @@ export function FloorPositionDetailWithFills({
           </span>
           <PositionFillsLedger
             fills={fills}
-            entryPrice={facts.entryPrice ?? facts.inspect.entryPrice}
+            entrySol={entrySol}
             entryTime={facts.inspect.entryTime}
             entryTokenAmount={entryTokenAmount}
             loading={isFetching && apiFills.length === 0 && !reconstructed}

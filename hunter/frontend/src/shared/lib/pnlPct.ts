@@ -14,6 +14,23 @@ export function pnlPctFromSol(
   return (pnlSol / entrySol) * 100;
 }
 
+/**
+ * One sell leg's PnL% on the money basis: the SOL the leg received against its
+ * share of the SOL the wallet paid at entry, `entrySol × legTokens / entryTokens`.
+ * The legs of a fully sold bag sum to the position's `pnl_sol`.
+ */
+export function legPnlPctFromSol(
+  legSol: number | null | undefined,
+  legTokens: number | null | undefined,
+  entrySol: number | null | undefined,
+  entryTokens: number | null | undefined,
+): number | null {
+  if (legSol == null || legTokens == null || entrySol == null || entryTokens == null) return null;
+  if (!Number.isFinite(legSol) || !(legTokens > 0) || !(entryTokens > 0)) return null;
+  const cost = entrySol * (legTokens / entryTokens);
+  return pnlPctFromSol(legSol - cost, cost);
+}
+
 /** `((exit - entry) / entry) × 100` when entry is a positive finite price. */
 export function pnlPctFromPrices(
   entryPrice: number | null | undefined,

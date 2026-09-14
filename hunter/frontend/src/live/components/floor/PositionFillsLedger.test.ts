@@ -27,6 +27,24 @@ describe('fillsFromPositionFacts', () => {
     expect(rows[1]?.reason).toBe('TakeProfit');
   });
 
+  it('prices the exit leg from the wallet money before the snapshot price', () => {
+    const rows = fillsFromPositionFacts({
+      positionId: 'pos-4',
+      entrySol: 0.5,
+      entryTokenAmount: 1_000_000,
+      exitTokenAmount: 1_000_000,
+      pnlSol: -0.02,
+      inspect: {
+        mint_address: 'Mint444',
+        entryTime: '2026-08-01T12:00:00Z',
+        entryPrice: 0.0000005,
+        exitTime: '2026-08-01T12:01:00Z',
+        exitPrice: 0.0000006,
+      },
+    });
+    expect(rows[1]?.sol_lamports).toBe(480_000_000);
+  });
+
   it('builds buy-only for an open position', () => {
     const rows = fillsFromPositionFacts({
       positionId: 'pos-2',

@@ -1,20 +1,23 @@
 // Append-only fill ledger table for a position dialog (entry + every sell leg).
 // Per-leg PnL% / hold are derived from the position entry — never stored columns.
+// A leg's PnL% is money basis: the SOL it received against its share of the SOL
+// the wallet paid at entry (`legPnlPctFromSol`), never a price ratio.
 
 import { Badge } from 'components/ui/Badge';
 import { formatCompact } from 'utils/format';
 import { formatSignedPct, pctGradeClass } from 'lib/signedTone';
+import { legPnlPctFromSol } from 'lib/pnlPct';
 import { lamportsToSol, solToLamports } from 'lib/strategy/types';
 import type { PositionFill } from 'types';
 import type { InspectTarget } from 'components/strategy/inspectTarget';
 
 export interface PositionFillsLedgerProps {
   fills: PositionFill[];
-  /** Entry price for per-leg PnL% (from the parent position). */
-  entryPrice?: number | null;
+  /** SOL the wallet paid at entry (human SOL) — the per-leg PnL% cost basis. */
+  entrySol?: number | null;
   /** Entry time ISO for per-leg hold. */
   entryTime?: string | null;
-  /** Entry token amount — for sell_bps of initial bag. */
+  /** Entry token amount — for sell_bps of initial bag and the per-leg cost share. */
   entryTokenAmount?: number | null;
   loading?: boolean;
   /** True when rows were reconstructed from `strategy_positions` (no ledger). */
@@ -64,12 +67,14 @@ export function fillsFromPositionFacts(facts: LegacyFillFacts): PositionFill[] {
   }
 
   if (inspect.exitTime && inspect.exitPrice != null) {
+    // The wallet's money first (`exitSol`, then `entrySol + pnlSol`); a
+    // snapshot-priced amount only when neither is known.
     const exitSol =
       facts.exitSol ??
-      (facts.exitTokenAmount != null
-        ? inspect.exitPrice * facts.exitTokenAmount
-        : facts.entrySol != null && facts.pnlSol != null
-          ? facts.entrySol + facts.pnlSol
+      (facts.entrySol != null && facts.pnlSol != null
+        ? facts.entrySol + facts.pnlSol
+        : facts.exitTokenAmount != null
+          ? inspect.exitPrice * facts.exitTokenAmount
           : null);
     const exitTokens =
       facts.exitTokenAmount ?? facts.entryTokenAmount ?? 0;
@@ -108,7 +113,7 @@ function sellBps(fill: PositionFill, entryTokens: number | null | undefined): nu
  */
 export function PositionFillsLedger({
   fills,
-  entryPrice,
+  entrySol,
   entryTime,
   entryTokenAmount,
   loading,
@@ -149,13 +154,13 @@ export function PositionFillsLedger({
         </thead>
         <tbody>
           {fills.map((f) => {
+            const sol = lamportsToSol(f.sol_lamports);
             const pnlPct =
-              f.side === 'sell' && entryPrice != null && entryPrice > 0
-                ? ((f.price - entryPrice) / entryPrice) * 100
+              f.side === 'sell'
+                ? legPnlPctFromSol(sol, f.token_amount, entrySol, entryTokenAmount)
                 : null;
             const hold = holdSecs(entryTime, f.at);
             const bps = sellBps(f, entryTokenAmount);
-            const sol = lamportsToSol(f.sol_lamports);
             return (
               <tr key={`${f.position_id}-${f.seq}`} className="border-b border-white/5 last:border-0">
                 <td className="px-2 py-1 tabular-nums text-text-dim">{f.seq}</td>
