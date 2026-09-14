@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
-use hunter_engine::event::{Effect, Event, LoadedRule, Mint, RuleId, TradeMode};
+use hunter_engine::event::{BuildBreadth, Effect, Event, LoadedRule, Mint, RuleId, TradeMode};
 use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts};
@@ -213,6 +213,100 @@ fn a_rule_switched_off_and_on_is_rearmed() {
     all.push(print(Side::Buy, 0.1, 5, 104, 4.0));
     let _ = hydrate_token(&mut s, &mint, &facts(), Some(&all), ts(5.0), |id| id == r.id);
     assert_eq!(buys_for(&trade(&mut s, &mint, trigger()), r.id), 1);
+}
+
+/// The recipe every door-test buy goes through, public on the loaded table.
+const PUBLIC_BUILD: u64 = 0xB1;
+
+/// The loss door alone on a sell trigger: buys a 1 SOL sell while public-app first
+/// buyers hold at least 70 % of live supply.
+fn door_rule(id: u128) -> LoadedRule {
+    rule(id, json!({
+        "entry": {
+            "m_holder_book": {"public_app_share": [{"operator": ">=", "value": 70}]},
+            "m_flow_window": {"window_size_prints": 1, "sell": [{"operator": ">=", "value": 1}]}
+        },
+        "take_profit": 50
+    }))
+}
+
+fn load_public_table(state: &mut EngineState) {
+    let breadth = BuildBreadth { build_hash: PUBLIC_BUILD, app_buyers: 101, app_buys: 202 };
+    let _ = reduce(state, Event::BuildBreadthReloaded { breadth: Arc::from(vec![breadth]) });
+}
+
+/// Three wallets buy through the public recipe, starting `at` seconds after `ts(0)`.
+fn public_buys(at: f64) -> Vec<TradeLite> {
+    (1..=3)
+        .map(|w| TradeLite {
+            build_hash: Some(PUBLIC_BUILD),
+            token_amount: 1_000.0,
+            ..print(Side::Buy, 0.5, w, 100 + w, at + w as f64)
+        })
+        .collect()
+}
+
+/// [`trigger`] with the token amount every live print carries (a `NaN` amount breaks
+/// the book).
+fn door_trigger() -> TradeLite {
+    TradeLite { token_amount: 1_000.0, ..trigger() }
+}
+
+#[test]
+fn a_door_rule_on_from_birth_buys_the_trigger() {
+    let mint = Mint::from("MINT-door-birth");
+    let door = door_rule(1);
+    let mut s = EngineState::new();
+    load_public_table(&mut s);
+    reload(&mut s, vec![door.clone()]);
+    create(&mut s, &mint);
+    for t in public_buys(0.0) {
+        let _ = trade(&mut s, &mint, t);
+    }
+    assert_eq!(buys_for(&trade(&mut s, &mint, door_trigger()), door.id), 1);
+}
+
+/// A tracked token rebuilt for a door rule switched on after its buys: each history
+/// buy is classed against the loaded table as the live trade path classes it. An
+/// unclassed buy reads unknown, `public_app_share` stays `NaN`, and the door refuses
+/// the token for life (2026-09-14, `EJF7c3...`: rebuilt 12 s after birth, refused).
+#[test]
+fn a_door_rule_switched_on_later_sees_the_public_holders() {
+    let mint = Mint::from("MINT-door");
+    let (idle, door) = (idle_rule(2), door_rule(1));
+    let mut s = EngineState::new();
+    load_public_table(&mut s);
+    reload(&mut s, vec![idle.clone()]);
+    create(&mut s, &mint);
+    for t in public_buys(0.0) {
+        let _ = trade(&mut s, &mint, t);
+    }
+    reload(&mut s, vec![idle.clone(), door.clone()]);
+    let _ = hydrate_token(&mut s, &mint, &facts(), Some(&public_buys(0.0)), ts(5.0), |id| id == door.id);
+    assert_eq!(buys_for(&trade(&mut s, &mint, door_trigger()), door.id), 1);
+}
+
+/// The loaded table is `now`'s UTC day's: a history buy from an earlier day was
+/// classed against a table the engine no longer holds, so it stays unknown and the
+/// door fails closed rather than class it on the wrong day's breadth.
+#[test]
+fn a_history_buy_from_before_the_tables_day_stays_unknown() {
+    let mint = Mint::from("MINT-door-midnight");
+    let (idle, door) = (idle_rule(2), door_rule(1));
+    let mut s = EngineState::new();
+    load_public_table(&mut s);
+    reload(&mut s, vec![idle.clone()]);
+    create(&mut s, &mint);
+    for t in public_buys(0.0) {
+        let _ = trade(&mut s, &mint, t);
+    }
+    reload(&mut s, vec![idle.clone(), door.clone()]);
+    // `ts(0)` is 22:13:20 UTC, so two hours on is the next UTC day.
+    let now = ts(2.0 * 3600.0);
+    assert_ne!(now.date_naive(), ts(0.0).date_naive());
+    let _ = hydrate_token(&mut s, &mint, &facts(), Some(&public_buys(0.0)), now, |id| id == door.id);
+    let late = TradeLite { at: now, ..door_trigger() };
+    assert_eq!(buys_for(&trade(&mut s, &mint, late), door.id), 0);
 }
 
 #[test]

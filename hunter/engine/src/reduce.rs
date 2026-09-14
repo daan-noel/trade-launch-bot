@@ -906,6 +906,10 @@ pub struct HydrateFacts {
 ///   the live settle does. A tracked token keeps its arms, positions, episode
 ///   counters and birth-stamped axes; only its track is replaced, so windows a new
 ///   rule registered read the history they would have read.
+/// * Each history buy is stamped with its build-breadth class as `Trade` stamps it,
+///   when it was bought on `now`'s UTC day, the day the loaded table is for. An
+///   earlier day's buy stays unknown, so `m_holder_book.public_app_share` fails
+///   closed on that token.
 /// * An untracked token is built from `facts`. Its `prior_launches` stays unknown
 ///   (the tally at its birth is gone), and its launch-build door is stamped only
 ///   when it was born on `now`'s UTC day, the day the loaded door map is for. A rule
@@ -976,12 +980,19 @@ pub fn hydrate_token(
         }
         let mut stand_in = facts.first_slot.and_then(|f| f.creator_stand_in_wallet_hash);
         let creation_slot = facts.creation_slot.unwrap_or(0);
+        let table_day = now.date_naive();
         for &trade in history {
             if trade.slot > creation_slot {
                 if let Some(h) = stand_in.take() {
                     token.track.seed_creator(h);
                 }
             }
+            // The build-breadth stamp `Trade` applies, on the loaded table's day only (above).
+            let trade = if trade.at.date_naive() == table_day {
+                state.stamp_build_breadth(trade)
+            } else {
+                trade
+            };
             fold_trade(&mut token, trade);
         }
         if let Some(h) = stand_in {

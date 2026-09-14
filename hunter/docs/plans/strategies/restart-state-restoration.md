@@ -164,7 +164,11 @@ decides at the wall clock. A rebuild folds the creation-slot prints under the cr
 and then applies the first-slot stand-in, in the live settle's order. What an untracked
 token's rebuild cannot recover fails closed: `prior_launches` reads unknown (the tally
 at its birth is gone), and its launch-build door is stamped only when it was born on
-today's UTC day, the day the loaded door map is for.
+today's UTC day, the day the loaded door map is for. Every rebuild, tracked or not,
+stamps each history buy with its build-breadth class as a live trade is stamped, when
+the buy printed on today's UTC day, the day the loaded build-breadth table is for; an
+earlier day's buy stays unknown, and `m_holder_book.public_app_share` then reads `NaN`
+on that token.
 
 ## The entry depth survives a restart
 
