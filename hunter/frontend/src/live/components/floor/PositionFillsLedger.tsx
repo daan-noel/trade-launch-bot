@@ -13,11 +13,11 @@ import type { InspectTarget } from 'components/strategy/inspectTarget';
 
 export interface PositionFillsLedgerProps {
   fills: PositionFill[];
-  /** SOL the wallet paid at entry (human SOL) — the per-leg PnL% cost basis. */
+  /** SOL the wallet paid at entry (human SOL): the per-leg PnL% cost basis. */
   entrySol?: number | null;
   /** Entry time ISO for per-leg hold. */
   entryTime?: string | null;
-  /** Entry token amount — for sell_bps of initial bag and the per-leg cost share. */
+  /** Entry token amount: sizes sell_bps of the initial bag and the per-leg cost share. */
   entryTokenAmount?: number | null;
   loading?: boolean;
   /** True when rows were reconstructed from `strategy_positions` (no ledger). */
