@@ -15,6 +15,7 @@ import {
   type RunSummary,
 } from 'lib/strategy/runSummary';
 import { parseMetricExitParts } from 'lib/strategy/exitReason';
+import { pnlPctFromSol } from 'lib/pnlPct';
 import type { ClosedTradePoint } from '@live/store/liveEndpoints';
 import type { HistoryFocus } from './historyFocus';
 
@@ -24,7 +25,7 @@ export function closeToRunOutcome(c: ClosedTradePoint): RunOutcomeRow {
     fired: true,
     exit: c.exit_reason ?? 'Other',
     pnl_sol: c.pnl_sol,
-    pnl_pct: c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : 0,
+    pnl_pct: pnlPctFromSol(c.pnl_sol, c.entry_sol),
     holding_secs: c.hold_secs ?? 0,
     // Live book: buy size varies between closes, so the fold must weight its
     // headline percent by capital rather than average the per-close percents.

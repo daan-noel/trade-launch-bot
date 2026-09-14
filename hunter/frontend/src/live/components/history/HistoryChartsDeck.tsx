@@ -46,6 +46,7 @@ import { useAccordionOpen } from 'hooks/useUiPrefs';
 import { ACCORDION_IDS } from 'lib/storage';
 import { formatDecimalTrim } from 'utils/format';
 import { cn } from 'lib/cn';
+import { pnlPctFromSol } from 'lib/pnlPct';
 import type { ClosedTradePoint } from '@live/store/liveEndpoints';
 import {
   filterClosesForFocus,
@@ -141,7 +142,7 @@ function mapCloses(
   }[] = [];
   for (let i = 0; i < closes.length; i++) {
     const c = closes[i]!;
-    const pnlPct = c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null;
+    const pnlPct = pnlPctFromSol(c.pnl_sol, c.entry_sol);
     points.push({
       key: `${c.exit_time}:${i}`,
       timeMs: Date.parse(c.exit_time),

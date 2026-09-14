@@ -32,6 +32,7 @@ import {
 } from '@live/store/liveEndpoints';
 import { presetStart } from '@live/pages/console/historyCohort';
 import type { PortfolioRulePnl } from 'types';
+import { pnlPctFromSol } from 'lib/pnlPct';
 import { PortfolioRulePositions } from './PortfolioRulePositions';
 
 const portfolioRuleRowKey = (r: PortfolioRulePnl) => r.rule_id;
@@ -197,7 +198,7 @@ export function PortfolioPage() {
         key: `${c.exit_time}:${i}`,
         timeMs: Date.parse(c.exit_time),
         pnlSol: c.pnl_sol,
-        pnlPct: c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null,
+        pnlPct: pnlPctFromSol(c.pnl_sol, c.entry_sol),
         label: c.rule_id ?? 'unknown',
         groupId: c.rule_id,
       })),

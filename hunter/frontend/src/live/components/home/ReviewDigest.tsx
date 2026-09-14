@@ -23,6 +23,7 @@ import { useTimezone } from 'context/TimezoneContext';
 import { formatSigned, signedToneClass } from 'lib/signedTone';
 import { consoleHref, consoleHistoryHref, rulesHref } from 'lib/strategy/nav';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
+import { pnlPctFromSol } from 'lib/pnlPct';
 import { useGetPortfolioClosesSeriesQuery } from '@live/store/liveEndpoints';
 import { ATTENTION_STATUSES, selectLiveOpen } from '@live/slices/liveStatusSlice';
 
@@ -49,7 +50,7 @@ export const ReviewDigest = memo(function ReviewDigest() {
         key: `${c.exit_time}:${i}`,
         timeMs: Date.parse(c.exit_time),
         pnlSol: c.pnl_sol,
-        pnlPct: c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null,
+        pnlPct: pnlPctFromSol(c.pnl_sol, c.entry_sol),
         label: c.rule_id ?? 'unknown',
         groupId: c.rule_id,
       })),

@@ -28,6 +28,7 @@ import {
   shiftDayKey,
 } from 'components/analytics/pnlSeries';
 import { isMetricExitReason } from 'lib/strategy/exitReason';
+import { pnlPctFromSol } from 'lib/pnlPct';
 import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { formatDurationShort } from 'utils/format';
 
@@ -339,7 +340,7 @@ export function filterClosesForFocus<T extends FocusableClose>(
     case 'pct':
       return closes.filter((c) =>
         matchesPctFocus(
-          c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null,
+          pnlPctFromSol(c.pnl_sol, c.entry_sol),
           focus.lo,
           focus.hi,
         ),
@@ -352,7 +353,7 @@ export function filterClosesForFocus<T extends FocusableClose>(
       return closes.filter((c) =>
         matchesHoldBandSecs(
           c.hold_secs,
-          c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null,
+          pnlPctFromSol(c.pnl_sol, c.entry_sol),
           focus,
         ),
       );

@@ -64,6 +64,20 @@ describe('historyRunSummaryFromCloses', () => {
     expect(r.n_exit_manual).toBe(0);
   });
 
+  it('a close with no SOL paid has no pnl% and stays out of the percent stats', () => {
+    expect(closeToRunOutcome(pt({ id: 'z', entry_sol: 0, pnl_sol: -0.01 })).pnl_pct).toBeNull();
+    const r = historyRunSummaryFromCloses([
+      pt({ id: 'a', entry_sol: 1, pnl_sol: 0.1 }),
+      pt({ id: 'b', entry_sol: 1, pnl_sol: 0.3 }),
+      pt({ id: 'z', entry_sol: 0, pnl_sol: -0.01 }),
+    ]).realized;
+    expect(r.n_closed).toBe(3);
+    expect(r.total_pnl_sol).toBeCloseTo(0.39, 9);
+    expect(r.worst_pnl_pct).toBeCloseTo(10, 9);
+    expect(r.best_pnl_pct).toBeCloseTo(30, 9);
+    expect(r.mean_pnl_pct).toBeCloseTo(20, 9);
+  });
+
   it('maps hold_secs and pnl% onto the outcome row', () => {
     expect(
       closeToRunOutcome(

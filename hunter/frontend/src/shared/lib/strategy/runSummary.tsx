@@ -214,7 +214,10 @@ export interface RunOutcomeRow {
   fired: boolean;
   exit: string;
   pnl_sol: number;
-  pnl_pct: number;
+  /** PnL% of this position; `null` when it has no percent basis (no SOL paid).
+   *  A null row still counts in the SOL sums but stays out of every percent
+   *  statistic (mean / median / p90 / best / worst / sum). */
+  pnl_pct: number | null;
   holding_secs: number;
   /** Entry cost of this position, when the surface has it. Supplying it makes the
    *  fold's `return_pct` capital-weighted — required on a live/paper cohort,
@@ -609,6 +612,13 @@ export function quantileSorted(sorted: readonly number[], q: number): number | n
   return sorted.length === 0 ? null : sorted[Math.round((sorted.length - 1) * q)]!;
 }
 
+/** The rows' known percents; a row with no percent basis contributes none. */
+function pctsOf(rows: readonly RunOutcomeRow[]): number[] {
+  const out: number[] = [];
+  for (const r of rows) if (r.pnl_pct != null && Number.isFinite(r.pnl_pct)) out.push(r.pnl_pct);
+  return out;
+}
+
 function median(vals: number[]): number {
   return quantileSorted([...vals].sort((a, b) => a - b), 0.5) ?? 0;
 }
@@ -656,7 +666,8 @@ function metricsOf(
   exits: Record<ExitCountKey, number>,
 ): RunMetrics {
   const n = closed.length;
-  const pcts = closed.map((r) => r.pnl_pct);
+  const pcts = pctsOf(closed);
+  const np = pcts.length;
   const total = closed.reduce((s, r) => s + r.pnl_sol, 0);
   const grossWin = closed.reduce((s, r) => (r.pnl_sol > 0 ? s + r.pnl_sol : s), 0);
   const grossLoss = closed.reduce((s, r) => (r.pnl_sol < 0 ? s - r.pnl_sol : s), 0);
@@ -683,17 +694,17 @@ function metricsOf(
     total_pnl_sol: total,
     open_pnl_sol: openPnl,
     expectancy_sol: n ? total / n : 0,
-    mean_pnl_pct: n ? pcts.reduce((s, v) => s + v, 0) / n : 0,
+    mean_pnl_pct: np ? pcts.reduce((s, v) => s + v, 0) / np : 0,
     return_pct: weightedReturnPct(total, capital),
     // The column sum. `null` on an empty cohort so the tile drops instead of
     // asserting a measured `+0%`, matching how `median_pnl_pct` handles absence.
-    sum_pnl_pct: n ? pcts.reduce((s, v) => s + v, 0) : null,
+    sum_pnl_pct: np ? pcts.reduce((s, v) => s + v, 0) : null,
     median_pnl_pct: median(pcts),
     p90_pnl_pct: quantileSorted([...pcts].sort((a, b) => a - b), 0.9) ?? 0,
     // reduce, not `Math.max(...pcts)` — a group can hold thousands of rows, past
     // the spread arg limit.
-    best_pnl_pct: n ? pcts.reduce((m, v) => (v > m ? v : m), pcts[0]) : 0,
-    worst_pnl_pct: n ? pcts.reduce((m, v) => (v < m ? v : m), pcts[0]) : 0,
+    best_pnl_pct: np ? pcts.reduce((m, v) => (v > m ? v : m), pcts[0]) : 0,
+    worst_pnl_pct: np ? pcts.reduce((m, v) => (v < m ? v : m), pcts[0]) : 0,
     std_pnl_pct: 0,
     profit_factor: grossLoss > 0 ? grossWin / grossLoss : null,
     score: null,
@@ -717,8 +728,9 @@ export function runSummaryFromRows(rows: RunOutcomeRow[]): RunSummary {
   const open = fired.filter((r) => r.exit === 'Open');
   const openPnl = open.reduce((s, r) => s + r.pnl_sol, 0);
   const exits = countExits(closed);
-  const mtmPct = fired.length
-    ? fired.reduce((s, r) => s + r.pnl_pct, 0) / fired.length
+  const firedPcts = pctsOf(fired);
+  const mtmPct = firedPcts.length
+    ? firedPcts.reduce((s, v) => s + v, 0) / firedPcts.length
     : 0;
   const realized = metricsOf(closed, fired.length, open.length, openPnl, exits);
   const mtm = metricsOf(fired, fired.length, open.length, openPnl, zeroExitCounts());

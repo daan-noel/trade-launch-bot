@@ -1,4 +1,5 @@
 import type { CostModel, LiveTrade } from 'types';
+import { pnlPctFromSol } from './pnlPct';
 
 /**
  * Venue-neutral spot in SOL per raw token unit — same convention as
@@ -83,6 +84,6 @@ export function unrealizedFromValue(
   const pnlSol = netProceedsSol(valueSol, reserveSol, costs) - costBasisSol;
   return {
     pnlSol,
-    pnlPct: costBasisSol > 0 ? (pnlSol / costBasisSol) * 100 : null,
+    pnlPct: pnlPctFromSol(pnlSol, costBasisSol),
   };
 }
