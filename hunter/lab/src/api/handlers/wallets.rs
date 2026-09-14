@@ -165,7 +165,8 @@ struct WalletTokenRow {
     /// Mark-to-market PnL on the still-open bag (uses the token's current
     /// price); `null` when there's no open bag or the price is unknown.
     wallet_unrealized_pnl_sol: Option<f64>,
-    /// `realized_pnl_sol + unrealized_pnl_sol` — the one ranking number.
+    /// `realized_pnl_sol + unrealized_pnl_sol`, gross of fee. The page's own
+    /// total is net (`walletTotalSol` in `walletPnlStats.ts`).
     wallet_total_pnl_sol: f64,
     /// `net_token_amount > 0` — still holding some of this mint.
     wallet_is_open: bool,

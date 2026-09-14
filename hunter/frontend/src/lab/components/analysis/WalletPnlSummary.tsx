@@ -111,25 +111,25 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
         <StatTile
           label="Realized PnL (gross)"
-          value={<AmountCell sol={summary.totalRealizedPnlSol} />}
-          tone={signTone(summary.totalRealizedPnlSol)}
+          value={<AmountCell sol={summary.grossRealizedSol} />}
+          tone={signTone(summary.grossRealizedSol)}
         />
         <StatTile
           label="Realized PnL (net of fee)"
-          value={<AmountCell sol={summary.totalRealizedPnlSolNetOfFee} />}
-          tone={signTone(summary.totalRealizedPnlSolNetOfFee)}
+          value={<AmountCell sol={summary.netRealizedSol} />}
+          tone={signTone(summary.netRealizedSol)}
           sub="~125bps/leg pump.fun fee"
         />
         <StatTile
           label="Unrealized (open bags)"
-          value={<AmountCell sol={summary.totalUnrealizedPnlSol} />}
-          tone={signTone(summary.totalUnrealizedPnlSol)}
+          value={<AmountCell sol={summary.openMarkSol} />}
+          tone={signTone(summary.openMarkSol)}
           sub={`${summary.openCount} open`}
         />
         <StatTile
           label="Total (mark-to-market)"
-          value={<AmountCell sol={summary.totalPnlSol} />}
-          tone={signTone(summary.totalPnlSol)}
+          value={<AmountCell sol={summary.totalSol} />}
+          tone={signTone(summary.totalSol)}
           bold
         />
         <StatTile
@@ -148,7 +148,7 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
         <StatTile label="Payoff ratio" value={ratio(summary.payoffRatio)} sub="avg win / |avg loss|" />
         <StatTile
           label="Volume traded"
-          value={<AmountCell sol={summary.totalVolumeSol} />}
+          value={<AmountCell sol={summary.volumeSol} />}
           sub={`${formatWithCommas(summary.tokenCount)} tokens${summary.partialDataCount > 0 ? ` · ${summary.partialDataCount} partial` : ''}`}
         />
       </div>

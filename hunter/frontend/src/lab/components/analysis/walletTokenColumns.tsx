@@ -4,7 +4,7 @@ import { DateCell } from 'components/table/DateCell';
 import { AmountCell, FeeCell, PriceCell } from 'components/tokens/priceCells';
 import { Badge } from 'components/ui/Badge';
 import { ageClass, formatAge, formatDecimalTrim } from 'utils/format';
-import { walletHoldSeconds } from './walletPnlStats';
+import { WALLET_STATS, walletHoldSeconds, walletNetPct, walletTotalSol } from './walletPnlStats';
 
 /**
  * Trader Analysis wallet columns — the position the wallet held on each mint,
@@ -249,31 +249,31 @@ export function walletTokenColumns(): ColumnDef<TraderTokenRow>[] {
     },
     {
       key: 'w_pnl',
-      label: 'PnL',
+      label: WALLET_STATS.rowTotalSol.label,
       group: 'wallet_pos',
       width: '92px',
-      tooltip: 'Realized PnL plus the mark-to-market on any still-open bag',
+      tooltip: WALLET_STATS.rowTotalSol.def,
       sortable: true,
       render: (r) => (
-        <span className={r.wallet_total_pnl_sol >= 0 ? 'text-green' : 'text-red'}>
-          <AmountCell sol={r.wallet_total_pnl_sol} />
+        <span className={walletTotalSol(r) >= 0 ? 'text-green' : 'text-red'}>
+          <AmountCell sol={walletTotalSol(r)} />
         </span>
       ),
-      sortValue: (r) => r.wallet_total_pnl_sol,
+      sortValue: walletTotalSol,
       searchValue: () => '',
-      filterNumber: (r) => r.wallet_total_pnl_sol,
+      filterNumber: walletTotalSol,
     },
     {
       key: 'w_pnl_pct',
-      label: 'PnL %',
+      label: WALLET_STATS.rowNetPct.label,
       group: 'wallet_pos',
       width: '78px',
-      tooltip: 'Realized PnL over the matched cost basis. Blank with no buys in the window.',
+      tooltip: WALLET_STATS.rowNetPct.def,
       sortable: true,
-      render: (r) => <SignedPct pct={r.wallet_realized_pnl_pct} />,
-      sortValue: (r) => r.wallet_realized_pnl_pct,
+      render: (r) => <SignedPct pct={walletNetPct(r)} />,
+      sortValue: walletNetPct,
       searchValue: () => '',
-      filterNumber: (r) => r.wallet_realized_pnl_pct,
+      filterNumber: walletNetPct,
     },
     {
       key: 'w_fee',

@@ -75,8 +75,10 @@ describe('traderRowToFocusRow', () => {
       row({
         mint_address: 'OpenMint',
         wallet_is_open: true,
+        wallet_matched_cost_sol: 0,
         wallet_realized_pnl_pct: null,
         wallet_realized_pnl_sol: 0,
+        wallet_realized_pnl_sol_net_of_fee: 0,
         wallet_unrealized_pnl_sol: 0.2,
         wallet_total_pnl_sol: 0.2,
         wallet_first_trade_at: '2026-07-01T00:00:00Z',
@@ -95,6 +97,7 @@ describe('filterTraderRowsByFocus', () => {
   const win = row({
     mint_address: 'WinMint',
     wallet_realized_pnl_sol: 1,
+    wallet_realized_pnl_sol_net_of_fee: 0.95,
     wallet_realized_pnl_pct: 20,
     wallet_is_open: false,
     wallet_last_trade_at: '2026-07-27T14:30:00Z', // Mon 14:00 UTC
@@ -102,20 +105,32 @@ describe('filterTraderRowsByFocus', () => {
   const loss = row({
     mint_address: 'LossMint',
     wallet_realized_pnl_sol: -0.5,
+    wallet_realized_pnl_sol_net_of_fee: -0.55,
     wallet_realized_pnl_pct: -10,
+    wallet_is_open: false,
+    wallet_last_trade_at: '2026-07-27T14:30:00Z',
+  });
+  // Gross winner, net loser: the fee decides, so it focuses as a loss.
+  const feeLoss = row({
+    mint_address: 'FeeLossMint',
+    wallet_realized_pnl_sol: 0.01,
+    wallet_realized_pnl_sol_net_of_fee: -0.015,
+    wallet_realized_pnl_pct: 1,
     wallet_is_open: false,
     wallet_last_trade_at: '2026-07-27T14:30:00Z',
   });
   const openBag = row({
     mint_address: 'OpenMint',
     wallet_is_open: true,
+    wallet_matched_cost_sol: 0,
     wallet_realized_pnl_pct: null,
     wallet_realized_pnl_sol: 0,
+    wallet_realized_pnl_sol_net_of_fee: 0,
     wallet_unrealized_pnl_sol: 0.3,
     wallet_total_pnl_sol: 0.3,
     wallet_last_trade_at: '2026-07-28T08:00:00Z',
   });
-  const rows = [win, loss, openBag];
+  const rows = [win, loss, feeLoss, openBag];
 
   it('filters open / closed / outcome', () => {
     expect(filterTraderRowsByFocus(rows, [{ kind: 'status', status: 'open' }]).map((r) => r.mint_address)).toEqual([
@@ -123,13 +138,14 @@ describe('filterTraderRowsByFocus', () => {
     ]);
     expect(
       filterTraderRowsByFocus(rows, [{ kind: 'status', status: 'closed' }]).map((r) => r.mint_address),
-    ).toEqual(['WinMint', 'LossMint']);
+    ).toEqual(['WinMint', 'LossMint', 'FeeLossMint']);
     expect(
       filterTraderRowsByFocus(rows, [{ kind: 'outcome', outcome: 'win' }]).map((r) => r.mint_address),
     ).toEqual(['WinMint']);
     // Open bag with no realized % is neither win nor loss.
     expect(filterTraderRowsByFocus(rows, [{ kind: 'outcome', outcome: 'loss' }]).map((r) => r.mint_address)).toEqual([
       'LossMint',
+      'FeeLossMint',
     ]);
   });
 

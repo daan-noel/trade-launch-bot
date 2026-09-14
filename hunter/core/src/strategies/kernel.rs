@@ -544,10 +544,9 @@ pub struct WalletMintPnl {
     /// exit — charging a hypothetical exit fee here would overstate the haircut
     /// for a bag that might still be held when fees/slippage move).
     pub unrealized_pnl_sol: Option<f64>,
-    /// `realized_pnl_sol + unrealized_pnl_sol.unwrap_or(0.0)` — the single
-    /// mark-to-market ranking number (Trader Analysis' "ranked by PnL" chart
-    /// sorts on this, not on `realized_pnl_sol` alone, so a wallet's still-open
-    /// runner isn't invisible to the ranking).
+    /// `realized_pnl_sol + unrealized_pnl_sol.unwrap_or(0.0)`, gross of fee — the
+    /// co-trade headline. Trader Analysis' own figures are net of fee: the page
+    /// adds `realized_pnl_sol_net_of_fee` to the same unrealized mark.
     pub total_pnl_sol: f64,
     /// `net_token_amount > 0` — still holding some of this mint.
     pub is_open: bool,

@@ -2,7 +2,7 @@ import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { Badge } from 'components/ui/Badge';
 import { formatDurationShort } from 'utils/format';
 import { formatTimestampMs } from 'utils/date';
-import { walletHoldSeconds } from './walletPnlStats';
+import { WALLET_STATS, walletHoldSeconds, walletNetPct, walletTotalSol } from './walletPnlStats';
 import type { TraderTokenRow } from 'types';
 
 /**
@@ -17,7 +17,8 @@ export function TraderChartCardExtra({
   timezone: string;
 }) {
   const holdSecs = walletHoldSeconds(row);
-  const pct = row.wallet_realized_pnl_pct;
+  const total = walletTotalSol(row);
+  const pct = walletNetPct(row);
   const unrealized = row.wallet_unrealized_pnl_sol;
 
   return (
@@ -39,8 +40,11 @@ export function TraderChartCardExtra({
         </span>
       </span>
       <span className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
-        <span className={`font-bold ${row.wallet_total_pnl_sol >= 0 ? 'text-green' : 'text-red'}`}>
-          <AmountCell sol={row.wallet_total_pnl_sol} /> PnL
+        <span
+          className={`font-bold ${total >= 0 ? 'text-green' : 'text-red'}`}
+          title={`${WALLET_STATS.rowTotalSol.def}\n\n${WALLET_STATS.rowNetPct.label}: ${WALLET_STATS.rowNetPct.def}`}
+        >
+          <AmountCell sol={total} /> PnL
           {pct != null && (
             <span className="ml-1 font-mono font-semibold">
               ({pct >= 0 ? '+' : ''}

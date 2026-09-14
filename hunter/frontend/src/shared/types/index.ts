@@ -935,7 +935,8 @@ export interface TraderTokenRow extends TokenRecord {
   /** Mark-to-market PnL on the still-open bag; `null` when there's no open bag
    *  or the current price is unknown. */
   wallet_unrealized_pnl_sol: number | null;
-  /** `realized_pnl_sol + (unrealized_pnl_sol ?? 0)` — the one ranking number. */
+  /** `realized_pnl_sol + (unrealized_pnl_sol ?? 0)`, gross of fee. The page
+   *  reads the net total instead (`walletTotalSol`, `walletPnlStats.ts`). */
   wallet_total_pnl_sol: number;
   /** `net_token_amount > 0` — still holding some of this mint. */
   wallet_is_open: boolean;

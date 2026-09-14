@@ -601,10 +601,16 @@ export function exitBreakdownFromRows(
 
 // --- client-side aggregation (sweep drill-in) --------------------------------
 
+/** **The one client-side quantile**: nearest rank over an ascending array,
+ *  `sorted[round((n - 1) × q)]`. `null` on an empty array. Every client fold that
+ *  prints a median or a percentile (this builder, the Trader Analysis summary)
+ *  reads it here, so two tiles named `Median %` cannot rank differently. */
+export function quantileSorted(sorted: readonly number[], q: number): number | null {
+  return sorted.length === 0 ? null : sorted[Math.round((sorted.length - 1) * q)]!;
+}
+
 function median(vals: number[]): number {
-  if (vals.length === 0) return 0;
-  const s = [...vals].sort((a, b) => a - b);
-  return s[Math.round((s.length - 1) * 0.5)];
+  return quantileSorted([...vals].sort((a, b) => a - b), 0.5) ?? 0;
 }
 
 /** Tally the exit reasons of a cohort of closed rows. A reason with no counter
@@ -683,7 +689,7 @@ function metricsOf(
     // asserting a measured `+0%`, matching how `median_pnl_pct` handles absence.
     sum_pnl_pct: n ? pcts.reduce((s, v) => s + v, 0) : null,
     median_pnl_pct: median(pcts),
-    p90_pnl_pct: n ? [...pcts].sort((a, b) => a - b)[Math.round((n - 1) * 0.9)] : 0,
+    p90_pnl_pct: quantileSorted([...pcts].sort((a, b) => a - b), 0.9) ?? 0,
     // reduce, not `Math.max(...pcts)` — a group can hold thousands of rows, past
     // the spread arg limit.
     best_pnl_pct: n ? pcts.reduce((m, v) => (v > m ? v : m), pcts[0]) : 0,
