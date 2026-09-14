@@ -54,7 +54,7 @@ def episodes(S, wallet_id):
     rows = []
     for r in np.unique(T.run_of[T.wallet == wallet_id]):
         r = int(r)
-        if T.end[r] - T.start[r] < 30 or not np.isfinite(S.c_s[r]):
+        if not np.isfinite(S.c_s[r]):   # no print-count floor: it reads the coin's future
             continue
         R = Run(S, r)
         p = 0.0; peak = 0.0; e0 = -1

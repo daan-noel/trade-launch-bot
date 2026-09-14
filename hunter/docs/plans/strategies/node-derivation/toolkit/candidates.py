@@ -5,7 +5,7 @@ walk books in seconds and exactly as a live rule would. Build the table under LO
 contain the current sentence and every loosening to be tried; a loosening past a floor cannot
 be read off it.
 
-  build(S, trigger, floor=None, exit=..., actor=None, extra=None) -> DataFrame
+  build(S, trigger, floor=None, exit=..., actor=None, extra=None, runs=None) -> DataFrame
 
   trigger(run) -> bool mask over the coin's prints: the candidate prints. Fires only at
                   t >= S.t_min; the caller spells the rest (side, size, public, age).
@@ -15,6 +15,7 @@ be read off it.
                the candidate), act_lag (s), act_pre (that buy landed by our fill), act_in (it
                buys inside our hold).
   extra(run,k) -> dict of node-specific facts added to the row.
+  runs         optional iterable of run ids; default is every coin.
 
 Standard facts (all at the candidate print k, from prints before it):
   ssize  the print's SOL             age      s since creation     hold_n  public holders
@@ -41,16 +42,20 @@ from .facts import Run
 RULE_EXIT = X("tp15 sl25 t90", arm=0.15, cap=90.0)
 
 
-def build(S, trigger, floor=None, exit=RULE_EXIT, actor=None, extra=None):
+def build(S, trigger, floor=None, exit=RULE_EXIT, actor=None, extra=None, runs=None):
     T = S.T
     rows = []
-    for r in range(len(T.start)):
-        n = T.end[r] - T.start[r]
-        if n < 60 or not np.isfinite(S.c_s[r]):
+    it = range(len(T.start)) if runs is None else runs
+    for r in it:
+        r = int(r)
+        if r < 0 or r >= len(T.start):
+            continue
+        # No floor on the coin's print count or life: both are read at the END of the coin, after
+        # the fire. A >= 60 prints / >= 60 s floor here dropped every coin that dies young and put
+        # rule 3b's study at +5.00 %/trade; every fire of it reads -3.1 % (evidence 7).
+        if not np.isfinite(S.c_s[r]):
             continue
         R = Run(S, r)
-        if R.age[-1] < 60.0:
-            continue
         cand = trigger(R) & (R.t >= S.t_min)
         if not cand.any():
             continue

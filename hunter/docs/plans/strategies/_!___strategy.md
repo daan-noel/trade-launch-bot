@@ -551,7 +551,8 @@ daily-profitable rows collapse into 7 machines - the largest one 16 addresses sp
 space by `ord(mint[0]) % 8`, two per shard, verified on 13,587 of 13,587 mints with zero
 violations. **26 wallets have no co-selection partner and a margin that clears its own standard
 error.** They are the only rows where one row is one opinion, and they are the only instruments
-used. [solo-traders.md](solo-traders.md) is that set.
+used, except a row that manufactures volume stays a roster row and is dropped at pick (derive 4.0;
+evidence 5.1). [solo-traders.md](solo-traders.md) is that set.
 
 | node | wallets | net SOL | margin | median trade | lose > 20 % | best 1 % of trades = | open to us? | studied? |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
@@ -901,6 +902,9 @@ under trail50 c600 - at n >= 1,000 with a top-1 % share at or under about 20 %.*
 
 # 9. CLOSED MISTAKES
 
+The checks that catch these before a number is reported are
+[backtest-audit.md](backtest-audit.md); a number that has not passed it is a study read.
+
 | mistake | the rule |
 | --- | --- |
 | Close a slot because a sentence is red | A red number is an address. A slot closes on a mechanism or a conjunction search |
@@ -921,6 +925,7 @@ under trail50 c600 - at n >= 1,000 with a top-1 % share at or under about 20 %.*
 | Score money on his coins only | Full tape. His mint list is not a gate |
 | Compare "his coins" with a control | Forward conditioning; truncate the path at his arrival |
 | Read a candidate set as a universe | Matched negatives come from the full print population |
+| Keep or drop a coin on its future (its print count or life) | No coin floor anywhere: a >= 60 prints floor turns a -3.1 %/trade rule into +5.00 % |
 | Report a coin-level lift as if a rule could fire on it | Restate per print. 4.63x per coin is 1.21x per print |
 | Price the fill one or two slots after the trigger, or drop the trigger's slot | Last print landed by `fire + 115 ms`, both legs |
 | Take the next print after the signal as the fill | +8 to +12 pp of pure look-ahead |
@@ -1008,6 +1013,7 @@ The one section that names files, tables and engine vocabulary. Delete it to por
 | what | where |
 | --- | --- |
 | the method, the gates, how a result is recorded | [_!___derive.md](_!___derive.md) |
+| the checks every backtest number passes before it is a result | [backtest-audit.md](backtest-audit.md) |
 | the open queue | [_!___workflow.md](_!___workflow.md) |
 | a node's derivation, step by step, and its rule | [node-derivation/](node-derivation/README.md) |
 | every idea, in Door / Event / Permission / Exit | [_!___inventory.md](_!___inventory.md) |

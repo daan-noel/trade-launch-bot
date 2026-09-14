@@ -260,6 +260,7 @@ Name whose silence (the coin's, or one ix structure's) and who breaks it. A list
 | idea | meaning | status |
 | --- | --- | --- |
 | burst start | an ix structure's first buy ≥ 0.5 SOL after that structure is silent, on a mid-life coin; tool or router structures | keep (with slow-wall) · ev 6.4 |
+| └ 8aaRWu structure_burst | this ix structure silent, then it buys; among family prints 28.9 % vs 27.1 %, not a 6.1 term | open · mt3 6.2 (occupancy red; leftover 1.20 % / +8.84 %; 7.1 next) |
 | └ silence ≥ 10 slots, any structure | the same, any ix structure, ≥ 10 silent slots | red · ev 7 (C5) |
 | first buy after a silent coin | first buy ≥ 0.5 SOL after the coin is silent ≥ 10 slots | red · ev 7 (C8) |
 | new structure breaks the silence | the breaker is an ix structure this coin has not seen | red |
@@ -277,7 +278,7 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 | clip left | the structure has spent ≥ 0.3 SOL here and is still under 60 % of its median spend per coin | red · ev 7 (C9) |
 | under its own sell | coin silent, vsol below this structure's last sell here, no buy back yet; the structure sells-then-buys on ≥ 25 % of its coins | red · ev 7 (C10) |
 | └ operator structures only | the same, operator structures only | red · ev 7 (C9) |
-| clip step-up | this buy is larger than the structure's last buy here | new |
+| clip step-up | this buy is larger than the structure's last buy here | open · mt3 6.2 (8aaRWu occupancy red; 47.6 % of acted vs 28.5 % ignored; not a majority term; 7.1 next) |
 | first print here this hour | the structure's first print on this coin in the current UTC hour | new |
 | arrives from another coin | the structure is buying another coin, then prints here | red · ev 7 (C13) |
 
@@ -289,7 +290,7 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 | first outside buyer after the creator | the first non-creator buy after the creator has bought | new |
 | operator structures cross K | the count of operator structures on this coin rises through K | dead · mt1 5.2d |
 | ix structures in 2 s cross K | distinct ix structures in the last 2 s rises through K | dead · mt1 5.2d |
-| ApfmkS held state / quiet crossing | 5.1 flat (lift 1.44); 5.1c unpriced nearly flat (nb2 LOW, rank 0.42); rising-edge and quiet-crossing behind cost 2.14..5.63 %, 95 %+ ahead | dead · mt1 5.2f |
+| ApfmkS held state / quiet crossing | 5.1 flat; volume manufacture (VolAcc + TransferChecked), not a reader | dead · derive 4.0 |
 | first operator structure after only creator and seed racers | first non-creator, non-seed operator-structure buy >= 0.5 SOL; prior prints are only the creator and seed racers; one fire per coin | red · ev 7 (C15) |
 | buy flow spike | a buy lands at ≥ 3x the coin's trailing 30-slot buy rate | open |
 

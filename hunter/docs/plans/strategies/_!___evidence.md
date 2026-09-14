@@ -63,6 +63,8 @@ nothing merges across that instant. <!-- pt-ok: cutoff, tape before it carries o
 | --- | --- |
 | decision to own-fill-observed | p50 **115 ms**, p90 228, p99 513 (send path 8 ms, ack to fill 107 ms) |
 | `entry_slot - target_slot` | p50 **0**; 52.6 % in the trigger's own slot, 81.6 % within one, 93.4 % within two |
+| trigger to own fill, copy rules' real fills 09-01..09-13 (251, `strategy_positions` `entry_time - target_time`, ingest clock) | p10 / p25 / p50 / p75 / p90 **36 / 55 / 83 / 160 / 206 ms**; 63.7 % in the trigger's own slot. The seat derive section 0 re-reads before a latency verdict |
+| the fill model on those fills (our buy found on the lake by signature, taken off the tape; the state it met is the print before it in chain order) | at each fill's own lag the model's print is that state in **98.4 %** (mean +0.28 % dearer); at a flat 83 ms mean +0.36 %, median 0.00 %. Failed real buys since 09-01: 3 of 256, none on slippage (`mid-tape/mt_d8_fillcheck.py`) |
 | what explains the spread | trigger staleness, 98.7 % of variance; chain load is not a factor |
 | P(same slot) by reaction time | < 50 ms 84 %, 50-100 ms 75 %, 100-200 ms 54 %, >= 200 ms 20 % |
 
@@ -685,8 +687,9 @@ rows are the tickets where our fill lands after the member's buy.
 A driftless price reaches break-even first on 49.1-49.2 % of these tickets. Our fill lands after the
 member's closing sell on 0-0.5 %.
 
-- **The absolute read on the behind row passes rule 1's trigger and kills AbQcLH on cost** (4.55 %
-  against 1.41 %). The 2 % line sits between them.
+- **The absolute read on the behind row passes rule 1's trigger on peak leftover +7.46 %.**
+  AbQcLH is a race (lag 47 ms, ahead 5 %) with thin peak +1.69 %. Cost is diagnostic
+  (4.55 % against 1.41 %); it is not the veto.
 - **Alone it passes noise.** sssssw (cost 1.18 %, peak +1.01 %) and the burst start 8fStGV avoids
   both pass. Phase 4 drops sssssw (-0.62 % at RACE, 1/8 days) and 5.1's coverage drops the avoided
   class (5.8 % of its decisions against 93.2 % for its trigger), so the veto holds only in the
@@ -702,16 +705,29 @@ member's closing sell on 0-0.5 %.
 - **The horizon is the hold p50.** At the hold p10 (1-4 s) the peak is below zero on every row; at
   the hold p90 the ignored prints cover the cost too (+4..+18 %).
 - **Applied to the mid-tape node, after the calibration** (its own members out of its public
-  prints): 9999hu's and 88887Q's sell >= 1 cost 8.97 % and 7.01 % behind their buy and are killed
-  on the cost line, though peak leftover there stays +12.6 % and +6.8 %: a 7-9 % move leaves a
-  volatile path, and 9999hu's acted book rests on its tail (top 1 % 43 %, capped book red; ledger,
-  section 7). A read over all acted tickets counts the ahead ones, where its own buy is the leftover.
-  Every other print class and every rising-edge state on 9999hu fails the same cost line
-  (6.95..22.61 % behind; mid-tape-rule-2.md step 5.2d). 9Uq8GV's buy >= 1, burst start and nb2 / npro
-  rising edges fail it too (4.55..14.45 %; mid-tape-rule-1.md step 5.2d). 8dtx2t's burst start
-  costs 5.39 % with peak leftover +0.71 % (mid-tape-rule-1.md step 5.2e). ApfmkS names no print
-  (5.1 peak lift 1.44) and no unpriced state (5.1c nb2 LOW, rank 0.42); rising-edge and
-  quiet-crossing behind cost 2.14..5.63 % with 95 %+ ahead (mid-tape-rule-1.md step 5.2f).
+  prints): 9999hu's and 88887Q's sell >= 1 cost 8.97 % and 7.01 % behind their buy, and peak
+  leftover there stays **+12.6 % and +6.8 %**, so leftover exists at our fill (derive 5.2: cost
+  is not a kill). 9999hu's acted book rests on its tail (top 1 % 43 %, capped book red; ledger,
+  section 7). On 88887Q the WHO and history classes of that sell (seller_loss, nonce, tool) and
+  every other spike plus rising-edge nb2 / npro2 show the same leftover (behind cost 6.55-7.74 %,
+  peak +3.13 to +6.45 %; mid-tape-rule-3.md). A read over all acted tickets counts the ahead
+  ones, where its own buy is the leftover. Every other print class and every rising-edge state on
+  9999hu has leftover of the same shape (cost 6.95..22.61 % behind, peak still green;
+  mid-tape-rule-2.md step 5.2d). 9Uq8GV's buy >= 1, burst start and nb2 / npro rising edges:
+  behind cost 4.55..14.45 % (mid-tape-rule-1.md step 5.2d). 8dtx2t's burst start costs 5.39 %
+  with peak leftover **+0.71 %** (thin; mid-tape-rule-1.md step 5.2e); exclusive quiet /
+  continuation / loud peak **+0.08 / +1.92 / +1.07 %**. On 3Xk2Eu the same burst family (and
+  its WHO / history) costs 5.41-15.49 % behind with peak leftover **+5.75 to +10.41 %**, so
+  leftover exists. On **8aaRWu** identity leftover PASSES: behind cost **1.19-1.94 %**, peak
+  leftover **+5.31 to +16.47 %**, missed 0; structure_burst 1.36 % / +5.31 % / cover 45.7 %;
+  parent union cover 95.2 %, behind cost **1.20 %**, peak **+8.84 %**; loud restart cost 2.37 %
+  with peak **+7.12 %** (a candidate, not a cost kill). 6.1: 0.3 % of family prints acted; first
+  terms mvk >= 1.29 %, nstruct >= 3, sell_run <= 0. 6.2 occupancy of those terms on every coin is
+  red 0/6 (best mvk **-1.51 %**/trade); leftover on each spelling still PASSES. Occupancy red
+  and leftover green is 7.1 (the door is missing), not phase 8. Identity is the candidate. ApfmkS is volume
+  manufacture,
+  not a reader: drop at pick (derive 4.0; tape share 0.45 % SOL, VolAcc + TransferChecked unique
+  in the 26). 5.1 on it is flat (peak lift 1.44; mid-tape-rule-1.md step 5.2f).
 - **49uohd's sell >= 1, read only:** behind its buy the cost is 2.69 %, a kill on that class at our
   seat; ahead of it (57.5 % of tickets) its own buy is the leftover. Its 5.1 peak is a node print
   (6.4 at 25-50 ms); the sell class is its second band (3.3-3.7 at 150-300 ms, the member book of
@@ -1419,12 +1435,17 @@ That actor is **not a volume maker** despite its size: on the coins it trades it
 prints and 0.53 % of the SOL, and clears +4.71 % gross over 34,828 round trips on 13,565 coins.
 A volume maker owns a large share of his coin's tape and round-trips to about zero minus fees.
 This one is a passenger that keeps the difference - a reader run industrially. Exclude it from any
-count of independent agreement.
+count of independent agreement. A hopper that farms pump.fun volume (`InitUserVolumeAccumulator`
+plus bundled `TransferChecked`) also fails as a reader when tape share is small: **ApfmkS** owns
+0.45 % of SOL on its coins and is the only one of the 26 with those instructions. Drop it at pick
+(derive 4.0).
 
 ## 5.2 The instrument set: 26 solo traders, five nodes
 
 The 26 with no co-selection partner and a margin clearing its own standard error
 (`t` = return on spend / bootstrap SE >= 2). Full anatomy: [solo-traders.md](solo-traders.md).
+Roster membership is not instrument eligibility: a row that manufactures volume stays in the 26
+for agreement counts and is dropped at pick (derive 4.0). `ApfmkS` is that row.
 
 | node | wallets | trades | net SOL | margin | median trade | lose > 20 % | best 1 % = | entry reserve |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -1753,13 +1774,15 @@ The ledger: every rule booked, one row each, with the coordinate that produced i
 | C5 quiet deep-age, token-silence burst start | D keep / document / keep+ep . E first buy >= 0.5 after >= 10 token-silent slots . P age>=400 / v / quiet / creator . X trail40 c600 | keep+P **-32.46 SOL, 0/8, 200 first/day**; document **-3.63**; keep+ep **-9.46**; both halves red | **does not ship.** DELAY: the burst lasts ~80 ms |
 | C5 quiet deep-age, returning-pro restart | D keep / document . E returning professional after 10-slot build silence . P age>=400 / v / quiet / creator . X trail40 c600 | keep+P **-1.88 SOL, 1/8, 37/day**; document +0.40 (7.5/day, top1 94 %, hold -0.05) | **does not ship.** Does not describe GZmUDs on this tape |
 | G1 deep-age big clip, public size buy | D keep / document / slow-wall . E non-racer buy >= 1.0 SOL . P age>=200 / v 45-80 / live n60>=20 / creator . X trail40 c600 | keep+P **-13.19 SOL, 1/8, 125 first/day**; document +1.75 (16/day, top1 78 %); slow-wall +4.69 (33/day, top1 116 %, wo-top1 -0.77) | **does not ship**. Response equals base. Size print is not the tell |
-| Mid-tape instruments, all seven members | D cgroup / keep / not-dump / not-3ix / sw5 . E named by response . X clock 45 / tp30 / trail40 . seat lag_115 | 9Uq8GV ceiling +4.12 %/trade, names buy>=1; 8aaRWu +1.72 % clock 45 off slow-wall, lift 1.33; ApfmkS names nothing, self-start 45 %, followed +4.90 % unnamed; 9999hu / 88887Q name sell >= 1 | **does not ship.** All members measured. Slow-wall cell is C2 |
+| Mid-tape instruments, all seven members | D cgroup / keep / not-dump / not-3ix / sw5 . E named by response . X clock 45 / tp30 / trail40 . seat lag_115 | 9Uq8GV ceiling +4.12 %/trade, names buy>=1; 8aaRWu +1.72 % clock 45 off slow-wall, lift 1.33; ApfmkS volume manufacture, drop at pick; 9999hu / 88887Q name sell >= 1 | **does not ship.** All members measured. Slow-wall cell is C2 |
 | Mid-tape episodes 1/2/3+ four unpriced facts | D n_pro / n_pro_60 / n_hold / creator in / last-pro . E burst START . P age/v . X clock 45 / trail40 . seat lag_115 | all red; closest n_pro_60>=2 + creator in **-0.92 %/trade, 1/8**. Ep1 state does not separate return coins. Gap p50 56 s | **does not ship.** Four facts are the market on this event |
 | Mid-tape holder book at episode open | D never_sold / dev / sold_back / pro_hold / last_pro_hold / top1 . E burst START . P age/v . X clock 45 / trail40 . seat lag_115 | all red; last_pro_hold>=0.15 lift 3.50 then **-3.57 %/trade**. Ep1 book does not name return coins | **does not ship.** Tokens remaining is not D on this event |
 | Mid-tape 9Uq8GV | D none . E none at FOLLOW: buy >= 1, burst start, nb2 / npro rising edge . P none . X clock 15 (prior) . R one per coin . S 0.2 . seat lag_115 | buy>=1 behind cost **4.99 %** (cover 87.5 %); burst start 14.45 %; nb2>=4/5 6.14 / 4.96 %; npro 4.55..4.76 %, dt 5 ms | **no DELAY-legal E at FOLLOW** (step 5.2d). Pays at RACE only |
 | Mid-tape 8dtx2t burst start | D none . E public burst start on the fires it takes . P none . X none . R one per coin . S 0.2 . seat lag_115 | behind cost **5.39 %** (98.6 % over 2 %), peak +0.71 % at hold p50; buy>=0.5 4.50 %; nb2/npro rising edges 5.06..5.36 %. PASS none | **a 5.2 kill.** Public burst START stays C2 (workflow 2) |
 | Mid-tape 9999hu (88887Q is the same tell) | D none . E none at FOLLOW: sell >= 1 and every other print class, and the rising-edge states of the frenzy it buys into . P none . X working tp15 / sl40 / 70 s on the killed parent . R one per coin . S 0.2 . seat lag_115 | sell >= 1 behind cost **8.97 %** (88887Q 7.01 %), peak +12.61 % (1.27); other classes 6.95..22.61 %; rising edges 7.87..8.54 % (ahead leftover ~0.4 % is its own buy); occupancy -3.53 % 0/8; age <= 16.3 s +3.85 % 7/7 is the launch first-sell; acted tp15 sl40 t70 +1.61 % 7/7, top 1 % 42.8 %, capped -7.42 SOL | **no DELAY-legal E at FOLLOW.** Pays at RACE only |
-| Mid-tape ApfmkS | D none . E none at FOLLOW: 5.1 flat, no unpriced held state . P none . X none . R one per coin . S 0.2 . seat lag_115 | 5.1 peak sell>=1 lift **1.44**; 5.1c unpriced max rank-dev **0.08** (nb2 3 vs 4, LOW); stronger separator is priced (mv10 +8.0 vs +3.9). Rising-edge behind cost 2.14..5.63 % (95..99 % ahead); quiet-crossing nb2<=3 cost 4.80 % (cover 50.9 %, 95.9 % ahead). PASS none | **no DELAY-legal E at FOLLOW.** Pays at RACE only. Mid-tape node closed at this seat |
+| Mid-tape ApfmkS | D none . E none: volume manufacture, not a reader . P none . X none . R one per coin . S 0.2 . seat lag_115 | tape share 0.13 % prints / 0.45 % SOL; `InitUserVolumeAccumulator` 7.7 % and bundled `TransferChecked` 40.8 % of prints (unique in the 26); CreateCoinAndBuy 1 mint; 5.1 peak lift 1.44 | **drop at pick** (derive 4.0). Not FIND E |
+| Mid-tape 8aaRWu | D unread (7.1) . E identity family; 6.1 terms mvk >= 1.29 %, nstruct >= 3, sell_run <= 0 (occupancy red) . P none (frame age >= 10 s) . X none . R one per coin . S 0.2 . seat 83 ms, 115 ms beside it | parent leftover cost **1.20 %**, peak **+8.84 %**, cover 95.2 %; occupancy none **-2.97 %** 0/6, mvk **-1.51 %** 0/6, AND **-1.34 %** 0/6; control sells **-4.07 %**; leftover on each spelling PASSES; acted-only **+0.88 %** 4/6 | **5.2 PASS, 6.2 occupancy red.** Next 7.1, not phase 8. Do not AND. Identity beats priced. 6.2 numbers re-read before they count |
+| Mid-tape 8dtx2t rule 3b (first position) | D holders <= 46 . E public clip_step_up buy, own step >= 4.4 %, reserve <= 40, a new wallet, age >= 1 s . P <= 4 sells >= 1 SOL in 30 s, <= 25 prints in 5 s . X +40 % / -30 % / 17 s . R one per coin . S 0.2 . seat 83 ms, every leg, every lake coin born from 09-01 | study **-3.15 %** 0/6, holdout **-3.35 %** 0/5, 09-11..09-13 **-3.14 %** 0/3, about 2,000 a day; engine spelling every day -3.27 % (interval -3.60 .. -2.96), 50 ms -2.55 %. The study's +5.00 % 6/6 read only coins that end with >= 60 prints and >= 60 s: 40.4 % of fires sit on coins that end shorter, at -14.2 .. -14.9 %. By age at the fire: 1-3 s -3.15 %, 3-10 s -5.28 % (together 47 % of fires), 10-30 s -3.17 %, 30-300 s -1.3 .. -1.8 % | **red on every fire.** A future floor in the candidate table ([backtest-audit.md](backtest-audit.md) U1); E, D, P, X were read on survivors, on first positions only (derive 3: re-entry is R) and from age 1 s (derive 9: the frame is age >= 10 s) |
 | **C8 four-slot inventory walk** | D documented . E token-silence >=10 slots . P creator in . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 | **+47.54 SOL, 7/7, hold +13.33, LOO +13.90, boot 99.7 %**; tickets 47/170/220/192/140/125/63 (tracks documented births); plus is **age < 60 s** (+48.23); age>=60 **-0.82**; 818 / 1,622 fires sit at local index 0 and carry +46.08 (strategy law 31); on keep-create without the keep+ep50 sidecar the event books -1,034.87 (law 30) | **does not ship**. Launch book, not mid-tape. Day 0 = 47 is a 6.2 h stub. Tail 40 %. Inventory has no mid-tape 4-tuple that pays |
 | **C9 four new events** | D n_pro>=8 . E after-flush first buy . P creator+age/v+cu . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+8.73 SOL, 5/7, hold +2.03, LOO +5.93, boot 98.5 %, top client 32 %**; tickets 21/72/170/143/58/35/39; peak/trough 8.1x, top2 58 %; wo top1 **+1.41**; top1 84 % | **does not ship**. TYPE fails. Client gate clears. Floor 4/7. Tail. Not the next parent |
 | **C10 S4 sell-then-buy** | D slow-wall 5 % . E price under own exit (n_sell>=10, rebuy frac>=0.25, no is_pro) . P creator+age/v . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+4.47 SOL, 3/6, hold -1.13, LOO +0.57, boot 81.8 %, top client 87 %**; tickets 16/179/208/33/32/7; peak/trough 26x, top2 81 %; wo top1 **-3.63**; top1 181 % | **does not ship**. TYPE fails: two-day client inside slow-wall. Body red |

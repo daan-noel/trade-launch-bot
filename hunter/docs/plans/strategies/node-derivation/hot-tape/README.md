@@ -20,6 +20,11 @@ script that names the node's wallets needs `DATABASE_URL` in `hunter/.env` (a re
 | `r1b_exit.py` | rule 1's entry with an exit read the engine's way (prints, ticks, `LagMs` exit leg, partial legs); `check` reproduces rule 1's tickets, `paths`, `alone [2]`, `combine`, `book`; `ref` freezes rule 1b's tickets for the engine parity (`r1_engine_parity.py compare TAPE CSV r1b_ref`) | 1.24, 1.25 |
 | `r1c_loosen.py` | rule 1's entry loosened one term at a time under both exits, the added trades judged on their own net of the rule 1 tickets they displace (derive 12.4); its docstring holds the eight bars: `book`, `walk`, `combine`, `grid`, `slices` | 7 (rule 1c) |
 | `b2_leftover.py` | derive 5.2 calibrated: leftover existence on five member x trigger pairs whose fate is known, then applied to the mid-tape node's 9999hu and 88887Q (`toolkit.seat.leftover`) | 1.27 |
+| `r1g_members.py` | upgrade plan U1: each paying member's positions classed by the print they follow, checked against rule 1 + Door's terms and booked at our seat (115, 25, 50 ms) | - |
+| `r1g_exit.py` | upgrade plan U2: r1b_exit's evaluator and bars on the + Door pool, both exits, with the speed, decay, under-water, sell-on-sell and net-flow exits: `alone`, `alone2`, `combine`, `book` | - |
+| `r1g_loosen.py` | upgrade plan U3a: r1c_loosen's walk with the door as a fixed term, study from 09-02: `check`, `grid`, `walk`, `combine` | - |
+| `r1g_score.py` | upgrade plan U3b: one additive monotone score over rule 1's six fitted terms in place of the AND, walk-forward | - |
+| `r1g_size.py` | upgrade plan U4: rule 1 + Door's tickets re-priced at a clip sized by a score at the fire (0.05-0.5 SOL), against a flat clip of the same mean and random sizing, walk-forward | - |
 | `toolkit_check.py` | the toolkit re-runs steps 16, 21, 24 and 39 next to the recorded numbers | - |
 
 The step scripts the chain cites and this folder does not hold stay in git at `8b01c18b`, the

@@ -64,7 +64,7 @@ One row per step, in order, dead ends included. The phase is [_!___derive.md](..
 
 | step | question | what it shows | what it does to the rule | script | ev |
 | --- | --- | --- | --- | --- | --- |
-| 4 | Which members pay, and at which seat? | | | | |
+| 4 | Which members pay, and at which seat? Is this a reader (tape share + ix book)? | | | | |
 | 5.1 | What print does each react to, and at what lag? (WHO / history, not only size / % / gap) | | | | |
 | 5.2 | Does leftover exist at our 115 ms fill on the fires it takes? | | | | |
 | 6.1 | Which of those prints does it act on? | | | | |

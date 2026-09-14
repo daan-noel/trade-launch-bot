@@ -17,7 +17,7 @@ nodes. A node is picked here, then derived by [_!___derive.md](_!___derive.md).
 | node | status at our seat | where |
 | --- | --- | --- |
 | hot-tape re-entry | **rule 1 passes every ship bar**; the clean test is next | section 1 |
-| mid-tape one-shot | **open**: 8dtx2t burst family is a 5.2 kill, exclusive splits included; next 88887Q | section 2 |
+| mid-tape one-shot | **open**: 8aaRWu 6.2 occupancy red, leftover still exists; next **7.1** (door test), not phase 8. **8dtx2t rule 3b** (first position) is red on every lake day (-3.1 %/trade): its study book read a future coin floor. 88887Q / 3Xk2Eu leftover exists under the peak-leftover veto. ApfmkS is volume manufacture | section 2 |
 | deep-age big clip | red: a public size print is not the tell (response equals the base); the remainder is which coin, not which print | evidence 7, agreement in section 4 |
 | quiet deep-age | red: the token-silence burst it follows lasts ~80 ms, so a 115 ms fill is after it | evidence 7 |
 | instant launch | dead at this seat: consumed inside ~2 slots | strategy 8.1 (age-0 launch ramps) |
@@ -48,8 +48,8 @@ days must pass every bar, the tail included. Working file:
   file L10); the clean test goes on day by day, all four side by side.
 - **More trades a day need a second event, not a looser rule 1** (evidence 7, rule 1c). The open candidate is
   49uohd's capitulation dip-buy: +3.50 %/trade 8/8 on its picks at our seat under a clock (a 5.3
-  column), red in every public spelling (1.16). Its sell >= 1 class is a 5.2 kill behind its buy
-  (cost 2.69 %, 1.27): run 5.2 on the dip-buy picks as 1.16 defines them before its descriptors
+  column), red in every public spelling (1.16). Its sell >= 1 class has leftover behind its buy
+  (cost 2.69 %, peak +6.42 %, 1.27): run 5.2 on the dip-buy picks as 1.16 defines them before its descriptors
   (fall, burst, busy tape, seller at a loss, size) are fitted as one within-coin score. AbQcLH's
   burst start is a 5.2 kill (cost 4.55 %).
 
@@ -57,20 +57,49 @@ days must pass every bar, the tail included. Working file:
 
 ## 2. Mid-tape one-shot
 
-**Open.** Instrument **8dtx2t** is closed at our seat for its named family. He reacts to a public
-burst (quiet restart / continuation / loud restart, lift 5.74 / 5.81 / 9.72 @ 50-75 ms). Behind
-our 115 ms fill, exclusive cost **4.23 / 4.48 / 6.11 %** (5.2 kill). The quiet print itself moves
-+2.27 %; the rest of the burst lands inside 115 ms. His close is a cut (>20 % losses 0.8 %,
-body +11.67) and is not the veto. Working file:
+**Open.** **8aaRWu** is DELAY-legal at our seat: identity family leftover cover **95.2 %**, behind
+cost **1.20 %**, peak leftover **+8.84 %**. 6.2 occupancy on every coin is red 0/6 (best term
+mvk >= 1.29 % at **-1.51 %**/trade); leftover on those spellings still PASSES. Acted-only (not a
+sentence) is **+0.88 %** 4/6. Do not AND (AND occupancy **-1.34 %** 0/6, cover 22.3 %). Identity
+beats the priced burst family (loud restart cost 2.37 % with peak leftover **+7.12 %**: leftover
+exists; cost is not a kill). **3Xk2Eu** leftover exists on the same burst family (peak **+5.75 to +10.41 %**) despite
+cost 5.41-15.49 %. **88887Q** leftover exists on sell/down (peak **+3.13 to +6.45 %**) despite
+cost 6.55-7.74 %. **8dtx2t**'s first-position sentence (rule 3b: clip_step_up with its own step
+>= 4.4 %, reserve <= 40 SOL, a new wallet, age >= 1 s; D holders <= 46; P few big sells and
+prints; X +40 % / -30 % / 17 s; one entry per coin) books **-3.15 / -3.35 / -3.14 %/trade** on
+the study, the holdout and 09-11..09-13, 0 positive days, at the measured 83 ms seat (evidence 7).
+Its study +5.00 % read only coins that end with >= 60 prints (the candidate table's floor, now
+removed from the toolkit). ApfmkS is volume manufacture. 8aaRWu is the live instrument (cheapest entry among those hills).
+Working file:
 [node-derivation/mid-tape-rule-3.md](node-derivation/mid-tape-rule-3.md).
 
-- **Next:** 5.1 then 5.2 on the next candidate (**88887Q**: largest RACE book, unread tell on this
-  tape), derive section 5 (WHO and this-print history, not only size / % / gap), every-leg study.
-  9999hu / 9Uq8GV / ApfmkS / 8aaRWu / 3Xk2Eu stay candidates.
-  8dtx2t's X-cut stays a prior.
-- **Kills it:** no DELAY-legal public trigger at our seat on any remaining member (derive 5.2).
-- **Do not:** copy a fill; fire at buy-minus-L; walk D/P/X on 8dtx2t's burst family; AND-filter
-  that family further (97 % of behind quiet tickets already cost >= 2); pool members.
+- **Next:** 7.1 on 8aaRWu's spelled identity family (its coins before first buy vs after vs
+  other coins), at 83 ms with 115 ms beside it, study fires stopping at 09-06 12:00. Occupancy
+  red and leftover green is the door test (derive 10), not phase 8. Age >= 10 s is the frame
+  (P), not E. Do not split first vs re-entry: E is this print, R is re-entry. 8aaRWu's 6.2
+  occupancy numbers sit on the old candidate floor and on study fires past 09-06 12:00: re-read
+  before they count. Do not AND the terms as the event. Age / hold_n stay out of E (P).
+  `seed_racer` is a race diagnostic, not E. 88887Q / 3Xk2Eu leftover exists under the
+  peak-leftover veto (cost is not a kill). 8dtx2t exclusive leftover is thin (+0.08 / +1.92 /
+  +1.07 %). 9Uq8GV's buy>=1 leftover is still unread under this veto. ApfmkS is volume
+  manufacture (derive pick).
+- **Next on 8dtx2t:** one sentence on all its buys (5.1 names clip_step_up on all buys and on
+  first positions alike, so first vs re-entry is R, not two E's), frame age >= 10 s (47 % of rule
+  3b's fires sat at 1-10 s, -3.2 / -5.3 %/trade), re-derived from 6.1 on the fixed toolkit, then
+  booked by `mid-tape/mt_d8_replay.py` on every lake day before any verdict. Every toolkit book made before
+  the fix, 8aaRWu's 6.2 and acted-only numbers included, is re-read before it counts.
+- **Kills it:** peak leftover <= 0 on the spelled event; 7.1 shows no coin property and phases 8
+  and 9 fail both exit families walked forward (derive 5.2 is a veto, not a verdict; 6.2
+  occupancy is already red). For 8dtx2t's first position: the re-derived sentence red on the
+  replay's every-day book.
+- **Do not:** copy a fill; fire at buy-minus-L; prefer 8aaRWu's priced burst family over identity;
+  pick seed_racer as E; AND the identity classes or the 6.1 terms as the event; drop four identity
+  classes because `structure_burst` has the highest 5.1 lift; treat structure_burst / tool as 6.1
+  terms (they do not separate among family prints); kill leftover existence on reaction cost when
+  peak leftover still pays; skip D / jump to phase 8 because occupancy is red; split first-on-mint
+  vs re-entry into two E's when they share the 5.1 class; fit study fires after 09-06 12:00; hunt
+  leftover inside age < 10 s as the prize; pool members; pick ApfmkS (volume-accumulator + bundled
+  TransferChecked; derive pick).
 
 ---
 

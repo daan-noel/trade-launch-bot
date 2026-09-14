@@ -146,6 +146,8 @@ __pycache__/
 !hunter/docs/plans/strategies/node-derivation/hot-tape/b2_leftover.py
 !hunter/docs/plans/strategies/node-derivation/hot-tape/r1c_loosen.py
 !hunter/docs/plans/strategies/node-derivation/hot-tape/toolkit_check.py
+!hunter/docs/plans/strategies/node-derivation/mid-tape/mt_d8_replay.py
+!hunter/docs/plans/strategies/node-derivation/mid-tape/mt_d8_fillcheck.py
 hunter/docs/plans/strategies/node-derivation/data/
 !hunter/docs/plans/strategies/study-kernel/kernel.py
 !hunter/docs/plans/strategies/study-kernel/tape.py

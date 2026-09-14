@@ -13,6 +13,7 @@ the five decision nodes its members answer.
 | `hunter/_local/roster-nodes.xlsx` | sheets `NODE SUMMARY` and `NODE 1..5`, the same rows colour-coded per node with rejected wallets greyed |
 | [rb-coselect.py](rb-coselect.py) | establishes independence - which wallets are one machine |
 | [rb-actor-sheet.py](rb-actor-sheet.py) | the ranking, `t` and its bootstrap; writes the workbook and `solo-traders-base.csv` |
+| [rb-actor-tape-share.py](rb-actor-tape-share.py) | tape share on coins a wallet prints: wash vs reader (evidence 5.1) |
 | [rb-solo-nodes.py](rb-solo-nodes.py) | the node anatomy in this file, the per-node files, and the `NODE *` sheets |
 
 **Run order is `rb-actor-sheet.py` then `rb-solo-nodes.py`.** The first rewrites the whole
@@ -33,7 +34,7 @@ and carrying sampling error the outcome columns do not.
 
 ## 1. What makes a wallet eligible
 
-Two cuts, in order.
+Two cuts make the **roster**. A third screen makes an **instrument**.
 
 **No co-selection partner.** Wallets whose coin lists either never intersect (one operator
 splitting a work queue) or almost entirely coincide (one operator racing itself) collapse into
@@ -44,9 +45,15 @@ its standard error, the error from a 2,000-resample per-episode bootstrap. Ten o
 under `t = 2`; nine of those ten have a 90 % interval that crosses zero and three are outright
 negative. They are dropped, leaving **26**.
 
-Both cuts are necessary and neither is sufficient. A machine's wallet can have a huge `t` - the
-16-address machine's legs run tens of thousands of trades - and still be one opinion counted
-sixteen times.
+**A reader, not volume manufacture** ([_!___derive.md](_!___derive.md) pick, 4.0). Tape share on
+the coins he prints: a wash owns a large share and round-trips to about zero minus fees
+(evidence 5.1). Ix book from lake `ix_labels`: `InitUserVolumeAccumulator`, bundled
+`TransferChecked`, or `CreateCoinAndBuy` as the book is a hopper even when tape share is small.
+`ApfmkS` stays a roster row (`t = 2.41`) and is not an instrument.
+
+The first two cuts are necessary and neither is sufficient. A machine's wallet can have a huge
+`t` - the 16-address machine's legs run tens of thousands of trades - and still be one opinion
+counted sixteen times. `t >= 2` does not prove a reader.
 
 `margin_if_10_best_trades_deleted` in the CSV is the fastest sanity check on any row: `64hP` goes
 1.18 % to 1.07 %, while `9RNZnq` goes 8.25 % to 3.28 % and four of the ten rejected wallets turn
@@ -153,10 +160,15 @@ Create cgroup include is the market (concentration 0.87-1.16). Their prints stay
 list is never a door ([_!___evidence.md](_!___evidence.md) 7, mid-tape rows). `8dtx` and `3Xk2` run durable-nonce
 racer builds: what is closed is copying their fill, not the decision they make. `3Xk2Eu` has no
 prints on the last-leg tape. `9Uq8GV` names the event (buy >= 1 lift 4.75) and leftover on their
-coins is +4.12 %/trade at clock 45; public doors besides slow-wall are red. `8aaRWu` does not
-name burst START (lift 1.33); leftover on their coins is +1.72 %/trade clock 45, on keep and
-**off** slow-wall. `ApfmkS` names nothing (all lifts ~1), self-starts 45 %, and the leftover
-on the bursts they follow is +4.90 % unnamed. All seven members are measured
+coins is +4.12 %/trade at clock 45; public doors besides slow-wall are red. `8aaRWu` names a
+structure restart on every-leg study (`structure_burst` lift 4.84 @ 25-50 ms; priced burst_start
+5.95) and leftover behind a 115 ms fill PASSES (parent union cost 1.20 %, peak +8.84 %); 6.1
+first terms are mvk >= 1.29 %, nstruct >= 3, sell_run <= 0; 6.2 occupancy of those terms is red
+0/6 (best mvk -1.51 %); next is 7.1 (occupancy red and leftover green is the door test, not
+phase 8). E is this print; re-entry is R.
+`ApfmkS` is volume manufacture, not a reader: `InitUserVolumeAccumulator` and
+bundled `TransferChecked` are unique to it in the 26, tape share is 0.45 % of SOL, and 5.1 is
+flat; it is not the next instrument. All seven members are measured
 ([_!___evidence.md](_!___evidence.md) 7, mid-tape rows). Multi-trade is 14-26 % of their mints; the
 close-to-reopen gap is 56 s p50. The four unpriced facts at episode open are the market
 and do not fill D ([_!___evidence.md](_!___evidence.md) 7, mid-tape episodes row). Token remaining (holder
@@ -330,7 +342,8 @@ agreement predicts anything forward is **unmeasured**.
 ## 6. What it does not claim
 
 Membership is selection - the population is picked for being profitable - so levels are
-tautological and only ordering carries. No entry in this file is priced at `lag_115`, none has a
+tautological and only ordering carries. `t >= 2` is not a reader: measure tape share and the ix
+book before FIND E (section 1; derive 4.0). No entry in this file is priced at `lag_115`, none has a
 holdout, and the five nodes are descriptions of habit confirmed by outcome, not candidate rules. A
 node becomes a rule only through the full-tape test in [_!___strategy.md](_!___strategy.md) 7.4
 and Phase 5.

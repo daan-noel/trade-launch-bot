@@ -37,16 +37,24 @@ mode is **build-time**, never a runtime capability check.
 
 Read before trusting any backtest number:
 [execution-costs.md](docs/plans/strategies/execution-costs.md) (what a round trip costs) and
-[fill-and-cost-models.md](docs/plans/strategies/fill-and-cost-models.md). Open work lives in
+[fill-and-cost-models.md](docs/plans/strategies/fill-and-cost-models.md).
+**No backtest number is a result until it passes
+[backtest-audit.md](docs/plans/strategies/backtest-audit.md)**: rebuilt by code that shares
+nothing with the study, on every coin born in the window (none kept on its future), every lake
+day, every wallet and leg, split study / holdout / new days and by coin age. Open work lives in
 [`docs/roadmap/`](docs/roadmap/), never in `docs/plans/`.
 
 **Searching for a new trading rule?**
 [_!___strategy.md](docs/plans/strategies/_!___strategy.md) is the basis.
 [_!___derive.md](docs/plans/strategies/_!___derive.md) is the method: from one paying
-wallet to a sentence (pick, leftover existence at 115 ms, event, then D/X/P; inventory
-search on that parent), the gates and ship bars, and how a result is recorded. An event
-candidate is graded by leftover existence behind his buy at our fill (derive 5.2), never
+wallet to a sentence (pick, leftover existence at 115 ms, event, then D then X then P;
+inventory search on that parent), the gates and ship bars, and how a result is recorded. An event
+candidate is graded by leftover existence behind his buy at our fill (derive 5.2:
+peak leftover after that fill; reaction cost is not a kill), never
 by one exit's P&L. Scan WHO printed, not only size / side / this-print % / coin-gap.
+A red occupancy book with green leftover is 7.1 (the door is missing), not phase 8 and
+not a dead E. E is this print (re-entry is R). Study fires stop where the holdout starts.
+Age < 10 s is not the mid-tape prize.
 [_!___inventory.md](docs/plans/strategies/_!___inventory.md) is every idea, used after
 the event is named.
 [_!___workflow.md](docs/plans/strategies/_!___workflow.md) is the open queue.
@@ -65,7 +73,8 @@ naming it in the root `.gitignore`.
 The instrument set is the 26 solo traders, node by node
 ([solo-traders.md](docs/plans/strategies/solo-traders.md)). A trader names a decision; he
 is never cloned, his coins are never a gate, and his own prints stay out of the pool. "His
-fill is unreachable" is not "his decision is unreachable".
+fill is unreachable" is not "his decision is unreachable". Drop volume manufacture
+(tape share and the ix book) before FIND E; `t >= 2` is not a reader.
 
 ## Commands
 

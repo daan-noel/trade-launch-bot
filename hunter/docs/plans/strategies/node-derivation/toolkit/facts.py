@@ -36,7 +36,7 @@ class Run:
         self.r, self.a, self.b, self.n = r, a, b, b - a
         self.t = T.t[a:b]; self.v = T.v[a:b]; self.sol = T.sol[a:b]; self.side = T.side[a:b]
         self.wal = T.wallet[a:b]; self.bu = T.build[a:b]
-        self.day = T.day[a:b]
+        self.day = T.day[a:b]; self.slot = T.slot[a:b]
         self.tm = np.maximum.accumulate(self.t)
         self.age = self.tm - S.c_s[r]
         self.mine = S.is_node[a:b]; self.pub = ~self.mine

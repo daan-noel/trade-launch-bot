@@ -80,9 +80,9 @@ def capped(F, yc="y"):
 
 
 def ledger(F, days, b=B, yc="y"):
-    y = F[yc]
     if len(F) == 0:
         return dict(n=0, nday=0.0, pct=np.nan, sol=0.0, solday=0.0, pos="0/0")
+    y = F[yc]
     s = float(y.sum())
     ag = F.groupby("day")[yc].sum()
     top = float(y.nlargest(max(1, int(round(0.01 * len(F))))).sum())
