@@ -92,6 +92,9 @@ pub struct ManageConfig {
     /// Slippage floor (bps) applied to each management sell — protects proceeds
     /// against a thin curve. Default 10% (managed tokens are often low-liquidity).
     pub sell_slippage_bps: u64,
+    /// Slippage ceiling (bps) on each management / volume-bot buy — the min-tokens-
+    /// out floor below the quoted fill. Default 10%, matching the sell side.
+    pub buy_slippage_bps: u64,
     /// Log intended actions and place NO real trades. Test before live.
     pub dry_run: bool,
     /// Compute-unit price (micro-lamports/CU) for manage buy/sell txs. The manage
@@ -120,6 +123,7 @@ impl ManageConfig {
         }
         Ok(Some(Self {
             sell_slippage_bps: env_u64("MANAGE_SELL_SLIPPAGE_BPS", 1_000)?,
+            buy_slippage_bps: env_u64("MANAGE_BUY_SLIPPAGE_BPS", 1_000)?,
             dry_run: env_flag("MANAGE_DRY_RUN", false),
             cu_price_micro_lamports: env_u64("MANAGE_CU_PRICE_MICRO_LAMPORTS", 50_000)?,
             jito_min_tip_sol: env_f64("MANAGE_JITO_MIN_TIP_SOL", 0.0)?,

@@ -104,8 +104,7 @@ pub async fn execute_action(
     // mandatory fingerprint-audit gate BEFORE anything executes. The legacy
     // `PlanLeg[]` still drives the (proven) per-leg execution below; the gated plan
     // is the audited, persisted SSOT — a hard-reject here aborts the whole action.
-    let orch_plan =
-        build_orchestrator_plan(pool, mint, &plan.legs, &ctx, manage_cfg.sell_slippage_bps).await?;
+    let orch_plan = build_orchestrator_plan(pool, mint, &plan.legs, &ctx, manage_cfg).await?;
     let gated = crate::plan_pipeline::gate(orch_plan, settings.allow_fingerprint)
         .context("manage action failed the mandatory plan/audit gate")?;
 
@@ -496,7 +495,7 @@ async fn buy_leg(
             &creator,
             token_program,
             sol_amount,
-            Some(manage_cfg.sell_slippage_bps),
+            Some(manage_cfg.buy_slippage_bps),
             false, // cashback — chain flag covers it
         )
         .await
@@ -558,7 +557,7 @@ async fn build_orchestrator_plan(
     mint: &str,
     legs: &[PlanLeg],
     ctx: &ExecContext,
-    slippage_bps: u64,
+    manage_cfg: &ManageConfig,
 ) -> Result<orchestrator::Plan> {
     use orchestrator::{Amount, IdSeq, Intent, Operation, Plan, Role, WalletRef};
 
@@ -582,7 +581,7 @@ async fn build_orchestrator_plan(
                 wref,
                 mint.to_string(),
                 leg.amount_base.max(0) as u64,
-                Some(slippage_bps),
+                Some(manage_cfg.sell_slippage_bps),
                 vec![],
             ),
             "buy" => Operation::buy(
@@ -593,7 +592,7 @@ async fn build_orchestrator_plan(
                 wref,
                 mint.to_string(),
                 Amount::ExactQuote(leg.spend_quote.max(0) as u64),
-                Some(slippage_bps),
+                Some(manage_cfg.buy_slippage_bps),
                 vec![],
             ),
             "consolidate" => {
