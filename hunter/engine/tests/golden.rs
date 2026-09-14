@@ -1233,6 +1233,52 @@ fn two_fingerprints_flow_states_diverge() {
     assert_eq!(buys(&fx), vec![(rid(1), BUY)]);
 }
 
+/// `buy_pct_of_vsol` sizes off the priced depth (vsol), never the `liquidity`
+/// reading (real SOL = vsol - 30 on the curve): at vsol 60 / real 30 a 1 % buy is
+/// 0.6 SOL, not 0.3.
+#[test]
+fn buy_pct_of_vsol_sizes_off_the_priced_depth() {
+    use hunter_engine::metrics::flow_ix::ix_hash;
+
+    let mut fp = cu_fp(1);
+    fp.metric_config = json!({ "m_flow_ix": { "ix_patterns": [["a"]] } });
+    let params = json!({
+        "buy_pct_of_vsol": 1.0,
+        "entry": { "m_flow_ix": { "tagged_buy": [{"operator": ">", "value": 0}] } }
+    });
+    let mut s = EngineState::new();
+    let m = Mint::from("tokPct");
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![fp]));
+    reduce(
+        &mut s,
+        Event::TokenCreated {
+            mint: m.clone(),
+            fp: cu_token(),
+            at: ts(0.0),
+            creator_wallet_hash: None, identity: None,
+            creation_slot: None,
+        },
+    );
+    let fx = reduce(
+        &mut s,
+        Event::Trade {
+            mint: m,
+            trade: TradeLite {
+                side: Side::Buy,
+                sol: 1.0,
+                price: 1.0,
+                reserve_sol: 30.0,
+                priced_reserve_sol: 60.0,
+                at: ts(1.0),
+                ix_hash: Some(ix_hash(&["a"])),
+                wallet_hash: 1,
+                ..Default::default()
+            },
+        },
+    );
+    assert_eq!(buys(&fx), vec![(rid(1), 600_000_000)]);
+}
+
 // ── Re-entry lifecycle (plan Ph4) ─────────────────────────────────────────────
 //
 // One-shot behavior is the golden non-regression: every scenario above runs rules

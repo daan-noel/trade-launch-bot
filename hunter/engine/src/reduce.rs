@@ -1089,7 +1089,10 @@ fn evaluate_token(
                 && state.dupe_guard.blocks(c.trade_mode, token.identity, mint, now);
             (
                 decide_arm(c, rule_id, arm, token, dead, dupe_blocked, now),
-                resolve_buy_lamports(c, token.track.current_reserves()),
+                // The priced depth (vsol), not the `liquidity` reading (real SOL =
+                // vsol - 30 on the curve): the percent is of the depth impact is
+                // charged against, which is what holds impact constant.
+                resolve_buy_lamports(c, token.track.current_priced_reserves()),
                 c.concurrent_cap,
                 c.max_total,
                 c.trade_mode,
