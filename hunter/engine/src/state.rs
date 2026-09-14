@@ -617,14 +617,12 @@ impl EngineState {
     /// set without the group.
     ///
     /// [`TradeLite::build_day_public`]: crate::metrics::TradeLite::build_day_public
-    pub fn stamp_build_breadth(&self, mut t: crate::metrics::TradeLite) -> crate::metrics::TradeLite {
-        if self.any_holder_book && t.side == crate::metrics::Side::Buy {
-            t.build_day_public = self
-                .public_recipes
-                .as_ref()
-                .map(|s| t.build_hash.is_some_and(|h| s.contains(&h)));
+    pub fn stamp_build_breadth(&self, t: crate::metrics::TradeLite) -> crate::metrics::TradeLite {
+        if self.any_holder_book {
+            crate::metrics::holder_book::stamp_public(t, self.public_recipes.as_ref())
+        } else {
+            t
         }
-        t
     }
 
     /// A fresh track for a token created at `at`, pre-registering every rule

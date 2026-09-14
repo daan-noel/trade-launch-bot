@@ -30,8 +30,10 @@
 
 use std::collections::HashMap;
 
+use chrono::NaiveDate;
+
 use crate::event::BuildBreadth;
-use crate::hash::HashedMap;
+use crate::hash::{HashedMap, HashedSet};
 
 use super::{MetricId, Side, TradeLite};
 
@@ -45,6 +47,32 @@ pub const PUBLIC_MIN_REPEAT: u32 = 2;
 /// Whether a build-breadth row's app was a public app on its day.
 pub fn is_public_app(b: &BuildBreadth) -> bool {
     b.app_buyers > PUBLIC_MIN_BUYERS && u64::from(b.app_buys) >= u64::from(PUBLIC_MIN_REPEAT) * u64::from(b.app_buyers)
+}
+
+/// One day's public-app recipes, by build-recipe hash: the rows of that day's
+/// build-breadth table that pass [`is_public_app`].
+pub fn public_recipes(breadth: &[BuildBreadth]) -> HashedSet {
+    breadth.iter().filter(|b| is_public_app(b)).map(|b| b.build_hash).collect()
+}
+
+/// Stamp a buy with [`TradeLite::build_day_public`] on one day's public recipes;
+/// `None` (no table for the day) stamps it unknown. A sell passes unchanged. **The one
+/// stamp**: the engine's live fold and the closed-position readout both call it.
+pub fn stamp_public(mut t: TradeLite, public: Option<&HashedSet>) -> TradeLite {
+    if t.side == Side::Buy {
+        t.build_day_public = public.map(|s| t.build_hash.is_some_and(|h| s.contains(&h)));
+    }
+    t
+}
+
+/// Stamp every buy on the public recipes of its own UTC day, as a replay that loads
+/// each day's table at 00:00 UTC stamps it. A day `tables` lacks stays unknown.
+pub fn stamp_by_day(trades: &mut [TradeLite], tables: &[(NaiveDate, HashedSet)]) {
+    for t in trades.iter_mut() {
+        let day = t.at.date_naive();
+        let public = tables.iter().find(|(d, _)| *d == day).map(|(_, s)| s);
+        *t = stamp_public(*t, public);
+    }
 }
 
 /// A first-buy group is bundled at this many wallets in one (slot, build).
@@ -190,6 +218,23 @@ mod tests {
 
     const PUB: Option<bool> = Some(true);
     const BOT: Option<bool> = Some(false);
+
+    /// Each buy is classed on its own UTC day's table; a day with no table stays
+    /// unknown, and a sell is never stamped.
+    #[test]
+    fn a_buy_is_stamped_on_its_own_days_table() {
+        use chrono::{TimeZone, Utc};
+        let day1 = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let day2 = day1 + chrono::Duration::days(1);
+        let day3 = day2 + chrono::Duration::days(1);
+        let public = |h| public_recipes(&[BuildBreadth { build_hash: h, app_buyers: 101, app_buys: 202 }]);
+        let tables = [(day1.date_naive(), public(7)), (day2.date_naive(), public(9))];
+        let at = |side, when| TradeLite { at: when, ..print(side, 1, 1.0, 1, 7, None) };
+        let mut trades = [at(Side::Buy, day1), at(Side::Buy, day2), at(Side::Buy, day3), at(Side::Sell, day1)];
+        stamp_by_day(&mut trades, &tables);
+        let got: Vec<Option<bool>> = trades.iter().map(|t| t.build_day_public).collect();
+        assert_eq!(got, [PUB, BOT, None, None]);
+    }
 
     #[test]
     fn a_public_app_is_wide_and_comes_back() {

@@ -53,6 +53,7 @@ use hunter_engine::metrics::flow_ix::{
 use hunter_engine::metrics::template_grain::{
     grain_hash_from_labels_value, program_hash_from_labels_value,
 };
+use hunter_engine::metrics::holder_book::{public_recipes, stamp_by_day};
 use hunter_engine::metrics::{metric_spec, MetricId, Side, TradeLite};
 use hunter_engine::readout::{
     replay_readout, replay_series, ConditionRead, ConditionSeries, ReadSide, ReadoutSource,
@@ -66,6 +67,7 @@ use crate::strategies::engine::EngineReloadError;
 use trading_core::models::trade::{Trade, TradeRow, TradeType};
 use trading_core::models::wallet::validate_solana_address;
 use trading_core::models::StrategyPosition;
+use trading_core::storage::repositories::build_breadth_repo::BuildBreadthRepo;
 
 /// What a condition **is**, independent of any instant — the half of the wire shape
 /// that does not change row to row, so the series sends it once and the point read
@@ -549,6 +551,30 @@ async fn replay_created_at(
     }
 }
 
+/// Stamp each buy with its build-breadth class from the stored table of its own UTC
+/// day, the table the live engine held that day, when the rule reads `m_holder_book`.
+/// Read-only: a day never stored stays unknown and `public_app_share` reads `null`, so
+/// a request never computes a table (one `GROUP BY` over a day of `trades`).
+async fn stamp_build_breadth(app_state: &DeployState, rule: &CompiledRule, lites: &mut [TradeLite]) {
+    if !rule.needs_holder_book {
+        return;
+    }
+    let days: std::collections::BTreeSet<chrono::NaiveDate> =
+        lites.iter().filter(|t| t.side == Side::Buy).map(|t| t.at.date_naive()).collect();
+    let repo = BuildBreadthRepo::new(app_state.core.db.clone());
+    let mut tables = Vec::with_capacity(days.len());
+    for day in days {
+        match repo.load_day(day).await {
+            Ok(rows) if !rows.is_empty() => {
+                tables.push((day, public_recipes(&BuildBreadthRepo::to_engine(&rows))));
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%day, "readout replay: build breadth read failed: {e}"),
+        }
+    }
+    stamp_by_day(lites, &tables);
+}
+
 /// The entry fill `(time, price)` a `PositionCtx` anchors on; `None` for a position
 /// that never filled, whose `m_position` reads then have no anchor.
 fn entry_fill(position: &StrategyPosition) -> Option<(chrono::DateTime<chrono::Utc>, f64)> {
@@ -584,7 +610,8 @@ async fn replay_for_position(
     let flow_ctx = load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
-    let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
+    let mut lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
+    stamp_build_breadth(app_state, &rule.compiled, &mut lites).await;
     let entry = entry_fill(position);
     let stage = Some(position.scale_stage);
     let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
@@ -657,7 +684,8 @@ fn trade_lite(t: &Trade) -> TradeLite {
             t.tip_lamports,
         ),
         // Raw token units, what `m_holder_book` keeps each wallet's bag in. The
-        // previous-day build breadth is the engine's to stamp, never an adapter's.
+        // previous-day build breadth is stamped by the engine's one stamp, never
+        // here: `stamp_build_breadth` applies it from the stored table.
         token_amount: t.token_amount as f64,
         build_day_public: None,
     }
@@ -831,7 +859,8 @@ async fn series_response(
     let flow_ctx = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &mint, &trades).await;
-    let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
+    let mut lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
+    stamp_build_breadth(app_state, &rule.compiled, &mut lites).await;
     let SeriesAnchor { position_id, centre, entry, stage } = anchor;
     let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
 

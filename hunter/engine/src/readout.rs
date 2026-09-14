@@ -1628,4 +1628,40 @@ mod tests {
         assert!(!read.ok);
         assert!(c.can_enter(&track, ts(5)));
     }
+
+    /// A closed position's `public_app_share` reads what the live fold read only when
+    /// its stored buys are stamped on their day's table first ([`stamp_by_day`]):
+    /// unstamped, every holder is unknown and the door row reads blank.
+    ///
+    /// [`stamp_by_day`]: crate::metrics::holder_book::stamp_by_day
+    #[test]
+    fn a_replayed_door_reads_the_public_share_once_its_buys_are_stamped() {
+        use crate::event::BuildBreadth;
+        use crate::metrics::holder_book::{public_recipes, stamp_by_day};
+        let c = rule(serde_json::json!({
+            "entry": { "m_holder_book": {
+                "public_app_share": [{ "operator": ">=", "value": 70 }]
+            } }
+        }));
+        let buys: Vec<TradeLite> = (1..=3_i64)
+            .map(|w| TradeLite {
+                wallet_hash: w as u64,
+                slot: 100 + w as u64,
+                build_hash: Some(0xB1),
+                token_amount: 1_000.0,
+                ..trade(1.0, w)
+            })
+            .collect();
+        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None };
+        let share = |trades: Vec<TradeLite>| {
+            let readout = replay_readout(&c, trades, &ctx, ts(10));
+            find(&readout.reads, ReadSide::Entry, MetricId::PublicAppShare).value
+        };
+
+        assert!(share(buys.clone()).is_nan(), "unstamped buys are unknown holders");
+        let table = [BuildBreadth { build_hash: 0xB1, app_buyers: 101, app_buys: 202 }];
+        let mut stamped = buys;
+        stamp_by_day(&mut stamped, &[(ts(0).date_naive(), public_recipes(&table))]);
+        assert_eq!(share(stamped), 100.0);
+    }
 }

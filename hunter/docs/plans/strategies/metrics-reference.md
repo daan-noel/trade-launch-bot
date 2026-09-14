@@ -306,7 +306,9 @@ past compute budget, system, token, associated-token and memo; a direct pump.fun
 by its recipe. A recipe nobody bought with the day before is not public. The daily
 `build_breadth_day_stats` table carries each recipe's app counts; `reduce` keeps the recipes
 that pass (`EngineState::public_recipes`) and stamps every buy with its class
-(`TradeLite::build_day_public`). With no table loaded the stamp is `None`, and
+(`TradeLite::build_day_public`) through the one stamp, `holder_book::stamp_public`, which a
+closed-position readout also applies (each buy on its own UTC day's stored table,
+`holder_book::stamp_by_day`). With no table loaded the stamp is `None`, and
 `public_app_share` reads `NaN` while such a holder keeps a bag (fails closed). Bundled: at
 least `BUNDLE_MIN_WALLETS` (3) first buys in one `(slot, build)`. Because the class is fixed at
 the buy, a table reload moves no tracked token's reading and bumps no `cross_epoch`.

@@ -73,7 +73,9 @@ One question, two sources, and the answer says which it used. An **open** positi
 read out of the decision loop's own `TokenTrack`, so a condition shown satisfied is one
 the fold is acting on. A **closed** one has no engine state left and is reconstructed by
 `replay_readout` — folding `TradeRepo::find_by_mint_until` rows through a fresh track to
-the exit (or entry) fill, then reading there.
+the exit (or entry) fill, then reading there. For a rule that reads `m_holder_book`, each
+buy is first stamped on its own UTC day's stored build-breadth table (`BuildBreadthRepo::load_day`,
+read-only: a day never stored stays unknown and `public_app_share` reads `null`).
 
 A replay anchors its metric clock on the **token's own `created_at`**, the same instant
 `TokenCreated` gives the live fold — never on the first retained trade. `time` is measured
