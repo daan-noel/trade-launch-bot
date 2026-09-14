@@ -931,7 +931,8 @@ struct LaunchRequirementResponse {
     /// The dev-wallet minimum the launch gate enforces (rent + fees + live tip
     /// ceiling + dev-buy). This is the SAME figure `execute_launch` checks.
     dev_required_lamports: u64,
-    /// Per-bundler-leg funding target (buy + tip + headroom); 0 if no bundle.
+    /// Per-bundler-leg funding target (`launcher::leg_required_lamports`: buy + ATA
+    /// rent + fees + persona tip + rent-exempt minimum); 0 if no bundle.
     per_leg_lamports: u64,
     /// Number of bundler legs this launch would run (0 = no bundle).
     leg_count: u32,

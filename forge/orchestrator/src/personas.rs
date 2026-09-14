@@ -114,6 +114,27 @@ impl PersonaSet {
         &self.personas[idx.min(self.personas.len() - 1)]
     }
 
+    /// The highest compute-rail priority fee (lamports) any persona in the set can
+    /// draw for an op whose measured CU floor is `cu_floor`:
+    /// `ceil((cu_floor + cu_headroom.max) * cu_price.max / 1_000_000)` — the same
+    /// `cu_limit` the disguise builds (floor + headroom) at the top price. A funding
+    /// target sized off this covers whichever persona a wallet is assigned.
+    pub fn max_priority_fee_lamports(&self, cu_floor: u32) -> u64 {
+        self.personas
+            .iter()
+            .map(|p| {
+                let cu_limit = cu_floor as u128 + p.cu_headroom.max as u128;
+                (cu_limit * p.cu_price.max as u128).div_ceil(1_000_000) as u64
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The highest tip (lamports) any persona in the set can draw.
+    pub fn max_tip_lamports(&self) -> u64 {
+        self.personas.iter().map(|p| p.tip_lamports.max).max().unwrap_or(0)
+    }
+
     /// Load a lab-derived config (JSON), validating every template's structure and
     /// that its variant names are legal catalog entries for the pump venue (so a
     /// stale/typo'd config can never ship a variant the provider would later
@@ -234,6 +255,30 @@ mod tests {
     #[test]
     fn builtin_is_valid_against_catalog() {
         PersonaSet::builtin().validate().expect("builtin personas must be catalog-legal");
+    }
+
+    /// The worst-case fee/tip draw is the max over personas (aggressive_sniper tops
+    /// both on the builtin set), with the fee rounded up.
+    #[test]
+    fn worst_case_fee_and_tip_cover_every_persona() {
+        let set = PersonaSet::builtin();
+        // aggressive_sniper: (110_000 + 60_000) CU x 450_000 uLamports / 1e6.
+        assert_eq!(set.max_priority_fee_lamports(110_000), 76_500);
+        assert_eq!(set.max_tip_lamports(), 10_000);
+        for p in &set.personas {
+            let cu = 110_000 + p.cu_headroom.max;
+            assert!(cu * p.cu_price.max / 1_000_000 <= set.max_priority_fee_lamports(110_000));
+            assert!(p.tip_lamports.max <= set.max_tip_lamports());
+        }
+        // 1 CU at 1 uLamport still costs a whole lamport (ceil).
+        let one = PersonaSet {
+            personas: vec![Persona {
+                cu_headroom: JitterRange::fixed(0),
+                cu_price: JitterRange::fixed(1),
+                ..set.personas[0].clone()
+            }],
+        };
+        assert_eq!(one.max_priority_fee_lamports(1), 1);
     }
 
     #[test]

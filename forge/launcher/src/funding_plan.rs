@@ -6,7 +6,8 @@
 //! computed once, in [`dev_launch_required_lamports`], so the funder can never
 //! top a dev wallet up to less than the gate demands (CLAUDE.md SSOT rule — a
 //! second copy of that figure drifts). A launch's real need is template-specific:
-//! `dev = create floor + dev_buy_quote`, `leg = leg buy + tip + fees`.
+//! `dev = create floor + dev_buy_quote`, `leg = leg buy + ATA rent + fees + tip +
+//! the payer's rent-exempt minimum` (see [`leg_required_lamports`]).
 
 use anyhow::Result;
 
@@ -36,15 +37,37 @@ pub fn dev_launch_required_lamports(
         + params.dev_buy_quote.unwrap_or(0).max(0) as u64
 }
 
-/// Per bundler leg funding target: the leg's buy quote + the bundle tip + fee/
-/// rent headroom. `tip_quote` is the bundle-wide tip; a leg's actual tip is drawn
-/// by the per-wallet persona disguise within its range, so budgeting
-/// the full configured tip per leg stays safe rather than under-funding a leg that
-/// happens to draw the top of its tip range.
-pub fn leg_required_lamports(quote_per_leg: i64, tip_quote: Option<i64>) -> u64 {
-    let quote = quote_per_leg.max(0) as u64;
-    let tip = tip_quote.unwrap_or(0).max(0) as u64;
-    quote + tip + FUNDING_HEADROOM_LAMPORTS
+/// Per bundler-leg funding target (lamports): everything one co-buy leg takes out
+/// of its wallet, so a wallet funded to this can land the leg and still pass rent:
+///
+/// - `quote_per_leg` — the SOL-in buy (`buy_exact_sol_in` / `buy_exact_quote_in_v2`):
+///   the program takes its venue fee out of this spend, so no fee rides on top;
+/// - the base token ATA's rent, sized by the launch's token program (legacy SPL
+///   for `create_v1`, Token-2022 otherwise), plus the WSOL quote ATA's rent the v2
+///   encodings create (a persona may swap a SOL-in leg onto one);
+/// - one signature fee;
+/// - the worst-case priority fee + tip any persona draws for a curve buy
+///   ([`crate::plan_pipeline::plan_personas`], the set the gate disguises with —
+///   the co-buy tip is the persona draw, never the bundle-wide `bundle_tip_quote`,
+///   which rides the create leg);
+/// - the rent-exempt minimum a system account keeps once it holds any lamports.
+pub fn leg_required_lamports(quote_per_leg: i64, token_program_id: &str) -> u64 {
+    use pump_trader::protocol::{TOKEN_2022_ACCOUNT_SPACE, TOKEN_2022_PROGRAM_ID, TOKEN_ACCOUNT_SPACE};
+    use solana_sdk::{fee::FeeStructure, rent::Rent};
+
+    let rent = Rent::default();
+    let base_ata_space = if token_program_id == TOKEN_2022_PROGRAM_ID {
+        TOKEN_2022_ACCOUNT_SPACE
+    } else {
+        TOKEN_ACCOUNT_SPACE
+    };
+    let ata_rent = rent.minimum_balance(base_ata_space as usize)
+        + rent.minimum_balance(TOKEN_ACCOUNT_SPACE as usize);
+    let personas = crate::plan_pipeline::plan_personas();
+    let fee_and_tip = FeeStructure::default().lamports_per_signature
+        + personas.max_priority_fee_lamports(crate::plan_pipeline::plan_compute_cfg().curve_buy_cu)
+        + personas.max_tip_lamports();
+    quote_per_leg.max(0) as u64 + ata_rent + fee_and_tip + rent.minimum_balance(0)
 }
 
 /// The per-launch funding requirement derived from a template. `leg_count == 0`
@@ -53,7 +76,7 @@ pub fn leg_required_lamports(quote_per_leg: i64, tip_quote: Option<i64>) -> u64 
 pub struct FundPlan {
     /// Target balance for the dev wallet (launch gate + headroom).
     pub dev_lamports: u64,
-    /// Target balance for each bundler leg wallet (leg buy + tip + headroom).
+    /// Target balance for each bundler leg wallet ([`leg_required_lamports`]).
     pub per_leg_lamports: u64,
     /// Number of bundler legs this launch will run (0 = no bundle).
     pub leg_count: u32,
@@ -76,8 +99,9 @@ impl FundPlan {
         let (per_leg_lamports, leg_count) = match resolve_leg_count(requested_bundler_count, params)
         {
             Some(n) => {
-                let (quote_per_leg, tip_quote) = resolve_bundle_quote(params)?;
-                (leg_required_lamports(quote_per_leg, tip_quote), n)
+                let (quote_per_leg, _bundle_tip) = resolve_bundle_quote(params)?;
+                let token_program = crate::keystore::token_program_for_variant(variant);
+                (leg_required_lamports(quote_per_leg, token_program), n)
             }
             None => (0, 0),
         };
@@ -137,7 +161,36 @@ mod tests {
         let p = params(Some(0), Some(3), Some(50_000_000), Some(1_000_000));
         let plan = FundPlan::from_params("pumpfun.create_v2", &p, None, 0).unwrap();
         assert_eq!(plan.leg_count, 3);
-        assert_eq!(plan.per_leg_lamports, 50_000_000 + 1_000_000 + FUNDING_HEADROOM_LAMPORTS);
+        assert_eq!(
+            plan.per_leg_lamports,
+            leg_required_lamports(50_000_000, pump_trader::protocol::TOKEN_2022_PROGRAM_ID)
+        );
+    }
+
+    /// A leg covers its buy, both ATA rents, the signature fee, the worst persona
+    /// fee + tip, and the payer's rent-exempt minimum — not a flat 0.002 headroom.
+    /// The bundle-wide tip is not a co-buy cost.
+    #[test]
+    fn leg_requirement_itemizes_every_cost() {
+        use pump_trader::protocol::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+        let legacy = leg_required_lamports(10_000_000, TOKEN_PROGRAM_ID);
+        // 10M buy + 2 x 2,039,280 ATA rent + 5,000 fee + 76,500 priority + 10,000 tip
+        // + 890,880 rent-exempt minimum.
+        assert_eq!(legacy, 10_000_000 + 2 * 2_039_280 + 5_000 + 76_500 + 10_000 + 890_880);
+        // A Token-2022 base ATA is larger, so its rent is higher.
+        assert!(leg_required_lamports(10_000_000, TOKEN_2022_PROGRAM_ID) > legacy);
+        // The template's bundle tip never changes the per-leg target.
+        let a = FundPlan::from_params("pumpfun.create_v1", &params(None, Some(1), Some(10_000_000), None), None, 0)
+            .unwrap();
+        let b = FundPlan::from_params(
+            "pumpfun.create_v1",
+            &params(None, Some(1), Some(10_000_000), Some(5_000_000)),
+            None,
+            0,
+        )
+        .unwrap();
+        assert_eq!(a.per_leg_lamports, legacy);
+        assert_eq!(a.per_leg_lamports, b.per_leg_lamports);
     }
 
     #[test]

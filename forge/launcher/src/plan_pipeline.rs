@@ -36,6 +36,19 @@ use pump_trader::BundleBuyVariant;
 /// overflow — is never chosen for our own launch buys).
 pub const LAUNCH_BUY_VARIANT: &str = "buy_exact_sol_in";
 
+/// The persona set every plan is disguised with. The gate draws each op's CU /
+/// price / tip from it and the funder sizes a leg wallet off its worst case
+/// ([`crate::funding_plan::leg_required_lamports`]), so both read this one set.
+pub(crate) fn plan_personas() -> PersonaSet {
+    PersonaSet::builtin()
+}
+
+/// The measured compute-budget cost model a disguise's CU floor comes from
+/// (`cu_limit = floor + persona headroom`). Shared by the gate and the funder.
+pub(crate) fn plan_compute_cfg() -> executor_core::config::ComputeBudgetCfg {
+    executor_core::config::ComputeBudgetCfg::default()
+}
+
 /// Fallback bundler-leg slippage when a template carries none (kept equal to the
 /// historical composer default so a leg's min_out floor is unchanged).
 pub const DEFAULT_BUNDLE_SLIPPAGE_BPS: u64 = 500;
@@ -84,8 +97,8 @@ pub fn gate(plan: Plan, allow_fingerprint: bool) -> Result<GatedPlan> {
     //    chosen encoding to the plan so the audit + build see the real variant.
     //    (Disguise only swaps a buy/sell to a denom-compatible sibling; create /
     //    transfer keep their authored variant.)
-    let personas = PersonaSet::builtin();
-    let cfg = executor_core::config::ComputeBudgetCfg::default();
+    let personas = plan_personas();
+    let cfg = plan_compute_cfg();
     let mut plan = plan;
     let disguises = disguise_ops(&personas, &plan.ops, &cfg);
     for (op, d) in plan.ops.iter_mut().zip(&disguises) {
