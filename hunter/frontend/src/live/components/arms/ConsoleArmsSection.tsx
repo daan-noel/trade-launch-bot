@@ -18,7 +18,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { connectArmedChanged } from 'services/sse';
 import { fetchArmsSummary } from 'services/api';
-import { numericColKeys } from 'services/tableRequest';
+import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { DEFAULT_POSITIONS_QUERY } from 'hooks/useServerTable';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useUiToggle } from 'hooks/useUiPrefs';
@@ -79,9 +79,15 @@ function ArmsSectionBody() {
   // with the table instead of describing the unfiltered ledger.
   const [query, setQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const columns = useMemo(() => armColumns(ruleNameOf), [ruleNameOf]);
-  const numericCols = useMemo(() => numericColKeys(columns), [columns]);
+  // The table appends the shared token columns, so their keys join the table's
+  // own for numeric lowering and the PriceUnit conversion.
+  const numericCols = useMemo(() => tokenNumericColKeys(columns), [columns]);
+  const amountCols = useMemo(() => tokenAmountColKeys(columns), [columns]);
 
-  const input = useMemo(() => ({ cohort, query, numericCols }), [cohort, query, numericCols]);
+  const input = useMemo(
+    () => ({ cohort, query, numericCols, amountCols }),
+    [cohort, query, numericCols, amountCols],
+  );
   // Page/sort deliberately excluded — paging the table must not re-run the
   // aggregate.
   const summaryKey = useMemo(
@@ -147,6 +153,7 @@ function ArmsSectionBody() {
         cohort={cohort}
         columns={columns}
         numericCols={numericCols}
+        amountCols={amountCols}
         query={query}
         onQueryChange={setQuery}
         ruleNameOf={ruleNameOf}

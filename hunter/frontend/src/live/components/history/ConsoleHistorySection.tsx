@@ -28,7 +28,7 @@ import {
   fetchPortfolioPositionsPage,
   fetchPortfolioPositionsSummary,
 } from 'services/api';
-import { numericColKeys } from 'services/tableRequest';
+import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { fetchAllTablePages } from 'lib/strategy/fetchPositionChartSeries';
 import { DEFAULT_POSITIONS_QUERY } from 'hooks/useServerTable';
 import type { TableQuery } from 'components/table/types';
@@ -149,11 +149,14 @@ function HistorySectionBody({
   // deck narrow with it instead of describing the unfiltered book.
   const [query, setQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const columns = useMemo(() => historyColumns(ruleNameOf), [ruleNameOf]);
-  const numericCols = useMemo(() => numericColKeys(columns), [columns]);
+  // The table appends the shared token columns, so their keys join the table's
+  // own for numeric lowering and the PriceUnit conversion.
+  const numericCols = useMemo(() => tokenNumericColKeys(columns), [columns]);
+  const amountCols = useMemo(() => tokenAmountColKeys(columns), [columns]);
 
   const input = useMemo(
-    () => ({ cohort, query, numericCols, timezone }),
-    [cohort, query, numericCols, timezone],
+    () => ({ cohort, query, numericCols, amountCols, timezone }),
+    [cohort, query, numericCols, amountCols, timezone],
   );
   const clientScan = historyNeedsClientScan(cohort);
   // Page/sort deliberately excluded — paging the table must not re-run the
@@ -342,6 +345,7 @@ function HistorySectionBody({
         cohort={cohort}
         columns={columns}
         numericCols={numericCols}
+        amountCols={amountCols}
         timezone={timezone}
         query={query}
         onQueryChange={setQuery}

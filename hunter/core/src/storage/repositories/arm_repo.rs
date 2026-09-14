@@ -18,12 +18,21 @@ use uuid::Uuid;
 use crate::api::table_query::{FilterSpec, TableRequest};
 use crate::models::strategy_arm::{ArmBlockedBy, ArmFunnel, StrategyArm, BLOCKED_BY_LIMIT};
 use crate::storage::repositories::strategy_repo::{like_escape, push_filter_predicate};
-use crate::storage::token_enrichment::FilterKind;
+use crate::storage::token_enrichment::{enrich_filter_sql, enrich_sort_sql, FilterKind};
 
 /// Projection for [`StrategyArm`]. `waited_sec` is computed, never stored — a
 /// stored copy would go stale on every live episode the moment it is read.
 const ARM_COLS: &str = "a.rule_id, a.mint_address, a.mode, a.armed_at, a.ended_at, \
     a.end_reason, a.position_id, a.end_detail, t.symbol";
+
+/// The one `FROM` clause every arms read shares, so the page, the count, the
+/// funnel and the breakdown filter one population. Both token joins are outer —
+/// the ledger and `tokens` expire on different clocks. `tokens_info` is what the
+/// token-enrichment sort/filter keys resolve against; Postgres removes the join
+/// from a query that references none of its columns (unique key, LEFT JOIN).
+const ARM_FROM: &str = "FROM strategy_arms a \
+    LEFT JOIN tokens t ON t.mint_address = a.mint_address \
+    LEFT JOIN tokens_info i ON i.mint_address = a.mint_address";
 
 /// The representative blocker, lifted out of `end_detail`. THE definition — the
 /// sort whitelist, the filter whitelist and the summary's `GROUP BY` all
@@ -75,7 +84,10 @@ impl From<TableRequest> for ArmQuery {
 }
 
 /// Frontend column key → trusted SQL sort expression. `None` = not sortable.
-/// Aliases: `a` = strategy_arms, `t` = LEFT-JOINed `tokens`.
+/// Aliases: `a` = strategy_arms, `t` = `tokens`, `i` = `tokens_info` (both
+/// LEFT-JOINed). Owns only the `a.*` arms; the token-enrichment columns fall
+/// through to the shared [`enrich_sort_sql`] SSOT, the same whitelist the
+/// positions table uses.
 fn arm_sort_sql(key: &str) -> Option<&'static str> {
     Some(match key {
         "mint_address" => "a.mint_address",
@@ -87,11 +99,12 @@ fn arm_sort_sql(key: &str) -> Option<&'static str> {
         "end_reason" => "a.end_reason",
         "blocked_by" => BLOCKED_BY_SQL,
         "waited_sec" => WAITED_SEC_SQL,
-        _ => return None,
+        _ => return enrich_sort_sql(key),
     })
 }
 
 /// Frontend column key → trusted SQL expression + type. `None` = not filterable.
+/// Token-enrichment keys fall through to the shared [`enrich_filter_sql`].
 fn arm_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
     use FilterKind::{Numeric, Text};
     Some(match key {
@@ -109,7 +122,7 @@ fn arm_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "blocked_by" => (BLOCKED_BY_SQL, Text),
         "position_id" => ("a.position_id::text", Text),
         "waited_sec" => (WAITED_SEC_SQL, Numeric),
-        _ => return None,
+        _ => return enrich_filter_sql(key),
     })
 }
 
@@ -235,9 +248,9 @@ impl ArmRepo {
 
     // -- Reads ----------------------------------------------------------------
 
-    /// One page of arming episodes, newest-armed first by default. LEFT-JOINs
-    /// `tokens` for the symbol column and the symbol half of the search — the
-    /// join is outer because the ledger and `tokens` expire on different clocks.
+    /// One page of arming episodes, newest-armed first by default, over
+    /// [`ARM_FROM`] (`tokens` carries the symbol column and the symbol half of the
+    /// search). The token-enrichment fields are attached per page by the handler.
     pub async fn arms_paged(
         &self,
         limit: i64,
@@ -245,8 +258,7 @@ impl ArmRepo {
         query: &ArmQuery,
     ) -> anyhow::Result<Vec<StrategyArm>> {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
-            "SELECT {ARM_COLS}, {WAITED_SEC_SQL} AS waited_sec FROM strategy_arms a \
-             LEFT JOIN tokens t ON t.mint_address = a.mint_address WHERE TRUE"
+            "SELECT {ARM_COLS}, {WAITED_SEC_SQL} AS waited_sec {ARM_FROM} WHERE TRUE"
         ));
         push_arm_where(&mut qb, query);
         push_arm_order(&mut qb, query);
@@ -257,10 +269,8 @@ impl ArmRepo {
     /// Filtered count — same JOIN + WHERE as [`ArmRepo::arms_paged`], so the
     /// pager total tracks the page exactly.
     pub async fn count_arms(&self, query: &ArmQuery) -> anyhow::Result<i64> {
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT COUNT(*) FROM strategy_arms a \
-             LEFT JOIN tokens t ON t.mint_address = a.mint_address WHERE TRUE",
-        );
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
+            sqlx::QueryBuilder::new(format!("SELECT COUNT(*) {ARM_FROM} WHERE TRUE"));
         push_arm_where(&mut qb, query);
         let (n,): (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
         Ok(n)
@@ -282,8 +292,7 @@ impl ArmRepo {
              0::float8 AS entry_rate_pct, \
              PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {WAITED_SEC_SQL}) \
                FILTER (WHERE a.ended_at IS NOT NULL) AS median_waited_sec \
-             FROM strategy_arms a \
-             LEFT JOIN tokens t ON t.mint_address = a.mint_address WHERE TRUE"
+             {ARM_FROM} WHERE TRUE"
         ));
         push_arm_where(&mut qb, query);
         let funnel = qb.build_query_as::<ArmFunnel>().fetch_one(&self.pool).await?;
@@ -303,8 +312,7 @@ impl ArmRepo {
     /// blocker, and they are not a bucket (see `entry_blockers_json`).
     pub async fn arm_blocked_by(&self, query: &ArmQuery) -> anyhow::Result<Vec<ArmBlockedBy>> {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
-            "SELECT {BLOCKED_BY_SQL} AS blocked_by, COUNT(*) AS n FROM strategy_arms a \
-             LEFT JOIN tokens t ON t.mint_address = a.mint_address \
+            "SELECT {BLOCKED_BY_SQL} AS blocked_by, COUNT(*) AS n {ARM_FROM} \
              WHERE {BLOCKED_BY_SQL} IS NOT NULL"
         ));
         push_arm_where(&mut qb, query);
@@ -350,6 +358,18 @@ mod tests {
     fn unknown_keys_resolve_to_nothing() {
         assert_eq!(arm_sort_sql("a.mint_address; DROP TABLE tokens"), None);
         assert!(arm_filter_sql("'; DELETE FROM strategy_arms --").is_none());
+    }
+
+    /// The Arms table appends the shared token columns, so their keys must reach
+    /// the shared whitelist — an unresolved key is silently dropped, and the
+    /// header would offer a sort (or a filter) that changes nothing.
+    #[test]
+    fn token_columns_fall_through_to_the_enrichment_whitelist() {
+        for key in ["market_cap", "current_price", "trade_count", "initial_buy"] {
+            assert_eq!(arm_sort_sql(key), enrich_sort_sql(key), "{key}");
+            assert_eq!(arm_filter_sql(key), enrich_filter_sql(key), "{key}");
+            assert!(arm_filter_sql(key).is_some(), "{key}");
+        }
     }
 
     /// A live episode has no `end_reason`, so the filter column must COALESCE or

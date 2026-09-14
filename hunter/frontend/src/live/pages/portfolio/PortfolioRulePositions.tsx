@@ -18,7 +18,11 @@
 
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { TokenTable } from 'components/tokens/TokenTable';
-import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
+import {
+  COMPACT_TOKEN_DEFAULT_COLS,
+  tokenAmountColKeys,
+  tokenNumericColKeys,
+} from 'components/tokens/sharedTokenColumns';
 import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
 import {
   PositionChartCardExtra,
@@ -27,7 +31,6 @@ import {
 import { InlineAlert } from 'components/ui/Modal';
 import { CloseIcon } from 'components/ui/icons';
 import type { TableQuery } from 'components/table/types';
-import { numericColKeys } from 'services/tableRequest';
 import { fetchPortfolioPositionsPage } from 'services/api';
 import { connectStrategyPositionUpdate } from 'services/sse';
 import { useFlowPatternSourceForRule } from 'hooks/useFlowPatternKeys';
@@ -59,11 +62,15 @@ const RANGE_LABEL: Record<PortfolioRange, string> = {
 const OMIT_WHEN_SCOPED = new Set(['rule', 'status']);
 
 /** Hoisted — the defs have no per-render input once `rule` is dropped, and a
- *  fresh array each render would re-derive `numericCols` and remount the table. */
+ *  fresh array each render would re-derive `numericCols` and remount the table.
+ *  The key sets include the appended token columns, whose sort/filter keys the
+ *  positions whitelist resolves through the token-enrichment SSOT. */
 const RULE_POSITION_COLUMNS = historyColumns(() => null).filter(
   (c) => !OMIT_WHEN_SCOPED.has(c.key),
 );
-const RULE_POSITION_NUMERIC_COLS = numericColKeys(RULE_POSITION_COLUMNS);
+const RULE_POSITION_KEYS = new Set(RULE_POSITION_COLUMNS.map((c) => c.key));
+const RULE_POSITION_NUMERIC_COLS = tokenNumericColKeys(RULE_POSITION_COLUMNS);
+const RULE_POSITION_AMOUNT_COLS = tokenAmountColKeys(RULE_POSITION_COLUMNS);
 
 /** Positions key by `id`, not by mint — a rule can re-enter the same token. */
 const positionRowKey = (r: RulePositionRecord) => r.id;
@@ -146,6 +153,7 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
         cohort,
         query,
         numericCols: RULE_POSITION_NUMERIC_COLS,
+        amountCols: RULE_POSITION_AMOUNT_COLS,
         timezone,
       }),
     [cohort, query, timezone],
@@ -234,9 +242,8 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
 
       <TokenTable
         columns={RULE_POSITION_COLUMNS}
-        // This panel owns its full layout; an appended enrichment column would
-        // offer a sort/filter key the backend whitelist rejects.
-        existingKeys={ALL_TOKEN_INFO_KEYS}
+        existingKeys={RULE_POSITION_KEYS}
+        defaultCols={COMPACT_TOKEN_DEFAULT_COLS}
         rows={items}
         rowKey={positionRowKey}
         serverSide

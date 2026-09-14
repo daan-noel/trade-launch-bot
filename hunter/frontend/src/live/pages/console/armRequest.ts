@@ -16,14 +16,19 @@ import {
   toTableRequest,
   type TableRequestBody,
 } from 'services/tableRequest';
+import type { AmountStorageUnit } from 'lib/priceUnitSnapshot';
 import type { ArmCohort } from './armCohort';
 
 export interface ArmRequestInput {
   cohort: ArmCohort;
   /** The table's own view state (search + per-column filters + page + sort). */
   query: TableQuery;
-  /** Column keys that filter numerically — from `numericColKeys(columns)`. */
+  /** Column keys that filter numerically — `tokenNumericColKeys(columns)`, so the
+   *  appended token columns lower to structured ops too. */
   numericCols: ReadonlySet<string>;
+  /** PriceUnit amount columns (`tokenAmountColKeys(columns)`) — a typed operand
+   *  converts display → storage unit before the server compare. */
+  amountCols?: ReadonlyMap<string, AmountStorageUnit>;
 }
 
 /** Server-side filters contributed by the cohort bar — everything except the
@@ -64,8 +69,13 @@ function withCohort(base: TableRequestBody, cohort: ArmCohort): TableRequestBody
 }
 
 /** One **page** of the Arms table (honors pagination + sort). */
-export function armTableBody({ cohort, query, numericCols }: ArmRequestInput): TableRequestBody {
-  return withCohort(toTableRequest(query, numericCols), cohort);
+export function armTableBody({
+  cohort,
+  query,
+  numericCols,
+  amountCols,
+}: ArmRequestInput): TableRequestBody {
+  return withCohort(toTableRequest(query, numericCols, { amountCols }), cohort);
 }
 
 /** The same population with pagination + sort dropped — for the funnel. */
@@ -73,8 +83,9 @@ export function armSummaryBody({
   cohort,
   query,
   numericCols,
+  amountCols,
 }: ArmRequestInput): TableRequestBody {
-  return withCohort(toSummaryBody(query, numericCols), cohort);
+  return withCohort(toSummaryBody(query, numericCols, { amountCols }), cohort);
 }
 
 /**
@@ -84,8 +95,8 @@ export function armSummaryBody({
  * them, but page and sort are deliberately excluded (paging must not re-run the
  * aggregate).
  */
-export function armPopulationKey({ cohort, query, numericCols }: ArmRequestInput): string {
-  const body = armSummaryBody({ cohort, query, numericCols });
+export function armPopulationKey(input: ArmRequestInput): string {
+  const body = armSummaryBody(input);
   return JSON.stringify([body.filters, body.range ?? null, body.search ?? '']);
 }
 

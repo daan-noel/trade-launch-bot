@@ -17,7 +17,11 @@ asserted by `DataTable.boundary.test.ts`) and owns the "token recipe":
    after the caller's bespoke columns — callers export only their own columns + an
    `existingKeys` set (`POSITION_KEYS`/`SIM_KEYS`); a table that owns its
    full layout passes `ALL_TOKEN_INFO_KEYS` to append nothing (Tokens page, Trader
-   Analysis, Sweep drill-in, Wallet).
+   Analysis, Sweep drill-in, Wallet). A table whose own columns fill the width
+   (Console History / Arms, Portfolio drill-down) appends the set at
+   `defaultCols={COMPACT_TOKEN_DEFAULT_COLS}`. A **server** table that appends the set
+   serializes its request with `tokenNumericColKeys` / `tokenAmountColKeys`, never
+   `numericColKeys(ownColumns)` — else a token-column filter goes out as text, unconverted.
 2. **Own the table wiring** in one of two modes:
    - **server** (`serverSide` + `serverTotal`/`onQueryChange`/`resetKey`/`loading`) —
      rows arrive backend-enriched one page at a time; the emitted `TableQuery` is handed

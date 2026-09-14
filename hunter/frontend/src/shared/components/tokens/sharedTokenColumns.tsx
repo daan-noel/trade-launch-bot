@@ -1,4 +1,5 @@
 import { useMemo, useState, type MouseEvent } from 'react';
+import type { ColVisibilityOverrides } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { DateCell } from 'components/table/DateCell';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
@@ -556,6 +557,19 @@ export function appendedTokenColumns(existingKeys: Set<string>): ColumnDef<any>[
  */
 export const ALL_TOKEN_INFO_KEYS: Set<string> = new Set(
   tokenInfoColumns().map((c) => c.key),
+);
+
+/** The token headline a compact table shows by default. */
+const COMPACT_SHOWN_KEYS = new Set(['market_cap', 'ath_price', 'trade_count', 'migrated', 'dead']);
+
+/**
+ * `defaultCols` for a token table whose own columns already fill the width (the
+ * live review tables — Console History / Arms, Portfolio drill-down): the
+ * appended token set shows only its headline, every other token column one click
+ * away in the Columns menu. A user's persisted choice still wins.
+ */
+export const COMPACT_TOKEN_DEFAULT_COLS: ColVisibilityOverrides = Object.fromEntries(
+  [...ALL_TOKEN_INFO_KEYS].map((k) => [k, COMPACT_SHOWN_KEYS.has(k)]),
 );
 
 /**

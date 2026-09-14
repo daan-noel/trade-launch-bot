@@ -1021,7 +1021,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   (`appendedTokenColumns`, so callers export only their bespoke columns + an `existingKeys` set — see
   `components/strategy/strategyColumns` `POSITION_KEYS`/`SIM_KEYS`, each derived straight from
   its column array so keys can't drift from what's rendered; a table that owns its full layout
-  passes `ALL_TOKEN_INFO_KEYS` to append nothing); (2) own the table wiring. **Two modes:** **server**
+  passes `ALL_TOKEN_INFO_KEYS` to append nothing; Console History / Arms and the Portfolio
+  drill-down append the set at `COMPACT_TOKEN_DEFAULT_COLS`); (2) own the table wiring. **Two modes:** **server**
   (`serverSide` + `serverTotal`/`onQueryChange`/`resetKey`) — rows arrive backend-enriched one page at a
   time, paging/sort/filter round-trip (Positions via `RunPositionsPanel`, Paper, Matched, Sim, Wallet
   Holdings, **Tokens page**); **client** (default) — rows are the full already-enriched set and

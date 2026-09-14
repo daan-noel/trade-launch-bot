@@ -16,7 +16,7 @@
 import { memo, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { TokenTable } from 'components/tokens/TokenTable';
-import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
+import { COMPACT_TOKEN_DEFAULT_COLS } from 'components/tokens/sharedTokenColumns';
 import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
 import {
   PositionChartCardExtra,
@@ -46,6 +46,7 @@ import { fetchPortfolioPositionsPage } from 'services/api';
 import { useFlowPatternSourceForRule } from 'hooks/useFlowPatternKeys';
 import { useServerTable } from 'hooks/useServerTable';
 import type { RulePositionRecord } from 'types';
+import type { AmountStorageUnit } from 'lib/priceUnitSnapshot';
 import type { HistoryCohort } from '@live/pages/console/historyCohort';
 import {
   historyCohortKey,
@@ -86,6 +87,8 @@ const useHistoryRowFlowPatternSource = (r: RulePositionRecord) =>
  * `exit_reason`, `entry_sol`, `pnl_sol`, `pnl_pct`, `exit_time`. `rule` and
  * `hold` are display-only (derived), so they are deliberately not sortable —
  * a header that sorts nothing is worse than one that doesn't offer to.
+ * `TokenTable` appends the shared token columns after these; their keys fall
+ * through to the token-enrichment whitelist server-side.
  */
 export function historyColumns(
   ruleNameOf: (id: string | null) => string | null,
@@ -222,6 +225,7 @@ export const HistoryTable = memo(function HistoryTable({
   cohort,
   columns,
   numericCols,
+  amountCols,
   timezone,
   query,
   onQueryChange,
@@ -234,6 +238,7 @@ export const HistoryTable = memo(function HistoryTable({
   /** Built by the section — it needs the same defs to derive `numericCols`. */
   columns: ColumnDef<RulePositionRecord>[];
   numericCols: ReadonlySet<string>;
+  amountCols: ReadonlyMap<string, AmountStorageUnit>;
   timezone: string;
   /** Owned by the section, so the strip + charts narrow with this table. */
   query: TableQuery;
@@ -252,11 +257,12 @@ export const HistoryTable = memo(function HistoryTable({
   const body = useMemo(
     () =>
       historyTableBody(
-        { cohort, query, numericCols, timezone },
+        { cohort, query, numericCols, amountCols, timezone },
         clientScanFocus ? HEAT_SCAN_PAGE_SIZE : undefined,
       ),
-    [cohort, query, numericCols, timezone, clientScanFocus],
+    [cohort, query, numericCols, amountCols, timezone, clientScanFocus],
   );
+  const ownKeys = useMemo(() => new Set(columns.map((c) => c.key)), [columns]);
 
   const fetchPage = useCallback(
     (b: unknown, signal: AbortSignal) => fetchPortfolioPositionsPage(b as never, signal),
@@ -321,7 +327,8 @@ export const HistoryTable = memo(function HistoryTable({
       )}
       <TokenTable
         columns={columns}
-        existingKeys={ALL_TOKEN_INFO_KEYS}
+        existingKeys={ownKeys}
+        defaultCols={COMPACT_TOKEN_DEFAULT_COLS}
         rows={rows}
         rowKey={historyPositionRowKey}
         searchable

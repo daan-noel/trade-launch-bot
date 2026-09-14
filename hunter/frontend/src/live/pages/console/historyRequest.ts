@@ -24,6 +24,7 @@ import {
   toTableRequest,
   type TableRequestBody,
 } from 'services/tableRequest';
+import type { AmountStorageUnit } from 'lib/priceUnitSnapshot';
 import type { HistoryCohort } from './historyCohort';
 import {
   dayBoundsUtcIso,
@@ -56,8 +57,12 @@ export interface HistoryRequestInput {
   cohort: HistoryCohort;
   /** The table's own view state (search + per-column filters + page + sort). */
   query: TableQuery;
-  /** Column keys that filter numerically — from `numericColKeys(columns)`. */
+  /** Column keys that filter numerically — `tokenNumericColKeys(columns)`, so the
+   *  appended token columns lower to structured ops too. */
   numericCols: ReadonlySet<string>;
+  /** PriceUnit amount columns (`tokenAmountColKeys(columns)`) — a typed operand
+   *  converts display → storage unit before the server compare. */
+  amountCols?: ReadonlyMap<string, AmountStorageUnit>;
   timezone: string;
 }
 
@@ -173,11 +178,11 @@ function withCohort(
 
 /** One **page** of the History table (honors pagination + sort). */
 export function historyTableBody(
-  { cohort, query, numericCols, timezone }: HistoryRequestInput,
+  { cohort, query, numericCols, amountCols, timezone }: HistoryRequestInput,
   /** Wide first page for the client-scanned lenses. */
   scanPageSize?: number,
 ): TableRequestBody {
-  const base = toTableRequest(query, numericCols);
+  const base = toTableRequest(query, numericCols, { amountCols });
   const body = withCohort(base, cohort, timezone);
   return scanPageSize ? { ...body, pagination: { page: 1, pageSize: scanPageSize } } : body;
 }
@@ -188,10 +193,10 @@ export function historyTableBody(
  * by construction, which is the whole point of this module.
  */
 export function historySummaryBody(
-  { cohort, query, numericCols, timezone }: HistoryRequestInput,
+  { cohort, query, numericCols, amountCols, timezone }: HistoryRequestInput,
   opts: HistoryScopeOpts = {},
 ): TableRequestBody {
-  return withCohort(toSummaryBody(query, numericCols), cohort, timezone, opts);
+  return withCohort(toSummaryBody(query, numericCols, { amountCols }), cohort, timezone, opts);
 }
 
 /**
@@ -228,7 +233,7 @@ export function historyCohortKey(
  * walk: neither may re-run just because the user turned a page or re-sorted.
  */
 export function historyPopulationKey(
-  { cohort, query, timezone }: Omit<HistoryRequestInput, 'numericCols'>,
+  { cohort, query, timezone }: Omit<HistoryRequestInput, 'numericCols' | 'amountCols'>,
   opts: HistoryScopeOpts = {},
 ): string {
   return `${historyCohortKey(cohort, timezone, opts)}|${JSON.stringify({

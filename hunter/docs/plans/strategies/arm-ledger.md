@@ -143,13 +143,19 @@ exactly like `/api/portfolio/positions/query`. The whitelists live in `arm_repo`
 - **sort**: `mint_address`, `symbol`, `rule_id`, `mode`, `armed_at`, `ended_at`,
   `end_reason`, `blocked_by`, `waited_sec`
 - **filter**: the same set plus `position_id`
+- every other key falls through to the shared token-enrichment whitelist
+  (`enrich_sort_sql` / `enrich_filter_sql`), the positions table's fallthrough
 
 `range` applies to `armed_at`, not `ended_at`: the question is "what did the bot look at
 during this window", and keying on the end would drop every episode still waiting. The
 `end_reason` filter column is `COALESCE(end_reason, 'waiting')`, so a live episode is
-filterable — the same trap `exit_reason` has on the positions whitelist. There is no
-token-enrichment fallthrough: the table appends no enrichment columns, so the JOIN
-carries `symbol` for the search and nothing else.
+filterable — the same trap `exit_reason` has on the positions whitelist.
+
+The Arms table appends the shared token columns, so every read shares one `FROM`
+(`ARM_FROM`: `tokens t` + `tokens_info i`, both LEFT) and the page response is
+`ArmResponse` — the episode with `TokenEnrichment` flattened on, attached by one
+`fetch_by_mints` batch over the page's mints. Postgres removes the unreferenced
+`tokens_info` join, so the funnel pays for it only when a token key is filtered.
 
 `waited_sec` = `EXTRACT(EPOCH FROM (COALESCE(ended_at, now()) - armed_at))`, defined
 once and shared by the sort and filter whitelists so the column can't sort by one fact

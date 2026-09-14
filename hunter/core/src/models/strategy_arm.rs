@@ -51,6 +51,21 @@ pub struct StrategyArm {
     pub waited_sec: Option<f64>,
 }
 
+/// One arms-table row on the wire: the episode plus the shared token enrichment,
+/// so the Arms table renders the same token columns every token table does.
+///
+/// `ath_price` rides beside the flatten for the reason it does on positions: it
+/// is row-owned in the enrichment SSOT (see `token_enrichment`). The enrichment
+/// is `Default` (blank columns) when the token row is gone.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArmResponse {
+    #[serde(flatten)]
+    pub arm: StrategyArm,
+    pub ath_price: Option<f64>,
+    #[serde(flatten)]
+    pub token: crate::storage::token_enrichment::TokenEnrichment,
+}
+
 /// The arm funnel over a cohort — how selective a rule is, in one row.
 ///
 /// `armed` is every episode in the window (live ones included), so

@@ -46,6 +46,26 @@ use crate::serde_wire::u64_as_string;
 /// `COALESCE(...)`/`(...)::text` without extra wrapping.
 pub const MARKET_CAP_SQL: &str = "(i.current_price * t.total_supply_token)";
 
+/// The token's most recent sync, over every sync scope. THE definition — the
+/// [`ENRICH_SELECT`] projection embeds it as a literal and a guard test pins the
+/// two; the sort whitelist references it.
+const LAST_SYNCED_SQL: &str = "(SELECT MAX(s.last_synced_at) FROM token_sync_state s \
+       WHERE s.mint_address = t.mint_address)";
+
+/// SOL-denominated filter expressions for columns stored in lamports. The table
+/// columns render and filter in human SOL (`filterAmount: 'sol'` / `u64Sol` on the
+/// frontend), so the compare must lift the stored lamports into SOL first — a raw
+/// lamport column against a SOL operand matches almost every row on `>`. Multiplied,
+/// never divided, the same convention as the positions `ENTRY_SOL_SQL`. Sorts stay
+/// on the raw column (monotonic, no cast).
+const INITIAL_BUY_SOL_SQL: &str = "(t.initial_buy_lamports * 0.000000001)";
+const FIRST_SLOT_BUY_SOL_SQL: &str = "(i.first_slot_buy_lamports * 0.000000001)";
+const FIRST_SLOT_SELL_SOL_SQL: &str = "(i.first_slot_sell_lamports * 0.000000001)";
+const MAX_COST_SOL_SQL: &str =
+    "((t.initial_buy_instruction->>'max_cost_lamports')::numeric * 0.000000001)";
+const SPENDABLE_IN_SOL_SQL: &str =
+    "((t.initial_buy_instruction->>'spendable_lamports_in')::numeric * 0.000000001)";
+
 /// SQL column fragment for the token-enrichment projection. Requires the query to
 /// alias `tokens` as `t` and `tokens_info` as `i` (LEFT JOIN). Column names/order
 /// match [`TokenEnrichmentRow`]. `market_cap` is computed ([`MARKET_CAP_SQL`],
@@ -275,6 +295,7 @@ pub fn enrich_sort_sql(key: &str) -> Option<&'static str> {
         "volume" => "i.volume_sol",
         "trade_count" => "i.trade_count",
         "last_trade" => "i.last_trade_at",
+        "last_synced" => LAST_SYNCED_SQL,
         "migrated" => "i.is_migrated",
         "dead" => "i.is_dead",
         "first_slot_buy" => "i.first_slot_buy_lamports",
@@ -303,7 +324,7 @@ pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "symbol" => ("t.symbol", Text),
         "name" => ("t.name", Text),
         "creator" => ("t.creator_wallet", Text),
-        "initial_buy" | "init_buy" => ("t.initial_buy_lamports", Numeric),
+        "initial_buy" | "init_buy" => (INITIAL_BUY_SOL_SQL, Numeric),
         "init_supply" => ("t.initial_supply_token", Numeric),
         "cu_limit" => ("t.cu_limit", Numeric),
         "cu_price" => ("t.cu_price", Numeric),
@@ -313,8 +334,8 @@ pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "market_cap" => (MARKET_CAP_SQL, Numeric),
         "volume" => ("i.volume_sol", Numeric),
         "trade_count" => ("i.trade_count", Numeric),
-        "first_slot_buy" => ("i.first_slot_buy_lamports", Numeric),
-        "first_slot_sell" => ("i.first_slot_sell_lamports", Numeric),
+        "first_slot_buy" => (FIRST_SLOT_BUY_SOL_SQL, Numeric),
+        "first_slot_sell" => (FIRST_SLOT_SELL_SOL_SQL, Numeric),
         // Flags. COALESCEd for the same reason `exit_reason` is: the LEFT JOIN
         // leaves a token with no `tokens_info` row NULL, and `NULL = false` is
         // NULL, so an un-enriched token would silently vanish from a "not
@@ -325,10 +346,10 @@ pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "is_mayhem_mode" | "mayhem_mode" | "mayhem" => ("t.is_mayhem_mode", Bool),
         "is_cashback_enabled" | "cashback" => ("t.is_cashback_enabled", Bool),
         // initial_buy_instruction JSONB — text in JSONB, cast to numeric so the
-        // comparison ops work.
+        // comparison ops work. The two lamport ceilings compare in SOL.
         "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),
-        "max_cost_lamports" => ("(t.initial_buy_instruction->>'max_cost_lamports')::numeric", Numeric),
-        "spendable_lamports_in" => ("(t.initial_buy_instruction->>'spendable_lamports_in')::numeric", Numeric),
+        "max_cost_lamports" => (MAX_COST_SOL_SQL, Numeric),
+        "spendable_lamports_in" => (SPENDABLE_IN_SOL_SQL, Numeric),
         "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
         "ix_count" | "ix_labels_count" => (IX_COUNT_SQL.as_str(), Numeric),
         // The raw JSONB column; the ix-label grammar builds the predicate.
@@ -388,6 +409,33 @@ mod market_cap_ssot_tests {
         assert_eq!(kind, FilterKind::Numeric);
         assert_eq!(count, crate::storage::ix_labels_sql::ix_labels_count_sql("t.ix_labels"));
         assert_eq!(enrich_sort_sql("ix_count"), Some(count));
+    }
+
+    /// The projection embeds the last-synced subquery as a literal; the sort
+    /// arm must order by exactly what the column shows.
+    #[test]
+    fn last_synced_sorts_on_the_projected_expression() {
+        assert!(ENRICH_SELECT.contains(LAST_SYNCED_SQL), "ENRICH_SELECT drifted from LAST_SYNCED_SQL");
+        assert_eq!(enrich_sort_sql("last_synced"), Some(LAST_SYNCED_SQL));
+    }
+
+    /// The SOL-denominated columns filter in SOL: the frontend sends the operand
+    /// in the unit the cell shows, so a filter on a raw lamport column is off by
+    /// 1e9 and `>0.5` keeps nearly every row.
+    #[test]
+    fn sol_columns_filter_in_sol_not_lamports() {
+        for key in [
+            "initial_buy",
+            "init_buy",
+            "first_slot_buy",
+            "first_slot_sell",
+            "max_cost_lamports",
+            "spendable_lamports_in",
+        ] {
+            let (sql, kind) = enrich_filter_sql(key).expect("whitelisted");
+            assert_eq!(kind, FilterKind::Numeric, "{key}");
+            assert!(sql.contains("* 0.000000001"), "{key} must lift lamports to SOL: {sql}");
+        }
     }
 
     /// COALESCE, not a bare column: the position reads LEFT JOIN `tokens_info`,

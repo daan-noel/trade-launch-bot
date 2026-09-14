@@ -33,8 +33,12 @@ server-side.
   exactly this: the toggle and its lazy grid already live there.
 
 The grid starts closed (no `chartsDefaultOn`) — a card is a per-row trade fetch, and the
-deck is this page's primary read. `existingKeys` is `ALL_TOKEN_INFO_KEYS`, appending
-**nothing**: an appended token column would offer a sort/filter key B1's whitelist rejects.
+deck is this page's primary read. The shared token columns append after History's own
+(B1's whitelist falls through to the token-enrichment SSOT), shown at
+`COMPACT_TOKEN_DEFAULT_COLS` — the headline (MCap, ATH, Trades, Migrated, Dead) visible,
+the rest in the Columns menu. The request serializes with `tokenNumericColKeys` /
+`tokenAmountColKeys`, so a typed filter on a token column lowers and unit-converts like
+the table's own. The Portfolio drill-down and the Arms table carry the same set.
 
 ### The cohort includes the table's own filters
 

@@ -13,7 +13,7 @@
 import { memo, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { TokenTable } from 'components/tokens/TokenTable';
-import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
+import { COMPACT_TOKEN_DEFAULT_COLS } from 'components/tokens/sharedTokenColumns';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { InlineAlert } from 'components/ui/Modal';
 import { DateCell } from 'components/table/DateCell';
@@ -26,6 +26,7 @@ import { fetchArmsPage } from 'services/api';
 import { formatDurationShort } from 'utils/format';
 import { ruleAnalyzeHref } from 'lib/strategy/nav';
 import type { StrategyArmRecord } from 'lib/strategy/types';
+import type { AmountStorageUnit } from 'lib/priceUnitSnapshot';
 import { ARM_END_LABEL, ArmChartCardExtra, armEndBadge } from '@live/components/floor/liveChartCards';
 import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
 import type { ArmCohort } from '@live/pages/console/armCohort';
@@ -60,6 +61,8 @@ const armChartCardExtra = (r: StrategyArmRecord) => (
  * `mode`, `armed_at`, `ended_at`, `end_reason`, `blocked_by`, `waited_sec`. `rule` is
  * display-only (the name is resolved client-side), so it is deliberately not
  * sortable — a header that sorts nothing is worse than one that doesn't offer to.
+ * `TokenTable` appends the shared token columns after these; their keys fall
+ * through to the token-enrichment whitelist server-side.
  */
 export function armColumns(
   ruleNameOf: (id: string | null) => string | null,
@@ -153,6 +156,7 @@ export const ArmsTable = memo(function ArmsTable({
   cohort,
   columns,
   numericCols,
+  amountCols,
   query,
   onQueryChange,
   ruleNameOf,
@@ -164,6 +168,7 @@ export const ArmsTable = memo(function ArmsTable({
   /** Built by the section — it needs the same defs to derive `numericCols`. */
   columns: ColumnDef<StrategyArmRecord>[];
   numericCols: ReadonlySet<string>;
+  amountCols: ReadonlyMap<string, AmountStorageUnit>;
   /** Owned by the section, so the funnel narrows with this table. */
   query: TableQuery;
   onQueryChange: (q: TableQuery) => void;
@@ -174,9 +179,10 @@ export const ArmsTable = memo(function ArmsTable({
   reloadNonce: number;
 }) {
   const body = useMemo(
-    () => armTableBody({ cohort, query, numericCols }),
-    [cohort, query, numericCols],
+    () => armTableBody({ cohort, query, numericCols, amountCols }),
+    [cohort, query, numericCols, amountCols],
   );
+  const ownKeys = useMemo(() => new Set(columns.map((c) => c.key)), [columns]);
   const fetchPage = useCallback(
     (b: unknown, signal: AbortSignal) => fetchArmsPage(b as never, signal),
     [],
@@ -218,7 +224,8 @@ export const ArmsTable = memo(function ArmsTable({
       {error && <InlineAlert variant="error">Arms failed to load: {error}</InlineAlert>}
       <TokenTable
         columns={columns}
-        existingKeys={ALL_TOKEN_INFO_KEYS}
+        existingKeys={ownKeys}
+        defaultCols={COMPACT_TOKEN_DEFAULT_COLS}
         rows={items}
         rowKey={armRowKey}
         searchable

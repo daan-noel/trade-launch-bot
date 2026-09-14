@@ -8,6 +8,7 @@
 
 import type { WindowSpec } from 'lib/strategy/windowSpec';
 import type { Criteria } from 'lib/strategy/fingerprintAxes';
+import type { TokenEnrichmentFields } from 'types';
 
 /** 1 SOL in lamports — the one divisor for the fingerprint/rule amount axes. */
 export const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -263,8 +264,11 @@ export interface ArmedEntry {
 }
 
 /** One arming episode from `POST /api/strategies/arms/query` — the durable twin
- *  of a Waiting row. `end_reason` is `null` while the episode is still live. */
-export interface StrategyArmRecord {
+ *  of a Waiting row. `end_reason` is `null` while the episode is still live.
+ *  Carries the shared token enrichment (backend `ArmResponse`), so the Arms table
+ *  renders the token columns; `symbol` stays row-owned and nullable (the token row
+ *  can be gone). */
+export interface StrategyArmRecord extends Omit<TokenEnrichmentFields, 'symbol'> {
   rule_id: string;
   mint_address: string;
   mode: string;
