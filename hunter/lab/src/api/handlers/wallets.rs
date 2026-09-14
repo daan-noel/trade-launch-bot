@@ -21,6 +21,7 @@ use trading_core::config::constants::curve_progress_pct;
 use trading_core::state::core_state::CoreState;
 use trading_core::storage::repositories::trade_repo::WalletTradedMint;
 use trading_core::strategies::kernel::wallet_mint_pnl;
+use trading_core::strategies::wallet_ledger::{wallet_episodes, EpisodeStatus, WalletEpisode, WalletTx};
 
 /// Query string for `GET /api/wallets/{wallet}/tokens` — the page's look-back
 /// picker (a rolling day count OR an explicit `from`/`to` range) plus max tokens.
@@ -64,6 +65,11 @@ fn default_limit() -> i64 {
 /// UPPER bound and moves `from` up, since the page is read end-first (rows are
 /// most-recent-trade first).
 const MAX_WINDOW_DAYS: i64 = 90;
+
+/// How far before the window the episode ledger reads, to find the opening buy
+/// of an episode that closes inside it: the `trades` retention policy, so every
+/// leg Postgres holds. A buy older than this leaves its episode `unseen_buy`.
+const EPISODE_LOOKBACK_DAYS: i64 = 30;
 
 /// Comparison wallets one co-trade read may carry. The second query is scoped to
 /// the mints already on screen, so each extra wallet is cheap — the cap exists so
@@ -199,6 +205,11 @@ struct WalletTokenRow {
     wallet_exit_slot: Option<i64>,
     wallet_exit_tx_index: Option<i32>,
 
+    /// The wallet's round trips on this mint on the exact wallet basis
+    /// ([`wallet_episodes`]): every episode that closed inside the window, plus
+    /// the one still open. Tape order.
+    episodes: Vec<WalletEpisode>,
+
     // ── Co-trade (only populated when the request names comparison wallets) ──
     /// The comparison wallets that were ALSO on this mint in the window, ordered
     /// by entry (earliest first; a wallet with no entry leg sorts last). Empty
@@ -257,10 +268,12 @@ struct CoTrader {
 /// interaction stats + reconstructed PnL (see [`WalletTokenRow`]). Both buys and
 /// sells count (a mint the wallet only exited in the window still shows).
 ///
-/// Two indexed reads: `wallet_traded_mints` (recent-first mint set + stats) then
+/// Three reads: `wallet_traded_mints` (recent-first mint set + stats),
 /// `find_list_rows_for_mints` (the same batch token projection the All Tokens /
-/// `/api/tokens/batch` path uses). The wallet's recency order is re-applied after
-/// the merge since `find_list_rows_for_mints` returns unspecified order.
+/// `/api/tokens/batch` path uses), and `wallet_txs_on` (the episode ledger's
+/// transactions on those mints, from [`EPISODE_LOOKBACK_DAYS`] before the
+/// window). The wallet's recency order is re-applied after the merge since
+/// `find_list_rows_for_mints` returns unspecified order.
 pub async fn list_wallet_tokens(
     state: web::Data<Arc<CoreState>>,
     path: web::Path<String>,
@@ -289,6 +302,24 @@ pub async fn list_wallet_tokens(
                 .json(serde_json::json!({ "error": "database error" }));
         }
     };
+
+    // The episode ledger's input, from before the window so an episode closing in
+    // it still finds its opening buy. PnL is the page's core, so a failure 500s
+    // rather than rendering a page with no trades.
+    let lookback = since - chrono::Duration::days(EPISODE_LOOKBACK_DAYS);
+    let mut txs_by_mint: HashMap<String, Vec<WalletTx>> = HashMap::new();
+    match state.trade_repo().wallet_txs_on(&wallet, &mints, lookback, until).await {
+        Ok(txs) => {
+            for (mint, tx) in txs {
+                txs_by_mint.entry(mint).or_default().push(tx);
+            }
+        }
+        Err(e) => {
+            tracing::error!("DB error fetching wallet transactions for {wallet}: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "database error" }));
+        }
+    }
 
     // Index the token rows by mint, then walk `traded` (recency order) so the
     // response preserves the wallet's most-recent-trade-first ordering.
@@ -327,7 +358,9 @@ pub async fn list_wallet_tokens(
         .filter_map(|t| {
             let token = by_mint.remove(&t.mint_address)?;
             let co = co_by_mint.remove(&t.mint_address).unwrap_or_default();
-            Some(wallet_token_row(token, t, co))
+            let txs = txs_by_mint.remove(&t.mint_address).unwrap_or_default();
+            let episodes = window_episodes(&txs, token.current_price, since);
+            Some(wallet_token_row(token, t, co, episodes))
         })
         .collect();
 
@@ -388,6 +421,17 @@ fn co_trader(primary: &WalletTradedMint, c: WalletTradedMint, token_price: Optio
     }
 }
 
+/// One mint's episodes as the page shows them: those that closed at or after
+/// `since`, plus the one still open. The fold itself runs over the look-back
+/// too, so an episode is cut by where it closed, never by where the read began.
+fn window_episodes(txs: &[WalletTx], current_price: Option<f64>, since: DateTime<Utc>) -> Vec<WalletEpisode> {
+    let since_ms = since.timestamp_millis();
+    wallet_episodes(txs, current_price)
+        .into_iter()
+        .filter(|e| e.status == EpisodeStatus::Open || e.exit_ms.is_some_and(|ms| ms >= since_ms))
+        .collect()
+}
+
 /// Build one response row: the token's `current_price` feeds `wallet_mint_pnl`'s
 /// mark-to-market of any still-open bag; the fee-adjusted, matched-cost-basis PnL
 /// itself is computed once in [`kernel::wallet_mint_pnl`], never re-derived here.
@@ -395,6 +439,7 @@ fn wallet_token_row(
     token: TokenSummary,
     t: WalletTradedMint,
     co: Vec<WalletTradedMint>,
+    episodes: Vec<WalletEpisode>,
 ) -> WalletTokenRow {
     // Entry order, earliest first — the reading order for "who moved first".
     // A wallet with no entry leg in the window has no tape position to sort on
@@ -438,6 +483,7 @@ fn wallet_token_row(
         wallet_entry_tx_index: t.entry_tx_index,
         wallet_exit_slot: t.exit_slot,
         wallet_exit_tx_index: t.exit_tx_index,
+        episodes,
         co_traders,
     }
 }
@@ -459,6 +505,34 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-08-25T12:00:00Z").unwrap().with_timezone(&Utc)
+    }
+
+    /// The window cuts episodes by where they closed: one closed before `since`
+    /// drops, one that opened in the look-back and closed inside stays whole, and
+    /// the open one stays.
+    #[test]
+    fn window_keeps_episodes_that_close_inside_it() {
+        let since = now();
+        let at = |secs: i64| since.timestamp_millis() + secs * 1_000;
+        let tx = |secs: i64, token_delta: i64, flow: i64| WalletTx {
+            slot: secs + 1_000,
+            tx_index: 0,
+            time_ms: at(secs),
+            token_delta,
+            flow_lamports: Some(flow),
+        };
+        let txs = [
+            tx(-300, 100, -1_000),
+            tx(-200, -100, 2_000),
+            tx(-100, 100, -1_000),
+            tx(100, -100, 3_000),
+            tx(200, 100, -1_000),
+        ];
+        let eps = window_episodes(&txs, None, since);
+        assert_eq!(eps.len(), 2);
+        assert_eq!(eps[0].entry_ms, at(-100), "the look-back buy opens the episode");
+        assert_eq!(eps[0].net_sol, Some(2_000.0 / 1e9));
+        assert_eq!(eps[1].status, EpisodeStatus::Open);
     }
 
     /// The wire shapes the page actually sends. Guards the two things a typo

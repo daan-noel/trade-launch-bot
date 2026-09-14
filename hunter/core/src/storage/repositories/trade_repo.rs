@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::models::trade::{Trade, TradeType};
 use crate::storage::repositories::wallet_dict_repo::WalletDictRepo;
+use crate::strategies::wallet_ledger::WalletTx;
 
 /// Mints per round-trip for the startup cache-seed scans. Bounds each `= ANY($1)`
 /// array so Postgres keeps using the per-mint indexes instead of falling back to a
@@ -977,6 +978,94 @@ impl TradeRepo {
                         TradeType::Sell,
                     ),
                 })
+            })
+            .collect())
+    }
+
+    /// One wallet's transactions on `mints` in `since..=until`, legs collapsed per
+    /// transaction, in tape order per mint: the input of
+    /// [`wallet_episodes`](crate::strategies::wallet_ledger::wallet_episodes).
+    ///
+    /// A transaction's flow is its `payer_net_lamports`, and only when it is
+    /// exactly this wallet's trade on this mint: the wallet paid for it, and no
+    /// leg of another mint or wallet shares it. Otherwise the flow is `None`, never
+    /// a curve-side substitute.
+    ///
+    /// Mint-scoped, so it rides `idx_trades_mint_order`. The shared-transaction
+    /// test is a lookup on `(block_time, slot, tx_index)`, run only where a flow
+    /// exists: ~0.15 ms a transaction on an open chunk, ~3 ms on a compressed one.
+    pub async fn wallet_txs_on(
+        &self,
+        wallet: &str,
+        mints: &[String],
+        since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Vec<(String, WalletTx)>> {
+        if mints.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+            return Ok(Vec::new());
+        };
+        #[derive(sqlx::FromRow)]
+        struct WalletTxRow {
+            mint_address: String,
+            slot: i64,
+            tx_index: i32,
+            block_time: DateTime<Utc>,
+            token_delta: i64,
+            flow_lamports: Option<i64>,
+        }
+        let rows: Vec<WalletTxRow> = sqlx::query_as(
+            r#"
+            WITH tx AS (
+                SELECT mint_address, slot, tx_index,
+                       MIN(block_time) AS block_time,
+                       SUM(CASE WHEN trade_type = 'buy' THEN token_amount ELSE -token_amount END)::BIGINT AS token_delta,
+                       MAX(payer_net_lamports) AS payer_net_lamports,
+                       COALESCE(BOOL_AND(payer_id = wallet_id), FALSE) AS wallet_pays
+                FROM trades
+                WHERE wallet_id = $1
+                  AND mint_address = ANY($2)
+                  AND block_time >= $3
+                  AND ($4::timestamptz IS NULL OR block_time <= $4)
+                GROUP BY mint_address, slot, tx_index
+            )
+            SELECT mint_address, slot, tx_index, block_time, token_delta,
+                   -- CASE keeps the lookup off every transaction without a flow.
+                   CASE
+                       WHEN payer_net_lamports IS NULL OR NOT wallet_pays THEN NULL
+                       WHEN EXISTS (
+                           SELECT 1 FROM trades o
+                           WHERE o.block_time = tx.block_time
+                             AND o.slot = tx.slot
+                             AND o.tx_index = tx.tx_index
+                             AND (o.mint_address <> tx.mint_address OR o.wallet_id <> $1)
+                       ) THEN NULL
+                       ELSE payer_net_lamports
+                   END AS flow_lamports
+            FROM tx
+            ORDER BY mint_address, slot, tx_index
+            "#,
+        )
+        .bind(wallet_id)
+        .bind(mints)
+        .bind(since)
+        .bind(until)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let tx = WalletTx {
+                    slot: r.slot,
+                    tx_index: r.tx_index,
+                    time_ms: r.block_time.timestamp_millis(),
+                    token_delta: r.token_delta,
+                    flow_lamports: r.flow_lamports,
+                };
+                (r.mint_address, tx)
             })
             .collect())
     }
