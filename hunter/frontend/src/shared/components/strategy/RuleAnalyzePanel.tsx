@@ -64,13 +64,19 @@ const posRowOverlay = markerRowOverlay(inspectFromPosition);
  */
 const EVIDENCE_DEFAULT_COLS = { token_amount: true } as const;
 
-const TABLE_RELOAD_STATUSES = new Set([
+/** Transitions that move a chart point: an entry fill (or scale-out leg), a close,
+ *  or an exit parked open. `BuySubmitted` has no entry price to plot and
+ *  `ExitPending` moves nothing, so those two reload the table page only. */
+const SERIES_RELOAD_STATUSES = new Set([
   'Holding',
   'End',
   'EntryFailed',
   'ExitStuck',
   'ExitUnconfirmed',
 ]);
+
+/** One refetch per burst of frames — a Stop closes every position of a rule at once. */
+const LIVE_RELOAD_COALESCE_MS = 300;
 
 /**
  * Evidence scope: current run · one run #N · all-time (both modes or one).
@@ -397,16 +403,35 @@ export function RuleAnalyzePanel({
     setScope({ kind: 'all' });
   }, [loading, error, total, scope.kind, queryIsPristine, focus.length, runs.length, currentRun]);
 
+  // Every frame of this rule is a status the table shows, so every one reloads the
+  // page; the full-cohort series walk only on a transition that moves a point. The
+  // sink sends a frame only after its row commits, so the refetch reads the new
+  // status. A reconnect / `sse_resync` resyncs both — frames inside the gap are gone.
   const [seriesTick, setSeriesTick] = useState(0);
   useEffect(() => {
     if (!ruleId || !liveUpdates) return;
-    const h = connectStrategyPositionUpdate((d) => {
-      if (d.rule_id !== ruleId) return;
-      if (!TABLE_RELOAD_STATUSES.has(d.status)) return;
-      reload();
-      setSeriesTick((t) => t + 1);
-    });
-    return () => h.close();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let series = false;
+    const schedule = (withSeries: boolean) => {
+      series ||= withSeries;
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        reload();
+        if (series) setSeriesTick((t) => t + 1);
+        series = false;
+      }, LIVE_RELOAD_COALESCE_MS);
+    };
+    const h = connectStrategyPositionUpdate(
+      (d) => {
+        if (d.rule_id === ruleId) schedule(SERIES_RELOAD_STATUSES.has(d.status));
+      },
+      () => schedule(true),
+    );
+    return () => {
+      h.close();
+      if (timer) clearTimeout(timer);
+    };
   }, [ruleId, reload, liveUpdates]);
 
   // Full-cohort series for charts + Temporal (table filters only; focus applied in shell / request).

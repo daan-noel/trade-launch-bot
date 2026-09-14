@@ -235,9 +235,13 @@ the loop never waits. **Terminal handlers are not an exception** — an inline
 `await_pending_pg` + `record_sell_fill` + real-mode held-pool check is three round
 trips, and a Stop closes every position of a rule at once, so they serialize
 head-to-head while ingest is also writing PG; while the loop is blocked **nothing**
-else folds — no ticks, no pings, no other fills. The price is that a terminal write
-does not guarantee landing before its SSE frame, so a client must trust the frame's
-payload rather than refetching the row on it. `pending_pg` is pruned of finished handles on each
+else folds — no ticks, no pings, no other fills. **A position's
+`strategy_position_update` frame is chained onto the same handle** (`send_after_write`):
+it is built at the transition but sent only once that position's write commits, so
+a client may refetch the row on a frame and read the new status. Sending it at the
+transition instead races the spawned write, and every refetching reader (Rules
+Evidence, Console History, the fill ledger, Portfolio) shows the pre-transition row
+with no later frame to correct it. `pending_pg` is pruned of finished handles on each
 finalize (`prune_finished_pg`), else it would grow by one entry per closed position
 for the life of the process.
 

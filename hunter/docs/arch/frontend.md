@@ -113,8 +113,10 @@ frame just deletes the row from `open`, and Console History reads it back from t
 that same frame (with the exit fill the frame doesn't carry).
 In-place patch on `strategy_position_update` / `strategy_armed_changed`. Snapshot drops
 armed rows that collide with open `(rule, mint)` (Waiting must not stick after buy).
-Terminal position SSE is emitted **before** the sink drops registry meta so
-`position_id` / `trade_mode` stay populated; the slice ignores nil/empty ids.
+Terminal position SSE is built **before** the sink drops registry meta so
+`position_id` / `trade_mode` stay populated; the slice ignores nil/empty ids. Every
+position frame is sent only after its row's PG write commits, so a consumer that
+refetches on it (Rules Evidence, Console History) reads the new status.
 A position that opens mid-session is hydrated by **deltas alone** — the snapshot's
 triggers are all session edges — so every `strategy_position_update` carries the whole
 entry snapshot (`entry_price` + `entry_sol` + `entry_time`), sourced from `PositionMeta`

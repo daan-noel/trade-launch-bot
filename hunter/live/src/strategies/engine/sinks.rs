@@ -474,9 +474,10 @@ impl Sink {
     ///
     /// Engine-final handlers return whether the registry row should be dropped
     /// (the engine no longer owns the position — for `ExitStuck`/`ExitUnconfirmed`
-    /// the PG row stays OPEN and the reaper/manual actions own it from here). SSE
-    /// is emitted **before** `registry.remove` so clients always get a real
-    /// `position_id` (and entry price) on the final frame.
+    /// the PG row stays OPEN and the reaper/manual actions own it from here). The
+    /// SSE frame is built **before** `registry.remove` so clients always get a real
+    /// `position_id` (and entry price) on the final frame, and sent only once the
+    /// transition's PG write has committed ([`Self::send_after_write`]).
     /// `entry_depth` is the engine's entry depth (`EnteredCtx::entry_priced_reserve`),
     /// read on a `Holding` transition; the first-entry write persists it.
     pub async fn on_position_update(&mut self, delta: PositionDelta, entry_depth: Option<f64>) {
@@ -1033,6 +1034,30 @@ impl Sink {
         self.pending_pg.retain(|_, h| !h.is_finished());
     }
 
+    /// Send a position frame only after that position's queued PG write commits.
+    ///
+    /// A frame is a promise the row is readable: the Rules Evidence table, Console
+    /// History, the fill ledger and the Portfolio reads all refetch on it, and a
+    /// frame that outruns its chained write hands them the pre-transition row with
+    /// no later frame to correct it. Chained onto `pending_pg` exactly like a
+    /// write, so per-position frame order stays the write order and the decision
+    /// loop still never waits on PG.
+    fn send_after_write(&mut self, pg_id: uuid::Uuid, event: SseEvent) {
+        let prev = match self.pending_pg.remove(&pg_id) {
+            Some(h) if !h.is_finished() => h,
+            _ => {
+                let _ = self.sse_tx.send(event);
+                return;
+            }
+        };
+        let sse_tx = self.sse_tx.clone();
+        let handle = tokio::spawn(async move {
+            let _ = prev.await;
+            let _ = sse_tx.send(event);
+        });
+        self.pending_pg.insert(pg_id, handle);
+    }
+
     /// Keep this mint's PumpSwap pool on the LaserStream filter for the life of
     /// the real position (independent of `track_post_migration`).
     fn retain_held_pool(&self, mint: &str, mode: TradeMode) {
@@ -1240,7 +1265,10 @@ impl Sink {
         }
     }
 
-    fn emit_position_sse(&self, delta: &PositionDelta) {
+    /// Build the position's SSE frame NOW (the registry row may be dropped right
+    /// after) and send it once this position's queued PG write commits — see
+    /// [`Self::send_after_write`].
+    fn emit_position_sse(&mut self, delta: &PositionDelta) {
         let Some(meta) = self.registry.get(delta.position) else {
             // No registry row (duplicate terminal / unknown id) — skip rather
             // than broadcast a nil position_id that cannot patch Live Status.
@@ -1296,10 +1324,11 @@ impl Sink {
         };
         let scale_stage = (meta.scale_stage > 0 || meta.sold_token_amount > 0)
             .then_some(meta.scale_stage);
-        let _ = self.sse_tx.send(SseEvent::StrategyPositionUpdate {
+        let pg_id = meta.pg_id;
+        self.send_after_write(pg_id, SseEvent::StrategyPositionUpdate {
             rule_id: delta.rule.0,
             mint_address: delta.mint.to_string(),
-            position_id: meta.pg_id,
+            position_id: pg_id,
             status: position_status_str(delta.status).to_string(),
             exit_reason: delta.reason.map(|r| r.label().into_owned()),
             entry_price,
