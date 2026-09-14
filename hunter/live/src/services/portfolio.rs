@@ -17,7 +17,9 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::warn;
 
+use trading_core::config::constants::lamports_to_sol;
 use trading_core::models::portfolio::{unrealized_pnl, ManagedMint};
+use trading_core::storage::repositories::trade_repo::AvgEntry;
 use trading_core::models::MarkQuote;
 use trading_core::state::token_cache::mark_quote;
 use trading_core::strategies::kernel::{modeled_cost_basis, weighted_return_pct, CostModel};
@@ -549,16 +551,16 @@ pub async fn closes_series(
 /// Per-bag cost basis + unrealized PnL. **The only place the service turns a mark
 /// into PnL** — the arithmetic is delegated to
 /// [`trading_core::models::portfolio::unrealized_pnl`] (the SSOT compute site);
-/// this helper only lifts the SOL/raw average entry into UI space to match the
-/// per-UI-token mark. `avg_entry_price` is SOL per raw unit (`AvgEntry`);
-/// `mark_sol_per_ui` is SOL per UI token (Jupiter mark ÷ SOL/USD). Cost basis needs
-/// only the average entry; the mark-to-market fields need a mark too.
+/// this helper only resolves the basis ([`holding_cost_basis`]: the buys' wallet
+/// flow, or the modeled inverse of their curve-side average for a buy written
+/// before the flow was captured). `mark_sol_per_ui` is SOL per UI token (Jupiter
+/// mark ÷ SOL/USD). Cost basis needs only the recorded buys; the mark-to-market
+/// fields need a mark too.
 ///
 /// `reserve_sol` is the mint's SOL-side pool depth from the live cache, for the
 /// exit leg's impact — `None` charges none rather than guessing. The figure this
-/// returns is **net of the round trip**: `avg_entry_price` is the curve-side fill
-/// price, so the basis is the kernel's `modeled_cost_basis` of that buy (fee and
-/// fixed leg added back), and the mark is the exact sell that would realize it.
+/// returns is **net of the round trip**: the basis is what the buys took from the
+/// wallet, and the mark is the exact sell that would realize it.
 struct HoldingPnl {
     cost_basis_sol: Option<f64>,
     unrealized_pnl_sol: Option<f64>,
@@ -593,18 +595,14 @@ fn resolve_mark_sol_per_ui(
 }
 
 fn holding_pnl(
-    avg_entry_price: Option<f64>,
+    entry: Option<&AvgEntry>,
     mark_sol_per_ui: Option<f64>,
     decimals: u8,
     ui_amount: f64,
     reserve_sol: Option<f64>,
 ) -> HoldingPnl {
-    // SOL/raw → SOL/ui so it shares a unit basis with the per-UI-token mark.
-    let avg_entry_per_ui = avg_entry_price.map(|a| a * 10f64.powi(decimals as i32));
     let costs = CostModel::pumpfun_with_impact();
-    // A holding's only record is its curve-side average, so its basis is the
-    // kernel's inverse of that buy — the same all-in figure on both branches.
-    let basis = avg_entry_per_ui.map(|entry_ui| modeled_cost_basis(entry_ui, ui_amount, &costs));
+    let basis = entry.map(|e| holding_cost_basis(e, decimals, ui_amount, &costs));
     match (basis, mark_sol_per_ui) {
         (Some(basis), Some(mark)) => {
             let p = unrealized_pnl(basis, mark, ui_amount, reserve_sol, &costs);
@@ -626,6 +624,23 @@ fn holding_pnl(
             unrealized_pnl_sol: None,
             unrealized_pnl_pct: None,
         },
+    }
+}
+
+/// What the `ui_amount` still held cost the wallet: its buys' wallet flow
+/// (`AvgEntry::wallet_paid_lamports`, every fee included), pro-rata by the tokens
+/// still held out of those bought. A buy written before the flow was captured has
+/// only its curve-side average, so the basis is then the kernel's inverse of that
+/// buy (`modeled_cost_basis`: fee and fixed leg added back).
+fn holding_cost_basis(entry: &AvgEntry, decimals: u8, ui_amount: f64, costs: &CostModel) -> f64 {
+    let held_raw = ui_amount * 10f64.powi(decimals as i32);
+    match entry.wallet_paid_lamports {
+        Some(paid) if entry.total_token_amount > 0 => {
+            let share = (held_raw / entry.total_token_amount as f64).min(1.0);
+            lamports_to_sol(paid) * share
+        }
+        // SOL/raw → SOL/ui so it shares a unit basis with the per-UI-token amount.
+        _ => modeled_cost_basis(entry.avg_entry_price * 10f64.powi(decimals as i32), ui_amount, costs),
     }
 }
 
@@ -773,7 +788,7 @@ async fn compose(
                     };
                     let value_usd = price_usd.map(|p| p * h.ui_amount);
                     let pnl = holding_pnl(
-                        avg_entries.get(&h.mint).map(|a| a.avg_entry_price),
+                        avg_entries.get(&h.mint),
                         mark_sol_per_ui,
                         h.decimals,
                         h.ui_amount,
@@ -874,6 +889,29 @@ async fn compose(
 mod tests {
     use super::*;
 
+    /// 1e9 raw bought at 1e-9 SOL/raw curve-side (1.0 SOL), no captured flow.
+    fn modeled() -> AvgEntry {
+        AvgEntry {
+            avg_entry_price: 1e-9,
+            total_token_amount: 1_000_000_000,
+            total_cost_lamports: 1_000_000_000,
+            wallet_paid_lamports: None,
+        }
+    }
+
+    /// With the flow captured, the basis is what the buys took from the wallet,
+    /// pro-rata to the tokens still held - no model.
+    #[test]
+    fn a_captured_flow_is_the_basis() {
+        let paid = AvgEntry { wallet_paid_lamports: Some(1_012_727_000), ..modeled() };
+        // 1000 UI at 6 dp = 1e9 raw: the whole bag.
+        let p = holding_pnl(Some(&paid), None, 6, 1000.0, None);
+        assert!((p.cost_basis_sol.unwrap() - 1.012727).abs() < 1e-12);
+        // Half sold: half the paid SOL.
+        let p = holding_pnl(Some(&paid), None, 6, 500.0, None);
+        assert!((p.cost_basis_sol.unwrap() - 0.5063635).abs() < 1e-12);
+    }
+
     /// SSOT guard: the service's PnL composition is the SSOT `unrealized_pnl` fed
     /// with a UI-space average entry — never a re-implemented formula. Fixture: avg
     /// entry 1e-9 SOL/raw at 6 decimals = 1e-3 SOL/UI token; mark 2e-3 SOL/UI;
@@ -886,7 +924,7 @@ mod tests {
     fn holding_pnl_matches_known_fixture() {
         let costs = CostModel::pumpfun_with_impact();
         let fee = costs.fee_bps_per_leg / 10_000.0;
-        let p = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0, None);
+        let p = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, None);
 
         let want_basis = 1.0 * (1.0 + fee) + costs.fixed_buy_sol;
         let want_pnl =
@@ -906,7 +944,7 @@ mod tests {
     /// on-chain PnL tracker.
     #[test]
     fn a_flat_mark_is_a_loss() {
-        let p = holding_pnl(Some(1e-9), Some(1e-3), 6, 1000.0, None);
+        let p = holding_pnl(Some(&modeled()), Some(1e-3), 6, 1000.0, None);
         assert!(p.unrealized_pnl_sol.unwrap() < 0.0);
         assert!(p.unrealized_pnl_pct.unwrap() < 0.0);
     }
@@ -914,9 +952,9 @@ mod tests {
     /// Depth charges the exit's impact; no depth charges none rather than a guess.
     #[test]
     fn shallow_depth_marks_lower_than_none() {
-        let deep = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0, Some(1_000.0));
-        let shallow = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0, Some(10.0));
-        let no_depth = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0, None);
+        let deep = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, Some(1_000.0));
+        let shallow = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, Some(10.0));
+        let no_depth = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, None);
         assert!(shallow.unrealized_pnl_sol.unwrap() < deep.unrealized_pnl_sol.unwrap());
         assert!(deep.unrealized_pnl_sol.unwrap() < no_depth.unrealized_pnl_sol.unwrap());
     }
@@ -928,7 +966,7 @@ mod tests {
     fn no_mark_yields_cost_basis_but_no_pnl() {
         let costs = CostModel::pumpfun_with_impact();
         let want_basis = 1.0 * (1.0 + costs.fee_bps_per_leg / 10_000.0) + costs.fixed_buy_sol;
-        let p = holding_pnl(Some(1e-9), None, 6, 1000.0, None);
+        let p = holding_pnl(Some(&modeled()), None, 6, 1000.0, None);
         assert!((p.cost_basis_sol.unwrap() - want_basis).abs() < 1e-12);
         assert!(p.unrealized_pnl_sol.is_none());
         assert!(p.unrealized_pnl_pct.is_none());

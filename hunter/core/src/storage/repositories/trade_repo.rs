@@ -725,16 +725,33 @@ impl TradeRepo {
         };
         // Σ over the wallet's buy legs, grouped per mint. Kept integer in SQL
         // (exact lamports / raw units); the SOL conversion happens once in Rust.
-        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        // The wallet flow is per TRANSACTION, repeated on each of its legs: one
+        // value per signature, and one unknown makes the mint's sum unknown.
+        let rows: Vec<(String, i64, i64, Option<i64>)> = sqlx::query_as(
             r#"
-            SELECT mint_address,
-                   COALESCE(SUM(amount_lamports), 0)::bigint,
-                   COALESCE(SUM(token_amount), 0)::bigint
-            FROM trades
-            WHERE wallet_id = $1
-              AND trade_type = 'buy'
-              AND mint_address = ANY($2)
-            GROUP BY mint_address
+            WITH legs AS (
+                SELECT mint_address, tx_signature, amount_lamports, token_amount,
+                       payer_net_lamports
+                FROM trades
+                WHERE wallet_id = $1
+                  AND trade_type = 'buy'
+                  AND mint_address = ANY($2)
+            ),
+            per_tx AS (
+                SELECT mint_address, MAX(payer_net_lamports) AS flow
+                FROM legs GROUP BY mint_address, tx_signature
+            ),
+            paid AS (
+                SELECT mint_address,
+                       CASE WHEN bool_or(flow IS NULL) THEN NULL ELSE -SUM(flow) END AS paid
+                FROM per_tx GROUP BY mint_address
+            )
+            SELECT l.mint_address,
+                   COALESCE(SUM(l.amount_lamports), 0)::bigint,
+                   COALESCE(SUM(l.token_amount), 0)::bigint,
+                   MAX(p.paid)::bigint
+            FROM legs l JOIN paid p USING (mint_address)
+            GROUP BY l.mint_address
             "#,
         )
         .bind(wallet_id)
@@ -744,7 +761,7 @@ impl TradeRepo {
 
         Ok(rows
             .into_iter()
-            .map(|(mint, total_cost_lamports, total_token_amount)| {
+            .map(|(mint, total_cost_lamports, total_token_amount, wallet_paid_lamports)| {
                 let avg_entry_price = if total_token_amount > 0 {
                     lamports_to_sol(total_cost_lamports) / total_token_amount as f64
                 } else {
@@ -756,6 +773,7 @@ impl TradeRepo {
                         avg_entry_price,
                         total_token_amount: total_token_amount as u64,
                         total_cost_lamports,
+                        wallet_paid_lamports,
                     },
                 )
             })
@@ -1660,6 +1678,10 @@ pub struct AvgEntry {
     pub total_token_amount: u64,
     /// Σ amount_lamports across the wallet's buy legs — exact integer lamports.
     pub total_cost_lamports: i64,
+    /// What those buys took from the wallet: −Σ `payer_net_lamports` over their
+    /// transactions, each counted once, every fee included. `None` when any of them
+    /// carried no flow (written before the flow was captured).
+    pub wallet_paid_lamports: Option<i64>,
 }
 
 /// One mint's slot range for [`TradeRepo::prints_in_slot_windows`].
