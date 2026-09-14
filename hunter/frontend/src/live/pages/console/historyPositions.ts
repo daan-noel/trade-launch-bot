@@ -14,7 +14,7 @@
  * every surface sees the same client-side narrowing.
  */
 
-import { resolvePnlPct } from 'lib/pnlPct';
+import { pnlPctFromSol } from 'lib/pnlPct';
 import type { RunOutcomeRow } from 'lib/strategy/runSummary';
 import type { RulePositionRecord } from 'types';
 import type { ClosedTradePoint } from '@live/store/liveEndpoints';
@@ -44,12 +44,7 @@ export function holdSecondsOf(
 
 /** Realized PnL % for a row — the same resolver the table's PnL% column uses. */
 function pctOf(r: RulePositionRecord): number | null {
-  return resolvePnlPct({
-    pnlSol: r.pnl_sol,
-    entrySol: r.entry_sol,
-    entryPrice: r.entry_price,
-    exitPrice: r.exit_price,
-  });
+  return pnlPctFromSol(r.pnl_sol, r.entry_sol);
 }
 
 /** A position that closed cleanly with capital deployed — the charts' atom. */

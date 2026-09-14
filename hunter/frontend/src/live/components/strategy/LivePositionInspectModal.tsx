@@ -9,7 +9,7 @@ import {
 } from '@live/components/floor/openPositionStatus';
 import { useResolvedFlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { holdLabel } from 'lib/holdLabel';
-import { resolvePnlPct } from 'lib/pnlPct';
+import { pnlPctFromSol } from 'lib/pnlPct';
 import type { StrategyRule } from 'lib/strategy/types';
 import type { RulePositionRecord } from 'types';
 
@@ -52,12 +52,7 @@ export function LivePositionInspectModal({
   // re-creates the series-markers plugin on every status tick.
   const inspect = useMemo(() => inspectFromPosition(position), [position]);
 
-  const pnlPct = resolvePnlPct({
-    pnlSol: position.pnl_sol,
-    entrySol: position.entry_sol,
-    entryPrice: position.entry_price,
-    exitPrice: position.exit_price,
-  });
+  const pnlPct = pnlPctFromSol(position.pnl_sol, position.entry_sol);
 
   return (
     <Modal

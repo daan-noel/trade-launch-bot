@@ -1,7 +1,8 @@
 /**
- * PnL% helpers — prefer SOL-basis (`pnl / entry`) when both legs known; fall
- * back to price-basis `(exit - entry) / entry`. Matches Evidence cells which
- * color off SOL PnL but display price-basis `pnl_percent` from the backend.
+ * PnL% helpers, money basis only: PnL over the SOL the wallet paid, the same
+ * quantity as the backend's `pnl_percent`. A missing money basis is `null`
+ * (rendered as a dash), never a price ratio: `(exit - entry) / entry` charges no
+ * fee or fixed cost and can read green on a trade that lost SOL.
  */
 
 /** `(pnlSol / entrySol) × 100` when entry is a positive finite stake. */
@@ -29,27 +30,4 @@ export function legPnlPctFromSol(
   if (!Number.isFinite(legSol) || !(legTokens > 0) || !(entryTokens > 0)) return null;
   const cost = entrySol * (legTokens / entryTokens);
   return pnlPctFromSol(legSol - cost, cost);
-}
-
-/** `((exit - entry) / entry) × 100` when entry is a positive finite price. */
-export function pnlPctFromPrices(
-  entryPrice: number | null | undefined,
-  exitPrice: number | null | undefined,
-): number | null {
-  if (entryPrice == null || exitPrice == null) return null;
-  if (!Number.isFinite(entryPrice) || !Number.isFinite(exitPrice) || entryPrice <= 0) return null;
-  return ((exitPrice - entryPrice) / entryPrice) * 100;
-}
-
-/** SOL-basis first, then price-basis. */
-export function resolvePnlPct(opts: {
-  pnlSol?: number | null;
-  entrySol?: number | null;
-  entryPrice?: number | null;
-  exitPrice?: number | null;
-}): number | null {
-  return (
-    pnlPctFromSol(opts.pnlSol, opts.entrySol) ??
-    pnlPctFromPrices(opts.entryPrice, opts.exitPrice)
-  );
 }

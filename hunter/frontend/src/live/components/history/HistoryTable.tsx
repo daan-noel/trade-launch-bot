@@ -40,7 +40,7 @@ import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import { exitReasonSearchText } from 'lib/strategy/exitReason';
 import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { holdLabel } from 'lib/holdLabel';
-import { resolvePnlPct } from 'lib/pnlPct';
+import { pnlPctFromSol } from 'lib/pnlPct';
 import { ruleAnalyzeHref } from 'lib/strategy/nav';
 import { fetchPortfolioPositionsPage } from 'services/api';
 import { useFlowPatternSourceForRule } from 'hooks/useFlowPatternKeys';
@@ -53,6 +53,10 @@ import {
   historyTableBody,
 } from '@live/pages/console/historyRequest';
 import { applyHistoryClientLenses } from '@live/pages/console/historyPositions';
+
+/** The PnL% column's one value for render, sort and filter: PnL over the SOL the
+ *  wallet paid, the quantity the server's `pnl_pct` sort key orders by. */
+const historyPnlPct = (r: RulePositionRecord) => pnlPctFromSol(r.pnl_sol, r.entry_sol);
 
 /** Stable row key — hoisted so DataTable doesn't see a fresh closure each render. */
 const historyPositionRowKey = (r: RulePositionRecord) => r.id;
@@ -166,21 +170,16 @@ export function historyColumns(
       label: 'PnL%',
       sortable: true,
       render: (r) => {
-        const pct = resolvePnlPct({
-          pnlSol: r.pnl_sol,
-          entrySol: r.entry_sol,
-          entryPrice: r.entry_price,
-          exitPrice: r.exit_price,
-        });
+        const pct = historyPnlPct(r);
         return pct != null ? (
           <span className={`tabular-nums ${pctGradeClass(pct)}`}>{formatSignedPct(pct, 1)}</span>
         ) : (
           <span className="text-text-dim">—</span>
         );
       },
-      sortValue: (r) => r.pnl_percent ?? null,
+      sortValue: historyPnlPct,
       searchValue: () => '',
-      filterNumber: (r) => r.pnl_percent ?? null,
+      filterNumber: historyPnlPct,
     },
     {
       key: 'hold',

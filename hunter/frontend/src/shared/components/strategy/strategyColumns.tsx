@@ -447,10 +447,10 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = (
     render: (r) => {
       if (r.exit_price == null || r.pnl_sol == null)
         return <span className="text-text-dim">—</span>;
-      // `pnl_sol` is the backend's realized SOL PnL — the canonical win/loss
-      // basis (mirrors `StrategyPosition::is_win`/`positions_summary`), so color
-      // off `pnl_sol` itself rather than `pnl_percent` (price-basis; can disagree
-      // with SOL-basis under slippage/fees in real mode).
+      // `pnl_sol` is the backend's realized SOL PnL, the canonical win/loss
+      // basis (mirrors `StrategyPosition::is_win`/`positions_summary`); the
+      // cell colors off the SOL amount it shows. `pnl_percent` is the same
+      // money basis over the SOL paid, so the two agree in sign.
       return (
         <span className={cn('font-bold', signedToneClass(r.pnl_sol))}>
           <AmountCell sol={r.pnl_sol} />
