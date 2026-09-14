@@ -287,8 +287,9 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 | --- | --- | --- |
 | second outside buyer | the second non-creator buyer, age 5-300 s | red · ev 3.7 |
 | first outside buyer after the creator | the first non-creator buy after the creator has bought | new |
-| operator structures cross K | the count of operator structures on this coin rises through K | open · mt1 5.2b |
-| ix structures in 2 s cross K | distinct ix structures in the last 2 s rises through K | open · mt1 5.2b |
+| operator structures cross K | the count of operator structures on this coin rises through K | dead · mt1 5.2d |
+| ix structures in 2 s cross K | distinct ix structures in the last 2 s rises through K | dead · mt1 5.2d |
+| ApfmkS held state / quiet crossing | 5.1 flat (lift 1.44); 5.1c unpriced nearly flat (nb2 LOW, rank 0.42); rising-edge and quiet-crossing behind cost 2.14..5.63 %, 95 %+ ahead | dead · mt1 5.2f |
 | first operator structure after only creator and seed racers | first non-creator, non-seed operator-structure buy >= 0.5 SOL; prior prints are only the creator and seed racers; one fire per coin | red · ev 7 (C15) |
 | buy flow spike | a buy lands at ≥ 3x the coin's trailing 30-slot buy rate | open |
 
@@ -300,8 +301,10 @@ structure's remaining spend on this coin. One fire per (coin, ix structure).
 | first buy after a flush stops | first buy ≥ 0.5 SOL (not a seed racer) after a flush, once vsol makes no new low for ≥ 10 slots; one fire per flush | red · ev 7 (C9) |
 | sell inside a frenzy | a public sell ≥ 1 SOL inside a frenzy, a new high in the last 20 s, by a seller who bought ≤ 30 s ago; fire on the sell | keep · ev 1.22 (rule 1's event) |
 | └ 9999hu sell >= 1 | the same print class on a younger one-shot; behind its buy the move is already paid | dead · ev 1.27 |
+| └ 9999hu other prints / rising-edge frenzy | sell>=0.5, any sell, buys, pro, new_build, burst start; nb2/nb5/npro/nw5 rising edges | dead · mt2 5.2d |
 | capitulation cascade | a public sell ≥ 1 SOL from a seller at a loss, with the price down ≥ 5 % in 10 s, a second big sell in 10 s and a busy tape | red · ev 1.16 |
 | big buy after a dip | a buy ≥ 0.5 SOL opening a burst after ≥ 0.4 s of silence, the price down over 10 s | dead · ev 7 (AbQcLH burst start) |
+| └ 8dtx2t burst start | the same class on a mid-tape one-shot; behind cost 5.39 %, peak +0.71 % | dead · mt1 5.2e |
 | first buy after a run of sells | several sells in a row, then a buy | red · ev 7 (C14) |
 | first buy after the crowd left | the last hill's crowd holds under 50 % | new |
 | first buy after a structure sold | anyone's first buy after an ix structure sold this coin | new |

@@ -17,9 +17,9 @@ are only confirmed. Days after 09-10 are the clean test.
 ## 1. Rule 2
 
 ```
-E  public sell >= 1: a derive 5.2 kill, reaction cost 8.97 % behind its buy (1.27). Public occupancy
-   of that class at its fire time is red. Launch first-sell (age p50 ~2 s) is a different book
-   and is not this sentence. Not frozen.
+E  none at this seat. Every print class and every rising-edge state of the frenzy it buys into
+   is a derive 5.2 kill on cost behind its buy (step 5.2d). sell >= 1 is the named class
+   (lift 8.62 at 50-75 ms) and costs 8.97 % (1.27). Not frozen.
 P  none. Keep rule takes no cut on stop-outs vs take-profits at the fire (step 9.1). Rule 1's
    established-coin cut is under the floor here (age p50 15 s).
 X  working: take profit +15 %, stop -40 %, clock 70 s on the acted pool (step 8.2). Hazard is a
@@ -41,7 +41,7 @@ Plain words: (empty until E is a public sentence).
 
 | slot | where it comes from | step, evidence |
 | --- | --- | --- |
-| E, the trigger | sell >= 1 @ 50-75 ms lift 9.12; 79 % of episodes; behind its buy the reaction cost is 8.97 %, a 5.2 kill (the +17.8 % leftover is read on the ahead tickets) | 5.1, 5.2c; ev 1.27 |
+| E, the trigger | sell >= 1 @ 50-75 ms lift 8.62; 67 % of episodes; behind its buy cost 8.97 %, a 5.2 kill. Every other print class and the rising-edge states fail the same cost line | 5.1, 5.2c, 5.2d; ev 1.27 |
 | E, the terms | vs ignored same-coin sells: live frenzy (nb2 9 vs 5, buys2 6.5 vs 1.0), younger (age 16 s vs 145 s). Recipe-count occupancy does not lift. Age <= 16 s occupancy is the launch first-sell (fire age p50 2 s), not its 16 s fire | 6.1-6.2 |
 | P | keep rule takes none. Stop-outs are slightly hotter/thicker (vres AUC 0.63, mv60 0.62), not young-thin (hold_n AUC 0.50). Rule 1's holders x age is under the floor | 9.1 |
 | X | hazard is a 20-30 s clock (close median -0.2 % vs peak 17.8 %). Working family on the acted pool: tp15 sl40 t70 +1.61 % 7/7 body +4.47, top 1 % 43 %, capped -7.42 | 8.1-8.2 |
@@ -62,7 +62,8 @@ Plain words: (empty until E is a public sentence).
 | 8.1 | How does it close on the selected pool? | No closing print (buy >= 1 lift 1.18). E-kind closes n=2,555, held p50 **23.5 s**, close pnl p50 **-0.2 %**, peak p50 **17.8 %**. Hazard jumps at 20-30 s across every pnl band, not at a take-profit | X prior is a clock at hold p50. It does not eat the leftover; it gives it back. A copy of its close is the wrong family | `mt_hu_p8.py` | - |
 | 8.2 | Which family eats the leftover? | Clock 25 +0.86 5/7 body -6.3. **tp15 sl40 t70 +1.61 % 7/7 body +4.47**, hold 6.3 s, both halves green. Trail / ride / dump / longer clock worse. Sellbuy and scale do not beat it on days and body. Top 1 % 43 %, capped -7.42 | working X on the acted pool. Ship bars fail on the tail | `mt_hu_p8.py` | - |
 | 9.1 | What is true at the fire on stop-outs vs take-profits? | Occupied sl 14 % / tp 67 %. Best AUC vres 0.63, mv60 0.62; hold_n 0.50. Keep rule takes none of 28 facts. Rule 1 established-coin n=131-302, under the floor. Named age / stall / nb2 cuts lose a day or SOL | P stays none. The ship fail is the winner tail, not the stops. No D on this parent (5.2 kill, 1.27) | `mt_hu_p9.py` | - |
-| 5.2c | Does leftover exist behind its buy (derive 5.2 as calibrated)? | Behind its buy: reaction cost 8.97 % (93 % of tickets over 2 %), peak +12.61 % at its hold p50 (25 s), lag 58 ms; 88887Q 7.01 % | Killed on the cost line: the 5.2 row above read the ahead tickets, where its own buy is the leftover. No D search on this parent; another class or a state | `../hot-tape/b2_leftover.py` | 1.27 |
+| 5.2c | Does leftover exist behind its buy (derive 5.2 as calibrated)? | Behind its buy: reaction cost 8.97 % (93 % of tickets over 2 %), peak +12.61 % at its hold p50 (25 s), lag 58 ms; 88887Q 7.01 % | Killed on the cost line: the 5.2 row above read the ahead tickets, where its own buy is the leftover | `../hot-tape/b2_leftover.py` | 1.27 |
+| 5.1d / 5.2d | Another class, or a state? | 5.1 is not flat: sell >= 1 lift 8.62 @ 50-75 ms, sell >= 0.5 6.72, down>=2 % 6.79 (priced). Burst start lift 1.24. Unpriced state at its buy vs same-coin random: nb2 9 vs 5 (rank 0.75). Behind-row leftover: every print class cost 6.95..22.61 %; every rising edge (nb2>=8/9, nb5>=13/14, npro2>=2, npro5>=2/3, nw5>=22/23) cost 7.87..8.54 %, 84-89 % of tickets over 2 %. Ahead tickets on those edges cost ~0.4 %: its own buy counted as leftover. PASS none | No DELAY-legal E at FOLLOW. No D/P/X on this member | `mt_hu_p5d.py` | - |
 
 ### Tried and out
 
@@ -81,6 +82,11 @@ Plain words: (empty until E is a public sentence).
 | age <= 16.3 and nb2 >= 9 | -3.98 % 0/7 | nb2 kills the launch book too |
 | 88887Q as a second instrument | same tell (sell >= 1 lift 8.61) | law 27; one member |
 | pool with 9Uq8GV | buy vs sell, age 159 s vs 18 s | two sentences |
+| follow sell / sell>=0.5 / any sell | behind cost 8.97 / 8.94 / 8.78 % | 5.2 cost; the named class and its wider spellings |
+| follow buy / buy>=0.5 / buy>=1 | behind cost 6.95 / 7.23 / 7.83 % | 5.2 cost; not its 5.1 class |
+| follow burst start | cover 11.6 %, behind cost 22.61 % | 5.2 cost; lift 1.24, not its logic |
+| follow pro / new_build | behind cost 7.92 / 7.75 % | 5.2 cost |
+| rising edge nb2>=8/9, nb5, npro, nw5 | behind cost 7.87..8.54 %; acted dt p50 ~1.0-1.7 s, ahead 85-90 % | 5.2 cost on the behind row; the cheap leftover is ahead of its buy |
 
 ---
 
@@ -88,12 +94,12 @@ Plain words: (empty until E is a public sentence).
 
 | member | RACE cap15 | FOLLOW cap15 | days R/F | its trigger (peak lift, lag) | status |
 | --- | ---: | ---: | :---: | --- | --- |
-| **9999hu** | **+5.94 %** | -2.60 % | 7/7 / 0/7 | sell >= 1, 9.12, 50-75 ms | **instrument.** sell >= 1 is a 5.2 kill behind its buy (1.27); working X tp15 sl40 t70 (step 8.2); P none (step 9.1); public occupancy red |
+| **9999hu** | **+5.94 %** | -2.60 % | 7/7 / 0/7 | sell >= 1, 8.62, 50-75 ms | **closed at FOLLOW.** Every print class and rising-edge state is a 5.2 cost kill (step 5.2d). Pays at RACE only |
 | 88887Q | +5.73 % | -1.81 % | 7/7 / 0/7 | sell >= 1, 8.61, 50-75 ms | same tell; off this file |
 | 9Uq8GV | +2.21 % | -1.57 % | 8/8 / 3/8 | buy >= 1 / nb2 | other tell; [mid-tape-rule-1.md](mid-tape-rule-1.md) |
-| 8dtx2t | +3.16 % | -1.54 % | 7/7 / 0/7 | burst start | public burst START is C2 |
+| 8dtx2t | +3.16 % | -1.54 % | 7/7 / 0/7 | burst start | **closed at FOLLOW.** Burst start behind cost 5.39 % (rule-1 step 5.2e). Public burst START is C2 |
 | 8aaRWu | +1.06 % | -0.67 % | 5/7 / 3/7 | burst start | drop (tail) |
-| ApfmkS | +2.81 % | -1.46 % | 7/7 / 2/7 | flat | no print tell |
+| ApfmkS | +2.81 % | -1.46 % | 7/7 / 2/7 | flat | **closed at FOLLOW** on [mid-tape-rule-1.md](mid-tape-rule-1.md) step 5.2f |
 | 3Xk2Eu | - | - | - | - | no prints |
 
 ---
@@ -118,6 +124,9 @@ Plain words: (empty until E is a public sentence).
 | `node-derivation/data/mt_hu_p9_terms.csv` | 9.1 keep-rule new_terms |
 | `node-derivation/data/mt_hu_p9_named.csv` | 9.1 named inventory P cuts |
 | `node-derivation/data/mt_hu_p9_book.csv` | 9.1 P=none ledger |
+| `node-derivation/data/mt_hu_p5d_gate.csv` | 5.2d behind-row leftover, every class and rising-edge state |
+| `node-derivation/data/mt_hu_p5d_lift.csv` | 5.1d excess-intensity lift |
+| `node-derivation/data/mt_hu_p5d_rank.csv` | 5.1c unpriced state at its buy |
 
 ## Open
 

@@ -11,8 +11,9 @@ reuses the method and the toolkit, and gets its own case file and script folder 
 | [node-template.md](node-template.md) | the shape of a node's case file | starting a node |
 | [hot-tape-rule-1.md](hot-tape-rule-1.md) | the worked example: rule 1, its book, the chain of steps that produced it, the member book | reading the worked example, or shipping rule 1 |
 | [hot-tape/README.md](hot-tape/README.md) | the scripts rule 1 rests on, and where the step scripts are kept | re-running rule 1, or restoring a step |
-| [mid-tape-rule-1.md](mid-tape-rule-1.md) | the mid-tape node, 9Uq8GV book | 9Uq8GV leftover unread on burst start / nb2 |
-| [mid-tape-rule-2.md](mid-tape-rule-2.md) | the mid-tape node, instrument 9999hu | sell >= 1 is a 5.2 kill behind its buy (evidence 1.27); another class or a state next |
+| [mid-tape-rule-3.md](mid-tape-rule-3.md) | the mid-tape node, instrument 8dtx2t | open: burst start is a 5.2 kill; next candidate 88887Q |
+| [mid-tape-rule-1.md](mid-tape-rule-1.md) | fill-copy chain on 9Uq8GV / 8dtx2t / ApfmkS | prior spelling; not the live derivation |
+| [mid-tape-rule-2.md](mid-tape-rule-2.md) | fill-copy chain on 9999hu | prior spelling; not the live derivation |
 | [mid-tape/README.md](mid-tape/README.md) | every mid-tape script, by step | re-running a mid-tape step |
 | `data/` | candidate tables, holdout tapes, outputs and logs; not tracked, rebuilt by the scripts | - |
 

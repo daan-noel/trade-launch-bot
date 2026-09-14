@@ -15,3 +15,5 @@ if str(ROOT) not in sys.path:
 import toolkit  # noqa: E402,F401  - puts study-kernel on sys.path
 from toolkit.paths import DATA, HUNTER, LAKE, LOCAL, SHARED  # noqa: E402,F401
 from toolkit.paths import data as data_file  # noqa: E402,F401
+
+NODE_NAME = "mid-tape one-shot"

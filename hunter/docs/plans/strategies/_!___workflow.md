@@ -17,7 +17,7 @@ nodes. A node is picked here, then derived by [_!___derive.md](_!___derive.md).
 | node | status at our seat | where |
 | --- | --- | --- |
 | hot-tape re-entry | **rule 1 passes every ship bar**; the clean test is next | section 1 |
-| mid-tape one-shot | **open**: 9999hu's sell >= 1 is a 5.2 kill; another class or a state next | section 2 |
+| mid-tape one-shot | **open**: 8dtx2t burst family is a 5.2 kill, exclusive splits included; next 88887Q | section 2 |
 | deep-age big clip | red: a public size print is not the tell (response equals the base); the remainder is which coin, not which print | evidence 7, agreement in section 4 |
 | quiet deep-age | red: the token-silence burst it follows lasts ~80 ms, so a 115 ms fill is after it | evidence 7 |
 | instant launch | dead at this seat: consumed inside ~2 slots | strategy 8.1 (age-0 launch ramps) |
@@ -55,27 +55,21 @@ days must pass every bar, the tail included. Working file:
 
 ---
 
-## 2. Mid-tape one-shot: instrument 9999hu
+## 2. Mid-tape one-shot
 
-**Derive 5.2 kills this trigger** (evidence 1.27): behind its buy the reaction cost is 8.97 %, 93 %
-of tickets over 2 % (88887Q 7.01 %). A read over all acted tickets counts the ones ahead of its buy
-(cost 0), where its own buy is our leftover: a copied fill. Peak leftover behind its buy is still +12.6 % at
-its hold p50, the volatility of a 9 % move, and the book below agrees with the kill. Public
-occupancy of that class at its fire time is red. The working exit on the acted pool
-is take profit +15 %, stop -40 %, 70 s: +1.61 % 7/7, body +4.47, and it fails the tail (top 1 %
-43 %, capped book red). P stays none: the keep rule takes no cut on stop-outs vs take-profits.
-The line's ledger row: evidence 7 (mid-tape 9999hu). Working file:
-[node-derivation/mid-tape-rule-2.md](node-derivation/mid-tape-rule-2.md).
+**Open.** Instrument **8dtx2t** is closed at our seat for its named family. He reacts to a public
+burst (quiet restart / continuation / loud restart, lift 5.74 / 5.81 / 9.72 @ 50-75 ms). Behind
+our 115 ms fill, exclusive cost **4.23 / 4.48 / 6.11 %** (5.2 kill). The quiet print itself moves
++2.27 %; the rest of the burst lands inside 115 ms. His close is a cut (>20 % losses 0.8 %,
+body +11.67) and is not the veto. Working file:
+[node-derivation/mid-tape-rule-3.md](node-derivation/mid-tape-rule-3.md).
 
-- **Next:** another class or a state for 9999hu (derive 5.2: no X, P or D saves a kill); no D
-  search on this parent.
-- **Do not:** freeze age <= 16 s occupancy (it is the launch first-sell, fire age p50 2 s); copy
-  its close (a 20-30 s give-back); AND nb2 onto sell >= 1 occupancy; copy rule 1's holders x age
-  (under the floor on a 15 s fire).
-- **9Uq8GV:** its `buy >= 1` is a 5.2 kill (reaction cost +9.2 %); leftover behind its buy on its
-  burst start and on the nb2 rising edge is unread - run 5.2 on those acted tickets
-  ([mid-tape-rule-1.md](node-derivation/mid-tape-rule-1.md)). 88887Q is the same tell as 9999hu
-  and stays off; 8dtx2t's public burst START is C2 (section 3) and does not ship on its own.
+- **Next:** 5.1 then 5.2 on the next candidate (**88887Q**: largest RACE book, unread tell on this
+  tape), same method, every-leg study. 9999hu / 9Uq8GV / ApfmkS / 8aaRWu / 3Xk2Eu stay candidates.
+  8dtx2t's X-cut stays a prior.
+- **Kills it:** no DELAY-legal public trigger at our seat on any remaining member (derive 5.2).
+- **Do not:** copy a fill; fire at buy-minus-L; walk D/P/X on 8dtx2t's burst family; AND-filter
+  that family further (97 % of behind quiet tickets already cost >= 2); pool members.
 
 ---
 
