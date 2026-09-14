@@ -11,7 +11,7 @@ use super::bundle_buy::BundleBuyVariant;
 use super::buy::compute_curve_buy_min_out;
 use super::PumpFunTrader;
 use crate::error::{Context, Result, TradeError};
-use crate::protocol::{self, LAMPORTS_PER_SOL};
+use crate::protocol;
 use crate::types::{CreateTokenArgs, CreateTokenV2Args, TokenProgram};
 use executor_core::IxLayout;
 use solana_sdk::{
@@ -80,7 +80,7 @@ impl PumpFunTrader {
         variant: BundleBuyVariant,
         confirm: bool,
     ) -> Result<String> {
-        let buy_lamports = (dev_buy_sol * LAMPORTS_PER_SOL as f64) as u64;
+        let buy_lamports = executor_core::sol_to_lamports(dev_buy_sol);
         let dev_buy = DevBuy { sol: dev_buy_sol, lamports: buy_lamports, slippage_bps, variant };
         self.create_token_inner(mint, args, Some(dev_buy), confirm).await
     }
@@ -106,7 +106,7 @@ impl PumpFunTrader {
         variant: BundleBuyVariant,
         confirm: bool,
     ) -> Result<String> {
-        let buy_lamports = (dev_buy_sol * LAMPORTS_PER_SOL as f64) as u64;
+        let buy_lamports = executor_core::sol_to_lamports(dev_buy_sol);
         let dev_buy = DevBuy { sol: dev_buy_sol, lamports: buy_lamports, slippage_bps, variant };
         self.create_token_v2_inner(mint, args, Some(dev_buy), confirm).await
     }

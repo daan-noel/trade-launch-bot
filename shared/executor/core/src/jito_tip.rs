@@ -13,7 +13,6 @@
 use crate::engine::Engine;
 use crate::config::JitoTipCfg;
 use crate::error::{Context, Result};
-use crate::LAMPORTS_PER_SOL;
 use serde::Deserialize;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::system_instruction;
@@ -161,14 +160,10 @@ pub async fn refresh_tip_floor(http: &reqwest::Client, cache: &JitoTipCache) -> 
 }
 
 fn sol_to_lamports(sol: f64) -> u64 {
-    // Guard the cast: a NaN/±inf or negative percentile from a malformed feed
-    // row would otherwise saturate to 0 or u64::MAX. Returning 0 lets the
-    // [MIN_JITO_TIP_SOL, MAX_JITO_TIP_SOL] clamp in `tip_lamports_for_level`
-    // pull it back to the floor instead of seeding the cache with garbage.
-    if !sol.is_finite() || sol <= 0.0 {
-        return 0;
-    }
-    (sol * LAMPORTS_PER_SOL as f64) as u64
+    // A NaN/±inf or negative percentile from a malformed feed row maps to 0, which
+    // the [MIN_JITO_TIP_SOL, MAX_JITO_TIP_SOL] clamp in `tip_lamports_for_level`
+    // pulls back to the floor instead of seeding the cache with garbage.
+    crate::sol_to_lamports(sol)
 }
 
 impl Engine {
@@ -203,7 +198,7 @@ mod tests {
     const MAX_JITO_TIP_SOL: f64 = 0.005;
 
     fn lamports(sol: f64) -> u64 {
-        (sol * LAMPORTS_PER_SOL as f64) as u64
+        crate::sol_to_lamports(sol)
     }
 
     fn sample_floor() -> TipFloor {

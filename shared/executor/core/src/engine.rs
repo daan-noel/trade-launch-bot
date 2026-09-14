@@ -579,7 +579,7 @@ pub fn buy_lamports_checked(sol_amount: f64, max_buy_sol: f64) -> Result<u64> {
             "{sol_amount} SOL exceeds the {max_buy_sol} SOL sanity ceiling"
         )));
     }
-    let lamports = (sol_amount * crate::LAMPORTS_PER_SOL as f64) as u64;
+    let lamports = crate::sol_to_lamports(sol_amount);
     if lamports == 0 {
         return Err(TradeError::InvalidBuyAmount(format!(
             "{sol_amount} SOL rounds to 0 lamports"
@@ -625,5 +625,20 @@ mod tests {
             buy_lamports_checked(MAX_BUY_SOL, MAX_BUY_SOL).unwrap(),
             MAX_BUY_SOL as u64 * LAMPORTS_PER_SOL
         );
+    }
+
+    /// `1.001 * 1e9` is `1_000_999_999.99…` in `f64`: a truncating cast spends one
+    /// lamport less than asked. Every 0.001 step up to the ceiling is exact.
+    #[test]
+    fn rounds_to_the_nearest_lamport() {
+        assert_eq!(buy_lamports_checked(1.001, MAX_BUY_SOL).unwrap(), 1_001_000_000);
+        for milli in 1..=5_000u64 {
+            let sol = milli as f64 / 1_000.0;
+            assert_eq!(
+                buy_lamports_checked(sol, MAX_BUY_SOL).unwrap(),
+                milli * 1_000_000,
+                "{sol} SOL"
+            );
+        }
     }
 }

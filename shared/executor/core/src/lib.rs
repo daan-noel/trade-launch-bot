@@ -34,6 +34,17 @@ pub mod venue;
 /// SSOT test in `hunter/live`.
 pub const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
+/// SOL → lamports, **rounded** to the nearest lamport. A plain `as u64` cast
+/// truncates, and `1.001 * 1e9` is `1_000_999_999.99…` in `f64`, so a truncating
+/// cast spends one lamport less than asked. NaN, ±inf and non-positive inputs
+/// map to 0; the caller decides whether 0 is an error.
+pub fn sol_to_lamports(sol: f64) -> u64 {
+    if !sol.is_finite() || sol <= 0.0 {
+        return 0;
+    }
+    (sol * LAMPORTS_PER_SOL as f64).round() as u64
+}
+
 pub use config::{
     CacheCfg, ComputeBudgetCfg, JitoTipCfg, LimitsCfg, NonceCfg, RetryCfg, SlippageCfg, TraderConfig,
 };

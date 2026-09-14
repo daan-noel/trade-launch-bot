@@ -8,7 +8,7 @@
 // offsets are taken from the on-chain Anchor IDL committed at
 // `pump-trader/idl/pump_amm.json` (fetched from program pAMMBay…).
 //
-//   buy  → uses `buy_exact_quote_in` (spend a fixed SOL budget, min base out).
+//   buy  → uses `buy` (exact base out, max SOL in = the budget).
 //   sell → uses `sell` (exact base in, min SOL out).
 //
 // WSOL handling: the AMM quote mint is wrapped SOL, so each swap wraps SOL into
@@ -68,8 +68,10 @@ impl PumpFunTrader {
     ///
     /// `base_token_program_id` is the token's SPL program (legacy or 2022).
     /// `pool_override` lets the caller supply the known pool address; when
-    /// `None` the canonical index-0 / WSOL pool is derived. `slippage_bps = None`
-    /// means no floor (`min_out = 1`); pass `Some(bps)` for explicit protection. `confirm` mirrors
+    /// `None` the canonical index-0 / WSOL pool is derived. The swap is pump_amm's
+    /// exact-base-out `buy` capped at `sol_amount`: `slippage_bps = Some(bps)` asks
+    /// for the expected tokens less `bps`, `None` asks for the full expected amount
+    /// (zero tolerance - any adverse move before landing reverts it). `confirm` mirrors
     /// `sell_token_once`/`amm_sell`: `true` blocks on the RPC signature poll
     /// (manual/API callers); `false` returns once the sender accepts and leaves
     /// confirmation to the caller's own feed — saving the ~4 s `confirm_transaction`
@@ -352,14 +354,10 @@ impl PumpFunTrader {
         let base_out = cp_amount_out(quote_net, quote_res, base_res);
         // Exact-base-out buy: request slightly fewer tokens than the budget
         // buys (the slippage haircut) so the actual cost stays under the
-        // wrapped `spendable`, which is the spend cap. `None` = no floor (1).
-        let base_amount_out: u64 = match slippage_bps {
-            None => 1,
-            Some(slip) => {
-                let s = slip as u128;
-                (base_out.saturating_mul(BPS_DENOM.saturating_sub(s)) / BPS_DENOM).max(1) as u64
-            }
-        };
+        // wrapped `spendable`, which is the spend cap. `None` = zero haircut: the
+        // instruction buys EXACTLY `base_amount_out`, so a "no floor" of 1 would
+        // buy one raw unit for the whole budget's fees and report success.
+        let base_amount_out = amm_buy_base_amount_out(base_out, slippage_bps);
 
         let quote_tp = protocol::TOKEN; // WSOL is legacy SPL
         let user_base =
@@ -1458,6 +1456,15 @@ fn cp_amount_out(amount_in: u128, reserve_in: u128, reserve_out: u128) -> u128 {
     reserve_out.saturating_mul(amount_in) / reserve_in.saturating_add(amount_in)
 }
 
+/// The `base_amount_out` an exact-base-out AMM buy requests: the expected
+/// `base_out` less the `slippage_bps` haircut (rounded down), and the full
+/// `base_out` when no slippage is given. Never below 1 raw unit.
+fn amm_buy_base_amount_out(base_out: u128, slippage_bps: Option<u64>) -> u64 {
+    let keep = BPS_DENOM.saturating_sub(slippage_bps.unwrap_or(0) as u128);
+    let out = base_out.saturating_mul(keep) / BPS_DENOM;
+    out.clamp(1, u64::MAX as u128) as u64
+}
+
 fn read_pubkey(data: &[u8], off: usize) -> Result<Pubkey> {
     let end = off + 32;
     if data.len() < end {
@@ -1497,6 +1504,18 @@ mod tests {
 
     /// Hard Solana transaction wire-size limit (bytes).
     const TX_LIMIT: usize = 1232;
+
+    /// `buy` is exact-base-out: the requested amount IS the purchase. No slippage
+    /// must request the whole expected amount, never a 1-unit "floor".
+    #[test]
+    fn amm_buy_requests_the_expected_tokens_less_the_haircut() {
+        use super::amm_buy_base_amount_out;
+        assert_eq!(amm_buy_base_amount_out(1_000_000, None), 1_000_000);
+        assert_eq!(amm_buy_base_amount_out(1_000_000, Some(500)), 950_000);
+        assert_eq!(amm_buy_base_amount_out(999, Some(1)), 998);
+        assert_eq!(amm_buy_base_amount_out(0, None), 1);
+        assert_eq!(amm_buy_base_amount_out(1_000, Some(20_000)), 1);
+    }
 
     #[test]
     fn token_account_amount_lives_at_offset_64() {
