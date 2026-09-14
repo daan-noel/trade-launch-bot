@@ -530,6 +530,22 @@ trade**, so simulate and live resolve at the same point.
 - **Deadness:** sim/sweep book `Dead` (not `Open`) for a silent-death token at its
   death point, via the shared verdict — the same one the live fold uses. A dead
   **real** pool has no liquidity to sell into.
+- **Wallet episode ledger (`core/src/strategies/wallet_ledger.rs`)** — Trader Analysis'
+  one PnL source for a studied wallet. `wallet_episodes` folds one wallet's transactions
+  on one mint (legs collapsed per transaction, tape order) into round trips: an episode
+  opens on a transaction while none is held and closes on the sell that leaves at most
+  `1 / DUST_DIVISOR` (0.1 %) of what it bought above what it came in with; a later sale
+  of that dust joins it without moving its exit. Its SOL is each transaction's payer net
+  flow (`trades.payer_net_lamports`), read by `TradeRepo::wallet_txs_on` only when the
+  wallet paid and no other mint or wallet shares the transaction, otherwise `None` —
+  there is no curve-side fallback. Status: `Closed` (sold down, every flow exact — the
+  only one with `net_sol` / `pnl_pct`), `Open` (still holding; `mark_sol` / `open_pnl_sol`
+  at the current spot price, an estimate), `Incomplete` (`missing_flow`, or `unseen_buy`:
+  it sold more than the ledger saw bought — consecutive such sells join one episode).
+  The lab handler folds each mint from `EPISODE_LOOKBACK_DAYS` (30, the `trades`
+  retention) before the window and keeps the episodes that close inside it plus the
+  open one. A transfer out is invisible to `trades`, so tokens that left that way read
+  as an open episode, which no PnL figure sums.
 
 ## Event log + replay debugger (Phase 6)
 

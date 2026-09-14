@@ -1076,14 +1076,13 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   the page, never inside `tokenColumns()`, which stays the SSOT every other token table shares. Two groups
   (`groupLabels`: Position · Bonding curve): entry / exit instants and their **token ages**
   (creation -> first buy / last sell), hold span, buy+sell leg counts, SOL in / out, avg buy/sell
-  price, PnL and PnL% (net of fee, the page's one basis — see the analytics entry below), the
-  protocol fee the reconstruction charges, an open/partial/closed
-  state cell, and **entry / exit curve progress** with the gain across the hold. Curve progress is
-  the pool's real SOL just **before** that leg (the wallet's own impact backed out) over
-  `PUMP_GRADUATION_REAL_SOL`; >100% reads as a migrated pool. Second-order columns (`w_entry`,
-  `w_exit`, `w_avg_buy`, `w_avg_sell`, `w_fee`) default hidden. Every field is the per-mint window
-  grain, not one round trip — a wallet that re-entered shows its first buy, its last sell, and a
-  span covering both.
+  price, PnL and PnL% (the token's closed trades — see the analytics entry below), a Trades cell
+  (closed / open / incomplete counts), and **entry / exit curve progress** with the gain across the
+  hold. Curve progress is the pool's real SOL just **before** that leg (the wallet's own impact
+  backed out) over `PUMP_GRADUATION_REAL_SOL`; >100% reads as a migrated pool. Second-order columns
+  (`w_entry`, `w_exit`, `w_avg_buy`, `w_avg_sell`) default hidden. SOL in / out and the average
+  prices are curve-side window sums, not PnL; the activity fields span the whole window, so a wallet
+  that re-entered shows its first buy, its last sell, and a span covering both.
 - **Trader Analysis co-trade (`lab/components/analysis/coTrade.ts` + `coTradeColumns.tsx` +
   `CoTradeSummary.tsx`).** "Compare with" names up to `MAX_COMPARE_WALLETS` tracked wallets (`?with=` on
   `/api/wallets/:wallet/tokens`); the page stays **primary-shaped** and the comparison set is purely
@@ -1125,35 +1124,35 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   from `compareWalletColor(slot)`, the same call the chart markers and the strip's swatches make, so a
   wallet reads identically in the table and on every chart. The primary stays the subject of the PnL deck, the flow lens' `excludeSelf`, and every
   `wallet_*` column.
-- **Trader Analysis wallet PnL analytics (`lab/components/analysis/`).** The per-mint rows returned by
-  `/api/wallets/:wallet/tokens` (`WalletTokenRow` in `lab/api/handlers/wallets.rs`, backed by
-  `strategies::kernel::wallet_mint_pnl` — an avg-cost reconstruction over that wallet's in-window trades on
-  the mint, with gross **and** fee-adjusted-net realized PnL, the matched cost basis it was earned on,
-  plus mark-to-market unrealized PnL off `current_price`) land on `TraderTokenRow` as `wallet_*`
-  fields. **One basis, page-wide: net of fee.** `walletNetPct` (net realized ÷
-  `wallet_matched_cost_sol`, through `weightedReturnPct`) and `walletTotalSol` (net realized + open
-  mark) are the only per-token PnL readers — summary, table PnL / PnL % columns, chart cards, every
-  chart and every focus lens go through them, so a gross winner the fee turns red is a loss
-  everywhere at once. A **trade** is a token with something sold against a cost basis
-  (`isWalletTrade`); a never-sold bag is neither win nor loss. `TraderAnalysisPage` feeds the table's
-  full **filtered** cohort (via `TokenTable`'s `onFilteredRowsChange`, not just the visible page; pinned
-  when focus activates — same pin pattern as Sweep drill-in) into `<WalletAnalyticsPanel>`: the summary
-  (`WalletPnlSummary.tsx` — a Money row of net realized / open mark / total / return %, then Per trade
-  distribution, Risk and Behavior groups, then the Open/Closed/Win/Loss toggles), a focus-chip strip (`PositionFocusChips` over
-  `lib/strategy/positionFocus` via `walletFocus.ts`), and a collapsible multi-chart deck mirroring Console
-  History / Position Summary — Equity path · Return shape · Hold vs PnL · Ranked by PnL · Timing (daily
-  calendar + dow×hour heatmap). Chart clicks stack focus lenses (`heat` / `day` / `week` / `pct` / `pos` /
-  `band` / `status` / `outcome`); timing charts keep the parent cohort with a selection ring, other charts
-  + the token table refold on the focused slice. All chart data is pure/DB-free —
-  `lab/components/analysis/walletPnlStats.ts` derives every shape from the current `TraderTokenRow[]`
-  cohort, unit-tested in `walletPnlStats.test.ts` / `walletFocus.test.ts` — so filtering the table
-  live-updates every chart without a refetch. `WALLET_STATS` in that file is the one definition of
-  every figure: each summary tile (`StatTile`'s `info` ⓘ), the PnL columns and the chart tooltips
-  render its label and text, so adding a figure means adding its entry there. Medians and
-  percentiles use `quantileSorted` (`lib/strategy/runSummary.tsx`), the same nearest-rank rule as the
-  run-summary builder; the summary's Max drawdown is the Equity chart's own curve. Every figure is a
-  per-mint aggregate, not a per-episode ledger: a wallet that re-entered a mint several times in the
-  window collapses to one row (see the doc comment on `kernel::wallet_mint_pnl`).
+- **Trader Analysis wallet PnL analytics (`lab/components/analysis/`).** Each row of
+  `/api/wallets/:wallet/tokens` (`WalletTokenRow` in `lab/api/handlers/wallets.rs`) carries the
+  wallet's round trips on that mint as `episodes` (`strategies::wallet_ledger`, see
+  [strategies.md](strategies.md)). **The grain is the trade, the basis is what the wallet moved.**
+  A trade is one episode; only a `closed` one carries a PnL (`tradeNetSol`), an `open` one shows
+  apart as an estimate, an `incomplete` one is counted with its reason (`missing_flow` /
+  `unseen_buy`) and summed nowhere. `walletTrades` flattens the rows into `WalletTrade`s keyed
+  `mint::entry_slot:entry_tx_index`; the summary, every chart and every focus lens read those, and
+  the table's PnL / PnL % sum a token's closed trades (`walletRowNetSol` / `walletRowPct`, through
+  `weightedReturnPct`). A lens matches trades (`walletFocus.ts`, `tradeToFocusRow` into
+  `lib/strategy/positionFocus`); the table shows the tokens that own a matching trade, and the
+  summary folds only the matching trades. `TraderAnalysisPage` feeds the table's full **filtered**
+  cohort (via `TokenTable`'s `onFilteredRowsChange`, not just the visible page; pinned when focus
+  activates — same pin pattern as Sweep drill-in) into `<WalletAnalyticsPanel>`: the summary
+  (`WalletPnlSummary.tsx` — a Money row of net PnL / return % / open estimate / incomplete count,
+  then Per trade distribution, Risk and Behavior groups, then the Closed/Open/Incomplete and
+  Win/Loss bands), a focus-chip strip (`PositionFocusChips`), and a collapsible multi-chart deck
+  mirroring Console History / Position Summary — Equity path · Return shape · Hold vs PnL · Ranked by
+  PnL · Timing (daily calendar + dow×hour heatmap), one point per closed trade at its closing sell in
+  tape order (`toPnlPoints`). Chart clicks stack focus lenses (`heat` / `day` / `week` / `pct` /
+  `pos` / `band` / `status` / `outcome`); timing charts keep the parent cohort with a selection ring,
+  other charts + the token table refold on the focused slice. All of it is pure/DB-free —
+  `walletPnlStats.ts`, unit-tested in `walletPnlStats.test.ts` / `walletFocus.test.ts` — so filtering
+  the table live-updates every chart without a refetch. `WALLET_STATS` in that file is the one
+  definition of every figure: each summary tile (`StatTile`'s `info` ⓘ), the PnL columns and the
+  chart tooltips render its label and text, so adding a figure means adding its entry there. Medians
+  and percentiles use `quantileSorted` (`lib/strategy/runSummary.tsx`), the same nearest-rank rule as
+  the run-summary builder; the summary's Max drawdown is `maxDrawdownSol` over the Equity chart's
+  points.
 - **Trader Analysis flow lens (`lab/components/analysis/FlowLensBar.tsx` +
   `useTraderFlowLens.ts`).** The page's tokens belong to no cohort, so there is no fingerprint to read
   lists off and the charts' vol/non-vol overlay has nothing to classify with. The lens is
@@ -1257,10 +1256,11 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `RankedPnlBars`, `PnlSparkline` (inline SVG, cheap enough per table row). Callers map their own
   row type into `PnlPoint` and every chart derives from the same points, so an equity curve can't
   disagree with the histogram beside it. Promoted out of `@lab/components/analysis` (a sanctioned
-  lab→shared move — the live app may never import `@lab`); the `Wallet*` components there are now
-  thin adapters that map `TraderTokenRow` → `PnlPoint` and render the shared pair, and
-  `walletPnlStats.ts` keeps only the wallet-specific summary/scatter and the `WALLET_STATS`
-  definitions.
+  lab→shared move — the live app may never import `@lab`); `walletPnlStats.ts` keeps only the
+  wallet-specific trade → `PnlPoint` mapping, summary and scatter, and the `WALLET_STATS`
+  definitions. `maxDrawdownSol` reads every point before the curve collapses same-second points
+  for the chart, so a dip inside one second still counts; points sharing an instant fold in the
+  caller's order.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 - **Durable UI prefs have one gate:** `lib/storage.ts` (`STORAGE_KEYS` + `ACCORDION_IDS` +

@@ -187,8 +187,9 @@ today because **no live surface uses the run-metrics row as its headline** — e
 percent comes from `PositionsSummary` / `RuleCounters`, which are capital-weighted. If
 that changes, do the `TokenOutcome` work first.
 
-Two other percents are correct by construction and unrelated: `WalletMintPnl::realized_pnl_pct`
-(already `realized_pnl_sol / cost_basis_matched`) and the sweep/sim `pnl_percent`, which
+Two other percents are correct by construction and unrelated: `WalletEpisode::pnl_pct`
+(Trader Analysis, `net_sol / sol_in` of one wallet round trip on what the wallet moved,
+through `weighted_return_pct`) and the sweep/sim `pnl_percent`, which
 comes straight out of `round_trip_with_costs` — the SOL the round trip nets over
 `CostModel::capital_sol` (the order plus its fixed leg), the same capital a real row's
 `entry_lamports` records. A lab surface that sums capital over trades multiplies that,
