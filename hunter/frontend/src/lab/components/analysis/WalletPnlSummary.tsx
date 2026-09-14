@@ -71,12 +71,12 @@ interface MixSlice {
 }
 
 /**
- * At-a-glance verdict for the wallet under analysis, net of fee throughout:
- * the Money row (net realized, open mark, their total, return %), then the
- * Per trade distribution, Risk and Behavior groups. Every tile is named and
- * explained by `WALLET_STATS`. Money / stat tiles stay display-only; Open /
- * Closed / Winners / Losers use the same proportion-bar + clickable count tiles
- * as Console / Position Summary (exit mix / Positions band).
+ * At-a-glance verdict for the wallet under analysis, on its closed trades and
+ * what the wallet moved: the Money row (net PnL, return %, the open estimate
+ * apart, the incomplete count), then the Per trade distribution, Risk and
+ * Behavior groups. Every tile is named and explained by `WALLET_STATS`. Money /
+ * stat tiles stay display-only; Closed / Open / Winners / Losers use the same
+ * proportion-bar + clickable count tiles as Console / Position Summary.
  */
 export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
   summary,
@@ -88,9 +88,9 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
   const statusSlices: MixSlice[] = [
     {
       key: 'closed',
-      n: summary.closedCount,
+      n: summary.tradeCount,
       label: 'Closed',
-      full: 'Closed mints (no open bag)',
+      full: 'Closed trades (sold down to dust, every flow exact)',
       bar: 'bg-info',
       active: status === 'closed',
       onSelect: onToggleStatus ? () => onToggleStatus('closed') : undefined,
@@ -99,10 +99,18 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
       key: 'open',
       n: summary.openCount,
       label: 'Open',
-      full: 'Still holding an open bag',
+      full: 'Trades still holding',
       bar: 'bg-warning',
       active: status === 'open',
       onSelect: onToggleStatus ? () => onToggleStatus('open') : undefined,
+    },
+    {
+      key: 'incomplete',
+      n: summary.incompleteCount,
+      label: 'Incomplete',
+      full: 'Trades that cannot be priced exactly',
+      bar: 'bg-text-dim',
+      active: false,
     },
   ];
 
@@ -111,7 +119,7 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
       key: 'win',
       n: summary.winCount,
       label: 'Winners',
-      full: 'Trades with net realized above zero',
+      full: 'Closed trades with net above zero',
       bar: 'bg-green',
       active: outcome === 'win',
       onSelect: onToggleOutcome ? () => onToggleOutcome('win') : undefined,
@@ -120,7 +128,7 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
       key: 'loss',
       n: summary.lossCount,
       label: 'Losers',
-      full: 'Trades with net realized at or below zero',
+      full: 'Closed trades with net at or below zero',
       bar: 'bg-red',
       active: outcome === 'loss',
       onSelect: onToggleOutcome ? () => onToggleOutcome('loss') : undefined,
@@ -129,43 +137,51 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
 
   const s = summary;
   const decided = s.tradeCount;
-  const openShare = s.tokenCount > 0 ? s.openCount / s.tokenCount : 0;
+  const tracked = s.tradeCount + s.openCount + s.incompleteCount;
+  const incompleteWhy = [
+    s.missingFlowCount > 0 ? `${s.missingFlowCount} no flow` : null,
+    s.unseenBuyCount > 0 ? `${s.unseenBuyCount} unseen buy` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Money: the four figures, one basis (net of fee). */}
+      {/* Money: closed trades on what the wallet moved, the open estimate apart. */}
       <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
         <Stat
-          k="netRealizedSol"
-          value={<AmountCell sol={s.netRealizedSol} />}
-          tone={signTone(s.netRealizedSol)}
-          sub={
-            <>
-              gross <AmountCell sol={s.grossRealizedSol} />
-            </>
-          }
+          k="netSol"
+          value={<AmountCell sol={s.netSol} />}
+          tone={signTone(s.netSol)}
+          bold
+          sub={`${decided} closed trade${decided === 1 ? '' : 's'}`}
         />
-        <Stat
-          k="openMarkSol"
-          value={<AmountCell sol={s.openMarkSol} />}
-          tone={signTone(s.openMarkSol)}
-          sub={`${s.openCount} open`}
-        />
-        <Stat k="totalSol" value={<AmountCell sol={s.totalSol} />} tone={signTone(s.totalSol)} bold />
         <Stat
           k="returnPct"
           value={pctText(s.returnPct)}
           tone={signTone(s.returnPct)}
           sub={
             <>
-              over <AmountCell sol={s.matchedCostSol} /> sold cost
+              over <AmountCell sol={s.capitalInSol} /> in
             </>
           }
+        />
+        <Stat
+          k="openPnlSol"
+          value={<AmountCell sol={s.openPnlSol} />}
+          tone={s.openPnlSol == null ? 'muted' : signTone(s.openPnlSol)}
+          sub={`${s.openCount} open`}
+        />
+        <Stat
+          k="incompleteCount"
+          value={formatWithCommas(s.incompleteCount)}
+          tone={s.incompleteCount > 0 ? 'muted' : 'default'}
+          sub={incompleteWhy || undefined}
         />
       </div>
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-        <StatGroup title="Per trade" hint={`${decided} trade${decided === 1 ? '' : 's'} with a sell`}>
+        <StatGroup title="Per trade" hint={`${decided} closed trade${decided === 1 ? '' : 's'}`}>
           <Stat k="winRate" size="sm" value={pct(s.winRate)} sub={`${s.winCount}W / ${s.lossCount}L`} />
           <Stat k="medianPct" size="sm" value={pctText(s.medianPct)} tone={signTone(s.medianPct)} />
           <Stat k="meanPct" size="sm" value={pctText(s.meanPct)} tone={signTone(s.meanPct)} />
@@ -232,7 +248,7 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
             value={<AmountCell sol={s.capitalInSol} />}
             sub={
               <>
-                vol <AmountCell sol={s.volumeSol} />
+                out <AmountCell sol={s.capitalOutSol} />
               </>
             }
           />
@@ -243,12 +259,7 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
             size="sm"
             value={s.medianEntryCurvePct == null ? '—' : `${formatDecimalTrim(s.medianEntryCurvePct, 1)}%`}
           />
-          <Stat
-            k="tokenCount"
-            size="sm"
-            value={formatWithCommas(s.tokenCount)}
-            sub={s.partialDataCount > 0 ? `${s.partialDataCount} partial` : undefined}
-          />
+          <Stat k="tokenCount" size="sm" value={formatWithCommas(s.tokenCount)} />
         </StatGroup>
       </div>
 
@@ -256,15 +267,15 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
         <div className="grid grid-cols-1 gap-4 rounded-lg border border-white/6 bg-bg-panel px-3 py-2.5 md:grid-cols-2 md:gap-6">
           {onToggleStatus && (
             <MixBand
-              title="Positions"
-              hint="Open bags vs fully closed mints — click a segment or tile to focus"
+              title="Trades"
+              hint={`Closed vs open vs incomplete, ${tracked} in all — click Closed or Open to focus`}
               slices={statusSlices}
-              ariaLabel="Open vs closed mix"
+              ariaLabel="Closed vs open vs incomplete trades"
               tiles={
                 <>
                   <CountTile
                     label="Closed"
-                    value={String(summary.closedCount)}
+                    value={String(summary.tradeCount)}
                     cls="text-info"
                     active={status === 'closed'}
                     onClick={onToggleStatus ? () => onToggleStatus('closed') : undefined}
@@ -277,9 +288,9 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
                     onClick={onToggleStatus ? () => onToggleStatus('open') : undefined}
                   />
                   <CountTile
-                    label="Open share"
-                    value={summary.tokenCount ? pctOf(openShare) : '—'}
-                    cls={summary.openCount > 0 ? 'text-warning' : 'text-text-dim'}
+                    label="Incomplete"
+                    value={String(summary.incompleteCount)}
+                    cls="text-text-dim"
                   />
                 </>
               }
@@ -291,8 +302,8 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
               title="Outcomes"
               hint={
                 decided > 0
-                  ? `Trades only (${decided} of ${summary.tokenCount}), net of fee — never-sold bags excluded`
-                  : 'No matched cost basis yet (every row is still an open bag)'
+                  ? `Closed trades only (${decided}), on what the wallet moved`
+                  : 'No closed trade yet'
               }
               slices={outcomeSlices}
               ariaLabel="Win vs loss mix"

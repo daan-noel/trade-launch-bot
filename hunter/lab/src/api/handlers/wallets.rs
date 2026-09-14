@@ -1,9 +1,9 @@
 //! Wallet-centric analysis reads (the Trader Analysis page). Given a wallet
 //! address, returns the FULL token record for every mint it traded in a recent
-//! window, merged with the wallet's per-mint interaction stats AND a
-//! reconstructed avg-cost PnL (`kernel::wallet_mint_pnl`) — the row set the
-//! page's token table renders (all token fields + wallet columns) and drives its
-//! synced charts grid + PnL analytics panel from.
+//! window, merged with the wallet's per-mint activity AND its round trips on the
+//! exact wallet basis (`wallet_ledger::wallet_episodes`) — the row set the page's
+//! token table renders (all token fields + wallet columns) and drives its synced
+//! charts grid + PnL analytics panel from.
 //!
 //! Deliberately a **Postgres** read, not the Parquet lake: the default 7-day
 //! window includes *today*, which the sealed-days-only lake lacks, so a lake
@@ -20,7 +20,6 @@ use trading_core::api::handlers::tokens::TokenSummary;
 use trading_core::config::constants::curve_progress_pct;
 use trading_core::state::core_state::CoreState;
 use trading_core::storage::repositories::trade_repo::WalletTradedMint;
-use trading_core::strategies::kernel::wallet_mint_pnl;
 use trading_core::strategies::wallet_ledger::{wallet_episodes, EpisodeStatus, WalletEpisode, WalletTx};
 
 /// Query string for `GET /api/wallets/{wallet}/tokens` — the page's look-back
@@ -127,14 +126,12 @@ fn resolve_window(
 
 /// One row of the Trader Analysis token table: the full token record (flattened,
 /// so it renders through the same frontend columns as the All Tokens table) plus
-/// the wallet's interaction stats AND reconstructed PnL on that mint. Wallet
-/// fields are prefixed to avoid colliding with `TokenSummary::last_trade_at` (the
-/// token's *global* last trade) under `serde(flatten)`.
+/// the wallet's activity on that mint and its round trips. Wallet fields are
+/// prefixed to avoid colliding with `TokenSummary::last_trade_at` (the token's
+/// *global* last trade) under `serde(flatten)`.
 ///
-/// The PnL fields are computed by [`wallet_mint_pnl`] (`kernel.rs` — shared with
-/// the strategy cost model, so the pump.fun fee constant can't drift between
-/// "our own positions" and "a wallet we're studying"). See its doc comments for
-/// exactly what each figure means and how `partial_data` should be read.
+/// Every PnL figure is in `episodes` ([`wallet_episodes`]): what the wallet moved,
+/// exact or absent. The `wallet_*` activity fields are curve-side window sums.
 #[derive(Serialize)]
 struct WalletTokenRow {
     #[serde(flatten)]
@@ -155,30 +152,6 @@ struct WalletTokenRow {
     /// `null` when that side has no legs in the window.
     wallet_avg_buy_price: Option<f64>,
     wallet_avg_sell_price: Option<f64>,
-    /// `buy_token_amount - sell_token_amount` (raw units). Positive = still
-    /// holding a bag; negative only when `wallet_partial_data` is true.
-    wallet_net_token_amount: i64,
-    /// Cost of exactly the tokens sold, at the average buy price — the capital
-    /// the realized PnL was earned on and the denominator of every realized %.
-    wallet_matched_cost_sol: f64,
-    /// Realized PnL on the matched (closed) portion, gross of the pump.fun fee.
-    wallet_realized_pnl_sol: f64,
-    /// Same, net of the measured pump.fun protocol fee (no tip/priority charge).
-    wallet_realized_pnl_sol_net_of_fee: f64,
-    /// `realized_pnl_sol` as a % of the matched cost basis; `null` when there's
-    /// no cost basis to divide by (no buys in the window).
-    wallet_realized_pnl_pct: Option<f64>,
-    /// Mark-to-market PnL on the still-open bag (uses the token's current
-    /// price); `null` when there's no open bag or the price is unknown.
-    wallet_unrealized_pnl_sol: Option<f64>,
-    /// `realized_pnl_sol + unrealized_pnl_sol`, gross of fee. The page's own
-    /// total is net (`walletTotalSol` in `walletPnlStats.ts`).
-    wallet_total_pnl_sol: f64,
-    /// `net_token_amount > 0` — still holding some of this mint.
-    wallet_is_open: bool,
-    /// The wallet sold more than it bought in the window (its opening buy
-    /// predates `since`) — every PnL figure above is a partial estimate.
-    wallet_partial_data: bool,
 
     // ── Position + curve depth (the first buy / last sell legs) ──────────────
     /// The wallet's first BUY in the window — the position's entry. Distinct
@@ -242,11 +215,6 @@ struct CoTrader {
     sell_count: i64,
     buy_sol: f64,
     sell_sol: f64,
-    /// Realized + mark-to-market, from the same [`wallet_mint_pnl`] the primary's
-    /// figures come from, so the two are read on identical terms.
-    total_pnl_sol: f64,
-    is_open: bool,
-    partial_data: bool,
     /// `this.entry_slot - primary.entry_slot`. **Negative = entered ahead of the
     /// primary.** `null` when either side has no entry leg in the window (a mint
     /// only exited here, or an entry that predates `since`) — an absent lag is
@@ -265,7 +233,7 @@ struct CoTrader {
 /// traded in the request's window (rolling `days`, or the explicit `from`/`to`
 /// range — see [`resolve_window`]), most-recent-trade first (`limit <= 0` ⇒ every
 /// mint in the window; positive ⇒ capped), each merged with the wallet's
-/// interaction stats + reconstructed PnL (see [`WalletTokenRow`]). Both buys and
+/// activity + round trips (see [`WalletTokenRow`]). Both buys and
 /// sells count (a mint the wallet only exited in the window still shows).
 ///
 /// Three reads: `wallet_traded_mints` (recent-first mint set + stats),
@@ -384,14 +352,7 @@ fn comparison_wallets(raw: &str, primary: &str) -> Vec<String> {
 /// Build one comparison wallet's row, with its entry measured against the
 /// primary's tape position. Both lags are `None` unless BOTH sides have an entry
 /// leg in the window — an unknown ordering must never render as "same slot".
-fn co_trader(primary: &WalletTradedMint, c: WalletTradedMint, token_price: Option<f64>) -> CoTrader {
-    let pnl = wallet_mint_pnl(
-        c.buy_sol,
-        c.sell_sol,
-        c.buy_token_amount,
-        c.sell_token_amount,
-        token_price,
-    );
+fn co_trader(primary: &WalletTradedMint, c: WalletTradedMint) -> CoTrader {
     let entry_lag_slots = match (c.entry_slot, primary.entry_slot) {
         (Some(theirs), Some(ours)) => Some(theirs - ours),
         _ => None,
@@ -412,9 +373,6 @@ fn co_trader(primary: &WalletTradedMint, c: WalletTradedMint, token_price: Optio
         sell_count: c.sell_count,
         buy_sol: c.buy_sol,
         sell_sol: c.sell_sol,
-        total_pnl_sol: pnl.total_pnl_sol,
-        is_open: pnl.is_open,
-        partial_data: pnl.partial_data,
         entry_lag_slots,
         entry_lag_tx,
         bucket: entry_lag_slots.map(co_trade_bucket),
@@ -432,9 +390,14 @@ fn window_episodes(txs: &[WalletTx], current_price: Option<f64>, since: DateTime
         .collect()
 }
 
-/// Build one response row: the token's `current_price` feeds `wallet_mint_pnl`'s
-/// mark-to-market of any still-open bag; the fee-adjusted, matched-cost-basis PnL
-/// itself is computed once in [`kernel::wallet_mint_pnl`], never re-derived here.
+/// SOL per raw token unit over one side's window sums (the `current_price`
+/// convention); `None` when that side moved no tokens.
+fn avg_price(sol: f64, tokens: i64) -> Option<f64> {
+    (tokens > 0).then(|| sol / tokens as f64)
+}
+
+/// Build one response row. Every PnL figure lives in `episodes`; the rest is the
+/// window's curve-side activity.
 fn wallet_token_row(
     token: TokenSummary,
     t: WalletTradedMint,
@@ -444,16 +407,8 @@ fn wallet_token_row(
     // Entry order, earliest first — the reading order for "who moved first".
     // A wallet with no entry leg in the window has no tape position to sort on
     // and goes last rather than pretending to be at slot 0.
-    let mut co_traders: Vec<CoTrader> =
-        co.into_iter().map(|c| co_trader(&t, c, token.current_price)).collect();
+    let mut co_traders: Vec<CoTrader> = co.into_iter().map(|c| co_trader(&t, c)).collect();
     co_traders.sort_by_key(|c| (c.entry_slot.is_none(), c.entry_slot, c.entry_tx_index));
-    let pnl = wallet_mint_pnl(
-        t.buy_sol,
-        t.sell_sol,
-        t.buy_token_amount,
-        t.sell_token_amount,
-        token.current_price,
-    );
     WalletTokenRow {
         token,
         wallet_first_trade_at: t.first_trade_at,
@@ -462,17 +417,8 @@ fn wallet_token_row(
         wallet_sell_count: t.sell_count,
         wallet_buy_sol: t.buy_sol,
         wallet_sell_sol: t.sell_sol,
-        wallet_avg_buy_price: pnl.avg_buy_price,
-        wallet_avg_sell_price: pnl.avg_sell_price,
-        wallet_net_token_amount: pnl.net_token_amount,
-        wallet_matched_cost_sol: pnl.matched_cost_sol,
-        wallet_realized_pnl_sol: pnl.realized_pnl_sol,
-        wallet_realized_pnl_sol_net_of_fee: pnl.realized_pnl_sol_net_of_fee,
-        wallet_realized_pnl_pct: pnl.realized_pnl_pct,
-        wallet_unrealized_pnl_sol: pnl.unrealized_pnl_sol,
-        wallet_total_pnl_sol: pnl.total_pnl_sol,
-        wallet_is_open: pnl.is_open,
-        wallet_partial_data: pnl.partial_data,
+        wallet_avg_buy_price: avg_price(t.buy_sol, t.buy_token_amount),
+        wallet_avg_sell_price: avg_price(t.sell_sol, t.sell_token_amount),
         wallet_entry_at: t.entry_at,
         wallet_exit_at: t.exit_at,
         wallet_entry_curve_sol: t.entry_curve_sol,
@@ -632,11 +578,11 @@ mod tests {
     #[test]
     fn co_trader_lag_is_signed_against_the_primary() {
         let primary = traded("me", Some((100, 5)));
-        let ahead = co_trader(&primary, traded("them", Some((99, 2))), None);
+        let ahead = co_trader(&primary, traded("them", Some((99, 2))));
         assert_eq!(ahead.entry_lag_slots, Some(-1));
         assert_eq!(ahead.bucket, Some("leads"));
 
-        let behind = co_trader(&primary, traded("them", Some((104, 0))), None);
+        let behind = co_trader(&primary, traded("them", Some((104, 0))));
         assert_eq!(behind.entry_lag_slots, Some(4));
         assert_eq!(behind.bucket, Some("independent"));
     }
@@ -646,7 +592,7 @@ mod tests {
     #[test]
     fn same_slot_keeps_the_intra_slot_ordering() {
         let primary = traded("me", Some((100, 5)));
-        let co = co_trader(&primary, traded("them", Some((100, 2))), None);
+        let co = co_trader(&primary, traded("them", Some((100, 2))));
         assert_eq!(co.entry_lag_slots, Some(0));
         assert_eq!(co.entry_lag_tx, Some(-3), "3 transactions ahead inside the slot");
         assert_eq!(co.bucket, Some("co-slot"));
@@ -657,13 +603,13 @@ mod tests {
     #[test]
     fn missing_entry_leg_leaves_the_lag_unknown() {
         let primary = traded("me", Some((100, 5)));
-        let co = co_trader(&primary, traded("them", None), None);
+        let co = co_trader(&primary, traded("them", None));
         assert_eq!(co.entry_lag_slots, None);
         assert_eq!(co.entry_lag_tx, None);
         assert_eq!(co.bucket, None);
 
         let blind = traded("me", None);
-        let co = co_trader(&blind, traded("them", Some((100, 1))), None);
+        let co = co_trader(&blind, traded("them", Some((100, 1))));
         assert_eq!(co.entry_lag_slots, None);
         assert_eq!(co.bucket, None);
     }

@@ -2,12 +2,19 @@ import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { Badge } from 'components/ui/Badge';
 import { formatDurationShort } from 'utils/format';
 import { formatTimestampMs } from 'utils/date';
-import { WALLET_STATS, walletHoldSeconds, walletNetPct, walletTotalSol } from './walletPnlStats';
+import {
+  WALLET_STATS,
+  walletHoldSeconds,
+  walletRowCounts,
+  walletRowNetSol,
+  walletRowOpenSol,
+  walletRowPct,
+} from './walletPnlStats';
 import type { TraderTokenRow } from 'types';
 
 /**
- * Per-mint wallet stats for the Trader Analysis charts-grid card header.
- * Hold = first→last trade span in the window (per-mint grain, not one episode).
+ * Per-mint wallet stats for the Trader Analysis charts-grid card header. PnL
+ * sums the token's closed trades; hold = first→last trade span in the window.
  */
 export function TraderChartCardExtra({
   row,
@@ -17,9 +24,10 @@ export function TraderChartCardExtra({
   timezone: string;
 }) {
   const holdSecs = walletHoldSeconds(row);
-  const total = walletTotalSol(row);
-  const pct = walletNetPct(row);
-  const unrealized = row.wallet_unrealized_pnl_sol;
+  const net = walletRowNetSol(row);
+  const pct = walletRowPct(row);
+  const openSol = walletRowOpenSol(row);
+  const counts = walletRowCounts(row);
 
   return (
     <span className="ml-auto flex flex-col items-end gap-1 rounded-md border border-white/8 bg-white/3 px-2 py-1 text-[11px]">
@@ -40,43 +48,41 @@ export function TraderChartCardExtra({
         </span>
       </span>
       <span className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
-        <span
-          className={`font-bold ${total >= 0 ? 'text-green' : 'text-red'}`}
-          title={`${WALLET_STATS.rowTotalSol.def}\n\n${WALLET_STATS.rowNetPct.label}: ${WALLET_STATS.rowNetPct.def}`}
-        >
-          <AmountCell sol={total} /> PnL
-          {pct != null && (
-            <span className="ml-1 font-mono font-semibold">
-              ({pct >= 0 ? '+' : ''}
-              {pct.toFixed(1)}%)
-            </span>
-          )}
-        </span>
+        {net != null && (
+          <span
+            className={`font-bold ${net >= 0 ? 'text-green' : 'text-red'}`}
+            title={`${WALLET_STATS.rowNetSol.def}\n\n${WALLET_STATS.rowNetPct.label}: ${WALLET_STATS.rowNetPct.def}`}
+          >
+            <AmountCell sol={net} /> PnL
+            {pct != null && (
+              <span className="ml-1 font-mono font-semibold">
+                ({pct >= 0 ? '+' : ''}
+                {pct.toFixed(1)}%)
+              </span>
+            )}
+          </span>
+        )}
         <span className="text-text-dim">
           vol <AmountCell sol={row.wallet_buy_sol} />
           {' / '}
           <AmountCell sol={row.wallet_sell_sol} />
         </span>
-        {row.wallet_is_open && unrealized != null && (
+        {openSol != null && (
           <span
-            className={unrealized >= 0 ? 'text-green' : 'text-red'}
-            title="Mark-to-market on the still-open bag"
+            className={openSol >= 0 ? 'text-green' : 'text-red'}
+            title={WALLET_STATS.openPnlSol.def}
           >
-            uPnL <AmountCell sol={unrealized} />
+            open ≈ <AmountCell sol={openSol} />
           </span>
         )}
-        {row.wallet_is_open && (
+        {counts.open > 0 && (
           <Badge variant="info" size="sm">
             open
           </Badge>
         )}
-        {row.wallet_partial_data && (
-          <Badge
-            variant="warning"
-            size="sm"
-            title="Sold more than bought in this window — the position predates the look-back, so this PnL is a partial estimate"
-          >
-            partial
+        {counts.incomplete > 0 && (
+          <Badge variant="warning" size="sm" title={WALLET_STATS.incompleteCount.def}>
+            {counts.incomplete} incomplete
           </Badge>
         )}
       </span>

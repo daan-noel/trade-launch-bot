@@ -173,16 +173,16 @@ const parseLimit = (raw: string) => {
  * look-back window as the standard full token table (client-side sort / filter /
  * search) EXTENDED with the wallet's own position and bonding-curve columns
  * (`@lab/components/analysis/walletTokenColumns.tsx` — entry/exit + their token
- * ages, hold, leg counts, SOL in/out, PnL, fee, and the curve progress it bought
- * into and sold at), a wallet-level PnL analytics deck (summary + interactive
- * charts with focus chips, re-derived from the table's current filtered cohort —
- * see `walletPnlStats.ts` / `walletFocus.ts`), and the shared `TokenTable` Charts
- * toggle for a per-token grid mirroring the current page. Each chart card repeats
- * the headline wallet stats so a card read on its own still says who did what.
+ * ages, hold, leg counts, SOL in/out, PnL, trades, and the curve progress it
+ * bought into and sold at), a wallet-level PnL analytics deck (summary +
+ * interactive charts with focus chips, re-derived from the table's current
+ * filtered cohort — see `walletPnlStats.ts` / `walletFocus.ts`), and the shared
+ * `TokenTable` Charts toggle for a per-token grid mirroring the current page.
+ * Each chart card repeats the headline wallet stats so a card read on its own
+ * still says who did what.
  *
- * Every PnL figure is an avg-cost reconstruction over this per-mint grain, NOT a
- * true per-episode ledger (a wallet that re-entered a mint many times collapses
- * to one row) — see the backend `kernel::wallet_mint_pnl` doc comment.
+ * Every PnL figure counts the wallet's closed round trips on what it moved (the
+ * backend episode ledger, `wallet_ledger.rs`); a token row sums its own.
  *
  * Scope caveat: only tokens this box ingests appear — a coin the wallet traded
  * that was never tracked won't show. Charts are lazily mounted when the toggle

@@ -47,8 +47,10 @@ import {
   computeWalletSummary,
   rankedPnlBarRows,
   toPnlPoints,
+  walletTrades,
+  type WalletTrade,
 } from './walletPnlStats';
-import { filterTraderRowsByFocus } from './walletFocus';
+import { filterTradesByFocus } from './walletFocus';
 import type { TraderTokenRow } from 'types';
 
 /** Shared body height for the Hold vs PnL | Ranked by PnL pair so the ranked
@@ -59,7 +61,7 @@ const EquityCurveChart = lazy(() =>
   import('components/analytics/EquityCurveChart').then((m) => ({ default: m.EquityCurveChart })),
 );
 
-const NO_ROWS: readonly TraderTokenRow[] = [];
+const NO_TRADES: readonly WalletTrade[] = [];
 const CALENDAR_WEEKS = 10;
 
 interface WalletAnalyticsPanelProps {
@@ -88,12 +90,22 @@ export function WalletAnalyticsPanel({
 
   const matchOpts = useMemo(() => ({ timeZone: timezone }), [timezone]);
 
-  // Summary tracks the focused slice so KPIs match the table under a lens.
-  const summaryRows = useMemo(
-    () => (focus.length === 0 ? rows : filterTraderRowsByFocus(rows, focus, matchOpts)),
-    [rows, focus, matchOpts],
+  // Every lens matches trades; the summary folds the matching trades and the
+  // tokens they belong to, so KPIs match the table under a lens.
+  const trades = useMemo(() => walletTrades(rows), [rows]);
+  const focusedTrades = useMemo(
+    () => filterTradesByFocus(trades, focus, matchOpts),
+    [trades, focus, matchOpts],
   );
-  const summary = useMemo(() => computeWalletSummary(summaryRows), [summaryRows]);
+  const summaryRows = useMemo(() => {
+    if (focus.length === 0) return rows;
+    const hit = new Set(focusedTrades.map((t) => t.row));
+    return rows.filter((r) => hit.has(r));
+  }, [rows, focus.length, focusedTrades]);
+  const summary = useMemo(
+    () => computeWalletSummary(summaryRows, focusedTrades),
+    [summaryRows, focusedTrades],
+  );
 
   const statusLens = activeLensOfKind(focus, 'status');
   const outcomeLens = activeLensOfKind(focus, 'outcome');
@@ -106,64 +118,54 @@ export function WalletAnalyticsPanel({
 
   // Timing (calendar + heatmap): non-timing lenses narrow the grid; the active
   // time lens is a selection ring — same split as Console / Position Summary.
-  const timingRows = useMemo(() => {
-    if (!chartsOpen) return NO_ROWS;
-    const nonTiming = focus.filter((l) => !isTimeLens(l));
-    if (nonTiming.length === 0) return rows;
-    return filterTraderRowsByFocus(rows, nonTiming, matchOpts);
-  }, [chartsOpen, rows, focus, matchOpts]);
-
-  const focusedRows = useMemo(() => {
-    if (!chartsOpen) return NO_ROWS;
-    if (focus.length === 0) return rows;
-    return filterTraderRowsByFocus(rows, focus, matchOpts);
-  }, [chartsOpen, rows, focus, matchOpts]);
+  const timingTrades = useMemo(() => {
+    if (!chartsOpen) return NO_TRADES;
+    return filterTradesByFocus(trades, focus.filter((l) => !isTimeLens(l)), matchOpts);
+  }, [chartsOpen, trades, focus, matchOpts]);
 
   // Scatter: band zoom keeps parent dots (domain clips); other lenses refold.
-  const holdSourceRows = useMemo(() => {
-    if (!chartsOpen) return NO_ROWS;
-    const nonBand = focus.filter((l) => l.kind !== 'band');
-    if (nonBand.length === 0) return rows;
-    return filterTraderRowsByFocus(rows, nonBand, matchOpts);
-  }, [chartsOpen, rows, focus, matchOpts]);
+  const holdSourceTrades = useMemo(() => {
+    if (!chartsOpen) return NO_TRADES;
+    return filterTradesByFocus(trades, focus.filter((l) => l.kind !== 'band'), matchOpts);
+  }, [chartsOpen, trades, focus, matchOpts]);
 
   const lensDeck = useMemo(
     () =>
       chartsOpen
-        ? foldPnlDeck(toPnlPoints(focusedRows), {
+        ? foldPnlDeck(toPnlPoints(focusedTrades), {
             timeZone: timezone,
             density,
             labelOf: () => '',
             only: ['curve', 'buckets'],
           })
         : EMPTY_PNL_DECK,
-    [chartsOpen, focusedRows, timezone, density],
+    [chartsOpen, focusedTrades, timezone, density],
   );
 
   const timingDeck = useMemo(
     () =>
       chartsOpen
-        ? foldPnlDeck(toPnlPoints(timingRows), {
+        ? foldPnlDeck(toPnlPoints(timingTrades), {
             timeZone: timezone,
             density,
             labelOf: () => '',
             only: ['heat', 'days'],
           })
         : EMPTY_PNL_DECK,
-    [chartsOpen, timingRows, timezone, density],
+    [chartsOpen, timingTrades, timezone, density],
   );
 
   const holdPoints = useMemo(
-    () => (chartsOpen ? buildHoldScatter(holdSourceRows) : []),
-    [chartsOpen, holdSourceRows],
+    () => (chartsOpen ? buildHoldScatter(holdSourceTrades) : []),
+    [chartsOpen, holdSourceTrades],
   );
   const holdContextPoints = useMemo(
-    () => (chartsOpen ? buildHoldScatter(rows) : []),
-    [chartsOpen, rows],
+    () => (chartsOpen ? buildHoldScatter(trades) : []),
+    [chartsOpen, trades],
   );
   const rankedBars = useMemo(
-    () => (chartsOpen ? rankedPnlBarRows(focusedRows) : []),
-    [chartsOpen, focusedRows],
+    () => (chartsOpen ? rankedPnlBarRows(focusedTrades) : []),
+    [chartsOpen, focusedTrades],
   );
 
   const todayKey = useMemo(() => dayKeyInTz(Date.now(), timezone), [timezone]);
@@ -185,8 +187,8 @@ export function WalletAnalyticsPanel({
 
   if (rows.length === 0) return null;
 
-  const emptyLens = 'No tokens in this focus.';
-  const emptyCohort = 'No tokens with PnL to plot in this cohort.';
+  const emptyLens = 'No closed trades in this focus.';
+  const emptyCohort = 'No closed trades to plot in this cohort.';
   const chartsEmpty = focus.length > 0 ? emptyLens : emptyCohort;
 
   return (
@@ -219,9 +221,9 @@ export function WalletAnalyticsPanel({
           <ChartCard
             title="Equity path"
             tip={{
-              title: 'Cumulative Total',
+              title: `Cumulative ${WALLET_STATS.netSol.label}`,
               body:
-                `Running sum of ${WALLET_STATS.totalSol.label}, one step per token. ${WALLET_STATS.totalSol.def}\n\n` +
+                `Running sum of ${WALLET_STATS.netSol.label}, one step per closed trade at its closing sell. ${WALLET_STATS.netSol.def}\n\n` +
                 `max DD = ${WALLET_STATS.maxDrawdownSol.label}: ${WALLET_STATS.maxDrawdownSol.def}`,
             }}
             hint={
@@ -245,9 +247,9 @@ export function WalletAnalyticsPanel({
             title="Return shape"
             tip={{
               title: 'PnL % distribution',
-              body: `Histogram of the per-trade ${WALLET_STATS.rowNetPct.label}. ${WALLET_STATS.rowNetPct.def} Click a bar to focus that bucket.`,
+              body: `Histogram of the per-trade ${WALLET_STATS.tradePct.label}. ${WALLET_STATS.tradePct.def} Click a bar to focus that bucket.`,
             }}
-            hint={`${focusedRows.length} token${focusedRows.length === 1 ? '' : 's'}`}
+            hint={`${summary.tradeCount} trade${summary.tradeCount === 1 ? '' : 's'}`}
           >
             <PnlDistribution
               buckets={lensDeck.buckets}
@@ -269,10 +271,10 @@ export function WalletAnalyticsPanel({
               tip={{
                 title: 'Hold vs PnL scatter',
                 body:
-                  `Each point is one mint: X = first→last trade span in the window (not a single episode), Y = ${WALLET_STATS.rowNetPct.label} (net of fee). ` +
-                  'Drag to zoom a band; click a point to focus that mint. Reset scale / the focus chip clears.',
+                  `Each point is one closed trade: X = its hold (first buy → closing sell), Y = its ${WALLET_STATS.tradePct.label}, size = SOL its buys took. ` +
+                  'Drag to zoom a band; click a point to focus that trade. Reset scale / the focus chip clears.',
               }}
-              hint={`${holdPoints.length} mint${holdPoints.length === 1 ? '' : 's'} · click to focus`}
+              hint={`${holdPoints.length} trade${holdPoints.length === 1 ? '' : 's'} · click to focus`}
             >
               <HoldPnlScatter
                 points={holdPoints}
@@ -301,8 +303,8 @@ export function WalletAnalyticsPanel({
             <ChartCard
               title="Ranked by PnL"
               tip={{
-                title: 'Best → worst mint',
-                body: `Ranked on ${WALLET_STATS.rowTotalSol.label}, not win rate. ${WALLET_STATS.rowTotalSol.def} Click a row to focus that mint across charts + table.`,
+                title: 'Best → worst trade',
+                body: `Ranked on each closed trade's ${WALLET_STATS.tradeNetSol.label} ◎, not win rate. ${WALLET_STATS.tradeNetSol.def} Click a row to focus that trade across charts + table.`,
               }}
               hint="click a row to focus"
             >
@@ -328,8 +330,8 @@ export function WalletAnalyticsPanel({
                   tip={{
                     title: 'Daily PnL calendar',
                     body:
-                      'One square per calendar day in your timezone (bucketed by each mint\'s most-recent trade).\n\n' +
-                      'Green = the day netted profit, red = it bled. Brighter fill = larger |PnL|; brighter border = more mints that day. ' +
+                      "One square per calendar day in your timezone (each closed trade on its closing sell's day).\n\n" +
+                      'Green = the day netted profit, red = it bled. Brighter fill = larger |PnL|; brighter border = more trades that day. ' +
                       'Click a day — or a month label for that whole week — to focus. Click again to clear.',
                   }}
                 >
@@ -352,14 +354,14 @@ export function WalletAnalyticsPanel({
                   tip={{
                     title: 'Dow × hour heatmap',
                     body:
-                      `Day-of-week × hour-of-day ${WALLET_STATS.totalSol.label} ◎ in your timezone (per mint's most-recent trade).\n\n` +
-                      'Green = net profit in that slot; red = net loss. A cell counts mints decided then, not individual trades. ' +
+                      `Day-of-week × hour-of-day ${WALLET_STATS.netSol.label} ◎ in your timezone (each closed trade at its closing sell).\n\n` +
+                      'Green = net profit in that slot; red = net loss. A cell counts the closed trades that closed then. ' +
                       'Click to focus — equity, return, scatter, ranked, and the table follow.',
                   }}
                 >
                   <PnlHeatmap
                     cells={timingDeck.heatCells}
-                    unitLabel="token"
+                    unitLabel="trade"
                     emptyMessage={chartsEmpty}
                     selected={heatLens ? { dow: heatLens.dow, hour: heatLens.hour } : null}
                     onSelectCell={(c) => toggleLens({ kind: 'heat', dow: c.dow, hour: c.hour })}

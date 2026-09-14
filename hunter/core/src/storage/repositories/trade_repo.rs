@@ -852,7 +852,7 @@ impl TradeRepo {
         let limit_opt: Option<i64> = if limit <= 0 { None } else { Some(limit) };
         let wallet_ids: Vec<i32> = by_id.keys().copied().collect();
         // `amount_lamports`/`token_amount` sums per side feed the Trader Analysis
-        // page's avg-cost PnL reconstruction (`kernel::wallet_mint_pnl`) — both are
+        // page's volume and average-price columns (curve-side, not PnL) — both are
         // exact-integer `SUM(...)::BIGINT` (never NULL: `COALESCE` guards the
         // FILTER'd sum when a mint has only one side in the window). A named
         // `FromRow` (rather than a wide tuple) keeps every field labelled at the
@@ -1707,11 +1707,9 @@ pub struct TapePrint {
 ///
 /// `buy_count`/`sell_count`/`buy_sol`/`sell_sol`/`*_token_amount` are all scoped to
 /// the same `block_time >= since` window, so a mint the wallet only *exited* in the
-/// window can show `buy_count = 0` (its buys predate the window) — the handler
-/// (`wallets.rs::list_wallet_tokens`) feeds `buy_sol`/`sell_sol`/`*_token_amount`
-/// into [`crate::strategies::kernel::wallet_mint_pnl`] to reconstruct an avg-cost
-/// PnL for the row, and treats that case as `partial_data` rather than guessing at
-/// the missing cost basis.
+/// window can show `buy_count = 0` (its buys predate the window). These are
+/// curve-side activity figures; the row's PnL comes from
+/// [`TradeRepo::wallet_txs_on`] through the episode ledger.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WalletTradedMint {
     /// The wallet these stats belong to. Redundant on the single-wallet read,

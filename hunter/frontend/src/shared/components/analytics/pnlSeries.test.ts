@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildEquityCurve,
   dayKeyInTz,
   foldPnlDeck,
   matchesPctFocus,
+  maxDrawdownSol,
   monthAbbr,
   pctFocusFilter,
   pnlDistributionBuckets,
@@ -215,6 +217,28 @@ describe('foldPnlDeck', () => {
     const alpha = fold.trends.find((t) => t.groupId === 'rule-a')!;
     expect(alpha.label).toBe('Alpha');
     expect(alpha.decaying).toBe(true);
+  });
+});
+
+describe('maxDrawdownSol', () => {
+  const t0 = Date.parse('2026-08-01T15:00:00Z');
+
+  it('is the deepest fall below the running peak, the sum starting at 0', () => {
+    // +1, +2 (peak 3), -2, -3 (now -2): the fall from +3 to -2.
+    const points = [1, 2, -2, -3].map((pnlSol, i) => pt({ key: `p${i}`, timeMs: t0 + i * 60_000, pnlSol }));
+    expect(maxDrawdownSol(points)).toBeCloseTo(5, 9);
+  });
+
+  it('counts a dip inside one second, which the chart curve collapses', () => {
+    const points = [2, -3, 1].map((pnlSol, i) => pt({ key: `p${i}`, timeMs: t0 + i, pnlSol }));
+    expect(buildEquityCurve(points)).toHaveLength(1);
+    expect(maxDrawdownSol(points)).toBeCloseTo(3, 9);
+    expect(foldPnlDeck(points, { timeZone: 'UTC', labelOf: () => '', only: ['curve'] }).drawdownSol).toBeCloseTo(3, 9);
+  });
+
+  it('is 0 when the running sum never falls', () => {
+    expect(maxDrawdownSol([pt({ key: 'a', timeMs: t0, pnlSol: 1 })])).toBe(0);
+    expect(maxDrawdownSol([])).toBe(0);
   });
 });
 

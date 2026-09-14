@@ -1,24 +1,85 @@
 import { describe, expect, it } from 'vitest';
-import type { TraderTokenRow } from 'types';
+import type { TraderTokenRow, WalletEpisode } from 'types';
 import {
-  buildEquityCurve,
   buildHoldScatter,
-  buildPnlHeatCells,
   computeWalletSummary,
   dowHourInTz,
-  pnlDistributionBuckets,
   rankedPnlBarRows,
+  toPnlPoints,
   walletHoldSeconds,
-  walletNetPct,
-  walletTotalSol,
+  walletRowCounts,
+  walletRowNetSol,
+  walletRowOpenSol,
+  walletRowPct,
+  walletTrades,
 } from './walletPnlStats';
 import { rankByValue } from 'components/analytics/pnlSeries';
 
-/** Minimal valid `TraderTokenRow` with sane token-record defaults; each test
- *  overrides only the wallet_* fields it cares about. */
-function row(overrides: Partial<TraderTokenRow>): TraderTokenRow {
+const T0 = Date.parse('2026-07-01T00:00:00Z');
+let seq = 0;
+
+/** One trade; each call gets its own entry slot so trade keys stay unique. */
+function ep(overrides: Partial<WalletEpisode>): WalletEpisode {
+  seq += 1;
+  return {
+    status: 'closed',
+    missing_flow: false,
+    unseen_buy: false,
+    entry_slot: seq,
+    entry_tx_index: 0,
+    entry_ms: T0,
+    exit_slot: 10_000 + seq,
+    exit_tx_index: 0,
+    exit_ms: T0 + 60_000,
+    buy_count: 1,
+    sell_count: 1,
+    bought_tokens: 1_000,
+    sold_tokens: 1_000,
+    held_tokens: 0,
+    sol_in: 1,
+    sol_out: 1,
+    net_sol: 0,
+    pnl_pct: 0,
+    mark_sol: null,
+    open_pnl_sol: null,
+    ...overrides,
+  };
+}
+
+/** A closed trade: `net` ◎ on `cost` ◎ in, closing at tape slot `exitSlot`. */
+function closed(net: number, cost = 1, overrides: Partial<WalletEpisode> = {}): WalletEpisode {
+  return ep({ sol_in: cost, sol_out: cost + net, net_sol: net, pnl_pct: (net / cost) * 100, ...overrides });
+}
+
+function open(openPnl: number | null): WalletEpisode {
+  return ep({
+    status: 'open',
+    exit_slot: null,
+    exit_tx_index: null,
+    exit_ms: null,
+    net_sol: null,
+    pnl_pct: null,
+    held_tokens: 500,
+    open_pnl_sol: openPnl,
+  });
+}
+
+function incomplete(why: 'missing_flow' | 'unseen_buy'): WalletEpisode {
+  const exact = why === 'unseen_buy';
+  return ep({
+    status: 'incomplete',
+    [why]: true,
+    sol_in: exact ? 1 : null,
+    sol_out: exact ? 2 : null,
+    net_sol: null,
+    pnl_pct: null,
+  });
+}
+
+/** Minimal valid `TraderTokenRow` holding `episodes`. */
+function row(episodes: WalletEpisode[], overrides: Partial<TraderTokenRow> = {}): TraderTokenRow {
   const base: TraderTokenRow = {
-    mint_address: overrides.mint_address ?? 'MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    mint_address: overrides.mint_address ?? `Mint${seq}`,
     name: 'Test Token',
     symbol: 'TEST',
     creator_wallet: 'CreatorAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
@@ -57,15 +118,6 @@ function row(overrides: Partial<TraderTokenRow>): TraderTokenRow {
     wallet_sell_sol: 1.5,
     wallet_avg_buy_price: 0.01,
     wallet_avg_sell_price: 0.015,
-    wallet_net_token_amount: 0,
-    wallet_matched_cost_sol: 1,
-    wallet_realized_pnl_sol: 0.5,
-    wallet_realized_pnl_sol_net_of_fee: 0.475,
-    wallet_realized_pnl_pct: 50,
-    wallet_unrealized_pnl_sol: null,
-    wallet_total_pnl_sol: 0.5,
-    wallet_is_open: false,
-    wallet_partial_data: false,
     wallet_entry_at: null,
     wallet_exit_at: null,
     wallet_entry_curve_sol: null,
@@ -76,32 +128,13 @@ function row(overrides: Partial<TraderTokenRow>): TraderTokenRow {
     wallet_entry_tx_index: null,
     wallet_exit_slot: null,
     wallet_exit_tx_index: null,
+    episodes,
     co_traders: [],
   };
   return { ...base, ...overrides };
 }
 
-/** A sold-against-cost row: `net` ◎ net of fee on `cost` ◎ of matched basis. */
-function trade(net: number, overrides: Partial<TraderTokenRow> = {}, cost = 1): TraderTokenRow {
-  return row({
-    wallet_matched_cost_sol: cost,
-    wallet_realized_pnl_sol_net_of_fee: net,
-    ...overrides,
-  });
-}
-
-/** A never-sold bag: no matched cost, so no realized verdict. */
-function openBag(mark: number, overrides: Partial<TraderTokenRow> = {}): TraderTokenRow {
-  return row({
-    wallet_matched_cost_sol: 0,
-    wallet_realized_pnl_sol: 0,
-    wallet_realized_pnl_sol_net_of_fee: 0,
-    wallet_realized_pnl_pct: null,
-    wallet_unrealized_pnl_sol: mark,
-    wallet_is_open: true,
-    ...overrides,
-  });
-}
+const summarize = (rows: TraderTokenRow[]) => computeWalletSummary(rows, walletTrades(rows));
 
 describe('dowHourInTz', () => {
   it('reads dow/hour in UTC', () => {
@@ -117,21 +150,36 @@ describe('dowHourInTz', () => {
   });
 });
 
-describe('per-token net figures', () => {
-  it('net % is net realized over the matched cost', () => {
-    expect(walletNetPct(trade(0.25, {}, 0.5))).toBeCloseTo(50, 9);
-    expect(walletNetPct(openBag(1))).toBeNull();
+describe('walletTrades', () => {
+  it('flattens every token row into trades keyed by mint and entry', () => {
+    const a = closed(1, 1, { entry_slot: 5, entry_tx_index: 2 });
+    const trades = walletTrades([row([a, open(0)], { mint_address: 'A' }), row([], { mint_address: 'B' })]);
+    expect(trades).toHaveLength(2);
+    expect(trades[0]!.key).toBe('A::5:2');
+    expect(trades[0]!.row.mint_address).toBe('A');
+  });
+});
+
+describe('per-token figures', () => {
+  it('sums the closed trades only, money over the capital that earned it', () => {
+    const r = row([closed(0.5, 1), closed(-0.25, 0.5), open(3), incomplete('unseen_buy')]);
+    expect(walletRowNetSol(r)).toBeCloseTo(0.25, 9);
+    expect(walletRowPct(r)).toBeCloseTo((0.25 / 1.5) * 100, 9);
+    expect(walletRowOpenSol(r)).toBeCloseTo(3, 9);
+    expect(walletRowCounts(r)).toEqual({ closed: 2, open: 1, incomplete: 1 });
   });
 
-  it('total is net realized plus the open mark', () => {
-    expect(walletTotalSol(trade(0.2, { wallet_unrealized_pnl_sol: 0.3 }))).toBeCloseTo(0.5, 9);
-    expect(walletTotalSol(openBag(-0.4))).toBeCloseTo(-0.4, 9);
+  it('is blank, never 0, without a closed trade', () => {
+    const r = row([open(null), incomplete('missing_flow')]);
+    expect(walletRowNetSol(r)).toBeNull();
+    expect(walletRowPct(r)).toBeNull();
+    expect(walletRowOpenSol(r)).toBeNull();
   });
 });
 
 describe('computeWalletSummary', () => {
   it('is all-zero/null for an empty row set', () => {
-    const s = computeWalletSummary([]);
+    const s = summarize([]);
     expect(s.tokenCount).toBe(0);
     expect(s.tradeCount).toBe(0);
     expect(s.winRate).toBeNull();
@@ -139,28 +187,30 @@ describe('computeWalletSummary', () => {
     expect(s.medianPct).toBeNull();
     expect(s.payoffRatio).toBeNull();
     expect(s.profitFactor).toBeNull();
+    expect(s.openPnlSol).toBeNull();
   });
 
-  it('separates open bags from win/loss verdicts, on the net basis', () => {
+  it('sums closed trades and keeps open and incomplete ones apart', () => {
     const rows = [
-      trade(1.0, { wallet_realized_pnl_sol: 1.05 }, 2),
-      trade(-0.5, { wallet_realized_pnl_sol: -0.45 }, 2),
-      // Pure open bag: never sold, so no realized verdict — excluded from win/loss.
-      openBag(2.0),
+      row([closed(1.0, 2), closed(-0.5, 2)]),
+      row([open(2.0), incomplete('missing_flow'), incomplete('unseen_buy')]),
     ];
-    const s = computeWalletSummary(rows);
-    expect(s.tokenCount).toBe(3);
-    expect(s.openCount).toBe(1);
+    const s = summarize(rows);
+    expect(s.tokenCount).toBe(2);
     expect(s.tradeCount).toBe(2);
+    expect(s.openCount).toBe(1);
+    expect(s.incompleteCount).toBe(2);
+    expect(s.missingFlowCount).toBe(1);
+    expect(s.unseenBuyCount).toBe(1);
     expect(s.winCount).toBe(1);
     expect(s.lossCount).toBe(1);
     expect(s.winRate).toBeCloseTo(50, 9);
-    expect(s.grossRealizedSol).toBeCloseTo(0.6, 9);
-    expect(s.netRealizedSol).toBeCloseTo(0.5, 9);
-    expect(s.openMarkSol).toBeCloseTo(2.0, 9);
-    expect(s.totalSol).toBeCloseTo(2.5, 9);
-    // Σ net / Σ matched cost: 0.5 / 4.
+    expect(s.netSol).toBeCloseTo(0.5, 9);
+    expect(s.openPnlSol).toBeCloseTo(2.0, 9);
+    // Σ net / Σ SOL in of the closed trades: 0.5 / 4. The incomplete trade's
+    // exact-looking SOL is not in it.
     expect(s.returnPct).toBeCloseTo(12.5, 9);
+    expect(s.capitalInSol).toBeCloseTo(4, 9);
     expect(s.expectancySol).toBeCloseTo(0.25, 9);
     expect(s.avgWinSol).toBeCloseTo(1.0, 9);
     expect(s.avgLossSol).toBeCloseTo(-0.5, 9);
@@ -168,17 +218,16 @@ describe('computeWalletSummary', () => {
     expect(s.profitFactor).toBeCloseTo(2.0, 9);
   });
 
-  it('a gross winner the fee turns red is a loss', () => {
-    const s = computeWalletSummary([trade(-0.01, { wallet_realized_pnl_sol: 0.01 })]);
-    expect(s.winCount).toBe(0);
-    expect(s.lossCount).toBe(1);
-    expect(s.worstTradeSol).toBeCloseTo(-0.01, 9);
+  it('counts a re-entry as its own trade', () => {
+    const s = summarize([row([closed(1), closed(-1), closed(1)])]);
+    expect(s.tokenCount).toBe(1);
+    expect(s.tradeCount).toBe(3);
   });
 
   it('reports the per-trade % distribution by nearest rank', () => {
-    // Net % of -50, -10, 0, 20, 40, 60, 100, 150, 200, 400 on 1 ◎ each.
+    // PnL % of -50, -10, 0, 20, 40, 60, 100, 150, 200, 400 on 1 ◎ each.
     const nets = [-0.5, -0.1, 0, 0.2, 0.4, 0.6, 1, 1.5, 2, 4];
-    const s = computeWalletSummary(nets.map((n) => trade(n)));
+    const s = summarize([row(nets.map((n) => closed(n)))]);
     expect(s.tradeCount).toBe(10);
     expect(s.meanPct).toBeCloseTo(91, 9);
     // round(9 × 0.5) = 5 → 60; round(0.9) = 1 → -10; round(8.1) = 8 → 200.
@@ -193,228 +242,94 @@ describe('computeWalletSummary', () => {
 
   it('return % weights by capital while mean % weights every trade the same', () => {
     // +100 % on 0.1 ◎ and -50 % on 10 ◎: the mean is positive, the money is not.
-    const s = computeWalletSummary([trade(0.1, {}, 0.1), trade(-5, {}, 10)]);
+    const s = summarize([row([closed(0.1, 0.1), closed(-5, 10)])]);
     expect(s.meanPct).toBeCloseTo(25, 9);
     expect(s.returnPct).toBeLessThan(0);
-    expect(Math.sign(s.returnPct!)).toBe(Math.sign(s.netRealizedSol));
+    expect(Math.sign(s.returnPct!)).toBe(Math.sign(s.netSol));
   });
 
-  it('counts the longest losing run in last-trade order, not row order', () => {
-    const at = (min: number) => Date.parse('2026-07-01T00:00:00Z') + min * 60_000;
-    const rows = [
-      trade(-1, { wallet_last_trade_at_ms: at(4) }),
-      trade(1, { wallet_last_trade_at_ms: at(1) }),
-      trade(-1, { wallet_last_trade_at_ms: at(3) }),
-      trade(-1, { wallet_last_trade_at_ms: at(2) }),
-      trade(1, { wallet_last_trade_at_ms: at(5) }),
+  it('counts the longest losing run in closing-sell tape order, not input order', () => {
+    const at = (slot: number) => ({ exit_slot: slot, exit_ms: T0 });
+    const trades = [
+      closed(-1, 1, at(4)),
+      closed(1, 1, at(1)),
+      closed(-1, 1, at(3)),
+      closed(-1, 1, at(2)),
+      closed(1, 1, at(5)),
     ];
-    expect(computeWalletSummary(rows).longestLossStreak).toBe(3);
+    expect(summarize([row(trades)]).longestLossStreak).toBe(3);
   });
 
-  it('max drawdown is the equity curve drop on the total ◎', () => {
-    const at = (min: number) => Date.parse('2026-07-01T00:00:00Z') + min * 60_000;
-    const rows = [
-      trade(2, { wallet_last_trade_at_ms: at(1) }),
-      trade(-1.5, { wallet_last_trade_at_ms: at(2) }),
-      // An open mark counts: the curve sums the Total, not realized alone.
-      openBag(-1, { wallet_last_trade_at_ms: at(3) }),
-      trade(3, { wallet_last_trade_at_ms: at(4) }),
-    ];
-    expect(computeWalletSummary(rows).maxDrawdownSol).toBeCloseTo(2.5, 9);
+  it('max drawdown is the most lost in one stretch, in tape order, open trades out', () => {
+    // +1, +2 (peak 3), -2, -3 (now -2) → 5. All in one second, so only the tape
+    // order separates them; an open trade's estimate never enters.
+    const at = (slot: number) => ({ exit_slot: slot, exit_ms: T0 });
+    const trades = [closed(-3, 3, at(4)), closed(2, 1, at(2)), closed(1, 1, at(1)), closed(-2, 2, at(3)), open(-10)];
+    expect(summarize([row(trades)]).maxDrawdownSol).toBeCloseTo(5, 9);
   });
 
   it('reads the behavior medians and sums the capital', () => {
-    const t0 = Date.parse('2026-07-01T00:00:00Z');
     const rows = [
-      trade(0.1, {
-        wallet_buy_sol: 1,
-        wallet_sell_sol: 1.1,
-        wallet_first_trade_at_ms: t0,
-        wallet_last_trade_at_ms: t0 + 60_000,
-        wallet_entry_curve_pct: 10,
-      }),
-      trade(0.1, {
-        wallet_buy_sol: 3,
-        wallet_sell_sol: 3.1,
-        wallet_first_trade_at_ms: t0,
-        wallet_last_trade_at_ms: t0 + 600_000,
-        wallet_entry_curve_pct: 30,
-      }),
-      openBag(0, { wallet_buy_sol: 2, wallet_sell_sol: 0, wallet_entry_curve_pct: 20 }),
+      row([closed(0.1, 1, { entry_ms: T0, exit_ms: T0 + 60_000 })], { wallet_entry_curve_pct: 10 }),
+      row([closed(0.1, 3, { entry_ms: T0, exit_ms: T0 + 600_000 })], { wallet_entry_curve_pct: 30 }),
+      row([open(0)], { wallet_entry_curve_pct: 20 }),
     ];
-    const s = computeWalletSummary(rows);
-    expect(s.capitalInSol).toBeCloseTo(6, 9);
-    expect(s.volumeSol).toBeCloseTo(10.2, 9);
-    expect(s.medianBuySol).toBeCloseTo(2, 9);
+    const s = summarize(rows);
+    expect(s.capitalInSol).toBeCloseTo(4, 9);
+    expect(s.capitalOutSol).toBeCloseTo(4.2, 9);
+    // Closed trades only: [1, 3] → round(0.5) = 1 → 3.
+    expect(s.medianBuySol).toBeCloseTo(3, 9);
     expect(s.medianEntryCurvePct).toBeCloseTo(20, 9);
-    // Hold is read over trades only: [60, 600] → round(0.5) = 1 → 600.
+    // One round trip each: [60, 600] → 600.
     expect(s.medianHoldSecs).toBeCloseTo(600, 9);
   });
 
   it('reports null payoff/profit-factor with no losses', () => {
-    const s = computeWalletSummary([trade(1.0)]);
+    const s = summarize([row([closed(1.0)])]);
     expect(s.payoffRatio).toBeNull();
     expect(s.profitFactor).toBeNull();
     expect(s.worstTradeSol).toBeNull();
   });
-
-  it('flags partial data', () => {
-    const rows = [row({ wallet_partial_data: true }), row({ wallet_partial_data: false })];
-    expect(computeWalletSummary(rows).partialDataCount).toBe(1);
-  });
 });
 
-describe('buildPnlHeatCells', () => {
-  it('always returns all 168 day×hour cells', () => {
-    const cells = buildPnlHeatCells([], 'UTC');
-    expect(cells).toHaveLength(7 * 24);
-    expect(cells.every((c) => c.count === 0 && c.pnl_sol === 0)).toBe(true);
-  });
-
-  it('buckets a row into its last-trade dow/hour and sums the net total', () => {
-    const ms = Date.parse('2026-07-27T14:30:00Z'); // Monday 14:00 UTC bucket
-    const rows = [
-      trade(1.5, { wallet_last_trade_at_ms: ms }),
-      openBag(-0.5, { wallet_last_trade_at_ms: ms }),
-    ];
-    const cells = buildPnlHeatCells(rows, 'UTC');
-    const cell = cells.find((c) => c.dow === 1 && c.hour === 14);
-    expect(cell).toBeDefined();
-    expect(cell!.count).toBe(2);
-    expect(cell!.pnl_sol).toBeCloseTo(1.0, 9);
-  });
-
-  it('falls back to parsing wallet_last_trade_at when the _ms field is absent', () => {
-    const rows = [
-      trade(2.0, {
-        wallet_last_trade_at: '2026-07-27T14:30:00Z',
-        wallet_last_trade_at_ms: undefined,
-      }),
-    ];
-    const cells = buildPnlHeatCells(rows, 'UTC');
-    const cell = cells.find((c) => c.dow === 1 && c.hour === 14);
-    expect(cell!.pnl_sol).toBeCloseTo(2.0, 9);
+describe('toPnlPoints', () => {
+  it('makes one point per closed trade, in closing-sell tape order', () => {
+    const trades = walletTrades([
+      row([closed(1, 1, { exit_slot: 30 }), open(1), incomplete('missing_flow')]),
+      row([closed(-1, 1, { exit_slot: 20 })]),
+    ]);
+    const points = toPnlPoints(trades);
+    expect(points.map((p) => p.pnlSol)).toEqual([-1, 1]);
   });
 });
 
 describe('rankedPnlBarRows', () => {
-  it('sorts descending by net total without mutating the input', () => {
-    const rows = [
-      trade(-1, { mint_address: 'a' }),
-      trade(5, { mint_address: 'b' }),
-      trade(2, { mint_address: 'c' }),
-    ];
-    const ranked = rankByValue(rankedPnlBarRows(rows));
-    expect(ranked.map((r) => r.key)).toEqual(['b', 'c', 'a']);
-    expect(rows.map((r) => r.mint_address)).toEqual(['a', 'b', 'c']);
-  });
-
-  it('tags an open bag so the bar can mark it', () => {
-    const bars = rankedPnlBarRows([
-      row({ mint_address: 'open', wallet_is_open: true }),
-      row({ mint_address: 'closed', wallet_is_open: false }),
-    ]);
-    expect(bars.find((b) => b.key === 'open')!.tag).toBe('open');
-    expect(bars.find((b) => b.key === 'closed')!.tag).toBeNull();
-  });
-});
-
-describe('pnlDistributionBuckets', () => {
-  it('buckets net % and excludes rows with no matched cost basis', () => {
-    const rows = [
-      trade(-0.6), // < -50
-      trade(-0.05), // -10..0
-      trade(0), // 0..10 (half-open [0,10))
-      trade(0.15), // 10..20
-      trade(2.5), // 200…500
-      openBag(1), // excluded — pure open bag
-    ];
-    const buckets = pnlDistributionBuckets(rows);
-    const total = buckets.reduce((s, b) => s + b.count, 0);
-    expect(total).toBe(5);
-    expect(buckets.find((b) => b.label === '< -50%')!.count).toBe(1);
-    expect(buckets.find((b) => b.label === '-10…0%')!.count).toBe(1);
-    expect(buckets.find((b) => b.label === '0…10%')!.count).toBe(1);
-    expect(buckets.find((b) => b.label === '10…20%')!.count).toBe(1);
-    expect(buckets.find((b) => b.label === '200…500%')!.count).toBe(1);
-    expect(buckets.some((b) => b.label === '≥ 500%')).toBe(true);
-  });
-
-  it('sparse density collapses the near-zero zone', () => {
-    const rows = [trade(-0.05), trade(0.15), trade(1.2)];
-    const buckets = pnlDistributionBuckets(rows, 'sparse');
-    expect(buckets.map((b) => b.label)).toEqual([
-      '< -50%',
-      '-50…0%',
-      '0…50%',
-      '50…100%',
-      '100…200%',
-      '200…500%',
-      '≥ 500%',
-    ]);
-    expect(buckets.find((b) => b.label === '-50…0%')!.count).toBe(1);
-    expect(buckets.find((b) => b.label === '0…50%')!.count).toBe(1);
-    expect(buckets.find((b) => b.label === '100…200%')!.count).toBe(1);
-  });
-
-  it('every bucket has a stable win/loss/breakeven sign', () => {
-    const buckets = pnlDistributionBuckets([]);
-    expect(buckets.filter((b) => b.sign === -1).length).toBeGreaterThan(0);
-    expect(buckets.filter((b) => b.sign === 1).length).toBeGreaterThan(0);
-  });
-});
-
-describe('buildEquityCurve', () => {
-  it('accumulates the net total in ascending time order regardless of input order', () => {
-    const t1 = Date.parse('2026-07-01T00:00:00Z');
-    const t2 = Date.parse('2026-07-02T00:00:00Z');
-    const t3 = Date.parse('2026-07-03T00:00:00Z');
-    const rows = [
-      trade(1, { wallet_last_trade_at_ms: t3 }),
-      trade(2, { wallet_last_trade_at_ms: t1 }),
-      trade(-1, { wallet_last_trade_at_ms: t2 }),
-    ];
-    const curve = buildEquityCurve(rows);
-    expect(curve.map((p) => p.cumPnlSol)).toEqual([2, 1, 2]);
-    expect(curve[0]!.time).toBeLessThan(curve[1]!.time);
-    expect(curve[1]!.time).toBeLessThan(curve[2]!.time);
-  });
-
-  it('collapses same-second ties into one point', () => {
-    const t = Date.parse('2026-07-01T00:00:00.100Z');
-    const t2 = Date.parse('2026-07-01T00:00:00.900Z'); // same second
-    const rows = [
-      trade(1, { wallet_last_trade_at_ms: t }),
-      trade(1, { wallet_last_trade_at_ms: t2 }),
-    ];
-    const curve = buildEquityCurve(rows);
-    expect(curve).toHaveLength(1);
-    expect(curve[0]!.cumPnlSol).toBe(2);
+  it('ranks closed trades by net ◎ without mutating the input', () => {
+    const rows = [row([closed(-1), closed(5)], { mint_address: 'a' }), row([closed(2), open(9)], { mint_address: 'b' })];
+    const trades = walletTrades(rows);
+    const ranked = rankByValue(rankedPnlBarRows(trades));
+    expect(ranked.map((r) => r.value)).toEqual([5, 2, -1]);
+    expect(trades).toHaveLength(4);
   });
 });
 
 describe('walletHoldSeconds', () => {
   it('returns first→last span in seconds', () => {
-    const t0 = Date.parse('2026-07-01T00:00:00Z');
-    const t1 = Date.parse('2026-07-01T00:05:00Z');
-    expect(
-      walletHoldSeconds(
-        row({ wallet_first_trade_at_ms: t0, wallet_last_trade_at_ms: t1 }),
-      ),
-    ).toBeCloseTo(300, 9);
+    const t1 = T0 + 300_000;
+    expect(walletHoldSeconds(row([], { wallet_first_trade_at_ms: T0, wallet_last_trade_at_ms: t1 }))).toBeCloseTo(300, 9);
   });
 });
 
 describe('buildHoldScatter', () => {
-  it('excludes rows with no matched verdict or non-positive hold', () => {
-    const t0 = Date.parse('2026-07-01T00:00:00Z');
-    const t1 = Date.parse('2026-07-01T00:05:00Z');
-    const rows = [
-      trade(0.2, { wallet_first_trade_at_ms: t0, wallet_last_trade_at_ms: t1 }),
-      openBag(1), // no verdict
-      trade(0.05, { wallet_first_trade_at_ms: t1, wallet_last_trade_at_ms: t1 }), // zero hold
-    ];
-    const points = buildHoldScatter(rows);
+  it('plots closed trades with a positive hold, one point per round trip', () => {
+    const trades = walletTrades([
+      row([
+        closed(0.2, 1, { entry_ms: T0, exit_ms: T0 + 300_000 }),
+        closed(0.05, 1, { entry_ms: T0, exit_ms: T0 }), // zero hold
+        open(1), // no verdict
+      ]),
+    ]);
+    const points = buildHoldScatter(trades);
     expect(points).toHaveLength(1);
     expect(points[0]!.holdSeconds).toBeCloseTo(300, 9);
     expect(points[0]!.pnlPct).toBeCloseTo(20, 9);

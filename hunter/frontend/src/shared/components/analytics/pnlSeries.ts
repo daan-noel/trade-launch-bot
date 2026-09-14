@@ -158,45 +158,49 @@ export interface EquityPoint {
   peakSol: number;
 }
 
-/** Cumulative PnL over points already ordered oldest → newest. Ties (same-second
- *  points) collapse into one entry so a chart series never receives duplicate
- *  x-values. */
-function buildEquityCurveSorted(sorted: readonly PnlPoint[]): EquityPoint[] {
-  const out: EquityPoint[] = [];
+/** Cumulative PnL over points already ordered oldest → newest, and its deepest
+ *  peak-to-trough drop in SOL (`0` when never underwater). The drop is read on
+ *  every point; only the curve collapses same-second points into one entry, so
+ *  a chart series never receives duplicate x-values and a dip inside one second
+ *  still counts. */
+function foldEquitySorted(sorted: readonly PnlPoint[]): { curve: EquityPoint[]; drawdownSol: number } {
+  const curve: EquityPoint[] = [];
   let cum = 0;
   let peak = 0;
+  let drawdownSol = 0;
   for (const p of sorted) {
     cum += p.pnlSol;
     if (cum > peak) peak = cum;
+    if (peak - cum > drawdownSol) drawdownSol = peak - cum;
     const time = Math.floor(p.timeMs / 1000);
-    const last = out[out.length - 1];
+    const last = curve[curve.length - 1];
     if (last && last.time === time) {
       last.cumPnlSol = cum;
       last.peakSol = peak;
     } else {
-      out.push({ time, cumPnlSol: cum, peakSol: peak });
+      curve.push({ time, cumPnlSol: cum, peakSol: peak });
     }
   }
-  return out;
+  return { curve, drawdownSol };
+}
+
+/** Finite-time points oldest → newest. The sort is stable, so points that share
+ *  an instant keep the caller's order. */
+function sortedByTime(points: readonly PnlPoint[]): PnlPoint[] {
+  return points.filter((p) => Number.isFinite(p.timeMs)).sort((a, b) => a.timeMs - b.timeMs);
 }
 
 /** Cumulative PnL ordered oldest → newest. Ties (same-second points) collapse
  *  into one entry so a chart series never receives duplicate x-values. */
 export function buildEquityCurve(points: readonly PnlPoint[]): EquityPoint[] {
-  const sorted = points
-    .filter((p) => Number.isFinite(p.timeMs))
-    .sort((a, b) => a.timeMs - b.timeMs);
-  return buildEquityCurveSorted(sorted);
+  return foldEquitySorted(sortedByTime(points)).curve;
 }
 
-/** Deepest peak-to-trough drop in SOL over the curve (`0` when never underwater). */
-export function maxDrawdownSol(curve: readonly EquityPoint[]): number {
-  let worst = 0;
-  for (const p of curve) {
-    const dd = p.peakSol - p.cumPnlSol;
-    if (dd > worst) worst = dd;
-  }
-  return worst;
+/** Deepest fall of the running PnL below its highest point so far, in SOL, the
+ *  running sum starting at 0 (`0` when never underwater). Points that share an
+ *  instant fold in the caller's order. */
+export function maxDrawdownSol(points: readonly PnlPoint[]): number {
+  return foldEquitySorted(sortedByTime(points)).drawdownSol;
 }
 
 // ── distribution ────────────────────────────────────────────────────────────
@@ -652,9 +656,10 @@ export function foldPnlDeck(
   }
 
   let curve: EquityPoint[] = [];
+  let drawdownSol = 0;
   if (needCurve) {
     timed.sort((a, b) => a.timeMs - b.timeMs);
-    curve = buildEquityCurveSorted(timed);
+    ({ curve, drawdownSol } = foldEquitySorted(timed));
   }
 
   const days = byDay
@@ -709,7 +714,7 @@ export function foldPnlDeck(
 
   return {
     curve,
-    drawdownSol: want.has('curve') ? maxDrawdownSol(curve) : 0,
+    drawdownSol,
     buckets,
     heatCells: heat ? [...heat.values()] : [],
     days,

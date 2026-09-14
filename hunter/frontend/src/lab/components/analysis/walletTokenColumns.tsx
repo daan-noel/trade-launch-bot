@@ -1,10 +1,16 @@
 import type { ColumnDef } from 'components/table/types';
 import type { TraderTokenRow } from 'types';
 import { DateCell } from 'components/table/DateCell';
-import { AmountCell, FeeCell, PriceCell } from 'components/tokens/priceCells';
+import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { Badge } from 'components/ui/Badge';
 import { ageClass, formatAge, formatDecimalTrim } from 'utils/format';
-import { WALLET_STATS, walletHoldSeconds, walletNetPct, walletTotalSol } from './walletPnlStats';
+import {
+  WALLET_STATS,
+  walletHoldSeconds,
+  walletRowCounts,
+  walletRowNetSol,
+  walletRowPct,
+} from './walletPnlStats';
 
 /**
  * Trader Analysis wallet columns — the position the wallet held on each mint,
@@ -14,10 +20,10 @@ import { WALLET_STATS, walletHoldSeconds, walletNetPct, walletTotalSol } from '.
  * added to it: that file is the SSOT for every token table in both products, so
  * a wallet-only field must not leak into All Tokens / the strategy tables.
  *
- * Grain caveat, true of every field here: a row is the wallet's WHOLE window on
- * one mint, not one round trip. A wallet that re-entered a mint five times shows
- * one entry (its first buy), one exit (its last sell), and a `Hold` that spans
- * every re-entry — see the backend `kernel::wallet_mint_pnl` doc comment.
+ * A row is the wallet's WHOLE window on one mint. PnL and PnL % sum its closed
+ * trades (`walletPnlStats.ts`); the activity fields are window-wide, so a wallet
+ * that re-entered a mint five times shows one entry (its first buy), one exit
+ * (its last sell), and a `Hold` that spans every re-entry.
  */
 
 /** Token creation as epoch-ms — the instant both age columns measure from.
@@ -54,12 +60,6 @@ const entryAgeOf = (r: TraderTokenRow) =>
   legAgeSeconds(r, legMs(r.wallet_entry_at, r.wallet_entry_at_ms));
 const exitAgeOf = (r: TraderTokenRow) =>
   legAgeSeconds(r, legMs(r.wallet_exit_at, r.wallet_exit_at_ms));
-
-/** The pump.fun protocol fee the reconstruction charges this row — the gap
- *  between the gross and net-of-fee realized figures. Network fees and the Jito
- *  tip are not in it: this grain cannot see either. */
-const feeSolOf = (r: TraderTokenRow) =>
-  r.wallet_realized_pnl_sol - r.wallet_realized_pnl_sol_net_of_fee;
 
 /** Curve progress gained across the hold; `null` unless both legs are present. */
 function curveDeltaOf(r: TraderTokenRow): number | null {
@@ -99,7 +99,19 @@ function SignedPct({ pct }: { pct: number | null }) {
 
 /** Second-order fields, hidden on first paint so the position reads at a glance.
  *  Every one is a click away in the Columns panel. */
-const HIDDEN_KEYS = new Set(['w_entry', 'w_exit', 'w_avg_buy', 'w_avg_sell', 'w_fee']);
+const HIDDEN_KEYS = new Set(['w_entry', 'w_exit', 'w_avg_buy', 'w_avg_sell']);
+
+/** A token's trades by status, for the State column's sort and search. */
+function stateOf(r: TraderTokenRow): string {
+  const n = walletRowCounts(r);
+  return [
+    n.closed > 0 ? `${n.closed} closed` : null,
+    n.open > 0 ? `${n.open} open` : null,
+    n.incomplete > 0 ? `${n.incomplete} incomplete` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
 
 export function walletTokenColumns(): ColumnDef<TraderTokenRow>[] {
   const cols: ColumnDef<TraderTokenRow>[] = [
@@ -249,19 +261,23 @@ export function walletTokenColumns(): ColumnDef<TraderTokenRow>[] {
     },
     {
       key: 'w_pnl',
-      label: WALLET_STATS.rowTotalSol.label,
+      label: WALLET_STATS.rowNetSol.label,
       group: 'wallet_pos',
       width: '92px',
-      tooltip: WALLET_STATS.rowTotalSol.def,
+      tooltip: WALLET_STATS.rowNetSol.def,
       sortable: true,
-      render: (r) => (
-        <span className={walletTotalSol(r) >= 0 ? 'text-green' : 'text-red'}>
-          <AmountCell sol={walletTotalSol(r)} />
-        </span>
-      ),
-      sortValue: walletTotalSol,
+      render: (r) => {
+        const net = walletRowNetSol(r);
+        if (net == null) return '-';
+        return (
+          <span className={net >= 0 ? 'text-green' : 'text-red'}>
+            <AmountCell sol={net} />
+          </span>
+        );
+      },
+      sortValue: walletRowNetSol,
       searchValue: () => '',
-      filterNumber: walletTotalSol,
+      filterNumber: walletRowNetSol,
     },
     {
       key: 'w_pnl_pct',
@@ -270,52 +286,38 @@ export function walletTokenColumns(): ColumnDef<TraderTokenRow>[] {
       width: '78px',
       tooltip: WALLET_STATS.rowNetPct.def,
       sortable: true,
-      render: (r) => <SignedPct pct={walletNetPct(r)} />,
-      sortValue: walletNetPct,
+      render: (r) => <SignedPct pct={walletRowPct(r)} />,
+      sortValue: walletRowPct,
       searchValue: () => '',
-      filterNumber: walletNetPct,
-    },
-    {
-      key: 'w_fee',
-      label: 'Fee',
-      group: 'wallet_pos',
-      width: '82px',
-      tooltip:
-        'pump.fun protocol fee the PnL reconstruction charges (~125bps per leg). Network fees and the Jito tip are NOT in here — a tipping wallet pays more than this.',
-      sortable: true,
-      render: (r) => <FeeCell sol={feeSolOf(r)} />,
-      sortValue: feeSolOf,
-      searchValue: () => '',
-      filterNumber: feeSolOf,
+      filterNumber: walletRowPct,
     },
     {
       key: 'w_state',
-      label: 'State',
+      label: 'Trades',
       group: 'wallet_pos',
-      width: '78px',
-      tooltip:
-        'open = still holding a bag. partial = sold more than it bought in this window, so the cost basis predates the look-back and every PnL figure is an estimate.',
+      width: '110px',
+      tooltip: `This token's trades by status. ${WALLET_STATS.tradeCount.def} Open = still holding (no exact PnL until it sells). ${WALLET_STATS.incompleteCount.label}: ${WALLET_STATS.incompleteCount.def}`,
       sortable: true,
-      render: (r) => (
-        <span className="flex gap-1">
-          {r.wallet_is_open && (
-            <Badge variant="info" size="sm">
-              open
-            </Badge>
-          )}
-          {r.wallet_partial_data && (
-            <Badge variant="warning" size="sm">
-              partial
-            </Badge>
-          )}
-          {!r.wallet_is_open && !r.wallet_partial_data && (
-            <span className="text-text-dim">closed</span>
-          )}
-        </span>
-      ),
-      sortValue: (r) => (r.wallet_partial_data ? 2 : r.wallet_is_open ? 1 : 0),
-      searchValue: (r) =>
-        `${r.wallet_is_open ? 'open' : 'closed'}${r.wallet_partial_data ? ' partial' : ''}`,
+      render: (r) => {
+        const n = walletRowCounts(r);
+        return (
+          <span className="flex gap-1">
+            {n.closed > 0 && <span className="text-text-dim">{n.closed} closed</span>}
+            {n.open > 0 && (
+              <Badge variant="info" size="sm">
+                {n.open} open
+              </Badge>
+            )}
+            {n.incomplete > 0 && (
+              <Badge variant="warning" size="sm">
+                {n.incomplete} incomplete
+              </Badge>
+            )}
+          </span>
+        );
+      },
+      sortValue: stateOf,
+      searchValue: stateOf,
     },
 
     // ── bonding curve ───────────────────────────────────────────────────────

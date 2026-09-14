@@ -886,17 +886,55 @@ export interface TokenDetailRecord {
   last_synced_at: string | null;
 }
 
-/** One row of the Trader Analysis token table — a full {@link TokenRecord} (so it
- *  renders through the same columns as the All Tokens table) plus the wallet's
- *  interaction stats on that mint. Returned by `GET /api/wallets/:wallet/tokens`,
- *  most-recent-trade first. */
+/** Where one wallet round trip stands (backend `wallet_ledger::EpisodeStatus`).
+ *  Only `closed` carries a PnL; `incomplete` is counted, never summed. */
+export type WalletEpisodeStatus = 'closed' | 'open' | 'incomplete';
+
 /**
- * One Trader Analysis table row: the full token record plus the wallet's
- * interaction stats AND a reconstructed avg-cost PnL on that mint (backend
- * `wallets.rs::WalletTokenRow` / `kernel::wallet_mint_pnl` — see those doc
- * comments for exactly how each figure is derived and what `wallet_partial_data`
- * means). All scoped to the same look-back window, so a mint the wallet only
- * *exited* can show 0 buys and every PnL figure flagged `wallet_partial_data`.
+ * One wallet round trip on one mint (backend `wallet_ledger::WalletEpisode`):
+ * from a buy with none held to the sell that leaves at most 0.1 % of what it
+ * bought. SOL is what the wallet moved (the transaction's payer net flow, every
+ * fee and tip included); a figure is `null` rather than a guess when it is not
+ * exact.
+ */
+export interface WalletEpisode {
+  status: WalletEpisodeStatus;
+  /** A transaction in it has no exact wallet flow. */
+  missing_flow: boolean;
+  /** It sold more than the ledger saw it buy (a transfer in, or an older buy). */
+  unseen_buy: boolean;
+  entry_slot: number;
+  entry_tx_index: number;
+  entry_ms: number;
+  /** The closing sell; `null` while open. */
+  exit_slot: number | null;
+  exit_tx_index: number | null;
+  exit_ms: number | null;
+  buy_count: number;
+  sell_count: number;
+  bought_tokens: number;
+  sold_tokens: number;
+  held_tokens: number;
+  /** SOL the buys took from the wallet / the sells returned. */
+  sol_in: number | null;
+  sol_out: number | null;
+  /** `sol_out - sol_in`. `closed` only. */
+  net_sol: number | null;
+  /** `net_sol / sol_in x 100`. `closed` only. */
+  pnl_pct: number | null;
+  /** `open` only: tokens held x current spot price. An estimate. */
+  mark_sol: number | null;
+  /** `open` only: SOL moved so far + `mark_sol`. An estimate. */
+  open_pnl_sol: number | null;
+}
+
+/**
+ * One Trader Analysis table row (`GET /api/wallets/:wallet/tokens`,
+ * most-recent-trade first): the full token record, so it renders through the
+ * same columns as the All Tokens table, plus the wallet's activity on that mint
+ * in the window and its round trips (`episodes`, backend `wallets.rs::WalletTokenRow`).
+ * Every PnL figure comes from the episodes; the activity fields are curve-side
+ * sums, not PnL.
  */
 export interface TraderTokenRow extends TokenRecord {
   /** The wallet's first trade on this mint *within the window* — paired with
@@ -919,30 +957,6 @@ export interface TraderTokenRow extends TokenRecord {
    *  that side has no legs in the window. */
   wallet_avg_buy_price: number | null;
   wallet_avg_sell_price: number | null;
-  /** `buy_token_amount - sell_token_amount` (raw units). Positive = still
-   *  holding a bag; negative only when `wallet_partial_data` is true. */
-  wallet_net_token_amount: number;
-  /** Cost of exactly the tokens sold, at the average buy price — the capital
-   *  the realized PnL was earned on and the denominator of every realized %.
-   *  `0` when nothing matched. */
-  wallet_matched_cost_sol: number;
-  /** Realized PnL on the matched (closed) portion, gross of the pump.fun fee. */
-  wallet_realized_pnl_sol: number;
-  /** Same, net of the measured ~125bps/leg pump.fun protocol fee. */
-  wallet_realized_pnl_sol_net_of_fee: number;
-  /** `null` when there's no matched cost basis to divide by (no buys). */
-  wallet_realized_pnl_pct: number | null;
-  /** Mark-to-market PnL on the still-open bag; `null` when there's no open bag
-   *  or the current price is unknown. */
-  wallet_unrealized_pnl_sol: number | null;
-  /** `realized_pnl_sol + (unrealized_pnl_sol ?? 0)`, gross of fee. The page
-   *  reads the net total instead (`walletTotalSol`, `walletPnlStats.ts`). */
-  wallet_total_pnl_sol: number;
-  /** `net_token_amount > 0` — still holding some of this mint. */
-  wallet_is_open: boolean;
-  /** The wallet sold more than it bought in the window (opening buy predates the
-   *  window) — every PnL figure above is a partial-window estimate. */
-  wallet_partial_data: boolean;
 
   // ── Position + curve depth (first buy / last sell legs) ────────────────────
   /** The wallet's first BUY in the window — the position's entry. Distinct from
@@ -971,6 +985,10 @@ export interface TraderTokenRow extends TokenRecord {
   wallet_exit_slot: number | null;
   wallet_exit_tx_index: number | null;
 
+  /** The wallet's round trips on this mint: every one that closed inside the
+   *  window, plus the one still open. Tape order. */
+  episodes: WalletEpisode[];
+
   /** The comparison wallets that were ALSO on this mint in the window, earliest
    *  entry first. Empty unless the query named any (`with=`), so the page's
    *  "co-traded only" filter is a `length > 0` test — no refetch to toggle. */
@@ -995,10 +1013,6 @@ export interface CoTrader {
   sell_count: number;
   buy_sol: number;
   sell_sol: number;
-  /** Realized + mark-to-market, from the same reconstruction as the primary's. */
-  total_pnl_sol: number;
-  is_open: boolean;
-  partial_data: boolean;
   /** `this.entry_slot - primary.entry_slot`. **Negative = entered ahead of the
    *  primary.** `null` when either side has no entry leg in the window — an
    *  unknown ordering, never 0. */

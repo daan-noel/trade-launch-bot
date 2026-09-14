@@ -1,12 +1,58 @@
 import { describe, expect, it } from 'vitest';
 import { togglePositionFocus } from 'lib/strategy/positionFocus';
-import type { TraderTokenRow } from 'types';
-import { filterTraderRowsByFocus, traderRowToFocusRow } from './walletFocus';
+import type { TraderTokenRow, WalletEpisode } from 'types';
+import { filterTradesByFocus, filterTraderRowsByFocus, tradeToFocusRow } from './walletFocus';
+import { walletTrades } from './walletPnlStats';
 
-/** Minimal valid `TraderTokenRow`; overrides only what the case needs. */
-function row(overrides: Partial<TraderTokenRow>): TraderTokenRow {
-  const base: TraderTokenRow = {
-    mint_address: overrides.mint_address ?? 'MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+const MON_14 = Date.parse('2026-07-27T14:30:00Z'); // Mon 14:00 UTC
+let seq = 0;
+
+/** One trade closing at `exitMs`; `net` ◎ on 1 ◎ in. */
+function closed(net: number, exitMs = MON_14): WalletEpisode {
+  seq += 1;
+  return {
+    status: 'closed',
+    missing_flow: false,
+    unseen_buy: false,
+    entry_slot: seq,
+    entry_tx_index: 0,
+    entry_ms: exitMs - 60_000,
+    exit_slot: 10_000 + seq,
+    exit_tx_index: 0,
+    exit_ms: exitMs,
+    buy_count: 1,
+    sell_count: 1,
+    bought_tokens: 1_000,
+    sold_tokens: 1_000,
+    held_tokens: 0,
+    sol_in: 1,
+    sol_out: 1 + net,
+    net_sol: net,
+    pnl_pct: net * 100,
+    mark_sol: null,
+    open_pnl_sol: null,
+  };
+}
+
+function open(entryMs: number): WalletEpisode {
+  return {
+    ...closed(0),
+    status: 'open',
+    entry_ms: entryMs,
+    exit_slot: null,
+    exit_tx_index: null,
+    exit_ms: null,
+    net_sol: null,
+    pnl_pct: null,
+    held_tokens: 500,
+    open_pnl_sol: 0.3,
+  };
+}
+
+/** Minimal valid `TraderTokenRow` holding `episodes`. */
+function row(mint: string, episodes: WalletEpisode[]): TraderTokenRow {
+  return {
+    mint_address: mint,
     name: 'Test Token',
     symbol: 'TEST',
     creator_wallet: 'CreatorAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
@@ -45,15 +91,6 @@ function row(overrides: Partial<TraderTokenRow>): TraderTokenRow {
     wallet_sell_sol: 1.5,
     wallet_avg_buy_price: 0.01,
     wallet_avg_sell_price: 0.015,
-    wallet_net_token_amount: 0,
-    wallet_matched_cost_sol: 1,
-    wallet_realized_pnl_sol: 0.5,
-    wallet_realized_pnl_sol_net_of_fee: 0.475,
-    wallet_realized_pnl_pct: 50,
-    wallet_unrealized_pnl_sol: null,
-    wallet_total_pnl_sol: 0.5,
-    wallet_is_open: false,
-    wallet_partial_data: false,
     wallet_entry_at: null,
     wallet_exit_at: null,
     wallet_entry_curve_sol: null,
@@ -64,104 +101,80 @@ function row(overrides: Partial<TraderTokenRow>): TraderTokenRow {
     wallet_entry_tx_index: null,
     wallet_exit_slot: null,
     wallet_exit_tx_index: null,
+    episodes,
     co_traders: [],
   };
-  return { ...base, ...overrides };
 }
 
-describe('traderRowToFocusRow', () => {
-  it('maps open / closed and hold span from first→last trade', () => {
-    const open = traderRowToFocusRow(
-      row({
-        mint_address: 'OpenMint',
-        wallet_is_open: true,
-        wallet_matched_cost_sol: 0,
-        wallet_realized_pnl_pct: null,
-        wallet_realized_pnl_sol: 0,
-        wallet_realized_pnl_sol_net_of_fee: 0,
-        wallet_unrealized_pnl_sol: 0.2,
-        wallet_total_pnl_sol: 0.2,
-        wallet_first_trade_at: '2026-07-01T00:00:00Z',
-        wallet_last_trade_at: '2026-07-01T00:01:00Z',
-      }),
-    );
-    expect(open.isOpen).toBe(true);
-    expect(open.isClosed).toBe(false);
-    expect(open.pnl_sol).toBeNull(); // no realized verdict
-    expect(open.hold_secs).toBe(60);
-    expect(open.id).toBe('OpenMint');
+const mints = (rows: TraderTokenRow[]) => rows.map((r) => r.mint_address);
+
+describe('tradeToFocusRow', () => {
+  it('maps a closed trade to its own verdict, hold and closing instant', () => {
+    const [t] = walletTrades([row('M', [closed(0.2)])]);
+    const f = tradeToFocusRow(t!);
+    expect(f.isClosed).toBe(true);
+    expect(f.pnl_sol).toBeCloseTo(0.2, 9);
+    expect(f.pnl_pct).toBeCloseTo(20, 9);
+    expect(f.hold_secs).toBe(60);
+    expect(f.timeMs).toBe(MON_14);
+    expect(f.id).toBe(t!.key);
+  });
+
+  it('gives an open trade no verdict and its entry as the instant', () => {
+    const [t] = walletTrades([row('M', [open(MON_14)])]);
+    const f = tradeToFocusRow(t!);
+    expect(f.isOpen).toBe(true);
+    expect(f.isClosed).toBe(false);
+    expect(f.pnl_sol).toBeNull();
+    expect(f.hold_secs).toBeNull();
+    expect(f.timeMs).toBe(MON_14);
   });
 });
 
 describe('filterTraderRowsByFocus', () => {
-  const win = row({
-    mint_address: 'WinMint',
-    wallet_realized_pnl_sol: 1,
-    wallet_realized_pnl_sol_net_of_fee: 0.95,
-    wallet_realized_pnl_pct: 20,
-    wallet_is_open: false,
-    wallet_last_trade_at: '2026-07-27T14:30:00Z', // Mon 14:00 UTC
-  });
-  const loss = row({
-    mint_address: 'LossMint',
-    wallet_realized_pnl_sol: -0.5,
-    wallet_realized_pnl_sol_net_of_fee: -0.55,
-    wallet_realized_pnl_pct: -10,
-    wallet_is_open: false,
-    wallet_last_trade_at: '2026-07-27T14:30:00Z',
-  });
-  // Gross winner, net loser: the fee decides, so it focuses as a loss.
-  const feeLoss = row({
-    mint_address: 'FeeLossMint',
-    wallet_realized_pnl_sol: 0.01,
-    wallet_realized_pnl_sol_net_of_fee: -0.015,
-    wallet_realized_pnl_pct: 1,
-    wallet_is_open: false,
-    wallet_last_trade_at: '2026-07-27T14:30:00Z',
-  });
-  const openBag = row({
-    mint_address: 'OpenMint',
-    wallet_is_open: true,
-    wallet_matched_cost_sol: 0,
-    wallet_realized_pnl_pct: null,
-    wallet_realized_pnl_sol: 0,
-    wallet_realized_pnl_sol_net_of_fee: 0,
-    wallet_unrealized_pnl_sol: 0.3,
-    wallet_total_pnl_sol: 0.3,
-    wallet_last_trade_at: '2026-07-28T08:00:00Z',
-  });
-  const rows = [win, loss, feeLoss, openBag];
+  // `Mixed` re-entered: one winning and one losing trade.
+  const rows = [
+    row('WinMint', [closed(1)]),
+    row('LossMint', [closed(-0.5)]),
+    row('Mixed', [closed(0.3), closed(-0.2)]),
+    row('OpenMint', [open(Date.parse('2026-07-28T08:00:00Z'))]),
+  ];
 
-  it('filters open / closed / outcome', () => {
-    expect(filterTraderRowsByFocus(rows, [{ kind: 'status', status: 'open' }]).map((r) => r.mint_address)).toEqual([
-      'OpenMint',
-    ]);
-    expect(
-      filterTraderRowsByFocus(rows, [{ kind: 'status', status: 'closed' }]).map((r) => r.mint_address),
-    ).toEqual(['WinMint', 'LossMint', 'FeeLossMint']);
-    expect(
-      filterTraderRowsByFocus(rows, [{ kind: 'outcome', outcome: 'win' }]).map((r) => r.mint_address),
-    ).toEqual(['WinMint']);
-    // Open bag with no realized % is neither win nor loss.
-    expect(filterTraderRowsByFocus(rows, [{ kind: 'outcome', outcome: 'loss' }]).map((r) => r.mint_address)).toEqual([
+  it('shows a token when any of its trades matches', () => {
+    expect(mints(filterTraderRowsByFocus(rows, [{ kind: 'status', status: 'open' }]))).toEqual(['OpenMint']);
+    expect(mints(filterTraderRowsByFocus(rows, [{ kind: 'status', status: 'closed' }]))).toEqual([
+      'WinMint',
       'LossMint',
-      'FeeLossMint',
+      'Mixed',
     ]);
+    expect(mints(filterTraderRowsByFocus(rows, [{ kind: 'outcome', outcome: 'win' }]))).toEqual([
+      'WinMint',
+      'Mixed',
+    ]);
+    // An open trade has no verdict: neither win nor loss.
+    expect(mints(filterTraderRowsByFocus(rows, [{ kind: 'outcome', outcome: 'loss' }]))).toEqual([
+      'LossMint',
+      'Mixed',
+    ]);
+  });
+
+  it('keeps only the matching trades for the summary', () => {
+    const losers = filterTradesByFocus(walletTrades(rows), [{ kind: 'outcome', outcome: 'loss' }]);
+    expect(losers.map((t) => t.ep.net_sol)).toEqual([-0.5, -0.2]);
   });
 
   it('stacks heat + outcome and toggles off', () => {
     let lenses = togglePositionFocus([], { kind: 'heat', dow: 1, hour: 14 });
     lenses = togglePositionFocus(lenses, { kind: 'outcome', outcome: 'win' });
-    const out = filterTraderRowsByFocus(rows, lenses, { timeZone: 'UTC' });
-    expect(out.map((r) => r.mint_address)).toEqual(['WinMint']);
+    expect(mints(filterTraderRowsByFocus(rows, lenses, { timeZone: 'UTC' }))).toEqual(['WinMint', 'Mixed']);
 
     lenses = togglePositionFocus(lenses, { kind: 'heat', dow: 1, hour: 14 });
     expect(lenses).toEqual([{ kind: 'outcome', outcome: 'win' }]);
   });
 
-  it('focuses a single mint via pos', () => {
-    expect(
-      filterTraderRowsByFocus(rows, [{ kind: 'pos', positionId: 'LossMint' }]).map((r) => r.mint_address),
-    ).toEqual(['LossMint']);
+  it('focuses a single trade via pos', () => {
+    const loss = walletTrades(rows).find((t) => t.ep.net_sol === -0.2)!;
+    const out = filterTraderRowsByFocus(rows, [{ kind: 'pos', positionId: loss.key }]);
+    expect(mints(out)).toEqual(['Mixed']);
   });
 });

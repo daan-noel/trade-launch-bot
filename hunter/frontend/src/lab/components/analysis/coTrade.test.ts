@@ -39,9 +39,6 @@ function co(wallet: string, lagSlots: number | null, lagTx: number | null = 0): 
     sell_count: 0,
     buy_sol: 1,
     sell_sol: 0,
-    total_pnl_sol: 0,
-    is_open: true,
-    partial_data: false,
     entry_lag_slots: lagSlots,
     entry_lag_tx: lagSlots == null ? null : lagTx,
     bucket:
