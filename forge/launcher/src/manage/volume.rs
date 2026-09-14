@@ -26,6 +26,7 @@ use tracing::{info, warn};
 
 use super::execute::execute_action;
 use super::model::{ManageRequest, PlanLeg, WalletSelection};
+use super::plan::pct_of_balance;
 use crate::config::LauncherSettings;
 
 /// How often the scheduler wakes to look for due bots. Bots pace themselves via
@@ -49,8 +50,9 @@ pub struct VolumeConfig {
     /// Inter-cycle wait band (seconds), jittered uniformly.
     pub interval_secs_min: u64,
     pub interval_secs_max: u64,
-    /// Percent of the just-bought balance to sell back each cycle (0–100). `0`
-    /// disables the sell-back — the bot only accumulates (buy-only volume).
+    /// Percent of the tokens each cycle's buy received to sell back (0–100), never
+    /// more than the wallet holds. `0` disables the sell-back — the bot only
+    /// accumulates (buy-only volume).
     pub sell_back_pct: f64,
     /// Hard cumulative buy-spend cap (SOL). The bot stops once `spent_quote`
     /// reaches this — the treasury-drain guard, mirroring `FundingConfig`'s caps.
@@ -242,18 +244,23 @@ async fn run_cycle(
     let buy_spend = confirmed_quote(&buy.plan, "buy", |l| l.spend_quote);
     let mut delta = CycleDelta { spent_quote: buy_spend, volume_quote: buy_spend };
 
-    // SELL-BACK leg (optional). Sizes off the balance the buy just added — the
-    // sell's own pre-plan reconcile picks that up (getTokenAccountsByOwner is
-    // confirmed, so the fresh balance is visible immediately).
-    if config.sell_back_pct > 0.0 && buy.legs_confirmed > 0 {
+    // SELL-BACK leg (optional). Sized off the tokens THIS buy received (the buy
+    // action's on-chain before/after delta), as a fixed amount the sell plan clamps
+    // to the balance — never a percent of the whole balance, which would also sell
+    // tokens the wallet held before the cycle.
+    let received = sell_back_base(&buy.plan, config.sell_back_pct);
+    if config.sell_back_pct > 0.0 && buy.legs_confirmed > 0 && received.is_none() {
+        warn!(bot_id = %bot.id, "volume sell-back skipped: the buy's received tokens are unknown (balance read failed)");
+    }
+    if let Some(amount_base) = received.filter(|&n| n > 0) {
         match execute_action(
             pool,
             settings,
             &bot.mint_address,
             &ManageRequest {
                 kind: "sell".to_string(),
-                sizing: "pct_of_holdings".to_string(),
-                size: config.sell_back_pct,
+                sizing: "fixed_base".to_string(),
+                size: amount_base as f64,
                 selection: one,
                 token_scoped: true, // inert for sell (position-scoped) + explicit id
             },
@@ -267,6 +274,18 @@ async fn run_cycle(
     }
 
     Ok(delta)
+}
+
+/// Tokens to sell back: `pct`% (integer basis points, as every manage sell) of
+/// what the plan's confirmed buy legs received. `None` when a confirmed buy leg's
+/// received amount is unknown; `Some(0)` when nothing is to be sold.
+fn sell_back_base(plan: &serde_json::Value, pct: f64) -> Option<i64> {
+    let legs: Vec<PlanLeg> = serde_json::from_value(plan.clone()).unwrap_or_default();
+    let mut received = 0i64;
+    for l in legs.iter().filter(|l| l.side == "buy" && l.status.as_deref() == Some("confirmed")) {
+        received = received.saturating_add(l.received_base?);
+    }
+    Some(pct_of_balance(received, pct))
 }
 
 /// Resolve the wallet set a bot rotates across: explicit `wallet_ids` win, else the
@@ -310,4 +329,41 @@ fn jittered_interval(config: &VolumeConfig) -> ChronoDuration {
         rand::thread_rng().gen_range(config.interval_secs_min..=config.interval_secs_max)
     };
     ChronoDuration::seconds(secs as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sell_back_base;
+    use serde_json::json;
+
+    fn buy_leg(status: &str, received: Option<i64>) -> serde_json::Value {
+        let mut leg = json!({
+            "managed_wallet_id": "00000000-0000-0000-0000-000000000001",
+            "wallet_address": "W", "role": "trading", "token_account": null,
+            "side": "buy", "amount_base": 0, "spend_quote": 1_000, "est_quote": 0,
+            "status": status,
+        });
+        if let Some(r) = received {
+            leg["received_base"] = json!(r);
+        }
+        leg
+    }
+
+    /// The sell-back is a percent of what the buy received, not of the balance.
+    #[test]
+    fn sell_back_sizes_off_the_fresh_buy() {
+        let plan = json!([buy_leg("confirmed", Some(1_000_000))]);
+        assert_eq!(sell_back_base(&plan, 50.0), Some(500_000));
+        assert_eq!(sell_back_base(&plan, 100.0), Some(1_000_000));
+        // A failed leg contributes nothing.
+        let plan = json!([buy_leg("confirmed", Some(1_000)), buy_leg("failed", None)]);
+        assert_eq!(sell_back_base(&plan, 100.0), Some(1_000));
+    }
+
+    /// An unknown received amount skips the sell-back rather than guessing.
+    #[test]
+    fn unknown_receipt_skips_the_sell_back() {
+        let plan = json!([buy_leg("confirmed", None)]);
+        assert_eq!(sell_back_base(&plan, 50.0), None);
+    }
 }

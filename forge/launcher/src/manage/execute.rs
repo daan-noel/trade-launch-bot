@@ -9,7 +9,9 @@
 //! not this operator-triggered path.
 
 use anyhow::{bail, Context, Result};
-use platform_core::models::{ManageAction, ManageKind, ManageStatus, WalletRole};
+use std::collections::HashMap;
+
+use platform_core::models::{ManageAction, ManageKind, ManageStatus, TokenPosition, WalletRole};
 use platform_core::storage::repositories::{
     ManageActionRepo, ManagedWalletRepo, TokenPositionRepo, TokenRepo,
 };
@@ -20,6 +22,7 @@ use solana_sdk::pubkey::Pubkey;
 use sqlx::PgPool;
 use std::str::FromStr;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use super::model::{ManageRequest, PlanLeg};
 use super::plan::build_plan;
@@ -71,15 +74,21 @@ pub async fn execute_action(
     // this is correctness-critical — an under-count silently under-sells (leaving
     // tokens stranded) — so a failed reconcile is FATAL here rather than planning
     // off possibly-stale recorded balances. Buys/consolidates stay best-effort.
-    if let Err(e) = load_positions(pool, Some(settings), mint).await {
-        if kind == ManageKind::Sell {
-            bail!(
-                "pre-sell balance reconcile failed ({e}); refusing to size a sell off \
-                 stale balances — retry once RPC recovers"
-            );
+    // A buy keeps the fresh on-chain balances as the "before" side of each leg's
+    // `received_base`; after a failed reconcile there is no trustworthy "before".
+    let pre_balances = match load_positions(pool, Some(settings), mint).await {
+        Ok(rows) => Some(balances_by_wallet(&rows)),
+        Err(e) => {
+            if kind == ManageKind::Sell {
+                bail!(
+                    "pre-sell balance reconcile failed ({e}); refusing to size a sell off \
+                     stale balances — retry once RPC recovers"
+                );
+            }
+            warn!(%mint, ?e, "pre-plan position reconcile failed — planning off recorded balances");
+            None
         }
-        warn!(%mint, ?e, "pre-plan position reconcile failed — planning off recorded balances");
-    }
+    };
 
     let plan = build_plan(pool, mint, req).await?;
     if plan.legs.is_empty() {
@@ -183,8 +192,25 @@ pub async fn execute_action(
     }
 
     // Refresh positions from chain + feed (drained balances / new buyer holdings).
-    if let Err(e) = reconcile_positions(pool, settings, mint).await {
-        warn!(%mint, ?e, "post-action position reconcile failed");
+    let post_balances = match reconcile_positions(pool, settings, mint).await {
+        Ok(()) => TokenPositionRepo::by_mint(pool, mint)
+            .await
+            .map(|rows| balances_by_wallet(&rows))
+            .ok(),
+        Err(e) => {
+            warn!(%mint, ?e, "post-action position reconcile failed");
+            None
+        }
+    };
+    // What each confirmed buy leg actually received: on-chain balance after the
+    // action minus before it (both chain reads). The volume bot sizes its
+    // sell-back off this, never off the whole balance.
+    if let (Some(pre), Some(post)) = (&pre_balances, &post_balances) {
+        for leg in legs.iter_mut() {
+            if leg.side == "buy" && leg.status.as_deref() == Some("confirmed") {
+                leg.received_base = Some(received_base(pre, post, leg.managed_wallet_id));
+            }
+        }
     }
 
     let status = if confirmed == legs_total {
@@ -232,6 +258,19 @@ pub async fn execute_action(
         error,
         ..action
     })
+}
+
+/// `managed_wallet_id -> balance_base` over a mint's position rows (a wallet with
+/// no row holds 0).
+fn balances_by_wallet(rows: &[TokenPosition]) -> HashMap<Uuid, i64> {
+    rows.iter().map(|p| (p.managed_wallet_id, p.balance_base)).collect()
+}
+
+/// Tokens a wallet gained between two balance snapshots, floored at 0.
+fn received_base(pre: &HashMap<Uuid, i64>, post: &HashMap<Uuid, i64>, wallet: Uuid) -> i64 {
+    let before = pre.get(&wallet).copied().unwrap_or(0);
+    let after = post.get(&wallet).copied().unwrap_or(0);
+    (after - before).max(0)
 }
 
 /// Per-kind execution context resolved once before the leg loop.
@@ -577,4 +616,21 @@ async fn build_orchestrator_plan(
         ops.push(op);
     }
     Ok(Plan::for_mint(mint.to_string(), ops))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A buy's received tokens are its wallet's balance delta — a fresh buyer (no
+    /// row before) counts from 0, and a shrinking balance never goes negative.
+    #[test]
+    fn received_base_is_the_balance_delta() {
+        let (a, b, c) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let pre = HashMap::from([(a, 1_000), (c, 500)]);
+        let post = HashMap::from([(a, 1_750), (b, 300), (c, 400)]);
+        assert_eq!(received_base(&pre, &post, a), 750);
+        assert_eq!(received_base(&pre, &post, b), 300);
+        assert_eq!(received_base(&pre, &post, c), 0);
+    }
 }

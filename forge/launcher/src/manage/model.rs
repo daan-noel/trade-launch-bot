@@ -46,7 +46,8 @@ pub struct ManageRequest {
     pub kind: String,
     /// `pct_of_holdings` (Phase 2).
     pub sizing: String,
-    /// Sizing magnitude (percent for `pct_of_holdings`).
+    /// Sizing magnitude (percent for `pct_of_holdings`, token base units for
+    /// `fixed_base`).
     pub size: f64,
     #[serde(default)]
     pub selection: WalletSelection,
@@ -89,6 +90,11 @@ pub struct PlanLeg {
     /// Confirmed sell tx signature (base58), set by the executor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// Buy side: token base units a confirmed buy added to the wallet — its
+    /// on-chain balance after the action minus before it. `None` when either
+    /// balance read failed (or on a sell/consolidate leg).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_base: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

@@ -2,6 +2,7 @@
 //! chain writes.
 //!
 //! - `sell` + `pct_of_holdings` — per-holder, sized off the position balance.
+//! - `sell` + `fixed_base` — per-holder, a fixed token amount clamped to the balance.
 //! - `buy` + `fixed_sol` — per selected managed wallet (may be a fresh buyer that
 //!   holds nothing yet), a fixed SOL spend each.
 //! - `consolidate` + `sweep` — per selected wallet, sweep its SOL to treasury.
@@ -35,20 +36,34 @@ pub async fn build_plan(pool: &PgPool, mint: &str, req: &ManageRequest) -> Resul
     Ok(ActionPlan::from_legs(mint, kind.as_str(), sizing.as_str(), legs))
 }
 
-/// SELL: percent of each selected holder's balance.
+/// SELL: a percent of each selected holder's balance, or a fixed token amount per
+/// holder (clamped to its balance).
 async fn build_sell_legs(
     pool: &PgPool,
     mint: &str,
     req: &ManageRequest,
     sizing: ManageSizing,
 ) -> Result<Vec<PlanLeg>> {
-    if sizing != ManageSizing::PctOfHoldings {
-        bail!("sell supports sizing 'pct_of_holdings' (got '{}')", req.sizing);
-    }
-    let pct = req.size;
-    if !(0.0..=100.0).contains(&pct) {
-        bail!("pct_of_holdings size must be 0–100 (got {pct})");
-    }
+    let size = req.size;
+    // `Some(n)` = a fixed n base units per holder; `None` = `size` percent of each.
+    let fixed_base = match sizing {
+        ManageSizing::PctOfHoldings => {
+            if !(0.0..=100.0).contains(&size) {
+                bail!("pct_of_holdings size must be 0–100 (got {size})");
+            }
+            None
+        }
+        ManageSizing::FixedBase => {
+            if size < 1.0 || size.fract() != 0.0 || size > i64::MAX as f64 {
+                bail!("fixed_base size must be a whole token base-unit count >= 1 (got {size})");
+            }
+            Some(size as i64)
+        }
+        _ => bail!(
+            "sell supports sizing 'pct_of_holdings' | 'fixed_base' (got '{}')",
+            req.sizing
+        ),
+    };
 
     // Current spot price (raw ratio) for the preview's estimated proceeds.
     let price = TokenMarketStateRepo::get(pool, mint)
@@ -64,7 +79,10 @@ async fn build_sell_legs(
         if !req.selection.matches(p.managed_wallet_id, &p.role) {
             continue;
         }
-        let amount_base = pct_of_balance(p.balance_base, pct);
+        let amount_base = match fixed_base {
+            Some(n) => n.min(p.balance_base),
+            None => pct_of_balance(p.balance_base, size),
+        };
         if amount_base <= 0 {
             continue;
         }
@@ -82,6 +100,7 @@ async fn build_sell_legs(
             est_quote,
             status: None,
             signature: None,
+            received_base: None,
             error: None,
         });
     }
@@ -131,6 +150,7 @@ async fn build_buy_legs(
             est_quote: 0,
             status: None,
             signature: None,
+            received_base: None,
             error: None,
         })
         .collect())
@@ -166,6 +186,7 @@ async fn build_consolidate_legs(
             est_quote: 0,
             status: None,
             signature: None,
+            received_base: None,
             error: None,
         })
         .collect())
