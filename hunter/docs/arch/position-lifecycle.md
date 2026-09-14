@@ -139,11 +139,22 @@ exactly the dead-token losers, so paper PnL reads high while they sit open.
 Healing is the reaper's job and only the reaper's — no one-shot script. Full incident:
 [`@history/2026-08-05-paper-exitstuck-backlog.md`](../history/2026-08-05-paper-exitstuck-backlog.md).
 
-**Size the closing leg from cost basis × price ratio, never `price × tokens`.** A price
-*ratio* is scale-free; `price × tokens` books a 1e6× fantasy PnL (and can overflow
-`bigint`) against any row whose `entry_token_amount` carries the old token scale, while
-`entry_lamports` was always right. See
+**The closing leg sells through the kernel.** The heal values the bag at the print's
+spot (`fill_basis`, the paper entry's series) and nets it through `sell_value_proceeds`
+on that print's depth: impact, venue fee, fixed cost and the close, like every paper
+exit. A row whose `entry_token_amount` carries the old 1e6× token scale (its tokens at
+its own entry price are worth far more than `entry_sol`) is valued scale-free from
+`entry_sol` and the price ratio instead (`paper_bag_value`). See
 [`@history/2026-08-04-token-scale-1e6-pnl.md`](../history/2026-08-04-token-scale-1e6-pnl.md).
+
+### 2.2b A real close books the clearing sell's wallet flow
+
+Every path that closes a **real** row books what the wallet moved, never
+`price × tokens`: the engine sink and the orphan sell through `record_sell_fill` with the
+sell's own signatures, and the heal, sibling and manual-sell reconciles through
+`orphan_exit::wallet_fill_from_sell` - the clearing sell's `payer_net_lamports`
+(`SigLegs::wallet_received_sol`, negative when a dust sell's fees beat its proceeds),
+shared pro-rata by tokens when one sell cleared several rows.
 
 ### 2.3 What "Stop" actually waits on
 
