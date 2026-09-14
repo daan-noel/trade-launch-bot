@@ -132,6 +132,11 @@ pub async fn run_exit(
     empties_bag: bool,
     fire_abs_idx: Option<u64>,
 ) {
+    // Spawned on the decision: a clock exit (`held`/`stall`/`time`) fires on a tick
+    // long after the print it fills at, and a real sell always lands after its
+    // decision, so the exit is stamped no earlier than now (simulate's replay does
+    // the same with its logical clock).
+    let decided_at = Utc::now();
     let event = match wait_exit_fill(&token_cache, &mint, fire_abs_idx).await {
         Some(fill) => {
             stash_print(&fill_sigs, &intent, fill.print);
@@ -148,7 +153,7 @@ pub async fn run_exit(
                     price: fill.price,
                     sol,
                     token_amount,
-                    at: fill.block_time,
+                    at: fill.block_time.max(decided_at),
                 },
             }
         }
