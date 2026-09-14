@@ -986,13 +986,18 @@ fn sample_std_pct(n_closed: u64, sum: f64, sum_sq: f64) -> f64 {
     var.sqrt()
 }
 
-/// Manual-checklist rank used by the grouped sweep:
-/// `mtm_pct × (n_fired/matched) × (1 − 0.5·n_open/n_fired) × max(win_rate, ε)`.
+/// Manual-checklist rank used by the grouped sweep: `mtm_pct × q` for a gain and
+/// `mtm_pct ÷ q` for a loss, where the quality factor
+/// `q = (n_fired/matched) × (1 − 0.5·n_open/n_fired) × max(win_rate, ε)` ∈ (0, 1].
 ///
 /// - `mtm_pct` — mean pnl% over all fired (still-open marks included)
 /// - fire-rate — coverage of the matched group (capped at 1)
 /// - open-drag — soft penalty for unsettled bags
 /// - win-rate — closed-only; floored so all-open books don't zero the score
+///
+/// Lower quality always ranks lower: it shrinks a gain toward zero and deepens a
+/// loss. Multiplying a loss by `q` instead would pull it toward zero, so a combo
+/// that fires rarely and never wins would outrank a small, well-covered loss.
 ///
 /// `None` when nothing fired or `matched == 0`. Public so the sweep can rewrite
 /// a combo's score with the group's true matched-token count after finalize.
@@ -1009,7 +1014,8 @@ pub fn checklist_score(
     let fire_rate = (n_fired as f64 / matched as f64).min(1.0);
     let open_drag = (n_open as f64 / n_fired as f64).min(1.0);
     let wr = win_rate.max(SCORE_WIN_RATE_FLOOR);
-    Some(mtm_pnl_pct * fire_rate * (1.0 - SCORE_OPEN_DRAG * open_drag) * wr)
+    let quality = fire_rate * (1.0 - SCORE_OPEN_DRAG * open_drag) * wr;
+    Some(if mtm_pnl_pct >= 0.0 { mtm_pnl_pct * quality } else { mtm_pnl_pct / quality })
 }
 
 /// Width of the `exit_counts` histogram — one slot per [`exit_index`] value.
@@ -1040,11 +1046,14 @@ const SKETCH_INV_LN_GAMMA: f64 = 3.27885;
 
 /// Fixed-memory, order-independent quantile sketch (DDSketch-style log buckets).
 /// Median/p90 carry ~15% relative error; best/worst/mean/total stay exact.
+/// Counters are `u32`: a `u16` bucket saturated at 65_535, under-counting the one
+/// bucket a dead-heavy 100k-token sweep piles its -99 % closes into and moving
+/// the reported median/p90 to another bucket entirely.
 #[derive(Clone)]
 struct QuantileSketch {
-    neg: [u16; SKETCH_N],
-    pos: [u16; SKETCH_N],
-    zero: u16,
+    neg: [u32; SKETCH_N],
+    pos: [u32; SKETCH_N],
+    zero: u32,
 }
 
 impl Default for QuantileSketch {
@@ -1111,6 +1120,21 @@ impl QuantileSketch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 90_500 closes at -99 % and 9_500 at +5 %: the p90 is the loss bucket. A
+    /// saturating 16-bit counter capped the loss bucket at 65_535 and read +5 %.
+    #[test]
+    fn sketch_quantiles_survive_a_bucket_past_u16() {
+        let mut s = QuantileSketch::default();
+        for _ in 0..90_500 {
+            s.record(-99.0);
+        }
+        for _ in 0..9_500 {
+            s.record(5.0);
+        }
+        assert_eq!(s.count(), 100_000);
+        assert!(s.quantile(0.9) < 0.0, "p90 {}", s.quantile(0.9));
+    }
 
     // ── round-trip pricing ──────────────────────────────────────────────────
 
@@ -1533,6 +1557,19 @@ mod tests {
         let half = checklist_score(5, 0, 10, 40.0, 1.0).unwrap();
         assert!((full - 40.0).abs() < 1e-9);
         assert!((half - 20.0).abs() < 1e-9);
+    }
+
+    /// Among losers, the small well-covered loss ranks above a big loss that fired
+    /// on a tenth of the group and never won - lower quality deepens a loss.
+    #[test]
+    fn checklist_score_never_rewards_a_loser_for_low_quality() {
+        let small = checklist_score(100, 0, 100, -2.0, 0.45).unwrap();
+        let big_rare = checklist_score(10, 5, 100, -20.0, 0.0).unwrap();
+        assert!(small > big_rare, "{small} vs {big_rare}");
+        // Same loss, less coverage: ranks lower, not higher.
+        let full = checklist_score(10, 0, 10, -4.0, 1.0).unwrap();
+        let half = checklist_score(5, 0, 10, -4.0, 1.0).unwrap();
+        assert!(full > half, "{full} vs {half}");
     }
 
     /// Golden vectors for [`sell_value_proceeds`], shared with the frontend mirror.

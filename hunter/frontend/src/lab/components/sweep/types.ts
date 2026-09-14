@@ -24,7 +24,7 @@ export interface SweepResultRecord {
   std_pnl_pct: number;
   /** null = no losing trades (infinite profit factor). */
   profit_factor: number | null;
-  /** Checklist rank: MTM% × fire-rate × open-drag × win-rate. null = never fired. */
+  /** Checklist rank: MTM% scaled by fire-rate × open-drag × win-rate (a gain shrinks, a loss deepens). null = never fired. */
   score: number | null;
   expectancy_sol: number;
   avg_holding_secs: number;

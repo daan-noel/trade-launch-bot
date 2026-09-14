@@ -248,7 +248,7 @@ function genericStatColumns(
             ),
       {
         tooltip:
-          'MTM% × (fired/matched) × (1 − 0.5·open%) × win%. Matches the manual checklist. Blank when never fired.',
+          'MTM% × q for a gain, MTM% ÷ q for a loss, q = (fired/matched) × (1 − 0.5·open%) × win%: lower quality always ranks lower. Blank when never fired.',
       },
     ),
     metric(
@@ -701,7 +701,7 @@ export function buildGenericGroupColumns(
             ),
       {
         tooltip:
-          "Checklist score of this group's best combo (MTM% × fire-rate × open-drag × win%).",
+          "Checklist score of this group's best combo (MTM% scaled by fire-rate × open-drag × win%: shrinks a gain, deepens a loss).",
       },
     ),
     gm(

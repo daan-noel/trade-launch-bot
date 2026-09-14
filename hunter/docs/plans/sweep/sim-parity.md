@@ -184,7 +184,8 @@ condition `eval`, `CompiledRule::compile`.
    notional. The 1.0 default only fires when the caller omits it, and a sweep has no
    rule to source a notional from (it explores many combos). Residual = 4b above.
 6. **`best_combo` ranking includes open positions in score.** Checklist `score` uses
-   MTM% (opens included) × fire-rate × open-drag × win-rate; `marked_pnl_sol` remains
+   MTM% (opens included) scaled by fire-rate × open-drag × win-rate (a gain shrinks,
+   a loss deepens - `checklist_score`); `marked_pnl_sol` remains
    the tie-break. Pinned by `pnl_tiebreak_counts_open_positions` and
    `score_still_outranks_marked_pnl`.
 

@@ -369,10 +369,14 @@ approximation mechanism is [QuantileSketch](#quantilesketch--aggregaters).
 
 ### Score — `kernel.rs` → `checklist_score()`
 
-**Formula:** `MTM% × (n_fired / matched) × (1 − 0.5 · n_open/n_fired) × max(win_rate, 0.01)`
+**Formula:** `MTM% × q` when `MTM% >= 0`, `MTM% ÷ q` when it is negative, with
+`q = (n_fired / matched) × (1 − 0.5 · n_open/n_fired) × max(win_rate, 0.01)`.
 
-The manual-checklist rank: mark-to-market average return, times how much of the group
-fired, soft-penalised for still-open bags, times closed win rate.
+The manual-checklist rank: mark-to-market average return, scaled by a quality factor
+`q` in (0, 1] - how much of the group fired, soft-penalised for still-open bags, times
+closed win rate. Lower quality always ranks lower: it shrinks a gain toward zero and
+deepens a loss (multiplying a loss by `q` would pull it toward zero and rank a rare,
+never-winning loser first in an all-losing group).
 
 | Variable | Meaning |
 | --- | --- |
