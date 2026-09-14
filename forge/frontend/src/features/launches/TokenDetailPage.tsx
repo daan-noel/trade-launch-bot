@@ -183,9 +183,11 @@ export function TokenDetailPage() {
   );
 }
 
-/** Per-wallet holdings + derived PnL. Value/PnL are computed here from the token's
- *  raw price + decimals (never stored server-side): all quote amounts are quote
- *  base units, `current_price_quote` is quote base units per token base unit. */
+/** Per-wallet holdings + PnL. Value / PnL / PnL% come from the backend
+ *  (`PositionView`, one definition in `TokenPosition::with_pnl`) and render as-is;
+ *  this component only converts units for display. Quote amounts are quote base
+ *  units. `cost_quote` / `realized_quote` = SOL paid into / returned by the wallet's
+ *  current lot. */
 function HoldingsTable({
   mint,
   positions,
@@ -211,32 +213,27 @@ function HoldingsTable({
 
   const qd = overview?.quote_decimals ?? 9;
   const td = overview?.decimals ?? 6;
-  const price = overview?.current_price_quote ?? null; // quote base units / token base unit
   const usdRate = overview?.quote_usd_rate ?? null;
   const quoteSymbol = overview?.quote_symbol ?? 'quote';
 
-  // Aggregate holdings across every open position: total tokens held + total cost
-  // basis + total value, in the quote (SOL). Same math as the per-row cells, summed
-  // once (audit H2: recomputes only when positions / price change). Open-only, to
-  // match the launched-tokens list aggregate.
+  // Aggregate holdings across every open position: total tokens held + SOL paid +
+  // total value, in the quote (SOL) — sums of the backend's per-row figures (audit
+  // H2: recomputes only when positions change). Open-only, to match the
+  // launched-tokens list aggregate. Value is unknown if any open row is unpriced.
   const totals = useMemo(() => {
     const open = positions.filter((p) => p.status === 'open');
     const totalBase = open.reduce((s, p) => s + p.balance_base, 0);
     const totalCostQuote = open.reduce((s, p) => s + p.cost_quote, 0);
-    const totalValueQuote = price == null ? null : totalBase * price;
+    const totalValueQuote = open.some((p) => p.value_quote == null)
+      ? null
+      : open.reduce((s, p) => s + (p.value_quote ?? 0), 0);
     return { totalBase, totalCostQuote, totalValueQuote };
-  }, [positions, price]);
+  }, [positions]);
 
-  // Memoized so its identity is stable across polls (audit H2) — the value/PnL
-  // closures fold in the overview-derived scalars, so they only rebuild when
-  // those actually change, not on every positions refetch.
+  // Memoized so its identity is stable across polls (audit H2) — the cells fold
+  // in only the overview's unit scalars, so they rebuild when those change, not on
+  // every positions refetch.
   const columns = useMemo<Column<TokenPosition>[]>(() => {
-    // value_quote (quote base units) = balance_base * price; PnL folds realized in.
-    const valueQuote = (p: TokenPosition) => (price == null ? null : p.balance_base * price);
-    const pnlQuote = (p: TokenPosition) => {
-      const v = valueQuote(p);
-      return v == null ? null : p.realized_quote + v - p.cost_quote;
-    };
     const usd = (quoteBase: number | null) =>
       quoteBase == null || usdRate == null ? null : (quoteBase / 10 ** qd) * usdRate;
 
@@ -252,22 +249,27 @@ function HoldingsTable({
         render: (p) => <span className="mono">{(p.balance_base / 10 ** td).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>,
       },
       {
-        header: `Cost (${quoteSymbol})`,
+        header: `Paid (${quoteSymbol})`,
         align: 'right',
         render: (p) => <span className="mono">{quoteToHuman(p.cost_quote, qd)}</span>,
       },
       {
+        header: `Received (${quoteSymbol})`,
+        align: 'right',
+        render: (p) => <span className="mono">{quoteToHuman(p.realized_quote, qd)}</span>,
+      },
+      {
         header: `Value (${quoteSymbol})`,
         align: 'right',
-        render: (p) => <span className="mono">{quoteToHuman(valueQuote(p), qd)}</span>,
+        render: (p) => <span className="mono">{quoteToHuman(p.value_quote, qd)}</span>,
       },
       {
         header: 'PnL',
         align: 'right',
         render: (p) => {
-          const pnl = pnlQuote(p);
+          const pnl = p.pnl_quote;
           if (pnl == null) return <span className="muted">—</span>;
-          const pct = p.cost_quote > 0 ? (pnl / p.cost_quote) * 100 : null;
+          const pct = p.pnl_pct;
           const tone = pnl >= 0 ? 'text-[var(--color-good)]' : 'text-[var(--color-bad)]';
           return (
             <span className={`mono ${tone}`}>
@@ -287,7 +289,7 @@ function HoldingsTable({
           ),
       },
     ];
-  }, [qd, td, price, usdRate, quoteSymbol, selling]);
+  }, [qd, td, usdRate, quoteSymbol, selling]);
 
   return (
     <div className="space-y-3">
@@ -298,7 +300,7 @@ function HoldingsTable({
             value={(totals.totalBase / 10 ** td).toLocaleString(undefined, { maximumFractionDigits: 2 })}
           />
           <StatCard
-            label={`Total cost (${quoteSymbol})`}
+            label={`Total paid (${quoteSymbol})`}
             value={quoteToHuman(totals.totalCostQuote, qd)}
           />
           <StatCard

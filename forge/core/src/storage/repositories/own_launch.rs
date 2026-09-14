@@ -1164,23 +1164,23 @@ impl TokenPositionRepo {
 
     /// Reconcile many positions in ONE `UNNEST` update: set each row's on-chain
     /// balance (+ canonical token account, kept via COALESCE when None), its
-    /// feed-derived realized proceeds, its feed-derived cost basis, and the derived
+    /// feed-derived lot proceeds and lot cost, and the derived
     /// `open`/`closed` status — folding what were two per-row UPDATEs × N rows into a
     /// single round trip. A `dropped` row is left terminal (the CASE guard), matching
     /// [`Self::set_balance`]. The five slices are parallel arrays (row i across all
     /// five).
     ///
-    /// `cost_quote` is the feed-authoritative cost basis of the row's CURRENT open lot
-    /// (lot-reset average cost — see [`crate::storage::repositories::TradeRepo::fills_for_mint_wallets`]).
-    /// It's a `Some` only for wallets the feed has ingested fills for; a `None` leaves
-    /// the existing `cost_quote` untouched (COALESCE) so the seed cost survives the
-    /// ingest-lag window right after a launch/buy, before the fill lands in `trades`.
+    /// `realized` / `cost_quote` are the SOL returned by / paid into the row's CURRENT
+    /// lot (the PnL basis on [`crate::models::TokenPosition`]). Each is a `Some` only
+    /// for wallets the feed has ingested fills for; a `None` leaves the stored value
+    /// untouched (COALESCE) so the seed cost survives the ingest-lag window right
+    /// after a launch/buy, before the fill lands in `trades`.
     pub async fn reconcile_batch(
         pool: &PgPool,
         ids: &[Uuid],
         balances: &[i64],
         token_accounts: &[Option<String>],
-        realized: &[i64],
+        realized: &[Option<i64>],
         cost_quote: &[Option<i64>],
     ) -> anyhow::Result<()> {
         if ids.is_empty() {
@@ -1190,7 +1190,7 @@ impl TokenPositionRepo {
             "UPDATE token_positions AS p SET \
                  balance_base = v.balance_base, \
                  token_account = COALESCE(v.token_account, p.token_account), \
-                 realized_quote = v.realized_quote, \
+                 realized_quote = COALESCE(v.realized_quote, p.realized_quote), \
                  cost_quote = COALESCE(v.cost_quote, p.cost_quote), \
                  status = CASE WHEN p.status = 'dropped' THEN 'dropped' \
                                WHEN v.balance_base > 0 THEN 'open' ELSE 'closed' END, \

@@ -1107,8 +1107,9 @@ async fn token_trades(
     Ok(HttpResponse::Ok().json(rows))
 }
 
-/// Per-wallet holdings for a launched token (post-launch management, Phase 1).
-/// Balance, cost basis, and realized proceeds are all **feed-derived** — replayed
+/// Per-wallet holdings for a launched token (post-launch management, Phase 1),
+/// each row with its value + PnL at the current spot (`TokenPosition::with_pnl`).
+/// Balance, lot cost, and lot proceeds are all **feed-derived** — replayed
 /// from the ingested `trades` with **zero RPC** — so this read never issues a
 /// network call however often the page refetches. On-chain truth (an external
 /// transfer the feed can't see, or a dropped feed leg) is corrected only on the
@@ -1121,7 +1122,10 @@ async fn token_positions(
     let rows = launcher::read_positions(pool.get_ref(), &mint)
         .await
         .map_err(e500)?;
-    Ok(HttpResponse::Ok().json(rows))
+    let views = launcher::position_views(pool.get_ref(), &mint, rows)
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(views))
 }
 
 /// Refresh a mint's holdings against **chain** — the one and only RPC balance path
@@ -1140,7 +1144,10 @@ async fn positions_refresh(
     let rows = launcher::load_positions(pool.get_ref(), Some(settings), &mint)
         .await
         .map_err(e500)?;
-    Ok(HttpResponse::Ok().json(rows))
+    let views = launcher::position_views(pool.get_ref(), &mint, rows)
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(views))
 }
 
 /// Dry-run a management action (post-launch management): freshen positions

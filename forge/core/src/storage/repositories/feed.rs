@@ -6,7 +6,7 @@
 
 use sqlx::PgPool;
 
-use crate::models::{NewTrade, RawTx, TradePriced};
+use crate::models::{NewTrade, RawTx, TradePriced, WalletFill};
 
 /// `wallet_dict` — interning map (4-byte `wallet_ref` ↔ 44-byte address).
 pub struct WalletDictRepo;
@@ -153,72 +153,33 @@ impl TradeRepo {
         Ok(rows.into_iter().map(|(sig,)| sig).collect())
     }
 
-    /// Sum a wallet's fills of one side (`buy`/`sell`) for a mint, in quote base
-    /// units — the feed-accurate realized-proceeds / actual-cost figure for a
-    /// managed wallet's position. Joins `wallet_dict` by address (the interned
-    /// `wallet_ref` is keyed there, never stored on the managed wallet). Mint- and
-    /// wallet-scoped — never a table scan. Returns 0 when nothing's ingested yet.
-    pub async fn sum_side_quote_by_address(
-        pool: &PgPool,
-        mint_address: &str,
-        address: &str,
-        trade_type: &str,
-    ) -> anyhow::Result<i64> {
-        let (sum,): (i64,) = sqlx::query_as(
-            "SELECT COALESCE(SUM(t.amount_quote), 0) FROM trades t \
-             JOIN wallet_dict w ON w.id = t.wallet_ref \
-             WHERE t.mint_address = $1 AND w.address = $2 AND t.trade_type = $3",
-        )
-        .bind(mint_address)
-        .bind(address)
-        .bind(trade_type)
-        .fetch_one(pool)
-        .await?;
-        Ok(sum)
-    }
-
-    /// Realized sell proceeds for EVERY wallet that has sold a mint, in one grouped
-    /// query — `(address, sum_quote)` rows. Replaces the per-position
-    /// [`Self::sum_side_quote_by_address`] N+1 during position reconcile: a mint
-    /// with W managed wallets is one scan + `GROUP BY`, not W scans. Only wallets
-    /// with at least one sell appear (callers default the rest to 0).
-    pub async fn sum_sells_by_address_for_mint(
-        pool: &PgPool,
-        mint_address: &str,
-    ) -> anyhow::Result<Vec<(String, i64)>> {
-        Ok(sqlx::query_as(
-            "SELECT w.address, COALESCE(SUM(t.amount_quote), 0)::int8 FROM trades t \
-             JOIN wallet_dict w ON w.id = t.wallet_ref \
-             WHERE t.mint_address = $1 AND t.trade_type = 'sell' \
-             GROUP BY w.address",
-        )
-        .bind(mint_address)
-        .fetch_all(pool)
-        .await?)
-    }
-
     /// Chronological fill history for a mint, restricted to `addresses` (our managed
-    /// wallets) — `(address, trade_type, amount_quote, amount_base)` rows in canonical
-    /// order (`slot, tx_index, leg_index`). Feeds the per-wallet lot-reset cost-basis
-    /// walk in position reconcile: replaying a wallet's buys/sells derives the cost
-    /// basis of its CURRENT open lot, where a full exit to zero balance realizes the
-    /// prior lot and resets cost to 0 — so a sell-all-then-rebuy shows only the
-    /// re-buy's cost, not the stale launch/seed cost. Mint- AND wallet-scoped (bounded
-    /// to our handful of wallets, never every trader of a popular mint) — never a
-    /// table scan. Empty `addresses` ⇒ no query.
+    /// wallets), in canonical order (`slot, tx_index, leg_index`, the signature
+    /// keeping one tx's legs together when the RPC backfill stamps `tx_index = 0`).
+    /// Feeds the per-wallet lot replay in position reconcile. Each row carries the
+    /// tx's `payer_net_lamports` only when that tx traded no other mint, so the whole
+    /// flow belongs to this mint's lot (the PK index serves the `NOT EXISTS`).
+    /// Mint- AND wallet-scoped (bounded to our handful of wallets, never every
+    /// trader of a popular mint) — never a table scan. Empty `addresses` ⇒ no query.
     pub async fn fills_for_mint_wallets(
         pool: &PgPool,
         mint_address: &str,
         addresses: &[String],
-    ) -> anyhow::Result<Vec<(String, String, i64, i64)>> {
+    ) -> anyhow::Result<Vec<WalletFill>> {
         if addresses.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(sqlx::query_as(
-            "SELECT w.address, t.trade_type, t.amount_quote, t.amount_base FROM trades t \
+        Ok(sqlx::query_as::<_, WalletFill>(
+            "SELECT w.address, t.trade_type, t.amount_quote, t.amount_base, t.tx_signature, \
+                    CASE WHEN NOT EXISTS ( \
+                        SELECT 1 FROM trades o \
+                        WHERE o.block_time = t.block_time AND o.tx_signature = t.tx_signature \
+                          AND o.mint_address <> t.mint_address) \
+                    THEN t.payer_net_lamports END AS payer_net_lamports \
+             FROM trades t \
              JOIN wallet_dict w ON w.id = t.wallet_ref \
              WHERE t.mint_address = $1 AND w.address = ANY($2::text[]) \
-             ORDER BY t.slot, t.tx_index, t.leg_index",
+             ORDER BY t.slot, t.tx_index, t.tx_signature, t.leg_index",
         )
         .bind(mint_address)
         .bind(addresses)

@@ -99,7 +99,7 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
     filterKey: 'holding',
   },
   {
-    header: 'Cost (SOL)',
+    header: 'Paid (SOL)',
     align: 'right',
     render: (l) =>
       l.holding_base && l.holding_base > 0 ? (
@@ -107,7 +107,7 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
       ) : (
         <span className="muted">—</span>
       ),
-    // Cost basis in SOL (quote base units ÷ quote decimals).
+    // SOL paid into the open lots (quote base units ÷ quote decimals).
     filterNumber: (l) =>
       l.holding_base && l.holding_base > 0 && l.holding_cost_quote != null
         ? l.holding_cost_quote / 10 ** (l.quote_decimals ?? 9)

@@ -22,10 +22,10 @@ pub use status::{
 pub use metadata::{MetadataTemplate, NewMetadataTemplate};
 pub use own_launch::{
     Bundle, Launch, LaunchListRow, LaunchTemplate, ManageAction, ManagedWallet, NewLaunch,
-    NewLaunchTemplate, NewManagedWallet, SellLadder, TokenPosition, UpdateLaunchTemplate,
-    VolumeBot,
+    NewLaunchTemplate, NewManagedWallet, PositionView, SellLadder, TokenPosition,
+    UpdateLaunchTemplate, VolumeBot,
 };
 pub use token::{
     MarketStateDelta, NewToken, Token, TokenMarketState, TokenOverview, TokenSyncState,
 };
-pub use trade::{spot_price_quote, NewTrade, RawTx, Trade, TradePriced};
+pub use trade::{spot_price_quote, NewTrade, RawTx, Trade, TradePriced, WalletFill};

@@ -69,6 +69,19 @@ pub struct NewTrade {
     pub payer_net_lamports: Option<i64>,
 }
 
+/// One of a wallet's fills of a mint, as the position replay reads it (canonical
+/// order). `payer_net_lamports` is the tx's whole wallet flow when the tx paid by
+/// this wallet traded no other mint, else `None` (the leg's `amount_quote` books).
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct WalletFill {
+    pub address: String,
+    pub trade_type: String,
+    pub amount_quote: i64,
+    pub amount_base: i64,
+    pub tx_signature: Vec<u8>,
+    pub payer_net_lamports: Option<i64>,
+}
+
 /// `trades_priced` view row: a [`Trade`] plus the quote's decimals/USD rate and
 /// derived prices. `exec_price_quote`/`spot_price_quote` are raw ratios;
 /// `amount_usd` is the cross-quote numeraire.

@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use platform_core::models::{
-    BundleStatus, LaunchStatus, PositionStatus, TokenPosition, WalletRole, WalletStatus,
+    BundleStatus, LaunchStatus, PositionStatus, PositionView, TokenPosition, WalletFill,
+    WalletRole, WalletStatus,
 };
 use platform_core::storage::repositories::{
-    BundleRepo, LaunchRepo, ManagedWalletRepo, TokenPositionRepo, TradeRepo,
+    BundleRepo, LaunchRepo, ManagedWalletRepo, TokenMarketStateRepo, TokenPositionRepo, TradeRepo,
 };
 use pump_trader::protocol;
 use solana_sdk::pubkey::Pubkey;
@@ -55,6 +56,20 @@ pub async fn read_positions(pool: &PgPool, mint_address: &str) -> Result<Vec<Tok
     seed_positions(pool, mint_address).await?;
     reconcile_positions_feed(pool, mint_address).await?;
     TokenPositionRepo::by_mint(pool, mint_address).await
+}
+
+/// Price holdings rows for the API: each row's value + PnL at the mint's current
+/// spot ([`TokenPosition::with_pnl`], the one PnL implementation), one market-state
+/// read for the whole set.
+pub async fn position_views(
+    pool: &PgPool,
+    mint_address: &str,
+    rows: Vec<TokenPosition>,
+) -> Result<Vec<PositionView>> {
+    let price = TokenMarketStateRepo::get(pool, mint_address)
+        .await?
+        .and_then(|s| s.current_price_quote);
+    Ok(rows.into_iter().map(|p| p.with_pnl(price)).collect())
 }
 
 /// Seed cost-basis rows for the dev wallet + every bundle leg of a mint's launch.
@@ -216,20 +231,16 @@ pub async fn reconcile_positions_feed(pool: &PgPool, mint_address: &str) -> Resu
     }
     let probe_addrs: Vec<String> = probe.keys().cloned().collect();
 
-    let realized_by_addr: HashMap<String, i64> =
-        TradeRepo::sum_sells_by_address_for_mint(pool, mint_address)
-            .await?
-            .into_iter()
-            .collect();
-    // (held_base, cost_quote) of each wallet's CURRENT open lot, replayed from fills.
+    // Each wallet's CURRENT lot (held tokens, SOL paid in, SOL returned), replayed
+    // from its fills.
     let lots =
-        lot_by_address(&TradeRepo::fills_for_mint_wallets(pool, mint_address, &probe_addrs).await?);
+        lots_by_address(&TradeRepo::fills_for_mint_wallets(pool, mint_address, &probe_addrs).await?);
 
     // Discovery: a wallet the feed shows holding the mint with no position row yet
     // (an out-of-band manage-buy) gets one seeded at cost 0 so it's visible +
     // sellable. Feed-derived, so discovery costs no RPC either.
-    for (addr, (held_base, _cost)) in &lots {
-        if *held_base > 0 && !existing_owners.contains(addr) {
+    for (addr, lot) in &lots {
+        if lot.held_base > 0 && !existing_owners.contains(addr) {
             if let Some((wid, role)) = probe.get(addr) {
                 if let Err(e) = TokenPositionRepo::seed(pool, mint_address, *wid, role, 0).await {
                     warn!(%addr, ?e, "seed feed-discovered holder failed — skipping");
@@ -245,20 +256,20 @@ pub async fn reconcile_positions_feed(pool: &PgPool, mint_address: &str) -> Resu
     let mut ids = Vec::new();
     let mut balances = Vec::new();
     let mut token_accounts: Vec<Option<String>> = Vec::new();
-    let mut realized = Vec::new();
+    let mut realized: Vec<Option<i64>> = Vec::new();
     let mut cost_quote: Vec<Option<i64>> = Vec::new();
     for pos in &positions {
         if pos.status == PositionStatus::Dropped.as_str() {
             continue;
         }
-        let Some((held_base, cost)) = lots.get(&pos.wallet_address) else {
+        let Some(lot) = lots.get(&pos.wallet_address) else {
             continue;
         };
         ids.push(pos.id);
-        balances.push(*held_base);
+        balances.push(lot.held_base);
         token_accounts.push(None); // feed can't know the ATA; leave it (COALESCE)
-        realized.push(realized_by_addr.get(&pos.wallet_address).copied().unwrap_or(0));
-        cost_quote.push(Some(*cost));
+        realized.push(Some(lot.received_quote));
+        cost_quote.push(Some(lot.paid_quote));
     }
 
     TokenPositionRepo::reconcile_batch(pool, &ids, &balances, &token_accounts, &realized, &cost_quote)
@@ -285,8 +296,8 @@ pub async fn reconcile_positions_feed(pool: &PgPool, mint_address: &str) -> Resu
 /// write, so "sell all" is correct for a manual manage-buy or any out-of-band
 /// holding, not just the launch dev/bundle wallets.
 ///
-/// Shape: realized proceeds + cost basis for ALL wallets come from the feed in two
-/// grouped queries (not a per-position N+1); balances come from `ceil(N/100)`
+/// Shape: every wallet's lot (paid + returned SOL) comes from the feed in one
+/// mint-scoped query (not a per-position N+1); balances come from `ceil(N/100)`
 /// batched account reads; and every reconciled row is written in ONE `UNNEST`
 /// batch update. Cold, operator-triggered path — never run it on an ingest hot
 /// path.
@@ -304,28 +315,14 @@ pub async fn reconcile_positions(
         return Ok(());
     }
 
-    // Feed-accurate realized proceeds for every wallet that has sold — one scan +
-    // GROUP BY, defaulting the rest to 0. Lags one ingest cycle behind a
-    // just-fired sell; the next read picks it up.
-    let realized_by_addr: HashMap<String, i64> =
-        TradeRepo::sum_sells_by_address_for_mint(pool, mint_address)
-            .await?
-            .into_iter()
-            .collect();
-
-    // Feed-authoritative cost basis of each wallet's CURRENT open lot: replay its
-    // ordered fills so a full exit (sell to zero) realizes the prior lot and resets
-    // cost to 0 — a dev-buy-then-sell-all-then-rebuy shows only the re-buy's cost,
-    // not the stale launch/seed `dev_buy_quote`. Restricted to our probed wallets
-    // (mint + wallet scoped). Only wallets the feed has seen appear here; the rest
-    // keep their seed cost (reconcile_batch COALESCEs a `None`) so the value isn't
-    // zeroed during the ingest-lag window right after a launch/buy.
+    // Each probed wallet's CURRENT lot from the feed (mint + wallet scoped): the SOL
+    // paid in and returned, on the PnL basis of `TokenPosition`. Only wallets the
+    // feed has seen appear; the rest keep their stored figures (reconcile_batch
+    // COALESCEs a `None`) so a fresh seed isn't zeroed during the ingest-lag window.
+    // Lags one ingest cycle behind a just-fired trade; the next read picks it up.
     let probe_addrs: Vec<String> = probe.keys().cloned().collect();
-    let cost_by_addr: HashMap<String, i64> =
-        lot_by_address(&TradeRepo::fills_for_mint_wallets(pool, mint_address, &probe_addrs).await?)
-            .into_iter()
-            .map(|(addr, (_held, cost))| (addr, cost))
-            .collect();
+    let lots =
+        lots_by_address(&TradeRepo::fills_for_mint_wallets(pool, mint_address, &probe_addrs).await?);
 
     // The mint's token program picks the ATA derivation (Legacy for `create_v1`,
     // Token-2022 otherwise) — resolved from the launch we're reconciling.
@@ -377,7 +374,7 @@ pub async fn reconcile_positions(
     let mut ids = Vec::new();
     let mut balances = Vec::new();
     let mut token_accounts: Vec<Option<String>> = Vec::new();
-    let mut realized = Vec::new();
+    let mut realized: Vec<Option<i64>> = Vec::new();
     let mut cost_quote: Vec<Option<i64>> = Vec::new();
     for pos in &positions {
         if pos.status == PositionStatus::Dropped.as_str() {
@@ -389,48 +386,92 @@ pub async fn reconcile_positions(
         ids.push(pos.id);
         balances.push(*balance_base);
         token_accounts.push(token_account.clone());
-        realized.push(realized_by_addr.get(&pos.wallet_address).copied().unwrap_or(0));
-        // `None` when the feed has no fills for this wallet yet — keep the seed cost.
-        cost_quote.push(cost_by_addr.get(&pos.wallet_address).copied());
+        // `None` when the feed has no fills for this wallet yet — keep the stored lot.
+        let lot = lots.get(&pos.wallet_address);
+        realized.push(lot.map(|l| l.received_quote));
+        cost_quote.push(lot.map(|l| l.paid_quote));
     }
 
     TokenPositionRepo::reconcile_batch(pool, &ids, &balances, &token_accounts, &realized, &cost_quote)
         .await
 }
 
-/// Replay each wallet's ordered fills to derive its CURRENT open lot as
-/// `(held_base, cost_quote)` (both exact base units), lot-reset semantics: a buy
-/// adds tokens + cost, a sell that drains the wallet to zero realizes the whole lot
-/// and resets BOTH to 0, and a partial sell reduces held + cost pro-rata (average
-/// cost). So `buy 0.02 → sell all → buy 0.01` yields held = the re-buy's tokens and
-/// cost 0.01, not the stale 0.02 launch cost. `held_base` IS the feed-derived
-/// balance (buys − sells, floored at 0). `fills` must already be in canonical
-/// chronological order (the query's `ORDER BY slot, tx_index, leg_index`); rows for
-/// all wallets may be interleaved — we key state by address. Only wallets present in
-/// `fills` appear in the result (callers leave the rest on their seed values).
-fn lot_by_address(fills: &[(String, String, i64, i64)]) -> HashMap<String, (i64, i64)> {
-    // Per wallet: (held_base, cost_quote) of the open lot as we replay forward.
-    let mut lot: HashMap<String, (i64, i64)> = HashMap::new();
-    for (address, trade_type, amount_quote, amount_base) in fills {
-        let (held_base, cost) = lot.entry(address.clone()).or_insert((0, 0));
-        if trade_type == "buy" {
-            *held_base = held_base.saturating_add(*amount_base);
-            *cost = cost.saturating_add(*amount_quote);
-        } else {
-            // Sell. A drain to (or below) zero fully realizes the lot → reset. A
-            // partial sell scales the remaining cost by the fraction of tokens kept
-            // (i128 math: cost×remaining can overflow i64).
-            if *amount_base >= *held_base || *held_base == 0 {
-                *held_base = 0;
-                *cost = 0;
-            } else {
-                let remaining = *held_base - *amount_base;
-                *cost = ((*cost as i128 * remaining as i128) / *held_base as i128) as i64;
-                *held_base = remaining;
+/// One wallet's CURRENT lot of a mint (all exact base units): tokens held, SOL
+/// paid into the lot, SOL its sells returned — the PnL basis documented on
+/// [`TokenPosition`]. A lot opens on the first buy after the balance reached zero;
+/// a closed lot keeps its figures until then, so a sold-out row still shows what
+/// it made.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Lot {
+    held_base: i64,
+    paid_quote: i64,
+    received_quote: i64,
+}
+
+impl Lot {
+    fn buy(&mut self, base: i64, quote: i64) {
+        if self.held_base == 0 && (self.paid_quote != 0 || self.received_quote != 0) {
+            *self = Lot::default(); // the prior lot closed at zero; this buy opens anew
+        }
+        self.held_base = self.held_base.saturating_add(base);
+        self.paid_quote = self.paid_quote.saturating_add(quote);
+    }
+
+    /// A sell past the held balance (a feed gap or an external transfer-in) floors
+    /// the balance at 0, never negative.
+    fn sell(&mut self, base: i64, quote: i64) {
+        self.held_base = self.held_base.saturating_sub(base).max(0);
+        self.received_quote = self.received_quote.saturating_add(quote);
+    }
+
+    /// Book one transaction's legs for this wallet. With the tx's wallet flow
+    /// (`payer_net_lamports`) the tx is ONE fill: its net token change, priced at
+    /// what the wallet actually moved (fees, tip and venue fee included, counted
+    /// once however many legs the tx has). Without it each leg books its
+    /// `amount_quote`.
+    fn apply_tx(&mut self, legs: &[&WalletFill]) {
+        let Some(net) = legs.iter().find_map(|f| f.payer_net_lamports) else {
+            for f in legs {
+                if f.trade_type == "buy" {
+                    self.buy(f.amount_base, f.amount_quote);
+                } else {
+                    self.sell(f.amount_base, f.amount_quote);
+                }
             }
+            return;
+        };
+        let side_base = |side: &str| -> i64 {
+            legs.iter().filter(|f| f.trade_type == side).map(|f| f.amount_base).sum()
+        };
+        let (bought, sold) = (side_base("buy"), side_base("sell"));
+        if bought >= sold && bought > 0 {
+            self.buy(bought - sold, -net);
+        } else {
+            self.sell(sold - bought, net);
         }
     }
-    lot
+}
+
+/// Replay every wallet's fills into its CURRENT [`Lot`]. `fills` is in canonical
+/// order with one tx's legs adjacent (the query's `ORDER BY slot, tx_index,
+/// tx_signature, leg_index`); wallets may interleave, so each tx is split by
+/// wallet. Only wallets present in `fills` appear (callers keep the rest's stored
+/// figures).
+fn lots_by_address(fills: &[WalletFill]) -> HashMap<String, Lot> {
+    let mut lots: HashMap<String, Lot> = HashMap::new();
+    for tx in fills.chunk_by(|a, b| a.tx_signature == b.tx_signature) {
+        let mut wallets: Vec<&str> = Vec::new();
+        for f in tx {
+            if !wallets.contains(&f.address.as_str()) {
+                wallets.push(&f.address);
+            }
+        }
+        for wallet in wallets {
+            let legs: Vec<&WalletFill> = tx.iter().filter(|f| f.address == wallet).collect();
+            lots.entry(wallet.to_string()).or_default().apply_tx(&legs);
+        }
+    }
+    lots
 }
 
 /// The canonical associated token account: `PDA([owner, token_program, mint],
@@ -497,7 +538,8 @@ async fn fetch_ata_balances_batched(
 
 #[cfg(test)]
 mod tests {
-    use super::{launch_bought, lot_by_address};
+    use super::{launch_bought, lots_by_address, Lot};
+    use platform_core::models::WalletFill;
 
     /// Regression (dev-buy phantom `open`): the dev-buy is fused into the create
     /// (`tx0`), so a terminally dropped/failed atomic bundle means the dev never
@@ -523,43 +565,51 @@ mod tests {
         assert_eq!(launch_bought("pending", None), None);
     }
 
-    fn fill(addr: &str, side: &str, quote: i64, base: i64) -> (String, String, i64, i64) {
-        (addr.to_string(), side.to_string(), quote, base)
+    fn fill(addr: &str, side: &str, quote: i64, base: i64) -> WalletFill {
+        // One tx per fill unless a test groups legs by signature.
+        static SEQ: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        WalletFill {
+            address: addr.to_string(),
+            trade_type: side.to_string(),
+            amount_quote: quote,
+            amount_base: base,
+            tx_signature: vec![n],
+            payer_net_lamports: None,
+        }
     }
 
-    /// `held_base` (the feed-derived balance) = buys − sells, and cost tracks the lot.
+    fn lot(held_base: i64, paid_quote: i64, received_quote: i64) -> Lot {
+        Lot { held_base, paid_quote, received_quote }
+    }
+
+    /// Paid and received cover the same lot; a partial sell leaves `paid` whole.
     #[test]
-    fn balance_and_cost_track_buys_and_partial_sells() {
+    fn partial_sell_books_proceeds_against_the_lot() {
         let fills = vec![
-            fill("A", "buy", 20, 1_000), // hold 1000, cost 20
-            fill("A", "sell", 6, 400),   // sell 40% → hold 600, cost 12 (pro-rata)
+            fill("A", "buy", 20, 1_000), // hold 1000, paid 20
+            fill("A", "sell", 6, 400),   // hold 600, received 6
         ];
-        let lots = lot_by_address(&fills);
-        assert_eq!(lots["A"], (600, 12));
+        assert_eq!(lots_by_address(&fills)["A"], lot(600, 20, 6));
     }
 
-    /// A full exit to zero realizes the lot: balance AND cost reset to 0, so a
-    /// later re-buy shows only the re-buy's tokens + cost (not the stale launch lot).
+    /// A sold-out lot keeps its figures (its PnL stays visible); the next buy opens
+    /// a fresh lot, so a re-buy shows only its own cost, never the prior lot's
+    /// proceeds against it.
     #[test]
-    fn sell_all_then_rebuy_resets_lot() {
-        let fills = vec![
-            fill("A", "buy", 20, 1_000), // launch lot
-            fill("A", "sell", 25, 1_000), // exit to zero → reset
-            fill("A", "buy", 10, 500),   // fresh lot
-        ];
-        let lots = lot_by_address(&fills);
-        assert_eq!(lots["A"], (500, 10));
+    fn closed_lot_keeps_figures_until_a_rebuy_opens_a_new_one() {
+        let closed = vec![fill("A", "buy", 20, 1_000), fill("A", "sell", 25, 1_000)];
+        assert_eq!(lots_by_address(&closed)["A"], lot(0, 20, 25));
+        let mut rebuy = closed.clone();
+        rebuy.push(fill("A", "buy", 10, 500));
+        assert_eq!(lots_by_address(&rebuy)["A"], lot(500, 10, 0));
     }
 
-    /// Over-selling (sell base ≥ held) floors the balance at 0, never negative.
+    /// Over-selling (sell base > held) floors the balance at 0, never negative.
     #[test]
     fn oversell_floors_balance_at_zero() {
-        let fills = vec![
-            fill("A", "buy", 20, 1_000),
-            fill("A", "sell", 30, 1_500), // more than held → 0, not negative
-        ];
-        let lots = lot_by_address(&fills);
-        assert_eq!(lots["A"], (0, 0));
+        let fills = vec![fill("A", "buy", 20, 1_000), fill("A", "sell", 30, 1_500)];
+        assert_eq!(lots_by_address(&fills)["A"], lot(0, 20, 30));
     }
 
     /// Wallets are keyed independently even when their fills interleave.
@@ -569,10 +619,39 @@ mod tests {
             fill("A", "buy", 20, 1_000),
             fill("B", "buy", 5, 200),
             fill("A", "buy", 10, 500),
-            fill("B", "sell", 5, 200), // B exits → 0
+            fill("B", "sell", 5, 200),
         ];
-        let lots = lot_by_address(&fills);
-        assert_eq!(lots["A"], (1_500, 30));
-        assert_eq!(lots["B"], (0, 0));
+        let lots = lots_by_address(&fills);
+        assert_eq!(lots["A"], lot(1_500, 30, 0));
+        assert_eq!(lots["B"], lot(0, 5, 5));
+    }
+
+    /// With the wallet flow on the row, a tx books what the wallet moved (fee, tip
+    /// and venue fee included), once per signature however many legs it has.
+    #[test]
+    fn wallet_flow_books_once_per_signature() {
+        let leg = |side: &str, base: i64, quote: i64, net: i64| WalletFill {
+            address: "A".to_string(),
+            trade_type: side.to_string(),
+            amount_quote: quote,
+            amount_base: base,
+            tx_signature: vec![200],
+            payer_net_lamports: Some(net),
+        };
+        // Two buy legs in one tx: 1_000 curve-side each, the wallet paid 2_060.
+        let buy = vec![leg("buy", 500, 1_000, -2_060), leg("buy", 500, 1_000, -2_060)];
+        assert_eq!(lots_by_address(&buy)["A"], lot(1_000, 2_060, 0));
+        // A sell the wallet netted 1_900 from (proceeds after fees).
+        let mut sell = buy.clone();
+        sell.push(WalletFill { tx_signature: vec![201], ..leg("sell", 400, 2_000, 1_900) });
+        assert_eq!(lots_by_address(&sell)["A"], lot(600, 2_060, 1_900));
+    }
+
+    /// Rows without the wallet flow (older rows, a backfill without balances) book
+    /// their `amount_quote` leg by leg.
+    #[test]
+    fn rows_without_wallet_flow_fall_back_to_amount_quote() {
+        let fills = vec![fill("A", "buy", 1_000, 500), fill("A", "sell", 300, 100)];
+        assert_eq!(lots_by_address(&fills)["A"], lot(400, 1_000, 300));
     }
 }

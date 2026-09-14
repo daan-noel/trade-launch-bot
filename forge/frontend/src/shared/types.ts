@@ -99,10 +99,12 @@ export type WalletRole = 'dev' | 'bundler' | 'treasury' | 'trading';
 export type PositionStatus = 'open' | 'closed';
 
 // Per-wallet holding of a launched token — `GET /api/tokens/:mint/positions`
-// (TokenPosition in platform-core). Amounts are exact base-unit integers:
+// (PositionView in platform-core). Amounts are exact base-unit integers:
 // `balance_base` token base units, `cost_quote`/`realized_quote` quote base units
-// (lamports for a SOL-quoted token). PnL/value is derived on the client from the
-// token's price + decimals.
+// (lamports for a SOL-quoted token) = SOL paid into / returned by the wallet's
+// current lot, booked as what the wallet moved. `value_quote`/`pnl_quote`/`pnl_pct`
+// are computed server-side (`TokenPosition::with_pnl`) — render them, never
+// re-derive them.
 export interface TokenPosition {
   id: string;
   mint_address: string;
@@ -119,6 +121,12 @@ export interface TokenPosition {
   status: PositionStatus;
   created_at: string;
   updated_at: string;
+  // balance x current spot, quote base units; null until the token has a price.
+  value_quote: number | null;
+  // realized_quote + value_quote - cost_quote, quote base units.
+  pnl_quote: number | null;
+  // pnl_quote / cost_quote x 100; null when nothing was paid.
+  pnl_pct: number | null;
 }
 
 // ---- Post-launch management (docs/arch/launcher.md) ----
@@ -419,7 +427,7 @@ export interface LaunchListRow {
   // Tokens still held across open positions (token base units, SUM(balance_base)).
   // As-of the last reconcile (list load doesn't RPC-probe) — see backend list_page.
   holding_base: number | null;
-  // Cost basis of those open positions, quote base units (SUM(cost_quote)).
+  // SOL paid into those open positions' current lots, quote base units (SUM(cost_quote)).
   holding_cost_quote: number | null;
   // SOL value of the holding, quote base units (holding_base * current_price_quote).
   holding_value_quote: number | null;

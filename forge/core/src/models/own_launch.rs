@@ -158,8 +158,8 @@ pub struct LaunchListRow {
     /// units (`SUM(balance_base)`). `None` when no positions are seeded/open.
     /// As-of the last on-chain reconcile — see [`LaunchRepo::list_page`].
     pub holding_base: Option<i64>,
-    /// Cost basis of those open positions, quote base units (`SUM(cost_quote)` —
-    /// total SOL spent acquiring them). Divide by `10^quote_decimals` for human SOL.
+    /// SOL paid into those open positions' current lots, quote base units
+    /// (`SUM(cost_quote)`). Divide by `10^quote_decimals` for human SOL.
     pub holding_cost_quote: Option<i64>,
     /// SOL value of that holding, quote base units (`holding_base *
     /// current_price_quote`). Divide by `10^quote_decimals` for human SOL. `None`
@@ -185,8 +185,17 @@ pub struct NewLaunch {
 ///
 /// Amounts are exact base-unit integers (never baked-in floats): `balance_base`
 /// is token base units held; `cost_quote` / `realized_quote` are quote base units
-/// (the generalization of `_lamports`). PnL/USD is derived by the caller from the
-/// token's price + decimals, never stored.
+/// (the generalization of `_lamports`).
+///
+/// **PnL basis (the one definition).** Cost and proceeds cover the SAME lot: the
+/// wallet's CURRENT lot, which opens on the first buy after its balance reached
+/// zero (a closed lot keeps its figures until then). `cost_quote` is the SOL paid
+/// into that lot, `realized_quote` the SOL its sells returned, each booked as the
+/// wallet's whole-tx SOL flow (`trades.payer_net_lamports`, fees + tip + venue fee
+/// included, once per signature) where the feed has it, else the leg's
+/// `amount_quote`. So `pnl = realized_quote + value - cost_quote` is exactly what
+/// the lot moved plus what it still holds, and `pnl_pct = pnl / cost_quote` —
+/// [`TokenPosition::with_pnl`] computes both; no caller re-derives them.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TokenPosition {
     pub id: Uuid,
@@ -205,12 +214,47 @@ pub struct TokenPosition {
     /// until first reconciled.
     pub token_account: Option<String>,
     pub balance_base: i64,
+    /// SOL paid into the current lot, quote base units (see the PnL basis above).
     pub cost_quote: i64,
+    /// SOL the current lot's sells returned, quote base units.
     pub realized_quote: i64,
     pub balance_checked_at: Option<DateTime<Utc>>,
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// A holdings row plus its value and PnL at the token's current spot price — the
+/// shape the holdings API serves, so the UI renders these figures verbatim.
+#[derive(Debug, Clone, Serialize)]
+pub struct PositionView {
+    #[serde(flatten)]
+    pub position: TokenPosition,
+    /// `balance_base * current_price_quote`, quote base units. `0` for an empty
+    /// balance; `None` when the token has no price yet.
+    pub value_quote: Option<f64>,
+    /// `realized_quote + value_quote - cost_quote`, quote base units.
+    pub pnl_quote: Option<f64>,
+    /// `pnl_quote / cost_quote * 100`; `None` when nothing was paid.
+    pub pnl_pct: Option<f64>,
+}
+
+impl TokenPosition {
+    /// Value + PnL of this row at `price_quote` (raw spot ratio, quote base units per
+    /// token base unit) — the ONE implementation of the PnL basis documented on
+    /// [`TokenPosition`].
+    pub fn with_pnl(self, price_quote: Option<f64>) -> PositionView {
+        let value_quote = if self.balance_base == 0 {
+            Some(0.0)
+        } else {
+            price_quote.map(|p| self.balance_base as f64 * p)
+        };
+        let pnl_quote = value_quote.map(|v| self.realized_quote as f64 + v - self.cost_quote as f64);
+        let pnl_pct = pnl_quote
+            .filter(|_| self.cost_quote > 0)
+            .map(|pnl| pnl / self.cost_quote as f64 * 100.0);
+        PositionView { position: self, value_quote, pnl_quote, pnl_pct }
+    }
 }
 
 /// One executed post-launch management action — the audit row for a sell / buy /
@@ -310,4 +354,51 @@ pub struct Bundle {
     /// `None` for a legacy bundle whose create landed on its own separate tx.
     #[serde(default)]
     pub create_args: Option<Json>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pos(balance_base: i64, cost_quote: i64, realized_quote: i64) -> TokenPosition {
+        TokenPosition {
+            id: Uuid::nil(),
+            mint_address: "M".into(),
+            managed_wallet_id: Uuid::nil(),
+            wallet_address: "W".into(),
+            role: "dev".into(),
+            token_account: None,
+            balance_base,
+            cost_quote,
+            realized_quote,
+            balance_checked_at: None,
+            status: "open".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    /// Paid 100, sold half for 80, the rest is worth 60: PnL 40 on 100 paid.
+    #[test]
+    fn pnl_is_proceeds_plus_value_minus_paid() {
+        let v = pos(500, 100, 80).with_pnl(Some(0.12));
+        assert_eq!(v.value_quote, Some(60.0));
+        assert_eq!(v.pnl_quote, Some(40.0));
+        assert_eq!(v.pnl_pct, Some(40.0));
+    }
+
+    /// A closed lot needs no price: its PnL is proceeds minus paid.
+    #[test]
+    fn closed_lot_prices_without_a_quote() {
+        let v = pos(0, 100, 130).with_pnl(None);
+        assert_eq!((v.value_quote, v.pnl_quote, v.pnl_pct), (Some(0.0), Some(30.0), Some(30.0)));
+    }
+
+    /// An open balance with no price has no value/PnL; nothing paid has no pct.
+    #[test]
+    fn unpriced_or_unpaid_rows_stay_empty() {
+        let v = pos(10, 100, 0).with_pnl(None);
+        assert_eq!((v.value_quote, v.pnl_quote, v.pnl_pct), (None, None, None));
+        assert_eq!(pos(10, 0, 0).with_pnl(Some(1.0)).pnl_pct, None);
+    }
 }

@@ -59,7 +59,7 @@ Deep-dives belong at `@plans/launcher/<topic>.md`.
 | `model.rs` | Request + plan DTOs (`ManageRequest` → `ActionPlan` of `PlanLeg`, `WalletSelection`). |
 | `plan.rs` | `build_plan` — turn a request into a previewable plan (pure DB reads, no chain). |
 | `execute.rs` | `execute_action` — recompute the plan fresh, gate it, run legs via `PumpFunTrader` (manage trader config), insert the audit row. Gated by `MANAGE_ENABLED` (kill switch) + `MANAGE_DRY_RUN`. |
-| `positions.rs` | Holdings read model — seed positions from launch/bundle fills, reconcile RPC balance + realized proceeds. |
+| `positions.rs` | Holdings read model — seed positions from launch/bundle fills, replay each wallet's fills into its current lot (`Lot`: held, SOL paid in, SOL returned; a tx books its `payer_net_lamports` once per signature, else each leg's `amount_quote`), reconcile balances from the feed (GET) or chain (Refresh). `position_views` prices rows through `TokenPosition::with_pnl` (the one PnL definition: `realized + value - cost`, pct over `cost`) for the API. |
 | `ladder.rs` | Simple-threshold sell ladders (`arm_ladder`, `spawn_ladder_evaluator`, `LadderRung`). |
 | `volume.rs` | Volume-making bots (`start_volume_bot`, `spawn_volume_scheduler`, `VolumeConfig`). |
 

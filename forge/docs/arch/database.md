@@ -107,7 +107,7 @@ that reconcile deletes every ledger row above version 1, so they re-run.
 | `launch_templates` | authored launch specs; `variant`, JSONB `params`; `metadata_template_id` FK → metadata_templates (`ON DELETE SET NULL`) is the name/symbol/uri SSOT |
 | `launches` | executed launch record; `status` CHECK (`pending`/`created`/`failed`); `dev_wallet_id` FK; `bundle_id` **soft** back-ref |
 | `bundles` | atomic Jito bundle of create+buy legs; `status` CHECK (7 states); `tip_quote`, JSONB `legs`/`plan`/`audit`/`create_args`, `leg_signatures` TEXT[], `submit_attempts` (re-bid level) |
-| `token_positions` | per-wallet holdings read model; `managed_wallet_id` FK; `balance_base`/`cost_quote`/`realized_quote`; `status` CHECK (`open`/`closed`/`dropped`); no FK on `mint_address` |
+| `token_positions` | per-wallet holdings read model; `managed_wallet_id` FK; `balance_base`/`cost_quote`/`realized_quote` (SOL paid into / returned by the wallet's current lot — the PnL basis on `TokenPosition`); `status` CHECK (`open`/`closed`/`dropped`); no FK on `mint_address` |
 | `manage_actions` | audit log of executed management; `kind`/`sizing`/`status` CHECKs; JSONB `selection`/`plan`/`plan_orchestrator`/`audit` |
 | `sell_ladders` | threshold sell ladders; JSONB `rungs`; `status` CHECK (`armed`/`done`/`cancelled`) |
 | `volume_bots` | volume-making bots; JSONB `config`; `spent_quote`/`volume_quote`; `status` CHECK (`running`/`paused`/`stopped`) |
@@ -124,7 +124,7 @@ at this boundary. `dimensions.rs`, `feed.rs`, `metadata.rs`, `token.rs`, `own_la
 | `MarketRepo` | `markets` | `upsert`, `by_mint` |
 | `WalletDictRepo` | `wallet_dict` | `intern` (address → int ref, upsert) |
 | `RawTxRepo` | `raw_txs` | `insert_batch` (UNNEST, ON CONFLICT DO NOTHING) |
-| `TradeRepo` | `trades`/`trades_priced` | `insert_batch` / `insert_batch_new_keys` (returns the rows that landed), `find_signatures_present`, `sum_side_quote_by_address`, `sum_sells_by_address_for_mint`, `fills_for_mint_wallets`, `find_priced_by_mint`, `find_priced_page_with_count` |
+| `TradeRepo` | `trades`/`trades_priced` | `insert_batch` / `insert_batch_new_keys` (returns the rows that landed), `find_signatures_present`, `fills_for_mint_wallets` (a wallet set's fills with the per-tx wallet flow), `find_priced_by_mint`, `find_priced_page_with_count` |
 | `TokenRepo` | `tokens`/`token_overview` | `insert`, `mark_own_launch`, `get`, `overview` |
 | `TokenMarketStateRepo` | `token_market_state` | `apply_deltas` (one `UNNEST` upsert per ingest flush), `upsert`, `get` |
 | `TokenSyncStateRepo` | `token_sync_state` | `upsert`, `get` |
