@@ -20,6 +20,7 @@ import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useInspectReplayMutation } from '@lab/store/labEndpoints';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
+import { formatPrice } from 'utils/format';
 import {
   eventBody,
   eventKind,
@@ -73,7 +74,7 @@ function eventSummary(step: InspectStep): string {
     case 'Trade': {
       const t = (b.trade ?? {}) as Record<string, unknown>;
       const side = String(t.side ?? '?').toLowerCase();
-      return `${side} ${num(t.sol)}◎ @ ${num(t.price, 6)}`;
+      return `${side} ${num(t.sol)}◎ @ ${price(t.price)}`;
     }
     case 'Tick':
       return 'tick';
@@ -83,7 +84,7 @@ function eventSummary(step: InspectStep): string {
       return `first-slot buy ${lamportsSol(b.buy_lamports)}◎ / sell ${lamportsSol(b.sell_lamports)}◎`;
     case 'FillConfirmed': {
       const f = (b.fill ?? {}) as Record<string, unknown>;
-      return `fill @ ${num(f.price, 6)} (${num(f.sol)}◎)`;
+      return `fill @ ${price(f.price)} (${num(f.sol)}◎)`;
     }
     case 'FillFailed':
       return `fill failed: ${String(b.reason ?? '')}`;
@@ -99,6 +100,10 @@ function eventSummary(step: InspectStep): string {
 function num(v: unknown, dp = 4): string {
   return typeof v === 'number' ? v.toFixed(dp).replace(/\.?0+$/, '') : '—';
 }
+/** A SOL-per-raw-token price: sub-1e-6 values stay readable (`formatPrice`). */
+function price(v: unknown): string {
+  return typeof v === 'number' ? formatPrice(v) : '—';
+}
 function lamportsSol(v: unknown): string {
   return typeof v === 'number' ? (v / 1e9).toFixed(3) : '—';
 }
@@ -111,7 +116,7 @@ function effectSummary(fx: InspectEffect): string {
     case 'SubmitSell':
       return `sell · ${fx.reason ?? ''}`;
     case 'PositionUpdate':
-      return `${fx.status ?? ''}${fx.reason ? ` · ${fx.reason}` : ''}${fx.fill ? ` @ ${fx.fill.price.toFixed(6)}` : ''}`;
+      return `${fx.status ?? ''}${fx.reason ? ` · ${fx.reason}` : ''}${fx.fill ? ` @ ${price(fx.fill.price)}` : ''}`;
     case 'ArmedChanged':
       return String(fx.state ?? '');
   }
