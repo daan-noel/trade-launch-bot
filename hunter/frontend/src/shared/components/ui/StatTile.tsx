@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { cn } from 'lib/cn';
+import { InfoTooltip } from './InfoTooltip';
 
 export type StatTone = 'default' | 'green' | 'red' | 'primary' | 'muted' | 'info';
 
@@ -30,6 +31,8 @@ const sizeClass: Record<StatSize, { box: string; label: string; value: string }>
 /**
  * Single glanceable KPI atom — label over a mono value, optional sub-line.
  * Use `size="sm"` in dense detail grids; `md` for command-center strips.
+ * `info` puts an ⓘ beside the label carrying the metric's definition — pass the
+ * text from where the metric is defined, never a restatement.
  */
 export function StatTile({
   label,
@@ -39,6 +42,7 @@ export function StatTile({
   size = 'md',
   href,
   bold,
+  info,
 }: {
   label: string;
   value: ReactNode;
@@ -47,6 +51,7 @@ export function StatTile({
   size?: StatSize;
   href?: string;
   bold?: boolean;
+  info?: string;
 }) {
   const s = sizeClass[size];
   const valueCls = cn('font-mono leading-tight', s.value, toneClass[tone], bold && 'font-semibold');
@@ -58,8 +63,14 @@ export function StatTile({
         s.box,
       )}
     >
-      <span className={cn('truncate font-semibold uppercase tracking-wider text-text-dim', s.label)}>
-        {label}
+      <span
+        className={cn(
+          'flex min-w-0 items-center gap-1 font-semibold uppercase tracking-wider text-text-dim',
+          s.label,
+        )}
+      >
+        <span className="truncate">{label}</span>
+        {info && <InfoTooltip title={label} body={info} className="shrink-0" />}
       </span>
       {href ? (
         <a

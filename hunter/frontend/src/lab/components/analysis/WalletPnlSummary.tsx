@@ -1,9 +1,33 @@
-import { memo, type ReactNode } from 'react';
+import { memo, type ComponentProps, type ReactNode } from 'react';
 import { StatTile, type StatTone } from 'components/ui/StatTile';
 import { AmountCell } from 'components/tokens/priceCells';
-import { formatWithCommas } from 'utils/format';
+import { fmtSecs, pctText } from 'lib/strategy/runSummary';
+import { formatDecimalTrim, formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
-import type { WalletPnlSummary } from './walletPnlStats';
+import { WALLET_STATS, type WalletPnlSummary, type WalletStatKey } from './walletPnlStats';
+
+/** A tile named and explained by its [`WALLET_STATS`] entry — the only way a
+ *  wallet figure reaches the summary, so label and ⓘ can't drift from the fold. */
+function Stat({
+  k,
+  ...tile
+}: { k: WalletStatKey } & Omit<ComponentProps<typeof StatTile>, 'label' | 'info'>) {
+  const d = WALLET_STATS[k];
+  return <StatTile label={d.label} info={d.def} {...tile} />;
+}
+
+/** One titled group of small tiles — the same heading chrome as `MixBand`. */
+function StatGroup({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
+  return (
+    <section className="min-w-0 rounded-lg border border-white/6 bg-bg-panel px-3 py-2.5">
+      <div className="mb-1.5">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-text-mid">{title}</div>
+        <div className="mt-0.5 text-[10px] leading-snug text-text-dim">{hint}</div>
+      </div>
+      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">{children}</div>
+    </section>
+  );
+}
 
 /** Green when > 0, red when < 0, default (dim) at exactly 0 or `null`. */
 function signTone(v: number | null): StatTone {
@@ -47,12 +71,12 @@ interface MixSlice {
 }
 
 /**
- * At-a-glance verdict row for the wallet currently under analysis — the
- * headline numbers the wallet-analysis reverse-engineering docs compute by hand
- * in SQL (gross vs fee-adjusted net, payoff ratio over win rate, mark-to-market
- * total). Money tiles stay display-only; Open / Closed / Winners / Losers use the
- * same proportion-bar + clickable count tiles as Console / Position Summary
- * (exit mix / Positions band), not a separate Filter chip strip.
+ * At-a-glance verdict for the wallet under analysis, net of fee throughout:
+ * the Money row (net realized, open mark, their total, return %), then the
+ * Per trade distribution, Risk and Behavior groups. Every tile is named and
+ * explained by `WALLET_STATS`. Money / stat tiles stay display-only; Open /
+ * Closed / Winners / Losers use the same proportion-bar + clickable count tiles
+ * as Console / Position Summary (exit mix / Positions band).
  */
 export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
   summary,
@@ -87,7 +111,7 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
       key: 'win',
       n: summary.winCount,
       label: 'Winners',
-      full: 'Realized winners (matched cost basis)',
+      full: 'Trades with net realized above zero',
       bar: 'bg-green',
       active: outcome === 'win',
       onSelect: onToggleOutcome ? () => onToggleOutcome('win') : undefined,
@@ -96,61 +120,136 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
       key: 'loss',
       n: summary.lossCount,
       label: 'Losers',
-      full: 'Realized losers (matched cost basis)',
+      full: 'Trades with net realized at or below zero',
       bar: 'bg-red',
       active: outcome === 'loss',
       onSelect: onToggleOutcome ? () => onToggleOutcome('loss') : undefined,
     },
   ];
 
-  const decided = summary.winCount + summary.lossCount;
-  const openShare = summary.tokenCount > 0 ? summary.openCount / summary.tokenCount : 0;
+  const s = summary;
+  const decided = s.tradeCount;
+  const openShare = s.tokenCount > 0 ? s.openCount / s.tokenCount : 0;
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
-        <StatTile
-          label="Realized PnL (gross)"
-          value={<AmountCell sol={summary.grossRealizedSol} />}
-          tone={signTone(summary.grossRealizedSol)}
-        />
-        <StatTile
-          label="Realized PnL (net of fee)"
-          value={<AmountCell sol={summary.netRealizedSol} />}
-          tone={signTone(summary.netRealizedSol)}
-          sub="~125bps/leg pump.fun fee"
-        />
-        <StatTile
-          label="Unrealized (open bags)"
-          value={<AmountCell sol={summary.openMarkSol} />}
-          tone={signTone(summary.openMarkSol)}
-          sub={`${summary.openCount} open`}
-        />
-        <StatTile
-          label="Total (mark-to-market)"
-          value={<AmountCell sol={summary.totalSol} />}
-          tone={signTone(summary.totalSol)}
-          bold
-        />
-        <StatTile
-          label="Win rate"
-          value={pct(summary.winRate)}
-          sub={`${summary.winCount}W / ${summary.lossCount}L`}
-        />
-        <StatTile
-          label="Avg win / loss"
-          value={
+      {/* Money: the four figures, one basis (net of fee). */}
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <Stat
+          k="netRealizedSol"
+          value={<AmountCell sol={s.netRealizedSol} />}
+          tone={signTone(s.netRealizedSol)}
+          sub={
             <>
-              <AmountCell sol={summary.avgWinSol} /> / <AmountCell sol={summary.avgLossSol} />
+              gross <AmountCell sol={s.grossRealizedSol} />
             </>
           }
         />
-        <StatTile label="Payoff ratio" value={ratio(summary.payoffRatio)} sub="avg win / |avg loss|" />
-        <StatTile
-          label="Volume traded"
-          value={<AmountCell sol={summary.volumeSol} />}
-          sub={`${formatWithCommas(summary.tokenCount)} tokens${summary.partialDataCount > 0 ? ` · ${summary.partialDataCount} partial` : ''}`}
+        <Stat
+          k="openMarkSol"
+          value={<AmountCell sol={s.openMarkSol} />}
+          tone={signTone(s.openMarkSol)}
+          sub={`${s.openCount} open`}
         />
+        <Stat k="totalSol" value={<AmountCell sol={s.totalSol} />} tone={signTone(s.totalSol)} bold />
+        <Stat
+          k="returnPct"
+          value={pctText(s.returnPct)}
+          tone={signTone(s.returnPct)}
+          sub={
+            <>
+              over <AmountCell sol={s.matchedCostSol} /> sold cost
+            </>
+          }
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+        <StatGroup title="Per trade" hint={`${decided} trade${decided === 1 ? '' : 's'} with a sell`}>
+          <Stat k="winRate" size="sm" value={pct(s.winRate)} sub={`${s.winCount}W / ${s.lossCount}L`} />
+          <Stat k="medianPct" size="sm" value={pctText(s.medianPct)} tone={signTone(s.medianPct)} />
+          <Stat k="meanPct" size="sm" value={pctText(s.meanPct)} tone={signTone(s.meanPct)} />
+          <Stat
+            k="p10p90Pct"
+            size="sm"
+            value={`${pctText(s.p10Pct)} / ${pctText(s.p90Pct)}`}
+          />
+          <Stat
+            k="bestWorstPct"
+            size="sm"
+            value={`${pctText(s.bestPct)} / ${pctText(s.worstPct)}`}
+          />
+          <Stat
+            k="expectancySol"
+            size="sm"
+            value={<AmountCell sol={s.expectancySol} />}
+            tone={signTone(s.expectancySol)}
+          />
+        </StatGroup>
+
+        <StatGroup title="Risk" hint="How deep and how long it bled">
+          <Stat
+            k="maxDrawdownSol"
+            size="sm"
+            value={<AmountCell sol={s.maxDrawdownSol > 0 ? -s.maxDrawdownSol : 0} />}
+            tone={s.maxDrawdownSol > 0 ? 'red' : 'default'}
+          />
+          <Stat
+            k="worstTradeSol"
+            size="sm"
+            value={<AmountCell sol={s.worstTradeSol} />}
+            tone={signTone(s.worstTradeSol)}
+            sub={s.worstTradePct == null ? undefined : pctText(s.worstTradePct)}
+          />
+          <Stat
+            k="lossStreak"
+            size="sm"
+            value={decided > 0 ? String(s.longestLossStreak) : '—'}
+            tone={s.longestLossStreak >= 5 ? 'red' : 'default'}
+          />
+          <Stat
+            k="profitFactor"
+            size="sm"
+            value={ratio(s.profitFactor)}
+            tone={s.profitFactor == null ? 'default' : s.profitFactor >= 1 ? 'green' : 'red'}
+          />
+          <Stat k="payoffRatio" size="sm" value={ratio(s.payoffRatio)} />
+          <Stat
+            k="avgWinLossSol"
+            size="sm"
+            value={
+              <>
+                <AmountCell sol={s.avgWinSol} /> / <AmountCell sol={s.avgLossSol} />
+              </>
+            }
+          />
+        </StatGroup>
+
+        <StatGroup title="Behavior" hint="How it trades, before any PnL">
+          <Stat
+            k="capitalInSol"
+            size="sm"
+            value={<AmountCell sol={s.capitalInSol} />}
+            sub={
+              <>
+                vol <AmountCell sol={s.volumeSol} />
+              </>
+            }
+          />
+          <Stat k="medianBuySol" size="sm" value={<AmountCell sol={s.medianBuySol} />} />
+          <Stat k="medianHoldSecs" size="sm" value={fmtSecs(s.medianHoldSecs)} />
+          <Stat
+            k="medianEntryCurvePct"
+            size="sm"
+            value={s.medianEntryCurvePct == null ? '—' : `${formatDecimalTrim(s.medianEntryCurvePct, 1)}%`}
+          />
+          <Stat
+            k="tokenCount"
+            size="sm"
+            value={formatWithCommas(s.tokenCount)}
+            sub={s.partialDataCount > 0 ? `${s.partialDataCount} partial` : undefined}
+          />
+        </StatGroup>
       </div>
 
       {(onToggleStatus || onToggleOutcome) && (
@@ -192,7 +291,7 @@ export const WalletPnlSummaryRow = memo(function WalletPnlSummaryRow({
               title="Outcomes"
               hint={
                 decided > 0
-                  ? `Realized round-trips only (${decided} of ${summary.tokenCount}) — open-only bags excluded`
+                  ? `Trades only (${decided} of ${summary.tokenCount}), net of fee — never-sold bags excluded`
                   : 'No matched cost basis yet (every row is still an open bag)'
               }
               slices={outcomeSlices}

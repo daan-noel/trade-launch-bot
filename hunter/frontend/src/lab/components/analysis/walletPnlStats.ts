@@ -83,7 +83,7 @@ export const WALLET_STATS = {
   },
   returnPct: {
     label: 'Return %',
-    def: 'Σ net realized ÷ Σ cost of the tokens sold × 100: money over the capital that earned it. Always the same sign as Net realized.',
+    def: 'Σ net realized ÷ Σ cost of the tokens sold × 100: money over the capital that earned it. Always the same sign as Net realized. Sub-line: that Σ cost in ◎.',
   },
   tradeCount: {
     label: 'Trades',
@@ -232,6 +232,8 @@ export interface WalletPnlSummary {
   netRealizedSol: number;
   openMarkSol: number;
   totalSol: number;
+  /** Σ matched cost — the `returnPct` denominator. */
+  matchedCostSol: number;
   returnPct: number | null;
   meanPct: number | null;
   medianPct: number | null;
@@ -268,6 +270,7 @@ const EMPTY_SUMMARY: WalletPnlSummary = {
   netRealizedSol: 0,
   openMarkSol: 0,
   totalSol: 0,
+  matchedCostSol: 0,
   returnPct: null,
   meanPct: null,
   medianPct: null,
@@ -371,6 +374,7 @@ export function computeWalletSummary(rows: readonly TraderTokenRow[]): WalletPnl
     netRealizedSol: netRealized,
     openMarkSol: openMark,
     totalSol: netRealized + openMark,
+    matchedCostSol: matchedCost,
     returnPct: weightedReturnPct(netRealized, matchedCost),
     meanPct: pcts.length > 0 ? pcts.reduce((s, v) => s + v, 0) / pcts.length : null,
     medianPct: q(0.5),

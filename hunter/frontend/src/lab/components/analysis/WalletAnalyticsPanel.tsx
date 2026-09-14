@@ -42,6 +42,7 @@ import {
 import { PositionFocusChips } from 'components/strategy/PositionFocusChips';
 import { WalletPnlSummaryRow } from './WalletPnlSummary';
 import {
+  WALLET_STATS,
   buildHoldScatter,
   computeWalletSummary,
   rankedPnlBarRows,
@@ -218,10 +219,10 @@ export function WalletAnalyticsPanel({
           <ChartCard
             title="Equity path"
             tip={{
-              title: 'Cumulative PnL',
+              title: 'Cumulative Total',
               body:
-                'Running sum of mark-to-market PnL per mint (ordered by each mint\'s most-recent trade). ' +
-                'Max DD is the deepest peak-to-trough drop. Per-mint grain — re-entries on one mint collapse to one step.',
+                `Running sum of ${WALLET_STATS.totalSol.label}, one step per token. ${WALLET_STATS.totalSol.def}\n\n` +
+                `max DD = ${WALLET_STATS.maxDrawdownSol.label}: ${WALLET_STATS.maxDrawdownSol.def}`,
             }}
             hint={
               lensDeck.curve.length > 0 ? (
@@ -244,7 +245,7 @@ export function WalletAnalyticsPanel({
             title="Return shape"
             tip={{
               title: 'PnL % distribution',
-              body: 'Histogram of realized round-trip returns. Open-only bags (no matched cost basis) are excluded. Click a bar to focus that bucket.',
+              body: `Histogram of the per-trade ${WALLET_STATS.rowNetPct.label}. ${WALLET_STATS.rowNetPct.def} Click a bar to focus that bucket.`,
             }}
             hint={`${focusedRows.length} token${focusedRows.length === 1 ? '' : 's'}`}
           >
@@ -268,7 +269,7 @@ export function WalletAnalyticsPanel({
               tip={{
                 title: 'Hold vs PnL scatter',
                 body:
-                  'Each point is one mint: X = first→last trade span in the window (not a single episode), Y = realized PnL%. ' +
+                  `Each point is one mint: X = first→last trade span in the window (not a single episode), Y = ${WALLET_STATS.rowNetPct.label} (net of fee). ` +
                   'Drag to zoom a band; click a point to focus that mint. Reset scale / the focus chip clears.',
               }}
               hint={`${holdPoints.length} mint${holdPoints.length === 1 ? '' : 's'} · click to focus`}
@@ -301,7 +302,7 @@ export function WalletAnalyticsPanel({
               title="Ranked by PnL"
               tip={{
                 title: 'Best → worst mint',
-                body: 'Ranked on mark-to-market total PnL, not win rate. Click a row to focus that mint across charts + table.',
+                body: `Ranked on ${WALLET_STATS.rowTotalSol.label}, not win rate. ${WALLET_STATS.rowTotalSol.def} Click a row to focus that mint across charts + table.`,
               }}
               hint="click a row to focus"
             >
@@ -351,7 +352,7 @@ export function WalletAnalyticsPanel({
                   tip={{
                     title: 'Dow × hour heatmap',
                     body:
-                      'Day-of-week × hour-of-day net SOL in your timezone (per mint\'s most-recent trade).\n\n' +
+                      `Day-of-week × hour-of-day ${WALLET_STATS.totalSol.label} ◎ in your timezone (per mint's most-recent trade).\n\n` +
                       'Green = net profit in that slot; red = net loss. A cell counts mints decided then, not individual trades. ' +
                       'Click to focus — equity, return, scatter, ranked, and the table follow.',
                   }}
