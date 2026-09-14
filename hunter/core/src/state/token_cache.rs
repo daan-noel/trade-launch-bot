@@ -307,10 +307,10 @@ pub struct TokenState {
     /// block_time alongside `current_reserve_token` so the strategy snipe buy can
     /// derive a slippage `min_out` from the in-memory spot price without an inline RPC.
     pub current_reserve_sol: Option<f64>,
-    /// The PumpSwap pool's fee in bps, as its newest live swap charged it
-    /// (`Trade::venue_fee_bps` off the swap event; the pool's market-cap fee tier).
-    /// `None` until a live AMM swap is seen — a curve token, or a migrated one whose
-    /// only trades so far came from the DB — and pricing then keeps the curve fee.
+    /// The PumpSwap pool's fee in bps, as its newest swap that recorded one charged
+    /// it (`TradeRow::venue_fee_bps`; the pool's market-cap fee tier), live or
+    /// seeded from `trades`. `None` for a curve token, or a migrated one with no such
+    /// swap yet, and pricing then keeps the curve fee.
     /// A curve token never trades on the AMM and a migrated one never again on the
     /// curve, so every print of a token with a fee here is an AMM print.
     pub current_venue_fee_bps: Option<f64>,
@@ -592,6 +592,9 @@ impl TokenState {
                 self.update_market_cap(price);
             }
             self.update_reserves(trade);
+            if let Some(fee) = trade.venue_fee_bps().filter(|f| f.is_finite() && *f >= 0.0) {
+                self.current_venue_fee_bps = Some(fee);
+            }
         }
     }
 
@@ -1010,6 +1013,26 @@ mod tests {
         );
         t.real_reserve_sol = Some(real_reserve_sol);
         t
+    }
+
+    /// A swap that recorded its PumpSwap fee sets the pool fee — live or seeded
+    /// from `trades`, both fold through `add_trade` — and one that recorded none
+    /// (a curve print, a pre-0020 row) leaves it.
+    #[test]
+    fn the_pool_fee_follows_the_newest_swap_that_recorded_one() {
+        let now = Utc::now();
+        let mut state = TokenState::new(token_created_at(now - ChronoDuration::days(2)));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(30), 1.0, 1000.0, 50.0));
+        assert_eq!(state.current_venue_fee_bps, None);
+        let mut amm = trade_at(now - ChronoDuration::seconds(20), 1.0, 1000.0, 50.0);
+        amm.venue = "amm".into();
+        amm.venue_fee_bps = Some(95.0);
+        state.add_trade(amm.clone());
+        assert_eq!(state.current_venue_fee_bps, Some(95.0));
+        amm.block_time = now - ChronoDuration::seconds(10);
+        amm.venue_fee_bps = None;
+        state.add_trade(amm);
+        assert_eq!(state.current_venue_fee_bps, Some(95.0));
     }
 
     #[test]

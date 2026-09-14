@@ -337,9 +337,6 @@ impl IngestConsumer {
                     build_hash,
                     is_launch,
                 );
-                if let Some(fee) = e.venue_fee_bps.filter(|f| f.is_finite() && *f >= 0.0) {
-                    token_state.current_venue_fee_bps = Some(fee);
-                }
                 let tp = if is_amm && !token_state.amm_pool_prewarmed {
                     token_state.token.token_program_id.clone()
                 } else {
@@ -709,6 +706,7 @@ fn trade_from_event(e: &IlTrade) -> Trade {
         cu_price: e.cu_price,
         tip_lamports: e.tip_lamports,
         payer_net_lamports: e.payer_net_lamports,
+        venue_fee_bps: e.venue_fee_bps,
         tx_signature: e.signature.clone(),
         tx_index: e.tx_index,
         leg_index: e.leg_index,

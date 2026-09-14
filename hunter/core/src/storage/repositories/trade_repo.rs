@@ -21,7 +21,7 @@ const SEED_MINT_CHUNK: usize = 1000;
 /// ceiling guard in `tests` both read it, so adding a bound column cannot leave a
 /// stale copy behind (it did once — the doc said 18 while the guard still asserted
 /// 15, and neither was the truth).
-const TRADE_INSERT_BINDS_PER_ROW: usize = 21;
+const TRADE_INSERT_BINDS_PER_ROW: usize = 22;
 
 /// Rows per `insert_many` statement. A single Postgres statement is capped at
 /// 65535 bind parameters (the wire protocol's int16 count), and sqlx 0.6 silently
@@ -76,7 +76,7 @@ const TRADE_HISTORY_COLUMNS: &str = "t.mint_address, \
     COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue, \
     t.amount_lamports, t.token_amount, t.reserve_lamports, t.reserve_token, \
     t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels, \
-    t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports, \
+    t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports, t.venue_fee_bps, \
     p.address AS payer_address, \
     COALESCE(t.is_proxied, w.is_proxy) AS is_proxied";
 
@@ -156,6 +156,9 @@ struct TradeDbRow {
     payer_address: Option<String>,
     #[sqlx(default)]
     is_proxied: Option<bool>,
+    // 0020. Defaulted like the rest; NULL on curve rows and amm rows before 0020.
+    #[sqlx(default)]
+    venue_fee_bps: Option<f32>,
 }
 
 impl TryFrom<TradeDbRow> for Trade {
@@ -193,6 +196,7 @@ impl TryFrom<TradeDbRow> for Trade {
             // Not projected by the history reads: only a position's own fills read
             // it, through `sum_legs_by_signatures`.
             payer_net_lamports: None,
+            venue_fee_bps: r.venue_fee_bps.map(f64::from),
             tx_signature: sig_bytes_to_base58(&r.tx_signature),
             tx_index: r.tx_index as u32,
             leg_index: r.leg_index as u32,
@@ -270,9 +274,9 @@ impl TradeRepo {
                  reserve_lamports, reserve_token,
                  slot, tx_index, leg_index, block_time, tx_signature, ix_labels,
                  fee_lamports, cu_limit, cu_price, tip_lamports,
-                 payer_id, is_proxied, payer_net_lamports)
+                 payer_id, is_proxied, payer_net_lamports, venue_fee_bps)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                    $16, $17, $18, $19, $20, $21)
+                    $16, $17, $18, $19, $20, $21, $22)
             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
             "#,
         )
@@ -297,6 +301,7 @@ impl TradeRepo {
         .bind(payer_id)
         .bind(trade.is_proxied)
         .bind(trade.payer_net_lamports)
+        .bind(trade.venue_fee_bps.map(|f| f as f32))
         .execute(&self.pool)
         .await?;
 
@@ -380,7 +385,8 @@ impl TradeRepo {
                  (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount, \
                   reserve_lamports, reserve_token, slot, tx_index, leg_index, \
                   block_time, tx_signature, ix_labels, fee_lamports, \
-                  cu_limit, cu_price, tip_lamports, payer_id, is_proxied, payer_net_lamports) ",
+                  cu_limit, cu_price, tip_lamports, payer_id, is_proxied, payer_net_lamports, \
+                  venue_fee_bps) ",
             );
             qb.push_values(chunk.iter().zip(sig_chunk), |mut b, (t, sig)| {
                 let wallet_id = wallet_ids.get(&t.wallet_address).copied().unwrap_or_default();
@@ -408,7 +414,8 @@ impl TradeRepo {
                             .flatten(),
                     )
                     .push_bind(t.is_proxied)
-                    .push_bind(t.payer_net_lamports);
+                    .push_bind(t.payer_net_lamports)
+                    .push_bind(t.venue_fee_bps.map(|f| f as f32));
             });
             qb.push(" ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING");
             qb.build().execute(&self.pool).await?;
@@ -1004,20 +1011,20 @@ impl TradeRepo {
     /// The pool each of `mints` trades on now: the spot (SOL per raw unit) and
     /// priced SOL depth of its newest trade that carries a reserve pair — the pool
     /// an open bag would sell into. A mint with no such trade in the retained
-    /// window is absent. No per-swap PumpSwap fee is stored, so `venue_fee_bps` is
-    /// `None` and a migrated pool marks at the curve fee.
+    /// window is absent. `venue_fee_bps` is that trade's PumpSwap fee (NULL on the
+    /// curve and before migration 0020, which marks at the curve fee).
     ///
     /// One `idx_trades_mint_order` backward scan per mint (~7 ms each locally).
     pub async fn latest_pools(&self, mints: &[String]) -> anyhow::Result<HashMap<String, MarkQuote>> {
         if mints.is_empty() {
             return Ok(HashMap::new());
         }
-        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, i64, i64, Option<f32>)> = sqlx::query_as(
             r#"
-            SELECT m.mint, x.reserve_lamports, x.reserve_token
+            SELECT m.mint, x.reserve_lamports, x.reserve_token, x.venue_fee_bps
             FROM unnest($1::text[]) AS m(mint)
             JOIN LATERAL (
-                SELECT t.reserve_lamports, t.reserve_token
+                SELECT t.reserve_lamports, t.reserve_token, t.venue_fee_bps
                 FROM trades t
                 WHERE t.mint_address = m.mint
                   AND t.reserve_lamports IS NOT NULL AND t.reserve_token > 0
@@ -1031,12 +1038,12 @@ impl TradeRepo {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(mint, reserve_lamports, reserve_token)| {
+            .map(|(mint, reserve_lamports, reserve_token, venue_fee_bps)| {
                 let reserve_sol = lamports_to_sol(reserve_lamports);
                 let quote = MarkQuote {
                     price: reserve_sol / reserve_token as f64,
                     reserve_sol: Some(reserve_sol),
-                    venue_fee_bps: None,
+                    venue_fee_bps: venue_fee_bps.map(f64::from),
                 };
                 (mint, quote)
             })
@@ -2042,7 +2049,7 @@ mod tests {
     /// (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,
     /// reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time,
     /// tx_signature, ix_labels, fee_lamports, cu_limit, cu_price, tip_lamports,
-    /// payer_id, is_proxied, payer_net_lamports); one Postgres statement is capped at 65535 (sqlx 0.6
+    /// payer_id, is_proxied, payer_net_lamports, venue_fee_bps); one Postgres statement is capped at 65535 (sqlx 0.6
     /// wraps `len() as i16` past it → a Postgres parse error). Pin the chunk so
     /// adding a bound column re-checks the ceiling here instead of surfacing as a
     /// runtime parse error on the backfill path.

@@ -82,6 +82,11 @@ pub struct Trade {
     /// as its entry / exit SOL. Per-transaction — collapse by `tx_signature` before
     /// summing. `None` before migration 0019 or when the source carried no balances.
     pub payer_net_lamports: Option<i64>,
+    /// The fee a PumpSwap swap charged, in bps of the pool's own constant-product
+    /// amount (`trades.venue_fee_bps`, migration 0020). `None` on the curve, whose
+    /// fee is the cost model's constant, and on an amm row written before 0020.
+    #[serde(default)]
+    pub venue_fee_bps: Option<f64>,
     pub tx_signature: String,
     /// Position of this trade's transaction within its block. Real on the live
     /// LaserStream feed and on LaserStream-replay backfill. On the RPC backfill path
@@ -102,8 +107,8 @@ pub struct Trade {
     /// SOL side of the reserve pair this row prices from (venue-neutral): the
     /// bonding curve's *virtual* SOL reserves on curve rows, the PumpSwap pool's
     /// priced quote on amm rows — its vault plus the pool's virtual quote
-    /// (`PUMP_SWAP_VIRTUAL_QUOTE_SOL`). Spot price = `reserve_sol / reserve_token`. SOL stays
-    /// `f64` (small magnitude); the exactness lives in the lamports column.
+    /// (`PUMP_SWAP_VIRTUAL_QUOTE_SOL`). Spot price = `reserve_sol / reserve_token`.
+    /// SOL stays `f64` (small magnitude); the exactness lives in the lamports column.
     pub reserve_sol: Option<f64>,
     /// Token side of the reserve pair — raw on-chain integer units (`u64`, near 2^53).
     pub reserve_token: Option<u64>,
@@ -176,6 +181,7 @@ impl Trade {
             cu_price: None,
             tip_lamports: None,
             payer_net_lamports: None,
+            venue_fee_bps: None,
             tx_signature,
             tx_index: 0,
             leg_index: 0,
@@ -246,6 +252,11 @@ pub trait TradeRow {
     /// in [`chart_spot_price`](TradeRow::chart_spot_price). Only rows that carry the
     /// real-reserve pair price via the pool branch; the default is `None`.
     fn real_token_reserves(&self) -> Option<f64> {
+        None
+    }
+    /// The fee this print's venue charged, in bps, when it is a PumpSwap swap that
+    /// recorded one; `None` prices it at the cost model's curve fee.
+    fn venue_fee_bps(&self) -> Option<f64> {
         None
     }
     /// Borrowed wallet identity — borrowed so callers never clone unnecessarily.
@@ -375,6 +386,9 @@ impl TradeRow for Trade {
     }
     fn real_token_reserves(&self) -> Option<f64> {
         self.real_token_reserves.map(|v| v as f64)
+    }
+    fn venue_fee_bps(&self) -> Option<f64> {
+        self.venue_fee_bps
     }
     fn wallet(&self) -> &String {
         &self.wallet_address
