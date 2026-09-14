@@ -1,63 +1,102 @@
 # Trader Analysis episode ledger - what is still open
 
 Trader Analysis reads one row per (wallet, mint) over the window: an avg-cost rollup
-(`kernel::wallet_mint_pnl`), net of fee, with every per-trade figure in
-`walletPnlStats.ts` (`WALLET_STATS`). A "trade" there is one token, however many
-times the wallet re-entered it, so these stay unanswerable:
+(`kernel::wallet_mint_pnl`) on curve-side SOL less the 125 bps fee, with every
+per-trade figure in `walletPnlStats.ts` (`WALLET_STATS`). Two things keep it from
+matching what the wallet did:
 
-- a per-trade PnL % distribution when a wallet re-enters a mint (the page folds
-  every visit into one);
-- the hold of one round trip (the page's hold spans every re-entry);
-- how deep a trade went under water before it was sold (max adverse excursion).
+- **the SOL is modeled**: curve-side `amount_lamports` less 125 bps misses the network
+  fee, the priority fee, the tip, and the PumpSwap fee on a migrated coin;
+- **a trade is one token**, however many times the wallet re-entered it, so the
+  per-trade distribution, hold, loss streak and max drawdown fold every visit into one.
 
-## 1. The episode
+The target: every figure on the page equals what the wallet moved, trade by trade.
 
-An episode opens on a buy while the wallet holds no tokens of that mint and closes on
-the sell that brings its held amount back to zero. The next buy opens a new one. Legs
-fold in the canonical trade order `(slot, tx_index, leg_index)` - never `block_time`,
-which ties across a slot, and never a `leg_index = 0` filter, which drops buys.
+## 1. SOL basis - exact only
 
-Cost basis is avg-cost **within the episode**: a partial sell realizes against the
-episode's running average buy price. A mint traded as one episode then reproduces
-`wallet_mint_pnl` exactly, which is the parity test.
+A trade's SOL is its transactions' **payer net flow** (`trades.payer_net_lamports`,
+migration 0019): what the transaction took from or returned to the wallet, every fee,
+tip and venue charge included - the figure an on-chain tracker reads. There is no
+modeled fallback: a leg without an exact figure makes its episode **incomplete** (§3).
 
-An episode still holding at the window's end is open (marked at `current_price`, as
-now). An episode whose first leg in the window is a sell is partial (its buy predates
-the window) and carries the same `partial` flag the rollup does.
+A leg's flow is exact when all of these hold:
 
-## 2. Where it is computed
+- `payer_net_lamports` is not NULL. The column is forward-only, so nothing before
+  0019 reaches the server can ever be exact (`raw_txs` keeps no payload to re-decode);
+- the transaction's payer is the wallet (`payer_id = wallet_id`). A bot that pays from
+  one keypair and trades from another moves the payer's SOL, not the wallet's;
+- the transaction's legs for this wallet all sit on one mint. The flow is
+  per-transaction, denormalized onto every leg (collapse by signature), and cannot be
+  split across mints.
+
+Rent a buy parks in the wallet's own token account counts as still the wallet's
+(0019), so a close in a separate transaction moves only its 5,000-lamport fee, which
+is not a trade and is not booked.
+
+**Prerequisite:** migration 0019 and the live binary deployed to the server
+([exact-pnl-plan.md](exact-pnl-plan.md) item 1). Until then every episode is
+incomplete and the page shows none. The lake export gains the column before a window
+older than PG's ~30-day retention can be exact.
+
+## 2. The episode
+
+An episode opens on a buy while the wallet holds none of that mint and closes on the
+sell that brings its held amount to dust - at most 0.1 % of the tokens the episode
+bought. The next buy opens a new one. Legs fold in the canonical trade order
+`(slot, tx_index, leg_index)` - never `block_time`, which ties across a slot, and
+never a `leg_index = 0` filter, which drops buys.
+
+Closed episode PnL = Σ sell flow − Σ buy flow; PnL % = that over Σ buy flow. No cost
+method enters a closed episode. A partial sell realizes against the episode's running
+average buy cost, which only an open episode's split needs.
+
+An episode whose opening buy predates the window is read from its opening buy: the
+window selects episodes by close, and the fold looks back to the buy through PG and
+the lake.
+
+## 3. Incomplete episodes
+
+An episode the trades table cannot fully see is **incomplete**, counted and shown on
+the page, and left out of every PnL figure:
+
+- a leg without an exact flow (§1);
+- a sell of more tokens than the episode holds - tokens arrived without a buy
+  (a transfer in);
+- no opening buy within the data held.
+
+## 4. Open episodes
+
+An open episode has no exact value until it sells. It is shown apart, at the
+kernel's mark (`current_price`, labelled an estimate), and stays out of Total, the
+per-trade stats and the drawdown. Tokens that left by transfer read as open too: the
+trades table carries no transfers, so the page cannot tell them from a bag still
+held, and keeping open episodes out of every PnL figure keeps them from bending one.
+
+## 5. Max drawdown - the most lost at once
+
+The running Total adds each closed episode's exact net SOL at its close, ordered by
+the closing sell's `(slot, tx_index, leg_index)`, starting from 0. Max drawdown is the
+deepest fall of that running Total below its highest point so far - the largest loss
+in one stretch, whatever came before it. This is the Equity chart's fold
+(`buildEquityCurve` + `maxDrawdownSol`), moved from one point per token to one point
+per episode.
+
+## 6. Where it is computed
 
 - `kernel::wallet_episodes(legs) -> Vec<WalletEpisode>`: the pure fold, next to
   `wallet_mint_pnl`, unit-tested on golden leg sequences (one episode, a re-entry, a
-  partial sell, an oversold window). Each episode: entry / exit `(slot, tx_index)` and
-  time, buy / sell SOL, matched cost, gross and net realized, net %, hold.
+  partial sell, dust, an oversold sell, a missing flow, a payer that is not the
+  wallet). Each episode: entry / exit `(slot, tx_index)` and time, buy / sell flow,
+  net SOL and %, hold, status (closed / open / incomplete + reason).
 - Legs come from one bounded PG read per page load: the wallet's legs on the page's
-  mints in the window, same `wallet_dict` proxy exclusion as `traded_mints_agg`.
-- The wire: `episodes: WalletEpisode[]` on each `WalletTokenRow`. Mint-grain columns
-  and focus keep working; the summary's trade grain moves to episodes.
+  mints, window plus look-back, with `payer_net_lamports`, `payer_id` and
+  `signature`, same `wallet_dict` proxy exclusion as `traded_mints_agg`.
+- The wire: `episodes: WalletEpisode[]` on each `WalletTokenRow`. A mint's row PnL is
+  the sum of its closed episodes; a row with an incomplete episode shows the count.
 
-## 3. Max adverse / favorable excursion
+## 7. Summary once episodes land
 
-Per episode: the lowest and highest pool spot (`TradeRow::chart_spot_price`, the
-series the charts draw) over every print of the mint between entry and exit, against
-the episode's average entry price, as a %. MAE % = (min spot / avg entry - 1) x 100.
-Unit, basis and window go into `WALLET_STATS` with the metric.
-
-This needs every print of each traded mint over each episode, not only the wallet's
-own legs - the expensive part. Open choice: one PG query per page (min / max spot per
-episode range, grouped) against the lake for sealed days plus PG for the tail
-([lake-pg-read-paths.md](../plans/database/lake-pg-read-paths.md)).
-
-## 4. SOL basis
-
-The rollup and the episodes price curve-side `amount_lamports` with the 125 bps fee.
-`trades.payer_net_lamports` is what each transaction moved in the payer's wallet, all
-fees and tip included (NULL before migration 0019). Where every leg of an episode
-carries it, it is the exact figure; the choice (exact when complete, curve-side
-otherwise, the episode labelled with its basis) is open.
-
-## 5. Summary once episodes land
-
-`WALLET_STATS` gains `episodeCount`, `medianMaePct`, `worstMaePct`, `medianMfePct`;
-`tradeCount`, the per-trade %, hold and loss streak switch to the episode grain, each
-definition updated in the same commit. Workstation only: `lab` bin, no Helius call.
+`tradeCount`, win rate, the per-trade %, expectancy, worst trade, hold, loss streak and
+max drawdown switch to the episode grain on the exact basis; `WALLET_STATS` gains
+`episodeCount`, `incompleteCount`, `exactShare`, each definition updated in the same
+commit. Workstation only: `lab` bin, no Helius call.
