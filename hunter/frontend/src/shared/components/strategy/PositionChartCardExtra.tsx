@@ -222,7 +222,7 @@ function simEpisode(r: SimulatedTokenResult): PositionChartEpisode {
     holdSecs: r.holding_secs,
     pnlSol: r.pnl_sol,
     pnlPct: r.pnl_percent,
-    entrySol: solOf(r.entry_price, r.entry_token_amount),
+    entrySol: r.entry_sol ?? null,
     entryPrice: r.entry_price,
     exitPrice: r.exit_price,
     exitReason: r.exit_reason,

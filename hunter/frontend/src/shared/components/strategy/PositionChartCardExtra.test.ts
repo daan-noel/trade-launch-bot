@@ -70,6 +70,7 @@ describe('positionChartFactsFromSim', () => {
       fired: true,
       entry_price: 0.01,
       entry_token_amount: 100,
+      entry_sol: 1,
       exit_price: 0.02,
       holding_secs: 12,
       pnl_percent: 100,
@@ -82,5 +83,24 @@ describe('positionChartFactsFromSim', () => {
     expect(facts.holdSecs).toBe(12);
     expect(facts.entrySol).toBeCloseTo(1, 9);
     expect(facts.pnlPct).toBe(100);
+  });
+
+  it('sizes from entry_sol, never price x tokens', () => {
+    const row = {
+      mint_address: 'm',
+      symbol: 'T',
+      fired: true,
+      entry_price: 2.8e-8,
+      entry_token_amount: 3_500_000_000_000,
+      exit_price: 3e-8,
+      holding_secs: 5,
+      pnl_percent: 4,
+      pnl_sol: 0.004,
+      exit_reason: 'TakeProfit',
+      exit_time: '2026-07-01T00:00:05Z',
+      entry_time: '2026-07-01T00:00:00Z',
+    } as SimulatedTokenResult;
+    expect(positionChartFactsFromSim([row]).entrySol).toBeNull();
+    expect(positionChartFactsFromSim([{ ...row, entry_sol: 0.1 }]).entrySol).toBeCloseTo(0.1, 9);
   });
 });

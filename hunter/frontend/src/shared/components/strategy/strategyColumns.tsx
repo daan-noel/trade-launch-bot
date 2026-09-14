@@ -294,8 +294,13 @@ const TARGET_TOOLTIPS_SIM: Partial<Record<LegField, string>> = {
 };
 const ENTRY_TOOLTIPS: Partial<Record<LegField, string>> = {
   tokens: 'Tokens bought at entry.',
-  size: 'SOL spent at entry (entry price × tokens).',
+  size: 'SOL spent at entry: the recorded entry cost; a row without one shows entry price × tokens.',
   tx: 'Real: our buy transaction. Paper / simulated: the feed print the modeled fill was priced against.',
+};
+const ENTRY_TOOLTIPS_SIM: Partial<Record<LegField, string>> = {
+  ...ENTRY_TOOLTIPS,
+  tokens: 'Modeled tokens the entry bought (raw units).',
+  size: 'SOL notional the rule deployed at entry.',
 };
 const EXIT_TOOLTIPS: Partial<Record<LegField, string>> = {
   tokens: 'Tokens sold at exit.',
@@ -562,10 +567,11 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = (
     {
       price: (r) => r.entry_price,
       tokens: (r) => r.entry_token_amount,
+      size: (r) => r.entry_sol ?? null,
       time: (r) => r.entry_time,
       tx: (r) => r.entry_tx,
     },
-    { tooltips: ENTRY_TOOLTIPS },
+    { tooltips: ENTRY_TOOLTIPS_SIM },
   ),
   {
     key: 'ath_price',

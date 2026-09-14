@@ -286,8 +286,11 @@ export interface SimulatedTokenResult extends TokenEnrichmentFields {
   /** All-time-high price from `tokens_info` (row-owned enrichment); null if the
    *  token has no info row. */
   ath_price: number | null;
-  /** SOL notional the rule deployed (rendered as entry size); null when not fired. */
+  /** Modeled raw token count the entry bought; null when not fired. */
   entry_token_amount: number | null;
+  /** SOL notional the rule deployed (rendered as entry size); null when not fired.
+   *  Absent on payloads that predate the field. */
+  entry_sol?: number | null;
   entry_tx: string | null;
   entry_time: string | null;
   exit_price: number | null;

@@ -135,7 +135,7 @@ function simChartPoints(rows: SimulatedTokenResult[]): PositionChartPoint[] {
       pnlSol: r.pnl_sol ?? 0,
       pnlPct: r.pnl_percent,
       holdSeconds: hold != null && hold > 0 ? hold : open ? 1 : null,
-      entrySol: r.entry_token_amount ?? 0.1,
+      entrySol: r.entry_sol ?? 0.1,
       isOpen: open,
       exit_reason: open ? null : r.exit_reason,
       is_migrated: r.is_migrated ?? null,
