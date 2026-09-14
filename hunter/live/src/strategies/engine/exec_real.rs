@@ -27,8 +27,7 @@ use hunter_engine::event::{Event, Fill, FillFailReason, IntentId};
 use pump_trader::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 
 use trading_core::config::constants::{
-    lamports_to_sol, COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_LIMIT_CURVE_BUY,
-    COMPUTE_UNIT_LIMIT_CURVE_SELL,
+    COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
 };
 use trading_core::config::fee_tuning::close_account_fee_sol;
 use trading_core::config::FeeTuning;
@@ -620,8 +619,7 @@ async fn emit_entry_filled(
                 // take-profit / stop-loss fire on the same move; the SOL is what the
                 // buy took from the wallet.
                 price: legs.entry_price(),
-                sol: booked_wallet_sol(&legs, &order.mint, "buy")
-                    + take_reverted_fees_sol(&deps.registry, order.pg_id),
+                sol: booked_wallet_sol(&legs, &order.mint, "buy"),
                 token_amount: legs.token_amount,
                 at: legs.last_block_time,
             },
@@ -643,25 +641,24 @@ pub(crate) fn booked_wallet_sol(legs: &SigLegs, mint: &str, side: &str) -> f64 {
 }
 
 /// Charge a transaction of this position that landed and REVERTED: the wallet paid
-/// its network fee (the tip rolled back with its instructions), so the position
-/// carries it until a fill books it ([`take_reverted_fees_sol`]) or the entry fails
-/// (the sink writes it to `extra`).
-fn note_reverted_fee(registry: &PositionRegistry, pg_id: Uuid, cu_limit: u32) {
+/// its network fee (the tip rolled back with its instructions). It goes on the row
+/// (`StrategyRepo::add_reverted_fee`), where the next booked fill takes it. Failure
+/// path only; retries briefly on a row that has not landed yet, like
+/// [`note_entry_error`].
+async fn note_reverted_fee(repo: &StrategyRepo, pg_id: Uuid, cu_limit: u32) {
     let fee = FeeTuning::current().network_fee_lamports(cu_limit);
     warn!(pg = %pg_id, fee, "transaction reverted on chain: its fee is charged to the position");
-    if let Some(id) = registry.engine_id(pg_id) {
-        registry.update(id, |m| m.reverted_fee_lamports += fee);
+    for _ in 0..NOTE_ENTRY_ERROR_ATTEMPTS {
+        match repo.add_reverted_fee(pg_id, fee).await {
+            Ok(true) => return,
+            Ok(false) => tokio::time::sleep(NOTE_ENTRY_ERROR_BACKOFF).await,
+            Err(e) => {
+                warn!(pg = %pg_id, "add_reverted_fee failed: {e}");
+                return;
+            }
+        }
     }
-}
-
-/// Take the position's reverted-transaction fees not booked yet, in SOL — added to
-/// a buy's paid SOL, taken off a sell's received SOL.
-pub(crate) fn take_reverted_fees_sol(registry: &PositionRegistry, pg_id: Uuid) -> f64 {
-    let mut taken = 0u64;
-    if let Some(id) = registry.engine_id(pg_id) {
-        registry.update(id, |m| taken = std::mem::take(&mut m.reverted_fee_lamports));
-    }
-    lamports_to_sol(taken as i64)
+    warn!(pg = %pg_id, fee, "add_reverted_fee: row never appeared — the fee is log-only");
 }
 
 async fn emit_entry_outcome(
@@ -809,7 +806,7 @@ async fn confirm_entry(
     }
     let status = deps.trader.signature_state_detailed(sig).await;
     if matches!(status, Ok(SigStatus::Reverted { .. })) {
-        note_reverted_fee(&deps.registry, order.pg_id, COMPUTE_UNIT_LIMIT_CURVE_BUY);
+        note_reverted_fee(&deps.strategy_repo, order.pg_id, COMPUTE_UNIT_LIMIT_CURVE_BUY).await;
     }
     match classify_silent_send(&status) {
         SilentSendOutcome::Resend => EntryOutcome::Retry(describe_status(&status)),
@@ -1013,7 +1010,7 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
         if matches!(state, Ok(SigStatus::Reverted { .. })) {
             let cu_limit =
                 if is_migrated { COMPUTE_UNIT_LIMIT_AMM } else { COMPUTE_UNIT_LIMIT_CURVE_SELL };
-            note_reverted_fee(&deps.registry, order.pg_id, cu_limit);
+            note_reverted_fee(&deps.strategy_repo, order.pg_id, cu_limit).await;
         }
         match classify_sell_confirm(&state, is_migrated, now_migrated) {
             SellConfirmAction::WaitConfirm => {
@@ -1196,8 +1193,7 @@ async fn finish_cleared_sell(
     // the position records is what the wallet ends up with.
     let reclaims = order.empties_bag
         && !has_other_open_position(&deps.strategy_repo, &wallet, &order.mint, order.pg_id).await;
-    let mut sol = booked_wallet_sol(&legs, &order.mint, "sell")
-        - take_reverted_fees_sol(&deps.registry, order.pg_id);
+    let mut sol = booked_wallet_sol(&legs, &order.mint, "sell");
     if reclaims {
         sol -= close_account_fee_sol();
     }
@@ -1376,44 +1372,6 @@ pub(crate) fn snipe_reserves_from_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Two reverted buys are charged to the position and handed, once, to the
-    /// fill that books next; a position with no engine row has nothing to take.
-    #[test]
-    fn reverted_fees_carry_to_the_next_booked_fill() {
-        use hunter_engine::event::{PositionId, RuleId, TradeMode};
-        let registry = PositionRegistry::new();
-        let pg_id = Uuid::new_v4();
-        registry.upsert(
-            PositionId(7),
-            super::super::PositionMeta {
-                pg_id,
-                run_id: Uuid::new_v4(),
-                rule_id: RuleId(Uuid::new_v4()),
-                mint: "MINT".into(),
-                trade_mode: TradeMode::Real,
-                token_program_id: None,
-                creator: None,
-                entry_token_amount: None,
-                sold_token_amount: 0,
-                scale_stage: 0,
-                token_account: None,
-                entry_price: None,
-                entry_sol: None,
-                entry_time: None,
-                target_snapshot: None,
-                cashback_enabled: false,
-                inflight_intent: None,
-                reverted_fee_lamports: 0,
-            },
-        );
-        note_reverted_fee(&registry, pg_id, COMPUTE_UNIT_LIMIT_CURVE_BUY);
-        note_reverted_fee(&registry, pg_id, COMPUTE_UNIT_LIMIT_CURVE_BUY);
-        let fee = FeeTuning::current().network_fee_lamports(COMPUTE_UNIT_LIMIT_CURVE_BUY);
-        assert_eq!(take_reverted_fees_sol(&registry, pg_id), lamports_to_sol(2 * fee as i64));
-        assert_eq!(take_reverted_fees_sol(&registry, pg_id), 0.0, "taken once");
-        assert_eq!(take_reverted_fees_sol(&registry, Uuid::new_v4()), 0.0);
-    }
 
     #[test]
     fn classify_silent_send_buy_slippage_resends() {

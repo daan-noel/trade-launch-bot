@@ -28,7 +28,7 @@ fixture it maps to `EntryFailed` (entry NULL) or `ExitStuck` (everything else).
 | `ExitStuck` | Open · attention | sell gave up, **bag still held**; reaper redrives ×`EXIT_REDRIVE_CAP=2` then `exit_parked` (mig 0012 cols) |
 | `ExitUnconfirmed` | Open · attention | sell may/may-not have cleared; auto-re-sold **only** once the original is proven unexecutable (§2.1); bag-cleared reaper heal + manual Verify |
 | `End` | Terminal | confirmed exit (incl. `Dead` write-off) |
-| `EntryFailed` | Terminal | buy never filled; **no hypothetical exit price stamped; excluded from realized PnL** (entry NULL). Carries no `exit_reason` (nothing exited) — the cause is in `last_entry_error`, §2.2 |
+| `EntryFailed` | Terminal | buy never filled; **no hypothetical exit price stamped; excluded from realized PnL** (entry NULL) - only its reverted buys' fees (`extra.reverted_fee_lamports`) come off the rule and run totals. Carries no `exit_reason` (nothing exited) — the cause is in `last_entry_error`, §2.2 |
 
 Partition SSOT guards: `sinks.rs::status_partition_guard` (Rust, compile-forcing) ⟷
 `liveStatusSlice.ts` `OPEN_STATUSES`/`ATTENTION_STATUSES`/`TERMINAL_STATUSES` (+ vitest).
@@ -158,12 +158,13 @@ shared pro-rata by tokens when one sell cleared several rows.
 
 A buy or sell transaction that lands and **reverts** still pays its network fee (base +
 priority on the requested CU limit; the tip rolls back with its instructions). The real
-executor charges it to the position (`PositionMeta::reverted_fee_lamports`, from
-`FeeTuning::network_fee_lamports`) and the next booked fill takes it: added to the buy's
-paid SOL, taken off the sell's received SOL, so every per-position PnL carries it. A
-position whose entry never fills keeps the fee in `extra.reverted_fee_lamports`
-(`EXTRA_REVERTED_FEE_LAMPORTS`), and the rule and run PnL totals subtract it. A fee is
-lost only when the process restarts before the position books it.
+executor adds it to the row (`StrategyRepo::add_reverted_fee`, from
+`FeeTuning::network_fee_lamports`) under `extra.reverted_fee_lamports`
+(`EXTRA_REVERTED_FEE_LAMPORTS`). The next `record_entry_fill` / `record_sell_fill` takes
+it inside its own transaction - on top of the buy's paid SOL, off the sell's received
+SOL, on the row and its ledger leg - so every booking path (engine, reaper adopt,
+orphan, heal) carries it, across restarts. A position whose entry never fills keeps it,
+and the rule and run PnL totals subtract it.
 
 ### 2.3 What "Stop" actually waits on
 

@@ -481,11 +481,6 @@ pub struct PositionMeta {
     /// reaper uses it to emit `FillFailed` back into the engine when a sell task
     /// dies but the process is still up.
     pub inflight_intent: Option<IntentId>,
-    /// Network fees, in lamports, of this position's transactions that landed and
-    /// reverted and are not booked yet. The real executor adds each one; the next
-    /// booked fill takes them (on top of a buy's paid SOL, off a sell's received
-    /// SOL), or the sink writes them to `extra` when the entry fails.
-    pub reverted_fee_lamports: u64,
 }
 
 /// Trigger-trade snapshot the paper fill model arms from (→ DB `target_*`).

@@ -749,6 +749,28 @@ impl From<TableRequest> for PositionQuery {
     }
 }
 
+/// Take the position's unbooked reverted-transaction fees
+/// ([`EXTRA_REVERTED_FEE_LAMPORTS`]) inside the fill's transaction: the row is
+/// locked, the key cleared, and its lamports returned (0 when absent) for the fill
+/// to book.
+async fn take_reverted_fee(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> anyhow::Result<i64> {
+    let fee: Option<i64> = sqlx::query_scalar(&format!(
+        "WITH old AS ( \
+             SELECT id, COALESCE((extra->>'{EXTRA_REVERTED_FEE_LAMPORTS}')::bigint, 0) AS fee \
+             FROM strategy_positions WHERE id = $1 FOR UPDATE) \
+         UPDATE strategy_positions p SET extra = p.extra - '{EXTRA_REVERTED_FEE_LAMPORTS}' \
+         FROM old WHERE p.id = old.id AND old.fee <> 0 \
+         RETURNING old.fee"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(fee.unwrap_or(0))
+}
+
 /// The positions time-window instant — one expression shared by the range
 /// predicate and any caller that needs "when did this row happen" semantics.
 const POSITION_WHEN_SQL: &str = "COALESCE(sp.exit_time, sp.entry_time, sp.created_at)";
@@ -2904,6 +2926,9 @@ impl StrategyRepo {
         entry_priced_reserve: Option<f64>,
     ) -> anyhow::Result<StrategyPosition> {
         let mut tx = self.pool.begin().await?;
+        // What the buy took from the wallet, plus the fees of this position's
+        // reverted attempts (`EXTRA_REVERTED_FEE_LAMPORTS`), which it books and clears.
+        let entry_lamports = sol_to_lamports(entry_sol) + take_reverted_fee(&mut tx, id).await?;
         let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "UPDATE strategy_positions \
              SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, \
@@ -2921,7 +2946,7 @@ impl StrategyRepo {
         .bind(Json(json!([entry_tx])))
         .bind(entry_token_amount as i64)
         .bind(entry_price)
-        .bind(sol_to_lamports(entry_sol))
+        .bind(entry_lamports)
         .bind(entry_time)
         .bind(token_account)
         .bind(entry_slot.map(|v| v as i64))
@@ -2933,7 +2958,7 @@ impl StrategyRepo {
             id,
             "buy",
             entry_price,
-            sol_to_lamports(entry_sol),
+            entry_lamports,
             entry_token_amount as i64,
             entry_time,
             None,
@@ -2972,7 +2997,6 @@ impl StrategyRepo {
         // scale-out the column tracks the most recent leg that resolved one.
         exit_slot: Option<u64>,
     ) -> anyhow::Result<StrategyPosition> {
-        let lamports = sol_to_lamports(sol);
         let sig0 = match sig_kind {
             FillSigKind::Own => tx_signatures.first().map(|s| s.as_str()).filter(|s| !s.is_empty()),
             FillSigKind::Print => None,
@@ -2980,6 +3004,9 @@ impl StrategyRepo {
         let next_stage = stage.map(|s| s as i16);
         let fill_stage = stage.map(|s| s.saturating_sub(1) as i16);
         let mut db_tx = self.pool.begin().await?;
+        // What the sell returned, less the fees of this position's reverted attempts
+        // (`EXTRA_REVERTED_FEE_LAMPORTS`), which it books and clears.
+        let lamports = sol_to_lamports(sol) - take_reverted_fee(&mut db_tx, id).await?;
         append_fill_tx(
             &mut db_tx,
             id,
@@ -3348,6 +3375,24 @@ impl StrategyRepo {
     /// row is inserted asynchronously (Pass-1), so a buy that fails *before* any
     /// network I/O — the already-migrated skip — can run ahead of its own insert.
     /// The caller retries briefly on `false`, exactly as `mark_buy_submitted` does.
+    /// Add the network fee of one of the position's transactions that landed and
+    /// reverted to `extra` ([`EXTRA_REVERTED_FEE_LAMPORTS`]) — atomic, so two
+    /// reverts never lose one. `false` when the row does not exist (yet).
+    pub async fn add_reverted_fee(&self, id: Uuid, lamports: u64) -> anyhow::Result<bool> {
+        let res = sqlx::query(&format!(
+            "UPDATE strategy_positions SET extra = COALESCE(extra, '{{}}'::jsonb) \
+                 || jsonb_build_object('{EXTRA_REVERTED_FEE_LAMPORTS}', \
+                    COALESCE((extra->>'{EXTRA_REVERTED_FEE_LAMPORTS}')::bigint, 0) + $2), \
+                 updated_at = now() \
+             WHERE id = $1"
+        ))
+        .bind(id)
+        .bind(lamports as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     pub async fn note_last_entry_error(&self, id: Uuid, cause: &str) -> anyhow::Result<bool> {
         let cause = truncate_chars(cause, MAX_ENTRY_ERROR_LEN);
         let res = sqlx::query(

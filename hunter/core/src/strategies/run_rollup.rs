@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn a_failed_entrys_reverted_fee_reaches_the_run_total() {
         let mut failed = position("EntryFailed", None, None, None);
-        failed.set_reverted_fee_lamports(27_000);
+        failed.extra = serde_json::json!({ crate::models::strategy::EXTRA_REVERTED_FEE_LAMPORTS: 27_000 });
         let rows = vec![failed, position("End", Some("Manual"), Some(1.0), Some(1.5))];
         let r = roll_up(Uuid::new_v4(), &rows);
         assert_eq!(r.metrics.n_fired, 1);
