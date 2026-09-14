@@ -64,7 +64,7 @@ async fn build_sell_legs(
         if !req.selection.matches(p.managed_wallet_id, &p.role) {
             continue;
         }
-        let amount_base = ((p.balance_base as f64) * pct / 100.0).floor() as i64;
+        let amount_base = pct_of_balance(p.balance_base, pct);
         if amount_base <= 0 {
             continue;
         }
@@ -86,6 +86,19 @@ async fn build_sell_legs(
         });
     }
     Ok(legs)
+}
+
+/// `pct`% (0-100) of `balance` token base units, in integer math: the percent is
+/// rounded to basis points and applied as `balance * bps / 10_000` (u128, no
+/// overflow), so 100% is exactly `balance` and never strands a dust unit the way an
+/// `f64` product floored can.
+pub(crate) fn pct_of_balance(balance: i64, pct: f64) -> i64 {
+    let balance = balance.max(0);
+    let bps = (pct * 100.0).round().clamp(0.0, 10_000.0) as u128;
+    if bps == 10_000 {
+        return balance;
+    }
+    (balance as u128 * bps / 10_000) as i64
 }
 
 /// BUY: a fixed SOL spend per selected managed wallet (fresh buyers welcome).
@@ -213,4 +226,26 @@ async fn resolve_token_role_wallets(
         .into_iter()
         .filter(|w| w.status != WalletStatus::Retired.as_str())
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pct_of_balance;
+
+    /// 100% sells the whole balance. An f64 `balance * pct / 100` rounds once the
+    /// product passes 2^53 and floors one base unit short of a full exit.
+    #[test]
+    fn full_sell_is_exactly_the_balance() {
+        for b in [1, 7, 999_999_999_999_999, 1_000_000_000_000_000, i64::MAX] {
+            assert_eq!(pct_of_balance(b, 100.0), b);
+        }
+    }
+
+    #[test]
+    fn partial_sells_floor_in_integer_math() {
+        assert_eq!(pct_of_balance(1_000, 50.0), 500);
+        assert_eq!(pct_of_balance(999, 33.33), 332); // 999 * 3333 / 10000 = 332.9
+        assert_eq!(pct_of_balance(1_000, 0.0), 0);
+        assert_eq!(pct_of_balance(-5, 50.0), 0);
+    }
 }
