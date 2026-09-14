@@ -145,6 +145,9 @@ pub struct StrategyRunMetrics {
 pub struct MarkQuote {
     pub price: f64,
     pub reserve_sol: Option<f64>,
+    /// The pool's PumpSwap fee (`TokenState::current_venue_fee_bps`); `None` prices
+    /// the sell at the cost model's curve fee.
+    pub venue_fee_bps: Option<f64>,
 }
 
 /// Run-wide (or rule-wide) position aggregates for the strategy page's

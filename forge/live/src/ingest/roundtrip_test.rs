@@ -89,6 +89,8 @@ async fn pump_fun_events_project_onto_the_schema() {
         tip_lamports: Some(0),
         // The wallet paid its own tx, so `trades.payer_net_lamports` keeps it.
         payer_net_lamports: Some(-1_505_000_000),
+        // A curve trade: its fee is the protocol constant, never read per swap.
+        venue_fee_bps: None,
         // A direct trade: the venue's actor signed the transaction, so it is its
         // own payer and nothing is proxied. Forge trades from its own keypairs and
         // never routes through an aggregator, so this is the shape it always sees.

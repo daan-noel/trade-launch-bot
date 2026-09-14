@@ -114,7 +114,6 @@ struct RawPumpSwapBuyEvent {
     user_quote_token_reserves: u64,
     pool_base_token_reserves: u64,
     pool_quote_token_reserves: u64,
-    #[allow(dead_code)]
     quote_amount_in: u64,
     #[allow(dead_code)]
     lp_fee_basis_points: u64,
@@ -144,7 +143,6 @@ struct RawPumpSwapSellEvent {
     user_quote_token_reserves: u64,
     pool_base_token_reserves: u64,
     pool_quote_token_reserves: u64,
-    #[allow(dead_code)]
     quote_amount_out: u64,
     #[allow(dead_code)]
     lp_fee_basis_points: u64,
@@ -174,6 +172,19 @@ pub(super) struct DecodedAmmTrade {
     pub(super) pool_quote_reserves: f64,
     /// Exact raw-`u64` lamport mirror of `pool_quote_reserves`.
     pub(super) pool_quote_reserves_lamports: u64,
+    /// [`Trade::venue_fee_bps`]: the user-side amount against the pool's own
+    /// constant-product amount.
+    pub(super) fee_bps: Option<f64>,
+}
+
+/// Bps the user side paid beyond (buy) or lost against (sell) the pool's own
+/// constant-product quote amount. `None` for a zero pool amount.
+fn venue_fee_bps(pool_amount: u64, user_amount: u64, is_buy: bool) -> Option<f64> {
+    if pool_amount == 0 {
+        return None;
+    }
+    let ratio = user_amount as f64 / pool_amount as f64;
+    Some(if is_buy { ratio - 1.0 } else { 1.0 - ratio } * 10_000.0)
 }
 
 /// Turn a decoded PumpSwap `BuyEvent` into the neutral [`DecodedAmmTrade`]. SSOT for
@@ -194,6 +205,7 @@ fn amm_buy_trade(e: RawPumpSwapBuyEvent, lps: f64) -> DecodedAmmTrade {
         pool_base_reserves: post_base,
         pool_quote_reserves: post_quote as f64 / lps,
         pool_quote_reserves_lamports: post_quote,
+        fee_bps: venue_fee_bps(e.quote_amount_in, e.user_quote_amount_in, true),
     }
 }
 
@@ -214,6 +226,7 @@ fn amm_sell_trade(e: RawPumpSwapSellEvent, lps: f64) -> DecodedAmmTrade {
         pool_base_reserves: post_base,
         pool_quote_reserves: post_quote as f64 / lps,
         pool_quote_reserves_lamports: post_quote,
+        fee_bps: venue_fee_bps(e.quote_amount_out, e.user_quote_amount_out, false),
     }
 }
 
@@ -338,6 +351,7 @@ pub(super) fn build_amm_trade(
         cu_price: fee_budget.cu_price,
         tip_lamports: fee_budget.tip_lamports,
         payer_net_lamports,
+        venue_fee_bps: ev.fee_bps,
         signature: signature.to_string(),
         tx_index,
         leg_index,
@@ -512,5 +526,20 @@ mod tests {
         assert_eq!(from_logs[0].user, from_inner[0].user);
         assert_eq!(from_logs[0].pool_base_reserves, from_inner[0].pool_base_reserves);
         assert!((from_logs[0].quote_amount - from_inner[0].quote_amount).abs() < 1e-9);
+    }
+
+    #[test]
+    fn amm_fee_is_the_user_amount_against_the_pool_amount() {
+        let mut buy = buy_event(1_000, 1_000_000, 1, 2);
+        buy.user_quote_amount_in = 1_009_500; // pool amount + 95 bps of fees
+        let t = amm_buy_trade(buy, 1e9);
+        assert!((t.fee_bps.unwrap() - 95.0).abs() < 1e-9);
+        assert_eq!(t.quote_amount_lamports, 1_009_500, "sol stays the user side");
+
+        let mut sell = sell_event(1_000, 1_000_000, 1, 2);
+        sell.user_quote_amount_out = 990_500;
+        assert!((amm_sell_trade(sell, 1e9).fee_bps.unwrap() - 95.0).abs() < 1e-9);
+
+        assert_eq!(amm_buy_trade(buy_event(1_000, 0, 1, 2), 1e9).fee_bps, None);
     }
 }

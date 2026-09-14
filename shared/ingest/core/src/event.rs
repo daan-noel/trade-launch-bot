@@ -123,6 +123,12 @@ pub struct Trade {
     /// leg the tx produced, so collapse by `signature` before summing. `None` when
     /// the source carried no balances.
     pub payer_net_lamports: Option<i64>,
+    /// The venue fee this swap charged, in bps of its constant-product quote amount
+    /// (the pool's own `quote_amount_in` / `quote_amount_out`): every fee the user
+    /// side paid beyond it, lp + protocol + creator included. AMM only, read off
+    /// the swap event, so it follows the pool's market-cap fee tier. `None` on the
+    /// curve, whose fee is a protocol constant the host already knows.
+    pub venue_fee_bps: Option<f64>,
     pub signature: String,
     /// Position of this trade's transaction within its block (`info.index` from
     /// the LaserStream update). 0 on the RPC backfill path, which has no block

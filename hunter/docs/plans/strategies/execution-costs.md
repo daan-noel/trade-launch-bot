@@ -30,6 +30,7 @@ changes to 0.0000 pp (`a_real_round_trip_reproduces_the_wallet` pins one of them
 | term | size | who charges it |
 | --- | --- | --- |
 | venue fee | **125 bps/leg** — on top of the curve SOL on a buy, out of the curve's output on a sell | pump.fun |
+| venue fee, migrated coin | the PumpSwap pool's own fee, charged the same way on its constant-product amount; it follows the pool's market-cap tier | PumpSwap |
 | fixed cost per transaction | base fee + priority on the requested CU limit + tip: **0.000227 SOL a buy, 0.000225 a sell** at the current `.env` | the network + the tip rail |
 | close | **5 000 lamports** once per round trip — the rent-reclaim `closeAccount` | the network |
 | our price impact | the exact constant-product curve, on the leg's own depth | the bonding curve |
@@ -202,6 +203,12 @@ books the close fee. `Fill::price` stays the curve-side execution price — the 
 decision basis. The closed PnL is then `(exit − entry) / entry`, all-in, and a PnL
 tracker that reads the wallet sees the same number.
 
+The PumpSwap fee is read off each swap event (`Trade::venue_fee_bps`: the user-side
+amount against the pool's own constant-product amount), kept per token as the newest
+swap's (`TokenState::current_venue_fee_bps`), and swapped into the model by
+`CostModel::at_venue_fee` for live paper fills, the paper exit-stuck heal and every open
+mark. The lake stores no per-swap fee, so a sweep leg on an AMM print prices the curve's
+125 bps.
+
 What the kernel cannot know, and a real row books anyway: a tip above
-`JITO_MIN_TIP_SOL` from the tip feed, and the PumpSwap fee on a migrated coin (the
-kernel prices the curve's 125 bps).
+`JITO_MIN_TIP_SOL` from the tip feed.

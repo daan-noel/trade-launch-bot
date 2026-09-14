@@ -127,7 +127,8 @@ pub fn mark_bag(
         return None;
     }
     let quote = quote.filter(|q| q.price.is_finite() && q.price > 0.0)?;
-    Some(unrealized_pnl(cost_basis_sol, quote.price, held_amount, quote.reserve_sol, costs))
+    let costs = costs.at_venue_fee(quote.venue_fee_bps);
+    Some(unrealized_pnl(cost_basis_sol, quote.price, held_amount, quote.reserve_sol, &costs))
 }
 
 #[cfg(test)]
@@ -234,7 +235,7 @@ mod tests {
     #[test]
     fn mark_bag_is_unrealized_pnl() {
         let costs = CostModel::pumpfun_with_impact();
-        let quote = MarkQuote { price: 2.0, reserve_sol: Some(70.0) };
+        let quote = MarkQuote { price: 2.0, reserve_sol: Some(70.0), venue_fee_bps: None };
         let got = mark_bag(0.0508, 0.05, Some(quote), &costs).expect("markable");
         let want = unrealized_pnl(0.0508, 2.0, 0.05, Some(70.0), &costs);
         assert_eq!(got.cost_basis_sol, want.cost_basis_sol);
@@ -247,7 +248,7 @@ mod tests {
     #[test]
     fn mark_bag_declines_rather_than_inventing_a_zero() {
         let costs = CostModel::pumpfun_with_impact();
-        let quote = || Some(MarkQuote { price: 2.0, reserve_sol: None });
+        let quote = || Some(MarkQuote { price: 2.0, reserve_sol: None, venue_fee_bps: None });
         // No executed entry (BuySubmitted, fill not adopted yet).
         assert!(mark_bag(0.0, 1.0, quote(), &costs).is_none());
         assert!(mark_bag(f64::NAN, 1.0, quote(), &costs).is_none());
@@ -255,7 +256,7 @@ mod tests {
         assert!(mark_bag(1.0, 0.0, quote(), &costs).is_none());
         // Mint has no cached price yet (just entered, no post-entry trade).
         assert!(mark_bag(1.0, 1.0, None, &costs).is_none());
-        assert!(mark_bag(1.0, 1.0, Some(MarkQuote { price: 0.0, reserve_sol: None }), &costs)
+        assert!(mark_bag(1.0, 1.0, Some(MarkQuote { price: 0.0, reserve_sol: None, venue_fee_bps: None }), &costs)
             .is_none());
     }
 
@@ -264,7 +265,7 @@ mod tests {
     #[test]
     fn mark_bag_prices_only_the_remaining_bag() {
         let costs = CostModel::frictionless();
-        let quote = MarkQuote { price: 2.0, reserve_sol: None };
+        let quote = MarkQuote { price: 2.0, reserve_sol: None, venue_fee_bps: None };
         let whole = mark_bag(100.0, 100.0, Some(quote), &costs).expect("markable");
         let half = mark_bag(50.0, 50.0, Some(quote), &costs).expect("markable");
         assert_eq!(whole.unrealized_pnl_sol, 100.0);

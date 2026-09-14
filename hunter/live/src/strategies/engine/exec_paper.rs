@@ -92,7 +92,7 @@ pub async fn run_entry(
             let notional = lamports as f64 / LAMPORTS_PER_SOL;
             // `fill.price` is SOL per RAW unit ⇒ the token count is already raw units.
             let (tokens, paid) =
-                buy_fill(notional, fill.price, fill.reserve_sol, &CostModel::pumpfun_with_impact());
+                buy_fill(notional, fill.price, fill.reserve_sol, &fill.costs());
             Event::FillConfirmed {
                 intent,
                 fill: Fill {
@@ -144,7 +144,7 @@ pub async fn run_exit(
                 token_amount as f64,
                 fill.price,
                 fill.reserve_sol,
-                &CostModel::pumpfun_with_impact(),
+                &fill.costs(),
                 empties_bag,
             );
             Event::FillConfirmed {
@@ -174,16 +174,26 @@ struct ResolvedFill {
     block_time: chrono::DateTime<chrono::Utc>,
     /// The print that priced this fill; `None` for the last-known-spot fallback.
     print: Option<PrintKey>,
+    /// The pool's PumpSwap fee (`TokenState::current_venue_fee_bps`); `None` on the
+    /// curve.
+    venue_fee_bps: Option<f64>,
 }
 
 impl ResolvedFill {
-    fn priced_by(trades: &[CachedTrade], f: &PaperFill) -> Self {
+    fn priced_by(trades: &[CachedTrade], f: &PaperFill, venue_fee_bps: Option<f64>) -> Self {
         Self {
             price: f.price,
             reserve_sol: f.reserve_sol,
             block_time: f.block_time,
             print: trades.get(f.trade_idx).map(PrintKey::of),
+            venue_fee_bps,
         }
+    }
+
+    /// The cost model this fill trades under: the curve model, at the pool's own
+    /// fee once the token trades on PumpSwap.
+    fn costs(&self) -> CostModel {
+        CostModel::pumpfun_with_impact().at_venue_fee(self.venue_fee_bps)
     }
 }
 
@@ -227,7 +237,7 @@ async fn wait_entry_fill(
                     if exit_fill_window_closed(trigger_slot, max_slot) || timed_out {
                         let trigger = target_snapshot_from(&trades[rel]);
                         return find_worst_case_paper_entry_at(trades.as_slice(), rel, true)
-                            .map(|f| (ResolvedFill::priced_by(&trades, &f), trigger));
+                            .map(|f| (ResolvedFill::priced_by(&trades, &f, pool_fee_bps(token_cache, mint)), trigger));
                     }
                 } else if t_abs < base {
                     // Trigger trimmed out of the retained window — fail closed.
@@ -243,7 +253,7 @@ async fn wait_entry_fill(
                 if let Some(rel) = abs_to_rel(t_abs, base, trades.len()) {
                     let trigger = target_snapshot_from(&trades[rel]);
                     return find_worst_case_paper_entry_at(trades.as_slice(), rel, true)
-                        .map(|f| (ResolvedFill::priced_by(&trades, &f), trigger));
+                        .map(|f| (ResolvedFill::priced_by(&trades, &f, pool_fee_bps(token_cache, mint)), trigger));
                 }
             }
             return None;
@@ -272,7 +282,7 @@ async fn wait_exit_fill(
                     let max_slot = trades.last().map(|t| t.slot).unwrap_or(fire_slot);
                     if exit_fill_window_closed(fire_slot, max_slot) || timed_out {
                         return find_worst_case_paper_exit_at(trades.as_slice(), rel, true)
-                            .map(|f| ResolvedFill::priced_by(&trades, &f))
+                            .map(|f| ResolvedFill::priced_by(&trades, &f, pool_fee_bps(token_cache, mint)))
                             .or_else(|| last_known_price_fill(token_cache, mint));
                     }
                 }
@@ -305,8 +315,13 @@ fn last_known_price_fill(token_cache: &TokenCache, mint: &str) -> Option<Resolve
                 reserve_sol: s.current_reserve_sol.filter(|r| r.is_finite() && *r > 0.0),
                 block_time: s.last_trade_at.unwrap_or_else(chrono::Utc::now),
                 print: None,
+                venue_fee_bps: s.current_venue_fee_bps,
             })
     })
+}
+
+fn pool_fee_bps(token_cache: &TokenCache, mint: &str) -> Option<f64> {
+    token_cache.get(mint).and_then(|e| e.value().current_venue_fee_bps)
 }
 
 fn cache_trades(token_cache: &TokenCache, mint: &str) -> Option<(Arc<Vec<CachedTrade>>, u64)> {
@@ -448,6 +463,29 @@ mod tests {
         let fs = store.take(&intent).expect("print stashed under the intent");
         assert!(fs.sigs.is_empty() && fs.slot.is_none() && fs.token_account.is_none());
         assert_eq!(fs.print.map(|p| (p.slot, p.tx_index)), Some((101, 1)));
+    }
+
+    /// A migrated token's paper sell pays its PumpSwap pool's own fee (95 bps here),
+    /// not the curve's 125.
+    #[tokio::test]
+    async fn exit_on_a_pumpswap_pool_pays_the_pool_fee() {
+        let cache = populated_window();
+        cache.get_mut(MINT).unwrap().current_venue_fee_bps = Some(95.0);
+        let (tx, mut rx) = mpsc::channel(1);
+        let intent = IntentId {
+            rule: hunter_engine::event::RuleId(uuid::Uuid::nil()),
+            mint: hunter_engine::event::Mint::from(MINT),
+            seq: 8,
+        };
+        run_exit(tx, cache, FillSigStore::new(), intent, MINT.into(), 1_000, true, Some(0)).await;
+        let Some(Event::FillConfirmed { fill, .. }) = rx.recv().await else {
+            panic!("expected a FillConfirmed");
+        };
+        let amm = CostModel { fee_bps_per_leg: 95.0, ..CostModel::pumpfun_with_impact() };
+        let want = sell_proceeds(1_000.0, 0.5e-6, None, &amm, true);
+        assert!((fill.sol - want).abs() < 1e-15, "{} vs {want}", fill.sol);
+        let curve = sell_proceeds(1_000.0, 0.5e-6, None, &CostModel::pumpfun_with_impact(), true);
+        assert!(fill.sol > curve, "a cheaper pool fee returns more than the curve fee");
     }
 
     /// A manual close on a mint whose trades are gone (trimmed / never cached) has

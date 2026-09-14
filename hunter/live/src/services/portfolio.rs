@@ -600,12 +600,16 @@ fn holding_pnl(
     decimals: u8,
     ui_amount: f64,
     reserve_sol: Option<f64>,
+    venue_fee_bps: Option<f64>,
 ) -> HoldingPnl {
     let costs = CostModel::pumpfun_with_impact();
     let basis = entry.map(|e| holding_cost_basis(e, decimals, ui_amount, &costs));
     match (basis, mark_sol_per_ui) {
         (Some(basis), Some(mark)) => {
-            let p = unrealized_pnl(basis, mark, ui_amount, reserve_sol, &costs);
+            // The sell is priced on the pool the mark came from (its PumpSwap fee once
+            // migrated); the basis above stays the curve buy's inverse.
+            let sell_costs = costs.at_venue_fee(venue_fee_bps);
+            let p = unrealized_pnl(basis, mark, ui_amount, reserve_sol, &sell_costs);
             HoldingPnl {
                 cost_basis_sol: Some(p.cost_basis_sol),
                 unrealized_pnl_sol: Some(p.unrealized_pnl_sol),
@@ -798,6 +802,7 @@ async fn compose(
                                 .and_then(|s| s.current_reserve_sol)
                                 .filter(|r| r.is_finite() && *r > 0.0)
                         }),
+                        curve.and_then(|q| q.venue_fee_bps),
                     );
                     (
                         price_usd,
@@ -905,10 +910,10 @@ mod tests {
     fn a_captured_flow_is_the_basis() {
         let paid = AvgEntry { wallet_paid_lamports: Some(1_012_727_000), ..modeled() };
         // 1000 UI at 6 dp = 1e9 raw: the whole bag.
-        let p = holding_pnl(Some(&paid), None, 6, 1000.0, None);
+        let p = holding_pnl(Some(&paid), None, 6, 1000.0, None, None);
         assert!((p.cost_basis_sol.unwrap() - 1.012727).abs() < 1e-12);
         // Half sold: half the paid SOL.
-        let p = holding_pnl(Some(&paid), None, 6, 500.0, None);
+        let p = holding_pnl(Some(&paid), None, 6, 500.0, None, None);
         assert!((p.cost_basis_sol.unwrap() - 0.5063635).abs() < 1e-12);
     }
 
@@ -924,7 +929,7 @@ mod tests {
     fn holding_pnl_matches_known_fixture() {
         let costs = CostModel::pumpfun_with_impact();
         let fee = costs.fee_bps_per_leg / 10_000.0;
-        let p = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, None);
+        let p = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, None, None);
 
         let want_basis = 1.0 * (1.0 + fee) + costs.fixed_buy_sol;
         let want_pnl =
@@ -944,7 +949,7 @@ mod tests {
     /// on-chain PnL tracker.
     #[test]
     fn a_flat_mark_is_a_loss() {
-        let p = holding_pnl(Some(&modeled()), Some(1e-3), 6, 1000.0, None);
+        let p = holding_pnl(Some(&modeled()), Some(1e-3), 6, 1000.0, None, None);
         assert!(p.unrealized_pnl_sol.unwrap() < 0.0);
         assert!(p.unrealized_pnl_pct.unwrap() < 0.0);
     }
@@ -952,9 +957,9 @@ mod tests {
     /// Depth charges the exit's impact; no depth charges none rather than a guess.
     #[test]
     fn shallow_depth_marks_lower_than_none() {
-        let deep = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, Some(1_000.0));
-        let shallow = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, Some(10.0));
-        let no_depth = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, None);
+        let deep = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, Some(1_000.0), None);
+        let shallow = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, Some(10.0), None);
+        let no_depth = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, None, None);
         assert!(shallow.unrealized_pnl_sol.unwrap() < deep.unrealized_pnl_sol.unwrap());
         assert!(deep.unrealized_pnl_sol.unwrap() < no_depth.unrealized_pnl_sol.unwrap());
     }
@@ -966,7 +971,7 @@ mod tests {
     fn no_mark_yields_cost_basis_but_no_pnl() {
         let costs = CostModel::pumpfun_with_impact();
         let want_basis = 1.0 * (1.0 + costs.fee_bps_per_leg / 10_000.0) + costs.fixed_buy_sol;
-        let p = holding_pnl(Some(&modeled()), None, 6, 1000.0, None);
+        let p = holding_pnl(Some(&modeled()), None, 6, 1000.0, None, None);
         assert!((p.cost_basis_sol.unwrap() - want_basis).abs() < 1e-12);
         assert!(p.unrealized_pnl_sol.is_none());
         assert!(p.unrealized_pnl_pct.is_none());
@@ -975,7 +980,7 @@ mod tests {
     /// A received/transferred bag with no recorded buys has no cost basis and no PnL.
     #[test]
     fn no_recorded_buys_has_no_basis() {
-        let p = holding_pnl(None, Some(2e-3), 6, 1000.0, None);
+        let p = holding_pnl(None, Some(2e-3), 6, 1000.0, None, None);
         assert!(p.cost_basis_sol.is_none());
         assert!(p.unrealized_pnl_sol.is_none());
         assert!(p.unrealized_pnl_pct.is_none());
@@ -1048,7 +1053,7 @@ mod tests {
     /// beside a curve mark must not move the number.
     #[test]
     fn curve_spot_beats_the_jupiter_quote() {
-        let curve = MarkQuote { price: 1e-7, reserve_sol: Some(30.0) };
+        let curve = MarkQuote { price: 1e-7, reserve_sol: Some(30.0), venue_fee_bps: None };
         // A wildly different Jupiter quote is present and must be ignored.
         let got = resolve_mark_sol_per_ui(Some(&curve), 6, Some(999.0), Some(200.0));
         assert_eq!(got, Some(1e-7 * 1e6));
@@ -1067,7 +1072,7 @@ mod tests {
     #[test]
     fn a_junk_curve_price_degrades_to_the_fallback() {
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let curve = MarkQuote { price: bad, reserve_sol: None };
+            let curve = MarkQuote { price: bad, reserve_sol: None, venue_fee_bps: None };
             assert_eq!(
                 resolve_mark_sol_per_ui(Some(&curve), 6, Some(20.0), Some(200.0)),
                 Some(0.1),

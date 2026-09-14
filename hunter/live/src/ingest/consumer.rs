@@ -337,6 +337,9 @@ impl IngestConsumer {
                     build_hash,
                     is_launch,
                 );
+                if let Some(fee) = e.venue_fee_bps.filter(|f| f.is_finite() && *f >= 0.0) {
+                    token_state.current_venue_fee_bps = Some(fee);
+                }
                 let tp = if is_amm && !token_state.amm_pool_prewarmed {
                     token_state.token.token_program_id.clone()
                 } else {

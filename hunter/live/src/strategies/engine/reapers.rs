@@ -964,10 +964,14 @@ async fn close_paper_exit_stuck(deps: &ReaperDeps) {
         let (price, depth, at) =
             priced.unwrap_or_else(|| (pos.entry_price.unwrap_or(0.0), None, pos.updated_at));
         let token_amount = pos.remaining_token_amount();
+        let venue_fee_bps = deps
+            .token_cache
+            .get(&pos.mint_address)
+            .and_then(|e| e.value().current_venue_fee_bps);
         let sol = sell_value_proceeds(
             paper_bag_value(&pos, token_amount, price),
             depth,
-            &CostModel::pumpfun_with_impact(),
+            &CostModel::pumpfun_with_impact().at_venue_fee(venue_fee_bps),
             true,
         );
         let fill = Fill { price, sol, token_amount, at };

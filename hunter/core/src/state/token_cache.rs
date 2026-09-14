@@ -307,6 +307,13 @@ pub struct TokenState {
     /// block_time alongside `current_reserve_token` so the strategy snipe buy can
     /// derive a slippage `min_out` from the in-memory spot price without an inline RPC.
     pub current_reserve_sol: Option<f64>,
+    /// The PumpSwap pool's fee in bps, as its newest live swap charged it
+    /// (`Trade::venue_fee_bps` off the swap event; the pool's market-cap fee tier).
+    /// `None` until a live AMM swap is seen — a curve token, or a migrated one whose
+    /// only trades so far came from the DB — and pricing then keeps the curve fee.
+    /// A curve token never trades on the AMM and a migrated one never again on the
+    /// curve, so every print of a token with a fee here is an AMM print.
+    pub current_venue_fee_bps: Option<f64>,
     /// Latest known **real** SOL reserves — the dead-token liquidity signal
     /// (`is_dead` Signal 1). Maintained from the chronologically newest trade that
     /// carries a snapshot, NOT `trades.last()`, so a lag-inverted older trade
@@ -392,6 +399,7 @@ impl TokenState {
             initial_virtual_token_reserves: None,
             current_reserve_token: None,
             current_reserve_sol: None,
+            current_venue_fee_bps: None,
             current_real_sol_reserves: None,
             market_cap: None,
             current_price: initial_price,
@@ -676,6 +684,7 @@ pub fn mark_quote(cache: &TokenCache, mint: &str) -> Option<MarkQuote> {
     Some(MarkQuote {
         price,
         reserve_sol: state.current_reserve_sol.filter(|r| r.is_finite() && *r > 0.0),
+        venue_fee_bps: state.current_venue_fee_bps,
     })
 }
 

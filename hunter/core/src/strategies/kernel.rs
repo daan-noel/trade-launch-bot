@@ -242,6 +242,19 @@ impl CostModel {
     pub fn capital_sol(&self, notional_sol: f64) -> f64 {
         notional_sol + self.fixed_buy_sol
     }
+
+    /// This model for a leg on a pool whose own fee is `venue_fee_bps`: a PumpSwap
+    /// pool charges its market-cap tier (read off its swap events), not the curve's
+    /// 125 bps. PumpSwap's swap math has the curve's shape — constant product, fee
+    /// on top of a buy's pool amount and out of a sell's — so the fee is the only
+    /// term that changes. `None` (a curve leg, or a pool no swap has shown yet)
+    /// keeps the model as it is.
+    pub fn at_venue_fee(self, venue_fee_bps: Option<f64>) -> Self {
+        match venue_fee_bps.filter(|f| f.is_finite() && *f >= 0.0) {
+            Some(fee_bps_per_leg) => Self { fee_bps_per_leg, ..self },
+            None => self,
+        }
+    }
 }
 
 /// Wire-selectable [`CostModel`] — the cost half of a run's **identity** (the fill
@@ -1603,6 +1616,25 @@ mod tests {
         for (value, reserve, want) in cases {
             let got = sell_value_proceeds(value, reserve, &costs, true);
             assert!((got - want).abs() < 1e-12, "value {value}: {got} != {want}");
+        }
+    }
+
+    /// A PumpSwap leg swaps in only the pool's fee; a curve leg (`None`) and a
+    /// garbage fee keep the model as it is.
+    #[test]
+    fn at_venue_fee_swaps_only_the_fee() {
+        let curve = CostModel::pumpfun_with_impact();
+        let amm = curve.at_venue_fee(Some(95.0));
+        assert_eq!(amm.fee_bps_per_leg, 95.0);
+        assert_eq!(amm.fixed_sell_sol, curve.fixed_sell_sol);
+        assert_eq!(amm.close_fee_sol, curve.close_fee_sol);
+        assert!(amm.price_impact);
+        // A sell at 95 bps into a 70 SOL pool: g/(1+g/V)·(1−0.0095) − fixed − close.
+        let got = sell_value_proceeds(0.1, Some(70.0), &amm, true);
+        let want = 0.1 / (1.0 + 0.1 / 70.0) * (1.0 - 0.0095) - curve.fixed_sell_sol - curve.close_fee_sol;
+        assert!((got - want).abs() < 1e-15, "{got} vs {want}");
+        for keep in [None, Some(f64::NAN), Some(-1.0)] {
+            assert_eq!(curve.at_venue_fee(keep).fee_bps_per_leg, curve.fee_bps_per_leg);
         }
     }
 
