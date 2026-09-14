@@ -523,6 +523,11 @@ pub struct WalletMintPnl {
     /// this mint; negative means the wallet sold more than it bought in the
     /// window (see `partial_data`), never an accounting error.
     pub net_token_amount: i64,
+    /// The capital the realized PnL was earned on: `avg_buy_price ×
+    /// matched_tokens`, the cost of exactly the tokens that were sold. The
+    /// denominator of `realized_pnl_pct`, and the `Σ entry` a cohort's
+    /// `weighted_return_pct` divides by. `0.0` when nothing matched.
+    pub matched_cost_sol: f64,
     /// Realized PnL on the matched (closed) portion, gross of the pump.fun fee —
     /// `proceeds_of_matched − cost_basis_of_matched`.
     pub realized_pnl_sol: f64,
@@ -600,6 +605,7 @@ pub fn wallet_mint_pnl(
         avg_buy_price,
         avg_sell_price,
         net_token_amount,
+        matched_cost_sol: cost_basis_matched,
         realized_pnl_sol,
         realized_pnl_sol_net_of_fee,
         realized_pnl_pct,
@@ -1656,6 +1662,7 @@ mod tests {
         assert_eq!(p.net_token_amount, 0);
         assert!(!p.is_open);
         assert!(!p.partial_data);
+        assert!((p.matched_cost_sol - 1.0).abs() < 1e-12);
         assert!((p.realized_pnl_sol - 0.5).abs() < 1e-12);
         assert!((p.realized_pnl_pct.unwrap() - 50.0).abs() < 1e-9);
         // Net of the 125bps/leg fee: 1.5*(1-0.0125) - 1.0*(1+0.0125) = 1.48125 - 1.0125.
@@ -1674,6 +1681,7 @@ mod tests {
         assert!(!p.partial_data);
         assert_eq!(p.avg_sell_price, None);
         // Nothing matched yet, so realized is flat.
+        assert_eq!(p.matched_cost_sol, 0.0);
         assert!((p.realized_pnl_sol - 0.0).abs() < 1e-12);
         assert_eq!(p.realized_pnl_pct, None);
         // Unrealized: 100 * (0.02 - 0.01) = 1.0 SOL.
@@ -1698,7 +1706,9 @@ mod tests {
         assert!(p.is_open);
         assert!(!p.partial_data);
         // Cost basis of the 40 matched tokens = 40 * 0.01 = 0.4 SOL.
+        assert!((p.matched_cost_sol - 0.4).abs() < 1e-12);
         assert!((p.realized_pnl_sol - (0.8 - 0.4)).abs() < 1e-12);
+        assert!((p.realized_pnl_pct.unwrap() - 100.0).abs() < 1e-9, "percent is over matched cost");
         // Unrealized on the remaining 60: 60 * (0.02 - 0.01) = 0.6 SOL.
         assert!((p.unrealized_pnl_sol.unwrap() - 0.6).abs() < 1e-12);
         assert!((p.total_pnl_sol - (0.4 + 0.6)).abs() < 1e-12);
@@ -1714,6 +1724,7 @@ mod tests {
         assert!(!p.is_open, "a negative net amount is not an open bag");
         // Proceeds apportioned to the matched 60/100 of the sale: 1.5 * 0.6 = 0.9.
         // Cost basis of the matched 60 = 60 * 0.01 = 0.6.
+        assert!((p.matched_cost_sol - 0.6).abs() < 1e-12);
         assert!((p.realized_pnl_sol - (0.9 - 0.6)).abs() < 1e-9);
         assert_eq!(p.unrealized_pnl_sol, None, "no open bag to mark");
     }

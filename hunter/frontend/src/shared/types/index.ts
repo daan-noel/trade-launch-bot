@@ -922,6 +922,10 @@ export interface TraderTokenRow extends TokenRecord {
   /** `buy_token_amount - sell_token_amount` (raw units). Positive = still
    *  holding a bag; negative only when `wallet_partial_data` is true. */
   wallet_net_token_amount: number;
+  /** Cost of exactly the tokens sold, at the average buy price — the capital
+   *  the realized PnL was earned on and the denominator of every realized %.
+   *  `0` when nothing matched. */
+  wallet_matched_cost_sol: number;
   /** Realized PnL on the matched (closed) portion, gross of the pump.fun fee. */
   wallet_realized_pnl_sol: number;
   /** Same, net of the measured ~125bps/leg pump.fun protocol fee. */

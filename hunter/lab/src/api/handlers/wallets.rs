@@ -152,6 +152,9 @@ struct WalletTokenRow {
     /// `buy_token_amount - sell_token_amount` (raw units). Positive = still
     /// holding a bag; negative only when `wallet_partial_data` is true.
     wallet_net_token_amount: i64,
+    /// Cost of exactly the tokens sold, at the average buy price — the capital
+    /// the realized PnL was earned on and the denominator of every realized %.
+    wallet_matched_cost_sol: f64,
     /// Realized PnL on the matched (closed) portion, gross of the pump.fun fee.
     wallet_realized_pnl_sol: f64,
     /// Same, net of the measured pump.fun protocol fee (no tip/priority charge).
@@ -416,6 +419,7 @@ fn wallet_token_row(
         wallet_avg_buy_price: pnl.avg_buy_price,
         wallet_avg_sell_price: pnl.avg_sell_price,
         wallet_net_token_amount: pnl.net_token_amount,
+        wallet_matched_cost_sol: pnl.matched_cost_sol,
         wallet_realized_pnl_sol: pnl.realized_pnl_sol,
         wallet_realized_pnl_sol_net_of_fee: pnl.realized_pnl_sol_net_of_fee,
         wallet_realized_pnl_pct: pnl.realized_pnl_pct,

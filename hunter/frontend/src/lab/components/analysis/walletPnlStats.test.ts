@@ -56,6 +56,7 @@ function row(overrides: Partial<TraderTokenRow>): TraderTokenRow {
     wallet_avg_buy_price: 0.01,
     wallet_avg_sell_price: 0.015,
     wallet_net_token_amount: 0,
+    wallet_matched_cost_sol: 1,
     wallet_realized_pnl_sol: 0.5,
     wallet_realized_pnl_sol_net_of_fee: 0.475,
     wallet_realized_pnl_pct: 50,
