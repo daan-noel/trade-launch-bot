@@ -65,7 +65,8 @@ body +11.67) and is not the veto. Working file:
 [node-derivation/mid-tape-rule-3.md](node-derivation/mid-tape-rule-3.md).
 
 - **Next:** 5.1 then 5.2 on the next candidate (**88887Q**: largest RACE book, unread tell on this
-  tape), same method, every-leg study. 9999hu / 9Uq8GV / ApfmkS / 8aaRWu / 3Xk2Eu stay candidates.
+  tape), derive section 5 (WHO and this-print history, not only size / % / gap), every-leg study.
+  9999hu / 9Uq8GV / ApfmkS / 8aaRWu / 3Xk2Eu stay candidates.
   8dtx2t's X-cut stays a prior.
 - **Kills it:** no DELAY-legal public trigger at our seat on any remaining member (derive 5.2).
 - **Do not:** copy a fill; fire at buy-minus-L; walk D/P/X on 8dtx2t's burst family; AND-filter

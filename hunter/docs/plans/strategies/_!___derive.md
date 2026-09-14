@@ -1,33 +1,78 @@
 # Derive: the method, from one paying wallet to a shippable rule
 
-The one method file: how a target node, trader or wallet becomes a sentence, the gates every
-cell passes, and how a result is recorded. [_!___strategy.md](_!___strategy.md) is the basis and
-the laws; [_!___inventory.md](_!___inventory.md) is the idea list used after the event is named;
-[_!___evidence.md](_!___evidence.md) holds the numbers; [_!___workflow.md](_!___workflow.md) is
-the open queue. Code: [node-derivation/toolkit](node-derivation/toolkit/README.md). The worked
-example, every phase run on one node with its numbers, is
-[node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md). A node's working file
-starts from [node-derivation/node-template.md](node-derivation/node-template.md).
+How a target node, trader or wallet becomes a sentence; the gates every cell passes; how a
+result is recorded. [_!___strategy.md](_!___strategy.md) is the basis and the laws;
+[_!___inventory.md](_!___inventory.md) is the idea list used after the event is named;
+[_!___evidence.md](_!___evidence.md) holds the numbers; [_!___workflow.md](_!___workflow.md)
+is the open queue. Code: [node-derivation/toolkit](node-derivation/toolkit/README.md). Worked
+example: [node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md). A node's
+working file starts from [node-derivation/node-template.md](node-derivation/node-template.md).
 
 A wallet is an instrument. It names a decision. It is never a term, its coins are never a
 door, and its own prints stay out of every public count.
 
+Read top to bottom. One picture, one job.
+
 ```
-  0.  TARGET      what counts as done
-  1.  PICK        one member that pays; never the pooled node
-  2.  FRAME       two tapes, the seat, the coordinate
-  3.  SHAPE       one-shot, re-entry, or mixed - measured, not assumed
-  4.  WHO PAYS    median vs tail; RACE vs FOLLOW
-  5.  TRIGGER     the print (or state) it reacts to, and DELAY
-  6.  EVENT       which of those it takes; spell it publicly
-  7.  DOOR        optional; none is a valid filling
-  8.  EXIT        its closing hazard on the selected pool
-  9.  PERMISSION  the fires that die
- 10.  INVENTORY   combine ideas on this parent only; route a red result
- 11.  GATES       the keep rule, the gates on every cell, the ship bars
- 12.  HOLDOUT     confirms, never chooses; then every slot re-derived
- 13.  RECORD      each fact once, in its one place
- 14.  REFUSALS    and the guards
+WHAT
+  leftover of a real up-move
+  fire on a PUBLIC print, fill 115 ms later
+  latency is not the edge
+
+FLOW
+
+  PICK one wallet
+    harvest hold, total > 0, rare big losses, RACE pays
+        |
+        | fail --> next wallet
+        v
+  FIND E
+    5.1  he reacts to this public print
+    5.2  leftover still there 115 ms later
+        |
+        | fail --> other class / earlier tell / next wallet
+        | pass --> spell E, then D / X / P on that E only
+        v
+  SHIP
+    gates --> holdout --> engine --> paper
+```
+
+```
+DELAY  (why a 115 ms fill can still pay)
+
+  unseen intent
+       |
+       v
+  public print on the tape          FIRE here
+       |
+       |  115 ms, SOL has not all landed yet
+       v
+  our fill                          leftover must still be here
+       |
+       v
+  remaining SOL lands               now it is in the PRICE
+```
+
+```
+SLOTS  empty is a value. a red number closes this sentence, never a slot.
+
+  D  door         which coins we watch          optional (none is valid)
+  E  event        the public print we fire on   unpriced tell + DELAY
+  P  permissions  already true when E prints    cuts losers
+  X  exit         how leftover is eaten         from his close, this pool
+  R  re-entry     tickets per coin, one open
+  S  size         clip (standing 0.2 SOL)
+```
+
+```
+WHERE  (section)
+
+  0        target     leftover of a real up-move at 115 ms
+  1-4      pick       one member, every-leg tape, shape, RACE pays
+  5-6      find E     he reacts + leftover exists, then spell it
+  7-10     rest       D optional, X, P, inventory on that parent
+  11-13    ship       gates, holdout, record
+  14       refusals
 ```
 
 Inventory combination is the search engine **on a parent**. It is not how the parent is
@@ -45,6 +90,9 @@ The edge is remaining intent that is still unpriced at fill.
 Done, in order: frozen sentence, green on a disjoint holdout, ship bars, engine-reconciled
 trade by trade, paper, small real.
 
+The operating seat is **p50 115 ms**. Fastest observed own-fill is about 45 ms; sender ACK
+is 8-10 ms (not a fill). A lag ladder is a diagnostic. It does not change the veto.
+
 D is not required. Empty D is a filling. A door earns its place only when it raises money
 and keeps the bars. With a door the book is more concentrated; without one the event and
 exit have to carry it.
@@ -54,26 +102,31 @@ exit have to carry it.
 ## 1. Pick the instrument
 
 A node label is a cluster of wallets, not a strategy. Six wallets under one name can be
-two logics. The unit of derivation is **one member**.
+two logics. The unit of derivation is **one member**. Measure every roster member on
+every-leg study. Shape (one-shot / re-entry / mixed) comes from **his** episodes
+(phase 3). Mixed is two sentences.
 
 ```
-  pick a node  ->  price each member at two seats  ->  keep who pays
-                   (phase 4)                          at RACE or FOLLOW
+  node --> each member on every-leg tape --> keep who pays at RACE --> FIND E
 ```
 
-How to choose among members (all of this is measured on the study tape, none is a name):
+Pick does **not** require leftover at 115 ms. That is phase 5.2, after his reaction is named.
+A member that fails 5.2 is closed at our seat; it is not "never an instrument".
 
-| prefer the member that | drop the member that |
+| keep | not a drop |
 | --- | --- |
-| has a positive median, not only a tail | a negative median whose net is the top 1 % |
-| names a public print or a state (excess intensity spikes, or is flat because it fires on a held state) | copies a fill we cannot reach (lag ~50 ms, ahead < 10 %) |
-| leftover **exists** at `lag_115` on the fires it takes (phase 5.2) | peak leftover after our fill does not cover round-trip cost |
-| DELAY of that leftover survives 115 ms | the tell and the SOL land in the same slot |
+| harvest-scale hold (seconds to tens of seconds) | 1-2 s scalp as the whole book |
+| his **total** > 0, enough tickets | negative median when total is green and >20% losses are rare (a **cut**) |
+| RACE pays most days, body > 0 | FOLLOW red on a copy of his fill |
+| unread public tell | largest book with no named print yet |
+| rare closes at <= -20% of clip | top 1% share of **his** net (his harvest shape, not the 5.2 veto) |
 
-The node's largest book is not automatically the instrument. The largest book often does
-not name a public print. The member whose tell we already copied unsuccessfully is not
-the next instrument either: its public spelling is already a result. Prefer the member
-that still has an unread decision point at our seat.
+His median, his top-1%, and his >20% loss rate describe **his** X. They are not the DELAY
+veto. The ship tail bar (law 28) is top 1% of **our** book (section 11).
+
+The node's largest book is not automatically the instrument. Prefer the member that still
+has an unread decision point at our seat. A member whose public tell is already a 5.2 kill
+is not the next instrument of that same family.
 
 Roster and node lists: [solo-traders.md](solo-traders.md). `toolkit.tapes.roster(node)`
 returns the wallets. `S.wallet(prefix)` is the member.
@@ -84,20 +137,15 @@ returns the wallets. `S.wallet(prefix)` is the member.
 
 | step | what | rule |
 | --- | --- | --- |
-| 2.1 Two tapes | Study tape: every threshold is read here. Holdout: later lake days, same format (`lake_export.export`, an entry in `tapes.TAPES`), started a few days early as a warm-up. Overlap of the two tapes is checked row by row | Nothing is chosen on the holdout |
-| 2.2 Instrument | The member's wallet id is marked NODE so every public fact excludes it | It never enters a term |
-| 2.3 Seat | Both legs fill at the last print landed 115 ms after the decision print. Exact curve arithmetic, 125 bps + 0.000225 SOL a leg (`kernel.py`) | One kernel prices everything |
+| 2.1 Two tapes | Study: `study_exact` (every leg). Every threshold is read here. Last-leg `study` drops wallets whose prints are not last-leg. Holdout: later lake days, same grain (`lake_export.export`, an entry in `tapes.TAPES`), started a few days early as a warm-up. Overlap of the two tapes is checked row by row | Nothing is chosen on the holdout |
+| 2.2 Instrument | The member's wallet id is marked NODE so every public fact excludes it | It never enters a term. Two logics get two working files |
+| 2.3 Fire and fill | Fire = the **public** print, or the rising-edge print of a held state. Never his buy. Never buy-minus-L. Fill = last print landed by fire + 115 ms, both legs. Exact curve arithmetic, 125 bps + 0.000225 SOL a leg (`kernel.py`) | One kernel prices everything. A lag ladder does not change the veto |
 | 2.4 Coordinate | Every measurement writes the six slots of a rule (strategy section 6) plus the frame | Empty is a value. A red number closes this sentence, never a slot |
 
 ```
-  D  door         which tokens we watch at all; token-level, latency-free
-  E  event        the print we fire on; a condition on UNPRICED state
-  P  permissions  state already true when the event prints
-  X  exit         the harvest shape, derived from the story
-  R  re-entry     tickets per token, one position open at a time
-  S  size         the clip (standing: 0.2 SOL; physics min ~0.126)
-  frame           seat (last print landed by fire + 115 ms, both legs) . cost (125 bps +
-                  0.000225 SOL a leg + own impact on vsol) . universe (full tape, window, fires)
+  D E P X R S  -- see SLOTS at the top. empty is a value.
+  frame         seat = last print landed by fire + 115 ms, both legs
+                cost = 125 bps + 0.000225 SOL a leg + own impact on vsol
 ```
 
 A red number at coordinate `c` means "sentence `c` is red". A red sentence with `D` empty says
@@ -140,10 +188,24 @@ concentrate, and is still allowed to stay none.
 
 ## 4. Who pays
 
+Two seats, two questions. Do not mix them.
+
+```
+                    his buy print
+                         |
+       RACE              |              FOLLOW
+  fill just BEFORE ------+------ fill 115 ms AFTER
+  does HIS decision pay?        copy of HIS fill
+  (keep if this is green)       (red is expected; not a drop)
+```
+
+FOLLOW red on a copy of his fill is expected. It is not a drop of the wallet. "His fill is
+unreachable" is not "his decision is unreachable".
+
 | # | question | how | decide |
 | --- | --- | --- | --- |
-| 4.1 | Does this member's own book pay, or is it a tail? | Each member's episodes through our kernel: win rate, median, top 1 % share | A negative median whose net is the top 1 % is noise (law 28). Search which of **its** trades win; do not imitate the median |
-| 4.2 | At which seat? | `seat.seat_book(S, E, caps=(15,))`: RACE (sequenced before its print) and FOLLOW (our fill 115 ms after) | Keep members positive at RACE on most days with a positive body. Positive only at RACE: the event must be reached **before** its print (a state, not a follow). Positive at FOLLOW: a print trigger can work at 115 ms |
+| 4.1 | Does this member's own book pay? | Each member's episodes through our kernel: n, days, total SOL, median, top 1% share of **his** net, share of closes at <= -20% of clip, hold p50 | Keep: total > 0, enough tickets, harvest hold, rare >20% losses. A negative median with green total and rare large losses is a **cut** (his X), not a drop. Top 1% of his net is his harvest shape. Law 28 (ship tail) is top 1% of **our** book in section 11, not a pick veto |
+| 4.2 | At which seat? | `seat.seat_book(S, E, caps=(15,))`: RACE and FOLLOW | Keep members positive at RACE on most days with a positive body. Positive only at RACE: the event must be reached **before** his print (a state, not a follow of his buy). Positive at FOLLOW: copying his fill still pays; that is rare and still not the event (the event is a public print, not his buy) |
 
 Do not pool members (law 27). Derive from the ones that pay. A node that splits is two
 nodes; write two working files.
@@ -153,52 +215,156 @@ nodes; write two working files.
 ## 5. Trigger and DELAY - leftover existence, not an exit P&L
 
 Four questions, in this order. Question 4 is the veto. If it fails, this trigger is dead
-at our seat. Do not walk DxPxX on it.
+at our seat. Do not walk D / P / X on it.
 
 ```
-  1  WHO    will spend SOL on this coin in the next seconds or minutes
-  2  WHY    its business reason, not ours
-  3  WHAT   on the tape (never the price) shows the intention now
-  4  DELAY  why that SOL has not landed yet, and still has not landed 115 ms after we fire
+  1 WHO     who spends SOL next
+  2 WHY     their business reason
+  3 WHAT    the public print that shows it now
+  4 DELAY   that SOL still unpriced 115 ms after we fire     <-- veto
 ```
 
 Question 4 is the scarce one: if the tell and the SOL arrive together there is no trade at any
-seat, and that is how nearly every dead line died - the swarm lands in the trigger's own slot.
-Enumerate the delay first (strategy 1.6 lists the delays this market has).
+seat. Enumerate the delay first (strategy 1.6 lists the delays this market has).
 
-A P&L number is always E+X. A hold-matched clock, a copy of its close, and every-fire
-occupancy are exit or selection choices. None of them is the 5.2 veto. Its close is not
-the best X for our late fill; a median-hold clock is one X among many. Grade an event
-candidate by whether leftover **exists** at our seat, and whether this is its decision.
+A P&L number is always E+X. A hold-matched clock, a copy of his close, and every-fire
+occupancy are exit or selection choices. None of them is the 5.2 veto. Grade an event
+candidate by whether leftover **exists** at our seat, and whether this is his decision.
 
-**Correct E is two yeses.** (1) His decision: he pays at RACE (phase 4) and reacts to this
-public, unpriced tell (5.1: a lift spike of one class, covering at least 10 % of his
-decisions). (2) Our leftover: after a 115 ms fill on the fires he takes, behind his own buy,
-the path still has enough convexity inside his hold to pay round-trip cost (5.2). (1) without
-(2) is unreachable DELAY. (2) without (1) is noise: 5.2 alone passes a member that loses at
-every seat (evidence 1.27), so 5.2 never runs before (1).
+**Correct E is two yeses, in this order.**
+
+```
+  5.1  HE reacts to this public print          YES
+  5.2  leftover still there 115 ms later       YES
+           both --> E
+           only 5.1 --> unreachable DELAY
+           only 5.2 --> noise (do not run 5.2 first)
+```
+
+1. **5.1 his decision.** He pays at RACE (phase 4) and reacts to this public, unpriced tell:
+   a lift spike of one class (or a held state), covering **>= 10%** of his decisions.
+2. **5.2 our leftover.** After a 115 ms fill on the fires **he** takes, **behind his own
+   buy**, the path still has enough convexity inside **his** hold to pay round-trip cost.
+
+A better X cannot save a 5.2 kill.
+
+Worked pattern (rule 1): public **SELL >= 1** at 25-200 ms, he avoids burst starts; behind
+cost 1.41%, peak leftover +7.46%; then 6.1 spells which of those sells (recent buyer,
+crowded tape, new high).
+
+### Print classes (5.1 scan)
+
+A class is yes/no on **this print**. 5.1 is the fire clock. 6.1 then spells **which** of
+those prints he takes. Do not dump inventory 4-tuples into 5.1.
+
+```
+SCAN this print  (yes / no). Prefer 1, then 2. 3 is a screen, often DELAY = 0.
+
+  1  WHO printed           tool  nonce  operator  direct     unpriced -- scan
+  2  this printer's past   structure_burst  seller_recent  seller_loss
+                           clip_step_up  struct_first_here
+                           alone_in_slot  two_struct_slot  buy_after_sells
+  3  priced screen         buy/sell x size  this-print up/down %
+                           coin-gap burst_start  pro  new_build
+
+NOT a class: price path, windowed flow, named wallet lists, copy of his buy
+```
+
+| class | meaning |
+| --- | --- |
+| `seller_recent` | public sell; this wallet bought this coin in the last ~30 s |
+| `seller_loss` | public sell; this wallet is underwater on this coin |
+| `buy_after_sells` | public buy after a run of sells |
+| `clip_step_up` | this structure's buy here is larger than its last buy here |
+| `structure_burst` | **this** ix structure silent >= 10 slots on this coin, then it buys |
+| `struct_first_here` | this structure's first print on this coin |
+| `alone_in_slot` | no other print in this slot |
+| `two_struct_slot` | two different structures in this slot |
+| `tool` / `nonce` / `direct` / `operator` | who sent it (`build` -> template from lake `ix_labels`) |
+| `seed_racer` | diagnostic only: if he follows it, it is a race |
+
+`burst_start` is the **coin** quiet ~400 ms, then any buy. `structure_burst` names **whose**
+silence. A named list of structures he follows is a thermometer: if it spikes, the public
+class is the **type** of those structures, never the list.
+
+If a priced class and an identity class both spike, **identity is the candidate**. Score
+every spike that covers >= 10%, not only the loudest priced one. The loudest is often
+DELAY = 0.
+
+Held state (only if 5.1 is flat, or as a second pass): unpriced counts crossing K (distinct
+recipes / wallets / operator structures). Fire = the rising-edge print. Windowed flow
+(`buys5`) is the price path, not a state.
+
+### 5.1 then 5.2
+
+```
+  pick a class
+    5.1  he reacts?  (lift >= 2 and cover >= 10%)
+      no   -> next class.  all flat -> held STATE, then 5.2
+      yes  -> 5.2 leftover for us?  behind him, fill 115 ms later
+                                    cost < 2%   peak leftover > 0   missed < 50%
+        no   -> If 5.2 kills (below)
+        yes  -> SPELL E (6), then D / X / P
+```
+
+Fire = that public print (or the rising-edge print). **Not** his buy. **Not** buy minus L.
+
+```
+BEHIND  (5.2 reads this row only)
+
+  time -->   public print     his buy      our fill         later peak
+             FIRE             already      we pay           leftover
+                              in price     (behind him)
+
+AHEAD = we fill before his buy. That copies his fill. Not the veto.
+```
 
 | # | question | how | decide |
 | --- | --- | --- | --- |
-| 5.1 | What does it react to? | `trigger.excess_intensity(S, {m: [w]})`: its buys against same-coin controls; every public print in the 5 s before, by (class, lag); `trigger.peak(lift, cls)` | A spike of one class at one lag band is the trigger, and that lag is the reaction time. Flat everywhere: it fires on a **state** that has been true for seconds, not on a print. A class covering under 10 % of its decisions (acted tickets over its episodes, `seat.leftover`) is a corner, not its logic: 8fStGV's trigger covers 93 %, the burst start it avoids 5.8 % (evidence 1.27) |
-| 5.2 | Does leftover exist at our seat? | `seat.leftover(S, w, E, trigger)`, then `seat.leftover_summary`. Acted ticket: the latest print of the class <= 300 ms before each of his decisions (or the rising-edge print of the state). Our fill: `kernel.fill_idx`, 115 ms after that print. Read the **behind** row: the tickets where our fill lands after his buy, so his own fill is already in the price (on an ahead ticket his buy counts as our leftover: a copied fill). Reaction cost = % price move from the print to our fill. Peak leftover = the best net % of an exit decided inside his hold p50, filled 115 ms later, both legs' cost paid (break-even is +3.1..+3.9 % in price). Missed = our fill at or after his closing sell | **Kill** when any of, on the behind row: median reaction cost >= 2 %; median peak leftover <= 0; missed >= 50 %. On all acted tickets (the behind row has ahead 0 by construction): lag p50 <= 50 ms with ahead < 10 % (the tell and the SOL land together). Calibrated on the hot tape (evidence 1.27): rule 1's trigger reads cost 1.41 %, peak +7.46 %; AbQcLH's burst start costs 4.55 % and is killed; so is 9999hu's sell >= 1 at 8.97 %, whose peak behind its buy is still +12.6 %: a large move leaves a volatile path, and its acted book rests on its tail. A better X cannot save a kill. Try another class, or a state |
-| 5.3 | Diagnostics, not a veto | `seat.reaction` (dt, ahead, behind). Horizon scan at 1, 2, 5, 15, 30, 60 s clipped to hold p90, and at his sell time, all from the `lag_115` fill. His-exit column: our entry at 115 ms, his sell at RACE (no exit lag). Occupancy column: every fire of the class on its coins, hold-matched clock. From `leftover_summary`: the acted and ignored rows, the peak at hold p10 and p90, the within-coin peak excess over ignored, the share that reaches break-even before the mirror loss | Report every column. **Do not kill** on a red clock, a red copy of his exit, or a red every-fire occupancy. Those mix X or which-fires into E. The within-coin peak excess and the break-even-first share are never the veto: the first reads -1.93 on rule 1's trigger (its fills pay the rebound the ignored prints do not), the second passes every anchor (evidence 1.27). Law 23: peak leftover never ships |
+| 5.1 | What does it react to? | `trigger.excess_intensity(S, {m: [w]})`: its buys against same-coin controls; every public print in the 5 s before, by (class, lag); `trigger.peak(lift, cls)`. Scan the families above, not only size / side / this-print % / coin-gap | A spike of one class at one lag band is the trigger, and that lag is the reaction time. Identity beats a priced class when both spike. Flat everywhere: it fires on a **state**. A class covering under 10% of its decisions is a corner, not its logic: 8fStGV's trigger covers 93%, the burst start it avoids 5.8% (evidence 1.27) |
+| 5.2 | Does leftover exist at our seat? | `seat.leftover(S, w, E, trigger)`, then `seat.leftover_summary`. Acted ticket: the latest print of the class <= 300 ms before each of his decisions (or the rising-edge print of the state). Our fill: `kernel.fill_idx`, 115 ms after **that** print. Read the **behind** row only: our fill after his buy, so his print is already in the price. Ahead tickets copy his fill; they are not the veto. Reaction cost = % price move from the print to our fill. Peak leftover = the best net % of an exit decided inside his hold p50, filled 115 ms later, both legs paid (break-even is +3.1..+3.9% in price). Missed = our fill at or after his closing sell | **Kill** on the behind row when any of: median reaction cost >= 2%; median peak leftover <= 0; missed >= 50%. On all acted tickets: lag p50 <= 50 ms **and** ahead < 10% (tell and SOL land together). Calibrated on the hot tape (evidence 1.27): rule 1's trigger reads cost 1.41%, peak +7.46%; AbQcLH's burst start costs 4.55% and is killed; so is 9999hu's sell >= 1 at 8.97%. A better X cannot save a kill |
+| 5.3 | Diagnostics, not a veto | `seat.reaction` (dt, ahead, behind). Horizon scan at 1, 2, 5, 15, 30, 60 s clipped to hold p90, and at his sell time, all from the `lag_115` fill. His-exit column: our entry at 115 ms, his sell at RACE (no exit lag). Occupancy column: every fire of the class on its coins, hold-matched clock. From `leftover_summary`: the acted and ignored rows, the peak at hold p10 and p90, the within-coin peak excess over ignored, the share that reaches break-even before the mirror loss | Report every column. **Do not kill** on a red clock, a red copy of his exit, or a red every-fire occupancy. Those mix X or which-fires into E. His median / top-1% / >20% losses are his X, not this veto. Occupancy red + leftover green -> **6.1** (which fires), not a dead E. Law 23: peak leftover never ships |
+
+A 0-cost median at 50 ms on **acted** tickets means no later print has landed yet. That is
+not a purchasable fill. It does not change the seat.
 
 **DELAY is leftover of the move, not gap to the next print.** Next-print p50 of 50-80 ms
 is burst density (the hill is still printing). It is an artifact detector for a one-print
-pop (section 11), not a veto of an 87 s episode. The veto is: the tell and the SOL we wanted
-arrive together, so a 115 ms fill has nothing left.
+pop (section 11), not a veto of an 87 s episode.
 
 A waiting time is not a reaction time. "Seconds since the last big buy" measures how often
 big buys happen. Latency is measured from the trigger print, by excess intensity.
 
-Do not score a DxPxX grid on a trigger that 5.2 killed. A red 5.3 occupancy book with
-green 5.2 leftover is a 6.1 problem (which fires), not a dead E.
+### If 5.2 kills
 
-**5.2 is a veto, not a verdict.** Its lines separate the known triggers only in this order:
-phase 4 drops sssssw (it passes 5.2: cost 1.18 %, peak +1.01 %), and 5.1's coverage drops the
-class 8fStGV avoids. A trigger that passes 5.2 stays open until a finished search closes it:
-6.1 terms, then phases 8 and 9 on that pool, both exit families, walked forward (section 14).
+```
+  most behind tickets already cost >= 2% ?
+      YES --> this family is dead. do not AND. do not walk D/P/X.
+      NO  --> quieter subset? exclusive split, then 5.1, then 5.2
+
+  this print is the execution (SOL already landing) ?
+      YES --> earlier footprint of the SAME intent (WHO / history)
+
+  no class and no state passes 5.2 ?
+      --> next wallet. do not invent E from inventory.
+```
+
+Overlapping spikes (`burst_start` / `buy>=0.5` / `up>=3%`) are one **family**, not three
+events. Split exclusive only when the typical print **is** the move:
+
+```
+  quiet restart     burst start AND NOT up>=3%
+  continuation      (size OR up>=3%) AND NOT burst start
+  loud restart      burst start AND up>=3%
+```
+
+`up>=3%` is this print's own step: `((v[k] / v[k-1]) ** 2 - 1) * 100`. It is not an
+accumulated window.
+
+**5.2 is a veto, not a verdict.** A trigger that passes 5.2 stays open until a finished
+search closes it: 6.1 terms, then phases 8 and 9 on that pool, both exit families, walked
+forward (section 14). Phase 4 drops sssssw (it passes 5.2: cost 1.18%, peak +1.01%), and
+5.1's coverage drops the class 8fStGV avoids.
 
 ---
 
@@ -300,20 +466,17 @@ The parent is the sentence after phases 5-9, including empty slots.
 [_!___inventory.md](_!___inventory.md) is the idea list. Use it here, not at phase 0.
 
 ```
-  parent exists (E named, DELAY legal)
-        |
-        v
-  search D, P, X from the inventory on those fires
-  one slot at a time, keep rule, both exit families
-        |
-        v
-  red  ->  name the empty slot
-           add one idea THERE, from the member's contrast
-           (acted vs ignored, winners vs losers, coins before arrival vs rest)
-           re-search that slot; do not replace E
-        |
-        v
-  DELAY of this leftover died  ->  new trigger (phase 5), not a new inventory E row
+  E named, DELAY legal                     parent
+       |
+       v
+  search D, then X, then P                 one slot at a time
+       |
+       | red --> name that slot, add one idea THERE, retry
+       |         (do not replace E)
+       |
+       | leftover of this E died --> new trigger (5), not a new inventory E
+       v
+  gates
 ```
 
 A one-slot change is a new address. Ablate: drop one term at a time; keep it only if it
@@ -472,6 +635,26 @@ top 1 % of trades, against the 9-12 % calibration.
 The measurement laws are [_!___strategy.md](_!___strategy.md) 7.4 and its closed mistakes are
 section 9; these are the method's own.
 
+```
+  copy his fill and call it E
+  fire at buy-minus-L
+  use last-leg study as the book
+  drop a cutting harvester as a "tail"
+  use his median / top-1% / >20% loss as the 5.2 veto
+  run 5.2 before 5.1
+  put ahead tickets in the veto
+  kill E on occupancy / clock / copy of his close
+  walk D/P/X on a 5.2 kill
+  AND-filter a family where almost every behind ticket already costs >= 2%
+  invent E from unused inventory 4-tuples
+  treat 50 ms 0-cost acted median as take-profit, or change the seat
+  pool members
+  freeze D/E/P/X at random
+  close the node because FOLLOW of his buy is red
+  guess conjunctions instead of naming HIS reaction first
+  scan only size / side / % / coin-gap -- WHO printed is the scan
+```
+
 - **No parent from an inventory 4-tuple.** Combine ideas on a DELAY-legal event named by
   a member. Do not walk unused DxExPxX to invent the story.
 - **No DELAY read as next-print gap** when the leftover is a hill. Next-print gap is an
@@ -500,6 +683,10 @@ section 9; these are the method's own.
   are different stories, one at a time.
 - **No parking the harvester** because survival is the only holdout-positive book. Survival is a
   door; the target in section 0 is still leftover of real up-moves.
+- **No last-leg study as the book.** Thresholds are read on `study_exact` (every leg).
+- **No FOLLOW of his buy as a drop.** FOLLOW red on a copy of his fill is expected.
+- **No 50 ms 0-cost acted median as take-profit.** No later print has landed yet; that is not
+  a purchasable fill, and it does not change the 115 ms veto.
 
 The guards:
 

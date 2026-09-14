@@ -1,7 +1,8 @@
 # mid-tape: scripts of rule 3
 
 The record behind [../mid-tape-rule-3.md](../mid-tape-rule-3.md) (instrument 8dtx2t). Each script
-opens with its step and the question it answers. Playbook: [_!___derive.md](../../_!___derive.md).
+opens with its step and the question it answers. Method:
+[_!___derive.md](../../_!___derive.md).
 
 The scripts are local scratch and not tracked (only `_paths.py` is): each step's record is its
 chain row in the case file named below.

@@ -46,7 +46,7 @@ Read before trusting any backtest number:
 wallet to a sentence (pick, leftover existence at 115 ms, event, then D/X/P; inventory
 search on that parent), the gates and ship bars, and how a result is recorded. An event
 candidate is graded by leftover existence behind his buy at our fill (derive 5.2), never
-by one exit's P&L.
+by one exit's P&L. Scan WHO printed, not only size / side / this-print % / coin-gap.
 [_!___inventory.md](docs/plans/strategies/_!___inventory.md) is every idea, used after
 the event is named.
 [_!___workflow.md](docs/plans/strategies/_!___workflow.md) is the open queue.

@@ -1,12 +1,13 @@
 # node-derivation: from profitable wallets to a shippable rule
 
-The code that runs the method, and each node's case file. The method itself is
+The code that runs the method, and each node's case file. The method (picture, pick, print
+classes, DELAY, then D/X/P, gates, recording) is
 [../_!___derive.md](../_!___derive.md). Hot-tape is the first node taken end to end; the next node
 reuses the method and the toolkit, and gets its own case file and script folder beside hot-tape's.
 
 | file | what it is | read it when |
 | --- | --- | --- |
-| [../_!___derive.md](../_!___derive.md) | the method: pick a member, DELAY, event, then D/X/P; the gates; how a result is recorded | deriving any node or wallet |
+| [../_!___derive.md](../_!___derive.md) | the method: picture, pick, rich 5.1 classes, DELAY, then D/X/P; the gates; how a result is recorded | deriving any node or wallet |
 | [toolkit/README.md](toolkit/README.md) | the method as functions, by derive phase | writing a step's script |
 | [node-template.md](node-template.md) | the shape of a node's case file | starting a node |
 | [hot-tape-rule-1.md](hot-tape-rule-1.md) | the worked example: rule 1, its book, the chain of steps that produced it, the member book | reading the worked example, or shipping rule 1 |

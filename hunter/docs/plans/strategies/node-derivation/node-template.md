@@ -1,8 +1,8 @@
 # <Node>: rule <n> and the member book
 
 A new node's case file starts as a copy of this one; [hot-tape-rule-1.md](hot-tape-rule-1.md)
-is the filled example. Fill each section as the phase of [_!___derive.md](../_!___derive.md)
-that produces it runs; an empty slot stays written as empty, never dropped. Scripts go in
+is the filled example. Fill each section as [_!___derive.md](../_!___derive.md) produces
+it; an empty slot stays written as empty, never dropped. Scripts go in
 `node-derivation/<node>/`, one per step, each opening with its step and question; they stay
 local unless a rule or a gate needs them re-run. Toolkit calls for each phase:
 [toolkit/README.md](toolkit/README.md).
@@ -65,7 +65,7 @@ One row per step, in order, dead ends included. The phase is [_!___derive.md](..
 | step | question | what it shows | what it does to the rule | script | ev |
 | --- | --- | --- | --- | --- | --- |
 | 4 | Which members pay, and at which seat? | | | | |
-| 5.1 | What print does each react to, and at what lag? | | | | |
+| 5.1 | What print does each react to, and at what lag? (WHO / history, not only size / % / gap) | | | | |
 | 5.2 | Does leftover exist at our 115 ms fill on the fires it takes? | | | | |
 | 6.1 | Which of those prints does it act on? | | | | |
 | 6.2 | Does it hold as a public sentence on every coin? | | | | |
