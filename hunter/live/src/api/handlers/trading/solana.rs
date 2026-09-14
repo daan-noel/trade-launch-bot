@@ -288,7 +288,6 @@ pub async fn manual_sell(
     // actually cleared (index lag) and records the real sell's exit price; the
     // engine's reaper is the ultimate backstop for anything still unresolved.
     {
-        use hunter_engine::event::Fill;
         use trading_core::models::trade::TradeType;
         let state = app_state.get_ref().clone();
         let mint = body.mint_address.clone();
@@ -314,28 +313,33 @@ pub async fn manual_sell(
                     tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
                     continue;
                 }
-                // Exit price/time from the most recent sell; fall back to entry if the
-                // sell isn't indexed. `close_externally_cleared_position` used the same
-                // `exit_price × entry_token_amount` approximation for `exit_sol`.
+                // The close books what the wallet's sell left in the wallet, shared by
+                // the tokens each row still held. A sell not indexed yet is retried,
+                // then left to the reaper, never booked from a made-up proceeds figure.
                 let last_sell = state
                     .trade_repo()
                     .find_latest_by_wallet_mint_type(&wallet, &mint, TradeType::Sell)
                     .await
                     .ok()
                     .flatten();
+                let Some(last_sell) = last_sell else {
+                    tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
+                    continue;
+                };
                 for pos in positions {
-                    let (price, at) = match &last_sell {
-                        Some(s) => (s.price_per_token, s.block_time),
-                        None => (pos.entry_price.unwrap_or(0.0), chrono::Utc::now()),
-                    };
-                    let token_amount = pos.entry_token_amount.unwrap_or(0);
-                    let fill = Fill { price, sol: price * token_amount as f64, token_amount, at };
+                    use crate::strategies::engine::orphan_exit;
+                    let fill = orphan_exit::wallet_fill_from_sell(
+                        &state.trade_repo(),
+                        &wallet,
+                        &last_sell,
+                        pos.remaining_token_amount(),
+                    )
+                    .await;
                     // Engine path when registry has the row; PG book-close on miss
                     // (post-restart) so Holding never sticks after a Trade sell.
                     if state.positions.engine_id(pos.id).is_some() {
                         let _ = state.engine.reconcile_cleared(pos.id, fill).await;
                     } else {
-                        use crate::strategies::engine::orphan_exit;
                         if let Err(e) = orphan_exit::book_externally_cleared_pg(
                             &state.strategy_repo,
                             pos.id,

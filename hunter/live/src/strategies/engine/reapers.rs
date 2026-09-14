@@ -41,7 +41,9 @@ pub fn onchain_bag_check_from_env() -> bool {
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
 }
-use trading_core::state::token_cache::TokenCache;
+use trading_core::models::trade::TradeRow;
+use trading_core::state::token_cache::{mark_quote, TokenCache};
+use trading_core::strategies::kernel::{sell_value_proceeds, CostModel};
 use trading_core::state::trade_signals::TradeSignals;
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
@@ -224,7 +226,7 @@ async fn resolve_buy_submitted_inner(
                 .clone()
                 .or_else(|| deps.trader.cached_token_account(&position.mint_address));
             // What the buy took from the wallet — the same booking `exec_real` makes.
-            let (paid_sol, _) = legs.wallet_sol();
+            let paid_sol = exec_real::booked_wallet_sol(&legs, &position.mint_address, "buy");
             match deps
                 .strategy_repo
                 .record_entry_fill(
@@ -915,7 +917,9 @@ const PAPER_STUCK_HEAL_PER_TICK: i64 = 200;
 /// fixed to market-fill an empty window). This is the heal for that backlog, and
 /// the backstop for any paper exit that still fails.
 ///
-/// Price, in order: the mint's last `trades` row **as of the moment the exit gave
+/// The bag sells through the kernel (`sell_value_proceeds`: impact, venue fee,
+/// fixed cost and the close), like every paper exit. Spot, in order: the mint's
+/// last `trades` row **as of the moment the exit gave
 /// up** (`[entry_time, updated_at]` — the death price for a token that stopped
 /// trading, and the honest as-of price for a backlog row on a token that kept
 /// going) → the live cache's current spot → the entry price. The feed leads the
@@ -937,41 +941,35 @@ async fn close_paper_exit_stuck(deps: &ReaperDeps) {
     let mut n = 0u32;
     for pos in stuck {
         let since = pos.entry_time.unwrap_or(pos.created_at);
+        // Spot and depth of the pool state the exit prices against - the same basis
+        // `exec_paper` fills at and paper entries are priced on, never another
+        // trader's execution price.
         let from_feed = deps
             .trade_repo
             .find_latest_by_mint(&pos.mint_address, since, pos.updated_at)
             .await
             .ok()
             .flatten()
-            .filter(|t| t.price_per_token > 0.0)
-            .map(|t| (t.price_per_token, t.block_time));
+            .map(|t| (t.fill_basis(), t.reserve_sol(), t.block_time))
+            .filter(|(price, _, _)| *price > 0.0);
         let priced = from_feed.or_else(|| {
-            deps.token_cache.get(&pos.mint_address).and_then(|e| {
-                let s = e.value();
-                s.current_price
-                    .filter(|p| *p > 0.0)
-                    .map(|price| (price, s.last_trade_at.unwrap_or(pos.updated_at)))
-            })
+            let q = mark_quote(&deps.token_cache, &pos.mint_address)?;
+            let at = deps
+                .token_cache
+                .get(&pos.mint_address)
+                .and_then(|e| e.value().last_trade_at)
+                .unwrap_or(pos.updated_at);
+            Some((q.price, q.reserve_sol, at))
         });
-        let (price, at) =
-            priced.unwrap_or_else(|| (pos.entry_price.unwrap_or(0.0), pos.updated_at));
+        let (price, depth, at) =
+            priced.unwrap_or_else(|| (pos.entry_price.unwrap_or(0.0), None, pos.updated_at));
         let token_amount = pos.remaining_token_amount();
-        // Size the closing leg from the **cost basis × price ratio**, not
-        // `price × tokens`. Paper rows written before the 2026-08-04 token-scale
-        // fix carry `entry_token_amount` 1e6× too high (`Fill::price` is SOL per
-        // RAW unit, and `exec_paper` still multiplied by `TOKEN_SCALE`), so
-        // `price × tokens` would book a 1e6× fantasy PnL on 331 of the 359
-        // stranded rows. `entry_sol` was always right and a price *ratio* is
-        // scale-free, so this is correct on both sides of that fix — and exactly
-        // equal to `price × tokens` on a row whose scale is consistent.
-        let sol = match (pos.entry_sol, pos.entry_price, pos.entry_token_amount) {
-            (Some(entry_sol), Some(entry_price), Some(entry_tokens))
-                if entry_price > 0.0 && entry_tokens > 0 =>
-            {
-                entry_sol * (token_amount as f64 / entry_tokens as f64) * (price / entry_price)
-            }
-            _ => price * token_amount as f64,
-        };
+        let sol = sell_value_proceeds(
+            paper_bag_value(&pos, token_amount, price),
+            depth,
+            &CostModel::pumpfun_with_impact(),
+            true,
+        );
         let fill = Fill { price, sol, token_amount, at };
         let reason = pos.exit_reason.clone().unwrap_or_else(|| "Manual".to_string());
         match orphan_exit::book_externally_cleared_pg(&deps.strategy_repo, pos.id, fill, &reason)
@@ -983,6 +981,29 @@ async fn close_paper_exit_stuck(deps: &ReaperDeps) {
     }
     if n > 0 {
         info!(n, "reaper: closed paper ExitStuck rows at last known price");
+    }
+}
+
+/// Spot value of a paper bag's `tokens` at `price`: `price x tokens`, the gross the
+/// kernel's sell nets fee, impact and fixed costs out of.
+///
+/// Paper rows written before the 2026-08-04 token-scale fix carry
+/// `entry_token_amount` 1e6x too high, so `price x tokens` books a 1e6x fantasy
+/// value. Such a row is recognisable - its tokens at its own entry price are worth
+/// far more than the SOL it paid - and is valued scale-free instead, from the
+/// SOL it paid and the price ratio.
+fn paper_bag_value(pos: &StrategyPosition, tokens: u64, price: f64) -> f64 {
+    let at_spot = price * tokens as f64;
+    match (pos.entry_sol, pos.entry_price, pos.entry_token_amount) {
+        (Some(entry_sol), Some(entry_price), Some(entry_tokens))
+            if entry_sol > 0.0
+                && entry_price > 0.0
+                && entry_tokens > 0
+                && entry_price * entry_tokens as f64 > 10.0 * entry_sol =>
+        {
+            entry_sol * (tokens as f64 / entry_tokens as f64) * (price / entry_price)
+        }
+        _ => at_spot,
     }
 }
 
@@ -1023,5 +1044,45 @@ async fn close_stale_paper_exit_pending(deps: &ReaperDeps) {
     }
     if n > 0 {
         info!(n, "reaper: closed stale paper ExitPending at breakeven");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::paper_bag_value;
+    use trading_core::models::StrategyPosition;
+    use uuid::Uuid;
+
+    fn paper(entry_sol: f64, entry_price: f64, entry_tokens: u64) -> StrategyPosition {
+        let mut p = StrategyPosition::new(
+            Uuid::nil(),
+            "generic".into(),
+            Uuid::nil(),
+            "paper".into(),
+            "mint".into(),
+            "paper".into(),
+        );
+        p.entry_sol = Some(entry_sol);
+        p.entry_price = Some(entry_price);
+        p.entry_token_amount = Some(entry_tokens);
+        p
+    }
+
+    /// A consistent row is valued at spot: price x the tokens it holds.
+    #[test]
+    fn a_consistent_bag_is_worth_spot_times_tokens() {
+        // 0.1 SOL paid for ~3.25e12 raw tokens at 3e-14 SOL/raw.
+        let p = paper(0.100227, 3.0e-14, 3_250_000_000_000);
+        let v = paper_bag_value(&p, 3_250_000_000_000, 3.3e-14);
+        assert!((v - 3.3e-14 * 3.25e12).abs() < 1e-12, "{v}");
+    }
+
+    /// A pre-2026-08-04 row whose tokens are 1e6x too high is valued scale-free,
+    /// never at a 1e6x fantasy.
+    #[test]
+    fn a_token_scale_broken_bag_is_valued_from_what_it_paid() {
+        let p = paper(0.1, 3.0e-14, 3_250_000_000_000_000_000);
+        let v = paper_bag_value(&p, 3_250_000_000_000_000_000, 3.3e-14);
+        assert!((v - 0.11).abs() < 1e-9, "{v}");
     }
 }

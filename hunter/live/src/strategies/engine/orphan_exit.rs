@@ -120,6 +120,8 @@ pub fn spawn_orphan_sell(
     };
 
     let (fill_tx, mut fill_rx) = mpsc::channel::<Event>(4);
+    let fill_sigs = FillSigStore::new();
+    let sell_intent = order.intent.clone();
     let real_deps = RealExecDeps {
         trader: deps.trader.clone(),
         token_cache: deps.token_cache.clone(),
@@ -127,7 +129,7 @@ pub fn spawn_orphan_sell(
         strategy_repo: deps.strategy_repo.clone(),
         token_info_repo: TokenInfoRepo::new(deps.strategy_repo.pool().clone()),
         trade_signals: deps.trade_signals.clone(),
-        fill_sigs: FillSigStore::new(),
+        fill_sigs: fill_sigs.clone(),
         fill_tx,
         inflight: InFlightGuards::new(),
         buy_journal: SubmittedBuyJournal::new(),
@@ -161,23 +163,37 @@ pub fn spawn_orphan_sell(
         exec_real::run_exit(real_deps, order).await;
         match fill_rx.recv().await {
             Some(Event::FillConfirmed { fill, .. }) => {
-                if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
-                    if matches!(pos.status.as_str(), "End") {
-                        return;
+                // The final leg goes through the ledger like every other sell, so a
+                // scale-out's earlier legs stay in the row's proceeds and the sell's
+                // own signatures and slot are kept.
+                let landed = fill_sigs.take(&sell_intent);
+                let (sigs, slot) =
+                    landed.map(|f| (f.sigs, f.slot)).unwrap_or_default();
+                match repo.find_position(pg_id).await {
+                    Ok(Some(pos)) if pos.status != "End" => {
+                        match repo
+                            .record_sell_fill(
+                                pg_id,
+                                fill.price,
+                                fill.sol,
+                                fill.token_amount,
+                                fill.at,
+                                Some(&exit_reason),
+                                None,
+                                &sigs,
+                                FillSigKind::Own,
+                                true,
+                                slot,
+                            )
+                            .await
+                        {
+                            Ok(_) => info!(position_id = %pg_id, "orphan_exit: sold → End"),
+                            Err(e) => {
+                                warn!(position_id = %pg_id, "orphan_exit: close after sell failed: {e}")
+                            }
+                        }
                     }
-                    pos.close(
-                        fill.price,
-                        fill.sol,
-                        fill.token_amount,
-                        vec![],
-                        fill.at,
-                        &exit_reason,
-                    );
-                    if let Err(e) = repo.update_position(&pos).await {
-                        warn!(position_id = %pg_id, "orphan_exit: close after sell failed: {e}");
-                    } else {
-                        info!(position_id = %pg_id, "orphan_exit: sold → End");
-                    }
+                    _ => {}
                 }
                 // Sibling book-close is handled inside run_exit/finish_cleared_sell
                 // when wallet net is cleared (PG). Also heal here if that path missed.
@@ -378,13 +394,48 @@ pub async fn fill_from_latest_sell(
                 .flatten();
         }
     }
-    let token_amount = pos.remaining_token_amount();
-    last_sell.map(|s| Fill {
-        price: s.price_per_token,
-        sol: s.price_per_token * token_amount as f64,
-        token_amount,
-        at: s.block_time,
-    })
+    let sell = last_sell?;
+    Some(wallet_fill_from_sell(trade_repo, wallet, &sell, pos.remaining_token_amount()).await)
+}
+
+/// The close fill for `token_amount` tokens cleared by the wallet's own `sell`:
+/// what that sell's transaction left in the wallet (`SigLegs::wallet_received_sol`,
+/// every fee included), shared pro-rata by tokens when the sell cleared more than
+/// this bag - never `price x tokens`, which drops the venue fee and the tx costs.
+pub async fn wallet_fill_from_sell(
+    trade_repo: &TradeRepo,
+    wallet: &str,
+    sell: &trading_core::models::trade::Trade,
+    token_amount: u64,
+) -> Fill {
+    let legs = trade_repo
+        .sum_legs_by_signatures(
+            wallet,
+            &sell.mint_address,
+            std::slice::from_ref(&sell.tx_signature),
+            TradeType::Sell,
+        )
+        .await
+        .ok()
+        .flatten()
+        .filter(|l| l.token_amount > 0);
+    let (price, sol, sold) = match legs {
+        Some(l) => (
+            l.price_per_token(),
+            exec_real::booked_wallet_sol(&l, &sell.mint_address, "sell"),
+            l.token_amount,
+        ),
+        None => (sell.price_per_token, sell.amount_sol, sell.token_amount),
+    };
+    Fill { price, sol: pro_rata_sol(sol, token_amount, sold), token_amount, at: sell.block_time }
+}
+
+/// `sol` for `sold` tokens, scaled to `tokens` of them. 0 when nothing was sold.
+fn pro_rata_sol(sol: f64, tokens: u64, sold: u64) -> f64 {
+    if sold == 0 {
+        return 0.0;
+    }
+    sol * (tokens as f64 / sold as f64)
 }
 
 /// After a mint's wallet bag is cleared (PG net), close every other unsettled real
@@ -412,10 +463,13 @@ pub async fn close_siblings_if_mint_cleared(
         .await
         .unwrap_or_default();
     for sib in siblings {
+        // The leader's fill is wallet flow for the tokens its sell cleared; a
+        // sibling's share is that flow per token, not the price times its tokens.
+        let tokens = sib.remaining_token_amount();
         let fill = Fill {
             price: leader_fill.price,
-            sol: leader_fill.price * sib.remaining_token_amount() as f64,
-            token_amount: sib.remaining_token_amount(),
+            sol: pro_rata_sol(leader_fill.sol, tokens, leader_fill.token_amount),
+            token_amount: tokens,
             at: leader_fill.at,
         };
         if let Some(engine_id) = registry.engine_id(sib.id) {
@@ -729,4 +783,19 @@ pub fn adopt_buy_submitted_into_engine(
         },
     );
     Some(position)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pro_rata_sol;
+
+    /// A sell that cleared two rows' tokens pays each its share per token.
+    #[test]
+    fn a_shared_sell_splits_its_flow_by_tokens() {
+        assert!((pro_rata_sol(0.3, 1_000, 3_000) - 0.1).abs() < 1e-15);
+        assert_eq!(pro_rata_sol(0.3, 3_000, 3_000), 0.3);
+        // A dust sell whose fees beat its proceeds stays a loss when split.
+        assert!(pro_rata_sol(-0.0002, 500, 1_000) < 0.0);
+        assert_eq!(pro_rata_sol(0.3, 1_000, 0), 0.0);
+    }
 }

@@ -1818,13 +1818,23 @@ impl SigLegs {
         }
     }
 
-    /// The SOL these legs moved through the wallet, unsigned: what a buy paid or
-    /// a sell received, every fee included. Falls back to the curve-side
-    /// `amount_sol` only for a transaction written before the flow was captured —
-    /// the caller logs that it did.
-    pub fn wallet_sol(&self) -> (f64, bool) {
+    /// The SOL buy legs took from the wallet, every fee included (the flow's
+    /// outflow, positive). Falls back to the curve-side `amount_sol` only for a
+    /// transaction written before the flow was captured - the caller logs that it
+    /// did (`.1 == false`).
+    pub fn wallet_paid_sol(&self) -> (f64, bool) {
         match self.wallet_lamports {
-            Some(l) => (lamports_to_sol(l.abs()), true),
+            Some(l) => (lamports_to_sol(-l), true),
+            None => (self.amount_sol, false),
+        }
+    }
+
+    /// The SOL sell legs left in the wallet, every fee included - NEGATIVE when
+    /// the fees exceeded the proceeds (a dust bag), because that is what the
+    /// wallet moved. Same fallback as [`Self::wallet_paid_sol`].
+    pub fn wallet_received_sol(&self) -> (f64, bool) {
+        match self.wallet_lamports {
+            Some(l) => (lamports_to_sol(l), true),
             None => (self.amount_sol, false),
         }
     }
@@ -1891,6 +1901,29 @@ pub fn sig_bytes_to_base58(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
+
+    fn legs(wallet_lamports: Option<i64>) -> SigLegs {
+        SigLegs {
+            token_amount: 1_000,
+            amount_sol: 0.1,
+            wallet_lamports,
+            first_block_time: Utc::now(),
+            last_block_time: Utc::now(),
+            first_slot: None,
+            last_slot: None,
+        }
+    }
+
+    /// A buy books its outflow as a positive cost; a sell books what it left in
+    /// the wallet, keeping the sign when its fees beat its proceeds.
+    #[test]
+    fn wallet_flow_keeps_its_sign() {
+        assert_eq!(legs(Some(-101_250_000)).wallet_paid_sol(), (0.10125, true));
+        assert_eq!(legs(Some(98_000_000)).wallet_received_sol(), (0.098, true));
+        assert_eq!(legs(Some(-125_000)).wallet_received_sol(), (-0.000125, true));
+        // No captured flow: the curve-side amount, flagged inexact.
+        assert_eq!(legs(None).wallet_received_sol(), (0.1, false));
+    }
 
     /// `insert_many` binds [`TRADE_INSERT_BINDS_PER_ROW`] params per row
     /// (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,

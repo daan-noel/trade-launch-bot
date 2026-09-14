@@ -617,11 +617,12 @@ async fn emit_entry_filled(
 }
 
 /// The SOL a real fill books: what its transactions moved through the wallet,
-/// every fee included (`SigLegs::wallet_sol`). A transaction whose flow was never
-/// captured falls back to the curve-side amount, loudly — that row's PnL is not
-/// all-in.
-fn booked_wallet_sol(legs: &SigLegs, mint: &str, side: &str) -> f64 {
-    let (sol, exact) = legs.wallet_sol();
+/// every fee included (`SigLegs::wallet_paid_sol` / `wallet_received_sol`). A
+/// transaction whose flow was never captured falls back to the curve-side amount,
+/// loudly — that row's PnL is not all-in.
+pub(crate) fn booked_wallet_sol(legs: &SigLegs, mint: &str, side: &str) -> f64 {
+    let (sol, exact) =
+        if side == "buy" { legs.wallet_paid_sol() } else { legs.wallet_received_sol() };
     if !exact {
         warn!(mint = %mint, side, "real fill: no wallet flow captured, booking the curve-side amount");
     }
