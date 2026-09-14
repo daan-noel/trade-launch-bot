@@ -5,12 +5,11 @@ import type { TokenDetailRecord } from 'types';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatIso } from 'utils/date';
 import {
-  formatDecimal,
   formatDecimalTrim,
-  formatPrice,
   ratioVariant,
   truncate,
 } from 'utils/format';
+import { formatSignedPct } from 'lib/signedTone';
 import { AddrCard, StatCard } from 'components/ui/StatCard';
 import { Badge } from 'components/ui/Badge';
 import { u64Num } from 'lib/u64Wire';
@@ -195,14 +194,14 @@ export function TokenDetailPanel({
               Price Performance
             </div>
             <div className="grid grid-cols-3 gap-1">
-              <StatCard label="First Entry Price" value={entry != null ? formatPrice(entry) : '-'} large />
+              <StatCard label="First Entry Price" value={entry != null ? price.displayPrice(entry) : '-'} large />
               <StatCard label="ATH Price" value={detail.ath_price != null ? price.displayPrice(detail.ath_price) : '-'} variant="primary" large />
               <StatCard label="Current Price" value={detail.current_price != null ? price.displayPrice(detail.current_price) : '-'} large />
               <StatCard
                 label="ATH / FEP"
                 value={
                   athMult != null
-                    ? `${formatDecimalTrim(athMult, 2)}x  (${formatDecimal((athMult ?? 0) * 100, 1)}%)`
+                    ? `${formatDecimalTrim(athMult, 2)}x  (${formatSignedPct((athMult - 1) * 100, 1)})`
                     : '-'
                 }
                 variant={ratioVariant(athMult)}
@@ -212,7 +211,7 @@ export function TokenDetailPanel({
                 label="Current / FEP"
                 value={
                   curMult != null
-                    ? `${formatDecimalTrim(curMult, 2)}x  (${formatDecimal((curMult ?? 0) * 100, 1)}%)`
+                    ? `${formatDecimalTrim(curMult, 2)}x  (${formatSignedPct((curMult - 1) * 100, 1)})`
                     : '-'
                 }
                 variant={ratioVariant(curMult)}
