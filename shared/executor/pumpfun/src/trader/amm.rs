@@ -22,7 +22,7 @@ use crate::protocol::{
     self, AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET, AMM_CONFIG_FEE_RECIPIENTS_OFFSET,
     AMM_CONFIG_LP_FEE_BPS_OFFSET, AMM_CONFIG_MIN_LEN, AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET,
     AMM_POOL_BASE_VAULT_OFFSET, AMM_POOL_COIN_CREATOR_OFFSET, AMM_POOL_IS_CASHBACK_OFFSET,
-    AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET,
+    AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET, AMM_POOL_VIRTUAL_QUOTE_OFFSET,
 };
 use serde_json::json;
 use solana_sdk::{
@@ -952,35 +952,40 @@ impl PumpFunTrader {
         });
     }
 
-    /// Current pool reserves = the base/quote vault token balances (raw units).
+    /// The reserves the pool prices with, `(base vault, quote vault + the pool's
+    /// virtual quote)` in raw units — the pair constant-product runs on, and the
+    /// same pair the ingest's live reserves carry.
     async fn amm_reserves(&self, pool: &AmmPoolInfo) -> Result<(u128, u128)> {
-        // Both vault balances in a single request (getMultipleAccounts). Read the
-        // raw SPL `amount` (u64 @ offset 64, after mint[32] + owner[32]) — the base
-        // token-account layout is identical for Token and Token-2022.
+        // The pool account and both vaults in a single request (getMultipleAccounts).
+        // Read the raw SPL `amount` (u64 @ offset 64, after mint[32] + owner[32]) —
+        // the base token-account layout is identical for Token and Token-2022.
         let accounts = self
             .rpc
             .get_multiple_accounts(&[
+                pool.pool,
                 pool.pool_base_token_account,
                 pool.pool_quote_token_account,
             ])
             .await
             .context("read pool reserves")?;
-        let [base, quote]: [Option<_>; 2] = accounts.try_into().map_err(|_| {
+        let [pool_acc, base, quote]: [Option<_>; 3] = accounts.try_into().map_err(|_| {
             TradeError::Other("getMultipleAccounts returned an unexpected count".into())
         })?;
+        let pool_acc = pool_acc.context("pool account not found")?;
         let base = base.context("pool base vault not found")?;
         let quote = quote.context("pool quote vault not found")?;
         let base_res = read_u64(&base.data, 64)? as u128;
-        let quote_res = read_u64(&quote.data, 64)? as u128;
-        if base_res == 0 || quote_res == 0 {
+        let quote_vault = read_u64(&quote.data, 64)? as u128;
+        if base_res == 0 || quote_vault == 0 {
             bail!("PumpSwap pool has zero reserves");
         }
-        Ok((base_res, quote_res))
+        Ok((base_res, quote_vault + u128::from(pool_virtual_quote(&pool_acc.data))))
     }
 
     /// Pool reserves with a WS-cache fast path: serve a fresh AMM snapshot for
-    /// `mint` (same `(base, quote=lamports)` units as [`amm_reserves`]) when one
-    /// is available, otherwise read the vault balances on-chain. Curve snapshots
+    /// `mint` (the same priced `(base, quote=lamports)` pair as [`amm_reserves`] —
+    /// the ingest's AMM reserves carry the virtual quote) when one is available,
+    /// otherwise read the pool on-chain. Curve snapshots
     /// are never served here (the cache is venue-tagged), so a just-migrated
     /// token reads on-chain until its first AMM trade lands.
     async fn amm_reserves_cached(
@@ -1474,6 +1479,12 @@ fn read_pubkey(data: &[u8], off: usize) -> Result<Pubkey> {
         .map_err(|_| TradeError::Other(format!("bad pubkey at offset {off}")))
 }
 
+/// The virtual quote reserve a `Pool` account prices with (lamports); 0 for an
+/// account too short to hold it.
+fn pool_virtual_quote(data: &[u8]) -> u64 {
+    read_u64(data, AMM_POOL_VIRTUAL_QUOTE_OFFSET).unwrap_or(0)
+}
+
 fn read_u64(data: &[u8], off: usize) -> Result<u64> {
     let end = off + 8;
     if data.len() < end {
@@ -1530,6 +1541,16 @@ mod tests {
     #[test]
     fn read_u64_rejects_short_buffer() {
         assert!(read_u64(&[0u8; 40], 64).is_err());
+    }
+
+    /// A 301-byte `Pool` account carries its virtual quote at byte 245 (the value
+    /// read off `jAMSvc…` and `3Pt3PM…`); a shorter one prices on the vault.
+    #[test]
+    fn pool_virtual_quote_lives_at_offset_245() {
+        let mut data = vec![0u8; 301];
+        data[245..253].copy_from_slice(&17_584_505_288u64.to_le_bytes());
+        assert_eq!(super::pool_virtual_quote(&data), 17_584_505_288);
+        assert_eq!(super::pool_virtual_quote(&data[..crate::protocol::AMM_POOL_MIN_LEN]), 0);
     }
 
     // --- AMM swap transaction-size guards -------------------------------------

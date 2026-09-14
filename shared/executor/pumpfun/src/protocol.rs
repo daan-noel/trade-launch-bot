@@ -233,6 +233,11 @@ pub const AMM_POOL_QUOTE_VAULT_OFFSET: usize = 171;
 pub const AMM_POOL_COIN_CREATOR_OFFSET: usize = 211;
 pub const AMM_POOL_IS_CASHBACK_OFFSET: usize = 244;
 pub const AMM_POOL_MIN_LEN: usize = 245;
+/// The pool's virtual quote reserve (u64 lamports), right after
+/// `is_cashback_coin` and past the fields the published IDL lists. Every swap is
+/// constant-product on `(quote vault + this, base vault)`; the pool accounts read
+/// hold 17 584 505 288. A pool account too short to hold it prices on the vault.
+pub const AMM_POOL_VIRTUAL_QUOTE_OFFSET: usize = 245;
 
 /// Byte offsets into a PumpSwap `GlobalConfig` account (after the 8-byte
 /// discriminator). Layout: admin(32) lp_fee_basis_points(u64)
