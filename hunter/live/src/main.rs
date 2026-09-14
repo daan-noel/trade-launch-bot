@@ -1641,10 +1641,11 @@ mod tests {
     #[test]
     fn cost_model_cu_limits_match_the_executor() {
         use trading_core::config::constants::{
-            COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
+            COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
         };
         let executor = pump_trader::ComputeBudgetCfg::default();
         assert_eq!(COMPUTE_UNIT_LIMIT_CURVE_BUY, executor.curve_buy_cu);
         assert_eq!(COMPUTE_UNIT_LIMIT_CURVE_SELL, executor.curve_sell_cu);
+        assert_eq!(COMPUTE_UNIT_LIMIT_AMM, executor.amm_cu);
     }
 }

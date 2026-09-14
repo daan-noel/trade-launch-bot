@@ -648,6 +648,7 @@ pub fn adopt_holding_into_engine(
             target_snapshot: None,
             cashback_enabled: false,
             inflight_intent: None,
+            reverted_fee_lamports: 0,
         },
     );
     Some(position)
@@ -780,6 +781,7 @@ pub fn adopt_buy_submitted_into_engine(
             target_snapshot: None,
             cashback_enabled: false,
             inflight_intent: Some(intent),
+            reverted_fee_lamports: 0,
         },
     );
     Some(position)

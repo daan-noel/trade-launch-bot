@@ -226,7 +226,8 @@ async fn resolve_buy_submitted_inner(
                 .clone()
                 .or_else(|| deps.trader.cached_token_account(&position.mint_address));
             // What the buy took from the wallet — the same booking `exec_real` makes.
-            let paid_sol = exec_real::booked_wallet_sol(&legs, &position.mint_address, "buy");
+            let paid_sol = exec_real::booked_wallet_sol(&legs, &position.mint_address, "buy")
+                + exec_real::take_reverted_fees_sol(&deps.registry, position.id);
             match deps
                 .strategy_repo
                 .record_entry_fill(

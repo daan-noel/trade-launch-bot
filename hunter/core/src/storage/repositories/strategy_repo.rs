@@ -13,7 +13,7 @@ use crate::strategies::kernel::{weighted_return_pct, CostModel};
 use crate::strategies::run_rollup::{self, RunRollup};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
-    MarkQuote, EXTRA_ENTRY_PRICED_RESERVE,
+    MarkQuote, EXTRA_ENTRY_PRICED_RESERVE, EXTRA_REVERTED_FEE_LAMPORTS,
     ExitReasonCounts, PositionsSummary, StrategyPosition, StrategyRun, StrategyRunMetrics,
 };
 use crate::storage::token_enrichment::{
@@ -450,8 +450,10 @@ const RULE_COUNTERS_AGGS: &str = "\
     COUNT(p.*) FILTER (WHERE p.status = 'End' AND p.exit_lamports > p.entry_lamports) AS win, \
     COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL AND p.status = 'End' \
                          AND NOT (p.exit_lamports > p.entry_lamports)) AS loss, \
-    COALESCE(SUM(COALESCE(p.exit_lamports,0) - p.entry_lamports) \
-             FILTER (WHERE p.entry_price IS NOT NULL AND p.status = 'End'), 0)::BIGINT AS total_pnl_lamports, \
+    (COALESCE(SUM(COALESCE(p.exit_lamports,0) - p.entry_lamports) \
+             FILTER (WHERE p.entry_price IS NOT NULL AND p.status = 'End'), 0) \
+     - COALESCE(SUM((p.extra->>'reverted_fee_lamports')::BIGINT) \
+             FILTER (WHERE p.status = 'EntryFailed'), 0))::BIGINT AS total_pnl_lamports, \
     COALESCE(SUM(p.entry_lamports) \
              FILTER (WHERE p.entry_price IS NOT NULL AND p.status = 'End'), 0)::BIGINT AS closed_entry_lamports";
 
@@ -2201,8 +2203,10 @@ impl StrategyRepo {
                COUNT(*) FILTER (WHERE sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports) AS win, \
                COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status = 'End' \
                                   AND NOT (sp.exit_lamports > sp.entry_lamports)) AS loss, \
-               COALESCE(SUM(COALESCE(sp.exit_lamports,0) - sp.entry_lamports) \
-                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status = 'End'), 0)::BIGINT AS total_pnl_lamports, \
+               (COALESCE(SUM(COALESCE(sp.exit_lamports,0) - sp.entry_lamports) \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status = 'End'), 0) \
+                - COALESCE(SUM((sp.extra->>'{EXTRA_REVERTED_FEE_LAMPORTS}')::BIGINT) \
+                        FILTER (WHERE sp.status = 'EntryFailed'), 0))::BIGINT AS total_pnl_lamports, \
                COALESCE(SUM(sp.entry_lamports) FILTER (WHERE sp.entry_price IS NOT NULL), 0)::BIGINT AS total_entry_lamports, \
                COALESCE(SUM(sp.entry_lamports) FILTER (WHERE sp.entry_price IS NOT NULL \
                                   AND sp.status NOT IN ('End','EntryFailed')), 0)::BIGINT AS total_holding_lamports, \
@@ -4180,6 +4184,13 @@ mod filter_sql_tests {
     /// sort/filter expression came to disagree with the displayed cell in the
     /// first place (the old `exit_price × exit_token_amount` shape ignored the
     /// scale-out aggregate entirely).
+    /// The per-rule counters subtract the `EntryFailed` reverted fees under the
+    /// same `extra` key the sink writes.
+    #[test]
+    fn rule_counters_read_the_reverted_fee_key() {
+        assert!(RULE_COUNTERS_AGGS.contains(&format!("'{EXTRA_REVERTED_FEE_LAMPORTS}'")));
+    }
+
     #[test]
     fn pnl_sql_columns_share_one_numerator() {
         assert!(

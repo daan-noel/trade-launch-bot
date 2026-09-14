@@ -38,6 +38,8 @@ pub const COMPUTE_UNIT_PRICE_MICRO_LAMPORTS: u64 = 200_000;
 pub const COMPUTE_UNIT_LIMIT_CURVE_BUY: u32 = 110_000;
 /// Curve sell CU limit the executor requests.
 pub const COMPUTE_UNIT_LIMIT_CURVE_SELL: u32 = 100_000;
+/// PumpSwap swap CU limit the executor requests.
+pub const COMPUTE_UNIT_LIMIT_AMM: u32 = 180_000;
 /// Base fee per transaction signature, in lamports. Every transaction we send
 /// carries one signature, so this is the non-priority half of its network fee —
 /// and the whole fee of the rent-reclaim `closeAccount` transaction, which sets

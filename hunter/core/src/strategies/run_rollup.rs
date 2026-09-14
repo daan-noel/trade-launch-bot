@@ -93,9 +93,18 @@ pub fn position_outcome(p: &StrategyPosition) -> TokenOutcome {
 /// upsert only advances a row whose stamp is older — so two concurrent re-rolls
 /// (two positions of a draining run settling at once) can't let the staler read
 /// overwrite the fresher one.
+///
+/// `total_pnl_sol` also carries the reverted-transaction fees of the run's
+/// `EntryFailed` rows ([`StrategyPosition::reverted_fee_sol`]): the wallet paid them,
+/// and no closed position books them.
 pub fn roll_up(run_id: Uuid, positions: &[StrategyPosition]) -> RunRollup {
     let outcomes: Vec<TokenOutcome> = positions.iter().map(position_outcome).collect();
-    let metrics = exact_run_metrics(outcomes.iter());
+    let mut metrics = exact_run_metrics(outcomes.iter());
+    metrics.total_pnl_sol -= positions
+        .iter()
+        .filter(|p| p.status == "EntryFailed")
+        .map(StrategyPosition::reverted_fee_sol)
+        .sum::<f64>();
     let unsettled = positions.iter().filter(|p| !p.is_closed()).count() as u64;
     RunRollup {
         row: run_metrics_row(run_id, &metrics),
@@ -179,6 +188,18 @@ mod tests {
         assert_eq!(r.metrics.n_exit_manual, 1);
         assert!((r.metrics.total_pnl_sol - 0.5).abs() < 1e-6);
         assert_eq!(r.unsettled, 0);
+    }
+
+    /// A buy that reverted on chain and never filled still cost its fee: the run
+    /// total carries it, and the row stays unscored.
+    #[test]
+    fn a_failed_entrys_reverted_fee_reaches_the_run_total() {
+        let mut failed = position("EntryFailed", None, None, None);
+        failed.set_reverted_fee_lamports(27_000);
+        let rows = vec![failed, position("End", Some("Manual"), Some(1.0), Some(1.5))];
+        let r = roll_up(Uuid::new_v4(), &rows);
+        assert_eq!(r.metrics.n_fired, 1);
+        assert!((r.metrics.total_pnl_sol - (0.5 - 0.000_027)).abs() < 1e-12);
     }
 
     #[test]

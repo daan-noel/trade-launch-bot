@@ -409,7 +409,31 @@ pub struct StrategyPosition {
 /// Written with the entry fill, read back when a restart adopts the position.
 pub const EXTRA_ENTRY_PRICED_RESERVE: &str = "entry_priced_reserve";
 
+/// `extra` key holding the network fees, in lamports, of an `EntryFailed`
+/// position's buy transactions that landed and reverted: the wallet paid them and
+/// no fill books them. A position that filled carries none — its reverted fees are
+/// inside its booked `entry_sol` / exit SOL. The rule and run PnL totals subtract it.
+pub const EXTRA_REVERTED_FEE_LAMPORTS: &str = "reverted_fee_lamports";
+
 impl StrategyPosition {
+    /// The reverted-transaction fees an `EntryFailed` row carries
+    /// ([`EXTRA_REVERTED_FEE_LAMPORTS`]), in SOL; 0 when absent.
+    pub fn reverted_fee_sol(&self) -> f64 {
+        self.extra
+            .get(EXTRA_REVERTED_FEE_LAMPORTS)
+            .and_then(Value::as_i64)
+            .map_or(0.0, crate::config::constants::lamports_to_sol)
+    }
+
+    /// Record an `EntryFailed` row's reverted-transaction fees
+    /// ([`EXTRA_REVERTED_FEE_LAMPORTS`]).
+    pub fn set_reverted_fee_lamports(&mut self, lamports: u64) {
+        if !self.extra.is_object() {
+            self.extra = Value::Object(serde_json::Map::new());
+        }
+        self.extra[EXTRA_REVERTED_FEE_LAMPORTS] = Value::from(lamports);
+    }
+
     /// The entry's priced reserve from `extra` ([`EXTRA_ENTRY_PRICED_RESERVE`]);
     /// `None` when absent or not a positive number.
     pub fn entry_priced_reserve(&self) -> Option<f64> {
@@ -947,6 +971,17 @@ mod extra_tests {
         );
         p.extra = extra;
         p
+    }
+
+    #[test]
+    fn reverted_fee_reads_back_from_extra() {
+        let mut p = pos(json!(null));
+        assert_eq!(p.reverted_fee_sol(), 0.0);
+        p.set_reverted_fee_lamports(54_000);
+        assert!((p.reverted_fee_sol() - 0.000_054).abs() < 1e-15);
+        let mut q = pos(json!({ EXTRA_ENTRY_PRICED_RESERVE: 87.5 }));
+        q.set_reverted_fee_lamports(27_000);
+        assert_eq!(q.entry_priced_reserve(), Some(87.5), "other keys survive");
     }
 
     #[test]

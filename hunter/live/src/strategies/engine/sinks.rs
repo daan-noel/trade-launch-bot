@@ -688,6 +688,7 @@ impl Sink {
                 target_snapshot: None,
                 cashback_enabled: cashback,
                 inflight_intent: None,
+                reverted_fee_lamports: 0,
             },
         );
         self.retain_held_pool(&mint, info.mode);
@@ -932,7 +933,8 @@ impl Sink {
 
     /// The buy never filled (entry exhausted / fatal) — terminal `EntryFailed`.
     /// Deliberately stamps NO hypothetical exit price (there was never a
-    /// position; the row is excluded from PnL). Releases the SOL commitment so
+    /// position; the row is excluded from per-position PnL). Its reverted buys'
+    /// fees go to `extra` for the rule and run totals. Releases the SOL commitment so
     /// the unentered buy cannot strand the budget tracker.
     ///
     /// Returns `true` when finalized — caller emits SSE then drops the registry row.
@@ -951,12 +953,17 @@ impl Sink {
         let release = self.held_pool_release(&meta);
         let pg_id = meta.pg_id;
         let reason = delta.reason.map(|r| r.label().into_owned());
+        // Fees of buys that landed and reverted: paid, and no fill will book them.
+        let reverted_fee = meta.reverted_fee_lamports;
         let handle = tokio::spawn(async move {
             if let Some(h) = prev {
                 let _ = h.await;
             }
             if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
                 pos.mark_entry_failed();
+                if reverted_fee > 0 {
+                    pos.set_reverted_fee_lamports(reverted_fee);
+                }
                 if let Some(r) = reason {
                     pos.exit_reason = Some(r);
                 }

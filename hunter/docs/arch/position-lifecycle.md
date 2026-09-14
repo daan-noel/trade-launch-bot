@@ -156,6 +156,15 @@ sell's own signatures, and the heal, sibling and manual-sell reconciles through
 (`SigLegs::wallet_received_sol`, negative when a dust sell's fees beat its proceeds),
 shared pro-rata by tokens when one sell cleared several rows.
 
+A buy or sell transaction that lands and **reverts** still pays its network fee (base +
+priority on the requested CU limit; the tip rolls back with its instructions). The real
+executor charges it to the position (`PositionMeta::reverted_fee_lamports`, from
+`FeeTuning::network_fee_lamports`) and the next booked fill takes it: added to the buy's
+paid SOL, taken off the sell's received SOL, so every per-position PnL carries it. A
+position whose entry never fills keeps the fee in `extra.reverted_fee_lamports`
+(`EXTRA_REVERTED_FEE_LAMPORTS`), and the rule and run PnL totals subtract it. A fee is
+lost only when the process restarts before the position books it.
+
 ### 2.3 What "Stop" actually waits on
 
 `POST /api/strategy-rules/{id}/stop` (and `stop-all?mode=`) returns **202 + `action_id`**

@@ -107,9 +107,15 @@ impl FeeTuning {
     }
 
     fn fixed_leg_sol(&self, cu_limit: u32) -> f64 {
-        let network_lamports =
-            BASE_SIGNATURE_FEE_LAMPORTS + priority_fee_lamports(self.cu_price_micro_lamports, cu_limit);
-        network_lamports as f64 / LAMPORTS_PER_SOL as f64 + self.jito_min_tip_sol
+        self.network_fee_lamports(cu_limit) as f64 / LAMPORTS_PER_SOL as f64 + self.jito_min_tip_sol
+    }
+
+    /// The network fee of one transaction requesting `cu_limit`: the base signature
+    /// fee + the priority fee on the requested limit. It is also everything a
+    /// transaction that lands and REVERTS costs — its instructions roll back, the
+    /// tip transfer with them, and the fee stays charged.
+    pub fn network_fee_lamports(&self, cu_limit: u32) -> u64 {
+        BASE_SIGNATURE_FEE_LAMPORTS + priority_fee_lamports(self.cu_price_micro_lamports, cu_limit)
     }
 }
 
@@ -161,6 +167,9 @@ mod tests {
         assert!((t.fixed_buy_sol() - 0.000_227).abs() < 1e-15, "{}", t.fixed_buy_sol());
         assert!((t.fixed_sell_sol() - 0.000_225).abs() < 1e-15, "{}", t.fixed_sell_sol());
         assert!((close_account_fee_sol() - 0.000_005).abs() < 1e-15);
+        // A reverted transaction keeps only the network half: the tip rolls back.
+        assert_eq!(t.network_fee_lamports(COMPUTE_UNIT_LIMIT_CURVE_BUY), 27_000);
+        assert_eq!(t.network_fee_lamports(COMPUTE_UNIT_LIMIT_CURVE_SELL), 25_000);
     }
 
     /// The runtime rounds the priority fee UP to a whole lamport.
