@@ -73,6 +73,10 @@ pub struct GroupedSweepRun {
     /// Notional (SOL) every simulated round-trip in this run was priced at.
     /// `None` on legacy rows — callers fall back to the server default (1.0 SOL).
     pub buy_amount_sol: Option<f64>,
+    /// What one position of this run takes from the wallet — `buy_amount_sol` plus
+    /// the buy transaction's fixed cost (`CostModel::capital_sol`) — the denominator
+    /// every percent the run reports divides by. Derived on read, never stored.
+    pub capital_sol: Option<f64>,
     /// How each grouped field was partitioned — `[[field, spec], …]`, in group-by
     /// order. A group's key carries the `[min, max]` window it selected, and that
     /// window IS the predicate a promoted rule matches on, so "swept = run" holds by

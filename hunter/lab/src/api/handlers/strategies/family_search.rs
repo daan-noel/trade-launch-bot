@@ -699,7 +699,7 @@ async fn drive(
                 let tm = entry_timing(&corpus.tokens, &fp2, &fin.combo, &cfg2, &a);
                 // D8 corollary: the same taken set at the friendliest honest fill.
                 let opt = optimistic(&corpus.tokens, &fp2, &fin.combo.params, &cfg2);
-                let sp = spread(&corpus.tokens, &a, &opt, cfg2.pricing.buy_amount_sol);
+                let sp = spread(&corpus.tokens, &a, &opt, cfg2.pricing.capital_sol());
                 let inc = incumbent2.map(|p| authority(&corpus.tokens, &fp2, &p, &cfg2));
                 // Slice 7: reliability diagnostics on the finalist — ladders, regret,
                 // redundancy, per-clause fill. Grades trust, never selection.
@@ -720,7 +720,7 @@ async fn drive(
 
     let attribution = attribution::rollup_with_standing(
         &auth.outcomes,
-        cfg.pricing.buy_amount_sol,
+        cfg.pricing.capital_sol(),
         &standing_keys,
     );
     let (alarm_rows, other_n, other_pnl) = attribution_rows(&attribution);
@@ -741,7 +741,7 @@ async fn drive(
             fit_ret_pct: bf.ret_fit[ci],
             target_ret_pct: bf.ret_validate[ci],
             target_pnl_sol: s.pnl_sol,
-            target_n_tokens: (s.entry_sol / cfg.pricing.buy_amount_sol).round() as u64,
+            target_n_tokens: (s.entry_sol / cfg.pricing.capital_sol()).round() as u64,
             target_enter_pct: target_run.enter_pct[ci],
             target_win_pct: s.win_rate_pct(),
             target_n_closed: s.n_closed,

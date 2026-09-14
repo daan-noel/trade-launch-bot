@@ -815,6 +815,9 @@ fn dispatch_sell(
         fail_exit(&real_deps.fill_tx, intent, FillFailReason::Fatal);
         return;
     }
+    // The remainder, not a scale-out stage: its sell empties the account and the
+    // rent-reclaim close follows it.
+    let empties_bag = token_amount >= initial.saturating_sub(meta.sold_token_amount);
     match meta.trade_mode {
         TradeMode::Paper => {
             let fire_abs = exec_paper::latest_trade_abs_idx(token_cache, &mint);
@@ -825,6 +828,7 @@ fn dispatch_sell(
                 intent,
                 mint,
                 token_amount,
+                empties_bag,
                 fire_abs,
             ));
         }
@@ -842,6 +846,7 @@ fn dispatch_sell(
                 token_program_id: meta.token_program_id,
                 cashback_enabled: meta.cashback_enabled,
                 slippage_bps: sell_slippage(settings),
+                empties_bag,
                 decided_at: Some(Utc::now()),
             };
             tokio::spawn(super::exec_real::run_exit(real_deps.clone(), order));

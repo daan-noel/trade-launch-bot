@@ -612,6 +612,18 @@ impl OpenPositionBag {
             None => lamports_to_sol(self.entry_lamports) / entry_price,
         }
     }
+
+    /// What the bag still held took from the wallet: the entry's paid SOL
+    /// (`entry_lamports`, wallet-exact on a real row, the kernel's `buy_fill` on a
+    /// paper one) pro-rata to the tokens not yet sold. A legacy row with no token
+    /// count holds its whole bag, so its whole entry.
+    pub fn cost_basis_sol(&self, entry_price: f64) -> f64 {
+        let paid = lamports_to_sol(self.entry_lamports);
+        match self.entry_token_amount {
+            Some(bought) if bought > 0 => paid * self.held_amount(entry_price) / bought as f64,
+            _ => paid,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2260,11 +2272,10 @@ impl StrategyRepo {
         // contributes nothing rather than a fabricated 0-price loss.
         //
         // `mark_open_bag` (inside `mark_bag`), not `round_trip_with_costs`: the entry has already
-        // executed, so its impact is sunk and already inside `entry_price` (the
-        // executed average), and the bag priced is the tokens still held rather
-        // than a count re-derived from the notional — a half-sold position marks
-        // its remaining half. Both legs' fee and fixed cost are still charged:
-        // `entry_price` is the curve-side amount and carries neither.
+        // executed, so its cost is the SOL it actually took (`entry_lamports`,
+        // pro-rata to the bag still held), and the bag priced is the tokens still
+        // held rather than a count re-derived from the notional — a half-sold
+        // position marks its remaining half. The exit leg is charged in full.
         //
         // Depth caveat, since the number is only as honest as what it says it is:
         // impact is charged off the mint's **current** depth. That is the depth the
@@ -2281,8 +2292,9 @@ impl StrategyRepo {
             .unwrap_or_default()
             .iter()
             .filter_map(|m| {
-                let held = m.entry_price.filter(|p| *p > 0.0).map(|p| m.held_amount(p))?;
-                mark_bag(m.entry_price, held, mark_of(&m.mint_address), &costs)
+                let entry_price = m.entry_price.filter(|p| *p > 0.0)?;
+                let held = m.held_amount(entry_price);
+                mark_bag(m.cost_basis_sol(entry_price), held, mark_of(&m.mint_address), &costs)
                     .map(|p| p.unrealized_pnl_sol)
             })
             .sum();

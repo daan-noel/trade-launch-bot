@@ -429,7 +429,7 @@ fn rank_archive(archive: &[ArchiveRow]) -> Vec<usize> {
 /// passes `None` — see `execution_band_pct`, which does the same job in percent and
 /// already takes depth.
 fn expectancy_floor_sol(buy_sol: f64, cost: &CostModel, depth_sol: Option<f64>) -> f64 {
-    let (pnl_sol, _) = round_trip_with_costs(1.0, 1.0, buy_sol, depth_sol, cost);
+    let (pnl_sol, _) = round_trip_with_costs(1.0, 1.0, buy_sol, depth_sol, depth_sol, cost);
     EXPECTANCY_FLOOR_MULT * -pnl_sol
 }
 
@@ -891,12 +891,16 @@ mod tests {
     fn expectancy_floor_scales_with_buy_and_cost() {
         let cost = CostModel {
             fee_bps_per_leg: 125.0,
-            fixed_cost_sol_per_leg: 0.000225,
+            fixed_buy_sol: 0.000225,
+            fixed_sell_sol: 0.000225,
+            close_fee_sol: 0.0,
             price_impact: true,
         };
-        // 2 × round-trip: 2 × 2 × (0.1 × 0.0125 + 0.000225) = 0.0059.
+        // 2 × round-trip. The buy spends 0.1 + 0.000225 and lands 0.1/1.0125 on the
+        // curve; the sell returns that × 0.9875 − 0.000225.
+        let round_trip = 0.1 + 0.000225 - (0.1 / 1.0125 * 0.9875 - 0.000225);
         let f = expectancy_floor_sol(0.1, &cost, None);
-        assert!((f - 0.0059).abs() < 1e-9, "{f}");
+        assert!((f - 2.0 * round_trip).abs() < 1e-12, "{f}");
 
         // Depth is not decoration: once it is known, our own footprint raises the bar
         // a mean trade has to clear. A floor computed without it lets through rules

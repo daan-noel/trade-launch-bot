@@ -135,6 +135,14 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
     against the other two, that list is behind the market. Only top-level transfers
     count: an inner CPI transfer is the venue moving its own protocol fee, not the
     sender buying priority.
+  - **`payer_net_lamports` is what the transaction moved in the payer's wallet**
+    (migration 0019): the payer's signed lamport change (negative = paid out), every
+    fee, tip and venue charge included, with SOL in token accounts the payer owns
+    counted as still the payer's (rent is a deposit). Same per-TRANSACTION-on-a-per-LEG
+    attribution as `fee_lamports`. It is what a real position books as its entry and
+    exit SOL (`TradeRepo::sum_legs_by_signatures` collapses it per signature);
+    `amount_lamports` stays the venue's curve-side amount, which prices the print.
+    NULL = written before 0019 or a source with no balances — never 0.
 - `raw_txs` *(TimescaleDB hypertable on block_time; compress 2d, retain 7d)* — tx_signature(BYTEA), slot, block_time, tx_index, payload(BYTEA = verbatim protobuf wire bytes, parse in Rust), source(SMALLINT: 0=live 1=sync). PK `(block_time, tx_signature)`. Source-of-truth feed; `trades` is a typed projection. Written by `RawTxRepo` from both the live ingest db_writer and the token_sync backfill.
 
 ### Token analysis

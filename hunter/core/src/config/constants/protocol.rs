@@ -25,15 +25,22 @@ pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 /// USDC mint decimals (raw units → UI).
 pub const USDC_DECIMALS: u8 = 6;
 
-// Curve CU limits (duplicated with `pump_trader::constants`). The *rate*
-// (`CU_PRICE_MICRO_LAMPORTS` env) lives on [`crate::config::FeeTuning`]; the
-// compile-time default below matches that env default and is kept for callers
-// that still need a constant (executor defaults, docs).
+// Curve CU limits — copies of the executor's `ComputeBudgetCfg::default()`
+// (`executor-core`), which `trading_core` cannot depend on. The priority fee is
+// charged on the requested limit, so these ARE the priority half of what a leg
+// costs; `live`'s `cost_model_cu_limits_match_the_executor` test asserts the
+// copies stay equal. The *rate* (`CU_PRICE_MICRO_LAMPORTS` env) lives on
+// [`crate::config::FeeTuning`].
 /// Compute-unit price in micro-lamports (priority-fee rate per CU). Prefer
 /// [`crate::config::FeeTuning::cu_price_micro_lamports`] at runtime.
 pub const COMPUTE_UNIT_PRICE_MICRO_LAMPORTS: u64 = 200_000;
-/// Curve buy CU limit (measured p95 × 1.2).
-pub const COMPUTE_UNIT_LIMIT_CURVE_BUY: u32 = 150_000;
-/// Curve sell CU limit (measured p95 × ~1.15).
+/// Curve buy CU limit the executor requests.
+pub const COMPUTE_UNIT_LIMIT_CURVE_BUY: u32 = 110_000;
+/// Curve sell CU limit the executor requests.
 pub const COMPUTE_UNIT_LIMIT_CURVE_SELL: u32 = 100_000;
+/// Base fee per transaction signature, in lamports. Every transaction we send
+/// carries one signature, so this is the non-priority half of its network fee —
+/// and the whole fee of the rent-reclaim `closeAccount` transaction, which sets
+/// no compute-unit price.
+pub const BASE_SIGNATURE_FEE_LAMPORTS: u64 = 5_000;
 

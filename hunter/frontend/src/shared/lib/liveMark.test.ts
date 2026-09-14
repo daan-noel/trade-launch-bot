@@ -62,24 +62,27 @@ describe('valueSolAtSpot', () => {
  */
 const COSTS: CostModel = {
   fee_bps_per_leg: 125,
-  fixed_cost_sol_per_leg: 0.00025,
+  fixed_buy_sol: 0.00025,
+  fixed_sell_sol: 0.00025,
+  close_fee_sol: 0.000005,
   price_impact: true,
 };
 
 describe('netProceedsSol', () => {
   /**
-   * The cross-language guard. Every row here is also asserted by the Rust
-   * `mark_open_bag_golden_vectors` test in `hunter/core/src/strategies/kernel.rs`
-   * against the same literals — the browser nets a mark between holdings polls,
-   * so if these two drift, one open position has two values.
+   * The cross-language guard. Every net-proceeds value here is also asserted by the
+   * Rust `sell_value_proceeds_golden_vectors` test in
+   * `hunter/core/src/strategies/kernel.rs` against the same literals — the browser
+   * nets a mark between holdings polls, so if these two drift, one open position
+   * has two values.
    */
   it('netProceedsMatchesRust', () => {
     const cases: [number, number, number | null, number, number][] = [
       // [value, costBasis, reserve, wantNetProceeds, wantPnl]
-      [0.05, 0.050875000000000004, null, 0.049125000000000002, -0.0017500000000000016],
-      [0.1, 0.050875000000000004, 70, 0.09835892857142858, 0.04748392857142858],
-      [0.030784, 0.03022, null, 0.030149200000000004, -7.079999999999587e-5],
-      [30, 60.75025, 3, -0.00025, -60.7505],
+      [0.05, 0.050875, null, 0.049120000000000004, -0.0017549999999999927],
+      [0.1, 0.050875, 70, 0.098354129814550648, 0.047479129814550651],
+      [0.030784, 0.03022, null, 0.0301442, -7.5800000000000867e-5],
+      [30, 60.75025, 3, 2.6929268181818182, -58.057323181818184],
     ];
     for (const [value, costBasis, reserve, wantNet, wantPnl] of cases) {
       expect(netProceedsSol(value, reserve, COSTS)).toBeCloseTo(wantNet, 12);
@@ -98,8 +101,11 @@ describe('netProceedsSol', () => {
     expect(deep).toBeGreaterThan(shallow);
   });
 
-  it('clamps proceeds at zero when impact would exceed the pool', () => {
-    expect(netProceedsSol(30, 3, COSTS)).toBeCloseTo(-COSTS.fixed_cost_sol_per_leg, 12);
+  it('still pays the sell legs on a worthless bag', () => {
+    expect(netProceedsSol(0, 3, COSTS)).toBeCloseTo(
+      -(COSTS.fixed_sell_sol + COSTS.close_fee_sol),
+      12,
+    );
   });
 
   /** An unmoved price is NOT break-even — the defect this whole path exists to fix. */

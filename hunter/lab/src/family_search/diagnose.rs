@@ -302,8 +302,8 @@ pub fn alarm_regret(
     by_slot
         .into_iter()
         .map(|(slot, a)| {
-            let priced_entry = a.n_priced as f64 * pricing.buy_amount_sol;
-            let term_entry = a.n_terminal as f64 * pricing.buy_amount_sol;
+            let priced_entry = a.n_priced as f64 * pricing.capital_sol();
+            let term_entry = a.n_terminal as f64 * pricing.capital_sol();
             AlarmRegret {
                 slot,
                 label: a.label,

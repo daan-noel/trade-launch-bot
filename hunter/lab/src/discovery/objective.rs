@@ -193,9 +193,9 @@ impl ComboStats {
     /// The realised **capital-weighted return %** over closed trades — the profit
     /// centre, sign-locked to the combo's `total_pnl_sol` (module docs).
     ///
-    /// The sweep deploys a fixed notional per trade, so
-    /// `weighted_return_pct(Σ pnl, n · notional)` reduces exactly to the mean of the
-    /// per-trade percents. This reads that identity, not a mean-of-percents for its
+    /// The sweep deploys a fixed notional per trade, so every trade's capital
+    /// (`CostModel::capital_sol`) is the same and `weighted_return_pct(Σ pnl, n ·
+    /// capital)` reduces exactly to the mean of the per-trade percents. This reads that identity, not a mean-of-percents for its
     /// own sake — the distinction matters the moment sizing stops being fixed.
     pub fn return_pct(&self) -> f64 {
         self.mean_pnl_pct
@@ -409,18 +409,19 @@ mod tests {
         assert!(b > 0.0, "a profitable combo must not score negative: {b}");
     }
 
-    /// The profit centre is the SSOT capital-weighted return. Under the sweep's fixed
-    /// per-trade notional `weighted_return_pct(Σ pnl, n · notional)` reduces exactly
-    /// to `mean_pnl_pct`; this pins that identity so the day sizing stops being fixed,
+    /// The profit centre is the SSOT capital-weighted return. Every per-trade percent
+    /// divides by the same `CostModel::capital_sol(notional)`, so under the sweep's
+    /// fixed notional `weighted_return_pct(Σ pnl, n · capital)` reduces exactly to
+    /// `mean_pnl_pct`; this pins that identity so the day sizing stops being fixed,
     /// the copy fails loudly instead of drifting (the no-DB guard-test rule).
     #[test]
     fn mean_pnl_pct_is_the_capital_weighted_return() {
-        let notional = 0.126_f64; // the measured optimal fixed buy
+        let capital = 0.126_f64 + 0.000_227; // the measured optimal buy + its fixed leg
         let n = 40_u64;
         let mean_pct = 23.7_f64;
-        // Fixed notional ⇒ Σ pnl = notional × Σ pct/100 = notional × n × mean/100.
-        let sum_pnl_sol = notional * n as f64 * mean_pct / 100.0;
-        let sum_capital_sol = notional * n as f64;
+        // Fixed capital ⇒ Σ pnl = capital × Σ pct/100 = capital × n × mean/100.
+        let sum_pnl_sol = capital * n as f64 * mean_pct / 100.0;
+        let sum_capital_sol = capital * n as f64;
 
         let s = closed(n, 0.444, -14.9, mean_pct, Some(1.89));
         let ssot = weighted_return_pct(sum_pnl_sol, sum_capital_sol);

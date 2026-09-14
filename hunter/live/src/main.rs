@@ -1630,3 +1630,21 @@ fn task_fault<T>(name: &str, res: Result<T, tokio::task::JoinError>) -> anyhow::
         Err(e) => anyhow::anyhow!("{name} task aborted: {e}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// `trading_core` prices every leg's priority fee off its own copy of the curve
+    /// compute limits (it cannot depend on the executor). The trader requests the
+    /// executor's `ComputeBudgetCfg::default()` limits — this box never overrides
+    /// them, only the price — so the two copies must stay equal or the cost model
+    /// charges a priority fee the wallet never pays.
+    #[test]
+    fn cost_model_cu_limits_match_the_executor() {
+        use trading_core::config::constants::{
+            COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
+        };
+        let executor = pump_trader::ComputeBudgetCfg::default();
+        assert_eq!(COMPUTE_UNIT_LIMIT_CURVE_BUY, executor.curve_buy_cu);
+        assert_eq!(COMPUTE_UNIT_LIMIT_CURVE_SELL, executor.curve_sell_cu);
+    }
+}

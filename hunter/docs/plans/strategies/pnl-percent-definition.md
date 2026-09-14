@@ -17,7 +17,7 @@ Grain does not change the formula, only the scope of the two sums:
 | Surface | Numerator | Denominator | Field |
 | --- | --- | --- | --- |
 | One position | `realized_pnl_sol` | `entry_sol` | `StrategyPosition::pnl_pct` |
-| One **open** bag | net mark (`mark_open_bag`) | all-in entry cost | `UnrealizedPnl::unrealized_pnl_pct` |
+| One **open** bag | net mark (`mark_open_bag`) | what the entry paid, pro-rata to the bag held | `UnrealizedPnl::unrealized_pnl_pct` |
 | One rule / run | `Σ realized_pnl_sol` (closed) | `Σ entry_sol` (closed) | `PositionsSummary::return_pct`, `RuleCounters::return_pct` |
 | A portfolio window | `Σ realized_pnl_sol` | `Σ closed_entry_sol` | `RulePeriodPnlRow::return_pct`, `PortfolioPerformance::return_pct` |
 | Rules TOTAL tile | `Σ total_pnl_sol` across rules | `Σ closed_entry_sol` across rules | derived in `RulesView` |
@@ -83,14 +83,15 @@ between 0 % and break-even rendered a green % beside a red ◎. Now
 `realized_pnl_sol / entry_sol`, measured from lamports that actually moved. (Migration
 `0006` for the view; the model and `PNL_PCT_SQL` alongside it.)
 
-Those lamports are **curve-side**, which is a live caveat rather than history: both
-`entry_lamports` and `exit_lamports` sum `trades.amount_lamports`, and that column
-excludes the protocol fee by construction ([execution-costs §1](execution-costs.md)) and
-never carried tip or priority. So the realized figure is net of *slippage and impact*
-but not of *fees* — it reads ~4 pp better than the money did at live clip sizes, and
-`is_win` (`exit_lamports > entry_lamports`) calls a sub-break-even trade a win. Open in
-[realized-pnl-is-curve-side.md](../../roadmap/realized-pnl-is-curve-side.md); fixing it
-restates the whole live book, so it is a decision, not a patch.
+Those lamports are **what the wallet moved**. On a real row `entry_lamports` is what the
+buy transaction took from the wallet and `exit_lamports` what the sells returned —
+`trades.payer_net_lamports`, every fee, tip and venue charge included, the rent-reclaim
+close fee on the sell that empties the bag ([execution-costs §7](execution-costs.md)).
+On a paper row they are the kernel's `buy_fill` / `sell_proceeds` of the same trade. So
+`pnl_pct` is the all-in return an on-chain tracker reads, and `is_win`
+(`exit_lamports > entry_lamports`) is a win in money. Real rows closed before
+2026-08-31 still hold the curve-side amounts (fee, tip and priority not included) and
+read ~3-4 pp high. <!-- pt-ok: cutoff, those rows are still in the DB -->
 
 **2. The same ratio read only the last sell leg.** `exit_price` stamps the final leg
 while `realized_pnl_sol` sums them all via `realized_exit_sol`. On a scale-out the two
@@ -117,10 +118,10 @@ the PnL% column cannot reproduce is a tail of some other distribution.
 `UnrealizedPnl::unrealized_pnl_pct` obeys the same rule — SOL over the capital that
 produced it — with both halves supplied by `mark_open_bag`:
 
-- **numerator**: what closing the bag right now would leave, net of the exit's fee,
-  fixed cost and impact;
-- **denominator**: the all-in entry cost — curve cost **plus** the entry fee and the
-  entry leg's tip/priority, none of which is inside the executed `entry_price`.
+- **numerator**: what selling the bag right now would return — the exact curve sell, the
+  exit's fee, fixed cost and the close — minus the cost basis;
+- **denominator**: the cost basis — what the entry actually took from the wallet
+  (`entry_lamports`), pro-rata to the tokens still held.
 
 It is therefore directly comparable to the realized `pnl_pct` above rather than being a
 looser cousin of it, and a flat mark correctly reads red: an unmoved price still owes
@@ -129,8 +130,7 @@ the frontend the same constants so the live mark tip nets a price change the sam
 instead of carrying its own copy of a fee (`netProceedsSol`, pinned to the Rust golden
 vectors by `netProceedsMatchesRust`).
 
-The full derivation, and why a gross mark is wrong by ~4 pp rather than slightly
-optimistic, is [execution-costs §6](execution-costs.md).
+The full derivation is [execution-costs §6](execution-costs.md).
 
 ### Which bag, and at which price
 
@@ -189,7 +189,10 @@ that changes, do the `TokenOutcome` work first.
 
 Two other percents are correct by construction and unrelated: `WalletMintPnl::realized_pnl_pct`
 (already `realized_pnl_sol / cost_basis_matched`) and the sweep/sim `pnl_percent`, which
-comes straight out of `round_trip_with_costs` and is a cost-inclusive SOL return.
+comes straight out of `round_trip_with_costs` — the SOL the round trip nets over
+`CostModel::capital_sol` (the order plus its fixed leg), the same capital a real row's
+`entry_lamports` records. A lab surface that sums capital over trades multiplies that,
+never the bare notional (`Pricing::capital_sol`).
 
 ### `Σ trade %` — a tally, not a return
 

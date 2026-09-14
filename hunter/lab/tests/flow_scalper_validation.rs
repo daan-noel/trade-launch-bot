@@ -484,7 +484,9 @@ fn sweep_cost_selector_matches_the_realfee_column() {
     let selected = CostModelKind::PumpfunFeeOnly.model();
     let harness = CostModel::pumpfun_fee_only();
     assert_eq!(selected.fee_bps_per_leg, harness.fee_bps_per_leg);
-    assert_eq!(selected.fixed_cost_sol_per_leg, harness.fixed_cost_sol_per_leg);
+    assert_eq!(selected.fixed_buy_sol, harness.fixed_buy_sol);
+    assert_eq!(selected.fixed_sell_sol, harness.fixed_sell_sol);
+    assert_eq!(selected.close_fee_sol, harness.close_fee_sol);
     assert!(!selected.price_impact, "realFee is the zero-impact bound");
     // An omitted field takes the size-aware model, so a caller cannot land on a
     // zero-impact number by forgetting to name one.

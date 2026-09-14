@@ -108,12 +108,13 @@ impl Attribution {
 
 /// Streaming rollup: one pass over outcomes already in hand, O(1) state.
 ///
-/// `buy_amount_sol` is the run's notional — every position commits exactly it, so
-/// `Σentry_sol` is `n × buy`. It comes from the **request**, never from an incumbent
-/// rule (charter D5).
+/// `capital_sol` is what one position takes from the wallet —
+/// `CostModel::capital_sol` of the run's notional — so `Σentry_sol` is
+/// `n × capital`, the denominator every per-trade percent already divides by. The
+/// notional comes from the **request**, never from an incumbent rule (charter D5).
 #[derive(Clone, Debug)]
 pub struct AttributionAcc {
-    buy_amount_sol: f64,
+    capital_sol: f64,
     slots: [SlotAcc; N_EXIT_METRIC_SLOTS],
     n_other: u64,
     other_pnl_sol: f64,
@@ -150,9 +151,9 @@ struct LabelKey {
 }
 
 impl AttributionAcc {
-    pub fn new(buy_amount_sol: f64) -> Self {
+    pub fn new(capital_sol: f64) -> Self {
         Self {
-            buy_amount_sol,
+            capital_sol,
             slots: [SlotAcc::default(); N_EXIT_METRIC_SLOTS],
             n_other: 0,
             other_pnl_sol: 0.0,
@@ -221,7 +222,7 @@ impl AttributionAcc {
                     })
                 }),
                 pnl_sol: s.pnl_sol,
-                entry_sol: s.n as f64 * self.buy_amount_sol,
+                entry_sol: s.n as f64 * self.capital_sol,
                 authored_level: s.label.map(|l| l.value),
                 realized_level_pct: (s.n_gross > 0)
                     .then(|| s.gross_pct_sum / s.n_gross as f64),
@@ -236,7 +237,7 @@ impl AttributionAcc {
             by_slot,
             n_other: self.n_other,
             other_pnl_sol: self.other_pnl_sol,
-            other_entry_sol: self.n_other as f64 * self.buy_amount_sol,
+            other_entry_sol: self.n_other as f64 * self.capital_sol,
         }
     }
 }
@@ -244,19 +245,19 @@ impl AttributionAcc {
 /// [`AttributionAcc`] over a whole cohort's outcomes.
 pub fn rollup<'a>(
     outcomes: impl IntoIterator<Item = &'a TokenOutcome>,
-    buy_amount_sol: f64,
+    capital_sol: f64,
 ) -> Attribution {
-    rollup_with_standing(outcomes, buy_amount_sol, &[])
+    rollup_with_standing(outcomes, capital_sol, &[])
 }
 
 /// [`rollup`] with the run's standing terms declared, so a mechanical exit reads as
 /// one instead of joining the findings.
 pub fn rollup_with_standing<'a>(
     outcomes: impl IntoIterator<Item = &'a TokenOutcome>,
-    buy_amount_sol: f64,
+    capital_sol: f64,
     standing: &[StandingKey],
 ) -> Attribution {
-    let mut acc = AttributionAcc::new(buy_amount_sol).with_standing(standing.to_vec());
+    let mut acc = AttributionAcc::new(capital_sol).with_standing(standing.to_vec());
     for o in outcomes {
         acc.record(o);
     }

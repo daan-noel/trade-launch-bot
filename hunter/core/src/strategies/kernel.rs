@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::fee_tuning::close_account_fee_sol;
 use crate::config::FeeTuning;
 
 // ── Per-token outcome ─────────────────────────────────────────────────────────
@@ -124,13 +125,15 @@ impl TokenOutcome {
 /// every backtest run before that date is optimistic by that much. The constant is
 /// not persisted per run, so re-run anything whose margin was inside 0.5 pp.
 const FEE_BPS_PER_LEG: f64 = 125.0;
-/// Execution-cost model the kernel prices every round-trip with, so simulated
-/// PnL reflects the frictions the live trader pays. All knobs apply to **both**
-/// legs (symmetric entry/exit).
+/// Execution-cost model the kernel prices every round-trip with. Priced through
+/// [`buy_fill`] / [`sell_proceeds`], a round trip reproduces what the wallet
+/// moves: on the 34 real round trips of 2026-09-13/14, fed the pool state each
+/// landed in, it matches the on-chain balance changes to the lamport.
 ///
-/// Fixed per-leg cost (tip + priority) comes from process-wide [`FeeTuning`] —
-/// the same `JITO_MIN_TIP_SOL` / `CU_PRICE_MICRO_LAMPORTS` live applies to the
-/// trader. Install via [`FeeTuning::install`] after `dotenvy` in each bin.
+/// Fixed per-leg costs (base fee + priority + tip) come from process-wide
+/// [`FeeTuning`] — the same `JITO_MIN_TIP_SOL` / `CU_PRICE_MICRO_LAMPORTS` live
+/// applies to the trader. Install via [`FeeTuning::install`] after `dotenvy` in
+/// each bin.
 ///
 /// `Serialize` because the frontend's live mark tip has to net a price change
 /// between holdings polls, and the ONLY honest way for it to do that is to be
@@ -138,11 +141,23 @@ const FEE_BPS_PER_LEG: f64 = 125.0;
 /// copy of a fee that lives in this file and in `.env`.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct CostModel {
+    /// The venue fee, in bps, on each leg. A buy (`buy_exact_sol_in`) pays it on
+    /// top of the SOL that reaches the curve; a sell pays it out of the curve's
+    /// output.
     pub fee_bps_per_leg: f64,
-    pub fixed_cost_sol_per_leg: f64,
-    /// Charge **our own** constant-product price impact, `notional_sol /
-    /// reserve_sol` per leg, from the pool depth passed to
-    /// [`round_trip_with_costs`].
+    /// SOL a buy transaction costs beyond the order: base signature fee + priority
+    /// fee + tip ([`FeeTuning::fixed_buy_sol`]).
+    pub fixed_buy_sol: f64,
+    /// SOL a sell transaction costs out of what it returns
+    /// ([`FeeTuning::fixed_sell_sol`]).
+    pub fixed_sell_sol: f64,
+    /// The rent-reclaim close transaction a finished position sends, charged once
+    /// on the leg that empties the bag ([`close_account_fee_sol`]).
+    pub close_fee_sol: f64,
+    /// Charge **our own** constant-product price impact from the priced (virtual)
+    /// SOL depth each leg lands in: a buy of curve SOL `c` into `V` fills at
+    /// `spot × (1 + c/V)`, a sell worth `g` at spot returns `g / (1 + g/V)`. The
+    /// exact curve, not a linear haircut.
     ///
     /// Orthogonal to the fill model: a
     /// [`FillModel`](crate::strategies::paper_fill::FillModel) chooses **which
@@ -160,7 +175,7 @@ pub struct CostModel {
 
 impl CostModel {
     /// **The model.** Fee + fixed per-leg cost + **real** constant-product price
-    /// impact (`notional_sol / reserve_sol` per leg), and no flat `slippage_bps`.
+    /// impact on each leg's own depth, and no flat `slippage_bps`.
     ///
     /// This is the honest pairing with an explicit
     /// [`FillModel`](crate::strategies::paper_fill::FillModel): the fill model
@@ -182,7 +197,9 @@ impl CostModel {
     pub fn pumpfun_with_impact_with(tuning: &FeeTuning) -> Self {
         Self {
             fee_bps_per_leg: FEE_BPS_PER_LEG,
-            fixed_cost_sol_per_leg: tuning.fixed_cost_sol_per_leg(),
+            fixed_buy_sol: tuning.fixed_buy_sol(),
+            fixed_sell_sol: tuning.fixed_sell_sol(),
+            close_fee_sol: close_account_fee_sol(),
             price_impact: true,
         }
     }
@@ -209,7 +226,21 @@ impl CostModel {
     /// A frictionless model (no fees/slippage/fixed cost) — pure price-to-price,
     /// for analytic baselines and tests.
     pub fn frictionless() -> Self {
-        Self { fee_bps_per_leg: 0.0, fixed_cost_sol_per_leg: 0.0, price_impact: false }
+        Self {
+            fee_bps_per_leg: 0.0,
+            fixed_buy_sol: 0.0,
+            fixed_sell_sol: 0.0,
+            close_fee_sol: 0.0,
+            price_impact: false,
+        }
+    }
+
+    /// The capital a buy of `notional_sol` takes from the wallet — the order plus
+    /// its transaction's fixed cost. The ONE denominator a PnL percent divides by,
+    /// so a percent summed over `n` trades divides by `n × capital_sol(notional)`,
+    /// never `n × notional`.
+    pub fn capital_sol(&self, notional_sol: f64) -> f64 {
+        notional_sol + self.fixed_buy_sol
     }
 }
 
@@ -266,44 +297,110 @@ impl CostModelKind {
 pub struct ExitLeg {
     pub sell_bps: u16,
     pub price: f64,
-    /// SOL-side pool depth at this leg for [`CostModel::price_impact`]. `None`
-    /// charges no impact on this leg (same contract as
-    /// [`round_trip_with_costs`]'s reserve arg).
+    /// Priced (virtual) SOL depth this leg sells into, for
+    /// [`CostModel::price_impact`] — the leg's OWN depth, not the entry's. `None`
+    /// charges no impact on this leg.
     pub reserve_sol: Option<f64>,
+}
+
+/// The depth impact is charged against, or `None` for no impact. `filter` (not a
+/// bare `unwrap_or`) so a zero / negative / NaN depth cannot divide by ~0.
+fn impact_depth(costs: &CostModel, reserve_sol: Option<f64>) -> Option<f64> {
+    if !costs.price_impact {
+        return None;
+    }
+    reserve_sol.filter(|r| r.is_finite() && *r > 0.0)
+}
+
+/// A buy of `notional_sol` into a pool at spot `price` (SOL per raw token) with
+/// priced SOL depth `reserve_sol`: returns `(tokens, paid_sol)` — the tokens it
+/// receives and the SOL it takes from the wallet.
+///
+/// `buy_exact_sol_in` spends the notional, fee included: `c = B / (1 + fee)`
+/// reaches the curve, which returns `vtok·c / (vsol + c)` tokens =
+/// `c / (price × (1 + c/vsol))`. The transaction's fixed cost is paid on top, so
+/// `paid = B + fixed_buy` — [`CostModel::capital_sol`].
+pub fn buy_fill(notional_sol: f64, price: f64, reserve_sol: Option<f64>, costs: &CostModel) -> (f64, f64) {
+    if !(notional_sol > 0.0) || !(price > 0.0) || !price.is_finite() {
+        return (0.0, 0.0);
+    }
+    let fee = costs.fee_bps_per_leg / 10_000.0;
+    let curve_sol = notional_sol / (1.0 + fee);
+    let tokens = match impact_depth(costs, reserve_sol) {
+        Some(v) => curve_sol / (price * (1.0 + curve_sol / v)),
+        None => curve_sol / price,
+    };
+    (tokens, costs.capital_sol(notional_sol))
+}
+
+/// SOL a sell of `tokens` into a pool at spot `price` with priced SOL depth
+/// `reserve_sol` returns to the wallet. [`sell_value_proceeds`] on the bag's value
+/// at spot.
+pub fn sell_proceeds(
+    tokens: f64,
+    price: f64,
+    reserve_sol: Option<f64>,
+    costs: &CostModel,
+    empties_bag: bool,
+) -> f64 {
+    sell_value_proceeds(tokens * price, reserve_sol, costs, empties_bag)
+}
+
+/// SOL a sell of a bag worth `value_sol` at spot returns to the wallet: the curve
+/// pays `g / (1 + g/vsol)`, the venue keeps its fee out of that, and the
+/// transaction's fixed cost comes off the rest. The leg that `empties_bag` also
+/// pays the rent-reclaim close transaction. A worthless bag still pays its legs.
+///
+/// The TS mirror is `netProceedsSol` in `frontend/src/shared/lib/liveMark.ts`;
+/// `sell_value_proceeds_golden_vectors` pins both to the same literals.
+pub fn sell_value_proceeds(
+    value_sol: f64,
+    reserve_sol: Option<f64>,
+    costs: &CostModel,
+    empties_bag: bool,
+) -> f64 {
+    let fee = costs.fee_bps_per_leg / 10_000.0;
+    let value = if value_sol.is_finite() { value_sol.max(0.0) } else { 0.0 };
+    let out = match impact_depth(costs, reserve_sol) {
+        Some(v) => value / (1.0 + value / v),
+        None => value,
+    };
+    let close = if empties_bag { costs.close_fee_sol } else { 0.0 };
+    out * (1.0 - fee) - costs.fixed_sell_sol - close
 }
 
 /// Net PnL of a buy@`entry_price` / sell@`exit_price` round-trip sized at
 /// `notional_sol`, net of `costs`. Thin wrapper over [`round_trip_multi_leg`]
-/// with a single full-bag exit — the legacy 1-exit shape.
+/// with a single full-bag exit.
 ///
-/// `reserve_sol` is the **SOL-side pool depth at entry**, reused for the exit
-/// leg's impact (slightly over-charges winners when the pool grew — pessimistic
-/// on the trades that matter). Pass `None` when unknown.
+/// `entry_reserve_sol` / `exit_reserve_sol` are the priced SOL depths the buy and
+/// the sell land in. Pass `None` when unknown (no impact charged on that leg).
 pub fn round_trip_with_costs(
     entry_price: f64,
     exit_price: f64,
     notional_sol: f64,
-    reserve_sol: Option<f64>,
+    entry_reserve_sol: Option<f64>,
+    exit_reserve_sol: Option<f64>,
     costs: &CostModel,
 ) -> (f64, f64) {
     round_trip_multi_leg(
         entry_price,
         notional_sol,
-        reserve_sol,
-        &[ExitLeg { sell_bps: 10_000, price: exit_price, reserve_sol }],
+        entry_reserve_sol,
+        &[ExitLeg { sell_bps: 10_000, price: exit_price, reserve_sol: exit_reserve_sol }],
         costs,
     )
 }
 
-/// Multi-leg sibling of [`round_trip_with_costs`]: one entry + `exits` sell legs.
-/// Each leg pays fee bps + fixed-per-leg + impact(`leg_notional / reserve_at_leg`).
-/// Fixed cost therefore scales with leg count — the real economic bound on
-/// scale-out stage count (~1% of notional per extra exit leg at 0.1 SOL size).
+/// Multi-leg sibling of [`round_trip_with_costs`]: one [`buy_fill`] + `exits`
+/// [`sell_proceeds`] legs, each on its own price and depth. Every sell leg pays
+/// its own fixed cost, so fixed cost scales with leg count — the real economic
+/// bound on scale-out stage count — and the last leg pays the close.
 ///
 /// `exits` must be non-empty and `sum(sell_bps)` should cover the bag being
 /// priced (10_000 for a full close; less + a mark leg for mid-ladder open MTM).
-/// Returns `(pnl_sol, pnl_percent)` of the entry notional. Empty / invalid
-/// inputs → `(0, 0)`.
+/// Returns `(pnl_sol, pnl_percent)`, the percent over [`CostModel::capital_sol`].
+/// Empty / invalid inputs → `(0, 0)`.
 pub fn round_trip_multi_leg(
     entry_price: f64,
     notional_sol: f64,
@@ -311,111 +408,64 @@ pub fn round_trip_multi_leg(
     exits: &[ExitLeg],
     costs: &CostModel,
 ) -> (f64, f64) {
-    if entry_price <= 0.0 || notional_sol <= 0.0 || exits.is_empty() {
+    if entry_price <= 0.0 || notional_sol <= 0.0 {
         return (0.0, 0.0);
     }
-    let fee = costs.fee_bps_per_leg / 10_000.0;
-    let entry_impact = leg_impact(costs, notional_sol, entry_reserve_sol);
-    let eff_entry = entry_price * (1.0 + entry_impact);
-    if eff_entry <= 0.0 {
+    let Some(last) = exits.iter().rposition(|l| l.sell_bps > 0) else {
         return (0.0, 0.0);
-    }
-    let tokens_total = notional_sol / eff_entry;
-
-    let mut gross_proceeds = 0.0;
-    let mut n_exit = 0u32;
-    for leg in exits {
-        if leg.sell_bps == 0 {
-            continue;
-        }
-        let frac = leg.sell_bps as f64 / 10_000.0;
-        let leg_tokens = tokens_total * frac;
-        // Impact sized to this leg's share of the entry notional (same B/vsol
-        // grain as the single-leg path, just not the full bag).
-        let exit_impact = leg_impact(costs, notional_sol * frac, leg.reserve_sol);
-        let eff_exit = leg.price * (1.0 - exit_impact).max(0.0);
-        gross_proceeds += leg_tokens * eff_exit;
-        n_exit += 1;
-    }
-    if n_exit == 0 {
-        return (0.0, 0.0);
-    }
-    // Fee on entry notional + sum of exit proceeds; fixed cost once per leg
-    // (1 entry + N exits).
-    let costs_sol = (notional_sol + gross_proceeds) * fee
-        + costs.fixed_cost_sol_per_leg * (1.0 + f64::from(n_exit));
-    let pnl_sol = gross_proceeds - notional_sol - costs_sol;
-    (pnl_sol, pnl_sol / notional_sol * 100.0)
+    };
+    let (tokens, paid) = buy_fill(notional_sol, entry_price, entry_reserve_sol, costs);
+    let got: f64 = exits
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.sell_bps > 0)
+        .map(|(i, l)| {
+            let leg_tokens = tokens * f64::from(l.sell_bps) / 10_000.0;
+            sell_proceeds(leg_tokens, l.price, l.reserve_sol, costs, i == last)
+        })
+        .sum();
+    let pnl_sol = got - paid;
+    (pnl_sol, pnl_sol / paid * 100.0)
 }
 
-/// Our own footprint in the pool for one leg. `filter` (not a bare
-/// `unwrap_or`) so a zero / negative depth cannot divide by ~0.
-fn leg_impact(costs: &CostModel, size_sol: f64, reserve_sol: Option<f64>) -> f64 {
-    if !costs.price_impact || size_sol <= 0.0 {
-        return 0.0;
-    }
-    reserve_sol.filter(|r| *r > 0.0).map_or(0.0, |r| size_sol / r)
-}
-
-/// Net mark of an **already-filled** bag: what closing `held_amount` tokens at
-/// `mark_price` right now would leave, over the all-in capital the entry consumed.
-/// Returns `(cost_basis_sol, pnl_sol)` in whatever SOL unit `entry_price x
-/// held_amount` yields, so the caller's price/amount convention carries through
-/// unchanged (SOL-per-raw x raw units, or SOL-per-UI x UI units).
+/// Net PnL of an **already-filled** bag: what selling `held_amount` tokens at
+/// `mark_price` into `reserve_sol` right now would return, minus the
+/// `cost_basis_sol` that bag took from the wallet. The sell empties the bag, so it
+/// pays the close.
 ///
-/// The open-bag sibling of [`round_trip_with_costs`]. It exists because an open
-/// position is NOT a round trip with one price swapped: the entry has already
-/// executed, which changes two terms.
-///
-/// * **The token count is known.** `held_amount` is the bag that is actually
-///   still held, not `notional / effective_entry` re-derived from a price. A
-///   partially scaled-out position therefore marks what is left of it, and a
-///   fill that came back light marks what it really got.
-/// * **No entry impact is charged.** The fill already paid it, and it is inside
-///   `entry_price` by construction -- that price is the executed average
-///   (Sigma curve SOL / Sigma tokens), which is where our own footprint landed.
-///   Charging `leg_impact` on the entry again would book it twice.
-///
-/// Both legs' **fee** and **fixed** cost are still charged, and that is the
-/// correction this function exists to make. `entry_price` is the *curve-side*
-/// amount, which excludes the protocol fee ([`FEE_BPS_PER_LEG`], measured) and
-/// carries no tip or priority fee, so the capital a position consumed is the
-/// curve cost plus one entry leg's costs -- that is `cost_basis_sol`, and it is
-/// what a percent must divide by. The exit leg is charged in full because it has
-/// not happened: fee, fixed cost, and impact into the depth it would sell into.
-///
-/// The one deliberate difference from [`round_trip_multi_leg`]: exit impact is
-/// sized on the mark's **current** value, not on the entry notional. It is the
-/// SOL this bag would actually push into the pool now, which is the quantity the
-/// pool responds to -- on a bag that has doubled, the entry notional understates
-/// it by half.
+/// It is not a round trip with one price swapped: the entry has executed, so its
+/// cost is a fact, not a model — pass what the fill actually paid (the position's
+/// wallet-exact `entry_sol`, pro-rata to the bag still held). [`modeled_cost_basis`]
+/// is the fallback for a bag whose only record is a curve-side price.
 pub fn mark_open_bag(
-    entry_price: f64,
+    cost_basis_sol: f64,
     mark_price: f64,
     held_amount: f64,
     reserve_sol: Option<f64>,
     costs: &CostModel,
-) -> (f64, f64) {
-    if !entry_price.is_finite()
-        || entry_price <= 0.0
+) -> f64 {
+    if !cost_basis_sol.is_finite()
         || !held_amount.is_finite()
         || held_amount <= 0.0
         || !mark_price.is_finite()
         || mark_price < 0.0
     {
-        return (0.0, 0.0);
+        return 0.0;
+    }
+    sell_proceeds(held_amount, mark_price, reserve_sol, costs, true) - cost_basis_sol
+}
+
+/// What a curve buy that filled `held_amount` tokens at the curve-side execution
+/// price `entry_price` took from the wallet: `c × (1 + fee) + fixed_buy`, where
+/// `c = entry_price × held_amount` is the SOL that reached the curve. Exact for a
+/// bot curve buy at the floor tip — the inverse of [`buy_fill`] — and the basis for
+/// a bag with no wallet-flow record.
+pub fn modeled_cost_basis(entry_price: f64, held_amount: f64, costs: &CostModel) -> f64 {
+    if !(entry_price > 0.0) || !(held_amount > 0.0) {
+        return 0.0;
     }
     let fee = costs.fee_bps_per_leg / 10_000.0;
-    // Capital deployed: what the curve took, plus the entry leg's own costs --
-    // neither of which is inside `entry_price`.
-    let cost_basis_sol = entry_price * held_amount * (1.0 + fee) + costs.fixed_cost_sol_per_leg;
-
-    let gross_proceeds = mark_price * held_amount;
-    let exit_impact = leg_impact(costs, gross_proceeds, reserve_sol);
-    let after_impact = gross_proceeds * (1.0 - exit_impact).max(0.0);
-    let net_proceeds = after_impact * (1.0 - fee) - costs.fixed_cost_sol_per_leg;
-
-    (cost_basis_sol, net_proceeds - cost_basis_sol)
+    entry_price * held_amount * (1.0 + fee) + costs.fixed_buy_sol
 }
 
 /// Round a PnL figure through `f32` precision and back. The sweep's
@@ -1177,7 +1227,7 @@ mod tests {
     #[test]
     fn frictionless_round_trip_is_pure_price_delta() {
         // 2× exit, 1 SOL notional, no costs → +1 SOL, +100%.
-        let (sol, pct) = round_trip_with_costs(1.0, 2.0, 1.0, None, &CostModel::frictionless());
+        let (sol, pct) = round_trip_with_costs(1.0, 2.0, 1.0, None, None, &CostModel::frictionless());
         assert!((sol - 1.0).abs() < 1e-12);
         assert!((pct - 100.0).abs() < 1e-12);
     }
@@ -1185,9 +1235,38 @@ mod tests {
     #[test]
     fn costs_reduce_pnl_below_frictionless() {
         let costs = CostModel::pumpfun_with_impact();
-        let friction = round_trip_with_costs(1.0, 2.0, 1.0, Some(70.0), &costs).0;
-        let free = round_trip_with_costs(1.0, 2.0, 1.0, None, &CostModel::frictionless()).0;
+        let friction = round_trip_with_costs(1.0, 2.0, 1.0, Some(70.0), Some(70.0), &costs).0;
+        let free = round_trip_with_costs(1.0, 2.0, 1.0, None, None, &CostModel::frictionless()).0;
         assert!(friction < free, "costs must drag PnL down");
+    }
+
+    /// One real round trip of 2026-09-13 (position 785bedf3), priced from the pool
+    /// state it landed in, against what the wallet moved on chain: -50 227 000
+    /// lamports on the buy, +42 328 180 on the sell. The kernel reproduces both.
+    #[test]
+    fn a_real_round_trip_reproduces_the_wallet() {
+        let costs = CostModel {
+            fee_bps_per_leg: 125.0,
+            fixed_buy_sol: 0.000_227,
+            fixed_sell_sol: 0.000_225,
+            close_fee_sol: 0.0,
+            price_impact: true,
+        };
+        // Pre-buy pool: our leg's post-trade reserves minus / plus our own leg.
+        let (buy_amt, buy_tok) = (0.049_382_715, 551_616_111_320.0);
+        let v0 = 53.706_796_751 - buy_amt;
+        let p0 = v0 / (599_365_479_873_277.0 + buy_tok);
+        let (tokens, paid) = buy_fill(0.05, p0, Some(v0), &costs);
+        // The program floors to whole lamports and raw units: 1 lamport of the fee
+        // split is 2e-8 of this order.
+        assert!((tokens / buy_tok - 1.0).abs() < 1e-7, "tokens {tokens} vs {buy_tok}");
+        assert!((paid - 0.050_227).abs() < 1e-12);
+        // Pre-sell pool, same reconstruction.
+        let sell_amt = 0.043_091_829;
+        let v1 = 50.124_826_570 + sell_amt;
+        let p1 = v1 / (642_196_736_136_456.0 - buy_tok);
+        let got = sell_proceeds(buy_tok, p1, Some(v1), &costs, false);
+        assert!((got - 0.042_328_180).abs() < 2e-9, "got {got}");
     }
 
     // ── multi-leg round-trip (scale-out) ─────────────────────────────────────
@@ -1196,7 +1275,7 @@ mod tests {
     fn multi_leg_single_full_exit_matches_round_trip() {
         let m = CostModel::pumpfun_with_impact();
         let depth = Some(70.0);
-        let single = round_trip_with_costs(1.0, 1.25, 0.1, depth, &m);
+        let single = round_trip_with_costs(1.0, 1.25, 0.1, depth, depth, &m);
         let multi = round_trip_multi_leg(
             1.0,
             0.1,
@@ -1212,11 +1291,14 @@ mod tests {
     fn multi_leg_fixed_cost_scales_with_exit_count() {
         // Same prices / full coverage: one 100% exit vs two 50% exits at the same
         // price. Frictionless PnL is identical; with a fixed tip the 2-leg path
-        // pays one extra fixed_cost_sol_per_leg — the economic bound on stages.
+        // pays one extra fixed_sell_sol — the economic bound on stages — and the
+        // close is paid once either way.
         let tip = 0.001;
         let m = CostModel {
             fee_bps_per_leg: 0.0,
-            fixed_cost_sol_per_leg: tip,
+            fixed_buy_sol: tip,
+            fixed_sell_sol: tip,
+            close_fee_sol: 0.000_005,
             price_impact: false,
         };
         let one = round_trip_multi_leg(
@@ -1265,40 +1347,66 @@ mod tests {
     // ── price impact (§2g) ──────────────────────────────────────────────────
 
     #[test]
-    fn price_impact_is_notional_over_depth_and_scales_with_size() {
-        // Same trade, same pool, three sizes. Impact is B/vsol per leg, so the
-        // haircut must grow with size — the whole point the retired flat-slippage
-        // model missed.
+    fn price_impact_is_the_exact_curve_and_scales_with_size() {
+        // Same trade, same pool, three sizes. The haircut must grow with size —
+        // the whole point the retired flat-slippage model missed.
         let m = CostModel::pumpfun_with_impact();
         let depth = Some(70.0);
-        let small = round_trip_with_costs(1.0, 1.10, 0.1, depth, &m).1;
-        let mid = round_trip_with_costs(1.0, 1.10, 0.27, depth, &m).1;
-        let big = round_trip_with_costs(1.0, 1.10, 1.0, depth, &m).1;
+        let small = round_trip_with_costs(1.0, 1.10, 0.1, depth, depth, &m).1;
+        let mid = round_trip_with_costs(1.0, 1.10, 0.27, depth, depth, &m).1;
+        let big = round_trip_with_costs(1.0, 1.10, 1.0, depth, depth, &m).1;
         assert!(big < mid && mid < small, "bigger order must cost more: {small} {mid} {big}");
 
-        // And the entry leg's markup is exactly B/vsol: 1 SOL into 70 SOL = 1.43%.
-        let free = CostModel { fee_bps_per_leg: 0.0, fixed_cost_sol_per_leg: 0.0, ..m };
-        let (_, pct) = round_trip_with_costs(1.0, 1.0, 1.0, Some(70.0), &free);
-        // entry paid ×(1+1/70), exit received ×(1−1/70) ⇒ ≈ −2×1/70.
-        assert!((pct - (-100.0 * (2.0 / 70.0))).abs() < 0.05, "got {pct}");
+        // Buy 1 SOL into 70 and sell straight back into the pool it left: the curve
+        // returns 1 / (1 + 2/70) exactly, so the round trip loses (2/70)/(1 + 2/70).
+        let free = CostModel {
+            fee_bps_per_leg: 0.0,
+            fixed_buy_sol: 0.0,
+            fixed_sell_sol: 0.0,
+            close_fee_sol: 0.0,
+            ..m
+        };
+        let (_, pct) = round_trip_with_costs(1.0, 1.0, 1.0, Some(70.0), Some(70.0), &free);
+        let want = -100.0 * (2.0 / 70.0) / (1.0 + 2.0 / 70.0);
+        assert!((pct - want).abs() < 1e-9, "got {pct}, want {want}");
     }
 
     #[test]
     fn price_impact_is_inert_without_depth_or_without_the_flag() {
         // Depth unknown ⇒ degrades to fee-only, never a silent divide-by-zero.
         let m = CostModel::pumpfun_with_impact();
-        let none = round_trip_with_costs(1.0, 1.10, 1.0, None, &m).1;
-        let zero = round_trip_with_costs(1.0, 1.10, 1.0, Some(0.0), &m).1;
-        let neg = round_trip_with_costs(1.0, 1.10, 1.0, Some(-5.0), &m).1;
+        let none = round_trip_with_costs(1.0, 1.10, 1.0, None, None, &m).1;
+        let zero = round_trip_with_costs(1.0, 1.10, 1.0, Some(0.0), Some(0.0), &m).1;
+        let neg = round_trip_with_costs(1.0, 1.10, 1.0, Some(-5.0), Some(f64::NAN), &m).1;
         assert!((none - zero).abs() < 1e-12 && (none - neg).abs() < 1e-12);
         assert!(none.is_finite());
 
         // The size-blind kind ignores depth entirely, so a caller who happens to
         // have depth in hand cannot change what it charges.
         let blind = CostModel::pumpfun_fee_only();
-        let a = round_trip_with_costs(1.0, 1.10, 1.0, None, &blind).1;
-        let b = round_trip_with_costs(1.0, 1.10, 1.0, Some(70.0), &blind).1;
+        let a = round_trip_with_costs(1.0, 1.10, 1.0, None, None, &blind).1;
+        let b = round_trip_with_costs(1.0, 1.10, 1.0, Some(70.0), Some(70.0), &blind).1;
         assert!((a - b).abs() < 1e-12, "size-blind model must be depth-blind");
+    }
+
+    /// Each exit leg prices on its OWN depth: the same sell into a pool that
+    /// drained returns less than into the pool the entry saw.
+    #[test]
+    fn the_exit_prices_on_the_exit_depth() {
+        let m = CostModel::pumpfun_with_impact();
+        let same = round_trip_with_costs(1.0, 1.0, 1.0, Some(70.0), Some(70.0), &m).0;
+        let drained = round_trip_with_costs(1.0, 1.0, 1.0, Some(70.0), Some(35.0), &m).0;
+        assert!(drained < same, "drained {drained} vs same {same}");
+    }
+
+    /// The percent divides by what the wallet paid — the order plus its fixed
+    /// cost — never by the bare notional.
+    #[test]
+    fn the_percent_is_over_the_capital_paid() {
+        let m = CostModel::pumpfun_with_impact();
+        let (sol, pct) = round_trip_with_costs(1.0, 1.3, 0.05, Some(60.0), Some(60.0), &m);
+        assert!((pct - sol / m.capital_sol(0.05) * 100.0).abs() < 1e-12);
+        assert!(m.capital_sol(0.05) > 0.05);
     }
 
     #[test]
@@ -1346,12 +1454,14 @@ mod tests {
     fn no_kind_double_counts_what_the_fill_model_prices() {
         // Depth withheld ⇒ impact is inert ⇒ every kind must collapse to the same
         // number. If any kind still carried a flat slippage term, it would not.
-        let a = round_trip_with_costs(1.0, 1.5, 1.0, None, &CostModelKind::PumpfunImpact.model());
-        let b = round_trip_with_costs(1.0, 1.5, 1.0, None, &CostModelKind::PumpfunFeeOnly.model());
+        let impact = CostModelKind::PumpfunImpact.model();
+        let fee_only = CostModelKind::PumpfunFeeOnly.model();
+        let a = round_trip_with_costs(1.0, 1.5, 1.0, None, None, &impact);
+        let b = round_trip_with_costs(1.0, 1.5, 1.0, None, None, &fee_only);
         assert!((a.0 - b.0).abs() < 1e-12, "a size-blind kind must be the fee-only kind");
 
         // …and with depth, the ONLY thing that separates them is our own footprint.
-        let with = round_trip_with_costs(1.0, 1.5, 1.0, Some(70.0), &CostModelKind::PumpfunImpact.model());
+        let with = round_trip_with_costs(1.0, 1.5, 1.0, Some(70.0), Some(70.0), &impact);
         assert!(with.0 < a.0, "impact must cost something once depth is known");
     }
 
@@ -1367,8 +1477,9 @@ mod tests {
         };
         let c = CostModel::pumpfun_with_impact_with(&cheap);
         let d = CostModel::pumpfun_with_impact_with(&dear);
-        assert!((c.fixed_cost_sol_per_leg - cheap.fixed_cost_sol_per_leg()).abs() < 1e-15);
-        assert!(d.fixed_cost_sol_per_leg > c.fixed_cost_sol_per_leg);
+        assert!((c.fixed_buy_sol - cheap.fixed_buy_sol()).abs() < 1e-15);
+        assert!((c.fixed_sell_sol - cheap.fixed_sell_sol()).abs() < 1e-15);
+        assert!(d.fixed_buy_sol > c.fixed_buy_sol && d.fixed_sell_sol > c.fixed_sell_sol);
     }
 
     // ── exact_run_metrics (parity plan D1) ──────────────────────────────────
@@ -1628,7 +1739,7 @@ mod tests {
         assert!((p.total_pnl_sol - 0.0).abs() < 1e-12);
     }
 
-    /// Golden vectors for [`mark_open_bag`], shared with the frontend mirror.
+    /// Golden vectors for [`sell_value_proceeds`], shared with the frontend mirror.
     ///
     /// The browser has to net a mark between holdings polls (`walletMarksLive`),
     /// so `netProceedsSol` in `lib/liveMark.ts` re-implements this arithmetic in
@@ -1638,52 +1749,63 @@ mod tests {
     /// answers to "what is this bag worth". Constants are explicit rather than
     /// `FeeTuning::current()` so the vectors do not move with `.env`.
     #[test]
-    fn mark_open_bag_golden_vectors() {
+    fn sell_value_proceeds_golden_vectors() {
         let costs = CostModel {
             fee_bps_per_leg: 125.0,
-            fixed_cost_sol_per_leg: 0.00025,
+            fixed_buy_sol: 0.00025,
+            fixed_sell_sol: 0.00025,
+            close_fee_sol: 0.000_005,
             price_impact: true,
         };
-        // (entry, mark, held, reserve) -> (cost_basis, pnl)
-        let cases: [(f64, f64, f64, Option<f64>, f64, f64); 4] = [
-            // Flat mark: still a loss, because both legs are still owed.
-            (1.0, 1.0, 0.05, None, 0.050875000000000004, -0.0017500000000000016),
-            // Doubled, into a 70 SOL pool: impact bites the exit.
-            (1.0, 2.0, 0.05, Some(70.0), 0.050875000000000004, 0.04748392857142858),
-            // +4% on the measured median live clip: still just under break-even.
-            (1.0, 1.04, 0.0296, None, 0.03022, -7.079999999999587e-5),
-            // Impact larger than the pool: proceeds clamp at zero, never negative
-            // (the loss is the whole basis plus the leg's fixed cost, no more).
-            (0.5, 0.25, 120.0, Some(3.0), 60.75025, -60.7505),
+        // (value at spot, reserve) -> net proceeds of the sell that empties the bag
+        let cases: [(f64, Option<f64>, f64); 4] = [
+            // No depth: fee, the leg's fixed cost and the close only.
+            (0.05, None, 0.049120000000000004),
+            // Into a 70 SOL pool: the curve returns 0.1 / (1 + 0.1/70).
+            (0.1, Some(70.0), 0.098354129814550648),
+            (0.030784, None, 0.0301442),
+            // A bag ten times the pool: the curve still pays, just far less.
+            (30.0, Some(3.0), 2.6929268181818182),
         ];
-        for (entry, mark, held, reserve, want_basis, want_pnl) in cases {
-            let (basis, pnl) = mark_open_bag(entry, mark, held, reserve, &costs);
-            assert!((basis - want_basis).abs() < 1e-12, "basis {basis} != {want_basis}");
-            assert!((pnl - want_pnl).abs() < 1e-12, "pnl {pnl} != {want_pnl}");
+        for (value, reserve, want) in cases {
+            let got = sell_value_proceeds(value, reserve, &costs, true);
+            assert!((got - want).abs() < 1e-12, "value {value}: {got} != {want}");
         }
     }
 
-    /// The entry fill is sunk: marking at the price it filled at is a LOSS of both
-    /// legs' costs, never break-even. This is the whole reason the open mark is not
-    /// `round_trip_with_costs` with one price swapped — that one re-derives the bag
-    /// from the notional and charges the entry impact a second time.
+    /// The entry fill is sunk: marking at the price it filled at is a LOSS of the
+    /// exit leg's costs, never break-even, and the entry's impact is not charged
+    /// again — it is inside the basis the fill actually paid.
     #[test]
     fn mark_open_bag_does_not_recharge_entry_impact() {
         let costs = CostModel::pumpfun_with_impact();
-        let (_, open) = mark_open_bag(1.0, 1.0, 1.0, Some(10.0), &costs);
-        let (round_trip, _) = round_trip_with_costs(1.0, 1.0, 1.0, Some(10.0), &costs);
+        let (tokens, paid) = buy_fill(1.0, 1.0, Some(10.0), &costs);
+        let open = mark_open_bag(paid, 1.0, tokens, Some(10.0), &costs);
+        let (round_trip, _) = round_trip_with_costs(1.0, 1.0, 1.0, Some(10.0), Some(10.0), &costs);
+        assert!(open < 0.0);
         assert!(open > round_trip, "open mark {open} must not pay entry impact twice ({round_trip})");
     }
 
-    /// A partially sold bag marks what is LEFT: half the tokens, half the exposure.
+    /// Marking a fresh fill at a later price IS the round trip at that price: the
+    /// open mark and the closed trade are one formula.
     #[test]
-    fn mark_open_bag_scales_with_the_remaining_bag() {
-        let costs = CostModel::pumpfun_fee_only();
-        let (full_basis, full_pnl) = mark_open_bag(1.0, 2.0, 1.0, None, &costs);
-        let (half_basis, half_pnl) = mark_open_bag(1.0, 2.0, 0.5, None, &costs);
-        // Fixed cost is per leg, not per token, so only the size-scaled part halves.
-        let fixed = costs.fixed_cost_sol_per_leg;
-        assert!(((full_basis - fixed) / 2.0 - (half_basis - fixed)).abs() < 1e-12);
-        assert!(half_pnl < full_pnl && half_pnl > 0.0);
+    fn mark_open_bag_equals_the_round_trip_it_would_close() {
+        let costs = CostModel::pumpfun_with_impact();
+        let (tokens, paid) = buy_fill(0.05, 1e-7, Some(55.0), &costs);
+        let open = mark_open_bag(paid, 1.3e-7, tokens, Some(62.0), &costs);
+        let (closed, _) = round_trip_with_costs(1e-7, 1.3e-7, 0.05, Some(55.0), Some(62.0), &costs);
+        assert!((open - closed).abs() < 1e-15, "open {open} closed {closed}");
+    }
+
+    /// [`modeled_cost_basis`] inverts [`buy_fill`]: the curve-side price of an
+    /// executed buy, times its tokens, grossed up by the fee plus the fixed leg,
+    /// is what the order took from the wallet.
+    #[test]
+    fn modeled_cost_basis_inverts_buy_fill() {
+        let costs = CostModel::pumpfun_with_impact();
+        let (tokens, paid) = buy_fill(0.05, 1e-7, Some(55.0), &costs);
+        let curve_sol = 0.05 / (1.0 + costs.fee_bps_per_leg / 10_000.0);
+        let exec_price = curve_sol / tokens;
+        assert!((modeled_cost_basis(exec_price, tokens, &costs) - paid).abs() < 1e-15);
     }
 }

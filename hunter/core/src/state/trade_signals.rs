@@ -59,6 +59,10 @@ pub struct ObservedLegs {
     /// the latency histogram would then describe only the slow fills.
     pub first_slot: Option<u64>,
     pub last_slot: Option<u64>,
+    /// Σ the payer's net SOL flow over these signatures' transactions — each
+    /// transaction counted once, however many legs it has. `None` when any
+    /// signature's transaction carried no flow.
+    pub wallet_lamports: Option<i64>,
 }
 
 struct OwnLegEntry {
@@ -100,6 +104,9 @@ impl TradeSignals {
 
     /// Accumulate one observed own-wallet leg and early-wake waiters. No-op when
     /// nobody is waiting on `(wallet, mint)` — keeps the preview map tiny.
+    /// `payer_net_lamports` is per-transaction: every leg of one signature carries
+    /// the same value, so it is taken once, not summed.
+    #[allow(clippy::too_many_arguments)]
     pub fn observe_own_leg(
         &self,
         wallet: &str,
@@ -109,6 +116,7 @@ impl TradeSignals {
         amount_sol: f64,
         block_time: DateTime<Utc>,
         slot: u64,
+        payer_net_lamports: Option<i64>,
     ) {
         if !self.has_waiter(wallet, mint) {
             return;
@@ -138,6 +146,7 @@ impl TradeSignals {
                     last_block_time: block_time,
                     first_slot: Some(slot),
                     last_slot: Some(slot),
+                    wallet_lamports: payer_net_lamports,
                 },
                 seen_at: Instant::now(),
             });
@@ -182,6 +191,9 @@ impl TradeSignals {
                         (Some(x), Some(y)) => Some(x.max(y)),
                         (x, y) => x.or(y),
                     };
+                    // Distinct signatures are distinct transactions, so their flows
+                    // add; one unknown makes the sum unknown.
+                    a.wallet_lamports = a.wallet_lamports.zip(legs.wallet_lamports).map(|(x, y)| x + y);
                     a
                 }
             });
@@ -405,7 +417,7 @@ mod tests {
             let notified = guard.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, at, 300);
+            signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, at, 300, Some(-510_000));
             tokio::time::timeout(Duration::from_secs(1), notified.as_mut())
                 .await
                 .expect("waiter should wake on observe_own_leg");
@@ -413,7 +425,7 @@ mod tests {
 
         let legs = signals.observed_legs("sig1").expect("preview present");
         assert_eq!(legs.token_amount, 100);
-        signals.observe_own_leg("WALLET", "MINT", "sig1", 50, 0.25, at, 302);
+        signals.observe_own_leg("WALLET", "MINT", "sig1", 50, 0.25, at, 302, Some(-510_000));
         let legs = signals.observed_legs("sig1").expect("preview present");
         assert_eq!(legs.token_amount, 150);
         assert!((legs.amount_sol - 0.75).abs() < 1e-9);
@@ -422,12 +434,30 @@ mod tests {
         // both onto whichever leg happened to arrive last.
         assert_eq!(legs.first_slot, Some(300));
         assert_eq!(legs.last_slot, Some(302));
+        // Two legs of ONE transaction: its wallet flow counts once.
+        assert_eq!(legs.wallet_lamports, Some(-510_000));
+    }
+
+    /// Distinct signatures are distinct transactions: their flows add, and one
+    /// unknown flow makes the sum unknown rather than quietly smaller.
+    #[tokio::test]
+    async fn summed_signatures_add_their_wallet_flows() {
+        let signals = Arc::new(TradeSignals::new());
+        let _guard = signals.register("WALLET", "MINT");
+        let at = Utc::now();
+        signals.observe_own_leg("WALLET", "MINT", "a", 10, 0.1, at, 1, Some(100));
+        signals.observe_own_leg("WALLET", "MINT", "b", 10, 0.1, at, 2, Some(250));
+        signals.observe_own_leg("WALLET", "MINT", "c", 10, 0.1, at, 3, None);
+        let ab = signals.sum_observed_legs(&["a".into(), "b".into()]).unwrap();
+        assert_eq!(ab.wallet_lamports, Some(350));
+        let abc = signals.sum_observed_legs(&["a".into(), "b".into(), "c".into()]).unwrap();
+        assert_eq!(abc.wallet_lamports, None);
     }
 
     #[test]
     fn observe_own_leg_noop_without_waiter() {
         let signals = TradeSignals::new();
-        signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, Utc::now(), 300);
+        signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, Utc::now(), 300, None);
         assert!(signals.observed_legs("sig1").is_none());
         assert!(signals.own_legs.is_empty());
     }

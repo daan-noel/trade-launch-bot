@@ -223,6 +223,8 @@ async fn resolve_buy_submitted_inner(
                 .token_account
                 .clone()
                 .or_else(|| deps.trader.cached_token_account(&position.mint_address));
+            // What the buy took from the wallet — the same booking `exec_real` makes.
+            let (paid_sol, _) = legs.wallet_sol();
             match deps
                 .strategy_repo
                 .record_entry_fill(
@@ -230,7 +232,7 @@ async fn resolve_buy_submitted_inner(
                     sig,
                     legs.token_amount,
                     legs.price_per_token(),
-                    legs.amount_sol,
+                    paid_sol,
                     legs.last_block_time,
                     token_account.as_deref(),
                     legs.first_slot,
@@ -255,7 +257,7 @@ async fn resolve_buy_submitted_inner(
                                         intent,
                                         fill: Fill {
                                             price: legs.price_per_token(),
-                                            sol: legs.amount_sol,
+                                            sol: paid_sol,
                                             token_amount: legs.token_amount,
                                             at: legs.last_block_time,
                                         },

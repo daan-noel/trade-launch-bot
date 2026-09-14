@@ -1032,10 +1032,13 @@ export interface TokenLiveStats {
 export interface CostModel {
   /** Venue fee charged on EACH leg, in basis points (measured, not assumed). */
   fee_bps_per_leg: number;
-  /** Tip + priority fee per leg, in SOL. The larger half of the toll at live
-   *  clip sizes: ~0.77% of notional on a 0.03 SOL clip. */
-  fixed_cost_sol_per_leg: number;
-  /** Whether to charge our own `size / reserve` price impact on the leg. */
+  /** SOL a buy transaction costs beyond the order: base fee + priority + tip. */
+  fixed_buy_sol: number;
+  /** SOL a sell transaction costs out of what it returns: base fee + priority + tip. */
+  fixed_sell_sol: number;
+  /** The rent-reclaim close transaction the sell that empties a bag triggers. */
+  close_fee_sol: number;
+  /** Whether to charge our own constant-product price impact on the leg. */
   price_impact: boolean;
 }
 

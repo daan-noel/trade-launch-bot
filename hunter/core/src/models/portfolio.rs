@@ -6,15 +6,13 @@
 //! never re-derives them. Mirrors the realized-PnL convention of
 //! [`crate::models::strategy::StrategyPosition::realized_pnl_sol`].
 //!
-//! The mark is **net of the round trip**, and that is load-bearing rather than a
-//! refinement. A gross mark omits four terms, all of one sign: the entry fee and
-//! the exit fee (125 bps each — `avg_entry_price` is the *curve-side* amount, so
-//! neither is in it), and both legs' tip + priority. At the live clip size those
-//! fixed costs are the larger half: measured 0.77% of notional per leg on a
-//! 0.0296 SOL median clip, for ~4 pp of round trip in total. A bag needs roughly
-//! a +4% move to be worth anything, so a gross mark renders green across the
-//! entire range where the position is in fact under water — the same
-//! `+%`-beside-a-red-`◎` contradiction
+//! The mark is **what the wallet would end up with**: the SOL the entry actually
+//! took (the cost basis) against the SOL the exit would return — the curve's
+//! output for the bag, less the venue fee, the sell's fixed cost and the close.
+//! A gross mark (spot × tokens over curve-side cost) omits the entry fee, the exit
+//! fee and both legs' fixed cost, all of one sign — ~4 pp of round trip at the live
+//! clip size — so it renders green across the range where the position is in fact
+//! under water: the `+%`-beside-a-red-`◎` contradiction
 //! [`weighted_return_pct`](crate::strategies::kernel::weighted_return_pct)
 //! exists to kill.
 
@@ -51,9 +49,7 @@ pub struct ManagedMint {
 /// a gross mark reads ~4 pp high at live clip sizes.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct UnrealizedPnl {
-    /// Capital the bag actually consumed: the curve-side cost
-    /// `avg_entry_price × held_amount`, **plus** the entry fee and the entry
-    /// leg's fixed cost, neither of which is inside `avg_entry_price`.
+    /// SOL the bag still held took from the wallet — fee and fixed cost included.
     pub cost_basis_sol: f64,
     /// Mark-to-market gain/loss net of the round trip: what selling the bag at
     /// `current_mark` would leave, minus [`Self::cost_basis_sol`].
@@ -67,19 +63,18 @@ pub struct UnrealizedPnl {
     pub unrealized_pnl_pct: f64,
 }
 
-/// Compute unrealized PnL from an average entry, a current mark, the held amount,
-/// and the pool depth the exit would sell into.
+/// Compute unrealized PnL from the SOL a bag cost, a current mark, the held
+/// amount, and the pool depth the exit would sell into.
 ///
-/// **All three price/amount inputs share one unit basis**: `avg_entry_price` and
-/// `current_mark` are SOL per the SAME token quantity `held_amount` is counted in
+/// `current_mark` is SOL per the SAME token quantity `held_amount` is counted in
 /// (raw token units throughout this codebase — see
 /// [`crate::models::strategy::StrategyPosition::realized_pnl_sol`]), so the SOL
-/// outputs come out in human SOL. No basis (`avg_entry_price ≤ 0`, or nothing
+/// outputs come out in human SOL. No basis (`cost_basis_sol ≤ 0`, or nothing
 /// held) ⇒ every field is 0 rather than NaN.
 ///
 /// The arithmetic is [`mark_open_bag`] — the cost kernel that also prices the
 /// sim, the sweep, and the per-rule `open_pnl_sol`, so an open position means one
-/// thing on every surface. `reserve_sol` is the mint's SOL-side depth for the
+/// thing on every surface. `reserve_sol` is the mint's priced SOL depth for the
 /// exit's impact; `None` charges no impact rather than a guessed one, exactly as
 /// `CostModel::pumpfun_with_impact` degrades everywhere else.
 ///
@@ -88,14 +83,17 @@ pub struct UnrealizedPnl {
 /// `unrealized_pnl_sol` structural instead of a coincidence a later edit could
 /// quietly break.
 pub fn unrealized_pnl(
-    avg_entry_price: f64,
+    cost_basis_sol: f64,
     current_mark: f64,
     held_amount: f64,
     reserve_sol: Option<f64>,
     costs: &CostModel,
 ) -> UnrealizedPnl {
-    let (cost_basis_sol, unrealized_pnl_sol) =
-        mark_open_bag(avg_entry_price, current_mark, held_amount, reserve_sol, costs);
+    if !(cost_basis_sol > 0.0) || !(held_amount > 0.0) {
+        return UnrealizedPnl { cost_basis_sol: 0.0, unrealized_pnl_sol: 0.0, unrealized_pnl_pct: 0.0 };
+    }
+    let unrealized_pnl_sol =
+        mark_open_bag(cost_basis_sol, current_mark, held_amount, reserve_sol, costs);
     let unrealized_pnl_pct = weighted_return_pct(unrealized_pnl_sol, cost_basis_sol);
     UnrealizedPnl { cost_basis_sol, unrealized_pnl_sol, unrealized_pnl_pct }
 }
@@ -110,39 +108,40 @@ pub fn unrealized_pnl(
 /// an aggregator USD price over a wallet-wide average-cost basis, which is a
 /// different position, a different price universe, and a different denominator.
 ///
-/// Every input comes from the position itself: `entry_price` is its executed fill,
-/// `held_amount` is `entry_token_amount - sold_token_amount` (a scaled-out position
-/// marks the half it still owns), and `quote` is
+/// Every input comes from the position itself: `cost_basis_sol` is the SOL its
+/// entry took, pro-rata to `held_amount` = `entry_token_amount - sold_token_amount`
+/// (a scaled-out position marks the half it still owns —
+/// `OpenPositionBag::cost_basis_sol`), and `quote` is
 /// [`mark_quote`](crate::state::token_cache::mark_quote) — the one definition of
-/// what the live cache says a mint is worth, curve-native in SOL on the same basis
-/// `entry_price` is quoted in.
+/// what the live cache says a mint is worth, curve-native in SOL per raw unit.
 ///
 /// `None` — never a fabricated zero — when there is nothing honest to mark: no
 /// executed entry, no bag left, or no cached price for the mint yet.
 pub fn mark_bag(
-    entry_price: Option<f64>,
+    cost_basis_sol: f64,
     held_amount: f64,
     quote: Option<MarkQuote>,
     costs: &CostModel,
 ) -> Option<UnrealizedPnl> {
-    let entry_price = entry_price.filter(|p| p.is_finite() && *p > 0.0)?;
-    if !(held_amount > 0.0) {
+    if !(cost_basis_sol.is_finite() && cost_basis_sol > 0.0) || !(held_amount > 0.0) {
         return None;
     }
     let quote = quote.filter(|q| q.price.is_finite() && q.price > 0.0)?;
-    Some(unrealized_pnl(entry_price, quote.price, held_amount, quote.reserve_sol, costs))
+    Some(unrealized_pnl(cost_basis_sol, quote.price, held_amount, quote.reserve_sol, costs))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use crate::strategies::kernel::modeled_cost_basis;
+
     /// Frictionless: the pure price math, so a cost term cannot hide in the
     /// baseline. Prices are SOL-per-raw-unit and held is raw units — a 2× mark on
-    /// a 1.0-entry bag of 100 raw units books +100 SOL (100% up).
+    /// a 100-SOL bag of 100 raw units books +100 SOL (100% up).
     #[test]
     fn doubling_mark_books_100pct_gain() {
-        let p = unrealized_pnl(1.0, 2.0, 100.0, None, &CostModel::frictionless());
+        let p = unrealized_pnl(100.0, 2.0, 100.0, None, &CostModel::frictionless());
         assert_eq!(p.cost_basis_sol, 100.0);
         assert_eq!(p.unrealized_pnl_sol, 100.0);
         assert_eq!(p.unrealized_pnl_pct, 100.0);
@@ -151,15 +150,15 @@ mod tests {
     /// A mark below entry is a loss in both SOL and %.
     #[test]
     fn mark_below_entry_is_a_loss() {
-        let p = unrealized_pnl(1.0, 0.5, 100.0, None, &CostModel::frictionless());
+        let p = unrealized_pnl(100.0, 0.5, 100.0, None, &CostModel::frictionless());
         assert_eq!(p.cost_basis_sol, 100.0);
         assert_eq!(p.unrealized_pnl_sol, -50.0);
         assert_eq!(p.unrealized_pnl_pct, -50.0);
     }
 
-    /// No basis (zero entry) ⇒ pct is 0, not NaN/inf.
+    /// No basis ⇒ pct is 0, not NaN/inf.
     #[test]
-    fn zero_entry_has_no_pct() {
+    fn zero_basis_has_no_pct() {
         let p = unrealized_pnl(0.0, 2.0, 100.0, None, &CostModel::frictionless());
         assert_eq!(p.cost_basis_sol, 0.0);
         assert_eq!(p.unrealized_pnl_sol, 0.0);
@@ -167,15 +166,17 @@ mod tests {
     }
 
     /// The defect this module exists to prevent: an unmoved price is NOT break-even.
-    /// Both fees and both fixed legs are still owed, so a flat mark is red.
+    /// Both fees, both fixed legs and the close are owed, so a flat mark is red.
     #[test]
     fn a_flat_mark_is_a_loss_not_break_even() {
         let costs = CostModel::pumpfun_fee_only();
-        let p = unrealized_pnl(1.0, 1.0, 1.0, None, &costs);
+        let basis = modeled_cost_basis(1.0, 1.0, &costs);
+        let p = unrealized_pnl(basis, 1.0, 1.0, None, &costs);
         assert!(p.unrealized_pnl_sol < 0.0, "flat mark must not read break-even");
         assert!(p.unrealized_pnl_pct < 0.0);
-        // Both legs' fee (125 bps each) plus both legs' fixed cost, and nothing else.
-        let expected = -(2.0 * 0.0125 + 2.0 * costs.fixed_cost_sol_per_leg);
+        // Both legs' fee (125 bps each), both legs' fixed cost and the close.
+        let expected =
+            -(2.0 * 0.0125 + costs.fixed_buy_sol + costs.fixed_sell_sol + costs.close_fee_sol);
         assert!(
             (p.unrealized_pnl_sol - expected).abs() < 1e-12,
             "got {}, want {expected}",
@@ -183,15 +184,16 @@ mod tests {
         );
     }
 
-    /// Break-even needs roughly a +4% move at the live clip size — the number the
-    /// module header quotes, asserted so it cannot drift out of the docs silently.
+    /// Break-even needs a +3-4% move at the live clip size — the fee and the fixed
+    /// legs, asserted so the bar cannot drift out of the docs silently.
     #[test]
     fn break_even_needs_about_four_percent_at_live_clip_size() {
         let costs = CostModel::pumpfun_fee_only();
         // 0.0296 SOL clip (measured median real entry), priced as 1 SOL/token.
         let held = 0.0296;
-        let flat = unrealized_pnl(1.0, 1.0, held, None, &costs);
-        let up_four = unrealized_pnl(1.0, 1.04, held, None, &costs);
+        let basis = modeled_cost_basis(1.0, held, &costs);
+        let flat = unrealized_pnl(basis, 1.0, held, None, &costs);
+        let up_four = unrealized_pnl(basis, 1.04, held, None, &costs);
         assert!(flat.unrealized_pnl_pct < -3.0 && flat.unrealized_pnl_pct > -5.0);
         assert!(
             up_four.unrealized_pnl_pct.abs() < 1.5,
@@ -216,7 +218,7 @@ mod tests {
     fn pct_is_sign_locked_to_sol() {
         let costs = CostModel::pumpfun_with_impact();
         for mark in [0.0, 0.5, 1.0, 1.02, 1.04, 2.0, 10.0] {
-            let p = unrealized_pnl(1.0, mark, 0.05, Some(70.0), &costs);
+            let p = unrealized_pnl(0.0508, mark, 0.05, Some(70.0), &costs);
             assert_eq!(
                 p.unrealized_pnl_sol > 0.0,
                 p.unrealized_pnl_pct > 0.0,
@@ -233,8 +235,8 @@ mod tests {
     fn mark_bag_is_unrealized_pnl() {
         let costs = CostModel::pumpfun_with_impact();
         let quote = MarkQuote { price: 2.0, reserve_sol: Some(70.0) };
-        let got = mark_bag(Some(1.0), 0.05, Some(quote), &costs).expect("markable");
-        let want = unrealized_pnl(1.0, 2.0, 0.05, Some(70.0), &costs);
+        let got = mark_bag(0.0508, 0.05, Some(quote), &costs).expect("markable");
+        let want = unrealized_pnl(0.0508, 2.0, 0.05, Some(70.0), &costs);
         assert_eq!(got.cost_basis_sol, want.cost_basis_sol);
         assert_eq!(got.unrealized_pnl_sol, want.unrealized_pnl_sol);
         assert_eq!(got.unrealized_pnl_pct, want.unrealized_pnl_pct);
@@ -246,27 +248,25 @@ mod tests {
     fn mark_bag_declines_rather_than_inventing_a_zero() {
         let costs = CostModel::pumpfun_with_impact();
         let quote = || Some(MarkQuote { price: 2.0, reserve_sol: None });
-        // No executed entry price (BuySubmitted, fill not adopted yet).
-        assert!(mark_bag(None, 1.0, quote(), &costs).is_none());
-        assert!(mark_bag(Some(0.0), 1.0, quote(), &costs).is_none());
-        assert!(mark_bag(Some(f64::NAN), 1.0, quote(), &costs).is_none());
+        // No executed entry (BuySubmitted, fill not adopted yet).
+        assert!(mark_bag(0.0, 1.0, quote(), &costs).is_none());
+        assert!(mark_bag(f64::NAN, 1.0, quote(), &costs).is_none());
         // Nothing left to mark (fully scaled out, row not yet closed).
-        assert!(mark_bag(Some(1.0), 0.0, quote(), &costs).is_none());
+        assert!(mark_bag(1.0, 0.0, quote(), &costs).is_none());
         // Mint has no cached price yet (just entered, no post-entry trade).
-        assert!(mark_bag(Some(1.0), 1.0, None, &costs).is_none());
-        assert!(mark_bag(Some(1.0), 1.0, Some(MarkQuote { price: 0.0, reserve_sol: None }), &costs)
+        assert!(mark_bag(1.0, 1.0, None, &costs).is_none());
+        assert!(mark_bag(1.0, 1.0, Some(MarkQuote { price: 0.0, reserve_sol: None }), &costs)
             .is_none());
     }
 
-    /// A scaled-out position marks the bag it STILL holds, not the one it bought.
-    /// The wallet-holdings join this replaced could not express that: it priced the
-    /// whole on-chain balance against a wallet-wide average cost.
+    /// A scaled-out position marks the bag it STILL holds, against the share of the
+    /// entry that bought it.
     #[test]
     fn mark_bag_prices_only_the_remaining_bag() {
         let costs = CostModel::frictionless();
         let quote = MarkQuote { price: 2.0, reserve_sol: None };
-        let whole = mark_bag(Some(1.0), 100.0, Some(quote), &costs).expect("markable");
-        let half = mark_bag(Some(1.0), 50.0, Some(quote), &costs).expect("markable");
+        let whole = mark_bag(100.0, 100.0, Some(quote), &costs).expect("markable");
+        let half = mark_bag(50.0, 50.0, Some(quote), &costs).expect("markable");
         assert_eq!(whole.unrealized_pnl_sol, 100.0);
         assert_eq!(half.unrealized_pnl_sol, 50.0);
         // Per-SOL-deployed return is unchanged by the scale-out — only the size is.

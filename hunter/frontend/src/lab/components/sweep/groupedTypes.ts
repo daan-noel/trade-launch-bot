@@ -154,6 +154,10 @@ export interface GroupedSweepRunRecord {
   label: string | null;
   /** Notional (SOL) each simulated round-trip was priced at; `null` on legacy runs. */
   buy_amount_sol: number | null;
+  /** What one position takes from the wallet — `buy_amount_sol` plus the buy
+   *  transaction's fixed cost. The denominator every percent divides by; derived
+   *  server-side (`GroupedSweepRun::capital_sol`), `null` on legacy runs. */
+  capital_sol: number | null;
   /** How each grouped field was partitioned — `[[field, spec], …]` in group-by
    *  order. Empty on a run swept before the partition replaced the bucket width:
    *  its group keys are rendered labels no longer parsed, so it reads as

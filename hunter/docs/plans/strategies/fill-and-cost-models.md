@@ -318,79 +318,63 @@ for the case that established this.
 
 ## What is actually charged
 
-Per leg (a round trip is 1 entry + N exit legs):
+A round trip is 1 buy + N sells, priced by the exact formula in
+[execution-costs.md](execution-costs.md):
 
 | term | value today | source |
 | --- | --- | --- |
-| pump.fun protocol fee | **125 bps** of the leg's SOL | measured, `FEE_BPS_PER_LEG` |
-| Jito tip + priority fee | **0.000225 SOL**, fixed | `FeeTuning`: `JITO_MIN_TIP_SOL` (0.0002) + avg CU priority fee (0.000025) |
-| our own price impact | `leg_notional / reserve_sol` | `pumpfun_impact` only |
+| pump.fun venue fee | **125 bps** a leg — on top of the curve SOL on a buy, out of the curve's output on a sell | measured, `FEE_BPS_PER_LEG` |
+| fixed cost per transaction | **0.000227 SOL a buy, 0.000225 a sell**: 5 000 base + priority on the requested CU limit + tip | `FeeTuning`: `JITO_MIN_TIP_SOL`, `CU_PRICE_MICRO_LAMPORTS` |
+| close | **0.000005 SOL** once, on the sell that empties the bag | the rent-reclaim `closeAccount` |
+| our own price impact | the exact constant-product curve on each leg's own depth | `pumpfun_impact` only |
 
-The fixed term is **read from `.env`**, so it moves when you change
-`JITO_MIN_TIP_SOL` / `CU_PRICE_MICRO_LAMPORTS`. It was 0.001025 SOL/leg when
-[execution-costs.md](execution-costs.md) was measured (tip 0.001); at today's 0.0002
-tip it is 0.000225. Restart the lab bin after editing those keys.
+The fixed terms are **read from `.env`**, so they move when you change
+`JITO_MIN_TIP_SOL` / `CU_PRICE_MICRO_LAMPORTS`. Restart the lab bin after editing
+those keys. Every percent divides by what the buy took from the wallet: the order plus
+its fixed cost (`CostModel::capital_sol`).
 
 Only `pumpfun_impact` cares about **buy size**. `pumpfun_fee_only` is size-blind: a
 0.1 SOL buy and a 10 SOL buy are charged the same percentage.
 
-**There is no flat slippage term, and there must not be one.** A third model,
-`pumpfun_default`, charged 100 bps/leg. It is deleted, along with the `slippage_bps`
-field it set — the section below is why.
+**There is no flat slippage term, and there must not be one.** The section below is
+why.
 
-## One round trip, priced three ways — and why one of them is gone
+## One round trip, priced two ways — and why a flat slippage is not a third
 
-The `pumpfun_default` row below is the **deleted** flat-slippage model. It is kept
-here as the evidence that removed it — the numbers are why it went, and they are
-the reason to reach for `pumpfun_impact` rather than assume a flat haircut is
-close enough.
+**0.1 SOL buy · price rises 20% · both legs in a 70 SOL pool** (the measured median):
 
-**0.1 SOL buy · price rises 20% · pool depth 70 SOL** (the measured median):
-
-| cost model | gross proceeds | fee + fixed | **net PnL** |
-| --- | --- | --- | --- |
-| `pumpfun_impact` | 0.119658 ◎ (impact 0.143%/leg) | 0.003196 ◎ | **+16.46%** |
-| `pumpfun_fee_only` | 0.120000 ◎ | 0.003200 ◎ | **+16.80%** |
-| ~~`pumpfun_default`~~ (deleted) | 0.117624 ◎ (flat 1%/leg) | 0.003170 ◎ | **+14.45%** |
+| cost model | curve returns | wallet receives | wallet paid | **net PnL** |
+| --- | --- | --- | --- | --- |
+| `pumpfun_impact` | 0.118152 ◎ (impact 0.14%/leg) | 0.116445 ◎ | 0.100227 ◎ | **+16.18%** |
+| `pumpfun_fee_only` | 0.118519 ◎ | 0.116807 ◎ | 0.100227 ◎ | **+16.54%** |
 
 The same trade at **1.0 SOL** into the same 70 SOL pool:
 
-| cost model | impact charged/leg | **net PnL** |
+| cost model | impact/leg | **net PnL** |
 | --- | --- | --- |
-| `pumpfun_impact` | 1.43% | **+13.87%** |
-| `pumpfun_fee_only` | 0% | **+17.21%** |
-| ~~`pumpfun_default`~~ (deleted) | flat 1% | **+14.86%** |
+| `pumpfun_impact` | 1.41% | **+13.46%** |
+| `pumpfun_fee_only` | 0% | **+16.99%** |
 
-**Read those two tables together.** At 0.1 SOL the flat 1% is *harsher* than reality
-(14.45% vs 16.46%); at 1.0 SOL it is *kinder* than reality (14.86% vs 13.87%). That
-is the whole case against it in one number — it is wrong in both directions, and the
-error **flips sign** somewhere in the middle.
+A flat 1%/leg slippage charges 2% a round trip at every size: *harsher* than the curve
+at 0.1 SOL (0.28%) and *kinder* at 1.0 SOL (2.8%). Its error **flips sign** with size,
+so it does not shift a board, it **reshuffles** it — and a grid exists to rank.
 
-A cost model that is merely too harsh is survivable: it shifts every candidate down
-by roughly the same amount and the ranking holds. One whose error changes sign with
-size does not shift the board, it **reshuffles** it — and a grid exists to rank.
+It also double-counts. A `FillModel` chooses *which market print we transact
+against*; a flat `slippage_bps` is a stand-in for that same quantity. So there is no
+such kind and no such field; its wire name `pumpfun_default` does not decode — an
+unrecognized cost model is a hard error, because a run reporting a model it was not
+priced under is worse than one that fails to load.
 
-It also double-counted. A `FillModel` chooses *which market print we transact
-against*; a flat `slippage_bps` is a stand-in for that same quantity, so charging
-both charged execution slippage twice. Two independent reasons, one conclusion: the
-kind, the `CostModel::slippage_bps` field and the wire name are **deleted**, not
-deprecated. `pumpfun_default` does not decode — an unrecognized cost model is a hard
-error, because a run reporting a model it was not priced under is worse than one
-that fails to load.
-
-`pumpfun_fee_only` never charges impact, so it is a clean **upper bound**: 3.3 pp too
-generous at 1 SOL, only 0.34 pp too generous at 0.1 SOL. That is a bound you can
-reason with — it errs one way, and it errs more as size grows. It is the reason the
-size-blind model that survived is the one that charges *nothing* rather than the one
-that guessed.
+`pumpfun_fee_only` never charges impact, so it is a clean **upper bound**: 3.5 pp too
+generous at 1 SOL, only 0.36 pp at 0.1 SOL. That is a bound you can reason with — it
+errs one way, and more as size grows.
 
 ## Depth is optional, and missing depth silently downgrades the model
 
-Depth reaches the kernel as `Option<f64>` (`MetricSeries.reserve_sol` in the sweep,
-`PositionOutcome::entry_reserve_sol` in simulate). If it's absent, **no impact is
-charged rather than a guessed one** — so `pumpfun_impact` without depth is exactly
-`pumpfun_fee_only`. The entry's depth also prices the exit leg, which over-charges
-whenever the pool grew during the hold, i.e. it errs pessimistic on winners.
+Depth reaches the kernel as `Option<f64>` (`MetricSeries.priced_reserve_sol` at the
+entry and exit rows in the sweep, each fill print's own reserve in simulate and live
+paper). If it's absent, **no impact is charged rather than a guessed one** — so
+`pumpfun_impact` without depth is exactly `pumpfun_fee_only` on that leg.
 
 ## Pairing the two dropdowns
 
@@ -411,19 +395,19 @@ to warn about, and no surface warns about one.
 
 ## The bar a strategy has to clear
 
-Gross move needed to break even, `pumpfun_impact`, 70 SOL pool, at today's 0.000225
-fixed cost:
+Gross move needed to break even, `pumpfun_impact`, both legs in a 70 SOL pool, at
+today's fixed costs (0.000227 a buy, 0.000225 a sell, the 0.000005 close):
 
 | buy size | break-even gross |
 | --- | --- |
-| 0.10 ◎ | +3.28% |
-| **0.1255 ◎** (optimum = `sqrt(F · vsol)`) | **+3.26%** |
+| 0.10 ◎ | +3.30% |
+| **0.126 ◎** (optimum = `sqrt(F · vsol)`) | **+3.28%** |
 | 0.27 ◎ | +3.50% |
 | 1.00 ◎ | +5.55% |
 
-Cost is U-shaped in size — the tip is fixed SOL/leg so it dominates small orders,
-impact dominates large ones. The optimum moved from ~0.27 ◎ to ~0.126 ◎ purely
-because the tip dropped from 0.001 to 0.0002; recompute it whenever you retune tips.
+Cost is U-shaped in size — the fixed cost is SOL per transaction so it dominates small
+orders, impact dominates large ones. At a 0.001 tip the optimum sits at ~0.27 ◎;
+recompute it whenever you retune tips.
 
 Check a candidate against this bar **before** running a backtest — it kills most ideas
 for free. And note it is the *cost* floor only: it assumes the fill model is free,
@@ -453,15 +437,14 @@ which `worst_case` very much is not.
   them as one `Pricing` struct, so a scan can never get a fill model without a cost
   model). **Live paper is the exception: it always books `worst_case`** — it has no
   choice, since it fills forward off the live feed. That is what makes `worst_case`
-  the only setting with sweep↔paper parity.
+  the only setting with sweep↔paper parity. Its money goes through the same kernel
+  (`pumpfun_impact`, each fill against its print's own depth).
 - **A live rule's open positions** are marked through `pumpfun_impact` too, off the
-  mint's live cache price and depth (`MarkQuote`), so the unrealized figure on the
-  positions panel is comparable to a backtest's `open_pnl_sol` rather than a raw price
-  delta. One caveat it is worth knowing: it charges impact at **current** depth, while
-  a backtest charges an open position's at **entry** depth. Neither is exact — one
-  reserve cannot price two legs struck at different times — but the entry leg's impact
-  is already sunk, so the leg the number is actually deciding is priced at the depth it
-  would execute into. No cached depth ⇒ no impact charged, never a guess.
+  mint's live cache price and depth (`MarkQuote`), against the SOL the entry actually
+  paid — so the unrealized figure on the positions panel is comparable to a backtest's
+  `open_pnl_sol` rather than a raw price delta. Both price the unsold remainder at the
+  depth it would sell into: the live mint's current depth, the backtest's last print.
+  No cached depth ⇒ no impact charged, never a guess.
 - Per the root rule, a sweep result is a *ranking screener*, not a backtest — re-run a
   promoted combo through simulate before believing its PnL, at the same fill and cost
   models.

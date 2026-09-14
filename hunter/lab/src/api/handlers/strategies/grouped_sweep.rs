@@ -313,10 +313,11 @@ enum FilterPred {
 ///
 /// Columns whose *displayed* value is scaled (win% / open% render `×100`) fold that
 /// scale into the expression, so the operand the frontend sends (in displayed units)
-/// compares directly and sorts identically (monotonic). `buy_amount_sol` supplies the
-/// run notional the derived `mtm_pnl_pct` needs; `None` (or a non-positive value)
+/// compares directly and sorts identically (monotonic). `capital_sol` supplies what
+/// one position of the run takes from the wallet (`GroupedSweepRun::capital_sol`),
+/// which the derived `mtm_pnl_pct` divides by; `None` (or a non-positive value)
 /// leaves that one column unresolvable.
-fn resolve_result_expr(col: &str, buy_amount_sol: Option<f64>) -> Option<String> {
+fn resolve_result_expr(col: &str, capital_sol: Option<f64>) -> Option<String> {
     // Param column: frontend prefix `p_`, DB expression `(params->>'key')::numeric`.
     if let Some(param_key) = col.strip_prefix("p_") {
         // Only allow [a-z0-9_]+ to keep the interpolation injection-safe.
@@ -336,18 +337,20 @@ fn resolve_result_expr(col: &str, buy_amount_sol: Option<f64>) -> Option<String>
         "open_share" => {
             return Some("(r.n_open::numeric / NULLIF(r.n_fired, 0) * 100)".to_string())
         }
-        // Per-trade MTM % = (realized + unrealized) / (buy × fired) × 100. Mirrors the
-        // frontend `mtmPctOf`; needs the run notional, so it only resolves when known.
+        // Per-trade MTM % = (realized + unrealized) / (capital × fired) × 100. Mirrors
+        // the frontend `mtmPctOf`; needs the run's capital, so it only resolves when
+        // known.
         "mtm_pnl_pct" => {
-            let buy = buy_amount_sol?;
-            if !buy.is_finite() || buy <= 0.0 {
+            let capital = capital_sol?;
+            if !capital.is_finite() || capital <= 0.0 {
                 return None;
             }
-            // `buy` is a trusted f64 from our own runs table; Rust's f64 `Display`
-            // never emits scientific notation, so it is a plain SQL decimal literal.
+            // `capital` is a trusted f64 derived from our own runs table; Rust's f64
+            // `Display` never emits scientific notation, so it is a plain SQL decimal
+            // literal.
             return Some(format!(
                 "((r.total_pnl_sol + r.open_pnl_sol) / NULLIF({} * r.n_fired, 0) * 100)",
-                buy
+                capital
             ));
         }
         _ => {}
@@ -392,12 +395,12 @@ fn resolve_result_expr(col: &str, buy_amount_sol: Option<f64>) -> Option<String>
 /// `sort_col`/`sort_dir`. Unresolvable levels are dropped. A stable
 /// `r.combo_id ASC` tiebreak is always appended so equal rows keep a
 /// deterministic order across pages/refetches. Empty ⇒ caller's default.
-fn build_order_by(query: &ResultsQuery, buy_amount_sol: Option<f64>) -> String {
+fn build_order_by(query: &ResultsQuery, capital_sol: Option<f64>) -> String {
     order_by_from(
         query.sort.as_deref(),
         query.sort_col.as_deref(),
         query.sort_dir.as_deref(),
-        buy_amount_sol,
+        capital_sol,
     )
 }
 
@@ -407,20 +410,20 @@ fn order_by_from(
     sort: Option<&str>,
     sort_col: Option<&str>,
     sort_dir: Option<&str>,
-    buy_amount_sol: Option<f64>,
+    capital_sol: Option<f64>,
 ) -> String {
     let dir_sql = |dir: &str| -> &'static str { if dir.trim() == "asc" { "ASC" } else { "DESC" } };
     let mut levels: Vec<String> = Vec::new();
     if let Some(spec) = sort.filter(|s| !s.is_empty()) {
         for entry in spec.split(',') {
             let (col, dir) = entry.split_once(':').unwrap_or((entry, "desc"));
-            if let Some(expr) = resolve_result_expr(col.trim(), buy_amount_sol) {
+            if let Some(expr) = resolve_result_expr(col.trim(), capital_sol) {
                 levels.push(format!("{} {} NULLS LAST", expr, dir_sql(dir)));
             }
         }
     } else if let Some(col) = sort_col {
         let dir = sort_dir.unwrap_or("desc");
-        if let Some(expr) = resolve_result_expr(col, buy_amount_sol) {
+        if let Some(expr) = resolve_result_expr(col, capital_sol) {
             levels.push(format!("{} {} NULLS LAST", expr, dir_sql(dir)));
         }
     }
@@ -437,7 +440,7 @@ fn order_by_from(
 /// non-numeric op, or missing operand are dropped (mirrors the sort policy). Order
 /// is stabilized by sorting on the column key so the emitted `$n` placeholders are
 /// deterministic across the count and page queries.
-fn build_filter_preds(filters_json: Option<&str>, buy_amount_sol: Option<f64>) -> Vec<FilterPred> {
+fn build_filter_preds(filters_json: Option<&str>, capital_sol: Option<f64>) -> Vec<FilterPred> {
     let Some(raw) = filters_json.filter(|s| !s.is_empty()) else {
         return Vec::new();
     };
@@ -450,7 +453,7 @@ fn build_filter_preds(filters_json: Option<&str>, buy_amount_sol: Option<f64>) -
 
     let mut preds = Vec::new();
     for (col, f) in entries {
-        let Some(expr) = resolve_result_expr(&col, buy_amount_sol) else {
+        let Some(expr) = resolve_result_expr(&col, capital_sol) else {
             continue;
         };
         let sql_op: Option<&'static str> = match f.op.as_str() {
@@ -1109,6 +1112,7 @@ async fn run_grouped_sweep_job(
         max_combos: b.max_combos.map(|v| v as i32),
         label: None,
         buy_amount_sol: Some(b.buy_amount_sol),
+        capital_sol: Some(b.cost_model.model().capital_sol(b.buy_amount_sol)),
         // The clamped width actually used to partition (not the raw request), so
         // re-run + promotion restore exactly what this run swept.
         partition: plan.clone(),
@@ -1666,24 +1670,29 @@ pub async fn list_results(
 
     let repo = GroupedSweepRepo::new(state.db.clone(), tables);
 
-    // The derived `mtm_pnl_pct` column needs the run's `buy_amount_sol`. Fetch it
-    // only when a sort level or filter actually references that column — the common
-    // path (sorting/filtering the stored columns) skips the extra round-trip.
-    let needs_buy = query.sort.as_deref().is_some_and(|s| s.contains("mtm_pnl_pct"))
+    // The derived `mtm_pnl_pct` column needs the run's capital per position (its
+    // `buy_amount_sol` + the buy leg's fixed cost). Fetch it only when a sort level or
+    // filter actually references that column — the common path (sorting/filtering
+    // the stored columns) skips the extra round-trip.
+    let needs_capital = query.sort.as_deref().is_some_and(|s| s.contains("mtm_pnl_pct"))
         || query.sort_col.as_deref() == Some("mtm_pnl_pct")
         || query.filters.as_deref().is_some_and(|s| s.contains("mtm_pnl_pct"));
-    let buy_amount_sol = if needs_buy {
-        repo.run_buy_amount_sol(run_id).await.ok().flatten()
+    let capital_sol = if needs_capital {
+        repo.run_buy_amount_sol(run_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|b| trading_core::strategies::kernel::CostModel::pumpfun_with_impact().capital_sol(b))
     } else {
         None
     };
 
-    let order_by = build_order_by(&query, buy_amount_sol);
+    let order_by = build_order_by(&query, capital_sol);
 
     // Per-column filters shrink both the page and the total. They bind after the
     // fixed `run_id` ($1) / `group_id` ($2) params, so the fragment starts at $3;
     // it is identical for the count and page queries (both share that prefix).
-    let preds = build_filter_preds(query.filters.as_deref(), buy_amount_sol);
+    let preds = build_filter_preds(query.filters.as_deref(), capital_sol);
     let (filter_sql, filter_binds) = render_filter_sql(&preds, 3);
 
     let total = match repo.count_results(run_id, group_id, &filter_sql, &filter_binds).await {

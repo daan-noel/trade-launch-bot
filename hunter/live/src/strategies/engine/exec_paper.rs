@@ -28,14 +28,16 @@
 //! carry, and what the chart and trades table key on. The last-known-spot fallback
 //! prices off no print, so it stashes nothing.
 //!
-//! `Fill::price` is the feed's `price_per_token` = **SOL per RAW token unit**
-//! (`Trade::new`: `amount_sol / token_amount`, count in raw units), so a paper
-//! `token_amount` is `sol / price` with **no** decimal scaling — the same raw-unit
-//! convention `entry_price`/`exit_price` and the real executor use. Scaling it by
-//! 1e6 kept SOL PnL right (the factor cancels on the exit leg) but inflated every
-//! stored token count 1e6×, which made the repo's post-close
-//! `exit_price = exit_sol / sold_token_amount` 1e6× too small and pinned the
-//! positions PnL% cell at −100% on every paper row.
+//! **The money is the kernel's, not a price ratio.** `Fill::price` stays the
+//! print's spot — the engine's decision basis, SOL per RAW token unit — while
+//! `Fill::sol` and `Fill::token_amount` come from `kernel::buy_fill` /
+//! `sell_proceeds` against the print's own depth: the entry books what the order
+//! would take from the wallet (fee, impact, fixed leg) and the tokens it would
+//! receive, the exit what the sell would return. So a paper row's
+//! `(exit − entry) / entry` is the same all-in number a real row books from its
+//! wallet, and the same one simulate reports. Token counts are raw units with
+//! **no** decimal scaling — the raw-unit convention `entry_price`/`exit_price` and
+//! the real executor use.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +48,7 @@ use tokio::sync::mpsc;
 use hunter_engine::event::{Event, Fill, FillFailReason, IntentId};
 
 use trading_core::state::token_cache::{CachedTrade, TokenCache};
+use trading_core::strategies::kernel::{buy_fill, sell_proceeds, CostModel};
 use trading_core::strategies::paper_fill::{
     exit_fill_window_closed, find_worst_case_paper_entry_at, find_worst_case_paper_exit_at,
     PaperFill,
@@ -86,15 +89,16 @@ pub async fn run_entry(
                 registry.update(pid, |m| m.target_snapshot = Some(trigger));
             }
             stash_print(&fill_sigs, &intent, fill.print);
-            let sol = lamports as f64 / LAMPORTS_PER_SOL;
-            // `fill.price` is SOL per RAW unit ⇒ the quotient is already raw units.
-            let token_amount = (sol / fill.price).round().max(0.0) as u64;
+            let notional = lamports as f64 / LAMPORTS_PER_SOL;
+            // `fill.price` is SOL per RAW unit ⇒ the token count is already raw units.
+            let (tokens, paid) =
+                buy_fill(notional, fill.price, fill.reserve_sol, &CostModel::pumpfun_with_impact());
             Event::FillConfirmed {
                 intent,
                 fill: Fill {
                     price: fill.price,
-                    sol,
-                    token_amount,
+                    sol: paid,
+                    token_amount: tokens.round().max(0.0) as u64,
                     at: fill.block_time,
                 },
             }
@@ -115,7 +119,9 @@ pub async fn run_entry(
 /// unknown/never-priced mint.
 ///
 /// `token_amount` is the portion already sized by the decision loop
-/// (`Portion::token_amount`) — full remainder or a scale-out leg.
+/// (`Portion::token_amount`) — full remainder or a scale-out leg; `empties_bag`
+/// says it is the remainder, whose sell also pays the rent-reclaim close.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_exit(
     fill_tx: mpsc::Sender<Event>,
     token_cache: Arc<TokenCache>,
@@ -123,12 +129,19 @@ pub async fn run_exit(
     intent: IntentId,
     mint: String,
     token_amount: u64,
+    empties_bag: bool,
     fire_abs_idx: Option<u64>,
 ) {
     let event = match wait_exit_fill(&token_cache, &mint, fire_abs_idx).await {
         Some(fill) => {
             stash_print(&fill_sigs, &intent, fill.print);
-            let sol = token_amount as f64 * fill.price;
+            let sol = sell_proceeds(
+                token_amount as f64,
+                fill.price,
+                fill.reserve_sol,
+                &CostModel::pumpfun_with_impact(),
+                empties_bag,
+            );
             Event::FillConfirmed {
                 intent,
                 fill: Fill {
@@ -150,6 +163,9 @@ pub async fn run_exit(
 
 struct ResolvedFill {
     price: f64,
+    /// Priced SOL depth of the pool state `price` is the spot of — what our own
+    /// impact is charged against.
+    reserve_sol: Option<f64>,
     block_time: chrono::DateTime<chrono::Utc>,
     /// The print that priced this fill; `None` for the last-known-spot fallback.
     print: Option<PrintKey>,
@@ -159,6 +175,7 @@ impl ResolvedFill {
     fn priced_by(trades: &[CachedTrade], f: &PaperFill) -> Self {
         Self {
             price: f.price,
+            reserve_sol: f.reserve_sol,
             block_time: f.block_time,
             print: trades.get(f.trade_idx).map(PrintKey::of),
         }
@@ -278,6 +295,7 @@ fn last_known_price_fill(token_cache: &TokenCache, mint: &str) -> Option<Resolve
             .filter(|p| *p > 0.0)
             .map(|price| ResolvedFill {
                 price,
+                reserve_sol: s.current_reserve_sol.filter(|r| r.is_finite() && *r > 0.0),
                 block_time: s.last_trade_at.unwrap_or_else(chrono::Utc::now),
                 print: None,
             })
@@ -410,9 +428,16 @@ mod tests {
         let store = FillSigStore::new();
         let (tx, mut rx) = mpsc::channel(1);
         let intent = IntentId { rule: RuleId(uuid::Uuid::nil()), mint: Mint::from(MINT), seq: 7 };
-        run_exit(tx, populated_window(), store.clone(), intent.clone(), MINT.into(), 1_000, Some(0))
+        run_exit(tx, populated_window(), store.clone(), intent.clone(), MINT.into(), 1_000, true, Some(0))
             .await;
-        assert!(matches!(rx.recv().await, Some(Event::FillConfirmed { .. })));
+        let Some(Event::FillConfirmed { fill, .. }) = rx.recv().await else {
+            panic!("expected a FillConfirmed");
+        };
+        // The money is the kernel's sell — fee, fixed leg and close — at the print's
+        // spot, never a bare `tokens × price`.
+        let want = sell_proceeds(1_000.0, 0.5e-6, None, &CostModel::pumpfun_with_impact(), true);
+        assert!((fill.sol - want).abs() < 1e-15, "{} vs {want}", fill.sol);
+        assert!(fill.sol < 1_000.0 * 0.5e-6);
         let fs = store.take(&intent).expect("print stashed under the intent");
         assert!(fs.sigs.is_empty() && fs.slot.is_none() && fs.token_account.is_none());
         assert_eq!(fs.print.map(|p| (p.slot, p.tx_index)), Some((101, 1)));

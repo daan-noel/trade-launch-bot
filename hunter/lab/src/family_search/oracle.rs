@@ -165,7 +165,7 @@ pub fn oracle_moves(
         if sol > 0.0 {
             out.n_with_upside += 1;
         }
-        out.pct.push(100.0 * sol / pricing.buy_amount_sol);
+        out.pct.push(100.0 * sol / pricing.capital_sol());
         if let Some(d) = o.entry_time.and_then(|at| entry_depth(token, at)) {
             out.depth_sol.push(d);
         }
@@ -197,9 +197,9 @@ pub fn execution_band_pct(pricing: &Pricing, depth_sol: Option<f64>) -> f64 {
     if pricing.buy_amount_sol <= 0.0 {
         return 0.0;
     }
-    let (pnl_sol, _) =
-        round_trip_with_costs(1.0, 1.0, pricing.buy_amount_sol, depth_sol, &pricing.cost);
-    -100.0 * pnl_sol / pricing.buy_amount_sol
+    let (_, pnl_pct) =
+        round_trip_with_costs(1.0, 1.0, pricing.buy_amount_sol, depth_sol, depth_sol, &pricing.cost);
+    -pnl_pct
 }
 
 /// The best price still printed after `at` — what an exit could have got.
@@ -237,6 +237,7 @@ pub fn best_after_pnl_sol(
         exit_price,
         pricing.buy_amount_sol,
         depth,
+        depth,
         &pricing.cost,
     );
     Some(pnl_sol)
@@ -259,12 +260,14 @@ pub fn terminal_pnl_sol(
     let entry_at = outcome.entry_time?;
     let last = token.trades.last()?;
     let terminal = last.chart_spot_price().filter(|p| p.is_finite() && *p > 0.0)?;
-    let depth = entry_depth(token, entry_at);
+    // The last print is a real row: its own depth is what that close sells into.
+    let exit_depth = last.reserve_sol().filter(|r| r.is_finite() && *r > 0.0);
     let (pnl_sol, _) = round_trip_with_costs(
         entry_price,
         terminal,
         pricing.buy_amount_sol,
-        depth,
+        entry_depth(token, entry_at),
+        exit_depth,
         &pricing.cost,
     );
     Some(pnl_sol)
@@ -278,10 +281,10 @@ pub fn terminal_pnl_sol(
 /// impact is not a comparison; it is a strictly larger number that makes every rule
 /// look worse by a constant nobody can name.
 ///
-/// The impact depth is the entry row's own reserve on both legs — the shape
-/// [`round_trip_with_costs`] defines and the one the realized open-mark uses. Pricing
-/// the *peak* row's depth would need the argmax index, which is a second 4 B column
-/// for a second-order correction to a bound.
+/// The impact depth is the entry row's own reserve on both legs. The realized close
+/// sells into its own row's depth; pricing the *peak* row's depth here would need the
+/// argmax index, which is a second 4 B column for a second-order correction to a
+/// bound.
 pub fn oracle_pnl_sol(
     token: &CorpusToken,
     outcome: &TokenOutcome,
@@ -295,6 +298,7 @@ pub fn oracle_pnl_sol(
         entry_price,
         exit_price,
         pricing.buy_amount_sol,
+        depth,
         depth,
         &pricing.cost,
     );
@@ -351,7 +355,7 @@ mod tests {
 
         // The identical call the realized close makes, at the oracle's exit price.
         let depth = t.trades[0].reserve_sol;
-        let (want, _) = round_trip_with_costs(1.0, 4.0, p.buy_amount_sol, depth, &p.cost);
+        let (want, _) = round_trip_with_costs(1.0, 4.0, p.buy_amount_sol, depth, depth, &p.cost);
         assert_eq!(oracle, want);
         // Costs are actually charged: a 4x gross is NOT 3x the notional net.
         assert!(oracle < 3.0 * p.buy_amount_sol, "the round trip must cost something");
@@ -371,12 +375,15 @@ mod tests {
         let exit_at = t.trades[1].block_time;
         let best = best_after_pnl_sol(&t, &o, exit_at, &p).expect("prints follow");
         let depth = t.trades[0].reserve_sol;
-        let (want, _) = round_trip_with_costs(1.0, 6.0, p.buy_amount_sol, depth, &p.cost);
+        let (want, _) = round_trip_with_costs(1.0, 6.0, p.buy_amount_sol, depth, depth, &p.cost);
         assert_eq!(best, want);
 
-        // Holding to the end closes at the last print's 0.5 — a loss after costs.
+        // Holding to the end closes at the last print's 0.5 — a loss after costs —
+        // selling into that print's own depth.
         let term = terminal_pnl_sol(&t, &o, &p).expect("a last print exists");
-        let (want_term, _) = round_trip_with_costs(1.0, 0.5, p.buy_amount_sol, depth, &p.cost);
+        let last_depth = t.trades[5].reserve_sol;
+        let (want_term, _) =
+            round_trip_with_costs(1.0, 0.5, p.buy_amount_sol, depth, last_depth, &p.cost);
         assert_eq!(term, want_term);
         assert!(term < 0.0, "riding to the end loses money here");
 

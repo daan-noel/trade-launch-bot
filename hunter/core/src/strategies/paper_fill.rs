@@ -38,6 +38,11 @@ pub struct PaperFill {
     pub block_time: DateTime<Utc>,
     /// Base58 signature when the row carries one; `""` for slim cache/sweep rows.
     pub tx_signature: String,
+    /// Priced SOL depth of the pool state this fill lands in — the print's own
+    /// post-trade reserve, the same state `price` is the spot of. The kernel's
+    /// `buy_fill` / `sell_proceeds` charge our impact against it. `None` when the
+    /// print carries no reserve pair.
+    pub reserve_sol: Option<f64>,
 }
 
 fn paper_fill_from<T: TradeRow>(trades: &[T], idx: usize) -> PaperFill {
@@ -49,6 +54,7 @@ fn paper_fill_from<T: TradeRow>(trades: &[T], idx: usize) -> PaperFill {
         slot: t.slot(),
         block_time: t.block_time(),
         tx_signature: t.tx_signature().to_string(),
+        reserve_sol: t.reserve_sol().filter(|r| r.is_finite() && *r > 0.0),
     }
 }
 

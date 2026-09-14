@@ -107,6 +107,16 @@ pub struct Trade {
     /// fields genuinely paid ONCE even when the tx sells four wallets' bags — so
     /// the collapse-by-signature rule is not optional here.
     pub tip_lamports: Option<u64>,
+    /// The fee payer's net SOL flow over the whole transaction, in signed lamports
+    /// (post − pre): what the transaction actually took from (negative) or paid to
+    /// (positive) the payer, every fee, tip and venue charge included. SOL the payer
+    /// moves into or out of **its own token accounts** counts as still the payer's,
+    /// so the rent a buy parks in a fresh token account is a deposit, not a spend.
+    ///
+    /// Per-TRANSACTION like [`fee_lamports`](Self::fee_lamports): stamped on every
+    /// leg the tx produced, so collapse by `signature` before summing. `None` when
+    /// the source carried no balances.
+    pub payer_net_lamports: Option<i64>,
     pub signature: String,
     /// Position of this trade's transaction within its block (`info.index` from
     /// the LaserStream update). 0 on the RPC backfill path, which has no block

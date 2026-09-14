@@ -313,6 +313,7 @@ pub(super) fn build_amm_trade(
     leg_index: u32,
     amm_swap_accounts: Option<Box<Vec<String>>>,
     fee_budget: FeeBudget,
+    payer_net_lamports: Option<i64>,
     payer: &str,
     is_proxied: Option<bool>,
 ) -> Trade {
@@ -336,6 +337,7 @@ pub(super) fn build_amm_trade(
         cu_limit: fee_budget.cu_limit,
         cu_price: fee_budget.cu_price,
         tip_lamports: fee_budget.tip_lamports,
+        payer_net_lamports,
         signature: signature.to_string(),
         tx_index,
         leg_index,

@@ -113,6 +113,10 @@ impl From<RunDbRow> for GroupedSweepRun {
             max_combos: r.max_combos,
             label: r.label,
             buy_amount_sol: r.buy_amount_sol.map(tidy_sol_decimal),
+            capital_sol: r.buy_amount_sol.map(|b| {
+                trading_core::strategies::kernel::CostModel::pumpfun_with_impact()
+                    .capital_sol(tidy_sol_decimal(b))
+            }),
             partition: r.partition.0,
             ix_patterns: r.ix_patterns.map(|j| j.0),
             fill_model: r.fill_model,

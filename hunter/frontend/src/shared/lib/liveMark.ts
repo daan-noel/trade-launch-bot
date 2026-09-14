@@ -39,39 +39,40 @@ export function valueSolAtSpot(spotSolPerRaw: number, rawAmount: number): number
 }
 
 /**
- * TS mirror of `hunter_core::strategies::kernel::mark_open_bag`'s exit side: what
- * `valueSol` of an open bag is worth after the sell that would realize it.
+ * TS mirror of `hunter_core::strategies::kernel::sell_value_proceeds` for the sell
+ * that empties a bag: what `valueSol` (the bag at spot) returns to the wallet. The
+ * curve pays `g / (1 + g/vsol)`, the venue keeps its fee, and the sell's fixed cost
+ * and the rent-reclaim close come off the rest.
  *
  * The browser cannot hold the cost definition -- `costs` comes from
  * `GET /api/meta/cost-model`, so the fee and the tip are this box's configured
  * ones, not a copy that drifts. What is mirrored here is only the arithmetic, and
  * `netProceedsMatchesRust` in `liveMark.test.ts` pins it to the same vectors the
- * Rust `net_proceeds_golden_vectors` test asserts -- change one and the other
- * fails.
+ * Rust `sell_value_proceeds_golden_vectors` test asserts -- change one and the
+ * other fails.
  *
- * `reserveSol` is the SOL-side pool depth the sell would land in; `null` charges
- * no impact rather than a guessed one, exactly as the Rust degrades.
+ * `reserveSol` is the priced SOL depth the sell would land in; `null` charges no
+ * impact rather than a guessed one, exactly as the Rust degrades.
  */
 export function netProceedsSol(
   valueSol: number,
   reserveSol: number | null | undefined,
   costs: CostModel,
 ): number {
-  if (!Number.isFinite(valueSol) || valueSol <= 0) return 0;
   const fee = costs.fee_bps_per_leg / 10_000;
-  const impact =
-    costs.price_impact && reserveSol != null && reserveSol > 0
-      ? valueSol / reserveSol
-      : 0;
-  const afterImpact = valueSol * Math.max(1 - impact, 0);
-  return afterImpact * (1 - fee) - costs.fixed_cost_sol_per_leg;
+  const value = Number.isFinite(valueSol) ? Math.max(valueSol, 0) : 0;
+  const out =
+    costs.price_impact && reserveSol != null && Number.isFinite(reserveSol) && reserveSol > 0
+      ? value / (1 + value / reserveSol)
+      : value;
+  return out * (1 - fee) - costs.fixed_sell_sol - costs.close_fee_sol;
 }
 
 /**
- * Net unrealized PnL of an open bag marked at `valueSol`, against the all-in
- * `costBasisSol` the server already computed (curve cost + the entry leg's fee
- * and fixed cost). Returns `null` for `pct` with no basis -- a tile renders a dash
- * rather than asserting a break-even nobody measured.
+ * Net unrealized PnL of an open bag marked at `valueSol`, against the
+ * `costBasisSol` the server already computed (the SOL the entry took from the
+ * wallet). Returns `null` for `pct` with no basis -- a tile renders a dash rather
+ * than asserting a break-even nobody measured.
  */
 export function unrealizedFromValue(
   valueSol: number,

@@ -77,10 +77,11 @@ pub type CohortScored = (Vec<CohortScore>, Vec<f64>, Option<CohortScore>);
 /// `n_wins` is reconstructed from the row's own win **rate** — the fold keeps a rate,
 /// not a count — and rounding it back to a count is exact for any rate the fold can
 /// produce, since the rate is `wins / n_closed` with both integers.
-fn archive_score(a: &crate::rule_search::scorer::ArchiveRow, buy: f64) -> CohortScore {
+/// `capital` is what one position takes from the wallet ([`Pricing::capital_sol`]).
+fn archive_score(a: &crate::rule_search::scorer::ArchiveRow, capital: f64) -> CohortScore {
     CohortScore {
         pnl_sol: a.total_pnl_sol,
-        entry_sol: a.n_tokens as f64 * buy,
+        entry_sol: a.n_tokens as f64 * capital,
         n_closed: a.n_closed,
         n_wins: (a.win_rate * a.n_closed as f64).round() as u64,
     }
@@ -218,10 +219,11 @@ pub fn score_cohort(
     let sc = cfg.score_config(flow, fp);
     let archive = score_combos(tokens, &combos, &sc, observer)?;
     let n_matched = tokens.len() as u64;
-    let buy = cfg.pricing.buy_amount_sol;
-    let scores: Vec<CohortScore> = archive.iter().take(n).map(|a| archive_score(a, buy)).collect();
+    let capital = cfg.pricing.capital_sol();
+    let scores: Vec<CohortScore> =
+        archive.iter().take(n).map(|a| archive_score(a, capital)).collect();
     let enter_pct: Vec<f64> = archive.iter().take(n).map(|a| a.enter_pct(n_matched)).collect();
-    let ungated = extra.map(|_| archive_score(&archive[n], buy));
+    let ungated = extra.map(|_| archive_score(&archive[n], capital));
     Ok((scores, enter_pct, ungated))
 }
 
@@ -343,7 +345,7 @@ pub fn authority(
         token_idx,
         score: CohortScore {
             pnl_sol,
-            entry_sol: n_tokens as f64 * cfg.pricing.buy_amount_sol,
+            entry_sol: n_tokens as f64 * cfg.pricing.capital_sol(),
             n_closed,
             n_wins,
         },
@@ -545,7 +547,9 @@ pub fn optimistic(
 /// The intersection is the point: quoting two returns computed over two different
 /// populations would fold "different trades" into a number that is supposed to mean
 /// "same trades, different fills".
-pub fn spread(tokens: &[CorpusToken], auth: &Authority, opt: &Authority, buy: f64) -> Spread {
+/// `capital` is what one position takes from the wallet ([`Pricing::capital_sol`]) —
+/// the same for both passes, whose cost models share their fixed legs.
+pub fn spread(tokens: &[CorpusToken], auth: &Authority, opt: &Authority, capital: f64) -> Spread {
     let mints = |a: &Authority| -> std::collections::HashMap<&str, f64> {
         a.outcomes
             .iter()
@@ -563,7 +567,7 @@ pub fn spread(tokens: &[CorpusToken], auth: &Authority, opt: &Authority, buy: f6
             n += 1;
         }
     }
-    let entry_sol = n as f64 * buy;
+    let entry_sol = n as f64 * capital;
     // Return only: the spread is one taken set priced twice, and a win count over the
     // intersection would invite reading it as a second, differently-scoped grade.
     let authority_ret_pct =
@@ -726,6 +730,7 @@ mod tests {
             }),
             exit_legs: Vec::new(),
             last_price: 1.2,
+            last_reserve_sol: None,
         };
         let cost = CostModel::pumpfun_with_impact();
         let burst = replay_to_outcome(&po(Some(hunter_engine::metrics::WindowSpec::secs(2.0)), 1.6), &labels, 0.01, &cost);
@@ -757,8 +762,8 @@ mod tests {
         assert!(a.token_idx.iter().all(|&i| i < corpus.tokens.len()));
         assert_eq!(
             a.score.entry_sol,
-            a.n_tokens as f64 * cfg().pricing.buy_amount_sol,
-            "capital committed is n_tokens x the REQUEST's buy size"
+            a.n_tokens as f64 * cfg().pricing.capital_sol(),
+            "capital committed is n_tokens x what the REQUEST's buy size takes from the wallet"
         );
     }
 
@@ -775,7 +780,7 @@ mod tests {
             tokens.push(t);
         }
         let at = tokens[0].trades[0].block_time;
-        let buy = 0.01;
+        let capital = 0.01;
 
         // Both passes take m0 and m1; only the authority pass reaches m2.
         let auth = Authority {
@@ -795,7 +800,7 @@ mod tests {
             n_tokens: 2,
         };
 
-        let s = spread(&tokens, &auth, &opt, buy);
+        let s = spread(&tokens, &auth, &opt, capital);
         // m2 is in neither number — a return over a different population is not the
         // same taken set, which is the only thing this measurement claims to be.
         assert_eq!(s.n_common, 2);

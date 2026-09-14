@@ -99,7 +99,7 @@ function comboFiltersFromColFilters(
 }
 
 /** Combo columns that filter numerically (declare `filterNumber`) — the set the
- *  server accepts. `buyAmountSol` doesn't change *which* columns are filterable,
+ *  server accepts. `capitalSol` doesn't change *which* columns are filterable,
  *  so this is a stable, build-once set. */
 const COMBO_NUMERIC_KEYS: ReadonlySet<string> = numericColKeys(buildGenericComboColumns());
 
@@ -458,7 +458,8 @@ export function GenericSweepView() {
     [activeRunId, promote],
   );
 
-  const buyAmountSol = activeRun?.buy_amount_sol ?? 1;
+  // What one position takes from the wallet — every percent's denominator (server-derived).
+  const capitalSol = activeRun?.capital_sol ?? activeRun?.buy_amount_sol ?? 1;
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
   const { data: strategyRules = [] } = useGetStrategyRulesQuery();
   // group_key → saved fingerprint (promote identity) → rules for the Used-by column.
@@ -496,12 +497,12 @@ export function GenericSweepView() {
     return map;
   }, [strategyRules]);
   const groupColumns = useMemo(
-    () => buildGenericGroupColumns(buyAmountSol, { fingerprintByGroupId, rulesByFingerprintId }),
-    [buyAmountSol, fingerprintByGroupId, rulesByFingerprintId],
+    () => buildGenericGroupColumns(capitalSol, { fingerprintByGroupId, rulesByFingerprintId }),
+    [capitalSol, fingerprintByGroupId, rulesByFingerprintId],
   );
   const comboColumns = useMemo(
-    () => buildGenericComboColumns(buyAmountSol, exitMetricLegend),
-    [buyAmountSol, exitMetricLegend],
+    () => buildGenericComboColumns(capitalSol, exitMetricLegend),
+    [capitalSol, exitMetricLegend],
   );
 
   const groupRowActions = useCallback(

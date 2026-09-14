@@ -927,7 +927,12 @@ where
             let entry_price = b.entry_price.filter(|p| p.is_finite() && *p > 0.0)?;
             let quote = mark_of(&b.mint_address)?;
             let mark_price = quote.price;
-            let pnl = mark_bag(Some(entry_price), b.held_amount(entry_price), Some(quote), &costs)?;
+            let pnl = mark_bag(
+                b.cost_basis_sol(entry_price),
+                b.held_amount(entry_price),
+                Some(quote),
+                &costs,
+            )?;
             Some(OpenPositionMark {
                 position_id,
                 mint_address: b.mint_address,

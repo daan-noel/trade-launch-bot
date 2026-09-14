@@ -120,6 +120,9 @@ pub struct PositionOutcome {
     pub exit_legs: Vec<OutcomeExitLeg>,
     /// Last observed spot for the token — the mark for an open (unexited) position.
     pub last_price: f64,
+    /// Priced SOL depth at that last print — what the open remainder's mark sells
+    /// into. `None` when no print carried a reserve.
+    pub last_reserve_sol: Option<f64>,
 }
 
 /// Trigger-trade snapshot stashed when a worst-case entry fill is queued, then
@@ -731,11 +734,14 @@ impl Replay {
         }
     }
 
-    /// Build the `FillConfirmed` for an entry buy (mirrors `exec_paper::run_entry`).
+    /// Build the `FillConfirmed` for an entry buy. The engine reads only `price` and
+    /// sizes sells as fractions of `token_amount`, so the frictionless count is the
+    /// right grain here: the result row's money comes from the kernel
+    /// ([`PositionOutcome::pnl_with_costs`]), which prices the same fill with the
+    /// run's cost model — the one live paper books through `exec_paper`.
     fn buy_fill(&self, intent: IntentId, lamports: u64, price: f64, at: Ts) -> Event {
         let sol = lamports as f64 / LAMPORTS_PER_SOL_F64;
-        // `price` is SOL per RAW token unit ⇒ the quotient is already raw units
-        // (mirrors `exec_paper::run_entry`).
+        // `price` is SOL per RAW token unit ⇒ the quotient is already raw units.
         let token_amount = (sol / price).round().max(0.0) as u64;
         Event::FillConfirmed { intent, fill: Fill { price, sol, token_amount, at } }
     }
@@ -835,6 +841,7 @@ impl Replay {
     ) {
         let mint = Mint::from(b.mint.as_str());
         let last_price = self.last_price.get(&mint).copied().unwrap_or(exit_price);
+        let last_reserve = self.last_reserve_of(&mint);
         let remaining = b.entry_token_amount.saturating_sub(b.sold_token_amount);
         let final_tokens = final_token_amount.unwrap_or(remaining).min(remaining);
         if final_tokens > 0 {
@@ -842,7 +849,7 @@ impl Replay {
             b.exit_legs.push(OutcomeExitLeg {
                 sell_bps,
                 price: exit_price,
-                reserve_sol: self.last_priced_reserve_sol.get(&mint).copied().filter(|r| *r > 0.0),
+                reserve_sol: last_reserve,
                 time: exit_time,
                 tx: exit_tx.clone(),
                 reason,
@@ -855,7 +862,7 @@ impl Replay {
             Some(exit_time),
             Some(exit_tx),
             reason,
-            last_price,
+            (last_price, last_reserve),
         ));
     }
 
@@ -869,9 +876,15 @@ impl Replay {
             }
             let mint = Mint::from(b.mint.as_str());
             let last_price = self.last_price.get(&mint).copied().unwrap_or(b.entry_price);
-            self.done.push(outcome_from_builder(b, None, None, None, None, last_price));
+            let last_reserve = self.last_reserve_of(&mint);
+            self.done.push(outcome_from_builder(b, None, None, None, None, (last_price, last_reserve)));
         }
         self.done
+    }
+
+    /// Priced SOL depth of the mint's last folded print, when it carried one.
+    fn last_reserve_of(&self, mint: &Mint) -> Option<f64> {
+        self.last_priced_reserve_sol.get(mint).copied().filter(|r| *r > 0.0)
     }
 
     /// The token's current finite spot, or `None` when nothing has priced it yet.
@@ -969,7 +982,7 @@ fn outcome_from_builder(
     exit_time: Option<Ts>,
     exit_tx: Option<String>,
     exit_reason: Option<ExitReason>,
-    last_price: f64,
+    (last_price, last_reserve_sol): (f64, Option<f64>),
 ) -> PositionOutcome {
     let (target_price, target_token_amount, target_time, target_tx) = match b.target {
         Some(t) => (Some(t.price), Some(t.token_amount), Some(t.time), Some(t.tx)),
@@ -993,6 +1006,7 @@ fn outcome_from_builder(
         exit_reason,
         exit_legs: b.exit_legs,
         last_price,
+        last_reserve_sol,
     }
 }
 
@@ -1027,7 +1041,7 @@ impl PositionOutcome {
                 legs.push(ExitLeg {
                     sell_bps: rem as u16,
                     price: self.last_price,
-                    reserve_sol: self.entry_reserve_sol,
+                    reserve_sol: self.last_reserve_sol.or(self.entry_reserve_sol),
                 });
             }
         }
@@ -1035,7 +1049,7 @@ impl PositionOutcome {
             legs.push(ExitLeg {
                 sell_bps: 10_000,
                 price: self.exit_price.unwrap_or(self.last_price),
-                reserve_sol: self.entry_reserve_sol,
+                reserve_sol: self.last_reserve_sol.or(self.entry_reserve_sol),
             });
         }
         legs

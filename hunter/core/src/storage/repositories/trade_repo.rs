@@ -19,7 +19,7 @@ const SEED_MINT_CHUNK: usize = 1000;
 /// ceiling guard in `tests` both read it, so adding a bound column cannot leave a
 /// stale copy behind (it did once — the doc said 18 while the guard still asserted
 /// 15, and neither was the truth).
-const TRADE_INSERT_BINDS_PER_ROW: usize = 20;
+const TRADE_INSERT_BINDS_PER_ROW: usize = 21;
 
 /// Rows per `insert_many` statement. A single Postgres statement is capped at
 /// 65535 bind parameters (the wire protocol's int16 count), and sqlx 0.6 silently
@@ -188,6 +188,9 @@ impl TryFrom<TradeDbRow> for Trade {
             cu_limit: r.cu_limit.map(|v| v as u64),
             cu_price: r.cu_price.map(|v| v as u64),
             tip_lamports: r.tip_lamports.map(|v| v as u64),
+            // Not projected by the history reads: only a position's own fills read
+            // it, through `sum_legs_by_signatures`.
+            payer_net_lamports: None,
             tx_signature: sig_bytes_to_base58(&r.tx_signature),
             tx_index: r.tx_index as u32,
             leg_index: r.leg_index as u32,
@@ -265,9 +268,9 @@ impl TradeRepo {
                  reserve_lamports, reserve_token,
                  slot, tx_index, leg_index, block_time, tx_signature, ix_labels,
                  fee_lamports, cu_limit, cu_price, tip_lamports,
-                 payer_id, is_proxied)
+                 payer_id, is_proxied, payer_net_lamports)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                    $16, $17, $18, $19, $20)
+                    $16, $17, $18, $19, $20, $21)
             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
             "#,
         )
@@ -291,6 +294,7 @@ impl TradeRepo {
         .bind(trade.tip_lamports.map(|v| v as i64))
         .bind(payer_id)
         .bind(trade.is_proxied)
+        .bind(trade.payer_net_lamports)
         .execute(&self.pool)
         .await?;
 
@@ -374,7 +378,7 @@ impl TradeRepo {
                  (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount, \
                   reserve_lamports, reserve_token, slot, tx_index, leg_index, \
                   block_time, tx_signature, ix_labels, fee_lamports, \
-                  cu_limit, cu_price, tip_lamports, payer_id, is_proxied) ",
+                  cu_limit, cu_price, tip_lamports, payer_id, is_proxied, payer_net_lamports) ",
             );
             qb.push_values(chunk.iter().zip(sig_chunk), |mut b, (t, sig)| {
                 let wallet_id = wallet_ids.get(&t.wallet_address).copied().unwrap_or_default();
@@ -401,7 +405,8 @@ impl TradeRepo {
                             .then(|| wallet_ids.get(&t.payer_address).copied())
                             .flatten(),
                     )
-                    .push_bind(t.is_proxied);
+                    .push_bind(t.is_proxied)
+                    .push_bind(t.payer_net_lamports);
             });
             qb.push(" ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING");
             qb.build().execute(&self.pool).await?;
@@ -1307,20 +1312,33 @@ impl TradeRepo {
             Option<DateTime<Utc>>,
             Option<i64>,
             Option<i64>,
+            Option<i64>,
         ) = sqlx::query_as(
             r#"
+            WITH legs AS (
+                SELECT tx_signature, token_amount, amount_lamports, block_time, slot,
+                       payer_net_lamports
+                FROM trades
+                WHERE wallet_id = $1
+                  AND mint_address = $2
+                  AND trade_type = $3
+                  AND tx_signature = ANY($4)
+            ),
+            -- The wallet flow is per TRANSACTION, repeated on each of its legs:
+            -- one value per signature, and one unknown makes the sum unknown.
+            per_tx AS (
+                SELECT MAX(payer_net_lamports) AS flow FROM legs GROUP BY tx_signature
+            )
             SELECT COUNT(*)::bigint,
                    COALESCE(SUM(token_amount), 0)::bigint,
                    COALESCE(SUM(amount_lamports), 0)::bigint,
                    MIN(block_time),
                    MAX(block_time),
                    MIN(slot),
-                   MAX(slot)
-            FROM trades
-            WHERE wallet_id = $1
-              AND mint_address = $2
-              AND trade_type = $3
-              AND tx_signature = ANY($4)
+                   MAX(slot),
+                   (SELECT CASE WHEN bool_or(flow IS NULL) THEN NULL ELSE SUM(flow) END
+                    FROM per_tx)::bigint
+            FROM legs
             "#,
         )
         .bind(wallet_id)
@@ -1330,7 +1348,8 @@ impl TradeRepo {
         .fetch_one(&self.pool)
         .await?;
 
-        let (leg_count, token_sum, lamports_sum, first, last, first_slot, last_slot) = row;
+        let (leg_count, token_sum, lamports_sum, first, last, first_slot, last_slot, wallet_lamports) =
+            row;
         if leg_count == 0 {
             return Ok(None);
         }
@@ -1338,6 +1357,7 @@ impl TradeRepo {
             // token_amount stays an exact integer (raw units); SOL → human f64.
             token_amount: token_sum as u64,
             amount_sol: lamports_to_sol(lamports_sum),
+            wallet_lamports,
             first_block_time: first.unwrap_or_else(Utc::now),
             last_block_time: last.unwrap_or_else(Utc::now),
             // Unlike the block times there is no `now()` fallback: a missing slot
@@ -1519,8 +1539,13 @@ impl TradeRepo {
 pub struct SigLegs {
     /// Σ token_amount across the legs — exact raw integer units.
     pub token_amount: u64,
-    /// Σ amount_sol across the legs.
+    /// Σ amount_sol across the legs — the venue's curve-side amount, which prices
+    /// the fill (`price_per_token`) but is not what the wallet moved.
     pub amount_sol: f64,
+    /// Σ the payer's net SOL flow over these signatures' transactions, each counted
+    /// once (`trades.payer_net_lamports`): negative for a buy, positive for a sell.
+    /// What a real position books. `None` when any transaction carried no flow.
+    pub wallet_lamports: Option<i64>,
     /// Earliest leg's block time (the fill's entry time).
     pub first_block_time: DateTime<Utc>,
     /// Latest leg's block time (the fill's exit time).
@@ -1680,6 +1705,22 @@ fn pre_trade_real_sol(
     ))
 }
 
+/// The in-RAM own-leg preview is the same rollup the SQL sum produces, one
+/// ingest-to-PG commit earlier.
+impl From<crate::state::trade_signals::ObservedLegs> for SigLegs {
+    fn from(o: crate::state::trade_signals::ObservedLegs) -> Self {
+        Self {
+            token_amount: o.token_amount,
+            amount_sol: o.amount_sol,
+            wallet_lamports: o.wallet_lamports,
+            first_block_time: o.first_block_time,
+            last_block_time: o.last_block_time,
+            first_slot: o.first_slot,
+            last_slot: o.last_slot,
+        }
+    }
+}
+
 impl SigLegs {
     /// Weighted-average execution price (Σsol / Σtokens), or 0 when no tokens.
     pub fn price_per_token(&self) -> f64 {
@@ -1687,6 +1728,17 @@ impl SigLegs {
             self.amount_sol / self.token_amount as f64
         } else {
             0.0
+        }
+    }
+
+    /// The SOL these legs moved through the wallet, unsigned: what a buy paid or
+    /// a sell received, every fee included. Falls back to the curve-side
+    /// `amount_sol` only for a transaction written before the flow was captured —
+    /// the caller logs that it did.
+    pub fn wallet_sol(&self) -> (f64, bool) {
+        match self.wallet_lamports {
+            Some(l) => (lamports_to_sol(l.abs()), true),
+            None => (self.amount_sol, false),
         }
     }
 }
@@ -1757,7 +1809,7 @@ mod tests {
     /// (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,
     /// reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time,
     /// tx_signature, ix_labels, fee_lamports, cu_limit, cu_price, tip_lamports,
-    /// payer_id, is_proxied); one Postgres statement is capped at 65535 (sqlx 0.6
+    /// payer_id, is_proxied, payer_net_lamports); one Postgres statement is capped at 65535 (sqlx 0.6
     /// wraps `len() as i16` past it → a Postgres parse error). Pin the chunk so
     /// adding a bound column re-checks the ceiling here instead of surfacing as a
     /// runtime parse error on the backfill path.

@@ -10,7 +10,8 @@
 use std::sync::OnceLock;
 
 use crate::config::constants::{
-    COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL, LAMPORTS_PER_SOL,
+    BASE_SIGNATURE_FEE_LAMPORTS, COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
+    LAMPORTS_PER_SOL,
 };
 
 /// Process-wide fee knobs installed after `dotenvy` by both bins. Absent ⇒
@@ -19,7 +20,8 @@ use crate::config::constants::{
 static INSTALLED: OnceLock<FeeTuning> = OnceLock::new();
 
 /// Tip floor / ceiling, landed-tip percentile, and CU price — the knobs live
-/// applies onto `TraderConfig` and lab folds into `CostModel::fixed_cost_sol_per_leg`.
+/// applies onto `TraderConfig` and lab folds into `CostModel::fixed_buy_sol` /
+/// `fixed_sell_sol`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeeTuning {
     /// Helius Sender tip floor (SOL). Also the representative tip CostModel charges
@@ -90,20 +92,38 @@ impl FeeTuning {
         INSTALLED.get().cloned().unwrap_or_else(Self::defaults)
     }
 
-    /// Representative fixed cost (SOL) charged **per leg**: tip floor + average
-    /// curve buy/sell priority fee at this CU price. CostModel subtracts this twice
-    /// per round-trip.
-    pub fn fixed_cost_sol_per_leg(&self) -> f64 {
-        let avg_priority_sol = (priority_fee_sol(self.cu_price_micro_lamports, COMPUTE_UNIT_LIMIT_CURVE_BUY)
-            + priority_fee_sol(self.cu_price_micro_lamports, COMPUTE_UNIT_LIMIT_CURVE_SELL))
-            / 2.0;
-        self.jito_min_tip_sol + avg_priority_sol
+    /// Fixed SOL a curve **buy** transaction takes from the wallet on top of the
+    /// order: base signature fee + priority fee on the buy compute limit + the tip
+    /// floor. Measured on chain at the 2026-09 `.env`: 5 000 + 22 000 + 200 000
+    /// lamports, exactly.
+    pub fn fixed_buy_sol(&self) -> f64 {
+        self.fixed_leg_sol(COMPUTE_UNIT_LIMIT_CURVE_BUY)
+    }
+
+    /// Fixed SOL a curve **sell** transaction takes from what it returns — same
+    /// three terms on the sell compute limit (5 000 + 20 000 + 200 000 lamports).
+    pub fn fixed_sell_sol(&self) -> f64 {
+        self.fixed_leg_sol(COMPUTE_UNIT_LIMIT_CURVE_SELL)
+    }
+
+    fn fixed_leg_sol(&self, cu_limit: u32) -> f64 {
+        let network_lamports =
+            BASE_SIGNATURE_FEE_LAMPORTS + priority_fee_lamports(self.cu_price_micro_lamports, cu_limit);
+        network_lamports as f64 / LAMPORTS_PER_SOL as f64 + self.jito_min_tip_sol
     }
 }
 
-fn priority_fee_sol(cu_price_micro_lamports: u64, cu_limit: u32) -> f64 {
-    let lamports = cu_price_micro_lamports as f64 * cu_limit as f64 / 1_000_000.0;
-    lamports / LAMPORTS_PER_SOL as f64
+/// The fee the close transaction that reclaims a finished position's token-account
+/// rent pays: one base signature fee, no priority, no tip. The rent it returns was
+/// never a cost — it is SOL parked in our own account.
+pub fn close_account_fee_sol() -> f64 {
+    BASE_SIGNATURE_FEE_LAMPORTS as f64 / LAMPORTS_PER_SOL as f64
+}
+
+/// Solana's compute-rail priority fee: `ceil(cu_limit × cu_price / 1e6)` lamports,
+/// charged on the requested limit whatever the transaction consumes.
+fn priority_fee_lamports(cu_price_micro_lamports: u64, cu_limit: u32) -> u64 {
+    (u128::from(cu_price_micro_lamports) * u128::from(cu_limit)).div_ceil(1_000_000) as u64
 }
 
 fn env_f64(key: &str, default: f64) -> anyhow::Result<f64> {
@@ -128,18 +148,27 @@ fn env_u64(key: &str, default: u64) -> anyhow::Result<u64> {
 mod tests {
     use super::*;
 
+    /// The on-chain fills of 2026-09-13/14 at tip 0.0002 / CU price 200 000: every
+    /// buy tx took 227 000 lamports beyond the order, every sell 225 000.
     #[test]
-    fn fixed_cost_is_tip_plus_avg_priority() {
+    fn fixed_leg_costs_match_the_measured_fills() {
         let t = FeeTuning {
-            jito_min_tip_sol: 0.0001,
+            jito_min_tip_sol: 0.0002,
             jito_max_tip_sol: 0.0005,
             jito_tip_percentile: 50,
             cu_price_micro_lamports: 200_000,
         };
-        let buy = priority_fee_sol(200_000, COMPUTE_UNIT_LIMIT_CURVE_BUY);
-        let sell = priority_fee_sol(200_000, COMPUTE_UNIT_LIMIT_CURVE_SELL);
-        let want = 0.0001 + (buy + sell) / 2.0;
-        assert!((t.fixed_cost_sol_per_leg() - want).abs() < 1e-15);
+        assert!((t.fixed_buy_sol() - 0.000_227).abs() < 1e-15, "{}", t.fixed_buy_sol());
+        assert!((t.fixed_sell_sol() - 0.000_225).abs() < 1e-15, "{}", t.fixed_sell_sol());
+        assert!((close_account_fee_sol() - 0.000_005).abs() < 1e-15);
+    }
+
+    /// The runtime rounds the priority fee UP to a whole lamport.
+    #[test]
+    fn priority_fee_rounds_up() {
+        assert_eq!(priority_fee_lamports(200_000, 110_000), 22_000);
+        assert_eq!(priority_fee_lamports(1, 1), 1);
+        assert_eq!(priority_fee_lamports(0, 110_000), 0);
     }
 
     #[test]

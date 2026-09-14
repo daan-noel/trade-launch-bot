@@ -87,6 +87,15 @@ pub struct Pricing {
     pub cost: CostModel,
 }
 
+impl Pricing {
+    /// What one position takes from the wallet at this notional —
+    /// [`CostModel::capital_sol`]. Every percent's denominator, so a cohort's capital
+    /// is `n × capital_sol()`, never `n × buy_amount_sol`.
+    pub fn capital_sol(&self) -> f64 {
+        self.cost.capital_sol(self.buy_amount_sol)
+    }
+}
+
 // Deliberately NO `Default` impl. `CostModelKind` carries one (for an omitted
 // request field) and `FillModel` carries one, but a *pair* assembled from two
 // independent defaults is exactly the silent, unlabelled pricing this type exists to
@@ -1744,7 +1753,7 @@ pub(crate) fn resolve_exit_indexed(
                 entry_price,
                 entry_at,
                 fill_trade_slot(series, fill_row),
-                entry_depth(series, fill_row),
+                depth_at(series, fill_row),
                 row,
                 pricing,
             )
@@ -1755,12 +1764,11 @@ pub(crate) fn resolve_exit_indexed(
             trades, series, b, fill_row, entry_price, entry_at, pricing, tail_horizon,
         )
         .unwrap_or_else(|| {
-            let last_price = index
+            let mark = index
                 .last_finite_row()
-                .map(|k| series.price[k])
-                .filter(|p| p.is_finite())
-                .unwrap_or(entry_price);
-            open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
+                .filter(|&k| series.price[k].is_finite())
+                .map_or((entry_price, None), |k| (series.price[k], depth_at(series, k)));
+            open_outcome(series, fill_row, entry_price, entry_at, mark, pricing)
         }),
     }
 }
@@ -1808,7 +1816,7 @@ pub(crate) fn resolve_exit(
     // seeds `ArmState::Entered` — and folded forward each event BEFORE that event's
     // exit decision, mirroring `evaluate_token`'s per-event extrema fold.
     let mut ctx = PositionCtx::at_fill_with_arm(entry_price, entry_at, c.trail_arm_pct)
-        .with_entry_priced_reserve(entry_depth(series, fill_row).unwrap_or(f64::NAN));
+        .with_entry_priced_reserve(depth_at(series, fill_row).unwrap_or(f64::NAN));
     for j in (fill_row + 1)..n {
         if series.dead[j] {
             return close_at_fire(
@@ -1820,7 +1828,7 @@ pub(crate) fn resolve_exit(
                 entry_price,
                 entry_at,
                 entry_slot,
-                entry_depth(series, fill_row),
+                depth_at(series, fill_row),
                 j,
                 pricing,
             );
@@ -1837,7 +1845,7 @@ pub(crate) fn resolve_exit(
                     entry_price,
                     entry_at,
                     entry_slot,
-                    entry_depth(series, fill_row),
+                    depth_at(series, fill_row),
                     j,
                     pricing,
                 );
@@ -1854,8 +1862,7 @@ pub(crate) fn resolve_exit(
     }
     // Genuinely open: mark to the last finite price (unrealized — excluded from the
     // realized stats by `RunAgg`, but priced for the drill-in / row view).
-    let last_price = (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
-    open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
+    open_outcome(series, fill_row, entry_price, entry_at, last_mark(series, entry_price), pricing)
 }
 
 /// Scale-out exit scan — mirrors `decide_arm`'s open-side priority
@@ -1887,7 +1894,7 @@ fn resolve_exit_staged(
         EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
     };
     let entry_slot = fill_trade_slot(series, fill_row);
-    let entry_reserve = entry_depth(series, fill_row);
+    let entry_reserve = depth_at(series, fill_row);
     let n = series.n_rows();
     let has_exit_reqs = c.has_exit_metrics();
     let mut ctx = PositionCtx::at_fill_with_arm(entry_price, entry_at, c.trail_arm_pct)
@@ -1989,8 +1996,6 @@ fn resolve_exit_staged(
 
     // Still open: mark the unsold remainder. No frozen-tail advance of stages (see
     // fn docs). When nothing was banked this reduces to the legacy open mark.
-    let last_price =
-        (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
     open_staged(
         series,
         fill_row,
@@ -2000,7 +2005,7 @@ fn resolve_exit_staged(
         entry_reserve,
         &legs,
         sold_bps,
-        last_price,
+        last_mark(series, entry_price),
         pricing,
     )
 }
@@ -2022,6 +2027,7 @@ fn stage_fill_price(
         slot: series.slot[fire_row].unwrap_or(0),
         block_time: series.at[fire_row],
         tx_signature: String::new(),
+        reserve_sol: depth_at(series, fire_row),
     });
     let exit_row = series_row_for_trade_idx(series, fill.trade_idx).unwrap_or(fire_row);
     let reserve = series
@@ -2059,6 +2065,7 @@ fn close_staged(
         slot: series.slot[fire_row].unwrap_or(0),
         block_time: series.at[fire_row],
         tx_signature: String::new(),
+        reserve_sol: depth_at(series, fire_row),
     });
     let exit_row = series_row_for_trade_idx(series, fill.trade_idx).unwrap_or(fire_row);
     let reserve = series
@@ -2099,7 +2106,7 @@ fn open_staged(
     entry_reserve_sol: Option<f64>,
     prior_legs: &[ExitLeg],
     sold_bps: u16,
-    last_price: f64,
+    (last_price, last_depth): (f64, Option<f64>),
     pricing: &Pricing,
 ) -> TokenOutcome {
     let mut legs: Vec<ExitLeg> = prior_legs.to_vec();
@@ -2108,11 +2115,11 @@ fn open_staged(
         legs.push(ExitLeg {
             sell_bps: rem,
             price: last_price,
-            reserve_sol: entry_reserve_sol,
+            reserve_sol: last_depth.or(entry_reserve_sol),
         });
     }
     if legs.is_empty() {
-        return open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing);
+        return open_outcome(series, fill_row, entry_price, entry_at, (last_price, last_depth), pricing);
     }
     let (pnl_sol, pnl_pct) = round_trip_multi_leg(
         entry_price,
@@ -2164,6 +2171,7 @@ fn closed_multi(
             exit_price,
             pricing.buy_amount_sol,
             entry_reserve_sol,
+            entry_reserve_sol,
             &pricing.cost,
         )
     } else {
@@ -2195,32 +2203,44 @@ fn closed_multi(
     }
 }
 
-/// SOL-side pool depth at the entry row, for [`CostModel::price_impact`]. `None`
-/// when the series has no depth yet (pre-first-trade rows are `NaN`), which the
-/// cost model treats as "depth unknown" and charges no impact — never a guess.
+/// SOL-side pool depth at `row`, for [`CostModel::price_impact`] — the depth a leg
+/// filled at that row lands in. `None` when the series has no depth yet
+/// (pre-first-trade rows are `NaN`), which the cost model treats as "depth
+/// unknown" and charges no impact — never a guess.
 ///
-/// Reads the **priced** depth (`vsol`), not `reserve_sol`: impact on a
-/// constant-product curve is `B / vsol`, and the real reserve is `vsol - 30` clamped
-/// at zero. See [`TradeLite::priced_reserve_sol`].
-fn entry_depth(series: &MetricSeries, fill_row: usize) -> Option<f64> {
-    series.priced_reserve_sol.get(fill_row).copied().filter(|r| r.is_finite() && *r > 0.0)
+/// Reads the **priced** depth (`vsol`), not `reserve_sol`: the constant-product
+/// curve prices against `vsol`, and the real reserve is `vsol - 30` clamped at
+/// zero. See [`TradeLite::priced_reserve_sol`].
+fn depth_at(series: &MetricSeries, row: usize) -> Option<f64> {
+    series.priced_reserve_sol.get(row).copied().filter(|r| r.is_finite() && *r > 0.0)
 }
 
-/// The still-`Open` outcome, marked to `last_price`. One copy shared by every exit
-/// path so the scalar / index / SIMD tails can't drift.
+/// The last finite price in the series and the depth at that row — what an
+/// `Open` position is marked to. Falls back to the entry price (no depth) on a
+/// series with no finite price at all.
+fn last_mark(series: &MetricSeries, entry_price: f64) -> (f64, Option<f64>) {
+    (0..series.n_rows())
+        .rev()
+        .find(|&k| series.price[k].is_finite())
+        .map_or((entry_price, None), |k| (series.price[k], depth_at(series, k)))
+}
+
+/// The still-`Open` outcome, marked to `last_price` sold into `last_depth`. One
+/// copy shared by every exit path so the scalar / index / SIMD tails can't drift.
 fn open_outcome(
     series: &MetricSeries,
     fill_row: usize,
     entry_price: f64,
     entry_at: DateTime<Utc>,
-    last_price: f64,
+    (last_price, last_depth): (f64, Option<f64>),
     pricing: &Pricing,
 ) -> TokenOutcome {
     let (pnl_sol, pnl_pct) = round_trip_with_costs(
         entry_price,
         last_price,
         pricing.buy_amount_sol,
-        entry_depth(series, fill_row),
+        depth_at(series, fill_row),
+        last_depth,
         &pricing.cost,
     );
     TokenOutcome {
@@ -2360,7 +2380,7 @@ fn resolve_frozen_tail(
         entry_price,
         entry_at,
         entry_slot,
-        entry_depth(series, fill_row),
+        depth_at(series, fill_row),
         last,
         pricing,
     ))
@@ -2677,7 +2697,7 @@ pub(crate) fn resolve_exit_simd(
             entry_price,
             entry_at,
             entry_slot,
-            entry_depth(series, fill_row),
+            depth_at(series, fill_row),
             j,
             pricing,
         );
@@ -2687,9 +2707,7 @@ pub(crate) fn resolve_exit_simd(
     // first, else mark to the last finite price.
     resolve_frozen_tail(trades, series, b, fill_row, entry_price, entry_at, pricing, tail_horizon)
         .unwrap_or_else(|| {
-            let last_price =
-                (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
-            open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
+            open_outcome(series, fill_row, entry_price, entry_at, last_mark(series, entry_price), pricing)
         })
 }
 
@@ -3136,6 +3154,7 @@ fn close_at_fire(
             slot: series.slot[fire_row].unwrap_or(0),
             block_time: series.at[fire_row],
             tx_signature: String::new(),
+            reserve_sol: depth_at(series, fire_row),
         }
     });
     let exit_row = series_row_for_trade_idx(series, fill.trade_idx).unwrap_or(fire_row);
@@ -3147,6 +3166,7 @@ fn close_at_fire(
         entry_at,
         entry_slot,
         entry_reserve_sol,
+        depth_at(series, exit_row).or(entry_reserve_sol),
         fill.price,
         fill.block_time,
         fill_trade_slot(series, exit_row),
@@ -3200,6 +3220,7 @@ fn closed(
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,
     entry_reserve_sol: Option<f64>,
+    exit_reserve_sol: Option<f64>,
     exit_price: f64,
     exit_at: DateTime<Utc>,
     exit_slot: Option<u64>,
@@ -3210,6 +3231,7 @@ fn closed(
         exit_price,
         pricing.buy_amount_sol,
         entry_reserve_sol,
+        exit_reserve_sol,
         &pricing.cost,
     );
     TokenOutcome {

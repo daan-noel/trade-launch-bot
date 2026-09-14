@@ -86,6 +86,8 @@ async fn pump_fun_events_project_onto_the_schema() {
         cu_limit: Some(200_000),
         cu_price: Some(1_000),
         tip_lamports: Some(0),
+        // Forge keeps no wallet-flow column either.
+        payer_net_lamports: Some(-1_505_000_000),
         // A direct trade: the venue's actor signed the transaction, so it is its
         // own payer and nothing is proxied. Forge trades from its own keypairs and
         // never routes through an aggregator, so this is the shape it always sees.

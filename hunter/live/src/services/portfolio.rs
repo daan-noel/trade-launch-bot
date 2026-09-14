@@ -20,7 +20,7 @@ use tracing::warn;
 use trading_core::models::portfolio::{unrealized_pnl, ManagedMint};
 use trading_core::models::MarkQuote;
 use trading_core::state::token_cache::mark_quote;
-use trading_core::strategies::kernel::{mark_open_bag, weighted_return_pct, CostModel};
+use trading_core::strategies::kernel::{modeled_cost_basis, weighted_return_pct, CostModel};
 use trading_core::models::{cash_symbol, AssetKind, StrategyPosition};
 use trading_core::storage::token_enrichment::{fetch_by_mints, TokenEnrichment, TokenEnrichmentRow};
 
@@ -557,9 +557,8 @@ pub async fn closes_series(
 /// `reserve_sol` is the mint's SOL-side pool depth from the live cache, for the
 /// exit leg's impact — `None` charges none rather than guessing. The figure this
 /// returns is **net of the round trip**: `avg_entry_price` is the curve-side fill
-/// price, so neither leg's fee nor either tip is inside it, and at live clip sizes
-/// those are ~4 pp (see the `unrealized_pnl` module header). A gross number here is
-/// what makes a live position read green against an on-chain PnL tracker's red.
+/// price, so the basis is the kernel's `modeled_cost_basis` of that buy (fee and
+/// fixed leg added back), and the mark is the exact sell that would realize it.
 struct HoldingPnl {
     cost_basis_sol: Option<f64>,
     unrealized_pnl_sol: Option<f64>,
@@ -602,29 +601,22 @@ fn holding_pnl(
 ) -> HoldingPnl {
     // SOL/raw → SOL/ui so it shares a unit basis with the per-UI-token mark.
     let avg_entry_per_ui = avg_entry_price.map(|a| a * 10f64.powi(decimals as i32));
-    match (avg_entry_per_ui, mark_sol_per_ui) {
-        (Some(entry_ui), Some(mark)) => {
-            let p = unrealized_pnl(
-                entry_ui,
-                mark,
-                ui_amount,
-                reserve_sol,
-                &CostModel::pumpfun_with_impact(),
-            );
+    let costs = CostModel::pumpfun_with_impact();
+    // A holding's only record is its curve-side average, so its basis is the
+    // kernel's inverse of that buy — the same all-in figure on both branches.
+    let basis = avg_entry_per_ui.map(|entry_ui| modeled_cost_basis(entry_ui, ui_amount, &costs));
+    match (basis, mark_sol_per_ui) {
+        (Some(basis), Some(mark)) => {
+            let p = unrealized_pnl(basis, mark, ui_amount, reserve_sol, &costs);
             HoldingPnl {
                 cost_basis_sol: Some(p.cost_basis_sol),
                 unrealized_pnl_sol: Some(p.unrealized_pnl_sol),
                 unrealized_pnl_pct: Some(p.unrealized_pnl_pct),
             }
         }
-        // No live mark: we can still show what was paid, but not the PnL. The basis
-        // comes from the same SSOT (a zero mark yields the basis and a full loss —
-        // we keep the basis and drop the mark, which we have no price for), so the
-        // field means the same all-in thing on both branches.
-        (Some(entry_ui), None) => HoldingPnl {
-            cost_basis_sol: Some(
-                mark_open_bag(entry_ui, 0.0, ui_amount, None, &CostModel::pumpfun_with_impact()).0,
-            ),
+        // No live mark: we can still show what was paid, but not the PnL.
+        (Some(basis), None) => HoldingPnl {
+            cost_basis_sol: Some(basis),
             unrealized_pnl_sol: None,
             unrealized_pnl_pct: None,
         },
@@ -896,8 +888,9 @@ mod tests {
         let fee = costs.fee_bps_per_leg / 10_000.0;
         let p = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0, None);
 
-        let want_basis = 1.0 * (1.0 + fee) + costs.fixed_cost_sol_per_leg;
-        let want_pnl = 2.0 * (1.0 - fee) - costs.fixed_cost_sol_per_leg - want_basis;
+        let want_basis = 1.0 * (1.0 + fee) + costs.fixed_buy_sol;
+        let want_pnl =
+            2.0 * (1.0 - fee) - costs.fixed_sell_sol - costs.close_fee_sol - want_basis;
         assert!((p.cost_basis_sol.unwrap() - want_basis).abs() < 1e-12);
         assert!((p.unrealized_pnl_sol.unwrap() - want_pnl).abs() < 1e-12);
 
@@ -934,7 +927,7 @@ mod tests {
     #[test]
     fn no_mark_yields_cost_basis_but_no_pnl() {
         let costs = CostModel::pumpfun_with_impact();
-        let want_basis = 1.0 * (1.0 + costs.fee_bps_per_leg / 10_000.0) + costs.fixed_cost_sol_per_leg;
+        let want_basis = 1.0 * (1.0 + costs.fee_bps_per_leg / 10_000.0) + costs.fixed_buy_sol;
         let p = holding_pnl(Some(1e-9), None, 6, 1000.0, None);
         assert!((p.cost_basis_sol.unwrap() - want_basis).abs() < 1e-12);
         assert!(p.unrealized_pnl_sol.is_none());

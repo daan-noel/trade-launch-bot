@@ -146,6 +146,33 @@ impl<'k, 'a> TxSender<'k, 'a> {
         let n = self.n_signers?;
         Some(!(0..n).any(|i| self.keys.get(i) == actor))
     }
+
+    /// The payer's net SOL flow over the whole transaction —
+    /// [`Trade::payer_net_lamports`]. `account_keys[0]`'s balance change, widened by
+    /// the change in every token account the payer owns, so the rent a buy parks in
+    /// the payer's own fresh token account (or a close returns from it) nets out.
+    /// No allocation: a transaction carries a handful of token balances, and each
+    /// account appears at most once per list.
+    fn net_lamports(&self, meta: &scb::TransactionStatusMeta) -> Option<i64> {
+        let delta = |i: usize| -> Option<i64> {
+            let pre = *meta.pre_balances.get(i)?;
+            let post = *meta.post_balances.get(i)?;
+            Some(post as i64 - pre as i64)
+        };
+        let payer = self.payer();
+        let owned = |b: &scb::TokenBalance| b.owner == payer && b.account_index != 0;
+        let mut net = delta(0)?;
+        // An account alive after the tx is in `post`; one it closed is only in `pre`.
+        for b in meta.post_token_balances.iter().filter(|b| owned(b)) {
+            net += delta(b.account_index as usize).unwrap_or(0);
+        }
+        for b in meta.pre_token_balances.iter().filter(|b| owned(b)) {
+            if !meta.post_token_balances.iter().any(|p| p.account_index == b.account_index) {
+                net += delta(b.account_index as usize).unwrap_or(0);
+            }
+        }
+        Some(net)
+    }
 }
 
 // ── Decoder entry points ──────────────────────────────────────────────────────
@@ -320,6 +347,7 @@ impl Decoder {
 
         // Step 2: labels + compute budget.
         let (instruction_labels, fee_budget) = build_labels_pb(message, meta, &keys, p);
+        let payer_net_lamports = sender.net_lamports(meta);
 
         // Step 3: build IngestEvents.
         let mut events: Vec<IngestEvent> = Vec::new();
@@ -346,6 +374,7 @@ impl Decoder {
                 cu_limit: fee_budget.cu_limit,
                 cu_price: fee_budget.cu_price,
                 tip_lamports: fee_budget.tip_lamports,
+                payer_net_lamports,
                 signature: signature.clone(),
                 tx_index: info.index as u32,
                 leg_index: leg_index as u32,
@@ -384,6 +413,7 @@ impl Decoder {
                         &meta.pre_token_balances, &meta.post_token_balances,
                         instruction_labels.clone(),
                         fee_budget,
+                        payer_net_lamports,
                         &sender,
                     ) {
                         events.push(ev);
@@ -487,6 +517,7 @@ impl Decoder {
         let signature = bs58::encode(&info.signature).into_string();
         let (labels, fee_budget) = build_labels_pb(message, meta, &keys, p);
         // Charged once for the whole tx; stamped on every leg it produced.
+        let payer_net_lamports = sender.net_lamports(meta);
 
         // Passive account-list harvest for the executor's zero-RPC pool warmup:
         // resolve the full (ALT-included) account list of each TOP-LEVEL
@@ -534,7 +565,7 @@ impl Decoder {
             events.push(IngestEvent::Trade(build_amm_trade(
                 ev, mint, &signature, slot, received_at, received_at,
                 labels.clone(), info.index as u32, i as u32, accounts, fee_budget,
-                sender.payer(), sender.is_proxied(&ev.user),
+                payer_net_lamports, sender.payer(), sender.is_proxied(&ev.user),
             )));
         }
 
@@ -589,6 +620,7 @@ impl Decoder {
         post_token_balances: &[scb::TokenBalance],
         instruction_labels: Vec<String>,
         fee_budget: FeeBudget,
+        payer_net_lamports: Option<i64>,
         sender: &TxSender<'_, '_>,
     ) -> Option<IngestEvent> {
         let p = &self.protocol;
@@ -632,6 +664,7 @@ impl Decoder {
             cu_limit: fee_budget.cu_limit,
             cu_price: fee_budget.cu_price,
             tip_lamports: fee_budget.tip_lamports,
+            payer_net_lamports,
             signature: signature.to_string(),
             tx_index,
             leg_index: 0,
@@ -1538,6 +1571,78 @@ mod tests {
             assert_eq!(b.tip_lamports, Some(2_000_000));
             // priority spend = compute rail + tip rail = 0.003 SOL.
             assert_eq!(compute_rail(&b) + u128::from(b.tip_lamports.unwrap()), 3_000_000);
+        }
+    }
+
+    // ── payer net flow ────────────────────────────────────────────────────────
+
+    /// The payer's net flow of one real bot buy (2026-09-13): the wallet lost
+    /// 51 801 800 lamports, 1 574 800 of which it parked as rent in the fresh token
+    /// account it owns. The flow counts that rent as still the payer's.
+    mod payer_net {
+        use super::*;
+
+        fn balance(account_index: u32, owner: &[u8]) -> scb::TokenBalance {
+            scb::TokenBalance {
+                account_index,
+                owner: bs58::encode(owner).into_string(),
+                ..Default::default()
+            }
+        }
+
+        fn net(pre: Vec<u64>, post: Vec<u64>, pre_tok: Vec<scb::TokenBalance>, post_tok: Vec<scb::TokenBalance>) -> Option<i64> {
+            let payer = other_key(1);
+            let info = Tx::default().key(payer).key(other_key(2)).key(other_key(3)).signers(1).build();
+            let message = info.transaction.as_ref().unwrap().message.as_ref().unwrap();
+            let mut meta = info.meta.clone().unwrap();
+            meta.pre_balances = pre;
+            meta.post_balances = post;
+            meta.pre_token_balances = pre_tok;
+            meta.post_token_balances = post_tok;
+            let keys = LazyKeys::new(message, &meta);
+            TxSender::new(&keys, message).net_lamports(&meta)
+        }
+
+        #[test]
+        fn a_buy_nets_out_the_rent_parked_in_its_own_token_account() {
+            let got = net(
+                vec![2_235_876_254, 0, 27_171_333_844],
+                vec![2_184_074_454, 1_574_800, 27_220_716_559],
+                vec![],
+                // Our fresh account (index 1) and the curve's own vault (index 2).
+                vec![balance(1, &other_key(1)), balance(2, &other_key(3))],
+            );
+            assert_eq!(got, Some(-50_227_000));
+        }
+
+        #[test]
+        fn a_sell_that_keeps_its_account_is_the_payer_delta() {
+            let got = net(
+                vec![100, 1_574_800, 0],
+                vec![15_152_242, 1_574_800, 0],
+                vec![balance(1, &other_key(1))],
+                vec![balance(1, &other_key(1))],
+            );
+            assert_eq!(got, Some(15_152_142));
+        }
+
+        /// A sell that closes its account in the same tx gets the rent back; the
+        /// account is gone from `post`, so it is read from `pre`, and the refund
+        /// nets out — the flow is the sale alone.
+        #[test]
+        fn a_sell_that_closes_its_account_does_not_book_the_refund() {
+            let got = net(
+                vec![100, 1_574_800, 0],
+                vec![15_152_242 + 1_574_800, 0, 0],
+                vec![balance(1, &other_key(1))],
+                vec![],
+            );
+            assert_eq!(got, Some(15_152_142));
+        }
+
+        #[test]
+        fn no_balances_is_unknown_not_zero() {
+            assert_eq!(net(vec![], vec![], vec![], vec![]), None);
         }
     }
 }

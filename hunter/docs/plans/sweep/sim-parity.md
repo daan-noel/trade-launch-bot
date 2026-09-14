@@ -104,7 +104,7 @@ condition `eval`, `CompiledRule::compile`.
 - **D3 · Sketched quantiles.** Persisted sweep quantiles come from a 64-bucket DDSketch
    (~15% rel. error); `simulate` and the sweep drill-in compute exact ones. **Ranking is
    unaffected** — `score` is exact. O(1) memory per combo is the point.
-4b. **`pnl_percent` is not notional-invariant.** `fixed_cost_sol_per_leg` does not scale
+4b. **`pnl_percent` is not notional-invariant.** The fixed per-transaction cost does not scale
    with trade size, so PnL% is only comparable across runs at the *same* `buy_amount_sol`.
    The notional *chain* itself is consistent (see below).
 
@@ -210,10 +210,10 @@ Both were mistaken for the D0 bug during its investigation, so they are recorded
 
 - **Notional × fixed per-leg cost.** Sweep defaults to `buy_amount_sol = 1.0`
   (`registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL`); a promoted rule may trade 0.01. Every cost
-  model except `frictionless` charges `fixed_cost_sol_per_leg` = `JITO_MIN_TIP_SOL` +
-  avg CU priority fee ≈ 0.001025 SOL/leg ≈ 0.00205 per round trip — **0.2 % of notional
-  at 1.0 SOL, 20.5 % at 0.01**. Breakeven gross move goes from ~+2.2 % to ~+22.6 %, which
-  alone flips win% and PnL sign. No cost model charges a flat per-leg slippage any
+  model except `frictionless` charges a fixed cost per transaction = base fee + CU
+  priority + `JITO_MIN_TIP_SOL`. At a 0.001 tip that is ≈ 0.001025 SOL a leg ≈ 0.00205
+  per round trip — **0.2 % of notional at 1.0 SOL, 20.5 % at 0.01**. Breakeven gross
+  move goes from ~+2.2 % to ~+22.6 %, which alone flips win% and PnL sign. No cost model charges a flat per-leg slippage any
   more, and none of them ever drops the fixed cost. Sweep at the notional you intend
   to trade (this is residual 4b above) — doubly so under `pumpfun_impact`, whose
   impact term moves with that same notional.

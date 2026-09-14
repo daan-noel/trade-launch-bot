@@ -1460,6 +1460,7 @@ pub(crate) fn trade_from_ingest_event(e: &ingest_pumpfun::event::Trade) -> Trade
         cu_limit: e.cu_limit,
         cu_price: e.cu_price,
         tip_lamports: e.tip_lamports,
+        payer_net_lamports: e.payer_net_lamports,
         tx_signature: e.signature.clone(),
         tx_index: e.tx_index,
         leg_index: e.leg_index,

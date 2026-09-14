@@ -107,16 +107,17 @@ function tpsl(raw: unknown, key: 'take_profit' | 'stop_loss'): number | null {
 
 // --- combo columns ----------------------------------------------------------
 
-/** Per-trade MTM % from SOL totals + run notional (opens included). */
-function mtmPctOf(totalPnl: number, openPnl: number, nFired: number, buySol: number): number | null {
-  if (!(nFired > 0) || !(buySol > 0)) return null;
-  return ((totalPnl + openPnl) / (buySol * nFired)) * 100;
+/** Per-trade MTM % from SOL totals over the run's capital per position (opens
+ *  included). Mirrors the server's `mtm_pnl_pct` sort/filter expression. */
+function mtmPctOf(totalPnl: number, openPnl: number, nFired: number, capitalSol: number): number | null {
+  if (!(nFired > 0) || !(capitalSol > 0)) return null;
+  return ((totalPnl + openPnl) / (capitalSol * nFired)) * 100;
 }
 
 /** Build the generic-engine combo-results table columns. */
 
 export function buildGenericComboColumns(
-  buyAmountSol = 1,
+  capitalSol = 1,
   exitMetricLegend: ExitMetricLegendEntry[] = [],
 ): ColumnDef<SweepResultRecord>[] {
   return [
@@ -154,14 +155,14 @@ export function buildGenericComboColumns(
       render: (r) => ruleParamsCell(r.params),
       searchValue: () => '',
     },
-    ...genericStatColumns(buyAmountSol, exitMetricLegend),
+    ...genericStatColumns(capitalSol, exitMetricLegend),
   ];
 }
 
 /** The stat/count/exit columns shared by the combo table (order mirrors the
  *  legacy sweep so the two read the same). */
 function genericStatColumns(
-  buyAmountSol: number,
+  capitalSol: number,
   exitMetricLegend: ExitMetricLegendEntry[],
 ): ColumnDef<SweepResultRecord>[] {
   const metric = (
@@ -303,9 +304,9 @@ function genericStatColumns(
       'mtm_pnl_pct',
       'MTM %',
       'pnl',
-      (r) => mtmPctOf(r.total_pnl_sol, r.open_pnl_sol ?? 0, r.n_fired, buyAmountSol) ?? Number.NEGATIVE_INFINITY,
+      (r) => mtmPctOf(r.total_pnl_sol, r.open_pnl_sol ?? 0, r.n_fired, capitalSol) ?? Number.NEGATIVE_INFINITY,
       (r) => {
-        const v = mtmPctOf(r.total_pnl_sol, r.open_pnl_sol ?? 0, r.n_fired, buyAmountSol);
+        const v = mtmPctOf(r.total_pnl_sol, r.open_pnl_sol ?? 0, r.n_fired, capitalSol);
         return v == null ? tone('—', 'text-text-dim') : tone(pctText(v), pctGradeClass(v));
       },
       {
@@ -494,7 +495,7 @@ function usedByRulesCell(
 
 /** Build the generic-engine group-summary table columns. */
 export function buildGenericGroupColumns(
-  buyAmountSol = 1,
+  capitalSol = 1,
   lookups: GroupColumnLookups = {},
 ): ColumnDef<GroupedSweepGroupRecord>[] {
   const { fingerprintByGroupId, rulesByFingerprintId } = lookups;
@@ -761,14 +762,14 @@ export function buildGenericGroupColumns(
           g.best_total_pnl_sol,
           g.best_open_pnl_sol ?? 0,
           g.fired_count,
-          buyAmountSol,
+          capitalSol,
         ),
       (g) => {
         const v = mtmPctOf(
           g.best_total_pnl_sol,
           g.best_open_pnl_sol ?? 0,
           g.fired_count,
-          buyAmountSol,
+          capitalSol,
         );
         return v == null ? tone('—', 'text-text-dim') : tone(pctText(v), pctGradeClass(v));
       },

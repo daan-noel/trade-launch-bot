@@ -26,6 +26,7 @@ use hunter_engine::event::{Event, Fill, FillFailReason, IntentId};
 
 use pump_trader::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 
+use trading_core::config::fee_tuning::close_account_fee_sol;
 use trading_core::models::trade::TradeType;
 use trading_core::state::token_cache::TokenCache;
 use trading_core::state::trade_signals::TradeSignals;
@@ -217,6 +218,9 @@ pub struct SellOrder {
     pub token_program_id: Option<String>,
     pub cashback_enabled: bool,
     pub slippage_bps: Option<u64>,
+    /// This sell is the position's remainder, not a scale-out stage: once it
+    /// clears, the token account is empty and the rent-reclaim close follows.
+    pub empties_bag: bool,
     /// Wall clock when the exit was decided (post-`reduce` dispatch), or `None`
     /// for an exit no rule decided — an orphan sweep or a reaper nudge, whose
     /// "latency" is the age of the bag, not a reaction time. Twin of
@@ -564,17 +568,7 @@ async fn adopt_existing_fill(
         if let Some(obs) = deps.trade_signals.observed_legs(sig) {
             if obs.token_amount > PARTIAL_FILL_THRESHOLD {
                 info!(mint = %order.mint, sig = %sig, "adopted own-leg preview before re-send");
-                return Some((
-                    sig.clone(),
-                    SigLegs {
-                        token_amount: obs.token_amount,
-                        amount_sol: obs.amount_sol,
-                        first_block_time: obs.first_block_time,
-                        last_block_time: obs.last_block_time,
-                        first_slot: obs.first_slot,
-                        last_slot: obs.last_slot,
-                    },
-                ));
+                return Some((sig.clone(), SigLegs::from(obs)));
             }
         }
         if let Ok(Some(legs)) = deps.trade_repo.find_fill_by_signature(wallet, &order.mint, sig).await
@@ -611,13 +605,27 @@ async fn emit_entry_filled(
         .send(Event::FillConfirmed {
             intent: order.intent.clone(),
             fill: Fill {
+                // The curve-side execution price is the engine's decision basis; the
+                // SOL is what the buy took from the wallet.
                 price: legs.price_per_token(),
-                sol: legs.amount_sol,
+                sol: booked_wallet_sol(&legs, &order.mint, "buy"),
                 token_amount: legs.token_amount,
                 at: legs.last_block_time,
             },
         })
         .await;
+}
+
+/// The SOL a real fill books: what its transactions moved through the wallet,
+/// every fee included (`SigLegs::wallet_sol`). A transaction whose flow was never
+/// captured falls back to the curve-side amount, loudly — that row's PnL is not
+/// all-in.
+fn booked_wallet_sol(legs: &SigLegs, mint: &str, side: &str) -> f64 {
+    let (sol, exact) = legs.wallet_sol();
+    if !exact {
+        warn!(mint = %mint, side, "real fill: no wallet flow captured, booking the curve-side amount");
+    }
+    sol
 }
 
 async fn emit_entry_outcome(
@@ -810,14 +818,7 @@ async fn poll_feed_buy(
         // Prefer process-local own-leg preview (ingest saw our buy before PG).
         if let Some(obs) = deps.trade_signals.observed_legs(sig) {
             if obs.token_amount > PARTIAL_FILL_THRESHOLD {
-                return Some(SigLegs {
-                    token_amount: obs.token_amount,
-                    amount_sol: obs.amount_sol,
-                    first_block_time: obs.first_block_time,
-                    last_block_time: obs.last_block_time,
-                    first_slot: obs.first_slot,
-                    last_slot: obs.last_slot,
-                });
+                return Some(SigLegs::from(obs));
             }
         }
         if let Ok(Some(legs)) = deps.trade_repo.find_fill_by_signature(wallet, mint, sig).await {
@@ -1143,9 +1144,20 @@ async fn finish_cleared_sell(
         // Latest leg — the sell's `exit_slot`, matching `last_block_time` below.
         FillSigs { sigs: sell_sigs.to_vec(), token_account, slot: legs.last_slot, print: None },
     );
+    let wallet = deps.trader.wallet_pubkey();
+    // The sell that empties the account, with no sibling still holding the mint,
+    // is followed by the rent-reclaim close — whose fee is part of this round trip
+    // (the rent it returns never was). Decided before the fill books, so the SOL
+    // the position records is what the wallet ends up with.
+    let reclaims = order.empties_bag
+        && !has_other_open_position(&deps.strategy_repo, &wallet, &order.mint, order.pg_id).await;
+    let mut sol = booked_wallet_sol(&legs, &order.mint, "sell");
+    if reclaims {
+        sol -= close_account_fee_sol();
+    }
     let fill = Fill {
         price: legs.price_per_token(),
-        sol: legs.amount_sol,
+        sol,
         token_amount: legs.token_amount,
         at: legs.last_block_time,
     };
@@ -1158,7 +1170,6 @@ async fn finish_cleared_sell(
         .await;
 
     // Sibling book-close when the wallet mint bag is gone (PG net — no RPC).
-    let wallet = deps.trader.wallet_pubkey();
     let engine_tx = deps.engine_fill_tx.clone().unwrap_or_else(|| deps.fill_tx.clone());
     let _ = orphan_exit::close_siblings_if_mint_cleared(
         &deps.strategy_repo,
@@ -1172,35 +1183,34 @@ async fn finish_cleared_sell(
     )
     .await;
 
-    // Fire-and-forget rent reclaim when no sibling still shares the account.
-    let trader = deps.trader.clone();
-    let repo = deps.strategy_repo.clone();
-    let mint = order.mint.clone();
-    let pg = order.pg_id;
-    tokio::spawn(async move {
-        reclaim_token_account_if_last(&trader, &repo, &wallet, &mint, "real", pg).await;
-    });
+    // Fire-and-forget rent reclaim — the close this fill already booked the fee of.
+    if reclaims {
+        let trader = deps.trader.clone();
+        let mint = order.mint.clone();
+        tokio::spawn(async move {
+            if let Err(err) = trader.close_token_account(&mint, None).await {
+                tracing::debug!(mint = %mint, "rent-reclaim close skipped: {err}");
+            }
+        });
+    }
 }
 
-/// Reclaim rent only when no OTHER open position shares `(wallet, mint)` (M1).
-pub(crate) async fn reclaim_token_account_if_last(
-    trader: &Arc<PumpFunTrader>,
+/// Whether another open real position still shares `(wallet, mint)` — the one
+/// thing that keeps a cleared bag's token account open (M1). A failed check
+/// answers "yes": the account stays open and no close fee is booked, rather than
+/// closing an account a sibling may still hold.
+async fn has_other_open_position(
     repo: &StrategyRepo,
     wallet: &str,
     mint: &str,
-    mode: &str,
     exclude_position: Uuid,
-) {
-    match repo.has_other_open_position_on_mint(wallet, mint, mode, exclude_position).await {
-        Ok(true) => return,
-        Ok(false) => {}
+) -> bool {
+    match repo.has_other_open_position_on_mint(wallet, mint, "real", exclude_position).await {
+        Ok(other) => other,
         Err(err) => {
             warn!(mint = %mint, "rent-reclaim other-open check failed; deferring: {err}");
-            return;
+            true
         }
-    }
-    if let Err(err) = trader.close_token_account(mint, None).await {
-        tracing::debug!(mint = %mint, "rent-reclaim close skipped: {err}");
     }
 }
 
@@ -1267,14 +1277,7 @@ async fn confirm_sell(
             // Prefer process-local own-leg preview before SQL.
             if let Some(obs) = deps.trade_signals.sum_observed_legs(sell_sigs) {
                 if obs.token_amount.saturating_add(PARTIAL_FILL_THRESHOLD) >= order.token_amount {
-                    return Some(SigLegs {
-                        token_amount: obs.token_amount,
-                        amount_sol: obs.amount_sol,
-                        first_block_time: obs.first_block_time,
-                        last_block_time: obs.last_block_time,
-                        first_slot: obs.first_slot,
-                        last_slot: obs.last_slot,
-                    });
+                    return Some(SigLegs::from(obs));
                 }
             }
             if let Ok(Some(legs)) = deps

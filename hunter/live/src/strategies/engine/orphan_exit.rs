@@ -112,6 +112,8 @@ pub fn spawn_orphan_sell(
         token_program_id: position.token_program_id.clone(),
         cashback_enabled: false,
         slippage_bps: slippage,
+        // An orphan sweep sells the whole remaining bag.
+        empties_bag: true,
         // No rule decided this one — an orphan sweep reacts to a stranded bag, so
         // stamping `now` would log the sweep's own scheduling as exit latency.
         decided_at: None,

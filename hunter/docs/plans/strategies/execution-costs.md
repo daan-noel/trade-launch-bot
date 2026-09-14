@@ -1,43 +1,49 @@
 # Execution costs — what a round trip actually costs
 
-Reference for `CostModel` / `round_trip_with_costs`
-(`core/src/strategies/kernel.rs`). Applies to **every** strategy, not just the
-flow-scalper work that produced it. Measured 2026-07-28 on the local lake +
-Postgres; no Helius calls involved.
+Reference for `CostModel` and the round-trip functions in
+`core/src/strategies/kernel.rs` (`buy_fill`, `sell_proceeds`, `round_trip_multi_leg`).
+Applies to **every** strategy and to every surface: simulate, the sweep, live paper and
+the open-position marks all price through these functions, and a live real position
+books the wallet flow they reproduce.
 
 > For **worked examples** of each cost model (and of each `FillModel`) priced
 > side by side on the same trade, see
 > [fill-and-cost-models.md](fill-and-cost-models.md). This doc is the derivation;
 > that one is the "which dropdown do I pick" companion.
->
-> **The fixed per-leg cost below is env-derived, not a constant.** It is
-> `JITO_MIN_TIP_SOL + avg CU priority fee` via `FeeTuning`. The 0.001025 SOL/leg
-> used throughout this doc came from a 0.001 tip; at the current `hunter/.env`
-> (tip 0.0002, CU price 200 000) it is **0.000225 SOL/leg**, which moves the §3
-> optimum from ~0.27 SOL to ~0.126 SOL and the §4 break-even bar from ~4% to
-> ~3.3%. Recompute both whenever you retune tips — the formulas hold, the numbers
-> do not.
 
-A round trip pays four things. Two are proportional, one is fixed, one scales with
-how big you are relative to the pool:
+## The formula
+
+```
+fee   = 125 bps (pump curve)
+BUY   c      = B / (1 + fee)                        B = buy size, what the order spends
+      tokens = c / (P0 * (1 + c / V0))              P0, V0 = spot and priced (virtual) SOL landed into
+      paid   = B + fixed_buy
+SELL  out    = t * P1 / (1 + t * P1 / V1)           P1, V1 = spot and priced SOL at the sell
+      got    = out * (1 - fee) - fixed_sell         the leg that empties the bag also pays close_fee
+PnL = sum(got) - paid        PnL % = PnL / paid     (paid = CostModel::capital_sol(B))
+```
+
+Fed the pool state each landed in, this reproduces the wallet to the lamport: on the
+34 real round trips of 2026-09-13/14 every trade's percent matches the on-chain balance
+changes to 0.0000 pp (`a_real_round_trip_reproduces_the_wallet` pins one of them).
 
 | term | size | who charges it |
 | --- | --- | --- |
-| protocol fee | **125 bps/leg** (2.53% round trip) | pump.fun |
-| tip + priority | **0.001025 SOL/leg**, fixed | Jito + the validator |
-| our price impact | **`buy_amount_sol / reserve_sol`** per leg | the bonding curve |
+| venue fee | **125 bps/leg** — on top of the curve SOL on a buy, out of the curve's output on a sell | pump.fun |
+| fixed cost per transaction | base fee + priority on the requested CU limit + tip: **0.000227 SOL a buy, 0.000225 a sell** at the current `.env` | the network + the tip rail |
+| close | **5 000 lamports** once per round trip — the rent-reclaim `closeAccount` | the network |
+| our price impact | the exact constant-product curve, on the leg's own depth | the bonding curve |
 | market slippage | whatever the `FillModel` prices | the market |
 
-## 1. The protocol fee is 125 bps, not 100
+The rent a buy parks in its fresh token account (1 574 800 lamports at the current rent)
+is **not** a cost: the close returns it. It is SOL the wallet still owns.
 
-`FEE_BPS_PER_LEG` was `100.0` until 2026-07-28. It is **125**.
+## 1. The protocol fee is 125 bps, charged the way `buy_exact_sol_in` charges it
 
-Measured, not assumed. `trades.amount_lamports` is the *curve-side* amount and
-excludes the fee — confirmed by `|Δreserve_lamports| / amount_lamports` = **1.00000**
-at p25/median/p75 over 5.6M legs (the ingest never decodes the `fee` /
-`fee_basis_points` IDL fields). So a dev who asks to spend a round gross amount lands
-a curve-side amount of `gross × 10000/(10000 + fee_bps)`. Bucketing dev buys by that
-ratio:
+`trades.amount_lamports` is the *curve-side* amount and excludes the fee — measured:
+`|Δreserve_lamports| / amount_lamports` = **1.00000** at p25/median/p75 over 5.6M legs.
+So an order that spends a round `B` lands `c = B × 10000/(10000 + fee_bps)` on the
+curve. Bucketing dev buys by that ratio:
 
 | ratio | implies | count |
 | --- | --- | --- |
@@ -45,23 +51,26 @@ ratio:
 | 0.990099 (= 10000/10100) | 100 bps | 310 |
 
 (56,908 dev buys, against the nearest round 0.1 SOL. The same split holds against
-round 1.0 SOL: 13,503 vs 283.)
+round 1.0 SOL: 13,503 vs 283.) On chain, a bot 0.05 SOL buy puts 49 382 715 lamports on
+the curve and 617 285 into the protocol and creator fee accounts; a sell of 43 091 829
+curve lamports pays 538 649 of fee out of them.
 
-**Every backtest run before 2026-07-28 is 0.5 pp/round-trip optimistic.** The
-constant is not persisted per run, so stored `strategy_run_metrics` rows keep the
-number they were computed under and are *not* comparable to new ones. Re-run anything
-whose margin was inside 0.5 pp.
+Runs stored before 2026-07-28 are priced at 100 bps and do not compare.
+<!-- pt-ok: cutoff, those runs are still in the DB -->
 
-## 2. Our own price impact — `buy_amount_sol / reserve_sol`
+## 2. Our own price impact is the curve itself
 
-On a constant-product curve, spending `B` SOL against virtual reserves
-`(vsol, vtok)` yields `vtok·B/(vsol+B)` tokens. The **average** price paid is
-therefore `(vsol+B)/vtok`, which is exactly `(1 + B/vsol)` times the pre-trade spot
-`vsol/vtok`:
+On a constant-product curve, `c` SOL into virtual reserves `(vsol, vtok)` returns
+`vtok·c/(vsol+c)` tokens, an average price of exactly `(1 + c/vsol)` × the pre-trade
+spot. Selling a bag worth `g` at spot returns `g/(1 + g/vsol)`. Both are exact; to first
+order each leg costs `size / vsol`:
 
 ```
-impact_per_leg = B / vsol          (independent of vtok)
+impact_per_leg ≈ size / vsol          (independent of vtok)
 ```
+
+Each leg prices on **its own** depth — the exit on the pool it sells into, not the
+entry's. A pool that drained during the hold charges the exit more.
 
 Two consequences worth internalising:
 
@@ -70,15 +79,15 @@ Two consequences worth internalising:
   stddev of 0.08 over 3,160 buys (he sizes at 1.18% of vsol), and why `64hP`'s are a
   flat +3.82% (1.859% of vsol). If you see suspiciously constant slippage in a wallet
   study, this is why — it is not a bug.
-- **The flat `slippage_bps` is wrong in both directions.** It over-charges a small
+- **A flat `slippage_bps` is wrong in both directions.** It over-charges a small
   order in a deep pool and under-charges a large one in a shallow pool.
 
 ### Sizing as a fraction of the pool — `buy_pct_of_vsol`
 
 A rule can size each buy as a percent of the pool's SOL reserve instead of a fixed
 amount (`RuleParams.buy_pct_of_vsol`; blank ⇒ the rule's `buy_amount_lamports`). Since
-impact is `B / vsol` exactly, that is the knob that holds impact constant across a
-liquidity band a fixed size varies over — `fs3-*` gates vsol 40–75, nearly 2×, so a
+impact is `size / vsol` to first order, that is the knob that holds impact constant across
+a liquidity band a fixed size varies over — `fs3-*` gates vsol 40–75, nearly 2×, so a
 fixed size charges twice the impact at one end as the other.
 
 It resolves in the kernel at the entry decision (`reduce::resolve_buy_lamports`) against
@@ -99,39 +108,34 @@ notional — divergence D8 in [../sweep/sim-parity.md](../sweep/sim-parity.md).
 
 | kind | charges | use when |
 | --- | --- | --- |
-| `pumpfun_impact` | fee + fixed + **real `B/vsol` impact** | **default.** The honest pairing with any `FillModel` |
-| `pumpfun_fee_only` | fee + fixed | size-blind; a zero-impact upper bound. The "is there any edge at all?" screen |
+| `pumpfun_impact` | fee + fixed + close + **the exact curve** | **default.** The honest pairing with any `FillModel` |
+| `pumpfun_fee_only` | fee + fixed + close | size-blind; a zero-impact upper bound. The "is there any edge at all?" screen |
 
-A third, `pumpfun_default`, charged a flat `slippage_bps` per leg. It is **deleted** —
-it double-counted what the fill model already priced, and being size-blind its error
-changed sign with buy size, reordering a grid rather than shifting it. Its wire name
-no longer decodes, and the runs priced under it are deleted rather than migrated onto
-a label they were never computed under.
+There is no flat-slippage model: it double-counted what the fill model already priced,
+and being size-blind its error changed sign with buy size, reordering a grid rather than
+shifting it. Its wire name no longer decodes.
 
 Impact is **orthogonal to the fill model** and composes with it without
 double-counting: a `FillModel` chooses *which market print we transact against*,
-impact is *how far our own order moves the curve*. A live trade pays both. What must
-never combine is `slippage_bps` and `price_impact` — the former is a crude stand-in
-for exactly the latter.
+impact is *how far our own order moves the curve*. A live trade pays both.
 
 Depth reaches the kernel as `Option<f64>`: `None` charges **no** impact rather than
-guessing one. It is read from `MetricSeries::reserve_sol` in the sweep and from the
-fill's `TradeLite` in simulate (`PositionOutcome::entry_reserve_sol`). The same entry
-depth prices the exit leg, which slightly over-charges it whenever the pool grew
-during the hold — the common case on a winner, so the approximation errs toward
-pessimism on exactly the trades that matter most.
+guessing one. The sweep reads `MetricSeries::priced_reserve_sol` at the entry row and at
+the exit fill's row; simulate reads each fill print's own reserve
+(`PositionOutcome::entry_reserve_sol`, each exit leg's `reserve_sol`).
 
 ## 3. Cost is U-shaped in size — there is an optimum
 
-The tip is fixed SOL per leg, so it dominates *small* orders; impact grows with
-*large* ones. Total size-dependent cost per round trip is
+The fixed cost is SOL per transaction, so it dominates *small* orders; impact grows with
+*large* ones. Total size-dependent cost per round trip is, to first order,
 
 ```
-2·F/B + 2·B/vsol        (F = fixed_cost_sol_per_leg = 0.001025)
+2·F/B + 2·B/vsol        (F = the fixed cost per transaction)
 ```
 
-which is minimised at **`B* = sqrt(F · vsol)`**. On the measured median pool depth of
-~70 SOL:
+which is minimised at **`B* = sqrt(F · vsol)`**. At the current `.env` (F ≈ 0.000226)
+on the measured median pool depth of ~70 SOL that is **~0.126 SOL**. The table below
+is at a 0.001 SOL tip (F = 0.001025), where the optimum sits at ~0.27 SOL:
 
 | buy size | impact | tip + priority | size-dependent total |
 | --- | --- | --- | --- |
@@ -140,7 +144,8 @@ which is minimised at **`B* = sqrt(F · vsol)`**. On the measured median pool de
 | 0.5 SOL | 1.42% | 0.41% | 1.83% |
 | 1.0 SOL | 2.86% | 0.21% | **3.07%** |
 
-Shallower pools move the optimum down: on a 45 SOL pool it is ~0.21 SOL.
+Shallower pools move the optimum down. **Recompute both numbers whenever you retune
+tips** — the formulas hold, the numbers do not.
 
 **A fixed `buy_amount_lamports` cannot hold impact constant** across a liquidity
 band — that is what percent-of-vsol sizing buys, and it is the one real argument for
@@ -152,66 +157,51 @@ Pool depth at entry, measured over 3,160 reference buys: p10 48.5, p25 57.3, **m
 
 ## 4. The bar a strategy has to clear
 
-Fee alone is 2.53%/round trip. At the optimal size add ~1.5%, so **a strategy needs
-roughly 4% gross per round trip to break even**, before any market slippage. That is
-the number to check a candidate against first — it kills most ideas before a backtest
-is worth running.
+Fee alone is 2.5% a round trip. Add the fixed legs and impact at the chosen size, and a
+strategy needs roughly **3-4% gross per round trip to break even**, before any market
+slippage. That is the number to check a candidate against first — it kills most ideas
+before a backtest is worth running.
 
 ## 5. Multi-leg (scale-out) round trips
 
-`round_trip_multi_leg` is the sibling that prices **one entry + N exit legs**. Each
-leg pays fee bps + fixed tip + impact(`leg_notional / reserve_at_leg`). Fixed cost
-therefore scales with leg count — at 0.1 SOL size an extra exit leg adds ~1% of
-notional. That is the real economic bound on stage count (see the partial-exits
-roadmap).
-
-`round_trip_with_costs` is a thin wrapper over a single 10_000-bps exit, so legacy
-callers stay byte-identical. Simulate collects confirmed legs on `PositionOutcome`
-and prices through the multi-leg path; the grouped sweep still uses the single-exit
-wrapper until the staged resolver (roadmap step 4) lands.
+`round_trip_multi_leg` prices **one entry + N exit legs**. Each sell leg pays the fee,
+its own fixed cost and its own impact on its own depth; the leg that empties the bag
+pays the close. Fixed cost therefore scales with leg count — at 0.1 SOL size an extra
+exit leg adds ~0.2% of notional at the current tip. That is the real economic bound on
+stage count (see the partial-exits roadmap).
 
 ## 6. An open position is not a round trip with one price swapped
 
-`mark_open_bag` prices a bag that is **still held**: what closing it right now would
-leave, over the capital the entry consumed. Every open-position figure goes through
-it — the Holdings / Home / Console rows (`models::portfolio::unrealized_pnl`), the
-per-rule `PositionsSummary::open_pnl_sol`, and the frontend's live mark tip via
-`GET /api/meta/cost-model`.
+`mark_open_bag` prices a bag that is **still held**: what selling it right now would
+return, minus what the entry actually took from the wallet. Every open-position figure
+goes through it — the Holdings / Home / Console rows (`models::portfolio::mark_bag`),
+the per-rule `PositionsSummary::open_pnl_sol`, and the frontend's live mark tip via
+`GET /api/meta/cost-model` (`netProceedsSol` mirrors `sell_value_proceeds`).
 
-It differs from `round_trip_with_costs` in exactly two ways, both because the entry
-has already executed:
+- **The cost basis is a fact, not a model.** A position's `entry_lamports` is what its
+  buy paid (wallet-exact on a real row, `buy_fill` on a paper one), taken pro-rata to
+  the tokens still held (`OpenPositionBag::cost_basis_sol`). A holding with no position
+  row has only a curve-side average price; its basis is `modeled_cost_basis`, the
+  inverse of `buy_fill`.
+- **The exit is charged in full**: the exact sell of the held bag into the mint's
+  current depth, the fee, the sell's fixed cost and the close. Marking a fresh fill at
+  a later price is exactly the round trip at that price
+  (`mark_open_bag_equals_the_round_trip_it_would_close`).
 
-- **The bag is known, not derived.** `held_amount` is the tokens still held, so a
-  half-sold position marks its remaining half. `round_trip_with_costs` re-derives a
-  token count from `notional / effective_entry`, which is right for a hypothetical
-  trade and wrong for one that has a fill.
-- **No entry impact is charged.** The fill already paid it, and it is inside the
-  executed average `entry_price` (Σ curve SOL / Σ tokens) by construction. Charging
-  `leg_impact` on the entry again books our own footprint twice.
+A bag needs roughly a +3-4% move to be worth what it cost at the live clip size, the §4
+bar restated for an open position.
 
-Both legs' **fee** and **fixed cost** are still charged, and that is the whole point.
-`entry_price` is the curve-side amount (§1), so the entry fee is not in it and neither
-tip nor priority is anywhere near it. The capital a position really consumed is
+## 7. What a real position books
 
-    cost_basis = entry_price × held × (1 + fee) + fixed_per_leg
+A real fill's SOL is its transactions' **payer net flow** (`trades.payer_net_lamports`,
+migration 0019): the payer's lamport change over the transaction, with the SOL in token
+accounts the payer owns counted as still the payer's. The ingest decodes it from each
+transaction's pre/post balances, so it costs no RPC. The buy books what left the wallet,
+the sell what arrived; the sell that empties the bag and triggers the rent reclaim also
+books the close fee. `Fill::price` stays the curve-side execution price — the engine's
+decision basis. The closed PnL is then `(exit − entry) / entry`, all-in, and a PnL
+tracker that reads the wallet sees the same number.
 
-and the percent divides by that. Exit impact is sized on the mark's **current** value
-rather than the entry notional — that is the SOL the bag would actually push into the
-pool now, and on a bag that has doubled the entry notional understates it by half.
-
-### Why a gross mark is not a smaller version of the right answer
-
-At live clip sizes the omitted terms are ~4 pp, so a gross mark is green across the
-entire range where the bag is in fact under water — exactly the `+%`-beside-a-red-`◎`
-contradiction `weighted_return_pct` exists to kill. The fixed half dominates, because
-it does not shrink with the clip: at the measured median real entry of **0.0296 SOL**,
-tip + priority is **0.77% of notional per leg** (measured over 30 days of our own
-fills via `trades.fee_lamports` + `tip_lamports`), against 1.25% for the fee. A bag
-needs roughly a +4% move to be worth what it cost, which is the §4 bar restated for an
-open position.
-
-This is also what makes a live row disagree with an on-chain PnL tracker: a tracker
-prices the wallet's actual SOL flow, which is all-in by construction. `+1.6%` gross is
-`≈ −2.5%` all-in on a 0.03 SOL clip, and the difference is not noise — it is the four
-terms above.
-
+What the kernel cannot know, and a real row books anyway: a tip above
+`JITO_MIN_TIP_SOL` from the tip feed, and the PumpSwap fee on a migrated coin (the
+kernel prices the curve's 125 bps).

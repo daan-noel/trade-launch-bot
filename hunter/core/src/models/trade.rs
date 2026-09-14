@@ -75,6 +75,13 @@ pub struct Trade {
     /// `None` = no top-level system transfer in the tx. `Some(0)` = transfers, none
     /// to a recognised tip account. See migration `0013_trade_fee_budget.sql`.
     pub tip_lamports: Option<u64>,
+    /// The fee payer's net SOL flow over this trade's **transaction**, signed
+    /// lamports (post − pre, negative = paid out): every fee, tip and venue charge
+    /// included, with SOL the payer moved into or out of its own token accounts
+    /// counted as still the payer's (rent is a deposit). What a real position books
+    /// as its entry / exit SOL. Per-transaction — collapse by `tx_signature` before
+    /// summing. `None` before migration 0019 or when the source carried no balances.
+    pub payer_net_lamports: Option<i64>,
     pub tx_signature: String,
     /// Position of this trade's transaction within its block. Real on the live
     /// LaserStream feed and on LaserStream-replay backfill. On the RPC backfill path
@@ -168,6 +175,7 @@ impl Trade {
             cu_limit: None,
             cu_price: None,
             tip_lamports: None,
+            payer_net_lamports: None,
             tx_signature,
             tx_index: 0,
             leg_index: 0,
