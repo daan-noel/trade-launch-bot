@@ -96,15 +96,17 @@ impl TradeRepo {
         let leg_index: Vec<i16> = rows.iter().map(|r| r.leg_index).collect();
         let block_time: Vec<_> = rows.iter().map(|r| r.block_time).collect();
         let tx_signature: Vec<Vec<u8>> = rows.iter().map(|r| r.tx_signature.clone()).collect();
+        let payer_net: Vec<Option<i64>> = rows.iter().map(|r| r.payer_net_lamports).collect();
 
         let landed: Vec<(Vec<u8>, i16)> = sqlx::query_as(
             "INSERT INTO trades \
                 (mint_address, wallet_ref, launchpad_id, market_kind, quote_asset_id, trade_type, \
                  amount_quote, amount_base, reserve_quote, reserve_base, \
-                 slot, tx_index, leg_index, block_time, tx_signature) \
+                 slot, tx_index, leg_index, block_time, tx_signature, payer_net_lamports) \
              SELECT * FROM UNNEST($1::text[], $2::int4[], $3::int2[], $4::text[], $5::int2[], $6::text[], \
                                   $7::int8[], $8::int8[], $9::int8[], $10::int8[], \
-                                  $11::int8[], $12::int4[], $13::int2[], $14::timestamptz[], $15::bytea[]) \
+                                  $11::int8[], $12::int4[], $13::int2[], $14::timestamptz[], $15::bytea[], \
+                                  $16::int8[]) \
              ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING \
              RETURNING tx_signature, leg_index",
         )
@@ -123,6 +125,7 @@ impl TradeRepo {
         .bind(&leg_index)
         .bind(&block_time)
         .bind(&tx_signature)
+        .bind(&payer_net)
         .fetch_all(pool)
         .await?;
         Ok(landed.into_iter().collect())

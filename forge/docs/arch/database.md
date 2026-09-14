@@ -48,7 +48,7 @@ Ideas carried from hunter, generalized off SOL/pump.fun:
 | `core/src/storage/timescale.rs` | `teardown_dead_caggs` — drops the dead OHLCV CAggs at boot (idempotent) |
 | `core/src/storage/repositories/` | one repo struct per table; the DB↔model boundary |
 
-## Postgres schema (`migrations/0001_init.sql`, single squashed init)
+## Postgres schema (`migrations/0001_init.sql` squashed init + later versions)
 
 `0001` is the full end-state (SLP `0001..0013` + forge `0002..0007` folded in),
 including the `trades_priced` view's `wallet_address` (LEFT JOIN `wallet_dict` +
@@ -59,6 +59,13 @@ Squashing changes version 1's checksum and drops version 2 from
 the chain. Reconcile it once with
 `scripts/consolidate-migration-ledgers.ps1 -Ledger forge -Apply` (ledger-only — no
 schema, no data).
+
+Versions above `0001` stay idempotent (guarded DDL, views dropped + recreated):
+that reconcile deletes every ledger row above version 1, so they re-run.
+
+| Version | Change |
+| --- | --- |
+| `0002_trades_payer_net` | `trades.payer_net_lamports` + `trades_priced` recreated to carry it |
 
 ### Domain A — dimensions (interned, row-extensible)
 
@@ -82,7 +89,7 @@ schema, no data).
 | --- | --- |
 | `wallet_dict` | wallet interning map (int id ↔ address); **soft** ref from `trades`, no FK on hot insert |
 | `raw_txs` | **hypertable** — unparsed BYTEA payload source-of-truth; PK(block_time,tx_signature); compress after 2d, retain 7d |
-| `trades` | **hypertable** — typed projection; `wallet_ref` (soft), denormalized `launchpad_id`/`market_kind`/`quote_asset_id`; `amount_quote`/`amount_base`, `reserve_quote`/`reserve_base`; PK(block_time,tx_signature,leg_index); segmentby `mint_address`, compress after 7d, retain 30d |
+| `trades` | **hypertable** — typed projection; `wallet_ref` (soft), denormalized `launchpad_id`/`market_kind`/`quote_asset_id`; `amount_quote`/`amount_base`, `reserve_quote`/`reserve_base`; `payer_net_lamports` (the trading wallet's whole-tx signed SOL flow, native lamports, per-tx so collapse by signature; NULL unless the tx payer is the trade's wallet); PK(block_time,tx_signature,leg_index); segmentby `mint_address`, compress after 7d, retain 30d |
 
 ### Derived views (decimals + USD applied HERE, never stored)
 

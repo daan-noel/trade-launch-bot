@@ -69,7 +69,19 @@ pub fn trade_to_row(
         leg_index: t.leg_index.min(i16::MAX as u32) as i16,
         block_time: t.block_time,
         tx_signature: decode_sig(&t.signature)?,
+        payer_net_lamports: own_payer_net(&t.wallet, &t.payer, t.payer_net_lamports),
     })
+}
+
+/// The tx's payer net SOL flow, kept only when the payer IS the trade's wallet:
+/// then it is what that wallet moved. A proxied or third-party-paid trade keeps
+/// `None`, since the flow belongs to someone else.
+pub fn own_payer_net(wallet: &str, payer: &str, payer_net_lamports: Option<i64>) -> Option<i64> {
+    if wallet == payer {
+        payer_net_lamports
+    } else {
+        None
+    }
 }
 
 /// Map a token-create event to a `NewToken` (identity write-once row).
@@ -111,5 +123,17 @@ pub fn raw_tx_to_row(r: &IlRawTx) -> RawTx {
         tx_index: r.tx_index as i32,
         payload: r.payload.clone(),
         source: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::own_payer_net;
+
+    #[test]
+    fn payer_net_only_for_the_paying_wallet() {
+        assert_eq!(own_payer_net("W", "W", Some(-1_005_000)), Some(-1_005_000));
+        assert_eq!(own_payer_net("W", "Router", Some(-1_005_000)), None);
+        assert_eq!(own_payer_net("W", "W", None), None);
     }
 }

@@ -87,7 +87,7 @@ async fn pump_fun_events_project_onto_the_schema() {
         cu_limit: Some(200_000),
         cu_price: Some(1_000),
         tip_lamports: Some(0),
-        // Forge keeps no wallet-flow column either.
+        // The wallet paid its own tx, so `trades.payer_net_lamports` keeps it.
         payer_net_lamports: Some(-1_505_000_000),
         // A direct trade: the venue's actor signed the transaction, so it is its
         // own payer and nothing is proxied. Forge trades from its own keypairs and
@@ -157,6 +157,14 @@ async fn pump_fun_events_project_onto_the_schema() {
     .await
     .unwrap();
     assert_eq!(raw_count, 1, "raw tx landed");
+
+    let payer_net: Option<i64> =
+        sqlx::query_scalar("SELECT payer_net_lamports FROM trades WHERE mint_address = $1")
+            .bind(MINT)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(payer_net, Some(-1_505_000_000), "own-paid wallet flow persisted");
 
     // cleanup
     sqlx::query("DELETE FROM trades WHERE mint_address = $1").bind(MINT).execute(pool).await.unwrap();

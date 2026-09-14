@@ -25,6 +25,12 @@ pub struct Trade {
     pub leg_index: i16,
     pub block_time: DateTime<Utc>,
     pub tx_signature: Vec<u8>,
+    /// The trading wallet's whole-tx signed SOL flow, native lamports (post - pre:
+    /// swap, venue fee, signature/priority fee, tip; its own token-account rent
+    /// nets out). Per-TRANSACTION — every leg of the tx repeats it, so collapse by
+    /// `tx_signature` before summing. `None` unless the tx's fee payer is the
+    /// trade's wallet (or when the source carried no balances).
+    pub payer_net_lamports: Option<i64>,
 }
 
 /// Spot price of a trade's post-trade reserve pair, as a raw ratio (quote base
@@ -59,6 +65,8 @@ pub struct NewTrade {
     pub leg_index: i16,
     pub block_time: DateTime<Utc>,
     pub tx_signature: Vec<u8>,
+    /// See [`Trade::payer_net_lamports`].
+    pub payer_net_lamports: Option<i64>,
 }
 
 /// `trades_priced` view row: a [`Trade`] plus the quote's decimals/USD rate and

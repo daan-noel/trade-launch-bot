@@ -93,6 +93,7 @@ mod tests {
             leg_index: leg,
             block_time: Utc.timestamp_opt(1_700_000_000 + slot, 0).unwrap(),
             tx_signature: vec![slot as u8, leg as u8],
+            payer_net_lamports: None,
         }
     }
 

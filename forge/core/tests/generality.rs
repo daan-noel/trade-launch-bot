@@ -62,6 +62,7 @@ fn mk_trade(mint: &str, quote_id: i16, wallet_ref: i32, sig: &[u8]) -> NewTrade 
         leg_index: 0,
         block_time: Utc::now(),
         tx_signature: sig.to_vec(),
+        payer_net_lamports: None,
     }
 }
 
