@@ -1,9 +1,11 @@
+/** `toFixed`, except a value that rounds to zero prints unsigned (`0.00`, never `-0.00`). */
 export function formatDecimal(value: number, decimals: number): string {
-  return value.toFixed(decimals);
+  const s = value.toFixed(decimals);
+  return s.startsWith('-') && Number(s) === 0 ? s.slice(1) : s;
 }
 
 export function formatDecimalTrim(value: number, decimals: number): string {
-  const s = value.toFixed(decimals);
+  const s = formatDecimal(value, decimals);
   if (!s.includes('.')) return s;
   const trimmed = s.replace(/0+$/, '').replace(/\.$/, '');
   return trimmed || s;

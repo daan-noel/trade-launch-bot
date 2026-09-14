@@ -85,4 +85,11 @@ describe('formatSigned / formatSignedPct', () => {
     expect(formatSignedPct(-0.5, 1)).toBe('-0.5%');
     expect(formatSignedPct(0, 1)).toBe('0.0%');
   });
+
+  it('prints a value that rounds to zero unsigned', () => {
+    expect(formatSignedPct(-0.01, 1)).toBe('0.0%');
+    expect(formatSignedPct(0.01, 1)).toBe('0.0%');
+    expect(formatSigned(0.0001, 2)).toBe('0');
+    expect(formatSigned(-0.0001, 2)).toBe('0');
+  });
 });

@@ -9,7 +9,7 @@
  * bag sizes.
  */
 
-import { formatCompact } from 'utils/format';
+import { formatCompact, formatDecimal } from 'utils/format';
 
 export type SignedToneClass = 'text-green' | 'text-red' | 'text-text-mid' | 'text-text-dim';
 
@@ -114,12 +114,16 @@ export function signedStatTone(v: number | null | undefined): SignedStatTone {
   return v > 0 ? 'green' : 'red';
 }
 
-/** `+`-prefixed compact number for signed PnL displays (negatives keep `-`). */
+/** `+`-prefixed compact number for signed PnL displays (negatives keep `-`).
+ *  A value that rounds to zero prints unsigned. */
 export function formatSigned(v: number, digits: number): string {
-  return `${v > 0 ? '+' : ''}${formatCompact(v, digits)}`;
+  const s = formatCompact(v, digits);
+  return v > 0 && Number.parseFloat(s) !== 0 ? `+${s}` : s;
 }
 
-/** `+`-prefixed percent string, e.g. `+1.2%` / `-0.5%` / `0.0%`. */
+/** `+`-prefixed percent string, e.g. `+1.2%` / `-0.5%` / `0.0%`. A value that
+ *  rounds to zero prints unsigned (`0.0%`, never `-0.0%` or `+0.0%`). */
 export function formatSignedPct(v: number, digits = 1): string {
-  return `${v > 0 ? '+' : ''}${v.toFixed(digits)}%`;
+  const s = formatDecimal(v, digits);
+  return `${v > 0 && Number(s) !== 0 ? '+' : ''}${s}%`;
 }

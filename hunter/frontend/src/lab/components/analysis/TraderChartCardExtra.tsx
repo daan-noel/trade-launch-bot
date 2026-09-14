@@ -2,6 +2,7 @@ import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { Badge } from 'components/ui/Badge';
 import { formatDurationShort } from 'utils/format';
 import { formatTimestampMs } from 'utils/date';
+import { formatSignedPct, signedToneClass } from 'lib/signedTone';
 import {
   WALLET_STATS,
   walletHoldSeconds,
@@ -50,14 +51,13 @@ export function TraderChartCardExtra({
       <span className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
         {net != null && (
           <span
-            className={`font-bold ${net >= 0 ? 'text-green' : 'text-red'}`}
+            className={`font-bold ${signedToneClass(net)}`}
             title={`${WALLET_STATS.rowNetSol.def}\n\n${WALLET_STATS.rowNetPct.label}: ${WALLET_STATS.rowNetPct.def}`}
           >
             <AmountCell sol={net} /> PnL
             {pct != null && (
               <span className="ml-1 font-mono font-semibold">
-                ({pct >= 0 ? '+' : ''}
-                {pct.toFixed(1)}%)
+                ({formatSignedPct(pct, 1)})
               </span>
             )}
           </span>
@@ -69,7 +69,7 @@ export function TraderChartCardExtra({
         </span>
         {openSol != null && (
           <span
-            className={openSol >= 0 ? 'text-green' : 'text-red'}
+            className={signedToneClass(openSol)}
             title={WALLET_STATS.openPnlSol.def}
           >
             open ≈ <AmountCell sol={openSol} />

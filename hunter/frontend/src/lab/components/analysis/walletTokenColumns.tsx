@@ -4,6 +4,7 @@ import { DateCell } from 'components/table/DateCell';
 import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { Badge } from 'components/ui/Badge';
 import { ageClass, formatAge, formatDecimalTrim } from 'utils/format';
+import { signedToneClass } from 'lib/signedTone';
 import {
   WALLET_STATS,
   walletHoldSeconds,
@@ -86,13 +87,16 @@ function StaticAge({ seconds }: { seconds: number | null }) {
   return <span className={ageClass(seconds)}>{formatAge(seconds)}</span>;
 }
 
-/** A signed percent, green when it went the wallet's way. */
+/** A signed percent, green when it went the wallet's way. Sign and tone follow
+ *  the printed value, so one that rounds to zero reads `0%`, neutral. */
 function SignedPct({ pct }: { pct: number | null }) {
   if (pct == null) return <>-</>;
+  const text = formatDecimalTrim(pct, 1);
+  const shown = Number(text);
   return (
-    <span className={pct >= 0 ? 'text-green' : 'text-red'}>
-      {pct >= 0 ? '+' : ''}
-      {formatDecimalTrim(pct, 1)}%
+    <span className={signedToneClass(shown)}>
+      {shown > 0 ? '+' : ''}
+      {text}%
     </span>
   );
 }
@@ -270,7 +274,7 @@ export function walletTokenColumns(): ColumnDef<TraderTokenRow>[] {
         const net = walletRowNetSol(r);
         if (net == null) return '-';
         return (
-          <span className={net >= 0 ? 'text-green' : 'text-red'}>
+          <span className={signedToneClass(net)}>
             <AmountCell sol={net} />
           </span>
         );
