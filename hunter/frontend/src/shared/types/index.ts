@@ -925,7 +925,8 @@ export interface WalletEpisode {
   net_sol: number | null;
   /** `net_sol / sol_in x 100`. `closed` only. */
   pnl_pct: number | null;
-  /** `open` only: tokens held x current spot price. An estimate. */
+  /** `open` only: what the tokens held sell for now — the pool's sell, venue fee and
+   *  impact included (`held x spot` when the episode has a missing flow). An estimate. */
   mark_sol: number | null;
   /** `open` only: SOL moved so far + `mark_sol`. An estimate. */
   open_pnl_sol: number | null;

@@ -223,6 +223,18 @@ impl CostModel {
         Self { price_impact: false, ..Self::pumpfun_with_impact_with(tuning) }
     }
 
+    /// The venue's own charges only — its fee and the constant-product impact —
+    /// with no transaction cost: what a bag sells for whoever sends the sell. Marks
+    /// another wallet's bag, whose priority fee and tip are that wallet's choice.
+    pub fn venue_only() -> Self {
+        Self {
+            fixed_buy_sol: 0.0,
+            fixed_sell_sol: 0.0,
+            close_fee_sol: 0.0,
+            ..Self::pumpfun_with_impact()
+        }
+    }
+
     /// A frictionless model (no fees/slippage/fixed cost) — pure price-to-price,
     /// for analytic baselines and tests.
     pub fn frictionless() -> Self {

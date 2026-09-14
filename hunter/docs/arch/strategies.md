@@ -539,12 +539,16 @@ trade**, so simulate and live resolve at the same point.
   flow (`trades.payer_net_lamports`), read by `TradeRepo::wallet_txs_on` only when the
   wallet paid and no other mint or wallet shares the transaction, otherwise `None` —
   there is no curve-side fallback. Status: `Closed` (sold down, every flow exact — the
-  only one with `net_sol` / `pnl_pct`), `Open` (still holding; `mark_sol` / `open_pnl_sol`
-  at the current spot price, an estimate), `Incomplete` (`missing_flow`, or `unseen_buy`:
+  only one with `net_sol` / `pnl_pct`), `Open` (still holding; `mark_sol` is what the bag
+  sells for now, `open_pnl_sol` adds the SOL moved so far — an estimate), `Incomplete` (`missing_flow`, or `unseen_buy`:
   it sold more than the ledger saw bought — consecutive such sells join one episode).
   The lab handler folds each mint from `EPISODE_LOOKBACK_DAYS` (30, the `trades`
   retention) before the window and keeps the episodes that close inside it plus the
-  open one. A transfer out is invisible to `trades`, so tokens that left that way read
+  open one. The open mark (`wallet_ledger::open_mark_sol`) sells the held bag into the
+  pool of the mint's newest priced trade (`TradeRepo::latest_pools`) through
+  `CostModel::venue_only` — venue fee and impact, not the wallet's own transaction
+  cost. The stored trades carry no per-swap PumpSwap fee, so a migrated pool marks at
+  the curve fee. An episode with a missing flow keeps `held x spot`. A transfer out is invisible to `trades`, so tokens that left that way read
   as an open episode, which no PnL figure sums.
 
 ## Event log + replay debugger (Phase 6)

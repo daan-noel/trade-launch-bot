@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use trading_core::api::handlers::tokens::TokenSummary;
 use trading_core::config::constants::curve_progress_pct;
+use trading_core::models::MarkQuote;
 use trading_core::state::core_state::CoreState;
 use trading_core::storage::repositories::trade_repo::WalletTradedMint;
 use trading_core::strategies::wallet_ledger::{wallet_episodes, EpisodeStatus, WalletEpisode, WalletTx};
@@ -289,6 +290,21 @@ pub async fn list_wallet_tokens(
         }
     }
 
+    // The pool each still-held mint sells into now, for its open episode's mark.
+    // A failure degrades the marks to the token's spot with no depth.
+    let held: Vec<String> = txs_by_mint
+        .iter()
+        .filter(|(_, txs)| txs.iter().map(|t| t.token_delta).sum::<i64>() > 0)
+        .map(|(mint, _)| mint.clone())
+        .collect();
+    let mut pools = match state.trade_repo().latest_pools(&held).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("DB error fetching pools for {wallet}: {e}");
+            HashMap::new()
+        }
+    };
+
     // Index the token rows by mint, then walk `traded` (recency order) so the
     // response preserves the wallet's most-recent-trade-first ordering.
     let mut by_mint: HashMap<String, TokenSummary> = rows
@@ -327,7 +343,10 @@ pub async fn list_wallet_tokens(
             let token = by_mint.remove(&t.mint_address)?;
             let co = co_by_mint.remove(&t.mint_address).unwrap_or_default();
             let txs = txs_by_mint.remove(&t.mint_address).unwrap_or_default();
-            let episodes = window_episodes(&txs, token.current_price, since);
+            let mark = pools.remove(&t.mint_address).or_else(|| {
+                token.current_price.map(|price| MarkQuote { price, reserve_sol: None, venue_fee_bps: None })
+            });
+            let episodes = window_episodes(&txs, mark, since);
             Some(wallet_token_row(token, t, co, episodes))
         })
         .collect();
@@ -382,9 +401,9 @@ fn co_trader(primary: &WalletTradedMint, c: WalletTradedMint) -> CoTrader {
 /// One mint's episodes as the page shows them: those that closed at or after
 /// `since`, plus the one still open. The fold itself runs over the look-back
 /// too, so an episode is cut by where it closed, never by where the read began.
-fn window_episodes(txs: &[WalletTx], current_price: Option<f64>, since: DateTime<Utc>) -> Vec<WalletEpisode> {
+fn window_episodes(txs: &[WalletTx], mark: Option<MarkQuote>, since: DateTime<Utc>) -> Vec<WalletEpisode> {
     let since_ms = since.timestamp_millis();
-    wallet_episodes(txs, current_price)
+    wallet_episodes(txs, mark)
         .into_iter()
         .filter(|e| e.status == EpisodeStatus::Open || e.exit_ms.is_some_and(|ms| ms >= since_ms))
         .collect()

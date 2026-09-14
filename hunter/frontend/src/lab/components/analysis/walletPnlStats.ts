@@ -81,7 +81,7 @@ export const WALLET_STATS = {
   },
   openPnlSol: {
     label: 'Open (estimate)',
-    def: 'Σ over open trades of SOL moved so far + tokens held × current spot price. An estimate: an open trade has no exact value until it sells. In no other figure.',
+    def: 'Σ over open trades of SOL moved so far + what the tokens held would sell for now: the pool selling the bag, venue fee and price impact included, but not the transaction fee the wallet pays itself. An estimate: an open trade has no exact value until it sells. In no other figure.',
   },
   incompleteCount: {
     label: 'Incomplete',

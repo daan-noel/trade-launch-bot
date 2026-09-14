@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::models::trade::{Trade, TradeType};
+use crate::models::MarkQuote;
 use crate::storage::repositories::wallet_dict_repo::WalletDictRepo;
 use crate::strategies::wallet_ledger::WalletTx;
 
@@ -996,6 +997,48 @@ impl TradeRepo {
                         TradeType::Sell,
                     ),
                 })
+            })
+            .collect())
+    }
+
+    /// The pool each of `mints` trades on now: the spot (SOL per raw unit) and
+    /// priced SOL depth of its newest trade that carries a reserve pair — the pool
+    /// an open bag would sell into. A mint with no such trade in the retained
+    /// window is absent. No per-swap PumpSwap fee is stored, so `venue_fee_bps` is
+    /// `None` and a migrated pool marks at the curve fee.
+    ///
+    /// One `idx_trades_mint_order` backward scan per mint (~7 ms each locally).
+    pub async fn latest_pools(&self, mints: &[String]) -> anyhow::Result<HashMap<String, MarkQuote>> {
+        if mints.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT m.mint, x.reserve_lamports, x.reserve_token
+            FROM unnest($1::text[]) AS m(mint)
+            JOIN LATERAL (
+                SELECT t.reserve_lamports, t.reserve_token
+                FROM trades t
+                WHERE t.mint_address = m.mint
+                  AND t.reserve_lamports IS NOT NULL AND t.reserve_token > 0
+                ORDER BY t.slot DESC, t.tx_index DESC, t.leg_index DESC
+                LIMIT 1
+            ) x ON true
+            "#,
+        )
+        .bind(mints)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(mint, reserve_lamports, reserve_token)| {
+                let reserve_sol = lamports_to_sol(reserve_lamports);
+                let quote = MarkQuote {
+                    price: reserve_sol / reserve_token as f64,
+                    reserve_sol: Some(reserve_sol),
+                    venue_fee_bps: None,
+                };
+                (mint, quote)
             })
             .collect())
     }

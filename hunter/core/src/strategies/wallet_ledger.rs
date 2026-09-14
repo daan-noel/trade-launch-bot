@@ -12,7 +12,8 @@
 use serde::Serialize;
 
 use crate::config::constants::lamports_to_sol;
-use crate::strategies::kernel::weighted_return_pct;
+use crate::models::MarkQuote;
+use crate::strategies::kernel::{sell_value_proceeds, weighted_return_pct, CostModel};
 
 /// An episode closes once the tokens still held are at most `1 / DUST_DIVISOR`
 /// (0.1 %) of what it bought, above what it came in with.
@@ -78,8 +79,8 @@ pub struct WalletEpisode {
     pub net_sol: Option<f64>,
     /// `net_sol / sol_in x 100`, the house return rule. `Closed` with a buy only.
     pub pnl_pct: Option<f64>,
-    /// `Open` only: tokens held x the token's current spot price. An estimate,
-    /// never summed with an exact figure.
+    /// `Open` only: what the tokens held would sell for now ([`open_mark_sol`]).
+    /// Never summed with an exact figure.
     pub mark_sol: Option<f64>,
     /// `Open` only: SOL moved so far + `mark_sol`. An estimate.
     pub open_pnl_sol: Option<f64>,
@@ -150,7 +151,7 @@ impl Acc {
         }
     }
 
-    fn finish(self, current_price: Option<f64>) -> WalletEpisode {
+    fn finish(self, mark: Option<MarkQuote>) -> WalletEpisode {
         let status = match self.exit {
             None => EpisodeStatus::Open,
             Some(_) if self.missing_flow || self.unseen_buy => EpisodeStatus::Incomplete,
@@ -166,7 +167,8 @@ impl Acc {
             _ => None,
         };
         let is_open = status == EpisodeStatus::Open;
-        let mark_sol = current_price.filter(|_| is_open).map(|p| self.held as f64 * p);
+        let mark_sol =
+            mark.filter(|_| is_open).map(|q| open_mark_sol(self.held, &q, !self.missing_flow));
         let open_pnl_sol = moved.zip(mark_sol).map(|(m, mark)| m + mark);
         WalletEpisode {
             status,
@@ -193,10 +195,24 @@ impl Acc {
     }
 }
 
+/// What an open episode's `held` tokens would sell for in the pool `mark` quotes:
+/// the venue's sell of the bag — its fee and our impact on the pool's depth
+/// ([`CostModel::venue_only`]), without the wallet's own transaction cost, which
+/// is its choice. An episode with a missing flow (opened before the flow was
+/// recorded) keeps the plain `held x spot` estimate it was always shown with.
+pub fn open_mark_sol(held: i64, mark: &MarkQuote, exact: bool) -> f64 {
+    let value = held as f64 * mark.price;
+    if !exact {
+        return value;
+    }
+    let costs = CostModel::venue_only().at_venue_fee(mark.venue_fee_bps);
+    sell_value_proceeds(value, mark.reserve_sol, &costs, false)
+}
+
 /// Fold one wallet's transactions on one mint, in the canonical tape order
-/// `(slot, tx_index)`, into its episodes. `current_price` (SOL per raw token
-/// unit, `TokenSummary::current_price`) marks a still-open episode.
-pub fn wallet_episodes(txs: &[WalletTx], current_price: Option<f64>) -> Vec<WalletEpisode> {
+/// `(slot, tx_index)`, into its episodes. `mark` (the mint's pool now, SOL per raw
+/// token unit) marks a still-open episode.
+pub fn wallet_episodes(txs: &[WalletTx], mark: Option<MarkQuote>) -> Vec<WalletEpisode> {
     let mut done: Vec<Acc> = Vec::new();
     let mut cur: Option<Acc> = None;
     // Tokens the ledger has seen the wallet hold, never below zero.
@@ -229,7 +245,7 @@ pub fn wallet_episodes(txs: &[WalletTx], current_price: Option<f64>) -> Vec<Wall
         }
     }
     done.extend(cur);
-    done.into_iter().map(|a| a.finish(current_price)).collect()
+    done.into_iter().map(|a| a.finish(mark)).collect()
 }
 
 #[cfg(test)]
@@ -245,6 +261,11 @@ mod tests {
 
     fn close(a: Option<f64>, b: f64) -> bool {
         a.is_some_and(|a| (a - b).abs() < 1e-9)
+    }
+
+    /// A pool at `price` with no known depth.
+    fn spot(price: f64) -> Option<MarkQuote> {
+        Some(MarkQuote { price, reserve_sol: None, venue_fee_bps: None })
     }
 
     #[test]
@@ -309,7 +330,7 @@ mod tests {
 
     #[test]
     fn more_than_dust_left_keeps_the_episode_open() {
-        let eps = wallet_episodes(&[tx(1, 1_000_000, Some(-SOL)), tx(2, -998_000, Some(SOL))], Some(1e-6));
+        let eps = wallet_episodes(&[tx(1, 1_000_000, Some(-SOL)), tx(2, -998_000, Some(SOL))], spot(1e-6));
         assert_eq!(eps[0].status, EpisodeStatus::Open);
         assert_eq!(eps[0].held_tokens, 2_000);
         assert_eq!(eps[0].net_sol, None, "an open episode has no realized figure");
@@ -368,15 +389,39 @@ mod tests {
         assert_eq!((e.sol_in, e.sol_out, e.net_sol, e.pnl_pct), (None, None, None, None));
     }
 
+    /// The bag is marked at what selling it returns: the 0.75 SOL it is worth at
+    /// spot, less the venue fee, with no transaction cost of the wallet's.
     #[test]
-    fn an_open_episode_is_marked_at_the_current_price() {
-        let eps = wallet_episodes(&[tx(1, 1_000, Some(-SOL)), tx(2, -500, Some(SOL))], Some(0.0015));
+    fn an_open_episode_is_marked_at_what_its_bag_sells_for() {
+        let eps = wallet_episodes(&[tx(1, 1_000, Some(-SOL)), tx(2, -500, Some(SOL))], spot(0.0015));
         let e = &eps[0];
         assert_eq!(e.status, EpisodeStatus::Open);
-        assert!(close(e.mark_sol, 0.75));
-        assert!(close(e.open_pnl_sol, 0.75), "0 SOL moved so far + the 0.75 mark");
+        let want = 0.75 * (1.0 - 0.0125);
+        assert!(close(e.mark_sol, want));
+        assert!(close(e.open_pnl_sol, want), "0 SOL moved so far + the mark");
         assert_eq!(e.exit_slot, None);
         let unpriced = wallet_episodes(&[tx(1, 1_000, Some(-SOL))], None);
         assert_eq!((unpriced[0].mark_sol, unpriced[0].open_pnl_sol), (None, None));
+    }
+
+    /// A bag sells down the pool it marks against, and a PumpSwap pool charges
+    /// its own fee.
+    #[test]
+    fn the_open_mark_sells_into_the_pools_depth_at_its_fee() {
+        let pool = MarkQuote { price: 0.001, reserve_sol: Some(10.0), venue_fee_bps: None };
+        let bag = open_mark_sol(1_000, &pool, true);
+        assert!((bag - 1.0 / (1.0 + 1.0 / 10.0) * (1.0 - 0.0125)).abs() < 1e-12);
+        let amm = MarkQuote { venue_fee_bps: Some(95.0), ..pool };
+        assert!((open_mark_sol(1_000, &amm, true) - 1.0 / 1.1 * (1.0 - 0.0095)).abs() < 1e-12);
+    }
+
+    /// An episode opened before its flow was recorded keeps the `held x spot`
+    /// estimate.
+    #[test]
+    fn a_missing_flow_episode_keeps_the_spot_estimate() {
+        let eps = wallet_episodes(&[tx(1, 1_000, None)], spot(0.0015));
+        assert!(eps[0].missing_flow);
+        assert!(close(eps[0].mark_sol, 1.5));
+        assert_eq!(eps[0].open_pnl_sol, None);
     }
 }

@@ -7,9 +7,9 @@ deploy keep the figures they were booked with; they are not re-booked. Open:
 
 1. **Deploy.** Migration `0019_trade_payer_net.sql` and the live binary ship together;
    until then the server books curve-side amounts.
-2. **Sweep AMM legs.** The lake stores no per-swap PumpSwap fee, so a sweep leg on an
-   AMM print prices the curve's 125 bps; live paper and the open marks price the
-   pool's own fee.
+2. **Stored AMM fee.** Neither `trades` nor the lake stores the per-swap PumpSwap fee,
+   so a sweep leg on an AMM print and a Trader Analysis mark on a migrated pool price
+   the curve's 125 bps; live paper and the live open marks price the pool's own fee.
 3. **Rent stranded in empty token accounts.** The wallet holds 532 empty Token-2022
    accounts (1.14 SOL of rent, measured 2026-09-14), most from before 2026-09-07. A
    sweep that closes every empty account returns it. One path that still strands
