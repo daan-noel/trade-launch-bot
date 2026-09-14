@@ -56,6 +56,14 @@ rules `Flip-Catch - Bracket + Door` and `Flip-Catch - Room + Door` sit in the lo
 inactive. What remains: migration 0017 and the new bins on the server, the two rules on paper beside
 rule 1 and rule 1b, and the clean days (the first two read, case file L10).
 
+The public-app class changes to repeat use (case file L11-L12): the door's gain is one bot swarm's
+coins, and the line at 100 sits inside that swarm's recipes (100-275 wallets a day). Public when the
+first buy's app key had > 100 buying wallets and >= 2 buys per wallet the day before: the swarm runs
+about 1, the named apps 2.9 and up, and the money equals the 100 line's on every tape. The engine
+classes it this way (migration 0018: the daily table carries each recipe's app wallets and buys) and
+books `r1e_repeat.py`'s tickets ticket for ticket on the holdout and 09-11..09-12. What remains is
+unchanged: migrations 0017-0018 and the new bins on the server, the two rules on paper, the clean days.
+
 Every step reads `study_exact` (lake 09-01..09-06 12:00, every leg) and chooses there. The
 holdout (`holdout_exact`) books a frozen change once. The days after 09-10 stay untouched.
 

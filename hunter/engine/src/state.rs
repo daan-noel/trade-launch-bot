@@ -257,7 +257,7 @@ pub struct EngineState {
     /// Whether any loaded rule reads `m_print_wallet`, so every track opens the map.
     pub any_print_wallet: bool,
     /// Whether any loaded rule reads `m_holder_book`, so every track opens the book and
-    /// every buy is stamped from [`build_breadth`](Self::build_breadth).
+    /// every buy is stamped from [`public_recipes`](Self::public_recipes).
     pub any_holder_book: bool,
     /// Union of every loaded rule's [`ClockHorizons`] — how long *any* rule's
     /// readings can still move without a trade. Drives [`Settled`].
@@ -309,12 +309,13 @@ pub struct EngineState {
     /// Replaced whole by [`Event::LaunchBuildStatsReloaded`]; empty until a host
     /// loads one, in which case every door axis fails closed (never arms).
     pub launch_build_stats: crate::hash::HashedMap<crate::event::LaunchBuildStat>,
-    /// The day's build breadth, by build-recipe hash: distinct wallets that bought
-    /// with each recipe on the previous UTC day. Replaced whole by
+    /// The day's public-app recipes, by build-recipe hash: the rows of the daily
+    /// build-breadth table that pass [`is_public_app`](crate::metrics::holder_book::is_public_app).
+    /// Replaced whole by
     /// [`Event::BuildBreadthReloaded`](crate::event::Event::BuildBreadthReloaded);
     /// `None` until a host loads one, in which case every buy is stamped unknown and
     /// `m_holder_book.public_app_share` reads `NaN` (fails closed).
-    pub build_breadth: Option<crate::hash::HashedMap<u32>>,
+    pub public_recipes: Option<crate::hash::HashedSet>,
     /// Launches seen per creator wallet hash — the tally behind
     /// the `prior_launches` fingerprint axis. Incremented on every `TokenCreated`, read
     /// (strictly before the increment) to seed the new token's metric.
@@ -610,17 +611,18 @@ impl EngineState {
         }
     }
 
-    /// Stamp a buy with its recipe's previous-day breadth ([`TradeLite::build_day_buyers`])
-    /// when a loaded rule reads `m_holder_book`; any other print passes unchanged. One
-    /// map get per buy, and none at all for a rule set without the group.
+    /// Stamp a buy with whether its recipe went through a public app the previous day
+    /// ([`TradeLite::build_day_public`]) when a loaded rule reads `m_holder_book`; any
+    /// other print passes unchanged. One set lookup per buy, and none at all for a rule
+    /// set without the group.
     ///
-    /// [`TradeLite::build_day_buyers`]: crate::metrics::TradeLite::build_day_buyers
+    /// [`TradeLite::build_day_public`]: crate::metrics::TradeLite::build_day_public
     pub fn stamp_build_breadth(&self, mut t: crate::metrics::TradeLite) -> crate::metrics::TradeLite {
         if self.any_holder_book && t.side == crate::metrics::Side::Buy {
-            t.build_day_buyers = self
-                .build_breadth
+            t.build_day_public = self
+                .public_recipes
                 .as_ref()
-                .map(|m| t.build_hash.and_then(|h| m.get(&h).copied()).unwrap_or(0));
+                .map(|s| t.build_hash.is_some_and(|h| s.contains(&h)));
         }
         t
     }

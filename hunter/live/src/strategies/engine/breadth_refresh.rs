@@ -1,9 +1,9 @@
 //! The build-breadth table's daily refresh.
 //!
 //! `m_holder_book` classes a holder at its first buy from the day's build breadth:
-//! distinct wallets per build recipe on the previous UTC day. The engine holds one
-//! day's table; the boot path loads today's before the first rule load, and this
-//! task swaps in the next day's shortly after 00:00 UTC.
+//! each build recipe's app, its buying wallets and buys on the previous UTC day. The
+//! engine holds one day's table; the boot path loads today's before the first rule
+//! load, and this task swaps in the next day's shortly after 00:00 UTC.
 //!
 //! The compute is one `GROUP BY` over a day of `trades`, heavier than the launch-build
 //! door's, so it runs HERE, off the decision loop, and the loop only swaps the table

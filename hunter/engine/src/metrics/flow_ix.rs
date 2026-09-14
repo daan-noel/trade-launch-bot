@@ -75,6 +75,25 @@ pub fn build_hash_from_labels_value(labels: &Value) -> Option<u64> {
     build_hash(&normalize_labels(labels))
 }
 
+/// Programs every sender's transaction carries around the trade, whatever app sent
+/// it: a label whose program name starts with one of these never names the app.
+pub const APP_INFRA: [&str; 5] = ["Compute Budget", "System Program", "Token Program", "Associated Token", "Memo Program"];
+
+/// The app a transaction was sent through: the program of its first label that is not
+/// [`APP_INFRA`] (a label's program is the text before `": "`). `None` for a direct
+/// pump.fun call and for labels of infrastructure only: the pump.fun site and the bots
+/// that call the program directly differ only in their recipe, so there the recipe is
+/// the app.
+///
+/// The offline twin is the hot-tape study's `r1e_public.app_of` (case file L11).
+pub fn recipe_app<S: AsRef<str>>(labels: &[S]) -> Option<&str> {
+    let app = labels
+        .iter()
+        .map(|l| l.as_ref().split(": ").next().unwrap_or_default())
+        .find(|p| !APP_INFRA.iter().any(|i| p.starts_with(i)))?;
+    (app != "Pump.Fun").then_some(app)
+}
+
 // ── Structural markers ───────────────────────────────────────────────────────
 
 /// The structural markers a build can carry, one bit each.
@@ -1135,6 +1154,18 @@ mod tests {
         );
         assert_ne!(build_hash(&["Pump.Fun: Buy", "Compute Budget: SetComputeUnitLimit"]), core);
         assert_eq!(build_hash(&[] as &[&str]), None);
+    }
+
+    #[test]
+    fn a_recipes_app_is_its_first_program_past_the_infrastructure() {
+        let axiom = ["Compute Budget: SetComputeUnitPrice", "System Program: Transfer", "Axiom Trade: ix#00"];
+        assert_eq!(recipe_app(&axiom), Some("Axiom Trade"));
+        let unknown = ["Token Program: SyncNative", "Unknown (6Vo3245e): ix#01", "Pump.Fun: Buy"];
+        assert_eq!(recipe_app(&unknown), Some("Unknown (6Vo3245e)"));
+        // A direct pump.fun call, and infrastructure only: the recipe is the app.
+        assert_eq!(recipe_app(&["Compute Budget: SetComputeUnitLimit", "Pump.Fun: Buy"]), None);
+        assert_eq!(recipe_app(&["Compute Budget: SetComputeUnitLimit"]), None);
+        assert_eq!(recipe_app(&[] as &[&str]), None);
     }
 
     /// Every distinct sequence in a lake export, not a sample: point

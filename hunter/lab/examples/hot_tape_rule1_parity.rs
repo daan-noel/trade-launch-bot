@@ -70,12 +70,10 @@ async fn load_breadth(
     let mut day = first;
     while day <= last {
         let rows = repo.load_or_compute_day(day).await.expect("build breadth day");
-        let public = rows
-            .iter()
-            .filter(|r| r.buyers as u32 > hunter_engine::metrics::holder_book::PUBLIC_MIN_BUYERS)
-            .count();
+        let table = BuildBreadthRepo::to_engine(&rows);
+        let public = table.iter().filter(|b| hunter_engine::metrics::holder_book::is_public_app(b)).count();
         println!("build breadth {day}: {} recipes, {public} public", rows.len());
-        out.push((day, Arc::from(BuildBreadthRepo::to_engine(&rows))));
+        out.push((day, Arc::from(table)));
         day = day.succ_opt().expect("a date has a successor");
     }
     Arc::from(out)

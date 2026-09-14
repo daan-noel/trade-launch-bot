@@ -479,7 +479,7 @@ fn trade_lite(ct: &CachedTrade) -> TradeLite {
         // Raw token units, what `m_holder_book` keeps each wallet's bag in. The
         // previous-day build breadth is the engine's to stamp, never an adapter's.
         token_amount: ct.token_amount,
-        build_day_buyers: None,
+        build_day_public: None,
     }
 }
 

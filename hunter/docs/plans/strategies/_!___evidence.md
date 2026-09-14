@@ -771,10 +771,10 @@ little (+0.29 / +0.19 SOL study) and most of the gain is the bundled-buyer cut; 
 four one-slot rugs sit at public share 0.96, which no holder door catches.
 
 **The engine spelling.** The frozen breadth counts the whole tape, future days included, which
-no live engine can read. One app whose instruction order varies per transaction splits into about
-490 recipes of 75-100 buying wallets a day; over a 4.5-6 day tape they sit at the 300 line (study
-100-150, holdout 300-500), so the tape spelling classes that app private on one tape and public on
-the other. Every past-only spelling books the same clone on the holdout (tail 10-12 against rule
+no live engine can read. The recipes near any line are mostly one bot swarm (below): about 30
+unnamed programs at a time, 16 recipes each, so over a 4.5-6 day tape they sit at the 300 line
+(study 100-150, holdout 300-500) and the tape spelling classes the swarm private on one tape and
+public on the other. Every past-only spelling books the same clone on the holdout (tail 10-12 against rule
 1's 22, SOL 4.19-4.46 against 3.99, 1-3 days, thresholds 50-300). The engine reads: public when
 the recipe of the holder's first buy had more than 100 distinct buying wallets, on any token, on
 the UTC day before that buy; the class fixed at that buy; each bag in the prints' own token amounts
@@ -788,17 +788,71 @@ exit prints, SOL to 1.5e-16), and its stored daily table equals the lake's count
 | holdout, Room: rule 1b / clone | 412 / 353 | +5.55 / +6.84 % | 4.57 / 4.83 | 22 / 10 | 5/5 / 5/5 | 13.0 / 12.1 |
 | 09-11..09-12, Bracket: rule 1 / clone | 114 / 95 | +1.30 / +4.01 % | 0.30 / 0.76 | 11 / 7 | 2/2 / 2/2 | 38.9 / 15.1 |
 | 09-11..09-12, Room: rule 1b / clone | 109 / 90 | +0.79 / +3.42 % | 0.17 / 0.62 | 13 / 9 | 2/2 / 2/2 | 92.9 / 26.0 |
+| study 09-02..09-06 12:00, Bracket: rule 1 / clone | 464 / 418 | +5.13 / +6.03 % | 4.76 / 5.04 | 31 / 21 | 5/5 / 5/5 | 12.7 / 10.4 |
+| study 09-02..09-06 12:00, Room: rule 1b / clone | 411 / 370 | +6.00 / +6.46 % | 4.93 / 4.78 | 30 / 21 | 5/5 / 5/5 | 15.4 / 15.9 |
 
 On 09-11..09-12 the market prints half the trades of the days before, rule 1 fires 57 a day, and
-live paper matches the replay hour for hour; the clone refuses both paper stops at -80 %.
+live paper matches the replay hour for hour; the clone refuses both paper stops at -80 %. The
+study rows start 09-02: the lake and PG start 09-01, so 09-01 has no table the day before. On the
+study days the public-app door adds nothing to the bundled-buyer cut alone (5.05 / 4.95 SOL); on
+the holdout and 09-11..09-12 it carries the gain (the bundled-buyer cut alone books 3.69 / 4.42
+SOL on the holdout and 0.21 / 0.10 on 09-11..09-12, below rule 1's own).
+
+**Who the line sorts** (`r1e_public.py`). The swarm: 20-40 thousand persistent wallets (4 % new on
+a day, against 21-51 % on the named apps), each buying through about 3 of ~30 unnamed programs,
+one buy per wallet per program a day, 99 % of them selling the coin; its recipes hold 100-275
+buying wallets a day, the named apps' smaller recipes 60-230. Where it holds >= 20 % of live
+supply, 36-47 % of rule-1-like candidate sells (reserve 60-100, age >= 158 s) are followed by a
+one-slot fall of -50 % within 90 s, against 1.7-5.5 % elsewhere, on all three tapes; it sits on
+35-39 % of those rug candidates on the study and the holdout, 20 % on 09-11..09-12. The line at 100
+cuts through its recipes: the swarm is private on the days its recipes hold under 100 wallets (the
+tables of 09-03 and 09-11) and public on the others. Counted per program, it is always public. The
+rug rate among the candidates the door lets in (public share >= 0.7), base rate in brackets:
+
+| breadth of the first buy's build, the day before | study (3.37 %) | holdout (2.90 %) | 09-11..09-12 (6.71 %) |
+| --- | ---: | ---: | ---: |
+| recipe > 100 (the engine) | 1.56 % | 1.62 % | 5.50 % |
+| recipe > 200 | 0.92 % | 0.53 % | 5.00 % |
+| recipe > 300 | 0.92 % | 0.44 % | 4.81 % |
+| per program > 100 | 3.20 % | 2.54 % | 6.71 % |
+
+The clone's money is flat from recipe > 25 to > 300 on every tape (holdout Bracket 4.19-4.42 SOL,
+Room 4.62-4.84; 09-11..09-12 0.76-0.80 / 0.62-0.83) and falls from 500, where the named apps'
+smaller recipes go private. Counted per program the door adds nothing to the bundled-buyer cut. On
+09-11..09-12 the rugs the door lets in are not the swarm's (0 of 644 candidates): the door is not
+a complete rug shield.
+
+**Repeat use** (`r1e_repeat.py`): buy transactions per wallet, per app key, per day. The named apps
+run 2.9-16.1 on every day, the swarm's programs 1.03-1.07 through 09-11 (on 09-12 it is nearly
+absent). Public: the first buy's app key had > W wallets and >= R buys per wallet the day before.
+The choice rule, fixed before the read (study, the door keeps >= 90 % of the band's non-rug
+candidates, lowest rug rate among its passes), takes W 100, R 3 (1.13 %; R 2 1.19 %); DFlow runs
+2.9-3.8, so R 3 classes it private on some days and R 2 sits in the middle of the gap. The swarm
+leaves the door's passes on every tape (holdout candidates with swarm share >= 0.2 let in: 107 ->
+0):
+
+| 0.2 SOL, 115 ms, Bracket / Room SOL (worse than -40 %) | recipe > 100 | app > 100, repeat >= 2 | app > 100, repeat >= 3 |
+| --- | ---: | ---: | ---: |
+| study 09-02..09-06 12:00 | 5.04 / 4.78 (21 / 21) | 5.20 / 5.04 (20 / 20) | 5.16 / 4.96 (20 / 20) |
+| holdout | 4.35 / 4.83 (11 / 10) | 4.34 / 4.81 (11 / 11) | 4.28 / 4.77 (11 / 11) |
+| 09-11..09-12 | 0.76 / 0.62 (7 / 9) | 0.80 / 0.63 (7 / 9) | 0.78 / 0.63 (7 / 9) |
+| rug rate among the door's passes, study / holdout / new | 1.56 / 1.62 / 5.50 % | 1.19 / 1.55 / 5.52 % | 1.13 / 1.55 / 5.52 % |
+
+The engine classes public by app > 100 and repeat >= 2 (migration 0018, `holder_book::is_public_app`)
+and books that column's tickets ticket for ticket: holdout 393 / 393 and 358 / 358, 09-11..09-12
+96 / 96 and 91 / 91, same prints, SOL to 1.5e-16. Its stored table equals the lake's app wallets
+and buys on every recipe of every day 09-03..09-12.
 
 verdict: the loss door and the bundled-buyer permission cut rule 1's tail by about half on the
 holdout and raise its SOL under both exits, in the engine as in Python. Two days after 09-10
-agree and certify nothing: the clone misses the concentration bar on them.
+agree and certify nothing: the clone misses the concentration bar on them. The door's gain is the
+bot swarm's coins, and the 100 line sits inside that swarm's recipes. Repeat use keeps the swarm
+private on every day read at the same money, where a breadth line only moves the problem, and the
+engine reads it.
 empty slots: D (beyond the loss door), R and S unchanged.
 
 Scripts (local): `r1t_members.py`, `r1t_anatomy.py`, `r1t_path.py`, `r1t_rug.py`, `r1t_rugdoor.py`,
-`r1t_perm.py`, `r1t_holdout.py`, `r1e_breadth.py`, `r1e_parity.py`, `r1n_newdays.py` in
+`r1t_perm.py`, `r1t_holdout.py`, `r1e_breadth.py`, `r1e_parity.py`, `r1e_public.py`, `r1e_repeat.py`, `r1n_newdays.py` in
 `node-derivation/hot-tape/`; the engine side is `hunter/lab/examples/hot_tape_rule1_parity.rs`.
 
 # 2. THE PRIZE

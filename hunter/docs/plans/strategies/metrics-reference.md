@@ -290,7 +290,7 @@ to be complete.
 
 | metric | meaning | unit | eq-tol |
 | --- | --- | --- | --- |
-| `public_app_share` | percent of live supply held by wallets whose first buy of this token used a public-app build | percent | 0.01 |
+| `public_app_share` | percent of live supply held by wallets whose first buy of this token went through a public app | percent | 0.01 |
 | `bundled_share` | percent of live supply held by wallets whose first buy landed in a slot where at least 3 wallets first bought with one build | percent | 0.01 |
 
 **The book is exact.** Each print moves its wallet's bag by `TradeLite::token_amount`, every
@@ -298,20 +298,30 @@ leg, never below zero; live supply is the sum of the bags. A print without a tok
 breaks the book and both metrics read `NaN` from then on. A missed print costs only its own
 tokens, where a reserve-delta book would hand them to the next print's wallet.
 
-**A holder is classed once, at its first buy.** Public app: that buy's build recipe had more
-than `holder_book::PUBLIC_MIN_BUYERS` (100) distinct buying wallets, on any token, on the
-previous UTC day. `reduce` stamps every buy with that count (`TradeLite::build_day_buyers`)
-from `EngineState::build_breadth`, the daily `build_breadth_day_stats` table; with no table
-loaded the stamp is `None`, and `public_app_share` reads `NaN` while such a holder keeps a bag
-(fails closed). Bundled: at least `BUNDLE_MIN_WALLETS` (3) first buys in one `(slot, build)`.
-Because the class is fixed at the buy, a table reload moves no tracked token's reading and
-bumps no `cross_epoch`.
+**A holder is classed once, at its first buy.** Public app (`holder_book::is_public_app`): on
+the previous UTC day, the app that buy's build recipe went through had more than
+`PUBLIC_MIN_BUYERS` (100) distinct buying wallets and at least `PUBLIC_MIN_REPEAT` (2) buy
+transactions per wallet, on any token. The app is `flow_ix::recipe_app`, the first program
+past compute budget, system, token, associated-token and memo; a direct pump.fun call is keyed
+by its recipe. A recipe nobody bought with the day before is not public. The daily
+`build_breadth_day_stats` table carries each recipe's app counts; `reduce` keeps the recipes
+that pass (`EngineState::public_recipes`) and stamps every buy with its class
+(`TradeLite::build_day_public`). With no table loaded the stamp is `None`, and
+`public_app_share` reads `NaN` while such a holder keeps a bag (fails closed). Bundled: at
+least `BUNDLE_MIN_WALLETS` (3) first buys in one `(slot, build)`. Because the class is fixed at
+the buy, a table reload moves no tracked token's reading and bumps no `cross_epoch`.
 
 **Why a day before, not the whole tape.** The derivation counted breadth over the whole study
 tape, future days included. The engine spelling reads only the past; on the holdout and the
-days after 09-10 it books the same clone (hot-tape case file L9). One app with a
-per-transaction instruction order splits into hundreds of recipes of ~90 wallets a day, so
-the breadth of a recipe, not of an app, is what the threshold reads.
+days after 09-10 it books the same clone (hot-tape case file L9).
+
+**Why repeat use, not breadth alone.** The largest one-slot rug source is a bot swarm that buys
+through ~30 unnamed programs at a time, 16 recipes each, one buy per wallet per program a day.
+Counted per program it looks like a crowd app (~2,800 wallets each); counted per recipe it
+holds 100-275 wallets a day, so any breadth line sits inside it and moves with it (case file
+L11). Its wallets do not come back: 1.03-1.07 buys per wallet per program a day, against 2.9-16
+on the named apps, so the repeat test keeps it private every day at the same money (case file
+L12). The line is 2, not 3: DFlow runs 2.9-3.8.
 
 A replay's grid starts at its first queued event, and with a day table loaded that is 00:00
 UTC of the first day, not the first print: a Python reference of a clock exit must use the

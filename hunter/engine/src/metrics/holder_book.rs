@@ -4,11 +4,13 @@
 //! token, every leg, never below zero ([`TradeLite::token_amount`]). Live supply is
 //! the sum of the bags. Two shares of it, both read after the print is folded:
 //!
-//! * `public_app_share` — held by wallets whose first buy of this token used a
-//!   PUBLIC-APP build: a build recipe more than [`PUBLIC_MIN_BUYERS`] distinct
-//!   wallets bought with, on any token, on the UTC day before that buy
-//!   ([`TradeLite::build_day_buyers`], stamped by `reduce` from the daily
-//!   build-breadth table).
+//! * `public_app_share` — held by wallets whose first buy of this token went through
+//!   a PUBLIC APP ([`is_public_app`]): on the UTC day before that buy, the app had
+//!   more than [`PUBLIC_MIN_BUYERS`] distinct buying wallets and they came back, at
+//!   least [`PUBLIC_MIN_REPEAT`] buys per wallet ([`TradeLite::build_day_public`],
+//!   stamped by `reduce` from the daily build-breadth table). A bot swarm spreads
+//!   thousands of wallets over many programs at about one buy per wallet per program
+//!   a day; the named apps run 2.9 and up (hot-tape case file L12).
 //! * `bundled_share` — held by wallets whose first buy of this token landed in a
 //!   slot where at least [`BUNDLE_MIN_WALLETS`] wallets made their first buy of it
 //!   with the same build recipe: one trigger behind many wallets.
@@ -28,13 +30,22 @@
 
 use std::collections::HashMap;
 
+use crate::event::BuildBreadth;
 use crate::hash::HashedMap;
 
 use super::{MetricId, Side, TradeLite};
 
-/// A build is a public app when MORE than this many distinct wallets bought with it
-/// on the previous UTC day. Private bots sit far below it, public apps far above.
+/// A public app had MORE than this many distinct buying wallets on the previous UTC day.
 pub const PUBLIC_MIN_BUYERS: u32 = 100;
+
+/// A public app's wallets bought at least this many times each, on average, on the
+/// previous UTC day.
+pub const PUBLIC_MIN_REPEAT: u32 = 2;
+
+/// Whether a build-breadth row's app was a public app on its day.
+pub fn is_public_app(b: &BuildBreadth) -> bool {
+    b.app_buyers > PUBLIC_MIN_BUYERS && u64::from(b.app_buys) >= u64::from(PUBLIC_MIN_REPEAT) * u64::from(b.app_buyers)
+}
 
 /// A first-buy group is bundled at this many wallets in one (slot, build).
 pub const BUNDLE_MIN_WALLETS: u32 = 3;
@@ -117,7 +128,7 @@ impl HolderBookState {
     }
 
     fn class_first_buy(&mut self, t: &TradeLite, tokens: f64) {
-        let public = t.build_day_buyers.map(|n| n > PUBLIC_MIN_BUYERS);
+        let public = t.build_day_public;
         match public {
             Some(true) => self.public += tokens,
             None => self.unknown += tokens,
@@ -164,7 +175,7 @@ impl HolderBookState {
 mod tests {
     use super::*;
 
-    fn print(side: Side, wallet: u64, tokens: f64, slot: u64, build: u64, buyers: Option<u32>) -> TradeLite {
+    fn print(side: Side, wallet: u64, tokens: f64, slot: u64, build: u64, public: Option<bool>) -> TradeLite {
         TradeLite {
             side,
             sol: 1.0,
@@ -172,13 +183,26 @@ mod tests {
             token_amount: tokens,
             slot,
             build_hash: Some(build),
-            build_day_buyers: buyers,
+            build_day_public: public,
             ..TradeLite::default()
         }
     }
 
-    const PUB: Option<u32> = Some(PUBLIC_MIN_BUYERS + 1);
-    const BOT: Option<u32> = Some(PUBLIC_MIN_BUYERS);
+    const PUB: Option<bool> = Some(true);
+    const BOT: Option<bool> = Some(false);
+
+    #[test]
+    fn a_public_app_is_wide_and_comes_back() {
+        let row = |app_buyers, app_buys| BuildBreadth { build_hash: 1, app_buyers, app_buys };
+        assert!(is_public_app(&row(101, 202)));
+        // Wide but one buy per wallet: the swarm.
+        assert!(!is_public_app(&row(3_000, 3_150)));
+        assert!(!is_public_app(&row(101, 201)));
+        // Comes back but narrow: a private bot.
+        assert!(!is_public_app(&row(100, 1_000)));
+        // The repeat test cannot overflow.
+        assert!(!is_public_app(&row(u32::MAX, u32::MAX)));
+    }
 
     #[test]
     fn public_share_is_the_supply_public_first_buyers_hold() {

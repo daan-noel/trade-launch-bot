@@ -257,13 +257,13 @@ pub struct TradeLite {
     /// when a source does not carry it.
     #[serde(with = "finite_f64", default = "finite_f64::nan")]
     pub token_amount: f64,
-    /// Distinct wallets that bought with this print's build recipe, on any token, on
-    /// the UTC day before this print: the daily build-breadth table. Stamped by
-    /// `reduce` on a buy while a loaded rule reads `m_holder_book` (`Some(0)` for a
-    /// recipe the table does not hold); `None` when no table is loaded, and on every
-    /// row an adapter builds.
+    /// Whether this print's build recipe went through a public app on the UTC day
+    /// before this print ([`holder_book::is_public_app`] over the daily build-breadth
+    /// table). Stamped by `reduce` on a buy while a loaded rule reads `m_holder_book`
+    /// (`Some(false)` for a recipe the table does not hold); `None` when no table is
+    /// loaded, and on every row an adapter builds.
     #[serde(default)]
-    pub build_day_buyers: Option<u32>,
+    pub build_day_public: Option<bool>,
 }
 
 fn default_true() -> bool {
@@ -292,7 +292,7 @@ impl Default for TradeLite {
             is_launch: false,
             fee: FeeKeys::default(),
             token_amount: f64::NAN,
-            build_day_buyers: None,
+            build_day_public: None,
         }
     }
 }
@@ -749,8 +749,8 @@ pub enum MetricId {
     /// bought it.
     SinceBuy,
     // ── m_holder_book (who holds the supply) ─
-    /// Percent of live supply held by wallets whose first buy of this token used a
-    /// public-app build (`m_holder_book`).
+    /// Percent of live supply held by wallets whose first buy of this token went
+    /// through a public app (`m_holder_book`).
     PublicAppShare,
     /// Percent of live supply held by wallets whose first buy of this token landed in
     /// a slot where at least three wallets first bought with one build
@@ -1910,7 +1910,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::PublicAppShare,
                 name: "public_app_share",
-                description: "Percent of live supply held by wallets whose first buy of this token used a public-app build: a build recipe more than 100 distinct wallets bought with, on any token, on the UTC day before that buy. NaN when no wallet holds tokens, and while supply classed with no build-breadth table loaded is held.",
+                description: "Percent of live supply held by wallets whose first buy of this token went through a public app: on the UTC day before that buy, the app (the first program in the transaction past compute budget, system, token, associated-token and memo; the recipe itself for a direct pump.fun call) had more than 100 distinct buying wallets and at least 2 buy transactions per wallet. NaN when no wallet holds tokens, and while supply classed with no build-breadth table loaded is held.",
                 unit: Unit::Percent,
                 eq_tolerance: 0.01,
                 monotonic: false,

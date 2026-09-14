@@ -322,7 +322,8 @@ fn live_reading(g: &GroupSpec, m: &MetricSpec, basis: Basis) -> f64 {
         Event::BuildBreadthReloaded {
             breadth: Arc::from(vec![hunter_engine::event::BuildBreadth {
                 build_hash: flow_ix::build_hash(&VOL_LABELS).unwrap(),
-                buyers: 1_000,
+                app_buyers: 1_000,
+                app_buys: 3_000,
             }]),
         },
     );

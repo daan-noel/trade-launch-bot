@@ -160,7 +160,13 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             // Fold-time input only: a holder is classed at its first buy against the
             // table that stood then, so nothing about a tracked token's reading changes
             // here - no cross-epoch bump and nothing to unsettle.
-            state.build_breadth = Some(breadth.iter().map(|b| (b.build_hash, b.buyers)).collect());
+            state.public_recipes = Some(
+                breadth
+                    .iter()
+                    .filter(|b| crate::metrics::holder_book::is_public_app(b))
+                    .map(|b| b.build_hash)
+                    .collect(),
+            );
         }
 
         Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at, creator_stand_in_wallet_hash } => {

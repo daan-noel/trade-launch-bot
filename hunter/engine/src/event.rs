@@ -392,18 +392,24 @@ pub struct LaunchBuildStat {
     pub runners: u32,
 }
 
-/// One build recipe's previous-day breadth — a row of the daily build-breadth table,
-/// keyed by [`flow_ix::build_hash`](crate::metrics::flow_ix::build_hash). Delivered
-/// on a [`Event::BuildBreadthReloaded`]; `reduce` stamps
-/// [`TradeLite::build_day_buyers`](crate::metrics::TradeLite::build_day_buyers)
-/// from it on every buy while a loaded rule reads `m_holder_book`.
+/// One build recipe's app on the previous day — a row of the daily build-breadth
+/// table, keyed by [`flow_ix::build_hash`](crate::metrics::flow_ix::build_hash). The
+/// app is [`flow_ix::recipe_app`](crate::metrics::flow_ix::recipe_app) (the recipe
+/// itself for a direct pump.fun call), counted across every recipe it sent. Delivered
+/// on a [`Event::BuildBreadthReloaded`]; `reduce` classes each row with
+/// [`holder_book::is_public_app`](crate::metrics::holder_book::is_public_app) and
+/// stamps [`TradeLite::build_day_public`](crate::metrics::TradeLite::build_day_public)
+/// on every buy while a loaded rule reads `m_holder_book`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuildBreadth {
     /// FNV-1a of the build recipe (ordered labels without setup, teardown, memos).
     pub build_hash: u64,
-    /// Distinct wallets that bought with this recipe, on any token, on the previous
+    /// Distinct wallets that bought through this recipe's app, on any token, on the
+    /// previous UTC day.
+    pub app_buyers: u32,
+    /// Buy transactions sent through this recipe's app, on any token, on the previous
     /// UTC day.
-    pub buyers: u32,
+    pub app_buys: u32,
 }
 
 impl LaunchBuildStat {
