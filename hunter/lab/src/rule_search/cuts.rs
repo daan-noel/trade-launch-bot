@@ -424,20 +424,16 @@ fn label_paths(tokens: &[CorpusToken]) -> Vec<TokenPath> {
             let first_price = t
                 .trades
                 .first()
-                .map(|tr| tr.price_per_token)
+                .and_then(spot)
                 .filter(|p| p.is_finite() && *p > 0.0)
                 .unwrap_or(1.0);
             let t15 = t.trades.iter().find_map(|tr| {
-                (tr.price_per_token.is_finite()
-                    && first_price > 0.0
-                    && tr.price_per_token >= first_price * MIN_ATH_MULT)
-                    .then_some(tr.block_time)
+                let p = spot(tr)?;
+                (first_price > 0.0 && p >= first_price * MIN_ATH_MULT).then_some(tr.block_time)
             });
             let dump_at = t.trades.iter().find_map(|tr| {
-                (tr.block_time > ath_at
-                    && tr.price_per_token.is_finite()
-                    && ath_price.is_finite()
-                    && tr.price_per_token < ath_price * DUMP_FRAC)
+                let p = spot(tr)?;
+                (tr.block_time > ath_at && ath_price.is_finite() && p < ath_price * DUMP_FRAC)
                     .then_some(tr.block_time)
             });
             TokenPath {
@@ -678,12 +674,20 @@ fn sample_phases(
     }
 }
 
+/// A print's spot (reserve-pair) price - the series the engine's `price`, and so
+/// every per-row comparison in this module, reads. An ATH or dump level taken from
+/// execution prices would sit a buy's own impact above that series.
+fn spot(t: &crate::sweep::projection::CorpusTrade) -> Option<f64> {
+    use crate::models::trade::TradeRow;
+    t.chart_spot_price().filter(|p| p.is_finite())
+}
+
 fn token_ath(token: &CorpusToken) -> (f64, DateTime<Utc>) {
     let mut best = f64::NEG_INFINITY;
     let mut at = token.created_at;
     for t in token.trades.iter() {
-        if t.price_per_token.is_finite() && t.price_per_token > best {
-            best = t.price_per_token;
+        if let Some(p) = spot(t).filter(|p| *p > best) {
+            best = p;
             at = t.block_time;
         }
     }

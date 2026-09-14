@@ -78,10 +78,12 @@ pub type CohortScored = (Vec<CohortScore>, Vec<f64>, Option<CohortScore>);
 /// not a count — and rounding it back to a count is exact for any rate the fold can
 /// produce, since the rate is `wins / n_closed` with both integers.
 /// `capital` is what one position takes from the wallet ([`Pricing::capital_sol`]).
+/// `total_pnl_sol` is realized only, so its capital is the CLOSED positions' - an
+/// open position's capital over no PnL would bias the return toward zero.
 fn archive_score(a: &crate::rule_search::scorer::ArchiveRow, capital: f64) -> CohortScore {
     CohortScore {
         pnl_sol: a.total_pnl_sol,
-        entry_sol: a.n_tokens as f64 * capital,
+        entry_sol: a.n_closed as f64 * capital,
         n_closed: a.n_closed,
         n_wins: (a.win_rate * a.n_closed as f64).round() as u64,
     }
@@ -345,7 +347,8 @@ pub fn authority(
         token_idx,
         score: CohortScore {
             pnl_sol,
-            entry_sol: n_tokens as f64 * cfg.pricing.capital_sol(),
+            // Realized PnL over the capital that realized it: closed positions only.
+            entry_sol: n_closed as f64 * cfg.pricing.capital_sol(),
             n_closed,
             n_wins,
         },
@@ -762,8 +765,9 @@ mod tests {
         assert!(a.token_idx.iter().all(|&i| i < corpus.tokens.len()));
         assert_eq!(
             a.score.entry_sol,
-            a.n_tokens as f64 * cfg().pricing.capital_sol(),
-            "capital committed is n_tokens x what the REQUEST's buy size takes from the wallet"
+            a.score.n_closed as f64 * cfg().pricing.capital_sol(),
+            "capital is n_closed x what the REQUEST's buy size takes from the wallet - \
+             the positions whose PnL the score sums"
         );
     }
 

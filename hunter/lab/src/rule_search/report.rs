@@ -350,7 +350,7 @@ pub fn build_report(
     // Exit efficiency: realized over gross attainable (post-entry ATH).
     let exit_efficiency = champ_idx
         .and_then(|i| replayed.get(&i))
-        .and_then(|r| exit_efficiency_of(r, tokens, opts.buy_sol));
+        .and_then(|r| exit_efficiency_of(r, tokens, opts));
 
     let mut archive_out: Vec<ScoredRule> = ranked
         .iter()
@@ -537,11 +537,19 @@ fn ablation_rows(
     out
 }
 
-fn exit_efficiency_of(r: &Replayed, tokens: &[ReplayToken], buy_sol: f64) -> Option<f64> {
+/// Realized PnL over the PnL an exit at each closed entry's best later print would
+/// have booked. Both sides are the same money: the attainable round trip goes
+/// through the run's own kernel (`round_trip_with_costs`, entry depth on both legs
+/// like the family-search oracle) on the spot series the entry is priced on, and
+/// both count closed positions only - `total_pnl_sol` is realized.
+fn exit_efficiency_of(r: &Replayed, tokens: &[ReplayToken], opts: &ReplayOpts) -> Option<f64> {
+    use crate::models::trade::TradeRow;
+    use trading_core::strategies::kernel::round_trip_with_costs;
+
     let by_mint: HashMap<&str, &ReplayToken> =
         tokens.iter().map(|t| (t.mint.as_str(), t)).collect();
     let mut attainable = 0.0;
-    for o in &r.outcomes {
+    for o in r.outcomes.iter().filter(|o| o.exit_reason.is_some()) {
         let Some(tok) = by_mint.get(o.mint.as_str()) else {
             continue;
         };
@@ -549,11 +557,18 @@ fn exit_efficiency_of(r: &Replayed, tokens: &[ReplayToken], buy_sol: f64) -> Opt
             .trades
             .iter()
             .filter(|t| t.block_time >= o.entry_time)
-            .map(|t| t.price_per_token)
-            .filter(|p| p.is_finite())
+            .filter_map(|t| t.chart_spot_price())
             .fold(f64::NEG_INFINITY, f64::max);
         if peak.is_finite() && o.entry_price > 0.0 {
-            attainable += (buy_sol * (peak / o.entry_price - 1.0)).max(0.0);
+            let (best, _) = round_trip_with_costs(
+                o.entry_price,
+                peak,
+                opts.buy_sol,
+                o.entry_reserve_sol,
+                o.entry_reserve_sol,
+                &opts.cost,
+            );
+            attainable += best.max(0.0);
         }
     }
     (attainable > 1e-9).then(|| r.row.total_pnl_sol / attainable)

@@ -33,7 +33,8 @@ pub const RHO_FLOOR: f64 = 0.5;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CohortScore {
     pub pnl_sol: f64,
-    /// Capital committed — `n_entered × buy_amount_sol`.
+    /// Capital of the positions `pnl_sol` sums — `n_closed x` what one buy takes
+    /// from the wallet (`Pricing::capital_sol`); `pnl_sol` is realized only.
     pub entry_sol: f64,
     /// Positions that closed — the win rate's denominator.
     pub n_closed: u64,
