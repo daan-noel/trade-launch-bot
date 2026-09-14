@@ -61,7 +61,7 @@ Deep-dives belong at `@plans/launcher/<topic>.md`.
 | `execute.rs` | `execute_action` — recompute the plan fresh, gate it, run legs via `PumpFunTrader` (manage trader config), insert the audit row. Stamps each confirmed buy leg's `received_base` (on-chain balance after the action minus before). Gated by `MANAGE_ENABLED` (kill switch) + `MANAGE_DRY_RUN`. |
 | `positions.rs` | Holdings read model — seed positions from launch/bundle fills, replay each wallet's fills into its current lot (`Lot`: held, SOL paid in, SOL returned; a tx books its `payer_net_lamports` once per signature, else each leg's `amount_quote`), reconcile balances from the feed (GET) or chain (Refresh). `position_views` prices rows through `TokenPosition::with_pnl` (the one PnL definition: `realized + value - cost`, pct over `cost`) for the API. |
 | `ladder.rs` | Simple-threshold sell ladders (`arm_ladder`, `spawn_ladder_evaluator`, `LadderRung`). |
-| `volume.rs` | Volume-making bots (`start_volume_bot`, `spawn_volume_scheduler`, `VolumeConfig`). The sell-back sells `sell_back_pct` of the cycle buy's `received_base` (`fixed_base`), never a percent of the whole balance. |
+| `volume.rs` | Volume-making bots (`start_volume_bot`, `spawn_volume_scheduler`, `VolumeConfig`). The sell-back sells `sell_back_pct` of the cycle buy's `received_base` (`fixed_base`), never a percent of the whole balance. The budget books each buy's `sol_spent_lamports` (the wallet's SOL drop: buy + fees + tip + rent). |
 
 ## Architecture
 

@@ -148,12 +148,17 @@ pub async fn execute_action(
     let mut legs = plan.legs;
     let mut confirmed = 0i32;
     for leg in &mut legs {
+        let mut sol_spent = None;
         let outcome = match leg.side.as_str() {
             "sell" => sell_leg(pool, settings, manage_cfg, mint, leg).await,
-            "buy" => buy_leg(pool, settings, manage_cfg, mint, leg, &ctx).await,
+            "buy" => buy_leg(pool, settings, manage_cfg, mint, leg, &ctx).await.map(|(sig, spent)| {
+                sol_spent = spent;
+                sig
+            }),
             "consolidate" => consolidate_leg(pool, settings, manage_cfg, leg, &ctx).await,
             other => Err(anyhow::anyhow!("unknown leg side '{other}'")),
         };
+        leg.sol_spent_lamports = sol_spent;
         match outcome {
             Ok(sig) => {
                 leg.status = Some("confirmed".to_string());
@@ -466,7 +471,9 @@ async fn sell_leg(
 }
 
 /// BUY: spend `spend_quote` lamports of SOL to buy the token from `managed_wallet_id`.
-/// RPC-confirmed; returns the signature (`None` in dry-run).
+/// RPC-confirmed; returns the signature (`None` in dry-run) and the lamports the
+/// wallet actually spent ([`PlanLeg::sol_spent_lamports`], from a balance read on
+/// each side of the buy).
 async fn buy_leg(
     pool: &PgPool,
     settings: &LauncherSettings,
@@ -474,7 +481,7 @@ async fn buy_leg(
     mint: &str,
     leg: &PlanLeg,
     ctx: &ExecContext,
-) -> Result<Option<String>> {
+) -> Result<(Option<String>, Option<i64>)> {
     let (creator, token_program) = ctx.buy.context("buy context not resolved")?;
     let spend = leg.spend_quote.max(0);
     if spend == 0 {
@@ -483,12 +490,13 @@ async fn buy_leg(
     let sol_amount = spend as f64 / LAMPORTS_PER_SOL as f64;
     if manage_cfg.dry_run {
         info!(%mint, managed_wallet_id = %leg.managed_wallet_id, sol_amount, "MANAGE_DRY_RUN: would buy (no trade placed)");
-        return Ok(None);
+        return Ok((None, None));
     }
 
     let mint_pk = Pubkey::from_str(mint).context("parse mint for buy")?;
     let (_wallet, trader) =
         build_wallet_trader(pool, settings, manage_cfg, leg.managed_wallet_id).await?;
+    let before = trader.get_sol_balance().await.ok();
     let sig = trader
         .buy_token(
             &mint_pk,
@@ -500,7 +508,16 @@ async fn buy_leg(
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(Some(sig))
+    let after = trader.get_sol_balance().await.ok();
+    Ok((Some(sig), sol_spent(before, after, spend)))
+}
+
+/// Lamports a confirmed buy took from its wallet: the SOL balance drop across it,
+/// floored at the buy amount (`spend`) so a read that lags the confirm can't
+/// under-count. `None` when either read failed.
+fn sol_spent(before: Option<u64>, after: Option<u64>, spend: i64) -> Option<i64> {
+    let (before, after) = (before?, after?);
+    Some((before as i64 - after as i64).max(spend))
 }
 
 /// CONSOLIDATE: sweep the wallet's SOL (balance − fee) to treasury as a typed
@@ -620,6 +637,16 @@ async fn build_orchestrator_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The budget books the wallet's whole SOL drop, never less than the buy.
+    #[test]
+    fn sol_spent_is_the_balance_drop_floored_at_the_buy() {
+        // 0.01 SOL buy + fees/tip/ATA rent = 12.1M lamports gone.
+        assert_eq!(sol_spent(Some(50_000_000), Some(37_900_000), 10_000_000), Some(12_100_000));
+        // A lagging post-read shows no drop: count the buy itself.
+        assert_eq!(sol_spent(Some(50_000_000), Some(50_000_000), 10_000_000), Some(10_000_000));
+        assert_eq!(sol_spent(None, Some(1), 10_000_000), None);
+    }
 
     /// A buy's received tokens are its wallet's balance delta — a fresh buyer (no
     /// row before) counts from 0, and a shrinking balance never goes negative.

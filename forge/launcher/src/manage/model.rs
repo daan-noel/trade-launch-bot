@@ -95,6 +95,12 @@ pub struct PlanLeg {
     /// balance read failed (or on a sell/consolidate leg).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub received_base: Option<i64>,
+    /// Buy side: native lamports the confirmed buy took out of the wallet — its SOL
+    /// balance before the buy minus after (the buy, venue fee, signature/priority
+    /// fee, tip and ATA rent), never below `spend_quote` so a stale read can't
+    /// under-count. `None` in dry-run or when a balance read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sol_spent_lamports: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

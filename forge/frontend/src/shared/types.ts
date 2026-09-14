@@ -214,7 +214,7 @@ export interface VolumeConfig {
   interval_secs_min: number;
   interval_secs_max: number;
   sell_back_pct: number; // 0 = accumulate (buy-only)
-  budget_sol: number; // hard cumulative buy-spend cap
+  budget_sol: number; // hard cap on what the buy wallets pay (buy + fees + tip + rent)
   max_cycles?: number | null;
 }
 
@@ -225,7 +225,7 @@ export interface VolumeBot {
   selection: WalletSelection;
   config: VolumeConfig;
   cycles_done: number;
-  spent_quote: number; // lamports spent on buys
+  spent_quote: number; // lamports the buy wallets paid (buy + fees + tip + rent)
   volume_quote: number; // lamports traded (buys + sell-backs)
   next_run_at: string;
   last_error: string | null;

@@ -101,6 +101,7 @@ async fn build_sell_legs(
             status: None,
             signature: None,
             received_base: None,
+            sol_spent_lamports: None,
             error: None,
         });
     }
@@ -151,6 +152,7 @@ async fn build_buy_legs(
             status: None,
             signature: None,
             received_base: None,
+            sol_spent_lamports: None,
             error: None,
         })
         .collect())
@@ -187,6 +189,7 @@ async fn build_consolidate_legs(
             status: None,
             signature: None,
             received_base: None,
+            sol_spent_lamports: None,
             error: None,
         })
         .collect())

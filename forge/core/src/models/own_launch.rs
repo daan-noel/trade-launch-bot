@@ -306,7 +306,8 @@ pub struct VolumeBot {
     pub selection: Json,
     pub config: Json,
     pub cycles_done: i32,
-    /// Cumulative SOL (lamports) spent on buys — checked against the budget.
+    /// Cumulative SOL (lamports) the bot's buy wallets paid — buy + venue fee + tx
+    /// fee + tip + ATA rent (`PlanLeg::sol_spent_lamports`) — checked against the budget.
     pub spent_quote: i64,
     /// Cumulative notional (lamports) traded (buys + sell-backs) — the volume stat.
     pub volume_quote: i64,

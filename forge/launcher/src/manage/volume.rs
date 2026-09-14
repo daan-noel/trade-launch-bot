@@ -54,8 +54,10 @@ pub struct VolumeConfig {
     /// more than the wallet holds. `0` disables the sell-back — the bot only
     /// accumulates (buy-only volume).
     pub sell_back_pct: f64,
-    /// Hard cumulative buy-spend cap (SOL). The bot stops once `spent_quote`
-    /// reaches this — the treasury-drain guard, mirroring `FundingConfig`'s caps.
+    /// Hard cumulative spend cap (SOL). `spent_quote` books what the buy wallets
+    /// actually paid (buy + venue fee + tx fee + tip + ATA rent, see
+    /// `PlanLeg::sol_spent_lamports`), and the bot stops once it reaches this — the
+    /// treasury-drain guard, mirroring `FundingConfig`'s caps.
     pub budget_sol: f64,
     /// Optional cap on the number of cycles; `None` = run until the budget is hit.
     #[serde(default)]
@@ -191,7 +193,8 @@ async fn evaluate_once(pool: &PgPool, settings: &LauncherSettings) -> Result<()>
     Ok(())
 }
 
-/// The spend + volume a single cycle actually generated (confirmed legs only).
+/// The spend (what the wallets paid) + volume (notional traded) a single cycle
+/// actually generated (confirmed legs only).
 struct CycleDelta {
     spent_quote: i64,
     volume_quote: i64,
@@ -241,8 +244,11 @@ async fn run_cycle(
         None, // automated volume-bot cycle — no live operator surface
     )
     .await?;
+    // Budget: what the wallet paid; volume: the notional bought.
+    let wallet_spent =
+        confirmed_quote(&buy.plan, "buy", |l| l.sol_spent_lamports.unwrap_or(l.spend_quote));
     let buy_spend = confirmed_quote(&buy.plan, "buy", |l| l.spend_quote);
-    let mut delta = CycleDelta { spent_quote: buy_spend, volume_quote: buy_spend };
+    let mut delta = CycleDelta { spent_quote: wallet_spent, volume_quote: buy_spend };
 
     // SELL-BACK leg (optional). Sized off the tokens THIS buy received (the buy
     // action's on-chain before/after delta), as a fixed amount the sell plan clamps
