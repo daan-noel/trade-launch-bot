@@ -233,7 +233,7 @@ async fn resolve_buy_submitted_inner(
                     position.id,
                     sig,
                     legs.token_amount,
-                    legs.price_per_token(),
+                    legs.entry_price(),
                     paid_sol,
                     legs.last_block_time,
                     token_account.as_deref(),
@@ -258,7 +258,7 @@ async fn resolve_buy_submitted_inner(
                                     .send(Event::FillConfirmed {
                                         intent,
                                         fill: Fill {
-                                            price: legs.price_per_token(),
+                                            price: legs.entry_price(),
                                             sol: paid_sol,
                                             token_amount: legs.token_amount,
                                             at: legs.last_block_time,

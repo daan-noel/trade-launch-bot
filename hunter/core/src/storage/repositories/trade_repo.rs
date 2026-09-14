@@ -1411,20 +1411,11 @@ impl TradeRepo {
             .map(|s| sig_base58_to_bytes(s))
             .collect::<anyhow::Result<_>>()?;
 
-        let row: (
-            i64,
-            i64,
-            i64,
-            Option<DateTime<Utc>>,
-            Option<DateTime<Utc>>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-        ) = sqlx::query_as(
+        let row: SigLegsRow = sqlx::query_as(
             r#"
             WITH legs AS (
                 SELECT tx_signature, token_amount, amount_lamports, block_time, slot,
-                       payer_net_lamports
+                       tx_index, leg_index, payer_net_lamports, reserve_lamports, reserve_token
                 FROM trades
                 WHERE wallet_id = $1
                   AND mint_address = $2
@@ -1444,7 +1435,11 @@ impl TradeRepo {
                    MIN(slot),
                    MAX(slot),
                    (SELECT CASE WHEN bool_or(flow IS NULL) THEN NULL ELSE SUM(flow) END
-                    FROM per_tx)::bigint
+                    FROM per_tx)::bigint,
+                   -- The newest leg's post-trade spot, SOL per raw unit.
+                   (ARRAY_AGG(reserve_lamports::float8 / 1e9 / reserve_token::float8
+                              ORDER BY slot DESC, tx_index DESC, leg_index DESC)
+                        FILTER (WHERE reserve_lamports IS NOT NULL AND reserve_token > 0))[1]
             FROM legs
             "#,
         )
@@ -1455,8 +1450,17 @@ impl TradeRepo {
         .fetch_one(&self.pool)
         .await?;
 
-        let (leg_count, token_sum, lamports_sum, first, last, first_slot, last_slot, wallet_lamports) =
-            row;
+        let (
+            leg_count,
+            token_sum,
+            lamports_sum,
+            first,
+            last,
+            first_slot,
+            last_slot,
+            wallet_lamports,
+            post_spot,
+        ) = row;
         if leg_count == 0 {
             return Ok(None);
         }
@@ -1472,6 +1476,7 @@ impl TradeRepo {
             // reading, which is worse than not having one.
             first_slot: first_slot.map(|v| v as u64),
             last_slot: last_slot.map(|v| v as u64),
+            post_spot,
         }))
     }
 
@@ -1636,6 +1641,20 @@ impl TradeRepo {
     }
 }
 
+/// One `sum_legs_by_signatures` row: leg count, Σ tokens, Σ lamports, first / last
+/// block time, first / last slot, the wallet flow, the newest leg's post spot.
+type SigLegsRow = (
+    i64,
+    i64,
+    i64,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<f64>,
+);
+
 /// Rolled-up result of one or more trade legs sharing a `(wallet, mint, side)`,
 /// summed by transaction signature ([`TradeRepo::find_fill_by_signature`] /
 /// [`TradeRepo::sum_legs_by_signatures`]). For an entry the summary is the adopted
@@ -1663,6 +1682,9 @@ pub struct SigLegs {
     pub first_slot: Option<u64>,
     /// Latest leg's slot — the exit fill's `exit_slot`.
     pub last_slot: Option<u64>,
+    /// Spot (`reserve_sol / reserve_token`, SOL per raw unit) of the pool right
+    /// after the newest leg. `None` when that leg carried no reserve pair.
+    pub post_spot: Option<f64>,
 }
 
 /// Rolled-up manual-buy cost basis for one `(wallet, mint)` — the Σ of the
@@ -1826,11 +1848,24 @@ impl From<crate::state::trade_signals::ObservedLegs> for SigLegs {
             last_block_time: o.last_block_time,
             first_slot: o.first_slot,
             last_slot: o.last_slot,
+            post_spot: o.post_spot,
         }
     }
 }
 
 impl SigLegs {
+    /// The price a real buy's position measures its PnL ratio from: the pool's spot
+    /// right after the buy landed. It is the price series paper and simulate enter
+    /// at, and it already holds our own impact, which stays in the pool the real
+    /// position is marked against - so a real position reads 0 % the moment it
+    /// fills, as a paper one does, and its take-profit / stop-loss fire on the same
+    /// market move. The execution price only when the legs carried no reserve pair.
+    pub fn entry_price(&self) -> f64 {
+        self.post_spot
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .unwrap_or_else(|| self.price_per_token())
+    }
+
     /// Weighted-average execution price (Σsol / Σtokens), or 0 when no tokens.
     pub fn price_per_token(&self) -> f64 {
         if self.token_amount > 0 {
@@ -1933,7 +1968,20 @@ mod tests {
             last_block_time: Utc::now(),
             first_slot: None,
             last_slot: None,
+            post_spot: None,
         }
+    }
+
+    /// A real entry measures from the pool's spot after the buy; the execution
+    /// price only when the legs carried no reserve pair.
+    #[test]
+    fn entry_price_is_the_spot_the_buy_left() {
+        let mut l = legs(Some(-101_250_000));
+        assert_eq!(l.entry_price(), l.price_per_token());
+        l.post_spot = Some(1.2e-7);
+        assert_eq!(l.entry_price(), 1.2e-7);
+        l.post_spot = Some(f64::NAN);
+        assert_eq!(l.entry_price(), l.price_per_token());
     }
 
     /// A buy books its outflow as a positive cost; a sell books what it left in

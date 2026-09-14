@@ -199,8 +199,14 @@ migration 0019): the payer's lamport change over the transaction, with the SOL i
 accounts the payer owns counted as still the payer's. The ingest decodes it from each
 transaction's pre/post balances, so it costs no RPC. The buy books what left the wallet,
 the sell what arrived; the sell that empties the bag and triggers the rent reclaim also
-books the close fee. `Fill::price` stays the curve-side execution price — the engine's
-decision basis. The closed PnL is then `(exit − entry) / entry`, all-in, and a PnL
+books the close fee. A real buy's `Fill::price` — the entry price take-profit and
+stop-loss measure from — is the pool's spot right after that buy landed
+(`SigLegs::entry_price`, off the buy's own trade row). It is the series paper and
+simulate enter at, and it holds our own impact, which stays in the pool the position
+is marked against, so a real position reads 0 % the moment it fills, as a paper one
+does. A stored entry price is never rewritten: a real row an older binary wrote keeps
+its execution price. A sell's `Fill::price` is its execution price; it prices nothing.
+The closed PnL is then `(exit − entry) / entry`, all-in, and a PnL
 tracker that reads the wallet sees the same number.
 
 The PumpSwap fee is read off each swap event (`Trade::venue_fee_bps`: the user-side

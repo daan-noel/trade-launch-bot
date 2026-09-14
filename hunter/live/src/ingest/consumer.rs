@@ -389,6 +389,11 @@ impl IngestConsumer {
                 e.block_time,
                 e.slot,
                 e.payer_net_lamports,
+                e.reserves
+                    .virtual_sol
+                    .zip(e.reserves.virtual_token)
+                    .filter(|(_, tok)| *tok > 0)
+                    .map(|(sol, tok)| sol / tok as f64),
             );
         }
 

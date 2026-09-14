@@ -605,9 +605,10 @@ async fn emit_entry_filled(
         .send(Event::FillConfirmed {
             intent: order.intent.clone(),
             fill: Fill {
-                // The curve-side execution price is the engine's decision basis; the
-                // SOL is what the buy took from the wallet.
-                price: legs.price_per_token(),
+                // The pool's spot after the buy - the series paper enters at, so
+                // take-profit / stop-loss fire on the same move; the SOL is what the
+                // buy took from the wallet.
+                price: legs.entry_price(),
                 sol: booked_wallet_sol(&legs, &order.mint, "buy"),
                 token_amount: legs.token_amount,
                 at: legs.last_block_time,

@@ -63,6 +63,10 @@ pub struct ObservedLegs {
     /// transaction counted once, however many legs it has. `None` when any
     /// signature's transaction carried no flow.
     pub wallet_lamports: Option<i64>,
+    /// Spot (`reserve_sol / reserve_token`, SOL per raw unit) of the pool right
+    /// after the newest leg — the market price our own trade left behind.
+    /// `None` when that leg carried no reserve pair.
+    pub post_spot: Option<f64>,
 }
 
 struct OwnLegEntry {
@@ -117,6 +121,7 @@ impl TradeSignals {
         block_time: DateTime<Utc>,
         slot: u64,
         payer_net_lamports: Option<i64>,
+        post_spot: Option<f64>,
     ) {
         if !self.has_waiter(wallet, mint) {
             return;
@@ -124,6 +129,9 @@ impl TradeSignals {
         self.own_legs
             .entry(signature.to_string())
             .and_modify(|e| {
+                if block_time >= e.legs.last_block_time && post_spot.is_some() {
+                    e.legs.post_spot = post_spot;
+                }
                 e.legs.token_amount = e.legs.token_amount.saturating_add(token_amount);
                 e.legs.amount_sol += amount_sol;
                 if block_time < e.legs.first_block_time {
@@ -147,6 +155,7 @@ impl TradeSignals {
                     first_slot: Some(slot),
                     last_slot: Some(slot),
                     wallet_lamports: payer_net_lamports,
+                    post_spot,
                 },
                 seen_at: Instant::now(),
             });
@@ -182,6 +191,9 @@ impl TradeSignals {
                     }
                     if legs.last_block_time > a.last_block_time {
                         a.last_block_time = legs.last_block_time;
+                    }
+                    if legs.last_block_time >= a.last_block_time && legs.post_spot.is_some() {
+                        a.post_spot = legs.post_spot;
                     }
                     a.first_slot = match (a.first_slot, legs.first_slot) {
                         (Some(x), Some(y)) => Some(x.min(y)),
@@ -417,7 +429,7 @@ mod tests {
             let notified = guard.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, at, 300, Some(-510_000));
+            signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, at, 300, Some(-510_000), None);
             tokio::time::timeout(Duration::from_secs(1), notified.as_mut())
                 .await
                 .expect("waiter should wake on observe_own_leg");
@@ -425,7 +437,7 @@ mod tests {
 
         let legs = signals.observed_legs("sig1").expect("preview present");
         assert_eq!(legs.token_amount, 100);
-        signals.observe_own_leg("WALLET", "MINT", "sig1", 50, 0.25, at, 302, Some(-510_000));
+        signals.observe_own_leg("WALLET", "MINT", "sig1", 50, 0.25, at, 302, Some(-510_000), None);
         let legs = signals.observed_legs("sig1").expect("preview present");
         assert_eq!(legs.token_amount, 150);
         assert!((legs.amount_sol - 0.75).abs() < 1e-9);
@@ -445,19 +457,36 @@ mod tests {
         let signals = Arc::new(TradeSignals::new());
         let _guard = signals.register("WALLET", "MINT");
         let at = Utc::now();
-        signals.observe_own_leg("WALLET", "MINT", "a", 10, 0.1, at, 1, Some(100));
-        signals.observe_own_leg("WALLET", "MINT", "b", 10, 0.1, at, 2, Some(250));
-        signals.observe_own_leg("WALLET", "MINT", "c", 10, 0.1, at, 3, None);
+        signals.observe_own_leg("WALLET", "MINT", "a", 10, 0.1, at, 1, Some(100), None);
+        signals.observe_own_leg("WALLET", "MINT", "b", 10, 0.1, at, 2, Some(250), None);
+        signals.observe_own_leg("WALLET", "MINT", "c", 10, 0.1, at, 3, None, None);
         let ab = signals.sum_observed_legs(&["a".into(), "b".into()]).unwrap();
         assert_eq!(ab.wallet_lamports, Some(350));
         let abc = signals.sum_observed_legs(&["a".into(), "b".into(), "c".into()]).unwrap();
         assert_eq!(abc.wallet_lamports, None);
     }
 
+    /// The preview keeps the spot the NEWEST leg left behind; a leg with no
+    /// reserve pair does not erase it.
+    #[tokio::test]
+    async fn post_spot_is_the_newest_legs() {
+        let signals = Arc::new(TradeSignals::new());
+        let _guard = signals.register("WALLET", "MINT");
+        let at = Utc::now();
+        signals.observe_own_leg("WALLET", "MINT", "s", 10, 0.1, at, 1, None, Some(1.0e-7));
+        signals.observe_own_leg("WALLET", "MINT", "s", 10, 0.1, at, 1, None, Some(1.1e-7));
+        signals.observe_own_leg("WALLET", "MINT", "s", 10, 0.1, at, 1, None, None);
+        assert_eq!(signals.observed_legs("s").unwrap().post_spot, Some(1.1e-7));
+        let later = at + chrono::Duration::seconds(1);
+        signals.observe_own_leg("WALLET", "MINT", "t", 10, 0.1, later, 2, None, Some(1.3e-7));
+        let st = signals.sum_observed_legs(&["t".into(), "s".into()]).unwrap();
+        assert_eq!(st.post_spot, Some(1.3e-7), "the later signature's spot, in any order");
+    }
+
     #[test]
     fn observe_own_leg_noop_without_waiter() {
         let signals = TradeSignals::new();
-        signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, Utc::now(), 300, None);
+        signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, Utc::now(), 300, None, None);
         assert!(signals.observed_legs("sig1").is_none());
         assert!(signals.own_legs.is_empty());
     }
