@@ -82,6 +82,12 @@ const SELL_CONFIRM_WINDOW: Duration = Duration::from_secs(5);
 const SELL_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 /// Extended poll when sell status is Succeeded/Pending (never re-send).
 const SELL_UNCONFIRMED_EXTENDED: Duration = Duration::from_secs(20);
+/// Longest a sibling's sell queues on the mint lock: the holding exit's own worst
+/// case, every attempt's send and confirm window plus the extended poll.
+const EXIT_MINT_WAIT: Duration = Duration::from_secs(
+    SELL_ATTEMPTS as u64 * (SELL_SEND_TIMEOUT.as_secs() + SELL_CONFIRM_WINDOW.as_secs())
+        + SELL_UNCONFIRMED_EXTENDED.as_secs(),
+);
 /// Dust threshold (raw units) below which the remaining balance counts as cleared.
 const PARTIAL_FILL_THRESHOLD: u64 = 0;
 /// Bounded wait for the asynchronous `insert_position` before giving up on the
@@ -929,6 +935,16 @@ async fn poll_feed_buy(
     .await
 }
 
+/// Whether `order` is still the exit the engine has in flight for its position.
+/// A queued sell re-checks this before sending: the position can close, or move
+/// on to another intent, while it waits.
+fn exit_still_current(registry: &PositionRegistry, order: &SellOrder) -> bool {
+    registry
+        .engine_id(order.pg_id)
+        .and_then(|id| registry.get(id))
+        .is_some_and(|meta| meta.inflight_intent.as_ref() == Some(&order.intent))
+}
+
 /// Submit a real sell (escalating tip across attempts), confirm by summing the
 /// position's OWN sell legs vs the held amount, and emit the definitive outcome.
 pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
@@ -936,11 +952,33 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
         warn!(pg = %order.pg_id, mint = %order.mint, "real sell: exit guard held — skipping");
         return;
     };
-    // One sell per mint (shared ATA) — siblings wait for reaper/nudge rather than
-    // fanning out parallel Helius sell sends.
-    let Some(_mint_guard) = deps.inflight.try_begin_exit_mint(&order.mint) else {
-        warn!(pg = %order.pg_id, mint = %order.mint, "real sell: mint exit lock held — skipping");
-        return;
+    // One sell per mint (shared ATA): a sibling's exit queues behind the one in
+    // flight and sends the moment it finishes.
+    let _mint_guard = match deps.inflight.try_begin_exit_mint(&order.mint) {
+        Some(guard) => guard,
+        None => {
+            let Some(guard) = deps.inflight.begin_exit_mint(&order.mint, EXIT_MINT_WAIT).await else {
+                // Nothing was sent, so a retry is safe: the engine re-decides it.
+                warn!(pg = %order.pg_id, mint = %order.mint,
+                    "real sell: mint exit lock still held after {}s — handing the exit back",
+                    EXIT_MINT_WAIT.as_secs());
+                let _ = deps
+                    .fill_tx
+                    .send(Event::FillFailed {
+                        intent: order.intent,
+                        reason: FillFailReason::Reverted,
+                        at: Some(Utc::now()),
+                    })
+                    .await;
+                return;
+            };
+            if !exit_still_current(&deps.registry, &order) {
+                info!(pg = %order.pg_id, mint = %order.mint,
+                    "real sell: the position's exit changed while queued on the mint — dropping this one");
+                return;
+            }
+            guard
+        }
     };
 
     // Release FIRST — must fire even if the process crashes mid-exit.

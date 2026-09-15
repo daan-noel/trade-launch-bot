@@ -65,6 +65,9 @@ pub(crate) const RESEED_ACK_TIMEOUT: Duration = Duration::from_secs(60);
 /// and the caller degrades to "unavailable" rather than queueing.
 pub(crate) const READ_RULE_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// One FIFO exit lock per mint, present only while a guard or a waiter holds it.
+type ExitMintLocks = Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
 /// RAII interlock claiming a PG position id (and optionally a mint) for an
 /// in-flight entry or exit task. Recovery reapers skip ids/mints present in these
 /// sets so they never race a live task. The mint lock serializes exits that share
@@ -73,8 +76,8 @@ pub(crate) const READ_RULE_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct InFlightGuards {
     entry: Arc<DashSet<Uuid>>,
     exit: Arc<DashSet<Uuid>>,
-    /// Mints with an exit currently in flight (shared-ATA coordination).
-    exit_mints: Arc<DashSet<String>>,
+    /// Mints with an exit in flight or queued (shared-ATA coordination).
+    exit_mints: ExitMintLocks,
 }
 
 impl InFlightGuards {
@@ -100,13 +103,38 @@ impl InFlightGuards {
         }
     }
 
+    /// The mint's lock, created on first use. The map guard drops inside this call,
+    /// so no caller holds it across an await.
+    fn exit_mint_lock(&self, mint: &str) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(
+            self.exit_mints
+                .entry(mint.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .value(),
+        )
+    }
+
+    fn exit_mint_guard(&self, mint: &str, guard: tokio::sync::OwnedMutexGuard<()>) -> ExitMintGuard {
+        ExitMintGuard { guard: Some(guard), locks: self.exit_mints.clone(), mint: mint.to_string() }
+    }
+
     /// Claim `mint` for an exit task (one sell per mint at a time). Returns `None`
     /// if another exit already owns the mint.
     pub fn try_begin_exit_mint(&self, mint: &str) -> Option<ExitMintGuard> {
-        if self.exit_mints.insert(mint.to_string()) {
-            Some(ExitMintGuard { set: self.exit_mints.clone(), mint: mint.to_string() })
-        } else {
-            None
+        let guard = self.exit_mint_lock(mint).try_lock_owned().ok()?;
+        Some(self.exit_mint_guard(mint, guard))
+    }
+
+    /// Claim `mint`, queueing behind the exit that owns it (FIFO). `None` when it
+    /// is still owned after `wait`.
+    pub async fn begin_exit_mint(&self, mint: &str, wait: Duration) -> Option<ExitMintGuard> {
+        let lock = self.exit_mint_lock(mint);
+        match tokio::time::timeout(wait, lock.lock_owned()).await {
+            Ok(guard) => Some(self.exit_mint_guard(mint, guard)),
+            Err(_) => {
+                prune_exit_mint(&self.exit_mints, mint);
+                None
+            }
         }
     }
 
@@ -119,8 +147,15 @@ impl InFlightGuards {
     }
 
     pub fn exit_mint_held(&self, mint: &str) -> bool {
-        self.exit_mints.contains(mint)
+        self.exit_mints.get(mint).is_some_and(|lock| lock.try_lock().is_err())
     }
+}
+
+/// Drop `mint`'s lock once only the map references it: no guard, no waiter.
+/// `remove_if` decides under the shard lock that `exit_mint_lock` clones under,
+/// so a waiter that already holds a clone keeps the entry alive.
+fn prune_exit_mint(locks: &ExitMintLocks, mint: &str) {
+    locks.remove_if(mint, |_, lock| Arc::strong_count(lock) == 1);
 }
 
 /// Held for the lifetime of a real buy task — Drop frees the slot (panic-safe).
@@ -147,15 +182,19 @@ impl Drop for ExitGuard {
     }
 }
 
-/// Held for the lifetime of a mint-scoped exit — Drop frees the mint (panic-safe).
+/// Held for the lifetime of a mint-scoped exit — Drop frees the mint (panic-safe)
+/// and hands it to the next queued exit.
 pub struct ExitMintGuard {
-    set: Arc<DashSet<String>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    locks: ExitMintLocks,
     mint: String,
 }
 
 impl Drop for ExitMintGuard {
     fn drop(&mut self) {
-        self.set.remove(&self.mint);
+        // Release before pruning, so the prune sees this guard's reference gone.
+        drop(self.guard.take());
+        prune_exit_mint(&self.locks, &self.mint);
     }
 }
 
@@ -747,5 +786,40 @@ impl SubmittedBuyJournal {
     /// Drop the journal entry once the position is terminal / no longer needed.
     pub fn clear(&self, pg_id: Uuid) {
         self.0.remove(&pg_id);
+    }
+}
+
+#[cfg(test)]
+mod exit_mint_lock_tests {
+    use super::*;
+
+    /// A sibling's exit queued on the mint sends the moment the holder finishes,
+    /// not on the next reaper tick.
+    #[tokio::test]
+    async fn a_queued_exit_takes_the_mint_when_the_holder_finishes() {
+        let guards = InFlightGuards::new();
+        let held = guards.try_begin_exit_mint("M").expect("free mint");
+        assert!(guards.exit_mint_held("M"));
+        assert!(guards.try_begin_exit_mint("M").is_none(), "one exit per mint");
+        let waiter = guards.clone();
+        let queued = tokio::spawn(async move { waiter.begin_exit_mint("M", Duration::from_secs(5)).await.is_some() });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let released = tokio::time::Instant::now();
+        drop(held);
+        assert!(queued.await.expect("task"), "the queued exit gets the mint");
+        assert!(released.elapsed() < Duration::from_millis(500));
+        assert!(guards.exit_mints.is_empty(), "released with no waiter: pruned");
+    }
+
+    /// The wait is bounded; the holder keeps the mint when a waiter gives up.
+    #[tokio::test]
+    async fn a_queued_exit_gives_up_after_its_wait() {
+        let guards = InFlightGuards::new();
+        let held = guards.try_begin_exit_mint("M").expect("free mint");
+        assert!(guards.begin_exit_mint("M", Duration::from_millis(50)).await.is_none());
+        assert!(guards.exit_mint_held("M"), "the holder keeps the mint");
+        drop(held);
+        assert!(guards.exit_mints.is_empty(), "pruned once the holder releases");
+        assert!(!guards.exit_mint_held("M"));
     }
 }
