@@ -328,8 +328,10 @@ compose passes an absolute `/var/lib/hunter/event_log` backed by the
 destroyed by the same `up --build` that boot recovery exists to survive.
 
 **Mint-level exit lock:** `InFlightGuards` serializes sells per mint (shared ATA).
-After a leader sell clears the wallet mint net (PG), siblings are booked
-`ExternallyCleared` / End — no parallel sell fan-out.
+A sibling's bot exit queues behind the one in flight (FIFO, bounded by the holder's
+worst case) and sends the moment it finishes. After a leader sell clears the wallet
+mint net (PG), siblings are booked `ExternallyCleared` / End — no parallel sell
+fan-out.
 
 ## Console close + externally-cleared reconcile
 

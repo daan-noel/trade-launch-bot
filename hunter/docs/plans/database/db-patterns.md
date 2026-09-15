@@ -98,6 +98,31 @@ the migration itself — there is no maintenance task to register with:
 5. Index only what the **uncompressed** recent chunks need; historical chunks are served by
    the `segmentby`/`orderby` metadata, and a redundant time index just costs writes.
 
+### DML on a compressed hypertable
+
+An UPDATE or DELETE that can reach a compressed chunk decompresses that chunk's
+candidate rows, and TimescaleDB aborts the statement past
+`timescaledb.max_tuples_decompressed_per_dml_transaction` (100 000) after paying for the
+I/O. Every write to a hypertable carrying mutable rows must therefore plan against a
+time range the compression never covers:
+
+- **Bound the time column.** A join against `VALUES` or `unnest` gives the planner no
+  time constraint; add `time >= $lo AND time <= $hi` from the batch's own values.
+- **Force a custom plan.** sqlx caches the statement, and after five executions Postgres
+  may switch to a generic plan, which ignores parameter bounds on an UPDATE: it is a
+  plain `Append` over every chunk. Run the write in a transaction that opens with
+  `SET LOCAL plan_cache_mode = force_custom_plan`. sqlx 0.6's `.persistent(false)` is
+  not the fix: it still prepares a named server-side statement and never closes it.
+- **Stay inside the horizon.** Rows older than `compress_after` belong to the policy;
+  the writer drops them loudly instead of decompressing a chunk.
+- **Prove it.** An `#[ignore]` test compresses a throwaway chunk, sets the limit to 1 on
+  the connection under test, and runs the write more than five times
+  (`arm_repo::tests::multi_row_end_never_decompresses`).
+
+A read with a time bound prunes under a generic plan (`ChunkAppend` excludes chunks at
+startup), so a SELECT needs only the bound. For example, the signature lookups in
+`trade_repo` take a `since` anchor for `block_time`.
+
 Tables that don't need time-based aging (strategy rules, positions, sweep results) use standard B-tree PKs + targeted indexes. Sweep results use the `retention.rs` compaction strategy (retain per-metric extremes, ~660 rows/group) instead of time-based deletion.
 
 ## Sweep Result Retention

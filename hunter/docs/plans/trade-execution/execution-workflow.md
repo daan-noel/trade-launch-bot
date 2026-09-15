@@ -122,15 +122,20 @@ paths at no cost. Sells already retry (6-attempt loop), so only the buy needed t
 
 ```
 ExitGuard claimed                          ← recovery reaper skips guarded pg ids
+mint lock claimed, or queued behind the    ← FIFO, bounded by the holder's worst case;
+  sibling exit that holds it                 timeout → FillFailed::Reverted (nothing sent);
+                                             after a wait, drop if the intent moved on
 release_sol_for_position()                 ← idempotent; done FIRST, before any tx
 if entry_token_amount == 0: FillConfirmed at zero (no tx)
 
 per-attempt loop (max 6, tip escalates per level — max(percentile ladder, min×1.5^level)):
   re-read is_migrated from TokenCache      ← route can flip mid-exit (curve → AMM)
   send sell (15 s hard cap for RPC ops)    ← Ok(Some(sig)) | Ok(None) | Err
-  register wakeup BEFORE each balance query (prevent miss-in-gap)
-  poll_feed event-driven, rate-limited ≥ 250 ms between queries:
-    sum_legs_by_signatures(sell_sigs)      ← per-sig; never shared net balance
+  await_own_legs (the wait both confirms share):
+    wake future created BEFORE the checks  ← a notify during a check is not lost
+    own-leg preview on every wake          ← ingest records it before the DB write
+    sum_legs_by_signatures(sell_sigs,      ← fallback only: every 250 ms when a trade
+      since = exit start)                    landed for the key, and at the deadline
     remaining ≤ dust → cleared ✓
   if deadline without clear → classify_sell_confirm(error_code, route_changed):
     (thin wrapper over pump-trader's shared pump_trader::classify_swap_revert(
@@ -177,15 +182,20 @@ changed-vs-unchanged; changed → overwrite the cache and retry, unchanged (or t
 refresh RPC itself fails) → Fatal. Both the sell loop here and the curve-buy retry in
 **B** funnel through the one `pump_trader::classify_swap_revert` decision table.
 
-**Why rate-limit balance queries:** during a rapid sell dump the `trades` feed can fire
-many times per 250 ms window. Querying `sum_legs_by_signatures` on every notification
-would run a DB aggregate in a tight loop; the rate-limit batches notifications into at
-most one query per 250 ms, with a bypass at the poll deadline to ensure a final check
-always runs.
+**Why the preview, and Postgres only as a fallback:** ingest records our own leg in
+`TradeSignals` and wakes the waiter before it queues the DB write, so the preview holds a
+landed transaction one feed hop after it arrives. A Postgres lookup can only be slower:
+it waits for the batched commit, and on a busy disk it costs a read per chunk it
+probes. The fallback covers a leg the preview does not hold (healed from RPC, or past
+its TTL). It never runs at t=0, re-runs only once `WaitGuard::seq` shows a trade landed
+for the key, and its `since` anchor bounds `block_time` so it prunes to the recent
+chunks.
 
 ## D. RAII interlocks (`InFlightGuards` in `engine/mod.rs`)
 
-Both guards are DashSet operations — zero allocation, panic-safe (Drop always fires).
+The pg-id guards are DashSet operations: zero allocation, panic-safe (Drop always
+fires). The mint guard is a FIFO `tokio::sync::Mutex` per mint, pruned once no guard or
+waiter holds it.
 
 **`EntryGuard`** — claims `strategy_positions.id` during buy:
 - Prevents two concurrent entry tasks for the same PG row
@@ -197,6 +207,13 @@ Both guards are DashSet operations — zero allocation, panic-safe (Drop always 
   go through this gate
 - Spawned sell task holds the guard for its full lifetime
 - Dropped when sell completes or the task panics — no wedged state possible
+
+**`ExitMintGuard`**: claims the mint during sell (positions on one mint share a token
+account):
+- A bot exit queues behind the holder (`begin_exit_mint`) and sends the moment it
+  finishes. The wait is bounded by the holder's own worst case (`EXIT_MINT_WAIT`); a
+  timeout hands the exit back as `FillFailed::Reverted`.
+- Orphan sweeps and the wallet Sell All try-lock (`try_begin_exit_mint`) and report busy.
 
 ## E. Crash recovery (`reapers.rs` — spawned from the engine loop)
 

@@ -156,13 +156,14 @@ buys (170 buys; 48 % on quiet mints alone), which is the physical floor.
 
 ## Still open
 
-### The exit detects ~10x slower than the entry
+### Exit detection against entry detection
 
-Both legs ACK under 10 ms, but the entry sees its fill in 37–82 ms while the exit
-takes 296–717 ms to see the bag clear. The entry gets `observe_own_leg`'s early
-wake; `confirm_sell` polls on a ≥250 ms rate limit. This delays neither buy nor
-sell — only the *detection*, which holds the position's concurrency slot open
-longer than needed.
+Both legs ACK under 10 ms. At the 08-14 baseline the entry saw its fill in 37–82 ms and
+the exit took 296–717 ms to see the bag clear. Both confirms now resolve from the
+own-leg preview on every wake (`exec_real::await_own_legs`), so the two should read
+alike. Re-measure `ack_to_clear_ms` against `entry_landed.ack_to_fill_ms` after the
+[io-storm fix](io-storm-latency-plan.md) deploys. This delays neither buy nor sell,
+only the *detection*, which holds the position's concurrency slot open.
 
 ### Sample size
 

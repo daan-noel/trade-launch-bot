@@ -119,6 +119,14 @@ window (a token that dies on its creation slot), and the UPDATE keys on a row th
 INSERT is about to write. The end write is `WHERE ended_at IS NULL`, so it is idempotent
 and keeps the FIRST ending when two reach the same episode.
 
+The end write never reaches a compressed chunk. The UPDATE carries the batch's own
+`armed_at` span and runs under `SET LOCAL plan_cache_mode = force_custom_plan`, so the
+planner prunes to the chunks in that span. The rule behind it is in
+[db-patterns.md](../database/db-patterns.md#dml-on-a-compressed-hypertable). Ends armed
+past the compression horizon (`ARM_COMPRESS_AFTER_DAYS`, pinned to the migration by a
+test) are dropped with one warning. An episode ends within its token's life, so that
+count is zero in steady state.
+
 `ArmedRegistry` carries `armed_at` so the end write can key its episode without a read:
 the key is `(rule_id, mint_address, armed_at)`, and the writer resolves an end whose
 insert has not flushed yet by coalescing both sides inside one flush.
