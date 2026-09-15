@@ -2234,6 +2234,11 @@ mod tests {
         PgPoolOptions::new().max_connections(2).connect(&url).await.ok()
     }
 
+    /// A fresh, valid base58 transaction signature (the column stores its bytes).
+    fn unique_sig() -> String {
+        solana_sdk::signature::Signature::new_unique().to_string()
+    }
+
     fn unique(prefix: &str) -> String {
         format!("{prefix}{}", Uuid::new_v4().simple())
     }
@@ -2278,14 +2283,14 @@ mod tests {
     async fn find_fill_by_signature_sums_multi_leg() {
         let Some(pool) = test_pool().await else { return };
         let repo = TradeRepo::new(pool.clone());
-        let (wallet, mint, sig) = (unique("W"), unique("M"), unique("buysig-"));
+        let (wallet, mint, sig) = (unique("W"), unique("M"), unique_sig());
 
         // One buy that landed as two legs (e.g. a split route) under one signature.
         insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, 0, 0.6, 600).await;
         insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, 1, 0.4, 400).await;
         // A foreign buy on the SAME (wallet, mint) under a different signature —
         // a concurrent same-token position's fill (decision #2). Must NOT leak in.
-        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &unique("foreign-"), 0, 9.9, 9999).await;
+        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &unique_sig(), 0, 9.9, 9999).await;
 
         let legs = repo
             .find_fill_by_signature(&wallet, &mint, &sig, Utc::now())
@@ -2313,7 +2318,7 @@ mod tests {
         let Some(pool) = test_pool().await else { return };
         let repo = TradeRepo::new(pool.clone());
         let (wallet, mint) = (unique("W"), unique("M"));
-        let (mine_a, mine_b, theirs) = (unique("sellA-"), unique("sellB-"), unique("sellX-"));
+        let (mine_a, mine_b, theirs) = (unique_sig(), unique_sig(), unique_sig());
 
         // This position's exit landed across two sell signatures…
         insert_leg(&repo, &wallet, &mint, TradeType::Sell, &mine_a, 0, 0.3, 300).await;
