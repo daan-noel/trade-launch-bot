@@ -414,6 +414,7 @@ pub async fn wallet_fill_from_sell(
             &sell.mint_address,
             std::slice::from_ref(&sell.tx_signature),
             TradeType::Sell,
+            sell.block_time,
         )
         .await
         .ok()

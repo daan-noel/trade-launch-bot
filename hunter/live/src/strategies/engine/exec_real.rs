@@ -69,10 +69,10 @@ const BUY_SEND_TIMEOUT: Duration = Duration::from_secs(20);
 /// Extended feed poll after the RPC says the buy *landed* but the feed hasn't
 /// indexed it yet.
 const EXTENDED_FEED_WINDOW: Duration = Duration::from_secs(20);
-/// Feed re-poll cadence while waiting.
-const FEED_POLL: Duration = Duration::from_millis(500);
-/// Min gap between sell-leg balance queries (dump can fire many feed wakeups).
-const SELL_BALANCE_QUERY_MIN_INTERVAL: Duration = Duration::from_millis(250);
+/// Cadence of the entry confirm's Postgres fallback (see [`await_own_legs`]).
+const BUY_LEGS_QUERY_EVERY: Duration = Duration::from_millis(500);
+/// Cadence of the exit confirm's Postgres fallback (see [`await_own_legs`]).
+const SELL_LEGS_QUERY_EVERY: Duration = Duration::from_millis(250);
 /// Sell attempts inside one `SubmitSell` (escalating Jito tip); classify/heal
 /// runs between attempts. The engine adds bounded outer retries for safe Reverted.
 const SELL_ATTEMPTS: u8 = 6;
@@ -571,10 +571,7 @@ async fn adopt_existing_fill(
     wallet: &str,
     order: &BuyOrder,
 ) -> Option<(String, SigLegs)> {
-    let sigs = deps.buy_journal.sigs(order.pg_id);
-    if sigs.is_empty() {
-        return None;
-    }
+    let (first_signed_at, sigs) = deps.buy_journal.signed(order.pg_id)?;
     for sig in &sigs {
         if let Some(obs) = deps.trade_signals.observed_legs(sig) {
             if obs.token_amount > PARTIAL_FILL_THRESHOLD {
@@ -582,7 +579,8 @@ async fn adopt_existing_fill(
                 return Some((sig.clone(), SigLegs::from(obs)));
             }
         }
-        if let Ok(Some(legs)) = deps.trade_repo.find_fill_by_signature(wallet, &order.mint, sig).await
+        if let Ok(Some(legs)) =
+            deps.trade_repo.find_fill_by_signature(wallet, &order.mint, sig, first_signed_at).await
         {
             if legs.token_amount > PARTIAL_FILL_THRESHOLD {
                 info!(mint = %order.mint, sig = %sig, "adopted existing buy fill before re-send");
@@ -790,7 +788,7 @@ async fn confirm_entry(
     window: Duration,
 ) -> EntryOutcome {
     let mint = order.mint.as_str();
-    if let Some(legs) = poll_feed_buy(deps, wallet, mint, sig, guard, window).await {
+    if let Some(legs) = poll_feed_buy(deps, wallet, mint, sig, order.decided_at, guard, window).await {
         return EntryOutcome::Filled(legs);
     }
     // Race (option a): the token migrated during the buy window. The feed poll above
@@ -834,7 +832,9 @@ async fn confirm_entry(
             }
         }
         SilentSendOutcome::WaitThenSettle => {
-            match poll_feed_buy(deps, wallet, mint, sig, guard, EXTENDED_FEED_WINDOW).await {
+            match poll_feed_buy(deps, wallet, mint, sig, order.decided_at, guard, EXTENDED_FEED_WINDOW)
+                .await
+            {
                 Some(legs) => EntryOutcome::Filled(legs),
                 None => EntryOutcome::Ambiguous,
             }
@@ -848,35 +848,85 @@ async fn confirm_entry(
     }
 }
 
+/// Wait up to `window` for our own legs, as `preview` or `query` report them;
+/// each returns `Some` only once the legs are complete.
+///
+/// `preview` (the in-RAM own-leg map) runs on every wake: ingest records our leg
+/// and wakes this waiter BEFORE it queues the DB write, so a landed transaction
+/// resolves here one feed hop after it arrives. `query` (Postgres) is the
+/// fallback for a leg the preview does not hold (healed from RPC, or past its
+/// TTL): every `query_every`, only when a trade for this key has landed since
+/// the last query, and once at the deadline. It never runs at t=0, when our
+/// transaction cannot be on the feed yet. The wake future is created before the
+/// checks: `notify_waiters` reaches only futures that exist when it fires, so one
+/// created after them misses a leg that lands while they run.
+async fn await_own_legs<P, Q, F>(
+    guard: &trading_core::state::trade_signals::WaitGuard,
+    window: Duration,
+    query_every: Duration,
+    preview: P,
+    query: Q,
+) -> Option<SigLegs>
+where
+    P: Fn() -> Option<SigLegs>,
+    Q: Fn() -> F,
+    F: std::future::Future<Output = Option<SigLegs>>,
+{
+    let deadline = tokio::time::Instant::now() + window;
+    let mut next_query = tokio::time::Instant::now() + query_every;
+    let mut queried_seq: Option<u64> = None;
+    loop {
+        let notified = guard.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if let Some(legs) = preview() {
+            return Some(legs);
+        }
+        let now = tokio::time::Instant::now();
+        let at_deadline = now >= deadline;
+        if at_deadline || now >= next_query {
+            // Recorded before the query: a trade landing during it moves `seq` again.
+            let seq = guard.seq();
+            if queried_seq != Some(seq) {
+                queried_seq = Some(seq);
+                if let Some(legs) = query().await {
+                    return Some(legs);
+                }
+            }
+            next_query = tokio::time::Instant::now() + query_every;
+        }
+        if at_deadline {
+            return None;
+        }
+        tokio::select! {
+            _ = &mut notified => {}
+            _ = tokio::time::sleep_until(next_query.min(deadline)) => {}
+        }
+    }
+}
+
+/// Our buy `sig`'s legs, once it filled. `since` precedes the send (the order's
+/// decision).
 async fn poll_feed_buy(
     deps: &RealExecDeps,
     wallet: &str,
     mint: &str,
     sig: &str,
+    since: chrono::DateTime<Utc>,
     guard: &trading_core::state::trade_signals::WaitGuard,
     window: Duration,
 ) -> Option<SigLegs> {
-    let deadline = tokio::time::Instant::now() + window;
-    loop {
-        // Prefer process-local own-leg preview (ingest saw our buy before PG).
-        if let Some(obs) = deps.trade_signals.observed_legs(sig) {
-            if obs.token_amount > PARTIAL_FILL_THRESHOLD {
-                return Some(SigLegs::from(obs));
-            }
-        }
-        if let Ok(Some(legs)) = deps.trade_repo.find_fill_by_signature(wallet, mint, sig).await {
-            if legs.token_amount > PARTIAL_FILL_THRESHOLD {
-                return Some(legs);
-            }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return None;
-        }
-        tokio::select! {
-            _ = guard.notified() => {}
-            _ = tokio::time::sleep(FEED_POLL) => {}
-        }
-    }
+    let filled = |legs: SigLegs| (legs.token_amount > PARTIAL_FILL_THRESHOLD).then_some(legs);
+    await_own_legs(
+        guard,
+        window,
+        BUY_LEGS_QUERY_EVERY,
+        || deps.trade_signals.observed_legs(sig).map(SigLegs::from).and_then(filled),
+        || async move {
+            deps.trade_repo.find_fill_by_signature(wallet, mint, sig, since).await.ok().flatten().and_then(filled)
+        },
+    )
+    .await
 }
 
 /// Submit a real sell (escalating tip across attempts), confirm by summing the
@@ -910,6 +960,8 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
 
     let wallet = deps.trader.wallet_pubkey();
     let feed_guard = deps.trade_signals.register(&wallet, &order.mint);
+    // Precedes every sell this exit sends: the lower bound for finding their legs.
+    let exit_started = Utc::now();
     let mut sell_sigs: Vec<String> = Vec::new();
     let mut cashback = order.cashback_enabled;
     let base_program = order.token_program_id.clone().unwrap_or_default();
@@ -988,8 +1040,16 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
             }
         }
 
-        if let Some(legs) =
-            confirm_sell(&deps, &feed_guard, &wallet, &order, &sell_sigs, SELL_CONFIRM_WINDOW).await
+        if let Some(legs) = confirm_sell(
+            &deps,
+            &feed_guard,
+            &wallet,
+            &order,
+            &sell_sigs,
+            exit_started,
+            SELL_CONFIRM_WINDOW,
+        )
+        .await
         {
             // ACK → bag observed cleared on the feed: the exit twin of
             // `entry_landed`, and the last unmeasured segment on this leg.
@@ -1026,6 +1086,7 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
                     &wallet,
                     &order,
                     &sell_sigs,
+                    exit_started,
                     SELL_UNCONFIRMED_EXTENDED,
                 )
                 .await
@@ -1051,9 +1112,16 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
                     .await
                         > 0
                 {
-                    if let Some(legs) =
-                        confirm_sell(&deps, &feed_guard, &wallet, &order, &sell_sigs, Duration::ZERO)
-                            .await
+                    if let Some(legs) = confirm_sell(
+                        &deps,
+                        &feed_guard,
+                        &wallet,
+                        &order,
+                        &sell_sigs,
+                        exit_started,
+                        Duration::ZERO,
+                    )
+                    .await
                     {
                         info!(mint = %order.mint, "sell confirmed from healed feed legs");
                         finish_cleared_sell(&deps, &order, &sell_sigs, legs).await;
@@ -1302,50 +1370,38 @@ async fn submit_one_sell(
     }
 }
 
+/// This exit's own sell legs, once they cover the order's tokens. `since`
+/// precedes every sig in `sell_sigs` (the exit's start).
 async fn confirm_sell(
     deps: &RealExecDeps,
     guard: &trading_core::state::trade_signals::WaitGuard,
     wallet: &str,
     order: &SellOrder,
     sell_sigs: &[String],
+    since: chrono::DateTime<Utc>,
     window: Duration,
 ) -> Option<SigLegs> {
     if sell_sigs.is_empty() {
         return None;
     }
-    let deadline = tokio::time::Instant::now() + window;
-    let mut last_query: Option<tokio::time::Instant> = None;
-    loop {
-        let now = tokio::time::Instant::now();
-        let at_deadline = now >= deadline;
-        let rate_ok =
-            at_deadline || last_query.map_or(true, |t| now.duration_since(t) >= SELL_BALANCE_QUERY_MIN_INTERVAL);
-        if rate_ok {
-            last_query = Some(now);
-            // Prefer process-local own-leg preview before SQL.
-            if let Some(obs) = deps.trade_signals.sum_observed_legs(sell_sigs) {
-                if obs.token_amount.saturating_add(PARTIAL_FILL_THRESHOLD) >= order.token_amount {
-                    return Some(SigLegs::from(obs));
-                }
-            }
-            if let Ok(Some(legs)) = deps
-                .trade_repo
-                .sum_legs_by_signatures(wallet, &order.mint, sell_sigs, TradeType::Sell)
+    let cleared = |legs: SigLegs| {
+        (legs.token_amount.saturating_add(PARTIAL_FILL_THRESHOLD) >= order.token_amount).then_some(legs)
+    };
+    await_own_legs(
+        guard,
+        window,
+        SELL_LEGS_QUERY_EVERY,
+        || deps.trade_signals.sum_observed_legs(sell_sigs).map(SigLegs::from).and_then(cleared),
+        || async move {
+            deps.trade_repo
+                .sum_legs_by_signatures(wallet, &order.mint, sell_sigs, TradeType::Sell, since)
                 .await
-            {
-                if legs.token_amount.saturating_add(PARTIAL_FILL_THRESHOLD) >= order.token_amount {
-                    return Some(legs);
-                }
-            }
-        }
-        if at_deadline {
-            return None;
-        }
-        tokio::select! {
-            _ = guard.notified() => {}
-            _ = tokio::time::sleep(FEED_POLL) => {}
-        }
-    }
+                .ok()
+                .flatten()
+                .and_then(cleared)
+        },
+    )
+    .await
 }
 
 /// Slippage `min_out` reserves for the snipe buy, read from the cache (no RPC).
@@ -1378,6 +1434,111 @@ pub(crate) fn snipe_reserves_from_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// One of our own buy legs reaching ingest for `("W", "M")`.
+    fn land(signals: &TradeSignals, sig: &str) {
+        signals.observe_own_leg("W", "M", sig, 1_000, 0.01, Utc::now(), 1, None, None);
+    }
+
+    /// A leg that lands while the Postgres fallback runs must still wake the
+    /// waiter: its wake future is armed before the checks. A wake created after
+    /// them would miss it and wait for the next query, a full cadence later.
+    #[tokio::test]
+    async fn await_own_legs_keeps_a_wake_that_lands_during_the_query() {
+        let signals = Arc::new(TradeSignals::new());
+        let guard = signals.register("W", "M");
+        let started = tokio::time::Instant::now();
+        let legs = await_own_legs(
+            &guard,
+            Duration::from_secs(5),
+            Duration::from_secs(1),
+            || signals.observed_legs("sig").map(SigLegs::from),
+            || {
+                let signals = signals.clone();
+                async move {
+                    land(&signals, "sig");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    None
+                }
+            },
+        )
+        .await;
+        assert!(legs.is_some(), "the landed leg resolves the wait");
+        assert!(started.elapsed() < Duration::from_millis(1_800), "the wake was lost");
+    }
+
+    /// A leg the preview holds resolves the wait with no Postgres query at all.
+    #[tokio::test]
+    async fn await_own_legs_resolves_from_the_preview_without_querying() {
+        let signals = Arc::new(TradeSignals::new());
+        let guard = signals.register("W", "M");
+        let lander = signals.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            land(&lander, "sig");
+        });
+        let queries = AtomicUsize::new(0);
+        let legs = await_own_legs(
+            &guard,
+            Duration::from_secs(5),
+            Duration::from_secs(1),
+            || signals.observed_legs("sig").map(SigLegs::from),
+            || {
+                queries.fetch_add(1, Ordering::Relaxed);
+                async { None }
+            },
+        )
+        .await;
+        assert!(legs.is_some());
+        assert_eq!(queries.load(Ordering::Relaxed), 0, "no query when the preview has the leg");
+    }
+
+    /// With nothing landing for the key, the fallback queries once and then waits
+    /// for a trade rather than re-running an answer that cannot have changed.
+    #[tokio::test]
+    async fn await_own_legs_requeries_only_after_a_trade_lands() {
+        let signals = Arc::new(TradeSignals::new());
+        let guard = signals.register("W", "M");
+        let queries = AtomicUsize::new(0);
+        let legs = await_own_legs(
+            &guard,
+            Duration::from_millis(1_100),
+            Duration::from_millis(250),
+            || None,
+            || {
+                queries.fetch_add(1, Ordering::Relaxed);
+                async { None }
+            },
+        )
+        .await;
+        assert!(legs.is_none());
+        assert_eq!(queries.load(Ordering::Relaxed), 1);
+    }
+
+    /// A zero window is one final check: the query runs once, immediately.
+    #[tokio::test]
+    async fn await_own_legs_zero_window_queries_once() {
+        let signals = Arc::new(TradeSignals::new());
+        let guard = signals.register("W", "M");
+        land(&signals, "sig");
+        let stored = signals.observed_legs("sig").map(SigLegs::from);
+        let queries = AtomicUsize::new(0);
+        let legs = await_own_legs(
+            &guard,
+            Duration::ZERO,
+            Duration::from_secs(1),
+            || None,
+            || {
+                queries.fetch_add(1, Ordering::Relaxed);
+                let stored = stored.clone();
+                async move { stored }
+            },
+        )
+        .await;
+        assert!(legs.is_some());
+        assert_eq!(queries.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn classify_silent_send_buy_slippage_resends() {

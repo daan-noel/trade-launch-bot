@@ -16,6 +16,12 @@ use crate::strategies::wallet_ledger::WalletTx;
 /// full-table seq scan on a huge array (mirrors `sweep::corpus::DbSource` chunking).
 const SEED_MINT_CHUNK: usize = 1000;
 
+/// Slack under a signature lookup's `since` anchor. The anchor can trail the
+/// transaction it bounds - a position row inserts in the background, and a leg
+/// healed from RPC carries the cluster's block time, which lags wall time - so
+/// the bound sits well below it. An hour spans at most one extra daily chunk.
+pub const OWN_TX_LOOKUP_SLACK: chrono::Duration = chrono::Duration::hours(1);
+
 /// Bind parameters `insert_many` pushes per row — one per column in its INSERT
 /// list. The ONE place that number is written down: the chunk size below and the
 /// ceiling guard in `tests` both read it, so adding a bound column cannot leave a
@@ -1423,15 +1429,22 @@ impl TradeRepo {
     /// already returns its own submitted signature, so the entry fill is recovered
     /// by *that* signature instead of `find_latest_by_wallet_mint_type` (the latest
     /// buy for the pair) — which, with two concurrent positions on the same token,
-    /// would adopt the same fill twice.
+    /// would adopt the same fill twice. `since` as in [`Self::sum_legs_by_signatures`].
     pub async fn find_fill_by_signature(
         &self,
         wallet: &str,
         mint: &str,
         signature: &str,
+        since: DateTime<Utc>,
     ) -> anyhow::Result<Option<SigLegs>> {
-        self.sum_legs_by_signatures(wallet, mint, std::slice::from_ref(&signature.to_string()), TradeType::Buy)
-            .await
+        self.sum_legs_by_signatures(
+            wallet,
+            mint,
+            std::slice::from_ref(&signature.to_string()),
+            TradeType::Buy,
+            since,
+        )
+        .await
     }
 
     /// Sum the legs of a *set* of this position's own transaction `signatures` for
@@ -1442,12 +1455,19 @@ impl TradeRepo {
     /// `None` when none of the signatures are indexed yet (empty `signatures` or an
     /// unknown wallet short-circuits). The integer SOL/token sums are converted back
     /// to f64 (SOL from lamports, tokens from raw units) for [`SigLegs`].
+    ///
+    /// `since` is an instant the caller knows precedes every one of the
+    /// signatures (the buy's decision, the position row, the exit's start). Less
+    /// [`OWN_TX_LOOKUP_SLACK`], it bounds `block_time`, the `trades` partition key,
+    /// so the lookup probes the chunks from then on instead of every chunk, which
+    /// costs a disk read per chunk.
     pub async fn sum_legs_by_signatures(
         &self,
         wallet: &str,
         mint: &str,
         signatures: &[String],
         trade_type: TradeType,
+        since: DateTime<Utc>,
     ) -> anyhow::Result<Option<SigLegs>> {
         if signatures.is_empty() {
             return Ok(None);
@@ -1471,6 +1491,7 @@ impl TradeRepo {
                   AND mint_address = $2
                   AND trade_type = $3
                   AND tx_signature = ANY($4)
+                  AND block_time >= $5
             ),
             -- The wallet flow is per TRANSACTION, repeated on each of its legs:
             -- one value per signature, and one unknown makes the sum unknown.
@@ -1497,6 +1518,7 @@ impl TradeRepo {
         .bind(mint)
         .bind(trade_type_str(trade_type))
         .bind(&sig_bytes)
+        .bind(since - OWN_TX_LOOKUP_SLACK)
         .fetch_one(&self.pool)
         .await?;
 
@@ -2266,7 +2288,7 @@ mod tests {
         insert_leg(&repo, &wallet, &mint, TradeType::Buy, &unique("foreign-"), 0, 9.9, 9999).await;
 
         let legs = repo
-            .find_fill_by_signature(&wallet, &mint, &sig)
+            .find_fill_by_signature(&wallet, &mint, &sig, Utc::now())
             .await
             .expect("query")
             .expect("the signature's legs are summed, not None");
@@ -2274,6 +2296,13 @@ mod tests {
         assert!((legs.amount_sol - 1.0).abs() < 1e-6, "Σsol across both legs");
         // Weighted-average price = Σsol / Σtokens, not a per-leg price.
         assert!((legs.price_per_token() - 0.001).abs() < 1e-9, "weighted-avg fill price");
+
+        // The `since` bound is applied: an anchor past the legs plus the slack finds nothing.
+        let past_the_legs = Utc::now() + OWN_TX_LOOKUP_SLACK + chrono::Duration::minutes(1);
+        assert!(
+            repo.find_fill_by_signature(&wallet, &mint, &sig, past_the_legs).await.expect("query").is_none(),
+            "legs before since - slack are out of the lookup"
+        );
 
         cleanup(&pool, &mint).await;
     }
@@ -2294,7 +2323,7 @@ mod tests {
 
         // Empty signature set short-circuits to None (never a full-table scan).
         assert!(
-            repo.sum_legs_by_signatures(&wallet, &mint, &[], TradeType::Sell)
+            repo.sum_legs_by_signatures(&wallet, &mint, &[], TradeType::Sell, Utc::now())
                 .await
                 .expect("query")
                 .is_none(),
@@ -2307,6 +2336,7 @@ mod tests {
                 &mint,
                 &[mine_a.clone(), mine_b.clone()],
                 TradeType::Sell,
+                Utc::now(),
             )
             .await
             .expect("query")
@@ -2316,7 +2346,7 @@ mod tests {
 
         // Side filter holds: no Buy legs exist, so a Buy query over the sell sigs is None.
         assert!(
-            repo.sum_legs_by_signatures(&wallet, &mint, &[mine_a, mine_b], TradeType::Buy)
+            repo.sum_legs_by_signatures(&wallet, &mint, &[mine_a, mine_b], TradeType::Buy, Utc::now())
                 .await
                 .expect("query")
                 .is_none(),

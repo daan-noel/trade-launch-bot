@@ -706,7 +706,14 @@ impl FillSigStore {
 /// Crash recovery still reads `strategy_positions.submitted_buy_signatures` via
 /// the reaper — this journal is live-process only.
 #[derive(Debug, Clone, Default)]
-pub struct SubmittedBuyJournal(Arc<dashmap::DashMap<Uuid, Vec<String>>>);
+pub struct SubmittedBuyJournal(Arc<dashmap::DashMap<Uuid, JournalEntry>>);
+
+/// One position's journaled buys: every signature, and when the first was signed.
+#[derive(Debug, Clone)]
+struct JournalEntry {
+    first_signed_at: chrono::DateTime<chrono::Utc>,
+    sigs: Vec<String>,
+}
 
 impl SubmittedBuyJournal {
     pub fn new() -> Self {
@@ -717,17 +724,24 @@ impl SubmittedBuyJournal {
     pub fn append(&self, pg_id: Uuid, sig: String) {
         self.0
             .entry(pg_id)
-            .and_modify(|v| {
-                if !v.iter().any(|s| s == &sig) {
-                    v.push(sig.clone());
+            .and_modify(|e| {
+                if !e.sigs.iter().any(|s| s == &sig) {
+                    e.sigs.push(sig.clone());
                 }
             })
-            .or_insert_with(|| vec![sig]);
+            .or_insert_with(|| JournalEntry { first_signed_at: chrono::Utc::now(), sigs: vec![sig] });
     }
 
     /// Snapshot of sigs known for `pg_id` in this process (empty ⇒ first attempt).
     pub fn sigs(&self, pg_id: Uuid) -> Vec<String> {
-        self.0.get(&pg_id).map(|e| e.value().clone()).unwrap_or_default()
+        self.0.get(&pg_id).map(|e| e.sigs.clone()).unwrap_or_default()
+    }
+
+    /// The sigs plus when the first was signed. Every sig is recorded before its
+    /// send, so that instant precedes all of them: the lower bound for finding
+    /// their legs on the feed.
+    pub fn signed(&self, pg_id: Uuid) -> Option<(chrono::DateTime<chrono::Utc>, Vec<String>)> {
+        self.0.get(&pg_id).map(|e| (e.first_signed_at, e.sigs.clone()))
     }
 
     /// Drop the journal entry once the position is terminal / no longer needed.

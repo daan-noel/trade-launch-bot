@@ -215,7 +215,7 @@ async fn resolve_buy_submitted_inner(
     for sig in &position.submitted_buy_signatures {
         if let Ok(Some(legs)) = deps
             .trade_repo
-            .find_fill_by_signature(&wallet, &position.mint_address, sig)
+            .find_fill_by_signature(&wallet, &position.mint_address, sig, position.created_at)
             .await
         {
             if legs.token_amount == 0 {
@@ -383,7 +383,7 @@ async fn resolve_never_broadcast(
     for sig in &position.submitted_buy_signatures {
         if let Ok(Some(legs)) = deps
             .trade_repo
-            .find_fill_by_signature(&wallet, &position.mint_address, sig)
+            .find_fill_by_signature(&wallet, &position.mint_address, sig, position.created_at)
             .await
         {
             if legs.token_amount > 0 {
