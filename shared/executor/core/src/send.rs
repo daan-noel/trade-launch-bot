@@ -57,6 +57,20 @@ const REBROADCAST_TAIL_INTERVAL_MS: u64 = 1_000;
 /// plenty to catch the next few blocks on the best-effort tier.
 const REBROADCAST_WINDOW: Duration = Duration::from_secs(5);
 
+/// Bound on one keep-warm ping. Far above a healthy Sender round trip (1-6 ms);
+/// a ping that hangs past it only means the next send may open a fresh socket.
+const KEEP_WARM_PING_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The keep-warm URL for a send endpoint: the same scheme, host and port, so it
+/// holds the very sockets the send draws from the pool, with path `/ping` (the
+/// Sender's own warm-up route, `200 ok`) and no query.
+fn sender_ping_url(send_url: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(send_url).ok()?;
+    url.set_path("/ping");
+    url.set_query(None);
+    Some(url.into())
+}
+
 /// Per-call latency policy for [`Engine::build_trade_tx`], layered over the global
 /// [`crate::config::TraderConfig::durable_nonce`] flag.
 ///
@@ -541,6 +555,59 @@ impl Engine {
         Err(err)
     }
 
+    /// Spawn the loop that holds each Sender endpoint's sockets open between
+    /// sends ([`crate::config::SenderCfg`]). Every `keep_warm_ms` it fires
+    /// `keep_warm_sockets` concurrent `GET /ping`s per endpoint: concurrent so the
+    /// pool keeps that many sockets, one per send that can be in flight at once.
+    /// Without it the Sender closes the idle socket and the next buy pays DNS + TCP
+    /// on the hot path. A real send that meets a ping mid-flight on every socket
+    /// opens one more; at a 1-6 ms ping per 5 s tick that is under 0.2 % of sends.
+    ///
+    /// `None` when keep-warm is off or no endpoint parses. Sender pings cost no
+    /// credits. The caller owns the handle (`initialize` parks it in
+    /// `background_tasks`, aborted on drop).
+    pub fn spawn_sender_keep_warm(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let every = Duration::from_millis(self.config.sender.keep_warm_ms?);
+        let sockets = self.config.sender.keep_warm_sockets.max(1);
+        let mut urls: Vec<String> = Vec::new();
+        for ping in self.config.helius_sender_urls.iter().filter_map(|u| sender_ping_url(u)) {
+            if !urls.contains(&ping) {
+                urls.push(ping);
+            }
+        }
+        if urls.is_empty() {
+            return None;
+        }
+        let http = self.http.clone();
+        Some(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let mut pings = tokio::task::JoinSet::new();
+                for url in &urls {
+                    for _ in 0..sockets {
+                        let http = http.clone();
+                        let url = url.clone();
+                        pings.spawn(async move {
+                            // Read the body to the end: an HTTP/1.1 socket goes back
+                            // to the pool only once its response is consumed.
+                            let ping = async {
+                                http.get(&url).send().await?.error_for_status()?.bytes().await
+                            };
+                            match tokio::time::timeout(KEEP_WARM_PING_TIMEOUT, ping).await {
+                                Ok(Ok(_)) => {}
+                                Ok(Err(e)) => debug!("sender keep-warm {url} failed: {e}"),
+                                Err(_) => debug!("sender keep-warm {url} timed out"),
+                            }
+                        });
+                    }
+                }
+                while pings.join_next().await.is_some() {}
+            }
+        }))
+    }
+
     /// Poll the RPC until the transaction is confirmed or retries are exhausted.
     pub async fn confirm_transaction(&self, signature: &str, max_retries: usize) -> Result<()> {
         let sig = Signature::from_str(signature)?;
@@ -772,6 +839,56 @@ mod tests {
         (format!("http://{addr}/"), count)
     }
 
+    /// A keep-alive HTTP/1.1 endpoint, the shape of a real Sender: it answers
+    /// every request on a connection with `body` and never closes the socket
+    /// itself. Returns its URL plus separate connection and request counters, so a
+    /// test can tell a reused socket from a fresh one.
+    async fn spawn_keepalive_mock(
+        body: &'static str,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let conns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reqs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (c, r) = (conns.clone(), reqs.clone());
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                c.fetch_add(1, SeqCst);
+                let r = r.clone();
+                tokio::spawn(async move {
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let mut buf = [0u8; 8192];
+                    let mut pending: Vec<u8> = Vec::new();
+                    loop {
+                        let n = match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => n,
+                        };
+                        pending.extend_from_slice(&buf[..n]);
+                        // One reply per header block. A POST body carries no blank
+                        // line, so it only ever prefixes the next request's headers.
+                        while let Some(end) = pending.windows(4).position(|w| w == b"\r\n\r\n") {
+                            pending.drain(..end + 4);
+                            r.fetch_add(1, SeqCst);
+                            if sock.write_all(resp.as_bytes()).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        (format!("http://{addr}/"), conns, reqs)
+    }
+
     fn trader_with(urls: Vec<String>) -> Engine {
         // The send fan-out only touches `config.helius_sender_urls` + `http`, so a
         // bare engine (no init, dummy tip account / rent) is enough to drive it.
@@ -855,6 +972,72 @@ mod tests {
         );
         // First gap under one slot (~400 ms) — the whole point of the schedule.
         assert!(REBROADCAST_SCHEDULE_MS[0] < 400);
+    }
+
+    #[test]
+    fn ping_url_keeps_the_send_socket_and_drops_path_and_query() {
+        assert_eq!(
+            sender_ping_url("http://fra-sender.helius-rpc.com/fast").as_deref(),
+            Some("http://fra-sender.helius-rpc.com/ping")
+        );
+        assert_eq!(
+            sender_ping_url("http://127.0.0.1:9000/fast?swqos_only=true").as_deref(),
+            Some("http://127.0.0.1:9000/ping")
+        );
+        assert_eq!(sender_ping_url("not a url"), None);
+    }
+
+    #[test]
+    fn keep_warm_is_off_unless_asked_for() {
+        // Default = off: a short-lived trader (forge builds one per leg) must not
+        // leave a pinger per instance.
+        assert!(trader_with(vec!["http://127.0.0.1:1/fast".into()])
+            .spawn_sender_keep_warm()
+            .is_none());
+    }
+
+    /// The whole point of the keep-warm: the pings reuse the SAME sockets tick
+    /// after tick (a loop that reconnected every tick would keep nothing warm),
+    /// and the real send then rides one of them instead of opening its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn keep_warm_holds_its_sockets_and_the_send_reuses_one() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (url, conns, reqs) = spawn_keepalive_mock(OK_BODY).await;
+        let mut cfg = TraderConfig::new(
+            "http://localhost".into(),
+            vec![format!("{url}fast")],
+            Arc::new(Keypair::new()),
+            vec![solana_sdk::pubkey::Pubkey::new_unique()],
+        );
+        cfg.sender.keep_warm_ms = Some(40);
+        cfg.sender.keep_warm_sockets = 2;
+        let engine = Engine::new(
+            Arc::new(cfg),
+            solana_sdk::pubkey::Pubkey::new_unique(),
+            solana_sdk::pubkey::Pubkey::new_unique(),
+            0,
+            0,
+            0,
+            0,
+        );
+        let pinger = engine.spawn_sender_keep_warm().expect("keep-warm is on");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let pings = reqs.load(SeqCst);
+        assert!(pings >= 6, "expected >=6 pings over ~7 ticks x 2 sockets, got {pings}");
+        assert_eq!(conns.load(SeqCst), 2, "{pings} pings must reuse 2 sockets, not reconnect");
+
+        // Stop just after a tick so no ping holds a socket when the send goes out.
+        let seen = reqs.load(SeqCst);
+        while reqs.load(SeqCst) == seen {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        pinger.abort();
+
+        let sig = engine.send_transaction(&dummy_signed_tx()).await.unwrap();
+        assert!(sig.starts_with("5xMock"), "got {sig}");
+        assert_eq!(conns.load(SeqCst), 2, "the send must ride a warm socket");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

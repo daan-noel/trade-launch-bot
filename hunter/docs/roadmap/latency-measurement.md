@@ -135,6 +135,11 @@ buys (170 buys; 48 % on quiet mints alone), which is the physical floor.
 - **`anchor_ms` large** ⇒ nonce contention. `TxAnchor::Entry` caps it near 40 ms by
   falling back to a blockhash, so a larger reading means the cap is being hit.
 - **`send_ms` large but `probe fanout` fast** ⇒ the fan-out is degraded, not the wire.
+  Check the sockets first: with keep-warm on, the live process holds ESTABLISHED
+  connections to every Sender at idle
+  (`sudo nsenter -t $(docker inspect -f '{{.State.Pid}}' hunter-live-api) -n ss -tn`).
+  None ⇒ each send pays DNS + TCP, 9-18 ms instead of 1-6 ms
+  ([trade-execution.md](../arch/trade-execution.md), warm Sender sockets).
 - **Strategy wait large** ⇒ working as configured. Change entry conditions, not code.
 - **Everything small but slot delta wide** ⇒ tip / leader-schedule territory.
 
@@ -155,6 +160,23 @@ buys (170 buys; 48 % on quiet mints alone), which is the physical floor.
    Only an ambient-gap-filtered subset measures us.
 
 ## Still open
+
+### Sender keep-warm - deploy gate
+
+Without the loop (the box as of 2026-09-15), `send_ms` reads 12-19 ms on a real buy and
+the live process holds no socket to either Sender at idle. Over the first 20 real buys
+after it deploys:
+ESTABLISHED sockets to both Senders at idle, `send_ms` p50 <= 3 ms, `decide_to_ack_ms`
+p50 <= 6 ms.
+
+### Inclusion misses (+2 slots)
+
+Of 124 real fills (7 days to 2026-09-15), 41 % land in the trigger's slot, 38 % one slot
+later, and 20 % two or three slots later (p50 555 ms decision -> own fill). The misses
+do not cluster at leader hand-offs: a trigger in slot 0 of a leader's 4-slot window
+misses as often as one in slot 3. Next step, free: log the feed's current slot at the
+ACK on `snipe_latency`. `entry_slot` minus that slot then separates a leader skipping the
+tx (tip / priority territory) from a late send path.
 
 ### Exit detection against entry detection
 

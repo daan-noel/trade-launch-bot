@@ -188,6 +188,43 @@ impl Default for CacheCfg {
     }
 }
 
+/// How long a Helius Sender endpoint keeps an idle keep-alive socket open after a
+/// request, in ms. Measured 2026-09-15 from the EC2 box on `fra-sender` and
+/// `ams-sender`: 10.0 s after a request (5.0 s on a socket that never sent one).
+/// Past it the next send opens a fresh connection: DNS + TCP + request, 9-18 ms
+/// instead of the 1-6 ms round trip.
+pub const SENDER_IDLE_CLOSE_MS: u64 = 10_000;
+
+/// Keep-warm cadence a long-lived trader sets in [`SenderCfg::keep_warm_ms`]:
+/// half the Sender's idle close, so a late tick still lands inside it.
+pub const SENDER_KEEP_WARM_MS: u64 = SENDER_IDLE_CLOSE_MS / 2;
+
+// The tick has to beat the idle close with room for a late tick and the ping's own
+// round trip, or the socket it holds is gone by the next send and every buy pays
+// DNS + TCP again. Checked at compile time.
+const _: () = assert!(SENDER_KEEP_WARM_MS * 2 <= SENDER_IDLE_CLOSE_MS);
+
+/// Sender connection upkeep between sends.
+#[derive(Clone, Debug)]
+pub struct SenderCfg {
+    /// Cadence, in ms, of the `GET /ping` that holds each Sender endpoint's
+    /// sockets open between sends. `None` = no keep-warm, the right value for a
+    /// short-lived trader. A long-lived one sets [`SENDER_KEEP_WARM_MS`].
+    pub keep_warm_ms: Option<u64>,
+    /// Sockets held open per endpoint: one per send that can be in flight at
+    /// once (two rules buying one mint in the same instant need two).
+    pub keep_warm_sockets: usize,
+}
+
+impl Default for SenderCfg {
+    fn default() -> Self {
+        Self {
+            keep_warm_ms: None,
+            keep_warm_sockets: 2,
+        }
+    }
+}
+
 /// Slippage defaults applied when a caller doesn't pass a per-call tolerance.
 #[derive(Clone, Debug)]
 pub struct SlippageCfg {
@@ -227,7 +264,7 @@ impl Default for LimitsCfg {
 }
 
 /// Configuration for a [`crate::PumpFunTrader`]. The four required fields have no
-/// `Default`; the seven tuning sub-structs each carry today's production values,
+/// `Default`; the eight tuning sub-structs each carry today's production values,
 /// so a consumer overrides only what it needs:
 ///
 /// ```ignore
@@ -272,6 +309,7 @@ pub struct TraderConfig {
     pub retry: RetryCfg,
     pub nonce: NonceCfg,
     pub cache: CacheCfg,
+    pub sender: SenderCfg,
     pub slippage: SlippageCfg,
     pub limits: LimitsCfg,
 }
@@ -298,6 +336,7 @@ impl TraderConfig {
             retry: RetryCfg::default(),
             nonce: NonceCfg::default(),
             cache: CacheCfg::default(),
+            sender: SenderCfg::default(),
             slippage: SlippageCfg::default(),
             limits: LimitsCfg::default(),
         }
@@ -319,6 +358,7 @@ impl std::fmt::Debug for TraderConfig {
             .field("retry", &self.retry)
             .field("nonce", &self.nonce)
             .field("cache", &self.cache)
+            .field("sender", &self.sender)
             .field("slippage", &self.slippage)
             .field("limits", &self.limits)
             .finish()
@@ -346,6 +386,13 @@ mod tests {
             c.blockhash_refresh_ms,
             c.blockhash_max_age_ms
         );
+    }
+
+    /// Two rules buying one mint in the same instant send two txs at once; with one
+    /// warm socket per endpoint the second opens a cold one and pays DNS + TCP.
+    #[test]
+    fn keep_warm_holds_a_socket_per_concurrent_send() {
+        assert!(SenderCfg::default().keep_warm_sockets >= 2);
     }
 
     /// A recent blockhash is valid for ~150 slots (~60 s). The oldest hash a send

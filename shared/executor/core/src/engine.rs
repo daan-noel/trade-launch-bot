@@ -127,14 +127,14 @@ pub struct Engine {
     // background — never queried inline on the hot buy path.
     pub balance_lamports_cache: Arc<std::sync::Mutex<Option<(u64, std::time::Instant)>>>,
 
-    // Background refresher tasks spawned in `initialize()` (Jito tip-floor +
-    // recent-blockhash). Held so `Drop` on the wrapping trader can abort them.
+    // Background tasks spawned in `initialize()` (Jito tip-floor, recent-blockhash,
+    // Sender keep-warm). Held so `Drop` on the wrapping trader can abort them.
     pub background_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Engine {
-    /// Abort the `initialize()`-spawned refresher loops (Jito tip-floor +
-    /// recent-blockhash) so a dropped trader leaves no orphaned RPC/Jito
+    /// Abort the `initialize()`-spawned loops (Jito tip-floor, recent-blockhash,
+    /// Sender keep-warm) so a dropped trader leaves no orphaned RPC/Jito/Sender
     /// pollers behind. Harmless for the long-lived live-trading engine (dropped
     /// only at shutdown); load-bearing for a short-lived per-launch trader.
     fn drop(&mut self) {
@@ -167,19 +167,17 @@ impl Engine {
 
         // Configured HTTP client (vs `Client::new()`): `tcp_nodelay` removes Nagle
         // delay on the small JSON-RPC sends, and the pool keeps keep-alive
-        // connections warm between trades. `initialize()` fires a warmup request to
+        // connections between trades. `initialize()` fires a warmup request to
         // seed the pool.
         //
-        // A cold pool costs the hot-path POST a fresh TCP+TLS handshake — 1-2 extra
-        // RTTs to Europe, i.e. real slots — so the idle timeout must outlast the gap
-        // between trades. A *selective* rule can fire only a few times an hour, and
-        // the old 90 s timeout reaped the connection long before the next snipe.
-        // The two levers work as a pair: the long idle timeout keeps the connection,
-        // and HTTP/2 keep-alive PINGs (protocol-level — `reqwest` owns the timer, no
-        // hand-rolled pinger task) hold it open through NAT/LB idle reaping *and*
-        // evict it if the peer has gone away, so we never inherit a half-dead socket
-        // on the send. On an HTTP/1.1-negotiated endpoint the ping settings are
-        // simply inert.
+        // A cold pool costs the hot-path POST DNS + a TCP (+TLS) handshake, so the
+        // client-side idle timeout must outlast the gap between trades — a
+        // *selective* rule fires only a few times an hour. The client never closes
+        // first; the SERVER does: a Helius Sender drops an idle socket after
+        // `SENDER_IDLE_CLOSE_MS`. The regional Sender URLs are `http://`, which
+        // reqwest speaks as HTTP/1.1, so the HTTP/2 PING settings below are inert
+        // there and apply only to an endpoint that negotiates HTTP/2. What holds a
+        // Sender socket open is the keep-warm ping loop (`SenderCfg`).
         let http = reqwest::Client::builder()
             .tcp_nodelay(true)
             .pool_idle_timeout(std::time::Duration::from_secs(600))
@@ -230,6 +228,15 @@ impl Engine {
         // 0. Connection warmup — seed the keep-alive pool so the FIRST trade
         // doesn't pay a TLS handshake on the latency-critical send.
         self.warmup_connections().await;
+        // ...and hold those sockets open between sparse trades.
+        if let Some(handle) = self.spawn_sender_keep_warm() {
+            self.background_tasks.push(handle);
+            info!(
+                every_ms = self.config.sender.keep_warm_ms,
+                sockets = self.config.sender.keep_warm_sockets,
+                "🔥 Sender keep-warm running"
+            );
+        }
 
         // 1. Rent exemption amounts (one RPC call each).
         self.token_account_rent = self

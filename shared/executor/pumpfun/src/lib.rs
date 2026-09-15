@@ -41,7 +41,8 @@ pub use executor_core::{config, error};
 
 // --- engine items, re-exported through the façade ---
 pub use executor_core::config::{
-    CacheCfg, ComputeBudgetCfg, JitoTipCfg, LimitsCfg, NonceCfg, RetryCfg, SlippageCfg, TraderConfig,
+    CacheCfg, ComputeBudgetCfg, JitoTipCfg, LimitsCfg, NonceCfg, RetryCfg, SenderCfg, SlippageCfg,
+    TraderConfig, SENDER_IDLE_CLOSE_MS, SENDER_KEEP_WARM_MS,
 };
 pub use executor_core::error::{Result, TradeError};
 pub use executor_core::{

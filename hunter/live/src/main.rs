@@ -22,7 +22,7 @@ use actix_web::{web, App, HttpServer};
 // `http_auth` middleware — one SSOT copy across hunter live/lab + forge live.
 use http_auth::{require_bearer_auth, ApiAuth};
 
-use live::trader::{PumpFunTrader, TraderConfig};
+use live::trader::{PumpFunTrader, TraderConfig, SENDER_KEEP_WARM_MS};
 
 fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
     let bytes = bs58::decode(base58_key)
@@ -1108,6 +1108,9 @@ async fn run() -> anyhow::Result<()> {
     trader_config.cache.blockhash_refresh_ms = 10_000;
     trader_config.cache.blockhash_max_age_ms = 30_000;
     trader_config.nonce.refresh_first_delay_ms = 2_000;
+    // A selective rule buys minutes apart and the Sender drops an idle socket
+    // after 10 s, so without the pinger every buy pays DNS + TCP on the send.
+    trader_config.sender.keep_warm_ms = Some(SENDER_KEEP_WARM_MS);
     let trader_config = Arc::new(trader_config);
 
     let mut trader = PumpFunTrader::new(trader_config);
