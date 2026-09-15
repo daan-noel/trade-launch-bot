@@ -136,6 +136,11 @@ services:
     restart: unless-stopped
     # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
     init: true
+    # `memory.low` on the cgroup-v2 host: under memory pressure the kernel reclaims
+    # and swaps every other container before this one, so the trader's pages stay
+    # resident. A soft floor, not a cap: it allocates nothing and cannot OOM
+    # anything. The bot's RSS plus swap reads ~150 MB.
+    mem_reservation: 256m
     env_file: ../hunter/.env
     environment:
       HOST: 0.0.0.0
