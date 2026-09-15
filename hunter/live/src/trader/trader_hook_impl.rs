@@ -15,8 +15,16 @@ use pump_trader::PumpFunTrader;
 pub struct TraderHookBridge(pub Arc<PumpFunTrader>);
 
 impl TraderHook for TraderHookBridge {
-    fn update_live_reserves(&self, mint: &str, token_reserves: f64, sol_reserves: f64, is_amm: bool) {
-        self.0.update_live_reserves(mint, token_reserves, sol_reserves, is_amm);
+    fn update_live_reserves(
+        &self,
+        mint: &str,
+        token_reserves: f64,
+        sol_reserves: f64,
+        is_amm: bool,
+        venue_fee_bps: Option<f64>,
+    ) {
+        self.0
+            .update_live_reserves(mint, token_reserves, sol_reserves, is_amm, venue_fee_bps);
     }
 
     fn observe_amm_swap_accounts(&self, mint: &str, token_program: &str, keys: &[String]) -> bool {

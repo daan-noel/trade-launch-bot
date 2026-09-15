@@ -54,8 +54,16 @@ pub struct IngestHandles {
 pub trait TraderHook: Send + Sync + 'static {
     /// Feed a post-trade reserve snapshot into the live cache.
     /// `token_reserves` and `sol_reserves` are in the same units the trade
-    /// carries (`f64`); `is_amm` tags curve vs AMM venue.
-    fn update_live_reserves(&self, mint: &str, token_reserves: f64, sol_reserves: f64, is_amm: bool);
+    /// carries (`f64`); `is_amm` tags curve vs AMM venue; `venue_fee_bps` is the
+    /// trade's own PumpSwap fee, which the AMM builders size on.
+    fn update_live_reserves(
+        &self,
+        mint: &str,
+        token_reserves: f64,
+        sol_reserves: f64,
+        is_amm: bool,
+        venue_fee_bps: Option<f64>,
+    );
 
     /// Harvest one observed AMM swap's account list (`keys`, the fully resolved
     /// list of a top-level PumpSwap buy/sell of `mint`) into the trader's pool

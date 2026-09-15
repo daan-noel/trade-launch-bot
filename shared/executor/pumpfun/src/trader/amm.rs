@@ -340,17 +340,16 @@ impl PumpFunTrader {
         // Guard the real spend (NaN/∞, non-positive, oversized, or rounds-to-zero)
         // before building the swap — the AMM public entry, mirroring the curve path.
         let spendable = self.buy_lamports_checked(sol_amount)?;
-        let fee_bps = (cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps) as u128;
-        // A garbage/misread global-config (fee >= 100%) would wrap `BPS_DENOM -
-        // fee_bps` in release and silently drop slippage protection on a real
-        // spend — bail instead. `saturating_sub` keeps `slip` (caller input) safe
-        // even past 100%.
+        let fee_bps = self.amm_fee_bps(token_mint, &cfg);
+        // A garbage/misread global-config (fee >= 100%) is no fee at all — bail
+        // rather than size a real spend on it.
         if fee_bps >= BPS_DENOM {
             bail!("amm buy: fee_bps {fee_bps} >= 100% (bad global_config)");
         }
 
-        // Fee is taken off the quote (SOL) side before the curve swap.
-        let quote_net = (spendable as u128).saturating_mul(BPS_DENOM.saturating_sub(fee_bps)) / BPS_DENOM;
+        // A buy's fees sit on top of the pool's constant-product amount, so the
+        // budget buys `spendable / (1 + fee)` of pool quote.
+        let quote_net = (spendable as u128).saturating_mul(BPS_DENOM) / (BPS_DENOM + fee_bps);
         let base_out = cp_amount_out(quote_net, quote_res, base_res);
         // Exact-base-out buy: request slightly fewer tokens than the budget
         // buys (the slippage haircut) so the actual cost stays under the
@@ -431,13 +430,14 @@ impl PumpFunTrader {
         )?;
         let (base_res, quote_res) = self.amm_reserves_cached(token_mint, &pool).await?;
 
-        let fee_bps = (cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps) as u128;
-        // See `build_amm_buy_ixs`: bail on a >= 100% fee rather than wrap the
-        // slippage denominator; `saturating_sub` guards the caller-supplied slip.
+        let fee_bps = self.amm_fee_bps(token_mint, &cfg);
+        // A >= 100% fee would wrap the slippage denominator in release — bail
+        // instead; `saturating_sub` guards the caller-supplied slip.
         if fee_bps >= BPS_DENOM {
             bail!("amm sell: fee_bps {fee_bps} >= 100% (bad global_config)");
         }
 
+        // A sell's fees come off the pool's constant-product amount.
         let gross = cp_amount_out(token_amount as u128, base_res, quote_res);
         let net = gross.saturating_mul(BPS_DENOM.saturating_sub(fee_bps)) / BPS_DENOM;
         // `None` = no floor (min_out = 1): always fills regardless of price
@@ -950,6 +950,15 @@ impl PumpFunTrader {
             }
             inflight.store(false, Ordering::Release);
         });
+    }
+
+    /// The fee (bps) a swap of `mint` is sized on. PumpSwap tiers its fee by market
+    /// cap, so the fee the pool charged on its latest observed swap (fed with the
+    /// reserves) is the pool's own; the global config's flat fees only stand in
+    /// for a pool no feed has seen.
+    fn amm_fee_bps(&self, mint: &str, cfg: &AmmGlobalConfig) -> u128 {
+        let flat = cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps;
+        u128::from(self.reserve_cache.amm_fee_bps(mint).unwrap_or(flat))
     }
 
     /// The reserves the pool prices with, `(base vault, quote vault + the pool's

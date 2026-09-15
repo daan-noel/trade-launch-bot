@@ -35,9 +35,27 @@ struct ReserveEntry {
 #[derive(Default)]
 pub struct ReserveCache {
     inner: DashMap<String, ReserveEntry>,
+    /// The fee (bps) the mint's PumpSwap pool charged on its latest observed swap.
+    /// No freshness bound: the fee moves only when the pool crosses a market-cap
+    /// tier, so the last observation outlives a stale reserve snapshot.
+    amm_fee_bps: DashMap<String, u64>,
 }
 
 impl ReserveCache {
+    /// Record the fee a PumpSwap swap of `mint` charged, in bps of its
+    /// constant-product quote amount (the ingest's `venue_fee_bps`). Non-finite,
+    /// negative, and >= 100 % values are ignored.
+    pub fn update_amm_fee(&self, mint: &str, fee_bps: f64) {
+        if fee_bps.is_finite() && (0.0..10_000.0).contains(&fee_bps) {
+            self.amm_fee_bps.insert(mint.to_string(), fee_bps.round() as u64);
+        }
+    }
+
+    /// The fee (bps) `mint`'s PumpSwap pool charged on its latest observed swap.
+    pub fn amm_fee_bps(&self, mint: &str) -> Option<u64> {
+        self.amm_fee_bps.get(mint).map(|f| *f)
+    }
+
     /// Record a post-trade reserve snapshot for `mint`. `token_reserves` is in
     /// raw token units; `sol_reserves` is in SOL (the ingest's unit) and is
     /// converted to lamports here. Zero / non-finite inputs are ignored so an
@@ -154,6 +172,20 @@ mod tests {
         c.update("m", 100.0, 1.0, false);
         c.update("m", 200.0, 2.0, false);
         assert_eq!(c.get_fresh("m", BIG, false), Some((200, 2_000_000_000)));
+    }
+
+    #[test]
+    fn amm_fee_keeps_the_latest_sane_observation() {
+        let c = ReserveCache::default();
+        assert_eq!(c.amm_fee_bps("m"), None);
+        c.update_amm_fee("m", 125.004);
+        assert_eq!(c.amm_fee_bps("m"), Some(125));
+        c.update_amm_fee("m", 89.6);
+        assert_eq!(c.amm_fee_bps("m"), Some(90));
+        for bad in [f64::NAN, -1.0, 10_000.0] {
+            c.update_amm_fee("m", bad);
+        }
+        assert_eq!(c.amm_fee_bps("m"), Some(90));
     }
 
     #[test]

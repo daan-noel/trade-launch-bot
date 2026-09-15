@@ -348,15 +348,21 @@ impl PumpFunTrader {
     /// units; `sol_reserves` is in SOL; `is_amm` tags the venue (curve vs AMM).
     /// The trade path reads these (cache-first, freshness-bounded) instead of an
     /// on-chain reserve read — see `curve_reserves` / `amm_reserves_cached`.
+    /// `amm_fee_bps` is the fee a PumpSwap swap charged (the ingest's
+    /// `venue_fee_bps`); the AMM builders size on it — see `amm_fee_bps`.
     pub fn update_live_reserves(
         &self,
         mint: &str,
         token_reserves: f64,
         sol_reserves: f64,
         is_amm: bool,
+        amm_fee_bps: Option<f64>,
     ) {
         self.reserve_cache
             .update(mint, token_reserves, sol_reserves, is_amm);
+        if let (true, Some(fee)) = (is_amm, amm_fee_bps) {
+            self.reserve_cache.update_amm_fee(mint, fee);
+        }
     }
 
     /// The live-floor-sized Jito tip (lamports) for a bundle submission at
