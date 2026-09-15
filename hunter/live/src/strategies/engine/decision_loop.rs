@@ -746,11 +746,11 @@ fn dispatch_buy(
             let (creator, token_program_id, cashback) = token_cache
                 .get(&mint_s)
                 .map(|e| {
-                    let t = &e.value().token;
+                    let s = e.value();
                     (
-                        t.creator_wallet.clone(),
-                        t.token_program_id.clone().unwrap_or_default(),
-                        t.is_cashback_enabled,
+                        s.trade_creator().unwrap_or_default(),
+                        s.token.token_program_id.clone().unwrap_or_default(),
+                        s.token.is_cashback_enabled,
                     )
                 })
                 .unwrap_or_default();
@@ -836,13 +836,16 @@ fn dispatch_sell(
             registry.update(position, |m| {
                 m.inflight_intent = Some(intent.clone());
             });
+            // The curve's current creator, not the one recorded when the position
+            // opened: the venue can reassign it mid-hold.
+            let creator = token_cache.get(&mint).and_then(|e| e.value().trade_creator()).or(meta.creator);
             let order = SellOrder {
                 intent,
                 pg_id: meta.pg_id,
                 mint,
                 token_amount,
                 token_account: meta.token_account,
-                creator: meta.creator,
+                creator,
                 token_program_id: meta.token_program_id,
                 cashback_enabled: meta.cashback_enabled,
                 slippage_bps: sell_slippage(settings),

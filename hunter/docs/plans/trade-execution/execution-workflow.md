@@ -74,9 +74,9 @@ on timeout → classify_silent_send(sig) routes a Reverted status through the SS
              classify_swap_revert(custom, SwapRoute::Curve, SwapDirection::Buy):
   Reverted + buy slippage (6002/6042)  → FillFailed::Reverted (engine resubmits;
                                          fresh min_out on next run_entry)
-  Reverted + ConstraintSeeds 2006      → refresh_curve_creator_vault(); changed →
-                                         Reverted retry, unchanged / refresh-fail →
-                                         FillFailed::Fatal
+  Reverted + ConstraintSeeds 2006      → recheck_curve_creator(): chain creator ≠
+                                         the order's → token cache + Reverted retry;
+                                         equal / read-fail → FillFailed::Fatal
   Reverted + structural/unknown        → FillFailed::Fatal (blind resend only re-pays fees)
   Succeeded (landed+unindexed)         → wait extended poll (re-send = double-buy);
                                          still missing → Ambiguous (emit nothing)
@@ -142,8 +142,9 @@ per-attempt loop (max 6, tip escalates per level — max(percentile ladder, min�
      custom, SwapRoute, SwapDirection::Sell) — the SAME classifier pump-trader's
      own confirm=true sell/amm_sell retry uses; see @arch/trade-execution.md)
     slippage revert OR route changed       → retry (new reserves / new route next attempt)
-    curve ConstraintSeeds 2006             → RefreshCreator: refresh_curve_creator_vault()
-                                             changed → retry, unchanged → FillFailed::Fatal
+    curve ConstraintSeeds 2006             → RefreshCreator: recheck_curve_creator()
+                                             chain creator ≠ the attempt's → next attempt
+                                             uses it; equal / read-fail → FillFailed::Fatal
     AMM   ConstraintSeeds 2006             → RefreshCoinCreator: refresh_amm_pool_info()
                                              changed → retry, unchanged → FillFailed::Fatal
     6024 / 6005                            → refresh cashback / re-route migrated
@@ -170,17 +171,26 @@ sell would leave committed SOL stranded if the process crashes between sell and 
 **Why route is re-read per attempt:** a token can migrate from curve → AMM between sell
 attempts. Re-reading `is_migrated` lets the next attempt automatically switch venue.
 
-**Why a 2006 (ConstraintSeeds) is recoverable, not Fatal:** the snipe buy caches
-`TokenPDAs.creator_vault` derived from the create-event creator. pump.fun can change
-`bonding_curve.creator` (via `set_creator`) *after* that buy — both `buy` and `sell`
-seed `creator_vault` from `["creator-vault", bonding_curve.creator]`, so the stale
-cached vault then reverts every sell (or resend of a buy) with Anchor
-`ConstraintSeeds (2006)`. A 2006 is therefore *not* structural on either route:
-`refresh_curve_creator_vault()` / `refresh_amm_pool_info()` re-read the current
-creator/pool (one off-path RPC, only after a failed poll window) and report
-changed-vs-unchanged; changed → overwrite the cache and retry, unchanged (or the
-refresh RPC itself fails) → Fatal. Both the sell loop here and the curve-buy retry in
-**B** funnel through the one `pump_trader::classify_swap_revert` decision table.
+**Which creator an order uses:** pump.fun can reassign `bonding_curve.creator` (via
+`set_creator`) at any time on the curve, and both `buy` and `sell` seed `creator_vault`
+from `["creator-vault", bonding_curve.creator]`. The launch creator
+(`token.creator_wallet`) is therefore NOT the vault seed. Every curve `TradeEvent`
+carries the creator the venue validated that swap against (`Trade::curve_creator`);
+ingest writes it to `TokenState::curve_creator` before the strategy ping, and
+`dispatch_buy` / `dispatch_sell` take `TokenState::trade_creator()` (that creator, else
+the launch creator). The trigger print is itself a landed swap on the mint, so a buy
+decided on it derives the vault the chain just accepted, with no RPC.
+
+**Why a 2006 (ConstraintSeeds) is recoverable, not Fatal:** it still happens when the
+creator changes between the order's print and its transaction, or on an order built
+before any print carried the creator (after a restart). `recheck_curve_creator()`
+re-reads the curve's creator (one off-path RPC, only after a confirmed revert) and
+compares it with the creator the reverted transaction used: different → write it to the
+token cache and retry (the buy's retry is a new engine decision that reads it; the sell
+loop's next attempt carries it); equal, or the read fails → Fatal, so a resend never
+re-pays a fee on a vault it cannot fix. The AMM route's `refresh_amm_pool_info()` keeps
+its changed-vs-unchanged rule. Both loops funnel through the one
+`pump_trader::classify_swap_revert` decision table.
 
 **Why the preview, and Postgres only as a fallback:** ingest records our own leg in
 `TradeSignals` and wakes the waiter before it queues the DB write, so the preview holds a

@@ -120,6 +120,48 @@ fn classify_silent_send<E>(status: &Result<SigStatus, E>) -> SilentSendOutcome {
     }
 }
 
+/// What a 2006 (`ConstraintSeeds`: the creator vault did not match the curve's
+/// creator) revert turns out to be once the curve's creator is re-read from chain.
+#[derive(Debug, PartialEq, Eq)]
+enum CreatorRecheck {
+    /// The chain creator differs from the one the reverted transaction derived its
+    /// vault from: resend with it.
+    Changed(String),
+    /// The transaction already used the chain creator, so a resend cannot fix it.
+    Unchanged,
+    /// The chain read failed.
+    Failed(String),
+}
+
+/// `used` is the creator the reverted transaction derived its vault from; `None`
+/// when it derived from the trader's cached PDAs, which the re-read rewrites.
+fn creator_recheck_verdict(used: Option<&str>, chain: String) -> CreatorRecheck {
+    if used == Some(chain.as_str()) {
+        CreatorRecheck::Unchanged
+    } else {
+        CreatorRecheck::Changed(chain)
+    }
+}
+
+/// Re-read the curve's creator after a 2006: one `getMultipleAccounts`, only after a
+/// confirmed revert. A changed creator is written to the token cache, so every later
+/// order on the mint derives its vault from it.
+async fn recheck_curve_creator(deps: &RealExecDeps, mint: &str, used: Option<&str>) -> CreatorRecheck {
+    let chain = match deps.trader.get_creator_from_mint_pda(mint).await {
+        Ok(creator) => creator,
+        Err(e) => return CreatorRecheck::Failed(e.to_string()),
+    };
+    let verdict = creator_recheck_verdict(used, chain);
+    if let CreatorRecheck::Changed(creator) = &verdict {
+        if let Ok(key) = creator.parse::<solana_sdk::pubkey::Pubkey>() {
+            if let Some(mut state) = deps.token_cache.get_mut(mint) {
+                state.curve_creator = Some(key);
+            }
+        }
+    }
+    verdict
+}
+
 /// Recovery verdict for a `BuySubmitted` row — reaper never re-sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuyRecoveryVerdict {
@@ -821,19 +863,21 @@ async fn confirm_entry(
     match classify_silent_send(&status) {
         SilentSendOutcome::Resend => EntryOutcome::Retry(describe_status(&status)),
         SilentSendOutcome::RefreshCreatorThenResend => {
-            match deps.trader.refresh_curve_creator_vault(mint).await {
-                Ok(Some(vault)) => {
-                    warn!(mint = %mint, new_creator_vault = %vault,
-                        "buy reverted 2006; refreshed creator — reporting retry");
+            match recheck_curve_creator(deps, mint, Some(order.creator.as_str())).await {
+                CreatorRecheck::Changed(creator) => {
+                    // The engine re-decides; its next order reads this creator from
+                    // the token cache.
+                    warn!(mint = %mint, used = %order.creator, creator = %creator,
+                        "buy reverted 2006 on a reassigned curve creator — reporting retry");
                     EntryOutcome::Retry(Cow::Borrowed(
                         "reverted 2006 (stale creator); creator refreshed, retrying",
                     ))
                 }
-                Ok(None) => EntryOutcome::Fatal(Cow::Borrowed(
-                    "reverted 2006 but the creator vault is unchanged",
+                CreatorRecheck::Unchanged => EntryOutcome::Fatal(Cow::Borrowed(
+                    "reverted 2006 but the buy already used the chain creator",
                 )),
-                Err(e) => EntryOutcome::Fatal(Cow::Owned(format!(
-                    "reverted 2006 and the creator refresh failed: {e}"
+                CreatorRecheck::Failed(e) => EntryOutcome::Fatal(Cow::Owned(format!(
+                    "reverted 2006 and the creator re-read failed: {e}"
                 ))),
             }
         }
@@ -947,7 +991,7 @@ fn exit_still_current(registry: &PositionRegistry, order: &SellOrder) -> bool {
 
 /// Submit a real sell (escalating tip across attempts), confirm by summing the
 /// position's OWN sell legs vs the held amount, and emit the definitive outcome.
-pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
+pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
     let Some(_guard) = deps.inflight.try_begin_exit(order.pg_id) else {
         warn!(pg = %order.pg_id, mint = %order.mint, "real sell: exit guard held — skipping");
         return;
@@ -1178,9 +1222,13 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
                         return;
                     }
                     SwapRetryDecision::RefreshCreator => {
-                        match deps.trader.refresh_curve_creator_vault(&order.mint).await {
-                            Ok(Some(_)) => {}
-                            Ok(None) | Err(_) => {
+                        match recheck_curve_creator(&deps, &order.mint, order.creator.as_deref()).await {
+                            CreatorRecheck::Changed(creator) => {
+                                warn!(mint = %order.mint, attempt, creator = %creator,
+                                    "curve sell reverted 2006 on a reassigned creator — resending with the chain creator");
+                                order.creator = Some(creator);
+                            }
+                            CreatorRecheck::Unchanged | CreatorRecheck::Failed(_) => {
                                 fail_exit(&deps, &order, &sell_sigs, FillFailReason::Fatal).await;
                                 return;
                             }
@@ -1583,6 +1631,24 @@ mod tests {
         let status: Result<SigStatus, ()> =
             Ok(SigStatus::Reverted { custom: Some(6002) });
         assert_eq!(classify_silent_send(&status), SilentSendOutcome::Resend);
+    }
+
+    /// A 2006 retries only when the chain creator differs from the one the reverted
+    /// transaction used — the rule that stops a fee loop on a vault it cannot fix.
+    #[test]
+    fn creator_recheck_retries_only_on_a_different_creator() {
+        let chain = || "A6DG6oSc9NFhYmUDmATaPc97tjhjy2DjhWkabKANxBcv".to_string();
+        assert_eq!(
+            creator_recheck_verdict(Some("A6DG6oSc9NFhYmUDmATaPc97tjhjy2DjhWkabKANxBcv"), chain()),
+            CreatorRecheck::Unchanged
+        );
+        assert_eq!(
+            creator_recheck_verdict(Some("7E9jfxCczubz4FXkkVKzUMHXGwzJxyppC4m7y3ew8ATg"), chain()),
+            CreatorRecheck::Changed(chain())
+        );
+        // Derived from the cached PDAs, which the re-read just rewrote: one resend
+        // with the explicit creator, and a second 2006 then compares equal.
+        assert_eq!(creator_recheck_verdict(None, chain()), CreatorRecheck::Changed(chain()));
     }
 
     #[test]

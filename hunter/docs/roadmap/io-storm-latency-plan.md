@@ -175,6 +175,7 @@ Open:
 ## Out of scope, tracked separately
 
 - `reverted 2006 (stale creator)`: 14 of 61 Flip-Catch entry attempts, each charged a fee.
+  Root cause and fix: [stale-creator-2006-plan.md](stale-creator-2006-plan.md).
 - Paper rules on the live box share the 2 vCPUs, the serialized decision loop and the arm
   ledger with the real rules (Sep 15: ~3 500 arms/h from 4 rules). Keeping paper studies in
   lab simulate is the budget lever if Phase 3's `ping_to_decide_ms` shows queueing.

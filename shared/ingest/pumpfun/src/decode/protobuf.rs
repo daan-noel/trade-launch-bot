@@ -7,7 +7,6 @@
 
 use std::cell::OnceCell;
 
-use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
 use tracing::warn;
 
@@ -24,7 +23,7 @@ use super::instructions::{
 use super::trade::{
     build_amm_trade, compute_sol_change, compute_sol_change_lamports,
     decode_pump_swap_trades_from_inner, decode_pump_swap_trades_from_logs,
-    decode_trade_events_from_logs, DecodedAmmTrade, DecodedTradeEvent, RawTradeEvent,
+    decode_trade_event_body, decode_trade_events_from_logs, DecodedAmmTrade, DecodedTradeEvent,
 };
 use super::{DecodeOutput, Decoder, TxRelevance};
 
@@ -394,6 +393,7 @@ impl Decoder {
                 instruction_type: if ev.is_buy { "Buy".to_string() } else { "Sell".to_string() },
                 instruction_labels: instruction_labels.clone(),
                 amm_swap_accounts: None,
+                curve_creator: ev.curve_creator,
             }));
         }
 
@@ -678,6 +678,9 @@ impl Decoder {
             instruction_type: match side { Side::Buy => "Buy".to_string(), Side::Sell => "Sell".to_string() },
             instruction_labels,
             amm_swap_accounts: None,
+            // No event to read it from; the account list alone does not say which
+            // key the vault was derived from.
+            curve_creator: None,
         }))
     }
 }
@@ -724,9 +727,8 @@ fn decode_trade_events_from_inner_pb(pump_ixs: &[PbIx], p: &Protocol) -> Vec<Dec
         {
             continue;
         }
-        let mut buf: &[u8] = &bytes[16..];
-        match RawTradeEvent::deserialize(&mut buf) {
-            Ok(r) => events.push(DecodedTradeEvent::from_raw(r, p.lamports_per_sol)),
+        match decode_trade_event_body(&bytes[16..], p.lamports_per_sol) {
+            Ok(ev) => events.push(ev),
             Err(e) => warn!("Failed to Borsh-decode inner-pb TradeEvent: {e}"),
         }
     }

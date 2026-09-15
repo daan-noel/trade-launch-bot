@@ -263,7 +263,7 @@ pulling container logs.
 | send exceeded `BUY_SEND_TIMEOUT` (20 s) | `buy send timed out after 20s` |
 | confirmed on-chain revert | `reverted on-chain, curve buy error <code>` — the code is the point |
 | revert with no Anchor code | `reverted on-chain, no Anchor code (account / funds error)` |
-| 2006 stale creator | refreshed-and-retrying, or `creator vault is unchanged` |
+| 2006 stale creator | refreshed-and-retrying, `the buy already used the chain creator`, or `the creator re-read failed` |
 | migrated during the buy window | `token migrated during the buy window (…)` |
 
 Semantics: **"the most recent buy attempt that did not fill"**, whatever the row's

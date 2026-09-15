@@ -327,6 +327,11 @@ impl IngestConsumer {
         // Keep the DashMap mut guard short: precomputed hashes + AMM observe outside.
         let (metrics, amm_token_program) = match self.token_cache.get_mut(&mint) {
             Some(mut token_state) => {
+                // Before the strategy ping below, so an order decided on this print
+                // derives its creator vault from the creator this print passed.
+                if let Some(creator) = e.curve_creator {
+                    token_state.observe_curve_creator(creator, e.slot);
+                }
                 token_state.add_trade_hashed(
                     core_trade,
                     ix_hash,

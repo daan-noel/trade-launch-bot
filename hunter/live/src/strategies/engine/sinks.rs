@@ -638,8 +638,8 @@ impl Sink {
             .token_cache
             .get(&mint)
             .map(|e| {
-                let t = &e.value().token;
-                (t.token_program_id.clone(), Some(t.creator_wallet.clone()), false)
+                let s = e.value();
+                (s.token.token_program_id.clone(), s.trade_creator(), false)
             })
             .unwrap_or((None, None, false));
 

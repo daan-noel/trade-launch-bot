@@ -252,6 +252,8 @@ Losing the block metas hands the blockhash cache back to its watchdog, so `Cache
 
 AMM `Trade` events may carry `amm_swap_accounts` (the top-level PumpSwap swap's resolved account list, harvested by `decode_amm_live_pb`, one per pool per tx). `on_trade` feeds it to `TraderHook::observe_amm_swap_accounts` inline (pure CPU — replaces the old spawned RPC `prewarm_amm_pool`); `amm_pool_prewarmed` still means "trader cache warm for this mint", and a rejected parse just retries on the next swap.
 
+Curve `Trade` events carry `curve_creator`: `TradeEvent.creator` (the 32 bytes after `fee`), the creator the venue validated that swap's creator vault against. `on_trade` writes it to `TokenState::curve_creator` under the same guard as the trade, before the strategy ping, and never from an older slot than the one recorded. Real orders derive the creator vault from it (see [execution-workflow](../plans/trade-execution/execution-workflow.md)); `token.creator_wallet` stays the launch creator every creator-keyed metric means.
+
 **Held-position pool retention:** `track_post_migration` only gates *all* AMM history recording. Unsettled real positions always keep their pool on the gRPC filter (`HeldPoolGate`, noted by the engine sink + boot seed) so harvest + feed-confirm stay warm. `on_token_migrated` / `clear_pools` must not untrack a held mint — that path was reintroducing the `getSignaturesForAddress` + `getTransaction` cold burst on every AMM exit.
 
 ## Decoder — `decode/`

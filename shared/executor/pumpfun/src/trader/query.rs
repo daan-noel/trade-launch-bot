@@ -440,23 +440,25 @@ impl PumpFunTrader {
     async fn read_curve_routing(&self, mint: &Pubkey) -> Result<CurveRouting> {
         let key = mint.to_string();
 
-        // creator / token_program / cashback are fixed at creation and migration
-        // is terminal on-chain (curve → AMM, never back). So once a mint is
-        // observed migrated, every routing fact is immutable and we can serve it
-        // from cache with zero RPC — the common case for trading a graduated
-        // token. A not-yet-migrated entry is deliberately re-read each call so we
-        // catch the curve→AMM transition; a stale `is_migrated = false` would
-        // misroute a now-migrated trade to the bonding curve, which the program
-        // rejects with BondingCurveComplete (6005).
+        // token_program / cashback are fixed at creation and migration is terminal
+        // on-chain (curve → AMM, never back). The curve `creator` is NOT fixed:
+        // pump `set_creator` reassigns it while the token is on the curve. So once
+        // a mint is observed migrated we serve the entry from cache with zero RPC —
+        // the curve creator no longer routes anything (the AMM route reads the
+        // pool's `coin_creator`, with its own 2006 refresh). A not-yet-migrated
+        // entry is deliberately re-read each call: that catches both a reassigned
+        // creator and the curve→AMM transition, where a stale `is_migrated = false`
+        // would misroute a now-migrated trade to the bonding curve, which the
+        // program rejects with BondingCurveComplete (6005).
         if let Some(cached) = self.curve_routing_cache.get(&key).map(|r| *r) {
             if cached.is_migrated {
                 return Ok(cached);
             }
             // A fresh AMM-venue reserve snapshot in the WS-fed cache is monotonic
             // proof of migration (curve → AMM is terminal, and an AMM snapshot
-            // only exists post-graduation). The other routing facts (creator,
-            // token program) are immutable, so promote the cached entry to
-            // migrated and serve it with zero RPC — instead of re-reading the
+            // only exists post-graduation). The token program is immutable and the
+            // curve creator no longer routes anything, so promote the cached entry
+            // to migrated and serve it with zero RPC — instead of re-reading the
             // bonding curve on every pre-migration trade just to catch the flip.
             let has_amm_snapshot = self
                 .reserve_cache

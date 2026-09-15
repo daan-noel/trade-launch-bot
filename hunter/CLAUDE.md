@@ -240,6 +240,7 @@ The rule is here; the linked doc carries the mechanism. Read the doc before edit
 | Dead pools book a Dead exit | Sim and sweep close silent-death tokens from the shared deadness verdict rather than booking them `Open` at a stale price; a dead **real** pool has no liquidity to sell into. [engine](docs/arch/strategies.md) |
 | Truncated logs drop legs | The validator truncates logs past a byte limit, so leg recovery from inner-instruction self-CPI events must fire when logs are empty **or** truncated — never an `is_empty()`-only fallback. [ingest](docs/arch/ingest.md) |
 | `trades` ↔ `wallet_dict` | The address lives only in `wallet_dict` (no FK), so every read path **LEFT JOIN**s with a `COALESCE` fallback. An INNER join hides trades wholesale and reads exactly like an ingest miss. [database](docs/arch/database.md) |
+| The launch creator is not the vault seed | pump `set_creator` reassigns a curve's creator, and a vault from the old one reverts 2006. Real orders take `TokenState::trade_creator()` (the creator the newest print passed, fed by `Trade::curve_creator`), never `token.creator_wallet`, which stays the launch creator that metrics mean. A 2006 retries only when the chain creator differs from the one used. [execution](docs/plans/trade-execution/execution-workflow.md) |
 | Revert self-heal is one SSOT | `classify_swap_revert` decides route × direction × error code for both crates — sell loop and snipe retry import it, never a local copy. [execution](docs/arch/trade-execution.md) |
 
 ## Deployed server (EC2: 2vCPU / 4GB)

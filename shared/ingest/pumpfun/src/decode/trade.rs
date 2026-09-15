@@ -33,6 +33,33 @@ pub(super) struct RawTradeEvent {
     pub(super) real_token_reserves: u64,
 }
 
+/// The fields `TradeEvent` carries past [`RawTradeEvent`]'s, up to the curve
+/// creator: `fee_recipient` (32), `fee_basis_points` (u64), `fee` (u64).
+const TRADE_EVENT_FEE_FIELDS_LEN: usize = 32 + 8 + 8;
+
+/// The curve creator from the bytes that follow a Borsh-decoded [`RawTradeEvent`]:
+/// `TradeEvent.creator`, right after the fee fields. `None` when the event is too
+/// short to carry it (events from before the venue added creator fees).
+fn trailing_curve_creator(rest: &[u8]) -> Option<[u8; 32]> {
+    rest.get(TRADE_EVENT_FEE_FIELDS_LEN..TRADE_EVENT_FEE_FIELDS_LEN + 32)?
+        .try_into()
+        .ok()
+}
+
+/// Decode one `TradeEvent` body (the bytes after its discriminator): the Borsh
+/// prefix plus the trailing curve creator. SSOT for the log-line and the
+/// inner-instruction paths.
+pub(super) fn decode_trade_event_body(
+    body: &[u8],
+    lamports_per_sol: f64,
+) -> std::io::Result<DecodedTradeEvent> {
+    let mut rest = body;
+    let raw = RawTradeEvent::deserialize(&mut rest)?;
+    let mut ev = DecodedTradeEvent::from_raw(raw, lamports_per_sol);
+    ev.curve_creator = trailing_curve_creator(rest);
+    Ok(ev)
+}
+
 pub(super) struct DecodedTradeEvent {
     pub(super) mint: String,
     pub(super) sol_amount: f64,
@@ -50,6 +77,8 @@ pub(super) struct DecodedTradeEvent {
     /// Exact raw-`u64` lamport mirror of `real_sol_reserves`.
     pub(super) real_sol_reserves_lamports: u64,
     pub(super) real_token_reserves: u64,
+    /// [`Trade::curve_creator`].
+    pub(super) curve_creator: Option<[u8; 32]>,
 }
 
 impl DecodedTradeEvent {
@@ -67,6 +96,7 @@ impl DecodedTradeEvent {
             real_sol_reserves: raw.real_sol_reserves as f64 / lamports_per_sol,
             real_sol_reserves_lamports: raw.real_sol_reserves,
             real_token_reserves: raw.real_token_reserves,
+            curve_creator: None,
         }
     }
 }
@@ -89,9 +119,8 @@ pub(super) fn decode_trade_events_from_logs(
         if bytes.len() < 8 || &bytes[..8] != disc {
             continue;
         }
-        let mut buf: &[u8] = &bytes[8..];
-        match RawTradeEvent::deserialize(&mut buf) {
-            Ok(r) => events.push(DecodedTradeEvent::from_raw(r, lamports_per_sol)),
+        match decode_trade_event_body(&bytes[8..], lamports_per_sol) {
+            Ok(ev) => events.push(ev),
             Err(e) => warn!("Failed to Borsh-decode TradeEvent: {e}"),
         }
     }
@@ -399,6 +428,7 @@ pub(super) fn build_amm_trade(
         instruction_type: if ev.is_buy { "Buy".to_string() } else { "Sell".to_string() },
         instruction_labels,
         amm_swap_accounts,
+        curve_creator: None,
     }
 }
 
@@ -632,5 +662,54 @@ mod tests {
         assert!((amm_sell_trade(sell, 1e9).fee_bps.unwrap() - 95.0).abs() < 1e-9);
 
         assert_eq!(amm_buy_trade(buy_event(1_000, 0, 1, 2), 1e9).fee_bps, None);
+    }
+
+    /// A mainnet curve-sell `TradeEvent` (375 bytes with its discriminator), captured
+    /// off the relay together with the creator vault its transaction passed.
+    const LIVE_SELL_EVENT_B64: &str = "vdt/007mYe7M7j7o1ndiTdplLHrllmiqDDLVslhveGtzlJGSJRz1PImjwhEAAAAAvF5W3SsBAAAAqzhgZIe/K2nyw15NMbml0dVdqur4+NtGiuU7/nbRVp+QmKlqAAAAAOP26g4UAAAA0HqusNVTAQDjSscSDQAAANDim2REVQAArRHmpPwpRKT6glG++BVCbhv7KMa2ZGZ3YHxq2fVmpkZfAAAAAAAAAG0xKwAAAAAAhw7y/rKeVTDAXHkPYV5JscPXZHB4SKxoYbLRWzXEJ5MeAAAAAAAAANKjDQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAHNlbGwAAAAAAAAAAAAAAAAAAAAAAIgTAAAAAAAAtpgVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACJo8IRAAAAAOP26g4UAAAA40rHEg0AAAAAAAAAAAAAAAAAAAAAAAAA";
+    const LIVE_SELL_CREATOR_VAULT: &str = "HF3UQ2FKdWoXoFmuveb5BmUjBEvmWaSxdouahuK2NqRL";
+    const PUMP_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+    fn creator_vault(creator: [u8; 32]) -> String {
+        use solana_sdk::pubkey::Pubkey;
+        use std::str::FromStr;
+        let program = Pubkey::from_str(PUMP_PROGRAM).unwrap();
+        Pubkey::find_program_address(&[b"creator-vault", &creator], &program).0.to_string()
+    }
+
+    /// The decoded creator is the one the venue validated the swap against: its
+    /// creator-vault PDA is the vault the transaction actually passed.
+    #[test]
+    fn trade_event_creator_derives_the_vault_the_swap_passed() {
+        let p = Protocol::pump_fun();
+        let line = format!("Program data: {LIVE_SELL_EVENT_B64}");
+        let events = decode_trade_events_from_logs(&[line.as_str()], &p.discriminators.trade_event, 1e9);
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].is_buy);
+        let creator = events[0].curve_creator.expect("a 375-byte event carries the creator");
+        assert_eq!(creator_vault(creator), LIVE_SELL_CREATOR_VAULT);
+    }
+
+    /// The inner-instruction path decodes the same body the same way.
+    #[test]
+    fn inner_trade_event_carries_the_same_creator() {
+        let bytes = STANDARD.decode(LIVE_SELL_EVENT_B64).unwrap();
+        let from_log = decode_trade_event_body(&bytes[8..], 1e9).unwrap();
+        let p = Protocol::pump_fun();
+        let data = inner_ix(&p.discriminators.anchor_event_cpi, &p.discriminators.trade_event, &bytes[8..]);
+        let from_inner = decode_trade_event_body(&data[16..], 1e9).unwrap();
+        assert_eq!(from_log.curve_creator, from_inner.curve_creator);
+        assert!(from_inner.curve_creator.is_some());
+    }
+
+    /// An event one byte short of the creator still decodes its trade, without one.
+    #[test]
+    fn trade_event_too_short_for_the_creator_decodes_without_it() {
+        let bytes = STANDARD.decode(LIVE_SELL_EVENT_B64).unwrap();
+        let prefix = 121; // mint .. real_token_reserves
+        let body = &bytes[8..8 + prefix + TRADE_EVENT_FEE_FIELDS_LEN + 31];
+        let ev = decode_trade_event_body(body, 1e9).unwrap();
+        assert_eq!(ev.curve_creator, None);
+        assert!(ev.token_amount > 0);
     }
 }

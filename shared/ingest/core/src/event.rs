@@ -150,6 +150,13 @@ pub struct Trade {
     /// (attached once per pool per transaction). `Box` keeps the common
     /// (`None`) event size flat.
     pub amm_swap_accounts: Option<Box<Vec<String>>>,
+    /// Curve trades only: the curve creator this swap was validated against - the
+    /// venue checks its creator-fee vault against the curve's creator at execution,
+    /// so a landed swap proves it was the creator at that moment. It can differ from
+    /// [`TokenCreated::creator`]: the venue lets the creator be reassigned after
+    /// launch. Raw 32-byte key, no allocation on the per-trade path. `None` on AMM
+    /// trades, the balance-delta fallback, and events too short to carry it.
+    pub curve_creator: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

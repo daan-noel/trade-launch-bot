@@ -334,6 +334,16 @@ pub struct TokenState {
     /// is in flight). Lives on the token's own state so the "warm once per mint"
     /// guard is bounded by the cache — no separate, never-evicted map.
     pub amm_pool_prewarmed: bool,
+    /// The bonding curve's CURRENT creator: the one the newest curve print was
+    /// validated against (`Trade::curve_creator`), or a chain re-read after a stale
+    /// creator revert (2006). The venue can reassign the creator after launch, so
+    /// this is not `token.creator_wallet`, the launch creator that rule metrics are
+    /// defined on. Real buys and sells derive the creator vault from it
+    /// ([`trade_creator`](Self::trade_creator)). `None` until a print carries it.
+    pub curve_creator: Option<solana_sdk::pubkey::Pubkey>,
+    /// Slot of the print that set `curve_creator`, so an older print arriving late
+    /// never rewinds it.
+    pub curve_creator_slot: u64,
     /// Wall-clock time of the last successful manual sync, if any. Populated from
     /// `tokens_info.last_synced_at` on seed and refreshed after each sync.
     pub last_synced_at: Option<DateTime<Utc>>,
@@ -407,8 +417,29 @@ impl TokenState {
             ath_timestamp,
             is_migrated: false,
             amm_pool_prewarmed: false,
+            curve_creator: None,
+            curve_creator_slot: 0,
             last_synced_at: None,
             interner: WalletInterner::default(),
+        }
+    }
+
+    /// Record the curve creator a print at `slot` was validated against. A print
+    /// from an older slot than the one already recorded changes nothing.
+    pub fn observe_curve_creator(&mut self, creator: [u8; 32], slot: u64) {
+        if slot >= self.curve_creator_slot {
+            self.curve_creator = Some(solana_sdk::pubkey::Pubkey::new_from_array(creator));
+            self.curve_creator_slot = slot;
+        }
+    }
+
+    /// The creator a real curve buy or sell derives its creator vault from: the
+    /// current curve creator, else the launch creator; `None` when neither is known.
+    /// Called once per order.
+    pub fn trade_creator(&self) -> Option<String> {
+        match self.curve_creator {
+            Some(creator) => Some(creator.to_string()),
+            None => (!self.token.creator_wallet.is_empty()).then(|| self.token.creator_wallet.clone()),
         }
     }
 
@@ -904,6 +935,32 @@ mod tests {
     }
 
     const IDLE: i64 = TOKEN_CACHE_EVICT_IDLE_SECONDS;
+
+    /// Orders take the launch creator until a print carries the curve's current
+    /// one, then that one; an older print arriving late never rewinds it.
+    #[test]
+    fn trade_creator_follows_the_newest_print_and_never_rewinds() {
+        let mut state = TokenState::new(token_created_at(Utc::now()));
+        assert_eq!(state.trade_creator().as_deref(), Some("creator"));
+
+        let (old, new) = ([1u8; 32], [2u8; 32]);
+        state.observe_curve_creator(old, 100);
+        state.observe_curve_creator(new, 105);
+        state.observe_curve_creator(old, 104);
+        let expected = solana_sdk::pubkey::Pubkey::new_from_array(new).to_string();
+        assert_eq!(state.trade_creator(), Some(expected));
+        // Same slot: the later leg wins.
+        state.observe_curve_creator(old, 105);
+        assert_eq!(state.curve_creator, Some(solana_sdk::pubkey::Pubkey::new_from_array(old)));
+    }
+
+    /// No launch creator and no print yet: no creator, never an empty string.
+    #[test]
+    fn trade_creator_is_none_without_any_creator() {
+        let mut token = token_created_at(Utc::now());
+        token.creator_wallet.clear();
+        assert_eq!(TokenState::new(token).trade_creator(), None);
+    }
 
     #[test]
     fn keeps_recently_traded_token() {
