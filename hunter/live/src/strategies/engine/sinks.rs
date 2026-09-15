@@ -685,6 +685,7 @@ impl Sink {
                 entry_price: None,
                 entry_sol: None,
                 entry_time: None,
+                reverted_buy_fee_sol: 0.0,
                 target_snapshot: None,
                 cashback_enabled: cashback,
                 inflight_intent: None,
@@ -731,7 +732,8 @@ impl Sink {
         self.registry.update(delta.position, |m| {
             m.entry_token_amount = Some(fill.token_amount);
             m.entry_price = Some(fill.price);
-            m.entry_sol = Some(fill.sol);
+            // What `record_entry_fill` books: the buy plus its reverted attempts.
+            m.entry_sol = Some(fill.sol + std::mem::take(&mut m.reverted_buy_fee_sol));
             m.entry_time = Some(fill.at);
             m.sold_token_amount = 0;
             m.scale_stage = 0;

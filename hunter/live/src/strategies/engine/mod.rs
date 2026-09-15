@@ -473,6 +473,11 @@ pub struct PositionMeta {
     /// the full entry snapshot the UI charts and sizes from.
     pub entry_sol: Option<f64>,
     pub entry_time: Option<chrono::DateTime<chrono::Utc>>,
+    /// Network fees (SOL) of this position's buys that landed and reverted — the
+    /// in-memory mirror of PG `extra.reverted_fee_lamports` before the entry books
+    /// it. The entry fill adds it to `entry_sol` and clears it, as
+    /// `record_entry_fill` does.
+    pub reverted_buy_fee_sol: f64,
     /// Paper-only: trigger-trade snapshot for `target_*` (armed signal, distinct
     /// from the worst-case entry fill). Consumed by the sink on `Holding`.
     pub target_snapshot: Option<TargetSnapshot>,

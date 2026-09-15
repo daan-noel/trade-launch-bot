@@ -164,7 +164,9 @@ executor adds it to the row (`StrategyRepo::add_reverted_fee`, from
 it inside its own transaction - on top of the buy's paid SOL, off the sell's received
 SOL, on the row and its ledger leg - so every booking path (engine, reaper adopt,
 orphan, heal) carries it, across restarts. A position whose entry never fills keeps it,
-and the rule and run PnL totals subtract it.
+and the rule and run PnL totals subtract it. The registry mirrors the buy side
+(`PositionMeta::reverted_buy_fee_sol`): the sink adds it to the in-memory `entry_sol`, so
+a position frame shows the same entry cost the row books.
 
 ### 2.3 What "Stop" actually waits on
 

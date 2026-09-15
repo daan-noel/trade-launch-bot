@@ -27,7 +27,8 @@ use hunter_engine::event::{Event, Fill, FillFailReason, IntentId};
 use pump_trader::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 
 use trading_core::config::constants::{
-    COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
+    lamports_to_sol, COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_LIMIT_CURVE_BUY,
+    COMPUTE_UNIT_LIMIT_CURVE_SELL,
 };
 use trading_core::config::fee_tuning::close_account_fee_sol;
 use trading_core::config::FeeTuning;
@@ -644,21 +645,22 @@ pub(crate) fn booked_wallet_sol(legs: &SigLegs, mint: &str, side: &str) -> f64 {
 /// its network fee (the tip rolled back with its instructions). It goes on the row
 /// (`StrategyRepo::add_reverted_fee`), where the next booked fill takes it. Failure
 /// path only; retries briefly on a row that has not landed yet, like
-/// [`note_entry_error`].
-async fn note_reverted_fee(repo: &StrategyRepo, pg_id: Uuid, cu_limit: u32) {
+/// [`note_entry_error`]. Returns the fee, in lamports.
+async fn note_reverted_fee(repo: &StrategyRepo, pg_id: Uuid, cu_limit: u32) -> u64 {
     let fee = FeeTuning::current().network_fee_lamports(cu_limit);
     warn!(pg = %pg_id, fee, "transaction reverted on chain: its fee is charged to the position");
     for _ in 0..NOTE_ENTRY_ERROR_ATTEMPTS {
         match repo.add_reverted_fee(pg_id, fee).await {
-            Ok(true) => return,
+            Ok(true) => return fee,
             Ok(false) => tokio::time::sleep(NOTE_ENTRY_ERROR_BACKOFF).await,
             Err(e) => {
                 warn!(pg = %pg_id, "add_reverted_fee failed: {e}");
-                return;
+                return fee;
             }
         }
     }
     warn!(pg = %pg_id, fee, "add_reverted_fee: row never appeared — the fee is log-only");
+    fee
 }
 
 async fn emit_entry_outcome(
@@ -806,7 +808,11 @@ async fn confirm_entry(
     }
     let status = deps.trader.signature_state_detailed(sig).await;
     if matches!(status, Ok(SigStatus::Reverted { .. })) {
-        note_reverted_fee(&deps.strategy_repo, order.pg_id, COMPUTE_UNIT_LIMIT_CURVE_BUY).await;
+        let fee =
+            note_reverted_fee(&deps.strategy_repo, order.pg_id, COMPUTE_UNIT_LIMIT_CURVE_BUY).await;
+        if let Some(id) = deps.registry.engine_id(order.pg_id) {
+            deps.registry.update(id, |m| m.reverted_buy_fee_sol += lamports_to_sol(fee as i64));
+        }
     }
     match classify_silent_send(&status) {
         SilentSendOutcome::Resend => EntryOutcome::Retry(describe_status(&status)),

@@ -645,6 +645,8 @@ pub fn adopt_holding_into_engine(
             entry_price: pos.entry_price,
             entry_sol: pos.entry_sol,
             entry_time: pos.entry_time,
+            // A Holding row's entry already booked its reverted buys.
+            reverted_buy_fee_sol: 0.0,
             target_snapshot: None,
             cashback_enabled: false,
             inflight_intent: None,
@@ -777,6 +779,7 @@ pub fn adopt_buy_submitted_into_engine(
             entry_price: pos.entry_price,
             entry_sol: pos.entry_sol,
             entry_time: pos.entry_time,
+            reverted_buy_fee_sol: pos.reverted_fee_sol(),
             target_snapshot: None,
             cashback_enabled: false,
             inflight_intent: Some(intent),
