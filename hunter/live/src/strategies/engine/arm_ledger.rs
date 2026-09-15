@@ -14,11 +14,14 @@
 
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use trading_core::models::strategy_arm::ArmLedgerWrite;
-use trading_core::storage::repositories::arm_repo::{ArmEndRow, ArmInsertRow, ArmRepo};
+use trading_core::storage::repositories::arm_repo::{
+    drop_compressed_ends, ArmEndRow, ArmInsertRow, ArmRepo,
+};
 
 /// Queue depth. Sized for a burst of arms across every rule on a launch spike;
 /// past this the send is dropped **loudly** rather than blocking the fold — a
@@ -128,6 +131,10 @@ async fn flush(repo: &ArmRepo, pending: &mut Vec<ArmLedgerWrite>) {
     }
     if let Err(e) = repo.insert_arms(&arms).await {
         warn!(n = arms.len(), "arm ledger: insert failed: {e}");
+    }
+    let compressed = drop_compressed_ends(&mut ends, Utc::now());
+    if compressed > 0 {
+        warn!(n = compressed, "arm ledger: dropped ends armed past the compression horizon");
     }
     if let Err(e) = repo.end_arms(&ends).await {
         warn!(n = ends.len(), "arm ledger: end failed: {e}");

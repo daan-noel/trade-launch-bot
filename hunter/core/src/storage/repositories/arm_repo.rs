@@ -180,6 +180,24 @@ pub type ArmEndRow = (
     Option<serde_json::Value>,
 );
 
+/// `compress_after` of the `strategy_arms` compression policy, in days
+/// (`0002_arm_ledger.sql`). An episode armed earlier may sit in a compressed chunk,
+/// and an UPDATE reaching one decompresses it. Pinned to the migration by
+/// `compress_horizon_matches_the_migration`.
+pub const ARM_COMPRESS_AFTER_DAYS: i64 = 7;
+
+/// Remove the ends armed past the compression horizon, returning how many went.
+/// A row armed at or after `now - ARM_COMPRESS_AFTER_DAYS` lives in a chunk whose
+/// range ends after that instant, which the policy never compresses. Episodes end
+/// within their token's life, so this is empty in steady state; the caller logs
+/// a non-zero count rather than paying for a chunk decompress.
+pub fn drop_compressed_ends(rows: &mut Vec<ArmEndRow>, now: DateTime<Utc>) -> usize {
+    let horizon = now - chrono::Duration::days(ARM_COMPRESS_AFTER_DAYS);
+    let before = rows.len();
+    rows.retain(|row| row.2 >= horizon);
+    before - rows.len()
+}
+
 #[derive(Clone)]
 pub struct ArmRepo {
     pool: PgPool,
@@ -216,10 +234,20 @@ impl ArmRepo {
     /// `WHERE ended_at IS NULL` makes the write idempotent and keeps the FIRST
     /// ending: a token can go dead in the same drain as the rule being paused,
     /// and the reason that actually ended the episode is the earlier one.
+    ///
+    /// **The batch's own `armed_at` span bounds the UPDATE, planned per call.** A
+    /// join against `VALUES` gives the planner no time constraint, so without the
+    /// span it seq-scans every chunk, and reaching a compressed one decompresses
+    /// its open rows until TimescaleDB aborts the statement. The span is bound as
+    /// parameters, and a cached statement's generic plan ignores parameter bounds
+    /// (a plain `Append` over every chunk), so the transaction forces a custom
+    /// plan: the planner sees the values and keeps only the chunks in the span.
+    /// Callers drop ends past the compression horizon first
+    /// ([`drop_compressed_ends`]), so the span never reaches a compressed chunk.
     pub async fn end_arms(&self, rows: &[ArmEndRow]) -> anyhow::Result<u64> {
-        if rows.is_empty() {
+        let (Some(lo), Some(hi)) = (rows.iter().map(|r| r.2).min(), rows.iter().map(|r| r.2).max()) else {
             return Ok(0);
-        }
+        };
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "UPDATE strategy_arms a SET ended_at = v.ended_at, \
              end_reason = v.end_reason, position_id = v.position_id, \
@@ -241,9 +269,14 @@ impl ArmRepo {
         qb.push(
             ") AS v(rule_id, mint_address, armed_at, ended_at, end_reason, position_id, end_detail) \
              WHERE a.rule_id = v.rule_id AND a.mint_address = v.mint_address \
-             AND a.armed_at = v.armed_at AND a.ended_at IS NULL",
+             AND a.armed_at = v.armed_at AND a.ended_at IS NULL AND a.armed_at >= ",
         );
-        Ok(qb.build().execute(&self.pool).await?.rows_affected())
+        qb.push_bind(lo).push(" AND a.armed_at <= ").push_bind(hi);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET LOCAL plan_cache_mode = force_custom_plan").execute(&mut *tx).await?;
+        let ended = qb.build().execute(&mut *tx).await?.rows_affected();
+        tx.commit().await?;
+        Ok(ended)
     }
 
     // -- Reads ----------------------------------------------------------------
@@ -378,5 +411,103 @@ mod tests {
     fn end_reason_filter_covers_live_episodes() {
         let (sql, _) = arm_filter_sql("end_reason").expect("whitelisted");
         assert!(sql.contains("COALESCE"), "live episodes would be unfilterable: {sql}");
+    }
+
+    /// The horizon must be the policy's own: shorter drops ends the database could
+    /// take, longer lets a write reach a compressed chunk.
+    #[test]
+    fn compress_horizon_matches_the_migration() {
+        let migration = include_str!("../../../migrations/0002_arm_ledger.sql");
+        let policy = format!(
+            "add_compression_policy('strategy_arms', compress_after => INTERVAL '{ARM_COMPRESS_AFTER_DAYS} days'"
+        );
+        assert!(migration.contains(&policy), "policy drifted from ARM_COMPRESS_AFTER_DAYS: {policy}");
+    }
+
+    fn end_row(armed_at: DateTime<Utc>) -> ArmEndRow {
+        (Uuid::nil(), "m".to_string(), armed_at, armed_at, "dead".to_string(), None, None)
+    }
+
+    /// The horizon row itself stays: its chunk ends after the horizon.
+    #[test]
+    fn drop_compressed_ends_keeps_the_horizon_and_newer() {
+        let now = Utc::now();
+        let horizon = now - chrono::Duration::days(ARM_COMPRESS_AFTER_DAYS);
+        let mut rows = vec![
+            end_row(now),
+            end_row(horizon),
+            end_row(horizon - chrono::Duration::seconds(1)),
+            end_row(now - chrono::Duration::days(30)),
+        ];
+        assert_eq!(drop_compressed_ends(&mut rows, now), 2);
+        assert_eq!(rows.iter().map(|r| r.2).collect::<Vec<_>>(), vec![now, horizon]);
+    }
+
+    /// The day range of the throwaway chunk the DB test compresses and drops.
+    const OLD_CHUNK_SCOPE: &str =
+        "'strategy_arms', older_than => '2000-01-03'::timestamptz, newer_than => '1999-12-30'::timestamptz";
+
+    /// A multi-row end write must never reach a compressed chunk. Every other DML
+    /// on the connection under test aborts past ONE decompressed row, so a plan
+    /// that scans the compressed 2000-01-01 chunk fails the write. It runs seven
+    /// times: Postgres may switch a cached statement to a generic plan after five.
+    #[tokio::test]
+    #[ignore = "needs DATABASE_URL (TimescaleDB); creates, compresses and drops a 2000-01-01 chunk"]
+    async fn multi_row_end_never_decompresses() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let plain = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&url).await.expect("connect");
+        let capped = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::Executor::execute(
+                        conn,
+                        "SET timescaledb.max_tuples_decompressed_per_dml_transaction = 1",
+                    )
+                    .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("connect");
+        let drop_old = format!("SELECT drop_chunks({OLD_CHUNK_SCOPE})");
+        sqlx::query(&drop_old).execute(&plain).await.expect("pre-clean");
+
+        let rule = Uuid::new_v4();
+        let tag = rule.simple().to_string();
+        let old = "2000-01-01T12:00:00Z".parse::<DateTime<Utc>>().expect("ts");
+        let old_rows: Vec<ArmInsertRow> = (0..5)
+            .map(|i| (rule, format!("OLD{tag}{i}"), "paper".to_string(), old + chrono::Duration::seconds(i)))
+            .collect();
+        let seed = ArmRepo::new(plain.clone());
+        seed.insert_arms(&old_rows).await.expect("seed old");
+        sqlx::query(&format!("SELECT compress_chunk(c, if_not_compressed => true) FROM show_chunks({OLD_CHUNK_SCOPE}) c"))
+            .execute(&plain)
+            .await
+            .expect("compress");
+        let now = Utc::now();
+        let fresh: Vec<ArmInsertRow> = (0..2)
+            .map(|i| (rule, format!("NEW{tag}{i}"), "paper".to_string(), now - chrono::Duration::seconds(i)))
+            .collect();
+        seed.insert_arms(&fresh).await.expect("seed fresh");
+        let ends: Vec<ArmEndRow> =
+            fresh.iter().map(|(r, m, _, a)| (*r, m.clone(), *a, now, "dead".to_string(), None, None)).collect();
+
+        let under_test = ArmRepo::new(capped);
+        let mut results = Vec::new();
+        for _ in 0..7 {
+            results.push(under_test.end_arms(&ends).await.map_err(|e| e.to_string()));
+        }
+
+        sqlx::query("DELETE FROM strategy_arms WHERE rule_id = $1 AND armed_at > now() - interval '1 day'")
+            .bind(rule)
+            .execute(&plain)
+            .await
+            .expect("clean fresh");
+        sqlx::query(&drop_old).execute(&plain).await.expect("clean old");
+
+        let ended: u64 = results.iter().map(|r| *r.as_ref().expect("end write reached a compressed chunk")).sum();
+        assert_eq!(ended, 2, "both live episodes end, exactly once");
     }
 }
