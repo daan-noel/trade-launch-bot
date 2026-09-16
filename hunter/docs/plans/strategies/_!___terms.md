@@ -74,6 +74,7 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | **creator** | The wallet that created this coin. |
 | **operator** | A person or team running its own bot. |
 | **operator structure** | An ix structure with ≤ 50 wallets and ≥ 200 prints this week: one operator's bot, not a public tool. |
+| **reader** | A trader who is profitable on most days and whose buying reacts to something public on the tape - the kind of actor worth following. Never the person at a terminal reading a safety panel. The opposite is **volume manufacture**: a wallet whose book is its own round trips, which is dropped before any event is looked for. |
 | **instrument** | A wallet we study because it makes money. It names a decision worth copying. It is never a term in a rule, its coins are never a door, and its own prints stay out of every public count. |
 | **bundle** | Wallets whose first buy of a coin landed in one slot through one ix structure: one trigger behind many wallets. At 3 or more such first buys, the engine calls the group bundled. |
 | **bundle share** | The share of live supply held by wallets that bought in the creation slot. |

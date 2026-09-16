@@ -139,13 +139,15 @@ is [_!___derive.md](_!___derive.md) section 10.
 
 ## The state of the program
 
+What is **settled** is here. What is **next** goes stale between edits, so it is not duplicated
+here: the queue, the clean test and the calendar item all live in
+[_!___workflow.md](_!___workflow.md).
+
 | | |
 | --- | --- |
-| **ships next** | rule 1 (hot-tape): +4.44 %/trade, 100 a day, 5/5 on unseen days, top 1 % 9.8 %, reproduced ticket for ticket by the engine (evidence 1.22, 1.23). Its clean test is the days after 09-10 |
+| **one rule clears every ship bar** | rule 1 (hot-tape): +4.44 %/trade, 100 a day, 5/5 on unseen days, top 1 % 9.8 %, reproduced ticket for ticket by the engine (evidence 1.22, 1.23) |
 | **works, forward-valid** | survival selection: 4-6x on 30 days, with external confirmation |
 | **answered** | which coin goes to -50 %: bundle share and agreement among the solo 26, independent and stacking (1.3) |
-| **the binding constraint on door-behind sentences** | clients, and it is a date: thirty days of prints about 2026-09-30 |
-| **everything open** | [_!___workflow.md](_!___workflow.md) |
 
 ---
 
@@ -225,6 +227,9 @@ is still -10.4 %/trade, because their impact is already in the price.
 
 ## 1.4 What price contains, and what it does not
 
+The consequence for flow terms - that windowed flow on a curve **is** the price move, so there is
+no absorption to trade - is 7.1.
+
 Price is a function of the SOL reserve alone, so **every landed print is already in the price.**
 
 ```
@@ -250,6 +255,9 @@ are unpriced, and they are what an event is built from.
 
 Decision to fill is **p50 115 ms** against a 400 ms slot, and we land in the trigger's own slot
 52.6 % of the time.
+
+This is the law. What the seat actually **costs**, decomposed, is 7.2 - and the 115 ms is the
+smallest of its four terms, which is the part that surprises people.
 
 ```
   the fill is the LAST print landed by fire + 115 ms, on BOTH legs
@@ -307,6 +315,9 @@ The delays that exist in this market, largest first:
 story from a description.
 
 ## 1.7 The toll
+
+The three cost terms are here and the reserve they are charged against is 7.3; read both before
+pricing anything.
 
 125 bps a leg, a fixed 0.000225 SOL a leg, and our own impact `B / vsol` a leg. Cost is U-shaped
 in size and the minimum sits at `B* = sqrt(F * vsol)`, about **0.126 SOL** on a 70 SOL pool.
@@ -391,8 +402,9 @@ Terminals stage discovery by curve position - New Pairs, Final Stretch, Migrated
 insider holding, dev funding source, fresh-wallet buys, bot detection.
 
 Everything on that panel is a claim about **who holds the supply and who is buying**, never
-about the price path. That is what a reader reads - and it is the vocabulary the
-L-selection problem (1.3) is built from.
+about the price path. That is what a retail buyer reads - and it is the vocabulary the
+L-selection problem (1.3) is built from. ("Reader" everywhere else in these files means the
+daily-profitable professional of 5.4, never the person at the terminal.)
 
 ## 2.5 Actors and their equipment
 
@@ -726,6 +738,11 @@ Section 1.5 is the law. Seven corollaries:
 
 ## 7.4 Measurement honesty
 
+These are laws about what this venue lets a measurement mean. Several of them have an operative
+form as well - a gate a cell must pass, with a number and an order - and that form lives in
+[_!___derive.md](_!___derive.md) 11, which is where a run reads them. A law here says why the gate
+exists; derive 11 says what it refuses. Where both appear, the number is derive's.
+
 1. **Full tape.** Score every instance of the event on every coin. A candidate table is not a
    universe; matched negatives come from the full print population at decision time.
 2. **Decision-time facts only.** Nothing after the decision print is a term, a filter or a label.
@@ -913,6 +930,11 @@ under trail50 c600 - at n >= 1,000 with a top-1 % share at or under about 20 %.*
 
 The checks that catch these before a number is reported are the backtest audit in appendix 11.1;
 a number that has not passed it is a study read.
+
+**This section is an index, not a source.** Most rows restate in one line something a law in 7.4
+or a section above states in full - that is the point: it is the form you scan before a run, not
+the form you learn from. Where a row and the section it comes from read differently, the section
+is the definition and the row is the shorthand. Nothing here is the only home of a rule.
 
 | mistake | the rule |
 | --- | --- |
