@@ -9,7 +9,7 @@ Each combo in `<strategy>_grouped_sweep_combos` stores its params as a JSONB dic
 **Identity / ranking:**
 - `combo_id UUID` — FK into `combos` table
 - `group_id UUID` — FK into `groups` table
-- `score f64` — composite score (primary ranking key; formula + intuition in [Metrics reference](#metrics-reference--what-each-column-means) below)
+- `score f64` — composite score (primary ranking key; formula + intuition in [Metrics reference](#_!___metrics--what-each-column-means) below)
 
 **Win-rate / count:**
 - `win_rate f64` — fraction of tokens with positive PnL

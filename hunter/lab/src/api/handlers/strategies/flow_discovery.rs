@@ -1,7 +1,7 @@
 //! Flow-discovery job — score trade ix-structures per fingerprint group so the
 //! user can toggle `ix_patterns` on a fingerprint.
 //!
-//! See `hunter/docs/plans/strategies/metrics-reference.md` "Discovery scoring".
+//! See `hunter/docs/plans/strategies/_!___metrics.md` "Discovery scoring".
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

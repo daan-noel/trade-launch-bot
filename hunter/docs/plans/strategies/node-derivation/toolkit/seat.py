@@ -34,6 +34,12 @@
                            the price, so no copied fill is counted - the row the veto reads) and
                            ignored: medians, shares, and the within-coin excess (acted minus
                            ignored per coin, weighted by acted tickets, a coin bootstrap p5..p95)
+  veto(L, n_decisions)     derive 5.2's verdict on a leftover table, the ONE reader: a study
+                           script calls it and never re-spells the lines. kill when the behind
+                           row's median peak leftover <= 0 or missed >= 50 %, or a race (acted
+                           lag p50 <= 50 ms and ahead < 10 %); a corner when the class covers
+                           < 10 % of its decisions (derive 5.1); else PASS, flagged thin under
+                           THIN_PEAK. Cost is reported and decides nothing
 """
 from __future__ import annotations
 
@@ -245,3 +251,38 @@ def leftover_summary(L):
                               p95=round(hi * (100 if c == "up" else 1), 2))
                       for c, (e, lo, hi) in ex.items()}).T
     return T, X
+
+
+# A pass whose behind-row peak leftover is under this (net %, both legs paid) is flagged thin:
+# a flag, never a kill. Uncalibrated - the anchors of evidence 1.27 put noise at about +1 %
+# (sssssw +1.01 %) and a paying trigger at +7.46 % (rule 1); the calibrated line is open work.
+THIN_PEAK = 2.0
+
+
+def veto(L, n_decisions):
+    """Derive 5.2 on a `leftover` table: the verdict every study script books. `n_decisions` is the
+    member's decisions the class could cover (its episodes), for the 5.1 corner line."""
+    Tb, _ = leftover_summary(L)
+    A = L[L.acted == 1]
+    Bh = L[(L.acted == 1) & (L.ahead == 0)]
+    hz = [c for c in Tb.columns if c.startswith("peak_p50_h")]
+    mid = hz[len(hz) // 2]
+    b = Tb.loc["behind"]
+    peak = float(b[mid]) if len(Bh) else np.nan
+    why = []
+    if not peak > 0.0:
+        why.append("peak<=0")
+    if not (len(Bh) and float(b.missed) < 50.0):
+        why.append("missed>=50")
+    if len(A) and float(A.dt.median()) <= 0.050 and float(A.ahead.mean()) < 0.10:
+        why.append("race")
+    cover = 100.0 * len(A) / max(n_decisions, 1)
+    verdict = "kill" if why else ("corner" if cover < 10.0 else "PASS")
+    return dict(
+        acted=len(A), cover=round(cover, 1), behind=len(Bh),
+        acted_dt_ms=round(1000 * float(A.dt.median()), 0) if len(A) else np.nan,
+        acted_ahead=round(100 * float(A.ahead.mean()), 1) if len(A) else np.nan,
+        cost=b.cost_p50, cost_ge2=b.cost_ge2,
+        peak_p10h=b[hz[0]], peak=round(peak, 2), peak_p90h=b[hz[-1]],
+        missed=b.missed, ign_peak=Tb.loc["ignored", mid],
+        verdict=verdict, why=",".join(why), thin=bool(verdict == "PASS" and peak < THIN_PEAK))

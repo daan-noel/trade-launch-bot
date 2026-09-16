@@ -206,7 +206,7 @@ label sequences only, and a budget pin is a fingerprint edit (`find_or_create` i
 `metric_config` for identity, then patches). Discovery (lab
 `/strategies/flow-discovery`) is a separate job that scores structures and writes
 the same key — mutual `409` with sweeps. See
-[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+[`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
 
 ## Workstation resource fences (lab-only)
 

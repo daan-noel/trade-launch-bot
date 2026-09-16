@@ -763,7 +763,7 @@ here.
   button takes every table row *present* in some member token's creation slot) and
   *Launch shapes · this token* (only while a token is picked in `TokenPreviewPanel` —
   applies that token's own `first_slot_ix_labels`, which bypasses the table entirely:
-  uncapped, unfloored, per token). See `plans/strategies/metrics-reference.md` for why
+  uncapped, unfloored, per token). See `plans/strategies/_!___metrics.md` for why
   the group answer cannot stand in for the per-token one.
   `StructureTable` runs the shared `DataTable` with its search, per-column filter row,
   Columns panel and pins on (`tableId` `flow-structures`), opening sorted by `Auto`;

@@ -56,7 +56,7 @@ hence `[build] jobs = 4` and `[profile.dev] debug = "line-tables-only"`. All of 
   carries the finding: a metric before a group, a group before a new window kind. A metric you
   cannot state in one line — what it measures, unit, basis — is not ready to add. Extension
   cost: [hunter/CLAUDE.md](hunter/CLAUDE.md#hot-path-landmines),
-  [metrics-reference](hunter/docs/plans/strategies/metrics-reference.md).
+  [_!___metrics](hunter/docs/plans/strategies/_!___metrics.md).
 - **A metric ships explained, and explained once.** Every metric carries one definition —
   what it measures, unit, time basis, window — written at the point it is defined and
   rendered into the UI from that same text. Adding or changing a metric updates that

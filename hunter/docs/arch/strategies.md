@@ -31,7 +31,7 @@ Its uncapped, per-token-tail numbers are optimistic upper bounds — always re-r
 combo through simulate before trusting its PnL.
 
 Deep-dive detail: flow metrics + classifier in
-[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md);
+[`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md);
 what a round trip **costs** (fee 125 bps/leg, our own `buy_amount/reserve_sol` impact,
 the U-shaped optimal buy size) in
 [`plans/strategies/execution-costs.md`](../plans/strategies/execution-costs.md);
@@ -363,7 +363,7 @@ hot-right-now. The window adds three that lifetime has no analogue for: `buy_sha
 (direction, PERCENT 0-100), `m_crowd_window.unique_wallets` (how many people) and `trade_count` (how
 many trades — the same tape read without needing a wallet column). Formulas + monotonic
 flags:
-[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+[`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
 
 ## Burst (`m_flow_window`)
 
@@ -376,7 +376,7 @@ cannot collide in the blocker / monotonic-kill maps. It owns **no state** — bo
 are `m_flow_window`'s own `trade_count` on buffers `CompiledRule` already registers for
 each axis. **Entry side only**: the persisted exit-reason label carries one window
 qualifier. Semantics + the young-token reading:
-[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+[`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
 
 [`Windows`]: ../../engine/src/metrics/mod.rs
 
@@ -432,7 +432,7 @@ metrics are named for the tag, which is the part the engine knows. Patterns live
 `TradeLite` carries `ix_hash` / `wallet_hash`; adapters call the engine SSOT hashers
 only. Flow state keys by `FingerprintId` on `TokenTrack`. Unconfigured fingerprint
 ⇒ NaN. Full formulas / NaN rules / discovery scoring:
-[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+[`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
 
 ## Dump builds (`m_dump_ix` / `m_dump_ix_window`)
 
@@ -456,7 +456,7 @@ unconfigured is **omitted**, not drawn as a column of NaN. Offline series column
 `SeriesColumn::Fingerprint` for either group — the metric id routes the read, so the
 variant is named for the scope and not for one of its groups.
 
-Full contract: [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+Full contract: [`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
 
 Lab authoring: `POST /api/strategies/flow-discovery` scores ix-structures per
 sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`, and

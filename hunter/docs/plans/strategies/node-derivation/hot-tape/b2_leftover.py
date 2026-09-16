@@ -3,12 +3,14 @@
 Question: which reading of "leftover exists at our 115 ms fill on the prints it acts on" passes the
 trigger that became rule 1 and kills the triggers that are known dead, and what are its cut lines?
 
-Anchors, fixed before this run (study tape, members out of every public print):
+Anchors, fixed before this run (study tape, members out of every public print). Each names the
+derive step that must kill it; `seat.veto` is 5.2 and the race line, so only those two are its job:
 
   8fStGV  public SELL >= 1 SOL    MUST PASS   rule 1's trigger (evidence 1.22; case step 21)
-  AbQcLH  burst start             MUST KILL   a race: lag p50 47 ms, ahead 5 %, -1.36 % (1.16)
-  sssssw  burst start             MUST KILL   the member that loses at every seat (1.11)
-  8fStGV  burst start             MUST KILL   the class it avoids (lift 0.01 at 0-25 ms, case step 21)
+  AbQcLH  burst start             MUST KILL   5.2 race: lag p50 47 ms, ahead 5 %, -1.36 % (1.16)
+  sssssw  burst start             MUST KILL   phase 4: the member that loses at every seat (1.11);
+                                              5.2 alone passes it thin (1.27)
+  8fStGV  burst start             MUST KILL   5.1 coverage: the class it avoids, a corner (case step 21)
   49uohd  public SELL >= 1 SOL    no anchor   reachable, unspelled (1.16); read only
 
 Applied after the calibration, on the mid-tape node's roster (its members out of its public prints):
@@ -19,9 +21,10 @@ Applied after the calibration, on the mid-tape node's roster (its members out of
 Each reading is `toolkit.seat.leftover` on its acted tickets against the same coins' ignored
 prints of the class (up to 4 per acted ticket per coin), at its own hold p10 / p50 / p90:
 
-  absolute   on the acted tickets where our fill lands BEHIND its buy (its fill already in the
-             price; a ticket ahead of it counts its own buy as our leftover, a copied fill):
-             median cost < 2 %, median peak leftover (hold p50) > 0, missed < 50 %
+  absolute   `seat.veto` PASS: on the acted tickets where our fill lands BEHIND its buy (its fill
+             already in the price; a ticket ahead of it counts its own buy as our leftover, a
+             copied fill): median peak leftover (hold p50) > 0, missed < 50 %, not a race. Cost
+             is reported, never a line; a pass under seat.THIN_PEAK is flagged thin
   control    the acted peak leftover's within-coin excess over ignored, coin bootstrap p5 > 0
   path       the share that reaches break-even before the mirror loss, acted above 1 / (r + 1)
              (about 49 %) and above ignored within the coin, bootstrap p5 > 0
@@ -75,6 +78,7 @@ def main() -> None:
     rows, keep = [], []
     for node, p, cls, fn, want in CASES:
         if node not in sessions:
+            sessions.clear()                # CASES is grouped by node: one tape in RAM at a time
             sessions[node] = tapes.load("study", tapes.roster(node))
             print("study tape, %s: instruments %s  %ds"
                   % (node, sorted(sessions[node].ids.values()), time.time() - t0), flush=True)
@@ -95,8 +99,8 @@ def main() -> None:
         print(X.to_string())
         a, x = Tb.loc["behind"], X
         mid = "peak%d" % (len(hz) // 2)
-        absolute = bool(a.cost_p50 < 2.0 and a["peak_p50_h%d" % (len(hz) // 2)] > 0
-                        and a.missed < 50.0)
+        v = seat.veto(L, len(E))            # derive 5.2: cost is reported, never a line
+        absolute = v["verdict"] == "PASS"
         control = bool(x.loc[mid, "p5"] > 0)
         path = bool(a.up > a.null and x.loc["up", "p5"] > 0)
         rows.append(dict(member=p, trigger=cls, anchor=want, decisions=len(E), acted=len(A),
@@ -105,7 +109,8 @@ def main() -> None:
                          ign_peak_mid=Tb.loc["ignored", "peak_p50_h%d" % (len(hz) // 2)],
                          peak_excess=x.loc[mid, "excess"], peak_p5=x.loc[mid, "p5"],
                          up=a.up, null=a.null, ign_up=Tb.loc["ignored", "up"], up_excess=x.loc["up", "excess"],
-                         up_p5=x.loc["up", "p5"], absolute=absolute, control=control, path=path))
+                         up_p5=x.loc["up", "p5"], absolute=absolute, verdict=v["verdict"],
+                         why=v["why"], thin=v["thin"], control=control, path=path))
         keep.append(L.assign(member=p, trigger=cls))
     R = pd.DataFrame(rows)
     print("\n=== the three readings against the anchors")

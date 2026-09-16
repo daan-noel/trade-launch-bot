@@ -162,10 +162,19 @@ racer builds: what is closed is copying their fill, not the decision they make. 
 prints on the last-leg tape. `9Uq8GV` names the event (buy >= 1 lift 4.75) and leftover on their
 coins is +4.12 %/trade at clock 45; public doors besides slow-wall are red. `8aaRWu` names a
 structure restart on every-leg study (`structure_burst` lift 4.84 @ 25-50 ms; priced burst_start
-5.95) and leftover behind a 115 ms fill PASSES (parent union cost 1.20 %, peak +8.84 %); 6.1
-first terms are mvk >= 1.29 %, nstruct >= 3, sell_run <= 0; 6.2 occupancy of those terms is red
-0/6 (best mvk -1.51 %); next is 7.1 (occupancy red and leftover green is the door test, not
-phase 8). E is this print; re-entry is R.
+5.95) and leftover behind a 115 ms fill PASSES (parent union cost 1.20 %, peak +8.84 %); he takes
+**0.25 %** of those family prints; occupancy of that family is red, including on its coins
+(**-1.96 %**). Ignored leftover **+5.42 %**. This-printer 6.1 ranks `fresh_return` (0.51 % of
+that slice); a named `build` list is the market (3 public recipes, **0.29 %**) or a 5.3 %
+corner; silence-then-K is a **1.8 %** corner; run_k>=2 is **0.63 %** of that slice;
+Two lists agree K>=2 leftover cover<10 at **1.77 %** slice (all-ignored peak **+23.12 %**);
+2bu K>=1 leftover PASSES at **0.50 %**. First run here leftover PASSES at **0.50 %**
+slice (rank **0.501**; median acted 0). Size buy leftover PASSES at **0.56 %** slice
+(`ssize` rank **0.653**); `alone_in_slot` rank **0.354** low, leftover PASSES at **0.08 %**
+slice.
+E is not spelled. Next
+is 6.1 remaining this-print unread (this-wallet / neighborhood / lake fee), not 7.1 / phase 8. The mint
+list is not D. E is this print; re-entry is R.
 `ApfmkS` is volume manufacture, not a reader: `InitUserVolumeAccumulator` and
 bundled `TransferChecked` are unique to it in the 26, tape share is 0.45 % of SOL, and 5.1 is
 flat; it is not the next instrument. All seven members are measured

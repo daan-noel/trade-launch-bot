@@ -3,7 +3,7 @@
 The one strategy file. What this market is, who acts in it, the arithmetic every rule obeys,
 what is established, what is open, and why.
 
-Five files, and they do not overlap:
+Seven files, and they do not overlap:
 
 | file | carries | edit rule |
 | --- | --- | --- |
@@ -12,6 +12,8 @@ Five files, and they do not overlap:
 | [_!___inventory.md](_!___inventory.md) | every idea, in Door / Event / Permission / Exit | a row is added or its status changes |
 | [_!___workflow.md](_!___workflow.md) | the open queue | rewritten when the open list changes |
 | [_!___evidence.md](_!___evidence.md) | the standing measurements with their coordinates, and the ledger of every rule booked | a standing number is added; a closed line is one ledger row |
+| [_!___terms.md](_!___terms.md) | every word these files use, and every study code name | a word is registered in the same edit as the idea or finding that needs it |
+| [_!___metrics.md](_!___metrics.md) | what the engine measures: each metric's definition, unit, time basis and window | a metric is added or its definition changes, in the same commit as the code |
 
 Self-contained on purpose. Section 11 is the only part that names this repository; the rest
 travels. A claim here that the evidence file does not support is wrong **here**.
@@ -1021,7 +1023,7 @@ The one section that names files, tables and engine vocabulary. Delete it to por
 | the 26 independent traders and their five nodes | [solo-traders.md](solo-traders.md) |
 | frozen sentences, never edited after their date | [study-kernel/frozen-sentences.md](study-kernel/frozen-sentences.md) |
 | the pricing kernel every offline book runs through | [study-kernel/](study-kernel/) |
-| every engine metric with its one definition | [metrics-reference.md](metrics-reference.md) |
+| every engine metric with its one definition | [_!___metrics.md](_!___metrics.md) |
 | every `FillModel` and `CostModelKind` | [fill-and-cost-models.md](fill-and-cost-models.md) |
 | the cost derivation | [execution-costs.md](execution-costs.md) |
 | the harvester exit that fires from strength | [armed-trailing-stop.md](armed-trailing-stop.md) |

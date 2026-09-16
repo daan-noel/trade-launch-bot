@@ -6,6 +6,8 @@
                          rule would). Optional R terms: cool_sl (no re-entry for N s after a
                          stop-out), max_per_coin
   fires(C, spec, ...)    mask + occupy
+  Occupier(run, k, xs)   occupy() for many masks and exits on one table (no R terms), for the
+                         ladder: keep(m, e) -> the row indices occupy(C, m) keeps under exit e
   ledger(F, days)        the book: tickets a day, %/trade, SOL, SOL a day, days positive, worst
                          day, body (net without the top 1 % tickets), top 1 % share, biggest
                          coin's share, the two halves of the days, stop-out rate, win rate, and
@@ -64,6 +66,34 @@ def occupy(C, m, cool_sl=0.0, max_per_coin=None):
         if why[i] == "sl" and cool_sl > 0:
             t_ok = t[i] + hold[i] + cool_sl
     return C[keep]
+
+
+class Occupier:
+    """occupy() without R terms, vectorised: rows sorted by (run, k), xs[e] each row's exit fill
+    index under exit e. A kept row's next position is the first masked row of its coin after
+    its exit fill; the chains are walked for every coin at once."""
+
+    def __init__(self, run, k, xs):
+        run = np.asarray(run, dtype=np.int64); k = np.asarray(k, dtype=np.int64)
+        self.n = n = len(run); self.run = run; self.ar = np.arange(n)
+        key = run * (1 << 32) + k
+        self.q = [np.maximum(np.searchsorted(key, run * (1 << 32) + np.asarray(x, dtype=np.int64),
+                                             side="right"), self.ar + 1) for x in xs]
+        self.cs = np.flatnonzero(np.r_[True, run[1:] != run[:-1]]) if n else np.array([], np.int64)
+
+    def keep(self, m, e):
+        n = self.n
+        nm = np.full(n + 1, n, dtype=np.int64)
+        nm[:n] = np.minimum.accumulate(np.where(m, self.ar, n)[::-1])[::-1]
+        cur = nm[self.cs]; ok = cur < n
+        cur = cur[ok]; cur = cur[self.run[cur] == self.run[self.cs[ok]]]
+        out = []; q = self.q[e]
+        while cur.size:
+            out.append(cur)
+            nx = nm[q[cur]]; ok = nx < n
+            src = cur[ok]; nx = nx[ok]
+            cur = nx[self.run[nx] == self.run[src]]
+        return np.sort(np.concatenate(out)) if out else np.array([], dtype=np.int64)
 
 
 def fires(C, spec, **r):

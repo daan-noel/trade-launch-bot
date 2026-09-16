@@ -3,7 +3,8 @@
 What is open, in order, each with its next step and what kills it. The method, its gates and
 how a result is recorded are [_!___derive.md](_!___derive.md); the basis and the laws are
 [_!___strategy.md](_!___strategy.md); the numbers are [_!___evidence.md](_!___evidence.md); the
-ideas are [_!___inventory.md](_!___inventory.md). A closed line keeps one row in the evidence
+ideas are [_!___inventory.md](_!___inventory.md); every word is
+[_!___terms.md](_!___terms.md); what the engine measures is [_!___metrics.md](_!___metrics.md). A closed line keeps one row in the evidence
 ledger (section 7) and, when a mechanism closed it, one row in strategy 8.1. This file changes
 only when the open list changes.
 
@@ -17,7 +18,7 @@ nodes. A node is picked here, then derived by [_!___derive.md](_!___derive.md).
 | node | status at our seat | where |
 | --- | --- | --- |
 | hot-tape re-entry | **rule 1 passes every ship bar**; the clean test is next | section 1 |
-| mid-tape one-shot | **open**: 8aaRWu 6.2 occupancy red, leftover still exists; next **7.1** (door test), not phase 8. **8dtx2t rule 3b** (first position) is red on every lake day (-3.1 %/trade): its study book read a future coin floor. 88887Q / 3Xk2Eu leftover exists under the peak-leftover veto. ApfmkS is volume manufacture | section 2 |
+| mid-tape one-shot | **open**: 8aaRWu E is not spelled (identity leftover PASSES; **0.25 %** of family prints acted; named `build` list is the market at **0.29 %** or a 5.3 % corner; silence-then-K is a **1.8 %** corner; run_k>=2 leftover PASSES at **0.63 %** slice; Two lists agree K>=2 leftover cover<10 at **1.77 %** slice; First run here leftover PASSES at **0.50 %** slice / rank **0.501**, median acted 0; Size buy leftover PASSES at **0.56 %** slice / rank **0.530**; `alone_in_slot` rank **0.354** low, leftover PASSES at **0.08 %** slice). Occupancy red; its-coins occupancy **-1.96 %** so D cannot fix this class. Next **6.1** remaining this-print unread (this-wallet / neighborhood / lake fee), not 7.1 / phase 8. **8dtx2t rule 3b** (first position) is red on every lake day (-3.1 %/trade): its study book read a future coin floor. 88887Q / 3Xk2Eu leftover exists under the peak-leftover veto. ApfmkS is volume manufacture | section 2 |
 | deep-age big clip | red: a public size print is not the tell (response equals the base); the remainder is which coin, not which print | evidence 7, agreement in section 4 |
 | quiet deep-age | red: the token-silence burst it follows lasts ~80 ms, so a 115 ms fill is after it | evidence 7 |
 | instant launch | dead at this seat: consumed inside ~2 slots | strategy 8.1 (age-0 launch ramps) |
@@ -51,18 +52,37 @@ days must pass every bar, the tail included. Working file:
   column), red in every public spelling (1.16). Its sell >= 1 class has leftover behind its buy
   (cost 2.69 %, peak +6.42 %, 1.27): run 5.2 on the dip-buy picks as 1.16 defines them before its descriptors
   (fall, burst, busy tape, seller at a loss, size) are fitted as one within-coin score. AbQcLH's
-  burst start is a 5.2 kill (cost 4.55 %).
+  burst start is a 5.2 kill as a race (lag 47 ms, ahead 5 %).
 
 ---
 
 ## 2. Mid-tape one-shot
 
-**Open.** **8aaRWu** is DELAY-legal at our seat: identity family leftover cover **95.2 %**, behind
-cost **1.20 %**, peak leftover **+8.84 %**. 6.2 occupancy on every coin is red 0/6 (best term
-mvk >= 1.29 % at **-1.51 %**/trade); leftover on those spellings still PASSES. Acted-only (not a
-sentence) is **+0.88 %** 4/6. Do not AND (AND occupancy **-1.34 %** 0/6, cover 22.3 %). Identity
-beats the priced burst family (loud restart cost 2.37 % with peak leftover **+7.12 %**: leftover
-exists; cost is not a kill). **3Xk2Eu** leftover exists on the same burst family (peak **+5.75 to +10.41 %**) despite
+**Open.** **8aaRWu** is DELAY-legal at our seat: identity family leftover cover **94.4 %**, behind
+cost **1.08 %**, peak leftover **+9.51 %** (115 ms 1.17 / +8.88). He takes **0.25 %** of those
+family prints (study+age >= 10 s). Ignored family prints also have leftover (all-ignored peak
+**+5.42 %**; acted excess +5.45). Occupancy of that family on every coin is red (re-read
+**-4.12 %** 0/6 at 83 ms, study fires stop 09-06 12:00, no coin floor). Framed occupancy
+**on its coins** is still **-1.96 %** 0/6; after its first buy **-3.36 %**; other coins
+**-3.89 %**. The before-first-buy slice **+2.24 %** 6/6 (n=4,496, top1 58 %) is which print,
+not which coin: a door that selected his coins still loses. **E is not spelled.** This-printer
+6.1 ranks `fresh_return` (0.51 % of that slice). Inside `fresh_return`, remaining facts still
+leave **0.60-0.80 %** acted (large_recent / flow_spike / wal_n_any); ignored leftover **+7.08 %**.
+Loudness (`mvk`, `nstruct`, `sell_run`) does not name which printer; a behavioral slice does
+not either; a named `build` list is the market (3 public recipes, **0.29 %**) or a 5.3 %
+corner; how the print arrives does not either (slot_gap rank **0.506**; silence-then-K cover
+**1.8 %**, leftover cover<10; run_k>=2 slice **0.63 %**); Two lists agree does not either
+(agree2_k2 rank **0.532**; 2bu K>=2 leftover cover<10 at **1.77 %** slice; 2bu K>=1 leftover
+PASSES at **0.50 %** slice / 29.9 % of buys, ignored peak **+8.76 %**). First run here does
+not either (first_here rank **0.501**; leftover PASSES at **0.50 %** slice / 6.3 % of buys,
+behind peak **+7.72 %**, all-ignored **+7.45 %**; median acted 0). Size buy / alone in its
+slot do not either (`ssize` rank **0.653**, median 0.33 SOL; buy>=1 leftover PASSES at
+**0.56 %** slice; `alone_in_slot` rank **0.354** low, leftover PASSES at **0.08 %** slice,
+acted ahead **89.9 %**). The freeze-E-then-7.1
+fork is the miss (derive 6.1). 7.3 D3/D4 on that wide class
+stays red (parent **-3.76 %** 0/6; holders <= 46 **-4.10 %**). Do not AND.
+Identity beats the priced burst family (loud restart cost 2.37 % with peak leftover **+7.12 %**: leftover exists; cost is
+not a kill). **3Xk2Eu** leftover exists on the same burst family (peak **+5.75 to +10.41 %**) despite
 cost 5.41-15.49 %. **88887Q** leftover exists on sell/down (peak **+3.13 to +6.45 %**) despite
 cost 6.55-7.74 %. **8dtx2t**'s first-position sentence (rule 3b: clip_step_up with its own step
 >= 4.4 %, reserve <= 40 SOL, a new wallet, age >= 1 s; D holders <= 46; P few big sells and
@@ -73,32 +93,57 @@ removed from the toolkit). ApfmkS is volume manufacture. 8aaRWu is the live inst
 Working file:
 [node-derivation/mid-tape-rule-3.md](node-derivation/mid-tape-rule-3.md).
 
-- **Next:** 7.1 on 8aaRWu's spelled identity family (its coins before first buy vs after vs
-  other coins), at 83 ms with 115 ms beside it, study fires stopping at 09-06 12:00. Occupancy
-  red and leftover green is the door test (derive 10), not phase 8. Age >= 10 s is the frame
-  (P), not E. Do not split first vs re-entry: E is this print, R is re-entry. 8aaRWu's 6.2
-  occupancy numbers sit on the old candidate floor and on study fires past 09-06 12:00: re-read
-  before they count. Do not AND the terms as the event. Age / hold_n stay out of E (P).
-  `seed_racer` is a race diagnostic, not E. 88887Q / 3Xk2Eu leftover exists under the
-  peak-leftover veto (cost is not a kill). 8dtx2t exclusive leftover is thin (+0.08 / +1.92 /
-  +1.07 %). 9Uq8GV's buy>=1 leftover is still unread under this veto. ApfmkS is volume
-  manufacture (derive pick).
-- **Next on 8dtx2t:** one sentence on all its buys (5.1 names clip_step_up on all buys and on
-  first positions alike, so first vs re-entry is R, not two E's), frame age >= 10 s (47 % of rule
-  3b's fires sat at 1-10 s, -3.2 / -5.3 %/trade), re-derived from 6.1 on the fixed toolkit, then
-  booked by `mid-tape/mt_d8_replay.py` on every lake day before any verdict. Every toolkit book made before
-  the fix, 8aaRWu's 6.2 and acted-only numbers included, is re-read before it counts.
-- **Kills it:** peak leftover <= 0 on the spelled event; 7.1 shows no coin property and phases 8
-  and 9 fail both exit families walked forward (derive 5.2 is a veto, not a verdict; 6.2
-  occupancy is already red). For 8dtx2t's first position: the re-derived sentence red on the
-  replay's every-day book.
+- **Next:** 6.1 on 8aaRWu's remaining this-print unread (inventory E6 this-wallet / neighborhood /
+  lake fee: `w_gap` `w_nethere` `w_early` `w_up` `w_szrel` `w_age`, `txi` `prev_sgn` `ss_sell`
+  `prev_same` `clip_gap`, `pfee` `tip` `fee_rel`). Size buy / Alone in its slot do not spell E.
+  `ssize` rank **0.653** HIGH (median 0.33 vs 0.11 SOL); buy>=0.5 leftover PASSES at **0.72 %**
+  slice (34.5 % of buys, behind peak **+9.96 %**, ignored +6.68 %); buy>=1 leftover PASSES at
+  **0.56 %** slice (11.2 % of buys, behind **+17.07 %**, all-ignored **+6.45 %**); buy>=2 kill
+  cover<10 (2.9 % of buys). `alone_in_slot` rank **0.354** low (he avoids it; median 0); leftover
+  PASSES at **0.08 %** slice (12.3 % of buys, behind **+8.71 %**, all-ignored **+2.65 %**, acted
+  ahead **89.9 %** at 83 ms); 115 ms behind peak **+1.59 %**; crowded (`alone_in_slot` <= 0)
+  leftover PASSES at **0.37 %** slice (87.7 % of buys). Seat 83 ms with 115 ms beside it; study
+  fires stop at 09-06 12:00; frame age >= 10 s (P, not E). Do not freeze E. Do not run 7.1 / 7.3
+  / phase 8 on this wide class. Do not AND two views of one family. Age / hold_n / n_seen stay
+  out of E (P). `seed_racer` is a race diagnostic, not E. High fee is unread on the tape; the
+  lake carries `pfee` / `tip`. The mint list is not D. live_return / rotating / pro /
+  first_this_hour / tool_nonce / struct_wal_n / last_side / wal_rotating do not separate.
+  clip_vs_med is a corner. 88887Q / 3Xk2Eu leftover exists under the peak-leftover veto (cost
+  is not a kill). 8dtx2t exclusive leftover is thin (+0.08 / +1.92 / +1.07 %). 9Uq8GV's buy >= 1
+  (peak +4.01 %) and 9999hu's sell >= 1 (peak +12.61 %) pass 5.2 with occupancy red: each waits
+  for a spelled E, behind 8aaRWu. ApfmkS is volume manufacture (derive pick).
+- **9999hu's unread print classes** (mt2 5.2d): beside its sell >= 1, leftover also exists on
+  sell >= 0.5, any sell, buys, an operator structure's print, a structure new to the coin, a
+  burst start, and the nb2 / nb5 / npro / nw5 rising edges. Which of them it actually fires on
+  is unread, so the inventory carries only the sell >= 1 row until 6.1 names one.
+- **Next on 8dtx2t:** its sentence on all its buys (E = clip_step_up, frame age >= 10 s) is red
+  with each term read alone (case file, rows 3-4 .. 8 / 9 "8dtx2t all"). The 6.1 ladder names
+  E = clip_step_up AND step >= 3.5 % (acted share 2.30 %, cover 44.6 %; row "6.1 ladder
+  8dtx2t all"); it passes 5.2 (peak leftover +2.15 %). The money ladder over D, P and X finds
+  no step above chance, and its coins are red under occupancy (-0.91 %): D cannot fix it, E is
+  not spelled (he takes 2.30 %). Next: more 6.1 on this printer (the folds split at depth 2 on a
+  new wallet here vs a build new here). Every toolkit book made before the fix, 8aaRWu's 6.2 and acted-only numbers
+  included, is re-read before it counts.
+- **Re-read under the ladders** (derive 6.1, 10): each verdict a term read alone decided -
+  8aaRWu's 6.1 facts that "do not separate" and its acted share per slice, and its 7.3 D none.
+- **Kills it:** peak leftover <= 0 on the spelled event; a finished 6.1 ladder that names no
+  conjunction above chance; then the money ladder over D, P and X finds no step above chance,
+  walked forward (derive 5.2 is a veto, not a verdict). For 8dtx2t's first position: the
+  re-derived sentence red on the replay's every-day book.
 - **Do not:** copy a fill; fire at buy-minus-L; prefer 8aaRWu's priced burst family over identity;
-  pick seed_racer as E; AND the identity classes or the 6.1 terms as the event; drop four identity
+  pick seed_racer as E; AND two views of one family as the event (one family is one term); drop four identity
   classes because `structure_burst` has the highest 5.1 lift; treat structure_burst / tool as 6.1
-  terms (they do not separate among family prints); kill leftover existence on reaction cost when
-  peak leftover still pays; skip D / jump to phase 8 because occupancy is red; split first-on-mint
-  vs re-entry into two E's when they share the 5.1 class; fit study fires after 09-06 12:00; hunt
-  leftover inside age < 10 s as the prize; pool members; pick ApfmkS (volume-accumulator + bundled
+  terms (they do not separate among family prints); skip `clip_step_up` as a 6.1 term (47.6 % vs
+  28.5 %); kill leftover existence on reaction cost when peak leftover still pays; freeze E /
+  run 7.1 while acted is 0.3 % of the class, 0.5-0.8 % of a this-printer slice, 0.29 % of a
+  named-hash short list, 0.63 % of run_k>=2, 1.8 % of silence-then-K, 1.77 % of 2bu K>=2,
+  0.50 % of 2bu K>=1, 0.50 % of first_here, 0.72 % of buy>=0.5, 0.56 % of buy>=1, or 0.08 % of
+  `alone_in_slot`; treat the
+  before-first-buy slice as D (its-coins occupancy still red); skip D on a spelled E; jump to
+  the acted pool; copy 8dtx2t holders <= 46 onto 8aaRWu; treat a short clock on this red
+  occupancy as the exit (law 26); take 8aaRWu's mint list as D; split first-on-mint vs re-entry
+  into two E's when they share the 5.1 class; fit study fires after 09-06 12:00; hunt leftover
+  inside age < 10 s as the prize; pool members; pick ApfmkS (volume-accumulator + bundled
   TransferChecked; derive pick).
 
 ---
@@ -135,3 +180,4 @@ The number stands; the verdict does not. Each line names what it needs.
 | telegram-first | the smallest deficit measured; still red on money | more measurement |
 | Axiom push | priced at slot +1 with a take profit on a convex book | our seat and a harvester exit |
 | off-chain attention (feed rank, replies, livestream) | not stored at decision time | a data job: store it live; a delayed fetch is not it |
+| the thin-pass line of derive 5.2 (`seat.THIN_PEAK`, +2 % as a flag) | anchors of evidence 1.27: rule 1 +7.46 % pays; sssssw +1.01 % passes 5.2 and is noise at phase 4; passes read thin today: 8dtx2t burst start +0.71 %, its clip_step_up on every position +1.59 % | a calibrated line: peak leftover against the member's later book on members whose fate is known, the way 1.27 set the veto; until then thin is a flag, never a kill |

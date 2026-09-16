@@ -1,4 +1,14 @@
-# Metrics reference — flow groups
+# Metrics: what the engine measures, and how
+
+What every metric means, in what unit, on what time basis and over what window. The ideas that
+use them are [_!___inventory.md](_!___inventory.md); every word is
+[_!___terms.md](_!___terms.md); the numbers they produced are
+[_!___evidence.md](_!___evidence.md); the basis and the laws are
+[_!___strategy.md](_!___strategy.md).
+
+A metric is one quantity, named for what it measures. Its definition is written where it is
+defined in the code and rendered into the UI from that same text, so this file and the code say
+the same thing or one of them is wrong.
 
 Deep-dive for aggregate flow (`m_flow_lifetime` / `m_flow_window`), the crowd counts
 (`m_crowd_window`), build recipes (`m_build_window`), the print's wallet

@@ -19,7 +19,7 @@
 //! inside a clause AND. Entry stays a single object (AND). Optional `entry_event`
 //! is a second AND-object: the completing-print event. `entry_lock: "slot"` fires
 //! that event once per slot; filters in `entry` that fail spend the slot. `scale_out`
-//! stages stay object-form. See `docs/plans/strategies/metrics-reference.md`
+//! stages stay object-form. See `docs/plans/strategies/_!___metrics.md`
 //! (exit DNF / `m_position.armed`) and `docs/plans/strategies/armed-trailing-stop.md`.
 //!
 //! Group objects mix **strict params** (e.g. `window_size_sec`) with **metric

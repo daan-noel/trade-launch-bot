@@ -10,7 +10,7 @@ reference's tickets on the same prints before paper starts.
 
 Governing rules: the finding sets the metric, extend it don't complicate it, one metric ships
 explained once (root `CLAUDE.md`); ONE decision kernel ([arch/strategies.md](../arch/strategies.md));
-the flow-group mechanics ([metrics-reference.md](../plans/strategies/metrics-reference.md)).
+the flow-group mechanics ([_!___metrics.md](../plans/strategies/_!___metrics.md)).
 
 ## 1. The rule the engine implements
 
@@ -77,7 +77,7 @@ fill; a second code (`hot-tape/r1_exact_check.py`) rebuilds every ticket. Frozen
 - 1g. `LagMs` entry leg takes the exit leg's rule. It moves simulate and the grouped sweep; live
   paper books `worst_case` on both legs and is untouched. `lag_*` runs stored before 2026-09-11 price
   the entry on the last buy and do not compare.
-- 1h. `metrics-reference.md`, `fill-and-cost-models.md`, `arch/strategies.md`; unit tests on each
+- 1h. `_!___metrics.md`, `fill-and-cost-models.md`, `arch/strategies.md`; unit tests on each
   group and on the fill; `every_metric_is_live_reachable` reads all 96 metrics.
 
 ### Step 2: done (the rule, authored)

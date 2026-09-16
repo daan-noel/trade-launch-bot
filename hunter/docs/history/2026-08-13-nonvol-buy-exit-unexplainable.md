@@ -48,7 +48,7 @@ mode; the overlay is labelled `∑net`.
 appears with and without a trailing tip transfer and with `Create` vs `CreateIdempotent`,
 four sequences for one behaviour, and a partial list books the rest as organic demand.
 Audit by variant, never by example. That rule now lives in
-[metrics-reference.md](../plans/strategies/metrics-reference.md) *Classifier*. Corollary
+[_!___metrics.md](../plans/strategies/_!___metrics.md) *Classifier*. Corollary
 for the surfaces: any view reporting a decision already taken must classify with the set
 that decision was taken under ([frontend.md](../arch/frontend.md) *Console*), and when an
 exit looks impossible, replay the saved `metric_config` against `trades` before reading
