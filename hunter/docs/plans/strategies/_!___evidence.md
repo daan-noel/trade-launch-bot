@@ -46,6 +46,13 @@ block says otherwise. 83 ms is the measured seat from real fills since 09-01 (1.
 only where a row names it, so that a rule derived before the measurement is not silently re-priced.
 Where both appear, 115 ms is the verdict and 83 ms is the check.
 
+**The tape, by size.** Three print counts appear in this book and they are three frames, not three
+answers about one frame. **11.76 M** prints is the one-week tape 09-01..09-07, which most sections
+read (2.1, 5.4). **12.47 M** is the full print tape behind 1.11. **12.8 M** is the machine-census
+tape behind 5.7. The windows behind the last two are unrecorded. A number is comparable only to
+numbers read on its own tape, so a row that does not name its tape belongs to the one its section's
+frame block names.
+
 **Every column, in one place.** A table here uses these names and no others:
 
 | column | what it holds |
@@ -136,6 +143,13 @@ episodes and reproduced on an independent population.
 Measured on 506 real fills we land a median of **one print** behind the trigger (none at all in
 50 % of fills), while the ingest clock counts 1.6-1.8x that many prints inside 115 ms. On a
 swarm burst the honest fill is behind the swarm, not behind the print.
+
+**The three denominators in this section are three populations, not three answers.** `256` is
+every real buy since 09-01 (`strategy_positions`, `mode = 'real'`, `entry_time >= 09-01`), and 3
+of them never fill. `251` is the subset that matches both a lake print and a trigger print, which
+is what every latency quantile above is read on (`node-derivation/mid-tape/mt_d8_fillcheck.py`).
+The `506` is a third population, and this book does not record which one: treat it as
+unrecorded, and read the prints-behind-trigger number off the 251.
 
 ## 1.2 The cost
 
