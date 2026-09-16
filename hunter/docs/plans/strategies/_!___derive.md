@@ -298,22 +298,14 @@ SCAN this print  (yes / no). Prefer 1, then 2. 3 is a screen, often DELAY = 0.
 NOT a class: price path, windowed flow, named wallet lists, copy of his buy
 ```
 
-| class | meaning |
-| --- | --- |
-| `seller_recent` | public sell; this wallet bought this coin in the last ~30 s |
-| `seller_loss` | public sell; this wallet is underwater on this coin |
-| `buy_after_sells` | public buy after a run of sells |
-| `clip_step_up` | this structure's buy here is larger than its last buy here |
-| `structure_burst` | **this** ix structure silent >= 10 slots on this coin, then it buys |
-| `struct_first_here` | this structure's first print on this coin |
-| `alone_in_slot` | no other print in this slot |
-| `two_struct_slot` | two different structures in this slot |
-| `tool` / `nonce` / `direct` / `operator` | who sent it (`build` -> template from lake `ix_labels`) |
-| `seed_racer` | diagnostic only: if he follows it, it is a race |
+Every class above is defined once, with the code that computes it, in
+[_!___terms.md](_!___terms.md) under "Print classes a study fires on". Read it before scanning:
+several are easy to take loosely and each has an exact test.
 
-`burst_start` is the **coin** quiet ~400 ms, then any buy. `structure_burst` names **whose**
-silence. A named list of structures he follows is a thermometer: if it spikes, the public
-class is the **type** of those structures, never the list.
+The two that are confused most often: `burst_start` is the **coin** quiet ~400 ms, then any buy at
+all, while `structure_burst` names **whose** silence broke - one ix structure's. A named list of
+structures he follows is a thermometer: if it spikes, the public class is the **type** of those
+structures, never the list.
 
 If a priced class and an identity class both spike, **identity is the candidate**. Score
 every spike that covers >= 10%, not only the loudest priced one. The loudest is often

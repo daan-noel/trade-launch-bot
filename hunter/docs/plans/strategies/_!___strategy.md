@@ -92,8 +92,9 @@ by construction. Four things are **not** in the price, and they are the only raw
 
 **2. We are 115 ms late.** Deciding to filled is 115 ms. An edge used up inside that window is
 closed to us forever, however much it pays its owner. An edge that plays out over seconds and
-minutes is fully open. This is why copying a smart wallet can never work: their buy and the swarm
-behind it are in the price before we can act.
+minutes is fully open. This is why copying a smart wallet's **fill** can never work: their buy and
+the swarm behind it are in the price before we can act. Their **decision** is a separate question,
+asked at a different seat (5.4, 7.2), and it is where every live rule comes from.
 
 **3. The toll.** 3.2-4 % a round trip. A rule that is only slightly right still loses.
 
@@ -122,7 +123,7 @@ Six parts, always tested together:
 
 **Testing one part alone always fails**, because on its own we are still buying thousands of
 random dying coins. So a red number means *this sentence is red*, and the first question is which
-part was left empty. Write all six down every time, or that question cannot be asked.
+part is empty. Write all six down every time, or that question cannot be asked.
 
 ## How a dead story produces the next one
 
@@ -186,7 +187,7 @@ own realised break-even**, never against a fixed percentage carried over from an
 ## 1.3 There are two selection problems, not one
 
 ```
-   P-selection : which coin goes UP         - worked for two months, all red
+   P-selection : which coin goes UP         - two months of work, every sentence red
    L-selection : which coin goes to -50 %   - ANSWERED: predictable from the launch bundle
 ```
 
@@ -216,8 +217,8 @@ conjunction term is supposed to look like.
 
 **A second L-term is independent of it and stronger.** How many of the solo 26 are already in the
 coin at our decision print cuts the -50 % rate to a **0.37 lift**, against **0.82** for
-activity-matched random wallets and **0.98** for the ten roster wallets that failed the profit
-cut - and it reads the same outside the window the roster was selected on, so it is judgement
+activity-matched random wallets and **0.98** for the ten roster wallets under the profit
+cut - and it reads the same outside the roster's own selection window, so it is judgement
 rather than circularity. Stacked with the bundle term it turns a -14.62 %/trade population into
 **+3.86 %/trade** (evidence 6.8). Agreement is a gate on the LOSS only: firing *after* they land
 is still -10.4 %/trade, because their impact is already in the price.
@@ -526,7 +527,7 @@ trade to about zero. It buys "this coin is not decaying" - worth roughly the tol
 sixteen terms, one week, two event families, one clip. It does not cover the door slot, the
 L-selection on a book that has a left tail, state-conditional exits, or the survival door against the burst-start print.
 
-## 4.5 Why the split exists
+## 4.5 Why survival is predictable and a spike is not
 
 Survival is a property of the dev's **intent and equipment**, and intent is visible before it
 acts: a launch build, a presentation, several independent operators committing. A spike is a
@@ -670,7 +671,7 @@ exit family.
 - **Silence freezes price.** A coin with no prints during the hold exits at the entry reserve less
   the toll. Booking it at -100 % invents a loss the curve cannot produce and always flatters gates
   that select for activity. Measured cost of getting this wrong once: an 85 pp effect manufactured
-  out of nothing where the honest number was about 2 pp.
+  out of nothing where the honest number is about 2 pp.
 - **An exit needs no print.** Migration is the one exception, about 0.02 % of the corpus.
 - **Windowed flow on a curve is the price move** (corr 0.975-0.982 at 5/15/60 s). Net flow, buy
   share and their conjunctions add nothing. Only **counts and machine identity** are orthogonal
@@ -683,7 +684,7 @@ exit family.
 
 ## 7.2 The seat
 
-Section 1.5 is the law. Four corollaries:
+Section 1.5 is the law. Seven corollaries:
 
 - **A latency correction applied to one leg is not a latency correction.** The exit reaction is
   the same reaction as the entry, and the exit-leg artifact is the larger of the two.
@@ -765,8 +766,8 @@ Section 1.5 is the law. Four corollaries:
     that client's book**; the client gate is [_!___derive.md](_!___derive.md) 11.
 19. **A per-day gate is checked per day.** The ticket floor is a refusal on each day, and a
     mean hides exactly the shape that breaks it: tickets of `16, 177, 210, 24, 28, 9` average
-    53.9 and clear fifty twice in six days. Because the two big days are the days the single
-    carrying client was alive (law 18), the mean **launders the client concentration through the
+    53.9 and clear fifty twice in six days. Because those two big days are the single carrying
+    client's own lifetime (law 18), the mean **launders the client concentration through the
     floor** - two failures cancelling into an apparent pass. The gate: derive 11.
 20. **A term must be spellable without a wallet.** If it can only be written as "these named
     wallets did something", it is not a term, however well it measures. It stays a thermometer.
@@ -791,7 +792,7 @@ Section 1.5 is the law. Four corollaries:
 
 24. **An exit family is causal only if every branch is decided in INDEX order.** The common bug is
     a cut whose liveness depends on whether some other branch fires LATER in the window - "close
-    at 30 s unless the position ever reaches +30 %" keeps exactly the tickets that were going to
+    at 30 s unless the position ever reaches +30 %" keeps exactly the tickets that go on to
     work. Measured cost of that one bug here: **+8.30 %/trade against a true -2.38 %**, on a
     held-out half, 8/8 days, with every robustness column green. A rung, a stop, a clock and a
     trail must each resolve to an index, and the smallest index wins.
@@ -855,7 +856,9 @@ the worst day, not on expectancy alone.
 **Days positive is necessary and not sufficient.** Report **tail concentration** beside it: the
 share of net from the top 1 % of trades and from the single largest coin, against the measured
 calibration that a real convex book at this seat sits at **9-12 %**. If one coin carries the
-result, that is the result.
+result, that is the result. That 9-12 % is the calibration, not the bar: a cell stays a candidate
+at **<= 20 %** and ships at **<= 15 %** (derive 11). A share far above 20 % is noise around zero,
+not a fat tail.
 
 **Never thin the book below about 50 first-per-mint trades a day.** That floor is a refusal, not a
 target, and it is absolute rather than a fraction of the pool.
@@ -872,7 +875,7 @@ whitelists do not.**
 
 # 8. OPEN AND CLOSED
 
-Every line names the slot that was empty when it was measured. See
+Every line names the slot left empty at measurement. See
 [_!___evidence.md](_!___evidence.md) for the coordinate and the numbers.
 
 ## 8.1 Closed by a measured mechanism - these stay closed
@@ -885,7 +888,7 @@ Every line names the slot that was empty when it was measured. See
 | booking a silent exit at -100 % | the curve freezes price |
 | pricing a fill from the next print | an ordering privilege no latency buys |
 | charging impact on the real reserve | arithmetic |
-| the exit-fill inversion on the 30-day door rules | break-even sits under 50 ms; the apparent edge was the exit fill |
+| the exit-fill inversion on the 30-day door rules | break-even sits under 50 ms; the apparent edge is the exit fill |
 | supervised models on about 40 tape features | fit/hold collapse, reproduced by the conjunction walk-forward |
 | machine cadence as a signal | forward arrivals equal a matched control; a random print beats a confirmation print |
 | the 1,212-wallet oracle as a second door | it saturates 89-98 % of the parent |

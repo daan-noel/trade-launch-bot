@@ -54,7 +54,8 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | term | meaning |
 | --- | --- |
 | **ix structure** | The ordered instruction list of a buy or sell transaction. Order and repeats count. It is how a print was sent, and it identifies the software that sent it. |
-| **core ix structure** | An ix structure without token-account create/close and memo, plus whether fee_payer = wallet. The key when counting distinct ix structures, unless a row says otherwise. |
+| **core ix structure** | An ix structure with token-account create/close and memo dropped, then hashed. The key when counting distinct ix structures, unless a row says otherwise. The engine computes it as `build_hash` (`flow_ix.rs`), the studies as `build_core` (`toolkit/lake_export.py`), and the two partition every label sequence identically. Both layers carry it in a column named `build`, and [_!___metrics.md](_!___metrics.md) names it a **recipe**: three spellings, one key. The payer is not in it. |
+| **machine** | The software that sent a print, named by its ix structure and never by its wallet - a router puts many traders behind one wallet, so the wallet is not an identity. Used two ways, and a count says which: loosely, the software (the instruction names and their order); strictly, the **core ix structure plus the fee_payer**, which separates two operators running the same software. A count of independent machines uses the strict key. |
 | **creation ix structure** | The instruction list of the transaction that creates the coin. It always holds a Create, so it never equals a trade ix structure. |
 | **creation fingerprint** | A creation ix structure plus optional launch params (creator's first buy, first-slot buy, max cost, priority/tip fee, CU limit). Coins that share one form a **launch group**. |
 | **app** | The program a buy goes through: the first program past compute budget, system, token, associated-token and memo. Coarser than an ix structure: one app sends many of them. |
@@ -105,6 +106,30 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | **size (S)** | The clip we buy. |
 | **up door / loss door** | A door that picks coins that go up / a door that removes coins that go to -50 %. |
 | **booked** | A number that a study fixed and a shipped rule now carries. It is not re-fitted casually: changing it changes what ships. |
+| **sentence** | One complete rule: a filling for each of the six slots, empty included. It is the unit everything is measured on, so a red number closes one sentence and never a slot. |
+| **term** | One clause of a sentence: a single fact cut at one value, on one side. A term is never read alone - only inside the sentence it sits in. |
+| **parent** | The sentence a search starts from, with the fillings already fixed. A search adds terms to a parent; a new event or a new instrument is a new parent, not a deeper search. |
+| **coordinate** | Which sentence a number belongs to, written as all six slots. A number without one cannot be checked or reused. |
+| **cell** | One sentence booked on one tape: the row of numbers a walk produces. |
+
+### How an exit is written
+
+An exit is a family plus its settings, written as one string. `tp` is a take profit, `sl` a stop,
+`trail` the give-back from the best price reached during the hold, `c` (or `cap`) the clock in
+seconds from our fill, and **arm** what the position must first be up before a trail or a ride can
+fire at all. Every percentage is against our own entry price.
+
+| written | what sells the position |
+| --- | --- |
+| `clock 45` | 45 s after our fill, whatever the price. Nothing else fires. |
+| `trail40 c600` | A give-back of 40 % from the best price in the hold, or the clock at 600 s. |
+| `tp10 / sl25 / 60 s` | The **bracket**: take profit at +10 %, stop at -25 %, clock at 60 s. |
+| `tp100 / trail50 / c1200` | Take profit at +100 %, else a 50 % give-back, else the clock at 1200 s. |
+
+Every branch resolves to a print index and the smallest index wins, so a written exit reads as
+"whichever of these lands first". An **unarmed** trail has no arm gate and can fire from the start;
+an **armed** one sleeps until the position is up by its arm, which leaves the position with no exit
+but the clock underneath it unless a stop is set there.
 
 ## Words the method uses
 
@@ -127,11 +152,31 @@ These say how an idea is judged. The method itself is [_!___derive.md](_!___deri
 | **ship bar** | The fixed list a rule must clear before it trades real money, written before the run that tests it. |
 | **book** | What a rule earned over a set of days, at our seat, with every cost in it. |
 | **top 1 %** | How much of a book comes from its single best trade. A book carried by one ticket is not a rule. |
+| **body** | A book with its top 1 % of tickets removed. It says whether a rule pays without its luckiest trades. |
+| **RACE / PEER / FOLLOW** | Three seats, by where our fill lands against the trader's own buy: RACE just before it (does **his decision** pay?), PEER beside it, FOLLOW 115 ms after it (a copy of **his fill**). FOLLOW red is expected and closes nothing; only RACE answers whether the decision is worth copying. |
+| **DELAY** | The gap between a public print and the SOL that print promises. It is the whole edge: when the tell and the money land together there is no trade at any seat, and that is the one failure that kills a story outright. |
+| **episode** | One round trip: a first buy while flat, through to the sell that takes the position to 2 % or less of its peak. For a coin rather than a trader, a trough-to-peak leg closed when price retraces 20 % from the peak. |
+| **big / playable episode** | Big is an episode that reaches **+100 %**. Playable is a big one that is not an age-0 launch ramp, so it is still running when our fill lands: the median runs **87 s**, which is what harvester exits are designed against. |
+| **lift** | How much more often something happens where a rule fires than where it does not. A lift of 2 is twice the base rate. High lift over a tiny slice is a corner, not a logic. |
+| **oracle** | A number computed with hindsight to bound a slot - the best a perfect door or a perfect exit could reach. It says how much room the slot has. It never says a rule can get there. |
+| **client** | The unit a book's trades actually arrive in, because trades are not independent draws: the launch group behind a door sentence, the machine behind a trader-node sentence, the coin behind an event-only sentence. A book that dies when its best client leaves is that client's book, not a rule. |
+| **ticket floor** | The refusal that a sentence prints at least 50 first-per-mint trades on **every** day. It is a floor, never a target, and a mean across the days hides exactly the shape it exists to catch. |
+| **harvester / scalper / grinder** | Three shapes of book, by what each lives on. A harvester takes a slice of a real up-move over tens of seconds - the target here. A scalper takes 1-2 s pops. A grinder takes many small wins that one bad trade erases. |
 
-## Words we do not use
+## One thing, several names
 
-recipe, trade-ix, build, machine, client, professional, or a bare "racer" (say seed racer or
-nonce buyer). Where the code uses one of these, the doc still says the word above.
+The engine, the studies and these files grew their own spellings for the same key. A rebuilder
+meets all of them, so each is recorded here rather than banned. Prose prefers the left column.
+
+| the word here | also written | where the other spelling comes from |
+| --- | --- | --- |
+| **core ix structure** | recipe, build, `build_hash`, `build_core` | the engine's metric name and both layers' column name |
+| **operator structure** | professional build, pro, `is_pro` | the launch-door studies |
+| **machine** | - | defined above: the software, or strictly that structure plus its fee_payer |
+| **creation ix structure** | creation build | the creation-side studies and the client gate |
+
+Two spellings are not kept. Say **ix structure**, never "trade-ix"; say **seed racer** or **nonce
+buyer**, never a bare "racer" - the bare word hides which of the two opposite signals is meant.
 
 ---
 
@@ -237,3 +282,7 @@ All are public prints only.
 | `buy_after_sells` | A buy that directly follows two or more public sells in a row. | `toolkit/trigger.py:190` |
 | `seller_recent` | A sell by a wallet that last bought this coin 30 seconds ago or less. | `toolkit/trigger.py:183` |
 | `seller_loss` | A sell by a wallet that is under its average cost on this coin. | `toolkit/trigger.py:184` |
+| `burst_start` | A buy at least 0.4 s after the **coin's** previous print, whoever made it. It names the coin's silence; `structure_burst` names one ix structure's. | `toolkit/trigger.py:229` |
+| `tool` `nonce` `direct` | Who sent the print, read off its ix structure: a public trading app, a pre-signed nonce transaction, or a direct call to the venue. | `toolkit/trigger.py:73` |
+| `pro` | A print from an **operator structure**: its core ix structure has 200 or more prints this week from 50 or fewer wallets. | `toolkit/trigger.py:64` |
+| `seed_racer` | A print from a **seed racer**. Diagnostic only: a trader who follows one is in a race, which is a reason to look elsewhere, not an event to fire on. | `toolkit/trigger.py:73` |
