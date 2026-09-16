@@ -4,7 +4,9 @@ Each module answers one phase of [../../_!___derive.md](../../_!___derive.md); t
 is that phase. They are generic: a node is named by its roster label, a member by its address
 prefix, a trigger by a function over a coin's facts. Rule 1 runs on them
 ([../hot-tape/](../hot-tape/README.md)) and `hot-tape/toolkit_check.py` re-runs the trigger, seat,
-contrast and hazard steps next to the recorded numbers.
+contrast and hazard steps next to the recorded numbers. Every fact these modules compute is
+named, in plain words and with the line it is computed at, under "Study code names" in
+[../../_!___terms.md](../../_!___terms.md).
 
 ```python
 import sys; sys.path.insert(0, "<path to node-derivation>")
