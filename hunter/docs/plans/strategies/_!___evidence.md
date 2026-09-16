@@ -51,7 +51,10 @@ answers about one frame. **11.76 M** prints is the one-week tape 09-01..09-07, w
 read (2.1, 5.4). **12.47 M** is the full print tape behind 1.11. **12.8 M** is the machine-census
 tape behind 5.7. The windows behind the last two are unrecorded. A number is comparable only to
 numbers read on its own tape, so a row that does not name its tape belongs to the one its section's
-frame block names.
+frame block names. Eight sections carry money with no frame block - 1.1, 1.2, 1.4, 3.4, 4.1, 5.1,
+5.2, 5.5, plus section 1 from 1.5 on, which reads rule 1 and takes its coordinate from the section 7
+ledger. Each of those names its population and its script in prose, and its window is unrecorded:
+read two of them against each other only where they name the same population.
 
 **Every column, in one place.** A table here uses these names and no others:
 
