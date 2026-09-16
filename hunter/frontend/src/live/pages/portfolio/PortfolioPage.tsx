@@ -614,6 +614,9 @@ export function PortfolioPage() {
         defaultSort={{ col: 'pnl', dir: 'desc' }}
         tableId="portfolio-by-rule"
         pinnable
+        // `tableRows` is filtered by the "Show only decaying" toggle above,
+        // outside the table's own state.
+        resetKey={effectiveDecayOnly ? 'decay' : 'all'}
         emptyMessage={
           effectiveDecayOnly
             ? 'No decaying rules in this window.'

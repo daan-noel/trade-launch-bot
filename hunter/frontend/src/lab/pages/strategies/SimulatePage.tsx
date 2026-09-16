@@ -678,6 +678,9 @@ export function SimulatePage() {
         pinnable
         searchable
         tableId="simulate-rules"
+        // `visibleRules` is pre-filtered by the mode/tag pickers and the
+        // disabled-rules toggle above, outside the table's own state.
+        resetKey={`${modeFilter}|${tagFilter.include.join(',')}|${tagFilter.exclude.join(',')}|${showDisabled}`}
         emptyMessage={
           enabledRules.length > 0
             ? 'No rules match the current mode / tag filters.'

@@ -1238,6 +1238,13 @@ export function RulesView({
         colFilters
         tableId="strategy-rules"
         pinnable
+        // `visibleRules` is pre-filtered by the tag/mode pickers and the
+        // disabled-rules toggle above — none of which the table's own
+        // search/sort/col-filter state sees. Without this, flipping one of
+        // them leaves the table on whatever page it was on, which can show a
+        // stale, out-of-range, or (once the set grows back) suddenly-jumped
+        // page instead of resetting to page 1 like every other filter change.
+        resetKey={`${rowModeFilter}|${tagFilter.include.join(',')}|${tagFilter.exclude.join(',')}|${showDisabled}`}
         emptyMessage={
           enabledRules.length > 0
             ? 'No rules match the current mode / tag filters.'

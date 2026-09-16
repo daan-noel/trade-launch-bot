@@ -287,10 +287,12 @@ interface DataTableProps<R> {
   onQueryChange?: (q: TableQuery) => void;
   loading?: boolean;
   /**
-   * Server mode only: change this whenever an *external* control that affects
-   * the result set changes (e.g. a parent-owned global filter panel). The table
-   * snaps back to page 1 and re-emits, exactly as it does for its own
-   * search/sort/filter changes.
+   * Change this whenever an *external* control that affects the result set
+   * changes — a parent-owned global filter panel, or `rows` itself being
+   * pre-filtered by something outside the table (a tag/mode picker, a cohort
+   * switch). The table snaps back to page 1, exactly as it does for its own
+   * search/sort/filter changes; in server mode it also re-emits the query.
+   * Works in both client and server mode.
    */
   resetKey?: string | number;
   /** Optional extra className(s) applied to each data row's `<tr>`. Useful for
@@ -749,8 +751,8 @@ export function DataTable<R>({
     [debouncedColFilters],
   );
   const clientResetSig = useMemo(
-    () => `${debouncedSearch}|${debouncedColFiltersSig}|${sortKeysSig}|${pageSize}`,
-    [debouncedSearch, debouncedColFiltersSig, sortKeysSig, pageSize],
+    () => `${resetKey ?? ''}|${debouncedSearch}|${debouncedColFiltersSig}|${sortKeysSig}|${pageSize}`,
+    [resetKey, debouncedSearch, debouncedColFiltersSig, sortKeysSig, pageSize],
   );
   const prevClientResetSig = useRef<string | null>(null);
   useEffect(() => {

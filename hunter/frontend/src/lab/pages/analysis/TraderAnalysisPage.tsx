@@ -824,6 +824,10 @@ Not queried: a wallet cannot compare against itself, and the read takes the firs
           loading={isFetching}
           groupLabels={COLUMN_GROUP_LABELS}
           tableId="trader_analysis_tokens"
+          // `rowsForTable` is narrowed by the co-trade depth/bucket controls,
+          // the pre-entry probe, and the focus lens chips — all outside the
+          // table's own state.
+          resetKey={`${coOnly}|${coFocus ?? ''}|${coMinEff}|${coBuckets.join(',')}|${probe.on}|${probe.show}|${JSON.stringify(focus)}`}
           highlightWallet={query.wallet}
           compareWallets={query.with}
           titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}

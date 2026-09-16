@@ -388,6 +388,18 @@ export function BarTradesPanel({
         hoverable
         rowClassName={rowClassName}
         emptyMessage={emptyMessage}
+        // `trades` is a fresh selection every time the host's chart click/drag
+        // (or `external`) changes — outside this table's own state — so a new
+        // selection must not inherit the previous one's page.
+        resetKey={
+          external
+            ? `x:${external.label}|${external.timeLabel}`
+            : range
+              ? `r:${range.groupMode}:${range.lo}-${range.hi}`
+              : bar
+                ? `b:${bar.groupMode}:${bar.barTime}:${bar.slot ?? ''}`
+                : 'none'
+        }
       />
     </div>
   );

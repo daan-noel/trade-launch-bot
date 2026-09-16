@@ -1242,6 +1242,11 @@ export function ConsolePage() {
             rows={attentionRows}
             rowKey={openPositionRowKey}
             tableId="console-attention"
+            // `attentionRows` is filtered by the Paper/Real mode toggle above,
+            // outside the table's own search/sort/filter state — without this
+            // the table can strand pagination on a page that no longer exists
+            // once the mode flip shrinks the row set.
+            resetKey={modeFilter}
             emptyMessage="Nothing needs attention."
             selectedKey={selectedKey}
             onSelect={(key) => {
@@ -1282,6 +1287,9 @@ export function ConsolePage() {
             useRowChartFlowPatternSource={useOpenRowFlowPatternSource}
             renderChartCardExtra={openChartCardExtra}
             tableId="console-open"
+            // `openRows` is filtered by mode, the scoped-rule chip, and the
+            // status chip — all outside the table's own state.
+            resetKey={`${modeFilter}|${ruleParam ?? ''}|${statusFilter ?? ''}`}
             emptyMessage="No open positions."
             selectedKey={selectedKey}
             onSelect={(key) => {
@@ -1443,6 +1451,8 @@ export function ConsolePage() {
             useRowChartFlowPatternSource={useWaitingRowFlowPatternSource}
             renderChartCardExtra={waitingChartCardExtra}
             tableId="console-waiting"
+            // `waitingRows` is filtered by mode + the scoped-rule chip.
+            resetKey={`${modeFilter}|${ruleParam ?? ''}`}
             emptyMessage="No armed (waiting) rules."
             selectedKey={selectedKey}
             onSelect={(key) => {
