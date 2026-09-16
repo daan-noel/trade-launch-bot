@@ -154,6 +154,116 @@ describe('the help text speaks the registry vocabulary', () => {
     }
   });
 
+  it('names no metric the registry does not declare, inside the prose too', () => {
+    // The key check above is not enough: `ix_count` and `prior_launches` survived in
+    // m_state's BODY for months after they moved to the fingerprint axes, because
+    // nothing read the prose. Any snake_case token in a tip has to be registry
+    // vocabulary - a metric, a group, a strict param or a fingerprint-config field -
+    // or an English phrase listed here on purpose.
+    // Strict params and config keys are mostly named through constants, so harvest the
+    // constant VALUES across the metrics modules rather than the identifiers.
+    const params = new Set(
+      Object.values(
+        import.meta.glob('../../../../../engine/src/metrics/*.rs', {
+          eager: true,
+          query: '?raw',
+          import: 'default',
+        }),
+      ).flatMap((src) =>
+        [...(src as string).matchAll(/const\s+[A-Z_0-9]+:\s*&str\s*=\s*"([a-z_]+)"/g)].map(
+          (m) => m[1],
+        ),
+      ),
+    );
+    const fpFields = new Set(
+      [...rust.matchAll(/FpConfigFieldSpec\s*\{[\s\S]*?\bname:\s*"([a-z_]+)"/g)].map((m) => m[1]),
+    );
+    // Fingerprint axes are vocabulary too - a tip may send a reader to `ix_count` or
+    // `prior_launches`, as long as it does not call them metrics. Read from the axis
+    // table so the list cannot drift.
+    const axisRust = Object.values(
+      import.meta.glob('../../../../../engine/src/fingerprint/axis.rs', {
+        eager: true,
+        query: '?raw',
+        import: 'default',
+      }),
+    )[0] as string;
+    const axes = new Set([...axisRust.matchAll(/\bkey:\s*"([a-z_]+)"/g)].map((m) => m[1]));
+    // Words that are prose, not vocabulary: lake columns, on-chain field names and the
+    // window params the strict-param specs name through constants.
+    const PROSE = new Set([
+      'ix_labels',
+      'ix_patterns',
+      'cu_limit',
+      'cu_price',
+      'tip_lamports',
+      'window_size_sec',
+      'window_lag',
+      'after_age_sec',
+      'take_profit',
+      'stop_loss',
+      'creator_wallet',
+      'first_slot',
+      'tx_index',
+    ]);
+    const known = (w: string) =>
+      metrics.has(w) || groups.has(w) || params.has(w) || fpFields.has(w) || axes.has(w) ||
+      PROSE.has(w);
+
+    for (const [key, text] of bodies()) {
+      for (const [word] of text.matchAll(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g)) {
+        if (word.startsWith('m_') || word.endsWith('_*') || word.includes('*')) continue;
+        expect(known(word), `${key} names ${word}, which the registry does not declare`).toBe(true);
+      }
+    }
+  });
+
+  it('lists only its own metrics as a group tip bullet', () => {
+    // The exact shape of the bug: m_state's tip carried "• ix_count — instructions in
+    // the CREATION transaction", a bullet reading as a metric of that group, for an
+    // axis that had moved out. A bullet in a GROUP_HELP body is a claim of membership.
+    const byGroup = new Map<string, Set<string>>();
+    for (const block of rust.split(/GroupSpec\s*\{/).slice(1)) {
+      const g = block.match(/^\s*[\s\S]*?\bname:\s*"(m_[a-z_]+)"/)?.[1];
+      if (!g) continue;
+      byGroup.set(
+        g,
+        new Set([...block.matchAll(/MetricSpec\s*\{[\s\S]*?\bname:\s*"([a-z_]+)"/g)].map((m) => m[1])),
+      );
+    }
+    for (const [group, tip] of Object.entries(GROUP_HELP)) {
+      const set = byGroup.get(group);
+      if (!set) continue;
+      for (const [, name] of tip.body.matchAll(/^[•*-]\s+([a-z][a-z0-9_]*)\s+[—-]/gm)) {
+        expect(set.has(name), `${group}'s tip bullets ${name}, which it does not declare`)
+          .toBe(true);
+      }
+    }
+  });
+
+  it('attaches a metric to the group that actually declares it', () => {
+    // `m_group.metric` in a tip is a promise about where that metric lives. A metric
+    // moved between groups leaves the old spelling readable and wrong.
+    const byGroup = new Map<string, Set<string>>();
+    for (const block of rust.split(/GroupSpec\s*\{/).slice(1)) {
+      const g = block.match(/^\s*[\s\S]*?\bname:\s*"(m_[a-z_]+)"/)?.[1];
+      if (!g) continue;
+      byGroup.set(
+        g,
+        new Set([...block.matchAll(/MetricSpec\s*\{[\s\S]*?\bname:\s*"([a-z_]+)"/g)].map((m) => m[1])),
+      );
+    }
+    for (const [key, text] of bodies()) {
+      for (const [, group, metric] of text.matchAll(/\b(m_[a-z_]+)\.([a-z][a-z0-9_]*)\b/g)) {
+        const set = byGroup.get(group);
+        if (!set) continue; // the group check above owns an unknown group name
+        if (!metrics.has(metric)) continue; // a config field or param, not a metric
+        expect(set.has(metric), `${key} puts ${metric} in ${group}, which does not declare it`)
+          .toBe(true);
+      }
+    }
+  });
+
   it('teaches no retired metric name', () => {
     // Prefixes, not whole words: `vol_buy` and `nonvol_gross` are each a family.
     // Kept explicit rather than derived — a name is retired by a decision, and the
