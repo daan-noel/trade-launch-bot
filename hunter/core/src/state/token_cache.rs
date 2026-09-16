@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +22,12 @@ use crate::wallet_interner::WalletInterner;
 /// `config::constants` (single-source with the seed cap) and re-exported here so
 /// the long-standing `state::token_cache::MAX_TRADES_RETAINED` path keeps working.
 pub use crate::config::constants::MAX_TRADES_RETAINED;
+
+/// Trade appends and, of those, the ones that deep-copied the retained buffer
+/// because a reader held a snapshot `Arc` (see [`TokenState::push_trade_capped`]).
+/// Reset and logged by the eviction sweep, so the pair reads as a per-window rate.
+static TRADE_BUFFER_APPENDS: AtomicU64 = AtomicU64::new(0);
+static TRADE_BUFFER_COPIES: AtomicU64 = AtomicU64::new(0);
 /// Trim only once the window overruns the cap by this much, so the front-drain
 /// runs at most once per `TRADES_TRIM_SLACK` trades instead of on every push.
 pub const TRADES_TRIM_SLACK: usize = 1_000;
@@ -637,8 +644,16 @@ impl TokenState {
     /// the number trimmed so the exit memo's absolute cursor stays valid.
     pub fn push_trade_capped(&mut self, trade: CachedTrade) {
         // `make_mut` mutates in place when we hold the only reference (the common
-        // hot-path case); it copies once only if an API reader is still holding a
-        // snapshot Arc from a concurrent request.
+        // hot-path case); it copies once only if a reader is still holding a
+        // snapshot Arc — an API request, the decision loop's producer, or a paper
+        // fill poller. That copy is up to `MAX_TRADES_RETAINED + TRADES_TRIM_SLACK`
+        // entries wide and runs on the ingest task, which shares the box's two
+        // workers with the send path, so count it: an unexpectedly high share means
+        // the readers hold their snapshots across the append.
+        if Arc::strong_count(&self.trades) > 1 {
+            TRADE_BUFFER_COPIES.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+        TRADE_BUFFER_APPENDS.fetch_add(1, AtomicOrdering::Relaxed);
         let trades = Arc::make_mut(&mut self.trades);
         trades.push(trade);
         let len = trades.len();
@@ -897,11 +912,18 @@ where
             token_cache.remove(mint);
         }
 
+        let appends = TRADE_BUFFER_APPENDS.swap(0, AtomicOrdering::Relaxed);
+        let copies = TRADE_BUFFER_COPIES.swap(0, AtomicOrdering::Relaxed);
         info!(
-            "TokenCache eviction: dropped {} token(s) (dead or >{}s quiet, no open position); {} remain",
-            stale.len(),
-            TOKEN_CACHE_EVICT_IDLE_SECONDS,
-            token_cache.len()
+            dropped = stale.len(),
+            idle_secs = TOKEN_CACHE_EVICT_IDLE_SECONDS,
+            remain = token_cache.len(),
+            trade_appends = appends,
+            // Appends that deep-copied the whole retained buffer because a reader
+            // held a snapshot. Copy-free is the healthy state; a large share is
+            // ingest paying for readers that hold their `Arc` across the append.
+            buffer_copies = copies,
+            "TokenCache eviction: dropped token(s) (dead or quiet, no open position)"
         );
     }
 }

@@ -416,7 +416,7 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     // already holds.
     let reuse_account = match order.token_account.as_deref() {
         Some(a) => std::str::FromStr::from_str(a).ok(),
-        None => resolve_sibling_account(&deps, &wallet, &order.mint)
+        None => resolve_sibling_account(&deps, &wallet, &order.mint, order.pg_id)
             .await
             .and_then(|a| std::str::FromStr::from_str(&a).ok()),
     };
@@ -488,6 +488,11 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             anchor_ms = stages.map(|s| s.anchor_ms),
             send_ms = stages.map(|s| s.send_ms),
             sig = submit.as_ref().and_then(|r| r.as_ref().ok()).map(|b| b.signature.as_str()),
+            // The feed's newest slot at the ACK. `entry_slot - ack_slot` is the
+            // inclusion gap — slots between the chain state we sent against and the
+            // block that took the tx — which `entry_slot - target_slot` cannot give
+            // (it also contains however long the rule waited for its trigger).
+            ack_slot = deps.trade_signals.latest_feed_slot(),
             send_ok = matches!(submit, Some(Ok(_))),
             "snipe_latency"
         );
@@ -585,8 +590,13 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
 /// **Skipped entirely unless the trader has already resolved an account for this
 /// mint in-process.** That check is a pure in-memory read, so the snipe path — a
 /// mint nobody has touched — pays nothing and reaches the send with no DB round
-/// trip. Only a re-buy into an already-traded mint pays the (indexed, local) query,
-/// and that is never the latency-critical case.
+/// trip.
+///
+/// A re-buy into an already-held mint IS on the send path, though (92 of 181
+/// same-mint repeat entries in the 14 days to 2026-09-15 had the first fill already
+/// landed), so the live registry answers first and PG is only the fallback for a row
+/// this process does not hold — a position adopted by another process, or one whose
+/// account was recorded before a restart the registry has not re-adopted.
 ///
 /// Best-effort by design, never load-bearing: a cold cache after a restart, or a
 /// sibling that settles and reclaims the account inside this window, just means the
@@ -596,8 +606,13 @@ async fn resolve_sibling_account(
     deps: &RealExecDeps,
     wallet: &str,
     mint: &str,
+    exclude_pg: uuid::Uuid,
 ) -> Option<String> {
     deps.trader.cached_token_account(mint)?;
+    if let Some(acct) = deps.registry.sibling_token_account(mint, exclude_pg) {
+        info!(mint = %mint, account = %acct, "re-buying into the account a live sibling holds");
+        return Some(acct);
+    }
     match deps.strategy_repo.find_reusable_token_account(wallet, mint, "real").await {
         Ok(Some(acct)) => {
             info!(mint = %mint, account = %acct, "re-buying into the account this mint is already held in");

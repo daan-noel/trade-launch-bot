@@ -272,6 +272,8 @@ impl IngestConsumer {
     }
 
     async fn on_trade(&self, e: IlTrade, _persist_raw: bool) {
+        // The feed's own clock, for the send path's `ack_slot` (one relaxed atomic).
+        self.trade_signals.observe_slot(e.slot);
         let mint = e.mint.clone();
         let wallet = e.wallet.clone();
 

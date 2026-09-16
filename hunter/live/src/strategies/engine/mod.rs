@@ -618,6 +618,26 @@ impl PositionRegistry {
         self.by_id.iter().any(|e| e.value().mint == mint)
     }
 
+    /// The token account a live position on this mint already holds, ignoring
+    /// `exclude_pg` (the buying position itself).
+    ///
+    /// The in-memory twin of `StrategyRepo::find_reusable_token_account`: both
+    /// answer "does a non-terminal position on this (wallet, mint) already have an
+    /// account to re-buy into", and this registry holds exactly those positions
+    /// (boot adoption re-populates it across a restart). Reading it here keeps a PG
+    /// round trip off the send path — that query runs on a re-buy into a mint we
+    /// already hold, ~a quarter of real entries. The PG read stays as the fallback
+    /// for a row this process does not hold.
+    pub fn sibling_token_account(&self, mint: &str, exclude_pg: Uuid) -> Option<String> {
+        self.by_id
+            .iter()
+            .find(|e| {
+                let m = e.value();
+                m.mint == mint && m.pg_id != exclude_pg && m.token_account.is_some()
+            })
+            .and_then(|e| e.value().token_account.clone())
+    }
+
     /// Drop a closed position (called on a terminal `PositionUpdate`).
     pub fn remove(&self, id: PositionId) {
         if let Some((_, meta)) = self.by_id.remove(&id) {
@@ -821,5 +841,58 @@ mod exit_mint_lock_tests {
         drop(held);
         assert!(guards.exit_mints.is_empty(), "pruned once the holder releases");
         assert!(!guards.exit_mint_held("M"));
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    fn meta(pg_id: Uuid, mint: &str, token_account: Option<&str>) -> PositionMeta {
+        PositionMeta {
+            pg_id,
+            run_id: Uuid::nil(),
+            rule_id: RuleId(Uuid::nil()),
+            mint: mint.to_string(),
+            trade_mode: TradeMode::Real,
+            token_program_id: None,
+            creator: None,
+            entry_token_amount: None,
+            sold_token_amount: 0,
+            scale_stage: 0,
+            token_account: token_account.map(str::to_string),
+            entry_price: None,
+            entry_sol: None,
+            entry_time: None,
+            reverted_buy_fee_sol: 0.0,
+            target_snapshot: None,
+            cashback_enabled: false,
+            inflight_intent: None,
+        }
+    }
+
+    /// The send path reads this instead of PG on a re-buy into a held mint, so it
+    /// must answer exactly what the PG query answers: an account held by ANOTHER
+    /// live position on THIS mint. Returning the buyer's own row would hand the buy
+    /// back the account it is trying to resolve, and matching another mint would
+    /// buy into the wrong token's account.
+    #[test]
+    fn a_sibling_account_is_another_live_position_on_the_same_mint() {
+        let reg = PositionRegistry::new();
+        let (me, sibling, other_mint) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        reg.upsert(PositionId(1), meta(me, "MINT", None));
+        assert_eq!(reg.sibling_token_account("MINT", me), None, "nothing else holds it yet");
+
+        reg.upsert(PositionId(2), meta(sibling, "MINT", Some("ACCT")));
+        assert_eq!(reg.sibling_token_account("MINT", me).as_deref(), Some("ACCT"));
+        // The buyer never resolves to itself.
+        assert_eq!(reg.sibling_token_account("MINT", sibling), None);
+        // Another mint's account is never reused.
+        reg.upsert(PositionId(3), meta(other_mint, "OTHER", Some("OTHER_ACCT")));
+        assert_eq!(reg.sibling_token_account("MINT", sibling), None);
+
+        // A settled sibling leaves the registry, so its account stops being offered.
+        reg.remove(PositionId(2));
+        assert_eq!(reg.sibling_token_account("MINT", me), None);
     }
 }

@@ -91,11 +91,36 @@ pub struct TradeSignals {
     /// Own-wallet legs keyed by tx signature — only written while a waiter is
     /// registered for that `(wallet, mint)`.
     own_legs: DashMap<String, OwnLegEntry>,
+    /// Highest slot any feed frame has carried. Ingest publishes it per trade; the
+    /// send path reads it to stamp the slot a buy was handed to the sender.
+    feed_slot: std::sync::atomic::AtomicU64,
 }
 
 impl TradeSignals {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Publish the slot a feed frame carried. One relaxed `fetch_max` per trade —
+    /// `max`, not `store`, because frames within a slot arrive in no guaranteed
+    /// order and a late one must not rewind the clock.
+    pub fn observe_slot(&self, slot: u64) {
+        self.feed_slot.fetch_max(slot, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The newest slot seen on the feed, or `None` before the first frame.
+    ///
+    /// Stamped on a buy's `snipe_latency` line as `ack_slot`: `entry_slot -
+    /// ack_slot` is the **inclusion gap** — how many slots passed between the chain
+    /// state we sent against and the block that took our tx. It separates a late
+    /// send path from a leader that skipped us, which `entry_slot - target_slot`
+    /// (which also contains the strategy's own wait) cannot. A measured quantity,
+    /// so absence is `None`: slot 0 is not a real reading.
+    pub fn latest_feed_slot(&self) -> Option<u64> {
+        match self.feed_slot.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => None,
+            slot => Some(slot),
+        }
     }
 
     /// Whether anyone is waiting on `(wallet, mint)` (buy/sell confirm in flight).
@@ -408,6 +433,22 @@ mod tests {
             signals.mints.is_empty(),
             "slot should be pruned when no waiter remains"
         );
+    }
+
+    /// The slot gauge only ever moves forward: frames inside one slot arrive in no
+    /// guaranteed order, and a late one that rewound the clock would make a buy
+    /// stamp an `ack_slot` older than the state it decided on — reading as a
+    /// negative inclusion gap. Before the first frame there is no reading at all.
+    #[test]
+    fn the_feed_slot_only_moves_forward() {
+        let signals = TradeSignals::new();
+        assert_eq!(signals.latest_feed_slot(), None, "no frame seen yet");
+        signals.observe_slot(100);
+        assert_eq!(signals.latest_feed_slot(), Some(100));
+        signals.observe_slot(99);
+        assert_eq!(signals.latest_feed_slot(), Some(100), "a late frame never rewinds it");
+        signals.observe_slot(101);
+        assert_eq!(signals.latest_feed_slot(), Some(101));
     }
 
     /// Publishing for a mint nobody is watching is a no-op (the `is_empty`

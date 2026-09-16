@@ -174,9 +174,32 @@ p50 <= 6 ms.
 Of 124 real fills (7 days to 2026-09-15), 41 % land in the trigger's slot, 38 % one slot
 later, and 20 % two or three slots later (p50 555 ms decision -> own fill). The misses
 do not cluster at leader hand-offs: a trigger in slot 0 of a leader's 4-slot window
-misses as often as one in slot 3. Next step, free: log the feed's current slot at the
-ACK on `snipe_latency`. `entry_slot` minus that slot then separates a leader skipping the
-tx (tip / priority territory) from a late send path.
+misses as often as one in slot 3.
+
+`snipe_latency.ack_slot` is what settles it: `entry_slot - ack_slot` is the inclusion gap
+alone, with the rule's own wait excluded. Read it over the first ~50 buys after it
+deploys. A p50 of 0-1 means the send path is at its floor and the remaining spread is
+leader inclusion, which only tip or priority fee buys — so that closes this line. A p50
+of 2+ alongside `send_ms` <= 3 ms says the tx reaches the leader late for a reason that
+is not the socket, and the next suspect is the runtime (below).
+
+### Runtime contention on two vCPUs
+
+One runtime, `available_parallelism()` workers (2 on the box), no dedicated thread for the
+trade path: both decode lanes, the ingest consumer, the decision loop, HTTP/SSE, the
+reapers and every spawned buy share them. Decode and the consumer's per-trade body are
+synchronous, non-yielding blocks, so a spawned buy can sit in the run queue behind them.
+
+Two readings decide whether that is real, and both need a deploy first:
+`ping_to_decide_ms` under `LATENCY_TRACE` (queue wait, but it also contains the rule's
+intentional metric waits, so read it against a rule that fires on the trigger print), and
+`buffer_copies` against `trade_appends` on the `TokenCache eviction` line. The second
+counts appends that deep-copied the whole retained buffer (up to 3 500 trades) because a
+reader — an API request, the decision loop's producer, a paper fill poller — held a
+snapshot `Arc`. Copy-free is the healthy state; a large share is ingest paying for readers
+that hold across the append, on the same two workers the send needs.
+
+Only if those read badly is a dedicated runtime for the trade path worth its churn.
 
 ### Exit detection against entry detection
 
