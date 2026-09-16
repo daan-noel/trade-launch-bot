@@ -132,18 +132,8 @@ A member that fails 5.2 is closed at our seat; it is not "never an instrument".
 | unread public tell | largest book with no named print yet |
 | rare closes at <= -20% of clip | top 1% share of **his** net (his harvest shape, not the 5.2 veto) |
 
-Drop before FIND E: a reader, not volume manufacture. Two measurements, both required.
-
-- **Tape share** on the coins he prints (`study_exact`): a wash owns a large share of that
-  tape and round-trips to about zero minus fees (evidence 5.1). A small share does not prove a
-  reader.
-- **Ix book** from lake `ix_labels`: `InitUserVolumeAccumulator`, bundled `TransferChecked`,
-  or `CreateCoinAndBuy` as the book is volume manufacture, including a hopper with small tape
-  share. ApfmkS is the case (0.45 % of SOL, VolAcc 7.7 %, TransferChecked 40.8 %, unique in
-  the 26).
-
-His median, his top-1%, and his >20% loss rate describe **his** X. They are not the DELAY
-veto. The ship tail bar (law 28) is top 1% of **our** book (section 11).
+Drop before FIND E: a reader, not volume manufacture. Two measurements, both required; 4.0
+spells them.
 
 The node's largest book is not automatically the instrument. Prefer the member that still
 has an unread decision point at our seat. A member whose public tell is already a 5.2 kill

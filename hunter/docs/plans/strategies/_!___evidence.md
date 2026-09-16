@@ -9,12 +9,15 @@ word is [_!___terms.md](_!___terms.md); what the engine measures is
 This file keeps the measurements a rule, a law or an open line stands on. A closed line keeps
 one row in the ledger of section 7, and a step keeps its row in its case file. A cut section's
 full write-up is in git at `9f8ce4c5`, or at `8b01c18b` when it is missing there; a script named
-here and absent from disk is at the same commits. Section numbers are never reused: a number is a
+here and absent from disk is at the same commits, unless its own frame block says it is in no
+commit at all. Section numbers are never reused: a number is a
 permanent address, so cutting a section leaves a gap rather than renumbering the ones after it.
 A missing number is a section that was cut, not a page that is missing here.
 
 **Every result is a coordinate, never a verdict.** A measurement fixes all six slots of a rule
-whether or not the study thinks about it, so each block below names all six. `none` in a slot is
+whether or not the study thinks about it, so each block below names all six. Section 1 from 1.5
+on is the exception, and deliberately: those sections all read one sentence, rule 1, whose six
+slots are written once in the section 7 ledger rather than restated at each reading. `none` in a slot is
 a fact about the measurement, not an omission - it is usually the reason the number is red.
 
 ```
@@ -38,17 +41,44 @@ a fact about the measurement, not an omission - it is usually the reason the num
 | clip | 0.2 SOL |
 | occupancy | one position per coin at a time; re-entry otherwise unlimited |
 
-Column meanings used throughout: `first/day` = first-per-mint trades a day (the floor is 50);
-`be` = the cell's own realised break-even `L / (W + L)`; `top1 %` = share of net in the top 1 %
-of trades (calibration in 2.3); `fit | hold` = the week's two halves.
+**The seat.** 115 ms is the standing seat and every number here is priced at it unless its own
+block says otherwise. 83 ms is the measured seat from real fills since 09-01 (1.1) and is used
+only where a row names it, so that a rule derived before the measurement is not silently re-priced.
+Where both appear, 115 ms is the verdict and 83 ms is the check.
+
+**Every column, in one place.** A table here uses these names and no others:
+
+| column | what it holds |
+| --- | --- |
+| `n` | trades in the cell |
+| `first/day` | first-per-mint trades a day. The floor is 50, on **every** day |
+| `d50` | days at or above that floor, as days over days |
+| `days+` | days with a positive book, as days over days |
+| `worst` | the worst single day's %/trade |
+| `SOL` \| `%/trade` | net SOL over the cell, and the same per trade |
+| `W` \| `L` | the average win and the average loss, in percent |
+| `win` \| `be` | the realised win rate, and the break-even it must beat: `L / (W + L)` |
+| `l50` | the share of trades that lose 50 % or worse - the tail the L-door exists to cut. Always a percent, whether or not the cell carries the sign |
+| `top1 %` | the share of net carried by the top 1 % of trades. A real convex book at this seat sits at 9-12 % (2.3); 50 % and up is noise around zero, and a value over 100 % means the rest of the book is negative. `-` means the book is red, so the share says nothing |
+| `wo top1` \| `body` | two names for one column: net SOL with the top 1 % of tickets removed. It must be positive |
+| `max tok` \| `maxtok %` | the single biggest coin's share of net |
+| `clients` \| `top client` | how many clients the book has, and the best one's share of net |
+| `LOO` | leave-one-out: the book with its single best client removed, worst quoted |
+| `boot` | the share of a 2,000-draw bootstrap over clients that stays positive. The gate is 95 % |
+| `peak/trough` \| `top2` | the busiest day's first tickets over the thinnest day's, and the share of tickets in the two fattest days. Together they are the **TYPE** gate: a cell at 26x / 81 % is one client's two days, not a reading |
+| `READING` | the best cell with SOL > 0 that passes TYPE. `READING none` means no cell passes, so the SOL leader is a named client's book |
+| `k==0` | the share of fires at the coin's own first print. An event spelled as "silent >= 10 slots" is vacuously true there, so a high share means the named event is not what fired (strategy law 31) |
+| `fit` \| `hold` | the week's two halves. **Invalid behind the launch door**, where the out-of-sample unit is the build and not the day (3.1a) |
 
 Vocabulary cutoff **2026-08-30 17:48 UTC**: instruction names change at the decoder upgrade, so
 nothing merges across that instant. <!-- pt-ok: cutoff, tape before it carries old names -->
 
 ```
-  1. THE SEAT AND THE COST      what every number here is priced at
+  1. THE SEAT, THE COST,        what every number here is priced at - then 1.5 on,
+     AND THE HOT-TAPE NODE      the hot-tape node and rule 1 derived end to end
   2. THE PRIZE                  what an up-move is worth, and the tail calibration
-  3. SURVIVAL                   what predicts that a coin keeps living
+  3. SURVIVAL AND THE LOSS AXIS what predicts that a coin keeps living, and what
+                                predicts that it collapses
   4. ENTRY POSITION AND EXITS   where W and L come from
   5. NODES AND INSTRUMENTS      the 26, the five nodes, and what is reachable
   6. THE CONJUNCTION SPACE      what a search over terms actually produces
@@ -59,7 +89,7 @@ nothing merges across that instant. <!-- pt-ok: cutoff, tape before it carries o
 
 ---
 
-# 1. THE SEAT AND THE COST
+# 1. THE SEAT, THE COST, AND THE HOT-TAPE NODE
 
 ## 1.1 The seat, on real fills
 
@@ -68,7 +98,7 @@ nothing merges across that instant. <!-- pt-ok: cutoff, tape before it carries o
 | decision to own-fill-observed | p50 **115 ms**, p90 228, p99 513 (send path 8 ms, ack to fill 107 ms) |
 | `entry_slot - target_slot` | p50 **0**; 52.6 % in the trigger's own slot, 81.6 % within one, 93.4 % within two |
 | trigger to own fill, copy rules' real fills 09-01..09-13 (251, `strategy_positions` `entry_time - target_time`, ingest clock) | p10 / p25 / p50 / p75 / p90 **36 / 55 / 83 / 160 / 206 ms**; 63.7 % in the trigger's own slot. The seat derive section 0 re-reads before a latency verdict |
-| the fill model on those fills (our buy found on the lake by signature, taken off the tape; the state it met is the print before it in chain order) | at each fill's own lag the model's print is that state in **98.4 %** (mean +0.28 % dearer); at a flat 83 ms mean +0.36 %, median 0.00 %. Failed real buys since 09-01: 3 of 256, none on slippage (`mid-tape/mt_d8_fillcheck.py`) |
+| the fill model on those fills (our buy found on the lake by signature, taken off the tape; the state it met is the print before it in chain order) | at each fill's own lag the model's print is that state in **98.4 %** (mean +0.28 % dearer); at a flat 83 ms mean +0.36 %, median 0.00 %. Failed real buys since 09-01: 3 of 256, none on slippage (`node-derivation/mid-tape/mt_d8_fillcheck.py`) |
 | what explains the spread | trigger staleness, 98.7 % of variance; chain load is not a factor |
 | P(same slot) by reaction time | < 50 ms 84 %, 50-100 ms 75 %, 100-200 ms 54 %, >= 200 ms 20 % |
 
@@ -117,8 +147,8 @@ The engine reads about **1.25 % high** per trade against the offline kernel:
 - **Windowed flow is the price move**: corr 0.975-0.982 at 5 s / 15 s / 60 s.
   `buyshare = (1 + net/gross)/2`, so it carries information only through `gross`, and on a climb
   `gross/|net|` collapses to 1.000 for the bottom six deciles.
-- **Silence freezes price.** Booking a silent exit at -100 % manufactured an **85 pp** effect on
-  one cohort where the honest number was about 2 pp.
+- **Silence freezes price.** Booking a silent exit at -100 % manufactures an **85 pp** effect on
+  one cohort where the honest number is about 2 pp.
 - **The curve floor caps how far a trade can fall.** `price = vsol^2 / k` and `vsol` never goes
   below its opening 30, so a -50 % price move needs `vsol <= v_entry * sqrt(0.5)` and is
   **mechanically impossible below `v_entry` 42.43**. On the door-v3 event, **80.4 % of 50,411
@@ -323,6 +353,9 @@ seller at a loss, size), chosen on half the days.
 
 ## 1.20 Rule 1, every slot re-derived on its own pool (H16)
 
+The sentence re-derived here is **rule 1**, written out in full - all six slots - in the
+section 7 ledger. Read it there first; this section changes one slot at a time against it.
+
 `node-derivation/hot-tape/cvx_r1u_cand.py` writes one table per tape: every public sell >= 0.5 SOL on a coin
 aged >= 60 s inside loose floors, with its tape facts and its bracket outcome from a fill 115 ms
 later. `cvx_r1u.py` books any variant as a mask plus occupancy and reproduces rule 1 exactly (840
@@ -419,7 +452,7 @@ re-exported with every leg (`lake_export --all-legs`, tape `holdout_legs`).
 | holdout, every wallet | 101.6 | +3.65 % | 3.34 | 5/5 | +0.35 | 14.1 % | 5.4 % | +1.92..+5.37 % |
 | holdout, every wallet, every leg | 103.4 | **+3.26 %** | 3.03 | **5/5** | +0.28 | 15.5 % | 6.0 % | +1.52..+5.01 % |
 
-**The seat.** Both legs moved together; the book decays gently and stays positive, so no money sits
+**The seat.** Both legs move together; the book decays gently and stays positive, so no money sits
 in a same-slot fill:
 
 | every wallet | 115 ms | 200 ms | 300 ms | 500 ms |
@@ -544,7 +577,7 @@ metrics (`m_build_window.unique_builds`, `m_print_wallet.since_buy`, `m_state.on
 existing ones for every other term, and the `LagMs` fill with the exit leg's rule on both legs. The
 replay is the code simulate runs - the lab's lake load, `run_replay` over one `EngineState`, the
 engine cost kernel (125 bps a leg, 0.000225 SOL a leg from `.env`) - in
-`hunter/lab/examples/hot_tape_rule1_parity.rs`; `hot-tape/r1_engine_parity.py compare` matches its
+`hunter/lab/examples/hot_tape_rule1_parity.rs`; `node-derivation/hot-tape/r1_engine_parity.py compare` matches its
 positions to the frozen tickets of 1.22 on the trigger print `(slot, tx_index, leg)`.
 
 | corpus | reference tickets | engine positions in the fire window | same trigger print | entry fill, exit print, reason | SOL | reference only | engine only |
@@ -559,7 +592,7 @@ and every later trade on it is ignored, in simulate and live alike; the referenc
 saw both coins revive and fire 20 minutes later.
 
 **AMM prints change nothing.** Loading every venue, as live sees the tape, gives a byte-identical
-book on both corpora: `on_curve` keeps the rule off graduated pools, and no position was open across
+book on both corpora: `on_curve` keeps the rule off graduated pools, and no position is open across
 a graduation.
 
 | holdout_exact, engine vs Python | n | %/trade | SOL | days + | top 1 % | 95 % interval |
@@ -578,11 +611,11 @@ Study, engine: 603 tickets, +4.47 %, 6/6, top 1 % 12.9 % (Python 604, +4.51 %).
 Not measured here: the days after 09-10 (the clean test), a tip above 0.000225 SOL a leg, failed
 buys, and live paper, which books `worst_case` fills rather than this seat.
 
-## 1.24 Rule 1's exit, re-read on its own trades: nothing beats the bracket out of sample
+## 1.24 Rule 1's exit, re-read on its own trades: only a post-selection wall target beats the bracket
 
 Rule 1's entry frozen, eleven exit families from the inventory and the stepped trail, each read the
 way the engine reads an exit (every print after the fill, the 200 ms tick grid, the `LagMs(115)`
-exit leg, the engine kernel, one position per coin). `hot-tape/r1b_exit.py` reproduces rule 1's
+exit leg, the engine kernel, one position per coin). `node-derivation/hot-tape/r1b_exit.py` reproduces rule 1's
 frozen tickets exactly through the same evaluator (604 / 604 study, 450 / 450 holdout, same
 prints, same SOL), and its docstring carries the bars, fixed ahead of every comparison.
 
@@ -664,7 +697,7 @@ The four reference-only tickets sit on the two coins the engine retires as dead 
 | holdout, 0.35 SOL | +4.22 %, 6.61 SOL | +5.36 %, 7.67 SOL |
 | holdout 95 % interval, 115 ms | +2.27..+6.61 | +3.07..+8.28 |
 
-The holdout chose rule 1b's exit (1.24), so this table shows the engine books what Python booked; it
+The holdout chooses rule 1b's exit (1.24), so this table shows the engine books what Python booked; it
 certifies nothing. The days after 09-10 do, rule 1 and rule 1b side by side. A position the live
 engine adopts on restart reads its entry depth back from `strategy_positions.extra`.
 
@@ -674,7 +707,7 @@ engine adopts on restart reads its entry depth back from `strategy_positions.ext
 trigger pairs of the study tape whose fate is known, the members out of every public print. Acted
 ticket: the latest print of the class <= 300 ms before each of the member's decisions; our fill
 115 ms after it. Ignored: prints of the class on the same coins that it does not buy within 300 ms,
-up to 4 per acted ticket per coin. The anchors were fixed before the run: rule 1's trigger must
+up to 4 per acted ticket per coin. The anchors are fixed before the run: rule 1's trigger must
 pass; AbQcLH's race, sssssw's burst start and the class 8fStGV avoids must be killed. The **behind**
 rows are the tickets where our fill lands after the member's buy.
 
@@ -961,7 +994,7 @@ this book; it is noise around zero. Reproduce: `study-kernel/audit_bar.py`.
 
 ---
 
-# 3. SURVIVAL
+# 3. SURVIVAL AND THE LOSS AXIS
 
 ## 3.1 The launch-build door, 30 days
 
@@ -969,7 +1002,10 @@ this book; it is noise around zero. Reproduce: `study-kernel/audit_bar.py`.
 D launch build ranked by its TRAILING wall rate (a wall counts only if reached before day D)
 E none (a token-level screen)   P none   X none   R n/a   S n/a
 frame  2026-08-08 .. 09-07, 736,800 coins. Days 08-09 .. 08-30 are a 22-day holdout no pass
-       has fitted on.  scratchpad/x1.sql, x2.py, x5.py
+       has fitted on.
+       This pass is NOT reproducible: it ran from scratchpad `x1.sql`, `x2.py`, `x5.py`,
+       which are in no commit. The door itself is rebuilt tape-side by
+       study-kernel/cvx_door_export.py, and that is what every later section reads.
 ```
 
 **On every one of the 30 days**, door coins reach the soft label (reserve 60 with the peak 60 s
@@ -1242,7 +1278,7 @@ Three readings:
 - **No static exit reaches the professional's shape.** The best left tail buyable is 7.7 % of
   trades worse than -20 % against his 1.1 %, and it costs the entire right tail. Truncating the
   left tail while keeping `W` requires a condition that separates a drawdown inside an up-move
-  from the end of one - a state question, and the state-conditional family is untested.
+  from the end of one - a state question, answered in 4.7.
 
 To break even on the machine-print parent holding `W = 84.7`: `L <= 16.3`. Holding `L = 31.6`:
 `P >= .29`.
@@ -1278,7 +1314,7 @@ gapped past the level (median reserve 0.978 of it, p10 0.690); **68 % of breache
 holding further prints**, and breach-to-end-of-slot has median 0.995 but mean 0.883 and p10
 0.488; the tail carries it.
 
-Removing the reactive exit removes the apparent edge with it, which says the edge was the exit
+Removing the reactive exit removes the apparent edge with it, which says the edge is the exit
 fill rather than the entry.
 
 ## 4.7 The exit lab on a selected entry (C4)
@@ -1381,8 +1417,8 @@ Four times the seat still leaves +8.71, so this is not an exit-fill artifact. Ze
 
 **1. The ticket floor is a per-day refusal, and a mean hides it.** First-per-mint
 tickets a day for the frozen cell: **16, 177, 210, 24, 28, 9**. That is **2 of 6 days over
-fifty**, against a mean of "53.9 a day, floor ok". The mean is inflated by exactly the two days the
-single carrying client was alive (3.1a), so quoting it **launders the client concentration
+fifty**, against a mean of "53.9 a day, floor ok". The mean is inflated by exactly the two days that are the
+single carrying client's whole lifetime (3.1a), so quoting it **launders the client concentration
 through the gate**. The same error applies to door-v3 MONEY + bundle (13, 346, 296, 35, 26, 8 -
 2 of 6) and to that cell with agreement added (mean 23 a day, under the floor even as a mean).
 Door-v3 MONEY itself is clean: 73, 459, 491, 258, 241, 144 - 6 of 6.
@@ -1722,7 +1758,7 @@ The random null is **not 1.00**: "any wallet bought this coin before us" is alre
 20 % off the L-rate, and that part is not judgement. The 26 sit at 0.37-0.40, far outside the
 null's 5th percentile, and the ten roster wallets that failed the profit cut sit inside it.
 
-**And it transfers.** The 26 were chosen on 08-27..09-03, which overlaps this tape, so the
+**And it transfers.** The 26 are chosen on 08-27..09-03, which overlaps this tape, so the
 in-window number is circular. On 09-04 onward - outside the selection window entirely - the
 lift is **0.37 and 0.18**, unchanged, while rejected stays at 0.98 and random at 0.82. On 193
 A >= 1 trades and 62 A >= 2 trades, so the count is small and the effect is large.
@@ -1811,11 +1847,11 @@ The ledger: every rule booked, one row each, with the coordinate that produced i
 | Age x reserve grid, buy and hold | D none . E buy at an age x reserve cell (10 s-24 h x reserve 33 to the wall, 49 cells) . P none . X six exits | no cell with 300+ fires positive; the least bad (age 300 s+, reserve 45-75) is about the toll; random mid-tape fires -5.5 % on a 30 s clock against a -3.5 % toll | red: coin decay, monotone - older coins and higher reserves lose less |
 | Trough ceiling | D keep . E every real episode low (look-ahead) . X tp100/tr50/c1200 | +26.99 %/trade, 8/8 days, top 1 % = 12.2 % of net | **ceiling, not a rule** - and the tail calibration |
 | Real-time trough detector | D door . E up-tick within 2 % of the trailing 15 s low . X several | -7.33 %/trade; precision 5.6 % against about 45 % needed | refuted as built: a price path cannot tell a turning low from a falling knife |
-| 30-day launch-door rules (MAX SOL / SAFETY / shipped) | D launch door . X reactive trail priced at the breaching print | `lag_115` **-29.06 / -18.94 / -99.70 SOL** | refuted; the edge was the exit fill (4.5) |
+| 30-day launch-door rules (MAX SOL / SAFETY / shipped) | D launch door . X reactive trail priced at the breaching print | `lag_115` **-29.06 / -18.94 / -99.70 SOL** | refuted; the edge is the exit fill (4.5) |
 | Breakeven floor on the bracket | D `abs<=.33` . E rule 1's flip sell . X the bracket tp10 / sl25 / 60 s, and the same with a breakeven floor once up +7 % / +5 % / +3 % | bracket **+2.04 SOL**, 5/7, win 74.8 %; the floor at +3 % **-1.62**, 1/7, win **46.9 %**, with 42 % of exits closing at the fill; at +5 % -0.39, 3/7; at +7 % +1.06, 6/7. Undoored the same three read -10.06 / -6.97 / -4.27 | refuted at every arming. The floor scratches the trades that go on to reach the target, and a winner's own trough is -5.8 % at the median (1.20). `cvx_hot_exit7.py` |
 | Armed trail with no stop under it | D launch door v2 . X the armed trail, arm +10 %, nothing cutting below the arm gate | the 363 fires that arm book **+78.69 SOL**; the 1,619 that never arm book **-34.96** and hold to the 1200 s cap. A -25 % stop that applies only while unarmed: +43.72 -> **+46.18 SOL**, forward +7.58 -> +8.35, median hold 1200 s -> **235 s** | refuted. With an arm gate set the trail cannot fire below it, so an unarmed position carries no exit but the clock |
 | Campaign-rider family | D campaign class . E camp / camp+no-extraction / +returning+live+creator-in . seat lag_115 | -5.58 % to -10.15 %, 0/8 days | **this family is red. It is not the v0 sentence above** |
-| No-initial-buy door + router buy | D creation carries no buy and creator never traded . E router buy >= 0.5 SOL . X clock 45 | fitting week +12.58 SOL, 5/7; three earlier weeks red | refuted on a disjoint holdout; the fitting week was one launch machine active two days |
+| No-initial-buy door + router buy | D creation carries no buy and creator never traded . E router buy >= 0.5 SOL . X clock 45 | fitting week +12.58 SOL, 5/7; three earlier weeks red | refuted on a disjoint holdout; the fitting week is one launch machine active two days |
 | Wave node, all branches | every seat | -0.70 to -35.87 SOL | **closed by mechanism** (5.6) |
 | Attention-arrival node | every seat, every permission | truncation decomposition | **closed by mechanism** (5.5) |
 | Axiom push, cells A and B | seat **slot +1**, with a take-profit on a convex book | -109.83 / -42.67 SOL, 5 of 5 days red | red at a seat worse than ours |
