@@ -8,6 +8,10 @@ is the open queue; [_!___terms.md](_!___terms.md) is every word; [_!___metrics.m
 is what the engine measures. Code: [node-derivation/toolkit](node-derivation/toolkit/README.md). Worked
 example: [node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md). A node's
 working file starts from [node-derivation/node-template.md](node-derivation/node-template.md).
+Two more this method leans on by name: the roster of members is
+[solo-traders.md](solo-traders.md), and every number passes
+[backtest-audit.md](backtest-audit.md) before it is reported as a result. Those five are the
+whole of what derive needs outside the seven.
 
 A wallet is an instrument. It names a decision. It is never a term, its coins are never a
 door, and its own prints stay out of every public count. Volume manufacture is not an
@@ -75,7 +79,7 @@ WHERE  (section)
   0        target     leftover of a real up-move at 115 ms
   1-4      pick       one member, every-leg tape, shape, RACE pays, a reader
   5-6      find E     he reacts + leftover exists, then spell it
-  7-10     rest       D optional, X, P, inventory on that parent
+  7-10     rest       D optional, X, P, the ladder on that parent
   11-13    ship       gates, holdout, record
   14       refusals
 ```
@@ -484,7 +488,7 @@ term of E. Age < 1 s is a different cut (the fill-model hole, section 14).
 
 ---
 
-## 10. Inventory search - on this parent only, and where a red result routes
+## 10. The ladder - the one search, on this parent only, and where a red result routes
 
 The parent is the sentence after phases 5-9, including empty slots.
 

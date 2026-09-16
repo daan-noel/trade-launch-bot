@@ -70,6 +70,22 @@ Where both appear, 115 ms is the verdict and 83 ms is the check.
 | `k==0` | the share of fires at the coin's own first print. An event spelled as "silent >= 10 slots" is vacuously true there, so a high share means the named event is not what fired (strategy law 31) |
 | `fit` \| `hold` | the week's two halves. **Invalid behind the launch door**, where the out-of-sample unit is the build and not the day (3.1a) |
 
+**The short door names**, used in coordinate blocks and ledger rows without being spelled out:
+
+| written | the door it means |
+| --- | --- |
+| `none` | no door. Every coin on the tape is watched |
+| `keep`, `keep-create` | every coin whose creation group carries no exclusion - the door that is only the exclusions (dump factories, bundler groups, the rest of the inventory's D-exclude rows) with nothing selected in. The widest door that is not `none` |
+| `keep+ep`, `keep+ep50` | `keep`, and the coin has already completed a rise of 50 % or more. A door that waits for the coin to prove it can move |
+| `slow-wall`, `launch door`, `door-v3` | the creation build's previous UTC day had 20 or more launches, its slow-wall rate is at or above the cut (5 % or the 8 % ship cut), and it is not a bundler group (3.1, `study-kernel/cvx_door_export.py`) |
+| `document`, `documented`, `documented-project` | the coin's metadata URI resolves to a real document (3.3). Capture begins 2026-08-18, so only two holdout weeks exist <!-- pt-ok: cutoff, the tape before that date has no uri --> |
+| `n_pro>=8` | eight or more distinct operator structures have printed on the coin. A tape door, not a creation-time one |
+
+**The walk labels.** `C2`, `C8`, `C9` and the rest each name one walk, and every one of them has its
+row - coordinate, book and verdict - in the section 7 ledger. A label is an index into that ledger
+and nothing more: where a section here cites `C9`, the sentence it walked is written out there.
+`C0b` is the door-v3 parent, whose loss axis 3.7 reads.
+
 Vocabulary cutoff **2026-08-30 17:48 UTC**: instruction names change at the decoder upgrade, so
 nothing merges across that instant. <!-- pt-ok: cutoff, tape before it carries old names -->
 

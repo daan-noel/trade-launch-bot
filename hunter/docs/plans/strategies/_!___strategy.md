@@ -559,7 +559,7 @@ space by `ord(mint[0]) % 8`, two per shard, verified on 13,587 of 13,587 mints w
 violations. **26 wallets have no co-selection partner and a margin that clears its own standard
 error.** They are the only rows where one row is one opinion, and they are the only instruments
 used, except a row that manufactures volume stays a roster row and is dropped at pick (derive 4.0;
-evidence 5.1). [solo-traders.md](solo-traders.md) is that set.
+evidence 5.1). The roster itself is the solo-trader list in appendix 11.1.
 
 | node | wallets | net SOL | margin | median trade | lose > 20 % | best 1 % of trades = | open to us? | studied? |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
@@ -911,8 +911,8 @@ under trail50 c600 - at n >= 1,000 with a top-1 % share at or under about 20 %.*
 
 # 9. CLOSED MISTAKES
 
-The checks that catch these before a number is reported are
-[backtest-audit.md](backtest-audit.md); a number that has not passed it is a study read.
+The checks that catch these before a number is reported are the backtest audit in appendix 11.1;
+a number that has not passed it is a study read.
 
 | mistake | the rule |
 | --- | --- |
