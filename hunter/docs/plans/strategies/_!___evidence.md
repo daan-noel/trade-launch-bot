@@ -224,11 +224,10 @@ after a print costs seven times what the latency costs, because the print we rea
 a 0.2-2.0 SOL order in a 40-60 SOL pool - 1.16 % of the pool at the median episode, and the
 round trip of that displacement is what we pay twice.
 
-**Why this invalidates a whole family of readings.** An event anchored on a PRINT is a FOLLOW
-model by construction: we can only react to the print after it exists, so we always pay its
-impact and always lose its slot. Every node study in section 6 is anchored that way. A state
-that has been true for seconds is the only anchor that can be a PEER, and "the state changed at
-this print" is a print anchor wearing a state's clothes.
+**Why this invalidates a whole family of readings.** This is the measurement behind the
+print-anchor law, which [_!___strategy.md](_!___strategy.md) 7.2 states: an event anchored on a
+print is a FOLLOW model by construction. Every node study in section 6 is anchored that way, so
+every print-anchored red verdict here carries the anchor and is re-opened by it.
 
 **The ceiling with a perfect oracle, at the PEER seat**, which is the honest one for a rule that
 fires on the same condition at the same time:
@@ -390,9 +389,7 @@ section 7 ledger. Read it there first; this section changes one slot at a time a
 aged >= 60 s inside loose floors, with its tape facts and its bracket outcome from a fill 115 ms
 later. `cvx_r1u.py` books any variant as a mask plus occupancy and reproduces rule 1 exactly (840
 trades, +2.73 %, 4.58 SOL study; 525, +2.53 %, 2.66 holdout). A change is chosen on the study tape by
-walk-forward (each half of the days picks its cut by SOL with every fit day positive, the other half
-scores it, both folds must move the same way and beat the current value), then booked once on the
-holdout.
+walk-forward under derive's keep rule (derive 11), then booked once on the holdout.
 
 **The member's selection adds nothing inside rule 1.** The sells 8fStGV also buys book +2.00 % study
 / +2.77 % holdout against +2.82 % / +2.49 % for those it skips, and its buying inside our hold does
@@ -704,8 +701,9 @@ It is the exit candidate for the days after 09-10, next to rule 1's bracket.
 Rule 1b (Flip-Catch - Room; rule 1 is Flip-Catch - Bracket) is rule 1's entry with the exit of
 1.24's post-selection read: sell at 40 % of the entry's
 room to the graduation wall, stop at -60 %, clock at 90 s. The engine carries the target as one new
-position metric, `m_position.room_taken` = `pnl / ((115 / vsol at the fill)^2 - 1)`, in percent, so
-the exit is `room_taken >= 40` OR `held >= 90`, with `stop_loss` 60 and no `take_profit`
+position metric, `m_position.room_taken`, whose definition and unit live in
+[_!___metrics.md](_!___metrics.md); so the exit is `room_taken >= 40` OR `held >= 90`, with
+`stop_loss` 60 and no `take_profit`
 (`node-derivation/data/r1b_rule.json`). `vsol at the fill` is the depth of the last print folded when
 the fill confirms; in simulate that is the fill print, the `v0` of `r1b_exit.py`.
 `r1b_exit.py ref` freezes the Python tickets (`r1b_ref_*.parquet`), and the same replay and compare
@@ -1145,8 +1143,8 @@ Holdouts of the frozen sentence: **+1.46 % and +0.64 % a trade, 4 of 7 days each
 age x build combination inside reserve 50-85 is +1.5 to +2.4 %, and widening to 40-95 flips it
 negative, so the reserve term is load-bearing. Holder-book terms make it worse.
 
-Professional build = this week's buy side, <= 50 wallets and >= 200 prints: one operator's own
-tool rather than a retail terminal.
+"Professional build" here is the **operator structure** of [_!___terms.md](_!___terms.md), which
+is where the cut is defined.
 
 **Weakly positive out of sample. A lead for paper, not a rule.**
 
