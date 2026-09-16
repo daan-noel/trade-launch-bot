@@ -454,15 +454,26 @@ impl Engine {
                 if tokio::time::Instant::now() >= deadline {
                     break;
                 }
+                // Every endpoint at once and DETACHED — the schedule's clock belongs
+                // to the schedule, not to the slowest Sender. Awaiting the re-posts
+                // (sequentially, or as a joined set) makes every later gap start only
+                // once the slowest endpoint answers, so one wedged endpoint spends
+                // the front-loaded window this schedule exists to place. Each post
+                // bounds itself with `FANOUT_SEND_TIMEOUT`, so at most one task per
+                // endpoint per tick is outstanding and none can leak.
                 for url in &urls {
-                    // Bound each re-post so a wedged endpoint can't stall the loop;
-                    // ignore the outcome — a rejected stale-nonce re-post (after the
-                    // tx has landed) is the expected steady state, not an error.
-                    let _ = tokio::time::timeout(
-                        FANOUT_SEND_TIMEOUT,
-                        post_tx_bytes(&http, url, raw.clone()),
-                    )
-                    .await;
+                    let http = http.clone();
+                    let url = url.clone();
+                    let raw = raw.clone();
+                    // Outcome ignored: a rejected stale-nonce re-post (after the tx
+                    // has landed) is the expected steady state, not an error.
+                    tokio::spawn(async move {
+                        let _ = tokio::time::timeout(
+                            FANOUT_SEND_TIMEOUT,
+                            post_tx_bytes(&http, &url, raw),
+                        )
+                        .await;
+                    });
                 }
             }
         });
@@ -957,6 +968,26 @@ mod tests {
         assert!(
             n >= 4,
             "expected >=4 posts (1 initial + 3 rebroadcasts) inside 600ms, got {n}"
+        );
+    }
+
+    /// A slow endpoint must not spend another endpoint's re-posts. Sequentially
+    /// every turn cost the sum of both round trips, so the front-loaded gaps landed
+    /// late on the endpoint most likely to carry the trade.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_slow_endpoint_does_not_delay_the_other_endpoints_rebroadcasts() {
+        // One endpoint answers instantly and counts; the other stalls every request
+        // past the whole rebroadcast window.
+        let (fast, count) = spawn_counting_mock(OK_BODY).await;
+        let slow = spawn_mock(16, "HTTP/1.1 200 OK", OK_BODY, 5_000).await;
+        let trader = trader_with(vec![slow, fast]);
+        trader.send_transaction_rebroadcast(&dummy_signed_tx()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let n = count.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            n >= 4,
+            "expected >=4 posts (1 initial + 3 rebroadcasts) on the fast endpoint \
+             inside 600ms while the other stalls, got {n}"
         );
     }
 
