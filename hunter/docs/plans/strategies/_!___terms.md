@@ -106,6 +106,28 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | **up door / loss door** | A door that picks coins that go up / a door that removes coins that go to -50 %. |
 | **booked** | A number that a study fixed and a shipped rule now carries. It is not re-fitted casually: changing it changes what ships. |
 
+## Words the method uses
+
+These say how an idea is judged. The method itself is [_!___derive.md](_!___derive.md).
+
+| term | meaning |
+| --- | --- |
+| **instrument, node** | The wallet being studied, and the kind of decision it makes (hot tape, mid tape, launch). A node is picked, then derived. |
+| **leftover** | How much of a rise is still ahead of us once our order fills 115 ms after the print we followed. If a move is spent before we arrive, the leftover is gone and the idea is dead however good the print looked. |
+| **peak leftover** | The best price the coin reaches after our fill, measured from that fill. It says an edge could exist; it is never what a rule earns. |
+| **reaction cost** | How much of the rise is already paid for by the time we fill. A cost is not a kill on its own: what matters is what is left after it. |
+| **acted / ignored** | Of all the prints of one class on a trader's coins, the ones it bought right after, against the ones it let pass. The whole question of "which prints does it take" is this split. |
+| **cover** | The share of a trader's own buys that a spelling catches. A rule that describes 1 % of what it does is a corner, not its logic. |
+| **occupancy** | What the event earns when it fires on **every** coin, not only the ones the trader touched. Red occupancy with real leftover means the event is right and the door is missing, or the class is too wide. |
+| **slice** | The share of all prints of a class that a term keeps. A tiny slice with a big lift is a corner. |
+| **ladder** | Building a rule one term at a time: each step adds the single cut that most improves it, keeping the terms already taken. |
+| **fold, walk-forward** | The days are split in two: a rule is built on one half and scored on the other. A term that only works on the half it was built on is a fit, not a finding. |
+| **chance ladder** | The same ladder run on shuffled labels. A step counts only when it beats what shuffling alone would have produced. |
+| **study / holdout** | The days a rule is read on, and the later days it is judged on. A holdout is read once. |
+| **ship bar** | The fixed list a rule must clear before it trades real money, written before the run that tests it. |
+| **book** | What a rule earned over a set of days, at our seat, with every cost in it. |
+| **top 1 %** | How much of a book comes from its single best trade. A book carried by one ticket is not a rule. |
+
 ## Words we do not use
 
 recipe, trade-ix, build, machine, client, professional, or a bare "racer" (say seed racer or

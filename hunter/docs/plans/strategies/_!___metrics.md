@@ -11,9 +11,17 @@ defined in the code and rendered into the UI from that same text, so this file a
 the same thing or one of them is wrong.
 
 Deep-dive for aggregate flow (`m_flow_lifetime` / `m_flow_window`), the crowd counts
-(`m_crowd_window`), build recipes (`m_build_window`), the print's wallet
-(`m_print_wallet`), who holds the supply (`m_holder_book`) and the instruction-structure
-split (`m_flow_ix` / `m_flow_ix_window`) — the wallet- and label-keyed groups.
+(`m_crowd_window`, `m_crowd_after_age`), build recipes (`m_build_window`), the print's
+wallet (`m_print_wallet`), who holds the supply (`m_holder_book`) and the
+instruction-structure split (`m_flow_ix` / `m_flow_ix_window`) — the wallet- and
+label-keyed groups.
+
+**A group is one of three kinds.** **Static**: one running state, no window (lifetime
+flow, the holder book). **Dynamic**: a trailing window, with a size, a lag and the unit
+both are counted in. **Anchored**: an expanding span that starts at a point in the
+token's life rather than at now — today only `m_crowd_after_age`, whose anchor is a
+required strict param, and whose instances dedup on that anchor the way a dynamic
+group's dedup on its window.
 High-level map: [`arch/strategies.md`](../../arch/strategies.md). The split's origin roadmap
 (`roadmap/volume-flow-split-plan.md`) is deleted — fully shipped and superseded by
 this file.
@@ -126,13 +134,15 @@ because merging them on size alone would drop one of the two swept conditions.
 
 ## Aggregate flow (`m_flow_lifetime` / `m_flow_window`)
 
-Classifier-free SOL totals on the token. Same four JSON metric names; distinct
-registry `MetricId`s so lifetime can be monotonic while the window is not.
+Classifier-free SOL totals on the token: what the whole tape did, with no tagging of who
+did it. The two groups share their JSON metric names - `m_flow_lifetime` carries the five
+that make sense since birth, `m_flow_window` all ten - and the registry keeps distinct
+`MetricId`s for them, so lifetime can be monotonic while the window is not.
 
 | group | kind | strict params | state |
 | --- | --- | --- | --- |
-| `m_flow_lifetime` | static | none | two running counters on `TokenTrack` |
-| `m_flow_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints`, plus a nested `slice_size_*` for the two-window metrics | ring buffer deduped by the whole span |
+| `m_flow_lifetime` | static | none | three running counters (`buy`, `sell`, `trades`) in `FlowLifetimeState` |
+| `m_flow_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints`, plus `window_lag`, plus a nested `slice_size_*` for the two-window metrics | ring buffer deduped by the whole span |
 
 | metric | meaning | unit | eq-tol | monotonic (lifetime only) |
 | --- | --- | --- | --- | --- |
@@ -141,8 +151,8 @@ registry `MetricId`s so lifetime can be monotonic while the window is not.
 | `net_flow` | `buy − sell` | SOL | 0.1 | ✗ |
 | `gross_flow` | `buy + sell` | SOL | 0.1 | ✓ |
 | `trade_count` | trades landed | count | 0.5 | ✓ |
-| `buy_count` | number of BUYS in the window | count | 0.5 | ✗ |
-| `sell_count` | number of SELLS in the window | count | 0.5 | ✗ |
+| `buy_count` | number of BUYS in the window (window only) | count | 0.5 | ✗ |
+| `sell_count` | number of SELLS in the window (window only) | count | 0.5 | ✗ |
 | `buy_share` | `buy / (buy + sell)`, **percent 0-100** (window only) | percent | 0.5 | ✗ |
 | `trade_share` | trades in the nested slice, percent of the window's (window only) | percent | 0.5 | ✗ |
 | `sol_share` | gross SOL in the nested slice, percent of the window's (window only) | percent | 0.5 | ✗ |
@@ -162,7 +172,7 @@ No fingerprint config — unlike the ix-split groups below.
 
 | group | kind | strict params | state |
 | --- | --- | --- | --- |
-| `m_crowd_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints` | **its own** ring buffer of `(pos, wallet)`, plus a per-wallet occurrence map |
+| `m_crowd_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints`, plus `window_lag` | **its own** ring buffer of `(pos, wallet)`, plus a per-wallet occurrence map |
 
 | metric | meaning | unit | eq-tol |
 | --- | --- | --- | --- |
@@ -170,10 +180,14 @@ No fingerprint config — unlike the ix-split groups below.
 | `trades_per_wallet` | `m_flow_window.trade_count / unique_wallets` | count | 0.05 |
 
 **Its own group because its subject is WHO traded, not how much** — and that
-difference is a load obligation rather than a taste. These two are the only metrics
-`MetricId::needs_wallet_identity` returns true for, and an offline read that did not
-request the wallet column folds every trade as one anonymous wallet: `unique_wallets`
-reads `1` forever and the gate looks strict instead of broken. One group, one
+difference is a load obligation rather than a taste. Both metrics make
+`MetricId::needs_wallet_identity` return true, and so does every metric that reads a
+wallet anywhere: the whole of `m_flow_ix` / `m_flow_ix_window`, `m_burst_wave`, `m_copy`
+and `m_copy_window`, plus `non_creator_buyers`, `this_buyer_is_new`, `since_buy`,
+`public_app_share`, `bundled_share`, `same_wallet_count`, `working_wallet_count`,
+`has_new` and `has_unknown` (the one list is `mod.rs`'s `needs_wallet_identity`). An
+offline read that did not request the wallet column folds every trade as one anonymous
+wallet: `unique_wallets` reads `1` forever and the gate looks strict instead of broken. One group, one
 obligation, so a loader answers the question by group instead of by metric list.
 
 **Its buffer is its own, not `m_flow_window`'s.** A group's buffer is an obligation,
@@ -192,7 +206,8 @@ of the obligation being per-group. Both admit a trade through the one
 construction rather than by agreement.
 
 Registration is **one bucket per backing buffer** — `CompiledRule` collects
-`flow_windows` / `crowd_windows` / `price_windows` / `ix_windows` separately, and
+`flow_windows` / `crowd_windows` / `price_windows` / `ix_windows` / `dump_windows` /
+`copy_windows` / `build_windows` separately, and
 `EngineState` keeps a union of each. `ix_windows` is the one that mattered most: it
 drives `ensure_flow`, which opens a deque **per configured fingerprint**, so handing it
 the aggregate-flow union multiplied that fold by the number of fingerprints for spans no
@@ -247,11 +262,38 @@ wallet rotation that renders identity useless. Like `buy_share` it is `NaN` on a
 window, and for a sharper reason: `0.0` would let `trades_per_wallet <= 2` pass on a DEAD
 tape, which is the exact reading the gate exists to exclude.
 
+## Who arrived after the scramble (`m_crowd_after_age`)
+
+| group | kind | strict params | state |
+| --- | --- | --- | --- |
+| `m_crowd_after_age` | **anchored** | `after_age_sec`, required, and `0` is a real value (count from birth) | the set of buyer wallets seen since the anchor, capped |
+
+| metric | meaning | unit | eq-tol | monotonic |
+| --- | --- | --- | --- | --- |
+| `non_creator_buyers` | distinct wallets other than the creator whose BUY landed at or after `after_age_sec` | count | 0.5 | ✓ |
+| `this_buyer_is_new` | 0/1: this print is the buy that just added a wallet to that set — the arrival edge | count | 0.5 | ✗ |
+
+**Anchored, because no window can spell it.** A trailing window that ends at now still
+holds the launch scramble while now is inside it. Anchoring at an age asks for the second
+buyer *after* the scramble instead of the second buyer overall. The creator never counts:
+its own launch buy is not somebody arriving, and `m_crowd_window.unique_wallets` is the
+count-everyone reading.
+
+**The set is capped, and the cap is derived.** A condition only ever asks whether the
+count reached a threshold, so the state keeps at most one wallet more than the largest
+threshold any loaded rule names under that anchor. The cap is computed at rule compile,
+so every operator stays exact at it.
+
+**Pair the two to fire once.** `non_creator_buyers = N` alone is true on every print after
+the N-th arrival; with `this_buyer_is_new = 1` it is true only on the print where that
+buyer showed up. `this_buyer_is_new` is 0 on a tick, a sell, a repeat buyer, the creator,
+a buy before the anchor, and once the set has closed at its cap.
+
 ## Build recipes (`m_build_window`)
 
 | group | kind | strict params | state |
 | --- | --- | --- | --- |
-| `m_build_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints` | **its own** ring buffer of `(pos, build_hash)`, plus a per-recipe occurrence map |
+| `m_build_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints`, plus `window_lag` | **its own** ring buffer of `(pos, build_hash)`, plus a per-recipe occurrence map |
 
 | metric | meaning | unit | eq-tol |
 | --- | --- | --- | --- |
@@ -311,7 +353,8 @@ tokens, where a reserve-delta book would hand them to the next print's wallet.
 **A holder is classed once, at its first buy.** Public app (`holder_book::is_public_app`): on
 the previous UTC day, the app that buy's build recipe went through had more than
 `PUBLIC_MIN_BUYERS` (100) distinct buying wallets and at least `PUBLIC_MIN_REPEAT` (2) buy
-transactions per wallet, on any token. The app is `flow_ix::recipe_app`, the first program
+transactions per wallet **on average** — the test is `app_buys >= 2 x app_buyers`, not a
+floor on each wallet — on any token. The app is `flow_ix::recipe_app`, the first program
 past compute budget, system, token, associated-token and memo; a direct pump.fun call is keyed
 by its recipe. A recipe nobody bought with the day before is not public. The daily
 `build_breadth_day_stats` table carries each recipe's app counts; `reduce` keeps the recipes
@@ -647,7 +690,7 @@ Both calls, on every path that folds flow:
 
 `/metric-series` shipped without the seed and drew a `untagged_net` that disagreed with
 both the chart overlay and the live engine; locked by
-`the_creator_wallet_is_volume_side_even_without_a_pattern_match`. Order is free —
+`the_creator_wallet_is_tagged_even_without_a_pattern_match`. Order is free —
 `ensure_flow` copies an already-set creator, `seed_creator` back-fills existing states —
 but one of the two alone is a silent misclassification, never an error.
 
@@ -672,10 +715,10 @@ construction. See hunter/CLAUDE.md Gotchas.
 
 | group | kind | strict params | fingerprint config |
 | --- | --- | --- | --- |
-| `m_flow_ix` | static (fingerprint-scoped) | none | `ix_patterns: ix_pattern[]` (required when key present) |
-| `m_flow_ix_window` | dynamic | `window_size_sec` | none (reads `m_flow_ix`) |
-| `m_dump_ix` | static (fingerprint-scoped) | none | `ix_patterns: ix_pattern[]` — its OWN list |
-| `m_dump_ix_window` | dynamic | `window_size_sec` | none (reads `m_dump_ix`) |
+| `m_flow_ix` | static (fingerprint-scoped) | none | `ix_patterns: ix_pattern[]` **optional** — markers, or the wallet rules alone, may state the classifier instead |
+| `m_flow_ix_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints`, plus `window_lag` | none (reads `m_flow_ix`) |
+| `m_dump_ix` | static (fingerprint-scoped) | none | `ix_patterns: ix_pattern[]` — its OWN list, and **required**; plus `creator_is_listed` (default `false`) |
+| `m_dump_ix_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints`, plus `window_lag` | none (reads `m_dump_ix`) |
 | `m_burst_slot` | static (fingerprint-scoped) | none | `working_templates: string[]` — a `\|` id is a grain, a bare name is a program |
 | `m_burst_wave` | static | none | none for wallet/sol/gap/hole/tip. `working_buy_count` and `this_working` read this fingerprint's `m_burst_slot.working_templates` (same list, no second config). Consecutive-slot buy run; gap is empty buy-slots before that run. Create slot is not fireable. `hole` / `tip_seen` follow every curve buy in the wave. `hole` is a wave `tx_index` gap, not `m_burst_slot.packed`. |
 | `m_copy` | static (fingerprint-scoped) | none | `target_wallets: string[]` — base58 addresses |
@@ -781,10 +824,12 @@ transactions because it is priced per compute unit.
 `m_flow_ix.ix_patterns` takes the identical row shape, through the same
 `BuildPatterns` parser.
 
-**No wallet rules.** A build is a property of the transaction, so contagion and the
-creator rule do not apply and the group deliberately has no knob for them. Contagion
-would make every later sell from a wallet that once sold with a listed build count as
-a dump, which is the opposite of reading the build.
+**No contagion, and one wallet rule.** A build is a property of the transaction, so
+contagion has no knob here: it would make every later sell from a wallet that once sold
+with a listed build count as a dump, which is the opposite of reading the build. The one
+wallet rule is `creator_is_listed` (default `false`): with it on, a sell by the creator
+counts as listed whatever build it carries. It changes `dump_sell` and
+`dump_sell_count`, so the same exit reads differently on a fingerprint that sets it.
 
 **One list can do both jobs.** Matching is on the transaction's own ordered labels and
 the side split happens after, so a buy build can never match a sell. That is why the
@@ -823,7 +868,7 @@ transactions in the same slot.
 | Fingerprint has no `m_copy` key | every `m_copy*` metric NaN — same reason, and here a `sell_count <= 0` exit would fire on every position |
 | Trade carries no wallet (offline load without wallet identity) | not the target, whatever the size — every `m_copy*` metric reads `0` |
 | Pre-first-trade (no classifier state yet) | NaN (existing convention) |
-| Trade `ix_hash = None`, wallet not tagged, not creator | counts as organic |
+| Trade `ix_hash = None`, wallet not tagged, not creator | counts as organic under a tagged-side classifier. Under `untagged_ix_markers` the sides invert and an unmarked or label-less trade is TAGGED |
 | Token row missing / no `creator_wallet` | creator unseeded (logged `warn`); creator trades classify by pattern/contagion only |
 | Pre-V0 sealed lake days (NULL `ix_labels`) | organic in runtime; **excluded** from discovery score denominators |
 | Trade carries no fee reading (pre-`0013`, or no budget set) | matches no entry that pins a fee field, in either direction |
@@ -848,7 +893,7 @@ disagreeing.
 | **`0` is a real value; unknown is `NaN`** | A creation event with no `creator_wallet_hash` leaves the metric unseeded. Seeding `0` there would widen `= 0` to every token whose creator the feed failed to resolve — the one direction that silently inflates the rule. |
 | **The tally must be PRIMED** | A fresh process starts empty and reads every creator as new. `EngineState::prime_creator_launches` loads real history first: live from `TokenRepository::creator_launch_counts` at boot, `simulate` from the same query bounded to `[corpus_start - 30d, corpus_start)`. |
 | **The window is part of the rule** | Every threshold is denominated in `PRIOR_LAUNCH_WINDOW_DAYS`. Widening it re-scales every `prior_launches` condition already authored. |
-| **Unavailable on lake-corpus paths** | The lake's tokens dimension carries no creator column, so the grouped sweep, rule search and family search cannot seed it. `MetricId::needs_creator_history` flags this and the sweep's axis resolver REJECTS the axis rather than scoring every cell on zero trades. Use `simulate`, which reads the creator off the PG `tokens` row. |
+| **Unavailable on lake-corpus paths** | The lake's tokens dimension carries no creator column, so the grouped sweep, rule search and family search cannot seed it. It fails closed rather than scoring on zero: the lake path leaves `TokenFingerprint.prior_launches` as `None`, which fails a configured axis (`lab/src/lake/duck.rs`), and the corpus paths leave the tally empty. Use `simulate`, which reads the creator off the PG `tokens` row. |
 
 Same class of load-time hazard as `needs_wallet_identity`: the value depends on data the
 loader may not have asked for, and the failure looks like a strict gate that never fires.
@@ -860,7 +905,7 @@ registry, and each has cost a search run.
 
 | fact | what goes wrong without it |
 | --- | --- |
-| **`m_flow_ix*` is all `NaN` without `ix_patterns`** — on the request *and* in the fingerprint's `metric_config` | `NaN` satisfies nothing, so the conditions read as present and never fire. Rule save warns; the sweep does not. |
+| **`m_flow_ix*` is all `NaN` until the `m_flow_ix` KEY is present** — on the request *and* in the fingerprint's `metric_config`. The key alone is enough: `ix_patterns` is not required, and a classifier stated by markers, or by wallet contagion and the creator switch alone, reads normally (`flow_ix::from_metric_config`) | `NaN` satisfies nothing, so the conditions read as present and never fire. Rule save warns; the sweep does not. |
 | **`m_state.liquidity` is the REAL SOL reserve** — `TradeLite::reserve_sol` from `real_reserve_sol`, which is `vsol - 30` on the curve. Floors at **0** (empty curve), tops near **85** (migration). | A gate written against the virtual 30/115 scale sits ~30 too high. `liquidity >= 85` fires only on tokens that actually migrate. |
 | **`liquidity` reads either venue** — on an AMM pool it is the pool's SOL, with no 30 taken off | A curve-derived upper bound (`liquidity <= 70`) also passes on a graduated pool that drained. A curve-only rule adds `m_state.on_curve = 1`; replay carries no `Migrated` event, so nothing else stops it there. |
 | **`m_price_lifetime.stall` is seconds since the last ALL-TIME HIGH**, not since the last trade | An exit below ~60 fires on ordinary chop. It caps every hold, so it doubles as an entry filter. `m_position.held` is the time stop. |
