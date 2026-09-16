@@ -58,6 +58,7 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | **machine** | The software that sent a print, named by its ix structure and never by its wallet - a router puts many traders behind one wallet, so the wallet is not an identity. Used two ways, and a count says which: loosely, the software (the instruction names and their order); strictly, the **core ix structure plus the fee_payer**, which separates two operators running the same software. A count of independent machines uses the strict key. |
 | **creation ix structure** | The instruction list of the transaction that creates the coin. It always holds a Create, so it never equals a trade ix structure. |
 | **creation fingerprint** | A creation ix structure plus optional launch params (creator's first buy, first-slot buy, max cost, priority/tip fee, CU limit). Coins that share one form a **launch group**. |
+| **cgroup** | A coarse creation key: the creation ix count plus the last label of the creation `ix_labels`, e.g. `3ix:Buy`. Coarser than a creation ix structure, and used where a door wants a few large buckets rather than exact structures. Its values, and which of them count as a bundler group, are spelled out in [_!___strategy.md](_!___strategy.md) 11.2. |
 | **app** | The program a buy goes through: the first program past compute budget, system, token, associated-token and memo. Coarser than an ix structure: one app sends many of them. |
 | **public app** | An app that many people use and come back to: on the UTC day before this buy, more than 100 wallets bought through it and they made 2 or more buys each on average. A bot swarm is wide but never comes back, so it fails the second half. |
 | **tool** | A public trading app whose program sits in the ix structure: Axiom, Photon, GMGN, Bloom, Trojan, Terminal. Thousands of wallets share one tool structure. |
@@ -81,6 +82,8 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | **bundled share** | The share of live supply held by bundled wallets, at any age, not only the creation slot. |
 | **crowd** | The wallets that bought in the last hill. |
 | **pusher** | The ix structure that bought the most in the last hill. |
+| **sniper** | A bot that buys at or within a few slots of a coin's creation, on many coins, reading nothing that happens after the launch. A venue's safety panel counts them; a **sniper-eating rug** is a coin built to take their money, and it dies inside 10 s, which is why a harvester waits for age >= 10 s. |
+| **solo 26** | The 26 roster wallets with no co-selection partner and a margin that clears their own standard error: the rows where one address is one opinion (evidence 5.2). Used two ways - the pool instruments are picked from, and a door term counting how many of them are already in a coin. Roster membership is not eligibility: a wallet that manufactures volume stays in the 26 for agreement counts and is dropped at pick. Full anatomy: [solo-traders.md](solo-traders.md). |
 
 ## What a coin does
 
@@ -150,9 +153,13 @@ These say how an idea is judged. The method itself is [_!___derive.md](_!___deri
 | **fold, walk-forward** | The days are split in two: a rule is built on one half and scored on the other. A term that only works on the half it was built on is a fit, not a finding. |
 | **chance ladder** | The same ladder run on shuffled labels. A step counts only when it beats what shuffling alone would have produced. |
 | **study / holdout** | The days a rule is read on, and the later days it is judged on. A holdout is read once. |
+| **every-leg study** | The tape that keeps every leg of every trade (`study_exact`), and where every threshold here is read. The plain **last-leg study** drops wallets whose prints are not last-leg, so it holds fewer wallets and its numbers are not the same numbers. A table says which tape it is on. |
+| **lag_115** | The standing seat as the studies spell it: our fill is the last print landed by the fire plus 115 ms, on both legs. A table priced any other way names that in its own row. **zero lag** is its opposite and a diagnostic only - fill at the fire print itself, no seat at all - so it bounds what an edge could be and never says what one earns. |
+| **agree / anti-select** | Two traders agree when they buy the same coins more often than chance gives, and anti-select when they buy them less often. Anti-selection means two independent decisions, so both are worth counting; agreement means one signal wearing two wallets, and counting it twice overstates what is there. |
+| **loss-only** | A cut allowed to fire only while the position is below our fill. The condition is part of the term and not a detail: the same cut, allowed to fire above the fill, sells the winners as well. |
 | **ship bar** | The fixed list a rule must clear before it trades real money, written before the run that tests it. |
 | **book** | What a rule earned over a set of days, at our seat, with every cost in it. |
-| **top 1 %** | How much of a book comes from its single best trade. A book carried by one ticket is not a rule. |
+| **top 1 %** | How much of a book comes from its single best trade, also written **tail concentration**. A book carried by one ticket is not a rule. |
 | **body** | A book with its top 1 % of tickets removed. It says whether a rule pays without its luckiest trades. |
 | **RACE / PEER / FOLLOW** | Three seats, by where our fill lands against the trader's own buy: RACE just before it (does **his decision** pay?), PEER beside it, FOLLOW 115 ms after it (a copy of **his fill**). FOLLOW red is expected and closes nothing; only RACE answers whether the decision is worth copying. |
 | **DELAY** | The gap between a public print and the SOL that print promises. It is the whole edge: when the tell and the money land together there is no trade at any seat, and that is the one failure that kills a story outright. |
@@ -283,7 +290,7 @@ All are public prints only.
 | `buy_after_sells` | A buy that directly follows two or more public sells in a row. | `toolkit/trigger.py:190` |
 | `seller_recent` | A sell by a wallet that last bought this coin 30 seconds ago or less. | `toolkit/trigger.py:183` |
 | `seller_loss` | A sell by a wallet that is under its average cost on this coin. | `toolkit/trigger.py:184` |
-| `burst_start` | A buy at least 0.4 s after the **coin's** previous print, whoever made it. It names the coin's silence; `structure_burst` names one ix structure's. | `toolkit/trigger.py:229` |
+| `burst_start` | A buy at least 0.4 s after the **coin's** previous print, whoever made it. It names the coin's silence; `structure_burst` names one ix structure's. Prose writes it **burst start**; the two spellings are one class. | `toolkit/trigger.py:229` |
 | `tool` `nonce` `direct` | Who sent the print, read off its ix structure: a public trading app, a pre-signed nonce transaction, or a direct call to the venue. | `toolkit/trigger.py:73` |
 | `pro` | A print from an **operator structure**: its core ix structure has 200 or more prints this week from 50 or fewer wallets. | `toolkit/trigger.py:64` |
 | `seed_racer` | A print from a **seed racer**. Diagnostic only: a trader who follows one is in a race, which is a reason to look elsewhere, not an event to fire on. | `toolkit/trigger.py:73` |
