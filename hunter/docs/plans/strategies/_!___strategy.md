@@ -18,6 +18,10 @@ Seven files, and they do not overlap:
 Self-contained on purpose. Section 11 is the only part that names this repository; the rest
 travels. A claim here that the evidence file does not support is wrong **here**.
 
+Section numbers are never reused: a number is a permanent address, so cutting a section leaves a
+gap rather than renumbering the ones after it. A missing number is a section that was cut, not a
+page that is missing here.
+
 ```
   0. BIG PICTURE       plain language, one page - read this if you read nothing else
   1. THE BASIS         the arithmetic every rule obeys, with the numbers
