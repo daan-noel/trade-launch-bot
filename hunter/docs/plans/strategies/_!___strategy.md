@@ -18,6 +18,13 @@ Seven files, and they do not overlap:
 Self-contained on purpose. Section 11 is the only part that names this repository; the rest
 travels. A claim here that the evidence file does not support is wrong **here**.
 
+**Every measured number names its book.** A figure is a pointer into
+[_!___evidence.md](_!___evidence.md), written `(evidence 4.2)`, and the section there is the
+definition: where a number here and the section it points at read differently, the section wins.
+A figure marked **(unrecorded)** is one no evidence section holds - a real reading from a run whose
+book was never written, kept because it carries the argument, and not something to re-quote as a
+result or build a rule on.
+
 Section numbers are never reused: a number is a permanent address, so cutting a section leaves a
 gap rather than renumbering the ones after it. A missing number is a section that was cut, not a
 page that is missing here.
@@ -182,8 +189,8 @@ about an actor's remaining plan. It is never a claim about a price path.
 Break-even is `p = L / (W + L)`.
 
 **That number is not a market constant.** Measured on one week of the same fires, it moves from
-**29.0 %** under trail50 c600 to **46.4 %** under a 30 s clock, and from **14.5 %** at
-an arbitrary mid-tape entry to about **0** at an episode trough. A rule is judged against **its
+**29.0 %** under trail50 c600 to **46.4 %** under a 30 s clock (evidence 4.2), and from **14.5 %** at
+an arbitrary mid-tape entry (evidence 4.1) to about **0** at an episode trough. A rule is judged against **its
 own realised break-even**, never against a fixed percentage carried over from another cell.
 
 ## 1.3 There are two selection problems, not one
@@ -193,7 +200,7 @@ own realised break-even**, never against a fixed percentage carried over from an
    L-selection : which coin goes to -50 %   - ANSWERED: predictable from the launch bundle
 ```
 
-On the unselected mid-tape parent under trail50 c600: `P = .20`, `W = 84.7 %`,
+On the unselected mid-tape parent under trail50 c600 (evidence 4.3): `P = .20`, `W = 84.7 %`,
 `L = 31.6 %`, so `E = -8.8 %` a trade. Holding `W` fixed, the book breaks even at `L <= 16.3`.
 Holding `L` fixed, it breaks even at `P >= .29`. **Halving the loser cost is worth exactly as
 much as lifting the hit rate by nine points**, and the terms that mark a collapse - bundle share,
@@ -214,7 +221,7 @@ permission **inverts** on this axis: it buys survival and it buys the coins whos
 the supply.
 
 **This is the first term in the program that cuts the loser cost and raises the money at the same
-time**, and it is red on its own on the full tape (-151 SOL over 13,602 trades) - which is what a
+time**, and it is red on its own on the full tape (-151 SOL over 13,602 trades, evidence 3.7) - which is what a
 conjunction term is supposed to look like.
 
 **A second L-term is independent of it and stronger.** How many of the solo 26 are already in the
@@ -223,7 +230,7 @@ activity-matched random wallets and **0.98** for the ten roster wallets under th
 cut - and it reads the same outside the roster's own selection window, so it is judgement
 rather than circularity. Stacked with the bundle term it turns a -14.62 %/trade population into
 **+3.86 %/trade** (evidence 6.8). Agreement is a gate on the LOSS only: firing *after* they land
-is still -10.4 %/trade, because their impact is already in the price.
+is still -10.4 %/trade (unrecorded), because their impact is already in the price.
 
 ## 1.4 What price contains, and what it does not
 
@@ -254,7 +261,7 @@ are unpriced, and they are what an event is built from.
 ## 1.5 The seat
 
 Decision to fill is **p50 115 ms** against a 400 ms slot, and we land in the trigger's own slot
-52.6 % of the time.
+52.6 % of the time (evidence 1.1).
 
 This is the law. What the seat actually **costs**, decomposed, is 7.2 - and the 115 ms is the
 smallest of its four terms, which is the part that surprises people.
@@ -267,7 +274,7 @@ smallest of its four terms, which is the part that surprises people.
     - a quiet tape costs nothing: an AMM price moves only when someone trades
 ```
 
-Direction decides the cost of that lag:
+Direction decides the cost of that lag (evidence 1.1):
 
 | action | price moves | fill / trigger |
 | --- | --- | --- |
@@ -321,7 +328,7 @@ pricing anything.
 
 125 bps a leg, a fixed 0.000225 SOL a leg, and our own impact `B / vsol` a leg. Cost is U-shaped
 in size and the minimum sits at `B* = sqrt(F * vsol)`, about **0.126 SOL** on a 70 SOL pool.
-**A round trip on a coin that does not move costs 3.2-4.0 %.** A cohort whose median result sits
+**A round trip on a coin that does not move costs 3.2-4.0 %** (evidence 1.2). A cohort whose median result sits
 on the toll is telling you its median coin does not move.
 
 ## 1.8 The six statements everything follows from
@@ -349,7 +356,7 @@ program withdraws the SOL, takes a fee and seeds a PumpSwap pool.
 
 Consequences every later section uses:
 
-- **Price is a function of the reserve alone.** `price = vsol^2 / k`. Measured here: `k` is exact
+- **Price is a function of the reserve alone.** `price = vsol^2 / k`. Measured here (evidence 1.3): `k` is exact
   on every print at `3.219e16` (SOL x raw units), and the graduation wall sits at `vsol`
   114.9-115.0.
 - **Headroom is quadratic.** The gross a position can ever make is `(vsol_max / vsol_entry)^2 - 1`.
@@ -362,7 +369,7 @@ Consequences every later section uses:
 - **The fall is capped the same way, and this one is easy to forget.** `vsol` never goes below
   its opening 30, so a **-50 % price move needs `vsol <= v_entry * 0.7071` and is impossible
   below entry reserve 42.43**; -25 % is impossible below 34.6. A cheap entry does not merely
-  reduce the loss, it forbids it. Measured: 80.4 % of one event's 50,411 fires enter below 42.43
+  reduce the loss, it forbids it. Measured (evidence 1.3): 80.4 % of one event's 50,411 fires enter below 42.43
   and **cannot produce a -50 % trade at all**, which is why an L-rate compared across reserves
   measures headroom rather than prediction (7.4 law 21).
 - **A silent coin keeps its price.** No prints means no reserve change; an exit fills at the last
@@ -371,7 +378,7 @@ Consequences every later section uses:
 
 ## 2.2 Fees, and where the dev's money comes from
 
-- **Curve trades pay 1.25 % total.** Measured here: the curve-side amount is `gross * 10000/10125`
+- **Curve trades pay 1.25 % total.** Measured here (evidence 1.2): the curve-side amount is `gross * 10000/10125`
   on 16,544 of 16,854 round dev buys - 125 bps, not 100.
 - **Creators earn a revenue share on every trade of their coin**, dynamic by market-cap tier
   (0.05-0.95 % a trade), and the highest tier sits **just past graduation**.
@@ -423,8 +430,8 @@ A campaign is staged: **bump first to enter the feeds, volume once organic buyer
 - 8,000-15,000 coins launch per day; **under 2 % graduate.**
 - Wash trading is the most common manipulation (74.8 % of flagged cases), run by tiny groups
   (median 2.8 actors). **62.9 % of extraction events follow a visibility-building operation on
-  the same coin.** Manipulation is staged: attention first, extraction second.
-- Measured here: about **0.2 % of active wallets are profitable every day** and take about a
+  the same coin** (evidence 8). Manipulation is staged: attention first, extraction second.
+- Measured here, and unrecorded - no evidence section holds this census: about **0.2 % of active wallets are profitable every day** and take about a
   third of everyone else's losses; roughly half of those are launch operators trading their own
   creations.
 
@@ -496,18 +503,20 @@ That a coin keeps living:
 
 | selector | label | lift | evidence |
 | --- | --- | ---: | --- |
-| launch-build door | reaches reserve 60 with a late peak | **4-6x on all 30 days** | 736,800 coins, 22-day untouched holdout, no decay |
-| launch door + initial buy >= 2 SOL | produces a playable big move | 4.63x per coin (**1.21x per print**) | holdout |
-| metadata document + age + reserve + 8 professional builds | net money on any >= 0.5 SOL buy | -9.41 % to +1.39 % along the ladder | two positive holdout weeks, both under 1 SE from zero |
-| creator-sold blacklist | worse on every book | -4 to -8 % a trade, 0/7 days, four weeks | a permission, never an edge |
+| launch-build door | reaches reserve 60 with a late peak | **4-6x on all 30 days** | 3.1 - 736,800 coins, 22-day untouched holdout, no decay |
+| launch door + initial buy >= 2 SOL | produces a playable big move | 4.63x per coin (**1.21x per print**) | 3.2 - holdout |
+| metadata document + age + reserve + 8 professional builds | net money on any >= 0.5 SOL buy | -9.41 % to +1.39 % along the ladder | 3.3 - two positive holdout weeks, both under 1 SE from zero |
+| creator-sold blacklist | worse on every book | -4 to -8 % a trade, 0/7 days, four weeks | 3.4 - a permission, never an edge |
 
-Independently confirmed at 7x this sample: a survival analysis of **832,941 launches** finds
+Independently confirmed at 7x this sample (evidence 8): a survival analysis of **832,941 launches** finds
 telegram at a multivariate Cox HR of **5.40**, website 1.19, and all three links present at
 17.4x on graduation - which is survival. Its causal caveat is our thesis in the authors' words:
 a telegram channel "may proxy for creator effort, discoverability to buy-side bots and traders,
 or selection by creators who already expect to succeed."
 
 ## 4.2 The prize is real and reachable
+
+The census (evidence 2.1), and the ceiling it implies (evidence 2.2):
 
 | quantity | value |
 | --- | --- |
@@ -527,12 +536,12 @@ two slots and they are where the -50 % tail lives.
 
 Every axis tried against "this up-move is starting" lands in the same place. On the two event
 families measured on money - the zigzag turn and a machine print in the dip - **663 conjunctions
-above the ticket floor produce zero cells that are simultaneously positive, tail-robust and
+above the ticket floor (522 and 141, evidence 7) produce zero cells that are simultaneously positive, tail-robust and
 positive on both halves of the week.** Choosing the best ten cells on the first half of a week
 and scoring them on the second turns +74.9 SOL into -40.5.
 
 What a conjunction **does** do is recover the toll: it moves an unselected parent from -4.55 % a
-trade to about zero. It buys "this coin is not decaying" - worth roughly the toll - and not
+trade (evidence 4.2) to about zero. It buys "this coin is not decaying" - worth roughly the toll - and not
 "someone is about to arrive."
 
 **Read that as a wall on the terms currently computable, not as a law of the market.** It covers
@@ -568,12 +577,12 @@ repeat entry and holding time are the observable shadows of the answer.
 A roster row is an address, not a trader. Grouped by **which coins each wallet buys**, 41 of 77
 daily-profitable rows collapse into 7 machines - the largest one 16 addresses splitting the mint
 space by `ord(mint[0]) % 8`, two per shard, verified on 13,587 of 13,587 mints with zero
-violations. **26 wallets have no co-selection partner and a margin that clears its own standard
-error.** They are the only rows where one row is one opinion, and they are the only instruments
+violations (evidence 5.1). **26 wallets have no co-selection partner and a margin that clears its own standard
+error** (evidence 5.2). They are the only rows where one row is one opinion, and they are the only instruments
 used, except a row that manufactures volume stays a roster row and is dropped at pick (derive 4.0;
 evidence 5.1). The roster itself is the solo-trader list in appendix 11.1.
 
-| node | wallets | net SOL | margin | median trade | lose > 20 % | best 1 % of trades = | open to us? | studied? |
+| node (every column through `best 1 %`: evidence 5.2) | wallets | net SOL | margin | median trade | lose > 20 % | best 1 % of trades = | open to us? | studied? |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | hot-tape re-entry | 6 | 938.2 | 1.10 % | -2.07 % | 13.6 % | 180.6 % of net | **rule 1** ([_!___workflow.md](_!___workflow.md) 1). Three of the six read +2.2 to +2.3 %/trade at the RACE seat; pooled +0.50 % with a 216 % tail (evidence 1.11) | yes |
 | mid-tape one-shot | 7 | 427.9 | 1.73 % | -3.34 % | 15.9 % | 122.9 % | **open** ([_!___workflow.md](_!___workflow.md) 2); the best ceiling with volume, +0.71 %/trade 7/8 at the PEER seat (evidence 1.4) | all seven members measured (evidence 7) |
@@ -588,14 +597,14 @@ Three facts hold across all five:
 - **Four of the five are extreme lotteries.** Their best 1 % of trades produce 112-181 % of all
   net profit, which means the other 99 % collectively lose. `deep-age big clip` is the exception
   at 32.3 %, and it is the only node whose ordinary trades pay for themselves.
-- **Hold is reactive, not a timer, in every node.** `p90 / p50` runs 3.0x to 5.3x. **No
+- **Hold is reactive, not a timer, in every node.** `p90 / p50` runs 3.0x to 5.3x (evidence 5.2). **No
   profitable node exits on a clock**, and every exit this repository has scored is a clock or a
   fixed trail.
 
 ## 5.3 Agreement rises with age
 
 Co-selection lift between two of the 26, against the geometric mean of the pair's entry age
-(Spearman 0.794 on 325 pairs):
+(Spearman 0.794 on 325 pairs, evidence 5.3):
 
 | both enter at | pairs | median lift |
 | --- | ---: | ---: |
@@ -607,7 +616,7 @@ Co-selection lift between two of the 26, against the geometric mean of the pair'
 A coin's identity carries a shared signal a professional can read only once the coin has some
 life in it. Agreement predicts the -50 % rate forward, outside the roster's selection window
 (evidence 6.8), and it is the one coin-level term that is not saturated: a 1,212-wallet oracle covers 89-98 % of the parent and
-moves detection by at most 1.1 points, while 26 independent opinions are a different object.
+moves detection by at most 1.1 points (evidence 7), while 26 independent opinions are a different object.
 
 ## 5.4 What a reader is for
 
@@ -683,15 +692,15 @@ exit family.
 - **Silence freezes price.** A coin with no prints during the hold exits at the entry reserve less
   the toll. Booking it at -100 % invents a loss the curve cannot produce and always flatters gates
   that select for activity. Measured cost of getting this wrong once: an 85 pp effect manufactured
-  out of nothing where the honest number is about 2 pp.
-- **An exit needs no print.** Migration is the one exception, about 0.02 % of the corpus.
-- **Windowed flow on a curve is the price move** (corr 0.975-0.982 at 5/15/60 s). Net flow, buy
+  out of nothing where the honest number is about 2 pp (evidence 1.3).
+- **An exit needs no print.** Migration is the one exception, and it is rare.
+- **Windowed flow on a curve is the price move** (corr 0.975-0.982 at 5/15/60 s, evidence 1.3). Net flow, buy
   share and their conjunctions add nothing. Only **counts and machine identity** are orthogonal
   to price. **So there is no absorption on a curve.** Absorption is an order-book idea - buying
   that does not move price because resting size eats it - and a constant-product curve has no
   resting size: every buy moves price by its own arithmetic. `buy SOL / (-price fall)` therefore
   divides the signal by itself and reads backwards, and "price fell AND buyers were the larger
-  side" holds on 32 of 95,645 real buys. Any tell of the form "demand arrived without the
+  side" holds on 32 of 95,645 real buys (unrecorded). Any tell of the form "demand arrived without the
   price responding" is closed on this venue before it is measured.
 
 ## 7.2 The seat
@@ -746,7 +755,7 @@ exists; derive 11 says what it refuses. Where both appear, the number is derive'
 1. **Full tape.** Score every instance of the event on every coin. A candidate table is not a
    universe; matched negatives come from the full print population at decision time.
 2. **Decision-time facts only.** Nothing after the decision print is a term, a filter or a label.
-   Measured: 44.5 of 47 percentage points of apparent selection edge land after the decision
+   Measured, and unrecorded: 44.5 of 47 percentage points of apparent selection edge land after the decision
    point and are unharvestable.
 3. **The reader's own prints stay out of the pool.** His response rate names an event; it never
    gates and it is never money.
@@ -761,8 +770,8 @@ exists; derive 11 says what it refuses. Where both appear, the number is derive'
 10. **Report the artifact detectors beside every result** (the list: derive 11).
 11. **Lift belongs to the event, money to the gates.**
 12. **Measure lift on the grain the book collapses to.** Per-print and per-coin lift can invert
-    (2.68x per print against 0.74x per coin on the same event). **A 4.63x per-coin lift is 1.21x
-    per print.**
+    (2.68x per print against 0.74x per coin on the same event; unrecorded). **A 4.63x per-coin lift is 1.21x
+    per print** (evidence 3.2).
 13. **Per-trade engine reconciliation before belief**, against the published book, never against a
     recomputation - a recomputation shares the bug you are hunting.
 14. **The finding sets the metric.** Implement a rule in the terms it was derived in; when the
@@ -777,20 +786,20 @@ exists; derive 11 says what it refuses. Where both appear, the number is derive'
     conjunction search, never on a number.
 18. **Count CLIENTS, not trades.** Trades behind a door are not independent draws: one creation
     build launches many coins over a day or two and every trade on them shares a creator, a
-    machine and a window. Measured: **one build carries 82 % of the best cell's net and 221 % of
+    machine and a window. Measured (evidence 3.1a): **one build carries 82 % of the best cell's net and 221 % of
     the next one's**, and a week of prints holds 34 slow-wall builds with a median life of two
     days, so a 1,006-trade cell is 19 draws. **A cell that dies when its best client leaves is
     that client's book**; the client gate is [_!___derive.md](_!___derive.md) 11.
 19. **A per-day gate is checked per day.** The ticket floor is a refusal on each day, and a
     mean hides exactly the shape that breaks it: tickets of `16, 177, 210, 24, 28, 9` average
-    53.9 and clear fifty twice in six days. Because those two big days are the single carrying
+    against a reported mean of 53.9, and clear fifty twice in six days (evidence 4.8). Because those two big days are the single carrying
     client's own lifetime (law 18), the mean **launders the client concentration through the
     floor** - two failures cancelling into an apparent pass. The gate: derive 11.
 20. **A term must be spellable without a wallet.** If it can only be written as "these named
     wallets did something", it is not a term, however well it measures. It stays a thermometer.
 21. **Compare a rate only where the outcome is reachable.** `price = vsol^2 / k` with the curve
     floored at 30, so a -50 % move is arithmetically impossible below entry reserve 42.43, and
-    80.4 % of one event's fires sit below it. Reserve then reads as the strongest -50 %
+    80.4 % of one event's fires sit below it (evidence 1.3). Reserve then reads as the strongest -50 %
     "predictor" ever measured and predicts nothing. Hold the reachability band fixed, then read
     the term.
 
@@ -804,13 +813,13 @@ exists; derive 11 says what it refuses. Where both appear, the number is derive'
 23. **The distance to a perfect exit is not money on the table.** A perfect-exit ceiling answers
     "how much convexity exists", never "how much an exit can take", and the two differ by the
     whole of the timing problem: on the hot-tape node the ceiling is **+53 %/trade** and the best
-    of 480 causal exit shapes is **-2.35 %**, because the peak is at a different index on every
+    of 480 causal exit shapes is **-2.35 %** (evidence 1.5), because the peak is at a different index on every
     ticket. Quote a ceiling only beside a **searched** exit, never as a gap to be closed.
 
 24. **An exit family is causal only if every branch is decided in INDEX order.** The common bug is
     a cut whose liveness depends on whether some other branch fires LATER in the window - "close
     at 30 s unless the position ever reaches +30 %" keeps exactly the tickets that go on to
-    work. Measured cost of that one bug here: **+8.30 %/trade against a true -2.38 %**, on a
+    work. Measured cost of that one bug here (evidence 1.5): **+8.30 %/trade against a true -2.38 %**, on a
     held-out half, 8/8 days, with every robustness column green. A rung, a stop, a clock and a
     trail must each resolve to an index, and the smallest index wins.
 
@@ -825,19 +834,19 @@ exists; derive 11 says what it refuses. Where both appear, the number is derive'
     that is a standing refusal, and its signature is "shorter beats longer everywhere". And
     measuring the excursion over a horizon the actor never holds describes a payoff nobody in the
     node is exposed to: on the hot-tape node a read to **1800 s** against a median hold of
-    **19.9 s** reports a "+33 % median MFE" that is +7.6 % inside the hold that exists.
+    **19.9 s** (evidence 1.5) reports a "+33 % median MFE" that is +7.6 % inside the hold that exists (both unrecorded).
     Read the geometry at the actor's own hold, and settle the exit after the gates.
 
 27. **Pooling a node's members averages away the one that is a different animal.** Five of the six
     hot-tape wallets carry a negative median trade and a 180 % top-1 % share; `8fStGV` wins
-    **68.3 %** of its trades at a median of **+12.02 %** on a 0.10 SOL clip. Pooled, its exit
+    **68.3 %** of its trades at a median of **+12.02 %** on a 0.10 SOL clip (all three unrecorded: 1.11 books the member as a cell, never its own win rate). Pooled, its exit
     discipline disappears into 95,135 episodes dominated by two wallets. Split by member before
     any statement about how a node behaves - the mirror of "no node closed on a subset of its
     members".
 
 28. **Imitating an actor is bounded by his MEDIAN trade, never by his net.** On a lottery book -
     best 1 % of trades producing 112-181 % of net - copying every decision copies the median, and
-    every one of these five nodes has a negative one (-1.23 % to -3.34 %). Measured: a perfect
+    every one of these five nodes has a negative one (-1.23 % to -3.34 %, evidence 5.2). Measured: a perfect
     reproduction of the hot-tape node's decisions reads **-0.14 %/trade** at the PEER seat (1.4),
     so no amount of AUC on "when do they buy" can pay. **Price what a perfect copy is worth before
     building a model of the moment**; if it is not positive, the only object worth searching is a
@@ -847,19 +856,19 @@ exists; derive 11 says what it refuses. Where both appear, the number is derive'
     token-birth supply tracks the tape's births on full UTC days; a cell is a general type only
     if its per-day tickets track that door. Peak/trough and the two-fattest-days share of
     tickets sit beside every book ([_!___derive.md](_!___derive.md) 11). The SOL leader of a
-    26x / 81 %-in-two-days book is a named client,
+    26x / 81 %-in-two-days book (evidence 7, C13) is a named client,
     not the walk's reading, and more calendar days do not turn it into a type.
 
 30. **A sidecar left-join with missing = False is a universe filter.** The file's construction
     query is a rule term. A left-join that fills missing with False turns "not in this file" into
     "fails the door." Print sidecar rows, tape tokens, overlap, and the construction filter before the door
-    is scored. Measured: a sidecar holding the 18,583 keep+ep50 mints; documented x silence x
+    is scored. Measured (evidence 7, C8; the 18,583 and the age split are not in that row): a sidecar holding the 18,583 keep+ep50 mints; documented x silence x
     creator x trail40 books +47.54; the same event on keep-create without that file is -1,034.87
     (age < 60 s: -1,007.34). The last-12 h documented supply of 0 is the same hole.
 
 31. **An event with a vacuous base case is not the named event.** `if i == 0: gap = inf` makes
     ">= 10 empty slots" true of every first print. Report the share of fires at local index 0.
-    Measured: 818 / 1,622 of the C8 leader are `k == 0` and carry +46.08 of +47.54.
+    Measured (evidence 7, C8): 818 / 1,622 of the C8 leader are `k == 0` and carry +46.08 of +47.54.
 
 ## 7.5 The objective
 
@@ -872,7 +881,7 @@ the worst day, not on expectancy alone.
 
 **Days positive is necessary and not sufficient.** Report **tail concentration** beside it: the
 share of net from the top 1 % of trades and from the single largest coin, against the measured
-calibration that a real convex book at this seat sits at **9-12 %**. If one coin carries the
+calibration that a real convex book at this seat sits at **9-12 %** (evidence 2.3). If one coin carries the
 result, that is the result. That 9-12 % is the calibration, not the bar: a cell stays a candidate
 at **<= 20 %** and ships at **<= 15 %** (derive 11). A share far above 20 % is noise around zero,
 not a fat tail.
@@ -900,15 +909,15 @@ Every line names the slot left empty at measurement. See
 | line | the mechanism |
 | --- | --- |
 | copying a wallet's fill, at any seat | truncate the path one slot before they land and every "before" cell goes negative; their impact and the in-slot swarm are in the price first |
-| the wave node, all branches | landing first is a look-ahead (+44.41) and landing second is already negative (-24.07): a tape-observable trigger cannot precede the print that triggers it |
-| the attention-arrival node | the same truncation decomposition; 36.1 % of its k=2 fires are one machine |
+| the wave node, all branches | landing first is a look-ahead (+44.41) and landing second is already negative (-24.07), evidence 5.6: a tape-observable trigger cannot precede the print that triggers it |
+| the attention-arrival node | the same truncation decomposition; 36.1 % of its k=2 fires are one machine (evidence 5.5) |
 | booking a silent exit at -100 % | the curve freezes price |
 | pricing a fill from the next print | an ordering privilege no latency buys |
 | charging impact on the real reserve | arithmetic |
-| the exit-fill inversion on the 30-day door rules | break-even sits under 50 ms; the apparent edge is the exit fill |
+| the exit-fill inversion on the 30-day door rules | break-even sits under 50 ms (evidence 4.5); the apparent edge is the exit fill |
 | supervised models on about 40 tape features | fit/hold collapse, reproduced by the conjunction walk-forward |
 | machine cadence as a signal | forward arrivals equal a matched control; a random print beats a confirmation print |
-| the 1,212-wallet oracle as a second door | it saturates 89-98 % of the parent |
+| the 1,212-wallet oracle as a second door | it saturates 89-98 % of the parent (evidence 7) |
 | age-0 launch ramps as the prize | unreachable and unsurvivable |
 
 ## 8.2 Open, and red at our seat
@@ -922,7 +931,7 @@ its slots (law 17).
 
 Not a detection rate. **Any decision-time term that either cuts the loser cost by moving the
 entry toward the trough, or raises the win rate above the book's own realised break-even - 29 %
-under trail50 c600 - at n >= 1,000 with a top-1 % share at or under about 20 %.**
+under trail50 c600 (evidence 4.2) - at n >= 1,000 with a top-1 % share at or under about 20 %.**
 
 ---
 
