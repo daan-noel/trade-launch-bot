@@ -1113,11 +1113,16 @@ async fn run() -> anyhow::Result<()> {
     trader_config.sender.keep_warm_ms = Some(SENDER_KEEP_WARM_MS);
     let trader_config = Arc::new(trader_config);
 
+    // A failed init is degraded, never fatal: it leaves `global_account` unset, and
+    // every buy/sell/claim path bails at that "Not initialized" guard before it reads
+    // rent — so trading fail-closes on its own. Killing the process instead takes the
+    // DB pools, ingest and the whole HTTP surface down with it, which turns one bad
+    // Helius reply into a dark box: the read-only pages serve Postgres and need no
+    // trader at all. Boot on, trade never.
     let mut trader = PumpFunTrader::new(trader_config);
-    trader
-        .initialize()
-        .await
-        .context("Failed to initialize PumpFunTrader")?;
+    if let Err(e) = trader.initialize().await {
+        error!("Trader init failed — NO-TRADE mode, trading stays fail-closed: {e:#}");
+    }
     let trader = Arc::new(trader);
 
     // Probe mode: `cargo run -p hunter-live -- probe <subcommand>` runs a

@@ -3,6 +3,10 @@
 Disk-full runbook for the deployed hunter-live EC2. A full disk stops Postgres writes
 and nginx 502s every `/api` request — **check `df -h /` first when the site 502s.**
 
+A 502 with a healthy disk is the other shape: `live-api` is down or crash-looping, so
+nginx has no upstream. `docker ps` shows it `Restarting`, and `docker logs live-api`
+carries the reason — **read the logs before reclaiming anything.**
+
 [DOCKER.md](DOCKER.md) · retention sizing:
 [raw-txs-storage.md](../hunter/docs/plans/database/raw-txs-storage.md)
 
