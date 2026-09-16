@@ -474,6 +474,10 @@ The exit comes from the story's failure mode, and both families are always read 
                      that already clears the gates
 ```
 
+The shape of the event's own payoff picks between the families: a payoff that is small and
+frequent wants a fixed target, one that is rare and large wants a trail, and the wrong family
+spends the edge that is there.
+
 A static abort (time x percent) gives up winners as fast as it saves losses (104 cells, zero
 positive; evidence 4.4): it is not rerun. A cut that can fire while the position is ahead is a
 clock (evidence 4.7). A 45 s clock is a scalper control, never the primary read on a harvester

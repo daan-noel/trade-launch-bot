@@ -121,8 +121,12 @@ Working file:
   E = clip_step_up AND step >= 3.5 % (acted share 2.30 %, cover 44.6 %; row "6.1 ladder
   8dtx2t all"); it passes 5.2 (peak leftover +2.15 %). The money ladder over D, P and X finds
   no step above chance, and its coins are red under occupancy (-0.91 %): D cannot fix it, E is
-  not spelled (he takes 2.30 %). Next: more 6.1 on this printer (the folds split at depth 2 on a
-  new wallet here vs a build new here). Every toolkit book made before the fix, 8aaRWu's 6.2 and acted-only numbers
+  not spelled (he takes 2.30 %). The permission does not freeze on its own either (row "6.1
+  ladder P 8dtx2t all"). Next: **the root class, not the conjunction** - row "the rest 8dtx2t
+  all" scores clip_step_up at 2.56 % acted / 49.7 % cover under the same move term against the
+  coin step at 2.58 % / 62.8 % and a buy opening a 0.4 s gap at 3.61 % / 43.1 %, so the class is
+  dominated on both axes and the 6.1 ladder is re-run on the better root before anything freezes.
+  Every toolkit book made before the fix, 8aaRWu's 6.2 and acted-only numbers
   included, is re-read before it counts.
 - **Re-read under the ladders** (derive 6.1, 10): each verdict a term read alone decided -
   8aaRWu's 6.1 facts that "do not separate" and its acted share per slice, and its 7.3 D none.
