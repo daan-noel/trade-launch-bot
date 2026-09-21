@@ -1535,7 +1535,8 @@ for agreement counts and is dropped at pick (derive 4.0). `ApfmkS` is that row.
 
 `best 1 %` above 100 % means the other 99 % of trades collectively lose money.
 
-**Hold is reactive in every node**: `p90 / p50` runs 3.0x to 5.3x, so no node exits on a clock.
+**Hold is reactive at the node level**: `p90 / p50` runs 3.0x to 5.3x. Per member it can invert -
+`9Uq8GV` reads 1.0 and exits on a clock (5.8).
 
 The scope rule that defines the roster (exactly one buy and one sell on >= 95 % of trades) is
 expensive and its cost is monotone in purity: wallets under 50 % purity median 13.38 % margin on
@@ -1663,6 +1664,48 @@ Brands are not machines: Axiom, Terminal and GMGN are buy/sell symmetric (the te
 the seed-builder cohort is the racer layer. **A build's instruction name and its compute-budget
 order separate a campaign client from its generic twin on the same instruction set** - one
 concentrates about 21 buys per coin and is green, the other sprays about 2.7 per coin and is red.
+
+## 5.8 An exit read from a member's own sells: 9Uq8GV is a clock
+
+The first wallet read by derive 8.0, and the check that the step works. `toolkit.own_exit` on
+`study_exact`, fires cut at 09-06 12:00: **801 closed positions on 678 coins**, bought at its own
+fill, zero latency, 0.2 SOL, the same kernel on every row.
+
+```
+D  none . E none (its own positions, no reconstruction) . P none
+X  every branch of own_exit.families, read on FIRST CROSSING and then on money
+R  its own   S 0.2   seat its own fill, zero latency   universe study_exact, fires < 09-06 12:00
+```
+
+**Coverage on first crossing** - the branch names its sell when it is out within 300 ms of the
+crossing, it is early when it sits through it:
+
+| branch | names | sits through | never fires first |
+| --- | ---: | ---: | ---: |
+| clock 16 s | **9.9 %** | **1.6 %** | 88.5 % |
+| clock 14 s | 1.5 % | **84.4 %** | 14.1 % |
+| clock 18 s | 0.1 % | 0.6 % | **99.3 %** |
+| curved trail p 0.5, 17 % at a +50 % best | 8.6 % | 48.4 % | 42.9 % |
+| flat trail 10 % | 8.5 % | 53.2 % | 38.3 % |
+
+**Money against its own close** (`diff_abs` = mean absolute SOL a trade between the set's trade and
+its own; the fit days pick and the test days agree):
+
+| set | SOL | its own | diff_abs | corr | sells before it | after it |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **clock 15 s** | 3.50 | 4.33 | **0.0061** | **0.959** | 82.9 % | 15.2 % |
+| clock 16 s | 0.61 | 4.33 | 0.0068 | 0.981 | 1.6 % | 60.0 % |
+| curved trail p 0.3, 19 % OR a 10 s abort | 0.56 | 4.33 | 0.0231 | 0.526 | 57.6 % | 32.1 % |
+| a 10 s abort alone | 6.95 | 4.33 | 0.0439 | 0.222 | 47.6 % | 48.7 % |
+
+verdict: **its exit is a clock at about 15-16 s**, the only static exit read on the mid-tape node.
+Its hold is 9.7 / 16.0 / 16.2 s, so `p90 / p50` is 1.0 against 3.0-5.3x pooled per node: "hold is
+reactive, not a timer" is a node-level reading and it inverts on this member (law 27). The trail
+families are refuted on it - 0.023 to 0.044 SOL a trade from its close, correlation 0.22 to 0.53 -
+so a book on it is priced under the clock, not under a trail. The 16 s clock earns less than the
+15 s one only because it sells just after it and pays the extra move.     empty slots: D, E, P
+
+---
 
 # 6. THE CONJUNCTION SPACE
 

@@ -599,9 +599,10 @@ Three facts hold across all five:
 - **Four of the five are extreme lotteries.** Their best 1 % of trades produce 112-181 % of all
   net profit, which means the other 99 % collectively lose. `deep-age big clip` is the exception
   at 32.3 %, and it is the only node whose ordinary trades pay for themselves.
-- **Hold is reactive, not a timer, in every node.** `p90 / p50` runs 3.0x to 5.3x (evidence 5.2). **No
-  profitable node exits on a clock**, and every exit this repository has scored is a clock or a
-  fixed trail.
+- **Hold is reactive, not a timer, at the NODE level** - `p90 / p50` runs 3.0x to 5.3x
+  (evidence 5.2) - and **per member it can invert**: `9Uq8GV` reads 1.0 and its exit is a clock at
+  about 15-16 s, read against its own close (evidence 5.8). A node's hold shape is a pooled
+  reading, so an exit is read on the member, never on the node (law 27).
 
 ## 5.3 Agreement rises with age
 

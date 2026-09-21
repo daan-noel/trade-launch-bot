@@ -96,8 +96,11 @@ removed - it survives the correction.
 all net profit, and their best 10 % produce 295 % to 618 %. `deep-age big clip` is the single
 exception at 32.3 % and 133.9 %, and it is also the smallest, slowest and highest-margin node.
 
-**Hold is reactive, not a timer, in every node.** `p90 / p50` runs 3.0x to 5.3x, so no node exits
-on a clock. The widest is `quiet deep-age` at 5.3x, the tightest `deep-age big clip` at 3.0x.
+**Hold is reactive, not a timer, at the NODE level.** `p90 / p50` runs 3.0x to 5.3x per node, the
+widest `quiet deep-age` at 5.3x and the tightest `deep-age big clip` at 3.0x. **Read per member it
+can invert**: `9Uq8GV` runs 9.7 / 16.0 / 16.2 s, a ratio of **1.0**, and its exit is a clock at
+about 15-16 s confirmed against its own close (evidence 5.8). Pooling hides the member that is a
+different animal (law 27), on the exit side as well as the entry side.
 
 ---
 

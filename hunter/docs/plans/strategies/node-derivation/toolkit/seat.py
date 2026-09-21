@@ -30,7 +30,17 @@
                                       price reads 1 / (r + 1), about 0.49, whatever its
                                       volatility (`null` per ticket)
                            horizons default to its hold p10 / p50 / p90
-  leftover_summary(L)      acted, acted BEHIND it (our fill after its buy: its own fill is in
+  control(S, w, E, frame)  derive 5.2's control: the same read on RANDOM public buys of the same
+                           coins, in the same frame, at the same seat. Peak leftover is the best
+                           price inside a hold, so it is positive on most prints of any class; a
+                           pass no higher than this control says nothing about the class. Pass it
+                           to leftover_summary / veto, which flag a pass without one as thin
+  race_split(S, F, lag)    derive 5.4: how many public prints land inside our lag after each fire,
+                           and the same fire booked at 0 ms and at our seat, split into still /
+                           1 / 2+ windows. Answered fires that carry the book at 0 ms and lose at
+                           our seat are those bots' own buying landing before we do: move the
+                           event, do not re-spell it
+  leftover_summary(L, C)   acted, acted BEHIND it (our fill after its buy: its own fill is in
                            the price, so no copied fill is counted - the row the veto reads) and
                            ignored: medians, shares, and the within-coin excess (acted minus
                            ignored per coin, weighted by acted tickets, a coin bootstrap p5..p95)
@@ -208,6 +218,92 @@ def leftover(S, w, E, trigger, max_trig=0.3, horizons=None, n_ctrl=4, seed=20260
     return L
 
 
+def control(S, w, E, horizons=None, n_per=4, seed=20260918, b=B, frame=None, max_trig=0.3):
+    """Derive 5.2's control: the same leftover read on RANDOM public buys of the same coins, in the
+    same frame, at the same seat.
+
+    Peak leftover is the best price reached inside a hold, so it is positive on most prints of any
+    class: a pass that is no higher than this control says nothing about the class. `frame(R)`
+    returns the mask a study fires inside (its age band, its t_min); prints inside `max_trig` before
+    one of his buys are left out, so the control cannot contain his own triggers.
+
+    The table it returns has the columns of `leftover` with `acted = -1`, so passing it to
+    `leftover_summary` or `veto` adds the control row and nothing else changes."""
+    hz = tuple(horizons) if horizons is not None else \
+        tuple(float(x) for x in np.nanquantile(E.held.to_numpy(), (0.1, 0.5, 0.9)))
+    rng = np.random.default_rng(seed)
+    rows = []
+    for r in np.unique(E.run.to_numpy()):
+        R = Run(S, int(r))
+        m = R.pub & (R.side == 1) & (R.tm >= S.t_min)
+        if frame is not None:
+            m &= frame(R)
+        bt = R.tm[(R.wal == w) & (R.side == 1)]
+        cand = np.nonzero(m)[0]
+        if len(bt) and len(cand):
+            q = np.searchsorted(bt, R.tm[cand], side="left")
+            near = (q < len(bt)) & (bt[np.minimum(q, len(bt) - 1)] - R.tm[cand] <= max_trig)
+            cand = cand[~near]
+        if not len(cand):
+            continue
+        if len(cand) > n_per:
+            cand = np.sort(rng.choice(cand, size=n_per, replace=False))
+        for bj in cand:
+            ei, cost, peaks, up, null = _ticket(R, int(bj), hz, b)
+            rows.append((int(r), int(R.day[bj]), int(bj), -1, np.nan, np.nan, np.nan, cost,
+                         *peaks, up, null))
+    cols = ["run", "day", "k", "acted", "dt", "ahead", "missed", "cost"] + \
+        ["peak%d" % i for i in range(len(hz))] + ["up", "null"]
+    C = pd.DataFrame(rows, columns=cols)
+    C.attrs["horizons"] = hz
+    return C
+
+
+RACE_BINS = ("still (no print answers it)", "1 print answers", "2+ prints answer")
+
+
+def race_split(S, F, lag=LAG, cap=15.0, b=B):
+    """Derive 5.4's first read: WHO lands inside our lag, and what the fire is worth without them.
+
+    For every fire, count the public prints that land in the `lag` after it and the price move they
+    make, then book the same fire twice: at the fire's own reserve (0 ms, a ceiling) and at our seat.
+    Read the three rows against each other:
+
+      the answered fires carry the book at 0 ms and lose at our seat  -> the money is those bots'
+        own buying and it lands before we do. Do not re-spell this event; move it (5.4)
+      the still fires lose even at 0 ms                                -> nobody was coming; the
+        event is not naming a decision at all
+
+    `F` needs `run` and `k`. Returns one row a bin, and the per-fire table beside it."""
+    T = S.T
+    out = np.full((len(F), 4), np.nan)
+    for r, g in F.groupby("run"):
+        a, e = T.start[int(r)], T.end[int(r)]
+        t = T.t[a:e]; v = T.v[a:e]
+        pub = ~S.is_node[a:e]
+        for i, k in zip(F.index.get_indexer(g.index), g.k.to_numpy()):
+            k = int(k)
+            j = int(np.searchsorted(t, t[k] + lag, side="right"))
+            n83 = int(pub[k + 1:j].sum()) if j > k + 1 else 0
+            ei = fill_idx(t, k, lag)
+            out[i] = (n83, ((float(v[ei]) / float(v[k])) ** 2 - 1.0) * 100.0,
+                      _clock(t, v, k, float(v[k]), cap), _clock(t, v, ei, float(v[ei]), cap))
+    D = F.assign(n_in_lag=out[:, 0], move_in_lag=out[:, 1], y0=out[:, 2], y_seat=out[:, 3])
+    bin_ = np.where(D.n_in_lag == 0, 0, np.where(D.n_in_lag == 1, 1, 2))
+    rows = []
+    for i, nm in enumerate(RACE_BINS):
+        d = D[bin_ == i]
+        if d.empty:
+            continue
+        rows.append(dict(window=nm, n=len(d), share=round(100.0 * len(d) / len(D), 1),
+                         move_in_lag_p50=round(float(d.move_in_lag.median()), 2),
+                         pct_at_0ms=round(100.0 * float(d.y0.mean()) / b, 2),
+                         pct_at_seat=round(100.0 * float(d.y_seat.mean()) / b, 2),
+                         sol_at_0ms=round(float(d.y0.sum()), 2),
+                         sol_at_seat=round(float(d.y_seat.sum()), 2)))
+    return pd.DataFrame(rows), D
+
+
 def _coin_excess(L, col, n_boot=2000, seed=20260911):
     d = L[np.isfinite(L[col])]
     g = d.groupby(["run", "acted"])[col].mean().unstack()
@@ -223,14 +319,19 @@ def _coin_excess(L, col, n_boot=2000, seed=20260911):
     return est, float(np.quantile(bs, 0.05)), float(np.quantile(bs, 0.95))
 
 
-def leftover_summary(L):
+def leftover_summary(L, C=None):
+    """`C` is `control(...)`, the random-print baseline. Pass it: a peak leftover no higher than the
+    control's says nothing about the class (derive 5.2)."""
     hz = L.attrs.get("horizons", ())
     mid = "peak%d" % (len(hz) // 2)
+    rows = [("acted", L[L.acted == 1]), ("behind", L[(L.acted == 1) & (L.ahead == 0)]),
+            ("ignored", L[L.acted == 0])]
+    if C is not None and len(C):
+        rows.append(("control", C))
     out = {}
-    for nm, d in (("acted", L[L.acted == 1]), ("behind", L[(L.acted == 1) & (L.ahead == 0)]),
-                  ("ignored", L[L.acted == 0])):
+    for nm, d in rows:
         u = d.up.dropna()
-        a = nm != "ignored"
+        a = nm not in ("ignored", "control")
         out[nm] = dict(
             n=len(d), coins=d.run.nunique(),
             dt_p50_ms=round(1000 * float(d.dt.median()), 0) if a else np.nan,
@@ -259,10 +360,13 @@ def leftover_summary(L):
 THIN_PEAK = 2.0
 
 
-def veto(L, n_decisions):
+def veto(L, n_decisions, C=None):
     """Derive 5.2 on a `leftover` table: the verdict every study script books. `n_decisions` is the
-    member's decisions the class could cover (its episodes), for the 5.1 corner line."""
-    Tb, _ = leftover_summary(L)
+    member's decisions the class could cover (its episodes), for the 5.1 corner line. `C` is the
+    random-print control: without it, or with a peak no higher than it, a PASS is flagged **thin**,
+    because the best price inside a hold is positive on most prints of any class. Thin is a flag and
+    never a kill."""
+    Tb, _ = leftover_summary(L, C)
     A = L[L.acted == 1]
     Bh = L[(L.acted == 1) & (L.ahead == 0)]
     hz = [c for c in Tb.columns if c.startswith("peak_p50_h")]
@@ -278,6 +382,10 @@ def veto(L, n_decisions):
         why.append("race")
     cover = 100.0 * len(A) / max(n_decisions, 1)
     verdict = "kill" if why else ("corner" if cover < 10.0 else "PASS")
+    ctrl = float(Tb.loc["control", mid]) if "control" in Tb.index else np.nan
+    over_ctrl = np.nan if not np.isfinite(ctrl) else round(peak - ctrl, 2)
+    thin = bool(verdict == "PASS" and (peak < THIN_PEAK or not np.isfinite(ctrl)
+                                       or peak <= ctrl))
     return dict(
         acted=len(A), cover=round(cover, 1), behind=len(Bh),
         acted_dt_ms=round(1000 * float(A.dt.median()), 0) if len(A) else np.nan,
@@ -285,4 +393,6 @@ def veto(L, n_decisions):
         cost=b.cost_p50, cost_ge2=b.cost_ge2,
         peak_p10h=b[hz[0]], peak=round(peak, 2), peak_p90h=b[hz[-1]],
         missed=b.missed, ign_peak=Tb.loc["ignored", mid],
-        verdict=verdict, why=",".join(why), thin=bool(verdict == "PASS" and peak < THIN_PEAK))
+        ctrl_peak=round(ctrl, 2) if np.isfinite(ctrl) else "unread",
+        over_control=over_ctrl,
+        verdict=verdict, why=",".join(why), thin=thin)

@@ -83,53 +83,33 @@ days must pass every bar, the tail included. Working file:
 
 ## 2. Mid-tape one-shot, wallet by wallet
 
-Case file: [node-derivation/mid-tape-rule-3.md](node-derivation/mid-tape-rule-3.md) (every number
-below is a chain row there); 8dtx2t's portrait is
-[node-derivation/mid-tape-8dtx2t-logic.md](node-derivation/mid-tape-8dtx2t-logic.md). Seat 83 ms
-with 115 ms beside it; study fires stop at 09-06 12:00; frame age >= 10 s.
+**One wallet, one case file.** Each holds that wallet's checklist, its logic, its own exit, its
+sentence and its coverage table; this section is the one-line version and the order to work in.
+The shared chain, frame and sentences are [mid-tape-rule-3.md](node-derivation/mid-tape-rule-3.md).
+Seat 83 ms with 115 ms beside it; study fires stop at 09-06 12:00; frame age >= 10 s.
 
-### 8dtx2t - steps 1 to 4 done, step 5 is next
+| wallet | steps done | where it stands | what is unread first | file |
+| --- | --- | --- | --- | --- |
+| **8dtx2t** | 1-4, 6 partly | logic, exit and event all read; every sentence on them red at our seat (-2.87 % 0/6 on every coin; the launch door green on 4/4 study days, **-0.29 % on 2/5 holdout days**). The fires other bots answer inside 83 ms carry the book and land before we do | **step 5**: an earlier sign of the wake-up, then the second leg. Then R, which is 27 % of his positions | [8dtx2t](node-derivation/mid-tape-8dtx2t.md) |
+| **3Xk2Eu** | 1, 4 | E spelled and reachable (cover 30.5 %, peak +5.68 %). Its coins pay **+13.12 % 6/6 before it arrives** and -5.25 % elsewhere, so its logic is which coins it watches. P, X and D were all searched under a clock, so they are unread, not red | **step 2 on its coin choice**, then step 3. Then D2, the URI family, once a sidecar covers every coin | [3Xk2Eu](node-derivation/mid-tape-3Xk2Eu.md) |
+| **8aaRWu** | 1 (weak), 4 partly | answers an identity family and takes 0.25 % of it. Fourteen facts were each read **alone**, so none of those verdicts counts. Weak at pick: RACE 3/6 days, body -1.32 | the **6.1 ladder over all fourteen at once** - one script decides the open question. Steps 2 and 3 before anything else | [8aaRWu](node-derivation/mid-tape-8aaRWu.md) |
+| **88887Q** | 1, 4 started | the node's largest book (+64.56 SOL). Answers a public **sell**, the direction where a late fill pays. Reaction cost 6.55-7.53 %, peak leftover +3.13 to +6.45 % | steps 2 and 3; then 6.1, which sells it takes | [88887Q](node-derivation/mid-tape-88887Q.md) |
+| **9999hu** | 1, 4 started | second largest (+47.99 SOL). Eight classes carry leftover behind its buy, including a sell >= 1 at **+12.61 %**, the highest on the node; which it fires on is unread | steps 2 and 3; then 6.1 over the eight | [9999hu](node-derivation/mid-tape-9999hu.md) |
+| **9Uq8GV** | 1, 3, 4 started | **its exit is read**: a clock at about 15-16 s, `p90 / p50` = 1.0, every trail refuted against its own close (evidence 5.8). It answers a buy >= 1 SOL | step 2, now narrow: what makes it expect a rise inside 16 s? Then 6.1 | [9Uq8GV](node-derivation/mid-tape-9Uq8GV.md) |
 
-| | |
-| --- | --- |
-| **His logic** | He buys the first real buyer to wake a cheap, clean, quiet coin; he is out in 5-10 s when nobody follows; he rides a run on a trail that widens as the gain grows; he sells before the wall |
-| **Read** | The portrait is written. His exit is read and confirmed: four branches book 15.98 SOL against his 15.91 on unseen days. His event is spelled: a buy that opens a 0.4 s quiet, moves the price >= 1.90 %, from a wallet new to the coin (4.65 % of those he takes against a 0.70 % base, 61.6 % of his buys) |
-| **Red sentences** | That event with his exit on every coin: **-2.87 % a trade, 0/6 days at 83 ms**, against +2.97 % filled at the fire's own price. The same with a launch door: +1.85 % on 4/4 study days, **-0.29 % on 2/5 holdout days**. Rule 3b (his first position): -3.1 % on every lake day; its study book read a future coin floor |
-| **What the seat read says** | The fires that other bots answer inside 83 ms carry the book (+13.50 % at the fire's price, -3.05 % at our fill); the fires nobody answers lose even at zero lag (-0.92 %). The money lands before we do on **this** event |
-| **Unread** | The four next events of derive 5.4: an earlier sign of the wake-up, the second leg after the answered burst, the sell that the run provokes, his re-entries (27 % of his positions). How he picks 1 wake-up in 120. Whether wallets copy his buys. The coverage table is not built |
-| **Next** | Step 5 (derive 5.4), one row at a time, each back through 5.1 and 5.2; then step 7 |
+ApfmkS is left out at pick: its book is its own round trips (volume manufacture, derive 4.0). That
+is a filter on what counts as a reader, not a verdict on a logic.
 
-### 3Xk2Eu - its event is spelled; its portrait, its exit and its door are unread
+**The two largest books on this node answer a SELL.** That is rule 1's mechanism on a thinner tape,
+and it is the one direction where being late pays (strategy 1.5). Neither has a portrait.
 
-| | |
-| --- | --- |
-| **Read** | The ladder spells his event in both folds: a buy far above the coin's recent flow, on a thin tape, after a +11.6 % move in 10 s. With the move term the rise is spent before our fill (peak +1.54 %); without it the pair is reachable (30.5 % of his buys, peak +5.68 %), and tightened it fires 1 in 7 with peak +8.57 % |
-| **Red sentences** | That event on every coin under a 55.5 s clock: -4.54 % a trade, 0/6. Doors read and red: the creation fingerprint (best -1.10 %, 4/6), the coin's life shape, tape facts, the loss door, wallet sets |
-| **The strongest fact** | On the coins he later picks, the event books **+13.12 % a trade on 6/6 days before he arrives**, -1.32 % after, -5.25 % on other coins. His logic is which coins he watches, and that reason is unread |
-| **Made the wrong way** | The permission, exit and door searches ran under a clock, not under his own exit: no fixed rule names more than 12.4 % of his sells, and his exit was never read the 8.0 way. They count as not tried |
-| **Unread** | Step 2: 20 coins he came to against 20 where the same event fired and he did not. Step 3: his exit, the curved trail among the candidates. D2, the URI metadata, on a sidecar that covers every coin (today's covers only coins that later rise 50 %: law 30). D5 is no data |
-| **Next** | Step 2 on his coin choice, then step 3 |
-
-### 8aaRWu - picked and scanned; steps 2 and 3 were skipped
-
-| | |
-| --- | --- |
-| **Read** | He answers a family of identity prints (a structure restarts, a clip steps up, a buy after sells, a tool buy). The rise is still ahead of our fill behind his buy (peak +9.51 %, cost 1.08 %), and he takes **0.25 %** of those prints. The family on every coin is red (-4.12 %, 0/6), and on his own coins too (-1.96 %) |
-| **Weak at step 1** | RACE pays +0.80 SOL on 3/6 days and his body is -1.32 SOL: under the pick bar of derive 1. He stays open; he is not the first wallet to spend a session on |
-| **Made the wrong way** | Fourteen facts were each read **alone** and written as "does not separate" (fresh return, named builds, silence then K, run length, two lists agree, first run here, size, alone in its slot, and the rest). A fact is never read alone (derive 6.1): all fourteen are not tried. The leftover pass has no random-print control (derive 5.2) |
-| **Unread** | The portrait, his exit, the 6.1 ladder over every fact at once, the control, the coverage table |
-| **Next** | Steps 2 and 3, then the ladder |
-
-### 88887Q, 9999hu, 9Uq8GV - step 4 started, parked
-
-| wallet | read | unread | next |
-| --- | --- | --- | --- |
-| 88887Q (the node's largest book, +64.56 SOL his own) | He answers a public sell: a seller at a loss (lift 5.27), a sell >= 1 SOL (8.49). Behind his buy the cost is 6.55-7.74 % and the peak +3.13 to +6.45 %, with no control | portrait, his exit, which sells he takes | step 2 |
-| 9999hu (+47.99 SOL) | He answers a public sell >= 1 SOL (peak +12.61 %). The rise is also still ahead on smaller sells, buys, an operator's print, a structure new to the coin, a burst start, and the rising edges of the structure and wallet counts; which of these he fires on is unread | portrait, his exit, the 6.1 ladder | step 2 |
-| 9Uq8GV | He answers a buy >= 1 SOL (lift 4.75, peak +4.01 %); his hold is a 16 s clock | portrait, his exit, which buys | step 2 |
-
-The two largest books of this node answer a **sell**, the direction where a late fill pays
-(strategy 1.5), which is rule 1's shape on a thinner tape.
+- **Kills a sentence here:** peak leftover at or under its random-print control on the spelled
+  event; a finished 6.1 ladder naming no conjunction above chance; then the money ladder over D, P
+  and X finding no step above chance, walked forward. None of these closes a wallet (derive 14).
+- **Do not:** copy a fill; fire at buy-minus-L; read a fact alone and call it a verdict; price an
+  entry under a placeholder exit; AND two views of one family as the event; freeze E while acted is
+  a tiny share of the class; take a member's mint list as D; treat a before-first-buy green slice as
+  D while occupancy on those coins is red; pool members; hunt leftover inside age < 10 s.
 
 ---
 
@@ -177,7 +157,8 @@ wallet's coverage table until it is re-read.
 | what | why it does not count | the re-read |
 | --- | --- | --- |
 | 8aaRWu's fourteen "does not separate" facts | each fact was read alone (derive 6.1, 14) | the 6.1 ladder over all of them at once, both folds, against the chance ladder |
-| Every entry book priced before the wallet's own exit was read: 8dtx2t's rule 3b (+40 % / -30 % / 17 s), its 136 walked exits and its first money ladder; 3Xk2Eu's permission, exit and door searches under a 55.5 s clock; 8aaRWu's occupancy reads under a 26 s clock | an entry priced under a placeholder exit is priced wrong (derive 8.0, 14) | the same books under the wallet's own exit, once 8.0 is done for it. 8dtx2t's is done: its E and launch-door books already use it |
+| Every entry book priced before the wallet's own exit was read: 8dtx2t's rule 3b (+40 % / -30 % / 17 s), its 136 walked exits and its first money ladder; 3Xk2Eu's permission, exit and door searches under a 55.5 s clock; 8aaRWu's occupancy reads under a 26 s clock; 9Uq8GV's door reads under a 45 s clock | an entry priced under a placeholder exit is priced wrong (derive 8.0, 14) | the same books under the wallet's own exit, once 8.0 is done for it. Two are done: 8dtx2t's E and launch-door books already use his, and 9Uq8GV's is a 15-16 s clock (evidence 5.8) |
 | Every "leftover PASSES" with no control: 8aaRWu, 88887Q, 9999hu, 9Uq8GV, 3Xk2Eu | the best price inside a hold is positive on most prints of any class (derive 5.2) | the same read on random public buys of the same coins, frame and seat |
 | Quiet deep-age's red sentence | read at a 115 ms fill against a ~80 ms burst; the measured seat is 83 ms | the same read at 83 ms |
+| Every hold shape read as a node rather than as a member | pooling hides the member that is a different animal (law 27), on the exit side too | `toolkit.own_exit` a wallet. 9Uq8GV reads `p90 / p50` = 1.0 and exits on a clock (evidence 5.8); every other member's own exit is unread |
 | Every toolkit book made before the coin-floor fix, 8aaRWu's 6.2 and acted-only numbers included | the candidate table kept only coins that end with >= 60 prints (backtest-audit U1) | rebuilt with no floor before it is quoted |

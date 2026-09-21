@@ -1,5 +1,8 @@
 # Mid-tape one-shot: rule 1 and the member book
 
+<!-- case-ok: a prior fill-copy spelling on 9Uq8GV / 8dtx2t / ApfmkS, kept as the record of a
+     refuted line. The live work is mid-tape-<wallet>.md. -->
+
 The working file for the mid-tape node, derived by [_!___derive.md](../_!___derive.md).
 Members are split, never pooled. Each paying member's event is graded by leftover existence
 (derive 5.2: peak leftover behind its buy decides, cost is a diagnostic). 9Uq8GV's buy >= 1

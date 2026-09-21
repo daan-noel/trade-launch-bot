@@ -1,5 +1,12 @@
 # 8dtx2t: its entry and exit as plain reasoning
 
+<!-- case-ok: 8dtx2t's portrait (derive 3). Its checklist and coverage table are
+     mid-tape-8dtx2t.md. -->
+
+This is the worked form of a **portrait** (derive 3): the trader read as a person, his logic
+in one sentence, each part with its reason. Its checklist, its coverage table and what is
+unread on him are [mid-tape-8dtx2t.md](mid-tape-8dtx2t.md).
+
 What 8dtx2t buys and sells on, and the likely human reason behind each part. Every number
 names the chain row of [mid-tape-rule-3.md](mid-tape-rule-3.md) it comes from, or says it has
 none. The numbers are measured; each "why" is an inference from them. Study fires run

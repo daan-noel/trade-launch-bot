@@ -49,10 +49,76 @@ WHAT WE LOOK FOR
 | **3 His exit** | Read how he leaves, from his own sells | an exit rule that books near his own close, confirmed on unseen days. It prices every later step | 8.0, 8.1 |
 | **4 Test each clause** | One yes / no test per clause, written before the run | the print he answers (5.1) and which of those prints he takes (6.1) | 5, 5.1, 6.1 |
 | **5 Our version** | Is the rise still ahead at OUR fill? If not: an earlier sign, a slower part of the same move, the other side, another of his decisions | the event we can fire on | 5.2, 5.3, 5.4 |
-| **6 Fit D, P, X to that E** | Door, permission and exit searched together on that event's fires, starting from his own exit | the sentence | 6.2, 7, 8.2, 9, 10 |
+| **6 Fit D, P, X to that E** | Door, permission and exit searched together on that event's fires, starting from his own exit. The portrait says which slot to open first (7.0) | the sentence | 6.2, 7.0, 7, 8.2, 9, 10 |
 | **7 Coverage** | Mark every inventory family for this wallet: tried, not tried, no data | the coverage table and the unread list | 10.1 |
 | **8 Prove** | Gates, the backtest audit, the holdout read once, an independent replay, the engine ticket for ticket, paper, then real at 0.03 SOL | a rule that ships, or a red sentence | 11, 12 |
 | **9 Record** | Three lines: this sentence is red or green; what is unread; the next idea | the chain row, the inventory rows, the workflow line | 13 |
+
+```
+THE WHOLE RUN, ON ONE NEW WALLET, FROM NOTHING
+
+  the workflow names a node -> its roster wallets -> take ONE. One wallet, one case file.
+        |
+        v
+ [1 PICK] ....... does he pay, and is he a reader?
+        |         his own episodes: total > 0, harvest hold, rare closes at -20 %,
+        |         RACE pays most days with a positive body
+        |         tape share + ix book: a reader, not volume manufacture
+        |
+        +-- no --> the NEXT wallet. This one is parked, never closed.
+        v
+ [2 PORTRAIT] ... read him as a person. NO SCAN YET.
+        |         shape in numbers -> 20 trades read print by print -> his logic, one sentence:
+        |
+        |           "he buys WHICH COIN when WHICH PRINT, because <who spends next, and why>;
+        |            he skips <what>; he leaves when <what>"
+        |
+        |         split it into clauses. Write each clause's yes/no test BEFORE running it.
+        |         Say which half carries the weight: WHICH COIN, or WHICH PRINT.
+        v
+ [3 HIS EXIT] ... read it from his own sells, before any entry is priced
+        |         every branch on FIRST CROSSING: does it name his sell, or does he sit
+        |         through it? -> keep the set whose trades book NEAREST HIS OWN CLOSE
+        |         -> freeze -> read once on the holdout
+        |         == the starting X of every book below. Never a placeholder clock.
+        v
+ [4 TEST EACH CLAUSE]
+        |    5.1  which public print does he answer?  (WHO and his history first, price last)
+        |    6.1  which of those prints does he take?  (the ladder - never one fact alone)
+        v
+ [5 OUR VERSION] .. is the rise still ahead at OUR fill, 83-115 ms later?
+        |    5.2  leftover behind his buy, against a RANDOM-PRINT control
+        |    5.4  who lands inside our lag?
+        |           answered fires pay at 0 ms and lose at our seat
+        |             -> the money lands before we do. MOVE the event, do not re-spell it:
+        |                an earlier sign | the second leg | the other side | another decision
+        |
+        +-- nothing left --> park him with the unread list. STILL NOT CLOSED.
+        v
+ [6 FIT D, P, X TOGETHER] .. on that event's fires, under HIS exit
+        |         the portrait routes it:  weight in WHICH COIN  -> open D first
+        |                                  weight in WHICH PRINT -> more E, then P
+        |         one ladder, one term a step, both folds, beaten against a chance ladder
+        v
+ [7 COVERAGE] .. mark EVERY inventory family for this wallet:
+        |         tried | partly | not tried | no data | not his
+        |         a fact read alone, or a book under a placeholder exit, is NOT TRIED
+        v
+ [8 PROVE] ..... gates -> backtest audit -> freeze -> holdout read ONCE
+        |         -> replay that shares no code -> engine, ticket for ticket
+        |         -> real at 0.03 SOL -> 0.2-0.5 SOL once the small book pays
+        v
+ [9 RECORD] .... three lines, always:
+                   1. this sentence, all six slots, is red or green - and the number
+                   2. what is unread (the coverage table)
+                   3. the next idea
+
+WHAT A RED NUMBER DOES
+
+  It closes ONE SENTENCE. Not a slot, not a wallet, not a node.
+  The one failure that kills a STORY is the tell and the money landing together
+  (DELAY = 0) - and the wallet still stays open: read another of his decisions.
+```
 
 The steps are ticked in order in the case file
 ([node-template.md](node-derivation/node-template.md)). A skipped step is written as skipped, with
@@ -275,8 +341,15 @@ Then answer, in plain words:
 
 One sentence, in this shape:
 
-> He buys **<what, when>** because he expects **<who spends next, and why>**; he skips
-> **<what>** because **<reason>**; he leaves when **<what>** because then **<the reason is gone>**.
+> He buys **<which coin>** when **<which print>** because he expects **<who spends next, and
+> why>**; he skips **<what>** because **<reason>**; he leaves when **<what>** because then
+> **<the reason is gone>**.
+
+**It names two reasons, and says which carries the weight.** A coin reason (why this coin is
+worth watching at all) and a print reason (why now). They are different questions and one of
+them is usually most of his edge: his picks pay where the same print on other coins does not,
+or the print pays wherever it fires. Write which, and why you think so - that answer routes
+step 6 (section 7.0).
 
 Then one row per clause. The test column is filled before anything is run:
 
@@ -539,6 +612,27 @@ slot is held fixed only to search the next one on its fires, and is reopened in 
 
 Search D on the frozen event's fires. Default is none.
 
+### 7.0 Which slot the portrait opens first
+
+The method searches D after E because a door on an unspelled event cannot be read. That is an
+order, not a ranking: **the door is where the money has been, on wallet after wallet.** 3Xk2Eu's
+event books **+13.12 %/trade on 6/6 days** on the coins he later picks, before he arrives, and
+**-5.25 %** on every other coin (evidence 7). The hot-tape node's first read put eleven points in
+which coin and none in which moment (evidence 1.5). 8dtx2t's picks differ from the wake-ups he
+skips on coin facts, not print facts.
+
+So once E is spelled, the portrait's answer decides where step 6 starts:
+
+| the portrait says the weight is in | start step 6 on | because |
+| --- | --- | --- |
+| **which coin** | D, with P and X beside it (7.1, 7.3, then the ladder) | the event fires everywhere and only pays somewhere; more terms on E narrow the ticket count without finding the reason |
+| **which print** | E's remaining terms, then P (6.1 deeper, then 9) | the coins are ordinary and the moment is the edge |
+| it cannot tell | D first | a door is cheap to refuse and it is the slot the evidence keeps naming |
+
+Two guards do not move. A door is still searched on a **spelled** E, never on a class he takes a
+tiny share of (6.1). And his mint list is never the door: what is read is the coin facts that
+are true **before** he arrives (7.1).
+
 | # | question | how | decide |
 | --- | --- | --- | --- |
 | 7.1 | Is the gap a coin property, or its future arrival? | Event fires on coins it trades vs every other coin, and on its coins split at its **first** buy there. Run only on a **spelled** E (6.1 named which prints) | A gap **before** its first buy is a coin property (a door candidate) **only when occupancy on its coins is the green side** (a door that selected those coins would pay). Occupancy on its coins still red means D cannot fix this class: later fires on those same coins are red, so the green before-slice is which print (E), not which coin. A gap only after is its future arrival: the coin list is not D. Occupancy red on every coin and green on the fires he takes is this test (section 10) after E is spelled. The split is read on a table with no coin floor ([backtest-audit.md](backtest-audit.md) U1): on the old floor 8dtx2t's first-position split read +6.03 % (unrecorded) before its first buy and does not count |
@@ -703,7 +797,7 @@ these kills a story:
 | the tell was already in the price | WHAT | an earlier footprint of the same intention (the commitment, not the execution) |
 | the tell and the money are simultaneous | DELAY = 0 | this tell is unusable at any seat. **The only failure that kills a story** - the story, never the actor: read an earlier footprint of the same decision, or another of his decisions |
 | he takes a tiny share of the class; occupancy of the class is red | E is not spelled | keep leftover, add terms to E (this printer), do not add D |
-| positive on some coins, negative overall | the DOOR is missing | keep the **spelled** story, add a coin selector |
+| positive on some coins, negative overall | the DOOR is missing | keep the **spelled** story, add a coin selector (7.0: this is the common case, not the rare one) |
 | winners fine, losers catastrophic | the L-DOOR or the EXIT is missing | keep the story, work the loser cost |
 | positive but under the ticket floor | too narrow | widen the ACTOR class, never add permissions |
 | tickets spike on two days and vanish on the rest | the DOOR is a client, not a type | a named client book, not the reading (section 11, TYPE) |

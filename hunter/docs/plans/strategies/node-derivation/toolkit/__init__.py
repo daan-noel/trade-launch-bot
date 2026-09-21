@@ -6,7 +6,10 @@ cvx.py) on sys.path, so every module prices through the one kernel.
   paths        where the tapes, the lake, the roster and this folder's data live
   tapes        load a tape (study or holdout) with its instrument wallets marked
   facts        per-coin fact arrays at every print (windows, holders, the seller's history)
-  seat         a member's episodes, booked at the RACE and FOLLOW seats; our landing vs theirs
+  portrait     step 2: the trader as a person - his shape, and the 20 trades to read print by print
+  seat         a member's episodes at the RACE and FOLLOW seats; our landing vs theirs; 5.2's
+               leftover with its random-print control; 5.4's still-vs-answered race split
+  own_exit     step 3: his OWN exit, read from his own sells - the starting X of every later book
   trigger      excess intensity: which print class a wallet reacts to, and at what lag
   contrast     within-coin stratified rank: the prints it acts on against those it ignores
   exits        the exit families; every branch resolves to a print index

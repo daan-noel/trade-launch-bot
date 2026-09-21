@@ -20,6 +20,10 @@
 #      Link TARGETS are not prose: `](…)` is stripped before matching, so a link to a
 #      dated history entry or a `#measured-…-2026-07-19` anchor never trips the check.
 #
+#   3. A WALLET'S CASE FILE carries its `## 0. Checklist` and its coverage table, or
+#      says on a `case-ok` line what it is instead. Derive step 7: an idea nobody marked
+#      is an idea nobody runs.
+#
 #   2. DOC REFERENCES RESOLVE — every `.md` path cited from a doc or a code comment,
 #      and every `.rs`/`.ts`/`.tsx` path cited from a doc, must exist. A pointer to a
 #      deleted plan reads as authoritative and goes nowhere; a session told to read a
@@ -263,6 +267,46 @@ if [ -n "$bad_refs" ]; then
     printf 'Repoint it at the doc that absorbed it, or drop the citation.\n'
     printf '%s\n' "$bad_refs"
     fail=1
+fi
+
+# -- 3. A WALLET'S CASE FILE CARRIES ITS CHECKLIST AND ITS COVERAGE TABLE ------------
+#
+#     Derive's step 7 and its refusals: a session starts from the checklist and the unread
+#     list, never from memory, and a wallet is parked only with its coverage table current.
+#     Neither survives as a convention, so the gate holds them: every `.md` directly under
+#     `node-derivation/` needs a `## 0. Checklist` and a `Coverage and the unread list`
+#     section, or a line marked `case-ok` saying what it is instead (the node chain, a
+#     shipped rule, a portrait, a prior spelling). Same shape as `pt-ok` / `ref-ok`: if you
+#     cannot write the reason in a clause, the file wants the two sections.
+case_dir='hunter/docs/plans/strategies/node-derivation'
+if [ "$mode" = "--all" ]; then
+    case_files=$(git ls-files -- "$case_dir/*.md" 2>/dev/null)
+else
+    case_files=$(printf '%s\n' $staged | grep -E "^$case_dir/[^/]+\.md$" || true)
+fi
+case_files=$(printf '%s\n' $case_files | grep -vE '/(README|node-template)\.md$' || true)
+if [ -n "$case_files" ]; then
+    ok_files=$(git grep -lIE -e '^## 0\. Checklist' -e 'case-ok' -- $case_files 2>/dev/null)
+    cov_files=$(git grep -lIF -e 'Coverage and the unread list' -e 'case-ok' -- $case_files 2>/dev/null)
+    bad_case=$(printf '%s\n' $case_files \
+        | awk -v ok="$ok_files" -v cov="$cov_files" '
+            BEGIN { n = split(ok, a, "\n"); for (i = 1; i <= n; i++) A[a[i]]
+                    m = split(cov, b, "\n"); for (i = 1; i <= m; i++) B[b[i]] }
+            NF && !(($0 in A) && ($0 in B)) {
+                why = "no checklist and no coverage table"
+                if ($0 in A) why = "no coverage table"
+                else if ($0 in B) why = "no `## 0. Checklist`"
+                print "  " $0 " -> " why }' \
+        | sort -u)
+    if [ -n "$bad_case" ]; then
+        if [ "$fail" -eq 0 ]; then printf '\n'; fi
+        printf '\033[31mCASE FILE WITHOUT ITS CHECKLIST OR ITS COVERAGE TABLE\033[0m\n'
+        printf 'A session starts from the checklist and the unread list, not from memory, and an\n'
+        printf 'idea nobody marked is an idea nobody runs (derive 10.1, 14).\n'
+        printf 'Add both sections from node-template.md, or mark the file `case-ok: <what it is>`.\n'
+        printf '%s\n' "$bad_case"
+        fail=1
+    fi
 fi
 
 if [ "$fail" -ne 0 ]; then

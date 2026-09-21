@@ -1,6 +1,16 @@
 # Mid-tape one-shot: rule 3 (instrument 8aaRWu)
 
-**Read this first.** The method's order is the nine steps on the first page of
+<!-- case-ok: the mid-tape node's shared chain and frame, not one wallet's case file. Each
+     wallet's checklist, logic, exit and coverage table is `mid-tape-<wallet>.md`. -->
+
+**Read this first.** This file is the **node's chain**: the shared frame, the sentences, and
+every step ever run on any mid-tape wallet, which the inventory reaches as `mt3 <row>`. Where
+each wallet stands, what is unread on it and what to do next are its own case file:
+[8dtx2t](mid-tape-8dtx2t.md) . [3Xk2Eu](mid-tape-3Xk2Eu.md) . [8aaRWu](mid-tape-8aaRWu.md) .
+[88887Q](mid-tape-88887Q.md) . [9999hu](mid-tape-9999hu.md) . [9Uq8GV](mid-tape-9Uq8GV.md).
+New work on a wallet writes its rows in that wallet's file.
+
+The method's order is the nine steps on the first page of
 [_!___derive.md](../_!___derive.md). This file predates that order, so its steps ran as 5.1, 5.2,
 6.1 first. Where each wallet stands under the nine steps, which verdicts here were made the wrong
 way and do not count until re-read, and the next step are

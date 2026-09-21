@@ -1,5 +1,8 @@
 # Mid-tape one-shot: rule 2 (instrument 9999hu)
 
+<!-- case-ok: a prior fill-copy spelling on 9999hu, kept as the record of a
+     refuted line. The live work is mid-tape-<wallet>.md. -->
+
 The working file for **9999hu**, derived by [_!___derive.md](../_!___derive.md).
 One member, never pooled. 88887Q names the same tell and stays off this file (law 27).
 9Uq8GV is a different tell: [mid-tape-rule-1.md](mid-tape-rule-1.md).

@@ -20,6 +20,26 @@ read at the engine's grain instead: `study_exact` (lake 09-01 to 09-06 12:00, 5.
 
 ---
 
+## 0. Checklist - read this first, every session
+
+The nine steps of [../_!___derive.md](../_!___derive.md), on **8fStGV**, the member rule 1 is
+derived from. This file is both that wallet's case file and the worked example, so the checklist
+below is what a finished wallet looks like.
+
+| step | state | where |
+| --- | --- | --- |
+| 1 Pick | done | steps 15-16: three of the six members pay at RACE; 8fStGV is the one with a reachable print |
+| 2 Portrait | done, **late** | rows W1-W3, read after the rule shipped rather than before the scan. A flat 0.302 SOL clip, one buy and one sell a position, one at a time, 426 a day, 46 % re-entries. Reading it first would have saved the five readings of section 2.1 |
+| 3 His exit | done | step 29 (its closing hazard: it sells 25-50 ms after a public buy >= 1 SOL, take profit above +10 %, stop -25..-40 %, time from 40 s) and row W2, which fits a static set reproducing its own closes to 0.0177 SOL a position |
+| 4 Test each clause | done | steps 21, 24: a public sell >= 1 SOL at 25-200 ms (lift 8.1), then which of those sells it buys, against the ones it ignores on the same coin |
+| 5 Our version | done | steps 22-23, B2c: we land ahead of it 33.5 % of the time and leftover behind it is +7.46 % at its hold p50. No 5.4 row is needed: the event is reachable as it stands |
+| 6 Fit D, P, X | done | steps 25-34 and G0-G8: P filled (age, buyers, reserve), X re-read on its own pool, D left empty, every threshold re-read off money |
+| 7 Coverage | done | section 5 of this file |
+| 8 Prove | **done, and it ships** | G9-G12 (replay, term audit, the engine's grain), 1.22 / 1.23 (the holdout and the engine ticket for ticket), L7-L9 (the loss-door clone). Next: the clean days after 09-10, then real at 0.03 SOL (derive 12.12) |
+| 9 Record | done | the chain below, evidence 1.20-1.28, and the ledger row |
+
+---
+
 ## 1. Rule 1
 
 Every term is spelled the way the engine computes it (evidence 1.22); every wallet and every leg
@@ -265,3 +285,51 @@ print) under a 15 s clock, and their reaction measured by excess intensity.
 | `node-derivation/data/cvx_studyexact_*.parquet`, `cvx_holdexact_*.parquet` | the study days and the holdout at the engine's grain: every leg, `t_us` (the engine's clock), `vtok` (its spot); tapes `study_exact`, `holdout_exact` |
 | `node-derivation/data/r1_creators.parquet` | each tape coin's creator (Postgres `tokens.creator_wallet`, the source simulate reads) |
 | `node-derivation/data/r1_ref_{holdout_exact,study_exact}.parquet` | **the engine's parity reference**: rule 1's tickets, print identities and SOL |
+
+---
+
+## 5. Coverage and the unread list (derive 10.1)
+
+Every inventory family, marked **tried** / **partly** / **not tried** / **no data** / **not his**.
+A fact read alone, or a book priced under a placeholder exit, is **not tried**. This is the one
+wallet where most of the table is filled, which is what a finished wallet looks like.
+
+| family | mark | what was run | what is left |
+| --- | --- | --- | --- |
+| D1 creation fingerprint | tried | step 10: early liveliness separates its coins, creation structure does not; no public door rescues the book (best -5.60 %) | - |
+| D2 creator's document (metadata URI) | not tried | - | the whole family on rule 1's pool. The documented-project book is a different sentence, and its door enters at age >= 300 s |
+| D3 this coin's life before the fire | tried | steps 26-28b, 41: 30 unpriced door facts walked forward; the one that passed both folds (few earlier frenzy-sells made a new high) failed out of sample at -0.53 % | - |
+| D4 loss door | tried | L5-L9: the tail is a distribution wave, not a rug; public-app share >= 0.7 AND bundled-buyer share <= 0.2857 cuts trades worse than -40 % from 22 to 11 and books +5.61 / +6.84 %/trade on the holdout | the clean days after 09-10 certify it |
+| D5 off-chain | no data | outside the data scope (derive 2.0) | - |
+| E1 a listed ix structure acts | not his | its trigger is a public sell read by size and by the seller's own history, never by which software sent it | - |
+| E2 silence, then a spend | tried | step 21: it **avoids** burst starts (cover 5.8 %), and the member that loses buys them | - |
+| E3 an operator's plan is unfinished | not tried | - | the whole family |
+| E4 a count crosses a line | tried | step 24: >= 15 distinct recipes in the 5 s up to the sell is a term of the event; step 25 books each term's lift | - |
+| E5 after sellers | tried | steps 21-25: the event is a sell inside a frenzy, and the same frenzy on a BUY books -2.64 % | - |
+| E6 this print | tried | the sell's size (>= 1 SOL) and the seller's own hold (<= 30 s) are terms; G15 loosens each one alone and every one fails its first step | - |
+| E7 clock | not his | it fires on a print; its coins run 99 s to 370 s old at entry | - |
+| P1 curve position | tried | steps 32-33, G3: age >= 158 s, reserve after the sell <= 100 SOL | - |
+| P2 windowed tape metrics | tried | G2: "bought >= 2 SOL in 2 s" drops out on both test halves; the recipe count stays inside E | - |
+| P3 skin in | tried | L2-L4: at the fire only age, top-1 share and fresh-60 s share move at all, and none is taken under either exit | - |
+| P4 ix makeup of the recent tape | partly | the recipe count is the frenzy term; L8 reads the bundled groups as public-app builds | seed racers and the tool mix as permissions of their own |
+| P5 tape state already true | tried | step 24: a new high <= 20 s ago is a term; step 32's stop-outs are young thin coins | - |
+| X1 static | tried | steps 29-31, 39, G5, G12: the bracket beats twelve tape-driven exits; +20 % / -60 % / 90 s at the engine's grain | - |
+| X2 the tape stops | tried | steps 30-31: every tape-driven exit books below the bracket, because a frenzy swings 5-10 % inside a few prints | - |
+| X3 another actor acts | tried | L3: once under water, the top holders' selling reads AUC 0.47-0.56 - a cohort-state exit has nothing to read beyond price | - |
+| R re-entry | tried | G6: a 30 s cool-down after a stop adds +0.33 SOL on 14 trades, a five-a-coin cap rests on 8; R unchanged | - |
+| S size | tried | G7, step 40: 0.35 SOL flat keeps every bar on both tapes; 0.5 SOL fails the holdout tail | the book re-read at 0.03 SOL before the real test (derive 12.12) |
+| 5.4 an earlier sign | not tried | - | not needed: the event is already reachable behind the member's own buy |
+| 5.4 a slower part of the same move | not tried | - | G15 loosens the same event instead; a genuinely later entry is unread |
+| 5.4 the other side | tried | step 25: the same frenzy on a buy books -2.64 %. Rule 1 already buys the sell side | - |
+| 5.4 another of his decisions | tried | rows W1-W3: read as a whole trader it changes no slot, and its 6.1 ladder finishes at depth 0 | - |
+
+**Unread, in the order to run it:**
+
+1. **Step 8 on rule 1**: the untouched days after 09-10, all four rules side by side, then real at
+   0.03 SOL with the book re-read at that clip.
+2. **A second event on this node**, not a looser rule 1 (G15). The open candidate is 49uohd's
+   capitulation dip-buy, which needs its own case file starting at step 2.
+3. **D2** on rule 1's own pool, once a URI sidecar covers every coin.
+
+The next step itself is [_!___workflow.md](../_!___workflow.md) section 1, which points here for
+the list.
