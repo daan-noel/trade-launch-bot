@@ -82,6 +82,7 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | **bundled share** | The share of live supply held by bundled wallets, at any age, not only the creation slot. |
 | **crowd** | The wallets that bought in the last hill. |
 | **pusher** | The ix structure that bought the most in the last hill. |
+| **top holder** | One of the 10 wallets holding the most of a coin's live supply at our fill. |
 | **sniper** | A bot that buys at or within a few slots of a coin's creation, on many coins, reading nothing that happens after the launch. A venue's safety panel counts them; a **sniper-eating rug** is a coin built to take their money, and it dies inside 10 s, which is why a harvester waits for age >= 10 s. |
 | **solo 26** | The 26 roster wallets with no co-selection partner and a margin that clears their own standard error: the rows where one address is one opinion (evidence 5.2). Used two ways - the pool instruments are picked from, and a door term counting how many of them are already in a coin. Roster membership is not eligibility: a wallet that manufactures volume stays in the 26 for agreement counts and is dropped at pick. Full anatomy: [solo-traders.md](solo-traders.md). |
 
@@ -141,6 +142,15 @@ These say how an idea is judged. The method itself is [_!___derive.md](_!___deri
 
 | term | meaning |
 | --- | --- |
+| **portrait** | The trader read as a person before any scan: his shape in numbers, 20 of his trades read print by print, then his logic in one sentence with a reason for each part (derive 3). |
+| **clause** | One part of that sentence - what he buys, what he skips, when he leaves - with its reason. Each clause becomes one yes / no test, written before it is run. |
+| **his exit, starting X** | The exit rule read from his own sells, which books near his own close on unseen days (derive 8.0). It prices every later book, so an entry is never judged under a placeholder. |
+| **placeholder exit** | A clock or a fixed bracket used only because his real exit is not read yet. It decides nothing. |
+| **still window / answered window** | After a fire, no print lands inside our lag (still), or one or more do (answered). When only the answered fires pay, the money is the answering bots' own buying and it lands before we do (derive 5.4). |
+| **our version** | The event we can fire on at our seat that rests on his reason: the same print when the rise is still ahead of our fill, else an earlier sign, a slower part of the same move, the other side, or another of his decisions (derive 5.4). |
+| **coverage table** | One table per wallet: every inventory family marked tried, partly, not tried, no data or not his (derive 10.1). It is how no idea is skipped. |
+| **unread list** | Every coverage row that is not tried or not his. A wallet is never closed; it is **parked** with this list and picked up from it. |
+| **data scope** | What a rule may read: the on-chain tape and the token's URI metadata. Off-chain signals are outside it for now, and a family that needs them is marked no data, never red (derive 2.0). |
 | **instrument, node** | The wallet being studied, and the kind of decision it makes (hot tape, mid tape, launch). A node is picked, then derived. |
 | **leftover** | How much of a rise is still ahead of us once our order fills 115 ms after the print we followed. If a move is spent before we arrive, the leftover is gone and the idea is dead however good the print looked. |
 | **peak leftover** | The best price the coin reaches after our fill, measured from that fill. It says an edge could exist; it is never what a rule earns. |

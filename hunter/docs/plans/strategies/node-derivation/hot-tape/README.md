@@ -25,6 +25,11 @@ script that names the node's wallets needs `DATABASE_URL` in `hunter/.env` (a re
 | `r1g_loosen.py` | upgrade plan U3a: r1c_loosen's walk with the door as a fixed term, study from 09-02: `check`, `grid`, `walk`, `combine` | - |
 | `r1g_score.py` | upgrade plan U3b: one additive monotone score over rule 1's six fitted terms in place of the AND, walk-forward | - |
 | `r1g_size.py` | upgrade plan U4: rule 1 + Door's tickets re-priced at a clip sized by a score at the fire (0.05-0.5 SOL), against a flat clip of the same mean and random sizing, walk-forward | - |
+| `r1w_census.py` | step A of the 8fStGV re-read: its 1,916 positions on study_exact at its own seat - clip, legs, hold, give-back, re-entry, and the slice rule 1 + Door takes | - |
+| `r1w_exit.py` | step B: its exit fitted to reproduce ITS closes, family by family and as a greedy OR set, both folds (`alone`, `build`) | - |
+| `r1w_his_exit.py` | step B2: that exit frozen and booked on rule 1 + Door's fires, three tapes, r1u_curve_pop's evaluator and bars | - |
+| `r1w_eladder.py` | step C: the 6.1 ladder on its acted label over the class prints on its coins (`rank`, `ladder [N] [withp]`) | - |
+| `r1w_shold.py` | step C2: the one term both folds hold, a floor under the seller's hold, booked on both rules | - |
 | `toolkit_check.py` | the toolkit re-runs steps 16, 21, 24 and 39 next to the recorded numbers | - |
 
 The step scripts the chain cites and this folder does not hold stay in git at `8b01c18b`, the

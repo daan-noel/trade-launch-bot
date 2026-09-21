@@ -66,6 +66,10 @@ Rows marked **run** are code: their output is pasted beside the number.
 | M5 | Age < 10 s is not the mid-tape prize | derive 9, 14 |
 | M6 | 5.2 reaction cost is a diagnostic; the kill is peak leftover <= 0 or missed >= 50 % | derive 5.2 |
 | M7 | No "too slow for our seat" before the seat is re-measured and every class scanned | derive 0, 14 |
+| M8 | No entry judged under a placeholder exit: the wallet's own exit is read first and prices the book | derive 8.0, 14 |
+| M9 | No fact read alone as a verdict: a fact is read inside the ladder, and a lone read is **not tried** | derive 6.1, 10.1 |
+| M10 | No leftover pass without the random-print control beside it | derive 5.2 |
+| M11 | No wallet and no node closed by a number; a family without data is **no data**, never red | derive 10.1, 14 |
 
 ## 6. What goes beside every number
 

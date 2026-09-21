@@ -129,6 +129,7 @@ __pycache__/
 # Do NOT blanket-ignore *.py / *.json — that hides tracked fixtures, IDLs,
 # and plan twins. Root JSON dumps are already covered by /*.json above.
 *.py
+*.npy
 *.pyc
 *.txt
 *.json

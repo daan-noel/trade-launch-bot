@@ -484,8 +484,10 @@ study, never a term in a rule.**
 See 1.1.
 
 **T8 - Readers are derivable.** A daily-profitable trader runs a decision procedure over public
-data, so it can be reconstructed. A failed reconstruction indicts the hypothesis, never the
-existence of the logic.
+data, so it can be reconstructed. He knows why entering at his event pays, and his door, permission
+and exit are fitted to that event; the derivation starts from that reason and statistics test it
+([_!___derive.md](_!___derive.md), first page). A failed reconstruction indicts the hypothesis,
+never the existence of the logic: no wallet and no node is closed.
 
 **T9 - The seat decides reachability, and direction decides its cost.** See 1.5.
 
@@ -906,10 +908,13 @@ Every line names the slot left empty at measurement. See
 
 ## 8.1 Closed by a measured mechanism - these stay closed
 
+What closes here is a **way of trading**, never a wallet and never a node. A wallet that pays has
+a logic, and a closed way of reaching it leaves every other way open.
+
 | line | the mechanism |
 | --- | --- |
 | copying a wallet's fill, at any seat | truncate the path one slot before they land and every "before" cell goes negative; their impact and the in-slot swarm are in the price first |
-| the wave node, all branches | landing first is a look-ahead (+44.41) and landing second is already negative (-24.07), evidence 5.6: a tape-observable trigger cannot precede the print that triggers it |
+| following the wave's first buy, all branches | landing first is a look-ahead (+44.41) and landing second is already negative (-24.07), evidence 5.6: a tape-observable trigger cannot precede the print that triggers it |
 | the attention-arrival node | the same truncation decomposition; 36.1 % of its k=2 fires are one machine (evidence 5.5) |
 | booking a silent exit at -100 % | the curve freezes price |
 | pricing a fill from the next print | an ordering privilege no latency buys |

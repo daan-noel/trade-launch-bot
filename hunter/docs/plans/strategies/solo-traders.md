@@ -224,8 +224,9 @@ trades, and carries a real 19 % to 20 % rate of losses beyond 20 %, `4HgMCR` exc
 | 21 | `ArAqZH` | 3.07 | 1.28 % | -2.50 % | 15.7 % | **0.0 %** | 47.9 | 1,893 | 7 | 120 | 1.98 | 32 | lottery |
 | 22 | `4HgMCR` | 3.07 | 1.10 % | -1.50 % | 38.2 % | 0.9 % | 3.8 | 1,181 | 3 | 4 | 0.35 | 32 | flip |
 
-Both halves are **closed to us by the seat**: entry inside 11 seconds of creation is the launch
-reactor node, consumed inside about two slots ([_!___strategy.md](_!___strategy.md) 5.2).
+Every sentence booked on either half so far is **red at our seat**: entry inside 11 seconds of
+creation is the launch reactor node, consumed inside about two slots. The wallets stay open: a
+decision of theirs outside that ramp is unread ([_!___strategy.md](_!___strategy.md) 5.2).
 
 ### 3.4 Quiet deep-age - 4 wallets, 110.3 SOL
 
@@ -327,9 +328,9 @@ Reachability differs by node, and the seat decides it, not the margin:
 
 | node | open to us? | why |
 | --- | --- | --- |
-| instant launch | **no** | entry inside 11 s of creation; consumed in about two slots |
+| instant launch | **open, no sentence yet** | every sentence booked so far enters inside 11 s of creation, which is consumed in about two slots; a decision of theirs outside the ramp is unread |
 | mid-tape one-shot | **open, and the door is found** | behind the slow-wall launch door with the permission the burst-start print books **+6.97 % a trade** on 986 trades and clears the client gate at 95.9 %, against -3.33 behind the best public door ([_!___evidence.md](_!___evidence.md) 6.4). It fails the tail and the per-day ticket floor - 16/177/210/24/28/9 a day, over fifty twice in six (4.8) |
-| hot-tape re-entry | **red here** at lag_115 | terms that separate their buys from the tape at lift 2.0-2.2 capture a **+0.29 %** price move, where this node's 1.10 % NET margin implies **+3.65 %** (evidence 7, the H1 row). At a zero fee the cell still loses. **`margin` in this file is net of the 125 bps fee** (`rb-solo-nodes.py` 140), so convert before comparing: `move = (margin + 2.5)/0.9875`. The lag does NOT pay on the buy leg on an aged coin: mean -0.66 %, cheaper than the decision print only 22.5 % of the time - a direction factor is a property of tape DENSITY, not of a side |
+| hot-tape re-entry | **rule 1 pays** ([node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md)); the node read as one label is red at lag_115 | terms that separate their buys from the tape at lift 2.0-2.2 capture a **+0.29 %** price move, where this node's 1.10 % NET margin implies **+3.65 %** (evidence 7, the H1 row). At a zero fee the cell still loses. **`margin` in this file is net of the 125 bps fee** (`rb-solo-nodes.py` 140), so convert before comparing: `move = (margin + 2.5)/0.9875`. The lag does NOT pay on the buy leg on an aged coin: mean -0.66 %, cheaper than the decision print only 22.5 % of the time - a direction factor is a property of tape DENSITY, not of a side |
 | quiet deep-age | **red here** at lag_115 | the burst they follow lasts ~80 ms, so the fill is after it. Campaign-break v0 is a different sentence and is red too at 115 ms (evidence 7) |
 | deep-age big clip | **red here** at lag_115 | a public size print is not the tell (response = base). He starts the burst half the time (evidence 7) |
 
