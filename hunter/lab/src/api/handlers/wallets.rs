@@ -20,6 +20,8 @@ use trading_core::api::handlers::tokens::TokenSummary;
 use trading_core::config::constants::curve_progress_pct;
 use trading_core::models::MarkQuote;
 use trading_core::state::core_state::CoreState;
+use trading_core::storage::repositories::token_repo::TokenRepo;
+use trading_core::storage::repositories::trade_repo::TradeRepo;
 use trading_core::storage::repositories::trade_repo::WalletTradedMint;
 use trading_core::strategies::wallet_ledger::{wallet_episodes, EpisodeStatus, WalletEpisode, WalletTx};
 
@@ -243,6 +245,16 @@ struct CoTrader {
 /// transactions on those mints, from [`EPISODE_LOOKBACK_DAYS`] before the
 /// window). The wallet's recency order is re-applied after the merge since
 /// `find_list_rows_for_mints` returns unspecified order.
+///
+/// Every read runs on the **batch** pool, not `api`. Each one scales with the
+/// wallet's own volume, not with the page size: a wallet at ~60k transactions
+/// over ~5.5k mints in a 7d window costs ~4s warm and ~19s cold in
+/// `wallet_txs_on` alone, because its shared-transaction test is one index probe
+/// per transaction. That is over the api pool's 8s `statement_timeout`, which
+/// surfaced as a bare "database error" on exactly the busiest wallets — the ones
+/// the page exists to read. `batch` has no per-statement ceiling and is sized for
+/// exactly this: a human-initiated analytical read that must not sit on a
+/// connection the dashboard needs.
 pub async fn list_wallet_tokens(
     state: web::Data<Arc<CoreState>>,
     path: web::Path<String>,
@@ -252,8 +264,10 @@ pub async fn list_wallet_tokens(
     // `<= 0` ⇒ unbounded (see `wallet_traded_mints`); positive stays capped as asked.
     let limit = if query.limit <= 0 { 0 } else { query.limit };
     let (since, until) = resolve_window(&query, Utc::now());
+    let trades = TradeRepo::new(state.batch_db.clone());
+    let tokens = TokenRepo::new(state.batch_db.clone());
 
-    let traded = match state.trade_repo().wallet_traded_mints(&wallet, since, until, limit).await {
+    let traded = match trades.wallet_traded_mints(&wallet, since, until, limit).await {
         Ok(t) => t,
         Err(e) => {
             tracing::error!("DB error fetching traded mints for {wallet}: {e}");
@@ -263,7 +277,7 @@ pub async fn list_wallet_tokens(
     };
 
     let mints: Vec<String> = traded.iter().map(|t| t.mint_address.clone()).collect();
-    let rows = match state.token_repo().find_list_rows_for_mints(&mints).await {
+    let rows = match tokens.find_list_rows_for_mints(&mints).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("DB error fetching token rows for {wallet}: {e}");
@@ -277,7 +291,7 @@ pub async fn list_wallet_tokens(
     // rather than rendering a page with no trades.
     let lookback = since - chrono::Duration::days(EPISODE_LOOKBACK_DAYS);
     let mut txs_by_mint: HashMap<String, Vec<WalletTx>> = HashMap::new();
-    match state.trade_repo().wallet_txs_on(&wallet, &mints, lookback, until).await {
+    match trades.wallet_txs_on(&wallet, &mints, lookback, until).await {
         Ok(txs) => {
             for (mint, tx) in txs {
                 txs_by_mint.entry(mint).or_default().push(tx);
@@ -297,7 +311,7 @@ pub async fn list_wallet_tokens(
         .filter(|(_, txs)| txs.iter().map(|t| t.token_delta).sum::<i64>() > 0)
         .map(|(mint, _)| mint.clone())
         .collect();
-    let mut pools = match state.trade_repo().latest_pools(&held).await {
+    let mut pools = match trades.latest_pools(&held).await {
         Ok(p) => p,
         Err(e) => {
             tracing::error!("DB error fetching pools for {wallet}: {e}");
@@ -321,8 +335,7 @@ pub async fn list_wallet_tokens(
     let comparison = comparison_wallets(&query.with, &wallet);
     let mut co_by_mint: HashMap<String, Vec<WalletTradedMint>> = HashMap::new();
     if !comparison.is_empty() {
-        match state
-            .trade_repo()
+        match trades
             .wallets_traded_mints_on(&comparison, &mints, since, until)
             .await
         {

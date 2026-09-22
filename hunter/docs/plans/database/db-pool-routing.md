@@ -34,6 +34,13 @@ All heavy, potentially long-running DB work routes here.
 | `lab/src/api/handlers/strategies/grouped_sweep.rs` | Lake/corpus load, `insert_run`, sweep writer task, `delete_run` (CASCADE), `prune_runs` (CASCADE), targeted + full corpus reload for `list_token_results` |
 | `lab/src/api/handlers/strategies/tpsl{1,2}.rs` | Whole-table token scan (`collect_matching_tokens`) + batched trade fetch chunks for simulate |
 | `live/src/api/handlers/tokens/sync.rs` | Bulk token insert |
+| `lab/src/api/handlers/wallets.rs` | Trader Analysis (`GET /api/wallets/:wallet/tokens`) — all five reads |
+
+Trader Analysis is here because its cost scales with the WALLET, not with the page
+size: `wallet_txs_on` runs one shared-transaction index probe per transaction, so a
+wallet at ~60k transactions over ~5.5k mints in a 7d window costs ~4 s warm and ~19 s
+cold in that read alone. On `api` that trips the 8 s ceiling and the handler returns a
+bare `database error` — on exactly the high-volume wallets the page exists to read.
 
 ## Known past bug (fixed 2026-06-24)
 
