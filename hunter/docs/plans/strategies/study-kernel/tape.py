@@ -8,7 +8,9 @@ class Tape:
     def __init__(self, path='wk_prints.parquet', cols=None):
         cols = cols or ['mint', 'slot', 't_ms', 'reserve_lamports', 'amount_lamports', 'side', 'wallet_id',
                         'payer_id', 'proxied', 'build']
-        T = pq.read_table(path, columns=cols)
+        # mint and build arrive dictionary-encoded: factorize reads the codes, and a 20-million-row
+        # tape does not materialise two string columns
+        T = pq.read_table(path, columns=cols, read_dictionary=[c for c in ('mint', 'build') if c in cols])
         mint = T.column('mint').to_pandas()
         codes, uniques = pd.factorize(mint, sort=False)
         self.mints = np.asarray(uniques)

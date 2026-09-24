@@ -93,8 +93,9 @@ removed from the toolkit). ApfmkS is volume manufacture. 8aaRWu is the live inst
 Working file:
 [node-derivation/mid-tape-rule-3.md](node-derivation/mid-tape-rule-3.md).
 
-- **Next:** 6.1 on 8aaRWu's remaining this-print unread (inventory E6 this-wallet / neighborhood /
-  lake fee: `w_gap` `w_nethere` `w_early` `w_up` `w_szrel` `w_age`, `txi` `prev_sgn` `ss_sell`
+- **Next:** 6.1 on 8aaRWu's remaining this-print unread (inventory E4 fee paid and slot company,
+  and the per-wallet facts the inventory drops as unusable but the study table still carries:
+  `w_gap` `w_nethere` `w_early` `w_up` `w_szrel` `w_age`, `txi` `prev_sgn` `ss_sell`
   `prev_same` `clip_gap`, `pfee` `tip` `fee_rel`). Size buy / Alone in its slot do not spell E.
   `ssize` rank **0.653** HIGH (median 0.33 vs 0.11 SOL); buy>=0.5 leftover PASSES at **0.72 %**
   slice (34.5 % of buys, behind peak **+9.96 %**, ignored +6.68 %); buy>=1 leftover PASSES at

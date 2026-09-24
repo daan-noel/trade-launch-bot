@@ -25,7 +25,10 @@ COLS = ["mint", "slot", "t_ms", "reserve_lamports", "amount_lamports", "side", "
 # a fire chosen on the holdout (derive 2.1). One constant: every tape's start and every study
 # tape's end are the same moment.
 STUDY_END = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc).timestamp()
-# name -> (prints, tokens, wallet map or None for wallet_dict ids, first fire time)
+# The wide re-split (09-25): twelve study days and nine holdout days, so a rule that fires a few
+# times a day is judged on enough days. A study tape's fires end where its holdout's begin.
+STUDY2_END = datetime(2026, 9, 13, 0, 0, tzinfo=timezone.utc).timestamp()
+# name -> (prints, tokens, wallet map or None for wallet_dict ids, first fire time[, last fire time])
 TAPES = {
     "study": ("cvx_prints.parquet", "cvx_tok.parquet", None, None),
     "holdout": ("cvx_holdout_prints.parquet", "cvx_holdout_tok.parquet",
@@ -43,6 +46,12 @@ TAPES = {
     "holdout_exact": ("cvx_holdexact_prints.parquet", "cvx_holdexact_tok.parquet",
                       "cvx_holdexact_wallets.parquet",
                       STUDY_END),
+    # the wide split at the engine's grain: study 09-01 .. 09-12, holdout 09-13 .. 09-21 with
+    # three warm-up days in front of it (mid-tape scratch tape2_export.py)
+    "study2": ("cvx_study2_prints.parquet", "cvx_study2_tok.parquet",
+               "cvx_study2_wallets.parquet", None, STUDY2_END),
+    "holdout2": ("cvx_holdout2_prints.parquet", "cvx_holdout2_tok.parquet",
+                 "cvx_holdout2_wallets.parquet", STUDY2_END),
 }
 
 
@@ -101,14 +110,14 @@ def _ids_map(wfile, addresses) -> dict[int, str]:
 def load(name: str, addresses=()) -> Session:
     from cvx import DAY0
     from tape import Tape
-    prints, tokf, wfile, t_min = TAPES[name]
+    prints, tokf, wfile, t_min, *rest = TAPES[name]
     T = Tape(str(data(prints)), cols=COLS)
     T.day = ((T.t - DAY0) // 86400).astype(np.int16)
     tok = pd.read_parquet(data(tokf)).drop_duplicates("mint").set_index("mint")
     tok["c_s"] = (pd.to_datetime(tok.created_at, utc=True, format="ISO8601")
                   - pd.Timestamp(0, tz="UTC")).dt.total_seconds()
     c_s = tok.reindex(T.mints).c_s.to_numpy()
-    t_max = STUDY_END if t_min is None else np.inf
+    t_max = (rest[0] if rest else STUDY_END) if t_min is None else np.inf
     t_min = -np.inf if t_min is None else t_min
     days = (min(T.t.max(), t_max) - max(T.t.min(), t_min)) / 86400.0
     ids = {}
