@@ -1,7 +1,8 @@
 # Mid-tape one-shot: rule 1 and the member book
 
-<!-- case-ok: a prior fill-copy spelling on 9Uq8GV / 8dtx2t / ApfmkS, kept as the record of a
-     refuted line. The live work is mid-tape-<wallet>.md. -->
+<!-- case-ok: the mid-tape node's shared derivation chain, not one wallet's case file.
+     Each wallet's checklist and coverage table is mid-tape-<wallet>.md:
+     mid-tape-9Uq8GV.md, mid-tape-8dtx2t.md, mid-tape-3Xk2Eu.md. -->
 
 The working file for the mid-tape node, derived by [_!___derive.md](../_!___derive.md).
 Members are split, never pooled. Each paying member's event is graded by leftover existence

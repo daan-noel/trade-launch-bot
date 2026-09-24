@@ -110,8 +110,13 @@ def capped(F, yc="y"):
 
 
 def ledger(F, days, b=B, yc="y"):
+    # An empty book returns the SAME keys as a full one. A caller that reads one key off every
+    # ledger in a sweep (walkforward.new_terms) hits an empty cut sooner or later, and a short
+    # dict turns that into a KeyError halfway through a ladder.
     if len(F) == 0:
-        return dict(n=0, nday=0.0, pct=np.nan, sol=0.0, solday=0.0, pos="0/0")
+        return dict(n=0, nday=0.0, pct=np.nan, sol=0.0, solday=0.0, pos="0/0",
+                    worst=0.0, body=0.0, top1=np.nan, maxcoin=np.nan, h1=np.nan, h2=np.nan,
+                    sl=np.nan, win=np.nan, cap_sol=np.nan, cap_top1=np.nan)
     y = F[yc]
     s = float(y.sum())
     ag = F.groupby("day")[yc].sum()

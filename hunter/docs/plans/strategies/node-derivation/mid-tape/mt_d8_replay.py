@@ -273,9 +273,14 @@ def net_curve(v0, v1, b=CLIP):
 
 
 def y_engine(s0, v0, s1, v1, b=CLIP):
-    tok = b / (s0 * (1.0 + b / v0))
-    proceeds = tok * s1 * max(1.0 - b / v1, 0.0)
-    return proceeds - b - ((b + proceeds) * FEE + 2 * FIX)
+    """kernel.rs `round_trip_with_costs`, spelled in spot prices as `net_curve` above spells it
+    in reserves: the venue fee comes OFF THE TOP of the buy, so only `b / (1 + FEE)` reaches the
+    curve. Charging it at the end instead leaves the bag 1.25 % too large, which the engine's own
+    replay of rule 1 prices at about 2 % of a book."""
+    curve_sol = b / (1.0 + FEE)
+    tok = curve_sol / (s0 * (1.0 + curve_sol / v0))
+    value = max(tok * s1, 0.0)
+    return (value / (1.0 + value / v1)) * (1.0 - FEE) - b - 2.0 * FIX
 
 
 def exit_old(t, v, k, lag):

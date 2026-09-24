@@ -241,10 +241,14 @@ def first_trip(T: Tape, c: Coin, ei: int, spec: dict, start: int | None = None):
 
 
 def y_legs(s0, v0, legs, b=CLIP):
-    """kernel.rs round_trip_multi_leg: legs = [(fraction of the bag, spot, vsol)]."""
-    tok = b / (s0 * (1.0 + b / v0))
-    proceeds = sum(tok * q * s1 * max(1.0 - b * q / v1, 0.0) for q, s1, v1 in legs)
-    return proceeds - b - ((b + proceeds) * rx.FEE + (1 + len(legs)) * rx.FIX)
+    """kernel.rs round_trip_multi_leg: legs = [(fraction of the bag, spot, vsol)]. One
+    `buy_fill`, then one `sell_proceeds` a leg on its own depth; only the last leg empties the
+    bag, so only it pays the rent-reclaim close."""
+    tok, paid = rx.buy_fill(s0, v0, b)
+    last = len(legs) - 1
+    proceeds = sum(rx.sell_proceeds(tok * q, s1, v1, i == last)
+                   for i, (q, s1, v1) in enumerate(legs))
+    return proceeds - paid
 
 
 def book(T: Tape, C: pd.DataFrame, spec: dict, coins: dict, sem: Sem = SEM, b: float = CLIP) -> pd.DataFrame:

@@ -8,7 +8,9 @@ be read off it.
   build(S, trigger, floor=None, exit=..., actor=None, extra=None, runs=None) -> DataFrame
 
   trigger(run) -> bool mask over the coin's prints: the candidate prints. Fires only at
-                  t >= S.t_min; the caller spells the rest (side, size, public, age).
+                  t >= S.t_min AND t < S.t_max - a study tape still CONTAINS the holdout's
+                  warm-up prints, and a fire after that instant is a fire chosen on the
+                  holdout (derive 2.1); the caller spells the rest (side, size, public, age).
   floor(f)     -> bool on the fact dict, applied before the exit is booked (the loose floors).
   exit         an exits.X() spec, booked from a fill 115 ms after the candidate.
   actor        a wallet id: DIAGNOSTIC columns only, never a term - act (it buys <= 0.5 s after
@@ -56,7 +58,7 @@ def build(S, trigger, floor=None, exit=RULE_EXIT, actor=None, extra=None, runs=N
         if not np.isfinite(S.c_s[r]):
             continue
         R = Run(S, r)
-        cand = trigger(R) & (R.t >= S.t_min)
+        cand = trigger(R) & (R.t >= S.t_min) & (R.t < S.t_max)
         if not cand.any():
             continue
         hc, shold, spnl, sfrac = R.holders_and_seller(cand)

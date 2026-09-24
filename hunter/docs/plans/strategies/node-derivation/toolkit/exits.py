@@ -11,6 +11,10 @@ take profit by the headroom to the graduation wall.
   trail     once up >= arm, close on a give-back from the in-hold peak
   ride      once up >= arm, ride while public buying continues (3 s buy SOL >= quiet)
 
+An abort is a clock on the MOVE and not on the trade: ab_t seconds after our fill, the position
+closes unless the price is at least ab_pr above it. `fade` is not this shape - it also needs public
+buying to have dried up, so a coin that sits flat with buyers still printing never trips it.
+
 The trip is read on the print; the fill is the last print landed 115 ms after it (kernel.fill_idx).
 A multi-leg exit is priced leg by leg (law 25).
 
@@ -29,9 +33,11 @@ WALL = 115.0   # vsol at graduation: the headroom target is (WALL / vsol)^2 - 1
 
 
 def X(name, kind="bracket", arm=0.10, give=None, sl=0.25, cap=60.0, fade=False, dump=False,
-      be=None, tp2=None, cap2=None, be2=False, hf=None, tpmin=0.05, tpmax=0.40, quiet=0.3):
+      be=None, tp2=None, cap2=None, be2=False, hf=None, tpmin=0.05, tpmax=0.40, quiet=0.3,
+      ab_t=None, ab_pr=0.0):
     return dict(name=name, kind=kind, arm=arm, give=give, sl=sl, cap=cap, fade=fade, dump=dump,
-                be=be, tp2=tp2, cap2=cap2, be2=be2, hf=hf, tpmin=tpmin, tpmax=tpmax, quiet=quiet)
+                be=be, tp2=tp2, cap2=cap2, be2=be2, hf=hf, tpmin=tpmin, tpmax=tpmax, quiet=quiet,
+                ab_t=ab_t, ab_pr=ab_pr)
 
 
 def net_split(v0, v1, v2, B=B):
@@ -67,6 +73,8 @@ def first_trip(sp, t, v, side, sol, mv, cb3, ei, start, cap, v0, tp, sl, be):
         trips.append(("tp", bigbuy & (pk >= tp) & (pr > 0)))
     elif kind == "trail":
         trips.append(("tp", (pk >= tp) & ((1.0 + pr) <= (1.0 + pk) * (1.0 - sp["give"]))))
+    if sp.get("ab_t") is not None:
+        trips.append(("abort", ((t[sl_] - t[ei]) >= sp["ab_t"]) & (pr < sp["ab_pr"])))
     if sp["fade"]:
         trips.append(("fade", (cb3[sl_] < 0.3) & (pr < 0) & ((t[sl_] - t[ei]) >= 3.0)))
     if sp["dump"]:

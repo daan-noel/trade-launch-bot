@@ -235,7 +235,7 @@ def control(S, w, E, horizons=None, n_per=4, seed=20260918, b=B, frame=None, max
     rows = []
     for r in np.unique(E.run.to_numpy()):
         R = Run(S, int(r))
-        m = R.pub & (R.side == 1) & (R.tm >= S.t_min)
+        m = R.pub & (R.side == 1) & (R.tm >= S.t_min) & (R.tm < S.t_max)
         if frame is not None:
             m &= frame(R)
         bt = R.tm[(R.wal == w) & (R.side == 1)]

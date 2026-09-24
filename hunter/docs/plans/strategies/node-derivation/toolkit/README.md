@@ -37,15 +37,11 @@ lines (copy [../hot-tape/_paths.py](../hot-tape/_paths.py)).
 
 | module | step | call | returns |
 | --- | --- | --- | --- |
+| `kernel_parity` | - | `python -m toolkit.kernel_parity` | the no-DB guard: pins the round trip to the engine's own `sell_value_proceeds_golden_vectors` literals, then asserts every copy in this tree agrees - `study-kernel/kernel.py::net`, `r1_exact.y_engine`, `r1b_exit.y_legs`, `r1g_size.price`, `mid-tape/mt_d8_replay.y_engine`. Exits 1 on drift. Run it after any change to a cost constant or a fill formula, and whenever the engine's `CostModel` moves |
 | `paths` | - | `data(name)`; `ROOT`, `DATA`, `SHARED`, `LAKE`, `LOCAL`, `HUNTER` | where things live |
 | `lake_export` | 2.1 | `export(prefix, days, all_legs=False)`; `python -m toolkit.lake_export PREFIX DAY ... [--all-legs]` | `data/PREFIX_prints/_wallets/_tok.parquet`; register it in `tapes.TAPES`. The default keeps the last leg of each transaction (the study tape's grain); `--all-legs` keeps every leg (the engine's grain, tapes `holdout_legs`, `study_exact`, `holdout_exact`); every export carries `t_us` (the engine's clock) and `vtok` (spot = vsol / vtok) |
 | `tapes` | 2.1-2.2 | `load(name, addresses)`, `roster(node)`, `Session.wallet(prefix)` | a `Session`: `T`, `c_s` (creation s per run), `t_min` (first fire time), `days`, `ids`, `is_node` |
 | pick / 4.0 | 1, 4.0 | tape share on coins he prints; lake `ix_labels` for `InitUserVolumeAccumulator`, bundled `TransferChecked`, `CreateCoinAndBuy` | drop volume manufacture before FIND E (evidence 5.1). [rb-actor-tape-share.py](../../rb-actor-tape-share.py) is the share script for a machine |
-| portrait (no module) | 3 | `seat.episodes(S, w)` for the shape; the 20 trades (10 best by SOL, 10 losers nearest his median loss) read print by print off the tape | his logic in clauses. The filled form is [../mid-tape-8dtx2t-logic.md](../mid-tape-8dtx2t-logic.md) |
-| his exit (no module) | 8.0 | the first-crossing coverage of each branch and the set that books nearest his own close: `mid-tape/mt_d8_all.py` (the `x*` modes) is the template | the frozen exit set, the starting X of every later book |
-| our version (no module) | 5.4 | every fire booked at 0 ms and at the seat, split by the prints that land inside our lag: `mid-tape/mt_d8_all.py` (the fire-race mode) is the template | which next event to test |
-| `portrait` | 3 | `shape(S, w, E)`; `trades(S, w, E, n, is_pro_b, who)`; `markdown(...)` | step 2: his shape in numbers, and the 2n trades to read print by print (the n best by SOL, the n losers nearest his median loss), as the case file's section 1 |
-| `own_exit` | 8.0 | `families(R, k, hold_p50)`; `coverage(S, E, build)`; `book(S, E, build, lag, entry_lag)`; `table(E, *book(...))`; `at_our_seat(...)` | step 3: his OWN exit. Coverage on first crossing (names / sits through / never), then the set whose trades book nearest his own close. Its output is the starting X of every later book |
 | `facts` | all | `Run(S, r)`: `.j(w)`, `.recipes(k, w)`, `.wallets(k, w)`, `.bought(k, w)`, `.sold(k, w)`, `.move(k, w)`, `.holders()`, `.holders_and_seller(flag)`, `.pub_bought_incl(w)` | the public tape state at every print. `.holders()` counts reserve-sized bags above zero, and a full exit leaves float residue, so it reads about distinct buyers, not holders (evidence 1.22) |
 | `seat` | 3-4, 5.2 | `episodes(S, w)`; `seat_book(S, E, caps)`; `reaction(S, E, trigger_fn, max_trig)`; `leftover(S, w, E, trigger_fn, max_trig=0.3)`, `leftover_summary(L)`, `veto(L, n)` | positions (k, ks, pnl, peak, held); RACE / FOLLOW clock books; `reaction`: lag, ahead and a clock (5.3 columns); `leftover`: per acted and ignored ticket the reaction cost, peak leftover at its hold p10 / p50 / p90, missed, break-even first; the summary's **behind** row is the derive 5.2 veto; `veto`: its one reader - `PASS` / `kill` (why: peak<=0, missed>=50, race) / `corner`, a `thin` flag under `THIN_PEAK`, cost reported and never a line |
 | `trigger` | 5.1, 8.1 | `excess_intensity(S, {group: [ids]}, cases="buy"/"close", controls="coin"/"hold", near="node"/"group")`; `peak(lift, cls)` | lift and excess tables, class x lag bin (14 lag bins to 5 s). Classes: WHO (`tool` `nonce` `direct` `pro` `seed_racer`), this-print history, then priced screens. Identity beats a priced class when both spike. [derive section 5](../../_!___derive.md#print-classes-51-scan) |
@@ -79,6 +75,10 @@ the spec chosen - nothing re-fitted.
 
 - `exits.outcomes` passes the tape-reactive inputs as zeros: exact for the bracket and scale
   families; book `sellbuy`, `ride`, `fade` and `dump` through `run_exit` with a `facts.Run`.
+- `exits.X(ab_t=, ab_pr=)` is the abort: a clock on the MOVE, out at `ab_t` s after our fill
+  unless the print is `ab_pr` above it. It composes with any `kind`, and it is NOT `fade` -
+  `fade` also waits for public buying to dry up, so a coin sitting flat with buyers still
+  printing never trips it.
 - `candidates.build` computes every fact before the floor; a full tape takes about a minute.
 - `trigger.excess_intensity` draws random controls: lifts agree between runs to sampling noise,
   not to the digit.

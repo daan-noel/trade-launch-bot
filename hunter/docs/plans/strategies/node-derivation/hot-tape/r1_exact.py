@@ -58,13 +58,18 @@ from toolkit.book import ledger, mask
 
 FEE = 0.0125
 FIX = 0.000225
+# The engine charges a different fixed cost per side, and the leg that empties the bag also pays
+# the rent-reclaim close (hunter/core/src/strategies/kernel.rs, `CostModel`; the values are
+# `.env`'s fee tuning). `FIX` stays as the sell-side figure the older callers pass.
+FIX_BUY, FIX_SELL, FIX_CLOSE = 0.000227, 0.000225, 0.000005
 CLIP = 0.2
 TICK_US = 200_000
 MAX_FILL_WAIT_SLOTS = 3
 MIN_TRADE_SOL = 10_000 / 1e9
 
-# fire window ends (us); a tape not listed fires to its last print
-T_MAX = {"study_exact": datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc).timestamp() * 1e6}
+# fire window ends (us); a tape not listed fires to its last print. The instant itself is
+# tapes.STUDY_END, so the two copies cannot drift.
+T_MAX = {"study_exact": tapes.STUDY_END * 1e6}
 
 # candidate floor: the widest cut on any grid below, so a variant never needs a row cut here
 FLOOR = dict(ssize=0.5, age=60.0, vres=116.0, nb5=8, stall=90.0, shold=300.0)
@@ -269,11 +274,26 @@ def exit_fill(T: Tape, a: int, n: int, f: int, sem: Sem) -> int:
     return last if last is not None else f
 
 
+def buy_fill(s0, v0, b=CLIP):
+    """kernel.rs `buy_fill`: the venue fee comes OFF THE TOP, so only `b / (1 + FEE)` reaches the
+    curve and buys tokens at its own depth. The wallet pays the order plus the buy transaction.
+    `study-kernel/kernel.py::net` spells the same split in reserves (`s = B / (1 + FEE)`)."""
+    curve_sol = b / (1.0 + FEE)
+    return curve_sol / (s0 * (1.0 + curve_sol / v0)), b + FIX_BUY
+
+
+def sell_proceeds(tok, s1, v1, empties_bag=True):
+    """kernel.rs `sell_value_proceeds`: the curve pays `value / (1 + value / vsol)`, the venue
+    keeps its fee out of that, and the transaction's fixed cost comes off the rest."""
+    value = max(tok * s1, 0.0)
+    return (value / (1.0 + value / v1)) * (1.0 - FEE) - FIX_SELL - (FIX_CLOSE if empties_bag else 0.0)
+
+
 def y_engine(s0, v0, s1, v1, b=CLIP):
-    eff_in = s0 * (1.0 + b / v0)
-    tok = b / eff_in
-    proceeds = tok * s1 * max(1.0 - b / v1, 0.0)
-    return proceeds - b - ((b + proceeds) * FEE + 2 * FIX)
+    """kernel.rs `round_trip_with_costs`, leg for leg. Checked against the engine's own replay of
+    rule 1 and rule 1 v2 on study_exact: 1,064 positions, mean error 2e-6 SOL, both signs."""
+    tok, paid = buy_fill(s0, v0, b)
+    return sell_proceeds(tok, s1, v1) - paid
 
 
 def book_exits(T: Tape, C: pd.DataFrame, ex: Exit, sem: Sem, b: float = CLIP) -> pd.DataFrame:

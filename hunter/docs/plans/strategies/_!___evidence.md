@@ -1163,6 +1163,255 @@ Corpus-wide: creator-sold entries book **-4 to -8 % a trade, 0 of 7 days in each
 **A permission, never an edge** - and it is the only term that raises total SOL in every top cell
 of both conjunction scans (section 6).
 
+## 3.4g The ix structure the member answers is a real term, and on its own it is not a rule
+
+Every scan on omego asked what KIND of print lands and how MANY kinds land. Neither asks WHICH
+structure. Where identity did enter a table it was already destroyed: `trigger.who_builds` ORs
+nine named routers into one `tool` bit and `_who_flags` computes the app's own name and throws it
+away. `s_tool` then ranked 0.53 within a coin and the case file concluded "never who sent them" -
+which shows coarse sender TYPE is silent and says nothing about identity.
+
+**An app name is not a structure.** The tape carries 14,355 distinct `build_core` fingerprints and
+every one resolves against the lake's `ix_labels`:
+
+| app | distinct ix structures | share of prints |
+| --- | ---: | ---: |
+| Axiom Trade | **16** | 29.1 % |
+| Pump.Fun direct | **725** | 24.4 % |
+| Terminal | 23 | 6.1 % |
+| GMGN Bot | 10 | 4.5 % |
+| DFlow / Jupiter V6 / OKX | 62 / 72 / 60 | 2.1 / 1.8 / 0.6 % |
+| Photon / Bloom / Trojan | 14 / 14 / 6 | - |
+
+The `tool` bit alone merges at least 83 of these into one boolean.
+
+**The print he answers is the LAST print before him, not presence in a window.** Read as presence
+anywhere in 5 s the effect is 1.3-1.8x; read as the identity of the immediately preceding public
+print it is 3-10x on the same structures. His median gap to that print is **59 ms**.
+
+**The big routers are frequent and not selective**, which is why watching the chain and measuring
+the tape disagree. On his re-entries, the trigger print is:
+
+| app | before **his** re-entry | before a **control** moment | lift |
+| --- | ---: | ---: | ---: |
+| Axiom Trade | **24.6 %** | **32.6 %** | **0.75** |
+| GMGN Bot | 4.4 % | 5.6 % | 0.79 |
+| Terminal | 7.5 % | 8.2 % | 0.91 |
+| DFlow | 3.2 % | 3.6 % | 0.89 |
+| Photon / OKX | 0.5 / 0.8 % | 0.5 / 0.8 % | 0.98 / 0.97 |
+| **Pump.Fun direct** | **23.4 %** | **14.8 %** | **1.58** |
+
+Axiom is the commonest print before him because it is 29 % of the whole tape; the control moments
+on the same coins carry MORE of it than his moments do. What he answers is a bot going direct to
+Pump.Fun, three of them carrying **Lighthouse** - an on-chain assertion program only a careful
+builder uses.
+
+**It survives every control.** His trigger print is a buy 64.5 % of the time against the control's
+51.6 %, and 3.1x the size (median 0.377 SOL against 0.120) - and "a public buy >= 1 SOL" is
+already spelled on this member and already red (D11-D13). So every moment is binned by the trigger
+print's side, its size quintile and the tape's loudness (30 cells), the lift is read inside each
+cell, and the null shuffles which of a coin's own moments are his:
+
+| | result |
+| --- | --- |
+| structures at adjusted lift >= 1.50 | **18**, against a chance 95th percentile of **1** |
+| best adjusted lift | **6.04**, against a chance best of **1.68** |
+| holding in both halves of the days | **15** |
+| the trigger print is one of those 15 | **14.9 % of his re-entries against 3.1 % of controls (4.73x)** |
+| ... and a buy of >= 0.25 SOL | **10.52 % against 2.18 % (4.83x)**, over derive 10's 10 % cover floor |
+
+**And on its own it does not pay.** That sentence names no wallet, so 6.2 books it on all 106,347
+coins at our seat, against the same buy with the structures unnamed and against every other
+structure:
+
+| exit | EVENT | bare buy | other structures | event win | bare win |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| clock 19 s | -4.10 % | -3.50 % | -3.56 % | 34.0 % | 29.3 % |
+| clock 60 s | -6.55 % | -5.37 % | -5.43 % | 31.3 % | 26.6 % |
+| tp25 sl20 60 s | -4.14 % | -3.93 % | -3.98 % | 38.0 % | 33.9 % |
+| tp40 sl25 180 s | -5.53 % | -5.37 % | -5.42 % | 33.1 % | 28.2 % |
+| trail 10 / 8 | -4.85 % | -4.59 % | -4.69 % | 40.6 % | 34.9 % |
+| fade, no tp, 180 s | -5.35 % | -4.96 % | -5.02 % | 9.2 % | 9.8 % |
+| fade tp40 sl25 180 s | -3.77 % | -3.57 % | -3.61 % | 17.7 % | 17.3 % |
+| fade + dump tp60 sl30 | -3.88 % | -3.70 % | -3.75 % | 12.1 % | 12.9 % |
+| scale half +25, rest +80 | -5.55 % | -5.20 % | -5.27 % | 38.2 % | 30.8 % |
+
+0 of 6 days on every cell, and the event is **worse than both controls on all nine exits** - two of
+them the `fade` shape a scalper actually has, which no earlier scan here tested.
+
+**The way it is red is the finding.** Under every symmetric exit the win rate rises 4.7 to 5.7
+points and the money falls. The term picks entries that come good more often and its winners are
+too small to pay for its losers. That is what a component with empty slots beside it looks like,
+not a refuted term: on this member **P has never been tried at all** (P1-P5 read "not tried"), S
+has never been tried, and all 36 door ideas were read on the FIRST-buy pool, never on this one.
+
+**Where the per-structure thresholds belong.** How many prints of that same structure in the
+window, how much SOL they carry, how many land in the trigger's own slot - these are not a
+refinement of E. They are **P**, tape state already true at the fire.
+
+**The door is not licensed, because the oracle is hindsight.** The event on his own coins
+books -0.32 %/trade against -6.17 % on coins he never trades, which is the shape derive 7.1
+calls a missing door. Split by when the fire lands inside his own window it is the artifact
+3.4b already paid for once:
+
+| slice of his coins | fires | %/trade | days |
+| --- | ---: | ---: | ---: |
+| before he ever buys the coin | 8,512 | **+7.03 %** | **6/6** |
+| while he holds | 16,877 | -2.26 % | 0/6 |
+| flat, past his first exit | 18,152 | -2.75 % | 0/6 |
+
+"A coin he will later trade" is knowable only after he trades it. Inside his own window the
+event is red everywhere.
+
+**And it combines with nothing.** The money ladder over that pool - 208 one-sided cuts in 17
+families covering the per-structure window state, the tape's windows, the price shape, the
+coin and the print; one family one term; a 5 % fire floor; both folds; against the same
+ladder on outcomes shuffled across whole coins - returns **depth 0 on both objectives**, raw
+net and every ticket capped at the median take-profit. Fold 1 walks -5.09 to -1.86 on its
+test half with an older settled coin; fold 2 walks a different road and its fit reaches
++2.26 while its test reads -2.97. Every gain sits under a chance bar of **3.1 to 7.8
+points**.
+
+That bar is a finding of its own and it generalises past this member: **on a pool this
+heavy-tailed a beam search over 208 cuts manufactures 4-7 points of out-of-sample gain from
+noise**, so a 3-point improvement cannot be told from luck at this search size. A ladder run
+here without that null would have reported a door.
+
+**The money ladder was also the wrong instrument, and the acted label is the right one.**
+Derive 6.1 puts the label before the money for exactly this reason. On the pool where a
+re-entry is a live decision - event prints on his coins, past his first exit, while flat -
+he answers **14.08 %** of them, against 8.72 % before he ever buys the coin and **0.18 %
+while he holds**. A ladder over 224 cuts in 20 families, both folds, against a coin shuffle,
+takes one term: **the trigger print's own price step under 2.045 %**, lifting the share he
+answers to **20.4 %** with a gain of 5.6 and 6.5 points against a chance bar of 1.3 and 1.5.
+Read within the coin, what he answers is a **small, flat print into a selling tape**
+(`ssize` 0.43, `mvk` 0.41, `sells5` 0.62, `nb3` 0.58).
+
+**The per-structure thresholds do not exist, tested in the form they are stated.** A pooled
+cut cannot express one threshold per structure, so the pool is split by structure and each is
+asked on its own against a within-coin shuffle of the acted label. The three structures
+carrying 2,896 of the 4,804 acted prints read 0.489, 0.556 and 0.508 on the 5 s count and the
+same on the SOL and the slot. What differs per structure is the **acted rate** itself, from
+27.35 % to 10.55 %: the structure's identity predicts and its window state does not.
+
+**And the whole class is refuted at the seat, which is a harder gate than 6.2.** The exit is
+no longer borrowed: `exits.X` gains a clock on the MOVE (out at ab_t s unless the print is
+ab_pr above our fill), the shape `fade` cannot express because `fade` also waits for buying
+to dry up, and the `ride` family is booked here for the first time. Fifteen exits on 66,763
+coins put the finished sentence at **-3.06 %/trade, 0 of 6 days** - 0.7 points better than
+the old best, and still red. Then the ceiling:
+
+| what fires | best %/trade at our seat | days |
+| --- | ---: | ---: |
+| the prints he answers, picked by hindsight | **-1.62 %** | 0/6 |
+| the sentence (event + `mvk`) | -1.64 % | 1/6 |
+| the event, live state | -2.28 % | 0/6 |
+| the prints he lets go | -2.37 % | 0/6 |
+
+His selection is real and worth about one point, and the rung it starts from is under water.
+The same prints booked at a fill meeting the reserve the trigger print met pay **+2.07 %
+/trade, 6 of 6 days** (+4.88 % gross, which is his own +4.14 % almost exactly). At our 115 ms
+seat they read -1.60 %. Booked at every lag from 0 to 300 ms the loss is a **step, not a
+slope**: 0 ms +1.98 %, **10 ms -1.27 %**, 300 ms -2.07 %.
+
+**So the edge is the trigger print's own price impact, and there is no seat that holds it.**
+A 0 ms fill means being sequenced before the structure's own buy, which is not a seat but a
+different trade. This generalises past this member: **an event that is a public print, booked
+at the reserve that print leaves, can never collect that print's impact** - and a study that
+reads its 0 ms row as reachable has found a lookahead, not an edge. The copier's tax sits
+beside it: his own buy is inside our fill window on 59.0 % of these prints (his lag p50
+82 ms), and those fires book -2.25 % against -0.66 % for the rest (hot-tape-omego
+`om E1a-E2f`).
+
+## 3.4h A copied wallet's money is its own market impact, and a copier is behind it
+
+A wallet's own PnL and a copier's book are two different quantities, and the gap between them is
+the wallet's own price impact on both legs. Pricing the first as if it were the second is the
+single largest error this project has made, and it is the premise an entire node was built on.
+
+On omego, `om37_reentry.py` measures his re-entries as `net(R.vbef[k], R.v[ks - 1], B)` - the
+entry at the reserve **before his buy lands**, the exit at the reserve **before his sell lands**.
+Nobody stands in front of a wallet's buy and in front of its sell at the same time. Priced at
+every mark, over the same 21,191 closed re-entries, 0.2 SOL, the same toll:
+
+| entry priced at | exit priced at | %/trade | win | SOL | days |
+| --- | --- | ---: | ---: | ---: | ---: |
+| before his buy | before his sell | **+2.71 %** | 52.1 % | +114.66 | **6/6** |
+| his own fill | before his sell | +0.79 % | 44.3 % | +33.49 | 5/6 |
+| his own fill | after his sell | -1.16 % | 36.8 % | -49.34 | 0/6 |
+| **our fill, 115 ms after his buy** | **our fill, 115 ms after his sell** | **-1.51 %** | 35.9 % | **-63.95** | **0/6** |
+
+The top row is the one the case file recorded, with the words "at our clip". The bottom row is the
+only seat a copier can occupy. **The distance between them is 4.2 points, and the whole edge is
+2.7.** His two prints move these coins about 1.9 % on the buy and 2.0 % on the sell, so the top
+row is handing us both of his impacts.
+
+His own honest result sits near **+0.7 %/trade** - thin, real, and a business at a thousand trades
+a day. It is not a target for anyone standing behind him.
+
+**Three consequences.**
+
+1. **Every red on that member is explained at once.** The first buy, the earlier sign, the
+   re-entry and the structure event were each measured against a target that was never reachable,
+   so each had to come out red at 6.2 whatever it spelled.
+2. **The same shape appears one level up.** On the structure event, the 3.64 points lost in our
+   115 ms split into the trigger print's own impact (2.19) and the buyers who beat us into the
+   window (1.42). A copier is behind every print that pays.
+3. **`seat.seat_book` already names the distinction** - RACE against FOLLOW, "a member that pays
+   only at RACE is reacting to something we must reach before it". The tool was right and the
+   reading dropped it.
+
+**The rule this leaves.** A member's own money is a reason to study it, never a number to chase.
+Any figure quoted as what a wallet is "worth to us" is priced at our fill on both legs or it is not
+quoted at all (hot-tape-omego `om E3`).
+
+## 3.4i A copy target and a runner target are different labels, and a mean hides both
+
+Two facts about a pool have to be read separately and this project read them as one.
+
+**The pool is violently convex, and every book on it was read by its mean.** At our seat on
+omego's structure event the best price reached is p50 +10.8 % at 30 s, +27.4 % at 300 s and
++34.3 % at 1800 s, with a p99 of +513 %; **23 % of fires reach +100 % within half an hour**. In
+every book tried there - eleven tail-keeping exits beside the short ones - the **top 1 % of fires
+is positive and the body bleeds**: +6.3 SOL against -10.3 on the best short exit, +4.8 against
+-11.3 on a tail exit. `book.ledger` fills `top1` only when a book is positive, so every red table
+printed NaN there and the concentration went unread.
+
+That has a consequence beyond bookkeeping. **An average over a pool whose top 1 % carries the sign
+does not bound a subset of it.** "Even perfect selection of his picks loses on average, therefore
+no selection can win" is not valid, and it was used to close this member's event. It is withdrawn.
+
+**The event predicts the member and not the runner.** The label that points at the money is
+bounded: P(the best price reaches +100 % inside 30 minutes at our seat). Over **306,767 fires on
+11,147 coins strided across the whole tape**, so every day weighs evenly:
+
+| what fires | fires | reaches +100 % | lift |
+| --- | ---: | ---: | ---: |
+| any public buy >= 0.25 SOL | 306,767 | 19.45 % | 1.00 |
+| the 15 named structures | 36,472 | 19.71 % | **1.01** |
+| every other structure | 270,295 | 19.42 % | 1.00 |
+| the structures plus `mvk < 2.045` | 13,506 | 20.01 % | 1.03 |
+
+The same event is the trigger print before **4.83x** as many of that member's re-entries as of a
+control moment. **4.83x on the member, 1.01x on the runner.** Whatever those structures know about
+his attention, they know nothing about whether the coin moves, and no exit that waits for a runner
+can be rescued by that E.
+
+**And the tail cannot be fitted on six days.** The 6.1 ladder on the tail label, 162 cuts in 12
+families with the event itself among them, both folds, against the label shuffled across whole
+coins, returns **depth 0**. Both folds independently name the same two facts - `mv60 >= 106.4` and
+`vres < 70.14` - lifting the rate from 19.5 % to 27 % and 32 %, and both sit under a chance bar of
+**11 to 22 points**. The bar is that high because **the label is nearly a property of the COIN**,
+so the effective sample is 11,147 coins rather than 306,767 fires, and the rate itself swings
+**30.2, 12.0, 27.1, 16.7, 17.6, 11.0 %** across the six days.
+
+**What this settles.** Convexity is on the tape and it is not in this member: his median hold is
+20 s, his median close +1.98 %, and he takes exactly one buy and one sell every time (3.4h). A
+scalper is the wrong wallet to derive a runner rule from. Two folds agreeing on two families is
+the most encouraging read in the file and it is still not evidence at this sample size - a
+convexity rule is a data decision (coins and weeks) before it is a derivation
+(hot-tape-omego `om E5-E7`).
+
 ## 3.7 L-door where the tail exists (C0b), and the headroom trap under it
 
 ```
@@ -1237,6 +1486,134 @@ the coin - is stronger still (L-rate lift **0.37** against a matched-random null
 the two stack: `bundle < 0.20 AND A >= 1` reads an **8.77 %** L-rate and **+3.86 %/trade**
 against -14.62 % for the whole reachable population. Controls, transfer and the full table are
 in 6.8.
+
+## 3.8 A creation-settings group as the universe: the door is the creator, no entry passes
+
+```
+D the 6ix Create_v2 + ATA + BuyV2 + Transfer sequence (CU pin 500,000 / 10,000)
+E four candidates, all below   P as noted per entry   X rule 1's bracket . trail . abort . clock
+R one open per coin   S 0.2 and 0.03   seat 115 ms both legs
+frame  lake tokens 07-22..09-20 (1,522,740 coins); tape study-kernel/cvx_prints.parquet,
+       12.47 M prints, 127,833 coins, 08-30..09-06, against a 25,000-coin pool control.
+       Two independent passes. Case: node-derivation/launch-group-6ix.md
+```
+
+**A creation fingerprint is a launch TOOL, not an operator.** The sequence carries **41,013
+creators** over 61 days, top1 0.9 %; pinning the CU preset still leaves **27,802 creators** on
+90,162 coins. `max_cost` is the `u64::MAX` sentinel on 134,431 of 154,801 coins, so it carries no
+information and must never be range-filtered. The group's coins are below the pool on every
+outcome: **0.08 % migrate against 3.38 %**, median volume 0.58 SOL against 2.12, and **86.2 %
+never move at all** (peak vsol < 35).
+
+**The coins run as three lines, and the start print cannot tell them apart.** Dead 86 % (flat at
+vsol 30.2 from 2 s to 87 s, four prints). Meh 11 % (a bump to 39, back to 30). Movers 3 %, and
+they are **already at vsol 42 by age 2 s**, peaking at 56 around 7 minutes. Of coins first
+crossing vsol 35 after age 10 s, **83.6 % are false starts**, and the start print of a false start
+and of a real mover look the same (0.98 SOL, +5.7 %, 84 % fresh).
+
+**The creator's own trailing record IS a door, on coin quality.** Creators with >= 5 coins in the
+trailing 7 days, banded by how many reached 20 trades, read forward on the NEXT day's coins:
+
+| trailing record | coins/day | next-day survive | next-day volume >= 50 SOL | days beating base |
+| --- | ---: | ---: | ---: | ---: |
+| >= 50 % survived | 235 | **74.7 %** | **19.6 %** | **30/30** |
+| 20-50 % | 142 | 31.8 % | 4.1 % | 14/30 |
+| < 20 % | 489 | 6.4 % | 0.8 % | 0/30 |
+| group base | | 17.2 % | 4.2 % | |
+
+Read on episodes instead of volume the same bands give 8.18 % of hi-band coins producing a
+playable +50 % swing against a 5.33 % pool control: a **1.5x lift, not 4.7x**. Volume is not a
+swing (law 23), and the door's real work is exclusion - the low band runs 0.66 %. 119 creators
+carry the hi band, 29 of them 80 % of it, so it is 3.1's rotating client and refreshes daily.
+Asked the other way - does creator history reopen *leftover* - it stays red, and both readings
+hold: **the record selects better coins, and better coins are not an entry.**
+
+**The 24-point gap is the whole problem.** Firing at the true episode low against firing once
+price has risen 10 % off that same low, playable lows (age >= 60 s), same exits, same seat:
+
+| where we fire | pool | group hi band |
+| --- | ---: | ---: |
+| the true low (look-ahead, a ceiling) | **+14.73 %** 8/8 | **+9.56 %** 7/8 |
+| 10 % above it (decision time) | **-9.06 %** 0/8 | -12.57 % 0/8 |
+
+The coins are tradeable and the exit is adequate. Price confirmation costs 24 points, which
+reproduces 1.1's -9.87 % of entry per slot from an independent build. **An entry on a cohort must
+contain no price confirmation at all.**
+
+**Four entries, none passing.** Leftover of the first print at age >= 10 s is occupancy-red
+(-3.92 % at 87 s). The 8dtx analog (quiet, own step >= 1.90 %, fresh buyer, prove-or-abort in
+5-10 s) books clock 5 s **-3.79 %**, abort -3.78 %, and stays red even on the 3 % movers.
+Price location books **-3.10 %/trade, 0/8 days**. Buyer identity at a local low, with causal crew
+membership (a wallet on 3+ EARLIER coins of the same creator), gives 233,278 tickets across 30
+cells of class by position and **not one positive**, every cell within a point or two of the
+round-trip toll. Rule 1's frenzy shape transfers as a **monotone ladder** (-4.70 / -2.92 / -1.92 /
+-1.50 / **+0.88** / **+4.52** %/trade as each term is added, in both bands, the door worth about 6
+points at the tightest cut) but **fails its folds**: -14.20 % on 26 trades against +10.53 % on 81.
+Eight days is too short to read a cut that narrow.
+
+**One durable exclusion:** the creator's own buy on its own coin is the most reliably losing print
+measured here, **-21.97 %** at a local low and **-38.96 %** near one, on 2,385 tickets.
+
+**No large launch type is a sleeping-coin universe.** 71 exact sequences with >= 300 coins
+(406,278 coins): the best sleep-then-wake rate is **3.1 %**, and on that type 91 % of movers are
+already up by 10 s.     empty slots: E, and P/X/R behind it
+
+## 3.9 Creator rotation inside one launch build: not recoverable, and the group's one live entry dies
+
+```
+D the 6ix Create_v2 + ATA + BuyV2 + Transfer sequence, ix structure ONLY (no CU pin)
+E rule 1's frenzy shape, re-run   P at the sell   X bracket tp20/stop60/c90 and abort(5s,2%)+trail30
+R one open per coin   S 0.2   seat 115 ms both legs
+frame  09-01..09-21, 74,948 coins, 22,466 creator addresses, 2,713,148 prints
+       (study-kernel/tape6ix/, cvx_6ix_pairs.parquet, cvx_6ix_door21.parquet)
+```
+
+**A creator address is cheap to rotate, so it is not identity either - but no rotation is
+recoverable from this data.** The ix sequence is the stable layer because changing it costs a code
+change; the CU preset is a config field (500,000 / 10,000 on 79 % of the group, a build default)
+and the creator address is free to replace. Four independent attempts to recover one operator
+behind several addresses all land at or below their null:
+
+| attempt | link | real | null |
+| --- | --- | ---: | ---: |
+| crew co-occurrence | creators sharing >= 2 selective wallets | CU preset agrees 67.2 % | 73.9 % |
+| crew loyalty, 27-setting sweep | wallets on >= 2 coins of each creator | CU lift <= 2 pts anywhere | - |
+| the same, rotation shape | linked creators run sequentially | 3.7 % | 9.3 % |
+| day-matched succession | a stopping creator's crew reappears on a new address | 25.3 % at J >= 0.2 | 33.3 % |
+| config reuse | the exact configured buy carries across addresses | 1,350 values on >= 2 creators | 1,460 |
+
+The top crew-overlap pairs run **concurrently**, not in sequence, and disagree on their preset.
+The configured buy amounts are round SOL net of the 1 % pump fee (99,012,169 = 0.1 SOL;
+989,824,718 = 1.0 SOL), each shared by 500 to 2,000 addresses, so they are UI defaults and carry
+no operator. **The one link that could still carry rotation is funding**, and `raw_txs` is empty,
+so funder -> creator needs an RPC budget and stays untested.
+
+**The creator's trailing record replicates on an independent 21-day window.** Same door, tape
+rebuilt from scratch, 14 days carrying a full 7-day history:
+
+| band | coins | survive | volume >= 50 SOL | beats the day's base |
+| --- | ---: | ---: | ---: | ---: |
+| hi (>= 50 % of >= 5 trailing coins reach 20 trades) | 5,807 | **75.3 %** | **17.38 %** | **14/14** |
+| mid | 3,829 | 35.0 % | 4.39 % | 6/14 |
+| lo | 10,685 | 5.4 % | 0.77 % | 0/14 |
+| group base | | 19.5 % | 4.55 % | |
+
+**Rule 1's frenzy shape is a regime, not a rule.** The 8-day read leaves it alive on 107 trades;
+21 days give it 938 to 3,504 and split it in half. Hi band, bracket exit, %/trade at our seat:
+
+| cut | n | all | 09-08..09-14 | 09-15..09-21 | days |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| sell >= 1 SOL (base) | 25,836 | -5.71 | -4.85 | -6.56 | 0/14 |
+| + new high <= 20 s | 8,578 | -2.90 | -1.35 | -4.40 | 3/14 |
+| + quick-flip seller | 3,504 | -0.74 | +1.96 | -3.49 | 5/14 |
+| + frenzy nb >= 10 | 1,648 | +1.63 | +4.37 | -1.58 | 6/14 |
+| + frenzy nb >= 15 | 938 | **+3.25** | **+6.43** | **-0.92** | 7/14 |
+
+The ladder stays monotone, which is why a short tape flatters it. But the **base row is flat
+across the halves** (-4.85 against -6.56) while the tightest cut falls 7 points, so the selection
+decays, not the market. No single day and no handful of trades carry it: the top 5 trades are 0.67
+of 6.09 SOL, and the daily line runs +14.6, +9.7, +8.3 through 09-12 and negative after 09-15.
+The rest of the group decays the same way. **This closes E for the group on every entry tried.**
 
 ---
 
@@ -1535,8 +1912,7 @@ for agreement counts and is dropped at pick (derive 4.0). `ApfmkS` is that row.
 
 `best 1 %` above 100 % means the other 99 % of trades collectively lose money.
 
-**Hold is reactive at the node level**: `p90 / p50` runs 3.0x to 5.3x. Per member it can invert -
-`9Uq8GV` reads 1.0 and exits on a clock (5.8).
+**Hold is reactive in every node**: `p90 / p50` runs 3.0x to 5.3x, so no node exits on a clock.
 
 The scope rule that defines the roster (exactly one buy and one sell on >= 95 % of trades) is
 expensive and its cost is monotone in purity: wallets under 50 % purity median 13.38 % margin on
@@ -1664,48 +2040,6 @@ Brands are not machines: Axiom, Terminal and GMGN are buy/sell symmetric (the te
 the seed-builder cohort is the racer layer. **A build's instruction name and its compute-budget
 order separate a campaign client from its generic twin on the same instruction set** - one
 concentrates about 21 buys per coin and is green, the other sprays about 2.7 per coin and is red.
-
-## 5.8 An exit read from a member's own sells: 9Uq8GV is a clock
-
-The first wallet read by derive 8.0, and the check that the step works. `toolkit.own_exit` on
-`study_exact`, fires cut at 09-06 12:00: **801 closed positions on 678 coins**, bought at its own
-fill, zero latency, 0.2 SOL, the same kernel on every row.
-
-```
-D  none . E none (its own positions, no reconstruction) . P none
-X  every branch of own_exit.families, read on FIRST CROSSING and then on money
-R  its own   S 0.2   seat its own fill, zero latency   universe study_exact, fires < 09-06 12:00
-```
-
-**Coverage on first crossing** - the branch names its sell when it is out within 300 ms of the
-crossing, it is early when it sits through it:
-
-| branch | names | sits through | never fires first |
-| --- | ---: | ---: | ---: |
-| clock 16 s | **9.9 %** | **1.6 %** | 88.5 % |
-| clock 14 s | 1.5 % | **84.4 %** | 14.1 % |
-| clock 18 s | 0.1 % | 0.6 % | **99.3 %** |
-| curved trail p 0.5, 17 % at a +50 % best | 8.6 % | 48.4 % | 42.9 % |
-| flat trail 10 % | 8.5 % | 53.2 % | 38.3 % |
-
-**Money against its own close** (`diff_abs` = mean absolute SOL a trade between the set's trade and
-its own; the fit days pick and the test days agree):
-
-| set | SOL | its own | diff_abs | corr | sells before it | after it |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **clock 15 s** | 3.50 | 4.33 | **0.0061** | **0.959** | 82.9 % | 15.2 % |
-| clock 16 s | 0.61 | 4.33 | 0.0068 | 0.981 | 1.6 % | 60.0 % |
-| curved trail p 0.3, 19 % OR a 10 s abort | 0.56 | 4.33 | 0.0231 | 0.526 | 57.6 % | 32.1 % |
-| a 10 s abort alone | 6.95 | 4.33 | 0.0439 | 0.222 | 47.6 % | 48.7 % |
-
-verdict: **its exit is a clock at about 15-16 s**, the only static exit read on the mid-tape node.
-Its hold is 9.7 / 16.0 / 16.2 s, so `p90 / p50` is 1.0 against 3.0-5.3x pooled per node: "hold is
-reactive, not a timer" is a node-level reading and it inverts on this member (law 27). The trail
-families are refuted on it - 0.023 to 0.044 SOL a trade from its close, correlation 0.22 to 0.53 -
-so a book on it is priced under the clock, not under a trail. The 16 s clock earns less than the
-15 s one only because it sells just after it and pays the extra move.     empty slots: D, E, P
-
----
 
 # 6. THE CONJUNCTION SPACE
 
@@ -1900,7 +2234,6 @@ The ledger: every rule booked, one row each, with the coordinate that produced i
 | Mid-tape holder book at episode open | D never_sold / dev / sold_back / pro_hold / last_pro_hold / top1 . E burst START . P age/v . X clock 45 / trail40 . seat lag_115 | all red; last_pro_hold>=0.15 lift 3.50 then **-3.57 %/trade**. Ep1 book does not name return coins | **does not ship.** Tokens remaining is not D on this event |
 | Mid-tape 9Uq8GV | D unread . E buy >= 1 (burst start, nb2 / npro rising edges beside it) . P none . X clock 15 (prior) . R one per coin . S 0.2 . seat lag_115 | buy>=1 behind cost **4.99 %**, peak leftover **+4.01 %** (cover 87.5 %); every class and rising edge peak +1.65..+3.91 %, none a race; 6.2 occupancy of buy >= 1 + terms 0/8 | **5.2 PASS at FOLLOW** (peak +4.01 %), **occupancy red** (step 5.2d). Next 6.1 (which prints), 7.1 only after; not phase 8 |
 | Mid-tape 8dtx2t burst start | D none . E public burst start on the fires it takes . P none . X none . R one per coin . S 0.2 . seat lag_115 | behind cost **5.39 %** (98.6 % over 2 %), peak +0.71 % at hold p50; buy>=1 +2.15 %, buy>=0.5 +1.65 %, nb2 rising edges +1.18 / +3.17 %; pro -0.35 % and npro2 rising edge -1.01 % killed | **5.2 PASS, thin.** Not its E: 5.1 on every leg names clip_step_up (mid-tape-rule-3.md). Public burst START stays C2 (workflow 2) |
-| **Mid-tape 3Xk2Eu** | D none (every candidate red) . E `flow_spike >= 7.564` AND `nb5 <= 2` AND `struct_n <= 3` AND a public-app build . X a 55.5 s clock prior . R one open at a time . S 0.2 . seat 83 ms, `study_exact` | 6.1 ladder spells it in both folds (held-out acted **12.9 / 8.8 %** against a 0.4 % root); tightened it fires **1 in 7** on **12.3 %** of its buys with peak leftover **+8.57 %**. **Occupancy -4.54 %/trade 0/6 on every coin**, and tightening makes it worse (-3.99 -> -4.54 -> -4.95). 7.1: its coins **before** its first buy **+13.12 % 6/6** (59 a day, body +7.74, worst day +0.10, top 1 % 16.9 %), **after** -1.32 %, other coins -5.25 %. 7.3: every tape coin fact red (best AUC `buys10` 0.626, every quintile -2.5..-7.3 %, 0/6); the loss door lifts -6.52 -> **-3.92 %** and stays 0/5. **Wallets are not D either**: a 278-wallet cluster picked on the first half for entering its coins before it catches **75.4 %** of them on the held-out half, but at **4.2 %** precision (7.1 % at K >= 5), and the class on marked coins lifts -4.10 -> **-3.12 %** without crossing zero - the mix needs 25-30 % precision. **Modes are not the answer either**: split on the 60 s move before the buy it is a right-tail trader in each (means +4.75 to +9.00, medians -4.71 to +0.22), and all 24 mode x exit cells are red on every coin (best, the dip under a 55.5 s clock, -2.59 % 1/6). **P and X are searched too**: 8.1's closing hazard shows no take-profit band at any hold and names a loss-capped ride, which books -5.76..-6.57 % 0/6, worse than the clock (law 26); 9.1's only separator is `room` under the wall (AUC 0.636) and its best money cut is -4.46 % 0/6. **And the remaining door families**: the creation fingerprint reads AUC 0.46-0.51 on launch parameters, with a prior-only launcher history as the best cell of the whole study (creator >= 20 coins, >= 20 % wall rate: **-1.10 %/trade 4/6**) that is orthogonal to it (1.34 % of its rows are its coins, under the 3.73 % base); the coin's life shape is red (best `flush recovered` -2.33 % 0/6); D2 and D5 are **not scorable** because `cvx_meta` is the keep+ep50 sidecar (law 30) and its coverage alone is worth 8 points (+0.61 % 4/6 covered against -7.56 % 0/6 not covered). Guard: an `early_ops` count taken over the coin's whole first minute reads **+1.92 % 5/6** and is a lookahead for any fire inside that minute; truncated at the fire it books -3.19 % 0/6 | **red at our seat: E is spelled and reachable, D is not.** The only green universe is its own coins before it arrives, which no public fact reproduces. Its exit is not static either (no rule names > 12.4 % of its sells; it sits through the crossing on ~73 %). Open: this sentence is red and the wallet is not closed. The empty slot is which coin it watches; D2 (the URI metadata) is unread until a sidecar covers every coin, and D5 is outside the data scope (derive 2.0); and the reason it watches those coins is the next question (mid-tape-rule-3.md) |
 | Mid-tape 9999hu (88887Q is the same tell) | D unread . E sell >= 1 (every other print class and the frenzy's rising-edge states carry the same leftover) . P none . X tp15 / sl40 / 70 s, a prior read on the acted pool . R one per coin . S 0.2 . seat lag_115 | sell >= 1 behind cost **8.97 %** (88887Q 7.01 %), peak leftover **+12.61 %** (1.27); other classes cost 6.95..22.61 %, peak +5.51..+12.23 %; rising edges cost 7.87..8.54 %, peak +7.66..+11.84 %; occupancy -3.53 % 0/8; age <= 16.3 s +3.85 % 7/7 is the launch first-sell; acted tp15 sl40 t70 +1.61 % 7/7, top 1 % 42.8 %, capped -7.42 SOL | **5.2 PASS at FOLLOW** (peak +12.61 %), **occupancy red**, 1.9 % of its coins' sells >= 1 acted. Next 6.1 (which sells), 7.1 only after; not phase 8 on the acted pool (derive 6.2) |
 | Mid-tape ApfmkS | D none . E none: volume manufacture, not a reader . P none . X none . R one per coin . S 0.2 . seat lag_115 | tape share 0.13 % prints / 0.45 % SOL; `InitUserVolumeAccumulator` 7.7 % and bundled `TransferChecked` 40.8 % of prints (unique in the 26); CreateCoinAndBuy 1 mint; 5.1 peak lift 1.44 | **drop at pick** (derive 4.0). Not FIND E |
 | Mid-tape 8aaRWu | D unread (E not spelled) . E identity family; named `build` list is the market (0.29 %) or a 5.3 % corner; silence-then-K cover **1.8 %**, leftover cover<10; run_k>=2 leftover PASSES at **0.63 %** slice; Two lists agree K>=2 leftover cover<10 at **1.77 %** slice; First run here leftover PASSES at **0.50 %** slice / rank **0.501** . Size buy leftover PASSES at **0.56 %** slice / rank **0.530** . `alone_in_slot` rank **0.354** low, leftover PASSES at **0.08 %** slice . P none (frame age >= 10 s) . X none . R one per coin . S 0.2 . seat 83 ms, 115 ms beside it | parent leftover cost **1.08 %**, peak **+9.51 %**, cover 94.4 % (115 ms 1.17 / +8.88); ignored leftover **+5.42 %**; fresh_return leftover **+9.31 %**, ignored **+7.08 %**; named-list lift>=3 leftover cover<10, ignored peak **+14.34 %**; arrival slot_gap rank **0.506**; sil10 run_k>=2 leftover cover<10 (115 ms peak<=0); run_k>=2 behind peak **+19.29 %**, ignored +10.65 %; 2bu K>=2 leftover cover<10, all-ignored peak **+23.12 %**; 2bu K>=1 leftover PASSES cover 29.9 %, behind **+8.56 %**, ignored **+8.76 %**, slice **0.50 %**; first_here leftover PASSES cover 12.4 %, behind **+7.72 %**, all-ignored **+7.45 %**, slice **0.50 %**; buy>=1 leftover PASSES cover 16.8 %, behind **+17.07 %**, all-ignored **+6.45 %**, slice **0.56 %**; `alone_in_slot` leftover PASSES cover 23.5 %, behind **+8.71 %**, all-ignored **+2.65 %**, slice **0.08 %**, acted ahead **89.9 %**; occupancy re-read **-4.12 %** 0/6; its-coins **-1.96 %** 0/6; 7.1 framed before first buy **+2.24 %** 6/6 (top1 58 %); 7.3 framed parent **-3.76 %** 0/6 n=276,018 | **5.2 PASS. E not spelled.** Next 6.1 remaining this-print unread (this-wallet / neighborhood / lake fee), not 7.1 / phase 8. Its-coins occupancy red: D cannot fix this class. Do not AND. Identity beats priced |
@@ -1927,8 +2260,8 @@ The ledger: every rule booked, one row each, with the coordinate that produced i
 | Armed trail with no stop under it | D launch door v2 . X the armed trail, arm +10 %, nothing cutting below the arm gate | the 363 fires that arm book **+78.69 SOL**; the 1,619 that never arm book **-34.96** and hold to the 1200 s cap. A -25 % stop that applies only while unarmed: +43.72 -> **+46.18 SOL**, forward +7.58 -> +8.35, median hold 1200 s -> **235 s** | refuted. With an arm gate set the trail cannot fire below it, so an unarmed position carries no exit but the clock |
 | Campaign-rider family | D campaign class . E camp / camp+no-extraction / +returning+live+creator-in . seat lag_115 | -5.58 % to -10.15 %, 0/8 days | **this family is red. It is not the v0 sentence above** |
 | No-initial-buy door + router buy | D creation carries no buy and creator never traded . E router buy >= 0.5 SOL . X clock 45 | fitting week +12.58 SOL, 5/7; three earlier weeks red | refuted on a disjoint holdout; the fitting week is one launch machine active two days |
-| Wave node, all branches | every seat | -0.70 to -35.87 SOL | every follow sentence **closed by mechanism** (5.6); the node itself stays open to a sentence that is not a follow of the wave's first buy |
-| Attention-arrival node | every seat, every permission | truncation decomposition | every copy-of-arrival sentence **closed by mechanism** (5.5); the node itself stays open to a sentence that does not rest on their arrival |
+| Wave node, all branches | every seat | -0.70 to -35.87 SOL | **closed by mechanism** (5.6) |
+| Attention-arrival node | every seat, every permission | truncation decomposition | **closed by mechanism** (5.5) |
 | Axiom push, cells A and B | seat **slot +1**, with a take-profit on a convex book | -109.83 / -42.67 SOL, 5 of 5 days red | red at a seat worse than ours |
 | Copying any wallet | lag_115 | negative in every cell | **closed by mechanism** |
 | Copied buyer (copy-trade leader) | D none . E a wallet's first buy of a coin at age >= 10 s, >= 0.01 SOL, the wallet having >= 3 followers on another build on the days before (a follower trails it on >= 5 coins within 12 slots, >= 4x as often as it leads it, on >= 25 % of its own coins); late: those followers pushed >= 0.02 of vsol per leader coin at >= 2 slots behind . P none . X clock 5 / 15 / 30 s, peak inside each . R every first buy . S 0.2 . seat lag_115 . universe study_exact 09-02..09-06 12:00 | followers exist: 4,330 trailing pairs on another build, 801 leading pairs in the reversed-window null; their SOL lands 41 % at >= 2 slots behind (one operator's same-build wallets 71 %). Late leader 2,048 fires: clock **-5.91 / -7.02 / -6.34 %**, peak inside 5 s +3.42 %; every leader 30,402: -3.06 / -2.47 / -2.70 %; other first buys on the same coins: -2.42 / -2.00 / -2.04 %, peak +3.29 %. 0/5 days each at 15 s | red as E. 5.2 PASS by its line (peak +3.42 %), and it is the control's own peak: the late followers' SOL arrives and sellers outweigh it inside the hold. The biggest leaders' followers co-arrive in slot 0-1 (closed by 5.5) |

@@ -21,25 +21,6 @@ Study **fires** stop at 09-06 12:00 (derive 2.1): loading the tape does not cut 
 | 5.1-5.2 | `mt_p51_88887Q.py` | print 88887Q reacts to (WHO / history / priced), leftover at 115 ms | rule 3 |
 | lag ladder | `mt_p51_88887Q_lag.py` | leftover at 50 / 115 ms on seller_loss / sell>=1 / down>=2 % | rule 3 |
 | 5.1-5.2 | `mt_p51_3Xk2Eu.py` | print 3Xk2Eu reacts to (WHO / history / priced), leftover at 115 ms | rule 3 |
-| 6.1 | `mt_p61_3Xk2Eu.py` | which class prints 3Xk2Eu takes: acted share per class, rank inside `alone_in_slot`, leftover on it (0.08 % acted; a corner at 2.08 % / 5.6 % cover) | rule 3 |
-| 6.1 ladder | `mt_p61b_3Xk2Eu.py` | the E ladder on all its fires: depth 3 in both folds (flow_spike AND thin tape AND mv10) | rule 3 |
-| 5.2 on the spelled E | `mt_p61c_3Xk2Eu.py` | is the laddered E reachable: the whole sentence, each term, each pair, the earlier footprint | rule 3 |
-| 6.1 ladder in the pair | `mt_p61d_3Xk2Eu.py` | tighten the reachable pair with the price-move family barred (depth 1: `mvk >= 4.246`) | rule 3 |
-| 5.2 + coverage | `mt_p61e_3Xk2Eu.py` | 1-in-N, share of its buys covered, and leftover per tightened spelling | rule 3 |
-| 6.2 occupancy | `mt_p62_3Xk2Eu.py` | the sentence on every coin of the tape under a hold-matched clock (red 0/6) | rule 3 |
-| 7.1 | `mt_p71_3Xk2Eu.py` | its coins split at its first buy: before +13.12 % 6/6, after -1.32 % | rule 3 |
-| 7.3 | `mt_p73_3Xk2Eu.py` | do the tape's coin facts pick its coins before it arrives (no: every quintile red) | rule 3 |
-| 7.3b | `mt_p73b_3Xk2Eu.py` | the loss door as D on its tightened class (-3.92 % 0/5: D none) | rule 3 |
-| entry place | `mt_where_3Xk2Eu.py` | where in the coin it buys: move before, distance from the high, buyers ahead of it, move left above it (mid-move, ~79th buyer, +20 % left in 60 s) | rule 3 |
-| A co-fire | `mt_who_3Xk2Eu.py` | who else buys within +-0.2 / 1 / 5 s of it, against a same-coin chance anchor (the tight set follows it; nobody leads it) | rule 3 |
-| A2 live door | `mt_who2_3Xk2Eu.py` | the leading wallets as a walk-forward door: does the mark beat its first buy, and does the marked class pay (75 % caught at 4 % precision; money still red) | rule 3 |
-| B1 modes | `mt_b1_3Xk2Eu.py` | split its positions six ways and describe each bucket by what it was not cut on (clip flat at 0.72 SOL; dip and chase are two behaviours) | rule 3 |
-| B2 ladder per mode | `mt_b2_3Xk2Eu.py` | the 6.1 ladder inside each mode (chase 68 % cover, mild 23.5 %, dip 13.8 %) | rule 3 |
-| B3 mode money | `mt_b3_3Xk2Eu.py` | every mode on every coin under six exits, its coins beside (24 cells, none green on every coin) | rule 3 |
-| 8.1 / 9.1 | `mt_p9_3Xk2Eu.py` | `hazard` its closing hazard at fine bins per mode (no take-profit band: a loss-capped ride), `p` the first P search on this member (AUC then the money curves; best cut -4.46 % 0/6) | rule 3 |
-| D1 / D3 | `mt_d1_3Xk2Eu.py` | the creation fingerprint with a prior-only launcher history, and the coin's life shape before the fire (both red; best cell creator history -1.10 % 4/6) | rule 3 |
-| D2 / D5 | `mt_d2_3Xk2Eu.py` | the creator's document and off-chain attention; checks sidecar coverage first and finds it is the whole effect (law 30, keep+ep50) | rule 3 |
-| 8 exit read | `mt_x_3Xk2Eu.py` | which static rule sells where it sells, on first crossing (none does: best 12.4 %) | rule 3 |
 | 5.1-5.2 | `mt_p51_8aaRWu.py` | print 8aaRWu reacts to (WHO / history / priced), leftover at 115 ms | rule 3 |
 | overlap / exclusive / 6.1 | `mt_p61_8aaRWu.py` | identity-family overlap, exclusive leftover, which prints it takes (loudness pass; class too wide) | rule 3 |
 | 6.1 this printer | `mt_p61b_8aaRWu.py` | leftover on ignored family prints, then this-printer / live-vs-ghost rank (not another loudness cut) | rule 3 |
