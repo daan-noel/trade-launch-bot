@@ -13,7 +13,8 @@ use crate::strategies::kernel::{weighted_return_pct, CostModel};
 use crate::strategies::run_rollup::{self, RunRollup};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
-    MarkQuote, EXTRA_ENTRY_PRICED_RESERVE, EXTRA_REVERTED_FEE_LAMPORTS, EXTRA_STAGE_SINCE,
+    MarkQuote, EXTRA_ENTRY_PRICED_RESERVE, EXTRA_EXIT_PENDING_PARTIAL, EXTRA_REVERTED_FEE_LAMPORTS,
+    EXTRA_STAGE_SINCE,
     ExitReasonCounts, PositionsSummary, StrategyPosition, StrategyRun, StrategyRunMetrics,
 };
 use crate::storage::token_enrichment::{
@@ -1868,6 +1869,50 @@ impl StrategyRepo {
         .bind(id)
         .bind(status)
         .bind(exit_reason)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// `status = 'ExitPending'` for a sell the engine just submitted, recording in the
+    /// same statement whether that sell is partial ([`EXTRA_EXIT_PENDING_PARTIAL`]).
+    /// Terminal rows are left alone, as [`Self::mark_status`] leaves them.
+    pub async fn mark_exit_pending(
+        &self,
+        id: Uuid,
+        exit_reason: Option<&str>,
+        partial: bool,
+    ) -> anyhow::Result<u64> {
+        let res = sqlx::query(&format!(
+            "UPDATE strategy_positions \
+             SET status = 'ExitPending', \
+                 exit_reason = COALESCE($2, exit_reason), \
+                 extra = CASE WHEN $3 \
+                         THEN COALESCE(extra, '{{}}'::jsonb) || jsonb_build_object('{EXTRA_EXIT_PENDING_PARTIAL}', true) \
+                         ELSE COALESCE(extra, '{{}}'::jsonb) - '{EXTRA_EXIT_PENDING_PARTIAL}' END, \
+                 updated_at = now() \
+             WHERE id = $1 AND status NOT IN ('End','EntryFailed','ExitStuck','ExitUnconfirmed')"
+        ))
+        .bind(id)
+        .bind(exit_reason)
+        .bind(partial)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// **Boot only.** Put every paper row whose in-flight sell was partial back to
+    /// `Holding`: a paper sell is simulated inside the process, so one in flight at a
+    /// restart never happened, and the position is still the bag its last recorded fill
+    /// left. Boot adoption then resumes it at its stage. Never call this while the
+    /// engine runs: its own paper partials are genuinely in flight. Returns rows reopened.
+    pub async fn reopen_paper_partial_exits(&self) -> anyhow::Result<u64> {
+        let res = sqlx::query(&format!(
+            "UPDATE strategy_positions \
+             SET status = 'Holding', extra = extra - '{EXTRA_EXIT_PENDING_PARTIAL}', updated_at = now() \
+             WHERE mode = 'paper' AND status = 'ExitPending' \
+               AND COALESCE((extra->>'{EXTRA_EXIT_PENDING_PARTIAL}')::boolean, false)"
+        ))
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected())

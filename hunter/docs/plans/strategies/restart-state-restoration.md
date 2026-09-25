@@ -187,6 +187,19 @@ copycat guard is set, so a buy it decides is not one live made (live may have be
 cap, or blocked by the guard); dropped, it cannot leave an arm waiting forever on an
 order never sent. The first live tick decides every re-armed token at the wall clock.
 
+## A paper partial sell in flight at a restart is undone
+
+The sink writes `status = 'ExitPending'` together with whether the sell in flight is
+partial (`extra.exit_pending_partial`, `StrategyRepo::mark_exit_pending`; a partial sell's
+`ExitPending` delta carries the stage it sold in, a full one none). A paper sell is
+simulated inside the process, so one in flight at a restart never happened: boot puts
+those rows back to `Holding` (`reopen_paper_partial_exits`, before the adopt pass and
+never on a reseed), and the adopt resumes them at their stage. A full paper sell in flight
+is still closed at breakeven by the stale-paper reaper. A **real** partial sell in flight
+is still re-driven as a full sell of the remainder: whether it landed while the process
+was down is on the chain, not in PG (open:
+[restart-partial-sell-recovery](../../roadmap/restart-partial-sell-recovery.md)).
+
 ## The lifetime cap survives a restart
 
 `max_total_tokens` counts the entries of the rule's live run, which a restart resumes.

@@ -307,6 +307,15 @@ async fn run_loop(
     // rebuild below seeds the memory the guard will actually read.
     apply_dupe_guard_policy(&mut state, &settings);
 
+    // A paper partial sell in flight at the restart died with the process: its row
+    // goes back to `Holding` so the adopt below resumes it, instead of the stale-paper
+    // reaper closing the whole position. Boot only - never on a reseed.
+    match strategy_repo.reopen_paper_partial_exits().await {
+        Ok(0) => {}
+        Ok(n) => info!(reopened = n, "engine: paper partial sells in flight at the restart back to Holding"),
+        Err(e) => warn!("engine: reopen paper partial exits failed: {e}"),
+    }
+
     // Adopt PG position rows + re-entry episode counters + copycat-guard memory.
     // Snapshot the settings first — a `watch::Ref` must never be held across an await.
     let boot_settings = settings.borrow().clone();

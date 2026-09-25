@@ -426,6 +426,13 @@ pub const EXTRA_REVERTED_FEE_LAMPORTS: &str = "reverted_fee_lamports";
 /// entry fill.
 pub const EXTRA_STAGE_SINCE: &str = "stage_since";
 
+/// `extra` key set (`true`) while the sell in flight is a **partial** one (a line's
+/// `sell_pct`), written in the same statement as `status = 'ExitPending'`
+/// (`StrategyRepo::mark_exit_pending`) and removed by a full one. A restart reads it:
+/// a paper partial in flight died with the process, so the row goes back to `Holding`
+/// (`StrategyRepo::reopen_paper_partial_exits`) instead of being closed whole.
+pub const EXTRA_EXIT_PENDING_PARTIAL: &str = "exit_pending_partial";
+
 impl StrategyPosition {
     /// The reverted-transaction fees an `EntryFailed` row carries
     /// ([`EXTRA_REVERTED_FEE_LAMPORTS`]), in SOL; 0 when absent.

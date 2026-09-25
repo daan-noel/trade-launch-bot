@@ -497,7 +497,7 @@ impl Sink {
                 false
             }
             PositionStatus::ExitPending => {
-                self.on_status_only(&delta, "ExitPending").await;
+                self.on_exit_pending(&delta).await;
                 false
             }
             PositionStatus::End => self.on_end(&delta).await,
@@ -893,19 +893,23 @@ impl Sink {
     /// Holding persist inside the spawn. Mid-sell crash recovery: ExitPending
     /// reaper re-drives when the row lands; externally-cleared Holding reconcile
     /// covers a landed sell whose status write never committed.
-    async fn on_status_only(&mut self, delta: &PositionDelta, status: &str) {
+    ///
+    /// A partial sell's `ExitPending` carries the stage it sold in (`delta.stage`); a
+    /// full one carries none. That is recorded with the status, so a restart can tell a
+    /// partial in flight from a full exit.
+    async fn on_exit_pending(&mut self, delta: &PositionDelta) {
         let Some(meta) = self.registry.get(delta.position) else { return };
         let prev = self.pending_pg.remove(&meta.pg_id);
         let repo = self.repo.clone();
         let pg_id = meta.pg_id;
-        let status = status.to_string();
+        let partial = delta.stage.is_some();
         let reason = delta.reason.map(|r| r.label().into_owned());
         let handle = tokio::spawn(async move {
             if let Some(h) = prev {
                 let _ = h.await;
             }
-            if let Err(e) = repo.mark_status(pg_id, &status, reason.as_deref()).await {
-                warn!(pg = %pg_id, "engine sink: mark_status({status}) failed: {e}");
+            if let Err(e) = repo.mark_exit_pending(pg_id, reason.as_deref(), partial).await {
+                warn!(pg = %pg_id, "engine sink: mark_exit_pending failed: {e}");
             }
         });
         self.pending_pg.insert(pg_id, handle);
