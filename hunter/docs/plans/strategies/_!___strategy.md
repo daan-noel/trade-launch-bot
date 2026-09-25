@@ -13,7 +13,7 @@ Seven files, and they do not overlap:
 | [_!___workflow.md](_!___workflow.md) | the open queue | rewritten when the open list changes |
 | [_!___evidence.md](_!___evidence.md) | the standing measurements with their coordinates, and the ledger of every rule booked | a standing number is added; a closed line is one ledger row |
 | [_!___terms.md](_!___terms.md) | every word these files use, and every study code name | a word is registered in the same edit as the idea or finding that needs it |
-| [_!___metrics.md](_!___metrics.md) | what the engine measures: each metric's definition, unit, time basis and window | a metric is added or its definition changes, in the same commit as the code |
+| [_!___metrics.md](_!___metrics.md) | how the engine's metric system is built and extended; each metric's one definition (unit, tags, spans) lives in the registry (`engine/src/metrics/registry.rs`) | the structure, a landmine or the extension cost changes, in the same commit as the code |
 
 Self-contained on purpose. Section 11 is the only part that names this repository; the rest
 travels. A claim here that the evidence file does not support is wrong **here**.
@@ -685,7 +685,7 @@ exit family.
 ## 7.1 Physics
 
 - `price = vsol^2 / k`, exactly. **A vsol threshold squares into a price threshold**: -25 % vsol
-  is `pnl <= -43.75`, a 20 % trail is `retrace >= 36`, a +10 % arm is `arm_above_pct: 21`.
+  is `pnl_pct <= -43.75`, a 20 % trail is `retrace_pct >= 36`, a +10 % arm is a `pnl_pct >= 21` gate.
   Forgetting the square is the most common way a validated rule ships wrong.
 - `vsol` on a print is the reserve **after** that trade. The state a transaction meets at time `T`
   is the last print at or before `T`.
@@ -1061,7 +1061,7 @@ The one section that names files, tables and engine vocabulary. Delete it to por
 | the 26 independent traders and their five nodes | [solo-traders.md](solo-traders.md) |
 | frozen sentences, never edited after their date | [study-kernel/frozen-sentences.md](study-kernel/frozen-sentences.md) |
 | the pricing kernel every offline book runs through | [study-kernel/](study-kernel/) |
-| every engine metric with its one definition | [_!___metrics.md](_!___metrics.md) |
+| how the metric system is built and extended (each metric's one definition is the registry) | [_!___metrics.md](_!___metrics.md) |
 | every `FillModel` and `CostModelKind` | [fill-and-cost-models.md](fill-and-cost-models.md) |
 | the cost derivation | [execution-costs.md](execution-costs.md) |
 | the harvester exit that fires from strength | [armed-trailing-stop.md](armed-trailing-stop.md) |
@@ -1073,18 +1073,19 @@ The one section that names files, tables and engine vocabulary. Delete it to por
 
 | rule term | engine |
 | --- | --- |
-| event on a machine run | `m_flow_ix.ix_patterns` (exact ordered build) or `m_burst_slot.working_templates`, over `window_size_slots: 1` |
-| silence before it | `m_flow_window` on slots with `window_lag: 1`, so the quiet span cannot read the burst |
+| event on a machine run | a fingerprint tag (`ix_shape` exact ordered build, or `ix_template` / `program`) read `@tag [1sl]`, or `m_slot.* @working` |
+| silence before it | `m_flow.* [30sl@1]`: a lagged slot span, so the quiet span cannot read the burst |
 | door on launch machinery | fingerprint axes (`max_cost`, `init_buy`, launch `ix_labels`) or the wildcard fingerprint |
-| permissions | `m_snapshot.time`, `m_state.liquidity` (real reserve = `vsol - 30`), `m_price_window.trail` |
-| crowd after an age threshold | `m_crowd_after_age` (`non_creator_buyers`, `this_buyer_is_new`, param `after_age_sec`) |
-| harvester exit | `m_position.retrace` with `arm_above_pct`; `m_position.held` as the clock |
+| permissions | `m_state.age_sec`, `m_state.liquidity_sol` (real reserve = `vsol - 30`), `m_price.trail_pct [span]` |
+| crowd after an age threshold | `m_crowd.buyer_count [age60s]`, `m_crowd.buyer_is_new [age60s]` |
+| harvester exit | `m_position.retrace_pct` gated on `m_position.pnl_pct` (a line or an armed stage); `m_position.held_sec` as the clock |
 | fill and cost | `lag_115` + `pumpfun_impact`, both legs, in simulate and per-trade reconciliation |
 | re-entry | `reentry` with no cap, one position per coin at a time |
 | episode / swing decomposition | offline only; no engine metric yet |
 
-**`m_flow_ix` trap:** `wallet_contagion` and `creator_is_tagged` both default **TRUE**. Left
-alone, every coin tags its own creator and the metric reads nothing like the finding.
+**Converted-tag trap:** a `volume` tag converted from a v1 fingerprint carries `creator: true`
+and `sticky: true`, because v1 defaulted both on. Left alone, every coin tags its own creator
+and the metric reads nothing like the finding.
 
 **cgroup** = `<n_ix>ix:<last label after the colon>` from the creation `ix_labels`.
 `bundler_group` = cgroup in `{3ix:Buy, 4ix:Buy, 3ix:BuyExactSolIn}`.

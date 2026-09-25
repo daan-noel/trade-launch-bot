@@ -1,6 +1,6 @@
 # Strategy bundle — moving a rule between the two boxes
 
-Editing one ix pattern or one metric param changes **two rows**: a `fingerprints`
+Editing one tag or one rule condition changes **two rows**: a `fingerprints`
 row and a `strategy_rules` row. A bundle is the door for those two rows, in both
 directions, from the page they were edited on.
 
@@ -40,7 +40,7 @@ item, the changed fields with both values, and which side's `updated_at` is newe
 
 | Travels — the strategy | Stays with the box |
 | --- | --- |
-| `fingerprints.criteria`, `.wildcard`, `.metric_config`, `.name` | `strategy_rules.is_active` |
+| `fingerprints.criteria`, `.wildcard`, `.tags`, `.name` | `strategy_rules.is_active` |
 | `strategy_rules.params`, `.buy_amount_lamports` | `strategy_rules.is_enabled` |
 | `.max_concurrent_tokens`, `.max_total_tokens`, `.rule_name`, `.tags` | `strategy_rules.trade_mode` |
 | | `strategy_runs` / `strategy_positions` / `strategy_run_metrics` |
@@ -71,8 +71,8 @@ rule that arrived under a fresh UUID would be a second copy, and every later pas
 in either direction would fork again.
 
 A fingerprint that is new *by id* can still be present *by identity*. The
-`fingerprints_identity_uniq` index keys on `criteria` + `wildcard` +
-`metric_config`, so inserting it would be rejected. The plan resolves that to
+`fingerprints_identity_uniq` index keys on `criteria` + `wildcard` + `tags`, so
+inserting it would be rejected. The plan resolves that to
 `reuse_existing`: nothing is inserted, and the bundle's rules are rebound onto the
 row already there.
 
@@ -97,15 +97,24 @@ a rule at an unrelated creation shape.
 ## Everything that can fail, fails in the preview
 
 `plan_bundle` runs every check the write would run, without writing: the axis
-registry parse (an unknown axis is an error, never a silent drop — dropping one
-*widens* what the fingerprint matches), `Fingerprint::validate`,
-`validate_fingerprint_metric_config`, `RuleParams::parse` against the metric
-registry, the identity-index collision above, and the duplicate-rule gate.
+registry parse (an unknown axis is an error, never a silent drop - dropping one
+*widens* what the fingerprint matches), `Fingerprint::validate`, `validate_tags`,
+`RuleParams::parse` against the metric registry, the identity-index collision above, and
+the duplicate-rule gate.
 
-So a box that lacks a metric group the bundle uses names the rule that cannot land,
-in the preview, instead of 500-ing halfway through an apply. Vocabulary drift
-between the two boxes surfaces as a per-item message rather than a wire-format
-version bump.
+So a box that lacks a metric, tag matcher or rule part the bundle uses names the rule
+that cannot land, in the preview, instead of 500-ing halfway through an apply.
+
+### Format versions
+
+`bundle_format_version` is `2`: fingerprint `tags` and v2 rule params. A box reads formats
+`1` to `2` (`OLDEST_BUNDLE_FORMAT_VERSION..=BUNDLE_FORMAT_VERSION`) and refuses anything
+else before planning. A v1 bundle is converted on import by the engine's permanent v1
+reader ([`v1.rs`](../../../engine/src/v1.rs)): `metric_config` (read under that key as
+well) becomes `tags`, criteria keys are renamed (`prior_identity_launches` ->
+`name_reuse_count`), and params go through `parse_params_any`. The preview therefore
+diffs the converted rows against this box. A box still on v1 reads only format `1`, so it
+refuses a v2 bundle outright rather than applying half of it: migrate the target first.
 
 Params are canonicalized (`RuleParams::parse` → `to_value`) **before** the diff.
 Stored params are already canonical, so without that step an author's JSON key
@@ -152,6 +161,7 @@ amount of diffing can tell them apart from this side.
 ## Prerequisite
 
 Both boxes run the same core migration chain. A bundle carrying `criteria` needs
-core `0009` on the target; redeploying the live bin applies it (`sqlx::migrate!`
-runs at boot). An un-migrated server fails the whole Rules UI, not just this — see
+core `0009` on the target, and a v2 bundle needs core `0021` (the `tags` column) and its
+boot data migration; redeploying the live bin applies both (`sqlx::migrate!` and the
+data migration run at boot). An un-migrated server fails the whole Rules UI, not just this: see
 [db-patterns.md](../database/db-patterns.md).

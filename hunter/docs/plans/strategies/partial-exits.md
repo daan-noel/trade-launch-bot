@@ -1,65 +1,78 @@
-# Partial exits (tranched scale-out) — decision record
+# Partial exits (tranched scale-out): decision record
 
-> The **shipped** contract for `RuleParams.scale_out`. Structure/flow lives in
+> The **shipped** contract for partial sells: a rule's stages, where a line sells a
+> percent of the first bag and moves to the next stage. Structure and flow live in
 > [../../arch/strategies.md](../../arch/strategies.md),
 > [../../arch/position-lifecycle.md](../../arch/position-lifecycle.md) and
-> [../../arch/sweep.md](../../arch/sweep.md); this file is the *why* — the semantics
-> that are easy to break and the alternatives that were rejected.
+> [../../arch/sweep.md](../../arch/sweep.md); the grammar is
+> [`rule_params.rs`](../../../engine/src/rule_params.rs); this file is the *why*: the
+> semantics that are easy to break and the alternatives that are rejected.
 >
-> Motivation: a fixed TP costs
-> −10..−18%/event because it caps the tail that carries all EV, while a pure trailing
-> stop gives back 25-30% of every winner. The book shape that follows is negative median
-> with a paying tail ([_!___strategy.md](_!___strategy.md) 6, the two exit laws).
-> Before this landed, every exit in `reduce.rs` closed 100%.
+> Motivation: a fixed TP costs -10..-18 %/event because it caps the tail that carries all
+> EV, while a pure trailing stop gives back 25-30 % of every winner. The book shape that
+> follows is negative median with a paying tail ([_!___strategy.md](_!___strategy.md) 6,
+> the two exit laws).
 
 ## Design principles (why the shape is what it is)
 
-1. **N ordered stages, not a hardcoded 2-tranche case.** The authoring shape is a
-   `Vec` of stages; "sell most into strength, trail a stub" is the 1-stage instance.
-2. **Each stage reuses the FULL exit grammar** (`SideConditions` + per-stage TP sugar
-   + `arm_above_pct`), compiled through the same `build_reqs`/`pnl_req` desugar. No
-   parallel mini-language that can drift — so every exit family (fixed ROI, time stop,
-   trailing, flow/momentum fade) is per-stage for free, and any metric added later is
-   automatically a legal stage trigger.
-3. **Sizes are `bps of the INITIAL bag`**, never of the remainder — fractions compose
-   without compounding drift, and exec does exact integer token math. The final/global
-   close is always "all remaining" so dust is swept.
+1. **A ladder is stages.** Each rung is a stage whose line sells `sell_pct` and `go`es to
+   the next rung; the last rung's line sells everything left. "Sell most into strength,
+   trail a stub" is two stages.
+2. **A rung is ordinary grammar.** Its lines are the same lines as anywhere else in a rule
+   (any metric, tag, span, signal, a deadline on the stage), compiled by the same
+   `CompiledRule::compile`. No parallel mini-language that can drift: every exit family
+   (fixed ROI, time stop, trailing, flow fade) is a rung trigger for free, and so is any
+   metric added later.
+3. **Sizes are a percent of the INITIAL bag**, never of the remainder (`Portion::BpsOfInitial`,
+   basis points internally): fractions compose without compounding drift, and exec does
+   exact integer token math. A line without `sell_pct` sells all remaining, so dust is swept.
 4. **The portion travels on the existing `SubmitSell` effect** as a field, not a new
-   effect variant — the same vocabulary serves manual partial sells.
+   effect variant; the same vocabulary serves manual partial sells.
 5. **Durable truth is a per-position fills ledger** (`position_fills`), not wider
-   one-row columns — any number of legs, both sides, no further migration for manual
+   one-row columns: any number of legs, both sides, no further migration for manual
    partials or future DCA.
 6. **ONE decision kernel stays law.** It lands in `reduce`, so live-real, live-paper
-   and simulate get it by construction; the grouped sweep gets a staged resolver plus
-   parity guards (D5/D6 in [../sweep/sim-parity.md](../sweep/sim-parity.md)).
+   and simulate get it by construction; the grouped sweep walks staged rules on the shared
+   row walk, with parity guards (D5/D6 in [../sweep/sim-parity.md](../sweep/sim-parity.md)).
 
 ## Semantics (the contract)
 
-- `scale_out: [ { sell_bps, conditions… }, … ]`, ordered. Stages are one-shot and fire
-  strictly in order: stage k is the only stage evaluated while `stage == k`. Firing
-  sells `sell_bps` of the initial bag and advances to `k+1`.
-- **Global exits are unchanged and always close 100% of the remainder**: `Dead`
-  verdict, desugared `stop_loss`, the authored `exit` side, `Migrated`, `Manual`.
-  Priority per event stays `Dead > SL > … > stages`. This is the catastrophe path — a
-  stub in a rug must not wait for its stage.
-- After the last partial stage, the position continues under the global `exit` side —
-  **unless** the ladder ends with a **remainder stage** (`sell_bps` omitted ⇒ portion
-  `All`), whose conditions close it outright with their own reason. That is the only
-  way the stub gets a *different* policy than the pre-banking hold (trail 25% while
-  full, tighten to 8% on the stub); the global side is static across the whole hold and
-  cannot express it. Stage progression is therefore stepped/dynamic trailing for free.
-- `PositionCtx` (entry/peak/trough/entered_at) is **not** reset per stage — `pnl`,
-  `retrace`, `held` keep anchoring on the original entry.
-- Validation: `sell_bps` in `[1, 9900]`, `sum(explicit sell_bps) <= 9900` (a remainder
-  must exist for whatever closes it), stage conditions non-empty, `scale_out: []` folds
-  to "not set" at the wire boundary (the `configured_labels` precedent — see the
-  zero-as-unbound rule in [../../../CLAUDE.md](../../../CLAUDE.md)).
-- **Hard cap: at most 3 explicit stages** (+ optional remainder). Two independent
-  reasons, both worth re-reading before raising it: fee cost (~1% of notional per extra
-  leg at 0.1 SOL) and **in-flight-sell blindness** — no new decision is made while a
-  sell is pending, and each stage multiplies that window. A global exit that becomes
-  true mid-partial fires on the next event after the fill resolves; in-flight escalation
-  is deliberately not built.
+```json
+"stages": [
+  { "name": "full",
+    "on": [ { "if": [ { "metric": "m_position.pnl_pct", "is": [{ "operator": ">=", "value": 15 }] } ],
+              "sell": "bank", "sell_pct": 50, "go": "stub" } ] },
+  { "name": "stub",
+    "on": [ { "if": [ { "metric": "m_position.retrace_pct", "is": [{ "operator": ">=", "value": 8 }] } ],
+              "sell": "stub trail" } ] }
+]
+```
+
+- **One step per print or tick.** Dead first, then the `always` lines (stop loss, take
+  profit, then authored lines) in every stage, then the stage's deadline, then its `on`
+  lines; the first that holds acts. Only the current stage's lines are read.
+- **A partial line must move.** `sell_pct` is in `(0, 99]` (`MAX_SELL_PCT`), and a line
+  carrying it must also `go`, or it would sell again on the next print; the parser refuses
+  both. The stage moves when the partial FILL lands, not when the sell is sent.
+- **A partial that would overshoot sells the rest.** When the sold share plus this line's
+  would reach the whole bag, `reduce` sends a full close instead, so rungs need not sum to
+  anything.
+- **`always` lines close regardless of stage.** `stop_loss`, `take_profit` and every
+  authored `always` line are read before the stage's own lines, and `Dead`, `Migrated` and
+  `Manual` close all. That is the catastrophe path: a stub in a rug must not wait for its
+  rung.
+- **The stub gets its own policy by being its own stage.** A trail written in the `stub`
+  stage applies only after banking (trail 25 % while full, 8 % on the stub); an `always`
+  line is static across the whole hold and cannot express that.
+- **`PositionCtx` is not reset per stage**: `pnl_pct`, `retrace_pct`, `held_sec` keep
+  anchoring on the original entry; only `m_position.stage_sec` restarts.
+- **Keep a ladder short.** The grammar allows `MAX_STAGES` (32); two reasons bound a ladder
+  well below that. Fee cost (~1 % of notional per extra leg at 0.1 SOL), and **in-flight-sell
+  blindness**: no new decision is made while a sell is pending, and each rung multiplies
+  that window. An `always` line that becomes true mid-partial fires on the next event after
+  the fill resolves; in-flight escalation is deliberately not built.
+- A v1 `scale_out` ladder converts to one stage per rung (`v1::convert_ladder`); a stored
+  grouped sweep's ladders are its `stage_plans`.
 
 ## Grain: episode vs leg (locked)
 
@@ -113,7 +126,9 @@ ExitPending  -> ExitStuck | ExitUnconfirmed   (as before; bag = remainder)
   `reason_allows_reentry` reads the **last** leg's reason.
 - Boot: `count_closed_by_rule_mint` seeds `episodes`, and a mid-ladder `Holding` row is
   not closed — so a restart cannot inflate the budget. An adopted mid-ladder position
-  resumes `stage`/`sold_*` from the row + ledger.
+  resumes its stage (`scale_stage`, the stage the last partial fill landed in) and `sold_*`
+  from the row + ledger. A pure `go` writes nothing, so a move without a sell is not
+  remembered across a restart.
 
 ## Two layers of truth (within one episode)
 
@@ -175,10 +190,9 @@ per-leg + impact(`leg_size / reserve_at_leg`); the single-exit wrapper is unchan
 
 ## Extension points left open (deliberately not built)
 
-Per-stage position metrics (`since_stage` anchors), scale-in/DCA buys, in-flight sell
-escalation, per-stage re-entry, and a continuous dynamic trail (`trail_pct = f(pnl)`,
-or dynamic `arm_above_pct`) — the last is approximated arbitrarily well by adding
-stages, so build it only if measurement demands it.
+Scale-in/DCA buys, in-flight sell escalation, per-stage re-entry, and a continuous dynamic
+trail (`trail = f(pnl)`, or a dynamic gate): the last is approximated arbitrarily well by
+adding stages, so build it only if measurement demands it.
 
 ## Measured: a banked tranche does not pay on `fs3-00`
 
@@ -212,12 +226,12 @@ configurations is the evidence, not any one row.
 This does **not** refute scale-out. It refutes the cheapest shape of it on the one geometry
 whose give-back motivated the build: a rule whose exit is already a *trailing* stop has
 banked its own tranche by construction, so a TP stage only cuts the winners the trail was
-going to ride. The shapes still unmeasured are those where the stub gets a policy the
-global side cannot express — and note the global `exit` side always closes 100% at any
-stage, so a stage never *replaces* the trail, it races it.
+going to ride. The shapes still unmeasured are those where the stub gets a policy an
+`always` line cannot express. An `always` line closes 100 % in every stage, so a rung never
+*replaces* a trail written there, it races it.
 
-> A remainder stage is also load-bearing for liveness, not just for policy. The one
-> configuration here that drops the global `held >= 90` cap wedges: four positions never
+> A remainder rung is also load-bearing for liveness, not just for policy. The one
+> configuration here that drops the `always` line `held_sec >= 90` wedges: four positions never
 > close, the concurrency cap stays full, and the run silently stops entering — 79 entries
 > over 18 days against 274 at `max_concurrent_tokens` 50. Adding the remainder time stop
 > un-wedges it. **`n_open == max_concurrent_tokens` on a finished run means it stopped

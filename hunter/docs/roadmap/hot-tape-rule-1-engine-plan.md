@@ -33,20 +33,20 @@ Holdout at the engine's grain: +4.44 %/trade 5/5, top 1 % 9.8 %, 95 % interval +
 
 | term | reference (`r1_exact.py`) | engine today | work |
 | --- | --- | --- | --- |
-| trigger: a sell of 1 SOL or more | this leg's SOL | `m_flow_window {window_size_prints: 1}.sell >= 1` | reuse |
-| seller bought 30 s ago or less | now minus the wallet's last buy of this coin | `m_print_wallet.since_buy` | built (1c) |
-| 15 or more recipes in 5 s | distinct `build_core` in the closed window `[now_ms - 5000, now_ms]`, the print included, floor-ms positions | `m_build_window {window_size_sec: 5}.unique_builds` over `flow_ix::build_hash` | built (1a, 1b); partitions all 25,842 lake label sequences exactly as `build_core` does |
-| new high 20 s ago or less | `max(0, now - time of the last strictly higher spot)` | `m_price_lifetime.stall` | reuse; the registry text now says spot (1e) |
-| age 158 s or more | now minus `created_at` | `m_state.time` | reuse |
-| 368 buyers or more | distinct wallets, not the creator, with a buy at or after creation | `m_crowd_after_age {after_age_sec: 0}.non_creator_buyers` | reuse; the capped scan at 369 costs nothing measurable (a 132,992-coin replay folds in minutes) (1d) |
-| reserve 100 or less | `vsol` after the print | `m_state.liquidity <= 70` | reuse |
+| trigger: a sell of 1 SOL or more | this leg's SOL | `m_flow.sell_sol [1p] >= 1` | reuse |
+| seller bought 30 s ago or less | now minus the wallet's last buy of this coin | `m_print.since_buy_sec` | built (1c) |
+| 15 or more recipes in 5 s | distinct `build_core` in the closed window `[now_ms - 5000, now_ms]`, the print included, floor-ms positions | `m_crowd.unique_ix_shapes [5s]` over `trade_keys::build_hash` | built (1a, 1b); partitions all 25,842 lake label sequences exactly as `build_core` does |
+| new high 20 s ago or less | `max(0, now - time of the last strictly higher spot)` | `m_price.stall_sec` | reuse; the registry text now says spot (1e) |
+| age 158 s or more | now minus `created_at` | `m_state.age_sec` | reuse |
+| 368 buyers or more | distinct wallets, not the creator, with a buy at or after creation | `m_crowd.buyer_count [age0s]` | reuse; the capped scan at 369 costs nothing measurable (a 132,992-coin replay folds in minutes) (1d) |
+| reserve 100 or less | `vsol` after the print | `m_state.liquidity_sol <= 70` | reuse |
 | on the curve | the tapes are curve rows | `m_state.on_curve`, fed by the venue on all three adapters (the lab row carried no venue and hard-coded the curve) | built (1f) |
 | entry fill | the exit leg's rule (below) | `LagMs`: one helper, `paper_fill::lag_fill_idx`, on both legs | fixed (1g); before it the entry took the last BUY and priced 29 % of rule 1's entries at a print our buy cannot meet |
 | exit fill | last print of either side by fire + 115 ms, fire slot or next observed slot at most 3 on | `LagMs` exit, the same | reuse |
 | take profit, stop | `pnl %` against the entry print's spot, each print after the entry fill | `take_profit 20` / `stop_loss 60` | reuse |
-| clock | `held >= 90` on a print or on the 200 ms tick grid (first event + 200 ms); a tick fires from the last folded print | `m_position.held >= 90`, the replay's tick | reuse; parity aligns the grid's first event |
-| re-entry | a print after the exit fill, at or after its time | `reentry {cooldown_sec: 0, max_episodes_per_token: 1000}` | reuse |
-| never on a tick | only prints decide | a 1-print window holds its print through ticks | `since_buy` reads NaN on a tick, so a tick cannot fire; a test pins it |
+| clock | `held >= 90` on a print or on the 200 ms tick grid (first event + 200 ms); a tick fires from the last folded print | `m_position.held_sec >= 90`, the replay's tick | reuse; parity aligns the grid's first event |
+| re-entry | a print after the exit fill, at or after its time | `reentry {cooldown_sec: 0, max_per_coin: 1000}` | reuse |
+| never on a tick | only prints decide | a 1-print window holds its print through ticks | `m_print.since_buy_sec` reads NaN on a tick, so a tick cannot fire; a test pins it |
 | caps, guard, universe | none | concurrency cap, copycat guard, fingerprint | cap 0, `skip_duplicate_identity` off, a wildcard fingerprint |
 | cost | the engine kernel: impact `B/vsol` at each leg's print, 125 bps on notional + proceeds, 0.000225 SOL a leg | `pumpfun_impact` | reuse |
 | a coin's history | coins born before the tape's first print are left out | simulate starts at its corpus | parity compares coins born inside the corpus |
@@ -63,14 +63,14 @@ fill; a second code (`hot-tape/r1_exact_check.py`) rebuilds every ticket. Frozen
 
 ### Step 1: done (engine extensions)
 
-- 1a. `flow_ix::build_hash` beside `ix_hash` (the hash SSOT), drop list in `is_build_noise`;
+- 1a. `trade_keys::build_hash` beside `ix_hash` (the hash SSOT), drop list in `is_build_noise`;
   `TradeLite::build_hash`, set by all three adapters. `build_hash_partitions_like_the_study_build_core`
   reads `engine/fixtures/build_core_parity.json` (200 lake sequences with their `build_core`); its
   `--ignored` twin read all 25,842 sequences of lake days 09-01..09-10: 20,897 recipes, equal.
-- 1b. `m_build_window.unique_builds`, over `metrics/distinct_window.rs`, the distinct-count
-  mechanism now shared with `m_crowd_window`; arms in `on_trade` and `on_tick`; `needs_ix_labels`.
-- 1c. `m_print_wallet.since_buy`: NaN on a tick and for a wallet that never bought; the map opens
-  only when a loaded rule reads the group; `needs_wallet_identity`.
+- 1b. `m_crowd.unique_ix_shapes`, over `metrics/distinct_window.rs`, the distinct-count
+  mechanism shared with `m_crowd.unique_wallets`; arms in `on_trade` and `on_tick`; `needs_ix_labels`.
+- 1c. `m_print.since_buy_sec`: NaN on a tick and for a wallet that never bought; the map opens
+  only when a loaded rule reads it; `needs_wallet_identity`.
 - 1d. The crowd cap at 369 left as is: the full replays run in minutes.
 - 1e. The price metrics' registry text says spot, and so does the `TradeLite::price` doc.
 - 1f. `m_state.on_curve`; `CorpusTrade` carries the venue from the lake and the PG tail.
@@ -78,26 +78,27 @@ fill; a second code (`hot-tape/r1_exact_check.py`) rebuilds every ticket. Frozen
   paper books `worst_case` on both legs and is untouched. `lag_*` runs stored before 2026-09-11 price
   the entry on the last buy and do not compare.
 - 1h. `_!___metrics.md`, `fill-and-cost-models.md`, `arch/strategies.md`; unit tests on each
-  group and on the fill; `every_metric_is_live_reachable` reads all 96 metrics.
+  metric and on the fill; `every_metric_is_live_reachable` reads every metric.
 
 ### Step 2: done (the rule, authored)
 
-`node-derivation/data/r1p_rule.json`, written from the derived rule by `hot-tape/r1_engine_parity.py prep`:
+`node-derivation/data/r1p_rule.json`, written from the derived rule by `hot-tape/r1_engine_parity.py prep`
+in the v1 spelling; the parity example reads it through `hunter_engine::v1::parse_params_any`, which
+converts it to this rule:
 
 ```json
-{ "entry": {
-    "m_flow_window": { "window_size_prints": 1, "sell": [{"operator": ">=", "value": 1.0}] },
-    "m_print_wallet": { "since_buy": [{"operator": "<=", "value": 30}] },
-    "m_build_window": { "window_size_sec": 5, "unique_builds": [{"operator": ">=", "value": 15}] },
-    "m_price_lifetime": { "stall": [{"operator": "<=", "value": 20}] },
-    "m_state": { "time": [{"operator": ">=", "value": 158}],
-                 "liquidity": [{"operator": "<=", "value": 70}],
-                 "on_curve": [{"operator": "=", "value": 1}] },
-    "m_crowd_after_age": { "after_age_sec": 0,
-                           "non_creator_buyers": [{"operator": ">=", "value": 368}] } },
-  "exit": { "m_position": { "held": [{"operator": ">=", "value": 90}] } },
+{ "enter": { "filters": [
+    { "metric": "m_flow.sell_sol", "span": "1p", "is": [{"operator": ">=", "value": 1.0}] },
+    { "metric": "m_print.since_buy_sec", "is": [{"operator": "<=", "value": 30}] },
+    { "metric": "m_crowd.unique_ix_shapes", "span": "5s", "is": [{"operator": ">=", "value": 15}] },
+    { "metric": "m_price.stall_sec", "is": [{"operator": "<=", "value": 20}] },
+    { "metric": "m_state.age_sec", "is": [{"operator": ">=", "value": 158}] },
+    { "metric": "m_state.liquidity_sol", "is": [{"operator": "<=", "value": 70}] },
+    { "metric": "m_state.on_curve", "is": [{"operator": "=", "value": 1}] },
+    { "metric": "m_crowd.buyer_count", "span": "age0s", "is": [{"operator": ">=", "value": 368}] } ] },
+  "always": [ { "if": [{ "metric": "m_position.held_sec", "is": [{"operator": ">=", "value": 90}] }], "sell": true } ],
   "take_profit": 20, "stop_loss": 60,
-  "reentry": { "cooldown_sec": 0, "max_episodes_per_token": 1000 } }
+  "reentry": { "cooldown_sec": 0, "max_per_coin": 1000 } }
 ```
 
 ### Step 3: done (parity)

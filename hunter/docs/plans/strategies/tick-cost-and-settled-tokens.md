@@ -20,7 +20,7 @@ these tokens are never pruned:
 
 * anything that pumped past 30 SOL real reserves and then went quiet;
 * every post-migration / AMM row, where real reserve *is* the pool reserve;
-* anything whose rows carry no `vsol` at all, so `liquidity` reads `NaN` and
+* anything whose rows carry no `vsol` at all, so `liquidity_sol` reads `NaN` and
   `is_dead_verdict` answers "alive" (`None` reserves ⇒ not depleted).
 
 They accumulate for the whole corpus window. A 30-day simulate ticks ~13 M times; a
@@ -34,20 +34,25 @@ branch skips it. Soundness rests on two facts that must *both* hold:
 
 **(a) The sweep that stamped the verdict already ran at or past the token's horizon.**
 The horizon is the last instant any reading can move. Almost every metric is frozen
-between trades — price, reserves, lifetime flows and extrema, and every `m_position`
-metric except `held` are functions of trade data alone. Only four things move on a
-bare tick, and `arm::ClockHorizons` (computed per rule at `compile`, unioned per rule
-set at reload) bounds each:
+between trades: price, reserves, lifetime flows and extrema, and every `m_position`
+metric except `held_sec` and `stage_sec` are functions of trade data alone. Only five
+things move on a bare tick, and `arm::ClockHorizons` (computed per rule at `compile`,
+unioned per rule set at reload) bounds each:
 
 | Moves on a tick | Anchor | Horizon field |
 | --- | --- | --- |
 | trailing windows decay | newest trade | `max_window_secs` |
-| `m_state.time` | token creation | `time_secs` |
-| `m_price_lifetime.stall` | newest trade (upper bound on the last high) | `stall_secs` |
-| `m_position.held` | the entry fill | `held_secs` |
+| `m_state.age_sec`, `age_sec` stage deadlines | token creation | `time_secs` |
+| `m_price.stall_sec` | newest trade (upper bound on the last high) | `stall_secs` |
+| `m_position.held_sec`, `held_sec` stage deadlines | the entry fill | `held_secs` |
+| `m_position.stage_sec`, `stage_sec` stage deadlines | the current stage's start | `stage_secs` |
 
 plus two token-scoped one-shots `reduce` adds directly: the dead flip at
 `last_meaningful + DEAD_QUIET_SECS`, and any `ArmState::Cooldown { until }`.
+
+A stage deadline is absorbed half a second past its value, so the sweep that reaches it
+also observes it. A slot window's horizon converts at `NOMINAL_SLOT_SECS`; a print window
+adds nothing (a tick cannot move it, and a trade evaluates anyway).
 
 > **It is deliberately "has already been evaluated past the horizon", not "`now` is
 > past the horizon".** The first version compared `now` against the horizon plus one
@@ -120,26 +125,24 @@ at pre-optimization cost.
 
 ## 2. Window reads claimed O(1) and delivered O(n)
 
-`flow_window::WindowState` and `flow_ix::FlowSplitWindowState` both maintained
-running sums on push/evict — and then **threw them away**, rescanning the whole deque
-on every read. Worse, the filter called the shared `in_window`, which re-derived the
-window width (a float multiply + a round) **per element**.
+Every trailing window (`flow_window::WindowState`, each tag's windows in
+`tags::state::TagState`) maintains running sums on push and evict. The read must use them:
+a read that rescans the whole deque, or re-derives the window width (a float multiply and a
+round) per element through the shared `in_window`, costs one full scan per condition, per
+rule, per event, on every tick of every tracked coin. That is how a rule with three tagged
+windowed conditions once made "a rule with flow-split metrics" distinctly slower than one
+without.
 
-This is paid per metric, per rule, per event. `m_flow_ix` was the worst: `value()`
-went through `totals_at()`, which rebuilt a whole `FlowTotals` from scratch, so a rule
-with three `m_flow_ix_window` conditions did three full scans on every tick of
-every tracked token. That is why "a rule with flow-split metrics" felt distinctly
-slower than one without.
+The read is O(1), resting on two invariants:
 
-The read is now genuinely O(1), resting on two invariants:
-
-* the deque is kept **time-sorted** (`flow_window::push_sorted`) — a bare `push_back`
+* the deque is kept **position-sorted** (`flow_window::push_sorted`): a bare `push_back`
   in the monotone case, walking in from the tail when a regressed `block_time`
-  arrives (legal: canonical order is slot → tx_index → leg);
+  arrives (legal: canonical order is slot -> tx_index -> leg);
 * the running sums cover **all** of the deque, so a read starts from them and
-  subtracts only the two out-of-window ends — entries the last `evict` has not dropped
-  yet at the front, future-dated entries at the back. Both loops stop at the first
-  in-window entry, which sortedness guarantees is also the last out-of-window one.
+  subtracts only the two out-of-window ends: entries the last `evict` has not dropped
+  yet at the front, future-dated entries (or a lagged window's head) at the back. Both
+  loops stop at the first in-window entry, which sortedness guarantees is also the last
+  out-of-window one.
 
 Correcting both ends is what makes the read exact at instants nobody evicted at —
 `TokenCreated` / `FirstSlotSettled` evaluate at a time no `evict` ran on, and skipped
@@ -148,9 +151,8 @@ ticks now leave entries un-evicted by design.
 `price_window` keeps its filtered walks (the monotonic deques are short) but hoists
 the width out of them.
 
-Guarded by brute-force equivalence tests in both modules: the running-sum read must
-equal a naive `in_window` scan at a spread of probe instants, including out-of-order
-arrivals.
+Guarded by brute-force equivalence tests: the running-sum read must equal a naive
+`in_window` scan at a spread of probe instants, including out-of-order arrivals.
 
 ---
 
@@ -162,21 +164,21 @@ millions of rows — purely to feed `ix_hash`.
 
 Now:
 
-* `flow_ix::ix_hash_from_labels_json` walks the stored JSON array in place. It
+* `trade_keys::ix_hash_from_labels_json` walks the stored JSON array in place. It
   handles only the shape the writers emit (a flat array of unescaped strings) and
   **falls back to `serde_json`** on any escape or anything unexpected, so its result
-  is by construction whatever `ix_hash_opt(&parsed)` would have returned — including
-  "unparseable ⇒ `None` ⇒ organic". Locked by
-  `json_scanner_matches_the_parsed_hash`.
+  is by construction whatever `ix_hash_opt(&parsed)` would have returned, including
+  "unparseable => `None`" (no label matcher holds). Locked by
+  `json_scanner_matches_the_normalized_hash`.
 * `projection::FlowKeys { ix_hash, wallet_hash }` is resolved once at the row decode
   (`lake/duck.rs`, `project_pg_tail`), so the fold is a pure field move.
 * `Selection::with_flow_text` gates the **raw** strings. Flow *discovery* is the only
-  consumer that reports label text / groups by wallet address; every other flow
+  consumer that reports label text / groups by wallet address; every other tag
   consumer classifies from the hashes. So a flow sweep/simulate row is now *smaller*
   than before — 24 B of scalars instead of two pointers into ~85 B of heap.
 
 A fixture that carries label/wallet text must resolve `FlowKeys` the same way the
-loaders do, or the classifier sees nothing.
+loaders do, or the tag classifier sees nothing.
 
 ---
 
@@ -193,10 +195,10 @@ loaders do, or the classifier sees nothing.
   equal the key collapses to `rule_id`, and `arms` is a `BTreeMap` — already in that
   order. `EngineState::any_priority` (recomputed on reload) skips the sort unless some
   rule actually sets a priority, which is the only case where it can reorder anything.
-* **`tagged_wallets`.** A `BTreeSet<u64>` doing one pointer-chasing lookup per trade
-  per fingerprint, keyed by values `hash.rs` had already hashed. Now `hash::HashedSet`
-  — a flat set over an identity hasher. Membership-only, never iterated, so
-  determinism is unaffected.
+* **The sticky set** (`TagState`'s wallets that carried the tag) is a
+  `hash::HashedSet`: a flat set over an identity hasher, keyed by values `hash.rs`
+  already hashed, where a `BTreeSet<u64>` paid one pointer-chasing lookup per trade per
+  tag. Membership-only, never iterated, so determinism is unaffected.
 
 ---
 

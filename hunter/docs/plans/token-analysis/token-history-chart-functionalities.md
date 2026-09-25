@@ -115,7 +115,7 @@ this chart is used for — **what a token did in its first seconds**:
 | `interval` | `1s` | a `1m` candle swallows the entire window that decides an entry |
 | `groupMode` / `style` | `time` / `candles` | — |
 | `showDevMarkers` + `devMarkersBoundariesOnly` | both **on** | the dev's `first_buy`/`sell_all` are the signal; their manufactured mid-position churn is noise |
-| `showWalletMarkers`, `showEventMarkers`, `showAthLine`, `showMigrationLine`, `showFlowVol`, `showFlowNonVol` | on | read every time; the toolbar disables each when its data is absent, so they cost nothing |
+| `showWalletMarkers`, `showEventMarkers`, `showAthLine`, `showMigrationLine`, `showFlowTagged`, `showFlowUntagged` | on | read every time; the toolbar disables each when its data is absent, so they cost nothing |
 | `showTradeMarkers` | **off** | the per-bar buy/sell count badge is one badge per candle at `1s` — it hides the price action it annotates |
 | `trimEmptyBars` | **off** | no-trade gaps ARE information (a stalled token); dropping them distorts the time axis |
 
@@ -208,23 +208,31 @@ A host outside `token-price-chart` must deep-import (`components/token-price-cha
 statically-mounted host must not pull `lightweight-charts` into its chunk (see
 [`@arch/frontend.md`](../../arch/frontend.md) chart code-split).
 
-### 6b. Editing `ix_patterns` from the trades table
+### 6b. Adding a trade to a fingerprint tag from the trades table
 
-The panel's **Vol** badge is the editing control for `m_flow_ix.ix_patterns`:
-clicking it adds/removes that row's ordered `instruction_labels` on the target fingerprint
-and **saves immediately**. There is no staging step — a draft copy would be a second answer
-to "what counts as volume", and the surfaces reading the two copies then disagree on screen
-while both look authoritative. The write invalidates the `Fingerprint` tag, so the chart
-lines, the metric panes and the badge all redraw from the row that was just written; the
-engine picks it up on its next rules reload. `togglePattern` in `lib/flow/volumePatterns.ts`
-is the ONE toggler — Flow Discovery's structure checkboxes call it too.
+The panel's **`@tag`** column is the editing control for one tag of the target
+fingerprint's `tags` document: the badge says which half of the split the chart put the
+row on (`@tag`, `@!tag`, or `neither` for a creation-slot buyer the tag excludes), and a
+click adds that row's value to the tag - or removes it when listed - and **saves
+immediately**. The value is the row's exact ix shape (plus any fee fields pinned in the
+strip), its ix template, its program or its wallet, whichever matcher the strip
+(`IxPatternBar`, `TagStageControls`) has selected; a tag name the fingerprint does not
+define yet is created by the first click. There is no staging step on a fingerprint - a
+draft copy would be a second answer to "what carries the tag", and the surfaces reading
+the two copies then disagree on screen while both look authoritative. The write
+invalidates the `Fingerprint` cache tag, so the chart lines, the metric panes and the
+badge all redraw from the row that was just written; the engine picks it up on its next
+rules reload. `withStageValue` (`hooks/useIxPatternTarget.ts`, through the tags
+document's writers `withTagShape` / `withTagListValue` in `lib/strategy/tagsDoc.ts`) is
+the ONE write every add-to-tag click makes; Flow Discovery's draft tape stages into its
+own draft instead, saved by Apply.
 
-**Which row it writes to is `useVolumePatternTarget`, and it is never guessed while a fact
-is available.** `resolveVolumePatternTarget` ranks: an explicit pick from the bar's select,
-then the host's own `flowFingerprintId`, then a lone pattern-set match. The order is the
-whole point. Matching by SET cannot identify a row — `metric_config` is not part of
-fingerprint identity, so any number of rows may carry the same patterns, and every
-*unconfigured* row carries the same empty set, which is exactly the state authoring starts
+**Which row it writes to is `useIxPatternTarget`, and it is never guessed while a fact
+is available.** `resolveIxPatternTarget` ranks: an explicit pick from the bar's select,
+then the host's own `flowFingerprintId`, then a lone shape-set match. The order is the
+whole point. Matching by SET cannot identify a row - `tags` is not part of fingerprint
+match identity, so any number of rows may carry the same shapes, and every row without
+shapes carries the same empty set, which is exactly the state authoring starts
 from. A set-first resolver therefore fails precisely when the feature is first used: the
 badge goes dead when several rows match, and writes to whichever unrelated row happens to be
 the only empty one when just one does. Hence hosts pass `flowFingerprintId` alongside
@@ -235,23 +243,25 @@ since the badges then answer for a different row than the lines above them.
 
 Three further rules the surface exists to enforce:
 
-- **The badge tests structure; the lines apply contagion.** A row reads `Non-vol` while its
-  SOL sits on the vol line whenever the wallet was already tagged. `useFlowReasons` runs
-  `flowReasonsById` over the host's **full** history (contagion is forward-only, so a
-  single bar's rows cannot reconstruct it) and the cell appends `via creator` / `via
-  wallet`. Without that marker a toggle that "does nothing" looks like a bug.
-- **The first pattern reveals the overlay.** `flowLinesAvailable` is false with no patterns
-  and no creator wallet, and the per-curve flags are persisted prefs — so the chart auto-enables
+- **The badge says why.** The verdict comes from the same classification the lines draw
+  from (`tradeFlowReasons`, `useFlowReasons`), run over the host's **full** history - a
+  `sticky` wallet, a `cluster` and the creation slot are forward-only, so a single bar's
+  rows cannot reconstruct them - and the cell appends `via <matcher>`, the registry's
+  name for the matcher that held (`via creator`). Without that marker a click that "does nothing" (the row already
+  carries the tag through another matcher) looks like a bug; a listed value reads
+  `listed`.
+- **The first matcher reveals the overlay.** `flowLinesAvailable` is false until the tag
+  can classify, and the per-curve flags are persisted prefs - so the chart auto-enables
   BOTH lines on the transition to classifiable. Turning them back off stays the user's call.
-- **A run snapshot is not editable.** `flowReadOnly` marks a subtree whose patterns are a
-  stored fact — the grouped-sweep drill-in, whose numbers were computed under the run's own
-  `ix_patterns`. It shows `run snapshot` instead of the edit control and skips the
+- **A run snapshot is not editable.** `flowReadOnly` marks a subtree whose tags are a
+  stored fact - the grouped-sweep drill-in, whose numbers were computed under the run's own
+  `tags`. It shows `run snapshot` instead of the edit control and skips the
   fingerprint/rule fetches entirely.
 
-`VolumePatternBar` states the target and how many **active** rules use it before any click.
-That count is the whole warning: `metric_config` is not part of fingerprint identity, so a
-write does not fork the row — it lands on the same id and every rule bound to it starts
-classifying flow differently.
+`IxPatternBar` states the target fingerprint, the tag and how many **active** rules use it
+before any click. That count is the whole warning: `tags` is not part of fingerprint match
+identity, so a write does not fork the row - it lands on the same id and every rule bound
+to it starts reading that tag differently.
 
 ### 6c. Highlight lenses (where did this wallet / this ix structure appear)
 
@@ -288,8 +298,8 @@ number the wash beside it disagrees with. The structure chip also reports the to
 **unlabeled** trades: a structure lens can say nothing about a row whose `instruction_labels`
 were never captured, and `0 matches` over a pile of them means "not recorded", not "unique".
 
-**A lens is not the Tagged badge, deliberately.** 6b's badge writes `ix_patterns` and the
-engine acts on it; a lens writes nothing and no rule reads it. They sit one column apart on
+**A lens is not the `@tag` badge, deliberately.** 6b's badge writes a fingerprint tag and
+the engine acts on it; a lens writes nothing and no rule reads it. They sit one column apart on
 the same row and answer questions that differ only in wording, so the separation is the
 feature: asking *where else did this shape appear* must not change how a live rule classifies
 flow. The identity is shared, though — both match on `patternKey`, ordered and exact, so "the
@@ -348,12 +358,12 @@ twice, since both are on screen simultaneously:
 
 - **Toolbar readout** (`BarCrosshairFields`, `layout="inline"`) = the *price* view: for candles
   **O/H/L/C** (colors from `CHART_OHLC_COLORS`) plus Vol/Liq; for line, Price + Vol/Liq. Plus
-  the cumulative VolMk/NonVol pair when flow lines are *available* — both values, whichever
+  the cumulative `@tag` / `@!tag` pair when flow lines are *available* - both values, whichever
   curves are drawn, with a hidden curve's value dimmed. The numbers cost nothing to read and
   losing one on toggle-off is the annoying part.
 - **Bar tooltip** (`BarCrosshairTooltip`) = what the toolbar *cannot* say — **which** bar is
   hovered (timezone/slot-formatted bar time + `+age` since token creation) and its per-bar
-  **order flow** via `BarFlowFields`: Net / In / Out / Δ%, then VolMk / NonVol.
+  **order flow** via `BarFlowFields`: Net / In / Out / Δ%, then `@tag∑net` / `@!tag∑net`.
 
 A chart that repeats the O/H/L/C block inside its own tooltip is the bug.
 
@@ -391,10 +401,11 @@ Because bars are rebuilt whenever interval/group/metric/trades change, the chart
 
 ### 10b. Vertical (price) scale — manual Y zoom is sticky (`dualPriceScaleSync.ts`)
 
-The chart runs **two price scales**: right = token price/MC, left = the vol/non-vol flow
-overlay. Both flow curves share that left scale and vol normally dwarfs non-vol, which is
-why the toolbar toggles them **separately** (`flowLineVisibility.ts`): hiding vol lets the
-left scale autoscale to non-vol alone, the only way its shape is readable. The scale itself
+The chart runs **two price scales**: right = token price/MC, left = the cumulative
+`@tag` / `@!tag` flow overlay. Both flow curves share that left scale and the tagged curve
+normally dwarfs the rest, which is why the toolbar toggles them **separately**
+(`flowLineVisibility.ts`): hiding `@tag` lets the left scale autoscale to `@!tag` alone,
+the only way its shape is readable. The scale itself
 is visible iff at least one curve is — and the autoscale-reset key carries BOTH flags, since
 hiding either one changes what the axis means. `attachDualPriceScaleSync` keeps their Y zoom in lockstep — a drag on one axis
 mirrors the *relative* zoom onto the other via `setVisibleRange`, which implicitly turns

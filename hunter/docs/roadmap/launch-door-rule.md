@@ -61,11 +61,11 @@ Splitting that book by whether the trail ever armed (`scratchpad/v3_sim.py`, `v3
 | the trail armed (price reached +10 %) | 363 | **+78.69** |
 | never armed - held to the 1200 s cap with no stop at all | 1,619 | **-34.96** |
 
-Four fifths of entries never arm, and with `arm_above_pct` set the trail cannot fire below
-the gate, so those positions carry no stop and the median hold is the cap itself. A **-25 %
-hard stop that applies only while unarmed** recovers 5 SOL of that; it is not a full fix,
-because on a curve silence freezes the price and holding to the cap is often no worse than
-stopping out. The rest of the fix is not taking those entries.
+Four fifths of entries never arm, and the trail line reads only once the position is up the
+arm gate (the `armed` stage), so those positions carry no stop and the median hold is the
+cap itself. A **-25 % hard stop that applies only while unarmed** recovers 5 SOL of that; it
+is not a full fix, because on a curve silence freezes the price and holding to the cap is
+often no worse than stopping out. The rest of the fix is not taking those entries.
 
 My exit simulator is validated per fire against the study's on the shape both share:
 3,821 fires, maximum difference 0.00 SOL. Every number below comes off that simulator.
@@ -105,7 +105,7 @@ one for money (+46.50, worst +0.98) while "no racer, bundler or farm bought befo
 the best for the floor (+1.27) and holds its rate forward (+13.95 %). Both margins over no
 gate at all are small enough to sit inside noise on this sample, which is why the money rule
 above carries no gate. The list is shippable either way: 100 build identities cover 91 % of
-noise-role buys and 200 cover 96 %, an ordinary `m_flow_ix.ix_patterns` set.
+noise-role buys and 200 cover 96 %, an ordinary tag of exact `ix_shape`s.
 
 The thresholds below are the money rule; the three gates are the safety variant.
 
@@ -113,168 +113,146 @@ The thresholds below are the money rule; the three gates are the safety variant.
 ## 2. The two rules, authored
 
 Both rules share one fingerprint (the door), one event, one permission and one size.
-They differ in three entry gates and in one exit clause. Everything below is a JSON
-`params` bag on a `strategies` row plus a `fingerprints` row, with no code branch of
-its own.
+They differ in three entry gates and in their exit lines. Everything below is a JSON
+`params` bag on a `strategy_rules` row (size in its `buy_amount_lamports` column) plus a
+`fingerprints` row, with no code branch of its own.
 
 | study term | engine term | status |
 | --- | --- | --- |
 | DOOR: launch build (exact ordered creation `ix_labels`) whose previous-day tokens (20+) reached curve peak reserve 60 with the peak 60 s or more after birth, at 8 %+ | fingerprint axes `build_launches >= 20`, `build_runner_bps >= 800`, stamped at `TokenCreated` from the day's door snapshot | **new** (section 4) |
-| EVENT: the first buy at age 5 s or later by the second distinct buyer other than the creator | `entry_event = { m_crowd_after_age: { after_age_sec: 5, non_creator_buyers: >= 2 } }`, `entry_lock: "slot"` | **new metric** (section 3) |
-| EVENT: no later than 300 s | `entry = { m_state.time <= 300 }` | exists |
-| PERMISSION: the creator has not sold | money rule: `metric_config.m_flow_ix = { creator_is_tagged: true, wallet_contagion: false, ix_patterns: [] }`, `entry = { m_flow_ix.tagged_sell_count = 0 }`. Rate rule (whose `m_flow_ix` holds the noise list): `metric_config.m_dump_ix = { creator_is_listed: true, ix_patterns: [] }`, `entry = { m_dump_ix.dump_sell <= 0 }` | exists / **new flag** |
+| EVENT: the first buy at age 5 s or later by the second distinct buyer other than the creator | `enter.event: m_crowd.buyer_count [age5s] >= 2`, `enter.lock: "slot"` | **new metric** (section 3) |
+| EVENT: no later than 300 s | `enter.filters: m_state.age_sec <= 300` | exists |
+| PERMISSION: the creator has not sold | money rule: tag `volume = {"match": {"creator": true}}` (not `sticky`), `m_flow.sell_count @volume = 0`. Rate rule (whose `volume` holds the noise list): tag `dump = {"match": {"creator": true}, "side": "sell"}`, `m_flow.sell_sol @dump <= 0` | exists (the `creator` matcher) |
 | PERMISSION: when the creator field never trades, the creator is the creation-slot first buyer | creator-hash fallback resolved at `FirstSlotSettled` (section 5) | **new**, small |
-| GATE (rate rule): buy share 70 %+ over 15 s | `entry = { m_flow_window[15 s].buy_share >= 70 }` | exists |
-| GATE (rate rule): curve depth 40+ vsol | `entry = { m_state.liquidity >= 10 }` (real reserves = `vsol - 30`) | exists |
-| GATE (rate rule): no racer / bundler / farm buy before entry | the noise-build list on `metric_config.m_flow_ix = { creator_is_tagged: false, wallet_contagion: false, ix_patterns: [...] }`, read as `entry = { m_flow_ix.tagged_buy_count = 0 }` | exists |
-| EXIT: armed trail 10 / 20, a -25 % stop while unarmed, cap 1200 s | array-form DNF `exit` | exists |
-| SIZE 0.2 SOL, one entry per token | `buy_amount_lamports = 200000000`, no TP/SL, no `reentry` | exists |
+| GATE (rate rule): buy share 70 %+ over 15 s | `m_flow.buy_share_pct [15s] >= 70` | exists |
+| GATE (rate rule): curve depth 40+ vsol | `m_state.liquidity_sol >= 10` (real reserves = `vsol - 30`) | exists |
+| GATE (rate rule): no racer / bundler / farm buy before entry | the noise-build list as tag `volume = {"match": {"ix_shape": [...]}}` (no `creator`, not `sticky`), read as `m_flow.buy_count @volume = 0` | exists |
+| EXIT: armed trail 10 / 20, a -25 % stop while unarmed, cap 1200 s | stages `start` / `armed` plus an `always` cap line | exists |
+| SIZE 0.2 SOL, one entry per token | the row's `buy_amount_lamports = 200000000`, no TP/SL, no `reentry` | exists |
 
-**One collision.** A fingerprint carries exactly one `m_flow_ix` config, and the rate
-rule needs a build classifier twice: once for the creator (the sell permission) and
-once for the noise builds (the buy gate). They cannot share the list - tagging both
-makes `tagged_buy_count = 0` mean "no noise buy AND no creator buy", and the creator's
-own launch buy is nearly always there, so that gate blocks every entry.
+**Two tags, never one list.** The rate rule reads the creator (the sell permission) and the
+noise builds (the buy gate). They cannot share a tag: tagging both makes
+`m_flow.buy_count @volume = 0` mean "no noise buy AND no creator buy", and the creator's own
+launch buy is nearly always there, so that gate blocks every entry.
 
-The money rule has no collision and keeps the exact study spelling:
-`metric_config.m_flow_ix = { creator_is_tagged: true, wallet_contagion: false,
-ix_patterns: [] }` with `entry = { m_flow_ix.tagged_sell_count = 0 }`. That counts
+The money rule has no noise list and keeps the exact study spelling on `volume`:
+`{"match": {"creator": true}}`, not `sticky`, with `m_flow.sell_count @volume = 0`. That counts
 EVERY leg of a sell, which is what the study's `cr_sold` counts.
 
-The rate rule puts the noise list on `m_flow_ix` (its natural home) and needs a second
-home for the permission. `m_dump_ix` is the only other build classifier, and it needs
-two things before it can carry one:
+The rate rule puts the noise list on `volume` and the permission on a second tag, `dump`
+(`{"match": {"creator": true}, "side": "sell"}`). Two things hold for that permission:
 
-* **`creator_is_listed: bool`** (one `FpConfigFieldSpec`, one line in `matches`,
-  default false so every stored rule is unchanged), plus the creator seed on
-  `ensure_dump` that `ensure_flow` already has. Without it, `ix_patterns: []` compiles
-  to an empty list, `dump_sell_count` reads 0 on every token, and `= 0` passes
-  everything - a gate that looks like a permission and is not one.
-* **the leg-0 problem.** `dump_sell_count` counts leg 0s (transactions);
-  `tagged_sell_count` counts every leg. A creator selling as leg 2 of a bundle is
-  caught by one and missed by the other. So the rate rule spells the permission
-  `m_dump_ix.dump_sell <= 0` - SOL over every matching leg, `<= 0` rather than `= 0`
-  because the SOL metric carries an `=` tolerance and the count does not.
+* **A tag with no matcher that fires is not a permission.** `ix_shape: []` alone tags
+  nothing, `m_flow.sell_sol @dump` reads 0 on every token, and `<= 0` passes everything - a
+  gate that looks like a permission and is not one. The `creator` matcher is what makes it one.
+* **Prints, not transactions.** `m_flow.sell_tx_count` counts transactions (leg 0s);
+  `m_flow.sell_count` and `m_flow.sell_sol` count every leg. A creator selling as leg 2 of a
+  bundle is caught by one and missed by the other. So the rate rule spells the permission
+  `m_flow.sell_sol @dump <= 0` - SOL over every matching leg, `<= 0` rather than `= 0`
+  because `=` on `m_flow.sell_sol` carries a 0.1 SOL tolerance (the registry's `eq_tolerance`).
 
 The two rules therefore take **two fingerprint rows**: identical `criteria`, different
-`metric_config` (which is row identity anyway). Section 9's gate runs the money rule
-under both spellings and diffs the rejection sets, which is the only thing that proves
-they mean the same permission.
+`tags` (which is row identity anyway). Section 9's gate runs the money rule under both
+spellings and diffs the rejection sets, which is the only thing that proves they mean the
+same permission.
 
-**The fallback if that flag is not worth it.** Dropping the noise gate entirely leaves
-the rate rule on two gates, both `m_state`/`m_flow_window`, with the study's own
-`m_flow_ix` permission and no engine change at all: 625 fires, +28.12 SOL,
-22.50 % a trade, 9 of 9 periods, worst +0.42, win 43.5 %. The noise gate is worth
+**The fallback if the noise gate is not worth it.** Dropping it leaves the rate rule on two
+gates, both `m_state` / `m_flow`, with the money rule's `volume` permission: 625 fires,
++28.12 SOL, 22.50 % a trade, 9 of 9 periods, worst +0.42, win 43.5 %. The noise gate is worth
 0.57 SOL and 6.3 pp a trade over that, on 147 fires.
 
-`ensure_dump` gains the creator seed `ensure_flow` already has, and
-`TokenTrack::seed_creator` re-seeds both maps - which is also what makes the section 5
-fallback reach the permission at `FirstSlotSettled` without a second code path.
+`TokenTrack::seed_creator` re-seeds the creator on every tag, which is also what makes the
+section 5 fallback reach the permission at `FirstSlotSettled` without a second code path.
 
 ### 2a. The money rule
 
 ```json
 {
-  "buy_amount_lamports": 200000000,
-  "entry_lock": "slot",
-  "entry_event": {
-    "m_crowd_after_age": { "after_age_sec": 5, "non_creator_buyers": [{"operator": ">=", "value": 2}] }
+  "enter": {
+    "event":   [ {"metric": "m_crowd.buyer_count", "span": "age5s", "is": [{"operator": ">=", "value": 2}]} ],
+    "filters": [ {"metric": "m_state.age_sec", "is": [{"operator": "<=", "value": 300}]},
+                 {"metric": "m_flow.sell_count", "tag": "volume", "is": [{"operator": "=", "value": 0}]} ],
+    "lock": "slot"
   },
-  "entry": {
-    "m_state":   { "time": [{"operator": "<=", "value": 300}] },
-    "m_flow_ix": { "tagged_sell_count": [{"operator": "=", "value": 0}] }
-  },
-  "exit": [
-    { "m_position": { "arm_above_pct": 10, "armed": [{"operator": "=",  "value": 1}],
-                      "retrace": [{"operator": ">=", "value": 20}] } },
-    { "m_position": { "armed": [{"operator": "=",  "value": 0}],
-                      "pnl":   [{"operator": "<=", "value": -25}] } },
-    { "m_position": { "held":  [{"operator": ">=", "value": 1200}] } }
+  "always": [
+    {"if": [{"metric": "m_position.held_sec", "is": [{"operator": ">=", "value": 1200}]}], "sell": true}
+  ],
+  "stages": [
+    {"name": "start", "on": [
+      {"if": [{"metric": "m_position.retrace_pct", "is": [{"operator": ">=", "value": 20}]},
+              {"metric": "m_position.pnl_pct",     "is": [{"operator": ">=", "value": 10}]}], "sell": true},
+      {"if": [{"metric": "m_position.pnl_pct", "is": [{"operator": "<=", "value": -25}]}], "sell": true},
+      {"if": [{"metric": "m_position.pnl_pct", "is": [{"operator": ">=", "value": 10}]}], "go": "armed"}
+    ]},
+    {"name": "armed", "on": [
+      {"if": [{"metric": "m_position.retrace_pct", "is": [{"operator": ">=", "value": 20}]}], "sell": true}
+    ]}
   ]
 }
 ```
 
-`arm_above_pct` sits on the first clause only: `validate_group` rejects it on a clause
-carrying no trailing metric, and `extract_trail_arm_pct` takes the first clause that
-names it, so one spelling latches `armed` for the whole position. Clause 2 is the leak
-fix: while `armed` reads 0 the trailing clause is skipped by `trailing_armed`, and
-this is the only stop the position has.
+`start` is the unarmed position and `armed` the armed one: the trail sells only in `armed`,
+and the -25 % stop only in `start` - the leak fix, and the only stop an unarmed position has.
+A `go` takes effect from the next print, so `start` also reads the trail on the print that
+crosses +10 % (its first line), where the study already counts the trail as armed. The
+1,200 s cap is an `always` line, read in both stages.
 
 ### 2b. The rate rule
 
 Same bag, plus three entry gates and a tighter exit:
 
 ```json
-  "entry": {
-    "m_state":       { "time": [{"operator": "<=", "value": 300}],
-                       "liquidity": [{"operator": ">=", "value": 10}] },
-    "m_dump_ix":     { "dump_sell": [{"operator": "<=", "value": 0}] },
-    "m_flow_ix":     { "tagged_buy_count": [{"operator": "=", "value": 0}] },
-    "m_flow_window": { "window_size_sec": 15, "buy_share": [{"operator": ">=", "value": 70}] }
-  },
-  "exit": [
-    { "m_position": { "arm_above_pct": 5, "armed": [{"operator": "=",  "value": 1}],
-                      "retrace": [{"operator": ">=", "value": 20}] } },
-    { "m_position": { "armed": [{"operator": "=",  "value": 0}],
-                      "pnl":   [{"operator": "<=", "value": -25}] } },
-    { "m_position": { "armed": [{"operator": "=",  "value": 0}],
-                      "held":  [{"operator": ">=", "value": 180}] } },
-    { "m_position": { "held":  [{"operator": ">=", "value": 1200}] } }
+  "enter": { "filters": [
+    {"metric": "m_state.age_sec",       "is": [{"operator": "<=", "value": 300}]},
+    {"metric": "m_state.liquidity_sol", "is": [{"operator": ">=", "value": 10}]},
+    {"metric": "m_flow.sell_sol",  "tag": "dump",   "is": [{"operator": "<=", "value": 0}]},
+    {"metric": "m_flow.buy_count", "tag": "volume", "is": [{"operator": "=",  "value": 0}]},
+    {"metric": "m_flow.buy_share_pct", "span": "15s", "is": [{"operator": ">=", "value": 70}]}
+  ] },
+  "stages": [
+    {"name": "start", "on": [
+      {"if": [{"metric": "m_position.retrace_pct", "is": [{"operator": ">=", "value": 20}]},
+              {"metric": "m_position.pnl_pct",     "is": [{"operator": ">=", "value": 5}]}], "sell": true},
+      {"if": [{"metric": "m_position.pnl_pct", "is": [{"operator": "<=", "value": -25}]}], "sell": true},
+      {"if": [{"metric": "m_position.held_sec", "is": [{"operator": ">=", "value": 180}]},
+              {"metric": "m_position.pnl_pct",  "is": [{"operator": "<",  "value": 5}]}], "sell": true},
+      {"if": [{"metric": "m_position.pnl_pct", "is": [{"operator": ">=", "value": 5}]}], "go": "armed"}
+    ]},
+    {"name": "armed", "on": [
+      {"if": [{"metric": "m_position.retrace_pct", "is": [{"operator": ">=", "value": 20}]}], "sell": true}
+    ]}
   ]
 ```
 
-Clause 3 is the `bail180` term: a position that has not armed by 180 s is closed.
-Clause 4 keeps the cap for a position that armed and then went quiet.
+The third `start` line is the `bail180` term: a position that has not armed by 180 s is
+closed; its `pnl_pct < 5` keeps it off the print that arms. The `always` cap keeps closing a
+position that armed and then went quiet.
 
-## 3. `m_crowd_after_age` - the one new metric
+## 3. `m_crowd.buyer_count [age5s]` - the one new metric
 
-A new group, because the subject (how many distinct buyers this token has drawn since
-an age anchor) has no basis in the registry: `m_crowd_window` is trailing, counts
-every trade rather than buys, and counts the creator.
+A new span kind, because the subject (how many distinct buyers this token has drawn since
+an age anchor) has no basis among the trailing windows: `m_crowd.unique_wallets` is
+trailing, counts every trade rather than buys, and counts the creator.
 
 | | |
 | --- | --- |
-| group | `m_crowd_after_age` - distinct buyers since an age anchor |
-| metric | `non_creator_buyers` - distinct wallets, other than the creator, that have BOUGHT this token at or after `after_age_sec`. Count. |
-| strict param | `after_age_sec` (required, `allows_zero: true`) - the anchor. Buys before it never enter the set. |
-| state | one small wallet set per anchor on `TokenTrack` |
+| quantity | `m_crowd.buyer_count` - distinct wallets, other than the creator, that have BOUGHT this token at or after the anchor. Count. |
+| span | since age, `age<N>s` (`age5s` here) - the anchor. Buys before it never enter the set. |
+| state | one small wallet set per anchor on `TokenTrack` (`AgeAnchor`, `metrics/crowd_after_age.rs`); two rules on one anchor share it |
 
 **The creator exclusion is definitional, not a param.** The creator's own launch buy
-is not somebody arriving, and `m_crowd_window.unique_wallets` remains the
-count-everyone reading. One fewer param is one fewer dedup axis on the hot path.
+is not somebody arriving, and `m_crowd.unique_wallets` remains the count-everyone
+reading. One fewer param is one fewer dedup axis on the hot path.
 
-**`after_age_sec` cannot be replaced by an `m_state.time >= 5` filter.** That filter
+**The anchor cannot be replaced by an `m_state.age_sec >= 5` filter.** That filter
 would let a set seeded during the launch scramble satisfy `>= 2` at the first print
 past 5 s on nearly every token, which is a different rule with a different book. The
 finding sets the metric.
 
-### 3a. What the framework has to grow
-
-The registry says a `Dynamic` group is one "deduped by its strict params across
-rules", but `validate_group` and `build_reqs` both read `kind == Dynamic` as "has a
-window axis". Those two questions separate, each in one line, by asking the group's
-own `strict_params` whether it declares `WINDOW_AXIS` instead of asking its kind.
-`m_crowd_after_age` is then honestly `Dynamic` with one strict param and no window, and
-no existing group changes behaviour.
-
-A requirement's identity then has to carry the anchor, or two rules reading two
-anchors would collide on one buffer. That is the same job `Windows` does for a span,
-so it takes the same shape:
-
-* `AgeAnchor { since_age_ms: u64, cap: u32 }` in `metrics::crowd_lifetime`, ordered
-  and hashable, the dedup key of one aggregator.
-* `MetricReq.anchor: Option<AgeAnchor>`, set for this group's metrics only - the
-  `arm_above_pct` precedent, one optional field for one group.
-* `TokenTrack::value(id, windows, anchor, fingerprint, now)` - one extra argument,
-  `None` at every other call site. A second anchored group is the moment `windows` and
-  `anchor` become one `ReadScope` value; one does not justify the rename.
-* `CompiledRule.crowd_anchors` -> `EngineState.all_crowd_anchors` -> `WindowSets` ->
-  `TokenTrack::ensure_crowd_lifetime`, exactly the path `crowd_windows` already takes.
-
-### 3b. The set is capped, and the cap is derived
+### 3a. The set is capped, and the cap is derived
 
 A rule only ever asks whether the count has reached a threshold, so `cap` is the
-largest value any loaded condition on `non_creator_buyers` names under this anchor, plus
+largest value any loaded condition on `m_crowd.buyer_count` names under this anchor, plus
 one. Once the set holds `cap` wallets it stops inserting and the metric reports `cap`.
 Every operator stays exact at that cap: `>= 2` passes, `<= 5` fails at `cap = 6`,
 `= 3` fails at 6. A hot token drawing 3,000 buyers costs three entries, not three
@@ -329,7 +307,7 @@ CREATE TABLE launch_build_doors (
 One repo fn (`LaunchDoorRepo::compute_day(day)`) is the only SQL that fills it:
 `tokens` LEFT JOIN `tokens_info` over one day of creations, `GROUP BY ix_labels`.
 About 25k rows, never `trades`. The build key is hashed at load with the engine's
-`flow_ix::ix_hash` over the stored labels, so the hasher exists in one place and SQL
+`trade_keys::ix_hash` over the stored labels, so the hasher exists in one place and SQL
 never re-implements it.
 
 * **lab first**: simulate reads the rows for every day of its corpus and computes the
@@ -354,7 +332,7 @@ configured axis closed - an unseen build never arms. Stamped in `reduce` at
 `TokenCreated` before `match_all` runs, exactly where `prior_launches` is stamped:
 
 ```rust
-let build = flow_ix::ix_hash_opt(&tf.ix_labels);
+let build = trade_keys::ix_hash_opt(&tf.ix_labels);
 if let Some(door) = build.and_then(|h| state.build_doors.get(&h)) {
     tf.build_launches = Some(door.launches);
     tf.build_runner_bps = Some(door.runner_bps);
@@ -414,20 +392,21 @@ wallet on the same tokens - not merely that the money agrees.
  FirstSlotSettled --> creator hash falls back to the creation-slot first buyer
                       when the creator never bought
                      |
- each BUY    --> m_crowd_after_age.non_creator_buyers  (creator compare, age compare,
-             |                                      scan of <= 3 while the set is open)
- each SELL   --> creator match (m_flow_ix or m_dump_ix)  (one wallet-hash compare)
-             --> m_flow_window[15 s]               (rate rule only)
+ each BUY    --> m_crowd.buyer_count [age5s]  (creator compare, age compare,
+             |                             scan of <= 3 while the set is open)
+ each SELL   --> creator match (tag volume or dump)  (one wallet-hash compare)
+             --> m_flow.buy_share_pct [15s]  (rate rule only)
                      |
- entry_event: m_crowd_after_age{since 5 s}.non_creator_buyers >= 2       lock: slot
- entry:       creator has not sold  AND  m_state.time <= 300
-              (rate rule also: liquidity >= 10, buy_share[15 s] >= 70,
-               m_flow_ix.tagged_buy_count = 0 over the noise-build list)
+ enter.event:   m_crowd.buyer_count [age5s] >= 2       lock: slot
+ enter.filters: creator has not sold  AND  m_state.age_sec <= 300
+                (rate rule also: liquidity_sol >= 10, buy_share_pct [15s] >= 70,
+                 m_flow.buy_count @volume = 0 over the noise-build list)
                      |
                      | SubmitBuy 0.2 SOL   ~240 fires a day (money) / ~60 (rate)
                      v
- Holding --> exit DNF: (armed AND retrace >= 20) OR (unarmed AND pnl <= -25)
-                       OR held >= 1200   |   Dead
+ Holding --> start:  pnl_pct <= -25 -> sell;  pnl_pct >= 10 -> go armed
+             armed:  retrace_pct >= 20 -> sell
+             always: held_sec >= 1200 -> sell   |   Dead
 ```
 
 ## 7. What it costs on the hot path
@@ -437,7 +416,7 @@ wallet on the same tokens - not merely that the money agrees.
 | ingest, per curve print | one `f64` compare; two field writes on a new reserve high |
 | decision loop, `TokenCreated` | one FNV hash over the creation labels plus one map get (about 100 ns against the 461 us a creation already costs) |
 | decision loop, per print | zero for tokens the door does not arm; for armed tokens two compares and a scan of at most `cap` entries on a BUY while the set is open, plus the existing creator compare |
-| decision loop, tick | nothing new - `m_crowd_after_age` cannot move on a tick, so no `ClockHorizons` field and the settled-tick skip is untouched |
+| decision loop, tick | nothing new - `m_crowd.buyer_count` cannot move on a tick, so no `ClockHorizons` field and the settled-tick skip is untouched |
 | PG | one `GROUP BY` over one day of `tokens` once a day, off the loop; no `trades` scan anywhere |
 | RAM | the door map, a few hundred entries; at most `cap` wallet hashes per armed token per anchor |
 
@@ -446,9 +425,8 @@ creations, and every per-print cost above is paid only by an armed token.
 
 ## 8. Order of work
 
-1. `m_crowd_after_age`: the framework split in 3a, the group, the metric, the anchor,
-   the capped set, `ensure_crowd_lifetime` on the `WindowSets` path, the registry walk
-   test, the TS registry mirror. Test: two rules on anchors 5 and 30 read different
+1. `m_crowd.buyer_count` on the since-age span: the anchor, the capped set, the registry
+   walk test, the TS registry mirror. Test: two rules on anchors 5 and 30 read different
    values on one token; a token drawing 3,000 buyers holds `cap` entries.
 2. `curve_peak_reserve_sol` / `curve_peak_at`: cache latch, upsert columns, migration,
    workstation backfill. Test: a path peaking at reserve 70 at 30 s records 30 s, not
@@ -511,9 +489,9 @@ not the identity - see the fix below.
 
 | exit | fires | engine | target | gap | engine hold | target hold |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `retrace >= 36` | 744 | +33.79 | +33.13 | +0.65 | 62.5 s | 63.0 s |
-| `pnl <= -43.75` | 231 | -22.74 | -22.46 | -0.28 | 14.0 s | 14.2 s |
-| `held >= 1200` | 145 | +54.00 | +53.34 | +0.67 | - | 1200 s |
+| `retrace_pct >= 36` | 744 | +33.79 | +33.13 | +0.65 | 62.5 s | 63.0 s |
+| `pnl_pct <= -43.75` | 231 | -22.74 | -22.46 | -0.28 | 14.0 s | 14.2 s |
+| `held_sec >= 1200` | 145 | +54.00 | +53.34 | +0.67 | - | 1200 s |
 | `Dead` | 652 | -21.39 | -21.34 | **-0.06** | 184 s | 1200 s |
 | **total** | **1,772** | **+43.66** | **+42.67** | **+0.99 (2.3 %)** | | |
 
@@ -521,9 +499,9 @@ not the identity - see the fix below.
 and every one of the seven days agrees in sign and to within 0.4 SOL. The gap splits
 into two measured parts: the fee basis below carries **+0.55**, and **17 fires (1.0 %)**
 carry **+0.38** of the rest - sixteen of them `Dead`, where the engine cuts a silent
-token at a median 184 s and the study rides it to the 1200 s cap, and one `retrace`
+token at a median 184 s and the study rides it to the 1200 s cap, and one `retrace_pct`
 fire that arms on a different print. On the two exits that need no deadness call the
-books are equal to the SOL: `pnl <= -43.75` and `held >= 1200` both reconcile to
+books are equal to the SOL: `pnl_pct <= -43.75` and `held_sec >= 1200` both reconcile to
 **0.0000** after the fee basis.
 
 **7. The rate rule, against its own target.** The same construction, carrying the rate
@@ -590,24 +568,25 @@ machine unit before either was authored.
   three doors", section 1) is vacuous: there were none to find. Left out, the engine
   fired on 1,164 extra money-rule tokens booking **-1.42 SOL** and turning a 7-of-7 book
   into 6 of 7 with a -2.14 SOL day. The term needs no engine change - the creation
-  transaction IS the first buy print, so `m_flow_ix` with those 15 exact sequences and
-  both wallet switches off makes `tagged_buy_count <= 0` read exactly "not launched by a
-  bundler build". Restoring it reproduces the offline prediction to the fire: 2,001
+  transaction IS the first buy print, so a tag `bundler` holding those 15 exact `ix_shape`s
+  (no `creator`, not `sticky`) makes `m_flow.buy_count @bundler <= 0` read exactly "not
+  launched by a bundler build". Restoring it reproduces the offline prediction to the fire: 2,001
   fires and +43.56 SOL, predicted 2,001 and +43.56.
 
 ### One term that does not survive, and is therefore not shipped
 
 The rate rule's third gate - *no racer / bundler / farm buy before entry* - counts
-noise buys among the arrivals at **5 s or later**. `m_flow_ix` counts from birth or
-over a trailing window, and **93.0 % of fires carry a noise buy inside the first 5 s**
+noise buys among the arrivals at **5 s or later**. `m_flow.buy_count @volume` counts from
+birth or over a trailing window, and **93.0 % of fires carry a noise buy inside the first 5 s**
 (the launch scramble), against 17.5 % that carry one after it. Authored as
-`m_flow_ix.tagged_buy_count = 0` the gate rejected 96 % of the book (71 fires, 5 of 5
+`m_flow.buy_count @volume = 0` the gate rejected 96 % of the book (71 fires, 5 of 5
 periods that produced any).
 
-So the gate is **deferred, not approximated**. What it needs is `m_flow_ix` on the
-**anchored** basis this work already introduced for the crowd subject - the group, its
-`after_age_sec` dedup key, its read scope and its registration path all exist, so the
-extension is one more group on an existing basis rather than a new one. The 234
+So the gate is **deferred, not approximated**. What it needs is `m_flow.buy_count @volume`
+on the **since-age** span (`[age5s]`) this work already introduced for
+`m_crowd.buyer_count` - the span kind, its `AgeAnchor` dedup key and its read path all
+exist, so the extension is one more accepted span on an existing quantity (a registry
+change plus its compute arm) rather than a new basis. The 234
 expanded raw noise sequences are ready on fingerprint
 `77777777-7777-4777-8777-777777777777`.
 
@@ -629,7 +608,7 @@ trades for more total SOL, the rate rule converts that into per-trade return and
 floor. Neither has a losing day.
 
 The depth gate is what buys the rate rule its floor: 7 `Dead` exits against the money
-rule's 494, because `liquidity >= 10` keeps the position out of tokens that are already
+rule's 494, because `m_state.liquidity_sol >= 10` keeps the position out of tokens that are already
 dead-eligible when it enters.
 
 ### Divergences still open, each now with a number
@@ -643,7 +622,7 @@ dead-eligible when it enters.
   rule's. Not an error on either
   side - one is the study's convention, the other is what `round_trip_multi_leg`
   charges live - but the two are not interchangeable and a comparison must say which.
-* **`held >= 1200` holds report short.** The exit fires on a tick; the fill prices at
+* **`m_position.held_sec >= 1200` holds report short.** The exit fires on a tick; the fill prices at
   the last print, which on a silent token is much earlier, so `holding_secs` on those
   rows under-reports. A reporting artifact of the fill model, not money.
 * **The lake ends at 2026-09-06**, so the study's 09-07 period (263 fires, +3.61 SOL)

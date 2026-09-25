@@ -46,17 +46,18 @@ the SSOT, and `entered` is the sink's own member (the engine's Enter path emits 
 
 ## `end_detail` — the one reason that does not explain itself
 
-`unsatisfiable` names a mechanism, not a cause: it means a monotonic entry bound was
-permanently crossed, and `time` is the only monotonic metric, so it always reads "the
-token aged past the entry window". Which condition the entry was still *failing* when
-the clock ran out — the thing a rule gets tuned on — is nowhere in the word.
+`unsatisfiable` names a mechanism, not a cause: a monotonic entry bound was permanently
+crossed. In practice that bound is almost always `m_state.age_sec` (the token aged past
+the entry window). Which condition the entry was still *failing* when the clock ran out -
+the thing a rule gets tuned on - is nowhere in the word.
 
 `end_detail JSONB` (0003) carries it, set on `unsatisfiable` alone:
 
 ```json
-{ "blocked_by": "m_flow_window.gross_flow",
-  "killed_by":  { "metric": "m_state.time", "threshold": 50.0, "operator": "<" },
-  "unmet": [{ "metric": "m_flow_window.gross_flow", "window_size_sec": 60.0,
+{ "blocked_by": "m_flow.gross_sol [60s]",
+  "killed_by":  { "metric": "m_state.age_sec", "threshold": 50.0, "operator": "<" },
+  "unmet": [{ "metric": "m_flow.gross_sol [60s]", "window_size_sec": 60.0,
+              "window": { "size": 60.0, "lag": 0.0, "unit": "sec" },
               "value": 24.71, "conditions": [{ "operator": ">=", "value": 40.0 }] }] }
 ```
 
@@ -84,9 +85,14 @@ Three rules the shape encodes:
   binding; the scalar exists so the column can filter, sort and group without the
   client parsing the document, and `unmet` ships in full beside it.
 
-Metric names are the registry **paths** (`group.metric`), never the `MetricId` ordinal:
-this is a stored row that outlives the build that wrote it, and an ordinal would
-silently re-point every historical row the day a metric is inserted.
+A metric is named by its full read label (`MetricRef::label`: `m_family.metric @tag
+[span]`), never an ordinal: this is a stored row that outlives the build that wrote it, and
+an ordinal would silently re-point every historical row the day a metric is inserted. The
+label carries the tag and the span, so two conditions on one metric over different spans
+are two blockers. `window_size_sec` is a number of seconds for a seconds window and `null`
+otherwise; `window` carries the whole span (size, lag, unit). Rows written before metric
+system v2 keep their v1 text (`m_flow_window.gross_flow`, `m_state.time`) as written, and
+the UI shows them raw; a `blocked_by` breakdown across that cutover shows both spellings.
 
 `arm_blocked_by` groups the cohort on `end_detail ->> 'blocked_by'` — one expression,
 shared with the sort and filter whitelists, so a breakdown bar and the rows its lens

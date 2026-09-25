@@ -49,12 +49,14 @@ hence `[build] jobs = 4` and `[profile.dev] debug = "line-tables-only"`. All of 
   refutation: it changes the number that validates the rule, so what ships stops replicating
   what justifies it. Defer the extension and the rule stays unshipped, gap recorded.
 - **Extend it, don't complicate it.** One metric = one quantity, named for what it measures.
-  One group = one subject on one time basis (`m_flow_window` = flow, windowed) plus that
-  basis's params. A new metric joins the group whose subject and basis it shares; a new group
-  needs a subject or a basis that has none — never a second group for a family that exists,
-  never an unrelated quantity folded into one for convenience. Add the smallest thing that
-  carries the finding: a metric before a group, a group before a new window kind. A metric you
-  cannot state in one line — what it measures, unit, basis — is not ready to add. Extension
+  One family = one subject (`m_flow` = money moving); whose trades and over what stretch
+  are the read's tag and span (`m_flow.buy_sol @!volume [10s]`), never a new metric. A new
+  metric joins the family whose subject it shares; a new family needs a subject that has
+  none — never a second family for a subject that exists, never an unrelated quantity folded
+  into one for convenience. Add the smallest thing that carries the finding: a tag or span
+  a metric accepts before a metric, a metric before a family, a family before a new span
+  kind. A metric you cannot state in one line — what it measures, unit, basis — is not
+  ready to add. Extension
   cost: [hunter/CLAUDE.md](hunter/CLAUDE.md#hot-path-landmines),
   [_!___metrics](hunter/docs/plans/strategies/_!___metrics.md).
 - **A metric ships explained, and explained once.** Every metric carries one definition —

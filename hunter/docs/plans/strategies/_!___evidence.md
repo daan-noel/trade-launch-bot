@@ -603,7 +603,7 @@ Scripts: [r1_exact.py](node-derivation/hot-tape/r1_exact.py),
 ## 1.23 Rule 1 in the engine: simulate books the reference ticket for ticket (H18)
 
 The engine carries rule 1 in its own vocabulary (`node-derivation/data/r1p_rule.json`): three new
-metrics (`m_build_window.unique_builds`, `m_print_wallet.since_buy`, `m_state.on_curve`), the
+metrics (`m_crowd.unique_ix_shapes`, `m_print.since_buy_sec`, `m_state.on_curve`), the
 existing ones for every other term, and the `LagMs` fill with the exit leg's rule on both legs. The
 replay is the code simulate runs - the lab's lake load, `run_replay` over one `EngineState`, the
 engine cost kernel (125 bps a leg, 0.000225 SOL a leg from `.env`) - in
@@ -657,7 +657,7 @@ coins reach +30 % within 120 s. Only 31 trades never rise.
 | family (study, 0.2 SOL, 115 ms; rule 1 = 5.44 SOL) | best spec | SOL | fails |
 | --- | --- | ---: | --- |
 | stepped trail, 198 ladders | peak +15 %, trail 8 % | 4.43 | folds, top 1 % |
-| trail while up (`arm_above_pct`) | up 15 %, trail 3 % | 5.52 | folds |
+| trail while up (`m_position.retrace_pct` gated by `m_position.pnl_pct`) | up 15 %, trail 3 % | 5.52 | folds |
 | sell into a buy | up 15 %, a buy of 3 SOL | 5.77 | folds |
 | wall target | 0.4 x (115 / vsol)^2 - 1 | 6.35 | top 1 % 15.5 |
 | clock | 180 s | 6.19 | fold 1 |
@@ -704,8 +704,9 @@ It is the exit candidate for the days after 09-10, next to rule 1's bracket.
 Rule 1b (Flip-Catch - Room; rule 1 is Flip-Catch - Bracket) is rule 1's entry with the exit of
 1.24's post-selection read: sell at 40 % of the entry's
 room to the graduation wall, stop at -60 %, clock at 90 s. The engine carries the target as one new
-position metric, `m_position.room_taken`, whose definition and unit live in
-[_!___metrics.md](_!___metrics.md); so the exit is `room_taken >= 40` OR `held >= 90`, with
+position metric, `m_position.room_taken_pct`, whose definition and unit live in
+[_!___metrics.md](_!___metrics.md); so the exit is two `always` lines, `m_position.room_taken_pct >= 40`
+and `m_position.held_sec >= 90`, with
 `stop_loss` 60 and no `take_profit`
 (`node-derivation/data/r1b_rule.json`). `vsol at the fill` is the depth of the last print folded when
 the fill confirms; in simulate that is the fill print, the `v0` of `r1b_exit.py`.
@@ -875,7 +876,7 @@ public on the other. Every past-only spelling books the same clone on the holdou
 1's 22, SOL 4.19-4.46 against 3.99, 1-3 days, thresholds 50-300). The engine reads: public when
 the recipe of the holder's first buy had more than 100 distinct buying wallets, on any token, on
 the UTC day before that buy; the class fixed at that buy; each bag in the prints' own token amounts
-(`m_holder_book`, `build_breadth_day_stats`). The engine books that spelling's reference ticket for
+(`m_holdings.bag_share_pct @public_app`, `build_breadth_day_stats`). The engine books that spelling's reference ticket for
 ticket on the holdout and on 09-11..09-12 (388/388, 353/353, 95/95, 90/90: same trigger, fill and
 exit prints, SOL to 1.5e-16), and its stored daily table equals the lake's counts:
 

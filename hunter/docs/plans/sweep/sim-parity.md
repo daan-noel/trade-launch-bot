@@ -38,7 +38,7 @@ condition `eval`, `CompiledRule::compile`.
    `n_fired` / `total_pnl_sol` are therefore **upper bounds** vs. a live rule under its
    own caps. Caps make token outcomes order-dependent, which would serialize the rayon
    token fan-out.
-- **D8 · Percent-of-pool sizing ignored in sweep** (`RuleParams.buy_pct_of_vsol`). The
+- **D8 · Percent-of-pool sizing ignored in sweep** (`enter.size_pct_of_pool`). The
    kernel resolves a buy against the pool's SOL reserve at the entry instant
    (`reduce::resolve_buy_lamports`), so live-real, live-paper and simulate all size the
    same. A sweep does not: it prices every combo at the flat `pricing.buy_amount_sol`,
@@ -64,12 +64,12 @@ condition `eval`, `CompiledRule::compile`.
    flag-dropped non-vacuity leg). It drives `reduce` directly rather than `run_replay`
    because the lab replay driver keys in-flight fills by *mint* and so cannot carry two
    concurrent positions on one token whatever the engine decides.
-- **D5 · Scale-out in-flight-sell blindness absent in sweep (2026-07-29).** The live /
+- **D5 · Partial-sell in-flight blindness absent in sweep (2026-07-29).** The live /
    replay fold stays `ExitPending` until a partial fill confirms (and may defer that
-   confirm to a later adverse print in the fill window) — no new decision while the
-   sell is in flight. The sweep's staged resolver books each partial instantly and
-   resumes from the next series row, so a global exit that becomes true on the trade
-   *after* a stage fire is taken immediately. Same-batch confirms (fill window =
+   confirm to a later adverse print in the fill window) - no new decision while the
+   sell is in flight. The sweep's walk books each partial sell instantly and
+   resumes from the next series row, so an `always` line that becomes true on the trade
+   *after* a partial sell is taken immediately. Same-batch confirms (fill window =
    fire trade) match byte-for-byte; deferred fills can diverge. Guard:
    `scan_matches_replay_scale_out_two_stage` + `…_global_sl_mid_ladder` (trades spaced
    past `MAX_FILL_WAIT_SLOTS` so every fill collapses to the fire print).
@@ -124,16 +124,17 @@ condition `eval`, `CompiledRule::compile`.
    a **bug, not a divergence**: the fold's single-slot entry cache
    (`sweep/engine.rs::fill_outcomes_with_state`) is keyed by `AxesModel::entry_key` =
    the *entry-axis picks only*, but `resolve_entry` mirrors the engine's `can_enter`
-   veto — never buy while the exit conditions already hold — so the resolved entry is
+   veto - never buy while a sell line already holds - so the resolved entry is
    **exit-dependent**. With `order_for_entry_cache` making same-entry combos contiguous,
    the first combo of every entry class resolved entries under *its own* exit veto and
    every sibling silently inherited that entered set: wrong `n_fired`, wrong entry rows,
    wrong prices, wrong crown.
 
    *Proof (run `593844a2`, fp-scoped, 248 tokens):* combos 655360..79 share entry params
-   and all stored `n_fired = 55` — 655360's honest number (its `buy(30s)<3 | buy(60s)<1`
-   exits veto exactly the quiet-market rows its own entry needs). A fresh drill-in of the
-   promoted 655362 (exits `trail(5s)>30 | liq>85`, veto ~never) under the same
+   and all stored `n_fired = 55` - 655360's honest number (its
+   `m_flow.buy_sol [30s] < 3 | m_flow.buy_sol [60s] < 1` exits veto exactly the
+   quiet-market rows its own entry needs). A fresh drill-in of the promoted 655362 (exits
+   `m_price.trail_pct [5s] > 30 | m_state.liquidity_sol > 85`, veto ~never) under the same
    corpus/`as_of`/pricing gives **101 entered**, agreeing with an independent engine
    simulate (100/250). First-in-class combos reproduce their stored rows exactly
    (589824: 93↔93; 655360: 55↔55) — aggregate-vs-own-drill-in disagreement is the
@@ -147,7 +148,7 @@ condition `eval`, `CompiledRule::compile`.
    candidates applying that combo's veto, then a per-class fill memo). `ExitCtx` is
    rebuilt on the resolved `fill_row` (`Strategy::exit_ctx_key`) rather than on entry-key
    staleness, which per-combo entries made unsound as well as wasteful. Pure TP/SL
-   sweeps are bit-for-bit untaxed: position-scoped exit reqs read `NaN` before entry and
+   sweeps are bit-for-bit untaxed: position-scoped sell lines read `NaN` before entry and
    can never veto (`BoundCombo::entry_veto_possible`), so Stage B is a candidate lookup
    plus a memo hit. `resolve_entry` survives as the fused SSOT reference, and Stage B is
    asserted equal to it on **every** resolution under `cfg(test)`.
@@ -168,16 +169,17 @@ condition `eval`, `CompiledRule::compile`.
    token's series at its OWN `last_trade + DEAD_QUIET + TAIL_MARGIN` (that keeps every
    series short — extending the *tick grid* to the corpus horizon is the RAM cost the
    sparse-grid design exists to avoid). Instead, when the in-series scan leaves a
-   position `Open`, `resolve_frozen_tail` (`sweep/generic/strategy.rs`) resolves the
-   quiet tail **analytically in O(1)**: at a frozen price only the rate-1 clocks move
-   (`time` since creation, `stall` since the last high, `held` since entry), so the
-   earliest deterministic crossing up to the corpus-wide horizon — `min(as_of,
+   position `Open`, `frozen_tail::resolve` (`sweep/generic/frozen_tail.rs`) resolves the
+   quiet tail **analytically**: at a frozen price only the rate-1 clocks move
+   (`m_state.age_sec` since creation, `m_price.stall_sec` since the last high,
+   `m_position.held_sec` since entry, `m_position.stage_sec` and the stage deadlines), so the
+   earliest deterministic crossing up to the corpus-wide horizon - `min(as_of,
    corpus_last_trade + DEAD_QUIET + TAIL_MARGIN)`, the same cap `run_replay` uses — is
    computed and booked at the last trade's market fill (byte-identical to the exit
    `run_replay`'s `queue_exit_fill` books). `Dead`, SL/TP and price-movement exits can
-   never newly fire on a flat price, and a windowed exit metric (which *does* keep
-   changing in the tail) conservatively keeps the legacy `Open` — the one remaining
-   residual, documented at the fn. The horizon is opt-in per run
+   never newly fire on a flat price, and a windowed held-side read (which *does* keep
+   changing in the tail) conservatively keeps `Open` - the one remaining residual (D6),
+   documented at the module. The horizon is opt-in per run
    (`GenericSweepStrategy::set_corpus`); the drill-in threads the same horizon
    (`frozen_tail_horizon` over its token set) so a row's exit matches the aggregate the
    user clicked. Locked by `guard::scan_matches_replay_multi_token_frozen_tail` (the
@@ -267,13 +269,13 @@ Both were mistaken for the D0 bug during its investigation, so they are recorded
   bug, not just a caveat: with rows only at trade instants, every time-decaying metric is
   sampled exactly where a fresh trade has just been folded back in, so a between-trades
   crossing is invisible and the chart's condition-fire marker lands *late*. Measured on
-  `8HJNtq7k…hpump` under rule `promoted g0 c92432` (`m_flow_window@60 buy < 5`): the chart
+  `8HJNtq7k...hpump` under rule `promoted g0 c92432` (`m_flow.buy_sol [60s] < 5`): the chart
   drew the exit at 19:54:22, simulate booked it at 19:53:12 — **70 s** apart, because the
   window dipped under 5 during a 1.3 s gap between two trades.
   Fixed by extracting the sweep's sparse tick grid to `hunter_engine::metrics::grid`
   (`SparseGrid` + `fold_sparse` + `estimate_sparse_rows`) and driving **both** the sweep
   precompute and the chart endpoint through it — one loop, so a trade-only fold cannot be
-  reintroduced in one caller. The endpoint takes the rule's `time`/`stall` condition
+  reintroduced in one caller. The endpoint takes the rule's `m_state.age_sec` / `m_price.stall_sec` condition
   ceilings as query params to size the grid (windows are implied by `windows`), and bounds
   the response at `MAX_SERIES_ROWS`, reporting `truncated` / `covered_until` rather than
   silently returning a short series. The clock origin stays at `trades[0]` (the dev-buy

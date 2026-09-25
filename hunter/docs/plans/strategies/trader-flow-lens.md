@@ -1,80 +1,86 @@
-# Trader flow lens — analysis-owned pattern sets
+# Trader flow lens: an analysis-owned tag
 
 ## The gap
 
-The chart stack splits trade flow into **vol / non-vol** from a fingerprint's
-lists (`m_flow_ix.ix_patterns` exact sequences, or `m_burst_slot.working_templates`
-grain ids). That is the engine's own classification, so the set lives on the row
-rules are bound to.
+The chart stack splits trade flow into `@tag` / `@!tag` with the same classifier the
+engine folds (`TagState::fold_half`, mirrored by `classifyFlow.ts`), reading a fingerprint
+tag. That is the engine's own classification, so the tag lives on the row rules are bound
+to.
 
-Trader Analysis studies a wallet, and the tokens it traded belong to no cohort.
-With no fingerprint there are no patterns, so the overlay never draws and the
-per-candle trades table has no Tagged / Working column — precisely on the page
-where the question is *which structures surround this trader's entries and exits*.
+Trader Analysis studies a wallet, and the tokens it traded belong to no cohort. With no
+fingerprint there is no tag, so the overlay never draws and the per-candle trades table
+has no tag column, precisely on the page where the question is *which structures
+surround this trader's entries and exits*.
 
 ## The shape
 
-One classifier, **two owners** of the pattern set.
+One classifier, **two owners** of the list.
 
-- **Fingerprint** — what the engine trades on. Unchanged.
-- **`ix_pattern_sets`** (lab-only table, migrations `0002` + `0005`) — a named,
-  reusable set with no rule behind it. A set is **one vocabulary**, chosen at
-  create (`kind`, insert-only). The set picker is the switch.
+- **Fingerprint tags**: what the engine trades on. Unchanged.
+- **`ix_pattern_sets`** (lab-only table, migrations `0002` + `0005`): a named, reusable
+  set with no rule behind it. A set is **one vocabulary**, chosen at create (`kind`,
+  insert-only). The set picker is the switch.
 
-| Kind | Stored as | Overlay match | Fees | Narrowing unit |
+| Kind | Stored as | Reads as matcher | Fees | Narrowing unit |
 | --- | --- | --- | --- | --- |
-| `exact` | `patterns`: `[{ group, ix_labels, cu_limit?, cu_price?, tip_lamports? }]` | `'labels'` (tagged) | yes, catch-all vs pin | `group` |
-| `templates` | `working_templates`: grain-id strings | `'grain'` (working) | no | the grain itself |
+| `exact` | `patterns`: `[{ group, ix_labels, cu_limit?, cu_price?, tip_lamports? }]` | `ix_shape` | yes, catch-all vs pin | `group` |
+| `templates` | `working_templates`: grain ids (and bare program names) | `ix_template` (a bare name: `program`) | no | the grain itself |
 
-`group` labels a subset (a launch client / aggregator name) so an exact lens
-narrows to one of them without re-pasting. A templates set has no such label and
-needs none: a grain IS the launch client, so each grain is its own narrowing
-unit. The classifier never sees either: exact identity is labels **plus** pins
-(`patternRowKey`); template identity is the grain id (`templateGrain`). Both feed
-`classifyOptsForTape`, which reads the narrowed key set (`keysForSet`).
+`group` labels a subset (a launch client / aggregator name) so an exact lens narrows to
+one of them without re-pasting. A templates set has no such label and needs none: a grain
+IS the launch client, so each grain is its own narrowing unit. A set with no kind stored
+is exact. An unpinned exact row is `{ group, ix_labels }`.
 
-A set with no kind stored is exact. An unpinned exact row is `{ group, ix_labels }`.
+**The lens is a tag.** `lensTag` (`lib/flow/ixPatternSets.ts`) reads the narrowed set as
+one `FlowTag` named after the set: exact rows under `ix_shape` (pins kept), grain ids under
+`ix_template`, bare program names under `program`, with the lens' own `side` and `sticky`
+switches and `exclude_creation_slot` off. It carries no `creator` matcher, so the creator
+gets no special rule. Every chart and the trades table then classify `@set` / `@!set`
+through the one mapping, `classifyOptsForTag` (`lib/flow/tapeClassify.ts`), exactly as
+they would a fingerprint tag.
 
-Crossing from study to engine is one explicit copy (**Copy to fingerprint**),
-never a side effect of editing a lens. Exact copies into `m_flow_ix.ix_patterns`
-(fees kept). Templates copy into `m_burst_slot.working_templates`.
+Crossing from study to engine is one explicit copy (**Copy to fingerprint**), never a
+side effect of editing a lens. It ADDS the set's entries to a chosen tag of a chosen
+fingerprint (what the tag lists stays): exact rows under `ix_shape` with their pins, grain
+ids under `ix_template`, program names under `program`. Group labels have no home on a
+tag and are dropped. The PUT carries the whole row (criteria, wildcard, tags): an omitted
+axis would silently widen the fingerprint.
 
-## Classifier options a lens needs
+## The lens' switches
 
-`FlowClassifyOptions` gains three knobs; all default to the engine's behavior, so
-every other surface is unchanged.
+All default to what a lens asks, and apply only to the lens tag; every other surface is
+unchanged.
 
-- **`contagion`** (lens default **off**). The engine tags a wallet forward: one
-  structural match, and every later trade of that wallet counts as volume, with
-  the creator seeding the set. That answers "who is in the volume crew". A lens
-  asks "which STRUCTURES are around this moment", and on a busy token contagion
-  turns that into one wallet set within seconds. Off, each trade is judged by its
-  own labels or grain alone and the creator carries no special rule.
-- **`excludeWallets`** (lens default: the studied wallet). A trader must not
-  classify itself, or the lines describe the subject instead of its surroundings.
-- **`side`** (lens default **both**). A pattern is an ordered `ix_labels`
-  sequence (or a grain) and those identities carry no direction — an aggregator's
-  structure is byte-identical on the buy and on the sell that unwinds it — so one
-  key matches both legs and an unnarrowed line sums two opposite events. The
-  readings are different theses: a matched structure BUYING before a trade is a
-  crowd impulse joined, the same structure SELLING is exit liquidity absorbed,
-  and mixed they partially cancel. Narrowing filters TRADES, not patterns: no set
-  edit, and it composes with the group chips, so Axiom-buy vs Axiom-sell falls
-  out of the two together. An off-side trade books non-volume and never seeds
-  contagion; a trade with no side is off-side under any narrowing.
+- **`sticky`** (lens default **off**). A sticky tag carries a wallet forward: one match,
+  and every later trade of that wallet carries the tag. That answers "who is in the crew".
+  A lens asks "which STRUCTURES are around this moment", and on a busy token a sticky set
+  turns that into one wallet set within seconds. Off, each trade is judged by its own
+  labels or grain alone.
+- **`excludeWallets`** (lens default: the studied wallet). A trader must not classify
+  itself, or the lines describe the subject instead of its surroundings. Analysis only:
+  the engine has no such option. An excluded wallet always reads as the rest and never
+  moves sticky, cluster or creation-slot state.
+- **`side`** (lens default **both**). A shape or grain carries no direction: an
+  aggregator's structure is byte-identical on the buy and on the sell that unwinds it, so
+  one key matches both legs and an unnarrowed line sums two opposite events. The readings
+  are different theses: a matched structure BUYING before a trade is a crowd impulse
+  joined, the same structure SELLING is exit liquidity absorbed, and mixed they partially
+  cancel. Narrowing filters TRADES, not patterns: no set edit, and it composes with the
+  group chips, so Axiom-buy vs Axiom-sell falls out of the two together. An off-side trade
+  is the rest and never seeds `sticky`; a trade with no side is off-side under any
+  narrowing.
 
-The lines are already **net** (`buy − sell`) per basis — see
-`lib/flow/flowChartData.ts`. Only the per-trade `volSol`/`nonVolSol` fields are
-magnitudes.
+The lines are already **net** (`buy - sell`) per basis (`lib/flow/flowChartData.ts`).
+Only the per-trade tagged / rest SOL fields are magnitudes.
 
 ## Wiring
 
-Keys travel the existing prop path (`TokenTable` → `TokenChartsGrid` →
-`TokenTradeChart` → `TokenPriceChart` / `BarTradesPanel`). The rest of the lens —
-classifier options, fee pins, kind, and the badge write target — travels through
-`context/FlowLensContext`, provided once by the page: threading two more props
-through five layers to serve one page is the worse trade. Absent, every chart
-behaves exactly as before.
+Keys travel the existing prop path (`TokenTable` -> `TokenChartsGrid` ->
+`TokenTradeChart` -> `TokenPriceChart` / `BarTradesPanel`). The rest of the lens (the lens
+tag, the excluded wallets and the badge write target) travels through
+`context/FlowLensContext`, provided once by the page: threading more props through five
+layers to serve one page is the worse trade. Absent, every chart classifies with the host
+fingerprint's tag and badge clicks write to that fingerprint.
 
 A badge under a lens writes to `ix_pattern_sets`, never to a fingerprint.
 Exact clicks file under the lens' active group (the single enabled group when
@@ -95,10 +101,10 @@ even see and leaves the badge unchanged.
   must provably accept this click — unpinned, or its pins equal the pins the click
   carries. Unprovable ⇒ the ordinary write, never a guess.
 
-The badge says which click it is: `storedPatternIds` (grains) and
-`storedPatternRows` (exact) travel beside the narrowed keys, so a row that is off
-only because its unit is muted reads *"on the set but MUTED by the lens chips"*
-instead of *"click to save"*.
+The badge says which click it is: the lens' stage (`TagStage`, `useIxPatternTarget.ts`)
+answers `listed` and `muted` separately, so a value that is off only because its unit is
+muted reads *"muted by the lens chips: click to classify with it again"* instead of
+*"click to save"*.
 
 ## Page surface
 
@@ -163,9 +169,9 @@ distinction the structural-precision-without-money results turn on.
 
 Matching runs on the engine's own classifiers, never a second spelling:
 `template_grain::grain` (and the program name) against a templates set,
-`flow_ix::ix_hash` + `BuildPatterns::contains` with the set's fee pins against an
-exact one. The probe reads the NARROWED key set — what the charts classify with —
-so the chips move the filter and the overlay together.
+`trade_keys::ix_hash` + `BuildPatterns` with the set's fee pins against an exact one.
+The probe reads the NARROWED key set (what the charts classify with), so the chips move
+the filter and the overlay together.
 
 `side` comes from the lens. The studied wallet is always excluded: his own entry
 tx carries his own structure, and a set built from his tool matches himself on
@@ -254,7 +260,7 @@ this strip only carries the question asked with it.
 
 ## Open
 
-- **Per-group lines.** The overlay draws one vol series and one non-vol series,
+- **Per-group lines.** The overlay draws one `@set` series and one `@!set` series,
   so groups are compared by toggling chips rather than side by side. N series on
   the left scale is the next step if the comparison earns it.
 - **Entry-aligned aggregate.** The probe answers presence per token; the panel

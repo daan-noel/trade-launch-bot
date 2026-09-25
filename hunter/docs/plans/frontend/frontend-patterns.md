@@ -252,12 +252,13 @@ same-tab navigation (and Ctrl/middle-click new tabs) land with the row selected.
 - Fingerprints "Used by" → `rulesHref`; Rules (lab `linkToSimulate`) → `simulateHref`;
   Simulate rule name → `rulesHref`; fingerprint cells → `fingerprintsHref`.
 - Sweep group Used-by chips → `rulesHref`; matched fingerprint → `fingerprintsHref`. The
-  chip's **best** badge is `ruleParamsJsonEqual(rule.params, group.best_params)` — that
-  comparator canonicalizes key order **and** the order of every set-like array (a group's
-  window instances, a metric's DNF arms / AND atoms), because an editor round-trip re-emits
-  window instances sorted by window. `scale_out` is the one array kept positional (the
-  ladder executes in authored order). Never compare rule `params` with a bare
-  `JSON.stringify`.
+  chip's **best** badge is `jsonValuesEqual(rule.params, group.best_params)`
+  (`lib/strategy/matchRuleIdentity.ts`): key order is ignored, every array stays
+  positional (conditions, lines and stages all run in authored order). Both sides are the
+  backend's canonical `RuleParams::to_value` - a saved rule is parsed and re-serialized on
+  every write, and a promoted combo's params are written the same way - so no client-side
+  reordering is needed. A group stored before the v2 migration keeps v1 `best_params`,
+  which match no v2 rule. Never compare rule `params` with a bare `JSON.stringify`.
 - Flow Discovery seed/target badges → `fingerprintsHref`.
 - Live Armed rule columns → `rulesHref`.
 

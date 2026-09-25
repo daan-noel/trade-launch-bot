@@ -287,6 +287,13 @@ engine/src/rule_v1.rs         today's parser, read-only, deleted after both boxe
   registry document, pinned by `registry_fixture_is_current`) and
   `engine/fixtures/rule_v2_full.json` (every rule part, parsed by the engine test
   `the_shared_full_rule_fixture_parses_and_round_trips` and by `validate.test.ts`).
+- Open, live safety: a stage move with no sell (`go` alone, a deadline's move to `then`)
+  lives only in the engine's memory. The position row stores the stage only when a
+  partial sell fills (`scale_stage`), and never the stage's start time, so a live restart
+  puts such a position back in its last stored stage with `m_position.stage_sec`
+  counting from the buy. Fix: an effect for a stage move that the live sink persists
+  (stage and its start), read back by the adopt path; the golden effect streams gain the
+  move.
 - Open: the per-tag live line on the fingerprint card ("41 of 212 trades carry
   `volume`") needs a classification read per coin; the editors do not yet show the
   backend's save `warning` (they compute the same warnings client-side).

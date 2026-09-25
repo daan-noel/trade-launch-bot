@@ -47,12 +47,12 @@ Ranked full list of sweep↔simulate divergences, including the not-yet-accepted
 | `grouped_engine.rs` | `run_grouped_sweep`; two-phase driver (large groups serial, small groups parallel); `make_group_result`; coarse→refine (`run_grouped_with_refine`); partial persistence via `GroupSink` |
 | `obs.rs` | Process RSS + host RAM reads; sweep milestone clock |
 | `registry.rs` | `sweep_tables(strategy_id)` (one arm: `"generic"` → `grouped_sweep_*`), `run_grouped(...)`; `MAX_COMBOS`; resource fences (`bounded_threads` = cores/2 by default, host-RAM admission) |
-| `generic/` | `GenericSweepStrategy` — the one sweep family; there are no per-strategy adapters. `axes.rs` = fingerprint + TP/SL + metric-condition axes → `RuleParams` combos; `strategy.rs` = `Strategy` impl (`TokenState = MetricSeries` precompute; `resolve_entry` mirrors `can_enter` / `resolve_exit` scan the series) + `Pricing` (notional + fill model + cost model) + `ExitClass` bind-time classification and its per-class / vector row finders; `exit_index.rs` = prefix-extrema hulls answering an arbitrary monotone predicate (`first_max_row` / `first_min_row`), plus the `at`-monotonicity flag a `held` binary search needs; `guard.rs` asserts scan ≡ `run_replay` (under every `FillModel`), index/SIMD ≡ scalar, and that a TP/SL rule actually *reaches* the index |
+| `generic/` | `GenericSweepStrategy` - the one sweep family; there are no per-strategy adapters. `axes.rs` = the swept dimensions and combo -> `RuleParams` assembly: a metric axis is one condition `metric @tag [span] <operator> value` (`AxisSpec { kind, side, metric, tag, span, slice, operator, values }`; `side: entry` = an `enter.filters` condition, `side: exit` = its own `always` sell line; a `null` value is the **off** pick, so one grid sweeps with-vs-without; two axes on the same read join into one condition, AND when the pair can hold together, else OR), plus `take_profit` / `stop_loss` axes; entry axes are the high-order combo digits so combos sharing an entry stay contiguous. `strategy.rs` = the `Strategy` impl (`TokenState = MetricSeries` precompute over the run's one column set, the Pass-2 stage overlay) + `Pricing` (notional + fill model + cost model). `scan.rs` = the per-combo walk: the engine's own `CompiledRule::try_enter` and `held_line` over each series row through `RowReads` (the engine's `CoinReads` for a row), plus what a walk adds around them (worst-case fill, running peak / trough, stage moves, partial legs, money math); `BoundCombo` resolves each coin read's column and each held line's `ExitTag` once per combo. `fast_exit.rs` = the first exit row without walking every row, for a **flat** held side (`FastPlan`: one stage, no deadline, every line a sell-all on one position condition) - `ExitClass` per line; everything else walks (`scan::resolve_exit_walk`). `exit_index.rs` = prefix-extrema hulls answering an arbitrary monotone predicate (`first_max_row` / `first_min_row`), plus the `at`-monotonicity flag a `held_sec` binary search needs. `frozen_tail.rs` = clock decisions past a token's own series cut (below). `guard.rs` asserts scan == `run_replay` (under every `FillModel`), index/SIMD == walk, and that a TP/SL rule actually *reaches* the index |
 
 ### The entry is exit-dependent — the fold caches candidates, not entries
 
-The engine's `can_enter` gate refuses to buy **while the exit conditions already hold**,
-and `resolve_entry` mirrors it. So the resolved entry is a function of the *whole* rule,
+The engine's pre-entry veto refuses to buy **while an `always` or first-stage sell line
+already holds**, and `resolve_entry` mirrors it (it runs `try_enter` itself). So the resolved entry is a function of the *whole* rule,
 not just the entry axes: two combos with the same `entry_key` and different exits can
 legitimately enter on different rows. The fold's single-slot cache is keyed on
 `entry_key`, so caching the resolved entry there makes the first combo of each class
@@ -68,8 +68,8 @@ The fold now runs the entry in two stages:
 * **Stage B** `resolve_entry_from` — per combo: walk the shared candidates applying that
   combo's veto, then price the first admissible row through a per-class fill memo.
 
-Pure TP/SL sweeps (the 1M-combo shape) are untaxed: their exit reqs are position-scoped,
-read `NaN` before entry, and so can never veto (`BoundCombo::entry_veto_possible`), making
+Pure TP/SL sweeps (the 1M-combo shape) are untaxed: their lines read our position,
+which is `NaN` before entry, and so can never veto (`BoundCombo::entry_veto_possible`), making
 Stage B a candidate lookup plus a memo hit. `ExitCtx` (the prefix-extrema hulls) is now
 rebuilt on `exit_ctx_key` — the resolved `fill_row` — not on entry-key staleness.
 Locked by `guard::fold_gives_each_exit_variant_its_own_entry` (fold ≡ per-combo `scan` ≡
@@ -103,39 +103,42 @@ Two mutually-exclusive ways the start request narrows the loaded corpus, and the
 
 Nothing else blocks it. A per-axis predicate over a `u128` domain has no row-wide width to reconcile between two axes, no anchor to re-derive from a rendered label, and no value it cannot hold — so the promote path has three fewer failure modes than it has special cases. <!-- pt-ok: none -->
 
-The scope is persisted on the run row (`grouped_sweep_runs.fingerprint_id`, `lab/migrations/0001_init.sql`, no FK) because it is not reconstructible from the filter columns: the token-results reload re-applies the same match and re-run restores it in the form. Promote reuses the **saved row itself** when the group is the whole scope unnarrowed (`is_scope_only` — materializing would re-anchor a bucketed axis on its bucket's lower edge, match-identical but a different `find_or_create` identity, i.e. a duplicate); a group that narrowed the scope promotes to its own narrower fingerprint, carrying the scope's `metric_config`. A newly materialized row gets `Fingerprint::auto_name` (`3ix:Buy · max=1 · bkt=1`); `find_or_create` keeps an existing nickname. Detail: [fingerprint-auto-name.md](../plans/strategies/fingerprint-auto-name.md).
+The scope is persisted on the run row (`grouped_sweep_runs.fingerprint_id`, `lab/migrations/0001_init.sql`, no FK) because it is not reconstructible from the filter columns: the token-results reload re-applies the same match and re-run restores it in the form. Promote reuses the **saved row itself** when the group is the whole scope unnarrowed (`is_scope_only` - materializing would re-anchor a bucketed axis on its bucket's lower edge, match-identical but a different `find_or_create` identity, i.e. a duplicate); a group that narrowed the scope promotes to its own narrower fingerprint, carrying the scope's `tags`. A run with its own `tags` writes them onto the promoted fingerprint (validated first), so the promoted rule classifies trades exactly as the sweep scored them. A newly materialized row gets `Fingerprint::auto_name` (`3ix:Buy · max=1 · bkt=1`); `find_or_create` keeps an existing nickname. Detail: [fingerprint-auto-name.md](../plans/strategies/fingerprint-auto-name.md).
 
 ### Metric scope: token-scoped columns vs position-scoped axes
 
-Almost every metric is **token-scoped** — one value per token per event, so the
-precompute records it as a `SeriesColumn` and the per-combo scan reads it off the
-flat buffer. `m_position` (`retrace` / `pnl` / `held`) is **position-scoped**: its
-value anchors on *your* entry fill, so it cannot be precomputed token-independently
-(a static column would only ever record `NaN` — the track holds no position state).
+Almost every metric is **token-scoped** - one value per token per event, so the
+precompute records it as a `SeriesColumn` (a `MetricRef`, plus the fingerprint for a
+tagged read) and the per-combo scan reads it off the flat buffer. `m_position`
+(`pnl_pct` / `held_sec` / `retrace_pct` / `bounce_pct` / `room_taken_pct` /
+`stage_sec`) is **position-scoped**: its value anchors on *your* entry fill, so it
+cannot be precomputed token-independently (a static column would only ever record
+`NaN` - the track holds no position state).
 
 Consequences, all enforced in code:
 
 * `axes.rs` rejects an `m_position` axis on the **entry** side (it reads `NaN`
   before entry, so the condition could never fire) and contributes **no column**
   for it on the exit side.
-* `strategy.rs::resolve_exit` carries a running since-entry peak/trough (seeded to
-  the fill price, folded forward per row *before* that row's decision — mirroring
-  `reduce.rs::evaluate_token`) and evaluates position-scoped exit reqs through
-  `position_value(..)` against that `PositionCtx`, exactly as
-  `CompiledRule::exit_fired` does. Token-scoped exit reqs still read their column.
-* The desugared TP/SL `pnl` reqs (`ReqOrigin::{TakeProfit,StopLoss}`) go through that
-  **same** walk. The scan must not re-derive them as an `entry_price · (1 ∓ pct/100)`
-  price branch — that is a second representation of a fact the engine already
-  desugars, and it compares in *price* space where the fold compares in *pnl* space.
-  The exit label comes from the fired req's `ReqOrigin`, and priority
-  (`Dead > SL > TP > authored`) is carried by `exit_reqs` **order**: `compile`
-  prepends SL then TP. `CompiledRule::{take_profit,stop_loss}` survive as the
-  authoring / DB / FE surface; only the sweep's *evaluation* of them is gone.
-* `m_price_window` **is** token-scoped, so `trail`/`rise` precompute as an ordinary
-  `SeriesColumn::Window` — routed to the price-extrema deque (`ensure_price_window`),
-  not the flow ring buffer. Its window counts toward `SparseGrid::max_window_secs`:
-  a rolling high decays as prints age out, so the decay-region ticks must be emitted
-  exactly like a flow window's.
+* The walk carries a running since-entry peak/trough (seeded to the fill price,
+  folded forward per row *before* that row's decision - mirroring `reduce.rs`'s
+  `fold_entered_extremes`) and hands the engine's `held_line` that `PositionCtx`, so a
+  position condition reads exactly what the fold reads. Coin conditions read their
+  column (`RowReads`).
+* The TP/SL shortcuts are `always` pnl lines in the compiled rule (stop loss, then take
+  profit, then the authored lines), and they go through that **same** walk. The scan
+  must not re-derive them as an `entry_price * (1 -/+ pct/100)` price branch - that is
+  a second representation of a fact the engine already compiles, and it compares in
+  *price* space where the fold compares in *pnl* space. The exit code and label come
+  from the line that sold (`ExitTag`: `TakeProfit` / `StopLoss`, or `Metrics` + the
+  line's label + its `n_exit_metrics_by_slot` slot), and priority is the `always`
+  **order**. `CompiledRule::{take_profit,stop_loss}` survive as the authoring / DB / FE
+  surface.
+* `m_price` over a span **is** token-scoped, so `trail_pct` / `rise_pct [span]`
+  precompute as an ordinary column - routed to the price-extrema deque
+  (`ensure_price_window`), not the flow ring buffer. Its window counts toward
+  `SparseGrid::max_window_secs`: a rolling high decays as prints age out, so the
+  decay-region ticks must be emitted exactly like a flow window's.
 
 ### The sparse tick grid lives in `hunter-engine`, not here
 
@@ -143,12 +146,12 @@ Consequences, all enforced in code:
 `hunter_engine::metrics::grid`; `generic/strategy.rs` re-exports
 `SparseGrid` and calls `fold_sparse` for its precompute. The move is not cosmetic —
 it makes the tick grid the **only** way to drive a `MetricSeries`. A trade-only fold
-is not a coarser view of the same series but a different one: `m_flow_window` decay,
-`m_price_window` extrema, `stall`/`time` and the dead verdict all advance solely
-inside `TokenTrack::on_tick`, so with no ticks they are sampled exactly where a fresh
+is not a coarser view of the same series but a different one: windowed `m_flow`
+decay, windowed `m_price` extrema, `m_price.stall_sec` / `m_state.age_sec` and the dead
+verdict all advance solely inside `TokenTrack::on_tick`, so with no ticks they are sampled exactly where a fresh
 trade has just been folded back in. The chart endpoint had that bug and drew an exit
 70 s late; sharing the loop is what stops a second caller re-acquiring it. Callers
-declare what they will evaluate (`max_window_secs` + the `time`/`stall` ceilings) so
+declare what they will evaluate (`max_window_secs` + the `age_sec` / `stall_sec` ceilings; `held_sec` and `stage_sec` ride on the stall horizon) so
 the grid knows how far into each quiet gap it must stay dense. Every
 `guard.rs::scan_matches_replay_*` test covers the sweep's use of it unchanged.
 
@@ -156,39 +159,54 @@ Not wired: **re-entry** (`RuleParams.reentry`). The sweep's `TokenOutcome` is on
 episode per (token, combo); multi-episode accumulation would change the outcome
 model, aggregation and persistence. Re-entry validates via simulate/replay instead. Same for **exclusivity** (`RuleParams.exclusive` / `priority`) — it needs cross-*rule* state at one instant, which the per-combo fan-out has no place to keep; recorded as divergence D4 in [../plans/sweep/sim-parity.md](../plans/sweep/sim-parity.md) and locked by a `guard.rs` test.
 
-**Scale-out** (`RuleParams.scale_out`) **is** wired on the exit scan:
-`resolve_exit` delegates to `resolve_exit_staged` when the compiled ladder is
-non-empty (`Dead > global exit > stage`, multi-leg PnL via
-`round_trip_multi_leg`). Cost is ×(stages+1) resolve work only for those rules;
-legacy combos keep the index/SIMD fast paths (`fast_exit` requires empty
-`scale_out`). Deliberate residuals D5/D6 in sim-parity (no in-flight-sell
-blindness; no frozen-tail stage advance).
+**Stages, deadlines and partial sells are** wired on the exit scan: the walk runs the
+engine's one-step `held_line` per row, applies a move from the next row, books a partial
+sell as its own leg (multi-leg PnL via `round_trip_multi_leg`) and resolves stage
+deadlines on the tick grid. Only a **flat** held side takes the index / SIMD fast paths
+(`FastPlan`); any stage, deadline, partial sell or coin read walks. Deliberate residuals
+D5/D6 in sim-parity (no in-flight-sell blindness; the frozen tail skips a held side that
+reads a trailing window).
+
+**The frozen quiet tail** (`frozen_tail.rs`, sim-parity D1). The series stops at the
+token's own `last_trade + DEAD_QUIET + TAIL_MARGIN`; `run_replay` ticks on to the
+corpus-wide `min(as_of, corpus_last_trade + DEAD_QUIET + TAIL_MARGIN)`
+(`frozen_tail_horizon`, opt-in per run via `GenericSweepStrategy::set_corpus`). In that
+gap the price is frozen but the clocks run (`m_state.age_sec`, `m_price.stall_sec`,
+`m_position.held_sec` / `stage_sec`, the stage deadlines), so `frozen_tail::resolve`
+evaluates the rule's own `held_line` only at the ticks where a clock crosses a condition's
+threshold or a deadline - and one tick after any move or partial sell - and books a
+tail leg at the last trade. A held side that reads a trailing window, or a series that
+ends on a print, stays `Open`.
 
 **Axes do not sweep stage counts.** Optional **Pass-2 overlay** (run fields
-`scale_out` + `scale_out_top_k`; `scale_out` = `ExitStage[][]` on the wire for
-backend forward-compat, but the FE always sends exactly **one** user-authored
-ladder as its sole entry): after each group's cheap fold, `GenericSweepStrategy::
-post_group_rescore` re-scores its top-K combos against that ladder PLUS each
-combo's own Pass-1 baseline, and keeps whichever wins **per combo** — never
-forced onto a combo it doesn't help. The winning ladder (if any) is baked
-directly into that specific combo's own `_combos.params` / `best_params` at
-write time (`grouped_engine::retained_combo_params`); a combo the ladder
-doesn't help keeps its own exit and carries no `scale_out`. Promote / drill-in
-read `params` as-is — no run-level merge at read time. FE authors the ladder
-via `ScaleOutBuilder` (same stage editor as the Rule Editor) rather than
-picking from canned presets: Pass 2 is meant to test a hypothesis you already
-believe in against the sweep's own top-K survivors, not to blind-search a grid
-of guesses — comparing many arbitrary ladders per combo on a small sample is a
-multiple-comparisons trap (looks good by chance, not real edge). The staged exit
-semantics themselves are in
+`stage_plans` + `stage_plans_top_k`, lab `0006`; `stage_plans` = `Stage[][]`, one rule
+`stages` array per candidate plan): after each group's cheap fold,
+`GenericSweepStrategy::post_group_rescore` re-scores its top-K combos (default 3) under
+every plan PLUS each combo's own Pass-1 baseline, and keeps whichever wins **per
+combo** - never forced onto a combo it does not help. A plan may read only our position
+(`m_position`): the axes precompute records no other column for it, so
+`parse_stage_plans` refuses any other read with a `400`, and the grid widens to every
+plan's clocks so a deadline gets its tick. The winning plan (if any) is baked directly
+into that combo's own `_combos.params` / `best_params` at write time
+(`grouped_engine::retained_combo_params`); a combo no plan helps keeps its own exit and
+carries no stages. Promote / drill-in read `params` as-is - no run-level merge at read
+time. The FE authors the plan in the sweep form's stage-plan editor
+(`SweepPlanEditors.tsx`, the Rule Editor's own `StagesEditor`) rather than picking from
+canned presets: Pass 2 is meant to test a hypothesis you already believe in against the
+sweep's own top-K survivors, not to blind-search a grid of guesses - comparing many
+arbitrary plans per combo on a small sample is a multiple-comparisons trap (looks good by
+chance, not real edge). Partial-sell semantics:
 [`../plans/strategies/partial-exits.md`](../plans/strategies/partial-exits.md).
 
-### Flow axes (`m_flow_ix` / `m_flow_ix_window`)
+### Tagged axes and the run's tags
 
-When axes reference a flow group, the corpus loads with `Selection.with_flow`: it
+When an axis reads wallet identity or ix labels (`Metric::needs_wallet_identity` /
+`needs_ix_labels`: any tagged read, `m_holdings`, `m_print`, `m_slot` / `m_wave`, and the
+wallet- or shape-keyed `m_crowd` reads), the corpus loads with `Selection.with_flow`: it
 reads the trade `ix_labels` + `wallet` columns and resolves each row's
-`projection::FlowKeys { ix_hash, wallet_hash }` **at the row decode**, through the
-`flow_ix` SSOT hashers, then drops the strings. The same flag also reads
+`projection::FlowKeys` (ix shape, wallet, marker bits, template, program and build
+hashes) **at the row decode**, through the engine's `trade_keys` hashers, then drops the
+strings. The same flag also reads
 `cu_limit` + `cu_price` + `tip_lamports` into that row's `FeeKeys`, because a build
 list entry may pin a budget and the classifier needs both halves or it matches on the
 shape alone. `duck::FLOW_READ_COLS` names all five once — the three fee columns are
@@ -197,15 +215,17 @@ field. `Selection.with_flow_text` keeps
 the raw text as well and is set by exactly one caller — flow *discovery*, which
 reports label shapes and groups by wallet address. Everything else (sweep, simulate,
 metric-series, metric-discovery) classifies from the hashes, so its rows are the
-slimmer shape. The start body carries optional
-`ix_patterns: string[][]` — applied **corpus-wide** for that run (not per
-fingerprint). Missing patterns with flow axes ⇒ `400`. **Promote** copies the
-run's patterns into the created fingerprint's
-`metric_config.m_flow_ix.ix_patterns` as fee-wildcard entries — a run configures
-label sequences only, and a budget pin is a fingerprint edit (`find_or_create` ignores
-`metric_config` for identity, then patches). Discovery (lab
-`/strategies/flow-discovery`) is a separate job that scores structures and writes
-the same key — mutual `409` with sweeps. See
+slimmer shape. The start body carries an optional `tags` document - the same shape as
+a fingerprint's `tags` - applied **corpus-wide** for that run (not per fingerprint): every
+tagged column is scoped to `axes::SWEEP_FLOW_FP`, and each token's series registers the
+run's compiled tags (`strategy::register_tags`). An axis that reads a tag the document
+does not define, or a document `validate_tags` refuses, is a `400`
+(`axes_need_trade_keys`). **Promote** writes the run's `tags` onto the promoted
+fingerprint (`find_or_create` ignores tags for identity, then patches), so the rule reads
+the trade lists the sweep scored with. The form edits the document through the rule
+editor's own `TagsEditor` (`RunTagsEditor`, flagging a tag an axis reads that the
+document lacks). Discovery (lab `/strategies/flow-discovery`) is a separate job that
+scores structures and binds them into a fingerprint tag - mutual `409` with sweeps. See
 [`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
 
 ## Workstation resource fences (lab-only)
@@ -221,7 +241,7 @@ Grouped sweep runs hard **inside** a reserved slice of the analysis box so the d
 | Fold batch budget | `usable / 4` clamped to 32..=512 MB; hard max **65 536** combos/batch (8192 when under reserve) |
 | Driver (large groups) | **wave-outer** when shard fits (series once/token); else **pass-outer** with disk **spill** of finalized metrics |
 | Driver (small groups) | `sweep_group_serial`: **token-outer** (series built once/token, combos folded in batches over it) when the full `n_combos × ComboAgg` set fits across all workers; else **batch-outer** fallback (bounded `batch × ComboAgg`, series rebuilt once/batch). Single-batch groups are token-outer either way. The fit test reads `usable_host_bytes()`, which prices the run's **permanent** resident set (the corpus) as consumed but its own **transient** fold buffers as reusable headroom — without that, the sweep's own RSS drives `usable → 0` mid-run and token-outer never fires at all (measured 0/405 groups before the fix vs 152/405 normal and 601/601 under tight reserve after, with a 7.9× faster coarse pass on the tight run). Before/after: [../plans/sweep/ram-sizing.md](../plans/sweep/ram-sizing.md#measured-performance-2026-07-19) |
-| Exit-scan path | **Bind-time req classification, then a per-class search.** `BoundCombo::new` classifies every exit req once per combo (`ExitClass`): a monotone `m_position.pnl` bound → prefix-extrema hull, **O(log n)**; a `>=` bound on `m_position.held` → binary search on `series.at`, **O(log n)**; `m_position.retrace` → running-peak scan, **O(n)** (vectorized — *not* O(log n); a running peak is not a static prefix query); `m_position.bounce` → running-trough scan, **O(n)**; anything else (token-scoped column, multi-arm DNF, `=`/`!=`) → `General`. One `General` req drops the whole rule to the scalar walk. `bound.fast_exit` = no `General`, and it — not `has_exit_metrics()` — is what gates building the index (`wants_exit_index`). The earliest row across the classified reqs wins, ties broken by `exit_reqs` order (so desugared SL > TP > authored); `Dead` outranks all. Optional **AVX-512** toggle (`resolve_exit_simd`, 8×`f64`) for A/B on the pure-`pnl`-bound shape, comparing **in pnl space** per lane (IEEE ops are exactly rounded ⇒ bit-identical to scalar, so no threshold inversion is needed); other shapes delegate to the index path. **Byte-identical** to scalar (guards `index_exit_scan_matches_scalar_*` + `simd_exit_scan_matches_scalar_across_paths`), plus a **reachability** guard (`tp_sl_rules_actually_reach_the_exit_index`) — the Phase-2 desugaring made `has_exit_metrics()` true for every TP/SL rule, which silently disabled both fast paths for a whole phase without breaking a single equality test. Money math stays the one `kernel` copy. Lab-only. **The AVX-512 toggle buys nothing against the index and stays off.** Its 2.2× (0.63 s → 0.29 s) is measured against the *linear* scalar scan, which the O(log n) index replaced as the default — head-to-head on the current default path a 4541-token × 1600-combo pure-TP/SL run is **3.2 s toggle-off vs 4.3 s toggle-on**. It survives for A/B only; in debug it is ~2.3× *slower* still. The cost that matters is the `General` fallback: the same corpus with `m_flow_ix` / `m_price_lifetime` exits takes **62 s** against 4 s, so a metric-exit rule is ~15× a TP/SL one and the scalar walk — not the vector kernel — is the optimization target. |
+| Exit-scan path | **Bind-time line classification, then a per-class search.** `BoundCombo::new` builds a `FastPlan` once per combo when the held side is **flat** - one stage, no deadline, every line a sell-all on ONE condition on our position - and classifies each line (`ExitClass`): a one-sided `m_position.pnl_pct` bound -> prefix-extrema hull, **O(log n)**; a `>`/`>=` bound on `m_position.held_sec` -> binary search on `series.at`, **O(log n)**; `m_position.retrace_pct` -> running-peak scan, **O(n)** (vectorized - *not* O(log n); a running peak is not a static prefix query); `m_position.bounce_pct` -> running-trough scan, **O(n)**. Anything else (a coin read, a multi-arm DNF, `=`/`!=`, a partial sell, a move, a stage or deadline) leaves `fast` empty and the whole rule walks (`scan::resolve_exit_walk`); `fast` is what gates building the index (`wants_exit_index`). The earliest row across the lines wins, ties going to the earlier line - the order `held_line` checks them in, so SL > TP > authored; `Dead` outranks all. Optional **AVX-512** toggle (`resolve_exit_simd`, 8x`f64`) for A/B on the all-`pnl_pct` flat shape, comparing **in pnl space** per lane (IEEE ops are exactly rounded => bit-identical to the walk, so no threshold inversion is needed); other shapes delegate to the index path. **Byte-identical** to the walk (guards `index_exit_scan_matches_scalar_*` + `simd_exit_scan_matches_scalar_across_paths`), plus a **reachability** guard (`tp_sl_rules_actually_reach_the_exit_index`) - a TP/SL rule compiles to `always` pnl lines, and a classification that stops recognizing them silently disables both fast paths without breaking a single equality test. Money math stays the one `kernel` copy. Lab-only. **The AVX-512 toggle buys nothing against the index and stays off.** Its 2.2x (0.63 s -> 0.29 s) is measured against the *linear* scalar scan, which the O(log n) index replaced as the default - head-to-head on the current default path a 4541-token x 1600-combo pure-TP/SL run is **3.2 s toggle-off vs 4.3 s toggle-on**. It survives for A/B only; in debug it is ~2.3x *slower* still. The cost that matters is the walk: the same corpus with tagged-flow / lifetime-price exits takes **62 s** against 4 s, so a metric-exit rule is ~15x a TP/SL one and the walk - not the vector kernel - is the optimization target. |
 | Pricing (fill + cost model) | **Part of a run's identity, chosen per run.** `Pricing { buy_amount_sol, fill_model, cost }` threads from the request through `run_grouped` → `GenericSweepStrategy` → every scan fn. `fill_model` picks which trade in the window prices each leg (the same `FillModel` `ReplayConfig` threads — fill *eligibility* is identical across models, so the taken set never moves, only the price); `cost_model` picks `pumpfun_impact` (the default) vs `pumpfun_fee_only`. Both persist on the run row (migration `0010`) and the drill-in re-simulates under the run's own pair, for the same reason it re-uses the run's `as_of` (parity plan B7). **Fixed per-leg tip/priority** inside either cost model comes from process-wide `FeeTuning` (`JITO_MIN_TIP_SOL` + `CU_PRICE_MICRO_LAMPORTS` — same knobs live applies to the trader; lab installs at boot). **`NULL` ⇒ `pumpfun_impact`; an unrecognized value is a decode error, not a fallback.** No cost model charges a flat per-leg slippage: the fill model already prices execution slippage, so a flat term counts it twice, and because the fixed cost is per transaction that haircut scales with how often a combo fires — i.e. it is *not* rank-preserving across combos. Runs priced under the deleted flat-slippage model are **deleted, not migrated**, so no row names it; a row that somehow does fails loudly rather than reporting a model it was never computed under. Guard: `assert_parity` runs scan ≡ `run_replay` under **every** `FillModel`. |
 | Sharding | large `N` split into RAM-sized combo ranges; up to 4 shards in parallel (RAM-capped); spill+merge |
 | Smarter search | full `grid` with ≥200k combos and no refine → auto `lhs:50000` + refine (override with explicit `refine:` / `random:`) |
@@ -293,6 +313,8 @@ behind the run's start. `NULL` on rows written before the column existed ⇒ "un
 
 API: `POST /api/strategies/sweeps` (start, detached → 202 with `run_id`), `POST .../cancel`, `DELETE .../sweeps/{run_id}`, `PATCH .../sweeps/{run_id}` (rename), `DELETE .../sweeps?before=` (prune), `GET` for runs/groups/results.
 
+**A results page names its exit slots.** `GET .../sweeps/{run_id}/groups/{group_id}/results` streams NDJSON with `X-Total-Count` and `X-Exit-Metric-Legend`: `[{"slot": 0, "label": "..."}, ...]`, one entry per `n_exit_metrics_by_slot` slot, naming the sell line that owns it (`exit_metric_legend`). Slots number the labelled sell lines in rule order (the TP/SL shortcuts and move-only lines have none), capped at `N_EXIT_METRIC_SLOTS - 1`, the overflow named after its first line - the one numbering `scan::line_tags` counts by. An authored label shows as written; an unlabelled line shows its first condition without the threshold, which varies across a page's combos. Every combo in a group shares one rule shape, so the page's first row names them all; stored `params` go through `v1::parse_params_any`, and an unparsable row yields an empty legend.
+
 **Prune cutoff is a UTC instant, but the UI speaks local time.** `before` is required server-side (`PruneQuery`) so the route can't wipe the whole history by accident, and `delete_runs_before` compares it to `created_at` in UTC. The "Clear runs before" picker in `GenericSweepView` therefore converts its `YYYY-MM-DD` value through **local** midnight (`localMidnightIso`), not the browser's default date-only parse — that parse yields *UTC* midnight, which would prune on a boundary offset from the local-time stamps the run picker renders. The picker is also capped at today (`max` + a re-check in `onPrune`): a future cutoff matches every run, including one still sweeping whose writer task is mid-commit against the run row. The `{deleted}` count is surfaced in the UI, since a cutoff that matched nothing otherwise leaves the page unchanged and reads as a broken button.
 
 ## Parquet lake + DuckDB corpus (Phase 4 — `lab/src/lake/`)
@@ -361,7 +383,7 @@ out-of-sample-validate pipeline whose **primary deliverable is a grouped-sweep s
 are worth gridding, and which families must be gridded jointly. Promote into the
 shared rule editor remains a secondary exit on OOS survivors. Nothing ships to
 EC2; live/paper are untouched. Registry-driven throughout: a metric added to
-`REGISTRY` needs no pipeline edit (family tag + unit/scope/monotonic flags are
+`METRICS` needs no pipeline edit (its family, unit, accepted spans and monotonic flag are
 all it reads).
 
 | File | Role |
@@ -370,7 +392,7 @@ all it reads).
 | `discovery/baseline.rs` | **Layer 0**: `BaselineGrid` → one single-combo segment per `(tp, sl)` in ONE additive pass → `BaselineSelection{chosen, candidates, all_unprofitable}`. Layers 1–3 screen against the winner. Runs only when the grid holds 2+ brackets; a one-bracket grid is the caller naming a baseline. Fits on the **train slice only** — a bracket chosen with the held-out slice in view leaks into every Layer-1 number |
 | `discovery/candidates.rs` | `screen_plan` (registry → screenable metrics + `SkipReason`) → `collect_percentiles` (measured `[p05..p99]` per metric, via the engine's own `MetricSeries` — deliberately **not** DuckDB SQL, else percentile semantics could drift from `hunter_engine`) → `build_menus` (`p10/p25/p50/p75/p90` + `off`, rounded by unit) → feeds `AxesModel` directly; the hand-derived table in [axis-value-candidates.md](../plans/sweep/axis-value-candidates.md) is now generated, not authored |
 | `discovery/screen.rs` | Layer 1: `ScreenStrategy`, an additive scan mode (`GenericSweepStrategy::share_precompute`) that sweeps every candidate metric alone against the run's TP/SL baseline over **one** shared per-token precompute (~6N combos, not 6^N) → `Verdict{Keep\|DropNoEdge\|DropNegative\|DropSpike\|DropThin\|DropNoBaseline}` per metric → ranked shortlist. Every `ResponsePoint` carries win rate / median pnl% / **SOL** beside the unitless score, and the bare bracket's own row is hoisted to `ScreenReport::baseline_stats` — the reference line every `lift` is a delta against |
-| `discovery/family.rs` | Layer 2: `plan_families` groups the Layer-1 shortlist by the registry's `MetricFamily` tag (`price`/`flow`/`flow_ix`/`liquidity-age`), grids within each family, then runs an O(families²) pairwise interaction check (pin A's best, sweep B) → `Independent \| Interacting \| Inconclusive`. **L2b** builds connected components of undirected `Interacting` pairs and product-grids them under `FamilyLimits` (enforced, not advisory) → `JointResult` winners. **L1b** is the *synergy rescue*: the strongest winner is pinned and up to `rescue_cap` Layer-1 rejects re-screened under it through the same `classify`, so a metric with no standalone lift can still earn an axis — flagged `rescued`, because that lift is conditional on the pin |
+| `discovery/family.rs` | Layer 2: `plan_families` groups the Layer-1 shortlist by the registry `Family` (`m_state`, `m_price`, `m_flow`, ...), grids within each family, then runs an O(families²) pairwise interaction check (pin A's best, sweep B) -> `Independent \| Interacting \| Inconclusive`. **L2b** builds connected components of undirected `Interacting` pairs and product-grids them under `FamilyLimits` (enforced, not advisory) -> `JointResult` winners. **L1b** is the *synergy rescue*: the strongest winner is pinned and up to `rescue_cap` Layer-1 rejects re-screened under it through the same `classify`, so a metric with no standalone lift can still earn an axis - flagged `rescued`, because that lift is conditional on the pin |
 | `discovery/validate.rs` | Layer 3: `split_tokens` (age-based train/validate split) + `validate_candidates` re-scores each Layer-2 family **and** joint winner on the held-out slice via `simulate_one_combo` under the run's own `Pricing`/`as_of` → `ValidationVerdict{Holds\|Degraded\|Failed\|ThinValidate\|NoFireValidate\|UnrankableTrain}` (the two "can't tell" outcomes are never silently a pass). The slice carries its **own** cohort-scaled gate (`effective_min_closed`), reported so `ThinValidate` reads as a statement about the slice's size rather than about the candidate |
 | `discovery/seed.rs` | `build_sweep_seed` — Keep axes (`off` + narrowed) + TP/SL menus expanded ±1 rung on the canonical ladders + near-miss `optional_axes` + cluster notes. Near-miss is `DropNoEdge` **or `DropSpike`** with a positive-scoring pick, **and every `DropNegative` at any sign**; the ladder re-prices exactly what each of them failed on — a losing baseline for the negative lead, an unsupported peak for the spike. The seed note counts the three classes separately and flags the spikes unstable, since a spike converts far less often than the other two. Pure projection onto the same `AxisSpec` wire the generic sweep consumes |
 | `discovery/pipeline.rs` | `run_pipeline` — splits the cohort first, selects the baseline (L0) and fits Layers 1–2 (+ L1b/L2b) on train, validates on the held-out slice (a degenerate split fits the whole cohort and reports `no_validation` rather than a vacuous pass). `diagnose` emits the run-level findings a reader would otherwise have to derive across sections: which gate ran, whether the reference line was profitable, how much of the field died for want of data, how much power the validate slice had |
@@ -490,7 +512,7 @@ every change to shared sweep code is additive.
 | `family_search/enrich.rs` | The only stage that can make a rule **denser**. Offers each earned idea the fitted skeleton lacks, judges it in its own side's currency, and confirms every acceptance against the rule as it grows so two forms of one idea cannot both get in. Bounded at 12 trials + 3 accepts, all on the resident target cohort. |
 | `family_search/oracle.rs` | Capture ratio against the oracle exit — the best price printed after the fill, priced through the same cost and fill as the realized exit. `n_no_upside` is its own line and grades the **entry**. Also the cohort's net-move distribution and `execution_band_pct`, which the cost gate reads, and the two counterfactuals regret is graded against: `best_after_pnl_sol` (the best exit still ahead of a close) and `terminal_pnl_sol` (holding to the last print). |
 | `family_search/diagnose.rs` | Reliability diagnostics on the finalist (D13), all on the resident target: **threshold ladders** (`x0.5..x1.5`, plateau vs a spike), **alarm regret** (each alarm's closes against both counterfactuals — only when the alarm both leaves real upside AND loses to holding on is it cutting winners), **entry redundancy** (solo score + veto-set overlap, which drop-one ablation cannot see because a sibling covers for the clause), and **per-clause fill sensitivity** (drop-one contribution under both pricings; a flip or a collapse means the contribution is the fill model). Grades only — nothing here reaches selection, or the held-out cohort is leaked. |
-| `family_search/attribution.rs` | Per authored exit slot: n, **wins**, Σpnl_sol, Σentry_sol, a **standing** flag, plus the **authored threshold against the mean realized gross return** — offered only where the two are one quantity (`m_position.pnl`), so a stop that gaps past its level is visible without blaming gapping for execution cost. Bucketing mirrors `ComboAgg::record`, pinned equal by a no-DB test. |
+| `family_search/attribution.rs` | Per authored exit slot: n, **wins**, Σpnl_sol, Σentry_sol, a **standing** flag, plus the **authored threshold against the mean realized gross return** - offered only where the two are one quantity (`m_position.pnl_pct`), so a stop that gaps past its level is visible without blaming gapping for execution cost. Bucketing mirrors `ComboAgg::record`, pinned equal by a no-DB test. |
 | `family_search/gates.rs` | Four gates: freshness refuse (D7), **cost-clearance refuse** (D8), the axis-duplication refuse (an entry clause whose admit rate tracks the varied axis at \|ρ\| ≥ 0.8), and the lagging-entry-clause diagnostic. |
 | `family_search/report.rs` | Board payload + the portrait prose. Every candidate row carries the rank-only `fit_ret_pct` beside the reportable `target_ret_pct`. |
 | `api/handlers/strategies/family_search.rs` | `POST /api/strategies/family-search` (+`/cancel`/`/last`/`/{run_id}`). Scope resolves for every member up front (dimension-only), then the **target cohort stays resident** while fit siblings load one at a time. Persists the last result under `$SWEEP_LAKE_DIR/family-search/last.json`. Single-flight against every other heavy job. |

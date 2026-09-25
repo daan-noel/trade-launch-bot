@@ -107,12 +107,15 @@ variant.
 
 Axes: `cu_limit`, `cu_price`, `init_buy_lamports`, `max_cost_lamports`,
 `spendable_lamports_in`, `first_slot_buy_lamports`, `first_slot_sell_lamports`,
-`ix_labels`, `ix_count`, `prior_launches`.
+`ix_labels`, `ix_count`, `prior_launches`, `create_ata`, `build_prev_day_launches`,
+`build_prev_day_runner_bps`, `name_reuse_count`.
 
-`ix_count` is derived (`ix_labels.len()`), so it needs no token-side field.
-`prior_launches` is the engine's own creator tally, stamped onto the observed axes
-in `reduce` at `TokenCreated` before the match runs — a stateful engine value, not
-a `tokens` column.
+`ix_count` and `create_ata` are derived from the creation labels, so they need no
+token-side field. `prior_launches`, `name_reuse_count` and the two `build_prev_day_*`
+axes are engine state (the creator tally, the per-build name tally, the loaded
+launch-build stats), stamped onto the observed axes in `reduce` at `TokenCreated` before
+the match runs: stateful engine values, not `tokens` columns. Their priming and failure
+modes: [_!___metrics.md](_!___metrics.md) section 10.
 
 ## Storage
 
@@ -124,22 +127,20 @@ comparison is canonical without a canonicalisation pass.
 
 ### Row identity is wider than match identity
 
-Two rows are the same **row** when `criteria`, `wildcard` AND `metric_config`
-agree. `metric_config` selects no token, so it is not *match* identity — but it
-compiles into that row's live `m_flow_ix` patterns at reload, keyed by
-`fingerprint_id`. Two rows selecting the same tokens with different patterns
-classify flow differently, so they are different fingerprints and both must
-exist: eleven `8dtx · <router>` carriers share `{}` + `wildcard` and differ only
-here.
+Two rows are the same **row** when `criteria`, `wildcard` AND `tags` agree. `tags`
+selects no token, so it is not *match* identity - but it compiles into that row's live
+trade tags at reload, keyed by `fingerprint_id`. Two rows selecting the same tokens with
+different tags classify flow differently, so they are different fingerprints and both must
+exist: eleven `8dtx · <router>` carriers share `{}` + `wildcard` and differ only here.
 
 Leave it out and `find_or_create` returns an **arbitrary** one of the eleven
 (`LIMIT 1`, no ordering) — promoting a wildcard group could bind the rule to the
-`GMGN Bot` carrier and then overwrite that carrier's patterns with the sweep's,
-silently reclassifying flow for every rule already bound to it.
+`GMGN Bot` carrier and then overwrite that carrier's tags with the sweep's, silently
+reclassifying flow for every rule already bound to it.
 
 A `UNIQUE` index on the same three makes duplicates impossible at the storage
 layer rather than by convention. It indexes the two `jsonb` columns as `md5(…)`
-digests: a btree row is capped at ~2704 bytes and the carriers' pattern sets
+digests: a btree row is capped at ~2704 bytes and the carriers' tag documents
 alone exceed it. Equal `jsonb` always yields equal `md5`, so the constraint is
 exactly as strict, and a digest collision could only reject a write, never admit
 a duplicate. Reads keep comparing the values themselves.

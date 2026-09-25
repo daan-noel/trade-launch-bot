@@ -12,20 +12,24 @@ profitable, only on it firing.
 
 ## Arm
 
-Any paper rule with a 2-stage ladder works. Pick a fingerprint that arms often so the wait
-is short, and keep the stages *easy to hit* — this is about legs landing, not about edge:
+Any paper rule with a two-rung stage plan works. Pick a fingerprint that arms often so the
+wait is short, and keep the rungs *easy to hit* - this is about legs landing, not about edge:
 
 ```sql
 UPDATE strategy_rules
-   SET params = jsonb_set(params, '{scale_out}', '[{"sell_bps": 5000, "take_profit": 8}]'),
+   SET params = jsonb_set(params, '{stages}', '[
+         {"name": "half", "on": [{"if": [{"metric": "m_position.pnl_pct", "is": [{"operator": ">=", "value": 8}]}],
+                                  "sell": "half at +8", "sell_pct": 50, "go": "rest"}]},
+         {"name": "rest"}]'),
        is_active = true
  WHERE rule_name = 'fs3-00 dev13 base'
    AND trade_mode = 'paper';
 ```
 
-The ladder above is one explicit stage plus the global exit as the remainder. To exercise a
-**remainder stage** as well, use
-`[{"sell_bps": 5000, "take_profit": 8}, {"conditions": {"m_position": {"held": [{"operator": ">=", "value": 120}]}}}]`.
+The plan above is one partial sell plus the rule's `always` lines as the remainder (the rule
+must carry no `stages` of its own, or the update replaces them). To exercise a **remainder
+line** in the last stage as well, give `rest` one:
+`{"name": "rest", "on": [{"if": [{"metric": "m_position.held_sec", "is": [{"operator": ">=", "value": 120}]}], "sell": "rest at 120 s"}]}`.
 
 Disarm afterwards: `UPDATE strategy_rules SET is_active = false WHERE …`.
 

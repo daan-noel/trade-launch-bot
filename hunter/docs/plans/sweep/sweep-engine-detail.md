@@ -51,51 +51,46 @@ The group/combo tables carry the matching `n_open` / open-share columns.
 - `exit_stall f64` — stall exits
 - `exit_liquidity f64` — liquidity-drop exits
 
-## Exit-Metric Slot Breakdown — `n_exit_metrics_by_slot`
+## Exit-Metric Slot Breakdown - `n_exit_metrics_by_slot`
 
-The generic engine collapses every authored exit condition (`stall > 3`, `retrace
->= 5`, `held >= 10`, …) into one `ExitCode::Metrics` bucket, so `n_exit_metrics`
-alone can't say WHICH condition actually closed a position. A per-metric-label
-counter isn't affordable in the streaming aggregate (`ComboAgg`/`RunAgg`): it's
-held `combos`-wide in RAM for the whole sweep, so its footprint must stay O(1) per
-combo regardless of how many conditions a rule authors.
+Every rule line that sells buckets as one `ExitCode::Metrics` code, so `n_exit_metrics`
+alone can't say WHICH line closed a position. A per-label counter isn't affordable in
+the streaming aggregate (`ComboAgg`/`RunAgg`): it's held `combos`-wide in RAM for the
+whole sweep, so its footprint must stay O(1) per combo regardless of how many lines a
+rule authors.
 
 The fix keeps that bound with a **fixed-size** array instead of a per-label map:
 
-- `hunter_lab::sweep::strategy::N_EXIT_METRIC_SLOTS` (currently 8) bounds a new
-  `ComboAgg`/`ComboMetrics` field, `n_exit_metrics_by_slot: [u32; N]` — one
-  counter per **position** among a rule's own authored exit reqs (slot 0 = the
-  first authored condition compiled, slot 1 = the second, …), not one per
-  distinct `MetricId`. A rule with more than `N` authored conditions folds the
-  overflow into the last slot rather than growing the array.
-- The slot (and the label needed to name it — metric, operator, authored
-  threshold) is resolved once per combo at **bind time**
-  (`BoundCombo::exit_metric_label`, built alongside the existing `exit_classes`),
-  not per token: `TokenOutcome` carries it forward as four `Copy` fields
-  (`exit_metric`, `exit_operator`, `exit_metric_value`, `exit_metric_slot`), and
-  every exit-resolution path (scalar `resolve_exit`, indexed
-  `resolve_exit_indexed`, the AVX-512 `resolve_exit_simd`, and the frozen-tail
-  D1 resolve) threads the winning `exit_reqs` index through `close_at_fire` to
-  look it up — zero recomputation, zero extra allocation.
-- The label's operator/value are the req's first OR-arm's first AND-condition —
-  the same simplification `hunter_engine::arm::exit_fired`'s
-  `first_satisfied_cond` makes when it stamps a live/paper exit's label. The
-  metric name is always correct; a rare multi-arm DNF condition can report the
-  wrong arm's operator/value.
-- The per-token drill-in (`ComboTokenResult.exit`) reuses the exact same fields
-  to stamp the real `metric op value` label
-  (`hunter_engine::event::format_metric_exit_label`) instead of the bare
-  `"Metrics"` code name — at both the per-token and the aggregated-combo level.
+- `hunter_lab::sweep::strategy::N_EXIT_METRIC_SLOTS` (currently 8) bounds the
+  `ComboAgg`/`ComboMetrics` field `n_exit_metrics_by_slot: [u32; N]` - one counter per
+  **place** among a rule's own labelled sell lines, in rule order (`always` lines, then
+  each stage's `on` and `at_end` lines; the TP/SL shortcuts and move-only lines take no
+  slot), not one per distinct metric. A rule with more than `N` labelled sell lines
+  folds the overflow into the last slot rather than growing the array.
+- The slot and the label are resolved once per combo at **bind time**
+  (`scan::line_tags` -> each held line's `ExitTag { code, label, slot }` on
+  `BoundCombo`), not per token: `TokenOutcome` carries them forward as two `Copy`
+  fields (`exit_label`, `exit_metric_slot`), and every exit-resolution path (the walk,
+  the indexed `resolve_exit_indexed`, the AVX-512 `resolve_exit_simd`, and the
+  frozen-tail resolve) records the selling line's tag - zero recomputation, zero extra
+  allocation. A replay outcome, which carries only the label, is slotted by the same
+  numbering (`scan::line_slot_of`).
+- The label is the one live and simulate record (`ExitReason::Line`): the line's
+  authored label, else its first live condition as written
+  (`m_position.retrace_pct >= 3`, `m_flow.buy_sol @!volume [10s] >= 2`).
+- The per-token drill-in (`ComboTokenResult.exit`) shows that label instead of the bare
+  `"Metrics"` code name - at both the per-token and the aggregated-combo level.
 - Persisted as one `INTEGER[]` column on `grouped_sweep_results`
-  (`grouped_sweep_results.n_exit_metrics_by_slot`), not `N` scalar columns — `append_group`'s
+  (`grouped_sweep_results.n_exit_metrics_by_slot`), not `N` scalar columns - `append_group`'s
   bulk insert already sits close to the 65535 bind-parameter ceiling on its
   2000-row chunks, and an array column costs exactly one bind per row.
-- The frontend never re-derives a slot's meaning: `GET …/results` returns an
-  `X-Exit-Metric-Legend` response header (JSON: `[{slot, metric, operator,
-  value}, …]`), computed once per page by compiling any one row's own `params`
-  (every combo in a group shares one rule *shape* — the sweep varies threshold
-  values, not which conditions exist) — see `exit_metric_legend` in
-  `grouped_sweep.rs`. The `Metrics` column's per-row hover breaks the count down
+- The frontend never re-derives a slot's meaning: `GET .../results` returns an
+  `X-Exit-Metric-Legend` response header (JSON: `[{slot, label}, ...]`), computed once
+  per page from any one row's own `params` (every combo in a group shares one rule
+  *shape* - the sweep varies threshold values, not which lines exist) - see
+  `exit_metric_legend` in `grouped_sweep.rs`. An authored label shows as written; an
+  unlabelled line shows its first condition without the threshold, which varies across
+  the page's combos. The `Metrics` column's per-row hover breaks the count down
   using that legend.
 
 ## QuantileSketch — `aggregate.rs`

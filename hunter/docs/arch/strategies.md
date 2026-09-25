@@ -1,8 +1,8 @@
 # Strategies — the generic fingerprint + metrics engine
 
 There is exactly **one generic engine** — no named per-strategy stacks. A rule =
-a `fingerprint_id` (a token-creation shape) + `params`
-(strict TP/SL + `entry`/`exit` metric-condition groups). The decision core is a
+a `fingerprint_id` (a token-creation shape, plus the trade lists its `tags` define) +
+`params` (enter, signals, always lines, stages - [the rule model](#the-rule-model-enter-signals-always-stages)). The decision core is a
 **pure fold** in the `hunter-engine` crate; the live and lab bins are thin adapters
 that produce events and consume effects. A decision fix lands in exactly one place.
 
@@ -21,7 +21,8 @@ Its contract has two halves:
 
 - Every fact it *can* share with the engine is single-sourced from `hunter-engine`/`core`,
   never copied: deadness verdict, death-point, cost/PnL kernel, leaf-condition `eval`,
-  `CompiledRule::compile`, fill model, `TICK_MS`.
+  `CompiledRule::compile` and its own entry and held-side decisions (`try_enter`,
+  `held_line`, run over a series row through `CoinReads`), fill model, `TICK_MS`.
 - Every deliberate divergence from `reduce` (bounded per-token tail, stripped concurrency
   caps, sketched quantiles) is recorded in [`../plans/sweep/sim-parity.md`](../plans/sweep/sim-parity.md)
   **and** locked by a `sweep/generic/guard.rs` parity test.
@@ -35,8 +36,8 @@ Deep-dive detail: flow metrics + classifier in
 what a round trip **costs** (fee 125 bps/leg, our own `buy_amount/reserve_sol` impact,
 the U-shaped optimal buy size) in
 [`plans/strategies/execution-costs.md`](../plans/strategies/execution-costs.md);
-exit-condition traps that are invisible from the rule JSON — the unarmed `retrace`
-and the `stall` hold-cap — in
+exit-condition traps that are invisible from the rule JSON - the ungated
+`m_position.retrace_pct` and the `m_price.stall_sec` hold-cap - in
 [`plans/strategies/armed-trailing-stop.md`](../plans/strategies/armed-trailing-stop.md);
 the actor-model workflow that governs new rules in
 [`plans/strategies/_!___strategy.md`](../plans/strategies/_!___strategy.md);
@@ -50,22 +51,94 @@ fold; live, sweep, and the replay debugger all drive it.
 
 | Module | Role |
 | --- | --- |
-| `event.rs` | `Event` (TokenCreated / FirstSlotSettled / Trade / Tick / FillConfirmed / FillFailed / Migrated / RulesReloaded / ManualClose / **ExternallyCleared**), `Effect` (SubmitBuy / SubmitSell / PositionUpdate / ArmedChanged), `PositionDelta` / `ArmedDelta`, `Fill`, `ExitReason` (metric exits = spaced `name op value`), `LoadedRule`, derived ids (`RuleId`/`PositionId`/`IntentId` = `(rule, mint, seq)`) |
-| `state.rs` | `EngineState` (compiled rules / **the fingerprints those rules name** + each one's compiled `metric_config` / tracked tokens / open positions / per-rule cap counters, intent+position seqs); `TokenState` (metric track + `last_meaningful_at` + `last_trade_at` + per-rule arms + `episodes: BTreeMap<RuleId, u32>` — the re-entry episode counter, a parallel map so no `ArmState` transition has to carry it forward); `PositionRef`. Also the **settled-tick** machinery: `TokenState.settled: Option<Settled>` (this token is done changing on its own — see the `Tick` row below), `EngineState.cross_epoch` (bumped by `with_counters` / `record_identity` / `reload`, the ONE write paths for the three cross-token inputs a settled token's decision reads), the O(1) whole-map memo `all_settled_at`, `touch_token` (for boot adoption, which mutates a tracked token outside the fold), and the `dense_ticks` kill switch |
-| `arm.rs` | `CompiledRule` pre-chews a rule into flat `MetricReq`s + windows + `MonoBound`s (recompiled on reload, never per event); `can_enter` = entry AND holds and no exit clause fires (object-form `exit` = one singleton clause per req, today's flat OR; array-form = OR of AND-clauses); optional `entry_event` is a second AND-object and `entry_lock: slot` fires it once per slot (`try_enter` → Enter / SpendSlot / No); `ArmState` machine `PendingFirstSlot → Armed → EntryPending → Entered → ExitPending → Done \| Disarmed`, plus `Cooldown { until: Ts }` — a normal exit (TP/SL/Metrics, never Dead/Manual/Migrated) with `RuleParams.reentry { cooldown_sec, max_episodes_per_token }` configured re-arms into `Cooldown` instead of `Done`; `evaluate_token` promotes `Cooldown → Armed` once `now >= until` (trade/tick-driven, no new timer) and treats `Cooldown` as active so the token isn't pruned; absent `reentry` ⇒ today's one-shot behavior. Live boot seeds `episodes` from a batched closed-position count over adopted mints. Also carries `exclusive` / `priority` (`RuleParams`) — the single-position-per-token toggle |
+| `event.rs` | `Event` (TokenCreated / FirstSlotSettled / Trade / Tick / FillConfirmed / FillFailed / Migrated / RulesReloaded / ManualClose / **ExternallyCleared**), `Effect` (SubmitBuy / SubmitSell / PositionUpdate / ArmedChanged), `PositionDelta` / `ArmedDelta`, `Fill`, `ExitReason` (`TakeProfit` / `StopLoss` for the shortcuts, `Line(label)` for a rule line that sold, `Dead` / `Manual` / `Migrated`), `LoadedRule`, derived ids (`RuleId`/`PositionId`/`IntentId` = `(rule, mint, seq)`) |
+| `state.rs` | `EngineState` (compiled rules / **the fingerprints those rules name** + each one's compiled `tags` (`fp_tags`) + the `TrackRequirements` every coin's track registers - the union of the rules' `Buffers` plus one entry per (fingerprint, tag) a rule reads / tracked tokens / open positions / per-rule cap counters, intent+position seqs); `TokenState` (metric track + `last_meaningful_at` + `last_trade_at` + per-rule arms + `episodes: BTreeMap<RuleId, u32>` - the re-entry episode counter, a parallel map so no `ArmState` transition has to carry it forward); `PositionRef`. Also the **settled-tick** machinery: `TokenState.settled: Option<Settled>` (this token is done changing on its own - see the `Tick` row below), `EngineState.cross_epoch` (bumped by `with_counters` / `record_identity` / `reload`, the ONE write paths for the three cross-token inputs a settled token's decision reads), the O(1) whole-map memo `all_settled_at`, `touch_token` (for boot adoption, which mutates a tracked token outside the fold), and the `dense_ticks` kill switch |
+| `arm.rs` | `CompiledRule` pre-chews a rule at `RulesReloaded` into what the hot path reads, never parsing per event: flat `CondReq` lists for `enter.event` / `filters` / `final_filters`, `CompiledSignal`s, the `always` lines (stop loss, take profit, then the authored ones) and `CompiledStage`s with stage indices instead of names; one `MetricReq` per condition (its `MetricRef`, the DNF, and a `read_id` into `coin_reads`, the distinct coin reads a precomputed series must carry); the `Buffers` those reads need; the `MonoBound` entry kills; the `ClockHorizons`. **Every decision reads the coin through `CoinReads`** - `TokenTrack` in the fold, one series row in the lab sweep - so the entry and held-side walks are one generic body. Entry: `try_enter` -> `Enter` / `SpendSlot` / `Exhaust` / `No` under `enter.lock`, gated by the pre-entry veto; `can_enter` is the same gate for a buy retry. Held side: `held_step` / `held_line` (see [the rule model](#the-rule-model-enter-signals-always-stages)). `ArmState` machine `PendingFirstSlot -> Armed -> EntryPending -> Entered -> ExitPending -> Done \| Disarmed`, plus `Cooldown { until: Ts }` - a normal exit (TP / SL / a rule line, never Dead/Manual/Migrated) with `RuleParams.reentry { cooldown_sec, max_per_coin }` configured re-arms into `Cooldown` instead of `Done`; `evaluate_token` promotes `Cooldown -> Armed` once `now >= until` (trade/tick-driven, no new timer) and treats `Cooldown` as active so the token is not pruned; absent `reentry` => one position per coin. `EnteredCtx` carries the stage index and when it began (`move_to`), `sold_bps`, and the peak / trough. Live boot seeds `episodes` from a batched closed-position count over adopted mints. Also carries `exclusive` / `priority` (`RuleParams`) - the single-position-per-token toggle |
 | `identity.rs` + `dupe_guard.rs` | the **copycat guard**. `token_identity_hash(name, symbol)` is the ONE hasher (normalize → FNV-1a → 63-bit, so an `i64` column holds it unchanged) for the live producer, the lake exporter, and replay; `DupeGuard` is a per-mode (paper/real) rolling memory `identity → [(mint, at)]` that `decide_arm` consults. Records at the entry **attempt** (a reverted buy still counts), exempts the recording mint (else a token blocks its own retry), and prunes on event time. Policy arrives via `EngineState::set_dupe_guard_policy` — a switch, not an `Event` |
-| `reduce.rs` | the fold: arm on fingerprint match, disarm (dead / migration / derived-unsatisfiable — which captures the entry reqs still unmet at that instant via `CompiledRule::entry_blockers`, since `time` is the only monotonic metric and so the kill alone never says what the entry was short of / **duplicate-identity** — a different mint with the same `(name, symbol)` traded inside the guard's window; a `Disarm`, not `exclusive`'s wait, because the block outlives any curve token), `exclusive` rules stand down (stay `Armed`, never disarmed) while ANY other arm on the token holds a position — in-flight buys/sells and manual arms included, since `evaluate_token` reads the shared `token.arms` map; that sweep is visited in `(priority desc, RuleId asc)` order so whichever exclusive rule sorts first claims the token and later ones see the claim in the *same* event, enter via `CompiledRule::can_enter` (entry holds **and** exit metrics do not — refuses buy into an immediately-exitable state), caps checked at entry, fill retry policy (`Reverted` bounded; `Fatal` immediate give-up; exit `Unconfirmed`/`Fatal` terminal — never resold), exit priority **Dead > `exit_fired`** (TP/SL desugar into prepended `m_position.pnl` reqs, so the old `SL > TP > Metrics` tiebreak is preserved inside the one exit loop), metric exits persist as spaced `name op value` (`retrace >= 3`) via `ExitReason::Metrics { metric, operator, value }` while a desugared TP/SL keeps its `TakeProfit`/`StopLoss` label (origin tag), `ManualClose` (sell), `ExternallyCleared` (book closed, no sell) |
+| `reduce.rs` | the fold: arm on fingerprint match, disarm (dead / migration / derived-unsatisfiable - which captures the entry conditions still unmet at that instant via `CompiledRule::entry_blockers`, since the kill names only the monotonic bound that crossed / **duplicate-identity** - a different mint with the same `(name, symbol)` traded inside the guard's window; a `Disarm`, not `exclusive`'s wait, because the block outlives any curve token), `exclusive` rules stand down (stay `Armed`, never disarmed) while ANY other arm on the token holds a position - in-flight buys/sells and manual arms included, since `evaluate_token` reads the shared `token.arms` map; that sweep is visited in `(priority desc, RuleId asc)` order so whichever exclusive rule sorts first claims the token and later ones see the claim in the *same* event, enter via `CompiledRule::try_enter` (the entry holds **and** no sell line already holds - refuses to buy into an immediately-exitable state), caps checked at entry, fill retry policy (`Reverted` bounded; `Fatal` immediate give-up; exit `Unconfirmed`/`Fatal` terminal - never resold), held side **`Dead` first, then one `held_step`** (`decide_arm`): a full sell, a partial sell (`sell_pct` of the first bag, moving to the line's `go` stage when its fill lands; one that would take the bag past what is left sells the rest) or a stage move (`EnteredCtx::move_to`, read from the next print or tick). A rule-line exit persists as its label via `ExitReason::Line`; the TP/SL shortcuts keep `TakeProfit`/`StopLoss`; `ManualClose` (sell), `ExternallyCleared` (book closed, no sell) |
 | `cap.rs` | `Cap` — a governance limit with its `0 = unlimited` storage encoding already decoded. `Cap::zero_unlimited` is the ONE reader of that sentinel for **both** caps (`max_total_tokens`, `max_concurrent_tokens` — a blank field in the rule editor stores `0` on either); `CompiledRule` carries both already decoded so the fold just asks `allows(count)`. `UNLIMITED = u32::MAX`, so the hot path is a single `<` with no branch |
 | `fingerprint.rs` | `Fingerprint` (criteria; lamports at rest) + `match_all` / `MatchPhase` (Instant vs Full — the two-phase first-slot split). `wildcard` matches EVERY token and short-circuits every axis: a criterion-less row matches *nothing* on purpose (a half-filled form must not arm on everything), so a rule that decides purely on the tape has to say "any token" out loud or the two states are indistinguishable. A DB CHECK refuses a wildcard row that also carries axes, `Fingerprint::validate` refuses one at the write edge (a 400, not a DB error), and `wildcard` is part of match identity (`IDENTITY_WHERE` compares it) so a wildcard row never dedupes against an axis row. Every reader of the flag agrees on the same verdict: the matcher short-circuits to *matches all*, `has_any_criterion` counts it as the one criterion on both the model and engine sides, and the creation-stats SQL mirror (`fingerprint_scope_clauses`) emits **no** clause — never the `FALSE` fence a criterion-less row gets, which would show 0 matched tokens for the one fingerprint that arms on every launch. UI: a `match every token` checkbox on `FingerprintForm` that greys out and drops every axis, an `ALL tokens` chip in place of the axis chips, and an `all` badge in the fingerprints table (where the axis columns are all dashes) |
-| `metrics/` | the metric registry + `TokenTrack` (in-memory per-token metric state) + `MetricSeries` (sweep precompute) + `evaluator` (Operator/Condition/eval). Aggregate flow: `metrics/flow_lifetime.rs` (`m_flow_lifetime` — lifetime `buy`/`sell`/`net_flow`/`gross_flow`/`trade_count`) + `metrics/flow_window.rs` (`m_flow_window` — those five over a trailing window **plus
-`buy_share` / `buy_count` / `sell_count`, which are window-only**) + `metrics/flow_slice.rs` (the `m_flow_window` two-window reads `trade_share` / `sol_share` across a NESTED slice; owns no state, reads `flow_window`'s two ring buffers, and the slice axis is required PER METRIC via `metrics::is_two_window` so an instance that reads no share never carries one) + `m_crowd_window` (`unique_wallets` / `trades_per_wallet` — the wallet-keyed pair, its own group because it is the only window that needs the wallet column loaded) + `m_build_window` (`unique_builds` — distinct build recipes over a window, `flow_ix::build_hash`, its own group because its column is `ix_labels`; both hold a `metrics/distinct_window.rs` counter, the one O(1) distinct-count mechanism) + `m_print_wallet` (`since_buy` — the wallet behind the print being decided on; a wallet -> last-buy map a track opens only when a loaded rule reads it) + `m_holder_book` (`public_app_share` / `bundled_share` — who holds the supply, from an exact per-wallet token book over `TradeLite::token_amount`; a holder is classed at its first buy, the public test from `TradeLite::build_day_public`, which `reduce` stamps from `EngineState::public_recipes`, the recipes of the daily table that pass `holder_book::is_public_app`, replaced by an `Event::BuildBreadthReloaded`: at 00:00 UTC in replay, by `breadth_refresh` off the decision loop in live). `m_state.on_curve` is the venue of the last print: `liquidity` reads either venue. Classified flow (`m_flow_ix` / `m_flow_ix_window`) lives in `metrics/flow_ix.rs` — fingerprint-scoped classifier state + SSOT `ix_hash`/`wallet_hash`. Price groups: `metrics/price_lifetime.rs` (lifetime extrema — `stall`/`trail`/`rise`), `metrics/price_window.rs` (`m_price_window` — rolling-window `trail`/`rise` via monotonic deques; the dip trigger), and `metrics/position.rs` (`m_position` — **position-scoped** `retrace`/`bounce`/`pnl`/`held`/`armed`/`room_taken`, exit-only, read from a `PositionCtx` on `ArmState::Entered`; TP/SL desugar into `pnl`; `armed` is the 0/1 latch of `arm_above_pct`; `room_taken` is `pnl` as a percent of the entry's room to the graduation wall (`position::GRADUATION_PRICED_RESERVE_SOL`), sized from the `vsol` of the last print folded at `FillConfirmed`, which the sink stores in `strategy_positions.extra` and boot adoption (`orphan_exit`) reads back; object-form skip on trailing reqs stays, array-form DNF ANDs `armed` explicitly. Strict param `arm_above_pct` holds the **trailing** metrics (`retrace`/`bounce`, per the one reader `position::is_trailing`) off until the position is that far in profit on **object-form singleton** clauses — the peak seeds at the entry fill, so an unarmed `retrace` doubles as a hard stop from entry. Absent ⇒ prior behavior; `0` is a real value (arm at break-even), which is why `StrictParamSpec` carries `allows_zero`. Design + the measurement behind it: [../plans/strategies/armed-trailing-stop.md](../plans/strategies/armed-trailing-stop.md)). `m_burst_slot` (`metrics/burst_slot.rs`) is this-slot buy-prefix × this-print template grain — fingerprint-scoped via `working_templates`. `m_burst_wave` (`metrics/burst_wave.rs`) is the consecutive-slot buy run (gap before the wave, token-level). Both are family `burst`. Dynamic windows are registered **one bucket per backing buffer** on `TokenTrack` (`ensure_window` / `ensure_crowd_window` / `ensure_build_window` / `ensure_price_window` / `ensure_flow`), off `CompiledRule`'s matching `flow_windows` / `crowd_windows` / `build_windows` / `price_windows` / `ix_windows`, so a rule pays only for the buffers its metrics read. `ix_windows` is the load-bearing one: `ensure_flow` opens a deque **per configured fingerprint**, so a span registered there that no `m_flow_ix_window` metric reads is folded once per fingerprint per trade for nothing — and for the same reason `reload` narrows `fps` to the fingerprints the rules name and compiles their `metric_config` once (`metrics::FingerprintPatterns`) instead of per token: the live edge hands over every `fingerprints` row, and opening a classifier for each configured one cost the whole set on every creation and every trade, read by nobody. `GroupSpec.scope` (Token/Position) gates the entry side |
-| `rule_params.rs` | `RuleParams` registry-guided parse → canonical `to_value` + validation (incl. `scale_out: Vec<ExitStage>` — ordered partial-exit ladder; see `docs/plans/strategies/partial-exits.md`). Also `disabled: Option<DisabledConditions>` — **parked** entry/exit conditions AND scale-out stages the author toggled off in the editor: same `SideConditions` / `ExitStage` shapes, parsed and validated identically (so re-enabling one can never produce an unsavable rule), but read by **nothing** — `CompiledRule::compile` sees `entry`/`exit`/`scale_out` only, so the engine, sweep, and simulate are untouched and the hot path pays zero. Absent by default ⇒ stored rules round-trip byte-identically, no migration. A parked condition MAY duplicate a live one on the same (group, window, metric) — that is the feature (park `trail >= 12` while trying `trail >= 20`), and separate bags keep them from overwriting each other. Parked **stages** are the one deliberate asymmetry: `validate_stage` (per stage — can it fire, is its `sell_bps`/TP legal, are its conditions valid) applies to the bag, `validate_scale_out` (remainder last, stage count, bps sum) does not, because those describe a *ladder* and the bag is a shelf of spares — summing them would make parking a stage useless |
+| `metrics/` | the registry, the per-coin state and the reads. **`registry.rs`**: `FAMILIES` + `METRICS`, one `MetricSpec` per quantity - path `m_family.quantity` (unit in the last word: `_sol`, `_count` for prints, `_tx_count` for transactions, `_pct`, `_sec`; none = a 0/1 flag), summary, example, note, the tags it accepts (`TagUse` none / optional / required, at the `TagLevel` trade / template / wallet class) and the spans (`SpanUse`), `monotonic`, `eq_tolerance`, hue - plus `RULE_PARTS`; `registry_json()` serves it all, pinned to `engine/fixtures/registry.json` by `registry_fixture_is_current`, and every UI surface renders a metric only from it. **`metric_ref.rs`**: `MetricRef` = one read, metric + tag + span (`m_flow.buy_sol @!volume [10s]`); `check()` refuses a tag or span the metric does not accept, `label()` is the one spelling in labels, readouts, ledgers and errors, `chart_reads` lists every read a chart draws. **`span.rs`**: `Span` - the life (default), a trailing window `10s` / `20sl` / `5p` closed `[now - N, now]` with an optional lag (`10s@2`), a since-age anchor (`age60s`), and the nested `slice` of the two `m_flow.slice_*_share_pct` reads; a span is part of a read's identity, so two conditions on `buy_sol [10s]` share one buffer. **`tags/`**: a fingerprint's named trade lists - `config.rs` (the `tags` document, `validate_tags`, `compile_tags`), `state.rs` (`TagState`, see [the rule model](#the-rule-model-enter-signals-always-stages)). **`buffers.rs`**: `Buffers`, the per-buffer registration a set of reads needs, derived by one walk that the rule compiler, the engine's per-coin registration and the sweep's series all share. **`track.rs`**: `TokenTrack`, all the metric state one coin carries and the router every read goes through (`value(MetricRef, fingerprint, now)`); a read with no registered state is `NaN`, which satisfies nothing. Compute, one module per subject and basis: `state.rs` (`m_state`: `age_sec`, `liquidity_sol` on either venue, `on_curve` = the venue of the last print), `price_lifetime.rs` / `price_window.rs` (`m_price` over the life / a trailing window via monotonic deques), `flow_lifetime.rs` / `flow_window.rs` / `flow_slice.rs` (untagged `m_flow`; the window stays lean at 8 bytes a print with no transaction flag, so the `_tx_count` quantities need a tag; the slice reads own no state), `tags/state.rs` (tagged `m_flow` and `m_holdings.profit_sol`), `holder_book.rs` (`m_holdings.bag_share_pct` over the built-in wallet classes: an exact per-wallet token book over `TradeLite::token_amount`, a holder classed at its first buy, the `public_app` test from `TradeLite::build_day_public`, which `reduce` stamps from `EngineState::public_recipes` - the recipes of the daily build-breadth table that pass `holder_book::is_public_app`, replaced by an `Event::BuildBreadthReloaded`: at 00:00 UTC in replay, by `breadth_refresh` off the decision loop in live), `crowd_window.rs` / `build_window.rs` / `crowd_after_age.rs` (`m_crowd`: distinct wallets, distinct ix shapes, buyers since an age; the two windowed counts hold a `distinct_window.rs` counter, the one O(1) distinct-count mechanism), `print_wallet.rs` (`m_print`: a wallet -> last-buy map a track opens only when a loaded rule reads it), `burst_slot.rs` (`m_slot`, this slot's buy prefix at the ix-template grain, and `m_crowd.unique_ix_templates`), `burst_wave.rs` (`m_wave`, the consecutive-slot buy run), `position.rs` (`m_position`, **position-scoped**, read from a `PositionCtx` on `ArmState::Entered` and `NaN` without one: `pnl_pct`, `held_sec`, `retrace_pct` / `bounce_pct` off the running peak / trough seeded at the entry fill, `stage_sec`, and `room_taken_pct` - `pnl` as a percent of the entry's room to the graduation wall (`position::GRADUATION_PRICED_RESERVE_SOL`), sized from the `vsol` of the last print folded at `FillConfirmed`, which the sink stores in `strategy_positions.extra` and boot adoption (`orphan_exit`) reads back). `trade_keys.rs` is the one hasher set for a trade's identity (ix shape, build recipe, marker bits, wallet) every adapter calls. **A rule pays only for the buffers its reads name**: `Buffers` registers one buffer per span per backing store (`ensure_window` / `ensure_price_window` / `ensure_crowd_window` / `ensure_build_window` / `ensure_crowd_after_age`, the print-wallet map, the holder book, the slot state) and one `TagState` (`ensure_tag`) or template view (`ensure_template_tag`) per (fingerprint, tag) read; `reload` narrows `fps` to the fingerprints the rules name and compiles their `tags` once, because the live edge hands over every `fingerprints` row and a tag state folds on every trade of every coin. Formulas + NaN rules: [`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md) |
+| `rule_params.rs` | `RuleParams` - the typed `strategy_rules.params` (`RULE_FORMAT_VERSION` 2): `enter { event, filters, final_filters, lock, size_pct_of_pool }`, the `take_profit` / `stop_loss` shortcuts, `signals`, `always`, `stages` (at most `MAX_STAGES`), `reentry`, `exclusive` / `priority`. Parsed and validated once at save and at load, never per event; `to_value` is the one canonical writer. A condition is `{metric, tag?, span?, slice?, is}` (a `MetricRef` and its DNF: a list is AND, a list of lists is OR) or `{signal, not?}`; a line is `{if: [cond], sell?: "label" \| true, sell_pct?, go?}`, `sell_pct` at most `MAX_SELL_PCT` of the first bag. **Any condition or line may carry `"off": true`** - parked: kept in place and validated exactly like a live one (so switching it back on can never produce an unsavable rule) but compiled by nothing, so the engine, sweep and simulate never read it and the hot path pays zero. A parked condition may duplicate a live one on the same read (park `trail_pct >= 12` while trying `trail_pct >= 20`) |
+| `v1.rs` | The one reader of documents written before metric system v2 - rule params, fingerprint `metric_config` + criteria, rule bundles, stored sweep axes and ladders - into v2. A v1 (group, metric, window) becomes one `m_family.quantity @tag [span]` condition (`map_metric`); the fingerprint lists become tags (`m_flow_ix` = `volume`, `m_dump_ix` = `dump`, `m_copy` = `targets`, `m_burst_slot` = `working`); exit clauses become `always` lines; `arm_above_pct` on a lone trailing clause adds `m_position.pnl_pct >= X` to that line; the `armed` latch becomes stages `start` -> `armed` (`since_armed` = `m_position.stage_sec`); a `scale_out` ladder becomes one stage per rung; `disabled` becomes `"off": true`. A combination v2 cannot state exactly is refused. **Permanent**: the core and lab data migrations, rule-bundle import, the fingerprint PUT (a body may still send `metric_config`), every reader of a stored sweep combo (`parse_params_any`), and the golden tests, which keep their pinned v1 rules and so prove the conversion decision for decision |
 | `grouping.rs` | bucket matching (`same_bucket`) for the SOL fingerprint axes |
 | `deadness.rs` | `is_dead_verdict` + `DEAD_*` consts — the ONE deadness SSOT (core + live + sweep re-export it) |
-| **`Tick` (in `reduce.rs`)** | Sweeps every tracked token — **except** those `Settled`. A token is settled once a sweep has run **at or past** its horizon (`arm::ClockHorizons`: widest trailing window from the last trade, `time` from creation, `stall` from the last trade, `held` from the entry fill; plus the dead flip and any `Cooldown { until }`) **and** `cross_epoch` has not moved since. This exists because a token whose real reserves stayed above `DEAD_MAX_LIQUIDITY_SOL` (or that has no reserve reading at all) can never go dead, so without this it is never pruned and gets swept 5x/second forever — the dominant cost of a multi-day simulate. Skipping is decision-neutral and guarded differentially by `engine/tests/settled_ticks.rs`; measured ~180x on the quiet-token shape (`engine/tests/tick_bench.rs`). Full rationale: [../plans/strategies/tick-cost-and-settled-tokens.md](../plans/strategies/tick-cost-and-settled-tokens.md) |
-| `kernel.rs` | `CostModel` / `round_trip_with_costs` / `round_trip_multi_leg` (+ `ExitLeg`) + `RunAgg` → `RunMetrics` (≡ `strategy_run_metrics` cols) + the quantile sketch / robust score — one copy of the PnL+summary math shared by live/paper/sweep. Fixed per-leg cost (tip + CU priority) comes from process-wide [`FeeTuning`](../../core/src/config/fee_tuning.rs) (`JITO_MIN_TIP_SOL` + `CU_PRICE_MICRO_LAMPORTS`), installed at boot by both bins. **`FEE_BPS_PER_LEG = 125`** — measured, not assumed. **Runs stored before 2026-07-28 were priced at 100 bps with no impact charge: they understate cost and do not compare to a new run** (the constants are not persisted per run). <!-- pt-ok: cutoff, those runs are still in the DB --> Two `CostModelKind`s: **`pumpfun_impact`** (the default) — the only one that charges our own `buy_amount_sol / reserve_sol` price impact, so the only one whose cost responds to buy size — and `pumpfun_fee_only`, a size-blind zero-impact upper bound. Callers pass entry pool depth; `None` ⇒ no impact, never a guess, so `pumpfun_impact` without depth *is* `pumpfun_fee_only`. **`CostModel` carries no flat slippage field**: a third kind charged one, which double-counted what the fill model already prices and, being size-blind, had an error that changed sign with buy size. The kind, the field and its wire name are all deleted — `pumpfun_default` does not decode. An unrecognized `cost_model` therefore fails loudly instead of resolving to a default, which is correct: a run that reports a model it was not priced under is not comparable to anything, and the runs that named it are deleted rather than migrated. Scale-out prices through `round_trip_multi_leg` (fixed cost × leg count); the single-exit wrapper stays for legacy / sweep until the staged resolver lands |
+| **`Tick` (in `reduce.rs`)** | Sweeps every tracked token - **except** those `Settled`. A token is settled once a sweep has run **at or past** its horizon (`arm::ClockHorizons`: widest trailing window from the last trade, `m_state.age_sec` thresholds and age deadlines from creation, `m_price.stall_sec` from the last trade, `m_position.held_sec` thresholds and held deadlines from the entry fill, `m_position.stage_sec` thresholds and stage deadlines from the stage start; plus the dead flip and any `Cooldown { until }`) **and** `cross_epoch` has not moved since. This exists because a token whose real reserves stayed above `DEAD_MAX_LIQUIDITY_SOL` (or that has no reserve reading at all) can never go dead, so without this it is never pruned and gets swept 5x/second forever - the dominant cost of a multi-day simulate. Skipping is decision-neutral and guarded differentially by `engine/tests/settled_ticks.rs`; measured ~180x on the quiet-token shape (`engine/tests/tick_bench.rs`). Full rationale: [../plans/strategies/tick-cost-and-settled-tokens.md](../plans/strategies/tick-cost-and-settled-tokens.md) |
+| `kernel.rs` | `CostModel` / `round_trip_with_costs` / `round_trip_multi_leg` (+ `ExitLeg`) + `RunAgg` -> `RunMetrics` (== `strategy_run_metrics` cols) + the quantile sketch / robust score - one copy of the PnL+summary math shared by live/paper/sweep. Fixed per-leg cost (tip + CU priority) comes from process-wide [`FeeTuning`](../../core/src/config/fee_tuning.rs) (`JITO_MIN_TIP_SOL` + `CU_PRICE_MICRO_LAMPORTS`), installed at boot by both bins. **`FEE_BPS_PER_LEG = 125`** - measured, not assumed. **Runs stored before 2026-07-28 were priced at 100 bps with no impact charge: they understate cost and do not compare to a new run** (the constants are not persisted per run). <!-- pt-ok: cutoff, those runs are still in the DB --> Two `CostModelKind`s: **`pumpfun_impact`** (the default) - the only one that charges our own `buy_amount_sol / reserve_sol` price impact, so the only one whose cost responds to buy size - and `pumpfun_fee_only`, a size-blind zero-impact upper bound. Callers pass entry pool depth; `None` => no impact, never a guess, so `pumpfun_impact` without depth *is* `pumpfun_fee_only`. **`CostModel` carries no flat slippage field**: a third kind charged one, which double-counted what the fill model already prices and, being size-blind, had an error that changed sign with buy size. The kind, the field and its wire name are all deleted - `pumpfun_default` does not decode. An unrecognized `cost_model` therefore fails loudly instead of resolving to a default, which is correct: a run that reports a model it was not priced under is not comparable to anything, and the runs that named it are deleted rather than migrated. A position with partial sells prices through `round_trip_multi_leg` (fixed cost x leg count); the single-exit wrapper stays for legacy / sweep until the staged resolver lands |
 | `event_log.rs` | `LoggedEvent` — the on-disk JSONL format, SSOT for the live recorder (writer) + the lab replay inspector (reader) |
-| `readout.rs` | **Read-only** view of what the fold reads for one (token, rule): `read_rule` walks a `CompiledRule`'s `MetricReq`s through the same `track.value` / `position_value` + `evaluator` the decision uses and returns a `ConditionRead` per condition (metric, window, authored DNF, live value, `ok`, `origin`, `arm_above_pct`, `disarmed`, `exit_clause`). Trailing skip (`disarmed`) is singleton-clause only. `read_state` resolves an arm straight off `EngineState` — including a **manual episode's** rule, which lives in `manual_rules` keyed by position and is invisible to a plain `state.rules` get. `replay_readout` reconstructs the same thing for a closed position by folding stored trades to one instant. `RuleReadout.source` (`Engine` \| `Replay`) travels with the numbers because the two are not equally exact. See *Rule readout* below |
+| `readout.rs` | **Read-only** view of what the fold reads for one (token, rule), placed where each condition sits: `read_rule` walks the `CompiledRule`'s conditions through the same `MetricReq::read` + `evaluator` the decision uses and returns a `ConditionRead` per metric condition (its `ReadPart` - event / filter / final filter / signal group / always line / stage line, `on` or `at_end` - the `MetricRef`, the authored DNF, the value, `matched`, `ok`), a `SignalRead` per signal and a `LineRead` per line (`holds`, the label it `sells` with, `sell_bps`, `goes_to`). `read_state` resolves an arm straight off `EngineState` - including a **manual episode's** rule, which lives in `manual_rules` keyed by position and is invisible to a plain `state.rules` get - and names the held position's stage. `replay_readout` reconstructs the same thing for a closed position by folding stored trades to one instant, with its tag context (`ReplayTags`: fingerprint, compiled tags, creator). `RuleReadout.source` (`Engine` \| `Replay`) travels with the numbers because the two are not equally exact. See *Rule readout* below |
+
+## The rule model: enter, signals, always, stages
+
+A rule reads the coin through **conditions**: one `MetricRef` (`m_family.quantity @tag
+[span]`) judged against a DNF, or a named signal. The grammar is `rule_params.rs`; every
+part's one-line definition and example is the registry's `RULE_PARTS`, which the editors
+and the Guide page render as-is.
+
+**Entry.** `enter.event` is the print that triggers the buy, `enter.filters` must also
+hold (a failure keeps watching), and `enter.final_filters` are checked on a print that
+would otherwise buy (a failure ends the coin for this rule, `EntryVerdict::Exhaust`).
+`enter.lock: "token"` gives the coin one decision, on the first PRINT that makes the
+event true (a tick never is one, `evaluate_token`'s `on_print`); `"slot"` gives one per
+slot, and a filter failure spends that slot. `enter.size_pct_of_pool` sizes the buy as a
+percent of the pool's SOL, resolved in `reduce` at the entry instant. **The pre-entry
+veto** (`sell_line_holding_before_entry`): the rule never buys while an `always` sell line
+or a first-stage sell line already holds. Position metrics read `NaN` before the buy, so
+a line on our position never vetoes.
+
+**Held side: one step per print or tick** (`CompiledRule::held_step`). Each evaluation
+takes at most one action:
+
+1. the `always` lines in order - stop loss, take profit, then the authored ones; the
+   first that holds acts;
+2. else, when the current stage's deadline is reached, the first `at_end` line that holds
+   acts, and when none does the rule moves to `then` (default: the next stage);
+3. else the stage's `on` lines in order; the first that holds acts.
+
+`Dead` outranks all three (`reduce::decide_arm`). A line sells the whole bag, or
+`sell_pct` of the first buy's bag, and may move (`go`). A move takes effect from the next
+print or tick, where the new stage's lines are first read; a partial sell moves when its
+fill lands (`ArmState::ExitPending.then_stage`). `m_position.stage_sec` reads the time
+since the current stage began, so "in the first 30 s of the ride" needs no deadline.
+
+**Deadlines are clocks, so they join `ClockHorizons`.** A stage's `ends` is `age_sec`
+(coin age), `held_sec` (since our buy) or `stage_sec` (since the stage began);
+`absorb_deadline` widens `time_secs` / `held_secs` / `stage_secs` to one tick past it, so
+the settled-token tick skip never skips a deadline (the `Tick` row above). The sweep's
+frozen tail resolves deadlines the same way ([sweep.md](sweep.md)).
+
+**Exit labels.** A sell line's label is authored (`"sell": "spike"`) or, absent, its first
+live condition as written (`m_flow.buy_sol @!volume [10s] >= 2`; a signal's name on a
+signal line). It travels as `ExitReason::Line(label)`, persists verbatim in
+`strategy_positions.exit_reason`, and buckets as `n_exit_metrics` in every rollup. The
+TP/SL shortcuts keep `TakeProfit` / `StopLoss`. A row closed before the v2 migration keeps
+its v1 label (`stall > 3`), shown raw.
+
+**Tags are per fingerprint.** A `@tag` read counts the trades of a list the rule's
+fingerprint defines in its `tags` document (`metrics::tags`): `@volume` the trades that
+carry it, `@!volume` the rest. A trade carries a tag when ANY of its `match` entries holds
+(`program`, `ix_shape`, `ix_template`, `ix_contains`, `ix_lacks`, `wallet`, `creator`,
+`cluster`), on the tag's `side` only; `sticky` keeps the tag on a wallet that carried it
+once; `exclude_creation_slot` counts a creation-slot buyer that matches nothing on
+neither side. The fold keeps one `TagState` per (coin, fingerprint, tag) a loaded rule
+reads - lifetime totals for both halves, one window per span, the sticky set, the cluster
+groups and each half's bag - and one template view per (fingerprint, tag) an `m_slot` /
+`m_wave` / `m_crowd.unique_ix_templates` read uses, which sees only the tag's
+`ix_template` and `program` matchers. A tag the fingerprint does not define opens no state
+and reads `NaN` (`rule_tag_warning` says so at save). The built-in wallet classes
+`bundled` and `public_app` need no config and serve `m_holdings.bag_share_pct` only. A
+tags document is validated on save (`validate_tags`) and compiled once per reload
+(`compile_tags`); a trade already folded keeps the half it was folded under when a tag is
+edited. `TradeLite` carries the trade's identity hashes from the one `trade_keys` hasher
+set (ix shape, marker bits, wallet), so every adapter classifies alike.
+
+**Every driver that folds a track registers the tags off the one fingerprint row.**
+`EngineState` (live + simulate), `replay_readout` / `replay_series` (`ReplayTags`), the
+lab's `/metric-series` and the sweep's series (`register_tags`) all compile the same
+`tags` document and seed the creator before the first fold (the sweep, whose lake has no
+creator column, a first-slot stand-in: [sim-parity D8](../plans/sweep/sim-parity.md)); a
+driver that skips either returns `NaN`, or books the dev's trades on the other side, for
+a condition the live engine evaluates.
 
 ## Rule readout (what a position is waiting on / why it closed)
 
@@ -73,52 +146,51 @@ One question, two sources, and the answer says which it used. An **open** positi
 read out of the decision loop's own `TokenTrack`, so a condition shown satisfied is one
 the fold is acting on. A **closed** one has no engine state left and is reconstructed by
 `replay_readout` — folding `TradeRepo::find_by_mint_until` rows through a fresh track to
-the exit (or entry) fill, then reading there. For a rule that reads `m_holder_book`, each
-buy is first stamped on its own UTC day's stored build-breadth table (`BuildBreadthRepo::load_day`,
-read-only: a day never stored stays unknown and `public_app_share` reads `null`).
+the exit (or entry) fill, then reading there. For a rule that reads the holder book
+(`m_holdings.bag_share_pct`), each buy is first stamped on its own UTC day's stored
+build-breadth table (`BuildBreadthRepo::load_day`, read-only: a day never stored stays
+unknown and a `@public_app` read is `null`).
 
 A replay anchors its metric clock on the **token's own `created_at`**, the same instant
-`TokenCreated` gives the live fold — never on the first retained trade. `time` is measured
-from it, `stall` and the lifetime price/flow state are re-based on it, and the tick grid is
-phased from it, so anchoring on `trades[0]` shifts all three by however much of the token's
-head has aged out of the rolling ingest window. Its two clocks agree with the fold's for the
-same reason its hashes do: `trades.ix_labels` goes through the engine's shape-complete
-`ix_hash_from_labels_value`, so both persisted shapes hash alike and an object-shaped row is
-not silently booked organic.
+`TokenCreated` gives the live fold - never on the first retained trade. `m_state.age_sec`
+is measured from it, `m_price.stall_sec` and the lifetime price/flow state are re-based
+on it, and the tick grid is phased from it, so anchoring on `trades[0]` shifts all three
+by however much of the token's head has aged out of the rolling ingest window. Its hashes
+agree with the fold's for the same reason: `trades.ix_labels` goes through the engine's
+shape-complete `ix_hash_from_labels_value`, so both persisted shapes hash alike and an
+object-shaped row is not silently booked outside every tag.
 
 **Two shapes, and the client picks by what it is asking.** `.../metrics` answers at one
 instant, which is what makes it cheap enough to poll. `.../metric-series`
 (`replay_series`) answers at *every* row of the engine's decision grid in one pass, for
 a chart crosshair that would otherwise re-fold the token's history per hover — the fold
-is O(all trades) and a pointer moves at frame rate. Both resolve their rule and flow
-context through one shared path, because the `params_snapshot` preference below is
-exactly what two copies must not disagree about.
+is O(all trades) and a pointer moves at frame rate. Both resolve their rule and tag
+context through one shared path (`resolve_rule`, `load_tag_ctx`), because the
+`params_snapshot` preference below is exactly what two copies must not disagree about.
 
 The series is affordable where the lab's is not because it folds **only the columns
-this rule's reqs read** (a 6-condition rule folds 6 columns, against the lab's whole
-registry) and evaluates backend-side, so the client declares no windows or horizons:
-the grid's density comes off `CompiledRule::clock_horizons`, with `held_secs` riding on
-the `stall` horizon (measured from the last trade, which is at or after the entry fill,
-so it covers it). The tick grid is load-bearing either way: every decaying metric
-advances only inside a tick, so a trade-only fold never samples a between-trades
-crossing.
+this rule's conditions read** (a 6-condition rule folds 6 columns, against the lab's
+whole registry) and evaluates backend-side, so the client declares no windows or
+horizons: the grid's density comes off `CompiledRule::clock_horizons`, with `held_secs`
+and `stage_secs` riding on the `stall` horizon (measured from the last trade, which is at
+or after the entry fill and any stage move, so it covers both). The tick grid is
+load-bearing either way: every decaying metric advances only inside a tick, so a
+trade-only fold never samples a between-trades crossing.
 
 **The row cap is a coverage duration, not a payload size.** Any rule with a time stop
 holds a horizon open longer than the gaps an actively-traded token leaves, so the grid
 emits `1000/TICK_MS` = 5 rows per second of coverage almost regardless of how often the
-token prints: `MAX_READOUT_SERIES_ROWS` = 8k buys **~22 minutes**, measured from token
-creation, and a fold that runs out reports `truncated` + `covered_until` rather than
-reading as a token that stopped trading. Position windows past that are uncovered, which
-the strip surfaces as `· past coverage`. The conversion is pinned by
-`the_row_cap_buys_a_fixed_span_of_chart_not_a_fixed_payload`, since nothing at the call
-site reveals that a row count is really a clock.
+token prints: `MAX_READOUT_SERIES_ROWS` = 8k buys **~22 minutes**, and a fold that runs
+out reports `truncated` + `covered_until` rather than reading as a token that stopped
+trading. Position windows past that are uncovered, which the strip surfaces as
+`· past coverage`. Nothing at the call site reveals that the row count is really a clock.
 
 **Armed rows get the same pair.** `GET /api/strategies/armed/metrics` and
 `.../armed/metric-series?mint=&rule=[&armed_at=]` answer for a (token, rule) the engine is
 armed on but has **not entered** — the Waiting modal's "how close is it". One
 `SeriesAnchor` is the only difference between the two series routes: pre-entry there is no
-entry fill and no ladder stage, so the position-scoped conditions read `null` throughout,
-which is exactly what the `can_enter` gate itself sees. The rule is taken **live**, with no
+entry fill and no stage, so the position-scoped conditions read `null` throughout,
+which is exactly what the entry gate itself sees. The rule is taken **live**, with no
 `params_snapshot` step — nothing has been decided yet, so the current thresholds are the
 ones this row is being judged by, and reaching back for a frozen copy would draw a rule
 nobody is applying.
@@ -128,19 +200,16 @@ nobody is applying.
 from creation, and the series routes set it to `anchor − max(widest window, 60 s)` — the
 entry fill for a position, the arm instant for a Waiting row, which is what keeps a
 long-tracked token's coverage on *why it is still waiting* rather than on its first
-minutes. Raising
-the cap would only *move* the boundary — cost is linear in rows and this ships to 2vCPU —
-whereas placing it covers the position that was actually opened for inspection. Without it
-a position entered later than the cap's span falls entirely outside coverage, which is the
-one case a post-mortem cares about.
+minutes. Raising the cap would only *move* the boundary - cost is linear in rows and this
+ships to 2vCPU - whereas placing it covers the position that was actually opened for
+inspection. Without it a position entered later than the cap's span falls entirely
+outside coverage, which is the one case a post-mortem cares about.
 
 **Recording later is not folding later, and the difference is a wrong answer rather than a
-missing one.** `m_price_lifetime` and `time` are defined from token creation, so a fold
-that *starts* at the window reports different numbers; one that starts at creation and
-discards early rows reports the same numbers over a narrower span. Pinned by
-`record_from_moves_coverage_but_never_a_value`, which compares the two folds row for row on
-their overlap. Withheld rows cost no budget
-(`record_from_spends_the_row_budget_on_the_requested_window`).
+missing one.** `m_price` over the life and `m_state.age_sec` are defined from token
+creation, so a fold that *starts* at the window reports different numbers; one that
+starts at creation and discards early rows reports the same numbers over a narrower span.
+Withheld rows cost no row budget.
 
 Coverage is therefore a span with two ends, and the response carries both plus the reason:
 `covered_from` / `covered_until`, and `record_from` (`null` when the whole history is
@@ -149,44 +218,32 @@ oppositely — with a window, rows to its left exist and were withheld (`· befo
 without one, the token had not traded yet and there is nothing to miss.
 
 The contract between the two routes is one test: **a series row at an instant equals
-`replay_readout` at that instant**, condition for condition. It holds because they are
-the same parts — the same track, window registration, position ratchet, and the one
-`judge_req` body. Per-row `ok` must never come from a second evaluation; the three
-things a copy gets wrong are the first three below.
+`replay_readout` at that instant**, condition for condition
+(`a_series_row_equals_the_replay_at_its_instant`). It holds because they are the same
+parts - the same track, tag and buffer registration, position ratchet, and the one
+`judge` body. Per-row `ok` must never come from a second evaluation.
 
-Four things a second reader of `MetricReq`s gets wrong, each guarded in
-`engine/src/readout.rs` tests:
+What a second reader of a rule gets wrong (the engine side is guarded in
+`engine/src/readout_tests.rs`):
 
-- **The two sides use different combinators.** Entry mirrors `reqs_satisfied` (`eval`,
-  so an empty expr is vacuously true); global exit walks `exit_clauses` (OR of AND);
-  scale-out still mirrors `reqs_exit_fired` (flat OR of stage reqs). Object-form `exit`
-  compiles to one singleton clause per req, so that walk equals today's OR.
-- **`arm` clauses latch; they never close.** `RuleParams.arm` is the exit side's grammar
-  (object = OR of metrics, array = OR of AND-clauses). On a held position whose latch is
-  unset, `reduce::evaluate_token` reads the arm clauses AFTER the exit decision of the same
-  event and, when one holds and no exit fired, sets `EnteredCtx::armed` and
-  `armed_at`. So a clause reading `armed` cannot fire on the event that latched it, and
-  `m_position.since_armed` bounds a window opened by the latch (`armed = 1 AND
-  since_armed <= 30`). A position of a rule with `arm` clauses starts unarmed
-  (`EnteredCtx::with_clause_latch`); `armed_at` is RAM-only, like the latch itself. The
-  sweep does not carry `arm` clauses and rejects `since_armed` as an axis.
-- **`entry_lock: "token"` decides on one print.** The first PRINT (`evaluate_token`'s
-  `on_print`; a tick never is one) that makes `entry_event` true is the only candidate:
-  filters that pass enter, any that fail end the episode (`EntryVerdict::Exhaust`). The
-  sweep mirrors it on its per-print rows.
-- **`arm_above_pct` gating is HELD-side and singleton-clause only.** A one-req trailing
-  clause skips under its gate (`trailing_armed` = pnl *now*). A multi-req DNF clause
-  ANDs `m_position.armed` (the latch) and does not skip. The pre-entry walk
-  (`can_enter` → clause walk) still sees position metrics as `NaN`, so DNF trail/death
-  clauses do not block entry. So `disarmed` is false whenever there is no position;
-  claiming otherwise describes behaviour the engine does not have. On a series it is
-  per **row**, never one flag: a trail arms and disarms as PnL crosses the gate for
-  object-form skip; the latch does not un-flip. Position-scoped columns are likewise
-  blank before the entry fill — there is no position there, and the live fold reads
-  `NaN` on an un-entered arm.
-- **Only the active scale-out stage is evaluated.** Every stage is returned so the
-  ladder is visible, each tagged `active`; an inactive stage's `ok` is what the fold
-  *would* read, never a decision it is making.
+- **A condition is identified by its place.** `listed_reqs` walks entry (event, final
+  filters, filters), signals, `always` lines, then each stage's `on` and `at_end` lines -
+  the one order the point read and the series share, so column `i` and point read `i` are
+  the same condition, and the wire names each by `part` (`event` \| `filter` \|
+  `final_filter` \| `signal` \| `always` \| `stage`, with the signal group, stage and line
+  index) (`every_condition_is_placed_where_it_is_written`).
+- **Entry conditions read with no position**, even on a held position, exactly as the
+  pre-entry decision does (`entry_reads_with_no_position`). Position-scoped columns are
+  likewise blank before the entry fill: there is no position there, and the live fold
+  reads `NaN` on an un-entered arm.
+- **Every line is reported; only some decide.** `lines` carries each `always` and stage
+  line with `holds`, its sell label, `sell_pct` and the stage it `goes_to`, and `stage`
+  names where the position is. A line of another stage - or an `at_end` line before the
+  deadline - shows what the fold *would* read there, never a decision it is making.
+- **A replay's stage clock is an upper bound after a move.** `strategy_positions` keeps the
+  stage index (`scale_stage`) but not when the stage began, so a replay reads
+  `m_position.stage_sec` from the entry fill (`replay_stage`): exact in the first stage,
+  an upper bound after a move.
 - **A replay compiles `strategy_runs.params_snapshot`, not the rule's current params.**
   A rule edited after the position closed would otherwise draw thresholds that never
   applied to it — the most misleading thing a reconstruction can do, since every number
@@ -215,7 +272,7 @@ side-effects only.
 | `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; **terminal writes (`End`/`EntryFailed`/`ExitStuck`/`ExitUnconfirmed`) chain-spawn too — NO sink transition awaits PG on the loop** (see below); terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits. Inside each write task, a `PrintKey` (a paper fill's print, and the trigger print in both modes) resolves to its signature via `TradeRepo::print_signature` (3 reads, 250 ms apart) and lands where a real fill's does (`entry_tx_signatures`, `exit_tx_signatures`, `target_tx`, the buy leg of `position_fills`); a paper SELL leg keeps no ledger signature, because `uq_position_fills_sell_tx` guards only OUR sells and two paper positions can exit on one print (`FillSigKind::Print`); a miss writes the row without one |
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck-with-bag** redrive (PG-gated, backoff, bounded-then-park); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
 | `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End; boot adopts re-install manual TP/SL rules |
-| `rule_readout.rs` (in `live/src/api/handlers/strategies/`) | The readout's HTTP surface. `GET .../positions/{id}/metrics[?at=exit\|entry]` answers from the live fold when `PositionRegistry` still holds the row, else replays the durable row + stored trades (fold under `web::block`); `GET /api/strategies/armed/metrics?mint=&rule=` and `.../armed/metric-series` do the armed pair. Both series routes share ONE body (`series_response`) differing only in a `SeriesAnchor`, so an armed row and a position row can never disagree about a grid row. Reaches the loop through `EngineCommand::ReadRule` (`oneshot` ack, 2 s — a UI poll must not queue behind trade decisions), **not** a per-tick publish, which would allocate on the hot path for a usually-closed modal. Each `404` keeps its own reason (manual position / deleted rule / trades aged out / never filled); a wedged loop is `503`. Wire carries `metric_spec(id).name`, never `MetricId`, and non-finite readings serialize `null` |
+| `rule_readout.rs` (in `live/src/api/handlers/strategies/`) | The readout's HTTP surface. `GET .../positions/{id}/metrics[?at=exit\|entry]` answers from the live fold when `PositionRegistry` still holds the row, else replays the durable row + stored trades (fold under `web::block`); `GET /api/strategies/armed/metrics?mint=&rule=` and `.../armed/metric-series` do the armed pair. Both series routes share ONE body (`series_response`) differing only in a `SeriesAnchor`, so an armed row and a position row can never disagree about a grid row. Reaches the loop through `EngineCommand::ReadRule` (`oneshot` ack, 2 s - a UI poll must not queue behind trade decisions), **not** a per-tick publish, which would allocate on the hot path for a usually-closed modal. Each `404` keeps its own reason (manual position / deleted rule / trades aged out / never filled); a wedged loop is `503`. The wire carries names only - the registry path, the tag and span as authored, the full `label` (`m_flow.buy_sol @!volume [10s]`) and each condition's and line's `part` - never an engine ordinal, and non-finite readings serialize `null` |
 | `event_log.rs` | JSONL recorder (day + size segmented rotation, age/byte retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 
@@ -238,8 +295,8 @@ silently inflating the *stored* token count, which then corrupts anything derive
 that count alone — see
 [`@history/2026-08-04-token-scale-1e6-pnl.md`](../history/2026-08-04-token-scale-1e6-pnl.md).
 Corollary for tests: a corpus priced at
-`1.0` buys a **one-unit** bag, so any `sell_bps` ladder quantizes to 0/1 units — the
-sweep parity guard prices its scale-out corpora at `RAW_PX = 1e-6`.
+`1.0` buys a **one-unit** bag, so any partial sell quantizes to 0/1 units - the
+sweep parity guard prices its partial-sell corpora at `RAW_PX = 1e-6`.
 
 **No PG write blocks the decision loop (locked).** Every sink transition, terminal
 ones included, chain-spawns its write and keeps the handle in `pending_pg` so the
@@ -268,7 +325,12 @@ per-position one-off rule (`EngineState::manual_rules`) — without it, tracked-
 
 **Boot Holding adopt:** after event-log re-arm, PG `Holding` rows are loaded into
 the in-memory engine (`Entered`) + registry (PG-only, no RPC) so TP/SL/Dead and
-Ops `ManualClose` work after a process restart.
+Ops `ManualClose` work after a process restart. The stage and `sold_bps` resume from the
+row (`scale_stage`, the index the last partial fill recorded). A stage move with no sell
+(`go` alone, a deadline's move to `then`) is not stored, so such a position resumes in the
+last stage a partial fill recorded, and the stage's start time is not stored, so
+`m_position.stage_sec` restarts from the entry (open:
+[metric-system-v2-plan](../roadmap/metric-system-v2-plan.md)).
 
 **Warm start: prime, never re-decide.** An adopted arm carries the entry price but
 an *empty* metric track, while the async cache seed backfills up to
@@ -353,7 +415,7 @@ matrix — see [position-lifecycle.md](position-lifecycle.md) §3):
 
 1. Registry hit (Holding) → `manual_close(portion)` (engine `ManualClose`, SSE lifecycle).
    Optional `sell_bps` in `1..=9900` ⇒ partial (`Portion::BpsOfInitial`); omit / `10000` ⇒ Sell ALL.
-   Partials reuse the scale-out fill path (Holding preserved, stage/sold_bps advance).
+   Partials reuse the partial-sell fill path (Holding preserved, `sold_bps` advances).
 2. Registry miss / `ExitStuck`/`ExitUnconfirmed` retry → if PG `trades` net ≤ 0, book
    End (no sell RPC); else `orphan_exit::spawn_orphan_sell` (same `run_exit` feed
    confirm). Retry on a parked bag un-parks it (fresh redrive budget). Partial
@@ -367,31 +429,26 @@ book-close (`orphan_exit::book_externally_cleared_pg`). The 60 s reaper also run
 `find_externally_cleared_holding_mints` so a missed reconcile cannot leave a
 ghost Holding.
 
-## Aggregate flow (`m_flow_lifetime` / `m_flow_window`)
+## Flow (`m_flow`)
 
-Classifier-free SOL totals: `buy` / `sell` / `net_flow` / `gross_flow`. Lifetime is
-static (two running counters on `TokenTrack`); window is dynamic (`window_size_sec`,
-ring buffer). Use lifetime for maturity / critical-mass gates; window for
-hot-right-now. The window adds three that lifetime has no analogue for: `buy_share`
-(direction, PERCENT 0-100), `m_crowd_window.unique_wallets` (how many people) and `trade_count` (how
-many trades — the same tape read without needing a wallet column). Formulas + monotonic
-flags:
-[`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
+Money moving: `buy_sol` / `sell_sol` / `net_sol` / `gross_sol`, the print counts
+`buy_count` / `sell_count` / `trade_count` (every leg), and `buy_share_pct` (window only).
+Untagged over the life it is two running counters on `TokenTrack`; over a span, a ring
+buffer. Use the life for maturity / critical-mass gates, a window for hot-right-now;
+`m_crowd.unique_wallets` is the how-many-people companion (it needs the wallet column).
+With a tag the same quantities count one half of the split, and add `tag_share_pct` and
+the transaction counts `buy_tx_count` / `sell_tx_count` (leg 0 only; `TradeLite::leg_index`
+is what makes them possible, every adapter fills it from its own column).
 
-## Burst (`m_flow_window`)
-
-`trade_share` — the share of a reference window's trades that landed in a shorter window
-nested inside it, PERCENT 0-100. The one group whose basis is a window **pair**
-(`window_size_sec` + `slice_size_sec`, nesting enforced at save), which is why
-`MetricReq.window` carries a [`Windows`] carrier rather than a bare `Option<f64>`: a
-requirement's identity includes both axes, so two instances differing only in the slice
-cannot collide in the blocker / monotonic-kill maps. It owns **no state** — both readings
-are `m_flow_window`'s own `trade_count` on buffers `CompiledRule` already registers for
-each axis. **Entry side only**: the persisted exit-reason label carries one window
-qualifier. Semantics + the young-token reading:
-[`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
-
-[`Windows`]: ../../engine/src/metrics/mod.rs
+**The slice reads** (`slice_trade_share_pct`, `slice_sol_share_pct`, written
+`[30s, slice 2s]`) are the share of the span's trades / SOL that landed in a shorter
+window nested at its end, PERCENT 0-100. The slice counts in the span's unit, takes the
+span's lag, and may not be wider than it (`Span::parse`). They own **no state**: both
+readings are the coin's own flow buffers, which `Buffers` registers for each axis. The
+slice is part of the read's identity (`MetricRef`), so two reads differing only in the
+slice never collide in the blocker / monotonic-kill maps or the sweep's columns, and the
+exit label carries both (`[30s, slice 2s]`). Formulas, monotonic flags and the
+young-token reading: [`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
 
 ## Launch size is an axis
 
@@ -435,47 +492,17 @@ mirror counts the same window off `tokens`.
 Design + rationale:
 [fingerprint-ranges.md](../plans/strategies/fingerprint-ranges.md).
 
-## Ix-structure flow split (`m_flow_ix` / `m_flow_ix_window`)
+## Tag authoring (lab)
 
-Split every trade's SOL by whether the classifier **tags** it (an `ix_patterns` /
-marker match, contagion, or the creator) or does not, exposed as ordinary registry
-metrics. Tagged usually reads as creator tooling and untagged as organic retail; the
-metrics are named for the tag, which is the part the engine knows. Patterns live on
-`fingerprints.metric_config.m_flow_ix.ix_patterns` (not on the rule).
-`TradeLite` carries `ix_hash` / `wallet_hash`; adapters call the engine SSOT hashers
-only. Flow state keys by `FingerprintId` on `TokenTrack`. Unconfigured fingerprint
-⇒ NaN. Full formulas / NaN rules / discovery scoring:
-[`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
-
-## Dump builds (`m_dump_ix` / `m_dump_ix_window`)
-
-A second fingerprint-scoped ix-structure group on its own key, its own list and no
-wallet rules: `dump_sell` (SOL, every leg) and `dump_sell_count` (transactions, leg 0
-only) over sells whose ordered `ix_labels` match `m_dump_ix.ix_patterns`. State is
-`TokenTrack::dump`, keyed by `FingerprintId` beside `flow` rather than inside it —
-nothing is stored for a trade that does not match, so a rule reading no dump metric
-pays one hash-set lookup per sell. `TradeLite::leg_index` is what makes the
-transaction count possible; every adapter fills it from its source's own column.
-`TokenTrack::on_tick` evicts this group's windows alongside `flow`'s, so a quiet
-token's dump window decays on the clock rather than only on its next matching sell.
-
-**Every driver that folds a track registers BOTH lists off the one row.** `m_flow_ix`
-and `m_dump_ix` are separate state on the same fingerprint, so a driver that reads only
-the tagged list returns NaN for a condition the live engine evaluates — a post-mortem
-that says "never held" about the term that fired. The drivers are `EngineState`
-(live + simulate), `replay_readout` / `replay_series` (`ReplayFlow` carries both lists,
-each independently optional), and the lab's `/metric-series`. A group whose own list is
-unconfigured is **omitted**, not drawn as a column of NaN. Offline series columns are
-`SeriesColumn::Fingerprint` for either group — the metric id routes the read, so the
-variant is named for the scope and not for one of its groups.
-
-Full contract: [`plans/strategies/_!___metrics.md`](../plans/strategies/_!___metrics.md).
-
-Lab authoring: `POST /api/strategies/flow-discovery` scores ix-structures per
-sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`, and
-its draft cart carries the same two wallet-rule checkboxes as the fingerprint form
-(seeded from the target, since Apply PUTs the whole row). Bind posts `ix_patterns`
-alone, so a newly bound fingerprint takes the backend defaults.
+A tag is a list, not a meaning: `volume` (the dev's volume-making trades), `dump` (the
+dev's dump sells), `targets` (wallets to copy) and `working` (tool templates) are the same
+thing with different matchers ([the rule model](#the-rule-model-enter-signals-always-stages)).
+Tags live on the fingerprint (`fingerprints.tags`), never on the rule, and a series
+column of a tagged read is `SeriesColumn::tagged(read, fingerprint)`.
+`POST /api/strategies/flow-discovery` scores ix-structures per sweep `GroupKey`; its bind
+writes the chosen ix shapes into one named tag's `match.ix_shape` on the find-or-created
+fingerprint, keeping every other tag and that tag's other options (a new tag takes the
+posted `side`), validated before the write.
 `POST /api/strategies/rule-search` fills registry roles for one fingerprint and
 datetime range and boards a champion `RuleParams` (Promote → inactive paper).
 Governing workflow:
@@ -527,19 +554,21 @@ trade**, so simulate and live resolve at the same point.
   single-flight; results served by the strategy-agnostic `positions::
   sim_result_{page,summary}`. Both pricing knobs persist on the saved-rule's
   `SimMeta` (`state/sim_results.rs`) and surface as the Simulate table's Fill/Cost
-  columns, so a stored result always shows what it was priced under. Loads
-  `with_flow` when rule params reference `m_flow_*`; dry-run uses the rule's
-  fingerprint `metric_config`.
+  columns, so a stored result always shows what it was priced under, and
+  `SimMeta.rule_format` (`RULE_FORMAT_VERSION`) stamps the rule format: a cached result
+  of an older format is not loaded, so its rule re-simulates. Loads `with_flow` (the
+  wallet and `ix_labels` columns) when a read needs wallet identity or ix labels; a
+  dry-run classifies with the rule's fingerprint `tags`.
 - **`strategies/flow_discovery.rs`** + **`api/handlers/strategies/flow_discovery.rs`** —
-  lab-only job: score trade ix-structures per fingerprint group → toggle
-  `ix_patterns` (mutual `409` with sweep / metric-discovery / rule-search).
+  lab-only job: score trade ix-structures per fingerprint group -> bind them into a
+  fingerprint tag (mutual `409` with sweep / metric-discovery / rule-search).
 - **`sweep/generic/`** — the precompute-then-scan grouped sweep. `GenericSweepStrategy`
   implements the existing `sweep::strategy::Strategy` trait (so partition / two-phase
   pool / `GroupSink` persistence / refine / `ComboAgg` and the whole
   `start_grouped_sweep` handler are reused); only the per-combo simulation is
-  replaced with a scan over precomputed `MetricSeries`, reusing the same `evaluator`,
-  the same `Dead > Unsat > Enter` / `Dead > SL > TP > Metrics` decision, and the same
-  `kernel` cost. `sweep/generic/guard.rs` asserts the scan is identical to a
+  replaced with a scan over precomputed `MetricSeries` that runs the engine's own
+  `CompiledRule::try_enter` and `held_line` over each row (`CoinReads` for a series row),
+  and the same `kernel` cost. `sweep/generic/guard.rs` asserts the scan is identical to a
   single-token `run_replay` (the real fold). Registry id `"generic"`, tables
   `grouped_sweep_*`.
 - **Deadness:** sim/sweep book `Dead` (not `Open`) for a silent-death token at its
@@ -621,7 +650,8 @@ These surfaces are strategy-agnostic and unchanged by the retirement:
 3. **Sell-confirm via the `trades` feed**, no new RPC; per-signature attribution (a
    position confirms against its OWN sell sigs, not the shared net balance).
 4. **Quiet/time exits fire on the `TICK_MS` clock tick (200 ms)** — a token that goes
-   silent still advances to `now` so stall/time/decayed-flow conditions and the dead
+   silent still advances to `now` so stall/age/held/stage clocks, stage deadlines,
+   decayed-flow conditions and the dead
    verdict fire. Price TP/SL still fire on Trade events (no tick wait).
 5. **A tick may be skipped, a decision may not.** `Tick` skips `Settled` tokens
    (above). Anything that mutates a tracked token *outside* the evaluate sweep must
@@ -636,10 +666,10 @@ These surfaces are strategy-agnostic and unchanged by the retirement:
    no mint sharding, no interleaved position transitions.
 7. **Live-rule edit guard** — `fingerprint_id` is frozen post-create (PUT
    ignores it); `trade_mode` is editable via PUT but the editor locks it
-   behind an unlock control. Entry/exit params lock in the UI while the rule
+   behind an unlock control. The rule's params lock in the UI while the rule
    is active. Entry dispatch + sells both route off the position's
    snapshotted `trade_mode`, never a mid-retry rule flip. That lock is also what
-   makes the condition **park toggle** (`params.disabled`) an *authoring* feature
+   makes the condition **park toggle** (`"off": true`) an *authoring* feature
    and not a live A/B knob: a live rule's conditions are frozen, because its
    run's `params_snapshot` has to keep matching the positions it produced.
    Toggling a condition off is a rule edit like any other — park, simulate,
@@ -717,13 +747,13 @@ Two things make this the only trace of the edit that matters most:
 - **`params_snapshot` cannot say it.** It is written once at launch and describes the
   config the run *started* with — which stops being true the moment the rule is
   edited, without anything on the row changing.
-- **A fingerprint edit touches no rule row at all.** `m_flow_ix.ix_patterns` and the
+- **A fingerprint edit touches no rule row at all.** Its `tags` and the
   identity axes live on `fingerprints`, and one fingerprint is shared by every rule
   pointing at it — so an ix-structure edit re-defines several live rules at once and
   never appears in any `params_snapshot`. `RunConfigSig` hashes the fingerprint, so
   each of those runs is stamped.
 
-What is deliberately **not** a config change: `rule_name` and `tags` (labels the
+What is deliberately **not** a config change: `rule_name` and the rule's `tags` (Rules-board labels the
 kernel never reads — a rename that cried wolf would teach the operator to ignore the
 mark), and `trade_mode`, which already mints its own run one row above.
 

@@ -117,6 +117,7 @@ prefix is a hint, the instruction set a program runs is evidence.
 ## Related
 
 - Labeling in the ingest pipeline: [arch/ingest.md](../../arch/ingest.md)
-- The instruction markers this vocabulary feeds: `hunter/engine/src/metrics/flow_ix.rs`
+- The instruction markers this vocabulary feeds (`MARKERS`, read by a tag's `ix_contains` /
+  `ix_lacks` matchers): `hunter/engine/src/metrics/trade_keys.rs`
 - The failure that made the `Unknown`-means-no-data rule load-bearing:
   [docs/history/2026-08-25-ix-label-blackout.md](../../../../docs/history/2026-08-25-ix-label-blackout.md)

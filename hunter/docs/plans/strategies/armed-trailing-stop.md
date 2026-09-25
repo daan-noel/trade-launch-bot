@@ -1,32 +1,21 @@
-# `m_position.arm_above_pct` — the armed trailing stop
+# The gated trailing stop
 
-Deep-dive reference for the `m_position` strict param: what it
-does, why the exit grammar needed it, and the measurement that justified it.
-Overview of the group lives in [../../arch/strategies.md](../../arch/strategies.md);
-the honesty laws that grade any exit shape sit in
-[_!___strategy.md](_!___strategy.md) 7.2.
+Deep-dive reference for a trail that only counts once the trade is in profit: what it
+does, why the exit grammar needs it, and the measurement that justifies it. The engine
+overview is [../../arch/strategies.md](../../arch/strategies.md); the honesty laws that
+grade any exit shape sit in [_!___strategy.md](_!___strategy.md) 7.2.
 
 ## The problem
 
-Two engine facts combine into a trap:
+**`m_position.retrace_pct`'s peak seeds at the entry fill.** `EnteredCtx::at_fill` sets
+`peak_price = trough_price = entry_price`, so before the price ever rises, `retrace_pct`
+measures the drop *from entry*. An authored `retrace_pct >= 3` is therefore a 3 % trailing
+stop **after** a run-up and a hard -3 % stop **before** one.
 
-1. **`retrace`'s peak seeds at the entry fill.** `PositionCtx::at_fill` sets
-   `peak_price = trough_price = entry_price`, so before the price ever rises,
-   `retrace` measures the drop *from entry*. An authored `retrace >= 3` is therefore
-   a 3% trailing stop **after** a run-up and a hard −3% stop **before** one.
-2. **Exit conditions OR across metrics** (`CompiledRule::exit_fired` returns the
-   first req that holds; entry is the AND side). Within one metric the expr is DNF,
-   so `pnl` can AND with itself — but `retrace >= 3 AND pnl >= 2` spans two metrics
-   and cannot be authored at all. Exit may also be authored as a DNF of *clauses*
-   (AND inside a clause, OR across clauses) plus a latch metric
-   `m_position.armed`. Object-form `exit`
-   (no array) stays this flat OR, so stored rules do not change.
-
-So "trail out, but only once the trade has cleared the fee" was inexpressible, and
-the closest authorable thing silently doubled as a tight stop from entry.
-
-For a dip-buying scalper that is not a rounding error, it is the whole strategy.
-You deliberately buy into a falling price; the continuation stops you out before the
+So "trail out, but only once the trade has cleared the fee" needs a gate on
+`m_position.pnl_pct`, and the closest ungated thing silently doubles as a tight stop from
+entry. For a dip-buying scalper that is not a rounding error, it is the whole strategy:
+you deliberately buy into a falling price, and the continuation stops you out before the
 reversion you bought for.
 
 ## The measurement
@@ -45,7 +34,7 @@ his running token balance, priced against every market tick inside each episode)
 Two thirds of his winners dip more than 3% off their running peak *before* winning.
 
 **Applying an unarmed trail to his own episodes** (exit at the first tick where
-`retrace >= T`, else his real exit; `mean_net` = gross − 2 pp round-trip fee):
+`retrace_pct >= T`, else his real exit; `mean_net` = gross - 2 pp round-trip fee):
 
 | exit policy | fired | mean gross | mean net | median gross | win | clears fee |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -78,67 +67,71 @@ Two corollaries worth keeping:
 
 ## The design
 
-A **strict param on `m_position`**, not a new metric and not a grammar change:
+A gate is ordinary rule grammar: a line's `if` is an AND across metrics, and a stage is a
+latch. The two spellings are different exits, so say the one the rule means.
+
+| form | spelling | the trail counts |
+| --- | --- | --- |
+| per-reading gate | one line: `pnl_pct >= 2 and retrace_pct >= 4 -> sell` | only at a reading where the position is still at least +2 % |
+| armed stage (latch) | stage `start`: `pnl_pct >= 2 -> go armed`; stage `armed`: `retrace_pct >= 4 -> sell` | from the first reading at or above +2 % for the rest of the hold |
+
+On a run to +10 % that then falls, the per-reading trail fires at 4 % off the peak only
+while pnl is still at least +2 %; below that it is silent and the stop loss closes the
+position. The armed stage keeps trailing all the way down.
 
 ```json
-"exit": { "m_position": {
-    "retrace":       [{ "operator": ">=", "value": 4 }],
-    "arm_above_pct": 2
-} }
+{
+  "stop_loss": 12,
+  "stages": [
+    { "name": "start",
+      "on": [ { "if": [ { "metric": "m_position.pnl_pct", "is": [{ "operator": ">=", "value": 2 }] } ],
+                "go": "armed" } ] },
+    { "name": "armed",
+      "on": [ { "if": [ { "metric": "m_position.retrace_pct", "is": [{ "operator": ">=", "value": 4 }] } ],
+                "sell": "trail" } ] }
+  ]
+}
 ```
 
 | Decision | Why |
 | --- | --- |
-| strict param, not a metric | it parameterises an existing condition rather than being a quantity you put operators on; `m_position` already had an empty `strict_params` slot and the registry walk picks it up with no new machinery |
-| absent ⇒ off | every stored rule round-trips byte-identically; no migration |
-| `0` is a legal value | "arm at break-even" is a real setting. This forced `StrictParamSpec::allows_zero` (validators used a blanket `> 0`). It is **not** zero-as-unbound: `None` = off, `Some(0.0)` = arm at break-even, and the two stay distinguishable |
-| gates only `retrace` / `bounce` | via the ONE reader `position::is_trailing`. `pnl` is where TP/SL desugar to — gating a stop-loss on already being in profit would disable it. Authoring `arm_above_pct` on an instance with no trailing metric is **rejected at save**, not silently ignored |
-| disarmed ⇒ req skipped entirely | `position::trailing_armed` returns false and `exit_fired` `continue`s, so the metric cannot fire by any path. A non-finite pnl stays disarmed (fail closed, matching "NaN satisfies no condition") |
+| the gate reads `pnl_pct`, and never gates the stop | `stop_loss` / `take_profit` compile to the first `always` lines, checked in every stage before its own lines, so the stop works armed or not. Gating a stop on already being in profit would disable it |
+| `0` is a legal gate | "arm at break-even" is a real setting |
+| a non-finite pnl never arms or counts | `NaN` satisfies no condition, so the trail fails closed |
+| the move takes effect from the next print or tick | one step per evaluation: the reading that crosses the gate moves the stage, the `armed` lines are first read on the next one |
+| `m_position.stage_sec` is time since arming | a clock on the armed phase needs no second latch |
 
-### Call sites (all of them)
+**Converted v1 rules.** v1's `arm_above_pct` on a lone trailing clause checked the current
+pnl at each reading, so it converts to the per-reading line (locked by
+`scan_matches_replay_armed_trailing_exit` at gates 0 / 5 / 40, the last high enough that
+the trail never counts and the stop loss closes the position). A v1 `m_position.armed = 1`
+clause under a pnl latch converts to the armed stage; v1 latched before the exits of the
+crossing event, so the converted `start` stage also carries `pnl_pct >= X and <clause> ->
+sell` for each such clause, which can hold only on the crossing reading
+([`v1.rs`](../../../engine/src/v1.rs)).
 
-| Site | What it does |
-| --- | --- |
-| `engine/src/metrics/mod.rs` | `StrictParamSpec.allows_zero`; the `m_position` strict param; `registry_json` exposes both |
-| `engine/src/metrics/position.rs` | `is_trailing` + `trailing_armed` — the ONE readers |
-| `engine/src/arm.rs` | `MetricReq.arm_above_pct`, attached in `build_reqs` to trailing metrics only; the skip in `exit_fired`; `pnl_req` (TP/SL) hardcodes `None` |
-| `engine/src/rule_params.rs` | `allows_zero` in the strict-value check; the no-trailing-metric rejection |
-| `lab/src/sweep/generic/strategy.rs` | `exit_req_fires` mirrors the skip; `classify_exit_req` sends an armed trailing req to `ExitClass::General` |
-| `frontend/.../registry.ts`, `validate.ts` | `allows_zero` mirrored so the FE does not reject `0` |
-| `frontend/.../ruleConditionRows.ts` | the row model carries the whole non-window `strict` bag |
-| `live/.../orphan_exit.rs` | `adopt_holding_into_engine` seeds the latch from the rule (`rule_for(...).trail_arm_pct`) through `EnteredCtx::at_fill` — see *A restart does not remember the latch* |
+### The sweep walks both forms
 
-### The sweep must not use its fast path
+The sweep's fast exit paths (`sweep/generic/fast_exit.rs`) answer only a flat held side:
+one stage, no deadline, every line one condition selling the whole bag, where a
+prefix-extrema hull finds a `pnl_pct` bound and a running-peak scan finds a trail. A gated
+trail is a conjunction (two conditions on one line) or a stage move, which neither index
+can see, so `FastPlan::of` returns `None` and the rule goes to the row walk
+(`scan::resolve_exit_walk`), the reference every fast path is checked against. Do not
+"optimise" a gated trail onto the hull without an index that can see the gate.
 
-`ExitClass::Trailing` resolves `retrace >= t` through a prefix-extrema hull. Arming
-makes the exit a **conjunction** of retrace and pnl — two different running
-quantities — which the hull does not index. `classify_exit_req` therefore returns
-`ExitClass::General` for any armed trailing req, sending it to the scalar walk.
-Locked by `guard.rs::scan_matches_replay_armed_trailing_exit`, which asserts scan ≡
-replay under every fill model at gates 0 / 5 / 40 (the last high enough that the
-trail never arms and the stop-loss has to close the position).
+### A restart does not remember an armed stage
 
-Per the root rule: the scalar walk is the SSOT, and a correct scalar walk beats a
-clever wrong index. Do not "optimise" this back onto the hull without an index that
-can see the gate.
+A pure stage move writes nothing: `strategy_positions.scale_stage` records the stage a
+partial fill landed in, not a `go`. An adopted `Holding` row therefore resumes in the stage
+PG last recorded (for a trail with no partial sells, `start`: unarmed), with the peak
+re-seeded from entry and `stage_sec` counting from the entry (`orphan_exit.rs`). That is the
+consistent pair: a peak with no history is no evidence the gate was crossed, and re-arming
+on it would trail from a price the position never reached. The per-reading form needs no
+memory, so it survives a restart unchanged.
 
-### A restart does not remember the latch
+### Authoring
 
-`armed` is RAM-only: an adopted `Holding` row records an entry price and a stage, not
-whether `pnl` ever crossed the gate. Adoption therefore re-seeds the position exactly
-as a fresh fill does — `EnteredCtx::at_fill` with the rule's `trail_arm_pct`, so a
-gated trail comes back **unarmed** and an ungated one comes back armed. That pairs
-with the peak, which adoption also re-seeds from entry: a peak with no history is no
-evidence the gate was crossed, and re-arming on it would trail from a price the
-position never reached. The rule must be compiled before the adopt pass for the lookup
-to find the gate — boot and `reseed_from_db` both `reload_rules` first, and a manual
-position's one-off rule is installed inside the adopt fn ahead of the read.
-
-### Frontend status
-
-The rule editor has **no dedicated control** for `arm_above_pct` yet — author it via
-the API/SQL or the JSON view. What it does have is round-trip safety: the row model
-carries every non-window strict param, so opening an armed rule in the editor and
-re-saving it returns the param unchanged instead of silently dropping it. Locked by
-`ruleConditionRows.test.ts`. Any future registry strict param inherits that for free;
-only the editing *control* is per-param work.
+The rule editor spells both forms directly: two conditions on one sell line, or a
+`start` stage whose line moves to an `armed` stage. The sentence under each condition
+comes from the registry.

@@ -18,7 +18,7 @@ anchors below are the permanent record.
 
 > **Now generated.** `lab/src/discovery/candidates.rs` (`screen_plan` →
 > `collect_percentiles` → `build_menus`) derives this ladder and these menus for any
-> cohort straight off the metric `REGISTRY` — measured through the engine's own
+> cohort straight off the metric registry (`METRICS`) - measured through the engine's own
 > `MetricSeries`, not re-derived in SQL. The tables below stay as the recorded
 > ground truth for the 2026-07 lake and as the sanity check a generated menu is
 > compared against; a **new** metric needs no hand-derivation pass. Module
@@ -37,7 +37,7 @@ Subsets used:
 - **ALL** - every curve trade moment.
 - **HOT** - `age >= 120s AND vsol in [40, 115]` (the blueprint universe gate;
   n = 283K).
-- **HOT+DIP** - HOT and `trail 5..30%` (the dip-entry regime; n = 104K).
+- **HOT+DIP** - HOT and `trail_pct` 5..30 (the dip-entry regime; n = 104K).
 
 ## Percentile anchors (the ground truth)
 
@@ -46,65 +46,65 @@ price path from that moment (TP/SL reachability).
 
 | metric | subset | p05 | p10 | p25 | p50 | p75 | p90 | p95 | p99 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `time` (age s) | ALL(recent) | 1.3 | 4.9 | 22 | 98 | 357 | 938 | 1497 | 6.2K |
-| `liquidity` (vsol) | ALL | 30.8 | 32.5 | 39 | 52.6 | 71.5 | 87 | 96 | 107 |
-| `liquidity` | HOT+DIP | 49 | 53 | 63 | 77 | 90 | 99 | 103 | 108 |
-| `trail` % | ALL | 0 | 0 | 2.6 | 17.4 | 41.5 | 65 | 76 | 88 |
-| `trail` % | HOT | 0 | 0.1 | 6.4 | 22.8 | 43.4 | 61 | 69 | 79 |
-| `stall` s | ALL | 0 | 0 | 1.3 | 15.3 | 94 | 421 | 1005 | 4.3K |
-| `stall` s | HOT | 0 | 0.2 | 15 | 91 | 282 | 766 | 1504 | 5.7K |
+| `age_sec` | ALL(recent) | 1.3 | 4.9 | 22 | 98 | 357 | 938 | 1497 | 6.2K |
+| `liquidity_sol` (measured as vsol) | ALL | 30.8 | 32.5 | 39 | 52.6 | 71.5 | 87 | 96 | 107 |
+| `liquidity_sol` | HOT+DIP | 49 | 53 | 63 | 77 | 90 | 99 | 103 | 108 |
+| `trail_pct` | ALL | 0 | 0 | 2.6 | 17.4 | 41.5 | 65 | 76 | 88 |
+| `trail_pct` | HOT | 0 | 0.1 | 6.4 | 22.8 | 43.4 | 61 | 69 | 79 |
+| `stall_sec` | ALL | 0 | 0 | 1.3 | 15.3 | 94 | 421 | 1005 | 4.3K |
+| `stall_sec` | HOT | 0 | 0.2 | 15 | 91 | 282 | 766 | 1504 | 5.7K |
 | `fut_gain` % | HOT | 0 | 0.8 | 9.2 | 29 | 72 | 140 | 199 | 355 |
 | `fut_gain` % | HOT+DIP | 0 | 1.6 | 11 | 30 | 67 | 124 | 178 | 309 |
 | `fut_dd` % | HOT | 1.9 | 9.5 | 39 | 64 | 78 | 86 | 89 | 91 |
-| `net_flow@10` | HOT | -10.3 | -6.5 | -2.3 | 0.1 | 1.8 | 4.9 | 7.3 | 14 |
-| `net_flow@30` | HOT | -14.7 | -10 | -3.9 | 0.3 | 3.6 | 8.4 | 12 | 21 |
-| `net_flow@60` | HOT | -18.4 | -12.5 | -4.8 | 0.9 | 5.7 | 12 | 17 | 28 |
-| `gross_flow@30` | HOT | 1.1 | 2.3 | 6.0 | 15.8 | 32 | 56 | 75 | 112 |
-| `gross_flow@60` | HOT | 2.5 | 4.7 | 12.5 | 31 | 62 | 107 | 141 | 208 |
-| `buy@30` | HOT | 0.3 | 1.0 | 2.9 | 7.3 | 15.7 | 28 | 39 | 58 |
-| `sell@30` | HOT | 0.1 | 0.4 | 2.2 | 7.7 | 17 | 30 | 40 | 58 |
+| `net_sol [10s]` | HOT | -10.3 | -6.5 | -2.3 | 0.1 | 1.8 | 4.9 | 7.3 | 14 |
+| `net_sol [30s]` | HOT | -14.7 | -10 | -3.9 | 0.3 | 3.6 | 8.4 | 12 | 21 |
+| `net_sol [60s]` | HOT | -18.4 | -12.5 | -4.8 | 0.9 | 5.7 | 12 | 17 | 28 |
+| `gross_sol [30s]` | HOT | 1.1 | 2.3 | 6.0 | 15.8 | 32 | 56 | 75 | 112 |
+| `gross_sol [60s]` | HOT | 2.5 | 4.7 | 12.5 | 31 | 62 | 107 | 141 | 208 |
+| `buy_sol [30s]` | HOT | 0.3 | 1.0 | 2.9 | 7.3 | 15.7 | 28 | 39 | 58 |
+| `sell_sol [30s]` | HOT | 0.1 | 0.4 | 2.2 | 7.7 | 17 | 30 | 40 | 58 |
 
 Per-token: life p50 110s / p75 250s / p90 645s; max stall p50 74s / p90 416s.
 
 **Structural facts the values must respect:**
-- `vsol` floor is ~30 (an empty curve holds 30 virtual SOL): a `liquidity >`
-  gate below 35 is a no-op; migration sits ~115 (p99 = 107).
-- Half of all trade moments sit >= 17% below the lifetime peak; `trail` entry
+- `vsol` floor is ~30 (an empty curve holds 30 virtual SOL): a `liquidity_sol >`
+  gate below 35 (on this vsol basis) is a no-op; migration sits ~115 (p99 = 107).
+- Half of all trade moments sit >= 17% below the lifetime peak; `trail_pct` entry
   gates below ~5 barely filter, above ~40 select mostly-dying tokens - pair any
-  deep-dip gate with a `gross_flow` liveness gate.
+  deep-dip gate with a `gross_sol [span]` liveness gate.
 - From a HOT moment the median remaining upside is +29% but the median eventual
   drawdown is -64%: uncut positions die. TP > 150% is past p90 reachability;
   SL wider than ~40 mostly rides tokens to death.
-- `stall` is the time since the last NEW HIGH (peak clock), not since the last
-  trade. HOT median is already 91s - exit `stall >` values below ~60 fire on
+- `stall_sec` is the time since the last NEW HIGH (peak clock), not since the last
+  trade. HOT median is already 91s - exit `stall_sec >` values below ~60 fire on
   ordinary chop.
-- Windowed flows at HOT moments are balanced (net@30 p50 = +0.3): net-flow
+- Windowed flows at HOT moments are balanced (`net_sol [30s]` p50 = +0.3): net-flow
   cutpoints only a few SOL from 0 already select the p25/p75 tails.
 
 ## Candidate value menus (per axis)
 
 Percentile-spaced; pick 3-5 per axis per run. `off` = the null sentinel (sweep
-with-vs-without). Windows ARE sweepable within one run: two axes on the same
-(side, group) with different `window_size_sec` assemble into separate
-`GroupConditions` instances (the engine's multi-window-per-group model), so e.g.
-`m_flow_window.buy` at both 30s and 60s can run in one grid. Distinct groups
-(`m_flow_window` vs `m_price_window`) always carry independent windows.
+with-vs-without). Spans ARE sweepable within one run: the span is part of a read's
+identity (`MetricRef`), so two axes on one metric with different spans are two
+conditions over two buffers, e.g. `m_flow.buy_sol [30s]` and `m_flow.buy_sol [60s]` in
+one grid. Two axes on the same read (metric, tag and span) join into one condition: AND
+when the pair can hold together, else OR.
 
 | side | axis | operator | candidates (full menu) | anchors |
 | --- | --- | --- | --- | --- |
-| entry | `m_state.time` | `>` | off, 30, 60, 120, 300, 600 | p25..p90 of trade age; blueprint gate 120, omego med entry 780 |
-| entry | `m_state.liquidity` | `>` | off, 35, 45, 55, 70 | p10/p25/p50/p75; 35 ~ "any traction" |
-| entry | `m_state.liquidity` | `<` | off, 90, 100, 110 | p90/p95/p99 - pre-migration cap |
-| entry | `m_price_lifetime.trail` | `>` | off, 5, 8, 15, 25, 40 | HOT p25..p75; blueprint dip depth 8-25 |
-| entry | `m_price_lifetime.trail` | `<` | off, 35, 60 | cap vs dead-dump (HOT p75/p90) |
-| entry | `m_price_lifetime.stall` | `<` | off, 5, 15, 60 | momentum variant only (recent new high) |
-| entry | `m_flow_window.gross_flow@30` | `>` | off, 5, 10, 25, 50 | HOT p25/p40/p70/p90; blueprint hot gate 10 |
-| entry | `m_flow_window.net_flow@30` | `>` | off, -5, 0, 3, 8 | HOT p20/p50/p75/p90 |
-| entry | `m_flow_window.buy@30` | `>` | off, 3, 8, 15, 30 | HOT p25/p50/p75/p90 (momentum variant) |
-| exit | `m_price_lifetime.stall` | `>` | off, 60, 120, 300, 600 | HOT p40/p60/p75/p90; deadness verdict is the true floor |
-| exit | `m_price_lifetime.trail` | `>` | off, 20, 35, 50, 65 | must exceed the entry dip gate or it fires at entry |
-| exit | `m_flow_window.net_flow@10` | `<` | off, -2, -6, -12 | HOT p35/p10/p05 - dump-detector exit |
-| exit | `m_flow_window.sell@10` | `>` | off, 7, 18, 34 | HOT p75/p90/p95 of sell@10 (alt dump-detector) |
+| entry | `m_state.age_sec` | `>` | off, 30, 60, 120, 300, 600 | p25..p90 of trade age; blueprint gate 120, omego med entry 780 |
+| entry | `m_state.liquidity_sol` | `>` | off, 35, 45, 55, 70 | p10/p25/p50/p75; 35 ~ "any traction" |
+| entry | `m_state.liquidity_sol` | `<` | off, 90, 100, 110 | p90/p95/p99 - pre-migration cap |
+| entry | `m_price.trail_pct` | `>` | off, 5, 8, 15, 25, 40 | HOT p25..p75; blueprint dip depth 8-25 |
+| entry | `m_price.trail_pct` | `<` | off, 35, 60 | cap vs dead-dump (HOT p75/p90) |
+| entry | `m_price.stall_sec` | `<` | off, 5, 15, 60 | momentum variant only (recent new high) |
+| entry | `m_flow.gross_sol [30s]` | `>` | off, 5, 10, 25, 50 | HOT p25/p40/p70/p90; blueprint hot gate 10 |
+| entry | `m_flow.net_sol [30s]` | `>` | off, -5, 0, 3, 8 | HOT p20/p50/p75/p90 |
+| entry | `m_flow.buy_sol [30s]` | `>` | off, 3, 8, 15, 30 | HOT p25/p50/p75/p90 (momentum variant) |
+| exit | `m_price.stall_sec` | `>` | off, 60, 120, 300, 600 | HOT p40/p60/p75/p90; deadness verdict is the true floor |
+| exit | `m_price.trail_pct` | `>` | off, 20, 35, 50, 65 | must exceed the entry dip gate or it fires at entry |
+| exit | `m_flow.net_sol [10s]` | `<` | off, -2, -6, -12 | HOT p35/p10/p05 - dump-detector exit |
+| exit | `m_flow.sell_sol [10s]` | `>` | off, 7, 18, 34 | HOT p75/p90/p95 of `sell_sol [10s]` (alt dump-detector) |
 | - | `take_profit` | - | 20, 30, 60, 100, 150 | fut_gain HOT ~p40/p50/p75/p85/p90 |
 | - | `stop_loss` | - | 10, 15, 25, 40 | fut_dd HOT ~p10/p15/p25/p40; blueprint catastrophe SL 25 |
 
@@ -123,17 +123,17 @@ never refuses, except a true-floor overflow.
 Entry 648 x exit 288. Set *Max combos/group* >= 200k (default 100k would bail).
 
 ```text
-entry  time            > {off, 120, 300}
-entry  liquidity       > {off, 45, 60}
-entry  liquidity       < {off, 100}
-entry  trail           > {off, 8, 15, 25}
-entry  gross_flow@30   > {off, 10, 25}
-entry  net_flow@30     > {off, -5, 0}
-exit   stall           > {off, 60, 300}
-exit   trail           > {off, 20, 35, 50}
-exit   net_flow@10     < {off, -3}
-       take_profit       {30, 60, 100, 150}
-       stop_loss         {15, 25, 40}
+entry  m_state.age_sec         > {off, 120, 300}
+entry  m_state.liquidity_sol   > {off, 45, 60}
+entry  m_state.liquidity_sol   < {off, 100}
+entry  m_price.trail_pct       > {off, 8, 15, 25}
+entry  m_flow.gross_sol [30s]  > {off, 10, 25}
+entry  m_flow.net_sol [30s]    > {off, -5, 0}
+exit   m_price.stall_sec       > {off, 60, 300}
+exit   m_price.trail_pct       > {off, 20, 35, 50}
+exit   m_flow.net_sol [10s]    < {off, -3}
+       take_profit               {30, 60, 100, 150}
+       stop_loss                 {15, 25, 40}
 ```
 
 ## Fine-resolution grid (1M-budget, 777,600 combos, exhaustive)
@@ -142,42 +142,42 @@ Extra budget spent on resolution where the edge lives (dip trigger + TP/SL), not
 new axes. Set *Max combos/group* = **1,000,000**. Entry 1,080 x exit 36 x TP.SL 20.
 
 ```text
-entry  time            >= {off, 120, 300}          # 3
-entry  liquidity       >= {off, 45, 60, 70}        # 4
-entry  liquidity       <  {off, 100}               # 2
-entry  trail           >= {off, 8, 15, 25, 40}     # 5
-entry  gross_flow@30   >= {off, 10, 25}            # 3
-entry  net_flow@30     >= {off, -5, 0}             # 3
-exit   stall           >= {off, 60, 300}           # 3
-exit   trail           >= {off, 20, 35, 50}        # 4
-exit   net_flow@10     <  {off, -3, -6}            # 3
-       take_profit        {20, 35, 50, 100, 150}   # 5
-       stop_loss          {10, 15, 25, 40}         # 4
+entry  m_state.age_sec         >= {off, 120, 300}          # 3
+entry  m_state.liquidity_sol   >= {off, 45, 60, 70}        # 4
+entry  m_state.liquidity_sol   <  {off, 100}               # 2
+entry  m_price.trail_pct       >= {off, 8, 15, 25, 40}     # 5
+entry  m_flow.gross_sol [30s]  >= {off, 10, 25}            # 3
+entry  m_flow.net_sol [30s]    >= {off, -5, 0}             # 3
+exit   m_price.stall_sec       >= {off, 60, 300}           # 3
+exit   m_price.trail_pct       >= {off, 20, 35, 50}        # 4
+exit   m_flow.net_sol [10s]    <  {off, -3, -6}            # 3
+       take_profit                {20, 35, 50, 100, 150}   # 5
+       stop_loss                  {10, 15, 25, 40}         # 4
 ```
 
 Trim to ~389k by dropping entry-liquidity `70` and exit-net-flow `-6` if RAM/time
 drags. 4G RAM-reserve radio makes it slower; 1G default is fine for a dedicated
 lab run. The sweep won't refuse it — it degrades and toasts each step.
 
-Variant B (momentum, swap-in): entry `trail < {off, 5, 10}` + `stall < {off, 5,
-15}` + `net_flow@30 > {0, 3, 8}` + `buy@30 > {off, 8, 15}`; drop the dip axes.
+Variant B (momentum, swap-in): entry `trail_pct < {off, 5, 10}` + `stall_sec < {off, 5,
+15}` + `net_sol [30s] > {0, 3, 8}` + `buy_sol [30s] > {off, 8, 15}`; drop the dip axes.
 Fast-scalper TP/SL sub-grid: TP {10, 20, 35}, SL {8, 15, 25} (omego profile:
 med win +7.6%, med loss -5.3%, catastrophe -25).
 
 Notes:
 - Include `off` on every metric axis: the marginal value of each gate is read
   directly off the ranked table (combo with vs without).
-- A deep entry `trail >` pick combined with a low exit `trail >` pick yields
+- A deep entry `trail_pct >` pick combined with a low exit `trail_pct >` pick yields
   instant exits (~0 PnL rows) - expected; the ranking discards them.
-- `m_flow_ix` / `m_flow_ix_window` axes need `ix_patterns` configured
-  per run; corpus-wide percentiles are pattern-dependent, so no fixed menu.
-  Principled `tagged_share` cutpoints: `<` {25, 50, 75}. The 07-20/21 ix-structure
+- Tagged axes (`@volume` / `@!volume`) need the run's `tags` document; corpus-wide
+  percentiles are tag-dependent, so no fixed menu. Principled
+  `m_flow.tag_share_pct @volume` cutpoints: `<` {25, 50, 75}. The 07-20/21 ix-structure
   scan flags nonce-pumped spam shapes (e.g. AdvanceNonceAccount sell structures
-  with 92 wallets / 3.5K trades) as natural volume-side patterns; the top
+  with 92 wallets / 3.5K trades) as natural `volume`-tag shapes; the top
   routers by gross are Axiom (~37% across its shapes), Terminal, GMGN, direct
   Pump.Fun.
-- The blueprint's rolling-window dip metric and since-entry-peak retrace have since
-  shipped as `m_price_window`/`m_position`. See
+- The blueprint's rolling-window dip metric and since-entry-peak retrace are
+  `m_price.trail_pct [span]` and `m_position.retrace_pct`. See
   the [refuted-lines ledger](../../history/2026-09-03-refuted-lines-ledger.md).
 
 ## Fingerprint grouping set (the partition, not the sweep)
