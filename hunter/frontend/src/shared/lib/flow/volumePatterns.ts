@@ -1,7 +1,6 @@
 /**
- * Edits to a `m_flow_ix.ix_patterns` set — the ONE toggler behind
- * every surface that stages patterns (the chart trades table, Flow Discovery's
- * structure checkboxes).
+ * Sets of exact ix shapes (a tag's `ix_shape` labels, pins aside) - identity,
+ * toggling and readable text.
  *
  * A pattern is an EXACT ordered `ix_labels` sequence: never sorted, never
  * deduped, duplicates kept, same length. `JSON.stringify` of that array is its
@@ -99,6 +98,6 @@ export function patternsFromKeys(
   return out;
 }
 
-// Blank-label / empty-pattern sanitizing lives in `metricConfigWithIxPatterns`
-// (lib/strategy/registry), the one function that builds the persisted shape — a
-// second copy here would be the same rule written twice, free to drift.
+// Blank-label / empty-pattern sanitizing lives in `tagsToJson` (lib/strategy/tagsDoc),
+// the one function that builds the persisted shape - a second copy here would be the
+// same rule written twice, free to drift.

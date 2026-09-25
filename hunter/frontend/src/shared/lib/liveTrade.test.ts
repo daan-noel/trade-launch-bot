@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFlowTrades, patternKeysFrom } from './flow/classifyFlow';
+import { classifyFlowTrades } from './flow/classifyFlow';
+import { shapeTag } from './flow/tapeClassify';
 import { applyTokenLiveStats, liveTradeToTradeRecord, tradeDedupeKey } from './liveTrade';
 import type { LiveTrade, TokenDetailRecord, TokenLiveStats, TradeRecord } from 'types';
 
@@ -82,10 +83,9 @@ describe('liveTradeToTradeRecord', () => {
     const row = liveTradeToTradeRecord(sample);
     expect(row.instruction_labels).toEqual(sample.instruction_labels);
 
-    const keys = patternKeysFrom([sample.instruction_labels!]);
     const [classified] = classifyFlowTrades(
       [{ wallet_address: row.wallet_address, sol: row.amount_sol, ix_labels: row.instruction_labels }],
-      { patternKeys: keys },
+      { tag: shapeTag('t', [{ labels: sample.instruction_labels! }]) },
     );
     expect(classified.isTagged).toBe(true);
   });
@@ -99,7 +99,7 @@ describe('liveTradeToTradeRecord', () => {
     // against a staged empty pattern (mirrors Rust `ix_hash_opt` ⇒ `None`).
     const [classified] = classifyFlowTrades(
       [{ wallet_address: row.wallet_address, sol: row.amount_sol, ix_labels: row.instruction_labels }],
-      { patternKeys: patternKeysFrom([[]]) },
+      { tag: shapeTag('t', [{ labels: [] }]) },
     );
     expect(classified.isTagged).toBe(false);
   });
@@ -117,7 +117,7 @@ describe('liveTradeToTradeRecord', () => {
 
     const [classified] = classifyFlowTrades(
       [{ wallet_address: row.wallet_address, sol: row.amount_sol, ix_labels: row.instruction_labels }],
-      { patternKeys: patternKeysFrom([sample.instruction_labels!]) },
+      { tag: shapeTag('t', [{ labels: sample.instruction_labels! }]) },
     );
     expect(classified.isTagged).toBe(true);
   });

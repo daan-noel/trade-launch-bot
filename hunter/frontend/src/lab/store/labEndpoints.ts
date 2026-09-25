@@ -19,11 +19,11 @@ import type {
   FlowDiscoveryResult,
 } from 'types';
 import type { IxPatternSet, IxPatternSetDraft } from 'lib/flow/ixPatternSets';
+import type { MetricSeriesResponse } from 'lib/strategy/metricPanes';
 import type { InspectRequest, InspectRun } from '@lab/services/replayInspect';
 import type {
   EngineSimRequest,
   SimStartResponse,
-  MetricSeriesResponse,
   PromotedRuleDraft,
   Fingerprint,
 } from 'lib/strategy/types';
@@ -99,24 +99,29 @@ export const labApi = baseApi.injectEndpoints({
       }),
       transformResponse: (r: { summaries: Record<string, SimulatedSummary> }) => r.summaries ?? {},
     }),
-    // On-demand metric series for a token's chart panes (redesign 5.7) — every
-    // metric's value at every EVENT (trades + engine `TICK_MS` grid ticks),
-    // recomputed from the lake + PG tail with the SAME engine compute the
-    // live/sweep paths use (never persisted).
+    // On-demand metric series for a token's chart panes: every read of every registry
+    // metric (each tag and span it accepts) at every EVENT (trades + engine `TICK_MS`
+    // grid ticks), recomputed from the lake + PG tail with the SAME engine compute the
+    // live/sweep paths use (never persisted). A column is named by its read label.
     getMetricSeries: builder.query<
       MetricSeriesResponse,
       {
         mint: string;
+        /** Trailing spans for the windowed reads; the endpoint also pairs them into the
+         *  nested spans of the sliced reads. */
         windows?: WindowSpec[];
+        /** Since-age anchors (seconds) beside the always-drawn `age0s`. */
+        ages?: number[];
+        /** Fingerprint whose tags the tagged reads (`@volume`, `@!volume`) use; without
+         *  one those reads are omitted. */
         fingerprintId?: string | null;
-        /** Inspected run's entry fill — supplies the `m_position` (retrace/bounce/pnl/held)
-         *  columns, which are position-scoped and omitted without it. */
+        /** Inspected run's entry fill: supplies the `m_position` reads, which are
+         *  omitted without it. */
         entryTime?: string | null;
         entryPrice?: number | null;
-        /** Largest `time` / `stall` condition value the caller will evaluate over the
-         *  series (secs). These size the backend's sparse tick grid: the two clocks are
-         *  monotone, so it only needs dense ticks up to the last instant they could
-         *  cross. Omit when the rule constrains neither — see `metricClockHorizons`. */
+        /** Largest `m_state.age_sec` / `m_price.stall_sec` threshold the caller will
+         *  evaluate (secs): they size the backend's sparse tick grid. Omit when the
+         *  rule reads neither; see `metricClockHorizons`. */
         timeHorizonSec?: number | null;
         stallHorizonSec?: number | null;
       }
@@ -124,6 +129,7 @@ export const labApi = baseApi.injectEndpoints({
       query: ({
         mint,
         windows,
+        ages,
         fingerprintId,
         entryTime,
         entryPrice,
@@ -135,6 +141,7 @@ export const labApi = baseApi.injectEndpoints({
         // stays 30 seconds, `30sl@1` and `20p` mean themselves.
         if (windows && windows.length)
           params.set('windows', windows.map(formatWindowSpec).join(','));
+        if (ages && ages.length) params.set('ages', ages.join(','));
         if (fingerprintId) params.set('fingerprint_id', fingerprintId);
         if (entryTime && entryPrice != null && Number.isFinite(entryPrice)) {
           params.set('entry_time', entryTime);
@@ -149,11 +156,10 @@ export const labApi = baseApi.injectEndpoints({
         const q = params.toString();
         return `/api/tokens/${encodeURIComponent(mint)}/metric-series${q ? `?${q}` : ''}`;
       },
-      // The flow columns are folded server-side from the fingerprint's saved
-      // `ix_patterns`, so a pattern edit changes these numbers. Without the
-      // tag the pane keeps serving the pre-edit series while the chart — which
-      // re-derives its keys from the same invalidated fingerprint — already moved,
-      // and the two disagree for the rest of the cache window.
+      // The tagged columns are folded server-side from the fingerprint's saved
+      // `tags`, so a tag edit changes these numbers. Without the cache tag the pane
+      // keeps serving the pre-edit series while the chart, which re-derives from the
+      // same invalidated fingerprint, already moved.
       providesTags: ['Fingerprint'],
       keepUnusedDataFor: 60,
     }),
@@ -462,9 +468,12 @@ export const labApi = baseApi.injectEndpoints({
         /// a copy — there is no precision to pass, and so no substituted precision
         /// that could arm the bound rule on a window the card never showed.
         group_key: Record<string, unknown>;
+        /** The ix shapes to put in the tag (`match.ix_shape` entries). */
         ix_patterns: (string[] | Record<string, unknown>)[];
-        /** Which list to write. Omit / `tagged` → `m_flow_ix`; `dump` → `m_dump_ix`. */
-        list?: 'tagged' | 'dump';
+        /** The fingerprint tag to write (`volume`, `dump`, any name). */
+        tag: string;
+        /** `buy` / `sell`: which trades the tag takes, set only when the tag is new. */
+        side?: 'buy' | 'sell';
         name?: string;
       }
     >({

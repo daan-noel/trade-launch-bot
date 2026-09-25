@@ -52,9 +52,9 @@ function shortLabel(label: string): string {
 }
 
 /**
- * Registry-driven editor for `m_flow_ix.ix_patterns` (`string[][]`): each row is an
- * exact ordered ix-label sequence (same vocabulary as fingerprint `ix_labels`). Empty
- * list ⇒ fingerprint unconfigured for flow (metrics stay NaN).
+ * Editor for a tag's `ix_shape` matcher: each row is an exact ordered ix-label
+ * sequence (same vocabulary as fingerprint `ix_labels`), optionally pinned to a fee
+ * preset.
  *
  * **One line per pattern, one open editor at a time.** A pattern is a 6-10 label
  * sequence and a real fingerprint carries 50-150 of them, so a textarea per row is

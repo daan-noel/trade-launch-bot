@@ -1,13 +1,13 @@
 // Records + request shapes for the GROUPED param-sweep endpoints
 // (`/api/strategies/sweeps[...]`). ONE generic engine (`strategy_id="generic"`)
-// drives these: the swept `params` per combo is a `RuleParams` blob (rendered by
-// `genericSweepColumns`), and the axes are the registry-driven `AxisSpec[]`
-// (`genericAxes.ts`). There are no per-strategy static axis grids or
-// fingerprint-blob serializers — a new strategy is a registry entry, not a page.
+// drives these: the swept `params` per combo is a rule `params` document (rendered by
+// `ruleParamsCell`), and the axes are the registry-driven `AxisSpec[]`
+// (`genericAxes.ts`).
 
 import type { CostModelId, FillModelId } from 'lib/strategy/types';
 import type { Criteria } from 'lib/strategy/fingerprintAxes';
 import type { FieldFilterValue } from './fingerprintFilters';
+import type { AxisSpecWire } from './genericAxes';
 
 import type { SweepResultRecord } from './types';
 
@@ -112,8 +112,8 @@ export interface GroupedSweepRunRecord {
   curve_only: boolean;
   /** The grouping fields, in selection order. */
   grouping_spec: GroupField[];
-  /** The resolved param axes the run used (`{ axes: AxisSpec[] }` for generic). */
-  axes_spec: Record<string, unknown>;
+  /** The axes the run swept, as the request sent them. */
+  axes_spec: { axes?: AxisSpecWire[] };
   min_tokens: number;
   token_count: number;
   group_count: number;
@@ -163,9 +163,9 @@ export interface GroupedSweepRunRecord {
    *  its group keys are rendered labels no longer parsed, so it reads as
    *  one-group-per-value. Re-run to promote. */
   partition: [GroupField, PartitionSpec][];
-  /** Corpus-wide volume-ix patterns used when the run swept flow axes. `null` =
-   *  non-flow run / legacy. Promote copies these into the fingerprint. */
-  ix_patterns: string[][] | null;
+  /** The run's tags document (a fingerprint `tags` shape): what every `@tag` axis
+   *  read. `null` = the run read no tag. Promote writes it onto the fingerprint. */
+  tags: Record<string, unknown> | null;
   /** Which trade in the fill window priced each leg. `null` on legacy runs ⇒
    *  `worst_case`, what the sweep hardcoded before the model became selectable.
    *  Part of the run's IDENTITY — two runs under different fill models are not
@@ -176,19 +176,14 @@ export interface GroupedSweepRunRecord {
    *  `storedCostModel()`: typed as a bare string because the wire is not this build's
    *  to guarantee, even though every stored run now names a live model. */
   cost_model: string | null;
-  /** The candidate scale-out ladder(s) searched in Pass 2 — `ExitStage[][]`
-   *  (backend keeps the grid-shaped wire contract for forward compat), but the
-   *  FE authors exactly ONE user ladder via `ScaleOutBuilder` and sends it as
-   *  the sole entry: comparing many arbitrary ladders against the same small
-   *  per-combo sample is a multiple-comparisons trap, not a real search. `null`
-   *  = no Pass 2. Each group's top-K combos are independently re-scored against
-   *  the ladder(s) here plus their own baseline exit and keep whichever wins —
-   *  a combo it doesn't help keeps its own exit, so this field is the search
-   *  space, not what any one combo ended up with (see that combo's own
-   *  `params.scale_out`). */
-  scale_out: unknown[][] | null;
-  /** How many best combos/group Pass 2 re-scored. `null` when no overlay. */
-  scale_out_top_k: number | null;
+  /** The stage plans searched in Pass 2 (`Stage[][]`, one rule `stages` array per
+   *  plan; the form sends one). `null` = no Pass 2. Each group's top-K combos were
+   *  re-scored under every plan plus their own exit and kept the winner, so this is
+   *  what was searched, not what any one combo ended up with (that is in the combo's
+   *  own `params.stages`). */
+  stage_plans: unknown[][] | null;
+  /** How many best combos per group Pass 2 re-scored. `null` without plans. */
+  stage_plans_top_k: number | null;
 }
 
 /** One group's summary row: its fingerprint key, sample size, and winning combo. */
@@ -225,7 +220,8 @@ export interface GroupedSweepGroupRecord {
   best_std_pnl_pct: number;
   best_avg_holding_secs: number;
   best_median_holding_secs: number;
-  /** The winning combo's params — a `RuleParams` blob for the generic engine. */
+  /** The winning combo's rule `params`. A run stored before format 2 may carry a
+   *  format-1 document (`ruleParamsCell` shows it as such). */
   best_params: Record<string, unknown>;
   /** What this group's tokens were actually selected by. `undefined` only on a
    *  response from an older backend. See {@link GroupSelection}. */
@@ -289,15 +285,12 @@ export interface ComboTokenResult {
   pnl_sol: number;
   pnl_pct: number;
   holding_secs: number;
-  /** `"TakeProfit"` | `"StopLoss"` | `"Metrics"` | `"Dead"` | `"Open"` | `"NoEntry"`.
-   *  A metric exit arrives as the spaced detail label (`"stall > 3"`), not the bare
-   *  code name. */
+  /** `"TakeProfit"` | `"StopLoss"` | `"Dead"` | `"Open"` | `"NoEntry"`, or a sell
+   *  line's exit label (its own label, else its first condition). */
   exit: string;
-  /** Which of the rule's own authored exit conditions `exit` fired on (0-based) —
-   *  the row-grain join key for the group's `n_exit_metrics_by_slot` histogram.
-   *  `null` for every non-metric exit, and for a metric exit whose way could not be
-   *  resolved. Two authored ways can carry identical text, so this is the only thing
-   *  that tells them apart. */
+  /** Which sell line `exit` fired on (0-based): the row-grain join key for the
+   *  group's `n_exit_metrics_by_slot` histogram. `null` for every other exit. Two
+   *  lines can carry identical text, so this is the only thing that tells them apart. */
   exit_metric_slot: number | null;
   entry_time: string | null;
   entry_price: number | null;
@@ -349,9 +342,8 @@ export interface GroupedSweepStartArgs {
   min_tokens?: number;
   /** `grid` | `random:N` | `lhs:N` | `refine:N[:K]`. */
   method?: string;
-  /** Strategy-specific axes — for `"generic"` this is `AxesRequest { axes: [...] }`.
-   *  Resolved by `strategy_id` on the backend. */
-  axes?: unknown;
+  /** The backend `AxesRequest`. */
+  axes?: { axes: AxisSpecWire[] };
   token_cap?: number;
   /** Per-group combo cap override. Omitted ⇒ backend default. */
   max_combos?: number;
@@ -368,10 +360,9 @@ export interface GroupedSweepStartArgs {
    *  *how the box computed*, not the analysis, so it isn't persisted on the run row.
    *  Omitted ⇒ scalar. */
   use_avx512?: boolean;
-  /** Corpus-wide volume-ix patterns when axes reference `m_flow_ix` /
-   *  `m_flow_ix_window` (not aggregate `m_flow_lifetime` / `m_flow_window`).
-   *  Required by the backend for those runs; omitted otherwise. */
-  ix_patterns?: string[][];
+  /** The run's tags document: every `@tag` an axis reads must be defined here.
+   *  Omitted when no axis reads a tag. */
+  tags?: Record<string, unknown>;
   /** Which trade in the fill window prices each simulated leg. Omitted ⇒
    *  `worst_case` (what the sweep hardcoded before this was selectable), so stored
    *  and replayed runs keep their meaning. Unlike `use_avx512` this changes the
@@ -381,12 +372,9 @@ export interface GroupedSweepStartArgs {
    *  `pumpfun_impact`. Pair an explicit `fill_model` with `pumpfun_impact`:
    *  the fill price already prices slippage. */
   cost_model?: CostModelId;
-  /** Pass-2 ladder for the run — `ExitStage[][]` on the wire (backend grid
-   *  contract), but the FE sends exactly one user-authored ladder as its sole
-   *  entry. Omitted / empty ⇒ no Pass 2. Each top-K combo per group is
-   *  re-scored against it plus its own baseline and keeps whichever wins
-   *  (per combo — never forced onto a combo it doesn't help). */
-  scale_out?: unknown[][];
-  /** Top-K combos per group for Pass 2. Default 3. */
-  scale_out_top_k?: number;
+  /** Pass-2 stage plans (`Stage[][]`); the form sends one. Omitted = no Pass 2. A
+   *  plan may read our position only. */
+  stage_plans?: unknown[][];
+  /** Top-K combos per group Pass 2 re-scores. Default 3. */
+  stage_plans_top_k?: number;
 }

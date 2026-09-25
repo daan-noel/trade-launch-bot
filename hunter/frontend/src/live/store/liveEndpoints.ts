@@ -13,7 +13,6 @@ import type {
 } from 'types';
 import type { ArmedEntry } from 'lib/strategy/types';
 import type { HistoryRange } from 'lib/strategy/nav';
-import type { WindowSpec } from 'lib/strategy/windowSpec';
 
 /** The calendar windows the portfolio endpoints accept (the server's `range`
  *  grammar — `live::services::portfolio::range_window`). Same vocabulary as the
@@ -69,55 +68,67 @@ export interface ClosesSeries {
 }
 
 /**
+ * Where in the rule a condition or line sits (mirrors the backend's `PartOut`): the
+ * section the rule editor shows it under.
+ */
+export interface RulePart {
+  part: 'event' | 'filter' | 'final_filter' | 'signal' | 'always' | 'stage';
+  /** Signal name and OR-group, on a `signal` read. */
+  signal?: string;
+  group?: number;
+  /** Stage index and name, on a `stage` read. */
+  stage?: number;
+  stage_name?: string;
+  /** `true` for a stage's at-deadline list. */
+  at_end?: boolean;
+  /** Line index inside `always` (TP / SL first) or inside the stage list. */
+  line?: number;
+}
+
+/**
  * What a condition **is**, independent of any instant (mirrors the backend's
  * `ConditionMetaOut`, which both response shapes flatten).
  */
-export interface RuleConditionMeta {
-  side: 'entry' | 'exit' | 'stage';
-  /** Ladder index; present only on a `stage` read. */
-  stage?: number;
-  /** Whether the fold is currently evaluating this stage. */
-  stage_active?: boolean;
+export interface RuleConditionMeta extends RulePart {
+  /** Registry path, `m_flow.buy_sol`. */
   metric: string;
-  group: string;
   unit: string;
-  /** Legacy scalar: the SIZE of a wall-clock window, in seconds. `null` for a
-   *  static metric AND for a slot window, which has no seconds to report and names
-   *  itself in `window` instead — read `window` (via `readWindow`) unless you
-   *  genuinely mean seconds. */
-  window_size_sec: number | null;
-  /** The full span: size, lag and unit. Absent on a static metric, and on a payload
-   *  from a backend that predates slot windows. */
-  window?: WindowSpec | null;
+  /** `volume` / `!volume`; absent on an untagged read. */
+  tag?: string;
+  /** `10s`, `20sl`, `age60s`, ...; absent for the whole life. */
+  span?: string;
+  slice?: string;
+  /** The one full spelling, `m_flow.buy_sol @!volume [10s]`. */
+  label: string;
   /** Authored DNF: flat `[{operator,value}]` (one AND arm) or nested OR arms. */
   conditions: unknown;
-  origin: 'authored' | 'take_profit' | 'stop_loss';
-  /** PnL the trailing stop arms at, when gated. */
-  arm_above_pct?: number;
-  /** Index into compiled exit clauses. Present on `exit` so the strip ANDs chips
-   *  inside a way and ORs across ways. Absent on entry / scale-out. */
-  exit_clause?: number;
 }
 
 /**
  * One condition of a rule at ONE instant, with the value the fold reads for it
  * (mirrors `live::api::handlers::strategies::rule_readout::ConditionOut`).
  *
- * `value` is `null` when the metric is unreadable — an unregistered window, a flow
- * metric with no fingerprint state, or a position metric with no position. Per the
- * engine convention that satisfies nothing, so `ok` is false.
+ * `value` is `null` when the metric is unreadable (a tag the fingerprint does not
+ * define, a position metric with no position). Per the engine convention that
+ * satisfies nothing, so `ok` is false.
  */
 export interface RuleConditionRead extends RuleConditionMeta {
   value: number | null;
   ok: boolean;
   matched_operator?: string;
   matched_value?: number;
-  /**
-   * The trail is gated and not yet armed, so the fold **skips** this condition —
-   * it is not being evaluated at all. Render it as dormant, never as a failing
-   * condition, or the UI shows a stop that looks live when none is.
-   */
-  disarmed: boolean;
+}
+
+/** One line at one instant (`LineOut`). */
+export interface RuleLineRead extends RulePart {
+  /** Every condition of the line (metric and signal) holds now. */
+  holds: boolean;
+  /** The exit label the line sells with; absent = the line only moves. */
+  sells?: string;
+  /** Percent of the first bag; absent = everything left. */
+  sell_pct?: number;
+  /** Stage index the line moves to. */
+  goes_to?: number;
 }
 
 /** The same condition across every row of a series (`ConditionSeriesOut`). */
@@ -125,12 +136,6 @@ export interface RuleConditionSeries extends RuleConditionMeta {
   /** One per row of {@link RuleReadoutSeries.at}. */
   values: (number | null)[];
   ok: boolean[];
-  /**
-   * Per row, and **absent** unless this condition is a gated trail — the only kind
-   * the fold ever skips. A trail arms and disarms as PnL crosses `arm_above_pct`,
-   * so it cannot be one flag for the whole series.
-   */
-  disarmed?: boolean[];
 }
 
 /** Which instant a closed position's replay reads at. */
@@ -150,10 +155,13 @@ export interface RuleReadout {
   source: 'engine' | 'replay';
   /** Engine arm state (`Armed` | `Entered` | …); `null` on a replay. */
   arm: string | null;
-  stage: number | null;
+  /** The stage the held position is in; `null` when no bag is held. */
+  stage: { index: number; name: string } | null;
   /** The one instant every `value` in this response is read at. */
   at: string;
   conditions: RuleConditionRead[];
+  signals: { name: string; holds: boolean }[];
+  lines: RuleLineRead[];
 }
 
 /**

@@ -27,18 +27,11 @@ import {
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
-import { IxPatternsEditor } from 'components/strategy/IxPatternsEditor';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
-import {
-  ScaleOutBuilder,
-  stagesToDrafts,
-  draftsToStages,
-  type ScaleStageDraft,
-} from 'components/strategy/ScaleOutBuilder';
-import type { ExitStage } from 'lib/strategy/ruleParams';
 import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
-import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import { LabelTip } from 'components/strategy/LabelTip';
+import { tagNames, tagsFromJson, validateTags } from 'lib/strategy/tagsDoc';
+import { RunTagsEditor, StagePlanEditor } from './SweepPlanEditors';
+import { stagePlanErrors, stagesFromWire } from './stagePlan';
 import {
   COST_MODELS,
   storedCostModel,
@@ -50,10 +43,11 @@ import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import {
   axisRowError,
   axesSpecToRows,
+  axisTagNames,
   comboCount,
   newAxisRow,
   serializeAxisRows,
-  pnlAxisSugarDuplicateError,
+  storedAxisRows,
   type AxisSpecWire,
   type GenericAxisRow,
 } from './genericAxes';
@@ -69,31 +63,6 @@ const HARD_MAX_COMBOS = 1000000;
 /** Mirror `registry::{DEFAULT,MAX}_TOKEN_CAP` — corpus newest-N load ceiling. */
 const DEFAULT_TOKEN_CAP = 10000;
 const MAX_TOKEN_CAP = 100000;
-
-/**
- * Optional quick-start templates for the Pass-2 ladder editor — a starting
- * point to then EDIT (via `ScaleOutBuilder`, the same builder the Rule Editor
- * uses), not auto-searched candidates. Pass 2 authors and tests exactly ONE
- * ladder at a time: comparing many arbitrary shapes against the same small
- * per-combo sample is a multiple-comparisons trap (a "winner" that's noise,
- * not edge) — see `docs/arch/sweep.md` (*Pass-2 overlay*). Loading a
- * template just seeds the editor; the user still owns and can reshape it.
- */
-const SCALE_OUT_TEMPLATES: { label: string; stages: ExitStage[] }[] = [
-  {
-    label: '70% @ +50% TP → stub held ≥ 30s',
-    stages: [
-      { sell_bps: 7000, take_profit: 50, conditions: {} },
-      {
-        sell_bps: null,
-        take_profit: null,
-        conditions: {
-          m_position: [{ strict: {}, metrics: { held: [[{ operator: '>=', value: 30 }]] } }],
-        },
-      },
-    ],
-  },
-];
 
 /**
  * Desktop RAM reserve choices (MB) — how much host RAM the run leaves free for
@@ -179,9 +148,12 @@ interface GenericSweepConfig {
   ramReserveMb: number;
   /** Opt into the AVX-512 vectorized exit scan (lab-only; host-gated server-side). */
   useAvx512: boolean;
-  /** Corpus-wide volume-ix patterns when axes reference m_flow_ix /
-   *  m_flow_ix_window (not m_flow_lifetime / m_flow_window). */
-  ixPatterns: string[][];
+  /** The run's tags document (wire `tags` JSON): what an axis `@tag` reads. Sent only
+   *  when an axis reads a tag; Promote writes it onto the promoted fingerprint. */
+  tags: Record<string, unknown>;
+  /** The scope fingerprint whose tags were last loaded into `tags`, so picking one
+   *  loads its tags once and a later edit is not overwritten. */
+  tagsFromFingerprintId: string | null;
   /** Which trade in the fill window prices each leg. Unlike the RAM/AVX knobs this
    *  changes the RESULT, so it is persisted on the run and shown on its header. */
   fillModel: FillModelId;
@@ -190,11 +162,10 @@ interface GenericSweepConfig {
   /** Saved fingerprint the corpus is scoped to (engine match SSOT). When set the
    *  manual value filters are not sent — the backend matches instead. */
   seedFingerprintId: string | null;
-  /** Pass-2 scale-out ladder: one user-authored `ExitStage[]` (editor drafts,
-   *  same shape the Rule Editor uses). Empty = off. */
-  scaleOutStages: ScaleStageDraft[];
-  /** Top-K combos per group for Pass 2. */
-  scaleOutTopK: number;
+  /** The Pass-2 stage plan: one wire `stages` array. Empty = Pass 2 off. */
+  stagePlan: unknown[];
+  /** Top-K combos per group Pass 2 re-scores. */
+  stagePlansTopK: number;
 }
 
 function defaultConfig(): GenericSweepConfig {
@@ -205,9 +176,9 @@ function defaultConfig(): GenericSweepConfig {
     ixLabelsFilter: '',
     cashbackFilter: 'all',
     fieldFiltersText: {},
-    // A sensible starter grid: TP × SL, plus a time-since-creation entry gate.
+    // A starter grid: TP x SL, plus a coin-age entry filter.
     axisRows: [
-      { ...newAxisRow('metric'), side: 'entry', group: 'm_state', metric: 'time', operator: '>', valuesText: '5, 10' },
+      { ...newAxisRow('metric', undefined, 'entry', { metric: 'm_state.age_sec' }), operator: '>', valuesText: '5, 10' },
       newAxisRow('take_profit'),
       newAxisRow('stop_loss'),
     ],
@@ -224,7 +195,8 @@ function defaultConfig(): GenericSweepConfig {
     // Default OFF: the scalar scan is the SSOT. Flip to `true` once the workstation
     // A/B (plan §P5) confirms the speedup on your corpus — the result is identical.
     useAvx512: false,
-    ixPatterns: [],
+    tags: {},
+    tagsFromFingerprintId: null,
     // New runs default to the pair the fill-sensitivity analysis was measured under:
     // the next print after the signal, with slippage charged ONCE (in the fill price,
     // not again in the cost model — the model that did that is retired).
@@ -236,14 +208,12 @@ function defaultConfig(): GenericSweepConfig {
     fillModel: 'first_in_window',
     costModel: 'pumpfun_impact',
     seedFingerprintId: null,
-    scaleOutStages: [],
-    scaleOutTopK: 3,
+    stagePlan: [],
+    stagePlansTopK: 3,
   };
 }
 
-function axesReferenceFlow(rows: GenericAxisRow[]): boolean {
-  return rows.some((r) => r.kind === 'metric' && (r.group === 'm_flow_ix' || r.group === 'm_flow_ix_window'));
-}
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 function isoToLocalInput(iso: string | null): string {
   if (!iso) return '';
@@ -316,7 +286,9 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     // The run's own partition, never the form's: re-running at a different one
     // would score windows the stored groups never showed.
     partition: Object.fromEntries(run.partition ?? []),
-    ixPatterns: run.ix_patterns ?? defaults.ixPatterns,
+    // The run's own tags, marked as loaded for its scope so they are not replaced.
+    tags: isObj(run.tags) ? run.tags : {},
+    tagsFromFingerprintId: run.fingerprint_id ?? null,
     // Legacy rows (null fill) were computed under what the sweep hardcoded then —
     // restore THAT, not today's default, or a "re-run" would quietly reprice the
     // comparison.
@@ -330,24 +302,17 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     // filters are NULL on a scoped run, so without this the re-run would silently
     // widen to the whole selection window.
     seedFingerprintId: run.fingerprint_id ?? null,
-    // `scale_out` is `ExitStage[][]` on the wire (grid-shaped for forward
-    // compat) but the form authors exactly ONE ladder — restore its first
-    // entry into editor drafts; anything else (legacy multi-ladder runs,
-    // malformed rows) restores as empty rather than guessing.
-    scaleOutStages:
-      Array.isArray(run.scale_out) && Array.isArray(run.scale_out[0])
-        ? stagesToDrafts(run.scale_out[0] as ExitStage[])
-        : [],
-    scaleOutTopK: run.scale_out_top_k ?? defaults.scaleOutTopK,
+    // `stage_plans` is `Stage[][]` on the wire; the form authors one plan, so it
+    // restores the first.
+    stagePlan: Array.isArray(run.stage_plans?.[0]) ? run.stage_plans[0] : [],
+    stagePlansTopK: run.stage_plans_top_k ?? defaults.stagePlansTopK,
   };
 }
 
 /**
- * Config form for the generic-engine grouped sweep (redesign FE5.2). Reuses the
- * corpus/method/caps controls + `FingerprintGroupPicker`; the strategy-specific
- * param grid is replaced by the registry-driven `GenericAxisBuilder`, which emits
- * `AxisSpec[]` (`{side, group, metric, operator, values[, window]}`) instead of a
- * flat knob grid.
+ * Config form for the grouped sweep: the corpus / method / caps controls, the
+ * `FingerprintGroupPicker`, the axes (`GenericAxisBuilder`, wire `AxisSpec[]`), the
+ * run's tags and the Pass-2 stage plan.
  */
 export function GenericSweepConfigForm({
   storageKey,
@@ -393,10 +358,13 @@ export function GenericSweepConfigForm({
           Math.max(1, handoff.tokenCap || prev.tokenCap || DEFAULTS.tokenCap),
         ),
         buyAmountSol: tidySolDecimal(handoff.buyAmountSol || prev.buyAmountSol || DEFAULTS.buyAmountSol),
-        ixPatterns: handoff.ixPatterns?.length
-          ? handoff.ixPatterns
-          : prev.ixPatterns,
         ixLabelsFilter: handoff.ixLabelsFilter || prev.ixLabelsFilter || '',
+        // The tags the discovery run screened with, so a seeded `@tag` axis reads the
+        // same trades; marked as loaded for the scope so its own tags do not replace
+        // them. Without them, the scope fingerprint's tags load as usual.
+        ...(isObj(handoff.tags)
+          ? { tags: handoff.tags, tagsFromFingerprintId: handoff.fingerprintId ?? null }
+          : {}),
         seedFingerprintId: handoff.fingerprintId ?? prev.seedFingerprintId,
         groupBy: handoff.fingerprintId ? [] : prev.groupBy ?? DEFAULTS.groupBy,
         minTokens: handoff.fingerprintId ? 1 : prev.minTokens ?? DEFAULTS.minTokens,
@@ -413,7 +381,10 @@ export function GenericSweepConfigForm({
     groupBy: (stored.groupBy ?? DEFAULTS.groupBy).filter((f): f is GroupField =>
       (GROUP_FIELDS as readonly string[]).includes(f),
     ),
-    axisRows: stored.axisRows ?? DEFAULTS.axisRows,
+    // Rows saved before the read replaced group / metric / window restore as the defaults.
+    axisRows: storedAxisRows(stored.axisRows) ?? DEFAULTS.axisRows,
+    tags: isObj(stored.tags) ? stored.tags : DEFAULTS.tags,
+    stagePlan: Array.isArray(stored.stagePlan) ? stored.stagePlan : DEFAULTS.stagePlan,
     // Sanitize stale localStorage / pre-clamp values (backend max is 100k).
     tokenCap: Math.min(MAX_TOKEN_CAP, Math.max(1, stored.tokenCap ?? DEFAULTS.tokenCap)),
     // Same reason, different failure: `localStorage` outlives a deploy, so a saved grid
@@ -440,12 +411,13 @@ export function GenericSweepConfigForm({
     partition,
     ramReserveMb,
     useAvx512,
-    ixPatterns,
+    tags,
+    tagsFromFingerprintId,
     fillModel,
     costModel,
     seedFingerprintId,
-    scaleOutStages,
-    scaleOutTopK,
+    stagePlan,
+    stagePlansTopK,
   } = config;
 
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
@@ -457,6 +429,19 @@ export function GenericSweepConfigForm({
     ? fingerprintsById.get(seedFingerprintId)
     : undefined;
   const fpMatches = useFingerprintMatches(seedFingerprintId, seedFp?.name);
+
+  // Picking a scope fingerprint (here, by a re-run or by a discovery handoff) loads its
+  // tags into the run once, so an axis can read them.
+  useEffect(() => {
+    if (!seedFp || tagsFromFingerprintId === seedFp.id) return;
+    setConfig((prev) => ({
+      ...DEFAULTS,
+      ...prev,
+      tags: isObj(seedFp.tags) ? seedFp.tags : {},
+      tagsFromFingerprintId: seedFp.id,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedFp, tagsFromFingerprintId]);
 
   /** Scope the corpus to a saved fingerprint (engine match, server-side) — or clear
    *  back to manual group-by / filters. Selecting one drops the group-by selection
@@ -508,26 +493,24 @@ export function GenericSweepConfigForm({
   const ixFilterError = !ixLabelsGrouped && !seedFingerprintId ? ixFilter.error : null;
 
   // Axis validity + projected combos.
-  const rowErrors = useMemo(
-    () => axisRows.map((r) => axisRowError(r, registry)),
-    [axisRows, registry],
+  const definedTags = useMemo(() => tagNames(tags), [tags]);
+  const axesValid = useMemo(
+    () => axisRows.length > 0 && axisRows.every((r) => axisRowError(r, registry, definedTags) == null),
+    [axisRows, registry, definedTags],
   );
-  const pnlSugarErr = useMemo(() => pnlAxisSugarDuplicateError(axisRows), [axisRows]);
-  const axesValid =
-    axisRows.length > 0 && rowErrors.every((e) => e == null) && !pnlSugarErr;
-  const wireAxes: AxisSpecWire[] = useMemo(
-    () => serializeAxisRows(axisRows, registry),
-    [axisRows, registry],
+  const wireAxes: AxisSpecWire[] = useMemo(() => serializeAxisRows(axisRows), [axisRows]);
+  // The tags document is sent (and has to be valid) only when an axis reads a tag.
+  const readTags = useMemo(() => axisTagNames(axisRows, registry), [axisRows, registry]);
+  const tagsOk = readTags.length === 0 || validateTags(tagsFromJson(tags), registry).length === 0;
+  const planOk = useMemo(
+    () => stagePlanErrors(stagesFromWire(stagePlan), registry).length === 0,
+    [stagePlan, registry],
   );
-  const needsFlowPatterns = axesReferenceFlow(axisRows);
-  const flowPatternsOk =
-    !needsFlowPatterns ||
-    ixPatterns.some((p) => p.some((s) => s.trim().length > 0));
 
   const projected = useMemo(() => {
     if (methodKind !== 'grid') return Math.max(1, randomN);
-    return comboCount(axisRows, registry);
-  }, [methodKind, randomN, axisRows, registry]);
+    return comboCount(axisRows);
+  }, [methodKind, randomN, axisRows]);
 
   // Per-field value filters, parsed once. Blocks Run on a bad entry exactly as an
   // ix-labels parse error does — a silently dropped SOL filter would run the whole
@@ -549,15 +532,11 @@ export function GenericSweepConfigForm({
   const effectiveCap = Math.min(Math.max(1, maxCombos || DEFAULT_MAX_COMBOS), HARD_MAX_COMBOS);
   const overCap = projected > effectiveCap;
   const canRun =
-    axesValid && !overCap && !running && !ixFilterError && !fieldFilterError && flowPatternsOk;
+    axesValid && !overCap && !running && !ixFilterError && !fieldFilterError && tagsOk && planOk;
 
   function toggleGroupField(f: GroupField) {
     setField('groupBy', groupBy.includes(f) ? groupBy.filter((x) => x !== f) : [...groupBy, f]);
   }
-
-  // The user's authored Pass-2 ladder (editor drafts → wire `ExitStage[]`); `null`
-  // when the builder is empty, i.e. Pass 2 is off.
-  const scaleOutLadder = useMemo(() => draftsToStages(scaleOutStages), [scaleOutStages]);
 
   function handleRun() {
     if (!canRun) return;
@@ -586,9 +565,8 @@ export function GenericSweepConfigForm({
           : methodKind === 'random'
             ? `random:${Math.max(1, randomN)}`
             : 'grid',
-      // Generic wire axes: `AxesRequest { axes: [...] }` (cast — same slot the
-      // legacy per-strategy `AxesSpec` used; resolved by `strategy_id`).
-      axes: { axes: wireAxes } as unknown as GroupedSweepStartArgs['axes'],
+      // The backend `AxesRequest { axes: [...] }`.
+      axes: { axes: wireAxes },
       token_cap: Math.min(MAX_TOKEN_CAP, Math.max(1, tokenCap)),
       max_combos: effectiveCap !== DEFAULT_MAX_COMBOS ? effectiveCap : undefined,
       buy_amount_sol: buyAmountSol,
@@ -599,29 +577,26 @@ export function GenericSweepConfigForm({
       ram_reserve_mb: ramReserveMb !== DEFAULT_RAM_RESERVE_MB ? ramReserveMb : undefined,
       // Omit-when-default (same shape as ram_reserve_mb): only send when opted in.
       use_avx512: useAvx512 ? true : undefined,
-      ix_patterns: needsFlowPatterns
-        ? ixPatterns
-            .map((p) => p.map((s) => s.trim()).filter(Boolean))
-            .filter((p) => p.length > 0)
-        : undefined,
-      // Wire shape stays `ExitStage[][]` (forward-compat with the backend grid),
-      // but the form authors exactly ONE ladder — sent as its sole entry.
-      scale_out: scaleOutLadder ? [scaleOutLadder] : undefined,
-      scale_out_top_k: scaleOutLadder ? Math.max(1, scaleOutTopK) : undefined,
+      tags: readTags.length > 0 ? tags : undefined,
+      // `Stage[][]` on the wire; the form authors one plan, sent as its sole entry.
+      stage_plans: stagePlan.length > 0 ? [stagePlan] : undefined,
+      stage_plans_top_k: stagePlan.length > 0 ? Math.max(1, stagePlansTopK) : undefined,
     });
   }
 
   const runTitle = overCap
     ? `Over the ${effectiveCap.toLocaleString()} combo cap — narrow the grid, raise Max combos, or use Random N`
     : !axesValid
-      ? 'Fix the axes: every row needs a valid metric/operator and at least one value'
+      ? 'Fix the axes: every row needs a valid read and at least one value'
       : ixFilterError
         ? `Fix the instruction-label filter: ${ixFilterError}`
         : fieldFilterError
           ? `Fix the value filter — ${fieldFilterError}`
-          : !flowPatternsOk
-            ? 'Flow axes require at least one ix_patterns row'
-            : 'Run the grouped sweep';
+          : !tagsOk
+            ? 'Fix the run tags'
+            : !planOk
+              ? 'Fix the stage plan'
+              : 'Run the grouped sweep';
 
   return (
     <div className="mb-4 bg-surface">
@@ -887,101 +862,47 @@ export function GenericSweepConfigForm({
         </Accordion>
       </div>
 
-      {/* Registry-driven axis builder (replaces the static per-strategy grid). */}
       <div className="mt-3 border-t border-white/10 pt-3">
         <Accordion title="Sweep axes · metric conditions + TP / SL" defaultOpen>
-          <GenericAxisBuilder rows={axisRows} onChange={(rows) => setField('axisRows', rows)} projected={projected} />
+          <GenericAxisBuilder
+            rows={axisRows}
+            onChange={(rows) => setField('axisRows', rows)}
+            tags={definedTags}
+            projected={projected}
+          />
         </Accordion>
       </div>
 
-      {needsFlowPatterns && (
-        <div className="mt-3 border-t border-white/10 pt-3">
-          <Accordion title="Volume-ix patterns (flow axes)" defaultOpen>
-            <div className="flex flex-col gap-2">
-              <span className="text-[11px] text-text-dim">
-                <LabelTip tip={FINGERPRINT_FIELD_HELP.ix_patterns}>
-                  Corpus-wide patterns for this run
-                </LabelTip>
-                {' — '}required when axes use m_flow_ix / m_flow_ix_window. Promote copies
-                them into the fingerprint.
-              </span>
-              <IxPatternsEditor
-                patterns={ixPatterns}
-                onChange={(p) => setField('ixPatterns', p)}
-                disabled={running}
-              />
-              {!flowPatternsOk && (
-                <InlineAlert variant="error">
-                  Add at least one non-empty volume-ix pattern before running.
-                </InlineAlert>
-              )}
-            </div>
-          </Accordion>
-        </div>
-      )}
+      <div className="mt-3 border-t border-white/10 pt-3">
+        <Accordion title="Tags (what @tag reads)" defaultOpen={readTags.length > 0}>
+          {registry ? (
+            <RunTagsEditor
+              tags={tags}
+              onChange={(t) => setField('tags', t)}
+              registry={registry}
+              readTags={readTags}
+              disabled={running}
+            />
+          ) : (
+            <span className="text-[11px] text-text-dim/60">Loading strategy registry…</span>
+          )}
+        </Accordion>
+      </div>
 
       <div className="mt-3 border-t border-white/10 pt-3">
-        <Accordion title="Scale-out overlay (Pass 2)" defaultOpen={scaleOutStages.length > 0}>
-          <div className="flex flex-col gap-2">
-            <span className="text-[11px] text-text-dim">
-              Author ONE ladder below — same builder as the Rule Editor — as a hypothesis you
-              already believe in (e.g. from a wallet/tranche analysis), not a shape to search
-              over: comparing many arbitrary ladders against the same small per-combo sample
-              tends to pick noise, not edge. Keep the axes grid on the fast exit path; after
-              ranking, re-score each group&apos;s top-K combos against this ladder PLUS the
-              combo&apos;s own baseline exit, and keep whichever wins per combo (a combo it
-              doesn&apos;t help keeps its own exit). Promote attaches the winning ladder to the
-              saved rule.
-            </span>
-            {scaleOutStages.length === 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {SCALE_OUT_TEMPLATES.map((tpl) => (
-                  <button
-                    key={tpl.label}
-                    type="button"
-                    disabled={running}
-                    onClick={() => setField('scaleOutStages', stagesToDrafts(tpl.stages))}
-                    className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-text-dim hover:text-text disabled:opacity-40"
-                  >
-                    Start from: {tpl.label}
-                  </button>
-                ))}
-              </div>
-            )}
-            {registry ? (
-              <ScaleOutBuilder
-                stages={scaleOutStages}
-                onChange={(s) => setField('scaleOutStages', s)}
-                registry={registry}
-                disabled={running}
-                // No park toggle here: a run stores a bare `ExitStage[]`, with no
-                // `disabled` bag to fold a parked stage into, so it would vanish when
-                // the run is reloaded. Remove the stage instead.
-                allowToggle={false}
-              />
-            ) : (
-              <span className="text-[11px] text-text-dim/60">Loading strategy registry…</span>
-            )}
-            {scaleOutStages.length > 0 && (
-              <div className="flex flex-wrap items-end gap-3">
-                <label className="flex flex-col gap-0.5 text-[11px] text-text-dim">
-                  Top-K / group
-                  <Input
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={scaleOutTopK}
-                    onChange={(e) =>
-                      setField('scaleOutTopK', Math.max(1, Number(e.target.value) || 3))
-                    }
-                    disabled={running}
-                    className="w-20"
-                  />
-                </label>
-                <Badge variant="info">baseline vs. this ladder, per combo</Badge>
-              </div>
-            )}
-          </div>
+        <Accordion title="Stage plan (Pass 2)" defaultOpen={stagePlan.length > 0}>
+          {registry ? (
+            <StagePlanEditor
+              plan={stagePlan}
+              onChange={(p) => setField('stagePlan', p)}
+              topK={stagePlansTopK}
+              onTopK={(k) => setField('stagePlansTopK', k)}
+              registry={registry}
+              disabled={running}
+            />
+          ) : (
+            <span className="text-[11px] text-text-dim/60">Loading strategy registry…</span>
+          )}
         </Accordion>
       </div>
 

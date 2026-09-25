@@ -38,6 +38,7 @@ import { STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { PromoteRuleModal } from '@lab/components/sweep/PromoteRuleModal';
 import { DryRunDetail } from '@lab/components/strategy/DryRunDetail';
 import { FamilySearchBoard } from '@lab/components/family/FamilySearchBoard';
+import { TagsNote } from '@lab/components/family/TagsNote';
 import {
   useBackgroundJobActions,
   useBackgroundJobsState,
@@ -111,8 +112,8 @@ const DEFAULTS: Config = {
 /**
  * Standing exit terms, one per line — mechanics that ride into every candidate and
  * the ungated control but are never searched, ablated or credited. Written exactly as
- * the attribution table prints them, so a term can be copied straight back out of a
- * result: `liquidity >= 85`, `untagged_buy(2s) >= 0.9`.
+ * the attribution table prints them (`read op value`), so a term can be copied straight
+ * back out of a result: `m_state.liquidity_sol >= 85`, `m_flow.buy_sol @!volume [2s] >= 0.9`.
  */
 function standingTerms(raw: string): string[] {
   return raw
@@ -174,7 +175,7 @@ const TIPS = {
   },
   standing: {
     title: 'Standing exit terms',
-    body: 'Mechanical alarms you always want, one per line, written exactly as the attribution table prints them: `liquidity >= 85` (sell at migration), `untagged_buy(2s) >= 0.9`. Each rides into every candidate AND the ungated control, so the numbers describe a rule you would really run — and none of them is searched, ablated or credited with the edge. A term that does not parse fails the run rather than being silently dropped.',
+    body: 'Mechanical alarms you always want, one per line, written `read op value` exactly as the attribution table prints them: `m_state.liquidity_sol >= 85` (sell near migration), `m_flow.buy_sol @!volume [2s] >= 0.9` (untagged SOL bought in the last 2 s). Each rides into every candidate AND the ungated control, so the numbers describe a rule you would really run — and none of them is searched, ablated or credited with the edge. A term that does not parse fails the run rather than being silently dropped.',
   },
   incumbent: {
     title: 'Incumbent (display only)',
@@ -452,6 +453,7 @@ export function FamilySearchPage() {
           onRequestMatchCount={fpMatches.ensureCount}
         />
         {fpMatches.matchesModal}
+        {selectedFp && <TagsNote tags={selectedFp.tags} />}
       </div>
 
       <div className="mb-3 flex flex-wrap items-end gap-3">
@@ -658,7 +660,7 @@ export function FamilySearchPage() {
                   spellCheck={false}
                   value={config.standingExit}
                   onChange={(e) => set('standingExit', e.target.value)}
-                  placeholder={'liquidity >= 85'}
+                  placeholder={'m_state.liquidity_sol >= 85'}
                   className="w-full rounded border border-white/15 bg-black/20 px-2 py-1 font-mono text-xs text-text-mid placeholder:text-text-dim/50 focus:border-primary/50 focus:outline-none"
                 />
               </Field>

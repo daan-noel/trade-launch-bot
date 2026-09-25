@@ -380,8 +380,8 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // Save a group card as a fingerprint. Identity = group_key axes, plus the
   // applied ix_labels filter when that axis wasn't grouped (mutually exclusive
   // with the filter in the picker — without this merge, create silently drops
-  // the labels the Analyze already pinned). Plain fingerprint — no metric
-  // config; flow patterns are added later on Flow discovery.
+  // the labels the Analyze already pinned). Plain fingerprint with no tags; tags
+  // are added later on Flow discovery or the fingerprint form.
   async function createFingerprintFromGroup(group: GroupedCreationGroup) {
     setFpError(null);
     setFpBusyGroup(group.g);
@@ -391,7 +391,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       await createFingerprint({
         name: fingerprintNameFromGroupKey(gk),
         ...identity,
-        metric_config: {},
+        tags: {},
       }).unwrap();
     } catch (e) {
       setFpError(apiErrorMessage(e as never, 'Failed to create fingerprint'));
@@ -445,7 +445,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   const drillTotal = drillArgs ? drillData?.total ?? 0 : 0;
   // The drilled card's OWN fingerprint drives the vol/non-vol overlay on its
   // charts / inspect modal, so a manual group-by that lands on a saved
-  // fingerprint classifies with that row's `ix_patterns` — the same set
+  // fingerprint classifies with that row's `tags` — the same set
   // the engine decides on — instead of degrading to creator-vs-rest. The scoped
   // id is the fallback (under a fingerprint scope `fpByGroup` already resolves
   // to it, so this only matters before the groups arrive); a card that matches

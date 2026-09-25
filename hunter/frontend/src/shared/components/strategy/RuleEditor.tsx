@@ -3,38 +3,36 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { IconButton } from 'components/ui/IconButton';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { LockIcon, SaveIcon, SpinnerIcon, UnlockIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Tabs, TabsList, TabsTrigger, TabsPanel } from 'components/ui/Tabs';
 import { cn } from 'lib/cn';
-import { useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
+import { rulePart, useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
 import {
-  emptyRuleParams,
-  ruleParamsFromJson,
-  ruleParamsToJson,
-  type RuleParams,
-} from 'lib/strategy/ruleParams';
-import {
-  paramsToConditionRows,
-  rowsToSides,
-  type RuleConditionRow,
-} from 'lib/strategy/ruleConditionRows';
-import { validateRuleParams } from 'lib/strategy/validate';
+  emptyRuleDoc,
+  renameSignal,
+  renameStage,
+  ruleDocFromJson,
+  ruleDocToJson,
+  type RuleDoc,
+} from 'lib/strategy/ruleDoc';
+import { tagNames } from 'lib/strategy/tagsDoc';
+import { validateRuleDoc } from 'lib/strategy/validate';
 import { solToLamports, lamportsToSol, type StrategyRule, type TradeMode } from 'lib/strategy/types';
-import { ConditionBuilder } from './ConditionBuilder';
-import {
-  draftsToStages,
-  stagesToDrafts,
-  ScaleOutBuilder,
-  type ScaleStageDraft,
-} from './ScaleOutBuilder';
 import { FingerprintParamsById } from './FingerprintParamsSummary';
 import { FingerprintPicker } from './FingerprintPicker';
 import { LabelTip } from './LabelTip';
 import { RuleTagsInput } from './RuleTagsInput';
 import { allTags } from 'lib/strategy/tags';
-import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
+import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { RULE_FIELD_HELP } from 'lib/strategy/strategyHelp';
+import type { CondContext } from './rule/CondRow';
+import { CondList, LineList, PartHeader } from './rule/parts';
+import { SignalsEditor } from './rule/SignalsEditor';
+import { StagesEditor } from './rule/StagesEditor';
+import { RuleSentences } from './rule/RuleSentences';
+import { GuideButton } from './StrategyGuide';
 
 /** The normalized draft the editor emits (matches the create body; the page maps
  *  it to a create or an update patch). */
@@ -46,7 +44,7 @@ export interface RuleEditorDraft {
   max_concurrent_tokens: number;
   max_total_tokens: number;
   params: Record<string, unknown>;
-  /** Presentational labels — the server canonicalizes them on save. */
+  /** Presentational labels; the server canonicalizes them on save. */
   tags: string[];
 }
 
@@ -57,10 +55,10 @@ export interface RuleEditorProps {
   onCancel?: () => void;
   submitting?: boolean;
   error?: string | null;
-  /** Lab-only dry-run panel (FE3): given the editor's live draft (or `null` when
-   *  no fingerprint is chosen) and whether it is valid enough to simulate,
-   *  returns the panel rendered beneath the builder. Injected by the lab page so
-   *  the shared editor never imports the lab-only simulate endpoints. */
+  /** Lab-only dry-run panel: given the editor's live draft (or `null` when no
+   *  fingerprint is chosen) and whether it is valid enough to simulate, returns the
+   *  panel rendered beneath the builder. Injected by the lab page so the shared editor
+   *  never imports the lab-only simulate endpoints. */
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
 }
 
@@ -71,6 +69,74 @@ export function RuleEditor(props: RuleEditorProps) {
     return <p className="p-3 text-[12px] text-text-dim">loading registry…</p>;
   }
   return <RuleEditorInner {...props} registry={registry} />;
+}
+
+/** Read the stored params; a document the editor cannot read opens empty with the
+ *  reason shown, so it is never silently overwritten by a save. */
+function initialDoc(initial: StrategyRule | undefined): { doc: RuleDoc; error: string | null } {
+  if (!initial) return { doc: emptyRuleDoc(), error: null };
+  try {
+    return { doc: ruleDocFromJson(initial.params), error: null };
+  } catch (e) {
+    return { doc: emptyRuleDoc(), error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function Section({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border border-white/10 bg-white/2 p-3">
+      <h3 className="text-[13px] font-semibold text-text">
+        <span className="mr-1.5 text-accent">{n}.</span>
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+function NumberField({
+  reg,
+  part,
+  label,
+  value,
+  onChange,
+  unit,
+  integer,
+  disabled,
+  className = 'w-24',
+  placeholder,
+}: {
+  reg: StrategyRegistry;
+  part?: string;
+  label: string;
+  value: number | null;
+  onChange: (n: number | null) => void;
+  unit?: string;
+  integer?: boolean;
+  disabled?: boolean;
+  className?: string;
+  placeholder?: string;
+}) {
+  const p = part ? rulePart(reg, part) : undefined;
+  return (
+    <label className="flex flex-col gap-1 text-[11px] text-text-dim">
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {p && <InfoTooltip title={p.title} body={`${p.summary}\n\nExample: ${p.example}`} />}
+      </span>
+      <Input
+        fieldSize="sm"
+        numeric
+        integer={integer}
+        unit={unit}
+        placeholder={placeholder ?? 'off'}
+        numericValue={value != null && Number.isFinite(value) ? value : null}
+        onNumericChange={onChange}
+        disabled={disabled}
+        className={className}
+      />
+    </label>
+  );
 }
 
 function RuleEditorInner({
@@ -85,165 +151,73 @@ function RuleEditorInner({
   const [ruleName, setRuleName] = useState(initial?.rule_name ?? '');
   const [mode, setMode] = useState<TradeMode>(initial?.trade_mode ?? 'paper');
   const [buySol, setBuySol] = useState<number | null>(lamportsToSol(initial?.buy_amount_lamports));
-  const [maxConcurrent, setMaxConcurrent] = useState<number | null>(
-    initial?.max_concurrent_tokens ?? 1,
-  );
+  const [maxConcurrent, setMaxConcurrent] = useState<number | null>(initial?.max_concurrent_tokens ?? 1);
   const [maxTotal, setMaxTotal] = useState<number | null>(initial?.max_total_tokens ?? 0);
   const [fingerprintId, setFingerprintId] = useState<string | null>(initial?.fingerprint_id ?? null);
-  const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
-  // Autocomplete over the tags already in use, so the vocabulary converges
-  // instead of sprouting a near-duplicate per rule.
+  const [labels, setLabels] = useState<string[]>(initial?.tags ?? []);
   const { data: allRules = [] } = useGetStrategyRulesQuery();
-  const tagSuggestions = useMemo(() => allTags(allRules), [allRules]);
+  const labelSuggestions = useMemo(() => allTags(allRules), [allRules]);
+  const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const fpTags = useMemo(
+    () => tagNames(fingerprints.find((f) => f.id === fingerprintId)?.tags),
+    [fingerprints, fingerprintId],
+  );
 
-  // `params` carries TP/SL/re-entry/flags; entry/exit conditions live in `rows`
-  // and scale-out stages in `scaleStages` — both folded back at compose time.
-  const [params, setParams] = useState<RuleParams>(() =>
-    initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams(),
-  );
-  const [rows, setRows] = useState<RuleConditionRow[]>(() => {
-    const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
-    // Parked conditions come back as rows too (muted, `enabled: false`) — that is the
-    // point of storing them in `params.disabled` rather than dropping them on save.
-    return paramsToConditionRows(p);
-  });
-  const [scaleStages, setScaleStages] = useState<ScaleStageDraft[]>(() => {
-    const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
-    // Parked stages come back as drafts too (muted, `enabled: false`) — same reason
-    // as the parked condition rows above.
-    return stagesToDrafts(p.scale_out, p.disabled?.scale_out);
-  });
-  // The full rule params = TP/SL/re-entry + conditions + scale-out. Parked rows and
-  // parked stages share the one `disabled` bag, so they merge here rather than one
-  // overwriting the other.
-  const composedParams: RuleParams = useMemo(() => {
-    const sides = rowsToSides(rows);
-    const parkedStages = draftsToStages(scaleStages, false);
-    return {
-      take_profit: params.take_profit,
-      stop_loss: params.stop_loss,
-      reentry: params.reentry,
-      exclusive: params.exclusive,
-      priority: params.priority,
-      buy_pct_of_vsol: params.buy_pct_of_vsol,
-      ...sides,
-      entry_lock: Object.keys(sides.entry_event).length ? params.entry_lock : null,
-      disabled:
-        sides.disabled || parkedStages
-          ? { ...sides.disabled, scale_out: parkedStages }
-          : null,
-      scale_out: draftsToStages(scaleStages),
-    };
-  }, [
-    params.take_profit,
-    params.stop_loss,
-    params.reentry,
-    params.exclusive,
-    params.priority,
-    params.buy_pct_of_vsol,
-    params.entry_lock,
-    rows,
-    scaleStages,
-  ]);
-  const [tab, setTab] = useState<'builder' | 'json'>('builder');
-  const [jsonText, setJsonText] = useState(() =>
-    JSON.stringify(ruleParamsToJson(composedParams), null, 2),
-  );
-  const [jsonError, setJsonError] = useState<string | null>(null);
-  // Persisted rules start with mode locked; unlock via the padlock to flip paper↔real.
-  // Duplicate / promote pass an id-less `initial` — no lock control (create path).
+  const [{ doc: firstDoc, error: loadError }] = useState(() => initialDoc(initial));
+  const [doc, setDoc] = useState<RuleDoc>(firstDoc);
+  const [tab, setTab] = useState<'builder' | 'json' | 'words'>('builder');
+  const [jsonText, setJsonText] = useState(() => JSON.stringify(ruleDocToJson(firstDoc), null, 2));
+  const [jsonError, setJsonError] = useState<string | null>(loadError);
   const [modeUnlocked, setModeUnlocked] = useState(false);
 
-  // Conditions (fingerprint + params) are locked once the rule is live — only
-  // sizing/caps stay editable. Open positions keep their snapshotted trade_mode;
-  // flipping mode here only affects future entries.
+  // A live rule's conditions are locked; sizing and caps stay editable. Open positions
+  // keep their snapshotted trade mode, so flipping mode only affects future buys.
   const conditionsLocked = Boolean(initial?.is_active);
   const modeCanLock = Boolean(initial?.id);
   const modeLocked = modeCanLock && !modeUnlocked;
-
   const toggleModeLock = () => {
     if (modeUnlocked) {
       setModeUnlocked(false);
       return;
     }
-    if (
-      !window.confirm(
-        'Unlock trade mode? Changing paper↔real affects future entries for this rule. Open positions keep their original mode.',
-      )
-    ) {
+    if (!window.confirm('Unlock trade mode? Changing paper↔real affects future buys for this rule. Open positions keep their original mode.')) {
       return;
     }
     setModeUnlocked(true);
   };
 
-  // Re-entry: absent ⇒ one-shot. Toggling on seeds the family-observed defaults
-  // (cooldown 5s, cap 10/token); toggling off drops the block entirely. Editing a
-  // field to blank stores NaN so validation flags it (kept a number for the type).
-  const reentryOn = params.reentry != null;
-  const toggleReentry = (on: boolean) =>
-    setParams((p) => ({
-      ...p,
-      reentry: on ? (p.reentry ?? { cooldown_sec: 5, max_episodes_per_token: 10 }) : null,
-    }));
-  const setReentryField = (field: 'cooldown_sec' | 'max_episodes_per_token', n: number | null) =>
-    setParams((p) => ({
-      ...p,
-      reentry: {
-        cooldown_sec: p.reentry?.cooldown_sec ?? NaN,
-        max_episodes_per_token: p.reentry?.max_episodes_per_token ?? NaN,
-        [field]: n ?? NaN,
-      },
-    }));
-  const finiteOrNull = (v: number | null | undefined) =>
-    v != null && Number.isFinite(v) ? v : null;
+  const patch = (f: (d: RuleDoc) => RuleDoc) => setDoc((d) => f(d));
+  const setEnter = (e: Partial<RuleDoc['enter']>) => patch((d) => ({ ...d, enter: { ...d.enter, ...e } }));
 
-  // When editing the JSON tab, fold it back into TP/SL/re-entry, condition rows,
-  // and scale-out stages so the builder stays in sync.
   const syncFromJson = (text: string) => {
     setJsonText(text);
     try {
-      const parsed = ruleParamsFromJson(JSON.parse(text), registry);
-      setParams((p) => ({
-        ...p,
-        take_profit: parsed.take_profit,
-        stop_loss: parsed.stop_loss,
-        reentry: parsed.reentry,
-        exclusive: parsed.exclusive,
-        priority: parsed.priority,
-        buy_pct_of_vsol: parsed.buy_pct_of_vsol,
-        entry_event: parsed.entry_event,
-        entry_lock: parsed.entry_lock,
-      }));
-      setRows(paramsToConditionRows(parsed));
-      setScaleStages(stagesToDrafts(parsed.scale_out, parsed.disabled?.scale_out));
+      setDoc(ruleDocFromJson(JSON.parse(text)));
       setJsonError(null);
     } catch (e) {
       setJsonError(e instanceof Error ? e.message : 'invalid JSON');
     }
   };
   const switchTab = (next: string) => {
-    if (next === 'json') setJsonText(JSON.stringify(ruleParamsToJson(composedParams), null, 2));
-    setTab(next as 'builder' | 'json');
+    if (next === 'json') setJsonText(JSON.stringify(ruleDocToJson(doc), null, 2));
+    setTab(next as 'builder' | 'json' | 'words');
   };
 
-  const paramErrors = useMemo(
-    () => validateRuleParams(composedParams, registry),
-    [composedParams, registry],
+  const issues = useMemo(
+    () => validateRuleDoc(doc, registry, fingerprintId ? fpTags : undefined),
+    [doc, registry, fingerprintId, fpTags],
   );
   const buyLamports = solToLamports(buySol) ?? 0;
   const errors: string[] = [];
-  if (!ruleName.trim()) errors.push('rule_name must not be empty');
-  if (!fingerprintId) errors.push('a fingerprint is required');
-  if (buyLamports <= 0) errors.push('buy amount must be > 0');
-  // Blank ⇒ `null` ⇒ saved as the `0 = unlimited` sentinel on both caps, so only
-  // a negative typed value is an error.
-  if ((maxConcurrent ?? 0) < 0) errors.push('max concurrent must be ≥ 0 (blank = ∞)');
-  if ((maxTotal ?? 0) < 0) errors.push('max total must be ≥ 0 (blank = ∞)');
-  errors.push(...paramErrors);
+  if (!ruleName.trim()) errors.push('Give the rule a name');
+  if (!fingerprintId) errors.push('Pick a fingerprint: it decides which coins the rule watches');
+  if (buyLamports <= 0) errors.push('The buy amount must be above 0');
+  if ((maxConcurrent ?? 0) < 0) errors.push('Max concurrent must be 0 or more (blank = no cap)');
+  if ((maxTotal ?? 0) < 0) errors.push('Max total must be 0 or more (blank = no cap)');
+  errors.push(...issues.errors);
   if (jsonError) errors.push(`JSON: ${jsonError}`);
   const canSubmit = errors.length === 0 && !submitting;
 
-  // The editor's live draft — shared by submit and the dry-run render-prop.
   const currentDraft: RuleEditorDraft | null = fingerprintId
     ? {
         rule_name: ruleName.trim(),
@@ -252,18 +226,19 @@ function RuleEditorInner({
         buy_amount_lamports: buyLamports,
         max_concurrent_tokens: maxConcurrent ?? 0,
         max_total_tokens: maxTotal ?? 0,
-        params: ruleParamsToJson(composedParams),
-        tags,
+        params: ruleDocToJson(doc),
+        tags: labels,
       }
     : null;
 
-  const submit = () => {
-    if (currentDraft) onSubmit(currentDraft);
-  };
+  const signalNames = doc.signals.map((s) => s.name);
+  const stageNames = doc.stages.map((s) => s.name);
+  const buyCtx: CondContext = { reg: registry, tags: fpTags, signals: signalNames, beforeBuy: true, disabled: conditionsLocked };
+  const sellCtx: CondContext = { ...buyCtx, beforeBuy: false };
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Header: identity + sizing */}
+      {/* Identity + sizing */}
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.name}>Name</LabelTip>
@@ -272,12 +247,7 @@ function RuleEditorInner({
         <div className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.mode}>Mode</LabelTip>
           <div className="flex items-center gap-1">
-            <Select
-              fieldSize="sm"
-              value={mode}
-              onChange={(e) => setMode(e.target.value as TradeMode)}
-              disabled={modeLocked}
-            >
+            <Select fieldSize="sm" value={mode} onChange={(e) => setMode(e.target.value as TradeMode)} disabled={modeLocked}>
               <option value="paper">paper</option>
               <option value="real">real</option>
             </Select>
@@ -297,203 +267,154 @@ function RuleEditorInner({
         </div>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.buy}>Buy (◎)</LabelTip>
-          <Input
-            fieldSize="sm"
-            numeric
-            unit="◎"
-            numericValue={buySol}
-            onNumericChange={setBuySol}
-            className="w-24"
-          />
+          <Input fieldSize="sm" numeric unit="◎" numericValue={buySol} onNumericChange={setBuySol} className="w-24" />
         </label>
-        {/* The two governance caps are the genuine `0 = off` sentinels left in the
-            rule form: `blankZero` renders a stored 0 as an empty field so "no cap"
-            reads as blank/∞ instead of "capped at zero". Display-only — an untouched
-            0 still saves as 0, which the engine decodes to `Cap::UNLIMITED`. A NEW
-            rule still opens at 1 concurrent, so unbounded is always an explicit
-            authoring act, never a default. */}
+        {/* The two caps are the genuine `0 = off` sentinels: a stored 0 renders blank so
+            "no cap" reads as ∞ instead of "capped at zero". A new rule opens at 1
+            concurrent, so unbounded is always an explicit choice. */}
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.maxConcurrent}>Max concurrent</LabelTip>
-          <Input
-            fieldSize="sm"
-            numeric
-            integer
-            blankZero
-            placeholder="∞"
-            numericValue={maxConcurrent}
-            onNumericChange={setMaxConcurrent}
-            className="w-20"
-          />
+          <Input fieldSize="sm" numeric integer blankZero placeholder="∞" numericValue={maxConcurrent} onNumericChange={setMaxConcurrent} className="w-20" />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.maxTotal}>Max total</LabelTip>
-          <Input
-            fieldSize="sm"
-            numeric
-            integer
-            blankZero
-            placeholder="∞"
-            numericValue={maxTotal}
-            onNumericChange={setMaxTotal}
-            className="w-20"
-          />
+          <Input fieldSize="sm" numeric integer blankZero placeholder="∞" numericValue={maxTotal} onNumericChange={setMaxTotal} className="w-20" />
         </label>
       </div>
 
-      {/* Tags — a label, not a condition, so it stays editable while the rule is
-          live (unlike the fingerprint / entry / exit block below). */}
       <div className="flex flex-col gap-1 text-[11px] text-text-dim">
-        <LabelTip tip={RULE_FIELD_HELP.tags}>Tags</LabelTip>
-        <RuleTagsInput value={tags} onChange={setTags} suggestions={tagSuggestions} />
+        <LabelTip tip={RULE_FIELD_HELP.tags}>Labels</LabelTip>
+        <RuleTagsInput value={labels} onChange={setLabels} suggestions={labelSuggestions} />
       </div>
 
-      {/* Fingerprint + TP/SL — controls on one row; axis chips below full width */}
       <div className="flex flex-col gap-1.5">
-        <div className="grid grid-cols-[minmax(0,1fr)_5rem_5rem] items-end gap-x-3">
-          <div className="flex min-w-0 flex-col gap-1 text-[11px] text-text-dim">
-            <LabelTip tip={RULE_FIELD_HELP.fingerprint}>
-              Fingerprint{' '}
-              {conditionsLocked && <span className="text-text-dim/60">(locked — rule live)</span>}
-            </LabelTip>
-            <FingerprintPicker
-              value={fingerprintId}
-              onChange={setFingerprintId}
-              disabled={conditionsLocked}
-            />
-          </div>
-          <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-            <LabelTip tip={RULE_FIELD_HELP.takeProfit}>TP (%)</LabelTip>
-            <Input
-              fieldSize="sm"
-              numeric
-              unit="%"
-              numericValue={params.take_profit}
-              onNumericChange={(n) => setParams((p) => ({ ...p, take_profit: n }))}
-              disabled={conditionsLocked}
-              className="w-full"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-            <LabelTip tip={RULE_FIELD_HELP.stopLoss}>SL (%)</LabelTip>
-            <Input
-              fieldSize="sm"
-              numeric
-              unit="%"
-              numericValue={params.stop_loss}
-              onNumericChange={(n) => setParams((p) => ({ ...p, stop_loss: n }))}
-              disabled={conditionsLocked}
-              className="w-full"
-            />
-          </label>
+        <div className="flex min-w-0 flex-col gap-1 text-[11px] text-text-dim">
+          <LabelTip tip={RULE_FIELD_HELP.fingerprint}>
+            Fingerprint {conditionsLocked && <span className="text-text-dim/60">(locked: rule live)</span>}
+          </LabelTip>
+          <FingerprintPicker value={fingerprintId} onChange={setFingerprintId} disabled={conditionsLocked} />
         </div>
         <FingerprintParamsById id={fingerprintId} />
-      </div>
-
-      {/* Re-entry (optional): re-arm after each normal exit. Absent ⇒ one-shot. */}
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex h-8 items-center gap-1.5 text-[11px] text-text-dim">
-          <input
-            type="checkbox"
-            checked={reentryOn}
-            disabled={conditionsLocked}
-            onChange={(e) => toggleReentry(e.target.checked)}
-            className="accent-accent"
-          />
-          <LabelTip tip={RULE_FIELD_HELP.reentry}>Re-entry</LabelTip>
-        </label>
-        {reentryOn && (
-          <>
-            <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-              <LabelTip tip={RULE_FIELD_HELP.reentryCooldown}>Cooldown (s)</LabelTip>
-              <Input
-                fieldSize="sm"
-                numeric
-                unit="s"
-                numericValue={finiteOrNull(params.reentry?.cooldown_sec)}
-                onNumericChange={(n) => setReentryField('cooldown_sec', n)}
-                disabled={conditionsLocked}
-                className="w-20"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-              <LabelTip tip={RULE_FIELD_HELP.reentryMaxEpisodes}>Max episodes/token</LabelTip>
-              <Input
-                fieldSize="sm"
-                numeric
-                integer
-                numericValue={finiteOrNull(params.reentry?.max_episodes_per_token)}
-                onNumericChange={(n) => setReentryField('max_episodes_per_token', n)}
-                disabled={conditionsLocked}
-                className="w-24"
-              />
-            </label>
-          </>
+        {fingerprintId && (
+          <p className="text-[11px] text-text-dim">
+            Tags this fingerprint defines:{' '}
+            {fpTags.length ? fpTags.map((t) => <code key={t} className="mr-1">@{t}</code>) : <span className="italic">none (metrics that need a tag read nothing)</span>}
+          </p>
         )}
-      </div>
-
-      {/* Exclusivity (optional): skip entry while any other rule holds this token. */}
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex h-8 items-center gap-1.5 text-[11px] text-text-dim">
-          <input
-            type="checkbox"
-            checked={params.exclusive}
-            disabled={conditionsLocked}
-            onChange={(e) => setParams((p) => ({ ...p, exclusive: e.target.checked }))}
-            className="accent-accent"
-          />
-          <LabelTip tip={RULE_FIELD_HELP.exclusive}>Exclusive</LabelTip>
-        </label>
-        {params.exclusive && (
-          <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-            <LabelTip tip={RULE_FIELD_HELP.exclusivePriority}>Priority</LabelTip>
-            <Input
-              fieldSize="sm"
-              numeric
-              integer
-              numericValue={params.priority}
-              onNumericChange={(n) => setParams((p) => ({ ...p, priority: n ?? 0 }))}
-              disabled={conditionsLocked}
-              className="w-20"
-            />
-          </label>
-        )}
-        {/* Blank = the rule's fixed buy size. Set = a percent of the pool at entry,
-            which is what holds our own impact constant across a liquidity band. */}
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.buyPctOfVsol}>Buy % of vSOL</LabelTip>
-          <Input
-            fieldSize="sm"
-            numeric
-            unit="%"
-            numericValue={finiteOrNull(params.buy_pct_of_vsol)}
-            onNumericChange={(n) => setParams((p) => ({ ...p, buy_pct_of_vsol: n }))}
-            disabled={conditionsLocked}
-            className="w-24"
-          />
-        </label>
       </div>
 
       <Tabs value={tab} onValueChange={switchTab}>
-        <TabsList>
-          <TabsTrigger value="builder">Builder</TabsTrigger>
-          <TabsTrigger value="json">JSON</TabsTrigger>
-        </TabsList>
+        <div className="flex items-center justify-between gap-2">
+          <TabsList>
+            <TabsTrigger value="builder">Builder</TabsTrigger>
+            <TabsTrigger value="json">JSON</TabsTrigger>
+            <TabsTrigger value="words">In words</TabsTrigger>
+          </TabsList>
+          <GuideButton />
+        </div>
         <TabsPanel value="builder">
           <div className="flex flex-col gap-3">
-            <ConditionBuilder
-              rows={rows}
-              onChange={setRows}
-              registry={registry}
-              disabled={conditionsLocked}
-              entryLock={params.entry_lock}
-              onEntryLockChange={(lock) => setParams((p) => ({ ...p, entry_lock: lock }))}
-            />
-            <ScaleOutBuilder
-              stages={scaleStages}
-              onChange={setScaleStages}
-              registry={registry}
-              disabled={conditionsLocked}
-            />
+            <Section n={1} title="Buy">
+              <PartHeader ctx={buyCtx} part="enter.event" />
+              <CondList conds={doc.enter.event} onChange={(event) => setEnter({ event })} ctx={buyCtx} empty="No trigger: the rule buys on the first print or tick where the filters below hold." />
+              <PartHeader ctx={buyCtx} part="enter.filters" />
+              <CondList conds={doc.enter.filters} onChange={(filters) => setEnter({ filters })} ctx={buyCtx} />
+              <PartHeader ctx={buyCtx} part="enter.final_filters" />
+              <CondList conds={doc.enter.final_filters} onChange={(final_filters) => setEnter({ final_filters })} ctx={buyCtx} />
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex flex-col gap-1 text-[11px] text-text-dim">
+                  <span className="inline-flex items-center gap-1">
+                    {rulePart(registry, 'enter.lock')?.title ?? 'One chance'}
+                    <InfoTooltip body={`${rulePart(registry, 'enter.lock')?.summary ?? ''}\n\nExample: ${rulePart(registry, 'enter.lock')?.example ?? ''}`} />
+                  </span>
+                  <Select
+                    className="w-48"
+                    value={doc.enter.lock ?? ''}
+                    disabled={conditionsLocked}
+                    onChange={(e) => setEnter({ lock: (e.target.value || null) as RuleDoc['enter']['lock'] })}
+                  >
+                    <option value="">no: any print may buy</option>
+                    <option value="token">once per coin</option>
+                    <option value="slot">once per slot</option>
+                  </Select>
+                </label>
+                <NumberField
+                  reg={registry}
+                  part="enter.size_pct_of_pool"
+                  label="Size as % of pool"
+                  unit="%"
+                  placeholder="fixed"
+                  value={doc.enter.size_pct_of_pool}
+                  onChange={(n) => setEnter({ size_pct_of_pool: n })}
+                  disabled={conditionsLocked}
+                />
+              </div>
+            </Section>
+
+            <Section n={2} title="Signals">
+              <SignalsEditor
+                doc={doc}
+                ctx={sellCtx}
+                onChange={(signals) => patch((d) => ({ ...d, signals }))}
+                onRename={(from, to) => patch((d) => renameSignal(d, from, to))}
+              />
+            </Section>
+
+            <Section n={3} title="Sell">
+              <div className="flex flex-wrap items-end gap-3">
+                <NumberField reg={registry} part="stop_loss" label="Stop loss" unit="%" value={doc.stop_loss} onChange={(n) => patch((d) => ({ ...d, stop_loss: n }))} disabled={conditionsLocked} />
+                <NumberField reg={registry} part="take_profit" label="Take profit" unit="%" value={doc.take_profit} onChange={(n) => patch((d) => ({ ...d, take_profit: n }))} disabled={conditionsLocked} />
+              </div>
+              <PartHeader ctx={sellCtx} part="always" />
+              <LineList lines={doc.always} onChange={(always) => patch((d) => ({ ...d, always }))} ctx={sellCtx} stages={stageNames} addLabel="always line" />
+              <StagesEditor
+                doc={doc}
+                ctx={sellCtx}
+                onChange={(stages) => patch((d) => ({ ...d, stages }))}
+                onRename={(from, to) => patch((d) => renameStage(d, from, to))}
+              />
+            </Section>
+
+            <Section n={4} title="Settings">
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex h-8 items-center gap-1.5 text-[11px] text-text-dim">
+                  <input
+                    type="checkbox"
+                    className="accent-accent"
+                    checked={doc.reentry != null}
+                    disabled={conditionsLocked}
+                    onChange={(e) => patch((d) => ({ ...d, reentry: e.target.checked ? (d.reentry ?? { cooldown_sec: 5, max_per_coin: 10 }) : null }))}
+                  />
+                  {rulePart(registry, 'reentry')?.title ?? 'Buy again'}
+                  <InfoTooltip body={`${rulePart(registry, 'reentry')?.summary ?? ''}\n\nExample: ${rulePart(registry, 'reentry')?.example ?? ''}`} />
+                </label>
+                {doc.reentry && (
+                  <>
+                    <NumberField reg={registry} label="Wait after a sell" unit="s" placeholder="" value={doc.reentry.cooldown_sec} disabled={conditionsLocked} className="w-20"
+                      onChange={(n) => patch((d) => ({ ...d, reentry: { cooldown_sec: n ?? NaN, max_per_coin: d.reentry?.max_per_coin ?? NaN } }))} />
+                    <NumberField reg={registry} label="Most buys per coin" integer placeholder="" value={doc.reentry.max_per_coin} disabled={conditionsLocked} className="w-20"
+                      onChange={(n) => patch((d) => ({ ...d, reentry: { cooldown_sec: d.reentry?.cooldown_sec ?? NaN, max_per_coin: n ?? NaN } }))} />
+                  </>
+                )}
+              </div>
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex h-8 items-center gap-1.5 text-[11px] text-text-dim">
+                  <input
+                    type="checkbox"
+                    className="accent-accent"
+                    checked={doc.exclusive}
+                    disabled={conditionsLocked}
+                    onChange={(e) => patch((d) => ({ ...d, exclusive: e.target.checked }))}
+                  />
+                  {rulePart(registry, 'exclusive')?.title ?? 'Exclusive'}
+                  <InfoTooltip body={`${rulePart(registry, 'exclusive')?.summary ?? ''}\n\nExample: ${rulePart(registry, 'exclusive')?.example ?? ''}`} />
+                </label>
+                {doc.exclusive && (
+                  <NumberField reg={registry} label="Priority" integer placeholder="0" value={doc.priority} disabled={conditionsLocked} className="w-20"
+                    onChange={(n) => patch((d) => ({ ...d, priority: n ?? 0 }))} />
+                )}
+              </div>
+            </Section>
           </div>
         </TabsPanel>
         <TabsPanel value="json">
@@ -508,14 +429,26 @@ function RuleEditorInner({
             onChange={(e) => syncFromJson(e.target.value)}
           />
           <p className="mt-1 flex items-center gap-1 text-[11px] text-text-dim/70">
-            Raw <code>params</code> JSON — registry-validated. Order normalizes on save.
+            The rule's <code>params</code> as stored (format 2). Edits here update the builder.
             <LabelTip tip={RULE_FIELD_HELP.paramsJson} />
           </p>
+        </TabsPanel>
+        <TabsPanel value="words">
+          <div className="rounded-md border border-white/10 bg-bg-card p-3">
+            <RuleSentences doc={doc} reg={registry} />
+          </div>
         </TabsPanel>
       </Tabs>
 
       {renderDryRun?.(currentDraft, canSubmit)}
 
+      {issues.warnings.length > 0 && (
+        <ul className="flex flex-col gap-0.5 text-[11px] text-amber-300">
+          {issues.warnings.map((w, i) => (
+            <li key={i}>⚠ {w}</li>
+          ))}
+        </ul>
+      )}
       {errors.length > 0 && (
         <ul className="flex flex-col gap-0.5 text-[11px] text-red">
           {errors.map((e, i) => (
@@ -534,7 +467,7 @@ function RuleEditorInner({
           variant="primary"
           size="lg"
           disabled={!canSubmit}
-          onClick={submit}
+          onClick={() => currentDraft && onSubmit(currentDraft)}
           label={submitting ? 'Saving…' : initial?.id ? 'Save rule' : 'Create rule'}
           title={submitting ? 'Saving…' : initial?.id ? 'Save rule' : 'Create rule'}
         >

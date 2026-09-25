@@ -1,26 +1,21 @@
 import { useMemo } from 'react';
-import { flowPatternKeysFromMetricConfig } from 'lib/flow/flowPatternKeys';
+import { flowPatternKeysFromTags } from 'lib/flow/flowPatternKeys';
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 
 /**
- * Where a surface's vol/non-vol classification comes from: the keys to classify
- * with AND the fingerprint row they were read off.
+ * Where a surface's `@tag` / `@!tag` classification comes from: the fingerprint row
+ * AND a key set read off it.
  *
- * The id travels WITH the keys because editing needs it and a key set cannot be
- * traced back to one row. `metric_config` is not part of fingerprint identity, so
- * any number of fingerprints may carry the same patterns — and every unconfigured
- * one carries the same empty set, which is exactly the state authoring starts
- * from. A surface handed keys alone has to guess its write target, and both
- * outcomes are wrong: refuse (the Tagged badge goes dead) or guess (the write lands
- * on an unrelated rule's fingerprint).
- *
- * Prefer these hooks over the keys-only wrappers below wherever the surface can
- * edit patterns; the wrappers are for read-only classification (chart overlay).
+ * The id is what matters: a chart handed it classifies with the fingerprint's whole
+ * tag (every matcher and option) and writes "add to tag" clicks to that row. The keys
+ * are the default tag's exact ix shapes, the fallback for a host that passes keys
+ * alone. `tags` is not part of fingerprint identity, so a key set cannot be traced
+ * back to one row: a surface handed keys alone can only guess its write target.
  */
 export interface FlowPatternSource {
   /** Fingerprint the keys were read from — the row an edit writes to. */
   fingerprintId: string | null;
-  /** Its `ix_patterns` keys; `null` when the row has none configured. */
+  /** Its default tag's `ix_shape` keys; `null` when that tag has none. */
   keys: ReadonlySet<string> | null;
 }
 
@@ -38,11 +33,11 @@ export function useFlowPatternSource(
   return useMemo(() => {
     if (!fingerprintId) return NO_FLOW_PATTERN_SOURCE;
     const fp = fingerprints.find((f) => f.id === fingerprintId);
-    // The id stands even when the row carries no patterns yet — "unconfigured"
-    // is precisely the state a Tagged-badge edit exists to leave.
+    // The id stands even when the row has no tag yet - "no tags" is precisely the
+    // state an "add to tag" click exists to leave.
     return {
       fingerprintId,
-      keys: fp ? flowPatternKeysFromMetricConfig(fp.metric_config) : null,
+      keys: fp ? flowPatternKeysFromTags(fp.tags) : null,
     };
   }, [fingerprintId, fingerprints]);
 }

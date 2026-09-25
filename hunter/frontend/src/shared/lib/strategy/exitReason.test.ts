@@ -138,3 +138,27 @@ describe('normalizeExitReasonFilter', () => {
     expect(normalizeExitReasonFilter('stall > 3')).toBe('stall > 3');
   });
 });
+
+describe('v2 line exits', () => {
+  it('parses an auto label into the read, the operator and the value', () => {
+    expect(parseMetricExitParts('m_flow.buy_sol @!volume [10s] >= 2')).toEqual({
+      name: 'm_flow.buy_sol @!volume [10s]',
+      op: '>=',
+      value: '2',
+    });
+    expect(parseMetricExitParts('m_state.age_sec < 20')).toEqual({ name: 'm_state.age_sec', op: '<', value: '20' });
+    expect(parseMetricExitTarget('m_flow.slice_sol_share_pct [30s, slice 2s] >= 50')).toEqual({
+      metric: 'm_flow.slice_sol_share_pct [30s, slice 2s]',
+      window: null,
+    });
+  });
+
+  it('counts a labelled line as a line exit and the named exits as not', () => {
+    expect(isMetricExitReason('spike')).toBe(true);
+    expect(isMetricExitReason('m_state.age_sec < 20')).toBe(true);
+    for (const r of ['TakeProfit', 'StopLoss', 'Dead', 'Manual', 'Migrated', 'Open']) {
+      expect(isMetricExitReason(r)).toBe(false);
+    }
+    expect(exitReasonLabel('spike')).toBe('spike');
+  });
+});

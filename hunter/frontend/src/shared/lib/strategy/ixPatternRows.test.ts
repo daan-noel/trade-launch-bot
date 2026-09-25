@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  dumpPatternRowsFromConfig,
-  dumpPatternsFromConfig,
-  ixPatternRowsFromConfig,
-  ixPatternsFromConfig,
-  metricConfigWithDumpPatterns,
-  metricConfigWithIxPatterns,
-} from './registry';
+import { tagsFromJson, tagsToJson, withTagShape } from './tagsDoc';
 import {
   addUnpinnedPatterns,
   anyRowMatchesTrade,
@@ -127,49 +120,26 @@ describe('withPreservedFees', () => {
 /** The regression this whole module exists to prevent: the fingerprint form, the
  *  flow lens and the sweep config all edit LABELS, and a save from any of them must
  *  not widen a pinned entry back to ix-only. Discovery writes whole rows. */
-describe('a labels-only save preserves the pins it cannot edit', () => {
-  it('keeps a flow pin across a labels-only rewrite', () => {
-    const before = metricConfigWithIxPatterns([
-      { labels: DUMP, cu_limit: 300_000 },
-      { labels: ['Pump.Fun: Buy'] },
-    ]);
-    // What a labels-only surface reads, edits, and writes back.
-    const labels = ixPatternsFromConfig(before);
-    expect(labels).toEqual([DUMP, ['Pump.Fun: Buy']]);
-    const after = metricConfigWithIxPatterns(labels, before);
-    expect(ixPatternRowsFromConfig(after)).toEqual([
-      { labels: DUMP, cu_limit: 300_000 },
-      { labels: ['Pump.Fun: Buy'] },
-    ]);
-  });
-
-  it('keeps a dump pin across a labels-only rewrite', () => {
-    const before = metricConfigWithDumpPatterns({}, [
-      { labels: DUMP, cu_limit: 300_000, cu_price: 3_333_333 },
-    ]);
-    const after = metricConfigWithDumpPatterns(before, dumpPatternsFromConfig(before));
-    expect(dumpPatternRowsFromConfig(after)).toEqual([
+describe('a tag keeps its ix shape rows whole', () => {
+  it('keeps a pin through a read and a write', () => {
+    const doc = withTagShape({}, 'dump', { labels: DUMP, cu_limit: 300_000, cu_price: 3_333_333 });
+    expect(tagsFromJson(tagsToJson(tagsFromJson(doc)))[0].match.ix_shape).toEqual([
       { labels: DUMP, cu_limit: 300_000, cu_price: 3_333_333 },
     ]);
   });
 
-  /** Removing a shape still removes it — preservation is not resurrection. */
-  it('does not resurrect a shape the surface deleted', () => {
-    const before = metricConfigWithDumpPatterns({}, [
-      { labels: DUMP, cu_limit: 300_000 },
-      { labels: ['Pump.Fun: Buy'] },
-    ]);
-    const after = metricConfigWithDumpPatterns(before, [['Pump.Fun: Buy']]);
-    expect(dumpPatternRowsFromConfig(after)).toEqual([{ labels: ['Pump.Fun: Buy'] }]);
+  /** Removing a shape removes it; the pinned twin is a different entry. */
+  it('removes exactly the row asked for', () => {
+    let doc = withTagShape({}, 'dump', { labels: DUMP, cu_limit: 300_000 });
+    doc = withTagShape(doc, 'dump', { labels: ['Pump.Fun: Buy'] });
+    doc = withTagShape(doc, 'dump', { labels: DUMP }, true);
+    expect(tagsFromJson(doc)[0].match.ix_shape).toEqual([{ labels: DUMP, cu_limit: 300_000 }, { labels: ['Pump.Fun: Buy'] }]);
   });
 
-  /** An unpinned list must serialize byte-identically to what it always did. */
-  it('leaves a list with no pins in the shape it has always had', () => {
-    const cfg = metricConfigWithDumpPatterns({}, [DUMP, ['Pump.Fun: Buy']]);
-    expect((cfg.m_dump_ix as Record<string, unknown>).ix_patterns).toEqual([
-      DUMP,
-      ['Pump.Fun: Buy'],
-    ]);
+  /** An unpinned row stays the bare array it always was: `tags` is row identity. */
+  it('writes an unpinned row as a bare array', () => {
+    const doc = withTagShape({}, 'volume', { labels: DUMP });
+    expect(doc).toEqual({ volume: { match: { ix_shape: [DUMP] } } });
   });
 });
 

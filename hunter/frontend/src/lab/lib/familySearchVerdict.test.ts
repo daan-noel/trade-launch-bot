@@ -110,7 +110,7 @@ function base(): FamilySearchReport {
     // surviving the reprice. The tiers below flip one of these at a time.
     threshold_ladders: [
       {
-        clause: 'untagged_buy(2s) >= 1.6',
+        clause: 'm_flow.buy_sol @!volume [2s] >= 1.6',
         is_entry: false,
         verdict: 'plateau',
         points: [
@@ -123,7 +123,7 @@ function base(): FamilySearchReport {
     alarm_regret: [
       {
         slot: 0,
-        label: 'stall >= 30',
+        label: 'm_price.stall_sec >= 30',
         standing: false,
         n: 40,
         n_priced: 36,
@@ -138,7 +138,7 @@ function base(): FamilySearchReport {
     ],
     entry_redundancy: [
       {
-        clause: 'liquidity > 30',
+        clause: 'm_state.liquidity_sol > 30',
         n_vetoed: 40,
         solo_ret_pct: 10,
         solo_win_pct: 55,
@@ -150,7 +150,7 @@ function base(): FamilySearchReport {
     ],
     fill_sensitivity: [
       {
-        clause: 'untagged_buy(2s) >= 1.6',
+        clause: 'm_flow.buy_sol @!volume [2s] >= 1.6',
         is_entry: false,
         delta_authority: 6.0,
         delta_optimistic: 5.4,
@@ -288,10 +288,10 @@ describe('familyVerdict', () => {
     const v = familyVerdict(r);
 
     expect(v.label).toBe('Fragile draft');
-    expect(v.robustness.fragile).toEqual(['untagged_buy(2s) >= 1.6']);
-    expect(v.robustness.premature).toEqual(['stall >= 30']);
-    expect(v.robustness.fillDependent).toEqual(['untagged_buy(2s) >= 1.6']);
-    expect(v.robustness.redundant).toEqual(['liquidity > 30']);
+    expect(v.robustness.fragile).toEqual(['m_flow.buy_sol @!volume [2s] >= 1.6']);
+    expect(v.robustness.premature).toEqual(['m_price.stall_sec >= 30']);
+    expect(v.robustness.fillDependent).toEqual(['m_flow.buy_sol @!volume [2s] >= 1.6']);
+    expect(v.robustness.redundant).toEqual(['m_state.liquidity_sol > 30']);
     expect(v.robustness.winWithinNoise).toBe(true);
     // Repricing leads: whether the number is real outranks what it says.
     expect(v.headline.indexOf('repricing')).toBeGreaterThan(-1);
@@ -319,7 +319,7 @@ describe('familyVerdict', () => {
     const v = familyVerdict(r);
     expect(v.label).toBe('Priced on fill luck');
     // ...and the per-clause findings still ride along for the board to render.
-    expect(v.robustness.fragile).toEqual(['untagged_buy(2s) >= 1.6']);
+    expect(v.robustness.fragile).toEqual(['m_flow.buy_sol @!volume [2s] >= 1.6']);
   });
 
   it('does not claim clauses held up when nothing measured them', () => {

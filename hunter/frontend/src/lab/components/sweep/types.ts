@@ -1,12 +1,12 @@
 // Shared sweep-result row shape, reused by the grouped-sweep page and
 // `buildSweepColumns`. Mirrors the backend per-combo metrics serde struct.
 
-/** One ranked param-pair row: the combo's aggregated outcome across all swept
- *  tokens. `params` carries the strategy's swept knob values (keys vary by
- *  strategy), so the table derives its param columns from them. */
+/** One ranked combo row: the combo's aggregated outcome across all swept tokens.
+ *  `params` is the combo's rule `params` document (format 2; a run stored before it
+ *  may carry format 1, which `ruleParamsCell` shows as such). */
 export interface SweepResultRecord {
   combo_id: number;
-  params: Record<string, number | null>;
+  params: Record<string, unknown>;
   n_fired: number;
   n_open: number;
   n_closed: number;
@@ -38,13 +38,11 @@ export interface SweepResultRecord {
   n_exit_stall: number;
   n_exit_time: number;
   n_exit_liquidity: number;
-  /** Generic engine's single metric-condition exit (`ExitReason::Metrics`). The
-   *  legacy strategies never emit it, so it's optional on the wire (absent ⇒ 0). */
+  /** Exits on a rule's own sell line. Optional on the wire (absent = 0). */
   n_exit_metrics?: number;
-  /** `n_exit_metrics` broken down by WHICH authored exit condition fired (slot
-   *  index into the page's `X-Exit-Metric-Legend` header — see
-   *  `useStreamedSweepResults`). Absent on rows written before this column
-   *  existed; `sum() === n_exit_metrics` otherwise. */
+  /** `n_exit_metrics` broken down by WHICH sell line fired (slot index into the
+   *  page's `X-Exit-Metric-Legend` header, see `useStreamedSweepResults`). Absent on
+   *  rows written before this column existed; `sum() === n_exit_metrics` otherwise. */
   n_exit_metrics_by_slot?: number[];
   /** Analysis-only death-closes: positions closed at the last meaningful trade
    *  because the token died silent. Counted as closed; 0 on the live path. */

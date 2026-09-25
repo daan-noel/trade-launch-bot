@@ -8,6 +8,7 @@ import { LabelTip } from 'components/strategy/LabelTip';
 import { ruleParamsCell } from 'components/strategy/RuleParamsSummary';
 import type { HelpTip } from 'lib/strategy/strategyHelp';
 import { cn } from 'lib/cn';
+import { Clause } from './Clause';
 import { familyVerdict, type FamilyGate } from '@lab/lib/familySearchVerdict';
 import type {
   FamilyAlarmRow,
@@ -106,7 +107,7 @@ export function FamilySearchBoard({
             </span>
             {report.standing_terms.map((t) => (
               <Badge key={t} variant="neutral" size="sm">
-                {t}
+                <Clause text={t} />
               </Badge>
             ))}
           </div>
@@ -492,9 +493,7 @@ export function FamilySearchBoard({
                 .map((a) => (
                   <tr key={a.slot} className="border-t border-white/6">
                     <Td>
-                      <span className="font-mono text-text-mid">
-                        {a.label ?? `slot ${a.slot} (unnamed)`}
-                      </span>
+                      <Clause text={a.label ?? `slot ${a.slot} (unnamed)`} />
                       {a.standing && (
                         <span className="ml-1.5 align-middle">
                           <Badge
@@ -529,7 +528,7 @@ export function FamilySearchBoard({
               {report.attribution_other_n > 0 && (
                 <tr className="border-t border-white/6 text-text-dim">
                   <Td>
-                    <span title="Take-profit, stop, timeout, death — closes that were not authored metric exits">
+                    <span title="Take-profit, stop, timeout, death — closes no rule line made">
                       everything else
                     </span>
                   </Td>
@@ -573,9 +572,7 @@ export function FamilySearchBoard({
               {report.alarm_regret.map((a) => (
                 <tr key={a.slot} className="border-t border-white/6">
                   <Td>
-                    <span className="font-mono text-text-mid">
-                      {a.label ?? `slot ${a.slot} (unnamed)`}
-                    </span>
+                    <Clause text={a.label ?? `slot ${a.slot} (unnamed)`} />
                     {a.standing && (
                       <span className="ml-1.5 align-middle">
                         <Badge
@@ -646,7 +643,7 @@ export function FamilySearchBoard({
               {report.narrow_recheck.map((t) => (
                 <tr key={`${t.is_entry}-${t.label}`} className="border-t border-white/6">
                   <Td>
-                    <span className="font-mono text-text-mid">{t.label}</span>
+                    <Clause text={t.label} />
                   </Td>
                   <Td>
                     <Badge variant={t.is_entry ? 'primary' : 'info'} size="sm">
@@ -752,7 +749,7 @@ export function FamilySearchBoard({
                   className={cn('border-t border-white/6', f.fill_dependent && 'bg-warning/5')}
                 >
                   <Td>
-                    <span className="font-mono text-text-mid">{f.clause}</span>
+                    <Clause text={f.clause} />
                   </Td>
                   <Td>
                     <Badge variant={f.is_entry ? 'primary' : 'info'} size="sm">
@@ -834,7 +831,7 @@ export function FamilySearchBoard({
                   className={cn('border-t border-white/6', x.redundant && 'bg-warning/5')}
                 >
                   <Td>
-                    <span className="font-mono text-text-mid">{x.clause}</span>
+                    <Clause text={x.clause} />
                   </Td>
                   <Td align="right" mono>
                     {x.n_vetoed}
@@ -911,7 +908,7 @@ export function FamilySearchBoard({
                   className={cn('border-t border-white/6', e.accepted && 'bg-green/5')}
                 >
                   <Td>
-                    <span className="font-mono text-text-mid">{e.label}</span>
+                    <Clause text={e.label} />
                   </Td>
                   <Td>
                     <Badge variant={e.is_entry ? 'primary' : 'info'} size="sm">
@@ -971,7 +968,7 @@ export function FamilySearchBoard({
               {report.entry_timing.map((t) => (
                 <tr key={t.clause} className="border-t border-white/6">
                   <Td>
-                    <span className="font-mono text-text-mid">{t.clause}</span>
+                    <Clause text={t.clause} />
                   </Td>
                   <Td align="right" mono tone={t.delay_added_secs > 0 ? 'bad' : 'good'}>
                     {`${signed(t.delay_added_secs, 1)}s`}
@@ -1037,7 +1034,7 @@ export function FamilySearchBoard({
               {report.entry_gates.map((g) => (
                 <tr key={g.clause} className="border-t border-white/6">
                   <Td>
-                    <span className="font-mono text-text-mid">{g.clause}</span>
+                    <Clause text={g.clause} />
                   </Td>
                   <Td align="right" mono>
                     {g.rho == null ? '—' : signed(g.rho, 2)}
@@ -1190,8 +1187,8 @@ function GateLine({ gate }: { gate: FamilyGate }) {
 
 /**
  * The authored threshold against the level the term actually closed at — printed as a
- * pair only where the two are the same quantity. `pnl <= -8` realizing −20 is a stop
- * that does not stop; `stall >= 30` has no comparable realized number at all.
+ * pair only where the two are the same quantity. `m_position.pnl_pct <= -8` realizing −20 is
+ * a stop that does not stop; `m_price.stall_sec >= 30` has no comparable realized number.
  */
 function LevelCell({ row }: { row: FamilyAlarmRow }) {
   if (row.authored_level == null) return <span className="text-text-dim">—</span>;
@@ -1246,7 +1243,7 @@ function LadderRow({ ladder }: { ladder: FamilyThresholdLadder }) {
   return (
     <div className="rounded-md border border-white/8 bg-white/2 p-2.5">
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
-        <span className="font-mono text-xs text-text-mid">{ladder.clause}</span>
+        <Clause text={ladder.clause} className="text-xs" />
         <Badge variant={ladder.is_entry ? 'primary' : 'info'} size="sm">
           {ladder.is_entry ? 'entry · win rate' : 'exit · return'}
         </Badge>
@@ -1576,7 +1573,7 @@ const TIPS = {
   },
   level: {
     title: 'Asked → got',
-    body: 'The threshold the term authored against the mean GROSS return it actually closed at. Gross on purpose: that is the quantity `m_position.pnl` reads, so the pair is comparable — the further gap down to the net return is execution, which the fill spread reports separately. Shown only where the units match; `stall >= 30` has no comparable realized number.',
+    body: 'The threshold the term authored against the mean GROSS return it actually closed at. Gross on purpose: that is the quantity `m_position.pnl_pct` reads, so the pair is comparable — the further gap down to the net return is execution, which the fill spread reports separately. Shown only where the units match; `m_price.stall_sec >= 30` has no comparable realized number.',
   },
   delay: {
     title: 'Delay added',

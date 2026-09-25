@@ -35,6 +35,8 @@ import {
 import type { RuleEditorDraft } from 'components/strategy/RuleEditor';
 import { EXECUTION_MODEL_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
 import { STRATEGY_PARAMS } from 'lib/strategy/nav';
+import { Clause } from '@lab/components/family/Clause';
+import { TagsNote } from '@lab/components/family/TagsNote';
 import { PromoteRuleModal } from '@lab/components/sweep/PromoteRuleModal';
 import { DryRunDetail } from '@lab/components/strategy/DryRunDetail';
 import {
@@ -188,7 +190,7 @@ const TIPS = {
   },
   ablation: {
     title: 'Per-clause ablation',
-    body: 'The champion replayed with each clause removed (authority fill). A clause whose removal changes nothing is dead weight; a clause whose removal raises SOL is hurting.',
+    body: 'The champion replayed with each clause removed (authority fill). A clause whose removal changes nothing is dead weight; a clause whose removal raises SOL is hurting. A clause reads `read op value [cut]`: `m_flow.buy_sol @!volume [10s] >= 2 [peak]` is a gate on untagged SOL bought in the last 10 s; `[peak]` names the stretch of the cohort\'s price path the threshold was measured on.',
   },
 } satisfies Record<string, HelpTip>;
 
@@ -554,6 +556,7 @@ export function RuleSearchPage() {
           onRequestMatchCount={fpMatches.ensureCount}
         />
         {fpMatches.matchesModal}
+        {selectedFp && <TagsNote tags={selectedFp.tags} />}
       </div>
 
       <div className="mb-4 max-w-md">
@@ -923,7 +926,9 @@ function AblationTable({
               const delta = champion.total_pnl_sol - row.total_pnl_sol;
               return (
                 <tr key={i} className="border-t border-white/6">
-                  <td className="px-2 py-1.5 font-mono">{row.removed}</td>
+                  <td className="px-2 py-1.5">
+                    <Clause text={row.removed} />
+                  </td>
                   <td className="px-2 py-1.5">{row.side}</td>
                   <td className="px-2 py-1.5 text-right font-mono">{pct(row.enter_pct)}</td>
                   <td className="px-2 py-1.5 text-right font-mono">{row.n_tokens_entered}</td>

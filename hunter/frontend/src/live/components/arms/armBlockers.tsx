@@ -2,10 +2,11 @@
  * Rendering for `strategy_arms.end_detail` — the disarm's own answer to "the rule
  * watched this token and passed; what was it short of".
  *
- * `unsatisfiable` is the one `end_reason` whose name explains nothing: it means a
- * monotonic entry bound was permanently crossed, and `time` is the only monotonic
- * metric, so it always reads "the token aged past the entry window". The engine
- * captures the entry conditions still failing at that instant and they land here.
+ * `unsatisfiable` is the one `end_reason` whose name explains nothing: it means an
+ * upper bound on a metric that never decreases was crossed, so the buy condition can
+ * never hold again (`m_state.age_sec < 20` once the coin is 20 s old, or
+ * `m_flow.buy_count <= 5` once it has 6 buys). The engine captures the buy conditions
+ * still failing at that instant and they land here.
  *
  * The condition text goes through `conditionExprFromJson` → `formatConditions` —
  * the same pair the rule editor round-trips authored DNF through — so a threshold
@@ -19,21 +20,21 @@
 import { conditionExprFromJson, formatConditions } from 'lib/strategy/grammar';
 import { formatDecimalTrim } from 'utils/format';
 import type { ArmEndDetail, ArmUnmetCondition } from 'lib/strategy/types';
-import { formatWindowSpec, readWindow } from 'lib/strategy/windowSpec';
+import { formatWindowSpec } from 'lib/strategy/windowSpec';
 
-/** `m_flow_window.gross_flow` → `gross_flow`. The group is implied by the window
- *  and carries no information in a narrow cell; the full path stays the filter
- *  value, so sorting and grouping are unaffected by this shortening. */
-export const metricLeaf = (path: string) => path.slice(path.lastIndexOf('.') + 1);
-
-/** `gross_flow(60s)`, `gross_flow(30sl@1)` — the WHOLE span is part of a dynamic
- *  metric's identity, and two windows of one metric are two different conditions.
- *  Same vocabulary as the persisted exit reason, so an operator reading both sees
- *  one name for one req. */
+/** A read's label as the arm row states it. Since the v2 metric system the stored
+ *  `metric` IS the full label, `m_flow.buy_sol @!volume [10s]`: tag and span
+ *  included, and the family kept (a bare `buy_sol` is also an `m_slot` quantity).
+ *  Rows written before that carry `m_flow_window.gross_flow` with the window beside
+ *  it, so the window is appended there: two windows of one metric are two different
+ *  conditions. */
 export function unmetLabel(c: ArmUnmetCondition): string {
-  const w = formatWindowSpec(readWindow(c));
-  return w ? `${metricLeaf(c.metric)}(${w})` : metricLeaf(c.metric);
+  const w = c.metric.includes('[') ? '' : formatWindowSpec(c.window ?? (c.window_size_sec ? { size: c.window_size_sec, lag: 0, unit: 'sec' } : null));
+  return w ? `${c.metric}(${w})` : c.metric;
 }
+
+/** The short name a narrow cell shows: the label without its `m_` prefix. */
+export const metricLeaf = (path: string) => path.replace(/^m_/, '');
 
 /** `gross_flow(60s) 24.71 · needs >=40` — what it read, then what it needed. */
 export function unmetText(c: ArmUnmetCondition): string {
@@ -47,9 +48,9 @@ export function unmetText(c: ArmUnmetCondition): string {
 
 /** The one-line verdict: what blocked it, or that only the clock did. */
 export function endDetailText(d: ArmEndDetail): string {
-  const deadline = `aged past ${metricLeaf(d.killed_by.metric)} ${d.killed_by.operator} ${d.killed_by.threshold}`;
+  const deadline = `${d.killed_by.metric} ${d.killed_by.operator} ${d.killed_by.threshold} can no longer hold`;
   if (d.unmet.length === 0) {
-    // Not "no data" — everything else held, so the token qualified too late.
+    // Not "no data": everything else held, so the coin qualified too late.
     return `${deadline}; every other condition held`;
   }
   return `${deadline}; ${d.unmet.map(unmetText).join(' · ')}`;
@@ -90,7 +91,7 @@ export function ArmEndDetailLine({ detail }: { detail: ArmEndDetail | null }) {
       <span className="font-bold uppercase tracking-wider text-text-dim">Short of </span>
       {detail.unmet.length === 0 ? (
         <span className="text-text-mid">
-          nothing — every condition but the clock held, so the token qualified too late.
+          nothing: every other condition held, so the coin qualified too late.
         </span>
       ) : (
         <span className="text-text-mid">
@@ -98,8 +99,8 @@ export function ArmEndDetailLine({ detail }: { detail: ArmEndDetail | null }) {
         </span>
       )}
       <div className="mt-0.5 text-text-dim">
-        Disarmed at {metricLeaf(detail.killed_by.metric)} {detail.killed_by.operator}{' '}
-        {detail.killed_by.threshold}
+        Gave up: {detail.killed_by.metric} {detail.killed_by.operator} {detail.killed_by.threshold} can no longer
+        hold
       </div>
     </div>
   );

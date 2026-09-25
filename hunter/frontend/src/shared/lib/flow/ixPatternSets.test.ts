@@ -8,7 +8,8 @@ import {
   parsePastedPatterns,
   patternGroups,
   patternKeysForGroups,
-  tapeListForKind,
+  lensTag,
+  matcherForKind,
   toggleExactPattern,
   toggleIxPattern,
   UNGROUPED,
@@ -126,11 +127,29 @@ describe('toggleIxPattern', () => {
 });
 
 describe('kind + keys', () => {
-  it('treats missing kind as exact and maps templates to the working tape list', () => {
+  it('treats missing kind as exact and maps each kind to its tag matcher', () => {
     expect(kindOf({})).toBe('exact');
     expect(kindOf({ kind: 'templates' })).toBe('templates');
-    expect(tapeListForKind('exact')).toBe('tagged');
-    expect(tapeListForKind('templates')).toBe('working');
+    expect(matcherForKind('exact')).toBe('ix_shape');
+    expect(matcherForKind('templates')).toBe('ix_template');
+  });
+
+  it('reads a narrowed set as a tag: grains, programs and exact rows each under their matcher', () => {
+    const opts = { sticky: true, side: 'buy' as const };
+    const tmpl = lensTag(
+      { name: 's', kind: 'templates', patterns: [], working_templates: ['Axiom Trade|CU', 'Photon', 'X|F'] },
+      new Set(['Axiom Trade|CU', 'Photon']),
+      opts,
+    );
+    expect(tmpl?.match).toEqual({ ix_template: ['Axiom Trade|CU'], program: ['Photon'] });
+    expect(tmpl).toMatchObject({ name: 's', sticky: true, side: 'buy' });
+    const exact = lensTag(
+      { name: 'e', kind: 'exact', patterns: [p('g', 'A'), { ...p(null, 'B'), cu_limit: 5 }], working_templates: [] },
+      null,
+      opts,
+    );
+    expect(exact?.match).toEqual({ ix_shape: [{ labels: ['A'] }, { labels: ['B'], cu_limit: 5 }] });
+    expect(lensTag({ name: 'n', kind: 'exact', patterns: [], working_templates: [] }, null, opts)).toBeNull();
   });
 
   it('keys a templates set by grain id, not JSON.stringify(labels)', () => {

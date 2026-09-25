@@ -6,11 +6,12 @@ import { apiErrorMessage } from 'store/apiSlice';
 import {
   keysForSet,
   kindOf,
+  lensTag,
+  matcherForKind,
   mutedPatternForClick,
   patternGroups,
-  patternRowsForGroups,
-  tapeListForKind,
   toggleExactPattern,
+  toPatternRow,
   UNGROUPED,
   type IxPattern,
   type IxPatternSet,
@@ -18,12 +19,9 @@ import {
 } from 'lib/flow/ixPatternSets';
 import type { FlowSide } from 'lib/flow/classifyFlow';
 import type { FlowLensValue } from 'context/FlowLensContext';
-import {
-  isLaunchGrain,
-  templateGrain,
-  toggleWorkingTemplate,
-} from 'lib/strategy/templateGrain';
-import type { IxPatternFee, IxPatternFeeMask } from 'lib/strategy/ixPatternRows';
+import type { StageMatcher, StageValue } from 'hooks/useIxPatternTarget';
+import { toggleWorkingTemplate } from 'lib/strategy/templateGrain';
+import { patternRowKey, type IxPatternFeeMask } from 'lib/strategy/ixPatternRows';
 import {
   useCreateIxPatternSetMutation,
   useDeleteIxPatternSetMutation,
@@ -45,10 +43,11 @@ interface LensPrefs {
    *  to classify at once — under an enabled-list it would land outside the filter
    *  and read as a failed write. */
   mutedBySet: Record<string, string[]>;
+  /** The lens tag's `sticky`: a wallet that matched once carries the tag after. */
   contagion: boolean;
   excludeSelf: boolean;
-  /** `null` ⇒ both legs. Absent in prefs written before the knob existed, which
-   *  reads as both — the previous behavior. */
+  /** The lens tag's `side`. `null` ⇒ both legs. Absent in prefs written before the
+   *  knob existed, which reads as both - the previous behavior. */
   side: FlowSide | null;
   feePins: IxPatternFeeMask;
 }
@@ -57,10 +56,9 @@ const DEFAULT_PREFS: LensPrefs = {
   setId: null,
   groupsBySet: {},
   mutedBySet: {},
-  // Structural-only by DEFAULT, unlike the engine. A lens answers "which
-  // STRUCTURES are around this moment"; forward-only wallet tagging turns that
-  // into "which wallets ever matched once", which on a busy token is everyone
-  // within seconds. See `FlowClassifyOptions.contagion`.
+  // Not sticky by DEFAULT. A lens answers "which STRUCTURES are around this
+  // moment"; a sticky wallet set turns that into "which wallets ever matched once",
+  // which on a busy token is everyone within seconds.
   contagion: false,
   // The studied wallet classifies itself otherwise, which is never the question.
   excludeSelf: true,
@@ -71,10 +69,11 @@ const DEFAULT_PREFS: LensPrefs = {
 };
 
 export interface TraderFlowLens {
-  /** Value for `FlowLensProvider` — classifier options + the write target. */
+  /** Value for `FlowLensProvider` - the lens tag, exclusions and write target. */
   value: FlowLensValue;
-  /** Narrowed keys for the chart grid's `flowPatternKeys` prop; `null` ⇒ nothing
-   *  to classify with, and the charts fall back to their old behavior. */
+  /** Narrowed keys (exact shapes or grain ids) for the chart grid's
+   *  `flowPatternKeys` prop. Under the provider the charts read the lens tag
+   *  itself; the keys only feed hosts outside it. */
   keys: ReadonlySet<string> | null;
   sets: IxPatternSet[];
   set: IxPatternSet | null;
@@ -87,6 +86,7 @@ export interface TraderFlowLens {
   units: string[];
   enabledUnits: ReadonlySet<string> | null;
   toggleUnit: (unit: string) => void;
+  /** The lens tag's `sticky`. */
   contagion: boolean;
   setContagion: (on: boolean) => void;
   excludeSelf: boolean;
@@ -114,13 +114,13 @@ export interface TraderFlowLens {
 
 /**
  * The Trader Analysis flow lens: which analysis-owned pattern set the page's
- * charts classify vol/non-vol with, how they classify, and the write-through a
- * Tagged-badge click performs.
+ * charts read as a tag (`lensTag`: the narrowed set's matchers, the lens' side and
+ * sticky switches), and the write-through a badge click performs.
  *
  * Everything persists to `ix_pattern_sets` immediately — same no-staging rule the
- * fingerprint Tagged badge follows, for the same reason: two copies of "what counts
- * as volume" on screen at once, both looking authoritative. The difference is
- * blast radius — a lens is analysis-only, so no rule changes meaning when it does.
+ * fingerprint tag badge follows, for the same reason: two copies of "what carries
+ * the tag" on screen at once, both looking authoritative. The difference is blast
+ * radius - a lens is analysis-only, so no rule changes meaning when it does.
  *
  * Kind is insert-only. Switching Exact ↔ Templates is picking a different set.
  *
@@ -179,9 +179,17 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     [set, enabledUnits],
   );
 
-  const rows = useMemo(
-    () => (kind === 'exact' ? (patternRowsForGroups(patterns, enabledUnits) ?? []) : []),
-    [kind, patterns, enabledUnits],
+  const tag = useMemo(
+    () => (set ? lensTag(set, enabledUnits, { sticky: prefs.contagion, side: prefs.side ?? null }) : null),
+    [set, enabledUnits, prefs.contagion, prefs.side],
+  );
+
+  // A templates set holds grain ids and bare program names: a click writes either.
+  const [templateMatcher, setTemplateMatcher] = useState<StageMatcher>('ix_template');
+  const matcher: StageMatcher = kind === 'templates' ? templateMatcher : matcherForKind(kind);
+  const matchers = useMemo<StageMatcher[]>(
+    () => (kind === 'templates' ? ['ix_template', 'program'] : ['ix_shape']),
+    [kind],
   );
 
   const excludeWallets = useMemo(
@@ -275,49 +283,64 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
         : [...enabledUnits][0]
       : null;
 
+  /** Whether the stored set holds the value (an exact row with its pins). */
+  const listed = useCallback(
+    (v: StageValue) => {
+      if (!set) return false;
+      if (v.matcher === 'ix_shape') {
+        const key = patternRowKey(v.row);
+        return set.patterns.some((p) => patternRowKey(toPatternRow(p)) === key);
+      }
+      return set.working_templates.includes(v.value);
+    },
+    [set],
+  );
+
+  /** Stored, but narrowed out by the chips. */
+  const muted = useCallback(
+    (v: StageValue) => {
+      if (!set) return false;
+      if (v.matcher === 'ix_shape') {
+        return mutedPatternForClick(set.patterns, enabledUnits, v.row.labels, v.row) != null;
+      }
+      return mutedGrains.includes(v.value) && set.working_templates.includes(v.value);
+    },
+    [set, enabledUnits, mutedGrains],
+  );
+
   /**
-   * A tape badge reports what the CHART classified with — the NARROWED key set —
-   * so a click has to flip exactly that, or the badge stays put and the click
-   * reads as broken.
+   * A badge reports what the CHART classified with - the NARROWED set - so a click
+   * has to flip exactly that, or the badge stays put and the click reads as broken.
    *
-   * Either vocabulary can be off for two different reasons, and they take
-   * opposite writes: not in the set at all (add it), or in the set but narrowed
-   * out by the chips (bring that unit back). One write for both left the badge
-   * unchanged and quietly dropped a row the reader could not even see.
-   *
-   * The exact side un-mutes the whole GROUP the stored pattern sits in, since
-   * that is the unit there — and only when the muted row provably accepts this
-   * click (unpinned, or its pins equal the pins the click carries). Unprovable
-   * ⇒ fall through to the normal write rather than guess.
+   * Either vocabulary can be off for two different reasons, and they take opposite
+   * writes: not in the set at all (add it), or in the set but narrowed out by the
+   * chips (bring that unit back). The exact side un-mutes the whole GROUP the stored
+   * row sits in, and only when the muted row provably accepts this click (unpinned,
+   * or its pins equal the click's). Unprovable ⇒ the normal write rather than a guess.
    */
   const toggle = useCallback(
-    (labels: readonly string[], fee?: IxPatternFee) => {
+    (v: StageValue) => {
       if (!set) return;
-      if (kind === 'templates') {
-        if (isLaunchGrain(labels)) return;
-        const grain = templateGrain(labels);
-        const muted = mutedGrains.includes(grain);
-        if (muted && set.working_templates.includes(grain)) {
-          setGrainMuted(grain, false);
+      if (v.matcher !== 'ix_shape') {
+        const id = v.value;
+        const wasMuted = mutedGrains.includes(id);
+        if (wasMuted && set.working_templates.includes(id)) {
+          setGrainMuted(id, false);
           return;
         }
         // A mute left over from an earlier removal would swallow the add.
-        if (muted) setGrainMuted(grain, false);
-        void writeSet({
-          working_templates: toggleWorkingTemplate(set.working_templates, grain),
-        });
+        if (wasMuted) setGrainMuted(id, false);
+        void writeSet({ working_templates: toggleWorkingTemplate(set.working_templates, id) });
         return;
       }
-      const hidden = mutedPatternForClick(set.patterns, enabledUnits, labels, fee);
+      const hidden = mutedPatternForClick(set.patterns, enabledUnits, v.row.labels, v.row);
       if (hidden) {
         toggleUnit(hidden.group ?? UNGROUPED);
         return;
       }
-      void writeSet({
-        patterns: toggleExactPattern(set.patterns, labels, fee, activeGroup),
-      });
+      void writeSet({ patterns: toggleExactPattern(set.patterns, v.row.labels, v.row, activeGroup) });
     },
-    [set, kind, writeSet, activeGroup, mutedGrains, setGrainMuted, enabledUnits, toggleUnit],
+    [set, writeSet, activeGroup, mutedGrains, setGrainMuted, enabledUnits, toggleUnit],
   );
 
   const setFeePins = useCallback(
@@ -327,18 +350,21 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
 
   const value = useMemo<FlowLensValue>(
     () => ({
-      contagion: prefs.contagion,
+      tag,
       excludeWallets,
-      side: prefs.side ?? null,
       target: set
         ? {
-            name: set.name,
+            tagName: set.name,
+            matcher,
+            matchers,
+            setMatcher: setTemplateMatcher,
+            ownerName: null,
             kind,
-            list: tapeListForKind(kind),
             patterns: set.patterns,
             workingTemplates: set.working_templates,
-            rows,
             activeGroup,
+            listed,
+            muted,
             toggle,
             feePins: prefs.feePins ?? {},
             setFeePins,
@@ -348,14 +374,16 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
         : null,
     }),
     [
-      prefs.contagion,
-      prefs.side,
+      tag,
       prefs.feePins,
       excludeWallets,
       set,
       kind,
-      rows,
+      matcher,
+      matchers,
       activeGroup,
+      listed,
+      muted,
       toggle,
       setFeePins,
       saving,

@@ -1,0 +1,1639 @@
+{
+  "families": [
+    {
+      "example": "m_state.liquidity_sol >= 14 : at least 14 real SOL sits in the pool.",
+      "metrics": [
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_state.age_sec >= 20 : the coin is 20 s old or older.",
+          "hue": 212,
+          "monotonic": true,
+          "name": "age_sec",
+          "note": "",
+          "path": "m_state.age_sec",
+          "phrase": "coin age",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Seconds since the coin was created.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "seconds"
+        },
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_state.liquidity_sol >= 80 : the curve holds 80+ real SOL, near graduation (85).",
+          "hue": 236,
+          "monotonic": false,
+          "name": "liquidity_sol",
+          "note": "NaN before the first print.",
+          "path": "m_state.liquidity_sol",
+          "phrase": "real SOL in the pool",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Real SOL in the pool after the last print (on the curve: pool SOL minus the 30 virtual).",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_state.on_curve = 1 : the coin has not graduated.",
+          "hue": 224,
+          "monotonic": false,
+          "name": "on_curve",
+          "note": "NaN before the first print.",
+          "path": "m_state.on_curve",
+          "phrase": "the coin is still on the curve",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 while the last print was on the pump.fun curve, 0 once it was on the AMM.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "flag"
+        }
+      ],
+      "name": "m_state",
+      "summary": "The pool right now: how old the coin is, how much SOL is in the pool, curve or AMM.",
+      "title": "Pool state"
+    },
+    {
+      "example": "m_price.trail_pct [10s] >= 20 : the price is 20 % or more below its high of the last 10 s.",
+      "metrics": [
+        {
+          "eq_tolerance": 1.0,
+          "example": "m_price.rise_pct [30s] >= 50 : the price is 50 % above its low of the last 30 s.",
+          "hue": 50,
+          "monotonic": false,
+          "name": "rise_pct",
+          "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
+          "path": "m_price.rise_pct",
+          "phrase": "price above its low",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "How far the price is above its low, in percent.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 1.0,
+          "example": "m_price.trail_pct >= 30 : the price is 30 % below the coin's all-time high.",
+          "hue": 42,
+          "monotonic": false,
+          "name": "trail_pct",
+          "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
+          "path": "m_price.trail_pct",
+          "phrase": "price below its high",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "How far the price is below its high, in percent.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_price.stall_sec >= 60 : no new high for a minute.",
+          "hue": 40,
+          "monotonic": false,
+          "name": "stall_sec",
+          "note": "Only a strictly higher price resets it; a quiet tape keeps counting.",
+          "path": "m_price.stall_sec",
+          "phrase": "time since the last all-time high",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Seconds since the price last set a new all-time high.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "seconds"
+        }
+      ],
+      "name": "m_price",
+      "summary": "Where the price sits against its high and its low, over the coin's life or a recent stretch.",
+      "title": "Price chart"
+    },
+    {
+      "example": "m_flow.buy_sol @!volume [3s] >= 1 : trades WITHOUT the volume tag bought 1 SOL or more in the last 3 s.",
+      "metrics": [
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_flow.buy_sol [10s] >= 5 : 5+ SOL bought in the last 10 s.",
+          "hue": 170,
+          "monotonic": true,
+          "name": "buy_sol",
+          "note": "Every leg of a transaction counts.",
+          "path": "m_flow.buy_sol",
+          "phrase": "SOL bought",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "SOL spent buying.",
+          "tag_level": "trade",
+          "tags": "optional",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_flow.sell_sol @dump [1p] > 0 : the print being read is a dump sell.",
+          "hue": 355,
+          "monotonic": true,
+          "name": "sell_sol",
+          "note": "Every leg of a transaction counts.",
+          "path": "m_flow.sell_sol",
+          "phrase": "SOL sold",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "SOL received selling.",
+          "tag_level": "trade",
+          "tags": "optional",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_flow.net_sol [30s] < 0 : more SOL left than came in over the last 30 s.",
+          "hue": 300,
+          "monotonic": false,
+          "name": "net_sol",
+          "note": "",
+          "path": "m_flow.net_sol",
+          "phrase": "SOL bought minus SOL sold",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "SOL bought minus SOL sold: which way the money is going.",
+          "tag_level": "trade",
+          "tags": "optional",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_flow.gross_sol [30s] >= 10 : 10+ SOL traded in the last 30 s.",
+          "hue": 278,
+          "monotonic": true,
+          "name": "gross_sol",
+          "note": "",
+          "path": "m_flow.gross_sol",
+          "phrase": "SOL traded",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "SOL bought plus SOL sold: how much is changing hands.",
+          "tag_level": "trade",
+          "tags": "optional",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_flow.buy_count [1sl] >= 3 : 3+ buys landed in this slot.",
+          "hue": 288,
+          "monotonic": true,
+          "name": "buy_count",
+          "note": "A print is one leg: a bundle of 4 buys in one transaction counts 4.",
+          "path": "m_flow.buy_count",
+          "phrase": "buy prints",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Number of buy prints.",
+          "tag_level": "trade",
+          "tags": "optional",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_flow.sell_count [10s] = 0 : nobody sold in the last 10 s.",
+          "hue": 292,
+          "monotonic": true,
+          "name": "sell_count",
+          "note": "A print is one leg: a bundle of 4 sells in one transaction counts 4.",
+          "path": "m_flow.sell_count",
+          "phrase": "sell prints",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Number of sell prints.",
+          "tag_level": "trade",
+          "tags": "optional",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_flow.trade_count <= 7 : the coin has had 7 prints or fewer.",
+          "hue": 294,
+          "monotonic": true,
+          "name": "trade_count",
+          "note": "",
+          "path": "m_flow.trade_count",
+          "phrase": "prints",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Number of prints, buys and sells.",
+          "tag_level": "trade",
+          "tags": "optional",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_flow.buy_tx_count @targets [1p] >= 1 : a target wallet just bought.",
+          "hue": 282,
+          "monotonic": true,
+          "name": "buy_tx_count",
+          "note": "",
+          "path": "m_flow.buy_tx_count",
+          "phrase": "buy transactions",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Number of buy transactions (a bundle of 4 buy legs counts 1).",
+          "tag_level": "trade",
+          "tags": "required",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_flow.sell_tx_count @dump [1p] >= 1 : the print being read is part of a dump transaction.",
+          "hue": 117,
+          "monotonic": true,
+          "name": "sell_tx_count",
+          "note": "",
+          "path": "m_flow.sell_tx_count",
+          "phrase": "sell transactions",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Number of sell transactions (a bundle of 4 sell legs counts 1).",
+          "tag_level": "trade",
+          "tags": "required",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_flow.buy_share_pct [30s] >= 70 : 70 % of the SOL traded in 30 s was buying.",
+          "hue": 284,
+          "monotonic": false,
+          "name": "buy_share_pct",
+          "note": "NaN when nothing traded.",
+          "path": "m_flow.buy_share_pct",
+          "phrase": "buying share of the SOL traded",
+          "position": false,
+          "spans": {
+            "life": false,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Share of the traded SOL that was buying: buy_sol / gross_sol.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 1.0,
+          "example": "m_flow.tag_share_pct @volume <= 50 : the volume trades carried half the SOL or less.",
+          "hue": 109,
+          "monotonic": false,
+          "name": "tag_share_pct",
+          "note": "NaN when nothing traded. Trades the tag excludes count on neither side.",
+          "path": "m_flow.tag_share_pct",
+          "phrase": "share of the SOL traded",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Share of all traded SOL (buys and sells) that this tag's trades carried.",
+          "tag_level": "trade",
+          "tags": "required",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_flow.slice_trade_share_pct [30s, slice 2s] >= 50 : half of the last 30 s of prints came in the last 2 s.",
+          "hue": 306,
+          "monotonic": false,
+          "name": "slice_trade_share_pct",
+          "note": "Reads 100 on a coin younger than the slice; NaN on an empty span.",
+          "path": "m_flow.slice_trade_share_pct",
+          "phrase": "share of the prints in the last slice",
+          "position": false,
+          "spans": {
+            "life": false,
+            "since_age": false,
+            "slice": true,
+            "window": true
+          },
+          "summary": "Share of the span's prints that landed in the most recent slice of it.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_flow.slice_sol_share_pct [30s, slice 2s] >= 50 : half of the last 30 s of SOL moved in the last 2 s.",
+          "hue": 308,
+          "monotonic": false,
+          "name": "slice_sol_share_pct",
+          "note": "NaN on an empty span.",
+          "path": "m_flow.slice_sol_share_pct",
+          "phrase": "share of the SOL in the last slice",
+          "position": false,
+          "spans": {
+            "life": false,
+            "since_age": false,
+            "slice": true,
+            "window": true
+          },
+          "summary": "Share of the span's SOL that moved in the most recent slice of it.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
+        }
+      ],
+      "name": "m_flow",
+      "summary": "SOL bought and sold and how many trades, for all trades or one tag's trades, over the life or a recent stretch.",
+      "title": "Money moving"
+    },
+    {
+      "example": "m_holdings.profit_sol @volume >= 0.83 : the volume trades would net 0.83 SOL selling their whole bag now.",
+      "metrics": [
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_holdings.profit_sol @volume >= 0.83 : the volume trades would make 0.83 SOL dumping everything now.",
+          "hue": 115,
+          "monotonic": false,
+          "name": "profit_sol",
+          "note": "The sale value includes the price drop the dump itself causes. NaN once a tagged print had no token amount.",
+          "path": "m_holdings.profit_sol",
+          "phrase": "profit if the whole bag were sold now",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "What the tag's trades would net if their whole remaining bag were sold into the pool now: sale value + SOL taken out - SOL put in.",
+          "tag_level": "trade",
+          "tags": "required",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 0.01,
+          "example": "m_holdings.bag_share_pct @bundled >= 30 : bundle-bought wallets hold 30 % of the supply.",
+          "hue": 308,
+          "monotonic": false,
+          "name": "bag_share_pct",
+          "note": "Classes: bundled (first buy in a slot where 3+ wallets first bought with one ix shape), public_app (first buy through an app with 100+ buyers the day before). NaN while nobody holds.",
+          "path": "m_holdings.bag_share_pct",
+          "phrase": "share of the held supply",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Share of the coin's held supply that sits with this wallet class.",
+          "tag_level": "wallet_class",
+          "tags": "required",
+          "unit": "percent"
+        }
+      ],
+      "name": "m_holdings",
+      "summary": "The tokens a tag's trades still hold, and the profit they would make selling them now.",
+      "title": "What a tag holds"
+    },
+    {
+      "example": "m_crowd.unique_wallets [30s] >= 10 : 10 or more different wallets traded in the last 30 s.",
+      "metrics": [
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_crowd.unique_wallets [30s] >= 10 : 10+ different wallets traded in the last 30 s.",
+          "hue": 290,
+          "monotonic": false,
+          "name": "unique_wallets",
+          "note": "",
+          "path": "m_crowd.unique_wallets",
+          "phrase": "different wallets",
+          "position": false,
+          "spans": {
+            "life": false,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Different wallets that traded.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.05,
+          "example": "m_crowd.trades_per_wallet [30s] <= 1.5 : most wallets traded once.",
+          "hue": 296,
+          "monotonic": false,
+          "name": "trades_per_wallet",
+          "note": "NaN on an empty span.",
+          "path": "m_crowd.trades_per_wallet",
+          "phrase": "prints per wallet",
+          "position": false,
+          "spans": {
+            "life": false,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Prints per wallet: trade_count / unique_wallets. Low = a crowd arriving, high = a few wallets working the tape.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_crowd.unique_ix_shapes [30s] >= 4 : prints came from 4+ different tools.",
+          "hue": 98,
+          "monotonic": false,
+          "name": "unique_ix_shapes",
+          "note": "",
+          "path": "m_crowd.unique_ix_shapes",
+          "phrase": "different ix shapes",
+          "position": false,
+          "spans": {
+            "life": false,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Different ix shapes that traded (setup, teardown and memo instructions ignored).",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_crowd.unique_ix_templates @working >= 4 : 4+ working templates have bought this coin.",
+          "hue": 133,
+          "monotonic": true,
+          "name": "unique_ix_templates",
+          "note": "",
+          "path": "m_crowd.unique_ix_templates",
+          "phrase": "different ix templates seen",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Different ix templates of this tag seen among the coin's curve buys, this print included.",
+          "tag_level": "template",
+          "tags": "required",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_crowd.buyer_count [age60s] >= 5 : 5+ new wallets bought after the coin was a minute old.",
+          "hue": 300,
+          "monotonic": true,
+          "name": "buyer_count",
+          "note": "Buys before the start age never count.",
+          "path": "m_crowd.buyer_count",
+          "phrase": "new buyers",
+          "position": false,
+          "spans": {
+            "life": false,
+            "since_age": true,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Different wallets, the creator excluded, that bought since the span's start age.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_crowd.buyer_is_new [age60s] = 1 and m_crowd.buyer_count [age60s] = 5 : the 5th arrival, once.",
+          "hue": 304,
+          "monotonic": false,
+          "name": "buyer_is_new",
+          "note": "0 on a tick, a sell, a repeat buyer and the creator.",
+          "path": "m_crowd.buyer_is_new",
+          "phrase": "this print adds a new buyer",
+          "position": false,
+          "spans": {
+            "life": false,
+            "since_age": true,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when the print being read is a buy that just added a wallet to buyer_count.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "flag"
+        }
+      ],
+      "name": "m_crowd",
+      "summary": "How many different wallets, ix shapes or ix templates are trading.",
+      "title": "Who shows up"
+    },
+    {
+      "example": "m_print.since_buy_sec <= 5 : the wallet behind this print last bought this coin 5 s ago or less.",
+      "metrics": [
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_print.since_buy_sec <= 5 : this wallet bought 5 s ago or less (on a sell: a 5 s flip).",
+          "hue": 298,
+          "monotonic": false,
+          "name": "since_buy_sec",
+          "note": "NaN when that wallet never bought, and on a tick.",
+          "path": "m_print.since_buy_sec",
+          "phrase": "time since this wallet last bought",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Seconds since the wallet behind this print last bought this coin.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "seconds"
+        }
+      ],
+      "name": "m_print",
+      "summary": "Facts about the print being read right now. Empty (NaN) on a clock tick.",
+      "title": "This print"
+    },
+    {
+      "example": "m_slot.buy_count @working >= 3 : 3 or more buys in this slot came from a working template.",
+      "metrics": [
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.this_joined = 1 : decide on a buy print, not on a sell or a tick.",
+          "hue": 118,
+          "monotonic": false,
+          "name": "this_joined",
+          "note": "",
+          "path": "m_slot.this_joined",
+          "phrase": "this print joined the slot's buys",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when this print just joined the slot's buy group: a curve buy with an ix template, not the create.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.this_has_tag @working = 1 : this buy came from a working template.",
+          "hue": 119,
+          "monotonic": false,
+          "name": "this_has_tag",
+          "note": "0 when the print has no ix labels.",
+          "path": "m_slot.this_has_tag",
+          "phrase": "this print's template carries the tag",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when this print's ix template carries the tag.",
+          "tag_level": "template",
+          "tags": "required",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.same_template_buy_count >= 3 : 3 buys of one template landed together.",
+          "hue": 120,
+          "monotonic": false,
+          "name": "same_template_buy_count",
+          "note": "",
+          "path": "m_slot.same_template_buy_count",
+          "phrase": "buys in this slot with this print's template",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Buys so far in this slot with the same ix template as this print.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_slot.same_template_buy_sol >= 2 : one template put 2 SOL in this slot.",
+          "hue": 121,
+          "monotonic": false,
+          "name": "same_template_buy_sol",
+          "note": "",
+          "path": "m_slot.same_template_buy_sol",
+          "phrase": "SOL bought in this slot with this print's template",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "SOL bought so far in this slot by buys with the same ix template as this print.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.same_template_wallet_count >= 3 : 3 wallets bought with one template in this slot.",
+          "hue": 122,
+          "monotonic": false,
+          "name": "same_template_wallet_count",
+          "note": "",
+          "path": "m_slot.same_template_wallet_count",
+          "phrase": "wallets in this slot with this print's template",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Different wallets among this slot's buys with the same ix template as this print.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.template_count @working >= 2 : two different working templates bought in this slot.",
+          "hue": 126,
+          "monotonic": false,
+          "name": "template_count",
+          "note": "",
+          "path": "m_slot.template_count",
+          "phrase": "templates in this slot",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Different ix templates among this slot's buys (with a tag: only the tag's templates).",
+          "tag_level": "template",
+          "tags": "optional",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.buy_count @working >= 3 : 3 working-template buys in this slot.",
+          "hue": 123,
+          "monotonic": false,
+          "name": "buy_count",
+          "note": "",
+          "path": "m_slot.buy_count",
+          "phrase": "buys in this slot",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Buys so far in this slot whose ix template carries the tag.",
+          "tag_level": "template",
+          "tags": "required",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_slot.buy_sol @working >= 1 : working templates put 1 SOL in this slot.",
+          "hue": 124,
+          "monotonic": false,
+          "name": "buy_sol",
+          "note": "",
+          "path": "m_slot.buy_sol",
+          "phrase": "SOL bought in this slot",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "SOL bought so far in this slot by buys whose ix template carries the tag.",
+          "tag_level": "template",
+          "tags": "required",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.wallet_count @working >= 2 : two wallets bought with working templates in this slot.",
+          "hue": 125,
+          "monotonic": false,
+          "name": "wallet_count",
+          "note": "",
+          "path": "m_slot.wallet_count",
+          "phrase": "wallets in this slot",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Different wallets among this slot's buys whose ix template carries the tag.",
+          "tag_level": "template",
+          "tags": "required",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.buy_share_pct @working = 100 : every buy in this slot is a working template.",
+          "hue": 116,
+          "monotonic": false,
+          "name": "buy_share_pct",
+          "note": "NaN before the slot's first buy.",
+          "path": "m_slot.buy_share_pct",
+          "phrase": "share of this slot's buys",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Share of this slot's buys whose ix template carries the tag.",
+          "tag_level": "template",
+          "tags": "required",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.has_new_wallet @working = 1 : at least one fresh wallet in the pack.",
+          "hue": 127,
+          "monotonic": false,
+          "name": "has_new_wallet",
+          "note": "",
+          "path": "m_slot.has_new_wallet",
+          "phrase": "a first-time buyer is in this slot",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when a wallet among this slot's tagged buys is buying this coin for the first time.",
+          "tag_level": "template",
+          "tags": "required",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.has_unknown_wallet = 0 : every buyer in the slot is known.",
+          "hue": 128,
+          "monotonic": false,
+          "name": "has_unknown_wallet",
+          "note": "",
+          "path": "m_slot.has_unknown_wallet",
+          "phrase": "a buy in this slot has no wallet on record",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when a buy in this slot has no wallet on record.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_slot.packed = 1 : the buys were bundled.",
+          "hue": 129,
+          "monotonic": false,
+          "name": "packed",
+          "note": "NaN when a buy has no block position.",
+          "path": "m_slot.packed",
+          "phrase": "this slot's buys sit back to back",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when this slot's buys sit in back-to-back positions in the block, 0 when another transaction sits between them.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_slot.liquidity_before_sol <= 10 : the pool was shallow when this slot started.",
+          "hue": 130,
+          "monotonic": false,
+          "name": "liquidity_before_sol",
+          "note": "NaN until an earlier slot has a print.",
+          "path": "m_slot.liquidity_before_sol",
+          "phrase": "real SOL in the pool before this slot",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Real SOL in the pool at the last print of an earlier slot: the depth before this slot's buys.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 1.0,
+          "example": "m_slot.trail_before_pct >= 30 : this print lands in a 30 % dip.",
+          "hue": 131,
+          "monotonic": false,
+          "name": "trail_before_pct",
+          "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
+          "path": "m_slot.trail_before_pct",
+          "phrase": "price below its high before this print",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "How far below its all-time high the price was before this print.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "percent"
+        }
+      ],
+      "name": "m_slot",
+      "summary": "The buys landed so far in the current slot: bundles and packs of the same ix template.",
+      "title": "This slot's buys"
+    },
+    {
+      "example": "m_wave.wallet_count >= 2 : at least 2 different wallets bought in this wave.",
+      "metrics": [
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.this_joined = 1 : decide on a wave buy.",
+          "hue": 133,
+          "monotonic": false,
+          "name": "this_joined",
+          "note": "",
+          "path": "m_wave.this_joined",
+          "phrase": "this print joined the wave",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when this print just joined the current wave: a curve buy with an ix template, not the create.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.this_has_tag @working = 1 : a working template joined the wave.",
+          "hue": 90,
+          "monotonic": false,
+          "name": "this_has_tag",
+          "note": "NaN when the fingerprint has no such tag.",
+          "path": "m_wave.this_has_tag",
+          "phrase": "this print joined the wave with a tagged template",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when this print just joined the wave and its ix template carries the tag.",
+          "tag_level": "template",
+          "tags": "required",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.wallet_count >= 2 : the second wallet just joined.",
+          "hue": 134,
+          "monotonic": false,
+          "name": "wallet_count",
+          "note": "",
+          "path": "m_wave.wallet_count",
+          "phrase": "wallets in this wave",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Different wallets among this wave's buys.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.1,
+          "example": "m_wave.buy_sol >= 1 : the wave has put 1 SOL in.",
+          "hue": 135,
+          "monotonic": false,
+          "name": "buy_sol",
+          "note": "",
+          "path": "m_wave.buy_sol",
+          "phrase": "SOL bought in this wave",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "SOL bought in this wave so far.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "sol"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.buy_count @working >= 2 : two working-template buys in this wave.",
+          "hue": 102,
+          "monotonic": false,
+          "name": "buy_count",
+          "note": "NaN when the wave cannot fire (the create slot, or no gap before it).",
+          "path": "m_wave.buy_count",
+          "phrase": "buys in this wave",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Buys in this wave whose ix template carries the tag.",
+          "tag_level": "template",
+          "tags": "required",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.gap_slots >= 10 : the wave broke 10 quiet slots.",
+          "hue": 94,
+          "monotonic": false,
+          "name": "gap_slots",
+          "note": "NaN on the create slot, with no proven gap, or after a slot regression.",
+          "path": "m_wave.gap_slots",
+          "phrase": "empty slots before this wave",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Empty slots (no buys) before this wave started.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "count"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.all_new_wallets = 1 : a wave of fresh wallets.",
+          "hue": 96,
+          "monotonic": false,
+          "name": "all_new_wallets",
+          "note": "NaN on an empty wave.",
+          "path": "m_wave.all_new_wallets",
+          "phrase": "every wallet in this wave is a first-time buyer",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when every wallet in this wave is buying this coin for the first time.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.has_unknown_wallet = 0 : every buyer in the wave is known.",
+          "hue": 100,
+          "monotonic": false,
+          "name": "has_unknown_wallet",
+          "note": "",
+          "path": "m_wave.has_unknown_wallet",
+          "phrase": "a buy in this wave has no wallet on record",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when a buy in this wave has no wallet on record.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.this_tip_lamports >= 1000000 : this buyer tipped 0.001 SOL or more.",
+          "hue": 91,
+          "monotonic": false,
+          "name": "this_tip_lamports",
+          "note": "NaN when the fee was not captured; a real 0 reads 0.",
+          "path": "m_wave.this_tip_lamports",
+          "phrase": "tip this print paid",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "The tip this print's transaction paid.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "lamports"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.has_tx_gap = 0 : this buy sits right behind the last one.",
+          "hue": 92,
+          "monotonic": false,
+          "name": "has_tx_gap",
+          "note": "0 for the wave's first buy.",
+          "path": "m_wave.has_tx_gap",
+          "phrase": "another transaction sits before this buy",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when this buy's block position is more than one after the wave's previous buy: another transaction sits between them.",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "flag"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_wave.tip_band_seen = 0 : this buyer tips differently from the rest of the wave.",
+          "hue": 114,
+          "monotonic": false,
+          "name": "tip_band_seen",
+          "note": "",
+          "path": "m_wave.tip_band_seen",
+          "phrase": "an earlier buy in this wave tipped in this print's band",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "1 when an earlier buy in this wave paid a tip in the same band as this print (none, 0, <0.0001, <0.001, more).",
+          "tag_level": "template",
+          "tags": "none",
+          "unit": "flag"
+        }
+      ],
+      "name": "m_wave",
+      "summary": "The run of back-to-back slots with buys that this print belongs to.",
+      "title": "This buy wave"
+    },
+    {
+      "example": "m_position.pnl_pct >= 50 : we are up 50 % or more.",
+      "metrics": [
+        {
+          "eq_tolerance": 1.0,
+          "example": "m_position.pnl_pct <= -25 : we are down 25 %.",
+          "hue": 56,
+          "monotonic": false,
+          "name": "pnl_pct",
+          "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
+          "path": "m_position.pnl_pct",
+          "phrase": "our profit",
+          "position": true,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Our profit against our buy price, in percent.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_position.held_sec >= 1000 : we have held for 1000 s.",
+          "hue": 58,
+          "monotonic": false,
+          "name": "held_sec",
+          "note": "",
+          "path": "m_position.held_sec",
+          "phrase": "time held",
+          "position": true,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Seconds since our buy filled.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "seconds"
+        },
+        {
+          "eq_tolerance": 1.0,
+          "example": "m_position.retrace_pct >= 20 : the price is 20 % below its peak since we bought.",
+          "hue": 52,
+          "monotonic": false,
+          "name": "retrace_pct",
+          "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
+          "path": "m_position.retrace_pct",
+          "phrase": "fall from our best price",
+          "position": true,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "How far the price fell from its best since our buy, in percent: the trailing stop.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 1.0,
+          "example": "m_position.bounce_pct >= 30 : the price climbed 30 % off its low since we bought.",
+          "hue": 54,
+          "monotonic": false,
+          "name": "bounce_pct",
+          "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
+          "path": "m_position.bounce_pct",
+          "phrase": "rise from our worst price",
+          "position": true,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "How far the price rose from its worst since our buy, in percent.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 1.0,
+          "example": "m_position.room_taken_pct >= 40 : 40 % of the room to graduation is used (at a buy near pool 100 that is +13 %).",
+          "hue": 46,
+          "monotonic": false,
+          "name": "room_taken_pct",
+          "note": "NaN when the pool depth at our buy is unknown.",
+          "path": "m_position.room_taken_pct",
+          "phrase": "share of the way to graduation covered",
+          "position": true,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "How much of the way from our buy price to the graduation price the price has covered.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_position.stage_sec <= 30 : still in the first 30 s of this stage.",
+          "hue": 60,
+          "monotonic": false,
+          "name": "stage_sec",
+          "note": "",
+          "path": "m_position.stage_sec",
+          "phrase": "time in this stage",
+          "position": true,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "Seconds since the rule entered its current stage.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "seconds"
+        }
+      ],
+      "name": "m_position",
+      "summary": "Our own trade: profit, time held, fall from our best price. Exists only after we buy, so it is for sell lines.",
+      "title": "Our position"
+    }
+  ],
+  "operators": [
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "=",
+    "!="
+  ],
+  "rule_parts": [
+    {
+      "example": "m_state.age_sec >= 1 : buy on a print once the coin is 1 s old.",
+      "key": "enter.event",
+      "summary": "The print that triggers the buy. Every condition must hold on that print.",
+      "title": "Buy on"
+    },
+    {
+      "example": "m_state.liquidity_sol >= 14 : only when the pool holds 14+ SOL.",
+      "key": "enter.filters",
+      "summary": "Must also hold at that moment. If one fails, the rule keeps watching the coin.",
+      "title": "Only if"
+    },
+    {
+      "example": "m_crowd.unique_ix_templates @working >= 4 : give up on coins with fewer than 4 working templates.",
+      "key": "enter.final_filters",
+      "summary": "Checked on the print that would buy. If one fails, the rule stops watching this coin.",
+      "title": "Only if, else give up"
+    },
+    {
+      "example": "token + event age_sec >= 1 : decide once, on the first print after 1 s.",
+      "key": "enter.lock",
+      "summary": "token: only the coin's first event print may buy; slot: only the first event print of each slot.",
+      "title": "One chance"
+    },
+    {
+      "example": "1.5 : at pool 100 SOL, buy 1.5 SOL.",
+      "key": "enter.size_pct_of_pool",
+      "summary": "Buy this percent of the pool's SOL instead of the fixed amount, so our own price impact stays the same.",
+      "title": "Size as % of pool"
+    },
+    {
+      "example": "cashout = profit_sol @volume >= 1.18, or (profit_sol @volume >= 0.71 and buy_sol @!volume [3s] >= 1).",
+      "key": "signals",
+      "summary": "Named conditions, written once and used by name in any line. A signal holds when any of its groups holds (every condition of that group).",
+      "title": "Signals"
+    },
+    {
+      "example": "m_state.liquidity_sol >= 80 -> sell \"top\".",
+      "key": "always",
+      "summary": "Sell lines checked first, in every stage.",
+      "title": "Always"
+    },
+    {
+      "example": "early (until age 20 s) -> late -> ride (30 s) -> hold.",
+      "key": "stages",
+      "summary": "The steps after the buy. The position starts in the first stage; each stage has its own lines and may have a deadline.",
+      "title": "Stages"
+    },
+    {
+      "example": "cashout -> sell \"spike\".",
+      "key": "stage.on",
+      "summary": "Lines checked on every print and every 200 ms tick while in this stage, top to bottom; the first that holds acts.",
+      "title": "While in this stage"
+    },
+    {
+      "example": "ends at age 20 s, then late.",
+      "key": "stage.ends",
+      "summary": "When the stage ends: at a coin age, after time held, or after time in this stage. At the deadline the 'at end' lines run once, then the rule moves to 'then' (default: the next stage).",
+      "title": "Deadline"
+    },
+    {
+      "example": "m_flow.buy_sol @!volume < 1 -> sell \"dead at 20 s\".",
+      "key": "stage.at_end",
+      "summary": "Lines checked once, when the deadline is reached. A checkpoint.",
+      "title": "At the deadline"
+    },
+    {
+      "example": "m_flow.buy_sol @!volume [10s] >= 2 -> sell \"burst\".",
+      "key": "line",
+      "summary": "If every condition holds: sell (all, or a percent of the first buy's bag) and/or move to another stage.",
+      "title": "Line"
+    },
+    {
+      "example": "100 : sell at +100 %.",
+      "key": "take_profit",
+      "summary": "Shortcut for an always line: sell when m_position.pnl_pct reaches this.",
+      "title": "Take profit %"
+    },
+    {
+      "example": "30 : sell at -30 %.",
+      "key": "stop_loss",
+      "summary": "Shortcut for an always line, checked before everything: sell when m_position.pnl_pct falls to minus this.",
+      "title": "Stop loss %"
+    },
+    {
+      "example": "cooldown 30 s, at most 3 buys per coin.",
+      "key": "reentry",
+      "summary": "After a normal sell, wait this long and watch the coin again, up to a number of buys per coin.",
+      "title": "Buy again"
+    },
+    {
+      "example": "exclusive + priority 2 beats exclusive + priority 1.",
+      "key": "exclusive",
+      "summary": "Do not buy while another rule holds this coin. With two exclusive rules, the higher priority wins.",
+      "title": "Exclusive"
+    }
+  ],
+  "spans": [
+    {
+      "example": "m_flow.buy_sol >= 20 : 20+ SOL bought since the coin was created.",
+      "key": "life",
+      "summary": "Since the coin was created. The default: no span written.",
+      "text": "",
+      "title": "Whole life"
+    },
+    {
+      "example": "m_flow.buy_sol [10s] >= 5 : 5+ SOL bought in the last 10 s.",
+      "key": "sec",
+      "summary": "The last N seconds up to now.",
+      "text": "10s",
+      "title": "Last N seconds"
+    },
+    {
+      "example": "m_flow.buy_count [1sl] >= 3 : 3+ buys landed in this slot.",
+      "key": "slot",
+      "summary": "The last N slots (about 0.4 s each). A bundle always lands in one slot, so 1sl is exactly 'this slot'.",
+      "text": "20sl",
+      "title": "Last N slots"
+    },
+    {
+      "example": "m_flow.sell_tx_count @dump [1p] >= 1 : the print being read is a dump sell.",
+      "key": "print",
+      "summary": "The last N prints of this coin. 1p is the print being read.",
+      "text": "5p",
+      "title": "Last N prints"
+    },
+    {
+      "example": "m_flow.buy_count [30sl@1] = 0 : no buys in the 30 slots before this one.",
+      "key": "lag",
+      "summary": "The same window ending N units ago, so it cannot see the most recent stretch.",
+      "text": "10s@2",
+      "title": "Lagged"
+    },
+    {
+      "example": "m_crowd.buyer_count [age60s] >= 5 : 5+ new wallets bought after the coin was a minute old.",
+      "key": "since_age",
+      "summary": "From coin age N seconds until now.",
+      "text": "age60s",
+      "title": "Since age"
+    },
+    {
+      "example": "m_flow.slice_sol_share_pct [30s, slice 2s] >= 50 : half of 30 s of SOL moved in the last 2 s.",
+      "key": "slice",
+      "summary": "A shorter window nested in the span, same unit, for the two slice_*_share_pct metrics.",
+      "text": "slice 2s",
+      "title": "Slice"
+    }
+  ],
+  "tags": {
+    "builtin": [
+      {
+        "name": "bundled",
+        "summary": "Wallets whose first buy landed in a slot where 3+ wallets first bought with one ix shape."
+      },
+      {
+        "name": "public_app",
+        "summary": "Wallets whose first buy went through an app with 100+ buyers the day before."
+      }
+    ],
+    "example": "volume = program 9ddjzq or a 3-print cluster or the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
+    "fields": [
+      {
+        "example": "\"program\": [\"Axiom Trade\"] : every Axiom trade, whatever its instruction list.",
+        "key": "program",
+        "kind": "match",
+        "summary": "The transaction's main program (its first instruction past compute budget, system, token, ATA and memo) is one of these. Catches every build a tool ships.",
+        "title": "Program",
+        "value_type": "program[]"
+      },
+      {
+        "example": "[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"] with cu_price 1000.",
+        "key": "ix_shape",
+        "kind": "match",
+        "summary": "The transaction's exact ordered instruction list is one of these, optionally pinned to its fee preset (CU limit, CU price, tip).",
+        "title": "Exact ix shape",
+        "value_type": "ix_shape[]"
+      },
+      {
+        "example": "\"Axiom Trade|CU|ATA|1|0|0\".",
+        "key": "ix_template",
+        "kind": "match",
+        "summary": "The transaction's coarse template (program|CU|ATA|N|S|F) is one of these. The only matcher, with program, the slot and wave families can read.",
+        "title": "Ix template",
+        "value_type": "ix_template[]"
+      },
+      {
+        "example": "[\"CreateAccountWithSeed\"] : throwaway-account machines.",
+        "key": "ix_contains",
+        "kind": "match",
+        "summary": "The instruction list contains one of these markers (a mechanism or a retail router).",
+        "title": "Contains marker",
+        "value_type": "marker[]"
+      },
+      {
+        "example": "[\"Axiom Trade\", \"Photon\"] : every trade that did not come through those routers.",
+        "key": "ix_lacks",
+        "kind": "match",
+        "summary": "The instruction list contains NONE of these markers: everything except them.",
+        "title": "Lacks marker",
+        "value_type": "marker[]"
+      },
+      {
+        "example": "[\"7xKX...\"] : a wallet to copy.",
+        "key": "wallet",
+        "kind": "match",
+        "summary": "The wallet the venue credited is one of these addresses.",
+        "title": "Wallet",
+        "value_type": "wallet[]"
+      },
+      {
+        "example": "true : the dev's own buys and sells.",
+        "key": "creator",
+        "kind": "match",
+        "summary": "The trader is the coin's creator.",
+        "title": "Creator",
+        "value_type": "bool"
+      },
+      {
+        "example": "{\"min_prints\": 3, \"sol_tol_pct\": 10} : the 3rd of three matching 0.5 SOL buys in one slot.",
+        "key": "cluster",
+        "kind": "match",
+        "summary": "The trade is the Nth or later print in one slot with the same ix shape, side and fees, its SOL within P % of the first. Checked last.",
+        "title": "Same-slot cluster",
+        "value_type": "cluster"
+      },
+      {
+        "example": "\"sell\" : a dump list judges sells only.",
+        "key": "side",
+        "kind": "option",
+        "summary": "Only buys, or only sells, can carry the tag. Absent = both.",
+        "title": "Side",
+        "value_type": "side"
+      },
+      {
+        "example": "true : a wallet caught in a volume cluster stays volume for its later trades.",
+        "key": "sticky",
+        "kind": "option",
+        "summary": "A wallet that carried the tag once carries it for the rest of the coin.",
+        "title": "Sticky",
+        "value_type": "bool"
+      },
+      {
+        "example": "true : @!volume then means outside buyers only.",
+        "key": "exclude_creation_slot",
+        "kind": "option",
+        "summary": "A wallet that buys in the creation slot and matches nothing counts on NEITHER side for the rest of the coin: it is the dev's birth bundle or a sniper, not the audience.",
+        "title": "Ignore creation-slot buyers",
+        "value_type": "bool"
+      }
+    ],
+    "markers": [
+      {
+        "name": "AdvanceNonceAccount",
+        "router": false
+      },
+      {
+        "name": "CreateAccountWithSeed",
+        "router": false
+      },
+      {
+        "name": "System Program: Transfer",
+        "router": false
+      },
+      {
+        "name": "Pump.Fun: Create",
+        "router": false
+      },
+      {
+        "name": "Memo Program",
+        "router": false
+      },
+      {
+        "name": "Axiom Trade",
+        "router": true
+      },
+      {
+        "name": "Photon",
+        "router": true
+      },
+      {
+        "name": "Bloom Router",
+        "router": true
+      },
+      {
+        "name": "Trojan Trade",
+        "router": true
+      },
+      {
+        "name": "Terminal",
+        "router": true
+      }
+    ],
+    "summary": "A tag is a named trade list. It splits every coin's trades in two: @name = the trades that carry it, @!name = the rest."
+  }
+}

@@ -2368,7 +2368,10 @@ pub async fn list_token_results(
             window: crate::sweep::corpus::TradeWindow::LaunchWindow,
             per_mint_cap: sweep_per_mint_cap(),
             with_signatures: false,
-            with_flow: run.tags.is_some(),
+            // The same columns the sweep scored with (`axes_need_trade_keys`): without
+            // them a wallet-keyed read sees one anonymous wallet and the drill-in
+            // disagrees with the row it opens. Axes that no longer resolve load them.
+            with_flow: run.tags.is_some() || axes_need_trade_keys(&run.axes_spec, run.tags.as_ref()).unwrap_or(true),
             // Hash-resolved flow keys only — no consumer here reads label text.
             with_flow_text: false,
             // Only family search reads the oracle curve; every other run pays zero.

@@ -1,15 +1,21 @@
 import { useMemo } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
-import { IxPatternBar, FeePinToggles } from 'components/tokens/IxPatternBar';
+import { IxPatternBar, TagStageControls } from 'components/tokens/IxPatternBar';
 import { Badge } from 'components/ui/Badge';
 import { useTimezone } from 'context/TimezoneContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { useIxPatternTarget, type IxPatternTarget } from 'hooks/useIxPatternTarget';
+import {
+  useIxPatternTarget,
+  type IxPatternTarget,
+  type TagStage,
+  type TagTape,
+} from 'hooks/useIxPatternTarget';
 import { useFlowLensContext, type FlowLensTarget } from 'context/FlowLensContext';
 import { formatTimestampMs } from 'utils/date';
 import type { FlowReason } from 'lib/flow/classifyFlow';
-import { toPatternRow } from 'lib/flow/ixPatternSets';
+import { tagLabel } from 'lib/flow/tapeClassify';
+import { tagField, useStrategyRegistry } from 'lib/strategy/registry';
 import type {
   ChartBarSelection,
   ChartEventMarker,
@@ -54,27 +60,24 @@ export interface BarTradesPanelProps {
    *  same signal the chart's oversized gold marker carries — and counted in the
    *  heading, so the wallet under study is findable without reading addresses. */
   highlightWallet?: string | null;
-  /** The host's saved `ix_patterns` keys — adds the Tagged/Untagged column.
-   *  This is the set the chart lines, the metric panes and the engine all use, so
-   *  the badge and the overlay can never report different classifications. */
+  /** The host's key set (its default tag's exact ix shapes) - the fallback the
+   *  panel classifies with and matches a write target by when it has no
+   *  fingerprint id (see `hooks/useFlowPatternKeys`). */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** The fingerprint {@link flowPatternKeys} came from — the row a Tagged-badge edit
-   *  writes to. Pass it wherever the host knows one (`hooks/useFlowPatternKeys`
-   *  resolves both together): without it the panel can only guess its write
-   *  target from the pattern set, and an empty set matches every unconfigured
-   *  fingerprint at once, which leaves the badge uneditable. */
+  /** The host's fingerprint - the row an "add to tag" click writes to. Pass it
+   *  wherever the host knows one: without it the panel can only guess its target. */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen patterns — display only, never edited from here. */
+  /** A stored run's frozen shapes - display only, never edited from here. */
   flowReadOnly?: boolean;
-  /** Host-owned tape target (TokenTradeChart / Floor). When passed, this panel
-   *  does not create its own `useIxPatternTarget`, so the overlay above and the
-   *  badges here cannot disagree about which list is selected. */
+  /** Host-owned target (TokenTradeChart / Floor). When passed, this panel does not
+   *  create its own `useIxPatternTarget`, so the lines above and the badges here
+   *  cannot disagree about which tag is picked. */
   patternTarget?: IxPatternTarget | null;
-  /** Staging surfaces hide the fingerprint picker (see {@link IxPatternBar}). */
-  hideTargetPicker?: boolean;
-  /** Effective (contagion-aware) classification per trade id, from the host's
-   *  FULL trade history — a bar's rows alone can't reconstruct contagion. Omit
-   *  and the badge reports structure only, as it always has. */
+  /** A staging tape (Flow Discovery): badges write the draft, not a fingerprint. */
+  tape?: TagTape | null;
+  /** The verdict per trade id over the host's FULL trade history
+   *  (`tradeFlowReasons`) - sticky, cluster and the creation slot are forward-only,
+   *  so a bar's rows alone cannot reconstruct them. */
   flowReasons?: ReadonlyMap<string, FlowReason> | null;
   /** The token's two ephemeral highlight lenses (`useTokenHighlight`). Wires the
    *  per-row target buttons, paints matched rows, and renders the armed chips.
@@ -132,7 +135,7 @@ export function BarTradesPanel({
   flowFingerprintId = null,
   flowReadOnly = false,
   patternTarget: patternTargetProp = null,
-  hideTargetPicker = false,
+  tape = null,
   flowReasons = null,
   highlight = null,
   className = 'mt-3 border-t border-white/7 pt-2',
@@ -140,58 +143,32 @@ export function BarTradesPanel({
   const { timezone } = useTimezone();
   const price = usePriceDisplay();
 
-  // A page-wide flow lens (Trader Analysis) OWNS the pattern set on pages with no
+  // A page-wide flow lens (Trader Analysis) OWNS the set on pages with no
   // fingerprint behind their tokens. When one is provided it is the write target:
   // clicks land in `ix_pattern_sets`, never on a fingerprint, so nothing a study
-  // toggles can change how a live rule classifies flow.
+  // toggles can change what a live rule reads.
   const lens = useFlowLensContext();
   const lensTarget = flowReadOnly ? null : (lens?.target ?? null);
 
-  // Without a lens, a toggle edits the fingerprint's saved patterns directly, so
-  // the badge, the chart lines and the engine are always reading the same row.
-  // A host that already owns the target (so the overlay can follow the selected
-  // list) passes it in; this hook then no-ops.
+  // Without a lens or a tape, a click edits the fingerprint's tag directly, so the
+  // badge, the chart lines and the engine always read the same row. A host that
+  // already owns the target passes it in; this hook then no-ops.
   const createdTarget = useIxPatternTarget({
     fingerprintId: flowFingerprintId,
     savedKeys: flowPatternKeys,
-    enabled: !flowReadOnly && !lensTarget && !patternTargetProp,
+    enabled: !flowReadOnly && !lensTarget && !tape && !patternTargetProp,
   });
   const patternTarget = patternTargetProp ?? createdTarget;
-  const onTogglePattern = flowReadOnly
-    ? null
-    : (lensTarget?.toggle ?? patternTarget.toggle);
-  // The badge reports what the CHART classified with. Under a lens that is the
-  // narrowed key set the page handed down (group filters applied); a toggle still
-  // edits the whole stored set, filing new patterns under the lens' active group.
-  const badgeKeys = lensTarget ? (flowPatternKeys ?? null) : patternTarget.keys;
-  const toggleTargetName = lensTarget?.name ?? patternTarget.target?.name ?? null;
-  const feePinMask = lensTarget
-    ? lensTarget.list === 'working'
-      ? null
-      : lensTarget.feePins
-    : patternTarget.feePins;
-  const patternRows = lensTarget
-    ? lensTarget.list === 'working'
-      ? null
-      : lensTarget.rows
-    : patternTarget.rows;
-  // Under a lens the badge reports the NARROWED keys, so it can read "off" for a
-  // structure the set does hold. The whole stored set travels beside them: the
-  // badge's click un-mutes that one instead of saving, and its tooltip says so.
-  const storedPatternIds = useMemo(
-    () =>
-      lensTarget && lensTarget.list === 'working'
-        ? new Set(lensTarget.workingTemplates)
-        : null,
-    [lensTarget],
-  );
-  const storedPatternRows = useMemo(
-    () =>
-      lensTarget && lensTarget.list !== 'working'
-        ? lensTarget.patterns.map(toPatternRow)
-        : null,
-    [lensTarget],
-  );
+  const stage: TagStage | null = flowReadOnly ? null : (lensTarget ?? tape ?? patternTarget);
+  // The tag the reasons were computed against - the lines above read the same one.
+  // A stage with nothing classifying yet still names its tag, so the first click
+  // that fills it has a column to land in.
+  const flowTagName = lens
+    ? (lens.tag?.name ?? lensTarget?.tagName ?? null)
+    : tape
+      ? tape.tagName
+      : (patternTarget.tag?.name ?? (patternTarget.toggle ? patternTarget.tagName : null));
+  const { data: reg } = useStrategyRegistry();
 
   // Pulled apart rather than passed as one object: `useTokenHighlight` returns a
   // fresh literal every render, and depending on it would rebuild every column —
@@ -202,6 +179,10 @@ export function BarTradesPanel({
   const armedLensWallet = highlight?.lens.wallet ?? null;
   const armedLensStructureKey = highlight?.lens.structureKey ?? null;
 
+  const tagFieldTitle = useMemo(
+    () => (key: string) => tagField(reg, key)?.title ?? key,
+    [reg],
+  );
   const columns = useMemo(
     () =>
       tokenTradeColumns(price.unitLabel, {
@@ -209,36 +190,17 @@ export function BarTradesPanel({
         lensWallet: armedLensWallet,
         onLensStructure,
         lensStructureKey: armedLensStructureKey,
-        // The target's keys, not the prop: a badge must report the row its own
-        // click writes to. They are the same set in the normal case, and differ
-        // only when the reader deliberately picks another fingerprint — which
-        // `IxPatternBar` flags rather than letting the two drift silently.
-        flowPatternKeys: badgeKeys,
-        onTogglePattern,
-        toggleTargetName,
+        flowTagName,
         flowReasons,
-        // A lens set is one vocabulary; the column follows that list (exact →
-        // tagged, templates → working). Fingerprint path uses the strip's list.
-        patternList: lensTarget ? lensTarget.list : patternTarget.list,
-        otherListKeys: lensTarget ? null : patternTarget.otherKeys,
-        storedPatternIds,
-        storedPatternRows,
-        feePinMask,
-        patternRows,
+        stage,
+        tagFieldTitle,
       }),
     [
       price.unitLabel,
-      badgeKeys,
-      toggleTargetName,
-      onTogglePattern,
+      flowTagName,
       flowReasons,
-      lensTarget,
-      storedPatternIds,
-      storedPatternRows,
-      patternTarget.list,
-      patternTarget.otherKeys,
-      feePinMask,
-      patternRows,
+      stage,
+      tagFieldTitle,
       onLensWallet,
       onLensStructure,
       armedLensWallet,
@@ -368,13 +330,14 @@ export function BarTradesPanel({
           Clear
         </button>
         {lensTarget ? (
-          <FlowLensStrip target={lensTarget} patternCount={badgeKeys?.size ?? 0} />
+          <FlowLensStrip target={lensTarget} tagName={flowTagName} />
+        ) : tape ? (
+          <span className="inline-flex flex-wrap items-center gap-2">
+            <TagStageControls stage={tape} />
+            <span className="text-[11px] text-text-dim">into the draft: Apply saves it</span>
+          </span>
         ) : (
-          <IxPatternBar
-            target={patternTarget}
-            readOnly={flowReadOnly}
-            hideTargetPicker={hideTargetPicker}
-          />
+          <IxPatternBar target={patternTarget} readOnly={flowReadOnly} />
         )}
       </div>
       {highlight && lensActive && <LensChips highlight={highlight} />}
@@ -507,46 +470,36 @@ Every candle carrying this EXACT ordered structure is ` +
 }
 
 /**
- * The lens twin of {@link IxPatternBar}: what a Tagged-badge click writes to
- * when the page owns the pattern set instead of a fingerprint. No picker — the
- * set is chosen on the page, above every chart — and no active-rule warning,
- * because a lens is analysis-only and no rule can be bound to it.
+ * The lens twin of {@link IxPatternBar}: what a badge click writes when the page owns
+ * the set instead of a fingerprint. No picker - the set is chosen on the page, above
+ * every chart - and no active-rule warning, because a lens is analysis only and no
+ * rule can read it.
  */
 function FlowLensStrip({
   target,
-  patternCount,
+  tagName,
 }: {
   target: FlowLensTarget;
-  /** Patterns actually classifying right now — the narrowed set, which is what
-   *  the badges below report against. */
-  patternCount: number;
+  /** The lens tag's name, or `null` when the narrowing leaves nothing to classify. */
+  tagName: string | null;
 }) {
   const isTemplates = target.kind === 'templates';
   const total = isTemplates ? target.workingTemplates.length : target.patterns.length;
-  const unit = isTemplates ? 'grain' : 'pattern';
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <Badge variant={isTemplates ? 'success' : 'info'} size="sm">
         Flow lens · {isTemplates ? 'Templates' : 'Exact'}
       </Badge>
-      <span className="font-mono text-[11px] text-text">{target.name}</span>
-      <span
-        className="font-mono text-[11px] text-text-dim"
-        title={`${unit}s classifying this chart / ${unit}s in the whole set`}
-      >
-        {patternCount}/{total} {unit}
+      <span className="font-mono text-[11px] text-text-dim" title="entries in the whole stored set">
+        {total} {isTemplates ? 'id' : 'shape'}
         {total === 1 ? '' : 's'}
       </span>
-      {!isTemplates && (
-        <FeePinToggles mask={target.feePins} onChange={target.setFeePins} />
-      )}
+      {!tagName && <span className="text-[11px] text-text-dim">the narrowing leaves nothing to classify</span>}
+      <TagStageControls stage={target} />
       <span className="text-[11px] text-text-dim">
-        {isTemplates ? 'Working' : 'Tagged'} badges add/remove here
-        {target.activeGroup ? ` (group "${target.activeGroup}")` : ''} — analysis only, no
-        rule reads it.
+        {target.activeGroup ? `filed under group "${target.activeGroup}"; ` : ''}analysis only, no rule reads{' '}
+        {tagLabel(target.tagName)}.
       </span>
-      {target.saving && <span className="text-[11px] text-text-dim">Saving…</span>}
-      {target.error && <span className="text-[11px] text-red">{target.error}</span>}
     </span>
   );
 }

@@ -1,68 +1,25 @@
-import { Badge } from 'components/ui/Badge';
+import { useState } from 'react';
+
 import { Checkbox } from 'components/ui/Checkbox';
+import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
-import type { IxPatternTarget, TapeList, WorkingWrite } from 'hooks/useIxPatternTarget';
-import {
-  type IxPatternFeeField,
-  type IxPatternFeeMask,
-} from 'lib/strategy/ixPatternRows';
-
-/** The three lists a badge click can write into. Tagged and dump are ordered
- *  `ix_labels` sequences (a build may sit on BOTH). Working is a different
- *  vocabulary — template grain ids for `m_burst_slot.working_templates`. */
-const LISTS: {
-  value: TapeList;
-  label: string;
-  title: string;
-  activeClassName?: string;
-}[] = [
-  {
-    value: 'tagged',
-    label: 'tagged',
-    title: 'm_flow_ix.ix_patterns — which trades the flow split calls volume-side',
-  },
-  {
-    value: 'dump',
-    label: 'dump',
-    title: 'm_dump_ix.ix_patterns — the builds whose SELLS dump_sell_count counts',
-    activeClassName: 'bg-warning/20 text-warning',
-  },
-  {
-    value: 'working',
-    label: 'working',
-    title: 'm_burst_slot.working_templates — a | id is a grain, a bare name is a program',
-    activeClassName: 'bg-green/20 text-green',
-  },
-];
-
-const WORKING_WRITES: {
-  value: WorkingWrite;
-  label: string;
-  title: string;
-}[] = [
-  {
-    value: 'grain',
-    label: 'grain',
-    title: 'Click writes this trade\'s program|CU|ATA|N|S|F grain — harvest working list.',
-  },
-  {
-    value: 'program',
-    label: 'program',
-    title: 'Click writes this trade\'s program name (Axiom Trade) — every grain of that program is working.',
-  },
-];
+import { HOST_SHAPES_TAG, type IxPatternTarget, type StageMatcher, type TagStage } from 'hooks/useIxPatternTarget';
+import { tagLabel } from 'lib/flow/tapeClassify';
+import { type IxPatternFeeField, type IxPatternFeeMask } from 'lib/strategy/ixPatternRows';
+import { tagField, useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
+import { TAG_NAME_RE } from 'lib/strategy/tagsDoc';
 
 const FEE_PIN_TOGGLES: { field: IxPatternFeeField; label: string; title: string }[] = [
   {
     field: 'cu_limit',
     label: 'cu_limit',
-    title: 'Copy this tx\'s cu_limit onto the staged row. Off (the default) stages the ix structure only, even when the tx has a limit.',
+    title: 'Copy this tx\'s cu_limit onto the added shape. Off (the default) adds the ix shape alone, even when the tx has a limit.',
   },
   {
     field: 'cu_price',
     label: 'cu_price',
-    title: 'Copy this tx\'s cu_price. Many clients recompute this per transaction — pin it only when you have seen it hold.',
+    title: 'Copy this tx\'s cu_price. Many clients recompute this per transaction: pin it only when you have seen it hold.',
   },
   {
     field: 'tip_lamports',
@@ -72,10 +29,9 @@ const FEE_PIN_TOGGLES: { field: IxPatternFeeField; label: string; title: string 
 ];
 
 /**
- * Sticky fee-field modifiers for a trades table. Checking cu_limit then clicking
- * a tx stages that tx's ix labels plus that tx's cu_limit — not the other two.
- * All off = structure only. Hidden on the working list (grain ids, not ix+fee)
- * and on a read-only snapshot.
+ * Sticky fee-field modifiers for an `ix_shape` click. Checking cu_limit then clicking
+ * a tx adds that tx's ix shape plus its cu_limit - not the other two. All off = the
+ * shape alone (any budget).
  */
 export function FeePinToggles({
   mask,
@@ -87,7 +43,7 @@ export function FeePinToggles({
   disabled?: boolean;
 }) {
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5" title="Fields copied from the clicked tx. Default off = catch-all (any budget). Checking a box then clicking a selected catch-all narrows it to that pin — the two never sit together.">
+    <span className="inline-flex flex-wrap items-center gap-1.5" title="Fee fields copied from the clicked tx onto the ix shape. Default off = any budget.">
       <span className="text-[9px] uppercase tracking-wide text-text-dim/60">pin</span>
       {FEE_PIN_TOGGLES.map(({ field, label, title }) => (
         <label key={field} className="inline-flex cursor-pointer items-center gap-0.5" title={title}>
@@ -105,138 +61,178 @@ export function FeePinToggles({
   );
 }
 
+/** A matcher's registry title and summary, for a switch or a caption. */
+function matcherTitle(reg: StrategyRegistry | undefined, m: StageMatcher): string {
+  return tagField(reg, m)?.title ?? m;
+}
+
 /**
- * The strip above a chart's trades table: which fingerprint's
- * `ix_patterns` the Tagged badges edit, and what a click there costs.
+ * The "add to @tag (matcher)" caption, the matcher switch and the fee pins - the part
+ * every stage shares, whoever owns the tag. The caption states exactly what a badge
+ * click below writes.
+ */
+export function TagStageControls({ stage, disabled = false }: { stage: TagStage; disabled?: boolean }) {
+  const { data: reg } = useStrategyRegistry();
+  const options = stage.matchers.map((m) => ({
+    value: m,
+    label: matcherTitle(reg, m),
+    title: tagField(reg, m)?.summary ?? m,
+  }));
+  return (
+    <>
+      <span className="text-[11px] text-text">
+        click adds to <span className="font-mono">{tagLabel(stage.tagName)}</span> ({matcherTitle(reg, stage.matcher)})
+      </span>
+      {stage.matchers.length > 1 && (
+        <ToggleGroup
+          size="sm"
+          tone="neutral"
+          aria-label="Which matcher a badge click writes"
+          value={stage.matcher}
+          onChange={stage.setMatcher}
+          options={options}
+        />
+      )}
+      {stage.matcher === 'ix_shape' && (
+        <FeePinToggles mask={stage.feePins} onChange={stage.setFeePins} disabled={disabled} />
+      )}
+      {stage.saving && <span className="text-[11px] text-text-dim">Saving...</span>}
+      {stage.error && <span className="text-[11px] text-red">{stage.error}</span>}
+    </>
+  );
+}
+
+/** Said wherever the lines read the host's bare key set instead of a fingerprint tag. */
+const HOST_SHAPES_NOTE = `${tagLabel(HOST_SHAPES_TAG)} = the host's exact ix shapes only, not a fingerprint tag (no program, marker, wallet, creator, cluster, side or sticky).`;
+
+/** Not a legal tag name, so it cannot collide with one. */
+const NEW_TAG = '-new';
+
+/** The target's tags plus "new tag...", which opens a name field. */
+function TagPicker({ target }: { target: IxPatternTarget }) {
+  const { data: reg } = useStrategyRegistry();
+  const [draft, setDraft] = useState<string | null>(null);
+  const builtin = reg?.tags.builtin.map((b) => b.name) ?? [];
+  if (draft !== null) {
+    const ok = TAG_NAME_RE.test(draft) && !builtin.includes(draft);
+    return (
+      <span className="inline-flex items-center gap-1">
+        <Input
+          fieldSize="sm"
+          className="w-28 font-mono"
+          value={draft}
+          autoFocus
+          placeholder="tag name"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && ok) {
+              target.setTagName(draft);
+              setDraft(null);
+            } else if (e.key === 'Escape') setDraft(null);
+          }}
+        />
+        <span className={`text-[10px] ${ok ? 'text-text-dim' : 'text-red'}`}>
+          {ok ? 'Enter: the first click creates it' : 'a-z, 0-9, _ (1 to 24), not a built-in class'}
+        </span>
+      </span>
+    );
+  }
+  const names = target.tagNames.includes(target.tagName) ? target.tagNames : [...target.tagNames, target.tagName];
+  return (
+    <Select
+      fieldSize="sm"
+      value={target.tagName}
+      onChange={(e) => (e.target.value === NEW_TAG ? setDraft('') : target.setTagName(e.target.value))}
+      title="The tag a click writes and the chart classifies with"
+      className="max-w-40 font-mono"
+    >
+      {names.map((n) => (
+        <option key={n} value={n}>
+          {tagLabel(n)}
+          {target.tagNames.includes(n) ? '' : ' (new)'}
+        </option>
+      ))}
+      <option value={NEW_TAG}>new tag...</option>
+    </Select>
+  );
+}
+
+/**
+ * The strip above a chart's trades table: which fingerprint and which tag the badges
+ * write to, with which matcher, and what a click there costs.
  *
- * There is no staging step. `metric_config` is not part of fingerprint identity,
- * so a write lands on the same row and every rule bound to it starts classifying
- * flow differently — hence the named target and the loud active-rule count, which
- * are the parts of the old draft flow that were actually earning their keep.
- *
- * The target is normally the host's own fingerprint and the picker just states it.
- * The two ways it can be something else — guessed from the pattern set, or picked
- * away from the host — are both called out, because from the badge alone they are
- * indistinguishable from editing the row you are looking at.
+ * There is no staging step. A click saves the fingerprint's `tags`, and every rule
+ * bound to it reads the new tag - hence the named target and the loud active-rule
+ * count. The target is normally the host's own fingerprint; the two ways it can be
+ * something else - guessed from a key set, or picked away from the host - are both
+ * called out, because from the badge alone they look like editing the row on screen.
  */
 export function IxPatternBar({
   target,
   readOnly = false,
-  hideTargetPicker = false,
 }: {
   target: IxPatternTarget;
-  /** A stored run's frozen snapshot — its numbers were computed under those
-   *  patterns, so they are not this chart's to change. */
+  /** A stored run's frozen snapshot: its numbers were computed under those shapes,
+   *  so they are not this chart's to change. */
   readOnly?: boolean;
-  /** Staging surfaces own the write target (the cart). The list toggle and
-   *  fee pins still show; the fingerprint picker does not. */
-  hideTargetPicker?: boolean;
 }) {
   if (readOnly) {
     return (
       <span
         className="text-[10px] uppercase tracking-wide text-text-dim/60"
-        title="This chart shows a stored run's own ix_patterns — the numbers were computed under them, so they are not editable here."
+        title={`This chart shows a stored run's own ix shapes: the numbers were computed under them, so they are not editable here. ${HOST_SHAPES_NOTE}`}
       >
         run snapshot
       </span>
     );
   }
 
-  const {
-    fingerprints,
-    targetId,
-    setTargetId,
-    list,
-    setList,
-    patterns,
-    workingTemplates,
-    workingWrite,
-    setWorkingWrite,
-    feePins,
-    setFeePins,
-    activeRuleCount,
-    inferred,
-    offHost,
-    saving,
-    error,
-  } = target;
-  const count = list === 'working' ? workingTemplates.length : patterns.length;
-  const isWorking = list === 'working';
-
+  const { fingerprints, targetId, setTargetId, activeRuleCount, inferred, offHost } = target;
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <Badge variant={isWorking ? 'success' : list === 'dump' ? 'warning' : 'info'} size="sm">
-        {isWorking ? 'Working list' : list === 'dump' ? 'Dump builds' : 'Tagged patterns'}
-      </Badge>
-      <ToggleGroup
-        size="sm"
-        tone="neutral"
-        aria-label="Which list a badge click writes into"
-        value={list}
-        onChange={setList}
-        options={LISTS}
-      />
-      {isWorking && (
-        <ToggleGroup
-          size="sm"
-          tone="neutral"
-          aria-label="Whether a working badge click writes the grain or the program"
-          value={workingWrite}
-          onChange={setWorkingWrite}
-          options={WORKING_WRITES}
-        />
-      )}
-      {!isWorking && (
-        <FeePinToggles mask={feePins} onChange={setFeePins} disabled={!targetId && !hideTargetPicker} />
-      )}
-      <span className="font-mono text-[11px] text-text-dim">
-        {count} {isWorking ? `id${count === 1 ? '' : 's'}` : `pattern${count === 1 ? '' : 's'}`}
-      </span>
-
-      {!hideTargetPicker && (
-        <Select
-          fieldSize="sm"
-          value={targetId ?? ''}
-          onChange={(e) => setTargetId(e.target.value || null)}
-          title="Fingerprint the badges write to"
-          className="max-w-[16rem]"
-        >
-          <option value="">Fingerprint…</option>
-          {fingerprints.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.name}
-            </option>
-          ))}
-        </Select>
-      )}
-
-      {saving && <span className="text-[11px] text-text-dim">Saving…</span>}
-      {!hideTargetPicker && !targetId && (
+      <Select
+        fieldSize="sm"
+        value={targetId ?? ''}
+        onChange={(e) => setTargetId(e.target.value || null)}
+        title="Fingerprint the badges write to"
+        className="max-w-[16rem]"
+      >
+        <option value="">Fingerprint...</option>
+        {fingerprints.map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.name}
+          </option>
+        ))}
+      </Select>
+      {targetId ? (
+        <>
+          <TagPicker target={target} />
+          <TagStageControls stage={target} />
+        </>
+      ) : (
         <span className="text-[11px] text-text-dim">
-          Pick a fingerprint to make the badges editable.
+          {target.tag ? `${HOST_SHAPES_NOTE} ` : ''}Pick a fingerprint to make the badges add to one of its tags.
         </span>
       )}
       {inferred && (
         <span
           className="text-[11px] text-text-dim"
-          title="This host has no fingerprint of its own, so the target was matched by its pattern set. Confirm it before editing."
+          title="This host has no fingerprint of its own, so the target was matched by its ix shapes. Confirm it before editing."
         >
-          matched by patterns — confirm before editing
+          matched by shapes: confirm before editing
         </span>
       )}
       {offHost && (
         <span className="text-[11px] text-warning">
-          Not this chart&rsquo;s fingerprint — badges and overlay follow the picked one.
+          Not this chart&rsquo;s fingerprint: badges and lines follow the picked one.
         </span>
       )}
-      {!hideTargetPicker && activeRuleCount > 0 && (
+      {activeRuleCount > 0 && (
         <span className="text-[11px] text-warning">
-          {activeRuleCount} active rule{activeRuleCount === 1 ? '' : 's'} use this fingerprint —
-          editing changes what they read.
+          {activeRuleCount} active rule{activeRuleCount === 1 ? '' : 's'} use this fingerprint: a click changes
+          what they read.
         </span>
       )}
-      {error && <span className="text-[11px] text-red">{error}</span>}
     </span>
   );
 }

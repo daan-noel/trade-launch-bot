@@ -1,3 +1,4 @@
+import type { FlowTag } from 'lib/flow/classifyFlow';
 import type { FlowLineVisibility } from './flowLineVisibility';
 import type { LensMatch } from './lensTint';
 import type { UTCTimestamp } from 'lightweight-charts';
@@ -27,9 +28,9 @@ export interface ChartTrade {
   real_token_reserves?: number | null;
   venue?: 'curve' | 'amm';
   wallet_address?: string;
-  /** Ordered instruction labels — drives vol/non-vol flow classification. */
+  /** Ordered instruction labels - read by the tag classifier (`lib/flow/classifyFlow`). */
   instruction_labels?: string[] | null;
-  /** Per-tx compute budget — overlay matching against a pinned `ix_patterns` row. */
+  /** Per-tx compute budget - read by a fee-pinned `ix_shape` entry and the cluster matcher. */
   cu_limit?: number | null;
   cu_price?: number | null;
   tip_lamports?: number | null;
@@ -155,10 +156,12 @@ export interface ChartCrosshairInfo {
   /** Sell-side SOL volume in the hovered bar. */
   outflow: number;
   liquiditySol: number | null;
-  /** Cumulative volume-maker cohort at this bar (null when flow overlay has no point). */
+  /** Cumulative `@tag` net at this bar (null when the overlay has no point). */
   flowTagged: number | null;
-  /** Cumulative non-volume cohort at this bar (null when flow overlay has no point). */
+  /** Cumulative `@!tag` net at this bar (null when the overlay has no point). */
   flowUntagged: number | null;
+  /** The tag the overlay classifies with, naming the two readouts. */
+  flowTagName?: string | null;
 }
 
 export interface ChartBarSelection {
@@ -298,6 +301,7 @@ export interface ChartBarTooltipState {
   liquiditySol: number | null;
   flowTagged: number | null;
   flowUntagged: number | null;
+  flowTagName?: string | null;
   barTime: UTCTimestamp;
   /** Age of the bar's earliest trade since token creation (seconds); null when unknown. */
   ageSec: number | null;
@@ -380,34 +384,11 @@ export interface TokenPriceChartProps {
   /** Strategy entry/exit points to overlay as arrows + dashed price lines. */
   eventMarkers?: ChartEventMarker[] | null;
   /**
-   * `JSON.stringify(labels)` keys of fingerprint `ix_patterns` for the
-   * vol/non-vol overlay. Omit/empty is NOT a blank chart — the structural test
-   * simply never fires and the split degrades to creator-vs-rest, which the
-   * toolbar tooltip names. Only a token with neither patterns nor a creator
-   * wallet disables the toggle. (The trades-table Tagged badge keeps the stricter
-   * gate: it marks a per-trade STRUCTURAL match, which needs patterns.)
+   * The tag the cumulative `@tag` / `@!tag` overlay classifies with: a fingerprint
+   * tag, a flow-lens set read as one, or a staging draft (`lib/flow/classifyFlow`).
+   * `null`, or a tag with no matcher, draws no overlay and disables its toggle.
    */
-  flowPatternKeys?: ReadonlySet<string> | null;
-  /**
-   * Which list {@link flowPatternKeys} is. Tagged (default) is the engine's
-   * volume split (contagion on). Dump and working are structural-only — those
-   * groups have no wallet rule — and working keys are grain ids.
-   */
-  flowList?: 'tagged' | 'dump' | 'working';
-  /** Whole pattern rows when the list carries fee pins. Overlay matching uses
-   *  engine wildcards so an ix-only row still paints every budget of that shape. */
-  flowPatternRows?: readonly {
-    labels: string[];
-    cu_limit?: number | null;
-    cu_price?: number | null;
-    tip_lamports?: number | null;
-  }[] | null;
-  /** Override creator-wallet seeding. Default follows {@link flowList} (on for
-   *  tagged). Staging surfaces pass the fingerprint's `creator_is_tagged`. */
-  flowSeedCreator?: boolean;
-  /** Override wallet contagion. Default follows {@link flowList} (on for tagged).
-   *  Staging surfaces pass the fingerprint's `wallet_contagion`. */
-  flowContagion?: boolean;
+  flowTag?: FlowTag | null;
   /** Cumulative flow-line basis (default `cost_sol`). */
   flowBasis?: 'cost_sol' | 'token' | 'value_sol';
   /** Ephemeral highlight lenses — see {@link ChartHighlightLens}. */
@@ -455,20 +436,19 @@ export interface ChartToolbarProps {
   athLineAvailable: boolean;
   showMigrationLine: boolean;
   trimEmptyBars: boolean;
-  /** Per-curve visibility of the vol/non-vol cumulative overlay (left price scale). */
+  /** Per-curve visibility of the `@tag` / `@!tag` cumulative overlay (left price scale). */
   flowLines: FlowLineVisibility;
-  /** False only when nothing can classify (no patterns AND no creator wallet)
-   *  — toggle disabled. */
+  /** False when no tag classifies (none picked, or one with no matcher) - toggle
+   *  disabled. */
   flowLinesAvailable: boolean;
-  /** True when the split comes from the selected list's membership; false ⇒ the
-   *  lines are the creator-vs-rest degradation (labelled as such in the tooltip). */
-  flowPatternsConfigured: boolean;
-  /** Which list the overlay is classifying — names the tooltip. */
-  flowList?: 'tagged' | 'dump' | 'working';
+  /** The tag the overlay classifies with, naming the two curves. */
+  flowTagName?: string | null;
+  /** That tag in words (`tagSentence`), for the toggle tooltip. */
+  flowTagText?: string | null;
   /** Range-select (drag-to-highlight) mode is active. */
   rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;
-  /** Formatter for cumulative vol/non-vol amounts in the toolbar readout. */
+  /** Formatter for the cumulative `@tag` / `@!tag` nets in the toolbar readout. */
   formatFlow: (value: number) => string;
   isMigrated?: boolean;
   isMayhemMode?: boolean;

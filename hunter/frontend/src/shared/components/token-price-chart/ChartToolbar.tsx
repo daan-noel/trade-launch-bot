@@ -9,6 +9,7 @@ import {
   createChartPriceFormatter,
 } from './constants';
 import { FLOW_NON_VOL_LINE_COLOR, FLOW_VOL_LINE_COLOR } from 'lib/flow/flowChartData';
+import { tagLabel } from 'lib/flow/tapeClassify';
 import { BarCrosshairFields, crosshairInlineRows } from './BarCrosshairFields';
 import { Checkbox } from 'components/ui/Checkbox';
 import { cn } from 'lib/cn';
@@ -98,12 +99,12 @@ function FlowLineIcon({ color, active, low }: { color: string; active?: boolean;
   );
 }
 
-/** Cumulative volume-maker curve (red). */
+/** Cumulative `@tag` curve (red). */
 export function FlowTaggedLineIcon({ active }: { active?: boolean }) {
   return <FlowLineIcon color={FLOW_VOL_LINE_COLOR} active={active} />;
 }
 
-/** Cumulative non-volume curve (gold). */
+/** Cumulative `@!tag` curve (gold). */
 export function FlowUntaggedLineIcon({ active }: { active?: boolean }) {
   return <FlowLineIcon color={FLOW_NON_VOL_LINE_COLOR} active={active} low />;
 }
@@ -119,32 +120,25 @@ export function FlowUntaggedLineIcon({ active }: { active?: boolean }) {
 export function FlowLineToggles({
   visibility,
   available,
-  patternsConfigured,
-  list = 'tagged',
+  tagName,
+  tagText,
   onChange,
 }: {
   visibility: FlowLineVisibility;
   available: boolean;
-  /** True when the split comes from the selected list's membership; false =>
-   *  the creator + contagion fallback. Only changes the tooltip wording. */
-  patternsConfigured?: boolean;
-  /** Names the membership set the lines classify against. */
-  list?: 'tagged' | 'dump' | 'working';
+  /** The tag the curves split by. */
+  tagName?: string | null;
+  /** That tag in words, for the tooltip. */
+  tagText?: string | null;
   onChange: (next: FlowLineVisibility) => void;
 }) {
-  const listName =
-    list === 'working'
-      ? 'working_templates grains (structural, no contagion)'
-      : list === 'dump'
-        ? 'dump ix_patterns (structural, no contagion)'
-        : 'tagged ix_patterns + creator/wallet contagion';
+  const on = tagName ? tagLabel(tagName) : '@tag';
+  const off = tagName ? tagLabel(tagName, true) : '@!tag';
   const basis = !available
-    ? 'Needs a creator wallet or a pattern list to classify against'
-    : patternsConfigured === false
-      ? 'No patterns on this list — showing creator + wallets they traded with (red) vs the rest (gold). Add patterns for the true split.'
-      : `Classified via this chart's selected ${listName}, the same set the badges below report`;
+    ? 'Needs a tag with at least one matcher to classify against'
+    : `Split by this chart's tag, the same one the badges below report: ${tagText ?? on}`;
   const scaleNote =
-    ' Both curves share the left price scale, so hiding one rescales the axis to the other.';
+    ' Running net (buy - sell) since creation. Both curves share the left price scale, so hiding one rescales the axis to the other.';
   return (
     // Hairline border, not a fill: an inactive IconToggleButton is already
     // CHART_COLORS.grid, so a grid-colored group box would swallow the gap and
@@ -157,8 +151,8 @@ export function FlowLineToggles({
         active={available && visibility.tagged}
         onClick={() => onChange({ ...visibility, tagged: !visibility.tagged })}
         disabled={!available}
-        label="Toggle the cumulative volume-maker flow line"
-        tooltip={`Cumulative volume-maker (red) line. ${basis}.${scaleNote}`}
+        label={`Toggle the cumulative ${on} flow line`}
+        tooltip={`Cumulative ${on} (red) line: the trades carrying the tag. ${basis}.${scaleNote}`}
         activeColor={FLOW_VOL_LINE_COLOR}
       >
         <FlowTaggedLineIcon active={available && visibility.tagged} />
@@ -167,8 +161,8 @@ export function FlowLineToggles({
         active={available && visibility.untagged}
         onClick={() => onChange({ ...visibility, untagged: !visibility.untagged })}
         disabled={!available}
-        label="Toggle the cumulative non-volume flow line"
-        tooltip={`Cumulative non-volume (gold) line. ${basis}.${scaleNote}`}
+        label={`Toggle the cumulative ${off} flow line`}
+        tooltip={`Cumulative ${off} (gold) line: the rest, minus any trade the tag ignores. ${basis}.${scaleNote}`}
         activeColor={FLOW_NON_VOL_LINE_COLOR}
       >
         <FlowUntaggedLineIcon active={available && visibility.untagged} />
@@ -411,8 +405,8 @@ export function ChartToolbar({
   trimEmptyBars,
   flowLines,
   flowLinesAvailable,
-  flowPatternsConfigured,
-  flowList,
+  flowTagName,
+  flowTagText,
   rangeSelectMode,
   crosshair,
   formatFlow,
@@ -461,11 +455,11 @@ export function ChartToolbar({
         // A hidden curve's value is dimmed so the readout still matches the chart.
         <div>
           <span style={{ color: FLOW_VOL_LINE_COLOR, opacity: flowLines.tagged ? 1 : 0.45 }}>
-            <span className="font-semibold">VolMk</span>{' '}
+            <span className="font-semibold">{flowTagName ? tagLabel(flowTagName) : '@tag'}</span>{' '}
             {crosshair.flowTagged != null ? formatFlow(crosshair.flowTagged) : '—'}
           </span>{' '}
           <span style={{ color: FLOW_NON_VOL_LINE_COLOR, opacity: flowLines.untagged ? 1 : 0.45 }}>
-            <span className="font-semibold">NonVol</span>{' '}
+            <span className="font-semibold">{flowTagName ? tagLabel(flowTagName, true) : '@!tag'}</span>{' '}
             {crosshair.flowUntagged != null ? formatFlow(crosshair.flowUntagged) : '—'}
           </span>
         </div>
@@ -741,8 +735,8 @@ export function ChartToolbar({
           <FlowLineToggles
             visibility={flowLines}
             available={flowLinesAvailable}
-            patternsConfigured={flowPatternsConfigured}
-            list={flowList}
+            tagName={flowTagName}
+            tagText={flowTagText}
             onChange={onFlowLinesChange}
           />
 

@@ -21,8 +21,12 @@ import {
   type GroupField,
   type GroupedSweepRunRecord,
 } from './groupedTypes';
-import type { AxisSpecWire } from './genericAxes';
-import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
+import { axesSpecToRows, axisSummary } from './genericAxes';
+import { stagesFromWire } from './stagePlan';
+import { tagSentence, tagsFromJson } from 'lib/strategy/tagsDoc';
+import { lineSentence, stageStrip } from 'lib/strategy/sentences';
+import { useStrategyRegistry } from 'lib/strategy/registry';
+import { tidySolDecimal } from 'utils/format';
 
 /** A read-only summary of the currently-selected sweep run's full launch config
  *  — what corpus/filters/grid it was swept over — so a saved run is legible at a
@@ -73,32 +77,16 @@ function fieldFilterLines(filters: Record<string, (number | boolean)[]>): string
     });
 }
 
-/** One `AxisSpecWire.values` entry as text — `null` is the metric-axis `off`
- *  sentinel (that combo omits the condition entirely). */
-function fmtAxisValues(values: (number | null)[]): string {
-  return values.map((v) => (v == null ? 'off' : formatDecimalTrim(v, 4))).join(', ');
-}
-
-/** Render the persisted `axes_spec.axes` (the actual TP/SL values + metric
- *  conditions this run swept over) as short readable lines — so what a saved run
- *  swept is legible right here, without pushing it into the live editor via
- *  "Use these settings" (which would also discard any unsaved draft there). */
-function axisSpecLines(axesSpec: unknown): string[] {
-  const axes = (axesSpec as { axes?: AxisSpecWire[] } | null | undefined)?.axes;
-  if (!Array.isArray(axes) || axes.length === 0) return [];
-  return axes.map((a) => {
-    if (a.kind === 'take_profit') return `TP: ${fmtAxisValues(a.values)} %`;
-    if (a.kind === 'stop_loss') return `SL: ${fmtAxisValues(a.values)} %`;
-    const window = a.window != null ? ` (${a.window}s)` : '';
-    return `${a.side ?? 'entry'} · ${a.group ?? '?'}.${a.metric ?? '?'}${window} ${a.operator ?? ''} ${fmtAxisValues(a.values)}`;
+/** The Pass-2 plan a run searched, as sentences: the stage strip, then each line. */
+function stagePlanLines(plans: unknown[][] | null, reg: Parameters<typeof lineSentence>[0]): string[] {
+  const out: string[] = [];
+  (plans ?? []).forEach((plan, i) => {
+    const stages = stagesFromWire(plan);
+    if (!stages.length) return;
+    out.push(`plan ${i + 1}: ${stageStrip(stages)}`);
+    for (const s of stages) for (const l of [...s.on, ...s.at_end]) out.push(`  ${s.name}: ${lineSentence(reg, l)}`);
   });
-}
-
-/** `ix_patterns` (`string[][]`) as one line per pattern — the corpus-wide
- *  ix-name sequences a flow-axis run classified volume by. */
-function ixPatternLines(patterns: string[][] | null): string[] {
-  if (!patterns || patterns.length === 0) return [];
-  return patterns.map((p) => p.join(' → '));
+  return out;
 }
 
 export interface SelectedSweepHistoryProps {
@@ -115,6 +103,7 @@ export interface SelectedSweepHistoryProps {
 
 export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: SelectedSweepHistoryProps) {
   const [rename, renameState] = useRenameGroupedSweepRunMutation();
+  const { data: registry } = useStrategyRegistry();
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -142,8 +131,11 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
         }`
       : 'any';
   const fieldLines = run.field_filters ? fieldFilterLines(run.field_filters) : [];
-  const axisLines = axisSpecLines(run.axes_spec);
-  const flowLines = ixPatternLines(run.ix_patterns);
+  // What the run swept, read-only here: "Use these settings" would push it into the
+  // form and discard an unsaved draft there.
+  const axisLines = axesSpecToRows(run.axes_spec).map(axisSummary);
+  const tagLines = tagsFromJson(run.tags).map(tagSentence);
+  const planLines = stagePlanLines(run.stage_plans, registry);
   // Name the scope fingerprint when it still exists; a deleted one keeps the run
   // honest by falling back to its id (the run row deliberately has no FK).
   const scopeFp = run.fingerprint_id
@@ -349,9 +341,6 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
             </span>
           </Row>
         )}
-        {/* The actual TP/SL + metric-condition grid this run swept over — read-only
-            here so it's legible without "Use these settings", which pushes it into
-            the live editor and discards any unsaved draft sitting there. */}
         {axisLines.length > 0 && (
           <Row label="Sweep axes">
             <span className="flex flex-col">
@@ -361,10 +350,19 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
             </span>
           </Row>
         )}
-        {flowLines.length > 0 && (
-          <Row label="Flow patterns">
+        {tagLines.length > 0 && (
+          <Row label="Tags">
             <span className="flex flex-col">
-              {flowLines.map((l, i) => (
+              {tagLines.map((l, i) => (
+                <span key={i}>{l}</span>
+              ))}
+            </span>
+          </Row>
+        )}
+        {planLines.length > 0 && (
+          <Row label={`Stage plan (top ${run.stage_plans_top_k ?? 3})`}>
+            <span className="flex flex-col whitespace-pre-wrap">
+              {planLines.map((l, i) => (
                 <span key={i}>{l}</span>
               ))}
             </span>

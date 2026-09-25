@@ -125,7 +125,7 @@ export interface RulesViewProps {
  *  score can span two configs, and this is the only thing that says so. Absent is
  *  the normal case; the title names what moved and when.
  *
- *  Editing a FINGERPRINT (identity axes, `m_flow_ix.ix_patterns`) marks every rule
+ *  Editing a FINGERPRINT (identity axes, tags) marks every rule
  *  pointing at it, which is exactly right: one edit re-defines all of them. */
 function RuleConfigEditedMark({ rule }: { rule: StrategyRule }) {
   const note = configEditSummary(rule.config_edits);
@@ -1247,7 +1247,7 @@ export function RulesView({
         resetKey={`${rowModeFilter}|${tagFilter.include.join(',')}|${tagFilter.exclude.join(',')}|${showDisabled}`}
         emptyMessage={
           enabledRules.length > 0
-            ? 'No rules match the current mode / tag filters.'
+            ? 'No rules match the current mode / label filters.'
             : 'No rules yet — create one from a fingerprint.'
         }
         selectedKey={selectedKey}

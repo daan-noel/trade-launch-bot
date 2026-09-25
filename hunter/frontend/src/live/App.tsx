@@ -25,6 +25,7 @@ const SettingsPage = lazy(() =>
 );
 const RulesPage = lazy(() => import('@live/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
 const FingerprintsPage = lazy(() => import('@live/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
+const GuidePage = lazy(() => import('components/strategy/StrategyGuide').then((m) => ({ default: m.StrategyGuide })));
 const ConsolePage = lazy(() => import('@live/pages/console/ConsolePage').then((m) => ({ default: m.ConsolePage })));
 const PortfolioPage = lazy(() =>
   import('@live/pages/portfolio/PortfolioPage').then((m) => ({ default: m.PortfolioPage })),
@@ -89,6 +90,7 @@ export default function App() {
               <Route path="strategies/rules" element={<RulesPage />} />
               <Route path="strategies/rules/:ruleId" element={<RuleAnalyzePage />} />
               <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
+              <Route path="strategies/guide" element={<GuidePage />} />
               <Route path="wallet" element={<MyWalletPage />} />
               <Route path="profiles" element={<ProfilesPage />} />
               <Route path="settings" element={<SettingsPage />} />

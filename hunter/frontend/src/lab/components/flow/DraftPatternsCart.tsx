@@ -2,56 +2,77 @@ import { Fragment, useState } from 'react';
 
 import { clearPrompt, IxPatternRowsEditor } from 'components/strategy/IxPatternsEditor';
 import { LabelTip } from 'components/strategy/LabelTip';
+import { tagSentence } from 'lib/strategy/tagsDoc';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
-import { Checkbox } from 'components/ui/Checkbox';
 import { EmptyState } from 'components/ui/EmptyState';
 import { IconButton } from 'components/ui/IconButton';
+import { Input } from 'components/ui/Input';
+import { Select } from 'components/ui/Select';
 import { CheckIcon, CloseIcon, EditIcon, LinkIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
-import { DISCOVERY_FIELD_HELP, FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import {
-  metricConfigWithList,
-  metricConfigWithWorkingTemplates,
-  withFlowWalletRules,
-  type TapeList,
-} from 'lib/strategy/registry';
-import { toggleWorkingTemplate } from 'lib/strategy/templateGrain';
+import { ToggleGroup } from 'components/ui/ToggleGroup';
+import type { StageMatcher } from 'hooks/useIxPatternTarget';
+import type { FlowTag } from 'lib/flow/classifyFlow';
+import { flowTagOf, tagLabel } from 'lib/flow/tapeClassify';
 import {
   formatFeePins,
+  patternRowKey,
   rowPinsFee,
   serializeIxPatternRows,
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
-import { ToggleGroup } from 'components/ui/ToggleGroup';
+import { tagField, useStrategyRegistry } from 'lib/strategy/registry';
+import { DISCOVERY_FIELD_HELP } from 'lib/strategy/strategyHelp';
+import { TAG_NAME_RE, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
+import { isProgramWorkingId, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import type { Fingerprint } from 'lib/strategy/types';
 
-/** The lists the cart can stage into. `tagged` is `m_flow_ix.ix_patterns` (which
- *  trades the flow split calls volume-side); `dump` is `m_dump_ix.ix_patterns` (the
- *  builds whose SELLS `dump_sell_count` counts); `working` is
- *  `m_burst_slot.working_templates` (grain ids). A build may sit on both ix lists,
- *  so the cart states which list it is about to write rather than leaving Apply
- *  ambiguous - the risk is writing the RIGHT build into the WRONG list, not an
- *  illegal overlap. Working grains are a different vocabulary; bind cannot create
- *  a fingerprint from them. */
-const STAGE_LISTS: { value: TapeList; label: string; title: string }[] = [
-  { value: 'tagged', label: 'tagged', title: 'Stage into m_flow_ix.ix_patterns' },
-  { value: 'dump', label: 'dump', title: 'Stage into m_dump_ix.ix_patterns' },
-  {
-    value: 'working',
-    label: 'working',
-    title: 'Stage into m_burst_slot.working_templates (grain ids)',
-  },
-];
+/** The matchers the cart stages: the exact ix shape, or the template vocabulary
+ *  (grain ids under `ix_template`, bare program names under `program`). */
+export type CartMatcher = Exclude<StageMatcher, 'wallet'>;
 
-/** Staging "cart" for the ix_patterns being assembled: an accent-elevated
- *  panel that reads as the page's deliverable, not just another box. Checked rows
- *  from the ranked table land here as chips; the primary Apply CTA writes them back
- *  to the fingerprint. Raw JSON editing is one toggle away. */
-export interface FlowWalletRules {
-  wallet_contagion: boolean;
-  creator_is_tagged: boolean;
+export const CART_MATCHERS: readonly CartMatcher[] = ['ix_shape', 'ix_template', 'program'];
+
+/**
+ * `doc` with tag `name`'s staged matcher(s) set to the draft - `rows` for `ix_shape`,
+ * `ids` for `ix_template` (grains) and `program` (bare names) - every other matcher,
+ * option and tag kept. Adds before it removes, so a tag whose list is swapped whole
+ * never passes through "no matcher" and loses its options. Every step goes through
+ * `withTagShape` / `withTagListValue`, the tags document's one writer.
+ */
+export function withTagDraft(
+  doc: unknown,
+  name: string,
+  rows: readonly IxPatternRow[] | null,
+  ids: readonly string[] | null,
+): Record<string, unknown> {
+  const saved = flowTagOf(doc, name);
+  let out: unknown = doc;
+  if (rows) {
+    for (const r of rows) out = withTagShape(out, name, r);
+    const keep = new Set(rows.map(patternRowKey));
+    for (const r of saved?.match.ix_shape ?? []) {
+      if (!keep.has(patternRowKey(r))) out = withTagShape(out, name, r, true);
+    }
+  }
+  if (ids) {
+    for (const k of ['ix_template', 'program'] as const) {
+      const want = ids.filter((id) => (k === 'program') === isProgramWorkingId(id));
+      for (const v of want) out = withTagListValue(out, name, k, v);
+      for (const v of saved?.match[k] ?? []) {
+        if (!want.includes(v)) out = withTagListValue(out, name, k, v, true);
+      }
+    }
+  }
+  return (out ?? {}) as Record<string, unknown>;
 }
 
+const NEW_TAG = '-new';
+
+/** Staging "cart" for one fingerprint tag: an accent-elevated panel that reads as the
+ *  page's deliverable. Checked rows from the ranked table land here as chips; Apply
+ *  writes them into the named tag's matcher on the fingerprint. Raw JSON editing is
+ *  one toggle away. */
 export function DraftPatternsCart({
   draftPatterns,
   onChange,
@@ -60,89 +81,131 @@ export function DraftPatternsCart({
   onWorkingChange,
   currentWorking,
   targetFp,
-  stageInto,
-  onStageIntoChange,
-  walletRules,
-  savedWalletRules,
-  onWalletRulesChange,
+  tagName,
+  onTagNameChange,
+  matcher,
+  onMatcherChange,
+  previewTag,
   applying,
   onApply,
 }: {
   draftPatterns: IxPatternRow[];
   onChange: (patterns: IxPatternRow[]) => void;
+  /** The tag's saved `ix_shape`. */
   currentPatterns: IxPatternRow[];
+  /** Draft grain ids / program names. */
   draftWorking: string[];
-  onWorkingChange: (grains: string[]) => void;
+  onWorkingChange: (ids: string[]) => void;
+  /** The tag's saved `ix_template` + `program`. */
   currentWorking: string[];
   targetFp: Fingerprint | null;
-  /** Which list Apply writes the draft into. */
-  stageInto: TapeList;
-  /** Switching reseeds the draft from the other list — the page owns that. */
-  onStageIntoChange: (list: TapeList) => void;
-  /** `m_flow_ix`'s two wallet rules as staged — Apply writes these. */
-  walletRules: FlowWalletRules;
-  /** The same pair as SAVED on the target, so the panel can mark them unsaved. */
-  savedWalletRules: FlowWalletRules;
-  onWalletRulesChange: (rules: FlowWalletRules) => void;
+  /** The tag Apply writes into (`@tagName`). */
+  tagName: string;
+  /** Switching reseeds the draft from that tag - the page owns that. */
+  onTagNameChange: (name: string) => void;
+  /** Which matcher a check writes. `ix_template` / `program` share one draft. */
+  matcher: CartMatcher;
+  onMatcherChange: (m: CartMatcher) => void;
+  /** The tag as Apply would save it - saved options, draft matcher. */
+  previewTag: FlowTag;
   applying: boolean;
   onApply: () => void;
 }) {
   const [rawEdit, setRawEdit] = useState(false);
+  const [newTag, setNewTag] = useState<string | null>(null);
+  const { data: reg } = useStrategyRegistry();
+  const title = (k: string) => tagField(reg, k)?.title ?? k;
+  const builtin = reg?.tags.builtin.map((b) => b.name) ?? [];
 
-  const isWorking = stageInto === 'working';
+  const isTemplate = matcher !== 'ix_shape';
   const draftNorm = serializeIxPatternRows(draftPatterns);
   const savedNorm = serializeIxPatternRows(currentPatterns);
-  const stagedCount = isWorking ? draftWorking.length : draftNorm.length;
-  const patternsDirty = isWorking
+  const stagedCount = isTemplate ? draftWorking.length : draftNorm.length;
+  const dirty = isTemplate
     ? JSON.stringify([...draftWorking].sort()) !== JSON.stringify([...currentWorking].sort())
     : JSON.stringify(draftNorm) !== JSON.stringify(savedNorm);
-
-  // Only meaningful against a saved row: bind posts `ix_patterns` alone, so a newly
-  // bound fingerprint takes the backend defaults and is edited after.
-  const rulesDirty =
-    targetFp != null &&
-    stageInto === 'tagged' &&
-    (walletRules.wallet_contagion !== savedWalletRules.wallet_contagion ||
-      walletRules.creator_is_tagged !== savedWalletRules.creator_is_tagged);
+  const tagNames = Object.keys(targetFp?.tags ?? {});
+  const names = tagNames.includes(tagName) ? tagNames : [...tagNames, tagName];
+  const writes = isTemplate
+    ? `${tagLabel(tagName)} (${title('ix_template')} / ${title('program')})`
+    : `${tagLabel(tagName)} (${title('ix_shape')})`;
 
   const applyLabel = applying
     ? 'Applying…'
-    : isWorking && !targetFp
-      ? 'Pick a fingerprint to save grains'
+    : isTemplate && !targetFp
+      ? 'Pick a fingerprint to save templates'
       : targetFp
-        ? `Update “${targetFp.name}”`
-        : 'Create & bind fingerprint';
+        ? `Save ${writes} on "${targetFp.name}"`
+        : `Create & bind fingerprint with ${writes}`;
 
-  const applyDisabled =
-    stagedCount === 0 || applying || (isWorking && !targetFp);
+  const applyDisabled = applying || (isTemplate && !targetFp) || (!targetFp && stagedCount === 0);
+  const newOk = newTag !== null && TAG_NAME_RE.test(newTag) && !builtin.includes(newTag);
 
   return (
     <div className="rounded-lg border border-accent/30 bg-accent/4 p-3 shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-accent)_10%,transparent)]">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <span className="inline-flex flex-wrap items-center gap-2">
-          <LabelTip
-            tip={DISCOVERY_FIELD_HELP.draftPatterns}
-            className="text-xs font-semibold text-text"
-          >
-            Draft {isWorking ? 'working grains' : 'ix_patterns'}
+          <LabelTip tip={DISCOVERY_FIELD_HELP.draftPatterns} className="text-xs font-semibold text-text">
+            Draft for
           </LabelTip>
+          {newTag !== null ? (
+            <span className="inline-flex items-center gap-1">
+              <Input
+                fieldSize="sm"
+                className="w-28 font-mono"
+                value={newTag}
+                autoFocus
+                placeholder="tag name"
+                onChange={(e) => setNewTag(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && newOk) {
+                    onTagNameChange(newTag);
+                    setNewTag(null);
+                  } else if (e.key === 'Escape') setNewTag(null);
+                }}
+              />
+              <span className={`text-[10px] ${newOk ? 'text-text-dim' : 'text-red'}`}>
+                {newOk ? 'Enter: Apply creates it' : 'a-z, 0-9, _ (1 to 24), not a built-in class'}
+              </span>
+            </span>
+          ) : (
+            <Select
+              fieldSize="sm"
+              className="max-w-40 font-mono"
+              value={tagName}
+              title="The fingerprint tag Apply writes into"
+              onChange={(e) => (e.target.value === NEW_TAG ? setNewTag('') : onTagNameChange(e.target.value))}
+            >
+              {names.map((n) => (
+                <option key={n} value={n}>
+                  {tagLabel(n)}
+                  {tagNames.includes(n) ? '' : ' (new)'}
+                </option>
+              ))}
+              <option value={NEW_TAG}>new tag...</option>
+            </Select>
+          )}
           <ToggleGroup
             size="sm"
             tone="neutral"
-            aria-label="Which list Apply writes the draft into"
-            value={stageInto}
-            onChange={onStageIntoChange}
-            options={STAGE_LISTS}
+            aria-label="Which matcher a checked row writes"
+            value={matcher}
+            onChange={onMatcherChange}
+            options={CART_MATCHERS.map((m) => ({
+              value: m,
+              label: title(m),
+              title: tagField(reg, m)?.summary ?? m,
+            }))}
           />
           <Badge variant={stagedCount > 0 ? 'accent' : 'neutral'} size="sm" pill>
             {stagedCount} staged
           </Badge>
           {targetFp && (
             <span className="text-[10px] text-text-dim">
-              {isWorking ? currentWorking.length : savedNorm.length} saved
+              {isTemplate ? currentWorking.length : savedNorm.length} saved
             </span>
           )}
-          {(patternsDirty || rulesDirty) && stagedCount > 0 && (
+          {dirty && (
             <Badge variant="warning" size="sm" pill>
               unsaved
             </Badge>
@@ -155,18 +218,17 @@ export function DraftPatternsCart({
               size="xs"
               className="text-red hover:text-red"
               onClick={() => {
-                if (!window.confirm(isWorking ? 'Clear all staged grains?' : clearPrompt(draftPatterns)))
-                  return;
-                if (isWorking) onWorkingChange([]);
+                if (!window.confirm(isTemplate ? 'Clear all staged templates?' : clearPrompt(draftPatterns))) return;
+                if (isTemplate) onWorkingChange([]);
                 else onChange([]);
               }}
-              title={isWorking ? 'Delete all staged grains' : 'Delete all staged structures'}
+              title={isTemplate ? 'Delete all staged templates' : 'Delete all staged shapes'}
             >
               <TrashIcon className="h-3 w-3" />
               Delete all
             </Button>
           )}
-          {!isWorking && (
+          {!isTemplate && (
             <Button
               variant="link"
               size="xs"
@@ -180,19 +242,14 @@ export function DraftPatternsCart({
         </span>
       </div>
 
-      {isWorking ? (
+      {isTemplate ? (
         stagedCount === 0 ? (
           <EmptyState
             compact
             message={
               <>
-                No working grains staged. Check rows in the ranked table — each
-                structure maps to its program|CU|ATA|N|S|F grain.
-                <br />
-                <span className="text-[10px] text-text-dim/70">
-                  Burst metrics read NaN until at least one grain is staged. Launch
-                  (create) shapes are skipped.
-                </span>
+                No templates staged. Check rows in the ranked table: each shape maps to its{' '}
+                {matcher === 'program' ? 'program' : 'program|CU|ATA|N|S|F grain'}.
               </>
             }
           />
@@ -204,7 +261,7 @@ export function DraftPatternsCart({
                 type="button"
                 onClick={() => onWorkingChange(toggleWorkingTemplate(draftWorking, id))}
                 className="inline-flex items-center gap-1 rounded border border-green/40 bg-green/10 px-1.5 py-0.5 font-mono text-[10px] text-text-hi hover:border-red/50 hover:bg-red/10"
-                title="Remove from working list"
+                title={`Remove from the draft (${title(isProgramWorkingId(id) ? 'program' : 'ix_template')})`}
               >
                 {id}
                 <span aria-hidden className="text-text-dim/60">
@@ -219,15 +276,7 @@ export function DraftPatternsCart({
       ) : stagedCount === 0 ? (
         <EmptyState
           compact
-          message={
-            <>
-              No structures staged. Check rows in the ranked table below.
-              <br />
-              <span className="text-[10px] text-text-dim/70">
-                Flow metrics stay NaN until at least one structure is staged.
-              </span>
-            </>
-          }
+          message={<>No shapes staged. Check rows in the ranked table below.</>}
           action={
             <button
               type="button"
@@ -248,24 +297,19 @@ export function DraftPatternsCart({
             if (labels.length === 0) return null;
             const pin = formatFeePins(p);
             return (
-              <li
-                key={i}
-                className="flex items-center gap-2 rounded border border-white/8 bg-white/3 px-2 py-1.5"
-              >
+              <li key={i} className="flex items-center gap-2 rounded border border-white/8 bg-white/3 px-2 py-1.5">
                 <span className="w-4 shrink-0 font-mono text-[9px] text-text-dim/60">{i + 1}</span>
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
                   {labels.map((label, k) => (
                     <Fragment key={k}>
                       {k > 0 && <span className="text-[10px] text-text-dim/40">›</span>}
-                      <span className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-[10px] text-text-mid">
-                        {label}
-                      </span>
+                      <span className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-[10px] text-text-mid">{label}</span>
                     </Fragment>
                   ))}
                   {rowPinsFee(p) && (
                     <span
                       className="shrink-0 rounded bg-accent/15 px-1 font-mono text-[9px] text-accent"
-                      title={`pinned to ${pin} — a trade must carry these exactly`}
+                      title={`pinned to ${pin}: a trade must carry these exactly`}
                     >
                       {pin || 'fee'}
                     </span>
@@ -276,8 +320,8 @@ export function DraftPatternsCart({
                   size="sm"
                   type="button"
                   onClick={() => onChange(draftPatterns.filter((_, j) => j !== i))}
-                  title="Remove pattern"
-                  aria-label="Remove pattern"
+                  title="Remove shape"
+                  aria-label="Remove shape"
                 >
                   <CloseIcon />
                 </IconButton>
@@ -287,62 +331,10 @@ export function DraftPatternsCart({
         </ul>
       )}
 
-      {stagedCount > 0 && stageInto === 'working' && (
-        <div className="mt-2 rounded border border-white/8 bg-white/3 px-2 py-1.5 text-[10px] text-text-dim/80">
-          m_burst_slot.working_templates are grain ids, not full ix sequences. A
-          grain match is structural only — no wallet contagion. Bind-from-group
-          cannot create a fingerprint from grains; pick a saved row to Update.
-        </div>
-      )}
-
-      {stagedCount > 0 && stageInto === 'tagged' && (
-        <div className="mt-2 flex flex-col gap-1 rounded border border-white/8 bg-white/3 px-2 py-1.5 text-[11px]">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-text-dim/70">
-            classifier
-          </span>
-          <label className="flex cursor-pointer items-start gap-1.5 text-text-mid">
-            <Checkbox
-              boxSize="sm"
-              className="mt-0.5"
-              checked={walletRules.wallet_contagion}
-              disabled={applying}
-              onChange={() =>
-                onWalletRulesChange({
-                  ...walletRules,
-                  wallet_contagion: !walletRules.wallet_contagion,
-                })
-              }
-            />
-            <LabelTip tip={FINGERPRINT_FIELD_HELP.wallet_contagion}>wallet contagion</LabelTip>
-          </label>
-          <label className="flex cursor-pointer items-start gap-1.5 text-text-mid">
-            <Checkbox
-              boxSize="sm"
-              className="mt-0.5"
-              checked={walletRules.creator_is_tagged}
-              disabled={applying}
-              onChange={() =>
-                onWalletRulesChange({
-                  ...walletRules,
-                  creator_is_tagged: !walletRules.creator_is_tagged,
-                })
-              }
-            />
-            <LabelTip tip={FINGERPRINT_FIELD_HELP.creator_is_tagged}>creator is tagged</LabelTip>
-          </label>
-          <span className="text-[10px] text-text-dim/70">
-            {walletRules.wallet_contagion || walletRules.creator_is_tagged
-              ? 'a tag is a property of the WALLET here — untick both for a purely structural gate'
-              : 'purely structural — every trade judged on its own ix_labels'}
-          </span>
-          {!targetFp && (
-            <span className="text-[10px] text-text-dim/70">
-              Bind posts patterns only, so these two land on their defaults (both on) and
-              apply from your next Update.
-            </span>
-          )}
-        </div>
-      )}
+      <p className="mt-2 rounded border border-white/8 bg-white/3 px-2 py-1.5 text-[11px] text-text-dim">
+        After Apply: {tagSentence({ ...previewTag, id: '' })} Side, sticky and the creation-slot option are the
+        tag&rsquo;s own; edit them on the fingerprint.
+      </p>
 
       <Button
         variant="primary"
@@ -362,24 +354,11 @@ export function DraftPatternsCart({
         {applyLabel}
       </Button>
 
-      {targetFp && (isWorking ? currentWorking.length > 0 : currentPatterns.length > 0) && (
+      {targetFp && Object.keys(targetFp.tags ?? {}).length > 0 && (
         <details className="mt-2 text-[10px] text-text-dim">
-          <summary className="cursor-pointer">Saved config</summary>
+          <summary className="cursor-pointer">Saved tags</summary>
           <pre className="mt-1 overflow-x-auto rounded bg-black/20 p-2 font-mono">
-            {JSON.stringify(
-              isWorking
-                ? metricConfigWithWorkingTemplates(targetFp.metric_config ?? {}, currentWorking)
-                : withFlowWalletRules(
-                    metricConfigWithList(
-                      targetFp.metric_config ?? {},
-                      currentPatterns,
-                      stageInto === 'dump' ? 'dump' : 'tagged',
-                    ),
-                    savedWalletRules,
-                  ),
-              null,
-              2,
-            )}
+            {JSON.stringify(targetFp.tags, null, 2)}
           </pre>
         </details>
       )}

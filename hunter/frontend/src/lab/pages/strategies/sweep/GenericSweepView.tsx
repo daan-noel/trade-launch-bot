@@ -38,7 +38,7 @@ import {
 } from 'lib/strategy/positionFocus';
 import type { PositionChartPoint } from 'lib/strategy/positionChartPoints';
 import { cn } from 'lib/cn';
-import { flowPatternKeysOf } from 'lib/flow/flowPatternKeys';
+import { flowPatternKeysFromTags } from 'lib/flow/flowPatternKeys';
 import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
@@ -809,7 +809,7 @@ export function GenericSweepView() {
                     groupId={activeGroupId}
                     comboId={activeComboId}
                     comboParams={activeCombo?.params ?? null}
-                    ixPatterns={activeRun?.ix_patterns ?? null}
+                    runTags={activeRun?.tags ?? null}
                     inspectFingerprintId={
                       promotedFp?.groupId === activeGroupId ? promotedFp.fingerprintId : null
                     }
@@ -837,7 +837,7 @@ function ComboTokenResults({
   groupId,
   comboId,
   comboParams,
-  ixPatterns,
+  runTags,
   inspectFingerprintId,
   onClose,
 }: {
@@ -845,20 +845,18 @@ function ComboTokenResults({
   runId: string;
   groupId: string;
   comboId: number;
-  /** The combo's swept `RuleParams` blob — pins the inspect's metric panes to the
-   *  exact params that produced these rows. Null when the row paged out of view. */
+  /** The combo's rule `params`: pins the inspect's metric panes to the exact rule
+   *  that produced these rows. Null when the row paged out of view. */
   comboParams: Record<string, unknown> | null;
-  /** Corpus-wide run patterns — chart overlay before Promote creates a fingerprint. */
-  ixPatterns: string[][] | null;
+  /** The run's tags: the chart's tagged-trade overlay before Promote creates a
+   *  fingerprint. */
+  runTags: Record<string, unknown> | null;
   /** Promoted fingerprint for this group — enables flow metric-series panes. */
   inspectFingerprintId: string | null;
   onClose: () => void;
 }) {
   const { timezone } = useTimezone();
-  const flowPatternKeys = useMemo(
-    () => flowPatternKeysOf(ixPatterns),
-    [ixPatterns],
-  );
+  const flowPatternKeys = useMemo(() => flowPatternKeysFromTags(runTags), [runTags]);
   const query = useGetComboTokenResultsQuery({ strategyId, runId, groupId, comboId });
   // Stable identities: RTK keeps `query.data` referentially equal across renders, so
   // memoizing keeps `rows`/`visible` from churning — otherwise the filtered-rows
@@ -1047,7 +1045,7 @@ function ComboTokenResults({
         sortable: true,
       },
       {
-        // Which authored exit condition fired — the row-grain counterpart of the
+        // Which sell line fired — the row-grain counterpart of the
         // group's `n_exit_metrics_by_slot` histogram, which until now could be read
         // only in aggregate. Filterable, so "every token that left on way 1" is one
         // number rather than a scan of the Exit text — and two ways whose text is
@@ -1055,9 +1053,9 @@ function ComboTokenResults({
         key: 'exit_way',
         label: 'Way',
         tooltip:
-          "Which of the rule's own authored exit conditions this token left on " +
-          "(0-based) — the same slot index the group's metric-exit breakdown counts. " +
-          'Blank on a non-metric exit (take profit, stop, dead, open) and on a metric ' +
+          "Which of the rule's own sell lines this token left on " +
+          "(0-based) — the same slot index the group's sell-line breakdown counts. " +
+          'Blank on any other exit (take profit, stop, dead, open) and on a line ' +
           'exit whose way the sweep could not resolve.',
         render: (r) =>
           r.exit_metric_slot == null ? (
@@ -1114,7 +1112,7 @@ function ComboTokenResults({
         chartsDefaultOn
         flowPatternKeys={flowPatternKeys}
         // A finished run's numbers were computed under the run's OWN stored
-        // ix_patterns, which are a snapshot rather than a live fingerprint
+        // tags, which are a snapshot rather than a live fingerprint
         // row — so they are readable here but not editable, or a Tagged-badge click
         // would silently retarget some unrelated fingerprint.
         flowReadOnly
@@ -1167,8 +1165,8 @@ function ComboTokenResults({
             comboParams
               ? {
                   paramsJson: comboParams,
-                  // Flow panes need a fingerprint with metric_config — available
-                  // after Promote for this group (run patterns → FP).
+                  // Tag reads need a fingerprint with the run's tags — available
+                  // after Promote for this group (run tags → FP).
                   fingerprintId: inspectFingerprintId,
                   label: `combo #${comboId}`,
                 }

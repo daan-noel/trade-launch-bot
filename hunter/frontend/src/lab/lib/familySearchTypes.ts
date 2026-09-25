@@ -75,12 +75,13 @@ export interface FamilyAlarmRow {
   pnl_pct: number;
   /** The threshold the rule authored. */
   authored_level: number | null;
-  /** Mean GROSS return at the close — the quantity `m_position.pnl` itself reads. */
+  /** Mean GROSS return at the close — the quantity `m_position.pnl_pct` itself reads. */
   realized_level_pct: number | null;
   /** Only then may the two be printed side by side (percent vs seconds). */
   level_is_return: boolean;
-  /** Points past the authored level the term actually closed. A `pnl <= -8` that
-   *  realizes −20 is a stop that does not stop: price gaps straight through it. */
+  /** Points past the authored level the term actually closed. A
+   *  `m_position.pnl_pct <= -8` that realizes −20 is a stop that does not stop: price
+   *  gaps straight through it. */
   level_overshoot_pp: number | null;
 }
 
@@ -390,7 +391,7 @@ export interface FamilySearchStartArgs {
    *  search runs. `0` refuses only the unarguable case. */
   cost_clearance_margin?: number;
   /** Mechanical alarms that ride into EVERY candidate and the ungated control, written
-   *  as the board prints them (`"liquidity >= 85"`). None is searched, ablated or
+   *  as the board prints them (`"m_state.liquidity_sol >= 85"`). None is searched, ablated or
    *  credited; one that does not parse fails the run rather than being dropped. */
   standing_exit?: string[];
   /** Absolute win-rate floor in percent, on top of the ungated control's own rate. */

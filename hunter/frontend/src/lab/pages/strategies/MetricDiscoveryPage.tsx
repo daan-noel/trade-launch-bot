@@ -8,9 +8,9 @@ import { IconButton } from 'components/ui/IconButton';
 import { PlayIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { InlineAlert } from 'components/ui/Modal';
+import { Select } from 'components/ui/Select';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
-import { IxPatternsEditor } from 'components/strategy/IxPatternsEditor';
 import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { PageHeader } from 'components/ui/PageHeader';
 import { useLocalStorage } from 'hooks/useLocalStorage';
@@ -21,7 +21,18 @@ import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import { solToLamports, type Fingerprint } from 'lib/strategy/types';
 import type { PromotedRuleDraft } from 'lib/strategy/types';
 import { PromoteRuleModal } from '@lab/components/sweep/PromoteRuleModal';
+import { Clause } from '@lab/components/family/Clause';
 import { parseWindowSpec } from 'lib/strategy/windowSpec';
+import {
+  findFamily,
+  findMetric,
+  metricHelp,
+  spanKind,
+  useStrategyRegistry,
+  type StrategyRegistry,
+} from 'lib/strategy/registry';
+import { readPhrase } from 'lib/strategy/sentences';
+import { tagNames, tagSentence, tagsFromJson } from 'lib/strategy/tagsDoc';
 import {
   useGetLastMetricDiscoveryQuery,
   useLazyGetMetricDiscoveryQuery,
@@ -32,12 +43,19 @@ import type {
   Bracket,
   CandidateValidation,
   DiscoverySweepHandoff,
+  DroppedMember,
+  FamilyMember,
   FamilyResult,
   JointResult,
+  MenuGap,
   MetricResponse,
   PipelineDto,
+  Read,
   Rescue,
   ScoredRow,
+  Side,
+  SkippedMetric,
+  SkipReason,
 } from '@lab/lib/metricDiscoveryTypes';
 
 interface Config {
@@ -54,12 +72,13 @@ interface Config {
   minClosed: number;
   splitFraction: number;
   buyAmountSol: number;
-  /** Entry / exit screening spans, as text in the `formatWindowSpec` grammar:
-   *  `30` (seconds), `30sl@1`, `20p`. Text rather than a number so a basis can be
-   *  typed at all, and validated before the run is admitted. */
-  entryWindow: string;
-  exitWindow: string;
-  ixPatterns: string[][];
+  /** Entry / exit screening windows, as written in a span: `30s`, `30sl@1`, `20p`.
+   *  Validated before the run is admitted. */
+  entrySpan: string;
+  exitSpan: string;
+  /** Unscoped runs only: the fingerprint whose tags the screen reads. A scoped run
+   *  reads the scoping fingerprint's own tags. */
+  tagsFingerprintId: string | null;
   ixLabelsFilter: string;
 }
 
@@ -76,9 +95,9 @@ const DEFAULTS: Config = {
   minClosed: 20,
   splitFraction: 0.7,
   buyAmountSol: 1.0,
-  entryWindow: '30',
-  exitWindow: '10',
-  ixPatterns: [],
+  entrySpan: '30s',
+  exitSpan: '10s',
+  tagsFingerprintId: null,
   ixLabelsFilter: '',
 };
 
@@ -199,6 +218,12 @@ export function MetricDiscoveryPage() {
     ? fingerprints.find((f) => f.id === config.fingerprintId)
     : undefined;
   const fpMatches = useFingerprintMatches(config.fingerprintId, selectedFp?.name);
+  // A scoped run reads its own fingerprint's tags; an unscoped one borrows a picked set.
+  const tagsFp =
+    selectedFp ??
+    (config.tagsFingerprintId ? fingerprints.find((f) => f.id === config.tagsFingerprintId) : undefined);
+  const tags = tagsFp && tagNames(tagsFp.tags).length > 0 ? tagsFp.tags : null;
+  const { data: reg } = useStrategyRegistry();
   const [start, startState] = useStartMetricDiscoveryMutation();
   const [fetchResult] = useLazyGetMetricDiscoveryQuery();
   const { data: lastResult } = useGetLastMetricDiscoveryQuery();
@@ -248,9 +273,9 @@ export function MetricDiscoveryPage() {
         stop_loss_menu: parseBracketMenu(config.stopLossMenu),
         min_closed: config.minClosed,
         split_fraction: config.splitFraction,
-        entry_window_sec: config.entryWindow,
-        exit_window_sec: config.exitWindow,
-        ix_patterns: config.ixPatterns.length ? config.ixPatterns : undefined,
+        entry_span: config.entrySpan.trim(),
+        exit_span: config.exitSpan.trim(),
+        tags: tags ?? undefined,
       }).unwrap();
 
       for (let i = 0; i < 600; i++) {
@@ -273,9 +298,9 @@ export function MetricDiscoveryPage() {
   }
 
   function promote(params: Record<string, unknown>, label: string) {
-    const fp: Fingerprint | undefined = config.fingerprintId
-      ? fingerprints.find((f) => f.id === config.fingerprintId)
-      : fingerprints[0];
+    // The tags' owner first: a promoted `@volume` read means nothing on a fingerprint
+    // that does not define `volume`.
+    const fp: Fingerprint | undefined = tagsFp ?? fingerprints[0];
     if (!fp) {
       setError('Promote needs a fingerprint — scope the run to one, or create a fingerprint first.');
       return;
@@ -293,10 +318,7 @@ export function MetricDiscoveryPage() {
   }
 
   function openAsSweep() {
-    if (!result?.sweep_seed) {
-      setError('No sweep seed on this result — re-run the pipeline.');
-      return;
-    }
+    if (!result) return;
     const handoff: DiscoverySweepHandoff = {
       seed: result.sweep_seed,
       includeOptional,
@@ -306,7 +328,7 @@ export function MetricDiscoveryPage() {
       tokenCap: config.tokenCap,
       fingerprintId: config.fingerprintId,
       buyAmountSol: config.buyAmountSol,
-      ixPatterns: config.ixPatterns,
+      tags,
       ixLabelsFilter: config.ixLabelsFilter,
     };
     try {
@@ -319,7 +341,9 @@ export function MetricDiscoveryPage() {
   }
 
   const pct = progress && progress.total > 0 ? (progress.processed / progress.total) * 100 : null;
-  const seedReady = !!result?.sweep_seed?.axes?.length;
+  const seedReady = (result?.sweep_seed.axes.length ?? 0) > 0;
+  const spanTip = spanFieldTip(reg);
+  const tagFps = fingerprints.filter((f) => tagNames(f.tags).length > 0);
 
   return (
     <div className="pt-2">
@@ -384,14 +408,14 @@ export function MetricDiscoveryPage() {
             />
           </div>
         </div>
-        <TextField label="Entry win" value={config.entryWindow}
-          onChange={(v) => set('entryWindow', v)} width="w-[100px]"
-          invalid={parseWindowSpec(config.entryWindow) == null}
-          title="Seconds, or a span: 30sl@1 (slots), 20p (prints)" />
-        <TextField label="Exit win" value={config.exitWindow}
-          onChange={(v) => set('exitWindow', v)} width="w-[100px]"
-          invalid={parseWindowSpec(config.exitWindow) == null}
-          title="Seconds, or a span: 30sl@1 (slots), 20p (prints)" />
+        <TextField label="Entry span" value={config.entrySpan}
+          onChange={(v) => set('entrySpan', v)} width="w-[100px]"
+          invalid={parseWindowSpec(config.entrySpan) == null}
+          title={spanTip} />
+        <TextField label="Exit span" value={config.exitSpan}
+          onChange={(v) => set('exitSpan', v)} width="w-[100px]"
+          invalid={parseWindowSpec(config.exitSpan) == null}
+          title={spanTip} />
         <Field label="Train split">
           <Input
             type="number"
@@ -453,20 +477,41 @@ export function MetricDiscoveryPage() {
         <div className="mt-3">
           <LabelTip
             tip={{
-              title: 'Volume ix patterns',
-              body: 'Required to screen flow-split metrics. Same shape as the sweep / flow-discovery bind.',
+              title: 'Tags',
+              body: `${reg?.tags.summary ?? ''}\n\nA read that takes a tag is screened once per tag: @volume (the tagged trades) and, where the metric allows it, @!volume (the rest). Example: m_flow.buy_sol @!volume [30s] is the SOL bought by untagged trades in the last 30 s. With no tags those reads are skipped.`,
             }}
           >
             <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
-              Volume ix patterns
+              Tags {selectedFp ? `· from ${selectedFp.name}` : ''}
             </span>
           </LabelTip>
-          <div className="mt-1">
-            <IxPatternsEditor
-              patterns={config.ixPatterns}
-              onChange={(v) => set('ixPatterns', v)}
-            />
-          </div>
+          {!selectedFp && (
+            <div className="mt-1">
+              <Select
+                fieldSize="sm"
+                value={config.tagsFingerprintId ?? ''}
+                onChange={(e) => set('tagsFingerprintId', e.target.value || null)}
+                className="w-64"
+                aria-label="Tags from fingerprint"
+              >
+                <option value="">No tags</option>
+                {tagFps.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name} ({tagNames(f.tags).join(', ')})
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
+          <ul className="mt-1 space-y-0.5 font-mono text-[11px] text-text-mid">
+            {tags ? (
+              tagsFromJson(tags).map((t) => <li key={t.name}>{tagSentence(t)}</li>)
+            ) : (
+              <li className="font-sans text-text-dim">
+                No tags: reads that need one (e.g. m_flow.buy_sol @volume) are skipped.
+              </li>
+            )}
+          </ul>
         </div>
       </div>
 
@@ -524,7 +569,7 @@ function Results({
     (acc[m.verdict] ??= []).push(m);
     return acc;
   }, {});
-  const rescues = result.family.rescues ?? [];
+  const rescues = result.family.rescues;
   const seed = result.sweep_seed;
 
   return (
@@ -550,21 +595,19 @@ function Results({
             gate relaxed {result.screen.min_closed} → {result.screen.effective_min_closed}
           </Badge>
         )}
-        {seed && (
-          <Badge variant="info" size="sm">
-            seed ~{seed.combo_estimate.toLocaleString()} combos · {seed.axes.length} axes
-          </Badge>
-        )}
+        <Badge variant="info" size="sm">
+          seed ~{seed.combo_estimate.toLocaleString()} combos · {seed.axes.length} axes
+        </Badge>
       </div>
 
       {/* How to read this run — the questions the layer tables can't answer alone. */}
-      {(result.diagnostics?.length ?? 0) > 0 && (
+      {result.diagnostics.length > 0 && (
         <div className="rounded border border-white/10 bg-white/2 p-3">
           <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-text-dim/80">
             How to read this run
           </div>
           <ul className="list-inside list-disc space-y-1 text-[11px] text-text-mid">
-            {result.diagnostics!.map((d, i) => (
+            {result.diagnostics.map((d, i) => (
               <li key={i}>{d}</li>
             ))}
           </ul>
@@ -588,7 +631,7 @@ function Results({
         >
           Open as sweep
         </button>
-        {seed && seed.optional_axes.length > 0 && (
+        {seed.optional_axes.length > 0 && (
           <label
             className="flex items-center gap-1.5 text-[11px] text-text-mid"
             title={
@@ -610,7 +653,7 @@ function Results({
         </span>
       </div>
 
-      {seed && seed.notes.length > 0 && (
+      {seed.notes.length > 0 && (
         <div className="rounded border border-white/8 p-2 text-[11px] text-text-dim">
           <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/80">
             Seed notes
@@ -657,7 +700,7 @@ function Results({
       </Section>
 
       {dropped.length > 0 && (
-        <Section title="Layer 1 · dropped / skipped" count={dropped.length}>
+        <Section title="Layer 1 · dropped" count={dropped.length}>
           {/* Why the field died, before the field itself — the tally is the finding. */}
           <div className="mb-2 flex flex-wrap gap-1.5">
             {DROP_ORDER.filter((v) => droppedBy[v]?.length).map((v) => (
@@ -684,20 +727,15 @@ function Results({
               ))}
             </tbody>
           </table>
-          {(result.screen.skipped.length > 0 || result.screen.gaps.length > 0) && (
-            <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-text-dim">
-              {result.screen.skipped.map((s, i) => (
-                <span key={`s${i}`} className="rounded bg-white/5 px-1.5 py-0.5">
-                  skipped {s.group}.{s.metric}: {s.reason}
-                </span>
-              ))}
-              {result.screen.gaps.map((g, i) => (
-                <span key={`g${i}`} className="rounded bg-white/5 px-1.5 py-0.5">
-                  gap {g.group}.{g.metric}: {g.reason}
-                </span>
-              ))}
-            </div>
-          )}
+        </Section>
+      )}
+
+      {(result.screen.skipped.length > 0 || result.screen.gaps.length > 0) && (
+        <Section
+          title="Layer 1 · not screened"
+          count={result.screen.skipped.length + result.screen.gaps.length}
+        >
+          <NotScreened skipped={result.screen.skipped} gaps={result.screen.gaps} />
         </Section>
       )}
 
@@ -751,10 +789,10 @@ function Results({
         </Section>
       )}
 
-      {(result.family.joints?.length ?? 0) > 0 && (
-        <Section title="Layer 2b · joint grids" count={result.family.joints!.length}>
+      {result.family.joints.length > 0 && (
+        <Section title="Layer 2b · joint grids" count={result.family.joints.length}>
           <div className="flex flex-col gap-3">
-            {result.family.joints!.map((j, i) => (
+            {result.family.joints.map((j, i) => (
               <JointCard key={i} j={j} onPromote={onPromote} />
             ))}
           </div>
@@ -767,8 +805,7 @@ function Results({
           <>
             <div className="mb-2 text-[11px] text-text-dim">
               train {result.validation.train_tokens} · validate {result.validation.validate_tokens}
-              {result.validation.effective_min_closed != null &&
-                ` · needs ${result.validation.effective_min_closed} closed there for any verdict`}
+              {` · needs ${result.validation.effective_min_closed} closed there for any verdict`}
               {result.validation.boundary && ` · split @ ${new Date(result.validation.boundary).toISOString().slice(0, 16).replace('T', ' ')}`}
             </div>
             {result.validation.candidates.length === 0 ? (
@@ -938,10 +975,7 @@ function CurveSpark({ curve }: { curve: MetricResponse['curve'] }) {
 function ShortlistRow({ m }: { m: MetricResponse }) {
   return (
     <tr className="border-t border-white/6">
-      <Td>
-        <span className="font-mono">{m.side}·{m.group}.{m.metric}</span>
-        {windowLabel(m) && <span className="text-text-dim"> @{windowLabel(m)}</span>}
-      </Td>
+      <Td><ReadName r={m} side={m.side} /></Td>
       <Td>{m.operator}</Td>
       <Td right>{fmt(m.lift)}</Td>
       <Td right>{fmt(m.plateau)}</Td>
@@ -961,10 +995,7 @@ function DroppedRow({ m }: { m: MetricResponse }) {
     .reduce((n, p) => Math.max(n, p.n_closed), 0);
   return (
     <tr className="border-t border-white/6">
-      <Td>
-        <span className="font-mono">{m.side}·{m.group}.{m.metric}</span>
-        {windowLabel(m) && <span className="text-text-dim"> @{windowLabel(m)}</span>}
-      </Td>
+      <Td><ReadName r={m} side={m.side} /></Td>
       <Td>{m.operator}</Td>
       <Td>
         <Badge variant={badgeVariant(m.verdict)} size="sm" title={verdictHelp[m.verdict] ?? ''}>
@@ -985,9 +1016,9 @@ function RescueRow({ r }: { r: Rescue }) {
   const kept = r.verdict === 'keep';
   return (
     <tr className={`border-t border-white/6 ${kept ? '' : 'text-text-dim'}`}>
-      <Td><span className="font-mono">{r.side}·{r.group}.{r.metric}</span></Td>
+      <Td><ReadName r={r} side={r.side} /></Td>
       <Td>{r.operator}</Td>
-      <Td><Badge variant="accent" size="sm">{r.pinned}</Badge></Td>
+      <Td><FamilyBadge name={r.pinned} /></Td>
       <Td right>{fmt(r.pinned_score, 3)}</Td>
       <Td right>{fmt(r.lift, 3)}</Td>
       <Td>
@@ -1009,29 +1040,12 @@ function FamilyCard({
   return (
     <div className="rounded border border-white/8 p-3">
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
-        <Badge variant="accent" size="sm">{f.family}</Badge>
+        <FamilyBadge name={f.family} />
         <span className="text-[11px] text-text-dim">{f.combos} combos · {f.members.length} members</span>
         {f.n_gated > 0 && <span className="text-[10px] text-text-dim">{f.n_gated} gated</span>}
-        {f.dropped.map((d, i) => (
-          <span key={i} className="text-[10px] text-warning" title={d.reason}>
-            dropped {d.metric} ({d.reason})
-          </span>
-        ))}
+        <DroppedMembers dropped={f.dropped} />
       </div>
-      <div className="mb-2 flex flex-wrap gap-1.5">
-        {f.members.map((m, i) => (
-          <span
-            key={i}
-            className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
-              m.rescued ? 'bg-warning/12 text-warning' : 'bg-white/5 text-text-mid'
-            }`}
-            title={m.rescued ? 'Rescued: lift is conditional on the pinned winner' : undefined}
-          >
-            {m.metric} {m.operator} {m.values.map((v) => fmt(v, 1)).join('/')}
-            {m.rescued && ' ·rescued'}
-          </span>
-        ))}
-      </div>
+      <Members members={f.members} />
       {f.best ? (
         <div className="flex flex-wrap items-center gap-3 text-[11px] text-text-dim">
           <span>score <b className="text-text">{fmt(f.best.score, 3)}</b></span>
@@ -1064,26 +1078,9 @@ function JointCard({
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <Badge variant="warning" size="sm">joint · {label}</Badge>
         <span className="text-[11px] text-text-dim">{j.combos} combos · {j.members.length} members</span>
-        {j.dropped.map((d, i) => (
-          <span key={i} className="text-[10px] text-warning">
-            dropped {d.metric} ({d.reason})
-          </span>
-        ))}
+        <DroppedMembers dropped={j.dropped} />
       </div>
-      <div className="mb-2 flex flex-wrap gap-1.5">
-        {j.members.map((m, i) => (
-          <span
-            key={i}
-            className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
-              m.rescued ? 'bg-warning/12 text-warning' : 'bg-white/5 text-text-mid'
-            }`}
-            title={m.rescued ? 'Rescued: lift is conditional on the pinned winner' : undefined}
-          >
-            {m.metric} {m.operator} {m.values.map((v) => fmt(v, 1)).join('/')}
-            {m.rescued && ' ·rescued'}
-          </span>
-        ))}
-      </div>
+      <Members members={j.members} />
       {j.best ? (
         <div className="flex flex-wrap items-center gap-3 text-[11px] text-text-dim">
           <span>score <b className="text-text">{fmt(j.best.score, 3)}</b></span>
@@ -1172,12 +1169,135 @@ function TextField({
   );
 }
 
-/** The span a screened metric was read at, labelled. Prefers the backend's `window`
- *  string and falls back to the legacy seconds scalar, so a slot or print row names
- *  its own basis instead of dropping the qualifier. */
-function windowLabel(m: { window?: string | null; window_sec: number | null }): string {
-  if (m.window) return m.window;
-  return m.window_sec != null ? `${m.window_sec}s` : '';
+// ── reads, explained from the registry ───────────────────────────────────────
+
+/** Hover text for a read: the sentence it reads as, then the metric's one definition. */
+function readTip(reg: StrategyRegistry | undefined, r: Read): string {
+  const spec = findMetric(reg, r.metric);
+  const phrase = readPhrase(reg, r);
+  return spec ? `${phrase}\n\n${metricHelp(spec)}` : phrase;
+}
+
+/** `entry · m_flow.buy_sol @!volume [30s]`, explained on hover. */
+function ReadName({ r, side }: { r: Read; side?: Side }) {
+  const { data: reg } = useStrategyRegistry();
+  return (
+    <span className="font-mono" title={readTip(reg, r)}>
+      {side && <span className="text-text-dim">{side} · </span>}
+      {r.label}
+    </span>
+  );
+}
+
+function FamilyBadge({ name }: { name: string }) {
+  const { data: reg } = useStrategyRegistry();
+  const fam = findFamily(reg, name);
+  return (
+    <Badge variant="accent" size="sm" title={fam ? `${fam.title}: ${fam.summary}` : undefined}>
+      {name}
+    </Badge>
+  );
+}
+
+/** A family grid's axes: `m_flow.buy_sol @volume [30s] >= 2/5`. */
+function Members({ members }: { members: FamilyMember[] }) {
+  const { data: reg } = useStrategyRegistry();
+  return (
+    <div className="mb-2 flex flex-wrap gap-1.5">
+      {members.map((m, i) => (
+        <span
+          key={i}
+          className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
+            m.rescued ? 'bg-warning/12 text-warning' : 'bg-white/5 text-text-mid'
+          }`}
+          title={`${m.side}: ${readTip(reg, m)}${
+            m.rescued ? '\n\nRescued: its lift is conditional on the pinned winner.' : ''
+          }`}
+        >
+          {m.label} {m.operator} {m.values.map((v) => fmt(v, 1)).join('/')}
+          {m.rescued && ' ·rescued'}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+const DROPPED_WORDS: Record<DroppedMember['reason'], string> = {
+  axis_cap: 'past the per-family axis cap',
+  combo_cap: 'the grid would pass the combo cap',
+};
+
+function DroppedMembers({ dropped }: { dropped: DroppedMember[] }) {
+  return (
+    <>
+      {dropped.map((d, i) => (
+        <span key={i} className="text-[10px] text-warning">
+          dropped <Clause text={d.label} className="text-warning" /> ({DROPPED_WORDS[d.reason] ?? d.reason})
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** Why a metric never reached the screen, in plain words. */
+const SKIP_WORDS: Record<SkipReason, string> = {
+  tags_missing: 'Reads only tagged trades, and this run has no tags. Pick tags above to screen it.',
+  position_is_exit_only: 'Reads our own position, which does not exist before the buy: exit side only.',
+  baseline_or_fixed: 'Not swept: it is the TP/SL bracket itself, or fixed at the moment of the buy.',
+  no_declared_menu: 'A position metric with no declared value menu yet (a backend gap, not a finding).',
+  anchor_not_a_screen_param:
+    'A since-age read: its start age is a choice the screen does not make, so it is left to the sweep.',
+};
+
+/** A menu gap in plain words. */
+function gapWords(g: MenuGap): string {
+  return g.reason === 'no_samples'
+    ? 'Never had a value on this cohort.'
+    : `Its p10..p90 round to ${g.distinct ?? 'fewer than 2'} distinct value(s): nothing to sweep.`;
+}
+
+/** The metrics the screen left out, grouped by why. The screen is a full registry
+ *  pass, so every metric is either here or in a table above. */
+function NotScreened({ skipped, gaps }: { skipped: SkippedMetric[]; gaps: MenuGap[] }) {
+  const groups = new Map<string, { words: string; reads: { r: Read; side: Side }[] }>();
+  const add = (key: string, words: string, r: Read, side: Side) => {
+    const g = groups.get(key) ?? { words, reads: [] };
+    g.reads.push({ r, side });
+    groups.set(key, g);
+  };
+  for (const s of skipped) add(s.reason, SKIP_WORDS[s.reason] ?? s.reason, s, s.side);
+  for (const g of gaps) add(`gap:${g.reason}:${g.distinct ?? ''}`, gapWords(g), g, g.side);
+  return (
+    <div className="flex flex-col gap-2 text-[11px]">
+      {[...groups.entries()].map(([key, g]) => (
+        <div key={key}>
+          <p className="text-text-mid">
+            {g.words} <span className="text-text-dim">({g.reads.length})</span>
+          </p>
+          <div className="mt-0.5 flex flex-wrap gap-1.5 text-[10px]">
+            {g.reads.map(({ r, side }, i) => (
+              <span key={i} className="rounded bg-white/5 px-1.5 py-0.5">
+                <ReadName r={r} side={side} />
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The span fields' help, from the registry's span kinds (the window ones only: a
+ *  screen span is always a trailing window). */
+function spanFieldTip(reg: StrategyRegistry | undefined): string {
+  const kinds = ['sec', 'slot', 'print', 'lag']
+    .map((k) => spanKind(reg, k))
+    .filter((k) => k != null)
+    .map((k) => `${k.text}: ${k.title}. ${k.summary}`);
+  return [
+    'The window every windowed read is screened at on this side. A two-window read screens a slice a tenth of it.',
+    ...kinds,
+  ].join('\n');
 }
 
 function NumField({

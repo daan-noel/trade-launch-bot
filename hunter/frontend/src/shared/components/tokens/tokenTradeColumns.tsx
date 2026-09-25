@@ -11,63 +11,36 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeFees';
 import { patternKey } from 'lib/flow/volumePatterns';
-import { workingListHits } from 'lib/strategy/templateGrain';
-import {
-  anyRowMatchesTrade,
-  feeFromTrade,
-  feeMaskActive,
-  formatFeePins,
-  patternRowKey,
-  rowFromTrade,
-  type IxPatternFee,
-  type IxPatternFeeMask,
-  type IxPatternRow,
-} from 'lib/strategy/ixPatternRows';
+import { tagLabel } from 'lib/flow/tapeClassify';
+import { formatFeePins } from 'lib/strategy/ixPatternRows';
+import { stageValueOf, stageValueText, type TagStage } from 'hooks/useIxPatternTarget';
 // Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
 // colors come along without dragging the charting library into this chunk.
 import { CHART_COLORS } from 'components/token-price-chart/constants';
 
 export interface TokenTradeColumnsOpts {
   /**
-   * `ix_patterns` keys (`JSON.stringify(labels)`) to test each row's
-   * structure against. When non-empty, prepends the Tagged/Untagged badge column.
-   * Omit or empty → column hidden, unless {@link onTogglePattern} is set.
+   * The tag the chart classifies with (`@name`, no `@`). Set ⇒ the tag column
+   * renders: which half each trade landed on, and - with {@link stage} - the click
+   * that adds this trade's value to the tag.
    */
-  flowPatternKeys?: ReadonlySet<string> | null;
+  flowTagName?: string | null;
   /**
-   * Makes the badge an edit control: adds/removes that row's ordered
-   * `instruction_labels` in the target fingerprint's saved `ix_patterns`.
-   * Set ⇒ the column always renders, because authoring starts from an EMPTY set
-   * and the rows you click into it are the whole point.
-   *
-   * There is no staging step — a click PERSISTS, and every active rule bound to
-   * that fingerprint classifies flow differently from the engine's next rules
-   * reload on. Pass {@link toggleTargetName} so the row says which one.
-   *
-   * The optional `fee` is the pin copied from this tx under the strip's fee-field
-   * checkboxes. Omitted / empty ⇒ an ix-only row, which is the default.
-   */
-  onTogglePattern?: ((labels: readonly string[], fee?: IxPatternFee) => void) | null;
-  /**
-   * Stored rows a click writes. Pressed / Tagged follow engine matching: an
-   * unpinned row is a fee wildcard (this tx stays selected whether or not it
-   * carries a budget, and whether or not the pin strip is on). A pin-only list
-   * lights only the trades that satisfy that pin. A click with the pin strip on
-   * narrows a catch-all of this shape to that pin (never both); pins off widens
-   * back to a catch-all.
-   */
-  patternRows?: readonly IxPatternRow[] | null;
-  /** Sticky fee-field modifiers — which of this tx's budget fields a click copies. */
-  feePinMask?: IxPatternFeeMask | null;
-  /** Name of the fingerprint {@link onTogglePattern} writes to — named in the
-   *  badge tooltip, since the click is an immediate save and not a local edit. */
-  toggleTargetName?: string | null;
-  /**
-   * Effective (contagion-aware) classification per trade id — what the chart's
-   * lines actually did with the row. The badge tests structure alone, so without
-   * this a row reading "Untagged" whose SOL sits on the tagged line looks like a bug.
+   * The verdict per trade id over the coin's FULL history (`tradeFlowReasons`): the
+   * same pass the chart's lines draw from, so a badge and the line above it cannot
+   * disagree. Absent id = the rest (`@!tag`).
    */
   flowReasons?: ReadonlyMap<string, FlowReason> | null;
+  /**
+   * What a badge click writes (tag, matcher, owner). A fingerprint stage SAVES on
+   * click - every active rule bound to that fingerprint reads the new tag from the
+   * engine's next rules reload on - so the tooltip names the tag, the matcher and
+   * the fingerprint. `null` ⇒ the badge is display only.
+   */
+  stage?: TagStage | null;
+  /** A tag field's title from the registry (`reg.tags.fields`), by key: names the
+   *  matcher a click writes and the matcher a trade carries the tag through. */
+  tagFieldTitle?: (key: string) => string;
   /**
    * Arms the ephemeral WALLET highlight lens from a row — adds a target button to
    * the Wallet cell. Nothing is persisted: this only washes candles and rows.
@@ -76,46 +49,14 @@ export interface TokenTradeColumnsOpts {
   /** The armed wallet, so its own rows render the button lit. */
   lensWallet?: string | null;
   /**
-   * Arms the ephemeral IX-STRUCTURE lens from a row. Deliberately separate from
-   * {@link onTogglePattern}, which lives one column over and SAVES to the
-   * fingerprint the engine reads — asking "where else did this shape appear" must
-   * never change how a live rule classifies flow.
+   * Arms the ephemeral IX-STRUCTURE lens from a row. Deliberately separate from the
+   * tag badge, which lives one column over and SAVES to the fingerprint the engine
+   * reads - asking "where else did this shape appear" must never change how a live
+   * rule classifies.
    */
   onLensStructure?: ((labels: readonly string[]) => void) | null;
   /** `patternKey` of the armed structure, so matching rows render the button lit. */
   lensStructureKey?: string | null;
-  /**
-   * WHICH list {@link flowPatternKeys} is and {@link onTogglePattern} writes into.
-   * `'tagged'` (the default) is `m_flow_ix.ix_patterns`; `'dump'` is
-   * `m_dump_ix.ix_patterns`; `'working'` is `m_burst_slot.working_templates`
-   * (a different vocabulary — membership is grain or program, not an
-   * exact `ix_labels` sequence).
-   *
-   * The tagged and dump columns are otherwise identical and that is the danger: a
-   * badge reading "Tagged" while the click files the build under `m_dump_ix` names
-   * the wrong metric for the row, so the label, the tone and the tooltip all follow
-   * this. Contagion notes are suppressed under `'dump'` and `'working'` - the
-   * reasons map is the flow split's verdict.
-   */
-  patternList?: 'tagged' | 'dump' | 'working';
-  /**
-   * Keys of the list this column is NOT writing into. A build may sit on BOTH -
-   * that is the normal case and nothing rejects it - so the mark is INFORMATION,
-   * not a conflict: it says this sell is already counted by the other group's
-   * metrics, which is what a reader comparing `tagged_sell` and `dump_sell` needs
-   * to know before treating them as disjoint.
-   */
-  otherListKeys?: ReadonlySet<string> | null;
-  /**
-   * What the WRITE TARGET stores, when {@link flowPatternKeys} / {@link patternRows}
-   * are a narrowed view of it (a flow lens with some units muted) — grain ids on
-   * `'working'`, whole rows otherwise. A row that is off because its unit is muted
-   * takes a different click than one that is off because the target never had it —
-   * the first brings the unit back, the second saves — so the badge says which.
-   * Omit both when the badge already shows the whole target.
-   */
-  storedPatternIds?: ReadonlySet<string> | null;
-  storedPatternRows?: readonly IxPatternRow[] | null;
 }
 
 /** Target glyph for a highlight-lens toggle — reads as "find this everywhere". */
@@ -218,22 +159,14 @@ function ProxyBadge({ isProxied }: { isProxied?: boolean | null }) {
   );
 }
 
-/** True when ordered `instruction_labels` exact-match a ix_patterns row. */
-export function isIxPattern(
-  labels: readonly string[] | null | undefined,
-  patternKeys: ReadonlySet<string>,
-): boolean {
-  return !!labels && labels.length > 0 && patternKeys.has(JSON.stringify(labels));
+/** The verdict's half: tagged (a matcher held), excluded (a creation-slot buyer
+ *  under `exclude_creation_slot`) or the rest. */
+function halfOf(reason: FlowReason | null | undefined): 'tagged' | 'excluded' | 'rest' {
+  return reason == null ? 'rest' : reason === 'creation_slot' ? 'excluded' : 'tagged';
 }
 
-/** Stable empty set so an unconfigured column doesn't allocate per render. */
-const EMPTY_PATTERN_KEYS: ReadonlySet<string> = new Set<string>();
-
-/** Why the chart counted a row as tagged when its own structure didn't. */
-const CONTAGION_NOTE: Record<Exclude<FlowReason, 'structural'>, string> = {
-  creator: 'via creator',
-  wallet: 'via wallet',
-};
+/** The registry field that names a reason (`creation_slot` is the option's effect). */
+const reasonField = (r: FlowReason) => (r === 'creation_slot' ? 'exclude_creation_slot' : r);
 
 /**
  * Takes only the unit *label* (not the whole `usePriceDisplay` object) so the
@@ -247,121 +180,69 @@ export function tokenTradeColumns(
   unit: string,
   opts?: TokenTradeColumnsOpts,
 ): ColumnDef<TradeRecord>[] {
-  const keys = opts?.flowPatternKeys ?? EMPTY_PATTERN_KEYS;
-  const onToggle = opts?.onTogglePattern ?? null;
+  const tagName = opts?.flowTagName ?? null;
   const reasons = opts?.flowReasons ?? null;
-  const showTagged = keys.size > 0 || onToggle != null;
+  const stage = opts?.stage ?? null;
+  const title = opts?.tagFieldTitle ?? ((k: string) => k);
   const onLensWallet = opts?.onLensWallet ?? null;
   const lensWallet = opts?.lensWallet ?? null;
   const onLensStructure = opts?.onLensStructure ?? null;
   const lensStructureKey = opts?.lensStructureKey ?? null;
-  const targetLabel = opts?.toggleTargetName ? `“${opts.toggleTargetName}”` : 'the fingerprint';
-  const list = opts?.patternList ?? 'tagged';
-  const isDump = list === 'dump';
-  const isWorking = list === 'working';
-  const otherKeys = opts?.otherListKeys ?? null;
-  const storedIds = opts?.storedPatternIds ?? null;
-  const storedRows = isWorking ? null : (opts?.storedPatternRows ?? null);
-  const pinMask = opts?.feePinMask ?? null;
-  const patternRows = isWorking ? null : (opts?.patternRows ?? null);
-  const pinning = !isWorking && feeMaskActive(pinMask);
-  const listField = isWorking
-    ? 'm_burst_slot.working_templates'
-    : isDump
-      ? 'm_dump_ix.ix_patterns'
-      : 'm_flow_ix.ix_patterns';
-  const inWord = isWorking ? 'Working' : isDump ? 'Dump' : 'Tagged';
-  const outWord = isWorking ? 'Other' : isDump ? 'Not dump' : 'Untagged';
 
   const leading: ColumnDef<TradeRecord>[] = [];
 
-  if (showTagged) {
+  if (tagName) {
+    const on = tagLabel(tagName);
+    const off = tagLabel(tagName, true);
+    const writes = stage ? `${tagLabel(stage.tagName)} (${title(stage.matcher)})` : null;
+    const owner = stage?.ownerName ? ` on "${stage.ownerName}"` : '';
     leading.push({
-      key: 'is_tagged_ix_pattern',
-      label: inWord,
-      tooltip: onToggle
-        ? isWorking
-          ? `Working-list match against ${listField} (grain or program). Clicking SAVES ` +
-            `this trade's grain or program (the strip's grain|program switch) to ${targetLabel}. ` +
-            `Active rules bound to it change meaning on the next reload.`
-          : `Structural ${listField} match. Clicking SAVES this trade’s ordered ` +
-            `instruction_labels to ${targetLabel} under ${listField} — there is no staging ` +
-            `step, and every active rule bound to it changes meaning from the ` +
-            `engine’s next rules reload on.` +
-            (isDump
-              ? ` The same build may also sit under m_flow_ix - the two groups ask` +
-                ` different questions, so a sell can be tagged flow AND a dump.`
-              : ` “via creator/wallet” = the lines already count this row through` +
-                ` contagion, whatever its own structure is.`)
-        : isWorking
-          ? `Working-list match on ${listField} — this trade's grain or program.`
-          : `Structural ${listField} match — this trade’s ordered instruction_labels ` +
-            `match a row of that list (an ix-only row is a fee wildcard)` +
-            (isDump ? '.' : ' (no creator/wallet contagion).'),
+      key: 'flow_tag',
+      label: on,
+      tooltip:
+        `Which half of ${on} the chart put this trade on: ${on}, ${off} (the rest) or neither ` +
+        `(a creation-slot buyer the tag ignores), classified over the coin's full history; ` +
+        `"via" names the matcher that held.` +
+        (stage && writes
+          ? ` Clicking adds this trade's ${title(stage.matcher)} to ${writes}${owner}, or removes it when listed.`
+          : ''),
       render: (t) => {
-        const labels = t.instruction_labels;
-        if (!labels || labels.length === 0) {
-          return <span className="text-text-dim/40">—</span>;
-        }
-        const isTagged = isWorking
-          ? workingListHits(keys, labels)
-          : patternRows != null
-            ? anyRowMatchesTrade(patternRows, labels, t)
-            : isIxPattern(labels, keys);
-        const clickRow = pinning ? rowFromTrade(labels, t, pinMask) : { labels: [...labels] };
-        const clickFee = feeFromTrade(t, pinMask);
-        const exactClickSaved =
-          patternRows != null &&
-          patternRows.some((r) => patternRowKey(r) === patternRowKey(clickRow));
-        const pinNote = pinning ? formatFeePins(clickFee) : '';
-        // The reasons map is the FLOW split's verdict (structure + contagion), so it
-        // says nothing about a dump build or a working grain and must not decorate either.
-        const reason = isDump || isWorking ? null : (reasons?.get(t.id) ?? null);
-        const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : null;
-        const inOther =
-          !isTagged && !isWorking && otherKeys != null && isIxPattern(labels, otherKeys);
+        const reason = reasons?.get(t.id) ?? null;
+        const half = halfOf(reason);
         const badge = (
           <Badge
-            variant={isTagged ? (isWorking ? 'success' : isDump ? 'warning' : 'danger') : 'neutral'}
+            variant={half === 'tagged' ? 'danger' : half === 'excluded' ? 'warning' : 'neutral'}
             size="sm"
-            className={onToggle ? 'cursor-pointer' : undefined}
+            className={stage?.toggle ? 'cursor-pointer' : undefined}
           >
-            {isTagged ? inWord : outWord}
+            {half === 'tagged' ? on : half === 'excluded' ? 'neither' : off}
           </Badge>
         );
-        const pinClickHint = pinning
-          ? pinNote
-            ? ` this structure + ${pinNote}`
-            : ' this structure only (this tx has none of the checked fee fields)'
-          : ' this structure';
-        // Off because it is MUTED, not because the target lacks it — the click
-        // brings it back rather than saving anything.
-        const muted =
-          !isTagged &&
-          (isWorking
-            ? storedIds != null && workingListHits(storedIds, labels)
-            : storedRows != null && anyRowMatchesTrade(storedRows, labels, t));
-        const clickTitle = muted
-          ? `On ${targetLabel} but MUTED by the lens chips — click to classify with it again`
-          : exactClickSaved
-          ? `Saved under ${listField} on ${targetLabel} — click to remove${pinClickHint}`
-          : isTagged && pinning
-            ? `Catch-all (any budget) on ${targetLabel}. Click to narrow to${pinClickHint}`
-            : isWorking
-              ? `Click to save this grain or program (strip switch) under ${listField} on ${targetLabel}`
-              : `Click to save${pinClickHint} under ${listField} on ${targetLabel}`;
-        const cell = (
+        const note =
+          reason && reason !== 'creation_slot' ? `via ${title(reasonField(reason)).toLowerCase()}` : null;
+        const value = stage ? stageValueOf(stage.matcher, t, stage.feePins) : null;
+        const listed = !!stage && value != null && stage.listed(value);
+        const muted = !!stage && value != null && !listed && !!stage.muted?.(value);
+        const pins = value?.matcher === 'ix_shape' ? formatFeePins(value.row) : '';
+        const clickTitle = !value
+          ? ''
+          : muted
+            ? `In ${writes}${owner} but muted by the lens chips: click to classify with it again.`
+            : `${listed ? 'Remove' : 'Add'} ${stageValueText(value)} ${listed ? 'from' : 'to'} ${writes}${owner}.` +
+              (stage?.ownerName ? ' Saves now.' : '');
+        const toggle = stage?.toggle ?? null;
+        return (
           <span className="inline-flex items-center gap-1">
-            {onToggle ? (
+            {toggle && value ? (
               <button
                 type="button"
-                aria-pressed={isTagged}
+                aria-pressed={listed}
                 title={clickTitle}
                 onClick={(e) => {
                   // The row itself is selectable on several hosts; an edit click
                   // must not also change the table's selection.
                   e.stopPropagation();
-                  onToggle(labels, pinning ? clickFee : undefined);
+                  toggle(value);
                 }}
                 // inline-flex, so the hit area is the badge itself — an inline
                 // button leaves line-height slack the click falls through.
@@ -372,50 +253,25 @@ export function tokenTradeColumns(
             ) : (
               badge
             )}
-            {pinning && exactClickSaved && pinNote && (
-              <span className="font-mono text-[9px] text-accent" title={`this exact pin is saved: ${pinNote}`}>
-                {pinNote}
+            {listed && (
+              <span className="text-[9px] uppercase tracking-wide text-accent" title={`listed under ${writes}`}>
+                listed{pins ? ` ${pins}` : ''}
               </span>
             )}
-            {note && (
-              <span className="text-[9px] uppercase tracking-wide text-text-dim/70">
-                {note}
-              </span>
-            )}
-            {inOther && (
-              <span
-                className="text-[9px] uppercase tracking-wide text-text-dim/70"
-                title={`This build is also in the ${isDump ? 'tagged' : 'dump'} list, which is allowed. The same sell is counted by ${isDump ? 'm_flow_ix' : 'm_dump_ix'} too - two independent answers, so do not read the two groups' numbers as parts of a whole.`}
-              >
-                also {isDump ? 'tagged' : 'dump'}
-              </span>
-            )}
+            {muted && <span className="text-[9px] uppercase tracking-wide text-text-dim/70">muted</span>}
+            {note && <span className="text-[9px] uppercase tracking-wide text-text-dim/70">{note}</span>}
           </span>
         );
-        return cell;
       },
-      // Structure outranks contagion: sorting this column is for finding the rows
-      // whose pattern you can actually toggle.
       sortValue: (t) => {
-        const labels = t.instruction_labels;
-        const structural = isWorking
-          ? !!labels && workingListHits(keys, labels)
-          : patternRows != null
-            ? !!labels && anyRowMatchesTrade(patternRows, labels, t)
-            : isIxPattern(labels, keys);
-        return structural ? 2 : !isDump && reasons?.get(t.id) ? 1 : 0;
+        const half = halfOf(reasons?.get(t.id));
+        return half === 'tagged' ? 2 : half === 'excluded' ? 1 : 0;
       },
       searchValue: (t) => {
-        const labels = t.instruction_labels;
-        const structural = isWorking
-          ? !!labels && workingListHits(keys, labels)
-          : patternRows != null
-            ? !!labels && anyRowMatchesTrade(patternRows, labels, t)
-            : isIxPattern(labels, keys);
-        const reason = isDump ? null : (reasons?.get(t.id) ?? null);
-        const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : '';
-        const word = structural ? list : isDump ? 'not dump' : 'untagged';
-        return `${word}${note ? ` ${note}` : ''}`;
+        const reason = reasons?.get(t.id) ?? null;
+        const half = halfOf(reason);
+        const word = half === 'tagged' ? on : half === 'excluded' ? 'neither' : off;
+        return reason && reason !== 'creation_slot' ? `${word} via ${reason}` : word;
       },
     });
   }
@@ -424,10 +280,10 @@ export function tokenTradeColumns(
     key: 'ix_structure',
     label: 'ix_labels',
     tooltip:
-      'Ordered instruction-label structure of this trade — the flow-split matching key. ' +
+      'Ordered instruction-label structure of this trade - what the exact ix shape matcher reads. ' +
       (onLensStructure
         ? 'Click the target to wash every candle this exact ordered structure appeared in. ' +
-          'View-only: unlike the Tagged badge, it saves nothing and no rule reads it.'
+          'View-only: unlike the tag badge, it saves nothing and no rule reads it.'
         : ''),
     render: (t) => {
       const labels = t.instruction_labels ?? [];

@@ -76,7 +76,7 @@ export function rowPinsFee(row: IxPatternFee): boolean {
 /** A row back to its stored form.
  *
  *  An unpinned row serializes as the bare array it came in as — not as
- *  `{labels: [...]}`. `metric_config` is part of a fingerprint's ROW identity, so a
+ *  `{labels: [...]}`. `tags` is part of a fingerprint's ROW identity, so a
  *  save that rewrites every unpinned row into a new shape would rewrite identity
  *  for every fingerprint in the app on the next edit, for no behaviour change.
  */

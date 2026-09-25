@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildFlowLines } from './flowChartData';
+import { buildFlowLines, tradeFlowReasons } from './flowChartData';
+import { shapeTag } from './tapeClassify';
 import type { TradeRecord } from 'types';
 
 /** Minimal trade fixture — only the fields `buildFlowLines`/`classifyFlow`
@@ -23,7 +24,8 @@ function trade(overrides: Partial<TradeRecord>): TradeRecord {
   };
 }
 
-const NO_PATTERNS = { patternKeys: new Set<string>(), creatorWallet: null };
+/** A tag no trade carries: every trade is the rest. */
+const NO_PATTERNS = { tag: shapeTag('t', []) };
 
 describe('buildFlowLines', () => {
   it('nets buy − sell (cost_sol) so the line drops when a cohort sells', () => {
@@ -94,5 +96,26 @@ describe('buildFlowLines', () => {
     expect(lines.untagged[0].value).toBeCloseTo(20, 6);
     expect(lines.untagged[1].value).toBeCloseTo(44, 6);
     expect(lines.untagged.at(-1)!.value).toBeCloseTo(48, 6);
+  });
+});
+
+describe('tradeFlowReasons', () => {
+  it('classifies in canonical order whatever order the rows arrive in', () => {
+    const tag = { ...shapeTag('t', [{ labels: ['A'] }]), sticky: true };
+    const first = trade({ id: 'a', slot: 1, instruction_labels: ['A'] });
+    const later = trade({ id: 'b', slot: 2, instruction_labels: ['Z'] });
+    const map = tradeFlowReasons([later, first], { tag });
+    expect(map?.get('a')).toBe('ix_shape');
+    expect(map?.get('b')).toBe('sticky');
+  });
+
+  it('keeps an excluded trade off both lines', () => {
+    const tag = { ...shapeTag('t', [{ labels: ['A'] }]), exclude_creation_slot: true };
+    const trades: TradeRecord[] = [
+      trade({ slot: 1, amount_sol: 1, instruction_labels: ['Pump.Fun: Create', 'Pump.Fun: Buy'] }),
+      trade({ slot: 2, wallet_address: 'w2', block_time: '2026-07-21T01:01:00Z', amount_sol: 5 }),
+    ];
+    const lines = buildFlowLines(trades, 'time', 60, 'cost_sol', { tag });
+    expect(lines.untagged.at(-1)!.value).toBeCloseTo(5, 6);
   });
 });

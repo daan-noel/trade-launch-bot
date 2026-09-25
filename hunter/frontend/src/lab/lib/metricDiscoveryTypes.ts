@@ -4,8 +4,21 @@
 
 import type { AxisSpecWire } from '@lab/components/sweep/genericAxes';
 import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
+import type { MetricRef } from 'lib/strategy/metricRef';
 
 export type ScoreOutcome = 'ranked' | 'below_min_closed' | 'no_fire';
+
+export type Side = 'entry' | 'exit';
+
+/**
+ * One read, as every discovery row names it (Rust `ReadDto`, flattened into the row):
+ * the {@link MetricRef} keys as written, its `family` (`m_flow`) and `label`, the one
+ * full spelling (`m_flow.buy_sol @!volume [30s]`).
+ */
+export interface Read extends MetricRef {
+  family: string;
+  label: string;
+}
 
 /** A TP/SL bracket. `null` on a side means that guard is omitted. */
 export interface Bracket {
@@ -27,7 +40,7 @@ export interface ScoredRow {
   total_pnl_sol: number;
 }
 
-/** One point on a metric's Layer-1 response curve. */
+/** One point on a read's Layer-1 response curve. */
 export interface ResponsePoint {
   value: number | null; // null = the `off` pick
   score: number | null;
@@ -50,18 +63,9 @@ export type ScreenVerdict =
   | 'drop_thin'
   | 'drop_no_baseline';
 
-export interface MetricResponse {
-  side: 'entry' | 'exit';
-  group: string;
-  metric: string;
+export interface MetricResponse extends Read {
+  side: Side;
   operator: string;
-  /** The span this metric was screened at, labelled (`30s`, `30sl@1`, `20p`).
-   *  Prefer this over {@link window_sec}. */
-  window?: string | null;
-  /** Legacy seconds scalar. Null on a slot or print span - neither has seconds to
-   *  report, so a reader that only knows this key drops the qualifier rather than
-   *  calling 30 slots 30 seconds. */
-  window_sec: number | null;
   verdict: ScreenVerdict;
   baseline: number | null;
   lift: number | null;
@@ -86,11 +90,27 @@ export interface BaselineSelection {
   candidates: BaselineCandidate[];
 }
 
-export interface SkippedMetric {
-  side: string;
-  group: string;
-  metric: string;
-  reason: string;
+/** Why a registry metric is not screened on a side (Rust `SkipReason::as_str`). */
+export type SkipReason =
+  | 'tags_missing'
+  | 'position_is_exit_only'
+  | 'baseline_or_fixed'
+  | 'no_declared_menu'
+  | 'anchor_not_a_screen_param';
+
+/** A metric left out of the screen. A skipped metric has no read, so its label is the
+ *  bare path. */
+export interface SkippedMetric extends Read {
+  side: Side;
+  reason: SkipReason;
+}
+
+/** A screened read that produced no menu: never finite on the cohort, or its
+ *  p10..p90 round to fewer than two values (`distinct` of them). */
+export interface MenuGap extends Read {
+  side: Side;
+  reason: 'no_samples' | 'degenerate';
+  distinct?: number;
 }
 
 export interface ScreenDto {
@@ -108,13 +128,11 @@ export interface ScreenDto {
   shortlist: MetricResponse[];
   responses: MetricResponse[];
   skipped: SkippedMetric[];
-  gaps: SkippedMetric[];
+  gaps: MenuGap[];
 }
 
-export interface FamilyMember {
-  side: 'entry' | 'exit';
-  group: string;
-  metric: string;
+export interface FamilyMember extends Read {
+  side: Side;
   operator: string;
   values: number[];
   lift: number;
@@ -123,11 +141,10 @@ export interface FamilyMember {
 }
 
 /** One Layer-1 reject re-screened under a pinned winner. */
-export interface Rescue {
-  side: 'entry' | 'exit';
-  group: string;
-  metric: string;
+export interface Rescue extends Read {
+  side: Side;
   operator: string;
+  /** The family whose winner was pinned (`m_flow`). */
   pinned: string;
   pinned_score: number;
   /** Same tags as a Layer-1 verdict — `keep` means the rescue succeeded. */
@@ -136,8 +153,9 @@ export interface Rescue {
 }
 
 export interface DroppedMember {
-  metric: string;
-  reason: string;
+  /** The dropped read's full label (`m_flow.buy_sol @!volume [30s]`). */
+  label: string;
+  reason: 'axis_cap' | 'combo_cap';
 }
 
 export interface BestCombo {
@@ -145,10 +163,12 @@ export interface BestCombo {
   n_fired: number;
   n_closed: number;
   picks: (number | null)[];
+  /** The canonical rule params (format 2) — the promote handoff. */
   params: Record<string, unknown>;
 }
 
 export interface FamilyResult {
+  /** The registry family (`m_flow`). */
   family: string;
   combos: number;
   n_gated: number;
@@ -180,16 +200,14 @@ export interface FamilyDto {
   combos_scanned: number;
   families: FamilyResult[];
   interactions: Interaction[];
-  /** Present on new runs; older cached results may omit it. */
-  joints?: JointResult[];
-  /** Present on new runs; older cached results may omit it. */
-  rescues?: Rescue[];
+  joints: JointResult[];
+  rescues: Rescue[];
 }
 
 export interface SliceScore {
   tokens: number;
   score: number | null;
-  outcome: 'ranked' | 'below_min_closed' | 'no_fire';
+  outcome: ScoreOutcome;
   n_fired: number;
   n_closed: number;
   win_rate: number;
@@ -256,7 +274,9 @@ export interface DiscoverySweepHandoff {
   tokenCap: number;
   fingerprintId: string | null;
   buyAmountSol: number;
-  ixPatterns: string[][];
+  /** The tags document the run screened with. A seeded axis that reads `@volume`
+   *  needs the same tags to mean the same trades. */
+  tags: Record<string, unknown> | null;
   ixLabelsFilter: string;
 }
 
@@ -264,18 +284,17 @@ export interface PipelineDto {
   cohort_tokens: number;
   fit_tokens: number;
   /** The cohort was truncated to the newest `token_cap` matches. */
-  cohort_capped?: boolean;
-  token_cap?: number | null;
+  cohort_capped: boolean;
+  token_cap: number | null;
   /** Layer 0 — absent when the caller named a single baseline. */
-  baseline_selection?: BaselineSelection | null;
-  /** Run-level findings in plain language. Present on new runs. */
-  diagnostics?: string[];
+  baseline_selection: BaselineSelection | null;
+  /** Run-level findings in plain language. */
+  diagnostics: string[];
   screen: ScreenDto;
   family: FamilyDto;
   validation: ValidationDto | null;
-  no_validation: string | null;
-  /** Present on new runs; older cached `/last` results may omit it. */
-  sweep_seed?: SweepSeed;
+  no_validation: 'degenerate_split' | 'no_candidates' | null;
+  sweep_seed: SweepSeed;
 }
 
 /** `GET …/metric-discovery/{run_id}` and `/last` both return this envelope. */
@@ -305,9 +324,11 @@ export interface MetricDiscoveryStartArgs {
   stop_loss_menu?: (number | null)[];
   min_closed?: number;
   split_fraction?: number;
-  /** A bare number is SECONDS - what this field has always meant; a string is a
-   *  full span (`"30sl@1"`, `"20p"`) in the same grammar every other span uses. */
-  entry_window_sec?: number | string;
-  exit_window_sec?: number | string;
-  ix_patterns?: string[][];
+  /** The window every windowed read is screened at on the entry side: `30s`, `30sl@1`,
+   *  `20p` (a bare number is seconds). */
+  entry_span?: string;
+  exit_span?: string;
+  /** The run's tags document (a fingerprint's `tags`). A read that needs a tag is
+   *  screened once per tag and its negation; without tags it is skipped. */
+  tags?: Record<string, unknown>;
 }

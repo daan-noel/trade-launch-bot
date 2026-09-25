@@ -1,164 +1,229 @@
-/** Client-side PREVIEW of `hunter_engine::metrics::flow_ix::FlowState`
- *  (Rust SSOT: hunter/engine/src/metrics/flow_ix.rs:305-386) — used by
- *  token charts (Flow Discovery, Simulate, inspect) to redraw vol/non-vol
- *  lines without a backend round-trip. Visualization only — never wired to
- *  live trading decisions. Equivalence classes match via `JSON.stringify`
- *  of ordered `ix_labels` arrays (or `templateGrain` under {@link FlowMatchMode}
- *  `'grain'`).
+/** Client-side mirror of the engine's tag classifier
+ *  (`hunter_engine::metrics::tags::state::TagState::fold_half`, Rust SSOT
+ *  hunter/engine/src/metrics/tags/state.rs) - the charts and the trades table redraw
+ *  a tag edit without a backend round trip. Visualization only, never wired to a
+ *  trading decision.
  *
- *  Mirrors the Rust classify order: creator wallet → always volume; wallet
- *  already tagged (forward-only contagion) → volume; else structural
- *  `ix_labels` match against the pattern set; else organic.
+ *  One trade, one verdict, in the engine's order:
  *
- *  Dump / working overlays reuse this fold with contagion off (those groups
- *  have no wallet rule). The structural test then IS the verdict. */
+ *  1. On the tag's `side` (absent = both), the trade carries the tag when ANY matcher
+ *     holds - program, ix_shape, ix_template, ix_contains, ix_lacks, wallet, creator,
+ *     then the sticky set, then `cluster` LAST (it counts the trade into its slot
+ *     group, so it runs only when nothing else qualified it).
+ *  2. Else, under `exclude_creation_slot`, a creation-slot buyer - and every later
+ *     trade of that wallet - counts on NEITHER side.
+ *  3. Else the trade is the rest (`@!tag`).
+ *
+ *  Trades must be the coin's FULL history in canonical order (slot -> tx_index ->
+ *  leg_index): sticky, cluster and the creation slot are all forward-only state. */
 
 import { anyRowMatchesTrade, type IxPatternRow } from 'lib/strategy/ixPatternRows';
-import { workingListHits } from 'lib/strategy/templateGrain';
+import type { MatcherKey, TagDef } from 'lib/strategy/tagsDoc';
+import { isLaunchGrain, templateGrain, templateProgram } from 'lib/strategy/templateGrain';
+
+/** The tag a surface classifies against: a fingerprint tag, a lens set read as one,
+ *  or a staging draft. `name` is display only (`@name`). */
+export type FlowTag = Pick<TagDef, 'name' | 'match' | 'side' | 'sticky' | 'exclude_creation_slot'>;
+
+/** One leg of a trade. */
+export type FlowSide = 'buy' | 'sell';
 
 export interface FlowTradeLite {
   wallet_address: string;
-  /** Signed by convention of the caller — this module only reads magnitude. */
+  /** Read as a magnitude, whatever sign convention the caller uses. */
   sol: number;
   ix_labels: readonly string[] | null | undefined;
-  /** Which leg this is. Required only under a {@link FlowClassifyOptions.side}
-   *  narrowing; absent there, the trade cannot prove it is on the asked side and
-   *  is treated as off-side. */
+  /** Which leg this is. A trade without one is off-side under a sided tag, is never
+   *  a creation-slot buyer, and forms its own cluster groups. */
   side?: FlowSide | null;
-  /** Fee budget this tx compiled — used when {@link FlowClassifyOptions.patternRows}
-   *  carries pinned rows. Absent fields are wildcards on the row side. */
+  /** The trade's slot. Read by `cluster` (groups per slot) and
+   *  `exclude_creation_slot`; absent reads as slot 0. */
+  slot?: number | null;
+  /** The fee budget this tx declared: read by fee-pinned ix shapes and by the
+   *  cluster's group identity. Absent = not captured. */
   cu_limit?: number | null;
   cu_price?: number | null;
   tip_lamports?: number | null;
 }
 
-/** One leg of a trade. `ix_labels` do NOT encode this — an aggregator's launch
- *  structure is byte-identical on the way in and the way out — so a side read is
- *  a filter over trades, never over patterns. */
-export type FlowSide = 'buy' | 'sell';
-
-/** How {@link FlowClassifyOptions.patternKeys} are compared to a trade.
- *
- *  `'labels'` (default) is `m_flow_ix` / `m_dump_ix`: exact ordered `ix_labels`.
- *  `'grain'` is `m_burst_slot.working_templates`: grain or program name. */
-export type FlowMatchMode = 'labels' | 'grain';
-
 export interface FlowClassifyOptions {
-  /** Membership set. Under `'labels'`, `JSON.stringify(ix_labels)`; under
-   *  `'grain'`, `templateGrain(ix_labels)`. */
-  patternKeys: ReadonlySet<string>;
-  /** When set (tagged/dump), structural match uses engine row matching — an
-   *  unpinned row is a fee wildcard — instead of `patternKeys.has`. Empty /
-   *  omitted falls back to the key set. Ignored under `'grain'`. */
-  patternRows?: readonly IxPatternRow[] | null;
-  /** Default `'labels'`. */
-  match?: FlowMatchMode;
-  /** Token creator wallet address — always classified as volume-side, and
-   *  seeds the contagion set (mirrors `FlowState::set_creator`). */
+  tag: FlowTag;
+  /** The coin's creator wallet - the `creator` matcher's subject. */
   creatorWallet?: string | null;
-  /**
-   * Forward-only wallet tagging, the Rust classifier's behavior — default `true`.
-   *
-   * Set `false` for a STRUCTURAL-ONLY read: every trade is judged by its own
-   * `ix_labels` alone, and neither a match nor the creator wallet taints the
-   * wallet's later trades. Contagion answers "who is in the volume crew"; with
-   * it on, one match makes a wallet volume-side forever, which smears a study of
-   * "which STRUCTURES are around this moment" into a single wallet set within
-   * seconds. Analysis-only surfaces (the Trader Analysis flow lens) therefore
-   * default it off — the engine's own classification is never computed here.
-   */
-  contagion?: boolean;
-  /**
-   * Narrow classification to ONE leg — `'buy'`, `'sell'`, or `null`/absent for
-   * both (the engine's behavior).
-   *
-   * A pattern key is an ordered `ix_labels` sequence, and those labels carry no
-   * direction: the same aggregator structure matches a buy and the sell that
-   * unwinds it, so an unnarrowed lens sums two opposite events onto one line.
-   * The two readings are different theses — a matched structure BUYING just
-   * before a trade is a crowd impulse joined, the same structure SELLING is exit
-   * liquidity absorbed — and mixed they partially cancel.
-   *
-   * Off-side trades classify non-volume and never tag a wallet, so a narrowed
-   * lens answers only about the leg asked for.
-   */
-  side?: FlowSide | null;
-  /** Wallets that can never be volume-side and never tag anything — the studied
-   *  trader itself, typically, so a lens does not classify its own subject. */
+  /** Analysis-only (a flow lens): wallets that always read as the rest and never
+   *  move sticky, cluster or creation-slot state - the studied trader itself, so a
+   *  lens does not classify its own subject. The engine has no such option. */
   excludeWallets?: ReadonlySet<string> | null;
 }
 
 /**
- * WHY a trade counts as volume-side. The per-trade Tagged badge tests structure
- * alone, but the chart's lines apply contagion on top — so a row can read
- * "Non-vol" while its SOL sits on the vol line. Naming the mechanism is the only
- * way a pattern edit and the line it moves stay legible to each other.
- *
- *  - `structural` — its ordered `ix_labels` match a staged pattern.
- *  - `creator`    — the token creator's own wallet (seeds the contagion set).
- *  - `wallet`     — a wallet already tagged by an earlier trade, whatever this
- *                   trade's own structure looks like.
+ * Why a trade sits where it does. A matcher key or `sticky` = it carries the tag
+ * (`@tag`), through that matcher (the first that held, in the classifier's order).
+ * `creation_slot` = excluded, on neither side. No reason = the rest (`@!tag`).
  */
-export type FlowReason = 'structural' | 'creator' | 'wallet';
+export type FlowReason = MatcherKey | 'sticky' | 'creation_slot';
+
+/** Which half a trade lands on. */
+export type FlowHalf = 'tagged' | 'rest' | 'excluded';
 
 export interface FlowClassified {
+  half: FlowHalf;
+  /** `half === 'tagged'`. */
   isTagged: boolean;
-  /** `null` ⇔ `isTagged === false`. */
+  /** `null` exactly when the trade is the rest (or unfoldable). */
   reason: FlowReason | null;
+  /** SOL on the tagged half; 0 otherwise. */
   taggedSol: number;
+  /** SOL on the rest; 0 otherwise (an excluded trade moves neither). */
   untaggedSol: number;
 }
 
-function isStructuralMatch(t: FlowTradeLite, opts: FlowClassifyOptions): boolean {
-  const labels = t.ix_labels;
-  if (!labels || labels.length === 0) return false;
-  if (opts.match === 'grain') return workingListHits(opts.patternKeys, labels);
-  const rows = opts.patternRows;
-  if (rows && rows.length > 0) return anyRowMatchesTrade(rows, labels, t);
-  return opts.patternKeys.has(JSON.stringify(labels));
+interface ClusterGroup {
+  ix: string | null;
+  side: FlowSide | null;
+  fee: string;
+  firstSol: number;
+  close: number;
 }
 
-/** Classify `trades` (must already be in canonical order — slot -> tx_index
- *  -> leg_index) into vol/non-vol, forward-tagging wallets as they're seen. */
+/** A tag compiled once per classification pass, never per trade. */
+interface CompiledTag {
+  programs: ReadonlySet<string>;
+  shapes: readonly IxPatternRow[];
+  templates: ReadonlySet<string>;
+  contains: readonly string[];
+  lacks: readonly string[];
+  wallets: ReadonlySet<string>;
+  creator: boolean;
+}
+
+function compile(tag: FlowTag): CompiledTag {
+  const m = tag.match;
+  return {
+    programs: new Set(m.program ?? []),
+    shapes: m.ix_shape ?? [],
+    templates: new Set(m.ix_template ?? []),
+    contains: m.ix_contains ?? [],
+    lacks: m.ix_lacks ?? [],
+    // The engine hashes `s.trim()` for wallets only.
+    wallets: new Set((m.wallet ?? []).map((w) => w.trim()).filter(Boolean)),
+    creator: m.creator === true,
+  };
+}
+
+/** Marker containment is substring containment over each label (engine
+ *  `marker_bits`): a label carries its program prefix. No labels = no markers. */
+function hasMarker(labels: readonly string[], names: readonly string[]): boolean {
+  return labels.some((l) => names.some((n) => l.includes(n)));
+}
+
+/** The first stateless matcher (or the sticky set) that qualifies the trade. */
+function matchReason(
+  c: CompiledTag,
+  t: FlowTradeLite,
+  labels: readonly string[],
+  creatorWallet: string | null,
+  sticky: ReadonlySet<string> | null,
+): FlowReason | null {
+  // Program, template and shape need labels (engine `*_hash` = None on none).
+  const has = labels.length > 0;
+  if (has && c.programs.size > 0 && c.programs.has(templateProgram(labels))) return 'program';
+  if (has && c.shapes.length > 0 && anyRowMatchesTrade(c.shapes, labels, t)) return 'ix_shape';
+  if (has && c.templates.size > 0 && c.templates.has(templateGrain(labels))) return 'ix_template';
+  if (c.contains.length > 0 && hasMarker(labels, c.contains)) return 'ix_contains';
+  // A label-less trade carries no marker, so it LACKS every one (engine bits = 0).
+  if (c.lacks.length > 0 && !hasMarker(labels, c.lacks)) return 'ix_lacks';
+  if (t.wallet_address && c.wallets.has(t.wallet_address)) return 'wallet';
+  if (c.creator && creatorWallet && t.wallet_address === creatorWallet) return 'creator';
+  if (sticky?.has(t.wallet_address)) return 'sticky';
+  return null;
+}
+
+const feeKey = (t: FlowTradeLite) => `${t.cu_limit ?? ''}|${t.cu_price ?? ''}|${t.tip_lamports ?? ''}`;
+
+/** Classify `trades` (canonical order) against one tag. */
 export function classifyFlowTrades<T extends FlowTradeLite>(
   trades: readonly T[],
   opts: FlowClassifyOptions,
 ): (T & FlowClassified)[] {
-  const contagion = opts.contagion !== false;
-  const excluded = opts.excludeWallets;
-  const side = opts.side ?? null;
-  const taggedWallets = new Set<string>();
-  // The creator seeds contagion, so it is only a tag when contagion is on. With
-  // it off, the creator's trades are judged by their structure like everyone
-  // else's — otherwise "structural only" would still carry one wallet rule.
-  if (contagion && opts.creatorWallet) taggedWallets.add(opts.creatorWallet);
+  const { tag } = opts;
+  const c = compile(tag);
+  const creatorWallet = opts.creatorWallet ?? null;
+  const excluded = opts.excludeWallets ?? null;
+  const cluster = tag.match.cluster ?? null;
+  const sticky = tag.sticky ? new Set<string>() : null;
+  // Engine `set_creator`: under creator + sticky the creator starts in the set.
+  if (sticky && c.creator && creatorWallet) sticky.add(creatorWallet);
+  let birthSlot: number | null = null;
+  const birthWallets = new Set<string>();
+  let clusterSlot = 0;
+  let groups: ClusterGroup[] = [];
+
+  const clusterHit = (t: FlowTradeLite, labels: readonly string[], sol: number, slot: number) => {
+    if (!cluster) return false;
+    if (slot !== clusterSlot) {
+      groups = [];
+      clusterSlot = slot;
+    }
+    const ix = labels.length > 0 ? JSON.stringify(labels) : null;
+    const side = t.side ?? null;
+    const fee = feeKey(t);
+    let g = groups.find((x) => x.ix === ix && x.side === side && x.fee === fee);
+    if (!g) {
+      g = { ix, side, fee, firstSol: sol, close: 0 };
+      groups.push(g);
+    }
+    const close = Math.abs(sol - g.firstSol) <= (cluster.sol_tol_pct / 100) * g.firstSol;
+    if (close) g.close += 1;
+    return close && g.close >= cluster.min_prints;
+  };
 
   const out: (T & FlowClassified)[] = [];
+  const push = (t: T, half: FlowHalf, reason: FlowReason | null, sol: number) =>
+    out.push({
+      ...t,
+      half,
+      isTagged: half === 'tagged',
+      reason,
+      taggedSol: half === 'tagged' ? sol : 0,
+      untaggedSol: half === 'rest' ? sol : 0,
+    });
+
   for (const t of trades) {
-    // Off-side and excluded are the same verdict: non-volume, and no tagging —
-    // a trade the lens is not asking about must not seed contagion either.
-    if (excluded?.has(t.wallet_address) || (side !== null && t.side !== side)) {
-      const mag = Math.abs(t.sol);
-      out.push({ ...t, isTagged: false, reason: null, taggedSol: 0, untaggedSol: mag });
+    const sol = Math.abs(t.sol);
+    const labels = t.ix_labels ?? [];
+    const slot = t.slot ?? 0;
+    if (excluded?.has(t.wallet_address)) {
+      push(t, 'rest', null, sol);
       continue;
     }
-    const structuralMatch = isStructuralMatch(t, opts);
-    // Read the contagion set BEFORE this trade can join it, so a wallet's first
-    // structural match is reported as `structural` and only its later trades as
-    // `wallet` — otherwise every trade of a tagged wallet looks like contagion
-    // and nothing points back at the pattern that started it.
-    const wasTagged = contagion && taggedWallets.has(t.wallet_address);
-    const isTagged = wasTagged || structuralMatch;
-    const reason: FlowReason | null = wasTagged
-      ? t.wallet_address === opts.creatorWallet
-        ? 'creator'
-        : 'wallet'
-      : structuralMatch
-        ? 'structural'
-        : null;
-    if (contagion && isTagged) taggedWallets.add(t.wallet_address);
-    const g = Math.abs(t.sol);
-    out.push({ ...t, isTagged, reason, taggedSol: isTagged ? g : 0, untaggedSol: isTagged ? 0 : g });
+    // Engine `on_trade`: a non-finite amount is not folded at all.
+    if (!Number.isFinite(sol)) {
+      push(t, 'excluded', null, 0);
+      continue;
+    }
+    if (birthSlot === null && isLaunchGrain(labels)) birthSlot = slot;
+
+    const onSide = tag.side == null || tag.side === t.side;
+    let reason: FlowReason | null = onSide ? matchReason(c, t, labels, creatorWallet, sticky) : null;
+    if (onSide && reason === null && clusterHit(t, labels, sol, slot)) reason = 'cluster';
+    if (reason !== null) {
+      sticky?.add(t.wallet_address);
+      push(t, 'tagged', reason, sol);
+      continue;
+    }
+    if (tag.exclude_creation_slot) {
+      if (birthSlot === slot && t.side === 'buy') {
+        birthWallets.add(t.wallet_address);
+        push(t, 'excluded', 'creation_slot', sol);
+        continue;
+      }
+      if (birthWallets.has(t.wallet_address)) {
+        push(t, 'excluded', 'creation_slot', sol);
+        continue;
+      }
+    }
+    push(t, 'rest', null, sol);
   }
   return out;
 }
@@ -169,13 +234,9 @@ export interface FlowTradeIdentified extends FlowTradeLite {
 }
 
 /**
- * Effective (contagion-aware) classification, keyed by trade id — what the
- * chart's lines actually did with each trade, for a table that can only see one
- * candle's worth of rows and so cannot recompute contagion itself.
- *
- * `trades` must be the token's FULL history in canonical order: contagion is
- * forward-only, so classifying a slice would miss the earlier trade that tagged
- * the wallet. Non-volume trades are omitted from the map — absent means organic.
+ * The verdict per trade id, for a table that sees one candle's rows and so cannot
+ * recompute the forward-only state itself. `trades` must be the coin's FULL history
+ * in canonical order. The rest is omitted - absent means `@!tag`.
  */
 export function flowReasonsById(
   trades: readonly FlowTradeIdentified[],
@@ -188,8 +249,7 @@ export function flowReasonsById(
   return out;
 }
 
-/** Build the `patternKeys` set from draft pattern arrays the same way
- *  Flow Discovery structure checkboxes key structures. */
+/** `JSON.stringify(labels)` identity set of label sequences, blanks dropped. */
 export function patternKeysFrom(patterns: readonly (readonly string[])[]): Set<string> {
   return new Set(patterns.filter((p) => p.length > 0).map((p) => JSON.stringify(p)));
 }

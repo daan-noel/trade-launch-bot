@@ -1,7 +1,7 @@
 import type { IChartApi, ISeriesApi } from 'lightweight-charts';
 
 /**
- * Per-series visibility for the cumulative tagged / non-tagged flow overlay.
+ * Per-series visibility for the cumulative `@tag` / `@!tag` flow overlay.
  *
  * The two curves share the LEFT price scale, and tagged normally dwarfs non-tagged —
  * so with both drawn the non-tagged curve is pinned to the axis floor and its shape
@@ -47,7 +47,7 @@ export function flowLineVisibilityFromPrefs(prefs: {
  * an effect that also depends on the structural series deps (style / grouping /
  * interval), so the toggles survive a series recreation.
  *
- * `available` is the classification gate (creator wallet or `ix_patterns`)
+ * `available` is the classification gate (a tag with at least one matcher)
  * — it is per-chart, never per-series, so it forces both curves off together.
  */
 export function applyFlowLineVisibility(args: {

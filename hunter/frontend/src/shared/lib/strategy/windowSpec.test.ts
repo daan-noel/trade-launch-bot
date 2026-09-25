@@ -3,53 +3,16 @@ import { describe, expect, it } from 'vitest';
 // Imported straight from the Rust crates - ONE copy of each name, so the two sides
 // cannot drift into a UI that spells a param the backend rejects as unknown.
 import metricsSrc from '../../../../../engine/src/metrics/mod.rs?raw';
-import flowSliceSrc from '../../../../../engine/src/metrics/flow_slice.rs?raw';
-import eventSrc from '../../../../../engine/src/event.rs?raw';
 import {
-  SLICE_PARAM,
-  SLICE_PRINT_PARAM,
-  SLICE_SLOT_PARAM,
-  sliceSpecFromStrict,
   formatWindowSpec,
   parseWindowSpec,
-  readWindow,
   sameWindowSpec,
   unitSuffix,
-  WINDOW_LAG_PARAM,
-  WINDOW_PRINT_PARAM,
-  WINDOW_SEC_PARAM,
-  WINDOW_SLOT_PARAM,
   WINDOW_UNITS,
-  windowSpecFromStrict,
 } from './windowSpec';
 
-/** The param names are a CONTRACT with the engine registry: a rule spelling one the
- *  backend does not declare is rejected as an unknown param at save, and a control
- *  the backend never reads is a field that silently does nothing. Read them out of
- *  the Rust source rather than trusting two hand-kept copies. */
-describe('param names match the engine', () => {
-  it('mirrors hunter_engine::metrics window params', () => {
-    const src = metricsSrc;
-    for (const [constant, value] of [
-      ['WINDOW_SEC_PARAM', WINDOW_SEC_PARAM],
-      ['WINDOW_SLOT_PARAM', WINDOW_SLOT_PARAM],
-      ['WINDOW_PRINT_PARAM', WINDOW_PRINT_PARAM],
-      ['WINDOW_LAG_PARAM', WINDOW_LAG_PARAM],
-    ] as const) {
-      expect(src).toContain(`pub const ${constant}: &str = "${value}";`);
-    }
-  });
-
-  it('mirrors hunter_engine::metrics::flow_slice slice params', () => {
-    const src = flowSliceSrc;
-    expect(src).toContain(`pub const SLICE_PARAM: &str = "${SLICE_PARAM}";`);
-    expect(src).toContain(`pub const SLICE_SLOT_PARAM: &str = "${SLICE_SLOT_PARAM}";`);
-    expect(src).toContain(`pub const SLICE_PRINT_PARAM: &str = "${SLICE_PRINT_PARAM}";`);
-  });
-
-  // A basis with no option in the picker round-trips through the JSON view with no
-  // way to author it, which is how `window_size_slots` shipped DB-only the first
-  // time. The engine enumerates its bases once, in `WindowUnit::ALL`.
+describe('window units match the engine', () => {
+  // The engine enumerates its bases once, in `WindowUnit::ALL`.
   it('offers every basis the engine declares', () => {
     expect(metricsSrc).toContain(
       'pub const ALL: [WindowUnit; 3] = [Self::Sec, Self::Slot, Self::Print];',
@@ -67,12 +30,10 @@ describe('label vocabulary matches the engine', () => {
       const rustName = { sec: 'Sec', slot: 'Slot', print: 'Print' }[unit];
       expect(metricsSrc).toContain(`Self::${rustName} => "${unitSuffix(unit)}"`);
     }
-    // The label itself is built once, by `WindowSpec::label`, and the exit-reason
-    // qualifier is that string in parentheses - so a reason parses back through
-    // `WindowSpec::parse` by construction rather than by two sides agreeing.
+    // The label is built once, by `WindowSpec::label`, and read back by
+    // `WindowSpec::parse`; a condition's span and an exit label both use it.
     expect(metricsSrc).toContain('pub fn label(&self) -> String {');
     expect(metricsSrc).toContain('pub fn parse(s: &str) -> Option<Self> {');
-    expect(eventSrc).toContain('format!("{}({})", metric.name(), w.label())');
   });
 
   // `formatWindowSpec` and `parseWindowSpec` are the frontend half of that pair. A
@@ -131,53 +92,5 @@ describe('sameWindowSpec', () => {
     expect(sameWindowSpec(base, { ...base, size: 60 })).toBe(false);
     expect(sameWindowSpec(null, null)).toBe(true);
     expect(sameWindowSpec(base, null)).toBe(false);
-  });
-});
-
-describe('windowSpecFromStrict', () => {
-  it('reads any size param, with the group lag', () => {
-    expect(windowSpecFromStrict({ window_size_sec: 30 })).toEqual({
-      size: 30,
-      lag: 0,
-      unit: 'sec',
-    });
-    expect(windowSpecFromStrict({ window_size_slots: 30, window_lag: 1 })).toEqual({
-      size: 30,
-      lag: 1,
-      unit: 'slot',
-    });
-    // The one-transaction span: `gross_flow >= 10` over this is "this tx moved 10 SOL".
-    expect(windowSpecFromStrict({ window_size_prints: 1 })).toEqual({
-      size: 1,
-      lag: 0,
-      unit: 'print',
-    });
-    expect(windowSpecFromStrict({ window_size_prints: 20, window_lag: 1 })).toEqual({
-      size: 20,
-      lag: 1,
-      unit: 'print',
-    });
-    expect(windowSpecFromStrict({})).toBeNull();
-  });
-
-  it('gives the slice axis the group lag and its own size', () => {
-    expect(sliceSpecFromStrict({ window_size_slots: 30, window_lag: 1, slice_size_slots: 1 }))
-      .toEqual({ size: 1, lag: 1, unit: 'slot' });
-    expect(sliceSpecFromStrict({ window_size_prints: 20, slice_size_prints: 4 }))
-      .toEqual({ size: 4, lag: 0, unit: 'print' });
-    expect(sliceSpecFromStrict({ window_size_sec: 60 })).toBeNull();
-  });
-});
-
-describe('readWindow', () => {
-  // A slot window reports `null` under the legacy seconds key, so a reader that only
-  // knows that key drops the window entirely rather than calling 30 slots 30 seconds.
-  it('prefers the span object and falls back to the legacy scalar', () => {
-    expect(readWindow({ window: { size: 30, lag: 1, unit: 'slot' }, window_size_sec: null }))
-      .toEqual({ size: 30, lag: 1, unit: 'slot' });
-    expect(readWindow({ window: { size: 1, lag: 0, unit: 'print' }, window_size_sec: null }))
-      .toEqual({ size: 1, lag: 0, unit: 'print' });
-    expect(readWindow({ window_size_sec: 60 })).toEqual({ size: 60, lag: 0, unit: 'sec' });
-    expect(readWindow({ window_size_sec: null })).toBeNull();
   });
 });

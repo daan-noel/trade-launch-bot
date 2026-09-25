@@ -19,8 +19,10 @@ import {
   type IxPatternSetKind,
 } from 'lib/flow/ixPatternSets';
 import { patternRowKey } from 'lib/strategy/ixPatternRows';
-import { metricConfigWithList, metricConfigWithWorkingTemplates } from 'lib/strategy/registry';
-import { toggleWorkingTemplate } from 'lib/strategy/templateGrain';
+import { tagField, useStrategyRegistry } from 'lib/strategy/registry';
+import { isProgramWorkingId, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
+import { tagNames, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
+import { defaultTagName, tagLabel } from 'lib/flow/tapeClassify';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
@@ -37,27 +39,27 @@ const KIND_OPTIONS: { value: IxPatternSetKind; label: string; title: string }[] 
   {
     value: 'templates',
     label: 'Templates',
-    title: 'Grain ids (program|CU|ATA|N|S|F) — harvest working-template vocabulary',
+    title: 'Grain ids (program|CU|ATA|N|S|F) and program names: a tag\'s ix template / program matchers',
   },
   {
     value: 'exact',
     label: 'Exact',
-    title: 'Full ix_labels sequences, optional fee pins — same as tagged/dump',
+    title: 'Full ix_labels sequences, optional fee pins: a tag\'s exact ix shape matcher',
   },
 ];
 
 /**
- * The Trader Analysis **flow lens** control strip: which analysis-owned pattern
- * set every chart on the page classifies vol/non-vol with, and how.
+ * The Trader Analysis **flow lens** control strip: which analysis-owned pattern set
+ * every chart on the page reads as a tag (`@set` / `@!set`), and how.
  *
- * A wallet study has no fingerprint, so the chart stack's usual source for
- * patterns is empty and the vol/non-vol overlay never draws. This bar supplies
- * that fact from `ix_pattern_sets` instead. Kind is chosen at create (Templates
- * or Exact); the set picker is the switch. Charts, the Vol column, and badge
- * clicks all follow the selected set's kind.
+ * A wallet study has no fingerprint, so the chart stack has no tag to read and the
+ * overlay never draws. This bar supplies one from `ix_pattern_sets` instead: the
+ * narrowed set as matchers, with the lens' own side and sticky switches. Kind is
+ * chosen at create (Templates or Exact); the set picker is the switch. Charts, the
+ * tag column and badge clicks all follow the selected set.
  *
- * Nothing here can reach a rule: a set is analysis-only, and the one path into
- * the engine is the explicit copy-to-fingerprint below.
+ * Nothing here can reach a rule: a set is analysis-only, and the one path into the
+ * engine is the explicit add-to-fingerprint-tag below.
  */
 export function FlowLensBar({
   lens,
@@ -77,6 +79,8 @@ export function FlowLensBar({
   const [copied, setCopied] = useState(false);
 
   const { set, sets, units, enabledUnits, keys } = lens;
+  const { data: reg } = useStrategyRegistry();
+  const stickyField = tagField(reg, 'sticky');
   const kind = set ? kindOf(set) : newKind;
   const isTemplates = kind === 'templates';
   const classifying = keys?.size ?? 0;
@@ -165,7 +169,7 @@ export function FlowLensBar({
           title="Pattern set every chart on this page classifies with"
           className="max-w-[22rem]"
         >
-          <option value="">No lens — charts show no vol/non-vol lines</option>
+          <option value="">No lens - charts show no tag lines</option>
           {sets.map((s) => {
             const k = kindOf(s);
             const n = k === 'templates' ? s.working_templates.length : s.patterns.length;
@@ -265,18 +269,16 @@ export function FlowLensBar({
 
         <span className="mx-1 h-4 w-px bg-white/10" />
 
-        {/* Structural-only is the lens' default and the reason it answers a
-            different question than the engine's own split — see `contagion`. */}
+        {/* Not sticky is the lens' default: it asks which STRUCTURES surround a
+            moment, and a sticky wallet set answers which wallets ever matched. */}
         <label className="flex items-center gap-1.5 text-[11px] text-text-dim">
           <Switch
             checked={lens.contagion}
             onChange={lens.setContagion}
-            label="Wallet contagion"
+            label={stickyField?.title ?? 'Sticky'}
           />
-          <span
-            title="ON = the engine's own rule: one structural match tags that wallet, and every later trade of it counts as volume (the creator seeds it). OFF = each trade judged by its own ix_labels / grain alone — what you want when the question is which STRUCTURES surround a moment."
-          >
-            Contagion
+          <span title={stickyField ? `${stickyField.summary}\n\nExample: ${stickyField.example}` : undefined}>
+            {stickyField?.title ?? 'Sticky'}
           </span>
         </label>
         <label className="flex items-center gap-1.5 text-[11px] text-text-dim">
@@ -486,34 +488,28 @@ function mergeExact(current: IxPattern[], incoming: IxPattern[]): IxPattern[] {
   return [...kept, ...incoming.filter((p) => !keptKeys.has(patternRowKey(toPatternRow(p))))];
 }
 
-/** Leg narrowing: Both / Buy / Sell.
+/** Leg narrowing: Both / Buy / Sell - the lens tag's `side`.
  *
  * `ix_labels` carry no direction — an aggregator's structure is byte-identical
- * on the buy and on the sell that unwinds it — so one pattern key matches both
- * legs and an unnarrowed line sums two opposite events. Narrowing is a filter
- * over TRADES, not over patterns: no set edit, and it composes with the group
- * chips (Axiom-buy vs Axiom-sell falls out of the two together). */
+ * on the buy and on the sell that unwinds it - so one shape matches both legs and
+ * an unnarrowed line sums two opposite events. It composes with the group chips
+ * (Axiom-buy vs Axiom-sell falls out of the two together). */
 function SideControl({ lens }: { lens: TraderFlowLens }) {
+  const { data: reg } = useStrategyRegistry();
+  const field = tagField(reg, 'side');
   const options: { value: FlowSide | null; label: string; title: string }[] = [
-    {
-      value: null,
-      label: 'Both',
-      title: 'Classify every leg — the engine’s own behavior. One pattern counts a matched structure buying AND the same structure selling.',
-    },
-    {
-      value: 'buy',
-      label: 'Buy',
-      title: 'Only matched BUYS count as volume — the crowd impulse a trade joins.',
-    },
-    {
-      value: 'sell',
-      label: 'Sell',
-      title: 'Only matched SELLS count as volume — the exit liquidity a trade absorbs.',
-    },
+    { value: null, label: 'Both', title: 'buys and sells can carry the lens tag' },
+    { value: 'buy', label: 'Buy', title: 'only buys can carry the lens tag' },
+    { value: 'sell', label: 'Sell', title: 'only sells can carry the lens tag' },
   ];
   return (
     <div className="flex items-center gap-1">
-      <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">Side</span>
+      <span
+        className="text-[9px] font-bold uppercase tracking-widest text-text-dim"
+        title={field ? `${field.summary}\n\nExample: ${field.example}` : undefined}
+      >
+        {field?.title ?? 'Side'}
+      </span>
       <div className="flex overflow-hidden rounded-md border border-white/10">
         {options.map((o) => {
           const on = lens.side === o.value;
@@ -580,14 +576,14 @@ function RenameControl({ lens }: { lens: TraderFlowLens }) {
 }
 
 /**
- * The one path from study to something the engine reads: copy the lens into the
- * matching fingerprint field (exact → m_flow_ix.ix_patterns with fees;
- * templates → m_burst_slot.working_templates).
+ * The one path from study to something the engine reads: add the lens' entries to a
+ * fingerprint tag - exact rows under `ix_shape` (pins kept), grain ids under
+ * `ix_template`, bare program names under `program`.
  *
- * Deliberately explicit and one-directional. A lens is a guess under
- * examination; a fingerprint's lists are what live rules classify with, so the
- * crossing is a decision, never a side effect of editing a lens. Group labels
- * have no home on a fingerprint and are dropped.
+ * Deliberately explicit and one-directional. A lens is a guess under examination; a
+ * fingerprint's tags are what live rules read, so the crossing is a decision, never
+ * a side effect of editing a lens. It ADDS - what the tag already lists stays - and
+ * group labels have no home on a tag and are dropped.
  */
 function PromoteToFingerprint({
   setKind,
@@ -597,57 +593,63 @@ function PromoteToFingerprint({
   set: { patterns: IxPattern[]; working_templates: string[] };
 }) {
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const { data: reg } = useStrategyRegistry();
   const [updateFingerprint, { isLoading }] = useUpdateFingerprintMutation();
   const [targetId, setTargetId] = useState('');
+  const [tagName, setTagName] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
   const target = fingerprints.find((f) => f.id === targetId) ?? null;
+  const names = tagNames(target?.tags);
+  const tag = tagName ?? defaultTagName(target?.tags);
   const isTemplates = setKind === 'templates';
   const n = isTemplates ? set.working_templates.length : set.patterns.length;
+  const title = (k: string) => tagField(reg, k)?.title ?? k;
+  const writes = isTemplates
+    ? `${tagLabel(tag)} (${title('ix_template')} / ${title('program')})`
+    : `${tagLabel(tag)} (${title('ix_shape')})`;
 
   const copy = async () => {
     if (!target) return;
     setStatus(null);
+    let tags: unknown = target.tags;
+    if (isTemplates) {
+      for (const id of set.working_templates) {
+        tags = withTagListValue(tags, tag, isProgramWorkingId(id) ? 'program' : 'ix_template', id);
+      }
+    } else {
+      for (const p of set.patterns) tags = withTagShape(tags, tag, toPatternRow(p));
+    }
     try {
-      const prev = target.metric_config ?? {};
-      const metric_config = isTemplates
-        ? metricConfigWithWorkingTemplates(prev, set.working_templates)
-        : metricConfigWithList(
-            prev,
-            set.patterns.map(toPatternRow),
-            'tagged',
-          );
       await updateFingerprint({
         id: target.id,
         body: {
           name: target.name,
-          // The whole criteria map round-trips: a PUT replaces the row, so an
-          // omitted axis would silently WIDEN what this fingerprint matches. Same
-          // reason `wildcard` is sent — omitted it defaults to false, turning a
-          // match-everything row into a criterion-less one.
+          // The whole row round-trips: a PUT replaces it, so an omitted axis would
+          // silently WIDEN what this fingerprint matches, and `wildcard` omitted
+          // defaults to false, turning a match-everything row criterion-less.
           criteria: target.criteria,
           wildcard: target.wildcard,
-          metric_config,
+          tags: tags as Record<string, unknown>,
         },
       }).unwrap();
-      setStatus(
-        `Copied ${n} ${isTemplates ? 'grain' : 'pattern'}${n === 1 ? '' : 's'} to ${target.name}`,
-      );
+      setStatus(`Added ${n} ${isTemplates ? 'id' : 'shape'}${n === 1 ? '' : 's'} to ${writes} on ${target.name}`);
     } catch (e) {
-      setStatus(apiErrorMessage(e as never, 'Failed to copy to fingerprint'));
+      setStatus(apiErrorMessage(e as never, 'Failed to add to the fingerprint tag'));
     }
   };
 
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-white/7 pt-2">
       <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">
-        Copy to fingerprint
+        Add to fingerprint tag
       </span>
       <Select
         fieldSize="sm"
         value={targetId}
         onChange={(e) => {
           setTargetId(e.target.value);
+          setTagName(null);
           setStatus(null);
         }}
         className="max-w-[16rem]"
@@ -659,24 +661,36 @@ function PromoteToFingerprint({
           </option>
         ))}
       </Select>
+      {target && (
+        <Select
+          fieldSize="sm"
+          value={tag}
+          onChange={(e) => setTagName(e.target.value)}
+          className="max-w-40 font-mono"
+          title="The fingerprint tag the lens entries are added to"
+        >
+          {(names.includes(tag) ? names : [...names, tag]).map((t) => (
+            <option key={t} value={t}>
+              {tagLabel(t)}
+              {names.includes(t) ? '' : ' (new)'}
+            </option>
+          ))}
+        </Select>
+      )}
       <Button
         size="xs"
         variant="ghost"
         disabled={!target || isLoading}
         onClick={() => void copy()}
-        title={
-          isTemplates
-            ? "Replace that fingerprint's working_templates with this lens' grains."
-            : "Replace that fingerprint's ix_patterns with this lens' exact rows (fees kept)."
-        }
+        title={`Add this lens' ${n} entr${n === 1 ? 'y' : 'ies'} to ${writes}. What the tag already lists stays.`}
       >
-        {isTemplates ? 'Copy grains' : 'Copy patterns'}
+        Add {n} to {tagLabel(tag)}
       </Button>
-      <span className="text-[11px] text-warning">
-        {isTemplates
-          ? 'Replaces its working_templates — harvest rules bound to it change meaning.'
-          : 'Replaces its ix_patterns — every rule bound to it changes meaning.'}
-      </span>
+      {target && (
+        <span className="text-[11px] text-warning">
+          Saves {writes} on {target.name}: every rule reading it changes meaning.
+        </span>
+      )}
       {status && <span className="text-[11px] text-text-dim">{status}</span>}
     </div>
   );

@@ -1,54 +1,149 @@
 import { useCallback, useMemo, useState } from 'react';
 
-import { flowPatternKeysOf } from 'lib/flow/flowPatternKeys';
+import type { FlowTag } from 'lib/flow/classifyFlow';
+import { flowPatternKeysFromTags } from 'lib/flow/flowPatternKeys';
+import { defaultTagName, flowTagOf, shapeTag } from 'lib/flow/tapeClassify';
 import { patternKey, patternsFromKeys } from 'lib/flow/volumePatterns';
+import { ixLabelsActions } from 'lib/ixLabels';
 import {
-  ixPatternsFromConfig,
-  metricConfigWithList,
-  metricConfigWithWorkingTemplates,
-  patternRowsForList,
-  patternsForList,
-  workingTemplatesFromConfig,
-  type TapeList,
-} from 'lib/strategy/registry';
-
-export type { TapeList };
-
-/** What a working-list badge click writes. Default grain is harvest. */
-export type WorkingWrite = 'grain' | 'program';
-import {
-  isLaunchGrain,
-  templateGrain,
-  templateProgram,
-  toggleWorkingTemplate,
-} from 'lib/strategy/templateGrain';
-import {
-  togglePatternRow,
-  type IxPatternFee,
+  formatFeePins,
+  patternRowKey,
+  rowFromTrade,
   type IxPatternFeeMask,
+  type IxPatternFeeSource,
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
+import { tagNames, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
+import { templateGrain, templateProgram } from 'lib/strategy/templateGrain';
+import type { Fingerprint } from 'lib/strategy/types';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
   useGetStrategyRulesQuery,
   useUpdateFingerprintMutation,
 } from 'store/sharedEndpoints';
-import type { Fingerprint } from 'lib/strategy/types';
 
-/** Same-membership test on two pattern sets. Order between patterns carries no
- *  meaning; order INSIDE a pattern does, and `patternKey` preserves it. */
-function samePatternSet(
-  a: readonly (readonly string[])[],
-  b: readonly (readonly string[])[],
-): boolean {
+// ── What a click writes ──────────────────────────────────────────────────────
+
+/** The tag matchers a trade click can write: the trade's exact ix shape, its ix
+ *  template, its program, or its wallet. */
+export type StageMatcher = 'ix_shape' | 'ix_template' | 'program' | 'wallet';
+
+export const STAGE_MATCHERS: readonly StageMatcher[] = ['ix_shape', 'ix_template', 'program', 'wallet'];
+
+/** The trade fields a click reads. */
+export interface StageTrade extends IxPatternFeeSource {
+  instruction_labels?: readonly string[] | null;
+  wallet_address?: string | null;
+}
+
+/** The one value a click on a trade writes under a matcher. */
+export type StageValue =
+  | { matcher: 'ix_shape'; row: IxPatternRow }
+  | { matcher: 'ix_template' | 'program' | 'wallet'; value: string };
+
+/** The value a click on `t` writes under `matcher` - its labels plus the pinned fee
+ *  fields, its template, its program or its wallet. `null` = nothing to write (no
+ *  labels captured, or no wallet). */
+export function stageValueOf(
+  matcher: StageMatcher,
+  t: StageTrade,
+  feePins?: IxPatternFeeMask | null,
+): StageValue | null {
+  const labels = t.instruction_labels ?? [];
+  switch (matcher) {
+    case 'wallet':
+      return t.wallet_address ? { matcher, value: t.wallet_address } : null;
+    case 'ix_shape':
+      return labels.length > 0 ? { matcher, row: rowFromTrade(labels, t, feePins) } : null;
+    case 'ix_template':
+      return labels.length > 0 ? { matcher, value: templateGrain(labels) } : null;
+    case 'program':
+      return labels.length > 0 ? { matcher, value: templateProgram(labels) } : null;
+  }
+}
+
+/** A value in words, for a tooltip: the shape's actions (and pins), the template,
+ *  the program or the wallet. */
+export function stageValueText(v: StageValue): string {
+  if (v.matcher !== 'ix_shape') return v.value;
+  const pins = formatFeePins(v.row);
+  return `${ixLabelsActions([...v.row.labels])}${pins ? ` (${pins})` : ''}`;
+}
+
+/** Identity of a value under its matcher (a shape keys with its exact pins). */
+export function stageValueKey(v: StageValue): string {
+  return `${v.matcher}|${v.matcher === 'ix_shape' ? patternRowKey(v.row) : v.value}`;
+}
+
+/** Every value a tag lists, keyed by {@link stageValueKey} - built once per tag, so
+ *  a table's per-row "listed" read is one lookup. */
+export function listedKeysOf(tag: FlowTag | null): ReadonlySet<string> {
+  const out = new Set<string>();
+  if (!tag) return out;
+  for (const row of tag.match.ix_shape ?? []) out.add(stageValueKey({ matcher: 'ix_shape', row }));
+  for (const matcher of ['ix_template', 'program', 'wallet'] as const) {
+    for (const value of tag.match[matcher] ?? []) out.add(stageValueKey({ matcher, value }));
+  }
+  return out;
+}
+
+/** `doc` with the value added to (or taken from) tag `name` - the one write every
+ *  "add to tag" click makes, through the tags document's one writer. A missing tag
+ *  is created. */
+export function withStageValue(doc: unknown, name: string, v: StageValue, remove: boolean): Record<string, unknown> {
+  return v.matcher === 'ix_shape'
+    ? withTagShape(doc, name, v.row, remove)
+    : withTagListValue(doc, name, v.matcher, v.value, remove);
+}
+
+/**
+ * What an "add to tag" click writes into, whoever owns the list: a fingerprint tag
+ * (the engine reads it), a flow-lens set (analysis only) or a discovery draft. Every
+ * trades table renders this one shape, so the strip, the badge and its tooltip all
+ * name the same tag and the same matcher.
+ */
+export interface TagStage {
+  /** The tag a click writes, without the `@`. A lens names its set here. */
+  tagName: string;
+  /** The matcher a click writes under. */
+  matcher: StageMatcher;
+  /** Matchers this stage can write; more than one ⇒ the strip offers a switch. */
+  matchers: readonly StageMatcher[];
+  setMatcher: (m: StageMatcher) => void;
+  /** Where the tag lives - a fingerprint name, a lens set, the draft - named in
+   *  every click tooltip, since a fingerprint click is an immediate save. */
+  ownerName: string | null;
+  /** Fee fields an `ix_shape` click copies from the tx. All off = the shape alone. */
+  feePins: IxPatternFeeMask;
+  setFeePins: (mask: IxPatternFeeMask) => void;
+  /** Whether the value is on the list (the badge reads pressed). */
+  listed: (v: StageValue) => boolean;
+  /** Listed, but narrowed out by a lens: a click brings it back rather than saving. */
+  muted?: (v: StageValue) => boolean;
+  /** Add the value when absent, remove it when listed. `null` ⇒ read-only. */
+  toggle: ((v: StageValue) => void) | null;
+  saving: boolean;
+  error: string | null;
+}
+
+/** A staging tape (Flow Discovery): the stage plus the draft tag the chart above
+ *  previews - the tag exactly as Apply would save it. */
+export interface TagTape extends TagStage {
+  tag: FlowTag | null;
+}
+
+// ── Which fingerprint ────────────────────────────────────────────────────────
+
+/** Stable empty result for the skipped match pass. */
+const NO_MATCHES: Fingerprint[] = [];
+
+/** Same-membership test on two shape sets (order inside a shape counts). */
+function sameShapeSet(a: readonly (readonly string[])[], b: readonly (readonly string[])[]): boolean {
   if (a.length !== b.length) return false;
   const bKeys = new Set(b.map(patternKey));
   return a.every((p) => bKeys.has(patternKey(p)));
 }
-
-/** Stable empty result for the skipped match pass. */
-const NO_MATCHES: Fingerprint[] = [];
 
 export interface IxPatternTargetChoice {
   targetId: string | null;
@@ -57,19 +152,16 @@ export interface IxPatternTargetChoice {
 }
 
 /**
- * Which fingerprint a Tagged-badge edit lands on, as a pure function of its inputs —
- * the whole precedence rule in one testable place, since this repo's tests run on
- * `node` and the hook around it needs a React tree.
+ * Which fingerprint an "add to tag" click lands on, as a pure function of its inputs.
  *
- * Precedence is explicit pick > the host's own fingerprint > a pattern-set match.
- * The order is the point: a match on the SET can never outrank an id, because an
- * unconfigured host classifies with the empty set and every unconfigured
- * fingerprint carries that same set. Reading the match first therefore fails
- * exactly when authoring starts — either uneditable (several rows match) or,
- * worse, silently writing to whichever single unrelated row happened to be empty.
+ * Precedence is explicit pick > the host's own fingerprint > a key-set match. A match
+ * can never outrank an id: every fingerprint without shapes carries the same empty
+ * set, so reading the match first fails exactly when authoring starts - uneditable
+ * (several rows match) or, worse, writing to whichever unrelated row happened to be
+ * empty.
  *
- * @param matchIds fingerprints carrying the host's set; a match is taken only when
- *                 there is exactly one, and is always reported as `inferred`
+ * @param matchIds fingerprints carrying the host's set; taken only when there is
+ *                 exactly one, and always reported as `inferred`
  */
 export function resolveIxPatternTarget(input: {
   pickedId: string | null;
@@ -77,9 +169,7 @@ export function resolveIxPatternTarget(input: {
   matchIds: readonly string[];
 }): IxPatternTargetChoice {
   const { pickedId, hostFingerprintId, matchIds } = input;
-  // Only consulted when nothing better exists — a guess must never displace a fact.
-  const inferredId =
-    pickedId == null && !hostFingerprintId && matchIds.length === 1 ? matchIds[0] : null;
+  const inferredId = pickedId == null && !hostFingerprintId && matchIds.length === 1 ? matchIds[0] : null;
   const targetId = pickedId ?? hostFingerprintId ?? inferredId;
   return {
     targetId,
@@ -88,85 +178,52 @@ export function resolveIxPatternTarget(input: {
   };
 }
 
-/** The write used to rebuild `m_flow_ix` from the pattern rows alone, which deleted
- *  the marker masks and reverted `wallet_contagion` / `creator_is_tagged` to their
- *  `true` backend defaults — a different classifier, not a tighter one — on every
- *  badge toggle. `metricConfigWithList` routes through each group's own writer, which
- *  preserves what this surface does not render. */
-const patternsOf = patternsForList;
+/** Display name of the ad-hoc tag a host's bare key set classifies with. */
+export const HOST_SHAPES_TAG = 'shapes';
 
-export interface IxPatternTarget {
-  /** Fingerprint a toggle writes to; `null` ⇒ the badge is read-only. */
+export interface IxPatternTarget extends TagStage {
+  /** Fingerprint a click writes to; `null` ⇒ read-only. */
   target: Fingerprint | null;
   /** Every fingerprint, for the target picker. */
   fingerprints: Fingerprint[];
   targetId: string | null;
   setTargetId: (id: string | null) => void;
-  /** Which list a toggle writes into. */
-  list: TapeList;
-  setList: (list: TapeList) => void;
-  /** The ACTIVE list's patterns — what the badge classifies against. Empty when
-   *  {@link list} is `'working'` (use {@link workingTemplates}). */
-  patterns: string[][];
-  /** Grain ids or program names when {@link list} is `'working'`. */
-  workingTemplates: string[];
-  /** Working-list click writes a grain (default) or the program name. */
-  workingWrite: WorkingWrite;
-  setWorkingWrite: (write: WorkingWrite) => void;
-  /** The ACTIVE list as whole rows — what a fee-pinning click toggles against,
-   *  and what the badge matches (an unpinned row is a fee wildcard). */
-  rows: IxPatternRow[];
-  /** Sticky fee-field modifiers for the next badge click. All off = ix structure only. */
-  feePins: IxPatternFeeMask;
-  setFeePins: (mask: IxPatternFeeMask) => void;
-  /** Keys of the list a toggle is NOT writing into, so a row can show that the
-   *  other one also counts it. A build may sit on both - the mark is information,
-   *  not a conflict. */
-  otherKeys: ReadonlySet<string> | null;
-  /** {@link patterns} as `flowPatternKeys`. Falls back to the host's own keys
-   *  when nothing is targeted, so a read-only panel classifies as before. */
+  /** The target's tag names, for the tag picker. */
+  tagNames: string[];
+  /** Pick the tag a click writes and the chart classifies with. A name the target
+   *  does not define yet is a new tag: the first click creates it. */
+  setTagName: (name: string) => void;
+  /** The tag the chart classifies with: the target's tag as stored, or - with no
+   *  target - an ad-hoc tag of the host's exact shapes. `null` ⇒ nothing classifies
+   *  (a new tag before its first click). */
+  tag: FlowTag | null;
+  /** `tag`'s exact shapes as keys, for a host that still hands keys down. */
   keys: ReadonlySet<string> | null;
-  /** Active rules bound to the target — a write changes what they all mean. */
+  /** Active rules bound to the target - a write changes what they all read. */
   activeRuleCount: number;
-  /** Add/remove one ordered `ix_labels` sequence (and optional fee pins) and persist
-   *  it. No-op with no target. `fee` omitted or empty ⇒ an ix-only row. */
-  toggle: ((labels: readonly string[], fee?: IxPatternFee) => void) | null;
-  /** The target was matched by pattern set, not handed down — it is a guess, and
-   *  the picker must say so rather than presenting it as the host's fingerprint. */
+  /** The target was matched by key set, not handed down: a guess. */
   inferred: boolean;
-  /** The target is NOT the fingerprint this host classifies with, so the badge
-   *  and the chart's lines above it now answer for different rows. Only reachable
-   *  by an explicit pick, and must be surfaced wherever true. */
+  /** The target is NOT the host's fingerprint, so the chart now reads the picked one. */
   offHost: boolean;
-  saving: boolean;
-  error: string | null;
 }
 
 /**
- * Which fingerprint a Tagged-badge toggle edits, and the write itself.
+ * Which fingerprint and which tag an "add to tag" click edits, and the write itself.
  *
- * `ix_patterns` lives on exactly one row — the fingerprint — and that row is
- * what the chart lines, the metric panes and the running engine all classify from.
- * So a toggle edits it directly: a staging copy would be a second answer to "what
- * counts as volume", and the surfaces reading the two copies then disagree on
- * screen while both look authoritative. The engine picks the edit up on its next
- * rules reload (`FlowState::set_patterns`), which is the point of writing through.
+ * A tag lives on exactly one row - the fingerprint - and that row is what the chart
+ * lines, the metric panes and the running engine all classify from. So a click
+ * edits it directly, through `withTagShape` / `withTagListValue`: a staging copy
+ * would be a second answer to "what carries the tag", and the surfaces reading the
+ * two copies then disagree on screen while both look authoritative.
  *
- * The target is the host's OWN fingerprint whenever it knows one — a position, a
- * sim result and a rule's evidence all classify against a specific row, and asking
- * the reader to re-pick a row the app already resolved is both friction and a
- * chance to pick wrong. Only a host with no fingerprint at all (plain token detail,
- * flow preview) falls back to matching by pattern set, and that match is a guess:
- * it is reported as {@link IxPatternTarget.inferred} and taken only when
- * exactly one row carries the set. Otherwise the target stays `null` and the caller
- * picks, because a write changes flow classification for every active rule bound to
- * that fingerprint.
+ * The target is the host's OWN fingerprint whenever it knows one. Only a host with
+ * none falls back to matching by its key set, reported as {@link IxPatternTarget.inferred}
+ * and taken only when exactly one row carries the set.
  *
- * @param fingerprintId the host's fingerprint — the write target when known
- * @param savedKeys     the host's current pattern keys; matched against only when
- *                      there is no `fingerprintId` to use
- * @param enabled       `false` on a read-only host (a stored run's frozen snapshot),
- *                      which skips the fingerprint/rule fetches entirely
+ * @param fingerprintId the host's fingerprint - the write target when known
+ * @param savedKeys     the host's key set; matched against only without an id, and
+ *                      classified with as an ad-hoc shape tag when nothing resolves
+ * @param enabled       `false` on a read-only host, which skips the fetches
  */
 export function useIxPatternTarget({
   fingerprintId = null,
@@ -182,25 +239,22 @@ export function useIxPatternTarget({
   const [updateFingerprint, { isLoading: saving }] = useUpdateFingerprintMutation();
 
   const [pickedId, setPickedId] = useState<string | null>(null);
-  const [list, setList] = useState<TapeList>('tagged');
-  const [workingWrite, setWorkingWrite] = useState<WorkingWrite>('grain');
+  const [pickedTag, setPickedTag] = useState<string | null>(null);
+  const [matcher, setMatcher] = useState<StageMatcher>('ix_shape');
   const [feePins, setFeePins] = useState<IxPatternFeeMask>({});
   const [error, setError] = useState<string | null>(null);
 
-  const savedPatterns = useMemo(() => patternsFromKeys(savedKeys), [savedKeys]);
+  const savedShapes = useMemo(() => patternsFromKeys(savedKeys), [savedKeys]);
 
-  // Matching by pattern set is the last resort, so it runs only when there is
-  // nothing better. An empty set matches every unconfigured fingerprint at once,
-  // which is why it can never outrank an id the host actually knows.
   const needsMatch = pickedId == null && !fingerprintId;
   const matches = useMemo(
     () =>
       needsMatch
         ? fingerprints.filter((f) =>
-            samePatternSet(ixPatternsFromConfig(f.metric_config), savedPatterns),
+            sameShapeSet(flowTagOf(f.tags, defaultTagName(f.tags))?.match.ix_shape?.map((r) => r.labels) ?? [], savedShapes),
           )
         : NO_MATCHES,
-    [needsMatch, fingerprints, savedPatterns],
+    [needsMatch, fingerprints, savedShapes],
   );
 
   const { targetId, inferred, offHost } = resolveIxPatternTarget({
@@ -208,57 +262,18 @@ export function useIxPatternTarget({
     hostFingerprintId: fingerprintId,
     matchIds: matches.map((f) => f.id),
   });
-  const target = useMemo(
-    () => fingerprints.find((f) => f.id === targetId) ?? null,
-    [fingerprints, targetId],
-  );
+  const target = useMemo(() => fingerprints.find((f) => f.id === targetId) ?? null, [fingerprints, targetId]);
+  const names = useMemo(() => tagNames(target?.tags), [target]);
+  const tagName = pickedTag ?? defaultTagName(target?.tags);
 
-  const patterns = useMemo(
-    () =>
-      list === 'working'
-        ? []
-        : target
-          ? patternsOf(target.metric_config, list)
-          : savedPatterns,
-    [target, savedPatterns, list],
-  );
+  const tag = useMemo<FlowTag | null>(() => {
+    if (target) return flowTagOf(target.tags, tagName);
+    return savedShapes.length > 0 ? shapeTag(HOST_SHAPES_TAG, savedShapes.map((labels) => ({ labels }))) : null;
+  }, [target, tagName, savedShapes]);
 
-  const rows = useMemo(
-    () =>
-      list === 'working'
-        ? []
-        : target
-          ? patternRowsForList(target.metric_config, list)
-          : savedPatterns.map((labels) => ({ labels })),
-    [target, savedPatterns, list],
-  );
-
-  const workingTemplates = useMemo(
-    () => (target ? workingTemplatesFromConfig(target.metric_config) : []),
-    [target],
-  );
-
-  // The other list, for the "also dump" / "also tagged" marker. Empty without a
-  // target, and unused on the working list (grain ids are a different vocabulary).
-  const otherKeys = useMemo(
-    () =>
-      target && list !== 'working'
-        ? flowPatternKeysOf(patternsOf(target.metric_config, list === 'dump' ? 'tagged' : 'dump'))
-        : null,
-    [target, list],
-  );
-
-  // The badge classifies against the row it writes to, or it reports a state its
-  // own click cannot change. With no target that is the host's set unchanged —
-  // reused by reference, since a re-parsed copy would rebuild every column.
   const keys = useMemo(
-    () =>
-      list === 'working'
-        ? new Set(workingTemplates)
-        : target
-          ? flowPatternKeysOf(patterns)
-          : (savedKeys ?? null),
-    [target, patterns, savedKeys, list, workingTemplates],
+    () => (target ? flowPatternKeysFromTags(target.tags, tagName) : (savedKeys ?? null)),
+    [target, tagName, savedKeys],
   );
 
   const activeRuleCount = useMemo(
@@ -266,78 +281,62 @@ export function useIxPatternTarget({
     [rules, targetId],
   );
 
+  const listedKeys = useMemo(() => listedKeysOf(target ? tag : null), [target, tag]);
+  const listed = useCallback((v: StageValue) => listedKeys.has(stageValueKey(v)), [listedKeys]);
+
   const toggle = useCallback(
-    (labels: readonly string[], fee?: IxPatternFee) => {
-      if (!target || labels.length === 0) return;
-      if (list === 'working' && isLaunchGrain(labels)) return;
+    (v: StageValue) => {
+      if (!target) return;
       setError(null);
-      const row: IxPatternRow = { labels: [...labels], ...fee };
-      const workingId =
-        workingWrite === 'program' ? templateProgram(labels) : templateGrain(labels);
-      const metric_config =
-        list === 'working'
-          ? metricConfigWithWorkingTemplates(
-              target.metric_config ?? {},
-              toggleWorkingTemplate(
-                workingTemplatesFromConfig(target.metric_config),
-                workingId,
-              ),
-            )
-          : metricConfigWithList(
-              target.metric_config ?? {},
-              togglePatternRow(patternRowsForList(target.metric_config, list), row),
-              list,
-            );
-      // Fire-and-report: the mutation invalidates `Fingerprint`, which re-derives the
-      // chart's keys AND refetches the metric series, so both redraw from the row
-      // that was just written rather than from any local echo of it.
+      const tags = withStageValue(target.tags, tagName, v, listed(v));
+      // Fire-and-report: the mutation invalidates `Fingerprint`, so the chart, the
+      // badges and the metric panes all redraw from the row just written.
       void updateFingerprint({
         id: target.id,
         body: {
           name: target.name,
-          // The whole criteria map is round-tripped: a PUT replaces the row, so an
-          // omitted axis would silently WIDEN what this fingerprint matches. Same
-          // reason `wildcard` is sent — omitted it defaults to false, which the
-          // write edge then rejects as criterion-less.
+          // The whole row round-trips: a PUT replaces it, so an omitted axis would
+          // silently WIDEN what this fingerprint matches, and `wildcard` omitted
+          // defaults to false, which the write edge rejects as criterion-less.
           criteria: target.criteria,
           wildcard: target.wildcard,
-          metric_config,
+          tags,
         },
       })
         .unwrap()
-        .catch((e) =>
-          setError(
-            apiErrorMessage(
-              e as never,
-              list === 'working' ? 'Failed to save working templates' : `Failed to save ${list} patterns`,
-            ),
-          ),
-        );
+        .catch((e) => setError(apiErrorMessage(e as never, `Failed to save tag ${tagName}`)));
     },
-    [target, updateFingerprint, list, workingWrite],
+    [target, tagName, listed, updateFingerprint],
   );
 
+  const setTargetId = useCallback((id: string | null) => {
+    setPickedId(id);
+    // Another row has other tags: read its default until one is picked.
+    setPickedTag(null);
+  }, []);
+
   return {
+    tagName,
+    matcher,
+    matchers: STAGE_MATCHERS,
+    setMatcher,
+    ownerName: target?.name ?? null,
+    feePins,
+    setFeePins,
+    listed,
+    toggle: target ? toggle : null,
+    saving,
+    error,
     target,
     fingerprints,
     targetId,
-    setTargetId: setPickedId,
-    list,
-    setList,
-    patterns,
-    workingTemplates,
-    workingWrite,
-    setWorkingWrite,
-    rows,
-    feePins,
-    setFeePins,
-    otherKeys,
+    setTargetId,
+    tagNames: names,
+    setTagName: setPickedTag,
+    tag,
     keys,
     activeRuleCount,
-    toggle: target ? toggle : null,
     inferred,
     offHost,
-    saving,
-    error,
   };
 }

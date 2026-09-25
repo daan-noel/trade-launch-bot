@@ -28,7 +28,7 @@ function fp(id: string, criteria: Criteria, wildcard = false): Fingerprint {
     name: id,
     wildcard,
     criteria,
-    metric_config: {},
+    tags: {},
     created_at: '',
     updated_at: '',
   };

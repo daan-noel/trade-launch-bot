@@ -107,14 +107,15 @@ interface TokenTableCommon<R> {
   /** Wallets compared against {@link highlightWallet} on every chart, in
    *  comparison-slot order — see `TokenTradeChart`'s `compareWallets`. */
   compareWallets?: readonly string[] | null;
-  /** Fingerprint ix_patterns keys for the charts-grid vol/non-vol overlay —
-   *  one set for the whole grid. Use {@link useRowChartFlowPatternSource} instead
-   *  when the rows span fingerprints. */
+  /** Key set of the grid's fingerprint (its default tag's exact shapes) - one for
+   *  the whole grid, the fallback when no fingerprint resolves. Use
+   *  {@link useRowChartFlowPatternSource} instead when the rows span fingerprints. */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Fingerprint {@link flowPatternKeys} came from — the Tagged-badge write target on
-   *  every card (see `BarTradesPanel`). Pass it whenever the cohort has one. */
+  /** Fingerprint {@link flowPatternKeys} came from - the tag every card classifies
+   *  with and the "add to tag" write target (see `BarTradesPanel`). Pass it whenever
+   *  the cohort has one. */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  /** A stored run's frozen shapes - display only (see `BarTradesPanel`). */
   flowReadOnly?: boolean;
   /** Per-card pattern source for a table whose rows span fingerprints (Console
    *  History mixes rules). Called as a hook per card — see

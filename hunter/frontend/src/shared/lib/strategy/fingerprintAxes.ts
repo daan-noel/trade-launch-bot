@@ -36,7 +36,8 @@ export type AxisId =
   | 'prior_launches'
   | 'create_ata'
   | 'build_prev_day_launches'
-  | 'build_prev_day_runner_bps';
+  | 'build_prev_day_runner_bps'
+  | 'name_reuse_count';
 
 /** What an axis's numbers *are* — drives how a bound is shown and parsed. */
 export type AxisUnit = 'lamports' | 'compute_units' | 'count' | 'bps' | 'labels';
@@ -186,6 +187,16 @@ export const AXES: readonly AxisDef[] = [
     phase: 'instant',
     definition:
       'Of this build\'s previous-day launches, the share whose curve reserve peaked at 60 SOL or more, 60 s or more after birth, with the peak before the day began - in basis points (800 = 8 %). Stamped at creation; unknown (fails closed) for a build the stats do not list.',
+  },
+  {
+    id: 'name_reuse_count',
+    label: 'Name reused (same build)',
+    chip: 'name_rep',
+    kind: 'numeric',
+    unit: 'count',
+    phase: 'instant',
+    definition:
+      "How many EARLIER coins of this creation build (the exact ordered instruction labels of the creation transaction) had this coin's name and symbol, lowercased and without spaces, over the last 30 days. `>= 1` = the build is re-using a name. Example: a 7ix coin named PEPE, when 7ix already launched a PEPE last week, reads 1. Needs an `ix_labels` axis on the same row; unknown (fails closed) for a blank name or symbol.",
   },
 ] as const;
 
@@ -509,6 +520,10 @@ export function criteriaProblems(criteria: Criteria): string[] {
   // launching.
   const labels = criteria.ix_labels;
   const count = criteria.ix_count;
+  // The name-reuse tally is kept per creation build, so it needs the build named.
+  if (criteria.name_reuse_count && labels?.kind !== 'sequence') {
+    out.push('Name reused needs an instruction-label sequence on the same fingerprint: the tally is kept per creation build');
+  }
   if (labels?.kind === 'sequence' && count && !predicateMatches(count, String(labels.labels.length))) {
     out.push(
       `Instruction count excludes ${labels.labels.length}, the length of the instruction-label sequence on the same fingerprint — no token can satisfy both`,

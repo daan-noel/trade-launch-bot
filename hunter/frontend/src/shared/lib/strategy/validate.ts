@@ -1,292 +1,190 @@
-// Client-side mirror of the backend rule-params validation
-// (`hunter_engine::rule_params` §5). It uses the SAME error vocabulary so a
-// draft that passes here passes the save endpoint too — the editor can surface
-// problems inline instead of round-tripping to the server. The backend remains
-// the authority; this is a fast-feedback pre-check.
+// Client-side mirror of the engine's rule validation (`RuleParams::parse` +
+// `validate` in `hunter_engine::rule_params`), so the editor names a problem where it
+// is, while typing. The backend stays the authority: a draft that passes here passes
+// the save endpoint, and the save endpoint's message is shown when it does not.
+//
+// Every message starts with WHERE (`Buy on, condition 1`, `stage early, line 2`) and
+// says what to change.
 
-import { normalizeConditionExpr, type Condition, type ConditionExpr } from './grammar';
+import type { Condition, ConditionExpr } from './grammar';
+import { checkRef } from './metricRef';
+import { findMetric, type StrategyRegistry } from './registry';
 import {
-  MAX_EXPLICIT_SCALE_STAGES,
-  MAX_SCALE_SELL_BPS,
-  authoredExitSides,
-  sideInstances,
-  type ExitStage,
-  type RuleParams,
-  type SideConditions,
-  type GroupConditions,
-} from './ruleParams';
-import { findGroup, findMetric, type StrategyRegistry } from './registry';
+  MAX_SELL_PCT,
+  MAX_SIZE_PCT_OF_POOL,
+  MAX_STAGES,
+  type Cond,
+  type Line,
+  type RuleDoc,
+} from './ruleDoc';
 
-/** Validate a draft against the registry. Returns human-readable error strings
- *  (empty = valid), matching the backend's messages closely. */
-export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefined): string[] {
-  const errors: string[] = [];
-  for (const [name, v] of [
-    ['take_profit', p.take_profit],
-    ['stop_loss', p.stop_loss],
-  ] as const) {
-    if (v != null && (!Number.isFinite(v) || v <= 0)) {
-      errors.push(`${name} must be a finite number > 0`);
-    }
-  }
-  validateSide('entry', p.entry, reg, errors);
-  validateSide('entry_event', p.entry_event, reg, errors);
-  const eventLive = p.entry_event && Object.keys(p.entry_event).length > 0;
-  if (p.entry_lock === 'slot' && !eventLive) {
-    errors.push('entry_lock requires a non-empty entry_event');
-  }
-  if (p.exitClauses && p.exitClauses.length > 0) {
-    p.exitClauses.forEach((c, i) => {
-      if (Object.keys(c).length === 0) {
-        errors.push(`exit[${i}] is empty — a DNF clause with no metrics is always true`);
-        return;
-      }
-      validateSide(`exit[${i}]`, c, reg, errors);
-    });
-  } else {
-    validateSide('exit', p.exit, reg, errors);
-  }
-  // Parked conditions validate exactly like live ones (backend does the same), so a
-  // toggle back on can never turn a saved rule into one that refuses to save.
-  validateSide('disabled.entry', p.disabled?.entry, reg, errors);
-  validateSide('disabled.entry_event', p.disabled?.entry_event, reg, errors);
-  if (p.disabled?.exitClauses && p.disabled.exitClauses.length > 0) {
-    p.disabled.exitClauses.forEach((c, i) => {
-      if (Object.keys(c).length === 0) {
-        errors.push(`disabled.exit[${i}] is empty — a DNF clause with no metrics is always true`);
-        return;
-      }
-      validateSide(`disabled.exit[${i}]`, c, reg, errors);
-    });
-  } else {
-    validateSide('disabled.exit', p.disabled?.exit, reg, errors);
-  }
-  validateScaleOut(p.scale_out, reg, errors);
-  // Parked stages get the PER-STAGE rules only — the cross-stage ones (remainder
-  // last, stage count, bps sum) describe a ladder, and the bag is a shelf of spares.
-  // Same split the backend applies (`validate_stage` vs `validate_scale_out`).
-  (p.disabled?.scale_out ?? []).forEach((stage, i) =>
-    validateStage(`disabled.scale_out[${i}]`, stage, reg, errors),
-  );
-  validateReentry(p.reentry, errors);
-  // Mirror of the backend `parse_opt_priority`.
-  if (!Number.isInteger(p.priority)) errors.push('priority must be an integer');
-  errors.push(...pnlSugarDuplicateErrors(p));
-  return errors;
+/** A signal or stage name: `[a-z0-9_]`, 1 to 32 characters. */
+export const NAME_RE = /^[a-z0-9_]{1,32}$/;
+
+export function nameError(name: string, what: string): string | null {
+  return NAME_RE.test(name) ? null : `${what} \`${name}\` must be 1-32 characters of a-z, 0-9 and _`;
 }
 
-/** True for the advanced `m_position.pnl` metric (TP/SL sugar is the primary surface). */
-export function isPnlAdvancedMetric(group: string, metric: string): boolean {
-  return group === 'm_position' && metric === 'pnl';
+/** Why one metric condition cannot be saved, or `null`. */
+export function metricCondError(
+  reg: StrategyRegistry | undefined,
+  c: Extract<Cond, { kind: 'metric' }>,
+  definedTags?: readonly string[],
+): string | null {
+  const refErr = checkRef(reg, c.ref, definedTags);
+  if (refErr) return refErr;
+  if (c.is.length === 0 || c.is.some((arm) => arm.length === 0)) return 'enter a value, e.g. >= 2';
+  if (c.is.flat().some((x) => !Number.isFinite(x.value))) return 'every value must be a finite number';
+  const tol = findMetric(reg, c.ref.metric)?.eq_tolerance ?? 0;
+  return unsatisfiableReason(c.is, tol);
+}
+
+export interface RuleIssues {
+  /** Block the save. */
+  errors: string[];
+  /** Save goes through, but the rule may not do what it says (the backend warns too). */
+  warnings: string[];
 }
 
 /**
- * Authored `m_position.pnl` conditions that exactly restate the TP/SL sugar
- * (`pnl >= take_profit` / `pnl <= −stop_loss`). Backend desugar produces those
- * same bounds — duplicating them is a footgun, not a second exit.
+ * Validate a draft. `definedTags` = the tag names the rule's fingerprint defines;
+ * reading any other tag is a warning (it reads nothing and never holds), as the
+ * backend's `rule_tag_warning` says at save.
  */
-export function pnlSugarDuplicateErrors(p: RuleParams): string[] {
+export function validateRuleDoc(
+  d: RuleDoc,
+  reg: StrategyRegistry | undefined,
+  definedTags?: readonly string[],
+): RuleIssues {
   const errors: string[] = [];
-  let sawTp = false;
-  let sawSl = false;
-  for (const side of authoredExitSides(p)) {
-    const arms = side.m_position?.find((g) => g.metrics.pnl?.length)?.metrics.pnl;
-    if (!arms?.length) continue;
-    for (const arm of arms) {
-      for (const c of arm) {
-        if (
-          !sawTp &&
-          p.take_profit != null &&
-          c.operator === '>=' &&
-          nearlyEqual(c.value, p.take_profit)
-        ) {
-          errors.push(
-            'exit.m_position.pnl duplicates take_profit — use the TP % field (or clear it)',
-          );
-          sawTp = true;
-        }
-        if (
-          !sawSl &&
-          p.stop_loss != null &&
-          c.operator === '<=' &&
-          nearlyEqual(c.value, -p.stop_loss)
-        ) {
-          errors.push(
-            'exit.m_position.pnl duplicates stop_loss — use the SL % field (or clear it)',
-          );
-          sawSl = true;
-        }
+  const warnings: string[] = [];
+  const stageNames = d.stages.map((s) => s.name);
+
+  const checkCond = (c: Cond, at: string, beforeBuy: boolean) => {
+    if (c.kind === 'signal') {
+      const sig = d.signals.find((s) => s.name === c.signal);
+      if (!sig) {
+        errors.push(`${at}: there is no signal \`${c.signal}\``);
+        return;
       }
+      if (beforeBuy && sig.groups.flat().some((g) => findMetric(reg, g.ref.metric)?.position)) {
+        errors.push(`${at}: signal \`${c.signal}\` reads our position, which does not exist before the buy`);
+      }
+      return;
+    }
+    const tagMissing =
+      definedTags && c.ref.tag && checkRef(reg, c.ref) === null && checkRef(reg, c.ref, definedTags) !== null;
+    const err = metricCondError(reg, c, undefined);
+    if (err) errors.push(`${at}: ${err}`);
+    else if (tagMissing) warnings.push(`${at}: ${checkRef(reg, c.ref, definedTags)}`);
+    if (beforeBuy && findMetric(reg, c.ref.metric)?.position) {
+      errors.push(`${at}: ${c.ref.metric} reads our position, which does not exist before the buy`);
+    }
+  };
+  const checkConds = (cs: Cond[], at: string, beforeBuy: boolean) =>
+    cs.forEach((c, i) => checkCond(c, `${at}, condition ${i + 1}`, beforeBuy));
+
+  // Numbers.
+  for (const [label, v, hi] of [
+    ['Take profit', d.take_profit, Infinity],
+    ['Stop loss', d.stop_loss, Infinity],
+    ['Size as % of pool', d.enter.size_pct_of_pool, MAX_SIZE_PCT_OF_POOL],
+  ] as const) {
+    if (v != null && !(Number.isFinite(v) && v > 0 && v <= hi)) {
+      errors.push(`${label} must be above 0${Number.isFinite(hi) ? ` and at most ${hi}` : ''}`);
     }
   }
-  return errors;
-}
-
-function nearlyEqual(a: number, b: number): boolean {
-  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 1e-9;
-}
-
-/** Mirror of the backend `parse_opt_reentry`: `cooldown_sec` finite `>= 0`,
- *  `max_episodes_per_token` an integer `>= 1`. */
-function validateReentry(re: RuleParams['reentry'], errors: string[]): void {
-  if (re == null) return;
-  if (!Number.isFinite(re.cooldown_sec) || re.cooldown_sec < 0) {
-    errors.push('reentry.cooldown_sec must be a finite number >= 0');
-  }
-  if (
-    !Number.isFinite(re.max_episodes_per_token) ||
-    re.max_episodes_per_token < 1 ||
-    !Number.isInteger(re.max_episodes_per_token)
-  ) {
-    errors.push('reentry.max_episodes_per_token must be an integer >= 1');
-  }
-}
-
-/** A stage's sell size is an integer bps in `[1, MAX]` — the backend checks this at
- *  parse, for the live ladder and the parked bag alike. */
-function sellBpsInRange(bps: number): boolean {
-  return Number.isInteger(bps) && bps >= 1 && bps <= MAX_SCALE_SELL_BPS;
-}
-
-/** Mirror of backend `validate_scale_out` — the CROSS-stage rules (remainder last,
- *  stage count, bps sum). Per-stage rules live in {@link validateStage}. */
-function validateScaleOut(
-  stages: ExitStage[] | null | undefined,
-  reg: StrategyRegistry | undefined,
-  errors: string[],
-): void {
-  if (!stages || stages.length === 0) return;
-  let explicit = 0;
-  let sumBps = 0;
-  for (let i = 0; i < stages.length; i++) {
-    const stage = stages[i];
-    const prefix = `scale_out[${i}]`;
-    if (stage.sell_bps == null) {
-      if (i + 1 !== stages.length) {
-        errors.push(`${prefix}: remainder stage (sell_bps omitted) must be last`);
-      }
-    } else {
-      if (i > 0 && stages[i - 1].sell_bps == null) {
-        errors.push(`${prefix}: remainder stage (sell_bps omitted) must be last`);
-      }
-      // Only a legal bps counts toward the ladder budget (the range error itself is
-      // reported by `validateStage`, which the parked bag shares).
-      if (sellBpsInRange(stage.sell_bps)) {
-        explicit += 1;
-        sumBps += stage.sell_bps;
-      }
+  if (d.reentry) {
+    if (!(Number.isFinite(d.reentry.cooldown_sec) && d.reentry.cooldown_sec >= 0)) {
+      errors.push('Buy again: the wait must be 0 s or more');
     }
-    validateStage(prefix, stage, reg, errors);
-  }
-  if (explicit > MAX_EXPLICIT_SCALE_STAGES) {
-    errors.push(
-      `scale_out: at most ${MAX_EXPLICIT_SCALE_STAGES} explicit stages (+ optional remainder); got ${explicit}`,
-    );
-  }
-  if (sumBps > MAX_SCALE_SELL_BPS) {
-    errors.push(
-      `scale_out: sum of explicit sell_bps must be <= ${MAX_SCALE_SELL_BPS} (got ${sumBps}) — a remainder must exist for the stub`,
-    );
-  }
-}
-
-/** Mirror of the backend `validate_stage`: the rules that describe ONE stage in
- *  isolation, shared by the live ladder and the parked bag (so a stage switched back
- *  on can never turn a saved rule into one that refuses to save). */
-function validateStage(
-  prefix: string,
-  stage: ExitStage,
-  reg: StrategyRegistry | undefined,
-  errors: string[],
-): void {
-  if (stage.sell_bps != null && !sellBpsInRange(stage.sell_bps)) {
-    errors.push(`${prefix}.sell_bps must be an integer in [1, ${MAX_SCALE_SELL_BPS}]`);
-  }
-  if (stage.take_profit != null && (!Number.isFinite(stage.take_profit) || stage.take_profit <= 0)) {
-    errors.push(`${prefix}.take_profit must be a finite number > 0`);
-  }
-  const hasConds = sideInstances(stage.conditions).some(([, g]) => groupHasConstraint(g));
-  if (stage.take_profit == null && !hasConds) {
-    errors.push(`${prefix}: stage needs take_profit and/or non-empty conditions`);
-  }
-  // Stages are exit-like — reuse the side validator under a prefixed path.
-  validateSide(`${prefix}.conditions`, stage.conditions, reg, errors);
-}
-
-function validateSide(
-  side: 'entry' | 'exit' | string,
-  conds: SideConditions | undefined,
-  reg: StrategyRegistry | undefined,
-  errors: string[],
-): void {
-  if (!conds) return;
-  // One pass per group instance (a group may hold several — one per window).
-  for (const [groupName, group] of sideInstances(conds)) {
-    // Skip instances the user left entirely blank — an empty group is treated as
-    // absent (only groups that carry a constraint are serialized).
-    if (!groupHasConstraint(group)) continue;
-    const spec = findGroup(reg, groupName);
-    if (!spec) {
-      errors.push(`${side}: unknown metric group '${groupName}'`);
-      continue;
-    }
-    for (const sp of spec.strict_params) {
-      if (sp.required && group.strict[sp.name] == null) {
-        errors.push(`${side}.${groupName}: missing required param '${sp.name}'`);
-      }
-    }
-    for (const [name, v] of Object.entries(group.strict)) {
-      // Mirrors the Rust validator: `allows_zero` params take `>= 0` because 0 is a
-      // real value of their domain (`arm_above_pct: 0` = arm the trailing stop at
-      // break-even), not the param being unset.
-      const allowsZero = spec.strict_params.find((sp) => sp.name === name)?.allows_zero === true;
-      const ok = v == null || (Number.isFinite(v) && (v > 0 || (allowsZero && v === 0)));
-      if (!ok) {
-        errors.push(
-          `${side}.${groupName}.${name} must be a finite number ${allowsZero ? '>= 0' : '> 0'}`,
-        );
-      }
-    }
-    for (const [metric, arms] of Object.entries(group.metrics)) {
-      if (arms.length === 0) continue;
-      const m = findMetric(reg, groupName, metric);
-      if (!m) {
-        errors.push(`${side}.${groupName}: unknown metric '${metric}'`);
-        continue;
-      }
-      // Same metric, different ops: validate the normalized form (AND→OR when needed).
-      const normalized = normalizeConditionExpr(arms, m.eq_tolerance);
-      if (normalized.some((arm) => arm.length === 0 || arm.some((c) => !Number.isFinite(c.value)))) {
-        errors.push(`${side}.${groupName}.${metric}: condition value must be finite`);
-        continue;
-      }
-      const why = unsatisfiableReason(normalized, m.eq_tolerance);
-      if (why) errors.push(`${side}.${groupName}.${metric}: contradictory conditions (${why})`);
+    if (!(Number.isInteger(d.reentry.max_per_coin) && d.reentry.max_per_coin >= 1)) {
+      errors.push('Buy again: the most buys per coin must be a whole number, 1 or more');
     }
   }
-}
+  if (!Number.isInteger(d.priority)) errors.push('Priority must be a whole number');
 
-function groupHasConstraint(group: GroupConditions): boolean {
-  return Object.values(group.metrics).some((arms) => arms.length > 0);
+  // Enter.
+  checkConds(d.enter.event, 'Buy on', true);
+  checkConds(d.enter.filters, 'Only if', true);
+  checkConds(d.enter.final_filters, 'Only if, else give up', true);
+  if (d.enter.lock && d.enter.event.every((c) => c.off)) {
+    errors.push('One chance needs a "Buy on" condition: the chance is the first print that makes it true');
+  }
+
+  // Signals.
+  const seenSignals = new Set<string>();
+  for (const s of d.signals) {
+    const nErr = nameError(s.name, 'Signal name');
+    if (nErr) errors.push(nErr);
+    if (seenSignals.has(s.name)) errors.push(`Two signals are named \`${s.name}\``);
+    seenSignals.add(s.name);
+    if (s.groups.length === 0 || s.groups.some((g) => g.length === 0)) {
+      errors.push(`Signal \`${s.name}\` has an empty group: give every group a condition or remove it`);
+    }
+    s.groups.forEach((g, gi) => checkConds(g, `Signal \`${s.name}\`, group ${gi + 1}`, false));
+  }
+
+  // Lines.
+  const checkLine = (l: Line, at: string, conditional: boolean) => {
+    if (conditional && !l.off && l.if.every((c) => c.off)) {
+      errors.push(`${at} has no condition, so it would act on the first print`);
+    }
+    checkConds(l.if, at, false);
+    if (!l.sell && !l.go) errors.push(`${at} does nothing: make it sell and/or go to a stage`);
+    if (l.go && !stageNames.includes(l.go)) errors.push(`${at}: there is no stage \`${l.go}\``);
+    if (l.sell?.pct != null) {
+      if (!(Number.isFinite(l.sell.pct) && l.sell.pct > 0 && l.sell.pct <= MAX_SELL_PCT)) {
+        errors.push(`${at}: the sell percent must be above 0 and at most ${MAX_SELL_PCT}`);
+      }
+      if (!l.go) {
+        errors.push(`${at}: a partial sell must also go to another stage, or it would sell again on the next print`);
+      }
+    }
+  };
+  d.always.forEach((l, i) => checkLine(l, `Always, line ${i + 1}`, true));
+
+  // Stages.
+  if (d.stages.length > MAX_STAGES) errors.push(`At most ${MAX_STAGES} stages`);
+  const seenStages = new Set<string>();
+  d.stages.forEach((s, si) => {
+    const nErr = nameError(s.name, 'Stage name');
+    if (nErr) errors.push(nErr);
+    if (seenStages.has(s.name)) errors.push(`Two stages are named \`${s.name}\``);
+    seenStages.add(s.name);
+    const at = `Stage \`${s.name}\``;
+    if (s.ends && !(Number.isFinite(s.ends.secs) && s.ends.secs >= 0)) {
+      errors.push(`${at}: the deadline must be 0 s or more`);
+    }
+    s.on.forEach((l, i) => checkLine(l, `${at}, line ${i + 1}`, true));
+    s.at_end.forEach((l, i) => checkLine(l, `${at}, at-deadline line ${i + 1}`, false));
+    if (s.at_end.length && !s.ends) errors.push(`${at} has at-deadline lines but no deadline`);
+    if (s.then) {
+      if (!s.ends) errors.push(`${at}: "then" needs a deadline`);
+      if (!stageNames.includes(s.then)) errors.push(`${at}: there is no stage \`${s.then}\``);
+    } else if (s.ends && si === d.stages.length - 1) {
+      errors.push(`${at} has a deadline but no stage follows it: pick where it goes next`);
+    }
+  });
+  return { errors, warnings };
 }
 
 /**
- * Port of the backend `check_satisfiable` over DNF: an expr is unsatisfiable
- * only when every OR arm is. Within an arm, conditions AND (interval
- * intersection); `=`/`!=` contribute `±tol/2` bands.
+ * Port of the engine's `check_expr_satisfiable` over DNF: an expression can never hold
+ * only when every OR arm can never hold. Within an arm, conditions AND (interval
+ * intersection); `=` / `!=` contribute `±tol/2` bands. The message is the last arm's,
+ * as the engine reports it.
  */
 export function unsatisfiableReason(arms: ConditionExpr, tol: number): string | null {
   if (arms.length === 0) return null;
-  const reasons: string[] = [];
+  let last: string | null = null;
   for (const arm of arms) {
     const why = armUnsatisfiableReason(arm, tol);
-    if (!why) return null; // at least one arm is feasible
-    reasons.push(why);
+    if (!why) return null;
+    last = why;
   }
-  return reasons[0] ?? 'all OR arms unsatisfiable';
+  return last ?? 'can never hold: no OR group can hold';
 }
-
-export { normalizeConditionExpr } from './grammar';
 
 function armUnsatisfiableReason(conds: Condition[], tol: number): string | null {
   const half = tol / 2;
@@ -340,3 +238,5 @@ function armUnsatisfiableReason(conds: Condition[], tol: number): string | null 
   }
   return null;
 }
+
+export { normalizeConditionExpr } from './grammar';

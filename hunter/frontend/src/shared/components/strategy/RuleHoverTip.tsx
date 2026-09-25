@@ -6,6 +6,20 @@ import { ruleParamsCell } from './RuleParamsSummary';
 import { fingerprintParamsCell } from './FingerprintParamsSummary';
 import { capsDisplayText } from './capsRuleColumns';
 import { lamportsToSol, type Fingerprint, type StrategyRule } from 'lib/strategy/types';
+import { useStrategyRegistry } from 'lib/strategy/registry';
+import { ruleDocFromJson } from 'lib/strategy/ruleDoc';
+import { RuleSentences } from './rule/RuleSentences';
+
+/** The rule in words, when its params are a format-2 document. */
+function RuleWords({ params }: { params: unknown }) {
+  const { data: reg } = useStrategyRegistry();
+  if (!reg) return null;
+  try {
+    return <RuleSentences doc={ruleDocFromJson(params)} reg={reg} />;
+  } catch {
+    return null;
+  }
+}
 
 function sectionLabel(text: string): ReactNode {
   return (
@@ -48,6 +62,10 @@ export function RuleDetailCard({
       <div className="flex flex-col gap-1">
         {sectionLabel('Params')}
         {ruleParamsCell(rule.params)}
+      </div>
+      <div className="flex max-w-xl flex-col gap-1">
+        {sectionLabel('In words')}
+        <RuleWords params={rule.params} />
       </div>
     </div>
   );

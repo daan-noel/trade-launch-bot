@@ -1,50 +1,18 @@
-// Compact at-a-glance chip cluster for a rule's `params` (TP/SL + entry/exit
-// metric conditions). Shared by Rules, Simulate, Fingerprints (used-by), and the
-// generic sweep tables — one SSOT so every surface that shows a rule reads the same.
+// Compact at-a-glance summary of a rule's `params` (format 2): the buy conditions,
+// then each sell line as `conditions -> action`, stage by stage. Shared by Rules,
+// Simulate, Fingerprints (used-by) and the search tables, so every surface that shows
+// a rule reads the same. The full sentences live in `rule/RuleSentences.tsx`.
 
 import { Fragment, type CSSProperties, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { formatDecimalTrim } from 'utils/format';
-import { findMetric, useStrategyRegistry, type Operator } from 'lib/strategy/registry';
+import { familyName, findMetric, useStrategyRegistry, type Operator } from 'lib/strategy/registry';
 import { metricColorStyle } from 'lib/strategy/metricColors';
-import { conditionExprFromJson } from 'lib/strategy/grammar';
-import { formatWindowSpec, windowSpecFromStrict } from 'lib/strategy/windowSpec';
+import { refLabel } from 'lib/strategy/metricRef';
+import { ruleDocFromJson, type Cond, type Line, type RuleDoc } from 'lib/strategy/ruleDoc';
+import { condLabel, condSentence, deadlineSentence, lineExitLabel } from 'lib/strategy/sentences';
 
-/** Nested `params` blob as stored on `strategy_rules.params` / sweep combos. A
- *  group's value is a plain object (one window) OR an array of them (one per
- *  window) — the multi-window-per-group wire form. */
-interface RuleParamsJson {
-  take_profit?: number | null;
-  stop_loss?: number | null;
-  entry?: Record<string, unknown>;
-  entry_event?: Record<string, unknown>;
-  entry_lock?: 'slot' | null;
-  /** Object-form OR array-form DNF. */
-  exit?: Record<string, unknown> | Record<string, unknown>[];
-  scale_out?: Array<{
-    sell_bps?: number | null;
-    take_profit?: number | null;
-    conditions?: Record<string, unknown>;
-  }> | null;
-  reentry?: { cooldown_sec?: number; max_episodes_per_token?: number } | null;
-  exclusive?: boolean;
-  priority?: number;
-}
-
-interface SideChip {
-  group: string;
-  metric: string;
-  operator: string;
-  text: string;
-  /** When true, render a `|` separator before this chip (OR between arms). */
-  orBefore?: boolean;
-  /** When true, render `∧` before this chip (AND inside a DNF clause). */
-  andBefore?: boolean;
-  /** When true, render `∨` before this chip (OR between DNF clauses). */
-  clauseOrBefore?: boolean;
-}
-
-function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
+function chip(text: ReactNode, cls?: string, style?: CSSProperties, title?: string): ReactNode {
   return (
     <span
       className={cn(
@@ -52,415 +20,164 @@ function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
         cls,
       )}
       style={style}
+      title={title}
     >
       {text}
     </span>
   );
 }
 
-/** Terse chips for one side's metric conditions, e.g. `time>10`, `liquidity<30 | liquidity>=70`.
- *  A group value is a plain object (one window) or an array of them (one per window). */
-function sideChips(side: Record<string, unknown> | undefined): SideChip[] {
-  if (!side) return [];
-  const out: SideChip[] = [];
-  for (const [group, groupVal] of Object.entries(side)) {
-    const instances = Array.isArray(groupVal) ? groupVal : [groupVal];
-    for (const body of instances) {
-      if (!body || typeof body !== 'object' || Array.isArray(body)) continue;
-      const inst = body as Record<string, unknown>;
-      // The whole span, not just a size: two slot windows of one metric would
-      // otherwise chip identically, and a slot window would read as a lifetime one.
-      const numeric = Object.fromEntries(
-        Object.entries(inst).filter((e): e is [string, number] => typeof e[1] === 'number'),
-      );
-      const spec = windowSpecFromStrict(numeric);
-      const suffix = spec ? `(${formatWindowSpec(spec)})` : '';
-      for (const [metric, raw] of Object.entries(inst)) {
-        if (!Array.isArray(raw)) continue;
-        const arms = conditionExprFromJson(raw);
-        if (!arms) continue;
-        for (let ai = 0; ai < arms.length; ai++) {
-          const arm = arms[ai];
-          for (let ci = 0; ci < arm.length; ci++) {
-            const c = arm[ci];
-            out.push({
-              group,
-              metric,
-              operator: c.operator,
-              text: `${metric}${suffix}${c.operator}${formatDecimalTrim(c.value, 4)}`,
-              orBefore: ai > 0 && ci === 0,
-            });
-          }
-        }
-      }
-    }
+/** The rule, or why it cannot be read (a format-1 document from an old sweep combo). */
+function parse(raw: unknown): { doc: RuleDoc } | { error: string } {
+  try {
+    return { doc: ruleDocFromJson(raw ?? {}) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
   }
-  return out;
 }
 
-function exitChips(exit: RuleParamsJson['exit']): SideChip[] {
-  if (Array.isArray(exit)) {
-    const out: SideChip[] = [];
-    exit.forEach((clause, ci) => {
-      if (!clause || typeof clause !== 'object' || Array.isArray(clause)) return;
-      const chips = sideChips(clause);
-      chips.forEach((c, i) => {
-        out.push({
-          ...c,
-          clauseOrBefore: ci > 0 && i === 0,
-          andBefore: i > 0,
-          orBefore: c.orBefore,
-        });
-      });
-    });
-    return out;
+function CondChip({ c }: { c: Cond }) {
+  const { data: reg } = useStrategyRegistry();
+  if (c.kind === 'signal') {
+    return <>{chip(c.not ? `not ${c.signal}` : c.signal, cn('text-accent', c.off && 'line-through opacity-50'), undefined, condSentence(reg, c))}</>;
   }
-  return sideChips(exit);
-}
-
-function parseParams(raw: unknown): {
-  take_profit: number | null;
-  stop_loss: number | null;
-  entry: SideChip[];
-  event: SideChip[];
-  entryLock: boolean;
-  exit: SideChip[];
-  scale_out: Array<{ sellPct: number | null; take_profit: number | null; conds: SideChip[] }>;
-  reentry: { cooldown_sec: number; max_episodes_per_token: number } | null;
-  exclusive: boolean;
-  priority: number;
-} {
-  const p = (raw && typeof raw === 'object' ? raw : {}) as RuleParamsJson;
-  const re = p.reentry;
-  const reentry =
-    re && typeof re.cooldown_sec === 'number' && typeof re.max_episodes_per_token === 'number'
-      ? { cooldown_sec: re.cooldown_sec, max_episodes_per_token: re.max_episodes_per_token }
-      : null;
-  const scale_out = Array.isArray(p.scale_out)
-    ? p.scale_out.map((s) => ({
-        sellPct:
-          typeof s.sell_bps === 'number' && Number.isFinite(s.sell_bps) ? s.sell_bps / 100 : null,
-        take_profit: typeof s.take_profit === 'number' ? s.take_profit : null,
-        conds: sideChips(s.conditions),
-      }))
-    : [];
-  return {
-    take_profit: typeof p.take_profit === 'number' ? p.take_profit : null,
-    stop_loss: typeof p.stop_loss === 'number' ? p.stop_loss : null,
-    entry: sideChips(p.entry),
-    event: sideChips(p.entry_event),
-    entryLock: p.entry_lock === 'slot',
-    exit: exitChips(p.exit),
-    scale_out,
-    reentry,
-    exclusive: p.exclusive === true,
-    priority: typeof p.priority === 'number' ? p.priority : 0,
-  };
-}
-
-/** One metric-condition chip tinted from the registry hue (+ fixed op shade). */
-function MetricCondChip({ chip: c }: { chip: SideChip }) {
-  const { data: registry } = useStrategyRegistry();
-  const hue = findMetric(registry, c.group, c.metric)?.hue;
+  const spec = findMetric(reg, c.ref.metric);
   const tint = metricColorStyle({
-    hue,
-    group: c.group,
-    metric: c.metric,
-    operator: c.operator as Operator,
+    hue: spec?.hue,
+    group: familyName(c.ref.metric),
+    metric: spec?.name ?? c.ref.metric,
+    operator: c.is[0]?.[0]?.operator as Operator | undefined,
   });
+  return <>{chip(condLabel(c), cn(c.off && 'line-through opacity-50'), tint.style, condSentence(reg, c))}</>;
+}
+
+function Conds({ conds }: { conds: Cond[] }) {
   return (
     <>
-      {c.clauseOrBefore && (
-        <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
-          ∨
-        </span>
-      )}
-      {c.andBefore && (
-        <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
-          ∧
-        </span>
-      )}
-      {c.orBefore && (
-        <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
-          |
-        </span>
-      )}
-      {chip(c.text, undefined, {
-        borderColor: tint.border,
-        backgroundColor: tint.background,
-        color: tint.color,
-      })}
+      {conds.map((c, i) => (
+        <Fragment key={c.id}>
+          {i > 0 && <span className="font-mono text-[10px] text-text-dim/70">∧</span>}
+          <CondChip c={c} />
+        </Fragment>
+      ))}
     </>
   );
 }
 
-/** Preserve first-seen group order; chips within a group stay contiguous. */
-function chipsByGroup(chips: SideChip[]): { group: string; chips: SideChip[] }[] {
-  const order: string[] = [];
-  const map = new Map<string, SideChip[]>();
-  for (const c of chips) {
-    let bucket = map.get(c.group);
-    if (!bucket) {
-      bucket = [];
-      map.set(c.group, bucket);
-      order.push(c.group);
-    }
-    bucket.push(c);
-  }
-  return order.map((group) => ({ group, chips: map.get(group)! }));
+function actionChip(l: Line): ReactNode {
+  const parts: string[] = [];
+  if (l.sell) parts.push(`${l.sell.pct != null ? `sell ${formatDecimalTrim(l.sell.pct, 1)}%` : 'sell'} "${lineExitLabel(l)}"`);
+  if (l.go) parts.push(`→ ${l.go}`);
+  return chip(parts.join(' '), l.sell ? 'text-warning' : 'text-accent');
 }
 
-function isDnfChips(chips: SideChip[]): boolean {
-  return chips.some((c) => c.andBefore || c.clauseOrBefore);
-}
-
-function SideBlock({
-  side,
-  chips,
-  labelCls,
-  lock,
-}: {
-  side: 'in' | 'out' | 'event';
-  chips: SideChip[];
-  labelCls: string;
-  lock?: boolean;
-}): ReactNode {
-  if (chips.length === 0) return null;
-  const label = side === 'event' ? (lock ? 'evt/s' : 'evt') : side;
-  const labelTitle =
-    side === 'event'
-      ? lock
-        ? 'Completing-print event, once per slot'
-        : 'Completing-print event, every print'
-      : undefined;
-  // Array-form DNF spans groups inside a way. Grouping by group would pull
-  // liquidity from two clauses onto one row and park ∧ / ∨ on the wrong chip.
-  if (isDnfChips(chips)) {
-    return (
-      <div className="grid grid-cols-[2rem_1fr] items-start gap-x-1.5">
-        <span className={cn('pt-0.5 text-[9px] uppercase leading-tight', labelCls)} title={labelTitle}>
-          {label}
-        </span>
-        <div className="flex flex-wrap items-center gap-1">
-          {chips.map((c, i) => (
-            <Fragment key={`${side}-dnf-${c.group}-${i}`}>
-              <span className="pt-0.5 text-[10px] leading-tight text-text-dim" title={c.group}>
-                {c.group}
-              </span>
-              <MetricCondChip chip={c} />
-            </Fragment>
-          ))}
-        </div>
-      </div>
-    );
-  }
+function LineRow({ l, tag }: { l: Line; tag: string }) {
   return (
-    <div className="grid grid-cols-[2rem_auto_1fr] items-start gap-x-1.5 gap-y-0.5">
-      {chipsByGroup(chips).map(({ group, chips: groupChips }, gi) => (
-        <Fragment key={`${side}-${group}`}>
-          <span className={cn('pt-0.5 text-[9px] uppercase leading-tight', labelCls)} title={labelTitle}>
-            {gi === 0 ? label : ''}
-          </span>
-          <span className="pt-0.5 text-[10px] leading-tight text-text-dim" title={group}>
-            {group}
-          </span>
-          <div className="flex flex-wrap items-center gap-1">
-            {groupChips.map((c, i) => (
-              <MetricCondChip key={`${side}-${group}-${i}`} chip={c} />
-            ))}
-          </div>
-        </Fragment>
-      ))}
+    <div className={cn('flex flex-wrap items-center gap-1', l.off && 'opacity-50')}>
+      <span className="text-[9px] font-bold uppercase text-warning/70">{tag}</span>
+      {l.if.length ? <Conds conds={l.if} /> : chip('always', 'text-text-dim')}
+      <span className="font-mono text-[10px] text-text-dim">⇒</span>
+      {actionChip(l)}
     </div>
   );
 }
 
-/** Compact chip cluster for a rule's / combo's `RuleParams`.
- *  Metric conditions stack one row per metric group; side label on the first
- *  row only so later groups stay indented under it. */
+function BuyRow({ label, conds, cls }: { label: string; conds: Cond[]; cls: string }) {
+  if (!conds.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className={cn('text-[9px] font-bold uppercase', cls)}>{label}</span>
+      <Conds conds={conds} />
+    </div>
+  );
+}
+
+function headline(doc: RuleDoc): ReactNode[] {
+  const out: ReactNode[] = [];
+  if (doc.stop_loss != null) out.push(chip(`SL ${formatDecimalTrim(doc.stop_loss, 1)}%`, 'text-red'));
+  if (doc.take_profit != null) out.push(chip(`TP ${formatDecimalTrim(doc.take_profit, 1)}%`, 'text-green'));
+  if (doc.enter.size_pct_of_pool != null) out.push(chip(`size ${formatDecimalTrim(doc.enter.size_pct_of_pool, 2)}% pool`, 'text-accent'));
+  if (doc.reentry) out.push(chip(`again ${formatDecimalTrim(doc.reentry.cooldown_sec, 1)}s ×${doc.reentry.max_per_coin}`, 'text-accent'));
+  if (doc.exclusive) out.push(chip(`exclusive P${doc.priority}`, 'text-warning'));
+  return out;
+}
+
+/** Compact summary for a rule's / combo's `params`: one row per buy part, then one
+ *  row per sell line (`always`, then each stage). */
 export function ruleParamsCell(raw: unknown): ReactNode {
-  const { take_profit, stop_loss, entry, event, entryLock, exit, scale_out, reentry, exclusive, priority } =
-    parseParams(raw);
-  const hasTpsl = take_profit != null || stop_loss != null;
-  const hasFlags = reentry != null || exclusive;
-  const hasScale = scale_out.length > 0;
-  const empty =
-    !hasTpsl && !hasFlags && !hasScale && entry.length === 0 && event.length === 0 && exit.length === 0;
+  const p = parse(raw);
+  if ('error' in p) return chip('format-1 params', 'text-text-dim', undefined, p.error);
+  const { doc } = p;
+  const head = headline(doc);
+  const e = doc.enter;
+  const empty = !head.length && !e.event.length && !e.filters.length && !e.final_filters.length && !doc.always.length && !doc.stages.length;
   return (
     <div className="flex flex-col items-start gap-1 text-left">
-      {hasTpsl && (
+      {head.length > 0 && (
         <div className="flex flex-wrap items-center gap-1">
-          {take_profit != null && chip(`TP ${formatDecimalTrim(take_profit, 1)}%`, 'text-green')}
-          {stop_loss != null && chip(`SL ${formatDecimalTrim(stop_loss, 1)}%`, 'text-red')}
+          {head.map((h, i) => (
+            <Fragment key={i}>{h}</Fragment>
+          ))}
         </div>
       )}
-      {hasFlags && (
-        <div className="flex flex-wrap items-center gap-1">
-          {reentry != null &&
-            chip(
-              `Re-entry ${formatDecimalTrim(reentry.cooldown_sec, 1)}s/${reentry.max_episodes_per_token}`,
-              'text-accent',
-            )}
-          {exclusive && chip(`Exclusive P${priority}`, 'text-warning')}
+      <BuyRow label={e.lock ? `on/${e.lock}` : 'on'} conds={e.event} cls="text-accent" />
+      <BuyRow label="if" conds={e.filters} cls="text-accent/70" />
+      <BuyRow label="if/quit" conds={e.final_filters} cls="text-accent/70" />
+      {doc.signals.map((s) => (
+        <div key={s.id} className="flex flex-wrap items-center gap-1">
+          <span className="text-[9px] font-bold uppercase text-accent">{s.name} =</span>
+          {s.groups.map((g, gi) => (
+            <Fragment key={gi}>
+              {gi > 0 && <span className="font-mono text-[10px] text-text-dim/70">∨</span>}
+              <Conds conds={g} />
+            </Fragment>
+          ))}
         </div>
-      )}
-      {hasScale && (
-        <div className="flex flex-wrap items-center gap-1">
-          {scale_out.map((s, i) => {
-            const pct =
-              s.sellPct != null ? `${formatDecimalTrim(s.sellPct, 0)}%` : 'rem';
-            const tp =
-              s.take_profit != null ? `@TP${formatDecimalTrim(s.take_profit, 0)}` : '';
-            return (
-              <Fragment key={`scale-${i}`}>
-                {chip(`Scale ${pct}${tp}`, 'text-accent')}
-              </Fragment>
-            );
-          })}
-        </div>
-      )}
-      <SideBlock side="event" chips={event} labelCls="text-accent" lock={entryLock} />
-      <SideBlock side="in" chips={entry} labelCls="text-accent/70" />
-      <SideBlock side="out" chips={exit} labelCls="text-warning/70" />
+      ))}
+      {doc.always.map((l) => (
+        <LineRow key={l.id} l={l} tag="always" />
+      ))}
+      {doc.stages.map((s) => (
+        <Fragment key={s.id}>
+          <div className="flex flex-wrap items-center gap-1">
+            {chip(s.name, 'text-accent', undefined, s.ends ? `ends ${deadlineSentence(s.ends)}` : 'no deadline')}
+            {s.ends && <span className="font-mono text-[10px] text-text-dim">⏱ {s.ends.basis.replace('_sec', '')} {formatDecimalTrim(s.ends.secs, 1)}s{s.then ? ` → ${s.then}` : ''}</span>}
+          </div>
+          {s.on.map((l) => (
+            <LineRow key={l.id} l={l} tag={s.name} />
+          ))}
+          {s.at_end.map((l) => (
+            <LineRow key={l.id} l={l} tag="⏱" />
+          ))}
+        </Fragment>
+      ))}
       {empty && chip('fingerprint only', 'text-text-dim')}
     </div>
   );
 }
 
-function headerSep(): ReactNode {
-  return (
-    <span className="px-0.5 font-mono text-[10px] text-text-dim/35" aria-hidden>
-      ·
-    </span>
-  );
-}
-
-function headerSideChips(
-  side: string,
-  chips: SideChip[],
-  labelCls = side === 'out' ? 'text-warning/70' : 'text-accent/70',
-): ReactNode[] {
-  if (chips.length === 0) return [];
-  const out: ReactNode[] = [];
-  let sideShown = false;
-  for (let i = 0; i < chips.length; i++) {
-    const c = chips[i];
-    out.push(
-      <Fragment key={`${side}-${c.group}-${i}`}>
-        {c.clauseOrBefore && (
-          <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
-            ∨
-          </span>
-        )}
-        {c.andBefore && (
-          <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
-            ∧
-          </span>
-        )}
-        {c.orBefore && (
-          <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
-            |
-          </span>
-        )}
-        {!sideShown && (
-          <span className={cn('text-[9px] font-bold uppercase leading-none', labelCls)}>{side}</span>
-        )}
-        <span className="font-mono text-[10px] text-text-dim/80" title={c.group}>
-          {c.group}
-        </span>
-        <MetricCondChip
-          chip={{ ...c, orBefore: false, andBefore: false, clauseOrBefore: false }}
-        />
-      </Fragment>,
-    );
-    sideShown = true;
-  }
-  return out;
-}
-
-/** Single-row chip strip for modal headers — same facts as {@link ruleParamsCell}, laid out
- *  horizontally so params stay visible above a chart. */
+/** Single-row strip for modal headers: the same facts, laid out horizontally. */
 export function ruleParamsHeaderStrip(raw: unknown): ReactNode {
-  const { take_profit, stop_loss, entry, event, entryLock, exit, scale_out, reentry, exclusive, priority } =
-    parseParams(raw);
-  const nodes: ReactNode[] = [];
-  let needsSep = false;
-  const push = (node: ReactNode) => {
-    if (needsSep) nodes.push(<Fragment key={`sep-${nodes.length}`}>{headerSep()}</Fragment>);
-    nodes.push(node);
-    needsSep = true;
-  };
-
-  if (take_profit != null) {
-    push(chip(`TP ${formatDecimalTrim(take_profit, 1)}%`, 'text-green'));
-  }
-  if (stop_loss != null) {
-    push(chip(`SL ${formatDecimalTrim(stop_loss, 1)}%`, 'text-red'));
-  }
-  if (reentry != null) {
-    push(
-      chip(
-        `Re ${formatDecimalTrim(reentry.cooldown_sec, 1)}s/${reentry.max_episodes_per_token}`,
-        'text-accent',
-      ),
-    );
-  }
-  if (exclusive) push(chip(`Excl P${priority}`, 'text-warning'));
-  for (const [i, s] of scale_out.entries()) {
-    const pct = s.sellPct != null ? `${formatDecimalTrim(s.sellPct, 0)}%` : 'rem';
-    const tp = s.take_profit != null ? `@TP${formatDecimalTrim(s.take_profit, 0)}` : '';
-    push(<Fragment key={`scale-${i}`}>{chip(`Scale ${pct}${tp}`, 'text-accent')}</Fragment>);
-  }
-
-  const condNodes = [
-    ...headerSideChips(entryLock ? 'evt/s' : 'evt', event, 'text-accent'),
-    ...headerSideChips('in', entry),
-    ...headerSideChips('out', exit),
-  ];
-  if (condNodes.length > 0) {
-    if (needsSep) nodes.push(<Fragment key={`sep-${nodes.length}`}>{headerSep()}</Fragment>);
-    nodes.push(
-      <div key="conds" className="flex flex-wrap items-center gap-1">
-        {condNodes}
-      </div>,
-    );
-  }
-
-  if (nodes.length === 0) {
-    return chip('fingerprint only', 'text-text-dim');
-  }
-
-  return <div className="flex flex-wrap items-center gap-1">{nodes}</div>;
+  return <div className="max-h-24 overflow-auto">{ruleParamsCell(raw)}</div>;
 }
 
-/** Flat searchable text for table filters (metric names, ops, TP/SL). */
+/** Flat searchable text for table filters: every read label, stage and exit label. */
 export function ruleParamsSearchText(raw: unknown): string {
-  const { take_profit, stop_loss, entry, event, entryLock, exit, scale_out, reentry, exclusive, priority } =
-    parseParams(raw);
+  const p = parse(raw);
+  if ('error' in p) return 'format-1';
+  const { doc } = p;
   const parts: string[] = [];
-  if (take_profit != null) parts.push(`TP ${formatDecimalTrim(take_profit, 1)}%`);
-  if (stop_loss != null) parts.push(`SL ${formatDecimalTrim(stop_loss, 1)}%`);
-  if (reentry != null) {
-    parts.push(`Re-entry ${formatDecimalTrim(reentry.cooldown_sec, 1)}s/${reentry.max_episodes_per_token}`);
+  if (doc.take_profit != null) parts.push(`TP ${formatDecimalTrim(doc.take_profit, 1)}%`);
+  if (doc.stop_loss != null) parts.push(`SL ${formatDecimalTrim(doc.stop_loss, 1)}%`);
+  const conds = (cs: Cond[]) => cs.map((c) => (c.kind === 'signal' ? c.signal : condLabel(c)));
+  parts.push(...conds(doc.enter.event), ...conds(doc.enter.filters), ...conds(doc.enter.final_filters));
+  for (const s of doc.signals) parts.push(s.name, ...s.groups.flat().map((c) => refLabel(c.ref)));
+  for (const l of doc.always) parts.push(...conds(l.if), lineExitLabel(l));
+  for (const s of doc.stages) {
+    parts.push(s.name);
+    for (const l of [...s.on, ...s.at_end]) parts.push(...conds(l.if), lineExitLabel(l));
   }
-  if (exclusive) parts.push(`Exclusive P${priority}`);
-  for (const s of scale_out) {
-    const pct = s.sellPct != null ? `${formatDecimalTrim(s.sellPct, 0)}%` : 'rem';
-    parts.push(`Scale ${pct}`);
-  }
-  for (const c of event) {
-    parts.push(`${entryLock ? 'evt/s' : 'evt'} ${c.text}`);
-  }
-  for (const c of entry) {
-    if (c.orBefore) parts.push('|');
-    parts.push(`in ${c.text}`);
-  }
-  for (const c of exit) {
-    if (c.orBefore) parts.push('|');
-    parts.push(`out ${c.text}`);
-  }
-  if (parts.length === 0) return 'fingerprint only';
-  return parts.join(' ');
+  return parts.length ? parts.join(' ') : 'fingerprint only';
 }
 
 /** Numeric sort keys for the params multi-sort header (null = unset / empty). */
@@ -470,12 +187,15 @@ export function ruleParamsSortParts(raw: unknown): {
   entry_count: number | null;
   exit_count: number | null;
 } {
-  const { take_profit, stop_loss, entry, event, exit } = parseParams(raw);
-  const buy = entry.length + event.length;
+  const p = parse(raw);
+  if ('error' in p) return { take_profit: null, stop_loss: null, entry_count: null, exit_count: null };
+  const { doc } = p;
+  const buy = doc.enter.event.length + doc.enter.filters.length + doc.enter.final_filters.length;
+  const sell = doc.always.length + doc.stages.reduce((n, s) => n + s.on.length + s.at_end.length, 0);
   return {
-    take_profit,
-    stop_loss,
+    take_profit: doc.take_profit,
+    stop_loss: doc.stop_loss,
     entry_count: buy > 0 ? buy : null,
-    exit_count: exit.length > 0 ? exit.length : null,
+    exit_count: sell > 0 ? sell : null,
   };
 }

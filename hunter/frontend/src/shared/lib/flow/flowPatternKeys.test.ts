@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { flowPatternKeysFromMetricConfig, flowPatternKeysOf } from './flowPatternKeys';
+import { flowPatternKeysFromTags, flowPatternKeysOf } from './flowPatternKeys';
 
 describe('flowPatternKeysOf', () => {
   it('returns null for empty / missing patterns', () => {
@@ -18,16 +18,19 @@ describe('flowPatternKeysOf', () => {
   });
 });
 
-describe('flowPatternKeysFromMetricConfig', () => {
-  it('reads m_flow_ix.ix_patterns', () => {
-    const keys = flowPatternKeysFromMetricConfig({
-      m_flow_ix: { ix_patterns: [['x', 'y']] },
+describe('flowPatternKeysFromTags', () => {
+  it('reads the volume tag ix_shape labels, pins dropped', () => {
+    const keys = flowPatternKeysFromTags({
+      dump: { match: { ix_shape: [['s']] } },
+      volume: { match: { ix_shape: [['x', 'y'], { labels: ['z'], cu_price: 5 }] } },
     });
-    expect(keys?.has(JSON.stringify(['x', 'y']))).toBe(true);
+    expect(keys).toEqual(new Set([JSON.stringify(['x', 'y']), JSON.stringify(['z'])]));
   });
 
-  it('returns null when flow config is absent', () => {
-    expect(flowPatternKeysFromMetricConfig({})).toBeNull();
-    expect(flowPatternKeysFromMetricConfig(null)).toBeNull();
+  it('reads a named tag, and null when it has no shapes', () => {
+    const doc = { dump: { match: { ix_shape: [['s']] } }, volume: { match: { program: ['p'] } } };
+    expect(flowPatternKeysFromTags(doc, 'dump')?.has(JSON.stringify(['s']))).toBe(true);
+    expect(flowPatternKeysFromTags(doc)).toBeNull();
+    expect(flowPatternKeysFromTags(null)).toBeNull();
   });
 });

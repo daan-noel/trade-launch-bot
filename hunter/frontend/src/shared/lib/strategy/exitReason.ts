@@ -1,13 +1,14 @@
 /**
  * Exit-reason display + filter vocabulary (SSOT).
  *
- * Persisted strings come from the engine (`TakeProfit`, `stall > 3`, `Open`, …).
- * Metric-condition exits store spaced `name op value`; legacy rows may still
- * hold bare `Metrics` or compact `stall>`. Badge rendering separates the three
- * tokens visually when the spaced form is present.
+ * The engine books `TakeProfit`, `StopLoss`, `Dead`, `Manual`, `Migrated`, or the
+ * label of the rule line that sold. A line with no label of its own sells as its first
+ * condition, `m_flow.buy_sol @!volume [10s] >= 2`; a labelled one as its label
+ * (`spike`). Rows from before the v2 metric system hold `untagged_buy(2s) >= 0.9`,
+ * compact `stall>` or bare `Metrics`, and are shown as stored.
  */
 
-import type { WindowSpec } from './windowSpec';
+import { formatMetricThreshold, type WindowSpec } from './windowSpec';
 
 export interface MetricExitParts {
   name: string;
@@ -22,7 +23,30 @@ export interface MetricExitParts {
  *  print identically. A static metric carries no qualifier at all. */
 const WINDOW_QUALIFIER = String.raw`(?:\((\d*\.?\d+)(s|sl)(?:@(\d*\.?\d+))?\))?`;
 
-/** Spaced `name[(window)] op value` (e.g. `stall > 3`, `untagged_buy(2s) >= 0.9`). */
+/** A v2 auto label: the read's full label, then `op value`
+ *  (`m_flow.buy_sol @!volume [10s] >= 2`, `m_state.age_sec < 20`). */
+const LINE_AUTO_LABEL = new RegExp(
+  String.raw`^(m_[a-z]+\.[a-z0-9_]+(?: @!?[a-z0-9_]+)?(?: \[[^\]]+\])?) (>=|<=|!=|>|<|=) ([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$`,
+);
+
+/** The names the engine books for exits that are not a rule line. */
+const NAMED_EXITS = new Set([
+  'TakeProfit',
+  'StopLoss',
+  'Dead',
+  'Manual',
+  'ManualClose',
+  'Migrated',
+  'ExitFailed',
+  'LiquidityExit',
+  'TrailingStop',
+  'Stall',
+  'TimeStop',
+  'NoEntry',
+  'Open',
+]);
+
+/** Spaced `name[(window)] op value`: a pre-v2 row (`stall > 3`, `untagged_buy(2s) >= 0.9`). */
 const METRIC_EXIT_SPACED = new RegExp(
   String.raw`^([a-z][a-z0-9_]*)${WINDOW_QUALIFIER} (>=|<=|!=|>|<|=) ([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$`,
 );
@@ -35,6 +59,8 @@ export function parseMetricExitParts(
   reason: string | null | undefined,
 ): MetricExitParts | null {
   if (!reason) return null;
+  const v2 = LINE_AUTO_LABEL.exec(reason.trim());
+  if (v2) return { name: v2[1], op: v2[2], value: v2[3] };
   const spaced = METRIC_EXIT_SPACED.exec(reason.trim());
   if (spaced) {
     // The qualifier stays ON the name: it is what separates a dynamic group's read
@@ -50,10 +76,12 @@ export function parseMetricExitParts(
   return null;
 }
 
-/** True for bare legacy `Metrics` or a metric detail label. */
+/** True when a rule line sold: any reason that is not one of the engine's named
+ *  exits (a line's own label, an auto label, or a pre-v2 metric label / `Metrics`). */
 export function isMetricExitReason(reason: string | null | undefined): boolean {
-  if (!reason) return false;
-  return reason === 'Metrics' || parseMetricExitParts(reason) != null;
+  const r = reason?.trim();
+  if (!r) return false;
+  return !NAMED_EXITS.has(r);
 }
 
 /** Which authored condition a metric exit reason names. */
@@ -83,6 +111,9 @@ export function parseMetricExitTarget(
   reason: string | null | undefined,
 ): MetricExitTarget | null {
   if (!reason) return null;
+  // A v2 auto label names the whole read, tag and span included.
+  const v2 = LINE_AUTO_LABEL.exec(reason.trim());
+  if (v2) return { metric: v2[1], window: null };
   const m = new RegExp(
     String.raw`^\s*([a-z][a-z0-9_]*)${WINDOW_QUALIFIER}\s*(?:>=|<=|!=|>|<|=)`,
     'i',
@@ -103,14 +134,7 @@ export function formatMetricExitLabel(
   return `${name} ${op} ${formatMetricThreshold(value)}`;
 }
 
-/** Compact threshold for labels — mirrors the engine's format_metric_threshold. */
-export function formatMetricThreshold(v: number): string {
-  if (!Number.isFinite(v)) return String(v);
-  if (v === 0) return '0';
-  if (Number.isInteger(v) && Math.abs(v) < 1e15) return String(v);
-  const s = v.toFixed(6);
-  return s.replace(/\.?0+$/, '');
-}
+export { formatMetricThreshold };
 
 /** Compact badge label for a persisted `exit_reason`. Still-open / null →
  *  `"Open"`. Metric detail forms render as stored (spaced). Legacy bare

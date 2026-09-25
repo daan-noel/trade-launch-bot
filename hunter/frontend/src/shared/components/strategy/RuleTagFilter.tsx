@@ -65,8 +65,8 @@ export function RuleTagFilter({ rules, filter, onChange }: RuleTagFilterProps) {
               onClick={() => onChange(cycleTag(filter, tag))}
               title={
                 {
-                  off: `Show only rules tagged ${tag}`,
-                  include: `Hide rules tagged ${tag}`,
+                  off: `Show only rules labelled ${tag}`,
+                  include: `Hide rules labelled ${tag}`,
                   exclude: `Clear the ${tag} filter`,
                 }[tagChipState(filter, tag)]
               }
@@ -80,7 +80,7 @@ export function RuleTagFilter({ rules, filter, onChange }: RuleTagFilterProps) {
           onClick={() => onChange({ include: [], exclude: [] })}
           className="cursor-pointer rounded-md px-1.5 py-0.5 text-[10px] text-text-dim hover:bg-white/8 hover:text-text"
         >
-          clear tags
+          clear labels
         </button>
       )}
     </div>

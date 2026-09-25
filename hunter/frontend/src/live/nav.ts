@@ -31,6 +31,7 @@ export const liveNav: NavConfig = {
       items: [
         { to: '/strategies/rules', label: 'Rules' },
         { to: '/strategies/fingerprints', label: 'Fingerprints' },
+        { to: '/strategies/guide', label: 'Guide' },
       ],
     },
     { kind: 'item', to: '/console', label: 'Console' },

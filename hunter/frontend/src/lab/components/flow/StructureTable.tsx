@@ -20,6 +20,7 @@ import {
   IX_LABELS_FILTER_TITLE,
 } from 'lib/ixLabels';
 import { signalGradeClass } from 'lib/signedTone';
+import { tagLabel } from 'lib/flow/tapeClassify';
 import { DISCOVERY_COL_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
 import type { FlowDiscoveryStructure } from 'types';
 
@@ -72,14 +73,15 @@ function buildStructureColumns(opts: {
   suggestionByStructure: Map<string, StructureSuggestion>;
   liftDefined: boolean;
   onToggle: (labels: string[]) => void;
+  tagName: string | null;
 }): ColumnDef<FlowDiscoveryStructure>[] {
-  const { draftKeys, volKey, contagionByStructure, suggestionByStructure, liftDefined, onToggle } =
+  const { draftKeys, volKey, contagionByStructure, suggestionByStructure, liftDefined, onToggle, tagName } =
     opts;
 
   return [
     {
       key: 'vol',
-      label: 'Vol',
+      label: tagName ? tagLabel(tagName) : 'Vol',
       tooltip: helpText(DISCOVERY_COL_HELP.vol),
       render: (s) => (
         <Checkbox
@@ -95,8 +97,7 @@ function buildStructureColumns(opts: {
         { value: 'open', label: 'not staged' },
       ],
       filterOptionValue: (s) => (draftKeys.has(volKey(s)) ? 'staged' : 'open'),
-      filterTitle:
-        'Show only the rows already in the draft ix_patterns, or only the ones still open',
+      filterTitle: `Show only the rows already in the draft for ${tagName ? tagLabel(tagName) : 'the tag'}, or only the ones still open`,
       sortValue: (s) => (draftKeys.has(volKey(s)) ? 1 : 0),
       searchValue: () => '',
     },
@@ -428,9 +429,11 @@ export function StructureTable({
   previewKeys,
   onToggle,
   onFilteredRowsChange,
+  tagName = null,
 }: {
   structures: FlowDiscoveryStructure[];
-  /** Membership the Vol checkbox tests — label keys (tagged/dump) or grain ids (working). */
+  /** Membership the check column tests - exact-shape keys, or grain ids / program
+   *  names on a template stage. */
   draftKeys: ReadonlySet<string>;
   /** How a ranked row maps into {@link draftKeys}. Default = exact ix_labels. */
   volKey?: (s: FlowDiscoveryStructure) => string;
@@ -448,6 +451,8 @@ export function StructureTable({
    *  buttons act on "what you are looking at". Pass a stable (useCallback)
    *  handler. */
   onFilteredRowsChange?: (rows: FlowDiscoveryStructure[]) => void;
+  /** The tag a check stages into, naming the check column (`@volume`). */
+  tagName?: string | null;
 }) {
   const draftKeysSig = [...draftKeys].join('|');
   const columns = useMemo(
@@ -459,9 +464,10 @@ export function StructureTable({
         suggestionByStructure,
         liftDefined,
         onToggle,
+        tagName,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- draftKeysSig/contagion/suggestion maps are the real identities
-    [draftKeysSig, volKey, contagionByStructure, suggestionByStructure, liftDefined, onToggle],
+    [draftKeysSig, volKey, contagionByStructure, suggestionByStructure, liftDefined, onToggle, tagName],
   );
   const rowClassName = useCallback(
     (s: FlowDiscoveryStructure) => {

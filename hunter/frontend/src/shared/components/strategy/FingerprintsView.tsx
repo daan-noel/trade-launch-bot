@@ -106,11 +106,9 @@ const COLOR_COLS: {
         ? (rowLabels(r) ? formatIxLabelsText(rowLabels(r)!) : null)
         : axisText(r, def),
   })),
-  // The `metric_config` lists tint on their CONTENTS, not their count — the whole
-  // point on this page is spotting the rows that configure the same list, and two
-  // rows both reading `copy 1` are the same criterion only when it is the same
-  // wallet. Unconfigured stays `null` so a page of empty lists does not tint as
-  // one shared value.
+  // The tags tint on their CONTENTS, not their count: the point on this page is
+  // spotting the rows that classify trades the same way. None stays `null` so a page
+  // of tagless rows does not tint as one shared value.
   ...FP_CONFIG_LISTS.map((s) => ({
     key: s.columnKey,
     valueOf: (r: Fingerprint) => (s.count(r) === 0 ? null : s.identity(r)),
@@ -386,13 +384,9 @@ export function FingerprintsView({
         filterTitle: IX_LABELS_FILTER_TITLE,
         cellClassName: cellTint('ix_labels'),
       },
-      // One column per fingerprint-scoped `metric_config` list, generated — so a
-      // group added to the engine's `fingerprint_config` becomes a column, sortable,
-      // searchable and filterable, with no edit here. Written out by hand this list
-      // carried only `flow` and `dump`, and the two groups added after them
-      // (`m_burst_slot`, `m_copy`) had a form control and a chip but no column: on a
-      // page where every axis cell is a dash, a copy fingerprint showed NOTHING of
-      // the wallet it follows.
+      // One column per fingerprint-scoped list (the tags), generated from the one
+      // table: on a page where every axis cell is a dash, a copy fingerprint's
+      // `targets` tag is the only thing that says whose trades it follows.
       //
       // The cell is the chip, never a bare count Badge: `1` and `1` are different
       // criteria when the contents differ, and the ribbon + tooltip is where that

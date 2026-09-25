@@ -44,10 +44,10 @@ export interface TokenHighlight {
  * The two ephemeral highlight lenses for ONE token's chart: "when did this wallet
  * trade" and "when did this ix structure appear".
  *
- * View-only, and deliberately NOT the Tagged badge's path. That badge writes
- * `ix_patterns` / `ix_pattern_sets`, which the engine reads to classify
- * flow — a reader arming a lens out of curiosity must not be able to change how a
- * live rule trades. Nothing here is persisted, and both lenses drop when the
+ * View-only, and deliberately NOT the tag badge's path. That badge writes a
+ * fingerprint tag (which the engine reads) or an `ix_pattern_sets` lens - a reader
+ * arming a lens out of curiosity must not be able to change how a live rule
+ * trades. Nothing here is persisted, and both lenses drop when the
  * token changes.
  *
  * @param trades the token's full trade history (what the chart is drawing)

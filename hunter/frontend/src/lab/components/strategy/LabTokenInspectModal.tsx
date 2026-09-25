@@ -11,7 +11,8 @@ import { labTokenInspectModalTitle } from '@lab/components/strategy/LabTokenInsp
  * Run-result token inspect (sweep combos + simulate positions) — chart with the
  * run's **fill** entry/exit markers + metric panes. `ruleOverride` pins the panes
  * to the exact params that produced the run; pane fires land as `signal` markers
- * (`name op value`, e.g. `stall > 3`) so they stay distinct from the fill arrows.
+ * (`m_price.stall_sec >= 3`, or the exit reason a line books) so they stay distinct
+ * from the fill arrows.
  */
 export function LabTokenInspectModal({
   target,
@@ -48,7 +49,7 @@ export function LabTokenInspectModal({
   const heading = target.symbol || target.mint_address.slice(0, 8);
 
   // The inspected run's entry fill drives the position-scoped `m_position` panes.
-  // Absent on a never-entered (`NoEntry`) target → the group stays hidden.
+  // Absent on a never-entered (`NoEntry`) target: the series then carries no `m_position` reads.
   const positionEntry = useMemo(
     () =>
       target.entryTime != null && target.entryPrice != null

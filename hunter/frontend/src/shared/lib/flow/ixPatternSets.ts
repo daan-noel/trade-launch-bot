@@ -6,17 +6,17 @@
  * the same fact owned by a study surface, for tokens that belong to no cohort
  * (Trader Analysis). A set is **one vocabulary**, chosen at create:
  *
- * * `exact` — ordered `ix_labels` plus optional fee pins. Overlay match is
- *   `'labels'` (same as tagged/dump). `group` labels a subset for narrowing.
- * * `templates` — grain ids (`program|CU|ATA|N|S|F`). Overlay match is
- *   `'grain'` (same as working). No fee pins.
+ * * `exact` - ordered `ix_labels` plus optional fee pins: a tag's `ix_shape`
+ *   matcher. `group` labels a subset for narrowing.
+ * * `templates` - grain ids (`program|CU|ATA|N|S|F`) and bare program names: a
+ *   tag's `ix_template` / `program` matchers. No fee pins.
  *
- * Both feed the ONE classifier (`lib/flow/classifyFlow`) via `classifyOptsForTape`.
+ * Both feed the ONE classifier (`lib/flow/classifyFlow`) read as a tag
+ * ({@link lensTag}).
  */
 
-import { patternKeysFrom } from 'lib/flow/classifyFlow';
-import type { TapeList } from 'lib/strategy/registry';
-import { parseGrainIds } from 'lib/strategy/templateGrain';
+import { patternKeysFrom, type FlowSide, type FlowTag } from 'lib/flow/classifyFlow';
+import { isProgramWorkingId, parseGrainIds } from 'lib/strategy/templateGrain';
 import {
   FEE_FIELDS,
   feeMatchesTrade,
@@ -70,9 +70,38 @@ export function kindOf(set: { kind?: IxPatternSetKind } | null | undefined): IxP
   return set?.kind === 'templates' ? 'templates' : 'exact';
 }
 
-/** Overlay list this set's kind classifies as. Never dump. */
-export function tapeListForKind(kind: IxPatternSetKind): TapeList {
-  return kind === 'templates' ? 'working' : 'tagged';
+/** The tag matcher a click on this set's kind writes: exact rows are `ix_shape`,
+ *  grain ids `ix_template`. */
+export function matcherForKind(kind: IxPatternSetKind): 'ix_shape' | 'ix_template' {
+  return kind === 'templates' ? 'ix_template' : 'ix_shape';
+}
+
+/**
+ * The set, narrowed to `enabled`, read as a tag: exact rows under `ix_shape`, grain
+ * ids under `ix_template` and bare program names under `program`. `sticky` and
+ * `side` are the lens' own switches. `null` when nothing is left to classify with.
+ */
+export function lensTag(
+  set: Pick<IxPatternSet, 'name' | 'kind' | 'patterns' | 'working_templates'>,
+  enabled: ReadonlySet<string> | null,
+  opts: { sticky: boolean; side: FlowSide | null },
+): FlowTag | null {
+  const { patterns, templates } = narrowedSetPayload(set, enabled);
+  const rows = patterns.map(toPatternRow);
+  const grains = templates.filter((g) => !isProgramWorkingId(g));
+  const programs = templates.filter(isProgramWorkingId);
+  if (rows.length + grains.length + programs.length === 0) return null;
+  return {
+    name: set.name,
+    match: {
+      ...(rows.length > 0 ? { ix_shape: rows } : {}),
+      ...(grains.length > 0 ? { ix_template: grains } : {}),
+      ...(programs.length > 0 ? { program: programs } : {}),
+    },
+    side: opts.side,
+    sticky: opts.sticky,
+    exclude_creation_slot: false,
+  };
 }
 
 export function toPatternRow(p: IxPattern): IxPatternRow {

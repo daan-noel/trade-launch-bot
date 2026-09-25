@@ -1,0 +1,167 @@
+{
+  "enter": {
+    "event": [
+      {
+        "metric": "m_state.age_sec",
+        "is": [
+          {
+            "operator": ">=",
+            "value": 1
+          }
+        ]
+      }
+    ],
+    "filters": [
+      {
+        "metric": "m_state.liquidity_sol",
+        "is": [
+          {
+            "operator": ">=",
+            "value": 14
+          }
+        ]
+      }
+    ],
+    "lock": "token"
+  },
+  "stop_loss": 30,
+  "signals": {
+    "cashout": [
+      [
+        {
+          "metric": "m_holdings.profit_sol",
+          "tag": "volume",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 1.18
+            }
+          ]
+        }
+      ],
+      [
+        {
+          "metric": "m_holdings.profit_sol",
+          "tag": "volume",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 0.71
+            }
+          ]
+        },
+        {
+          "metric": "m_flow.buy_sol",
+          "tag": "!volume",
+          "span": "3s",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    ]
+  },
+  "always": [
+    {
+      "if": [
+        {
+          "metric": "m_state.liquidity_sol",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 80
+            }
+          ]
+        }
+      ],
+      "sell": "top"
+    }
+  ],
+  "stages": [
+    {
+      "name": "early",
+      "ends": {
+        "age_sec": 20
+      },
+      "on": [
+        {
+          "if": [
+            {
+              "signal": "cashout"
+            }
+          ],
+          "sell": "spike"
+        }
+      ],
+      "then": "late"
+    },
+    {
+      "name": "late",
+      "on": [
+        {
+          "if": [
+            {
+              "signal": "cashout"
+            }
+          ],
+          "go": "ride"
+        }
+      ]
+    },
+    {
+      "name": "ride",
+      "ends": {
+        "stage_sec": 30
+      },
+      "on": [
+        {
+          "if": [
+            {
+              "metric": "m_flow.buy_sol",
+              "tag": "!volume",
+              "span": "10s",
+              "is": [
+                {
+                  "operator": ">=",
+                  "value": 2
+                }
+              ]
+            }
+          ],
+          "sell": true
+        },
+        {
+          "if": [
+            {
+              "metric": "m_position.pnl_pct",
+              "is": [
+                {
+                  "operator": ">=",
+                  "value": 40
+                }
+              ]
+            }
+          ],
+          "sell": "half",
+          "sell_pct": 50,
+          "go": "late"
+        }
+      ],
+      "at_end": [
+        {
+          "sell": "ride over"
+        }
+      ],
+      "then": "late"
+    }
+  ],
+  "reentry": {
+    "cooldown_sec": 30,
+    "max_per_coin": 3
+  },
+  "exclusive": true,
+  "priority": 2
+}

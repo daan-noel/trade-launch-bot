@@ -283,6 +283,13 @@ engine/src/rule_v1.rs         today's parser, read-only, deleted after both boxe
 - **Guide page** (lab and live): the workflow picture, the terms table, every family,
   quantity, matcher, span and rule part, each with its summary and example, all from the
   registry.
+- **Shared fixtures** keep the two sides one: `engine/fixtures/registry.json` (the
+  registry document, pinned by `registry_fixture_is_current`) and
+  `engine/fixtures/rule_v2_full.json` (every rule part, parsed by the engine test
+  `the_shared_full_rule_fixture_parses_and_round_trips` and by `validate.test.ts`).
+- Open: the per-tag live line on the fingerprint card ("41 of 212 trades carry
+  `volume`") needs a classification read per coin; the editors do not yet show the
+  backend's save `warning` (they compute the same warnings client-side).
 
 ## 9. Parity baseline and gates
 
@@ -305,7 +312,7 @@ Each phase passes when:
 | --- | --- | --- | --- |
 | 0 | baseline capture; this plan | baseline files written | done: 227,997 tickets, 83 rules (3 short-window runs timed out) |
 | 1 | engine: registry v2, tags + classifier, families, spans, `MetricRef`; rule v2 parser, compile, stage machine; `v1` converter; golden tests ported | engine gates | done |
-| 2 | lab, core, live: sweep axes and kernels, candidates, rule and family search, metric series, engine_sim, readouts, arms end_detail paths, bundle v2, data migration + dry run | backend gates + baseline parity | gates pass; the baseline re-simulate waits on migrating the local database (it blocks the server sync until phase 5) |
-| 3 | frontend: registry types, fingerprint editor, rule editor, readout, staging, exit labels, Guide page | frontend gates + a walk through every editor | open |
+| 2 | lab, core, live: sweep axes and kernels, candidates, rule and family search, metric series, engine_sim, readouts, arms end_detail paths, bundle v2, data migration + dry run | backend gates + baseline parity | done: gates pass; local database migrated; baseline parity: all 227,997 tickets match (same entries, exit prints and SOL; 0 differences), only line labels differ; the six 7ix rules rewritten with a signal and deadline stages simulate identically (09-01 .. 09-21) |
+| 3 | frontend: registry types, fingerprint editor, rule editor, readout, staging, exit labels, Guide page | frontend gates + a walk through every editor | rule execution first: core lib, editors, readout, live console, exit labels, Guide, chart panes done; staging in progress; sweep, discovery and search pages next (compile-level first) |
 | 4 | docs: `_!___metrics.md`, `arch/strategies.md`, `hunter/CLAUDE.md` landmines, `_!___terms.md` | check-docs clean | open |
 | 5 | server: dry run on a server dump, deploy, migrate | needs the user's go-ahead | open |

@@ -1,380 +1,200 @@
 import { describe, expect, it } from 'vitest';
-import type { StrategyRegistry } from 'lib/strategy/registry';
+import type { MetricSpec, StrategyRegistry } from 'lib/strategy/registry';
 import {
   axisRowError,
+  axisSummary,
+  axisTagNames,
   axesSpecToRows,
   comboCount,
   invalidValueFragments,
   newAxisRow,
   parseValueList,
-  pnlAxisSugarDuplicateError,
   serializeAxisRows,
+  storedAxisRows,
   type GenericAxisRow,
 } from './genericAxes';
 
-// Tiny registry: static snapshot + lifetime flow, dynamic trailing flow.
+function metric(path: string, over: Partial<MetricSpec> = {}): MetricSpec {
+  return {
+    name: path.split('.')[1],
+    path,
+    phrase: path,
+    unit: 'sol',
+    summary: '',
+    example: '',
+    note: '',
+    tags: 'none',
+    tag_level: 'trade',
+    spans: { life: true, window: false, since_age: false, slice: false },
+    monotonic: false,
+    eq_tolerance: 0.1,
+    hue: 0,
+    position: false,
+    ...over,
+  };
+}
+
+// Tiny registry: a life-only state metric, a windowed flow metric with an optional
+// tag, a two-window share metric, a wallet-class holdings metric and a position metric.
 const REG: StrategyRegistry = {
   operators: ['>', '>=', '<', '<=', '=', '!='],
-  groups: [
+  families: [
+    { name: 'm_state', title: 'State', summary: '', example: '', metrics: [metric('m_state.age_sec', { unit: 'seconds' })] },
     {
-      name: 'm_state',
-      kind: 'static',
-      strict_params: [],
+      name: 'm_flow',
+      title: 'Flow',
+      summary: '',
+      example: '',
       metrics: [
-        { name: 'time', unit: 'seconds', eq_tolerance: 0.5, monotonic: true, hue: 200 },
-        { name: 'liquidity', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 185 },
-      ],
-    },
-    {
-      name: 'm_flow_lifetime',
-      kind: 'static',
-      strict_params: [],
-      metrics: [
-        { name: 'gross_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: true, hue: 278 },
-        { name: 'buy', unit: 'sol', eq_tolerance: 0.1, monotonic: true, hue: 170 },
-      ],
-    },
-    {
-      name: 'm_flow_window',
-      kind: 'dynamic',
-      strict_params: [
-        { name: 'window_size_sec', required: true },
-        // The group declares the slice axis for every instance; only the metrics
-        // flagged `two_window` may set it.
-        { name: 'slice_size_sec', required: false },
-      ],
-      metrics: [
-        { name: 'net_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 285 },
-        { name: 'gross_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 290 },
-        {
-          name: 'trade_share',
+        metric('m_flow.buy_sol', { tags: 'optional', spans: { life: true, window: true, since_age: false, slice: false } }),
+        metric('m_flow.slice_trade_share_pct', {
           unit: 'percent',
-          eq_tolerance: 0.5,
-          monotonic: false,
-          hue: 306,
-          two_window: true,
-        },
+          spans: { life: false, window: true, since_age: false, slice: true },
+        }),
       ],
     },
     {
-      name: 'm_price_window',
-      kind: 'dynamic',
-      strict_params: [{ name: 'window_size_sec', required: true }],
-      metrics: [{ name: 'trail', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 45 }],
+      name: 'm_holdings',
+      title: 'Holdings',
+      summary: '',
+      example: '',
+      metrics: [metric('m_holdings.bag_share_pct', { unit: 'percent', tags: 'required', tag_level: 'wallet_class' })],
     },
     {
-      // Position-scoped (exit-only): reads NaN before entry, so an entry axis on it
-      // can never fire — the builder hides it on entry and axisRowError rejects it.
       name: 'm_position',
-      kind: 'static',
-      scope: 'position',
-      strict_params: [],
-      metrics: [{ name: 'retrace', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 15 }],
+      title: 'Position',
+      summary: '',
+      example: '',
+      metrics: [metric('m_position.retrace_pct', { unit: 'percent', position: true })],
     },
   ],
+  spans: [],
+  tags: { summary: '', example: '', fields: [], markers: [], builtin: [{ name: 'bundled', summary: '' }] },
+  rule_parts: [],
 };
 
 function metricRow(over: Partial<GenericAxisRow>): GenericAxisRow {
-  return { ...newAxisRow('metric', REG), ...over };
+  return { ...newAxisRow('metric', REG), valuesText: '5', ...over };
 }
 
 describe('parseValueList', () => {
-  it('parses a comma list, deduped + ascending', () => {
+  it('parses a comma list, deduped and ascending', () => {
     expect(parseValueList('100, 50, 200, 50')).toEqual([50, 100, 200]);
   });
-  it('expands lo..hi step s inclusive', () => {
+  it('expands lo..hi step s inclusive and rounds float drift', () => {
     expect(parseValueList('10..40 step 10')).toEqual([10, 20, 30, 40]);
+    expect(parseValueList('0..1 : 0.25')).toEqual([0, 0.25, 0.5, 0.75, 1]);
   });
-  it('accepts colon step and rounds float drift', () => {
-    expect(parseValueList('0..1 step 0.25')).toEqual([0, 0.25, 0.5, 0.75, 1]);
-  });
-  it('range without step yields the two endpoints', () => {
+  it('a range without a step is its two ends; a reversed range flips', () => {
     expect(parseValueList('1..5')).toEqual([1, 5]);
-  });
-  it('mixes list and range and drops blanks/NaN', () => {
-    expect(parseValueList('5, 10..20 step 5, x, , 100')).toEqual([5, 10, 15, 20, 100]);
-  });
-  it('flips a reversed range', () => {
     expect(parseValueList('40..10 step 10')).toEqual([10, 20, 30, 40]);
   });
-  it('parses off (any case, deduped) as a leading null', () => {
-    expect(parseValueList('off, 10, 20')).toEqual([null, 10, 20]);
-    expect(parseValueList('10, OFF, Off, 20')).toEqual([null, 10, 20]);
+  it('off (any case) is one leading null', () => {
+    expect(parseValueList('10, OFF, off, 20')).toEqual([null, 10, 20]);
   });
-});
-
-describe('invalidValueFragments', () => {
-  it('surfaces fragments that parse to nothing', () => {
+  it('names the fragments that parse to nothing', () => {
     expect(invalidValueFragments('5, of, 10..20 step 5, 1O, off, ')).toEqual(['of', '1O']);
-    expect(invalidValueFragments('off, 5, 10')).toEqual([]);
   });
 });
 
 describe('axisRowError', () => {
-  it('flags an empty value list', () => {
-    expect(axisRowError(metricRow({ group: 'm_state', metric: 'time', valuesText: '' }), REG)).toBe(
-      'add at least one value',
-    );
+  it('needs values, a metric and a valid read', () => {
+    expect(axisRowError(metricRow({ ref: { metric: 'm_state.age_sec' }, valuesText: '' }), REG)).toBe('add at least one value');
+    expect(axisRowError(metricRow({ ref: { metric: '' } }), REG)).toBe('pick a metric');
+    expect(axisRowError(metricRow({ ref: { metric: 'm_bogus.x' } }), REG)).toMatch(/unknown metric/);
+    expect(axisRowError(metricRow({ ref: { metric: 'm_state.age_sec' } }), REG)).toBeNull();
   });
-  it('flags a missing group/metric/operator', () => {
-    expect(axisRowError(metricRow({ valuesText: '5' }), REG)).toBe('pick a metric group');
-    expect(axisRowError(metricRow({ group: 'm_state', valuesText: '5' }), REG)).toBe('pick a metric');
+
+  it('checks the span with the rule editor check', () => {
+    expect(axisRowError(metricRow({ ref: { metric: 'm_state.age_sec', span: '10s' } }), REG)).toMatch(/takes no window/);
+    expect(axisRowError(metricRow({ ref: { metric: 'm_flow.buy_sol', span: '30x' } }), REG)).toMatch(/expected/);
+    expect(axisRowError(metricRow({ ref: { metric: 'm_flow.buy_sol', span: '20sl@1' } }), REG)).toBeNull();
   });
-  it('requires a window on a dynamic group', () => {
-    const row = metricRow({ group: 'm_flow_window', metric: 'net_flow', window: '', valuesText: '1' });
-    expect(axisRowError(row, REG)).toBe('window (s) > 0 required');
-    expect(axisRowError({ ...row, window: '10' }, REG)).toBeNull();
+
+  it('a two-window metric needs its slice, nested in the span', () => {
+    const share = (span: string, slice?: string) =>
+      metricRow({ ref: { metric: 'm_flow.slice_trade_share_pct', span, ...(slice ? { slice } : {}) } });
+    expect(axisRowError(share('60s'), REG)).toMatch(/needs a slice/);
+    expect(axisRowError(share('10s', '30s'), REG)).toMatch(/wider than its span/);
+    expect(axisRowError(share('60s', '3s'), REG)).toBeNull();
   });
-  it('does not require a window on m_flow_lifetime (static)', () => {
-    const row = metricRow({
-      group: 'm_flow_lifetime',
-      metric: 'gross_flow',
-      operator: '>=',
-      window: '',
-      valuesText: '50',
-    });
-    expect(axisRowError(row, REG)).toBeNull();
+
+  it('a tag must be defined by the run tags; a wallet class needs none', () => {
+    const tagged = metricRow({ ref: { metric: 'm_flow.buy_sol', tag: '!volume', span: '10s' } });
+    expect(axisRowError(tagged, REG)).toMatch(/define no `volume`/);
+    expect(axisRowError(tagged, REG, ['volume'])).toBeNull();
+    const bundled = metricRow({ ref: { metric: 'm_holdings.bag_share_pct', tag: 'bundled' } });
+    expect(axisRowError(bundled, REG)).toBeNull();
   });
-  it('accepts a valid static metric row', () => {
-    expect(
-      axisRowError(metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: '5, 10' }), REG),
-    ).toBeNull();
-  });
-  it('rejects a position-scoped group on entry but accepts it on exit', () => {
-    const base = { group: 'm_position', metric: 'retrace', operator: '>=' as const, valuesText: '3' };
-    expect(axisRowError(metricRow({ ...base, side: 'entry' }), REG)).toMatch(/exit-only/);
+
+  it('a position metric is exit only', () => {
+    const base = { ref: { metric: 'm_position.retrace_pct' } };
+    expect(axisRowError(metricRow({ ...base, side: 'entry' }), REG)).toMatch(/exit side/);
     expect(axisRowError(metricRow({ ...base, side: 'exit' }), REG)).toBeNull();
   });
-  it('rejects TP/SL values <= 0', () => {
-    expect(axisRowError({ ...newAxisRow('take_profit'), valuesText: '0, 100' }, REG)).toBe(
-      'TP / SL values must be > 0',
-    );
-    expect(axisRowError({ ...newAxisRow('take_profit'), valuesText: '50, 100' }, REG)).toBeNull();
-  });
-  it('accepts off on a metric row, rejects it on TP/SL and alone', () => {
-    expect(
-      axisRowError(metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: 'off, 5' }), REG),
-    ).toBeNull();
-    expect(axisRowError({ ...newAxisRow('take_profit'), valuesText: 'off, 100' }, REG)).toMatch(/only applies to metric axes/);
-    expect(
-      axisRowError(metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: 'off' }), REG),
-    ).toBe("add at least one number besides 'off'");
-  });
-  it('flags unrecognized fragments instead of silently dropping them', () => {
-    expect(
-      axisRowError(metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: '5, of' }), REG),
-    ).toBe('unrecognized value: of');
+
+  it('off belongs to metric axes and needs a number beside it', () => {
+    expect(axisRowError(metricRow({ ref: { metric: 'm_state.age_sec' }, valuesText: 'off, 5' }), REG)).toBeNull();
+    expect(axisRowError(metricRow({ ref: { metric: 'm_state.age_sec' }, valuesText: 'off' }), REG)).toMatch(/besides 'off'/);
+    expect(axisRowError({ ...newAxisRow('take_profit'), valuesText: 'off, 100' }, REG)).toMatch(/metric axes only/);
+    expect(axisRowError({ ...newAxisRow('take_profit'), valuesText: '0, 100' }, REG)).toMatch(/above 0/);
+    expect(axisRowError(metricRow({ ref: { metric: 'm_state.age_sec' }, valuesText: '5, of' }), REG)).toBe('unrecognized value: of');
   });
 });
 
-/** A two-window metric is a ratio ACROSS a nested pair, so an axis on one carries
- *  both spans — and the builder has to say so BEFORE the sweep launches.
- *
- *  Selecting `trade_share` without a slice used to be silently accepted here and then
- *  rejected by the engine on every assembled combo, which is a sweep that starts, runs
- *  and scores nothing. The rule is per METRIC: the group declares the axis for every
- *  instance, so asking the group would demand a slice of `gross_flow` too. */
-describe('the nested slice axis', () => {
-  const shareRow = (over: Partial<GenericAxisRow> = {}) =>
-    metricRow({
-      group: 'm_flow_window',
-      metric: 'trade_share',
-      operator: '>=',
-      window: '60',
-      valuesText: '40',
-      ...over,
-    });
-
-  it('requires a slice on a two-window metric', () => {
-    expect(axisRowError(shareRow(), REG)).toMatch(/slice/);
-    expect(axisRowError(shareRow({ slice: '3' }), REG)).toBeNull();
-  });
-
-  it('refuses a slice on a metric that reads none', () => {
-    const row = metricRow({
-      group: 'm_flow_window',
-      metric: 'gross_flow',
-      operator: '>=',
-      window: '60',
-      slice: '3',
-      valuesText: '5',
-    });
-    expect(axisRowError(row, REG)).toMatch(/does not read a slice/);
-  });
-
-  it('requires the slice to nest inside the window', () => {
-    expect(axisRowError(shareRow({ window: '10', slice: '30' }), REG)).toMatch(/nest inside/);
-  });
-
-  it('serializes and restores both spans', () => {
-    const [wire] = serializeAxisRows([shareRow({ slice: '3' })], REG);
-    expect(wire.window).toBe(60);
-    expect(wire.slice).toBe(3);
-    const [back] = axesSpecToRows([wire]);
-    expect(back.window).toBe('60');
-    expect(back.slice).toBe('3');
-  });
-
-  it('carries the slice in the window UNIT the row chose', () => {
-    const [wire] = serializeAxisRows(
-      [shareRow({ windowUnit: 'slot', window: '30', lag: '1', slice: '3' })],
-      REG,
-    );
-    expect(wire.window).toBe('30sl@1');
-    // The slice rides the reference's lag rather than carrying one of its own.
-    expect(wire.slice).toBe('3sl');
-  });
-
-  it('sends no slice for a metric that does not read one', () => {
-    const [wire] = serializeAxisRows(
-      [
-        metricRow({
-          group: 'm_flow_window',
-          metric: 'gross_flow',
-          operator: '>=',
-          window: '60',
-          slice: '3',
-          valuesText: '5',
-        }),
-      ],
-      REG,
-    );
-    expect(wire.slice).toBeUndefined();
-  });
-});
-
-describe('serializeAxisRows + comboCount', () => {
+describe('serializeAxisRows / axesSpecToRows', () => {
   const rows: GenericAxisRow[] = [
-    metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: '5, 10, 15' }),
-    metricRow({ side: 'entry', group: 'm_flow_window', metric: 'net_flow', operator: '>', window: '10', valuesText: '0, 2.5' }),
+    metricRow({ ref: { metric: 'm_state.age_sec' }, operator: '>', valuesText: '5, 10, 15' }),
+    metricRow({ side: 'exit', ref: { metric: 'm_flow.buy_sol', tag: '!volume', span: '10s' }, operator: '<', valuesText: 'off, 1, 2.5' }),
     { ...newAxisRow('take_profit'), valuesText: '50, 100, 200' },
   ];
 
-  it('drops the window on static metrics and keeps it on dynamic', () => {
-    const withLifetime = [
-      ...rows,
-      metricRow({
-        side: 'entry',
-        group: 'm_flow_lifetime',
-        metric: 'gross_flow',
-        operator: '>=',
-        window: '999',
-        valuesText: '50',
-      }),
-    ];
-    const specs = serializeAxisRows(withLifetime, REG);
-    expect(specs[0]).toMatchObject({ kind: 'metric', group: 'm_state', metric: 'time', values: [5, 10, 15] });
-    expect(specs[0].window).toBeUndefined();
-    expect(specs[1]).toMatchObject({ group: 'm_flow_window', window: 10, values: [0, 2.5] });
-    expect(specs[2]).toEqual({ kind: 'take_profit', values: [50, 100, 200] });
-    expect(specs[3]).toMatchObject({ group: 'm_flow_lifetime', metric: 'gross_flow', values: [50] });
-    expect(specs[3].window).toBeUndefined();
+  it('writes the backend AxisSpec, keys only when set', () => {
+    const wire = serializeAxisRows(rows);
+    expect(wire[0]).toEqual({ kind: 'metric', side: 'entry', metric: 'm_state.age_sec', operator: '>', values: [5, 10, 15] });
+    expect(wire[1]).toEqual({
+      kind: 'metric',
+      side: 'exit',
+      metric: 'm_flow.buy_sol',
+      tag: '!volume',
+      span: '10s',
+      operator: '<',
+      values: [null, 1, 2.5],
+    });
+    expect(wire[2]).toEqual({ kind: 'take_profit', values: [50, 100, 200] });
   });
 
-  it('combo count is the product of value counts', () => {
-    expect(comboCount(rows, REG)).toBe(3 * 2 * 3);
+  it('round-trips, and a kind-less wire axis is a metric axis', () => {
+    const back = axesSpecToRows({ axes: serializeAxisRows(rows) });
+    expect(serializeAxisRows(back)).toEqual(serializeAxisRows(rows));
+    const [seed] = axesSpecToRows([{ side: 'entry', metric: 'm_state.age_sec', operator: '<=', values: [null, 20] }]);
+    expect(seed.kind).toBe('metric');
+    expect(seed.valuesText).toBe('off, 20');
   });
 
-  it('combo count is 0 when an axis has no values', () => {
-    expect(comboCount([metricRow({ group: 'm_state', metric: 'time', valuesText: '' })], REG)).toBe(0);
+  it('counts combos as the product of value counts', () => {
+    expect(comboCount(rows)).toBe(3 * 3 * 3);
+    expect(comboCount([metricRow({ valuesText: '' })])).toBe(0);
   });
 
-  it('serializes off as null and counts it as a grid point', () => {
-    const withOff = [metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: 'off, 5, 10' })];
-    expect(serializeAxisRows(withOff, REG)[0].values).toEqual([null, 5, 10]);
-    expect(comboCount(withOff, REG)).toBe(3);
+  it('lists the fingerprint tags the axes read', () => {
+    const withClass = [...rows, metricRow({ ref: { metric: 'm_holdings.bag_share_pct', tag: 'bundled' } })];
+    expect(axisTagNames(withClass, REG)).toEqual(['volume']);
+  });
+
+  it('says what an axis does', () => {
+    expect(axisSummary(rows[0])).toBe('entry filter: m_state.age_sec > each of 5, 10, 15');
+    expect(axisSummary(rows[1])).toBe(
+      'exit line, sells everything when: m_flow.buy_sol @!volume [10s] < each of 1, 2.5, or left out',
+    );
   });
 });
 
-describe('multi-window axes serialize independently', () => {
-  // No cross-row window validation: different windows on the same (side, group)
-  // and on distinct groups both serialize as their own axes. The backend
-  // assembles one GroupConditions instance per distinct window_size_sec, exactly
-  // the engine's multi-window-per-group model.
-  it('same group, two windows → two wire axes carrying each window', () => {
-    const rows: GenericAxisRow[] = [
-      metricRow({ side: 'exit', group: 'm_flow_window', metric: 'buy', window: '30', valuesText: '1, 3' }),
-      metricRow({ side: 'exit', group: 'm_flow_window', metric: 'buy', window: '60', valuesText: '1, 3' }),
-    ];
-    const specs = serializeAxisRows(rows, REG);
-    expect(specs.map((s) => s.window)).toEqual([30, 60]);
-  });
-  it('distinct groups keep independent windows', () => {
-    // The reported footgun: m_price_window(5) and m_flow_window(3) are DIFFERENT
-    // dynamic groups, each with its own window_size_sec, so the sizes may differ.
-    const rows: GenericAxisRow[] = [
-      metricRow({ side: 'entry', group: 'm_price_window', metric: 'trail', window: '5', valuesText: '1' }),
-      metricRow({ side: 'entry', group: 'm_flow_window', metric: 'gross_flow', window: '3', valuesText: '10' }),
-    ];
-    const specs = serializeAxisRows(rows, REG);
-    expect(specs.map((s) => s.window)).toEqual([5, 3]);
-  });
-});
-
-describe('pnlAxisSugarDuplicateError', () => {
-  it('rejects exit pnl >= that overlaps a TP axis value', () => {
-    const rows: GenericAxisRow[] = [
-      { ...newAxisRow('take_profit'), valuesText: '50, 100' },
-      metricRow({
-        side: 'exit',
-        group: 'm_position',
-        metric: 'pnl',
-        operator: '>=',
-        valuesText: '50, 75',
-      }),
-    ];
-    expect(pnlAxisSugarDuplicateError(rows)).toMatch(/duplicates a TP axis/);
-  });
-
-  it('rejects exit pnl <= that overlaps −SL', () => {
-    const rows: GenericAxisRow[] = [
-      { ...newAxisRow('stop_loss'), valuesText: '30' },
-      metricRow({
-        side: 'exit',
-        group: 'm_position',
-        metric: 'pnl',
-        operator: '<=',
-        valuesText: '-30, -25',
-      }),
-    ];
-    expect(pnlAxisSugarDuplicateError(rows)).toMatch(/duplicates an SL axis/);
-  });
-
-  it('allows a non-overlapping catastrophe pnl beside SL', () => {
-    const rows: GenericAxisRow[] = [
-      { ...newAxisRow('stop_loss'), valuesText: '30' },
-      metricRow({
-        side: 'exit',
-        group: 'm_position',
-        metric: 'pnl',
-        operator: '<=',
-        valuesText: '-25',
-      }),
-    ];
-    expect(pnlAxisSugarDuplicateError(rows)).toBeNull();
-  });
-
-  it('axesSpecToRows round-trips discovery-style AxisSpec wire', () => {
-    const rows = axesSpecToRows([
-      {
-        kind: 'metric',
-        side: 'entry',
-        group: 'm_state',
-        metric: 'time',
-        operator: '>=',
-        values: [null, 5, 30],
-      },
-      { kind: 'take_profit', values: [20, 30, 60] },
-      { kind: 'stop_loss', values: [10, 15, 25] },
-    ]);
-    expect(rows).toHaveLength(3);
-    expect(rows[0].kind).toBe('metric');
-    expect(rows[0].valuesText).toBe('off, 5, 30');
-    expect(rows[0].operator).toBe('>=');
-    expect(rows[1].kind).toBe('take_profit');
-    expect(rows[1].valuesText).toBe('20, 30, 60');
-    const wire = serializeAxisRows(rows, REG);
-    expect(wire[0].values).toEqual([null, 5, 30]);
-    expect(wire[1].values).toEqual([20, 30, 60]);
+describe('storedAxisRows', () => {
+  it('keeps v2 rows and refuses rows saved before the read existed', () => {
+    const v2 = [metricRow({ ref: { metric: 'm_state.age_sec' } })];
+    expect(storedAxisRows(v2)).toEqual(v2);
+    expect(storedAxisRows([{ id: 'a', kind: 'metric', group: 'm_state', metric: 'time', valuesText: '5' }])).toBeNull();
+    expect(storedAxisRows(undefined)).toBeNull();
   });
 });

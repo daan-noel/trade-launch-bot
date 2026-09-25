@@ -1,6 +1,6 @@
 // Match a sweep/discovery `group_key` to a saved fingerprint, using the same
 // identity as promote/bind (`fingerprint_from_group_key` + `IDENTITY_WHERE`).
-// `name` is a label, not identity; `metric_config` is (see `FingerprintIdentity`).
+// `name` is a label, not identity; `tags` is (see `FingerprintIdentity`).
 //
 // **A group key carries predicates, not rendered labels.** A card's window IS the
 // predicate a fingerprint stores, so identity here is a comparison of the same
@@ -63,16 +63,16 @@ export interface FingerprintIdentity {
    *  yields `false`. Carrying it anyway is what stops a saved wildcard row from
    *  keying identically to an axis-free card and badging it. */
   wildcard: boolean;
-  /** Per-fingerprint metric config. Selects no token, so it is not MATCH identity —
-   *  but it IS ROW identity, because it compiles into that row's live `m_flow_ix`
-   *  patterns. Eleven `8dtx · <router>` rows share `{}` + `wildcard` and differ only
-   *  here; without it {@link fingerprintIdentityKey} would badge an arbitrary one of
-   *  them while `find_or_create` resolved to another.
+  /** The fingerprint's tags. They select no token, so they are not MATCH identity,
+   *  but they ARE ROW identity, because they decide how that row classifies trades.
+   *  Rows can share criteria + `wildcard` and differ only here; without it
+   *  {@link fingerprintIdentityKey} would badge an arbitrary one of them while
+   *  `find_or_create` resolved to another.
    *
    *  **Optional, and absent means `{}`** — which is what a card creates with, so a
    *  group key and the backend's match-identity DTO both leave it unset and still key
    *  onto the right row. Only {@link fingerprintToIdentity} fills it in. */
-  metric_config?: Record<string, unknown>;
+  tags?: Record<string, unknown>;
 }
 
 /** One group-key value, as the backend serializes it. */
@@ -185,7 +185,7 @@ export function predicatesEqual(a: AxisPredicate | undefined, b: AxisPredicate |
 /**
  * True when every match axis agrees — the same token set.
  *
- * MATCH identity only: two rows differing solely in `metric_config` both return
+ * MATCH identity only: two rows differing solely in `tags` both return
  * true. For the row `find_or_create` resolves to, key with
  * {@link fingerprintIdentityKey}.
  *
@@ -256,7 +256,7 @@ export function fingerprintIdentityKey(id: FingerprintIdentity): string {
       .join(',')}`;
   });
   parts.push(id.wildcard ? 'any' : '');
-  parts.push(canonicalJson(id.metric_config ?? {}));
+  parts.push(canonicalJson(id.tags ?? {}));
   return parts.join('|');
 }
 
@@ -277,7 +277,7 @@ export function fingerprintToIdentity(fp: Fingerprint): FingerprintIdentity {
   return {
     criteria: fp.criteria ?? {},
     wildcard: fp.wildcard,
-    metric_config: fp.metric_config ?? {},
+    tags: fp.tags ?? {},
   };
 }
 

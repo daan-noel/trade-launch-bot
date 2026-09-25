@@ -50,9 +50,10 @@ export interface Fingerprint {
    *  from the map is not part of identity. Bounds are decimal STRINGS over the full
    *  `u64` domain — see `fingerprintAxes.ts`. */
   criteria: Criteria;
-  /** Per-metric-group fingerprint-side config (e.g. `m_flow_ix.ix_patterns`).
-   *  Absent/`{}` => flow metrics stay NaN. Not part of identity. */
-  metric_config: Record<string, unknown>;
+  /** Named trade lists (`{volume: {match: {...}, side, sticky, ...}}`), read by rules
+   *  as `@volume` / `@!volume`: see `tagsDoc.ts`. `{}` = none, so every tag read is
+   *  NaN. Not part of identity. */
+  tags: Record<string, unknown>;
   created_at: string;
   updated_at: string;
   /** How many rules reference this fingerprint — folded in by the list endpoint
@@ -290,7 +291,8 @@ export interface StrategyArmRecord extends Omit<TokenEnrichmentFields, 'symbol'>
 
 /** One entry condition still failing when the arm gave up. */
 export interface ArmUnmetCondition {
-  /** `group.metric`, e.g. `m_flow_window.gross_flow`. */
+  /** The read's full label, `m_flow.buy_sol @!volume [10s]` (rows before the v2
+   *  metric system: `group.metric`, e.g. `m_flow_window.gross_flow`). */
   metric: string;
   /** Legacy scalar: the SIZE of a wall-clock window, in seconds. `null` for a
    *  static metric AND for a slot window, which names itself in `window` instead. */
@@ -341,51 +343,7 @@ export interface ArmFunnel {
   blocked_by: ArmBlockedBy[];
 }
 
-/** One computed metric column from `GET /api/tokens/{mint}/metric-series`. */
-export interface MetricSeriesColumn {
-  metric: string;
-  group: string;
-  unit: string;
-  /** The WHOLE span this column was computed over — size, lag and unit. Present only
-   *  for dynamic groups (`m_flow_window`, `m_flow_ix_window`, `m_price_window`);
-   *  null for static ones (`m_flow_lifetime`, …). Prefer this over
-   *  {@link MetricSeriesColumn.window_size_sec}. */
-  window?: WindowSpec | null;
-  /** The nested SLICE span, for the two-window metrics alone
-   *  (`m_flow_window.trade_share` / `.sol_share`). Their reading is a ratio ACROSS the
-   *  pair, so a column labelled by `window` alone names a different number than it
-   *  holds. Null everywhere else. */
-  slice?: WindowSpec | null;
-  /** Legacy seconds scalar, for readers that predate `window`. Null on a slot or
-   *  print span — neither has seconds to report, so a reader that only knows this key
-   *  drops the column rather than calling 30 slots 30 seconds. */
-  window_size_sec: number | null;
-  /** One value per event (aligned with `at`); non-finite ⇒ `null`. */
-  values: Array<number | null>;
-}
-
-/** `GET /api/tokens/{mint}/metric-series` response — every metric's value at every
- *  **event**, as parallel arrays. Computed on demand (never persisted). Lab-only.
- *
- *  Events are trades *plus* engine `TICK_MS` grid ticks, because the time-decaying
- *  metrics (`m_flow_window` decay, `m_price_window` extrema, `stall`/`time`,
- *  deadness) only advance on a tick — a trade-only series silently reports a later
- *  fire than the engine takes. Rows are therefore ∝ the token's lifespan, not its
- *  trade count. */
-export interface MetricSeriesResponse {
-  mint_address: string;
-  /** RFC3339 timestamps aligned with every column's `values`. */
-  at: string[];
-  /** Spot price (SOL) at each event — aligned with `at`; non-finite ⇒ `null`. */
-  price?: Array<number | null>;
-  series: MetricSeriesColumn[];
-  /** The backend's row ceiling cut the series short: it covers only
-   *  `[first trade, covered_until]`. Rows that ARE present stay exact — only the
-   *  span is bounded — so surface it rather than silently drawing a partial token. */
-  truncated?: boolean;
-  /** Last instant the series reaches (RFC3339); null when there are no events. */
-  covered_until?: string | null;
-}
+// The metric-series wire types live beside their one consumer, `metricPanes.ts`.
 
 /** Inline dry-run draft for `POST /api/strategies/simulate`. NOTE: this uses
  *  `buy_amount_sol` (f64 SOL) — the one amount that is SOL, not lamports, on the
@@ -581,7 +539,7 @@ export interface StrategyPositionUpdateEvent {
 
 // ── Strategy bundle — cross-box rule sync ──────────────────────────────────
 // Mirrors `trading_core::api::handlers::strategies::rule_bundle` field-for-field.
-// The bundle carries the STRATEGY (fingerprint criteria + metric_config, rule
+// The bundle carries the STRATEGY (fingerprint criteria + tags, rule
 // params/sizing/caps/tags). It deliberately carries no `is_active`, `is_enabled`
 // or `trade_mode`: those describe how a box RUNS a rule, and letting arming ride
 // along would let a paste from the paper lab arm a real-money rule on the server.

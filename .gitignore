@@ -134,6 +134,8 @@ __pycache__/
 *.txt
 *.json
 *.csv
+# Engine fixtures are read by both the Rust and the frontend tests.
+!hunter/engine/fixtures/*.json
 
 # --- Node derivation: only the toolkit and the scripts a rule or a method gate rests on are tracked ---
 # A step script is scratch and stays local: its number goes to the evidence doc, its step to the

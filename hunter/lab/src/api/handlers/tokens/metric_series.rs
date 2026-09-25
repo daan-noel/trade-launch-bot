@@ -70,6 +70,10 @@ pub struct MetricSeriesQuery {
     /// seconds). Omitted ⇒ a default set.
     #[serde(default)]
     pub windows: Option<String>,
+    /// Comma-separated since-age anchors in seconds (`5,60`) for the since-age reads,
+    /// beside the always-drawn `age0s`, so a rule's `[age5s]` read has its column.
+    #[serde(default)]
+    pub ages: Option<String>,
     #[serde(default)]
     pub curve_only: bool,
     /// Fingerprint whose `tags` the tagged reads use. Absent ⇒ tagged reads are omitted
@@ -150,6 +154,7 @@ pub async fn token_metric_series(
 ) -> impl Responder {
     let mint = path.into_inner();
     let windows = parse_windows(query.windows.as_deref());
+    let ages = parse_ages(query.ages.as_deref());
     // The grid stays dense wherever anything the caller evaluates can still move: the
     // trailing spans plus the two clocks the caller declares. Deadness is covered by
     // the grid itself.
@@ -186,7 +191,7 @@ pub async fn token_metric_series(
             "truncated": false, "covered_until": serde_json::Value::Null,
         }));
     }
-    let result = web::block(move || build_series(&mint, &trades, &windows, &grid, tags.as_ref(), creator, entry)).await;
+    let result = web::block(move || build_series(&mint, &trades, coin_reads(&windows, &ages, tags.as_ref()), &grid, tags.as_ref(), creator, entry)).await;
     match result {
         Ok(resp) => HttpResponse::Ok().json(resp),
         Err(e) => {
@@ -271,16 +276,29 @@ fn parse_windows(raw: Option<&str>) -> Vec<WindowSpec> {
     }
 }
 
+/// Parse the `ages` CSV: finite, non-negative seconds, deduped.
+fn parse_ages(raw: Option<&str>) -> Vec<f64> {
+    let mut out: Vec<f64> = raw
+        .unwrap_or("")
+        .split(',')
+        .filter_map(|s| s.trim().parse::<f64>().ok())
+        .filter(|a| a.is_finite() && *a > 0.0)
+        .collect();
+    out.sort_by(f64::total_cmp);
+    out.dedup();
+    out
+}
+
 /// Every coin read the endpoint draws: [`chart_reads`] of every non-position metric,
 /// the tagged ones only when a fingerprint supplies the tags.
-fn coin_reads(windows: &[WindowSpec], tags: Option<&TagCtx>) -> Vec<SeriesColumn> {
+fn coin_reads(windows: &[WindowSpec], ages: &[f64], tags: Option<&TagCtx>) -> Vec<SeriesColumn> {
     let trade: Vec<&str> = tags.map(|c| c.tags.iter().map(|t| t.name).collect()).unwrap_or_default();
     let template: Vec<&str> =
         tags.map(|c| c.tags.iter().filter(|t| t.patterns.templates().is_some()).map(|t| t.name).collect()).unwrap_or_default();
     METRICS
         .iter()
         .filter(|m| m.family != Family::Position)
-        .flat_map(|m| chart_reads(m, &trade, &template, windows))
+        .flat_map(|m| chart_reads(m, &trade, &template, windows, ages))
         .filter_map(|r| {
             if r.is_fingerprint_scoped() {
                 tags.map(|c| SeriesColumn::tagged(r, c.fp_id))
@@ -297,13 +315,12 @@ fn coin_reads(windows: &[WindowSpec], tags: Option<&TagCtx>) -> Vec<SeriesColumn
 fn build_series(
     mint: &str,
     trades: &[crate::sweep::projection::CorpusTrade],
-    windows: &[WindowSpec],
+    columns: Vec<SeriesColumn>,
     grid: &SparseGrid,
     tags: Option<&TagCtx>,
     creator: Option<u64>,
     entry: Option<(Ts, f64)>,
 ) -> serde_json::Value {
-    let columns = coin_reads(windows, tags);
     let created_at = trades[0].block_time;
     let mut series = MetricSeries::new(created_at, columns.clone());
     // Tags and the creator BEFORE the first fold, in the live `TokenCreated` order.
@@ -354,7 +371,7 @@ fn build_series(
 fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64) -> Vec<SeriesOut> {
     let n = series.n_rows();
     let reads: Vec<MetricRef> =
-        METRICS.iter().filter(|m| m.family == Family::Position).flat_map(|m| chart_reads(m, &[], &[], &[])).collect();
+        METRICS.iter().filter(|m| m.family == Family::Position).flat_map(|m| chart_reads(m, &[], &[], &[], &[])).collect();
     let mut cols: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(n); reads.len()];
     let mut ctx = PositionCtx::at_fill(entry_price, entered_at);
     for i in 0..n {
@@ -487,10 +504,10 @@ mod tests {
         let grid = SparseGrid::for_windows(&[10.0]);
         let ctx = volume_ctx();
         let w = [WindowSpec::secs(10.0)];
-        let seeded = build_series("mint", &trades, &w, &grid, Some(&ctx), Some(wallet_hash("dev")), None);
+        let seeded = build_series("mint", &trades, coin_reads(&w, &[], Some(&ctx)), &grid, Some(&ctx), Some(wallet_hash("dev")), None);
         assert_eq!(last(&seeded, "m_flow.buy_sol @volume"), 7.0, "dev + pattern bot");
         assert_eq!(last(&seeded, "m_flow.buy_sol @!volume"), 3.0, "the stranger only");
-        let unseeded = build_series("mint", &trades, &w, &grid, Some(&ctx), None, None);
+        let unseeded = build_series("mint", &trades, coin_reads(&w, &[], Some(&ctx)), &grid, Some(&ctx), None, None);
         assert_eq!(last(&unseeded, "m_flow.buy_sol @volume"), 2.0);
         assert_eq!(last(&unseeded, "m_flow.buy_sol @!volume"), 8.0);
     }
@@ -506,7 +523,7 @@ mod tests {
         ctx.tags.extend(compile_tags(&serde_json::json!({ "working": { "match": { "ix_template": ["Pump.Fun|200000|0|1|0|0"] } } })));
         // Two spans, so the two-window reads have a nested pair.
         let w = [WindowSpec::secs(30.0), WindowSpec::secs(10.0)];
-        let out = build_series("mint", &trades, &w, &grid, Some(&ctx), Some(wallet_hash("dev")), Some((ts(0), 1.0)));
+        let out = build_series("mint", &trades, coin_reads(&w, &[], Some(&ctx)), &grid, Some(&ctx), Some(wallet_hash("dev")), Some((ts(0), 1.0)));
         let paths: Vec<&str> = out["series"].as_array().unwrap().iter().map(|c| c["metric"].as_str().unwrap()).collect();
         for m in METRICS {
             assert!(paths.contains(&m.path().as_str()), "{} has no column", m.path());

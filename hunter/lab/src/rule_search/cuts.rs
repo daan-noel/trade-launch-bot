@@ -306,7 +306,7 @@ fn cut_columns(windows: &[f64], tags: &[CompiledTag], fp: FingerprintId) -> Vec<
     let spans: Vec<WindowSpec> = windows.iter().map(|&w| WindowSpec::secs(w)).collect();
     let mut cols: Vec<SeriesColumn> = Vec::new();
     for spec in METRICS.iter().filter(|m| m.family != Family::Position) {
-        for r in chart_reads(spec, &trade, &template, &spans) {
+        for r in chart_reads(spec, &trade, &template, &spans, &[]) {
             // A since-age read needs an age anchor the search has no vocabulary for
             // (`clause_legal` rejects every clause on one), so its column would fold a
             // buffer nothing reads.

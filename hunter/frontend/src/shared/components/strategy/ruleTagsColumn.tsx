@@ -26,7 +26,7 @@ export function buildRuleTagsColumn({
 }: RuleTagsColumnOptions = {}): ColumnDef<StrategyRule> {
   return {
     key: 'tags',
-    label: 'Tags',
+    label: 'Labels',
     group: 'name',
     render: (r) => {
       const tags = r.tags ?? [];
@@ -37,7 +37,7 @@ export function buildRuleTagsColumn({
             <TagChip
               key={tag}
               tag={tag}
-              title={onTagClick ? `Show only rules tagged ${tag}` : tag}
+              title={onTagClick ? `Show only rules labelled ${tag}` : tag}
               onClick={
                 onTagClick
                   ? (e) => {

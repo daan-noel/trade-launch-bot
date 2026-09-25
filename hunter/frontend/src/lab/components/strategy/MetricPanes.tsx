@@ -14,34 +14,42 @@ import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
 import { cn } from 'lib/cn';
 import { ACCORDION_IDS, STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
-import { useStrategyRegistry, unitSuffix, type MetricUnit } from 'lib/strategy/registry';
+import { metricColorStyle } from 'lib/strategy/metricColors';
+import {
+  allMetrics,
+  familyName,
+  findFamily,
+  findMetric,
+  metricHelp,
+  unitSuffix,
+  useStrategyRegistry,
+  type MetricSpec,
+  type MetricUnit,
+  type StrategyRegistry,
+} from 'lib/strategy/registry';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
-import { ruleParamsFromJson, type RuleParams } from 'lib/strategy/ruleParams';
 import {
   CONDITION_SIDE_TAG,
   DEFAULT_WINDOWS,
-  extractRuleMetricPrefs,
   findRuleFireMarkers,
   metricClockHorizons,
-  metricColKey,
-  nestedWindowPairs,
   metricConditionBands,
   metricConditionStatesAt,
-  metricPrefsFromParams,
   metricThresholdsFor,
   nearestSeriesIndex,
+  paneRuleFromJson,
   parseSeriesAtSec,
+  rulePaneKeys,
+  ruleAges,
+  ruleWindows,
+  seriesByLabel,
+  type ConditionSide,
   type MetricConditionLanes,
+  type MetricSeriesColumn,
 } from 'lib/strategy/metricPanes';
 import { useGetMetricSeriesQuery } from '@lab/store/labEndpoints';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
-import type { MetricSeriesColumn } from 'lib/strategy/types';
-import {
-  formatWindowSpec,
-  readWindow,
-  windowSpecKey,
-  type WindowSpec,
-} from 'lib/strategy/windowSpec';
+import type { WindowSpec } from 'lib/strategy/windowSpec';
 
 /** Wall-clock label for the truncation notice's `covered_until`. */
 function formatCoveredUntil(at: string | null | undefined): string {
@@ -50,12 +58,17 @@ function formatCoveredUntil(at: string | null | undefined): string {
   return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString() : at;
 }
 
+/** A read label (`m_flow.buy_sol @!volume [10s]`): family, dot, metric. Saved panes
+ *  in any other shape name no read and are dropped on load. */
+const READ_LABEL_RE = /^m_[a-z]+\.[a-z0-9_]+/;
+
 interface Prefs {
-  panes: string[]; // column keys
+  /** Read labels. */
+  panes: string[];
   /** WHOLE spans, since a bare size cannot tell 30 slots from 30 seconds. */
   windows: WindowSpec[];
   ruleId: string | null;
-  /** When true, panes follow the selected rule's metrics (cleared on manual toggle). */
+  /** When true, panes follow the selected rule's reads (cleared on manual toggle). */
   autoPanes: boolean;
   /** Draw the rule's conditions as on/off lanes under the price chart. */
   timeline: boolean;
@@ -72,22 +85,23 @@ function loadPrefs(): Prefs {
     timeline: false,
     ...(stored ?? {}),
   };
-  // Prefs saved before the other bases existed hold bare seconds. Widen them rather
-  // than discard: a stored `[10, 30, 60]` meant three wall-clock spans and still does.
+  merged.panes = (merged.panes as unknown[]).filter(
+    (k): k is string => typeof k === 'string' && READ_LABEL_RE.test(k),
+  );
+  // A bare number is a wall-clock span in seconds.
   merged.windows = (merged.windows as Array<WindowSpec | number>)
     .map((w) => (typeof w === 'number' ? { size: w, lag: 0, unit: 'sec' as const } : w))
     .filter((w) => w != null && Number.isFinite(w.size) && w.size > 0);
   return merged as Prefs;
 }
 
-/** Pin the pane overlay to explicit params instead of the saved-rule dropdown —
- *  e.g. the exact sweep combo / simulated rule the caller is inspecting, so the
- *  `signal` markers (`{metric}{op}`) are computed from the same params that
- *  produced the run. */
+/** Pin the pane overlay to explicit params instead of the saved-rule dropdown: the
+ *  exact sweep combo / simulated rule the caller is inspecting, so the `signal`
+ *  markers are computed from the params that produced the run. */
 export interface MetricPanesRuleOverride {
-  /** Raw `RuleParams` JSON (a rule's `params` or a sweep combo's blob). */
+  /** Raw rule `params` JSON (a rule's `params` or a sweep combo's blob). */
   paramsJson: unknown;
-  /** Fingerprint to key the metric-series fetch by (null = none). */
+  /** Fingerprint whose tags the tagged reads use (null = none). */
   fingerprintId: string | null;
   /** Shown in place of the rule dropdown (e.g. "combo #37", the rule name). */
   label: string;
@@ -95,28 +109,27 @@ export interface MetricPanesRuleOverride {
 
 export interface MetricPanesProps {
   mint: string;
-  /** Shared wall-clock crosshair (unix seconds) — from price chart or pane hover. */
+  /** Shared wall-clock crosshair (unix seconds): from price chart or pane hover. */
   crosshairTimeSec?: number | null;
   /** Shared visible window from the price chart (unix seconds). */
   visibleTimeRange?: ChartVisibleTimeRange | null;
   /** Pane hover drives the shared crosshair (and the price chart). */
   onCrosshairTimeChange?: (timeSec: number | null) => void;
-  /** Emit first metric entry/exit fires as chart markers. */
+  /** Emit the rule's first buy / sell fires as chart markers. */
   onEventMarkersChange?: (markers: ChartEventMarker[]) => void;
   /**
    * Emit the rule's conditions as chart bottom-pane lanes (the "timeline"). Wiring
-   * it is what surfaces the toggle — a host with no chart beside the panes has
+   * it is what surfaces the toggle: a host with no chart beside the panes has
    * nowhere to draw them, so it stays hidden there rather than inert.
    */
   onConditionBandsChange?: (bands: MetricConditionLanes | null) => void;
-  /** The inspected run's exit reason — picks which condition the timeline draws as
-   *  a value line. Without it the line falls back to the first exit condition. */
+  /** The inspected run's exit reason: picks which condition the timeline draws as a
+   *  value line. Without it the line falls back to the first exit condition. */
   exitReason?: string | null;
   /** When set, overlay these params (not the dropdown rule's). */
   ruleOverride?: MetricPanesRuleOverride | null;
-  /** Inspected run's entry fill. Supplies the position-scoped `m_position`
-   *  (retrace/bounce/pnl/held) columns — those anchor on the entry, so without it they
-   *  can't be computed and the whole group is hidden. */
+  /** Inspected run's entry fill. Supplies the `m_position` reads, which anchor on the
+   *  entry: without it the endpoint omits them. */
   positionEntry?: { time: string; price: number } | null;
 }
 
@@ -131,6 +144,55 @@ function useMetricPanesCtx(): MetricPanesModel {
   const ctx = useContext(MetricPanesContext);
   if (!ctx) throw new Error('MetricPanesPart must render inside MetricPanesProvider');
   return ctx;
+}
+
+/** Everything a pane needs about one read, from the series column and the registry. */
+interface PaneMeta {
+  key: string;
+  path: string;
+  family: string;
+  unit: MetricUnit;
+  spec: MetricSpec | undefined;
+  column: MetricSeriesColumn | undefined;
+  /** CSS colour from the registry hue. */
+  color: string;
+  /** Tooltip: the read, then the registry's definition. */
+  help: string;
+}
+
+function paneMeta(
+  key: string,
+  column: MetricSeriesColumn | undefined,
+  registry: StrategyRegistry | undefined,
+): PaneMeta {
+  const path = column?.metric ?? key.split(' ')[0];
+  const family = column?.family ?? familyName(path);
+  const spec = findMetric(registry, path);
+  return {
+    key,
+    path,
+    family,
+    unit: column?.unit ?? spec?.unit ?? 'count',
+    spec,
+    column,
+    color: metricColorStyle({ hue: spec?.hue, group: family, metric: path }).color,
+    help: spec ? `${key}\n${metricHelp(spec)}` : key,
+  };
+}
+
+/** A pane group: the rule's own reads, or one registry family. */
+interface PaneGroup {
+  key: string;
+  title: string;
+  help: string;
+  /** The family of a family group (its items drop the `family.` prefix); null for the rule group. */
+  family: string | null;
+  items: string[];
+}
+
+/** A read as shown inside its family group: `buy_sol @!volume [10s]`. */
+function shortLabel(key: string, family: string | null): string {
+  return family && key.startsWith(`${family}.`) ? key.slice(family.length + 1) : key;
 }
 
 function useMetricPanesModel({
@@ -154,52 +216,41 @@ function useMetricPanesModel({
     [ruleOverride, rules, prefs.ruleId],
   );
 
-  // Override params are derived, never written into prefs — closing the inspect
-  // leaves the user's saved dropdown/pane selection untouched.
-  const overrideParams: RuleParams | null = useMemo(
-    () => (ruleOverride && registry ? ruleParamsFromJson(ruleOverride.paramsJson, registry) : null),
-    [ruleOverride, registry],
+  // Override params are derived, never written into prefs: closing the inspect leaves
+  // the saved dropdown / pane selection untouched.
+  const ruleParamsJson = ruleOverride ? ruleOverride.paramsJson : selectedRule?.params ?? null;
+  const parsed = useMemo(
+    () => (ruleParamsJson != null ? paneRuleFromJson(ruleParamsJson) : null),
+    [ruleParamsJson],
   );
-  const overridePrefs = useMemo(
-    () => (overrideParams ? metricPrefsFromParams(overrideParams, registry) : null),
-    [overrideParams, registry],
-  );
+  const rule = parsed?.rule ?? null;
+  const ruleError = parsed?.error ?? null;
+  const ruleKeys = useMemo(() => (rule ? rulePaneKeys(rule) : []), [rule]);
 
-  // When a rule is selected (and autoPanes is on), adopt its metrics + windows.
+  // A dropdown rule (with autoPanes on) writes its reads into prefs, so a manual
+  // toggle later starts from them.
   useEffect(() => {
-    if (!selectedRule || !registry || !prefs.autoPanes) return;
-    const rp = extractRuleMetricPrefs(selectedRule, registry);
-    setPrefs((p) => ({
-      ...p,
-      windows: rp.windows,
-      panes: rp.paneKeys.length ? rp.paneKeys : p.panes,
-    }));
-  }, [selectedRule, registry, prefs.autoPanes]);
+    if (!selectedRule || !rule || !prefs.autoPanes) return;
+    setPrefs((p) => ({ ...p, windows: ruleWindows(rule), panes: ruleKeys.length ? ruleKeys : p.panes }));
+  }, [selectedRule, rule, ruleKeys, prefs.autoPanes]);
 
-  const windows = overridePrefs
-    ? overridePrefs.windows
-    : prefs.autoPanes && selectedRule && registry
-      ? extractRuleMetricPrefs(selectedRule, registry).windows
-      : prefs.windows;
+  // A shown rule always fetches its own spans, or its windowed reads are not columns.
+  const windows = useMemo(() => (rule ? ruleWindows(rule) : prefs.windows), [rule, prefs.windows]);
+  const ages = useMemo(() => (rule ? ruleAges(rule) : []), [rule]);
 
-  const ruleParams: RuleParams | null = useMemo(() => {
-    if (overrideParams) return overrideParams;
-    return selectedRule && registry ? ruleParamsFromJson(selectedRule.params, registry) : null;
-  }, [overrideParams, selectedRule, registry]);
-
-  // The backend sizes its sparse tick grid from what we'll evaluate over the series.
-  // `windows` covers the trailing metrics; the two wall-clock metrics (`time` from
-  // creation, `stall` from the last high) have to be declared or their crossings can
-  // fall in a gap the grid skipped.
+  // The backend sizes its sparse tick grid from what we evaluate over the series:
+  // `windows` covers the trailing reads; the two clocks have to be declared, or their
+  // crossings can fall in a gap the grid skipped.
   const clockHorizons = useMemo(
-    () => (ruleParams ? metricClockHorizons(ruleParams) : null),
-    [ruleParams],
+    () => (rule ? metricClockHorizons(rule, registry) : null),
+    [rule, registry],
   );
 
   const { data, isFetching, error } = useGetMetricSeriesQuery(
     {
       mint,
       windows,
+      ages,
       fingerprintId: ruleOverride ? ruleOverride.fingerprintId : selectedRule?.fingerprint_id ?? null,
       entryTime: positionEntry?.time ?? null,
       entryPrice: positionEntry?.price ?? null,
@@ -213,33 +264,26 @@ function useMetricPanesModel({
     setJSON(STORAGE_KEYS.metricPanes, prefs);
   }, [prefs]);
 
-  /** Panes actually rendered: the override's own metrics until the user toggles. */
-  const panes =
-    overridePrefs && prefs.autoPanes && overridePrefs.paneKeys.length
-      ? overridePrefs.paneKeys
-      : prefs.panes;
+  /** Panes actually rendered: the rule's own reads until the user toggles. */
+  const panes = rule && prefs.autoPanes && ruleKeys.length ? ruleKeys : prefs.panes;
 
   const atSec = useMemo(() => parseSeriesAtSec(data?.at ?? []), [data?.at]);
+  const seriesByKey = useMemo(() => seriesByLabel(data?.series ?? []), [data]);
 
-  // Push metric entry/exit markers up to the price chart.
+  // Push the rule's buy / sell fires up to the price chart.
   useEffect(() => {
     if (!onEventMarkersChange) return;
-    if (!data || !ruleParams || !registry) {
-      onEventMarkersChange([]);
-      return;
-    }
-    onEventMarkersChange(findRuleFireMarkers(ruleParams, data, registry));
-  }, [data, ruleParams, registry, onEventMarkersChange]);
+    onEventMarkersChange(data && rule && registry ? findRuleFireMarkers(rule, data, registry) : []);
+  }, [data, rule, registry, onEventMarkersChange]);
 
   // The lanes fold the series the panes already fetched, so the toggle costs no
-  // request — only the fold, which is why it still gates on `prefs.timeline`
-  // rather than running for every inspect that never opens it.
+  // request, only the fold: that is why it still gates on `prefs.timeline`.
   const conditionBands = useMemo(
     () =>
-      prefs.timeline && data && ruleParams && registry
-        ? metricConditionBands(ruleParams, data, registry, exitReason)
+      prefs.timeline && data && rule && registry
+        ? metricConditionBands(rule, data, registry, exitReason)
         : null,
-    [prefs.timeline, data, ruleParams, registry, exitReason],
+    [prefs.timeline, data, rule, registry, exitReason],
   );
 
   // Cleared on unmount so a modal that switches to a run with no overlay does not
@@ -250,164 +294,120 @@ function useMetricPanesModel({
     return () => onConditionBandsChange(null);
   }, [conditionBands, onConditionBandsChange]);
 
-  const allColumns = useMemo(() => {
-    const cols: Array<{
-      key: string;
-      metric: string;
-      unit: MetricUnit;
-      window: WindowSpec | null;
-      /** The nested slice, for the two-window metrics alone — their reading is a
-       *  ratio across the pair, so the pane is named by both spans. */
-      slice?: WindowSpec | null;
-      group: string;
-    }> = [];
-    for (const g of registry?.groups ?? []) {
-      // Position-scoped metrics need the inspected run's entry fill; with no entry
-      // context the backend can't compute them, so hide the group entirely rather
-      // than surface an all-empty pane set.
-      if (g.scope === 'position' && !positionEntry) continue;
-      for (const m of g.metrics) {
-        if (g.kind !== 'dynamic') {
-          cols.push({ key: metricColKey(m.name, null), metric: m.name, unit: m.unit, window: null, group: g.name });
-          continue;
-        }
-        // A two-window metric is a ratio ACROSS a nested pair, so its panes are the
-        // pairs the endpoint computes — one per (reference, slice) — not one per
-        // window. Offering it at a bare window listed a pane whose column the series
-        // never emits, and which would read `NaN` on every row if it did.
-        if (m.two_window) {
-          for (const [w, b] of nestedWindowPairs(windows)) {
-            cols.push({
-              key: metricColKey(m.name, w, b),
-              metric: m.name,
-              unit: m.unit,
-              window: w,
-              slice: b,
-              group: g.name,
-            });
-          }
-          continue;
-        }
-        for (const w of windows) {
-          cols.push({ key: metricColKey(m.name, w), metric: m.name, unit: m.unit, window: w, group: g.name });
-        }
-      }
-    }
-    return cols;
-  }, [registry, windows, positionEntry]);
-
-  /** Registry group order + name for a column key — drives the grouped layout. */
-  const groupOf = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const c of allColumns) map.set(c.key, c.group);
-    return map;
-  }, [allColumns]);
-
-  const groupOrder = useMemo(() => (registry?.groups ?? []).map((g) => g.name), [registry]);
-
-  /** All selectable columns bucketed by group, in registry order (for the selector). */
-  const columnsByGroup = useMemo(() => {
-    const buckets = new Map<string, typeof allColumns>();
-    for (const c of allColumns) {
-      const arr = buckets.get(c.group) ?? [];
-      arr.push(c);
-      buckets.set(c.group, arr);
-    }
-    return groupOrder.filter((g) => buckets.has(g)).map((g) => ({ group: g, cols: buckets.get(g)! }));
-  }, [allColumns, groupOrder]);
-
-  /** Split a flat list of selected pane keys into registry-ordered groups. */
-  const groupKeys = useCallback(
-    <T,>(items: T[], keyOf: (item: T) => string): Array<{ group: string; items: T[] }> => {
-      const buckets = new Map<string, T[]>();
-      for (const it of items) {
-        const g = groupOf.get(keyOf(it)) ?? 'other';
-        const arr = buckets.get(g) ?? [];
-        arr.push(it);
-        buckets.set(g, arr);
-      }
-      const ordered = [...groupOrder, 'other'].filter((g) => buckets.has(g));
-      return ordered.map((g) => ({ group: g, items: buckets.get(g)! }));
-    },
-    [groupOf, groupOrder],
+  const metaOf = useCallback(
+    (key: string) => paneMeta(key, seriesByKey.get(key), registry),
+    [seriesByKey, registry],
   );
 
-  const seriesByKey = useMemo(() => {
-    const map = new Map<string, MetricSeriesColumn>();
-    // `readWindow` prefers the span object and falls back to the legacy seconds
-    // scalar, so a slot or print column keys by its own span.
-    for (const s of data?.series ?? []) map.set(metricColKey(s.metric, readWindow(s)), s);
-    return map;
-  }, [data]);
+  /** The picker: every read the series carries, family by family, metric by metric,
+   *  in registry order. */
+  const catalog = useMemo(() => {
+    const order = new Map(allMetrics(registry).map((m, i) => [m.path, i]));
+    const famOrder = new Map((registry?.families ?? []).map((f, i) => [f.name, i]));
+    const byFamily = new Map<string, Map<string, string[]>>();
+    for (const s of data?.series ?? []) {
+      const fam = byFamily.get(s.family) ?? new Map<string, string[]>();
+      fam.set(s.metric, [...(fam.get(s.metric) ?? []), s.label]);
+      byFamily.set(s.family, fam);
+    }
+    const rank = (m: Map<string, number>, k: string) => m.get(k) ?? Number.MAX_SAFE_INTEGER;
+    return [...byFamily.entries()]
+      .sort(([a], [b]) => rank(famOrder, a) - rank(famOrder, b) || a.localeCompare(b))
+      .map(([name, metrics]) => {
+        const fam = findFamily(registry, name);
+        return {
+          name,
+          title: fam?.title ?? name,
+          summary: fam?.summary ?? '',
+          metrics: [...metrics.entries()]
+            .sort(([a], [b]) => rank(order, a) - rank(order, b) || a.localeCompare(b))
+            .map(([path, reads]) => ({ path, spec: findMetric(registry, path), reads })),
+        };
+      });
+  }, [data, registry]);
+
+  const allKeys = useMemo(() => (data?.series ?? []).map((s) => s.label), [data]);
+
+  /** Selected reads in groups: the rule's own conditions first, then family by
+   *  family in registry order. */
+  const groupPanes = useCallback(
+    (keys: string[]): PaneGroup[] => {
+      const ruleSet = new Set(ruleKeys);
+      const out: PaneGroup[] = [];
+      const own = ruleKeys.filter((k) => keys.includes(k));
+      if (own.length) {
+        out.push({
+          key: 'rule',
+          title: 'Rule conditions',
+          help: "The reads this rule's conditions make, in rule order",
+          family: null,
+          items: own,
+        });
+      }
+      const byFamily = new Map<string, string[]>();
+      for (const k of keys) {
+        if (ruleSet.has(k)) continue;
+        const fam = metaOf(k).family;
+        byFamily.set(fam, [...(byFamily.get(fam) ?? []), k]);
+      }
+      const famOrder = new Map((registry?.families ?? []).map((f, i) => [f.name, i]));
+      const ranked = [...byFamily.keys()].sort(
+        (a, b) => (famOrder.get(a) ?? Infinity) - (famOrder.get(b) ?? Infinity) || a.localeCompare(b),
+      );
+      for (const fam of ranked) {
+        const f = findFamily(registry, fam);
+        out.push({ key: fam, title: f?.title ?? fam, help: f?.summary ?? fam, family: fam, items: byFamily.get(fam)! });
+      }
+      return out;
+    },
+    [ruleKeys, metaOf, registry],
+  );
 
   const crosshairIdx = useMemo(() => {
     if (crosshairTimeSec == null || !atSec.length) return null;
     return nearestSeriesIndex(atSec, crosshairTimeSec);
   }, [crosshairTimeSec, atSec]);
 
-  const conditionStates = useMemo(() => {
-    if (crosshairIdx == null || !ruleParams || !data || !registry) return [];
-    return metricConditionStatesAt(ruleParams, crosshairIdx, data, registry);
-  }, [crosshairIdx, ruleParams, data, registry]);
-
-  // Keyed by SERIES COLUMN (`metric` / `metric@Ns`), never by metric name: a rule is
-  // free to constrain `untagged_buy` lifetime and `untagged_buy` at 2 s at once, and those
-  // are different readings with different verdicts. Keying by name paints both panes
-  // with whichever condition wrote last — and since the lifetime twin is monotone,
-  // that is a green pane under a windowed metric sitting at zero.
+  // Keyed by READ, never by metric: a rule may read `m_flow.buy_sol` over the life and
+  // over 10 s at once, and those are different numbers with different verdicts.
   const conditionByColumn = useMemo(() => {
-    const map = new Map<string, { ok: boolean; side: 'entry' | 'exit' }>();
-    for (const s of conditionStates) {
-      // Prefer a failing side if both exist; otherwise last write wins.
+    const map = new Map<string, { ok: boolean; side: ConditionSide }>();
+    if (crosshairIdx == null || !rule || !data || !registry) return map;
+    for (const s of metricConditionStatesAt(rule, crosshairIdx, data, registry)) {
+      // A failing condition wins over a passing one on the same read.
       const prev = map.get(s.key);
       if (!prev || (prev.ok && !s.ok)) map.set(s.key, { ok: s.ok, side: s.side });
     }
     return map;
-  }, [conditionStates]);
+  }, [crosshairIdx, rule, data, registry]);
 
-  /** One readable number per selected pane — crosshair when hovering, else latest. */
-  const valueStrip = useMemo(() => {
-    return panes.map((key) => {
-      const meta = allColumns.find((c) => c.key === key);
-      const col = seriesByKey.get(key);
-      if (!meta || !col) return { key, label: key, text: '—', ok: null as boolean | null };
-      const idx =
-        crosshairIdx != null
-          ? crosshairIdx
-          : col.values.reduceRight<number | null>(
-            (found, v, i) => (found != null ? found : v != null && Number.isFinite(v) ? i : null),
-            null,
-          );
-      const raw = idx != null ? col.values[idx] : null;
-      const suffix = unitSuffix(meta.unit);
-      const text = raw != null && Number.isFinite(raw) ? `${formatMetric(raw)}${suffix}` : '—';
-      const cond = conditionByColumn.get(key);
-      return {
-        key,
-        label: key,
-        text,
-        ok: cond ? cond.ok : null,
-      };
-    });
-  }, [panes, allColumns, seriesByKey, crosshairIdx, conditionByColumn]);
+  /** One readable number per selected pane: crosshair when hovering, else latest. */
+  const valueStrip = useMemo(
+    () =>
+      panes.map((key) => {
+        const meta = metaOf(key);
+        const values = meta.column?.values;
+        const idx = values ? (crosshairIdx ?? lastFiniteIdx(values)) : null;
+        const raw = values && idx != null ? values[idx] : null;
+        const text = raw != null && Number.isFinite(raw) ? `${formatMetric(raw)}${unitSuffix(meta.unit)}` : '—';
+        return { key, meta, text, ok: conditionByColumn.get(key)?.ok ?? null };
+      }),
+    [panes, metaOf, crosshairIdx, conditionByColumn],
+  );
 
   const togglePane = (key: string) =>
     setPrefs((p) => ({
       ...p,
       autoPanes: false,
-      // Seed from the rendered set so the first manual toggle under an override
-      // edits the override's panes instead of resurfacing stale saved ones.
+      // Seed from the rendered set so the first manual toggle under a rule edits the
+      // rule's panes instead of resurfacing stale saved ones.
       panes: panes.includes(key) ? panes.filter((k) => k !== key) : [...panes, key],
     }));
 
-  const allSelected = allColumns.length > 0 && allColumns.every((c) => panes.includes(c.key));
+  const allSelected = allKeys.length > 0 && allKeys.every((k) => panes.includes(k));
 
   const toggleSelectAll = () =>
-    setPrefs((p) => ({
-      ...p,
-      autoPanes: false,
-      panes: allSelected ? [] : allColumns.map((c) => c.key),
-    }));
+    setPrefs((p) => ({ ...p, autoPanes: false, panes: allSelected ? [] : allKeys }));
 
   const xDomain: ChartVisibleTimeRange | null = useMemo(() => {
     if (visibleTimeRange && visibleTimeRange.to > visibleTimeRange.from) return visibleTimeRange;
@@ -416,7 +416,7 @@ function useMetricPanesModel({
     return { from: finite[0], to: finite[finite.length - 1] };
   }, [visibleTimeRange, atSec]);
 
-  /** Map pointer X on a pane → nearest series timestamp (drives shared crosshair). */
+  /** Map pointer X on a pane to the nearest series timestamp (drives the crosshair). */
   const handlePanePointer = useCallback(
     (clientX: number, svgEl: Element) => {
       if (!onCrosshairTimeChange || !atSec.length) return;
@@ -426,8 +426,7 @@ function useMetricPanesModel({
       const rect = svgEl.getBoundingClientRect();
       if (rect.width <= 0) return;
       const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-      const t = xFrom + ratio * xSpan;
-      const idx = nearestSeriesIndex(atSec, t);
+      const idx = nearestSeriesIndex(atSec, xFrom + ratio * xSpan);
       if (idx == null || !Number.isFinite(atSec[idx])) return;
       onCrosshairTimeChange(atSec[idx]);
     },
@@ -446,10 +445,11 @@ function useMetricPanesModel({
     prefs,
     setPrefs,
     panes,
-    allColumns,
-    columnsByGroup,
+    allKeys,
+    catalog,
+    metaOf,
+    groupPanes,
     valueStrip,
-    groupKeys,
     togglePane,
     toggleSelectAll,
     allSelected,
@@ -458,20 +458,32 @@ function useMetricPanesModel({
     data,
     crosshairIdx,
     atSec,
-    seriesByKey,
     xDomain,
-    ruleParams,
+    rule,
+    ruleError,
     conditionByColumn,
     crosshairTimeSec,
     handlePanePointer,
     handlePaneLeave,
-    /** The host draws lanes — without one the toggle has nowhere to point. */
+    /** The host draws lanes: without one the toggle has nowhere to point. */
     timelineSupported: !!onConditionBandsChange,
     timelineOn: prefs.timeline,
     laneCount: conditionBands?.lanes.length ?? 0,
     setTimelineOn: (on: boolean) => setPrefs((p) => ({ ...p, timeline: on })),
   };
 }
+
+/** Index of the last finite value, or null. */
+function lastFiniteIdx(values: Array<number | null>): number | null {
+  for (let i = values.length - 1; i >= 0; i--) {
+    const v = values[i];
+    if (v != null && Number.isFinite(v)) return i;
+  }
+  return null;
+}
+
+const groupLabelClass =
+  'font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary';
 
 function MetricPanesSelector() {
   const {
@@ -481,20 +493,18 @@ function MetricPanesSelector() {
     rules,
     prefs,
     panes,
-    allColumns,
-    columnsByGroup,
+    allKeys,
+    catalog,
     togglePane,
     toggleSelectAll,
     allSelected,
     setPrefs,
+    ruleError,
   } = useMetricPanesCtx();
 
   if (!registry) return null;
 
   const inspect = layout === 'inspect';
-  const groupLabelClass = inspect
-    ? 'w-full font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary'
-    : 'w-32 shrink-0 pt-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary';
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-white/8 bg-white/2 p-2">
@@ -502,93 +512,56 @@ function MetricPanesSelector() {
         title="Metrics"
         padding="none"
         bordered={false}
-        storageKey={
-          inspect ? ACCORDION_IDS.metricSelectorInspect : ACCORDION_IDS.metricSelector
-        }
-        // Collapsed by default in both placements: the picker is a tall
-        // multi-column checklist, and open it pushes the panes it selects off
-        // screen — you set the panes once, then read them.
+        storageKey={inspect ? ACCORDION_IDS.metricSelectorInspect : ACCORDION_IDS.metricSelector}
+        // Collapsed by default in both placements: the picker is a tall checklist,
+        // and open it pushes the panes it selects off screen.
         defaultOpen={false}
       >
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2 border-b border-white/8 pb-2">
             <span className="text-[11px] text-text-dim">
-              {panes.length} / {allColumns.length} selected
+              {panes.length} / {allKeys.length} selected
             </span>
             <Button variant="subtle" size="xs" onClick={toggleSelectAll}>
               {allSelected ? 'unselect all' : 'select all'}
             </Button>
           </div>
-          {columnsByGroup.map(({ group, cols }) => {
-            const windowRows = colsByWindow(cols);
-            const isDynamic = windowRows.some((r) => r.window != null);
-            return (
-              <div
-                key={group}
-                className={cn(
-                  'border-b border-white/5 pb-1.5 last:border-b-0 last:pb-0',
-                  inspect ? 'flex flex-col gap-1' : 'flex items-start gap-x-3',
-                )}
-              >
-                <span className={groupLabelClass} title={group}>
-                  {group}
-                </span>
-                <div className={`min-w-0 flex-1 ${isDynamic ? 'flex flex-col gap-0.5' : ''}`}>
-                  {windowRows.map(({ window, items }) => (
-                    <div
-                      key={window ? windowSpecKey(window) : 'static'}
-                      className={`flex min-w-0 items-center gap-2 ${
-                        isDynamic ? 'rounded px-1 py-0.5 odd:bg-white/2' : 'px-1'
-                      }`}
+          {catalog.map((fam) => (
+            <div
+              key={fam.name}
+              className={cn(
+                'border-b border-white/5 pb-1.5 last:border-b-0 last:pb-0',
+                inspect ? 'flex flex-col gap-1' : 'flex items-start gap-x-3',
+              )}
+            >
+              <span className={cn(groupLabelClass, inspect ? 'w-full' : 'w-32 shrink-0 pt-0.5')} title={fam.summary}>
+                {fam.title}
+              </span>
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                {fam.metrics.map((m) => (
+                  <div key={m.path} className="flex min-w-0 items-start gap-2 rounded px-1 py-0.5 odd:bg-white/2">
+                    <span
+                      className="w-32 shrink-0 truncate font-mono text-[11px]"
+                      style={{ color: metricColorStyle({ hue: m.spec?.hue, group: fam.name, metric: m.path }).color }}
+                      title={m.spec ? `${m.path}\n${metricHelp(m.spec)}` : m.path}
                     >
-                      <span
-                        className={`w-8 shrink-0 text-center font-mono text-[10px] font-semibold tabular-nums ${
-                          window != null
-                            ? 'rounded bg-white/8 px-1 py-px text-text'
-                            : 'invisible select-none'
-                        }`}
-                        aria-hidden={window == null}
-                      >
-                        {window ? formatWindowSpec(window) : '0s'}
-                      </span>
-                      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-0.5">
-                        {items.map((c) => (
-                          <label
-                            key={c.key}
-                            className="flex shrink-0 items-center gap-1 text-[11px] text-text-dim"
-                          >
-                            <Checkbox
-                              boxSize="sm"
-                              checked={panes.includes(c.key)}
-                              onChange={() => togglePane(c.key)}
-                            />
-                            <span
-                              className="font-mono whitespace-nowrap"
-                              title={`${c.metric}${c.window ? `@${formatWindowSpec(c.window)}` : ''}${
-                                c.slice ? ` / ${formatWindowSpec(c.slice)} slice` : ''
-                              }`}
-                            >
-                              {/* The bucket already names the reference window, so a
-                                  two-window metric shows only what distinguishes it
-                                  from its siblings: the nested slice. Without it the
-                                  same bucket lists `trade_share` several times with no
-                                  way to tell which reading each one is. */}
-                              {c.metric}
-                              {c.slice ? (
-                                <span className="text-text-dim">/{formatWindowSpec(c.slice)}</span>
-                              ) : null}
-                            </span>
-                          </label>
-                        ))}
-                      </div>
+                      {shortLabel(m.path, fam.name)}
+                    </span>
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                      {m.reads.map((key) => (
+                        <label key={key} className="flex shrink-0 items-center gap-1 text-[11px] text-text-dim" title={key}>
+                          <Checkbox boxSize="sm" checked={panes.includes(key)} onChange={() => togglePane(key)} />
+                          <span className="font-mono whitespace-nowrap">{key.slice(m.path.length).trim() || 'life'}</span>
+                        </label>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ))}
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
-        <div className="flex items-center gap-2 border-t border-white/8 pt-2">
+        <div className="flex flex-wrap items-center gap-2 border-t border-white/8 pt-2">
           <span className="text-[11px] text-text-dim">rule overlay</span>
           {ruleOverride ? (
             <span
@@ -601,13 +574,7 @@ function MetricPanesSelector() {
             <Select
               fieldSize="sm"
               value={prefs.ruleId ?? ''}
-              onChange={(e) =>
-                setPrefs((p) => ({
-                  ...p,
-                  ruleId: e.target.value || null,
-                  autoPanes: true,
-                }))
-              }
+              onChange={(e) => setPrefs((p) => ({ ...p, ruleId: e.target.value || null, autoPanes: true }))}
               className="min-w-40"
             >
               <option value="">none</option>
@@ -618,6 +585,7 @@ function MetricPanesSelector() {
               ))}
             </Select>
           )}
+          {ruleError && <span className="text-[11px] text-warning">{ruleError}</span>}
         </div>
       </Accordion>
     </div>
@@ -625,20 +593,12 @@ function MetricPanesSelector() {
 }
 
 function MetricPanesValues() {
-  const {
-    allColumns,
-    valueStrip,
-    groupKeys,
-    crosshairIdx,
-    ruleParams,
-    timelineSupported,
-    timelineOn,
-    laneCount,
-    setTimelineOn,
-  } = useMetricPanesCtx();
+  const { valueStrip, groupPanes, crosshairIdx, rule, timelineSupported, timelineOn, laneCount, setTimelineOn } =
+    useMetricPanesCtx();
 
-  const timelineAvailable = timelineSupported && ruleParams != null;
+  const timelineAvailable = timelineSupported && rule != null;
   if (valueStrip.length === 0 && !timelineAvailable) return null;
+  const byKey = new Map(valueStrip.map((v) => [v.key, v]));
 
   return (
     <div className="sticky top-0 z-10 flex flex-col gap-y-1.5 rounded-md border border-white/10 bg-bg-panel/95 px-2.5 py-2 backdrop-blur-sm">
@@ -657,66 +617,40 @@ function MetricPanesValues() {
             title={
               timelineOn
                 ? `Hide the per-condition timeline under the chart (${laneCount} lanes)`
-                : "Draw each of the rule's conditions as a lane under the chart, filled where it held — the fire windows without scrubbing for them. Reads the same series as these panes, so it models no arming gate or ladder stage."
+                : "Draw each of the rule's conditions as a lane under the chart, filled where its reading held. Reads the same series as these panes, so it models no entry lock and no stage."
             }
           >
             timeline
           </button>
         )}
       </div>
-      {groupKeys(valueStrip, (v) => v.key).map(({ group, items }) => {
-        const rows = colsByWindow(
-          items.map((v) => {
-            const meta = allColumns.find((c) => c.key === v.key);
-            return { ...v, window: meta?.window ?? null, metric: meta?.metric ?? v.label };
-          }),
-        );
-        const isDynamic = rows.some((r) => r.window != null);
-        return (
-          <div key={group} className="flex items-start gap-x-3">
-            <span className="w-32 shrink-0 pt-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary">
-              {group}
-            </span>
-            <div className={`min-w-0 flex-1 ${isDynamic ? 'flex flex-col gap-0.5' : ''}`}>
-              {rows.map(({ window, items: rowItems }) => (
-                <div
-                  key={window ? windowSpecKey(window) : 'static'}
-                  className={`flex min-w-0 flex-wrap items-end gap-x-3 gap-y-1 px-1 ${
-                    isDynamic ? 'rounded py-0.5 odd:bg-white/2' : ''
-                  }`}
-                >
-                  <span
-                    className={`mb-0.5 w-8 shrink-0 text-center font-mono text-[10px] font-semibold tabular-nums ${
-                      window != null
-                        ? 'rounded bg-white/8 px-1 py-px text-text'
-                        : 'invisible select-none'
-                    }`}
-                    aria-hidden={window == null}
+      {groupPanes(valueStrip.map((v) => v.key)).map((g) => (
+        <div key={g.key} className="flex items-start gap-x-3">
+          <span className={cn(groupLabelClass, 'w-32 shrink-0 pt-0.5')} title={g.help}>
+            {g.title}
+          </span>
+          <div className="flex min-w-0 flex-1 flex-wrap items-end gap-x-3 gap-y-1 px-1">
+            {g.items.map((key) => {
+              const v = byKey.get(key)!;
+              return (
+                <div key={key} className="min-w-18" title={v.meta.help}>
+                  <div className="font-mono text-[10px]" style={{ color: v.meta.color }}>
+                    {shortLabel(key, g.family)}
+                  </div>
+                  <div
+                    className={cn(
+                      'font-mono text-[15px] font-semibold tabular-nums leading-tight',
+                      v.ok === true ? 'text-green' : v.ok === false ? 'text-warning' : 'text-text',
+                    )}
                   >
-                    {window ? formatWindowSpec(window) : '0s'}
-                  </span>
-                  {rowItems.map((v) => (
-                    <div key={v.key} className="min-w-[4.5rem]">
-                      <div className="font-mono text-[10px] text-text-dim">{v.metric}</div>
-                      <div
-                        className={`font-mono text-[15px] font-semibold tabular-nums leading-tight ${
-                          v.ok === true
-                            ? 'text-green'
-                            : v.ok === false
-                              ? 'text-warning'
-                              : 'text-text'
-                        }`}
-                      >
-                        {v.text}
-                      </div>
-                    </div>
-                  ))}
+                    {v.text}
+                  </div>
                 </div>
-              ))}
-            </div>
+              );
+            })}
           </div>
-        );
-      })}
+        </div>
+      ))}
     </div>
   );
 }
@@ -724,16 +658,14 @@ function MetricPanesValues() {
 function MetricPanesGraphs() {
   const {
     layout,
-    registry,
     panes,
-    allColumns,
-    groupKeys,
-    seriesByKey,
+    metaOf,
+    groupPanes,
     atSec,
     xDomain,
     crosshairTimeSec,
     crosshairIdx,
-    ruleParams,
+    rule,
     conditionByColumn,
     handlePanePointer,
     handlePaneLeave,
@@ -750,93 +682,68 @@ function MetricPanesGraphs() {
       {isFetching && <p className="text-[12px] text-text-dim">computing…</p>}
       {data?.truncated && (
         <p className="text-[12px] text-warning">
-          Series truncated at the row ceiling — panes and condition markers cover only up
+          Series truncated at the row ceiling: panes and condition markers cover only up
           to {formatCoveredUntil(data.covered_until)}. Anything after that is not drawn.
         </p>
       )}
 
       {panes.length === 0 ? (
         <p className="text-[12px] text-text-dim/70">
-          Pick a metric above, or select a rule to auto-load its conditions.
+          Pick a metric above, or select a rule to load its conditions.
         </p>
       ) : (
         <div
           className="flex flex-col gap-2"
           onPointerLeave={(e) => {
-            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-              handlePaneLeave();
-            }
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) handlePaneLeave();
           }}
         >
-          {groupKeys(panes, (key) => key).map(({ group, items }) => {
-            const rows = colsByWindow(
-              items.map((key) => {
-                const meta = allColumns.find((c) => c.key === key);
-                return { key, window: meta?.window ?? null };
-              }),
-            );
-            const isDynamic = rows.some((r) => r.window != null);
-            return (
-              <div key={group} className="flex flex-col gap-1.5">
-                <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary">
-                  {group}
-                </span>
-                {rows.map(({ window, items: rowItems }) => (
-                  <div
-                    key={window ? windowSpecKey(window) : 'static'}
-                    className="flex flex-col gap-1.5"
-                  >
-                    {isDynamic && (
-                      <span className="w-fit rounded bg-white/8 px-1.5 py-px font-mono text-[10px] font-semibold tabular-nums text-text">
-                        {formatWindowSpec(window)}
-                      </span>
-                    )}
-                    {rowItems.map(({ key }) => {
-                      const col = seriesByKey.get(key);
-                      const meta = allColumns.find((c) => c.key === key);
-                      if (!col || !meta) {
-                        return (
-                          <div
-                            key={key}
-                            className="rounded border border-white/8 p-2 text-[11px] text-text-dim/60"
-                          >
-                            {key} — no data
-                          </div>
-                        );
-                      }
-                      return (
-                        <MetricPane
-                          key={key}
-                          label={meta.metric}
-                          unit={meta.unit}
-                          atSec={atSec}
-                          values={col.values}
-                          xDomain={xDomain}
-                          crosshairTimeSec={crosshairTimeSec}
-                          crosshairIdx={crosshairIdx}
-                          thresholds={
-                            ruleParams
-                              ? metricThresholdsFor(ruleParams, meta.metric, meta.window, registry)
-                              : []
-                          }
-                          conditionOk={conditionByColumn.get(key)?.ok ?? null}
-                          onPointerTime={handlePanePointer}
-                          compact={compact}
-                        />
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
+          {groupPanes(panes).map((g) => (
+            <div key={g.key} className="flex flex-col gap-1.5">
+              <span className={groupLabelClass} title={g.help}>
+                {g.title}
+              </span>
+              {g.items.map((key) => {
+                const meta = metaOf(key);
+                if (!meta.column) {
+                  return (
+                    <div
+                      key={key}
+                      className="rounded border border-white/8 p-2 text-[11px] text-text-dim/60"
+                      title={meta.help}
+                    >
+                      {key}: not in this series
+                    </div>
+                  );
+                }
+                return (
+                  <MetricPane
+                    key={key}
+                    label={shortLabel(key, g.family)}
+                    help={meta.help}
+                    color={meta.color}
+                    unit={meta.unit}
+                    atSec={atSec}
+                    values={meta.column.values}
+                    xDomain={xDomain}
+                    crosshairTimeSec={crosshairTimeSec}
+                    crosshairIdx={crosshairIdx}
+                    thresholds={rule ? metricThresholdsFor(rule, key) : []}
+                    conditionOk={conditionByColumn.get(key)?.ok ?? null}
+                    onPointerTime={handlePanePointer}
+                    compact={compact}
+                  />
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-/** Mount once per token inspect — shares query/state across split panes. */
+/** Mount once per token inspect: shares query/state across split panes. */
 export function MetricPanesProvider({
   children,
   layout = 'page',
@@ -856,9 +763,10 @@ export function MetricPanesPart({ part }: { part: MetricPanesPartKind }) {
 }
 
 /**
- * Registry-driven metric panes for one token (lab-only — metric-series needs the
+ * Registry-driven metric panes for one token (lab-only: metric-series needs the
  * lake). Default stacked layout; use {@link MetricPanesProvider} +
- * {@link MetricPanesPart} for inspect modal split (graphs right, values under chart).
+ * {@link MetricPanesPart} for the inspect modal split (graphs right, values under
+ * the chart).
  */
 export function MetricPanes(props: MetricPanesProps) {
   return (
@@ -870,32 +778,6 @@ export function MetricPanes(props: MetricPanesProps) {
       </div>
     </MetricPanesProvider>
   );
-}
-
-/** Split a group's columns into one line per span (static/no-window cols first).
- *
- *  Bucketed on the span's dedup IDENTITY, not on its size: 30 slots and 30 seconds
- *  are two readings and must be two lines, or one line's chip would name a window the
- *  other line's numbers were not computed over. */
-function colsByWindow<T extends { window: WindowSpec | null }>(
-  cols: T[],
-): Array<{ window: WindowSpec | null; items: T[] }> {
-  const buckets = new Map<string, { window: WindowSpec | null; items: T[] }>();
-  for (const c of cols) {
-    const k = c.window ? windowSpecKey(c.window) : 'static';
-    const bucket = buckets.get(k) ?? { window: c.window, items: [] };
-    bucket.items.push(c);
-    buckets.set(k, bucket);
-  }
-  return [...buckets.values()].sort((a, b) => {
-    if (!a.window) return b.window ? -1 : 0;
-    if (!b.window) return 1;
-    return (
-      a.window.unit.localeCompare(b.window.unit) ||
-      a.window.size - b.window.size ||
-      a.window.lag - b.window.lag
-    );
-  });
 }
 
 /** Compact metric number for the HUD / pane rail. */
@@ -911,20 +793,17 @@ function formatMetric(v: number): string {
 
 const PANE_H = 64;
 
-const thresholdColor = (side: 'entry' | 'exit') =>
-  side === 'entry' ? 'var(--color-primary)' : 'var(--color-warning)';
+const THRESHOLD_COLOR: Record<ConditionSide, string> = {
+  entry: 'var(--color-primary)',
+  signal: 'var(--color-secondary)',
+  exit: 'var(--color-warning)',
+};
+
+type Threshold = { side: ConditionSide; value: number };
 
 /** Rule threshold values labelled on the right edge of a pane's sparkline. Shared by
  *  the compact and full pane layouts so the two never drift. */
-function ThresholdLabels({
-  thresholds,
-  hi,
-  span,
-}: {
-  thresholds: Array<{ side: 'entry' | 'exit'; value: number }>;
-  hi: number;
-  span: number;
-}) {
+function ThresholdLabels({ thresholds, hi, span }: { thresholds: Threshold[]; hi: number; span: number }) {
   return (
     <>
       {thresholds.map((t, i) => (
@@ -934,7 +813,7 @@ function ThresholdLabels({
           style={{
             top: `${((hi - t.value) / span) * 100}%`,
             transform: 'translateY(-50%)',
-            color: thresholdColor(t.side),
+            color: THRESHOLD_COLOR[t.side],
           }}
           title={`${t.side} threshold`}
         >
@@ -945,9 +824,11 @@ function ThresholdLabels({
   );
 }
 
-/** One metric pane: value-first rail + wall-clock sparkline with min/max + thresholds. */
+/** One pane: value-first rail + wall-clock sparkline with min/max + thresholds. */
 function MetricPane({
   label,
+  help,
+  color,
   unit,
   atSec,
   values,
@@ -960,13 +841,15 @@ function MetricPane({
   compact = false,
 }: {
   label: string;
+  help: string;
+  color: string;
   unit: MetricUnit;
   atSec: number[];
   values: Array<number | null>;
   xDomain: ChartVisibleTimeRange | null;
   crosshairTimeSec: number | null;
   crosshairIdx: number | null;
-  thresholds: Array<{ side: 'entry' | 'exit'; value: number }>;
+  thresholds: Threshold[];
   conditionOk: boolean | null;
   onPointerTime?: (clientX: number, svgEl: Element) => void;
   compact?: boolean;
@@ -995,12 +878,7 @@ function MetricPane({
   let cur: string[] = [];
   values.forEach((v, i) => {
     const t = atSec[i];
-    if (v == null || !Number.isFinite(v) || !Number.isFinite(t)) {
-      if (cur.length) segments.push(cur.join(' '));
-      cur = [];
-      return;
-    }
-    if (t < xFrom || t > xTo) {
+    if (v == null || !Number.isFinite(v) || !Number.isFinite(t) || t < xFrom || t > xTo) {
       if (cur.length) segments.push(cur.join(' '));
       cur = [];
       return;
@@ -1009,17 +887,10 @@ function MetricPane({
   });
   if (cur.length) segments.push(cur.join(' '));
 
-  const suffix = unitSuffix(unit);
-  const primaryIdx =
-    crosshairIdx != null
-      ? crosshairIdx
-      : values.reduceRight<number | null>(
-        (found, v, i) => (found != null ? found : v != null && Number.isFinite(v) ? i : null),
-        null,
-      );
+  const primaryIdx = crosshairIdx ?? lastFiniteIdx(values);
   const primary = primaryIdx != null ? values[primaryIdx] : null;
   const primaryText =
-    primary != null && Number.isFinite(primary) ? `${formatMetric(primary)}${suffix}` : '—';
+    primary != null && Number.isFinite(primary) ? `${formatMetric(primary)}${unitSuffix(unit)}` : '—';
   const crossX =
     crosshairTimeSec != null && crosshairTimeSec >= xFrom && crosshairTimeSec <= xTo
       ? x(crosshairTimeSec)
@@ -1030,13 +901,58 @@ function MetricPane({
   const valueTone =
     conditionOk === true ? 'text-green' : conditionOk === false ? 'text-warning' : 'text-text';
 
+  const sparkline = (
+    <div className="relative min-w-0">
+      <svg
+        viewBox={`0 0 ${W} ${PANE_H}`}
+        preserveAspectRatio="none"
+        className="h-16 w-full min-w-0 cursor-crosshair touch-none"
+        onPointerMove={(e) => onPointerTime?.(e.clientX, e.currentTarget)}
+      >
+        {thresholds.map((t, i) => (
+          <line
+            key={i}
+            x1={0}
+            x2={W}
+            y1={y(t.value)}
+            y2={y(t.value)}
+            stroke={THRESHOLD_COLOR[t.side]}
+            strokeWidth={1}
+            strokeDasharray="4 3"
+            opacity={0.75}
+          />
+        ))}
+        {segments.map((pts, i) => (
+          <polyline key={i} points={pts} fill="none" stroke={color} strokeWidth={1.5} />
+        ))}
+        {crossX != null && (
+          <line x1={crossX} x2={crossX} y1={0} y2={PANE_H} stroke="var(--color-text)" strokeWidth={1} opacity={0.65} />
+        )}
+        {crossY != null && (
+          <line
+            x1={0}
+            x2={W}
+            y1={crossY}
+            y2={crossY}
+            stroke="var(--color-text)"
+            strokeWidth={1}
+            opacity={0.35}
+            strokeDasharray="3 3"
+          />
+        )}
+        {crossX != null && crossY != null && <circle cx={crossX} cy={crossY} r={3.5} fill={color} opacity={0.9} />}
+      </svg>
+      <ThresholdLabels thresholds={thresholds} hi={hi} span={span} />
+    </div>
+  );
+
   if (compact) {
     return (
       <div className="flex min-w-0 flex-col gap-1 rounded-md border border-white/8 bg-white/2 p-2">
-        {/* Label left, readout right — the crosshair is shared across every pane, so
-         *  hovering ANY pane (or the price chart) updates all of these at once. */}
+        {/* Label left, readout right: the crosshair is shared across every pane, so
+            hovering ANY pane (or the price chart) updates all of these at once. */}
         <div className="flex min-w-0 items-baseline justify-between gap-2">
-          <span className="truncate font-mono text-[10px] text-text-dim" title={label}>
+          <span className="truncate font-mono text-[10px]" style={{ color }} title={help}>
             {label}
           </span>
           <span
@@ -1046,59 +962,7 @@ function MetricPane({
             {primaryText}
           </span>
         </div>
-        <div className="relative min-w-0">
-          <svg
-            viewBox={`0 0 ${W} ${PANE_H}`}
-            preserveAspectRatio="none"
-            className="h-16 w-full min-w-0 cursor-crosshair touch-none"
-            onPointerMove={(e) => onPointerTime?.(e.clientX, e.currentTarget)}
-          >
-            {thresholds.map((t, i) => (
-              <g key={i}>
-                <line
-                  x1={0}
-                  x2={W}
-                  y1={y(t.value)}
-                  y2={y(t.value)}
-                  stroke={thresholdColor(t.side)}
-                  strokeWidth={1}
-                  strokeDasharray="4 3"
-                  opacity={0.75}
-                />
-              </g>
-            ))}
-            {segments.map((pts, i) => (
-              <polyline key={i} points={pts} fill="none" stroke="var(--color-green)" strokeWidth={1.5} />
-            ))}
-            {crossX != null && (
-              <line
-                x1={crossX}
-                x2={crossX}
-                y1={0}
-                y2={PANE_H}
-                stroke="var(--color-text)"
-                strokeWidth={1}
-                opacity={0.65}
-              />
-            )}
-            {crossY != null && (
-              <line
-                x1={0}
-                x2={W}
-                y1={crossY}
-                y2={crossY}
-                stroke="var(--color-text)"
-                strokeWidth={1}
-                opacity={0.35}
-                strokeDasharray="3 3"
-              />
-            )}
-            {crossX != null && crossY != null && (
-              <circle cx={crossX} cy={crossY} r={3.5} fill="var(--color-green)" opacity={0.9} />
-            )}
-          </svg>
-          <ThresholdLabels thresholds={thresholds} hi={hi} span={span} />
-        </div>
+        {sparkline}
         <div className="flex justify-between px-0.5 font-mono text-[10px] tabular-nums text-text-dim">
           <span title="visible max">{formatMetric(hi)}</span>
           <span title="visible min">{formatMetric(lo)}</span>
@@ -1110,72 +974,15 @@ function MetricPane({
   return (
     <div className="grid grid-cols-[7.5rem_minmax(0,1fr)_auto] items-stretch gap-2 rounded-md border border-white/8 bg-white/2 p-2">
       <div className="flex min-w-0 flex-col justify-center gap-0.5">
-        <span className="truncate font-mono text-[11px] text-text-dim" title={label}>
+        <span className="truncate font-mono text-[11px]" style={{ color }} title={help}>
           {label}
         </span>
         <span className={`font-mono text-[18px] font-semibold tabular-nums leading-none ${valueTone}`}>
           {primaryText}
         </span>
-        <span className="text-[10px] text-text-dim/70">
-          {crosshairIdx != null ? 'crosshair' : 'latest'}
-        </span>
+        <span className="text-[10px] text-text-dim/70">{crosshairIdx != null ? 'crosshair' : 'latest'}</span>
       </div>
-
-      <div className="relative min-w-0">
-        <svg
-          viewBox={`0 0 ${W} ${PANE_H}`}
-          preserveAspectRatio="none"
-          className="h-16 w-full cursor-crosshair touch-none"
-          onPointerMove={(e) => onPointerTime?.(e.clientX, e.currentTarget)}
-        >
-          {thresholds.map((t, i) => (
-            <g key={i}>
-              <line
-                x1={0}
-                x2={W}
-                y1={y(t.value)}
-                y2={y(t.value)}
-                stroke={thresholdColor(t.side)}
-                strokeWidth={1}
-                strokeDasharray="4 3"
-                opacity={0.75}
-              />
-            </g>
-          ))}
-          {segments.map((pts, i) => (
-            <polyline key={i} points={pts} fill="none" stroke="var(--color-green)" strokeWidth={1.5} />
-          ))}
-          {crossX != null && (
-            <line
-              x1={crossX}
-              x2={crossX}
-              y1={0}
-              y2={PANE_H}
-              stroke="var(--color-text)"
-              strokeWidth={1}
-              opacity={0.65}
-            />
-          )}
-          {crossY != null && (
-            <line
-              x1={0}
-              x2={W}
-              y1={crossY}
-              y2={crossY}
-              stroke="var(--color-text)"
-              strokeWidth={1}
-              opacity={0.35}
-              strokeDasharray="3 3"
-            />
-          )}
-          {crossX != null && crossY != null && (
-            <circle cx={crossX} cy={crossY} r={3.5} fill="var(--color-green)" opacity={0.9} />
-          )}
-        </svg>
-        {/* Threshold labels overlaid on the right of the sparkline */}
-        <ThresholdLabels thresholds={thresholds} hi={hi} span={span} />
-      </div>
-
+      {sparkline}
       <div className="flex w-12 flex-col justify-between py-0.5 text-right font-mono text-[10px] tabular-nums text-text-dim">
         <span title="visible max">{formatMetric(hi)}</span>
         <span title="visible min">{formatMetric(lo)}</span>

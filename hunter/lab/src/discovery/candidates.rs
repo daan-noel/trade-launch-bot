@@ -183,6 +183,19 @@ pub enum SkipReason {
     AnchorNotAScreenParam,
 }
 
+impl SkipReason {
+    /// Stable wire tag.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TagsMissing => "tags_missing",
+            Self::PositionIsExitOnly => "position_is_exit_only",
+            Self::BaselineOrFixed => "baseline_or_fixed",
+            Self::NoDeclaredMenu => "no_declared_menu",
+            Self::AnchorNotAScreenParam => "anchor_not_a_screen_param",
+        }
+    }
+}
+
 /// A registry metric the screen left out on a side, with the reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Skipped {
@@ -254,7 +267,7 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
                 }
                 continue;
             }
-            let reads: Vec<MetricRef> = chart_reads(spec, &trade, &template, &side_spans(spec, side, cfg))
+            let reads: Vec<MetricRef> = chart_reads(spec, &trade, &template, &side_spans(spec, side, cfg), &[])
                 .into_iter()
                 .filter(|r| r.span.since_age.is_none())
                 .collect();

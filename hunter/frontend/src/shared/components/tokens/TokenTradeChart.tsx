@@ -16,11 +16,10 @@ import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
 import { useFlowLensContext } from 'context/FlowLensContext';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
 import { useTokenHighlight } from 'components/tokens/useTokenHighlight';
-import { useIxPatternTarget, type IxPatternTarget, type TapeList } from 'hooks/useIxPatternTarget';
-import { classifyOptsForTape } from 'lib/flow/tapeClassify';
-import type { ChartTapeStaging } from 'components/tokens/chartTapeStaging';
+import { useIxPatternTarget, type TagTape } from 'hooks/useIxPatternTarget';
+import { tradeFlowReasons } from 'lib/flow/flowChartData';
+import { classifyOptsForTag } from 'lib/flow/tapeClassify';
 import { usePriceUnit } from 'context/PriceUnitContext';
-import { useFlowReasons } from 'hooks/useFlowReasons';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
 import { apiErrorMessage, useGetTokenTradesQuery } from 'store/apiSlice';
@@ -46,34 +45,6 @@ interface TokenTradeChartExternalSelection {
   trades: TradeRecord[];
   emptyMessage: string;
   onClear: () => void;
-}
-
-export type { ChartTapeStaging } from 'components/tokens/chartTapeStaging';
-
-function stagingPatternTarget(tape: ChartTapeStaging): IxPatternTarget {
-  return {
-    target: null,
-    fingerprints: [],
-    targetId: null,
-    setTargetId: () => {},
-    list: tape.list,
-    setList: tape.setList,
-    patterns: tape.rows.map((r) => r.labels),
-    workingTemplates: tape.workingTemplates,
-    workingWrite: tape.workingWrite ?? 'grain',
-    setWorkingWrite: tape.setWorkingWrite ?? (() => {}),
-    rows: tape.rows,
-    feePins: tape.feePins,
-    setFeePins: tape.setFeePins,
-    otherKeys: null,
-    keys: tape.keys,
-    activeRuleCount: 0,
-    toggle: tape.toggle,
-    inferred: false,
-    offHost: false,
-    saving: false,
-    error: null,
-  };
 }
 
 interface TokenTradeChartProps {
@@ -104,21 +75,21 @@ interface TokenTradeChartProps {
   /** Visible wall-clock window for sibling panes (time-grouping mode only). */
   onVisibleTimeRangeChange?: (range: { from: number; to: number } | null) => void;
   /**
-   * Fingerprint `ix_patterns` keys for the vol/non-vol overlay + Vol
-   * badge. Omit/empty still draws the overlay (creator-vs-rest split); it only
-   * hides the per-trade Tagged badge, which is a structural match by definition.
+   * The host's key set (its default tag's exact ix shapes). Classified with as an
+   * ad-hoc shape tag only when no fingerprint resolves - a host that knows its
+   * fingerprint passes {@link flowFingerprintId} and the chart reads the whole tag.
    */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Fingerprint {@link flowPatternKeys} came from — the trades table's Tagged-badge
-   *  write target (see `BarTradesPanel`). Pass it wherever the host knows one. */
+  /** The host's fingerprint: its tag is what the overlay and badges classify with,
+   *  and the row an "add to tag" click writes (see `BarTradesPanel`). */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  /** A stored run's frozen shapes - display only (see `BarTradesPanel`). */
   flowReadOnly?: boolean;
   /**
-   * Staging tape (Flow Discovery). Overlay, badges and clicks all read this
-   * draft instead of persisting to a fingerprint. The cart owns Apply.
+   * Staging tape (Flow Discovery). The overlay and badges read its draft tag and
+   * clicks write the draft instead of a fingerprint. The cart owns Apply.
    */
-  tape?: ChartTapeStaging | null;
+  tape?: TagTape | null;
   /** Bottom-pane on/off lanes — the inspect's rule-condition timeline. */
   timeBands?: ChartTimeBand[] | null;
   /** The stretch those lanes speak for. */
@@ -258,53 +229,22 @@ export function TokenTradeChart({
     [profileWallets],
   );
 
-  // Classified over the full history, not the selection — contagion is
-  // forward-only, so a bar's rows alone can't reconstruct it.
-  // Under a page-wide lens the table's reasons must be computed the SAME way the
-  // overlay lines were (structural-only, exclusions) or the badge and the line
-  // disagree on the same trade.
+  // The tag the lines and the badges classify with: the staging draft, else the
+  // page's lens, else the host fingerprint's picked tag. Classified over the FULL
+  // history, not the selection - sticky, cluster and the creation slot are
+  // forward-only - with the lens' exclusions, the same pass the lines draw from.
   const lens = useFlowLensContext();
-  const lensTarget = flowReadOnly ? null : (lens?.target ?? null);
   const persistTarget = useIxPatternTarget({
     fingerprintId: flowFingerprintId,
     savedKeys: flowPatternKeys,
-    enabled: !flowReadOnly && !lensTarget && !tape,
+    enabled: !flowReadOnly && !lens && !tape,
   });
-  const patternTarget = useMemo(
-    () => (tape ? stagingPatternTarget(tape) : persistTarget),
-    [tape, persistTarget],
+  const flowTag = tape ? tape.tag : lens ? lens.tag : persistTarget.tag;
+  const excludeWallets = lens?.excludeWallets ?? null;
+  const flowReasons = useMemo(
+    () => tradeFlowReasons(trades, classifyOptsForTag(flowTag, detail?.creator_wallet, excludeWallets)),
+    [trades, flowTag, detail?.creator_wallet, excludeWallets],
   );
-  const overlayList: TapeList = tape?.list ?? lensTarget?.list ?? persistTarget.list;
-  const overlayKeys = tape?.keys ?? (lensTarget ? (flowPatternKeys ?? null) : persistTarget.keys);
-  const overlayRows =
-    overlayList === 'working'
-      ? null
-      : (tape?.rows ?? (lensTarget ? lensTarget.rows : persistTarget.rows));
-  const classifyOpts = useMemo(
-    () =>
-      classifyOptsForTape({
-        list: overlayList,
-        keys: overlayKeys,
-        rows: overlayRows,
-        creatorWallet: detail?.creator_wallet,
-        contagion: lens?.contagion ?? tape?.contagion,
-        seedCreator: tape?.seedCreator,
-        excludeWallets: lens?.excludeWallets ?? null,
-        side: lens?.side ?? null,
-      }),
-    [
-      overlayList,
-      overlayKeys,
-      overlayRows,
-      detail?.creator_wallet,
-      lens?.contagion,
-      tape?.contagion,
-      tape?.seedCreator,
-      lens?.excludeWallets,
-      lens?.side,
-    ],
-  );
-  const flowReasons = useFlowReasons(trades, classifyOpts);
 
   const selectionTrades = useMemo(() => {
     if (externalSelection) return externalSelection.trades;
@@ -344,11 +284,7 @@ export function TokenTradeChart({
         onCrosshairTimeChange={onCrosshairTimeChange}
         externalCrosshairTimeSec={externalCrosshairTimeSec}
         onVisibleTimeRangeChange={onVisibleTimeRangeChange}
-        flowPatternKeys={overlayKeys}
-        flowList={overlayList}
-        flowPatternRows={overlayRows}
-        flowSeedCreator={tape?.seedCreator}
-        flowContagion={tape?.contagion}
+        flowTag={flowTag}
         highlightLens={highlight.lens}
         onHighlightLensMatch={highlight.onLensMatch}
         timeBands={timeBands}
@@ -366,11 +302,11 @@ export function TokenTradeChart({
         eventMarkers={eventMarkers}
         myWalletAddresses={myWalletAddresses}
         highlightWallet={highlightWallet}
-        flowPatternKeys={overlayKeys}
+        flowPatternKeys={flowPatternKeys}
         flowFingerprintId={flowFingerprintId}
         flowReadOnly={flowReadOnly}
-        patternTarget={patternTarget}
-        hideTargetPicker={!!tape}
+        patternTarget={persistTarget}
+        tape={tape}
         flowReasons={flowReasons}
         highlight={highlight}
       />

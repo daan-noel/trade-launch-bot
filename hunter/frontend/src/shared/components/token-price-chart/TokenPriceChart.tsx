@@ -23,7 +23,8 @@ import {
   type FlowBasis,
   type FlowLines,
 } from 'lib/flow/flowChartData';
-import { classifyOptsForTape } from 'lib/flow/tapeClassify';
+import { classifyOptsForTag } from 'lib/flow/tapeClassify';
+import { tagSentence } from 'lib/strategy/tagsDoc';
 import { useFlowLensContext } from 'context/FlowLensContext';
 import { attachDualPriceScaleSync, type DualPriceScaleSync } from './dualPriceScaleSync';
 import {
@@ -545,11 +546,7 @@ export function TokenPriceChart({
   creatorWallet = null,
   tokenCreatedAt,
   eventMarkers = null,
-  flowPatternKeys = null,
-  flowList = 'tagged',
-  flowPatternRows = null,
-  flowSeedCreator,
-  flowContagion,
+  flowTag = null,
   flowBasis = 'cost_sol',
   highlightLens = null,
   onHighlightLensMatch,
@@ -647,58 +644,31 @@ export function TokenPriceChart({
     tagged: initialPrefs.showFlowTagged,
     untagged: initialPrefs.showFlowUntagged,
   });
-  // A page-wide flow lens (Trader Analysis) overrides HOW the split is computed:
-  // structural-only reads and excluded wallets. Absent everywhere else, where the
-  // chart classifies from the selected tape list (tagged = engine contagion;
-  // dump/working = structural only).
+  // A page-wide flow lens (Trader Analysis) adds its excluded wallets (the studied
+  // trader). The tag itself - fingerprint tag, lens set or staging draft - is the
+  // host's to pick and arrives as `flowTag`.
   const lens = useFlowLensContext();
   const flowExcludeWallets = lens?.excludeWallets ?? null;
-  const flowSide = lens?.side ?? null;
   const classifyOpts = useMemo(
-    () =>
-      classifyOptsForTape({
-        list: flowList,
-        keys: flowPatternKeys,
-        rows: flowPatternRows,
-        creatorWallet,
-        contagion: lens?.contagion ?? flowContagion,
-        seedCreator: flowSeedCreator,
-        excludeWallets: flowExcludeWallets,
-        side: flowSide,
-      }),
-    [
-      flowList,
-      flowPatternKeys,
-      flowPatternRows,
-      creatorWallet,
-      lens?.contagion,
-      flowContagion,
-      flowSeedCreator,
-      flowExcludeWallets,
-      flowSide,
-    ],
+    () => classifyOptsForTag(flowTag, creatorWallet, flowExcludeWallets),
+    [flowTag, creatorWallet, flowExcludeWallets],
   );
-  /** True once the selected list has membership — the split is then that list's
-   *  own classifier, not the creator-vs-rest fallback. */
-  const flowPatternsConfigured = flowPatternKeys != null && flowPatternKeys.size > 0;
-  // Adding the first pattern is only feedback if the lines are on screen. The
-  // overlay toggle is a persisted pref and the button is dead until something can
-  // classify, so that first toggle would otherwise change nothing visible. Fires on
-  // the transition only — turning the lines back off stays the user's call.
-  const wasFlowPatternsConfigured = useRef(flowPatternsConfigured);
-  useEffect(() => {
-    const was = wasFlowPatternsConfigured.current;
-    wasFlowPatternsConfigured.current = flowPatternsConfigured;
-    if (!was && flowPatternsConfigured) setFlowLineVis({ tagged: true, untagged: true });
-  }, [flowPatternsConfigured]);
-  /** Draw the overlay whenever SOMETHING can classify: patterns, or just the
-   *  creator wallet (which alone splits creator + everyone they traded with off
-   *  from the rest — see `classifyFlow`). Both readings are useful on a chart,
-   *  so the toggle only goes dead when neither input exists; the toolbar tooltip
-   *  says which of the two you're looking at. A structural-only lens has no
-   *  creator rule to fall back on, so with contagion off the overlay needs
-   *  patterns or it has nothing to say. */
+  /** The overlay draws exactly when the tag can classify (it uses a matcher). */
   const flowLinesAvailable = classifyOpts != null;
+  const flowTagName = classifyOpts ? classifyOpts.tag.name : null;
+  const flowTagText = useMemo(() => (flowTag ? tagSentence({ ...flowTag, id: '' }) : null), [flowTag]);
+  const flowTagNameRef = useRef(flowTagName);
+  flowTagNameRef.current = flowTagName;
+  // A tag becoming readable is only feedback if the lines are on screen. The overlay
+  // toggle is a persisted pref and the button is dead until something classifies,
+  // so that first toggle would otherwise change nothing visible. Fires on the
+  // transition only - turning the lines back off stays the user's call.
+  const wasFlowLinesAvailable = useRef(flowLinesAvailable);
+  useEffect(() => {
+    const was = wasFlowLinesAvailable.current;
+    wasFlowLinesAvailable.current = flowLinesAvailable;
+    if (!was && flowLinesAvailable) setFlowLineVis({ tagged: true, untagged: true });
+  }, [flowLinesAvailable]);
   const flowLinesAvailableRef = useRef(flowLinesAvailable);
   flowLinesAvailableRef.current = flowLinesAvailable;
   const { timezone: chartTimezone } = useTimezone();
@@ -1179,6 +1149,7 @@ export function TokenPriceChart({
         liquiditySol: bar.liquiditySol,
         flowTagged: flow.tagged,
         flowUntagged: flow.untagged,
+        flowTagName: flowTagNameRef.current,
       };
       setCrosshair(info);
       // Resolve wall-clock seconds for sibling panes (metric series): the instant
@@ -1442,9 +1413,8 @@ export function TokenPriceChart({
     }
   }, [bars, style, showChart, groupingKey, priceUnit, highlightBarKey, snapshotVisibleViewport]);
 
-  // Vol/non-tagged cumulative overlay (left price scale). With no configured
-  // patterns the structural test never fires and the split degrades to
-  // creator-vs-rest — still drawn, and labelled as such by the toolbar.
+  // `@tag` / `@!tag` cumulative overlay (left price scale). No tag that classifies
+  // ⇒ no lines, and the toolbar toggle says why.
   const flowLines = useMemo(() => {
     if (!classifyOpts) {
       return { tagged: [], untagged: [] } satisfies FlowLines;
@@ -2087,8 +2057,8 @@ export function TokenPriceChart({
         trimEmptyBars={trimEmptyBars}
         flowLines={flowLineVis}
         flowLinesAvailable={flowLinesAvailable}
-        flowPatternsConfigured={flowPatternsConfigured}
-        flowList={flowList}
+        flowTagName={flowTagName}
+        flowTagText={flowTagText}
         rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
         formatFlow={formatFlow}

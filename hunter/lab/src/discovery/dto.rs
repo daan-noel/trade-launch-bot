@@ -246,7 +246,7 @@ impl ScreenDto {
                 .map(|s| SkippedDto {
                     side: side_str(s.side),
                     read: ReadDto::metric(s.metric),
-                    reason: format!("{:?}", s.reason),
+                    reason: s.reason.as_str(),
                 })
                 .collect(),
             gaps: r
@@ -255,7 +255,14 @@ impl ScreenDto {
                 .map(|(m, gap)| MenuGapDto {
                     side: side_str(m.side),
                     read: ReadDto::of(m.r),
-                    reason: format!("{gap:?}"),
+                    reason: match gap {
+                        crate::discovery::candidates::MenuGap::NoSamples => "no_samples",
+                        crate::discovery::candidates::MenuGap::Degenerate { .. } => "degenerate",
+                    },
+                    distinct: match gap {
+                        crate::discovery::candidates::MenuGap::NoSamples => None,
+                        crate::discovery::candidates::MenuGap::Degenerate { distinct } => Some(*distinct),
+                    },
                 })
                 .collect(),
         }
@@ -362,7 +369,9 @@ pub struct SkippedDto {
     pub side: String,
     #[serde(flatten)]
     pub read: ReadDto,
-    pub reason: String,
+    /// `tags_missing`, `position_is_exit_only`, `baseline_or_fixed`,
+    /// `no_declared_menu` or `anchor_not_a_screen_param`.
+    pub reason: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -370,7 +379,11 @@ pub struct MenuGapDto {
     pub side: String,
     #[serde(flatten)]
     pub read: ReadDto,
-    pub reason: String,
+    /// `no_samples` (never finite on the cohort) or `degenerate` (p10..p90 round to
+    /// fewer than two values, `distinct` of them).
+    pub reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distinct: Option<usize>,
 }
 
 // ───────────────────────────── Layer 2 ─────────────────────────────────────
@@ -476,7 +489,7 @@ impl From<&FamilyResult> for FamilyResultDto {
                 .dropped
                 .iter()
                 .map(|(m, reason)| DroppedMemberDto {
-                    metric: m.metric.r.label(),
+                    label: m.metric.r.label(),
                     reason: match reason {
                         DropReason::AxisCap => "axis_cap",
                         DropReason::ComboCap => "combo_cap",
@@ -504,7 +517,8 @@ pub struct FamilyMemberDto {
 
 #[derive(Debug, Serialize)]
 pub struct DroppedMemberDto {
-    pub metric: String,
+    /// The dropped read's full label, `m_flow.buy_sol @!volume [30s]`.
+    pub label: String,
     pub reason: String,
 }
 
@@ -594,7 +608,7 @@ impl From<&JointResult> for JointResultDto {
                 .dropped
                 .iter()
                 .map(|(m, reason)| DroppedMemberDto {
-                    metric: m.metric.r.label(),
+                    label: m.metric.r.label(),
                     reason: match reason {
                         DropReason::AxisCap => "axis_cap",
                         DropReason::ComboCap => "combo_cap",

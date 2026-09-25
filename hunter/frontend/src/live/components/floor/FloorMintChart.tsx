@@ -13,8 +13,7 @@ import type { ChartHighlightLens, ChartLensMatches } from 'components/token-pric
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
 import { apiErrorMessage, useGetTokenDetailQuery, useGetTokenTradesQuery } from 'store/apiSlice';
-import type { IxPatternRow } from 'lib/strategy/ixPatternRows';
-import type { TapeList } from 'lib/strategy/registry';
+import type { FlowTag } from 'lib/flow/classifyFlow';
 import type { TradeRecord } from 'types';
 
 const EMPTY: TradeRecord[] = [];
@@ -38,10 +37,8 @@ export function FloorMintChart({
   height = 220,
   tableId = 'floor-mint-chart',
   chrome = 'full',
-  /** Fingerprint `ix_patterns` keys — enables the vol/non-vol overlay. */
-  flowPatternKeys = null,
-  flowList = 'tagged',
-  flowPatternRows = null,
+  /** The tag the `@tag` / `@!tag` overlay classifies with (`IxPatternTarget.tag`). */
+  flowTag = null,
   highlightLens = null,
   onHighlightLensMatch,
   selectedBar = null,
@@ -58,9 +55,7 @@ export function FloorMintChart({
   height?: number;
   tableId?: string;
   chrome?: ChartChrome;
-  flowPatternKeys?: ReadonlySet<string> | null;
-  flowList?: TapeList;
-  flowPatternRows?: readonly IxPatternRow[] | null;
+  flowTag?: FlowTag | null;
   highlightLens?: ChartHighlightLens | null;
   onHighlightLensMatch?: (matches: ChartLensMatches) => void;
   selectedBar?: ChartBarSelection | null;
@@ -136,9 +131,7 @@ export function FloorMintChart({
         isMigrated={detail?.is_migrated}
         isCashbackEnabled={detail?.is_cashback_enabled}
         creatorWallet={detail?.creator_wallet ?? null}
-        flowPatternKeys={flowPatternKeys}
-        flowList={flowList}
-        flowPatternRows={flowPatternRows}
+        flowTag={flowTag}
         highlightLens={highlightLens}
         onHighlightLensMatch={onHighlightLensMatch}
       />

@@ -1,9 +1,9 @@
-/** Plain-language ⓘ help for rule / fingerprint / sweep authoring.
+/** Plain-language ⓘ help for the PAGE-level fields of rule / fingerprint / sweep
+ *  authoring (name, mode, caps, cost models, ...).
  *
- *  Wording goal: detailed enough to use without reading the plan docs, still
- *  scannable. Bodies may use newlines (`whitespace-pre-line` in InfoTooltip).
- *  Mirrors engine semantics: entry AND / exit OR across metrics; within one
- *  metric `,` = AND, `|` = OR, `lo..hi` = inclusive range. */
+ *  Every metric, span, tag matcher and rule part is explained by the registry
+ *  (`GET /api/meta/strategy-registry`), never here: one definition, rendered as-is.
+ *  Bodies may use newlines (`whitespace-pre-line` in InfoTooltip). */
 
 export interface HelpTip {
   title: string;
@@ -45,842 +45,12 @@ export const CONDITION_GRAMMAR_HELP: HelpTip = {
     '  Typing <30, >=70 (AND) is impossible as one range — it auto-becomes',
     '  <30 | >=70 (OR). Feasible pairs like >5, <40 stay AND.',
     '',
-    'Across different metrics, entry still ANDs and exit still ORs (see side tip).',
+    'Conditions in one list must ALL hold. For "this OR that" across metrics, write two',
+    'lines, or a signal with two groups.',
   ].join('\n'),
 };
 
-// ── Entry / exit sides ───────────────────────────────────────────────────────
-
-export const SIDE_HELP = {
-  entry_event: {
-    title: 'Event — the completing print',
-    body: [
-      'AND of metrics about THIS print: the buy that completes a slot burst.',
-      '',
-      'Harvest puts crowd shape here (this_member, this_working, same_buy_count, has_new…).',
-      'Filters (the other buy column) still have to hold on that same print.',
-      '',
-      'ONCE PER SLOT (entry_lock): the first print this slot that makes the event true',
-      'is the only candidate. Filters that fail spend the slot — later prints this slot',
-      'cannot retry. That is what stops a mixed burst from firing twice.',
-      '',
-      'EVERY PRINT: event AND filters on every print (no lock). Same AND, no spend.',
-      '',
-      'Empty event = today\'s level-AND: filters alone, every print. The lock control',
-      'hides until you add an event row (a lock with no event is a save error).',
-      '',
-      'ACROSS METRICS: AND, same as filters. WITHIN ONE METRIC: , = AND, | = OR.',
-    ].join('\n'),
-  },
-  entry: {
-    title: 'Filters — AND with the event',
-    body: [
-      'Runs after the fingerprint matches and the (token, rule) arm is live.',
-      '',
-      'When an Event is set, these filters evaluate on THAT print (and, with once-per-slot,',
-      'a fail spends the slot). Without an Event they are the whole buy gate, every print.',
-      '',
-      'ACROSS METRICS: AND — every metric you fill must be true at the same moment. Example: time > 5 AND liquidity > 10 → both required.',
-      '',
-      'WITHIN ONE METRIC: still use , (AND) / | (OR) / lo..hi as in the condition tip. Example: time 5..30 → enter only while age is between 5 and 30 seconds.',
-      '',
-      'Empty metric = ignore that metric. Empty whole filter column + empty event = buy as soon as the fingerprint arms (no extra wait).',
-      '',
-      'OVERLAP GATE: if any exit metric is already true at the same moment, the engine does not buy (would sell on the next tick). Keep entry and exit bands disjoint.',
-      '',
-      'Monotonic tip: time and m_flow_lifetime buy/sell/gross_flow only go up. An entry',
-      'like time < 30 (or lifetime gross_flow < 5) can never succeed after it is crossed —',
-      'the engine disarms that arm (derived unsatisfiable).',
-    ].join('\n'),
-  },
-  exit: {
-    title: 'Exit side — when to SELL',
-    body: [
-      'Checked while you hold a position, alongside take-profit and stop-loss.',
-      '',
-      'Prefer the TP / SL % fields for classic %-from-entry exits (labeled TakeProfit /',
-      'StopLoss). Those are sugar for m_position.pnl — use the pnl metric only for',
-      'extra/custom bounds (e.g. a catastrophe stop beside SL).',
-      '',
-      'ACROSS METRICS: OR of ways to sell. Object-form (one metric per way — sweep axes, and the editor\'s default) means any one true metric sells. Example: stall > 15 OR trail > 20 → either is enough. Two metrics in one way (array-form) means both must hold; any way still sells.',
-      '',
-      'The rule editor: + in the exit header adds another way (OR); + on a way ANDs a condition into that way.',
-      '',
-      'WITHIN ONE METRIC: , = AND, | = OR, lo..hi = inclusive range. Examples:',
-      '  liquidity 20..50     → sell while liquidity is inside that band',
-      '  liquidity <30 | >=70 → sell if pool is thin OR very deep',
-      '',
-      'Empty whole exit side = only TP / SL / death close the trade (no metric exit).',
-      '',
-      'Close reasons OR together: TP hit OR SL hit OR any exit metric OR dead/migrated.',
-      '',
-      'If an exit metric is already true when entry would fire, entry is refused until that exit clears (see entry overlap gate).',
-    ].join('\n'),
-  },
-} as const satisfies Record<'entry' | 'entry_event' | 'exit', HelpTip>;
-
-// ── Metric groups ────────────────────────────────────────────────────────────
-
-export const GROUP_HELP: Record<string, HelpTip> = {
-  m_state: {
-    title: 'm_state — point-in-time facts',
-    body: [
-      'Always-on metrics that do not need a trailing window.',
-      '',
-      '• time, liquidity, on_curve.',
-      '',
-      'Looking for ix_count or prior_launches? They are fingerprint AXES, not metrics:',
-      'creation-time facts that select which tokens a rule runs on, set beside the',
-      'fingerprint rather than as a condition here.',
-      '',
-      'Use for age gates, pool-depth filters and venue screens. Kind: static.',
-    ].join('\n'),
-  },
-  m_price_lifetime: {
-    title: 'm_price_lifetime — price behaviour',
-    body: [
-      'How price has been moving since the token (and your hold) has been alive.',
-      '',
-      '• stall — seconds since the price last set a new all-time high (how long since progress).',
-      '• trail — % drop from the lifetime peak (give-back from the high).',
-      '• rise — % climb from the lifetime trough (bounce off the all-time low).',
-      '',
-      'No window_size_sec. Kind: static.',
-    ].join('\n'),
-  },
-  m_price_window: {
-    title: 'm_price_window — rolling price extrema',
-    body: [
-      'Price position relative to the highest/lowest print over a trailing window',
-      '(window_size_sec, _slots or _prints — exactly one). Unlike m_price_lifetime',
-      '(lifetime peak), this high/low rolls forward, so it reads short dips inside an',
-      'otherwise-hot token.',
-      '',
-      '• trail — % below the rolling-window high (the dip-buy trigger).',
-      '• rise — % above the rolling-window low (breakout/momentum).',
-      '',
-      'Empty window (no trade for N s) ⇒ NaN (never fires). Kind: dynamic.',
-    ].join('\n'),
-  },
-  m_flow_lifetime: {
-    title: 'm_flow_lifetime — lifetime flow',
-    body: [
-      'Sums buys/sells since token birth (no trailing window, no classifier).',
-      '',
-      'Metrics — gross_flow, net_flow, buy, sell (SOL) and trade_count (a tally).',
-      'Every name is shared with m_flow_window, which reads the same quantity over a',
-      'trailing window instead of since birth.',
-      '',
-      'Use as a maturity / critical-mass gate. For "hot right now", prefer',
-      'm_flow_window. No window_size_sec. Kind: static.',
-    ].join('\n'),
-  },
-  m_flow_window: {
-    title: 'm_flow_window — trailing flow',
-    body: [
-      'Sums buys/sells over a trailing window. Unlike m_flow_lifetime (totals since',
-      'birth), the lookback rolls forward.',
-      '',
-      'Metrics:',
-      '• gross_flow — buys + sells, SOL (activity)',
-      '• net_flow — buys − sells, SOL (direction)',
-      '• buy / sell — one side only, SOL',
-      '• buy_share — buy / (buy + sell) in PERCENT 0-100, not 0-1: direction',
-      '  independent of size. NaN on an empty window, so it never fires on silence.',
-      '• trade_count — how many trades landed (a count). One wallet re-entering ten',
-      '  times reads 10 here and 1 in m_crowd_window.unique_wallets.',
-      '• buy_count / sell_count — how many BUYS, how many SELLS. trade_count counts',
-      '  both, so on a one-slot window only these answer "who bought the slice". The',
-      '  two always add up to trade_count; a condition cannot subtract, which is why',
-      '  sell_count exists at all.',
-      '• trade_share / sol_share — what fraction of the window landed in a SLICE',
-      '  nested inside it (set slice_size_sec). trade_share counts trades, sol_share',
-      '  counts SOL, and they are not the same reading: ten prints of 0.1 SOL and one',
-      '  print of 10 are identical in the first and far apart in the second. On a',
-      '  PRINT window only sol_share still varies. Entry side only, for now.',
-      '',
-      'If you use any metric here you must set EXACTLY ONE size — window_size_sec',
-      '(e.g. 10), window_size_slots (e.g. 30) or window_size_prints (e.g. 20) — plus',
-      'an optional window_lag. slice_size_* is required by trade_share / sol_share and',
-      'REJECTED on a row without them: a slice nothing reads is a gate that does nothing.',
-      'Kind: dynamic.',
-    ].join('\n'),
-  },
-  m_crowd_window: {
-    title: 'm_crowd_window — who is trading, over a window',
-    body: [
-      'The two readings about PEOPLE rather than money, over the same trailing window',
-      'm_flow_window uses.',
-      '',
-      'Metrics — unique_wallets and trades_per_wallet. One wallet churning and a crowd',
-      'arriving are identical in gross_flow and far apart here.',
-      '',
-      'Why its own group rather than part of m_flow_window: it needs the WALLET column',
-      'loaded. An offline read without it folds every trade as one anonymous wallet, so',
-      'unique_wallets reads 1 forever and the gate looks strict instead of broken. One',
-      'group, one load obligation. (The flow-ix, burst-wave, copy and holder metrics',
-      'need that column too, each for its own reason.)',
-      '',
-      'To gate on flow AND crowd over one window, author both groups at the same',
-      'window_size_sec. They are ANDed, and they share one buffer.',
-      'Kind: dynamic.',
-    ].join('\n'),
-  },
-  m_flow_ix: {
-    title: 'm_flow_ix — flow split by instruction structure (lifetime)',
-    body: [
-      'Splits every trade by whether its instruction shape is TAGGED by the',
-      'fingerprint\'s ix_patterns (+ wallet contagion + creator wallet). Tagged is',
-      'usually creator tooling and untagged usually organic, but the metric reads the',
-      'MATCH, not the motive, and is named for what it reads.',
-      '',
-      'Metrics (SOL unless noted): tagged_buy/sell/net/gross, untagged_*, tagged_share (%),',
-      'tagged_buy_count / tagged_sell_count count LEGS, not SOL — and not transactions',
-      'either: one transaction carrying several buy instructions counts once per leg.',
-      '(m_dump_ix.dump_sell_count is the one that counts transactions.)',
-      'Unconfigured fingerprint ⇒ all NaN (conditions never fire). Kind: static.',
-    ].join('\n'),
-  },
-  m_flow_ix_window: {
-    title: 'm_flow_ix_window — flow split by instruction structure (trailing)',
-    body: [
-      'Same split as m_flow_ix, but over a trailing window (window_size_sec,',
-      'window_size_slots or window_size_prints).',
-      'Reads the same ix_patterns from the fingerprint (no duplicate config).',
-      '',
-      'Metric names mirror m_flow_ix (tagged_*, untagged_*, tagged_share, and the two',
-      'tagged_*_count tallies). Kind: dynamic.',
-      '',
-      'tagged_sell_count on a ONE-SLOT window is "how many tagged sells landed at',
-      'once" — the reading tagged_sell (SOL) cannot give, because one large sell and',
-      'several small ones are the same number of SOL.',
-    ].join('\n'),
-  },
-  m_position: {
-    title: 'm_position — your open position (EXIT ONLY)',
-    body: [
-      'Metrics anchored on YOUR entry fill — they only exist while you hold, so this',
-      'group is exit-only (hidden on the entry side).',
-      '',
-      '• retrace, bounce, held, armed, room_taken.',
-      '• pnl — prefer the TP / SL % fields for the classic labeled exits; those desugar',
-      '  into pnl. Use this row for extra or custom bounds.',
-      '',
-      'Before entry these read NaN. Kind: static.',
-    ].join('\n'),
-  },
-  m_dump_ix: {
-    title: 'm_dump_ix — dump-list sells (lifetime)',
-    body: [
-      'SOL sold through builds on this fingerprint\'s m_dump_ix.ix_patterns, since birth.',
-      'Its own list, separate from the flow split — a sell can be tagged AND a dump.',
-      '',
-      '• dump_sell — SOL, every LEG.',
-      '• dump_sell_count — TRANSACTIONS (a four-wallet bag counts once).',
-      '',
-      'Unconfigured list ⇒ both NaN (never 0). Kind: static.',
-    ].join('\n'),
-  },
-  m_dump_ix_window: {
-    title: 'm_dump_ix_window — dump-list sells (trailing)',
-    body: [
-      'Same dump list as m_dump_ix, over a trailing window.',
-      'On a ONE-SLOT window dump_sell_count >= 2 is two dump-built transactions at once.',
-      'Kind: dynamic.',
-    ].join('\n'),
-  },
-  m_burst_slot: {
-    title: 'm_burst_slot — this slot\'s buy prefix x this print\'s grain',
-    body: [
-      'Harvest\'s completing-print group. Needs fingerprint working_templates: a `|` id is',
-      'a grain, a bare name is a program. Not full ix_labels. Absent => every metric',
-      'reads NaN, never 0.',
-      '',
-      'Event metrics (this print): this_member, this_working, has_new, has_unknown,',
-      'packed. Crowd shape: same_* (this grain) and working_* (listed grains).',
-      'Depth gates: pre_slot_liquidity, pre_print_trail (the previous print\'s trail).',
-      '',
-      'Author crowd shape on the Event column; depth/age/quiet-tape on Filters.',
-      'Kind: static (fingerprint-scoped).',
-    ].join('\n'),
-  },
-  m_burst_wave: {
-    title: 'm_burst_wave — this token\'s consecutive-slot buy run',
-    body: [
-      'Token-level (no fingerprint list). A wave is consecutive buy-slots; it resets',
-      'when the next buy is at least 2 slots after the last buy-slot. The gap is empty',
-      'buy-slots BEFORE that run started, not before a later printer in the same run.',
-      'Create slot is not a fireable wave.',
-      '',
-      'Completing print: this_member = 1 and wallet_count crosses 2, or working_buy_count',
-      'crosses 2 on the fingerprint working-template list. all_new is every wave wallet',
-      'first-on-this-mint (not has_new). hole is a wave tx_index gap, not packed.',
-      '',
-      'Kind: static.',
-    ].join('\n'),
-  },
-};
-
-// ── Per-metric meaning ───────────────────────────────────────────────────────
-
-export const METRIC_HELP: Record<string, HelpTip> = {
-  time: {
-    title: 'time — age (seconds)',
-    body: [
-      'Monotonic, so an upper bound disarms the arm once it is passed.',
-      '',
-      'Examples:',
-      '  >5          wait until older than 5s',
-      '  5..30       only while age is between 5 and 30s (same as >=5, <=30)',
-      '  <30         must enter before 30s — after that this entry can never fire again (arm disarms)',
-      '',
-      'Typical entry gate to skip the first chaotic moments or to force an early sniper window.',
-    ].join('\n'),
-  },
-  liquidity: {
-    title: 'liquidity — pool SOL',
-    body: [
-      'The REAL reserve, read at the most recent trade: on the bonding curve that is',
-      'vsol − 30, so it floors at 0 and tops near 85 at migration. A gate written',
-      'against the virtual 30..115 scale sits about 30 too high. On an AMM pool it is',
-      'the pool’s SOL with nothing taken off, so a curve-only rule adds on_curve = 1.',
-      '',
-      'Examples:',
-      '  >10              need at least ~10◎ in the pool',
-      '  20..50           inside a band (expands to >=20, <=50)',
-      '  <30 | >=70       outside band — thin OR very deep (comma form <30, >=70 auto-ORs)',
-      '',
-      'Common on exit for “rug thin” or “overheated depth” signals.',
-    ].join('\n'),
-  },
-  buy_share: {
-    title: 'buy_share — share of window SOL that is buys (percent)',
-    body: [
-      'PERCENT 0-100, not 0-1. It reads the DIRECTION of the tape, independent of its',
-      'size, which is what separates it from net_flow.',
-      '',
-      'net_flow conflates the two: +5◎ net is a different situation on 6◎ of turnover',
-      'than on 200◎. This reads high when one side is being ABSORBED rather than',
-      'matched.',
-      '',
-      'Examples:',
-      '  >=80      four out of five SOL traded is buying',
-      '  >=95      near one-sided — nobody is selling into it',
-      '  <=30      distribution',
-      '',
-      'NaN on an empty window (no flow, no direction to report), so it never fires on',
-      'silence. Needs a window size (window_size_sec, _slots or _prints).',
-    ].join('\n'),
-  },
-  unique_wallets: {
-    title: 'unique_wallets — distinct traders in the window (count)',
-    body: [
-      'Read it against gross_flow’s how much SOL and trade_count’s how many trades.',
-      '',
-      'One wallet churning and a crowd arriving look identical in SOL and different',
-      'here. Pair the two to tell a real crowd from one bot: high gross_flow with low',
-      'unique_wallets is wash volume. Both live in m_crowd_window.',
-      '',
-      'Examples:',
-      '  >=10     a real crowd, not one bot',
-      '  <=2      one or two wallets are the whole tape',
-      '',
-      'Needs a window size (window_size_sec, _slots or _prints). Wallet-keyed: an',
-      'offline run loaded without wallet',
-      'identity sees every trade as one anonymous wallet, so this reads 1.',
-    ].join('\n'),
-  },
-  trade_count: {
-    title: 'trade_count — how many trades (count)',
-    body: [
-      'Two groups use this name:',
-      '• m_flow_lifetime.trade_count — since token birth (maturity), monotonic.',
-      '• m_flow_window.trade_count — over a trailing window (how busy it is now), and',
-      '  that one needs a window size (window_size_sec, _slots or _prints).',
-      '',
-      'Read it against m_crowd_window.unique_wallets’ how many PEOPLE are on the tape:',
-      'one wallet re-entering ten times reads 10 here and 1 there. Unlike unique_wallets',
-      'this needs no wallet column, so it survives a load that did not ask for wallet',
-      'identity.',
-      '',
-      'Examples:',
-      '  >=8      an active tape',
-      '  <=3      a quiet one — pairs with a high buy_share for "quiet accumulation"',
-    ].join('\n'),
-  },
-  stall: {
-    title: 'stall — time since the all-time high (seconds)',
-    body: [
-      'Seconds since the price last set a NEW all-time high. Resets to ~0 only when a trade prints above the running peak; trades at or below it let the clock keep running.',
-      '',
-      'Pairs with trail off the same anchor: trail is HOW FAR below the high, stall is HOW LONG since it.',
-      '',
-      'Examples:',
-      '  >15     no new high for 15s → the run has stalled out',
-      '  <2      still making fresh highs',
-      '',
-      'Often used as an exit: sell once the token stops making progress.',
-    ].join('\n'),
-  },
-  trail: {
-    title: 'trail — drawdown from the high (%)',
-    body: [
-      'Percent below the high-water mark. 0 at the high; grows as price gives back.',
-      '',
-      'Two groups use this name:',
-      '• m_price_lifetime.trail — vs the LIFETIME peak (classic trailing exit).',
-      '• m_price_window.trail — vs the ROLLING window high (the dip-buy entry).',
-      '',
-      'Examples:',
-      '  >=12    (window) 12%+ below the recent high → buy the dip',
-      '  >20     (lifetime) sell after a 20% give-back from the peak',
-    ].join('\n'),
-  },
-  rise: {
-    title: 'rise — climb from the low (%)',
-    body: [
-      'Percent above the low-water mark. 0 at the low; grows as price recovers/breaks out.',
-      '',
-      'Two groups use this name:',
-      '• m_price_lifetime.rise — vs the LIFETIME trough (bounce off the all-time low).',
-      '• m_price_window.rise — vs the ROLLING window low (breakout/momentum).',
-      '',
-      'Examples:',
-      '  >=15    (window) 15%+ above the recent low → momentum/breakout entry',
-      '  <=20    (lifetime) still within 20% of the all-time low (near the floor)',
-    ].join('\n'),
-  },
-  retrace: {
-    title: 'retrace — give-back since entry (%)  [exit only]',
-    body: [
-      'Percent below the highest price seen SINCE YOUR ENTRY — a trailing stop off the',
-      'post-entry peak. At entry the peak is your fill, so before any run-up it measures',
-      'the drop from entry (a soft stop); after a run-up it trails the new peak.',
-      '',
-      'Example:  >=3    sell on a 3% pullback off the since-entry high.',
-    ].join('\n'),
-  },
-  bounce: {
-    title: 'bounce — climb from since-entry low (%)  [exit only]',
-    body: [
-      'Percent above the lowest price seen SINCE YOUR ENTRY — recovery off the',
-      'post-entry trough. At entry the trough is your fill, so before any dip it equals',
-      'pnl; after a dip+recovery it measures the bounce from the worst since-entry print.',
-      '',
-      'Example:  >=15   sell once price has bounced 15% off the since-entry low.',
-    ].join('\n'),
-  },
-  pnl: {
-    title: 'pnl — profit/loss vs entry (%)  [exit only, advanced]',
-    body: [
-      'Signed percent vs your entry price. Positive = in profit, negative = underwater.',
-      '',
-      'Prefer the TP / SL % fields for the usual exits — they are sugar for this metric',
-      '(TP → pnl >= tp, SL → pnl <= −sl) and keep the TakeProfit / StopLoss labels.',
-      'Use this row only for extra or non-sugar bounds.',
-      '',
-      'Examples:',
-      '  <=-25   −25% catastrophe stop beside a normal SL',
-      '  >=80    custom profit bound when you intentionally skip the TP field',
-      '',
-      'Do not restate the same bound as TP/SL here — the editor blocks that duplicate.',
-    ].join('\n'),
-  },
-  held: {
-    title: 'held — time in position (seconds)  [exit only]',
-    body: [
-      'Seconds since your entry fill. Only increases while you hold.',
-      '',
-      'Example:  >=60   time-stop: bail if still holding after 60s.',
-    ].join('\n'),
-  },
-  gross_flow: {
-    title: 'gross_flow — total volume (SOL)',
-    body: [
-      'Buys + sells in SOL. Measures how much traded, not who won.',
-      '',
-      'Two groups use this name:',
-      '• m_flow_lifetime.gross_flow — since token birth (maturity / critical-mass gate).',
-      '• m_flow_window.gross_flow — over window_size_sec (hot-right-now filter).',
-      '',
-      'Example: >5 with window 10 → more than 5◎ changed hands in the last 10 seconds.',
-    ].join('\n'),
-  },
-  net_flow: {
-    title: 'net_flow — buy pressure (SOL)',
-    body: [
-      'Buys minus sells in SOL. Positive = net buying; negative = net selling.',
-      '',
-      'Two groups use this name:',
-      '• m_flow_lifetime.net_flow — lifetime direction since birth.',
-      '• m_flow_window.net_flow — over window_size_sec (short-horizon pressure).',
-      '',
-      'Examples:',
-      '  >2      strong net buying in the window',
-      '  <0      net selling',
-    ].join('\n'),
-  },
-  buy: {
-    title: 'buy — buy volume (SOL)',
-    body: [
-      'SOL spent on buys only (sells ignored).',
-      '',
-      'Two groups use this name:',
-      '• m_flow_lifetime.buy — since token birth.',
-      '• m_flow_window.buy — inside the trailing window (needs window_size_sec).',
-      '',
-      'Example: >3 → at least 3◎ of buys in the chosen lookback.',
-    ].join('\n'),
-  },
-  sell: {
-    title: 'sell — sell volume (SOL)',
-    body: [
-      'SOL from sells only (buys ignored).',
-      '',
-      'Two groups use this name:',
-      '• m_flow_lifetime.sell — since token birth.',
-      '• m_flow_window.sell — inside the trailing window (needs window_size_sec).',
-      '',
-      'Example: >2 → heavy selling in the lookback — often an exit signal.',
-    ].join('\n'),
-  },
-
-  // m_flow_ix / m_flow_ix_window — same JSON names; registry appends unit/tol/monotonic.
-  tagged_buy: {
-    title: 'tagged_buy — buys the fingerprint tags (SOL)',
-    body: [
-      'SOL spent on buys the classifier TAGS. Usually creator tooling / wash, but the',
-      'metric reads the tag, not the motive — so gate on it for what it measures.',
-      '',
-      'A trade is tagged if: its ix_labels match an ix_patterns row, OR its wallet was',
-      'already tagged on this token (contagion), OR it is the creator.',
-      '',
-      'Examples:',
-      '  >2     heavy tagged buying (lifetime or window)',
-      '  <0.5   little tooling buy pressure',
-      '',
-      'Needs the fingerprint m_flow_ix key; without it, NaN (never fires). The key alone',
-      'is enough: ix_patterns is optional, and markers or the wallet switches can state',
-      'the classifier on their own.',
-      'Windowed form also needs window_size_sec on m_flow_ix_window.',
-    ].join('\n'),
-  },
-  tagged_sell: {
-    title: 'tagged_sell — sells from tagged wallets (SOL)',
-    body: [
-      'SOL from sells the classifier tags (same classifier as tagged_buy).',
-      '',
-      'Examples:',
-      '  >1     tagged wallets dumping',
-      '  >3 on exit → sell when tooling exits hard',
-      '',
-      'Unconfigured fingerprint ⇒ NaN. Windowed form needs window_size_sec.',
-    ].join('\n'),
-  },
-  tagged_net: {
-    title: 'tagged_net — tagged buy minus sell (SOL)',
-    body: [
-      'tagged_buy − tagged_sell. Positive = tagged wallets accumulating; negative =',
-      'tagged wallets distributing.',
-      '',
-      'Examples:',
-      '  >1     tooling still accumulating',
-      '  <0     tagged net selling',
-      '',
-      'Not monotonic. Unconfigured fingerprint ⇒ NaN.',
-    ].join('\n'),
-  },
-  tagged_gross: {
-    title: 'tagged_gross — tagged activity (SOL)',
-    body: [
-      'tagged_buy + tagged_sell — how much tagged tape traded (direction ignored).',
-      '',
-      'Example: >5 → at least 5◎ of tagged flow (buys+sells).',
-      '',
-      'Useful with tagged_share to require both activity and dominance.',
-    ].join('\n'),
-  },
-  untagged_buy: {
-    title: 'untagged_buy — buys the fingerprint does not tag (SOL)',
-    body: [
-      'SOL spent on buys the classifier does NOT tag — the rest of the tape, usually',
-      'organic / retail.',
-      '',
-      'Example: >2 → real buy interest outside the tagged wallets.',
-      '',
-      'Trades with missing ix_labels are untagged unless the wallet is already tagged',
-      'or is the creator. Unconfigured fingerprint ⇒ NaN.',
-    ].join('\n'),
-  },
-  untagged_sell: {
-    title: 'untagged_sell — sells from untagged wallets (SOL)',
-    body: [
-      'SOL from sells the classifier does not tag.',
-      '',
-      'Example: >2 on exit → untagged holders dumping.',
-      '',
-      'Unconfigured fingerprint ⇒ NaN.',
-    ].join('\n'),
-  },
-  untagged_net: {
-    title: 'untagged_net — untagged buy minus sell (SOL)',
-    body: [
-      'untagged_buy − untagged_sell. Positive = untagged accumulation; negative =',
-      'untagged exit.',
-      '',
-      'Examples:',
-      '  >1     untagged net buying',
-      '  <0     untagged net selling',
-      '',
-      'Not monotonic. Unconfigured fingerprint ⇒ NaN.',
-    ].join('\n'),
-  },
-  untagged_gross: {
-    title: 'untagged_gross — untagged activity (SOL)',
-    body: [
-      'untagged_buy + untagged_sell — total untagged tape (direction ignored).',
-      '',
-      'Example: >3 → meaningful untagged churn alongside (or instead of) tagged flow.',
-    ].join('\n'),
-  },
-  tagged_share: {
-    title: 'tagged_share — tagged share of tape (%)',
-    body: [
-      'A ratio, so it says nothing about size: 90 % of a 2◎ tape and 90 % of a 200◎ one',
-      'read the same. Pair it with gross_flow when the size matters.',
-      '',
-      'Examples:',
-      '  >70     tape dominated by tagged flow',
-      '  <30     mostly untagged',
-      '  40..60  mixed / contested',
-      '',
-      'Unit is percent (not SOL). Unconfigured fingerprint ⇒ NaN.',
-    ].join('\n'),
-  },
-};
-
-/**
- * The tooltip body for one metric: its **registry definition** first, then the unit /
- * `=` tolerance / monotonic facts derived from the same spec, then whatever extended
- * prose {@link METRIC_HELP} adds.
- *
- * The definition comes from `spec.description` — authored once on the backend
- * `MetricSpec`, beside the metric it defines — so a tooltip cannot say something the
- * engine does not. `METRIC_HELP` is **extended guidance only**: worked examples, reading
- * guides, refutations. It must never restate the definition, and a metric with no entry
- * there is fully documented by the registry alone.
- */
-export function metricHelpBody(
-  metric: string,
-  spec?: { unit: string; eq_tolerance: number; monotonic: boolean; description?: string },
-): string {
-  const extended = METRIC_HELP[metric]?.body;
-  const base =
-    spec?.description ??
-    extended ??
-    'Registry metric — type a condition in the box, or leave empty to ignore.';
-  if (!spec) return base;
-  // Every registry unit, named. This used to be a two-branch ternary falling through
-  // to 'SOL', which documented every `count` metric (`unique_wallets`, `trade_count`,
-  // `ix_count`, `prior_launches`) as SOL and told the reader their `=` bucket was
-  // "+/-0.25 SOL". A metric added with a new unit should read wrong loudly, not
-  // silently become SOL, hence the explicit map plus a passthrough default.
-  const UNIT_NAME: Record<string, string> = {
-    seconds: 'seconds',
-    percent: 'percent',
-    sol: 'SOL',
-    count: '',
-  };
-  const unit = UNIT_NAME[spec.unit] ?? spec.unit;
-  const amount = (n: number) => (unit ? `${n} ${unit}` : String(n));
-  const half = spec.eq_tolerance / 2;
-  const bits = [
-    '',
-    `Unit: ${unit || 'a plain count'}.`,
-    `= / != bucket: values within ±${amount(half)} of the target count as equal (tol ${spec.eq_tolerance}).`,
-  ];
-  if (spec.monotonic) {
-    bits.push(
-      'Monotonic: value never decreases. An entry upper bound (e.g. time < 30) that is crossed permanently disarms the arm.',
-    );
-  }
-  // Extended prose goes BELOW the definition and the facts, and only when it is not
-  // already the base (a registry payload with no description falls back to it).
-  const tail = extended && extended !== base ? `\n\n${extended}` : '';
-  return `${base}${bits.join('\n')}${tail}`;
-}
-
-/**
- * The tooltip for one metric group: its **registry definition** first, then
- * whatever extended prose {@link GROUP_HELP} adds. Same resolution as
- * {@link metricHelpBody} — a group added in Rust is documented on the next load
- * even with no frontend copy.
- */
-export function groupHelpTip(
-  group: string,
-  spec?: { description?: string },
-): HelpTip | undefined {
-  const extended = GROUP_HELP[group];
-  const description = spec?.description;
-  if (!description && !extended) return undefined;
-  return {
-    title: extended?.title ?? group,
-    body: description
-      ? extended?.body && extended.body !== description
-        ? `${description}\n\n${extended.body}`
-        : description
-      : extended!.body,
-  };
-}
-
-// ── Strict params ────────────────────────────────────────────────────────────
-
-export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
-  arm_above_pct: {
-    title: 'arm ≥ % — disarm the trail until you\'re this far in profit',
-    body: [
-      'retrace/bounce measure from the since-entry peak/trough, which starts AT your',
-      'entry fill. Unarmed, that makes retrace a hard stop from entry — it fires on the',
-      'normal dip you bought into, before any real run-up.',
-      '',
-      'Setting arm ≥ N%  disables retrace/bounce until pnl has reached N% — only then',
-      'does the trail start watching for a pullback off the real peak. 0 = arm at',
-      'break-even. Leave blank = unarmed (today\'s default, usually wrong for a dip-buy',
-      'entry).',
-    ].join('\n'),
-  },
-
-  slice_size_sec: {
-    title: 'slice_size_sec — the recent slice',
-    body: [
-      "m_flow_window's second window: the SHORT one, nested inside the reference span.",
-      'On a slot row the twin param slice_size_slots takes its place — both axes of',
-      'the group count in the same unit.',
-      '',
-      'trade_share = trades in the last slice_size_sec, as a percent of trades in',
-      'the last window_size_sec. It measures how CONCENTRATED the tape is in time,',
-      'independent of how busy it is: ten trades in the last 3s and ten spread over',
-      'a minute are the same trade_count and the same gross_flow, and 50 vs 10 here.',
-      '',
-      'Must be > 0 and <= window_size_sec. Reads 100 on a token younger than it —',
-      'a true reading of a short life, not a maturity signal, so gate m_state.time',
-      'yourself if that is what you mean.',
-    ].join('\n'),
-  },
-  slice_size_slots: {
-    title: 'slice_size_slots — the recent slice, in slots',
-    body: [
-      "m_flow_window's second window when the row counts in slots. Same quantity as",
-      'slice_size_sec — trades in the slice as a percent of trades in the reference',
-      'window — measured in the discrete buckets the chain actually batches in.',
-      '',
-      'Both axes of the group must use the SAME unit: a slice in slots over a',
-      'reference in seconds is a ratio across two different clocks, and the rule is',
-      'rejected at save. Must be > 0 and <= window_size_slots.',
-      '',
-      'The canonical shape is slice 1 / window 30: the current slot against the',
-      'half-minute of tape behind it.',
-    ].join('\n'),
-  },
-  slice_size_prints: {
-    title: 'slice_size_prints — the recent slice, in prints',
-    body: [
-      "m_flow_window's second window when the row counts in prints. Same quantity as",
-      'slice_size_sec — trades in the slice as a percent of trades in the reference',
-      'window — measured in the token\u2019s own transactions.',
-      '',
-      'Note what that makes trade_share on this basis: a count over a count, so it is',
-      'the constant 100 * slice / window on every tape. It carries no information.',
-      'Its SOL twin sol_share is the reading that survives here: the same two spans,',
-      'but the numerator is money, which still varies when the counts cannot.',
-      '',
-      'Both axes of the group must use the SAME unit, and slice <= window.',
-    ].join('\n'),
-  },
-  window_size_sec: {
-    title: 'window_size_sec — trailing lookback, in seconds',
-    body: [
-      'How many seconds of recent trades to include for dynamic groups:',
-      '  • m_flow_window — gross_flow, net_flow, buy, sell, trade_count, buy_count,',
-      '    sell_count, buy_share, and the nested-slice pair trade_share / sol_share',
-      '  • m_crowd_window — unique_wallets, trades_per_wallet',
-      '  • m_flow_ix_window — tagged_*, untagged_*, tagged_share (same split as lifetime)',
-      '  • m_price_window — trail, rise',
-      '',
-      'Every dynamic group needs EXACTLY ONE size — this, window_size_slots or',
-      'window_size_prints; never two and never none. The window is the closed interval',
-      '[now − lag − size, now − lag]. Example: 10 → the last 10s.',
-      '',
-      'Each dynamic group instance has its own window: you can author the same',
-      'group at several windows (e.g. m_flow_window at 30s and 60s); each',
-      'distinct window becomes its own clause. Static groups (m_flow_lifetime,',
-      'm_flow_ix, m_price_lifetime) take no window at all.',
-    ].join('\n'),
-  },
-  window_size_slots: {
-    title: 'window_size_slots — trailing lookback, in slots',
-    body: [
-      'The same lookback as window_size_sec, counted in SLOTS instead of seconds.',
-      'Set one or the other, never both.',
-      '',
-      'Time is continuous and slots are discrete, and the difference is not a',
-      'rounding detail. A slot is what the chain batches in, so a bundle is a slot',
-      'fact and never a time fact: at ~400ms per slot a one-second window straddles',
-      'two or three slots and merges bursts that landed separately.',
-      '',
-      'A slot window is exactly `size` slots — size 1, lag 0 is the current slot',
-      'alone. Its cursor is the slot number the feed reports, never a time estimate,',
-      'so it holds its last reading until a trade moves it.',
-      '',
-      'A load without the slot column cannot advance a slot window: an offline run',
-      'that did not request slots reads such a metric as unreadable, which satisfies',
-      'nothing.',
-    ].join('\n'),
-  },
-  window_size_prints: {
-    title: 'window_size_prints — trailing lookback, in PRINTS',
-    body: [
-      "The same lookback as window_size_sec, counted in this token's own",
-      'transactions. Set one size param or another, never two.',
-      '',
-      'This is the only basis in which a quantity is a statement about a TRADE.',
-      '"10 SOL in the last second" is ten one-SOL prints or one ten-SOL print, and no',
-      'wall-clock or slot span can tell them apart; window_size_prints 1 with lag 0 is',
-      'the current transaction alone, so gross_flow > 10 on it means exactly "this tx',
-      'moved 10 SOL".',
-      '',
-      'A print window is exactly `size` prints. Its cursor moves ONLY on a trade, so',
-      'silence never decays it: 20 prints back is 20 prints back whether they landed',
-      'in one slot or over an hour. That is the property a seconds window cannot have',
-      '— and the reason a print gate reads the same on a busy token and a dead one.',
-      '',
-      'A token younger than the window holds fewer prints than you asked for; the',
-      'reading is over what exists, which is a true reading of a short life, so gate',
-      'm_state.time yourself if you mean maturity.',
-    ].join('\n'),
-  },
-  window_lag: {
-    title: 'window_lag — how far back the window ENDS',
-    body: [
-      'How many units (seconds, slots or prints — matching the size param) back from',
-      'now the window stops. 0 — the default — means it ends at now.',
-      '',
-      'This is what makes a window causal in its own terms. A gate on "the state',
-      'entering this slot" must not be able to see the slot it is firing in, and',
-      'lag 1 on a slot window is exactly that: the slice is size 1 / lag 0 and the',
-      'quiet tape before it is size 30 / lag 1 — two spans that cannot leak into',
-      'each other.',
-      '',
-      'The lag belongs to the GROUP, so both axes of a two-window group share it: a',
-      'two-window group is two spans on one clock.',
-      '',
-      'A lagged window reads a different span from an unlagged one of the same size,',
-      'so the two are different clauses and label themselves differently (30sl@1).',
-    ].join('\n'),
-  },
-};
-
-// ── Rule editor fields ───────────────────────────────────────────────────────
+// ── Rule page fields ─────────────────────────────────────────────────────────
 
 export const RULE_FIELD_HELP = {
   name: {
@@ -892,7 +62,7 @@ export const RULE_FIELD_HELP = {
     ].join('\n'),
   },
   tags: {
-    title: 'Tags',
+    title: 'Labels',
     body: [
       'Free-form labels for slicing the Rules board — chip-filter to show only a family, or hide a batch you are not looking at right now.',
       '',
@@ -910,7 +80,7 @@ export const RULE_FIELD_HELP = {
       '',
       'real — send actual buys/sells on-chain. Spends SOL from the configured wallet.',
       '',
-      'Locked after create — unlock the padlock to flip paper↔real. That only affects future entries; open positions keep their original mode. Sizing/caps stay editable while live; fingerprint + entry/exit conditions lock once active.',
+      'Locked after create — unlock the padlock to flip paper↔real. That only affects future buys; open positions keep their original mode. Sizing/caps stay editable while live; the fingerprint and the conditions lock once active.',
     ].join('\n'),
   },
   buy: {
@@ -942,279 +112,25 @@ export const RULE_FIELD_HELP = {
     body: [
       'Creation-time matcher: which brand-new tokens this rule is allowed to arm on (CU, first buy, labels, etc.).',
       '',
-      'Flow: fingerprint matches → arm → entry conditions (if any) → buy → exit (TP/SL/metrics).',
+      'Flow: fingerprint matches → the rule watches the coin → Buy conditions → buy → Sell lines.',
+      '',
+      'Its tags (e.g. @volume) are the trade lists the rule\'s conditions can read.',
       '',
       'Locked while the rule is live so live behaviour cannot silently change mid-run.',
-    ].join('\n'),
-  },
-  takeProfit: {
-    title: 'Take profit (%)',
-    body: [
-      'Primary control for a labeled TakeProfit exit. Sugar for m_position.pnl >= this %',
-      '(same evaluation path as an authored pnl condition — not a second mechanism).',
-      '',
-      'Examples: 100 → +100% (2× entry). 50 → +50%.',
-      '',
-      'ORs with stop-loss and exit metrics — any one can close. Leave empty to disable TP.',
-      'Prefer this field over writing pnl >= … in the exit metrics.',
-    ].join('\n'),
-  },
-  scaleOut: {
-    title: 'Scale-out (tranched exit)',
-    body: [
-      'Ordered partial exits: each stage sells a % of the INITIAL bag when its',
-      'conditions (or stage TP) fire, then advances. Global exit / SL still close',
-      '100% of whatever remains — catastrophe path is unchanged.',
-      '',
-      'Sell % is of the initial bag (not the remainder). Blank sell % = remainder',
-      'stage (must be last): closes the stub under its own conditions (e.g. a',
-      'tighter trail or a pure time-stop). At most 3 partial stages + optional',
-      'remainder; sum of partials ≤ 99%.',
-      '',
-      'After the last partial, the position keeps the global exit side unless a',
-      'remainder stage is authored.',
-    ].join('\n'),
-  },
-  stopLoss: {
-    title: 'Stop loss (%)',
-    body: [
-      'Primary control for a labeled StopLoss exit. Sugar for m_position.pnl <= −this %',
-      '(same evaluation path as an authored pnl condition — not a second mechanism).',
-      '',
-      'Examples: 30 → −30% from entry. 50 → −50%.',
-      '',
-      'ORs with take-profit and exit metrics. Leave empty to disable SL.',
-      'Prefer this field over writing pnl <= … in the exit metrics.',
     ].join('\n'),
   },
   paramsJson: {
     title: 'Params JSON',
     body: [
-      'Raw strategy params: take_profit, stop_loss, entry{…}, exit{…}, scale_out[…], reentry{…}.',
+      'The rule as stored (format 2): enter{event, filters, final_filters, lock,',
+      'size_pct_of_pool}, take_profit, stop_loss, signals{}, always[], stages[], reentry,',
+      'exclusive, priority.',
       '',
-      'Each metric is a list of {operator, value} (one AND arm) or a nested list of arms for OR.',
-      'Example liquidity outside band: [[{"operator":"<","value":30}],[{"operator":">=","value":70}]].',
+      'A condition: {"metric": "m_flow.buy_sol", "tag": "!volume", "span": "10s",',
+      '"is": [{"operator": ">=", "value": 2}]}. A line: {"if": [conditions],',
+      '"sell": "label", "go": "stage"}.',
       '',
-      'Validated against the metric registry on save. Prefer the Builder tab unless you know the shape.',
-    ].join('\n'),
-  },
-  reentry: {
-    title: 'Re-entry',
-    body: [
-      'Off ⇒ one-shot: once a token+rule closes (Done), it never re-enters that token.',
-      '',
-      'On ⇒ after each NORMAL exit (TP / SL / an exit metric — never a dead/manual/migrated',
-      'close) the rule waits the cooldown, then re-arms and can enter the same token again,',
-      'up to the episode cap.',
-      '',
-      'This is what the dip-scalper needs: its edge is rapid re-entry, not a single trade.',
-    ].join('\n'),
-  },
-  reentryCooldown: {
-    title: 'Cooldown (seconds)',
-    body: [
-      'How long to wait after a close before the rule can re-arm the same token.',
-      '',
-      'A floor, not a timer: re-arm happens on the next trade/tick once the cooldown has',
-      'elapsed. 0 ⇒ eligible on the very next event. Must be ≥ 0.',
-    ].join('\n'),
-  },
-  reentryMaxEpisodes: {
-    title: 'Max episodes per token',
-    body: [
-      'Hard cap on how many times this rule may enter a single token (across the whole run).',
-      '',
-      'The Nth close re-arms only while the episode count is below this. Integer ≥ 1.',
-      'Note this also becomes what the rule’s max-total cap counts (episodes, not tokens).',
-    ].join('\n'),
-  },
-  exclusive: {
-    title: 'Exclusive',
-    body: [
-      'Off ⇒ today’s behavior: rules hold positions independently, so several rules can',
-      'stack on the same token at once.',
-      '',
-      'On ⇒ skip entry while ANY other rule already holds this token — including an',
-      'in-flight buy or sell, and including a manual buy. Use it when rules are meant to',
-      'compete for the same opportunity rather than stack on it.',
-      '',
-      'Blocked is not disarmed: the rule stays armed and retries once the holder lets go.',
-      'Asymmetric by design — a non-exclusive rule never checks anyone, so it can still',
-      'enter a token an exclusive rule holds.',
-      '',
-      'The grouped sweep IGNORES this — sweep numbers stay un-deconflicted upper bounds.',
-    ].join('\n'),
-  },
-  exclusivePriority: {
-    title: 'Priority',
-    body: [
-      'Higher priority wins when two exclusive rules would enter the same token at once.',
-      'Default 0; ties break by rule ID.',
-      '',
-      'Only matters between two exclusive rules — it is not a general scheduling knob.',
-    ].join('\n'),
-  },
-  buyPctOfVsol: {
-    title: 'Buy % of vSOL',
-    body: [
-      'Size each buy as a percent of the pool’s SOL reserve at the entry instant,',
-      'instead of the fixed buy amount above. Blank = keep the fixed amount.',
-      '',
-      'Why: our own price impact is exactly buy / vsol. A fixed size inside a liquidity',
-      'band that spans 2x therefore moves the price twice as much at one end as the',
-      'other. A percent holds that constant — which is how the wallets worth copying',
-      'size, and why their realised slippage is flat (1.2-1.9% of vsol).',
-      '',
-      'Capped at 10%. If the pool depth is unknown at entry the rule falls back to the',
-      'fixed amount rather than guessing a size.',
-      '',
-      'The grouped sweep IGNORES this and prices every combo at its flat notional —',
-      're-run a percent-sized rule through simulate before trusting a sweep PnL.',
-    ].join('\n'),
-  },
-} as const satisfies Record<string, HelpTip>;
-
-// ── Fingerprint fields ───────────────────────────────────────────────────────
-
-export const FINGERPRINT_FIELD_HELP = {
-  ix_patterns: {
-    title: 'ix_patterns — what the fingerprint TAGS',
-    body: [
-      'Ordered instruction-label sequences that TAG a trade for',
-      'm_flow_ix / m_flow_ix_window. Exact ordered match — same vocabulary as fingerprint ix_labels.',
-      '',
-      'Classifier (any one is enough):',
-      '  1) trade ix_labels hash ∈ one of these pattern rows',
-      '  2) wallet already tagged on THIS token — if wallet contagion is on',
-      '  3) creator wallet — if creator is tagged is on',
-      'Otherwise the trade is untagged (untagged_*). Rules 2 and 3 default ON and are',
-      'the two checkboxes below; untick both to judge each transaction on its own',
-      'shape alone.',
-      '',
-      'Example row: ["Pump.Fun: Buy","Token Program: CloseAccount"]',
-      '',
-      'Empty / missing m_flow_ix key ⇒ m_flow_ix / m_flow_ix_window metrics',
-      'are NaN (never fire). Aggregate flow (m_flow_lifetime / m_flow_window) does not',
-      'use this config.',
-      'Discover candidates on Lab → Flow discovery, then Apply back here.',
-    ].join('\n'),
-  },
-  ix_markers: {
-    title: 'ix markers — the STRUCTURAL half of the classifier',
-    body: [
-      'A marker is a MECHANISM, matched as a substring of any instruction label, where',
-      'a pattern row is one exact build. That difference is the point: a build ships',
-      'new variants continuously, so a pattern list books every unlisted variant on the',
-      'other side of the split, while a marker keeps identifying the same thing.',
-      '',
-      'The vocabulary holds two kinds, and both are mechanisms:',
-      '  machinery — what the transaction DOES (a throwaway account, a nonce, a memo)',
-      '  router    — the retail front-end a person clicked through',
-      '',
-      'The SIDE is a separate claim, not a convenience:',
-      '  a marker TAGS           — "carries a throwaway account" identifies machines',
-      '                            and leaves everything else unjudged',
-      '  a marker leaves UNTAGGED — "came through a named router" identifies people and',
-      '                            judges everything else a machine',
-      '',
-      'One row names ONE side: an untagged mask judges every build already, so it',
-      'composes with neither a tagged mask nor a pattern list, and the backend rejects',
-      'the combination rather than picking one.',
-    ].join('\n'),
-  },
-  wallet_contagion: {
-    title: 'wallet_contagion — a tag spreads to the WALLET',
-    body: [
-      'ON (the default): once a wallet trades tagged on a token, EVERY later trade of',
-      'its own on that token is tagged too — whatever instructions it carries. The',
-      'latch is per token and never clears.',
-      '',
-      'OFF: only the transaction in front of the classifier is judged, by its own',
-      'ix_labels. This is what a STRUCTURAL rule means — "did this transaction have',
-      'this shape" — and it is what the count metrics need: with contagion on, a',
-      'wallet that made one tagged BUY has its later sells counted as tagged sells.',
-      '',
-      'Leaving it on does not merely tighten a structural gate, it measures a',
-      'different thing: the fire set stops matching the one the rule was derived on.',
-    ].join('\n'),
-  },
-  creator_is_tagged: {
-    title: 'creator_is_tagged — the creator is tagged unconditionally',
-    body: [
-      'ON (the default): every trade from the token creator is tagged whatever its',
-      'instruction shape — his dev buy and his dump alike.',
-      '',
-      'OFF: the creator is judged like anyone else, by ix_labels. Turn it off for a',
-      'structural rule, which adds an identity term otherwise, and for any rule that',
-      'is not allowed to read a wallet.',
-      '',
-      'Note it cuts BOTH ways: with it off, a creator dump that does not match a',
-      'saved pattern is untagged.',
-    ].join('\n'),
-  },
-  dump_ix_patterns: {
-    title: 'm_dump_ix.ix_patterns — the builds counted as dumps',
-    body: [
-      'Ordered instruction-label sequences whose SELLS m_dump_ix counts. Its own list,',
-      'separate from m_flow_ix and free to overlap it — normally it does, since a',
-      'dev’s dump shape is a sell build of a family the flow split already tags.',
-      '',
-      'The two lists ask different questions of one transaction: m_flow_ix asks whether',
-      'the trade is part of the family’s flow, this asks whether the sell carries the',
-      'dump shape. A build on both makes the same sell count in tagged_sell AND in',
-      'dump_sell — two answers agreeing, not one event counted twice. Read them side',
-      'by side, never as parts of a whole.',
-      '',
-      'No wallet rules here. A build is a property of the TRANSACTION, so contagion and',
-      'the creator rule do not apply — every sell is judged on its own ix_labels.',
-      '',
-      'Metrics: dump_sell (SOL, every LEG) and dump_sell_count (TRANSACTIONS, leg 0',
-      'only). One tx selling the bags of four wallets is 1 count and 4 legs of SOL, so',
-      'dump_sell / dump_sell_count is SOL per transaction.',
-      '',
-      'Typical exit: dump_sell_count(1sl) >= 2 — two dump-built transactions in one slot.',
-      '',
-      'A list carries VARIANTS or it carries nothing: matching hashes the whole ordered',
-      'label list, so the same tool with and without a trailing tip Transfer, or with',
-      'CloseAccount on a full exit, is several sequences for one behaviour.',
-      '',
-      'Empty / missing m_dump_ix key ⇒ both metrics read NaN (never 0, so a `<=` bound',
-      'cannot fire on an unconfigured fingerprint).',
-    ].join('\n'),
-  },
-  target_wallets: {
-    title: 'target_wallets — the wallets this rule copies',
-    body: [
-      'Base58 addresses. m_copy / m_copy_window read this list and nothing else:',
-      'they are the only groups keyed on WHO signed a print rather than on what it',
-      'was built from. Absent => every copy metric is NaN (never 0), so a rule on an',
-      'unconfigured fingerprint does nothing at all rather than buying everything.',
-      '',
-      'Matched against the wallet the VENUE credited, so list the wallet the target',
-      'signs with: an aggregator router PDA here reads as hundreds of thousands of',
-      'unrelated fills belonging to its customers.',
-      '',
-      'ONE target per rule. The seat, the size gate and the exit are per-target',
-      'questions, and a shared list makes two targets fires indistinguishable.',
-    ].join('\n'),
-  },
-  working_templates: {
-    title: 'working_templates — grains or programs the burst groups treat as working',
-    body: [
-      'One list, two spellings. A `|` id is a grain (Axiom Trade|CU|ATA|F). A bare name',
-      'is a program (Axiom Trade) and matches every grain of that program. Not full',
-      'ix_labels sequences.',
-      '',
-      'm_burst_slot.this_working / working_* / has_new and m_burst_wave.this_working /',
-      'working_buy_count read this list. Absent => those metrics are NaN (never 0).',
-      '',
-      'Add from the tape: set the chart\'s list toggle to "working". Default click writes',
-      'the grain. Switch the strip to "program" and click to write the program name.',
-      'Or type Axiom Trade in this box.',
-      '',
-      'Catalog (harvest grains): Axiom Trade|CU|ATA|F, Axiom Trade|CU|ATA|N|F,',
-      'Photon|CU|ATA|F, Terminal|CU|ATA|F, GMGN Bot|CU|ATA|F, GMGN|CU|ATA|F,',
-      'Bloom Router|CU|F, Bloom|CU|F.',
+      'Checked against the registry on save. The Builder tab writes exactly this.',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;
@@ -1315,6 +231,8 @@ export const SWEEP_FIELD_HELP = {
       'inside that slice.',
       '',
       'Leave empty to select the corpus with the manual group-by / filters instead.',
+      '',
+      'Picking one also loads its tags into the run\'s tags, so an axis can read them.',
     ].join('\n'),
   },
   method: {
@@ -1441,60 +359,67 @@ export const SWEEP_FIELD_HELP = {
       'Same metric, two axes: feasible opposing ops → AND range combo; crossed ops → OR outside band.',
     ].join('\n'),
   },
-  axisWindow: {
-    title: 'Window size',
+  axes: {
+    title: 'Sweep axes',
     body: [
-      'Trailing window for dynamic metrics on this axis (same as the size param on',
-      'a rule): m_flow_window, m_flow_ix_window, m_price_window.',
+      'Each axis is one dimension of the grid; a combo picks one value from every axis',
+      'and runs as one rule.',
       '',
-      'Counted in the unit beside it — seconds, slots or prints. The axis assembles',
-      'the size param that unit spells, so a slot axis sweeps window_size_slots and',
-      'a print axis sweeps window_size_prints.',
+      '  entry axis  a condition the coin must pass to be bought (the rule\'s "Only if").',
+      '  exit axis   its own sell line: sells everything when the condition holds.',
+      '  TP / SL     the rule\'s take-profit / stop-loss %.',
       '',
-      'You can sweep the same group at several windows (each becomes its own',
-      'clause). Lifetime / static metrics (m_flow_lifetime, m_flow_ix) ignore this',
-    ].join('\n'),
-  },
-  axisWindowUnit: {
-    title: 'Window unit',
-    body: [
-      'What this axis’s windows count in.',
+      'Example: entry m_state.age_sec <= 20, 60 and TP 50, 100 is 2 x 2 = 4 combos.',
       '',
-      '  • sec — wall clock, a continuous interval.',
-      '  • slot — exactly N slots, the discrete buckets the chain batches in. A',
-      '    bundle is a slot fact; at ~400ms a one-second window straddles two or',
-      '    three slots and merges bursts that landed separately.',
-      '  • print — exactly N transactions of this token’s own tape. Silence never',
-      '    decays it, and size 1 lag 0 is ONE trade — the only span in which a',
-      '    threshold is a statement about a trade rather than about an interval.',
-      '',
-      'Both the size and the lag count in this unit. Sweeping one metric on two units',
-      'is two axes: they read different tape, so they are different rules.',
-    ].join('\n'),
-  },
-  axisWindowLag: {
-    title: 'Window lag',
-    body: [
-      'How many units back from now this axis’s window ENDS. 0 — the default — means',
-      'it ends at now.',
-      '',
-      'This is what makes a swept window causal in its own terms. A gate on “the state',
-      'entering this slot” must not be able to see the slot it fires in: the slice is',
-      'size 1 / lag 0 and the quiet tape before it is size 30 / lag 1, two spans with',
-      'no way for one to leak into the other.',
-      '',
-      'A lagged window reads a different span from an unlagged one of the same size,',
-      'so the two are different clauses and never merge into one group instance.',
+      'Two axes on the same read (metric + tag + span) join into one condition: AND when',
+      'both can hold (> 5 and < 50), else OR (< 5 or > 50). Drag an axis onto the other',
+      'column to flip its side.',
     ].join('\n'),
   },
   axisOp: {
     title: 'Operator',
     body: [
-      'Comparison applied to each value on this axis when building a combo’s RuleParams.',
+      'The comparison every value on this axis is tried with: >  >=  <  <=  =  !=',
       '',
-      'Supported: >  >=  <  <=  =  !=',
+      'Example: >= with values 1, 2 is two combos, one reading >= 1 and one >= 2.',
+    ].join('\n'),
+  },
+  tags: {
+    title: 'Run tags',
+    body: [
+      'The named trade lists this run\'s @tag reads use, the same document a fingerprint',
+      'carries. Picking a scope fingerprint loads its tags; edit them here for the run.',
       '',
-      'Example: op > and values 5, 10 → combos with time > 5 and time > 10 (separate combos).',
+      'Sent only when an axis reads a tag. Promote writes them onto the promoted',
+      'fingerprint, so the saved rule reads the trades the sweep scored with.',
+      '',
+      'Example: tag volume = trades by program Axiom; an axis m_flow.buy_sol @!volume [10s]',
+      'then reads SOL bought by everyone else in the last 10 s.',
+    ].join('\n'),
+  },
+  stagePlans: {
+    title: 'Stage plan (Pass 2)',
+    body: [
+      'One plan of stages to try on top of the grid. After ranking, each group\'s',
+      'top-K combos are re-scored under this plan AND under their own exit; each combo',
+      'keeps whichever scores better, and Promote saves that rule.',
+      '',
+      'A plan reads our position only (m_position metrics, TP/SL): the sweep records no',
+      'other columns for it.',
+      '',
+      'Example: stage bank sells 70 % at m_position.pnl_pct >= 50 and goes to rest;',
+      'rest sells the remainder at m_position.held_sec >= 30.',
+      '',
+      'Author a plan you already believe in: trying many shapes on the same small',
+      'per-combo sample picks noise.',
+    ].join('\n'),
+  },
+  stagePlansTopK: {
+    title: 'Top-K per group (Pass 2)',
+    body: [
+      'How many of each group\'s best combos the stage plan re-scores.',
+      '',
+      'Example: 3 re-scores the three best combos of every group; the rest keep their exit.',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;
@@ -1518,41 +443,42 @@ export const DISCOVERY_FIELD_HELP = {
       'When set, discovery scores only tokens that MATCH this fingerprint',
       '(engine match SSOT — same buckets / axes as live).',
       '',
-      'UI then uses one “ALL” group; Apply writes ix_patterns back to this fingerprint.',
-      'Leave empty to partition manually with group-by / filters below.',
+      'UI then uses one “ALL” group; Apply writes the checked shapes into one of this',
+      'fingerprint’s tags. Leave empty to partition manually with group-by / filters below.',
     ].join('\n'),
   },
   applyFingerprint: {
     title: 'Apply to fingerprint',
     body: [
-      'Target fingerprint that receives the draft ix_patterns on Apply.',
+      'Target fingerprint whose tag receives the draft on Apply.',
       '',
-      '• Pick an existing row → PUT metric_config.m_flow_ix on that fingerprint.',
-      '• Empty → create / bind a fingerprint from the selected group key, then write patterns.',
+      '• Pick an existing row → the draft is written into the chosen tag on that fingerprint;',
+      '  its other tags and matchers are kept.',
+      '• Empty → create / bind a fingerprint from the selected group key, then write the tag.',
       '',
       'Auto-match highlights a saved fingerprint whose axes already equal this group.',
     ].join('\n'),
   },
   draftPatterns: {
-    title: 'Draft patterns / grains',
+    title: 'Draft for a tag',
     body: [
-      'tagged / dump: checked structures become unpinned pattern rows (exact ix_labels, any fee budget). Checking Vol on a shape that already has pins widens those pins to the catch-all.',
+      'Exact shapes: checked structures become the tag’s ix_shape entries (exact ix_labels, any fee budget). Checking Vol on a shape that already has pins widens those pins to the catch-all.',
       'On the preview trades table, the pin checkboxes (cu_limit / cu_price / tip) copy those fields from the clicked tx. A pin click on a catch-all of that shape narrows it to that pin — the two never sit together, because the catch-all already matches every budget.',
       'An ix-only row is a wildcard: Vol stays checked on every trade of that shape. A pin-only row lights only the trades that match that pin.',
-      'working: the strip\'s grain|program switch chooses the spelling. Grain is program|CU|ATA|N|S|F; program is the bare name and matches every grain of that router. Launch (create) shapes are skipped. No fee pins and no wallet contagion. Bind cannot create a fingerprint from this list — pick a saved row to Update.',
-      'Apply writes the selected list on the target fingerprint (tagged = m_flow_ix, dump = m_dump_ix, working = m_burst_slot.working_templates).',
+      'Templates: a grain (program|CU|ATA|N|S|F) goes under ix_template; a bare program name goes under program and matches every grain of that router. Launch (create) shapes are skipped. No fee pins and no wallet contagion. Templates need a saved fingerprint — pick one to Update.',
+      'Apply writes the draft into the chosen tag on the target fingerprint; every other tag and matcher is kept.',
       '',
-      'Those patterns drive tagged_* / untagged_* / tagged_share (or dump_sell / dump_sell_count, or burst working_templates) on rules that use this fingerprint.',
-      'Empty draft cannot Apply — toggle at least one structure (or add a row in the editor).',
+      'Rules on this fingerprint then read the split: m_flow.buy_sol @volume is the SOL bought by trades carrying the tag, m_flow.buy_sol @!volume by the rest.',
+      'An empty draft cannot create a fingerprint — toggle at least one structure (or add a row in the editor).',
     ].join('\n'),
   },
   volumeSplit: {
     title: 'Flow split — checked structures',
     body: [
       'Live preview of the group’s scored SOL split into two buckets based on the checkboxes',
-      'below: "Volume" = every row you’ve checked (would-be ix_patterns); "Organic" =',
-      'every unchecked row. Nothing here is saved — it’s just a preview of what Apply would',
-      'flag as volume once you toggle rows, computed client-side from each row’s Gross◎.',
+      'below: "Volume" = every row you’ve checked (the would-be @tag trades); "Organic" =',
+      'every unchecked row (@!tag). Nothing here is saved — it’s just a preview of what Apply',
+      'would tag once you toggle rows, computed client-side from each row’s Gross◎.',
       '',
       'Example: group scored 100 SOL total; you check two rows worth 62 SOL combined →',
       'bar shows 62% volume / 38% organic. Only structures currently listed in the table',
@@ -1584,8 +510,8 @@ export const DISCOVERY_COL_HELP = {
   vol: {
     title: 'Vol — include in draft',
     body: [
-      'Check this box to add the row’s exact ix_labels sequence to the draft',
-      'ix_patterns list as a catch-all (any fee budget). If that shape already has',
+      'Check this box to add the row’s exact ix_labels sequence to the tag’s draft',
+      'ix_shape list as a catch-all (any fee budget). If that shape already has',
       'fee pins, checking Vol widens them to the catch-all. Unchecked rows are ignored',
       'on Apply unless a fee-pinned copy of the same shape is already in the draft.',
       'Pin cu_limit / cu_price / tip from a specific tx on the preview trades strip —',
@@ -1759,9 +685,9 @@ export const DISCOVERY_COL_HELP = {
     title: 'Contagion% — would this row already get swept in?',
     body: [
       'Of THIS row’s SOL, how much comes from wallets that ALSO traded on a structure',
-      'you’ve already checked above. Mirrors how the live engine actually classifies volume:',
-      'once a wallet’s trade matches a checked pattern, ALL of that wallet’s later trades —',
-      'any side, any shape — count as volume too, not just the matching row.',
+      'you’ve already checked above. Shown for a STICKY tag, where that is how the engine',
+      'classifies: once a wallet’s trade matches a checked shape, ALL of that wallet’s later',
+      'trades (any side, any shape) carry the tag too, not just the matching row.',
       '',
       'Example: you check a buy-only row traded by wallets A, B, C. This sell-only row is',
       'traded 8 SOL by A and 2 SOL by a new wallet D → Contagion% = 8 / 10 = 80.',

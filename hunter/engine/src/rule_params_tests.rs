@@ -113,3 +113,26 @@ fn an_at_end_line_may_be_unconditional() {
     ] });
     assert!(RuleParams::parse(&v).is_ok());
 }
+
+/// Numbers as `f64`, so `1` and `1.0` compare equal (the frontend writes whatever a
+/// person typed; the engine writes `f64`).
+fn norm(v: &Value) -> Value {
+    match v {
+        Value::Number(n) => json!(n.as_f64().expect("finite")),
+        Value::Array(a) => Value::Array(a.iter().map(norm).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), norm(v))).collect()),
+        other => other.clone(),
+    }
+}
+
+/// `fixtures/rule_v2_full.json` uses every part of the grammar. The frontend's rule
+/// model round-trips the same file key for key (`validate.test.ts`), so the editor and
+/// the engine read and write one document.
+#[test]
+fn the_shared_full_rule_fixture_parses_and_round_trips() {
+    let doc: Value = serde_json::from_str(include_str!("../fixtures/rule_v2_full.json")).expect("fixture parses");
+    let p = RuleParams::parse(&doc).expect("the shared fixture is a valid rule");
+    assert_eq!(norm(&p.to_value()), norm(&doc));
+    assert_eq!(p.stages.len(), 3);
+    assert_eq!(p.stages[2].at_end.len(), 1);
+}

@@ -5,12 +5,12 @@ import type { FilterSpec } from 'components/table/numericFilter';
 
 export const COMBO_PAGE_SIZE = 200;
 
-/** One `n_exit_metrics_by_slot` slot's name — see `exit_metric_legend` (backend). */
+/** One `n_exit_metrics_by_slot` slot's name (backend `exit_metric_legend`): the sell
+ *  line's own label, else its first condition without the threshold, which varies
+ *  across a page's combos (`m_position.retrace_pct >=`). */
 export interface ExitMetricLegendEntry {
   slot: number;
-  metric: string;
-  operator: string | null;
-  value: number | null;
+  label: string;
 }
 
 export interface StreamedSweepState {

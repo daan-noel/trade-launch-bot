@@ -6,43 +6,27 @@ import { IconButton } from 'components/ui/IconButton';
 import { PlusIcon } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
+import { RefFields, type CondContext } from 'components/strategy/rule/CondRow';
+import { SWEEP_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import {
-  SWEEP_FIELD_HELP,
-  STRICT_PARAM_HELP,
-  METRIC_HELP,
-  metricHelpBody,
-  groupHelpTip,
-  SIDE_HELP,
-  RULE_FIELD_HELP,
-} from 'lib/strategy/strategyHelp';
-import { unitSuffix, useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
+  familyName,
+  findMetric,
+  rulePart,
+  unitSuffix,
+  useStrategyRegistry,
+  type Operator,
+  type StrategyRegistry,
+} from 'lib/strategy/registry';
 import { metricColorStyle } from 'lib/strategy/metricColors';
-import { isPnlAdvancedMetric } from 'lib/strategy/validate';
-import {
-  isDiscreteUnit,
-  sliceSizeParam,
-  unitSuffix as windowUnitSuffix,
-  WINDOW_UNITS,
-  type WindowUnit,
-} from 'lib/strategy/windowSpec';
+import { readPhrase } from 'lib/strategy/sentences';
 import {
   axisRowError,
+  axisSummary,
   comboCount,
   newAxisRow,
-  pnlAxisSugarDuplicateError,
-  axisRowUnit,
-  axisRowNeedsSlice,
-  rowNeedsWindow,
-  type AxisKind,
   type GenericAxisRow,
   type MetricAxisSide,
 } from './genericAxes';
-
-const KIND_LABEL: Record<AxisKind, string> = {
-  metric: 'metric',
-  take_profit: 'TP %',
-  stop_loss: 'SL %',
-};
 
 const DND_MIME = 'application/x-hunter-axis-id';
 
@@ -55,95 +39,83 @@ function axisDragId(dt: DataTransfer): string {
   return dt.getData(DND_MIME) || dt.getData('text/plain');
 }
 
+/** The rule part a side writes into, for its heading and help. */
+const SIDE_PART: Record<MetricAxisSide, string> = { entry: 'enter.filters', exit: 'always' };
+
 export interface GenericAxisBuilderProps {
   rows: GenericAxisRow[];
   onChange: (rows: GenericAxisRow[]) => void;
-  /** Projected combos for this axis set (rendered as a badge; the config form
-   *  reuses the same number for the over-cap gate). */
+  /** The tag names the run's tags document defines: what a tag select offers. */
+  tags: readonly string[];
+  /** Projected combos (the badge); the form reuses the number for its cap gate. */
   projected?: number;
 }
 
-/** Insertion slot while dragging a metric: before `beforeId`, or append when null. */
+/** Insertion slot while dragging a metric row: before `beforeId`, or append. */
 type DropSlot = { side: MetricAxisSide; beforeId: string | null };
 
 /**
- * The registry-driven sweep axis builder (redesign FE5.1). Layout:
- *  - TP / SL strip on top (one of each; empty slot = add)
- *  - Entry metrics (left) · Exit metrics (right)
- * Metric rows tint from the registry `hue` (+ fixed per-op shade). Drag a
- * metric row onto the other column to flip its side (or reorder within a column).
+ * The sweep axis builder: a TP / SL strip on top, entry filters (left) and exit sell
+ * lines (right) below. Each metric row is one read (the rule editor's own metric, tag
+ * and span controls), an operator and the values to try. Drag a row onto the other
+ * column to flip its side.
  */
-export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBuilderProps) {
+export function GenericAxisBuilder({ rows, onChange, tags, projected }: GenericAxisBuilderProps) {
   const { data: registry } = useStrategyRegistry();
-  /** HTML5 DnD can't read custom MIME data during dragover — keep source id in state. */
+  /** HTML5 DnD cannot read custom MIME data during dragover: keep the source id here. */
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
 
-  const combos = useMemo(() => projected ?? comboCount(rows, registry), [projected, rows, registry]);
-  const pnlSugarErr = useMemo(() => pnlAxisSugarDuplicateError(rows), [rows]);
-
-  const tpRow = useMemo(() => rows.find((r) => r.kind === 'take_profit'), [rows]);
-  const slRow = useMemo(() => rows.find((r) => r.kind === 'stop_loss'), [rows]);
-  const entryRows = useMemo(
-    () => rows.filter((r) => r.kind === 'metric' && r.side === 'entry'),
-    [rows],
-  );
-  const exitRows = useMemo(
-    () => rows.filter((r) => r.kind === 'metric' && r.side === 'exit'),
-    [rows],
-  );
+  const combos = useMemo(() => projected ?? comboCount(rows), [projected, rows]);
+  const tpRow = rows.find((r) => r.kind === 'take_profit');
+  const slRow = rows.find((r) => r.kind === 'stop_loss');
+  const entryRows = rows.filter((r) => r.kind === 'metric' && r.side === 'entry');
+  const exitRows = rows.filter((r) => r.kind === 'metric' && r.side === 'exit');
 
   const clearDrag = () => {
     setDraggingId(null);
     setDropSlot(null);
   };
-
   const setRow = (id: string, patch: Partial<GenericAxisRow>) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const removeRow = (id: string) => onChange(rows.filter((r) => r.id !== id));
-  /** At most one TP and one SL axis — a second of the same kind would overwrite
-   *  in `RuleParams` while still multiplying combo count. */
+  /** One TP and one SL axis at most: a second would overwrite the first in the rule
+   *  while still multiplying the combo count. */
   const addTpSl = (kind: 'take_profit' | 'stop_loss') => {
     if (rows.some((r) => r.kind === kind)) return;
     onChange([...rows, newAxisRow(kind, registry)]);
   };
-  const addMetric = (side: MetricAxisSide) =>
-    onChange([...rows, newAxisRow('metric', registry, side)]);
+  const addMetric = (side: MetricAxisSide) => onChange([...rows, newAxisRow('metric', registry, side)]);
 
-  /** Move a metric row to `targetSide`, optionally inserting before `beforeId`
-   *  (same-column reorder or cross-column drop). Appends when `beforeId` is
-   *  null / missing. */
-  const moveMetric = (id: string, targetSide: MetricAxisSide, beforeId: string | null) => {
+  /** Move a metric row to `side`, before `beforeId` (or after that side's last row). */
+  const moveMetric = (id: string, side: MetricAxisSide, beforeId: string | null) => {
     const src = rows.find((r) => r.id === id);
     if (!src || src.kind !== 'metric') return;
-
-    const moved: GenericAxisRow = { ...src, side: targetSide };
     const without = rows.filter((r) => r.id !== id);
-
-    let insertAt = without.length;
+    let at = without.length;
     if (beforeId) {
       const bi = without.findIndex((r) => r.id === beforeId);
-      if (bi >= 0) insertAt = bi;
+      if (bi >= 0) at = bi;
     } else {
       let last = -1;
-      for (let i = 0; i < without.length; i++) {
-        const r = without[i];
-        if (r.kind === 'metric' && r.side === targetSide) last = i;
-      }
-      insertAt = last >= 0 ? last + 1 : without.length;
+      without.forEach((r, i) => {
+        if (r.kind === 'metric' && r.side === side) last = i;
+      });
+      at = last >= 0 ? last + 1 : without.length;
     }
-    onChange([...without.slice(0, insertAt), moved, ...without.slice(insertAt)]);
+    onChange([...without.slice(0, at), { ...src, side }, ...without.slice(at)]);
   };
+
+  if (!registry) return <p className="text-[11px] text-text-dim/60">Loading strategy registry…</p>;
+  const tpPart = rulePart(registry, 'take_profit');
+  const slPart = rulePart(registry, 'stop_loss');
 
   return (
     <div className="flex flex-col gap-2">
       <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
         <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/80">
           Axes
-          <InfoTooltip
-            title="Sweep axes"
-            body="TP/SL on top; entry metrics left, exit right. Each combo picks one value per axis. Same metric + crossed ops → OR; feasible opposing bounds → AND range. Drag a metric onto the other column to flip its side."
-          />
+          <InfoTooltip title={SWEEP_FIELD_HELP.axes.title} body={SWEEP_FIELD_HELP.axes.body} />
         </span>
         <span />
         <Badge variant={combos === 0 ? 'neutral' : 'primary'} className="font-mono">
@@ -151,74 +123,55 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
         </Badge>
       </div>
 
-      {/* TP / SL strip — one slot each; empty slot is the add affordance. */}
-      <div className="flex flex-col gap-1.5 rounded-md border border-white/10 bg-white/[0.02] p-2">
-        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
-          TP / SL
-          <InfoTooltip
-            title="Take profit / Stop loss"
-            body={`${RULE_FIELD_HELP.takeProfit.body} ${RULE_FIELD_HELP.stopLoss.body} Each is its own sweep axis (comma-separated % values).`}
-          />
-        </span>
+      {/* TP / SL strip: one slot each; an empty slot is the add button. */}
+      <div className="flex flex-col gap-1.5 rounded-md border border-white/10 bg-white/2 p-2">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim/70">TP / SL</span>
         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-          <TpSlSlot
-            kind="take_profit"
-            row={tpRow}
-            registry={registry}
-            onAdd={() => addTpSl('take_profit')}
-            onPatch={(patch) => tpRow && setRow(tpRow.id, patch)}
-            onRemove={() => tpRow && removeRow(tpRow.id)}
-          />
-          <TpSlSlot
-            kind="stop_loss"
-            row={slRow}
-            registry={registry}
-            onAdd={() => addTpSl('stop_loss')}
-            onPatch={(patch) => slRow && setRow(slRow.id, patch)}
-            onRemove={() => slRow && removeRow(slRow.id)}
-          />
+          {(['take_profit', 'stop_loss'] as const).map((kind) => {
+            const row = kind === 'take_profit' ? tpRow : slRow;
+            const part = kind === 'take_profit' ? tpPart : slPart;
+            return (
+              <TpSlSlot
+                key={kind}
+                kind={kind}
+                row={row}
+                help={part ? `${part.summary}\n\nExample: ${part.example}` : undefined}
+                registry={registry}
+                onAdd={() => addTpSl(kind)}
+                onPatch={(patch) => row && setRow(row.id, patch)}
+                onRemove={() => row && removeRow(row.id)}
+              />
+            );
+          })}
         </div>
       </div>
 
-      {/* Entry (left) · Exit (right) */}
-      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-        <MetricSideColumn
-          side="entry"
-          rows={entryRows}
-          registry={registry}
-          draggingId={draggingId}
-          dropSlot={dropSlot?.side === 'entry' ? dropSlot : null}
-          onDragStartRow={setDraggingId}
-          onDragEnd={clearDrag}
-          onDropSlot={setDropSlot}
-          onPatch={setRow}
-          onRemove={removeRow}
-          onAdd={() => addMetric('entry')}
-          onMove={moveMetric}
-        />
-        <MetricSideColumn
-          side="exit"
-          rows={exitRows}
-          registry={registry}
-          draggingId={draggingId}
-          dropSlot={dropSlot?.side === 'exit' ? dropSlot : null}
-          onDragStartRow={setDraggingId}
-          onDragEnd={clearDrag}
-          onDropSlot={setDropSlot}
-          onPatch={setRow}
-          onRemove={removeRow}
-          onAdd={() => addMetric('exit')}
-          onMove={moveMetric}
-        />
+      <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+        {(['entry', 'exit'] as const).map((side) => (
+          <MetricSideColumn
+            key={side}
+            side={side}
+            rows={side === 'entry' ? entryRows : exitRows}
+            registry={registry}
+            tags={tags}
+            draggingId={draggingId}
+            dropSlot={dropSlot?.side === side ? dropSlot : null}
+            onDragStartRow={setDraggingId}
+            onDragEnd={clearDrag}
+            onDropSlot={setDropSlot}
+            onPatch={setRow}
+            onRemove={removeRow}
+            onAdd={() => addMetric(side)}
+            onMove={moveMetric}
+          />
+        ))}
       </div>
 
       {rows.length === 0 && (
         <p className="rounded-md border border-dashed border-white/10 px-3 py-2 text-[12px] text-text-dim">
-          No axes yet — add a TP / SL axis above or a metric condition in either column.
+          No axes yet: add a TP / SL axis above or a metric axis in either column.
         </p>
       )}
-
-      {pnlSugarErr && <p className="text-[11px] text-red">{pnlSugarErr}</p>}
     </div>
   );
 }
@@ -247,10 +200,11 @@ const TPSL_SLOT: Record<
   },
 };
 
-/** One TP or SL axis slot — empty = add affordance; filled = tinted values editor. */
+/** One TP or SL axis slot: empty = the add button; filled = its values box. */
 function TpSlSlot({
   kind,
   row,
+  help,
   registry,
   onAdd,
   onPatch,
@@ -258,20 +212,21 @@ function TpSlSlot({
 }: {
   kind: 'take_profit' | 'stop_loss';
   row: GenericAxisRow | undefined;
-  registry: StrategyRegistry | undefined;
+  /** The registry's text for this rule part. */
+  help: string | undefined;
+  registry: StrategyRegistry;
   onAdd: () => void;
   onPatch: (patch: Partial<GenericAxisRow>) => void;
   onRemove: () => void;
 }) {
   const style = TPSL_SLOT[kind];
-
   if (!row) {
     return (
       <button
         type="button"
         onClick={onAdd}
         className={cn(
-          'flex min-h-[3.25rem] items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-[11px] font-semibold tracking-wide transition-colors',
+          'flex min-h-13 items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-[11px] font-semibold tracking-wide transition-colors',
           style.empty,
         )}
       >
@@ -280,16 +235,9 @@ function TpSlSlot({
       </button>
     );
   }
-
   const err = axisRowError(row, registry);
-
   return (
-    <div
-      className={cn(
-        'flex flex-col gap-1 rounded-md border px-2.5 py-2',
-        err ? 'border-red/40 bg-red/5' : style.filled,
-      )}
-    >
+    <div className={cn('flex flex-col gap-1 rounded-md border px-2.5 py-2', err ? 'border-red/40 bg-red/5' : style.filled)}>
       <div className="flex items-center gap-2">
         <span
           className={cn(
@@ -298,11 +246,7 @@ function TpSlSlot({
           )}
         >
           {style.short}
-          <InfoTooltip
-            title={kind === 'take_profit' ? RULE_FIELD_HELP.takeProfit.title : RULE_FIELD_HELP.stopLoss.title}
-            body={kind === 'take_profit' ? RULE_FIELD_HELP.takeProfit.body : RULE_FIELD_HELP.stopLoss.body}
-            side="top"
-          />
+          {help && <InfoTooltip title={style.label} body={help} side="top" />}
         </span>
         <div className="min-w-0 flex-1">
           <Input
@@ -313,10 +257,7 @@ function TpSlSlot({
             unit="%"
             aria-label={`${style.label} values`}
             aria-invalid={!!err}
-            className={cn(
-              'font-mono tabular-nums',
-              err ? 'border-red/70 focus:border-red' : style.input,
-            )}
+            className={cn('font-mono tabular-nums', err ? 'border-red/70 focus:border-red' : style.input)}
           />
         </div>
         <button
@@ -328,12 +269,12 @@ function TpSlSlot({
           ✕
         </button>
       </div>
-      {err && <span className="text-[10px] text-red">{err}</span>}
+      <span className={cn('text-[10px]', err ? 'text-red' : 'text-text-dim')}>{err ?? axisSummary(row)}</span>
     </div>
   );
 }
 
-/** Insert-slot line — absolutely placed so it doesn't shift row hit-testing. */
+/** Insert-slot line, absolutely placed so it does not shift row hit-testing. */
 function DropIndicator({ at }: { at: 'before' | 'after' }) {
   return (
     <div
@@ -354,6 +295,7 @@ function MetricSideColumn({
   side,
   rows,
   registry,
+  tags,
   draggingId,
   dropSlot,
   onDragStartRow,
@@ -366,7 +308,8 @@ function MetricSideColumn({
 }: {
   side: MetricAxisSide;
   rows: GenericAxisRow[];
-  registry: StrategyRegistry | undefined;
+  registry: StrategyRegistry;
+  tags: readonly string[];
   draggingId: string | null;
   dropSlot: DropSlot | null;
   onDragStartRow: (id: string) => void;
@@ -375,58 +318,40 @@ function MetricSideColumn({
   onPatch: (id: string, patch: Partial<GenericAxisRow>) => void;
   onRemove: (id: string) => void;
   onAdd: () => void;
-  onMove: (id: string, targetSide: MetricAxisSide, beforeId: string | null) => void;
+  onMove: (id: string, side: MetricAxisSide, beforeId: string | null) => void;
 }) {
+  const part = rulePart(registry, SIDE_PART[side]);
   const showEndIndicator = dropSlot != null && dropSlot.beforeId == null && rows.length > 0;
 
-  /** Insert slot from pointer Y vs each row's midpoint (stable across flex gaps). */
+  /** Insert slot from the pointer Y against each row's midpoint. */
   const slotFromPointerY = (clientY: number, columnEl: HTMLElement): DropSlot => {
-    const nodes = columnEl.querySelectorAll<HTMLElement>('[data-axis-row]');
-    for (const node of nodes) {
+    for (const node of columnEl.querySelectorAll<HTMLElement>('[data-axis-row]')) {
       const rect = node.getBoundingClientRect();
-      if (clientY < rect.top + rect.height / 2) {
-        return { side, beforeId: node.dataset.axisRow || null };
-      }
+      if (clientY < rect.top + rect.height / 2) return { side, beforeId: node.dataset.axisRow || null };
     }
     return { side, beforeId: null };
   };
 
-  /** Skip a no-op slot (same place the dragged row already occupies). */
+  /** `null` for a no-op slot (where the dragged row already is). */
   const normalizeSlot = (slot: DropSlot): DropSlot | null => {
     if (!draggingId) return slot;
-    const fromIdx = rows.findIndex((r) => r.id === draggingId);
-    if (fromIdx < 0) return slot; // cross-column — always a real move
-    const toIdx = slot.beforeId
-      ? rows.findIndex((r) => r.id === slot.beforeId)
-      : rows.length;
-    // Removing the source shifts later indices down by one.
-    const adjustedTo = fromIdx < toIdx ? toIdx - 1 : toIdx;
-    if (adjustedTo === fromIdx) return null;
-    return slot;
-  };
-
-  const previewSlot = (clientY: number, columnEl: HTMLElement) => {
-    onDropSlot(normalizeSlot(slotFromPointerY(clientY, columnEl)));
-  };
-
-  const commitDrop = (id: string, slot: DropSlot | null) => {
-    onDropSlot(null);
-    onDragEnd();
-    if (!id || !slot) return;
-    onMove(id, side, slot.beforeId);
+    const from = rows.findIndex((r) => r.id === draggingId);
+    if (from < 0) return slot;
+    const to = slot.beforeId ? rows.findIndex((r) => r.id === slot.beforeId) : rows.length;
+    return (from < to ? to - 1 : to) === from ? null : slot;
   };
 
   return (
     <div
       className={cn(
         'flex flex-col gap-1.5 rounded-md border p-2 transition-colors',
-        dropSlot ? 'border-primary/50 bg-primary/5' : 'border-white/10 bg-white/[0.02]',
+        dropSlot ? 'border-primary/50 bg-primary/5' : 'border-white/10 bg-white/2',
       )}
       onDragOver={(e) => {
         if (!isAxisDrag(e.dataTransfer)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
-        previewSlot(e.clientY, e.currentTarget);
+        onDropSlot(normalizeSlot(slotFromPointerY(e.clientY, e.currentTarget)));
       }}
       onDragLeave={(e) => {
         if (e.currentTarget.contains(e.relatedTarget as Node)) return;
@@ -436,21 +361,20 @@ function MetricSideColumn({
         e.preventDefault();
         const id = axisDragId(e.dataTransfer);
         const slot = normalizeSlot(slotFromPointerY(e.clientY, e.currentTarget));
-        commitDrop(id, slot);
+        onDropSlot(null);
+        onDragEnd();
+        if (id && slot) onMove(id, side, slot.beforeId);
       }}
     >
-      <div className="flex items-center justify-between gap-1.5">
-        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
-          {side}
-          <InfoTooltip title={SIDE_HELP[side].title} body={SIDE_HELP[side].body} />
-        </span>
-        <IconButton
-          variant="success"
-          size="md"
-          onClick={onAdd}
-          title="Add metric"
-          aria-label="Add metric"
-        >
+      <div className="flex items-start justify-between gap-1.5">
+        <div className="flex min-w-0 flex-col">
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
+            {side === 'entry' ? 'Entry filters' : 'Exit lines'}
+            {part && <InfoTooltip title={part.title} body={`${part.summary}\n\nExample: ${part.example}`} />}
+          </span>
+          {part && <span className="text-[10px] text-text-dim/60">{part.summary}</span>}
+        </div>
+        <IconButton variant="success" size="md" onClick={onAdd} title="Add metric axis" aria-label="Add metric axis">
           <PlusIcon />
         </IconButton>
       </div>
@@ -459,46 +383,40 @@ function MetricSideColumn({
         <div
           className={cn(
             'rounded border border-dashed px-2 py-3 text-center text-[11px] transition-colors',
-            dropSlot
-              ? 'border-primary/50 bg-primary/10 text-primary/80'
-              : 'border-white/10 text-text-dim/50',
+            dropSlot ? 'border-primary/50 bg-primary/10 text-primary/80' : 'border-white/10 text-text-dim/50',
           )}
         >
           {dropSlot ? 'Drop here' : 'Drop here or + metric'}
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
-          {rows.map((row, i) => {
-            const showBefore = dropSlot?.beforeId === row.id;
-            const showAfter = showEndIndicator && i === rows.length - 1;
-            return (
-              <div key={row.id} className="relative" data-axis-row={row.id}>
-                {showBefore && <DropIndicator at="before" />}
-                {showAfter && <DropIndicator at="after" />}
-                <AxisRow
-                  row={row}
-                  registry={registry}
-                  dragHandle
-                  dragging={draggingId === row.id}
-                  onDragStartRow={() => onDragStartRow(row.id)}
-                  onDragEnd={onDragEnd}
-                  onPatch={(patch) => onPatch(row.id, patch)}
-                  onRemove={() => onRemove(row.id)}
-                />
-              </div>
-            );
-          })}
+          {rows.map((row, i) => (
+            <div key={row.id} className="relative" data-axis-row={row.id}>
+              {dropSlot?.beforeId === row.id && <DropIndicator at="before" />}
+              {showEndIndicator && i === rows.length - 1 && <DropIndicator at="after" />}
+              <MetricAxisRow
+                row={row}
+                registry={registry}
+                tags={tags}
+                dragging={draggingId === row.id}
+                onDragStartRow={() => onDragStartRow(row.id)}
+                onDragEnd={onDragEnd}
+                onPatch={(patch) => onPatch(row.id, patch)}
+                onRemove={() => onRemove(row.id)}
+              />
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-/** One editable axis row. Metric rows omit the side select (column owns side). */
-function AxisRow({
+/** One metric axis: the read, the operator, the values, then what it does in words. */
+function MetricAxisRow({
   row,
   registry,
-  dragHandle,
+  tags,
   dragging,
   onDragStartRow,
   onDragEnd,
@@ -506,236 +424,85 @@ function AxisRow({
   onRemove,
 }: {
   row: GenericAxisRow;
-  registry: StrategyRegistry | undefined;
-  /** When set, a ⠿ handle starts the drag (inputs stay selectable). */
-  dragHandle?: boolean;
-  dragging?: boolean;
-  onDragStartRow?: () => void;
-  onDragEnd?: () => void;
+  registry: StrategyRegistry;
+  tags: readonly string[];
+  dragging: boolean;
+  onDragStartRow: () => void;
+  onDragEnd: () => void;
   onPatch: (patch: Partial<GenericAxisRow>) => void;
   onRemove: () => void;
 }) {
-  const err = axisRowError(row, registry);
-  const isMetric = row.kind === 'metric';
-  const group = registry?.groups.find((g) => g.name === row.group);
-  const metric = group?.metrics.find((m) => m.name === row.metric);
-  const needsWindow = rowNeedsWindow(row, registry);
-  // Per METRIC, not per group: `m_flow_window` declares the slice axis for every
-  // instance while only `trade_share` / `sol_share` read it, so asking the group would
-  // put this control on a `gross_flow` row and the backend would then reject the axis.
-  const needsSlice = axisRowNeedsSlice(row, registry);
-  const valueUnit = metric ? unitSuffix(metric.unit) : row.kind !== 'metric' ? '%' : '';
-  // Both window controls count in the ONE unit the row picks. A discrete axis
-  // (slots, prints) counts whole buckets, so its inputs step by 1 from 1.
-  const windowUnit = axisRowUnit(row);
-  const uSuffix = windowUnitSuffix(windowUnit);
-  const uStep = isDiscreteUnit(windowUnit) ? 1 : 0.5;
-  const windowHint = windowUnit === 'slot' ? '30' : windowUnit === 'print' ? '20' : '10';
-
-  const onGroup = (name: string) => {
-    const g = registry?.groups.find((gg) => gg.name === name);
-    onPatch({ group: name, metric: g?.metrics[0]?.name ?? '' });
-  };
-
-  const tintStyle: CSSProperties | undefined =
-    !err && isMetric && row.metric
-      ? (() => {
-          const c = metricColorStyle({
-            hue: metric?.hue,
-            group: row.group,
-            metric: row.metric,
-            operator: row.operator,
-          });
-          return { borderColor: c.border, backgroundColor: c.background };
-        })()
+  const err = axisRowError(row, registry, tags);
+  const spec = findMetric(registry, row.ref.metric);
+  // Before the buy our position does not exist, so an entry axis does not offer it.
+  const ctx: CondContext = { reg: registry, tags, signals: [], beforeBuy: row.side === 'entry' };
+  const tint: CSSProperties | undefined =
+    !err && spec
+      ? metricColorStyle({ hue: spec.hue, group: familyName(spec.path), metric: spec.name, operator: row.operator }).style
       : undefined;
-
   return (
     <div
       className={cn(
-        'flex flex-wrap items-center gap-1.5 rounded-md border px-2 py-1.5 transition-opacity',
-        err ? 'border-red/40 bg-red/5' : tintStyle ? '' : 'border-white/10 bg-surface',
+        'flex flex-col gap-1 rounded-md border px-2 py-1.5 transition-opacity',
+        err ? 'border-red/40 bg-red/5' : tint ? '' : 'border-white/10 bg-surface',
         dragging && 'opacity-40',
       )}
-      style={tintStyle}
+      style={tint ? { borderColor: tint.borderColor, backgroundColor: tint.backgroundColor } : undefined}
     >
-      {dragHandle && (
+      <div className="flex flex-wrap items-center gap-1.5">
         <span
           draggable
           onDragStart={(e) => {
             e.dataTransfer.setData(DND_MIME, row.id);
             e.dataTransfer.setData('text/plain', row.id);
             e.dataTransfer.effectAllowed = 'move';
-            onDragStartRow?.();
+            onDragStartRow();
           }}
-          onDragEnd={() => onDragEnd?.()}
+          onDragEnd={onDragEnd}
           className="shrink-0 cursor-grab select-none px-0.5 text-[12px] leading-none text-text-dim/40 active:cursor-grabbing"
           title="Drag to the other column (or reorder)"
           aria-label="Drag axis"
         >
           ⠿
         </span>
+        <RefFields r={row.ref} onChange={(ref) => onPatch({ ref })} ctx={ctx} />
+        <Cell label="op" tip={SWEEP_FIELD_HELP.axisOp}>
+          <Select
+            fieldSize="sm"
+            value={row.operator}
+            onChange={(e) => onPatch({ operator: e.target.value as Operator })}
+            className="w-14"
+          >
+            {registry.operators.map((op) => (
+              <option key={op} value={op}>
+                {op}
+              </option>
+            ))}
+          </Select>
+        </Cell>
+        <Cell label="values" grow tip={SWEEP_FIELD_HELP.axisValues}>
+          <Input
+            fieldSize="sm"
+            value={row.valuesText}
+            onChange={(e) => onPatch({ valuesText: e.target.value })}
+            placeholder="off, 5, 10  ·  10..40 step 10"
+            unit={spec ? unitSuffix(spec.unit) || undefined : undefined}
+            aria-invalid={!!err}
+            className={cn('min-w-32', err && 'border-red/70 focus:border-red')}
+          />
+        </Cell>
+        <button type="button" onClick={onRemove} title="Remove axis" className="ml-auto shrink-0 px-1 text-text-dim hover:text-red">
+          ✕
+        </button>
+      </div>
+      {err ? (
+        <span className="text-[11px] text-red">{err}</span>
+      ) : (
+        <span className="text-[11px] text-text-dim">
+          {axisSummary(row)}
+          <span className="text-text-dim/60"> · reads {readPhrase(registry, row.ref)}</span>
+        </span>
       )}
-
-      <span className="w-14 shrink-0 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
-        {KIND_LABEL[row.kind]}
-      </span>
-
-      {isMetric ? (
-        <>
-          <Cell
-            label="group"
-            tip={row.group ? groupHelpTip(row.group, group) : undefined}
-          >
-            <Select
-              fieldSize="sm"
-              value={row.group}
-              onChange={(e) => onGroup(e.target.value)}
-              className="w-32"
-            >
-              <option value="">group…</option>
-              {registry?.groups
-                // Hide position-scoped (exit-only) groups from an entry axis — they
-                // read NaN before entry, so an entry condition can never fire.
-                .filter((g) => !(row.side === 'entry' && g.scope === 'position'))
-                .map((g) => (
-                  <option key={g.name} value={g.name}>
-                    {g.name}
-                  </option>
-                ))}
-            </Select>
-          </Cell>
-          <Cell
-            label="metric"
-            tip={
-              row.metric
-                ? {
-                    title: METRIC_HELP[row.metric]?.title ?? row.metric,
-                    body: metricHelpBody(
-                      row.metric,
-                      group?.metrics.find((m) => m.name === row.metric),
-                    ),
-                  }
-                : undefined
-            }
-          >
-            <Select
-              fieldSize="sm"
-              value={row.metric}
-              onChange={(e) => onPatch({ metric: e.target.value })}
-              className="w-28"
-              disabled={!group}
-            >
-              <option value="">metric…</option>
-              {group?.metrics.map((m) => (
-                <option key={m.name} value={m.name}>
-                  {isPnlAdvancedMetric(group.name, m.name) ? `${m.name} (advanced)` : m.name}
-                </option>
-              ))}
-            </Select>
-          </Cell>
-          <Cell label="op" tip={SWEEP_FIELD_HELP.axisOp}>
-            <Select
-              fieldSize="sm"
-              value={row.operator}
-              onChange={(e) => onPatch({ operator: e.target.value as GenericAxisRow['operator'] })}
-              className="w-14"
-            >
-              {registry?.operators.map((op) => (
-                <option key={op} value={op}>
-                  {op}
-                </option>
-              ))}
-            </Select>
-          </Cell>
-          {needsWindow && (
-            <Cell label={`window ${uSuffix}`} tip={SWEEP_FIELD_HELP.axisWindow}>
-              <Input
-                fieldSize="sm"
-                type="number"
-                min={uStep}
-                step={uStep}
-                value={row.window}
-                onChange={(e) => onPatch({ window: e.target.value })}
-                placeholder={windowHint}
-                className="w-16"
-              />
-            </Cell>
-          )}
-
-          {needsWindow && (
-            <Cell label="unit" tip={SWEEP_FIELD_HELP.axisWindowUnit}>
-              <Select
-                fieldSize="sm"
-                value={windowUnit}
-                onChange={(e) => onPatch({ windowUnit: e.target.value as WindowUnit })}
-                className="w-20"
-              >
-                {/* Straight off WINDOW_UNITS, so a new basis gets its option rather
-                    than being sweepable only by hand-editing the axes JSON. */}
-                {WINDOW_UNITS.map((u) => (
-                  <option key={u} value={u}>
-                    {u}
-                  </option>
-                ))}
-              </Select>
-            </Cell>
-          )}
-
-          {needsWindow && (
-            <Cell label={`lag ${uSuffix}`} tip={SWEEP_FIELD_HELP.axisWindowLag}>
-              <Input
-                fieldSize="sm"
-                type="number"
-                min={0}
-                step={uStep}
-                value={row.lag ?? ''}
-                onChange={(e) => onPatch({ lag: e.target.value })}
-                placeholder="0"
-                className="w-14"
-              />
-            </Cell>
-          )}
-
-          {needsSlice && (
-            <Cell label={`slice ${uSuffix}`} tip={STRICT_PARAM_HELP[sliceSizeParam(windowUnit)]}>
-              <Input
-                fieldSize="sm"
-                type="number"
-                min={uStep}
-                step={uStep}
-                value={row.slice ?? ''}
-                onChange={(e) => onPatch({ slice: e.target.value })}
-                placeholder={windowHint}
-                className="w-16"
-              />
-            </Cell>
-          )}
-        </>
-      ) : null}
-
-      <Cell label="values" grow tip={SWEEP_FIELD_HELP.axisValues}>
-        <Input
-          fieldSize="sm"
-          value={row.valuesText}
-          onChange={(e) => onPatch({ valuesText: e.target.value })}
-          placeholder={isMetric ? 'off, 5, 10  ·  10..40 step 10' : '50, 100, 200'}
-          unit={valueUnit || undefined}
-          aria-invalid={!!err}
-          className={cn('min-w-[8rem]', err && 'border-red/70 focus:border-red')}
-        />
-      </Cell>
-
-      <button
-        type="button"
-        onClick={onRemove}
-        title="Remove axis"
-        className="ml-auto shrink-0 px-1 text-text-dim hover:text-red"
-      >
-        ✕
-      </button>
-
-      {err && <span className="w-full text-[11px] text-red">{err}</span>}
     </div>
   );
 }

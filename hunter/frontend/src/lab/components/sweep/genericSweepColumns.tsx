@@ -11,19 +11,17 @@ import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { cn } from 'lib/cn';
 import { fingerprintsHref, rulesHref } from 'lib/strategy/nav';
 import { renderGroupKey } from 'lib/strategy/matchGroupFingerprint';
-import { ruleParamsJsonEqual } from 'lib/strategy/ruleParams';
+import { jsonValuesEqual } from 'lib/strategy/matchRuleIdentity';
 import type { Fingerprint, StrategyRule } from 'lib/strategy/types';
 import { formatDecimalTrim } from 'utils/format';
 import type { ExitMetricLegendEntry } from '@lab/hooks/useStreamedSweepResults';
 import { GROUP_FIELD_LABELS, type GroupField, type GroupedSweepGroupRecord } from './groupedTypes';
 import type { SweepResultRecord } from './types';
 
-// Generic-engine sweep columns (redesign FE5.2). The stat columns mirror the
-// legacy `sweepColumns`/`groupColumns` shape, but the swept params are now a
-// nested `RuleParams` blob (TP/SL + entry/exit metric conditions), rendered as
-// compact chips instead of one flat column per knob. The legacy per-strategy
-// exit-reason columns (trailing/stall/time/liquidity) collapse to the
-// engine's single `Metrics` exit.
+// Grouped-sweep table columns. A combo's `params` is a rule `params` document (TP /
+// SL, entry filters, sell lines), rendered by `ruleParamsCell`; TP and SL also get
+// their own sortable columns. Exits split into TP, SL, the rule's own sell lines
+// (broken down per line by the page's exit legend), dead and still open.
 
 // --- formatters -------------------------------------------------------------
 
@@ -92,7 +90,7 @@ function pnlCellWithScreenerFlag(pnlSol: number, openShare: number | null): Reac
   );
 }
 
-/** The nested `params` blob a generic combo / group carries. */
+/** The top-level TP / SL of a combo's `params` (the same key in format 1 and 2). */
 interface RuleParamsJson {
   take_profit?: number | null;
   stop_loss?: number | null;
@@ -149,7 +147,7 @@ export function buildGenericComboColumns(
     },
     {
       key: 'conditions',
-      label: 'Conditions',
+      label: 'Rule',
       group: 'params',
       sortable: false,
       render: (r) => ruleParamsCell(r.params),
@@ -343,32 +341,22 @@ function genericStatColumns(
   ];
 }
 
-/** One legend entry as a short `metric op value` fragment (e.g. `stall > 3`),
- *  or just the metric name when the condition didn't resolve (rare — see the
- *  backend's `exit_metric_legend`). */
-function legendFragment(l: ExitMetricLegendEntry): string {
-  if (l.operator == null || l.value == null) return l.metric;
-  return `${l.metric} ${l.operator} ${formatDecimalTrim(l.value, 4)}`;
-}
-
-/** The `Metrics` exit column: the same aggregate count as before, plus — when
- *  the page's `X-Exit-Metric-Legend` named its slots — a per-row hover
- *  breakdown of WHICH authored condition each of those exits fired on. Falls
- *  back to the old undifferentiated count when there's no legend (legacy rows,
- *  a rule the sweep never resolved a slot for, or a run predating this column). */
+/** The sell-line exit column: the count, plus (when the page's `X-Exit-Metric-Legend`
+ *  named its slots) a per-row hover breakdown of WHICH line each exit sold on. Without
+ *  a legend it is the bare count. */
 function metricsExitColumn(exitMetricLegend: ExitMetricLegendEntry[]): ColumnDef<SweepResultRecord> {
-  const baseTooltip = 'Exited because any exit metric condition became true';
+  const baseTooltip = "Exited on one of the rule's own sell lines";
   const breakdown = (r: SweepResultRecord): string | undefined => {
     const slots = r.n_exit_metrics_by_slot;
     if (!slots || exitMetricLegend.length === 0) return undefined;
     const parts = exitMetricLegend
-      .map((l) => (slots[l.slot] ? `${legendFragment(l)}: ${slots[l.slot]}` : null))
+      .map((l) => (slots[l.slot] ? `${l.label}: ${slots[l.slot]}` : null))
       .filter((s): s is string => s != null);
     return parts.length > 0 ? parts.join('\n') : undefined;
   };
   return {
     key: 'n_exit_metrics',
-    label: 'Metrics',
+    label: 'Lines',
     group: 'exits',
     tooltip: baseTooltip,
     sortable: true,
@@ -442,8 +430,8 @@ function usedByRulesCell(
 ): ReactNode {
   const ranked = bestParams
     ? [...rules].sort((a, b) => {
-        const am = ruleParamsJsonEqual(a.params, bestParams) ? 0 : 1;
-        const bm = ruleParamsJsonEqual(b.params, bestParams) ? 0 : 1;
+        const am = jsonValuesEqual(a.params, bestParams) ? 0 : 1;
+        const bm = jsonValuesEqual(b.params, bestParams) ? 0 : 1;
         return am - bm;
       })
     : rules;
@@ -451,7 +439,7 @@ function usedByRulesCell(
   return (
     <ul className="flex min-w-40 flex-col gap-1.5 text-left">
       {ranked.map((r) => {
-        const isBest = !!bestParams && ruleParamsJsonEqual(r.params, bestParams);
+        const isBest = !!bestParams && jsonValuesEqual(r.params, bestParams);
         return (
           <li
             key={r.id}

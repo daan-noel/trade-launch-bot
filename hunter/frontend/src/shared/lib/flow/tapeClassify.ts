@@ -1,77 +1,69 @@
 /**
- * The ONE mapping from the strip's selected list to overlay classify options.
+ * The ONE mapping from "which tag does this surface read" to classify options.
  *
- * Badges, chart lines and contagion notes all go through here so switching
- * tagged / dump / working cannot leave the table answering one question and the
- * lines another. `useFlowPatternSource` stays the engine's tagged snapshot for
- * metric panes; this is the live overlay.
+ * The chart lines, the trades-table badges and the reasons map all go through here,
+ * so a tag switch cannot leave the table answering one question and the lines
+ * another.
  */
 
-import {
-  patternKeysFrom,
-  type FlowClassifyOptions,
-  type FlowSide,
-} from './classifyFlow';
 import type { IxPatternRow } from 'lib/strategy/ixPatternRows';
-import type { TapeList } from 'lib/strategy/registry';
+import { tagNames, tagsFromJson, usedMatchers, type TagMatch } from 'lib/strategy/tagsDoc';
+import type { FlowClassifyOptions, FlowTag } from './classifyFlow';
 
-export interface TapeClassifyInput {
-  list: TapeList;
-  /** Label-sequence keys (tagged/dump) or grain ids (working). */
-  keys: ReadonlySet<string> | null | undefined;
-  /** Whole rows when the list carries fee pins. Ignored on `'working'`. */
-  rows?: readonly IxPatternRow[] | null;
-  creatorWallet?: string | null;
-  /**
-   * Wallet-contagion override. Default: on for `'tagged'`, off for dump/working
-   * (those groups have no wallet rule). A flow lens supplies this explicitly.
-   */
-  contagion?: boolean;
-  /**
-   * Whether the creator wallet seeds the contagion set. Default follows
-   * `'tagged'`. Staging surfaces pass the fingerprint's `creator_is_tagged`.
-   */
-  seedCreator?: boolean;
-  excludeWallets?: ReadonlySet<string> | null;
-  side?: FlowSide | null;
+/** The tag a surface reads when nothing picked one: `volume` when the document
+ *  defines it (the name v1's flow list converts to), else its first tag, else
+ *  `volume` (a click then creates it). */
+export const DEFAULT_TAG = 'volume';
+
+export function defaultTagName(doc: unknown): string {
+  const names = tagNames(doc);
+  return names.includes(DEFAULT_TAG) ? DEFAULT_TAG : (names[0] ?? DEFAULT_TAG);
 }
 
-/** Build classify options for the selected tape list, or `null` when nothing
- *  can classify (empty keys and no creator-contagion fallback). */
-export function classifyOptsForTape(input: TapeClassifyInput): FlowClassifyOptions | null {
-  const list = input.list;
-  const keys = input.keys;
-  const hasKeys = keys != null && keys.size > 0;
-  const contagion = input.contagion ?? list === 'tagged';
-  const seedCreator = input.seedCreator ?? list === 'tagged';
-  const creatorWallet = seedCreator ? (input.creatorWallet ?? null) : null;
+/** Tag `name` of a stored `tags` document, or `null` when it does not define it. */
+export function flowTagOf(doc: unknown, name: string): FlowTag | null {
+  return tagsFromJson(doc).find((t) => t.name === name) ?? null;
+}
 
-  if (!hasKeys && (!contagion || !creatorWallet)) return null;
+/** `@name`, or `@!name` for the rest - how rules and every surface write a half. */
+export function tagLabel(name: string, negated = false): string {
+  return `@${negated ? '!' : ''}${name}`;
+}
 
-  const rows =
-    list === 'working' ? null : input.rows && input.rows.length > 0 ? input.rows : null;
+/** Whether the tag can classify anything: at least one matcher in use. */
+export function tagClassifies(tag: FlowTag | null | undefined): tag is FlowTag {
+  return !!tag && usedMatchers({ ...tag, id: '' }).length > 0;
+}
 
+/** An ad-hoc tag of exact ix shapes only - for a host that hands down a bare key set
+ *  (a stored run's frozen shapes) rather than a fingerprint tag. */
+export function shapeTag(name: string, rows: readonly IxPatternRow[]): FlowTag {
   return {
-    patternKeys: keys ?? new Set<string>(),
-    patternRows: rows,
-    match: list === 'working' ? 'grain' : 'labels',
-    creatorWallet,
-    contagion,
-    excludeWallets: input.excludeWallets ?? null,
-    side: input.side ?? null,
+    name,
+    match: rows.length > 0 ? { ix_shape: [...rows] } : {},
+    side: null,
+    sticky: false,
+    exclude_creation_slot: false,
   };
 }
 
-/** Overlay key set from a staging draft. Working keys are grain ids; tagged/dump
- *  keys are `JSON.stringify(labels)`. */
-export function keysForTapeDraft(
-  list: TapeList,
-  rows: readonly IxPatternRow[],
-  workingTemplates: readonly string[],
-): ReadonlySet<string> | null {
-  if (list === 'working') {
-    return workingTemplates.length > 0 ? new Set(workingTemplates) : null;
+/** `tag` with some matchers replaced - a staging draft previewed as the tag it
+ *  would save. An empty list drops that matcher. */
+export function withDraftMatch(tag: FlowTag, patch: Partial<TagMatch>): FlowTag {
+  const match: TagMatch = { ...tag.match };
+  for (const [k, v] of Object.entries(patch) as [keyof TagMatch, TagMatch[keyof TagMatch]][]) {
+    if (v === undefined || (Array.isArray(v) && v.length === 0)) delete match[k];
+    else (match as Record<string, unknown>)[k] = v;
   }
-  const keys = patternKeysFrom(rows.map((r) => r.labels));
-  return keys.size > 0 ? keys : null;
+  return { ...tag, match };
+}
+
+/** Classify options for one tag, or `null` when nothing can classify. */
+export function classifyOptsForTag(
+  tag: FlowTag | null | undefined,
+  creatorWallet?: string | null,
+  excludeWallets?: ReadonlySet<string> | null,
+): FlowClassifyOptions | null {
+  if (!tagClassifies(tag)) return null;
+  return { tag, creatorWallet: creatorWallet ?? null, excludeWallets: excludeWallets ?? null };
 }

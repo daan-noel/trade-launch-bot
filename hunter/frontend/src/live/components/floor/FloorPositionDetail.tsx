@@ -141,9 +141,6 @@ export function FloorPositionDetail({
     fingerprintId: facts.flowFingerprintId ?? null,
     savedKeys: facts.flowPatternKeys ?? null,
   });
-  const overlayList = patternTarget.list;
-  const overlayKeys = patternTarget.keys;
-  const overlayRows = overlayList === 'working' ? null : patternTarget.rows;
   // Published to `facts.conditions` (the rule-condition strip) so hovering the chart
   // answers "what did the rule see HERE". A store rather than state: the crosshair
   // moves per frame and must not re-render the chart emitting it.
@@ -177,9 +174,7 @@ export function FloorPositionDetail({
       markers={markers}
       tableId="floor-detail"
       height={chartHeight}
-      flowPatternKeys={overlayKeys}
-      flowList={overlayList}
-      flowPatternRows={overlayRows}
+      flowTag={patternTarget.tag}
       highlightLens={highlight.lens}
       onHighlightLensMatch={highlight.onLensMatch}
       onCrosshairTimeChange={crosshair.set}

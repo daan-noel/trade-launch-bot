@@ -1,63 +1,49 @@
 import { describe, expect, it } from 'vitest';
-import { classifyOptsForTape, keysForTapeDraft } from './tapeClassify';
+import {
+  classifyOptsForTag,
+  defaultTagName,
+  flowTagOf,
+  shapeTag,
+  tagLabel,
+  withDraftMatch,
+} from './tapeClassify';
 
-describe('classifyOptsForTape', () => {
-  const keys = new Set([JSON.stringify(['A'])]);
-
-  it('tagged defaults to contagion + creator seed', () => {
-    const opts = classifyOptsForTape({
-      list: 'tagged',
-      keys,
-      creatorWallet: 'creator',
-    });
-    expect(opts).toMatchObject({
-      match: 'labels',
-      contagion: true,
-      creatorWallet: 'creator',
-    });
-  });
-
-  it('dump and working turn contagion and creator seed off', () => {
-    for (const list of ['dump', 'working'] as const) {
-      const opts = classifyOptsForTape({
-        list,
-        keys,
-        creatorWallet: 'creator',
-      });
-      expect(opts).toMatchObject({
-        contagion: false,
-        creatorWallet: null,
-        match: list === 'working' ? 'grain' : 'labels',
-      });
-    }
-  });
-
-  it('empty dump keys with no contagion classify nothing', () => {
-    expect(classifyOptsForTape({ list: 'dump', keys: null, creatorWallet: 'c' })).toBeNull();
-  });
-
-  it('empty tagged keys still classify via creator contagion', () => {
-    const opts = classifyOptsForTape({ list: 'tagged', keys: null, creatorWallet: 'c' });
-    expect(opts).not.toBeNull();
-    expect(opts?.creatorWallet).toBe('c');
-  });
-
-  it('staging can suppress contagion on tagged', () => {
-    const opts = classifyOptsForTape({
-      list: 'tagged',
-      keys,
-      creatorWallet: 'c',
-      contagion: false,
-    });
-    expect(opts?.contagion).toBe(false);
+describe('defaultTagName', () => {
+  it('prefers volume, else the first tag, else volume', () => {
+    expect(defaultTagName({ dump: {}, volume: {} })).toBe('volume');
+    expect(defaultTagName({ dump: {}, crew: {} })).toBe('dump');
+    expect(defaultTagName(null)).toBe('volume');
   });
 });
 
-describe('keysForTapeDraft', () => {
-  it('uses label keys for tagged/dump and grain ids for working', () => {
-    const rows = [{ labels: ['A', 'B'] }];
-    expect([...keysForTapeDraft('tagged', rows, [])!]).toEqual([JSON.stringify(['A', 'B'])]);
-    expect(keysForTapeDraft('working', rows, ['Pump.Fun|CU'])).toEqual(new Set(['Pump.Fun|CU']));
-    expect(keysForTapeDraft('working', rows, [])).toBeNull();
+describe('classifyOptsForTag', () => {
+  it('is null for a missing tag or one with no matcher', () => {
+    expect(classifyOptsForTag(null)).toBeNull();
+    expect(classifyOptsForTag(shapeTag('v', []))).toBeNull();
+  });
+
+  it('carries the tag, the creator and the exclusions', () => {
+    const tag = flowTagOf({ volume: { match: { creator: true }, sticky: true } }, 'volume')!;
+    const opts = classifyOptsForTag(tag, 'dev', new Set(['me']));
+    expect(opts?.tag.sticky).toBe(true);
+    expect(opts?.creatorWallet).toBe('dev');
+    expect(opts?.excludeWallets?.has('me')).toBe(true);
+  });
+});
+
+describe('withDraftMatch', () => {
+  it('replaces one matcher and keeps the rest; an empty list drops it', () => {
+    const tag = flowTagOf({ v: { match: { ix_shape: [['a']], creator: true }, side: 'sell' } }, 'v')!;
+    const draft = withDraftMatch(tag, { ix_shape: [{ labels: ['b'] }] });
+    expect(draft.match).toEqual({ ix_shape: [{ labels: ['b'] }], creator: true });
+    expect(draft.side).toBe('sell');
+    expect(withDraftMatch(tag, { ix_shape: [] }).match).toEqual({ creator: true });
+  });
+});
+
+describe('tagLabel', () => {
+  it('writes both halves', () => {
+    expect(tagLabel('volume')).toBe('@volume');
+    expect(tagLabel('volume', true)).toBe('@!volume');
   });
 });

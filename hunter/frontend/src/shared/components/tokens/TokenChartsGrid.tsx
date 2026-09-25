@@ -31,18 +31,16 @@ export type ChartOverlayHook<R> = (row: R, mint: string) => RowChartOverlay;
 export type MintGroupOverlayHook<R> = (mint: string, rows: R[]) => RowChartOverlay;
 
 /**
- * Resolve ONE row's saved `ix_patterns` keys, for a grid whose rows span
- * different fingerprints (Console History lists positions from many rules), where
- * a single grid-wide set would misclassify most cards. Called once per card as a
- * **hook** — same rules-of-hooks contract as {@link ChartOverlayHook}. Under
- * `groupByMint` it receives the group's representative row.
+ * Resolve ONE row's fingerprint, for a grid whose rows span different fingerprints
+ * (Console History lists positions from many rules), where a single grid-wide tag
+ * would misclassify most cards. Called once per card as a **hook** - same
+ * rules-of-hooks contract as {@link ChartOverlayHook}. Under `groupByMint` it
+ * receives the group's representative row.
  *
- * What it returns IS what the card classifies with — the fingerprint's saved
- * patterns, the same set the engine decides on. Nothing layers over it.
- *
- * It returns the fingerprint id ALONGSIDE the keys because a card's trades table
- * can edit those patterns, and the write needs the row they came from — keys alone
- * cannot be traced back to one (see `hooks/useFlowPatternKeys`).
+ * The card classifies with that fingerprint's tag - the same one the engine decides
+ * on - and its trades table writes "add to tag" clicks to that row. The key set
+ * rides along only as the fallback for a card whose fingerprint does not resolve
+ * (see `hooks/useFlowPatternKeys`).
  */
 export type FlowPatternSourceHook<R> = (row: R, mint: string) => FlowPatternSource;
 
@@ -115,10 +113,10 @@ interface TokenChartCardProps<R> {
    *  card. `undefined` ⇒ use the hook; `null`/array ⇒ override. */
   eventMarkersOverride?: ChartEventMarker[] | null;
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Grid-wide fingerprint for {@link flowPatternKeys} — the Tagged-badge write
-   *  target when every card shares one (see `BarTradesPanel`). */
+  /** Grid-wide fingerprint for {@link flowPatternKeys} - the tag and the "add to
+   *  tag" write target when every card shares one (see `BarTradesPanel`). */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  /** A stored run's frozen shapes - display only (see `BarTradesPanel`). */
   flowReadOnly?: boolean;
   /** Resolves this card's own pattern source (called as a hook); wins over the
    *  grid-wide props whenever it resolves a fingerprint or a set. */
@@ -154,7 +152,7 @@ function TokenChartCard<R>({
   const eventMarkers = eventMarkersOverride !== undefined ? eventMarkersOverride : hookMarkers;
   // Per-row source wins; the grid-wide props are the fallback for a uniform
   // cohort. Keys and id fall back independently: a row hook that resolves the
-  // fingerprint but finds no patterns on it still owns this card's write target.
+  // fingerprint but finds no shapes on it still owns this card's tag and target.
   const rowFlowSource = useFlowSource(row, mint);
   const selectable = !!onSelect;
 
@@ -262,14 +260,15 @@ export interface TokenChartsGridProps<R> {
   /** Hook-based alternative to {@link mintGroupOverlay} — see
    *  {@link MintGroupOverlayHook}. Takes precedence when both are supplied. */
   useMintGroupOverlay?: MintGroupOverlayHook<R>;
-  /** Fingerprint ix_patterns keys for the vol/non-vol overlay on every card.
-   *  Use when one set is right for the whole grid (a rule-scoped cohort); when the
-   *  rows span fingerprints, pass {@link useRowFlowPatternKeys} instead. */
+  /** Key set of the grid's fingerprint (its default tag's exact shapes), the
+   *  fallback on every card. Use when one fingerprint is right for the whole grid
+   *  (a rule-scoped cohort); when the rows span fingerprints, pass
+   *  {@link useRowFlowPatternKeys} instead. */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Fingerprint {@link flowPatternKeys} came from — the Tagged-badge write target
-   *  for every card (see `BarTradesPanel`). */
+  /** Fingerprint {@link flowPatternKeys} came from - the tag and the "add to tag"
+   *  write target for every card (see `BarTradesPanel`). */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  /** A stored run's frozen shapes - display only (see `BarTradesPanel`). */
   flowReadOnly?: boolean;
   /** Per-card pattern source for a grid whose rows span fingerprints — see
    *  {@link FlowPatternSourceHook}. Wins over the grid-wide props per card. */

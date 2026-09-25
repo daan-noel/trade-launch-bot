@@ -7,7 +7,45 @@ import {
 } from 'components/token-price-chart/chartBars';
 import type { ChartGroupMode, ChartTrade, OhlcBar } from 'components/token-price-chart/types';
 import { formatCompact, formatDecimalTrim } from 'utils/format';
-import { classifyFlowTrades, type FlowClassifyOptions } from './classifyFlow';
+import type { TradeRecord } from 'types';
+import {
+  classifyFlowTrades,
+  flowReasonsById,
+  type FlowClassifyOptions,
+  type FlowReason,
+  type FlowTradeLite,
+} from './classifyFlow';
+
+/** A chart trade as the classifier reads it - the ONE mapping, shared by the lines
+ *  and the trades table's reasons so the two cannot read a field differently. */
+export function toFlowTrade(t: ChartTrade): FlowTradeLite {
+  return {
+    wallet_address: t.wallet_address ?? '',
+    sol: t.amount_sol ?? 0,
+    ix_labels: t.instruction_labels,
+    side: t.trade_type,
+    slot: t.slot ?? null,
+    cu_limit: t.cu_limit,
+    cu_price: t.cu_price,
+    tip_lamports: t.tip_lamports,
+  };
+}
+
+/**
+ * The verdict per trade id over a coin's FULL history, for the trades table - the
+ * same pass the chart's lines draw from. `null` without options.
+ */
+export function tradeFlowReasons(
+  trades: readonly TradeRecord[],
+  opts: FlowClassifyOptions | null | undefined,
+): ReadonlyMap<string, FlowReason> | null {
+  if (!opts) return null;
+  const sorted = [...trades].sort(compareTradesChronologically);
+  return flowReasonsById(
+    sorted.map((t) => ({ id: t.id, ...toFlowTrade(t) })),
+    opts,
+  );
+}
 
 /** Cumulative-line basis — each cohort's line is the running NET (buy − sell),
  *  not gross turnover, so a line legitimately drops when that cohort sells.
@@ -23,6 +61,8 @@ export interface FlowLinePoint {
   value: number;
 }
 
+/** `tagged` = the trades carrying the tag (`@tag`); `untagged` = the rest (`@!tag`).
+ *  A trade the tag excludes (a creation-slot buyer) is on neither line. */
 export interface FlowLines {
   tagged: FlowLinePoint[];
   untagged: FlowLinePoint[];
@@ -42,7 +82,7 @@ interface FlowBucket {
   spot: number | null;
 }
 
-/** Cumulative tagged/non-tagged series over one token's trades. */
+/** Cumulative `@tag` / `@!tag` series over one token's trades. */
 export function buildFlowLines(
   trades: readonly ChartTrade[],
   groupMode: ChartGroupMode,
@@ -52,21 +92,13 @@ export function buildFlowLines(
 ): FlowLines {
   const sorted = [...trades].sort(compareTradesChronologically);
   const classified = classifyFlowTrades(
-    sorted.map((t) => ({
-      wallet_address: t.wallet_address ?? '',
-      sol: t.amount_sol ?? 0,
-      ix_labels: t.instruction_labels,
-      side: t.trade_type,
-      cu_limit: t.cu_limit,
-      cu_price: t.cu_price,
-      tip_lamports: t.tip_lamports,
-      raw: t,
-    })),
+    sorted.map((t) => ({ ...toFlowTrade(t), raw: t })),
     classifyOpts,
   );
 
   const buckets = new Map<number, FlowBucket>();
   for (const t of classified) {
+    if (t.half === 'excluded') continue;
     const raw = t.raw;
     const key =
       groupMode === 'slot' ? tradeBarSlot(raw) : tradeBarTime(raw.block_time, intervalSec);
@@ -152,7 +184,7 @@ export function alignFlowToBars(
   return { tagged, untagged };
 }
 
-/** Vol/non-tagged overlay line colors (match Flow Discovery preview). */
+/** `@tag` / `@!tag` overlay line colors (match Flow Discovery preview). */
 export const FLOW_VOL_LINE_COLOR = '#EF5350';
 export const FLOW_NON_VOL_LINE_COLOR = '#F5C542';
 
@@ -163,7 +195,7 @@ export function flowSeriesScale(basis: FlowBasis): number {
   return basis === 'token' ? TOKEN_FLOW_SERIES_SCALE : 1;
 }
 
-/** Find the tagged/non-tagged point matching a bar's time key (both arrays share
+/** Find the `@tag` / `@!tag` point matching a bar's time key (both arrays share
  *  the exact same time sequence — see {@link buildFlowLines} / {@link alignFlowToBars}). */
 export function flowAt(
   lines: FlowLines,

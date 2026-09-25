@@ -5,8 +5,6 @@ import {
   CONDITION_VALUE_LANE_COLOR,
   seriesIndexAsOf,
 } from 'lib/strategy/metricPanes';
-import { parseMetricExitTarget } from 'lib/strategy/exitReason';
-import { readWindow, sameWindowSpec, windowSpecKey } from 'lib/strategy/windowSpec';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetArmedMetricSeriesQuery,
@@ -25,6 +23,7 @@ import { useCrosshairTimeSec } from './crosshairTime';
 import {
   RuleConditionStrip,
   conditionLabel,
+  partKey,
   type HoverCoverage,
 } from './RuleConditionStrip';
 
@@ -261,7 +260,7 @@ function seriesToBands(
     const spans: Array<{ from: number; to: number }> = [];
     let start = -1;
     for (let i = 0; i < atSec.length; i++) {
-      const on = (c.ok[i] ?? false) && !(c.disarmed?.[i] ?? false);
+      const on = c.ok[i] ?? false;
       if (on && start < 0) start = i;
       else if (!on && start >= 0) {
         spans.push({ from: atSec[start], to: atSec[i - 1] });
@@ -270,7 +269,7 @@ function seriesToBands(
     }
     if (start >= 0) spans.push({ from: atSec[start], to: atSec[atSec.length - 1] });
     return {
-      key: `${c.side}-${c.stage ?? ''}-${c.metric}-${windowSpecKey(readWindow(c))}-${idx}`,
+      key: `${partKey(c)}-${c.label}-${idx}`,
       label: conditionLabel(c),
       color: CONDITION_LANE_COLOR,
       spans,
@@ -281,7 +280,7 @@ function seriesToBands(
     lanes,
     valueLane: drawn
       ? {
-          key: `value-${drawn.metric}-${windowSpecKey(readWindow(drawn))}`,
+          key: `value-${partKey(drawn)}-${drawn.label}`,
           label: conditionLabel(drawn),
           color: CONDITION_VALUE_LANE_COLOR,
           points: atSec.map((t, i) => ({ timeSec: t, value: drawn.values[i] ?? null })),
@@ -292,49 +291,44 @@ function seriesToBands(
   };
 }
 
+/** Buy parts vs sell parts of the rule. */
+function sideOf(c: RuleConditionSeries): ReadSide {
+  return c.part === 'event' || c.part === 'filter' || c.part === 'final_filter' ? 'entry' : 'exit';
+}
+
 /**
  * The condition whose reading gets drawn.
  *
  * `drawSide` is the question the host is asking. A post-mortem asks "why did it
- * leave" ⇒ the exit condition the reason names, else the first authored one. A
- * Waiting row asks "why has it NOT entered" ⇒ an entry condition, where no reason
- * exists to name one, so an authored one is drawn — stable across refreshes, unlike
- * "whichever is currently failing", which would swap lines as the token moves.
+ * leave" => the sell condition the exit reason names, else the first sell one. A
+ * Waiting row asks "why has it NOT bought" => a buy condition, drawn stably rather
+ * than "whichever is currently failing", which would swap lines as the token moves.
+ * Signal conditions belong to neither side and are not drawn.
  *
- * `time` is skipped while anything else is authored. Conditions arrive in the fold's
- * order, which sorts `m_state.time` first on most rules, so taking the head
- * blindly spends the chart's one value pane on a straight ramp of the x axis —
- * a quantity the reader already has, drawn against the price of a pane.
+ * `m_state.age_sec` is skipped while anything else is authored: it is a straight ramp
+ * of the x axis, a quantity the reader already has.
  */
 function valueLaneCondition(
   series: RuleReadoutSeries,
   drawSide: ReadSide,
   exitReason: string | null | undefined,
 ) {
-  const side: RuleConditionSeries[] = series.conditions.filter((c) => c.side === drawSide);
+  const side = series.conditions.filter((c) => c.part !== 'signal' && sideOf(c) === drawSide);
   if (side.length === 0) return null;
   const named = drawSide === 'exit' && exitReason ? matchExitReason(side, exitReason) : null;
   if (named) return named;
-  // A rule that authors nothing but the clock keeps it rather than losing the pane.
-  return side.find((c) => c.metric !== 'time') ?? side[0];
+  return side.find((c) => c.metric !== 'm_state.age_sec') ?? side[0];
 }
 
 /**
- * Resolve a persisted exit reason to the condition it names.
- *
- * Matching by name ALONE would be free to pick the lifetime condition for a windowed
- * exit, which is the mismatch this whole pane exists to make impossible — so a label
- * carrying no window qualifier only matches when it is unambiguous.
+ * Resolve a stored exit reason to the condition it names. A line with no label of its
+ * own sells as its first condition, `m_flow.buy_sol @!volume [10s] >= 2`: the read's
+ * full label, then the operator and threshold. The label carries tag and span, so a
+ * windowed read never matches its lifetime twin. A line with a label of its own names
+ * no condition, and nothing is guessed.
  */
 function matchExitReason(exits: RuleConditionSeries[], reason: string) {
-  const target = parseMetricExitTarget(reason);
-  if (!target) return null;
-  const byName = exits.filter((c) => c.metric === target.metric);
-  if (byName.length === 0) return null;
-  if (target.window != null) {
-    return byName.find((c) => sameWindowSpec(readWindow(c), target.window)) ?? null;
-  }
-  return byName.length === 1 ? byName[0] : null;
+  return exits.find((c) => reason.startsWith(`${c.label} `)) ?? null;
 }
 
 /**
@@ -398,15 +392,11 @@ function readoutAt(
   if (i == null) return null;
   // The series' metadata IS the point shape's metadata (the backend flattens one
   // `ConditionMetaOut` into both), so the row is that metadata plus three cells.
-  const conditions: RuleConditionRead[] = series.conditions.map(
-    ({ values, ok, disarmed, ...meta }) => ({
-      ...meta,
-      value: values[i] ?? null,
-      ok: ok[i] ?? false,
-      // Absent on every condition but a gated trail — the only kind the fold skips.
-      disarmed: disarmed?.[i] ?? false,
-    }),
-  );
+  const conditions: RuleConditionRead[] = series.conditions.map(({ values, ok, ...meta }) => ({
+    ...meta,
+    value: values[i] ?? null,
+    ok: ok[i] ?? false,
+  }));
   return {
     atMs: series.at[i],
     coverage: hoverCoverage(series, atSec, timeSec),
@@ -420,6 +410,10 @@ function readoutAt(
       stage: null,
       at: new Date(series.at[i]).toISOString(),
       conditions,
+      // A series row carries conditions only: line and signal verdicts are read at a
+      // pinned instant, so the strip shows the chips without them here.
+      signals: [],
+      lines: [],
     },
   };
 }
