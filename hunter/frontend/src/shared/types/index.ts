@@ -149,7 +149,7 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   sold_token_amount?: number;
   /** Running sum of confirmed sell-leg SOL (scale-out aggregate). */
   exit_sol_total?: number;
-  /** Next scale-out stage index (`0` = pre-first / legacy). */
+  /** Index of the stage the position is in (`0` = the first stage). */
   scale_stage?: number;
   /** Sold fraction of the initial bag in bps. */
   sold_bps?: number;
@@ -726,7 +726,7 @@ export interface OpenStrategyPosition {
   sold_token_amount?: number;
   /** Sold fraction of the initial bag in bps. */
   sold_bps?: number;
-  /** Next scale-out stage index. */
+  /** Index of the stage the position is in (`0` = the first stage). */
   scale_stage?: number;
   /** `bot` | `manual` — who opened the position. */
   origin?: string;
@@ -772,6 +772,7 @@ export interface PositionFill {
   token_amount: number;
   at: string;
   reason?: string | null;
+  /** Index of the stage the position was in when this leg sold. */
   stage?: number | null;
   tx_signature?: string | null;
 }

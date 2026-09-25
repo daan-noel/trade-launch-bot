@@ -178,11 +178,23 @@ boot adoption reads it back (`StrategyPosition::entry_priced_reserve`), so a pos
 held across a restart keeps its room target. A row written before the key existed
 reads `NaN`, and then only the stop and the clock close it.
 
+## The stage and its clock survive a restart
+
+Every stage change is an engine effect: `StageMoved` for a move that sells nothing, and a
+partial fill's `PositionDelta` (`stage`, `stage_since`) for a partial sell that moves.
+The sink writes the stage (`scale_stage`) and its start (`extra.stage_since`,
+`EXTRA_STAGE_SINCE`) in one statement (`record_stage_move`, `record_sell_fill`), chained
+behind the position's earlier writes. Boot adoption restores both
+(`EnteredCtx::move_to(scale_stage, stage_since)`), so `m_position.stage_sec` and a
+`stage_sec` deadline read the clock they read before the restart. A row with no stored
+start is in the stage it entered, which began at the entry fill.
+
 `prime_trade` also clears the whole-map "settled" memo: it folds outside `reduce`, and
 without that the next tick could skip the token it just moved.
 
 Locked by `engine/tests/hydrate.rs`, the `producers::tests` `hydration_*` and
-`hydrate_facts_*` cases, `hydrate::tests`, and `models::strategy::extra_tests`.
+`hydrate_facts_*` cases, `hydrate::tests`, `models::strategy::extra_tests`, the golden
+`every_stage_move_is_emitted_with_its_start`, and `orphan_exit::tests::restart`.
 
 ## Still open
 

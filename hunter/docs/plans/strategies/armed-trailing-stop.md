@@ -120,15 +120,15 @@ can see, so `FastPlan::of` returns `None` and the rule goes to the row walk
 (`scan::resolve_exit_walk`), the reference every fast path is checked against. Do not
 "optimise" a gated trail onto the hull without an index that can see the gate.
 
-### A restart does not remember an armed stage
+### A restart resumes the armed stage
 
-A pure stage move writes nothing: `strategy_positions.scale_stage` records the stage a
-partial fill landed in, not a `go`. An adopted `Holding` row therefore resumes in the stage
-PG last recorded (for a trail with no partial sells, `start`: unarmed), with the peak
-re-seeded from entry and `stage_sec` counting from the entry (`orphan_exit.rs`). That is the
-consistent pair: a peak with no history is no evidence the gate was crossed, and re-arming
-on it would trail from a price the position never reached. The per-reading form needs no
-memory, so it survives a restart unchanged.
+Every stage move is persisted with its start (`StageMoved` -> `record_stage_move`), so an
+adopted `Holding` row resumes in the stage it was in, on the same `stage_sec` clock
+(`orphan_exit.rs`). The peak is re-seeded from the entry and rebuilt from the cached
+trades since the entry as they prime; trades printed while the process was down are in
+neither, so the rebuilt peak is at most the true one. The trail can then only sell later
+than it would have, never on a price the position did not reach. The per-reading form
+needs no memory either way.
 
 ### Authoring
 

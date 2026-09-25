@@ -77,7 +77,7 @@ export interface LiveOpenRow {
   exitRedriveCount: number;
   /** Sold fraction of the initial bag in bps (0 = none / legacy). */
   soldBps: number;
-  /** Next scale-out stage index. */
+  /** Index of the stage the position is in (`0` = the first stage). */
   scaleStage: number;
   updatedAt: number;
 }

@@ -240,10 +240,10 @@ What a second reader of a rule gets wrong (the engine side is guarded in
   line with `holds`, its sell label, `sell_pct` and the stage it `goes_to`, and `stage`
   names where the position is. A line of another stage - or an `at_end` line before the
   deadline - shows what the fold *would* read there, never a decision it is making.
-- **A replay's stage clock is an upper bound after a move.** `strategy_positions` keeps the
-  stage index (`scale_stage`) but not when the stage began, so a replay reads
-  `m_position.stage_sec` from the entry fill (`replay_stage`): exact in the first stage,
-  an upper bound after a move.
+- **A replay reads the stage the row recorded.** At the entry instant the position is in
+  its first stage, begun at the fill; at the exit it is in `scale_stage`, begun at
+  `extra.stage_since` (`replay_stage`). The series chart folds that last stage over the
+  whole position.
 - **A replay compiles `strategy_runs.params_snapshot`, not the rule's current params.**
   A rule edited after the position closed would otherwise draw thresholds that never
   applied to it — the most misleading thing a reconstruction can do, since every number
@@ -325,12 +325,13 @@ per-position one-off rule (`EngineState::manual_rules`) — without it, tracked-
 
 **Boot Holding adopt:** after event-log re-arm, PG `Holding` rows are loaded into
 the in-memory engine (`Entered`) + registry (PG-only, no RPC) so TP/SL/Dead and
-Ops `ManualClose` work after a process restart. The stage and `sold_bps` resume from the
-row (`scale_stage`, the index the last partial fill recorded). A stage move with no sell
-(`go` alone, a deadline's move to `then`) is not stored, so such a position resumes in the
-last stage a partial fill recorded, and the stage's start time is not stored, so
-`m_position.stage_sec` restarts from the entry (open:
-[metric-system-v2-plan](../roadmap/metric-system-v2-plan.md)).
+Ops `ManualClose` work after a process restart. The stage, its start and `sold_bps`
+resume from the row. Every stage change is an engine effect the sink persists in one
+statement with its start: `StageMoved` (a `go` alone, a deadline's move to `then`) through
+`record_stage_move`, and a partial sell's move on its fill (`PositionDelta::stage_since`)
+through `record_sell_fill`. So `scale_stage` and `extra.stage_since` never disagree, and
+`m_position.stage_sec` and a `stage_sec` deadline keep their clock across a restart
+(`orphan_exit::tests::restart`).
 
 **Warm start: prime, never re-decide.** An adopted arm carries the entry price but
 an *empty* metric track, while the async cache seed backfills up to

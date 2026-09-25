@@ -642,7 +642,8 @@ impl Replay {
                 self.queue_exit_fill(&mint, intent, token_amount, now, work);
             }
             Effect::PositionUpdate(delta) => self.on_position_update(delta),
-            Effect::ArmedChanged(_) => {}
+            // A stage lives in the engine's own state here; nothing to persist.
+            Effect::ArmedChanged(_) | Effect::StageMoved(_) => {}
         }
     }
 

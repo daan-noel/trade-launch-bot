@@ -590,7 +590,8 @@ async fn dispatch(
                 }
                 sink.on_armed_changed(delta)
             }
-            _ => {}
+            Effect::StageMoved(mv) => sink.on_stage_moved(mv),
+            Effect::SubmitBuy { .. } | Effect::SubmitSell { .. } => {}
         }
     }
     // Pass 2 — act on submit effects (spawn is ready once registry is upserted).

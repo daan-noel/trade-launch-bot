@@ -51,7 +51,7 @@ use tracing::{debug, info, warn};
 use hunter_engine::arm::EntryBlockers;
 use hunter_engine::event::{
     ArmedDelta, ArmedStateTag, DisarmReason, LoadedRule, PositionDelta, PositionStatus, RuleId,
-    TradeMode,
+    StageMove, TradeMode,
 };
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::metrics::evaluator::condition_expr_to_value;
@@ -59,9 +59,11 @@ use hunter_engine::metrics::MetricRef;
 
 use trading_core::models::ingest::SseEvent;
 use trading_core::models::strategy_arm::ArmLedgerWrite;
-use trading_core::models::{StrategyPosition, StrategyRun};
+use trading_core::models::{bps_of_bag, StrategyPosition, StrategyRun};
 use trading_core::state::token_cache::TokenCache;
-use trading_core::storage::repositories::strategy_repo::{FillSigKind, RunFinalize, StrategyRepo};
+use trading_core::storage::repositories::strategy_repo::{
+    FillSigKind, RunFinalize, SellLegStage, StrategyRepo,
+};
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 
 use crate::ingest::HeldPoolGate;
@@ -516,6 +518,40 @@ impl Sink {
         }
     }
 
+    /// Consume one `StageMoved`: the registry first (the next sell leg stamps the stage
+    /// it acted in from it), then the stage and its start in one chained PG write, then
+    /// the position frame so the console shows the new stage.
+    pub fn on_stage_moved(&mut self, mv: &StageMove) {
+        let Some(meta) = self.registry.get(mv.position) else {
+            warn!(rule = %mv.rule.0, mint = %mv.mint, "engine sink: StageMoved for an unknown position - skipping");
+            return;
+        };
+        self.registry.update(mv.position, |m| m.scale_stage = mv.stage);
+        let prev = self.pending_pg.remove(&meta.pg_id);
+        let repo = self.repo.clone();
+        let (pg_id, stage, since) = (meta.pg_id, mv.stage, mv.since);
+        let handle = tokio::spawn(async move {
+            if let Some(h) = prev {
+                let _ = h.await;
+            }
+            if let Err(e) = repo.record_stage_move(pg_id, stage, since).await {
+                warn!(pg = %pg_id, stage, "engine sink: record_stage_move failed: {e}");
+            }
+        });
+        self.pending_pg.insert(pg_id, handle);
+        self.emit_position_sse(&PositionDelta {
+            position: mv.position,
+            rule: mv.rule,
+            mint: mv.mint.clone(),
+            status: PositionStatus::Holding,
+            fill: None,
+            reason: None,
+            intent: None,
+            stage: Some(mv.stage),
+            stage_since: Some(mv.since),
+        });
+    }
+
     /// A straggler of an already-finalized run just settled — re-roll that run's
     /// metrics so its numbers stop being the provisional snapshot taken when the
     /// rule was paused.
@@ -811,10 +847,11 @@ impl Sink {
     ) {
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
         let reason = delta.reason.map(|r| r.label().into_owned());
-        let stage = delta.stage;
+        // `meta` is the registry row before this fill: the stage the line sold in.
+        let stage = SellLegStage { leg: Some(meta.scale_stage), after: delta.stage, since: delta.stage_since };
         self.registry.update(delta.position, |m| {
             m.sold_token_amount = m.sold_token_amount.saturating_add(fill.token_amount);
-            if let Some(s) = stage {
+            if let Some(s) = stage.after {
                 m.scale_stage = s;
             }
             m.inflight_intent = None;
@@ -902,7 +939,7 @@ impl Sink {
         let mint = meta.mint.clone();
         let release = self.held_pool_release(&meta);
         let pg_id = meta.pg_id;
-        let stage = delta.stage;
+        let stage = SellLegStage { leg: Some(meta.scale_stage), after: None, since: None };
         let handle = tokio::spawn(async move {
             if let Some(h) = prev {
                 let _ = h.await;
@@ -1312,21 +1349,10 @@ impl Sink {
             });
         // Mid-ladder banked fraction for the FE chip (phase 5); omitted when zero.
         let sold_token_amount = (meta.sold_token_amount > 0).then_some(meta.sold_token_amount);
-        let sold_bps = if meta.sold_token_amount > 0 {
-            let entry = meta.entry_token_amount.unwrap_or(0);
-            if entry == 0 {
-                None
-            } else {
-                Some(
-                    ((u128::from(meta.sold_token_amount) * 10_000) / u128::from(entry)).min(10_000)
-                        as u16,
-                )
-            }
-        } else {
-            None
-        };
-        let scale_stage = (meta.scale_stage > 0 || meta.sold_token_amount > 0)
-            .then_some(meta.scale_stage);
+        let sold_bps = Some(bps_of_bag(meta.sold_token_amount, meta.entry_token_amount)).filter(|&b| b > 0);
+        // Always sent: a move back to the first stage (0) must overwrite the client's
+        // last stage, which an omitted field would keep.
+        let scale_stage = Some(meta.scale_stage);
         let pg_id = meta.pg_id;
         self.send_after_write(pg_id, SseEvent::StrategyPositionUpdate {
             rule_id: delta.rule.0,

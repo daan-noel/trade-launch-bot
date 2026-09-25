@@ -23,7 +23,7 @@ use trading_core::models::trade::TradeType;
 use trading_core::state::token_cache::TokenCache;
 use trading_core::state::trade_signals::TradeSignals;
 use trading_core::storage::repositories::settings_repo::AppSettings;
-use trading_core::storage::repositories::strategy_repo::{FillSigKind, StrategyRepo};
+use trading_core::storage::repositories::strategy_repo::{FillSigKind, SellLegStage, StrategyRepo};
 use trading_core::storage::repositories::token_info_repo::TokenInfoRepo;
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 
@@ -179,7 +179,7 @@ pub fn spawn_orphan_sell(
                                 fill.token_amount,
                                 fill.at,
                                 Some(&exit_reason),
-                                None,
+                                SellLegStage { leg: Some(pos.scale_stage), ..Default::default() },
                                 &sigs,
                                 FillSigKind::Own,
                                 true,
@@ -345,7 +345,7 @@ pub async fn book_externally_cleared_pg(
         token_amount,
         fill.at,
         Some(reason),
-        None,
+        SellLegStage { leg: Some(pos.scale_stage), ..Default::default() },
         &[],
         FillSigKind::Own,
         true,
@@ -611,16 +611,16 @@ pub fn adopt_holding_into_engine(
     state.touch_token(&mint);
     // Seed the position context from the adopted fill: `held` counts from the entry
     // time, `retrace` from the entry price (the peak is re-established as live trades
-    // fold in — a conservative restart baseline). The stage and `sold_bps` resume
-    // from PG (the stage index the last partial fill recorded); the stage's start time
-    // is not stored, so `stage_sec` restarts from the entry. A peak taken from entry
-    // carries no evidence a latch was crossed, so a staged rule resumes where PG last
-    // saw it. The fill's depth comes back from `extra`; a row written before it was
-    // stored reads NaN, and then only the stop and the clock close it.
+    // fold in — a conservative restart baseline). The stage, its start and `sold_bps`
+    // resume from PG: every stage move writes `scale_stage` and its start together
+    // (`record_stage_move`, `record_sell_fill`), so `stage_sec` and a `stage_sec`
+    // deadline keep the clock they had. The fill's depth comes back from `extra`; a row
+    // written before it was stored reads NaN, and then only the stop and the clock
+    // close it.
     let token = state.tokens.get_mut(&mint)?;
     let entry_depth = pos.entry_priced_reserve().unwrap_or(f64::NAN);
     let mut ctx = EnteredCtx::at_fill(position, entry_price, created_at, entry_depth);
-    ctx.stage = pos.scale_stage;
+    ctx.move_to(pos.scale_stage, pos.stage_since().unwrap_or(created_at));
     ctx.sold_bps = pos.sold_bps();
     token.arms.insert(rule_id, ArmState::Entered(ctx));
 
@@ -799,5 +799,116 @@ mod tests {
         // A dust sell whose fees beat its proceeds stays a loss when split.
         assert!(pro_rata_sol(-0.0002, 500, 1_000) < 0.0);
         assert_eq!(pro_rata_sol(0.3, 1_000, 0), 0.0);
+    }
+
+    mod restart {
+        use std::sync::Arc;
+
+        use chrono::{DateTime, Duration, TimeZone, Utc};
+        use hunter_engine::arm::ArmState;
+        use hunter_engine::event::{
+            Effect, Event, ExitReason, Fill, LoadedRule, Mint, RuleId, TradeMode,
+        };
+        use hunter_engine::fingerprint::{Criteria, Fingerprint, FingerprintId};
+        use hunter_engine::grouping::TokenFingerprint;
+        use hunter_engine::rule_params::RuleParams;
+        use hunter_engine::{reduce, EngineState};
+        use serde_json::json;
+        use trading_core::models::strategy::{StrategyPosition, EXTRA_STAGE_SINCE};
+        use uuid::Uuid;
+
+        use super::super::adopt_holding_into_engine;
+        use crate::strategies::engine::PositionRegistry;
+
+        const MINT: &str = "MINT-staged";
+
+        fn t(secs: f64) -> DateTime<Utc> {
+            Utc.timestamp_opt(1_800_000_000, 0).unwrap() + Duration::milliseconds((secs * 1000.0) as i64)
+        }
+
+        fn fp() -> Fingerprint {
+            Fingerprint { id: FingerprintId(Uuid::from_u128(0xF)), wildcard: true, criteria: Criteria::new(), tags: json!({}) }
+        }
+
+        /// Buys on arm; `start` moves to `hold` at 10 s in the stage, and `hold` sells
+        /// once its own clock reaches 20 s.
+        fn rule() -> LoadedRule {
+            let params = json!({ "stages": [
+                { "name": "start", "ends": { "stage_sec": 10 }, "then": "hold" },
+                { "name": "hold", "ends": { "stage_sec": 20 }, "then": "start", "at_end": [{ "sell": "late" }] }
+            ] });
+            LoadedRule {
+                id: RuleId(Uuid::from_u128(1)),
+                fingerprint_id: fp().id,
+                trade_mode: TradeMode::Paper,
+                buy_amount_lamports: 100_000_000,
+                max_concurrent_tokens: 0,
+                max_total_tokens: 0,
+                params: RuleParams::parse(&params).expect("valid"),
+                entry_enabled: true,
+            }
+        }
+
+        fn loaded() -> EngineState {
+            let mut s = EngineState::new();
+            reduce(&mut s, Event::RulesReloaded { rules: Arc::from(vec![rule()]), fps: Arc::from(vec![fp()]) });
+            s
+        }
+
+        fn late_sells(fx: &[Effect]) -> usize {
+            fx.iter()
+                .filter(|e| matches!(e, Effect::SubmitSell { reason: ExitReason::Line("late"), .. }))
+                .count()
+        }
+
+        /// A restart after a stage move resumes the same stage on the same clock: the
+        /// row the sink writes from the engine's effects, adopted into a fresh engine,
+        /// sells at the instant the running engine sells.
+        #[test]
+        fn a_restart_after_a_stage_move_keeps_the_stage_clock() {
+            let mint = Mint::from(MINT);
+            let mut running = loaded();
+            let fx = reduce(&mut running, Event::TokenCreated {
+                mint: mint.clone(), fp: Box::new(TokenFingerprint::default()), at: t(0.0),
+                creator_wallet_hash: None, identity: None, creation_slot: None,
+            });
+            let buy = fx.iter().find_map(|e| match e {
+                Effect::SubmitBuy { intent, .. } => Some(intent.clone()),
+                _ => None,
+            }).expect("buys on arm");
+            let fill = Fill { price: 1.0, sol: 0.1, token_amount: 1_000_000, at: t(1.0) };
+            reduce(&mut running, Event::FillConfirmed { intent: buy, fill });
+            let moved = reduce(&mut running, Event::Tick { now: t(11.0) });
+            let (stage, since) = moved.iter().find_map(|e| match e {
+                Effect::StageMoved(m) => Some((m.stage, m.since)),
+                _ => None,
+            }).expect("the deadline move is emitted");
+            assert_eq!((stage, since), (1, t(11.0)));
+
+            // The row as the sink leaves it: the entry fill, then `record_stage_move`.
+            let mut pos = StrategyPosition::new(
+                Uuid::new_v4(), "generic".into(), rule().id.0, "paper".into(), MINT.into(), "paper".into(),
+            );
+            pos.status = "Holding".into();
+            pos.entry_price = Some(fill.price);
+            pos.entry_time = Some(fill.at);
+            pos.entry_token_amount = Some(fill.token_amount);
+            pos.scale_stage = stage;
+            pos.extra = json!({ EXTRA_STAGE_SINCE: since.to_rfc3339() });
+
+            let mut restarted = loaded();
+            adopt_holding_into_engine(&mut restarted, &PositionRegistry::new(), &pos).expect("adopted");
+            match restarted.tokens.get(&mint).and_then(|tk| tk.arms.get(&rule().id)) {
+                Some(ArmState::Entered(ctx)) => assert_eq!((ctx.stage, ctx.stage_since), (1, t(11.0))),
+                other => panic!("expected Entered, got {other:?}"),
+            }
+
+            for now in [15.0, 30.9] {
+                assert_eq!(late_sells(&reduce(&mut running, Event::Tick { now: t(now) })), 0);
+                assert_eq!(late_sells(&reduce(&mut restarted, Event::Tick { now: t(now) })), 0, "restarted, at {now} s");
+            }
+            assert_eq!(late_sells(&reduce(&mut running, Event::Tick { now: t(31.0) })), 1);
+            assert_eq!(late_sells(&reduce(&mut restarted, Event::Tick { now: t(31.0) })), 1);
+        }
     }
 }

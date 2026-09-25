@@ -352,7 +352,8 @@ pub struct StrategyPosition {
     /// Running sum of confirmed sell-leg SOL (human), from `exit_sol_lamports_total`.
     #[serde(default)]
     pub exit_sol_total: f64,
-    /// Next scale-out stage index (`0` = pre-first partial / legacy).
+    /// The stage the position is in (`0` = the first stage). Its start instant is
+    /// in `extra` ([`EXTRA_STAGE_SINCE`]); both are written by one statement.
     #[serde(default)]
     pub scale_stage: u8,
     /// Raw submitted buy signatures (`TEXT[]`).
@@ -417,6 +418,14 @@ pub const EXTRA_ENTRY_PRICED_RESERVE: &str = "entry_priced_reserve";
 /// keeps it, and the rule and run PnL totals subtract it.
 pub const EXTRA_REVERTED_FEE_LAMPORTS: &str = "reverted_fee_lamports";
 
+/// `extra` key holding when the position's current stage (`scale_stage`) began, as
+/// RFC 3339: `m_position.stage_sec` and a `stage_sec` deadline count from it. Written
+/// in the same statement as `scale_stage` on every stage move
+/// (`StrategyRepo::record_stage_move`, and `record_sell_fill` for a partial sell that
+/// moves). Absent while the position is in the stage it entered, which began at the
+/// entry fill.
+pub const EXTRA_STAGE_SINCE: &str = "stage_since";
+
 impl StrategyPosition {
     /// The reverted-transaction fees an `EntryFailed` row carries
     /// ([`EXTRA_REVERTED_FEE_LAMPORTS`]), in SOL; 0 when absent.
@@ -434,6 +443,17 @@ impl StrategyPosition {
             .get(EXTRA_ENTRY_PRICED_RESERVE)
             .and_then(Value::as_f64)
             .filter(|v| v.is_finite() && *v > 0.0)
+    }
+
+    /// When the current stage began ([`EXTRA_STAGE_SINCE`]), else the entry fill:
+    /// the stage the position entered began then. `None` for a row that never filled.
+    pub fn stage_since(&self) -> Option<DateTime<Utc>> {
+        self.extra
+            .get(EXTRA_STAGE_SINCE)
+            .and_then(Value::as_str)
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc))
+            .or(self.entry_time)
     }
 
     /// In the runtime holding index: buy in flight or held. These are the states
@@ -971,6 +991,19 @@ mod extra_tests {
         assert_eq!(pos(json!(null)).reverted_fee_sol(), 0.0);
         let p = pos(json!({ EXTRA_REVERTED_FEE_LAMPORTS: 54_000 }));
         assert!((p.reverted_fee_sol() - 0.000_054).abs() < 1e-15);
+    }
+
+    #[test]
+    fn stage_since_reads_back_from_extra_else_the_entry() {
+        let entry = DateTime::parse_from_rfc3339("2026-09-25T10:00:00Z").unwrap().with_timezone(&Utc);
+        let moved = entry + chrono::Duration::milliseconds(12_345);
+        let mut p = pos(json!({ EXTRA_STAGE_SINCE: moved.to_rfc3339() }));
+        p.entry_time = Some(entry);
+        assert_eq!(p.stage_since(), Some(moved));
+        p.extra = json!({});
+        assert_eq!(p.stage_since(), Some(entry), "the entered stage began at the fill");
+        p.entry_time = None;
+        assert_eq!(p.stage_since(), None);
     }
 
     #[test]

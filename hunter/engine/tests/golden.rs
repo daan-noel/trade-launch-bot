@@ -145,6 +145,18 @@ fn stages(fx: &[Effect]) -> Vec<Option<u8>> {
         .collect()
 }
 
+/// Every stage move a batch persisted: `(stage, since)` from `StageMoved`, and from a
+/// partial fill that moved (`stage_since` set).
+fn moves(fx: &[Effect]) -> Vec<(u8, Ts)> {
+    fx.iter()
+        .filter_map(|e| match e {
+            Effect::StageMoved(m) => Some((m.stage, m.since)),
+            Effect::PositionUpdate(d) => d.stage.zip(d.stage_since),
+            _ => None,
+        })
+        .collect()
+}
+
 fn statuses(fx: &[Effect]) -> Vec<PositionStatus> {
     fx.iter()
         .filter_map(|e| match e {
@@ -2229,4 +2241,53 @@ fn prior_identity_launches_counts_the_build_s_earlier_same_name_launches() {
         hunter_engine::metrics::trade_keys::wallet_hash("earlier"),
     )]);
     assert_eq!(buys(&create(&mut s, "d", 0.0, &labels)).len(), 1);
+}
+
+/// `start` moves to `hold` at its deadline and to `ride` on a `go` line; `ride` sells
+/// half and goes to `hold`; `hold` sells the rest when its own clock reaches 20 s.
+fn staged_rule() -> LoadedRule {
+    let pnl = |v: f64| json!({ "metric": "m_position.pnl_pct", "is": [{ "operator": ">=", "value": v }] });
+    rule(1, 1, json!({
+        "stages": [
+            { "name": "start", "ends": { "stage_sec": 10 }, "then": "hold",
+              "on": [{ "if": [pnl(50.0)], "go": "ride" }] },
+            { "name": "hold", "ends": { "stage_sec": 20 }, "then": "start",
+              "at_end": [{ "sell": "late" }] },
+            { "name": "ride", "on": [{ "if": [pnl(100.0)], "sell": "half", "sell_pct": 50, "go": "hold" }] }
+        ]
+    }))
+}
+
+/// Every stage change is an effect carrying the new stage and when it began: the
+/// deadline move and the `go` move as `StageMoved`, the partial sell's move on its
+/// fill. That is what the live sink persists, so a restart resumes the same clock.
+#[test]
+fn every_stage_move_is_emitted_with_its_start() {
+    // The deadline move.
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![staged_rule()], vec![cu_fp(1)]));
+    enter_holding(&mut s, &m); // filled at 0.1
+    assert!(moves(&reduce(&mut s, Event::Tick { now: ts(10.0) })).is_empty(), "9.9 s in the stage");
+    let fx = reduce(&mut s, Event::Tick { now: ts(10.1) });
+    assert_eq!(moves(&fx), vec![(1, ts(10.1))]);
+    assert!(sells(&fx).is_empty(), "a move sells nothing");
+    // `hold` counts from its own start, not from the entry.
+    assert!(sells(&reduce(&mut s, Event::Tick { now: ts(30.0) })).is_empty());
+    let fx = reduce(&mut s, Event::Tick { now: ts(30.1) });
+    assert_eq!(sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![ExitReason::Line("late")]);
+
+    // The `go` move, then the partial sell's move riding its fill.
+    let mut s = EngineState::new();
+    reduce(&mut s, reload(vec![staged_rule()], vec![cu_fp(1)]));
+    enter_holding(&mut s, &m);
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.5, 40.0, 1.0) });
+    assert_eq!(moves(&fx), vec![(2, ts(1.0))]);
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 2.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::BpsOfInitial(5000)]);
+    assert!(moves(&fx).is_empty(), "the move waits for the fill");
+    assert_eq!(stages(&fx), vec![Some(2)], "the submit names the stage it sold in");
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: sell_intent(&fx), fill: fill(2.0, 2.1) });
+    assert_eq!(moves(&fx), vec![(1, ts(2.1))]);
+    assert!(!fx.iter().any(|e| matches!(e, Effect::StageMoved(_))), "one fact, one effect");
 }

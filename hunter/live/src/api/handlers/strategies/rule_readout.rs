@@ -598,15 +598,20 @@ fn entry_fill(position: &StrategyPosition) -> Option<(chrono::DateTime<chrono::U
         .filter(|(_, p)| p.is_finite() && *p > 0.0)
 }
 
-/// The stage a replay reads a position in: the stage PG last recorded, begun at the
-/// entry fill. PG keeps the index but not the move time, so `m_position.stage_sec`
-/// replays as time since the fill — exact for the first stage, an upper bound after
-/// a move. `None` for a position that never filled.
+/// The stage a replay reads a position in, and when it began. At the entry instant
+/// the position is in its first stage, begun at the fill. Anywhere later it is the
+/// stage PG last recorded, begun when PG says it began
+/// ([`StrategyPosition::stage_since`]). `None` for a position that never filled.
 fn replay_stage(
     position: &StrategyPosition,
     entry: Option<(chrono::DateTime<chrono::Utc>, f64)>,
+    read_at: ReadAt,
 ) -> Option<(u8, chrono::DateTime<chrono::Utc>)> {
-    entry.map(|(at, _)| (position.scale_stage, at))
+    let (entered, _) = entry?;
+    Some(match read_at {
+        ReadAt::Entry => (0, entered),
+        ReadAt::Exit => (position.scale_stage, position.stage_since().unwrap_or(entered)),
+    })
 }
 
 /// Reconstruct a closed position's readout at one instant by folding its token's
@@ -639,7 +644,7 @@ async fn replay_for_position(
     let mut lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
     stamp_build_breadth(app_state, &rule.compiled, &mut lites).await;
     let entry = entry_fill(position);
-    let stage = replay_stage(position, entry);
+    let stage = replay_stage(position, entry, read_at);
     let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
 
     // Off the reactor: this walks every trade the token made before `at`, which for a
@@ -845,7 +850,9 @@ pub async fn get_position_metric_series(
             // still demands a real price.
             centre: position.entry_time,
             entry: entry_fill(&position),
-            stage: replay_stage(&position, entry_fill(&position)),
+            // The series folds one stage over the whole chart: the last one, which is
+            // what the exit decided in.
+            stage: replay_stage(&position, entry_fill(&position), ReadAt::Exit),
         },
     )
     .await

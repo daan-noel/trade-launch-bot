@@ -126,9 +126,10 @@ ExitPending  -> ExitStuck | ExitUnconfirmed   (as before; bag = remainder)
   `reason_allows_reentry` reads the **last** leg's reason.
 - Boot: `count_closed_by_rule_mint` seeds `episodes`, and a mid-ladder `Holding` row is
   not closed — so a restart cannot inflate the budget. An adopted mid-ladder position
-  resumes its stage (`scale_stage`, the stage the last partial fill landed in) and `sold_*`
-  from the row + ledger. A pure `go` writes nothing, so a move without a sell is not
-  remembered across a restart.
+  resumes its stage (`scale_stage`), the stage's start (`extra.stage_since`) and `sold_*`
+  from the row + ledger: every stage move, with or without a sell, writes the stage and
+  its start in one statement. Each sell leg stamps the stage the position was in when it
+  sold (`position_fills.stage`).
 
 ## Two layers of truth (within one episode)
 

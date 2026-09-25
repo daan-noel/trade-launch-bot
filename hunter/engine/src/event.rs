@@ -475,6 +475,21 @@ pub enum Effect {
     PositionUpdate(PositionDelta),
     /// A (token, rule) arming transition — the live-monitor SSE consumes it.
     ArmedChanged(ArmedDelta),
+    /// A held position moved to another stage without selling (a `go` line, or a
+    /// stage deadline moving to `then`). The PG writer persists the stage and its
+    /// start so a restart resumes the same stage on the same clock. A move that a
+    /// partial sell's fill makes rides that fill's [`PositionDelta`] instead.
+    StageMoved(StageMove),
+}
+
+/// One stage move of a held position: the new stage and the instant it began.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StageMove {
+    pub position: PositionId,
+    pub rule: RuleId,
+    pub mint: Mint,
+    pub stage: u8,
+    pub since: Ts,
 }
 
 /// A position's current lifecycle status, mirroring the `strategy_positions`
@@ -514,9 +529,13 @@ pub struct PositionDelta {
     pub reason: Option<ExitReason>,
     /// The intent that drove this transition (for adapter correlation), when one did.
     pub intent: Option<IntentId>,
-    /// Scale-out stage index after this transition (`None` = legacy / no ladder).
-    /// Set on partial ExitPending submits and on Holding-preserving partial fills.
+    /// The stage index: on a partial `ExitPending` the stage the selling line acted
+    /// in, on a Holding-preserving partial fill the stage the position is in after
+    /// it (`None` elsewhere).
     pub stage: Option<u8>,
+    /// When `stage` began, set only when this transition moved the position: a
+    /// partial fill whose line goes to a stage. `None` = the stage did not change.
+    pub stage_since: Option<Ts>,
 }
 
 /// Why a (token, rule) arming ended.

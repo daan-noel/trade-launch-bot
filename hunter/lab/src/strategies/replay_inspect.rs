@@ -148,8 +148,11 @@ enum InspectEffect {
         intent: Option<IntentId>,
         #[serde(skip_serializing_if = "Option::is_none")]
         stage: Option<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stage_since: Option<Ts>,
     },
     ArmedChanged { mint: String, rule: RuleId, state: ArmedStateTag },
+    StageMoved { position: PositionId, rule: RuleId, mint: String, stage: u8, since: Ts },
 }
 
 impl From<&Effect> for InspectEffect {
@@ -176,11 +179,19 @@ impl From<&Effect> for InspectEffect {
                 reason: d.reason,
                 intent: d.intent.clone(),
                 stage: d.stage,
+                stage_since: d.stage_since,
             },
             Effect::ArmedChanged(d) => InspectEffect::ArmedChanged {
                 mint: d.mint.to_string(),
                 rule: d.rule,
                 state: d.state,
+            },
+            Effect::StageMoved(m) => InspectEffect::StageMoved {
+                position: m.position,
+                rule: m.rule,
+                mint: m.mint.to_string(),
+                stage: m.stage,
+                since: m.since,
             },
         }
     }
@@ -447,6 +458,7 @@ fn effect_touches_mint(fx: &Effect, mint: &str) -> bool {
         Effect::SubmitSell { intent, .. } => intent.mint.as_str() == mint,
         Effect::PositionUpdate(PositionDelta { mint: m, .. }) => m.as_str() == mint,
         Effect::ArmedChanged(d) => d.mint.as_str() == mint,
+        Effect::StageMoved(m) => m.mint.as_str() == mint,
     }
 }
 

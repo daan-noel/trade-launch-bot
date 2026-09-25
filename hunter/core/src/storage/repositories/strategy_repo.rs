@@ -13,7 +13,7 @@ use crate::strategies::kernel::{weighted_return_pct, CostModel};
 use crate::strategies::run_rollup::{self, RunRollup};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
-    MarkQuote, EXTRA_ENTRY_PRICED_RESERVE, EXTRA_REVERTED_FEE_LAMPORTS,
+    MarkQuote, EXTRA_ENTRY_PRICED_RESERVE, EXTRA_REVERTED_FEE_LAMPORTS, EXTRA_STAGE_SINCE,
     ExitReasonCounts, PositionsSummary, StrategyPosition, StrategyRun, StrategyRunMetrics,
 };
 use crate::storage::token_enrichment::{
@@ -2986,7 +2986,7 @@ impl StrategyRepo {
         token_amount: u64,
         at: DateTime<Utc>,
         reason: Option<&str>,
-        stage: Option<u8>,
+        stage: SellLegStage,
         tx_signatures: &[String],
         // Whose transaction `tx_signatures` name: a `Print` stays off the ledger leg.
         sig_kind: FillSigKind,
@@ -3000,8 +3000,9 @@ impl StrategyRepo {
             FillSigKind::Own => tx_signatures.first().map(|s| s.as_str()).filter(|s| !s.is_empty()),
             FillSigKind::Print => None,
         };
-        let next_stage = stage.map(|s| s as i16);
-        let fill_stage = stage.map(|s| s.saturating_sub(1) as i16);
+        let next_stage = stage.after.map(i16::from);
+        let fill_stage = stage.leg.map(i16::from);
+        let stage_since = stage.since.map(|t| t.to_rfc3339());
         let mut db_tx = self.pool.begin().await?;
         // What the sell returned, less the fees of this position's reverted attempts
         // (`EXTRA_REVERTED_FEE_LAMPORTS`), which it books and clears.
@@ -3082,21 +3083,47 @@ impl StrategyRepo {
                      exit_sol_lamports_total = exit_sol_lamports_total + $3, \
                      scale_stage = COALESCE($4, scale_stage), \
                      exit_slot = COALESCE($5, exit_slot), \
+                     extra = {stage_since_merge}, \
                      status = 'Holding', \
                      updated_at = now() \
                  WHERE id = $1 \
-                 RETURNING {POSITION_COLS}"
+                 RETURNING {POSITION_COLS}",
+                stage_since_merge = stage_since_merge_sql("$6"),
             ))
             .bind(id)
             .bind(token_amount as i64)
             .bind(lamports)
             .bind(next_stage)
             .bind(exit_slot.map(|v| v as i64))
+            .bind(stage_since)
             .fetch_one(&mut *db_tx)
             .await?
         };
         db_tx.commit().await?;
         Ok(StrategyPosition::from(row))
+    }
+
+    /// Persist a stage move that sold nothing (a `go` line, or a stage deadline
+    /// moving to `then`): the stage and the instant it began, in ONE statement, so a
+    /// restart never reads a stage with another stage's clock.
+    pub async fn record_stage_move(
+        &self,
+        id: Uuid,
+        stage: u8,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(&format!(
+            "UPDATE strategy_positions \
+             SET scale_stage = $2, extra = {}, updated_at = now() \
+             WHERE id = $1",
+            stage_since_merge_sql("$3"),
+        ))
+        .bind(id)
+        .bind(i16::from(stage))
+        .bind(since.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Sell-leg aggregate vs ledger SSOT check for one position. Returns
@@ -3853,6 +3880,29 @@ pub enum FillSigKind {
     Own,
     /// The feed print a paper fill was priced against.
     Print,
+}
+
+/// Where one sell leg leaves the position's stage ([`StrategyRepo::record_sell_fill`]).
+/// `Default` = nothing known: the leg carries no stage and the stored one stays.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SellLegStage {
+    /// The stage the position was in when the leg sold, stamped on the
+    /// `position_fills` leg.
+    pub leg: Option<u8>,
+    /// The stage the position is in after the leg; `None` keeps `scale_stage`.
+    pub after: Option<u8>,
+    /// When `after` began, set when this leg moved the position; `None` keeps the
+    /// stored start ([`EXTRA_STAGE_SINCE`]).
+    pub since: Option<DateTime<Utc>>,
+}
+
+/// `extra` with [`EXTRA_STAGE_SINCE`] set to the RFC 3339 text in `param`, or
+/// unchanged when `param` is NULL: the one SQL spelling of a stage-start write.
+fn stage_since_merge_sql(param: &str) -> String {
+    format!(
+        "CASE WHEN {param}::text IS NULL THEN extra \
+         ELSE COALESCE(extra, '{{}}'::jsonb) || jsonb_build_object('{EXTRA_STAGE_SINCE}', {param}::text) END"
+    )
 }
 
 /// Append one row to `position_fills` inside an open transaction. `seq` is

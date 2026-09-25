@@ -23,7 +23,7 @@ use crate::cap::Cap;
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS};
 use crate::event::{
     ArmedDelta, ArmedStateTag, DisarmReason, Effect, Event, ExitReason, FillFailReason, Mint,
-    Portion, PositionDelta, PositionStatus, RuleId, TradeMode,
+    Portion, PositionDelta, PositionStatus, RuleId, StageMove, TradeMode,
 };
 use crate::fingerprint::{match_all, MatchPhase};
 use crate::grouping::{TokenFingerprint, LAMPORTS_PER_SOL_F64};
@@ -297,6 +297,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         reason: None,
                         intent: Some(intent),
                         stage: Some(0),
+                        stage_since: None,
                     }));
                 }
                 Some(ArmState::ExitPending {
@@ -332,6 +333,8 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             reason: Some(reason),
                             intent: Some(intent),
                             stage: Some(stage),
+                            // The move and the fill are one fact: persisted together.
+                            stage_since: then_stage.map(|_| fill.at),
                         }));
                     } else {
                         // Full / remainder close.
@@ -351,6 +354,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             reason: Some(reason),
                             intent: Some(intent),
                             stage: None,
+                            stage_since: None,
                         }));
                     }
                 }
@@ -458,6 +462,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             reason: None,
                             intent: Some(intent),
                             stage: None,
+                            stage_since: None,
                         }));
                     }
                 }
@@ -484,6 +489,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             reason: Some(exit_reason),
                             intent: Some(intent),
                             stage: None,
+                            stage_since: None,
                         }));
                     } else if reason == FillFailReason::Fatal || attempts >= MAX_EXIT_ATTEMPTS {
                         // Sell gave up but the bag is still held — the position
@@ -501,6 +507,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             reason: Some(exit_reason),
                             intent: Some(intent),
                             stage: None,
+                            stage_since: None,
                         }));
                     } else {
                         let next = state.next_intent(rule_id, mint.clone());
@@ -599,6 +606,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 reason: None,
                 intent: Some(intent),
                 stage: None,
+                stage_since: None,
             }));
         }
 
@@ -628,6 +636,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         reason: Some(ExitReason::Manual),
                         intent: None,
                         stage: None,
+                        stage_since: None,
                     }));
                 }
             } else if let Some(ArmState::Entered(held)) = token.arms.get(&rule).cloned() {
@@ -662,6 +671,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         reason: Some(ExitReason::Manual),
                         intent: Some(intent),
                         stage: None,
+                        stage_since: None,
                     }));
                 }
             }
@@ -691,6 +701,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         reason: Some(ExitReason::Manual),
                         intent: None,
                         stage: None,
+                        stage_since: None,
                     }));
                 }
             }
@@ -1341,6 +1352,7 @@ fn apply_decision(
                 reason: None,
                 intent: Some(intent),
                 stage: None,
+                stage_since: None,
             }));
         }
         ArmDecision::Exit(reason) => {
@@ -1375,11 +1387,19 @@ fn apply_decision(
                 reason: Some(reason),
                 intent: Some(intent),
                 stage: None,
+                stage_since: None,
             }));
         }
         ArmDecision::Move(stage) => {
             if let Some(ArmState::Entered(held)) = token.arms.get_mut(&rule_id) {
                 held.move_to(stage, now);
+                fx.push(Effect::StageMoved(StageMove {
+                    position: held.position,
+                    rule: rule_id,
+                    mint: mint.clone(),
+                    stage,
+                    since: now,
+                }));
             }
         }
         ArmDecision::PartialExit { reason, sell_bps, then_stage } => {
@@ -1416,6 +1436,7 @@ fn apply_decision(
                 reason: Some(reason),
                 intent: Some(intent),
                 stage: Some(stage),
+                stage_since: None,
             }));
         }
     }
