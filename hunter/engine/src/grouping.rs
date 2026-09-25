@@ -75,7 +75,9 @@ pub enum GroupField {
     CreateAta,
     BuildPrevDayLaunches,
     BuildPrevDayRunnerBps,
-    PriorIdentityLaunches,
+    /// Aliased: the axis's name until metric system v2.
+    #[serde(alias = "prior_identity_launches")]
+    NameReuseCount,
 }
 
 impl GroupField {
@@ -96,7 +98,7 @@ impl GroupField {
         GroupField::CreateAta,
         GroupField::BuildPrevDayLaunches,
         GroupField::BuildPrevDayRunnerBps,
-        GroupField::PriorIdentityLaunches,
+        GroupField::NameReuseCount,
     ];
 
     /// The fingerprint axis this field groups on, or `None` for a grouping-only
@@ -117,7 +119,7 @@ impl GroupField {
             GroupField::CreateAta => AxisId::CreateAta,
             GroupField::BuildPrevDayLaunches => AxisId::BuildPrevDayLaunches,
             GroupField::BuildPrevDayRunnerBps => AxisId::BuildPrevDayRunnerBps,
-            GroupField::PriorIdentityLaunches => AxisId::PriorIdentityLaunches,
+            GroupField::NameReuseCount => AxisId::NameReuseCount,
         })
     }
 
@@ -496,7 +498,7 @@ mod tests {
             prior_launches: Some(3),
             build_prev_day_launches: None,
             build_prev_day_runner_bps: None,
-            prior_identity_launches: None,
+            name_reuse_count: None,
         }
     }
 

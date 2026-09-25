@@ -66,12 +66,12 @@ pub fn observed_axes(
         build_prev_day_launches: None,
         build_prev_day_runner_bps: None,
         // Engine-stamped from its per-build name tally; offline through
-        // [`stamp_prior_identity_launches`].
-        prior_identity_launches: None,
+        // [`stamp_name_reuse_count`].
+        name_reuse_count: None,
     }
 }
 
-/// Stamp `prior_identity_launches` onto observed axes from a primed
+/// Stamp `name_reuse_count` onto observed axes from a primed
 /// [`IdentityLaunches`](hunter_engine::fingerprint::identity_launches::IdentityLaunches) -
 /// the offline mirror of what `reduce` does at `TokenCreated`, through the same count.
 ///
@@ -79,19 +79,19 @@ pub fn observed_axes(
 /// [`stamp_launch_build_axes`]: the axis is not a column, and an unstamped token fails
 /// a configured axis closed, so a name-reuse door would scan to zero tokens. A blank
 /// name or symbol has no identity and stays `None`.
-pub fn stamp_prior_identity_launches(
+pub fn stamp_name_reuse_count(
     tf: &mut TokenFingerprint,
     token: &Token,
     history: &hunter_engine::fingerprint::identity_launches::IdentityLaunches,
 ) {
     let (Some(build), Some(identity)) = (
-        hunter_engine::metrics::flow_ix::ix_hash_opt(&tf.ix_labels),
+        hunter_engine::metrics::trade_keys::ix_hash_opt(&tf.ix_labels),
         hunter_engine::token_identity_hash(&token.name, &token.symbol),
     ) else {
         return;
     };
-    let mint = hunter_engine::metrics::flow_ix::wallet_hash(&token.mint_address);
-    tf.prior_identity_launches = Some(history.prior(build, identity, token.created_at, mint));
+    let mint = hunter_engine::metrics::trade_keys::wallet_hash(&token.mint_address);
+    tf.name_reuse_count = Some(history.prior(build, identity, token.created_at, mint));
 }
 
 /// Stamp the two engine-stamped **launch-build door** axes onto observed axes, from
@@ -104,14 +104,14 @@ pub fn stamp_prior_identity_launches(
 /// is silent, and reads exactly like a rule nobody's tokens match.
 ///
 /// `stats` is the day's map keyed by the build hash
-/// ([`ix_hash`](hunter_engine::metrics::flow_ix::ix_hash) over the ordered creation
+/// ([`ix_hash`](hunter_engine::metrics::trade_keys::ix_hash) over the ordered creation
 /// labels), the same key the engine's own map uses. A build the map does not list
 /// leaves both axes `None`, which fails a configured axis closed.
 pub fn stamp_launch_build_axes(
     tf: &mut TokenFingerprint,
     stats: &std::collections::HashMap<u64, hunter_engine::event::LaunchBuildStat>,
 ) {
-    if let Some(stat) = hunter_engine::metrics::flow_ix::ix_hash_opt(&tf.ix_labels)
+    if let Some(stat) = hunter_engine::metrics::trade_keys::ix_hash_opt(&tf.ix_labels)
         .and_then(|h| stats.get(&h))
     {
         tf.build_prev_day_launches = Some(stat.launches);

@@ -77,7 +77,7 @@ pub enum AxisId {
     BuildPrevDayRunnerBps,
     /// How many earlier tokens of this creation build carried this token's
     /// `(name, symbol)` identity. Engine-stamped from a primed, timestamped tally.
-    PriorIdentityLaunches,
+    NameReuseCount,
 }
 
 /// The value shape an axis carries — which [`AxisPredicate`] variant is legal on it.
@@ -299,14 +299,20 @@ pub static AXES: &[AxisDef] = &[
                      a build the stats do not list.",
     },
     AxisDef {
-        id: AxisId::PriorIdentityLaunches,
-        key: "prior_identity_launches",
+        id: AxisId::NameReuseCount,
+        key: "name_reuse_count",
         label: "Name reused (same build)",
         chip: "name_rep",
         kind: AxisKind::Numeric,
         unit: AxisUnit::Count,
         phase: AxisPhase::Instant,
-        definition: "How many EARLIER tokens of this creation build - the exact ordered                      instruction labels of the creation transaction - carried this                      token's name and symbol (lowercased, whitespace and invisible                      characters removed), counted from 30 days before the engine's                      tally was primed. `>= 1` is a name the build already launched.                      Needs an `ix_labels` axis on the same row; unknown (fails closed)                      for a blank name or symbol.",
+        definition: "How many EARLIER coins of this creation build (the exact ordered \
+                     instruction labels of the creation transaction) had this coin's \
+                     name and symbol, lowercased and without spaces, over the last \
+                     30 days. `>= 1` = the build is re-using a name. Example: a 7ix \
+                     coin named PEPE, when 7ix already launched a PEPE last week, \
+                     reads 1. Needs an `ix_labels` axis on the same row; unknown \
+                     (fails closed) for a blank name or symbol.",
     },
 ];
 
@@ -326,7 +332,7 @@ impl AxisId {
         AxisId::CreateAta,
         AxisId::BuildPrevDayLaunches,
         AxisId::BuildPrevDayRunnerBps,
-        AxisId::PriorIdentityLaunches,
+        AxisId::NameReuseCount,
     ];
 
     /// This axis's registry row.
@@ -375,7 +381,7 @@ impl AxisId {
             AxisId::CreateAta => crate::metrics::template_grain::create_ata_present(&tf.ix_labels)?,
             AxisId::BuildPrevDayLaunches => u128::from(tf.build_prev_day_launches?),
             AxisId::BuildPrevDayRunnerBps => u128::from(tf.build_prev_day_runner_bps?),
-            AxisId::PriorIdentityLaunches => u128::from(tf.prior_identity_launches?),
+            AxisId::NameReuseCount => u128::from(tf.name_reuse_count?),
             AxisId::IxLabels => return None,
         };
         Some(v)
@@ -922,11 +928,11 @@ impl Criteria {
         // that stopped launching.
         // The name tally is kept per creation build, and only for builds a fingerprint
         // names - so a row reading it without naming its build could never be stamped.
-        if self.get(AxisId::PriorIdentityLaunches).is_some()
+        if self.get(AxisId::NameReuseCount).is_some()
             && !matches!(self.get(AxisId::IxLabels), Some(AxisPredicate::Sequence { .. }))
         {
             out.push(
-                "prior_identity_launches needs an ix_labels axis on the same row - the                  tally is kept per creation build"
+                "name_reuse_count needs an ix_labels axis on the same row - the tally is kept per creation build"
                     .into(),
             );
         }
@@ -991,7 +997,7 @@ mod tests {
             prior_launches: Some(7),
             build_prev_day_launches: Some(24),
             build_prev_day_runner_bps: Some(1250),
-            prior_identity_launches: Some(2),
+            name_reuse_count: Some(2),
             ..TokenFingerprint::default()
         };
         for axis in AxisId::ALL {

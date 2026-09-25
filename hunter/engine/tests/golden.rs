@@ -15,7 +15,6 @@ use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, F
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts};
 use hunter_engine::reduce::reduce;
-use hunter_engine::rule_params::RuleParams;
 use hunter_engine::EngineState;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -43,7 +42,7 @@ fn cu_fp(id: u128) -> Fingerprint {
         wildcard: false,
         criteria: Criteria::new()
             .with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
-        metric_config: serde_json::json!({}),
+        tags: serde_json::json!({}),
     }
 }
 
@@ -59,7 +58,7 @@ fn rule_capped(id: u128, fp: u128, params: Value, max_concurrent: u32, max_total
         buy_amount_lamports: 1_000_000_000,
         max_concurrent_tokens: max_concurrent,
         max_total_tokens: max_total,
-        params: RuleParams::parse(&params).expect("valid params"),
+        params: hunter_engine::v1::parse_params_any(&params).expect("valid params"),
         entry_enabled: true,
     }
 }
@@ -319,12 +318,7 @@ fn metrics_exit_on_time_condition() {
     let fx = reduce(&mut s, Event::Tick { now: ts(6.0) });
     assert_eq!(
         sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
-        vec![ExitReason::Metrics {
-            metric: hunter_engine::metrics::MetricId::Time,
-            operator: hunter_engine::metrics::evaluator::Operator::Gt,
-            value: 5.0,
-            window: None,
-        }]
+        vec![ExitReason::Line("m_state.age_sec > 5")]
     );
 }
 
@@ -372,12 +366,7 @@ fn position_retrace_is_a_trailing_stop_off_the_since_entry_peak() {
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.25, 40.0, 2.0) });
     assert_eq!(
         sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
-        vec![ExitReason::Metrics {
-            metric: hunter_engine::metrics::MetricId::Retrace,
-            operator: hunter_engine::metrics::evaluator::Operator::Gte,
-            value: 3.0,
-            window: None,
-        }]
+        vec![ExitReason::Line("m_position.retrace_pct >= 3")]
     );
 }
 
@@ -397,12 +386,7 @@ fn position_held_is_a_time_stop() {
     let fx = reduce(&mut s, Event::Tick { now: ts(6.0) });
     assert_eq!(
         sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
-        vec![ExitReason::Metrics {
-            metric: hunter_engine::metrics::MetricId::Held,
-            operator: hunter_engine::metrics::evaluator::Operator::Gte,
-            value: 5.0,
-            window: None,
-        }]
+        vec![ExitReason::Line("m_position.held_sec >= 5")]
     );
 }
 
@@ -485,12 +469,7 @@ fn stall_exit_on_quiet_token_is_tick_driven() {
     let fx = reduce(&mut s, Event::Tick { now: ts(5.0) });
     assert_eq!(
         sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
-        vec![ExitReason::Metrics {
-            metric: hunter_engine::metrics::MetricId::Stall,
-            operator: hunter_engine::metrics::evaluator::Operator::Gt,
-            value: 3.0,
-            window: None,
-        }]
+        vec![ExitReason::Line("m_price.stall_sec > 3")]
     );
 }
 
@@ -1081,12 +1060,12 @@ fn compiled_rule_is_public() {
 
 #[test]
 fn flow_entry_on_tagged_net_and_exit_when_organic_goes_quiet() {
-    use hunter_engine::metrics::flow_ix::ix_hash;
+    use hunter_engine::metrics::trade_keys::ix_hash;
 
     let mut fp = cu_fp(1);
-    fp.metric_config = json!({
+    fp.tags = hunter_engine::v1::convert_metric_config(&json!({
         "m_flow_ix": { "ix_patterns": [["vol"]] }
-    });
+    })).unwrap();
     let params = json!({
         "entry": { "m_flow_ix": { "tagged_net": [{"operator": ">", "value": 2}] } },
         "exit": {
@@ -1161,28 +1140,23 @@ fn flow_entry_on_tagged_net_and_exit_when_organic_goes_quiet() {
     let fx = reduce(&mut s, Event::Tick { now: ts(7.0) });
     assert_eq!(
         sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
-        vec![ExitReason::Metrics {
-            metric: hunter_engine::metrics::MetricId::WinUntaggedGross,
-            operator: hunter_engine::metrics::evaluator::Operator::Eq,
-            value: 0.0,
-            window: Some(hunter_engine::metrics::WindowSpec::secs(5.0)),
-        }]
+        vec![ExitReason::Line("m_flow.gross_sol @!volume [5s] = 0")]
     );
 }
 
 #[test]
 fn two_fingerprints_flow_states_diverge() {
-    use hunter_engine::metrics::flow_ix::ix_hash;
+    use hunter_engine::metrics::trade_keys::ix_hash;
 
     let mut fp_a = cu_fp(1);
-    fp_a.metric_config = json!({
+    fp_a.tags = hunter_engine::v1::convert_metric_config(&json!({
         "m_flow_ix": { "ix_patterns": [["a"]] }
-    });
+    })).unwrap();
     let mut fp_b = cu_fp(2);
     fp_b.criteria.insert(AxisId::CuLimit, AxisPredicate::exact(200_000)); // same match
-    fp_b.metric_config = json!({
+    fp_b.tags = hunter_engine::v1::convert_metric_config(&json!({
         "m_flow_ix": { "ix_patterns": [["b"]] }
-    });
+    })).unwrap();
     // Rule A enters on tagged_buy>0 for pattern A; rule B would need pattern B.
     let params_a = json!({
         "entry": { "m_flow_ix": { "tagged_buy": [{"operator": ">", "value": 0}] } }
@@ -1238,10 +1212,10 @@ fn two_fingerprints_flow_states_diverge() {
 /// 0.6 SOL, not 0.3.
 #[test]
 fn buy_pct_of_vsol_sizes_off_the_priced_depth() {
-    use hunter_engine::metrics::flow_ix::ix_hash;
+    use hunter_engine::metrics::trade_keys::ix_hash;
 
     let mut fp = cu_fp(1);
-    fp.metric_config = json!({ "m_flow_ix": { "ix_patterns": [["a"]] } });
+    fp.tags = hunter_engine::v1::convert_metric_config(&json!({ "m_flow_ix": { "ix_patterns": [["a"]] } })).unwrap();
     let params = json!({
         "buy_pct_of_vsol": 1.0,
         "entry": { "m_flow_ix": { "tagged_buy": [{"operator": ">", "value": 0}] } }
@@ -1595,12 +1569,13 @@ fn scale_out_stage_fires_partial_and_advances() {
     );
     enter_holding(&mut s, &m);
 
-    // +50% → stage-0 partial (7000 bps), NOT a full End.
+    // +50% → stage-0 partial (7000 bps), NOT a full End. A rung's take profit is a
+    // stage line, so it is labelled by its condition.
     let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.5, 40.0, 1.0) });
     assert_eq!(sell_portions(&fx), vec![Portion::BpsOfInitial(7000)]);
     assert_eq!(
         sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
-        vec![ExitReason::TakeProfit]
+        vec![ExitReason::Line("m_position.pnl_pct >= 50")]
     );
     assert_eq!(statuses(&fx), vec![PositionStatus::ExitPending]);
     assert_eq!(stages(&fx), vec![Some(0)]);
@@ -1699,7 +1674,7 @@ fn scale_out_after_last_partial_global_trail_closes_stub() {
     assert_eq!(sell_portions(&fx), vec![Portion::All]);
     assert!(matches!(
         sells(&fx)[0].1,
-        ExitReason::Metrics { .. }
+        ExitReason::Line(_)
     ));
 }
 
@@ -1799,7 +1774,7 @@ fn scale_out_absent_legacy_sell_is_portion_all() {
 }
 
 #[test]
-fn manual_close_partial_preserves_holding_and_advances_sold_bps() {
+fn manual_close_partial_preserves_holding_and_stage_and_advances_sold_bps() {
     // Console "Sell N%" — same Portion plumbing as scale-out; fill restores Holding.
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
@@ -1824,12 +1799,14 @@ fn manual_close_partial_preserves_holding_and_advances_sold_bps() {
 
     let fx = reduce(&mut s, Event::FillConfirmed { intent: leg, fill: fill(1.2, 1.0) });
     assert_eq!(statuses(&fx), vec![PositionStatus::Holding]);
-    assert_eq!(stages(&fx), vec![Some(1)]);
+    // A manual partial keeps the stage the position is in: it never skips a step of
+    // the rule's plan.
+    assert_eq!(stages(&fx), vec![Some(0)]);
     assert_eq!(s.positions.len(), 1, "partial manual keeps the concurrency slot");
     let token = s.tokens.get(&m).expect("still tracked");
     match token.arms.get(&rid(1)) {
         Some(hunter_engine::arm::ArmState::Entered(ctx)) => {
-            assert_eq!(ctx.stage, 1);
+            assert_eq!(ctx.stage, 0);
             assert_eq!(ctx.sold_bps, 5000);
         }
         other => panic!("expected Entered after partial manual fill, got {other:?}"),
@@ -2214,7 +2191,7 @@ fn arm_clause_window_closes_after_since_armed() {
     assert!(sells(&fx).is_empty(), "37.5 s past the latch: outside the window");
 }
 
-/// `prior_identity_launches` counts earlier creations of the SAME build with the same
+/// `name_reuse_count` counts earlier creations of the SAME build with the same
 /// `(name, symbol)`: the first reads 0, the second 1; a primed earlier launch counts;
 /// another build's launch of that name does not.
 #[test]
@@ -2225,8 +2202,8 @@ fn prior_identity_launches_counts_the_build_s_earlier_same_name_launches() {
         wildcard: false,
         criteria: Criteria::new()
             .with(AxisId::IxLabels, AxisPredicate::Sequence { labels: labels.clone() })
-            .with(AxisId::PriorIdentityLaunches, AxisPredicate::Range { min: Some(1), max: None }),
-        metric_config: serde_json::json!({}),
+            .with(AxisId::NameReuseCount, AxisPredicate::Range { min: Some(1), max: None }),
+        tags: serde_json::json!({}),
     };
     let token = |ix: &[String]| Box::new(TokenFingerprint { ix_labels: ix.to_vec(), ..Default::default() });
     let pepe = hunter_engine::token_identity_hash("Pepe", "PEPE");
@@ -2246,10 +2223,10 @@ fn prior_identity_launches_counts_the_build_s_earlier_same_name_launches() {
     let mut s = EngineState::new();
     reduce(&mut s, reload(vec![rule(1, 1, json!({}))], vec![fp]));
     s.prime_identity_launches([(
-        hunter_engine::metrics::flow_ix::ix_hash(&labels),
+        hunter_engine::metrics::trade_keys::ix_hash(&labels),
         pepe.unwrap(),
         ts(-100.0),
-        hunter_engine::metrics::flow_ix::wallet_hash("earlier"),
+        hunter_engine::metrics::trade_keys::wallet_hash("earlier"),
     )]);
     assert_eq!(buys(&create(&mut s, "d", 0.0, &labels)).len(), 1);
 }

@@ -9,19 +9,19 @@
 //! reason, same entry/exit price, same PnL. If they ever diverge, the fast path
 //! silently lies; this test fails first.
 
-use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria};
 use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
+use serde_json::{json, Value};
 
 use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{ExitReason, LoadedRule, RuleId, TradeMode};
-use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
-use hunter_engine::metrics::evaluator::{Condition, Operator};
-use hunter_engine::metrics::flow_ix::FlowPatterns;
-use hunter_engine::metrics::{MetricGroupId, MetricId, Ts};
-use hunter_engine::rule_params::{ExitStage, GroupConditions, RuleParams, SideConditions};
+use hunter_engine::metrics::evaluator::Operator;
+use hunter_engine::metrics::tags::config::compile_tags;
+use hunter_engine::metrics::Ts;
+use hunter_engine::rule_params::RuleParams;
 
 use trading_core::config::constants::sol_to_lamports;
 use trading_core::strategies::kernel::{CostModel, ExitCode};
@@ -33,9 +33,13 @@ use crate::sweep::strategy::TokenOutcome;
 use crate::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
 
 use super::axes::{AxisSide, AxisSpec};
-use super::strategy::{
-    build_series_with_flow, columns_for, scan, sparse_grid_for, wants_exit_index, Pricing,
+use super::fast_exit::{resolve_exit_indexed, resolve_exit_simd, wants_exit_index};
+use super::frozen_tail::frozen_tail_horizon;
+use super::scan::{
+    columns_for, resolve_entry, resolve_exit_walk, scan, scan_with_horizon, sparse_grid_for, BoundCombo,
+    EntryResolution,
 };
+use super::strategy::{build_series, Pricing};
 
 const BUY_SOL: f64 = 1.0;
 const FP_ID: uuid::Uuid = uuid::Uuid::from_u128(0x1234);
@@ -165,7 +169,7 @@ fn token_at(mint: &str, created_secs: f64, trades: Vec<CorpusTrade>) -> (CorpusT
 fn fingerprint() -> Fingerprint {
     Fingerprint {
         id: FingerprintId(FP_ID),
-        metric_config: serde_json::json!({}),
+        tags: json!({}),
         wildcard: false,
         criteria: Criteria::new()
             .with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
@@ -185,39 +189,28 @@ fn loaded(params: RuleParams) -> LoadedRule {
     }
 }
 
-/// `RuleParams` with a single exit metric condition.
-fn exit_metric(group: MetricGroupId, metric: MetricId, op: Operator, value: f64) -> RuleParams {
-    let mut gc = GroupConditions::default();
-    gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
-    let mut side = SideConditions::default();
-    side.0.insert(group, vec![gc]);
-    RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side.into()), ..RuleParams::default() }
+/// A rule from its v2 JSON.
+fn rule(v: Value) -> RuleParams {
+    RuleParams::parse(&v).unwrap_or_else(|e| panic!("{v}: {e}"))
 }
 
-/// One side's conditions for a single windowed (dynamic-group) metric — e.g. the
-/// `m_price_window(30).trail >= 12` dip trigger.
-fn window_metric_side(
-    group: MetricGroupId,
-    metric: MetricId,
-    window: f64,
-    op: Operator,
-    value: f64,
-) -> SideConditions {
-    let mut gc = GroupConditions::default();
-    gc.strict.insert("window_size_sec".to_string(), window);
-    gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
-    let mut side = SideConditions::default();
-    side.0.insert(group, vec![gc]);
-    side
+/// One condition: `metric [span] op value`.
+fn cond(metric: &str, span: Option<&str>, op: &str, value: f64) -> Value {
+    let mut c = json!({ "metric": metric, "is": [{ "operator": op, "value": value }] });
+    if let Some(sp) = span {
+        c["span"] = json!(sp);
+    }
+    c
 }
 
-/// One side's conditions for a single static-group metric (e.g. `m_position.retrace`).
-fn static_metric_side(group: MetricGroupId, metric: MetricId, op: Operator, value: f64) -> SideConditions {
-    let mut gc = GroupConditions::default();
-    gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
-    let mut side = SideConditions::default();
-    side.0.insert(group, vec![gc]);
-    side
+/// A rule that sells everything on one condition.
+fn exit_metric(metric: &str, span: Option<&str>, op: &str, value: f64) -> RuleParams {
+    rule(json!({ "always": [{ "if": [cond(metric, span, op, value)], "sell": true }] }))
+}
+
+/// A rule of only the TP / SL shortcuts (both absent: it rides to Dead or Open).
+fn tp_sl(take_profit: Option<f64>, stop_loss: Option<f64>) -> RuleParams {
+    RuleParams { take_profit, stop_loss, ..RuleParams::default() }
 }
 
 fn exit_code_of(reason: Option<ExitReason>) -> ExitCode {
@@ -225,7 +218,7 @@ fn exit_code_of(reason: Option<ExitReason>) -> ExitCode {
         None => ExitCode::Open,
         Some(ExitReason::TakeProfit) => ExitCode::TakeProfit,
         Some(ExitReason::StopLoss) => ExitCode::StopLoss,
-        Some(ExitReason::Metrics { .. }) => ExitCode::Metrics,
+        Some(ExitReason::Line(_)) => ExitCode::Metrics,
         Some(ExitReason::Dead) => ExitCode::Dead,
         Some(ExitReason::Manual) => ExitCode::Open,
         Some(ExitReason::Migrated) => ExitCode::Open,
@@ -258,14 +251,14 @@ fn assert_parity(label: &str, params: RuleParams, tokens: &[(CorpusToken, Replay
     assert_parity_with_flow(label, params, tokens, as_of, None);
 }
 
-/// Like [`assert_parity`], but configures fingerprint `metric_config` + seeds the
-/// scan's flow state from the same `ix_patterns` (V2.3 drift lock).
+/// Like [`assert_parity`], with a fingerprint tags document the replay classifies with
+/// and the scan's series registers — the same document on both sides.
 fn assert_parity_with_flow(
     label: &str,
     params: RuleParams,
     tokens: &[(CorpusToken, ReplayToken)],
     as_of: Ts,
-    ix_patterns: Option<Vec<Vec<String>>>,
+    tags: Option<Value>,
 ) {
     for fm in FILL_MODELS {
         assert_parity_under(
@@ -273,7 +266,7 @@ fn assert_parity_with_flow(
             params.clone(),
             tokens,
             as_of,
-            ix_patterns.clone(),
+            tags.clone(),
             fm,
         );
     }
@@ -286,19 +279,15 @@ fn assert_parity_under(
     params: RuleParams,
     tokens: &[(CorpusToken, ReplayToken)],
     as_of: Ts,
-    ix_patterns: Option<Vec<Vec<String>>>,
+    tags: Option<Value>,
     fill_model: FillModel,
 ) {
     let rule = loaded(params);
     let mut fp = fingerprint();
-    if let Some(patterns) = &ix_patterns {
-        fp.metric_config = serde_json::json!({
-            "m_flow_ix": { "ix_patterns": patterns }
-        });
+    if let Some(doc) = &tags {
+        fp.tags = doc.clone();
     }
-    let flow_patterns = ix_patterns
-        .as_ref()
-        .map(|p| FlowPatterns::from_label_sequences(p));
+    let compiled_tags = tags.as_ref().map(compile_tags).unwrap_or_default();
     let pricing = pricing_for(fill_model);
     let cost = pricing.cost;
 
@@ -318,13 +307,7 @@ fn assert_parity_under(
         let po = replay_out.iter().find(|o| o.mint == corpus_tok.mint);
         let (r_fired, r_exit, r_entry, r_exit_price, r_pnl_sol, r_pnl_pct) = replay_tuple(po, &cost);
 
-        let series = build_series_with_flow(
-            corpus_tok,
-            cols.clone(),
-            &grid,
-            as_of,
-            flow_patterns.as_ref(),
-        );
+        let series = build_series(corpus_tok, cols.clone(), &grid, as_of, &compiled_tags);
         let outcome = scan(&corpus_tok.trades, &series, &compiled, &pricing);
 
         assert_eq!(
@@ -418,37 +401,32 @@ fn corpus() -> Vec<(CorpusToken, ReplayToken)> {
 #[test]
 fn scan_matches_replay_tp_sl_rule() {
     // TP 50% OR SL 30%. Enter on arm (no entry conditions).
-    let params = RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, ..RuleParams::default() };
+    let params = tp_sl(Some(50.0), Some(30.0));
     assert_parity("tp_sl", params, &corpus(), at(1000.0));
 }
 
 #[test]
 fn scan_matches_replay_metrics_exit_rule() {
     // Exit when trail (% off peak) exceeds 50 — no TP/SL, so only the metric fires.
-    let params = exit_metric(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gt, 50.0);
+    let params = exit_metric("m_price.trail_pct", None, ">", 50.0);
     assert_parity("trail_exit", params, &corpus(), at(1000.0));
 }
 
 #[test]
 fn scan_matches_replay_entry_gated_rule() {
-    // Entry gated on time > 2s (so entry defers past the first trade), TP 20%.
-    let mut gc = GroupConditions::default();
-    gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
-    let mut entry = SideConditions::default();
-    entry.0.insert(MetricGroupId::State, vec![gc]);
-    let params =
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None, ..RuleParams::default() };
+    // Entry gated on age > 2s (so entry defers past the first trade), TP 20%.
+    let params = rule(json!({ "enter": { "filters": [cond("m_state.age_sec", None, ">", 2.0)] }, "take_profit": 20 }));
     assert_parity("entry_gate", params, &corpus(), at(1000.0));
 }
 
 #[test]
 fn scan_matches_replay_pure_dead_open_rule() {
     // No TP/SL/exit metrics: every fired token rides to Dead or Open.
-    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, ..RuleParams::default() };
+    let params = tp_sl(None, None);
     assert_parity("dead_open", params, &corpus(), at(1000.0));
 }
 
-/// Plan §5 / step 4 — 2-stage scale-out: bank 70% into strength (`take_profit`),
+/// Two stages: bank 70% into strength (`pnl_pct >= 50`),
 /// then close the stub on a pure time-stop (`held >= N`). Trades are spaced so
 /// each fire's fill window collapses to the fire trade (no mid-flight deferred
 /// fill), so the sweep's instantaneous stage advance matches replay's
@@ -456,7 +434,7 @@ fn scan_matches_replay_pure_dead_open_rule() {
 #[test]
 fn scan_matches_replay_scale_out_two_stage() {
     // Entry @ `RAW_PX` exactly (fill window empty past slot 0 → market-fill) so
-    // `initial_tokens = 1e6` and `7000 bps` is an exact integer — otherwise
+    // `initial_tokens = 1e6` and `70 %` is an exact integer — otherwise
     // replay's `sell_bps_of` truncates (6999) and multi-leg PnL drifts by float
     // dust under WorstCase. Gaps ≫ MAX_FILL_WAIT_SLOTS so every exit also
     // collapses to its fire print under every FillModel.
@@ -468,27 +446,10 @@ fn scan_matches_replay_scale_out_two_stage() {
             ct(40.0, true, 0.5, 1.60 * RAW_PX, 100.0), // held ≥ 30 from entry → remainder
         ],
     )];
-    let remainder = static_metric_side(
-        MetricGroupId::Position,
-        MetricId::Held,
-        Operator::Gte,
-        30.0,
-    );
-    let params = RuleParams {
-        scale_out: Some(vec![
-            ExitStage {
-                sell_bps: Some(7000),
-                take_profit: Some(50.0),
-                conditions: SideConditions::default(),
-            },
-            ExitStage {
-                sell_bps: None,
-                take_profit: None,
-                conditions: remainder,
-            },
-        ]),
-        ..RuleParams::default()
-    };
+    let params = rule(json!({ "stages": [
+        { "name": "bank", "on": [{ "if": [cond("m_position.pnl_pct", None, ">=", 50.0)], "sell": true, "sell_pct": 70, "go": "rest" }] },
+        { "name": "rest", "on": [{ "if": [cond("m_position.held_sec", None, ">=", 30.0)], "sell": true }] }
+    ] }));
     assert_parity("scale_out_2stage", params, &tokens, at(1000.0));
 }
 
@@ -504,15 +465,10 @@ fn scan_matches_replay_scale_out_global_sl_mid_ladder() {
             ct(20.0, false, 0.5, 0.60 * RAW_PX, 100.0), // −40% from entry → global SL
         ],
     )];
-    let params = RuleParams {
-        stop_loss: Some(30.0),
-        scale_out: Some(vec![ExitStage {
-            sell_bps: Some(7000),
-            take_profit: Some(50.0),
-            conditions: SideConditions::default(),
-        }]),
-        ..RuleParams::default()
-    };
+    let params = rule(json!({ "stop_loss": 30, "stages": [
+        { "name": "bank", "on": [{ "if": [cond("m_position.pnl_pct", None, ">=", 50.0)], "sell": true, "sell_pct": 70, "go": "rest" }] },
+        { "name": "rest" }
+    ] }));
     assert_parity("scale_out_sl_mid", params, &tokens, at(1000.0));
 }
 
@@ -559,25 +515,13 @@ fn scan_matches_replay_position_retrace_exit() {
     // metric must read the running PositionCtx, not a (NaN) series column.
     assert_parity(
         "position_retrace",
-        RuleParams {
-            take_profit: None,
-            stop_loss: None,
-            entry: None,
-            exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0).into()),
-            ..RuleParams::default()
-        },
+        exit_metric("m_position.retrace_pct", None, ">=", 3.0),
         &corpus(),
         at(1000.0),
     );
     assert_parity(
         "position_retrace_gappy",
-        RuleParams {
-            take_profit: None,
-            stop_loss: None,
-            entry: None,
-            exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0).into()),
-            ..RuleParams::default()
-        },
+        exit_metric("m_position.retrace_pct", None, ">=", 3.0),
         &gappy_corpus(),
         at(100_000.0),
     );
@@ -585,88 +529,70 @@ fn scan_matches_replay_position_retrace_exit() {
 
 #[test]
 fn scan_matches_replay_armed_trailing_exit() {
-    // `m_position.arm_above_pct` — the trailing stop held off until the position is
-    // in profit. Two things must hold at once, which is why this is a parity test
-    // and not just an engine unit test:
-    //
-    //   1. the scan's `exit_req_fires` must skip a disarmed trailing req exactly as
-    //      `CompiledRule::exit_fired` does, and
-    //   2. an armed req must NOT take the `ExitClass::Trailing` prefix-extrema hull
-    //      — arming is a conjunction of retrace and pnl, which the hull does not
-    //      index, so `classify_exit_req` sends it to the scalar walk. If that
-    //      classification ever regresses the hull answers a question it cannot see
-    //      the gate on, and only a parity assertion catches it.
-    //
-    // Gates on both sides of the corpus's price path: 0 (arm at break-even) and a
-    // gate high enough that the trail never arms and the stop-loss has to close it.
+    // A trailing stop that only counts while the position is in profit: the v1
+    // `arm_above_pct` gate on a lone trailing condition, which v1 checked against the
+    // CURRENT pnl, converts to one line `pnl_pct >= gate AND retrace_pct >= 3`. Gates on
+    // both sides of the corpus's price path: break-even, and one so high the trail never
+    // counts and the stop loss closes it.
     for gate in [0.0, 5.0, 40.0] {
-        let mut gc = GroupConditions::default();
-        gc.metrics.insert(
-            MetricId::Retrace,
-            vec![vec![Condition { operator: Operator::Gte, value: 3.0 }]],
-        );
-        gc.strict.insert("arm_above_pct".into(), gate);
-        let mut side = SideConditions::default();
-        side.0.insert(MetricGroupId::Position, vec![gc]);
-
-        let params = RuleParams {
-            take_profit: None,
-            stop_loss: Some(20.0),
-            entry: None,
-            exit: Some(side.into()),
-            ..RuleParams::default()
-        };
+        let v1 = json!({
+            "stop_loss": 20,
+            "exit": { "m_position": { "arm_above_pct": gate, "retrace": [{ "operator": ">=", "value": 3 }] } }
+        });
+        let params = hunter_engine::v1::parse_params_any(&v1).expect("the latch converts");
+        assert_eq!(params.always.len(), 1, "one line");
+        assert_eq!(params.always[0].when.len(), 2, "the gate and the trail, AND-ed");
         assert_parity(&format!("armed_trailing_gate_{gate}"), params.clone(), &corpus(), at(1000.0));
-        assert_parity(
-            &format!("armed_trailing_gappy_gate_{gate}"),
-            params,
-            &gappy_corpus(),
-            at(100_000.0),
-        );
+        assert_parity(&format!("armed_trailing_gappy_gate_{gate}"), params, &gappy_corpus(), at(100_000.0));
     }
 }
 
 #[test]
 fn scan_matches_replay_position_pnl_exit() {
-    // Authored `m_position.pnl <= -20` — a metric stop (stamps Metrics, distinct from
-    // the desugared `stop_loss` which stamps StopLoss). Position-scoped, so the scan
-    // evaluates it against the PositionCtx pnl at each row.
-    let params = exit_metric(MetricGroupId::Position, MetricId::Pnl, Operator::Lte, -20.0);
+    // An authored `m_position.pnl_pct <= -20` line — a line exit (labelled by the line,
+    // distinct from the `stop_loss` shortcut's StopLoss), read off the held position.
+    let params = exit_metric("m_position.pnl_pct", None, "<=", -20.0);
     assert_parity("position_pnl", params, &corpus(), at(1000.0));
 }
 
 #[test]
 fn scan_matches_replay_position_held_exit() {
-    // `m_position.held >= 5` — a time stop. New fast-path class (binary search on the
+    // `m_position.held_sec >= 5` — a time stop. New fast-path class (binary search on the
     // series' `at` column), and one no sweep path could resolve without walking every
     // row before item B; locked against the fold on both a dense and a gappy corpus.
-    let params = exit_metric(MetricGroupId::Position, MetricId::Held, Operator::Gte, 5.0);
+    let params = exit_metric("m_position.held_sec", None, ">=", 5.0);
     assert_parity("position_held", params.clone(), &corpus(), at(1000.0));
     assert_parity("position_held_gappy", params, &gappy_corpus(), at(100_000.0));
 }
 
 #[test]
 fn scan_matches_replay_tp_sl_plus_authored_metric() {
-    // Mixed classes AND mixed origins on one rule: the desugared SL/TP must still
+    // Mixed classes AND mixed labels on one rule: the SL/TP shortcuts must still
     // outrank the authored trailing stop when both fire on the same row, and the
-    // labels must stay `StopLoss`/`TakeProfit` rather than collapsing to `Metrics`.
-    let params = RuleParams {
-        take_profit: Some(50.0),
-        stop_loss: Some(30.0),
-        entry: None,
-        exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0).into()),
-        ..RuleParams::default()
-    };
+    // exits must stay `StopLoss`/`TakeProfit` rather than collapsing to a line exit.
+    let params = retrace_with_tp_sl();
     assert_parity("tp_sl_plus_retrace", params, &corpus(), at(1000.0));
+}
+
+/// TP 50 + SL 30 + a trailing-stop line.
+fn retrace_with_tp_sl() -> RuleParams {
+    rule(json!({
+        "take_profit": 50,
+        "stop_loss": 30,
+        "always": [{ "if": [cond("m_position.retrace_pct", None, ">=", 3.0)], "sell": true }]
+    }))
+}
+
+/// Enter on a 12 %+ dip off the 30 s rolling high.
+fn dip_entry() -> Value {
+    json!({ "filters": [cond("m_price.trail_pct", Some("30s"), ">=", 12.0)] })
 }
 
 #[test]
 fn scan_matches_replay_price_window_dip_entry() {
-    // Entry on `m_price_window(30).trail >= 12` (buy a 12%+ dip off the rolling high),
+    // Entry on `m_price.trail_pct [30s] >= 12` (buy a 12%+ dip off the rolling high),
     // exit via TP. Exercises the windowed price-extrema entry column end-to-end.
-    let entry = window_metric_side(MetricGroupId::PriceWindow, MetricId::WinTrail, 30.0, Operator::Gte, 12.0);
-    let params =
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None, ..RuleParams::default() };
+    let params = rule(json!({ "enter": dip_entry(), "take_profit": 20 }));
     assert_parity("pw_dip_entry", params, &pw_dip_corpus(), at(1000.0));
 }
 
@@ -675,33 +601,15 @@ fn position_retrace_actually_fires_the_trailing_stop() {
     // Non-vacuity guard for the parity tests above: a scan≡replay assertion passes
     // trivially if NEITHER side ever enters, so prove the two new metrics really do
     // drive an entry and a close on this fixture.
-    let compiled = CompiledRule::compile(&loaded(RuleParams {
-        take_profit: None,
-        stop_loss: None,
-        entry: Some(window_metric_side(
-            MetricGroupId::PriceWindow,
-            MetricId::WinTrail,
-            30.0,
-            Operator::Gte,
-            12.0,
-        )),
-        exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0).into()),
-        ..RuleParams::default()
-    }));
+    let compiled = CompiledRule::compile(&loaded(rule(json!({
+        "enter": dip_entry(),
+        "always": [{ "if": [cond("m_position.retrace_pct", None, ">=", 3.0)], "sell": true }]
+    }))));
     let cols = columns_for(&compiled);
     // The dip trigger IS a precomputed column; the position metric is NOT (it reads
-    // the per-entry PositionCtx — a static column could only ever record NaN).
-    assert!(
-        cols.contains(&hunter_engine::metrics::series::SeriesColumn::window(MetricId::WinTrail, hunter_engine::metrics::WindowSpec::secs(30.0))),
-        "m_price_window.trail must precompute as a windowed column: {cols:?}"
-    );
-    assert!(
-        !cols.iter().any(|c| matches!(
-            c,
-            hunter_engine::metrics::series::SeriesColumn::Static(MetricId::Retrace)
-        )),
-        "m_position must not become a series column: {cols:?}"
-    );
+    // the held position — a coin column could only ever record NaN).
+    assert_eq!(cols.len(), 1, "one coin read: {cols:?}");
+    assert_eq!(cols[0].r.label(), "m_price.trail_pct [30s]");
     // The price-window decay region must be sized by the price window, not just flows.
     assert_eq!(sparse_grid_for(&compiled).max_window_secs, 30.0);
 
@@ -711,10 +619,11 @@ fn position_retrace_actually_fires_the_trailing_stop() {
 
     // The dipping token: enters on the 16.7% dip, closes on the post-peak retrace.
     let (dip, _) = &toks[0];
-    let series = build_series_with_flow(dip, cols.clone(), &grid, at(1000.0), None);
+    let series = build_series(dip, cols.clone(), &grid, at(1000.0), &[]);
     let out = scan(&dip.trades, &series, &compiled, &pricing);
     assert!(out.fired, "the 12% dip entry must fire");
     assert_eq!(out.exit, ExitCode::Metrics, "the retrace trailing stop must close it");
+    assert_eq!(out.exit_label, Some("m_position.retrace_pct >= 3"), "labelled by its line");
     assert!(
         out.exit_price.is_some_and(|p| p < 1.8),
         "exit must price off the post-peak dump, got {:?}",
@@ -723,19 +632,19 @@ fn position_retrace_actually_fires_the_trailing_stop() {
 
     // The flat token never dips 12% off its rolling high → never enters.
     let (flat, _) = &toks[1];
-    let flat_series = build_series_with_flow(flat, cols, &grid, at(1000.0), None);
+    let flat_series = build_series(flat, cols, &grid, at(1000.0), &[]);
     let flat_out = scan(&flat.trades, &flat_series, &compiled, &pricing);
     assert!(!flat_out.fired, "no 12% dip → no entry");
 }
 
 #[test]
 fn scan_matches_replay_minimal_flow_scalper_core() {
-    // The irreducible 2-metric core: dip entry (price_window trail >= 12) + trailing-
-    // stop exit (position retrace >= 3), no TP/SL. Both new metric classes together.
-    let entry = window_metric_side(MetricGroupId::PriceWindow, MetricId::WinTrail, 30.0, Operator::Gte, 12.0);
-    let exit = static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0);
-    let params =
-        RuleParams { take_profit: None, stop_loss: None, entry: Some(entry), exit: Some(exit.into()), ..RuleParams::default() };
+    // The irreducible 2-read core: dip entry (trail_pct [30s] >= 12) + trailing-stop
+    // line (retrace_pct >= 3), no TP/SL.
+    let params = rule(json!({
+        "enter": dip_entry(),
+        "always": [{ "if": [cond("m_position.retrace_pct", None, ">=", 3.0)], "sell": true }]
+    }));
     assert_parity("flow_scalper_core", params, &pw_dip_corpus(), at(1000.0));
 }
 
@@ -782,28 +691,23 @@ fn gappy_corpus() -> Vec<(CorpusToken, ReplayToken)> {
 #[test]
 fn scan_matches_replay_gappy_dead_open() {
     // Enter-on-arm, no exits: dead_midgap → Dead mid-gap, revive/idle → Open.
-    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, ..RuleParams::default() };
+    let params = tp_sl(None, None);
     assert_parity("gappy_dead_open", params, &gappy_corpus(), at(100_000.0));
 }
 
 #[test]
 fn scan_matches_replay_time_gate_across_gap() {
-    // Entry gated on time > 3600 s — qualifies mid-gap, so the fill lands on a tick
+    // Entry gated on age > 3600 s — qualifies mid-gap, so the fill lands on a tick
     // deep inside the quiet span the sparse grid must still emit.
-    let mut gc = GroupConditions::default();
-    gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 3600.0 }]]);
-    let mut entry = SideConditions::default();
-    entry.0.insert(MetricGroupId::State, vec![gc]);
-    let params =
-        RuleParams { take_profit: Some(5.0), stop_loss: None, entry: Some(entry), exit: None, ..RuleParams::default() };
+    let params = rule(json!({ "enter": { "filters": [cond("m_state.age_sec", None, ">", 3600.0)] }, "take_profit": 5 }));
     assert_parity("time_gate_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
 #[test]
 fn scan_matches_replay_stall_eq_exit_across_gap() {
-    // Exit when stall ≈ 1800 s (`=` with the metric's tolerance) — a tolerance-edged
+    // Exit when stall_sec ≈ 1800 (`=` with the metric's tolerance) — a tolerance-edged
     // threshold reached only inside the gap. Exercises both region boundaries.
-    let params = exit_metric(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Eq, 1800.0);
+    let params = exit_metric("m_price.stall_sec", None, "=", 1800.0);
     assert_parity("stall_eq_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
@@ -819,22 +723,14 @@ fn scan_matches_replay_stall_eq_exit_across_gap() {
 /// tokens — the shape the sweep actually runs.
 #[test]
 fn shared_bind_matches_per_token_bind() {
-    use super::strategy::{resolve_entry, resolve_exit, BoundCombo};
-
     let pricing = pricing();
     let as_of = at(100_000.0);
     // Two rule shapes (metric-exit and TP/SL) over both corpora, so the entry, exit
     // and mono-kill column sets are all exercised on tokens with differing series
     // lengths and gap structure.
     let rules = [
-        exit_metric(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 1800.0),
-        RuleParams {
-            take_profit: Some(50.0),
-            stop_loss: Some(30.0),
-            entry: None,
-            exit: None,
-            ..RuleParams::default()
-        },
+        exit_metric("m_price.stall_sec", None, ">=", 1800.0),
+        tp_sl(Some(50.0), Some(30.0)),
     ];
 
     for params in rules {
@@ -845,10 +741,10 @@ fn shared_bind_matches_per_token_bind() {
         let shared = BoundCombo::new(&cols, compiled.clone());
 
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
-            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
+            let series = build_series(corpus_tok, cols.clone(), &grid, as_of, &[]);
 
             let entry = resolve_entry(&corpus_tok.trades, &series, &shared, &pricing);
-            let shared_out = resolve_exit(&corpus_tok.trades, &series, &shared, &entry, &pricing, None);
+            let shared_out = resolve_exit_walk(&corpus_tok.trades, &series, &shared, &entry, &pricing, None);
             // `scan` binds against this token's own series — the reference.
             let per_token_out = scan(&corpus_tok.trades, &series, &compiled, &pricing);
 
@@ -866,32 +762,26 @@ fn shared_bind_matches_per_token_bind() {
 
 #[test]
 fn scan_matches_replay_window_flow_across_gap() {
-    // Exit when the 60 s gross-flow window drops to 0 — flows decay to 0 partway
-    // through the gap, so the decay-region ticks must be present and exact.
-    let mut gc = GroupConditions::default();
-    gc.strict.insert("window_size_sec".to_string(), 60.0);
-    gc.metrics.insert(MetricId::GrossFlow, vec![vec![Condition { operator: Operator::Lte, value: 0.0 }]]);
-    let mut exit = SideConditions::default();
-    exit.0.insert(MetricGroupId::FlowWindow, vec![gc]);
-    let params =
-        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit.into()), ..RuleParams::default() };
+    // Exit when the 60 s gross flow drops to 0 — flows decay to 0 partway through the
+    // gap, so the decay-region ticks must be present and exact.
+    let params = exit_metric("m_flow.gross_sol", Some("60s"), "<=", 0.0);
     assert_parity("flow_decay_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
-/// Corpus for volume/organic flow split — labeled trades + configured patterns.
+/// Corpus for a tag split — labelled trades and a `volume` tag matching them.
 fn flow_corpus() -> Vec<(CorpusToken, ReplayToken)> {
     vec![
-        // Enters on volume-side buy (tagged_net≥3), exits when organic window goes quiet.
+        // Enters on a `volume` buy (net ≥ 3), exits when the untagged window goes quiet.
         token(
             "vol_entry",
             vec![
-                // Organic first — not enough tagged_net to enter.
+                // Untagged first — not enough `volume` net to enter.
                 ct_flow(1.0, true, 1.0, 1.0, 100.0, None, Some("org1")),
-                // Volume-side pattern match → tagged_net=3 → entry.
+                // Pattern match → `volume` net = 3 → entry.
                 ct_flow(2.0, true, 3.0, 1.1, 103.0, Some(&["vol"]), Some("vol1")),
             ],
         ),
-        // Never matches the volume pattern → never enters.
+        // Never matches the pattern → never enters.
         token(
             "organic_only",
             vec![
@@ -903,47 +793,22 @@ fn flow_corpus() -> Vec<(CorpusToken, ReplayToken)> {
 }
 
 #[test]
-fn scan_matches_replay_flow_ix_entry_and_window_exit() {
-    // Mirror the engine golden: enter on tagged_net > 2, exit when trailing
-    // untagged_gross (5 s) ≈ 0. Patterns + scan FP id must stay aligned with replay.
-    let mut entry_gc = GroupConditions::default();
-    entry_gc.metrics.insert(
-        MetricId::TaggedNet,
-        vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]],
-    );
-    let mut entry = SideConditions::default();
-    entry.0.insert(MetricGroupId::FlowIx, vec![entry_gc]);
-
-    let mut exit_gc = GroupConditions::default();
-    exit_gc.strict.insert("window_size_sec".to_string(), 5.0);
-    exit_gc.metrics.insert(
-        MetricId::WinUntaggedGross,
-        vec![vec![Condition { operator: Operator::Eq, value: 0.0 }]],
-    );
-    let mut exit = SideConditions::default();
-    exit.0.insert(MetricGroupId::FlowIxWindow, vec![exit_gc]);
-
-    let params = RuleParams {
-        take_profit: None,
-        stop_loss: None,
-        entry: Some(entry),
-        exit: Some(exit.into()),
-        ..RuleParams::default()
-    };
-    let patterns = vec![vec!["vol".to_string()]];
-    assert_parity_with_flow(
-        "flow_ix",
-        params,
-        &flow_corpus(),
-        at(1000.0),
-        Some(patterns),
-    );
+fn scan_matches_replay_tag_entry_and_window_exit() {
+    // Enter on `m_flow.net_sol @volume > 2`, exit when the untagged gross over 5 s is
+    // 0. The tag is the one a v1 `ix_patterns` list converts to (creator and sticky on),
+    // and the replay's fingerprint and the scan's series read the same document.
+    let params = rule(json!({
+        "enter": { "filters": [{ "metric": "m_flow.net_sol", "tag": "volume", "is": [{ "operator": ">", "value": 2 }] }] },
+        "always": [{ "if": [{ "metric": "m_flow.gross_sol", "tag": "!volume", "span": "5s", "is": [{ "operator": "=", "value": 0 }] }], "sell": true }]
+    }));
+    let tags = hunter_engine::v1::ix_patterns_to_tags(&json!([["vol"]])).expect("tags");
+    assert_parity_with_flow("tag_split", params, &flow_corpus(), at(1000.0), Some(tags));
 }
 
 // ───────────────── scalar ≡ AVX-512 exit-scan parity (plan §P3) ─────────────────
 //
 // `resolve_exit_simd` (the vector path the frontend toggle selects) must produce a
-// **byte-identical** `TokenOutcome` to the scalar `resolve_exit` — same exit code,
+// **byte-identical** `TokenOutcome` to the reference walk — same exit code,
 // entry/exit prices, times, slots and PnL — for every rule shape and token. This is
 // the SSOT safety net the toggle rests on (locked design decision 2): the strategy.rs
 // unit tests prove the kernel's first-exit-row search; this proves the whole outcome,
@@ -993,33 +858,30 @@ fn assert_outcomes_eq(a: &TokenOutcome, b: &TokenOutcome, msg: &str) {
 #[test]
 fn simd_exit_scan_matches_scalar_across_paths() {
     use super::exit_index::ExitIndex;
-    use super::strategy::{resolve_entry, resolve_exit, resolve_exit_simd, BoundCombo};
 
     let pricing = pricing();
     let as_of = at(100_000.0);
 
     // Entry gated on time > 2 s so the fill defers past the first print — exercises a
     // non-zero `fill_row` (the SIMD scan starts at `fill_row + 1`).
-    let entry_gate = {
-        let mut gc = GroupConditions::default();
-        gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
-        let mut entry = SideConditions::default();
-        entry.0.insert(MetricGroupId::State, vec![gc]);
-        RuleParams { take_profit: Some(20.0), stop_loss: Some(60.0), entry: Some(entry), exit: None, ..RuleParams::default() }
-    };
+    let entry_gate = rule(json!({
+        "enter": { "filters": [cond("m_state.age_sec", None, ">", 2.0)] },
+        "take_profit": 20,
+        "stop_loss": 60
+    }));
 
     let rules = vec![
         // TP + SL together.
-        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, ..RuleParams::default() },
+        tp_sl(Some(50.0), Some(30.0)),
         // TP only / SL only (one threshold absent → the `have_sl`/`have_tp` branches).
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None, ..RuleParams::default() },
-        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None, ..RuleParams::default() },
+        tp_sl(Some(20.0), None),
+        tp_sl(None, Some(40.0)),
         // Neither → only Dead / Open can fire.
-        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, ..RuleParams::default() },
+        tp_sl(None, None),
         // Deferred entry (non-zero fill row).
         entry_gate,
-        // Metrics exit → SIMD delegates to scalar; still must match.
-        exit_metric(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gt, 50.0),
+        // A coin-read line → SIMD delegates to the walk; still must match.
+        exit_metric("m_price.trail_pct", None, ">", 50.0),
     ];
 
     for (i, params) in rules.into_iter().enumerate() {
@@ -1030,19 +892,19 @@ fn simd_exit_scan_matches_scalar_across_paths() {
         let bound = BoundCombo::new(&cols, compiled.clone());
 
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
-            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
+            let series = build_series(corpus_tok, cols.clone(), &grid, as_of, &[]);
             let trades = &corpus_tok.trades;
             let entry = resolve_entry(trades, &series, &bound, &pricing);
             let mut idx = ExitIndex::default();
             match &entry {
-                super::strategy::EntryResolution::Entered { fill_row, .. }
+                EntryResolution::Entered { fill_row, .. }
                     if wants_exit_index(&bound, &entry) =>
                 {
                     idx.rebuild(&series, *fill_row);
                 }
                 _ => idx.clear(),
             }
-            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing, None);
+            let scalar = resolve_exit_walk(trades, &series, &bound, &entry, &pricing, None);
             let simd = resolve_exit_simd(trades, &series, &bound, &entry, &pricing, &idx, None);
             assert_eq!(
                 outcome_tuple(&simd),
@@ -1056,16 +918,12 @@ fn simd_exit_scan_matches_scalar_across_paths() {
 
 /// **Reachability lock** (item B's regression, not its correctness).
 ///
-/// From Phase 2 until this change, the exit index and the AVX-512 scan were dead for
-/// every TP/SL rule: desugaring turned `take_profit`/`stop_loss` into `pnl` exit reqs,
-/// which made `has_exit_metrics()` — the flag both fast paths gated on — true. Nothing
-/// failed, because the scalar fallback they dropped into is the correct reference. The
-/// absence of *this* assertion is what let that rot for a whole phase, so it asserts
+/// A fast path that stays correct but stops being *taken* rots silently — the walk it
+/// falls back to is the correct reference, so no equality test fails. So this asserts
 /// the gate is open, on a real entered token, for the exact rule shape it was built for.
 #[test]
 fn tp_sl_rules_actually_reach_the_exit_index() {
     use super::exit_index::ExitIndex;
-    use super::strategy::{resolve_entry, BoundCombo, EntryResolution};
 
     let pricing = pricing();
     let as_of = at(1000.0);
@@ -1078,26 +936,17 @@ fn tp_sl_rules_actually_reach_the_exit_index() {
 
     let mut entered_tokens = 0;
     for (tp, sl) in ladders {
-        let compiled = CompiledRule::compile(&loaded(RuleParams {
-            take_profit: tp,
-            stop_loss: sl,
-            entry: None,
-            exit: None,
-            ..RuleParams::default()
-        }));
-        // The shape the old gate got wrong: desugared reqs exist, so the pre-fix
-        // branch would have refused the index here.
-        assert!(
-            compiled.has_exit_metrics(),
-            "TP/SL desugars into exit reqs — that is what broke the old gate"
-        );
+        let compiled = CompiledRule::compile(&loaded(tp_sl(tp, sl)));
+        // The shortcuts compile to `always` lines — the shape a gate on "has lines"
+        // would refuse the index for.
+        assert!(!compiled.always.is_empty(), "TP/SL compile to lines");
         let cols = columns_for(&compiled);
         let grid = sparse_grid_for(&compiled);
         let bound = BoundCombo::new(&cols, compiled.clone());
-        assert!(bound.fast_exit, "a pure TP/SL rule must classify entirely");
+        assert!(bound.fast.is_some(), "a pure TP/SL rule must be a flat plan");
 
         for (corpus_tok, _) in corpus().iter() {
-            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
+            let series = build_series(corpus_tok, cols.clone(), &grid, as_of, &[]);
             let entry = resolve_entry(&corpus_tok.trades, &series, &bound, &pricing);
             let EntryResolution::Entered { fill_row, .. } = entry else { continue };
             entered_tokens += 1;
@@ -1118,56 +967,33 @@ fn tp_sl_rules_actually_reach_the_exit_index() {
 #[test]
 fn index_exit_scan_matches_scalar_across_paths() {
     use super::exit_index::ExitIndex;
-    use super::strategy::{resolve_entry, resolve_exit, resolve_exit_indexed, BoundCombo};
 
     let pricing = pricing();
     let as_of = at(100_000.0);
 
-    let entry_gate = {
-        let mut gc = GroupConditions::default();
-        gc.metrics.insert(
-            MetricId::Time,
-            vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]],
-        );
-        let mut entry = SideConditions::default();
-        entry.0.insert(MetricGroupId::State, vec![gc]);
-        RuleParams {
-            take_profit: Some(20.0),
-            stop_loss: Some(60.0),
-            entry: Some(entry),
-            exit: None,
-            ..RuleParams::default()
-        }
-    };
+    let entry_gate = rule(json!({
+        "enter": { "filters": [cond("m_state.age_sec", None, ">", 2.0)] },
+        "take_profit": 20,
+        "stop_loss": 60
+    }));
 
     let rules = vec![
-        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, ..RuleParams::default() },
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None, ..RuleParams::default() },
-        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None, ..RuleParams::default() },
-        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, ..RuleParams::default() },
+        tp_sl(Some(50.0), Some(30.0)),
+        tp_sl(Some(20.0), None),
+        tp_sl(None, Some(40.0)),
+        tp_sl(None, None),
         entry_gate,
-        // Metrics → index falls back to scalar; still must match.
-        exit_metric(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gt, 50.0),
-        // The three position classes the fast path now resolves itself: a trailing
-        // stop (O(n) running peak), a time stop (binary search on `at`), and an
-        // authored `pnl` bound (hull, but labelled `Metrics` not `StopLoss`).
-        exit_metric(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0),
-        exit_metric(MetricGroupId::Position, MetricId::Held, Operator::Gte, 5.0),
-        exit_metric(MetricGroupId::Position, MetricId::Pnl, Operator::Lte, -20.0),
+        // A coin-read line → the index falls back to the walk; still must match.
+        exit_metric("m_price.trail_pct", None, ">", 50.0),
+        // The three position classes the fast path resolves itself: a trailing stop
+        // (O(n) running peak), a time stop (binary search on `at`), and an authored
+        // `pnl_pct` bound (hull, but a line exit, not `StopLoss`).
+        exit_metric("m_position.retrace_pct", None, ">=", 3.0),
+        exit_metric("m_position.held_sec", None, ">=", 5.0),
+        exit_metric("m_position.pnl_pct", None, "<=", -20.0),
         // Mixed classes on one rule — the earliest row across hull + scan wins, and
-        // the tie-break must keep the desugared SL/TP ahead of the authored metric.
-        RuleParams {
-            take_profit: Some(50.0),
-            stop_loss: Some(30.0),
-            entry: None,
-            exit: Some(static_metric_side(
-                MetricGroupId::Position,
-                MetricId::Retrace,
-                Operator::Gte,
-                3.0,
-            ).into()),
-            ..RuleParams::default()
-        },
+        // the tie-break must keep the SL/TP shortcuts ahead of the authored line.
+        retrace_with_tp_sl(),
     ];
 
     for (i, params) in rules.into_iter().enumerate() {
@@ -1177,19 +1003,19 @@ fn index_exit_scan_matches_scalar_across_paths() {
         let bound = BoundCombo::new(&cols, compiled.clone());
 
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
-            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
+            let series = build_series(corpus_tok, cols.clone(), &grid, as_of, &[]);
             let trades = &corpus_tok.trades;
             let entry = resolve_entry(trades, &series, &bound, &pricing);
             let mut idx = ExitIndex::default();
             match &entry {
-                super::strategy::EntryResolution::Entered { fill_row, .. }
+                EntryResolution::Entered { fill_row, .. }
                     if wants_exit_index(&bound, &entry) =>
                 {
                     idx.rebuild(&series, *fill_row);
                 }
                 _ => idx.clear(),
             }
-            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing, None);
+            let scalar = resolve_exit_walk(trades, &series, &bound, &entry, &pricing, None);
             let indexed = resolve_exit_indexed(trades, &series, &bound, &entry, &pricing, &idx, None);
             assert_outcomes_eq(
                 &indexed,
@@ -1203,7 +1029,6 @@ fn index_exit_scan_matches_scalar_across_paths() {
 #[test]
 fn index_exit_scan_matches_scalar_on_randomized_walks() {
     use super::exit_index::ExitIndex;
-    use super::strategy::{resolve_entry, resolve_exit, resolve_exit_indexed, BoundCombo};
     use hunter_engine::metrics::series::MetricSeries;
     use hunter_engine::metrics::{Side, TradeLite};
 
@@ -1285,21 +1110,14 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
         }
 
         for (ti, (tp, sl)) in tp_sl_grid.iter().enumerate() {
-            let params = RuleParams {
-                take_profit: *tp,
-                stop_loss: *sl,
-                entry: None,
-                exit: None,
-                ..RuleParams::default()
-            };
-            let compiled = CompiledRule::compile(&loaded(params));
+            let compiled = CompiledRule::compile(&loaded(tp_sl(*tp, *sl)));
             let bound = BoundCombo::new(series.columns(), compiled);
             let entry = resolve_entry(&trades, &series, &bound, &pricing);
             let mut idx = ExitIndex::default();
-            if let super::strategy::EntryResolution::Entered { fill_row, .. } = &entry {
+            if let EntryResolution::Entered { fill_row, .. } = &entry {
                 idx.rebuild(&series, *fill_row);
             }
-            let scalar = resolve_exit(&trades, &series, &bound, &entry, &pricing, None);
+            let scalar = resolve_exit_walk(&trades, &series, &bound, &entry, &pricing, None);
             let indexed = resolve_exit_indexed(&trades, &series, &bound, &entry, &pricing, &idx, None);
             assert_outcomes_eq(
                 &indexed,
@@ -1372,10 +1190,7 @@ fn replay_outcome_to_token(po: &PositionOutcome, cost: &CostModel) -> TokenOutco
         pnl_percent: pnl_pct as f32,
         pnl_sol: pnl_sol as f32,
         exit: exit_code_of(po.exit_reason),
-        exit_metric: None,
-        exit_operator: None,
-        exit_metric_value: None,
-        exit_metric_window: None,
+        exit_label: None,
         exit_metric_slot: None,
         entry_time: None,
         entry_price: None,
@@ -1389,10 +1204,6 @@ fn replay_outcome_to_token(po: &PositionOutcome, cost: &CostModel) -> TokenOutco
 #[test]
 fn scan_matches_replay_multi_token_frozen_tail() {
     use super::exit_index::ExitIndex;
-    use super::strategy::{
-        frozen_tail_horizon, resolve_entry, resolve_exit, resolve_exit_indexed, resolve_exit_simd,
-        wants_exit_index, BoundCombo, EntryResolution,
-    };
     use crate::sweep::aggregate::ComboAgg;
 
     let as_of = at(100_000.0);
@@ -1406,11 +1217,10 @@ fn scan_matches_replay_multi_token_frozen_tail() {
     let tail_horizon = frozen_tail_horizon(as_of, &corpus_tokens);
     assert!(tail_horizon.is_some(), "corpus has trades");
 
-    // `time > 1000`: the plan's canonical deterministic clock (token-scoped ⇒ the scalar
-    // path, and grid-horizon-aware so no mid-history tick is dropped). The `held` clock
-    // is locked separately in `held_frozen_tail_matches_across_exit_paths` (its position
-    // scope needs a tail crossing, not a mid-gap one).
-    let params = exit_metric(MetricGroupId::State, MetricId::Time, Operator::Gt, 1000.0);
+    // `age_sec > 1000`: the canonical deterministic clock (a coin read ⇒ the walk, and
+    // grid-horizon-aware so no mid-history tick is dropped). The `held_sec` clock is
+    // locked separately in `held_frozen_tail_matches_across_exit_paths`.
+    let params = exit_metric("m_state.age_sec", None, ">", 1000.0);
 
     for fm in FILL_MODELS {
         let pricing = pricing_for(fm);
@@ -1424,7 +1234,7 @@ fn scan_matches_replay_multi_token_frozen_tail() {
         let mut legacy = ComboAgg::default();
 
         for (corpus_tok, _) in &corpus {
-            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
+            let series = build_series(corpus_tok, cols.clone(), &grid, as_of, &[]);
             let trades = &corpus_tok.trades;
             let entry = resolve_entry(trades, &series, &bound, &pricing);
             let mut idx = ExitIndex::default();
@@ -1434,9 +1244,9 @@ fn scan_matches_replay_multi_token_frozen_tail() {
                 }
                 _ => idx.clear(),
             }
-            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing, tail_horizon);
-            // All three exit paths must resolve the frozen tail identically (time is a
-            // `General` req, so index/simd delegate to scalar — asserted, not assumed).
+            let scalar = resolve_exit_walk(trades, &series, &bound, &entry, &pricing, tail_horizon);
+            // All three exit paths must resolve the frozen tail identically (age is a coin
+            // read, so index/simd delegate to the walk — asserted, not assumed).
             let indexed =
                 resolve_exit_indexed(trades, &series, &bound, &entry, &pricing, &idx, tail_horizon);
             let simd =
@@ -1444,7 +1254,7 @@ fn scan_matches_replay_multi_token_frozen_tail() {
             assert_outcomes_eq(&indexed, &scalar, &format!("{fm:?}/{} index", corpus_tok.mint));
             assert_outcomes_eq(&simd, &scalar, &format!("{fm:?}/{} simd", corpus_tok.mint));
             sweep.record(&scalar);
-            legacy.record(&resolve_exit(trades, &series, &bound, &entry, &pricing, None));
+            legacy.record(&resolve_exit_walk(trades, &series, &bound, &entry, &pricing, None));
         }
 
         let replay_out = run_replay(
@@ -1519,21 +1329,15 @@ fn veto_corpus() -> Vec<(CorpusToken, ReplayToken)> {
     )]
 }
 
-fn metric_axis(
-    side: AxisSide,
-    group: &str,
-    metric: &str,
-    operator: Operator,
-    values: Vec<Option<f64>>,
-) -> AxisSpec {
+fn metric_axis(side: AxisSide, metric: &str, operator: Operator, values: Vec<Option<f64>>) -> AxisSpec {
     AxisSpec {
         kind: "metric".to_string(),
         side: Some(side),
-        group: Some(group.to_string()),
         metric: Some(metric.to_string()),
-        operator: Some(operator),
-        window: None,
+        tag: None,
+        span: None,
         slice: None,
+        operator: Some(operator),
         values,
     }
 }
@@ -1542,14 +1346,14 @@ fn metric_axis(
 fn fold_gives_each_exit_variant_its_own_entry() {
     use crate::sweep::engine::fill_outcomes_with_state;
     use crate::sweep::generic::axes::{AxesModel, AxesRequest};
-    use crate::sweep::generic::strategy::{scan_with_horizon, GenericSweepStrategy};
+    use crate::sweep::generic::strategy::GenericSweepStrategy;
     use crate::sweep::progress::NoopObserver;
     use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod};
 
     let as_of = at(100_000.0);
     let corpus = veto_corpus();
 
-    // One entry axis (`time >= 1`, satisfied on every row from 1 s on — so the veto has
+    // One entry axis (`age_sec >= 1`, satisfied on every row from 1 s on — so the veto has
     // somewhere to move the entry TO) × one exit axis on a token-scoped metric. All
     // combos therefore share an `entry_key` and differ only on the exit side: the class
     // the old cache collapsed. The three exit picks veto at three different depths —
@@ -1557,21 +1361,15 @@ fn fold_gives_each_exit_variant_its_own_entry() {
     // all) — so the class spans every shape the shared walk has to serve.
     let model = AxesModel::resolve(&AxesRequest {
         axes: vec![
-            metric_axis(AxisSide::Entry, "m_state", "time", Operator::Gte, vec![Some(1.0)]),
-            metric_axis(
-                AxisSide::Exit,
-                "m_state",
-                "liquidity",
-                Operator::Lt,
-                vec![Some(40.0), Some(100.0), Some(200.0)],
-            ),
+            metric_axis(AxisSide::Entry, "m_state.age_sec", Operator::Gte, vec![Some(1.0)]),
+            metric_axis(AxisSide::Exit, "m_state.liquidity_sol", Operator::Lt, vec![Some(40.0), Some(100.0), Some(200.0)]),
         ],
     })
     .expect("axes resolve");
 
     for fm in FILL_MODELS {
         let pricing = pricing_for(fm);
-        let strategy = GenericSweepStrategy::new(model.clone(), pricing, as_of, None);
+        let strategy = GenericSweepStrategy::new(model.clone(), pricing, as_of, Vec::new());
         let mut params = strategy.sample(SweepMethod::Grid);
         strategy.order_for_entry_cache(&mut params);
         assert_eq!(params.len(), 3, "one entry pick × three exit picks");
@@ -1664,20 +1462,16 @@ fn fold_gives_each_exit_variant_its_own_entry() {
 
 #[test]
 fn held_frozen_tail_matches_across_exit_paths() {
-    // The `held` clock is position-scoped, so it takes the fast HeldBound index path
-    // (not the scalar walk `time` forces). Its frozen-tail Open branch must resolve
-    // byte-identically across scalar / index / simd. `held > 500` crosses ~500 s after
+    // `held_sec` reads our position, so it takes the fast HeldBound index path (not the
+    // walk `age_sec` forces). Its frozen-tail Open branch must resolve byte-identically
+    // across walk / index / simd. `held_sec > 500` crosses ~500 s after
     // entry — past every `corpus()` token's own ≈370 s cut, so the crossing lands in the
     // frozen tail (not a sparse mid-history gap), and an explicit far horizon fires it.
     use super::exit_index::ExitIndex;
-    use super::strategy::{
-        resolve_entry, resolve_exit, resolve_exit_indexed, resolve_exit_simd, wants_exit_index,
-        BoundCombo, EntryResolution,
-    };
 
     let as_of = at(100_000.0);
     let tail_horizon = Some(at(2000.0)); // ≫ entry + 500, so the tail crossing fires
-    let params = exit_metric(MetricGroupId::Position, MetricId::Held, Operator::Gt, 500.0);
+    let params = exit_metric("m_position.held_sec", None, ">", 500.0);
 
     let mut saw_frozen_close = false;
     for fm in FILL_MODELS {
@@ -1686,10 +1480,10 @@ fn held_frozen_tail_matches_across_exit_paths() {
         let cols = columns_for(&compiled);
         let grid = sparse_grid_for(&compiled);
         let bound = BoundCombo::new(&cols, compiled.clone());
-        assert!(bound.fast_exit, "a lone held bound must classify (fast path)");
+        assert!(bound.fast.is_some(), "a lone held bound must be a flat plan (fast path)");
 
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
-            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
+            let series = build_series(corpus_tok, cols.clone(), &grid, as_of, &[]);
             let trades = &corpus_tok.trades;
             let entry = resolve_entry(trades, &series, &bound, &pricing);
             let mut idx = ExitIndex::default();
@@ -1699,7 +1493,7 @@ fn held_frozen_tail_matches_across_exit_paths() {
                 }
                 _ => idx.clear(),
             }
-            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing, tail_horizon);
+            let scalar = resolve_exit_walk(trades, &series, &bound, &entry, &pricing, tail_horizon);
             let indexed =
                 resolve_exit_indexed(trades, &series, &bound, &entry, &pricing, &idx, tail_horizon);
             let simd =
@@ -1709,7 +1503,7 @@ fn held_frozen_tail_matches_across_exit_paths() {
 
             // Non-vacuity: the horizon-off resolve leaves a healthy token Open where the
             // horizon-on resolve closes it via the frozen-tail held crossing.
-            let off = resolve_exit(trades, &series, &bound, &entry, &pricing, None);
+            let off = resolve_exit_walk(trades, &series, &bound, &entry, &pricing, None);
             if scalar.exit == ExitCode::Metrics && off.exit == ExitCode::Open {
                 saw_frozen_close = true;
             }
@@ -1756,13 +1550,7 @@ fn sweep_ignores_exclusivity_but_the_engine_enforces_it() {
     // Sweep: each combo is scanned on its own → BOTH enter, un-deconflicted.
     for rule in [&a, &b] {
         let compiled = CompiledRule::compile(rule);
-        let series = build_series_with_flow(
-            &corpus_tok,
-            columns_for(&compiled),
-            &sparse_grid_for(&compiled),
-            as_of,
-            None,
-        );
+        let series = build_series(&corpus_tok, columns_for(&compiled), &sparse_grid_for(&compiled), as_of, &[]);
         let outcome = scan(&corpus_tok.trades, &series, &compiled, &pricing);
         assert!(
             outcome.fired,
@@ -1848,13 +1636,7 @@ fn sweep_ignores_the_copycat_guard_but_the_engine_enforces_it() {
 
     // Sweep: each token is scanned on its own → BOTH fire, un-deduplicated.
     for tok in [&corpus_a, &corpus_b] {
-        let series = build_series_with_flow(
-            tok,
-            columns_for(&compiled),
-            &sparse_grid_for(&compiled),
-            as_of,
-            None,
-        );
+        let series = build_series(tok, columns_for(&compiled), &sparse_grid_for(&compiled), as_of, &[]);
         let outcome = scan(&tok.trades, &series, &compiled, &pricing);
         assert!(outcome.fired, "sweep fires every same-identity token independently ({})", tok.mint);
     }
@@ -1902,3 +1684,4 @@ fn sweep_ignores_the_copycat_guard_but_the_engine_enforces_it() {
         "guard off ⇒ both same-identity mints are entered"
     );
 }
+

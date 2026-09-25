@@ -441,7 +441,7 @@ impl TokenRepo {
 
     /// Every creation of one build (tokens whose creation labels are exactly `labels`)
     /// in `[since, before)`, as `(mint, name, symbol, created_at)`: what the
-    /// `prior_identity_launches` tally is primed with, live and offline alike.
+    /// `name_reuse_count` tally is primed with, live and offline alike.
     /// Bounded on both ends and filtered on `created_at` first, so it rides
     /// `idx_tokens_created_at`; both stored label shapes compare alike.
     pub async fn build_identity_rows(

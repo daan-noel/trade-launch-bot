@@ -28,7 +28,6 @@ use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::price_window::PriceWindowState;
-use hunter_engine::rule_params::RuleParams;
 
 use lab::sweep::corpus::{CorpusSource, CorpusToken, Selection, TradeWindow};
 use lab::sweep::projection::to_trade_lite;
@@ -60,7 +59,7 @@ fn broad_fp() -> Fingerprint {
         wildcard: false,
         criteria: Criteria::new()
             .with(AxisId::CuLimit, AxisPredicate::exact(u128::from(FP_CU))),
-        metric_config: serde_json::json!({}),
+        tags: serde_json::json!({}),
     }
 }
 
@@ -78,7 +77,7 @@ fn rule(id: u128, params: serde_json::Value) -> LoadedRule {
         // semantics), so the caps don't hide episodes. Re-entry lifecycle is out of scope here.
         max_concurrent_tokens: 1_000_000,
         max_total_tokens: 0,
-        params: RuleParams::parse(&params).expect("valid rule params"),
+        params: hunter_engine::v1::parse_params_any(&params).expect("valid rule params"),
         entry_enabled: true,
     }
 }

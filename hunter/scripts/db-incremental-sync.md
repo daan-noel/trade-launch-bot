@@ -7,9 +7,11 @@ Safe to run repeatedly. **Non-destructive for market data**: your local sweep re
 settings, `raw_txs`, and existing trades are never touched — only new rows are added
 (and a few metadata rows refreshed).
 
-> **The server must be migrated first.** `fingerprints.wildcard` is read off the
-> foreign table, so a server that has not run core `0005`-`0007` fails the sync on
-> an unknown column — and its un-migrated rows would carry an inert
+> **The server must be migrated first.** Since core `0021` (metric system v2) the
+> fingerprint column is `tags`, read off the foreign table by name, so a server still
+> on `metric_config` fails the sync before anything is written. `fingerprints.wildcard`
+> is read off the foreign table too, so a server that has not run core `0005`-`0007`
+> fails the sync on an unknown column — and its un-migrated rows would carry an inert
 > `bucket_size_amount`, or restore an axis under a local wildcard, which the local
 > `fingerprints_bucket_width_needs_a_sol_axis` and
 > `fingerprints_wildcard_excludes_axes` CHECKs reject. Redeploy the live bin

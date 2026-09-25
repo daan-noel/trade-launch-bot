@@ -33,11 +33,13 @@ pub mod fingerprint;
 pub mod grouping;
 pub mod hash;
 pub mod identity;
+pub mod intern;
 pub mod metrics;
 pub mod readout;
 pub mod reduce;
 pub mod rule_params;
 pub mod state;
+pub mod v1;
 
 pub use cap::Cap;
 pub use dupe_guard::DupeGuard;

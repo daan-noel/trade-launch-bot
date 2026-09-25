@@ -73,11 +73,13 @@ condition `eval`, `CompiledRule::compile`.
    fire trade) match byte-for-byte; deferred fills can diverge. Guard:
    `scan_matches_replay_scale_out_two_stage` + `…_global_sl_mid_ladder` (trades spaced
    past `MAX_FILL_WAIT_SLOTS` so every fill collapses to the fire print).
-- **D6 · Scale-out frozen-tail (D1) not applied (2026-07-29).** A rule with
-   `scale_out` that leaves the in-series scan `Open` does **not** get the analytic
-   quiet-tail clock resolve — a stage / remainder `held` that would only fire past
-   the per-token cut stays `Open` in the sweep. Legacy (no scale-out) keeps full D1.
-   Re-measure staged ladders through simulate when the close lives in the quiet tail.
+- **D6 · Frozen tail skips a held side that reads a trailing window.** The quiet-tail
+   resolve (D1, `sweep::generic::frozen_tail`) evaluates the rule's own held step at
+   every clock crossing and stage deadline past the per-token cut, for every rule —
+   stages, partial sells and moves included. It stays `Open` instead when any held-side
+   read is windowed (windows decay in the tail, which it does not fold) or the series
+   ends on a print. Re-measure such a rule through simulate when its close lives in the
+   quiet tail.
 - **D7 · Duplicate-identity (copycat) guard absent in sweep (2026-08-07).** The
    `strategy.skip_duplicate_identity` gate refuses an entry when a **different** mint
    with the same `(name, symbol)` was traded inside a rolling window
@@ -101,6 +103,14 @@ condition `eval`, `CompiledRule::compile`.
    Note the horizon choice is what makes simulate faithful at all: a "forever" memory
    means "since the bot started" live and "since the corpus window opened" in a
    backtest — two different gates. The rolling window is the same rule in both.
+- **D8 · The sweep's `creator` is the creation slot's first buyer.** A tag with the
+   `creator` matcher (and a `sticky` tag, which the creator joins) reads the coin's
+   creator wallet. The lake carries no creator column, so a sweep series seeds the
+   creation slot's first buyer — the stand-in the fold itself uses when the create names
+   no creator (`FirstSlotSettled`). A simulate reads the real creator from `tokens` when
+   it has one, so the two differ exactly on a coin whose creator did not make the
+   creation slot's first buy. Usually the dev buy sits in the create transaction and the
+   two are the same wallet. Guard: `scan_matches_replay_tag_entry_and_window_exit`.
 - **D3 · Sketched quantiles.** Persisted sweep quantiles come from a 64-bucket DDSketch
    (~15% rel. error); `simulate` and the sweep drill-in compute exact ones. **Ranking is
    unaffected** — `score` is exact. O(1) memory per combo is the point.

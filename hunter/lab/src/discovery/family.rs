@@ -7,7 +7,7 @@
 //! Metrics interact strongly **within** a family (they are different views of one
 //! underlying quantity — lifetime vs rolling vs since-entry price, say) and largely
 //! compose **across** families. The families are registry data
-//! ([`MetricFamily`](hunter_engine::metrics::MetricFamily)), not a lab-side map, so a
+//! ([`Family`](hunter_engine::metrics::Family)), not a lab-side map, so a
 //! group added later lands in a family with no edit here — the extensibility contract
 //! (plan §5, decision D3).
 //!
@@ -31,11 +31,11 @@
 
 use anyhow::Result;
 use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::{group_spec, MetricFamily};
+use hunter_engine::metrics::Family;
 
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::Corpus;
-use crate::sweep::generic::axes::{AxesModel, AxesRequest, AxisSpec, ResolvedAxis, WindowField};
+use crate::sweep::generic::axes::{AxesModel, AxesRequest, AxisSpec, ResolvedAxis};
 use crate::sweep::generic::Pricing;
 use crate::sweep::progress::SweepObserver;
 
@@ -90,16 +90,7 @@ pub struct FamilyMember {
 
 impl FamilyMember {
     fn axis(&self) -> AxisSpec {
-        AxisSpec {
-            kind: "metric".to_string(),
-            side: Some(self.metric.side),
-            group: Some(group_spec(self.metric.group).name.to_string()),
-            metric: Some(self.metric.metric.name().to_string()),
-            operator: Some(self.operator),
-            window: self.metric.window.map(|w| WindowField::Span(w.label())),
-            slice: None,
-            values: std::iter::once(None).chain(self.values.iter().copied().map(Some)).collect(),
-        }
+        crate::discovery::candidates::axis_spec_of(self.metric, self.operator, std::iter::once(None).chain(self.values.iter().copied().map(Some)).collect())
     }
 
     /// A single-valued axis pinning this member at `value` — how a family is "held
@@ -142,7 +133,7 @@ pub struct BestCombo {
 /// One family's grid outcome.
 #[derive(Clone, Debug)]
 pub struct FamilyResult {
-    pub family: MetricFamily,
+    pub family: Family,
     /// Members actually gridded, best Layer-1 lift first (also the axis order).
     pub members: Vec<FamilyMember>,
     /// Members a bound removed, with the reason — no silent caps.
@@ -169,8 +160,8 @@ pub enum InteractionVerdict {
 /// One ordered `(A pinned, B swept)` measurement.
 #[derive(Clone, Debug)]
 pub struct Interaction {
-    pub pinned: MetricFamily,
-    pub swept: MetricFamily,
+    pub pinned: Family,
+    pub swept: Family,
     /// B's best picks standing alone (from its own family grid).
     pub alone: Vec<Option<f64>>,
     /// B's best picks with A pinned at A's best.
@@ -186,7 +177,7 @@ pub struct Interaction {
 #[derive(Clone, Debug)]
 pub struct JointResult {
     /// Families in this connected component (stable: registry order of first appearance).
-    pub families: Vec<MetricFamily>,
+    pub families: Vec<Family>,
     /// Members actually gridded (union of component families, lift-desc, then capped).
     pub members: Vec<FamilyMember>,
     /// Members a bound removed, with the reason — no silent caps.
@@ -208,7 +199,7 @@ pub struct Rescue {
     pub metric: ScreenMetric,
     pub operator: Operator,
     /// The family whose winner was pinned while this metric was re-swept.
-    pub pinned: MetricFamily,
+    pub pinned: Family,
     /// The pinned-alone score — the `off` pick of the rescue's own curve, and the
     /// baseline its lift is measured against.
     pub pinned_score: f64,
@@ -245,7 +236,7 @@ pub struct FamilyReport {
 
 impl FamilyReport {
     /// The family pairs that must be gridded jointly.
-    pub fn interacting_pairs(&self) -> impl Iterator<Item = (MetricFamily, MetricFamily)> + '_ {
+    pub fn interacting_pairs(&self) -> impl Iterator<Item = (Family, Family)> + '_ {
         self.interactions
             .iter()
             .filter(|i| i.verdict == InteractionVerdict::Interacting)
@@ -255,9 +246,9 @@ impl FamilyReport {
 
 /// Undirected connected components of `Interacting` pairs. Singleton families and
 /// Independent/Inconclusive edges are ignored — only edges that force a joint grid.
-pub fn interacting_components(interactions: &[Interaction]) -> Vec<Vec<MetricFamily>> {
-    let mut nodes: Vec<MetricFamily> = Vec::new();
-    let mut edges: Vec<(MetricFamily, MetricFamily)> = Vec::new();
+pub fn interacting_components(interactions: &[Interaction]) -> Vec<Vec<Family>> {
+    let mut nodes: Vec<Family> = Vec::new();
+    let mut edges: Vec<(Family, Family)> = Vec::new();
     for i in interactions {
         if i.verdict != InteractionVerdict::Interacting {
             continue;
@@ -287,7 +278,7 @@ pub fn interacting_components(interactions: &[Interaction]) -> Vec<Vec<MetricFam
 
     // BFS components.
     let mut seen = vec![false; nodes.len()];
-    let mut out: Vec<Vec<MetricFamily>> = Vec::new();
+    let mut out: Vec<Vec<Family>> = Vec::new();
     for start in 0..nodes.len() {
         if seen[start] {
             continue;
@@ -323,7 +314,7 @@ pub fn interacting_components(interactions: &[Interaction]) -> Vec<Vec<MetricFam
 /// Plan one joint grid over the union of `component` families' members.
 pub fn plan_joint(
     families: &[FamilyResult],
-    component: &[MetricFamily],
+    component: &[Family],
     limits: FamilyLimits,
 ) -> JointResult {
     let mut members: Vec<FamilyMember> = Vec::new();
@@ -348,7 +339,7 @@ pub fn plan_joint(
 
 /// Group Layer 1's shortlist into families, honouring [`FamilyLimits`].
 pub fn plan_families(report: &ScreenReport, limits: FamilyLimits) -> Vec<FamilyResult> {
-    let mut by_family: Vec<(MetricFamily, Vec<FamilyMember>)> = Vec::new();
+    let mut by_family: Vec<(Family, Vec<FamilyMember>)> = Vec::new();
     for r in report.shortlisted() {
         let Verdict::Keep { lift, ref narrowed, .. } = r.verdict else { continue };
         if narrowed.is_empty() {
@@ -361,7 +352,7 @@ pub fn plan_families(report: &ScreenReport, limits: FamilyLimits) -> Vec<FamilyR
             lift,
             rescued: false,
         };
-        let fam = group_spec(r.metric.group).family;
+        let fam = r.metric.family();
         match by_family.iter_mut().find(|(f, _)| *f == fam) {
             Some((_, v)) => v.push(member),
             None => by_family.push((fam, vec![member])),
@@ -448,7 +439,7 @@ pub fn run_family_layer(
         .map(|f| family_model(&f.members, &baseline))
         .collect::<Result<_, String>>()
         .map_err(|e| anyhow::anyhow!("family grid axes: {e}"))?;
-    let grids = AdditiveStrategy::new(models, pricing, as_of, cfg.flow_patterns.as_ref());
+    let grids = AdditiveStrategy::new(models, pricing, as_of, &cfg.tags);
     combos_scanned += grids.combos().len();
     let rows = grids.run(corpus, observer)?;
     for (i, fam) in families.iter_mut().enumerate() {
@@ -482,7 +473,7 @@ pub fn run_family_layer(
             .map(|i| family_model(&families[*i].members, &baseline))
             .collect::<Result<_, String>>()
             .map_err(|e| anyhow::anyhow!("rescued family grid axes: {e}"))?;
-        let regrid = AdditiveStrategy::new(models, pricing, as_of, cfg.flow_patterns.as_ref());
+        let regrid = AdditiveStrategy::new(models, pricing, as_of, &cfg.tags);
         combos_scanned += regrid.combos().len();
         let rows = regrid.run(corpus, observer)?;
         for (slot, fam_i) in touched.iter().enumerate() {
@@ -518,7 +509,7 @@ pub fn run_family_layer(
             })
             .collect::<Result<_, String>>()
             .map_err(|e| anyhow::anyhow!("interaction axes: {e}"))?;
-        let checks = AdditiveStrategy::new(check_models, pricing, as_of, cfg.flow_patterns.as_ref());
+        let checks = AdditiveStrategy::new(check_models, pricing, as_of, &cfg.tags);
         combos_scanned += checks.combos().len();
         let check_rows = checks.run(corpus, observer)?;
 
@@ -564,7 +555,7 @@ pub fn run_family_layer(
             .collect::<Result<_, String>>()
             .map_err(|e| anyhow::anyhow!("joint grid axes: {e}"))?;
         let joint_grids =
-            AdditiveStrategy::new(joint_models, pricing, as_of, cfg.flow_patterns.as_ref());
+            AdditiveStrategy::new(joint_models, pricing, as_of, &cfg.tags);
         combos_scanned += joint_grids.combos().len();
         let joint_rows = joint_grids.run(corpus, observer)?;
         for (i, joint) in joints.iter_mut().enumerate() {
@@ -661,7 +652,7 @@ fn run_rescue(
         .map(|r| rescue_model(pinned_family, pinned_best, r, &report.baseline))
         .collect::<Result<_, String>>()
         .map_err(|e| anyhow::anyhow!("rescue axes: {e}"))?;
-    let strategy = AdditiveStrategy::new(models, pricing, as_of, cfg.flow_patterns.as_ref());
+    let strategy = AdditiveStrategy::new(models, pricing, as_of, &cfg.tags);
     *combos_scanned += strategy.combos().len();
     let rows = strategy.run(corpus, observer)?;
 
@@ -706,7 +697,7 @@ fn adopt_rescues(
         if narrowed.is_empty() {
             continue;
         }
-        let fam = group_spec(res.metric.group).family;
+        let fam = res.metric.family();
         let idx = match families.iter().position(|f| f.family == fam) {
             Some(i) => i,
             None => {
@@ -764,16 +755,7 @@ fn rescue_model(
             axes.push(a);
         }
     }
-    axes.push(AxisSpec {
-        kind: "metric".to_string(),
-        side: Some(r.metric.side),
-        group: Some(group_spec(r.metric.group).name.to_string()),
-        metric: Some(r.metric.metric.name().to_string()),
-        operator: Some(r.operator),
-        window: r.metric.window.map(|w| WindowField::Span(w.label())),
-        slice: None,
-        values: r.menu_values(),
-    });
+    axes.push(crate::discovery::candidates::axis_spec_of(r.metric, r.operator, r.menu_values()));
     axes.extend(baseline_axes(baseline));
     AxesModel::resolve(&AxesRequest { axes })
 }
@@ -817,11 +799,11 @@ fn baseline_axes(b: &ScreenBaseline) -> Vec<AxisSpec> {
             out.push(AxisSpec {
                 kind: kind.to_string(),
                 side: None,
-                group: None,
                 metric: None,
-                operator: None,
-                window: None,
+                tag: None,
+                span: None,
                 slice: None,
+                operator: None,
                 values: vec![Some(v)],
             });
         }
@@ -883,7 +865,7 @@ fn metric_picks(model: &AxesModel, idx: usize) -> Vec<Option<f64>> {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use hunter_engine::metrics::{MetricGroupId, MetricId};
+    use hunter_engine::metrics::Metric;
 
     use super::super::candidates::{screen_plan, ScreenMetric};
     use super::super::fixtures::{corpus, pricing};
@@ -897,16 +879,16 @@ mod tests {
         ScreenBaseline { take_profit_pct: Some(30.0), stop_loss_pct: Some(15.0) }
     }
 
-    fn screen_metric(metric: MetricId, side: AxisSide) -> ScreenMetric {
+    fn screen_metric(metric: Metric, side: AxisSide) -> ScreenMetric {
         screen_plan(&ScreenConfig::default())
             .metrics
             .iter()
-            .find(|m| m.metric == metric && m.side == side)
+            .find(|m| m.r.metric == metric && m.side == side)
             .copied()
             .expect("metric screened")
     }
 
-    fn kept(metric: MetricId, side: AxisSide, narrowed: Vec<f64>, lift: f64) -> MetricResponse {
+    fn kept(metric: Metric, side: AxisSide, narrowed: Vec<f64>, lift: f64) -> MetricResponse {
         MetricResponse {
             metric: screen_metric(metric, side),
             operator: Operator::Gte,
@@ -959,19 +941,19 @@ mod tests {
     #[test]
     fn shortlist_is_grouped_by_registry_family() {
         let r = report_of(vec![
-            kept(MetricId::Time, AxisSide::Entry, vec![5.0, 30.0], 3.0),
-            kept(MetricId::Liquidity, AxisSide::Entry, vec![40.0, 50.0], 2.0),
-            kept(MetricId::Trail, AxisSide::Entry, vec![10.0, 20.0], 1.0),
+            kept(Metric::AgeSec, AxisSide::Entry, vec![5.0, 30.0], 3.0),
+            kept(Metric::LiquiditySol, AxisSide::Entry, vec![40.0, 50.0], 2.0),
+            kept(Metric::TrailPct, AxisSide::Entry, vec![10.0, 20.0], 1.0),
         ]);
         let plan = plan_families(&r, FamilyLimits::default());
         assert_eq!(plan.len(), 2, "snapshot and price are distinct families");
-        let liq_age = plan.iter().find(|f| f.family == MetricFamily::State).unwrap();
+        let liq_age = plan.iter().find(|f| f.family == Family::State).unwrap();
         assert_eq!(liq_age.members.len(), 2, "time + liquidity share m_state");
         // Axis order is lift-descending, so a cap drops the weakest member.
         assert!(liq_age.members[0].lift >= liq_age.members[1].lift);
-        let price = plan.iter().find(|f| f.family == MetricFamily::Price).unwrap();
+        let price = plan.iter().find(|f| f.family == Family::Price).unwrap();
         assert_eq!(price.members.len(), 1);
-        assert_eq!(price.members[0].metric.metric, MetricId::Trail);
+        assert_eq!(price.members[0].metric.r.metric, Metric::TrailPct);
         // (off + 2)² = 9 combos for the two-member family.
         assert_eq!(liq_age.combos, 9);
     }
@@ -980,16 +962,16 @@ mod tests {
     #[test]
     fn caps_drop_weakest_members_with_a_reason() {
         let r = report_of(vec![
-            kept(MetricId::Time, AxisSide::Entry, vec![5.0, 30.0], 9.0),
-            kept(MetricId::Liquidity, AxisSide::Entry, vec![40.0, 50.0], 1.0),
+            kept(Metric::AgeSec, AxisSide::Entry, vec![5.0, 30.0], 9.0),
+            kept(Metric::LiquiditySol, AxisSide::Entry, vec![40.0, 50.0], 1.0),
         ]);
         let plan = plan_families(&r, FamilyLimits { max_axes: 1, max_combos: 1_024, rescue_cap: 0 });
         let fam = &plan[0];
         assert_eq!(fam.members.len(), 1);
-        assert_eq!(fam.members[0].metric.metric, MetricId::Time, "highest lift survives");
+        assert_eq!(fam.members[0].metric.r.metric, Metric::AgeSec, "highest lift survives");
         assert_eq!(fam.dropped.len(), 1);
         assert_eq!(fam.dropped[0].1, DropReason::AxisCap);
-        assert_eq!(fam.dropped[0].0.metric.metric, MetricId::Liquidity);
+        assert_eq!(fam.dropped[0].0.metric.r.metric, Metric::LiquiditySol);
 
         // The combo cap bites second, on the same lift order.
         let plan = plan_families(&r, FamilyLimits { max_axes: 4, max_combos: 4, rescue_cap: 0 });
@@ -1008,9 +990,9 @@ mod tests {
         let cfg = ScreenConfig::default();
         let weights = DiscoveryWeights { min_closed: 1, ..DiscoveryWeights::default() };
         let screen = report_of(vec![
-            kept(MetricId::Time, AxisSide::Entry, vec![5.0, 30.0], 3.0),
-            kept(MetricId::Liquidity, AxisSide::Entry, vec![40.0, 45.0], 2.0),
-            kept(MetricId::Trail, AxisSide::Entry, vec![5.0, 15.0], 1.0),
+            kept(Metric::AgeSec, AxisSide::Entry, vec![5.0, 30.0], 3.0),
+            kept(Metric::LiquiditySol, AxisSide::Entry, vec![40.0, 45.0], 2.0),
+            kept(Metric::TrailPct, AxisSide::Entry, vec![5.0, 15.0], 1.0),
         ]);
 
         let out = run_family_layer(
@@ -1078,8 +1060,8 @@ mod tests {
         // Position metrics are exit-only, so any that survived sit in the price family.
         for f in &out.families {
             for m in &f.members {
-                if m.metric.group == MetricGroupId::Position {
-                    assert_eq!(f.family, MetricFamily::Price);
+                if m.metric.r.is_position() {
+                    assert_eq!(f.family, Family::Price);
                     assert_eq!(m.metric.side, AxisSide::Exit);
                 }
             }
@@ -1126,7 +1108,7 @@ mod tests {
                     res.metric == m.metric && res.operator == m.operator && res.verdict.is_keep()
                 });
                 assert_eq!(m.rescued, !kept, "a member's `rescued` flag must match its provenance");
-                assert!(kept || rescued, "{:?} came from nowhere", m.metric.metric);
+                assert!(kept || rescued, "{:?} came from nowhere", m.metric.r.metric);
             }
         }
         // A rescue is only ever attempted on a metric Layer 1 dropped.
@@ -1197,12 +1179,12 @@ mod tests {
             verdict,
         };
         let interactions = vec![
-            mk(MetricFamily::Price, MetricFamily::Flow, InteractionVerdict::Interacting),
-            mk(MetricFamily::Flow, MetricFamily::Price, InteractionVerdict::Interacting),
-            mk(MetricFamily::Flow, MetricFamily::FlowIx, InteractionVerdict::Interacting),
+            mk(Family::Price, Family::Flow, InteractionVerdict::Interacting),
+            mk(Family::Flow, Family::Price, InteractionVerdict::Interacting),
+            mk(Family::Flow, Family::Crowd, InteractionVerdict::Interacting),
             mk(
-                MetricFamily::State,
-                MetricFamily::Price,
+                Family::State,
+                Family::Price,
                 InteractionVerdict::Independent,
             ),
         ];
@@ -1210,21 +1192,21 @@ mod tests {
         assert_eq!(comps.len(), 1);
         assert_eq!(
             comps[0],
-            vec![MetricFamily::Flow, MetricFamily::FlowIx, MetricFamily::Price]
+            vec![Family::Crowd, Family::Flow, Family::Price]
         );
     }
 
     #[test]
     fn plan_joint_caps_drop_weakest_with_reason() {
         let members_a = vec![FamilyMember {
-            metric: screen_metric(MetricId::Time, AxisSide::Entry),
+            metric: screen_metric(Metric::AgeSec, AxisSide::Entry),
             operator: Operator::Gte,
             values: vec![5.0, 30.0],
             lift: 9.0,
             rescued: false,
         }];
         let members_b = vec![FamilyMember {
-            metric: screen_metric(MetricId::Trail, AxisSide::Entry),
+            metric: screen_metric(Metric::TrailPct, AxisSide::Entry),
             operator: Operator::Gte,
             values: vec![10.0, 20.0],
             lift: 1.0,
@@ -1232,7 +1214,7 @@ mod tests {
         }];
         let families = vec![
             FamilyResult {
-                family: MetricFamily::State,
+                family: Family::State,
                 members: members_a,
                 dropped: vec![],
                 combos: 3,
@@ -1240,7 +1222,7 @@ mod tests {
                 n_gated: 0,
             },
             FamilyResult {
-                family: MetricFamily::Price,
+                family: Family::Price,
                 members: members_b,
                 dropped: vec![],
                 combos: 3,
@@ -1250,11 +1232,11 @@ mod tests {
         ];
         let joint = plan_joint(
             &families,
-            &[MetricFamily::State, MetricFamily::Price],
+            &[Family::State, Family::Price],
             FamilyLimits { max_axes: 1, max_combos: 1_024, rescue_cap: 0 },
         );
         assert_eq!(joint.members.len(), 1);
-        assert_eq!(joint.members[0].metric.metric, MetricId::Time);
+        assert_eq!(joint.members[0].metric.r.metric, Metric::AgeSec);
         assert_eq!(joint.dropped.len(), 1);
         assert_eq!(joint.dropped[0].1, DropReason::AxisCap);
         assert_eq!(joint.families.len(), 2);

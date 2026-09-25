@@ -29,11 +29,11 @@
 //! No tick work: nothing here can move without a buy, so a settled token pays
 //! nothing and the group declares no clock horizon.
 //!
-//! [`this_buyer_is_new`]: super::MetricId::ThisBuyerIsNew
+//! [`this_buyer_is_new`]: super::Metric::BuyerIsNew
 
 use smallvec::SmallVec;
 
-use super::{secs_between, MetricId, Side, TradeLite, Ts};
+use super::{secs_between, Metric, Side, TradeLite, Ts};
 
 /// The strict param naming the anchor: buys before this age never enter the set.
 pub const AFTER_AGE_PARAM: &str = "after_age_sec";
@@ -131,10 +131,10 @@ impl CrowdAfterAgeState {
     }
 
     /// Value of one `m_crowd_after_age` metric.
-    pub fn value(&self, id: MetricId) -> f64 {
+    pub fn value(&self, id: Metric) -> f64 {
         match id {
-            MetricId::NonCreatorBuyers => self.buyers.len() as f64,
-            MetricId::ThisBuyerIsNew => f64::from(u8::from(self.last_print_added)),
+            Metric::BuyerCount => self.buyers.len() as f64,
+            Metric::BuyerIsNew => f64::from(u8::from(self.last_print_added)),
             _ => f64::NAN,
         }
     }
@@ -167,31 +167,31 @@ mod tests {
         s.on_trade(&buy(CREATOR, 0.1), born, Some(CREATOR));
         s.on_trade(&buy(1, 0.4), born, Some(CREATOR));
         s.on_trade(&buy(2, 3.9), born, Some(CREATOR));
-        assert_eq!(s.value(MetricId::NonCreatorBuyers), 0.0);
+        assert_eq!(s.value(Metric::BuyerCount), 0.0);
         // Exactly at the anchor counts; a sell never does; the creator never does.
         s.on_trade(&buy(1, 5.0), born, Some(CREATOR));
-        assert_eq!(s.value(MetricId::NonCreatorBuyers), 1.0);
-        assert_eq!(s.value(MetricId::ThisBuyerIsNew), 1.0);
+        assert_eq!(s.value(Metric::BuyerCount), 1.0);
+        assert_eq!(s.value(Metric::BuyerIsNew), 1.0);
         s.on_trade(&sell(3, 6.0), born, Some(CREATOR));
         s.on_trade(&buy(CREATOR, 7.0), born, Some(CREATOR));
-        assert_eq!(s.value(MetricId::NonCreatorBuyers), 1.0);
-        assert_eq!(s.value(MetricId::ThisBuyerIsNew), 0.0);
+        assert_eq!(s.value(Metric::BuyerCount), 1.0);
+        assert_eq!(s.value(Metric::BuyerIsNew), 0.0);
         // The same wallet again is not a new buyer; a second wallet is.
         s.on_trade(&buy(1, 8.0), born, Some(CREATOR));
-        assert_eq!(s.value(MetricId::ThisBuyerIsNew), 0.0);
+        assert_eq!(s.value(Metric::BuyerIsNew), 0.0);
         s.on_trade(&buy(4, 9.0), born, Some(CREATOR));
-        assert_eq!(s.value(MetricId::NonCreatorBuyers), 2.0);
-        assert_eq!(s.value(MetricId::ThisBuyerIsNew), 1.0);
+        assert_eq!(s.value(Metric::BuyerCount), 2.0);
+        assert_eq!(s.value(Metric::BuyerIsNew), 1.0);
     }
 
     #[test]
     fn a_tick_clears_the_arrival_flag() {
         let mut s = CrowdAfterAgeState::new(AgeAnchor::secs(0.0), 3);
         s.on_trade(&buy(1, 1.0), ts(0.0), None);
-        assert_eq!(s.value(MetricId::ThisBuyerIsNew), 1.0);
+        assert_eq!(s.value(Metric::BuyerIsNew), 1.0);
         s.on_tick();
-        assert_eq!(s.value(MetricId::ThisBuyerIsNew), 0.0);
-        assert_eq!(s.value(MetricId::NonCreatorBuyers), 1.0);
+        assert_eq!(s.value(Metric::BuyerIsNew), 0.0);
+        assert_eq!(s.value(Metric::BuyerCount), 1.0);
     }
 
     #[test]
@@ -200,15 +200,15 @@ mod tests {
         for w in 1..=50u64 {
             s.on_trade(&buy(w, w as f64), ts(0.0), None);
         }
-        assert_eq!(s.value(MetricId::NonCreatorBuyers), 3.0);
+        assert_eq!(s.value(Metric::BuyerCount), 3.0);
         assert_eq!(s.buyers.len(), 3);
         // A closed set cannot tell whether the 50th wallet was new, so it says no.
-        assert_eq!(s.value(MetricId::ThisBuyerIsNew), 0.0);
+        assert_eq!(s.value(Metric::BuyerIsNew), 0.0);
         // Raising the cap re-opens it for the NEXT arrivals only.
         s.raise_cap(5);
         s.on_trade(&buy(77, 60.0), ts(0.0), None);
-        assert_eq!(s.value(MetricId::NonCreatorBuyers), 4.0);
-        assert_eq!(s.value(MetricId::ThisBuyerIsNew), 1.0);
+        assert_eq!(s.value(Metric::BuyerCount), 4.0);
+        assert_eq!(s.value(Metric::BuyerIsNew), 1.0);
         s.raise_cap(2);
         assert_eq!(s.cap(), 5, "a cap is never lowered");
     }
@@ -217,7 +217,7 @@ mod tests {
     fn an_unknown_creator_excludes_nobody() {
         let mut s = CrowdAfterAgeState::new(AgeAnchor::secs(0.0), 3);
         s.on_trade(&buy(CREATOR, 1.0), ts(0.0), None);
-        assert_eq!(s.value(MetricId::NonCreatorBuyers), 1.0);
+        assert_eq!(s.value(Metric::BuyerCount), 1.0);
     }
 
     #[test]

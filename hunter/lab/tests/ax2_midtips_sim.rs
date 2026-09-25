@@ -15,7 +15,6 @@ use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::{
     AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId,
 };
-use hunter_engine::rule_params::RuleParams;
 
 use lab::lake::duck::LakeSource;
 use lab::sweep::corpus::{CorpusSource, CorpusToken, Selection, TradeWindow};
@@ -65,11 +64,12 @@ fn door_fp() -> Fingerprint {
                 AxisId::FirstSlotBuyLamports,
                 AxisPredicate::range(Some(500_000_000), None),
             ),
-        metric_config: json!({
+        // The v1 working-template list, as the tags document it converts to.
+        tags: hunter_engine::v1::convert_metric_config(&json!({
             "m_burst_slot": {
                 "working_templates": WORKING
             }
-        }),
+        })).expect("tags"),
     }
 }
 
@@ -124,7 +124,7 @@ fn loaded() -> LoadedRule {
         max_concurrent_tokens: 0,
         max_total_tokens: 0,
         entry_enabled: true,
-        params: RuleParams::parse(&ax2_params()).expect("ax2 params"),
+        params: hunter_engine::v1::parse_params_any(&ax2_params()).expect("ax2 params"),
     }
 }
 

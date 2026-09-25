@@ -66,12 +66,14 @@ fn default_token_cap() -> usize {
 #[derive(serde::Deserialize)]
 pub struct BindFlowDiscoveryBody {
     pub group_key: serde_json::Value,
-    /// Mixed `ix_patterns` rows: a bare label array, or `{labels, cu_limit?,
-    /// cu_price?, tip_lamports?}`. Same shapes `metric_config` stores.
+    /// The ix shapes to put in the tag: a bare label array, or `{labels, cu_limit?,
+    /// cu_price?, tip_lamports?}` — the tag's `match.ix_shape` entries.
     pub ix_patterns: Vec<serde_json::Value>,
-    /// Which list to write. `"dump"` → `m_dump_ix`; anything else → `m_flow_ix`.
+    /// The fingerprint tag to write (`volume`, `dump`, any name).
+    pub tag: String,
+    /// `buy` / `sell`: which trades the tag takes, set only when the tag is new.
     #[serde(default)]
-    pub list: Option<String>,
+    pub side: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -180,25 +182,16 @@ pub async fn bind_flow_discovery(
     body: web::Json<BindFlowDiscoveryBody>,
 ) -> impl Responder {
     let b = body.into_inner();
-    let name = b.name.filter(|s| !s.trim().is_empty()).unwrap_or_default();
-    let group = if b.list.as_deref() == Some("dump") {
-        "m_dump_ix"
-    } else {
-        "m_flow_ix"
-    };
-    let metric_config = serde_json::json!({
-        group: { "ix_patterns": b.ix_patterns }
-    });
-    if let Err(e) = hunter_engine::metrics::validate_fingerprint_metric_config(&metric_config) {
-        return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
-    }
-
+    let name = b.name.clone().filter(|s| !s.trim().is_empty()).unwrap_or_default();
     // The key already carries the window it selected, so the draft is a copy — no
     // precision to pass, and so no substituted precision that could arm the bound
     // rule on a window the card never showed.
     let mut draft = fingerprint_from_group_key(&b.group_key, name);
     draft.ensure_auto_name();
-    draft.metric_config = metric_config.clone();
+    draft.tags = match with_tag_shapes(&draft.tags, &b) {
+        Ok(doc) => doc,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
+    };
     if !draft.has_any_criterion() {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "error": "group_key has no fingerprint identity axes — pick cu_limit/ix_labels/… or update an existing fingerprint via PUT"
@@ -214,17 +207,41 @@ pub async fn bind_flow_discovery(
                 .json(serde_json::json!({ "error": "database error" }));
         }
     };
-    // Identity ignores metric_config — patch when the stored row differs.
-    if fp.metric_config != metric_config {
-        fp.metric_config = metric_config;
+    // Identity ignores the tags — write the tag into the stored row's own document,
+    // keeping its other tags.
+    let tags = match with_tag_shapes(&fp.tags, &b) {
+        Ok(doc) => doc,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
+    };
+    if fp.tags != tags {
+        fp.tags = tags;
         fp.updated_at = Utc::now();
         if let Err(e) = repo.update(&fp).await {
-            tracing::error!("flow-discovery bind: update metric_config failed: {e}");
+            tracing::error!("flow-discovery bind: update tags failed: {e}");
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({ "error": "database error" }));
         }
     }
     HttpResponse::Ok().json(fp)
+}
+
+/// `doc` with tag `b.tag`'s `match.ix_shape` set to `b.ix_patterns`, every other tag
+/// and every other option of that tag kept. A new tag takes `b.side`. Validated.
+fn with_tag_shapes(doc: &serde_json::Value, b: &BindFlowDiscoveryBody) -> Result<serde_json::Value, String> {
+    let mut doc = if doc.is_object() { doc.clone() } else { serde_json::json!({}) };
+    let map = doc.as_object_mut().expect("an object");
+    let tag = map.entry(b.tag.trim().to_string()).or_insert_with(|| {
+        let mut t = serde_json::json!({ "match": {} });
+        if let Some(side) = &b.side {
+            t["side"] = serde_json::json!(side);
+        }
+        t
+    });
+    let tag = tag.as_object_mut().ok_or("that tag is not an object")?;
+    let m = tag.entry("match").or_insert_with(|| serde_json::json!({}));
+    m.as_object_mut().ok_or("that tag's `match` is not an object")?.insert("ix_shape".into(), serde_json::json!(b.ix_patterns));
+    hunter_engine::metrics::tags::config::validate_tags(&doc)?;
+    Ok(doc)
 }
 
 // ── Job ──────────────────────────────────────────────────────────────────────

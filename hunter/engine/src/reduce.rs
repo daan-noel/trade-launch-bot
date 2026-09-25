@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use smallvec::SmallVec;
 
-use crate::arm::{ArmState, ClockHorizons, CompiledRule, EnteredCtx, EntryBlockers, EntryVerdict};
+use crate::arm::{ArmState, ClockHorizons, CompiledRule, EnteredCtx, EntryBlockers, EntryVerdict, HeldAction};
 use crate::cap::Cap;
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS};
 use crate::event::{
@@ -99,15 +99,15 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             }
             // Name reuse inside the build: strictly-prior, stamped before the match,
             // advanced once per creation for the same reason `prior_launches` is.
-            if let (Some(build), Some(id)) = (crate::metrics::flow_ix::ix_hash_opt(&tf.ix_labels), identity) {
-                let mint_hash = crate::metrics::flow_ix::wallet_hash(mint.as_str());
-                tf.prior_identity_launches = state.take_prior_identity_launches(build, id, at, mint_hash);
+            if let (Some(build), Some(id)) = (crate::metrics::trade_keys::ix_hash_opt(&tf.ix_labels), identity) {
+                let mint_hash = crate::metrics::trade_keys::wallet_hash(mint.as_str());
+                tf.name_reuse_count = state.take_name_reuse_count(build, id, at, mint_hash);
             }
             // The launch-build door axes: one hash over the creation labels, one map
             // get. Stamped once, here, so a token keeps the door it was born under
             // even after the day rolls over - which is the term the rule is derived
             // in (the previous day's stats, as they stood at 00:00 UTC).
-            if let Some(stat) = crate::metrics::flow_ix::ix_hash_opt(&tf.ix_labels)
+            if let Some(stat) = crate::metrics::trade_keys::ix_hash_opt(&tf.ix_labels)
                 .and_then(|h| state.launch_build_stats.get(&h))
             {
                 tf.build_prev_day_launches = Some(stat.launches);
@@ -279,19 +279,14 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     // before any dip `bounce` equals `pnl`. `room_taken` reads the
                     // depth of the last print folded here: in simulate the fill
                     // print itself (the replay confirms right after folding it).
-                    let (trail_arm_pct, clause_latch) = state
-                        .rule_for(rule_id, Some(position))
-                        .map_or((None, false), |c| (c.trail_arm_pct, !c.arm_clauses.is_empty()));
                     token.arms.insert(
                         rule_id,
                         ArmState::Entered(EnteredCtx::at_fill(
                             position,
                             fill.price,
                             fill.at,
-                            trail_arm_pct,
                             token.track.current_priced_reserves(),
-                        )
-                        .with_clause_latch(clause_latch)),
+                        )),
                     );
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
@@ -309,17 +304,21 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     reason,
                     portion,
                     held,
+                    then_stage,
                     ..
                 }) if pend == intent =>
                 {
                     if portion.is_partial() {
-                        // Partial fill: advance stage, keep bag open, resume peak/trough.
+                        // Partial fill: keep the bag open, resume peak/trough, and move to
+                        // the stage the selling line named (a manual partial stays put).
                         let bps = match portion {
                             Portion::BpsOfInitial(b) => b,
                             Portion::All => 0, // unreachable via is_partial
                         };
                         let mut next = held;
-                        next.stage = next.stage.saturating_add(1);
+                        if let Some(t) = then_stage {
+                            next.move_to(t, fill.at);
+                        }
                         next.sold_bps = next.sold_bps.saturating_add(bps);
                         let stage = next.stage;
                         let position = next.position;
@@ -468,6 +467,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     attempts,
                     portion,
                     held,
+                    then_stage,
                 }) if pend == intent => {
                     let position = held.position;
                     if reason == FillFailReason::Unconfirmed {
@@ -512,6 +512,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                                 attempts: attempts + 1,
                                 portion,
                                 held,
+                                then_stage,
                             },
                         );
                         fx.push(Effect::SubmitSell {
@@ -634,7 +635,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     let intent = state.next_intent(rule, mint.clone());
                     // Same ExitPending + SubmitSell shape as PartialExit / full
                     // Exit — exec/sinks already size from `portion`. A partial
-                    // Manual fill advances stage like a ladder leg (pure reuse).
+                    // manual fill keeps the stage the position is in.
                     token.arms.insert(
                         rule,
                         ArmState::ExitPending {
@@ -643,6 +644,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             attempts: 1,
                             portion,
                             held,
+                            then_stage: None,
                         },
                     );
                     fx.push(Effect::SubmitSell {
@@ -741,8 +743,11 @@ enum ArmDecision {
     /// end the episode. A later slot does not become the first fire.
     Exhaust,
     Exit(ExitReason),
-    /// Scale-out leg: sell `sell_bps` of the initial bag; fill restores Entered.
-    PartialExit { reason: ExitReason, sell_bps: u16 },
+    /// Partial sell: `sell_bps` of the first bag; the fill restores Entered in
+    /// `then_stage`.
+    PartialExit { reason: ExitReason, sell_bps: u16, then_stage: Option<u8> },
+    /// Move the held position to another stage, from the next evaluation.
+    Move(u8),
 }
 
 /// Sweep every arm on one token at `now`, deciding then applying. Used by
@@ -779,8 +784,9 @@ fn horizon_secs(s: f64) -> chrono::Duration {
 ///
 /// Anchors, all of which must be covered or a tick skip would drop a decision:
 /// * trailing windows decay from the newest trade;
-/// * `time` climbs from creation, `stall` from the last trade (an upper bound on
-///   the last all-time high), `held` from each entry fill;
+/// * `age` climbs from creation, `stall` from the last trade (an upper bound on
+///   the last all-time high), `held` from each entry fill, `stage` from each stage
+///   start (stage deadlines ride the same horizons);
 /// * the dead verdict flips once, at `last_meaningful + DEAD_QUIET_SECS`;
 /// * a re-entry `Cooldown` re-arms at its own instant.
 ///
@@ -807,7 +813,9 @@ fn settle_until(state: &EngineState, token: &TokenState, h: &ClockHorizons) -> O
         match arm {
             ArmState::Cooldown { until: re } => until = until.max(*re),
             ArmState::Entered(ctx) => {
-                until = until.max(ctx.entered_at + horizon_secs(h.held_secs))
+                until = until
+                    .max(ctx.entered_at + horizon_secs(h.held_secs))
+                    .max(ctx.stage_since + horizon_secs(h.stage_secs))
             }
             _ => {}
         }
@@ -841,10 +849,6 @@ fn fold_entered_extremes(token: &mut TokenState, at: Ts) {
             p.fold_price(cur_price);
             ctx.peak_price = p.peak_price;
             ctx.trough_price = p.trough_price;
-            if p.armed && !ctx.armed {
-                ctx.armed_at = Some(at);
-            }
-            ctx.armed = p.armed;
         }
     }
 }
@@ -949,7 +953,7 @@ pub fn hydrate_token(
             tf.build_prev_day_launches = None;
             tf.build_prev_day_runner_bps = None;
             if facts.created_at.date_naive() == now.date_naive() {
-                if let Some(stat) = crate::metrics::flow_ix::ix_hash_opt(&tf.ix_labels)
+                if let Some(stat) = crate::metrics::trade_keys::ix_hash_opt(&tf.ix_labels)
                     .and_then(|h| state.launch_build_stats.get(&h))
                 {
                     tf.build_prev_day_launches = Some(stat.launches);
@@ -1091,7 +1095,7 @@ fn evaluate_token(
         });
     }
     for rule_id in rule_ids {
-        let (decision, buy_lamports, cap, max_total, trade_mode, latch) = {
+        let (decision, buy_lamports, cap, max_total, trade_mode) = {
             let arm = &token.arms[&rule_id];
             // Manual episodes resolve via their per-position exit rule; a
             // tracked-only manual arm has neither ⇒ no decision (no auto-exit).
@@ -1109,28 +1113,12 @@ fn evaluate_token(
                 c.concurrent_cap,
                 c.max_total,
                 c.trade_mode,
-                // `arm` clauses latch a held position the exits just left open. Read
-                // after them, on the same event, so a clause that reads `armed` cannot
-                // fire on the event that latched it.
-                match arm {
-                    ArmState::Entered(held) if !held.armed && !c.arm_clauses.is_empty() => {
-                        c.arm_fired(&token.track, &held.position_ctx(), now)
-                    }
-                    _ => false,
-                },
             )
         };
-        let latch = latch && matches!(decision, ArmDecision::None);
         apply_decision(
             state, token, mint, rule_id, decision, buy_lamports, cap, max_total, trade_mode, now,
             fx,
         );
-        if latch {
-            if let Some(ArmState::Entered(held)) = token.arms.get_mut(&rule_id) {
-                held.armed = true;
-                held.armed_at = Some(now);
-            }
-        }
     }
 
     // Stamp the settled verdict LAST, off the post-decision arm states — a decision
@@ -1155,11 +1143,8 @@ fn arm_position(arm: &ArmState) -> Option<crate::event::PositionId> {
 
 /// Decide one arm's fate. Priorities: armed side disarms (dead, then derived-unsat)
 /// before it enters; an `exclusive` rule then stands down while another arm holds the
-/// token; entry is gated by [`CompiledRule::can_enter`] (no buy while exit metrics
-/// already hold); the open side follows `Dead > exit_fired > stage_fired`, where
-/// `exit_fired` walks the desugared-TP/SL-then-authored exit reqs in order (so the
-/// legacy `SL > TP > Metrics` tiebreak is preserved inside the one loop) and stages
-/// only fire when no global exit did.
+/// token; entry is gated by [`CompiledRule::try_enter`] (no buy while a sell line
+/// already holds); the held side is `Dead`, then one [`CompiledRule::held_step`].
 fn decide_arm(
     c: &CompiledRule,
     rule_id: RuleId,
@@ -1214,30 +1199,25 @@ fn decide_arm(
             }
         }
         ArmState::Entered(held) => {
-            // Dead stays first and special (liquidity-based, not price). Every
-            // price-based exit — the desugared TP/SL and every authored metric —
-            // flows through the one `exit_fired` loop, so priority collapses from
-            // `Dead > SL > TP > Metrics` to `Dead > exit_fired` (SL/TP are prepended
-            // pnl reqs, so their old relative order is preserved inside the loop).
-            // Scale-out stages rank after the global side (catastrophe path first).
+            // Dead stays first and special (liquidity-based, not price); then one step
+            // of the rule's plan: always lines, the stage deadline, the stage's lines.
             if dead {
                 return ArmDecision::Exit(ExitReason::Dead);
             }
-            let ctx = held.position_ctx();
-            if let Some(reason) = c.exit_fired(&token.track, &ctx, now) {
-                return ArmDecision::Exit(reason);
-            }
-            if let Some(reason) = c.stage_fired(held.stage, &token.track, &ctx, now) {
-                match c.stage_at(held.stage).and_then(|s| s.sell_bps) {
-                    Some(sell_bps) => {
-                        return ArmDecision::PartialExit { reason, sell_bps };
+            match c.held_step(&token.track, held, now) {
+                HeldAction::None => ArmDecision::None,
+                HeldAction::Move { stage } => ArmDecision::Move(stage),
+                HeldAction::Sell { reason, bps: None, .. } => ArmDecision::Exit(reason),
+                HeldAction::Sell { reason, bps: Some(b), then_stage } => {
+                    // A partial sell that would take the bag past what is left sells
+                    // the rest instead.
+                    if u32::from(held.sold_bps) + u32::from(b) >= 10_000 {
+                        ArmDecision::Exit(reason)
+                    } else {
+                        ArmDecision::PartialExit { reason, sell_bps: b, then_stage }
                     }
-                    // Remainder stage (`sell_bps` omitted) ⇒ full close under its
-                    // own conditions.
-                    None => return ArmDecision::Exit(reason),
                 }
             }
-            ArmDecision::None
         }
         // Pending / in-flight / terminal arms make no sweep decision.
         _ => ArmDecision::None,
@@ -1257,7 +1237,7 @@ fn decide_arm(
 /// guessing. That is the conservative direction: the fixed amount is a number a human
 /// authored, where a guessed one is not.
 fn resolve_buy_lamports(c: &CompiledRule, reserve_sol: f64) -> u64 {
-    let Some(pct) = c.buy_pct_of_vsol else { return c.buy_amount_lamports };
+    let Some(pct) = c.size_pct_of_pool else { return c.buy_amount_lamports };
     if !reserve_sol.is_finite() || reserve_sol <= 0.0 {
         return c.buy_amount_lamports;
     }
@@ -1377,6 +1357,7 @@ fn apply_decision(
                     attempts: 1,
                     portion: Portion::All,
                     held,
+                    then_stage: None,
                 },
             );
             fx.push(Effect::SubmitSell {
@@ -1396,7 +1377,12 @@ fn apply_decision(
                 stage: None,
             }));
         }
-        ArmDecision::PartialExit { reason, sell_bps } => {
+        ArmDecision::Move(stage) => {
+            if let Some(ArmState::Entered(held)) = token.arms.get_mut(&rule_id) {
+                held.move_to(stage, now);
+            }
+        }
+        ArmDecision::PartialExit { reason, sell_bps, then_stage } => {
             let Some(ArmState::Entered(held)) = token.arms.get(&rule_id).cloned() else {
                 return;
             };
@@ -1412,6 +1398,7 @@ fn apply_decision(
                     attempts: 1,
                     portion,
                     held,
+                    then_stage,
                 },
             );
             fx.push(Effect::SubmitSell {
@@ -1458,7 +1445,7 @@ fn rearm_after_close(
         *e += 1;
         *e
     };
-    if n >= re.max_episodes_per_token {
+    if n >= re.max_per_coin {
         return ArmState::Done;
     }
     let until = closed_at + chrono::Duration::milliseconds((re.cooldown_sec * 1000.0) as i64);
@@ -1466,13 +1453,13 @@ fn rearm_after_close(
 }
 
 /// Whether a close `reason` is a normal strategy exit that should re-arm under
-/// re-entry. TP / SL / a metric exit ⇒ yes (the trailing stop or a rule condition
+/// re-entry. TP / SL / a rule line ⇒ yes (the trailing stop or a rule condition
 /// fired — trade the next signal). Dead / Manual / Migrated ⇒ no: the token is gone,
 /// a human intervened, or it left the curve — re-arming would fight that.
 fn reason_allows_reentry(reason: ExitReason) -> bool {
     matches!(
         reason,
-        ExitReason::TakeProfit | ExitReason::StopLoss | ExitReason::Metrics { .. }
+        ExitReason::TakeProfit | ExitReason::StopLoss | ExitReason::Line(_)
     )
 }
 
@@ -1538,7 +1525,10 @@ mod buy_sizing {
             buy_amount_lamports: 300_000_000, // 0.3 SOL
             max_concurrent_tokens: 1,
             max_total_tokens: 0,
-            params: RuleParams { buy_pct_of_vsol: pct, ..Default::default() },
+            params: RuleParams {
+                enter: crate::rule_params::Enter { size_pct_of_pool: pct, ..Default::default() },
+                ..Default::default()
+            },
             entry_enabled: true,
         })
     }
@@ -1590,22 +1580,22 @@ mod buy_sizing {
     /// would spend half the pool must not be storable in the first place.
     #[test]
     fn an_absurd_percent_is_rejected_at_parse() {
-        let err = RuleParams::parse(&serde_json::json!({ "buy_pct_of_vsol": 50 }))
-            .expect_err("50% of a pool is not a size");
-        assert!(err.contains("buy_pct_of_vsol"), "{err}");
+        let size = |v: serde_json::Value| RuleParams::parse(&serde_json::json!({ "enter": { "size_pct_of_pool": v } }));
+        let err = size(serde_json::json!(50)).expect_err("50% of a pool is not a size");
+        assert!(err.contains("size_pct_of_pool"), "{err}");
         for bad in [0, -1] {
-            assert!(RuleParams::parse(&serde_json::json!({ "buy_pct_of_vsol": bad })).is_err());
+            assert!(size(serde_json::json!(bad)).is_err());
         }
-        assert!(RuleParams::parse(&serde_json::json!({ "buy_pct_of_vsol": 1.5 })).is_ok());
+        assert!(size(serde_json::json!(1.5)).is_ok());
     }
 
     /// Params round-trip: a stored rule must come back byte-identical, and a rule
     /// without the knob must not grow the key.
     #[test]
     fn the_percent_round_trips_and_stays_absent_by_default() {
-        let json = serde_json::json!({ "buy_pct_of_vsol": 1.25 });
+        let json = serde_json::json!({ "enter": { "size_pct_of_pool": 1.25 } });
         let p = RuleParams::parse(&json).unwrap();
-        assert_eq!(p.buy_pct_of_vsol, Some(1.25));
+        assert_eq!(p.enter.size_pct_of_pool, Some(1.25));
         assert_eq!(p.to_value(), json);
         assert_eq!(RuleParams::default().to_value(), serde_json::json!({}));
     }

@@ -74,8 +74,8 @@ pub struct TokenFingerprint {
     /// `TokenCreated` from a timestamped tally kept only for builds a loaded
     /// fingerprint names. `None` for a blank identity or an untracked build, which
     /// fails a configured axis closed.
-    #[serde(default)]
-    pub prior_identity_launches: Option<u32>,
+    #[serde(default, alias = "prior_identity_launches")]
+    pub name_reuse_count: Option<u32>,
 }
 
 /// Read a lamports value from a creation instruction-args object. **The one decode

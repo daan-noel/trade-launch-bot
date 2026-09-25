@@ -790,12 +790,12 @@ fn retained_combo_params<S: Strategy>(
             let p = params.get(id as usize)?;
             let mut v = strategy.params_json(p);
             // Bake this combo's OWN Pass-2 winner (if any) directly into its persisted
-            // params — see `GroupResult::scale_out_winners`. Every downstream reader
-            // (drill-in, promote, the group's `best_params`) reads this one column, so
-            // there is no separate run-wide merge step anymore.
-            if let Some(ladder) = gr.scale_out_winners.get(&id) {
+            // params as its `stages` — see `GroupResult::scale_out_winners`. Every
+            // downstream reader (drill-in, promote, the group's `best_params`) reads this
+            // one column, so there is no separate run-wide merge step.
+            if let Some(stages) = gr.scale_out_winners.get(&id) {
                 if let Value::Object(obj) = &mut v {
-                    obj.insert("scale_out".into(), ladder.clone());
+                    obj.insert("stages".into(), stages.clone());
                 }
             }
             Some((id, v))
@@ -985,10 +985,7 @@ mod tests {
                 pnl_percent: *p as f32,
                 pnl_sol: *p as f32,
                 exit: ExitCode::TakeProfit,
-                exit_metric: None,
-                exit_operator: None,
-                exit_metric_value: None,
-                exit_metric_window: None,
+                exit_label: None,
                 exit_metric_slot: None,
                 entry_time: None,
                 entry_price: None,

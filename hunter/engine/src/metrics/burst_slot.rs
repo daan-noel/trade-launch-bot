@@ -1,54 +1,31 @@
-//! `m_burst_slot` — this token, this slot so far, this print's build template.
+//! `m_slot` — this coin, this slot so far, this print's ix template.
 //!
-//! Static (no window). Fingerprint-scoped: the working-template **list** lives on
-//! the fingerprint so the group stays reusable. One slot prefix on the token,
-//! reset when `slot` changes. Unconfigured fingerprints read `NaN`.
-//!
-//! A **member** is a curve buy with a template grain, not a launch create, that
-//! joins the current-slot prefix. `member_template_count` is distinct grains on
-//! the WHOLE prefix (SQL `run_ntmpl`); `working_*` counts only members whose
-//! grain is on the fingerprint list; `same_*` only those sharing this print's
-//! grain. `working_buy_share` is the working count over the whole prefix, so
-//! 100 is a PURE pack - and a pure pack makes the working family and the whole
-//! prefix read the same number. The 5-slot buy quiet the rule also needs is NOT here: it is
-//! `m_flow_window.buy_count == 0` on a lagged slot window (`4sl@1`).
-//! See `hunter/docs/plans/strategies/_!___metrics.md` (`m_burst_slot`).
-
-use serde_json::Value;
+//! One slot prefix on the coin, reset when the slot changes. A **member** is a curve
+//! buy with an ix template, not the create, that joins the current-slot prefix.
+//! `template_count` is distinct templates on the WHOLE prefix; a tagged read
+//! (`buy_count @working`) counts only members whose template carries the tag; the
+//! `same_template_*` metrics only those sharing this print's template.
+//! `buy_share_pct @working` is the tagged count over the whole prefix, so 100 is a PURE
+//! pack. The tag is applied when a metric is READ ([`TemplatePatterns`]), so one buffer
+//! per coin serves every fingerprint. The quiet slots before a burst are not here: they
+//! are `m_flow.buy_count [4sl@1] = 0`.
 
 use crate::hash::{HashedMap, HashedSet};
 
-use super::template_grain::{grain_id_hash, program_id_hash};
-use super::{MetricId, Side, TradeLite};
-
-/// The config key this group reads, inside `fingerprints.metric_config`.
-pub const CONFIG_KEY: &str = "m_burst_slot";
+use super::registry::Metric;
+use super::{Side, TradeLite};
 
 // ── Patterns ─────────────────────────────────────────────────────────────────
 
-/// Compiled `working_templates` for one fingerprint.
-///
-/// One list, two spellings: a `|` id is a grain (`Axiom Trade|CU|ATA|F`); a
-/// bare name is a program (`Axiom Trade`) and matches every grain of that
-/// program. `working_programs` is a read-compat alias for bare names only.
+/// One tag at the ix-template level (`TagPatterns::templates`): its `ix_template`
+/// entries and its `program` entries. A program matches every template it ships.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BurstPatterns {
+pub struct TemplatePatterns {
     hashes: HashedSet,
     programs: HashedSet,
 }
 
-fn take_working_id(id: &str, hashes: &mut HashedSet, programs: &mut HashedSet) {
-    if id.is_empty() {
-        return;
-    }
-    if id.contains('|') {
-        hashes.insert(grain_id_hash(id));
-    } else {
-        programs.insert(program_id_hash(id));
-    }
-}
-
-impl BurstPatterns {
+impl TemplatePatterns {
     pub fn new(hashes: HashedSet) -> Self {
         Self {
             hashes,
@@ -61,83 +38,11 @@ impl BurstPatterns {
         self
     }
 
-    /// Parse `metric_config["m_burst_slot"]`. `None` = key absent or the list
-    /// empty ⇒ the group is unconfigured and every metric reads `NaN`.
-    pub fn from_metric_config(cfg: &Value) -> Option<Self> {
-        let obj = cfg.get(CONFIG_KEY)?;
-        if !obj.is_object() {
-            return None;
-        }
-        let mut hashes = HashedSet::default();
-        let mut programs = HashedSet::default();
-        if let Some(arr) = obj.get("working_templates").and_then(|v| v.as_array()) {
-            for row in arr {
-                take_working_id(row.as_str()?, &mut hashes, &mut programs);
-            }
-        }
-        // Read-compat: older rows stored bare names here. Writers use
-        // `working_templates` only.
-        if let Some(arr) = obj.get("working_programs").and_then(|v| v.as_array()) {
-            for row in arr {
-                let id = row.as_str()?;
-                if !id.is_empty() {
-                    programs.insert(program_id_hash(id));
-                }
-            }
-        }
-        if hashes.is_empty() && programs.is_empty() {
-            return None;
-        }
-        Some(Self { hashes, programs })
-    }
-
-    pub fn validate_metric_config(cfg: &Value) -> Result<(), String> {
-        let Some(obj) = cfg.get(CONFIG_KEY) else {
-            return Ok(());
-        };
-        let Some(map) = obj.as_object() else {
-            return Err(format!("{CONFIG_KEY} must be an object"));
-        };
-        let has_templates = map.contains_key("working_templates");
-        let has_programs = map.contains_key("working_programs");
-        if !has_templates && !has_programs {
-            return Err(format!("{CONFIG_KEY} carries no working_templates"));
-        }
-        if has_templates {
-            let Some(rows) = map.get("working_templates").and_then(|v| v.as_array()) else {
-                return Err(format!(
-                    "{CONFIG_KEY}.working_templates must be an array of strings"
-                ));
-            };
-            for row in rows {
-                if !row.is_string() {
-                    return Err(format!(
-                        "{CONFIG_KEY}.working_templates entry must be a string"
-                    ));
-                }
-            }
-        }
-        if has_programs {
-            let Some(rows) = map.get("working_programs").and_then(|v| v.as_array()) else {
-                return Err(format!(
-                    "{CONFIG_KEY}.working_programs must be an array of strings"
-                ));
-            };
-            for row in rows {
-                if !row.is_string() {
-                    return Err(format!(
-                        "{CONFIG_KEY}.working_programs entry must be a string"
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub fn is_empty(&self) -> bool {
         self.hashes.is_empty() && self.programs.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn contains(&self, hash: u64) -> bool {
         self.hashes.contains(&hash)
     }
@@ -328,53 +233,50 @@ impl BurstSlotState {
         self.this_template.and_then(|h| self.by_template.get(&h))
     }
 
-    /// Read one metric. `patterns` is this fingerprint's working list; `None` ⇒
-    /// unconfigured ⇒ NaN.
-    pub fn value(&self, id: MetricId, patterns: Option<&BurstPatterns>) -> f64 {
-        let Some(p) = patterns else {
-            return f64::NAN;
-        };
-        use MetricId::*;
-        match id {
-            ThisMember => f64::from(u8::from(self.this_member)),
-            ThisWorking => match self.this_template {
-                Some(h) => f64::from(u8::from(p.matches(Some(h), self.this_program))),
-                None => 0.0,
-            },
-            SameBuyCount => self.this_run().map(|r| f64::from(r.count)).unwrap_or(f64::NAN),
-            SameBuySol => self.this_run().map(|r| r.sol).unwrap_or(f64::NAN),
-            SameWalletCount => {
-                self.this_run().map(|r| r.wallets.len() as f64).unwrap_or(f64::NAN)
-            }
-            MemberTemplateCount => {
+    /// Read one metric. `tag` is the condition's tag at the template level: `Some` for a
+    /// tagged read (`buy_count @working`), `None` for an untagged one. A metric that
+    /// needs a tag reads `NaN` without one — never a count of nothing.
+    pub fn value(&self, metric: Metric, tag: Option<&TemplatePatterns>) -> f64 {
+        use Metric::*;
+        match (metric, tag) {
+            (SlotThisJoined, _) => f64::from(u8::from(self.this_member)),
+            (SlotSameTemplateBuyCount, _) => self.this_run().map(|r| f64::from(r.count)).unwrap_or(f64::NAN),
+            (SlotSameTemplateBuySol, _) => self.this_run().map(|r| r.sol).unwrap_or(f64::NAN),
+            (SlotSameTemplateWalletCount, _) => self.this_run().map(|r| r.wallets.len() as f64).unwrap_or(f64::NAN),
+            (SlotTemplateCount, None) => {
                 if self.member_count == 0 {
                     f64::NAN
                 } else {
                     self.by_template.len() as f64
                 }
             }
-            WorkingBuyCount => self.working_count(p),
-            WorkingBuySol => self.working_sol(p),
-            WorkingWalletCount => self.working_wallets(p),
-            WorkingTemplateCount => self.working_template_count(p),
-            WorkingTemplatesSeen => self.working_templates_seen(p),
-            WorkingBuyShare => {
+            (SlotHasUnknownWallet, _) => f64::from(u8::from(self.has_unknown)),
+            (SlotPacked, _) => self.packed(),
+            (SlotLiquidityBeforeSol, _) => self.pre_slot_liquidity,
+            (SlotTrailBeforePct, _) => self.pre_print_trail,
+            (_, None) => f64::NAN,
+            (SlotThisHasTag, Some(p)) => match self.this_template {
+                Some(h) => f64::from(u8::from(p.matches(Some(h), self.this_program))),
+                None => 0.0,
+            },
+            (SlotTemplateCount, Some(p)) => self.working_template_count(p),
+            (SlotBuyCount, Some(p)) => self.working_count(p),
+            (SlotBuySol, Some(p)) => self.working_sol(p),
+            (SlotWalletCount, Some(p)) => self.working_wallets(p),
+            (UniqueIxTemplates, Some(p)) => self.working_templates_seen(p),
+            (SlotBuySharePct, Some(p)) => {
                 if self.member_count == 0 {
                     f64::NAN
                 } else {
                     100.0 * self.working_count(p) / f64::from(self.member_count)
                 }
             }
-            HasNew => f64::from(u8::from(self.has_new(p))),
-            HasUnknown => f64::from(u8::from(self.has_unknown)),
-            Packed => self.packed(),
-            PreSlotLiquidity => self.pre_slot_liquidity,
-            PrePrintTrail => self.pre_print_trail,
+            (SlotHasNewWallet, Some(p)) => f64::from(u8::from(self.has_new(p))),
             _ => f64::NAN,
         }
     }
 
-    fn working_count(&self, p: &BurstPatterns) -> f64 {
+    fn working_count(&self, p: &TemplatePatterns) -> f64 {
         let mut n = 0u32;
         for (h, run) in &self.by_template {
             if p.matches(Some(*h), run.program) {
@@ -384,7 +286,7 @@ impl BurstSlotState {
         f64::from(n)
     }
 
-    fn working_sol(&self, p: &BurstPatterns) -> f64 {
+    fn working_sol(&self, p: &TemplatePatterns) -> f64 {
         let mut s = 0.0;
         for (h, run) in &self.by_template {
             if p.matches(Some(*h), run.program) {
@@ -394,7 +296,7 @@ impl BurstSlotState {
         s
     }
 
-    fn working_wallets(&self, p: &BurstPatterns) -> f64 {
+    fn working_wallets(&self, p: &TemplatePatterns) -> f64 {
         let mut w = HashedSet::default();
         for (h, run) in &self.by_template {
             if p.matches(Some(*h), run.program) {
@@ -404,7 +306,7 @@ impl BurstSlotState {
         w.len() as f64
     }
 
-    fn working_template_count(&self, p: &BurstPatterns) -> f64 {
+    fn working_template_count(&self, p: &TemplatePatterns) -> f64 {
         self.by_template
             .keys()
             .filter(|h| {
@@ -414,14 +316,14 @@ impl BurstSlotState {
             .count() as f64
     }
 
-    fn working_templates_seen(&self, p: &BurstPatterns) -> f64 {
+    fn working_templates_seen(&self, p: &TemplatePatterns) -> f64 {
         self.seen_templates
             .iter()
             .filter(|h| p.matches(Some(**h), self.seen_program.get(*h).copied()))
             .count() as f64
     }
 
-    fn has_new(&self, p: &BurstPatterns) -> bool {
+    fn has_new(&self, p: &TemplatePatterns) -> bool {
         self.by_template
             .iter()
             .any(|(h, run)| p.matches(Some(*h), run.program) && run.has_new)
@@ -435,6 +337,7 @@ pub(crate) fn is_member(t: &TradeLite) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::template_grain::{grain_id_hash, program_id_hash};
     use crate::metrics::{Side, TradeLite};
     use chrono::{TimeZone, Utc};
 
@@ -460,45 +363,43 @@ mod tests {
         }
     }
 
-    fn patterns(ids: &[&str]) -> BurstPatterns {
+    fn patterns(ids: &[&str]) -> TemplatePatterns {
         let mut h = HashedSet::default();
         for id in ids {
             h.insert(grain_id_hash(id));
         }
-        BurstPatterns::new(h)
+        TemplatePatterns::new(h)
     }
 
     #[test]
     fn packed_consecutive_vs_hole_and_nan_on_missing() {
-        let p = patterns(&["Axiom Trade|CU|ATA|F"]);
         let mut s = BurstSlotState::default();
         let h = grain_id_hash("Axiom Trade|CU|ATA|F");
 
         s.on_trade(&buy(10, Some(5), 1, Some(h), 1.0), 0.0, f64::NAN);
         s.on_trade(&buy(10, Some(6), 2, Some(h), 1.0), 0.0, 10.0);
         s.on_trade(&buy(10, Some(7), 3, Some(h), 1.0), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::Packed, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotPacked, None), 1.0);
 
         let mut hole = BurstSlotState::default();
         hole.on_trade(&buy(10, Some(5), 1, Some(h), 1.0), 0.0, f64::NAN);
         hole.on_trade(&buy(10, Some(7), 2, Some(h), 1.0), 0.0, 10.0);
-        assert_eq!(hole.value(MetricId::Packed, Some(&p)), 0.0);
+        assert_eq!(hole.value(Metric::SlotPacked, None), 0.0);
 
         let mut miss = BurstSlotState::default();
         miss.on_trade(&buy(10, Some(5), 1, Some(h), 1.0), 0.0, f64::NAN);
         miss.on_trade(&buy(10, None, 2, Some(h), 1.0), 0.0, 10.0);
-        assert!(miss.value(MetricId::Packed, Some(&p)).is_nan());
+        assert!(miss.value(Metric::SlotPacked, None).is_nan());
     }
 
     #[test]
     fn tx_index_zero_is_a_valid_first() {
-        let p = patterns(&["Axiom Trade|CU|ATA|F"]);
         let h = grain_id_hash("Axiom Trade|CU|ATA|F");
         let mut s = BurstSlotState::default();
         s.on_trade(&buy(10, Some(0), 1, Some(h), 1.0), 0.0, f64::NAN);
         s.on_trade(&buy(10, Some(1), 2, Some(h), 1.0), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::Packed, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::SameBuyCount, Some(&p)), 2.0);
+        assert_eq!(s.value(Metric::SlotPacked, None), 1.0);
+        assert_eq!(s.value(Metric::SlotSameTemplateBuyCount, None), 2.0);
     }
 
     #[test]
@@ -507,20 +408,20 @@ mod tests {
         let h = grain_id_hash("A|CU|F");
         let mut s = BurstSlotState::default();
         s.on_trade(&buy(10, Some(1), 7, Some(h), 0.5), 15.0, f64::NAN);
-        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::PrePrintTrail, Some(&p)), 15.0);
-        assert!(s.value(MetricId::PreSlotLiquidity, Some(&p)).is_nan());
+        assert_eq!(s.value(Metric::SlotHasNewWallet, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotTrailBeforePct, None), 15.0);
+        assert!(s.value(Metric::SlotLiquidityBeforeSol, None).is_nan());
 
         s.on_trade(&buy(11, Some(1), 7, Some(h), 0.5), 20.0, 12.0);
         // Same wallet, now a repeat — first-on-mint was slot 10.
-        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 0.0);
-        assert_eq!(s.value(MetricId::PreSlotLiquidity, Some(&p)), 12.0);
-        assert_eq!(s.value(MetricId::SameBuyCount, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotHasNewWallet, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotLiquidityBeforeSol, None), 12.0);
+        assert_eq!(s.value(Metric::SlotSameTemplateBuyCount, None), 1.0);
 
         s.on_trade(&buy(11, Some(2), 8, Some(h), 0.4), 20.0, 12.0);
-        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::SameWalletCount, Some(&p)), 2.0);
-        assert_eq!(s.value(MetricId::SameBuySol, Some(&p)), 0.9);
+        assert_eq!(s.value(Metric::SlotHasNewWallet, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotSameTemplateWalletCount, None), 2.0);
+        assert_eq!(s.value(Metric::SlotSameTemplateBuySol, None), 0.9);
     }
 
     #[test]
@@ -539,19 +440,21 @@ mod tests {
         s.on_trade(&buy(10, Some(1), 1, Some(ax), 0.5), 0.0, f64::NAN);
         s.on_trade(&buy(11, Some(1), 2, Some(ph), 0.5), 0.0, 10.0);
         s.on_trade(&buy(12, Some(1), 3, Some(te), 0.5), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::WorkingTemplatesSeen, Some(&p)), 3.0);
-        assert_eq!(s.value(MetricId::WorkingTemplateCount, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::UniqueIxTemplates, Some(&p)), 3.0);
+        assert_eq!(s.value(Metric::SlotTemplateCount, Some(&p)), 1.0);
         s.on_trade(&buy(13, Some(1), 4, Some(gm), 0.5), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::WorkingTemplatesSeen, Some(&p)), 4.0);
-        assert_eq!(s.value(MetricId::WorkingTemplateCount, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::UniqueIxTemplates, Some(&p)), 4.0);
+        assert_eq!(s.value(Metric::SlotTemplateCount, Some(&p)), 1.0);
     }
 
+    /// A metric that needs a tag reads NaN without one; an untagged metric reads the slot.
     #[test]
-    fn unconfigured_is_nan_not_zero() {
+    fn a_tagged_metric_without_a_tag_is_nan_not_zero() {
         let mut s = BurstSlotState::default();
         s.on_trade(&buy(10, Some(1), 1, Some(1), 1.0), 0.0, f64::NAN);
-        assert!(s.value(MetricId::SameBuyCount, None).is_nan());
-        assert!(s.value(MetricId::ThisWorking, None).is_nan());
+        assert_eq!(s.value(Metric::SlotSameTemplateBuyCount, None), 1.0);
+        assert!(s.value(Metric::SlotThisHasTag, None).is_nan());
+        assert!(s.value(Metric::SlotBuyCount, None).is_nan());
     }
 
     #[test]
@@ -561,24 +464,24 @@ mod tests {
         let dead = grain_id_hash("Pump.Fun");
         let mut s = BurstSlotState::default();
         s.on_trade(&buy(10, Some(1), 1, Some(work), 1.0), 0.0, f64::NAN);
-        assert_eq!(s.value(MetricId::ThisWorking, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotThisHasTag, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotThisJoined, None), 1.0);
         s.on_trade(&buy(10, Some(2), 2, Some(dead), 1.0), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::ThisWorking, Some(&p)), 0.0);
-        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotThisHasTag, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotThisJoined, None), 1.0);
         // Organic Pump.Fun is a member but not working — mixed size ignores it.
-        assert_eq!(s.value(MetricId::WorkingTemplateCount, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::MemberTemplateCount, Some(&p)), 2.0);
-        assert_eq!(s.value(MetricId::WorkingBuySol, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::SameBuySol, Some(&p)), 1.0); // this print's grain = Pump.Fun
+        assert_eq!(s.value(Metric::SlotTemplateCount, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotTemplateCount, None), 2.0);
+        assert_eq!(s.value(Metric::SlotBuySol, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotSameTemplateBuySol, None), 1.0); // this print's grain = Pump.Fun
     }
 
     #[test]
     fn bare_name_is_a_program_and_matches_every_grain() {
-        let p = BurstPatterns::from_metric_config(&serde_json::json!({
-            "m_burst_slot": { "working_templates": ["Axiom Trade"] }
-        }))
-        .expect("configured");
+        let tags = crate::metrics::tags::config::compile_tags(&serde_json::json!({
+            "working": { "match": { "program": ["Axiom Trade"] } }
+        }));
+        let p = tags[0].patterns.templates().expect("a program is template-level");
         let ata = grain_id_hash("Axiom Trade|ATA|F");
         let cu = grain_id_hash("Axiom Trade|CU|ATA|F");
         let pump = grain_id_hash("Pump.Fun");
@@ -592,8 +495,8 @@ mod tests {
         t.program_hash = Some(axiom);
         let mut s = BurstSlotState::default();
         s.on_trade(&t, 0.0, f64::NAN);
-        assert_eq!(s.value(MetricId::ThisWorking, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotThisHasTag, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotBuyCount, Some(&p)), 1.0);
     }
 
     #[test]
@@ -604,21 +507,21 @@ mod tests {
         let mut launch = buy(10, Some(1), 1, Some(h), 2.0);
         launch.is_launch = true;
         s.on_trade(&launch, 0.0, f64::NAN);
-        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 0.0);
-        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotThisJoined, None), 0.0);
+        assert_eq!(s.value(Metric::SlotBuyCount, Some(&p)), 0.0);
 
         let mut amm = buy(10, Some(2), 2, Some(h), 2.0);
         amm.on_curve = false;
         s.on_trade(&amm, 0.0, 10.0);
-        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 0.0);
-        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotThisJoined, None), 0.0);
+        assert_eq!(s.value(Metric::SlotBuyCount, Some(&p)), 0.0);
 
         s.on_trade(&buy(10, Some(3), 3, Some(h), 1.0), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotThisJoined, None), 1.0);
+        assert_eq!(s.value(Metric::SlotBuyCount, Some(&p)), 1.0);
         // Launch/AMM wallets still mark ever — next slot they are repeats.
         s.on_trade(&buy(11, Some(1), 1, Some(h), 1.0), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotHasNewWallet, Some(&p)), 0.0);
     }
 
     #[test]
@@ -630,9 +533,9 @@ mod tests {
         launch.is_launch = true;
         s.on_trade(&launch, 0.0, f64::NAN);
         s.on_trade(&buy(10, Some(2), 1, Some(h), 1.0), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotHasNewWallet, Some(&p)), 0.0);
         s.on_trade(&buy(10, Some(3), 2, Some(h), 1.0), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotHasNewWallet, Some(&p)), 1.0);
     }
 
     #[test]
@@ -641,12 +544,12 @@ mod tests {
         let h = grain_id_hash("A|CU|F");
         let mut s = BurstSlotState::default();
         s.on_trade(&buy(10, Some(1), 1, Some(h), 1.0), 0.0, f64::NAN);
-        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotThisJoined, None), 1.0);
         s.on_tick();
-        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotThisJoined, None), 0.0);
 
         s.on_trade(&buy(10, Some(2), 2, Some(h), 1.0), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotThisJoined, None), 1.0);
         let sell = TradeLite {
             side: Side::Sell,
             sol: 0.5,
@@ -656,9 +559,9 @@ mod tests {
             ..Default::default()
         };
         s.on_trade(&sell, 20.0, 10.0);
-        assert_eq!(s.value(MetricId::ThisMember, Some(&p)), 0.0);
-        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 2.0);
-        assert_eq!(s.value(MetricId::PrePrintTrail, Some(&p)), 20.0);
+        assert_eq!(s.value(Metric::SlotThisJoined, None), 0.0);
+        assert_eq!(s.value(Metric::SlotBuyCount, Some(&p)), 2.0);
+        assert_eq!(s.value(Metric::SlotTrailBeforePct, None), 20.0);
     }
 
     #[test]
@@ -671,13 +574,13 @@ mod tests {
         s.on_trade(&buy(10, Some(1), 1, Some(ax), 0.5), 0.0, f64::NAN);
         s.on_trade(&buy(10, Some(2), 2, Some(pf), 3.0), 0.0, 10.0);
         s.on_trade(&buy(10, Some(3), 3, Some(ph), 0.5), 0.0, 10.0);
-        assert_eq!(s.value(MetricId::WorkingTemplateCount, Some(&p)), 2.0);
-        assert_eq!(s.value(MetricId::MemberTemplateCount, Some(&p)), 3.0);
-        assert_eq!(s.value(MetricId::WorkingBuySol, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::WorkingWalletCount, Some(&p)), 2.0);
-        assert_eq!(s.value(MetricId::ThisWorking, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::HasUnknown, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotTemplateCount, Some(&p)), 2.0);
+        assert_eq!(s.value(Metric::SlotTemplateCount, None), 3.0);
+        assert_eq!(s.value(Metric::SlotBuySol, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotWalletCount, Some(&p)), 2.0);
+        assert_eq!(s.value(Metric::SlotThisHasTag, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotHasNewWallet, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::SlotHasUnknownWallet, None), 0.0);
     }
 
     #[test]
@@ -686,9 +589,9 @@ mod tests {
         let h = grain_id_hash("A|CU|F");
         let mut s = BurstSlotState::default();
         s.on_trade(&buy(10, Some(1), 0, Some(h), 1.0), 0.0, f64::NAN);
-        assert_eq!(s.value(MetricId::HasUnknown, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::HasNew, Some(&p)), 0.0);
-        assert_eq!(s.value(MetricId::SameWalletCount, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotHasUnknownWallet, None), 1.0);
+        assert_eq!(s.value(Metric::SlotHasNewWallet, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::SlotSameTemplateWalletCount, None), 0.0);
     }
 
     #[test]
@@ -703,14 +606,14 @@ mod tests {
 
         // The whole pack: two grains, so this is not a same-template pack even
         // though every working-list buy in it shares one.
-        assert_eq!(s.value(MetricId::MemberTemplateCount, Some(&p)), 2.0);
+        assert_eq!(s.value(Metric::SlotTemplateCount, None), 2.0);
         // The working slice of it.
-        assert_eq!(s.value(MetricId::WorkingBuyCount, Some(&p)), 2.0);
-        assert_eq!(s.value(MetricId::WorkingBuySol, Some(&p)), 1.5);
-        assert_eq!(s.value(MetricId::WorkingWalletCount, Some(&p)), 2.0);
+        assert_eq!(s.value(Metric::SlotBuyCount, Some(&p)), 2.0);
+        assert_eq!(s.value(Metric::SlotBuySol, Some(&p)), 1.5);
+        assert_eq!(s.value(Metric::SlotWalletCount, Some(&p)), 2.0);
         // This print's grain only.
-        assert_eq!(s.value(MetricId::SameBuyCount, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::SameBuySol, Some(&p)), 0.25);
+        assert_eq!(s.value(Metric::SlotSameTemplateBuyCount, None), 1.0);
+        assert_eq!(s.value(Metric::SlotSameTemplateBuySol, None), 0.25);
     }
 
     #[test]
@@ -720,15 +623,15 @@ mod tests {
         let x = grain_id_hash("Other|CU|F");
         let mut s = BurstSlotState::default();
         // Empty prefix has no share.
-        assert!(s.value(MetricId::WorkingBuyShare, Some(&p)).is_nan());
+        assert!(s.value(Metric::SlotBuySharePct, Some(&p)).is_nan());
 
         s.on_trade(&buy(10, Some(1), 1, Some(a), 1.0), 20.0, 12.0);
         s.on_trade(&buy(10, Some(2), 2, Some(a), 1.0), 20.0, 12.0);
-        assert_eq!(s.value(MetricId::WorkingBuyShare, Some(&p)), 100.0);
+        assert_eq!(s.value(Metric::SlotBuySharePct, Some(&p)), 100.0);
 
         // One uncatalogued buyer joins and the pack stops being pure.
         s.on_trade(&buy(10, Some(3), 3, Some(x), 1.0), 20.0, 12.0);
-        let share = s.value(MetricId::WorkingBuyShare, Some(&p));
+        let share = s.value(Metric::SlotBuySharePct, Some(&p));
         assert!((share - 200.0 / 3.0).abs() < 1e-9, "{share}");
         assert!(share < 100.0);
     }

@@ -14,9 +14,12 @@ use crate::event::{IntentId, LoadedRule, ManualExit, Mint, PositionId, RuleId, T
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::identity::IdentityHash;
 use crate::grouping::TokenFingerprint;
+use crate::metrics::burst_slot::TemplatePatterns;
+use crate::metrics::buffers::Buffers;
+use crate::metrics::tags::config::{compile_tags, CompiledTag, TagPatterns};
+use crate::metrics::tags::TagKey;
 use crate::metrics::track::TokenTrack;
-use crate::metrics::FingerprintPatterns;
-use crate::metrics::Ts;
+use crate::metrics::{Ts, WindowSpec};
 
 /// Per-rule live counters, backing the concurrency + lifetime caps. `open` counts
 /// in-flight + held positions (for `max_concurrent`); `total` counts committed
@@ -134,73 +137,111 @@ impl TokenState {
     }
 }
 
-/// What a token's track folds under a rule set ([`EngineState::track_requirements`]).
-/// A reload registers new state on tracked tokens going forward only, so a track
-/// holds the whole history of a window only if the window was registered at the
-/// token's birth; [`adds_to`](Self::adds_to) says when a reload broke that.
+/// One fingerprint tag some loaded rule reads, as a track registers it.
 #[derive(Debug, Clone, PartialEq)]
+struct TagNeed {
+    patterns: TagPatterns,
+    /// Read trade by trade: open a `TagState` with these windows.
+    trade: bool,
+    windows: Vec<WindowSpec>,
+    /// Read at the template level (slot / wave).
+    template: Option<TemplatePatterns>,
+}
+
+/// Everything a coin's track folds under the loaded rules: the union of every rule's
+/// [`Buffers`], plus one entry per fingerprint tag a rule reads. A reload registers new
+/// state on tracked coins going forward only, so a track holds the whole history of a
+/// buffer only if it was registered at the coin's birth; [`adds_to`](Self::adds_to) says
+/// when a reload broke that.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct TrackRequirements {
-    /// flow, crowd, price, ix, dump, copy, build window unions, in that order.
-    windows: [Vec<crate::metrics::WindowSpec>; 7],
-    crowd_anchors: Vec<(crate::metrics::crowd_after_age::AgeAnchor, u32)>,
-    print_wallet: bool,
-    holder_book: bool,
-    patterns: BTreeMap<FingerprintId, FingerprintPatterns>,
+    buffers: Buffers,
+    tags: BTreeMap<(FingerprintId, TagKey), TagNeed>,
 }
 
 impl TrackRequirements {
-    /// Whether `self` asks a track for anything `before` did not: a window, an age
-    /// anchor or a larger anchor cap, the wallet map, the holder book, or a fingerprint
-    /// classifier.
-    /// A track built under `before` has not folded that from birth.
+    /// The union over `rules`, with each tag resolved against its fingerprint's
+    /// compiled tags (a tag the fingerprint does not define is left out: its reads are
+    /// `NaN`, which satisfies nothing).
+    fn build<'a>(
+        rules: impl Iterator<Item = &'a CompiledRule>,
+        fp_tags: &BTreeMap<FingerprintId, Vec<CompiledTag>>,
+    ) -> Self {
+        let mut out = Self::default();
+        for r in rules {
+            out.buffers.union(&r.buffers);
+            for read in &r.buffers.tags {
+                let Some(tag) = fp_tags.get(&r.fingerprint_id).and_then(|t| t.iter().find(|t| t.key == read.key)) else {
+                    continue;
+                };
+                let need = out.tags.entry((r.fingerprint_id, read.key)).or_insert_with(|| TagNeed {
+                    patterns: tag.patterns.clone(),
+                    trade: false,
+                    windows: Vec::new(),
+                    template: None,
+                });
+                need.trade |= read.trade;
+                for w in &read.windows {
+                    if !need.windows.contains(w) {
+                        need.windows.push(*w);
+                    }
+                }
+                if read.template {
+                    need.template = tag.patterns.templates();
+                }
+            }
+        }
+        out.buffers.tags.clear(); // held per fingerprint in `tags`
+        out
+    }
+
+    /// Register all of it on one track (idempotent; a re-registered tag adopts its
+    /// edited definition).
+    fn ensure(&self, track: &mut TokenTrack) {
+        self.buffers.ensure_on(track);
+        for (&(fp, key), need) in &self.tags {
+            if need.trade {
+                track.ensure_tag(fp, key, &need.patterns, &need.windows);
+            }
+            if let Some(t) = &need.template {
+                track.ensure_template_tag(fp, key, t);
+            }
+        }
+    }
+
+    /// Whether `self` asks a track for anything `before` did not: a window, an anchor
+    /// or a larger anchor cap, a map, the slot state, or a tag (new, redefined, or with
+    /// a new window). A track built under `before` has not folded that from birth.
     pub fn adds_to(&self, before: &TrackRequirements) -> bool {
-        let new_window = self
-            .windows
+        let (b, was) = (&self.buffers, &before.buffers);
+        let new_window = [
+            (&b.flow_windows, &was.flow_windows),
+            (&b.price_windows, &was.price_windows),
+            (&b.crowd_windows, &was.crowd_windows),
+            (&b.build_windows, &was.build_windows),
+        ]
+        .iter()
+        .any(|(now, was)| now.iter().any(|w| !was.contains(w)));
+        let new_anchor = b
+            .crowd_anchors
             .iter()
-            .zip(&before.windows)
-            .any(|(now, was)| now.iter().any(|w| !was.contains(w)));
-        let new_anchor = self.crowd_anchors.iter().any(|(a, cap)| {
-            !before.crowd_anchors.iter().any(|(b, was_cap)| a == b && was_cap >= cap)
+            .any(|(a, cap)| !was.crowd_anchors.iter().any(|(x, c)| a == x && c >= cap));
+        let new_tag = self.tags.iter().any(|(k, need)| match before.tags.get(k) {
+            None => true,
+            Some(old) => {
+                old.patterns != need.patterns
+                    || (need.trade && !old.trade)
+                    || need.windows.iter().any(|w| !old.windows.contains(w))
+                    || (need.template.is_some() && old.template != need.template)
+            }
         });
-        let new_pattern = self
-            .patterns
-            .iter()
-            .any(|(id, p)| before.patterns.get(id) != Some(p));
         new_window
             || new_anchor
-            || new_pattern
-            || (self.print_wallet && !before.print_wallet)
-            || (self.holder_book && !before.holder_book)
+            || new_tag
+            || (b.print_wallet && !was.print_wallet)
+            || (b.holder_book && !was.holder_book)
+            || (b.slot_state && !was.slot_state)
     }
-}
-
-/// The four window unions a track is registered from, one per backing buffer.
-///
-/// A named carrier rather than four positional slices: they are all
-/// `&[WindowSpec]`, so a swapped pair compiles and then registers every span on a
-/// buffer no metric reads — a whole group silently reading `NaN`.
-#[derive(Debug, Clone, Copy)]
-struct WindowSets<'a> {
-    /// `m_flow_window`.
-    flow: &'a [crate::metrics::WindowSpec],
-    /// `m_crowd_window`.
-    crowd: &'a [crate::metrics::WindowSpec],
-    /// `m_crowd_after_age` — one capped set per anchor.
-    crowd_anchors: &'a [(crate::metrics::crowd_after_age::AgeAnchor, u32)],
-    /// `m_price_window`.
-    price: &'a [crate::metrics::WindowSpec],
-    /// `m_flow_ix_window` — opened per fingerprint.
-    ix: &'a [crate::metrics::WindowSpec],
-    /// `m_dump_ix_window` — opened per fingerprint, on its own buffer.
-    dump: &'a [crate::metrics::WindowSpec],
-    /// `m_copy_window` — opened per fingerprint, on its own buffer.
-    copy: &'a [crate::metrics::WindowSpec],
-    /// `m_build_window`.
-    build: &'a [crate::metrics::WindowSpec],
-    /// `m_print_wallet` — one map per token, opened when any rule reads it.
-    print_wallet: bool,
-    /// `m_holder_book` — one book per token, opened when any rule reads it.
-    holder_book: bool,
 }
 
 /// The engine's whole world. Construct with [`EngineState::new`], feed it events
@@ -224,41 +265,11 @@ pub struct EngineState {
     /// classifier deque per token. The live edge hands over every `fingerprints` row;
     /// [`reload`](Self::reload) is where that narrows to the working set.
     pub fps: Vec<Fingerprint>,
-    /// Each loaded fingerprint's compiled `metric_config`, keyed by id — built once
-    /// per reload rather than re-walked per token. Only fingerprints that configure
-    /// a fingerprint-scoped group appear, so a track opens exactly the classifier
-    /// state some rule can read.
-    pub(crate) fp_patterns: BTreeMap<FingerprintId, FingerprintPatterns>,
-    /// Union of every rule's `m_flow_window` spans — ensured on each new track.
-    ///
-    /// One union per BUFFER, mirroring [`CompiledRule`]'s buckets: a span registered
-    /// on a buffer no metric reads is a deque folded on every trade for nothing, and
-    /// the `m_flow_ix_window` union is worse than that because `ensure_flow` opens one
-    /// deque per configured fingerprint.
-    pub all_windows: Vec<crate::metrics::WindowSpec>,
-    /// Union of every rule's `m_crowd_window` spans (the wallet-keyed buffer).
-    pub all_crowd_windows: Vec<crate::metrics::WindowSpec>,
-    /// Union of every rule's `m_crowd_after_age` anchors, each at the largest cap
-    /// any rule needs on it.
-    pub all_crowd_anchors: Vec<(crate::metrics::crowd_after_age::AgeAnchor, u32)>,
-    /// Union of every rule's `m_price_window` spans.
-    pub all_price_windows: Vec<crate::metrics::WindowSpec>,
-    /// Union of every rule's `m_flow_ix_window` spans — the only ones `ensure_flow`
-    /// opens per fingerprint.
-    pub all_ix_windows: Vec<crate::metrics::WindowSpec>,
-    /// Union of every rule's `m_dump_ix_window` spans — the only ones `ensure_dump`
-    /// opens per fingerprint.
-    pub all_dump_windows: Vec<crate::metrics::WindowSpec>,
-    /// Union of every rule's `m_copy_window` spans — the only ones `ensure_copy`
-    /// opens per fingerprint.
-    pub all_copy_windows: Vec<crate::metrics::WindowSpec>,
-    /// Union of every rule's `m_build_window` spans.
-    pub all_build_windows: Vec<crate::metrics::WindowSpec>,
-    /// Whether any loaded rule reads `m_print_wallet`, so every track opens the map.
-    pub any_print_wallet: bool,
-    /// Whether any loaded rule reads `m_holder_book`, so every track opens the book and
-    /// every buy is stamped from [`public_recipes`](Self::public_recipes).
-    pub any_holder_book: bool,
+    /// Each loaded fingerprint's compiled tags, keyed by id — compiled once per reload,
+    /// never per coin.
+    pub(crate) fp_tags: BTreeMap<FingerprintId, Vec<CompiledTag>>,
+    /// What every coin's track registers under the loaded rules.
+    requirements: TrackRequirements,
     /// Union of every loaded rule's [`ClockHorizons`] — how long *any* rule's
     /// readings can still move without a trade. Drives [`Settled`].
     pub tick_horizons: ClockHorizons,
@@ -326,11 +337,11 @@ pub struct EngineState {
     /// count is the whole signal, and dropping a cold entry would resurrect exactly
     /// the "everyone is new" bias priming exists to remove.
     pub(crate) creator_launches: std::collections::HashMap<u64, u32>,
-    /// The `prior_identity_launches` tally, kept only for builds in
+    /// The `name_reuse_count` tally, kept only for builds in
     /// [`identity_builds`](Self::identity_builds) - one build's launches, not the tape's.
     pub(crate) identity_launches: crate::fingerprint::identity_launches::IdentityLaunches,
     /// Creation builds (ix hash of the exact creation labels) some loaded fingerprint
-    /// reads `prior_identity_launches` on. Rebuilt on every reload.
+    /// reads `name_reuse_count` on. Rebuilt on every reload.
     pub(crate) identity_builds: crate::hash::HashedSet,
     /// Builds whose history a host has already primed (live primes each once).
     identity_primed: crate::hash::HashedSet,
@@ -371,7 +382,7 @@ impl EngineState {
         }
     }
 
-    /// Load creations into the `prior_identity_launches` tally:
+    /// Load creations into the `name_reuse_count` tally:
     /// `(creation build ix hash, identity, created_at, mint hash)`. A host primes every
     /// creation of the tracked builds over the span it replays plus the window before
     /// it; a mint already present is skipped.
@@ -384,7 +395,7 @@ impl EngineState {
         }
     }
 
-    /// Creation builds some loaded fingerprint reads `prior_identity_launches` on - the
+    /// Creation builds some loaded fingerprint reads `name_reuse_count` on - the
     /// ones a host must prime.
     pub fn identity_builds(&self) -> &crate::hash::HashedSet {
         &self.identity_builds
@@ -398,7 +409,7 @@ impl EngineState {
 
     /// How many earlier creations of `build` carried `identity` in the trailing window,
     /// and record this one. `None` when no loaded fingerprint reads the axis on the build.
-    pub(crate) fn take_prior_identity_launches(
+    pub(crate) fn take_name_reuse_count(
         &mut self,
         build: u64,
         identity: crate::identity::IdentityHash,
@@ -540,136 +551,56 @@ impl EngineState {
         self.fps.iter().find(|f| f.id == id).is_some_and(Fingerprint::has_first_slot_criteria)
     }
 
-    /// Rebuild the compiled rule set + fingerprints from a reload. Recomputes the
-    /// distinct-window union and ensures any newly-referenced window / flow state
-    /// exists on every already-tracked token (going forward — past history is not
-    /// re-folded).
+    /// Rebuild the compiled rule set + fingerprints from a reload, and register what the
+    /// rules read on every tracked coin (going forward — past history is not re-folded).
     ///
     /// **Narrows `fps` to the fingerprints the rules name**, and compiles each one's
-    /// `metric_config` here rather than per token — see [`fps`](Self::fps) and
-    /// [`fp_patterns`](Self::fp_patterns). Decision-neutral: a dropped fingerprint has
-    /// no rule to arm, so its match answer was never read.
+    /// tags here rather than per coin — see [`fps`](Self::fps) and
+    /// [`fp_tags`](Self::fp_tags). Decision-neutral: a dropped fingerprint has no rule to
+    /// arm, so its match answer was never read.
     pub fn reload(&mut self, rules: &[LoadedRule], fps: &[Fingerprint]) {
         self.rules = rules.iter().map(|r| (r.id, CompiledRule::compile(r))).collect();
         let named: BTreeSet<FingerprintId> =
             self.rules.values().map(|c| c.fingerprint_id).collect();
         self.fps = fps.iter().filter(|f| named.contains(&f.id)).cloned().collect();
-        self.fp_patterns = self
+        self.fp_tags = self
             .fps
             .iter()
-            .filter_map(|f| {
-                let p = FingerprintPatterns::compile(&f.metric_config);
-                (!p.is_empty()).then_some((f.id, p))
-            })
+            .map(|f| (f.id, compile_tags(&f.tags)))
+            .filter(|(_, t)| !t.is_empty())
             .collect();
         self.identity_builds = self
             .fps
             .iter()
-            .filter(|f| f.criteria.get(crate::fingerprint::AxisId::PriorIdentityLaunches).is_some())
+            .filter(|f| f.criteria.get(crate::fingerprint::AxisId::NameReuseCount).is_some())
             .filter_map(|f| match f.criteria.get(crate::fingerprint::AxisId::IxLabels) {
                 Some(crate::fingerprint::AxisPredicate::Sequence { labels }) => {
-                    crate::metrics::flow_ix::ix_hash_opt(labels)
+                    crate::metrics::trade_keys::ix_hash_opt(labels)
                 }
                 _ => None,
             })
             .collect();
 
-        let mut all_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
-        let mut all_crowd_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
-        let mut all_price_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
-        let mut all_ix_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
-        let mut all_dump_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
-        let mut all_copy_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
-        let mut all_build_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
-        let mut any_print_wallet = false;
-        let mut any_holder_book = false;
-        let mut all_crowd_anchors: Vec<(crate::metrics::crowd_after_age::AgeAnchor, u32)> =
-            Vec::new();
         let mut horizons = ClockHorizons::default();
         let mut any_priority = false;
         for r in self.rules.values() {
             horizons = horizons.widen(r.clock_horizons);
             any_priority |= r.priority != 0;
-            any_print_wallet |= r.needs_print_wallet;
-            any_holder_book |= r.needs_holder_book;
-            for (src, dst) in [
-                (&r.flow_windows, &mut all_windows),
-                (&r.crowd_windows, &mut all_crowd_windows),
-                (&r.price_windows, &mut all_price_windows),
-                (&r.ix_windows, &mut all_ix_windows),
-                (&r.dump_windows, &mut all_dump_windows),
-                (&r.copy_windows, &mut all_copy_windows),
-                (&r.build_windows, &mut all_build_windows),
-            ] {
-                for &w in src {
-                    if !dst.contains(&w) {
-                        dst.push(w);
-                    }
-                }
-            }
-            for &(anchor, cap) in &r.crowd_anchors {
-                match all_crowd_anchors.iter_mut().find(|(a, _)| *a == anchor) {
-                    Some((_, c)) => *c = (*c).max(cap),
-                    None => all_crowd_anchors.push((anchor, cap)),
-                }
-            }
         }
-        self.all_crowd_anchors = all_crowd_anchors;
-        self.all_windows = all_windows;
-        self.all_crowd_windows = all_crowd_windows;
-        self.all_price_windows = all_price_windows;
-        self.all_dump_windows = all_dump_windows;
-        self.all_copy_windows = all_copy_windows;
-        self.all_build_windows = all_build_windows;
-        self.any_print_wallet = any_print_wallet;
-        self.any_holder_book = any_holder_book;
-        self.all_ix_windows = all_ix_windows;
+        self.requirements = TrackRequirements::build(self.rules.values(), &self.fp_tags);
         self.tick_horizons = horizons;
         self.any_priority = any_priority;
         // A different rule set means different horizons, different priorities and a
         // different arming answer — nothing settled under the old set may stay settled.
         self.bump_cross_epoch();
-        // Borrowed out before the loop: `window_sets` reads `self`, which the
-        // `values_mut` iteration has mutably borrowed.
-        let (sets, patterns) = (
-            WindowSets {
-                flow: &self.all_windows,
-                crowd: &self.all_crowd_windows,
-                crowd_anchors: &self.all_crowd_anchors,
-                price: &self.all_price_windows,
-                ix: &self.all_ix_windows,
-                dump: &self.all_dump_windows,
-                copy: &self.all_copy_windows,
-                build: &self.all_build_windows,
-                print_wallet: self.any_print_wallet,
-                holder_book: self.any_holder_book,
-            },
-            &self.fp_patterns,
-        );
         for token in self.tokens.values_mut() {
-            Self::ensure_track_windows_and_flow(&mut token.track, sets, patterns);
+            self.requirements.ensure(&mut token.track);
         }
     }
 
-    /// What a token's track folds under the loaded rules: every window, anchor, map
-    /// and fingerprint classifier [`new_track`](Self::new_track) registers.
+    /// What a coin's track folds under the loaded rules.
     pub fn track_requirements(&self) -> TrackRequirements {
-        TrackRequirements {
-            windows: [
-                &self.all_windows,
-                &self.all_crowd_windows,
-                &self.all_price_windows,
-                &self.all_ix_windows,
-                &self.all_dump_windows,
-                &self.all_copy_windows,
-                &self.all_build_windows,
-            ]
-            .map(|w| w.clone()),
-            crowd_anchors: self.all_crowd_anchors.clone(),
-            print_wallet: self.any_print_wallet,
-            holder_book: self.any_holder_book,
-            patterns: self.fp_patterns.clone(),
-        }
+        self.requirements.clone()
     }
 
     /// Stamp a buy with whether its recipe went through a public app the previous day
@@ -679,18 +610,18 @@ impl EngineState {
     ///
     /// [`TradeLite::build_day_public`]: crate::metrics::TradeLite::build_day_public
     pub fn stamp_build_breadth(&self, t: crate::metrics::TradeLite) -> crate::metrics::TradeLite {
-        if self.any_holder_book {
+        if self.requirements.buffers.holder_book {
             crate::metrics::holder_book::stamp_public(t, self.public_recipes.as_ref())
         } else {
             t
         }
     }
 
-    /// A fresh track for a token created at `at`, pre-registering every rule
-    /// window (flow + price) and every configured flow fingerprint.
+    /// A fresh track for a coin created at `at`, with everything the loaded rules read
+    /// registered from birth.
     pub fn new_track(&self, at: Ts) -> TokenTrack {
         let mut track = TokenTrack::new(at);
-        Self::ensure_track_windows_and_flow(&mut track, self.window_sets(), &self.fp_patterns);
+        self.requirements.ensure(&mut track);
         track
     }
 
@@ -703,73 +634,6 @@ impl EngineState {
             .or_else(|| position.and_then(|p| self.manual_rules.get(&p)))
     }
 
-    /// The four window unions, in the order [`ensure_track_windows_and_flow`] reads
-    /// them. One accessor so a caller cannot pass them in the wrong order — the
-    /// failure that would be is silent, not a compile error: every union is the same
-    /// type, and a swapped pair registers each span on a buffer nothing reads.
-    ///
-    /// [`ensure_track_windows_and_flow`]: Self::ensure_track_windows_and_flow
-    fn window_sets(&self) -> WindowSets<'_> {
-        WindowSets {
-            flow: &self.all_windows,
-            crowd: &self.all_crowd_windows,
-            crowd_anchors: &self.all_crowd_anchors,
-            price: &self.all_price_windows,
-            ix: &self.all_ix_windows,
-            dump: &self.all_dump_windows,
-            copy: &self.all_copy_windows,
-            build: &self.all_build_windows,
-            print_wallet: self.any_print_wallet,
-            holder_book: self.any_holder_book,
-        }
-    }
-
-    fn ensure_track_windows_and_flow(
-        track: &mut TokenTrack,
-        windows: WindowSets<'_>,
-        patterns: &BTreeMap<FingerprintId, FingerprintPatterns>,
-    ) {
-        for &w in windows.flow {
-            track.ensure_window(w);
-        }
-        for &w in windows.crowd {
-            track.ensure_crowd_window(w);
-        }
-        for &(anchor, cap) in windows.crowd_anchors {
-            track.ensure_crowd_after_age(anchor, cap);
-        }
-        for &w in windows.price {
-            track.ensure_price_window(w);
-        }
-        for &w in windows.build {
-            track.ensure_build_window(w);
-        }
-        if windows.print_wallet {
-            track.ensure_print_wallet();
-        }
-        if windows.holder_book {
-            track.ensure_holder_book();
-        }
-        for (&fp, p) in patterns {
-            // Each group opens its own buffers off its own list, so a fingerprint
-            // configured for one and not the other pays for one and not the other.
-            if let Some(dump) = &p.dump {
-                track.ensure_dump(fp, dump, windows.dump);
-            }
-            if let Some(burst) = &p.burst {
-                track.ensure_burst(fp, burst);
-            }
-            if let Some(copy) = &p.copy {
-                track.ensure_copy(fp, copy, windows.copy);
-            }
-            if let Some(flow) = &p.flow {
-                // Only the `m_flow_ix_window` spans: this call opens a deque PER
-                // FINGERPRINT, so handing it the aggregate-flow union multiplied the
-                // fold by the number of configured fingerprints for nothing.
-                track.ensure_flow(fp, flow, windows.ix);
-            }
-        }
-    }
 }
 
 /// Compile a manual position's TP/SL config into a one-off exit rule via the ONE
@@ -783,18 +647,7 @@ fn compile_manual_exit_rule(rule: RuleId, exit: &ManualExit) -> CompiledRule {
     let params = RuleParams {
         take_profit: exit.tp_pct.filter(|v| v.is_finite() && *v > 0.0),
         stop_loss: exit.sl_pct.filter(|v| v.is_finite() && *v > 0.0),
-        entry: None,
-        entry_event: None,
-        entry_lock: None,
-        exit: None,
-        arm: None,
-        scale_out: None,
-        reentry: None,
-        exclusive: false,
-        priority: 0,
-        disabled: None,
-        // Exit-only rule: there is no buy to size.
-        buy_pct_of_vsol: None,
+        ..RuleParams::default()
     };
     let loaded = LoadedRule {
         id: rule,
@@ -814,7 +667,7 @@ mod tests {
     use super::*;
     use crate::event::TradeMode;
     use crate::fingerprint::{AxisId, AxisPredicate, Criteria};
-    use crate::metrics::{MetricId, Side, TradeLite, Windows};
+    use crate::metrics::{Metric, MetricRef, Side, TagRef, TradeLite};
     use crate::rule_params::RuleParams;
     use chrono::{TimeZone, Utc};
     use serde_json::json;
@@ -828,17 +681,17 @@ mod tests {
         FingerprintId(Uuid::from_u128(n))
     }
 
-    /// A fingerprint that tags one build into `m_flow_ix`.
+    /// A fingerprint with one `volume` tag.
     fn fp(n: u128) -> Fingerprint {
         Fingerprint {
             id: fp_id(n),
             wildcard: false,
             criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000 + n)),
-            metric_config: json!({ "m_flow_ix": { "ix_patterns": [["Pump.Fun: Buy"]] } }),
+            tags: json!({ "volume": { "match": { "ix_shape": [["Pump.Fun: Buy"]] } } }),
         }
     }
 
-    fn rule_on(fp: FingerprintId) -> LoadedRule {
+    fn rule_on(fp: FingerprintId, params: serde_json::Value) -> LoadedRule {
         LoadedRule {
             id: RuleId(Uuid::from_u128(1)),
             fingerprint_id: fp,
@@ -846,66 +699,72 @@ mod tests {
             buy_amount_lamports: 100_000_000,
             max_concurrent_tokens: 1,
             max_total_tokens: 0,
-            params: RuleParams::parse(&json!({
-                "entry": { "m_state": { "time": [{ "operator": ">=", "value": 1.0 }] } },
-                "exit": { "m_position": { "held": [{ "operator": ">=", "value": 30.0 }] } }
-            }))
-            .expect("params"),
+            params: RuleParams::parse(&params).expect("params"),
             entry_enabled: true,
         }
     }
 
-    /// The live edge hands the engine every `fingerprints` row, but only the ones a
-    /// rule names can decide anything. Keeping the rest cost a classifier deque per
-    /// unnamed-but-configured fingerprint on EVERY token, folded on every trade and
-    /// read by nobody.
+    fn reads_volume() -> serde_json::Value {
+        json!({ "enter": { "filters": [
+            { "metric": "m_flow.buy_sol", "tag": "!volume", "is": [{ "operator": ">=", "value": 0.0 }] }
+        ] } })
+    }
+
+    fn rest_buy() -> MetricRef {
+        MetricRef::life(Metric::BuySol).with_tag(TagRef::parse("!volume").unwrap())
+    }
+
+    /// Only the fingerprints a rule names are kept and compiled, and a coin opens
+    /// state only for the tags a rule reads.
     #[test]
-    fn reload_keeps_only_the_fingerprints_the_rules_name() {
+    fn reload_keeps_only_what_the_rules_read() {
         let (named, unnamed, bare) = (fp(1), fp(2), Fingerprint::empty(fp_id(3)));
         let mut state = EngineState::new();
-        state.reload(&[rule_on(named.id)], &[named.clone(), unnamed.clone(), bare]);
-
+        state.reload(&[rule_on(named.id, reads_volume())], &[named.clone(), unnamed.clone(), bare]);
         assert_eq!(state.fps.iter().map(|f| f.id).collect::<Vec<_>>(), vec![named.id]);
-        // And only the kept one compiles a pattern set to open state from.
-        assert_eq!(state.fp_patterns.keys().copied().collect::<Vec<_>>(), vec![named.id]);
+        assert_eq!(state.fp_tags.keys().copied().collect::<Vec<_>>(), vec![named.id]);
 
-        // On a real track that is the difference between one classifier and two.
         let mut track = state.new_track(ts());
-        track.ensure_flow(named.id, state.fp_patterns[&named.id].flow.as_ref().unwrap(), &[]);
         track.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, at: ts(), ..Default::default() });
-        assert_eq!(track.value(MetricId::UntaggedBuy, Windows::NONE, Some(named.id), ts()), 1.0);
-        assert!(
-            track.value(MetricId::UntaggedBuy, Windows::NONE, Some(unnamed.id), ts()).is_nan(),
-            "an unnamed fingerprint opens no state, so its metrics read NaN - not 0"
-        );
+        assert_eq!(track.value(rest_buy(), Some(named.id), ts()), 1.0);
+        assert!(track.value(rest_buy(), Some(unnamed.id), ts()).is_nan(), "an unnamed fingerprint opens no state");
     }
 
-    /// A fingerprint that configures no fingerprint-scoped group at all must not get
-    /// an entry either: `Some(empty patterns)` would still open a deque per token.
+    /// A rule that reads no tag opens no tag state, even on a fingerprint that
+    /// defines one: an unread tag would be a classifier folded on every trade for
+    /// nothing.
     #[test]
-    fn a_fingerprint_with_no_group_config_compiles_to_nothing() {
-        let mut plain = fp(1);
-        plain.metric_config = json!({});
+    fn an_unread_tag_opens_no_state() {
+        let named = fp(1);
         let mut state = EngineState::new();
-        state.reload(&[rule_on(plain.id)], &[plain.clone()]);
-        assert_eq!(state.fps.len(), 1, "it still matches - identity is unaffected");
-        assert!(state.fp_patterns.is_empty(), "but it opens no classifier state");
+        let plain = json!({ "enter": { "filters": [{ "metric": "m_state.age_sec", "is": [{ "operator": ">=", "value": 1.0 }] }] } });
+        state.reload(&[rule_on(named.id, plain)], std::slice::from_ref(&named));
+        let track = state.new_track(ts());
+        assert!(!track.has_tag(named.id, TagKey::of("volume")));
     }
 
-    /// Narrowing must not change a decision: the dropped rows had no rule to arm, so
-    /// the arming answer is the same set of rules either way.
+    /// A tag a rule reads but its fingerprint does not define reads NaN, never 0.
+    #[test]
+    fn a_missing_tag_reads_nan() {
+        let mut plain = fp(1);
+        plain.tags = json!({});
+        let mut state = EngineState::new();
+        state.reload(&[rule_on(plain.id, reads_volume())], std::slice::from_ref(&plain));
+        let mut track = state.new_track(ts());
+        track.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, at: ts(), ..Default::default() });
+        assert!(track.value(rest_buy(), Some(plain.id), ts()).is_nan());
+    }
+
+    /// Narrowing is decision-neutral: the dropped rows had no rule to arm.
     #[test]
     fn narrowing_is_decision_neutral() {
         let named = fp(1);
-        let noise: Vec<Fingerprint> = (10..40).map(fp).collect();
         let mut all = vec![named.clone()];
-        all.extend(noise);
-
+        all.extend((10..40).map(fp));
         let mut wide = EngineState::new();
-        wide.reload(&[rule_on(named.id)], &all);
+        wide.reload(&[rule_on(named.id, reads_volume())], &all);
         let mut narrow = EngineState::new();
-        narrow.reload(&[rule_on(named.id)], &[named.clone()]);
-
+        narrow.reload(&[rule_on(named.id, reads_volume())], std::slice::from_ref(&named));
         let tf = TokenFingerprint { cu_limit: Some(200_001), ..Default::default() };
         let hits = |st: &EngineState| {
             crate::fingerprint::match_all(&st.fps, &tf, crate::fingerprint::MatchPhase::Full)
@@ -915,5 +774,20 @@ mod tests {
         };
         assert_eq!(hits(&wide), hits(&narrow));
         assert_eq!(hits(&narrow), vec![named.id]);
+    }
+
+    /// A reload that starts reading a tag window adds to what tracked coins folded.
+    #[test]
+    fn a_new_tag_window_adds_to_the_requirements() {
+        let named = fp(1);
+        let mut state = EngineState::new();
+        state.reload(&[rule_on(named.id, reads_volume())], std::slice::from_ref(&named));
+        let before = state.track_requirements();
+        let windowed = json!({ "enter": { "filters": [
+            { "metric": "m_flow.buy_sol", "tag": "!volume", "span": "10s", "is": [{ "operator": ">=", "value": 0.0 }] }
+        ] } });
+        state.reload(&[rule_on(named.id, windowed)], std::slice::from_ref(&named));
+        assert!(state.track_requirements().adds_to(&before));
+        assert!(!before.adds_to(&before));
     }
 }

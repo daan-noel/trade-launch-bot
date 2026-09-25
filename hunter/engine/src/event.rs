@@ -20,8 +20,7 @@ use uuid::Uuid;
 use crate::cap::Cap;
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::grouping::TokenFingerprint;
-use crate::metrics::evaluator::Operator;
-use crate::metrics::{metric_id_by_name, MetricId, Ts, TradeLite};
+use crate::metrics::{Ts, TradeLite};
 use crate::rule_params::RuleParams;
 
 /// A token mint address — the event stream's partition key. `Arc<str>` so cloning
@@ -97,62 +96,43 @@ pub enum TradeMode {
     Real,
 }
 
-/// Why a position closed. Persisted as a short string label ([`ExitReason::label`]):
-/// `TakeProfit | StopLoss | Dead | Manual | Migrated | {name}[({w}s)] {op} {value}`
-/// (e.g. `stall > 3`, `trail >= 20`, `untagged_buy(2s) >= 0.9`). Legacy rows may still
-/// store bare `Metrics`, the brief `{name}{op}` form (`stall>`), or a windowed exit
-/// with no `({w}s)` — see [`parse_metric_exit_label`].
+/// Why a position closed. Persisted as its label ([`ExitReason::label`]):
+/// `TakeProfit | StopLoss | Dead | Manual | Migrated`, or the label of the rule line
+/// that sold (`"spike"`, `"top"`, or one generated from the line's first condition,
+/// `m_flow.buy_sol @!volume [10s] >= 2`). Rows written before rule lines existed carry
+/// labels like `stall > 3`; they read back as lines with that label.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExitReason {
-    /// Price reached `entry_price · (1 + take_profit/100)`.
+    /// The `take_profit` shortcut: `m_position.pnl_pct` reached it.
     TakeProfit,
-    /// Price fell to `entry_price · (1 − stop_loss/100)`.
+    /// The `stop_loss` shortcut: `m_position.pnl_pct` fell to minus it.
     StopLoss,
-    /// An exit metric condition held — name, operator, and authored threshold.
-    Metrics {
-        metric: MetricId,
-        operator: Operator,
-        /// Authored condition threshold (not the live metric reading).
-        value: f64,
-        /// Trailing-window size of the req that fired, `None` for a static metric.
-        ///
-        /// Load-bearing, not decoration: a dynamic group and its lifetime twin share
-        /// every metric *name* (`m_flow_ix.untagged_buy` and
-        /// `m_flow_ix_window.untagged_buy` are both `"untagged_buy"`), so without the
-        /// window the label names a monotone lifetime total when what actually fired
-        /// was a burst over `window` seconds — two readings that move in opposite
-        /// ways. Multi-window rules make it worse: several reqs print identically.
-        window: Option<crate::metrics::WindowSpec>,
-    },
-    /// The token was judged dead (liquidity gone + silent).
+    /// A rule line sold; its label (interned, so the reason stays `Copy`).
+    Line(&'static str),
+    /// The coin was judged dead (liquidity gone + silent).
     Dead,
     /// A manual sell / stop-all closed it.
     Manual,
-    /// The token migrated off the curve.
+    /// The coin migrated off the curve.
     Migrated,
 }
 
 impl ExitReason {
-    /// Persisted / displayed label. Ladder reasons keep PascalCase; metric exits
-    /// are spaced `name[({w}s)] op value` (`stall > 3`, `untagged_buy(2s) >= 0.9`).
+    /// The persisted / displayed label.
     pub fn label(self) -> Cow<'static, str> {
-        match self {
-            Self::TakeProfit => Cow::Borrowed("TakeProfit"),
-            Self::StopLoss => Cow::Borrowed("StopLoss"),
-            Self::Dead => Cow::Borrowed("Dead"),
-            Self::Manual => Cow::Borrowed("Manual"),
-            Self::Migrated => Cow::Borrowed("Migrated"),
-            Self::Metrics {
-                metric,
-                operator,
-                value,
-                window,
-            } => Cow::Owned(format_metric_exit_label(metric, operator, value, window)),
-        }
+        Cow::Borrowed(match self {
+            Self::TakeProfit => "TakeProfit",
+            Self::StopLoss => "StopLoss",
+            Self::Dead => "Dead",
+            Self::Manual => "Manual",
+            Self::Migrated => "Migrated",
+            Self::Line(label) => label,
+        })
     }
 
-    pub fn is_metrics(self) -> bool {
-        matches!(self, Self::Metrics { .. })
+    /// A rule line sold (not a shortcut, not the engine's own verdict, not a person).
+    pub fn is_line(self) -> bool {
+        matches!(self, Self::Line(_))
     }
 }
 
@@ -169,43 +149,6 @@ pub fn format_metric_threshold(v: f64) -> String {
     }
     let s = format!("{v:.6}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
-}
-
-/// Spaced metric-exit label SSOT: `name[({w}s)] op value`.
-///
-/// The `({w}s)` qualifier rides on the **name**, not as a fourth token, so the
-/// existing three-token split still parses every form and a reader scanning a
-/// column of reasons sees the metric and its window as one word.
-pub fn format_metric_exit_label(
-    metric: MetricId,
-    operator: Operator,
-    value: f64,
-    window: Option<crate::metrics::WindowSpec>,
-) -> String {
-    format!(
-        "{} {} {}",
-        format_metric_exit_name(metric, window),
-        operator.symbol(),
-        format_metric_threshold(value)
-    )
-}
-
-/// The name half of a metric exit label: `untagged_buy` or `untagged_buy(2s)`.
-/// Shared with every UI that renders a condition beside its reason, so a chart
-/// legend and a persisted reason can never disagree about which req is meant.
-pub fn format_metric_exit_name(
-    metric: MetricId,
-    window: Option<crate::metrics::WindowSpec>,
-) -> String {
-    match window {
-        // The qualifier is `WindowSpec::label` in parentheses — the SAME grammar a
-        // `?windows=` query and a chart legend use, so a reason written here parses
-        // back through `WindowSpec::parse` by construction rather than by agreement.
-        Some(w) if w.size.is_finite() && w.size > 0.0 => {
-            format!("{}({})", metric.name(), w.label())
-        }
-        _ => metric.name().to_string(),
-    }
 }
 
 impl fmt::Display for ExitReason {
@@ -229,120 +172,18 @@ impl<'de> Deserialize<'de> for ExitReason {
     }
 }
 
-/// Parse a persisted exit-reason label. Accepts ladder names and spaced
-/// `name op value` detail forms. Bare legacy `"Metrics"` / compact `stall>` are
-/// recognized by [`is_metric_exit_label`] for rollups but not reconstructed here
-/// without a threshold (compact → threshold `0` only when parsing for typed use
-/// is impossible — prefer [`parse_metric_exit_label`]).
+/// Read a persisted exit-reason label back: a named reason, else the label of the rule
+/// line that wrote it. `None` only for an empty label.
 pub fn parse_exit_reason(s: &str) -> Option<ExitReason> {
-    match s {
-        "TakeProfit" => Some(ExitReason::TakeProfit),
-        "StopLoss" => Some(ExitReason::StopLoss),
-        "Dead" => Some(ExitReason::Dead),
-        "Manual" => Some(ExitReason::Manual),
-        "Migrated" => Some(ExitReason::Migrated),
-        other => parse_metric_exit_label(other).map(|(metric, operator, value, window)| {
-            ExitReason::Metrics {
-                metric,
-                operator,
-                value,
-                window,
-            }
-        }),
-    }
-}
-
-/// True for bare legacy `"Metrics"`, spaced `name op value`, or brief `{name}{op}`.
-pub fn is_metric_exit_label(s: &str) -> bool {
-    s == "Metrics" || parse_metric_exit_label(s).is_some()
-}
-
-const METRIC_OPS: &[(&str, Operator)] = &[
-    (">=", Operator::Gte),
-    ("<=", Operator::Lte),
-    ("!=", Operator::Ne),
-    (">", Operator::Gt),
-    ("<", Operator::Lt),
-    ("=", Operator::Eq),
-];
-
-/// Parse `name[({w}s)] op value` (`stall > 3`, `untagged_buy(2s) >= 0.9`) or legacy
-/// compact `name{op}` (`stall>`). Compact forms return `value = 0.0` as a
-/// placeholder (rollup detection only).
-///
-/// The window is what disambiguates a dynamic group from its lifetime twin, so it
-/// also **selects** the `MetricId`: qualified ⇒ the `Dynamic`-group metric of that
-/// name, bare ⇒ the `Static` one. Rows written before the qualifier existed are bare
-/// whichever group fired, so a bare name falls back to any group — the same answer
-/// this returned before, never a parse failure on a real stored reason.
-pub fn parse_metric_exit_label(
-    s: &str,
-) -> Option<(MetricId, Operator, f64, Option<crate::metrics::WindowSpec>)> {
-    let s = s.trim();
-    // Spaced form: split on whitespace into [name, op, value, ...].
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.len() >= 3 {
-        let (name, window) = split_window_qualifier(parts[0]);
-        let op_sym = parts[1];
-        let val_str = parts[2];
-        let metric = metric_id_by_name_windowed(name, window.is_some())?;
-        let operator = METRIC_OPS
-            .iter()
-            .find(|(sym, _)| *sym == op_sym)
-            .map(|(_, op)| *op)?;
-        let value: f64 = val_str.parse().ok()?;
-        return Some((metric, operator, value, window));
-    }
-    // Legacy compact `{name}{op}` (no threshold).
-    for &(sym, op) in METRIC_OPS {
-        if let Some(name) = s.strip_suffix(sym) {
-            if name.is_empty() || name.chars().any(|c| c.is_whitespace()) {
-                continue;
-            }
-            let (name, window) = split_window_qualifier(name);
-            if let Some(metric) = metric_id_by_name_windowed(name, window.is_some()) {
-                return Some((metric, op, 0.0, window));
-            }
-        }
-    }
-    None
-}
-
-/// Split `untagged_buy(2s)` into `("untagged_buy", Some(2s))`, `buy(30sl@1)` into the
-/// 30-slot span lagged by one, `buy(1p)` into the single-print span. Anything that is
-/// not a well-formed suffix is left on the name, so an unrecognised qualifier fails
-/// the name lookup instead of silently parsing as a bare metric. A label written
-/// before slots existed has no `sl`, no `p` and no `@`, so it still parses to exactly
-/// the seconds window it always meant.
-fn split_window_qualifier(token: &str) -> (&str, Option<crate::metrics::WindowSpec>) {
-    let Some(open) = token.find('(') else {
-        return (token, None);
-    };
-    let Some(inner) = token[open + 1..].strip_suffix(')') else {
-        return (token, None);
-    };
-    // A bare number inside the parens would be a legacy seconds span, which
-    // `WindowSpec::parse` accepts — but this position never held one: the qualifier
-    // has carried its `s` since it was introduced, and `untagged_buy(2)` is exactly the
-    // malformed shape that must fail the name lookup rather than resolve.
-    match crate::metrics::WindowSpec::parse(inner) {
-        Some(w) if inner.trim().parse::<f64>().is_err() => (&token[..open], Some(w)),
-        _ => (token, None),
-    }
-}
-
-/// Resolve a metric name to the dynamic (windowed) or static variant.
-///
-/// `windowed = false` prefers a static group but accepts a dynamic one, because a
-/// pre-qualifier row stored a bare name whichever group fired and rejecting it would
-/// turn old reasons into unparseable strings.
-fn metric_id_by_name_windowed(name: &str, windowed: bool) -> Option<MetricId> {
-    let want = if windowed {
-        crate::metrics::MetricKind::Dynamic
-    } else {
-        crate::metrics::MetricKind::Static
-    };
-    crate::metrics::metric_id_by_name_kind(name, want).or_else(|| metric_id_by_name(name))
+    Some(match s.trim() {
+        "" => return None,
+        "TakeProfit" => ExitReason::TakeProfit,
+        "StopLoss" => ExitReason::StopLoss,
+        "Dead" => ExitReason::Dead,
+        "Manual" => ExitReason::Manual,
+        "Migrated" => ExitReason::Migrated,
+        other => ExitReason::Line(crate::intern::intern(other)),
+    })
 }
 
 /// Why a submitted buy/sell did not confirm. Drives the fold's retry policy.
@@ -376,7 +217,7 @@ pub struct Fill {
 
 /// A rule as the engine consumes it — the DB row's columns plus **parsed**
 /// One creation build's previous-day tally — a row of the daily launch-build
-/// stats, keyed by the build's [`flow_ix::ix_hash`](crate::metrics::flow_ix::ix_hash)
+/// stats, keyed by the build's [`trade_keys::ix_hash`](crate::metrics::trade_keys::ix_hash)
 /// over its exact ordered creation labels. Delivered on a
 /// [`Event::LaunchBuildStatsReloaded`]; `reduce` stamps
 /// `build_prev_day_launches` / `build_prev_day_runner_bps` from it at
@@ -393,8 +234,8 @@ pub struct LaunchBuildStat {
 }
 
 /// One build recipe's app on the previous day — a row of the daily build-breadth
-/// table, keyed by [`flow_ix::build_hash`](crate::metrics::flow_ix::build_hash). The
-/// app is [`flow_ix::recipe_app`](crate::metrics::flow_ix::recipe_app) (the recipe
+/// table, keyed by [`trade_keys::build_hash`](crate::metrics::trade_keys::build_hash). The
+/// app is [`trade_keys::recipe_app`](crate::metrics::trade_keys::recipe_app) (the recipe
 /// itself for a direct pump.fun call), counted across every recipe it sent. Delivered
 /// on a [`Event::BuildBreadthReloaded`]; `reduce` classes each row with
 /// [`holder_book::is_public_app`](crate::metrics::holder_book::is_public_app) and
@@ -728,118 +569,29 @@ pub enum ArmedStateTag {
 #[cfg(test)]
 mod exit_label_tests {
     use super::*;
-    use crate::metrics::{metric_id_by_name_kind, MetricKind};
-
-    fn win(name: &str) -> MetricId {
-        metric_id_by_name_kind(name, MetricKind::Dynamic).expect("dynamic metric")
-    }
-    fn stat(name: &str) -> MetricId {
-        metric_id_by_name_kind(name, MetricKind::Static).expect("static metric")
-    }
-
-    /// The whole point of the qualifier: `m_flow_ix.untagged_buy` and
-    /// `m_flow_ix_window.untagged_buy` share a name, so a label without the window
-    /// names a monotone lifetime total when a 2 s burst is what fired.
-    #[test]
-    fn window_qualifier_round_trips_and_selects_the_right_metric() {
-        let windowed = ExitReason::Metrics {
-            metric: win("untagged_buy"),
-            operator: Operator::Gte,
-            value: 0.9,
-            window: Some(crate::metrics::WindowSpec::secs(2.0)),
-        };
-        assert_eq!(windowed.label(), "untagged_buy(2s) >= 0.9");
-        assert_eq!(parse_exit_reason(&windowed.label()), Some(windowed));
-
-        let lifetime = ExitReason::Metrics {
-            metric: stat("untagged_buy"),
-            operator: Operator::Gte,
-            value: 0.9,
-            window: None,
-        };
-        assert_eq!(lifetime.label(), "untagged_buy >= 0.9");
-        assert_eq!(parse_exit_reason(&lifetime.label()), Some(lifetime));
-
-        // The two must not collapse onto each other.
-        assert_ne!(windowed.label(), lifetime.label());
-        assert_ne!(win("untagged_buy"), stat("untagged_buy"));
-    }
-
-    /// One size, three bases, three labels. `1s`, `1sl` and `1p` read different tape,
-    /// so an operator reading a stored reason must be able to tell which fired.
-    #[test]
-    fn each_basis_labels_itself_apart_at_the_same_size() {
-        use crate::metrics::WindowSpec;
-        let label = |w| {
-            ExitReason::Metrics {
-                metric: win("untagged_buy"),
-                operator: Operator::Gte,
-                value: 1.0,
-                window: Some(w),
-            }
-            .label()
-            .into_owned()
-        };
-        let (sec, slot, print) = (
-            label(WindowSpec::secs(1.0)),
-            label(WindowSpec::slots(1.0, 0.0)),
-            label(WindowSpec::prints(1.0, 0.0)),
-        );
-        assert_eq!(sec, "untagged_buy(1s) >= 1");
-        assert_eq!(slot, "untagged_buy(1sl) >= 1");
-        assert_eq!(print, "untagged_buy(1p) >= 1");
-        assert_eq!(std::collections::BTreeSet::from([&sec, &slot, &print]).len(), 3);
-    }
 
     #[test]
-    fn fractional_and_large_windows_survive_the_round_trip() {
-        use crate::metrics::WindowSpec;
-        for w in [
-            WindowSpec::secs(0.5),
-            WindowSpec::secs(2.0),
-            WindowSpec::secs(45.0),
-            WindowSpec::secs(300.0),
-            // A slot span and a lagged one must survive the same round trip, or a
-            // persisted exit reason cannot name which read fired.
-            WindowSpec::slots(1.0, 0.0),
-            WindowSpec::slots(30.0, 1.0),
-            // Same for a print span. `1p` is the one-transaction read, and its
-            // suffix has to stay distinguishable from `1s` and `1sl` - three spans
-            // that report different tape must never label identically.
-            WindowSpec::prints(1.0, 0.0),
-            WindowSpec::prints(20.0, 1.0),
+    fn every_reason_round_trips_through_its_label() {
+        for r in [
+            ExitReason::TakeProfit,
+            ExitReason::StopLoss,
+            ExitReason::Dead,
+            ExitReason::Manual,
+            ExitReason::Migrated,
+            ExitReason::Line("spike"),
+            ExitReason::Line("m_flow.buy_sol @!volume [10s] >= 2"),
         ] {
-            let r = ExitReason::Metrics {
-                metric: win("untagged_buy"),
-                operator: Operator::Lte,
-                value: 0.2,
-                window: Some(w),
-            };
-            assert_eq!(parse_exit_reason(&r.label()), Some(r), "window {w:?}");
+            assert_eq!(parse_exit_reason(&r.label()), Some(r));
         }
     }
 
-    /// Rows written before the qualifier existed are bare whichever group fired.
-    /// They must keep parsing — a stored reason that stops resolving reads to the
-    /// console exactly like a deleted metric.
+    /// A label written before rule lines existed reads back as a line with that label,
+    /// never as nothing: a stored reason that stopped resolving would read like a
+    /// deleted metric.
     #[test]
-    fn legacy_labels_still_parse() {
-        assert!(matches!(parse_exit_reason("stall > 3"), Some(ExitReason::Metrics { .. })));
-        assert!(matches!(parse_exit_reason("untagged_buy >= 0.9"), Some(ExitReason::Metrics { .. })));
-        assert!(matches!(parse_exit_reason("stall>"), Some(ExitReason::Metrics { .. })));
-        assert_eq!(parse_exit_reason("TakeProfit"), Some(ExitReason::TakeProfit));
-        assert!(is_metric_exit_label("Metrics"));
-        assert!(is_metric_exit_label("untagged_buy(2s) >= 0.9"));
-        assert!(!is_metric_exit_label("Dead"));
-    }
-
-    /// A qualifier that is not `({number}s)` stays on the name, so it fails the
-    /// lookup instead of silently parsing as the bare metric.
-    #[test]
-    fn malformed_qualifiers_do_not_degrade_to_the_lifetime_metric() {
-        for s in ["untagged_buy(2) >= 0.9", "untagged_buy(xs) >= 0.9", "untagged_buy(2s >= 0.9"] {
-            assert_eq!(parse_exit_reason(s), None, "{s}");
-        }
+    fn a_stored_label_from_before_lines_still_reads() {
+        assert_eq!(parse_exit_reason("stall > 3"), Some(ExitReason::Line("stall > 3")));
+        assert_eq!(parse_exit_reason(""), None);
     }
 }
 

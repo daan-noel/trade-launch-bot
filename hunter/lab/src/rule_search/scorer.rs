@@ -17,21 +17,22 @@ use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::grid::SparseGrid;
 use hunter_engine::metrics::series::SeriesColumn;
-use hunter_engine::metrics::{group_spec, MetricId, MetricKind, MetricScope};
+use hunter_engine::metrics::tags::config::CompiledTag;
+use hunter_engine::metrics::{Metric, MetricRef, WindowUnit, NOMINAL_SLOT_SECS};
 use trading_core::config::constants::sol_to_lamports;
 
 use crate::sweep::aggregate::ComboAgg;
 use crate::sweep::corpus::CorpusToken;
-use crate::sweep::generic::axes::SWEEP_FLOW_FP;
-use crate::sweep::generic::strategy::{
-    build_series_with_flow, entry_candidates, frozen_tail_horizon, resolve_entry_from, resolve_exit,
-    BoundCombo, EntryCandidates, Pricing,
+use crate::sweep::generic::frozen_tail::frozen_tail_horizon;
+use crate::sweep::generic::scan::{
+    self, entry_candidates, resolve_entry_from, resolve_exit_walk, BoundCombo, EntryCandidates,
 };
+use crate::sweep::generic::strategy::build_series;
+use crate::sweep::generic::Pricing;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::TokenOutcome;
 
 use super::generator::{Clause, GeneratedCombo};
-use hunter_engine::metrics::flow_ix::FlowPatterns;
 
 /// Time blocks a range is split into for the robust (trimmed) rank and the
 /// per-quartile PnL row.
@@ -114,8 +115,9 @@ pub fn block_of(at: DateTime<Utc>, range: (DateTime<Utc>, DateTime<Utc>)) -> usi
 pub struct ScoreConfig<'a> {
     pub pricing: Pricing,
     pub as_of: DateTime<Utc>,
-    pub flow: Option<&'a FlowPatterns>,
-    pub flow_fp: FingerprintId,
+    /// The fingerprint's compiled tags; tagged reads are scoped to `fp`.
+    pub tags: &'a [CompiledTag],
+    pub fp: FingerprintId,
     pub skip_duplicate_identity: bool,
     pub duplicate_identity_window_hours: u64,
     pub max_concurrent_tokens: u32,
@@ -133,13 +135,11 @@ pub fn score_combos(
     if combos.is_empty() {
         return Ok(Vec::new());
     }
-    let columns = columns_for(combos, cfg.flow_fp, cfg.flow.is_some());
+    let compiled: Vec<CompiledRule> = combos.iter().map(|c| compile_params(&c.params, cfg)).collect();
+    let columns = columns_for(&compiled);
     let grid = grid_for(combos, &cfg.as_of, tokens);
     let tail = frozen_tail_horizon(cfg.as_of, tokens);
-    let bounds: Vec<BoundCombo> = combos
-        .iter()
-        .map(|c| BoundCombo::new(&columns, compile_params(&c.params, cfg)))
-        .collect();
+    let bounds: Vec<BoundCombo> = compiled.into_iter().map(|c| BoundCombo::new(&columns, c)).collect();
 
     // Group combos that share an entry filling so the candidate walk runs once.
     let classes = entry_classes(combos);
@@ -154,13 +154,7 @@ pub fn score_combos(
             if observer.cancelled() {
                 return vec![TokenOutcome::no_entry(); combos.len()];
             }
-            let series = build_series_with_flow(
-                token,
-                columns.clone(),
-                &grid,
-                cfg.as_of,
-                cfg.flow,
-            );
+            let series = build_series(token, columns.clone(), &grid, cfg.as_of, cfg.tags);
             let mut outs = vec![TokenOutcome::no_entry(); combos.len()];
             for idxs in &classes {
                 if idxs.is_empty() {
@@ -176,7 +170,7 @@ pub fn score_combos(
                         &mut cands,
                         &cfg.pricing,
                     );
-                    outs[ci] = resolve_exit(
+                    outs[ci] = resolve_exit_walk(
                         &token.trades,
                         &series,
                         &bounds[ci],
@@ -205,7 +199,7 @@ pub fn score_combos(
 fn compile_params(params: &hunter_engine::rule_params::RuleParams, cfg: &ScoreConfig<'_>) -> CompiledRule {
     let loaded = LoadedRule {
         id: RuleId(Uuid::nil()),
-        fingerprint_id: cfg.flow_fp,
+        fingerprint_id: cfg.fp,
         trade_mode: TradeMode::Paper,
         buy_amount_lamports: sol_to_lamports(cfg.pricing.buy_amount_sol).max(0) as u64,
         max_concurrent_tokens: 0,
@@ -228,51 +222,23 @@ fn entry_classes(combos: &[GeneratedCombo]) -> Vec<Vec<usize>> {
 fn entry_key(clauses: &[Clause]) -> String {
     let mut parts: Vec<String> = clauses
         .iter()
-        .map(|c| {
-            format!(
-                "{:?}:{:?}:{:?}:{:?}:{}",
-                c.group,
-                c.metric,
-                c.window,
-                c.op,
-                c.threshold.to_bits()
-            )
-        })
+        .map(|c| format!("{:?}:{:?}:{}", c.r, c.op, c.threshold.to_bits()))
         .collect();
     parts.sort();
     parts.join("|")
 }
 
-fn columns_for(combos: &[GeneratedCombo], flow_fp: FingerprintId, with_flow: bool) -> Vec<SeriesColumn> {
-    let fp = if flow_fp.0.is_nil() { SWEEP_FLOW_FP } else { flow_fp };
-    let mut cols = Vec::new();
-    let mut push = |c: &Clause| {
-        let g = group_spec(c.group);
-        if g.scope == MetricScope::Position {
-            return;
-        }
-        if !with_flow && hunter_engine::metrics::is_fingerprint_scoped(c.metric) {
-            return;
-        }
-        let col = if hunter_engine::metrics::is_fingerprint_scoped(c.metric) {
-            SeriesColumn::Fingerprint(c.metric, c.window, fp)
-        } else {
-            match (g.kind, c.window) {
-                (MetricKind::Dynamic, Some(w)) => SeriesColumn::window(c.metric, w),
-                _ => SeriesColumn::Static(c.metric),
-            }
-        };
+/// The run's one fixed column set: every coin read any combo's compiled rule makes,
+/// scoped as the rule scopes it, so each combo binds its reads by equality.
+fn columns_for(compiled: &[CompiledRule]) -> Vec<SeriesColumn> {
+    let mut cols: Vec<SeriesColumn> = Vec::new();
+    for col in compiled.iter().flat_map(scan::columns_for) {
         if !cols.contains(&col) {
             cols.push(col);
         }
-    };
-    for combo in combos {
-        for c in combo.entry.clauses.iter().chain(combo.exit.clauses.iter()) {
-            push(c);
-        }
     }
     if cols.is_empty() {
-        cols.push(SeriesColumn::Static(MetricId::Time));
+        cols.push(SeriesColumn::of(MetricRef::life(Metric::AgeSec)));
     }
     cols
 }
@@ -283,22 +249,20 @@ fn grid_for(combos: &[GeneratedCombo], as_of: &DateTime<Utc>, tokens: &[CorpusTo
     let mut stall_h = 0.0f64;
     for c in combos {
         for cl in c.entry.clauses.iter().chain(c.exit.clauses.iter()) {
-            if let Some(w) = cl.window {
+            if let Some(w) = cl.r.span.window {
                 // A wall clock: a slot span converts at the nominal slot time, and a
                 // print span contributes nothing (no tick can move its cursor).
                 // Sizes a horizon only, never a reading.
                 max_window = max_window.max(match w.unit {
-                    hunter_engine::metrics::WindowUnit::Sec => w.size + w.lag,
-                    hunter_engine::metrics::WindowUnit::Slot => {
-                        (w.size + w.lag) * hunter_engine::metrics::NOMINAL_SLOT_SECS
-                    }
-                    hunter_engine::metrics::WindowUnit::Print => 0.0,
+                    WindowUnit::Sec => w.size + w.lag,
+                    WindowUnit::Slot => (w.size + w.lag) * NOMINAL_SLOT_SECS,
+                    WindowUnit::Print => 0.0,
                 });
             }
-            if cl.metric == MetricId::Time {
+            if cl.r.metric == Metric::AgeSec {
                 time_h = time_h.max(cl.threshold);
             }
-            if cl.metric == MetricId::Stall {
+            if cl.r.metric == Metric::StallSec {
                 stall_h = stall_h.max(cl.threshold);
             }
         }
@@ -488,10 +452,7 @@ mod tests {
                 pnl_percent: 1.0,
                 pnl_sol: 0.1,
                 exit: ExitCode::TakeProfit,
-                exit_metric: None,
-                exit_operator: None,
-                exit_metric_value: None,
-                exit_metric_window: None,
+                exit_label: None,
                 exit_metric_slot: None,
                 entry_time: None,
                 entry_price: None,
@@ -544,8 +505,8 @@ mod tests {
         let cfg = ScoreConfig {
             pricing: crate::discovery::fixtures::pricing(),
             as_of: Utc::now(),
-            flow: None,
-            flow_fp: FingerprintId(Uuid::nil()),
+            tags: &[],
+            fp: FingerprintId(Uuid::nil()),
             skip_duplicate_identity: true,
             duplicate_identity_window_hours: 24,
             max_concurrent_tokens: 0,
@@ -565,8 +526,8 @@ mod tests {
         let cfg = ScoreConfig {
             pricing: crate::discovery::fixtures::pricing(),
             as_of: Utc::now(),
-            flow: None,
-            flow_fp: FingerprintId(Uuid::nil()),
+            tags: &[],
+            fp: FingerprintId(Uuid::nil()),
             skip_duplicate_identity: false,
             duplicate_identity_window_hours: 24,
             max_concurrent_tokens: 0,
@@ -584,8 +545,8 @@ mod tests {
         let cfg = ScoreConfig {
             pricing: crate::discovery::fixtures::pricing(),
             as_of: Utc::now(),
-            flow: None,
-            flow_fp: FingerprintId(Uuid::nil()),
+            tags: &[],
+            fp: FingerprintId(Uuid::nil()),
             skip_duplicate_identity: false,
             duplicate_identity_window_hours: 24,
             max_concurrent_tokens: 1,

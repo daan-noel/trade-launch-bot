@@ -1,86 +1,71 @@
-//! Generic sweep **axes** — the redesigned engine's replacement for the three
-//! per-strategy `*Axes` structs (plan §5.4).
+//! Sweep **axes** — the dimensions a grouped sweep varies.
 //!
-//! An axis is one swept dimension. Each combo picks exactly one value from every
-//! axis; the picked values assemble one [`RuleParams`] (the "WHEN it trades"
-//! JSONB a rule stores). The precompute-then-scan sweep reads these `RuleParams`
-//! through the **same** `hunter_engine` evaluator the live engine uses, so a
-//! swept combo and a promoted rule trade identically by construction.
+//! Each combo picks one value from every axis, and the picks assemble one rule
+//! ([`RuleParams`]) that the scan runs through the engine's own decision code, so a
+//! swept combo and the promoted rule trade identically.
 //!
-//! Axis kinds (the wire `kind` tag, default `"metric"`):
-//! * `metric` — a `(side, group, metric, operator[, window])` condition; each
-//!   value becomes a `{operator, value}` condition on that metric. A `null`
-//!   value is the **off** sentinel: that combo simply omits the condition
-//!   (sweeping with-vs-without in one grid). Off is metric-only.
+//! Axis kinds (the wire `kind`, default `"metric"`):
+//! * `metric` — one condition `metric @tag [span] <operator> value`, where `side` says
+//!   where it goes: `entry` ⇒ an `enter.filters` condition (the coin must pass it to be
+//!   bought), `exit` ⇒ its own `always` sell line (sell everything when it holds). A
+//!   `null` value is the **off** pick: that combo leaves the condition out, so one
+//!   grid sweeps with-vs-without.
 //! * `take_profit` / `stop_loss` — each value sets the rule's TP / SL %.
 //!
-//! Group / metric are named (the registry enums aren't serde) and resolved
-//! against [`hunter_engine::metrics`] so a typo is a hard error, never a silent
-//! no-op — the same contract rule-save validation enforces.
+//! Example: `{"side": "entry", "metric": "m_flow.buy_sol", "tag": "!volume",
+//! "span": "10s", "operator": ">=", "values": [1, 2, 4]}` sweeps "SOL bought by
+//! trades without `volume` in the last 10 s is at least 1 / 2 / 4".
+//!
+//! Two axes on the same read (metric + tag + span) join into one condition: AND when
+//! the pair can hold together (`> 5` and `< 50`), else OR (`< 5` or `> 50`).
 
+use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::{coalesce_contributions, Condition, Operator};
 use hunter_engine::metrics::series::SeriesColumn;
-use hunter_engine::fingerprint::FingerprintId;
-use hunter_engine::metrics::{
-    group_by_name, group_spec, is_fingerprint_scoped, metric_spec, MetricGroupId, MetricId, MetricKind,
-    MetricScope, WindowSpec,
-};
+use hunter_engine::metrics::{metric_spec, Metric, MetricRef, WindowUnit};
+use hunter_engine::rule_params::{Cond, Line, RuleParams, Sell};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Run-scoped fingerprint id for sweep flow state (compile_combo + SeriesColumn::Fingerprint
-/// share this so BoundCombo column indices line up). Promote materializes a real FP.
+/// The fingerprint id a sweep's tag reads are scoped to. The combo's compiled rule and
+/// the run's series columns share it, so their column indices line up. Promote writes
+/// the run's tags onto a real fingerprint.
 pub const SWEEP_FLOW_FP: FingerprintId = FingerprintId(Uuid::nil());
-use hunter_engine::rule_params::{ExitSide, GroupConditions, RuleParams, SideConditions};
-use serde::{Deserialize, Serialize};
 
-/// Which side of the rule an axis conditions.
+/// Where a metric axis's condition goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AxisSide {
+    /// An `enter.filters` condition.
     Entry,
+    /// Its own `always` sell line.
     Exit,
 }
 
-/// The raw wire form of one axis (from the request `axes.axes[]` array).
+/// The wire form of one axis (the request's `axes.axes[]`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AxisSpec {
     /// `"metric"` (default), `"take_profit"`, or `"stop_loss"`.
     #[serde(default = "default_kind")]
     pub kind: String,
-    /// Metric axes only — which side the condition applies to.
-    #[serde(default)]
+    /// Metric axes only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side: Option<AxisSide>,
-    /// Metric axes only — the registry group name (e.g. `"m_state"`).
-    #[serde(default)]
-    pub group: Option<String>,
-    /// Metric axes only — the registry metric name (e.g. `"time"`).
-    #[serde(default)]
+    /// Metric axes only — the registry path, `m_family.name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metric: Option<String>,
-    /// Metric axes only — the comparison operator.
-    #[serde(default)]
+    /// Metric axes only — `volume`, `!volume`, a built-in class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Metric axes only — the span, `10s`, `30sl@1`, `20p`, `age60s`; absent = life.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<String>,
+    /// Metric axes only — the nested slice of a two-window read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator: Option<Operator>,
-    /// Dynamic-metric axes only — the trailing window.
-    ///
-    /// A bare number is SECONDS, which is what every stored sweep config holds and
-    /// what this field has always meant; a string is a full span in the
-    /// `WindowSpec::parse` grammar (`"30s"`, `"30sl@1"`, `"20p"`). One field rather
-    /// than three, so an old config round-trips byte-identically and a new one names
-    /// its basis in the same spelling a chart legend and an exit reason use.
-    #[serde(default)]
-    pub window: Option<WindowField>,
-    /// The nested SLICE span, for the two-window metrics alone
-    /// (`m_flow_window.trade_share` / `.sol_share`).
-    ///
-    /// Required exactly when the metric reads it (`is_two_window`) and rejected when it
-    /// does not — the same per-metric rule `rule_params::validate_group` enforces, so a
-    /// combo this builds cannot be one the engine refuses. Without it these two metrics
-    /// were unsweepable: every assembled rule failed validation at run time, which is a
-    /// whole sweep that starts and produces nothing.
-    #[serde(default)]
-    pub slice: Option<WindowField>,
-    /// The swept values. Must be non-empty; deduped + sorted on resolve. On a
-    /// metric axis a `null` is the **off** sentinel (combo omits the condition);
-    /// TP/SL axes reject it (absent TP/SL is authored by omitting the axis).
+    /// The swept values. On a metric axis a `null` is the **off** pick.
     pub values: Vec<Option<f64>>,
 }
 
@@ -88,59 +73,19 @@ fn default_kind() -> String {
     "metric".to_string()
 }
 
-/// The two spellings of [`AxisSpec::window`]. Untagged, so the wire stays a bare
-/// JSON number for a wall-clock span and gains a string only when a basis is named.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum WindowField {
-    /// Seconds — the pre-basis spelling, unchanged.
-    Secs(f64),
-    /// A full span: `"30s"`, `"30sl@1"`, `"20p"`. A bare numeric string is seconds.
-    Span(String),
-}
-
-impl WindowField {
-    /// Resolve to a span, or `None` when it names no usable window.
-    pub fn spec(&self) -> Option<WindowSpec> {
-        match self {
-            Self::Secs(v) if v.is_finite() && *v > 0.0 => Some(WindowSpec::secs(*v)),
-            Self::Secs(_) => None,
-            Self::Span(s) => WindowSpec::parse(s),
-        }
-    }
-}
-
-/// The full request body's `axes` field.
+/// The request body's `axes` field.
 #[derive(Clone, Debug, Deserialize, Default)]
 pub struct AxesRequest {
     #[serde(default)]
     pub axes: Vec<AxisSpec>,
 }
 
-/// A validated, registry-resolved axis.
+/// A validated axis.
 #[derive(Clone, Debug)]
 pub enum ResolvedAxis {
-    /// A metric condition axis: each value → `{operator, value}` on the metric.
-    /// A `None` value is the **off** pick — that combo carries no condition on
-    /// this metric (sorted first, so pick 0 is always off when present).
-    Metric {
-        side: AxisSide,
-        group: MetricGroupId,
-        metric: MetricId,
-        operator: Operator,
-        /// Present iff the metric's group is dynamic (`m_flow_window`). The WHOLE
-        /// span — a bare size cannot tell 30 slots from 30 seconds, and the two
-        /// sweep different rules.
-        window: Option<WindowSpec>,
-        /// The nested slice, present iff the METRIC reads it (`is_two_window`) — the
-        /// second half of a two-window read's identity, so two axes differing only
-        /// here open two group instances rather than merging into one.
-        slice: Option<WindowSpec>,
-        values: Vec<Option<f64>>,
-    },
-    /// Take-profit %.
+    /// Each value → `{operator, value}` on `r`; `None` is the off pick (sorted first).
+    Metric { side: AxisSide, r: MetricRef, operator: Operator, values: Vec<Option<f64>> },
     TakeProfit { values: Vec<f64> },
-    /// Stop-loss %.
     StopLoss { values: Vec<f64> },
 }
 
@@ -153,86 +98,59 @@ impl ResolvedAxis {
         }
     }
 
-    /// This axis's value at `pick` — `None` on a metric axis means the **off**
-    /// sentinel, so the two `None`s are distinguished by the outer `Option`.
+    /// This axis's value at `pick` — an inner `None` is a metric axis's off pick.
     pub fn value_at(&self, pick: usize) -> Option<Option<f64>> {
         match self {
             ResolvedAxis::Metric { values, .. } => values.get(pick).copied(),
-            ResolvedAxis::TakeProfit { values } | ResolvedAxis::StopLoss { values } => {
-                values.get(pick).copied().map(Some)
-            }
+            ResolvedAxis::TakeProfit { values } | ResolvedAxis::StopLoss { values } => values.get(pick).copied().map(Some),
         }
     }
 
-    /// True for an axis that shapes the ENTRY side — used to keep entry axes as
-    /// the high-order combo digits so same-entry combos stay contiguous (the
-    /// engine's per-token entry cache then recomputes the entry once per block).
+    /// An entry axis. Entry axes are the high-order combo digits, so combos sharing an
+    /// entry stay contiguous and the per-token entry walk is shared.
     fn is_entry(&self) -> bool {
         matches!(self, ResolvedAxis::Metric { side: AxisSide::Entry, .. })
     }
 
-    /// The precompute column this axis reads (metric axes only). Position-scoped
-    /// metrics (`m_position`) read no column: their value comes from the per-entry
-    /// `PositionCtx` during the exit scan, not a token-independent series (a static
-    /// column would only ever record `NaN`, since the track has no position state).
+    /// The series column this axis reads. A position metric reads none: it comes from
+    /// the held position during the exit scan, not from the coin.
     fn column(&self) -> Option<SeriesColumn> {
         match self {
-            ResolvedAxis::Metric { group, .. }
-                if group_spec(*group).scope == MetricScope::Position =>
-            {
-                None
-            }
-            ResolvedAxis::Metric { metric, window, .. } => Some(if is_fingerprint_scoped(*metric) {
-                SeriesColumn::Fingerprint(*metric, *window, SWEEP_FLOW_FP)
-            } else {
-                match window {
-                    Some(w) => SeriesColumn::window(*metric, *w),
-                    None => SeriesColumn::Static(*metric),
-                }
+            ResolvedAxis::Metric { r, .. } if !r.is_position() => Some(SeriesColumn {
+                r: *r,
+                fp: r.is_fingerprint_scoped().then_some(SWEEP_FLOW_FP),
             }),
             _ => None,
         }
     }
 }
 
-/// A resolved, validated axes model: the ordered axes plus derived combo math.
-/// Entry axes are ordered before exit/TP/SL axes so a grid walk keeps each
-/// distinct entry contiguous.
+/// A resolved axes model: the ordered axes and the combo math.
 #[derive(Clone, Debug)]
 pub struct AxesModel {
-    /// Axes in combo-significance order (index 0 = most significant). Entry
-    /// axes first (slowest-varying) so the exit sub-grid varies within one entry.
+    /// Combo-significance order (index 0 most significant): entry axes first.
     pub axes: Vec<ResolvedAxis>,
 }
 
 impl AxesModel {
-    /// Resolve + validate the wire specs against the metric registry.
+    /// Resolve and validate the wire specs against the registry.
     pub fn resolve(req: &AxesRequest) -> Result<Self, String> {
         if req.axes.is_empty() {
             return Err("at least one axis is required".to_string());
         }
-        let mut resolved: Vec<ResolvedAxis> = Vec::with_capacity(req.axes.len());
+        let mut resolved = Vec::with_capacity(req.axes.len());
         for (i, spec) in req.axes.iter().enumerate() {
             resolved.push(resolve_one(spec).map_err(|e| format!("axis {i}: {e}"))?);
         }
-        // No shared-window constraint: `assemble` places each axis into the
-        // `GroupConditions` instance matching its `window_size_sec`, so different
-        // windows on the same (side, group) become distinct instances — exactly the
-        // engine's multi-window-per-group model. Same-window axes merge; nothing
-        // conflicts.
-        // Entry axes first (high-order); the rest keep their relative order.
         resolved.sort_by_key(|a| !a.is_entry());
         Ok(Self { axes: resolved })
     }
 
-    /// Total combos = product of every axis's value count. Uses checked
-    /// multiplication — a wrapping `product()` can yield a bogus huge count that
-    /// then tries to allocate petabytes when sampling a grid.
+    /// Total combos = product of every axis's value count (`usize::MAX` on overflow).
     pub fn combo_count(&self) -> usize {
         let mut n: usize = 1;
         for a in &self.axes {
-            let len = a.value_count().max(1);
-            match n.checked_mul(len) {
+            match n.checked_mul(a.value_count().max(1)) {
                 Some(p) => n = p,
                 None => return usize::MAX,
             }
@@ -240,99 +158,82 @@ impl AxesModel {
         n
     }
 
-    /// The distinct precompute columns every combo could read — the union fed to
-    /// `MetricSeries` so one replay pass serves every combo.
+    /// The distinct series columns every combo could read.
     pub fn columns(&self) -> Vec<SeriesColumn> {
         let mut cols: Vec<SeriesColumn> = Vec::new();
-        for a in &self.axes {
-            if let Some(c) = a.column() {
-                if !cols.contains(&c) {
-                    cols.push(c);
-                }
+        for c in self.axes.iter().filter_map(ResolvedAxis::column) {
+            if !cols.contains(&c) {
+                cols.push(c);
             }
         }
         cols
     }
 
-    /// True when any axis references a volume-flow metric group.
-    pub fn references_flow(&self) -> bool {
-        self.axes.iter().any(|a| {
-            matches!(
-                a,
-                ResolvedAxis::Metric {
-                    group: MetricGroupId::FlowIx | MetricGroupId::FlowIxWindow,
-                    ..
-                }
-            )
-        })
-    }
-
-    /// Largest trailing window any metric axis reads, IN SECONDS, across both window
-    /// families (`m_flow_window`/`m_flow_ix_window` and `m_price_window`) — `0.0`
-    /// if the swept rules read no windowed metrics. Sizes the sparse grid's decay
-    /// region (plan §P2): past `last_trade + this`, every window flow is 0 and every
-    /// rolling price extremum has aged out.
-    ///
-    /// The grid is a WALL clock, so a slot span converts at the nominal slot time and
-    /// a print span contributes nothing — no tick can move a print cursor, and a trade
-    /// emits its own row. Mirrors `ClockHorizons::absorb_req`: this sizes a horizon,
-    /// never a reading, so the slot approximation costs coverage and not correctness.
-    pub fn max_window_secs(&self) -> f64 {
-        self.axes
-            .iter()
-            .filter_map(|a| match a {
-                ResolvedAxis::Metric { window: Some(w), .. } => Some(match w.unit {
-                    hunter_engine::metrics::WindowUnit::Sec => w.size + w.lag,
-                    hunter_engine::metrics::WindowUnit::Slot => {
-                        (w.size + w.lag) * hunter_engine::metrics::NOMINAL_SLOT_SECS
-                    }
-                    hunter_engine::metrics::WindowUnit::Print => 0.0,
-                }),
-                _ => None,
-            })
-            .fold(0.0_f64, f64::max)
-    }
-
-    /// The largest swept condition value (+ the metric's `=`-tolerance) placed on
-    /// `metric` across every axis and both sides — `0.0` if the metric isn't swept.
-    /// For the monotone/static `time`/`stall` metrics this is the sparse grid's
-    /// horizon: past it, no `metric` condition can change truth (plan §P2). The
-    /// full `eq_tolerance` is a safe superset of every operator's settle point
-    /// (including `=`'s upper tolerance edge and derived mono-bounds).
-    pub fn metric_value_ceiling(&self, metric: MetricId) -> f64 {
-        let mut max = 0.0_f64;
-        let mut found = false;
+    /// The tags the axes read (without `!`), for the caller to check against the run's
+    /// tags document.
+    pub fn tag_names(&self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
         for a in &self.axes {
-            if let ResolvedAxis::Metric { metric: m, values, .. } = a {
-                if *m == metric {
-                    for v in values.iter().flatten() {
-                        max = max.max(*v);
-                        found = true;
+            if let ResolvedAxis::Metric { r, .. } = a {
+                if let Some(t) = r.tag.filter(|t| !t.is_builtin()) {
+                    if !out.contains(&t.name) {
+                        out.push(t.name);
                     }
                 }
             }
         }
-        if found {
-            max + hunter_engine::metrics::metric_spec(metric).eq_tolerance
-        } else {
-            0.0
-        }
+        out
     }
 
-    /// The `window_size_sec` used by the entry side's `m_flow_window` group (if
-    /// any) — the number of high-order entry axes' first window. Used only by the
-    /// entry-cache key packing; correctness comes from the assembled RuleParams.
+    /// Whether any axis reads a tag.
+    pub fn references_tags(&self) -> bool {
+        self.axes.iter().any(|a| matches!(a, ResolvedAxis::Metric { r, .. } if r.tag.is_some()))
+    }
+
+    /// Largest span any metric axis reads, in seconds (slot spans at the nominal slot
+    /// time, print spans as 0 — a print moves only on a trade, which emits its own row).
+    /// Sizes the sparse grid's decay region; a horizon, never a reading.
+    pub fn max_window_secs(&self) -> f64 {
+        self.axes
+            .iter()
+            .filter_map(|a| match a {
+                ResolvedAxis::Metric { r, .. } => Some([r.span.window, r.span.slice]),
+                _ => None,
+            })
+            .flatten()
+            .flatten()
+            .map(|w| match w.unit {
+                WindowUnit::Sec => w.size + w.lag,
+                WindowUnit::Slot => (w.size + w.lag) * hunter_engine::metrics::NOMINAL_SLOT_SECS,
+                WindowUnit::Print => 0.0,
+            })
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// The largest swept value on `metric` (+ its `=` tolerance), `0.0` when unswept —
+    /// the sparse grid's horizon for a clock metric: past it no condition on the clock
+    /// changes truth.
+    pub fn metric_value_ceiling(&self, metric: Metric) -> f64 {
+        let mut max: Option<f64> = None;
+        for a in &self.axes {
+            if let ResolvedAxis::Metric { r, values, .. } = a {
+                if r.metric == metric {
+                    for v in values.iter().flatten() {
+                        max = Some(max.map_or(*v, |m: f64| m.max(*v)));
+                    }
+                }
+            }
+        }
+        max.map_or(0.0, |m| m + metric_spec(metric).eq_tolerance)
+    }
+
+    /// The number of entry axes.
     pub fn entry_axis_count(&self) -> usize {
         self.axes.iter().filter(|a| a.is_entry()).count()
     }
 
-    /// The per-axis value indices combo `idx` picks — the mixed-radix decode every
-    /// other combo accessor is defined in terms of (axis 0 most significant, so the
-    /// entry axes at the front are the slowest-varying digits).
-    ///
-    /// SSOT: `combo_params` and `entry_key` read this decode rather than each
-    /// carrying a copy of the loop. Discovery reads the picks directly (to compare
-    /// which value a family's best combo landed on) — one decode, three readers.
+    /// The per-axis value indices combo `idx` picks (mixed radix, axis 0 most
+    /// significant). The one decode every combo accessor reads.
     pub fn combo_picks(&self, idx: usize) -> Vec<usize> {
         let mut rem = idx;
         let mut picks = vec![0usize; self.axes.len()];
@@ -344,144 +245,65 @@ impl AxesModel {
         picks
     }
 
-    /// Assemble the `RuleParams` for combo `idx` by mixed-radix decoding (axis 0
-    /// most significant). Panics only if `idx >= combo_count` (caller-guarded).
+    /// The rule combo `idx` assembles.
     pub fn combo_params(&self, idx: usize) -> RuleParams {
         self.assemble(&self.combo_picks(idx))
     }
 
-    /// The packed entry-axis pick indices for combo `idx` — the engine's entry
-    /// cache key (two combos with equal packing share an entry resolution).
+    /// The packed entry-axis picks of combo `idx` — two combos with the same key share
+    /// their whole entry side.
     pub fn entry_key(&self, idx: usize) -> u64 {
         let picks = self.combo_picks(idx);
-        // Pack only the entry-axis picks (the high-order front) into a key.
         let mut key = 0u64;
         for (a_idx, axis) in self.axes.iter().enumerate() {
             if axis.is_entry() {
-                key = key
-                    .wrapping_mul(axis.value_count() as u64 + 1)
-                    .wrapping_add(picks[a_idx] as u64 + 1);
+                key = key.wrapping_mul(axis.value_count() as u64 + 1).wrapping_add(picks[a_idx] as u64 + 1);
             }
         }
         key
     }
 
     fn assemble(&self, picks: &[usize]) -> RuleParams {
-        // `reentry` / `exclusive` / `priority` are not sweepable axes — exclusivity is
-        // a documented sweep divergence (docs/plans/sweep/sim-parity.md).
+        // Re-entry, exclusivity and priority are not sweepable — exclusivity is a
+        // documented sweep difference (docs/plans/sweep/sim-parity.md).
         let mut rp = RuleParams::default();
+        // Per side, one condition per read, in first-seen order.
+        let mut entry: Vec<(MetricRef, Vec<Condition>)> = Vec::new();
+        let mut exit: Vec<(MetricRef, Vec<Condition>)> = Vec::new();
         for (axis, &pick) in self.axes.iter().zip(picks) {
             match axis {
                 ResolvedAxis::TakeProfit { values } => rp.take_profit = Some(values[pick]),
                 ResolvedAxis::StopLoss { values } => rp.stop_loss = Some(values[pick]),
-                ResolvedAxis::Metric {
-                    side,
-                    group,
-                    metric,
-                    operator,
-                    window,
-                    slice,
-                    values,
-                } => {
-                    // The off pick: no condition, no group entry, no window —
-                    // this combo behaves as if the axis were never authored.
-                    let Some(val) = values[pick] else { continue };
-                    let sc = match side {
-                        AxisSide::Entry => rp.entry.get_or_insert_with(SideConditions::default),
-                        AxisSide::Exit => rp
-                            .exit
-                            .get_or_insert_with(|| ExitSide::Any(SideConditions::default()))
-                            .as_object_mut()
-                            .expect("sweep authors object-form exit"),
+                ResolvedAxis::Metric { side, r, operator, values } => {
+                    // The off pick: this combo behaves as if the axis were never authored.
+                    let Some(value) = values[pick] else { continue };
+                    let list = match side {
+                        AxisSide::Entry => &mut entry,
+                        AxisSide::Exit => &mut exit,
                     };
-                    // One `GroupConditions` instance per distinct `window_size_sec`,
-                    // mirroring the engine's multi-window-per-group model
-                    // (`hunter_engine::rule_params`): axes sharing a window merge into
-                    // the same instance, distinct windows each get their own. So
-                    // `m_flow_window@30` and `m_flow_window@60` coexist, and a
-                    // `m_price_window` window is independent of any flow window. A
-                    // static group's axes all carry `window == None`, so they collapse
-                    // to a single window-less instance. Created lazily on the first
-                    // metric so an all-off group leaves no window-only instance behind.
-                    let instances = sc.0.entry(*group).or_default();
-                    let gc = match instances.iter().position(|g| {
-                        // BOTH axes are instance identity: two `trade_share` axes over
-                        // one reference window and different slices are two different
-                        // reads, and merging them would drop one from every rule.
-                        same_window(g.window_spec(&hunter_engine::metrics::WINDOW_AXIS), *window)
-                            && same_window(
-                                g.window_spec(&hunter_engine::metrics::flow_slice::SLICE_AXIS),
-                                *slice,
-                            )
-                    }) {
-                        Some(i) => &mut instances[i],
-                        None => {
-                            let mut g = GroupConditions::default();
-                            if let Some(w) = window {
-                                // The param that matches the UNIT: writing seconds for
-                                // a slot span would silently assemble a different rule
-                                // from the one the axis swept.
-                                g.strict.insert(w.unit.size_param().to_string(), w.size);
-                                // A zero lag stays absent — the default, and what keeps
-                                // a pre-basis config's assembled params byte-identical.
-                                if w.lag > 0.0 {
-                                    g.strict.insert(
-                                        hunter_engine::metrics::WINDOW_LAG_PARAM.to_string(),
-                                        w.lag,
-                                    );
-                                }
-                            }
-                            if let Some(b) = slice {
-                                // The slice rides the reference's lag (that pair IS the
-                                // two-window basis), so only its size is written.
-                                g.strict.insert(
-                                    hunter_engine::metrics::flow_slice::SLICE_AXIS
-                                        .size_param(b.unit)
-                                        .to_string(),
-                                    b.size,
-                                );
-                            }
-                            instances.push(g);
-                            instances.last_mut().expect("just pushed")
-                        }
-                    };
-                    // Stage each axis contribution as its own single-condition arm;
-                    // coalesce below: AND when the combined list is satisfiable
-                    // (range `> a, < b`), else one OR arm per contribution (`< a | > b`).
-                    gc.metrics
-                        .entry(*metric)
-                        .or_default()
-                        .push(vec![Condition { operator: *operator, value: val }]);
+                    let c = Condition { operator: *operator, value };
+                    match list.iter_mut().find(|(x, _)| x == r) {
+                        Some((_, cs)) => cs.push(c),
+                        None => list.push((*r, vec![c])),
+                    }
                 }
             }
         }
-        if let Some(entry) = rp.entry.as_mut() {
-            coalesce_side(entry);
-        }
-        if let Some(exit) = rp.exit.as_mut().and_then(ExitSide::as_object_mut) {
-            coalesce_side(exit);
-        }
+        let cond = |r: MetricRef, cs: Vec<Condition>| Cond::Metric {
+            r,
+            is: coalesce_contributions(cs, metric_spec(r.metric).eq_tolerance),
+            off: false,
+        };
+        rp.enter.filters = entry.into_iter().map(|(r, cs)| cond(r, cs)).collect();
+        rp.always = exit
+            .into_iter()
+            .map(|(r, cs)| Line { when: vec![cond(r, cs)], sell: Some(Sell { label: None, pct: None }), go: None, off: false })
+            .collect();
         rp
     }
 }
 
-/// Flatten staged per-axis arms into the metric's DNF expr (same rule on entry
-/// and exit): AND when satisfiable, else OR. That makes both orientations work:
-/// * `> lows × < highs` → ranges when `a < b`, outside OR when crossed
-/// * `< lows × > highs` → outside OR when crossed, ranges when the pair forms an interval
-fn coalesce_side(side: &mut SideConditions) {
-    for instances in side.0.values_mut() {
-        for group in instances.iter_mut() {
-            for (metric_id, arms) in group.metrics.iter_mut() {
-                let flat: Vec<Condition> = arms.iter().flatten().copied().collect();
-                let tol = metric_spec(*metric_id).eq_tolerance;
-                *arms = coalesce_contributions(flat, tol);
-            }
-        }
-    }
-}
-
-/// Resolve + validate a single axis spec against the registry.
+/// Resolve and validate one axis spec.
 fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
     if spec.values.is_empty() {
         return Err("`values` must be non-empty".to_string());
@@ -492,20 +314,15 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
         return Err("`values` must all be finite".to_string());
     }
     if numbers.is_empty() {
-        // An all-off axis is the same as not authoring the axis — reject the no-op.
         return Err("`values` needs at least one number besides `off`".to_string());
     }
-    // Dedup + sort for a stable, minimal grid.
     numbers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     numbers.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
 
     match spec.kind.as_str() {
         "take_profit" | "stop_loss" => {
             if has_off {
-                return Err(
-                    "TP/SL axes cannot carry `off` — omit the axis to leave the guard off"
-                        .to_string(),
-                );
+                return Err("TP/SL axes cannot carry `off` — omit the axis to leave it off".to_string());
             }
             if numbers.iter().any(|v| *v <= 0.0) {
                 return Err("TP/SL values must be > 0".to_string());
@@ -517,303 +334,49 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
             })
         }
         "metric" => {
-            let side = spec.side.ok_or("metric axis needs `side`")?;
-            let group_name = spec.group.as_deref().ok_or("metric axis needs `group`")?;
-            let metric_name = spec.metric.as_deref().ok_or("metric axis needs `metric`")?;
-            let operator = spec.operator.ok_or("metric axis needs `operator`")?;
-            let group = group_by_name(group_name)
-                .ok_or_else(|| format!("unknown metric group `{group_name}`"))?;
-            // Position-scoped metrics (`m_position`) only exist while a position is
-            // held — they read `NaN` before entry, so an entry condition on one can
-            // never fire. Reject it on the entry side (mirrors the rule-save gate).
-            if group.scope == MetricScope::Position && side == AxisSide::Entry {
+            let side = spec.side.ok_or("a metric axis needs `side` (entry or exit)")?;
+            let operator = spec.operator.ok_or("a metric axis needs `operator`")?;
+            // One parser for every read: the rule's own.
+            let mut obj = serde_json::Map::new();
+            obj.insert("metric".into(), serde_json::json!(spec.metric.as_deref().ok_or("a metric axis needs `metric`")?));
+            for (k, v) in [("tag", &spec.tag), ("span", &spec.span), ("slice", &spec.slice)] {
+                if let Some(v) = v {
+                    obj.insert(k.into(), serde_json::json!(v));
+                }
+            }
+            let r = MetricRef::from_json(&obj)?;
+            if r.is_position() && side == AxisSide::Entry {
                 return Err(format!(
-                    "group `{group_name}` is position-scoped (exit-only) — it has no value before entry; place it on the exit side"
+                    "`{}` reads our position, which has no value before the buy — put it on the exit side",
+                    r.label()
                 ));
             }
-            let mspec = group
-                .metric_by_name(metric_name)
-                .ok_or_else(|| format!("metric `{metric_name}` not in group `{group_name}`"))?;
-            // `since_armed` needs an `arm` clause to latch, and a swept combo carries
-            // none: the column would read NaN on every row and never fire.
-            if mspec.id == hunter_engine::metrics::MetricId::SinceArmed {
-                return Err("m_position.since_armed needs a rule `arm` clause, which a sweep combo does not carry - simulate the rule instead".into());
-            }
-            let window = match group.kind {
-                MetricKind::Dynamic => Some(
-                    spec.window.as_ref().and_then(WindowField::spec).ok_or_else(|| {
-                        format!(
-                            "group `{group_name}` is dynamic — `window` is required: a \
-                             number of seconds, or a span like \"30sl@1\" / \"20p\""
-                        )
-                    })?,
-                ),
-                MetricKind::Static => None, // a window on a static metric is ignored
-                // An anchored group is scoped by an age anchor, not a window, and a
-                // sweep axis has no vocabulary for one. Reject rather than sweep a
-                // group whose reading would be NaN on every token.
-                MetricKind::Anchored => {
-                    return Err(format!(
-                        "group `{group_name}` is anchored (`after_age_sec`) - not sweepable yet; \
-                         author it on the rule instead"
-                    ))
-                }
-            };
-            // The slice axis, required exactly when the METRIC reads it. Asking the
-            // group would demand one of every `m_flow_window` axis, since the group
-            // declares the axis for every instance; asking the metric is the rule
-            // `validate_group` applies, so the two cannot disagree.
-            let reads_slice = hunter_engine::metrics::is_two_window(mspec.id);
-            let slice = match (reads_slice, spec.slice.as_ref().and_then(WindowField::spec)) {
-                (true, Some(b)) => {
-                    let w = window.expect("a two-window metric is in a dynamic group");
-                    if b.unit != w.unit {
-                        return Err(format!(
-                            "metric `{metric_name}`: the slice and the window must count                              in the same unit — a ratio across two clocks is not a share                              of anything"
-                        ));
-                    }
-                    if b.size > w.size {
-                        return Err(format!(
-                            "metric `{metric_name}`: the slice must nest INSIDE the                              window (slice {} > window {})",
-                            b.size, w.size,
-                        ));
-                    }
-                    Some(b)
-                }
-                (true, None) => {
-                    return Err(format!(
-                        "metric `{metric_name}` is a ratio across a NESTED pair —                          `slice` is required: a number of seconds, or a span like                          \"3sl\" / \"4p\""
-                    ))
-                }
-                (false, Some(_)) => {
-                    return Err(format!(
-                        "metric `{metric_name}` does not read a slice — a span nothing                          reads is a silent no-op"
-                    ))
-                }
-                (false, None) => None,
-            };
-            // Off first (pick 0), then the numbers ascending.
             let mut values: Vec<Option<f64>> = Vec::with_capacity(numbers.len() + 1);
             if has_off {
                 values.push(None);
             }
             values.extend(numbers.into_iter().map(Some));
-            Ok(ResolvedAxis::Metric {
-                side,
-                group: group.id,
-                metric: mspec.id,
-                operator,
-                window,
-                slice,
-                values,
-            })
+            Ok(ResolvedAxis::Metric { side, r, operator, values })
         }
         other => Err(format!("unknown axis kind `{other}`")),
-    }
-}
-
-/// Whether two group instances share a SPAN (so an axis merges into an existing
-/// instance rather than opening a new one). Static-group axes carry `None` and
-/// collapse to the single window-less instance.
-///
-/// Compared on `WindowSpec::key` — the engine's own buffer identity — so two axes
-/// that differ in unit or lag open two instances. Merging them on size alone is how
-/// a 30-slot axis would land in the 30-second instance and one of the two swept
-/// conditions would vanish from every assembled rule.
-fn same_window(a: Option<WindowSpec>, b: Option<WindowSpec>) -> bool {
-    match (a, b) {
-        (Some(x), Some(y)) => x.key() == y.key(),
-        (None, None) => true,
-        _ => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hunter_engine::rule_params::RuleParams;
 
-    fn metric_axis(kind_side: AxisSide, group: &str, metric: &str, op: &str, window: Option<f64>, vals: Vec<f64>) -> AxisSpec {
+    fn axis(side: AxisSide, metric: &str, span: Option<&str>, op: &str, vals: Vec<f64>) -> AxisSpec {
         AxisSpec {
             kind: "metric".to_string(),
-            side: Some(kind_side),
-            group: Some(group.to_string()),
+            side: Some(side),
             metric: Some(metric.to_string()),
-            operator: Some(serde_json::from_str(&format!("\"{op}\"")).unwrap()),
-            window: window.map(WindowField::Secs),
+            tag: None,
+            span: span.map(str::to_string),
             slice: None,
+            operator: Some(serde_json::from_str(&format!("\"{op}\"")).unwrap()),
             values: vals.into_iter().map(Some).collect(),
-        }
-    }
-
-    /// A two-window metric is a ratio ACROSS a nested pair, so an axis on it carries
-    /// both spans into the assembled rule.
-    ///
-    /// Without the slice these two metrics were unsweepable in a way that failed
-    /// nowhere visible: the builder assembled a rule missing a required strict param,
-    /// the engine gate rejected every combo, and the sweep ran to completion having
-    /// scored nothing.
-    #[test]
-    fn a_two_window_axis_carries_both_spans_into_the_assembled_rule() {
-        let mut spec =
-            metric_axis(AxisSide::Entry, "m_flow_window", "trade_share", ">=", None, vec![40.0]);
-        spec.window = Some(WindowField::Span("60s".to_string()));
-        spec.slice = Some(WindowField::Span("3s".to_string()));
-        let model = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).expect("resolves");
-        let rp = model.assemble(&[0]);
-        let g = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
-        assert_eq!(g.strict_param("window_size_sec"), Some(60.0));
-        assert_eq!(g.strict_param("slice_size_sec"), Some(3.0));
-        // ...and the assembled params are what the engine itself accepts.
-        RuleParams::parse(&rp.to_value()).expect("the assembled rule passes the engine gate");
-    }
-
-    /// The slice is required exactly when the METRIC reads it, and rejected when it
-    /// does not - the same per-metric rule `validate_group` applies, so the builder
-    /// cannot assemble a combo the engine refuses.
-    #[test]
-    fn the_slice_is_required_by_the_metric_and_refused_by_the_others() {
-        let mut missing =
-            metric_axis(AxisSide::Entry, "m_flow_window", "sol_share", ">=", None, vec![40.0]);
-        missing.window = Some(WindowField::Span("60s".to_string()));
-        let err = AxesModel::resolve(&AxesRequest { axes: vec![missing] }).unwrap_err();
-        assert!(err.contains("slice"), "{err}");
-
-        let mut spurious =
-            metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", ">=", None, vec![5.0]);
-        spurious.window = Some(WindowField::Span("60s".to_string()));
-        spurious.slice = Some(WindowField::Span("3s".to_string()));
-        let err = AxesModel::resolve(&AxesRequest { axes: vec![spurious] }).unwrap_err();
-        assert!(err.contains("does not read a slice"), "{err}");
-    }
-
-    /// Both axes must count in the same unit and the slice must nest inside the
-    /// window - a ratio across two clocks is not a share of anything, and a slice
-    /// wider than its reference is not a slice.
-    #[test]
-    fn a_slice_that_cannot_nest_is_refused_rather_than_assembled() {
-        for (window, slice, needle) in [("60s", "3sl", "same unit"), ("10s", "30s", "nest INSIDE")]
-        {
-            let mut spec = metric_axis(
-                AxisSide::Entry,
-                "m_flow_window",
-                "trade_share",
-                ">=",
-                None,
-                vec![40.0],
-            );
-            spec.window = Some(WindowField::Span(window.to_string()));
-            spec.slice = Some(WindowField::Span(slice.to_string()));
-            let err = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap_err();
-            assert!(err.contains(needle), "{window}/{slice}: {err}");
-        }
-    }
-
-    /// Two `trade_share` axes over one reference window and DIFFERENT slices are two
-    /// different reads, so they open two group instances. Merging them on the
-    /// reference alone would drop one from every assembled rule.
-    #[test]
-    fn two_slices_over_one_window_open_two_instances() {
-        let axis = |slice: &str, value: f64| {
-            let mut spec = metric_axis(
-                AxisSide::Entry,
-                "m_flow_window",
-                "trade_share",
-                ">=",
-                None,
-                vec![value],
-            );
-            spec.window = Some(WindowField::Span("60s".to_string()));
-            spec.slice = Some(WindowField::Span(slice.to_string()));
-            spec
-        };
-        let model = AxesModel::resolve(&AxesRequest { axes: vec![axis("3s", 40.0), axis("10s", 70.0)] })
-            .expect("resolves");
-        let rp = model.assemble(&[0, 0]);
-        let instances = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow];
-        assert_eq!(instances.len(), 2, "one instance per slice");
-        RuleParams::parse(&rp.to_value()).expect("engine gate");
-    }
-
-    /// A metric axis on a discrete basis must assemble the size param that basis
-    /// spells. Writing `window_size_sec` for a slot axis would sweep one rule and
-    /// score a different one - the silent kind of wrong, since every cell still
-    /// produces a number.
-    #[test]
-    fn a_discrete_axis_assembles_the_size_param_its_unit_spells() {
-        for (span, param, size) in [
-            ("30sl", "window_size_slots", 30.0),
-            ("20p", "window_size_prints", 20.0),
-            ("45s", "window_size_sec", 45.0),
-        ] {
-            let mut spec =
-                metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", ">=", None, vec![5.0]);
-            spec.window = Some(WindowField::Span(span.to_string()));
-            let model = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).expect(span);
-            let rp = model.assemble(&[0]);
-            let g = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
-            assert_eq!(g.strict_param(param), Some(size), "{span}");
-            // ...and no OTHER size param rides along: two would be two spans claiming
-            // one axis, which the engine rejects at save.
-            assert_eq!(
-                hunter_engine::metrics::WINDOW_AXIS
-                    .params()
-                    .into_iter()
-                    .filter(|p| g.strict.contains_key(*p))
-                    .count(),
-                1,
-                "{span}"
-            );
-        }
-    }
-
-    /// A lagged span carries its lag through, and a zero lag stays ABSENT - which is
-    /// what keeps a sweep config saved before the other bases existed assembling
-    /// byte-identical params.
-    #[test]
-    fn a_lagged_axis_carries_its_lag_and_a_zero_lag_stays_absent() {
-        let mut spec =
-            metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", "<=", None, vec![3.0]);
-        spec.window = Some(WindowField::Span("30sl@1".to_string()));
-        let model = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).expect("resolves");
-        let rp = model.assemble(&[0]);
-        let g = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
-        assert_eq!(g.strict_param("window_size_slots"), Some(30.0));
-        assert_eq!(g.strict_param("window_lag"), Some(1.0));
-
-        let plain = metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", "<=", Some(30.0), vec![3.0]);
-        let model = AxesModel::resolve(&AxesRequest { axes: vec![plain] }).expect("resolves");
-        let rp = model.assemble(&[0]);
-        let g = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
-        assert_eq!(g.strict_param("window_size_sec"), Some(30.0), "a bare number is seconds");
-        assert!(!g.strict.contains_key("window_lag"), "a zero lag stays absent");
-    }
-
-    /// Two axes on one metric that differ only in BASIS are two group instances.
-    /// Merging them on size alone is how a 30-slot axis would land in the 30-second
-    /// instance and one of the two swept conditions would vanish from every rule.
-    #[test]
-    fn one_size_on_two_bases_opens_two_instances() {
-        let mut a = metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", ">=", None, vec![5.0]);
-        a.window = Some(WindowField::Span("30s".to_string()));
-        let mut b = metric_axis(AxisSide::Entry, "m_flow_window", "buy", ">=", None, vec![2.0]);
-        b.window = Some(WindowField::Span("30sl".to_string()));
-        let model = AxesModel::resolve(&AxesRequest { axes: vec![a, b] }).expect("resolves");
-        let rp = model.assemble(&[0, 0]);
-        let instances = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow];
-        assert_eq!(instances.len(), 2, "one size, two bases, two instances");
-    }
-
-    /// A dynamic axis with an unparseable span fails at RESOLVE. Admitting it would
-    /// fold every cell against a column that was never registered, and a whole sweep
-    /// of `NaN` reads as a finding rather than as an error.
-    #[test]
-    fn an_unparseable_span_is_rejected_at_resolve() {
-        for bad in ["", "abc", "30x", "0p"] {
-            let mut spec =
-                metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", ">=", None, vec![5.0]);
-            spec.window = Some(WindowField::Span(bad.to_string()));
-            let err = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap_err();
-            assert!(err.contains("window"), "{bad}: {err}");
         }
     }
 
@@ -821,337 +384,150 @@ mod tests {
         AxisSpec {
             kind: "take_profit".to_string(),
             side: None,
-            group: None,
             metric: None,
-            operator: None,
-            window: None,
+            tag: None,
+            span: None,
             slice: None,
+            operator: None,
             values: vals.into_iter().map(Some).collect(),
         }
     }
 
+    fn model(axes: Vec<AxisSpec>) -> AxesModel {
+        AxesModel::resolve(&AxesRequest { axes }).expect("resolves")
+    }
+
+    /// Every assembled combo is a rule the engine itself accepts.
+    fn promotable(p: &RuleParams) {
+        RuleParams::parse(&p.to_value()).expect("the assembled rule passes the engine gate");
+    }
+
     #[test]
-    fn combo_count_is_product_and_columns_dedup() {
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![5.0, 10.0, 15.0]),
-                metric_axis(AxisSide::Entry, "m_flow_window", "net_flow", ">", Some(10.0), vec![0.0, 2.5]),
-                tp(vec![50.0, 100.0, 200.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).unwrap();
+    fn combo_count_is_the_product_and_columns_dedup() {
+        let m = model(vec![
+            axis(AxisSide::Entry, "m_state.age_sec", None, ">", vec![5.0, 10.0, 15.0]),
+            axis(AxisSide::Entry, "m_flow.net_sol", Some("10s"), ">", vec![0.0, 2.5]),
+            tp(vec![50.0, 100.0, 200.0]),
+        ]);
         assert_eq!(m.combo_count(), 3 * 2 * 3);
-        // time (static) + net_flow@10 (window) = 2 columns.
         assert_eq!(m.columns().len(), 2);
     }
 
     #[test]
-    fn combo_params_assembles_conditions_tp_sl() {
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![5.0, 10.0]),
-                tp(vec![100.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).unwrap();
-        // combo 0 → time>5, TP 100 ; combo 1 → time>10, TP 100 (entry is high-order)
+    fn an_entry_axis_is_a_filter_and_an_exit_axis_a_sell_line() {
+        let m = model(vec![
+            axis(AxisSide::Entry, "m_state.age_sec", None, ">", vec![5.0, 10.0]),
+            axis(AxisSide::Exit, "m_position.retrace_pct", None, ">=", vec![20.0]),
+            tp(vec![100.0]),
+        ]);
         let p0 = m.combo_params(0);
-        let p1 = m.combo_params(1);
         assert_eq!(p0.take_profit, Some(100.0));
-        let entry0 = p0.entry.as_ref().unwrap();
-        let conds0 = &entry0.0[&MetricGroupId::State][0].metrics[&MetricId::Time];
-        assert_eq!(conds0[0][0].value, 5.0);
-        let entry1 = p1.entry.as_ref().unwrap();
-        let conds1 = &entry1.0[&MetricGroupId::State][0].metrics[&MetricId::Time];
-        assert_eq!(conds1[0][0].value, 10.0);
-        // The assembled params must survive the canonical parse (promotable).
-        RuleParams::parse(&p0.to_value()).unwrap();
+        assert_eq!(p0.enter.filters.len(), 1);
+        let Cond::Metric { r, is, .. } = &p0.enter.filters[0] else { panic!("a metric filter") };
+        assert_eq!(r.metric, Metric::AgeSec);
+        assert_eq!(is[0][0].value, 5.0);
+        assert_eq!(p0.always.len(), 1, "the exit axis sells on its own line");
+        assert!(p0.always[0].sell.is_some_and(|s| s.pct.is_none()), "it sells everything");
+        let Cond::Metric { is, .. } = &m.combo_params(1).enter.filters[0] else { panic!() };
+        assert_eq!(is[0][0].value, 10.0, "entry is the high-order digit");
+        promotable(&p0);
     }
 
     #[test]
-    fn off_pick_omits_the_condition() {
-        let mut spec = metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![5.0]);
-        spec.values.push(None); // off — must sort to pick 0
-        let req = AxesRequest { axes: vec![spec, tp(vec![100.0])] };
-        let m = AxesModel::resolve(&req).unwrap();
-        assert_eq!(m.combo_count(), 2 * 1);
-        // Combo 0 = the off pick: no entry conditions at all ⇒ enter on arm.
-        let p0 = m.combo_params(0);
-        assert!(p0.entry.is_none());
-        assert!(p0.enter_on_arm());
-        assert_eq!(p0.take_profit, Some(100.0));
-        // Combo 1 = time > 5 as usual.
-        let p1 = m.combo_params(1);
-        let conds = &p1.entry.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Time];
-        assert_eq!(conds[0][0].value, 5.0);
-        // Both survive the canonical parse (promotable).
-        RuleParams::parse(&p0.to_value()).unwrap();
-        RuleParams::parse(&p1.to_value()).unwrap();
-    }
-
-    #[test]
-    fn off_pick_on_dynamic_group_omits_window_too() {
-        let mut spec =
-            metric_axis(AxisSide::Entry, "m_flow_window", "net_flow", ">", Some(10.0), vec![2.5]);
-        spec.values.insert(0, None);
-        let req = AxesRequest { axes: vec![spec] };
-        let m = AxesModel::resolve(&req).unwrap();
-        // The off combo must not leave a metric-less group behind (validation
-        // rejects a group carrying only window_size_sec).
-        let p0 = m.combo_params(0);
-        assert!(p0.entry.is_none());
-        RuleParams::parse(&p0.to_value()).unwrap();
-        RuleParams::parse(&m.combo_params(1).to_value()).unwrap();
-    }
-
-    #[test]
-    fn all_off_axis_rejected() {
-        let mut spec = metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![]);
+    fn the_off_pick_leaves_the_condition_out() {
+        let mut spec = axis(AxisSide::Entry, "m_state.age_sec", None, ">", vec![5.0]);
         spec.values.push(None);
-        let e = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap_err();
-        assert!(e.contains("besides `off`"), "{e}");
+        let m = model(vec![spec, tp(vec![100.0])]);
+        assert_eq!(m.combo_count(), 2);
+        let p0 = m.combo_params(0);
+        assert!(p0.enter.filters.is_empty() && p0.enter_on_arm(), "off sorts first");
+        assert_eq!(m.combo_params(1).enter.filters.len(), 1);
+        promotable(&p0);
+        promotable(&m.combo_params(1));
     }
 
     #[test]
-    fn tp_sl_reject_off() {
-        let mut spec = tp(vec![100.0]);
-        spec.values.push(None);
-        let e = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap_err();
-        assert!(e.contains("cannot carry `off`"), "{e}");
+    fn two_axes_on_one_read_join_into_one_condition() {
+        // Feasible bounds AND into a range...
+        let m = model(vec![
+            axis(AxisSide::Exit, "m_state.liquidity_sol", None, ">", vec![0.0]),
+            axis(AxisSide::Exit, "m_state.liquidity_sol", None, "<", vec![40.0]),
+        ]);
+        let p = m.combo_params(0);
+        assert_eq!(p.always.len(), 1, "one read, one line");
+        let Cond::Metric { is, .. } = &p.always[0].when[0] else { panic!() };
+        assert_eq!((is.len(), is[0].len()), (1, 2), "a range is one AND arm");
+        promotable(&p);
+        // ...crossed bounds OR into an outside band.
+        let m = model(vec![
+            axis(AxisSide::Exit, "m_state.liquidity_sol", None, "<", vec![30.0]),
+            axis(AxisSide::Exit, "m_state.liquidity_sol", None, ">", vec![70.0]),
+        ]);
+        let Cond::Metric { is, .. } = &m.combo_params(0).always[0].when[0] else { panic!() };
+        assert_eq!(is.len(), 2, "an outside band is two OR arms");
     }
 
     #[test]
-    fn dynamic_metric_requires_window() {
-        let req = AxesRequest {
-            axes: vec![metric_axis(AxisSide::Entry, "m_flow_window", "buy", ">", None, vec![1.0])],
-        };
-        assert!(AxesModel::resolve(&req).is_err());
+    fn one_metric_on_two_spans_is_two_reads() {
+        let m = model(vec![
+            axis(AxisSide::Exit, "m_flow.buy_sol", Some("30s"), "<", vec![1.0]),
+            axis(AxisSide::Exit, "m_flow.buy_sol", Some("60s"), "<", vec![1.0]),
+            axis(AxisSide::Entry, "m_flow.buy_sol", Some("30sl"), ">=", vec![1.0]),
+        ]);
+        assert_eq!(m.columns().len(), 3, "a size on two bases is two reads");
+        let p = m.combo_params(0);
+        assert_eq!(p.always.len(), 2);
+        promotable(&p);
     }
 
     #[test]
-    fn unknown_group_rejected() {
-        let req = AxesRequest {
-            axes: vec![metric_axis(AxisSide::Entry, "m_bogus", "x", ">", None, vec![1.0])],
-        };
-        assert!(AxesModel::resolve(&req).is_err());
+    fn a_two_window_read_needs_its_slice() {
+        let mut spec = axis(AxisSide::Entry, "m_flow.slice_trade_share_pct", Some("60s"), ">=", vec![40.0]);
+        assert!(AxesModel::resolve(&AxesRequest { axes: vec![spec.clone()] }).is_err(), "no slice");
+        spec.slice = Some("3s".to_string());
+        let m = model(vec![spec]);
+        promotable(&m.combo_params(0));
     }
 
     #[test]
-    fn position_group_rejected_on_entry_but_swept_on_exit() {
-        // `m_position` only has a value while holding, so an entry condition on it
-        // could never fire — reject the axis rather than sweep a dead grid.
-        let entry = metric_axis(AxisSide::Entry, "m_position", "retrace", ">=", None, vec![3.0]);
+    fn a_position_metric_is_exit_only_and_reads_no_column() {
+        let entry = axis(AxisSide::Entry, "m_position.retrace_pct", None, ">=", vec![3.0]);
         let e = AxesModel::resolve(&AxesRequest { axes: vec![entry] }).unwrap_err();
-        assert!(e.contains("exit-only"), "{e}");
-
-        // On the exit side it sweeps normally — but contributes NO precompute column
-        // (the scan reads it from the per-entry PositionCtx, not a token series).
-        let exit = metric_axis(AxisSide::Exit, "m_position", "retrace", ">=", None, vec![1.5, 3.0, 5.0, 10.0]);
-        let m = AxesModel::resolve(&AxesRequest { axes: vec![exit] }).unwrap();
-        assert_eq!(m.combo_count(), 4);
-        assert!(m.columns().is_empty(), "position metrics must not become series columns");
-        // The assembled params must survive the canonical parse (promotable to a rule).
-        let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::Position][0].metrics[&MetricId::Retrace];
-        assert_eq!(arms[0][0].value, 1.5);
-        RuleParams::parse(&p.to_value()).unwrap();
+        assert!(e.contains("exit side"), "{e}");
+        let m = model(vec![axis(AxisSide::Exit, "m_position.retrace_pct", None, ">=", vec![1.5, 3.0])]);
+        assert!(m.columns().is_empty());
+        promotable(&m.combo_params(0));
     }
 
     #[test]
-    fn price_window_axis_resolves_to_a_windowed_column() {
-        // The dip trigger: `m_price_window(30).trail` — a dynamic group, so it takes a
-        // window and precomputes as a Window column (routed to the price-extrema deque).
-        let axis = metric_axis(
-            AxisSide::Entry,
-            "m_price_window",
-            "trail",
-            ">=",
-            Some(30.0),
-            vec![8.0, 15.0, 25.0],
-        );
-        let m = AxesModel::resolve(&AxesRequest { axes: vec![axis] }).unwrap();
-        assert_eq!(m.combo_count(), 3);
-        assert_eq!(m.columns(), vec![SeriesColumn::window(MetricId::WinTrail, hunter_engine::metrics::WindowSpec::secs(30.0))]);
-        // The rolling high decays between trades, so it must size the sparse grid.
-        assert_eq!(m.max_window_secs(), 30.0);
-        RuleParams::parse(&m.combo_params(0).to_value()).unwrap();
-    }
-
-    #[test]
-    fn same_group_distinct_windows_make_two_instances() {
-        // Two `m_flow_window` axes with different windows on the same side are NOT a
-        // conflict — they assemble into two `GroupConditions` instances (one per
-        // window), exactly the engine's multi-window-per-group model. This is the
-        // reported case: the exit side's `buy` at both 30 s and 60 s.
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Exit, "m_flow_window", "buy", "<", Some(30.0), vec![1.0]),
-                metric_axis(AxisSide::Exit, "m_flow_window", "buy", "<", Some(60.0), vec![1.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).expect("distinct windows on one group must resolve");
-        let p = m.combo_params(0);
-        let insts = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::FlowWindow];
-        assert_eq!(insts.len(), 2, "one instance per distinct window");
-        // Sorted ascending by window when serialized; assert both windows present.
-        let windows: Vec<f64> =
-            insts.iter().filter_map(|g| g.strict_param("window_size_sec")).collect();
-        assert!(windows.contains(&30.0) && windows.contains(&60.0), "{windows:?}");
-        // Each carries its own `buy` condition, and the whole thing is promotable.
-        assert!(insts.iter().all(|g| g.metrics.contains_key(&MetricId::Buy)));
-        RuleParams::parse(&p.to_value()).unwrap();
-    }
-
-    #[test]
-    fn same_group_same_window_merges_into_one_instance() {
-        // Two axes on the same (side, group, window) merge into ONE instance — the
-        // engine rejects duplicate windows, so they must not become two.
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Entry, "m_flow_window", "buy", ">", Some(10.0), vec![1.0]),
-                metric_axis(AxisSide::Entry, "m_flow_window", "sell", ">", Some(10.0), vec![1.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).unwrap();
-        let p = m.combo_params(0);
-        let insts = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow];
-        assert_eq!(insts.len(), 1, "same window ⇒ one instance");
-        assert!(insts[0].metrics.contains_key(&MetricId::Buy));
-        assert!(insts[0].metrics.contains_key(&MetricId::Sell));
-        RuleParams::parse(&p.to_value()).unwrap();
-    }
-
-    #[test]
-    fn distinct_groups_keep_independent_windows() {
-        // The reported footgun: `m_price_window(5)` and `m_flow_window(3)` on the
-        // same side are DIFFERENT groups, each with its own `window_size_sec`, so
-        // the sizes are free to differ — this must resolve, not error.
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Entry, "m_price_window", "trail", ">", Some(5.0), vec![1.0, 3.0]),
-                metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", "<", Some(3.0), vec![10.0, 15.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).expect("distinct groups may hold different windows");
-        // Each group carries its own window in the assembled params.
-        let p = m.combo_params(0);
-        let entry = &p.entry.as_ref().unwrap().0;
-        assert_eq!(entry[&MetricGroupId::PriceWindow][0].strict["window_size_sec"], 5.0);
-        assert_eq!(entry[&MetricGroupId::FlowWindow][0].strict["window_size_sec"], 3.0);
-        RuleParams::parse(&p.to_value()).unwrap();
-    }
-
-    #[test]
-    fn same_group_two_windows_per_metric_promotable() {
-        // A single metric (`trail`) swept at two `m_price_window` windows becomes two
-        // instances, each with a `trail` condition — the engine accepts this.
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Entry, "m_price_window", "trail", ">", Some(5.0), vec![1.0]),
-                metric_axis(AxisSide::Entry, "m_price_window", "trail", ">", Some(30.0), vec![1.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).expect("same metric at two windows must resolve");
-        let p = m.combo_params(0);
-        assert_eq!(p.entry.as_ref().unwrap().0[&MetricGroupId::PriceWindow].len(), 2);
-        RuleParams::parse(&p.to_value()).unwrap();
-    }
-
-    #[test]
-    fn entry_axes_ordered_before_exit() {
-        let req = AxesRequest {
-            axes: vec![
-                tp(vec![100.0, 200.0]),
-                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![5.0, 10.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).unwrap();
-        assert!(m.axes[0].is_entry(), "entry axis must sort first");
-    }
-
-    #[test]
-    fn exit_range_orientation_ands_when_feasible() {
-        // `> lows × < highs` — the range orientation: AND when a < b.
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Exit, "m_state", "liquidity", ">", None, vec![0.0, 5.0]),
-                metric_axis(AxisSide::Exit, "m_state", "liquidity", "<", None, vec![40.0, 70.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).unwrap();
-        assert_eq!(m.combo_count(), 4);
-        for i in 0..m.combo_count() {
-            let p = m.combo_params(i);
-            let arms =
-                &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
-            assert_eq!(arms.len(), 1, "combo {i}: feasible opposing bounds must AND");
-            assert_eq!(arms[0].len(), 2);
-            RuleParams::parse(&p.to_value()).unwrap();
+    fn bad_axes_are_refused() {
+        let mut all_off = axis(AxisSide::Entry, "m_state.age_sec", None, ">", vec![]);
+        all_off.values.push(None);
+        assert!(AxesModel::resolve(&AxesRequest { axes: vec![all_off] }).unwrap_err().contains("besides `off`"));
+        let mut tp_off = tp(vec![100.0]);
+        tp_off.values.push(None);
+        assert!(AxesModel::resolve(&AxesRequest { axes: vec![tp_off] }).unwrap_err().contains("cannot carry `off`"));
+        assert!(AxesModel::resolve(&AxesRequest { axes: vec![axis(AxisSide::Entry, "m_bogus.x", None, ">", vec![1.0])] }).is_err());
+        for bad in ["abc", "30x", "0p"] {
+            let spec = axis(AxisSide::Entry, "m_flow.buy_sol", Some(bad), ">=", vec![5.0]);
+            assert!(AxesModel::resolve(&AxesRequest { axes: vec![spec] }).is_err(), "{bad}");
         }
     }
 
     #[test]
-    fn exit_outside_orientation_ors_when_crossed() {
-        // `< low × > high` with crossed values → OR outside band.
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Exit, "m_state", "liquidity", "<", None, vec![30.0]),
-                metric_axis(AxisSide::Exit, "m_state", "liquidity", ">", None, vec![70.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).unwrap();
-        let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
-        assert_eq!(arms.len(), 2);
-        assert_eq!(arms[0][0].operator, Operator::Lt);
-        assert_eq!(arms[1][0].operator, Operator::Gt);
-        RuleParams::parse(&p.to_value()).unwrap();
+    fn a_price_window_sizes_the_grid_and_clocks_set_ceilings() {
+        let m = model(vec![
+            axis(AxisSide::Entry, "m_price.trail_pct", Some("30s"), ">=", vec![8.0, 15.0]),
+            axis(AxisSide::Entry, "m_state.age_sec", None, "<=", vec![20.0, 60.0]),
+        ]);
+        assert_eq!(m.max_window_secs(), 30.0);
+        assert!(m.metric_value_ceiling(Metric::AgeSec) >= 60.0);
+        assert_eq!(m.metric_value_ceiling(Metric::StallSec), 0.0);
     }
 
     #[test]
-    fn exit_outside_orientation_ands_when_pair_forms_interval() {
-        // `< 10 × > 0` is a satisfiable interval, not an outside band.
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Exit, "m_state", "liquidity", "<", None, vec![10.0]),
-                metric_axis(AxisSide::Exit, "m_state", "liquidity", ">", None, vec![0.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).unwrap();
-        let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
-        assert_eq!(arms.len(), 1);
-        assert_eq!(arms[0].len(), 2);
-    }
-
-    #[test]
-    fn entry_same_metric_compatible_axes_stay_and() {
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![10.0]),
-                metric_axis(AxisSide::Entry, "m_state", "time", "<", None, vec![50.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).unwrap();
-        let p = m.combo_params(0);
-        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Time];
-        assert_eq!(arms.len(), 1);
-        assert_eq!(arms[0].len(), 2);
-        RuleParams::parse(&p.to_value()).unwrap();
-    }
-
-    #[test]
-    fn entry_same_metric_crossed_bounds_become_or() {
-        let req = AxesRequest {
-            axes: vec![
-                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![50.0]),
-                metric_axis(AxisSide::Entry, "m_state", "time", "<", None, vec![10.0]),
-            ],
-        };
-        let m = AxesModel::resolve(&req).unwrap();
-        let p = m.combo_params(0);
-        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Time];
-        assert_eq!(arms.len(), 2);
-        RuleParams::parse(&p.to_value()).unwrap();
+    fn entry_axes_sort_first() {
+        let m = model(vec![tp(vec![100.0, 200.0]), axis(AxisSide::Entry, "m_state.age_sec", None, ">", vec![5.0, 10.0])]);
+        assert!(m.axes[0].is_entry());
     }
 }

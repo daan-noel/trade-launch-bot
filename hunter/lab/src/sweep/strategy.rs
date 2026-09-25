@@ -166,10 +166,10 @@ pub fn lhs_index_plan(rng: &mut StdRng, n: usize, axis_lens: &[usize]) -> Vec<Ve
 /// They are populated only in the single-combo re-simulation path (the drill-in
 /// endpoint); the full sweep folds these into `ComboAgg` aggregates and never
 /// reads the individual timestamps, so the hot-path cost is a handful of `None`
-/// writes per outcome (register-level, no allocation). The `exit_metric*` fields
-/// are the exception: [`ComboAgg::record`](crate::sweep::aggregate::ComboAgg::record)
-/// DOES read `exit_metric_slot` (to bucket `n_exit_metrics_by_slot`), but it's
-/// still a `Copy` field already resolved at bind time — no per-token cost either.
+/// writes per outcome (register-level, no allocation). `exit_metric_slot` is the
+/// exception: [`ComboAgg::record`](crate::sweep::aggregate::ComboAgg::record) DOES
+/// read it (to bucket `n_exit_metrics_by_slot`), but it is a `Copy` field resolved at
+/// bind time — no per-token cost either.
 #[derive(Clone, Copy, Debug)]
 pub struct TokenOutcome {
     /// Whether the strategy took a position on this token under these params.
@@ -182,26 +182,13 @@ pub struct TokenOutcome {
     pub pnl_sol: f32,
     /// Why it exited (or `Open`/`NoEntry`).
     pub exit: ExitCode,
-    /// The authored metric an `ExitCode::Metrics` exit fired on (`None` for every
-    /// other exit / still-`Open` / `NoEntry`). Together with `exit_operator` /
-    /// `exit_metric_value` this reconstructs the same `metric op value` label
-    /// [`hunter_engine::event::format_metric_exit_label`] renders for live/paper —
-    /// without it the grouped sweep collapsed every authored condition down to
-    /// the bare `"Metrics"` code name. Resolved once per (combo, token) from the
-    /// winning `MetricReq` (bind-time data, no live-value recompute), not per row.
-    pub exit_metric: Option<hunter_engine::metrics::MetricId>,
-    /// The authored condition operator paired with `exit_metric` (see above).
-    pub exit_operator: Option<hunter_engine::metrics::evaluator::Operator>,
-    /// The authored condition **threshold** paired with `exit_metric` — not the
-    /// live metric reading at exit, mirroring `ExitReason::Metrics::value`.
-    pub exit_metric_value: Option<f64>,
-    /// Trailing-window size of the req that fired (`None` for a static metric),
-    /// mirroring `ExitReason::Metrics::window`. Without it the drill-in row labels a
-    /// windowed slice as its lifetime twin — the two share every metric name.
-    pub exit_metric_window: Option<hunter_engine::metrics::WindowSpec>,
-    /// 0-based position among this rule's OWN authored exit reqs (capped at
-    /// `N_EXIT_METRIC_SLOTS - 1`) — the aggregate's bounded per-metric bucket
-    /// index. `None` for every non-metric exit.
+    /// The label of the rule line that sold, on a line exit (`ExitCode::Metrics`) —
+    /// the same text live and simulate record (`spike`, `m_position.pnl_pct >= 50`).
+    /// `None` for every other exit, still-`Open` and `NoEntry`. Interned, so `Copy`.
+    pub exit_label: Option<&'static str>,
+    /// The selling line's place among this rule's own labelled sell lines (capped at
+    /// `N_EXIT_METRIC_SLOTS - 1`) — the aggregate's bounded per-line bucket. `None` for
+    /// every other exit.
     pub exit_metric_slot: Option<u8>,
     /// Block time of the simulated entry fill (`None` when not fired).
     pub entry_time: Option<DateTime<Utc>>,
@@ -229,10 +216,7 @@ impl TokenOutcome {
             pnl_percent: 0.0,
             pnl_sol: 0.0,
             exit: ExitCode::NoEntry,
-            exit_metric: None,
-            exit_operator: None,
-            exit_metric_value: None,
-            exit_metric_window: None,
+            exit_label: None,
             exit_metric_slot: None,
             entry_time: None,
             entry_price: None,

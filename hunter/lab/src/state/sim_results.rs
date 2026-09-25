@@ -82,6 +82,13 @@ pub struct SimMeta {
     #[serde(default)]
     pub n_tokens_entered: Option<usize>,
     pub n_migrated: u64,
+    /// The rule format this result was computed under
+    /// ([`RULE_FORMAT_VERSION`](hunter_engine::rule_params::RULE_FORMAT_VERSION)). An
+    /// older one is not loaded: its exit labels name metrics that no longer exist, so
+    /// the rule re-simulates rather than serving them. A meta written before the field
+    /// reads as format `1`.
+    #[serde(default = "legacy_rule_format")]
+    pub rule_format: u8,
     /// Which fill model priced this run's round-trips — surfaced as the Simulate
     /// table's Fill column so a result reads with the pessimism band it was booked
     /// under. `#[serde(default)]` so legacy metas (pre-field) load as `WorstCase`.
@@ -149,6 +156,7 @@ impl SimResults {
             );
         }
         let index = DashMap::new();
+        let mut stale = 0usize;
         match fs::read_dir(&dir) {
             Ok(entries) => {
                 for entry in entries.flatten() {
@@ -161,6 +169,9 @@ impl SimResults {
                         continue;
                     }
                     match load_meta(&path) {
+                        Ok(meta) if meta.rule_format < hunter_engine::rule_params::RULE_FORMAT_VERSION => {
+                            stale += 1;
+                        }
                         Ok(meta) => {
                             index.insert(meta.rule_id, meta);
                         }
@@ -182,6 +193,9 @@ impl SimResults {
                     "sim-results: could not scan cache dir"
                 );
             }
+        }
+        if stale > 0 {
+            tracing::info!(count = stale, "sim-results: skipped results from an older rule format - those rules re-simulate");
         }
         let n = index.len();
         if n > 0 {
@@ -255,6 +269,7 @@ impl SimResults {
                     n_matched: Some(n_matched),
                     n_tokens_entered: Some(n_tokens_entered),
                     n_migrated,
+                    rule_format: hunter_engine::rule_params::RULE_FORMAT_VERSION,
                     fill_model,
                     cost_model,
                     dupe_guard_window_hours,
@@ -477,6 +492,10 @@ fn count_migrated(rows: &[Value]) -> u64 {
             sim_query::row_is_fired(r) && r.get("is_migrated").and_then(Value::as_bool).unwrap_or(false)
         })
         .count() as u64
+}
+
+fn legacy_rule_format() -> u8 {
+    1
 }
 
 fn load_meta(path: &Path) -> io::Result<SimMeta> {

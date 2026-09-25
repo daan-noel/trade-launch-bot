@@ -20,8 +20,7 @@ use crate::storage::repositories::rule_repo::RuleRepo;
 
 use super::rule_params::RuleParams;
 
-pub use hunter_engine::metrics::fee::fee_pin_warning;
-pub use hunter_engine::metrics::flow_ix::flow_unconfigured_warning;
+pub use hunter_engine::metrics::tags::config::{fee_pin_warning, rule_tag_warning};
 
 /// Outcome of a rule CRUD write, mapped to an HTTP status by the calling edge.
 #[derive(Debug)]
@@ -245,7 +244,8 @@ pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
         draft.max_total_tokens,
         &tags,
     )?;
-    let params = RuleParams::parse(&draft.params)?;
+    // Either format is accepted and the v2 serialization is what is stored.
+    let params = hunter_engine::v1::parse_params_any(&draft.params)?;
     let now = Utc::now();
     Ok(StrategyRule {
         id: Uuid::new_v4(),
@@ -363,7 +363,7 @@ pub async fn save(repo: &RuleRepo, rule: &mut StrategyRule) -> Result<(), RuleEr
         &rule.tags,
     )
     .map_err(RuleError::Invalid)?;
-    let params = RuleParams::parse(&rule.params)
+    let params = hunter_engine::v1::parse_params_any(&rule.params)
         .map_err(|e| RuleError::Invalid(format!("invalid params: {e}")))?;
     rule.params = params.to_value();
     reject_duplicate(
@@ -397,14 +397,14 @@ async fn flow_warning_for(
     params: &Value,
 ) -> Option<String> {
     match fp_repo.find(fingerprint_id).await {
-        // Fingerprint-scoped metrics fail silently (NaN reads, the rule never fires),
-        // so an unconfigured fingerprint is reported at write time rather than found
-        // later as a rule that simply never arms.
-        Ok(Some(fp)) => flow_unconfigured_warning(params, &fp.metric_config)
-            // An unconfigured group is the louder problem (every metric reads NaN),
-            // so it wins the one slot; a pinned budget is reported when there is no
-            // such gap to report first.
-            .or_else(|| fee_pin_warning(&fp.metric_config)),
+        // A tag the fingerprint does not define reads NaN (the rule never fires), so it
+        // is reported at write time rather than found later as a rule that never arms.
+        Ok(Some(fp)) => RuleParams::parse(params)
+            .ok()
+            .and_then(|p| rule_tag_warning(&p, &fp.tags))
+            // A missing tag is the louder problem, so it wins the one slot; a pinned
+            // fee preset is reported when there is no such gap to report first.
+            .or_else(|| fee_pin_warning(&fp.tags)),
         _ => None,
     }
 }
@@ -500,22 +500,20 @@ mod generic_tests {
     fn generic_params_registry_checked() {
         // A typo'd metric can't silently no-op — it fails the save.
         let d = generic_draft(json!({
-            "entry": {"m_state": {"tyme": [{"operator": ">", "value": 1}]}}
+            "enter": { "filters": [{ "metric": "m_state.tyme", "is": [{ "operator": ">", "value": 1 }] }] }
         }));
         assert!(matches!(build_rule(&d), Err(e) if e.contains("tyme")));
 
-        // Contradictory conditions fail the save. A *flat* same-field list is now
-        // coalesced to OR arms (`> 30 OR < 10`, satisfiable — see
-        // `normalize_condition_expr`), so contradiction is only unavoidable when every
-        // explicit OR arm is itself unsatisfiable — the multi-arm form the engine keeps
-        // as authored (`multi_arm_all_unsat_still_rejected`).
+        // A condition that can never hold fails the save. A flat list is coalesced
+        // (`> 30 OR < 10` is satisfiable — see `normalize_condition_expr`), so it is
+        // refused only when every explicit OR group is itself impossible.
         let d = generic_draft(json!({
-            "entry": {"m_state": {"time": [
-                [{"operator": ">", "value": 30}, {"operator": "<", "value": 10}],
-                [{"operator": ">", "value": 50}, {"operator": "<", "value": 20}]
-            ]}}
+            "enter": { "filters": [{ "metric": "m_state.age_sec", "is": [
+                [{ "operator": ">", "value": 30 }, { "operator": "<", "value": 10 }],
+                [{ "operator": ">", "value": 50 }, { "operator": "<", "value": 20 }]
+            ] }] }
         }));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("contradictory")));
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("can never hold")));
 
         // Fingerprint-only rule (empty params) is legal: enter on arm, TP/SL off.
         assert!(build_rule(&generic_draft(json!({}))).is_ok());

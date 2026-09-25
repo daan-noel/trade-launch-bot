@@ -32,15 +32,20 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use hunter_engine::event::parse_metric_exit_label;
+use hunter_engine::arm::CompiledRule;
 use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::{group_of, MetricFamily, MetricId};
+use hunter_engine::metrics::{Family, Metric, MetricRef};
 
 use crate::rule_search::cuts::{Cut, CutPhase, CutTable};
 use crate::rule_search::generator::{
-    assemble, clause_label, is_band_pair, Clause, EntryFilling, ExitBag, GeneratedCombo,
+    assemble, clause_label, is_band_pair, same_read, Clause, EntryFilling, ExitBag, GeneratedCombo,
 };
 use crate::rule_search::roles::{entry_compete, entry_role, CompeteKey, EntryRole};
+use crate::rule_search::scorer::loaded_from_params;
+use crate::sweep::generic::axes::SWEEP_FLOW_FP;
+use crate::sweep::generic::scan::line_tags;
+
+use super::attribution::parse_line_label;
 
 /// The end-event families a diversity quota buckets on. An exit fires on one of a
 /// few genuinely different kinds of alarm; two thresholds of the same kind are one
@@ -49,13 +54,14 @@ use crate::rule_search::roles::{entry_compete, entry_role, CompeteKey, EntryRole
 pub enum EndFamily {
     /// Windowed or lifetime SOL flow — the crowd leaving.
     Flow,
-    /// The flow **split** (vol / nonvol) — organic activity as against bot volume.
+    /// The flow **split** (a fingerprint tag's trades against the rest) — organic
+    /// activity as against bot volume.
     Organic,
-    /// A clock: `stall` (token quiet) or `held` (our own fill).
+    /// A clock: `stall_sec` (token quiet) or `held_sec` (our own fill).
     StallClock,
-    /// `liquidity` — the pool draining out from under the position.
+    /// `liquidity_sol` — the pool draining out from under the position.
     LiquidityCeiling,
-    /// Any price-path term: `trail`, `retrace`, `bounce`, `rise`, `pnl`.
+    /// Any price-path term: `trail_pct`, `retrace_pct`, `bounce_pct`, `rise_pct`, `pnl_pct`.
     PriceTrail,
 }
 
@@ -104,21 +110,18 @@ const EXIT_REPS_PER_FAMILY: usize = 2;
 /// Exit bags kept after ranking.
 const MAX_EXIT_BAGS: usize = 64;
 
-/// Which end-event family an exit metric belongs to.
-pub fn end_family(metric: MetricId) -> EndFamily {
-    match metric {
-        MetricId::Stall | MetricId::Held | MetricId::Time => EndFamily::StallClock,
-        MetricId::Liquidity => EndFamily::LiquidityCeiling,
-        MetricId::Trail
-        | MetricId::WinTrail
-        | MetricId::Retrace
-        | MetricId::Bounce
-        | MetricId::LifeRise
-        | MetricId::WinRise
-        | MetricId::Pnl => EndFamily::PriceTrail,
-        _ => match group_of(metric).family {
-            MetricFamily::FlowIx => EndFamily::Organic,
-            MetricFamily::Flow => EndFamily::Flow,
+/// Which end-event family an exit read belongs to.
+pub fn end_family(r: &MetricRef) -> EndFamily {
+    match r.metric {
+        Metric::StallSec | Metric::HeldSec | Metric::AgeSec => EndFamily::StallClock,
+        Metric::LiquiditySol => EndFamily::LiquidityCeiling,
+        Metric::TrailPct | Metric::RetracePct | Metric::BouncePct | Metric::RisePct | Metric::PnlPct => {
+            EndFamily::PriceTrail
+        }
+        // A fingerprint tag's half of the tape, or the build mix.
+        _ if r.is_fingerprint_scoped() || r.metric == Metric::UniqueIxShapes => EndFamily::Organic,
+        m => match m.family() {
+            Family::Flow | Family::Crowd | Family::Holdings | Family::Print => EndFamily::Flow,
             // A registry row with no family of its own reads as a price-path term
             // rather than silently inflating one of the two flow buckets.
             _ => EndFamily::PriceTrail,
@@ -126,13 +129,13 @@ pub fn end_family(metric: MetricId) -> EndFamily {
     }
 }
 
-/// The refuted price-trail terms specifically — `trail` / `win_trail` against the
-/// token's own ATH. Adding `trail >= 15 @10s` to a working exit took spend=5 from
-/// +30.7% to −15.3% and spend=4 from +40.8% to −14.1%. It stays **in** the library,
-/// flagged: a library that cannot express a refuted term cannot re-refute it on the
-/// next family.
-pub fn is_price_trail_term(metric: MetricId) -> bool {
-    matches!(metric, MetricId::Trail | MetricId::WinTrail)
+/// The refuted price-trail term specifically — `m_price.trail_pct` (life or window)
+/// against the token's own ATH. Adding `m_price.trail_pct [10s] >= 15` to a working
+/// exit took spend=5 from +30.7% to −15.3% and spend=4 from +40.8% to −14.1%. It
+/// stays **in** the library, flagged: a library that cannot express a refuted term
+/// cannot re-refute it on the next family.
+pub fn is_price_trail_term(r: &MetricRef) -> bool {
+    r.metric == Metric::TrailPct
 }
 
 /// The flag a price-trail candidate carries onto the board.
@@ -142,40 +145,46 @@ pub const TRAIL_FLAG: &str =
 
 // ─────────────────────────── standing terms (charter D10) ─────────────────────
 //
-// `liquidity >= 85` on a promoted rule is not a discovered edge — it is "sell at
-// migration", added by hand because the pool is about to change underneath the
-// position. It has to be present in every simulation or the numbers describe a rule
-// nobody would run, and it must never be searched, credited, dropped by the ablation,
-// or counted toward the diversity quota. Mechanics are not findings.
+// `m_state.liquidity_sol >= 85` on a promoted rule is not a discovered edge — it is
+// "sell at migration", added by hand because the pool is about to change underneath
+// the position. It has to be present in every simulation or the numbers describe a
+// rule nobody would run, and it must never be searched, credited, dropped by the
+// ablation, or counted toward the diversity quota. Mechanics are not findings.
 
 /// A mechanical exit the operator always wants. Rides into every candidate, the
 /// ungated control included; never generated, never ablated, never credited.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StandingTerm {
     pub clause: Clause,
-    /// The label as the attribution table prints it — the same text the operator
-    /// typed, round-tripped through the one label SSOT.
+    /// The label as the attribution table prints it — the exit label the engine gives
+    /// the term's sell line, so the text the operator typed is matched in the one
+    /// spelling.
     pub label: String,
 }
 
-/// Parse `metric[(Ws)] op value` (`liquidity >= 85`, `untagged_buy(2s) >= 0.9`) through
-/// [`parse_metric_exit_label`] — the same parser the persisted exit reason uses, so a
-/// standing term is written exactly as the board prints one.
+/// Parse `read op value` (`m_state.liquidity_sol >= 85`,
+/// `m_flow.buy_sol @!volume [2s] >= 0.9`) through [`parse_line_label`] — the inverse of
+/// the exit label an unlabelled sell line carries, so a standing term is written
+/// exactly as the board prints one.
 pub fn parse_standing(s: &str) -> anyhow::Result<StandingTerm> {
-    let (metric, op, value, window) = parse_metric_exit_label(s)
-        .ok_or_else(|| anyhow::anyhow!("standing exit term `{s}` is not `metric[(Ws)] op value`"))?;
-    Ok(StandingTerm {
-        clause: Clause {
-            group: group_of(metric).id,
-            metric,
-            window,
-            op,
-            threshold: value,
-            // Declared by the operator, not earned from a path — the phase says so.
-            phase: CutPhase::Declared,
-        },
-        label: hunter_engine::event::format_metric_exit_label(metric, op, value, window),
-    })
+    let (r, op, threshold) = parse_line_label(s).ok_or_else(|| {
+        anyhow::anyhow!("standing exit term `{s}` is not `m_family.metric [@tag] [[span]] op value`")
+    })?;
+    // Declared by the operator, not earned from a path — the phase says so.
+    let clause = Clause { r, op, threshold, phase: CutPhase::Declared };
+    Ok(StandingTerm { clause, label: line_label(&clause) })
+}
+
+/// The exit label the engine gives a sell line made of `c` alone — read off the
+/// compiled rule, never re-spelled here.
+fn line_label(c: &Clause) -> String {
+    let params = assemble(&EntryFilling { clauses: vec![] }, &ExitBag { clauses: vec![*c] });
+    let loaded = loaded_from_params(params, SWEEP_FLOW_FP, 0.0, 0, 0);
+    line_tags(&CompiledRule::compile(&loaded))
+        .into_iter()
+        .find_map(|t| t.label)
+        .map(str::to_string)
+        .unwrap_or_else(|| clause_label(c))
 }
 
 /// Parse a request's standing list, rejecting the whole run on the first bad term:
@@ -184,20 +193,11 @@ pub fn parse_standing_all(terms: &[String]) -> anyhow::Result<Vec<StandingTerm>>
     terms.iter().map(|s| parse_standing(s)).collect()
 }
 
-/// Does this alarm match a standing term? Keyed on `(metric, window, threshold)` —
-/// not on slot order, because `SideConditions` groups clauses by group and window and
-/// the compiled req order need not follow the authored one.
-pub fn is_standing(
-    standing: &[StandingTerm],
-    metric: MetricId,
-    window: Option<hunter_engine::metrics::WindowSpec>,
-    value: f64,
-) -> bool {
-    standing.iter().any(|s| {
-        s.clause.metric == metric
-            && s.clause.window == window
-            && (s.clause.threshold - value).abs() < f64::EPSILON
-    })
+/// Does this alarm match a standing term? Keyed on the line's exit label (read,
+/// operator, threshold) — not on slot order, because the slot numbering follows the
+/// compiled line order, not the authored one.
+pub fn is_standing(standing: &[StandingTerm], label: &str) -> bool {
+    standing.iter().any(|s| s.label == label)
 }
 
 // ─────────────────────────── entry: quantities, not clauses ───────────────────
@@ -208,8 +208,8 @@ pub fn is_standing(
 pub struct EntryQuantity {
     /// One clause (a floor or a ceiling) or two (a band).
     pub clauses: Vec<Clause>,
-    pub metric: MetricId,
-    pub window: Option<hunter_engine::metrics::WindowSpec>,
+    /// The read every clause of the idea is on.
+    pub r: MetricRef,
     /// Menu rank of the strongest signature behind it — lower is stronger.
     pub rank: u8,
     /// At most one quantity per compete slot (one trigger family, one giveback…).
@@ -239,16 +239,17 @@ pub fn entry_quantities(cuts: &CutTable) -> Vec<EntryQuantity> {
 
     // Best (lowest menu rank) cut per quantity. `Time`/`Liquidity` selectors and
     // windowed flow floors both land here; wait-only monotones never do.
-    let mut best: BTreeMap<(String, (i64, i64, i64)), Cut> = BTreeMap::new();
+    let mut best: BTreeMap<String, Cut> = BTreeMap::new();
     for c in &cuts.entry {
         if c.phase == CutPhase::WinnerCeil {
             continue;
         }
-        match entry_role(c.metric) {
+        match entry_role(&c.r) {
             Some(EntryRole::Selector | EntryRole::Extra | EntryRole::Trigger(_)) => {}
             _ => continue,
         }
-        let key = (format!("{:?}", c.metric), window_key(c.window));
+        // The read's one spelling keys it: metric, tag and span.
+        let key = c.r.label();
         best.entry(key)
             .and_modify(|prev| {
                 if c.phase.menu_rank() < prev.phase.menu_rank() {
@@ -268,13 +269,7 @@ pub fn entry_quantities(cuts: &CutTable) -> Vec<EntryQuantity> {
                 Some(ceil) => vec![floor, *ceil],
                 None => vec![floor],
             };
-            EntryQuantity {
-                clauses,
-                metric: c.metric,
-                window: c.window,
-                rank: c.phase.menu_rank(),
-                compete: entry_compete(c.metric),
-            }
+            EntryQuantity { clauses, r: c.r, rank: c.phase.menu_rank(), compete: entry_compete(&c.r) }
         })
         .collect();
 
@@ -362,13 +357,13 @@ pub fn exit_alarms(
         a.phase
             .menu_rank()
             .cmp(&b.phase.menu_rank())
-            .then_with(|| format!("{:?}", a.metric).cmp(&format!("{:?}", b.metric)))
+            .then_with(|| format!("{:?}", a.r.metric).cmp(&format!("{:?}", b.r.metric)))
             .then_with(|| a.threshold.partial_cmp(&b.threshold).unwrap_or(std::cmp::Ordering::Equal))
     });
 
     let mut out: BTreeMap<EndFamily, Vec<Clause>> = BTreeMap::new();
     for c in &ranked {
-        let fam = end_family(c.metric);
+        let fam = end_family(&c.r);
         if skip.contains(&fam) {
             continue;
         }
@@ -376,10 +371,9 @@ pub fn exit_alarms(
         if bucket.len() >= EXIT_REPS_PER_FAMILY {
             continue;
         }
-        // One threshold per (metric, window): a second is the same alarm re-tuned,
-        // and threshold variety is what the per-family reps budget is for.
-        if bucket.iter().any(|s| s.metric == c.metric && window_key(s.window) == window_key(c.window))
-        {
+        // One threshold per read: a second is the same alarm re-tuned, and threshold
+        // variety is what the per-family reps budget is for.
+        if bucket.iter().any(|s| same_read(&s.r, &c.r)) {
             continue;
         }
         bucket.push(Clause::from(*c));
@@ -466,8 +460,8 @@ impl Candidate {
         clauses.extend(standing.iter().map(|s| s.clause));
         let full = ExitBag { clauses };
         let families: BTreeSet<EndFamily> =
-            exit.clauses.iter().map(|c| end_family(c.metric)).collect();
-        let flags = if exit.clauses.iter().any(|c| is_price_trail_term(c.metric)) {
+            exit.clauses.iter().map(|c| end_family(&c.r)).collect();
+        let flags = if exit.clauses.iter().any(|c| is_price_trail_term(&c.r)) {
             vec![TRAIL_FLAG]
         } else {
             Vec::new()
@@ -619,7 +613,7 @@ pub fn generate(
     standing: &[StandingTerm],
 ) -> QuotaOutcome<Candidate> {
     let taken: BTreeSet<EndFamily> =
-        standing.iter().map(|s| end_family(s.clause.metric)).collect();
+        standing.iter().map(|s| end_family(&s.clause.r)).collect();
     let quantities = entry_quantities(cuts);
     let fillings = entry_fillings(&quantities);
     let bags = exit_bags(&exit_alarms(cuts, &taken));
@@ -663,21 +657,6 @@ pub fn expansion_bases(
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-/// `Option<f64>` is not `Ord`; windows are compared as milli-second integers so a map
-/// key is stable and `2.0` never sorts apart from itself.
-fn window_key(w: Option<hunter_engine::metrics::WindowSpec>) -> (i64, i64, i64) {
-    match w {
-        // The unit's own discriminant, not a table restated here: a new basis must
-        // key apart from every existing one without this site being remembered into.
-        Some(w) => (
-            w.unit as i64,
-            hunter_engine::metrics::quantize(w.size) as i64,
-            hunter_engine::metrics::quantize(w.lag) as i64,
-        ),
-        None => (-1, -1, -1),
-    }
-}
-
 fn filling_key(f: &EntryFilling) -> String {
     let mut v: Vec<String> = f.clauses.iter().map(clause_label).collect();
     v.sort();
@@ -709,16 +688,8 @@ pub fn unused_clauses(
     used_exit: &[Clause],
     standing: &[StandingTerm],
 ) -> (Vec<Clause>, Vec<Clause>) {
-    let taken = |cs: &[Clause], c: &Clause| {
-        cs.iter().any(|u| {
-            u.metric == c.metric && window_key(u.window) == window_key(c.window) && u.op == c.op
-        })
-    };
-    let is_standing_clause = |c: &Clause| {
-        standing.iter().any(|s| {
-            s.clause.metric == c.metric && window_key(s.clause.window) == window_key(c.window)
-        })
-    };
+    let taken = |cs: &[Clause], c: &Clause| cs.iter().any(|u| same_read(&u.r, &c.r) && u.op == c.op);
+    let is_standing_clause = |c: &Clause| standing.iter().any(|s| same_read(&s.clause.r, &c.r));
 
     let mut entry: Vec<Clause> = entry_quantities(cuts)
         .into_iter()
@@ -730,7 +701,7 @@ pub fn unused_clauses(
 
     // An extra alarm has to be a **new kind**, or it is the same bet re-tuned.
     let used_families: BTreeSet<EndFamily> =
-        used_exit.iter().map(|c| end_family(c.metric)).collect();
+        used_exit.iter().map(|c| end_family(&c.r)).collect();
     let exit: Vec<Clause> = exit_alarms(cuts, &used_families)
         .into_values()
         .flatten()
@@ -763,21 +734,27 @@ mod tests {
     use super::*;
     use crate::rule_search::cuts::{Cut, CutPhase};
     use hunter_engine::metrics::evaluator::Operator;
-    use hunter_engine::metrics::{group_of, MetricGroupId};
+    use hunter_engine::metrics::{Span, TagRef};
 
-    fn cut(metric: MetricId, op: Operator, threshold: f64, window: Option<hunter_engine::metrics::WindowSpec>) -> Cut {
-        Cut {
-            group: group_of(metric).id,
-            metric,
-            window,
-            op,
-            threshold,
-            phase: CutPhase::DumpLead,
-        }
+    fn life(m: Metric) -> MetricRef {
+        MetricRef::life(m)
     }
 
-    fn entry_cut(metric: MetricId, op: Operator, threshold: f64, phase: CutPhase) -> Cut {
-        Cut { phase, ..cut(metric, op, threshold, None) }
+    fn win(m: Metric, secs: f64) -> MetricRef {
+        life(m).with_span(Span::secs(secs))
+    }
+
+    /// The trades the fingerprint's `volume` tag leaves out.
+    fn organic(r: MetricRef) -> MetricRef {
+        r.with_tag(TagRef::parse("!volume").unwrap())
+    }
+
+    fn cut(r: MetricRef, op: Operator, threshold: f64) -> Cut {
+        Cut { r, op, threshold, phase: CutPhase::DumpLead }
+    }
+
+    fn entry_cut(m: Metric, op: Operator, threshold: f64, phase: CutPhase) -> Cut {
+        Cut { phase, ..cut(life(m), op, threshold) }
     }
 
     /// An earned menu spanning all five end-event families plus two entry BANDS —
@@ -787,28 +764,25 @@ mod tests {
             windows: vec![2.0, 10.0],
             entry: vec![
                 // A time band: floor + ceiling on one quantity = ONE idea.
-                entry_cut(MetricId::Time, Operator::Gte, 20.0, CutPhase::WinnerFloor),
-                entry_cut(MetricId::Time, Operator::Lte, 90.0, CutPhase::WinnerCeil),
+                entry_cut(Metric::AgeSec, Operator::Gte, 20.0, CutPhase::WinnerFloor),
+                entry_cut(Metric::AgeSec, Operator::Lte, 90.0, CutPhase::WinnerCeil),
                 // A liquidity band.
-                entry_cut(MetricId::Liquidity, Operator::Gt, 30.0, CutPhase::WinnerFloor),
-                entry_cut(MetricId::Liquidity, Operator::Lt, 60.0, CutPhase::WinnerCeil),
+                entry_cut(Metric::LiquiditySol, Operator::Gt, 30.0, CutPhase::WinnerFloor),
+                entry_cut(Metric::LiquiditySol, Operator::Lt, 60.0, CutPhase::WinnerCeil),
                 // An activity floor, no ceiling — one clause, one idea.
-                Cut {
-                    phase: CutPhase::Contrast,
-                    ..cut(MetricId::GrossFlow, Operator::Gte, 55.0, Some(hunter_engine::metrics::WindowSpec::secs(60.0)))
-                },
+                Cut { phase: CutPhase::Contrast, ..cut(win(Metric::GrossSol, 60.0), Operator::Gte, 55.0) },
             ],
             exit: vec![
-                cut(MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
-                cut(MetricId::GrossFlow, Operator::Lt, 25.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
-                cut(MetricId::Buy, Operator::Lt, 3.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
-                cut(MetricId::UntaggedBuy, Operator::Gte, 1.6, None),
-                cut(MetricId::WinUntaggedBuy, Operator::Gte, 1.6, Some(hunter_engine::metrics::WindowSpec::secs(2.0))),
-                cut(MetricId::Stall, Operator::Gte, 30.0, None),
-                cut(MetricId::Held, Operator::Gte, 120.0, None),
-                cut(MetricId::Liquidity, Operator::Lt, 12.0, None),
-                cut(MetricId::Trail, Operator::Gte, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
-                cut(MetricId::Retrace, Operator::Gte, 25.0, None),
+                cut(win(Metric::GrossSol, 10.0), Operator::Lt, 15.0),
+                cut(win(Metric::GrossSol, 10.0), Operator::Lt, 25.0),
+                cut(win(Metric::BuySol, 10.0), Operator::Lt, 3.0),
+                cut(organic(life(Metric::BuySol)), Operator::Gte, 1.6),
+                cut(organic(win(Metric::BuySol, 2.0)), Operator::Gte, 1.6),
+                cut(life(Metric::StallSec), Operator::Gte, 30.0),
+                cut(life(Metric::HeldSec), Operator::Gte, 120.0),
+                cut(life(Metric::LiquiditySol), Operator::Lt, 12.0),
+                cut(win(Metric::TrailPct, 10.0), Operator::Gte, 15.0),
+                cut(life(Metric::RetracePct), Operator::Gte, 25.0),
             ],
             winner_fill: Vec::new(),
             winner_lead: Vec::new(),
@@ -818,18 +792,18 @@ mod tests {
 
     #[test]
     fn end_families_partition_the_exit_menu() {
-        assert_eq!(end_family(MetricId::GrossFlow), EndFamily::Flow);
-        assert_eq!(end_family(MetricId::Buy), EndFamily::Flow);
-        assert_eq!(end_family(MetricId::UntaggedBuy), EndFamily::Organic);
-        assert_eq!(end_family(MetricId::WinUntaggedBuy), EndFamily::Organic);
-        assert_eq!(end_family(MetricId::Stall), EndFamily::StallClock);
-        assert_eq!(end_family(MetricId::Held), EndFamily::StallClock);
-        assert_eq!(end_family(MetricId::Liquidity), EndFamily::LiquidityCeiling);
-        assert_eq!(end_family(MetricId::Trail), EndFamily::PriceTrail);
-        assert_eq!(end_family(MetricId::Retrace), EndFamily::PriceTrail);
-        // Group membership is what decides flow vs organic — a new registry row
-        // joins by its family, never by being listed here.
-        assert_eq!(group_of(MetricId::UntaggedBuy).id, MetricGroupId::FlowIx);
+        assert_eq!(end_family(&win(Metric::GrossSol, 10.0)), EndFamily::Flow);
+        assert_eq!(end_family(&win(Metric::BuySol, 10.0)), EndFamily::Flow);
+        assert_eq!(end_family(&organic(life(Metric::BuySol))), EndFamily::Organic);
+        assert_eq!(end_family(&organic(win(Metric::BuySol, 2.0))), EndFamily::Organic);
+        assert_eq!(end_family(&life(Metric::StallSec)), EndFamily::StallClock);
+        assert_eq!(end_family(&life(Metric::HeldSec)), EndFamily::StallClock);
+        assert_eq!(end_family(&life(Metric::LiquiditySol)), EndFamily::LiquidityCeiling);
+        assert_eq!(end_family(&win(Metric::TrailPct, 10.0)), EndFamily::PriceTrail);
+        assert_eq!(end_family(&life(Metric::RetracePct)), EndFamily::PriceTrail);
+        // The read's tag is what decides flow vs organic — a new registry row joins by
+        // its family and its tag, never by being listed here.
+        assert!(organic(life(Metric::BuySol)).is_fingerprint_scoped());
     }
 
     /// The whole "5 entry metrics are really 3" correction, on one assertion.
@@ -837,10 +811,10 @@ mod tests {
     fn a_band_is_one_entry_idea_written_as_two_clauses() {
         let qs = entry_quantities(&table());
         // Three ideas from five cuts: time band, liquidity band, activity floor.
-        assert_eq!(qs.len(), 3, "{:?}", qs.iter().map(|q| q.metric).collect::<Vec<_>>());
-        let time = qs.iter().find(|q| q.metric == MetricId::Time).expect("time band");
+        assert_eq!(qs.len(), 3, "{:?}", qs.iter().map(|q| q.r.label()).collect::<Vec<_>>());
+        let time = qs.iter().find(|q| q.r.metric == Metric::AgeSec).expect("time band");
         assert!(time.is_band() && time.clauses.len() == 2);
-        let flow = qs.iter().find(|q| q.metric == MetricId::GrossFlow).expect("activity floor");
+        let flow = qs.iter().find(|q| q.r.metric == Metric::GrossSol).expect("activity floor");
         assert!(!flow.is_band() && flow.clauses.len() == 1);
 
         // And the densest filling carries all three ideas — five clauses.
@@ -864,16 +838,15 @@ mod tests {
         // Every bag draws at most one alarm per family: two flow thresholds are one
         // bet, not two alarms.
         for b in &bags {
-            let fams: BTreeSet<EndFamily> =
-                b.clauses.iter().map(|c| end_family(c.metric)).collect();
+            let fams: BTreeSet<EndFamily> = b.clauses.iter().map(|c| end_family(&c.r)).collect();
             assert_eq!(fams.len(), b.clauses.len(), "duplicate family in {:?}", bag_key(b));
         }
         // Threshold variety still exists — two flow bags at different levels.
         let flow_levels: BTreeSet<String> = bags
             .iter()
             .flat_map(|b| b.clauses.iter())
-            .filter(|c| end_family(c.metric) == EndFamily::Flow)
-            .map(|c| format!("{}{}", c.metric.name(), c.threshold))
+            .filter(|c| end_family(&c.r) == EndFamily::Flow)
+            .map(|c| format!("{}{}", c.r.label(), c.threshold))
             .collect();
         assert!(flow_levels.len() >= 2, "{flow_levels:?}");
     }
@@ -923,7 +896,7 @@ mod tests {
         // so the cap must refuse to fill 10 slots with it.
         let mut cuts = table();
         cuts.exit.retain(|c| {
-            matches!(end_family(c.metric), EndFamily::Flow | EndFamily::Organic)
+            matches!(end_family(&c.r), EndFamily::Flow | EndFamily::Organic)
         });
         let cfg = GeneratorConfig { slots: 10, ..Default::default() };
         let out = generate(&cuts, &cfg, &[]);
@@ -941,7 +914,7 @@ mod tests {
         let trailing: Vec<&Candidate> = out
             .kept
             .iter()
-            .filter(|c| c.searched_exit().iter().any(|x| is_price_trail_term(x.metric)))
+            .filter(|c| c.searched_exit().iter().any(|x| is_price_trail_term(&x.r)))
             .collect();
         assert!(!trailing.is_empty(), "price trail must stay available");
         assert!(trailing.iter().all(|c| c.flags.contains(&TRAIL_FLAG)));
@@ -949,18 +922,18 @@ mod tests {
         // `retrace` is a price term but NOT the refuted token-ATH trail, so a bag
         // whose only price term is retrace is unflagged.
         let retrace_only = out.kept.iter().find(|c| {
-            c.searched_exit().iter().any(|x| x.metric == MetricId::Retrace)
-                && !c.searched_exit().iter().any(|x| is_price_trail_term(x.metric))
+            c.searched_exit().iter().any(|x| x.r.metric == Metric::RetracePct)
+                && !c.searched_exit().iter().any(|x| is_price_trail_term(&x.r))
         });
         assert!(retrace_only.is_some_and(|c| c.flags.is_empty()));
     }
 
-    /// `liquidity >= 85` is "sell at migration", not a discovered edge: present in
-    /// every rule, never searched, never counted as an alarm kind.
+    /// `m_state.liquidity_sol >= 85` is "sell at migration", not a discovered edge:
+    /// present in every rule, never searched, never counted as an alarm kind.
     #[test]
     fn a_standing_term_rides_every_candidate_without_being_searched() {
-        let standing = parse_standing_all(&["liquidity >= 85".to_string()]).expect("parses");
-        assert_eq!(standing[0].clause.metric, MetricId::Liquidity);
+        let standing = parse_standing_all(&["m_state.liquidity_sol >= 85".to_string()]).expect("parses");
+        assert_eq!(standing[0].clause.r, MetricRef::life(Metric::LiquiditySol));
         assert!((standing[0].clause.threshold - 85.0).abs() < 1e-9);
 
         let out = generate(&table(), &GeneratorConfig::default(), &standing);
@@ -973,9 +946,9 @@ mod tests {
                 .exit
                 .clauses
                 .iter()
-                .any(|x| x.metric == MetricId::Liquidity && (x.threshold - 85.0).abs() < 1e-9));
+                .any(|x| x.r.metric == Metric::LiquiditySol && (x.threshold - 85.0).abs() < 1e-9));
             // …but not in the searched alarms, and not in the quota's families.
-            assert!(!c.searched_exit().iter().any(|x| x.metric == MetricId::Liquidity));
+            assert!(!c.searched_exit().iter().any(|x| x.r.metric == Metric::LiquiditySol));
             assert!(!c.families.contains(&EndFamily::LiquidityCeiling));
         }
         // The family it occupies is not searched for a duplicate either.
@@ -986,16 +959,21 @@ mod tests {
         assert_eq!(control.exit.clauses.len(), 1);
         assert!(control.entry.clauses.is_empty());
 
-        // And it is recognised by (metric, window, value), never by slot order.
-        assert!(is_standing(&standing, MetricId::Liquidity, None, 85.0));
-        assert!(!is_standing(&standing, MetricId::Liquidity, None, 12.0));
+        // And it is recognised by its exit label (read, operator, threshold), never by
+        // slot order.
+        assert_eq!(standing[0].label, "m_state.liquidity_sol >= 85");
+        assert!(is_standing(&standing, "m_state.liquidity_sol >= 85"));
+        assert!(!is_standing(&standing, "m_state.liquidity_sol >= 12"));
     }
 
     #[test]
     fn a_malformed_standing_term_fails_the_run_rather_than_being_dropped() {
-        assert!(parse_standing("liquidity >= 85").is_ok());
-        assert!(parse_standing("untagged_buy(2s) >= 0.9").is_ok());
-        assert!(parse_standing_all(&["liquidity >= 85".into(), "nonsense".into()]).is_err());
+        assert!(parse_standing("m_state.liquidity_sol >= 85").is_ok());
+        let organic = parse_standing("m_flow.buy_sol @!volume [2s] >= 0.9").expect("a tagged windowed term");
+        assert_eq!(organic.label, "m_flow.buy_sol @!volume [2s] >= 0.9", "the label round-trips");
+        assert!(parse_standing_all(&["m_state.liquidity_sol >= 85".into(), "nonsense".into()]).is_err());
+        // A read the metric does not accept is refused by the rule's own parser.
+        assert!(parse_standing("m_state.age_sec [10s] >= 5").is_err());
     }
 
     #[test]
@@ -1047,7 +1025,7 @@ mod tests {
 
         // Nothing already used comes back.
         for c in &exit_add {
-            let fam = end_family(c.metric);
+            let fam = end_family(&c.r);
             assert!(!top.families.contains(&fam), "{fam:?} is already an alarm on the finalist");
         }
         for c in &entry_add {
@@ -1056,7 +1034,7 @@ mod tests {
                 .entry
                 .clauses
                 .iter()
-                .any(|u| u.metric == c.metric && u.op == c.op));
+                .any(|u| same_read(&u.r, &c.r) && u.op == c.op));
         }
     }
 }

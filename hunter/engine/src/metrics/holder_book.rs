@@ -1,17 +1,18 @@
-//! `m_holder_book` — who holds this token's supply (static metrics).
+//! The per-wallet holder book behind `m_holdings.bag_share_pct @bundled` /
+//! `@public_app`: who holds this coin's supply.
 //!
 //! An exact per-wallet token book: each wallet's tokens bought minus sold on this
-//! token, every leg, never below zero ([`TradeLite::token_amount`]). Live supply is
-//! the sum of the bags. Two shares of it, both read after the print is folded:
+//! coin, every leg, never below zero ([`TradeLite::token_amount`]). Live supply is
+//! the sum of the bags. Two wallet classes share it, both read after the print is folded:
 //!
-//! * `public_app_share` — held by wallets whose first buy of this token went through
+//! * `@public_app` — held by wallets whose first buy of this token went through
 //!   a PUBLIC APP ([`is_public_app`]): on the UTC day before that buy, the app had
 //!   more than [`PUBLIC_MIN_BUYERS`] distinct buying wallets and they came back, at
 //!   least [`PUBLIC_MIN_REPEAT`] buys per wallet ([`TradeLite::build_day_public`],
 //!   stamped by `reduce` from the daily build-breadth table). A bot swarm spreads
 //!   thousands of wallets over many programs at about one buy per wallet per program
 //!   a day; the named apps run 2.9 and up (hot-tape case file L12).
-//! * `bundled_share` — held by wallets whose first buy of this token landed in a
+//! * `@bundled` — held by wallets whose first buy of this token landed in a
 //!   slot where at least [`BUNDLE_MIN_WALLETS`] wallets made their first buy of it
 //!   with the same build recipe: one trigger behind many wallets.
 //!
@@ -25,8 +26,8 @@
 //! **Opened only when a loaded rule reads it.** The book holds one entry per wallet
 //! that ever bought the token; a track opens it through
 //! [`TokenTrack::ensure_holder_book`](super::track::TokenTrack::ensure_holder_book)
-//! only when some rule names the group. It needs the wallet and label columns
-//! ([`MetricId::needs_wallet_identity`], [`MetricId::needs_ix_labels`]).
+//! only when some rule reads a wallet class. It needs the wallet and label columns
+//! ([`Metric::needs_wallet_identity`](super::registry::Metric::needs_wallet_identity), [`Metric::needs_ix_labels`](super::registry::Metric::needs_ix_labels)).
 
 use std::collections::HashMap;
 
@@ -35,7 +36,8 @@ use chrono::NaiveDate;
 use crate::event::BuildBreadth;
 use crate::hash::{HashedMap, HashedSet};
 
-use super::{MetricId, Side, TradeLite};
+use super::tags::{BUNDLED, PUBLIC_APP};
+use super::{Side, TradeLite};
 
 /// A public app had MORE than this many distinct buying wallets on the previous UTC day.
 pub const PUBLIC_MIN_BUYERS: u32 = 100;
@@ -183,17 +185,18 @@ impl HolderBookState {
         bag.public = public;
     }
 
-    /// Value of one `m_holder_book` metric, in percent of live supply. `NaN` when no
-    /// wallet holds tokens or the book lost a print's amount; `public_app_share` is
-    /// also `NaN` while any held supply was classed with no table loaded.
-    pub fn value(&self, id: MetricId) -> f64 {
+    /// `m_holdings.bag_share_pct @class`: the class's share of live supply, in
+    /// percent. `NaN` when no wallet holds tokens, the book lost a print's amount, or
+    /// `class` is not a built-in wallet class; `@public_app` is also `NaN` while any
+    /// held supply was classed with no breadth table loaded.
+    pub fn bag_share_pct(&self, class: &str) -> f64 {
         if self.broken || self.live <= 0.0 {
             return f64::NAN;
         }
-        match id {
-            MetricId::PublicAppShare if self.unknown > 0.0 => f64::NAN,
-            MetricId::PublicAppShare => self.public / self.live * 100.0,
-            MetricId::BundledShare => self.bundled / self.live * 100.0,
+        match class {
+            PUBLIC_APP if self.unknown > 0.0 => f64::NAN,
+            PUBLIC_APP => self.public / self.live * 100.0,
+            BUNDLED => self.bundled / self.live * 100.0,
             _ => f64::NAN,
         }
     }
@@ -254,10 +257,10 @@ mod tests {
         let mut b = HolderBookState::default();
         b.on_trade(&print(Side::Buy, 1, 700.0, 10, 7, PUB));
         b.on_trade(&print(Side::Buy, 2, 300.0, 11, 8, BOT));
-        assert_eq!(b.value(MetricId::PublicAppShare), 70.0);
+        assert_eq!(b.bag_share_pct(PUBLIC_APP), 70.0);
         // The public buyer sells half: 350 of 650.
         b.on_trade(&print(Side::Sell, 1, 350.0, 12, 7, PUB));
-        assert!((b.value(MetricId::PublicAppShare) - 350.0 / 650.0 * 100.0).abs() < 1e-12);
+        assert!((b.bag_share_pct(PUBLIC_APP) - 350.0 / 650.0 * 100.0).abs() < 1e-12);
     }
 
     #[test]
@@ -266,7 +269,7 @@ mod tests {
         b.on_trade(&print(Side::Buy, 1, 100.0, 10, 7, BOT));
         // A later buy through a public app does not reclass the wallet.
         b.on_trade(&print(Side::Buy, 1, 100.0, 11, 9, PUB));
-        assert_eq!(b.value(MetricId::PublicAppShare), 0.0);
+        assert_eq!(b.bag_share_pct(PUBLIC_APP), 0.0);
     }
 
     #[test]
@@ -275,26 +278,26 @@ mod tests {
         b.on_trade(&print(Side::Buy, 1, 100.0, 10, 7, BOT));
         b.on_trade(&print(Side::Buy, 2, 100.0, 10, 7, BOT));
         b.on_trade(&print(Side::Buy, 9, 200.0, 10, 8, BOT)); // same slot, other build
-        assert_eq!(b.value(MetricId::BundledShare), 0.0);
+        assert_eq!(b.bag_share_pct(BUNDLED), 0.0);
         b.on_trade(&print(Side::Buy, 3, 100.0, 10, 7, BOT));
-        assert_eq!(b.value(MetricId::BundledShare), 60.0);
+        assert_eq!(b.bag_share_pct(BUNDLED), 60.0);
         b.on_trade(&print(Side::Buy, 4, 100.0, 10, 7, BOT));
-        assert!((b.value(MetricId::BundledShare) - 400.0 / 600.0 * 100.0).abs() < 1e-12);
+        assert!((b.bag_share_pct(BUNDLED) - 400.0 / 600.0 * 100.0).abs() < 1e-12);
         // A member's sell leaves the bundled sum with its tokens.
         b.on_trade(&print(Side::Sell, 1, 100.0, 11, 5, BOT));
-        assert_eq!(b.value(MetricId::BundledShare), 60.0);
+        assert_eq!(b.bag_share_pct(BUNDLED), 60.0);
     }
 
     #[test]
     fn a_bag_never_goes_below_zero_and_an_empty_book_is_nan() {
         let mut b = HolderBookState::default();
-        assert!(b.value(MetricId::BundledShare).is_nan());
+        assert!(b.bag_share_pct(BUNDLED).is_nan());
         b.on_trade(&print(Side::Sell, 5, 50.0, 9, 7, BOT)); // never bought: nothing
         b.on_trade(&print(Side::Buy, 1, 100.0, 10, 7, PUB));
         b.on_trade(&print(Side::Sell, 1, 150.0, 11, 7, PUB));
-        assert!(b.value(MetricId::PublicAppShare).is_nan());
+        assert!(b.bag_share_pct(PUBLIC_APP).is_nan());
         b.on_trade(&print(Side::Buy, 2, 40.0, 12, 8, BOT));
-        assert_eq!(b.value(MetricId::PublicAppShare), 0.0);
+        assert_eq!(b.bag_share_pct(PUBLIC_APP), 0.0);
     }
 
     #[test]
@@ -302,10 +305,10 @@ mod tests {
         let mut b = HolderBookState::default();
         b.on_trade(&print(Side::Buy, 1, 100.0, 10, 7, None));
         b.on_trade(&print(Side::Buy, 2, 100.0, 11, 8, PUB));
-        assert!(b.value(MetricId::PublicAppShare).is_nan());
-        assert_eq!(b.value(MetricId::BundledShare), 0.0);
+        assert!(b.bag_share_pct(PUBLIC_APP).is_nan());
+        assert_eq!(b.bag_share_pct(BUNDLED), 0.0);
         b.on_trade(&print(Side::Sell, 1, 100.0, 12, 7, None));
-        assert_eq!(b.value(MetricId::PublicAppShare), 100.0);
+        assert_eq!(b.bag_share_pct(PUBLIC_APP), 100.0);
     }
 
     #[test]
@@ -313,7 +316,7 @@ mod tests {
         let mut b = HolderBookState::default();
         b.on_trade(&print(Side::Buy, 1, 100.0, 10, 7, PUB));
         b.on_trade(&print(Side::Buy, 2, f64::NAN, 11, 7, PUB));
-        assert!(b.value(MetricId::PublicAppShare).is_nan());
-        assert!(b.value(MetricId::BundledShare).is_nan());
+        assert!(b.bag_share_pct(PUBLIC_APP).is_nan());
+        assert!(b.bag_share_pct(BUNDLED).is_nan());
     }
 }

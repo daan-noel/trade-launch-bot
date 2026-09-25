@@ -263,18 +263,17 @@ mod tests {
             id: FingerprintId(Uuid::from_u128(0xF)),
             wildcard: true,
             criteria: Criteria::new(),
-            metric_config: serde_json::json!({}),
+            tags: serde_json::json!({}),
         }
     }
 
     /// Buys a 1 SOL sell once 3 wallets other than the creator have bought since birth.
     fn crowd_rule() -> LoadedRule {
         let params = serde_json::json!({
-            "entry": {
-                "m_crowd_after_age": {"after_age_sec": 0,
-                                      "non_creator_buyers": [{"operator": ">=", "value": 3}]},
-                "m_flow_window": {"window_size_prints": 1, "sell": [{"operator": ">=", "value": 1}]}
-            },
+            "enter": { "filters": [
+                { "metric": "m_crowd.buyer_count", "span": "age0s", "is": [{ "operator": ">=", "value": 3 }] },
+                { "metric": "m_flow.sell_sol", "span": "1p", "is": [{ "operator": ">=", "value": 1 }] }
+            ] },
             "take_profit": 50
         });
         LoadedRule {

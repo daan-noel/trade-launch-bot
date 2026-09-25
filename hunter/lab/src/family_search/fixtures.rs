@@ -6,8 +6,6 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 
-use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::MetricId;
 use trading_core::strategies::kernel::{CostModel, ExitCode};
 use trading_core::strategies::paper_fill::FillModel;
 
@@ -83,10 +81,7 @@ pub fn outcome_at(entry_at: DateTime<Utc>, entry_price: f64, pnl_sol: f64) -> To
         pnl_percent: 0.0,
         pnl_sol: pnl_sol as f32,
         exit: ExitCode::TimeStop,
-        exit_metric: None,
-        exit_operator: None,
-        exit_metric_value: None,
-        exit_metric_window: None,
+        exit_label: None,
         exit_metric_slot: None,
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
@@ -97,21 +92,12 @@ pub fn outcome_at(entry_at: DateTime<Utc>, entry_price: f64, pnl_sol: f64) -> To
     }
 }
 
-/// A close on an authored exit term, stamped exactly as the engine stamps it.
-pub fn metric_exit(
-    slot: u8,
-    metric: MetricId,
-    operator: Operator,
-    value: f64,
-    window: Option<hunter_engine::metrics::WindowSpec>,
-    pnl_sol: f64,
-) -> TokenOutcome {
+/// A close on an authored sell line, stamped exactly as the engine stamps it: the
+/// line's exit label (`m_price.stall_sec >= 30`) and its slot.
+pub fn metric_exit(slot: u8, label: &'static str, pnl_sol: f64) -> TokenOutcome {
     TokenOutcome {
         exit: ExitCode::Metrics,
-        exit_metric: Some(metric),
-        exit_operator: Some(operator),
-        exit_metric_value: Some(value),
-        exit_metric_window: window,
+        exit_label: Some(label),
         exit_metric_slot: Some(slot),
         ..outcome_at(created_at(), 1.0, pnl_sol)
     }
@@ -136,7 +122,7 @@ pub fn fp_row(name: &str) -> trading_core::models::Fingerprint {
     trading_core::models::Fingerprint {
         id: uuid::Uuid::new_v4(),
         name: name.into(),
-        metric_config: serde_json::json!({}),
+        tags: serde_json::json!({}),
         created_at: created_at(),
         updated_at: created_at(),
         wildcard: false,

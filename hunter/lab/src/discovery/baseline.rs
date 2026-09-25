@@ -135,7 +135,7 @@ pub fn select_baseline(
         .map(bracket_model)
         .collect::<Result<_, String>>()
         .map_err(|e| anyhow::anyhow!("baseline grid axes: {e}"))?;
-    let strategy = AdditiveStrategy::new(models, pricing, as_of, cfg.flow_patterns.as_ref());
+    let strategy = AdditiveStrategy::new(models, pricing, as_of, &cfg.tags);
     let combos_scanned = strategy.combos().len();
     let rows = strategy.run(corpus, observer)?;
 
@@ -207,11 +207,11 @@ fn bracket_model(b: &ScreenBaseline) -> Result<AxesModel, String> {
             axes.push(AxisSpec {
                 kind: kind.to_string(),
                 side: None,
-                group: None,
                 metric: None,
-                operator: None,
-                window: None,
+                tag: None,
+                span: None,
                 slice: None,
+                operator: None,
                 values: vec![Some(v)],
             });
         }

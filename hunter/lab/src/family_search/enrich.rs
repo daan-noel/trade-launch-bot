@@ -292,19 +292,32 @@ mod tests {
     use super::*;
     use crate::rule_search::cuts::CutPhase;
     use hunter_engine::metrics::evaluator::Operator;
-    use hunter_engine::metrics::{group_of, MetricId};
+    use hunter_engine::metrics::{Metric, MetricRef, Span, TagRef};
 
-    fn clause(metric: MetricId, op: Operator, threshold: f64, window: Option<hunter_engine::metrics::WindowSpec>) -> Clause {
-        Clause { group: group_of(metric).id, metric, window, op, threshold, phase: CutPhase::DumpLead }
+    fn clause(r: MetricRef, op: Operator, threshold: f64) -> Clause {
+        Clause { r, op, threshold, phase: CutPhase::DumpLead }
+    }
+
+    fn life(m: Metric) -> MetricRef {
+        MetricRef::life(m)
+    }
+
+    fn win(m: Metric, secs: f64) -> MetricRef {
+        life(m).with_span(Span::secs(secs))
+    }
+
+    /// `m_flow.buy_sol @!volume [2s]`: the organic buys of the last 2 s.
+    fn organic_burst() -> MetricRef {
+        win(Metric::BuySol, 2.0).with_tag(TagRef::parse("!volume").unwrap())
     }
 
     fn skeleton() -> GeneratedCombo {
-        let entry = EntryFilling { clauses: vec![clause(MetricId::Liquidity, Operator::Gt, 30.0, None)] };
+        let entry = EntryFilling { clauses: vec![clause(life(Metric::LiquiditySol), Operator::Gt, 30.0)] };
         let exit = ExitBag {
             clauses: vec![
-                clause(MetricId::Stall, Operator::Gte, 30.0, None),
+                clause(life(Metric::StallSec), Operator::Gte, 30.0),
                 // The standing tail: sell at migration, never searched, never dropped.
-                clause(MetricId::Liquidity, Operator::Gte, 85.0, None),
+                clause(life(Metric::LiquiditySol), Operator::Gte, 85.0),
             ],
         };
         GeneratedCombo { params: reassemble(&entry, &exit), entry, exit }
@@ -319,23 +332,23 @@ mod tests {
         }
     }
 
-    fn has(f: &EntryFilling, m: MetricId) -> bool {
-        f.clauses.iter().any(|c| c.metric == m)
+    fn has(f: &EntryFilling, m: Metric) -> bool {
+        f.clauses.iter().any(|c| c.r.metric == m)
     }
-    fn bag_has(b: &ExitBag, m: MetricId, v: f64) -> bool {
-        b.clauses.iter().any(|c| c.metric == m && (c.threshold - v).abs() < 1e-9)
+    fn bag_has(b: &ExitBag, m: Metric, v: f64) -> bool {
+        b.clauses.iter().any(|c| c.r.metric == m && (c.threshold - v).abs() < 1e-9)
     }
 
     /// The whole point of the stage: a term the broad fit is blind to gets added back
     /// on the cohort that needs it — and the entry side earns its place with SAFETY.
     #[test]
     fn an_entry_idea_that_buys_win_rate_is_accepted_even_when_it_costs_a_little_return() {
-        let entry_menu = [clause(MetricId::Time, Operator::Gte, 20.0, None)];
-        let exit_menu = [clause(MetricId::WinUntaggedBuy, Operator::Gte, 1.6, Some(hunter_engine::metrics::WindowSpec::secs(2.0)))];
+        let entry_menu = [clause(life(Metric::AgeSec), Operator::Gte, 20.0)];
+        let exit_menu = [clause(organic_burst(), Operator::Gte, 1.6)];
 
         let score = |e: &EntryFilling, x: &ExitBag| {
-            let time = has(e, MetricId::Time);
-            let organic = bag_has(x, MetricId::WinUntaggedBuy, 1.6);
+            let time = has(e, Metric::AgeSec);
+            let organic = bag_has(x, Metric::BuySol, 1.6);
             match (time, organic) {
                 (false, false) => s(21.0, 48.0, 200),
                 // +14pp of win rate for −1pp of return: exactly the trade an entry
@@ -350,19 +363,19 @@ mod tests {
         assert_eq!(out.n_accepted, 2, "{:#?}", out.trials);
 
         let combo = out.combo.expect("an enriched rule");
-        assert!(has(&combo.entry, MetricId::Liquidity) && has(&combo.entry, MetricId::Time));
-        assert!(bag_has(&combo.exit, MetricId::Stall, 30.0));
-        assert!(bag_has(&combo.exit, MetricId::WinUntaggedBuy, 1.6));
+        assert!(has(&combo.entry, Metric::LiquiditySol) && has(&combo.entry, Metric::AgeSec));
+        assert!(bag_has(&combo.exit, Metric::StallSec, 30.0));
+        assert!(bag_has(&combo.exit, Metric::BuySol, 1.6));
 
         // The standing term survives, still last, still exactly once.
         assert_eq!(
-            combo.exit.clauses.iter().filter(|c| c.metric == MetricId::Liquidity).count(),
+            combo.exit.clauses.iter().filter(|c| c.r.metric == Metric::LiquiditySol).count(),
             1
         );
         assert_eq!(combo.exit.clauses.last().unwrap().threshold, 85.0);
 
         // Both accepted rows carry the numbers that bought them.
-        let time = out.trials.iter().find(|t| t.label.contains("time")).expect("time trial");
+        let time = out.trials.iter().find(|t| t.label.contains("age_sec")).expect("time trial");
         assert!(time.accepted && time.win_delta_pp().unwrap() > 13.0);
         assert!(time.ret_delta_pct() < 0.0, "it cost return and was still worth it");
     }
@@ -371,8 +384,8 @@ mod tests {
     /// and refused, never quietly welded on.
     #[test]
     fn an_idea_that_pays_nothing_is_refused_with_its_reason() {
-        let entry_menu = [clause(MetricId::Time, Operator::Gte, 20.0, None)];
-        let exit_menu = [clause(MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)))];
+        let entry_menu = [clause(life(Metric::AgeSec), Operator::Gte, 20.0)];
+        let exit_menu = [clause(win(Metric::GrossSol, 10.0), Operator::Lt, 15.0)];
         // Flat whatever is added.
         let score = |_: &EntryFilling, _: &ExitBag| s(21.0, 48.0, 200);
 
@@ -395,13 +408,13 @@ mod tests {
     /// re-score on the growing rule catches it.
     #[test]
     fn the_second_of_two_redundant_ideas_is_refused_on_the_confirming_pass() {
-        let a = clause(MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)));
-        let b = clause(MetricId::Buy, Operator::Lt, 3.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)));
+        let a = clause(win(Metric::GrossSol, 10.0), Operator::Lt, 15.0);
+        let b = clause(win(Metric::BuySol, 10.0), Operator::Lt, 3.0);
         let exit_menu = [a, b];
 
         let score = move |_: &EntryFilling, x: &ExitBag| {
-            let has_a = bag_has(x, MetricId::GrossFlow, 15.0);
-            let has_b = bag_has(x, MetricId::Buy, 3.0);
+            let has_a = bag_has(x, Metric::GrossSol, 15.0);
+            let has_b = bag_has(x, Metric::BuySol, 3.0);
             // Either one lifts the rule to +31%; both together add nothing further.
             match (has_a, has_b) {
                 (false, false) => s(21.0, 50.0, 200),
@@ -438,9 +451,9 @@ mod tests {
     #[test]
     fn the_trial_budget_is_shared_between_the_two_sides() {
         let e: Vec<Clause> =
-            (0..20).map(|i| clause(MetricId::Time, Operator::Gte, i as f64, None)).collect();
+            (0..20).map(|i| clause(life(Metric::AgeSec), Operator::Gte, i as f64)).collect();
         let x: Vec<Clause> = (0..20)
-            .map(|i| clause(MetricId::Stall, Operator::Gte, 100.0 + i as f64, None))
+            .map(|i| clause(life(Metric::StallSec), Operator::Gte, 100.0 + i as f64))
             .collect();
         let picked = interleave(&e, &x, MAX_TRIALS);
         assert_eq!(picked.len(), MAX_TRIALS);

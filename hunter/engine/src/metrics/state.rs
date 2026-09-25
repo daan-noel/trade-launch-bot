@@ -19,7 +19,7 @@
 //!
 //! Static state is shared by every rule armed on the token (computed once).
 
-use super::{secs_between, MetricId, Ts};
+use super::{secs_between, Metric, Ts};
 
 /// Incremental `m_state` state: the last observed reserves and venue.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -52,11 +52,11 @@ impl StateMetrics {
 
     /// Value of one `m_state` metric. Non-snapshot ids yield `NaN`
     /// (unreachable — `TokenTrack` routes by group).
-    pub fn value(&self, id: MetricId, created_at: Ts, now: Ts) -> f64 {
+    pub fn value(&self, id: Metric, created_at: Ts, now: Ts) -> f64 {
         match id {
-            MetricId::Time => Self::time(created_at, now),
-            MetricId::Liquidity => self.liquidity(),
-            MetricId::OnCurve => self.on_curve.map_or(f64::NAN, |c| f64::from(u8::from(c))),
+            Metric::AgeSec => Self::time(created_at, now),
+            Metric::LiquiditySol => self.liquidity(),
+            Metric::OnCurve => self.on_curve.map_or(f64::NAN, |c| f64::from(u8::from(c))),
             _ => f64::NAN,
         }
     }
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn on_curve_is_the_last_trades_venue_and_nan_before_any() {
         let mut s = StateMetrics::default();
-        let read = |s: &StateMetrics| s.value(MetricId::OnCurve, ts(0), ts(1));
+        let read = |s: &StateMetrics| s.value(Metric::OnCurve, ts(0), ts(1));
         assert!(read(&s).is_nan());
         s.on_trade(60.0, true);
         assert_eq!(read(&s), 1.0);

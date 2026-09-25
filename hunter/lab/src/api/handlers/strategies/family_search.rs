@@ -39,7 +39,7 @@ use crate::sweep::generic::Pricing;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::registry::clamp_token_cap;
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
-use hunter_engine::metrics::flow_ix::FlowPatterns;
+use hunter_engine::metrics::tags::config::compile_tags;
 use hunter_engine::rule_params::RuleParams;
 use trading_core::models::Fingerprint;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
@@ -245,7 +245,7 @@ async fn run_job(
     let incumbent_params: Option<RuleParams> = match b.incumbent_rule_id {
         None => None,
         Some(rule_id) => match RuleRepo::new(state.db.clone()).find(rule_id).await {
-            Ok(Some(r)) => match RuleParams::parse(&r.params) {
+            Ok(Some(r)) => match hunter_engine::v1::parse_params_any(&r.params) {
                 Ok(p) => Some(p),
                 Err(e) => {
                     let msg = format!("incumbent rule params are invalid: {e}");
@@ -330,8 +330,10 @@ async fn drive(
         .iter()
         .find(|r| r.id == fam.target)
         .ok_or_else(|| anyhow::anyhow!("target fingerprint vanished from the table"))?;
-    let flow = FlowPatterns::from_metric_config(&target_row.metric_config);
-    let with_flow = flow.is_some();
+    // The target's tags split every cohort's trades: the menu is earned on the target
+    // and scored unchanged across the family.
+    let tags = compile_tags(&fp_to_engine(target_row).tags);
+    let with_flow = !tags.is_empty();
 
     let base_sel = Selection {
         mints: None,
@@ -510,9 +512,9 @@ async fn drive(
     phase("signatures");
     let cuts = {
         let corpus = target_corpus.clone();
-        let flow = flow.clone();
+        let tags = tags.clone();
         let fp_id = target_scope.1.id;
-        pool.install(move || cut_table(&corpus.tokens, flow.as_ref(), fp_id))
+        pool.install(move || cut_table(&corpus.tokens, &tags, fp_id))
     };
     let library = crate::family_search::generator::generate(&cuts, &cfg.generator, &standing);
     // `earn_candidates` is the same two steps; the table is kept because the enrich
@@ -521,10 +523,10 @@ async fn drive(
         library.kept.len(),
         {
             let corpus = target_corpus.clone();
-            let flow = flow.clone();
+            let tags = tags.clone();
             earn_candidates(
                 &corpus.tokens,
-                flow.as_ref(),
+                &tags,
                 target_scope.1.id,
                 &cfg.generator,
                 &standing,
@@ -569,7 +571,7 @@ async fn drive(
         let (scores, enter_pct, ungated) = {
             let corpus = corpus.clone();
             let candidates = candidates.clone();
-            let flow = flow.clone();
+            let tags = tags.clone();
             let cfg = cfg.clone();
             let observer = observer.clone();
             let fp_id = engine_fp.id;
@@ -581,7 +583,7 @@ async fn drive(
                         &corpus.tokens,
                         &candidates,
                         Some(&control),
-                        flow.as_ref(),
+                        &tags,
                         fp_id,
                         &cfg,
                         observer.as_ref(),
@@ -645,10 +647,7 @@ async fn drive(
     // ── Authority pass + enrich: the target cohort and the finalist only. ───
     check_cancelled(observer.as_ref())?;
     phase("authority");
-    let standing_keys: Vec<_> = standing
-        .iter()
-        .map(|s| (s.clause.metric, s.clause.window, s.clause.threshold))
-        .collect();
+    let standing_keys: Vec<String> = standing.iter().map(|s| s.label.clone()).collect();
     let (finalist, auth, capture, narrow, timing, spread_of_draft, incumbent_auth, enriched, diag) = {
         let corpus = target_corpus.clone();
         let cfg2 = cfg.clone();

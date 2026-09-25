@@ -27,7 +27,7 @@ struct FingerprintDbRow {
     name: String,
     criteria: sqlx::types::Json<Criteria>,
     wildcard: bool,
-    metric_config: sqlx::types::Json<serde_json::Value>,
+    tags: sqlx::types::Json<serde_json::Value>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -39,7 +39,7 @@ impl From<FingerprintDbRow> for Fingerprint {
             name: r.name,
             criteria: r.criteria.0,
             wildcard: r.wildcard,
-            metric_config: r.metric_config.0,
+            tags: r.tags.0,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -48,10 +48,10 @@ impl From<FingerprintDbRow> for Fingerprint {
 
 // Explicit column list (struct order) — not `SELECT *`.
 const FINGERPRINT_COLS: &str =
-    "id, name, criteria, wildcard, metric_config, created_at, updated_at";
+    "id, name, criteria, wildcard, tags, created_at, updated_at";
 
 /// The identity predicate for [`FingerprintRepo::find_or_create`]: the same
-/// criteria, the same wildcard flag and the same `metric_config`. `name` is a label
+/// criteria, the same wildcard flag and the same `tags`. `name` is a label
 /// and is not identity.
 ///
 /// One `jsonb` equality replaces the per-axis column chain this used to be --
@@ -60,7 +60,7 @@ const FINGERPRINT_COLS: &str =
 /// no edit here. The `fingerprints_identity_uniq` index enforces the same key, so a
 /// duplicate cannot be created by a racing writer either.
 ///
-/// `metric_config` is NOT match identity -- it selects no token -- but it IS row
+/// `tags` is NOT match identity -- it selects no token -- but it IS row
 /// identity, because [`crate::models::Fingerprint`] carries it into
 /// `EngineState`'s per-fingerprint `m_flow_ix` patterns at reload. Leaving it out
 /// made this query return an ARBITRARY row (`LIMIT 1`, no ordering) out of the twelve
@@ -68,7 +68,7 @@ const FINGERPRINT_COLS: &str =
 /// `8dtx - GMGN Bot` carrier and then overwrite that carrier's patterns with the
 /// sweep's, silently reclassifying flow for every rule already bound to it.
 const IDENTITY_WHERE: &str =
-    "criteria = $1::jsonb AND wildcard = $2 AND metric_config = $3::jsonb";
+    "criteria = $1::jsonb AND wildcard = $2 AND tags = $3::jsonb";
 
 impl FingerprintRepo {
     pub fn new(pool: PgPool) -> Self {
@@ -84,7 +84,7 @@ impl FingerprintRepo {
         let name = stored_name(fp);
         sqlx::query(
             r#"
-            INSERT INTO fingerprints (id, name, criteria, wildcard, metric_config, created_at, updated_at)
+            INSERT INTO fingerprints (id, name, criteria, wildcard, tags, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
         )
@@ -92,7 +92,7 @@ impl FingerprintRepo {
         .bind(&name)
         .bind(sqlx::types::Json(&fp.criteria))
         .bind(fp.wildcard)
-        .bind(sqlx::types::Json(&fp.metric_config))
+        .bind(sqlx::types::Json(&fp.tags))
         .bind(fp.created_at)
         .bind(fp.updated_at)
         .execute(&self.pool)
@@ -112,7 +112,7 @@ impl FingerprintRepo {
                 name = $2,
                 criteria = $3,
                 wildcard = $4,
-                metric_config = $5,
+                tags = $5,
                 updated_at = now()
             WHERE id = $1
             "#,
@@ -121,7 +121,7 @@ impl FingerprintRepo {
         .bind(&name)
         .bind(sqlx::types::Json(&fp.criteria))
         .bind(fp.wildcard)
-        .bind(sqlx::types::Json(&fp.metric_config))
+        .bind(sqlx::types::Json(&fp.tags))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -179,7 +179,7 @@ impl FingerprintRepo {
         ))
         .bind(sqlx::types::Json(&fp.criteria))
         .bind(fp.wildcard)
-        .bind(sqlx::types::Json(&fp.metric_config))
+        .bind(sqlx::types::Json(&fp.tags))
         .fetch_optional(&self.pool)
         .await?;
         Ok(existing.map(Fingerprint::from))
@@ -188,7 +188,7 @@ impl FingerprintRepo {
     /// Return the existing identity-identical fingerprint, or persist `fp` as a
     /// new row. Sweep promotion goes through here so equal winning groups map
     /// onto ONE fingerprint (`name` is a label and does not affect identity; see
-    /// [`IDENTITY_WHERE`] for why `metric_config` does).
+    /// [`IDENTITY_WHERE`] for why `tags` does).
     pub async fn find_or_create(&self, fp: &Fingerprint) -> anyhow::Result<Fingerprint> {
         if let Some(mut existing) = self.find_by_identity(fp).await? {
             self.persist_legacy_relabel(&mut existing).await?;
@@ -224,7 +224,7 @@ impl FingerprintRepo {
 
 /// Every gate a stored row must pass, in ONE place.
 ///
-/// Both halves, not just the criteria half. `metric_config` selects no token, so it
+/// Both halves, not just the criteria half. `tags` selects no token, so it
 /// reads like a label — but it compiles into the fingerprint's live `m_flow_ix` and
 /// `m_dump_ix` classifiers, and an unknown marker name or a malformed pattern list
 /// degrades one to "unconfigured", which reads its metrics as `NaN`: a rule that
@@ -232,8 +232,8 @@ impl FingerprintRepo {
 /// non-HTTP writer (sweep promotion) reaches the table through here.
 fn validate_row(fp: &Fingerprint) -> anyhow::Result<()> {
     fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
-    hunter_engine::metrics::validate_fingerprint_metric_config(&fp.metric_config)
-        .map_err(|e| anyhow::anyhow!("invalid fingerprint metric_config: {e}"))?;
+    hunter_engine::metrics::tags::config::validate_tags(&fp.tags)
+        .map_err(|e| anyhow::anyhow!("invalid fingerprint tags: {e}"))?;
     Ok(())
 }
 
@@ -254,6 +254,8 @@ mod tests {
     /// The migration that creates the identity index, read at compile time.
     const RANGES_MIGRATION: &str =
         include_str!("../../../migrations/0009_fingerprint_criteria_ranges.sql");
+    /// Renames the identity column; Postgres carries the index across a rename.
+    const V2_MIGRATION: &str = include_str!("../../../migrations/0021_metric_system_v2.sql");
 
     /// Columns `IDENTITY_WHERE` compares, in order.
     fn predicate_columns() -> Vec<&'static str> {
@@ -269,6 +271,17 @@ mod tests {
     /// unwrapped here: what must agree is WHICH columns are identity, not how the
     /// index stores them.
     fn index_columns() -> Vec<&'static str> {
+        // `RENAME COLUMN old TO new` pairs a later migration applied to the table.
+        let renames: Vec<(&str, &str)> = V2_MIGRATION
+            .lines()
+            .filter(|l| l.starts_with("ALTER TABLE fingerprints RENAME COLUMN"))
+            .filter_map(|l| {
+                let rest = l.trim_end_matches(';').split("RENAME COLUMN ").nth(1)?;
+                let (old, new) = rest.split_once(" TO ")?;
+                Some((old.trim(), new.trim()))
+            })
+            .collect();
+        let renamed = |c: &'static str| renames.iter().find(|(old, _)| *old == c).map_or(c, |(_, new)| *new);
         let tail = RANGES_MIGRATION
             .split_once("fingerprints_identity_uniq")
             .expect("the migration creates the identity index")
@@ -289,6 +302,7 @@ mod tests {
                     .trim_end_matches(')')
                     .trim_end_matches("::text")
             })
+            .map(renamed)
             .collect()
     }
 
@@ -307,15 +321,15 @@ mod tests {
         );
     }
 
-    /// `metric_config` is the column that was missing, and it is not obvious: it
-    /// selects no token, so it reads like a label. It is not — it compiles into that
-    /// fingerprint's live `m_flow_ix` patterns, and eleven `8dtx` rows differ only
-    /// there. Named explicitly so removing it fails here rather than in production.
+    /// `tags` is the column that is easy to miss: it selects no token, so it reads
+    /// like a label. It is not — it compiles into that fingerprint's live tags, and
+    /// eleven `8dtx` rows differ only there. Named explicitly so removing it fails here
+    /// rather than in production.
     #[test]
-    fn identity_includes_metric_config() {
+    fn identity_includes_tags() {
         assert!(
-            predicate_columns().contains(&"metric_config"),
-            "metric_config is row identity: {IDENTITY_WHERE}"
+            predicate_columns().contains(&"tags"),
+            "tags is row identity: {IDENTITY_WHERE}"
         );
     }
 }

@@ -203,14 +203,15 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_label_on_a_closed_row_still_counts_as_closed() {
+    fn a_closed_row_always_counts_as_closed() {
+        // A missing or non-exit label falls back to Manual, never to Open.
         assert_eq!(ExitCode::from_closed_reason(None), ExitCode::Manual);
-        assert_eq!(ExitCode::from_closed_reason(Some("wat")), ExitCode::Manual);
         assert_eq!(ExitCode::from_closed_reason(Some("Open")), ExitCode::Manual);
-        assert_eq!(
-            ExitCode::from_closed_reason(Some("stall > 3")),
-            ExitCode::Metrics
-        );
+        // Any other label is the rule line that sold: an authored label, an automatic
+        // one, or a v1 metric label.
+        for line in ["spike", "m_position.pnl_pct >= 50", "stall > 3"] {
+            assert_eq!(ExitCode::from_closed_reason(Some(line)), ExitCode::Metrics, "{line}");
+        }
     }
 
     #[test]

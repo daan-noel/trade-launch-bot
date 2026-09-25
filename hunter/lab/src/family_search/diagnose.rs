@@ -35,15 +35,14 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use hunter_engine::event::format_metric_exit_label;
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
-use hunter_engine::metrics::MetricId;
 use trading_core::strategies::kernel::{weighted_return_pct, CostModel, ExitCode};
 
 use crate::rule_search::generator::{assemble, clause_label, EntryFilling, ExitBag};
 use crate::sweep::corpus::CorpusToken;
 use crate::sweep::generic::Pricing;
 
+use super::attribution::StandingKey;
 use super::generator::Candidate;
 use super::oracle::{best_after_pnl_sol, terminal_pnl_sol};
 use super::score::CohortScore;
@@ -53,7 +52,8 @@ use super::{authority, Authority, RunConfig, FILL_OPTIMISTIC};
 
 /// Multipliers on the chosen threshold, the chosen value excluded (it is read off
 /// the finalist's own authority pass for free). Multiplicative so a negative level
-/// (`pnl <= -8`) ladders through negative neighbours instead of crossing zero.
+/// (`m_position.pnl_pct <= -8`) ladders through negative neighbours instead of
+/// crossing zero.
 pub const LADDER_FACTORS: [f64; 6] = [0.5, 0.7, 0.85, 1.15, 1.3, 1.5];
 
 /// Grade span (max − min over the ladder, in the side's own currency) below which
@@ -225,35 +225,13 @@ impl AlarmRegret {
     }
 }
 
-/// `(metric, window identity, threshold-in-µ)` — the standing-term identity,
-/// float-keyed the same way the engine keys windows so `2.0` never sorts apart from
-/// itself. The window half carries the whole span: two terms that differ only in
-/// unit or lag read DIFFERENT tape and must not collapse onto one key.
-fn skey(
-    metric: MetricId,
-    window: Option<hunter_engine::metrics::WindowSpec>,
-    value: f64,
-) -> (MetricId, i64, i64, i64, i64) {
-    let (unit, size, lag) = match window {
-        // The unit's own discriminant, not a table restated here: a new basis must
-        // key apart from every existing one without this site being remembered into.
-        Some(w) => (
-            w.unit as i64,
-            hunter_engine::metrics::quantize(w.size) as i64,
-            hunter_engine::metrics::quantize(w.lag) as i64,
-        ),
-        None => (-1, -1, -1),
-    };
-    (metric, unit, size, lag, (value * 1_000_000.0).round() as i64)
-}
-
 /// Fold one authority pass into per-alarm regret rows. Pure over outcomes in hand.
 pub fn alarm_regret(
     tokens: &[CorpusToken],
     auth: &Authority,
     pricing: &Pricing,
     band_pct: f64,
-    standing_keys: &[(MetricId, Option<hunter_engine::metrics::WindowSpec>, f64)],
+    standing_keys: &[StandingKey],
 ) -> Vec<AlarmRegret> {
     #[derive(Default)]
     struct Acc {
@@ -267,24 +245,23 @@ pub fn alarm_regret(
         realized_term_sol: f64,
         terminal_sol: f64,
     }
-    let standing: HashSet<(MetricId, i64, i64, i64, i64)> =
-        standing_keys.iter().map(|&(m, w, v)| skey(m, w, v)).collect();
+    // The standing identity is the line's exit label: read, operator and threshold in
+    // the engine's one spelling, so two terms on different spans never collapse.
+    let standing: HashSet<&str> = standing_keys.iter().map(String::as_str).collect();
     let mut by_slot: BTreeMap<u8, Acc> = BTreeMap::new();
 
     for (o, &ti) in auth.outcomes.iter().zip(&auth.token_idx) {
         if o.exit != ExitCode::Metrics {
             continue;
         }
-        let (Some(slot), Some(metric), Some(op), Some(value)) =
-            (o.exit_metric_slot, o.exit_metric, o.exit_operator, o.exit_metric_value)
-        else {
+        let (Some(slot), Some(label)) = (o.exit_metric_slot, o.exit_label) else {
             continue;
         };
         let acc = by_slot.entry(slot).or_default();
         acc.n += 1;
         if acc.label.is_none() {
-            acc.label = Some(format_metric_exit_label(metric, op, value, o.exit_metric_window));
-            acc.standing = standing.contains(&skey(metric, o.exit_metric_window, value));
+            acc.label = Some(label.to_string());
+            acc.standing = standing.contains(label);
         }
         let (Some(token), Some(exit_at)) = (tokens.get(ti), o.exit_time) else { continue };
         if let Some(best) = best_after_pnl_sol(token, o, exit_at, pricing) {
@@ -416,7 +393,7 @@ pub fn diagnose(
     auth: &Authority,
     cfg: &RunConfig,
     band_pct: f64,
-    standing_keys: &[(MetricId, Option<hunter_engine::metrics::WindowSpec>, f64)],
+    standing_keys: &[StandingKey],
 ) -> Diagnostics {
     let combo = &finalist.combo;
     let entry = &combo.entry.clauses;
@@ -688,16 +665,15 @@ mod tests {
     fn the_regret_fold_pools_by_money_and_marks_standing_terms() {
         use crate::family_search::fixtures::{metric_exit, pricing, token_from_prices};
         use chrono::Duration;
-        use hunter_engine::metrics::evaluator::Operator;
 
         // Entry at row 0 (price 1), alarm closes at row 1; the 6.0 peak is still
         // ahead and the token dies to 0.5.
         let t = token_from_prices(&[1.0, 2.0, 6.0, 1.0, 0.5]).with_oracle();
-        let mut o = metric_exit(0, MetricId::Stall, Operator::Gte, 30.0, None, 0.008);
+        let mut o = metric_exit(0, "m_price.stall_sec >= 30", 0.008);
         o.entry_time = Some(t.trades[0].block_time);
         o.exit_time = Some(t.trades[0].block_time + Duration::seconds(1));
         // A second close on the standing term.
-        let mut s = metric_exit(1, MetricId::Liquidity, Operator::Gte, 85.0, None, 0.001);
+        let mut s = metric_exit(1, "m_state.liquidity_sol >= 85", 0.001);
         s.entry_time = Some(t.trades[0].block_time);
         s.exit_time = Some(t.trades[0].block_time + Duration::seconds(1));
 
@@ -712,11 +688,11 @@ mod tests {
             &auth,
             &pricing(),
             4.0,
-            &[(MetricId::Liquidity, None, 85.0)],
+            &["m_state.liquidity_sol >= 85".to_string()],
         );
         assert_eq!(rows.len(), 2);
         let stall = &rows[0];
-        assert_eq!(stall.label.as_deref(), Some("stall >= 30"));
+        assert_eq!(stall.label.as_deref(), Some("m_price.stall_sec >= 30"));
         assert!(!stall.standing);
         assert_eq!((stall.n, stall.n_priced, stall.n_terminal), (1, 1, 1));
         // The 6.0 peak was still ahead of the close: a real forfeit...

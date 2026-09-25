@@ -1,98 +1,68 @@
-//! **Automated candidate generation** (plan §2.1) — the registry-driven
-//! replacement for the hand-derived anchor table in
-//! [`docs/plans/sweep/axis-value-candidates.md`].
+//! **Automated candidate generation** (plan §2.1) — the registry-driven candidate menus
+//! the screen sweeps, in place of hand-derived anchor tables.
 //!
-//! Today a human runs throwaway DuckDB percentile queries and records the anchors
-//! in that doc; a metric added later has no menu until someone repeats the ritual.
-//! That is the pipeline's single biggest extensibility hole (plan §0, gap #1). This
-//! module closes it: for a cohort it
+//! For a cohort it
 //!
-//! 1. enumerates every screenable `(side, group, metric[, window])` straight off
-//!    [`REGISTRY`] ([`screen_plan`]) — a new metric is included automatically,
-//!    and anything excluded is reported with a [`SkipReason`], never dropped
-//!    silently;
-//! 2. measures each metric's own distribution over the cohort
-//!    ([`collect_percentiles`]) into a percentile ladder;
-//! 3. spaces a candidate menu off that ladder, rounded to the metric's `unit`,
-//!    with the `off` sentinel first ([`build_menus`]) — ready to hand to the
-//!    sweep as an [`AxisSpec`].
+//! 1. enumerates every screenable `(side, read)` straight off the registry
+//!    ([`screen_plan`]): each metric over each tag and span it accepts. A new metric is
+//!    included automatically, and anything excluded is reported with a [`SkipReason`],
+//!    never dropped silently;
+//! 2. measures each read's own distribution over the cohort ([`collect_percentiles`])
+//!    into a percentile ladder;
+//! 3. spaces a candidate menu off that ladder, rounded to the metric's unit, with the
+//!    `off` pick first ([`build_menus`]) — ready to hand to the sweep as an
+//!    [`AxisSpec`].
 //!
 //! ## Why the percentiles come from `MetricSeries`, not DuckDB SQL
 //!
-//! The plan sketched `metric_percentiles` as an `approx_quantile` in
-//! [`lake::duck`](crate::lake::duck). It isn't: only `time`/`liquidity` are raw
-//! lake columns — `trail`, `stall`, the rolling-window flows and the price-window
-//! extrema are *engine* quantities. Expressing them as DuckDB window functions
-//! would be a **second implementation of metric semantics** that can silently drift
-//! from [`hunter_engine`] (the SSOT rule), and the anchors would then describe
-//! values the screen never actually gates on. Instead the ladder is measured
-//! through the engine's own [`MetricSeries`] compute — the exact numbers the Layer-1
-//! scan reads — and the same per-token precompute the screen needs anyway (plan
-//! §6.1: precompute reuse is the dominant lever).
+//! Only `age_sec` / `liquidity_sol` are raw lake columns; every trailing window, clock
+//! and tag split is an *engine* quantity. A DuckDB version of them would be a second
+//! implementation of metric semantics that can drift from [`hunter_engine`], and the
+//! anchors would describe values the screen never gates on. So the ladder is measured
+//! through the engine's own [`MetricSeries`] compute — the exact numbers the scan reads.
 //!
-//! Values are sampled at **trade moments** (trades folded with no synthetic ticks),
-//! matching what the hand-derived anchor table measured.
-//!
-//! [`docs/plans/sweep/axis-value-candidates.md`]: ../../../docs/plans/sweep/axis-value-candidates.md
-//! [`REGISTRY`]: hunter_engine::metrics::REGISTRY
+//! Values are sampled at **trade moments** (trades folded with no synthetic ticks).
 
 use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::flow_ix::FlowPatterns;
+use hunter_engine::metrics::registry::METRICS;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
-use hunter_engine::metrics::{
-    group_spec, is_fingerprint_scoped, MetricGroupId, MetricId, MetricKind, MetricScope, Unit, REGISTRY,
- WindowSpec,
-};
+use hunter_engine::metrics::tags::config::CompiledTag;
+use hunter_engine::metrics::{chart_reads, Family, Metric, MetricRef, MetricSpec, TagUse, Unit, WindowSpec};
 use trading_core::strategies::kernel::exact_quantile_f64;
 
 use crate::sweep::corpus::CorpusToken;
-use crate::sweep::generic::axes::{AxisSide, AxisSpec, WindowField, SWEEP_FLOW_FP};
+use crate::sweep::generic::axes::{AxisSide, AxisSpec, SWEEP_FLOW_FP};
+use crate::sweep::generic::strategy::register_tags;
 use crate::sweep::projection::to_trade_lite;
 
-/// The percentile ladder every screenable metric is measured on. Mirrors the
-/// columns of the hand-written anchor table so a generated row is comparable with
-/// the recorded ones.
+/// The percentile ladder every screenable read is measured on.
 pub const PERCENTILE_LADDER: [f64; 8] = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99];
 
 /// The ladder rungs a candidate menu is spaced on (plan §2.1: `p10, p25, p50, p75,
-/// p90` plus the `off` sentinel). A strict subset of [`PERCENTILE_LADDER`].
+/// p90` plus `off`). A strict subset of [`PERCENTILE_LADDER`].
 pub const MENU_PERCENTILES: [f64; 5] = [0.10, 0.25, 0.50, 0.75, 0.90];
 
-/// Declared menus for **position-scoped** metrics (`m_position`). They anchor on
-/// *your* entry fill, so no token-independent distribution exists to measure — the
-/// one explicit annotation the extensibility contract predicts (plan §5). Values
-/// are the trailing-stop / holding-time anchors from `axis-value-candidates.md`.
-///
-/// Every `MetricScope::Position` metric must appear here or in
-/// [`POSITION_EXCLUDED`]; `position_metrics_all_declared` pins that, so adding one
-/// to the registry fails loudly instead of going unscreened.
-const POSITION_MENUS: &[(MetricId, &[f64])] = &[
-    (MetricId::Retrace, &[5.0, 10.0, 15.0, 25.0, 40.0]),
-    (MetricId::Bounce, &[5.0, 10.0, 15.0, 25.0, 40.0]),
-    (MetricId::Held, &[30.0, 60.0, 120.0, 300.0, 600.0]),
+/// Declared menus for **position** metrics. They read *your* entry fill, so no
+/// coin-side distribution exists to measure. Every position metric must appear here or
+/// in [`POSITION_EXCLUDED`]; `position_metrics_all_declared` pins that.
+const POSITION_MENUS: &[(Metric, &[f64])] = &[
+    (Metric::RetracePct, &[5.0, 10.0, 15.0, 25.0, 40.0]),
+    (Metric::BouncePct, &[5.0, 10.0, 15.0, 25.0, 40.0]),
+    (Metric::HeldSec, &[30.0, 60.0, 120.0, 300.0, 600.0]),
 ];
 
-/// Position metrics the screen deliberately does not sweep as a metric axis.
-/// `pnl` **is** the baseline TP/SL (they desugar into it — see the engine's
-/// `arm.rs`), which every screening combo already carries; screening it again
-/// would just re-sweep the baseline.
-/// `armed` is a 0/1 LATCH, not a threshold: it says whether `retrace` acts as a
-/// trailing stop or as a hard stop from entry, and it is configured by
-/// `arm_above_pct` on the condition that reads `retrace`. There is no menu of
-/// values to sweep, and screening it alone would only split every cohort in two.
-/// `since_armed` needs a rule `arm` clause to latch, which a screening combo does not
-/// carry, so it would read NaN on every row.
-const POSITION_EXCLUDED: &[MetricId] = &[MetricId::Pnl, MetricId::Armed, MetricId::SinceArmed];
+/// Position metrics the screen does not sweep: `pnl_pct` IS the baseline TP/SL every
+/// screening combo already carries; `stage_sec` equals `held_sec` in a one-stage combo;
+/// `room_taken_pct` is fixed at the fill (it describes the entry, not a moment to sell).
+const POSITION_EXCLUDED: &[Metric] = &[Metric::PnlPct, Metric::StageSec, Metric::RoomTakenPct];
 
 // ───────────────────────────── configuration ───────────────────────────────
 
-/// Which comparison directions the screen tries per metric.
+/// Which comparison directions the screen tries per read.
 ///
-/// The default is **both**: the plan treats the operator as an *output* of the
-/// screen ("keep, with the suggested operator" — §2.2), and the anchor table shows
-/// most metrics earning a gate in either direction depending on side (`liquidity >`
-/// floor vs `liquidity <` pre-migration cap). Measuring beats guessing, and it is
-/// additive (2 × 5 values), not multiplicative.
+/// The default is **both**: the operator is an *output* of the screen ("keep, with the
+/// suggested operator"), and most metrics earn a gate in either direction depending on
+/// side. Measuring beats guessing, and it is additive (2 × 5 values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum DirectionPolicy {
     #[default]
@@ -102,8 +72,7 @@ pub enum DirectionPolicy {
 }
 
 impl DirectionPolicy {
-    /// The operators to screen, primary first. `>=` is primary everywhere: an
-    /// upper-bound gate is only ever the complement of the same cutpoint.
+    /// The operators to screen, primary first.
     pub fn operators(self) -> &'static [Operator] {
         match self {
             DirectionPolicy::Both => &[Operator::Gte, Operator::Lt],
@@ -116,26 +85,19 @@ impl DirectionPolicy {
 /// Run-scoped knobs for the screen's candidate generation.
 #[derive(Clone, Debug)]
 pub struct ScreenConfig {
-    /// `window_size_sec` every dynamic group is screened at on the **entry** side.
-    /// Windows are compared across runs, not swept within one (plan §2.1).
+    /// The span every windowed read is screened at on the **entry** side. Spans are
+    /// compared across runs, not swept within one (plan §2.1).
     pub entry_window: WindowSpec,
-    /// `window_size_sec` for dynamic groups on the **exit** side.
+    /// The span for windowed reads on the **exit** side.
     pub exit_window: WindowSpec,
-    /// The nested SLICE the two-window metrics (`trade_share` / `sol_share`) are
-    /// screened over, as a fraction of the side's own window.
-    ///
-    /// One fraction rather than a span per side, because the slice only means anything
-    /// relative to the window it nests in — and because both sides must stay in the
-    /// window's own UNIT, which a fixed span cannot promise. Screening these metrics at
-    /// a bare window instead produced a column of `NaN` for every token, so they were
-    /// enumerated, scored on nothing, and silently never surfaced as candidates.
+    /// The nested slice a two-window read is screened over, as a fraction of the side's
+    /// span — relative, because a slice only means anything inside its window and must
+    /// stay in the window's unit.
     pub slice_fraction: f64,
-    /// Compiled `ix_patterns` for the run. `None` ⇒ `m_flow_ix*` metrics
-    /// are skipped ([`SkipReason::FlowPatternsMissing`]) — their values are
-    /// pattern-dependent, so a corpus-wide menu would be meaningless.
-    pub flow_patterns: Option<FlowPatterns>,
-    /// Per-metric ceiling on retained samples (see [`Reservoir`]). Bounds the
-    /// percentile pass's RAM at `columns × cap × 8` bytes regardless of corpus size.
+    /// The run's tags. A read that needs a tag is screened once per tag (and its
+    /// negation); with none, such reads are skipped ([`SkipReason::TagsMissing`]).
+    pub tags: Vec<CompiledTag>,
+    /// Per-read ceiling on retained samples (see [`Reservoir`]).
     pub sample_cap: usize,
     pub directions: DirectionPolicy,
 }
@@ -145,12 +107,12 @@ impl Default for ScreenConfig {
         Self {
             entry_window: WindowSpec::secs(30.0),
             exit_window: WindowSpec::secs(10.0),
-            // A tenth of the window: wide enough that the ratio is not dominated by a
-            // single print, narrow enough that "recent" still means recent.
+            // A tenth of the window: wide enough that the ratio is not one print,
+            // narrow enough that "recent" still means recent.
             slice_fraction: 0.1,
-            flow_patterns: None,
-            // 200k samples per metric ⇒ ~1.6 MB/column; the p10..p90 rungs the menu
-            // reads are stable long before this.
+            tags: Vec::new(),
+            // 200k samples per read ≈ 1.6 MB/column; the p10..p90 rungs are stable
+            // long before this.
             sample_cap: 200_000,
             directions: DirectionPolicy::default(),
         }
@@ -159,75 +121,77 @@ impl Default for ScreenConfig {
 
 // ───────────────────────────── the screen plan ─────────────────────────────
 
-/// Where a metric's candidate values come from.
+/// Where a read's candidate values come from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ValueSource {
-    /// Measured from the metric's own distribution over the cohort, through this
-    /// precompute column.
+    /// Measured from the read's own distribution over the cohort, through this column.
     Series(SeriesColumn),
     /// Declared up front ([`POSITION_MENUS`]) — no cohort distribution exists.
     Declared(&'static [f64]),
 }
 
-/// One `(side, metric)` the screen will sweep alone.
+/// One `(side, read)` the screen sweeps alone.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScreenMetric {
     pub side: AxisSide,
-    pub group: MetricGroupId,
-    pub metric: MetricId,
-    /// `Some` iff the group is [`MetricKind::Dynamic`] — the side's window, as a
-    /// WHOLE span. A bare size cannot tell 30 slots from 30 seconds, and a screen
-    /// that reads the wrong one scores a different metric than it names.
-    pub window: Option<WindowSpec>,
-    /// `Some` iff the METRIC reads a nested slice ([`is_two_window`]) — the other half
-    /// of its basis, without which its column is `NaN` on every row.
-    ///
-    /// [`is_two_window`]: hunter_engine::metrics::is_two_window
-    pub slice: Option<WindowSpec>,
+    pub r: MetricRef,
     pub source: ValueSource,
 }
 
 impl ScreenMetric {
-    /// The precompute column this metric reads (`None` for a declared menu).
+    /// The column this read measures (`None` for a declared menu).
     pub fn column(&self) -> Option<SeriesColumn> {
         match self.source {
             ValueSource::Series(c) => Some(c),
             ValueSource::Declared(_) => None,
         }
     }
+
+    /// The read's family — what the family discovery groups by.
+    pub fn family(&self) -> Family {
+        self.r.metric.family()
+    }
+
+    /// `entry·m_flow.buy_sol @!volume [30s]` — how a report names it.
+    pub fn name(&self) -> String {
+        format!("{}·{}", side_str(self.side), self.r.label())
+    }
 }
 
-/// Why a registry metric is not screened on a side. Reported, never silently
-/// dropped (the no-silent-caps rule).
+/// `entry` / `exit`.
+pub fn side_str(side: AxisSide) -> &'static str {
+    match side {
+        AxisSide::Entry => "entry",
+        AxisSide::Exit => "exit",
+    }
+}
+
+/// Why a registry metric is not screened on a side. Reported, never silently dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
-    /// `m_flow_ix*` without `ix_patterns` — values are pattern-dependent.
-    FlowPatternsMissing,
-    /// Position-scoped groups have no value before entry (`axes.rs` rejects the
-    /// entry axis outright).
+    /// The metric reads only a tag and the run has none.
+    TagsMissing,
+    /// A position metric has no value before entry (`axes.rs` refuses the entry axis).
     PositionIsExitOnly,
-    /// `m_position.pnl` is the baseline TP/SL the screen already carries.
-    BaselineTpSl,
-    /// Position-scoped with no entry in [`POSITION_MENUS`] — a new metric that
-    /// needs its declared menu (guarded by `position_metrics_all_declared`).
+    /// A position metric the screen does not sweep ([`POSITION_EXCLUDED`]).
+    BaselineOrFixed,
+    /// A position metric with no [`POSITION_MENUS`] entry — a new metric that needs its
+    /// declared menu (guarded by `position_metrics_all_declared`).
     NoDeclaredMenu,
-    /// An anchored group (`m_crowd_after_age`) is scoped by an `after_age_sec`
-    /// anchor, which the screen's window vocabulary cannot name — a column built
-    /// without one reads `NaN` on every row, so the group is skipped loudly here
-    /// rather than screened into nothing.
+    /// A since-age read: its start age is a choice the screen's span vocabulary cannot
+    /// make, and screening one arbitrary age would name a different metric.
     AnchorNotAScreenParam,
 }
 
-/// A registry metric the screen left out, with the reason.
+/// A registry metric the screen left out on a side, with the reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Skipped {
     pub side: AxisSide,
-    pub group: MetricGroupId,
-    pub metric: MetricId,
+    pub metric: Metric,
     pub reason: SkipReason,
 }
 
-/// The screenable metrics for a run, plus everything excluded and why.
+/// The screenable reads for a run, plus everything excluded and why.
 #[derive(Clone, Debug, Default)]
 pub struct ScreenPlan {
     pub metrics: Vec<ScreenMetric>,
@@ -235,8 +199,8 @@ pub struct ScreenPlan {
 }
 
 impl ScreenPlan {
-    /// The distinct precompute columns the percentile pass must record — one
-    /// [`MetricSeries`] per token over this union serves every metric (plan §6.1).
+    /// The distinct columns the percentile pass records — one [`MetricSeries`] per
+    /// token over this union serves every read.
     pub fn columns(&self) -> Vec<SeriesColumn> {
         let mut cols: Vec<SeriesColumn> = Vec::new();
         for c in self.metrics.iter().filter_map(ScreenMetric::column) {
@@ -248,97 +212,68 @@ impl ScreenPlan {
     }
 }
 
-/// Enumerate every screenable metric off [`REGISTRY`] for `cfg`.
-///
-/// Registry-driven end to end: `kind` picks the side's window, `is_two_window` adds
-/// its nested slice, `scope` forces exit-only, and a fingerprint-configured group
-/// needs its patterns. Adding a metric to the registry surfaces it here with no edit.
+/// The side's span for a metric, and the slice nested in it for a two-window read.
+fn side_spans(spec: &MetricSpec, side: AxisSide, cfg: &ScreenConfig) -> Vec<WindowSpec> {
+    let w = match side {
+        AxisSide::Entry => cfg.entry_window,
+        AxisSide::Exit => cfg.exit_window,
+    };
+    if spec.spans.slice {
+        let slice = WindowSpec { size: (w.size * cfg.slice_fraction).max(1.0), lag: 0.0, unit: w.unit };
+        vec![w, slice]
+    } else {
+        vec![w]
+    }
+}
+
+/// Enumerate every screenable read off the registry for `cfg`: each metric's
+/// [`chart_reads`] over the side's span and the run's tags, position metrics on the
+/// exit side with their declared menus. A metric added to the registry surfaces here
+/// with no edit.
 pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
     let mut plan = ScreenPlan::default();
-    for group in REGISTRY {
+    let trade: Vec<&str> = cfg.tags.iter().map(|t| t.name).collect();
+    let template: Vec<&str> = cfg.tags.iter().filter(|t| t.patterns.templates().is_some()).map(|t| t.name).collect();
+    for spec in METRICS {
         for side in [AxisSide::Entry, AxisSide::Exit] {
-            let window = match group.kind {
-                MetricKind::Dynamic => Some(match side {
-                    AxisSide::Entry => cfg.entry_window,
-                    AxisSide::Exit => cfg.exit_window,
-                }),
-                // An anchored group's scope is an age anchor, which the screen's
-                // window vocabulary cannot name - see the skip below.
-                MetricKind::Static | MetricKind::Anchored => None,
-            };
-            if group.kind == MetricKind::Anchored {
-                // Skipped LOUDLY, on the plan's own skip list: an anchored group needs
-                // an `after_age_sec` the screen cannot choose, and a column built
-                // without one reads NaN on every row.
-                for m in group.metrics {
-                    plan.skipped.push(Skipped {
-                        side,
-                        group: group.id,
-                        metric: m.id,
-                        reason: SkipReason::AnchorNotAScreenParam,
-                    });
-                }
-                continue;
-            }
-            for m in group.metrics {
-                let skip = |reason| Skipped { side, group: group.id, metric: m.id, reason };
-                // A two-window metric is a ratio ACROSS a nested pair, so the side's
-                // window alone does not name a reading of it.
-                let slice = window.filter(|_| hunter_engine::metrics::is_two_window(m.id)).map(|w| {
-                    WindowSpec {
-                        size: (w.size * cfg.slice_fraction).max(1.0),
-                        lag: w.lag,
-                        unit: w.unit,
-                    }
-                });
-                // Position-scoped: exit-only, and its values are declared.
-                if group.scope == MetricScope::Position {
-                    if side == AxisSide::Entry {
-                        plan.skipped.push(skip(SkipReason::PositionIsExitOnly));
-                        continue;
-                    }
-                    if POSITION_EXCLUDED.contains(&m.id) {
-                        plan.skipped.push(skip(SkipReason::BaselineTpSl));
-                        continue;
-                    }
-                    match POSITION_MENUS.iter().find(|(id, _)| *id == m.id) {
+            let skip = |reason| Skipped { side, metric: spec.id, reason };
+            if spec.family == Family::Position {
+                if side == AxisSide::Entry {
+                    plan.skipped.push(skip(SkipReason::PositionIsExitOnly));
+                } else if POSITION_EXCLUDED.contains(&spec.id) {
+                    plan.skipped.push(skip(SkipReason::BaselineOrFixed));
+                } else {
+                    match POSITION_MENUS.iter().find(|(id, _)| *id == spec.id) {
                         Some((_, menu)) => plan.metrics.push(ScreenMetric {
                             side,
-                            group: group.id,
-                            metric: m.id,
-                            window,
-                            // Position metrics are static and read no slice.
-                            slice: None,
+                            r: MetricRef::life(spec.id),
                             source: ValueSource::Declared(menu),
                         }),
                         None => plan.skipped.push(skip(SkipReason::NoDeclaredMenu)),
                     }
-                    continue;
                 }
-                // Fingerprint-scoped flow needs the run's compiled patterns.
-                let column = if is_fingerprint_scoped(m.id) {
-                    if cfg.flow_patterns.is_none() {
-                        plan.skipped.push(skip(SkipReason::FlowPatternsMissing));
-                        continue;
-                    }
-                    SeriesColumn::Fingerprint(m.id, window, SWEEP_FLOW_FP)
+                continue;
+            }
+            let reads: Vec<MetricRef> = chart_reads(spec, &trade, &template, &side_spans(spec, side, cfg))
+                .into_iter()
+                .filter(|r| r.span.since_age.is_none())
+                .collect();
+            if reads.is_empty() {
+                let reason = if spec.spans.since_age && !spec.spans.life && !spec.spans.window {
+                    SkipReason::AnchorNotAScreenParam
+                } else if spec.tags == TagUse::Required {
+                    SkipReason::TagsMissing
                 } else {
-                    match (window, slice) {
-                        (Some(w), Some(b)) => {
-                            SeriesColumn::Window(m.id, hunter_engine::metrics::Windows::two(w, b))
-                        }
-                        (Some(w), None) => SeriesColumn::window(m.id, w),
-                        _ => SeriesColumn::Static(m.id),
-                    }
+                    // Every metric has a life or a window read; reaching here means the
+                    // registry grew a span kind this plan does not know.
+                    SkipReason::AnchorNotAScreenParam
                 };
-                plan.metrics.push(ScreenMetric {
-                    side,
-                    group: group.id,
-                    metric: m.id,
-                    window,
-                    slice,
-                    source: ValueSource::Series(column),
-                });
+                plan.skipped.push(skip(reason));
+                continue;
+            }
+            for r in reads {
+                let column = SeriesColumn { r, fp: r.is_fingerprint_scoped().then_some(SWEEP_FLOW_FP) };
+                plan.metrics.push(ScreenMetric { side, r, source: ValueSource::Series(column) });
             }
         }
     }
@@ -349,18 +284,14 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
 
 /// A deterministic, memory-bounded sample of one column's values.
 ///
-/// Keeps every `keep_every`-th finite value; when the buffer hits `cap` it drops
-/// every other survivor and doubles the stride, so the retained set stays a uniform
-/// (order-spaced, not random) sample of everything seen at a bounded cost. Chosen
-/// over reservoir sampling because it needs no RNG — the same corpus yields the same
-/// anchors on every run, which a published candidate menu depends on.
+/// Keeps every `keep_every`-th finite value; when the buffer hits `cap` it drops every
+/// other survivor and doubles the stride, so the retained set stays a uniform sample
+/// at a bounded cost. No RNG — the same corpus yields the same anchors on every run.
 #[derive(Clone, Debug)]
 struct Reservoir {
     cap: usize,
     keep_every: u64,
-    /// Count of finite values observed (also the stride cursor).
     n_finite: u64,
-    /// Values the metric could not resolve (`NaN` before its first input).
     n_nonfinite: u64,
     buf: Vec<f64>,
 }
@@ -400,25 +331,19 @@ impl Reservoir {
                 *slot = exact_quantile_f64(&self.buf, q);
             }
         }
-        MetricPercentiles {
-            column,
-            n_finite: self.n_finite,
-            n_nonfinite: self.n_nonfinite,
-            n_sampled: self.buf.len(),
-            ladder,
-        }
+        MetricPercentiles { column, n_finite: self.n_finite, n_nonfinite: self.n_nonfinite, n_sampled: self.buf.len(), ladder }
     }
 }
 
-/// One metric's measured distribution over the cohort.
+/// One read's measured distribution over the cohort.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MetricPercentiles {
     pub column: SeriesColumn,
     /// Finite values observed (the honest denominator behind the ladder).
     pub n_finite: u64,
-    /// Events where the metric had no value yet (`NaN`) — excluded from the ladder.
+    /// Events where the read had no value yet (`NaN`) — excluded from the ladder.
     pub n_nonfinite: u64,
-    /// Values actually retained for the quantile (≤ `sample_cap`).
+    /// Values retained for the quantile (≤ `sample_cap`).
     pub n_sampled: usize,
     /// Values at [`PERCENTILE_LADDER`], ascending. All `NaN` when nothing was seen.
     pub ladder: [f64; PERCENTILE_LADDER.len()],
@@ -427,10 +352,7 @@ pub struct MetricPercentiles {
 impl MetricPercentiles {
     /// The measured value at ladder rung `q` (`None` if `q` isn't a rung).
     pub fn at(&self, q: f64) -> Option<f64> {
-        PERCENTILE_LADDER
-            .iter()
-            .position(|p| (p - q).abs() < 1e-9)
-            .map(|i| self.ladder[i])
+        PERCENTILE_LADDER.iter().position(|p| (p - q).abs() < 1e-9).map(|i| self.ladder[i])
     }
 }
 
@@ -448,43 +370,22 @@ impl PercentileTable {
     }
 }
 
-/// Measure every column in `plan` over `tokens` — **one pass, one series per
-/// token** over the column union (plan §6.1). Values are sampled at trade moments
-/// (no synthetic ticks): a tick can only re-read a decayed window or an advanced
-/// clock, and weighting the ladder by wall-clock silence rather than by activity
-/// would drag every menu toward dead-token values.
-pub fn collect_percentiles(
-    tokens: &[CorpusToken],
-    plan: &ScreenPlan,
-    cfg: &ScreenConfig,
-) -> PercentileTable {
+/// Measure every column in `plan` over `tokens` — one pass, one series per token over
+/// the column union. Sampled at trade moments (no synthetic ticks): weighting the
+/// ladder by wall-clock silence rather than activity would drag every menu toward
+/// dead-coin values.
+pub fn collect_percentiles(tokens: &[CorpusToken], plan: &ScreenPlan, cfg: &ScreenConfig) -> PercentileTable {
     let columns = plan.columns();
     if columns.is_empty() {
         return PercentileTable::default();
     }
-    // Flow/price windows every dynamic column reads — registered once per series so
-    // the whole trade history feeds them (mirrors `build_series_with_flow`).
-    let windows: Vec<hunter_engine::metrics::WindowSpec> = columns
-        .iter()
-        // A dynamic column can carry two axes; both need a buffer, so this flattens
-        // rather than picking one.
-        .flat_map(|c| match c {
-            SeriesColumn::Fingerprint(_, w, _) => vec![*w],
-            SeriesColumn::Window(_, w) => vec![w.primary, w.secondary],
-            _ => vec![],
-        })
-        .flatten()
-        .collect();
-
     let mut res: Vec<Reservoir> = columns.iter().map(|_| Reservoir::new(cfg.sample_cap)).collect();
     for token in tokens {
         if token.trades.is_empty() {
             continue;
         }
         let mut series = MetricSeries::new(token.created_at, columns.clone());
-        if let Some(patterns) = &cfg.flow_patterns {
-            series.ensure_flow(SWEEP_FLOW_FP, patterns, &windows);
-        }
+        register_tags(&mut series, &cfg.tags);
         for t in token.trades.iter() {
             series.push_trade(to_trade_lite(t));
         }
@@ -495,79 +396,72 @@ pub fn collect_percentiles(
             }
         }
     }
-    PercentileTable(
-        res.into_iter().zip(columns).map(|(r, col)| r.finish(col)).collect(),
-    )
+    PercentileTable(res.into_iter().zip(columns).map(|(r, col)| r.finish(col)).collect())
 }
 
 // ───────────────────────────── candidate menus ─────────────────────────────
 
-/// A generated menu for one screened metric.
+/// A generated menu for one screened read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MetricCandidates {
     pub metric: ScreenMetric,
     /// Operators to screen, primary first ([`DirectionPolicy`]).
     pub operators: Vec<Operator>,
-    /// `off` (`None`) first, then the rounded anchors ascending — the exact shape
-    /// [`AxisSpec::values`] takes.
+    /// `off` (`None`) first, then the rounded anchors ascending — [`AxisSpec::values`].
     pub values: Vec<Option<f64>>,
-    /// `(quantile, measured value)` behind each menu entry — the audit trail for a
-    /// measured menu. Empty for a declared menu.
+    /// `(quantile, measured value)` behind each menu entry. Empty for a declared menu.
     pub anchors: Vec<(f64, f64)>,
 }
 
 impl MetricCandidates {
-    /// This menu as a sweep axis for `operator` — the handoff into
-    /// [`AxesModel`](crate::sweep::generic::axes::AxesModel), so a generated menu
-    /// is swept through exactly the path a hand-authored one is.
+    /// This menu as a sweep axis for `operator` — swept through exactly the path a
+    /// hand-authored axis is.
     pub fn axis_spec(&self, operator: Operator) -> AxisSpec {
-        AxisSpec {
-            kind: "metric".to_string(),
-            side: Some(self.metric.side),
-            group: Some(group_spec(self.metric.group).name.to_string()),
-            metric: Some(self.metric.metric.name().to_string()),
-            operator: Some(operator),
-            window: self.metric.window.map(|w| WindowField::Span(w.label())),
-            slice: None,
-            values: self.values.clone(),
-        }
+        axis_spec_of(self.metric, operator, self.values.clone())
     }
 }
 
-/// Why a screened metric produced no usable menu.
+/// The sweep axis for one screened read.
+pub fn axis_spec_of(m: ScreenMetric, operator: Operator, values: Vec<Option<f64>>) -> AxisSpec {
+    AxisSpec {
+        kind: "metric".to_string(),
+        side: Some(m.side),
+        metric: Some(m.r.metric.spec().path()),
+        tag: m.r.tag.map(|t| t.text()),
+        span: m.r.span.span_text(),
+        slice: m.r.span.slice_text(),
+        operator: Some(operator),
+        values,
+    }
+}
+
+/// Why a screened read produced no usable menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuGap {
-    /// The metric never resolved to a finite value on this cohort.
+    /// The read never resolved to a finite value on this cohort.
     NoSamples,
-    /// Its p10..p90 collapse to fewer than two distinct rounded values — the metric
-    /// is ~constant here, so every candidate would gate identically.
+    /// Its p10..p90 collapse to fewer than two distinct rounded values.
     Degenerate { distinct: usize },
 }
 
-/// Menus for a run, plus the metrics that yielded none and why.
+/// Menus for a run, plus the reads that yielded none and why.
 #[derive(Clone, Debug, Default)]
 pub struct MenuPlan {
     pub menus: Vec<MetricCandidates>,
     pub gaps: Vec<(ScreenMetric, MenuGap)>,
 }
 
-/// Generate the candidate menu for one screened metric.
-pub fn candidate_menu(
-    metric: ScreenMetric,
-    table: &PercentileTable,
-    cfg: &ScreenConfig,
-) -> Result<MetricCandidates, MenuGap> {
+/// Generate the candidate menu for one screened read.
+pub fn candidate_menu(metric: ScreenMetric, table: &PercentileTable, cfg: &ScreenConfig) -> Result<MetricCandidates, MenuGap> {
     let operators = cfg.directions.operators().to_vec();
     let (values, anchors) = match metric.source {
-        ValueSource::Declared(menu) => {
-            (menu.iter().map(|v| Some(*v)).collect::<Vec<_>>(), Vec::new())
-        }
+        ValueSource::Declared(menu) => (menu.iter().map(|v| Some(*v)).collect::<Vec<_>>(), Vec::new()),
         ValueSource::Series(col) => {
             let p = table.get(col).ok_or(MenuGap::NoSamples)?;
             if p.n_sampled == 0 {
                 return Err(MenuGap::NoSamples);
             }
-            let unit = hunter_engine::metrics::metric_spec(metric.metric).unit;
+            let unit = metric.r.metric.spec().unit;
             let mut values: Vec<Option<f64>> = Vec::with_capacity(MENU_PERCENTILES.len());
             let mut anchors: Vec<(f64, f64)> = Vec::with_capacity(MENU_PERCENTILES.len());
             for q in MENU_PERCENTILES {
@@ -576,8 +470,7 @@ pub fn candidate_menu(
                     continue;
                 }
                 let rounded = round_for_unit(raw, unit);
-                // Dedup after rounding: adjacent rungs often collapse onto one
-                // gate, and two identical values would only duplicate a combo.
+                // Adjacent rungs often collapse onto one gate after rounding.
                 if values.contains(&Some(rounded)) {
                     continue;
                 }
@@ -590,15 +483,14 @@ pub fn candidate_menu(
             (values, anchors)
         }
     };
-    // `off` first (pick 0) so a combo's marginal value is read straight off the
-    // ranked table (the with-vs-without sentinel — `axes.rs`).
+    // `off` first (pick 0), so a combo's marginal value reads straight off the table.
     let mut with_off: Vec<Option<f64>> = Vec::with_capacity(values.len() + 1);
     with_off.push(None);
     with_off.extend(values);
     Ok(MetricCandidates { metric, operators, values: with_off, anchors })
 }
 
-/// Generate menus for every metric in `plan`.
+/// Generate menus for every read in `plan`.
 pub fn build_menus(plan: &ScreenPlan, table: &PercentileTable, cfg: &ScreenConfig) -> MenuPlan {
     let mut out = MenuPlan::default();
     for m in &plan.metrics {
@@ -610,13 +502,9 @@ pub fn build_menus(plan: &ScreenPlan, table: &PercentileTable, cfg: &ScreenConfi
     out
 }
 
-/// Round a measured anchor to a gate a human would author, by the metric's `unit`.
-///
-/// Percentiles land on values like `6.43176…`; a menu of those is unreadable and
-/// implies a precision the sample doesn't support. The steps widen with magnitude
-/// (the same spacing the hand-written menus use: `5/8/15/25` percent, `30/60/120/300`
-/// seconds, `35/45/55/70` SOL) so a menu stays legible across three orders of
-/// magnitude. Sign is preserved — flow metrics are legitimately negative.
+/// Round a measured anchor to a gate a human would author, by the metric's unit. The
+/// step widens with magnitude so a menu stays legible across orders of magnitude; the
+/// sign is kept (flows are legitimately negative).
 pub fn round_for_unit(v: f64, unit: Unit) -> f64 {
     let mag = v.abs();
     let step = match unit {
@@ -653,8 +541,7 @@ pub fn round_for_unit(v: f64, unit: Unit) -> f64 {
                 10.0
             }
         }
-        // A tally has no sub-unit to round to — a gate of "4.5 wallets" is not a gate
-        // a human would author, and every step below stays an integer.
+        // A tally has no sub-unit: every step stays an integer.
         Unit::Count => {
             if mag < 20.0 {
                 1.0
@@ -664,9 +551,22 @@ pub fn round_for_unit(v: f64, unit: Unit) -> f64 {
                 25.0
             }
         }
+        // 0 or 1: the only gate is the flag itself.
+        Unit::Flag => 1.0,
+        Unit::Lamports => {
+            if mag < 10_000.0 {
+                100.0
+            } else if mag < 1_000_000.0 {
+                10_000.0
+            } else if mag < 100_000_000.0 {
+                1_000_000.0
+            } else {
+                10_000_000.0
+            }
+        }
     };
     let r = (v / step).round() * step;
-    // Kill float dust from the divide/multiply (`0.30000000000000004`) and `-0.0`.
+    // Kill float dust (`0.30000000000000004`) and `-0.0`.
     let r = (r * 1e6).round() / 1e6;
     if r == 0.0 {
         0.0
@@ -681,169 +581,118 @@ mod tests {
     use crate::sweep::generic::axes::{AxesModel, AxesRequest};
     use crate::sweep::projection::CorpusTrade;
     use chrono::{Duration, TimeZone, Utc};
+    use hunter_engine::metrics::tags::config::compile_tags;
     use std::sync::Arc;
 
-    fn cfg_with_patterns() -> ScreenConfig {
+    fn cfg_with_tags() -> ScreenConfig {
         ScreenConfig {
-            flow_patterns: Some(FlowPatterns::from_label_sequences(&[vec!["Buy".to_string()]])),
+            tags: compile_tags(&serde_json::json!({
+                "volume": { "match": { "ix_shape": [["Buy"]] } },
+                "working": { "match": { "ix_template": ["Pump.Fun|200000|0|1|0|0"] } }
+            })),
             ..Default::default()
         }
     }
 
-    /// The extensibility contract (plan §5): every registry metric, on every side,
-    /// is either screened or carries a reason. A metric added to `REGISTRY` can
-    /// never be silently unscreened.
+    fn life(m: Metric) -> SeriesColumn {
+        SeriesColumn::of(MetricRef::life(m))
+    }
+
+    fn windowed(m: Metric, w: WindowSpec) -> SeriesColumn {
+        SeriesColumn::of(MetricRef::life(m).with_span(hunter_engine::metrics::Span::window(w)))
+    }
+
+    /// The extensibility contract: every registry metric, on every side, is screened or
+    /// carries a reason. A metric added to the registry can never be silently unscreened.
     #[test]
     fn every_registry_metric_is_screened_or_reported() {
-        for cfg in [ScreenConfig::default(), cfg_with_patterns()] {
+        for cfg in [ScreenConfig::default(), cfg_with_tags()] {
             let plan = screen_plan(&cfg);
-            for g in REGISTRY {
-                for m in g.metrics {
-                    for side in [AxisSide::Entry, AxisSide::Exit] {
-                        let screened = plan
-                            .metrics
-                            .iter()
-                            .any(|s| s.metric == m.id && s.group == g.id && s.side == side);
-                        let reported = plan
-                            .skipped
-                            .iter()
-                            .any(|s| s.metric == m.id && s.group == g.id && s.side == side);
-                        assert!(
-                            screened ^ reported,
-                            "{}.{} ({side:?}) must be screened xor reported",
-                            g.name,
-                            m.name,
-                        );
-                    }
+            for m in METRICS {
+                for side in [AxisSide::Entry, AxisSide::Exit] {
+                    let screened = plan.metrics.iter().any(|s| s.r.metric == m.id && s.side == side);
+                    let reported = plan.skipped.iter().any(|s| s.metric == m.id && s.side == side);
+                    assert!(screened ^ reported, "{} ({side:?}) must be screened xor reported", m.path());
                 }
             }
         }
     }
 
     #[test]
-    fn flow_ix_needs_patterns() {
+    fn tagged_reads_need_the_runs_tags() {
         let bare = screen_plan(&ScreenConfig::default());
-        assert!(
-            bare.skipped.iter().any(|s| s.group == MetricGroupId::FlowIx
-                && s.reason == SkipReason::FlowPatternsMissing),
-            "flow-split must be skipped (with a reason) when no patterns are supplied",
-        );
-        assert!(!bare.metrics.iter().any(|m| is_fingerprint_scoped(m.metric)));
-
-        let with = screen_plan(&cfg_with_patterns());
-        assert!(with.metrics.iter().any(|m| m.group == MetricGroupId::FlowIx));
-        // Fingerprint-scoped columns carry the run's sweep fingerprint.
-        assert!(with
-            .metrics
-            .iter()
-            .filter(|m| is_fingerprint_scoped(m.metric))
-            .all(|m| matches!(m.column(), Some(SeriesColumn::Fingerprint(_, _, fp)) if fp == SWEEP_FLOW_FP)));
+        assert!(bare.skipped.iter().any(|s| s.metric == Metric::ProfitSol && s.reason == SkipReason::TagsMissing));
+        assert!(!bare.metrics.iter().any(|m| m.r.is_fingerprint_scoped()));
+        let with = screen_plan(&cfg_with_tags());
+        let tagged: Vec<_> = with.metrics.iter().filter(|m| m.r.is_fingerprint_scoped()).collect();
+        assert!(tagged.iter().any(|m| m.r.label() == "m_flow.buy_sol @!volume [30s]"));
+        assert!(tagged.iter().all(|m| matches!(m.column(), Some(c) if c.fp == Some(SWEEP_FLOW_FP))));
     }
 
     #[test]
     fn position_metrics_are_exit_only_with_declared_menus() {
         let plan = screen_plan(&ScreenConfig::default());
-        let pos: Vec<_> =
-            plan.metrics.iter().filter(|m| m.group == MetricGroupId::Position).collect();
+        let pos: Vec<_> = plan.metrics.iter().filter(|m| m.r.is_position()).collect();
         assert!(!pos.is_empty());
-        assert!(pos.iter().all(|m| m.side == AxisSide::Exit), "m_position is exit-only");
-        assert!(pos.iter().all(|m| matches!(m.source, ValueSource::Declared(_))));
-        // Position metrics contribute no precompute column (mirrors `axes.rs`).
-        assert!(pos.iter().all(|m| m.column().is_none()));
-        // `pnl` is the baseline TP/SL, not a screened axis.
-        assert!(plan.skipped.iter().any(|s| s.metric == MetricId::Pnl
-            && s.side == AxisSide::Exit
-            && s.reason == SkipReason::BaselineTpSl));
+        assert!(pos.iter().all(|m| m.side == AxisSide::Exit && matches!(m.source, ValueSource::Declared(_))));
+        assert!(pos.iter().all(|m| m.column().is_none()), "a position read has no coin column");
+        assert!(plan.skipped.iter().any(|s| s.metric == Metric::PnlPct && s.reason == SkipReason::BaselineOrFixed));
     }
 
-    /// A new `m_position` metric must come with its declared menu (or an explicit
-    /// exclusion) — otherwise it would silently never be screened.
+    /// A new position metric must come with its declared menu or an explicit exclusion.
     #[test]
     fn position_metrics_all_declared() {
-        for g in REGISTRY.iter().filter(|g| g.scope == MetricScope::Position) {
-            for m in g.metrics {
-                let declared = POSITION_MENUS.iter().any(|(id, _)| *id == m.id);
-                let excluded = POSITION_EXCLUDED.contains(&m.id);
-                assert!(
-                    declared ^ excluded,
-                    "{}.{} needs a POSITION_MENUS entry or a POSITION_EXCLUDED entry (not both)",
-                    g.name,
-                    m.name,
-                );
-            }
+        for m in METRICS.iter().filter(|m| m.family == Family::Position) {
+            let declared = POSITION_MENUS.iter().any(|(id, _)| *id == m.id);
+            let excluded = POSITION_EXCLUDED.contains(&m.id);
+            assert!(declared ^ excluded, "{} needs a POSITION_MENUS or a POSITION_EXCLUDED entry (not both)", m.path());
         }
-        // Both tables must reference live metrics, so neither can rot into a no-op.
         for (id, menu) in POSITION_MENUS {
-            assert_eq!(hunter_engine::metrics::group_of(*id).scope, MetricScope::Position);
-            assert!(menu.len() >= 2, "{} declared menu needs >= 2 values", id.name());
-        }
-        for id in POSITION_EXCLUDED {
-            assert_eq!(hunter_engine::metrics::group_of(*id).scope, MetricScope::Position);
+            assert_eq!(id.family(), Family::Position);
+            assert!(menu.len() >= 2);
         }
     }
 
     #[test]
-    fn dynamic_groups_take_the_side_window_and_dedupe_columns() {
-        let cfg = ScreenConfig {
-            entry_window: WindowSpec::secs(30.0),
-            exit_window: WindowSpec::secs(10.0),
-            ..Default::default()
-        };
-        let plan = screen_plan(&cfg);
-        let win = |side, metric| {
-            plan.metrics
-                .iter()
-                .find(|m| m.side == side && m.metric == metric)
-                .and_then(|m| m.window)
-        };
-        assert_eq!(win(AxisSide::Entry, MetricId::NetFlow), Some(WindowSpec::secs(30.0)));
-        assert_eq!(win(AxisSide::Exit, MetricId::NetFlow), Some(WindowSpec::secs(10.0)));
-        // Static metrics carry no window and share ONE column across both sides.
-        assert_eq!(win(AxisSide::Entry, MetricId::Time), None);
+    fn windowed_reads_take_the_side_span_and_life_reads_share_one_column() {
+        let plan = screen_plan(&ScreenConfig::default());
+        let has = |side, label: &str| plan.metrics.iter().any(|m| m.side == side && m.r.label() == label);
+        assert!(has(AxisSide::Entry, "m_flow.net_sol [30s]"));
+        assert!(has(AxisSide::Exit, "m_flow.net_sol [10s]"));
+        assert!(has(AxisSide::Entry, "m_flow.net_sol"), "a life read is screened too");
+        assert!(has(AxisSide::Entry, "m_flow.slice_trade_share_pct [30s, slice 3s]"));
         let cols = plan.columns();
-        assert_eq!(cols.iter().filter(|c| **c == SeriesColumn::Static(MetricId::Time)).count(), 1);
-        assert!(cols.contains(&SeriesColumn::window(MetricId::NetFlow, hunter_engine::metrics::WindowSpec::secs(30.0))));
-        assert!(cols.contains(&SeriesColumn::window(MetricId::NetFlow, hunter_engine::metrics::WindowSpec::secs(10.0))));
+        assert_eq!(cols.iter().filter(|c| **c == life(Metric::AgeSec)).count(), 1);
     }
 
     #[test]
     fn menu_percentiles_are_ladder_rungs() {
         for q in MENU_PERCENTILES {
-            assert!(
-                PERCENTILE_LADDER.iter().any(|p| (p - q).abs() < 1e-9),
-                "{q} is not a ladder rung",
-            );
+            assert!(PERCENTILE_LADDER.iter().any(|p| (p - q).abs() < 1e-9), "{q} is not a ladder rung");
         }
     }
 
     #[test]
     fn reservoir_is_exact_below_cap_and_bounded_above_it() {
-        // Exact nearest-rank while everything fits.
         let mut r = Reservoir::new(1_000);
         for i in 1..=100 {
             r.push(i as f64);
         }
         r.push(f64::NAN);
-        let p = r.clone().finish(SeriesColumn::Static(MetricId::Time));
-        assert_eq!(p.n_finite, 100);
-        assert_eq!(p.n_nonfinite, 1);
-        assert_eq!(p.n_sampled, 100);
-        // Nearest-rank over 1..=100: index `round(99 · q)`.
+        let p = r.clone().finish(life(Metric::AgeSec));
+        assert_eq!((p.n_finite, p.n_nonfinite, p.n_sampled), (100, 1, 100));
         assert_eq!(p.at(0.5), Some(51.0));
         assert_eq!(p.at(0.9), Some(90.0));
         assert_eq!(p.at(0.42), None);
-
-        // Past the cap the buffer stays bounded and the ladder stays close.
         let cap = 64;
         let mut big = Reservoir::new(cap);
         for i in 1..=10_000 {
             big.push(i as f64);
         }
-        let p = big.finish(SeriesColumn::Static(MetricId::Time));
+        let p = big.finish(life(Metric::AgeSec));
         assert_eq!(p.n_finite, 10_000);
-        assert!(p.n_sampled <= cap, "sample must stay bounded: {}", p.n_sampled);
-        let median = p.at(0.5).unwrap();
-        assert!((median - 5_000.0).abs() < 500.0, "decimated median drifted: {median}");
+        assert!(p.n_sampled <= cap);
+        assert!((p.at(0.5).unwrap() - 5_000.0).abs() < 500.0);
     }
 
     #[test]
@@ -856,115 +705,62 @@ mod tests {
         assert_eq!(round_for_unit(0.31, Unit::Sol), 0.3);
         assert_eq!(round_for_unit(98.0, Unit::Seconds), 90.0);
         assert_eq!(round_for_unit(1497.0, Unit::Seconds), 1500.0);
-        // -0.0 never leaks into a menu (it would print as "-0").
+        assert_eq!(round_for_unit(0.6, Unit::Flag), 1.0);
+        assert_eq!(round_for_unit(123_456.0, Unit::Lamports), 120_000.0);
         assert!(round_for_unit(-0.001, Unit::Sol).is_sign_positive());
     }
 
-    /// Build a table by hand so the menu shaping is tested independently of a corpus.
     fn table_of(column: SeriesColumn, ladder: [f64; 8]) -> PercentileTable {
-        PercentileTable(vec![MetricPercentiles {
-            column,
-            n_finite: 1_000,
-            n_nonfinite: 0,
-            n_sampled: 1_000,
-            ladder,
-        }])
+        PercentileTable(vec![MetricPercentiles { column, n_finite: 1_000, n_nonfinite: 0, n_sampled: 1_000, ladder }])
+    }
+
+    fn screened(side: AxisSide, col: SeriesColumn) -> ScreenMetric {
+        ScreenMetric { side, r: col.r, source: ValueSource::Series(col) }
     }
 
     #[test]
     fn menu_is_off_first_rounded_deduped_and_ascending() {
-        let col = SeriesColumn::Static(MetricId::Trail);
-        // p10..p90 of `trail` (HOT row of the anchor table).
+        let col = life(Metric::TrailPct);
         let table = table_of(col, [0.0, 0.1, 6.4, 22.8, 43.4, 61.0, 69.0, 79.0]);
-        let m = ScreenMetric {
-            side: AxisSide::Entry,
-            group: MetricGroupId::PriceLifetime,
-            metric: MetricId::Trail,
-            window: None,
-            slice: None,
-            source: ValueSource::Series(col),
-        };
-        let menu = candidate_menu(m, &table, &ScreenConfig::default()).unwrap();
-        assert_eq!(menu.values[0], None, "`off` must be pick 0");
+        let menu = candidate_menu(screened(AxisSide::Entry, col), &table, &ScreenConfig::default()).unwrap();
         assert_eq!(menu.values, vec![None, Some(0.1), Some(6.0), Some(25.0), Some(45.0), Some(60.0)]);
-        // One anchor recorded per real value (off carries none).
         assert_eq!(menu.anchors.len(), menu.values.len() - 1);
-        assert_eq!(menu.anchors[0].0, 0.10);
         assert_eq!(menu.operators, vec![Operator::Gte, Operator::Lt]);
     }
 
     #[test]
-    fn degenerate_and_empty_metrics_are_reported_not_dropped() {
-        let col = SeriesColumn::Static(MetricId::Liquidity);
-        let m = ScreenMetric {
-            side: AxisSide::Entry,
-            group: MetricGroupId::State,
-            metric: MetricId::Liquidity,
-            window: None,
-            slice: None,
-            source: ValueSource::Series(col),
-        };
-        // A constant metric: every rung rounds onto the same gate.
+    fn degenerate_and_empty_reads_are_reported_not_dropped() {
+        let col = life(Metric::LiquiditySol);
+        let m = screened(AxisSide::Entry, col);
         let flat = table_of(col, [30.0; 8]);
-        assert_eq!(
-            candidate_menu(m, &flat, &ScreenConfig::default()),
-            Err(MenuGap::Degenerate { distinct: 1 }),
-        );
-        // Never resolved on this cohort.
-        let empty = PercentileTable(vec![MetricPercentiles {
-            column: col,
-            n_finite: 0,
-            n_nonfinite: 500,
-            n_sampled: 0,
-            ladder: [f64::NAN; 8],
-        }]);
+        assert_eq!(candidate_menu(m, &flat, &ScreenConfig::default()), Err(MenuGap::Degenerate { distinct: 1 }));
+        let empty = PercentileTable(vec![MetricPercentiles { column: col, n_finite: 0, n_nonfinite: 500, n_sampled: 0, ladder: [f64::NAN; 8] }]);
         assert_eq!(candidate_menu(m, &empty, &ScreenConfig::default()), Err(MenuGap::NoSamples));
-        // And a whole plan reports them instead of shrinking silently.
-        let plan = ScreenPlan { metrics: vec![m], skipped: Vec::new() };
-        let menus = build_menus(&plan, &flat, &ScreenConfig::default());
+        let menus = build_menus(&ScreenPlan { metrics: vec![m], skipped: Vec::new() }, &flat, &ScreenConfig::default());
         assert!(menus.menus.is_empty());
         assert_eq!(menus.gaps.len(), 1);
     }
 
     #[test]
     fn declared_position_menu_needs_no_percentiles() {
-        let m = ScreenMetric {
-            side: AxisSide::Exit,
-            group: MetricGroupId::Position,
-            metric: MetricId::Retrace,
-            window: None,
-            slice: None,
-            source: ValueSource::Declared(&[5.0, 10.0, 25.0]),
-        };
+        let m = ScreenMetric { side: AxisSide::Exit, r: MetricRef::life(Metric::RetracePct), source: ValueSource::Declared(&[5.0, 10.0, 25.0]) };
         let menu = candidate_menu(m, &PercentileTable::default(), &ScreenConfig::default()).unwrap();
         assert_eq!(menu.values, vec![None, Some(5.0), Some(10.0), Some(25.0)]);
         assert!(menu.anchors.is_empty());
     }
 
-    /// The handoff: a generated menu must sweep through the *same* axes model a
-    /// hand-authored one does — including the `off` sentinel and the window.
+    /// The handoff: a generated menu sweeps through the same axes model a hand-authored
+    /// one does — the `off` pick and the span included.
     #[test]
     fn generated_menu_resolves_as_a_sweep_axis() {
-        let col = SeriesColumn::window(MetricId::NetFlow, hunter_engine::metrics::WindowSpec::secs(30.0));
+        let col = windowed(Metric::NetSol, WindowSpec::secs(30.0));
         let table = table_of(col, [-10.3, -6.5, -2.3, 0.1, 1.8, 4.9, 7.3, 14.0]);
-        let m = ScreenMetric {
-            side: AxisSide::Entry,
-            group: MetricGroupId::FlowWindow,
-            metric: MetricId::NetFlow,
-            window: Some(WindowSpec::secs(30.0)),
-            slice: None,
-            source: ValueSource::Series(col),
-        };
-        let menu = candidate_menu(m, &table, &ScreenConfig::default()).unwrap();
-        let spec = menu.axis_spec(menu.operators[0]);
-        let model = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap();
+        let menu = candidate_menu(screened(AxisSide::Entry, col), &table, &ScreenConfig::default()).unwrap();
+        let model = AxesModel::resolve(&AxesRequest { axes: vec![menu.axis_spec(menu.operators[0])] }).unwrap();
         assert_eq!(model.combo_count(), menu.values.len());
         assert_eq!(model.columns(), vec![col]);
-        // Combo 0 is the off pick: no entry conditions at all.
-        assert!(model.combo_params(0).entry.is_none());
+        assert!(model.combo_params(0).enter.filters.is_empty(), "combo 0 is the off pick");
     }
-
-    // ── end-to-end over a synthetic corpus ─────────────────────────────────
 
     fn trade(secs: i64, price: f64, reserve: f64, is_buy: bool, sol: f64) -> CorpusTrade {
         CorpusTrade {
@@ -974,9 +770,7 @@ mod tests {
             token_amount: 1.0,
             price_per_token: price,
             reserve_sol: Some(reserve),
-            // Keep the pair CONSISTENT with the price: a fill prices off
-            // `reserve_sol / reserve_token`, so a constant token side would pin spot
-            // and no fixture price would ever move.
+            // Consistent with the price: a fill prices off `reserve_sol / reserve_token`.
             reserve_token: Some(reserve / price),
             real_reserve_sol: Some(reserve),
             real_token_reserves: None,
@@ -999,47 +793,25 @@ mod tests {
             mint: "mint".into(),
             symbol: "SYM".into(),
             created_at: created,
-            trades: Arc::new(
-                (0..10).map(|i| trade(i * 10, 1.0 + i as f64, 40.0 + i as f64, true, 1.0)).collect(),
-            ),
+            trades: Arc::new((0..10).map(|i| trade(i * 10, 1.0 + i as f64, 40.0 + i as f64, true, 1.0)).collect()),
             fp: Default::default(),
-        identity: None,
+            identity: None,
             peak_after: None,
         };
         let cfg = ScreenConfig::default();
         let plan = screen_plan(&cfg);
         let table = collect_percentiles(std::slice::from_ref(&token), &plan, &cfg);
-
-        // Every screened column is measured.
         assert_eq!(table.rows().len(), plan.columns().len());
-        // `time` runs 0..90s over the 10 trades — the median trade moment is ~45s.
-        let time = table.get(SeriesColumn::Static(MetricId::Time)).expect("time measured");
-        assert_eq!(time.n_finite, 10);
-        assert_eq!(time.at(0.05), Some(0.0));
-        assert_eq!(time.at(0.5), Some(50.0));
-        assert_eq!(time.at(0.99), Some(90.0));
-        // `liquidity` mirrors the reserve ramp, so its menu is a real ladder.
-        let liq = table.get(SeriesColumn::Static(MetricId::Liquidity)).expect("liquidity measured");
+        let age = table.get(life(Metric::AgeSec)).expect("age measured");
+        assert_eq!(age.n_finite, 10);
+        assert_eq!((age.at(0.05), age.at(0.5), age.at(0.99)), (Some(0.0), Some(50.0), Some(90.0)));
+        let liq = table.get(life(Metric::LiquiditySol)).expect("liquidity measured");
         assert_eq!(liq.at(0.5), Some(45.0));
-        let m = plan
-            .metrics
-            .iter()
-            .find(|m| m.metric == MetricId::Liquidity && m.side == AxisSide::Entry)
-            .copied()
-            .expect("liquidity screened");
+        let m = plan.metrics.iter().find(|m| m.r == MetricRef::life(Metric::LiquiditySol) && m.side == AxisSide::Entry).copied().unwrap();
         let menu = candidate_menu(m, &table, &cfg).expect("liquidity menu");
         assert_eq!(menu.values, vec![None, Some(41.0), Some(42.0), Some(45.0), Some(47.0), Some(48.0)]);
-        // A monotonically rising price never trails its peak ⇒ constant 0 ⇒ reported
-        // as degenerate rather than sweeping five identical gates.
-        let trail = plan
-            .metrics
-            .iter()
-            .find(|m| m.metric == MetricId::Trail && m.side == AxisSide::Entry)
-            .copied()
-            .expect("trail screened");
-        assert_eq!(
-            candidate_menu(trail, &table, &cfg),
-            Err(MenuGap::Degenerate { distinct: 1 }),
-        );
+        // A rising price never trails its peak ⇒ constant 0 ⇒ degenerate, reported.
+        let trail = plan.metrics.iter().find(|m| m.r == MetricRef::life(Metric::TrailPct) && m.side == AxisSide::Entry).copied().unwrap();
+        assert_eq!(candidate_menu(trail, &table, &cfg), Err(MenuGap::Degenerate { distinct: 1 }));
     }
 }

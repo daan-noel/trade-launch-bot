@@ -989,8 +989,6 @@ mod tests {
     use super::*;
     use crate::family_search::attribution::rollup;
     use crate::family_search::fixtures::metric_exit;
-    use hunter_engine::metrics::evaluator::Operator;
-    use hunter_engine::metrics::MetricId;
 
     fn base() -> Report {
         Report {
@@ -1329,8 +1327,8 @@ mod tests {
     #[test]
     fn attribution_rows_carry_money_not_only_counts() {
         let outs = vec![
-            metric_exit(0, MetricId::Retrace, Operator::Gte, 36.0, None, -0.2),
-            metric_exit(1, MetricId::Stall, Operator::Gte, 30.0, None, 0.5),
+            metric_exit(0, "m_position.retrace_pct >= 36", -0.2),
+            metric_exit(1, "m_price.stall_sec >= 30", 0.5),
             crate::family_search::fixtures::tp_exit(0.1),
         ];
         let (rows, other_n, other_pnl) = attribution_rows(&rollup(&outs, 0.01));
@@ -1338,11 +1336,11 @@ mod tests {
         assert_eq!(other_n, 1);
         assert!((other_pnl - 0.1).abs() < 1e-6);
         assert!(rows[0].pnl_pct < 0.0 && rows[1].pnl_pct > 0.0);
-        assert_eq!(rows[1].label.as_deref(), Some("stall >= 30"));
+        assert_eq!(rows[1].label.as_deref(), Some("m_price.stall_sec >= 30"));
 
         // The portrait names the term that made the money, not the one that fired most.
         let mut r = base();
         r.attribution = rows;
-        assert!(portrait(&r).iter().any(|s| s.contains("`stall >= 30`")));
+        assert!(portrait(&r).iter().any(|s| s.contains("`m_price.stall_sec >= 30`")));
     }
 }

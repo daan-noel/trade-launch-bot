@@ -74,7 +74,7 @@ pub struct StrategyRun {
     pub params_snapshot: Value,
     pub max_total_tokens: Option<i64>,
     /// Digest of the config this run is running under **now** — rule params, buy
-    /// size, caps, and the fingerprint's criteria + `metric_config`. `None` on a
+    /// size, caps, and the fingerprint's criteria + `tags`. `None` on a
     /// run whose config was never observed (pre-0012 history), which the engine
     /// adopts as a baseline rather than reading as a change.
     #[serde(default)]

@@ -67,11 +67,10 @@ pub struct PipelineConfig {
     pub split: SplitPolicy,
     /// Retention thresholds for the Layer-3 verdict.
     pub validation_thresholds: ValidationThresholds,
-    /// The run's raw `ix_patterns` (label sequences), if any. Kept beside the
-    /// compiled `cfg.screen.flow_patterns` because the compiled set is a one-way hash
-    /// with no reverse, and Layer 3's `simulate_one_combo` re-derives the classifier
-    /// from these sequences. `None` ⇒ no flow gating, exactly like the screen.
-    pub flow_label_sequences: Option<Vec<Vec<String>>>,
+    /// The run's tags document, if any — what `cfg.screen.tags` was compiled from.
+    /// Kept as written because Layer 3's `simulate_one_combo` compiles it again per
+    /// re-simulation. `None` ⇒ no tagged reads, exactly like the screen.
+    pub tags: Option<serde_json::Value>,
 }
 
 impl Default for PipelineConfig {
@@ -87,7 +86,7 @@ impl Default for PipelineConfig {
             family_limits: FamilyLimits::default(),
             split: SplitPolicy::default(),
             validation_thresholds: ValidationThresholds::default(),
-            flow_label_sequences: None,
+            tags: None,
         }
     }
 }
@@ -221,7 +220,7 @@ pub fn run_pipeline(
             as_of,
             cfg.weights,
             cfg.validation_thresholds,
-            cfg.flow_label_sequences.as_deref(),
+            cfg.tags.as_ref(),
             cfg.split,
             observer,
         )?;

@@ -877,7 +877,7 @@ fn fp_from_row(row: &duckdb::Row<'_>, base: usize) -> duckdb::Result<TokenFinger
         // keeps a `prior_launches` rule from being swept blind.
         prior_launches: None,
         // Engine-stamped from its per-build name tally; the lake carries no name.
-        prior_identity_launches: None,
+        name_reuse_count: None,
     })
 }
 

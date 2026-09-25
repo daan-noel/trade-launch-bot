@@ -186,7 +186,7 @@ async fn run_loop(
             Ok(rows) => {
                 let n = rows.len();
                 state.prime_creator_launches(rows.into_iter().map(|(w, c)| {
-                    (hunter_engine::metrics::flow_ix::wallet_hash(w.as_str()), c.max(0) as u32)
+                    (hunter_engine::metrics::trade_keys::wallet_hash(w.as_str()), c.max(0) as u32)
                 }));
                 tracing::info!(creators = n, "prior_launches primed");
             }
@@ -194,7 +194,7 @@ async fn run_loop(
             // say so loudly rather than start with an empty tally in silence.
             Err(e) => tracing::error!(
                 error = %e,
-                "prior_launches UNPRIMED - every creator reads as a first-time launcher;                  do not arm a prior_launches rule until this boot query succeeds"
+                "prior_launches UNPRIMED - every creator reads as a first-time launcher; do not arm a prior_launches rule until this boot query succeeds"
             ),
         }
     }
@@ -1049,7 +1049,7 @@ async fn reload_rules(
     );
     let identity_builds: Vec<Vec<String>> = engine_fps
         .iter()
-        .filter(|f| f.criteria.get(hunter_engine::fingerprint::AxisId::PriorIdentityLaunches).is_some())
+        .filter(|f| f.criteria.get(hunter_engine::fingerprint::AxisId::NameReuseCount).is_some())
         .filter_map(|f| match f.criteria.get(hunter_engine::fingerprint::AxisId::IxLabels) {
             Some(hunter_engine::fingerprint::AxisPredicate::Sequence { labels }) => Some(labels.clone()),
             _ => None,
@@ -1063,16 +1063,16 @@ async fn reload_rules(
     Ok(())
 }
 
-/// Prime the `prior_identity_launches` tally for every build a loaded fingerprint names
+/// Prime the `name_reuse_count` tally for every build a loaded fingerprint names
 /// and no earlier reload primed: its creations over the trailing window. Once per
 /// build - at boot before events flow, or on the reload that first names it.
 async fn prime_identity_launches(strategy_repo: &StrategyRepo, state: &mut EngineState, builds: &[Vec<String>]) {
     let repo = trading_core::storage::repositories::token_repo::TokenRepo::new(strategy_repo.pool().clone());
     let now = Utc::now();
     let since = now
-        - chrono::Duration::days(hunter_engine::fingerprint::identity_launches::PRIOR_IDENTITY_WINDOW_DAYS);
+        - chrono::Duration::days(hunter_engine::fingerprint::identity_launches::NAME_REUSE_WINDOW_DAYS);
     for labels in builds {
-        let build = hunter_engine::metrics::flow_ix::ix_hash(labels);
+        let build = hunter_engine::metrics::trade_keys::ix_hash(labels);
         if !state.claim_identity_priming(build) {
             continue;
         }
@@ -1081,13 +1081,13 @@ async fn prime_identity_launches(strategy_repo: &StrategyRepo, state: &mut Engin
                 let n = rows.len();
                 state.prime_identity_launches(rows.into_iter().filter_map(|(mint, name, symbol, at)| {
                     let id = hunter_engine::token_identity_hash(&name, &symbol)?;
-                    Some((build, id, at, hunter_engine::metrics::flow_ix::wallet_hash(&mint)))
+                    Some((build, id, at, hunter_engine::metrics::trade_keys::wallet_hash(&mint)))
                 }));
-                tracing::info!(launches = n, "prior_identity_launches primed");
+                tracing::info!(launches = n, "name_reuse_count primed");
             }
             Err(e) => tracing::error!(
                 error = %e,
-                "prior_identity_launches UNPRIMED - earlier same-name launches read as none;                  do not arm a prior_identity_launches rule until this query succeeds"
+                "name_reuse_count UNPRIMED - earlier same-name launches read as none; do not arm a name_reuse_count rule until this query succeeds"
             ),
         }
     }

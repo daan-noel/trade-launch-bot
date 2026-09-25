@@ -298,7 +298,7 @@ pub fn validate_candidates(
     as_of: DateTime<Utc>,
     weights: DiscoveryWeights,
     thresholds: ValidationThresholds,
-    ix_patterns: Option<&[Vec<String>]>,
+    tags: Option<&serde_json::Value>,
     policy: SplitPolicy,
     observer: &dyn SweepObserver,
 ) -> Result<ValidationReport> {
@@ -342,7 +342,7 @@ pub fn validate_candidates(
                 &candidates[i].params_json,
                 pricing,
                 as_of,
-                ix_patterns,
+                tags,
             )?;
             let metrics = ComboMetrics::exact_from_rows(i as u32, &rows);
             let outcome =
@@ -542,7 +542,7 @@ mod tests {
         let split = split_tokens(&c.tokens, SplitPolicy::AgeFraction(0.7));
         let params = serde_json::json!({
             "take_profit": 30.0, "stop_loss": 15.0,
-            "entry": { "m_state": { "time": [{ "operator": ">=", "value": 5.0 }] } }
+            "enter": { "filters": [{ "metric": "m_state.age_sec", "is": [{ "operator": ">=", "value": 5.0 }] }] }
         });
         hunter_engine::rule_params::RuleParams::parse(&params).expect("valid params");
         let cands = vec![Candidate { label: "test".into(), params_json: params }];
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn candidates_include_joint_winners() {
-        use hunter_engine::metrics::MetricFamily;
+        use hunter_engine::metrics::Family;
         use super::super::family::{BestCombo, FamilyLimits, FamilyReport, FamilyResult, JointResult};
         use super::super::screen::ScreenBaseline;
 
@@ -624,7 +624,7 @@ mod tests {
             baseline: ScreenBaseline { take_profit_pct: Some(30.0), stop_loss_pct: Some(15.0) },
             limits: FamilyLimits::default(),
             families: vec![FamilyResult {
-                family: MetricFamily::Price,
+                family: Family::Price,
                 members: vec![],
                 dropped: vec![],
                 combos: 1,
@@ -633,7 +633,7 @@ mod tests {
             }],
             interactions: vec![],
             joints: vec![JointResult {
-                families: vec![MetricFamily::Price, MetricFamily::Flow],
+                families: vec![Family::Price, Family::Flow],
                 members: vec![],
                 dropped: vec![],
                 combos: 4,
@@ -645,7 +645,7 @@ mod tests {
         };
         let cands = candidates_from_family_report(&report);
         assert_eq!(cands.len(), 2);
-        assert_eq!(cands[0].label, "family:price");
-        assert_eq!(cands[1].label, "joint:price+flow");
+        assert_eq!(cands[0].label, "family:m_price");
+        assert_eq!(cands[1].label, "joint:m_price+m_flow");
     }
 }

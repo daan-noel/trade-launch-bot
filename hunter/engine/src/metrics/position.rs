@@ -1,35 +1,27 @@
-//! `m_position` — position-scoped metrics (static; **exit-only**).
+//! `m_position` — our own trade. Exists only while a position is held, so its metrics
+//! are for sell lines.
 //!
-//! Every other group is token-scoped: one value per token, shared by every rule
-//! armed on it. These anchor on **your entry fill**, so they only have a value
-//! while a position is held. That state — the entry price, the since-entry peak
-//! and trough, and the entry time — is the [`PositionCtx`], carried on
+//! Every other family is coin-scoped: one value per coin, shared by every rule armed on
+//! it. These anchor on **our fill**, so they only have a value while we hold. That state
+//! — the entry price, the since-entry peak and trough, the entry time and when the
+//! current stage began — is the [`PositionCtx`], carried on
 //! [`ArmState::Entered`](crate::arm::ArmState) and folded forward each event.
 //!
-//! * `retrace` — percent below the **since-entry peak**: `(peak − price) / peak ·
-//!   100`, `>= 0`. The trailing stop (`retrace >= 3` = a 3% trail). At the entry
-//!   fill the peak IS the fill price, so before price rises `retrace` measures the
-//!   drop from entry (a soft stop); after a run-up it trails the new peak.
-//! * `bounce` — percent above the **since-entry trough**: `(price − trough) /
-//!   trough · 100`, `>= 0`. The climb-from-low twin of `retrace`. At the entry
-//!   fill the trough IS the fill price, so before any dip `bounce` equals `pnl`;
-//!   after a dip+recovery it measures recovery from the worst since-entry print.
-//! * `pnl` — signed percent vs the entry price: `(price − entry) / entry · 100`.
-//!   TP/SL desugar into this (`pnl >= tp` / `pnl <= −sl`) — one exit computation for
-//!   the ladder and for authored `m_position.pnl` conditions (see `arm.rs`).
-//! * `held` — seconds since the entry fill (floored at zero against block-time
-//!   regression, the `stall` precedent). Gives time-stop exits for free.
-//! * `room_taken`: percent of the entry's room to the graduation wall the price has
-//!   covered: `(price − entry) / (wall − entry) · 100`, where `wall = entry ·
-//!   (GRADUATION_PRICED_RESERVE_SOL / vsol at the fill)²` (spot goes as `vsol²` on the
-//!   curve). A take-profit sized by how far the coin still has to run: `room_taken >= 40`
-//!   asks +13 % of an entry at vsol 100 and +68 % of one at vsol 70.
+//! * `retrace_pct` — percent below the **since-entry peak**: `(peak - price) / peak ·
+//!   100`. At the fill the peak IS the fill price, so before price rises it measures
+//!   the drop from entry (a soft stop); after a run-up it trails the new peak.
+//! * `bounce_pct` — percent above the **since-entry trough**, the twin.
+//! * `pnl_pct` — signed percent vs the entry price. Take profit and stop loss compile
+//!   to lines on it.
+//! * `held_sec` — seconds since the fill (floored at zero against block-time regression).
+//! * `room_taken_pct` — percent of the entry's room to the graduation wall covered:
+//!   `(price - entry) / (wall - entry) · 100`, `wall = entry · (115 / vsol at fill)²`.
+//! * `stage_sec` — seconds since the rule entered its current stage.
 //!
-//! Before entry there is no context, so a position metric reads `NaN` (the engine
-//! convention: `NaN` satisfies no condition). That is exactly why the entry-side
-//! `can_enter` gate needs no special case — with no position, these never fire.
+//! Before entry there is no context, so a position metric reads `NaN` (which satisfies
+//! nothing) — why the pre-entry veto needs no special case.
 
-use super::{secs_between, MetricId, Ts};
+use super::{secs_between, Metric, Ts};
 
 /// Priced SOL reserve (`vsol`) of a pump.fun bonding curve at graduation: the 30
 /// virtual SOL every curve starts with plus the 85 real SOL that completes it. The
@@ -41,73 +33,44 @@ pub const GRADUATION_PRICED_RESERVE_SOL: f64 = 115.0;
 /// [`ArmState::Entered`](crate::arm::ArmState) on each open-side evaluation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PositionCtx {
-    /// The entry fill price (`pnl` reference).
+    /// The entry fill price (`pnl_pct` reference).
     pub entry_price: f64,
-    /// Highest price observed since entry (`retrace` reference), folded per event.
+    /// Highest price observed since entry (`retrace_pct` reference), folded per event.
     pub peak_price: f64,
-    /// Lowest price observed since entry (`bounce` reference), folded per event.
+    /// Lowest price observed since entry (`bounce_pct` reference), folded per event.
     pub trough_price: f64,
-    /// The entry fill time (`held` reference).
+    /// The entry fill time (`held_sec` reference).
     pub entered_at: Ts,
-    /// Trail latch: `true` once `pnl` has reached `trail_arm_pct`. When
-    /// `trail_arm_pct` is `None`, [`position_value`] reports `armed` as 1.
-    pub armed: bool,
-    /// Threshold that latches [`armed`](Self::armed). `None` (and no `arm` clauses) ⇒
-    /// the metric reads 1.
-    pub trail_arm_pct: Option<f64>,
-    /// The rule authors `arm` clauses: `armed` starts 0 and latches when one holds.
-    pub clause_latch: bool,
-    /// When `armed` latched (`since_armed` reference). `None` while unlatched, and for
-    /// a position whose latch is vacuous.
-    pub armed_at: Option<Ts>,
+    /// When the rule entered its current stage (`stage_sec` reference). The fill time
+    /// for the first stage.
+    pub stage_since: Ts,
     /// Priced SOL reserve (`vsol`) of the last print folded when the entry filled
-    /// (`room_taken` reference). `NaN` when unknown (an adopted row written before
-    /// the depth was stored), and `room_taken` then reads `NaN`.
+    /// (`room_taken_pct` reference). `NaN` when unknown, and `room_taken_pct` then reads
+    /// `NaN`.
     pub entry_priced_reserve: f64,
 }
 
 impl PositionCtx {
-    /// Fresh context at the entry fill — peak and trough both seed to the fill.
-    /// No trail latch (`armed` reads 1).
+    /// Fresh context at the entry fill — peak and trough both seed to the fill, the
+    /// first stage starts at the fill.
     pub fn at_fill(entry_price: f64, entered_at: Ts) -> Self {
-        Self::at_fill_with_arm(entry_price, entered_at, None)
-    }
-
-    /// Fresh context at the entry fill, with the `arm_above_pct` latch threshold.
-    /// `None` ⇒ `armed` starts (and stays) 1.
-    pub fn at_fill_with_arm(entry_price: f64, entered_at: Ts, trail_arm_pct: Option<f64>) -> Self {
         Self {
             entry_price,
             peak_price: entry_price,
             trough_price: entry_price,
             entered_at,
-            armed: trail_arm_pct.is_none(),
-            trail_arm_pct,
-            clause_latch: false,
-            armed_at: None,
+            stage_since: entered_at,
             entry_priced_reserve: f64::NAN,
         }
     }
 
-    /// Whether any latch is authored: an `arm_above_pct` gate or `arm` clauses. With
-    /// none, `armed` reads a vacuous 1.
-    pub fn latch_authored(&self) -> bool {
-        self.trail_arm_pct.is_some() || self.clause_latch
-    }
-
-    /// `since_armed` — seconds since the latch set; `NaN` while unlatched.
-    pub fn since_armed(&self, now: Ts) -> f64 {
-        self.armed_at.map_or(f64::NAN, |at| secs_between(at, now).max(0.0))
-    }
-
-    /// The same context with the entry's priced reserve set (`room_taken` reference).
+    /// The same context with the entry's priced reserve set (`room_taken_pct` reference).
     pub fn with_entry_priced_reserve(mut self, vsol: f64) -> Self {
         self.entry_priced_reserve = vsol;
         self
     }
 
-    /// Ratchet peak up / trough down for one finite price, and latch `armed`
-    /// once `pnl` reaches `trail_arm_pct`. No-op on non-finite price.
+    /// Ratchet peak up / trough down for one finite price. No-op on a non-finite one.
     pub fn fold_price(&mut self, price: f64) {
         if !price.is_finite() {
             return;
@@ -117,13 +80,6 @@ impl PositionCtx {
         }
         if price < self.trough_price {
             self.trough_price = price;
-        }
-        if !self.armed {
-            if let Some(gate) = self.trail_arm_pct {
-                if self.pnl(price) >= gate {
-                    self.armed = true;
-                }
-            }
         }
     }
 
@@ -163,6 +119,11 @@ impl PositionCtx {
         secs_between(self.entered_at, now).max(0.0)
     }
 
+    /// `stage_sec` — seconds since the current stage began, floored at zero.
+    pub fn stage_sec(&self, now: Ts) -> f64 {
+        secs_between(self.stage_since, now).max(0.0)
+    }
+
     /// `room_taken`: `pnl` as a percent of the entry's room to the graduation wall,
     /// `((GRADUATION_PRICED_RESERVE_SOL / vsol)² − 1) · 100`. `NaN` without a positive
     /// entry reserve, or with no room left (an entry at or past the wall).
@@ -180,45 +141,16 @@ impl PositionCtx {
     }
 }
 
-/// Whether a metric is a **trailing** stop — anchored on a since-entry extreme
-/// rather than on the entry price itself. These are exactly the metrics the
-/// `m_position.arm_above_pct` strict param gates, and this is the ONE reader of
-/// that classification (the engine's `exit_fired` and the sweep's `req_fired`
-/// both call it, so the two can never disagree about what "arming" covers).
-///
-/// `pnl` and `held` are deliberately NOT trailing: `pnl` is where TP/SL desugar
-/// to, and gating a stop-loss on already being in profit would disable it.
-pub fn is_trailing(id: MetricId) -> bool {
-    matches!(id, MetricId::Retrace | MetricId::Bounce)
-}
-
-/// Whether a trailing exit req is **armed** at this reading — i.e. the position is
-/// at least `arm_above_pct` in profit. `None` (param unset) ⇒ always armed, which
-/// is the pre-`arm_above_pct` behaviour every stored rule has.
-pub fn trailing_armed(arm_above_pct: Option<f64>, ctx: &PositionCtx, price: f64) -> bool {
-    match arm_above_pct {
-        None => true,
-        // A non-finite pnl (non-positive entry price / non-finite mark) cannot be
-        // shown to clear the gate, so it stays disarmed — fail closed, matching the
-        // engine-wide "NaN satisfies no condition" convention.
-        Some(gate) => ctx.pnl(price) >= gate,
-    }
-}
-
 /// Value of one `m_position` metric given the position context, the current price,
 /// and `now`. Non-position ids yield `NaN` (unreachable — the fold routes by scope).
-pub fn position_value(id: MetricId, ctx: &PositionCtx, price: f64, now: Ts) -> f64 {
+pub fn position_value(id: Metric, ctx: &PositionCtx, price: f64, now: Ts) -> f64 {
     match id {
-        MetricId::Retrace => ctx.retrace(price),
-        MetricId::Bounce => ctx.bounce(price),
-        MetricId::Pnl => ctx.pnl(price),
-        MetricId::Held => ctx.held(now),
-        MetricId::RoomTaken => ctx.room_taken(price),
-        MetricId::Armed => {
-            // No gate authored ⇒ latch is vacuously on. Otherwise the 0/1 flip.
-            f64::from(u8::from(!ctx.latch_authored() || ctx.armed))
-        }
-        MetricId::SinceArmed => ctx.since_armed(now),
+        Metric::RetracePct => ctx.retrace(price),
+        Metric::BouncePct => ctx.bounce(price),
+        Metric::PnlPct => ctx.pnl(price),
+        Metric::HeldSec => ctx.held(now),
+        Metric::RoomTakenPct => ctx.room_taken(price),
+        Metric::StageSec => ctx.stage_sec(now),
         _ => f64::NAN,
     }
 }
@@ -239,10 +171,7 @@ mod tests {
             peak_price: peak,
             trough_price: trough,
             entered_at: ts(entered),
-            armed: true,
-            trail_arm_pct: None,
-            clause_latch: false,
-            armed_at: None,
+            stage_since: ts(entered),
             entry_priced_reserve: f64::NAN,
         }
     }
@@ -336,13 +265,15 @@ mod tests {
     #[test]
     fn position_value_routes_each_metric() {
         let c = ctx(1.0, 2.0, 0.8, 0.0);
-        assert!((position_value(MetricId::Retrace, &c, 1.6, ts(5.0)) - 20.0).abs() < 1e-9);
-        assert!((position_value(MetricId::Bounce, &c, 1.0, ts(5.0)) - 25.0).abs() < 1e-9);
-        assert!((position_value(MetricId::Pnl, &c, 1.6, ts(5.0)) - 60.0).abs() < 1e-9);
-        assert_eq!(position_value(MetricId::Held, &c, 1.6, ts(5.0)), 5.0);
+        assert!((position_value(Metric::RetracePct, &c, 1.6, ts(5.0)) - 20.0).abs() < 1e-9);
+        assert!((position_value(Metric::BouncePct, &c, 1.0, ts(5.0)) - 25.0).abs() < 1e-9);
+        assert!((position_value(Metric::PnlPct, &c, 1.6, ts(5.0)) - 60.0).abs() < 1e-9);
+        assert_eq!(position_value(Metric::HeldSec, &c, 1.6, ts(5.0)), 5.0);
+        let staged = PositionCtx { stage_since: ts(3.0), ..c };
+        assert_eq!(position_value(Metric::StageSec, &staged, 1.6, ts(5.0)), 2.0);
         let deep = c.with_entry_priced_reserve(57.5);
-        assert!((position_value(MetricId::RoomTaken, &deep, 2.2, ts(5.0)) - 40.0).abs() < 1e-9);
+        assert!((position_value(Metric::RoomTakenPct, &deep, 2.2, ts(5.0)) - 40.0).abs() < 1e-9);
         // A token-scoped id is not a position metric → NaN.
-        assert!(position_value(MetricId::Trail, &c, 1.6, ts(5.0)).is_nan());
+        assert!(position_value(Metric::TrailPct, &c, 1.6, ts(5.0)).is_nan());
     }
 }

@@ -6,13 +6,13 @@
 //! `GroupedSweepResult` row. Nothing here recomputes: every field is read straight off
 //! the in-memory report, so the DTO can never disagree with what the pipeline scored.
 //!
-//! Vocabulary matches the rest of the redesign wire contract: metric/group names are
-//! the registry's `name`s, sides are `entry`/`exit`, operators are their JSON symbols
+//! Vocabulary matches the rest of the wire contract: a read is named by the registry
+//! path, tag and span ([`ReadDto`]), sides are `entry`/`exit`, operators are their JSON symbols
 //! (`>=`, `<`), and every verdict is a stable tag string the frontend switches on.
 
 use serde::Serialize;
 
-use hunter_engine::metrics::group_spec;
+use hunter_engine::metrics::{family_spec, Metric, MetricRef};
 
 use super::baseline::{BaselineCandidate, BaselineSelection};
 use super::family::{
@@ -192,6 +192,40 @@ pub struct ScreenDto {
     pub gaps: Vec<MenuGapDto>,
 }
 
+/// One read, as every discovery DTO names it: `family` (`m_flow`), `metric` (the
+/// registry path, `m_flow.buy_sol`), `tag`, `span` and `slice` as written, and `label`,
+/// the one full spelling (`m_flow.buy_sol @!volume [30s]`).
+#[derive(Debug, Serialize)]
+pub struct ReadDto {
+    pub family: &'static str,
+    pub metric: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slice: Option<String>,
+    pub label: String,
+}
+
+impl ReadDto {
+    pub fn of(r: MetricRef) -> Self {
+        Self {
+            family: family_spec(r.metric.family()).name,
+            metric: r.metric.spec().path(),
+            tag: r.tag.map(|t| t.text()),
+            span: r.span.span_text(),
+            slice: r.span.slice_text(),
+            label: r.label(),
+        }
+    }
+
+    /// A metric with no particular read (a skipped one).
+    pub fn metric(m: Metric) -> Self {
+        Self::of(MetricRef::life(m))
+    }
+}
+
 impl ScreenDto {
     fn from_report(r: &ScreenReport) -> Self {
         Self {
@@ -211,8 +245,7 @@ impl ScreenDto {
                 .iter()
                 .map(|s| SkippedDto {
                     side: side_str(s.side),
-                    group: group_spec(s.group).name.to_string(),
-                    metric: s.metric.name().to_string(),
+                    read: ReadDto::metric(s.metric),
                     reason: format!("{:?}", s.reason),
                 })
                 .collect(),
@@ -221,8 +254,7 @@ impl ScreenDto {
                 .iter()
                 .map(|(m, gap)| MenuGapDto {
                     side: side_str(m.side),
-                    group: group_spec(m.group).name.to_string(),
-                    metric: m.metric.name().to_string(),
+                    read: ReadDto::of(m.r),
                     reason: format!("{gap:?}"),
                 })
                 .collect(),
@@ -233,16 +265,9 @@ impl ScreenDto {
 #[derive(Debug, Serialize)]
 pub struct MetricResponseDto {
     pub side: String,
-    pub group: String,
-    pub metric: String,
+    #[serde(flatten)]
+    pub read: ReadDto,
     pub operator: String,
-    /// The span this metric was screened at, labelled (`30s`, `30sl@1`, `20p`).
-    /// Prefer this over [`window_sec`](Self::window_sec).
-    pub window: Option<String>,
-    /// Legacy seconds scalar. `None` on a slot or print span - neither has seconds to
-    /// report, so a reader that only knows this key drops the qualifier rather than
-    /// calling 30 slots 30 seconds.
-    pub window_sec: Option<f64>,
     /// One of `keep` | `drop_no_edge` | `drop_negative` | `drop_spike` | `drop_thin`
     /// | `drop_no_baseline`.
     pub verdict: String,
@@ -282,13 +307,8 @@ impl From<&MetricResponse> for MetricResponseDto {
         Self {
             best_score: r.best_pick_score(),
             side: side_str(r.metric.side),
-            group: group_spec(r.metric.group).name.to_string(),
-            metric: r.metric.metric.name().to_string(),
+            read: ReadDto::of(r.metric.r),
             operator: r.operator.symbol().to_string(),
-            window: r.metric.window.map(|w| w.label()),
-            window_sec: r.metric.window.filter(|w| {
-                w.unit == hunter_engine::metrics::WindowUnit::Sec && w.lag == 0.0
-            }).map(|w| w.size),
             verdict: verdict_tag(&r.verdict).to_string(),
             baseline: r.baseline,
             lift,
@@ -340,16 +360,16 @@ impl From<&ResponsePoint> for ResponsePointDto {
 #[derive(Debug, Serialize)]
 pub struct SkippedDto {
     pub side: String,
-    pub group: String,
-    pub metric: String,
+    #[serde(flatten)]
+    pub read: ReadDto,
     pub reason: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct MenuGapDto {
     pub side: String,
-    pub group: String,
-    pub metric: String,
+    #[serde(flatten)]
+    pub read: ReadDto,
     pub reason: String,
 }
 
@@ -382,8 +402,8 @@ impl FamilyDto {
 #[derive(Debug, Serialize)]
 pub struct RescueDto {
     pub side: String,
-    pub group: String,
-    pub metric: String,
+    #[serde(flatten)]
+    pub read: ReadDto,
     pub operator: String,
     /// The family whose winner was pinned.
     pub pinned: String,
@@ -399,8 +419,7 @@ impl From<&Rescue> for RescueDto {
     fn from(r: &Rescue) -> Self {
         Self {
             side: side_str(r.metric.side),
-            group: group_spec(r.metric.group).name.to_string(),
-            metric: r.metric.metric.name().to_string(),
+            read: ReadDto::of(r.metric.r),
             operator: r.operator.symbol().to_string(),
             pinned: r.pinned.as_str().to_string(),
             pinned_score: r.pinned_score,
@@ -446,8 +465,7 @@ impl From<&FamilyResult> for FamilyResultDto {
                 .iter()
                 .map(|m| FamilyMemberDto {
                     side: side_str(m.metric.side),
-                    group: group_spec(m.metric.group).name.to_string(),
-                    metric: m.metric.metric.name().to_string(),
+                    read: ReadDto::of(m.metric.r),
                     operator: m.operator.symbol().to_string(),
                     values: m.values.clone(),
                     lift: m.lift,
@@ -458,7 +476,7 @@ impl From<&FamilyResult> for FamilyResultDto {
                 .dropped
                 .iter()
                 .map(|(m, reason)| DroppedMemberDto {
-                    metric: m.metric.metric.name().to_string(),
+                    metric: m.metric.r.label(),
                     reason: match reason {
                         DropReason::AxisCap => "axis_cap",
                         DropReason::ComboCap => "combo_cap",
@@ -474,8 +492,8 @@ impl From<&FamilyResult> for FamilyResultDto {
 #[derive(Debug, Serialize)]
 pub struct FamilyMemberDto {
     pub side: String,
-    pub group: String,
-    pub metric: String,
+    #[serde(flatten)]
+    pub read: ReadDto,
     pub operator: String,
     pub values: Vec<f64>,
     pub lift: f64,
@@ -565,8 +583,7 @@ impl From<&JointResult> for JointResultDto {
                 .iter()
                 .map(|m| FamilyMemberDto {
                     side: side_str(m.metric.side),
-                    group: group_spec(m.metric.group).name.to_string(),
-                    metric: m.metric.metric.name().to_string(),
+                    read: ReadDto::of(m.metric.r),
                     operator: m.operator.symbol().to_string(),
                     values: m.values.clone(),
                     lift: m.lift,
@@ -577,7 +594,7 @@ impl From<&JointResult> for JointResultDto {
                 .dropped
                 .iter()
                 .map(|(m, reason)| DroppedMemberDto {
-                    metric: m.metric.metric.name().to_string(),
+                    metric: m.metric.r.label(),
                     reason: match reason {
                         DropReason::AxisCap => "axis_cap",
                         DropReason::ComboCap => "combo_cap",

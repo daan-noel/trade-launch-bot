@@ -368,14 +368,14 @@ fn axis_num_sql(axis: AxisId, ti_alias: &str) -> Option<String> {
         // this token's, in the trailing window. Normalization mirrors
         // `identity::normalize` (lowercase, whitespace and invisible characters
         // removed); a blank half is no identity, NULL, and fails the predicate.
-        AxisId::PriorIdentityLaunches => {
+        AxisId::NameReuseCount => {
             let arr = |c: &str| crate::storage::ix_labels_sql::ix_labels_array_sql(c);
             let norm = |c: &str| {
                 format!(
                     "lower(regexp_replace(COALESCE({c}, ''),                      '[[:space:]\\u00ad\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\ufeff]', '', 'g'))"
                 )
             };
-            let window = hunter_engine::fingerprint::identity_launches::PRIOR_IDENTITY_WINDOW_DAYS;
+            let window = hunter_engine::fingerprint::identity_launches::NAME_REUSE_WINDOW_DAYS;
             format!(
                 "(CASE WHEN {tn} = '' OR {ts} = '' THEN NULL ELSE                   (SELECT count(*) FROM tokens p WHERE {pa} = {ta}                     AND {pn} = {tn} AND {ps} = {ts}                     AND p.created_at < t.created_at                     AND p.created_at >= t.created_at - INTERVAL '{window} days')::numeric END)",
                 tn = norm("t.name"),

@@ -448,7 +448,7 @@ async fn run_engine_backtest(
         .filter_map(|t| {
             let trades = histories.get(&t.mint_address)?.clone();
             let creator_wallet_hash = (!t.creator_wallet.is_empty())
-                .then(|| hunter_engine::metrics::flow_ix::wallet_hash(&t.creator_wallet));
+                .then(|| hunter_engine::metrics::trade_keys::wallet_hash(&t.creator_wallet));
             Some(ReplayToken {
                 mint: t.mint_address.clone(),
                 symbol: t.symbol.clone(),
@@ -487,7 +487,7 @@ async fn run_engine_backtest(
             Ok(rows) => rows
                 .into_iter()
                 .map(|(w, n)| {
-                    (hunter_engine::metrics::flow_ix::wallet_hash(&w), n.max(0) as u32)
+                    (hunter_engine::metrics::trade_keys::wallet_hash(&w), n.max(0) as u32)
                 })
                 .collect::<Vec<_>>(),
             Err(e) => {
@@ -645,50 +645,24 @@ fn history_cache_key(
     AnalysisCacheKey::new(strategy, fp.id.0.to_string(), since, until)
 }
 
-/// True when the rule reads any metric that needs the lake's wallet / label columns.
-///
-/// Asks each metric itself (`MetricId::needs_wallet_identity`) rather than listing
-/// groups here: a group list silently excludes a wallet-keyed metric that lives in an
-/// otherwise SOL-only group, and the run then folds every trade as one anonymous
-/// wallet — which reads as a gate that never fires, not as a load error.
-///
-/// **Scale-out stages count.** A stage reuses the full exit grammar, so a ladder can
-/// be the only thing in the rule referencing a flow metric.
+/// True when the rule reads anything that needs the lake's wallet / label columns: a
+/// tag read, or a wallet-keyed metric. Asks each read itself
+/// (`MetricRef::needs_wallet_identity` / `needs_ix_labels`) over every condition of
+/// the rule — entry, signals, `always` and every stage — rather than listing families:
+/// a missed read folds every trade as one anonymous wallet, which reads as a gate that
+/// never fires, not as a load error.
 fn rule_needs_flow(loaded: &LoadedRule) -> bool {
-    rule_metrics(loaded).any(|m| m.needs_wallet_identity() || m.needs_ix_labels())
+    loaded.params.metric_refs().into_iter().any(|r| r.needs_wallet_identity() || r.needs_ix_labels())
 }
 
-/// Whether any condition of the rule reads `m_holder_book` - the one group that needs
-/// the daily build-breadth table in the replay.
+/// Whether the rule reads the holder book — the one buffer that needs the daily
+/// build-breadth table in the replay. The compiled rule's own buffer list decides.
 fn rule_reads_holder_book(loaded: &LoadedRule) -> bool {
-    rule_metrics(loaded).any(|m| {
-        hunter_engine::metrics::group_of(m).id == hunter_engine::metrics::MetricGroupId::HolderBook
-    })
-}
-
-/// Every metric a rule's conditions read: entry, entry event, exit clauses and
-/// scale-out stages.
-fn rule_metrics(loaded: &LoadedRule) -> impl Iterator<Item = hunter_engine::metrics::MetricId> + '_ {
-    let stages = loaded.params.scale_out.iter().flatten().map(|s| &s.conditions);
-    let entry = loaded.params.entry.as_ref().into_iter();
-    let event = loaded.params.entry_event.as_ref().into_iter();
-    let exit = loaded
-        .params
-        .exit
-        .as_ref()
-        .into_iter()
-        .flat_map(|e| e.clauses());
-    entry
-        .chain(event)
-        .chain(exit)
-        .chain(stages)
-        .flat_map(|side| side.0.values())
-        .flat_map(|instances| instances.iter())
-        .flat_map(|g| g.metrics.keys().copied())
+    hunter_engine::arm::CompiledRule::compile(loaded).buffers.holder_book
 }
 
 /// Every creation of the fingerprint's build over `[since - window, until)`, for the
-/// `prior_identity_launches` tally - empty unless the fingerprint reads that axis and
+/// `name_reuse_count` tally - empty unless the fingerprint reads that axis and
 /// names its build. Rows are `(build, identity, created_at, mint hash)`; a token with a
 /// blank name or symbol has no identity and is left out, as the engine leaves it.
 pub(crate) async fn load_identity_rows(
@@ -699,28 +673,28 @@ pub(crate) async fn load_identity_rows(
 ) -> Arc<[replay::IdentityLaunchRow]> {
     use hunter_engine::fingerprint::{AxisId, AxisPredicate};
     let labels = match (
-        fp.criteria.get(AxisId::PriorIdentityLaunches),
+        fp.criteria.get(AxisId::NameReuseCount),
         fp.criteria.get(AxisId::IxLabels),
     ) {
         (Some(_), Some(AxisPredicate::Sequence { labels })) => labels.clone(),
         _ => return Arc::from(Vec::new()),
     };
     let window = chrono::Duration::days(
-        hunter_engine::fingerprint::identity_launches::PRIOR_IDENTITY_WINDOW_DAYS,
+        hunter_engine::fingerprint::identity_launches::NAME_REUSE_WINDOW_DAYS,
     );
     let from = since.unwrap_or(DateTime::UNIX_EPOCH) - window;
     let to = until.unwrap_or_else(Utc::now);
-    let build = hunter_engine::metrics::flow_ix::ix_hash(&labels);
+    let build = hunter_engine::metrics::trade_keys::ix_hash(&labels);
     match TokenRepo::new(app_state.batch_db.clone()).build_identity_rows(&labels, from, to).await {
         Ok(rows) => rows
             .into_iter()
             .filter_map(|(mint, name, symbol, at)| {
                 let id = hunter_engine::token_identity_hash(&name, &symbol)?;
-                Some((build, id, at, hunter_engine::metrics::flow_ix::wallet_hash(&mint)))
+                Some((build, id, at, hunter_engine::metrics::trade_keys::wallet_hash(&mint)))
             })
             .collect(),
         Err(e) => {
-            tracing::warn!(error = %e, "prior_identity_launches unprimed - the axis counts corpus tokens only");
+            tracing::warn!(error = %e, "name_reuse_count unprimed - the axis counts corpus tokens only");
             Arc::from(Vec::new())
         }
     }
@@ -782,7 +756,7 @@ pub(crate) async fn scan_matched_candidates(
                 }
                 // The name-reuse axis, through the engine's own count.
                 if let Some(h) = identity.as_deref() {
-                    trading_core::strategies::fingerprint_axes::stamp_prior_identity_launches(&mut tf, t, h);
+                    trading_core::strategies::fingerprint_axes::stamp_name_reuse_count(&mut tf, t, h);
                 }
                 !match_all(std::slice::from_ref(&fp_scan), &tf, MatchPhase::Full).is_empty()
             })
@@ -1008,7 +982,7 @@ mod dupe_guard_resolution {
     }
 }
 
-/// Which lake columns a rule's metrics oblige the loader to fetch.
+/// Which lake columns a rule's reads oblige the loader to fetch.
 #[cfg(test)]
 mod flow_column_needs {
     use super::*;
@@ -1028,81 +1002,62 @@ mod flow_column_needs {
         }
     }
 
+    fn cond(metric: &str, span: Option<&str>, op: &str, value: f64) -> serde_json::Value {
+        let mut c = serde_json::json!({ "metric": metric, "is": [{ "operator": op, "value": value }] });
+        if let Some(sp) = span {
+            c["span"] = serde_json::json!(sp);
+        }
+        c
+    }
+
     /// A wallet-keyed metric must pull the lake's flow columns, and the answer comes
-    /// from `MetricId::needs_wallet_identity` rather than a group name.
+    /// from the read itself rather than a family name.
     ///
-    /// The bug this pins is silent and looks like a strategy result, not a load error:
-    /// without the `wallet` column every trade folds as one anonymous wallet, so
-    /// `m_crowd_window.unique_wallets >= N` reads 1 forever and the run reports zero
-    /// entries — which is indistinguishable from "the gate is simply strict".
+    /// The bug this pins is silent and looks like a strategy result: without the
+    /// `wallet` column every trade folds as one anonymous wallet, so
+    /// `m_crowd.unique_wallets >= N` reads 1 forever and the run reports zero entries.
     #[test]
     fn a_crowd_metric_forces_the_flow_columns() {
-        let uw = rule_with(serde_json::json!({
-            "entry": { "m_crowd_window": {
-                "window_size_sec": 60,
-                "unique_wallets": [{ "operator": ">=", "value": 20 }]
-            } }
-        }));
-        assert!(rule_needs_flow(&uw), "m_crowd_window needs the wallet column");
-
-        let sol_only = rule_with(serde_json::json!({
-            "entry": { "m_flow_window": {
-                "window_size_sec": 60,
-                "gross_flow": [{ "operator": ">=", "value": 45 }]
-            } }
-        }));
+        let uw = rule_with(serde_json::json!({ "enter": { "filters": [cond("m_crowd.unique_wallets", Some("60s"), ">=", 20.0)] } }));
+        assert!(rule_needs_flow(&uw), "m_crowd.unique_wallets needs the wallet column");
+        let sol_only = rule_with(serde_json::json!({ "enter": { "filters": [cond("m_flow.gross_sol", Some("60s"), ">=", 45.0)] } }));
         assert!(!rule_needs_flow(&sol_only), "a SOL-only window must not pay for flow");
     }
 
-    /// `m_burst_wave` is token-level, not fingerprint-scoped, so it does not ride
-    /// `is_fingerprint_scoped`. Without this, simulate loads the slim lake rows
-    /// (no wallet / no grain) and the event reads 0 forever.
+    /// `m_wave` reads wallets and ix templates; without them the event reads 0 forever.
     #[test]
-    fn a_burst_wave_event_forces_the_flow_columns() {
-        let wave = rule_with(serde_json::json!({
-            "entry_event": { "m_burst_wave": {
-                "this_member": [{ "operator": "=", "value": 1 }],
-                "wallet_count": [{ "operator": ">=", "value": 2 }]
-            } }
-        }));
-        assert!(rule_needs_flow(&wave), "m_burst_wave needs wallet + template grain");
+    fn a_wave_event_forces_the_flow_columns() {
+        let wave = rule_with(serde_json::json!({ "enter": { "event": [
+            cond("m_wave.this_joined", None, "=", 1.0),
+            cond("m_wave.wallet_count", None, ">=", 2.0)
+        ] } }));
+        assert!(rule_needs_flow(&wave), "m_wave needs wallet + template grain");
     }
 
-    /// `m_copy*` is keyed on WHO signed a print and on nothing else, so a copy rule
-    /// must pull the wallet column. Without it every trade folds as one anonymous
-    /// wallet, the target matches nothing, and the run reports zero entries - which
-    /// reads as "he never bought on our tokens" rather than as a load error.
+    /// A tag read needs the ix labels and wallets on every side of the rule — the
+    /// entry, and a sell line alone.
     #[test]
-    fn a_copy_trigger_forces_the_flow_columns() {
-        let copy = rule_with(serde_json::json!({
-            "entry_event": { "m_copy_window": {
-                "window_size_prints": 1,
-                "buy_sol": [{ "operator": ">=", "value": 0.5 }]
-            } }
+    fn a_tag_read_forces_the_flow_columns_anywhere_in_the_rule() {
+        let mut buy = cond("m_flow.buy_sol", Some("1p"), ">=", 0.5);
+        buy["tag"] = serde_json::json!("targets");
+        let entry = rule_with(serde_json::json!({ "enter": { "event": [buy] } }));
+        assert!(rule_needs_flow(&entry));
+        let mut sold = cond("m_flow.sell_tx_count", None, ">=", 1.0);
+        sold["tag"] = serde_json::json!("targets");
+        let sell_only = rule_with(serde_json::json!({
+            "enter": { "filters": [cond("m_state.age_sec", None, ">=", 30.0)] },
+            "always": [{ "if": [sold], "sell": true }]
         }));
-        assert!(rule_needs_flow(&copy), "m_copy_window needs the wallet column");
-
-        // ...and so does a rule whose ONLY copy term is the lifetime exit filter.
-        let lifetime_only = rule_with(serde_json::json!({
-            "entry": { "m_state": { "time": [{ "operator": ">=", "value": 30 }] } },
-            "exit": { "m_copy": { "sell_count": [{ "operator": ">=", "value": 1 }] } }
-        }));
-        assert!(rule_needs_flow(&lifetime_only), "m_copy needs it on either side");
+        assert!(rule_needs_flow(&sell_only), "a sell line's tag read counts too");
     }
 
-    /// A ladder stage reuses the full exit grammar, so it can be the ONLY part of a
-    /// rule that reads a flow metric. Checking `entry`/`exit` alone missed it.
+    /// A stage can be the ONLY part of a rule that reads a flow metric.
     #[test]
-    fn a_scale_out_stage_can_be_what_needs_flow() {
-        let staged = rule_with(serde_json::json!({
-            "scale_out": [{
-                "sell_bps": 5000,
-                "conditions": { "m_crowd_window": {
-                    "window_size_sec": 30,
-                    "unique_wallets": [{ "operator": "<=", "value": 3 }]
-                } }
-            }]
-        }));
+    fn a_stage_can_be_what_needs_flow() {
+        let staged = rule_with(serde_json::json!({ "stages": [{
+            "name": "watch",
+            "on": [{ "if": [cond("m_crowd.unique_wallets", Some("30s"), "<=", 3.0)], "sell": true, "sell_pct": 50, "go": "rest" }]
+        }, { "name": "rest" }] }));
         assert!(rule_needs_flow(&staged), "a stage's flow metric counts too");
     }
 }

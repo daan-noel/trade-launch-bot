@@ -20,7 +20,6 @@ use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, F
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts};
 use hunter_engine::reduce::reduce;
-use hunter_engine::rule_params::RuleParams;
 use hunter_engine::EngineState;
 use serde_json::json;
 use uuid::Uuid;
@@ -58,7 +57,7 @@ fn cu_fp(id: u128) -> Fingerprint {
         criteria: Criteria::new()
             .with(AxisId::CuLimit, AxisPredicate::exact(200_000))
             .with(AxisId::FirstSlotBuyLamports, AxisPredicate::exact(1_000_000_000)),
-        metric_config: serde_json::json!({}),
+        tags: serde_json::json!({}),
     }
 }
 
@@ -73,7 +72,7 @@ fn rules() -> Vec<LoadedRule> {
             buy_amount_lamports: 500_000_000,
             max_concurrent_tokens: 2,
             max_total_tokens: 5,
-            params: RuleParams::parse(&json!({ "take_profit": 80 })).unwrap(),
+            params: hunter_engine::v1::parse_params_any(&json!({ "take_profit": 80 })).unwrap(),
             entry_enabled: true,
         },
         LoadedRule {
@@ -83,7 +82,7 @@ fn rules() -> Vec<LoadedRule> {
             buy_amount_lamports: 1_000_000_000,
             max_concurrent_tokens: 1,
             max_total_tokens: 0,
-            params: RuleParams::parse(&json!({
+            params: hunter_engine::v1::parse_params_any(&json!({
                 "stop_loss": 40,
                 "entry": { "m_state": { "time": [{ "operator": "<", "value": 60 }] } },
                 "exit":  { "m_price_lifetime": { "stall": [{ "operator": ">", "value": 8 }] } }

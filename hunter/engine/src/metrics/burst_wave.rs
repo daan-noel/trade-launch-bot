@@ -1,27 +1,27 @@
-//! `m_burst_wave` — this token's buys in the current consecutive-slot run.
+//! `m_wave` — this coin's buys in the current consecutive-slot run.
 //!
-//! Static (no window). Token-level for wallet/sol/gap/hole/tip; `working_buy_count`
-//! and `this_working` intersect this fingerprint's `m_burst_slot.working_templates`
-//! at read (same list, no second config). A `|` id is a grain; a bare name is a
-//! program. A **wave** is consecutive buy-slots (no
+//! One state per coin. `buy_count @tag` and `this_has_tag @tag` apply a tag at the
+//! ix-template level when read ([`TemplatePatterns`]). A **wave** is consecutive
+//! buy-slots (no
 //! empty buy-slot between them). It resets when the next buy is at least 2 slots
 //! after the last buy-slot. The gap is empty buy-slots *before this wave started*,
 //! not before a later printer in the same run.
 //!
 //! Create slot does not start a fireable wave: seed `creation_slot` so buys in
 //! that slot (and consecutive slots after it) stay unfireable until a real gap.
-//! Launch creates are not members. Per-print facts (`this_member`, `this_working`,
-//! `this_tip`, `hole`, `tip_seen`) clear on a tick.
+//! Launch creates are not members. Per-print facts (`this_joined`, `this_has_tag`,
+//! `this_tip_lamports`, `has_tx_gap`, `tip_band_seen`) clear on a tick.
 //!
-//! Completing prints: `wallet_count` crosses 2 (any member), or `working_buy_count`
-//! crosses 2 (named-list prints in this wave). `hole` and `tip_seen` follow every
+//! Completing prints: `wallet_count` crosses 2 (any member), or `buy_count @tag`
+//! crosses 2 (tagged prints in this wave). `has_tx_gap` and `tip_band_seen` follow every
 //! curve buy in the wave (same predecessor as the Python mem fold), not only
-//! template members. `hole` is a wave `tx_index` gap, not `m_burst_slot.packed`.
-//! `tip_seen` is this print's tip band already present on an earlier wave buy.
+//! template members. `has_tx_gap` is a wave `tx_index` gap, not `m_slot.packed`.
+//! `tip_band_seen` is this print's tip band already present on an earlier wave buy.
 
 use crate::hash::HashedSet;
-use super::burst_slot::{is_member, BurstPatterns};
-use super::{MetricId, Side, TradeLite};
+use super::burst_slot::{is_member, TemplatePatterns};
+use super::registry::Metric;
+use super::{Side, TradeLite};
 
 /// One token's current consecutive-slot buy wave.
 #[derive(Debug, Clone)]
@@ -178,10 +178,10 @@ impl BurstWaveState {
         self.last_slot = Some(t.slot);
     }
 
-    pub fn value(&self, id: MetricId, patterns: Option<&BurstPatterns>) -> f64 {
-        use MetricId::*;
+    pub fn value(&self, id: Metric, patterns: Option<&TemplatePatterns>) -> f64 {
+        use Metric::*;
         match id {
-            WaveThisMember => f64::from(u8::from(self.this_member)),
+            WaveThisJoined => f64::from(u8::from(self.this_member)),
             WaveWalletCount => self.wave_wals.len() as f64,
             WaveBuySol => self.wave_sol,
             WaveGapSlots => {
@@ -191,7 +191,7 @@ impl BurstWaveState {
                     f64::NAN
                 }
             }
-            WaveAllNew => {
+            WaveAllNewWallets => {
                 if self.wave_wals.is_empty() {
                     f64::NAN
                 } else {
@@ -202,8 +202,8 @@ impl BurstWaveState {
                     f64::from(u8::from(all_new))
                 }
             }
-            WaveHasUnknown => f64::from(u8::from(self.wave_unknown)),
-            WaveWorkingBuyCount => {
+            WaveHasUnknownWallet => f64::from(u8::from(self.wave_unknown)),
+            WaveBuyCount => {
                 let Some(p) = patterns else {
                     return f64::NAN;
                 };
@@ -216,7 +216,7 @@ impl BurstWaveState {
                     .filter(|(h, prog)| p.matches(Some(**h), **prog))
                     .count() as f64
             }
-            WaveThisWorking => {
+            WaveThisHasTag => {
                 let Some(p) = patterns else {
                     return f64::NAN;
                 };
@@ -224,9 +224,9 @@ impl BurstWaveState {
                     p.matches(self.this_template_hash, self.this_program_hash),
                 ))
             }
-            WaveThisTip => self.this_tip,
-            WaveHole => f64::from(u8::from(self.this_hole)),
-            WaveTipSeen => f64::from(u8::from(self.this_tip_seen)),
+            WaveThisTipLamports => self.this_tip,
+            WaveHasTxGap => f64::from(u8::from(self.this_hole)),
+            WaveTipBandSeen => f64::from(u8::from(self.this_tip_seen)),
             _ => f64::NAN,
         }
     }
@@ -235,7 +235,7 @@ impl BurstWaveState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::BurstPatterns;
+    use super::TemplatePatterns;
     use crate::metrics::template_grain::grain_id_hash;
     use crate::metrics::TradeLite;
     use chrono::{TimeZone, Utc};
@@ -268,9 +268,9 @@ mod tests {
         s.seed_creation_slot(100);
         s.on_trade(&buy(100, 1, 1.0));
         s.on_trade(&buy(100, 2, 1.0));
-        assert!(s.value(MetricId::WaveGapSlots, None).is_nan());
-        assert_eq!(s.value(MetricId::WaveWalletCount, None), 2.0);
-        assert_eq!(s.value(MetricId::WaveThisMember, None), 1.0);
+        assert!(s.value(Metric::WaveGapSlots, None).is_nan());
+        assert_eq!(s.value(Metric::WaveWalletCount, None), 2.0);
+        assert_eq!(s.value(Metric::WaveThisJoined, None), 1.0);
     }
 
     #[test]
@@ -280,19 +280,19 @@ mod tests {
         s.on_trade(&buy(100, 1, 0.5));
         // Quiet of 25 empty slots, then two wallets in one slot.
         s.on_trade(&buy(126, 2, 1.0));
-        assert_eq!(s.value(MetricId::WaveGapSlots, None), 26.0);
-        assert_eq!(s.value(MetricId::WaveWalletCount, None), 1.0);
+        assert_eq!(s.value(Metric::WaveGapSlots, None), 26.0);
+        assert_eq!(s.value(Metric::WaveWalletCount, None), 1.0);
         s.on_trade(&buy(126, 3, 1.5));
-        assert_eq!(s.value(MetricId::WaveGapSlots, None), 26.0);
-        assert_eq!(s.value(MetricId::WaveWalletCount, None), 2.0);
-        assert_eq!(s.value(MetricId::WaveBuySol, None), 2.5);
-        assert_eq!(s.value(MetricId::WaveAllNew, None), 1.0);
-        assert_eq!(s.value(MetricId::WaveThisMember, None), 1.0);
+        assert_eq!(s.value(Metric::WaveGapSlots, None), 26.0);
+        assert_eq!(s.value(Metric::WaveWalletCount, None), 2.0);
+        assert_eq!(s.value(Metric::WaveBuySol, None), 2.5);
+        assert_eq!(s.value(Metric::WaveAllNewWallets, None), 1.0);
+        assert_eq!(s.value(Metric::WaveThisJoined, None), 1.0);
         // Consecutive slot continues the SAME wave; gap does not become 1.
         s.on_trade(&buy(127, 4, 0.4));
-        assert_eq!(s.value(MetricId::WaveGapSlots, None), 26.0);
-        assert_eq!(s.value(MetricId::WaveWalletCount, None), 3.0);
-        assert_eq!(s.value(MetricId::WaveBuySol, None), 2.9);
+        assert_eq!(s.value(Metric::WaveGapSlots, None), 26.0);
+        assert_eq!(s.value(Metric::WaveWalletCount, None), 3.0);
+        assert_eq!(s.value(Metric::WaveBuySol, None), 2.9);
     }
 
     #[test]
@@ -302,8 +302,8 @@ mod tests {
         s.on_trade(&buy(10, 1, 1.0));
         s.on_trade(&buy(40, 1, 1.0));
         s.on_trade(&buy(40, 2, 1.0));
-        assert_eq!(s.value(MetricId::WaveAllNew, None), 0.0);
-        assert_eq!(s.value(MetricId::WaveWalletCount, None), 2.0);
+        assert_eq!(s.value(Metric::WaveAllNewWallets, None), 0.0);
+        assert_eq!(s.value(Metric::WaveWalletCount, None), 2.0);
     }
 
     #[test]
@@ -311,10 +311,10 @@ mod tests {
         let mut s = BurstWaveState::default();
         s.seed_creation_slot(1);
         s.on_trade(&buy(10, 1, 1.0));
-        assert_eq!(s.value(MetricId::WaveThisMember, None), 1.0);
+        assert_eq!(s.value(Metric::WaveThisJoined, None), 1.0);
         s.on_tick();
-        assert_eq!(s.value(MetricId::WaveThisMember, None), 0.0);
-        assert_eq!(s.value(MetricId::WaveWalletCount, None), 1.0);
+        assert_eq!(s.value(Metric::WaveThisJoined, None), 0.0);
+        assert_eq!(s.value(Metric::WaveWalletCount, None), 1.0);
     }
 
     #[test]
@@ -324,21 +324,17 @@ mod tests {
         let mut launch = buy(5, 9, 3.0);
         launch.is_launch = true;
         s.on_trade(&launch);
-        assert_eq!(s.value(MetricId::WaveThisMember, None), 0.0);
-        assert_eq!(s.value(MetricId::WaveWalletCount, None), 0.0);
-        assert!(s.value(MetricId::WaveGapSlots, None).is_nan());
+        assert_eq!(s.value(Metric::WaveThisJoined, None), 0.0);
+        assert_eq!(s.value(Metric::WaveWalletCount, None), 0.0);
+        assert!(s.value(Metric::WaveGapSlots, None).is_nan());
         s.on_trade(&buy(20, 1, 1.0));
-        assert_eq!(s.value(MetricId::WaveGapSlots, None), 15.0);
-        assert_eq!(s.value(MetricId::WaveWalletCount, None), 1.0);
+        assert_eq!(s.value(Metric::WaveGapSlots, None), 15.0);
+        assert_eq!(s.value(Metric::WaveWalletCount, None), 1.0);
     }
 
     #[test]
     fn working_buy_count_is_named_prints_in_the_fireable_wave() {
-        use super::BurstPatterns;
-        let named = BurstPatterns::from_metric_config(&serde_json::json!({
-            "m_burst_slot": { "working_templates": ["Axiom Trade|CU|ATA|F"] }
-        }))
-        .unwrap();
+        let named = crate::metrics::tags::config::compile_tags(&serde_json::json!({ "working": { "match": { "ix_template": ["Axiom Trade|CU|ATA|F"] } } }))[0].patterns.templates().unwrap();
         let mut other = buy(30, 2, 1.0);
         other.template_hash = Some(grain_id_hash("Pump.Fun|CU|ATA|F"));
         let mut named_buy = buy(30, 3, 0.4);
@@ -347,16 +343,16 @@ mod tests {
         let mut s = BurstWaveState::default();
         s.seed_creation_slot(10);
         s.on_trade(&buy(10, 1, 1.0));
-        assert!(s.value(MetricId::WaveWorkingBuyCount, Some(&named)).is_nan());
+        assert!(s.value(Metric::WaveBuyCount, Some(&named)).is_nan());
         s.on_trade(&other);
-        assert_eq!(s.value(MetricId::WaveWorkingBuyCount, Some(&named)), 0.0);
+        assert_eq!(s.value(Metric::WaveBuyCount, Some(&named)), 0.0);
         s.on_trade(&named_buy);
-        assert_eq!(s.value(MetricId::WaveWorkingBuyCount, Some(&named)), 1.0);
+        assert_eq!(s.value(Metric::WaveBuyCount, Some(&named)), 1.0);
         let mut named2 = buy(31, 4, 0.4);
         named2.template_hash = Some(grain_id_hash("Axiom Trade|CU|ATA|F"));
         s.on_trade(&named2);
-        assert_eq!(s.value(MetricId::WaveWorkingBuyCount, Some(&named)), 2.0);
-        assert!(s.value(MetricId::WaveWorkingBuyCount, None).is_nan());
+        assert_eq!(s.value(Metric::WaveBuyCount, Some(&named)), 2.0);
+        assert!(s.value(Metric::WaveBuyCount, None).is_nan());
     }
 
     fn axiom(slot: u64, txi: u32, wallet: u64, tip: Option<u64>) -> TradeLite {
@@ -367,16 +363,8 @@ mod tests {
         t
     }
 
-    fn named_patterns() -> BurstPatterns {
-        BurstPatterns::from_metric_config(&serde_json::json!({
-            "m_burst_slot": {
-                "working_templates": [
-                    "Axiom Trade|CU|ATA|F",
-                    "Axiom Trade|CU|ATA|N|F"
-                ]
-            }
-        }))
-        .unwrap()
+    fn named_patterns() -> TemplatePatterns {
+        crate::metrics::tags::config::compile_tags(&serde_json::json!({ "working": { "match": { "ix_template": ["Axiom Trade|CU|ATA|F", "Axiom Trade|CU|ATA|N|F"] } } }))[0].patterns.templates().unwrap()
     }
 
     #[test]
@@ -386,13 +374,13 @@ mod tests {
         s.seed_creation_slot(10);
         s.on_trade(&buy(10, 1, 1.0));
         s.on_trade(&axiom(20, 1, 2, Some(200_000)));
-        assert_eq!(s.value(MetricId::WaveThisWorking, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::WaveThisTip, None), 200_000.0);
+        assert_eq!(s.value(Metric::WaveThisHasTag, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::WaveThisTipLamports, None), 200_000.0);
         let mut pump = buy(20, 3, 1.0);
         pump.tx_index = Some(3);
         s.on_trade(&pump);
-        assert_eq!(s.value(MetricId::WaveThisWorking, Some(&p)), 0.0);
-        assert!(s.value(MetricId::WaveThisWorking, None).is_nan());
+        assert_eq!(s.value(Metric::WaveThisHasTag, Some(&p)), 0.0);
+        assert!(s.value(Metric::WaveThisHasTag, None).is_nan());
     }
 
     #[test]
@@ -402,11 +390,11 @@ mod tests {
         s.seed_creation_slot(10);
         s.on_trade(&buy(10, 1, 1.0));
         s.on_trade(&axiom(20, 4, 2, Some(200_000)));
-        assert_eq!(s.value(MetricId::WaveWorkingBuyCount, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::WaveBuyCount, Some(&p)), 1.0);
         s.on_trade(&axiom(21, 1, 3, Some(200_000)));
-        assert_eq!(s.value(MetricId::WaveGapSlots, None), 10.0);
-        assert_eq!(s.value(MetricId::WaveWorkingBuyCount, Some(&p)), 2.0);
-        assert_eq!(s.value(MetricId::WaveThisWorking, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::WaveGapSlots, None), 10.0);
+        assert_eq!(s.value(Metric::WaveBuyCount, Some(&p)), 2.0);
+        assert_eq!(s.value(Metric::WaveThisHasTag, Some(&p)), 1.0);
     }
 
     #[test]
@@ -419,10 +407,10 @@ mod tests {
         bare.tx_index = Some(1);
         bare.fee = crate::metrics::fee::FeeKeys::new(None, None, Some(200_000));
         s.on_trade(&bare);
-        assert_eq!(s.value(MetricId::WaveThisMember, None), 0.0);
+        assert_eq!(s.value(Metric::WaveThisJoined, None), 0.0);
         s.on_trade(&axiom(20, 4, 3, Some(250_000)));
-        assert_eq!(s.value(MetricId::WaveHole, None), 1.0);
-        assert_eq!(s.value(MetricId::WaveTipSeen, None), 1.0);
+        assert_eq!(s.value(Metric::WaveHasTxGap, None), 1.0);
+        assert_eq!(s.value(Metric::WaveTipBandSeen, None), 1.0);
     }
 
     #[test]
@@ -432,18 +420,18 @@ mod tests {
         s.on_trade(&buy(10, 1, 1.0));
         let mut a = axiom(20, 5, 2, Some(200_000));
         s.on_trade(&a);
-        assert_eq!(s.value(MetricId::WaveHole, None), 0.0);
+        assert_eq!(s.value(Metric::WaveHasTxGap, None), 0.0);
         a.slot = 20;
         a.tx_index = Some(7);
         a.wallet_hash = 3;
         s.on_trade(&a);
-        assert_eq!(s.value(MetricId::WaveHole, None), 1.0);
+        assert_eq!(s.value(Metric::WaveHasTxGap, None), 1.0);
         // Next slot continues the wave; 1 - 7 is not a hole.
         a.slot = 21;
         a.tx_index = Some(1);
         a.wallet_hash = 4;
         s.on_trade(&a);
-        assert_eq!(s.value(MetricId::WaveHole, None), 0.0);
+        assert_eq!(s.value(Metric::WaveHasTxGap, None), 0.0);
     }
 
     #[test]
@@ -454,11 +442,11 @@ mod tests {
         let mut first = axiom(20, 0, 2, Some(200_000));
         first.tx_index = None;
         s.on_trade(&first);
-        assert_eq!(s.value(MetricId::WaveHole, None), 0.0);
+        assert_eq!(s.value(Metric::WaveHasTxGap, None), 0.0);
         let second = axiom(20, 5, 3, Some(200_000));
         s.on_trade(&second);
         // 5 - (-1) > 1
-        assert_eq!(s.value(MetricId::WaveHole, None), 1.0);
+        assert_eq!(s.value(Metric::WaveHasTxGap, None), 1.0);
     }
 
     #[test]
@@ -467,11 +455,11 @@ mod tests {
         s.seed_creation_slot(10);
         s.on_trade(&buy(10, 1, 1.0));
         s.on_trade(&axiom(20, 1, 2, None));
-        assert!(s.value(MetricId::WaveThisTip, None).is_nan());
+        assert!(s.value(Metric::WaveThisTipLamports, None).is_nan());
         s.on_trade(&axiom(20, 2, 3, Some(0)));
-        assert_eq!(s.value(MetricId::WaveThisTip, None), 0.0);
+        assert_eq!(s.value(Metric::WaveThisTipLamports, None), 0.0);
         s.on_trade(&axiom(20, 3, 4, Some(250_000)));
-        assert_eq!(s.value(MetricId::WaveThisTip, None), 250_000.0);
+        assert_eq!(s.value(Metric::WaveThisTipLamports, None), 250_000.0);
     }
 
     #[test]
@@ -483,11 +471,11 @@ mod tests {
         pump.tx_index = Some(1);
         pump.fee = crate::metrics::fee::FeeKeys::new(None, None, Some(200_000));
         s.on_trade(&pump);
-        assert_eq!(s.value(MetricId::WaveTipSeen, None), 0.0);
+        assert_eq!(s.value(Metric::WaveTipBandSeen, None), 0.0);
         s.on_trade(&axiom(20, 3, 3, Some(250_000)));
-        assert_eq!(s.value(MetricId::WaveTipSeen, None), 1.0);
+        assert_eq!(s.value(Metric::WaveTipBandSeen, None), 1.0);
         s.on_trade(&axiom(20, 4, 4, Some(2_000_000)));
-        assert_eq!(s.value(MetricId::WaveTipSeen, None), 0.0);
+        assert_eq!(s.value(Metric::WaveTipBandSeen, None), 0.0);
     }
 
     #[test]
@@ -498,26 +486,23 @@ mod tests {
         s.on_trade(&buy(10, 1, 1.0));
         s.on_trade(&axiom(20, 1, 2, Some(200_000)));
         s.on_trade(&axiom(20, 3, 3, Some(200_000)));
-        assert_eq!(s.value(MetricId::WaveThisMember, None), 1.0);
-        assert_eq!(s.value(MetricId::WaveHole, None), 1.0);
-        assert_eq!(s.value(MetricId::WaveTipSeen, None), 1.0);
-        assert_eq!(s.value(MetricId::WaveThisWorking, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::WaveThisJoined, None), 1.0);
+        assert_eq!(s.value(Metric::WaveHasTxGap, None), 1.0);
+        assert_eq!(s.value(Metric::WaveTipBandSeen, None), 1.0);
+        assert_eq!(s.value(Metric::WaveThisHasTag, Some(&p)), 1.0);
         s.on_tick();
-        assert_eq!(s.value(MetricId::WaveThisMember, None), 0.0);
-        assert_eq!(s.value(MetricId::WaveHole, None), 0.0);
-        assert_eq!(s.value(MetricId::WaveTipSeen, None), 0.0);
-        assert_eq!(s.value(MetricId::WaveThisWorking, Some(&p)), 0.0);
-        assert_eq!(s.value(MetricId::WaveThisTip, None), 200_000.0);
-        assert_eq!(s.value(MetricId::WaveWorkingBuyCount, Some(&p)), 2.0);
+        assert_eq!(s.value(Metric::WaveThisJoined, None), 0.0);
+        assert_eq!(s.value(Metric::WaveHasTxGap, None), 0.0);
+        assert_eq!(s.value(Metric::WaveTipBandSeen, None), 0.0);
+        assert_eq!(s.value(Metric::WaveThisHasTag, Some(&p)), 0.0);
+        assert_eq!(s.value(Metric::WaveThisTipLamports, None), 200_000.0);
+        assert_eq!(s.value(Metric::WaveBuyCount, Some(&p)), 2.0);
     }
 
     #[test]
     fn bare_program_name_matches_ata_f_grain() {
         use crate::metrics::template_grain::program_id_hash;
-        let p = BurstPatterns::from_metric_config(&serde_json::json!({
-            "m_burst_slot": { "working_templates": ["Axiom Trade"] }
-        }))
-        .unwrap();
+        let p = crate::metrics::tags::config::compile_tags(&serde_json::json!({ "working": { "match": { "program": ["Axiom Trade"] } } }))[0].patterns.templates().unwrap();
         let mut mid = buy(20, 3, 0.4);
         mid.tx_index = Some(4);
         mid.template_hash = Some(grain_id_hash("Axiom Trade|ATA|F"));
@@ -527,7 +512,7 @@ mod tests {
         s.on_trade(&buy(10, 1, 1.0));
         s.on_trade(&axiom(20, 2, 2, Some(150_000)));
         s.on_trade(&mid);
-        assert_eq!(s.value(MetricId::WaveThisWorking, Some(&p)), 1.0);
-        assert_eq!(s.value(MetricId::WaveWorkingBuyCount, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::WaveThisHasTag, Some(&p)), 1.0);
+        assert_eq!(s.value(Metric::WaveBuyCount, Some(&p)), 1.0);
     }
 }

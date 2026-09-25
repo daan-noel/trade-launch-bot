@@ -14,7 +14,7 @@ pub mod scorer;
 
 use chrono::{DateTime, Utc};
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
-use hunter_engine::metrics::flow_ix::FlowPatterns;
+use hunter_engine::metrics::tags::config::CompiledTag;
 use hunter_engine::rule_params::RuleParams;
 
 use crate::sweep::corpus::Corpus;
@@ -33,7 +33,8 @@ pub struct SearchInput<'a> {
     pub fp: &'a EngineFingerprint,
     pub pricing: Pricing,
     pub as_of: DateTime<Utc>,
-    pub flow: Option<&'a FlowPatterns>,
+    /// `fp`'s compiled tags.
+    pub tags: &'a [CompiledTag],
     pub skip_duplicate_identity: bool,
     pub duplicate_identity_window_hours: u64,
     pub max_concurrent_tokens: u32,
@@ -50,7 +51,7 @@ pub fn run_search(
     observer: &dyn SweepObserver,
 ) -> anyhow::Result<Report> {
     observer.notice("cuts");
-    let cuts = build_cut_table(&input.corpus.tokens, input.flow, input.fp.id);
+    let cuts = build_cut_table(&input.corpus.tokens, input.tags, input.fp.id);
     if observer.cancelled() {
         anyhow::bail!("cancelled");
     }
@@ -65,8 +66,8 @@ pub fn run_search(
     let cfg = ScoreConfig {
         pricing: input.pricing,
         as_of: input.as_of,
-        flow: input.flow,
-        flow_fp: input.fp.id,
+        tags: input.tags,
+        fp: input.fp.id,
         skip_duplicate_identity: input.skip_duplicate_identity,
         duplicate_identity_window_hours: input.duplicate_identity_window_hours,
         max_concurrent_tokens: input.max_concurrent_tokens,
@@ -177,7 +178,7 @@ mod tests {
     fn fp() -> Fingerprint {
         Fingerprint {
             id: FingerprintId(Uuid::nil()),
-            metric_config: serde_json::json!({}),
+            tags: serde_json::json!({}),
             wildcard: false,
             criteria: Criteria::new(),
         }
@@ -194,7 +195,7 @@ mod tests {
                 fp: &fp,
                 pricing,
                 as_of: Utc::now(),
-                flow: None,
+                tags: &[],
                 skip_duplicate_identity: true,
                 duplicate_identity_window_hours: 24,
                 max_concurrent_tokens: 0,

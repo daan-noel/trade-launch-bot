@@ -42,8 +42,7 @@ use chrono::{DateTime, Utc};
 use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::{Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
-use hunter_engine::metrics::flow_ix::wallet_hash;
-use hunter_engine::rule_params::RuleParams;
+use hunter_engine::metrics::trade_keys::wallet_hash;
 use lab::lake::duck::LakeSource;
 use lab::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
 use lab::sweep::corpus::{CorpusSource, Selection, TradeWindow};
@@ -125,14 +124,15 @@ async fn main() {
         buy_amount_lamports: (buy_sol * 1e9).round() as u64,
         max_concurrent_tokens: 0,
         max_total_tokens: 0,
-        params: RuleParams::parse(&rule_json).expect("rule 1 validates"),
+        // The rule file may be a v1 export; the one converter reads either.
+        params: hunter_engine::v1::parse_params_any(&rule_json).expect("rule 1 validates"),
         entry_enabled: true,
     };
     let fp = Fingerprint {
         id: fp_id,
         wildcard: true,
         criteria: Criteria::new(),
-        metric_config: serde_json::json!({}),
+        tags: serde_json::json!({}),
     };
 
     let mints: Vec<String> = std::fs::read_to_string(env("R1_MINTS"))

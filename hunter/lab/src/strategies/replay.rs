@@ -205,7 +205,7 @@ pub struct ReplayConfig {
     /// which is right for a fixture and wrong for a real backtest, so the caller that
     /// has a token history is the one that must fill this.
     pub creator_launches: Arc<[(u64, u32)]>,
-    /// Creations to prime the `prior_identity_launches` tally with, as
+    /// Creations to prime the `name_reuse_count` tally with, as
     /// `(creation build ix hash, identity, created_at, mint hash)`: every creation of
     /// the fingerprint's build over the run window and the trailing window before it.
     /// The corpus is one fingerprint, so a same-name launch of the build outside it
@@ -1146,7 +1146,7 @@ mod tests {
     fn first_slot_settles_at_created_when_create_slot_is_empty() {
         let fps = [EngineFingerprint {
             id: FingerprintId(Uuid::from_u128(1)),
-            metric_config: serde_json::json!({}),
+            tags: serde_json::json!({}),
             wildcard: false,
             criteria: Criteria::new()
                 .with(AxisId::CuLimit, AxisPredicate::exact(200_000))
@@ -1188,7 +1188,7 @@ mod tests {
     fn fp(id: u128) -> EngineFingerprint {
         EngineFingerprint {
             id: FingerprintId(Uuid::from_u128(id)),
-            metric_config: serde_json::json!({}),
+            tags: serde_json::json!({}),
             wildcard: false,
             criteria: Criteria::new()
                 .with(AxisId::CuLimit, AxisPredicate::exact(200_000)),

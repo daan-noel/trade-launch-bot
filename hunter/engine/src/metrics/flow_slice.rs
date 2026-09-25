@@ -1,61 +1,16 @@
-//! The nested SLICE axis of `m_flow_window` — the second window the `*_share`
-//! metrics read, and the two ratios across the pair.
+//! The two slice metrics of `m_flow`: a span with a shorter slice nested in it
+//! (`[30s, slice 2s]`), and the share of the span's activity the slice holds.
 //!
-//! * `window_size_sec` (`W`) — the group's own span; the denominator.
-//! * `slice_size_sec` (`b`) — the span nested inside it; the numerator. `b <= W`,
-//!   enforced at save (`rule_params::validate_group`).
+//! * `slice_trade_share_pct` — prints in the slice as a percent of prints in the span.
+//! * `slice_sol_share_pct` — the same ratio on gross SOL. Ten prints of 0.1 SOL and one
+//!   print of 10 are the same trade share and far apart here, and on a PRINT span the
+//!   trade share is `slice / span` on every coin while this one still varies.
 //!
-//! Two metrics read the pair, and they are not restatements of each other:
-//! * `trade_share` — trades in `[now - b, now]` as a percent of trades in `[now - W, now]`.
-//! * `sol_share` — the same ratio on gross SOL. Ten prints of a tenth of a SOL and
-//!   one print of ten are the same `trade_share` and far apart here, and on a PRINT
-//!   window `trade_share` is `b / W` on every token while this one still varies.
-//!
-//! **These are metrics of `m_flow_window`, not a group of their own.** The slice is
-//! one more span over the same tape, so a second group would be a second name for
-//! one subject. What keeps the axis from becoming a span nothing reads is
-//! [`is_two_window`](super::is_two_window): the registry declares `slice_size_*`
-//! optional, `validate_group` requires it exactly when one of these two metrics is
-//! present and rejects it when neither is, and `build_reqs` attaches it to their
-//! requirements alone.
-//!
-//! **This module owns no state.** Both readings come off the two `WindowState` ring
-//! buffers the track already keeps — [`trade_count`](WindowState::trade_count) and
-//! [`gross_flow`](WindowState::value) — so a rule that also gates on
-//! `m_flow_window(3)` and `m_flow_window(60)` pays nothing extra. Reusing that one
-//! implementation is also what makes `trade_share(60s/3s)` and
-//! `m_flow_window(3).trade_count / m_flow_window(60).trade_count` the same number by
-//! construction rather than by agreement.
+//! **This module owns no state.** Both readings come off the two token-level flow
+//! windows the track already keeps — [`trade_count`](WindowState::trade_count) and
+//! gross SOL — so `[30s, slice 2s]` and a separate `[2s]` read share buffers.
 
 use super::flow_window::WindowState;
-
-/// The group's second strict param — the slice (numerator) window, in seconds.
-///
-/// Named once here because three layers spell it: the registry declares it,
-/// `arm::build_reqs` reads it into [`Windows::secondary`], and
-/// `rule_params::validate_group` enforces the nesting bound.
-///
-/// [`Windows::secondary`]: super::Windows::secondary
-pub const SLICE_PARAM: &str = "slice_size_sec";
-
-/// The slot twin of [`SLICE_PARAM`]. Mutually exclusive with it, and it must agree
-/// with the group's own unit - a slice measured in slots inside a reference measured
-/// in seconds is a ratio across two different axes.
-pub const SLICE_SLOT_PARAM: &str = "slice_size_slots";
-
-/// The print twin of [`SLICE_PARAM`] - the slice as a count of the token's own
-/// transactions. `slice_size_prints: 1` over `window_size_prints: 20` is "what share
-/// of the last twenty prints is this one", which is `5` on any tape and therefore the
-/// one shape of this metric that carries no information; the useful spans are wider.
-pub const SLICE_PRINT_PARAM: &str = "slice_size_prints";
-
-/// This group's SECOND window axis, one size param per unit. The reference axis is
-/// `metrics::WINDOW_AXIS`; both must resolve to the same unit.
-pub const SLICE_AXIS: super::WindowAxis = super::WindowAxis {
-    sec: SLICE_PARAM,
-    slot: SLICE_SLOT_PARAM,
-    print: SLICE_PRINT_PARAM,
-};
 
 /// Percent of the reference window's trades that landed in the slice window.
 ///
@@ -99,9 +54,9 @@ pub fn sol_share(
     slice_now: i64,
     reference_now: i64,
 ) -> f64 {
-    let denom = reference.value(super::MetricId::GrossFlow, reference_now);
+    let denom = reference.value(super::Metric::GrossSol, reference_now);
     if denom > 0.0 {
-        slice.value(super::MetricId::GrossFlow, slice_now) / denom * 100.0
+        slice.value(super::Metric::GrossSol, slice_now) / denom * 100.0
     } else {
         f64::NAN
     }
@@ -110,7 +65,7 @@ pub fn sol_share(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::{MetricId, Side, Ts, WindowSpec};
+    use crate::metrics::{Metric, Side, Ts, WindowSpec};
     use chrono::{Duration, TimeZone, Utc};
 
     fn ts(secs: f64) -> Ts {
@@ -128,7 +83,7 @@ mod tests {
     fn tape(widths: [f64; 2], at: &[f64]) -> (WindowState, WindowState) {
         let mut a = WindowState::new(WindowSpec::secs(widths[0]));
         let mut b = WindowState::new(WindowSpec::secs(widths[1]));
-        for (i, &t) in at.iter().enumerate() {
+        for &t in at {
             a.on_trade(Side::Buy, 1.0, p(t), p(t));
             b.on_trade(Side::Buy, 1.0, p(t), p(t));
         }
@@ -149,8 +104,8 @@ mod tests {
 
         let now = p(60.0);
         // Identical by every single-window flow reading.
-        assert_eq!(ref_a.value(MetricId::TradeCount, now), ref_b.value(MetricId::TradeCount, now));
-        assert_eq!(ref_a.value(MetricId::GrossFlow, now), ref_b.value(MetricId::GrossFlow, now));
+        assert_eq!(ref_a.value(Metric::TradeCount, now), ref_b.value(Metric::TradeCount, now));
+        assert_eq!(ref_a.value(Metric::GrossSol, now), ref_b.value(Metric::GrossSol, now));
 
         // 5 of 10 land in `[57, 60]` — 57.0 counts, the closed lower bound.
         assert_eq!(trade_share(&slice_a, &ref_a, now, now), 50.0);
@@ -169,7 +124,7 @@ mod tests {
         let build = |sols: [f64; 3]| {
             let mut slice = WindowState::new(WindowSpec::secs(3.0));
             let mut reference = WindowState::new(WindowSpec::secs(60.0));
-            for (i, (&sol, at)) in sols.iter().zip([10.0, 20.0, 30.0]).enumerate() {
+            for (&sol, at) in sols.iter().zip([10.0, 20.0, 30.0]) {
                 slice.on_trade(Side::Buy, sol, p(at), p(30.0));
                 reference.on_trade(Side::Buy, sol, p(at), p(30.0));
             }
@@ -197,9 +152,7 @@ mod tests {
     fn a_sell_moves_money_so_it_counts_toward_the_share() {
         let mut slice = WindowState::new(WindowSpec::secs(3.0));
         let mut reference = WindowState::new(WindowSpec::secs(60.0));
-        for (i, (side, sol, at)) in
-            [(Side::Buy, 5.0, 10.0), (Side::Sell, 5.0, 30.0)].into_iter().enumerate()
-        {
+        for (side, sol, at) in [(Side::Buy, 5.0, 10.0), (Side::Sell, 5.0, 30.0)] {
             slice.on_trade(side, sol, p(at), p(30.0));
             reference.on_trade(side, sol, p(at), p(30.0));
         }

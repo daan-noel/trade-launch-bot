@@ -25,7 +25,7 @@
 
 use super::distinct_window::DistinctWindow;
 use super::flow_window::is_foldable;
-use super::{MetricId, WindowSpec};
+use super::{Metric, WindowSpec};
 
 /// One trailing-window wallet aggregator for a single [`WindowSpec`] — a
 /// [`DistinctWindow`] keyed by wallet hash, one entry per foldable trade, so its
@@ -62,13 +62,13 @@ impl CrowdWindowState {
     }
 
     /// Value of one `m_crowd_window` metric over the window at `now_pos`.
-    pub fn value(&self, id: MetricId, now_pos: i64) -> f64 {
+    pub fn value(&self, id: Metric, now_pos: i64) -> f64 {
         match id {
-            MetricId::UniqueWallets => self.win.distinct(now_pos),
+            Metric::UniqueWallets => self.win.distinct(now_pos),
             // `NaN` on an empty window rather than `0.0`: no wallets means no churn to
             // report, and a `0.0` would let `trades_per_wallet <= 2` pass on a dead
             // tape - the exact reading the gate exists to exclude.
-            MetricId::TradesPerWallet => {
+            Metric::TradesPerWallet => {
                 let wallets = self.win.distinct(now_pos);
                 if wallets > 0.0 {
                     self.trade_count(now_pos) / wallets
@@ -109,8 +109,8 @@ mod tests {
         for (wallet, at) in [(1, 0.0), (1, 1.0), (2, 2.0), (3, 3.0)] {
             w.on_trade(1.0, wallet, p(at), p(at));
         }
-        assert_eq!(w.value(MetricId::UniqueWallets, p(3.0)), 3.0);
-        assert_eq!(w.value(MetricId::TradesPerWallet, p(3.0)), 4.0 / 3.0);
+        assert_eq!(w.value(Metric::UniqueWallets, p(3.0)), 3.0);
+        assert_eq!(w.value(Metric::TradesPerWallet, p(3.0)), 4.0 / 3.0);
     }
 
     /// A wallet leaves the distinct count only when its LAST entry falls out.
@@ -122,11 +122,11 @@ mod tests {
         w.on_trade(1.0, 8, p(9.0), p(9.0));
         // At t=11 the first entry is out, but wallet 7 still has one inside.
         w.evict(p(11.0));
-        assert_eq!(w.value(MetricId::UniqueWallets, p(11.0)), 2.0);
+        assert_eq!(w.value(Metric::UniqueWallets, p(11.0)), 2.0);
         // At t=20 both of 7's entries and 8's are gone.
         w.evict(p(20.0));
-        assert_eq!(w.value(MetricId::UniqueWallets, p(20.0)), 0.0);
-        assert!(w.value(MetricId::TradesPerWallet, p(20.0)).is_nan());
+        assert_eq!(w.value(Metric::UniqueWallets, p(20.0)), 0.0);
+        assert!(w.value(Metric::TradesPerWallet, p(20.0)).is_nan());
     }
 
     /// A LAGGED window excludes a head, and the read — not eviction — is what
@@ -139,8 +139,8 @@ mod tests {
             w.on_trade(1.0, slot, slot as i64, slot as i64);
         }
         // At slot 4 with lag 1 the window is slots [1, 3]: wallet 4 is excluded.
-        assert_eq!(w.value(MetricId::UniqueWallets, 4), 3.0);
-        assert_eq!(w.value(MetricId::TradesPerWallet, 4), 1.0);
+        assert_eq!(w.value(Metric::UniqueWallets, 4), 3.0);
+        assert_eq!(w.value(Metric::TradesPerWallet, 4), 1.0);
     }
 
     /// The admission guard is `m_flow_window`'s, so a trade the flow deque refuses is
@@ -152,8 +152,8 @@ mod tests {
         w.on_trade(f64::NAN, 1, p(0.0), p(0.0));
         w.on_trade(-1.0, 2, p(1.0), p(1.0));
         w.on_trade(1.0, 3, p(2.0), p(2.0));
-        assert_eq!(w.value(MetricId::UniqueWallets, p(2.0)), 1.0);
-        assert_eq!(w.value(MetricId::TradesPerWallet, p(2.0)), 1.0);
+        assert_eq!(w.value(Metric::UniqueWallets, p(2.0)), 1.0);
+        assert_eq!(w.value(Metric::TradesPerWallet, p(2.0)), 1.0);
     }
 
     /// The inline scratch must not change the answer when it spills to the heap.
@@ -168,8 +168,8 @@ mod tests {
             w.on_trade(1.0, 100 + i, 2, 2);
         }
         // At slot 2 with lag 1 the window is slots [1, 1]: only the first two count.
-        assert_eq!(w.value(MetricId::UniqueWallets, 2), 2.0);
-        assert_eq!(w.value(MetricId::TradesPerWallet, 2), 1.0);
+        assert_eq!(w.value(Metric::UniqueWallets, 2), 2.0);
+        assert_eq!(w.value(Metric::TradesPerWallet, 2), 1.0);
     }
 
     /// The ratio the flow metrics cannot express: one wallet re-entering and a crowd
@@ -183,8 +183,8 @@ mod tests {
             churn.on_trade(1.0, 1, p(i as f64), p(i as f64)); // one person, six trades
         }
         let now = p(6.0);
-        assert_eq!(crowd.value(MetricId::TradesPerWallet, now), 1.0);
-        assert_eq!(churn.value(MetricId::TradesPerWallet, now), 6.0);
+        assert_eq!(crowd.value(Metric::TradesPerWallet, now), 1.0);
+        assert_eq!(churn.value(Metric::TradesPerWallet, now), 6.0);
     }
 
     /// The trap the `NaN` exists for: a dead tape must not satisfy `<= 2`.
@@ -194,9 +194,9 @@ mod tests {
         w.on_trade(1.0, 1, p(0.0), p(0.0));
         // Read far enough ahead that the trade has aged out of the window.
         let empty = p(60.0);
-        assert_eq!(w.value(MetricId::UniqueWallets, empty), 0.0);
+        assert_eq!(w.value(Metric::UniqueWallets, empty), 0.0);
         assert!(
-            w.value(MetricId::TradesPerWallet, empty).is_nan(),
+            w.value(Metric::TradesPerWallet, empty).is_nan(),
             "0.0 here would let `trades_per_wallet <= 2` pass on a dead tape",
         );
     }
@@ -233,7 +233,7 @@ mod tests {
                     seen.sort_unstable();
                     seen.dedup();
                     assert_eq!(
-                        w.value(MetricId::UniqueWallets, now),
+                        w.value(Metric::UniqueWallets, now),
                         seen.len() as f64,
                         "w={window} at={at} probe={probe}",
                     );
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn an_empty_window_has_no_crowd_to_report() {
         let w = CrowdWindowState::new(WindowSpec::secs(10.0));
-        assert_eq!(w.value(MetricId::UniqueWallets, p(0.0)), 0.0);
-        assert!(w.value(MetricId::TradesPerWallet, p(0.0)).is_nan());
+        assert_eq!(w.value(Metric::UniqueWallets, p(0.0)), 0.0);
+        assert!(w.value(Metric::TradesPerWallet, p(0.0)).is_nan());
     }
 }

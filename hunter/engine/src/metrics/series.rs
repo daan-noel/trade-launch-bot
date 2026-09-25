@@ -8,47 +8,36 @@
 //! track values, sampled after each fold. That shared compute is what the
 //! Phase-1.8 determinism test locks down (track ≡ series, byte-for-byte).
 
-use super::dump_ix::DumpPatterns;
-use super::flow_ix::FlowPatterns;
+use super::buffers::Buffers;
+use super::burst_slot::TemplatePatterns;
+use super::tags::config::TagPatterns;
+use super::tags::TagKey;
 use super::track::TokenTrack;
-use super::{group_of, MetricGroupId, MetricId, TradeLite, Ts};
+use super::{MetricRef, TradeLite, Ts};
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL};
 use crate::fingerprint::FingerprintId;
 
-/// One column of a [`MetricSeries`] — a static metric, a dynamic metric at a
-/// specific `window_size_sec`, or a fingerprint-scoped flow metric.
+/// One column of a [`MetricSeries`]: a read ([`MetricRef`]) and, for a fingerprint tag,
+/// the fingerprint it is scoped to.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SeriesColumn {
-    Static(MetricId),
-    /// A dynamic metric at its window(s) — carries the whole [`Windows`] rather than
-    /// one `f64` so a two-window group (`m_flow_window`) is a column like any other.
-    /// Dropping the second axis here would not fail: it would read `NaN` for every
-    /// row, which draws as a condition that never holds.
-    ///
-    /// [`Windows`]: super::Windows
-    Window(MetricId, super::Windows),
-    /// A fingerprint-scoped metric (`m_flow_ix*`, `m_dump_ix*`) — the groups whose
-    /// state is keyed by fingerprint ([`is_fingerprint_scoped`]). The id is what
-    /// routes the read, so one variant serves every such group; naming it after one
-    /// of them is how a dump column came to be built as a bare `Static` and read
-    /// `NaN` on every row.
-    ///
-    /// [`is_fingerprint_scoped`]: super::is_fingerprint_scoped
-    Fingerprint(MetricId, Option<super::WindowSpec>, FingerprintId),
+pub struct SeriesColumn {
+    pub r: MetricRef,
+    pub fp: Option<FingerprintId>,
 }
 
 impl SeriesColumn {
-    /// A single-window dynamic column — the shape every group but `m_flow_window` has.
-    pub fn window(id: MetricId, spec: super::WindowSpec) -> Self {
-        SeriesColumn::Window(id, super::Windows::one(spec))
+    /// A coin-level read.
+    pub fn of(r: MetricRef) -> Self {
+        Self { r, fp: None }
+    }
+
+    /// A read scoped to a fingerprint's tag.
+    pub fn tagged(r: MetricRef, fp: FingerprintId) -> Self {
+        Self { r, fp: Some(fp) }
     }
 
     fn eval(self, track: &TokenTrack, now: Ts) -> f64 {
-        match self {
-            SeriesColumn::Static(id) => track.value(id, super::Windows::NONE, None, now),
-            SeriesColumn::Window(id, ws) => track.value(id, ws, None, now),
-            SeriesColumn::Fingerprint(id, ws, fp) => track.value(id, ws.into(), Some(fp), now),
-        }
+        track.value(self.r, self.fp, now)
     }
 }
 
@@ -103,26 +92,10 @@ pub struct MetricSeries {
     record_from: Option<Ts>,
 }
 
-/// Register a windowed column's backing deque on `track`, routed **by group** to the
-/// buffer its metric actually reads. The dynamic groups share the window size param
-/// names but not the state, so registering only one — as the old blanket
-/// `ensure_window` did — leaves the others unregistered and every one of their columns
-/// reading `NaN`. Mirrors the live engine's split registration in `state.rs`, off the
-/// same registry, so a new dynamic group is routed here the day it is added.
-/// The buyer-set cap a readout series opens an anchored column at. A series has
-/// no rule to derive the cap from, and it draws the count rather than judging a
-/// threshold, so it takes a fixed cap wide enough for any chart: past it the count
-/// reads the cap, which the chart labels as such.
+/// The buyer-set cap a series opens a since-age column at. A series has no rule to
+/// derive the cap from, and it draws the count rather than judging a threshold, so it
+/// takes a fixed cap wide enough for any chart: past it the count reads the cap.
 pub const SERIES_ANCHOR_CAP: u32 = 64;
-
-fn register_window(track: &mut TokenTrack, id: MetricId, ws: super::WindowSpec) {
-    match group_of(id).id {
-        MetricGroupId::PriceWindow => track.ensure_price_window(ws),
-        MetricGroupId::CrowdWindow => track.ensure_crowd_window(ws),
-        MetricGroupId::BuildWindow => track.ensure_build_window(ws),
-        _ => track.ensure_window(ws),
-    }
-}
 
 impl MetricSeries {
     /// Start a series for a token created at `created_at`, recording `columns`.
@@ -130,29 +103,9 @@ impl MetricSeries {
     /// feeds it.
     pub fn new(created_at: Ts, columns: Vec<SeriesColumn>) -> Self {
         let mut track = TokenTrack::new(created_at);
-        for c in &columns {
-            // A static group whose state is opened on demand: the column is what
-            // asks for it, as a rule's condition does on the live track.
-            if let SeriesColumn::Static(id) = c {
-                match group_of(*id).id {
-                    MetricGroupId::PrintWallet => track.ensure_print_wallet(),
-                    MetricGroupId::HolderBook => track.ensure_holder_book(),
-                    _ => {}
-                }
-            }
-            if let SeriesColumn::Window(id, ws) = c {
-                // Both axes — registering only the primary leaves a slice column NaN.
-                for w in [ws.primary, ws.secondary].into_iter().flatten() {
-                    register_window(&mut track, *id, w);
-                }
-                // An anchored column opens its set at the smallest cap that keeps a
-                // readout exact for the thresholds the series is drawn for; the
-                // series reads the count, so it takes a generous fixed cap.
-                if let Some(anchor) = ws.anchor {
-                    track.ensure_crowd_after_age(anchor, SERIES_ANCHOR_CAP);
-                }
-            }
-        }
+        // Every coin-level buffer the columns read, from the same walk the engine
+        // registers from. Tag columns also need their definition: `ensure_tag`.
+        Buffers::of(columns.iter().map(|c| c.r), SERIES_ANCHOR_CAP).ensure_on(&mut track);
         let n_cols = columns.len();
         Self {
             track,
@@ -187,93 +140,25 @@ impl MetricSeries {
         self.record_from = Some(from);
     }
 
-    /// Register a trailing **flow** window on the track before folding.
-    ///
-    /// [`new`](Self::new) already registers whatever a [`SeriesColumn::Window`]
-    /// needs, so this is for a caller that registers off a *rule* rather than off
-    /// its column set (`CompiledRule::flow_windows`). Registering the same span twice
-    /// is a no-op, which is what lets such a caller mirror the live track's setup
-    /// verbatim.
-    pub fn ensure_window(&mut self, spec: super::WindowSpec) {
-        self.track.ensure_window(spec);
+    /// Register the buffers a rule reads, when a caller registers off a rule rather
+    /// than off its column set (the sweep's drill-in mirrors the live track this way).
+    /// Registering twice is a no-op.
+    pub fn ensure_buffers(&mut self, b: &Buffers) {
+        b.ensure_on(&mut self.track);
     }
 
-    /// Register a trailing **wallet** window (`m_crowd_window`) — the twin of
-    /// [`ensure_window`](Self::ensure_window) for the wallet-keyed deque.
-    pub fn ensure_crowd_window(&mut self, spec: super::WindowSpec) {
-        self.track.ensure_crowd_window(spec);
+    /// Open one fingerprint tag's trade-level state (and windows) before folding. A
+    /// tagged column reads `NaN` without it.
+    pub fn ensure_tag(&mut self, fp: FingerprintId, key: TagKey, patterns: &TagPatterns, windows: &[super::WindowSpec]) {
+        self.track.ensure_tag(fp, key, patterns, windows);
     }
 
-    /// Register a trailing **build-recipe** window (`m_build_window`) — the twin of
-    /// [`ensure_window`](Self::ensure_window) for the recipe-keyed deque.
-    pub fn ensure_build_window(&mut self, spec: super::WindowSpec) {
-        self.track.ensure_build_window(spec);
+    /// Register one tag's template view (slot / wave columns).
+    pub fn ensure_template_tag(&mut self, fp: FingerprintId, key: TagKey, patterns: &TemplatePatterns) {
+        self.track.ensure_template_tag(fp, key, patterns);
     }
 
-    /// Open the `m_print_wallet` map before folding — the twin of the rule-driven
-    /// registration on the live track.
-    pub fn ensure_print_wallet(&mut self) {
-        self.track.ensure_print_wallet();
-    }
-
-    /// Open the `m_holder_book` book before folding — the twin of the rule-driven
-    /// registration on the live track.
-    pub fn ensure_holder_book(&mut self) {
-        self.track.ensure_holder_book();
-    }
-
-    /// Register a rolling **price-extrema** window (`m_price_window`) — the twin of
-    /// [`ensure_window`](Self::ensure_window) for the other deque family.
-    pub fn ensure_price_window(&mut self, spec: super::WindowSpec) {
-        self.track.ensure_price_window(spec);
-    }
-
-    /// Attach fingerprint-scoped flow state (and optional window sizes) before
-    /// folding trades. Required for [`SeriesColumn::Fingerprint`] columns to leave `NaN`.
-    pub fn ensure_flow(
-        &mut self,
-        fp: FingerprintId,
-        patterns: &FlowPatterns,
-        windows: &[super::WindowSpec],
-    ) {
-        self.track.ensure_flow(fp, patterns, windows);
-    }
-
-    /// Attach fingerprint-scoped dump state (and optional window sizes) before
-    /// folding trades. The twin of [`ensure_flow`](Self::ensure_flow) for the other
-    /// list on the same row: a `m_dump_ix*` column reads `NaN` without it.
-    pub fn ensure_dump(
-        &mut self,
-        fp: FingerprintId,
-        patterns: &DumpPatterns,
-        windows: &[super::WindowSpec],
-    ) {
-        self.track.ensure_dump(fp, patterns, windows);
-    }
-
-    /// Attach fingerprint-scoped copy state (and optional window sizes) before
-    /// folding trades. Twin of [`ensure_dump`](Self::ensure_dump) for the
-    /// target-wallet list: an `m_copy*` column reads `NaN` without it.
-    pub fn ensure_copy(
-        &mut self,
-        fp: FingerprintId,
-        patterns: &crate::metrics::copy::CopyPatterns,
-        windows: &[super::WindowSpec],
-    ) {
-        self.track.ensure_copy(fp, patterns, windows);
-    }
-
-    /// Attach fingerprint-scoped burst state before folding trades. Twin of
-    /// [`ensure_dump`](Self::ensure_dump) for `m_burst_slot`.
-    pub fn ensure_burst(
-        &mut self,
-        fp: crate::fingerprint::FingerprintId,
-        patterns: &crate::metrics::burst_slot::BurstPatterns,
-    ) {
-        self.track.ensure_burst(fp, patterns);
-    }
-
-    /// Seed the creator wallet hash (volume-side unconditionally).
+    /// Seed the creator wallet hash on every tag state.
     pub fn seed_creator(&mut self, hash: u64) {
         self.track.seed_creator(hash);
     }
@@ -334,6 +219,17 @@ impl MetricSeries {
         self.dead.push(dead);
     }
 
+    /// The fold's state after the last recorded row — the coin as a later instant with
+    /// no new print reads it (the sweep's frozen-tail resolve).
+    pub fn track(&self) -> &TokenTrack {
+        &self.track
+    }
+
+    /// The token's creation instant.
+    pub fn created_at(&self) -> Ts {
+        self.track.created_at()
+    }
+
     /// The recorded columns, in row order.
     pub fn columns(&self) -> &[SeriesColumn] {
         &self.columns
@@ -370,12 +266,20 @@ impl MetricSeries {
 mod tests {
     use crate::metrics::WindowSpec;
     use super::*;
-    use crate::metrics::Side;
+    use crate::metrics::{Metric, Side};
     use chrono::{Duration, TimeZone, Utc};
 
     fn ts(secs: f64) -> Ts {
         Utc.timestamp_opt(1_700_000_000, 0).unwrap()
             + Duration::milliseconds((secs * 1000.0) as i64)
+    }
+
+    fn life(m: Metric) -> SeriesColumn {
+        SeriesColumn::of(MetricRef::life(m))
+    }
+
+    fn win(m: Metric, w: WindowSpec) -> SeriesColumn {
+        SeriesColumn::of(MetricRef::life(m).with_span(crate::metrics::Span::window(w)))
     }
 
     fn trade(side: Side, sol: f64, price: f64, reserve: f64, secs: f64) -> TradeLite {
@@ -402,16 +306,16 @@ mod tests {
 
     fn columns() -> Vec<SeriesColumn> {
         vec![
-            SeriesColumn::Static(MetricId::Time),
-            SeriesColumn::Static(MetricId::Liquidity),
-            SeriesColumn::Static(MetricId::Stall),
-            SeriesColumn::Static(MetricId::Trail),
-            SeriesColumn::Static(MetricId::LifeGrossFlow),
-            SeriesColumn::Static(MetricId::LifeBuy),
-            SeriesColumn::window(MetricId::GrossFlow, WindowSpec::secs(10.0)),
-            SeriesColumn::window(MetricId::NetFlow, WindowSpec::secs(10.0)),
-            SeriesColumn::window(MetricId::Buy, WindowSpec::secs(10.0)),
-            SeriesColumn::window(MetricId::Sell, WindowSpec::secs(10.0)),
+            life(Metric::AgeSec),
+            life(Metric::LiquiditySol),
+            life(Metric::StallSec),
+            life(Metric::TrailPct),
+            life(Metric::GrossSol),
+            life(Metric::BuySol),
+            win(Metric::GrossSol, WindowSpec::secs(10.0)),
+            win(Metric::NetSol, WindowSpec::secs(10.0)),
+            win(Metric::BuySol, WindowSpec::secs(10.0)),
+            win(Metric::SellSol, WindowSpec::secs(10.0)),
         ]
     }
 
@@ -420,11 +324,8 @@ mod tests {
     fn track_reference(created: Ts, cols: &[SeriesColumn], evs: &[Ev]) -> Vec<Vec<u64>> {
         let mut track = TokenTrack::new(created);
         for c in cols {
-            if let SeriesColumn::Window(id, ws) = c {
-                // Both axes — registering only the primary leaves a slice column NaN.
-                for w in [ws.primary, ws.secondary].into_iter().flatten() {
-                    register_window(&mut track, *id, w);
-                }
+            if let Some(w) = c.r.span.window {
+                track.ensure_window(w);
             }
         }
         let mut out = Vec::new();
@@ -501,7 +402,7 @@ mod tests {
         // `ensure_price_window`; the old blanket `ensure_window` left it unregistered so
         // every price-window column read `NaN` (empty panes / dead sweep entry gate).
         let created = ts(0.0);
-        let col = SeriesColumn::window(MetricId::WinTrail, WindowSpec::secs(30.0));
+        let col = win(Metric::TrailPct, WindowSpec::secs(30.0));
         let mut s = MetricSeries::new(created, vec![col]);
         s.push_trade(trade(Side::Buy, 3.0, 2.0, 15.0, 0.0)); // rolling high = 2.0
         s.push_trade(trade(Side::Sell, 1.0, 1.5, 14.0, 1.0)); // dip to 1.5 → 25% below high
@@ -519,9 +420,9 @@ mod tests {
                 Ev::Tick(now) => s.push_tick(now),
             }
         }
-        let time = s.column_values(SeriesColumn::Static(MetricId::Time)).unwrap();
+        let time = s.column_values(life(Metric::AgeSec)).unwrap();
         assert_eq!(time.first().copied(), Some(0.0));
         assert_eq!(time.last().copied(), Some(12.0));
-        assert!(s.column_values(SeriesColumn::Static(MetricId::Buy)).is_none());
+        assert!(s.column_values(win(Metric::BuySol, WindowSpec::secs(99.0))).is_none());
     }
 }

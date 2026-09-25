@@ -21,7 +21,7 @@ use crate::sweep::corpus::{sweep_per_mint_cap, CorpusSource, Selection};
 use crate::sweep::generic::Pricing;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::registry::clamp_token_cap;
-use hunter_engine::metrics::flow_ix::FlowPatterns;
+use hunter_engine::metrics::tags::config::compile_tags;
 use hunter_engine::rule_params::RuleParams;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
@@ -222,8 +222,8 @@ async fn run_job(
         }
     };
     let engine_fp = fp_to_engine(&fp_row);
-    let flow = FlowPatterns::from_metric_config(&fp_row.metric_config);
-    let with_flow = flow.is_some();
+    let tags = compile_tags(&engine_fp.tags);
+    let with_flow = !tags.is_empty();
 
     let mut buy_amount_sol = b.buy_amount_sol;
     let mut max_concurrent: u32 = 0;
@@ -257,7 +257,7 @@ async fn run_job(
         buy_amount_sol = rule.buy_amount_sol();
         max_concurrent = rule.max_concurrent_tokens.max(0) as u32;
         max_total = rule.max_total_tokens.max(0) as u32;
-        match RuleParams::parse(&rule.params) {
+        match hunter_engine::v1::parse_params_any(&rule.params) {
             Ok(p) => incumbent_params = Some(p),
             Err(e) => {
                 let msg = format!("incumbent rule params are invalid: {e}");
@@ -365,7 +365,6 @@ async fn run_job(
     let result = tokio::task::spawn_blocking({
         let observer = observer.clone();
         let corpus = corpus.clone();
-        let flow = flow.clone();
         move || -> anyhow::Result<crate::rule_search::report::Report> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -384,7 +383,7 @@ async fn run_job(
                         fp: &engine_fp,
                         pricing,
                         as_of,
-                        flow: flow.as_ref(),
+                        tags: &tags,
                         skip_duplicate_identity: skip_dupe,
                         duplicate_identity_window_hours: dupe_hours,
                         max_concurrent_tokens: max_concurrent,

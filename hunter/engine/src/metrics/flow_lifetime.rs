@@ -1,20 +1,10 @@
-//! `m_flow_lifetime` — lifetime (since-token-birth) flow aggregates (static metrics).
+//! `m_flow` over the coin's whole life, untagged: buy / sell SOL and print counts.
 //!
-//! Sibling of [`super::flow_window`] with the same JSON metric names
-//! (`buy` / `sell` / `gross_flow` / `net_flow` / `trade_count`) but no trailing
-//! window — totals only grow. No fingerprint config (unlike `m_flow_ix`).
-//!
-//! * `buy` — sum of buy SOL,
-//! * `sell` — sum of sell SOL,
-//! * `gross_flow` — `buy + sell` (total churn),
-//! * `net_flow` — `buy − sell` (directional pressure),
-//! * `trade_count` — how many trades landed.
-//!
-//! O(1) per trade: three running counters. Non-finite or negative SOL is ignored
-//! (same poison-feed guard as the window group) — and a trade dropped that way is
-//! NOT counted, so `trade_count` matches its window sibling on the same tape.
+//! O(1) per trade: four running counters. Non-finite or negative SOL is ignored (the
+//! same poison-feed guard as the window) — and a trade dropped that way is NOT counted,
+//! so `trade_count` matches its window twin on the same tape.
 
-use super::{MetricId, Side};
+use super::{Metric, Side};
 
 /// Lifetime flow accumulators for one token.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -22,6 +12,7 @@ pub struct FlowLifetimeState {
     buy: f64,
     sell: f64,
     trades: u64,
+    buys: u64,
 }
 
 impl FlowLifetimeState {
@@ -31,21 +22,25 @@ impl FlowLifetimeState {
             return;
         }
         match side {
-            Side::Buy => self.buy += sol,
+            Side::Buy => {
+                self.buy += sol;
+                self.buys += 1;
+            }
             Side::Sell => self.sell += sol,
         }
         self.trades += 1;
     }
 
-    /// Value of one `m_flow_lifetime` metric. Non-lifetime ids yield `NaN`
-    /// (unreachable — `TokenTrack` routes by group).
-    pub fn value(&self, id: MetricId) -> f64 {
+    /// One lifetime `m_flow` read. Any other metric yields `NaN`.
+    pub fn value(&self, id: Metric) -> f64 {
         match id {
-            MetricId::LifeBuy => self.buy,
-            MetricId::LifeSell => self.sell,
-            MetricId::LifeGrossFlow => self.buy + self.sell,
-            MetricId::LifeNetFlow => self.buy - self.sell,
-            MetricId::LifeTradeCount => self.trades as f64,
+            Metric::BuySol => self.buy,
+            Metric::SellSol => self.sell,
+            Metric::GrossSol => self.buy + self.sell,
+            Metric::NetSol => self.buy - self.sell,
+            Metric::TradeCount => self.trades as f64,
+            Metric::BuyCount => self.buys as f64,
+            Metric::SellCount => (self.trades - self.buys) as f64,
             _ => f64::NAN,
         }
     }
@@ -61,11 +56,13 @@ mod tests {
         s.on_trade(Side::Buy, 3.0);
         s.on_trade(Side::Sell, 1.0);
         s.on_trade(Side::Buy, 2.0);
-        assert_eq!(s.value(MetricId::LifeBuy), 5.0);
-        assert_eq!(s.value(MetricId::LifeSell), 1.0);
-        assert_eq!(s.value(MetricId::LifeGrossFlow), 6.0);
-        assert_eq!(s.value(MetricId::LifeNetFlow), 4.0);
-        assert_eq!(s.value(MetricId::LifeTradeCount), 3.0);
+        assert_eq!(s.value(Metric::BuySol), 5.0);
+        assert_eq!(s.value(Metric::SellSol), 1.0);
+        assert_eq!(s.value(Metric::GrossSol), 6.0);
+        assert_eq!(s.value(Metric::NetSol), 4.0);
+        assert_eq!(s.value(Metric::TradeCount), 3.0);
+        assert_eq!(s.value(Metric::BuyCount), 2.0);
+        assert_eq!(s.value(Metric::SellCount), 1.0);
     }
 
     /// The property an upper bound depends on: `trade_count` only ever grows, so
@@ -77,12 +74,12 @@ mod tests {
         let mut last = 0.0;
         for (side, sol) in [(Side::Buy, 3.0), (Side::Sell, 9.0), (Side::Sell, 0.01), (Side::Buy, 1.0)] {
             s.on_trade(side, sol);
-            let now = s.value(MetricId::LifeTradeCount);
+            let now = s.value(Metric::TradeCount);
             assert!(now > last, "trade_count went {last} -> {now}");
             last = now;
         }
         // `net_flow` moved both ways over the same tape; the count did not.
-        assert!(s.value(MetricId::LifeNetFlow) < 0.0);
+        assert!(s.value(Metric::NetSol) < 0.0);
         assert_eq!(last, 4.0);
     }
 
@@ -92,9 +89,9 @@ mod tests {
         s.on_trade(Side::Buy, f64::NAN);
         s.on_trade(Side::Buy, -1.0);
         s.on_trade(Side::Buy, 2.0);
-        assert_eq!(s.value(MetricId::LifeBuy), 2.0);
+        assert_eq!(s.value(Metric::BuySol), 2.0);
         assert_eq!(
-            s.value(MetricId::LifeTradeCount),
+            s.value(Metric::TradeCount),
             1.0,
             "a poisoned trade is dropped from the SOL sums, so it must not be counted either"
         );

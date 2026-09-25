@@ -99,23 +99,19 @@ pub struct GroupedSweepRun {
     /// flat-slippage model are deleted too, rather than migrated onto a label they
     /// were never computed under. See `CostModelKind`.
     pub cost_model: Option<String>,
-    /// Optional volume-ix pattern set for flow-metric sweeps (`string[][]`).
-    /// Compiled corpus-wide into `FlowPatterns`; Promote copies into the
-    /// fingerprint's `metric_config.m_flow_ix.ix_patterns`. `None` =
-    /// non-flow run / legacy row.
-    pub ix_patterns: Option<Value>,
-    /// The candidate scale-out ladder **grid** searched in Pass 2 (`ExitStage[][]`
-    /// — one array per candidate ladder). `None` = no Pass 2 (legacy / overlay
-    /// off). This is the config that was searched, NOT necessarily what any one
-    /// combo ended up with: each group's top-K combos are independently re-scored
-    /// against every ladder here plus their own baseline and keep whichever wins,
-    /// so the winning ladder (if any) is baked directly into that specific
-    /// combo's own `_combos.params` / `best_params` at write time — never merged
-    /// from this run-level field at read time. See
+    /// The run's tags document (a fingerprint `tags` shape) — what every `@tag` axis
+    /// read. Promote writes it onto the promoted fingerprint. `None` = the run read no
+    /// tag.
+    pub tags: Option<Value>,
+    /// The candidate stage plans searched in Pass 2 (`Stage[][]` — one rule `stages`
+    /// array per candidate). `None` = no Pass 2. This is what was searched, NOT what any
+    /// one combo ended up with: each group's top-K combos are re-scored under every plan
+    /// here plus their own exit and keep whichever wins, and the winner is baked into
+    /// that combo's own `_combos.params` / `best_params` at write time. See
     /// `docs/arch/sweep.md` (*Pass-2 overlay*).
-    pub scale_out: Option<Value>,
-    /// How many best combos per group Pass 2 re-scores. `None` when no overlay.
-    pub scale_out_top_k: Option<i32>,
+    pub stage_plans: Option<Value>,
+    /// How many best combos per group Pass 2 re-scores. `None` without plans.
+    pub stage_plans_top_k: Option<i32>,
     /// Lifecycle: `running` (in flight), `completed` (full sweep), or
     /// `cancelled` (cancelled / crash-recovered → only `groups_done` groups
     /// present). With incremental persistence a `cancelled` run is honest about

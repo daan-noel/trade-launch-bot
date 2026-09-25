@@ -33,7 +33,7 @@ use crate::sweep::progress::SweepObserver;
 use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod, TokenOutcome};
 
-use hunter_engine::metrics::flow_ix::FlowPatterns;
+use hunter_engine::metrics::tags::config::CompiledTag;
 use hunter_engine::metrics::series::SeriesColumn;
 use hunter_engine::metrics::Ts;
 
@@ -61,11 +61,11 @@ impl AdditiveStrategy {
         models: Vec<AxesModel>,
         pricing: Pricing,
         as_of: Ts,
-        flow: Option<&FlowPatterns>,
+        tags: &[CompiledTag],
     ) -> Self {
         let mut segments: Vec<GenericSweepStrategy> = models
             .into_iter()
-            .map(|m| GenericSweepStrategy::new(m, pricing, as_of, flow.cloned()))
+            .map(|m| GenericSweepStrategy::new(m, pricing, as_of, tags.to_vec()))
             .collect();
         let mut columns: Vec<SeriesColumn> = Vec::new();
         let mut grid = SparseGrid::default();
@@ -276,22 +276,22 @@ impl Strategy for AdditiveStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sweep::generic::axes::{AxesRequest, AxisSide, AxisSpec, WindowField};
+    use crate::sweep::generic::axes::{AxesRequest, AxisSide, AxisSpec};
     use crate::sweep::progress::NoopObserver;
     use chrono::Utc;
-    use hunter_engine::metrics::MetricId;
+    use hunter_engine::metrics::Metric;
 
     use super::super::fixtures::{corpus, pricing};
 
-    fn metric_axis(group: &str, metric: &str, window: Option<f64>, vals: Vec<f64>) -> AxisSpec {
+    fn metric_axis(metric: &str, span: Option<&str>, vals: Vec<f64>) -> AxisSpec {
         AxisSpec {
             kind: "metric".to_string(),
             side: Some(AxisSide::Entry),
-            group: Some(group.to_string()),
             metric: Some(metric.to_string()),
-            operator: Some(hunter_engine::metrics::evaluator::Operator::Gte),
-            window: window.map(WindowField::Secs),
+            tag: None,
+            span: span.map(str::to_string),
             slice: None,
+            operator: Some(hunter_engine::metrics::evaluator::Operator::Gte),
             // `off` first, then the values — the with-vs-without sentinel.
             values: std::iter::once(None).chain(vals.into_iter().map(Some)).collect(),
         }
@@ -301,11 +301,11 @@ mod tests {
         AxisSpec {
             kind: "take_profit".to_string(),
             side: None,
-            group: None,
             metric: None,
-            operator: None,
-            window: None,
+            tag: None,
+            span: None,
             slice: None,
+            operator: None,
             values: vec![Some(v)],
         }
     }
@@ -317,12 +317,12 @@ mod tests {
     fn two_segment() -> AdditiveStrategy {
         AdditiveStrategy::new(
             vec![
-                model(vec![metric_axis("m_state", "time", None, vec![5.0, 30.0, 60.0]), tp(30.0)]),
-                model(vec![metric_axis("m_state", "liquidity", None, vec![40.0, 50.0]), tp(30.0)]),
+                model(vec![metric_axis("m_state.age_sec", None, vec![5.0, 30.0, 60.0]), tp(30.0)]),
+                model(vec![metric_axis("m_state.liquidity_sol", None, vec![40.0, 50.0]), tp(30.0)]),
             ],
             pricing(),
             Utc::now(),
-            None,
+            &[],
         )
     }
 
@@ -332,20 +332,23 @@ mod tests {
     fn segments_share_one_precompute() {
         let s = AdditiveStrategy::new(
             vec![
-                model(vec![metric_axis("m_state", "time", None, vec![5.0, 30.0]), tp(30.0)]),
+                model(vec![metric_axis("m_state.age_sec", None, vec![5.0, 30.0]), tp(30.0)]),
                 model(vec![
-                    metric_axis("m_price_window", "trail", Some(45.0), vec![10.0]),
+                    metric_axis("m_price.trail_pct", Some("45s"), vec![10.0]),
                     tp(30.0),
                 ]),
             ],
             pricing(),
             Utc::now(),
-            None,
+            &[],
         );
         let cols: Vec<_> = s.segments.iter().map(|x| x.columns().to_vec()).collect();
         assert_eq!(cols[0], cols[1], "segments must share the column union");
-        assert!(cols[0].contains(&SeriesColumn::Static(MetricId::Time)));
-        assert!(cols[0].contains(&SeriesColumn::window(MetricId::WinTrail, hunter_engine::metrics::WindowSpec::secs(45.0))));
+        assert!(cols[0].contains(&SeriesColumn::of(hunter_engine::metrics::MetricRef::life(Metric::AgeSec))));
+        assert!(cols[0].contains(&SeriesColumn::of(
+            hunter_engine::metrics::MetricRef::life(Metric::TrailPct)
+                .with_span(hunter_engine::metrics::Span::secs(45.0)),
+        )));
         // The union grid takes the widest horizon of either segment: segment 0 owns
         // the `time` ceiling, segment 1 the price window.
         let grids: Vec<_> = s.segments.iter().map(|x| x.grid()).collect();

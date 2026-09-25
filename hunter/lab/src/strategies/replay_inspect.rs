@@ -404,7 +404,7 @@ pub fn inspect(
 /// takes it off the feed — so the check belongs here, on the way in, rather than as a
 /// silent difference in the replayed decisions.
 fn warn_if_the_log_carries_no_slots(rules: &[LoadedRule], events: &[LoggedEvent]) {
-    let wanted = rules.iter().filter(|r| CompiledRule::compile(r).needs_slot).count();
+    let wanted = rules.iter().filter(|r| CompiledRule::compile(r).buffers.needs_slot).count();
     if wanted == 0 {
         return;
     }
@@ -422,7 +422,7 @@ fn warn_if_the_log_carries_no_slots(rules: &[LoadedRule], events: &[LoggedEvent]
         tracing::warn!(
             trades,
             rules = wanted,
-            "replay-inspect: this log carries NO slots, so every slot window holds its              opening content for the whole run - the rules reading one decide on a frozen              cursor here, not on the tape"
+            "replay-inspect: this log carries NO slots, so every slot window holds its opening content for the whole run - the rules reading one decide on a frozen cursor here, not on the tape"
         );
     }
 }
@@ -472,7 +472,7 @@ mod tests {
     fn fp(id: u128) -> EngineFingerprint {
         EngineFingerprint {
             id: FingerprintId(Uuid::from_u128(id)),
-            metric_config: serde_json::json!({}),
+            tags: serde_json::json!({}),
             wildcard: false,
             criteria: Criteria::new()
                 .with(AxisId::CuLimit, AxisPredicate::exact(200_000)),

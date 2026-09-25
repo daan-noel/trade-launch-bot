@@ -134,7 +134,7 @@ pub async fn create_fingerprint(
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
     if let Err(e) =
-        hunter_engine::metrics::validate_fingerprint_metric_config(&fp.metric_config)
+        hunter_engine::metrics::tags::config::validate_tags(&fp.tags)
     {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
@@ -160,7 +160,7 @@ pub async fn update_fingerprint(
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
     if let Err(e) =
-        hunter_engine::metrics::validate_fingerprint_metric_config(&fp.metric_config)
+        hunter_engine::metrics::tags::config::validate_tags(&fp.tags)
     {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }

@@ -12,20 +12,20 @@ use std::collections::HashMap;
 use chrono::{DateTime, Duration, Utc};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::flow_ix::FlowPatterns;
+use hunter_engine::metrics::registry::METRICS;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
+use hunter_engine::metrics::tags::config::CompiledTag;
 use hunter_engine::metrics::{
-    group_of, is_fingerprint_scoped, metric_spec, MetricGroupId, MetricId, MetricKind, MetricScope,
-    Unit, REGISTRY,
+    chart_reads, metric_spec, Family, Metric, MetricRef, TagRef, Unit, WindowKey, WindowSpec,
 };
 use trading_core::strategies::kernel::exact_quantile_f64;
 
 use crate::discovery::candidates::round_for_unit;
 use crate::sweep::corpus::CorpusToken;
-use crate::sweep::generic::axes::SWEEP_FLOW_FP;
+use crate::sweep::generic::strategy::register_tags;
 use crate::sweep::projection::to_trade_lite;
 
-use super::roles::{entry_role, is_position, EntryRole};
+use super::roles::{entry_role, EntryRole};
 
 /// Seconds before ATH / before 1.5× / after ATH that count as a lead window.
 const LEAD_SEC: i64 = 3;
@@ -114,13 +114,15 @@ impl CutPhase {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cut {
-    pub group: MetricGroupId,
-    pub metric: MetricId,
-    pub window: Option<hunter_engine::metrics::WindowSpec>,
+    pub r: MetricRef,
     pub op: Operator,
     pub threshold: f64,
     pub phase: CutPhase,
 }
+
+/// A read's identity in the per-token snapshots: metric, tag, and the dedup keys of
+/// its window and slice (`None` = the coin's life).
+pub type FillKey = (Metric, Option<TagRef>, Option<WindowKey>, Option<WindowKey>);
 
 #[derive(Clone, Debug)]
 pub struct CutTable {
@@ -128,11 +130,11 @@ pub struct CutTable {
     pub entry: Vec<Cut>,
     pub exit: Vec<Cut>,
     /// One snapshot per ran token at fill-moment, keyed by `fill_key`.
-    pub winner_fill: Vec<HashMap<(MetricId, i64), f64>>,
+    pub winner_fill: Vec<HashMap<FillKey, f64>>,
     /// Last row in the run-lead window (just before 1.5×) per ran token.
-    pub winner_lead: Vec<HashMap<(MetricId, i64), f64>>,
+    pub winner_lead: Vec<HashMap<FillKey, f64>>,
     /// First-print snapshot per ran token.
-    pub winner_launch: Vec<HashMap<(MetricId, i64), f64>>,
+    pub winner_launch: Vec<HashMap<FillKey, f64>>,
 }
 
 impl CutTable {
@@ -148,21 +150,16 @@ impl CutTable {
     }
 }
 
-pub fn fill_key(metric: MetricId, window: Option<hunter_engine::metrics::WindowSpec>) -> (MetricId, i64) {
-    (
-        metric,
-        window
-            .map(|w| hunter_engine::metrics::quantize(w.size) as i64)
-            .unwrap_or(-1),
-    )
+pub fn fill_key(r: &MetricRef) -> FillKey {
+    (r.metric, r.tag, r.span.window.map(|w| w.key()), r.span.slice.map(|w| w.key()))
 }
 
 /// Declared position-scoped exit menus (no token-independent distribution).
-const POSITION_EXIT: &[(MetricId, Operator, &[f64])] = &[
-    (MetricId::Retrace, Operator::Gte, &[10.0, 15.0, 25.0]),
-    (MetricId::Bounce, Operator::Gte, &[10.0, 15.0, 25.0]),
-    (MetricId::Held, Operator::Gte, &[60.0, 120.0, 300.0]),
-    (MetricId::Pnl, Operator::Gte, &[20.0, 40.0, 80.0]),
+const POSITION_EXIT: &[(Metric, Operator, &[f64])] = &[
+    (Metric::RetracePct, Operator::Gte, &[10.0, 15.0, 25.0]),
+    (Metric::BouncePct, Operator::Gte, &[10.0, 15.0, 25.0]),
+    (Metric::HeldSec, Operator::Gte, &[60.0, 120.0, 300.0]),
+    (Metric::PnlPct, Operator::Gte, &[20.0, 40.0, 80.0]),
 ];
 
 struct TokenPath {
@@ -177,19 +174,16 @@ struct TokenPath {
     dump_at: Option<DateTime<Utc>>,
 }
 
-/// Build the cut table for this cohort. `flow` / `flow_fp` enable split metrics.
-pub fn build_cut_table(
-    tokens: &[CorpusToken],
-    flow: Option<&FlowPatterns>,
-    flow_fp: FingerprintId,
-) -> CutTable {
+/// Build the cut table for this cohort. `tags` (scoped to `fp`) enable the tagged
+/// reads.
+pub fn build_cut_table(tokens: &[CorpusToken], tags: &[CompiledTag], fp: FingerprintId) -> CutTable {
     if tokens.is_empty() {
         return CutTable::empty();
     }
     let paths = label_paths(tokens);
     let windows = cohort_windows(tokens, &paths);
-    let columns = cut_columns(&windows, flow.is_some(), flow_fp);
-    let sampled = sample_phases(tokens, &paths, &columns, flow, flow_fp);
+    let columns = cut_columns(&windows, tags, fp);
+    let sampled = sample_phases(tokens, &paths, &columns, tags);
     let thick = paths.iter().filter(|p| p.winner).count() >= MIN_SPLIT
         && paths.iter().filter(|p| !p.winner).count() >= MIN_SPLIT;
     let fill_n = samples_n(&sampled.by, Bucket::FillWinner);
@@ -202,20 +196,18 @@ pub fn build_cut_table(
     let mut entry = Vec::new();
     let mut exit = Vec::new();
     for (ci, col) in columns.iter().enumerate() {
-        let (group, metric, window) = col_meta(*col);
-        if is_position(metric) {
+        let r = col.r;
+        if r.is_position() {
             continue;
         }
-        let unit = metric_spec(metric).unit;
-        if let Some(role) = entry_role(metric) {
+        let unit = metric_spec(r.metric).unit;
+        if let Some(role) = entry_role(&r) {
             if !matches!(role, EntryRole::WaitOnly) {
                 push_entry(
                     &mut entry,
                     &sampled.by,
                     ci,
-                    group,
-                    metric,
-                    window,
+                    r,
                     unit,
                     role,
                     thick,
@@ -225,29 +217,15 @@ pub fn build_cut_table(
                 );
             }
         }
-        push_exit(
-            &mut exit,
-            &sampled.by,
-            ci,
-            group,
-            metric,
-            window,
-            unit,
-            lead_n,
-            dump_run_n,
-            gb_n,
-        );
+        push_exit(&mut exit, &sampled.by, ci, r, unit, lead_n, dump_run_n, gb_n);
     }
     for &(id, op, vals) in POSITION_EXIT {
-        if id == MetricId::Held && sampled.held_ran.len() >= MIN_SPLIT {
+        if id == Metric::HeldSec && sampled.held_ran.len() >= MIN_SPLIT {
             continue;
         }
-        let group = group_of(id).id;
         for &v in vals {
             exit.push(Cut {
-                group,
-                metric: id,
-                window: None,
+                r: MetricRef::life(id),
                 op,
                 threshold: v,
                 phase: CutPhase::Declared,
@@ -259,13 +237,10 @@ pub fn build_cut_table(
     // Vacuous-cut admission gate: drop clauses that reject (almost) nothing on
     // this cohort. Position-scoped / declared cuts have no sampled column and
     // are kept — the sample basis, not an exemption list, decides.
-    let col_ix: HashMap<(MetricId, i64), usize> = columns
+    let col_ix: HashMap<FillKey, usize> = columns
         .iter()
         .enumerate()
-        .map(|(ci, col)| {
-            let (_, metric, window) = col_meta(*col);
-            (fill_key(metric, window), ci)
-        })
+        .map(|(ci, col)| (fill_key(&col.r), ci))
         .collect();
     admit_cuts(&mut entry, &sampled.by, &col_ix);
     admit_cuts(&mut exit, &sampled.by, &col_ix);
@@ -299,7 +274,7 @@ pub(crate) fn cut_holds(op: Operator, threshold: f64, v: f64) -> bool {
 fn admit_cuts(
     cuts: &mut Vec<Cut>,
     by: &HashMap<(usize, Bucket), Vec<f64>>,
-    col_ix: &HashMap<(MetricId, i64), usize>,
+    col_ix: &HashMap<FillKey, usize>,
 ) {
     cuts.retain(|c| {
         // A ceiling only ever ships inside a band; the floor beside it carries
@@ -307,7 +282,7 @@ fn admit_cuts(
         if c.phase == CutPhase::WinnerCeil {
             return true;
         }
-        let Some(&ci) = col_ix.get(&fill_key(c.metric, c.window)) else {
+        let Some(&ci) = col_ix.get(&fill_key(&c.r)) else {
             return true;
         };
         let Some(xs) = by.get(&(ci, Bucket::All)) else {
@@ -321,59 +296,29 @@ fn admit_cuts(
     });
 }
 
-fn col_meta(col: SeriesColumn) -> (MetricGroupId, MetricId, Option<hunter_engine::metrics::WindowSpec>) {
-    match col {
-        SeriesColumn::Static(id) => (group_of(id).id, id, None),
-        SeriesColumn::Window(id, w) => (group_of(id).id, id, w.primary),
-        SeriesColumn::Fingerprint(id, w, _) => (group_of(id).id, id, w),
-    }
-}
-
-fn cut_columns(windows: &[f64], with_flow: bool, flow_fp: FingerprintId) -> Vec<SeriesColumn> {
-    let fp = if flow_fp.0.is_nil() {
-        SWEEP_FLOW_FP
-    } else {
-        flow_fp
-    };
-    let mut cols = Vec::new();
-    for g in REGISTRY {
-        if g.scope == MetricScope::Position {
-            continue;
-        }
-        // An anchored group needs an `after_age_sec` the search has no vocabulary for
-        // (`clause_legal` rejects every clause on one), so precomputing its column
-        // would fold a buffer nothing reads.
-        if g.kind == MetricKind::Anchored {
-            continue;
-        }
-        if matches!(g.family, hunter_engine::metrics::MetricFamily::FlowIx) && !with_flow {
-            continue;
-        }
-        for m in g.metrics {
-            match g.kind {
-                MetricKind::Static => {
-                    cols.push(if is_fingerprint_scoped(m.id) {
-                        SeriesColumn::Fingerprint(m.id, None, fp)
-                    } else {
-                        SeriesColumn::Static(m.id)
-                    });
-                }
-                MetricKind::Dynamic => {
-                    for &w in windows {
-                        cols.push(if is_fingerprint_scoped(m.id) {
-                            SeriesColumn::Fingerprint(m.id, Some(hunter_engine::metrics::WindowSpec::secs(w)), fp)
-                        } else {
-                            SeriesColumn::window(m.id, hunter_engine::metrics::WindowSpec::secs(w))
-                        });
-                    }
-                }
-                // Filtered out above.
-                MetricKind::Anchored => {}
+/// Every coin read the cut table samples: [`chart_reads`] of each non-position metric
+/// over the cohort's windows (seconds) and the run's tags, fingerprint reads scoped to
+/// `fp`. Without tags only the untagged reads exist.
+fn cut_columns(windows: &[f64], tags: &[CompiledTag], fp: FingerprintId) -> Vec<SeriesColumn> {
+    let trade: Vec<&str> = tags.iter().map(|t| t.name).collect();
+    let template: Vec<&str> =
+        tags.iter().filter(|t| t.patterns.templates().is_some()).map(|t| t.name).collect();
+    let spans: Vec<WindowSpec> = windows.iter().map(|&w| WindowSpec::secs(w)).collect();
+    let mut cols: Vec<SeriesColumn> = Vec::new();
+    for spec in METRICS.iter().filter(|m| m.family != Family::Position) {
+        for r in chart_reads(spec, &trade, &template, &spans) {
+            // A since-age read needs an age anchor the search has no vocabulary for
+            // (`clause_legal` rejects every clause on one), so its column would fold a
+            // buffer nothing reads.
+            if r.span.since_age.is_some() {
+                continue;
+            }
+            let col = SeriesColumn { r, fp: r.is_fingerprint_scoped().then_some(fp) };
+            if !cols.contains(&col) {
+                cols.push(col);
             }
         }
     }
-    cols.sort_by_key(|c| format!("{c:?}"));
-    cols.dedup();
     cols
 }
 
@@ -401,9 +346,9 @@ enum Bucket {
 
 struct PhaseSamples {
     by: HashMap<(usize, Bucket), Vec<f64>>,
-    winner_fill: Vec<HashMap<(MetricId, i64), f64>>,
-    winner_lead: Vec<HashMap<(MetricId, i64), f64>>,
-    winner_launch: Vec<HashMap<(MetricId, i64), f64>>,
+    winner_fill: Vec<HashMap<FillKey, f64>>,
+    winner_lead: Vec<HashMap<FillKey, f64>>,
+    winner_launch: Vec<HashMap<FillKey, f64>>,
     held_ran: Vec<f64>,
 }
 
@@ -483,25 +428,9 @@ fn sample_phases(
     tokens: &[CorpusToken],
     paths: &[TokenPath],
     columns: &[SeriesColumn],
-    flow: Option<&FlowPatterns>,
-    flow_fp: FingerprintId,
+    tags: &[CompiledTag],
 ) -> PhaseSamples {
     let mut by: HashMap<(usize, Bucket), Vec<f64>> = HashMap::new();
-    let fp = if flow_fp.0.is_nil() {
-        SWEEP_FLOW_FP
-    } else {
-        flow_fp
-    };
-    let windows: Vec<hunter_engine::metrics::WindowSpec> = columns
-        .iter()
-        .filter_map(|c| match c {
-            SeriesColumn::Fingerprint(_, w, _) => *w,
-            // Single-window by construction here: `cut_columns` only builds
-            // `SeriesColumn::window`. A second axis would need its own buffer.
-            SeriesColumn::Window(_, w) => w.primary,
-            _ => None,
-        })
-        .collect();
     let lead = Duration::seconds(LEAD_SEC);
     let launch_hi_off = Duration::seconds(LAUNCH_SEC);
     let mut win_fill_secs: Vec<f64> = paths
@@ -536,18 +465,16 @@ fn sample_phases(
         let gb_hi = path.ath_at + lead;
 
         let mut series = MetricSeries::new(token.created_at, columns.to_vec());
-        if let Some(patterns) = flow {
-            series.ensure_flow(fp, patterns, &windows);
-        }
+        register_tags(&mut series, tags);
         for t in token.trades.iter() {
             series.push_trade(to_trade_lite(t));
         }
         let n = series.n_rows();
         let mut snapped = false;
         let mut snapped_launch = false;
-        let mut snap: HashMap<(MetricId, i64), f64> = HashMap::new();
-        let mut lead_snap: HashMap<(MetricId, i64), f64> = HashMap::new();
-        let mut launch_snap: HashMap<(MetricId, i64), f64> = HashMap::new();
+        let mut snap: HashMap<FillKey, f64> = HashMap::new();
+        let mut lead_snap: HashMap<FillKey, f64> = HashMap::new();
+        let mut launch_snap: HashMap<FillKey, f64> = HashMap::new();
         for row in 0..n {
             let at = series.at[row];
             let price = series.price[row];
@@ -579,8 +506,7 @@ fn sample_phases(
                     };
                     by.entry((ci, fill_bucket)).or_default().push(v);
                     if path.winner {
-                        let (_, metric, window) = col_meta(*col);
-                        snap.insert(fill_key(metric, window), v);
+                        snap.insert(fill_key(&col.r), v);
                     }
                 }
                 if in_run_lead {
@@ -591,8 +517,7 @@ fn sample_phases(
                     };
                     by.entry((ci, b)).or_default().push(v);
                     if path.winner {
-                        let (_, metric, window) = col_meta(*col);
-                        lead_snap.insert(fill_key(metric, window), v);
+                        lead_snap.insert(fill_key(&col.r), v);
                     }
                 }
                 if at_launch {
@@ -603,8 +528,7 @@ fn sample_phases(
                     };
                     by.entry((ci, b)).or_default().push(v);
                     if path.winner {
-                        let (_, metric, window) = col_meta(*col);
-                        launch_snap.insert(fill_key(metric, window), v);
+                        launch_snap.insert(fill_key(&col.r), v);
                     }
                 }
                 if in_lead {
@@ -706,35 +630,14 @@ fn rung(xs: &mut [f64], q: f64, unit: Unit) -> Option<f64> {
     Some(round_for_unit(v, unit))
 }
 
-fn emit(
-    out: &mut Vec<Cut>,
-    group: MetricGroupId,
-    metric: MetricId,
-    window: Option<hunter_engine::metrics::WindowSpec>,
-    op: Operator,
-    threshold: f64,
-    phase: CutPhase,
-) {
+fn emit(out: &mut Vec<Cut>, r: MetricRef, op: Operator, threshold: f64, phase: CutPhase) {
     if !threshold.is_finite() {
         return;
     }
-    if out.iter().any(|c| {
-        c.group == group
-            && c.metric == metric
-            && c.window == window
-            && c.op == op
-            && (c.threshold - threshold).abs() < 1e-9
-    }) {
+    if out.iter().any(|c| c.r == r && c.op == op && (c.threshold - threshold).abs() < 1e-9) {
         return;
     }
-    out.push(Cut {
-        group,
-        metric,
-        window,
-        op,
-        threshold,
-        phase,
-    });
+    out.push(Cut { r, op, threshold, phase });
 }
 
 fn median_of(by: &HashMap<(usize, Bucket), Vec<f64>>, ci: usize, bucket: Bucket) -> Option<f64> {
@@ -751,19 +654,17 @@ fn emit_entry_contrast(
     out: &mut Vec<Cut>,
     by: &HashMap<(usize, Bucket), Vec<f64>>,
     ci: usize,
-    group: MetricGroupId,
-    metric: MetricId,
-    window: Option<hunter_engine::metrics::WindowSpec>,
+    r: MetricRef,
     unit: Unit,
     win_b: Bucket,
     lose_b: Bucket,
     phase: CutPhase,
     floor_phase: CutPhase,
 ) {
-    if metric == MetricId::Time {
+    if r.metric == Metric::AgeSec {
         if let Some(mut xs) = by.get(&(ci, win_b)).cloned() {
             if let Some(v) = rung(&mut xs, 0.75, unit) {
-                emit(out, group, metric, window, Operator::Lt, v, phase);
+                emit(out, r, Operator::Lt, v, phase);
             }
         }
     } else if let (Some(mw), Some(ml)) = (median_of(by, ci, win_b), median_of(by, ci, lose_b)) {
@@ -776,18 +677,18 @@ fn emit_entry_contrast(
                 Operator::Lte
             };
             let mid = round_for_unit((mw + ml) * 0.5, unit);
-            emit(out, group, metric, window, op, mid, phase);
+            emit(out, r, op, mid, phase);
         }
     }
-    if metric != MetricId::Time {
+    if r.metric != Metric::AgeSec {
         if let Some(mut xs) = by.get(&(ci, win_b)).cloned() {
             if let Some(v) = rung(&mut xs, 0.10, unit) {
-                emit(out, group, metric, window, Operator::Gte, v, floor_phase);
+                emit(out, r, Operator::Gte, v, floor_phase);
             }
             // p90 ceiling beside the p10 floor — the band pair (one filling).
             if floor_phase == CutPhase::WinnerFloor {
                 if let Some(v) = rung(&mut xs, 0.90, unit) {
-                    emit(out, group, metric, window, Operator::Lte, v, CutPhase::WinnerCeil);
+                    emit(out, r, Operator::Lte, v, CutPhase::WinnerCeil);
                 }
             }
         }
@@ -799,9 +700,7 @@ fn push_entry(
     out: &mut Vec<Cut>,
     by: &HashMap<(usize, Bucket), Vec<f64>>,
     ci: usize,
-    group: MetricGroupId,
-    metric: MetricId,
-    window: Option<hunter_engine::metrics::WindowSpec>,
+    r: MetricRef,
     unit: Unit,
     role: EntryRole,
     thick: bool,
@@ -817,9 +716,7 @@ fn push_entry(
             out,
             by,
             ci,
-            group,
-            metric,
-            window,
+            r,
             unit,
             Bucket::WinnerPeak,
             Bucket::LoserPeak,
@@ -831,9 +728,7 @@ fn push_entry(
                 out,
                 by,
                 ci,
-                group,
-                metric,
-                window,
+                r,
                 unit,
                 Bucket::RunLeadWin,
                 Bucket::RunLeadLose,
@@ -846,9 +741,7 @@ fn push_entry(
                 out,
                 by,
                 ci,
-                group,
-                metric,
-                window,
+                r,
                 unit,
                 Bucket::LaunchWin,
                 Bucket::LaunchLose,
@@ -861,9 +754,7 @@ fn push_entry(
                 out,
                 by,
                 ci,
-                group,
-                metric,
-                window,
+                r,
                 unit,
                 Bucket::FillWinner,
                 Bucket::FillLoser,
@@ -875,8 +766,8 @@ fn push_entry(
     }
 
     let op_primary = match role {
-        EntryRole::Selector if metric == MetricId::Time => Operator::Lt,
-        EntryRole::Selector if metric == MetricId::Liquidity => Operator::Gte,
+        EntryRole::Selector if r.metric == Metric::AgeSec => Operator::Lt,
+        EntryRole::Selector if r.metric == Metric::LiquiditySol => Operator::Gte,
         EntryRole::Selector => Operator::Gte,
         EntryRole::Extra | EntryRole::Trigger(_) => Operator::Gte,
         EntryRole::WaitOnly => return,
@@ -887,21 +778,21 @@ fn push_entry(
     ] {
         if let Some(mut xs) = by.get(&(ci, bucket)).cloned() {
             if let Some(v) = rung(&mut xs, q, unit) {
-                emit(out, group, metric, window, op, v, phase);
+                emit(out, r, op, v, phase);
             }
         }
     }
-    if metric == MetricId::Time {
+    if r.metric == Metric::AgeSec {
         if let Some(mut xs) = by.get(&(ci, Bucket::Peak)).cloned() {
             if let Some(v) = rung(&mut xs, 0.75, unit) {
-                emit(out, group, metric, window, Operator::Lt, v, CutPhase::Peak);
+                emit(out, r, Operator::Lt, v, CutPhase::Peak);
             }
         }
     }
-    if metric == MetricId::Liquidity {
+    if r.metric == Metric::LiquiditySol {
         if let Some(mut xs) = by.get(&(ci, Bucket::Peak)).cloned() {
             if let Some(v) = rung(&mut xs, 0.75, unit) {
-                emit(out, group, metric, window, Operator::Lte, v, CutPhase::Peak);
+                emit(out, r, Operator::Lte, v, CutPhase::Peak);
             }
         }
     }
@@ -912,19 +803,17 @@ fn emit_exit_rungs(
     out: &mut Vec<Cut>,
     by: &HashMap<(usize, Bucket), Vec<f64>>,
     ci: usize,
-    group: MetricGroupId,
-    metric: MetricId,
-    window: Option<hunter_engine::metrics::WindowSpec>,
+    r: MetricRef,
     unit: Unit,
     bucket: Bucket,
     phase: CutPhase,
 ) {
     if let Some(mut xs) = by.get(&(ci, bucket)).cloned() {
         if let Some(v) = rung(&mut xs, 0.50, unit) {
-            emit(out, group, metric, window, Operator::Gte, v, phase);
+            emit(out, r, Operator::Gte, v, phase);
         }
         if let Some(v) = rung(&mut xs, 0.90, unit) {
-            emit(out, group, metric, window, Operator::Gte, v, phase);
+            emit(out, r, Operator::Gte, v, phase);
         }
     }
 }
@@ -934,9 +823,7 @@ fn push_exit(
     out: &mut Vec<Cut>,
     by: &HashMap<(usize, Bucket), Vec<f64>>,
     ci: usize,
-    group: MetricGroupId,
-    metric: MetricId,
-    window: Option<hunter_engine::metrics::WindowSpec>,
+    r: MetricRef,
     unit: Unit,
     lead_n: usize,
     dump_run_n: usize,
@@ -957,15 +844,13 @@ fn push_exit(
     } else {
         Bucket::GivebackLeadAll
     };
-    emit_exit_rungs(out, by, ci, group, metric, window, unit, lead_bucket, CutPhase::DumpLead);
-    emit_exit_rungs(out, by, ci, group, metric, window, unit, gb_bucket, CutPhase::GivebackLead);
+    emit_exit_rungs(out, by, ci, r, unit, lead_bucket, CutPhase::DumpLead);
+    emit_exit_rungs(out, by, ci, r, unit, gb_bucket, CutPhase::GivebackLead);
     if let Some(mut xs) = by.get(&(ci, dump_bucket)).cloned() {
         if let Some(v) = rung(&mut xs, 0.50, unit) {
             emit(
                 out,
-                group,
-                metric,
-                window,
+                r,
                 Operator::Gte,
                 v,
                 CutPhase::AfterDump,
@@ -974,9 +859,7 @@ fn push_exit(
         if let Some(v) = rung(&mut xs, 0.90, unit) {
             emit(
                 out,
-                group,
-                metric,
-                window,
+                r,
                 Operator::Gte,
                 v,
                 CutPhase::DumperP90,
@@ -1040,19 +923,10 @@ fn push_outcome_held(out: &mut Vec<Cut>, held_ran: &[f64]) {
         return;
     }
     let mut xs = held_ran.to_vec();
-    let group = group_of(MetricId::Held).id;
     for q in [0.50, 0.75] {
         if let Some(v) = rung(&mut xs, q, Unit::Seconds) {
             if v >= 2.0 {
-                emit(
-                    out,
-                    group,
-                    MetricId::Held,
-                    None,
-                    Operator::Gte,
-                    v,
-                    CutPhase::Outcome,
-                );
+                emit(out, MetricRef::life(Metric::HeldSec), Operator::Gte, v, CutPhase::Outcome);
             }
         }
     }
@@ -1071,6 +945,11 @@ mod tests {
     use super::*;
     use crate::discovery::fixtures::{self, created_at, trade};
     use std::sync::Arc;
+
+    /// The untagged windowed buy flow (`m_flow.buy_sol [Ns]`).
+    fn is_window_buy(c: &Cut) -> bool {
+        c.r.metric == Metric::BuySol && c.r.tag.is_none() && c.r.span.is_windowed()
+    }
 
     fn path_token(
         mint: &str,
@@ -1153,7 +1032,7 @@ mod tests {
 
     #[test]
     fn empty_corpus_is_empty_table() {
-        let t = build_cut_table(&[], None, FingerprintId(uuid::Uuid::nil()));
+        let t = build_cut_table(&[], &[], FingerprintId(uuid::Uuid::nil()));
         assert!(t.entry.is_empty());
         assert!(t.exit.is_empty());
     }
@@ -1164,21 +1043,17 @@ mod tests {
         let mut by: HashMap<(usize, Bucket), Vec<f64>> = HashMap::new();
         by.insert((0, Bucket::All), (0..40).map(|i| i as f64).collect());
         let mut col_ix = HashMap::new();
-        col_ix.insert(fill_key(MetricId::Liquidity, None), 0usize);
-        let group = group_of(MetricId::Liquidity).id;
+        let liq = MetricRef::life(Metric::LiquiditySol);
+        col_ix.insert(fill_key(&liq), 0usize);
         let mut cuts = vec![
             Cut {
-                group,
-                metric: MetricId::Liquidity,
-                window: None,
+                r: liq,
                 op: Operator::Gte,
                 threshold: 0.0,
                 phase: CutPhase::WinnerFloor,
             },
             Cut {
-                group,
-                metric: MetricId::Liquidity,
-                window: None,
+                r: liq,
                 op: Operator::Gte,
                 threshold: 20.0,
                 phase: CutPhase::Contrast,
@@ -1193,11 +1068,8 @@ mod tests {
     fn admission_keeps_cuts_with_no_sample_basis() {
         let by: HashMap<(usize, Bucket), Vec<f64>> = HashMap::new();
         let col_ix = HashMap::new();
-        let group = group_of(MetricId::Retrace).id;
         let mut cuts = vec![Cut {
-            group,
-            metric: MetricId::Retrace,
-            window: None,
+            r: MetricRef::life(Metric::RetracePct),
             op: Operator::Gte,
             threshold: 10.0,
             phase: CutPhase::Declared,
@@ -1209,11 +1081,11 @@ mod tests {
     #[test]
     fn winner_ceil_pairs_the_floor_on_thick_splits() {
         let tokens = contrast_corpus();
-        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let t = build_cut_table(&tokens, &[], FingerprintId(uuid::Uuid::nil()));
         let liq: Vec<&Cut> = t
             .entry
             .iter()
-            .filter(|c| c.metric == MetricId::Liquidity)
+            .filter(|c| c.r.metric == Metric::LiquiditySol)
             .collect();
         let floor = liq.iter().find(|c| c.phase == CutPhase::WinnerFloor);
         let ceil = liq.iter().find(|c| c.phase == CutPhase::WinnerCeil);
@@ -1231,20 +1103,20 @@ mod tests {
     #[test]
     fn position_exits_are_declared() {
         let corpus = fixtures::corpus(4);
-        let t = build_cut_table(&corpus.tokens, None, FingerprintId(uuid::Uuid::nil()));
-        assert!(t.exit.iter().any(|c| c.metric == MetricId::Retrace && c.phase == CutPhase::Declared));
-        assert!(t.exit.iter().any(|c| c.metric == MetricId::Held));
-        assert!(t.entry.iter().all(|c| !is_position(c.metric)));
+        let t = build_cut_table(&corpus.tokens, &[], FingerprintId(uuid::Uuid::nil()));
+        assert!(t.exit.iter().any(|c| c.r.metric == Metric::RetracePct && c.phase == CutPhase::Declared));
+        assert!(t.exit.iter().any(|c| c.r.metric == Metric::HeldSec));
+        assert!(t.entry.iter().all(|c| !c.r.is_position()));
     }
 
     #[test]
     fn contrast_lands_in_the_liq_gap_not_with_the_loser_majority() {
         let tokens = contrast_corpus();
-        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let t = build_cut_table(&tokens, &[], FingerprintId(uuid::Uuid::nil()));
         let liq: Vec<&Cut> = t
             .entry
             .iter()
-            .filter(|c| c.metric == MetricId::Liquidity)
+            .filter(|c| c.r.metric == Metric::LiquiditySol)
             .collect();
         assert!(
             liq.iter().any(|c| c.phase == CutPhase::Contrast),
@@ -1269,19 +1141,19 @@ mod tests {
     #[test]
     fn dump_lead_buy_is_higher_than_runner_after_dump() {
         let tokens = contrast_corpus();
-        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let t = build_cut_table(&tokens, &[], FingerprintId(uuid::Uuid::nil()));
         let buy_lead: Vec<&Cut> = t
             .exit
             .iter()
-            .filter(|c| c.metric == MetricId::Buy && c.phase == CutPhase::DumpLead)
+            .filter(|c| is_window_buy(c) && c.phase == CutPhase::DumpLead)
             .collect();
         assert!(
             !buy_lead.is_empty(),
             "expected dump-lead buy cuts, exit phases {:?}",
             t.exit
                 .iter()
-                .filter(|c| c.metric == MetricId::Buy)
-                .map(|c| (c.phase, c.threshold, c.window))
+                .filter(|c| is_window_buy(c))
+                .map(|c| (c.phase, c.threshold, c.r.label()))
                 .collect::<Vec<_>>()
         );
         // Ran dumpers spike amount_sol=8 in the lead; never-ran stay at 0.4.
@@ -1295,8 +1167,8 @@ mod tests {
     #[test]
     fn fill_moment_time_cap_is_before_peak() {
         let tokens = contrast_corpus();
-        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
-        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.metric == MetricId::Time).collect();
+        let t = build_cut_table(&tokens, &[], FingerprintId(uuid::Uuid::nil()));
+        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.r.metric == Metric::AgeSec).collect();
         let fill = time
             .iter()
             .find(|c| c.phase == CutPhase::FillMoment)
@@ -1325,8 +1197,8 @@ mod tests {
     #[test]
     fn thick_split_keeps_peak_when_fill_moment_exists() {
         let tokens = contrast_corpus();
-        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
-        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.metric == MetricId::Time).collect();
+        let t = build_cut_table(&tokens, &[], FingerprintId(uuid::Uuid::nil()));
+        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.r.metric == Metric::AgeSec).collect();
         assert!(
             time.iter().any(|c| c.phase == CutPhase::Contrast),
             "peak contrast time must stay, got {:?}",
@@ -1340,7 +1212,7 @@ mod tests {
         let liq: Vec<&Cut> = t
             .entry
             .iter()
-            .filter(|c| c.metric == MetricId::Liquidity)
+            .filter(|c| c.r.metric == Metric::LiquiditySol)
             .collect();
         assert!(
             liq.iter().any(|c| c.phase == CutPhase::Contrast),
@@ -1352,8 +1224,8 @@ mod tests {
     #[test]
     fn held_comes_from_fill_to_dump_not_declared_minutes() {
         let tokens = contrast_corpus();
-        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
-        let held: Vec<&Cut> = t.exit.iter().filter(|c| c.metric == MetricId::Held).collect();
+        let t = build_cut_table(&tokens, &[], FingerprintId(uuid::Uuid::nil()));
+        let held: Vec<&Cut> = t.exit.iter().filter(|c| c.r.metric == Metric::HeldSec).collect();
         assert!(
             held.iter().any(|c| c.phase == CutPhase::Outcome && c.threshold < 60.0),
             "expected outcome held from a ~15s dump, got {:?}",
@@ -1365,8 +1237,8 @@ mod tests {
     #[test]
     fn run_lead_time_is_before_fill_moment() {
         let tokens = slow_run_corpus();
-        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
-        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.metric == MetricId::Time).collect();
+        let t = build_cut_table(&tokens, &[], FingerprintId(uuid::Uuid::nil()));
+        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.r.metric == Metric::AgeSec).collect();
         let lead = time
             .iter()
             .find(|c| c.phase == CutPhase::RunLead)
@@ -1397,8 +1269,8 @@ mod tests {
     #[test]
     fn launch_time_exists_beside_peak() {
         let tokens = slow_run_corpus();
-        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
-        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.metric == MetricId::Time).collect();
+        let t = build_cut_table(&tokens, &[], FingerprintId(uuid::Uuid::nil()));
+        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.r.metric == Metric::AgeSec).collect();
         assert!(
             time.iter().any(|c| c.phase == CutPhase::Launch),
             "launch time must be an extra, got {:?}",
@@ -1410,16 +1282,16 @@ mod tests {
     #[test]
     fn giveback_lead_is_after_ath_not_dump_lead() {
         let tokens = slow_run_corpus();
-        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let t = build_cut_table(&tokens, &[], FingerprintId(uuid::Uuid::nil()));
         let buy_dump: Vec<&Cut> = t
             .exit
             .iter()
-            .filter(|c| c.metric == MetricId::Buy && c.phase == CutPhase::DumpLead)
+            .filter(|c| is_window_buy(c) && c.phase == CutPhase::DumpLead)
             .collect();
         let buy_gb: Vec<&Cut> = t
             .exit
             .iter()
-            .filter(|c| c.metric == MetricId::Buy && c.phase == CutPhase::GivebackLead)
+            .filter(|c| is_window_buy(c) && c.phase == CutPhase::GivebackLead)
             .collect();
         assert!(
             !buy_dump.is_empty(),
@@ -1430,7 +1302,7 @@ mod tests {
             "giveback-lead buy must exist, exit phases {:?}",
             t.exit
                 .iter()
-                .filter(|c| c.metric == MetricId::Buy)
+                .filter(|c| is_window_buy(c))
                 .map(|c| (c.phase, c.threshold))
                 .collect::<Vec<_>>()
         );

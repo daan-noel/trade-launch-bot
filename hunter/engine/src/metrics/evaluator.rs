@@ -165,11 +165,11 @@ pub fn check_arm_satisfiable(conds: &[Condition], tol: f64) -> Result<(), String
         }
     }
     if lo > hi || (lo == hi && (lo_strict || hi_strict)) {
-        return Err(format!("bounds cross: feasible range is empty around {lo}"));
+        return Err(format!("can never hold: no value is inside every bound (they cross at {lo})"));
     }
     for (b_lo, b_hi) in ne_bands {
         if lo.is_finite() && hi.is_finite() && b_lo <= lo && hi <= b_hi {
-            return Err(format!("'!=' band [{b_lo}, {b_hi}] covers the feasible range"));
+            return Err(format!("can never hold: the '!=' band [{b_lo}, {b_hi}] rules out every value the other bounds allow"));
         }
     }
     Ok(())
@@ -187,7 +187,7 @@ pub fn check_expr_satisfiable(arms: &[Vec<Condition>], tol: f64) -> Result<(), S
             Err(e) => last_err = Some(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| "all OR arms unsatisfiable".into()))
+    Err(last_err.unwrap_or_else(|| "can never hold: no OR group can hold".into()))
 }
 
 /// Coalesce a flat list of axis contributions into DNF: AND when the combined

@@ -24,7 +24,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use hunter_engine::metrics::fee::{BuildPatterns, FeeKeys};
-use hunter_engine::metrics::flow_ix::ix_hash_from_labels_value;
+use hunter_engine::metrics::trade_keys::ix_hash_from_labels_value;
 use hunter_engine::metrics::template_grain::{program_owned, grain};
 use hunter_engine::grouping::normalize_labels;
 use trading_core::config::constants::lamports_to_sol;
@@ -207,7 +207,7 @@ impl Matcher {
                     }
                     let labels: Vec<&str> = p.ix_labels.iter().map(String::as_str).collect();
                     groups
-                        .entry(hunter_engine::metrics::flow_ix::ix_hash(&labels))
+                        .entry(hunter_engine::metrics::trade_keys::ix_hash(&labels))
                         .or_insert_with(|| p.group.clone().unwrap_or_else(|| "ungrouped".into()));
                     rows.push(serde_json::Value::Object(obj));
                 }

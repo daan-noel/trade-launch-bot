@@ -16,9 +16,9 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+use hunter_engine::metrics::WindowSpec;
 
 use crate::api::handlers::strategies::grouped_sweep::matches_field_filter;
-use crate::sweep::generic::axes::WindowField;
 use crate::discovery::baseline::BaselineGrid;
 use crate::discovery::dto::PipelineDto;
 use crate::discovery::objective::DiscoveryWeights;
@@ -33,7 +33,6 @@ use crate::state::local_state::LocalState;
 use crate::sweep::corpus::{sweep_per_mint_cap, CorpusSource, Selection};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
-use hunter_engine::metrics::flow_ix::FlowPatterns;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::strategies::fingerprint_axes::fp_to_engine;
 
@@ -86,19 +85,17 @@ pub struct StartMetricDiscoveryBody {
     /// 70/30. Clamped to `[0,1]`.
     #[serde(default = "default_split_fraction")]
     pub split_fraction: f64,
-    /// Entry-side window every dynamic metric is screened at. A bare number is
-    /// SECONDS - what this field has always meant and what every stored request
-    /// holds; a string is a full span (`"30sl@1"`, `"20p"`) in the same
-    /// `WindowSpec::parse` grammar a chart legend and an exit reason use.
-    #[serde(default = "default_entry_window")]
-    pub entry_window_sec: WindowField,
-    /// Exit-side window every dynamic metric is screened at. Same spellings.
-    #[serde(default = "default_exit_window")]
-    pub exit_window_sec: WindowField,
-    /// The run's `ix_patterns` — enables the flow-split metrics (skipped
-    /// without them). Absent ⇒ no flow gating.
+    /// The span every windowed read is screened at on the entry side: `30s`, `30sl@1`,
+    /// `20p` (a bare number is seconds).
+    #[serde(default = "default_entry_span")]
+    pub entry_span: String,
+    /// The same, on the exit side.
+    #[serde(default = "default_exit_span")]
+    pub exit_span: String,
+    /// The run's tags document (a fingerprint `tags` shape). Each tag's reads are
+    /// screened; without it, reads that need a tag are skipped.
     #[serde(default)]
-    pub ix_patterns: Option<Vec<Vec<String>>>,
+    pub tags: Option<serde_json::Value>,
 }
 
 fn default_token_cap() -> usize {
@@ -119,11 +116,11 @@ fn default_min_closed() -> u64 {
 fn default_split_fraction() -> f64 {
     0.7
 }
-fn default_entry_window() -> WindowField {
-    WindowField::Span(ScreenConfig::default().entry_window.label())
+fn default_entry_span() -> String {
+    ScreenConfig::default().entry_window.label()
 }
-fn default_exit_window() -> WindowField {
-    WindowField::Span(ScreenConfig::default().exit_window.label())
+fn default_exit_span() -> String {
+    ScreenConfig::default().exit_window.label()
 }
 
 // ── Progress observer ──────────────────────────────────────────────────────
@@ -311,10 +308,10 @@ async fn run_job(
     // otherwise screen every dynamic metric against a column that was never folded,
     // and every one of them would score `NaN` - which reads as a finding, not an error.
     let (entry_window, exit_window) =
-        match (b.entry_window_sec.spec(), b.exit_window_sec.spec()) {
+        match (WindowSpec::parse(&b.entry_span), WindowSpec::parse(&b.exit_span)) {
             (Some(e), Some(x)) => (e, x),
             _ => {
-                let msg = "entry_window_sec / exit_window_sec: a number of seconds, or a                            span like \"30sl@1\" / \"20p\"";
+                let msg = "entry_span / exit_span: a span like \"30s\", \"30sl@1\" or \"20p\"";
                 gate.error = Some(msg.into());
                 let _ = early_tx
                     .send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
@@ -343,13 +340,17 @@ async fn run_job(
         .filter(|g| g.brackets().len() == 1)
         .map_or(baseline, |g| g.brackets()[0]);
 
-    let flow_patterns = b
-        .ix_patterns
-        .as_ref()
-        .map(|p| FlowPatterns::from_label_sequences(p));
+    if let Some(doc) = &b.tags {
+        if let Err(e) = hunter_engine::metrics::tags::config::validate_tags(doc) {
+            gate.error = Some(e.clone());
+            let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("tags: {e}") })));
+            return;
+        }
+    }
+    let tags = b.tags.as_ref().map(hunter_engine::metrics::tags::config::compile_tags).unwrap_or_default();
 
     let token_cap = crate::sweep::registry::clamp_token_cap(b.token_cap);
-    let with_flow = flow_patterns.is_some();
+    let with_flow = !tags.is_empty();
     let mut sel = Selection {
         mints: None,
         token_cap,
@@ -505,7 +506,7 @@ async fn run_job(
         screen: ScreenConfig {
             entry_window,
             exit_window,
-            flow_patterns,
+            tags,
             ..ScreenConfig::default()
         },
         baseline,
@@ -513,7 +514,7 @@ async fn run_job(
         weights: DiscoveryWeights { min_closed: b.min_closed, ..DiscoveryWeights::default() },
         split: SplitPolicy::AgeFraction(b.split_fraction.clamp(0.0, 1.0)),
         validation_thresholds: ValidationThresholds::default(),
-        flow_label_sequences: b.ix_patterns.clone(),
+        tags: b.tags.clone(),
         ..PipelineConfig::default()
     };
 

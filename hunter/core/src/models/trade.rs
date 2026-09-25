@@ -400,7 +400,7 @@ impl TradeRow for Trade {
         self.venue != "amm"
     }
     fn wallet_hash(&self) -> Option<u64> {
-        Some(hunter_engine::metrics::flow_ix::wallet_hash(&self.wallet_address))
+        Some(hunter_engine::metrics::trade_keys::wallet_hash(&self.wallet_address))
     }
 }
 

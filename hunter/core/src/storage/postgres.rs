@@ -125,6 +125,10 @@ pub async fn connect(settings: &Settings) -> anyhow::Result<DbPools> {
         .run(&hot)
         .await
         .map_err(|e| anyhow::anyhow!("Migration failed: {e}"))?;
+    // Row rewrites SQL cannot express (the metric system v2 conversion), once per DB.
+    crate::storage::data_migrations::run(&hot)
+        .await
+        .map_err(|e| anyhow::anyhow!("Data migration failed: {e}"))?;
 
     // Continuous aggregates (OHLCV candles) can't be created inside a transaction,
     // and every sqlx migration runs in one — so set them up here, idempotently,

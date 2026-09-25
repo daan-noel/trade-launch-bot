@@ -7,11 +7,10 @@
 //! (incl. joint grids). Near-miss drops land in [`SweepSeed::optional_axes`]
 //! (off by default in the UI) — see [`near_miss_axis`] for which drops qualify.
 
-use hunter_engine::metrics::group_spec;
-use hunter_engine::metrics::MetricFamily;
+use hunter_engine::metrics::Family;
 use serde::Serialize;
 
-use crate::sweep::generic::axes::{AxisSide, AxisSpec, WindowField};
+use crate::sweep::generic::axes::{AxisSide, AxisSpec};
 
 use super::family::{FamilyReport, InteractionVerdict, JointResult};
 use super::screen::{MetricResponse, ScreenBaseline, ScreenReport, Verdict};
@@ -81,8 +80,8 @@ pub fn build_sweep_seed(screen: &ScreenReport, family: &FamilyReport) -> SweepSe
             notes.push(format!(
                 "joint grid dropped {}·{}.{} ({reason:?})",
                 side_str(m.metric.side),
-                group_spec(m.metric.group).name,
-                m.metric.metric.name()
+                m.metric.r.metric.family().as_str(),
+                m.metric.r.metric.name()
             ));
         }
         if j.best.is_some() {
@@ -195,18 +194,9 @@ fn top_scoring_axis(r: &MetricResponse, mut scored: Vec<(f64, f64)>) -> Option<A
 }
 
 fn metric_axis(r: &MetricResponse, values: &[f64]) -> AxisSpec {
-    AxisSpec {
-        kind: "metric".to_string(),
-        side: Some(r.metric.side),
-        group: Some(group_spec(r.metric.group).name.to_string()),
-        metric: Some(r.metric.metric.name().to_string()),
-        operator: Some(r.operator),
-        window: r.metric.window.map(|w| WindowField::Span(w.label())),
-        slice: None,
-        values: std::iter::once(None)
+    crate::discovery::candidates::axis_spec_of(r.metric, r.operator, std::iter::once(None)
             .chain(values.iter().copied().map(Some))
-            .collect(),
-    }
+            .collect())
 }
 
 fn tpsl_seed_axes(baseline: &ScreenBaseline, notes: &mut Vec<String>) -> Vec<AxisSpec> {
@@ -217,11 +207,11 @@ fn tpsl_seed_axes(baseline: &ScreenBaseline, notes: &mut Vec<String>) -> Vec<Axi
         out.push(AxisSpec {
             kind: "take_profit".to_string(),
             side: None,
-            group: None,
             metric: None,
-            operator: None,
-            window: None,
+            tag: None,
+            span: None,
             slice: None,
+            operator: None,
             values: vals.into_iter().map(Some).collect(),
         });
     }
@@ -231,11 +221,11 @@ fn tpsl_seed_axes(baseline: &ScreenBaseline, notes: &mut Vec<String>) -> Vec<Axi
         out.push(AxisSpec {
             kind: "stop_loss".to_string(),
             side: None,
-            group: None,
             metric: None,
-            operator: None,
-            window: None,
+            tag: None,
+            span: None,
             slice: None,
+            operator: None,
             values: vals.into_iter().map(Some).collect(),
         });
     }
@@ -272,7 +262,7 @@ fn build_clusters(family: &FamilyReport) -> Vec<SeedCluster> {
     let mut clusters: Vec<SeedCluster> = Vec::new();
 
     // Interacting joint results first.
-    let joint_fams: std::collections::HashSet<MetricFamily> = family
+    let joint_fams: std::collections::HashSet<Family> = family
         .joints
         .iter()
         .flat_map(|j| j.families.iter().copied())
@@ -303,8 +293,8 @@ fn build_clusters(family: &FamilyReport) -> Vec<SeedCluster> {
                     format!(
                         "{}·{}.{}",
                         side_str(m.metric.side),
-                        group_spec(m.metric.group).name,
-                        m.metric.metric.name()
+                        m.metric.r.metric.family().as_str(),
+                        m.metric.r.metric.name()
                     )
                 })
                 .collect(),
@@ -324,8 +314,8 @@ fn cluster_from_joint(j: &JointResult) -> SeedCluster {
                 format!(
                     "{}·{}.{}",
                     side_str(m.metric.side),
-                    group_spec(m.metric.group).name,
-                    m.metric.metric.name()
+                    m.metric.r.metric.family().as_str(),
+                    m.metric.r.metric.name()
                 )
             })
             .collect(),
@@ -343,7 +333,7 @@ fn side_str(side: AxisSide) -> &'static str {
 mod tests {
     use super::*;
     use hunter_engine::metrics::evaluator::Operator;
-    use hunter_engine::metrics::{MetricId};
+    use hunter_engine::metrics::Metric;
 
     use super::super::candidates::{screen_plan, ScreenConfig, ScreenMetric};
     use super::super::family::{
@@ -359,16 +349,16 @@ mod tests {
         ScreenBaseline { take_profit_pct: Some(30.0), stop_loss_pct: Some(15.0) }
     }
 
-    fn screen_metric(metric: MetricId, side: AxisSide) -> ScreenMetric {
+    fn screen_metric(metric: Metric, side: AxisSide) -> ScreenMetric {
         screen_plan(&ScreenConfig::default())
             .metrics
             .iter()
-            .find(|m| m.metric == metric && m.side == side)
+            .find(|m| m.r.metric == metric && m.side == side)
             .copied()
             .expect("metric screened")
     }
 
-    fn keep(metric: MetricId, side: AxisSide, narrowed: Vec<f64>, lift: f64) -> MetricResponse {
+    fn keep(metric: Metric, side: AxisSide, narrowed: Vec<f64>, lift: f64) -> MetricResponse {
         MetricResponse {
             metric: screen_metric(metric, side),
             operator: Operator::Gte,
@@ -395,7 +385,7 @@ mod tests {
         }
     }
 
-    fn drop_no_edge_positive(metric: MetricId, side: AxisSide) -> MetricResponse {
+    fn drop_no_edge_positive(metric: Metric, side: AxisSide) -> MetricResponse {
         MetricResponse {
             metric: screen_metric(metric, side),
             operator: Operator::Gte,
@@ -407,7 +397,7 @@ mod tests {
 
     /// A spike shaped like a real one: the peak's neighbours give the lift straight
     /// back, and one of them is outright destructive.
-    fn drop_spike_positive(metric: MetricId, side: AxisSide) -> MetricResponse {
+    fn drop_spike_positive(metric: Metric, side: AxisSide) -> MetricResponse {
         MetricResponse {
             metric: screen_metric(metric, side),
             operator: Operator::Gte,
@@ -462,9 +452,9 @@ mod tests {
             })
             .collect();
         let family = if members.is_empty() {
-            MetricFamily::Price
+            Family::Price
         } else {
-            group_spec(members[0].metric.group).family
+            members[0].metric.family()
         };
         FamilyReport {
             cohort_tokens: 10,
@@ -503,8 +493,8 @@ mod tests {
     #[test]
     fn seed_axes_match_keep_plus_tpsl_menus() {
         let screen = screen_of(vec![
-            keep(MetricId::Time, AxisSide::Entry, vec![5.0, 30.0], 3.0),
-            drop_no_edge_positive(MetricId::Liquidity, AxisSide::Entry),
+            keep(Metric::AgeSec, AxisSide::Entry, vec![5.0, 30.0], 3.0),
+            drop_no_edge_positive(Metric::LiquiditySol, AxisSide::Entry),
         ]);
         let family = empty_family(&screen);
         let seed = build_sweep_seed(&screen, &family);
@@ -515,7 +505,7 @@ mod tests {
             .filter(|a| a.kind == "metric")
             .collect();
         assert_eq!(metrics.len(), 1);
-        assert_eq!(metrics[0].metric.as_deref(), Some("time"));
+        assert_eq!(metrics[0].metric.as_deref(), Some("m_state.age_sec"));
         assert_eq!(
             metrics[0].values,
             vec![None, Some(5.0), Some(30.0)]
@@ -527,7 +517,7 @@ mod tests {
         assert_eq!(sl.values, vec![Some(10.0), Some(15.0), Some(25.0)]);
 
         assert_eq!(seed.optional_axes.len(), 1);
-        assert_eq!(seed.optional_axes[0].metric.as_deref(), Some("liquidity"));
+        assert_eq!(seed.optional_axes[0].metric.as_deref(), Some("m_state.liquidity_sol"));
         assert!(seed.combo_estimate >= 3 * 3 * 3);
         assert!(!seed.notes.is_empty());
     }
@@ -537,7 +527,7 @@ mod tests {
     /// rather than "nothing was found at this bracket".
     #[test]
     fn positive_spike_is_offered_as_an_optional_axis() {
-        let screen = screen_of(vec![drop_spike_positive(MetricId::Liquidity, AxisSide::Entry)]);
+        let screen = screen_of(vec![drop_spike_positive(Metric::LiquiditySol, AxisSide::Entry)]);
         let family = empty_family(&screen);
         let seed = build_sweep_seed(&screen, &family);
 
@@ -560,7 +550,7 @@ mod tests {
     /// value there for the sweep to re-price.
     #[test]
     fn spike_with_no_positive_pick_is_not_offered() {
-        let mut r = drop_spike_positive(MetricId::Liquidity, AxisSide::Entry);
+        let mut r = drop_spike_positive(Metric::LiquiditySol, AxisSide::Entry);
         r.curve = vec![point(None, 4.36), point(Some(1.0), -0.26), point(Some(8.0), -0.10)];
         let screen = screen_of(vec![r]);
         let family = empty_family(&screen);
@@ -570,20 +560,20 @@ mod tests {
     #[test]
     fn interacting_cluster_notes_joint() {
         let screen = screen_of(vec![
-            keep(MetricId::Time, AxisSide::Entry, vec![5.0], 3.0),
-            keep(MetricId::Trail, AxisSide::Entry, vec![10.0], 2.0),
+            keep(Metric::AgeSec, AxisSide::Entry, vec![5.0], 3.0),
+            keep(Metric::TrailPct, AxisSide::Entry, vec![10.0], 2.0),
         ]);
         let mut family = empty_family(&screen);
         // Force two families + an interacting edge + a joint stub.
         let liq = FamilyMember {
-            metric: screen_metric(MetricId::Time, AxisSide::Entry),
+            metric: screen_metric(Metric::AgeSec, AxisSide::Entry),
             operator: Operator::Gte,
             values: vec![5.0],
             lift: 3.0,
             rescued: false,
         };
         let price = FamilyMember {
-            metric: screen_metric(MetricId::Trail, AxisSide::Entry),
+            metric: screen_metric(Metric::TrailPct, AxisSide::Entry),
             operator: Operator::Gte,
             values: vec![10.0],
             lift: 2.0,
@@ -591,7 +581,7 @@ mod tests {
         };
         family.families = vec![
             FamilyResult {
-                family: MetricFamily::State,
+                family: Family::State,
                 members: vec![liq.clone()],
                 dropped: vec![],
                 combos: 2,
@@ -599,7 +589,7 @@ mod tests {
                 n_gated: 0,
             },
             FamilyResult {
-                family: MetricFamily::Price,
+                family: Family::Price,
                 members: vec![price.clone()],
                 dropped: vec![],
                 combos: 2,
@@ -608,8 +598,8 @@ mod tests {
             },
         ];
         family.interactions = vec![Interaction {
-            pinned: MetricFamily::State,
-            swept: MetricFamily::Price,
+            pinned: Family::State,
+            swept: Family::Price,
             alone: vec![Some(10.0)],
             given: vec![Some(5.0)],
             score_alone: 1.0,
@@ -617,7 +607,7 @@ mod tests {
             verdict: InteractionVerdict::Interacting,
         }];
         family.joints = vec![super::super::family::JointResult {
-            families: vec![MetricFamily::State, MetricFamily::Price],
+            families: vec![Family::State, Family::Price],
             members: vec![liq, price],
             dropped: vec![],
             combos: 4,

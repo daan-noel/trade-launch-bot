@@ -11,7 +11,6 @@ use hunter_engine::event::{BuildBreadth, Effect, Event, LoadedRule, Mint, RuleId
 use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts};
-use hunter_engine::rule_params::RuleParams;
 use hunter_engine::{hydrate_token, reduce, EngineState, HydrateFacts};
 use serde_json::json;
 use uuid::Uuid;
@@ -27,7 +26,7 @@ fn fp() -> Fingerprint {
         id: FingerprintId(Uuid::from_u128(0xF)),
         wildcard: false,
         criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
-        metric_config: json!({}),
+        tags: json!({}),
     }
 }
 
@@ -65,7 +64,7 @@ fn rule(id: u128, params: serde_json::Value) -> LoadedRule {
         buy_amount_lamports: 100_000_000,
         max_concurrent_tokens: 0,
         max_total_tokens: 0,
-        params: RuleParams::parse(&params).expect("valid params"),
+        params: hunter_engine::v1::parse_params_any(&params).expect("valid params"),
         entry_enabled: true,
     }
 }

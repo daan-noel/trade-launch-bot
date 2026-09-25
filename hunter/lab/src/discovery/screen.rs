@@ -107,11 +107,11 @@ fn fixed_axis(kind: &str, value: f64) -> AxisSpec {
     AxisSpec {
         kind: kind.to_string(),
         side: None,
-        group: None,
         metric: None,
-        operator: None,
-        window: None,
+        tag: None,
+        span: None,
         slice: None,
+        operator: None,
         values: vec![Some(value)],
     }
 }
@@ -482,7 +482,7 @@ pub fn screen_with_menus(
         segments.iter().map(|s| s.model.clone()).collect(),
         pricing,
         as_of,
-        cfg.flow_patterns.as_ref(),
+        &cfg.tags,
     );
     let combos_scanned = strategy.combos().len();
     let rows_by_segment = strategy.run(corpus, observer)?;
@@ -663,8 +663,7 @@ fn narrow(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use hunter_engine::metrics::MetricGroupId;
-
+    
     use super::super::candidates::{screen_plan, ValueSource};
     use super::super::fixtures::{corpus, pricing};
     use crate::sweep::generic::axes::AxisSide;
@@ -859,9 +858,8 @@ mod tests {
             let errored = report.errors.iter().any(|e| e.metric == *m);
             assert!(
                 responded || gapped || errored,
-                "{:?} on {:?} vanished from the report",
-                m.metric,
-                m.side
+                "{} vanished from the report",
+                m.name()
             );
         }
         // Combo budget is additive: one combo per pick, nothing multiplicative.
@@ -878,11 +876,11 @@ mod tests {
         assert!(report
             .responses
             .iter()
-            .any(|r| r.metric.group == MetricGroupId::Position && r.metric.side == AxisSide::Exit)
-            || report.gaps.iter().any(|(m, _)| m.group == MetricGroupId::Position));
+            .any(|r| r.metric.r.is_position() && r.metric.side == AxisSide::Exit)
+            || report.gaps.iter().any(|(m, _)| m.r.is_position()));
         // Position menus are declared, never measured.
         for r in &report.responses {
-            if r.metric.group == MetricGroupId::Position {
+            if r.metric.r.is_position() {
                 assert!(matches!(r.metric.source, ValueSource::Declared(_)));
             }
         }

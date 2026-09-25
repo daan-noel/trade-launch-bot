@@ -31,7 +31,6 @@ use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, F
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts};
 use hunter_engine::reduce::reduce;
-use hunter_engine::rule_params::RuleParams;
 use hunter_engine::EngineState;
 use serde_json::json;
 use uuid::Uuid;
@@ -45,7 +44,7 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
         id: FingerprintId(Uuid::from_u128(1)),
         wildcard: false,
         criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
-        metric_config: json!({ "m_flow_ix": { "ix_patterns": [["Pump.Fun: Buy"]] } }),
+        tags: hunter_engine::v1::convert_metric_config(&json!({ "m_flow_ix": { "ix_patterns": [["Pump.Fun: Buy"]] } })).unwrap(),
     };
     let rule = LoadedRule {
         id: RuleId(Uuid::from_u128(1)),
@@ -56,7 +55,7 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
         // one open position while the rest of the corpus keeps ticking.
         max_concurrent_tokens: 1,
         max_total_tokens: 0,
-        params: RuleParams::parse(&json!({
+        params: hunter_engine::v1::parse_params_any(&json!({
             "entry": {
                 "m_flow_window": { "window_size_sec": 30, "gross_flow": [{"operator": ">", "value": 500.0}] },
                 "m_flow_ix_window": { "window_size_sec": 30, "tagged_share": [{"operator": "<", "value": 5.0}] }

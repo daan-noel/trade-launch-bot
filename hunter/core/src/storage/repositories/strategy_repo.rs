@@ -514,19 +514,18 @@ const EXIT_REASON_COUNTS: &[(&str, &str)] = &[
     ("LiquidityExit", "n_liquidity"),
 ];
 
-/// SQL predicate: legacy bare `Metrics`, spaced `name op value`, or brief
-/// `{name}{op}` — SSOT with [`hunter_engine::event::is_metric_exit_label`].
+/// SQL predicate: the row was sold by a rule line — any non-empty label that is not a
+/// named reason ([`EXIT_REASON_COUNTS`] and the two open states). The SSOT of the
+/// same split as [`ExitCode::from_reason`](crate::strategies::kernel::ExitCode::from_reason).
 fn metrics_exit_sql_pred(col: &str) -> String {
-    use std::collections::BTreeSet;
-    let names: BTreeSet<&str> = hunter_engine::metrics::REGISTRY
+    let named: Vec<String> = EXIT_REASON_COUNTS
         .iter()
-        .flat_map(|g| g.metrics.iter().map(|m| m.name))
+        .map(|(label, _)| *label)
+        .filter(|l| *l != "Metrics")
+        .chain(["Open", "NoEntry", "Migrated"])
+        .map(|l| format!("'{l}'"))
         .collect();
-    let alt = names.into_iter().collect::<Vec<_>>().join("|");
-    // Compact `stall>` OR spaced `stall > 3` (value is anything non-empty to EOL).
-    format!(
-        "({col} = 'Metrics' OR {col} ~ '^({alt})(>=|<=|!=|>|<|=)($| )' OR {col} ~ '^({alt}) (>=|<=|!=|>|<|=) ')"
-    )
+    format!("({col} IS NOT NULL AND {col} <> '' AND {col} NOT IN ({}))", named.join(", "))
 }
 
 /// Raw aggregate row behind [`StrategyRepo::positions_summary`]. Lamport sums are

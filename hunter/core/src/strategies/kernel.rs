@@ -52,8 +52,9 @@ pub enum ExitCode {
 }
 
 impl ExitCode {
-    /// Map a persisted exit-reason label to a code. Metric detail forms
-    /// (`stall > 3`, …) and legacy `"Metrics"` both map to [`ExitCode::Metrics`].
+    /// Map a persisted exit-reason label to a code. Any other non-empty label is the
+    /// label of the rule line that sold (`"spike"`, `m_position.pnl_pct >= 50`, a v1
+    /// `stall > 3`, legacy `"Metrics"`) and maps to [`ExitCode::Metrics`].
     pub fn from_reason(reason: &str) -> Self {
         match reason {
             "TakeProfit" => ExitCode::TakeProfit,
@@ -68,8 +69,8 @@ impl ExitCode {
             "Open" => ExitCode::Open,
             // Matched fingerprint / armed but never filled — distinct from still-Open.
             "NoEntry" => ExitCode::NoEntry,
-            r if hunter_engine::event::is_metric_exit_label(r) => ExitCode::Metrics,
-            _ => ExitCode::Open,
+            "" => ExitCode::Open,
+            _ => ExitCode::Metrics,
         }
     }
 

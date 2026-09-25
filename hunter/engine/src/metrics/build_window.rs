@@ -4,7 +4,7 @@
 //!   prints in the window, the print being read included.
 //!
 //! A recipe is a transaction's ordered instruction labels without account setup,
-//! teardown and memos ([`build_hash`](super::flow_ix::build_hash)), so it names the
+//! teardown and memos ([`build_hash`](super::trade_keys::build_hash)), so it names the
 //! tool or bot that built the transaction rather than the wallet that signed it.
 //! Many recipes printing at once is many independent machines reacting to the same
 //! tape: the hot-tape rule's "15 or more recipes in 5 s" (evidence 1.22).
@@ -19,7 +19,7 @@
 
 use super::distinct_window::DistinctWindow;
 use super::flow_window::is_foldable;
-use super::{MetricId, WindowSpec};
+use super::{Metric, WindowSpec};
 
 /// One trailing-window recipe counter for a single [`WindowSpec`].
 #[derive(Debug, Clone)]
@@ -53,9 +53,9 @@ impl BuildWindowState {
     }
 
     /// Value of one `m_build_window` metric over the window at `now_pos`.
-    pub fn value(&self, id: MetricId, now_pos: i64) -> f64 {
+    pub fn value(&self, id: Metric, now_pos: i64) -> f64 {
         match id {
-            MetricId::UniqueBuilds => self.win.distinct(now_pos),
+            Metric::UniqueIxShapes => self.win.distinct(now_pos),
             _ => f64::NAN,
         }
     }
@@ -81,15 +81,15 @@ mod tests {
         w.on_trade(0.1, Some(1), p(0.0), p(0.0));
         w.on_trade(0.1, Some(2), p(1.0), p(1.0));
         w.on_trade(0.1, Some(1), p(2.0), p(2.0));
-        assert_eq!(w.value(MetricId::UniqueBuilds, p(2.0)), 2.0);
+        assert_eq!(w.value(Metric::UniqueIxShapes, p(2.0)), 2.0);
         // At t=5.0 the t=0 print sits exactly on the low bound: still in.
         w.on_trade(0.1, Some(3), p(5.0), p(5.0));
-        assert_eq!(w.value(MetricId::UniqueBuilds, p(5.0)), 3.0, "the print read is counted");
+        assert_eq!(w.value(Metric::UniqueIxShapes, p(5.0)), 3.0, "the print read is counted");
         // At t=5.001 recipe 1 is still held by its t=2 print; nothing is lost yet.
-        assert_eq!(w.value(MetricId::UniqueBuilds, p(5.001)), 3.0);
+        assert_eq!(w.value(Metric::UniqueIxShapes, p(5.001)), 3.0);
         // At t=6.001 recipe 2 (t=1) is out.
         w.evict(p(6.001));
-        assert_eq!(w.value(MetricId::UniqueBuilds, p(6.001)), 2.0);
+        assert_eq!(w.value(Metric::UniqueIxShapes, p(6.001)), 2.0);
     }
 
     /// A print without labels has no recipe: it adds nothing, but time still moves.
@@ -98,6 +98,6 @@ mod tests {
         let mut w = BuildWindowState::new(WindowSpec::secs(5.0));
         w.on_trade(0.1, Some(9), p(0.0), p(0.0));
         w.on_trade(0.1, None, p(10.0), p(10.0));
-        assert_eq!(w.value(MetricId::UniqueBuilds, p(10.0)), 0.0);
+        assert_eq!(w.value(Metric::UniqueIxShapes, p(10.0)), 0.0);
     }
 }

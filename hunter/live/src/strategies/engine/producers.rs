@@ -33,7 +33,7 @@ use hunter_engine::{FirstSlotFacts, HydrateFacts};
 use trading_core::models::token::Token;
 use trading_core::models::trade::{Trade, TradeRow};
 use hunter_engine::grouping::LAMPORTS_PER_SOL_F64;
-use hunter_engine::metrics::flow_ix::wallet_hash;
+use hunter_engine::metrics::trade_keys::wallet_hash;
 use hunter_engine::token_identity_hash;
 use hunter_engine::metrics::{Side, TradeLite};
 

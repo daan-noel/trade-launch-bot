@@ -18,7 +18,7 @@
 //! the chart plots. Peak/trough/last-price are tracked incrementally — O(1) per
 //! trade, no history.
 
-use super::{secs_between, MetricId, Ts};
+use super::{secs_between, Metric, Ts};
 
 /// Incremental `m_price_lifetime` state.
 #[derive(Debug, Clone, PartialEq)]
@@ -109,11 +109,11 @@ impl PriceLifetimeState {
 
     /// Value of one `m_price_lifetime` metric. Non-price-lifetime ids yield `NaN`
     /// (unreachable — `TokenTrack` routes by group).
-    pub fn value(&self, id: MetricId, now: Ts) -> f64 {
+    pub fn value(&self, id: Metric, now: Ts) -> f64 {
         match id {
-            MetricId::Stall => self.stall(now),
-            MetricId::Trail => self.trail(),
-            MetricId::LifeRise => self.rise(),
+            Metric::StallSec => self.stall(now),
+            Metric::TrailPct => self.trail(),
+            Metric::RisePct => self.rise(),
             _ => f64::NAN,
         }
     }

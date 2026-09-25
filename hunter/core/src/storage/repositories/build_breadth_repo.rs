@@ -1,7 +1,7 @@
 //! `build_breadth_day_stats` - the daily build-breadth table.
 //!
 //! One row per (UTC day, build recipe): the recipe's app
-//! ([`recipe_app`](hunter_engine::metrics::flow_ix::recipe_app); the recipe itself for
+//! ([`recipe_app`](hunter_engine::metrics::trade_keys::recipe_app); the recipe itself for
 //! a direct pump.fun call), counted across every recipe it sent on the PREVIOUS day -
 //! its distinct buying wallets and its buy transactions, on any token. The engine
 //! classes each row with
@@ -22,7 +22,7 @@ use sqlx::PgPool;
 
 use hunter_engine::event::BuildBreadth;
 use hunter_engine::grouping::normalize_labels;
-use hunter_engine::metrics::flow_ix::{build_hash, is_build_noise, recipe_app};
+use hunter_engine::metrics::trade_keys::{build_hash, is_build_noise, recipe_app};
 
 /// One stored row.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -258,7 +258,7 @@ mod tests {
         let engine = BuildBreadthRepo::to_engine(&out);
         assert_eq!(
             Some(engine[0].build_hash),
-            hunter_engine::metrics::flow_ix::build_hash_from_labels_value(&trade)
+            hunter_engine::metrics::trade_keys::build_hash_from_labels_value(&trade)
         );
     }
 

@@ -1,3 +1,4 @@
+pub mod data_migrations;
 pub mod ix_labels_sql;
 pub mod postgres;
 pub mod repositories;

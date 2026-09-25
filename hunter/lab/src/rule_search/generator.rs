@@ -6,21 +6,19 @@
 
 use std::collections::BTreeMap;
 
-use hunter_engine::metrics::evaluator::{Condition, Operator};
-use hunter_engine::metrics::{group_spec, MetricGroupId, MetricId, MetricKind};
-use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
+use hunter_engine::metrics::evaluator::{coalesce_contributions, Condition, Operator};
+use hunter_engine::metrics::{metric_spec, MetricRef, Span};
+use hunter_engine::rule_params::{Cond, Line, RuleParams, Sell};
 
 use super::cuts::{cut_holds, fill_key, Cut, CutPhase, CutTable, MIN_SPLIT};
 use super::roles::{
-    entry_compete, entry_role, exit_competes, exit_role, EntryRole, ExitRole, TriggerFamily,
+    entry_compete, entry_role, exit_competes, exit_role, quantity, EntryRole, ExitRole, TriggerFamily,
 };
 
-/// One authored clause (metric, side implied by which bag it sits in).
+/// One authored clause (a read, side implied by which bag it sits in).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Clause {
-    pub group: MetricGroupId,
-    pub metric: MetricId,
-    pub window: Option<hunter_engine::metrics::WindowSpec>,
+    pub r: MetricRef,
     pub op: Operator,
     pub threshold: f64,
     pub phase: CutPhase,
@@ -28,14 +26,7 @@ pub struct Clause {
 
 impl From<Cut> for Clause {
     fn from(c: Cut) -> Self {
-        Self {
-            group: c.group,
-            metric: c.metric,
-            window: c.window,
-            op: c.op,
-            threshold: c.threshold,
-            phase: c.phase,
-        }
+        Self { r: c.r, op: c.op, threshold: c.threshold, phase: c.phase }
     }
 }
 
@@ -74,15 +65,15 @@ pub fn generate(cuts: &CutTable) -> Vec<GeneratedCombo> {
 
 /// Top-3 extra-OR candidates: unused exit cuts as one extra clause on a full rule.
 pub fn extra_or_candidates(base: &GeneratedCombo, cuts: &CutTable) -> Vec<GeneratedCombo> {
-    let used: Vec<MetricId> = base.exit.clauses.iter().map(|c| c.metric).collect();
+    let used: Vec<_> = base.exit.clauses.iter().map(|c| quantity(&c.r)).collect();
     let mut ranked = cuts.exit.clone();
     ranked.sort_by_key(|c| c.phase.menu_rank());
     let mut out = Vec::new();
     for cut in &ranked {
-        if used.contains(&cut.metric) {
+        if used.contains(&quantity(&cut.r)) {
             continue;
         }
-        if base.exit.clauses.iter().any(|c| exit_competes(c.metric, cut.metric)) {
+        if base.exit.clauses.iter().any(|c| exit_competes(&c.r, &cut.r)) {
             continue;
         }
         if base.exit.clauses.len() >= 2 {
@@ -112,9 +103,7 @@ const BAND_CAP: usize = 6;
 /// Two clauses forming a floor + ceiling on one quantity — the band counts as
 /// ONE can-fail filling, never a same-metric compete clash.
 pub fn is_band_pair(a: &Clause, b: &Clause) -> bool {
-    a.metric == b.metric
-        && a.group == b.group
-        && same_window(a.window, b.window)
+    same_read(&a.r, &b.r)
         && matches!(
             (a.op, b.op),
             (Operator::Gte | Operator::Gt, Operator::Lte | Operator::Lt)
@@ -133,15 +122,11 @@ fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
             ceils.push(Clause::from(*c));
             continue;
         }
-        match entry_role(c.metric) {
+        match entry_role(&c.r) {
             Some(EntryRole::Selector) | Some(EntryRole::Extra) => {
                 // Floors are collected pre-dedup: a metric whose contrast cut
                 // wins the singles menu still gets its p10..p90 band.
-                if c.phase == CutPhase::WinnerFloor
-                    && !floors
-                        .iter()
-                        .any(|f| f.metric == c.metric && same_window(f.window, c.window))
-                {
+                if c.phase == CutPhase::WinnerFloor && !floors.iter().any(|f| same_read(&f.r, &c.r)) {
                     floors.push(Clause::from(*c));
                 }
                 can_fail.push(Clause::from(*c));
@@ -156,7 +141,7 @@ fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
         a.phase
             .menu_rank()
             .cmp(&b.phase.menu_rank())
-            .then_with(|| format!("{:?}", a.metric).cmp(&format!("{:?}", b.metric)))
+            .then_with(|| format!("{:?}", a.r.metric).cmp(&format!("{:?}", b.r.metric)))
     });
     can_fail = take_can_fail(can_fail);
 
@@ -213,7 +198,7 @@ fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
             if band_pairs >= BAND_CAP * 4 {
                 break;
             }
-            if single.metric == band[0].metric {
+            if quantity(&single.r) == quantity(&band[0].r) {
                 continue;
             }
             let mut clauses = band.to_vec();
@@ -253,8 +238,8 @@ fn take_can_fail(cuts: Vec<Clause>) -> Vec<Clause> {
     let mut extra = Vec::new();
     let mut seen = Vec::new();
     for c in cuts {
-        if !seen.contains(&c.metric) {
-            seen.push(c.metric);
+        if !seen.contains(&quantity(&c.r)) {
+            seen.push(quantity(&c.r));
             primary.push(c);
         } else if c.phase.is_entry_extra() {
             extra.push(c);
@@ -263,10 +248,10 @@ fn take_can_fail(cuts: Vec<Clause>) -> Vec<Clause> {
     primary.truncate(CAN_FAIL_CAP);
     let mut extra_seen = Vec::new();
     extra.retain(|c| {
-        if extra_seen.contains(&c.metric) {
+        if extra_seen.contains(&quantity(&c.r)) {
             false
         } else {
-            extra_seen.push(c.metric);
+            extra_seen.push(quantity(&c.r));
             true
         }
     });
@@ -289,7 +274,7 @@ fn pair_cooccurs(a: &Clause, b: &Clause, cuts: &CutTable) -> bool {
     }
     let n = snaps
         .iter()
-        .filter(|m| match (m.get(&fill_key(a.metric, a.window)), m.get(&fill_key(b.metric, b.window))) {
+        .filter(|m| match (m.get(&fill_key(&a.r)), m.get(&fill_key(&b.r))) {
             (Some(&va), Some(&vb)) => clause_holds(a, va) && clause_holds(b, vb),
             _ => false,
         })
@@ -323,9 +308,7 @@ pub fn retune_candidates(base: &GeneratedCombo, cuts: &CutTable) -> Vec<Generate
     }
     for (i, c) in base.exit.clauses.iter().enumerate() {
         for n in neighbors(c, &cuts.exit) {
-            if base.exit.clauses.iter().enumerate().any(|(j, o)| {
-                j != i && (o.metric == n.metric || exit_competes(o.metric, n.metric))
-            }) {
+            if base.exit.clauses.iter().enumerate().any(|(j, o)| j != i && exit_competes(&o.r, &n.r)) {
                 continue;
             }
             let mut exit = base.exit.clone();
@@ -345,12 +328,8 @@ pub fn retune_candidates(base: &GeneratedCombo, cuts: &CutTable) -> Vec<Generate
 
 fn neighbors(c: &Clause, cuts: &[Cut]) -> Vec<Clause> {
     cuts.iter()
-        .filter(|n| n.metric == c.metric && n.group == c.group && n.phase == c.phase)
-        .filter(|n| {
-            n.window != c.window
-                || n.op != c.op
-                || (n.threshold - c.threshold).abs() > 1e-9
-        })
+        .filter(|n| quantity(&n.r) == quantity(&c.r) && n.phase == c.phase)
+        .filter(|n| !same_read(&n.r, &c.r) || n.op != c.op || (n.threshold - c.threshold).abs() > 1e-9)
         .copied()
         .map(Clause::from)
         .collect()
@@ -362,7 +341,7 @@ fn has_entry_compete_clash(clauses: &[Clause]) -> bool {
             if is_band_pair(a, b) {
                 continue; // floor + ceiling on one quantity is ONE filling, not a clash
             }
-            match (entry_compete(a.metric), entry_compete(b.metric)) {
+            match (entry_compete(&a.r), entry_compete(&b.r)) {
                 (Some(x), Some(y)) if x == y => return true,
                 _ => {}
             }
@@ -374,14 +353,14 @@ fn has_entry_compete_clash(clauses: &[Clause]) -> bool {
 fn exit_bags(cuts: &[Cut]) -> Vec<ExitBag> {
     let mut ranked: Vec<Cut> = cuts.to_vec();
     ranked.sort_by_key(|c| c.phase.menu_rank());
-    // One representative cut per (metric, window) — prefer dump-lead / contrast / p90.
+    // One representative cut per read — prefer dump-lead / contrast / p90.
     let mut singles: Vec<Clause> = Vec::new();
     for c in &ranked {
-        if singles.iter().any(|s| s.metric == c.metric && s.window == c.window) {
+        if singles.iter().any(|s| same_read(&s.r, &c.r)) {
             continue;
         }
-        let role = exit_role(c.metric);
-        let already = singles.iter().filter(|s| exit_role(s.metric) == role).count();
+        let role = exit_role(&c.r);
+        let already = singles.iter().filter(|s| exit_role(&s.r) == role).count();
         let cap = match role {
             ExitRole::Giveback | ExitRole::Clock => 2,
             ExitRole::Progress => 3,
@@ -399,7 +378,7 @@ fn exit_bags(cuts: &[Cut]) -> Vec<ExitBag> {
     }
     for i in 0..singles.len() {
         for j in (i + 1)..singles.len() {
-            if exit_competes(singles[i].metric, singles[j].metric) {
+            if exit_competes(&singles[i].r, &singles[j].r) {
                 continue;
             }
             bags.push(ExitBag {
@@ -410,97 +389,52 @@ fn exit_bags(cuts: &[Cut]) -> Vec<ExitBag> {
     bags
 }
 
+/// The rule a filling and a bag make: every entry clause an `enter.filters`
+/// condition (AND), every exit clause its own `always` sell line (OR).
 pub(crate) fn assemble(entry: &EntryFilling, exit: &ExitBag) -> RuleParams {
     let mut rp = RuleParams::default();
-    if !entry.clauses.is_empty() {
-        rp.entry = Some(side_from(&entry.clauses));
-    }
-    if !exit.clauses.is_empty() {
-        rp.exit = Some(side_from(&exit.clauses).into());
-    }
+    rp.enter.filters = conds_from(&entry.clauses);
+    rp.always = conds_from(&exit.clauses)
+        .into_iter()
+        .map(|c| Line { when: vec![c], sell: Some(Sell { label: None, pct: None }), go: None, off: false })
+        .collect();
     rp
 }
 
-fn side_from(clauses: &[Clause]) -> SideConditions {
-    let mut sc = SideConditions::default();
+/// One condition per read, in first-seen order. Clauses on one read here are only
+/// ever a band's floor + ceiling, which AND into one arm.
+fn conds_from(clauses: &[Clause]) -> Vec<Cond> {
+    let mut reads: Vec<(MetricRef, Vec<Condition>)> = Vec::new();
     for c in clauses {
-        let instances = sc.0.entry(c.group).or_default();
-        let gc = match instances
-            .iter()
-            .position(|g| {
-                same_window(g.window_spec(&hunter_engine::metrics::WINDOW_AXIS), c.window)
-            })
-        {
-            Some(i) => &mut instances[i],
-            None => {
-                let mut g = GroupConditions::default();
-                if let Some(w) = c.window {
-                    // Write the param that matches the unit - writing seconds for a
-                    // slot span would silently author a different rule.
-                    g.strict.insert(w.unit.size_param().to_string(), w.size);
-                    if w.lag > 0.0 {
-                        g.strict
-                            .insert(hunter_engine::metrics::WINDOW_LAG_PARAM.to_string(), w.lag);
-                    }
-                }
-                instances.push(g);
-                instances.last_mut().expect("just pushed")
-            }
-        };
-        // The expr is DNF (OR of AND-arms). Same-metric clauses here are only
-        // ever a band's floor + ceiling, which must AND — one arm, not two.
-        let arms = gc.metrics.entry(c.metric).or_default();
-        let cond = Condition {
-            operator: c.op,
-            value: c.threshold,
-        };
-        match arms.first_mut() {
-            Some(arm) => arm.push(cond),
-            None => arms.push(vec![cond]),
+        let cond = Condition { operator: c.op, value: c.threshold };
+        match reads.iter_mut().find(|(r, _)| same_read(r, &c.r)) {
+            Some((_, cs)) => cs.push(cond),
+            None => reads.push((c.r, vec![cond])),
         }
     }
-    sc
+    reads
+        .into_iter()
+        .map(|(r, cs)| Cond::Metric { r, is: coalesce_contributions(cs, metric_spec(r.metric).eq_tolerance), off: false })
+        .collect()
 }
 
-/// Human label for one authored clause — the ablation table's row key.
+/// Human label for one authored clause — the ablation table's row key. The read
+/// prints as the engine labels it (`m_flow.buy_sol @!volume [10s]`), so a row names
+/// the same span a persisted exit reason and a live chip do.
 pub fn clause_label(c: &Clause) -> String {
-    let op = match c.op {
-        Operator::Gt => ">",
-        Operator::Gte => ">=",
-        Operator::Lt => "<",
-        Operator::Lte => "<=",
-        Operator::Eq => "=",
-        Operator::Ne => "!=",
-    };
-    // Suffix from the engine's own `WindowUnit::suffix`, so an ablation row names the
-    // same span a persisted exit reason and a live chip do. A lag prints only when
-    // there is one - a lagged window reads different tape from an unlagged one of the
-    // same size, and the two must not label identically.
-    let window = c
-        .window
-        .map(|w| match w.lag > 0.0 {
-            true => format!("({:.0}{}@{:.0})", w.size, w.unit.suffix(), w.lag),
-            false => format!("({:.0}{})", w.size, w.unit.suffix()),
-        })
-        .unwrap_or_default();
-    format!(
-        "{} {}{window} {op} {} [{}]",
-        c.group.name(),
-        c.metric.name(),
-        c.threshold,
-        c.phase.label()
-    )
+    format!("{} {} {} [{}]", c.r.label(), c.op.symbol(), c.threshold, c.phase.label())
 }
 
-fn same_window(a: Option<hunter_engine::metrics::WindowSpec>, b: Option<hunter_engine::metrics::WindowSpec>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        // Compare the dedup identity, not the raw floats: two clauses that differ
-        // in unit or lag read different tape and must never merge into one group
-        // instance, however close their sizes look.
-        (Some(x), Some(y)) => x.key() == y.key(),
-        _ => false,
-    }
+/// Same metric, same tag, same span. Spans compare by their dedup identity, not the
+/// raw floats: two clauses that differ in unit or lag read different tape and must
+/// never merge into one condition, however close their sizes look.
+pub(crate) fn same_read(a: &MetricRef, b: &MetricRef) -> bool {
+    a.metric == b.metric && a.tag == b.tag && same_span(a.span, b.span)
+}
+
+fn same_span(a: Span, b: Span) -> bool {
+    let key = |w: Option<hunter_engine::metrics::WindowSpec>| w.map(|w| w.key());
+    key(a.window) == key(b.window) && key(a.slice) == key(b.slice) && a.since_age == b.since_age
 }
 
 /// Whether this filling is the empty-entry combo.
@@ -514,97 +448,81 @@ pub fn same_exit_bag(a: &ExitBag, b: &ExitBag) -> bool {
     }
     a.clauses.iter().all(|c| {
         b.clauses.iter().any(|d| {
-            d.metric == c.metric
-                && d.group == c.group
-                && same_window(d.window, c.window)
-                && d.op == c.op
-                && (d.threshold - c.threshold).abs() < 1e-9
+            same_read(&d.r, &c.r) && d.op == c.op && (d.threshold - c.threshold).abs() < 1e-9
         })
     })
 }
 
-/// Dynamic groups must carry a window; static groups must not.
+/// The metric accepts the read's tag and span. A since-age read carries an age
+/// anchor the search cannot choose, so a clause on one is never legal here (the
+/// rule editor authors it instead).
 pub fn clause_legal(c: &Clause) -> bool {
-    match group_spec(c.group).kind {
-        MetricKind::Dynamic => c.window.is_some(),
-        // An anchored group carries an age anchor the search cannot choose, so a
-        // clause on one is never legal here (the rule editor authors it instead).
-        MetricKind::Static => c.window.is_none(),
-        MetricKind::Anchored => false,
-    }
+    c.r.span.since_age.is_none() && c.r.check().is_ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rule_search::cuts::CutPhase;
+    use hunter_engine::metrics::{Metric, WindowSpec};
 
-    fn cut(group: MetricGroupId, metric: MetricId, op: Operator, v: f64) -> Cut {
-        Cut {
-            group,
-            metric,
-            window: None,
-            op,
-            threshold: v,
-            phase: CutPhase::Peak,
-        }
+    fn life(m: Metric) -> MetricRef {
+        MetricRef::life(m)
     }
 
-    fn clause(group: MetricGroupId, metric: MetricId, op: Operator, v: f64) -> Clause {
-        Clause {
-            group,
-            metric,
-            window: None,
-            op,
-            threshold: v,
-            phase: CutPhase::Peak,
-        }
+    fn win(m: Metric, secs: f64) -> MetricRef {
+        MetricRef::life(m).with_span(Span::window(WindowSpec::secs(secs)))
+    }
+
+    fn cut(r: MetricRef, op: Operator, v: f64) -> Cut {
+        Cut { r, op, threshold: v, phase: CutPhase::Peak }
+    }
+
+    fn cut_at(r: MetricRef, op: Operator, v: f64, phase: CutPhase) -> Cut {
+        Cut { r, op, threshold: v, phase }
+    }
+
+    fn clause(r: MetricRef, op: Operator, v: f64) -> Clause {
+        Clause { r, op, threshold: v, phase: CutPhase::Peak }
+    }
+
+    fn table(entry: Vec<Cut>, exit: Vec<Cut>) -> CutTable {
+        CutTable { entry, exit, ..CutTable::empty() }
+    }
+
+    fn has(clauses: &[Clause], m: Metric) -> bool {
+        clauses.iter().any(|c| c.r.metric == m)
     }
 
     #[test]
     fn empty_entry_and_empty_exit_are_combos() {
-        let table = CutTable {
-            windows: vec![10.0],
-            entry: vec![],
-            exit: vec![],
-            winner_fill: vec![],
-            winner_lead: vec![],
-            winner_launch: vec![],
-        };
+        let table = CutTable { windows: vec![10.0], ..CutTable::empty() };
         let g = generate(&table);
         assert_eq!(g.len(), 1);
         assert!(g[0].entry.clauses.is_empty());
         assert!(g[0].exit.clauses.is_empty());
-        assert!(g[0].params.entry.is_none());
-        assert!(g[0].params.exit.is_none());
+        assert!(g[0].params.enter.filters.is_empty());
+        assert!(g[0].params.always.is_empty());
     }
 
     #[test]
     fn exit_bags_cap_at_two_and_respect_compete() {
-        let table = CutTable {
-            windows: vec![],
-            entry: vec![],
-            exit: vec![
-                cut(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gte, 12.0),
-                cut(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 15.0),
-                cut(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 30.0),
+        let table = table(
+            vec![],
+            vec![
+                cut(life(Metric::TrailPct), Operator::Gte, 12.0),
+                cut(life(Metric::RetracePct), Operator::Gte, 15.0),
+                cut(life(Metric::StallSec), Operator::Gte, 30.0),
             ],
-            winner_fill: vec![],
-            winner_lead: vec![],
-            winner_launch: vec![],
-        };
+        );
         let bags = exit_bags(&table.exit);
         assert!(bags.iter().any(|b| b.clauses.is_empty()));
         assert!(bags.iter().all(|b| b.clauses.len() <= 2));
         assert!(!bags.iter().any(|b| {
-            b.clauses.len() == 2
-                && b.clauses.iter().any(|c| c.metric == MetricId::Trail)
-                && b.clauses.iter().any(|c| c.metric == MetricId::Retrace)
+            b.clauses.len() == 2 && has(&b.clauses, Metric::TrailPct) && has(&b.clauses, Metric::RetracePct)
         }));
         assert!(bags.iter().any(|b| {
-            b.clauses.len() == 2
-                && b.clauses.iter().any(|c| c.metric == MetricId::Trail)
-                && b.clauses.iter().any(|c| c.metric == MetricId::Stall)
+            b.clauses.len() == 2 && has(&b.clauses, Metric::TrailPct) && has(&b.clauses, Metric::StallSec)
         }));
     }
 
@@ -612,105 +530,67 @@ mod tests {
     fn extra_or_skips_compete_and_full_bags() {
         let base = GeneratedCombo {
             entry: EntryFilling { clauses: vec![] },
-            exit: ExitBag {
-                clauses: vec![clause(
-                    MetricGroupId::PriceLifetime,
-                    MetricId::Trail,
-                    Operator::Gte,
-                    12.0,
-                )],
-            },
+            exit: ExitBag { clauses: vec![clause(life(Metric::TrailPct), Operator::Gte, 12.0)] },
             params: RuleParams::default(),
         };
-        let table = CutTable {
-            windows: vec![],
-            entry: vec![],
-            exit: vec![
-                cut(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 15.0),
-                cut(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 40.0),
+        let table = table(
+            vec![],
+            vec![
+                cut(life(Metric::RetracePct), Operator::Gte, 15.0),
+                cut(life(Metric::StallSec), Operator::Gte, 40.0),
             ],
-            winner_fill: vec![],
-            winner_lead: vec![],
-            winner_launch: vec![],
-        };
+        );
         let extra = extra_or_candidates(&base, &table);
-        assert!(extra.iter().all(|g| !g.exit.clauses.iter().any(|c| c.metric == MetricId::Retrace)));
-        assert!(extra.iter().any(|g| g.exit.clauses.iter().any(|c| c.metric == MetricId::Stall)));
+        assert!(extra.iter().all(|g| !has(&g.exit.clauses, Metric::RetracePct)));
+        assert!(extra.iter().any(|g| has(&g.exit.clauses, Metric::StallSec)));
     }
 
     #[test]
-    fn same_window_clauses_merge() {
+    fn entry_clauses_are_filters_and_exit_clauses_sell_lines() {
         let e = EntryFilling {
             clauses: vec![
-                Clause {
-                    group: MetricGroupId::FlowWindow,
-                    metric: MetricId::Buy,
-                    window: Some(hunter_engine::metrics::WindowSpec::secs(10.0)),
-                    op: Operator::Gte,
-                    threshold: 5.0,
-                    phase: CutPhase::Peak,
-                },
-                Clause {
-                    group: MetricGroupId::FlowWindow,
-                    metric: MetricId::UniqueWallets,
-                    window: Some(hunter_engine::metrics::WindowSpec::secs(10.0)),
-                    op: Operator::Gte,
-                    threshold: 8.0,
-                    phase: CutPhase::Peak,
-                },
+                clause(win(Metric::BuySol, 10.0), Operator::Gte, 5.0),
+                clause(win(Metric::UniqueWallets, 10.0), Operator::Gte, 8.0),
             ],
         };
-        let rp = assemble(&e, &ExitBag { clauses: vec![] });
-        let side = rp.entry.expect("entry");
-        let inst = &side.0[&MetricGroupId::FlowWindow];
-        assert_eq!(inst.len(), 1);
-        assert_eq!(inst[0].strict_param("window_size_sec"), Some(10.0));
-        assert!(inst[0].metrics.contains_key(&MetricId::Buy));
-        assert!(inst[0].metrics.contains_key(&MetricId::UniqueWallets));
+        let x = ExitBag {
+            clauses: vec![
+                clause(life(Metric::TrailPct), Operator::Gte, 20.0),
+                clause(life(Metric::StallSec), Operator::Gte, 30.0),
+            ],
+        };
+        let rp = assemble(&e, &x);
+        assert_eq!(rp.enter.filters.len(), 2, "one AND condition per entry read");
+        let reads: Vec<String> = rp.metric_refs().iter().map(MetricRef::label).collect();
+        assert!(reads.contains(&"m_flow.buy_sol [10s]".to_string()), "{reads:?}");
+        assert!(reads.contains(&"m_crowd.unique_wallets [10s]".to_string()), "{reads:?}");
+        assert_eq!(rp.always.len(), 2, "one OR sell line per exit read");
+        assert!(rp.always.iter().all(|l| l.when.len() == 1 && l.sell.is_some()));
+        RuleParams::parse(&rp.to_value()).expect("the assembled rule passes the engine gate");
     }
 
     #[test]
     fn can_fail_pairs_time_and_liq() {
-        let table = CutTable {
-            windows: vec![],
-            entry: vec![
-                cut(MetricGroupId::State, MetricId::Time, Operator::Lt, 40.0),
-                cut(MetricGroupId::State, MetricId::Liquidity, Operator::Gte, 20.0),
-                Cut {
-                    group: MetricGroupId::FlowWindow,
-                    metric: MetricId::UniqueWallets,
-                    window: Some(hunter_engine::metrics::WindowSpec::secs(5.0)),
-                    op: Operator::Gte,
-                    threshold: 8.0,
-                    phase: CutPhase::Contrast,
-                },
+        let table = table(
+            vec![
+                cut(life(Metric::AgeSec), Operator::Lt, 40.0),
+                cut(life(Metric::LiquiditySol), Operator::Gte, 20.0),
+                cut_at(win(Metric::UniqueWallets, 5.0), Operator::Gte, 8.0, CutPhase::Contrast),
             ],
-            exit: vec![],
-            winner_fill: vec![],
-            winner_lead: vec![],
-            winner_launch: vec![],
-        };
+            vec![],
+        );
         let entries = entry_fillings(&table);
         assert!(entries.iter().any(|e| e.clauses.is_empty()));
         assert!(entries.iter().any(|e| {
-            e.clauses.len() == 2
-                && e.clauses.iter().any(|c| c.metric == MetricId::Time)
-                && e.clauses.iter().any(|c| c.metric == MetricId::Liquidity)
+            e.clauses.len() == 2 && has(&e.clauses, Metric::AgeSec) && has(&e.clauses, Metric::LiquiditySol)
         }));
         assert!(entries.iter().any(|e| {
-            e.clauses.len() == 2
-                && e.clauses.iter().any(|c| c.metric == MetricId::Liquidity)
-                && e.clauses.iter().any(|c| c.metric == MetricId::UniqueWallets)
+            e.clauses.len() == 2 && has(&e.clauses, Metric::LiquiditySol) && has(&e.clauses, Metric::UniqueWallets)
         }));
         assert!(entries.iter().all(|e| {
             e.clauses
                 .iter()
-                .filter(|c| {
-                    matches!(
-                        entry_role(c.metric),
-                        Some(EntryRole::Selector) | Some(EntryRole::Extra)
-                    )
-                })
+                .filter(|c| matches!(entry_role(&c.r), Some(EntryRole::Selector) | Some(EntryRole::Extra)))
                 .count()
                 <= 2
         }));
@@ -720,172 +600,93 @@ mod tests {
     fn retune_swaps_threshold_not_metric() {
         let base = GeneratedCombo {
             entry: EntryFilling { clauses: vec![] },
-            exit: ExitBag {
-                clauses: vec![clause(
-                    MetricGroupId::PriceLifetime,
-                    MetricId::Trail,
-                    Operator::Gte,
-                    12.0,
-                )],
-            },
+            exit: ExitBag { clauses: vec![clause(life(Metric::TrailPct), Operator::Gte, 12.0)] },
             params: RuleParams::default(),
         };
-        let table = CutTable {
-            windows: vec![],
-            entry: vec![],
-            exit: vec![
-                cut(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gte, 12.0),
-                cut(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gte, 18.0),
-                cut(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 40.0),
+        let table = table(
+            vec![],
+            vec![
+                cut(life(Metric::TrailPct), Operator::Gte, 12.0),
+                cut(life(Metric::TrailPct), Operator::Gte, 18.0),
+                cut(life(Metric::StallSec), Operator::Gte, 40.0),
             ],
-            winner_fill: vec![],
-            winner_lead: vec![],
-            winner_launch: vec![],
-        };
+        );
         let r = retune_candidates(&base, &table);
         assert!(r.iter().any(|g| {
             g.exit.clauses.len() == 1
-                && g.exit.clauses[0].metric == MetricId::Trail
+                && g.exit.clauses[0].r.metric == Metric::TrailPct
                 && (g.exit.clauses[0].threshold - 18.0).abs() < 1e-9
         }));
-        assert!(r.iter().all(|g| !g.exit.clauses.iter().any(|c| c.metric == MetricId::Stall)));
+        assert!(r.iter().all(|g| !has(&g.exit.clauses, Metric::StallSec)));
     }
 
     #[test]
     fn cooccur_drops_pairs_that_never_happen_together() {
         use std::collections::HashMap;
         let mut fill = HashMap::new();
-        fill.insert(fill_key(MetricId::Time, None), 10.0);
-        fill.insert(fill_key(MetricId::Liquidity, None), 80.0);
+        fill.insert(fill_key(&life(Metric::AgeSec)), 10.0);
+        fill.insert(fill_key(&life(Metric::LiquiditySol)), 80.0);
         let fills = vec![fill; 10];
-        let table = CutTable {
-            winner_fill: fills,
-            ..CutTable::empty()
-        };
-        let time = Clause {
-            group: MetricGroupId::State,
-            metric: MetricId::Time,
-            window: None,
-            op: Operator::Lt,
-            threshold: 5.0,
-            phase: CutPhase::FillMoment,
-        };
-        let liq = Clause {
-            group: MetricGroupId::State,
-            metric: MetricId::Liquidity,
-            window: None,
-            op: Operator::Gte,
-            threshold: 20.0,
-            phase: CutPhase::FillMoment,
-        };
+        let table = CutTable { winner_fill: fills, ..CutTable::empty() };
+        let at_fill = |r, op, v| Clause { r, op, threshold: v, phase: CutPhase::FillMoment };
+        let time = at_fill(life(Metric::AgeSec), Operator::Lt, 5.0);
+        let liq = at_fill(life(Metric::LiquiditySol), Operator::Gte, 20.0);
         assert!(!pair_cooccurs(&time, &liq, &table));
-        let time_ok = Clause {
-            group: MetricGroupId::State,
-            metric: MetricId::Time,
-            window: None,
-            op: Operator::Lt,
-            threshold: 40.0,
-            phase: CutPhase::FillMoment,
-        };
+        let time_ok = at_fill(life(Metric::AgeSec), Operator::Lt, 40.0);
         assert!(pair_cooccurs(&time_ok, &liq, &table));
-        let peak_time = clause(MetricGroupId::State, MetricId::Time, Operator::Lt, 5.0);
-        let peak_liq = clause(MetricGroupId::State, MetricId::Liquidity, Operator::Gte, 20.0);
+        let peak_time = clause(life(Metric::AgeSec), Operator::Lt, 5.0);
+        let peak_liq = clause(life(Metric::LiquiditySol), Operator::Gte, 20.0);
         assert!(pair_cooccurs(&peak_time, &peak_liq, &table));
     }
 
     #[test]
     fn contrast_beats_fill_moment_on_same_metric() {
-        let table = CutTable {
-            windows: vec![],
-            entry: vec![
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Liquidity,
-                    window: None,
-                    op: Operator::Gte,
-                    threshold: 90.0,
-                    phase: CutPhase::FillMoment,
-                },
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Liquidity,
-                    window: None,
-                    op: Operator::Gte,
-                    threshold: 47.0,
-                    phase: CutPhase::Contrast,
-                },
-                cut(MetricGroupId::State, MetricId::Time, Operator::Lt, 40.0),
+        let liq = life(Metric::LiquiditySol);
+        let table = table(
+            vec![
+                cut_at(liq, Operator::Gte, 90.0, CutPhase::FillMoment),
+                cut_at(liq, Operator::Gte, 47.0, CutPhase::Contrast),
+                cut(life(Metric::AgeSec), Operator::Lt, 40.0),
             ],
-            exit: vec![],
-            winner_fill: vec![],
-            winner_lead: vec![],
-            winner_launch: vec![],
-        };
+            vec![],
+        );
         let entries = entry_fillings(&table);
         let liq_singles: Vec<&EntryFilling> = entries
             .iter()
-            .filter(|e| e.clauses.len() == 1 && e.clauses[0].metric == MetricId::Liquidity)
+            .filter(|e| e.clauses.len() == 1 && e.clauses[0].r.metric == Metric::LiquiditySol)
             .collect();
         assert!(
             liq_singles
                 .iter()
-                .any(|e| (e.clauses[0].threshold - 47.0).abs() < 1e-9
-                    && e.clauses[0].phase == CutPhase::Contrast),
+                .any(|e| (e.clauses[0].threshold - 47.0).abs() < 1e-9 && e.clauses[0].phase == CutPhase::Contrast),
             "peak contrast liq must be a filling"
         );
         assert!(
             liq_singles
                 .iter()
-                .any(|e| (e.clauses[0].threshold - 90.0).abs() < 1e-9
-                    && e.clauses[0].phase == CutPhase::FillMoment),
+                .any(|e| (e.clauses[0].threshold - 90.0).abs() < 1e-9 && e.clauses[0].phase == CutPhase::FillMoment),
             "fill-moment stays as an extra filling for the same metric"
         );
     }
 
     #[test]
     fn run_lead_is_kept_as_extra_beside_contrast() {
-        let table = CutTable {
-            windows: vec![],
-            entry: vec![
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Time,
-                    window: None,
-                    op: Operator::Lt,
-                    threshold: 40.0,
-                    phase: CutPhase::Contrast,
-                },
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Time,
-                    window: None,
-                    op: Operator::Lt,
-                    threshold: 8.0,
-                    phase: CutPhase::RunLead,
-                },
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Liquidity,
-                    window: None,
-                    op: Operator::Gte,
-                    threshold: 47.0,
-                    phase: CutPhase::Contrast,
-                },
+        let age = life(Metric::AgeSec);
+        let table = table(
+            vec![
+                cut_at(age, Operator::Lt, 40.0, CutPhase::Contrast),
+                cut_at(age, Operator::Lt, 8.0, CutPhase::RunLead),
+                cut_at(life(Metric::LiquiditySol), Operator::Gte, 47.0, CutPhase::Contrast),
             ],
-            exit: vec![],
-            winner_fill: vec![],
-            winner_lead: vec![],
-            winner_launch: vec![],
-        };
+            vec![],
+        );
         let entries = entry_fillings(&table);
         assert!(entries.iter().any(|e| {
-            e.clauses.len() == 1
-                && e.clauses[0].metric == MetricId::Time
-                && e.clauses[0].phase == CutPhase::Contrast
+            e.clauses.len() == 1 && e.clauses[0].r.metric == Metric::AgeSec && e.clauses[0].phase == CutPhase::Contrast
         }));
         assert!(entries.iter().any(|e| {
             e.clauses.len() == 1
-                && e.clauses[0].metric == MetricId::Time
+                && e.clauses[0].r.metric == Metric::AgeSec
                 && e.clauses[0].phase == CutPhase::RunLead
                 && (e.clauses[0].threshold - 8.0).abs() < 1e-9
         }));
@@ -893,141 +694,74 @@ mod tests {
 
     #[test]
     fn band_is_one_filling_and_one_and_arm() {
-        let table = CutTable {
-            windows: vec![],
-            entry: vec![
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Liquidity,
-                    window: None,
-                    op: Operator::Gte,
-                    threshold: 20.0,
-                    phase: CutPhase::WinnerFloor,
-                },
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Liquidity,
-                    window: None,
-                    op: Operator::Lte,
-                    threshold: 70.0,
-                    phase: CutPhase::WinnerCeil,
-                },
-                cut(MetricGroupId::State, MetricId::Time, Operator::Lt, 40.0),
+        let liq = life(Metric::LiquiditySol);
+        let table = table(
+            vec![
+                cut_at(liq, Operator::Gte, 20.0, CutPhase::WinnerFloor),
+                cut_at(liq, Operator::Lte, 70.0, CutPhase::WinnerCeil),
+                cut(life(Metric::AgeSec), Operator::Lt, 40.0),
             ],
-            exit: vec![],
-            winner_fill: vec![],
-            winner_lead: vec![],
-            winner_launch: vec![],
-        };
+            vec![],
+        );
         let entries = entry_fillings(&table);
         let band = entries
             .iter()
-            .find(|e| {
-                e.clauses.len() == 2
-                    && e.clauses.iter().all(|c| c.metric == MetricId::Liquidity)
-            })
+            .find(|e| e.clauses.len() == 2 && e.clauses.iter().all(|c| c.r.metric == Metric::LiquiditySol))
             .expect("floor + ceil band filling");
         // The band + one different-metric single occupies both can-fail slots.
         assert!(entries.iter().any(|e| {
             e.clauses.len() == 3
-                && e.clauses.iter().filter(|c| c.metric == MetricId::Liquidity).count() == 2
-                && e.clauses.iter().any(|c| c.metric == MetricId::Time)
+                && e.clauses.iter().filter(|c| c.r.metric == Metric::LiquiditySol).count() == 2
+                && has(&e.clauses, Metric::AgeSec)
         }));
         // DNF: the band must assemble as ONE AND-arm, not floor OR ceil.
         let rp = assemble(band, &ExitBag { clauses: vec![] });
-        let side = rp.entry.expect("entry");
-        let inst = &side.0[&MetricGroupId::State];
-        let arms = &inst[0].metrics[&MetricId::Liquidity];
-        assert_eq!(arms.len(), 1, "one OR-arm");
-        assert_eq!(arms[0].len(), 2, "floor AND ceil in that arm");
+        assert_eq!(rp.enter.filters.len(), 1, "one condition on the one read");
+        let Cond::Metric { is, .. } = &rp.enter.filters[0] else { panic!("a metric condition") };
+        assert_eq!(is.len(), 1, "one OR-arm");
+        assert_eq!(is[0].len(), 2, "floor AND ceil in that arm");
     }
 
     #[test]
     fn band_pair_is_not_a_compete_clash() {
         let floor = Clause {
-            group: MetricGroupId::State,
-            metric: MetricId::Liquidity,
-            window: None,
+            r: life(Metric::LiquiditySol),
             op: Operator::Gte,
             threshold: 20.0,
             phase: CutPhase::WinnerFloor,
         };
-        let ceil = Clause {
-            op: Operator::Lte,
-            threshold: 70.0,
-            phase: CutPhase::WinnerCeil,
-            ..floor
-        };
+        let ceil = Clause { op: Operator::Lte, threshold: 70.0, phase: CutPhase::WinnerCeil, ..floor };
         assert!(is_band_pair(&floor, &ceil));
         assert!(!has_entry_compete_clash(&[floor, ceil]));
         // Two floors on one metric still clash.
-        let floor2 = Clause {
-            threshold: 30.0,
-            ..floor
-        };
+        let floor2 = Clause { threshold: 30.0, ..floor };
         assert!(has_entry_compete_clash(&[floor, floor2]));
     }
 
     #[test]
     fn retune_stays_same_phase() {
+        let liq = life(Metric::LiquiditySol);
         let base = GeneratedCombo {
             entry: EntryFilling {
-                clauses: vec![Clause {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Liquidity,
-                    window: None,
-                    op: Operator::Gte,
-                    threshold: 47.0,
-                    phase: CutPhase::Contrast,
-                }],
+                clauses: vec![Clause { r: liq, op: Operator::Gte, threshold: 47.0, phase: CutPhase::Contrast }],
             },
             exit: ExitBag { clauses: vec![] },
             params: RuleParams::default(),
         };
-        let table = CutTable {
-            windows: vec![],
-            entry: vec![
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Liquidity,
-                    window: None,
-                    op: Operator::Gte,
-                    threshold: 47.0,
-                    phase: CutPhase::Contrast,
-                },
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Liquidity,
-                    window: None,
-                    op: Operator::Gte,
-                    threshold: 55.0,
-                    phase: CutPhase::Contrast,
-                },
-                Cut {
-                    group: MetricGroupId::State,
-                    metric: MetricId::Liquidity,
-                    window: None,
-                    op: Operator::Gte,
-                    threshold: 90.0,
-                    phase: CutPhase::FillMoment,
-                },
+        let table = table(
+            vec![
+                cut_at(liq, Operator::Gte, 47.0, CutPhase::Contrast),
+                cut_at(liq, Operator::Gte, 55.0, CutPhase::Contrast),
+                cut_at(liq, Operator::Gte, 90.0, CutPhase::FillMoment),
             ],
-            exit: vec![],
-            winner_fill: vec![],
-            winner_lead: vec![],
-            winner_launch: vec![],
-        };
+            vec![],
+        );
         let r = retune_candidates(&base, &table);
         assert!(r.iter().any(|g| {
             g.entry.clauses.len() == 1
                 && (g.entry.clauses[0].threshold - 55.0).abs() < 1e-9
                 && g.entry.clauses[0].phase == CutPhase::Contrast
         }));
-        assert!(r.iter().all(|g| {
-            !g.entry
-                .clauses
-                .iter()
-                .any(|c| c.phase == CutPhase::FillMoment)
-        }));
+        assert!(r.iter().all(|g| !g.entry.clauses.iter().any(|c| c.phase == CutPhase::FillMoment)));
     }
 }

@@ -48,19 +48,19 @@ pub struct Fingerprint {
     /// migration.
     #[serde(default)]
     pub criteria: Criteria,
-    /// Per-metric-group fingerprint-side config (e.g. `m_flow_ix.ix_patterns`).
-    /// **Not** part of match identity — it selects no token — but it IS part of ROW
-    /// identity: it compiles into this fingerprint's live `m_flow_ix` patterns, so
-    /// two rows matching the same tokens with different config are different
+    /// The fingerprint's trade tags, `{name: definition}`
+    /// ([`hunter_engine::metrics::tags::config`]). **Not** part of match identity — it
+    /// selects no coin — but it IS part of ROW identity: two rows matching the same
+    /// coins with different tags split trades differently, so they are different
     /// fingerprints. `find_or_create` and the `fingerprints_identity_uniq` index both
     /// key on it.
-    #[serde(default = "default_metric_config")]
-    pub metric_config: serde_json::Value,
+    #[serde(default = "default_tags")]
+    pub tags: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-fn default_metric_config() -> serde_json::Value {
+fn default_tags() -> serde_json::Value {
     serde_json::json!({})
 }
 
@@ -72,7 +72,7 @@ impl Fingerprint {
             name: String::new(),
             wildcard: false,
             criteria: Criteria::new(),
-            metric_config: default_metric_config(),
+            tags: default_tags(),
             created_at: now,
             updated_at: now,
         }
@@ -86,7 +86,7 @@ impl Fingerprint {
             id: FingerprintId(self.id),
             wildcard: self.wildcard,
             criteria: self.criteria.clone(),
-            metric_config: self.metric_config.clone(),
+            tags: self.tags.clone(),
         }
     }
 
@@ -110,17 +110,20 @@ impl Fingerprint {
         id: Uuid,
         now: DateTime<Utc>,
     ) -> Result<Self, String> {
-        let criteria = parse_criteria(body.get("criteria"))?;
+        // A v1 client still sends `prior_identity_launches` and `metric_config`: both
+        // are read and stored as v2.
+        let criteria = parse_criteria(body.get("criteria").map(hunter_engine::v1::convert_criteria).as_ref())?;
+        let tags = match (body.get("tags").filter(|v| v.is_object()), body.get("metric_config").filter(|v| v.is_object())) {
+            (Some(t), _) => t.clone(),
+            (None, Some(v1)) => hunter_engine::v1::convert_metric_config(v1)?,
+            (None, None) => default_tags(),
+        };
         Ok(Fingerprint {
             id,
             name: body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             wildcard: body.get("wildcard").and_then(|v| v.as_bool()).unwrap_or(false),
             criteria,
-            metric_config: body
-                .get("metric_config")
-                .filter(|v| v.is_object())
-                .cloned()
-                .unwrap_or_else(default_metric_config),
+            tags,
             created_at: now,
             updated_at: now,
         })

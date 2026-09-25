@@ -79,7 +79,7 @@ impl RunConfigSig {
                         "criteria": f.criteria,
                     }))
                 }),
-                fp.map_or(0, |f| hash_json(&f.metric_config)),
+                fp.map_or(0, |f| hash_json(&f.tags)),
             ],
         }
     }
@@ -137,12 +137,12 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    fn fp(metric_config: Value) -> Fingerprint {
+    fn fp(tags: Value) -> Fingerprint {
         Fingerprint {
             id: FingerprintId(Uuid::nil()),
             wildcard: true,
             criteria: Criteria::new(),
-            metric_config,
+            tags,
         }
     }
 

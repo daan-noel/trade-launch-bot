@@ -22,7 +22,7 @@
 //!
 //! # What travels, and what does not
 //!
-//! Travelling is the *strategy*: fingerprint `criteria` / `metric_config` / `name`,
+//! Travelling is the *strategy*: fingerprint `criteria` / `tags` / `name`,
 //! rule `params` / sizing / caps / tags. Staying put is the *box*: `is_active`,
 //! `is_enabled`, `trade_mode`, and every history table (`strategy_runs`,
 //! `strategy_positions`, ...), which the incremental sync already owns.
@@ -42,7 +42,7 @@
 //! what makes an import idempotent: paste twice, the second is `identical`.
 //!
 //! A fingerprint that is new *by id* may still be present *by identity*
-//! (`fingerprints_identity_uniq` on criteria + wildcard + metric_config). Inserting
+//! (`fingerprints_identity_uniq` on criteria + wildcard + tags). Inserting
 //! it would trip that index, so the plan resolves it to [`ItemStatus::ReuseExisting`]
 //! and rebinds the bundle's rules onto the row already here.
 //!
@@ -68,12 +68,16 @@ use crate::storage::repositories::fingerprint_repo::FingerprintRepo;
 use crate::storage::repositories::rule_repo::RuleRepo;
 use crate::strategies::rules::{self, normalize_tags, RuleDraft, RuleError};
 
-use hunter_engine::rule_params::RuleParams;
 
 /// Wire-format version. Bumped only for a change a reader cannot absorb; the
 /// target box refuses a bundle it does not know how to read rather than applying
-/// the half of it that happens to parse.
-pub const BUNDLE_FORMAT_VERSION: u32 = 1;
+/// the half of it that happens to parse. v2 = metric system v2 (fingerprint `tags`,
+/// staged rule params); a v1 bundle is converted on import
+/// ([`hunter_engine::v1`]).
+pub const BUNDLE_FORMAT_VERSION: u32 = 2;
+
+/// The oldest bundle format this box still reads.
+pub const OLDEST_BUNDLE_FORMAT_VERSION: u32 = 1;
 
 /// `trade_mode` for a rule the target box has never seen. Paper, always — see the
 /// module docs. An existing rule keeps whatever mode it already has here.
@@ -84,7 +88,7 @@ const IMPORT_TRADE_MODE: &str = "paper";
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// One fingerprint as it travels. Identity (`criteria` + `wildcard` +
-/// `metric_config`) plus the label, and `updated_at` so the preview can say which
+/// `tags`) plus the label, and `updated_at` so the preview can say which
 /// side is older.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleFingerprint {
@@ -95,8 +99,10 @@ pub struct BundleFingerprint {
     pub wildcard: bool,
     #[serde(default)]
     pub criteria: Value,
-    #[serde(default = "empty_object")]
-    pub metric_config: Value,
+    /// The fingerprint's trade tags. A v1 bundle carries `metric_config` instead,
+    /// converted on import.
+    #[serde(default = "empty_object", alias = "metric_config")]
+    pub tags: Value,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -284,7 +290,7 @@ pub async fn export_bundle(
             name: fp.name.clone(),
             wildcard: fp.wildcard,
             criteria: serde_json::to_value(&fp.criteria)?,
-            metric_config: fp.metric_config.clone(),
+            tags: fp.tags.clone(),
             updated_at: fp.updated_at,
         });
     }
@@ -372,11 +378,16 @@ pub async fn plan_bundle(
 /// Parse + validate one incoming fingerprint exactly as the CRUD handlers do, so
 /// the preview rejects what the write would reject.
 fn incoming_fingerprint(b: &BundleFingerprint) -> Result<Fingerprint, String> {
+    let tags = if hunter_engine::v1::is_v1_metric_config(&b.tags) {
+        hunter_engine::v1::convert_metric_config(&b.tags).map_err(|e| format!("fingerprint tags: {e}"))?
+    } else {
+        b.tags.clone()
+    };
     let body = json!({
         "name": b.name,
         "wildcard": b.wildcard,
-        "criteria": b.criteria,
-        "metric_config": b.metric_config,
+        "criteria": hunter_engine::v1::convert_criteria(&b.criteria),
+        "tags": tags,
     });
     // Timestamps are the target box's, never the bundle's: `created_at` is when the
     // row appeared HERE, and `updated_at` is this write. The bundle's own
@@ -384,7 +395,7 @@ fn incoming_fingerprint(b: &BundleFingerprint) -> Result<Fingerprint, String> {
     let mut fp = Fingerprint::from_json(&body, b.id, Utc::now())?;
     fp.ensure_auto_name();
     fp.validate()?;
-    hunter_engine::metrics::validate_fingerprint_metric_config(&fp.metric_config)?;
+    hunter_engine::metrics::tags::config::validate_tags(&fp.tags)?;
     Ok(fp)
 }
 
@@ -425,7 +436,7 @@ async fn plan_one_fingerprint(
             // fingerprints to every rule already bound to them.
             if let Some(h) = holder.as_ref().filter(|h| h.id != local.id) {
                 plan.note = Some(format!(
-                    "these criteria + metric_config already belong to \"{}\" ({}) on this box; \
+                    "these criteria + tags already belong to \"{}\" ({}) on this box; \
                      merge or delete that fingerprint first",
                     h.name, h.id
                 ));
@@ -467,9 +478,9 @@ fn fingerprint_changes(local: &Fingerprint, incoming: &Fingerprint) -> Vec<Field
     );
     push_change(
         &mut out,
-        "metric_config",
-        local.metric_config.clone(),
-        incoming.metric_config.clone(),
+        "tags",
+        local.tags.clone(),
+        incoming.tags.clone(),
     );
     out
 }
@@ -505,7 +516,7 @@ async fn plan_one_rule(
     // Canonical params, or the metric registry's own rejection. Canonicalizing
     // BEFORE the diff is what stops an author's JSON key order from reading as a
     // change on every paste — stored params are already canonical.
-    let params = match RuleParams::parse(&b.params) {
+    let params = match hunter_engine::v1::parse_params_any(&b.params) {
         Ok(p) => p.to_value(),
         Err(e) => {
             plan.note = Some(format!("params rejected by this box: {e}"));
@@ -829,9 +840,9 @@ pub async fn apply_response(
 fn parse_bundle(body: &Value) -> Result<RuleBundle, String> {
     let bundle: RuleBundle =
         serde_json::from_value(body.clone()).map_err(|e| format!("not a strategy bundle: {e}"))?;
-    if bundle.bundle_format_version != BUNDLE_FORMAT_VERSION {
+    if !(OLDEST_BUNDLE_FORMAT_VERSION..=BUNDLE_FORMAT_VERSION).contains(&bundle.bundle_format_version) {
         return Err(format!(
-            "bundle format v{} — this box reads v{BUNDLE_FORMAT_VERSION}",
+            "bundle format v{} — this box reads v{OLDEST_BUNDLE_FORMAT_VERSION} to v{BUNDLE_FORMAT_VERSION}",
             bundle.bundle_format_version
         ));
     }
@@ -842,13 +853,13 @@ fn parse_bundle(body: &Value) -> Result<RuleBundle, String> {
 mod tests {
     use super::*;
 
-    fn fp(name: &str, criteria: Value, metric_config: Value) -> BundleFingerprint {
+    fn fp(name: &str, criteria: Value, tags: Value) -> BundleFingerprint {
         BundleFingerprint {
             id: Uuid::nil(),
             name: name.into(),
             wildcard: false,
             criteria,
-            metric_config,
+            tags,
             updated_at: Utc::now(),
         }
     }
@@ -908,6 +919,9 @@ mod tests {
         });
         assert!(parse_bundle(&body).is_err());
         body["bundle_format_version"] = json!(BUNDLE_FORMAT_VERSION);
+        assert!(parse_bundle(&body).is_ok());
+        // A v1 bundle still reads: it is converted on import.
+        body["bundle_format_version"] = json!(OLDEST_BUNDLE_FORMAT_VERSION);
         assert!(parse_bundle(&body).is_ok());
     }
 

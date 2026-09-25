@@ -1,4 +1,4 @@
-//! Does `m_burst_slot` read what the SQL derivation read?
+//! Does `m_slot` read what the SQL derivation read?
 //!
 //! The crowd-island rule is derived in SQL over `ixg.cm_pre`. Re-expressing it as
 //! engine metrics is where a derivation quietly becomes a different rule - the way
@@ -25,18 +25,18 @@
 use std::collections::{HashMap, HashSet};
 
 use hunter_engine::fingerprint::FingerprintId;
-use hunter_engine::hash::HashedSet;
-use hunter_engine::metrics::burst_slot::BurstPatterns;
+use hunter_engine::metrics::buffers::Buffers;
+use hunter_engine::metrics::tags::config::compile_tags;
 use hunter_engine::metrics::template_grain;
 use hunter_engine::metrics::track::TokenTrack;
-use hunter_engine::metrics::{MetricId, Side, TradeLite, WindowSpec, WindowUnit, Windows};
+use hunter_engine::metrics::{Metric, MetricRef, Side, Span, TradeLite, WindowSpec, WindowUnit};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
 use uuid::Uuid;
 
 /// The working list this study ships, after the money check: Axiom's two grains
 /// and GMGN Bot. The five the SQL also carried are 2.6 % of fires and contribute
-/// at most 0.28 SOL each, so they are not here — see `_!___metrics.md` (`m_burst_slot`).
+/// at most 0.28 SOL each, so they are not here — see `_!___metrics.md` (`m_slot`).
 const WORKING: [&str; 3] = [
     "Axiom Trade|CU|ATA|F",
     "Axiom Trade|CU|ATA|N|F",
@@ -241,12 +241,19 @@ async fn the_prefix_reads_what_the_sql_prefix_read() {
         .map(|r| (r.get::<String, _>("mint"), r.get::<i64, _>("slot")))
         .collect();
 
+    // The working list as the tag a fingerprint keeps it in.
     let fp = FingerprintId(Uuid::nil());
-    let mut hashes = HashedSet::default();
-    for id in WORKING {
-        hashes.insert(template_grain::grain_id_hash(id));
-    }
-    let patterns = BurstPatterns::new(hashes);
+    let tags = compile_tags(&serde_json::json!({ "working": { "match": { "ix_template": WORKING } } }));
+    let working = &tags[0];
+    let templates = working.patterns.templates().expect("an ix_template tag has a template view");
+    let tag = hunter_engine::metrics::tags::TagRef::parse("working").expect("tag");
+    let quiet = MetricRef::life(Metric::BuyCount).with_span(Span::window(QUIET));
+    let slot_read = |m: Metric| MetricRef::life(m);
+    let working_read = |m: Metric| MetricRef::life(m).with_tag(tag);
+    let buffers = Buffers::of(
+        [quiet, slot_read(Metric::SlotTemplateCount), working_read(Metric::SlotBuyCount)].into_iter(),
+        1,
+    );
 
     let mut checked = 0usize;
     let mut quiet_checked = 0usize;
@@ -275,8 +282,8 @@ async fn the_prefix_reads_what_the_sql_prefix_read() {
 
         let created_at: chrono::DateTime<chrono::Utc> = trades[0].get("block_time");
         let mut track = TokenTrack::new(created_at);
-        track.ensure_burst(fp, &patterns);
-        track.ensure_window(QUIET);
+        buffers.ensure_on(&mut track);
+        track.ensure_template_tag(fp, working.key, &templates);
         let mut slot_seen: Option<i64> = None;
 
         for t in &trades {
@@ -323,7 +330,7 @@ async fn the_prefix_reads_what_the_sql_prefix_read() {
             if is_buy && slot_seen != Some(slot) {
                 slot_seen = Some(slot);
                 quiet_checked += 1;
-                let buys = track.value(MetricId::BuyCount, Windows::one(QUIET), None, at);
+                let buys = track.value(quiet, None, at);
                 let engine_quiet = buys == 0.0;
                 let sql_quiet = quiet_slots.contains(&(mint.clone(), slot));
                 if engine_quiet != sql_quiet {
@@ -338,38 +345,37 @@ async fn the_prefix_reads_what_the_sql_prefix_read() {
                 continue;
             };
             checked += 1;
-            let win = Windows::default();
-            let read = |id| track.value(id, win, Some(fp), at);
+            let read = |r: MetricRef| track.value(r, Some(fp), at);
             let at_ = format!("{mint} slot {slot} tx {tx_index}");
 
-            let nt = read(MetricId::MemberTemplateCount);
+            let nt = read(slot_read(Metric::SlotTemplateCount));
             if (nt - f64::from(w.run_ntmpl)).abs() > 0.5 {
                 bad.push(format!(
-                    "{at_}: member_template_count {nt} != run_ntmpl {}",
+                    "{at_}: m_slot.template_count {nt} != run_ntmpl {}",
                     w.run_ntmpl
                 ));
             }
-            let fam_n = read(MetricId::SameBuyCount);
+            let fam_n = read(slot_read(Metric::SlotSameTemplateBuyCount));
             if (fam_n - f64::from(w.fam_n)).abs() > 0.5 {
-                bad.push(format!("{at_}: same_buy_count {fam_n} != fam_n {}", w.fam_n));
+                bad.push(format!("{at_}: m_slot.same_template_buy_count {fam_n} != fam_n {}", w.fam_n));
             }
-            let fam_sol = read(MetricId::SameBuySol);
+            let fam_sol = read(slot_read(Metric::SlotSameTemplateBuySol));
             if (fam_sol - w.fam_sol).abs() > 1e-6 {
                 bad.push(format!(
-                    "{at_}: same_buy_sol {fam_sol} != fam_sol {}",
+                    "{at_}: m_slot.same_template_buy_sol {fam_sol} != fam_sol {}",
                     w.fam_sol
                 ));
             }
-            let wc = read(MetricId::WorkingBuyCount);
+            let wc = read(working_read(Metric::SlotBuyCount));
             if (wc - f64::from(w.work_n)).abs() > 0.5 {
-                bad.push(format!("{at_}: working_buy_count {wc} != work_n {}", w.work_n));
+                bad.push(format!("{at_}: m_slot.buy_count @working {wc} != work_n {}", w.work_n));
             }
             // Purity, against SQL's own two counts rather than the engine's.
-            let share = read(MetricId::WorkingBuyShare);
+            let share = read(working_read(Metric::SlotBuySharePct));
             let want_share = 100.0 * f64::from(w.work_n) / f64::from(w.run_n);
             if (share - want_share).abs() > 1e-9 {
                 bad.push(format!(
-                    "{at_}: working_buy_share {share} != {want_share}                      (sql {}/{})",
+                    "{at_}: m_slot.buy_share_pct @working {share} != {want_share} (sql {}/{})",
                     w.work_n, w.run_n
                 ));
             }
@@ -377,7 +383,7 @@ async fn the_prefix_reads_what_the_sql_prefix_read() {
     }
 
     println!(
-        "prefix parity: {checked} fires and {quiet_checked} slot quiet gates compared,          {} mismatches",
+        "prefix parity: {checked} fires and {quiet_checked} slot quiet gates compared, {} mismatches",
         bad.len()
     );
     assert!(checked > 0, "no fires compared - the sample missed the tape");

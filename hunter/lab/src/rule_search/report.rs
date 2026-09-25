@@ -632,7 +632,7 @@ fn replay_loaded(
             // The lake corpus carries no creator wallet, so the `prior_launches` fingerprint axis
             // cannot be primed here and reads `NaN` (see `LAKE_BLIND_METRICS`).
             creator_launches: Default::default(),
-            // No names on the lake corpus either: `prior_identity_launches` stays
+            // No names on the lake corpus either: `name_reuse_count` stays
             // unprimed and fails closed for tokens outside the corpus.
             identity_launches: Default::default(),
             // Same reason, one layer up: the launch-build door is a PG feed, so a
@@ -640,7 +640,7 @@ fn replay_loaded(
             // door rule fails closed rather than arming on an unknown build.
             launch_build_stats: Default::default(),
             // The build-breadth table is a PG feed too: a lake-only run classes every
-            // holder unknown, so `m_holder_book.public_app_share` reads NaN.
+            // holder unknown, so `m_holdings.bag_share_pct @public_app` reads NaN.
             build_breadth: Default::default(),
         },
     );
@@ -711,14 +711,11 @@ fn replay_to_token(po: &PositionOutcome, buy_sol: f64, cost: &CostModel) -> Toke
             None => ExitCode::Open,
             Some(ExitReason::TakeProfit) => ExitCode::TakeProfit,
             Some(ExitReason::StopLoss) => ExitCode::StopLoss,
-            Some(ExitReason::Metrics { .. }) => ExitCode::Metrics,
+            Some(ExitReason::Line(_)) => ExitCode::Metrics,
             Some(ExitReason::Dead) => ExitCode::Dead,
             Some(ExitReason::Manual | ExitReason::Migrated) => ExitCode::Open,
         },
-        exit_metric: None,
-        exit_operator: None,
-        exit_metric_value: None,
-        exit_metric_window: None,
+        exit_label: None,
         exit_metric_slot: None,
         entry_time: Some(po.entry_time),
         entry_price: Some(po.entry_price),

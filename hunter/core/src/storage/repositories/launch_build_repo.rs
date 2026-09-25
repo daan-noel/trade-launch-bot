@@ -16,7 +16,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use hunter_engine::event::LaunchBuildStat;
-use hunter_engine::metrics::flow_ix::ix_hash_from_labels_value;
+use hunter_engine::metrics::trade_keys::ix_hash_from_labels_value;
 
 use crate::config::constants::{RUNNER_MIN_PEAK_AGE_SECS, RUNNER_PEAK_RESERVE_SOL};
 use crate::storage::ix_labels_sql::ix_labels_array_sql;
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(
             out[0].build_hash,
-            hunter_engine::metrics::flow_ix::ix_hash(&["Pump.Fun: Create_v2", "Pump.Fun: Buy"])
+            hunter_engine::metrics::trade_keys::ix_hash(&["Pump.Fun: Create_v2", "Pump.Fun: Buy"])
         );
         assert_eq!(out[0].runner_bps(), 1250);
     }

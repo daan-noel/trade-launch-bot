@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::flow_ix::ix_hash;
+use super::trade_keys::ix_hash;
 
 /// The fee budget of one transaction, packed.
 ///
@@ -380,38 +380,6 @@ impl BuildPatterns {
     }
 }
 
-/// Warning text when a fingerprint's build lists pin a fee budget.
-///
-/// The failure mode this exists for is silent by construction: fee capture is
-/// forward-only, so a pinned entry matches NOTHING in history recorded before it,
-/// and a rule written against one looks exactly like a rule whose cohort went quiet.
-/// The same shape unpinned would have fired. Said once, at save time, where the
-/// author can still act on it.
-pub fn fee_pin_warning(metric_config: &Value) -> Option<String> {
-    let pinned: Vec<&str> = [("m_flow_ix", "ix_patterns"), ("m_dump_ix", "ix_patterns")]
-        .iter()
-        .filter(|(group, field)| {
-            metric_config
-                .get(group)
-                .and_then(|g| g.get(field))
-                .and_then(Value::as_array)
-                .and_then(|rows| BuildPatterns::parse(rows))
-                .is_some_and(|p| p.pins_fee())
-        })
-        .map(|(group, _)| *group)
-        .collect();
-    if pinned.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "{} pins a fee budget on at least one build - fee capture is forward-only, so \
-         those entries match no trade recorded before it. Check the entry against \
-         RECENT data, and confirm the pinned field is a preset rather than a value the \
-         sending client recomputes per transaction.",
-        pinned.join(" and ")
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,29 +630,7 @@ mod tests {
     }
 
 
-    #[test]
-    fn a_pinned_list_warns_and_an_unpinned_one_does_not() {
-        let pinned = json!({"m_dump_ix": {"ix_patterns": [
-            {"labels": DUMP, "cu_limit": 300_000}
-        ]}});
-        let warning = fee_pin_warning(&pinned).expect("pinned config warns");
-        assert!(warning.contains("m_dump_ix"), "{warning}");
-        assert!(warning.contains("forward-only"), "{warning}");
 
-        // The same builds without a pin have nothing to warn about.
-        assert!(fee_pin_warning(&json!({"m_dump_ix": {"ix_patterns": [DUMP]}})).is_none());
-        assert!(fee_pin_warning(&json!({})).is_none());
-    }
-
-    #[test]
-    fn the_warning_names_every_pinned_list() {
-        let both = json!({
-            "m_flow_ix": {"ix_patterns": [{"labels": ["Pump.Fun: Buy"], "cu_price": 1}]},
-            "m_dump_ix": {"ix_patterns": [{"labels": DUMP, "cu_limit": 300_000}]},
-        });
-        let warning = fee_pin_warning(&both).unwrap();
-        assert!(warning.contains("m_flow_ix") && warning.contains("m_dump_ix"), "{warning}");
-    }
 
     #[test]
     fn the_packed_layout_stays_smaller_than_three_options() {

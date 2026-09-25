@@ -114,17 +114,17 @@ impl CachedTrade {
     /// without the token-local interner).
     pub fn from_trade(t: &Trade, wallet: u32) -> Self {
         use hunter_engine::grouping::normalize_labels;
-        use hunter_engine::metrics::flow_ix::{ix_hash_opt, wallet_hash};
+        use hunter_engine::metrics::trade_keys::{ix_hash_opt, wallet_hash};
         let labels = normalize_labels(&t.instruction_labels);
         Self::from_trade_hashes(
             t,
             wallet,
             ix_hash_opt(&labels),
             wallet_hash(&t.wallet_address),
-            hunter_engine::metrics::flow_ix::marker_bits(&labels),
+            hunter_engine::metrics::trade_keys::marker_bits(&labels),
             hunter_engine::metrics::template_grain::grain_hash(&labels),
             hunter_engine::metrics::template_grain::program_hash(&labels),
-            hunter_engine::metrics::flow_ix::build_hash(&labels),
+            hunter_engine::metrics::trade_keys::build_hash(&labels),
             hunter_engine::metrics::template_grain::is_launch(&labels),
         )
     }
@@ -396,7 +396,7 @@ impl TokenState {
             });
 
         let creator_wallet_hash = (!token.creator_wallet.is_empty())
-            .then(|| hunter_engine::metrics::flow_ix::wallet_hash(&token.creator_wallet));
+            .then(|| hunter_engine::metrics::trade_keys::wallet_hash(&token.creator_wallet));
         Self {
             token,
             trades: Arc::new(Vec::new()),

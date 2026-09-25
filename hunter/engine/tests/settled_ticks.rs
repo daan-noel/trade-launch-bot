@@ -26,7 +26,6 @@ use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, F
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts};
 use hunter_engine::reduce::reduce;
-use hunter_engine::rule_params::RuleParams;
 use hunter_engine::EngineState;
 use serde_json::json;
 use uuid::Uuid;
@@ -66,7 +65,7 @@ fn cu_fp(id: u128) -> Fingerprint {
         id: fid(id),
         wildcard: false,
         criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
-        metric_config: json!({ "m_flow_ix": { "ix_patterns": [["Pump.Fun: Buy"]] } }),
+        tags: hunter_engine::v1::convert_metric_config(&json!({ "m_flow_ix": { "ix_patterns": [["Pump.Fun: Buy"]] } })).unwrap(),
     }
 }
 
@@ -84,7 +83,7 @@ fn rules() -> Vec<LoadedRule> {
             buy_amount_lamports: 500_000_000,
             max_concurrent_tokens: 2,
             max_total_tokens: 6,
-            params: RuleParams::parse(&json!({
+            params: hunter_engine::v1::parse_params_any(&json!({
                 "take_profit": 80,
                 "stop_loss": 40,
                 "entry": {
@@ -110,7 +109,7 @@ fn rules() -> Vec<LoadedRule> {
             buy_amount_lamports: 250_000_000,
             max_concurrent_tokens: 1,
             max_total_tokens: 0,
-            params: RuleParams::parse(&json!({
+            params: hunter_engine::v1::parse_params_any(&json!({
                 "entry": {
                     "m_price_window": {
                         "window_size_sec": 35,
@@ -134,7 +133,7 @@ fn rules() -> Vec<LoadedRule> {
             buy_amount_lamports: 100_000_000,
             max_concurrent_tokens: 1,
             max_total_tokens: 2,
-            params: RuleParams::parse(&json!({ "take_profit": 500 })).unwrap(),
+            params: hunter_engine::v1::parse_params_any(&json!({ "take_profit": 500 })).unwrap(),
             entry_enabled: true,
         },
     ]
@@ -209,7 +208,7 @@ fn stream(seed: u64, n_events: usize) -> Vec<Event> {
                     priced_reserve_sol: rng.frac() * 60.0,
                     at: ts(now),
                     ix_hash: (rng.frac() < 0.4)
-                        .then(|| hunter_engine::metrics::flow_ix::ix_hash(&["Pump.Fun: Buy"])),
+                        .then(|| hunter_engine::metrics::trade_keys::ix_hash(&["Pump.Fun: Buy"])),
                     wallet_hash: rng.below(6),
                     leg_index: 0,
                     ..Default::default()
@@ -361,7 +360,7 @@ fn a_freed_cap_slot_wakes_a_settled_token() {
         buy_amount_lamports: 100_000_000,
         max_concurrent_tokens: 1,
         max_total_tokens: 0,
-        params: RuleParams::parse(&json!({ "take_profit": 50 })).unwrap(),
+        params: hunter_engine::v1::parse_params_any(&json!({ "take_profit": 50 })).unwrap(),
         entry_enabled: true,
     };
     let mut s = EngineState::new();

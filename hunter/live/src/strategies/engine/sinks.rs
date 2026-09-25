@@ -55,7 +55,7 @@ use hunter_engine::event::{
 };
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::metrics::evaluator::condition_expr_to_value;
-use hunter_engine::metrics::{group_of, group_spec, metric_spec, MetricId};
+use hunter_engine::metrics::MetricRef;
 
 use trading_core::models::ingest::SseEvent;
 use trading_core::models::strategy_arm::ArmLedgerWrite;
@@ -1377,15 +1377,10 @@ fn disarm_reason_str(r: DisarmReason) -> &'static str {
     }
 }
 
-/// A metric's stable wire path, `group.metric` — `m_flow_window.gross_flow`.
-///
-/// The registry **names**, never the `MetricId` ordinal, which is internal and
-/// must not reach a client or a stored row (the same line the readout routes
-/// hold). This is a ledger column that outlives any given build, so an ordinal
-/// would silently re-point every stored row the day a metric is inserted.
-fn metric_path(metric: MetricId) -> String {
-    let group = group_spec(group_of(metric).id).name;
-    format!("{group}.{}", metric_spec(metric).name)
+/// A read's stable wire label: `m_flow.buy_sol @!volume [10s]` — the registry names,
+/// never an ordinal, because this is a ledger column that outlives any build.
+fn metric_path(r: MetricRef) -> String {
+    r.label()
 }
 
 /// [`EntryBlockers`] as the `strategy_arms.end_detail` JSON.
@@ -1401,16 +1396,16 @@ fn metric_path(metric: MetricId) -> String {
 /// the same one.
 fn entry_blockers_json(b: &EntryBlockers) -> serde_json::Value {
     serde_json::json!({
-        "blocked_by": b.unmet.first().map(|r| metric_path(r.metric)),
+        "blocked_by": b.unmet.first().map(|r| metric_path(r.r)),
         "killed_by": {
-            "metric": metric_path(b.killed_by.metric),
+            "metric": metric_path(b.killed_by.r),
             "threshold": b.killed_by.threshold,
             // The operator the bound is enforced with, so the UI states the
             // deadline the way the rule authored it.
             "operator": if b.killed_by.cross_at_ge { "<" } else { "<=" },
         },
         "unmet": b.unmet.iter().map(|r| serde_json::json!({
-            "metric": metric_path(r.metric),
+            "metric": metric_path(r.r),
             // The group's own window. A two-window group's second axis is not on the
             // wire yet — add a key for it rather than widening this one, so a reader
             // can never mistake one window for the other.
@@ -1419,11 +1414,11 @@ fn entry_blockers_json(b: &EntryBlockers) -> serde_json::Value {
             // window has no seconds to report and states `null` here, naming itself in
             // `window` instead. Writing the whole span under this key would put an
             // object where every reader of this column expects a scalar.
-            "window_size_sec": r.window.primary
+            "window_size_sec": r.r.span.window
                 .filter(|w| w.unit == hunter_engine::metrics::WindowUnit::Sec)
                 .map(|w| w.size),
             // The full span - size, lag and unit.
-            "window": r.window.primary,
+            "window": r.r.span.window,
             // Non-finite serializes `null`: an unreadable metric satisfies
             // nothing, and a `NaN` is not representable in JSON anyway.
             "value": r.value.is_finite().then_some(r.value),

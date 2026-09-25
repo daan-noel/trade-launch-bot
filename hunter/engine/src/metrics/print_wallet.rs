@@ -14,12 +14,12 @@
 //! map per token, which on a busy coin holds every buyer it ever had; a track opens
 //! it through [`TokenTrack::ensure_print_wallet`](super::track::TokenTrack::ensure_print_wallet)
 //! only when some rule names the group, so a rule set that does not pays nothing.
-//! The map needs the wallet column ([`MetricId::needs_wallet_identity`]).
+//! The map needs the wallet column ([`Metric::needs_wallet_identity`]).
 
 use crate::hash::HashedMap;
 
 use super::flow_window::is_foldable;
-use super::{secs_between, MetricId, Side, TradeLite, Ts};
+use super::{secs_between, Metric, Side, TradeLite, Ts};
 
 /// One token's wallet -> last-buy map and the reading for the print folded last.
 #[derive(Debug, Clone)]
@@ -55,9 +55,9 @@ impl PrintWalletState {
     }
 
     /// Value of one `m_print_wallet` metric.
-    pub fn value(&self, id: MetricId) -> f64 {
+    pub fn value(&self, id: Metric) -> f64 {
         match id {
-            MetricId::SinceBuy => self.since_buy,
+            Metric::SinceBuySec => self.since_buy,
             _ => f64::NAN,
         }
     }
@@ -83,19 +83,19 @@ mod tests {
         s.on_trade(&print(Side::Buy, 8, 2.0));
         s.on_trade(&print(Side::Buy, 7, 4.5));
         s.on_trade(&print(Side::Sell, 7, 30.0));
-        assert_eq!(s.value(MetricId::SinceBuy), 25.5, "the LAST buy, not the first");
+        assert_eq!(s.value(Metric::SinceBuySec), 25.5, "the LAST buy, not the first");
         // A sell never moves the clock; the next sell reads the same buy.
         s.on_trade(&print(Side::Sell, 7, 40.0));
-        assert_eq!(s.value(MetricId::SinceBuy), 35.5);
+        assert_eq!(s.value(Metric::SinceBuySec), 35.5);
     }
 
     #[test]
     fn a_buy_reads_the_buy_before_it() {
         let mut s = PrintWalletState::default();
         s.on_trade(&print(Side::Buy, 7, 1.0));
-        assert!(s.value(MetricId::SinceBuy).is_nan(), "no earlier buy");
+        assert!(s.value(Metric::SinceBuySec).is_nan(), "no earlier buy");
         s.on_trade(&print(Side::Buy, 7, 3.0));
-        assert_eq!(s.value(MetricId::SinceBuy), 2.0);
+        assert_eq!(s.value(Metric::SinceBuySec), 2.0);
     }
 
     #[test]
@@ -103,10 +103,10 @@ mod tests {
         let mut s = PrintWalletState::default();
         s.on_trade(&print(Side::Buy, 7, 1.0));
         s.on_trade(&print(Side::Sell, 9, 2.0));
-        assert!(s.value(MetricId::SinceBuy).is_nan(), "wallet 9 never bought");
+        assert!(s.value(Metric::SinceBuySec).is_nan(), "wallet 9 never bought");
         s.on_trade(&print(Side::Sell, 7, 3.0));
-        assert_eq!(s.value(MetricId::SinceBuy), 2.0);
+        assert_eq!(s.value(Metric::SinceBuySec), 2.0);
         s.on_tick();
-        assert!(s.value(MetricId::SinceBuy).is_nan(), "a tick is not a print");
+        assert!(s.value(Metric::SinceBuySec).is_nan(), "a tick is not a print");
     }
 }

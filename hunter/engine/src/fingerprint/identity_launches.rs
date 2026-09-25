@@ -1,4 +1,4 @@
-//! The `prior_identity_launches` tally - how many earlier tokens of one creation build
+//! The `name_reuse_count` tally - how many earlier tokens of one creation build
 //! carried a token's `(name, symbol)` identity, over a trailing window.
 //!
 //! One structure for every path that stamps the axis: the engine keeps one in
@@ -19,7 +19,7 @@ use crate::metrics::Ts;
 
 /// Trailing window the count reads: launches strictly before the token and at most
 /// this many days before it.
-pub const PRIOR_IDENTITY_WINDOW_DAYS: i64 = 30;
+pub const NAME_REUSE_WINDOW_DAYS: i64 = 30;
 
 /// Creation instants and mints per (creation build, identity).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -38,9 +38,9 @@ impl IdentityLaunches {
     }
 
     /// Earlier creations of `build` with `identity`: strictly before `at`, at most
-    /// [`PRIOR_IDENTITY_WINDOW_DAYS`] before it, the token itself excluded.
+    /// [`NAME_REUSE_WINDOW_DAYS`] before it, the token itself excluded.
     pub fn prior(&self, build: u64, identity: IdentityHash, at: Ts, mint: u64) -> u32 {
-        let from = at - chrono::Duration::days(PRIOR_IDENTITY_WINDOW_DAYS);
+        let from = at - chrono::Duration::days(NAME_REUSE_WINDOW_DAYS);
         let n = self
             .by_key
             .get(&identity_key(build, identity))

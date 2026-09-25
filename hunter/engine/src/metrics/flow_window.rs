@@ -39,7 +39,7 @@
 
 use std::collections::VecDeque;
 
-use super::{MetricId, Side, WindowSpec};
+use super::{Metric, Side, WindowSpec};
 
 /// Whether a trade is admitted to a window at all — the ONE guard against a poisoned
 /// feed value, shared with [`m_crowd_window`](super::crowd_window) so the two groups
@@ -162,7 +162,7 @@ impl WindowState {
     /// head lives, as well as anything a regressed `block_time` pushed in. Both loops
     /// terminate on the first in-window entry, which the sorted deque guarantees is
     /// also the last out-of-window one.
-    pub fn value(&self, id: MetricId, now_pos: i64) -> f64 {
+    pub fn value(&self, id: Metric, now_pos: i64) -> f64 {
         let (lo, hi) = self.spec.bounds(now_pos);
         let (mut buy, mut sell, mut buy_n) = (self.buy, self.sell, self.buy_n);
         for &(pos, signed) in self.buf.iter() {
@@ -178,18 +178,18 @@ impl WindowState {
             drop_entry(signed, &mut buy, &mut sell, &mut buy_n);
         }
         match id {
-            MetricId::Buy => buy,
-            MetricId::Sell => sell,
-            MetricId::GrossFlow => buy + sell,
-            MetricId::NetFlow => buy - sell,
-            MetricId::BuyCount => buy_n as f64,
+            Metric::BuySol => buy,
+            Metric::SellSol => sell,
+            Metric::GrossSol => buy + sell,
+            Metric::NetSol => buy - sell,
+            Metric::BuyCount => buy_n as f64,
             // Both ends are corrected on the SAME bounds as `trade_count`, so the two
             // counts and `buy_count` always add up — a sell is a trade that is not a buy.
-            MetricId::SellCount => self.trade_count(now_pos) - buy_n as f64,
+            Metric::SellCount => self.trade_count(now_pos) - buy_n as f64,
             // Direction of the window's flow, independent of its size. Undefined on an
             // empty window: with no SOL either way there is no share to report, and a
             // `0.0` would read as "all sells" to a `buy_share <= X` condition.
-            MetricId::BuyShare => {
+            Metric::BuySharePct => {
                 let gross = buy + sell;
                 if gross > 0.0 {
                     buy / gross * 100.0
@@ -197,7 +197,7 @@ impl WindowState {
                     f64::NAN
                 }
             }
-            MetricId::TradeCount => self.trade_count(now_pos),
+            Metric::TradeCount => self.trade_count(now_pos),
             _ => f64::NAN,
         }
     }
@@ -250,16 +250,16 @@ mod tests {
         let mut w = WindowState::new(WindowSpec::secs(10.0));
         w.on_trade(Side::Buy, 1.0, p(0.0), p(0.0));
         w.on_trade(Side::Sell, 0.0, p(1.0), p(1.0));
-        assert_eq!(w.value(MetricId::BuyCount, p(1.0)), 1.0);
-        assert_eq!(w.value(MetricId::SellCount, p(1.0)), 1.0);
+        assert_eq!(w.value(Metric::BuyCount, p(1.0)), 1.0);
+        assert_eq!(w.value(Metric::SellCount, p(1.0)), 1.0);
 
         // Push both out of the window; the eviction is where the sign is read again.
         w.on_trade(Side::Buy, 1.0, p(30.0), p(30.0));
-        assert_eq!(w.value(MetricId::BuyCount, p(30.0)), 1.0);
-        assert_eq!(w.value(MetricId::SellCount, p(30.0)), 0.0);
+        assert_eq!(w.value(Metric::BuyCount, p(30.0)), 1.0);
+        assert_eq!(w.value(Metric::SellCount, p(30.0)), 0.0);
         assert_eq!(
-            w.value(MetricId::BuyCount, p(30.0)) + w.value(MetricId::SellCount, p(30.0)),
-            w.value(MetricId::TradeCount, p(30.0)),
+            w.value(Metric::BuyCount, p(30.0)) + w.value(Metric::SellCount, p(30.0)),
+            w.value(Metric::TradeCount, p(30.0)),
         );
     }
 
@@ -283,21 +283,21 @@ mod tests {
             w.on_trade(side, sol, p(at), p(at));
         }
         let now = p(4.0);
-        assert_eq!(w.value(MetricId::BuyCount, now), 2.0);
-        assert_eq!(w.value(MetricId::SellCount, now), 3.0);
+        assert_eq!(w.value(Metric::BuyCount, now), 2.0);
+        assert_eq!(w.value(Metric::SellCount, now), 3.0);
         assert_eq!(
-            w.value(MetricId::BuyCount, now) + w.value(MetricId::SellCount, now),
-            w.value(MetricId::TradeCount, now),
+            w.value(Metric::BuyCount, now) + w.value(Metric::SellCount, now),
+            w.value(Metric::TradeCount, now),
         );
 
         // ...and it still holds once the window has evicted part of the tape, which is
         // where a separately-maintained counter would drift from the count.
         let later = p(13.0);
         w.evict(later);
-        assert_eq!(w.value(MetricId::SellCount, later), 2.0, "only the 3.0 and 4.0 sells remain");
+        assert_eq!(w.value(Metric::SellCount, later), 2.0, "only the 3.0 and 4.0 sells remain");
         assert_eq!(
-            w.value(MetricId::BuyCount, later) + w.value(MetricId::SellCount, later),
-            w.value(MetricId::TradeCount, later),
+            w.value(Metric::BuyCount, later) + w.value(Metric::SellCount, later),
+            w.value(Metric::TradeCount, later),
         );
     }
 
@@ -307,8 +307,8 @@ mod tests {
     #[test]
     fn an_empty_window_counts_zero_sells_rather_than_nan() {
         let w = WindowState::new(WindowSpec::secs(10.0));
-        assert_eq!(w.value(MetricId::SellCount, p(0.0)), 0.0);
-        assert_eq!(w.value(MetricId::BuyCount, p(0.0)), 0.0);
+        assert_eq!(w.value(Metric::SellCount, p(0.0)), 0.0);
+        assert_eq!(w.value(Metric::BuyCount, p(0.0)), 0.0);
     }
     use super::*;
     use crate::metrics::Ts;
@@ -337,8 +337,8 @@ mod tests {
         // And the sums agree with the predicate at that exact edge.
         let mut w = WindowState::new(WindowSpec::secs(10.0));
         w.on_trade(Side::Buy, 7.0, p(0.0), p(0.0));
-        assert_eq!(w.value(MetricId::Buy, p(10.0)), 7.0, "still summed at exactly w");
-        assert_eq!(w.value(MetricId::Buy, p(10.001)), 0.0, "dropped a hair later");
+        assert_eq!(w.value(Metric::BuySol, p(10.0)), 7.0, "still summed at exactly w");
+        assert_eq!(w.value(Metric::BuySol, p(10.001)), 0.0, "dropped a hair later");
     }
 
     /// Two rules asking for the same span share one buffer; a span that differs in
@@ -372,14 +372,14 @@ mod tests {
 
         let mut w = WindowState::new(burst);
         w.on_trade(Side::Buy, 2.0, 100, 100);
-        assert_eq!(w.value(MetricId::Buy, 100), 2.0, "in the current slot");
-        assert_eq!(w.value(MetricId::BuyCount, 100), 1.0);
-        assert_eq!(w.value(MetricId::Buy, 101), 0.0, "gone once the slot rolls");
+        assert_eq!(w.value(Metric::BuySol, 100), 2.0, "in the current slot");
+        assert_eq!(w.value(Metric::BuyCount, 100), 1.0);
+        assert_eq!(w.value(Metric::BuySol, 101), 0.0, "gone once the slot rolls");
 
         let mut q = WindowState::new(quiet);
         q.on_trade(Side::Buy, 2.0, 100, 100);
-        assert_eq!(q.value(MetricId::Buy, 100), 0.0, "the current slot is excluded");
-        assert_eq!(q.value(MetricId::Buy, 101), 2.0, "and enters once it is behind");
+        assert_eq!(q.value(Metric::BuySol, 100), 0.0, "the current slot is excluded");
+        assert_eq!(q.value(Metric::BuySol, 101), 2.0, "and enters once it is behind");
     }
 
     /// `buy_count` counts BUYS; `trade_count` counts both sides. On a one-slot
@@ -390,8 +390,8 @@ mod tests {
         w.on_trade(Side::Buy, 1.0, 7, 7);
         w.on_trade(Side::Sell, 1.0, 7, 7);
         w.on_trade(Side::Buy, 1.0, 7, 7);
-        assert_eq!(w.value(MetricId::BuyCount, 7), 2.0);
-        assert_eq!(w.value(MetricId::TradeCount, 7), 3.0);
+        assert_eq!(w.value(Metric::BuyCount, 7), 2.0);
+        assert_eq!(w.value(Metric::TradeCount, 7), 3.0);
     }
 
     #[test]
@@ -400,10 +400,10 @@ mod tests {
         w.on_trade(Side::Buy, 3.0, p(0.0), p(0.0));
         w.on_trade(Side::Sell, 1.0, p(1.0), p(1.0));
         w.on_trade(Side::Buy, 2.0, p(2.0), p(2.0));
-        assert_eq!(w.value(MetricId::Buy, p(2.0)), 5.0);
-        assert_eq!(w.value(MetricId::Sell, p(2.0)), 1.0);
-        assert_eq!(w.value(MetricId::GrossFlow, p(2.0)), 6.0);
-        assert_eq!(w.value(MetricId::NetFlow, p(2.0)), 4.0);
+        assert_eq!(w.value(Metric::BuySol, p(2.0)), 5.0);
+        assert_eq!(w.value(Metric::SellSol, p(2.0)), 1.0);
+        assert_eq!(w.value(Metric::GrossSol, p(2.0)), 6.0);
+        assert_eq!(w.value(Metric::NetSol, p(2.0)), 4.0);
     }
 
     #[test]
@@ -412,11 +412,11 @@ mod tests {
         w.on_trade(Side::Buy, 5.0, p(0.0), p(0.0));
         // Boundary: an entry exactly 10 s old is still in (cutoff is exclusive).
         w.evict(p(10.0));
-        assert_eq!(w.value(MetricId::Buy, p(10.0)), 5.0);
+        assert_eq!(w.value(Metric::BuySol, p(10.0)), 5.0);
         // One millisecond past the window edge → it drops.
         w.evict(p(10.001));
-        assert_eq!(w.value(MetricId::Buy, p(10.001)), 0.0);
-        assert_eq!(w.value(MetricId::GrossFlow, p(10.001)), 0.0);
+        assert_eq!(w.value(Metric::BuySol, p(10.001)), 0.0);
+        assert_eq!(w.value(Metric::GrossSol, p(10.001)), 0.0);
     }
 
     #[test]
@@ -426,9 +426,9 @@ mod tests {
         w.on_trade(Side::Sell, 2.0, p(3.0), p(3.0));
         // A new trade at t=6 pushes t=0 out of the 5 s window.
         w.on_trade(Side::Buy, 4.0, p(6.0), p(6.0));
-        assert_eq!(w.value(MetricId::Buy, p(6.0)), 4.0); // t=0 buy gone
-        assert_eq!(w.value(MetricId::Sell, p(6.0)), 2.0); // t=3 sell still in
-        assert_eq!(w.value(MetricId::NetFlow, p(6.0)), 2.0);
+        assert_eq!(w.value(Metric::BuySol, p(6.0)), 4.0); // t=0 buy gone
+        assert_eq!(w.value(Metric::SellSol, p(6.0)), 2.0); // t=3 sell still in
+        assert_eq!(w.value(Metric::NetSol, p(6.0)), 2.0);
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
         w.on_trade(Side::Buy, f64::NAN, p(0.0), p(0.0));
         w.on_trade(Side::Buy, -1.0, p(0.0), p(0.0));
         w.on_trade(Side::Buy, 2.0, p(0.0), p(0.0));
-        assert_eq!(w.value(MetricId::Buy, p(0.0)), 2.0);
+        assert_eq!(w.value(Metric::BuySol, p(0.0)), 2.0);
     }
 
     #[test]
@@ -446,8 +446,8 @@ mod tests {
         w.on_trade(Side::Buy, 5.0, p(54.0), p(54.0));
         w.on_trade(Side::Buy, 1.0, p(51.0), p(51.0));
         // At now=51 the t=54 print is future-dated — must not count.
-        assert_eq!(w.value(MetricId::Buy, p(51.0)), 1.0);
-        assert_eq!(w.value(MetricId::Buy, p(54.0)), 6.0);
+        assert_eq!(w.value(Metric::BuySol, p(51.0)), 1.0);
+        assert_eq!(w.value(Metric::BuySol, p(54.0)), 6.0);
     }
 
     /// The O(1) read starts from the running sums and corrects only the two ends,
@@ -492,7 +492,7 @@ mod tests {
                         .filter(|&&(t, _)| in_window(WindowSpec::secs(window), t, now))
                         .count() as f64;
                     assert_eq!(
-                        w.value(MetricId::TradeCount, now),
+                        w.value(Metric::TradeCount, now),
                         brute,
                         "w={window} at={at} probe={probe}",
                     );
@@ -537,11 +537,11 @@ mod tests {
                     }
                     let got = |id| w.value(id, now);
                     let eq = |a: f64, b: f64| (a - b).abs() < 1e-9;
-                    assert!(eq(got(MetricId::Buy), buy), "buy w={window} at={at} p={probe}");
-                    assert!(eq(got(MetricId::Sell), sell), "sell w={window} at={at} p={probe}");
-                    assert!(eq(got(MetricId::GrossFlow), buy + sell), "gross w={window}");
-                    assert!(eq(got(MetricId::NetFlow), buy - sell), "net w={window}");
-                    let share = got(MetricId::BuyShare);
+                    assert!(eq(got(Metric::BuySol), buy), "buy w={window} at={at} p={probe}");
+                    assert!(eq(got(Metric::SellSol), sell), "sell w={window} at={at} p={probe}");
+                    assert!(eq(got(Metric::GrossSol), buy + sell), "gross w={window}");
+                    assert!(eq(got(Metric::NetSol), buy - sell), "net w={window}");
+                    let share = got(Metric::BuySharePct);
                     if buy + sell > 0.0 {
                         assert!(
                             eq(share, buy / (buy + sell) * 100.0),
@@ -564,12 +564,12 @@ mod tests {
     #[test]
     fn buy_share_is_direction_not_size_and_nan_when_empty() {
         let mut w = WindowState::new(WindowSpec::secs(60.0));
-        assert!(w.value(MetricId::BuyShare, p(0.0)).is_nan(), "empty window is undefined");
+        assert!(w.value(Metric::BuySharePct, p(0.0)).is_nan(), "empty window is undefined");
 
         // 6 SOL of turnover, 5 of it buys.
         w.on_trade(Side::Buy, 5.0, p(1.0), p(1.0));
         w.on_trade(Side::Sell, 1.0, p(2.0), p(2.0));
-        let small = w.value(MetricId::BuyShare, p(3.0));
+        let small = w.value(Metric::BuySharePct, p(3.0));
         assert!((small - 500.0 / 6.0).abs() < 1e-9, "got {small}");
 
         // Same 5:1 direction at 100x the size reads identically - which `net_flow`
@@ -577,9 +577,9 @@ mod tests {
         let mut big = WindowState::new(WindowSpec::secs(60.0));
         big.on_trade(Side::Buy, 500.0, p(1.0), p(1.0));
         big.on_trade(Side::Sell, 100.0, p(2.0), p(2.0));
-        assert!((big.value(MetricId::BuyShare, p(3.0)) - small).abs() < 1e-9);
+        assert!((big.value(Metric::BuySharePct, p(3.0)) - small).abs() < 1e-9);
         assert!(
-            (big.value(MetricId::NetFlow, p(3.0)) - w.value(MetricId::NetFlow, p(3.0))).abs()
+            (big.value(Metric::NetSol, p(3.0)) - w.value(Metric::NetSol, p(3.0))).abs()
                 > 1.0,
             "net_flow conflates direction with size; buy_share is the point"
         );
@@ -587,6 +587,6 @@ mod tests {
         // All buys, no sells - a full 100%, not a divide-by-zero.
         let mut one = WindowState::new(WindowSpec::secs(60.0));
         one.on_trade(Side::Buy, 2.0, p(1.0), p(1.0));
-        assert!((one.value(MetricId::BuyShare, p(2.0)) - 100.0).abs() < 1e-9);
+        assert!((one.value(Metric::BuySharePct, p(2.0)) - 100.0).abs() < 1e-9);
     }
 }

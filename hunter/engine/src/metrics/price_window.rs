@@ -25,7 +25,7 @@
 
 use std::collections::VecDeque;
 
-use super::{MetricId, WindowSpec};
+use super::{Metric, WindowSpec};
 
 /// One trailing-window extrema tracker for a single `window_size_sec`.
 #[derive(Debug, Clone)]
@@ -159,10 +159,10 @@ impl PriceWindowState {
 
     /// Value of one `m_price_window` metric over `[now − w, now]`. Non price-window
     /// ids yield `NaN` (unreachable — `TokenTrack` routes by group).
-    pub fn value(&self, id: MetricId, now_pos: i64) -> f64 {
+    pub fn value(&self, id: Metric, now_pos: i64) -> f64 {
         match id {
-            MetricId::WinTrail => self.trail(now_pos),
-            MetricId::WinRise => self.rise(now_pos),
+            Metric::TrailPct => self.trail(now_pos),
+            Metric::RisePct => self.rise(now_pos),
             _ => f64::NAN,
         }
     }

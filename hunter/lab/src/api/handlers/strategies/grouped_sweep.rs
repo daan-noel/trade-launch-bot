@@ -143,11 +143,11 @@ pub struct StartGroupedSweepBody {
     /// leaves results comparable regardless of path. Omitted ⇒ scalar.
     #[serde(default)]
     pub use_avx512: Option<bool>,
-    /// Corpus-wide volume-ix patterns for flow-metric axes (`string[][]`).
-    /// Required when `axes` reference `m_flow_ix` / `m_flow_ix_window`; Promote
-    /// writes them into the fingerprint's `metric_config`.
+    /// The run's tags document — the same shape a fingerprint's `tags` has. Every
+    /// `@tag` an axis reads must be defined here; Promote writes it onto the promoted
+    /// fingerprint, so the rule reads the tags the sweep scored with.
     #[serde(default)]
-    pub ix_patterns: Option<Vec<Vec<String>>>,
+    pub tags: Option<serde_json::Value>,
     /// Which trade in the fill window prices each simulated leg — mirrors
     /// `EngineSimRequest.fill_model`, and threads the same `FillModel` the sweep's
     /// scan and `run_replay` both take. Omitted ⇒ `worst_case`, which is what the
@@ -166,21 +166,18 @@ pub struct StartGroupedSweepBody {
     /// haircut is **not** rank-preserving across combos.
     #[serde(default)]
     pub cost_model: trading_core::strategies::kernel::CostModelKind,
-    /// Candidate scale-out ladder **grid** for Pass 2: `ExitStage[][]` — one array
-    /// per candidate ladder (NOT a single flat ladder). Each group's top-K combos
-    /// are independently re-scored against every ladder here PLUS their own
-    /// baseline exit, and each combo keeps whichever wins for it — a dynamic,
-    /// per-combo pick, not one ladder forced onto the whole grid. Omitted / empty
-    /// ⇒ no Pass 2. Stages validated like rule `scale_out`; v1 restricts stage
-    /// conditions to `m_position` / `take_profit` so the precompute columns from
-    /// the axes grid stay sufficient. See
-    /// `docs/arch/sweep.md` (*Pass-2 overlay*).
+    /// Candidate stage plans for Pass 2: `Stage[][]` — one rule `stages` array per
+    /// candidate (NOT one flat plan). Each group's top-K combos are re-scored under
+    /// every plan here PLUS their own exit, and each combo keeps whichever wins for it.
+    /// Omitted / empty ⇒ no Pass 2. A plan's conditions may read only our position
+    /// (the axes precompute records no other columns). See `docs/arch/sweep.md`
+    /// (*Pass-2 overlay*).
     #[serde(default)]
-    pub scale_out: Option<serde_json::Value>,
-    /// How many best combos per group Pass 2 re-scores. Default 3; ignored when
-    /// `scale_out` is absent.
+    pub stage_plans: Option<serde_json::Value>,
+    /// How many best combos per group Pass 2 re-scores. Default 3; ignored without
+    /// `stage_plans`.
     #[serde(default)]
-    pub scale_out_top_k: Option<usize>,
+    pub stage_plans_top_k: Option<usize>,
 }
 
 /// The [`Pricing`](crate::sweep::generic::Pricing) a stored run was computed under.
@@ -703,16 +700,18 @@ async fn run_grouped_sweep_job(
     // Stored run tag: the refine pass reports as its own method, else the sampler.
     let method_tag = if refine.is_some() { "refine".to_string() } else { method.tag().to_string() };
 
-    // Peek axes for flow groups before load so the lake projects ix_labels/wallet.
-    let with_flow = axes_json_references_flow(&b.axes);
-    if with_flow && b.ix_patterns.is_none() {
-        let msg = "axes reference m_flow_ix/m_flow_ix_window but ix_patterns is missing";
-        gate.error = Some(msg.into());
-        let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
-        return;
-    }
-    // Parse + validate Pass-2 scale_out overlay (optional). Empty / omitted ⇒ off.
-    let scale_out_pass2 = match parse_scale_out_pass2(b.scale_out.as_ref(), b.scale_out_top_k) {
+    // Peek the axes before the load: a tag or wallet read needs the lake to project
+    // the ix-label and wallet columns, and every tag they read must be defined.
+    let with_flow = match axes_need_trade_keys(&b.axes, b.tags.as_ref()) {
+        Ok(v) => v,
+        Err(msg) => {
+            gate.error = Some(msg.clone());
+            let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
+            return;
+        }
+    };
+    // Parse + validate the Pass-2 stage plans (optional). Empty / omitted ⇒ off.
+    let scale_out_pass2 = match parse_stage_plans(b.stage_plans.as_ref(), b.stage_plans_top_k) {
         Ok(v) => v,
         Err(msg) => {
             gate.error = Some(msg.clone());
@@ -1116,14 +1115,9 @@ async fn run_grouped_sweep_job(
         // The clamped width actually used to partition (not the raw request), so
         // re-run + promotion restore exactly what this run swept.
         partition: plan.clone(),
-        ix_patterns: b
-            .ix_patterns
-            .as_ref()
-            .and_then(|p| serde_json::to_value(p).ok()),
-        scale_out: scale_out_pass2
-            .as_ref()
-            .and_then(|_| b.scale_out.clone()),
-        scale_out_top_k: scale_out_pass2.as_ref().map(|(_, k)| *k as i32),
+        tags: b.tags.clone(),
+        stage_plans: scale_out_pass2.as_ref().and_then(|_| b.stage_plans.clone()),
+        stage_plans_top_k: scale_out_pass2.as_ref().map(|(_, k)| *k as i32),
         // The run's pricing identity. Persisted (not just applied) because a PnL
         // column without them is unreadable: two runs under different models are not
         // comparable, and the drill-in re-simulates against these to reproduce the
@@ -1299,7 +1293,7 @@ async fn run_grouped_sweep_job(
             fill_model: b.fill_model,
             cost: b.cost_model.model(),
         },
-        b.ix_patterns.clone(),
+        b.tags.clone(),
         scale_out_pass2.clone(),
         coarse_observer,
         observer,
@@ -1759,52 +1753,44 @@ pub async fn list_results(
         .streaming(stream)
 }
 
-/// Legend for a page's `n_exit_metrics_by_slot` breakdown: for each occupied
-/// slot, the metric name + condition that names it — e.g.
-/// `[{"slot":0,"metric":"stall","operator":">","value":3.0}]`. Mirrors
-/// `BoundCombo::exit_metric_label`'s bind-time derivation exactly (including its
-/// overflow rule: a rule with more than `N_EXIT_METRIC_SLOTS` authored exit
-/// conditions names the last slot after whichever of them compiles first), so
-/// the label always matches what the aggregate actually counted. `params` must
-/// be a valid `RuleParams` JSON object; anything else (unparsable / legacy row)
-/// yields an empty legend rather than an error — this is a display aid, never on
-/// the write path.
+/// Legend for a page's `n_exit_metrics_by_slot` breakdown: for each slot, the sell
+/// line that owns it — `[{"slot": 0, "label": "m_position.retrace_pct >="}]`. The slot
+/// numbering is `scan::BoundCombo`'s (labelled sell lines in rule order, capped at
+/// `N_EXIT_METRIC_SLOTS - 1`, the overflow named after the first line in it). An
+/// authored label shows as written; an unlabelled line shows its first condition
+/// without the threshold, which varies across the combos of a page. An unparsable
+/// `params` yields an empty legend — a display aid, never on the write path.
 fn exit_metric_legend(params_json: &serde_json::Value) -> Vec<serde_json::Value> {
-    use hunter_engine::arm::{CompiledRule, ReqOrigin};
-    use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
-    use hunter_engine::fingerprint::FingerprintId;
-    use hunter_engine::rule_params::RuleParams;
+    use hunter_engine::rule_params::Cond;
 
-    let Ok(params) = RuleParams::parse(params_json) else {
+    let Ok(params) = hunter_engine::v1::parse_params_any(params_json) else {
         return Vec::new();
     };
-    let loaded = LoadedRule {
-        id: RuleId(Uuid::nil()),
-        fingerprint_id: FingerprintId(Uuid::nil()),
-        trade_mode: TradeMode::Paper,
-        buy_amount_lamports: 0,
-        max_concurrent_tokens: u32::MAX,
-        max_total_tokens: 0,
-        params,
-        entry_enabled: true,
-    };
-    let compiled = CompiledRule::compile(&loaded);
-
     let mut legend: Vec<serde_json::Value> = Vec::new();
-    let mut authored_slots: u8 = 0;
-    for r in compiled.exit_reqs.iter().filter(|r| r.origin == ReqOrigin::Authored) {
-        let slot = authored_slots.min(crate::sweep::strategy::N_EXIT_METRIC_SLOTS as u8 - 1) as usize;
-        authored_slots = authored_slots.saturating_add(1);
+    let mut next: u8 = 0;
+    for line in params.all_lines().filter(|l| !l.off) {
+        let Some(sell) = line.sell else { continue };
+        let slot = next.min(crate::sweep::strategy::N_EXIT_METRIC_SLOTS as u8 - 1) as usize;
+        next = next.saturating_add(1);
         if slot != legend.len() {
-            continue; // this req folded into an already-named slot (overflow)
+            continue; // folded into the last slot (overflow)
         }
-        let cond = r.conds.first().and_then(|arm| arm.first());
-        legend.push(serde_json::json!({
-            "slot": slot,
-            "metric": r.metric.name(),
-            "operator": cond.map(|c| c.operator.symbol()),
-            "value": cond.map(|c| c.value),
-        }));
+        let label = sell.label.map(str::to_string).unwrap_or_else(|| {
+            line.when
+                .iter()
+                .find_map(|c| match c {
+                    Cond::Metric { r, is, off: false } => {
+                        let op = is.first().and_then(|a| a.first()).map(|c| c.operator.symbol()).unwrap_or("");
+                        Some(format!("{} {op}", r.label()).trim_end().to_string())
+                    }
+                    Cond::Signal { name, negated, off: false } => {
+                        Some(if *negated { format!("not {name}") } else { (*name).to_string() })
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| "rule".to_string())
+        });
+        legend.push(serde_json::json!({ "slot": slot, "label": label }));
     }
     legend
 }
@@ -1974,9 +1960,17 @@ pub async fn promote_group(
         None => group.best_params.clone(),
     };
     // No separate Pass-2 merge needed: `params` already carries this specific
-    // combo's own winning ladder (if Pass 2 rescored it) baked in at write time —
-    // see `grouped_engine::retained_combo_params`. `run.scale_out` is the candidate
-    // grid that was searched, not necessarily what this combo ended up with.
+    // combo's own winning stage plan (if Pass 2 rescored it) baked in at write time —
+    // see `grouped_engine::retained_combo_params`. `run.stage_plans` is the grid that
+    // was searched, not necessarily what this combo ended up with. A row stored before
+    // the v2 rule format converts here, so the draft is always a v2 rule.
+    let params = match hunter_engine::v1::parse_params_any(&params) {
+        Ok(p) => p.to_value(),
+        Err(e) => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": format!("stored combo params no longer parse: {e}")}))
+        }
+    };
 
     // The fingerprint this group promotes to is **whatever selected its tokens**,
     // resolved once by `GroupSelection` (scope fingerprint ∧ run filters ∧ group
@@ -2031,22 +2025,17 @@ pub async fn promote_group(
                 }));
             }
         };
-        // A narrowed scope keeps the scope's metric config — the promoted rule must
-        // classify flow exactly as the swept corpus did.
+        // A narrowed scope keeps the scope's tags — the promoted rule must classify
+        // trades exactly as the swept corpus did — and the run's own tags, when it
+        // carried any, are what the numbers were scored with.
         if let Some(s) = &scope_fp {
-            draft_fp.metric_config = s.metric_config.clone();
+            draft_fp.tags = s.tags.clone();
         }
-        // V2.2: Promote copies the run's volume-ix patterns into metric_config so
-        // the live/sim rule classifies with the same set the sweep scored.
-        if let Some(patterns) = &run.ix_patterns {
-            draft_fp.metric_config = serde_json::json!({
-                "m_flow_ix": { "ix_patterns": patterns }
-            });
-            if let Err(e) = hunter_engine::metrics::validate_fingerprint_metric_config(
-                &draft_fp.metric_config,
-            ) {
+        if let Some(tags) = &run.tags {
+            if let Err(e) = hunter_engine::metrics::tags::config::validate_tags(tags) {
                 return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
             }
+            draft_fp.tags = tags.clone();
         }
         draft_fp.ensure_auto_name();
         match fp_repo.find_or_create(&draft_fp).await {
@@ -2058,28 +2047,23 @@ pub async fn promote_group(
             }
         }
     };
-    // Write the run's patterns onto the fingerprint when they differ. This is reachable
-    // only on the `is_scope_only` branch, and it writes onto the *saved* fingerprint on
-    // purpose: the promoted rule must classify flow with the exact pattern set that
-    // produced these results, and a fingerprint whose patterns disagree with the sweep
-    // would silently score differently live. Validate before touching a row the user owns.
+    // Write the run's tags onto the fingerprint when they differ. Reachable only on the
+    // `is_scope_only` branch, and it writes onto the *saved* fingerprint on purpose: the
+    // promoted rule must read the exact tags that produced these results, and a
+    // fingerprint whose tags disagree with the sweep would silently score differently
+    // live. Validated before touching a row the user owns.
     //
-    // The draft branch above cannot reach the write: `metric_config` is part of
-    // `find_or_create` identity, so the row it returns already carries these patterns.
-    if let Some(patterns) = &run.ix_patterns {
-        let want = serde_json::json!({
-            "m_flow_ix": { "ix_patterns": patterns }
-        });
-        if fp.metric_config != want {
-            if let Err(e) =
-                hunter_engine::metrics::validate_fingerprint_metric_config(&want)
-            {
+    // The draft branch above cannot reach the write: the tags are part of
+    // `find_or_create` identity, so the row it returns already carries them.
+    if let Some(want) = &run.tags {
+        if fp.tags != *want {
+            if let Err(e) = hunter_engine::metrics::tags::config::validate_tags(want) {
                 return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
             }
-            fp.metric_config = want;
+            fp.tags = want.clone();
             fp.updated_at = Utc::now();
             if let Err(e) = fp_repo.update(&fp).await {
-                tracing::error!("promote: update fingerprint metric_config failed: {e}");
+                tracing::error!("promote: update fingerprint tags failed: {e}");
                 return HttpResponse::InternalServerError()
                     .json(serde_json::json!({"error": "database error"}));
             }
@@ -2102,61 +2086,45 @@ pub async fn promote_group(
     HttpResponse::Ok().json(draft)
 }
 
-/// Cheap pre-resolve check: does the axes JSON reference anything that needs the
-/// lake's wallet / label columns?
-///
-/// Group name alone is not the test, and must not become one even though the
-/// wallet-keyed metrics currently sit together in `m_crowd_window`: loading without
-/// the wallet column makes every trade one anonymous wallet — a gate that silently
-/// never fires rather than an error — so the answer has to follow the registry rather
-/// than a group list someone remembers to extend. The group check stays for the
-/// flow-split families (whose every metric is fingerprint-keyed) and the metric name
-/// is checked against the registry's own answer, `MetricId::needs_wallet_identity`.
-fn axes_json_references_flow(axes: &serde_json::Value) -> bool {
-    use hunter_engine::metrics::{group_spec, MetricGroupId, REGISTRY};
+/// What the corpus load must carry for these axes: `true` when an axis reads a tag or
+/// a wallet-keyed metric, which need the lake's ix-label and wallet columns. Loading
+/// without them makes every trade untagged and one anonymous wallet — a gate that
+/// silently never fires — so the answer follows the registry, not a list of names.
+/// `Err` when the axes do not resolve, or read a tag `tags` does not define.
+fn axes_need_trade_keys(axes: &serde_json::Value, tags: Option<&serde_json::Value>) -> Result<bool, String> {
+    use crate::sweep::generic::{AxesModel, AxesRequest, ResolvedAxis};
 
-    let Some(arr) = axes.get("axes").and_then(|v| v.as_array()) else {
-        return false;
-    };
-    let wallet_keyed = |group: &str, metric: &str| {
-        REGISTRY
-            .iter()
-            .filter(|g| g.name == group)
-            .flat_map(|g| g.metrics.iter())
-            .any(|m| m.name == metric && m.id.needs_wallet_identity())
-    };
-    arr.iter().any(|a| {
-        let group = a.get("group").and_then(|g| g.as_str()).unwrap_or_default();
-        if group == group_spec(MetricGroupId::FlowIx).name
-            || group == group_spec(MetricGroupId::FlowIxWindow).name
-        {
-            return true;
-        }
-        a.get("metric")
-            .and_then(|m| m.as_str())
-            .is_some_and(|metric| wallet_keyed(group, metric))
-    })
+    let req: AxesRequest = serde_json::from_value(axes.clone()).map_err(|e| format!("invalid axes: {e}"))?;
+    let model = AxesModel::resolve(&req).map_err(|e| format!("axes: {e}"))?;
+    let defined = tags.map(hunter_engine::metrics::tags::config::tag_names).unwrap_or_default();
+    if let Some(t) = model.tag_names().into_iter().find(|t| !defined.iter().any(|d| d == t)) {
+        return Err(format!("an axis reads tag `{t}`, which the run's tags do not define — add it to `tags`"));
+    }
+    if let Some(doc) = tags {
+        hunter_engine::metrics::tags::config::validate_tags(doc)?;
+    }
+    Ok(model.axes.iter().any(|a| {
+        matches!(a, ResolvedAxis::Metric { r, .. } if r.needs_wallet_identity() || r.needs_ix_labels())
+    }))
 }
 
-/// Validate one candidate ladder's stages parse as a rule `scale_out` and every
-/// authored condition is position-scoped (the axes precompute has no extra
-/// columns for a token-scoped metric). Returns the parsed stages.
-fn parse_scale_out_ladder(
-    ladder: &serde_json::Value,
-    variant_idx: usize,
-) -> Result<Vec<hunter_engine::rule_params::ExitStage>, String> {
-    use hunter_engine::arm::{CompiledRule, ReqOrigin};
+/// Parse one candidate stage plan: a rule `stages` array whose conditions read only
+/// our position (the axes precompute records no other columns, so a coin read would be
+/// `NaN` on every row).
+fn parse_stage_plan(plan: &serde_json::Value, idx: usize) -> Result<Vec<hunter_engine::rule_params::Stage>, String> {
+    use hunter_engine::arm::CompiledRule;
     use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
     use hunter_engine::fingerprint::FingerprintId;
     use hunter_engine::rule_params::RuleParams;
 
-    let wrapped = serde_json::json!({ "scale_out": ladder });
-    let parsed =
-        RuleParams::parse(&wrapped).map_err(|e| format!("scale_out[{variant_idx}]: {e}"))?;
-    let stages = parsed
-        .scale_out
-        .clone()
-        .ok_or_else(|| format!("scale_out[{variant_idx}] is empty"))?;
+    if !plan.is_array() {
+        return Err(format!("stage_plans[{idx}] must be a `stages` array"));
+    }
+    let parsed = RuleParams::parse(&serde_json::json!({ "stages": plan })).map_err(|e| format!("stage_plans[{idx}]: {e}"))?;
+    if parsed.stages.is_empty() {
+        return Err(format!("stage_plans[{idx}] is empty"));
+    }
+    let stages = parsed.stages.clone();
     let compiled = CompiledRule::compile(&LoadedRule {
         id: RuleId(uuid::Uuid::nil()),
         fingerprint_id: FingerprintId(uuid::Uuid::nil()),
@@ -2167,50 +2135,29 @@ fn parse_scale_out_ladder(
         params: parsed,
         entry_enabled: true,
     });
-    for (i, stage) in compiled.scale_out.iter().enumerate() {
-        for req in &stage.reqs {
-            if matches!(req.origin, ReqOrigin::Authored) && !req.position_scoped {
-                return Err(format!(
-                    "scale_out[{variant_idx}][{i}]: Pass-2 stages may only use m_position \
-                     metrics or take_profit (axes precompute has no extra columns for \
-                     token-scoped metrics)"
-                ));
-            }
-        }
+    if let Some(c) = compiled.coin_reads.first() {
+        return Err(format!(
+            "stage_plans[{idx}] reads `{}` — a Pass-2 plan may read only m_position metrics (the sweep \
+             records no other columns for it)",
+            c.r.label()
+        ));
     }
     Ok(stages)
 }
 
-/// A candidate scale-out **ladder grid** for Pass 2 + its per-group top-K —
-/// `registry::run_grouped`'s `scale_out_pass2` param shape, named here so the
-/// nested `Vec<Vec<ExitStage>>` (one array per candidate ladder) is spelled once.
-type ScaleOutGrid = (Vec<Vec<hunter_engine::rule_params::ExitStage>>, usize);
+/// Candidate stage plans for Pass 2 plus the per-group top-K —
+/// `registry::run_grouped`'s `scale_out_pass2` param shape.
+type StagePlans = (Vec<Vec<hunter_engine::rule_params::Stage>>, usize);
 
-/// Parse the optional Pass-2 **ladder grid** (`ExitStage[][]`) + top_k. Empty /
-/// null ⇒ `Ok(None)`. Each ladder is validated like a rule `scale_out` (see
-/// [`parse_scale_out_ladder`]); every top-K combo will be re-scored against every
-/// ladder here plus its own baseline and keep whichever wins — see
-/// `docs/arch/sweep.md` (*Pass-2 overlay*).
-fn parse_scale_out_pass2(
-    raw: Option<&serde_json::Value>,
-    top_k: Option<usize>,
-) -> Result<Option<ScaleOutGrid>, String> {
-    let Some(v) = raw else { return Ok(None) };
-    if v.is_null() {
-        return Ok(None);
-    }
-    let arr = v
-        .as_array()
-        .ok_or_else(|| "scale_out must be an array of ladders (ExitStage[][])".to_string())?;
+/// Parse the optional Pass-2 plans (`Stage[][]`) + top-K. Empty / null ⇒ `Ok(None)`.
+fn parse_stage_plans(raw: Option<&serde_json::Value>, top_k: Option<usize>) -> Result<Option<StagePlans>, String> {
+    let Some(v) = raw.filter(|v| !v.is_null()) else { return Ok(None) };
+    let arr = v.as_array().ok_or("stage_plans must be an array of stage plans (Stage[][])")?;
     if arr.is_empty() {
         return Ok(None);
     }
-    let variants = arr
-        .iter()
-        .enumerate()
-        .map(|(i, ladder)| parse_scale_out_ladder(ladder, i))
-        .collect::<Result<Vec<_>, String>>()?;
-    Ok(Some((variants, top_k.unwrap_or(3).max(1))))
+    let plans = arr.iter().enumerate().map(|(i, p)| parse_stage_plan(p, i)).collect::<Result<Vec<_>, String>>()?;
+    Ok(Some((plans, top_k.unwrap_or(3).max(1))))
 }
 
 /// Synthesize a saved fingerprint from a ranked group's key.
@@ -2421,7 +2368,7 @@ pub async fn list_token_results(
             window: crate::sweep::corpus::TradeWindow::LaunchWindow,
             per_mint_cap: sweep_per_mint_cap(),
             with_signatures: false,
-            with_flow: run.ix_patterns.is_some(),
+            with_flow: run.tags.is_some(),
             // Hash-resolved flow keys only — no consumer here reads label text.
             with_flow_text: false,
             // Only family search reads the oracle curve; every other run pays zero.
@@ -2455,19 +2402,9 @@ pub async fn list_token_results(
     // The run's own instant, NOT wall-clock now — a drill-in must reproduce the row
     // it drills into, and deadness is judged against this (parity plan B7).
     let run_as_of = run.created_at;
-    let ix_patterns: Option<Vec<Vec<String>>> = run
-        .ix_patterns
-        .as_ref()
-        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let tags = run.tags.clone();
     let result = tokio::task::spawn_blocking(move || {
-        registry::simulate_one_combo(
-            &strategy_id,
-            &tokens,
-            &params_json,
-            pricing,
-            run_as_of,
-            ix_patterns.as_deref(),
-        )
+        registry::simulate_one_combo(&strategy_id, &tokens, &params_json, pricing, run_as_of, tags.as_ref())
     })
     .await;
 
@@ -2703,55 +2640,49 @@ mod field_filter_tests {
 }
 
 #[cfg(test)]
-mod scale_out_pass2_tests {
-    use super::parse_scale_out_pass2;
+mod stage_plans_tests {
+    use super::parse_stage_plans;
     use serde_json::json;
+
+    fn sell_at(metric: &str, value: f64, pct: Option<f64>) -> serde_json::Value {
+        let mut line = json!({ "if": [{ "metric": metric, "is": [{ "operator": ">=", "value": value }] }], "sell": true });
+        if let Some(p) = pct {
+            line["sell_pct"] = json!(p);
+            line["go"] = json!("rest");
+        }
+        line
+    }
 
     #[test]
     fn absent_or_empty_is_off() {
-        assert!(parse_scale_out_pass2(None, None).unwrap().is_none());
-        assert!(parse_scale_out_pass2(Some(&json!([])), Some(3)).unwrap().is_none());
-        assert!(parse_scale_out_pass2(Some(&json!(null)), None).unwrap().is_none());
+        assert!(parse_stage_plans(None, None).unwrap().is_none());
+        assert!(parse_stage_plans(Some(&json!([])), Some(3)).unwrap().is_none());
+        assert!(parse_stage_plans(Some(&json!(null)), None).unwrap().is_none());
     }
 
     #[test]
-    fn a_flat_ladder_is_rejected_not_a_grid() {
-        // Wire contract is `ExitStage[][]` (a grid of ladders), not a single flat
-        // ladder — a bare `{sell_bps,...}` object array of stages must error, not
-        // silently be treated as one ladder.
-        let raw = json!([
-            { "sell_bps": 7000, "take_profit": 50 },
-            { "conditions": { "m_position": { "held": [{ "operator": ">=", "value": 30 }] } } }
-        ]);
-        let err = parse_scale_out_pass2(Some(&raw), None).unwrap_err();
-        assert!(err.contains("scale_out[0]"), "{err}");
+    fn a_flat_plan_is_refused_not_taken_for_a_grid() {
+        let raw = json!([{ "name": "bank", "on": [sell_at("m_position.pnl_pct", 50.0, Some(70.0))] }]);
+        let err = parse_stage_plans(Some(&raw), None).unwrap_err();
+        assert!(err.contains("stage_plans[0]"), "{err}");
     }
 
     #[test]
-    fn accepts_a_grid_of_position_only_ladders() {
-        let raw = json!([
-            [
-                { "sell_bps": 5000, "take_profit": 30 },
-                { "conditions": { "m_position": { "held": [{ "operator": ">=", "value": 20 }] } } }
-            ],
-            [
-                { "sell_bps": 7000, "take_profit": 50 },
-                { "conditions": { "m_position": { "held": [{ "operator": ">=", "value": 30 }] } } }
-            ]
-        ]);
-        let (variants, k) = parse_scale_out_pass2(Some(&raw), Some(5)).unwrap().unwrap();
-        assert_eq!(variants.len(), 2);
-        assert_eq!(variants[0].len(), 2);
-        assert_eq!(variants[1].len(), 2);
-        assert_eq!(k, 5);
+    fn accepts_a_grid_of_position_only_plans() {
+        let plan = |tp: f64, held: f64| {
+            json!([
+                { "name": "bank", "on": [sell_at("m_position.pnl_pct", tp, Some(50.0))] },
+                { "name": "rest", "on": [sell_at("m_position.held_sec", held, None)] }
+            ])
+        };
+        let (plans, k) = parse_stage_plans(Some(&json!([plan(30.0, 20.0), plan(50.0, 30.0)])), Some(5)).unwrap().unwrap();
+        assert_eq!((plans.len(), plans[0].len(), plans[1].len(), k), (2, 2, 2, 5));
     }
 
     #[test]
-    fn rejects_token_scoped_stage_metric_in_any_variant() {
-        let raw = json!([
-            [{ "sell_bps": 7000, "conditions": { "m_state": { "time": [{ "operator": ">=", "value": 10 }] } } }]
-        ]);
-        let err = parse_scale_out_pass2(Some(&raw), None).unwrap_err();
+    fn refuses_a_coin_read_in_any_plan() {
+        let raw = json!([[{ "name": "late", "on": [sell_at("m_state.age_sec", 10.0, None)] }]]);
+        let err = parse_stage_plans(Some(&raw), None).unwrap_err();
         assert!(err.contains("m_position"), "{err}");
     }
 }

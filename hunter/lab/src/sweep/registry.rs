@@ -619,12 +619,12 @@ pub async fn run_grouped(
     // Notional + fill model + cost model — the run's PRICING IDENTITY, not tuning
     // knobs: two runs priced differently are not comparable (see `Pricing`).
     pricing: Pricing,
-    // Corpus-wide volume-ix patterns for flow-metric axes (`None` = non-flow).
-    ix_patterns: Option<Vec<Vec<String>>>,
-    // Pass-2 candidate scale_out ladder grid + top_k (`None` = no Pass 2). Each
-    // top-K combo per group is independently re-scored against every ladder here
-    // plus its own baseline — see `GenericSweepStrategy::post_group_rescore`.
-    scale_out_pass2: Option<(Vec<Vec<hunter_engine::rule_params::ExitStage>>, usize)>,
+    // The run's tags document (`None` = the axes read no tag).
+    tags: Option<Value>,
+    // Pass-2 candidate stage plans + top_k (`None` = no Pass 2). Each top-K combo per
+    // group is re-scored under every plan here plus its own exit — see
+    // `GenericSweepStrategy::post_group_rescore`.
+    scale_out_pass2: Option<(Vec<Vec<hunter_engine::rule_params::Stage>>, usize)>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -633,7 +633,7 @@ pub async fn run_grouped(
         "generic" => {
             sweep_generic(
                 axes_json, method, refine, corpus, group_plan, min_tokens, floor, max_combos,
-                pricing, ix_patterns, scale_out_pass2, coarse_observer, observer, sink,
+                pricing, tags, scale_out_pass2, coarse_observer, observer, sink,
             )
             .await
         }
@@ -678,8 +678,8 @@ async fn sweep_generic(
     floor: CoverageFloor,
     max_combos: Option<usize>,
     pricing: Pricing,
-    ix_patterns: Option<Vec<Vec<String>>>,
-    scale_out_pass2: Option<(Vec<Vec<hunter_engine::rule_params::ExitStage>>, usize)>,
+    tags: Option<Value>,
+    scale_out_pass2: Option<(Vec<Vec<hunter_engine::rule_params::Stage>>, usize)>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -692,15 +692,7 @@ async fn sweep_generic(
         .context("invalid generic axes request")?;
     let model = AxesModel::resolve(&req).map_err(|e| anyhow!("axes: {e}"))?;
 
-    if model.references_flow() && ix_patterns.is_none() {
-        bail!(
-            "axes reference m_flow_ix/m_flow_ix_window but ix_patterns is missing — \
-             supply ix_patterns (string[][]) or drop the flow axes"
-        );
-    }
-    let flow_patterns = ix_patterns.as_ref().map(|p| {
-        hunter_engine::metrics::flow_ix::FlowPatterns::from_label_sequences(p)
-    });
+    let compiled_tags = compile_run_tags(&model, tags.as_ref())?;
 
     // Grid guard: reject an explosive full grid before doing any sweep work. A full
     // grid runs exactly as chosen (capped by `cap` = the caller's Max combos/group);
@@ -727,7 +719,7 @@ async fn sweep_generic(
         bail!("param space is empty");
     }
     let mut strategy =
-        GenericSweepStrategy::new(model, pricing, chrono::Utc::now(), flow_patterns);
+        GenericSweepStrategy::new(model, pricing, chrono::Utc::now(), compiled_tags);
     // Opt into the analytic frozen-tail resolve (D1): anchor it to this run's corpus so
     // a deterministic clock exit past a token's own last-trade cut still closes, matching
     // a simulate over the same tokens (parity plan Task 1). No-op on a trade-less corpus.
@@ -736,8 +728,8 @@ async fn sweep_generic(
         let n = variants.len();
         strategy.set_scale_out_pass2(variants, top_k);
         observer.notice(&format!(
-            "Pass-2 scale-out overlay: re-scoring top-{top_k} combos/group against {n} \
-             candidate ladder(s) + baseline, per combo"
+            "Pass-2 stage plans: re-scoring top-{top_k} combos/group under {n} candidate \
+             plan(s) + their own exit, per combo"
         ));
     }
     let max_series_bytes = corpus
@@ -862,16 +854,10 @@ pub fn simulate_one_combo(
     params_json: &Value,
     pricing: Pricing,
     as_of: chrono::DateTime<chrono::Utc>,
-    ix_patterns: Option<&[Vec<String>]>,
+    tags: Option<&Value>,
 ) -> Result<Vec<ComboTokenResult>> {
     match strategy_id {
-        "generic" => simulate_generic_one_combo(
-            tokens,
-            params_json,
-            pricing,
-            as_of,
-            ix_patterns,
-        ),
+        "generic" => simulate_generic_one_combo(tokens, params_json, pricing, as_of, tags),
         other => bail!(
             "strategy '{other}' has no single-combo simulation (supported: {:?})",
             strategy_ids()
@@ -897,19 +883,29 @@ fn exit_label(code: ExitCode) -> &'static str {
     }
 }
 
-/// Drill-in row's persisted exit-reason string. A metric exit reuses the exact
-/// `metric op value` label the live/paper engine stamps
-/// (`hunter_engine::event::format_metric_exit_label`) instead of the bare
-/// `"Metrics"` code name — the fields it needs (`exit_metric`/`exit_operator`/
-/// `exit_metric_value`) are resolved bind-time on `TokenOutcome`, not
-/// recomputed here. Falls back to [`exit_label`] for every other exit / when
-/// (rarely — see the SIMD fallback) the detail wasn't resolved.
+/// Drill-in row's persisted exit-reason string: the selling line's label, the same
+/// text live and simulate record, else [`exit_label`]'s code name.
 fn exit_reason_string(o: &crate::sweep::strategy::TokenOutcome) -> String {
-    match (o.exit_metric, o.exit_operator, o.exit_metric_value) {
-        (Some(metric), Some(op), Some(value)) => {
-            hunter_engine::event::format_metric_exit_label(metric, op, value, o.exit_metric_window)
+    o.exit_label.map_or_else(|| exit_label(o.exit).to_string(), str::to_string)
+}
+
+/// The run's tags document compiled, after checking every tag the axes read is
+/// defined in it.
+pub(crate) fn compile_run_tags(
+    model: &AxesModel,
+    tags: Option<&Value>,
+) -> Result<Vec<hunter_engine::metrics::tags::config::CompiledTag>> {
+    use hunter_engine::metrics::tags::config::{compile_tags, tag_names, validate_tags};
+    let defined = tags.map(tag_names).unwrap_or_default();
+    if let Some(t) = model.tag_names().into_iter().find(|t| !defined.iter().any(|d| d == t)) {
+        bail!("an axis reads tag `{t}`, which the run's tags do not define — add it to `tags`");
+    }
+    match tags {
+        Some(doc) => {
+            validate_tags(doc).map_err(|e| anyhow!("tags: {e}"))?;
+            Ok(compile_tags(doc))
         }
-        _ => exit_label(o.exit).to_string(),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -936,19 +932,19 @@ fn simulate_generic_one_combo(
     params_json: &Value,
     pricing: Pricing,
     as_of: chrono::DateTime<chrono::Utc>,
-    ix_patterns: Option<&[Vec<String>]>,
+    tags: Option<&Value>,
 ) -> Result<Vec<ComboTokenResult>> {
     use hunter_engine::arm::CompiledRule;
     use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
     use hunter_engine::fingerprint::FingerprintId;
-    use hunter_engine::rule_params::RuleParams;
-    use trading_core::config::constants::sol_to_lamports;
+        use trading_core::config::constants::sol_to_lamports;
 
-    use crate::sweep::generic::strategy::{
-        build_series_with_flow, columns_for, frozen_tail_horizon, scan_with_horizon, sparse_grid_for,
-    };
+    use crate::sweep::generic::frozen_tail::frozen_tail_horizon;
+    use crate::sweep::generic::scan::{columns_for, scan_with_horizon, sparse_grid_for};
+    use crate::sweep::generic::strategy::build_series;
 
-    let params = RuleParams::parse(params_json)
+    // A combo stored before the v2 rule format converts here.
+    let params = hunter_engine::v1::parse_params_any(params_json)
         .map_err(|e| anyhow!("invalid generic combo params: {e}"))?;
     // Dummy fingerprint + unlimited caps: like the sweep, a single-combo drill-in
     // judges each token independently and never models cross-token concurrency.
@@ -965,22 +961,14 @@ fn simulate_generic_one_combo(
     let compiled = CompiledRule::compile(&loaded);
     let columns = columns_for(&compiled);
     let grid = sparse_grid_for(&compiled);
-    let flow_patterns = ix_patterns.map(|p| {
-        hunter_engine::metrics::flow_ix::FlowPatterns::from_label_sequences(p)
-    });
+    let compiled_tags = tags.map(hunter_engine::metrics::tags::config::compile_tags).unwrap_or_default();
     // The frozen-tail resolve (D1) anchored on THIS drill-in's token set, so a row's
     // exit matches the sweep aggregate the user clicked (parity plan Task 1 / B7).
     let tail_horizon = frozen_tail_horizon(as_of, tokens);
 
     let mut results = Vec::with_capacity(tokens.len());
     for tt in tokens {
-        let series = build_series_with_flow(
-            tt,
-            columns.clone(),
-            &grid,
-            as_of,
-            flow_patterns.as_ref(),
-        );
+        let series = build_series(tt, columns.clone(), &grid, as_of, &compiled_tags);
         let o = scan_with_horizon(&tt.trades, &series, &compiled, &pricing, tail_horizon);
         results.push(ComboTokenResult {
             mint_address: tt.mint.clone(),

@@ -83,7 +83,7 @@ pub fn grain(labels: &[impl AsRef<str>]) -> String {
 }
 
 /// FNV-1a of [`grain`]. `None` on empty/missing labels — same sentinel as
-/// [`ix_hash_opt`](super::flow_ix::ix_hash_opt).
+/// [`ix_hash_opt`](super::trade_keys::ix_hash_opt).
 pub fn grain_hash(labels: &[impl AsRef<str>]) -> Option<u64> {
     if labels.is_empty() {
         None
@@ -133,7 +133,7 @@ pub fn grain_hash_from_labels_value(labels: &Value) -> Option<u64> {
 
 /// [`grain_hash`] over stored JSON text. Falls back to a real parse when the
 /// scanner-friendly shape does not apply — same contract as
-/// [`ix_hash_from_labels_json`](super::flow_ix::ix_hash_from_labels_json).
+/// [`ix_hash_from_labels_json`](super::trade_keys::ix_hash_from_labels_json).
 pub fn grain_hash_from_labels_json(json: &str) -> Option<u64> {
     let value: Value = serde_json::from_str(json).ok()?;
     grain_hash_from_labels_value(&value)

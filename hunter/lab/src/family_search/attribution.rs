@@ -1,17 +1,18 @@
 //! Per-alarm attribution (charter D4) — which authored exit term did the work.
 //!
-//! Everything needed already exists and nothing was aggregated: `ExitReason::Metrics`
-//! carries `{ metric, operator, value, window }`, the sweep resolves an authored slot
-//! per exit req at **bind time**, and [`TokenOutcome`] already carries both. This
-//! rolls them up. Deletion-ablation costs one re-run per term and is replaced by one
-//! run — and attribution is the hard prerequisite for partial exits, since a ladder
-//! cannot fire on a signal it cannot name.
+//! Everything needed already exists and nothing was aggregated: a line exit carries
+//! its label (`ExitReason::Line`, `m_price.stall_sec >= 30`), the sweep numbers every
+//! labelled sell line into a slot at **bind time**, and [`TokenOutcome`] already
+//! carries both. This rolls them up. Deletion-ablation costs one re-run per term and
+//! is replaced by one run — and attribution is the hard prerequisite for partial
+//! exits, since a ladder cannot fire on a signal it cannot name.
 //!
 //! Count alone is misleading: a term that fires 200× for −0.4◎ and one that fires 20×
 //! for +1.1◎ read the same. Every row therefore carries `Σpnl_sol` **and**
 //! `Σentry_sol`, so the percentage is money-over-capital — the one PnL % definition.
 
-use hunter_engine::event::format_metric_exit_label;
+use hunter_engine::metrics::evaluator::Operator;
+use hunter_engine::metrics::{Metric, MetricRef};
 use trading_core::strategies::kernel::{weighted_return_pct, ExitCode};
 
 use crate::sweep::strategy::{TokenOutcome, N_EXIT_METRIC_SLOTS};
@@ -19,13 +20,13 @@ use crate::sweep::strategy::{TokenOutcome, N_EXIT_METRIC_SLOTS};
 /// One authored exit term's share of the outcome.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AlarmRow {
-    /// 0-based position among the rule's OWN authored exit reqs — the same slot the
+    /// 0-based position among the rule's OWN labelled sell lines — the same slot the
     /// sweep's `n_exit_metrics_by_slot` buckets on.
     pub slot: u8,
-    /// `metric[(Ws)] op value`, through the label SSOT. `None` only if every outcome
-    /// in the slot arrived without its condition triple (it never should). The window
-    /// rides on the name because a dynamic group and its lifetime twin share
-    /// `metric.name()` — without it a 2s burst reads as the lifetime term.
+    /// The selling line's exit label (`m_flow.buy_sol @!volume [2s] >= 0.9`), the text
+    /// live and simulate record. `None` only if every outcome in the slot arrived
+    /// without one (it never should). The span rides on the read, so a 2 s burst term
+    /// never reads as its lifetime twin.
     pub label: Option<String>,
     /// Positions this term closed.
     pub n: u64,
@@ -41,23 +42,22 @@ pub struct AlarmRow {
     pub pnl_sol: f64,
     /// Capital those positions committed — the percentage's denominator.
     pub entry_sol: f64,
-    /// The threshold the rule authored, as the engine reports it
-    /// ([`ExitReason::Metrics::value`](hunter_engine::event::ExitReason)) — the level
-    /// the term *asked* to close at.
+    /// The threshold the line authored, read off its label ([`parse_line_label`]) —
+    /// the level the term *asked* to close at.
     pub authored_level: Option<f64>,
     /// The level the term actually closed at: mean **gross** `exit ÷ entry − 1`, in
     /// percent, over the positions this slot closed.
     ///
-    /// Gross on purpose. It is the quantity `m_position.pnl` itself reads, so it is
+    /// Gross on purpose. It is the quantity `m_position.pnl_pct` itself reads, so it is
     /// the only realized number directly comparable to `authored_level`; the further
     /// gap down to the realized *net* return is the execution band, which the spread
     /// row reports separately. Conflating the two would blame gapping for cost.
     pub realized_level_pct: Option<f64>,
     /// Whether [`authored_level`](Self::authored_level) and
     /// [`realized_level_pct`](Self::realized_level_pct) are the same quantity, so a
-    /// board may print them side by side. True for `m_position.pnl`, whose realized
-    /// counterpart is exactly the gross return; false for `stall`, `held`, a flow
-    /// term — different units, and printing them as a pair would be nonsense.
+    /// board may print them side by side. True for `m_position.pnl_pct`, whose realized
+    /// counterpart is exactly the gross return; false for `stall_sec`, `held_sec`, a
+    /// flow term — different units, and printing them as a pair would be nonsense.
     pub level_is_return: bool,
 }
 
@@ -76,8 +76,9 @@ impl AlarmRow {
     /// How far past its own threshold the term actually closed, in percentage points.
     /// `None` unless the two are the same quantity.
     ///
-    /// This is the `pnl <= -8` that realizes −19.4%: prints are sparse and price gaps
-    /// straight past the level, so a price stop on this token class does not stop.
+    /// This is the `m_position.pnl_pct <= -8` that realizes −19.4%: prints are sparse
+    /// and price gaps straight past the level, so a price stop on this token class
+    /// does not stop.
     pub fn level_overshoot_pp(&self) -> Option<f64> {
         if !self.level_is_return {
             return None;
@@ -119,35 +120,57 @@ pub struct AttributionAcc {
     n_other: u64,
     other_pnl_sol: f64,
     /// The run's standing terms, so a mechanical exit is labelled as one rather than
-    /// appearing among the findings. Matched on `(metric, window, value)` — never on
-    /// slot order, since `SideConditions` groups clauses by group and window and the
-    /// compiled req order need not follow the authored one.
+    /// appearing among the findings. Matched on the line's exit label — never on slot
+    /// order, since the slot numbering follows the compiled line order, not the
+    /// authored one.
     standing: Vec<StandingKey>,
 }
 
-/// `(metric, window, authored value)` — the standing identity.
-type StandingKey = (hunter_engine::metrics::MetricId, Option<hunter_engine::metrics::WindowSpec>, f64);
+/// A standing term's exit label — the standing identity.
+pub type StandingKey = String;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct SlotAcc {
     n: u64,
     n_wins: u64,
     pnl_sol: f64,
-    label: Option<LabelKey>,
+    /// The interned label the outcome stamps, so the accumulator allocates nothing
+    /// per position.
+    label: Option<&'static str>,
     /// Σ gross `exit ÷ entry − 1` in percent, and how many positions could be priced
     /// (an outcome missing either price contributes to neither).
     gross_pct_sum: f64,
     n_gross: u64,
 }
 
-/// The condition triple an outcome stamps, kept `Copy` so the accumulator allocates
-/// nothing per position — the label string is formatted once, at `finish`.
-#[derive(Clone, Copy, Debug)]
-struct LabelKey {
-    metric: hunter_engine::metrics::MetricId,
-    operator: hunter_engine::metrics::evaluator::Operator,
-    value: f64,
-    window: Option<hunter_engine::metrics::WindowSpec>,
+/// Invert a sell line's exit label (`m_flow.buy_sol @!volume [2s] >= 0.9`): the read,
+/// the operator and the threshold of the line's first condition, as the engine names
+/// an unlabelled sell line. The read goes through the rule's own parser
+/// ([`MetricRef::from_json`]). `None` for anything else — a line authored with its own
+/// label (`spike`) names no condition.
+pub fn parse_line_label(label: &str) -> Option<(MetricRef, Operator, f64)> {
+    let (read, rest) = label.trim().rsplit_once(' ')?;
+    let value: f64 = rest.parse().ok().filter(|v: &f64| v.is_finite())?;
+    let (read, op) = read.trim_end().rsplit_once(' ')?;
+    let op: Operator = serde_json::from_value(serde_json::json!(op)).ok()?;
+    let (path, mut rest) = read.split_once(' ').map_or((read, ""), |(p, r)| (p, r.trim()));
+    let mut obj = serde_json::Map::new();
+    obj.insert("metric".into(), serde_json::json!(path));
+    if let Some(tagged) = rest.strip_prefix('@') {
+        let (tag, after) = tagged.split_once(' ').map_or((tagged, ""), |(t, a)| (t, a.trim()));
+        obj.insert("tag".into(), serde_json::json!(tag));
+        rest = after;
+    }
+    if !rest.is_empty() {
+        let span = rest.strip_prefix('[')?.strip_suffix(']')?;
+        let (span, slice) = span.split_once(", slice ").map_or((span, None), |(s, sl)| (s, Some(sl)));
+        obj.insert("span".into(), serde_json::json!(span));
+        if let Some(sl) = slice {
+            obj.insert("slice".into(), serde_json::json!(sl));
+        }
+    }
+    let r = MetricRef::from_json(&obj).ok()?;
+    Some((r, op, value))
 }
 
 impl AttributionAcc {
@@ -195,11 +218,7 @@ impl AttributionAcc {
             }
         }
         if s.label.is_none() {
-            if let (Some(metric), Some(operator), Some(value)) =
-                (o.exit_metric, o.exit_operator, o.exit_metric_value)
-            {
-                s.label = Some(LabelKey { metric, operator, value, window: o.exit_metric_window });
-            }
+            s.label = o.exit_label;
         }
     }
 
@@ -209,28 +228,23 @@ impl AttributionAcc {
             .iter()
             .enumerate()
             .filter(|(_, s)| s.n > 0)
-            .map(|(i, s)| AlarmRow {
-                slot: i as u8,
-                label: s
-                    .label
-                    .map(|l| format_metric_exit_label(l.metric, l.operator, l.value, l.window)),
-                n: s.n,
-                n_wins: s.n_wins,
-                standing: s.label.is_some_and(|l| {
-                    self.standing.iter().any(|(m, w, v)| {
-                        *m == l.metric && *w == l.window && (v - l.value).abs() < f64::EPSILON
-                    })
-                }),
-                pnl_sol: s.pnl_sol,
-                entry_sol: s.n as f64 * self.capital_sol,
-                authored_level: s.label.map(|l| l.value),
-                realized_level_pct: (s.n_gross > 0)
-                    .then(|| s.gross_pct_sum / s.n_gross as f64),
-                // `m_position.pnl` is "signed percent vs the entry price" — literally
-                // the gross return, so the pair is comparable. Nothing else is.
-                level_is_return: s
-                    .label
-                    .is_some_and(|l| l.metric == hunter_engine::metrics::MetricId::Pnl),
+            .map(|(i, s)| {
+                let authored = s.label.and_then(parse_line_label);
+                AlarmRow {
+                    slot: i as u8,
+                    label: s.label.map(str::to_string),
+                    n: s.n,
+                    n_wins: s.n_wins,
+                    standing: s.label.is_some_and(|l| self.standing.iter().any(|k| k == l)),
+                    pnl_sol: s.pnl_sol,
+                    entry_sol: s.n as f64 * self.capital_sol,
+                    authored_level: authored.map(|(_, _, v)| v),
+                    realized_level_pct: (s.n_gross > 0).then(|| s.gross_pct_sum / s.n_gross as f64),
+                    // `m_position.pnl_pct` is "signed percent vs the entry price" —
+                    // literally the gross return, so the pair is comparable. Nothing
+                    // else is.
+                    level_is_return: authored.is_some_and(|(r, _, _)| r.metric == Metric::PnlPct),
+                }
             })
             .collect();
         Attribution {
@@ -269,8 +283,11 @@ mod tests {
     use super::*;
     use crate::family_search::fixtures::metric_exit;
     use crate::sweep::aggregate::ComboAgg;
-    use hunter_engine::metrics::evaluator::Operator;
-    use hunter_engine::metrics::MetricId;
+
+    const STALL: &str = "m_price.stall_sec >= 30";
+    const RETRACE: &str = "m_position.retrace_pct >= 36";
+    const FLOW_DRY: &str = "m_flow.gross_sol [10s] < 15";
+    const LIQ_85: &str = "m_state.liquidity_sol >= 85";
 
     /// The SSOT duplication guard required by `../../CLAUDE.md`: this rollup and the
     /// sweep's `n_exit_metrics_by_slot` are two implementations of one fact, so a
@@ -278,18 +295,11 @@ mod tests {
     #[test]
     fn per_slot_counts_equal_the_sweeps_breakdown() {
         let outs = vec![
-            metric_exit(0, MetricId::Stall, Operator::Gte, 30.0, None, 0.10),
-            metric_exit(0, MetricId::Stall, Operator::Gte, 30.0, None, -0.02),
-            metric_exit(1, MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)), 0.30),
+            metric_exit(0, STALL, 0.10),
+            metric_exit(0, STALL, -0.02),
+            metric_exit(1, FLOW_DRY, 0.30),
             // Slot beyond the fixed array — both readers clamp it to the last bucket.
-            metric_exit(
-                N_EXIT_METRIC_SLOTS as u8 + 4,
-                MetricId::WinUntaggedBuy,
-                Operator::Gte,
-                1.6,
-                Some(hunter_engine::metrics::WindowSpec::secs(2.0)),
-                0.05,
-            ),
+            metric_exit(N_EXIT_METRIC_SLOTS as u8 + 4, "m_flow.buy_sol @!volume [2s] >= 1.6", 0.05),
             // Not an authored-metric exit: excluded from every slot by both readers.
             crate::family_search::fixtures::tp_exit(0.4),
             TokenOutcome::no_entry(),
@@ -319,10 +329,10 @@ mod tests {
         // opposite by money. Buy size 0.01◎.
         let mut outs: Vec<TokenOutcome> = Vec::new();
         for _ in 0..200 {
-            outs.push(metric_exit(0, MetricId::Retrace, Operator::Gte, 36.0, None, -0.002));
+            outs.push(metric_exit(0, RETRACE, -0.002));
         }
         for _ in 0..20 {
-            outs.push(metric_exit(1, MetricId::Stall, Operator::Gte, 30.0, None, 0.055));
+            outs.push(metric_exit(1, STALL, 0.055));
         }
         let a = rollup(&outs, 0.01);
         let loud = &a.by_slot[0];
@@ -343,31 +353,20 @@ mod tests {
         assert!((quiet.pnl_pct() - 550.0).abs() < 1e-3, "{}", quiet.pnl_pct());
     }
 
-    /// The stop that does not stop: `pnl <= -8` realizing far past its own level
+    /// The stop that does not stop: `pnl_pct <= -8` realizing far past its own level
     /// because prints are sparse and price gaps straight through it. The pair only
     /// prints where the two are the same quantity.
     #[test]
     fn a_stop_that_gaps_past_its_level_shows_both_numbers() {
         use crate::family_search::fixtures::filled_at;
+        const STOP: &str = "m_position.pnl_pct <= -8";
         // Authored −8%. Two closes land at −19% and −21% gross: mean −20%.
         let outs = vec![
-            filled_at(
-                metric_exit(0, MetricId::Pnl, Operator::Lte, -8.0, None, -0.002),
-                1.0,
-                0.81,
-            ),
-            filled_at(
-                metric_exit(0, MetricId::Pnl, Operator::Lte, -8.0, None, -0.0022),
-                1.0,
-                0.79,
-            ),
+            filled_at(metric_exit(0, STOP, -0.002), 1.0, 0.81),
+            filled_at(metric_exit(0, STOP, -0.0022), 1.0, 0.79),
             // A seconds-unit term on the same rule: comparable numbers do not exist,
             // so the pair must NOT be offered for it.
-            filled_at(
-                metric_exit(1, MetricId::Stall, Operator::Gte, 30.0, None, 0.004),
-                1.0,
-                1.4,
-            ),
+            filled_at(metric_exit(1, STALL, 0.004), 1.0, 1.4),
         ];
         let a = rollup(&outs, 0.01);
         let stop = &a.by_slot[0];
@@ -385,19 +384,19 @@ mod tests {
         assert!((stall.realized_level_pct.unwrap() - 40.0).abs() < 1e-9);
     }
 
-    /// A dynamic group and its lifetime twin share `metric.name()`, so a label that
-    /// omits the window makes a 2s burst term read as the lifetime one — the two
-    /// occupy distinct slots and must read distinctly.
+    /// A windowed read and its lifetime twin share a metric, so a label that omits the
+    /// span makes a 2 s burst term read as the lifetime one — the two occupy distinct
+    /// slots and must read distinctly.
     #[test]
     fn same_metric_different_windows_are_distinct_labelled_slots() {
         let outs = vec![
-            metric_exit(0, MetricId::UntaggedBuy, Operator::Gte, 0.9, None, 0.01),
-            metric_exit(1, MetricId::WinUntaggedBuy, Operator::Gte, 0.9, Some(hunter_engine::metrics::WindowSpec::secs(2.0)), 0.02),
+            metric_exit(0, "m_flow.buy_sol @!volume >= 0.9", 0.01),
+            metric_exit(1, "m_flow.buy_sol @!volume [2s] >= 0.9", 0.02),
         ];
         let a = rollup(&outs, 0.01);
         assert_eq!(a.by_slot.len(), 2);
-        assert_eq!(a.by_slot[0].label.as_deref(), Some("untagged_buy >= 0.9"));
-        assert_eq!(a.by_slot[1].label.as_deref(), Some("untagged_buy(2s) >= 0.9"));
+        assert_eq!(a.by_slot[0].label.as_deref(), Some("m_flow.buy_sol @!volume >= 0.9"));
+        assert_eq!(a.by_slot[1].label.as_deref(), Some("m_flow.buy_sol @!volume [2s] >= 0.9"));
         assert_ne!(a.by_slot[0].label, a.by_slot[1].label);
     }
 
@@ -409,10 +408,10 @@ mod tests {
         for i in 0..10 {
             // Slot 0: 3 wins in 10, but the wins are big — positive on money.
             let pnl = if i < 3 { 0.05 } else { -0.01 };
-            outs.push(metric_exit(0, MetricId::Stall, Operator::Gte, 30.0, None, pnl));
+            outs.push(metric_exit(0, STALL, pnl));
         }
         for _ in 0..4 {
-            outs.push(metric_exit(1, MetricId::Retrace, Operator::Gte, 36.0, None, 0.002));
+            outs.push(metric_exit(1, RETRACE, 0.002));
         }
         let a = rollup(&outs, 0.01);
 
@@ -430,11 +429,8 @@ mod tests {
     /// the table so the closes add up, labelled so it is never read as an edge.
     #[test]
     fn a_standing_term_is_labelled_rather_than_credited() {
-        let outs = vec![
-            metric_exit(0, MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)), 0.03),
-            metric_exit(1, MetricId::Liquidity, Operator::Gte, 85.0, None, 0.20),
-        ];
-        let standing = [(MetricId::Liquidity, None, 85.0)];
+        let outs = vec![metric_exit(0, FLOW_DRY, 0.03), metric_exit(1, LIQ_85, 0.20)];
+        let standing = [LIQ_85.to_string()];
         let a = rollup_with_standing(&outs, 0.01, &standing);
 
         assert!(!a.by_slot[0].standing, "a searched alarm is a finding");
@@ -445,7 +441,44 @@ mod tests {
         assert!((a.by_slot[1].pnl_sol - 0.20).abs() < 1e-6);
 
         // A different threshold on the same metric is NOT the standing term.
-        let other = [(MetricId::Liquidity, None, 12.0)];
+        let other = ["m_state.liquidity_sol >= 12".to_string()];
         assert!(!rollup_with_standing(&outs, 0.01, &other).by_slot[1].standing);
+    }
+
+    /// The label parser inverts the engine's own name for an unlabelled sell line, for
+    /// every read shape a search authors: bare, windowed, tagged, sliced.
+    #[test]
+    fn a_line_label_parses_back_to_its_read_operator_and_threshold() {
+        use crate::rule_search::cuts::CutPhase;
+        use crate::rule_search::generator::{assemble, Clause, EntryFilling, ExitBag};
+        use crate::rule_search::scorer::loaded_from_params;
+        use hunter_engine::arm::CompiledRule;
+        use hunter_engine::fingerprint::FingerprintId;
+        use hunter_engine::metrics::{Span, TagRef, WindowSpec};
+
+        let reads = [
+            MetricRef::life(Metric::StallSec),
+            MetricRef::life(Metric::GrossSol).with_span(Span::secs(10.0)),
+            MetricRef::life(Metric::BuySol).with_tag(TagRef::parse("!volume").unwrap()).with_span(Span::secs(2.0)),
+            MetricRef::life(Metric::SliceSolSharePct)
+                .with_span(Span::sliced(WindowSpec::secs(30.0), WindowSpec::secs(2.0))),
+        ];
+        let clauses: Vec<Clause> = reads
+            .iter()
+            .zip([30.0, 15.0, 0.9, 50.0])
+            .map(|(&r, v)| Clause { r, op: Operator::Gte, threshold: v, phase: CutPhase::Declared })
+            .collect();
+        let params = assemble(&EntryFilling { clauses: vec![] }, &ExitBag { clauses: clauses.clone() });
+        let loaded = loaded_from_params(params, FingerprintId(uuid::Uuid::nil()), 0.01, 0, 0);
+        let labels: Vec<&str> =
+            crate::sweep::generic::scan::line_tags(&CompiledRule::compile(&loaded)).iter().filter_map(|t| t.label).collect();
+        assert_eq!(labels.len(), clauses.len());
+        for (label, c) in labels.iter().zip(&clauses) {
+            let (r, op, v) = parse_line_label(label).unwrap_or_else(|| panic!("`{label}` parses"));
+            assert_eq!(r, c.r, "{label}");
+            assert_eq!(op, c.op, "{label}");
+            assert!((v - c.threshold).abs() < 1e-12, "{label}");
+        }
+        assert_eq!(parse_line_label("spike"), None, "an authored label names no condition");
     }
 }

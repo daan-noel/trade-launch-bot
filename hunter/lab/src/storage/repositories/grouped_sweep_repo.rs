@@ -78,11 +78,11 @@ struct RunDbRow {
     label: Option<String>,
     buy_amount_sol: Option<f64>,
     partition: sqlx::types::Json<hunter_engine::grouping::GroupPlan>,
-    ix_patterns: Option<sqlx::types::Json<Value>>,
+    tags: Option<sqlx::types::Json<Value>>,
     fill_model: Option<String>,
     cost_model: Option<String>,
-    scale_out: Option<sqlx::types::Json<Value>>,
-    scale_out_top_k: Option<i32>,
+    stage_plans: Option<sqlx::types::Json<Value>>,
+    stage_plans_top_k: Option<i32>,
 }
 
 impl From<RunDbRow> for GroupedSweepRun {
@@ -118,11 +118,11 @@ impl From<RunDbRow> for GroupedSweepRun {
                     .capital_sol(tidy_sol_decimal(b))
             }),
             partition: r.partition.0,
-            ix_patterns: r.ix_patterns.map(|j| j.0),
+            tags: r.tags.map(|j| j.0),
             fill_model: r.fill_model,
             cost_model: r.cost_model,
-            scale_out: r.scale_out.map(|j| j.0),
-            scale_out_top_k: r.scale_out_top_k,
+            stage_plans: r.stage_plans.map(|j| j.0),
+            stage_plans_top_k: r.stage_plans_top_k,
         }
     }
 }
@@ -317,11 +317,11 @@ impl GroupedSweepRepo {
             .bind(&run.label)
             .bind(run.buy_amount_sol.map(tidy_sol_decimal))
             .bind(sqlx::types::Json(&run.partition))
-            .bind(run.ix_patterns.as_ref().map(sqlx::types::Json))
+            .bind(run.tags.as_ref().map(sqlx::types::Json))
             .bind(&run.fill_model)
             .bind(&run.cost_model)
-            .bind(run.scale_out.as_ref().map(sqlx::types::Json))
-            .bind(run.scale_out_top_k)
+            .bind(run.stage_plans.as_ref().map(sqlx::types::Json))
+            .bind(run.stage_plans_top_k)
             .execute(&self.pool)
             .await?;
         Ok(())

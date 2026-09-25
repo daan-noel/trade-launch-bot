@@ -57,6 +57,15 @@ async fn main() -> anyhow::Result<()> {
         return run_lake_export(include_today).await;
     }
 
+    // `lab migrate-v2 --dry-run [--database-url <url>]` — convert every stored rule,
+    // fingerprint and run snapshot to the v2 metric system inside a transaction that is
+    // rolled back, print what would change and any row that would not convert, then
+    // exit. Runs NO schema migration, so it can check a database (the server's, through
+    // a tunnel) before the deploy that migrates it. The real conversion runs at boot.
+    if std::env::args().nth(1).as_deref() == Some("migrate-v2") {
+        return run_migrate_v2_dry().await;
+    }
+
     // `lab reroll-run <uuid>...` — recompute those runs' `strategy_run_metrics`
     // from their current positions, then exit. Metrics are normally written once,
     // when a run is finalized; this is the manual lever for the case where a
@@ -104,6 +113,9 @@ async fn main() -> anyhow::Result<()> {
     storage::lab_migrations::run(&db)
         .await
         .context("lab migrations failed")?;
+    storage::lab_data_migrations::run(&db)
+        .await
+        .context("lab data migrations failed")?;
 
     // Crash recovery: a killed process can leave a grouped sweep stuck at
     // `status = 'running'`. None can be live at boot (single-flight gate), so any
@@ -290,6 +302,30 @@ async fn run_lake_export(include_today: bool) -> anyhow::Result<()> {
 /// `lab reroll-run <uuid>...`: re-roll each run's metrics row from its current
 /// positions and exit. Batch job — no HTTP, no pollers. Idempotent (the upsert
 /// only advances a row with an older `rolled_up_at`), so re-running is harmless.
+async fn run_migrate_v2_dry() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if !args.iter().any(|a| a == "--dry-run") {
+        anyhow::bail!(
+            "usage: hunter-lab migrate-v2 --dry-run [--database-url <url>] (the real conversion runs at boot; this only reports)"
+        );
+    }
+    let url = match args.iter().position(|a| a == "--database-url") {
+        Some(i) => args.get(i + 1).cloned().context("--database-url needs a value")?,
+        None => config::Settings::from_env().context("Failed to load configuration")?.database_url,
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&url).await?;
+    let r = trading_core::storage::data_migrations::convert_metric_system_v2(&pool, false).await?;
+    println!("metric system v2 dry run (nothing written):");
+    println!("  fingerprints converted: {}", r.fingerprints);
+    println!("  rules converted:        {}", r.rules);
+    println!("  run snapshots:          {}", r.run_snapshots);
+    println!("  running run hashes reset: {}", r.run_hashes_cleared);
+    for k in &r.run_snapshots_kept {
+        println!("  kept as written: {k}");
+    }
+    Ok(())
+}
+
 async fn run_reroll(ids: &[String]) -> anyhow::Result<()> {
     if ids.is_empty() {
         anyhow::bail!("usage: hunter-lab reroll-run <run-uuid> [<run-uuid>...]");

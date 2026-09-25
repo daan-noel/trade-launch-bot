@@ -331,11 +331,11 @@ function armUnsatisfiableReason(conds: Condition[], tol: number): string | null 
     }
   }
   if (lo > hi || (lo === hi && (loStrict || hiStrict))) {
-    return `bounds cross: feasible range is empty around ${lo}`;
+    return `can never hold: no value is inside every bound (they cross at ${lo})`;
   }
   for (const [bLo, bHi] of neBands) {
     if (Number.isFinite(lo) && Number.isFinite(hi) && bLo <= lo && hi <= bHi) {
-      return `'!=' band [${bLo}, ${bHi}] covers the feasible range`;
+      return `can never hold: the '!=' band [${bLo}, ${bHi}] rules out every value the other bounds allow`;
     }
   }
   return null;

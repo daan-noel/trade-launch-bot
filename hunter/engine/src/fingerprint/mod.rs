@@ -63,14 +63,14 @@ pub struct Fingerprint {
     /// The configured axes. Empty (without `wildcard`) matches nothing.
     #[serde(default)]
     pub criteria: Criteria,
-    /// Per-metric-group fingerprint-side config (e.g. `m_flow_ix`). **Not** part
-    /// of match identity — compiled into
-    /// [`crate::metrics::flow_ix::FlowPatterns`] at reload.
-    #[serde(default = "default_metric_config")]
-    pub metric_config: serde_json::Value,
+    /// The fingerprint's tags: named trade lists, `{name: definition}`
+    /// ([`crate::metrics::tags::config`]). **Not** part of match identity — compiled
+    /// once per reload.
+    #[serde(default = "default_tags")]
+    pub tags: serde_json::Value,
 }
 
-fn default_metric_config() -> serde_json::Value {
+fn default_tags() -> serde_json::Value {
     serde_json::json!({})
 }
 
@@ -82,7 +82,7 @@ impl Fingerprint {
             id,
             wildcard: false,
             criteria: Criteria::new(),
-            metric_config: default_metric_config(),
+            tags: default_tags(),
         }
     }
 

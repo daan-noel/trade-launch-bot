@@ -17,8 +17,8 @@
 //! multiplying that by a pointer's move rate on a 2vCPU box is the thing the series
 //! exists to avoid.
 //!
-//! The two share their rule resolution and their flow context ([`resolve_rule`],
-//! [`load_flow_ctx`]) rather than each doing it. Two copies drift, and the
+//! The two share their rule resolution and their tag context ([`resolve_rule`],
+//! [`load_tag_ctx`]) rather than each doing it. Two copies drift, and the
 //! run-snapshot preference is exactly the part that must not: a rule edited after the
 //! position closed would otherwise draw thresholds that never applied to it. The
 //! engine holds the other half of that line — a series row at an instant equals
@@ -42,22 +42,20 @@ use uuid::Uuid;
 use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{LoadedRule, RuleId};
 use hunter_engine::fingerprint::FingerprintId;
-use hunter_engine::metrics::evaluator::ConditionExpr;
-use hunter_engine::metrics::burst_slot::BurstPatterns;
-use hunter_engine::metrics::copy::CopyPatterns;
-use hunter_engine::metrics::dump_ix::DumpPatterns;
+use hunter_engine::metrics::evaluator::{condition_expr_to_value, ConditionExpr};
 use hunter_engine::metrics::fee::FeeKeys;
-use hunter_engine::metrics::flow_ix::{
-    ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash, FlowPatterns,
-};
+use hunter_engine::metrics::holder_book::{public_recipes, stamp_by_day};
+use hunter_engine::metrics::tags::config::{compile_tags, CompiledTag};
 use hunter_engine::metrics::template_grain::{
     grain_hash_from_labels_value, program_hash_from_labels_value,
 };
-use hunter_engine::metrics::holder_book::{public_recipes, stamp_by_day};
-use hunter_engine::metrics::{metric_spec, MetricId, Side, TradeLite};
+use hunter_engine::metrics::trade_keys::{
+    ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash,
+};
+use hunter_engine::metrics::{metric_spec, MetricRef, Side, TradeLite};
 use hunter_engine::readout::{
-    replay_readout, replay_series, ConditionRead, ConditionSeries, ReadSide, ReadoutSource,
-    ReplayCtx, ReplayFlow, RuleReadout,
+    replay_readout, replay_series, ConditionRead, ConditionSeries, LineRead, ReadPart,
+    ReadoutSource, ReplayCtx, ReplayTags, RuleReadout, SignalRead,
 };
 use hunter_engine::rule_params::RuleParams;
 
@@ -69,45 +67,89 @@ use trading_core::models::wallet::validate_solana_address;
 use trading_core::models::StrategyPosition;
 use trading_core::storage::repositories::build_breadth_repo::BuildBreadthRepo;
 
+/// Where in the rule a condition or line sits — the section the rule editor shows it
+/// under, so the readout and the editor name the same place the same way.
+#[derive(Debug, serde::Serialize)]
+struct PartOut {
+    /// `event` | `filter` | `final_filter` | `signal` | `always` | `stage`.
+    part: &'static str,
+    /// Signal name, on a `signal` read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signal: Option<&'static str>,
+    /// Which OR-group of the signal, on a `signal` read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<u16>,
+    /// Stage index and name, on a `stage` read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage_name: Option<&'static str>,
+    /// `true` for a stage's `at_end` list, `false` for its `on` list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    at_end: Option<bool>,
+    /// Line index inside `always` or inside the stage list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<u16>,
+}
+
+fn part_out(p: ReadPart) -> PartOut {
+    let mut out = PartOut {
+        part: "",
+        signal: None,
+        group: None,
+        stage: None,
+        stage_name: None,
+        at_end: None,
+        line: None,
+    };
+    match p {
+        ReadPart::Event => out.part = "event",
+        ReadPart::Filter => out.part = "filter",
+        ReadPart::FinalFilter => out.part = "final_filter",
+        ReadPart::Signal { name, group, .. } => {
+            out.part = "signal";
+            out.signal = Some(name);
+            out.group = Some(group);
+        }
+        ReadPart::Always { line } => {
+            out.part = "always";
+            out.line = Some(line);
+        }
+        ReadPart::Stage { stage, name, at_end, line } => {
+            out.part = "stage";
+            out.stage = Some(stage);
+            out.stage_name = Some(name);
+            out.at_end = Some(at_end);
+            out.line = Some(line);
+        }
+    }
+    out
+}
+
 /// What a condition **is**, independent of any instant — the half of the wire shape
 /// that does not change row to row, so the series sends it once and the point read
 /// flattens it beside its single value.
 ///
-/// `metric` is the registry **name**, not the engine's `MetricId` — the id is an
-/// internal ordinal and must never reach a client (the lab's `metric-series` route
-/// holds the same line).
+/// Names only, never an engine ordinal: `metric` is the registry path (`m_flow.buy_sol`),
+/// `tag` and `span` are the authored spellings, and `label` is the one full spelling
+/// (`m_flow.buy_sol @!volume [10s]`) the rule editor also shows.
 #[derive(Debug, serde::Serialize)]
 struct ConditionMetaOut {
-    /// `entry` | `exit` | `stage`.
-    side: &'static str,
-    /// Ladder index; present only on a `stage` read.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stage: Option<u8>,
-    /// Whether the fold is currently evaluating this stage. Absent off a stage read.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stage_active: Option<bool>,
-    metric: &'static str,
-    group: &'static str,
+    #[serde(flatten)]
+    part: PartOut,
+    metric: String,
     unit: &'static str,
-    /// Trailing-window size for a dynamic metric; `null` for static ones.
-    window_size_sec: Option<f64>,
-    /// The full span - size, lag and unit. `window_size_sec` above stays for
-    /// clients that only ever knew wall-clock windows.
+    /// `volume` or `!volume`; absent on an untagged read.
     #[serde(skip_serializing_if = "Option::is_none")]
-    window: Option<hunter_engine::metrics::WindowSpec>,
+    tag: Option<String>,
+    /// `10s`, `20sl`, `age60s`, ...; absent for the whole life.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    span: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slice: Option<String>,
+    label: String,
     /// The authored DNF, `OR` of `AND` arms, as `{operator, value}` objects.
     conditions: serde_json::Value,
-    /// `authored` | `take_profit` | `stop_loss` — a desugared ladder req keeps its
-    /// label so the UI does not render a TP as a raw `pnl` condition.
-    origin: &'static str,
-    /// PnL the trailing stop arms at, when gated.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    arm_above_pct: Option<f64>,
-    /// Index into the compiled exit clauses. Present on `exit` reads so the
-    /// strip can AND chips inside a way and OR across ways. Absent on entry
-    /// and scale-out stages.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    exit_clause: Option<u8>,
 }
 
 /// One condition read at one instant.
@@ -126,9 +168,36 @@ struct ConditionOut {
     matched_operator: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     matched_value: Option<f64>,
-    /// The trail is gated and not yet armed, so the fold **skips** this condition.
-    /// Distinct from `ok: false`: it is not being evaluated at all.
-    disarmed: bool,
+}
+
+/// One line (`if ... then sell / go`) at one instant.
+#[derive(Debug, serde::Serialize)]
+struct LineOut {
+    #[serde(flatten)]
+    part: PartOut,
+    /// Every condition of the line holds right now.
+    holds: bool,
+    /// The exit label the line sells with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sells: Option<String>,
+    /// Percent of the first bag a partial sell takes; absent = everything left.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sell_pct: Option<f64>,
+    /// The stage index the line moves to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    goes_to: Option<u8>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SignalOut {
+    name: &'static str,
+    holds: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct StageOut {
+    index: u8,
+    name: &'static str,
 }
 
 /// One condition across a whole series: the same metadata, then one entry per row of
@@ -140,12 +209,6 @@ struct ConditionSeriesOut {
     /// Per row; non-finite serializes `null`, as on the point read.
     values: Vec<Option<f64>>,
     ok: Vec<bool>,
-    /// Per row, and **omitted entirely** unless this condition is a gated trail —
-    /// the only kind the fold ever skips. Per-row rather than a single flag because
-    /// a trail arms and disarms as PnL crosses `arm_above_pct`, which is exactly the
-    /// distinction `disarmed` exists to carry.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    disarmed: Vec<bool>,
 }
 
 /// The series response. `at` is **epoch millis**, not RFC3339: at one row per
@@ -192,88 +255,60 @@ struct ReadoutOut {
     /// The arm's lifecycle state (`Armed`, `Entered`, `ExitPending`, …).
     /// `null` on a replay — the arm is long gone.
     arm: Option<&'static str>,
-    /// Scale-out stage; `null` when no bag is held.
-    stage: Option<u8>,
+    /// The stage the held position is in; `null` when no bag is held.
+    stage: Option<StageOut>,
     /// The instant every value is read at — one instant for the whole response.
     at: chrono::DateTime<chrono::Utc>,
     conditions: Vec<ConditionOut>,
+    signals: Vec<SignalOut>,
+    lines: Vec<LineOut>,
 }
 
-fn side_name(side: ReadSide) -> &'static str {
-    match side {
-        ReadSide::Entry => "entry",
-        ReadSide::Exit => "exit",
-        ReadSide::Stage { .. } => "stage",
-    }
-}
-
-fn origin_name(origin: hunter_engine::arm::ReqOrigin) -> &'static str {
-    use hunter_engine::arm::ReqOrigin::*;
-    match origin {
-        Authored => "authored",
-        TakeProfit => "take_profit",
-        StopLoss => "stop_loss",
-    }
-}
-
-/// The instant-independent half of a condition, from the parts every read carries.
-/// ONE mapper for both shapes: the strip renders a hovered series row with exactly
-/// the chips it renders a pinned point read with, so the two cannot describe the
-/// same condition differently.
-fn condition_meta(
-    side: ReadSide,
-    metric: MetricId,
-    window: Option<hunter_engine::metrics::WindowSpec>,
-    conds: &ConditionExpr,
-    origin: hunter_engine::arm::ReqOrigin,
-    arm_above_pct: Option<f64>,
-    exit_clause: Option<u8>,
-) -> ConditionMetaOut {
-    let spec = metric_spec(metric);
-    let (stage, stage_active) = match side {
-        ReadSide::Stage { index, active } => (Some(index), Some(active)),
-        _ => (None, None),
-    };
+/// The instant-independent half of a condition. ONE mapper for both shapes: the strip
+/// renders a hovered series row with exactly the chips it renders a pinned point read
+/// with, so the two cannot describe the same condition differently.
+fn condition_meta(part: ReadPart, r: MetricRef, conds: &ConditionExpr) -> ConditionMetaOut {
     ConditionMetaOut {
-        side: side_name(side),
-        stage,
-        stage_active,
-        metric: spec.name,
-        group: hunter_engine::metrics::group_spec(hunter_engine::metrics::group_of(metric).id).name,
-        unit: spec.unit.as_str(),
-        // Kept as the legacy key for a wall-clock window so no client breaks; a
-        // slot window reports `null` there and names itself in `window` instead.
-        window_size_sec: window
-            .filter(|w| w.unit == hunter_engine::metrics::WindowUnit::Sec)
-            .map(|w| w.size),
-        window,
-        conditions: hunter_engine::metrics::evaluator::condition_expr_to_value(conds),
-        origin: origin_name(origin),
-        arm_above_pct,
-        exit_clause,
+        part: part_out(part),
+        metric: metric_spec(r.metric).path(),
+        unit: metric_spec(r.metric).unit.as_str(),
+        tag: r.tag.map(|t| t.text()),
+        span: r.span.span_text(),
+        slice: r.span.slice_text(),
+        label: r.label(),
+        conditions: condition_expr_to_value(conds),
     }
 }
 
 fn condition_out(r: &ConditionRead) -> ConditionOut {
     ConditionOut {
-        meta: condition_meta(r.side, r.metric, r.window, &r.conds, r.origin, r.arm_above_pct, r.exit_clause),
+        meta: condition_meta(r.part, r.r, &r.conds),
         value: r.value.is_finite().then_some(r.value),
         ok: r.ok,
         matched_operator: r.matched.map(|c| c.operator.symbol()),
         matched_value: r.matched.map(|c| c.value),
-        disarmed: r.disarmed,
     }
 }
 
+fn line_out(l: &LineRead) -> LineOut {
+    LineOut {
+        part: part_out(l.part),
+        holds: l.holds,
+        sells: l.sells.map(|r| r.label().into_owned()),
+        sell_pct: l.sell_bps.map(|b| f64::from(b) / 100.0),
+        goes_to: l.goes_to,
+    }
+}
+
+fn signal_out(s: &SignalRead) -> SignalOut {
+    SignalOut { name: s.name, holds: s.holds }
+}
+
 fn condition_series_out(c: &ConditionSeries) -> ConditionSeriesOut {
-    let r = &c.req;
     ConditionSeriesOut {
-        meta: condition_meta(c.side, r.metric, r.window.primary, &r.conds, r.origin, r.arm_above_pct, c.exit_clause),
+        meta: condition_meta(c.part, c.req.r, &c.req.conds),
         values: c.values.iter().map(|v| v.is_finite().then_some(*v)).collect(),
         ok: c.ok.clone(),
-        // Only a gated trail is ever skipped, so every other condition ships an
-        // empty vec and the field vanishes from its JSON object.
-        disarmed: if r.arm_above_pct.is_some() { c.disarmed.clone() } else { Vec::new() },
     }
 }
 
@@ -286,9 +321,11 @@ fn readout_out(mint: String, rule_id: RuleId, readout: RuleReadout) -> ReadoutOu
             ReadoutSource::Replay => "replay",
         },
         arm: readout.arm,
-        stage: readout.stage,
+        stage: readout.stage.map(|(index, name)| StageOut { index, name }),
         at: readout.at,
-        conditions: readout.reads.iter().map(condition_out).collect(),
+        conditions: readout.conditions.iter().map(condition_out).collect(),
+        signals: readout.signals.iter().map(signal_out).collect(),
+        lines: readout.lines.iter().map(line_out).collect(),
     }
 }
 
@@ -410,84 +447,60 @@ async fn resolve_rule(
     })
 }
 
-/// The flow context a replay classifies volume vs organic with — the rule's
-/// fingerprint patterns and the token's creator wallet.
+/// The tag context a replay classifies trades with — the rule's fingerprint tags,
+/// compiled, and the token's creator wallet.
 ///
-/// Without it every `m_flow_ix` condition reads `NaN` and — worse — the creator's
-/// dev buy and dev dump, usually a token's two largest single flows, classify as
-/// organic. Neither half is fatal on its own: an unconfigured fingerprint just omits
-/// the flow columns, and a missing creator is logged rather than silently folded.
-/// See [`ReplayFlow`].
-/// One fingerprint's compiled lists plus the token's creator wallet — a named
-/// carrier rather than a widening tuple, so adding a fingerprint-scoped group cannot
-/// silently transpose two `Option`s of the same shape at a call site.
+/// Without it every `@tag` condition reads `NaN` and — worse — the creator's dev buy
+/// and dev dump, usually a token's two largest single flows, never join a `creator` or
+/// `sticky` tag. Neither half is fatal on its own: a rule that reads no tag skips both
+/// lookups, and a missing creator is logged rather than silently folded. A named
+/// carrier rather than a tuple, so a new field cannot transpose two `Option`s.
 #[derive(Default)]
-struct FlowCtx {
-    patterns: Option<FlowPatterns>,
-    dump: Option<DumpPatterns>,
-    burst: Option<BurstPatterns>,
-    copy: Option<CopyPatterns>,
+struct TagCtx {
+    tags: Vec<CompiledTag>,
     creator_wallet_hash: Option<u64>,
 }
 
-impl FlowCtx {
-    /// Borrow as the engine's replay context. `None` when the fingerprint configures
-    /// no list at all — gating on the flow list alone would leave a dump-, burst- or
-    /// copy-only rule reading `NaN`.
-    fn as_replay(&self, fingerprint: FingerprintId) -> Option<ReplayFlow<'_>> {
-        (self.patterns.is_some()
-            || self.dump.is_some()
-            || self.burst.is_some()
-            || self.copy.is_some())
-        .then_some(ReplayFlow {
+impl TagCtx {
+    /// Borrow as the engine's replay context. `None` when there is no tag to read.
+    fn as_replay(&self, fingerprint: FingerprintId) -> Option<ReplayTags<'_>> {
+        (!self.tags.is_empty()).then_some(ReplayTags {
             fingerprint,
-            patterns: self.patterns.as_ref(),
-            dump: self.dump.as_ref(),
-            burst: self.burst.as_ref(),
-            copy: self.copy.as_ref(),
+            tags: &self.tags,
             creator_wallet_hash: self.creator_wallet_hash,
         })
     }
 }
 
-async fn load_flow_ctx(
+async fn load_tag_ctx(
     app_state: &DeployState,
     mint: &str,
+    rule: &CompiledRule,
     fingerprint_id: FingerprintId,
-) -> FlowCtx {
-    // Every list comes off the ONE row, in one read: they are separate groups on
-    // the same fingerprint, so a rule may carry any of them.
-    let mut ctx = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
-        Ok(Some(fp)) => {
-            let cfg = fp_to_engine(&fp).metric_config;
-            FlowCtx {
-                patterns: FlowPatterns::from_metric_config(&cfg),
-                dump: DumpPatterns::from_metric_config(&cfg),
-                burst: BurstPatterns::from_metric_config(&cfg),
-                copy: CopyPatterns::from_metric_config(&cfg),
-                creator_wallet_hash: None,
-            }
-        }
-        Ok(None) => FlowCtx::default(),
+) -> TagCtx {
+    // A rule that reads no tag needs neither the fingerprint nor the creator.
+    if rule.buffers.tags.is_empty() {
+        return TagCtx::default();
+    }
+    let tags = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
+        Ok(Some(fp)) => compile_tags(&fp_to_engine(&fp).tags),
+        Ok(None) => Vec::new(),
         Err(e) => {
             tracing::warn!(fp = %fingerprint_id.0, "readout replay: fingerprint load failed: {e}");
-            FlowCtx::default()
+            Vec::new()
         }
     };
-    // Only pay for the creator lookup on the flow path — the creator seeds the flow
-    // contagion set and nothing else, so a dump-, burst- or copy-only rule never
-    // needs it.
-    if ctx.patterns.is_none() {
-        return ctx;
+    if tags.is_empty() {
+        return TagCtx::default();
     }
-    ctx.creator_wallet_hash = match app_state.core.token_repo().find_by_mint(mint).await {
+    let creator_wallet_hash = match app_state.core.token_repo().find_by_mint(mint).await {
         Ok(Some(t)) if !t.creator_wallet.is_empty() => Some(wallet_hash(&t.creator_wallet)),
         _ => {
-            tracing::warn!(mint, "readout replay: no creator wallet — flow split unseeded");
+            tracing::warn!(mint, "readout replay: no creator wallet — creator and sticky tags unseeded");
             None
         }
     };
-    ctx
+    TagCtx { tags, creator_wallet_hash }
 }
 
 /// The token's stored trades up to `until`, as the engine's `TradeLite`.
@@ -552,11 +565,12 @@ async fn replay_created_at(
 }
 
 /// Stamp each buy with its build-breadth class from the stored table of its own UTC
-/// day, the table the live engine held that day, when the rule reads `m_holder_book`.
-/// Read-only: a day never stored stays unknown and `public_app_share` reads `null`, so
-/// a request never computes a table (one `GROUP BY` over a day of `trades`).
+/// day, the table the live engine held that day, when the rule reads the holder book
+/// (`m_holdings.bag_share_pct @public_app`). Read-only: a day never stored stays
+/// unknown and the read is `null`, so a request never computes a table (one
+/// `GROUP BY` over a day of `trades`).
 async fn stamp_build_breadth(app_state: &DeployState, rule: &CompiledRule, lites: &mut [TradeLite]) {
-    if !rule.needs_holder_book {
+    if !rule.buffers.holder_book {
         return;
     }
     let days: std::collections::BTreeSet<chrono::NaiveDate> =
@@ -584,6 +598,17 @@ fn entry_fill(position: &StrategyPosition) -> Option<(chrono::DateTime<chrono::U
         .filter(|(_, p)| p.is_finite() && *p > 0.0)
 }
 
+/// The stage a replay reads a position in: the stage PG last recorded, begun at the
+/// entry fill. PG keeps the index but not the move time, so `m_position.stage_sec`
+/// replays as time since the fill — exact for the first stage, an upper bound after
+/// a move. `None` for a position that never filled.
+fn replay_stage(
+    position: &StrategyPosition,
+    entry: Option<(chrono::DateTime<chrono::Utc>, f64)>,
+) -> Option<(u8, chrono::DateTime<chrono::Utc>)> {
+    entry.map(|(at, _)| (position.scale_stage, at))
+}
+
 /// Reconstruct a closed position's readout at one instant by folding its token's
 /// stored trades.
 ///
@@ -607,25 +632,26 @@ async fn replay_for_position(
     };
 
     let trades = load_trades(app_state, &position.mint_address, at).await?;
-    let flow_ctx = load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
+    let tag_ctx =
+        load_tag_ctx(app_state, &position.mint_address, &rule.compiled, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
     let mut lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
     stamp_build_breadth(app_state, &rule.compiled, &mut lites).await;
     let entry = entry_fill(position);
-    let stage = Some(position.scale_stage);
+    let stage = replay_stage(position, entry);
     let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
 
     // Off the reactor: this walks every trade the token made before `at`, which for a
     // busy token is tens of thousands of folds. Small next to the lab's full series,
     // still not something to run on an async worker of a 2vCPU box.
     let out = web::block(move || {
-        let flow = flow_ctx.as_replay(fingerprint_id);
+        let tags = tag_ctx.as_replay(fingerprint_id);
         replay_readout(
             &compiled,
             lites,
             &ReplayCtx {
-                created_at, entry, stage, flow,
+                created_at, entry, stage, tags,
             },
             at,
         )
@@ -668,7 +694,7 @@ fn trade_lite(t: &Trade) -> TradeLite {
         tx_index: Some(t.tx_index as u32),
         template_hash: grain_hash_from_labels_value(&t.instruction_labels),
         program_hash: program_hash_from_labels_value(&t.instruction_labels),
-        build_hash: hunter_engine::metrics::flow_ix::build_hash_from_labels_value(
+        build_hash: hunter_engine::metrics::trade_keys::build_hash_from_labels_value(
             &t.instruction_labels,
         ),
         is_launch: hunter_engine::metrics::template_grain::is_launch_from_labels_value(
@@ -819,7 +845,7 @@ pub async fn get_position_metric_series(
             // still demands a real price.
             centre: position.entry_time,
             entry: entry_fill(&position),
-            stage: Some(position.scale_stage),
+            stage: replay_stage(&position, entry_fill(&position)),
         },
     )
     .await
@@ -837,7 +863,8 @@ struct SeriesAnchor {
     /// Entry fill anchoring the `m_position` metrics; `None` pre-entry, whose
     /// position-scoped reads then stay `NaN` — exactly what `can_enter` sees.
     entry: Option<(chrono::DateTime<chrono::Utc>, f64)>,
-    stage: Option<u8>,
+    /// Stage index and the instant it began; `None` pre-entry.
+    stage: Option<(u8, chrono::DateTime<chrono::Utc>)>,
 }
 
 /// Fold one token's retained history through one compiled rule and answer with the
@@ -856,7 +883,7 @@ async fn series_response(
         Ok(t) => t,
         Err(resp) => return resp,
     };
-    let flow_ctx = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
+    let tag_ctx = load_tag_ctx(app_state, &mint, &rule.compiled, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &mint, &trades).await;
     let mut lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -876,12 +903,12 @@ async fn series_response(
     // Off the reactor, for the same reason the point replay is — more so: this folds
     // the token's whole retained history and evaluates every condition at every row.
     let out = web::block(move || {
-        let flow = flow_ctx.as_replay(fingerprint_id);
+        let tags = tag_ctx.as_replay(fingerprint_id);
         replay_series(
             &compiled,
             lites,
             &ReplayCtx {
-                created_at, entry, stage, flow,
+                created_at, entry, stage, tags,
             },
             as_of,
             Some(MAX_READOUT_SERIES_ROWS),
@@ -946,8 +973,8 @@ pub struct ArmedSeriesQuery {
 ///
 /// The same readout for an **armed, not yet entered** (token, rule) pair: entry
 /// conditions with live values, so a Waiting row can answer "what is it waiting on".
-/// Exit conditions come back too, position-scoped ones reading `null` — exactly what
-/// the pre-entry `can_enter` gate sees.
+/// Held-side lines come back too, position metrics reading `null` — exactly what the
+/// pre-entry `can_enter` gate sees.
 pub async fn get_armed_metrics(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<ArmedReadoutQuery>,
@@ -975,7 +1002,7 @@ pub async fn get_armed_metrics(
 /// Waiting modal's chart crosshair and condition timeline read.
 ///
 /// Same fold, same grid and same honesty as the position series — only the anchor
-/// differs. Pre-entry there is no entry fill and no ladder stage, so the
+/// differs. Pre-entry there is no entry fill and no stage, so the
 /// position-scoped conditions read `null` throughout, which is exactly what the
 /// `can_enter` gate itself sees.
 ///

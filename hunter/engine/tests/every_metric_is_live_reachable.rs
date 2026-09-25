@@ -1,18 +1,17 @@
-//! Registry-driven guard: **every** metric in [`REGISTRY`] produces a real reading
-//! on the LIVE path.
+//! Registry-driven guard: **every** metric, on every tag and span it accepts, produces a
+//! real reading on the LIVE path.
 //!
-//! Adding a metric touches two files - the registry entry and its group's compute
-//! arm - and only the first is compile-enforced. `TokenTrack::value` routes by
-//! group, but each group's own `value(id)` ends in `_ => f64::NAN`, so a registered
-//! metric whose compute arm was never written reads `NaN` forever. `NaN` satisfies
-//! no condition (evaluator contract), so the rule simply never fires: no panic, no
+//! Adding a metric touches two places - the registry entry and its compute arm - and
+//! only the first is compile-enforced. Each compute module's `value` ends in
+//! `_ => f64::NAN`, so a registered metric whose arm was never written reads `NaN`
+//! forever. `NaN` satisfies no condition, so the rule simply never fires: no panic, no
 //! log line, no failing test - a gate that is silently always-false.
 //!
-//! This test drives each metric through the same surface hunter-live uses
+//! This test drives each (metric, tag, span) through the same surface hunter-live uses
 //! (`EngineState` + `reduce` + `readout::read_state`) over a stream rich enough to
-//! define every one of them, and asserts the readout value is finite. It walks
-//! `REGISTRY` rather than a list, so a metric added tomorrow is covered without
-//! touching this file.
+//! define every one of them, and asserts the readout value is finite. It walks the
+//! registry rather than a list, so a metric, a tag level or a span kind added tomorrow
+//! is covered without touching this file.
 
 use std::sync::Arc;
 
@@ -20,10 +19,8 @@ use chrono::{Duration, TimeZone, Utc};
 use hunter_engine::event::{Effect, Event, Fill, LoadedRule, Mint, RuleId, TradeMode};
 use hunter_engine::fingerprint::{Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
-use hunter_engine::metrics::{
-    flow_ix, flow_slice, is_two_window, GroupSpec, MetricKind, MetricScope, MetricSpec, Side,
-    TradeLite, Ts, REGISTRY,
-};
+use hunter_engine::metrics::registry::{MetricSpec, TagLevel, TagUse, METRICS};
+use hunter_engine::metrics::{trade_keys, Side, TradeLite, Ts};
 use hunter_engine::readout::read_state;
 use hunter_engine::reduce::reduce;
 use hunter_engine::rule_params::RuleParams;
@@ -38,138 +35,95 @@ fn ts(secs: f64) -> Ts {
     Utc.timestamp_opt(1_700_000_000, 0).unwrap() + Duration::milliseconds((secs * 1000.0) as i64)
 }
 
-/// The volume-side label sequence the probe's "volume" trades carry.
+/// The label sequence the probe's `volume` trades carry.
 const VOL_LABELS: [&str; 1] = ["Pump.Fun: Buy"];
 
-/// The sequence every NON-volume trade carries, and therefore the build
-/// `m_dump_ix` counts the sells of. Disjoint from [`VOL_LABELS`] so this probe reads
-/// each group's own state: the two lists MAY overlap, and a shared build would leave
-/// a flow bug looking like a passing dump assertion.
+/// The sequence every other trade carries, and so the shape the `dump` tag lists.
+/// Disjoint from [`VOL_LABELS`] so each tag reads its own state.
 const NONVOL_LABELS: [&str; 1] = ["Pump.Fun: Sell"];
 
-/// The probe's wallets, as ADDRESSES. `m_copy` matches on the same `wallet_hash`
-/// digest every adapter puts on a print, so the list has to be written the way a
-/// rule author writes it - base58 in, hash out - rather than as bare `u64`s.
+/// The probe's wallets, as addresses (a `wallet` matcher hashes them the way every
+/// adapter hashes a print's wallet).
 const WALLETS: [&str; 5] = ["w-eleven", "w-twelve", "w-thirteen", "w-fourteen", "w-fifteen"];
 
-/// The two the copy list names. `w-twelve` buys twice in the script and
-/// `w-thirteen` sells, so all four copy metrics get a non-zero reading; a
-/// single-wallet list would leave one side at `0`, which is a reading but not a
-/// demonstration.
+/// The two the `targets` tag names: one buys twice, one sells.
 const COPY_TARGETS: [&str; 2] = [WALLETS[1], WALLETS[2]];
 
-/// A wildcard fingerprint configured for every fingerprint-scoped group, so none
-/// reads `NaN` for want of config. Each has its own list: `m_flow_ix` tags the
-/// volume side, `m_dump_ix` counts sells built the other way, `m_copy` names two of
-/// the probe's wallets.
+/// A wildcard fingerprint with one tag of each kind the probe reads.
 fn probe_fp() -> Fingerprint {
     Fingerprint {
         id: FingerprintId(Uuid::from_u128(FP)),
         wildcard: true,
         criteria: Criteria::new(),
-        metric_config: json!({
-            "m_flow_ix": { "ix_patterns": [VOL_LABELS] },
-            "m_dump_ix": { "ix_patterns": [NONVOL_LABELS] },
-            "m_burst_slot": { "working_templates": ["Pump.Fun"] },
-            "m_copy": { "target_wallets": COPY_TARGETS }
+        tags: json!({
+            "volume": { "match": { "ix_shape": [VOL_LABELS], "creator": true }, "sticky": true },
+            "dump": { "match": { "ix_shape": [NONVOL_LABELS] }, "side": "sell" },
+            "targets": { "match": { "wallet": COPY_TARGETS } },
+            "working": { "match": { "program": ["Pump.Fun"] } }
         }),
     }
 }
 
-/// Which clock a dynamic group's window is authored on. Time is continuous while
-/// slots and prints are discrete, so these are three window implementations, not one
-/// with a unit label - a metric can read on one and be `NaN` on another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Basis {
-    Sec,
-    Slot,
-    Print,
-}
-
-impl Basis {
-    fn label(self) -> &'static str {
-        match self {
-            Basis::Sec => "seconds",
-            Basis::Slot => "slots",
-            Basis::Print => "prints",
+/// Every (tag, span) a metric accepts, as the condition keys that spell it.
+fn variants(m: &MetricSpec) -> Vec<Map<String, Value>> {
+    let mut tags: Vec<Option<&str>> = Vec::new();
+    if m.tags != TagUse::Required {
+        tags.push(None);
+    }
+    if m.tags != TagUse::None {
+        match m.tag_level {
+            TagLevel::Trade => tags.extend([Some("volume"), Some("!volume"), Some("dump"), Some("targets")]),
+            TagLevel::Template => tags.push(Some("working")),
+            TagLevel::WalletClass => tags.extend([Some("bundled"), Some("public_app")]),
         }
     }
-}
-
-/// Fill in this group's strict params with values that define a reading on `basis`.
-///
-/// Driven off the registry's own param names: an unrecognised **required** param is
-/// a hard failure telling the author to teach the probe, never a silent skip that
-/// would let a new group's metrics go unchecked.
-fn strict_params(g: &GroupSpec, m: &MetricSpec, basis: Basis, obj: &mut Map<String, Value>) {
-    // The slice axis is declared by `m_flow_window` for every instance but read only
-    // by the metrics `is_two_window` names. Setting it for the others is rejected at
-    // save as a no-op, so the probe follows the same per-metric rule the engine does -
-    // which is what makes this test cover the contract rather than work around it.
-    let reads_slice = is_two_window(m.id);
-    for p in g.strict_params {
-        if !reads_slice && flow_slice::SLICE_AXIS.params().contains(&p.name) {
-            continue;
+    let mut spans: Vec<(Option<&str>, Option<&str>)> = Vec::new();
+    if m.spans.life {
+        spans.push((None, None));
+    }
+    if m.spans.window {
+        // The probe's trades span slots 100..110 and a handful of prints: every window
+        // covers them, and a slice nests inside.
+        for (w, s) in [("10s", "2s"), ("20sl", "4sl"), ("50p", "4p")] {
+            spans.push((Some(w), m.spans.slice.then_some(s)));
         }
-        let v = match (p.name, basis) {
-            (hunter_engine::metrics::WINDOW_SEC_PARAM, Basis::Sec) => json!(10.0),
-            (flow_slice::SLICE_PARAM, Basis::Sec) => json!(2.0),
-            // The probe's trades span slots 100..110, so a 20-slot window covers them
-            // and a 4-slot burst nests inside it.
-            (hunter_engine::metrics::WINDOW_SLOT_PARAM, Basis::Slot) => json!(20.0),
-            (flow_slice::SLICE_SLOT_PARAM, Basis::Slot) => json!(4.0),
-            // Wide enough to hold every print the probe folds, with a burst nested
-            // inside it, so an empty window is never what a NaN would be blamed on.
-            (hunter_engine::metrics::WINDOW_PRINT_PARAM, Basis::Print) => json!(50.0),
-            (flow_slice::SLICE_PRINT_PARAM, Basis::Print) => json!(4.0),
-            // The anchored group: count from birth, so every probe buy is admitted.
-            (hunter_engine::metrics::crowd_after_age::AFTER_AGE_PARAM, _) => json!(0.0),
-            // The other bases' size params, plus two optional knobs deliberately left
-            // unset: a lag would push the window off the probe's trades, and
-            // `arm_above_pct` would report the trailing metrics as `disarmed` rather
-            // than read them.
-            (
-                hunter_engine::metrics::WINDOW_SEC_PARAM
-                | hunter_engine::metrics::WINDOW_SLOT_PARAM
-                | hunter_engine::metrics::WINDOW_PRINT_PARAM
-                | hunter_engine::metrics::WINDOW_LAG_PARAM
-                | flow_slice::SLICE_PARAM
-                | flow_slice::SLICE_SLOT_PARAM
-                | flow_slice::SLICE_PRINT_PARAM
-                | "arm_above_pct",
-                _,
-            ) => continue,
-            (other, _) => {
-                assert!(
-                    !p.required,
-                    "{}: required strict param `{other}` is unknown to this probe - \
-                     add a value for it here so the group's metrics stay covered",
-                    g.name
-                );
-                continue;
+    }
+    if m.spans.since_age {
+        spans.push((Some("age0s"), None));
+    }
+    let mut out = Vec::new();
+    for tag in &tags {
+        for (span, slice) in &spans {
+            let mut c = Map::new();
+            c.insert("metric".into(), json!(m.path()));
+            if let Some(t) = tag {
+                c.insert("tag".into(), json!(t));
             }
-        };
-        obj.insert(p.name.to_string(), v);
+            if let Some(s) = span {
+                c.insert("span".into(), json!(s));
+            }
+            if let Some(s) = slice {
+                c.insert("slice".into(), json!(s));
+            }
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A rule reading one condition, on the side it can sit on, with a permissive
+/// threshold. The condition is never the point - the reading is.
+fn params_for(m: &MetricSpec, cond: &Map<String, Value>) -> Value {
+    let mut c = cond.clone();
+    c.insert("is".into(), json!([{ "operator": ">=", "value": -1.0e9 }]));
+    if m.path().starts_with("m_position.") {
+        json!({ "always": [{ "if": [Value::Object(c)], "sell": "probe" }] })
+    } else {
+        json!({ "enter": { "filters": [Value::Object(c)] } })
     }
 }
 
-/// Rule params placing `metric` on the side its scope allows, with a permissive
-/// condition. The condition is never the point - the reading is.
-fn params_for(g: &GroupSpec, m: &MetricSpec, basis: Basis) -> Value {
-    let mut group_obj = Map::new();
-    strict_params(g, m, basis, &mut group_obj);
-    group_obj.insert(m.name.to_string(), json!([{ "operator": ">=", "value": -1.0e9 }]));
-    let side = if g.scope == MetricScope::Position { "exit" } else { "entry" };
-    let mut params = json!({ side: { g.name: Value::Object(group_obj) } });
-    // `since_armed` has no reading until something latches `armed`: an `arm` clause
-    // that holds on the first event after the fill gives the probe its latch.
-    if m.name == "since_armed" {
-        params["arm"] = json!({ "m_state": { "time": [{ "operator": ">=", "value": 0.0 }] } });
-    }
-    params
-}
-
-fn loaded_rule(params: Value, g: &GroupSpec, m: &MetricSpec) -> LoadedRule {
+fn loaded_rule(params: Value, what: &str) -> LoadedRule {
     LoadedRule {
         id: RuleId(Uuid::from_u128(RULE)),
         fingerprint_id: FingerprintId(Uuid::from_u128(FP)),
@@ -177,8 +131,7 @@ fn loaded_rule(params: Value, g: &GroupSpec, m: &MetricSpec) -> LoadedRule {
         buy_amount_lamports: 100_000_000,
         max_concurrent_tokens: 1,
         max_total_tokens: 0,
-        params: RuleParams::parse(&params)
-            .unwrap_or_else(|e| panic!("{}.{} does not validate as a rule: {e}", g.name, m.name)),
+        params: RuleParams::parse(&params).unwrap_or_else(|e| panic!("{what} does not validate as a rule: {e}")),
         entry_enabled: true,
     }
 }
@@ -204,11 +157,11 @@ fn trade(
         priced_reserve_sol: reserve + 30.0,
         at: ts(at),
         ix_hash: Some(if vol {
-            flow_ix::ix_hash(&VOL_LABELS)
+            trade_keys::ix_hash(&VOL_LABELS)
         } else {
-            flow_ix::ix_hash(&NONVOL_LABELS)
+            trade_keys::ix_hash(&NONVOL_LABELS)
         }),
-        wallet_hash: flow_ix::wallet_hash(wallet),
+        wallet_hash: trade_keys::wallet_hash(wallet),
         slot,
         marker_bits: 0,
         leg_index: 0,
@@ -218,7 +171,7 @@ fn trade(
         } else {
             hunter_engine::metrics::template_grain::grain_hash(&NONVOL_LABELS).unwrap()
         }),
-        build_hash: if vol { flow_ix::build_hash(&VOL_LABELS) } else { flow_ix::build_hash(&NONVOL_LABELS) },
+        build_hash: if vol { trade_keys::build_hash(&VOL_LABELS) } else { trade_keys::build_hash(&NONVOL_LABELS) },
         fee: hunter_engine::metrics::fee::FeeKeys::new(None, None, Some(0)),
         // Tokens proportional to SOL at the print's price, so the holder book adds up.
         token_amount: (sol / price * 1e6).round(),
@@ -242,7 +195,7 @@ fn drive(state: &mut EngineState, mint: &Mint) -> Vec<Effect> {
             fp,
             at: ts(0.0),
             // Seeds `prior_launches`; without a creator it stays NaN by design.
-            creator_wallet_hash: Some(flow_ix::wallet_hash("creator-wallet")),
+            creator_wallet_hash: Some(trade_keys::wallet_hash("creator-wallet")),
             identity: None,
             creation_slot: None,
         },
@@ -314,132 +267,53 @@ fn confirm_entry(state: &mut EngineState, mint: &Mint, mut fx: Vec<Effect>) {
     }
 }
 
-/// Read `metric` off the live engine after driving the probe stream, with the
-/// metric's group authored on `basis`. Returns the reading itself, finite or not.
-fn live_reading(g: &GroupSpec, m: &MetricSpec, basis: Basis) -> f64 {
-    let mint = Mint(format!("probe-{}-{}-{}", g.name, m.name, basis.label()).into());
-    let rule = loaded_rule(params_for(g, m, basis), g, m);
+/// Read one condition off the live engine after driving the probe stream.
+fn live_reading(m: &MetricSpec, cond: &Map<String, Value>) -> f64 {
+    let what = Value::Object(cond.clone()).to_string();
+    let mint = Mint(format!("probe-{what}").into());
+    let rule = loaded_rule(params_for(m, cond), &what);
 
     let mut state = EngineState::default();
-    // The build-breadth table `m_holder_book` stamps buys from: without one every
-    // holder is classed unknown and `public_app_share` reads NaN by design.
+    // The build-breadth table the holder book stamps buys from: without one every holder
+    // is classed unknown and `@public_app` reads NaN by design.
     reduce(
         &mut state,
         Event::BuildBreadthReloaded {
             breadth: Arc::from(vec![hunter_engine::event::BuildBreadth {
-                build_hash: flow_ix::build_hash(&VOL_LABELS).unwrap(),
+                build_hash: trade_keys::build_hash(&VOL_LABELS).unwrap(),
                 app_buyers: 1_000,
                 app_buys: 3_000,
             }]),
         },
     );
-    reduce(
-        &mut state,
-        Event::RulesReloaded {
-            rules: Arc::from(vec![rule]),
-            fps: Arc::from(vec![probe_fp()]),
-        },
-    );
+    reduce(&mut state, Event::RulesReloaded { rules: Arc::from(vec![rule]), fps: Arc::from(vec![probe_fp()]) });
     let fx = drive(&mut state, &mint);
     confirm_entry(&mut state, &mint, fx);
 
-    let out = read_state(&state, &mint, RuleId(Uuid::from_u128(RULE)), ts(7.0)).unwrap_or_else(
-        || panic!("{}.{} ({}): the live engine has no arm to read", g.name, m.name, basis.label()),
-    );
-    out.reads
-        .iter()
-        .find(|r| r.metric == m.id)
-        .unwrap_or_else(|| {
-            panic!("{}.{} ({}): compiled away - no req reads it", g.name, m.name, basis.label())
-        })
-        .value
+    let out = read_state(&state, &mint, RuleId(Uuid::from_u128(RULE)), ts(7.0))
+        .unwrap_or_else(|| panic!("{what}: the live engine has no arm to read"));
+    out.conditions.first().unwrap_or_else(|| panic!("{what}: compiled away - nothing reads it")).value
 }
 
 #[test]
-fn every_registered_metric_reads_a_real_value_on_the_live_path() {
+fn every_metric_reads_a_real_value_on_every_tag_and_span_it_accepts() {
     let mut unreadable: Vec<String> = Vec::new();
     let mut checked = 0usize;
-
-    for g in REGISTRY {
-        for m in g.metrics {
+    for m in METRICS {
+        for cond in variants(m) {
             checked += 1;
-            let v = live_reading(g, m, Basis::Sec);
+            let v = live_reading(m, &cond);
             if !v.is_finite() {
-                unreadable.push(format!("{}.{} reads {v}", g.name, m.name));
+                unreadable.push(format!("{} reads {v}", Value::Object(cond)));
             }
         }
     }
-
     assert!(
         unreadable.is_empty(),
-        "{} of {checked} registered metrics never produce a value on the live path \
+        "{} of {checked} metric reads never produce a value on the live path \
          (a NaN gate is silently always-false, so no rule using one can ever fire).\n  {}",
         unreadable.len(),
         unreadable.join("\n  "),
     );
-    assert!(checked >= 40, "probe covered only {checked} metrics - registry walk is broken");
-}
-
-/// The slot twin of the test above. A dynamic group's two window bases are two
-/// implementations, not one with a unit label: the slot path counts in a discrete
-/// cursor advanced off `TradeLite::slot`, so a group can read perfectly on seconds
-/// and `NaN` on slots (a window never registered, a `now_pos` never advanced). Every
-/// dynamic metric is authorable on either, so both have to be reachable.
-#[test]
-fn every_dynamic_metric_also_reads_on_a_slot_window() {
-    let mut unreadable: Vec<String> = Vec::new();
-    let mut checked = 0usize;
-
-    for g in REGISTRY {
-        if g.kind != MetricKind::Dynamic {
-            continue;
-        }
-        for m in g.metrics {
-            checked += 1;
-            let v = live_reading(g, m, Basis::Slot);
-            if !v.is_finite() {
-                unreadable.push(format!("{}.{} reads {v} on a slot window", g.name, m.name));
-            }
-        }
-    }
-
-    assert!(
-        unreadable.is_empty(),
-        "{} of {checked} dynamic metrics are readable on seconds but not on slots.\n  {}",
-        unreadable.len(),
-        unreadable.join("\n  "),
-    );
-    assert!(checked > 0, "no dynamic groups walked - registry walk is broken");
-}
-
-/// The print twin of the two tests above. A print window's cursor is a fold counter
-/// the engine keeps itself rather than a field the feed supplies, so it fails in its
-/// own way: a counter never bumped, or bumped after the fold, leaves every reading
-/// empty while seconds and slots stay perfect. Every dynamic metric is authorable on
-/// this basis, so it has to be reachable on it.
-#[test]
-fn every_dynamic_metric_also_reads_on_a_print_window() {
-    let mut unreadable: Vec<String> = Vec::new();
-    let mut checked = 0usize;
-
-    for g in REGISTRY {
-        if g.kind != MetricKind::Dynamic {
-            continue;
-        }
-        for m in g.metrics {
-            checked += 1;
-            let v = live_reading(g, m, Basis::Print);
-            if !v.is_finite() {
-                unreadable.push(format!("{}.{} reads {v} on a print window", g.name, m.name));
-            }
-        }
-    }
-
-    assert!(
-        unreadable.is_empty(),
-        "{} of {checked} dynamic metrics are readable on seconds but not on prints.\n  {}",
-        unreadable.len(),
-        unreadable.join("\n  "),
-    );
-    assert!(checked > 0, "no dynamic groups walked - registry walk is broken");
+    assert!(checked >= 150, "probe covered only {checked} reads - the registry walk is broken");
 }

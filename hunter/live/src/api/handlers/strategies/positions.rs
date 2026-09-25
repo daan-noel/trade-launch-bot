@@ -291,14 +291,14 @@ pub async fn close_position(
     // Reject anything else before touching the engine / orphan path.
     let portion = match query.sell_bps {
         None | Some(10_000) => hunter_engine::event::Portion::All,
-        Some(bps) if (1..=hunter_engine::rule_params::MAX_SCALE_SELL_BPS).contains(&bps) => {
+        Some(bps) if (1..=hunter_engine::rule_params::MAX_SELL_BPS).contains(&bps) => {
             hunter_engine::event::Portion::BpsOfInitial(bps)
         }
         Some(bps) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
                 "error": format!(
                     "sell_bps must be 1..={} (partial) or 10000/omit (all), got {bps}",
-                    hunter_engine::rule_params::MAX_SCALE_SELL_BPS
+                    hunter_engine::rule_params::MAX_SELL_BPS
                 )
             }));
         }
