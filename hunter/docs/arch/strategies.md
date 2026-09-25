@@ -341,7 +341,12 @@ statement with its start: `StageMoved` (a `go` alone, a deadline's move to `then
 `record_stage_move`, and a partial sell's move on its fill (`PositionDelta::stage_since`)
 through `record_sell_fill`. So `scale_stage` and `extra.stage_since` never disagree, and
 `m_position.stage_sec` and a `stage_sec` deadline keep their clock across a restart
-(`orphan_exit::tests::restart`).
+(`orphan_exit::tests::restart`). The adopted token starts as a placeholder
+(`TokenState::facts_pending`: born at the entry fill, no creator, no creation slot); its
+first drain from the token cache rebuilds it from the cache's creation facts and the
+drained history (`decision_loop::prime_drained` -> `hunter_engine::restore_adopted`), so
+`age_sec`, an `age_sec` deadline, since-creation spans and creator-tagged reads read
+what they read before the restart.
 
 **Warm start: prime, never re-decide.** An adopted arm carries the entry price but
 an *empty* metric track, while the async cache seed backfills up to

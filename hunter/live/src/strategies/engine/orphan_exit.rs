@@ -579,12 +579,11 @@ pub fn adopt_holding_into_engine(
             TokenState {
                 created_at,
                 tf: TokenFingerprint::default(),
-                // An adopted row carries no metadata, and this token's
-                // `TokenCreated` is long past — but the copycat guard is not blind
-                // here: `boot::seed_dupe_guard` rebuilds its memory straight from
-                // `strategy_positions ⋈ tokens`, so an adopted position still
-                // blocks copycats. `None` only means a *further* entry on THIS
-                // mint adds nothing the rebuild did not already record.
+                // Unknown until the first drain restores the creation facts from
+                // the token cache (`facts_pending`). The copycat guard is not blind
+                // meanwhile: `boot::seed_dupe_guard` rebuilds its memory straight
+                // from `strategy_positions ⋈ tokens`, so an adopted position still
+                // blocks copycats.
                 identity: None,
                 track,
                 last_meaningful_at: None,
@@ -596,6 +595,9 @@ pub fn adopt_holding_into_engine(
                 arms: Default::default(),
                 episodes: Default::default(),
                 entry_locks: Default::default(),
+                // Its creation facts come from the token cache on its first drain
+                // (`decision_loop::prime_drained` -> `hunter_engine::restore_adopted`).
+                facts_pending: true,
             },
         );
     }
@@ -719,12 +721,11 @@ pub fn adopt_buy_submitted_into_engine(
             TokenState {
                 created_at,
                 tf: TokenFingerprint::default(),
-                // An adopted row carries no metadata, and this token's
-                // `TokenCreated` is long past — but the copycat guard is not blind
-                // here: `boot::seed_dupe_guard` rebuilds its memory straight from
-                // `strategy_positions ⋈ tokens`, so an adopted position still
-                // blocks copycats. `None` only means a *further* entry on THIS
-                // mint adds nothing the rebuild did not already record.
+                // Unknown until the first drain restores the creation facts from
+                // the token cache (`facts_pending`). The copycat guard is not blind
+                // meanwhile: `boot::seed_dupe_guard` rebuilds its memory straight
+                // from `strategy_positions ⋈ tokens`, so an adopted position still
+                // blocks copycats.
                 identity: None,
                 track,
                 last_meaningful_at: None,
@@ -736,6 +737,9 @@ pub fn adopt_buy_submitted_into_engine(
                 arms: Default::default(),
                 episodes: Default::default(),
                 entry_locks: Default::default(),
+                // Its creation facts come from the token cache on its first drain
+                // (`decision_loop::prime_drained` -> `hunter_engine::restore_adopted`).
+                facts_pending: true,
             },
         );
     }
@@ -811,8 +815,9 @@ mod tests {
         };
         use hunter_engine::fingerprint::{Criteria, Fingerprint, FingerprintId};
         use hunter_engine::grouping::TokenFingerprint;
+        use hunter_engine::metrics::{Side, TradeLite};
         use hunter_engine::rule_params::RuleParams;
-        use hunter_engine::{reduce, EngineState};
+        use hunter_engine::{reduce, restore_adopted, EngineState, FirstSlotFacts, HydrateFacts};
         use serde_json::json;
         use trading_core::models::strategy::{StrategyPosition, EXTRA_STAGE_SINCE};
         use uuid::Uuid;
@@ -909,6 +914,118 @@ mod tests {
             }
             assert_eq!(late_sells(&reduce(&mut running, Event::Tick { now: t(31.0) })), 1);
             assert_eq!(late_sells(&reduce(&mut restarted, Event::Tick { now: t(31.0) })), 1);
+        }
+
+        const CREATOR: u64 = 777;
+
+        fn dev_fp() -> Fingerprint {
+            Fingerprint {
+                id: FingerprintId(Uuid::from_u128(0xD)),
+                wildcard: true,
+                criteria: Criteria::new(),
+                tags: json!({ "dev": { "match": { "creator": true } } }),
+            }
+        }
+
+        /// Buys on arm; moves to `late` when the coin is 60 s old; sells whenever the
+        /// creator sold 0.5 SOL or more in the last 30 s.
+        fn dev_rule() -> LoadedRule {
+            let params = json!({
+                "always": [{ "if": [{ "metric": "m_flow.sell_sol", "tag": "dev", "span": "30s",
+                                      "is": [{ "operator": ">=", "value": 0.5 }] }], "sell": "dev sold" }],
+                "stages": [{ "name": "early", "ends": { "age_sec": 60 }, "then": "late" }, { "name": "late" }]
+            });
+            LoadedRule {
+                id: RuleId(Uuid::from_u128(2)),
+                fingerprint_id: dev_fp().id,
+                trade_mode: TradeMode::Paper,
+                buy_amount_lamports: 100_000_000,
+                max_concurrent_tokens: 0,
+                max_total_tokens: 0,
+                params: RuleParams::parse(&params).expect("valid"),
+                entry_enabled: true,
+            }
+        }
+
+        fn dev_loaded() -> EngineState {
+            let mut s = EngineState::new();
+            reduce(&mut s, Event::RulesReloaded { rules: Arc::from(vec![dev_rule()]), fps: Arc::from(vec![dev_fp()]) });
+            s
+        }
+
+        fn print(side: Side, sol: f64, wallet: u64, slot: u64, at: f64) -> TradeLite {
+            TradeLite {
+                side, sol, price: 1e-7, reserve_sol: 40.0, priced_reserve_sol: 70.0, at: t(at),
+                wallet_hash: wallet, slot, on_curve: true, ..Default::default()
+            }
+        }
+
+        fn moves(fx: &[Effect]) -> usize {
+            fx.iter().filter(|e| matches!(e, Effect::StageMoved(_))).count()
+        }
+
+        fn dev_sells(fx: &[Effect]) -> usize {
+            fx.iter()
+                .filter(|e| matches!(e, Effect::SubmitSell { reason: ExitReason::Line("dev sold"), .. }))
+                .count()
+        }
+
+        /// A restart rebuilds an adopted position's token from the cache's creation
+        /// facts: the coin's age counts from its birth (the `age_sec` deadline moves at
+        /// 60 s of age, not 60 s after the buy) and a creator-tagged read keys on the
+        /// creator (the dev-sold line fires). Both engines decide identically.
+        #[test]
+        fn a_restart_restores_the_adopted_tokens_creation_facts() {
+            let mint = Mint::from("MINT-dev");
+            let mut running = dev_loaded();
+            let fx = reduce(&mut running, Event::TokenCreated {
+                mint: mint.clone(), fp: Box::new(TokenFingerprint::default()), at: t(0.0),
+                creator_wallet_hash: Some(CREATOR), identity: None, creation_slot: Some(100),
+            });
+            let buy = fx.iter().find_map(|e| match e {
+                Effect::SubmitBuy { intent, .. } => Some(intent.clone()),
+                _ => None,
+            }).expect("buys on arm");
+            let fill = Fill { price: 1e-7, sol: 0.1, token_amount: 1_000_000, at: t(5.0) };
+            reduce(&mut running, Event::FillConfirmed { intent: buy, fill });
+            let history = vec![
+                print(Side::Buy, 1.0, CREATOR, 100, 0.2),
+                print(Side::Buy, 0.5, 1, 101, 2.0),
+                print(Side::Buy, 0.5, 2, 102, 8.0),
+            ];
+            for &tr in &history {
+                reduce(&mut running, Event::Trade { mint: mint.clone(), trade: tr });
+            }
+
+            let mut pos = StrategyPosition::new(
+                Uuid::new_v4(), "generic".into(), dev_rule().id.0, "paper".into(), "MINT-dev".into(), "paper".into(),
+            );
+            pos.status = "Holding".into();
+            pos.entry_price = Some(fill.price);
+            pos.entry_time = Some(fill.at);
+            pos.entry_token_amount = Some(fill.token_amount);
+            let mut restarted = dev_loaded();
+            adopt_holding_into_engine(&mut restarted, &PositionRegistry::new(), &pos).expect("adopted");
+            assert!(restarted.tokens[&mint].facts_pending);
+            let facts = HydrateFacts {
+                fp: TokenFingerprint::default(),
+                created_at: t(0.0),
+                creator_wallet_hash: Some(CREATOR),
+                identity: None,
+                creation_slot: Some(100),
+                first_slot: Some(FirstSlotFacts { buy_lamports: 1_000_000_000, sell_lamports: 0, creator_stand_in_wallet_hash: None }),
+            };
+            restore_adopted(&mut restarted, &mint, &facts, &history, t(9.0));
+            assert!(!restarted.tokens[&mint].facts_pending);
+            assert_eq!(restarted.tokens[&mint].created_at, t(0.0));
+
+            for (now, want) in [(59.9, 0), (60.0, 1)] {
+                assert_eq!(moves(&reduce(&mut running, Event::Tick { now: t(now) })), want, "running at {now} s");
+                assert_eq!(moves(&reduce(&mut restarted, Event::Tick { now: t(now) })), want, "restarted at {now} s");
+            }
+            let dump = print(Side::Sell, 0.8, CREATOR, 200, 70.0);
+            assert_eq!(dev_sells(&reduce(&mut running, Event::Trade { mint: mint.clone(), trade: dump })), 1);
+            assert_eq!(dev_sells(&reduce(&mut restarted, Event::Trade { mint: mint.clone(), trade: dump })), 1);
         }
     }
 }

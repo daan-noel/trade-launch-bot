@@ -178,6 +178,23 @@ boot adoption reads it back (`StrategyPosition::entry_priced_reserve`), so a pos
 held across a restart keeps its room target. A row written before the key existed
 reads `NaN`, and then only the stop and the clock close it.
 
+## An adopted token gets its creation facts back
+
+Boot adoption builds a position's token from the PG row alone: a placeholder born at the
+entry fill, with no creator, no creation slot and no identity
+(`TokenState::facts_pending`). Left that way, `m_state.age_sec` and an `age_sec` deadline
+count from the buy, and every creator-tagged read (`@dev` with `match.creator`, a
+creator-sold exit line) keys on nobody, so that line can never fire. The token's first
+drain from the cache (a ping or the tick's prime scan) is the one that finds it cached;
+`decision_loop::prime_drained` then calls `hunter_engine::restore_adopted` with the
+cache's creation facts (`Producer::hydrate_facts`, the same facts a rule-activation
+rebuild reads) and the drained history, before any of that drain's live trades are
+decided on. The rebuild is `hydrate_token`'s fold: creation slot and creator seeded, the
+first-slot stand-in applied before the first print past the creation slot, and each held
+position's peak and trough folded from its entry. Trades printed while the process was
+down are in neither the cache nor the history, so a lifetime read over the gap stays
+short.
+
 ## The stage and its clock survive a restart
 
 Every stage change is an engine effect: `StageMoved` for a move that sells nothing, and a
@@ -194,7 +211,8 @@ without that the next tick could skip the token it just moved.
 
 Locked by `engine/tests/hydrate.rs`, the `producers::tests` `hydration_*` and
 `hydrate_facts_*` cases, `hydrate::tests`, `models::strategy::extra_tests`, the golden
-`every_stage_move_is_emitted_with_its_start`, and `orphan_exit::tests::restart`.
+`every_stage_move_is_emitted_with_its_start`, `orphan_exit::tests::restart` and
+`decision_loop::tests`.
 
 ## Still open
 

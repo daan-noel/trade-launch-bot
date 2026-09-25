@@ -125,6 +125,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 arms: BTreeMap::new(),
                 episodes: BTreeMap::new(),
                 entry_locks: BTreeMap::new(),
+                facts_pending: false,
             };
             // Arm every rule whose fingerprint matches the instant axes. A rule whose
             // fingerprint also carries a first-slot axis stays *pending* until the
@@ -564,6 +565,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         arms: BTreeMap::new(),
                         episodes: BTreeMap::new(),
                         entry_locks: BTreeMap::new(),
+                        facts_pending: false,
                     },
                 );
             }
@@ -950,73 +952,25 @@ pub fn hydrate_token(
     let mut fx = Effects::new();
     state.all_settled_at = None;
     let mut token = match (state.tokens.remove(mint), history) {
-        (Some(t), None) => t,
-        (Some(mut t), Some(_)) => {
-            t.track = state.new_track(t.created_at);
-            t.last_meaningful_at = None;
-            t.last_trade_at = None;
-            t
-        }
+        (Some(t), _) => t,
         (None, None) => return fx,
-        (None, Some(_)) => {
-            let mut tf = facts.fp.clone();
-            tf.prior_launches = None;
-            tf.build_prev_day_launches = None;
-            tf.build_prev_day_runner_bps = None;
-            if facts.created_at.date_naive() == now.date_naive() {
-                if let Some(stat) = crate::metrics::trade_keys::ix_hash_opt(&tf.ix_labels)
-                    .and_then(|h| state.launch_build_stats.get(&h))
-                {
-                    tf.build_prev_day_launches = Some(stat.launches);
-                    tf.build_prev_day_runner_bps = Some(stat.runner_bps());
-                }
-            }
-            if let Some(fs) = facts.first_slot {
-                tf.first_slot_buy_lamports = Some(fs.buy_lamports);
-                tf.first_slot_sell_lamports = Some(fs.sell_lamports);
-            }
-            TokenState {
-                created_at: facts.created_at,
-                tf,
-                identity: facts.identity,
-                track: state.new_track(facts.created_at),
-                last_meaningful_at: None,
-                last_trade_at: None,
-                settled: None,
-                first_slot_settled: facts.first_slot.is_some(),
-                arms: BTreeMap::new(),
-                episodes: BTreeMap::new(),
-                entry_locks: BTreeMap::new(),
-            }
-        }
+        (None, Some(_)) => TokenState {
+            created_at: facts.created_at,
+            tf: facts_tf(state, facts, now),
+            identity: facts.identity,
+            track: state.new_track(facts.created_at),
+            last_meaningful_at: None,
+            last_trade_at: None,
+            settled: None,
+            first_slot_settled: facts.first_slot.is_some(),
+            arms: BTreeMap::new(),
+            episodes: BTreeMap::new(),
+            entry_locks: BTreeMap::new(),
+            facts_pending: false,
+        },
     };
     if let Some(history) = history {
-        if let Some(slot) = facts.creation_slot.filter(|&s| s > 0) {
-            token.track.seed_creation_slot(slot);
-        }
-        if let Some(h) = facts.creator_wallet_hash {
-            token.track.seed_creator(h);
-        }
-        let mut stand_in = facts.first_slot.and_then(|f| f.creator_stand_in_wallet_hash);
-        let creation_slot = facts.creation_slot.unwrap_or(0);
-        let table_day = now.date_naive();
-        for &trade in history {
-            if trade.slot > creation_slot {
-                if let Some(h) = stand_in.take() {
-                    token.track.seed_creator(h);
-                }
-            }
-            // The build-breadth stamp `Trade` applies, on the loaded table's day only (above).
-            let trade = if trade.at.date_naive() == table_day {
-                state.stamp_build_breadth(trade)
-            } else {
-                trade
-            };
-            fold_trade(&mut token, trade);
-        }
-        if let Some(h) = stand_in {
-            token.track.seed_creator(h);
-        }
+        rebuild_track(state, &mut token, facts, history, now);
     }
     token.unsettle();
 
@@ -1046,6 +1000,93 @@ pub fn hydrate_token(
         state.tokens.insert(mint.clone(), token);
     }
     fx
+}
+
+/// **Give a boot-adopted token its creation facts** ([`TokenState::facts_pending`]) and
+/// rebuild its track from `history`, the cached trades before this process started, in
+/// chain order. The restart path's counterpart of [`hydrate_token`]:
+///
+/// * `created_at`, the identity and the observed axes come from `facts`, so `age_sec`,
+///   an `age_sec` deadline and every since-creation span count from the coin's birth,
+///   not from our entry fill;
+/// * the track is refolded as [`hydrate_token`] folds it: the creation slot and the
+///   creator seeded, the first-slot stand-in applied before the first print past the
+///   creation slot, so creator-keyed reads (`@creator`, a creator-sold line) key on the
+///   wallet they keyed on before the restart;
+/// * each held position's peak and trough fold the history printed since its entry,
+///   as [`prime_trade`] folds them.
+///
+/// Decides nothing, emits nothing. A no-op for an untracked token or one whose facts
+/// are already known. Trades printed while the process was down are in neither the
+/// cache nor `history`, so a lifetime read over that gap stays short.
+pub fn restore_adopted(state: &mut EngineState, mint: &Mint, facts: &HydrateFacts, history: &[crate::metrics::TradeLite], now: Ts) {
+    let Some(mut token) = state.tokens.remove(mint) else { return };
+    if token.facts_pending {
+        token.facts_pending = false;
+        token.created_at = facts.created_at;
+        token.identity = facts.identity;
+        token.tf = facts_tf(state, facts, now);
+        rebuild_track(state, &mut token, facts, history, now);
+        token.unsettle();
+        state.all_settled_at = None;
+    }
+    state.tokens.insert(mint.clone(), token);
+}
+
+/// A rebuilt token's observed axes: the creation facts, with the engine tallies a
+/// rebuild cannot recover left unknown (`prior_launches`), and the launch-build door
+/// stamped only for a token born on `now`'s UTC day, the day the loaded door map is for.
+fn facts_tf(state: &EngineState, facts: &HydrateFacts, now: Ts) -> TokenFingerprint {
+    let mut tf = facts.fp.clone();
+    tf.prior_launches = None;
+    tf.build_prev_day_launches = None;
+    tf.build_prev_day_runner_bps = None;
+    if facts.created_at.date_naive() == now.date_naive() {
+        if let Some(stat) =
+            crate::metrics::trade_keys::ix_hash_opt(&tf.ix_labels).and_then(|h| state.launch_build_stats.get(&h))
+        {
+            tf.build_prev_day_launches = Some(stat.launches);
+            tf.build_prev_day_runner_bps = Some(stat.runner_bps());
+        }
+    }
+    if let Some(fs) = facts.first_slot {
+        tf.first_slot_buy_lamports = Some(fs.buy_lamports);
+        tf.first_slot_sell_lamports = Some(fs.sell_lamports);
+    }
+    tf
+}
+
+/// Replace `token`'s track with one folded from `history` (every trade to fold, chain
+/// order), the way the live path built it: creation slot and creator seeded first, the
+/// first-slot stand-in applied before the first print past the creation slot, each buy
+/// stamped with its build-breadth class when it printed on `now`'s UTC day (the loaded
+/// table's day), and every held position's peak and trough folded from its entry on.
+fn rebuild_track(state: &EngineState, token: &mut TokenState, facts: &HydrateFacts, history: &[crate::metrics::TradeLite], now: Ts) {
+    token.track = state.new_track(token.created_at);
+    token.last_meaningful_at = None;
+    token.last_trade_at = None;
+    if let Some(slot) = facts.creation_slot.filter(|&s| s > 0) {
+        token.track.seed_creation_slot(slot);
+    }
+    if let Some(h) = facts.creator_wallet_hash {
+        token.track.seed_creator(h);
+    }
+    let mut stand_in = facts.first_slot.and_then(|f| f.creator_stand_in_wallet_hash);
+    let creation_slot = facts.creation_slot.unwrap_or(0);
+    let table_day = now.date_naive();
+    for &trade in history {
+        if trade.slot > creation_slot {
+            if let Some(h) = stand_in.take() {
+                token.track.seed_creator(h);
+            }
+        }
+        let trade = if trade.at.date_naive() == table_day { state.stamp_build_breadth(trade) } else { trade };
+        fold_trade(token, trade);
+        fold_entered_extremes(token, trade.at);
+    }
+    if let Some(h) = stand_in {
+        token.track.seed_creator(h);
+    }
 }
 
 /// `on_print`: this evaluation is a trade landing, not a clock tick or a lifecycle

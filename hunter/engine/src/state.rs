@@ -47,8 +47,8 @@ pub struct TokenState {
     pub tf: TokenFingerprint,
     /// The `(name, symbol)` key the duplicate-identity guard matches on. `None` =
     /// unknown or blank ⇒ this token never blocks and is never recorded. Set once
-    /// from `TokenCreated`; a boot-adopted position must be given it explicitly
-    /// (see `live`'s adopt path) or the guard silently forgets across a restart.
+    /// from `TokenCreated`, or for a boot-adopted token by
+    /// [`crate::reduce::restore_adopted`].
     pub identity: Option<IdentityHash>,
     pub track: TokenTrack,
     /// Newest *meaningful*-trade time (drives the deadness quiet clock). `None`
@@ -73,6 +73,11 @@ pub struct TokenState {
     /// Per-rule slot that already had an `entry_event` candidate (`entry_lock:
     /// "slot"`). Absent key ⇒ this rule has not locked a slot on this token.
     pub entry_locks: BTreeMap<RuleId, u64>,
+    /// Built from a stored position at boot, without the token's creation facts: its
+    /// `created_at` is the entry fill, it has no creator, no creation slot and no
+    /// identity. [`crate::reduce::restore_adopted`] supplies them from the token cache
+    /// before the first cached trade folds, and clears this.
+    pub facts_pending: bool,
 }
 
 /// A token's "nothing of mine can change on its own any more" verdict, stamped by

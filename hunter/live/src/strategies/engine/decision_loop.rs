@@ -437,7 +437,7 @@ async fn run_loop(
             Some(ping) = create_rx.recv() => {
                 stamp_ping(&ping_stamps, &ping, "create");
                 let produced = producer.on_ping(&ping);
-                prime(&mut state, produced.prime);
+                prime_drained(&mut state, &producer, &ping.mint, produced.prime);
                 EventBatch::many(produced.events.into_vec())
             }
             Some(ping) = ping_rx.recv() => {
@@ -446,7 +446,7 @@ async fn run_loop(
                 // is skipped before any clone.
                 stamp_ping(&ping_stamps, &ping, "trade");
                 let produced = producer.on_ping(&ping);
-                prime(&mut state, produced.prime);
+                prime_drained(&mut state, &producer, &ping.mint, produced.prime);
                 EventBatch::many(produced.events.into_vec())
             }
             // One rebuilt token per turn, below every live lane: a rule switched on
@@ -485,7 +485,7 @@ async fn run_loop(
                         .collect();
                     for mint in missing {
                         let produced = producer.prime_tracked(&mint);
-                        prime(&mut state, produced.prime);
+                        prime_drained(&mut state, &producer, &mint, produced.prime);
                         warm.events.extend(produced.events);
                     }
                 }
@@ -543,6 +543,29 @@ fn prime(state: &mut EngineState, primed: super::producers::PrimedTrades) {
     for (mint, trade) in primed {
         hunter_engine::prime_trade(state, &mint, trade);
     }
+}
+
+/// [`prime`] one drain of `mint`, except for a token adopted from a stored position
+/// that still lacks its creation facts (`TokenState::facts_pending`): that one is
+/// rebuilt from the cache's facts with the drained history
+/// ([`hunter_engine::restore_adopted`]), before any of the drain's live trades are
+/// decided on. Its first drain is the one that finds it cached, so the facts and the
+/// history come from the same cache entry. A drain of an uncached mint primes nothing
+/// and leaves the flag for the next one.
+fn prime_drained(
+    state: &mut EngineState,
+    producer: &super::producers::Producer,
+    mint: &str,
+    primed: super::producers::PrimedTrades,
+) {
+    let pending = state.tokens.get(mint).is_some_and(|t| t.facts_pending);
+    let facts = if pending { producer.hydrate_facts(mint) } else { None };
+    let Some(facts) = facts else {
+        prime(state, primed);
+        return;
+    };
+    let history: Vec<_> = primed.into_iter().map(|(_, trade)| trade).collect();
+    hunter_engine::restore_adopted(state, &Mint::from(mint), &facts, &history, Utc::now());
 }
 
 /// Dispatch a `reduce` call's effects. State effects first (registry + SSE;
@@ -1163,4 +1186,76 @@ fn buy_slippage(settings: &watch::Receiver<AppSettings>) -> Option<u64> {
 
 fn sell_slippage(settings: &watch::Receiver<AppSettings>) -> Option<u64> {
     resolve_sell_slippage_bps(settings.borrow().sell_slippage_bps, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::{Duration, Utc};
+    use hunter_engine::event::{Event, LoadedRule, Mint, RuleId, TradeMode};
+    use hunter_engine::fingerprint::{Criteria, Fingerprint, FingerprintId};
+    use hunter_engine::rule_params::RuleParams;
+    use hunter_engine::{reduce, EngineState};
+    use serde_json::json;
+    use trading_core::models::strategy::StrategyPosition;
+    use trading_core::models::token::Token;
+    use trading_core::models::trade::{Trade, TradeType};
+    use trading_core::state::token_cache::{TokenCache, TokenState};
+    use uuid::Uuid;
+
+    use super::prime_drained;
+    use crate::strategies::engine::orphan_exit::adopt_holding_into_engine;
+    use crate::strategies::engine::producers::Producer;
+    use crate::strategies::engine::PositionRegistry;
+
+    const MINT: &str = "MINT-adopted";
+
+    /// The first drain of an adopted position's token rebuilds it from the cache: the
+    /// coin's birth time replaces the entry fill, and the flag clears so a later drain
+    /// primes as usual.
+    #[test]
+    fn the_first_drain_restores_an_adopted_token() {
+        let now = Utc::now();
+        let born = now - Duration::seconds(600);
+        let token = Token::new(
+            MINT.into(), "creator".into(), "Name".into(), "SYM".into(),
+            None, None, None, None, None, None, None, false, false,
+            serde_json::Value::Array(vec![]), "create-sig".into(), None, born,
+        );
+        let mut cached = TokenState::new(token);
+        cached.add_trade(Trade::new(MINT.into(), "w1".into(), TradeType::Buy, 0.5, 1_000_000, "sig-1".into(), 10, born + Duration::seconds(1)));
+        let cache = TokenCache::new();
+        cache.insert(MINT.into(), cached);
+        let mut producer = Producer::new(Arc::new(cache), now);
+
+        let fp = Fingerprint { id: FingerprintId(Uuid::from_u128(0xF)), wildcard: true, criteria: Criteria::new(), tags: json!({}) };
+        let rule = LoadedRule {
+            id: RuleId(Uuid::from_u128(1)),
+            fingerprint_id: fp.id,
+            trade_mode: TradeMode::Paper,
+            buy_amount_lamports: 100_000_000,
+            max_concurrent_tokens: 0,
+            max_total_tokens: 0,
+            params: RuleParams::parse(&json!({ "take_profit": 50 })).expect("valid"),
+            entry_enabled: true,
+        };
+        let mut state = EngineState::new();
+        reduce(&mut state, Event::RulesReloaded { rules: Arc::from(vec![rule.clone()]), fps: Arc::from(vec![fp]) });
+        let mut pos = StrategyPosition::new(Uuid::new_v4(), "generic".into(), rule.id.0, "paper".into(), MINT.into(), "paper".into());
+        pos.status = "Holding".into();
+        pos.entry_price = Some(1e-7);
+        pos.entry_time = Some(now - Duration::seconds(300));
+        pos.entry_token_amount = Some(1_000_000);
+        adopt_holding_into_engine(&mut state, &PositionRegistry::new(), &pos).expect("adopted");
+        let mint = Mint::from(MINT);
+        assert_eq!(state.tokens[&mint].created_at, now - Duration::seconds(300), "placeholder: the entry fill");
+
+        let produced = producer.prime_tracked(MINT);
+        prime_drained(&mut state, &producer, MINT, produced.prime);
+        let t = &state.tokens[&mint];
+        assert!(!t.facts_pending);
+        assert_eq!(t.created_at, born, "the coin's birth, from the cache");
+        assert_eq!(t.last_trade_at, Some(born + Duration::seconds(1)), "the cached history folded");
+    }
 }
