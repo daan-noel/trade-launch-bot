@@ -75,6 +75,7 @@ export function StrategyGuideBody({ reg }: { reg: StrategyRegistry }) {
         <li>
           <b>Sell</b>: after the buy, on every print and tick, one step: stop loss, take profit and the <i>Always</i> lines first, then
           the current stage's lines. The first line that holds acts: it sells (all, or a percent of the first bag) and/or moves to another stage.
+          A line that moves to the stage the position is already in does nothing there (unless it sells everything), so it never sells twice.
         </li>
         <li>
           At a stage's <b>deadline</b> its at-deadline lines run once; if none acts, the rule moves on to the next stage.

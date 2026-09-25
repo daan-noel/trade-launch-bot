@@ -1022,8 +1022,8 @@ mod tests {
         assert_eq!(
             classes(serde_json::json!({ "stages": [{ "name": "one", "on": [{
                 "if": [{ "metric": "m_position.pnl_pct", "is": [[{ "operator": ">=", "value": 50 }]] }],
-                "sell": true, "sell_pct": 50, "go": "one"
-            }] }] })),
+                "sell": true, "sell_pct": 50, "go": "rest"
+            }] }, { "name": "rest" }] })),
             None
         );
         assert_eq!(

@@ -311,6 +311,61 @@ fn a_partial_sell_carries_its_share_and_next_stage() {
     );
 }
 
+/// A line that goes to the stage the position is already in, and keeps part of the bag,
+/// does not act there: an `always` move no longer restarts the stage clock or hides the
+/// stage's own lines, and an `always` partial sell does not sell again in its target.
+#[test]
+fn a_line_idle_in_its_target_stage_does_not_act() {
+    let r = compile(json!({
+        "always": [
+            { "if": [c("m_position.pnl_pct", ">=", 50.0)], "go": "armed" }
+        ],
+        "stages": [
+            { "name": "start" },
+            { "name": "armed", "on": [{ "if": [c("m_position.retrace_pct", ">=", 20.0)], "sell": "trail" }] }
+        ]
+    }));
+    let mut t = TokenTrack::new(t0());
+    t.on_trade(print(1.6, 20.0, 1.0));
+    assert_eq!(r.held_step(&t, &held(1.0, 1.6, 1.0, 0, 0.0), at(2.0)), HeldAction::Move { stage: 1 });
+    assert_eq!(r.held_step(&t, &held(1.0, 1.6, 1.0, 1, 2.0), at(3.0)), HeldAction::None, "already armed: no move");
+    let mut dipped = TokenTrack::new(t0());
+    dipped.on_trade(print(1.6, 20.0, 1.0));
+    dipped.on_trade(print(1.52, 20.0, 2.0));
+    assert_eq!(
+        r.held_step(&dipped, &held(1.0, 2.0, 1.0, 1, 2.0), at(3.0)),
+        HeldAction::Sell { reason: ExitReason::Line("trail"), bps: None, then_stage: None },
+        "the stage's own line is read while the always move still holds"
+    );
+
+    let bank = compile(json!({
+        "always": [{ "if": [c("m_position.pnl_pct", ">=", 100.0)], "sell": "bank", "sell_pct": 50.0, "go": "banked" }],
+        "stages": [
+            { "name": "start" },
+            { "name": "banked", "on": [{ "if": [c("m_position.retrace_pct", ">=", 20.0)], "sell": "trail rest" }] }
+        ]
+    }));
+    let mut up = TokenTrack::new(t0());
+    up.on_trade(print(2.2, 20.0, 1.0));
+    assert_eq!(
+        bank.held_step(&up, &held(1.0, 2.2, 1.0, 0, 0.0), at(2.0)),
+        HeldAction::Sell { reason: ExitReason::Line("bank"), bps: Some(5000), then_stage: Some(1) }
+    );
+    assert_eq!(bank.held_step(&up, &held(1.0, 2.2, 1.0, 1, 2.0), at(3.0)), HeldAction::None, "banked once");
+}
+
+/// The pre-entry veto skips a line that would be idle in the first stage.
+#[test]
+fn a_line_idle_in_the_first_stage_does_not_veto() {
+    let r = compile(json!({
+        "always": [{ "if": [c("m_state.liquidity_sol", ">=", 10.0)], "sell": "part", "sell_pct": 50.0, "go": "start" }],
+        "stages": [{ "name": "start" }]
+    }));
+    let mut deep = TokenTrack::new(t0());
+    deep.on_trade(print(1.0, 40.0, 0.5));
+    assert_eq!(r.sell_line_holding_before_entry(&deep, at(1.0)), None);
+}
+
 /// A line without a label is labelled from its first condition.
 #[test]
 fn an_unlabelled_line_names_itself_from_its_first_condition() {

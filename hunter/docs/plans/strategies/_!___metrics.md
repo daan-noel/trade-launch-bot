@@ -418,7 +418,8 @@ registry (`RULE_PARTS`). What matters to a metric:
   its `ClockHorizons` and its monotonic entry kills.
 - Held side: one step per print or 200 ms tick, the first line that holds acts; a stage move
   takes effect from the next evaluation, a partial sell moves when its fill lands
-  ([partial-exits.md](partial-exits.md)).
+  ([partial-exits.md](partial-exits.md)). A line that goes to the stage the position is
+  already in, and keeps part of the bag, does not act there (`CompiledLine::idle_in`).
 
 ## 9. Extending the system
 

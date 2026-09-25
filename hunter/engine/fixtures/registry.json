@@ -1381,7 +1381,7 @@
     {
       "example": "m_state.liquidity_sol >= 80 -> sell \"top\".",
       "key": "always",
-      "summary": "Sell lines checked first, in every stage.",
+      "summary": "Lines checked first, in every stage.",
       "title": "Always"
     },
     {
@@ -1399,7 +1399,7 @@
     {
       "example": "ends at age 20 s, then late.",
       "key": "stage.ends",
-      "summary": "When the stage ends: at a coin age, after time held, or after time in this stage. At the deadline the 'at end' lines run once, then the rule moves to 'then' (default: the next stage).",
+      "summary": "When the stage ends: at a coin age, after time held, or after time in this stage. At the deadline the 'at end' lines run once, then the rule moves to 'then' (default: the next stage). A loop of deadlines needs a time-in-stage wait above 0 s in one of its stages.",
       "title": "Deadline"
     },
     {
@@ -1411,7 +1411,7 @@
     {
       "example": "m_flow.buy_sol @!volume [10s] >= 2 -> sell \"burst\".",
       "key": "line",
-      "summary": "If every condition holds: sell (all, or a percent of the first buy's bag) and/or move to another stage.",
+      "summary": "If every condition holds: sell (all, or a percent of the first buy's bag) and/or move to another stage. A line that moves to the stage the position is already in does nothing there, unless it sells everything.",
       "title": "Line"
     },
     {

@@ -100,6 +100,26 @@ describe('validation mirrors the engine', () => {
     expect(errs.join()).toMatch(/no signal `nope`/);
   });
 
+  it('names a stage line that goes to its own stage', () => {
+    const errs = withLine((d) => {
+      d.stages[1].on[0].go = d.stages[1].name;
+    });
+    expect(errs.join()).toMatch(/goes to its own stage/);
+  });
+
+  it('names a deadline loop with no wait, and allows a stage_sec re-check', () => {
+    const d = emptyRuleDoc();
+    const a = newStage('a');
+    a.ends = { basis: 'age_sec', secs: 20 };
+    const b = newStage('b');
+    b.ends = { basis: 'held_sec', secs: 30 };
+    b.then = 'a';
+    d.stages.push(a, b);
+    expect(validateRuleDoc(d, reg).errors.join()).toMatch(/Stages a -> b -> a loop/);
+    b.ends = { basis: 'stage_sec', secs: 5 };
+    expect(validateRuleDoc(d, reg).errors).toEqual([]);
+  });
+
   it('names an expression that can never hold', () => {
     const errs = withLine((d) => d.enter.filters.push(metricCond({ metric: 'm_state.age_sec' }, [[{ operator: '>', value: 30 }, { operator: '<', value: 10 }]])));
     expect(errs.join()).toMatch(/can never hold/);
@@ -120,7 +140,7 @@ describe('validation mirrors the engine', () => {
   it('allows an empty at-deadline line and refuses an empty on line', () => {
     const d = emptyRuleDoc();
     const s = newStage('a');
-    s.ends = { basis: 'held_sec', secs: 60 };
+    s.ends = { basis: 'stage_sec', secs: 60 };
     s.at_end.push(newLine());
     s.then = 'a';
     d.stages.push(s);

@@ -499,12 +499,27 @@ impl RuleParams {
             check_line(l, &format!("always[{i}]"), true)?;
         }
         for (si, s) in self.stages.iter().enumerate() {
+            // A stage's own line that goes to that stage and keeps part of the bag
+            // never acts there (`CompiledLine::idle_in`): refuse it rather than keep a
+            // dead line.
+            let not_to_itself = |l: &Line, at: &str| -> Result<(), String> {
+                let sells_all = matches!(l.sell, Some(Sell { pct: None, .. }));
+                if l.go == Some(s.name) && !sells_all {
+                    return Err(format!("{at} goes to its own stage `{}`, where it would never act", s.name));
+                }
+                Ok(())
+            };
             for (i, l) in s.on.iter().enumerate() {
-                check_line(l, &format!("stage `{}`.on[{i}]", s.name), true)?;
+                let at = format!("stage `{}`.on[{i}]", s.name);
+                check_line(l, &at, true)?;
+                not_to_itself(l, &at)?;
             }
             for (i, l) in s.at_end.iter().enumerate() {
-                check_line(l, &format!("stage `{}`.at_end[{i}]", s.name), false)?;
+                let at = format!("stage `{}`.at_end[{i}]", s.name);
+                check_line(l, &at, false)?;
+                not_to_itself(l, &at)?;
             }
+
             if !s.at_end.is_empty() && s.ends.is_none() {
                 return Err(format!("stage `{}` has at_end lines but no deadline (`ends`)", s.name));
             }
@@ -515,6 +530,49 @@ impl RuleParams {
                 target(t, &format!("stage `{}`.then", s.name))?;
             } else if s.ends.is_some() && si + 1 == self.stages.len() {
                 return Err(format!("stage `{}` ends but no stage follows it: add `then`", s.name));
+            }
+        }
+        self.check_deadline_loops()
+    }
+
+    /// A loop of deadline moves must wait somewhere. An `age_sec` / `held_sec` deadline
+    /// stays passed once passed, and a `stage_sec` of 0 passes on arrival, so a loop made
+    /// only of those would move on every print, forever. At least one stage in the loop
+    /// needs a `stage_sec` above 0, whose clock restarts each time the loop reaches it.
+    /// The deadline's target is resolved as the compiler resolves it (no `then` = the
+    /// next stage).
+    fn check_deadline_loops(&self) -> Result<(), String> {
+        let index = |name: &str| self.stages.iter().position(|s| s.name == name);
+        let next = |i: usize| -> Option<usize> {
+            let s = &self.stages[i];
+            s.ends?;
+            match s.then {
+                Some(t) => index(t),
+                None => Some(i + 1).filter(|&n| n < self.stages.len()),
+            }
+        };
+        let waits = |i: usize| {
+            matches!(self.stages[i].ends, Some(Deadline { basis: DeadlineBasis::Stage, secs }) if secs > 0.0)
+        };
+        for start in 0..self.stages.len() {
+            let mut path = vec![start];
+            let mut at = start;
+            while let Some(n) = next(at) {
+                if n == start {
+                    if !path.iter().any(|&i| waits(i)) {
+                        let names: Vec<&str> = path.iter().chain([&start]).map(|&i| self.stages[i].name).collect();
+                        return Err(format!(
+                            "stages {} loop on their deadlines with no stage_sec wait: once the deadlines pass they would move on every print (give one of them a stage_sec deadline above 0)",
+                            names.join(" -> ")
+                        ));
+                    }
+                    break;
+                }
+                if path.contains(&n) {
+                    break; // a loop that does not return to `start`: checked from its own stages
+                }
+                path.push(n);
+                at = n;
             }
         }
         Ok(())

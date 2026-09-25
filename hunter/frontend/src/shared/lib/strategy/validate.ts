@@ -16,6 +16,7 @@ import {
   type Cond,
   type Line,
   type RuleDoc,
+  type Stage,
 } from './ruleDoc';
 
 /** A signal or stage name: `[a-z0-9_]`, 1 to 32 characters. */
@@ -156,8 +157,20 @@ export function validateRuleDoc(
     if (s.ends && !(Number.isFinite(s.ends.secs) && s.ends.secs >= 0)) {
       errors.push(`${at}: the deadline must be 0 s or more`);
     }
-    s.on.forEach((l, i) => checkLine(l, `${at}, line ${i + 1}`, true));
-    s.at_end.forEach((l, i) => checkLine(l, `${at}, at-deadline line ${i + 1}`, false));
+    // A stage's own line that goes to that stage and keeps part of the bag would never
+    // act there (the engine's `CompiledLine::idle_in`).
+    const notToItself = (l: Line, lineAt: string) => {
+      const sellsAll = l.sell != null && l.sell.pct == null;
+      if (l.go === s.name && !sellsAll) errors.push(`${lineAt} goes to its own stage \`${s.name}\`, where it would never act`);
+    };
+    s.on.forEach((l, i) => {
+      checkLine(l, `${at}, line ${i + 1}`, true);
+      notToItself(l, `${at}, line ${i + 1}`);
+    });
+    s.at_end.forEach((l, i) => {
+      checkLine(l, `${at}, at-deadline line ${i + 1}`, false);
+      notToItself(l, `${at}, at-deadline line ${i + 1}`);
+    });
     if (s.at_end.length && !s.ends) errors.push(`${at} has at-deadline lines but no deadline`);
     if (s.then) {
       if (!s.ends) errors.push(`${at}: "then" needs a deadline`);
@@ -166,7 +179,44 @@ export function validateRuleDoc(
       errors.push(`${at} has a deadline but no stage follows it: pick where it goes next`);
     }
   });
+  const loop = deadlineLoopWithoutWait(d.stages);
+  if (loop) {
+    errors.push(
+      `Stages ${loop.join(' -> ')} loop on their deadlines with no wait: once the deadlines pass they would move on every print. Give one of them a "time in this stage" deadline above 0 s.`,
+    );
+  }
   return { errors, warnings };
+}
+
+/**
+ * Port of the engine's `check_deadline_loops`: a loop of deadline moves in which no stage
+ * waits a `stage_sec` above 0 (age and held deadlines stay passed, a 0 s stage deadline
+ * passes on arrival). The deadline's target is the compiler's: no `then` = the next stage.
+ * Returns the loop's stage names, first one repeated at the end.
+ */
+export function deadlineLoopWithoutWait(stages: Stage[]): string[] | null {
+  const index = (name: string) => stages.findIndex((s) => s.name === name);
+  const next = (i: number): number | null => {
+    const s = stages[i];
+    if (!s.ends) return null;
+    if (s.then != null) return index(s.then) >= 0 ? index(s.then) : null;
+    return i + 1 < stages.length ? i + 1 : null;
+  };
+  const waits = (i: number) => stages[i].ends?.basis === 'stage_sec' && stages[i].ends!.secs > 0;
+  for (let start = 0; start < stages.length; start++) {
+    const path = [start];
+    let at = start;
+    for (let n = next(at); n != null; n = next(at)) {
+      if (n === start) {
+        if (!path.some(waits)) return [...path, start].map((i) => stages[i].name);
+        break;
+      }
+      if (path.includes(n)) break;
+      path.push(n);
+      at = n;
+    }
+  }
+  return null;
 }
 
 /**

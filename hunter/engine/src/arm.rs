@@ -147,6 +147,16 @@ pub struct CompiledLine {
     pub go: Option<u8>,
 }
 
+impl CompiledLine {
+    /// The line goes to `stage` and does not sell the whole bag, so in `stage` it has
+    /// nothing to do: moving to where the position already is would only restart the
+    /// stage clock and hide every line below it, and a partial sell would sell again on
+    /// every print. Such a line does not act while the position is in `stage`.
+    pub fn idle_in(&self, stage: u8) -> bool {
+        self.go == Some(stage) && !matches!(self.sell, Some(CompiledSell { bps: None, .. }))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledStage {
     pub name: &'static str,
@@ -656,6 +666,7 @@ impl CompiledRule {
         self.always
             .iter()
             .chain(self.stages[0].on.iter())
+            .filter(|l| !l.idle_in(0))
             .filter_map(|l| l.sell.map(|s| (l, s)))
             .find(|(l, _)| self.line_holds(l, reads, None, now))
             .map(|(_, s)| s.reason)
@@ -775,7 +786,8 @@ impl CompiledRule {
 
     /// **One held-side step**: the `always` lines; else at the deadline the `at_end`
     /// lines or the move to `then`; else the stage's `on` lines. The first line that
-    /// holds acts.
+    /// holds acts; a line idle in the current stage ([`CompiledLine::idle_in`]) never
+    /// does.
     pub fn held_step<R: CoinReads + ?Sized>(&self, reads: &R, held: &EnteredCtx, now: Ts) -> HeldAction {
         match self.held_line(reads, &held.position_ctx(), held.stage, now) {
             HeldStep::None => HeldAction::None,
@@ -787,17 +799,18 @@ impl CompiledRule {
     /// [`held_step`](Self::held_step) naming the line that acted — for a caller that
     /// counts exits by line (the lab sweep).
     pub fn held_line<R: CoinReads + ?Sized>(&self, reads: &R, pos: &PositionCtx, stage: u8, now: Ts) -> HeldStep<'_> {
-        if let Some(l) = self.always.iter().find(|l| self.line_holds(l, reads, Some(pos), now)) {
+        let acts = |l: &&CompiledLine| !l.idle_in(stage) && self.line_holds(l, reads, Some(pos), now);
+        if let Some(l) = self.always.iter().find(acts) {
             return HeldStep::Line(l);
         }
-        let Some(stage) = self.stages.get(usize::from(stage)) else { return HeldStep::None };
-        if self.deadline_reached(stage, reads, pos, now) {
-            if let Some(l) = stage.at_end.iter().find(|l| self.line_holds(l, reads, Some(pos), now)) {
+        let Some(current) = self.stages.get(usize::from(stage)) else { return HeldStep::None };
+        if self.deadline_reached(current, reads, pos, now) {
+            if let Some(l) = current.at_end.iter().find(acts) {
                 return HeldStep::Line(l);
             }
-            return stage.then.map_or(HeldStep::None, HeldStep::Move);
+            return current.then.map_or(HeldStep::None, HeldStep::Move);
         }
-        stage.on.iter().find(|l| self.line_holds(l, reads, Some(pos), now)).map_or(HeldStep::None, HeldStep::Line)
+        current.on.iter().find(acts).map_or(HeldStep::None, HeldStep::Line)
     }
 
     /// Every held line in [`CompiledLine::index`] order.

@@ -136,3 +136,35 @@ fn the_shared_full_rule_fixture_parses_and_round_trips() {
     assert_eq!(p.stages.len(), 3);
     assert_eq!(p.stages[2].at_end.len(), 1);
 }
+
+/// A stage's own line that goes to that stage and keeps part of the bag would never act.
+#[test]
+fn a_stage_line_to_its_own_stage_is_refused() {
+    let go_self = json!({ "stages": [{ "name": "a", "on": [{ "if": [c("m_position.pnl_pct", ">=", 10.0)], "go": "a" }] }] });
+    assert!(RuleParams::parse(&go_self).unwrap_err().contains("goes to its own stage `a`"));
+    let part_self = json!({ "stages": [{ "name": "a", "on": [{ "if": [c("m_position.pnl_pct", ">=", 10.0)], "sell": "p", "sell_pct": 50.0, "go": "a" }] }] });
+    assert!(RuleParams::parse(&part_self).unwrap_err().contains("own stage"));
+    let all_self = json!({ "stages": [{ "name": "a", "on": [{ "if": [c("m_position.pnl_pct", ">=", 10.0)], "sell": "x", "go": "a" }] }] });
+    assert!(RuleParams::parse(&all_self).is_ok(), "selling everything acts wherever it goes");
+}
+
+/// A loop of deadline moves needs a stage_sec wait above 0 somewhere in it.
+#[test]
+fn a_deadline_loop_without_a_wait_is_refused() {
+    let loop_on_age = json!({ "stages": [
+        { "name": "a", "ends": { "age_sec": 20.0 }, "then": "b" },
+        { "name": "b", "ends": { "held_sec": 30.0 }, "then": "a" }
+    ] });
+    let e = RuleParams::parse(&loop_on_age).unwrap_err();
+    assert!(e.contains("a -> b -> a") && e.contains("stage_sec"), "{e}");
+    let zero = json!({ "stages": [{ "name": "a", "ends": { "stage_sec": 0.0 }, "then": "a" }] });
+    assert!(RuleParams::parse(&zero).is_err());
+    let recheck = json!({ "stages": [{ "name": "a", "ends": { "stage_sec": 30.0 }, "then": "a",
+        "at_end": [{ "if": [c("m_position.pnl_pct", "<", 0.0)], "sell": "weak" }] }] });
+    assert!(RuleParams::parse(&recheck).is_ok(), "a check every 30 s");
+    let implicit_next = json!({ "stages": [
+        { "name": "a", "ends": { "age_sec": 20.0 } },
+        { "name": "b", "ends": { "stage_sec": 5.0 }, "then": "a" }
+    ] });
+    assert!(RuleParams::parse(&implicit_next).is_ok(), "b waits 5 s each time round");
+}

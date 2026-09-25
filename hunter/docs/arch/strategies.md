@@ -101,6 +101,16 @@ print or tick, where the new stage's lines are first read; a partial sell moves 
 fill lands (`ArmState::ExitPending.then_stage`). `m_position.stage_sec` reads the time
 since the current stage began, so "in the first 30 s of the ride" needs no deadline.
 
+**A line idle in its target stage never acts** (`CompiledLine::idle_in`, read by
+`held_line`, so live, simulate and the sweep agree). A line whose `go` names the stage the
+position is already in, and that does not sell the whole bag, is skipped there: an
+`always` move to `armed` does not restart `armed`'s clock or hide its lines on every
+print, and an `always` partial sell does not sell again once it is in its target. The
+pre-entry veto skips a line idle in the first stage. Validation refuses the two cases that
+can only be mistakes: a stage's own line going to that stage, and a loop of deadline moves
+in which no stage waits a `stage_sec` above 0 (an `age_sec` / `held_sec` deadline stays
+passed, so such a loop would move on every print).
+
 **Deadlines are clocks, so they join `ClockHorizons`.** A stage's `ends` is `age_sec`
 (coin age), `held_sec` (since our buy) or `stage_sec` (since the stage began);
 `absorb_deadline` widens `time_secs` / `held_secs` / `stage_secs` to one tick past it, so
