@@ -75,11 +75,12 @@ pub enum GroupField {
     CreateAta,
     BuildPrevDayLaunches,
     BuildPrevDayRunnerBps,
+    PriorIdentityLaunches,
 }
 
 impl GroupField {
     /// Every field, for exhaustive iteration in guards and request validation.
-    pub const ALL: [GroupField; 15] = [
+    pub const ALL: [GroupField; 16] = [
         GroupField::TokenProgramId,
         GroupField::IsCashbackEnabled,
         GroupField::CuLimit,
@@ -95,6 +96,7 @@ impl GroupField {
         GroupField::CreateAta,
         GroupField::BuildPrevDayLaunches,
         GroupField::BuildPrevDayRunnerBps,
+        GroupField::PriorIdentityLaunches,
     ];
 
     /// The fingerprint axis this field groups on, or `None` for a grouping-only
@@ -115,6 +117,7 @@ impl GroupField {
             GroupField::CreateAta => AxisId::CreateAta,
             GroupField::BuildPrevDayLaunches => AxisId::BuildPrevDayLaunches,
             GroupField::BuildPrevDayRunnerBps => AxisId::BuildPrevDayRunnerBps,
+            GroupField::PriorIdentityLaunches => AxisId::PriorIdentityLaunches,
         })
     }
 
@@ -493,6 +496,7 @@ mod tests {
             prior_launches: Some(3),
             build_prev_day_launches: None,
             build_prev_day_runner_bps: None,
+            prior_identity_launches: None,
         }
     }
 

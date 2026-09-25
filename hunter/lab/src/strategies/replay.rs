@@ -205,7 +205,17 @@ pub struct ReplayConfig {
     /// which is right for a fixture and wrong for a real backtest, so the caller that
     /// has a token history is the one that must fill this.
     pub creator_launches: Arc<[(u64, u32)]>,
+    /// Creations to prime the `prior_identity_launches` tally with, as
+    /// `(creation build ix hash, identity, created_at, mint hash)`: every creation of
+    /// the fingerprint's build over the run window and the trailing window before it.
+    /// The corpus is one fingerprint, so a same-name launch of the build outside it
+    /// (another max_cost, another CU price) is only known from here. Empty means the
+    /// axis counts corpus tokens only.
+    pub identity_launches: Arc<[IdentityLaunchRow]>,
 }
+
+/// One primed creation: `(creation build ix hash, identity, created_at, mint hash)`.
+pub type IdentityLaunchRow = (u64, u64, DateTime<Utc>, u64);
 
 impl Default for ReplayConfig {
     fn default() -> Self {
@@ -216,6 +226,7 @@ impl Default for ReplayConfig {
             duplicate_identity_window_hours: hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS,
             fill_delay_ms: 0,
             creator_launches: Arc::from(Vec::new()),
+            identity_launches: Arc::from(Vec::new()),
             launch_build_stats: Arc::from(Vec::new()),
             build_breadth: Arc::from(Vec::new()),
         }
@@ -335,6 +346,7 @@ impl Replay {
         // Before any event: the tally has to know the history that precedes the
         // corpus, or every creator in it reads as a first-time launcher.
         state.prime_creator_launches(cfg.creator_launches.iter().copied());
+        state.prime_identity_launches(cfg.identity_launches.iter().copied());
         // The copycat guard is an operator policy, not a market input — set from the
         // run config, exactly as the live loop sets it from `app_settings`.
         state.set_dupe_guard_policy(

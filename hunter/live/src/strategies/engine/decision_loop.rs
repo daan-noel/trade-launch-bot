@@ -1047,11 +1047,50 @@ async fn reload_rules(
         fingerprints = engine_fps.len(),
         "engine: rules reloaded"
     );
+    let identity_builds: Vec<Vec<String>> = engine_fps
+        .iter()
+        .filter(|f| f.criteria.get(hunter_engine::fingerprint::AxisId::PriorIdentityLaunches).is_some())
+        .filter_map(|f| match f.criteria.get(hunter_engine::fingerprint::AxisId::IxLabels) {
+            Some(hunter_engine::fingerprint::AxisPredicate::Sequence { labels }) => Some(labels.clone()),
+            _ => None,
+        })
+        .collect();
     let _ = reduce(
         state,
         Event::RulesReloaded { rules: loaded.into(), fps: engine_fps.into() },
     );
+    prime_identity_launches(strategy_repo, state, &identity_builds).await;
     Ok(())
+}
+
+/// Prime the `prior_identity_launches` tally for every build a loaded fingerprint names
+/// and no earlier reload primed: its creations over the trailing window. Once per
+/// build - at boot before events flow, or on the reload that first names it.
+async fn prime_identity_launches(strategy_repo: &StrategyRepo, state: &mut EngineState, builds: &[Vec<String>]) {
+    let repo = trading_core::storage::repositories::token_repo::TokenRepo::new(strategy_repo.pool().clone());
+    let now = Utc::now();
+    let since = now
+        - chrono::Duration::days(hunter_engine::fingerprint::identity_launches::PRIOR_IDENTITY_WINDOW_DAYS);
+    for labels in builds {
+        let build = hunter_engine::metrics::flow_ix::ix_hash(labels);
+        if !state.claim_identity_priming(build) {
+            continue;
+        }
+        match repo.build_identity_rows(labels, since, now).await {
+            Ok(rows) => {
+                let n = rows.len();
+                state.prime_identity_launches(rows.into_iter().filter_map(|(mint, name, symbol, at)| {
+                    let id = hunter_engine::token_identity_hash(&name, &symbol)?;
+                    Some((build, id, at, hunter_engine::metrics::flow_ix::wallet_hash(&mint)))
+                }));
+                tracing::info!(launches = n, "prior_identity_launches primed");
+            }
+            Err(e) => tracing::error!(
+                error = %e,
+                "prior_identity_launches UNPRIMED - earlier same-name launches read as none;                  do not arm a prior_identity_launches rule until this query succeeds"
+            ),
+        }
+    }
 }
 
 /// Admin reseed: reload rules/fingerprints from PG, then adopt open position rows

@@ -75,6 +75,9 @@ pub enum AxisId {
     BuildPrevDayLaunches,
     /// Of those, the share that became runners, in basis points. Engine-stamped.
     BuildPrevDayRunnerBps,
+    /// How many earlier tokens of this creation build carried this token's
+    /// `(name, symbol)` identity. Engine-stamped from a primed, timestamped tally.
+    PriorIdentityLaunches,
 }
 
 /// The value shape an axis carries — which [`AxisPredicate`] variant is legal on it.
@@ -295,11 +298,21 @@ pub static AXES: &[AxisDef] = &[
                      (800 = 8 %). Stamped at creation; unknown (fails closed) for \
                      a build the stats do not list.",
     },
+    AxisDef {
+        id: AxisId::PriorIdentityLaunches,
+        key: "prior_identity_launches",
+        label: "Name reused (same build)",
+        chip: "name_rep",
+        kind: AxisKind::Numeric,
+        unit: AxisUnit::Count,
+        phase: AxisPhase::Instant,
+        definition: "How many EARLIER tokens of this creation build - the exact ordered                      instruction labels of the creation transaction - carried this                      token's name and symbol (lowercased, whitespace and invisible                      characters removed), counted from 30 days before the engine's                      tally was primed. `>= 1` is a name the build already launched.                      Needs an `ix_labels` axis on the same row; unknown (fails closed)                      for a blank name or symbol.",
+    },
 ];
 
 impl AxisId {
     /// Every axis, for exhaustive iteration in guards, forms and SQL builders.
-    pub const ALL: [AxisId; 13] = [
+    pub const ALL: [AxisId; 14] = [
         AxisId::CuLimit,
         AxisId::CuPrice,
         AxisId::InitBuyLamports,
@@ -313,6 +326,7 @@ impl AxisId {
         AxisId::CreateAta,
         AxisId::BuildPrevDayLaunches,
         AxisId::BuildPrevDayRunnerBps,
+        AxisId::PriorIdentityLaunches,
     ];
 
     /// This axis's registry row.
@@ -361,6 +375,7 @@ impl AxisId {
             AxisId::CreateAta => crate::metrics::template_grain::create_ata_present(&tf.ix_labels)?,
             AxisId::BuildPrevDayLaunches => u128::from(tf.build_prev_day_launches?),
             AxisId::BuildPrevDayRunnerBps => u128::from(tf.build_prev_day_runner_bps?),
+            AxisId::PriorIdentityLaunches => u128::from(tf.prior_identity_launches?),
             AxisId::IxLabels => return None,
         };
         Some(v)
@@ -905,6 +920,16 @@ impl Criteria {
         // itself. Left unchecked the contradiction is invisible: the row reads as
         // fully configured and matches nothing, which looks exactly like a cohort
         // that stopped launching.
+        // The name tally is kept per creation build, and only for builds a fingerprint
+        // names - so a row reading it without naming its build could never be stamped.
+        if self.get(AxisId::PriorIdentityLaunches).is_some()
+            && !matches!(self.get(AxisId::IxLabels), Some(AxisPredicate::Sequence { .. }))
+        {
+            out.push(
+                "prior_identity_launches needs an ix_labels axis on the same row - the                  tally is kept per creation build"
+                    .into(),
+            );
+        }
         if let (Some(AxisPredicate::Sequence { labels }), Some(count)) =
             (self.get(AxisId::IxLabels), self.get(AxisId::IxCount))
         {
@@ -966,6 +991,7 @@ mod tests {
             prior_launches: Some(7),
             build_prev_day_launches: Some(24),
             build_prev_day_runner_bps: Some(1250),
+            prior_identity_launches: Some(2),
             ..TokenFingerprint::default()
         };
         for axis in AxisId::ALL {

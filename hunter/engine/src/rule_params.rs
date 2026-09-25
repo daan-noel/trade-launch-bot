@@ -160,15 +160,20 @@ impl From<SideConditions> for ExitSide {
 
 /// Completing-print lock. JSON `"slot"`: the first print this slot that makes
 /// `entry_event` true is the only candidate; `entry` filters that fail spend it.
+/// JSON `"token"`: the first PRINT of the token's life that makes `entry_event` true
+/// is the only candidate; `entry` filters that fail end the episode. A clock tick is
+/// never that print.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryLock {
     Slot,
+    Token,
 }
 
 impl EntryLock {
     fn parse(v: &Value) -> Result<Self, String> {
         match v.as_str() {
             Some("slot") => Ok(Self::Slot),
+            Some("token") => Ok(Self::Token),
             Some(other) => Err(format!("entry_lock: unknown value '{other}'")),
             None => Err("entry_lock must be a string".into()),
         }
@@ -177,6 +182,7 @@ impl EntryLock {
     fn as_str(self) -> &'static str {
         match self {
             Self::Slot => "slot",
+            Self::Token => "token",
         }
     }
 }
@@ -202,6 +208,10 @@ pub struct RuleParams {
     /// OR of metrics ([`ExitSide::Any`]); array-form is OR of AND-clauses
     /// ([`ExitSide::Dnf`]).
     pub exit: Option<ExitSide>,
+    /// Conditions that LATCH `m_position.armed` instead of closing the position, in
+    /// the exit side's grammar (object = OR of metrics, array = OR of AND-clauses).
+    /// Read after the exit side of the same event. `None` = no clause latch.
+    pub arm: Option<ExitSide>,
     /// Ordered partial-exit ladder. `None` / empty = no scale-out (legacy full
     /// close only). See [`ExitStage`] and `docs/plans/strategies/partial-exits.md`.
     pub scale_out: Option<Vec<ExitStage>>,
@@ -401,6 +411,9 @@ impl RuleParams {
         if let Some(exit) = &self.exit {
             root.insert("exit".into(), exit_to_value(exit));
         }
+        if let Some(arm) = &self.arm {
+            root.insert("arm".into(), exit_to_value(arm));
+        }
         if let Some(stages) = &self.scale_out {
             if !stages.is_empty() {
                 root.insert(
@@ -463,6 +476,7 @@ impl RuleParams {
                     | "entry_event"
                     | "entry_lock"
                     | "exit"
+                    | "arm"
                     | "scale_out"
                     | "reentry"
                     | "exclusive"
@@ -483,6 +497,7 @@ impl RuleParams {
                 Some(v) => Some(EntryLock::parse(v)?),
             },
             exit: parse_opt_exit(obj.get("exit"), "exit")?,
+            arm: parse_opt_exit(obj.get("arm"), "arm")?,
             scale_out: parse_opt_scale_out(obj.get("scale_out"), "scale_out")?,
             reentry: parse_opt_reentry(obj.get("reentry"))?,
             exclusive: parse_opt_bool(obj.get("exclusive"), "exclusive")?,
@@ -537,6 +552,7 @@ impl RuleParams {
         }
         for (label, exit) in [
             ("exit", self.exit.as_ref()),
+            ("arm", self.arm.as_ref()),
             ("disabled.exit", d.and_then(|d| d.exit.as_ref())),
         ] {
             let Some(exit) = exit else { continue };
@@ -1635,6 +1651,7 @@ mod tests {
             entry_event: None,
             entry_lock: None,
             exit: None,
+            arm: None,
             scale_out: None,
             reentry: None,
             exclusive: false,

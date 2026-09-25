@@ -80,7 +80,9 @@ const POSITION_MENUS: &[(MetricId, &[f64])] = &[
 /// trailing stop or as a hard stop from entry, and it is configured by
 /// `arm_above_pct` on the condition that reads `retrace`. There is no menu of
 /// values to sweep, and screening it alone would only split every cohort in two.
-const POSITION_EXCLUDED: &[MetricId] = &[MetricId::Pnl, MetricId::Armed];
+/// `since_armed` needs a rule `arm` clause to latch, which a screening combo does not
+/// carry, so it would read NaN on every row.
+const POSITION_EXCLUDED: &[MetricId] = &[MetricId::Pnl, MetricId::Armed, MetricId::SinceArmed];
 
 // ───────────────────────────── configuration ───────────────────────────────
 

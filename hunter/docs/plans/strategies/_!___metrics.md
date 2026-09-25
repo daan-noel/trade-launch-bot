@@ -514,9 +514,24 @@ A trade is **tagged** iff any of:
    (exact ordered sequence — same semantics as fingerprint `ix_labels`);
 3. `wallet_contagion` is on AND its wallet was previously tagged on
    **this token**;
-4. `creator_is_tagged` is on AND it is the creator wallet.
+4. `creator_is_tagged` is on AND it is the creator wallet;
+5. its head program (`template_grain::program_owned`: the first instruction past compute
+   budget, system, token, associated-token and memo) is on `tagged_programs`;
+6. `volume_cluster` is set AND it is at least the `min_prints`-th trade of its slot with
+   the same ix list, side, CU limit, CU price and tip whose SOL is within `sol_tol_pct`
+   percent of that group's FIRST trade (read as the trades land, so the first
+   `min_prints - 1` stay untagged).
 
-Otherwise **untagged**. Contagion is per-token only (cross-token is a future toggle).
+Otherwise **untagged** - unless `creation_slot_buyers` is `excluded` and the wallet bought
+in the creation slot (the launch print's slot) without being tagged, in which case the trade
+is on **neither** side: it moves no `tagged_*` and no `untagged_*` total, lifetime or window.
+The creation slot holds the creator's birth bundle and snipers, never the audience an
+untagged total stands for.
+
+`tagged_programs` exists because an operator's own program keeps its name across every
+build it compiles: on the 7ix tape the crew's program ships ~25 sequences and adds new ones
+(two new instructions on 09-21), which an exact list books untagged until someone adds
+them. Contagion is per-token only (cross-token is a future toggle).
 
 Tagged usually reads as creator tooling and untagged as organic retail, and the
 sections below argue in those terms. The metric names do not: they say which side of
@@ -750,6 +765,11 @@ buy = +, sell = − for `*_net`.
 | `tagged_share` | `tagged_gross / (tagged_gross + untagged_gross)` ×100; NaN when total 0 | % | 1.0 | ✗ |
 | `tagged_buy_count` | tagged BUY trade events (LEGS) | count | 0.5 | ✓ |
 | `tagged_sell_count` | tagged SELL trade events (LEGS) | count | 0.5 | ✓ |
+| `tagged_pnl` | **`m_flow_ix` only**: the tagged side's paper profit - its bag (token amounts bought minus sold, floored at 0) sold into the curve at the last print, `vsol - vsol*vtok/(vtok + bag)`, minus `tagged_buy - tagged_sell`. Taken profit counts | SOL | 0.1 | ✗ |
+
+`tagged_pnl` has no window twin: a trailing window holds no bag. `vtok` is read as
+`priced_reserve_sol / price`, the reserve pair the print left. A tagged trade with no token
+amount makes it `NaN` for the rest of the token rather than a bag short by one trade.
 
 Windowed variants are never monotonic. Lifetime monotonic ✓ metrics participate in
 derived-unsatisfiability disarm (`arm.rs` reads the registry flag).
@@ -872,6 +892,8 @@ transactions in the same slot.
 | Token row missing / no `creator_wallet` | creator unseeded (logged `warn`); creator trades classify by pattern/contagion only |
 | Pre-V0 sealed lake days (NULL `ix_labels`) | organic in runtime; **excluded** from discovery score denominators |
 | Trade carries no fee reading (pre-`0013`, or no budget set) | matches no entry that pins a fee field, in either direction |
+| No print with a reserve pair yet, or a tagged trade without a token amount | `tagged_pnl` NaN |
+| Trade carries no labels | `program_hash` None: never on `tagged_programs` |
 
 Rule save **warns** (does not reject) when params reference flow groups but the
 fingerprint is unconfigured.
@@ -898,6 +920,21 @@ disagreeing.
 Same class of load-time hazard as `needs_wallet_identity`: the value depends on data the
 loader may not have asked for, and the failure looks like a strict gate that never fires.
 
+## Name reuse in one build (the `prior_identity_launches` fingerprint axis)
+
+How many EARLIER tokens of the same creation build (the exact ordered creation labels) carried
+this token's `(name, symbol)` identity (`identity::token_identity_hash`: lowercase, no
+whitespace, no invisible characters; a blank half is no identity), counted over the trailing
+`PRIOR_IDENTITY_WINDOW_DAYS` (30) before it. `>= 1` is a name the build already launched.
+
+| fact | why |
+| --- | --- |
+| **One counter, `fingerprint::identity_launches::IdentityLaunches`** | The engine stamps the axis at `TokenCreated` from its copy in `EngineState`; the simulate candidate scan stamps from one built off `tokens` (`fingerprint_axes::stamp_prior_identity_launches`). One count, so the scan and the replay cannot disagree. |
+| **Kept only for named builds** | A fingerprint reading the axis must also pin `ix_labels` (a `Criteria` validation); the tally holds those builds' launches only, so its size is one build's, not the tape's. |
+| **Primed with timestamps, both paths** | A replay folds one corpus, and a same-name launch of the build outside it (another `max_cost`, another CU price) still happened: simulate primes every creation of the build over `[since - 30d, until)` (`engine_sim::load_identity_rows`); live primes the last 30 days once per build, on the reload that first names it. |
+| **Unknown is `None`** | A blank identity, or an untracked build, fails a configured axis closed. |
+| **The dashboard mirror is SQL** | `axis_num_sql` counts the same window off `tokens` with a regex twin of the normalization; `[[:space:]]` there and `char::is_whitespace` here can differ on exotic whitespace. |
+
 ## Semantics that read as one thing and mean another
 
 Nine facts that produce silently wrong rules rather than errors. None is derivable from the
@@ -910,6 +947,7 @@ registry, and each has cost a search run.
 | **`liquidity` reads either venue** — on an AMM pool it is the pool's SOL, with no 30 taken off | A curve-derived upper bound (`liquidity <= 70`) also passes on a graduated pool that drained. A curve-only rule adds `m_state.on_curve = 1`; replay carries no `Migrated` event, so nothing else stops it there. |
 | **`m_price_lifetime.stall` is seconds since the last ALL-TIME HIGH**, not since the last trade | An exit below ~60 fires on ordinary chop. It caps every hold, so it doubles as an entry filter. `m_position.held` is the time stop. |
 | **`m_position.retrace` without `arm_above_pct` is a hard stop from entry** — the peak seeds at entry | Reads as a trailing stop, behaves as a fixed stop. |
+| **`m_position.armed` reads 0 once an `arm` clause is authored** - before, it read a vacuous 1 whenever no `arm_above_pct` was set; `since_armed` is `NaN` until a latch sets | An exit clause ANDing `armed = 1` never fires on a rule whose latch nothing sets. |
 | **`m_position` is exit-only** | It reads `NaN` before a fill, so it could never fire on entry. The sweep rejects it there. |
 | **`m_position.room_taken` is a share of the room to graduation, not a gain**: `pnl` over `((115 / vsol at the fill)^2 - 1)`, so `room_taken >= 40` is +13 % from vsol 100 and +68 % from vsol 70 | Read as a pnl it looks like a far target; on a deep pool it is a near one. The entry depth rides in `strategy_positions.extra`, so a position adopted on restart keeps it; a row written before that reads `NaN`, and only the stop and the clock close it. |
 | **`m_flow_window.buy_share` is PERCENT 0-100, not a 0-1 ratio** | An analysis carrying it as a ratio and authoring `>= 0.8` writes a gate every token passes, which reads as a working rule that took every trade in the universe. |

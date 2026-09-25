@@ -161,6 +161,19 @@ Four things a second reader of `MetricReq`s gets wrong, each guarded in
   so an empty expr is vacuously true); global exit walks `exit_clauses` (OR of AND);
   scale-out still mirrors `reqs_exit_fired` (flat OR of stage reqs). Object-form `exit`
   compiles to one singleton clause per req, so that walk equals today's OR.
+- **`arm` clauses latch; they never close.** `RuleParams.arm` is the exit side's grammar
+  (object = OR of metrics, array = OR of AND-clauses). On a held position whose latch is
+  unset, `reduce::evaluate_token` reads the arm clauses AFTER the exit decision of the same
+  event and, when one holds and no exit fired, sets `EnteredCtx::armed` and
+  `armed_at`. So a clause reading `armed` cannot fire on the event that latched it, and
+  `m_position.since_armed` bounds a window opened by the latch (`armed = 1 AND
+  since_armed <= 30`). A position of a rule with `arm` clauses starts unarmed
+  (`EnteredCtx::with_clause_latch`); `armed_at` is RAM-only, like the latch itself. The
+  sweep does not carry `arm` clauses and rejects `since_armed` as an axis.
+- **`entry_lock: "token"` decides on one print.** The first PRINT (`evaluate_token`'s
+  `on_print`; a tick never is one) that makes `entry_event` true is the only candidate:
+  filters that pass enter, any that fail end the episode (`EntryVerdict::Exhaust`). The
+  sweep mirrors it on its per-print rows.
 - **`arm_above_pct` gating is HELD-side and singleton-clause only.** A one-req trailing
   clause skips under its gate (`trailing_armed` = pnl *now*). A multi-req DNF clause
   ANDs `m_position.armed` (the latch) and does not skip. The pre-entry walk

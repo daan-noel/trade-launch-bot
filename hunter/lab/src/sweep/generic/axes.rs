@@ -534,6 +534,11 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
             let mspec = group
                 .metric_by_name(metric_name)
                 .ok_or_else(|| format!("metric `{metric_name}` not in group `{group_name}`"))?;
+            // `since_armed` needs an `arm` clause to latch, and a swept combo carries
+            // none: the column would read NaN on every row and never fire.
+            if mspec.id == hunter_engine::metrics::MetricId::SinceArmed {
+                return Err("m_position.since_armed needs a rule `arm` clause, which a sweep combo does not carry - simulate the rule instead".into());
+            }
             let window = match group.kind {
                 MetricKind::Dynamic => Some(
                     spec.window.as_ref().and_then(WindowField::spec).ok_or_else(|| {

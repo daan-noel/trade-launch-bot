@@ -1377,6 +1377,18 @@ fn event_admits(
     let leftover_ok = reqs_satisfied(series, &b.rule.leftover_reqs, &b.leftover_cols, i);
     let entry_ok = reqs_satisfied(series, &b.rule.entry_reqs, &b.entry_cols, i);
     match b.rule.entry_lock {
+        // Every series row is a print, so the engine's "the first print that makes the
+        // event true decides the token" is the first such row here.
+        Some(EntryLock::Token) => {
+            if !event_ok {
+                return EventAdmit::No;
+            }
+            if leftover_ok && entry_ok {
+                EventAdmit::Yes
+            } else {
+                EventAdmit::Exhaust
+            }
+        }
         Some(EntryLock::Slot) => {
             if !event_ok {
                 return EventAdmit::No;
@@ -3092,6 +3104,8 @@ unsafe fn first_trailing_row_avx512(
         entered_at: DateTime::UNIX_EPOCH,
         armed: true,
         trail_arm_pct: None,
+        clause_latch: false,
+        armed_at: None,
         entry_priced_reserve: f64::NAN,
     };
     for (k, &p) in price.iter().enumerate().take(n).skip(j) {

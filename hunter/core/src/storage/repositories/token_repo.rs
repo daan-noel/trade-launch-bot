@@ -439,6 +439,29 @@ impl TokenRepo {
         Ok(q.fetch_all(&self.pool).await?)
     }
 
+    /// Every creation of one build (tokens whose creation labels are exactly `labels`)
+    /// in `[since, before)`, as `(mint, name, symbol, created_at)`: what the
+    /// `prior_identity_launches` tally is primed with, live and offline alike.
+    /// Bounded on both ends and filtered on `created_at` first, so it rides
+    /// `idx_tokens_created_at`; both stored label shapes compare alike.
+    pub async fn build_identity_rows(
+        &self,
+        labels: &[String],
+        since: DateTime<Utc>,
+        before: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<(String, String, String, DateTime<Utc>)>> {
+        let arr = crate::storage::ix_labels_sql::ix_labels_array_sql("ix_labels");
+        let sql = format!(
+            "SELECT mint_address, name, symbol, created_at FROM tokens              WHERE created_at >= $1 AND created_at < $2 AND {arr} = $3::jsonb"
+        );
+        Ok(sqlx::query_as::<_, (String, String, String, DateTime<Utc>)>(&sql)
+            .bind(since)
+            .bind(before)
+            .bind(serde_json::json!(labels))
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
     /// Load the most-recent tokens created since `since` for cache seeding on
     /// startup, capped at `limit`. Bounded on *both* axes — recency window and row
     /// cap — rather than an unbounded full-table scan over the continuously growing

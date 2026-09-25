@@ -326,6 +326,14 @@ pub struct EngineState {
     /// count is the whole signal, and dropping a cold entry would resurrect exactly
     /// the "everyone is new" bias priming exists to remove.
     pub(crate) creator_launches: std::collections::HashMap<u64, u32>,
+    /// The `prior_identity_launches` tally, kept only for builds in
+    /// [`identity_builds`](Self::identity_builds) - one build's launches, not the tape's.
+    pub(crate) identity_launches: crate::fingerprint::identity_launches::IdentityLaunches,
+    /// Creation builds (ix hash of the exact creation labels) some loaded fingerprint
+    /// reads `prior_identity_launches` on. Rebuilt on every reload.
+    pub(crate) identity_builds: crate::hash::HashedSet,
+    /// Builds whose history a host has already primed (live primes each once).
+    identity_primed: crate::hash::HashedSet,
     /// Rolling memory of recently-traded `(name, symbol)` identities — the
     /// copycat guard. Disabled (and empty) unless the operator turns it on via
     /// [`set_dupe_guard_policy`](Self::set_dupe_guard_policy).
@@ -361,6 +369,48 @@ impl EngineState {
             let slot = self.creator_launches.entry(hash).or_insert(0);
             *slot = (*slot).max(n);
         }
+    }
+
+    /// Load creations into the `prior_identity_launches` tally:
+    /// `(creation build ix hash, identity, created_at, mint hash)`. A host primes every
+    /// creation of the tracked builds over the span it replays plus the window before
+    /// it; a mint already present is skipped.
+    pub fn prime_identity_launches(
+        &mut self,
+        seen: impl IntoIterator<Item = (u64, crate::identity::IdentityHash, Ts, u64)>,
+    ) {
+        for (build, identity, at, mint) in seen {
+            self.identity_launches.record(build, identity, at, mint);
+        }
+    }
+
+    /// Creation builds some loaded fingerprint reads `prior_identity_launches` on - the
+    /// ones a host must prime.
+    pub fn identity_builds(&self) -> &crate::hash::HashedSet {
+        &self.identity_builds
+    }
+
+    /// Whether a host has primed this build's history yet; marks it primed. A live
+    /// process primes each tracked build once, the first reload that names it.
+    pub fn claim_identity_priming(&mut self, build: u64) -> bool {
+        self.identity_builds.contains(&build) && self.identity_primed.insert(build)
+    }
+
+    /// How many earlier creations of `build` carried `identity` in the trailing window,
+    /// and record this one. `None` when no loaded fingerprint reads the axis on the build.
+    pub(crate) fn take_prior_identity_launches(
+        &mut self,
+        build: u64,
+        identity: crate::identity::IdentityHash,
+        at: Ts,
+        mint: u64,
+    ) -> Option<u32> {
+        if !self.identity_builds.contains(&build) {
+            return None;
+        }
+        let prior = self.identity_launches.prior(build, identity, at, mint);
+        self.identity_launches.record(build, identity, at, mint);
+        Some(prior)
     }
 
     /// Take this creator's launch count and record the launch — the strictly-prior
@@ -510,6 +560,17 @@ impl EngineState {
             .filter_map(|f| {
                 let p = FingerprintPatterns::compile(&f.metric_config);
                 (!p.is_empty()).then_some((f.id, p))
+            })
+            .collect();
+        self.identity_builds = self
+            .fps
+            .iter()
+            .filter(|f| f.criteria.get(crate::fingerprint::AxisId::PriorIdentityLaunches).is_some())
+            .filter_map(|f| match f.criteria.get(crate::fingerprint::AxisId::IxLabels) {
+                Some(crate::fingerprint::AxisPredicate::Sequence { labels }) => {
+                    crate::metrics::flow_ix::ix_hash_opt(labels)
+                }
+                _ => None,
             })
             .collect();
 
@@ -726,6 +787,7 @@ fn compile_manual_exit_rule(rule: RuleId, exit: &ManualExit) -> CompiledRule {
         entry_event: None,
         entry_lock: None,
         exit: None,
+        arm: None,
         scale_out: None,
         reentry: None,
         exclusive: false,

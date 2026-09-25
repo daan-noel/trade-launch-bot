@@ -132,6 +132,9 @@ impl RunConfig {
             // The lake corpus carries no creator wallet, so the `prior_launches` fingerprint axis
             // cannot be primed here and reads `NaN` (see `LAKE_BLIND_METRICS`).
             creator_launches: Default::default(),
+            // No names on the lake corpus either: `prior_identity_launches` stays
+            // unprimed and fails closed for tokens outside the corpus.
+            identity_launches: Default::default(),
             // Same reason, one layer up: the launch-build door is a PG feed, so a
             // lake-only run leaves both `build_prev_day_*` axes unstamped and any
             // door rule fails closed rather than arming on an unknown build.

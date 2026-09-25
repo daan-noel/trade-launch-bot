@@ -52,8 +52,14 @@ pub struct PositionCtx {
     /// Trail latch: `true` once `pnl` has reached `trail_arm_pct`. When
     /// `trail_arm_pct` is `None`, [`position_value`] reports `armed` as 1.
     pub armed: bool,
-    /// Threshold that latches [`armed`](Self::armed). `None` ⇒ the metric reads 1.
+    /// Threshold that latches [`armed`](Self::armed). `None` (and no `arm` clauses) ⇒
+    /// the metric reads 1.
     pub trail_arm_pct: Option<f64>,
+    /// The rule authors `arm` clauses: `armed` starts 0 and latches when one holds.
+    pub clause_latch: bool,
+    /// When `armed` latched (`since_armed` reference). `None` while unlatched, and for
+    /// a position whose latch is vacuous.
+    pub armed_at: Option<Ts>,
     /// Priced SOL reserve (`vsol`) of the last print folded when the entry filled
     /// (`room_taken` reference). `NaN` when unknown (an adopted row written before
     /// the depth was stored), and `room_taken` then reads `NaN`.
@@ -77,8 +83,21 @@ impl PositionCtx {
             entered_at,
             armed: trail_arm_pct.is_none(),
             trail_arm_pct,
+            clause_latch: false,
+            armed_at: None,
             entry_priced_reserve: f64::NAN,
         }
+    }
+
+    /// Whether any latch is authored: an `arm_above_pct` gate or `arm` clauses. With
+    /// none, `armed` reads a vacuous 1.
+    pub fn latch_authored(&self) -> bool {
+        self.trail_arm_pct.is_some() || self.clause_latch
+    }
+
+    /// `since_armed` — seconds since the latch set; `NaN` while unlatched.
+    pub fn since_armed(&self, now: Ts) -> f64 {
+        self.armed_at.map_or(f64::NAN, |at| secs_between(at, now).max(0.0))
     }
 
     /// The same context with the entry's priced reserve set (`room_taken` reference).
@@ -197,8 +216,9 @@ pub fn position_value(id: MetricId, ctx: &PositionCtx, price: f64, now: Ts) -> f
         MetricId::RoomTaken => ctx.room_taken(price),
         MetricId::Armed => {
             // No gate authored ⇒ latch is vacuously on. Otherwise the 0/1 flip.
-            f64::from(u8::from(ctx.trail_arm_pct.is_none() || ctx.armed))
+            f64::from(u8::from(!ctx.latch_authored() || ctx.armed))
         }
+        MetricId::SinceArmed => ctx.since_armed(now),
         _ => f64::NAN,
     }
 }
@@ -221,6 +241,8 @@ mod tests {
             entered_at: ts(entered),
             armed: true,
             trail_arm_pct: None,
+            clause_latch: false,
+            armed_at: None,
             entry_priced_reserve: f64::NAN,
         }
     }

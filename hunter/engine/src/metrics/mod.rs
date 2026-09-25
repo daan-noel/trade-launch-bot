@@ -797,6 +797,9 @@ pub enum MetricId {
     TaggedBuyCount,
     /// Tagged SELL transactions since birth - `TaggedSell` counted instead of summed.
     TaggedSellCount,
+    /// The tagged side's paper profit: its bag sold into the curve now, minus its net
+    /// SOL in (`m_flow_ix` only - a trailing window has no bag).
+    TaggedPnl,
     // ── m_flow_ix_window (trailing; distinct ids so monotonic flags can differ) ─
     WinTaggedBuy,
     WinTaggedSell,
@@ -838,6 +841,8 @@ pub enum MetricId {
     Armed,
     /// Percent of the entry's room to the graduation wall covered since the fill (`m_position`).
     RoomTaken,
+    /// Seconds since `armed` latched (`m_position`); `NaN` while unlatched.
+    SinceArmed,
     // ── m_burst_slot (this token, this slot so far, this print's template) ──
     /// 0/1: this print just joined the member prefix.
     ThisMember,
@@ -2080,7 +2085,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 required: false,
                 description: "Structural markers that leave a trade UNTAGGED, tagging                               everything without one. The inverse claim, not a                               convenience: `carries a throwaway account` identifies                               machines and judges nothing else, while `came through a                               named router` identifies people and judges everything else                               a machine.",
                 default_json: None,
-                conflicts_with: &["tagged_ix_markers", "ix_patterns"],
+                conflicts_with: &["tagged_ix_markers", "ix_patterns", "tagged_programs", "volume_cluster"],
             },
             FpConfigFieldSpec {
                 name: "wallet_contagion",
@@ -2096,6 +2101,30 @@ pub const REGISTRY: &[GroupSpec] = &[
                 required: false,
                 description: "Tag the creator wallet whatever it sends. The dev buy and                               the dev dump are usually a token's two largest single                               flows, so this moves every share metric.",
                 default_json: Some("true"),
+                conflicts_with: &[],
+            },
+            FpConfigFieldSpec {
+                name: "tagged_programs",
+                value_type: "string[]",
+                required: false,
+                description: "Programs that TAG a trade whatever build it ships: the                               transaction's head program (its first instruction past                               compute budget, system, token, associated-token and memo)                               is on the list. An operator's own program stays its own                               across every variant it compiles, where an exact list books                               each new variant untagged.",
+                default_json: None,
+                conflicts_with: &["untagged_ix_markers"],
+            },
+            FpConfigFieldSpec {
+                name: "volume_cluster",
+                value_type: "{min_prints, sol_tol_pct}",
+                required: false,
+                description: "TAG a trade once it is the `min_prints`-th trade of its slot                               with the same instruction list, side, compute-unit limit,                               compute-unit price and tip whose SOL is within `sol_tol_pct`                               percent of the group's first trade. Many identical                               transactions landing at once is one machine making volume.                               Read as they land: the first `min_prints - 1` stay untagged.",
+                default_json: None,
+                conflicts_with: &["untagged_ix_markers"],
+            },
+            FpConfigFieldSpec {
+                name: "creation_slot_buyers",
+                value_type: "\"untagged\" | \"excluded\"",
+                required: false,
+                description: "`excluded`: a wallet that buys in the creation slot without                               being tagged counts on NEITHER side for the rest of the                               token - the creator's birth bundle or a sniper, never the                               audience an untagged total stands for. `untagged` classifies                               it like any wallet.",
+                default_json: Some("\"untagged\""),
                 conflicts_with: &[],
             },
         ],
@@ -2199,6 +2228,15 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.5,
                 monotonic: true,
                 hue: 113,
+            },
+            MetricSpec {
+                id: MetricId::TaggedPnl,
+                name: "tagged_pnl",
+                description: "The tagged side's paper profit in SOL at the last print: its whole bag (token amounts bought minus sold, floored at 0) sold into the curve now, `vsol - vsol*vtok/(vtok + bag)`, minus its net SOL in (`tagged_buy - tagged_sell`). Profit already taken counts. Lifetime only. NaN before a print with a reserve pair, and for good once a tagged trade carried no token amount.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 115,
             },
         ],
     },
@@ -2705,10 +2743,11 @@ pub const REGISTRY: &[GroupSpec] = &[
         kind: MetricKind::Static,
         scope: MetricScope::Position,
         family: MetricFamily::Price,
-        // `arm_above_pct` is the threshold that latches `m_position.armed`. Object-form
-        // exit also skips trailing reqs until the position is this far in profit (the
-        // combinator is OR, so `retrace AND pnl` is otherwise unauthorable). Array-form
-        // DNF ANDs `armed` explicitly and does not skip. Absent ⇒ `armed` reads 1.
+        // `arm_above_pct` is one threshold that latches `m_position.armed`; the rule's
+        // `arm` clauses are the other. Object-form exit also skips trailing reqs until
+        // the position is this far in profit (the combinator is OR, so `retrace AND
+        // pnl` is otherwise unauthorable). Array-form DNF ANDs `armed` explicitly and
+        // does not skip. Neither authored ⇒ `armed` reads 1.
         strict_params: &[StrictParamSpec {
             name: "arm_above_pct",
             required: false,
@@ -2759,7 +2798,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Armed,
                 name: "armed",
-                description: "0/1 latch: 1 once pnl has reached arm_above_pct, and it stays 1 after price falls back under that threshold. Absent arm_above_pct reads 1. Put it in a DNF clause; do not AND live pnl with retrace.",
+                description: "0/1 latch: 1 once pnl has reached arm_above_pct or an `arm` clause has held, and it stays 1. With neither authored it reads 1. Put it in a DNF clause; do not AND live pnl with retrace.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
@@ -2773,6 +2812,15 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 1.0,
                 monotonic: false,
                 hue: 46,
+            },
+            MetricSpec {
+                id: MetricId::SinceArmed,
+                name: "since_armed",
+                description: "Seconds since `armed` latched - since `pnl` reached `arm_above_pct`, or since an `arm` clause first held. NaN while unlatched and on a position with no latch authored. Bounds a window that opens with the latch: `armed = 1 AND since_armed <= 30`.",
+                unit: Unit::Seconds,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 50,
             },
         ],
     },
@@ -3298,7 +3346,7 @@ mod tests {
         assert!(contagion["description"].as_str().unwrap().len() >= 30);
         let untagged = fields.iter().find(|f| f["name"] == "untagged_ix_markers").unwrap();
         assert_eq!(untagged["value_type"], "marker[]");
-        assert_eq!(untagged["conflicts_with"].as_array().unwrap().len(), 2);
+        assert_eq!(untagged["conflicts_with"].as_array().unwrap().len(), 4);
         let groups = j["groups"].as_array().unwrap();
         assert_eq!(groups.len(), REGISTRY.len());
         for (jg, g) in groups.iter().zip(REGISTRY) {

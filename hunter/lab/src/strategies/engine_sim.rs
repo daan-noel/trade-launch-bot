@@ -497,6 +497,9 @@ async fn run_engine_backtest(
         }
     };
     let creator_launches: Arc<[(u64, u32)]> = Arc::from(creator_launches);
+    // The same rows the candidate scan stamped with, so the replay's tally reads what
+    // the scan read.
+    let identity_launches = load_identity_rows(app_state, &fp, since, until).await;
 
     // The replay side of the SAME door: one `LaunchBuildStatsReloaded` per UTC day,
     // folded at that day's 00:00 boundary — a token is graded on the door the live
@@ -544,6 +547,7 @@ async fn run_engine_backtest(
                     duplicate_identity_window_hours: dupe_guard_window_hours
                         .unwrap_or(hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS),
                     creator_launches,
+                    identity_launches,
                     launch_build_stats,
                     build_breadth,
                     ..Default::default()
@@ -683,6 +687,59 @@ fn rule_metrics(loaded: &LoadedRule) -> impl Iterator<Item = hunter_engine::metr
         .flat_map(|g| g.metrics.keys().copied())
 }
 
+/// Every creation of the fingerprint's build over `[since - window, until)`, for the
+/// `prior_identity_launches` tally - empty unless the fingerprint reads that axis and
+/// names its build. Rows are `(build, identity, created_at, mint hash)`; a token with a
+/// blank name or symbol has no identity and is left out, as the engine leaves it.
+pub(crate) async fn load_identity_rows(
+    app_state: &Arc<LocalState>,
+    fp: &EngineFingerprint,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> Arc<[replay::IdentityLaunchRow]> {
+    use hunter_engine::fingerprint::{AxisId, AxisPredicate};
+    let labels = match (
+        fp.criteria.get(AxisId::PriorIdentityLaunches),
+        fp.criteria.get(AxisId::IxLabels),
+    ) {
+        (Some(_), Some(AxisPredicate::Sequence { labels })) => labels.clone(),
+        _ => return Arc::from(Vec::new()),
+    };
+    let window = chrono::Duration::days(
+        hunter_engine::fingerprint::identity_launches::PRIOR_IDENTITY_WINDOW_DAYS,
+    );
+    let from = since.unwrap_or(DateTime::UNIX_EPOCH) - window;
+    let to = until.unwrap_or_else(Utc::now);
+    let build = hunter_engine::metrics::flow_ix::ix_hash(&labels);
+    match TokenRepo::new(app_state.batch_db.clone()).build_identity_rows(&labels, from, to).await {
+        Ok(rows) => rows
+            .into_iter()
+            .filter_map(|(mint, name, symbol, at)| {
+                let id = hunter_engine::token_identity_hash(&name, &symbol)?;
+                Some((build, id, at, hunter_engine::metrics::flow_ix::wallet_hash(&mint)))
+            })
+            .collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "prior_identity_launches unprimed - the axis counts corpus tokens only");
+            Arc::from(Vec::new())
+        }
+    }
+}
+
+/// The rows as the engine's own tally, for the offline stamp; `None` when empty.
+fn identity_history(
+    rows: &[replay::IdentityLaunchRow],
+) -> Option<Arc<hunter_engine::fingerprint::identity_launches::IdentityLaunches>> {
+    if rows.is_empty() {
+        return None;
+    }
+    let mut h = hunter_engine::fingerprint::identity_launches::IdentityLaunches::default();
+    for &(build, id, at, mint) in rows {
+        h.record(build, id, at, mint);
+    }
+    Some(Arc::new(h))
+}
+
 /// Scan (or reuse) the fingerprint's **matched** candidate set: every token whose
 /// observed creation axes satisfy every configured axis, first-slot included —
 /// [`MatchPhase::Full`] against the token's already-settled `first_slot_buy_sol`/
@@ -705,6 +762,7 @@ pub(crate) async fn scan_matched_candidates(
     let batch_db = app_state.batch_db.clone();
     let fp_scan = fp.clone();
     let doors = door_days.by_day.clone();
+    let identity = identity_history(&load_identity_rows(app_state, fp, since, until).await);
     crate::strategies::candidate_cache::get_or_scan_candidates_state(
         app_state,
         candidate_cache_key(fp, since, until),
@@ -721,6 +779,10 @@ pub(crate) async fn scan_matched_candidates(
                     trading_core::strategies::fingerprint_axes::stamp_launch_build_axes(
                         &mut tf, day,
                     );
+                }
+                // The name-reuse axis, through the engine's own count.
+                if let Some(h) = identity.as_deref() {
+                    trading_core::strategies::fingerprint_axes::stamp_prior_identity_launches(&mut tf, t, h);
                 }
                 !match_all(std::slice::from_ref(&fp_scan), &tf, MatchPhase::Full).is_empty()
             })

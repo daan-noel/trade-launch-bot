@@ -343,8 +343,13 @@ pub struct CompiledRule {
     /// per element. TP/SL prepend as singleton clauses.
     pub exit_clauses: Vec<Vec<MetricReq>>,
     /// `m_position.arm_above_pct` from the exit side, if authored. Latches
-    /// [`EnteredCtx::armed`]. `None` ⇒ `armed` reads 1.
+    /// [`EnteredCtx::armed`]. `None` (and no [`arm_clauses`](Self::arm_clauses)) ⇒
+    /// `armed` reads 1.
     pub trail_arm_pct: Option<f64>,
+    /// `arm`: OR of AND-clauses that LATCH [`EnteredCtx::armed`] instead of closing
+    /// the position. Read after the exit clauses of the same event, so a clause that
+    /// reads `armed` cannot fire on the event that latched it. Empty ⇒ no clause latch.
+    pub arm_clauses: Vec<Vec<MetricReq>>,
     /// Ordered scale-out stages (empty = legacy full-close only). Evaluated via
     /// [`stage_fired`](Self::stage_fired) only when no global exit fired.
     pub scale_out: Vec<CompiledStage>,
@@ -479,6 +484,12 @@ impl CompiledRule {
         }
         exit_clauses.extend(authored_clauses);
         let exit_reqs: Vec<MetricReq> = exit_clauses.iter().flatten().cloned().collect();
+        let arm_clauses: Vec<Vec<MetricReq>> = rule
+            .params
+            .arm
+            .as_ref()
+            .map(|a| a.clauses().iter().map(|s| build_reqs(s, rule.fingerprint_id)).collect())
+            .unwrap_or_default();
 
         let trail_arm_pct = rule.params.exit.as_ref().and_then(extract_trail_arm_pct);
 
@@ -525,6 +536,7 @@ impl CompiledRule {
             .chain(entry_reqs.iter())
             .chain(event_reqs.iter())
             .chain(exit_reqs.iter())
+            .chain(arm_clauses.iter().flatten())
             .chain(stage_reqs)
         {
             let bucket = match group_of(r.metric).id {
@@ -569,6 +581,7 @@ impl CompiledRule {
             .chain(entry_reqs.iter())
             .chain(event_reqs.iter())
             .chain(exit_reqs.iter())
+            .chain(arm_clauses.iter().flatten())
             .chain(scale_out.iter().flat_map(|s| s.reqs.iter()))
         {
             clock_horizons.absorb_req(r);
@@ -621,6 +634,7 @@ impl CompiledRule {
             exit_reqs,
             exit_clauses,
             trail_arm_pct,
+            arm_clauses,
             scale_out,
             flow_windows,
             crowd_windows,
@@ -710,6 +724,16 @@ impl CompiledRule {
         clauses_exit_fired(&self.exit_clauses, track, ctx, now)
     }
 
+    /// Whether an `arm` clause holds at `now` (every req of one clause). Position
+    /// metrics read through `ctx`, like the exit side.
+    pub fn arm_fired(&self, track: &TokenTrack, ctx: &PositionCtx, now: Ts) -> bool {
+        let price = track.current_price();
+        self.arm_clauses.iter().any(|clause| {
+            !clause.is_empty()
+                && clause.iter().all(|r| req_exit_reason(r, track, ctx, now, price).is_some())
+        })
+    }
+
     /// Whether the current scale-out stage fires at `now`. Only the stage at
     /// `stage` is evaluated; past the ladder ⇒ `None` (position continues under
     /// the global exit side alone). Same req walk as [`exit_fired`].
@@ -747,11 +771,16 @@ impl CompiledRule {
 
     /// Armed-side entry: with [`entry_lock`](Self::entry_lock) `slot`, the first
     /// print this slot that makes `event_reqs` true is the only candidate.
+    ///
+    /// With `token`, only a print decides (`on_print`; a clock tick never does): the
+    /// first print that makes `event_reqs` true enters or, failing any filter, ends the
+    /// episode ([`EntryVerdict::Exhaust`]).
     pub fn try_enter(
         &self,
         track: &TokenTrack,
         now: Ts,
         locked_slot: Option<u64>,
+        on_print: bool,
     ) -> EntryVerdict {
         use crate::rule_params::EntryLock;
         let leftover_ok = self.leftover_satisfied(track, now);
@@ -771,6 +800,16 @@ impl CompiledRule {
                     EntryVerdict::Exhaust
                 } else {
                     EntryVerdict::No
+                }
+            }
+            Some(EntryLock::Token) => {
+                if !on_print || !self.event_satisfied(track, now) {
+                    return EntryVerdict::No;
+                }
+                if would_enter {
+                    EntryVerdict::Enter
+                } else {
+                    EntryVerdict::Exhaust
                 }
             }
             Some(EntryLock::Slot) => {
@@ -1126,6 +1165,12 @@ pub struct EnteredCtx {
     /// Trail latch — see [`PositionCtx::armed`](crate::metrics::position::PositionCtx::armed).
     pub armed: bool,
     pub trail_arm_pct: Option<f64>,
+    /// The rule authors `arm` clauses — see
+    /// [`PositionCtx::clause_latch`](crate::metrics::position::PositionCtx::clause_latch).
+    pub clause_latch: bool,
+    /// When `armed` latched — see
+    /// [`PositionCtx::armed_at`](crate::metrics::position::PositionCtx::armed_at).
+    pub armed_at: Option<Ts>,
     /// See [`PositionCtx::entry_priced_reserve`](crate::metrics::position::PositionCtx::entry_priced_reserve).
     pub entry_priced_reserve: f64,
 }
@@ -1151,8 +1196,20 @@ impl EnteredCtx {
             sold_bps: 0,
             armed: trail_arm_pct.is_none(),
             trail_arm_pct,
+            clause_latch: false,
+            armed_at: None,
             entry_priced_reserve,
         }
+    }
+
+    /// The rule authors `arm` clauses: `armed` starts 0 and only a clause (or the
+    /// `arm_above_pct` gate) latches it.
+    pub fn with_clause_latch(mut self, clause_latch: bool) -> Self {
+        if clause_latch {
+            self.clause_latch = true;
+            self.armed = false;
+        }
+        self
     }
 
     /// Build the [`PositionCtx`] position-scoped metrics read.
@@ -1164,6 +1221,8 @@ impl EnteredCtx {
             entered_at: self.entered_at,
             armed: self.armed,
             trail_arm_pct: self.trail_arm_pct,
+            clause_latch: self.clause_latch,
+            armed_at: self.armed_at,
             entry_priced_reserve: self.entry_priced_reserve,
         }
     }
@@ -1647,7 +1706,8 @@ mod tests {
         // and pnl +5% clears the gate → both rules sell.
         let ctx = PositionCtx {
             entry_price: 1.0, peak_price: 1.10, trough_price: 1.0, entered_at: created,
-            armed: true, trail_arm_pct: None, entry_priced_reserve: f64::NAN,
+            armed: true, trail_arm_pct: None, clause_latch: false, armed_at: None,
+            entry_priced_reserve: f64::NAN,
         };
         track.on_trade(TradeLite {
             side: Side::Sell, sol: 1.0, price: 1.05, reserve_sol: 60.0, at: now,
@@ -1661,7 +1721,8 @@ mod tests {
         // the position to the stop-loss.
         let sunk = PositionCtx {
             entry_price: 1.0, peak_price: 1.0, trough_price: 0.96, entered_at: created,
-            armed: true, trail_arm_pct: None, entry_priced_reserve: f64::NAN,
+            armed: true, trail_arm_pct: None, clause_latch: false, armed_at: None,
+            entry_priced_reserve: f64::NAN,
         };
         let mut down = TokenTrack::new(created);
         down.on_trade(TradeLite {
@@ -1677,7 +1738,8 @@ mod tests {
         // ...and the stop-loss still fires through the gate at −20%.
         let blown = PositionCtx {
             entry_price: 1.0, peak_price: 1.0, trough_price: 0.75, entered_at: created,
-            armed: true, trail_arm_pct: None, entry_priced_reserve: f64::NAN,
+            armed: true, trail_arm_pct: None, clause_latch: false, armed_at: None,
+            entry_priced_reserve: f64::NAN,
         };
         let mut crash = TokenTrack::new(created);
         crash.on_trade(TradeLite {
@@ -1724,6 +1786,8 @@ mod tests {
             entered_at: created,
             armed: true,
             trail_arm_pct: Some(10.0),
+            clause_latch: false,
+            armed_at: None,
             entry_priced_reserve: f64::NAN,
         };
         let mut track = TokenTrack::new(created);

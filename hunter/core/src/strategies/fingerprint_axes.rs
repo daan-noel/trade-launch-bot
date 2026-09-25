@@ -65,7 +65,33 @@ pub fn observed_axes(
         // `EngineState::launch_build_stats`. `None` here for the same reason.
         build_prev_day_launches: None,
         build_prev_day_runner_bps: None,
+        // Engine-stamped from its per-build name tally; offline through
+        // [`stamp_prior_identity_launches`].
+        prior_identity_launches: None,
     }
+}
+
+/// Stamp `prior_identity_launches` onto observed axes from a primed
+/// [`IdentityLaunches`](hunter_engine::fingerprint::identity_launches::IdentityLaunches) -
+/// the offline mirror of what `reduce` does at `TokenCreated`, through the same count.
+///
+/// An offline candidate scan needs it for the same reason it needs
+/// [`stamp_launch_build_axes`]: the axis is not a column, and an unstamped token fails
+/// a configured axis closed, so a name-reuse door would scan to zero tokens. A blank
+/// name or symbol has no identity and stays `None`.
+pub fn stamp_prior_identity_launches(
+    tf: &mut TokenFingerprint,
+    token: &Token,
+    history: &hunter_engine::fingerprint::identity_launches::IdentityLaunches,
+) {
+    let (Some(build), Some(identity)) = (
+        hunter_engine::metrics::flow_ix::ix_hash_opt(&tf.ix_labels),
+        hunter_engine::token_identity_hash(&token.name, &token.symbol),
+    ) else {
+        return;
+    };
+    let mint = hunter_engine::metrics::flow_ix::wallet_hash(&token.mint_address);
+    tf.prior_identity_launches = Some(history.prior(build, identity, token.created_at, mint));
 }
 
 /// Stamp the two engine-stamped **launch-build door** axes onto observed axes, from

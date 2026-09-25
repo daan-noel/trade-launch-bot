@@ -160,7 +160,13 @@ fn params_for(g: &GroupSpec, m: &MetricSpec, basis: Basis) -> Value {
     strict_params(g, m, basis, &mut group_obj);
     group_obj.insert(m.name.to_string(), json!([{ "operator": ">=", "value": -1.0e9 }]));
     let side = if g.scope == MetricScope::Position { "exit" } else { "entry" };
-    json!({ side: { g.name: Value::Object(group_obj) } })
+    let mut params = json!({ side: { g.name: Value::Object(group_obj) } });
+    // `since_armed` has no reading until something latches `armed`: an `arm` clause
+    // that holds on the first event after the fill gives the probe its latch.
+    if m.name == "since_armed" {
+        params["arm"] = json!({ "m_state": { "time": [{ "operator": ">=", "value": 0.0 }] } });
+    }
+    params
 }
 
 fn loaded_rule(params: Value, g: &GroupSpec, m: &MetricSpec) -> LoadedRule {

@@ -67,6 +67,15 @@ pub struct TokenFingerprint {
     /// [`build_prev_day_launches`](Self::build_prev_day_launches).
     #[serde(default)]
     pub build_prev_day_runner_bps: Option<u32>,
+    /// How many earlier tokens of this creation build carried this token's
+    /// `(name, symbol)` identity.
+    ///
+    /// **Engine-stamped, like `prior_launches`** - `reduce` counts it at
+    /// `TokenCreated` from a timestamped tally kept only for builds a loaded
+    /// fingerprint names. `None` for a blank identity or an untracked build, which
+    /// fails a configured axis closed.
+    #[serde(default)]
+    pub prior_identity_launches: Option<u32>,
 }
 
 /// Read a lamports value from a creation instruction-args object. **The one decode

@@ -97,6 +97,12 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 // so a replayed event cannot double-count.
                 tf.prior_launches = Some(state.take_prior_launches(h));
             }
+            // Name reuse inside the build: strictly-prior, stamped before the match,
+            // advanced once per creation for the same reason `prior_launches` is.
+            if let (Some(build), Some(id)) = (crate::metrics::flow_ix::ix_hash_opt(&tf.ix_labels), identity) {
+                let mint_hash = crate::metrics::flow_ix::wallet_hash(mint.as_str());
+                tf.prior_identity_launches = state.take_prior_identity_launches(build, id, at, mint_hash);
+            }
             // The launch-build door axes: one hash over the creation labels, one map
             // get. Stamped once, here, so a token keeps the door it was born under
             // even after the day rolls over - which is the term the rule is derived
@@ -144,7 +150,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             }
             // Evaluate now so enter-on-arm rules (and creation-time metrics like
             // `time`/`stall`) can fire at birth.
-            evaluate_token(state, &mut token, &mint, at, &mut fx);
+            evaluate_token(state, &mut token, &mint, at, false, &mut fx);
             if token.is_active() {
                 state.tokens.insert(mint, token);
             }
@@ -196,7 +202,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         token.arms.remove(&rule_id); // never fully matched → drop
                     }
                 }
-                evaluate_token(state, &mut token, &mint, at, &mut fx);
+                evaluate_token(state, &mut token, &mint, at, false, &mut fx);
             }
             if token.is_active() {
                 state.tokens.insert(mint, token);
@@ -212,7 +218,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let mut tokens = std::mem::take(&mut state.tokens);
             if let Some(token) = tokens.get_mut(&mint) {
                 fold_trade(token, trade);
-                evaluate_token(state, token, &mint, trade.at, &mut fx);
+                evaluate_token(state, token, &mint, trade.at, true, &mut fx);
                 if !token.is_active() {
                     tokens.remove(&mint);
                 }
@@ -249,7 +255,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 // cursor here on purpose: slot durations vary, so estimating one from
                 // elapsed time would be a silently wrong reading rather than a stale one.
                 token.track.on_tick(now, None);
-                evaluate_token(state, token, mint, now, &mut fx);
+                evaluate_token(state, token, mint, now, false, &mut fx);
                 all_settled &= token.settled.is_some();
                 token.is_active()
             });
@@ -273,9 +279,9 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     // before any dip `bounce` equals `pnl`. `room_taken` reads the
                     // depth of the last print folded here: in simulate the fill
                     // print itself (the replay confirms right after folding it).
-                    let trail_arm_pct = state
+                    let (trail_arm_pct, clause_latch) = state
                         .rule_for(rule_id, Some(position))
-                        .and_then(|c| c.trail_arm_pct);
+                        .map_or((None, false), |c| (c.trail_arm_pct, !c.arm_clauses.is_empty()));
                     token.arms.insert(
                         rule_id,
                         ArmState::Entered(EnteredCtx::at_fill(
@@ -284,7 +290,8 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             fill.at,
                             trail_arm_pct,
                             token.track.current_priced_reserves(),
-                        )),
+                        )
+                        .with_clause_latch(clause_latch)),
                     );
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
@@ -834,6 +841,9 @@ fn fold_entered_extremes(token: &mut TokenState, at: Ts) {
             p.fold_price(cur_price);
             ctx.peak_price = p.peak_price;
             ctx.trough_price = p.trough_price;
+            if p.armed && !ctx.armed {
+                ctx.armed_at = Some(at);
+            }
             ctx.armed = p.armed;
         }
     }
@@ -1023,11 +1033,14 @@ pub fn hydrate_token(
     fx
 }
 
+/// `on_print`: this evaluation is a trade landing, not a clock tick or a lifecycle
+/// event — the only instant an `entry_lock: "token"` rule decides on.
 fn evaluate_token(
     state: &mut EngineState,
     token: &mut TokenState,
     mint: &Mint,
     now: Ts,
+    on_print: bool,
     fx: &mut Effects,
 ) {
     // The dead-token verdict is a token-wide fact — compute it once, reuse per arm.
@@ -1078,7 +1091,7 @@ fn evaluate_token(
         });
     }
     for rule_id in rule_ids {
-        let (decision, buy_lamports, cap, max_total, trade_mode) = {
+        let (decision, buy_lamports, cap, max_total, trade_mode, latch) = {
             let arm = &token.arms[&rule_id];
             // Manual episodes resolve via their per-position exit rule; a
             // tracked-only manual arm has neither ⇒ no decision (no auto-exit).
@@ -1088,7 +1101,7 @@ fn evaluate_token(
             let dupe_blocked = matches!(arm, ArmState::Armed)
                 && state.dupe_guard.blocks(c.trade_mode, token.identity, mint, now);
             (
-                decide_arm(c, rule_id, arm, token, dead, dupe_blocked, now),
+                decide_arm(c, rule_id, arm, token, dead, dupe_blocked, now, on_print),
                 // The priced depth (vsol), not the `liquidity` reading (real SOL =
                 // vsol - 30 on the curve): the percent is of the depth impact is
                 // charged against, which is what holds impact constant.
@@ -1096,12 +1109,28 @@ fn evaluate_token(
                 c.concurrent_cap,
                 c.max_total,
                 c.trade_mode,
+                // `arm` clauses latch a held position the exits just left open. Read
+                // after them, on the same event, so a clause that reads `armed` cannot
+                // fire on the event that latched it.
+                match arm {
+                    ArmState::Entered(held) if !held.armed && !c.arm_clauses.is_empty() => {
+                        c.arm_fired(&token.track, &held.position_ctx(), now)
+                    }
+                    _ => false,
+                },
             )
         };
+        let latch = latch && matches!(decision, ArmDecision::None);
         apply_decision(
             state, token, mint, rule_id, decision, buy_lamports, cap, max_total, trade_mode, now,
             fx,
         );
+        if latch {
+            if let Some(ArmState::Entered(held)) = token.arms.get_mut(&rule_id) {
+                held.armed = true;
+                held.armed_at = Some(now);
+            }
+        }
     }
 
     // Stamp the settled verdict LAST, off the post-decision arm states — a decision
@@ -1139,6 +1168,7 @@ fn decide_arm(
     dead: bool,
     dupe_blocked: bool,
     now: Ts,
+    on_print: bool,
 ) -> ArmDecision {
     match arm {
         ArmState::Armed => {
@@ -1176,7 +1206,7 @@ fn decide_arm(
             {
                 return ArmDecision::None;
             }
-            match c.try_enter(&token.track, now, token.entry_locks.get(&rule_id).copied()) {
+            match c.try_enter(&token.track, now, token.entry_locks.get(&rule_id).copied(), on_print) {
                 EntryVerdict::Enter => ArmDecision::Enter,
                 EntryVerdict::SpendSlot => ArmDecision::SpendSlot,
                 EntryVerdict::Exhaust => ArmDecision::Exhaust,

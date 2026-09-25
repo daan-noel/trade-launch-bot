@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::fee::{BuildPatterns, FeeKeys};
 use super::flow_window::push_sorted;
+use super::template_grain::program_id_hash;
 use super::{MetricId, Side, TradeLite, Ts, WindowKey, WindowSpec};
 
 use crate::grouping::normalize_labels;
@@ -319,6 +320,41 @@ pub struct FlowPatterns {
     wallet_contagion: bool,
     /// The creator wallet is volume-side unconditionally.
     creator_is_tagged: bool,
+    /// Programs that TAG a trade whatever build it ships: the trade's head program
+    /// ([`template_grain::program_hash`](super::template_grain::program_hash)) is one
+    /// of these. An operator's own program stays its own across every variant it
+    /// compiles, where an exact list books each new variant untagged.
+    programs: HashedSet,
+    /// Tag a trade that is one of `min_prints` identical transactions in one slot.
+    /// `None` = off.
+    cluster: Option<VolumeCluster>,
+    /// How a wallet whose buy lands in the creation slot is counted.
+    creation_slot_buyers: CreationSlotBuyers,
+}
+
+/// The volume-cluster rule: a trade is TAGGED once it is the `min_prints`-th trade of
+/// its slot carrying the same ix list, side, compute-unit limit, compute-unit price and
+/// tip whose SOL sits within `sol_tol_pct` percent of the group's FIRST trade.
+///
+/// Many identical transactions landing at once is one machine making volume; one
+/// person buying is not. Read as the trades land: the first `min_prints - 1` members
+/// stay untagged, because nothing has shown them to be a cluster yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeCluster {
+    pub min_prints: u32,
+    pub sol_tol_pct: u32,
+}
+
+/// How a wallet that buys in the creation slot, untagged, is counted on this token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CreationSlotBuyers {
+    /// Classified like any other wallet (the behaviour before the field).
+    #[default]
+    Untagged,
+    /// On NEITHER side for the rest of the token: its trades move no tagged or untagged
+    /// total. The creation slot holds the creator's birth bundle and snipers - the
+    /// crew's money or nobody's audience, never the buyers an untagged count stands for.
+    Excluded,
 }
 
 impl Default for FlowPatterns {
@@ -329,6 +365,9 @@ impl Default for FlowPatterns {
             markers_are_organic: false,
             wallet_contagion: true,
             creator_is_tagged: true,
+            programs: HashedSet::default(),
+            cluster: None,
+            creation_slot_buyers: CreationSlotBuyers::Untagged,
         }
     }
 }
@@ -341,13 +380,7 @@ impl FlowPatterns {
     /// A purely structural classifier: markers only, both wallet rules off. The mask
     /// names the VOLUME side.
     pub fn markers_only(markers: u16) -> Self {
-        Self {
-            builds: BuildPatterns::default(),
-            markers,
-            markers_are_organic: false,
-            wallet_contagion: false,
-            creator_is_tagged: false,
-        }
+        Self { markers, wallet_contagion: false, creator_is_tagged: false, ..Self::default() }
     }
 
     /// A purely structural classifier whose mask names the ORGANIC side: a trade is
@@ -355,12 +388,25 @@ impl FlowPatterns {
     /// the burst came through a named retail router" is stated.
     pub fn organic_markers_only(markers: u16) -> Self {
         Self {
-            builds: BuildPatterns::default(),
             markers,
             markers_are_organic: true,
             wallet_contagion: false,
             creator_is_tagged: false,
+            ..Self::default()
         }
+    }
+
+    /// Whether the trade's head program is on the `tagged_programs` list.
+    pub fn tags_program(&self, program_hash: Option<u64>) -> bool {
+        program_hash.is_some_and(|h| self.programs.contains(&h))
+    }
+
+    pub fn cluster(&self) -> Option<VolumeCluster> {
+        self.cluster
+    }
+
+    pub fn creation_slot_buyers(&self) -> CreationSlotBuyers {
+        self.creation_slot_buyers
     }
 
     /// Whether the configured mask names the organic side.
@@ -403,7 +449,7 @@ impl FlowPatterns {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.builds.is_empty() && self.markers == 0
+        self.builds.is_empty() && self.markers == 0 && self.programs.is_empty() && self.cluster.is_none()
     }
 
     /// Compile an ordered list of label sequences (the sweep run's
@@ -438,6 +484,20 @@ impl FlowPatterns {
             }
             out.markers = marker_mask(&strs).ok()?;
             out.markers_are_organic = organic;
+        }
+        if let Some(arr) = obj.get("tagged_programs") {
+            for name in arr.as_array()? {
+                let name = name.as_str()?;
+                if !name.is_empty() {
+                    out.programs.insert(program_id_hash(name));
+                }
+            }
+        }
+        if let Some(c) = obj.get("volume_cluster") {
+            out.cluster = Some(parse_cluster(c).ok()?);
+        }
+        if let Some(v) = obj.get("creation_slot_buyers") {
+            out.creation_slot_buyers = parse_creation_slot_buyers(v).ok()?;
         }
         let Some(arr) = obj.get("ix_patterns") else {
             // Key present but no patterns field — markers and switches still apply.
@@ -490,8 +550,24 @@ impl FlowPatterns {
             // on one axis, and `ix_patterns` is itself a volume-side statement,
             // so none of it composes with an organic mask. Letting one silently win is
             // how a rule stops measuring what it says.
+            if let Some(progs) = flow_obj.get("tagged_programs") {
+                let Some(arr) = progs.as_array() else {
+                    return Err("m_flow_ix.tagged_programs must be an array".into());
+                };
+                for (i, p) in arr.iter().enumerate() {
+                    if p.as_str().is_none_or(str::is_empty) {
+                        return Err(format!("m_flow_ix.tagged_programs[{i}] must be a non-empty string"));
+                    }
+                }
+            }
+            if let Some(c) = flow_obj.get("volume_cluster") {
+                parse_cluster(c).map_err(|e| format!("m_flow_ix.volume_cluster: {e}"))?;
+            }
+            if let Some(v) = flow_obj.get("creation_slot_buyers") {
+                parse_creation_slot_buyers(v).map_err(|e| format!("m_flow_ix.creation_slot_buyers: {e}"))?;
+            }
             if flow_obj.contains_key("untagged_ix_markers") {
-                for other in ["tagged_ix_markers", "ix_patterns"] {
+                for other in ["tagged_ix_markers", "ix_patterns", "tagged_programs", "volume_cluster"] {
                     if flow_obj.contains_key(other) {
                         return Err(format!(
                             "m_flow_ix: untagged_ix_markers and {other} name opposite                              sides of the same split - configure exactly one"
@@ -508,6 +584,38 @@ impl FlowPatterns {
             }
         }
         Ok(())
+    }
+}
+
+/// `{"min_prints": N, "sol_tol_pct": P}`: `N >= 2` (one trade is not a cluster),
+/// `0 <= P <= 100`.
+fn parse_cluster(v: &Value) -> Result<VolumeCluster, String> {
+    let obj = v.as_object().ok_or("must be an object {min_prints, sol_tol_pct}")?;
+    let int = |k: &str| -> Result<u32, String> {
+        obj.get(k)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| format!("{k} must be a non-negative integer"))
+    };
+    let min_prints = int("min_prints")?;
+    let sol_tol_pct = int("sol_tol_pct")?;
+    if min_prints < 2 {
+        return Err("min_prints must be at least 2".into());
+    }
+    if sol_tol_pct > 100 {
+        return Err("sol_tol_pct must be at most 100".into());
+    }
+    if let Some(k) = obj.keys().find(|k| !matches!(k.as_str(), "min_prints" | "sol_tol_pct")) {
+        return Err(format!("unknown key `{k}`"));
+    }
+    Ok(VolumeCluster { min_prints, sol_tol_pct })
+}
+
+fn parse_creation_slot_buyers(v: &Value) -> Result<CreationSlotBuyers, String> {
+    match v.as_str() {
+        Some("untagged") => Ok(CreationSlotBuyers::Untagged),
+        Some("excluded") => Ok(CreationSlotBuyers::Excluded),
+        _ => Err("must be \"untagged\" or \"excluded\"".into()),
     }
 }
 
@@ -714,6 +822,37 @@ pub struct FlowState {
     creator_wallet_hash: Option<u64>,
     lifetime: FlowTotals,
     windows: BTreeMap<WindowKey, FlowIxWindowState>,
+    /// The creation slot, from the launch print (`TradeLite::is_launch`). `None` until
+    /// it is folded, and then no wallet is a creation-slot buyer.
+    birth_slot: Option<u64>,
+    /// Wallets excluded under [`CreationSlotBuyers::Excluded`].
+    birth_wallets: HashedSet,
+    /// The volume-cluster groups of the slot being folded; cleared when the slot moves.
+    cluster_slot: u64,
+    cluster_groups: Vec<ClusterGroup>,
+    /// The tagged side's bag in token units, signed (buys in, sells out) - `tagged_pnl`.
+    tagged_tokens: f64,
+    /// `vsol` and `vtok` after the last folded trade, the curve `tagged_pnl` sells into.
+    last_vsol: f64,
+    last_vtok: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClusterGroup {
+    ix_hash: Option<u64>,
+    side: Side,
+    fee: FeeKeys,
+    first_sol: f64,
+    close: u32,
+}
+
+/// Which side of the split a folded trade lands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowSide {
+    Tagged,
+    Untagged,
+    /// Counted on neither side ([`CreationSlotBuyers::Excluded`]).
+    Excluded,
 }
 
 impl FlowState {
@@ -724,6 +863,13 @@ impl FlowState {
             creator_wallet_hash: None,
             lifetime: FlowTotals::default(),
             windows: BTreeMap::new(),
+            birth_slot: None,
+            birth_wallets: HashedSet::default(),
+            cluster_slot: 0,
+            cluster_groups: Vec::new(),
+            tagged_tokens: 0.0,
+            last_vsol: f64::NAN,
+            last_vtok: f64::NAN,
         }
     }
 
@@ -753,10 +899,27 @@ impl FlowState {
         if !t.sol.is_finite() || t.sol < 0.0 {
             return;
         }
-        let is_tagged = self.classify(t);
-        if is_tagged {
-            self.tagged_wallets.insert(t.wallet_hash);
+        if t.is_launch && self.birth_slot.is_none() {
+            self.birth_slot = Some(t.slot);
         }
+        if t.priced_reserve_sol.is_finite() && t.priced_reserve_sol > 0.0 && t.price.is_finite() && t.price > 0.0 {
+            self.last_vsol = t.priced_reserve_sol;
+            self.last_vtok = t.priced_reserve_sol / t.price;
+        }
+        let is_tagged = match self.fold_side(t) {
+            FlowSide::Excluded => return,
+            FlowSide::Tagged => {
+                self.tagged_wallets.insert(t.wallet_hash);
+                // A missing amount poisons the bag for good: NaN propagates, and
+                // `tagged_pnl` reads NaN rather than a bag short by one trade.
+                self.tagged_tokens += match t.side {
+                    Side::Buy => t.token_amount,
+                    Side::Sell => -t.token_amount,
+                };
+                true
+            }
+            FlowSide::Untagged => false,
+        };
         self.lifetime.add(t.side, t.sol, is_tagged);
         for w in self.windows.values_mut() {
             let pos = w.spec.pos(t.at, cur.at_trade(t));
@@ -775,12 +938,80 @@ impl FlowState {
     /// Lifetime (`m_flow_ix`) or windowed (`m_flow_ix_window`) read at `now`.
     pub fn value(&self, id: MetricId, window: Option<WindowSpec>, now: Ts, cur: super::Cursor) -> f64 {
         match window {
+            None if id == MetricId::TaggedPnl => self.tagged_pnl(),
             None => self.lifetime.value(id),
             Some(spec) => match self.windows.get(&spec.key()) {
                 Some(w) => w.value(id, spec.now_pos(now, cur)),
                 None => f64::NAN,
             },
         }
+    }
+
+    /// `tagged_pnl`: what the tagged side would net selling its whole bag into the
+    /// curve now, minus the SOL it has put in - `vsol - vsol*vtok/(vtok + bag) -
+    /// (tagged_buy - tagged_sell)`, the bag floored at zero. Taken profit counts: a
+    /// side that sold out holds nothing and reads its net SOL out. `NaN` before a
+    /// print with a reserve pair, and for good once a tagged trade had no amount.
+    pub fn tagged_pnl(&self) -> f64 {
+        let (v, vt) = (self.last_vsol, self.last_vtok);
+        if !v.is_finite() || !vt.is_finite() || vt <= 0.0 || !self.tagged_tokens.is_finite() {
+            return f64::NAN;
+        }
+        let bag = self.tagged_tokens.max(0.0);
+        let liquidation = v - v * vt / (vt + bag);
+        liquidation - (self.lifetime.tagged_buy - self.lifetime.tagged_sell)
+    }
+
+    /// The side a trade folds on: [`classify`](Self::classify), then the volume-cluster
+    /// rule (which counts the trade into its slot group, so it runs once per trade and
+    /// only here), then the creation-slot rule for a trade nothing tagged.
+    fn fold_side(&mut self, t: &TradeLite) -> FlowSide {
+        if self.classify(t) || self.cluster_hit(t) {
+            return FlowSide::Tagged;
+        }
+        if self.patterns.creation_slot_buyers() == CreationSlotBuyers::Excluded {
+            if self.birth_slot == Some(t.slot) && t.side == Side::Buy {
+                self.birth_wallets.insert(t.wallet_hash);
+                return FlowSide::Excluded;
+            }
+            if self.birth_wallets.contains(&t.wallet_hash) {
+                return FlowSide::Excluded;
+            }
+        }
+        FlowSide::Untagged
+    }
+
+    /// Count this trade into its slot's cluster group; `true` once it is at least the
+    /// `min_prints`-th close member.
+    fn cluster_hit(&mut self, t: &TradeLite) -> bool {
+        let Some(c) = self.patterns.cluster() else { return false };
+        if t.slot != self.cluster_slot {
+            self.cluster_groups.clear();
+            self.cluster_slot = t.slot;
+        }
+        let idx = match self
+            .cluster_groups
+            .iter()
+            .position(|g| g.ix_hash == t.ix_hash && g.side == t.side && g.fee == t.fee)
+        {
+            Some(i) => i,
+            None => {
+                self.cluster_groups.push(ClusterGroup {
+                    ix_hash: t.ix_hash,
+                    side: t.side,
+                    fee: t.fee,
+                    first_sol: t.sol,
+                    close: 0,
+                });
+                self.cluster_groups.len() - 1
+            }
+        };
+        let g = &mut self.cluster_groups[idx];
+        let close = (t.sol - g.first_sol).abs() <= f64::from(c.sol_tol_pct) / 100.0 * g.first_sol;
+        if close {
+            g.close += 1;
+        }
+        close && g.close >= c.min_prints
     }
 
     /// Volume-side iff a structural marker matches, an exact pattern matches, or —
@@ -804,7 +1035,7 @@ impl FlowState {
         if self.patterns.contains(t.ix_hash, t.fee) {
             return true;
         }
-        false
+        self.patterns.tags_program(t.program_hash)
     }
 }
 
@@ -1428,4 +1659,114 @@ mod tests {
         assert_eq!(marker_bits_from_labels_value(&wrapped), seed);
     }
 
+    fn crew_state(cfg: serde_json::Value) -> FlowState {
+        FlowState::new(FlowPatterns::from_metric_config(&json!({ "m_flow_ix": cfg })).unwrap())
+    }
+
+    fn crew_trade(side: Side, sol: f64, wallet: &str, slot: u64) -> TradeLite {
+        TradeLite {
+            slot,
+            price: 1e-6,
+            priced_reserve_sol: 40.0,
+            token_amount: sol * 1e6,
+            ..trade(side, sol, Some(ix_hash(&["Axiom Trade: ix#00"])), wallet_hash(wallet), 0.0)
+        }
+    }
+
+    /// A program on `tagged_programs` tags every build it ships, including one no list
+    /// named; any other program stays untagged.
+    #[test]
+    fn a_tagged_program_tags_every_variant() {
+        let st = crew_state(json!({ "tagged_programs": ["Unknown (crew)"], "wallet_contagion": false,
+                                     "creator_is_tagged": false }));
+        let mut t = trade(Side::Buy, 1.0, Some(ix_hash(&["new variant"])), wallet_hash("a"), 0.0);
+        t.program_hash = Some(program_id_hash("Unknown (crew)"));
+        assert!(st.classify(&t));
+        t.program_hash = Some(program_id_hash("Axiom Trade"));
+        assert!(!st.classify(&t));
+        t.program_hash = None;
+        assert!(!st.classify(&t));
+    }
+
+    /// The cluster rule is read as trades land: the 3rd close member of a slot group is
+    /// the first tagged; a size outside the tolerance of the FIRST member neither counts
+    /// nor tags; a new slot starts empty.
+    #[test]
+    fn volume_cluster_tags_from_the_nth_close_member() {
+        let mut st = crew_state(json!({ "volume_cluster": { "min_prints": 3, "sol_tol_pct": 10 },
+                                         "wallet_contagion": false, "creator_is_tagged": false }));
+        let side_of = |st: &mut FlowState, sol: f64, w: &str, slot: u64| st.fold_side(&crew_trade(Side::Buy, sol, w, slot));
+        assert_eq!(side_of(&mut st, 1.00, "a", 7), FlowSide::Untagged);
+        assert_eq!(side_of(&mut st, 1.05, "b", 7), FlowSide::Untagged);
+        assert_eq!(side_of(&mut st, 2.00, "c", 7), FlowSide::Untagged, "outside 10 % of the first");
+        assert_eq!(side_of(&mut st, 0.95, "d", 7), FlowSide::Tagged);
+        assert_eq!(side_of(&mut st, 1.00, "e", 8), FlowSide::Untagged, "a new slot starts empty");
+        // A different fee budget is a different group.
+        let mut t = crew_trade(Side::Buy, 1.0, "f", 8);
+        t.fee = FeeKeys::new(Some(200_000), None, None);
+        assert_eq!(st.fold_side(&t), FlowSide::Untagged);
+    }
+
+    /// Under `excluded`, a wallet that buys untagged in the creation slot counts on
+    /// neither side for the rest of the token; a tagged creation-slot buy stays tagged.
+    #[test]
+    fn creation_slot_buyers_are_excluded_from_both_sides() {
+        let mut st = crew_state(json!({ "creation_slot_buyers": "excluded", "creator_is_tagged": true }));
+        st.set_creator(wallet_hash("dev"));
+        let mut launch = crew_trade(Side::Buy, 0.5, "dev", 100);
+        launch.is_launch = true;
+        st.on_trade(&launch, c(100));
+        st.on_trade(&crew_trade(Side::Buy, 2.0, "bundle", 100), c(100));
+        st.on_trade(&crew_trade(Side::Sell, 1.0, "bundle", 105), c(105));
+        st.on_trade(&crew_trade(Side::Buy, 3.0, "retail", 105), c(105));
+        let at = ts(0.0);
+        assert_eq!(st.value(MetricId::TaggedBuy, None, at, c(105)), 0.5, "the creator's buy");
+        assert_eq!(st.value(MetricId::UntaggedBuy, None, at, c(105)), 3.0, "retail only");
+        assert_eq!(st.value(MetricId::UntaggedSell, None, at, c(105)), 0.0, "the bundle's sell is on no side");
+    }
+
+    /// `tagged_pnl` is the tagged bag sold into the curve at the last print, minus the
+    /// tagged side's net SOL, with the bag floored at zero.
+    #[test]
+    fn tagged_pnl_is_bag_value_minus_net_sol_in() {
+        let mut st = crew_state(json!({ "tagged_programs": ["crew"] }));
+        let mut t = crew_trade(Side::Buy, 2.0, "w", 1);
+        t.program_hash = Some(program_id_hash("crew"));
+        t.token_amount = 5.0e7;
+        t.priced_reserve_sol = 40.0;
+        t.price = 40.0 / 1.0e9;
+        st.on_trade(&t, c(1));
+        let (v, vt, bag) = (40.0_f64, 1.0e9_f64, 5.0e7_f64);
+        let want = v - v * vt / (vt + bag) - 2.0;
+        assert!((st.tagged_pnl() - want).abs() < 1e-9, "{} vs {want}", st.tagged_pnl());
+        // Selling more than the bag floors it at zero: only the SOL taken out counts.
+        let mut s2 = crew_trade(Side::Sell, 3.0, "w", 2);
+        s2.token_amount = 9.0e7;
+        s2.priced_reserve_sol = 38.0;
+        s2.price = 38.0 / 1.1e9;
+        st.on_trade(&s2, c(2));
+        assert!((st.tagged_pnl() - 1.0).abs() < 1e-9, "3 out - 2 in = 1, got {}", st.tagged_pnl());
+        // A tagged trade without an amount poisons the bag for good.
+        let mut s3 = crew_trade(Side::Buy, 1.0, "w", 3);
+        s3.token_amount = f64::NAN;
+        st.on_trade(&s3, c(3));
+        assert!(st.tagged_pnl().is_nan());
+    }
+
+    #[test]
+    fn new_classifier_fields_validate() {
+        let ok = json!({ "m_flow_ix": { "tagged_programs": ["x"], "volume_cluster": { "min_prints": 3, "sol_tol_pct": 10 },
+                                         "creation_slot_buyers": "excluded" } });
+        assert!(FlowPatterns::validate_metric_config(&ok).is_ok());
+        for bad in [
+            json!({ "m_flow_ix": { "volume_cluster": { "min_prints": 1, "sol_tol_pct": 10 } } }),
+            json!({ "m_flow_ix": { "volume_cluster": { "min_prints": 3, "sol_tol_pct": 101 } } }),
+            json!({ "m_flow_ix": { "volume_cluster": { "min_prints": 3, "sol_tol_pct": 10, "x": 1 } } }),
+            json!({ "m_flow_ix": { "creation_slot_buyers": "tagged" } }),
+            json!({ "m_flow_ix": { "tagged_programs": [""] } }),
+            json!({ "m_flow_ix": { "tagged_programs": ["x"], "untagged_ix_markers": ["Photon"] } }),
+        ] {
+            assert!(FlowPatterns::validate_metric_config(&bad).is_err(), "{bad}");
+        }
+    }
 }

@@ -2131,3 +2131,125 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
     );
     assert_eq!(read(&s, "f"), Some(3), "a duplicate creation must not advance the tally");
 }
+
+/// `entry_lock: "token"`: only a PRINT decides, and the first print that makes
+/// `entry_event` true is the only one - a failing filter there ends the episode, and
+/// a clock tick that crosses the event first decides nothing.
+#[test]
+fn token_lock_decides_on_the_first_print_only() {
+    let params = json!({
+        "entry_event": { "m_state": { "time": [{ "operator": ">=", "value": 1 }] } },
+        "entry": { "m_state": { "liquidity": [{ "operator": ">=", "value": 14 }] } },
+        "entry_lock": "token"
+    });
+    // Filter fails on the first print after 1 s: no buy then, and none later.
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, params.clone())], vec![cu_fp(1)]));
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None });
+    reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 20.0, 0.5) });
+    let fx = reduce(&mut s, Event::Tick { now: ts(1.2) });
+    assert!(buys(&fx).is_empty(), "a tick is never the deciding print");
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 10.0, 1.5) });
+    assert!(buys(&fx).is_empty(), "the filter fails on the first print");
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 20.0, 2.0) });
+    assert!(buys(&fx).is_empty(), "the episode ended on the first print");
+
+    // Filter holds on the first print after 1 s: the buy happens there.
+    let mut s = EngineState::new();
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 20.0, 1.5) });
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)]);
+}
+
+/// An `arm` clause latches `armed` instead of closing, and is read after the exit
+/// side: an exit clause that needs `armed` cannot fire on the event that latched it,
+/// and `since_armed` then bounds the window the latch opened.
+#[test]
+fn arm_clause_latches_after_the_exits_of_its_event() {
+    let params = json!({
+        "arm": { "m_state": { "liquidity": [{ "operator": ">=", "value": 20 }] } },
+        "exit": [{
+            "m_position": { "armed": [{ "operator": "=", "value": 1 }],
+                            "since_armed": [{ "operator": "<=", "value": 30 }] },
+            "m_state": { "liquidity": [{ "operator": ">=", "value": 50 }] }
+        }]
+    });
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None });
+    reduce(&mut s, Event::FillConfirmed { intent: buy_intent(&fx), fill: fill(1.0, 0.5) });
+    // Latches here (liquidity 60 >= 20), and the exit - which reads `armed` - does not
+    // fire on the same print.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 60.0, 2.0) });
+    assert!(sells(&fx).is_empty(), "the latching print cannot also fire the exit");
+    // Next print, 1 s into the latch window: fires.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 60.0, 3.0) });
+    assert_eq!(sells(&fx).len(), 1);
+}
+
+/// With `arm` clauses authored, `armed` starts 0 (no vacuous 1), and `since_armed`
+/// stays NaN until a clause holds - so a 30 s window past the latch closes.
+#[test]
+fn arm_clause_window_closes_after_since_armed() {
+    let params = json!({
+        "arm": { "m_state": { "time": [{ "operator": ">=", "value": 2 }] } },
+        "exit": [{
+            "m_position": { "armed": [{ "operator": "=", "value": 1 }],
+                            "since_armed": [{ "operator": "<=", "value": 30 }] },
+            "m_state": { "liquidity": [{ "operator": ">=", "value": 50 }] }
+        }]
+    });
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None });
+    reduce(&mut s, Event::FillConfirmed { intent: buy_intent(&fx), fill: fill(1.0, 0.5) });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 60.0, 1.0) });
+    assert!(sells(&fx).is_empty(), "unlatched: armed reads 0");
+    reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 10.0, 2.5) }); // latches at 2.5
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 60.0, 40.0) });
+    assert!(sells(&fx).is_empty(), "37.5 s past the latch: outside the window");
+}
+
+/// `prior_identity_launches` counts earlier creations of the SAME build with the same
+/// `(name, symbol)`: the first reads 0, the second 1; a primed earlier launch counts;
+/// another build's launch of that name does not.
+#[test]
+fn prior_identity_launches_counts_the_build_s_earlier_same_name_launches() {
+    let labels: Vec<String> = vec!["Pump.Fun: Create_v2".into(), "Pump.Fun: Buy".into()];
+    let fp = Fingerprint {
+        id: fid(1),
+        wildcard: false,
+        criteria: Criteria::new()
+            .with(AxisId::IxLabels, AxisPredicate::Sequence { labels: labels.clone() })
+            .with(AxisId::PriorIdentityLaunches, AxisPredicate::Range { min: Some(1), max: None }),
+        metric_config: serde_json::json!({}),
+    };
+    let token = |ix: &[String]| Box::new(TokenFingerprint { ix_labels: ix.to_vec(), ..Default::default() });
+    let pepe = hunter_engine::token_identity_hash("Pepe", "PEPE");
+    let create = |s: &mut EngineState, mint: &str, at: f64, ix: &[String]| {
+        reduce(s, Event::TokenCreated { mint: Mint::from(mint), fp: token(ix), at: ts(at),
+                                        creator_wallet_hash: None, identity: pepe, creation_slot: None })
+    };
+    let other: Vec<String> = vec!["Pump.Fun: Create".into()];
+
+    let mut s = EngineState::new();
+    reduce(&mut s, reload(vec![rule(1, 1, json!({}))], vec![fp.clone()]));
+    assert!(buys(&create(&mut s, "a", 0.0, &other)).is_empty(), "another build never arms");
+    assert!(buys(&create(&mut s, "b", 1.0, &labels)).is_empty(), "first of its name in the build: 0");
+    assert_eq!(buys(&create(&mut s, "c", 2.0, &labels)).len(), 1, "second: 1");
+
+    // A primed earlier launch of the build counts from the first folded one.
+    let mut s = EngineState::new();
+    reduce(&mut s, reload(vec![rule(1, 1, json!({}))], vec![fp]));
+    s.prime_identity_launches([(
+        hunter_engine::metrics::flow_ix::ix_hash(&labels),
+        pepe.unwrap(),
+        ts(-100.0),
+        hunter_engine::metrics::flow_ix::wallet_hash("earlier"),
+    )]);
+    assert_eq!(buys(&create(&mut s, "d", 0.0, &labels)).len(), 1);
+}
