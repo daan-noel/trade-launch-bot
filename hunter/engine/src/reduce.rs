@@ -890,6 +890,21 @@ pub fn prime_trade(state: &mut EngineState, mint: &Mint, trade: crate::metrics::
     state.all_settled_at = None;
 }
 
+/// **Fold `event` as history, without acting** — the boot replay's entry point.
+///
+/// Arms, disarms and folds exactly as [`reduce`] does, but a decision that would act
+/// (a buy, a sell, a stage move) is dropped, so no arm is left waiting on an order that
+/// was never sent, and nothing is emitted. The replay cannot see what live saw at the
+/// time (the positions held then, the caps they filled, the copycat guard), so a buy it
+/// decides was not necessarily a buy live made; and a buy decided on a past print is not
+/// valid at today's price anyway. The next `Tick` decides every re-armed token at the
+/// wall clock, with the real caps and guard in place.
+pub fn observe(state: &mut EngineState, event: Event) {
+    state.observing = true;
+    let _ = reduce(state, event);
+    state.observing = false;
+}
+
 /// What `FirstSlotSettled` carried for a token, re-supplied to [`hydrate_token`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FirstSlotFacts {
@@ -1181,8 +1196,11 @@ fn evaluate_token(
     // every clock, so no later instant can reveal a crossing it missed. Stamping on
     // `until` alone would instead assume the next tick lands close enough to observe
     // one, which is a cadence assumption the engine does not get to make.
+    //
+    // Never under `observe`: a decision it dropped is still waiting to be made, so the
+    // next tick must evaluate this token rather than skip it as settled.
     token.settled = settle_until(state, token, &state.tick_horizons)
-        .filter(|until| now >= *until)
+        .filter(|until| now >= *until && !state.observing)
         .map(|until| Settled { until, epoch: state.cross_epoch });
 }
 
@@ -1320,6 +1338,15 @@ fn apply_decision(
     now: Ts,
     fx: &mut Effects,
 ) {
+    // `observe`: history may arm, disarm and spend a slot, never act.
+    if state.observing
+        && matches!(
+            decision,
+            ArmDecision::Enter | ArmDecision::Exit(_) | ArmDecision::PartialExit { .. } | ArmDecision::Move(_)
+        )
+    {
+        return;
+    }
     match decision {
         ArmDecision::None => {}
         ArmDecision::SpendSlot => {

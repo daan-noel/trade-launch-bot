@@ -1155,8 +1155,10 @@ fn apply_dupe_guard_policy(state: &mut EngineState, settings: &watch::Receiver<A
 }
 
 /// Replay the recent event-log tail to re-arm tokens that had no open position at
-/// crash time. Effects are **discarded** — this only rebuilds in-memory armed
-/// state; PG rows (Holding/BuySubmitted/ExitPending) are reconciled by the reapers.
+/// crash time, through [`hunter_engine::observe`]: it only rebuilds in-memory armed
+/// state and never acts, so the first live tick decides each re-armed token at the
+/// wall clock. PG rows (Holding/BuySubmitted/ExitPending) are reconciled by the
+/// reapers.
 async fn boot_recover(
     strategy_repo: &StrategyRepo,
     recorder: &Option<EventLogRecorder>,
@@ -1173,7 +1175,9 @@ async fn boot_recover(
     let events = event_log::recover_armed(rec.dir(), MAX_SNIPE_AGE_SECS, Utc::now(), &held);
     let n = events.len();
     for ev in events {
-        let _ = reduce(state, ev); // discard effects — re-arm only, never re-act
+        // Re-arm only, never re-act: a buy decided on a replayed print would never be
+        // sent, and its arm would wait on it forever holding a concurrency slot.
+        hunter_engine::observe(state, ev);
     }
     if n > 0 {
         info!(events = n, held = held.len(), "engine: boot recovery replayed");

@@ -3275,6 +3275,24 @@ impl StrategyRepo {
         Ok(rows)
     }
 
+    /// Entries each rule's live run holds: per `(rule_id, mode)`, the latest run by
+    /// `run_seq` (the one `latest_run` resumes) when it is still `Running`, and its
+    /// positions that were entered or are being entered (every status but
+    /// `EntryFailed`, which the engine rolls back). What `max_total_tokens` counts, so
+    /// boot can seed the engine's lifetime counter. One indexed query.
+    pub async fn count_live_run_entries(&self, rule_ids: &[Uuid]) -> anyhow::Result<Vec<(Uuid, String, i64)>> {
+        if rule_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
+            "WITH latest AS (                  SELECT DISTINCT ON (rule_id, mode) id, rule_id, mode, status FROM strategy_runs                  WHERE rule_id = ANY($1) ORDER BY rule_id, mode, run_seq DESC)              SELECT l.rule_id, l.mode, COUNT(p.id) FROM latest l              LEFT JOIN strategy_positions p ON p.run_id = l.id AND p.status <> 'EntryFailed'              WHERE l.status = 'Running'              GROUP BY l.rule_id, l.mode",
+        )
+        .bind(rule_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Delete stale **paper** `BuySubmitted` rows that never recorded an entry fill
     /// (`entry_price IS NULL`) past `stale_after`. Paper buys are a synchronous
     /// simulation with no on-chain tokens, so a crash mid-buy leaves an

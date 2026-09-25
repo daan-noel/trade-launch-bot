@@ -178,6 +178,21 @@ boot adoption reads it back (`StrategyPosition::entry_priced_reserve`), so a pos
 held across a restart keeps its room target. A row written before the key existed
 reads `NaN`, and then only the stop and the clock close it.
 
+## The boot replay re-arms and never acts
+
+`boot_recover` replays the recent event-log tail through `hunter_engine::observe`: it
+arms, disarms and folds as `reduce` does but drops every buy, sell and stage move, and
+never marks a token settled. The replay runs before the positions are adopted and the
+copycat guard is set, so a buy it decides is not one live made (live may have been at a
+cap, or blocked by the guard); dropped, it cannot leave an arm waiting forever on an
+order never sent. The first live tick decides every re-armed token at the wall clock.
+
+## The lifetime cap survives a restart
+
+`max_total_tokens` counts the entries of the rule's live run, which a restart resumes.
+Boot seeds the count from PG (`boot::seed_run_entries`); a new run (the rule switched
+back on, or its trade mode changed) starts it over in `EngineState::reload`.
+
 ## An adopted token gets its creation facts back
 
 Boot adoption builds a position's token from the PG row alone: a placeholder born at the

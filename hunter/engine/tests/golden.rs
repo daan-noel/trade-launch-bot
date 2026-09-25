@@ -2291,3 +2291,50 @@ fn every_stage_move_is_emitted_with_its_start() {
     assert_eq!(moves(&fx), vec![(1, ts(2.1))]);
     assert!(!fx.iter().any(|e| matches!(e, Effect::StageMoved(_))), "one fact, one effect");
 }
+
+/// The boot replay (`observe`) re-arms without acting: an enter-on-arm rule's
+/// replayed creation leaves the token Armed with no position and no slot taken, so
+/// nothing waits on a buy that was never sent. The first live tick then decides.
+#[test]
+fn observe_arms_but_never_acts() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
+    hunter_engine::observe(&mut s, Event::TokenCreated {
+        mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None,
+    });
+    assert!(matches!(s.tokens[&m].arms.get(&rid(1)), Some(hunter_engine::arm::ArmState::Armed)));
+    assert!(s.positions.is_empty());
+    assert_eq!(s.counters.get(&rid(1)).copied().unwrap_or_default().open, 0, "no slot held");
+    assert!(s.tokens[&m].settled.is_none(), "a dropped decision keeps the token live for the next tick");
+    let fx = reduce(&mut s, Event::Tick { now: ts(1.0) });
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "the live tick decides");
+}
+
+/// `max_total` counts one run's entries. A boot seed from the run PG holds keeps a
+/// capped rule capped across a restart; switching the rule off and on again starts a
+/// new run, and the count with it.
+#[test]
+fn the_lifetime_cap_counts_the_live_run() {
+    let capped = |enabled: bool| {
+        let mut r = rule_capped(1, 1, json!({ "take_profit": 100 }), 5, 2);
+        r.entry_enabled = enabled;
+        r
+    };
+    let born = |s: &mut EngineState, name: &str, at: f64| {
+        reduce(s, Event::TokenCreated {
+            mint: Mint::from(name), fp: cu_token(), at: ts(at), creator_wallet_hash: None, identity: None, creation_slot: None,
+        })
+    };
+    let mut s = EngineState::new();
+    reduce(&mut s, reload(vec![capped(true)], vec![cu_fp(1)]));
+    s.seed_run_entries(rid(1), 2);
+    assert!(buys(&born(&mut s, "tokA", 0.0)).is_empty(), "the run already holds 2 entries");
+
+    reduce(&mut s, reload(vec![capped(false)], vec![cu_fp(1)]));
+    reduce(&mut s, reload(vec![capped(true)], vec![cu_fp(1)]));
+    assert_eq!(buys(&born(&mut s, "tokB", 1.0)), vec![(rid(1), BUY)], "a new run, a new count");
+
+    s.seed_run_entries(rid(1), 0);
+    assert_eq!(s.counters[&rid(1)].total, 1, "a seed never lowers the count");
+}

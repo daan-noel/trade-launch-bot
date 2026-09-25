@@ -46,7 +46,7 @@ pub use dupe_guard::DupeGuard;
 pub use identity::{token_identity_hash, IdentityHash};
 pub use event::{Effect, Event};
 pub use event_log::LoggedEvent;
-pub use reduce::{hydrate_token, prime_trade, reduce, restore_adopted, FirstSlotFacts, HydrateFacts};
+pub use reduce::{hydrate_token, observe, prime_trade, reduce, restore_adopted, FirstSlotFacts, HydrateFacts};
 pub use state::{EngineState, TrackRequirements};
 
 /// The decision-loop clock cadence, in milliseconds — the single source of truth

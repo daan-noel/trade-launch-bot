@@ -104,7 +104,8 @@ export const RULE_FIELD_HELP = {
     body: [
       'Lifetime number of entries allowed for the whole run of this rule.',
       '',
-      'Blank (∞) = unlimited. After N successful entries, the rule stops taking new tokens.',
+      'Blank (∞) = unlimited. After N entries, the rule stops taking new tokens.',
+      'A run lasts until the rule is switched off or its trade mode changes: a restart keeps the count, switching the rule back on starts a new run and a new count.',
     ].join('\n'),
   },
   fingerprint: {

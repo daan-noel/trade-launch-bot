@@ -283,7 +283,7 @@ side-effects only.
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck-with-bag** redrive (PG-gated, backoff, bounded-then-park); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
 | `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End; boot adopts re-install manual TP/SL rules |
 | `rule_readout.rs` (in `live/src/api/handlers/strategies/`) | The readout's HTTP surface. `GET .../positions/{id}/metrics[?at=exit\|entry]` answers from the live fold when `PositionRegistry` still holds the row, else replays the durable row + stored trades (fold under `web::block`); `GET /api/strategies/armed/metrics?mint=&rule=` and `.../armed/metric-series` do the armed pair. Both series routes share ONE body (`series_response`) differing only in a `SeriesAnchor`, so an armed row and a position row can never disagree about a grid row. Reaches the loop through `EngineCommand::ReadRule` (`oneshot` ack, 2 s - a UI poll must not queue behind trade decisions), **not** a per-tick publish, which would allocate on the hot path for a usually-closed modal. Each `404` keeps its own reason (manual position / deleted rule / trades aged out / never filled); a wedged loop is `503`. The wire carries names only - the registry path, the tag and span as authored, the full `label` (`m_flow.buy_sol @!volume [10s]`) and each condition's and line's `part` - never an engine ordinal, and non-finite readings serialize `null` |
-| `event_log.rs` | JSONL recorder (day + size segmented rotation, age/byte retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
+| `event_log.rs` | JSONL recorder (day + size segmented rotation, age/byte retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; replayed through `hunter_engine::observe`, which arms and folds but never acts; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 
 `EngineHandle` (held by the HTTP layer, enqueues commands only): `reload_rules` (blocking, used by the background scheduler), `schedule_reload(sse_tx)` (HTTP rule/fingerprint mutations — PG write returns immediately; debounced reload + `tpsl_rules_changed` SSE on ack; coalesced reload acks in the decision loop),
@@ -365,6 +365,23 @@ projection as a history read (labels, fee trio, `real_reserve_sol` rebuilt by
 meaningful-trade clock together, so a primed trade hashes like a live one and a
 seeded token reads dead or alive as it would live. Why both halves are load-bearing:
 [../plans/strategies/restart-state-restoration.md](../plans/strategies/restart-state-restoration.md).
+
+**Boot recovery never acts.** The replay runs before the adopt pass and the copycat
+guard policy, so it cannot see the positions, caps and guard live saw: a buy it decides
+is not a buy live made, and a buy decided on a past print is not valid at today's price.
+`hunter_engine::observe` therefore drops every acting decision (buy, sell, stage move)
+and never marks a token settled; arming, disarming and folding proceed as in `reduce`.
+A buy kept from a replay would leave its arm `EntryPending` on an order never sent, and
+nothing resolves such an arm: it would hold a concurrency slot until the next restart. The first
+live tick decides each re-armed token at the wall clock (golden
+`observe_arms_but_never_acts`).
+
+**The lifetime cap counts the live run.** `max_total_tokens` is one run's entries, and a
+run survives a restart (the sink resumes the `Running` run), so boot seeds the engine's
+count from PG (`boot::seed_run_entries`: the latest run's positions, every status but
+`EntryFailed`). A rule switched back on, or moved to the other trade mode, starts a new
+run, and `EngineState::reload` starts its count over (golden
+`the_lifetime_cap_counts_the_live_run`).
 
 **Boot recovery is bounded at both ends — never read the corpus.** `recover_armed`
 needs only the last `MAX_SNIPE_AGE_SECS` (30 s) of events, and must stay O(that),

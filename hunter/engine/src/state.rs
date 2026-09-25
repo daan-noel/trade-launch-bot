@@ -358,6 +358,9 @@ pub struct EngineState {
     intent_seq: u64,
     /// Monotonic position id sequence.
     position_seq: u64,
+    /// Set only inside [`crate::reduce::observe`]: decisions that would act (a buy, a
+    /// sell, a stage move) are dropped; arming, disarming and folding proceed.
+    pub(crate) observing: bool,
 }
 
 impl EngineState {
@@ -370,6 +373,14 @@ impl EngineState {
     pub fn next_intent(&mut self, rule: RuleId, mint: Mint) -> IntentId {
         self.intent_seq += 1;
         IntentId { rule, mint, seq: self.intent_seq }
+    }
+
+    /// Raise `rule`'s lifetime entry count (`max_total`) to `entries`, the entries its
+    /// live run already holds in PG: the boot seed, so a restart does not hand a capped
+    /// rule a fresh allowance. Never lowers it, since entries this process made that PG
+    /// has not committed yet count too.
+    pub fn seed_run_entries(&mut self, rule: RuleId, entries: u32) {
+        self.with_counters(rule, |c| c.total = c.total.max(entries));
     }
 
     /// Load known launch history into the `prior_launches` tally, before any event
@@ -564,7 +575,22 @@ impl EngineState {
     /// [`fp_tags`](Self::fp_tags). Decision-neutral: a dropped fingerprint has no rule to
     /// arm, so its match answer was never read.
     pub fn reload(&mut self, rules: &[LoadedRule], fps: &[Fingerprint]) {
+        // A rule switched back on, or moved to the other trade mode, starts a new run
+        // (the live sink closes the old one), and `max_total` counts one run's
+        // entries: its lifetime count starts over. `open` still counts the positions
+        // the old run holds, which the concurrency cap is about.
+        let before: BTreeMap<RuleId, (bool, TradeMode)> =
+            self.rules.iter().map(|(id, c)| (*id, (c.entry_enabled, c.trade_mode))).collect();
         self.rules = rules.iter().map(|r| (r.id, CompiledRule::compile(r))).collect();
+        for (id, c) in &self.rules {
+            let new_run = c.entry_enabled
+                && before.get(id).is_none_or(|&(enabled, mode)| !enabled || mode != c.trade_mode);
+            if new_run {
+                if let Some(counters) = self.counters.get_mut(id) {
+                    counters.total = 0;
+                }
+            }
+        }
         let named: BTreeSet<FingerprintId> =
             self.rules.values().map(|c| c.fingerprint_id).collect();
         self.fps = fps.iter().filter(|f| named.contains(&f.id)).cloned().collect();

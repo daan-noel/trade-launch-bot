@@ -23,6 +23,7 @@ pub struct BootAdoptReport {
     pub buy_submitted: u32,
     pub episodes: u32,
     pub traded_identities: u32,
+    pub run_entries: u32,
 }
 
 /// Rebuild in-memory `Entered` arms + registry meta from PG `Holding` rows (real
@@ -127,6 +128,39 @@ pub async fn seed_episodes(strategy_repo: &StrategyRepo, state: &mut EngineState
     n
 }
 
+/// Seed each rule's lifetime entry count (`max_total_tokens`) from its live run in
+/// PG. The run survives a restart (the sink resumes the `Running` run), so the count
+/// must too, or a capped rule gets a fresh allowance on every boot. Only the run of
+/// the rule's current trade mode counts. **PG-only.**
+pub async fn seed_run_entries(strategy_repo: &StrategyRepo, state: &mut EngineState) -> u32 {
+    let ids: Vec<uuid::Uuid> = state.rules.keys().map(|r| r.0).collect();
+    let counts = match strategy_repo.count_live_run_entries(&ids).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("engine: run-entry seed load failed: {e}");
+            return 0;
+        }
+    };
+    let mut n = 0u32;
+    for (rule_uuid, mode, entries) in counts {
+        let rule = RuleId(rule_uuid);
+        let Some(c) = state.rules.get(&rule) else { continue };
+        let current = match c.trade_mode {
+            TradeMode::Real => "real",
+            TradeMode::Paper => "paper",
+        };
+        if mode != current {
+            continue;
+        }
+        state.seed_run_entries(rule, u32::try_from(entries.max(0)).unwrap_or(u32::MAX));
+        n += 1;
+    }
+    if n > 0 {
+        info!(seeded = n, "engine: seeded lifetime entry counts from live runs");
+    }
+    n
+}
+
 /// Rebuild the copycat guard's memory from PG.
 ///
 /// The guard's state is **not** in-RAM-only like the arms: it is a projection of
@@ -195,7 +229,7 @@ pub async fn seed_dupe_guard(
 }
 
 /// Run all PG adopt passes (holdings, buy-submitted dedup, episode counters,
-/// copycat-guard memory).
+/// copycat-guard memory, lifetime entry counts).
 pub async fn adopt_from_db(
     strategy_repo: &StrategyRepo,
     state: &mut EngineState,
@@ -207,5 +241,6 @@ pub async fn adopt_from_db(
         buy_submitted: adopt_buy_submitted(strategy_repo, state, registry).await,
         episodes: seed_episodes(strategy_repo, state).await,
         traded_identities: seed_dupe_guard(strategy_repo, state, settings).await,
+        run_entries: seed_run_entries(strategy_repo, state).await,
     }
 }
