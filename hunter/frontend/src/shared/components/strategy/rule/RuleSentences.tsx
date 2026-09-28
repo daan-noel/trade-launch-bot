@@ -1,10 +1,16 @@
-// Signals are their own frame. Watch and buy are two rows in a column, split
+// Signal is its own panel: its own outline and fill, above the panel that holds
+// watch, buy, sell, and again. Watch and buy are two rows in a column, split
 // by a divider. Buy gates are rows inside a green outline. Sell is the red
-// outline beside them. Again is its own section after sell.
+// outline beside them. Inside sell, Always is its own frame. A double rule
+// separates it from the stages. Stages have a full-width title and no frame.
+// Again is
+// its own section after sell. A signal holds when
+// any group holds. Reads inside one group share the sell if/then bracket.
+// The word or sits between groups.
 
 import { cn } from 'lib/cn';
 import { metricTone } from 'lib/strategy/metricColors';
-import { ROLE } from 'lib/strategy/roleColors';
+import { ROLE, wash } from 'lib/strategy/roleColors';
 import { familyName, findFamily, findMetric, type StrategyRegistry } from 'lib/strategy/registry';
 import { flowSplit, type FlowBlock, type FlowRow } from 'lib/strategy/ruleFlow';
 import type { RuleDoc } from 'lib/strategy/ruleDoc';
@@ -185,6 +191,77 @@ function FlowRows({ rows, reg, stages, signals }: { rows: FlowRow[]; reg: Strate
   );
 }
 
+function isOrPair(rows: FlowRow[]): boolean {
+  return rows.length === 1 && rows[0].gate === 'v';
+}
+
+/** One AND group shares the sell if/then bracket. A lone read stays a plain row. */
+function braceAnd(rows: FlowRow[]): FlowRow[] {
+  if (rows.length < 2) return rows;
+  return rows.map((r, i) => ({
+    ...r,
+    along: i > 0,
+    brace: i === 0 ? 'open' : i === rows.length - 1 ? 'close' : 'mid',
+  }));
+}
+
+/** Groups of one signal. A `v` row from the flow is only the break between groups. */
+function signalGroups(pairs: FlowRow[][]): FlowRow[][] {
+  const groups: FlowRow[][] = [];
+  let buf: FlowRow[] = [];
+  const flush = () => {
+    if (buf.length) groups.push(braceAnd(buf));
+    buf = [];
+  };
+  for (const pair of pairs) {
+    if (isOrPair(pair)) flush();
+    else buf.push(...pair);
+  }
+  flush();
+  return groups;
+}
+
+/** `or` is the parent. Each group is a child, so a lone read takes the same step as a bracket. */
+function alignSignal(groups: FlowRow[][]): FlowRow[][] {
+  const child = groups.length > 1;
+  if (!child) return groups;
+  return groups.map((rows) => rows.map((r) => (r.brace ? r : { ...r, tuck: true })));
+}
+
+function SignalBody({
+  block,
+  reg,
+  stages,
+  signals,
+}: {
+  block: FlowBlock;
+  reg: StrategyRegistry;
+  stages: string[];
+  signals: Set<string>;
+}) {
+  const groups = alignSignal(signalGroups(block.pairs));
+  return (
+    <div className="flex w-max shrink-0 flex-col gap-1">
+      <BlockHead block={block} signal />
+      <div className="flex flex-col gap-1">
+        {groups.map((rows, i) => (
+          <div key={i} className="flex flex-col">
+            {i > 0 && (
+              <div className="flex items-center gap-2 py-0.5">
+                <span className="text-[11px] font-semibold tracking-wide uppercase" style={{ color: ROLE.signal }}>
+                  or
+                </span>
+                <span className="h-px w-10 bg-white/25" />
+              </div>
+            )}
+            <FlowRows rows={rows} reg={reg} stages={stages} signals={signals} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function BlockHead({ block, signal = false }: { block: FlowBlock; signal?: boolean }) {
   if (!block.head) return null;
   if (block.kind === 'stage') return <StageMark name={block.head} />;
@@ -205,58 +282,120 @@ function SellBlock({ block, reg, stages, signals }: { block: FlowBlock; reg: Str
   );
 }
 
+function BlockStrip({
+  blocks,
+  reg,
+  stages,
+  signals,
+  bookends = false,
+}: {
+  blocks: FlowBlock[];
+  reg: StrategyRegistry;
+  stages: string[];
+  signals: Set<string>;
+  /** A divider before the first block and after the last, same as the ones between. */
+  bookends?: boolean;
+}) {
+  return (
+    <div className="flex items-stretch">
+      {blocks.map((block, i) => (
+        <div
+          key={block.key}
+          className={cn(
+            'flex',
+            (bookends || i > 0) && 'border-l border-white/10 pl-3',
+            i > 0 && 'ml-3',
+            bookends && i === blocks.length - 1 && 'border-r pr-3',
+          )}
+        >
+          <SellBlock block={block} reg={reg} stages={stages} signals={signals} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function RuleSentences({ doc, reg, watch }: { doc: RuleDoc; reg: StrategyRegistry; /** Fingerprint name on the WATCH row. */ watch?: string }) {
   const split = flowSplit(doc, watch);
   const stages = doc.stages.map((s) => s.name);
   const signals = new Set(doc.signals.map((s) => s.name));
   const watchRows = split.entry.filter((r) => r.head === 'WATCH');
   const buyRows = split.entry.filter((r) => r.head !== 'WATCH');
+  const sellAlways = split.sell.filter((b) => b.kind === 'always');
+  const sellStages = split.sell.filter((b) => b.kind === 'stage');
+  const sellOther = split.sell.filter((b) => b.kind !== 'always' && b.kind !== 'stage');
+  const flow = { reg, stages, signals };
   return (
-    <div className="flex items-start gap-6 overflow-x-auto">
+    <div className="flex flex-col gap-3">
       {split.signals.length > 0 && (
         <div
-          className="flex w-max shrink-0 flex-col gap-2 self-start rounded-lg border px-3 py-2"
-          style={{ borderColor: ROLE.signal }}
+          className="flex w-max max-w-full shrink-0 flex-col gap-2 self-start rounded-lg border px-3 py-2"
+          style={{ borderColor: ROLE.signal, backgroundColor: wash(ROLE.signal, 4) }}
         >
           <StepMark name="SIGNAL" />
           <div className="flex items-stretch overflow-x-auto">
             {split.signals.map((block, i) => (
-              <div key={block.key} className={cn('flex', i > 0 && 'ml-3 border-l border-white/10 pl-3')}>
-                <SellBlock block={block} reg={reg} stages={stages} signals={signals} />
+              <div key={block.key} className={cn('flex', i > 0 && 'ml-3 border-l border-white/15 pl-3')}>
+                <SignalBody block={block} {...flow} />
               </div>
             ))}
           </div>
         </div>
       )}
-      <div className="flex w-max shrink-0 flex-col">
-        <div className="px-3 pt-2 pb-2">
-          <FlowRows rows={watchRows} reg={reg} stages={stages} signals={signals} />
+      <div className="flex items-start gap-6 overflow-x-auto rounded-lg border border-white/15 bg-bg-card px-3 py-2">
+        <div className="flex w-max shrink-0 flex-col">
+          <div className="px-3 pt-2 pb-2">
+            <FlowRows rows={watchRows} {...flow} />
+          </div>
+          <div className="border-t border-white/30" />
+          <div className="mt-2 rounded-lg border border-buy/40 px-3 py-2">
+            {buyRows.length > 0 && <FlowRows rows={buyRows} {...flow} />}
+            {split.buy.map((block) => (
+              <div key={block.key} className="mt-1 border-t border-white/10 pt-1">
+                <SellBlock block={block} {...flow} />
+              </div>
+            ))}
+          </div>
         </div>
-        <div className="border-t border-white/30" />
-        <div className="mt-2 rounded-lg border border-buy/40 px-3 py-2">
-          {buyRows.length > 0 && <FlowRows rows={buyRows} reg={reg} stages={stages} signals={signals} />}
-          {split.buy.map((block) => (
-            <div key={block.key} className="mt-1 border-t border-white/10 pt-1">
-              <SellBlock block={block} reg={reg} stages={stages} signals={signals} />
+        <div className="flex w-max shrink-0 flex-col gap-2 rounded-lg border border-sell/40 px-3 py-2">
+          <StepMark name="SELL" />
+          <div className="flex items-stretch overflow-x-auto">
+            <div className="flex items-stretch gap-3">
+              {sellOther.length > 0 && <BlockStrip blocks={sellOther} {...flow} />}
+              {sellAlways.length > 0 && (
+                <div
+                  className="rounded-md border border-dashed px-2 py-1.5"
+                  style={{ borderColor: ROLE.info, backgroundColor: wash(ROLE.info, 5) }}
+                >
+                  <BlockStrip blocks={sellAlways} {...flow} />
+                </div>
+              )}
             </div>
-          ))}
+            {sellStages.length > 0 && (sellAlways.length > 0 || sellOther.length > 0) && (
+              <div className="mx-10 flex shrink-0 gap-1 self-stretch py-0.5" aria-hidden>
+                <span className="w-0.5 rounded-full bg-white/55" />
+                <span className="w-0.5 rounded-full bg-white/55" />
+              </div>
+            )}
+            {sellStages.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <div
+                  className="w-full rounded px-2 py-0.5 text-[11px] font-semibold tracking-wide"
+                  style={{ color: ROLE.stage, backgroundColor: wash(ROLE.stage, 16) }}
+                >
+                  STAGES
+                </div>
+                <BlockStrip blocks={sellStages} bookends {...flow} />
+              </div>
+            )}
+          </div>
         </div>
+        {split.again && (
+          <div className="w-max shrink-0 self-start rounded-lg border border-white/15 px-3 py-2">
+            <SellBlock block={split.again} {...flow} />
+          </div>
+        )}
       </div>
-      <div className="flex w-max shrink-0 flex-col gap-2 rounded-lg border border-sell/40 px-3 py-2">
-        <StepMark name="SELL" />
-        <div className="flex items-stretch overflow-x-auto">
-          {split.sell.map((block, i) => (
-            <div key={block.key} className={cn('flex', i > 0 && 'ml-3 border-l border-white/10 pl-3')}>
-              <SellBlock block={block} reg={reg} stages={stages} signals={signals} />
-            </div>
-          ))}
-        </div>
-      </div>
-      {split.again && (
-        <div className="w-max shrink-0 self-start rounded-lg border border-white/15 px-3 py-2">
-          <SellBlock block={split.again} reg={reg} stages={stages} signals={signals} />
-        </div>
-      )}
     </div>
   );
 }

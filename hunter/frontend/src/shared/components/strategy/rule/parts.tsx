@@ -1,7 +1,8 @@
 // The building blocks of the rule editor: a part heading explained from the registry,
 // a list of conditions, and a clause rail. Each condition is its own plate.
-// A line is if / and / then on one bar. else sits between lines, on a rule,
-// because the first line that holds is the one that acts.
+// A line is if / and, then what it does, on one bar. Move, on, and remove
+// share that bar. else sits between lines, on a rule, because the first line
+// that holds is the one that acts.
 
 import { Fragment, type ReactNode } from 'react';
 
@@ -103,7 +104,7 @@ export function CondList({
               <Lead word={leadOf(i)} />
             </div>
           )}
-          <div className="min-w-0 flex-1 rounded-md border border-white/12 bg-white/4 px-2 py-1">
+          <div className="min-w-0 flex-1 rounded-md border border-white/12 bg-white/2 px-2 py-1">
             <CondRow cond={c} ctx={ctx} onChange={(n) => set(i, n)} onRemove={() => remove(i)} />
           </div>
         </div>
@@ -211,7 +212,7 @@ export function LineEditor({
                   </option>
                 ))}
               </Select>
-              <div className="ml-auto flex items-center gap-1">
+              <div className="ml-auto flex h-7 shrink-0 items-center gap-0.5">
                 {onMove && (
                   <>
                     <IconButton variant="ghost" size="sm" disabled={ctx.disabled} onClick={() => onMove(-1)} title="Move up: lines are checked top to bottom">

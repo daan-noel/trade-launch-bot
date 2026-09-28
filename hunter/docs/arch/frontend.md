@@ -696,10 +696,11 @@ next load (no per-metric frontend work).
   `is_enabled` (Enable/Disable endpoints; Disabled hidden by default on Rules +
   Simulate, orthogonal to Active/Idle) and **tags** — a tri-state chip bar
   (`RuleTagFilter` + `TagChip`, off → include → exclude; includes OR, excludes
-  hide) over the `tags` column, backed by `useTagFilter` (`?tags=`/`?notags=` in
+  hide), backed by `useTagFilter` (`?tags=`/`?notags=` in
   the URL, sticky per app in `localStorage`), authored in the editor via
-  `RuleTagsInput`. The column itself is `buildRuleTagsColumn` — shared with
-  Simulate, where the same chip bar narrows what "Simulate Filtered" targets.
+  `RuleTagsInput`. On each rule row the labels sit under the name (`RuleLabels`,
+  shared with Simulate); clicking one includes that tag. On Simulate the same
+  chip bar narrows what "Simulate Filtered" targets.
   Tags are presentational only and orthogonal to `is_enabled`:
   chip colour is hashed from the label (`lib/strategy/tags.ts` → the shared
   `chipColorsFromHue`), and the canonical tag grammar lives server-side, NOT here

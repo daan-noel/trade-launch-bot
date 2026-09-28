@@ -67,10 +67,9 @@ import {
 } from 'store/sharedEndpoints';
 import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { useRuleActions } from 'components/strategy/useRuleActions';
-import { buildCapsColumns } from 'components/strategy/capsRuleColumns';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
-import { buildRuleTagsColumn } from 'components/strategy/ruleTagsColumn';
 import { ModeBadge } from 'components/strategy/ModeBadge';
+import { RuleLabels } from 'components/strategy/RuleLabels';
 import { RuleModeFilter } from 'components/strategy/RuleModeFilter';
 import { RuleTagFilter } from 'components/strategy/RuleTagFilter';
 import { useModeFilter } from 'hooks/useModeFilter';
@@ -78,7 +77,8 @@ import { useTagFilter } from 'hooks/useTagFilter';
 import { useUiToggle } from 'hooks/useUiPrefs';
 import { matchesModeFilter } from 'lib/strategy/mode';
 import { includeOnly, matchesTagFilter } from 'lib/strategy/tags';
-import { buildRuleParamsColumns } from 'components/strategy/ruleParamsColumns';
+import { buildRuleTradeColumns } from 'components/strategy/ruleParamsColumns';
+import { RuleExclusiveMark } from 'components/strategy/RuleParamsSummary';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
@@ -88,7 +88,6 @@ import { STORAGE_KEYS } from 'lib/storage';
 import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   ruleRowClass,
-  lamportsToSol,
   COST_MODELS,
   costModelHint,
   costModelLabel,
@@ -672,6 +671,7 @@ export function SimulatePage() {
       )}
       <DataTable
         columns={columns}
+        groupLabels={{ rule: 'Rule', fingerprint: 'Match', trade: 'Trade', sim: 'Sim' }}
         rows={visibleRules}
         rowKey={simulateRuleRowKey}
         loading={isLoading}
@@ -1196,13 +1196,14 @@ function buildColumns(
   return [
     {
       key: 'rule_name',
-      label: 'Rule',
-      group: 'name',
+      label: 'Name',
+      group: 'rule',
       render: (r) => (
         <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
-          <div className="flex min-w-40 cursor-default flex-col gap-0.5">
+          <div className="flex min-w-40 cursor-default flex-col items-center gap-1">
             <div className="flex items-center justify-center gap-1">
               <span className="font-medium text-text">{r.rule_name}</span>
+              <RuleExclusiveMark params={r.params} />
               <Link
                 to={rulesHref(r.id)}
                 title={`Open rule “${r.rule_name}”`}
@@ -1213,6 +1214,7 @@ function buildColumns(
                 <LinkIcon className="h-3.5 w-3.5" />
               </Link>
             </div>
+            <RuleLabels tags={r.tags} onTagClick={onTagClick} />
             <span className="text-[10px] text-text-dim">
               {!r.is_enabled
                 ? 'disabled'
@@ -1224,17 +1226,15 @@ function buildColumns(
         </RuleHoverTip>
       ),
       searchValue: (r) =>
-        `${r.rule_name} ${!r.is_enabled ? 'disabled' : r.is_active ? 'active' : 'idle'}`,
+        [r.rule_name, ...(r.tags ?? []), !r.is_enabled ? 'disabled' : r.is_active ? 'active' : 'idle'].join(
+          ' ',
+        ),
       sortValue: (r) => r.rule_name,
     },
-    // Same column definition the Rules board uses — a tag reads and filters
-    // identically on both. Clicking one narrows to that tag, which composes with
-    // "Simulate Filtered" (run exactly one family in one click).
-    buildRuleTagsColumn({ onTagClick }),
     {
       key: 'mode',
       label: 'Mode',
-      group: 'status',
+      group: 'rule',
       render: (r) => (
         <ModeBadge mode={r.trade_mode} />
       ),
@@ -1244,17 +1244,7 @@ function buildColumns(
     ...buildFingerprintRuleColumns(fpById, {
       cellClassName: (r) => fpTints.get(`${r.id}\0fingerprint`),
     }),
-    {
-      key: 'buy',
-      label: 'Buy',
-      render: (r) => <span className="tabular-nums">{lamportsToSol(r.buy_amount_lamports)}◎</span>,
-      searchValue: (r) => String(lamportsToSol(r.buy_amount_lamports)),
-      filterNumber: (r) => lamportsToSol(r.buy_amount_lamports),
-      sortValue: (r) => r.buy_amount_lamports,
-      sortable: true,
-    },
-    ...buildCapsColumns(),
-    ...buildRuleParamsColumns(),
+    ...buildRuleTradeColumns(),
     {
       key: 'sim_run',
       label: 'Run',

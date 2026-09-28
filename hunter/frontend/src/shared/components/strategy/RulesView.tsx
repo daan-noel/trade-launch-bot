@@ -28,14 +28,14 @@ import { StatTile } from 'components/ui/StatTile';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { ModeBadge } from './ModeBadge';
-import { buildCapsColumns } from './capsRuleColumns';
 import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
-import { buildRuleParamsColumns } from './ruleParamsColumns';
+import { buildRuleTradeColumns } from './ruleParamsColumns';
+import { RuleExclusiveMark } from './RuleParamsSummary';
 import { RuleHoverTip } from './RuleHoverTip';
+import { RuleLabels } from './RuleLabels';
 import { RuleModeFilter } from './RuleModeFilter';
 import { RuleSyncModal } from './RuleSyncModal';
 import { RuleTagFilter } from './RuleTagFilter';
-import { buildRuleTagsColumn } from './ruleTagsColumn';
 import { useRuleActions } from './useRuleActions';
 import type { RuleEditorDraft } from './RuleEditor';
 import { useModeFilter } from 'hooks/useModeFilter';
@@ -77,7 +77,6 @@ import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { weightedReturnPct } from 'lib/strategy/runSummary';
 import {
   configEditSummary,
-  lamportsToSol,
   ruleRowClass,
   type StrategyRule,
   type TradeMode,
@@ -542,35 +541,8 @@ export function RulesView({
     }, 'Stop all failed');
   };
 
-  const columns: ColumnDef<StrategyRule>[] = useMemo(() => [
-    {
-      key: 'rule_name',
-      label: 'Name',
-      group: 'name',
-      render: (r) => (
-        <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
-          <div className="flex items-center justify-center gap-1">
-            <span className="cursor-default font-medium text-text">{r.rule_name}</span>
-            <RuleConfigEditedMark rule={r} />
-            {linkToSimulate && (
-              <Link
-                to={simulateHref(r.id)}
-                title={`Simulate “${r.rule_name}”`}
-                aria-label={`Simulate ${r.rule_name}`}
-                className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <LinkIcon className="h-3.5 w-3.5" />
-              </Link>
-            )}
-          </div>
-        </RuleHoverTip>
-      ),
-      searchValue: (r) => r.rule_name,
-      sortValue: (r) => r.rule_name,
-      sortable: true,
-    },
-    ...(showScores
+  const columns: ColumnDef<StrategyRule>[] = useMemo(() => {
+    const scoreCols: ColumnDef<StrategyRule>[] = showScores
       ? ([
         {
           key: 'score_pnl',
@@ -749,11 +721,43 @@ export function RulesView({
           sortable: true as const,
         },
       ] satisfies ColumnDef<StrategyRule>[])
-      : []),
+      : [];
+    return [
+    {
+      key: 'rule_name',
+      label: 'Name',
+      group: 'rule',
+      render: (r) => (
+        <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
+          <div className="flex min-w-40 flex-col items-center gap-1">
+            <div className="flex items-center justify-center gap-1">
+              <span className="cursor-default font-medium text-text">{r.rule_name}</span>
+              <RuleExclusiveMark params={r.params} />
+              <RuleConfigEditedMark rule={r} />
+              {linkToSimulate && (
+                <Link
+                  to={simulateHref(r.id)}
+                  title={`Simulate “${r.rule_name}”`}
+                  aria-label={`Simulate ${r.rule_name}`}
+                  className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <LinkIcon className="h-3.5 w-3.5" />
+                </Link>
+              )}
+            </div>
+            <RuleLabels tags={r.tags} onTagClick={(tag) => setTagFilter(includeOnly(tag))} />
+          </div>
+        </RuleHoverTip>
+      ),
+      searchValue: (r) => [r.rule_name, ...(r.tags ?? [])].join(' '),
+      sortValue: (r) => r.rule_name,
+      sortable: true,
+    },
     {
       key: 'status',
       label: 'Status',
-      group: 'status',
+      group: 'rule',
       render: (r) => {
         if (!r.is_enabled) {
           return <Badge variant="danger">Disabled</Badge>;
@@ -777,12 +781,22 @@ export function RulesView({
       // Active > Idle > Disabled on desc (the natural first click).
       sortValue: (r) => (!r.is_enabled ? 0 : r.is_active ? 2 : 1),
     },
+    {
+      key: 'mode',
+      label: 'Mode',
+      group: 'rule',
+      render: (r) => (
+        <ModeBadge mode={r.trade_mode} />
+      ),
+      searchValue: (r) => r.trade_mode,
+      sortValue: (r) => r.trade_mode,
+    },
     ...(ruleLiveCounts
       ? ([
         {
           key: 'live_pos',
           label: 'Live',
-          group: 'status',
+          group: 'rule',
           render: (r: StrategyRule) => {
             const c = ruleLiveCounts[r.id];
             const open = c?.open ?? 0;
@@ -809,33 +823,11 @@ export function RulesView({
         },
       ] satisfies ColumnDef<StrategyRule>[])
       : []),
-    // Click-to-filter: the fastest path from "I see this label" to "show me the
-    // rest of them".
-    buildRuleTagsColumn({ onTagClick: (tag) => setTagFilter(includeOnly(tag)) }),
-    {
-      key: 'mode',
-      label: 'Mode',
-      group: 'status',
-      render: (r) => (
-        <ModeBadge mode={r.trade_mode} />
-      ),
-      searchValue: (r) => r.trade_mode,
-      sortValue: (r) => r.trade_mode,
-    },
+    ...scoreCols,
     ...buildFingerprintRuleColumns(fpById, {
       cellClassName: (r) => fpTints.get(`${r.id}\0fingerprint`),
     }),
-    {
-      key: 'buy',
-      label: 'Buy',
-      render: (r) => <span className="tabular-nums">{lamportsToSol(r.buy_amount_lamports)}◎</span>,
-      searchValue: (r) => String(lamportsToSol(r.buy_amount_lamports)),
-      sortValue: (r) => r.buy_amount_lamports,
-      filterNumber: (r) => lamportsToSol(r.buy_amount_lamports),
-      sortable: true,
-    },
-    ...buildCapsColumns(),
-    ...buildRuleParamsColumns(),
+    ...buildRuleTradeColumns(),
     {
       key: 'execute',
       label: 'Execute',
@@ -906,7 +898,8 @@ export function RulesView({
       },
       searchValue: (r) => (!r.is_enabled ? 'enable' : r.is_active ? 'pause stop' : 'activate'),
     },
-  ], [
+    ];
+  }, [
     fpById,
     linkToSimulate,
     showScores,
@@ -1231,6 +1224,7 @@ export function RulesView({
       )}
       <DataTable
         columns={columns}
+        groupLabels={{ rule: 'Rule', score: 'Score', fingerprint: 'Match', trade: 'Trade' }}
         rows={visibleRules}
         rowKey={strategyRuleRowKey}
         loading={isLoading}

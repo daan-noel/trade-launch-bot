@@ -1,13 +1,12 @@
 // Fingerprint column factory for Rules + Simulate: one visible cell (name +
-// axis chips) whose header offers per-axis sort toggles, backed by hidden
-// sort-only columns. SSOT so both pages sort the same axes the same way.
+// the axes that are set). The header sorts by the whole fingerprint and by
+// name, each backed by a hidden sort-only column.
 
 import { Link } from 'react-router-dom';
 
 import type { ColumnDef, SortValue } from 'components/table/types';
 import { MultiSortHeader } from 'components/table/MultiSortHeader';
 import { LinkIcon } from 'components/ui/icons';
-import { AXES, predicateSpans } from 'lib/strategy/fingerprintAxes';
 import {
   configuredIxLabels,
   IX_LABELS_FILTER_PLACEHOLDER,
@@ -32,9 +31,8 @@ type FpSortAxis = {
   sortValue: (fp: Fingerprint | undefined, fingerprintId: string) => SortValue;
 };
 
-/** Axes offered in the fingerprint header — labels match the param chips. The
- *  leading `fp` axis sorts by the whole-fingerprint identity so byte-identical
- *  fingerprints (which tie on every single axis) always land adjacent. */
+/** Header sorts for the fingerprint cell. Two only: the whole fingerprint (so
+ *  identical ones group) and its name. Axis values stay in the cell chips. */
 const FP_SORT_AXES: FpSortAxis[] = [
   {
     key: 'fp_id',
@@ -47,28 +45,6 @@ const FP_SORT_AXES: FpSortAxis[] = [
     label: 'name',
     sortValue: (fp, id) => fp?.name || id.slice(0, 8),
   },
-  // One sort axis per registry axis, generated — so a new axis is sortable in the
-  // rules header without an edit. A numeric axis sorts by its LOW bound (the high
-  // one when the gate is open below): a window needs one number to order by, and
-  // its start is where a reader scanning the column expects it.
-  ...AXES.map((def) => ({
-    key: `fp_${def.id}`,
-    label: def.chip,
-    title: `${def.label} — ${def.definition}`,
-    sortValue: (fp: Fingerprint | undefined) => {
-      const p = (fp?.criteria ?? {})[def.id];
-      if (p == null) return null;
-      if (p.kind === 'sequence') return configuredIxLabels(p.labels)?.length ?? null;
-      // The FIRST span's start (its end when the gate is open below): a column
-      // orders on one number, and where the accepted set begins is where a reader
-      // scanning it expects that number to be.
-      const [first] = predicateSpans(p);
-      const b = first?.min ?? first?.max;
-      if (b == null) return null;
-      const n = Number(b);
-      return Number.isFinite(n) ? n : null;
-    },
-  })),
 ];
 
 /** A fingerprint's configured label sequence, or `null` when the axis is unset. */

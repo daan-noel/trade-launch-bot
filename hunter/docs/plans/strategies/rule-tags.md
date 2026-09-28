@@ -111,8 +111,7 @@ Nothing enforces this — it is convention, and an un-namespaced tag is legal.
 Chips are **tri-state**: off → include → exclude → off.
 
 - **Include chips OR together.** Selecting `fam:scalper` + `fam:ignition` shows rules in
-  either family. (AND across includes is the rarer intent and is not offered — it is
-  reachable by typing in the column filter row.)
+  either family. AND across includes is not offered.
 - **Exclude chips AND together** — a rule carrying *any* excluded tag is hidden.
 - Exclude wins over include when a rule matches both.
 - An untagged rule is visible unless at least one include chip is active.
@@ -152,8 +151,8 @@ on the server) are unaffected.
 | FE lib | `frontend/src/shared/lib/strategy/tags.ts` | colour hash, filter predicate, URL codec |
 | FE hook | `frontend/src/shared/hooks/useTagFilter.ts` | URL + localStorage state |
 | FE ui | `components/strategy/{TagChip,RuleTagFilter,RuleTagsInput}.tsx` | chip, filter bar, editor input |
-| FE column | `components/strategy/ruleTagsColumn.tsx` | the ONE `tags` `ColumnDef`, shared by every rule table |
-| FE wiring | `components/strategy/{RulesView,RuleEditor,useRuleActions}.tsx`, `lab/pages/strategies/SimulatePage.tsx` | column, filter bar, draft field |
+| FE labels | `components/strategy/RuleLabels.tsx` | chips under the rule name, shared by every rule table |
+| FE wiring | `components/strategy/{RulesView,RuleEditor,useRuleActions}.tsx`, `lab/pages/strategies/SimulatePage.tsx` | name cell, filter bar, draft field |
 
 On **Simulate** the same chip bar narrows `visibleRules`, which is what the
 paper/real run buttons and *Simulate Filtered* target — so "run this family" is

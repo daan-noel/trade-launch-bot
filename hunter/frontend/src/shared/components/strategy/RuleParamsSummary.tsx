@@ -95,18 +95,23 @@ function BuyRow({ label, conds, cls }: { label: string; conds: Cond[]; cls: stri
   );
 }
 
-function headline(doc: RuleDoc): ReactNode[] {
+function exitBadges(doc: RuleDoc): ReactNode[] {
   const out: ReactNode[] = [];
   if (doc.take_profit != null) out.push(chip(`TP ${formatDecimalTrim(doc.take_profit, 1)}%`, 'text-green'));
   if (doc.stop_loss != null) out.push(chip(`SL ${formatDecimalTrim(doc.stop_loss, 1)}%`, 'text-red'));
+  return out;
+}
+
+function headline(doc: RuleDoc): ReactNode[] {
+  const out: ReactNode[] = [...exitBadges(doc)];
   if (doc.enter.size_pct_of_pool != null) out.push(chip(`size ${formatDecimalTrim(doc.enter.size_pct_of_pool, 2)}% pool`, 'text-accent'));
   if (doc.reentry) out.push(chip(`again ${formatDecimalTrim(doc.reentry.cooldown_sec, 1)}s ×${doc.reentry.max_per_coin}`, 'text-accent'));
   if (doc.exclusive) out.push(chip(`exclusive P${doc.priority}`, 'text-warning'));
   return out;
 }
 
-/** The Rules-list chain: the signal, the Buy gates, and the Sell names. The same
- *  words the editor shows when nothing is open. */
+/** The Rules-list chain: take-profit and stop-loss badges, then the signal, the
+ *  Buy gates, and the Sell names. */
 export function ruleChainCell(raw: unknown): ReactNode {
   const p = parse(raw);
   if ('error' in p) return chip('format-1 params', 'text-text-dim', undefined, p.error);
@@ -132,8 +137,10 @@ function ChainGlance({ doc }: { doc: RuleDoc }) {
     </p>
   );
   const signal = signalChip(doc);
+  const exits = exitBadges(doc);
   return (
     <div className="flex flex-col items-start gap-0.5 text-left text-[12px] leading-snug">
+      {exits.length > 0 && <p className="flex flex-wrap items-center gap-1">{exits}</p>}
       {signal && (
         <p>
           <span className="text-text-dim">Signal </span>
@@ -228,22 +235,50 @@ export function ruleParamsSearchText(raw: unknown): string {
   return parts.length ? parts.join(' ') : 'fingerprint only';
 }
 
-/** Numeric sort keys for the params multi-sort header (null = unset / empty). */
-export function ruleParamsSortParts(raw: unknown): {
+/** The trade numbers a rules row shows as their own columns. Null is unset. */
+export function ruleTradeFacts(raw: unknown): {
   take_profit: number | null;
   stop_loss: number | null;
-  entry_count: number | null;
-  exit_count: number | null;
+  size_pct_of_pool: number | null;
+  cooldown_sec: number | null;
+  max_per_coin: number | null;
+  exclusive: boolean;
+  priority: number;
 } {
   const p = parse(raw);
-  if ('error' in p) return { take_profit: null, stop_loss: null, entry_count: null, exit_count: null };
+  if ('error' in p) {
+    return {
+      take_profit: null,
+      stop_loss: null,
+      size_pct_of_pool: null,
+      cooldown_sec: null,
+      max_per_coin: null,
+      exclusive: false,
+      priority: 0,
+    };
+  }
   const { doc } = p;
-  const buy = doc.enter.event.length + doc.enter.filters.length + doc.enter.final_filters.length;
-  const sell = doc.always.length + doc.stages.reduce((n, s) => n + s.on.length + s.at_end.length, 0);
   return {
     take_profit: doc.take_profit,
     stop_loss: doc.stop_loss,
-    entry_count: buy > 0 ? buy : null,
-    exit_count: sell > 0 ? sell : null,
+    size_pct_of_pool: doc.enter.size_pct_of_pool,
+    cooldown_sec: doc.reentry?.cooldown_sec ?? null,
+    max_per_coin: doc.reentry?.max_per_coin ?? null,
+    exclusive: doc.exclusive,
+    priority: doc.priority,
   };
+}
+
+/** A mark on the rule name when the rule buys exclusively. */
+export function RuleExclusiveMark({ params }: { params: unknown }) {
+  const f = ruleTradeFacts(params);
+  if (!f.exclusive) return null;
+  return (
+    <span
+      className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-warning"
+      title={`Exclusive · priority ${f.priority}`}
+    >
+      excl
+    </span>
+  );
 }

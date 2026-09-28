@@ -2,7 +2,7 @@
 // written underneath (or, when it cannot be saved, the reason). A signal condition is
 // `[signal] holds / does not hold`.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 
 import { ConditionInput } from '../ConditionInput';
@@ -19,13 +19,12 @@ import {
   type MetricRef,
   type SpanModel,
 } from 'lib/strategy/metricRef';
-import { metricTone } from 'lib/strategy/metricColors';
+import { familyShort } from 'lib/strategy/metricColors';
 import { ROLE } from 'lib/strategy/roleColors';
 import { familyName, findFamily, findMetric, type MetricSpec, type StrategyRegistry } from 'lib/strategy/registry';
 import type { Cond, MetricCond } from 'lib/strategy/ruleDoc';
 import { applySpanSpell, spanReading, spanSpells, type SpanSpell } from 'lib/strategy/spanEditor';
 import { metricCondError } from 'lib/strategy/validate';
-import { FamilyMark } from './MetricMark';
 
 export interface CondContext {
   reg: StrategyRegistry;
@@ -203,6 +202,33 @@ export function RefFields({
   );
 }
 
+/** One metric's ink. Light, and a step apart from its neighbor, so each name reads alone. */
+function metricInk(hue: number): { hue: number; color: string; border: string; background: string } {
+  const h = ((Math.round(hue) % 360) + 360) % 360;
+  const light = 66 + (h % 16);
+  const color = `hsl(${h}, 86%, ${Math.min(92, light + 14)}%)`;
+  return {
+    hue: h,
+    color,
+    border: `hsla(${h}, 78%, ${Math.min(86, light + 6)}%, 0.75)`,
+    background: `hsla(${h}, 70%, ${light}%, 0.22)`,
+  };
+}
+
+function MetricChip({ family, hue, title }: { family: string; hue: number; title?: string }) {
+  const ink = metricInk(hue);
+  const style: CSSProperties = { color: ink.color, backgroundColor: ink.background, borderColor: ink.border };
+  return (
+    <span
+      className="inline-flex shrink-0 items-center rounded border px-1 font-mono text-[10px] font-bold leading-4 tracking-wide"
+      style={style}
+      title={title || family}
+    >
+      {familyShort(family)}
+    </span>
+  );
+}
+
 /** Metric picker, grouped by family. The closed face is the family color and the
  *  name. The menu indents each metric under its family. The phrase sits on the
  *  row and on hover. Our position's metrics are left out before the buy. The menu
@@ -236,10 +262,11 @@ export function MetricSelect({
           setOpen((v) => !v);
           setQuery('');
         }}
-        className="inline-flex h-7 max-w-56 items-center gap-1 rounded-md border border-white/10 bg-white/4 px-1.5 text-text hover:border-white/20 disabled:opacity-50"
+        className="inline-flex h-7 max-w-56 items-center gap-1 rounded-md border bg-white/2 px-1.5 hover:brightness-110 disabled:opacity-50"
+        style={spec ? { borderColor: metricInk(spec.hue).border } : undefined}
       >
-        {spec && <FamilyMark family={family} subject={findFamily(ctx.reg, family)?.title} hue={spec.hue} />}
-        <span className="truncate font-mono text-[11px]" style={spec ? { color: metricTone(spec.hue).color } : undefined}>
+        {spec && <MetricChip family={family} hue={spec.hue} title={findFamily(ctx.reg, family)?.title} />}
+        <span className="truncate font-mono text-[11px] font-semibold" style={spec ? { color: metricInk(spec.hue).color } : undefined}>
           {spec?.name ?? (value || 'pick a metric')}
         </span>
       </button>
@@ -362,16 +389,16 @@ function MetricMenu({
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {groups.length === 0 && <p className="px-2 py-1.5 text-[11px] text-text-dim">No metric</p>}
         {groups.map((g) => {
-          const band = metricTone(bandHue(g.metrics.map((m) => m.hue)));
+          const band = metricInk(bandHue(g.metrics.map((m) => m.hue)));
           return (
             <div key={g.family.name} className="pb-1">
               <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-bg-card px-2 py-1" title={g.family.summary}>
-                <FamilyMark family={g.family.name} subject={g.family.title} hue={band.hue} />
-                <span className="truncate text-[11px] text-text">{g.family.title}</span>
+                <MetricChip family={g.family.name} hue={band.hue} title={g.family.title} />
+                <span className="truncate text-[11px] font-semibold" style={{ color: band.color }}>{g.family.title}</span>
               </div>
               <div className="ml-3.5 border-l pl-1" style={{ borderLeftColor: band.color }}>
                 {g.metrics.map((m) => {
-                  const tone = metricTone(m.hue);
+                  const tone = metricInk(m.hue);
                   return (
                     <button
                       key={m.path}
@@ -387,7 +414,7 @@ function MetricMenu({
                       )}
                     >
                       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: tone.color }} />
-                      <span className="shrink-0 font-mono text-[11px]" style={{ color: tone.color }}>
+                      <span className="shrink-0 font-mono text-[11px] font-semibold" style={{ color: tone.color }}>
                         {m.name}
                       </span>
                       <span className="truncate text-[11px] text-text-dim">{m.phrase}</span>

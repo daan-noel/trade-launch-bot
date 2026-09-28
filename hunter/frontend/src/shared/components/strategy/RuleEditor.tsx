@@ -254,9 +254,7 @@ function RuleEditorInner({
           </p>
         </TabsPanel>
         <TabsPanel value="words">
-          <div className="rounded-md border border-white/10 bg-bg-card p-3">
-            <RuleSentences doc={doc} reg={registry} watch={fingerprints.find((f) => f.id === fingerprintId)?.name} />
-          </div>
+          <RuleSentences doc={doc} reg={registry} watch={fingerprints.find((f) => f.id === fingerprintId)?.name} />
         </TabsPanel>
       </Tabs>
 

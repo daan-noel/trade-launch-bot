@@ -1,7 +1,7 @@
-// Caps column factory for Rules + Simulate: one visible `conc/total` cell whose
-// header offers concurrent / total sort toggles, backed by hidden sort-only
-// columns. SSOT so both pages sort the same axes the same way. `0` means
-// unlimited on BOTH caps and displays/filters as `∞` (sorts as largest).
+// Caps column for the Trade group on Rules + Simulate: one visible `conc/total`
+// cell whose header sorts concurrent / total, backed by hidden sort-only
+// columns. `0` means unlimited on BOTH caps and displays/filters as `∞`
+// (sorts as largest).
 
 import type { ColumnDef, SortValue } from 'components/table/types';
 import { MultiSortHeader } from 'components/table/MultiSortHeader';
@@ -52,7 +52,7 @@ export function buildCapsColumns<R extends CapsRuleRow>(): ColumnDef<R>[] {
   const visible: ColumnDef<R> = {
     key: 'caps',
     label: 'Caps',
-    group: 'caps',
+    group: 'trade',
     render: (r) => (
       <span className="tabular-nums text-text-dim">{capsDisplayText(r)}</span>
     ),
@@ -70,7 +70,7 @@ export function buildCapsColumns<R extends CapsRuleRow>(): ColumnDef<R>[] {
   const sortOnly: ColumnDef<R>[] = CAPS_SORT_AXES.map((axis) => ({
     key: axis.key,
     label: axis.label,
-    group: 'caps',
+    group: 'trade',
     sortOnly: true,
     defaultVisible: false,
     sortable: true,
