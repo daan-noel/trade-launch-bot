@@ -75,11 +75,11 @@ is the table in `engine/src/metrics/v1_map.rs` (the migration's source, section 
         "ix_lacks":    ["Photon"],
         "wallet":      ["7xk..."],
         "creator":     true,
+        "creation_slot": true,
         "cluster":     {"min_prints": 3, "sol_tol_pct": 10}
       },
       "side":    "sell",
-      "sticky":  true,
-      "exclude_creation_slot": true
+      "sticky":  true
     }
   }
 }
@@ -88,8 +88,8 @@ is the table in `engine/src/metrics/v1_map.rs` (the migration's source, section 
 A trade carries the tag when **any** `match` entry holds, on the given `side` only. The
 matchers are read in a fixed order and `cluster` last, because a cluster counts every trade
 it reads into its slot group (today's classifier order). `sticky`: a wallet that carried
-the tag once carries it for the rest of the coin. `exclude_creation_slot`: a creation-slot
-buyer that matches nothing counts in neither `@tag` nor `@!tag`. Built-in tags need no
+the tag once carries it for the rest of the coin. `creation_slot` (a matcher): a buy in the
+coin's creation slot carries the tag. Built-in tags need no
 config and serve `m_holdings.bag_share_pct` only: `bundled` (first buy in a slot where
 >= 3 wallets first bought with one ix shape) and `public_app` (first buy through an app with
 > 100 buyers the day before). Tag names are `[a-z0-9_]{1,24}`.
@@ -99,7 +99,7 @@ used there may carry only `ix_template` and `program` matchers.
 
 | today | v2 |
 | --- | --- |
-| `m_flow_ix` { ix_patterns, tagged_ix_markers, untagged_ix_markers, tagged_programs, volume_cluster, creator_is_tagged, wallet_contagion, creation_slot_buyers } | tag `volume` { ix_shape, ix_contains, ix_lacks, program, cluster, creator, sticky, exclude_creation_slot } |
+| `m_flow_ix` { ix_patterns, tagged_ix_markers, untagged_ix_markers, tagged_programs, volume_cluster, creator_is_tagged, wallet_contagion, creation_slot_buyers } | tag `volume` { ix_shape, ix_contains, ix_lacks, program, cluster, creator, sticky; creation_slot_buyers "excluded" is refused, as v2 has no "neither" half } |
 | `m_dump_ix` { ix_patterns, creator_is_listed } | tag `dump` { ix_shape, creator, side: sell } |
 | `m_copy` { target_wallets } | tag `targets` { wallet } |
 | `m_burst_slot` { working_templates } | tag `working` { ix_template, program } |

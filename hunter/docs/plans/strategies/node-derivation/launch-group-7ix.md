@@ -21,7 +21,7 @@ Scripts (local, `launch-group-7ix/`): `g7_extract.py`, `g7_portrait.py`, `g7_dum
 `g7_final.py`, `g7_dumpix.py`, `g7_hybrid.py`; the D/P/E/X search: `g7_all.py`, `g7_tier3.py` (+ `b`,
 `c`), `g7_crewix.py`, `g7_axiom.py`, `g7_axiom2.py`, `g7_facts.py`, `g7_single.py`, `g7_combo.py`, `g7_hold.py`; the final pass: `g7_cache.py`, `g7_ride.py`, `g7_x3.py`, `g7_late.py`,
 `g7_ride2.py`, `g7_x4.py`, `g7_single2.py`, `g7_final2.py`; the leak pass: `g7_rule.py` (the rule in
-one module), `g7_leakA.py`, `g7_sigwin.py`, `g7_leakA2.py`, `g7_birth.py`, `g7_retune.py`; candidate 4's audit: `g7_book4.py` (the study
+one module), `g7_leakA.py`, `g7_sigwin.py`, `g7_leakA2.py`, `g7_birth.py`, `g7_retune.py`, `g7_birthcrew.py`; candidate 4's audit: `g7_book4.py` (the study
 ticket list), `g7_audit4.py` (independent replay); engine parity: `g7_engine_ref.py` (the rules as the engine
 spells them), `g7_engine_sim.py` (lab simulate driver), `g7_parity.py`.
 Tables in `data/g7_*.parquet`.
@@ -87,8 +87,11 @@ tp 10 % / clock 20 s about +2 %/trade.
 
 ### Candidate 4 - the current best (chain 28-32)
 
-Crew = Tier 1 | 2 | 3 as in chain 17. A wallet that buys in the creation slot and is not crew is
-**neither crew nor outsider** (the creator's birth bundle or a sniper - not the audience).
+Crew = Tier 1 | 2 | 3 as in chain 17, plus every wallet that buys in the creation slot: the dev's
+volume, 97.9 % of that slot's non-crew SOL (chain 33). The sentence and book below still read
+them as neutral; the crew spelling (f 0.5, targets 0.13 1.46, 0.65 1.43, 4.16 3.95 SOL) is booked
+in chain 33. The engine spells it as the `volume` tag's `creation_slot` matcher; the stored rules
+move to it once the engine-vs-Python parity on that spelling passes.
 
 ```
 E  first print at age >= 1 s, 0.03 SOL
@@ -205,8 +208,9 @@ recent-week fit), and the replay audit of section 4 covers candidate 1 only.
 | 28 no-signal exit | Is the 300 s no-signal clock measured? | No: a 120 / 300 grid picked it. Replacing it with the ride exits (vsol 110, dump print, 1,000 s): FINAL +42.21 / +39.64 against +41.7 / +42.0, +3.29 SOL against +3.35; BROAD +18.84 / +23.62 against +18.5 / +24.9. With the dump print read before the signal too, the early-signal branch is +2.5 % (FINAL) and +3.1 % (BROAD): its -6 % was the pre-signal dumps. | The no-signal clock goes; every exit carries a reason. | g7_rule.py |
 | 29 pre-signal dumps | What precedes the crew dumping before our signal? | FINAL 41, BROAD 130 trades at -52 / -58 %; they land a median 15.5 s after our fill, a quarter within 9 s. Sampled once a second (BROAD, base 0.97 %), lift on both periods: crew profit 0.8-1.0 x target 1.56 / 1.36; outsider buys 1-3 SOL over 10 s 2.17 / 3.18; age 10-40 s about 2. Crew sell and buy flows are not consistent. The signal re-spelt with a 5 or 10 s burst or at 0.7-0.8 x target catches more of them (FINAL 41 -> 14) and loses more (+3.29 -> +0.88 SOL): the earlier signal sells runners as quick spikes. No fact at birth or at 1 s marks them on both periods by more than 0.11 of rate. | Unfixed: before the crew acts, its early dump and a runner's start read the same on the tape. The current signal stays. | g7_leakA.py, g7_sigwin.py, g7_leakA2.py |
 | 30 creation-slot buyers | Are the creation-slot buyers outsiders? | 2-3 non-crew wallets per coin buy in the creation slot: SOL p50 0.6-1.8 (**15.8 on 4.16**), 20-40 % of them sell in the crew's dump slot, 10-45 % of what the split called outsider buys. | A spelling error in the split: they are not the audience. | g7_birth.py |
-| 31 corrected split | Counted as crew, or as neither? | Under the unchanged rule: as crew FINAL +35.52 / +46.46, 16/22, +3.24 SOL, BROAD +18.86 / +26.22, +4.51; neutral FINAL +41.55 / +45.25, 16/22, +3.46, BROAD +20.67 / +22.25, 20/22, +4.51. | Neutral: they are the creator's bundle or snipers, never the audience; the thresholds are re-measured under it. | g7_birth.py |
+| 31 corrected split | Counted as crew, or as neither? | Under the unchanged rule: as crew FINAL +35.52 / +46.46, 16/22, +3.24 SOL, BROAD +18.86 / +26.22, +4.51; neutral FINAL +41.55 / +45.25, 16/22, +3.46, BROAD +20.67 / +22.25, 20/22, +4.51. | Superseded by chain 33: the pick was a score gap, and the dump-slot sells mark them as the crew's side. | g7_birth.py |
 | 32 re-tune | Which signal, ride and guard values under the corrected split? | At the crew's first wave (study, door3): crew profit / target p10 / p50 0.65 / 1.00, outsider buys over 3 s p50 0.64 SOL. Grid f 0.5-0.7, burst 0.3-1.0, ride line 15-30 s, guard 2-3 SOL: burst 1.0 leads on both doors (0.3-0.5 fire too early); f 0.5 and 0.6 differ by < 1 point; ride line 20 s leads; guard 2 SOL lifts the day count on both doors (FINAL 16 -> 18/22, BROAD 20 -> 22/22). | Candidate 4. | g7_retune.py |
+| 33 creation-slot buyers are the dev's volume | Crew, crew minus sniper builds, or neutral? (engine spelling, closed windows, tape to 09-26) | Non-crew creation-slot buyers on door3: 2,009 wallets on 625 coins; sniper builds (`AdvanceNonceAccount` / `CreateAccountWithSeed`) are 822 wallets but **2.1 % of the SOL**; `ATA Create, Buy` carries 6,201 of 6,475 SOL. Targets as crew: 0.13 1.46, 0.65 1.43, 4.16 3.95 SOL. Cell f 0.5, burst 1.0, ride line 20 s, guard 2 SOL: as crew FINAL +36.01 / +52.86, 21/24 days, +3.45 SOL; BROAD +22.59 / +33.29, **26/26**, worst day +2.9 %, **+5.48 SOL**. Neutral, candidate 4's cell: FINAL +38.42 / +52.29, 20/24, +3.47; BROAD +19.78 / +27.27, 24/26, +4.69. Dropping sniper builds from the crew moves FINAL < 1 point and costs BROAD 0.14 SOL and 2 days. | Creation-slot buyers are crew (sticky), with no sniper carve-out; f moves to 0.5. The engine's `exclude_creation_slot` is replaced by a `creation_slot` matcher. | g7_birthcrew.py |
 
 ---
 
@@ -267,7 +271,7 @@ choice {0.13, 0.65, 4.16} is the user's, named before any book.
 | F3 entry age | FINAL 1.5 / 2 s +3.37 / +3.34 SOL; BROAD +4.56 / +4.41 SOL |
 | concentration | FINAL top 1 % 0.11, biggest coin 0.07, bootstrap 90 % +29.4 .. +59.1 %/trade; BROAD top 1 % **0.22** (over the 0.15 bar), biggest coin 0.03, +14.2 .. +29.0 |
 | forward | **open**: the doors were chosen on 09-01 .. 09-24; the rule is re-read unchanged on days after 09-24 |
-| T6 engine | **open**: crew tags (Tier 1-3, creation-slot neutral), crew profit against target, outsider buys and sells over 3 / 10 s, prints by 1 s, name reuse are not engine metrics |
+| T6 engine | **open**: crew tags (Tier 1-3, creation-slot buyers as crew), crew profit against target, outsider buys and sells over 3 / 10 s, prints by 1 s, name reuse are not engine metrics |
 
 ---
 

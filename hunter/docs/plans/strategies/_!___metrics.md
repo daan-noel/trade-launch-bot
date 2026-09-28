@@ -128,21 +128,22 @@ compiled once per reload (`compile_tags` into `EngineState::fp_tags`), never per
 
 ### The classifier
 
-`TagState::fold_half`, one verdict per trade, in this order:
+`TagState::fold_tagged`, one verdict per trade, in this order:
 
 1. Off the tag's `side` (absent = both), the trade cannot carry it.
 2. It carries the tag when ANY stateless matcher holds (`program`, `ix_shape`,
-   `ix_template`, `ix_contains`, `ix_lacks`, `wallet`, `creator`) or its wallet is in the
-   sticky set; else `cluster`, checked last because it counts every trade it reads into its
-   slot group.
-3. Else, under `exclude_creation_slot`, a wallet that buys in the creation slot, and every
-   later trade of that wallet, counts on NEITHER side: the creation slot holds the dev's
-   birth bundle and snipers, never the audience `@!tag` stands for.
-4. Else the trade is the rest.
+   `ix_template`, `ix_contains`, `ix_lacks`, `wallet`, `creator`, `creation_slot`) or its
+   wallet is in the sticky set; else `cluster`, checked last because it counts every trade
+   it reads into its slot group.
+3. Else the trade is the rest.
+
+`creation_slot` is a buy in the coin's creation slot: nobody reacts to a coin inside its
+own block, so those buys are the dev's birth bundle (sniper builds carry about 2 % of that
+SOL on the 7ix crew). With `sticky`, the bundle's later sells stay on the tag too.
 
 Both halves keep every total (`SplitTotals`: SOL, prints and transactions per side), so a
 metric reads the same way whichever half a condition names, and `tag_share_pct @!tag` is the
-rest's share. Excluded trades move no total on either half.
+rest's share.
 
 **A reload adopts an edited tag.** Trades already folded keep the half they were folded
 under (the totals are running sums; no trade is retained to redo), and the sticky set is

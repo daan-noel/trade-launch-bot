@@ -100,7 +100,6 @@ export function lensTag(
     },
     side: opts.side,
     sticky: opts.sticky,
-    exclude_creation_slot: false,
   };
 }
 

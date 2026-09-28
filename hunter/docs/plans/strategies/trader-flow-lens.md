@@ -34,8 +34,8 @@ is exact. An unpinned exact row is `{ group, ix_labels }`.
 **The lens is a tag.** `lensTag` (`lib/flow/ixPatternSets.ts`) reads the narrowed set as
 one `FlowTag` named after the set: exact rows under `ix_shape` (pins kept), grain ids under
 `ix_template`, bare program names under `program`, with the lens' own `side` and `sticky`
-switches and `exclude_creation_slot` off. It carries no `creator` matcher, so the creator
-gets no special rule. Every chart and the trades table then classify `@set` / `@!set`
+switches. It carries no `creator` or `creation_slot` matcher, so neither the creator nor
+the birth bundle gets a special rule. Every chart and the trades table then classify `@set` / `@!set`
 through the one mapping, `classifyOptsForTag` (`lib/flow/tapeClassify.ts`), exactly as
 they would a fingerprint tag.
 

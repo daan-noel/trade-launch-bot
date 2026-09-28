@@ -2,8 +2,9 @@
 // two, `@name` (the trades that carry it) and `@!name` (the rest). The frontend mirror
 // of `hunter_engine::metrics::tags::config`:
 //
-//   { "volume": { "match": { "program": [...], "cluster": {"min_prints": 3, "sol_tol_pct": 10} },
-//                 "side": "sell", "sticky": true, "exclude_creation_slot": true } }
+//   { "volume": { "match": { "program": [...], "creation_slot": true,
+//                            "cluster": {"min_prints": 3, "sol_tol_pct": 10} },
+//                 "side": "sell", "sticky": true } }
 //
 // A trade carries the tag when ANY `match` entry holds, on the tag's `side` only.
 // `tagsToJson` is the one writer: every surface that adds to a tag goes through
@@ -37,6 +38,8 @@ export interface TagMatch {
   ix_lacks?: string[];
   wallet?: string[];
   creator?: boolean;
+  /** A buy in the coin's creation slot: the dev's birth bundle. */
+  creation_slot?: boolean;
   cluster?: Cluster;
 }
 
@@ -55,8 +58,6 @@ export interface TagDef {
   side: 'buy' | 'sell' | null;
   /** A wallet that carried the tag once carries it for the rest of the coin. */
   sticky: boolean;
-  /** A creation-slot buyer that matches nothing counts on neither side. */
-  exclude_creation_slot: boolean;
 }
 
 let nextId = 0;
@@ -68,7 +69,7 @@ const strings = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
 export function emptyTag(name: string): TagDef {
-  return { id: newId(), name, match: {}, side: null, sticky: false, exclude_creation_slot: false };
+  return { id: newId(), name, match: {}, side: null, sticky: false };
 }
 
 /** Read a stored `tags` document. Unknown keys are dropped; the backend refuses them. */
@@ -81,6 +82,7 @@ export function tagsFromJson(doc: unknown): TagDef[] {
     for (const k of STRING_LIST_MATCHERS) if (m[k] !== undefined) match[k] = strings(m[k]);
     if (m.ix_shape !== undefined) match.ix_shape = parseIxPatternRows(m.ix_shape);
     if (typeof m.creator === 'boolean') match.creator = m.creator;
+    if (typeof m.creation_slot === 'boolean') match.creation_slot = m.creation_slot;
     if (isObj(m.cluster)) {
       match.cluster = {
         min_prints: Number(m.cluster.min_prints),
@@ -93,7 +95,6 @@ export function tagsFromJson(doc: unknown): TagDef[] {
       match,
       side: d.side === 'buy' || d.side === 'sell' ? d.side : null,
       sticky: d.sticky === true,
-      exclude_creation_slot: d.exclude_creation_slot === true,
     };
   });
 }
@@ -109,7 +110,7 @@ export function matcherUsed(m: TagMatch, k: MatcherKey): boolean {
 
 /** The matchers a tag uses, in the classifier's fixed order (cluster last). */
 export function usedMatchers(t: TagDef): MatcherKey[] {
-  const order: MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks', 'wallet', 'creator', 'cluster'];
+  const order: MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks', 'wallet', 'creator', 'creation_slot', 'cluster'];
   return order.filter((k) => matcherUsed(t.match, k));
 }
 
@@ -126,11 +127,11 @@ export function tagsToJson(tags: TagDef[]): Obj {
     const shapes = serializeIxPatternRows(t.match.ix_shape ?? []);
     if (shapes.length) match.ix_shape = shapes;
     if (t.match.creator) match.creator = true;
+    if (t.match.creation_slot) match.creation_slot = true;
     if (t.match.cluster) match.cluster = { ...t.match.cluster };
     const def: Obj = { match };
     if (t.side) def.side = t.side;
     if (t.sticky) def.sticky = true;
-    if (t.exclude_creation_slot) def.exclude_creation_slot = true;
     out[t.name] = def;
   }
   return out;
@@ -161,11 +162,11 @@ export function tagSentence(t: TagDef): string {
   list(m.ix_lacks, 'lacks all of');
   if (m.wallet?.length) parts.push(`${m.wallet.length} wallet${m.wallet.length === 1 ? '' : 's'}`);
   if (m.creator) parts.push('the creator');
+  if (m.creation_slot) parts.push('creation-slot buyers');
   if (m.cluster) parts.push(`a same-slot cluster of ${m.cluster.min_prints}+ prints within ${m.cluster.sol_tol_pct} % SOL`);
   const opts: string[] = [];
   if (t.side) opts.push(`${t.side}s only`);
   if (t.sticky) opts.push('sticky per wallet');
-  if (t.exclude_creation_slot) opts.push('creation-slot buyers on neither side');
   const body = parts.length ? parts.join(', or ') : 'nothing yet';
   return `@${t.name} = trades by ${body}${opts.length ? ` (${opts.join('; ')})` : ''}.`;
 }

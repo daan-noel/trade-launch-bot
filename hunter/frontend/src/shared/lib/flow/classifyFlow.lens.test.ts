@@ -9,7 +9,6 @@ const lensTag = (opts: Partial<FlowTag> = {}): FlowTag => ({
   match: { ix_shape: [{ labels: ['A'] }] },
   side: null,
   sticky: false,
-  exclude_creation_slot: false,
   ...opts,
 });
 

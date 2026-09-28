@@ -10,14 +10,13 @@ import {
 
 /** Cases mirror `hunter/engine/src/metrics/tags/state_tests.rs` one for one: the
  *  decision order and the forward-only state asserted here must stay in lockstep
- *  with `TagState::fold_half`. */
+ *  with `TagState::fold_tagged`. */
 
 const tag = (match: TagMatch, opts: Partial<FlowTag> = {}): FlowTag => ({
   name: 't',
   match,
   side: null,
   sticky: false,
-  exclude_creation_slot: false,
   ...opts,
 });
 
@@ -161,20 +160,29 @@ describe('classifyFlowTrades: cluster', () => {
   });
 });
 
-describe('classifyFlowTrades: exclude_creation_slot', () => {
-  it('creation-slot buyers count on neither side (creation_slot_buyers_are_excluded_from_both_halves)', () => {
-    const t = tag({ creator: true }, { sticky: true, exclude_creation_slot: true });
+describe('classifyFlowTrades: creation_slot', () => {
+  it('creation-slot buyers carry the tag, and their dump through sticky (creation_slot_buyers_carry_the_tag)', () => {
+    const t = tag({ creator: true, creation_slot: true }, { sticky: true });
     const out = classifyFlowTrades(
       [
         tr('dev', 0.5, CREATE_BUY, { slot: 100 }),
         tr('bundle', 2, ['Pump.Fun: Buy'], { slot: 100 }),
+        tr('flipper', 0.2, ['Pump.Fun: Sell'], { slot: 100, side: 'sell' }),
         tr('bundle', 1, ['Pump.Fun: Sell'], { slot: 105, side: 'sell' }),
         tr('retail', 3, ['Pump.Fun: Buy'], { slot: 105 }),
       ],
       { tag: t, creatorWallet: 'dev' },
     );
-    expect(out.map((x) => x.half)).toEqual(['tagged', 'excluded', 'excluded', 'rest']);
-    expect(out[1]).toMatchObject({ reason: 'creation_slot', taggedSol: 0, untaggedSol: 0 });
+    expect(out.map((x) => x.reason)).toEqual(['creator', 'creation_slot', null, 'sticky', null]);
+    expect(out[1]).toMatchObject({ half: 'tagged', taggedSol: 2, untaggedSol: 0 });
+  });
+
+  it('without the matcher a creation-slot buyer is the rest (creation_slot_buyers_are_the_rest_without_the_matcher)', () => {
+    const out = classifyFlowTrades(
+      [tr('dev', 0.5, CREATE_BUY, { slot: 100 }), tr('bundle', 2, ['Pump.Fun: Buy'], { slot: 100 })],
+      { tag: tag({ creator: true }), creatorWallet: 'dev' },
+    );
+    expect(out.map((x) => x.half)).toEqual(['tagged', 'rest']);
   });
 });
 

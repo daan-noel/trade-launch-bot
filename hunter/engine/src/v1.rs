@@ -666,7 +666,10 @@ pub fn convert_metric_config(cfg: &Value) -> Result<Value, String> {
             t.insert("sticky".into(), json!(true));
         }
         if f.get("creation_slot_buyers").and_then(Value::as_str) == Some("excluded") {
-            t.insert("exclude_creation_slot".into(), json!(true));
+            // v2 has no "neither" half: a creation-slot buyer is the dev's volume or the
+            // rest, and which one changes the rule's numbers, so the author decides.
+            return Err("m_flow_ix.creation_slot_buyers \"excluded\" has no v2 form: put the                         creation-slot buyers on the tag (match.creation_slot) or leave them in the rest"
+                .into());
         }
         tags.insert(TAG_VOLUME.into(), Value::Object(t));
     }

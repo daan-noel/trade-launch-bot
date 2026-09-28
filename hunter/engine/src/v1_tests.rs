@@ -139,14 +139,13 @@ fn parked_items_stay_parked() {
 fn a_flow_classifier_becomes_the_volume_tag() {
     let tags = convert_metric_config(&json!({
         "m_flow_ix": { "tagged_programs": ["Unknown (x)"], "volume_cluster": { "min_prints": 3, "sol_tol_pct": 10 },
-                       "creation_slot_buyers": "excluded", "creator_is_tagged": true, "wallet_contagion": true },
+                       "creator_is_tagged": true, "wallet_contagion": true },
         "m_dump_ix": { "ix_patterns": [["S"]], "creator_is_listed": true },
         "m_copy": { "target_wallets": ["W"] },
         "m_burst_slot": { "working_templates": ["Axiom Trade|CU|ATA|F", "Photon"] }
     }))
     .unwrap();
     assert_eq!(tags["volume"]["sticky"], true);
-    assert_eq!(tags["volume"]["exclude_creation_slot"], true);
     assert_eq!(tags["volume"]["match"]["creator"], true);
     assert_eq!(tags["dump"]["side"], "sell");
     assert_eq!(tags["dump"]["match"]["creator"], true);
@@ -156,6 +155,9 @@ fn a_flow_classifier_becomes_the_volume_tag() {
     // A classifier that tags nothing stays a valid tag that matches nothing.
     let none = convert_metric_config(&json!({ "m_flow_ix": { "creator_is_tagged": false, "wallet_contagion": false } })).unwrap();
     assert_eq!(none["volume"]["match"]["ix_shape"], json!([]));
+    // "Neither" has no v2 half: converting it is refused, never guessed.
+    let err = convert_metric_config(&json!({ "m_flow_ix": { "creation_slot_buyers": "excluded" } })).unwrap_err();
+    assert!(err.contains("match.creation_slot"), "{err}");
 }
 
 /// Every stored rule and fingerprint converts to a v2 document that parses. Point

@@ -1,5 +1,5 @@
 /** Client-side mirror of the engine's tag classifier
- *  (`hunter_engine::metrics::tags::state::TagState::fold_half`, Rust SSOT
+ *  (`hunter_engine::metrics::tags::state::TagState::fold_tagged`, Rust SSOT
  *  hunter/engine/src/metrics/tags/state.rs) - the charts and the trades table redraw
  *  a tag edit without a backend round trip. Visualization only, never wired to a
  *  trading decision.
@@ -8,11 +8,10 @@
  *
  *  1. On the tag's `side` (absent = both), the trade carries the tag when ANY matcher
  *     holds - program, ix_shape, ix_template, ix_contains, ix_lacks, wallet, creator,
- *     then the sticky set, then `cluster` LAST (it counts the trade into its slot
- *     group, so it runs only when nothing else qualified it).
- *  2. Else, under `exclude_creation_slot`, a creation-slot buyer - and every later
- *     trade of that wallet - counts on NEITHER side.
- *  3. Else the trade is the rest (`@!tag`).
+ *     creation_slot (a buy in the coin's creation slot), then the sticky set, then
+ *     `cluster` LAST (it counts the trade into its slot group, so it runs only when
+ *     nothing else qualified it).
+ *  2. Else the trade is the rest (`@!tag`).
  *
  *  Trades must be the coin's FULL history in canonical order (slot -> tx_index ->
  *  leg_index): sticky, cluster and the creation slot are all forward-only state. */
@@ -23,7 +22,7 @@ import { isLaunchGrain, templateGrain, templateProgram } from 'lib/strategy/temp
 
 /** The tag a surface classifies against: a fingerprint tag, a lens set read as one,
  *  or a staging draft. `name` is display only (`@name`). */
-export type FlowTag = Pick<TagDef, 'name' | 'match' | 'side' | 'sticky' | 'exclude_creation_slot'>;
+export type FlowTag = Pick<TagDef, 'name' | 'match' | 'side' | 'sticky'>;
 
 /** One leg of a trade. */
 export type FlowSide = 'buy' | 'sell';
@@ -36,8 +35,8 @@ export interface FlowTradeLite {
   /** Which leg this is. A trade without one is off-side under a sided tag, is never
    *  a creation-slot buyer, and forms its own cluster groups. */
   side?: FlowSide | null;
-  /** The trade's slot. Read by `cluster` (groups per slot) and
-   *  `exclude_creation_slot`; absent reads as slot 0. */
+  /** The trade's slot. Read by `cluster` (groups per slot) and `creation_slot`;
+   *  absent reads as slot 0. */
   slot?: number | null;
   /** The fee budget this tx declared: read by fee-pinned ix shapes and by the
    *  cluster's group identity. Absent = not captured. */
@@ -59,11 +58,12 @@ export interface FlowClassifyOptions {
 /**
  * Why a trade sits where it does. A matcher key or `sticky` = it carries the tag
  * (`@tag`), through that matcher (the first that held, in the classifier's order).
- * `creation_slot` = excluded, on neither side. No reason = the rest (`@!tag`).
+ * No reason = the rest (`@!tag`).
  */
-export type FlowReason = MatcherKey | 'sticky' | 'creation_slot';
+export type FlowReason = MatcherKey | 'sticky';
 
-/** Which half a trade lands on. */
+/** Which half a trade lands on. `excluded` = not folded at all (a non-finite amount,
+ *  which the engine skips). */
 export type FlowHalf = 'tagged' | 'rest' | 'excluded';
 
 export interface FlowClassified {
@@ -74,7 +74,7 @@ export interface FlowClassified {
   reason: FlowReason | null;
   /** SOL on the tagged half; 0 otherwise. */
   taggedSol: number;
-  /** SOL on the rest; 0 otherwise (an excluded trade moves neither). */
+  /** SOL on the rest; 0 otherwise. */
   untaggedSol: number;
 }
 
@@ -95,6 +95,7 @@ interface CompiledTag {
   lacks: readonly string[];
   wallets: ReadonlySet<string>;
   creator: boolean;
+  creationSlot: boolean;
 }
 
 function compile(tag: FlowTag): CompiledTag {
@@ -108,6 +109,7 @@ function compile(tag: FlowTag): CompiledTag {
     // The engine hashes `s.trim()` for wallets only.
     wallets: new Set((m.wallet ?? []).map((w) => w.trim()).filter(Boolean)),
     creator: m.creator === true,
+    creationSlot: m.creation_slot === true,
   };
 }
 
@@ -124,6 +126,7 @@ function matchReason(
   labels: readonly string[],
   creatorWallet: string | null,
   sticky: ReadonlySet<string> | null,
+  birthSlot: number | null,
 ): FlowReason | null {
   // Program, template and shape need labels (engine `*_hash` = None on none).
   const has = labels.length > 0;
@@ -135,6 +138,7 @@ function matchReason(
   if (c.lacks.length > 0 && !hasMarker(labels, c.lacks)) return 'ix_lacks';
   if (t.wallet_address && c.wallets.has(t.wallet_address)) return 'wallet';
   if (c.creator && creatorWallet && t.wallet_address === creatorWallet) return 'creator';
+  if (c.creationSlot && t.side === 'buy' && birthSlot !== null && (t.slot ?? 0) === birthSlot) return 'creation_slot';
   if (sticky?.has(t.wallet_address)) return 'sticky';
   return null;
 }
@@ -155,7 +159,6 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
   // Engine `set_creator`: under creator + sticky the creator starts in the set.
   if (sticky && c.creator && creatorWallet) sticky.add(creatorWallet);
   let birthSlot: number | null = null;
-  const birthWallets = new Set<string>();
   let clusterSlot = 0;
   let groups: ClusterGroup[] = [];
 
@@ -205,23 +208,12 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
     if (birthSlot === null && isLaunchGrain(labels)) birthSlot = slot;
 
     const onSide = tag.side == null || tag.side === t.side;
-    let reason: FlowReason | null = onSide ? matchReason(c, t, labels, creatorWallet, sticky) : null;
+    let reason: FlowReason | null = onSide ? matchReason(c, t, labels, creatorWallet, sticky, birthSlot) : null;
     if (onSide && reason === null && clusterHit(t, labels, sol, slot)) reason = 'cluster';
     if (reason !== null) {
       sticky?.add(t.wallet_address);
       push(t, 'tagged', reason, sol);
       continue;
-    }
-    if (tag.exclude_creation_slot) {
-      if (birthSlot === slot && t.side === 'buy') {
-        birthWallets.add(t.wallet_address);
-        push(t, 'excluded', 'creation_slot', sol);
-        continue;
-      }
-      if (birthWallets.has(t.wallet_address)) {
-        push(t, 'excluded', 'creation_slot', sol);
-        continue;
-      }
     }
     push(t, 'rest', null, sol);
   }

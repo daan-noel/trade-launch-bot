@@ -159,15 +159,6 @@ function ProxyBadge({ isProxied }: { isProxied?: boolean | null }) {
   );
 }
 
-/** The verdict's half: tagged (a matcher held), excluded (a creation-slot buyer
- *  under `exclude_creation_slot`) or the rest. */
-function halfOf(reason: FlowReason | null | undefined): 'tagged' | 'excluded' | 'rest' {
-  return reason == null ? 'rest' : reason === 'creation_slot' ? 'excluded' : 'tagged';
-}
-
-/** The registry field that names a reason (`creation_slot` is the option's effect). */
-const reasonField = (r: FlowReason) => (r === 'creation_slot' ? 'exclude_creation_slot' : r);
-
 /**
  * Takes only the unit *label* (not the whole `usePriceDisplay` object) so the
  * column array stays referentially stable across USD-rate ticks — the rate
@@ -200,26 +191,19 @@ export function tokenTradeColumns(
       key: 'flow_tag',
       label: on,
       tooltip:
-        `Which half of ${on} the chart put this trade on: ${on}, ${off} (the rest) or neither ` +
-        `(a creation-slot buyer the tag ignores), classified over the coin's full history; ` +
-        `"via" names the matcher that held.` +
+        `Which half of ${on} the chart put this trade on: ${on} or ${off} (the rest), ` +
+        `classified over the coin's full history; "via" names the matcher that held.` +
         (stage && writes
           ? ` Clicking adds this trade's ${title(stage.matcher)} to ${writes}${owner}, or removes it when listed.`
           : ''),
       render: (t) => {
         const reason = reasons?.get(t.id) ?? null;
-        const half = halfOf(reason);
         const badge = (
-          <Badge
-            variant={half === 'tagged' ? 'danger' : half === 'excluded' ? 'warning' : 'neutral'}
-            size="sm"
-            className={stage?.toggle ? 'cursor-pointer' : undefined}
-          >
-            {half === 'tagged' ? on : half === 'excluded' ? 'neither' : off}
+          <Badge variant={reason ? 'danger' : 'neutral'} size="sm" className={stage?.toggle ? 'cursor-pointer' : undefined}>
+            {reason ? on : off}
           </Badge>
         );
-        const note =
-          reason && reason !== 'creation_slot' ? `via ${title(reasonField(reason)).toLowerCase()}` : null;
+        const note = reason ? `via ${title(reason).toLowerCase()}` : null;
         const value = stage ? stageValueOf(stage.matcher, t, stage.feePins) : null;
         const listed = !!stage && value != null && stage.listed(value);
         const muted = !!stage && value != null && !listed && !!stage.muted?.(value);
@@ -263,15 +247,10 @@ export function tokenTradeColumns(
           </span>
         );
       },
-      sortValue: (t) => {
-        const half = halfOf(reasons?.get(t.id));
-        return half === 'tagged' ? 2 : half === 'excluded' ? 1 : 0;
-      },
+      sortValue: (t) => (reasons?.get(t.id) ? 1 : 0),
       searchValue: (t) => {
         const reason = reasons?.get(t.id) ?? null;
-        const half = halfOf(reason);
-        const word = half === 'tagged' ? on : half === 'excluded' ? 'neither' : off;
-        return reason && reason !== 'creation_slot' ? `${word} via ${reason}` : word;
+        return reason ? `${on} via ${reason}` : off;
       },
     });
   }

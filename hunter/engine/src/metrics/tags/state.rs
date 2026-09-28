@@ -3,9 +3,6 @@
 //! Reads serve `m_flow.* @tag` / `@!tag` (lifetime or a trailing window) and
 //! `m_holdings.profit_sol @tag` / `@!tag`. Every total is kept for BOTH halves, so a
 //! quantity reads the same way whichever half a condition names.
-//!
-//! **Excluded trades** (a creation-slot buyer under `exclude_creation_slot`) move no
-//! total at all: they count on neither side.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -177,14 +174,6 @@ impl TagWindow {
     }
 }
 
-/// Which half a folded trade lands on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Half {
-    Tagged,
-    Rest,
-    Excluded,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ClusterGroup {
     ix_hash: Option<u64>,
@@ -206,8 +195,6 @@ pub struct TagState {
     windows: BTreeMap<WindowKey, TagWindow>,
     /// The creation slot, from the launch print. `None` until it is folded.
     birth_slot: Option<u64>,
-    /// Wallets excluded under `exclude_creation_slot`.
-    birth_wallets: HashedSet,
     /// Cluster groups of the slot being folded; cleared when the slot moves.
     cluster_slot: u64,
     cluster_groups: Vec<ClusterGroup>,
@@ -228,7 +215,6 @@ impl TagState {
             lifetime: SplitTotals::default(),
             windows: BTreeMap::new(),
             birth_slot: None,
-            birth_wallets: HashedSet::default(),
             cluster_slot: 0,
             cluster_groups: Vec::new(),
             tagged_tokens: 0.0,
@@ -274,11 +260,7 @@ impl TagState {
             self.last_vsol = t.priced_reserve_sol;
             self.last_vtok = t.priced_reserve_sol / t.price;
         }
-        let tagged = match self.fold_half(t) {
-            Half::Excluded => return,
-            Half::Tagged => true,
-            Half::Rest => false,
-        };
+        let tagged = self.fold_tagged(t);
         if tagged && self.patterns.sticky {
             self.sticky_wallets.insert(t.wallet_hash);
         }
@@ -341,24 +323,12 @@ impl TagState {
         liquidation - (half.buy_sol - half.sell_sol)
     }
 
-    /// The half a trade folds on: the matchers, then the cluster rule (which counts the
-    /// trade into its slot group, so it runs once per trade and only here, and only
-    /// when nothing else qualified it), then the creation-slot rule.
-    fn fold_half(&mut self, t: &TradeLite) -> Half {
+    /// Whether a trade folds on the tagged half: the matchers, then the cluster rule
+    /// (which counts the trade into its slot group, so it runs once per trade and only
+    /// here, and only when nothing else qualified it).
+    fn fold_tagged(&mut self, t: &TradeLite) -> bool {
         let on_side = self.patterns.side.is_none_or(|s| s == t.side);
-        if on_side && (self.matches(t) || self.cluster_hit(t)) {
-            return Half::Tagged;
-        }
-        if self.patterns.exclude_creation_slot {
-            if self.birth_slot == Some(t.slot) && t.side == Side::Buy {
-                self.birth_wallets.insert(t.wallet_hash);
-                return Half::Excluded;
-            }
-            if self.birth_wallets.contains(&t.wallet_hash) {
-                return Half::Excluded;
-            }
-        }
-        Half::Rest
+        on_side && (self.matches(t) || self.cluster_hit(t))
     }
 
     /// Whether this trade would carry the tag on its matchers alone (the cluster rule
@@ -374,6 +344,7 @@ impl TagState {
         let p = &self.patterns;
         p.marks(t.marker_bits)
             || (p.creator && self.creator_wallet_hash == Some(t.wallet_hash))
+            || (p.creation_slot && t.side == Side::Buy && self.birth_slot == Some(t.slot))
             || (p.sticky && self.sticky_wallets.contains(&t.wallet_hash))
             || p.builds.matches(t.ix_hash, t.fee)
             || t.program_hash.is_some_and(|h| p.programs.contains(&h))

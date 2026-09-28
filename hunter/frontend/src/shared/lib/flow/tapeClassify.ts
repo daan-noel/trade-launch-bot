@@ -43,7 +43,6 @@ export function shapeTag(name: string, rows: readonly IxPatternRow[]): FlowTag {
     match: rows.length > 0 ? { ix_shape: [...rows] } : {},
     side: null,
     sticky: false,
-    exclude_creation_slot: false,
   };
 }
 

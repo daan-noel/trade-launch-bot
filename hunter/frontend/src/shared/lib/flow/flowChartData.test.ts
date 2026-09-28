@@ -109,13 +109,15 @@ describe('tradeFlowReasons', () => {
     expect(map?.get('b')).toBe('sticky');
   });
 
-  it('keeps an excluded trade off both lines', () => {
-    const tag = { ...shapeTag('t', [{ labels: ['A'] }]), exclude_creation_slot: true };
+  it('puts a creation-slot buyer on the tagged line', () => {
+    const base = shapeTag('t', [{ labels: ['A'] }]);
+    const tag = { ...base, match: { ...base.match, creation_slot: true } };
     const trades: TradeRecord[] = [
       trade({ slot: 1, amount_sol: 1, instruction_labels: ['Pump.Fun: Create', 'Pump.Fun: Buy'] }),
       trade({ slot: 2, wallet_address: 'w2', block_time: '2026-07-21T01:01:00Z', amount_sol: 5 }),
     ];
     const lines = buildFlowLines(trades, 'time', 60, 'cost_sol', { tag });
+    expect(lines.tagged.at(-1)!.value).toBeCloseTo(1, 6);
     expect(lines.untagged.at(-1)!.value).toBeCloseTo(5, 6);
   });
 });

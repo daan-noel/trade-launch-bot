@@ -47,7 +47,6 @@ describe('classifyFlow matches the shared parity fixture', () => {
         match: { ix_shape: c.patterns.map((labels) => ({ labels })), creator: true },
         side: null,
         sticky: true,
-        exclude_creation_slot: false,
       };
       const classified = classifyFlowTrades(
         c.trades.map((t) => ({ wallet_address: t.wallet, sol: t.sol, ix_labels: t.labels, side: t.side })),
