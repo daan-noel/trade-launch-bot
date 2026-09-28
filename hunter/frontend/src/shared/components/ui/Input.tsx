@@ -28,6 +28,17 @@ const variantClasses: Record<FieldVariant, string> = {
   card: 'border-white/10 bg-bg-card focus:border-primary/50',
 };
 
+/** Width and flex classes belong on a unit field's wrapper. The rest stay on the input. */
+function splitLayoutClass(className?: string): { layout: string; rest?: string } {
+  const layout: string[] = [];
+  const rest: string[] = [];
+  for (const part of (className ?? '').trim().split(/\s+/).filter(Boolean)) {
+    if (/^(?:w-|min-w-|max-w-|flex-|shrink-0|shrink$|grow|basis-)/.test(part)) layout.push(part);
+    else rest.push(part);
+  }
+  return { layout: layout.join(' '), rest: rest.join(' ') || undefined };
+}
+
 export function fieldClassName({
   size = 'sm',
   variant = 'default',
@@ -167,7 +178,8 @@ export const Input = forwardRef<
   // the field mid-edit (which would drop a leading `0`, e.g. `0.4` → `.4`).
   if (blankZero && !focused && (value === 0 || value === '0')) value = '';
 
-  const fieldCls = fieldClassName({ size: fieldSize, variant, type, className });
+  const split = unit ? splitLayoutClass(className) : null;
+  const fieldCls = fieldClassName({ size: fieldSize, variant, type, className: split ? split.rest : className });
 
   // Measures where the typed value ends, so the unit suffix sits right after it
   // ("5 ◎"). The mirror shares the input's typography + left padding; we zero its
@@ -194,9 +206,10 @@ export const Input = forwardRef<
   }
 
   const hasValue = value != null && `${value}` !== '';
+  const sized = split != null && /(?:^|\s)w-/.test(split.layout);
 
   return (
-    <span className="relative inline-flex w-full items-center">
+    <span className={cn('relative inline-flex items-center', split?.layout, !sized && 'w-full')}>
       <input
         ref={innerRef}
         type={type}
@@ -204,7 +217,7 @@ export const Input = forwardRef<
         onChange={onChange}
         onBlur={onBlur}
         onFocus={onFocus}
-        className={cn(fieldCls, 'w-full')}
+        className={cn(fieldCls, 'w-full min-w-0')}
         {...props}
       />
       <span

@@ -23,21 +23,22 @@ fn crew_rule() -> Value {
                     { "metric": "m_holdings.profit_sol", "tag": "volume", "is": [{ "operator": ">=", "value": 0.71 }] },
                     { "metric": "m_flow.buy_sol", "tag": "!volume", "span": "3s", "is": [{ "operator": ">=", "value": 1.0 }] }
                 ]
+            ],
+            "burst": [
+                [{ "metric": "m_flow.buy_sol", "tag": "!volume", "span": "10s", "is": [{ "operator": ">=", "value": 2.0 }] }]
             ]
         },
         "always": [
             { "if": [c("m_state.liquidity_sol", ">=", 80.0)], "sell": "top" },
             { "if": [{ "metric": "m_flow.sell_tx_count", "tag": "dump", "span": "1p", "is": [{ "operator": ">=", "value": 1.0 }] }], "sell": "dump" },
-            { "if": [c("m_position.held_sec", ">=", 1000.0)], "sell": "clock" }
+            { "if": [c("m_position.held_sec", ">=", 1000.0)], "sell": "clock" },
+            { "if": [{ "signal": "cashout" }, c("m_state.age_sec", "<", 20.0)], "sell": "spike" },
+            { "if": [{ "signal": "cashout" }, c("m_state.age_sec", ">=", 20.0)], "go": "ride" }
         ],
         "stages": [
-            { "name": "early", "ends": { "age_sec": 20.0 },
-              "on": [{ "if": [{ "signal": "cashout" }], "sell": "spike" }] },
-            { "name": "late",
-              "on": [{ "if": [{ "signal": "cashout" }], "go": "ride" }] },
-            { "name": "ride", "ends": { "stage_sec": 30.0 }, "then": "hold",
-              "on": [{ "if": [{ "metric": "m_flow.buy_sol", "tag": "!volume", "span": "10s", "is": [{ "operator": ">=", "value": 2.0 }] }], "sell": "burst" }] },
-            { "name": "hold" }
+            { "name": "open" },
+            { "name": "ride",
+              "on": [{ "if": [{ "signal": "burst" }, c("m_position.stage_sec", "<=", 30.0)], "sell": "burst" }] }
         ]
     })
 }
@@ -46,8 +47,9 @@ fn crew_rule() -> Value {
 fn a_full_rule_round_trips() {
     let v = crew_rule();
     let p = RuleParams::parse(&v).unwrap();
-    assert_eq!(p.stages.len(), 4);
+    assert_eq!(p.stages.len(), 2);
     assert_eq!(p.signals["cashout"].len(), 2);
+    assert_eq!(p.signals["burst"].len(), 1);
     assert_eq!(p.to_value(), v);
     assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
 }

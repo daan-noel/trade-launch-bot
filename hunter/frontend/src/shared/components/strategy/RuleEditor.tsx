@@ -3,20 +3,12 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { IconButton } from 'components/ui/IconButton';
-import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { LockIcon, SaveIcon, SpinnerIcon, UnlockIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Tabs, TabsList, TabsTrigger, TabsPanel } from 'components/ui/Tabs';
 import { cn } from 'lib/cn';
-import { rulePart, useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
-import {
-  emptyRuleDoc,
-  renameSignal,
-  renameStage,
-  ruleDocFromJson,
-  ruleDocToJson,
-  type RuleDoc,
-} from 'lib/strategy/ruleDoc';
+import { useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
+import { emptyRuleDoc, ruleDocFromJson, ruleDocToJson, type RuleDoc } from 'lib/strategy/ruleDoc';
 import { tagNames } from 'lib/strategy/tagsDoc';
 import { validateRuleDoc } from 'lib/strategy/validate';
 import { solToLamports, lamportsToSol, type StrategyRule, type TradeMode } from 'lib/strategy/types';
@@ -27,10 +19,7 @@ import { RuleTagsInput } from './RuleTagsInput';
 import { allTags } from 'lib/strategy/tags';
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { RULE_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import type { CondContext } from './rule/CondRow';
-import { CondList, LineList, PartHeader } from './rule/parts';
-import { SignalsEditor } from './rule/SignalsEditor';
-import { StagesEditor } from './rule/StagesEditor';
+import { RuleChain } from './rule/RuleChain';
 import { RuleSentences } from './rule/RuleSentences';
 import { GuideButton } from './StrategyGuide';
 
@@ -82,63 +71,6 @@ function initialDoc(initial: StrategyRule | undefined): { doc: RuleDoc; error: s
   }
 }
 
-function Section({ n, title, children }: { n: number; title: string; children: ReactNode }) {
-  return (
-    <section className="flex flex-col gap-3 rounded-lg border border-white/10 bg-white/2 p-3">
-      <h3 className="text-[13px] font-semibold text-text">
-        <span className="mr-1.5 text-accent">{n}.</span>
-        {title}
-      </h3>
-      {children}
-    </section>
-  );
-}
-
-function NumberField({
-  reg,
-  part,
-  label,
-  value,
-  onChange,
-  unit,
-  integer,
-  disabled,
-  className = 'w-24',
-  placeholder,
-}: {
-  reg: StrategyRegistry;
-  part?: string;
-  label: string;
-  value: number | null;
-  onChange: (n: number | null) => void;
-  unit?: string;
-  integer?: boolean;
-  disabled?: boolean;
-  className?: string;
-  placeholder?: string;
-}) {
-  const p = part ? rulePart(reg, part) : undefined;
-  return (
-    <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-      <span className="inline-flex items-center gap-1">
-        {label}
-        {p && <InfoTooltip title={p.title} body={`${p.summary}\n\nExample: ${p.example}`} />}
-      </span>
-      <Input
-        fieldSize="sm"
-        numeric
-        integer={integer}
-        unit={unit}
-        placeholder={placeholder ?? 'off'}
-        numericValue={value != null && Number.isFinite(value) ? value : null}
-        onNumericChange={onChange}
-        disabled={disabled}
-        className={className}
-      />
-    </label>
-  );
-}
-
 function RuleEditorInner({
   initial,
   onSubmit,
@@ -187,7 +119,6 @@ function RuleEditorInner({
   };
 
   const patch = (f: (d: RuleDoc) => RuleDoc) => setDoc((d) => f(d));
-  const setEnter = (e: Partial<RuleDoc['enter']>) => patch((d) => ({ ...d, enter: { ...d.enter, ...e } }));
 
   const syncFromJson = (text: string) => {
     setJsonText(text);
@@ -231,76 +162,55 @@ function RuleEditorInner({
       }
     : null;
 
-  const signalNames = doc.signals.map((s) => s.name);
-  const stageNames = doc.stages.map((s) => s.name);
-  const buyCtx: CondContext = { reg: registry, tags: fpTags, signals: signalNames, beforeBuy: true, disabled: conditionsLocked };
-  const sellCtx: CondContext = { ...buyCtx, beforeBuy: false };
-
   return (
     <div className="flex flex-col gap-3">
-      {/* Identity + sizing */}
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.name}>Name</LabelTip>
-          <Input fieldSize="sm" value={ruleName} onChange={(e) => setRuleName(e.target.value)} />
-        </label>
-        <div className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.mode}>Mode</LabelTip>
-          <div className="flex items-center gap-1">
-            <Select fieldSize="sm" value={mode} onChange={(e) => setMode(e.target.value as TradeMode)} disabled={modeLocked}>
-              <option value="paper">paper</option>
-              <option value="real">real</option>
-            </Select>
-            {modeCanLock && (
-              <IconButton
-                variant="ghost"
-                size="sm"
-                active={modeUnlocked}
-                onClick={toggleModeLock}
-                title={modeUnlocked ? 'Lock trade mode' : 'Unlock trade mode'}
-                aria-label={modeUnlocked ? 'Lock trade mode' : 'Unlock trade mode'}
-              >
-                {modeUnlocked ? <UnlockIcon /> : <LockIcon />}
-              </IconButton>
-            )}
+      <div className="flex items-start gap-4 rounded-md border border-white/10 bg-white/3 px-3 py-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <div className="flex items-end gap-3">
+            <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11px] text-text-dim">
+              <LabelTip tip={RULE_FIELD_HELP.name}>Name</LabelTip>
+              <Input fieldSize="sm" value={ruleName} onChange={(e) => setRuleName(e.target.value)} />
+            </label>
+            <div className="flex w-36 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
+              <LabelTip tip={RULE_FIELD_HELP.mode}>Mode</LabelTip>
+              <div className="flex items-center gap-1">
+                <Select fieldSize="sm" className="w-24" value={mode} onChange={(e) => setMode(e.target.value as TradeMode)} disabled={modeLocked}>
+                  <option value="paper">paper</option>
+                  <option value="real">real</option>
+                </Select>
+                {modeCanLock && (
+                  <IconButton
+                    variant="ghost"
+                    size="sm"
+                    active={modeUnlocked}
+                    onClick={toggleModeLock}
+                    title={modeUnlocked ? 'Lock trade mode' : 'Unlock trade mode'}
+                    aria-label={modeUnlocked ? 'Lock trade mode' : 'Unlock trade mode'}
+                  >
+                    {modeUnlocked ? <UnlockIcon /> : <LockIcon />}
+                  </IconButton>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="flex min-w-0 flex-col gap-1 text-[11px] text-text-dim">
+            <LabelTip tip={RULE_FIELD_HELP.tags}>Labels</LabelTip>
+            <RuleTagsInput value={labels} onChange={setLabels} suggestions={labelSuggestions} />
           </div>
         </div>
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.buy}>Buy (◎)</LabelTip>
-          <Input fieldSize="sm" numeric unit="◎" numericValue={buySol} onNumericChange={setBuySol} className="w-24" />
-        </label>
-        {/* The two caps are the genuine `0 = off` sentinels: a stored 0 renders blank so
-            "no cap" reads as ∞ instead of "capped at zero". A new rule opens at 1
-            concurrent, so unbounded is always an explicit choice. */}
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.maxConcurrent}>Max concurrent</LabelTip>
-          <Input fieldSize="sm" numeric integer blankZero placeholder="∞" numericValue={maxConcurrent} onNumericChange={setMaxConcurrent} className="w-20" />
-        </label>
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.maxTotal}>Max total</LabelTip>
-          <Input fieldSize="sm" numeric integer blankZero placeholder="∞" numericValue={maxTotal} onNumericChange={setMaxTotal} className="w-20" />
-        </label>
-      </div>
-
-      <div className="flex flex-col gap-1 text-[11px] text-text-dim">
-        <LabelTip tip={RULE_FIELD_HELP.tags}>Labels</LabelTip>
-        <RuleTagsInput value={labels} onChange={setLabels} suggestions={labelSuggestions} />
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <div className="flex min-w-0 flex-col gap-1 text-[11px] text-text-dim">
+        <div className="flex min-w-0 flex-1 flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.fingerprint}>
-            Fingerprint {conditionsLocked && <span className="text-text-dim/60">(locked: rule live)</span>}
+            Watch {conditionsLocked && <span className="text-text-dim/60">(locked: rule live)</span>}
           </LabelTip>
           <FingerprintPicker value={fingerprintId} onChange={setFingerprintId} disabled={conditionsLocked} />
+          <FingerprintParamsById id={fingerprintId} />
+          {fingerprintId && (
+            <p className="text-[11px] text-text-dim">
+              Tags:{' '}
+              {fpTags.length ? fpTags.map((t) => <code key={t} className="mr-1">@{t}</code>) : <span className="italic">none (a metric that needs a tag reads nothing)</span>}
+            </p>
+          )}
         </div>
-        <FingerprintParamsById id={fingerprintId} />
-        {fingerprintId && (
-          <p className="text-[11px] text-text-dim">
-            Tags this fingerprint defines:{' '}
-            {fpTags.length ? fpTags.map((t) => <code key={t} className="mr-1">@{t}</code>) : <span className="italic">none (metrics that need a tag read nothing)</span>}
-          </p>
-        )}
       </div>
 
       <Tabs value={tab} onValueChange={switchTab}>
@@ -313,109 +223,19 @@ function RuleEditorInner({
           <GuideButton />
         </div>
         <TabsPanel value="builder">
-          <div className="flex flex-col gap-3">
-            <Section n={1} title="Buy">
-              <PartHeader ctx={buyCtx} part="enter.event" />
-              <CondList conds={doc.enter.event} onChange={(event) => setEnter({ event })} ctx={buyCtx} empty="No trigger: the rule buys on the first print or tick where the filters below hold." />
-              <PartHeader ctx={buyCtx} part="enter.filters" />
-              <CondList conds={doc.enter.filters} onChange={(filters) => setEnter({ filters })} ctx={buyCtx} />
-              <PartHeader ctx={buyCtx} part="enter.final_filters" />
-              <CondList conds={doc.enter.final_filters} onChange={(final_filters) => setEnter({ final_filters })} ctx={buyCtx} />
-              <div className="flex flex-wrap items-end gap-3">
-                <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-                  <span className="inline-flex items-center gap-1">
-                    {rulePart(registry, 'enter.lock')?.title ?? 'One chance'}
-                    <InfoTooltip body={`${rulePart(registry, 'enter.lock')?.summary ?? ''}\n\nExample: ${rulePart(registry, 'enter.lock')?.example ?? ''}`} />
-                  </span>
-                  <Select
-                    className="w-48"
-                    value={doc.enter.lock ?? ''}
-                    disabled={conditionsLocked}
-                    onChange={(e) => setEnter({ lock: (e.target.value || null) as RuleDoc['enter']['lock'] })}
-                  >
-                    <option value="">no: any print may buy</option>
-                    <option value="token">once per coin</option>
-                    <option value="slot">once per slot</option>
-                  </Select>
-                </label>
-                <NumberField
-                  reg={registry}
-                  part="enter.size_pct_of_pool"
-                  label="Size as % of pool"
-                  unit="%"
-                  placeholder="fixed"
-                  value={doc.enter.size_pct_of_pool}
-                  onChange={(n) => setEnter({ size_pct_of_pool: n })}
-                  disabled={conditionsLocked}
-                />
-              </div>
-            </Section>
-
-            <Section n={2} title="Signals">
-              <SignalsEditor
-                doc={doc}
-                ctx={sellCtx}
-                onChange={(signals) => patch((d) => ({ ...d, signals }))}
-                onRename={(from, to) => patch((d) => renameSignal(d, from, to))}
-              />
-            </Section>
-
-            <Section n={3} title="Sell">
-              <div className="flex flex-wrap items-end gap-3">
-                <NumberField reg={registry} part="stop_loss" label="Stop loss" unit="%" value={doc.stop_loss} onChange={(n) => patch((d) => ({ ...d, stop_loss: n }))} disabled={conditionsLocked} />
-                <NumberField reg={registry} part="take_profit" label="Take profit" unit="%" value={doc.take_profit} onChange={(n) => patch((d) => ({ ...d, take_profit: n }))} disabled={conditionsLocked} />
-              </div>
-              <PartHeader ctx={sellCtx} part="always" />
-              <LineList lines={doc.always} onChange={(always) => patch((d) => ({ ...d, always }))} ctx={sellCtx} stages={stageNames} addLabel="always line" />
-              <StagesEditor
-                doc={doc}
-                ctx={sellCtx}
-                onChange={(stages) => patch((d) => ({ ...d, stages }))}
-                onRename={(from, to) => patch((d) => renameStage(d, from, to))}
-              />
-            </Section>
-
-            <Section n={4} title="Settings">
-              <div className="flex flex-wrap items-end gap-3">
-                <label className="flex h-8 items-center gap-1.5 text-[11px] text-text-dim">
-                  <input
-                    type="checkbox"
-                    className="accent-accent"
-                    checked={doc.reentry != null}
-                    disabled={conditionsLocked}
-                    onChange={(e) => patch((d) => ({ ...d, reentry: e.target.checked ? (d.reentry ?? { cooldown_sec: 5, max_per_coin: 10 }) : null }))}
-                  />
-                  {rulePart(registry, 'reentry')?.title ?? 'Buy again'}
-                  <InfoTooltip body={`${rulePart(registry, 'reentry')?.summary ?? ''}\n\nExample: ${rulePart(registry, 'reentry')?.example ?? ''}`} />
-                </label>
-                {doc.reentry && (
-                  <>
-                    <NumberField reg={registry} label="Wait after a sell" unit="s" placeholder="" value={doc.reentry.cooldown_sec} disabled={conditionsLocked} className="w-20"
-                      onChange={(n) => patch((d) => ({ ...d, reentry: { cooldown_sec: n ?? NaN, max_per_coin: d.reentry?.max_per_coin ?? NaN } }))} />
-                    <NumberField reg={registry} label="Most buys per coin" integer placeholder="" value={doc.reentry.max_per_coin} disabled={conditionsLocked} className="w-20"
-                      onChange={(n) => patch((d) => ({ ...d, reentry: { cooldown_sec: d.reentry?.cooldown_sec ?? NaN, max_per_coin: n ?? NaN } }))} />
-                  </>
-                )}
-              </div>
-              <div className="flex flex-wrap items-end gap-3">
-                <label className="flex h-8 items-center gap-1.5 text-[11px] text-text-dim">
-                  <input
-                    type="checkbox"
-                    className="accent-accent"
-                    checked={doc.exclusive}
-                    disabled={conditionsLocked}
-                    onChange={(e) => patch((d) => ({ ...d, exclusive: e.target.checked }))}
-                  />
-                  {rulePart(registry, 'exclusive')?.title ?? 'Exclusive'}
-                  <InfoTooltip body={`${rulePart(registry, 'exclusive')?.summary ?? ''}\n\nExample: ${rulePart(registry, 'exclusive')?.example ?? ''}`} />
-                </label>
-                {doc.exclusive && (
-                  <NumberField reg={registry} label="Priority" integer placeholder="0" value={doc.priority} disabled={conditionsLocked} className="w-20"
-                    onChange={(n) => patch((d) => ({ ...d, priority: n ?? 0 }))} />
-                )}
-              </div>
-            </Section>
-          </div>
+          <RuleChain
+            doc={doc}
+            patch={patch}
+            registry={registry}
+            locked={conditionsLocked}
+            buySol={buySol}
+            onBuySol={setBuySol}
+            maxConcurrent={maxConcurrent}
+            onMaxConcurrent={setMaxConcurrent}
+            maxTotal={maxTotal}
+            onMaxTotal={setMaxTotal}
+            tags={fpTags}
+          />
         </TabsPanel>
         <TabsPanel value="json">
           <textarea
@@ -435,7 +255,7 @@ function RuleEditorInner({
         </TabsPanel>
         <TabsPanel value="words">
           <div className="rounded-md border border-white/10 bg-bg-card p-3">
-            <RuleSentences doc={doc} reg={registry} />
+            <RuleSentences doc={doc} reg={registry} watch={fingerprints.find((f) => f.id === fingerprintId)?.name} />
           </div>
         </TabsPanel>
       </Tabs>

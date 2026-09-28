@@ -4,7 +4,7 @@
 //   m_flow.buy_sol @!volume [10s] >= 2
 //   -> SOL bought (trades without `volume`) in the last 10 s is at least 2 SOL
 //
-// Every surface that explains a rule (the editor under each row, the readout, the
+// Every surface that explains a rule (the In words sentences, the readout, the
 // Guide page examples) goes through here, so a rule reads the same everywhere.
 
 import type { Condition, ConditionExpr } from './grammar';
@@ -111,7 +111,7 @@ export function condSentence(reg: StrategyRegistry | undefined, c: Cond): string
 /** AND of conditions: `A, and B, and C`. Off conditions are left out. */
 export function condsSentence(reg: StrategyRegistry | undefined, cs: Cond[]): string {
   const live = cs.filter((c) => !c.off);
-  return live.length ? live.map((c) => condSentence(reg, c)).join(', and ') : 'always';
+  return live.length ? live.map((c) => condSentence(reg, c)).join(', and ') : 'Always';
 }
 
 /** The label the engine gives a line that sells with no label of its own: its first
@@ -175,8 +175,21 @@ export function stageStrip(stages: Stage[]): string {
     .join(' -> ');
 }
 
+function isText(c: MetricCond): string {
+  return c.is.map((arm) => arm.map((x) => `${x.operator} ${formatMetricThreshold(x.value)}`).join(', ')).join(' | ');
+}
+
 /** A metric condition's short chip text: `m_flow.buy_sol @!volume [10s] >= 2`. */
 export function condLabel(c: MetricCond): string {
-  const is = c.is.map((arm) => arm.map((x) => `${x.operator} ${formatMetricThreshold(x.value)}`).join(', ')).join(' | ');
+  const is = isText(c);
   return `${refLabel(c.ref)} ${is}`.trim();
+}
+
+/** The same read without the family: `buy_sol @!volume [10s] >= 2`. The family is a colored mark beside it. */
+export function condFace(c: MetricCond): string {
+  const read = refLabel(c.ref);
+  const dot = read.indexOf('.');
+  const name = dot >= 0 ? read.slice(dot + 1) : read;
+  const is = isText(c);
+  return `${name}${is ? ` ${is}` : ''}`.trim();
 }

@@ -75,6 +75,11 @@ A rule reads the coin through **conditions**: one `MetricRef` (`m_family.quantit
 part's one-line definition and example is the registry's `RULE_PARTS`, which the editors
 and the Guide page render as-is.
 
+A signal is written once and named from a buy gate or a line. The gate or line combines it with that case's own metrics (the list is AND).
+Age that splits one signal sits on those lines, in `always`, so both bands are read in
+every stage. The position starts in the first stage, so a guard that begins at the split
+lives on the stage that line moves to.
+
 **Entry.** `enter.event` is the print that triggers the buy, `enter.filters` must also
 hold (a failure keeps watching), and `enter.final_filters` are checked on a print that
 would otherwise buy (a failure ends the coin for this rule, `EntryVerdict::Exhaust`).

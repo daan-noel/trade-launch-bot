@@ -31,6 +31,7 @@ export const labNav: NavConfig = {
         { to: '/strategies/simulate', label: 'Simulate' },
         { to: '/strategies/sweep', label: 'Grouped sweep' },
         { to: '/strategies/replay', label: 'Replay viewer' },
+        { to: '/strategies/inventory', label: 'Idea inventory' },
       ],
     },
     { kind: 'item', to: '/profiles', label: 'Profiles' },

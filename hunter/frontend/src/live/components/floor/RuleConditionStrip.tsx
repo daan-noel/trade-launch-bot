@@ -434,9 +434,9 @@ export function partKey(p: RulePart): string {
 }
 
 const BUY_TITLES: Record<string, [string, string]> = {
-  event: ['Buy on', 'The print that triggers the buy: every condition must hold on it'],
-  filter: ['Only if', 'Must also hold at that moment; if one fails, the rule keeps watching'],
-  final_filter: ['Only if, else give up', 'Checked on the print that would buy; if one fails, the rule stops watching this coin'],
+  event: ['Buy On', 'The print that triggers the buy: every condition must hold on it'],
+  filter: ['Only If', 'Must also hold on that try. A miss fails this try'],
+  final_filter: ['Give Up', 'Checked on a try that would otherwise buy. A miss stops this coin'],
 };
 
 /** Group the readout into the rule's sections, in the fold's order. */

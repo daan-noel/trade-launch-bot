@@ -652,7 +652,7 @@ function PromoteToFingerprint({
           setTagName(null);
           setStatus(null);
         }}
-        className="max-w-[16rem]"
+        className="w-96 max-w-full"
       >
         <option value="">Pick a fingerprint…</option>
         {fingerprints.map((f) => (

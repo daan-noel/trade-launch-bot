@@ -7,6 +7,7 @@ import { IconButton } from 'components/ui/IconButton';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { CloseIcon, PlusIcon } from 'components/ui/icons';
+import { ROLE } from 'lib/strategy/roleColors';
 import { freshName, newStage, type DeadlineBasis, type RuleDoc, type Stage } from 'lib/strategy/ruleDoc';
 import { deadlineSentence, stageNext } from 'lib/strategy/sentences';
 import { nameError } from 'lib/strategy/validate';
@@ -24,11 +25,15 @@ export function StagesEditor({
   onChange,
   onRename,
   ctx,
+  focusId,
 }: {
   doc: RuleDoc;
   onChange: (stages: Stage[]) => void;
   onRename: (from: string, to: string) => void;
   ctx: CondContext;
+  /** When set, render only this stage. The rule editor's sell chain owns the
+   *  names and Add stage. Omit it (the sweep form) to show every stage. */
+  focusId?: string;
 }) {
   const stages = doc.stages;
   const names = stages.map((s) => s.name);
@@ -40,6 +45,24 @@ export function StagesEditor({
     [next[i], next[j]] = [next[j], next[i]];
     onChange(next);
   };
+  const card = (s: Stage, i: number) => (
+    <StageCard
+      key={s.id}
+      stage={s}
+      index={i}
+      stages={stages}
+      ctx={ctx}
+      onChange={(n) => set(i, n)}
+      onRename={(to) => onRename(s.name, to)}
+      onRemove={() => onChange(stages.filter((_, j) => j !== i))}
+      onMove={stages.length > 1 ? (d) => move(i, d) : undefined}
+    />
+  );
+  if (focusId !== undefined) {
+    const i = stages.findIndex((s) => s.id === focusId);
+    if (i < 0) return null;
+    return card(stages[i], i);
+  }
   return (
     <div className="flex flex-col gap-2">
       <PartHeader ctx={ctx} part="stages">
@@ -49,24 +72,12 @@ export function StagesEditor({
       </PartHeader>
       {stages.length === 0 ? (
         <p className="text-[11px] italic text-text-dim/70">
-          No stages: after the buy, only the Always lines, take profit and stop loss can sell.
+          No stages: after the buy, only the Always lines can sell.
         </p>
       ) : (
         <StageStrip stages={stages} />
       )}
-      {stages.map((s, i) => (
-        <StageCard
-          key={s.id}
-          stage={s}
-          index={i}
-          stages={stages}
-          ctx={ctx}
-          onChange={(n) => set(i, n)}
-          onRename={(to) => onRename(s.name, to)}
-          onRemove={() => onChange(stages.filter((_, j) => j !== i))}
-          onMove={stages.length > 1 ? (d) => move(i, d) : undefined}
-        />
-      ))}
+      <div className="flex flex-col gap-6">{stages.map((s, i) => card(s, i))}</div>
     </div>
   );
 }
@@ -75,11 +86,11 @@ export function StagesEditor({
 function StageStrip({ stages }: { stages: Stage[] }) {
   return (
     <div className="flex flex-wrap items-center gap-1 text-[11px]">
-      <span className="rounded bg-white/5 px-1.5 py-0.5 text-text-dim">buy</span>
+      <span className="rounded border border-buy/40 bg-buy/10 px-1.5 py-0.5 font-semibold text-buy">buy</span>
       {stages.map((s, i) => (
         <span key={s.id} className="flex items-center gap-1">
           <span className="text-text-dim">→</span>
-          <span className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-text" title={s.ends ? `ends ${deadlineSentence(s.ends)}, then ${stageNext(stages, i) ?? '?'}` : 'no deadline'}>
+          <span className="rounded border border-accent/55 bg-accent/15 px-1.5 py-0.5 font-mono font-semibold text-accent" title={s.ends ? `ends ${deadlineSentence(s.ends)}, then ${stageNext(stages, i) ?? '?'}` : 'no deadline'}>
             {s.name}
             {s.ends && <span className="text-text-dim"> ⏱{s.ends.secs}s</span>}
           </span>
@@ -113,9 +124,11 @@ function StageCard({
   const nextDefault = stages[index + 1]?.name;
   const inner: CondContext = { ...ctx, beforeBuy: false };
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-accent/25 bg-white/2 px-2 py-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-semibold text-text-dim">Stage {index + 1}</span>
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2 border-b border-white/12 pb-2">
+        <span className="text-[12px] font-semibold tracking-wide" style={{ color: ROLE.stage }}>
+          Stage {index + 1}
+        </span>
         <Input fieldSize="sm" className="w-36 font-mono" value={stage.name} disabled={ctx.disabled} onChange={(e) => onRename(e.target.value)} />
         {index === 0 && <span className="text-[11px] text-text-dim">the position starts here</span>}
         <div className="ml-auto flex items-center gap-1">
@@ -136,11 +149,9 @@ function StageCard({
       </div>
       {nErr && <p className="text-[11px] text-red">{nErr}</p>}
 
-      {/* Deadline */}
-      <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-dim">
+      <div className="flex flex-col gap-1.5">
         <PartHeader ctx={ctx} part="stage.ends" />
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-dim">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-dim">
         <Select
           className="w-52"
           value={stage.ends?.basis ?? ''}
@@ -185,14 +196,15 @@ function StageCard({
             </Select>
           </>
         )}
+        </div>
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-2 border-t border-white/10 pt-3">
         <PartHeader ctx={ctx} part="stage.on" />
         <LineList lines={stage.on} onChange={(on) => onChange({ ...stage, on })} ctx={inner} stages={names} />
       </div>
       {(stage.ends || stage.at_end.length > 0) && (
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2 border-t border-white/10 pt-3">
           <PartHeader ctx={ctx} part="stage.at_end" />
           <LineList lines={stage.at_end} onChange={(at_end) => onChange({ ...stage, at_end })} ctx={inner} stages={names} checkpoint addLabel="at-deadline line" />
         </div>

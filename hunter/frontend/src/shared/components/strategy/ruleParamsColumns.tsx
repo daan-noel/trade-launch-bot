@@ -6,7 +6,7 @@ import type { ColumnDef, SortValue } from 'components/table/types';
 import { MultiSortHeader } from 'components/table/MultiSortHeader';
 
 import {
-  ruleParamsCell,
+  ruleChainCell,
   ruleParamsSearchText,
   ruleParamsSortParts,
 } from './RuleParamsSummary';
@@ -33,12 +33,12 @@ export type RuleParamsRow = { params: unknown };
 export function buildRuleParamsColumns<R extends RuleParamsRow>(): ColumnDef<R>[] {
   const visible: ColumnDef<R> = {
     key: 'params',
-    label: 'Params',
+    label: 'Chain',
     group: 'params',
-    render: (r) => ruleParamsCell(r.params),
+    render: (r) => ruleChainCell(r.params),
     searchValue: (r) => ruleParamsSearchText(r.params),
     renderHeader: (ctx) => (
-      <MultiSortHeader title="Params" axes={PARAMS_SORT_AXES} ctx={ctx} />
+      <MultiSortHeader title="Chain" axes={PARAMS_SORT_AXES} ctx={ctx} />
     ),
   };
 

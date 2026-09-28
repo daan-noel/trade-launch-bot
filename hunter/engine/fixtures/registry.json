@@ -6,7 +6,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_state.age_sec >= 20 : the coin is 20 s old or older.",
-          "hue": 212,
+          "hue": 222,
           "monotonic": true,
           "name": "age_sec",
           "note": "",
@@ -27,7 +27,7 @@
         {
           "eq_tolerance": 0.1,
           "example": "m_state.liquidity_sol >= 80 : the curve holds 80+ real SOL, near graduation (85).",
-          "hue": 236,
+          "hue": 226,
           "monotonic": false,
           "name": "liquidity_sol",
           "note": "NaN before the first print.",
@@ -48,7 +48,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_state.on_curve = 1 : the coin has not graduated.",
-          "hue": 224,
+          "hue": 230,
           "monotonic": false,
           "name": "on_curve",
           "note": "NaN before the first print.",
@@ -77,7 +77,7 @@
         {
           "eq_tolerance": 1.0,
           "example": "m_price.rise_pct [30s] >= 50 : the price is 50 % above its low of the last 30 s.",
-          "hue": 50,
+          "hue": 42,
           "monotonic": false,
           "name": "rise_pct",
           "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
@@ -98,7 +98,7 @@
         {
           "eq_tolerance": 1.0,
           "example": "m_price.trail_pct >= 30 : the price is 30 % below the coin's all-time high.",
-          "hue": 42,
+          "hue": 46,
           "monotonic": false,
           "name": "trail_pct",
           "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
@@ -119,7 +119,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_price.stall_sec >= 60 : no new high for a minute.",
-          "hue": 40,
+          "hue": 50,
           "monotonic": false,
           "name": "stall_sec",
           "note": "Only a strictly higher price resets it; a quiet tape keeps counting.",
@@ -190,7 +190,7 @@
         {
           "eq_tolerance": 0.1,
           "example": "m_flow.net_sol [30s] < 0 : more SOL left than came in over the last 30 s.",
-          "hue": 300,
+          "hue": 166,
           "monotonic": false,
           "name": "net_sol",
           "note": "",
@@ -211,7 +211,7 @@
         {
           "eq_tolerance": 0.1,
           "example": "m_flow.gross_sol [30s] >= 10 : 10+ SOL traded in the last 30 s.",
-          "hue": 278,
+          "hue": 174,
           "monotonic": true,
           "name": "gross_sol",
           "note": "",
@@ -232,7 +232,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_flow.buy_count [1sl] >= 3 : 3+ buys landed in this slot.",
-          "hue": 288,
+          "hue": 158,
           "monotonic": true,
           "name": "buy_count",
           "note": "A print is one leg: a bundle of 4 buys in one transaction counts 4.",
@@ -253,7 +253,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_flow.sell_count [10s] = 0 : nobody sold in the last 10 s.",
-          "hue": 292,
+          "hue": 349,
           "monotonic": true,
           "name": "sell_count",
           "note": "A print is one leg: a bundle of 4 sells in one transaction counts 4.",
@@ -274,7 +274,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_flow.trade_count <= 7 : the coin has had 7 prints or fewer.",
-          "hue": 294,
+          "hue": 178,
           "monotonic": true,
           "name": "trade_count",
           "note": "",
@@ -295,7 +295,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_flow.buy_tx_count @targets [1p] >= 1 : a target wallet just bought.",
-          "hue": 282,
+          "hue": 154,
           "monotonic": true,
           "name": "buy_tx_count",
           "note": "",
@@ -316,7 +316,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_flow.sell_tx_count @dump [1p] >= 1 : the print being read is part of a dump transaction.",
-          "hue": 117,
+          "hue": 343,
           "monotonic": true,
           "name": "sell_tx_count",
           "note": "",
@@ -337,7 +337,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_flow.buy_share_pct [30s] >= 70 : 70 % of the SOL traded in 30 s was buying.",
-          "hue": 284,
+          "hue": 150,
           "monotonic": false,
           "name": "buy_share_pct",
           "note": "NaN when nothing traded.",
@@ -358,7 +358,7 @@
         {
           "eq_tolerance": 1.0,
           "example": "m_flow.tag_share_pct @volume <= 50 : the volume trades carried half the SOL or less.",
-          "hue": 109,
+          "hue": 182,
           "monotonic": false,
           "name": "tag_share_pct",
           "note": "NaN when nothing traded. Trades the tag excludes count on neither side.",
@@ -379,7 +379,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_flow.slice_trade_share_pct [30s, slice 2s] >= 50 : half of the last 30 s of prints came in the last 2 s.",
-          "hue": 306,
+          "hue": 186,
           "monotonic": false,
           "name": "slice_trade_share_pct",
           "note": "Reads 100 on a coin younger than the slice; NaN on an empty span.",
@@ -400,7 +400,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_flow.slice_sol_share_pct [30s, slice 2s] >= 50 : half of the last 30 s of SOL moved in the last 2 s.",
-          "hue": 308,
+          "hue": 190,
           "monotonic": false,
           "name": "slice_sol_share_pct",
           "note": "NaN on an empty span.",
@@ -429,7 +429,7 @@
         {
           "eq_tolerance": 0.1,
           "example": "m_holdings.profit_sol @volume >= 0.83 : the volume trades would make 0.83 SOL dumping everything now.",
-          "hue": 115,
+          "hue": 204,
           "monotonic": false,
           "name": "profit_sol",
           "note": "The sale value includes the price drop the dump itself causes. NaN once a tagged print had no token amount.",
@@ -450,7 +450,7 @@
         {
           "eq_tolerance": 0.01,
           "example": "m_holdings.bag_share_pct @bundled >= 30 : bundle-bought wallets hold 30 % of the supply.",
-          "hue": 308,
+          "hue": 210,
           "monotonic": false,
           "name": "bag_share_pct",
           "note": "Classes: bundled (first buy in a slot where 3+ wallets first bought with one ix shape), public_app (first buy through an app with 100+ buyers the day before). NaN while nobody holds.",
@@ -479,7 +479,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_crowd.unique_wallets [30s] >= 10 : 10+ different wallets traded in the last 30 s.",
-          "hue": 290,
+          "hue": 264,
           "monotonic": false,
           "name": "unique_wallets",
           "note": "",
@@ -500,7 +500,7 @@
         {
           "eq_tolerance": 0.05,
           "example": "m_crowd.trades_per_wallet [30s] <= 1.5 : most wallets traded once.",
-          "hue": 296,
+          "hue": 268,
           "monotonic": false,
           "name": "trades_per_wallet",
           "note": "NaN on an empty span.",
@@ -521,7 +521,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_crowd.unique_ix_shapes [30s] >= 4 : prints came from 4+ different tools.",
-          "hue": 98,
+          "hue": 272,
           "monotonic": false,
           "name": "unique_ix_shapes",
           "note": "",
@@ -542,7 +542,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_crowd.unique_ix_templates @working >= 4 : 4+ working templates have bought this coin.",
-          "hue": 133,
+          "hue": 276,
           "monotonic": true,
           "name": "unique_ix_templates",
           "note": "",
@@ -563,7 +563,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_crowd.buyer_count [age60s] >= 5 : 5+ new wallets bought after the coin was a minute old.",
-          "hue": 300,
+          "hue": 280,
           "monotonic": true,
           "name": "buyer_count",
           "note": "Buys before the start age never count.",
@@ -584,7 +584,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_crowd.buyer_is_new [age60s] = 1 and m_crowd.buyer_count [age60s] = 5 : the 5th arrival, once.",
-          "hue": 304,
+          "hue": 284,
           "monotonic": false,
           "name": "buyer_is_new",
           "note": "0 on a tick, a sell, a repeat buyer and the creator.",
@@ -613,7 +613,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_print.since_buy_sec <= 5 : this wallet bought 5 s ago or less (on a sell: a 5 s flip).",
-          "hue": 298,
+          "hue": 248,
           "monotonic": false,
           "name": "since_buy_sec",
           "note": "NaN when that wallet never bought, and on a tick.",
@@ -642,7 +642,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.this_joined = 1 : decide on a buy print, not on a sell or a tick.",
-          "hue": 118,
+          "hue": 68,
           "monotonic": false,
           "name": "this_joined",
           "note": "",
@@ -663,7 +663,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.this_has_tag @working = 1 : this buy came from a working template.",
-          "hue": 119,
+          "hue": 70,
           "monotonic": false,
           "name": "this_has_tag",
           "note": "0 when the print has no ix labels.",
@@ -684,7 +684,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.same_template_buy_count >= 3 : 3 buys of one template landed together.",
-          "hue": 120,
+          "hue": 72,
           "monotonic": false,
           "name": "same_template_buy_count",
           "note": "",
@@ -705,7 +705,7 @@
         {
           "eq_tolerance": 0.1,
           "example": "m_slot.same_template_buy_sol >= 2 : one template put 2 SOL in this slot.",
-          "hue": 121,
+          "hue": 74,
           "monotonic": false,
           "name": "same_template_buy_sol",
           "note": "",
@@ -726,7 +726,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.same_template_wallet_count >= 3 : 3 wallets bought with one template in this slot.",
-          "hue": 122,
+          "hue": 76,
           "monotonic": false,
           "name": "same_template_wallet_count",
           "note": "",
@@ -747,7 +747,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.template_count @working >= 2 : two different working templates bought in this slot.",
-          "hue": 126,
+          "hue": 78,
           "monotonic": false,
           "name": "template_count",
           "note": "",
@@ -768,7 +768,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.buy_count @working >= 3 : 3 working-template buys in this slot.",
-          "hue": 123,
+          "hue": 80,
           "monotonic": false,
           "name": "buy_count",
           "note": "",
@@ -789,7 +789,7 @@
         {
           "eq_tolerance": 0.1,
           "example": "m_slot.buy_sol @working >= 1 : working templates put 1 SOL in this slot.",
-          "hue": 124,
+          "hue": 82,
           "monotonic": false,
           "name": "buy_sol",
           "note": "",
@@ -810,7 +810,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.wallet_count @working >= 2 : two wallets bought with working templates in this slot.",
-          "hue": 125,
+          "hue": 84,
           "monotonic": false,
           "name": "wallet_count",
           "note": "",
@@ -831,7 +831,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.buy_share_pct @working = 100 : every buy in this slot is a working template.",
-          "hue": 116,
+          "hue": 86,
           "monotonic": false,
           "name": "buy_share_pct",
           "note": "NaN before the slot's first buy.",
@@ -852,7 +852,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.has_new_wallet @working = 1 : at least one fresh wallet in the pack.",
-          "hue": 127,
+          "hue": 88,
           "monotonic": false,
           "name": "has_new_wallet",
           "note": "",
@@ -873,7 +873,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.has_unknown_wallet = 0 : every buyer in the slot is known.",
-          "hue": 128,
+          "hue": 90,
           "monotonic": false,
           "name": "has_unknown_wallet",
           "note": "",
@@ -894,7 +894,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_slot.packed = 1 : the buys were bundled.",
-          "hue": 129,
+          "hue": 92,
           "monotonic": false,
           "name": "packed",
           "note": "NaN when a buy has no block position.",
@@ -915,7 +915,7 @@
         {
           "eq_tolerance": 0.1,
           "example": "m_slot.liquidity_before_sol <= 10 : the pool was shallow when this slot started.",
-          "hue": 130,
+          "hue": 94,
           "monotonic": false,
           "name": "liquidity_before_sol",
           "note": "NaN until an earlier slot has a print.",
@@ -936,7 +936,7 @@
         {
           "eq_tolerance": 1.0,
           "example": "m_slot.trail_before_pct >= 30 : this print lands in a 30 % dip.",
-          "hue": 131,
+          "hue": 96,
           "monotonic": false,
           "name": "trail_before_pct",
           "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
@@ -965,7 +965,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.this_joined = 1 : decide on a wave buy.",
-          "hue": 133,
+          "hue": 300,
           "monotonic": false,
           "name": "this_joined",
           "note": "",
@@ -986,7 +986,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.this_has_tag @working = 1 : a working template joined the wave.",
-          "hue": 90,
+          "hue": 302,
           "monotonic": false,
           "name": "this_has_tag",
           "note": "NaN when the fingerprint has no such tag.",
@@ -1007,7 +1007,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.wallet_count >= 2 : the second wallet just joined.",
-          "hue": 134,
+          "hue": 304,
           "monotonic": false,
           "name": "wallet_count",
           "note": "",
@@ -1028,7 +1028,7 @@
         {
           "eq_tolerance": 0.1,
           "example": "m_wave.buy_sol >= 1 : the wave has put 1 SOL in.",
-          "hue": 135,
+          "hue": 306,
           "monotonic": false,
           "name": "buy_sol",
           "note": "",
@@ -1049,7 +1049,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.buy_count @working >= 2 : two working-template buys in this wave.",
-          "hue": 102,
+          "hue": 308,
           "monotonic": false,
           "name": "buy_count",
           "note": "NaN when the wave cannot fire (the create slot, or no gap before it).",
@@ -1070,7 +1070,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.gap_slots >= 10 : the wave broke 10 quiet slots.",
-          "hue": 94,
+          "hue": 310,
           "monotonic": false,
           "name": "gap_slots",
           "note": "NaN on the create slot, with no proven gap, or after a slot regression.",
@@ -1091,7 +1091,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.all_new_wallets = 1 : a wave of fresh wallets.",
-          "hue": 96,
+          "hue": 312,
           "monotonic": false,
           "name": "all_new_wallets",
           "note": "NaN on an empty wave.",
@@ -1112,7 +1112,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.has_unknown_wallet = 0 : every buyer in the wave is known.",
-          "hue": 100,
+          "hue": 314,
           "monotonic": false,
           "name": "has_unknown_wallet",
           "note": "",
@@ -1133,7 +1133,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.this_tip_lamports >= 1000000 : this buyer tipped 0.001 SOL or more.",
-          "hue": 91,
+          "hue": 316,
           "monotonic": false,
           "name": "this_tip_lamports",
           "note": "NaN when the fee was not captured; a real 0 reads 0.",
@@ -1154,7 +1154,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.has_tx_gap = 0 : this buy sits right behind the last one.",
-          "hue": 92,
+          "hue": 318,
           "monotonic": false,
           "name": "has_tx_gap",
           "note": "0 for the wave's first buy.",
@@ -1175,7 +1175,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_wave.tip_band_seen = 0 : this buyer tips differently from the rest of the wave.",
-          "hue": 114,
+          "hue": 320,
           "monotonic": false,
           "name": "tip_band_seen",
           "note": "",
@@ -1204,7 +1204,7 @@
         {
           "eq_tolerance": 1.0,
           "example": "m_position.pnl_pct <= -25 : we are down 25 %.",
-          "hue": 56,
+          "hue": 12,
           "monotonic": false,
           "name": "pnl_pct",
           "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
@@ -1225,7 +1225,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_position.held_sec >= 1000 : we have held for 1000 s.",
-          "hue": 58,
+          "hue": 16,
           "monotonic": false,
           "name": "held_sec",
           "note": "",
@@ -1246,7 +1246,7 @@
         {
           "eq_tolerance": 1.0,
           "example": "m_position.retrace_pct >= 20 : the price is 20 % below its peak since we bought.",
-          "hue": 52,
+          "hue": 20,
           "monotonic": false,
           "name": "retrace_pct",
           "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
@@ -1267,7 +1267,7 @@
         {
           "eq_tolerance": 1.0,
           "example": "m_position.bounce_pct >= 30 : the price climbed 30 % off its low since we bought.",
-          "hue": 54,
+          "hue": 24,
           "monotonic": false,
           "name": "bounce_pct",
           "note": "Prices are the pool price each print left (the chart's price), not what that trader paid.",
@@ -1288,7 +1288,7 @@
         {
           "eq_tolerance": 1.0,
           "example": "m_position.room_taken_pct >= 40 : 40 % of the room to graduation is used (at a buy near pool 100 that is +13 %).",
-          "hue": 46,
+          "hue": 28,
           "monotonic": false,
           "name": "room_taken_pct",
           "note": "NaN when the pool depth at our buy is unknown.",
@@ -1309,7 +1309,7 @@
         {
           "eq_tolerance": 0.5,
           "example": "m_position.stage_sec <= 30 : still in the first 30 s of this stage.",
-          "hue": 60,
+          "hue": 32,
           "monotonic": false,
           "name": "stage_sec",
           "note": "",
@@ -1346,25 +1346,25 @@
       "example": "m_state.age_sec >= 1 : buy on a print once the coin is 1 s old.",
       "key": "enter.event",
       "summary": "The print that triggers the buy. Every condition must hold on that print.",
-      "title": "Buy on"
+      "title": "Buy On"
     },
     {
       "example": "m_state.liquidity_sol >= 14 : only when the pool holds 14+ SOL.",
       "key": "enter.filters",
-      "summary": "Must also hold at that moment. If one fails, the rule keeps watching the coin.",
-      "title": "Only if"
+      "summary": "Must also hold on that try. A miss fails this try. Once Per Coin has no next try, so that miss stops the coin.",
+      "title": "Only If"
     },
     {
       "example": "m_crowd.unique_ix_templates @working >= 4 : give up on coins with fewer than 4 working templates.",
       "key": "enter.final_filters",
-      "summary": "Checked on the print that would buy. If one fails, the rule stops watching this coin.",
-      "title": "Only if, else give up"
+      "summary": "Checked on a try that would otherwise buy. A miss stops this coin.",
+      "title": "Give Up"
     },
     {
-      "example": "token + event age_sec >= 1 : decide once, on the first print after 1 s.",
+      "example": "Once Per Coin, On is age >= 1 s: the first trade at 1 s is the only try. If Only If fails, this coin is finished.",
       "key": "enter.lock",
-      "summary": "token: only the coin's first event print may buy; slot: only the first event print of each slot.",
-      "title": "One chance"
+      "summary": "How many tries this rule gets on one coin. Any Print: a try on every trade and every clock tick where On is true. Once Per Coin: one try, the first trade where On is true; a clock tick is never a try; a failed Only If stops the coin. Once Per Slot: one try per block, the first moment On is true.",
+      "title": "Tries"
     },
     {
       "example": "1.5 : at pool 100 SOL, buy 1.5 SOL.",
@@ -1375,29 +1375,29 @@
     {
       "example": "cashout = profit_sol @volume >= 1.18, or (profit_sol @volume >= 0.71 and buy_sol @!volume [3s] >= 1).",
       "key": "signals",
-      "summary": "Named conditions, written once and used by name in any line. A signal holds when any of its groups holds (every condition of that group).",
+      "summary": "Named conditions, written once and used by name in any condition: a buy gate or a line. A signal holds when any of its groups holds (every condition of that group). The gate or line adds that case's own metrics beside the name.",
       "title": "Signals"
     },
     {
-      "example": "m_state.liquidity_sol >= 80 -> sell \"top\".",
+      "example": "cashout and age_sec < 20 -> sell \"spike\". cashout and age_sec >= 20 -> go ride.",
       "key": "always",
-      "summary": "Lines checked first, in every stage.",
+      "summary": "Lines checked first, in every stage. One signal splits on age here: both bands are read in every stage.",
       "title": "Always"
     },
     {
-      "example": "early (until age 20 s) -> late -> ride (30 s) -> hold.",
+      "example": "open -> ride.",
       "key": "stages",
-      "summary": "The steps after the buy. The position starts in the first stage; each stage has its own lines and may have a deadline.",
+      "summary": "The steps after the buy. The position starts in the first stage; each stage has its own lines and may have a deadline. A guard that starts later lives on the stage a line moves to.",
       "title": "Stages"
     },
     {
-      "example": "cashout -> sell \"spike\".",
+      "example": "burst and stage_sec <= 30 -> sell \"burst\".",
       "key": "stage.on",
       "summary": "Lines checked on every print and every 200 ms tick while in this stage, top to bottom; the first that holds acts.",
       "title": "While in this stage"
     },
     {
-      "example": "ends at age 20 s, then late.",
+      "example": "ends 30 s after this stage began, then hold.",
       "key": "stage.ends",
       "summary": "When the stage ends: at a coin age, after time held, or after time in this stage. At the deadline the 'at end' lines run once, then the rule moves to 'then' (default: the next stage). A loop of deadlines needs a time-in-stage wait above 0 s in one of its stages.",
       "title": "Deadline"
@@ -1409,7 +1409,7 @@
       "title": "At the deadline"
     },
     {
-      "example": "m_flow.buy_sol @!volume [10s] >= 2 -> sell \"burst\".",
+      "example": "cashout and age_sec < 20 -> sell \"spike\".",
       "key": "line",
       "summary": "If every condition holds: sell (all, or a percent of the first buy's bag) and/or move to another stage. A line that moves to the stage the position is already in does nothing there, unless it sells everything.",
       "title": "Line"

@@ -1,6 +1,8 @@
-// Metric UI colors — consumes the registry `hue` (backend SSOT) and applies a
-// fixed per-operator shade. Used by the sweep axis builder and rule-params
-// chips so the same metric always looks the same across surfaces.
+// Metric UI colors. The registry `hue` is the one color: a family is one band,
+// and each metric in it is a few degrees off. `metricTone` / `metricRowStyle`
+// paint a row from that hue. The wash stays light; the name stays saturated so it
+// still reads on that wash. Sweep chips add a fixed per-operator shade on top.
+// Role colors (buy, signal, stage) live in `roleColors.ts`.
 //
 // Fallback: if a metric has no `hue` yet (or the registry hasn't loaded), hash
 // `group.metric` to a stable hue so unknown metrics still get a color.
@@ -66,6 +68,33 @@ export function hashMetricHue(group: string, metric: string): number {
   return hashHue(`${group}.${metric}`);
 }
 
+/** `m_flow` → `flow`. */
+export function familyShort(family: string): string {
+  return family.startsWith('m_') ? family.slice(2) : family;
+}
+
+/**
+ * The metric's own tone from its registry hue. The wash stays light. The name is
+ * saturated and light so it stands out on that wash, and lightness still steps
+ * with the hue so two metrics a few degrees apart read apart. No operator shade:
+ * the row is the metric, not the comparison.
+ */
+export function metricTone(hue: number): MetricColorStyle {
+  const h = ((Math.round(hue) % 360) + 360) % 360;
+  return chipColorsFromHue(h, 38, Math.min(62, 50 + (h % 10)), true);
+}
+
+/** Left rail and a light wash for a whole condition row. The name uses `metricTone`. */
+export function metricRowStyle(hue: number): CSSProperties {
+  const tone = metricTone(hue);
+  return {
+    borderLeftWidth: 3,
+    borderLeftStyle: 'solid',
+    borderLeftColor: tone.color,
+    backgroundColor: tone.background,
+  };
+}
+
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
 }
@@ -82,11 +111,16 @@ function resolveHue(input: MetricColorInput): number {
  * Chip colors from a resolved hue + saturation/lightness. The ONE place the
  * border/background/text formula lives — metric chips and rule-tag chips share
  * it so a chip reads the same wherever it is rendered.
+ *
+ * `quiet` is the metric wash: a thin fill, and text saturated enough to stand
+ * out on it. Tag chips leave it off; they are labels, not a row of metrics.
  */
-export function chipColorsFromHue(hue: number, sat: number, light: number): MetricColorStyle {
-  const border = `hsla(${hue}, ${sat}%, ${light}%, 0.5)`;
-  const background = `hsla(${hue}, ${sat}%, ${light}%, 0.12)`;
-  const color = `hsl(${hue}, ${clamp(sat + 5, 45, 90)}%, ${clamp(light + 18, 62, 82)}%)`;
+export function chipColorsFromHue(hue: number, sat: number, light: number, quiet = false): MetricColorStyle {
+  const border = `hsla(${hue}, ${sat}%, ${light}%, ${quiet ? 0.45 : 0.5})`;
+  const background = `hsla(${hue}, ${sat}%, ${light}%, ${quiet ? 0.1 : 0.12})`;
+  const color = quiet
+    ? `hsl(${hue}, ${clamp(sat + 36, 68, 82)}%, ${clamp(light + 24, 74, 84)}%)`
+    : `hsl(${hue}, ${clamp(sat + 5, 45, 90)}%, ${clamp(light + 18, 62, 82)}%)`;
   return {
     hue,
     border,
@@ -104,7 +138,8 @@ export function metricColorStyle(input: MetricColorInput): MetricColorStyle {
   const op = (input.operator ?? '>') as Operator;
   return chipColorsFromHue(
     resolveHue(input),
-    clamp(68 + (OP_SATURATION[op] ?? 0), 40, 85),
-    clamp(58 + (OP_LIGHTNESS[op] ?? 0), 42, 72),
+    clamp(40 + (OP_SATURATION[op] ?? 0), 28, 52),
+    clamp(52 + (OP_LIGHTNESS[op] ?? 0), 44, 64),
+    true,
   );
 }

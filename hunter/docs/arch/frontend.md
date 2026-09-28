@@ -587,7 +587,72 @@ next load (no per-metric frontend work).
   before a live remainder, the ladder's one ordering rule. **The lab sweep config form
   passes `allowToggle={false}`**: a run stores a bare `ExitStage[]` with no bag, so a
   parked stage there would vanish on reload), `RuleEditor` (builder + JSON tab + a
-  `renderDryRun` slot; edit mode locks `trade_mode` behind a padlock unlock),
+  `renderDryRun` slot; edit mode locks `trade_mode` behind a padlock unlock).
+  The builder is a chain: Signal, Buy When, Keep Looking, Size, Sell, Again. Buy When
+  is On, then Only If: a miss fails this try. Keep Looking is Tries, then Give Up:
+  a miss stops this coin. Tries is Any Print, Once Per Coin, or Once Per Slot.
+  Once Per Coin has no next try, so a failed Only If stops the coin. Exclusive sits
+  outside the try. An empty gate is an Add button in that gate's color, and one
+  gate is open at a time. An open chip fills in its own color. On is buy green,
+  Only If a lighter green, Give Up a yellow-green. Tries steps from light gray
+  to a gray-green. Signal is its own row, above Buy When: a dashed secondary
+  outline, filled secondary while open. On, Only If, Give Up, and any sell line
+  name a signal. Sell is a TP/SL chip, an Always chip, then one name per stage.
+  A stage chip is an accent outline and fills accent while open. Always is a
+  dashed info outline and fills info while open. The TP/SL chip is a plain
+  outline, TP in buy and SL in sell, and it fills while open. It holds the two
+  inputs. The open section is plain. The chip carries the color, so the lines
+  stay readable. A stage body is a
+  heading with a rule under the name. Deadline, the lines, and the at-deadline
+  lines are separate blocks under that heading. One name is open at a time, and
+  Add stage appends a name without opening the others. A line in Always or a
+  stage is a clause rail: a number, a bar, and one column of if, and, and then.
+  Each condition is its own plate, with a gap between plates, so each metric
+  stays its own row. The sell sits on the then row, under a rule. else sits
+  between lines, on a rule in that same column, because the first line that
+  holds is the one that acts. A signal puts its name in a column on the left
+  and that rail on the right, in the signal color. any heads it. Each group
+  indents under it: the first row says all, every next row
+  says and, and or sits on a rule between groups. A condition is the fields on
+  that plate. The family mark and the metric name use the registry hue. The wash stays
+  light on Guide rows and chips, and the name stays saturated so it reads on that wash. A family
+  is one band, and each metric in the band is a few degrees apart, so the name, the chips, and the
+  Guide use that same hue (`metricColors.ts`). Role colors (buy, signal, stage) live in
+  `roleColors.ts`, and the chain chips and the In-words marks both read them. The metric menu groups by family. The family sits
+  flush left; its metrics sit indented on one guide in the family's color, each
+  named in its own hue. A span stays a text box. A menu beside it lists the
+  spellings that metric accepts (`(empty)` whole life, `10s`, `20sl`, `5p`,
+  `10s@2`; a slice metric adds `2s`, `4sl`, `2p`; a since-age metric uses
+  `age60s` and `age0s`), and the words beside the box say what the current text
+  means. A field with a unit is only as wide as its value, so Then sell is one
+  row: the percent of the first bag, the reason, and the stage it goes to. Name
+  and mode share a row, labels sit under that row, and watch sits beside that
+  column. The editor opens in the wide modal. The phrase and the definition are
+  the hover. Text under a row appears only when the row cannot be saved. The In
+  words tab puts watch and buy in one column, two rows, with a divider between
+  them. Watch is the fingerprint name. Buy has a green outline. Its gates are
+  rows: on, only if, give up, with a divider between gates and between reads in
+  a gate. Sell sits beside that column, with a red outline: one frame. TP/SL is
+  a column of rows. Signals sit in their own frame, ahead of buy and sell, one
+  column per signal. Sell is always, then each stage, in check order. Again is
+  its own frame after sell. Exclusive sits on the buy
+  row. A divider separates stages, and a divider separates
+  if/then pairs. Sell and go sit on the then line. A full sell reads all, and go
+  is followed by an arrow into the stage. A step is a filled mark,
+  and a stage name is an accent outline. A word's color follows its role, and one
+  role stays one family. On is buy green, Only If a lighter green, and Give Up a
+  yellow-green. Any Print, Once Per Slot, and Once Per Coin step from light gray
+  to a gray-green. if is blue and then a lighter blue. Always is plain and at end
+  is warm. sell is a filled red, SL a lighter red, TP a light green, and go a
+  filled accent. A deadline stays a warning outline. A signal name is the one signal
+  gold: the chain chip, the signal block, a use inside a buy gate or a sell line, the
+  editor row, and the summary chip. v is that same gold as an outline. Watch is plain, Buy is green, Sell is red, and Again is a
+  lighter green. A line's reads sit beside `if`, on one indent. The pair's
+  line runs through those reads and ends at `then`, where sell or go sits.
+  Signal groups join with `v`, further right than `if`, on the same tree line.
+  A metric family stays a filled color mark.
+  The Rules and Simulate params cell (`ruleChainCell`) is that same Signal row,
+  Buy chain, and Sell chain. Sweep tables keep the full line chips (`ruleParamsCell`),
   `FingerprintPicker`/`FingerprintForm` (registry-driven
   `metric_config` section + `IxPatternsEditor` for `m_flow_ix.ix_patterns` — **one
   line per pattern**, the sequence rendered short (`AdvanceNonceAccount ›
@@ -611,10 +676,11 @@ next load (no per-metric frontend work).
   pattern-only surface. A second `IxPatternsEditor` below it edits
   `m_dump_ix.ix_patterns`, the separate build list `dump_sell` / `dump_sell_count`
   read, through that group's own writer). Each numeric axis is ONE
-  `AxisConditionInput` — a condition expression (`3`, `1..5`, `>=2`, `!=3`,
+  `AxisConditionInput`, a condition expression (`3`, `1..5`, `>=2`, `!=3`,
   `<=2 | >=7`) read through `fingerprintGrammar`, the TS mirror of the Rust
   grammar, echoed as the predicate it parsed to and snapped to the canonical
-  spelling on blur. The form auto-fills `Fingerprint::auto_name` from the axes
+  spelling on blur. The form lists only axes that are set; Add axis reveals another,
+  and removing one clears it so a blank axis is not part of the match. The form auto-fills `Fingerprint::auto_name` from the axes
   (`3ix:Buy · max=1 · bkt=1`) and keeps a typed nickname; pickers search axis text
   and show the chip row in the dropdown.
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
@@ -781,6 +847,14 @@ here.
   fingerprint's saved patterns and a staged pattern with no row here is the cart's to
   remove. Job kind `discovery` in `BackgroundJobsContext`
   (SSE `flow_discovery_*`, mutual exclusion with sweeps).
+- Lab **Idea inventory** (`/strategies/inventory`, `InventoryPage`) - renders
+  [_!___inventory.md](../plans/strategies/_!___inventory.md) with no copy of it: the page
+  imports the file `?raw` (the lab dev server's `fsAllow`) and `@lab/lib/inventory.ts`
+  parses it into the **structure grid** (every ix-structure idea by what it reads x how
+  the structures are grouped, each cell colored by its status and jumping to its row) and one
+  table of every idea (name, status, idea, example; meaning, why, parameters and books open
+  on a click), grouped by slot and family. `inventory.test.ts` parses the real file, so a format change in the
+  markdown fails the test instead of dropping rows.
 - Lab **Rule search** (`/strategies/rule-search`, `RuleSearchPage`) — one required
   fingerprint + datetime range + buy/fill/cost/copycat (default ON) + optional
   incumbent (compare only). Job kind `rule_search` in `BackgroundJobsContext`
@@ -789,7 +863,18 @@ here.
   deadline. Board: refuse / ungated / candidate, champion vs empty-entry vs incumbent
   (authority SOL ranks, then tighter fill spread; first-in-window quoted beside
   it), `ruleParamsCell` for the champion, top archive, diagnostics (cut phases),
-  Promote (`src:rule-search`) and a draft Simulate of the unsaved champion.
+  Promote (`src:rule-search`) and a draft Simulate of the unsaved champion. Under the
+  picker `@lab/components/family/TagsNote` states the fingerprint's tags in one sentence
+  each (the search reads them; no tags = tagged reads left out), and every clause label
+  renders through `@lab/components/family/Clause`, which explains it on hover from the
+  registry definition of the metric path the label opens with.
+- Lab **Metric-combo discovery** (`/strategies/metric-discovery`, `MetricDiscoveryPage`,
+  types `@lab/lib/metricDiscoveryTypes`) — sends `entry_span` / `exit_span` (a window,
+  validated by `parseWindowSpec`) and a `tags` document: the scoping fingerprint's own
+  tags, or on an unscoped run a picked fingerprint's. Every row names its read by the
+  backend `label` and explains it with `readPhrase` + `metricHelp`; skipped and menu-gap
+  reads are grouped by reason in plain words. "Open as sweep" hands the run's tags to the
+  sweep form beside the seed.
 - Lab **Family search** (`/strategies/family-search`, `FamilySearchPage` +
   `@lab/components/family/FamilySearchBoard`) — rule search's sibling over a whole
   **fingerprint family**. Job kind `family_search` in `BackgroundJobsContext` (SSE
@@ -802,7 +887,9 @@ here.
   concurrency caps / incumbent sit in one persisted `Accordion` whose collapsed badge
   states what they currently are. Every one of them is sent from the form: a saved
   rule supplies none of them, so there is no control whose value can silently come
-  from somewhere else.
+  from somewhere else. Standing exit terms are written `read op value`
+  (`m_state.liquidity_sol >= 85`), the spelling the attribution table prints; the target's
+  tags show under the picker (`TagsNote`) and board clauses explain on hover (`Clause`).
   The board is ordered as the argument it makes — **verdict → portrait → execution →
   grade → evidence**. The verdict (`lab/lib/familySearchVerdict.ts`, unit-tested)
   blends nothing: it names which of six gates decided (clears execution · family ·

@@ -76,6 +76,7 @@ export function FingerprintPicker({
           placeholder={isLoading ? 'loading…' : 'Search fingerprints…'}
           noResultsLabel="No fingerprints match"
           fieldSize="sm"
+          menuMinWidth={640}
           className="min-w-0 flex-1"
           renderOption={(opt) => <FingerprintOptionBody fp={opt.data} label={opt.label} />}
         />

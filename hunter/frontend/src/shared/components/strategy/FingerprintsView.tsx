@@ -20,7 +20,7 @@ import { PageHeader } from 'components/ui/PageHeader';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { ModeBadge } from './ModeBadge';
 import { FingerprintForm } from './FingerprintForm';
-import { ruleParamsCell } from './RuleParamsSummary';
+import { ruleChainCell } from './RuleParamsSummary';
 import { capsDisplayText } from './capsRuleColumns';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { apiErrorMessage } from 'store/baseApi';
@@ -163,7 +163,7 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
                 <span>buy {lamportsToSol(r.buy_amount_lamports)}◎</span>
                 <span>caps {capsDisplayText(r)}</span>
               </div>
-              {ruleParamsCell(r.params)}
+              {ruleChainCell(r.params)}
             </Link>
           </li>
         ))}
@@ -515,6 +515,7 @@ export function FingerprintsView({
           <div className="flex flex-col gap-3">
             {editingId && <FingerprintUsedByDetail rules={editingRules} />}
             <FingerprintForm
+              key={editing === 'new' ? 'new' : editing.id}
               initial={editing === 'new' ? undefined : editing}
               onSubmit={submit}
               onCancel={() => setEditing(null)}

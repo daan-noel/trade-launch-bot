@@ -102,7 +102,7 @@ export function useRuleActions({ renderDryRun }: UseRuleActionsOptions = {}): Ru
       title={editing && editing !== 'new' && editing.id ? 'Edit rule' : 'New rule'}
       open={editing !== null}
       onClose={() => setEditing(null)}
-      size="xl"
+      size="xxl"
     >
       {editing !== null && (
         <RuleEditor

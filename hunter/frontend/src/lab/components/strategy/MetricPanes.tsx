@@ -15,6 +15,7 @@ import { Accordion } from 'components/ui/Accordion';
 import { cn } from 'lib/cn';
 import { ACCORDION_IDS, STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
 import { metricColorStyle } from 'lib/strategy/metricColors';
+import { ROLE } from 'lib/strategy/roleColors';
 import {
   allMetrics,
   familyName,
@@ -795,7 +796,7 @@ const PANE_H = 64;
 
 const THRESHOLD_COLOR: Record<ConditionSide, string> = {
   entry: 'var(--color-primary)',
-  signal: 'var(--color-secondary)',
+  signal: ROLE.signal,
   exit: 'var(--color-warning)',
 };
 

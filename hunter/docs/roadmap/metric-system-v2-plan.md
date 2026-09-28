@@ -118,17 +118,16 @@ The DB column `fingerprints.metric_config` is renamed `tags`.
     "lock":          "token",
     "size_pct_of_pool": 1.5
   },
-  "signals": { "cashout": [[cond, cond], [cond, cond, cond]] },
-  "always":  [ {"if": [cond], "sell": "top"} ],
+  "signals": { "cashout": [[cond, cond], [cond, cond, cond]], "burst": [[cond]] },
+  "always":  [
+    {"if": [cond], "sell": "top"},
+    {"if": [{"signal": "cashout"}, {"metric": "m_state.age_sec", "is": [{"operator": "<", "value": 20}]}], "sell": "spike"},
+    {"if": [{"signal": "cashout"}, {"metric": "m_state.age_sec", "is": [{"operator": ">=", "value": 20}]}], "go": "ride"}
+  ],
   "stages": [
-    { "name": "early", "ends": {"age_sec": 20},
-      "on":     [ {"if": [{"signal": "cashout"}], "sell": "spike"} ],
-      "at_end": [],
-      "then":   "late" },
-    { "name": "late",
-      "on": [ {"if": [{"signal": "cashout"}], "go": "ride"} ] },
-    { "name": "ride", "ends": {"stage_sec": 30},
-      "on": [ {"if": [cond], "sell": "burst"} ] }
+    { "name": "open" },
+    { "name": "ride",
+      "on": [ {"if": [{"signal": "burst"}, cond], "sell": "burst"} ] }
   ],
   "reentry":   { "cooldown_sec": 30, "max_per_coin": 3 },
   "exclusive": false,
@@ -139,7 +138,7 @@ The DB column `fingerprints.metric_config` is renamed `tags`.
 - `cond` = `{"metric": "m_flow.buy_sol", "tag": "!volume", "span": "10s", "is": [{"operator": ">=", "value": 2}]}`
   or `{"signal": "cashout"}` / `{"signal": "cashout", "not": true}`. `is` keeps today's
   condition grammar (a list is AND, a list of lists is OR).
-- a line's `if` is AND; OR is two lines or a signal. Actions: `"sell": "label"` (the whole
+- a line's `if` is AND; OR is two lines or a signal. The signal is the shared block; the metric that distinguishes a case, age included, sits on the line. Actions: `"sell": "label"` (the whole
   bag), `"sell": "label", "sell_pct": 50` (part of the initial bag), `"go": "stage"`; a partial
   sell may also `go`.
 - `ends`: `{"age_sec"}` (coin age), `{"held_sec"}` (since our buy), `{"stage_sec"}` (since this

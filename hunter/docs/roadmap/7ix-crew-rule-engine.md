@@ -26,8 +26,8 @@ The crew is one fingerprint tag, `volume`; the dump list is a second, `dump`.
 | 1,000 s clock | `m_position.held_sec >= 1000` | exists |
 | buy only at the first print at age >= 1 s | `enter.event: m_state.age_sec >= 1`, `enter.lock: "token"` | **added**: the `token` lock (the failing print spends the coin, as `slot` spends the slot) |
 | signal: crew profit at target, or at 0.6 x target with outsider buys | signal `cashout`: `[profit_sol @volume >= T]` or `[profit_sol @volume >= 0.6 T, m_flow.buy_sol @!volume [3s] >= 1]` | rule grammar |
-| signal before age 20 s: sell; at age >= 20 s: ride | stage `early` (`ends: {"age_sec": 20}`): `cashout` and `m_state.age_sec < 20` -> sell; at its end `cashout -> go ride`, else `late`; stage `late`: `cashout -> go ride` | rule grammar |
-| guard: first 30 s of the ride | stage `ride`: `m_flow.buy_sol @!volume [10s] >= 2` and `m_position.stage_sec <= 30` -> sell | **added**: `m_position.stage_sec`, seconds since the current stage began |
+| signal before age 20 s: sell; at age >= 20 s: ride | `always`: `cashout` and `m_state.age_sec < 20` -> sell; `cashout` and `m_state.age_sec >= 20` -> go `ride`. Age stays on the line. The position starts in `open` | rule grammar |
+| guard: first 30 s of the ride | signal `burst` = `m_flow.buy_sol @!volume [10s] >= 2`; stage `ride`: `burst` and `m_position.stage_sec <= 30` -> sell | **added**: `m_position.stage_sec`, seconds since the current stage began |
 | name used by an earlier coin of this build | fingerprint axis `name_reuse_count`: earlier tokens with the same create ix list and the same `(name, symbol)` identity (`identity::token_identity_hash`), trailing `NAME_REUSE_WINDOW_DAYS` | **added**: one timestamped tally (`fingerprint::identity_launches`) |
 
 The vsol >= 110, dump and clock exits are `always` lines, read in every stage. Nothing
@@ -71,13 +71,10 @@ Definition of done: `cargo check` / clippy / tests clean on `hunter-engine`, `hu
 
 ## 4. Status
 
-Steps 1-7 are built; the parity table is section 6 of the case file. The six stored rules are
-the v1 converter's form (a `start` / `armed` stage pair). The form section 1 writes - the
-`cashout` signal, `early` ending at age 20 s, `late`, `ride` - books the same tickets as the
-stored form on all six rules over 09-01 .. 09-21: same entries, exit prints and SOL. Open:
-
-- Store that form in the six rule rows, so the readout and the exit labels say the rule's own
-  words (`crew cashout`, `ride burst`, `dev dumps`).
+Steps 1-7 are built; the parity table is section 6 of the case file. The six stored rules
+use section 1: `cashout` and `burst` as signals, the age split on `always`, `open` then
+`ride`. Exit labels are `crew cashout`, `ride burst`, and `dev dumps`. Each max_cost keeps
+its own target. FINAL keeps the print-count door; BROAD keeps the pool door. Open:
 - `lab lake-export` through the newest day, then re-run `g7_engine_sim.py` so the 09-22 .. 09-24
   coins join the engine side.
 - Paper trading, then real at 0.03 SOL.

@@ -235,9 +235,10 @@ fn the_shortcuts_come_first_in_their_own_order() {
     assert_eq!(r.always[2].sell.unwrap().reason, ExitReason::Line("trail"));
 }
 
-/// The 7ix plan, one step per evaluation: a signal before age 20 sells; at 20 the rule
-/// moves to `late`; in `late` the signal moves to `ride` (and the ride's own line is read
-/// from the next evaluation, never on the move); a ride deadline moves to `hold`.
+/// A deadline plan, one step per evaluation: a signal before the age deadline sells; at
+/// the deadline the rule moves to `late`; in `late` the signal moves to `ride` (and the
+/// ride's own line is read from the next evaluation, never on the move); a ride deadline
+/// moves to `hold`.
 #[test]
 fn a_stage_plan_walks_one_step_per_evaluation() {
     let r = compile(json!({
@@ -273,6 +274,40 @@ fn a_stage_plan_walks_one_step_per_evaluation() {
         HeldAction::Sell { reason: ExitReason::Line("top"), bps: None, then_stage: None },
         "always lines apply in every stage"
     );
+}
+
+/// One signal, split by age on always. Before 20 s it sells. At 20 s it moves to
+/// `ride`, and the ride line is read on the next evaluation. Past that line's
+/// stage window the signal does nothing.
+#[test]
+fn one_signal_splits_on_age_in_always() {
+    let r = compile(json!({
+        "signals": {
+            "cashout": [[c("m_state.liquidity_sol", ">=", 30.0)]],
+            "burst": [[c("m_state.liquidity_sol", ">=", 30.0)]]
+        },
+        "always": [
+            { "if": [{ "signal": "cashout" }, c("m_state.age_sec", "<", 20.0)], "sell": "spike" },
+            { "if": [{ "signal": "cashout" }, c("m_state.age_sec", ">=", 20.0)], "go": "ride" }
+        ],
+        "stages": [
+            { "name": "open" },
+            { "name": "ride", "on": [{ "if": [{ "signal": "burst" }, c("m_position.stage_sec", "<=", 30.0)], "sell": "burst" }] }
+        ]
+    }));
+    let mut hot = TokenTrack::new(t0());
+    hot.on_trade(print(1.0, 35.0, 5.0));
+    assert_eq!(
+        r.held_step(&hot, &held(1.0, 1.0, 1.0, 0, 0.0), at(10.0)),
+        HeldAction::Sell { reason: ExitReason::Line("spike"), bps: None, then_stage: None }
+    );
+    assert_eq!(r.held_step(&hot, &held(1.0, 1.0, 1.0, 0, 0.0), at(20.0)), HeldAction::Move { stage: 1 });
+    assert_eq!(
+        r.held_step(&hot, &held(1.0, 1.0, 1.0, 1, 20.0), at(20.2)),
+        HeldAction::Sell { reason: ExitReason::Line("burst"), bps: None, then_stage: None },
+        "the ride line is read from the next evaluation"
+    );
+    assert_eq!(r.held_step(&hot, &held(1.0, 1.0, 1.0, 1, 20.0), at(55.0)), HeldAction::None);
 }
 
 /// A checkpoint: at the deadline the first `at_end` line that holds acts, and only

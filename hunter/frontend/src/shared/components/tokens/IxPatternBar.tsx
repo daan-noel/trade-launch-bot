@@ -195,7 +195,7 @@ export function IxPatternBar({
         value={targetId ?? ''}
         onChange={(e) => setTargetId(e.target.value || null)}
         title="Fingerprint the badges write to"
-        className="max-w-[16rem]"
+        className="w-96 max-w-full"
       >
         <option value="">Fingerprint...</option>
         {fingerprints.map((f) => (

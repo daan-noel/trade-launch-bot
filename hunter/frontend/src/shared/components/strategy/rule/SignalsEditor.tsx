@@ -1,15 +1,19 @@
-// Signals: named conditions, written once and used by name in any line. A signal
-// holds when ANY of its groups holds (every condition of that group).
+// Signals: named conditions, written once and used by name in any condition. A signal
+// holds when ANY of its groups holds (every condition of that group). The name
+// sits in a column on the left. The rail on the right says any, each group
+// indents as all / and, and or sits between groups.
+
+import { Fragment } from 'react';
 
 import { Button } from 'components/ui/Button';
 import { IconButton } from 'components/ui/IconButton';
 import { Input } from 'components/ui/Input';
 import { CloseIcon, PlusIcon } from 'components/ui/icons';
 import { defaultRef } from 'lib/strategy/metricRef';
+import { ROLE } from 'lib/strategy/roleColors';
 import { freshName, metricCond, newId, type MetricCond, type RuleDoc, type Signal } from 'lib/strategy/ruleDoc';
-import { condsSentence } from 'lib/strategy/sentences';
 import { nameError } from 'lib/strategy/validate';
-import { CondList, PartHeader } from './parts';
+import { CondList, Lead, PartHeader } from './parts';
 import type { CondContext } from './CondRow';
 
 function starterGroup(ctx: CondContext): MetricCond[] {
@@ -35,7 +39,7 @@ export function SignalsEditor({
     onChange([...signals, { id: newId(), name: freshName('signal', signals.map((s) => s.name)), groups: [starterGroup(ctx)] }]);
   const inner: CondContext = { ...ctx, beforeBuy: false };
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-4">
       <PartHeader ctx={ctx} part="signals">
         <Button variant="subtle" size="xs" disabled={ctx.disabled} onClick={add}>
           <PlusIcon className="size-3" /> signal
@@ -44,68 +48,78 @@ export function SignalsEditor({
       {signals.map((s, i) => {
         const nErr = nameError(s.name, 'Name');
         return (
-          <div key={s.id} className="flex flex-col gap-1.5 rounded-md border border-white/10 bg-bg-card px-2 py-2">
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-semibold text-text-dim">Signal</span>
+          <div key={s.id} className="flex items-start gap-3 border-b border-white/10 pb-3 last:border-b-0 last:pb-0">
+            <div className="flex w-44 shrink-0 flex-col gap-1.5 border-r border-white/10 pr-3">
+              <div className="flex items-center gap-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: ROLE.signal }}>Signal</span>
+                <IconButton
+                  className="ml-auto"
+                  variant="ghost"
+                  size="sm"
+                  disabled={ctx.disabled}
+                  onClick={() => onChange(signals.filter((_, j) => j !== i))}
+                  title="Remove signal"
+                  aria-label="Remove signal"
+                >
+                  <CloseIcon />
+                </IconButton>
+              </div>
               <Input
                 fieldSize="sm"
-                className="w-40 font-mono"
+                className="w-full font-mono"
                 value={s.name}
                 disabled={ctx.disabled}
                 onChange={(e) => onRename(s.name, e.target.value)}
               />
-              <span className="text-[11px] text-text-dim">holds when any group holds</span>
-              <IconButton
-                className="ml-auto"
-                variant="ghost"
-                size="sm"
-                disabled={ctx.disabled}
-                onClick={() => onChange(signals.filter((_, j) => j !== i))}
-                title="Remove signal"
-                aria-label="Remove signal"
-              >
-                <CloseIcon />
-              </IconButton>
+              {nErr && <p className="text-[11px] text-red">{nErr}</p>}
             </div>
-            {nErr && <p className="text-[11px] text-red">{nErr}</p>}
-            {s.groups.map((g, gi) => (
-              <div key={gi} className="flex flex-col gap-1">
-                {gi > 0 && <span className="text-[10px] font-semibold uppercase tracking-wide text-accent">or</span>}
-                <div className="flex items-start gap-1 rounded border border-white/5 p-1.5">
-                  <div className="min-w-0 flex-1">
-                    <CondList
-                      conds={g}
-                      metricOnly
-                      ctx={inner}
-                      empty="An empty group: add a condition or remove the group."
-                      onChange={(cs) =>
-                        set(i, { ...s, groups: s.groups.map((x, k) => (k === gi ? (cs as MetricCond[]) : x)) })
-                      }
-                    />
-                  </div>
-                  {s.groups.length > 1 && (
-                    <IconButton
-                      variant="ghost"
-                      size="sm"
-                      disabled={ctx.disabled}
-                      onClick={() => set(i, { ...s, groups: s.groups.filter((_, k) => k !== gi) })}
-                      title="Remove this group"
-                      aria-label="Remove group"
-                    >
-                      <CloseIcon />
-                    </IconButton>
-                  )}
+            <div className="flex min-w-0 flex-1 gap-2">
+              <div className="w-0.5 shrink-0 rounded-full" style={{ backgroundColor: ROLE.signal }} />
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <Lead word="any" />
+                {s.groups.map((g, gi) => (
+                  <Fragment key={gi}>
+                    {gi > 0 && (
+                      <div className="flex items-center gap-2 py-0.5 pl-12">
+                        <Lead word="or" />
+                        <span className="h-px min-w-8 flex-1 bg-white/12" />
+                      </div>
+                    )}
+                    <div className="flex items-start gap-1 pl-12">
+                      <div className="min-w-0 flex-1">
+                        <CondList
+                          conds={g}
+                          metricOnly
+                          ctx={inner}
+                          word={(k) => (k === 0 ? 'all' : 'and')}
+                          empty="An empty group: add a condition or remove the group."
+                          onChange={(cs) =>
+                            set(i, { ...s, groups: s.groups.map((x, k) => (k === gi ? (cs as MetricCond[]) : x)) })
+                          }
+                        />
+                      </div>
+                      {s.groups.length > 1 && (
+                        <IconButton
+                          variant="ghost"
+                          size="sm"
+                          disabled={ctx.disabled}
+                          onClick={() => set(i, { ...s, groups: s.groups.filter((_, k) => k !== gi) })}
+                          title="Remove this group"
+                          aria-label="Remove group"
+                        >
+                          <CloseIcon />
+                        </IconButton>
+                      )}
+                    </div>
+                  </Fragment>
+                ))}
+                <div className="pl-12">
+                  <Button variant="subtle" size="xs" disabled={ctx.disabled} onClick={() => set(i, { ...s, groups: [...s.groups, starterGroup(ctx)] })}>
+                    <PlusIcon className="size-3" /> or group
+                  </Button>
                 </div>
               </div>
-            ))}
-            <div>
-              <Button variant="subtle" size="xs" disabled={ctx.disabled} onClick={() => set(i, { ...s, groups: [...s.groups, starterGroup(ctx)] })}>
-                <PlusIcon className="size-3" /> or group
-              </Button>
             </div>
-            <p className="text-[11px] text-text-dim/80">
-              `{s.name}` holds when {s.groups.map((g) => `(${condsSentence(ctx.reg, g)})`).join(' or ')}.
-            </p>
           </div>
         );
       })}

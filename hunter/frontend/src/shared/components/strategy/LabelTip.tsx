@@ -16,7 +16,7 @@ export function LabelTip({
   return (
     <span className={cn('inline-flex items-center gap-1', className)}>
       {children}
-      <InfoTooltip title={tip.title} body={tip.body} />
+      <InfoTooltip title={tip.title} body={tip.body} figure={tip.figure} />
     </span>
   );
 }

@@ -1,14 +1,17 @@
 // Compact at-a-glance summary of a rule's `params` (format 2): the buy conditions,
 // then each sell line as `conditions -> action`, stage by stage. Shared by Rules,
 // Simulate, Fingerprints (used-by) and the search tables, so every surface that shows
-// a rule reads the same. The full sentences live in `rule/RuleSentences.tsx`.
+// a rule reads the same. The column drawing lives in `rule/RuleSentences.tsx`.
 
 import { Fragment, type CSSProperties, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { formatDecimalTrim } from 'utils/format';
 import { familyName, findMetric, useStrategyRegistry, type Operator } from 'lib/strategy/registry';
 import { metricColorStyle } from 'lib/strategy/metricColors';
+import { ROLE, signalChipStyle } from 'lib/strategy/roleColors';
 import { refLabel } from 'lib/strategy/metricRef';
+import { buyChips, buyGateConds, sellGlance, signalChip } from 'lib/strategy/ruleChain';
+import { GateFaces } from './rule/MetricMark';
 import { ruleDocFromJson, type Cond, type Line, type RuleDoc } from 'lib/strategy/ruleDoc';
 import { condLabel, condSentence, deadlineSentence, lineExitLabel } from 'lib/strategy/sentences';
 
@@ -39,7 +42,7 @@ function parse(raw: unknown): { doc: RuleDoc } | { error: string } {
 function CondChip({ c }: { c: Cond }) {
   const { data: reg } = useStrategyRegistry();
   if (c.kind === 'signal') {
-    return <>{chip(c.not ? `not ${c.signal}` : c.signal, cn('text-accent', c.off && 'line-through opacity-50'), undefined, condSentence(reg, c))}</>;
+    return <>{chip(c.not ? `not ${c.signal}` : c.signal, cn(c.off && 'line-through opacity-50'), signalChipStyle(), condSentence(reg, c))}</>;
   }
   const spec = findMetric(reg, c.ref.metric);
   const tint = metricColorStyle({
@@ -75,7 +78,7 @@ function LineRow({ l, tag }: { l: Line; tag: string }) {
   return (
     <div className={cn('flex flex-wrap items-center gap-1', l.off && 'opacity-50')}>
       <span className="text-[9px] font-bold uppercase text-warning/70">{tag}</span>
-      {l.if.length ? <Conds conds={l.if} /> : chip('always', 'text-text-dim')}
+      {l.if.length ? <Conds conds={l.if} /> : chip('Always', 'text-text-dim')}
       <span className="font-mono text-[10px] text-text-dim">⇒</span>
       {actionChip(l)}
     </div>
@@ -94,12 +97,57 @@ function BuyRow({ label, conds, cls }: { label: string; conds: Cond[]; cls: stri
 
 function headline(doc: RuleDoc): ReactNode[] {
   const out: ReactNode[] = [];
-  if (doc.stop_loss != null) out.push(chip(`SL ${formatDecimalTrim(doc.stop_loss, 1)}%`, 'text-red'));
   if (doc.take_profit != null) out.push(chip(`TP ${formatDecimalTrim(doc.take_profit, 1)}%`, 'text-green'));
+  if (doc.stop_loss != null) out.push(chip(`SL ${formatDecimalTrim(doc.stop_loss, 1)}%`, 'text-red'));
   if (doc.enter.size_pct_of_pool != null) out.push(chip(`size ${formatDecimalTrim(doc.enter.size_pct_of_pool, 2)}% pool`, 'text-accent'));
   if (doc.reentry) out.push(chip(`again ${formatDecimalTrim(doc.reentry.cooldown_sec, 1)}s ×${doc.reentry.max_per_coin}`, 'text-accent'));
   if (doc.exclusive) out.push(chip(`exclusive P${doc.priority}`, 'text-warning'));
   return out;
+}
+
+/** The Rules-list chain: the signal, the Buy gates, and the Sell names. The same
+ *  words the editor shows when nothing is open. */
+export function ruleChainCell(raw: unknown): ReactNode {
+  const p = parse(raw);
+  if ('error' in p) return chip('format-1 params', 'text-text-dim', undefined, p.error);
+  return <ChainGlance doc={p.doc} />;
+}
+
+function ChainGlance({ doc }: { doc: RuleDoc }) {
+  const { data: reg } = useStrategyRegistry();
+  const chips = buyChips(doc);
+  const when = chips.filter((c) => c.group === 'when');
+  const looking = chips.filter((c) => c.group === 'looking');
+  const line = (label: string, row: typeof chips, empty?: string) => (
+    <p className="flex flex-wrap items-center gap-1">
+      <span className="text-text-dim">{label}</span>
+      {row.length === 0 && empty && <span>{empty}</span>}
+      {row.map((g, i) => (
+        <span key={g.key} className="inline-flex items-center gap-1">
+          {i > 0 && <span className="text-text-dim">→</span>}
+          <span>{g.title}</span>
+          {g.key !== 'lock' && <GateFaces conds={buyGateConds(doc, g.key)} reg={reg} />}
+        </span>
+      ))}
+    </p>
+  );
+  const signal = signalChip(doc);
+  return (
+    <div className="flex flex-col items-start gap-0.5 text-left text-[12px] leading-snug">
+      {signal && (
+        <p>
+          <span className="text-text-dim">Signal </span>
+          {signal}
+        </p>
+      )}
+      {line('Buy When', when, 'first print')}
+      {line('Keep Looking', looking)}
+      <p>
+        <span className="text-text-dim">Sell </span>
+        {sellGlance(doc)}
+      </p>
+    </div>
+  );
 }
 
 /** Compact summary for a rule's / combo's `params`: one row per buy part, then one
@@ -120,12 +168,12 @@ export function ruleParamsCell(raw: unknown): ReactNode {
           ))}
         </div>
       )}
-      <BuyRow label={e.lock ? `on/${e.lock}` : 'on'} conds={e.event} cls="text-accent" />
-      <BuyRow label="if" conds={e.filters} cls="text-accent/70" />
-      <BuyRow label="if/quit" conds={e.final_filters} cls="text-accent/70" />
+      <BuyRow label={e.lock ? `On · ${e.lock === 'token' ? 'Once Per Coin' : 'Once Per Slot'}` : 'On'} conds={e.event} cls="text-accent" />
+      <BuyRow label="Only If" conds={e.filters} cls="text-accent/70" />
+      <BuyRow label="Give Up" conds={e.final_filters} cls="text-accent/70" />
       {doc.signals.map((s) => (
         <div key={s.id} className="flex flex-wrap items-center gap-1">
-          <span className="text-[9px] font-bold uppercase text-accent">{s.name} =</span>
+          <span className="text-[9px] font-bold uppercase" style={{ color: ROLE.signal }}>{s.name} =</span>
           {s.groups.map((g, gi) => (
             <Fragment key={gi}>
               {gi > 0 && <span className="font-mono text-[10px] text-text-dim/70">∨</span>}

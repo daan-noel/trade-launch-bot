@@ -108,6 +108,7 @@ export function FingerprintScopeControl({
           placeholder="Search fingerprints…"
           emptyOptionLabel={emptyOptionLabel}
           noResultsLabel="No fingerprints match"
+          menuMinWidth={640}
           fieldSize="sm"
           renderOption={(opt) => <FingerprintOptionBody fp={opt.data} label={opt.label} />}
         />

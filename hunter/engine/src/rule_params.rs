@@ -14,13 +14,15 @@
 //!   "stop_loss":   30,
 //!   "signals": { "cashout": [[cond, cond], [cond]] },   // named: any group holds (AND inside)
 //!   "always":  [line],                  // checked first, in every stage
-//!   "stages":  [{ "name": "early", "ends": {"age_sec": 20}, "on": [line], "at_end": [line], "then": "late" }],
+//!   "stages":  [{ "name": "open" }, { "name": "ride", "on": [line] }],
 //!   "reentry": { "cooldown_sec": 30, "max_per_coin": 3 },
 //!   "exclusive": true, "priority": 2
 //! }
 //! cond = {"metric": "m_flow.buy_sol", "tag": "!volume", "span": "10s", "is": [{"operator": ">=", "value": 2}]}
 //!      | {"signal": "cashout"} | {"signal": "cashout", "not": true}
-//! line = {"if": [cond], "sell": "label" | true, "sell_pct": 50, "go": "stage"}
+//! line = {"if": [{"signal": "cashout"}, cond], "sell": "label" | true, "sell_pct": 50, "go": "stage"}
+//! A line's `if` is AND, and so is a buy gate. The signal is the shared block
+//! (any group holds); that case's own metrics, age included, sit beside the name.
 //! ```
 //!
 //! Any condition or line may carry `"off": true`: kept in place and validated like a

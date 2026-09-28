@@ -4,7 +4,7 @@
 //   enter    the buy: `event` (the print that triggers it), `filters` (must also hold,
 //            else keep watching), `final_filters` (else give up the coin), `lock`,
 //            `size_pct_of_pool`
-//   signals  named conditions, written once, used by name in any line
+//   signals  named conditions, written once, used by name in any condition
 //   always   sell lines checked first, in every stage
 //   stages   the steps after the buy, each with its own lines and an optional deadline
 //

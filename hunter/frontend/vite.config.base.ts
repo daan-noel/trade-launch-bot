@@ -25,6 +25,11 @@ export interface AppConfigOptions {
    * refresh on e.g. `/strategies/tpsl1` loads the lab app, not the live one.
    */
   spaFallback?: boolean;
+  /**
+   * Directories outside this package the dev server may serve, relative to it.
+   * The lab reads `docs/plans/strategies/_!___inventory.md` with `?raw`.
+   */
+  fsAllow?: string[];
 }
 
 /** Rewrite top-level HTML navigations to `entry`, leaving assets/modules/@vite/api alone. */
@@ -76,6 +81,7 @@ export function makeConfig(opts: AppConfigOptions) {
       },
       server: {
         port: opts.port,
+        ...(opts.fsAllow ? { fs: { allow: ['.', ...opts.fsAllow] } } : {}),
         proxy: {
           '/api': {
             target: proxyTarget,

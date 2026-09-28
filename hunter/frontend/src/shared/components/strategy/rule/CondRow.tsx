@@ -2,11 +2,13 @@
 // written underneath (or, when it cannot be saved, the reason). A signal condition is
 // `[signal] holds / does not hold`.
 
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+
 import { ConditionInput } from '../ConditionInput';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { IconButton } from 'components/ui/IconButton';
-import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { CloseIcon } from 'components/ui/icons';
 import { cn } from 'lib/cn';
 import {
@@ -17,10 +19,13 @@ import {
   type MetricRef,
   type SpanModel,
 } from 'lib/strategy/metricRef';
-import { findMetric, metricHelp, type MetricSpec, type StrategyRegistry } from 'lib/strategy/registry';
+import { metricTone } from 'lib/strategy/metricColors';
+import { ROLE } from 'lib/strategy/roleColors';
+import { familyName, findFamily, findMetric, type MetricSpec, type StrategyRegistry } from 'lib/strategy/registry';
 import type { Cond, MetricCond } from 'lib/strategy/ruleDoc';
-import { condSentence } from 'lib/strategy/sentences';
+import { applySpanSpell, spanReading, spanSpells, type SpanSpell } from 'lib/strategy/spanEditor';
 import { metricCondError } from 'lib/strategy/validate';
+import { FamilyMark } from './MetricMark';
 
 export interface CondContext {
   reg: StrategyRegistry;
@@ -46,14 +51,15 @@ export function CondRow({
 }) {
   const muted = cond.off && 'opacity-50';
   return (
-    <div className={cn('flex flex-col gap-0.5 rounded border border-white/5 bg-white/2 px-2 py-1.5', muted)}>
+    <div className={cn('flex min-w-0 flex-1 flex-col gap-0.5', muted)}>
       <div className="flex flex-wrap items-center gap-1.5">
         {cond.kind === 'metric' ? (
           <MetricCondFields cond={cond} onChange={onChange} ctx={ctx} />
         ) : (
           <>
             <Select
-              className="w-40"
+              className="w-40 font-mono"
+              style={{ color: ROLE.signal, borderColor: ROLE.signal }}
               value={cond.signal}
               disabled={ctx.disabled}
               onChange={(e) => onChange({ ...cond, signal: e.target.value })}
@@ -97,15 +103,12 @@ export function CondRow({
 
 function CondFootnote({ cond, ctx }: { cond: Cond; ctx: CondContext }) {
   if (cond.kind === 'signal') {
-    const missing = !ctx.signals.includes(cond.signal);
-    return (
-      <p className={cn('text-[11px]', missing ? 'text-red' : 'text-text-dim')}>
-        {missing ? `There is no signal \`${cond.signal}\`.` : condSentence(ctx.reg, cond)}
-      </p>
-    );
+    if (ctx.signals.includes(cond.signal)) return null;
+    return <p className="text-[11px] text-red">There is no signal `{cond.signal}`.</p>;
   }
   const err = metricCondError(ctx.reg, cond, ctx.tags);
-  return <p className={cn('text-[11px]', err ? 'text-red' : 'text-text-dim')}>{err ?? condSentence(ctx.reg, cond)}</p>;
+  if (!err) return null;
+  return <p className="text-[11px] text-red">{err}</p>;
 }
 
 function MetricCondFields({
@@ -175,7 +178,6 @@ export function RefFields({
   return (
     <>
       <MetricSelect value={r.metric} onChange={pickMetric} ctx={ctx} />
-      {spec && <InfoTooltip title={spec.path} body={metricHelp(spec)} />}
       {spec && spec.tags !== 'none' && (
         <Select
           className="w-40"
@@ -196,46 +198,209 @@ export function RefFields({
           ))}
         </Select>
       )}
-      {spec && <SpanFields spec={spec} r={r} onChange={onChange} disabled={ctx.disabled} />}
+      {spec && <SpanFields spec={spec} r={r} onChange={onChange} reg={ctx.reg} disabled={ctx.disabled} />}
     </>
   );
 }
 
-/** Metric picker, grouped by family. Our position's metrics are left out before the buy. */
+/** Metric picker, grouped by family. The closed face is the family color and the
+ *  name. The menu indents each metric under its family. The phrase sits on the
+ *  row and on hover. Our position's metrics are left out before the buy. The menu
+ *  is portaled so the editor modal does not clip it. */
 export function MetricSelect({
   value,
   onChange,
   ctx,
-  className,
 }: {
   value: string;
   onChange: (path: string) => void;
   ctx: Pick<CondContext, 'reg' | 'beforeBuy' | 'disabled'>;
-  className?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const spec = findMetric(ctx.reg, value);
+  const family = familyName(value);
+  const title = spec ? `${spec.phrase}. ${spec.summary}` : undefined;
   return (
-    <Select
-      className={cn('w-56', className)}
-      value={value}
-      disabled={ctx.disabled}
-      onChange={(e) => onChange(e.target.value)}
-      title={findMetric(ctx.reg, value)?.summary}
+    <div>
+      <button
+        ref={btnRef}
+        type="button"
+        disabled={ctx.disabled}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        title={title}
+        onClick={() => {
+          if (ctx.disabled) return;
+          setOpen((v) => !v);
+          setQuery('');
+        }}
+        className="inline-flex h-7 max-w-56 items-center gap-1 rounded-md border border-white/10 bg-white/4 px-1.5 text-text hover:border-white/20 disabled:opacity-50"
+      >
+        {spec && <FamilyMark family={family} subject={findFamily(ctx.reg, family)?.title} hue={spec.hue} />}
+        <span className="truncate font-mono text-[11px]" style={spec ? { color: metricTone(spec.hue).color } : undefined}>
+          {spec?.name ?? (value || 'pick a metric')}
+        </span>
+      </button>
+      {open && btnRef.current && (
+        <MetricMenu
+          anchor={btnRef.current}
+          reg={ctx.reg}
+          beforeBuy={ctx.beforeBuy}
+          value={value}
+          query={query}
+          onQuery={setQuery}
+          onClose={() => setOpen(false)}
+          onPick={(path) => {
+            onChange(path);
+            setOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** The family's color: the middle hue of its metrics, so one outlier does not paint the group. */
+function bandHue(hues: number[]): number {
+  if (hues.length === 0) return 0;
+  const sorted = [...hues].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) / 2)];
+}
+
+function MetricMenu({
+  anchor,
+  reg,
+  beforeBuy,
+  value,
+  query,
+  onQuery,
+  onClose,
+  onPick,
+}: {
+  anchor: HTMLElement;
+  reg: StrategyRegistry;
+  beforeBuy: boolean;
+  value: string;
+  query: string;
+  onQuery: (q: string) => void;
+  onClose: () => void;
+  onPick: (path: string) => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const [box, setBox] = useState({ top: 0, left: 0, maxH: 280 });
+  const q = query.trim().toLowerCase();
+  const groups = useMemo(() => {
+    return reg.families
+      .map((f) => ({
+        family: f,
+        metrics: f.metrics.filter((m) => {
+          if (beforeBuy && m.position) return false;
+          if (!q) return true;
+          return m.name.includes(q) || m.path.toLowerCase().includes(q) || m.phrase.toLowerCase().includes(q) || m.summary.toLowerCase().includes(q);
+        }),
+      }))
+      .filter((g) => g.metrics.length > 0);
+  }, [reg, beforeBuy, q]);
+
+  useLayoutEffect(() => {
+    const place = () => {
+      const r = anchor.getBoundingClientRect();
+      const below = window.innerHeight - r.bottom;
+      const maxH = Math.min(320, Math.max(180, below - 12));
+      setBox({ top: r.bottom + 4, left: Math.min(r.left, window.innerWidth - 392), maxH });
+    };
+    place();
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [anchor]);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    menuRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Tab') {
+        e.stopPropagation();
+        e.preventDefault();
+        closeRef.current();
+      }
+    };
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!anchor.contains(t) && !menuRef.current?.contains(t)) closeRef.current();
+    };
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [anchor]);
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      role="listbox"
+      style={{ position: 'fixed', top: box.top, left: box.left, maxHeight: box.maxH, width: 380, zIndex: 260 }}
+      className="flex flex-col overflow-hidden rounded-md border border-white/10 bg-bg-card shadow-lg"
     >
-      {!findMetric(ctx.reg, value) && <option value={value}>{value || 'pick a metric...'}</option>}
-      {ctx.reg.families.map((f) => {
-        const ms = f.metrics.filter((m) => !(ctx.beforeBuy && m.position));
-        if (!ms.length) return null;
-        return (
-          <optgroup key={f.name} label={`${f.title} (${f.name})`}>
-            {ms.map((m) => (
-              <option key={m.path} value={m.path} title={m.summary}>
-                {m.path} : {m.phrase}
-              </option>
-            ))}
-          </optgroup>
-        );
-      })}
-    </Select>
+      <input
+        ref={inputRef}
+        value={query}
+        placeholder="Find a metric"
+        onChange={(e) => onQuery(e.target.value)}
+        className="border-b border-white/10 bg-transparent px-2 py-1.5 font-mono text-[11px] text-text outline-none placeholder:text-text-dim/60"
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto py-1">
+        {groups.length === 0 && <p className="px-2 py-1.5 text-[11px] text-text-dim">No metric</p>}
+        {groups.map((g) => {
+          const band = metricTone(bandHue(g.metrics.map((m) => m.hue)));
+          return (
+            <div key={g.family.name} className="pb-1">
+              <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-bg-card px-2 py-1" title={g.family.summary}>
+                <FamilyMark family={g.family.name} subject={g.family.title} hue={band.hue} />
+                <span className="truncate text-[11px] text-text">{g.family.title}</span>
+              </div>
+              <div className="ml-3.5 border-l pl-1" style={{ borderLeftColor: band.color }}>
+                {g.metrics.map((m) => {
+                  const tone = metricTone(m.hue);
+                  return (
+                    <button
+                      key={m.path}
+                      type="button"
+                      role="option"
+                      aria-selected={m.path === value}
+                      title={`${m.phrase}. ${m.summary}`}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => onPick(m.path)}
+                      className={cn(
+                        'flex w-full items-center gap-1.5 py-0.5 pr-2 pl-1.5 text-left hover:bg-white/6',
+                        m.path === value && 'bg-primary/15',
+                      )}
+                    >
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: tone.color }} />
+                      <span className="shrink-0 font-mono text-[11px]" style={{ color: tone.color }}>
+                        {m.name}
+                      </span>
+                      <span className="truncate text-[11px] text-text-dim">{m.phrase}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -253,94 +418,179 @@ function tagOptions(ctx: CondContext, spec: MetricSpec): { value: string; label:
   return out;
 }
 
-type SpanKindChoice = 'life' | 'window' | 'since_age';
-
 function spanAllowed(spec: MetricSpec, m: SpanModel): boolean {
   if (m.kind === 'life') return spec.spans.life;
   if (m.kind === 'since_age') return spec.spans.since_age;
   return spec.spans.window && spec.spans.slice === !!m.slice;
 }
 
-/** The span controls: which kind (life / a trailing window / since an age), then its
- *  text. Only the kinds the metric accepts are offered. */
+/** The spellings, closed into one menu so the row stays as wide as the text box. */
+function SpellMenu({
+  spells,
+  current,
+  disabled,
+  title,
+  onPick,
+}: {
+  spells: SpanSpell[];
+  current: string;
+  disabled?: boolean;
+  title: string;
+  onPick: (spell: SpanSpell) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ top: 0, left: 0 });
+
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) return;
+    const place = () => {
+      const r = btnRef.current!.getBoundingClientRect();
+      setBox({ top: r.bottom + 4, left: Math.min(r.left, window.innerWidth - 280) });
+    };
+    place();
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!btnRef.current?.contains(t) && !menuRef.current?.contains(t)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open]);
+
+  if (!spells.length) return null;
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={title}
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/4 text-[12px] text-text-dim hover:text-text disabled:opacity-50"
+      >
+        ▾
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="listbox"
+            style={{ position: 'fixed', top: box.top, left: box.left, zIndex: 260, width: 260 }}
+            className="flex flex-col overflow-hidden rounded-md border border-white/10 bg-bg-card py-1 shadow-lg"
+          >
+            {spells.map((s) => (
+              <button
+                key={s.key}
+                type="button"
+                role="option"
+                aria-selected={s.write === current}
+                title={s.detail}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onPick(s);
+                  setOpen(false);
+                }}
+                className={cn(
+                  'flex items-baseline gap-2 px-2 py-1 text-left text-[12px] hover:bg-white/5',
+                  s.write === current && 'bg-white/10',
+                )}
+              >
+                <span className="w-16 shrink-0 font-mono text-text">{s.face}</span>
+                <span className="text-text-dim">{s.label}</span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+/** The span box, a menu of the spellings this metric accepts, and the reading
+ *  of the current text. A life-only metric has no span. */
 function SpanFields({
   spec,
   r,
   onChange,
+  reg,
   disabled,
 }: {
   spec: MetricSpec;
   r: MetricRef;
   onChange: (r: MetricRef) => void;
+  reg: StrategyRegistry;
   disabled?: boolean;
 }) {
-  const kinds: SpanKindChoice[] = [];
-  if (spec.spans.life) kinds.push('life');
-  if (spec.spans.window) kinds.push('window');
-  if (spec.spans.since_age) kinds.push('since_age');
-  if (kinds.length === 1 && kinds[0] === 'life') return null;
-  const parsed = parseSpan(r.span, r.slice);
-  const kind: SpanKindChoice =
-    typeof parsed === 'string' ? (r.span?.startsWith('age') ? 'since_age' : 'window') : parsed.kind;
-  const setKind = (k: SpanKindChoice) => {
-    if (k === 'life') onChange({ ...r, span: undefined, slice: undefined });
-    else if (k === 'since_age') onChange({ ...r, span: 'age0s', slice: undefined });
-    else onChange({ ...r, span: '10s', slice: spec.spans.slice ? '2s' : undefined });
+  if (!spec.spans.window && !spec.spans.since_age) return null;
+  const spells = spanSpells(reg, spec);
+  const reading = spanReading(spec, r);
+  const pick = (spell: SpanSpell) => {
+    const next = applySpanSpell(spec, r, spell);
+    onChange({ ...r, span: next.span, slice: next.slice });
   };
-  const label: Record<SpanKindChoice, string> = { life: 'whole life', window: 'last ...', since_age: 'since age ...' };
-  const ageSecs = kind === 'since_age' && typeof parsed !== 'string' && parsed.kind === 'since_age' ? parsed.secs : null;
+  const placeholder = spec.spans.since_age ? 'age60s' : spec.spans.life ? '' : '10s';
   return (
-    <>
-      {kinds.length > 1 ? (
-        <Select className="w-28" value={kind} disabled={disabled} title="Over what stretch" onChange={(e) => setKind(e.target.value as SpanKindChoice)}>
-          {kinds.map((k) => (
-            <option key={k} value={k}>
-              {label[k]}
-            </option>
-          ))}
-        </Select>
-      ) : (
-        <span className="text-[11px] text-text-dim">{label[kind]}</span>
-      )}
-      {kind === 'window' && (
-        <>
-          <Input
-            fieldSize="sm"
-            className="w-20 font-mono"
-            value={r.span ?? ''}
-            disabled={disabled}
-            placeholder="10s"
-            title="s = seconds, sl = slots (about 0.4 s), p = prints; @2 = the window ending 2 units ago. 10s, 20sl, 5p, 10s@2."
-            onChange={(e) => onChange({ ...r, span: e.target.value.trim() || undefined })}
-          />
-          {spec.spans.slice && (
-            <>
-              <span className="text-[11px] text-text-dim">slice</span>
-              <Input
-                fieldSize="sm"
-                className="w-16 font-mono"
-                value={r.slice ?? ''}
-                disabled={disabled}
-                placeholder="2s"
-                title="The shorter, most recent part of the window, same unit."
-                onChange={(e) => onChange({ ...r, slice: e.target.value.trim() || undefined })}
-              />
-            </>
-          )}
-        </>
-      )}
-      {kind === 'since_age' && (
+    <div className="flex min-w-0 max-w-xl flex-col gap-0.5">
+      <div className="flex flex-wrap items-center gap-1">
         <Input
           fieldSize="sm"
-          numeric
-          unit="s"
-          className="w-20"
-          numericValue={ageSecs}
+          className="w-24 font-mono"
+          value={r.span ?? ''}
           disabled={disabled}
-          title="Counts from this coin age (seconds) until now. 0 = since creation."
-          onNumericChange={(n) => onChange({ ...r, span: `age${n ?? 0}s`, slice: undefined })}
+          placeholder={placeholder}
+          title="Type a spelling, or pick one from the menu."
+          onChange={(e) => onChange({ ...r, span: e.target.value.trim() || undefined, slice: spec.spans.slice ? r.slice : undefined })}
         />
-      )}
-    </>
+        <SpellMenu
+          spells={spells.span}
+          current={r.span ?? ''}
+          disabled={disabled}
+          title="Spellings this box accepts"
+          onPick={pick}
+        />
+        {spec.spans.slice && (
+          <>
+            <span className="text-[11px] text-text-dim">slice</span>
+            <Input
+              fieldSize="sm"
+              className="w-16 font-mono"
+              value={r.slice ?? ''}
+              disabled={disabled}
+              placeholder="2s"
+              title="Shorter than the span, same unit, no @. The span's @ applies to both."
+              onChange={(e) => onChange({ ...r, slice: e.target.value.trim() || undefined })}
+            />
+            <SpellMenu
+              spells={spells.slice}
+              current={r.slice ?? ''}
+              disabled={disabled}
+              title="Slice spellings: shorter, same unit, no @"
+              onPick={pick}
+            />
+          </>
+        )}
+        <span className={cn('text-[11px]', reading.bad ? 'text-red' : 'text-text-dim')}>{reading.text}</span>
+      </div>
+    </div>
   );
 }

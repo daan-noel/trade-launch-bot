@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Badge } from 'components/ui/Badge';
 import { HoverPopover } from 'components/ui/HoverPopover';
 import { ModeBadge } from './ModeBadge';
-import { ruleParamsCell } from './RuleParamsSummary';
+import { ruleChainCell } from './RuleParamsSummary';
 import { fingerprintParamsCell } from './FingerprintParamsSummary';
 import { capsDisplayText } from './capsRuleColumns';
 import { lamportsToSol, type Fingerprint, type StrategyRule } from 'lib/strategy/types';
@@ -11,11 +11,11 @@ import { ruleDocFromJson } from 'lib/strategy/ruleDoc';
 import { RuleSentences } from './rule/RuleSentences';
 
 /** The rule in words, when its params are a format-2 document. */
-function RuleWords({ params }: { params: unknown }) {
+function RuleWords({ params, watch }: { params: unknown; watch?: string }) {
   const { data: reg } = useStrategyRegistry();
   if (!reg) return null;
   try {
-    return <RuleSentences doc={ruleDocFromJson(params)} reg={reg} />;
+    return <RuleSentences doc={ruleDocFromJson(params)} reg={reg} watch={watch} />;
   } catch {
     return null;
   }
@@ -61,11 +61,11 @@ export function RuleDetailCard({
       ) : null}
       <div className="flex flex-col gap-1">
         {sectionLabel('Params')}
-        {ruleParamsCell(rule.params)}
+        {ruleChainCell(rule.params)}
       </div>
       <div className="flex max-w-xl flex-col gap-1">
         {sectionLabel('In words')}
-        <RuleWords params={rule.params} />
+        <RuleWords params={rule.params} watch={fingerprint?.name} />
       </div>
     </div>
   );

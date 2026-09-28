@@ -64,6 +64,7 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | **tool** | A public trading app whose program sits in the ix structure: Axiom, Photon, GMGN, Bloom, Trojan, Terminal. Thousands of wallets share one tool structure. |
 | **ix template** | A tool name plus markers: CU (compute budget), ATA (token account), N (nonce), S (seed), F (fee transfer), e.g. `Axiom Trade\|CU\|ATA\|N\|F`. Coarser than an ix structure. A direct pump.fun buy keeps its instruction name (`BuyExactQuoteInV2` and `BuyExactSolIn` are different traders). |
 | **aggregator** | A routing program other bots pass through: Jupiter, DFlow. |
+| **listed structure** | An ix structure on a list a study built from earlier days: a trader's list, the tools, or the operator structures. |
 | **seed racer** | An ix structure that creates a throwaway account (`CreateAccountWithSeed`). It sprays many coins and reacts to someone else's print. |
 | **nonce buyer** | An ix structure that sends a pre-signed transaction (`AdvanceNonceAccount`) and no seed account. Prepared in advance: the opposite signal to a seed racer. |
 | **priority/tip fee** | What a print pays to land sooner: the compute-unit price, plus a tip to a Jito validator. Read it against that ix structure's own usual fee, never against the market's. |
@@ -95,6 +96,11 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | **hill** | A completed rise of ≥ 50 % from a low to a peak. |
 | **flush** | Price ≥ 20 % below the coin's peak so far. |
 | **slow wall** | A coin reaches vsol 60 with its peak ≥ 60 s after birth: it climbed instead of spiking. |
+| **pack** | Buys that land on one coin together, in one slot. A pure pack is all from one list. |
+| **wave** | A run of back-to-back slots with buys on one coin, ended by an empty slot. |
+| **push** | One listed structure landing two or more buys on a coin in one slot, after the coin was silent. |
+| **swing low** | The lowest price of one down-leg before the coin turns up. Known for sure only afterwards, so a rule reads who acts near it, not the low itself. |
+| **capitulation** | Holders under their cost selling in a burst into a price that is already falling. |
 | **frenzy** | ≥ 15 distinct ix structures printed on the coin in the last 5 s. |
 | **absorption** | A sell whose drop is bought back: the coin makes a new high within 15 s of the sell. On a curve every buy moves price, so absorption means that sequence, never buying that fails to move price. |
 | **one-slot rug** | A fall of -50 % or worse inside a single slot: many wallets selling together, not a drift down. |

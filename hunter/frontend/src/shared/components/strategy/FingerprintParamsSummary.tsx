@@ -355,10 +355,10 @@ export function FingerprintOptionBody({
   const auto = fingerprintAutoName(fp);
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      <span className="truncate font-medium">{label}</span>
+      <span className="font-medium break-words">{label}</span>
       {fp.name.trim() !== auto && (
         <span
-          className="truncate font-mono text-[10px] text-text-dim"
+          className="font-mono text-[10px] break-words text-text-dim"
           title={`Auto-name from the match axes.\nTwo rows showing the same one match the same tokens, whatever they are called.`}
         >
           {auto}

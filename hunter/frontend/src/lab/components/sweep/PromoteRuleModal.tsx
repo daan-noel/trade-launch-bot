@@ -80,7 +80,7 @@ export function PromoteRuleModal({
   };
 
   return (
-    <Modal title="Promote combo → rule" open={draft !== null} onClose={onClose} size="xl">
+    <Modal title="Promote combo → rule" open={draft !== null} onClose={onClose} size="xxl">
       {initial && (
         <RuleEditor
           initial={initial}

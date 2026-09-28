@@ -108,9 +108,9 @@ export function validateRuleDoc(
   // Enter.
   checkConds(d.enter.event, 'Buy on', true);
   checkConds(d.enter.filters, 'Only if', true);
-  checkConds(d.enter.final_filters, 'Only if, else give up', true);
+  checkConds(d.enter.final_filters, 'Give Up', true);
   if (d.enter.lock && d.enter.event.every((c) => c.off)) {
-    errors.push('One chance needs a "Buy on" condition: the chance is the first print that makes it true');
+    errors.push('Tries needs an On condition: the try is the first moment that makes it true');
   }
 
   // Signals.

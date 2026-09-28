@@ -9,7 +9,8 @@
 // multiselect/autocomplete — if a second call site needs different matching or
 // multi-value support, extend this one rather than forking it.
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { cn } from 'lib/cn';
 import { fieldClassName, type FieldProps } from './Input';
 import { CloseIcon, SearchIcon } from './icons';
@@ -39,6 +40,23 @@ interface SearchableSelectProps<T> extends FieldProps {
   renderOption?: (opt: SearchableSelectOption<T>, highlighted: boolean) => ReactNode;
   className?: string;
   noResultsLabel?: string;
+  /** Floor for the open list, in px. The list is portaled, so it can be wider
+   *  than the field (a fingerprint row needs the name and its chips on one
+   *  line). Omit to match the field. */
+  menuMinWidth?: number;
+}
+
+/** Width and flex classes size the control. They belong on the wrapper: on the
+ *  input they do not grow a flex row, so the field (and the list under it) stay
+ *  at the input's default width. */
+function splitLayoutClass(className?: string): { layout: string; rest: string } {
+  const layout: string[] = [];
+  const rest: string[] = [];
+  for (const part of (className ?? '').trim().split(/\s+/).filter(Boolean)) {
+    if (/^(?:w-|min-w-|max-w-|flex-|shrink-0|shrink$|grow|basis-)/.test(part)) layout.push(part);
+    else rest.push(part);
+  }
+  return { layout: layout.join(' '), rest: rest.join(' ') };
 }
 
 /** Case/diacritic-insensitive-enough substring match — good enough for names
@@ -64,13 +82,16 @@ export function SearchableSelect<T>({
   renderOption,
   className,
   noResultsLabel = 'No matches',
+  menuMinWidth,
   fieldSize = 'sm',
   variant = 'default',
 }: SearchableSelectProps<T>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [highlighted, setHighlighted] = useState(0);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const selected = useMemo(() => options.find((o) => o.value === value) ?? null, [options, value]);
@@ -93,14 +114,48 @@ export function SearchableSelect<T>({
     if (highlighted >= rows.length) setHighlighted(Math.max(0, rows.length - 1));
   }, [rows.length, highlighted]);
 
+  // The list is portaled above the modal (z-200) so a parent with
+  // overflow:hidden cannot clip a list that is wider than its field.
+  const placeMenu = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const edge = 8;
+    const width = Math.min(
+      Math.max(rect.width, menuMinWidth ?? rect.width),
+      window.innerWidth - edge * 2,
+    );
+    let left = rect.left;
+    if (left + width > window.innerWidth - edge) left = Math.max(edge, rect.right - width);
+    const spaceBelow = window.innerHeight - rect.bottom - edge;
+    const spaceAbove = rect.top - edge;
+    const want = 448;
+    const placeAbove = spaceBelow < 200 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(160, Math.min(want, (placeAbove ? spaceAbove : spaceBelow) - 4));
+    const top = placeAbove ? Math.max(edge, rect.top - maxHeight - 4) : rect.bottom + 4;
+    setMenuPos({ top, left, width, maxHeight });
+  };
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    placeMenu();
+    window.addEventListener('resize', placeMenu);
+    window.addEventListener('scroll', placeMenu, true);
+    return () => {
+      window.removeEventListener('resize', placeMenu);
+      window.removeEventListener('scroll', placeMenu, true);
+    };
+  }, [open, menuMinWidth]);
+
   // Click-outside closes without committing the in-progress search text.
   useEffect(() => {
     if (!open) return;
     function onDocMouseDown(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-        setQuery('');
-      }
+      const target = e.target as Node;
+      if (containerRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+      setQuery('');
     }
     document.addEventListener('mousedown', onDocMouseDown);
     return () => document.removeEventListener('mousedown', onDocMouseDown);
@@ -148,9 +203,10 @@ export function SearchableSelect<T>({
 
   const displayValue = open ? query : selected?.label ?? '';
   const showPlaceholder = open ? filtered.length === 0 && query === '' : !selected;
+  const { layout, rest } = splitLayoutClass(className);
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className={cn('relative min-w-0 w-full', layout)}>
       <div className="relative">
         <input
           ref={inputRef}
@@ -169,7 +225,7 @@ export function SearchableSelect<T>({
             setHighlighted(0);
           }}
           onKeyDown={onKeyDown}
-          className={fieldClassName({ size: fieldSize, variant, className: cn('pr-6', className) })}
+          className={fieldClassName({ size: fieldSize, variant, className: cn('pr-6', rest) })}
         />
         <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-text-dim/50">
           {value ? (
@@ -192,8 +248,14 @@ export function SearchableSelect<T>({
           )}
         </span>
       </div>
-      {open && (
-        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-md border border-white/10 bg-bg-card py-1 shadow-lg">
+      {open &&
+        menuPos &&
+        createPortal(
+        <div
+          ref={menuRef}
+          style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width, maxHeight: menuPos.maxHeight }}
+          className="fixed z-[260] overflow-y-auto rounded-md border border-white/10 bg-bg-card py-1 shadow-lg"
+        >
           {rows.length === 0 ? (
             <div className="px-2.5 py-1.5 text-[11px] text-text-dim/60">{noResultsLabel}</div>
           ) : (
@@ -227,8 +289,9 @@ export function SearchableSelect<T>({
               );
             })
           )}
-        </div>
-      )}
+        </div>,
+        document.body,
+        )}
     </div>
   );
 }

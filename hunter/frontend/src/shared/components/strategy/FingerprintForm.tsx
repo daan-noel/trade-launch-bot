@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Input } from 'components/ui/Input';
+import { Select } from 'components/ui/Select';
 import { IconButton } from 'components/ui/IconButton';
-import { SaveIcon, SpinnerIcon, RefreshIcon } from 'components/ui/icons';
+import { CloseIcon, SaveIcon, SpinnerIcon, RefreshIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
@@ -125,14 +126,15 @@ const AXIS_DISABLED_TITLE =
   'A wildcard fingerprint matches every token, so it carries no axes.' +
   '\nUncheck "match every token" to narrow it by creation shape.';
 
-/** How an axis condition reads, spelled out once for every axis tooltip.
+/** How an axis box is typed, once for every axis tooltip.
  *
- *  One expression per axis rather than a pair of boxes, because exact, band, open
- *  end, gap and alternatives are all the same question — which values pass — and a
- *  pair of boxes can only ask two of the five. */
+ *  The box is one condition string. The examples live in `figure` so they stay
+ *  aligned; the body says what each mark means. */
 function boundsHelp(def: AxisDef): HelpTip {
-  const u = def.unit === 'lamports' ? '◎' : '';
-  const [lo, hi] = def.unit === 'lamports' ? ['1.5', '2'] : ['3', '5'];
+  const sol = def.unit === 'lamports';
+  const [lo, hi] = sol ? ['1.5', '2'] : ['3', '5'];
+  const unit = sol ? ' SOL' : '';
+  const row = (typed: string, means: string) => `${typed.padEnd(14)}${means}`;
   return {
     title: def.label,
     // The axis's ONE definition, rendered from the registry — never a second copy
@@ -140,20 +142,24 @@ function boundsHelp(def: AxisDef): HelpTip {
     body: [
       def.definition,
       '',
-      '`..` is INCLUSIVE at both ends; `-` is the half-open form a group chip spans, so a chip pasted here selects that chip\'s tokens.',
-      '`,` is AND and `|` is OR, the same as a rule condition.',
+      'Type a condition in the box. Empty leaves this axis out of the match.',
+      sol ? 'Type SOL.' : 'Type a whole number.',
+      'A number alone is exact. = and == mean the same.',
+      '.. includes both ends. - stops before the high number, which is how a group chip is written, so pasting a chip selects that chip\'s coins.',
+      'A comma means both parts. A pipe means either part.',
+      'Leaving the box rewrites the text to the spelling that is saved.',
       '',
       def.phase === 'first_slot'
-        ? 'Settles only after the creation slot closes, so a rule using it cannot fire at birth.'
-        : 'Known at creation.',
+        ? 'This value exists only after the creation slot closes, so a rule that uses it cannot fire at birth.'
+        : 'Known as soon as the coin is created.',
     ].join('\n'),
     figure: [
-      `${lo}${u}          exactly ${lo}${u}`,
-      `${lo}..${hi}${u}      ${lo} to ${hi}, both ends in`,
-      `${lo}-${hi}${u}       ${lo} up to but NOT ${hi}`,
-      `>=${lo}${u}        ${lo}${u} or more   (also >, <, <=)`,
-      `!=${lo}${u}        anything but ${lo}${u}`,
-      `<=${lo}${u} | >=${hi}${u}  either side of the gap`,
+      row(lo, `exactly ${lo}${unit}`),
+      row(`${lo}..${hi}`, `${lo} to ${hi}${unit}, both ends in`),
+      row(`${lo}-${hi}`, `${lo} up to, not including, ${hi}${unit}`),
+      row(`>=${lo}`, `${lo}${unit} or more (also >, <, <=)`),
+      row(`!=${lo}`, `anything but ${lo}${unit}`),
+      row(`<=${lo} | >=${hi}`, `${lo}${unit} or less, or ${hi}${unit} or more`),
     ].join('\n'),
   };
 }
@@ -191,6 +197,13 @@ export function FingerprintForm({
   error,
 }: FingerprintFormProps) {
   const [s, setS] = useState<FormState>(() => fromFingerprint(initial));
+  // Axes stay listed once shown, including one the operator just added and has
+  // not typed yet. An axis that was never set is absent: blank is not a zero.
+  const [openAxes, setOpenAxes] = useState<AxisId[]>(() => {
+    const start = fromFingerprint(initial);
+    return NUMERIC_AXES.filter((def) => (start.conditions[def.id] ?? '').trim() !== '').map((def) => def.id);
+  });
+  const [ixOpen, setIxOpen] = useState(() => fromFingerprint(initial).ix_labels.trim() !== '');
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setS((p) => ({ ...p, [k]: v }));
   const setCondition = (id: AxisId, v: string) =>
     setS((p) => ({ ...p, conditions: { ...p.conditions, [id]: v } }));
@@ -294,20 +307,79 @@ export function FingerprintForm({
         <LabelTip tip={WILDCARD_HELP}>match every token (wildcard)</LabelTip>
       </label>
 
-      <div className="grid grid-cols-2 gap-2">{NUMERIC_AXES.map(axisRow)}</div>
-
-      <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-        <LabelTip tip={{ title: axisDef('ix_labels').label, body: axisDef('ix_labels').definition }}>
-          {axisDef('ix_labels').label} (JSON array)
-        </LabelTip>
-        <IxLabelsInput
-          value={s.ix_labels}
-          onValueChange={(v) => set('ix_labels', v)}
-          disabled={s.wildcard}
-          title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
-          error={s.wildcard ? null : ixParsed.error}
-        />
-      </label>
+      {!s.wildcard && (
+        <div className="flex flex-col gap-2">
+          {NUMERIC_AXES.filter((def) => openAxes.includes(def.id)).map((def) => (
+            <div key={def.id} className="flex items-start gap-1">
+              <div className="min-w-0 flex-1">{axisRow(def)}</div>
+              <IconButton
+                variant="ghost"
+                size="sm"
+                className="mt-5"
+                disabled={submitting}
+                title={`Remove ${def.label}`}
+                aria-label={`Remove ${def.label}`}
+                onClick={() => {
+                  setCondition(def.id, '');
+                  setOpenAxes((ids) => ids.filter((id) => id !== def.id));
+                }}
+              >
+                <CloseIcon />
+              </IconButton>
+            </div>
+          ))}
+          {ixOpen && (
+            <div className="flex items-start gap-1">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11px] text-text-dim">
+                <LabelTip tip={{ title: axisDef('ix_labels').label, body: axisDef('ix_labels').definition }}>
+                  {axisDef('ix_labels').label} (JSON array)
+                </LabelTip>
+                <IxLabelsInput
+                  value={s.ix_labels}
+                  onValueChange={(v) => set('ix_labels', v)}
+                  disabled={submitting}
+                  error={ixParsed.error}
+                />
+              </label>
+              <IconButton
+                variant="ghost"
+                size="sm"
+                className="mt-5"
+                disabled={submitting}
+                title="Remove instruction labels"
+                aria-label="Remove instruction labels"
+                onClick={() => {
+                  set('ix_labels', '');
+                  setIxOpen(false);
+                }}
+              >
+                <CloseIcon />
+              </IconButton>
+            </div>
+          )}
+          <label className="flex items-center gap-2 text-[11px] text-text-dim">
+            <span>Add axis</span>
+            <Select
+              className="w-48"
+              value=""
+              disabled={submitting}
+              onChange={(e) => {
+                const id = e.target.value;
+                if (id === 'ix_labels') setIxOpen(true);
+                else if (id) setOpenAxes((ids) => (ids.includes(id as AxisId) ? ids : [...ids, id as AxisId]));
+              }}
+            >
+              <option value="">choose</option>
+              {NUMERIC_AXES.filter((def) => !openAxes.includes(def.id)).map((def) => (
+                <option key={def.id} value={def.id}>
+                  {def.label}
+                </option>
+              ))}
+              {!ixOpen && <option value="ix_labels">{axisDef('ix_labels').label}</option>}
+            </Select>
+          </label>
+        </div>
+      )}
       </section>
 
       {registry && (

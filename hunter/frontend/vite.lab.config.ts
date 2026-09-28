@@ -12,4 +12,5 @@ export default makeConfig({
   proxyTargetEnvKey: 'VITE_LAB_DEV_PROXY_TARGET',
   proxyTargetDefault: 'http://127.0.0.1:8140',
   spaFallback: true,
+  fsAllow: ['../docs/plans/strategies'],
 });

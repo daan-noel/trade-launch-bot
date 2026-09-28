@@ -8,6 +8,7 @@ import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { Modal } from 'components/ui/Modal';
 import { cn } from 'lib/cn';
+import { metricRowStyle, metricTone } from 'lib/strategy/metricColors';
 import { useStrategyRegistry, type MetricSpec, type StrategyRegistry } from 'lib/strategy/registry';
 
 const TERMS: [string, string, string][] = [
@@ -18,9 +19,9 @@ const TERMS: [string, string, string][] = [
   ['metric', 'One measured number in a family; its last word is its unit.', 'm_flow.buy_sol (SOL)'],
   ['span', 'The stretch a metric counts over. None = the whole life.', '[10s], [20sl], [5p], [age60s]'],
   ['condition', 'A metric read judged against numbers.', 'm_flow.buy_sol @!volume [10s] >= 2'],
-  ['signal', 'A named condition, written once and used by name in any line.', 'cashout'],
-  ['line', 'If every condition holds: sell and/or go to a stage.', 'cashout -> sell "spike"'],
-  ['stage', 'A step after the buy with its own lines and an optional deadline.', 'early (until age 20 s) -> late'],
+  ['signal', 'A named condition, written once and used by name in any condition.', 'cashout'],
+  ['line', 'If every condition holds: sell and/or go to a stage. A signal plus that line\'s own metrics.', 'cashout and age_sec < 20 -> sell "spike"'],
+  ['stage', 'A step after the buy with its own lines and an optional deadline.', 'open -> ride'],
   ['ix shape', "A transaction's exact ordered instruction list.", '["Compute Budget: SetComputeUnitLimit", "Pump.Fun: Buy"]'],
   ['ix template', 'The coarse shape program|CU|ATA|N|S|F.', 'Axiom Trade|CU|ATA|1|0|0'],
 ];
@@ -66,22 +67,21 @@ export function StrategyGuideBody({ reg }: { reg: StrategyRegistry }) {
       <H>How a rule runs</H>
       <ol className="list-decimal pl-5 text-[12px] leading-relaxed text-text-mid">
         <li>
-          A new coin matches the rule's <b>fingerprint</b> (its creation shape). The rule starts watching it.
+          <b>Watch.</b> The coin matches the fingerprint, or the rule never sees it.
         </li>
         <li>
-          <b>Buy</b>: on every print (and every 200 ms tick), the rule checks <i>Buy on</i> and <i>Only if</i>. When all hold, it buys.
-          It never buys while one of its own sell lines already holds.
+          <b>Buy When.</b> On starts a try. Only If must hold, or this try fails. Once Per Coin has no next try, so that miss stops the coin.
+          <b>Keep Looking.</b> Any Print tries every trade and clock tick. Once Per Coin tries on the first matching trade, and a clock tick never tries. Once Per Slot tries once per block. Give Up failing stops the coin.
         </li>
         <li>
-          <b>Sell</b>: after the buy, on every print and tick, one step: stop loss, take profit and the <i>Always</i> lines first, then
-          the current stage's lines. The first line that holds acts: it sells (all, or a percent of the first bag) and/or moves to another stage.
-          A line that moves to the stage the position is already in does nothing there (unless it sells everything), so it never sells twice.
+          <b>Sell.</b> After the buy, every print: TP/SL when it is set, then Always, then the open stage. The first line that holds sells and/or moves.
+          At a deadline the at-deadline lines run once, then the rule moves to the next stage.
         </li>
         <li>
-          At a stage's <b>deadline</b> its at-deadline lines run once; if none acts, the rule moves on to the next stage.
+          <b>Again.</b> After a sell, wait, then watch the coin again, up to the buy limit.
         </li>
         <li>
-          The exit is booked with the line's label (or, with no label, its first condition), so every result says which line sold.
+          <b>Reason.</b> The sell is booked with the line's label, or with its first condition when the label is blank.
         </li>
       </ol>
 
@@ -112,28 +112,33 @@ export function StrategyGuideBody({ reg }: { reg: StrategyRegistry }) {
       ))}
 
       <H>Metrics</H>
+      <p className="text-[12px] text-text-mid">
+        One color per metric, from the registry hue. A family is one band. Metrics in that band differ by a few degrees, so a row here matches the same row in the editor.
+        Buy SOL and sell SOL keep the chart's green and red.
+      </p>
       <Input fieldSize="sm" className="w-72" placeholder="search metrics: buy_sol, wallet, slot ..." value={q} onChange={(e) => setQ(e.target.value)} />
       {families.map((f) => (
         <div key={f.name} className="mt-2 flex flex-col">
-          <span className="text-[12px] font-semibold text-text">
-            {f.title} <span className="font-mono text-[11px] text-text-dim">{f.name}</span>
+          <span className="text-[12px] font-semibold" style={{ color: metricTone(f.metrics[0].hue).color }}>
+            {f.title} <span className="font-mono text-[11px]">{f.name}</span>
           </span>
           <span className="text-[11px] text-text-dim">
             {f.summary} <span className="font-mono">e.g. {f.example}</span>
           </span>
           {f.metrics.map((m) => (
-            <Row
-              key={m.path}
-              name={
-                <span className="flex flex-col">
-                  <span style={{ color: `hsl(${m.hue}, 70%, 72%)` }}>{m.path}</span>
-                  <span className="font-sans text-[10px] text-text-dim">{accepts(m)}</span>
-                </span>
-              }
-              summary={m.summary}
-              note={m.note || undefined}
-              example={m.example}
-            />
+            <div key={m.path} className="rounded-sm" style={metricRowStyle(m.hue)}>
+              <Row
+                name={
+                  <span className="flex flex-col">
+                    <span style={{ color: metricTone(m.hue).color }}>{m.path}</span>
+                    <span className="font-sans text-[10px] text-text-dim">{accepts(m)}</span>
+                  </span>
+                }
+                summary={m.summary}
+                note={m.note || undefined}
+                example={m.example}
+              />
+            </div>
           ))}
         </div>
       ))}
