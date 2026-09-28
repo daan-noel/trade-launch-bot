@@ -249,9 +249,13 @@ impl TagState {
     }
 
     /// Classify and fold one trade into the lifetime totals and every window.
-    pub fn on_trade(&mut self, t: &TradeLite, cur: Cursor) {
+    ///
+    /// Returns whether it folded on the tagged half (`false` for a trade refused as
+    /// unreadable), so a reader that breaks the window down by structure classifies
+    /// each trade with this one verdict instead of a second copy of the matchers.
+    pub fn on_trade(&mut self, t: &TradeLite, cur: Cursor) -> bool {
         if !t.sol.is_finite() || t.sol < 0.0 {
-            return;
+            return false;
         }
         if t.is_launch && self.birth_slot.is_none() {
             self.birth_slot = Some(t.slot);
@@ -282,6 +286,7 @@ impl TagState {
             let now_pos = w.spec.now_pos(t.at, cur);
             w.push(t.side, t.sol, tagged, first_leg, pos, now_pos);
         }
+        tagged
     }
 
     pub fn on_tick(&mut self, now: Ts, cur: Cursor) {

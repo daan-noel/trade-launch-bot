@@ -12,6 +12,7 @@ const SHORTCUTS: { to: string; label: string; blurb: string }[] = [
   { to: '/strategies/rule-search', label: 'Rule search', blurb: 'Fingerprint + range → champion rule' },
   { to: '/strategies/sweep', label: 'Grouped sweep', blurb: 'Param search → promote' },
   { to: '/analysis/trader', label: 'Trader', blurb: 'Wallet → tokens + charts' },
+  { to: '/analysis/entry-context', label: 'Entry context', blurb: 'The tape before his buys' },
 ];
 
 /**

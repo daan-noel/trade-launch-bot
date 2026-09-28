@@ -541,9 +541,9 @@ next load (no per-metric frontend work).
   the new group because `RuleParamsSummary` falls back to raw params.
 - `lib/strategy/grammar.ts` — the condition grammar (`">10, <=30"` → `{operator,value}`
   list; `1..10` → `>=1 AND <=10`), wrapping the shared compound `numericFilter` parser.
-- `lib/strategy/ruleParams.ts` — the ONE generic `params` JSONB ⇄ form serializer
-  (registry-guided strict/metric split; includes `scale_out: ExitStage[]`);
-  `validate.ts` mirrors backend §5 validation (incl. scale-out caps).
+- `lib/strategy/ruleDoc.ts` — the ONE `params` JSONB ⇄ editor document (format 2:
+  `enter` / `signals` / `always` / `stages`); `ruleDocToJson` writes exactly what the
+  engine's `RuleParams::to_value` writes.
 - `components/strategy/` — `ConditionInput` (grammar input + chips + red-underline),
   `ConditionBuilder` (Buy is one decision: **Event** column AND **Filters** column,
   both AND on the same print; empty Event is today's level-AND. `entry_lock` sits on
@@ -557,11 +557,7 @@ next load (no per-metric frontend work).
   per-row `⏻` **parks** a condition — kept, still validated, but folded into
   `params.disabled` instead of the live side, so the engine never compiles it.
   A way-level `⏻` parks every row in that way so an AND group round-trips as
-  one parked clause. `lib/strategy/ruleConditionRows.ts` owns the row↔bag fold: `clauseId` on exit
-  rows, `enabled` on the row, `rowsToSides` → `{entry, entry_event, exit, exitClauses, disabled}`
-  (including `disabled.entry_event`),
-  `paramsToConditionRows` is the editor load path (object-form → one way per metric).
-  Duplicate + `arm_above_pct`-orphan checks are keyed per way so two ways may both
+  one parked clause. Duplicate + `arm_above_pct`-orphan checks are keyed per way so two ways may both
   name `m_position.armed`. `parkedSideWarnings` still fires when parking a side's
   LAST condition rewrites the rule silently
   (empty filters ⇒ fingerprint + event; empty event ⇒ no completing-print gate;
@@ -1300,6 +1296,32 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   (no buy leg / tape past retention / fee pins with no fee readings) is never folded into a miss.
   Off by default (`mt:form.traderPreEntryProbe`), debounced 350ms, and only the newest probe may
   paint. Detail: [@plans/strategies/trader-flow-lens.md](@plans/strategies/trader-flow-lens.md).
+- **Entry Context (`lab/pages/analysis/EntryContextPage.tsx`, route `/analysis/entry-context`;
+  components in `lab/components/entry-context/`, pure reads in `lab/lib/entryContext/`).** The
+  tape in the `W` seconds before EVERY buy transaction of one wallet (re-entries included), read
+  under one target tag: the flow lens' set narrowed by its chips (`lens.value.tag`, the same tag
+  the charts tint with). `POST /api/wallets/:wallet/entry-context` (`lab/src/api/handlers/entry_context.rs`)
+  takes `{from, to, window_secs, tag, group_by}`; anchors come from `wallet_buy_txs`, prints from
+  `prints_in_slot_windows` with the wallet excluded in SQL. Each anchor's prints strictly ahead of
+  his `(slot, tx_index)` fold through the engine's own `TagState`, and the window is read with the
+  registry's `m_flow` reads on both halves — `buy_tx_count`/`buy_sol @tag` and `@!tag` over
+  `[Ws]`, and the control over `[Ws@W]` (both spans closed, as the engine's are). The target
+  share is `@tag / (@tag + @!tag)` of those reads, so it is exactly what a rule would read, not an
+  approximation. The same fold breaks the window down by structure (`exact` labels, `template`
+  grain, or `program`), classifying each print with the verdict `TagState::on_trade` returned —
+  one copy of the matchers. A tag needing history before the window (`sticky`, `creator`,
+  `creation_slot`) is refused. `unknown` (tape past retention, fee pins with no fee reading)
+  never passes a filter and is never a zero. **Axes** (`lib/entryContext/axes.ts`) are the
+  extension point: every per-entry number is one `EntryAxis` (key, label, unit, one-line
+  definition, getter); the filter bar, the entry columns, the token roll-up and the summary all
+  render from that list. The filter is a list of `{axis, cond}` lines in the table grammar
+  (`>50`, `<5 | >90`), ANDed, persisted with the form (`mt:form.entryContext`). Two sections read
+  the filtered entries: **Summary** (entries / readable / passing tiles, the share histogram
+  window vs control, the structure board: presence, largest-in, mean shares) and **Tokens** (the
+  shared `TokenTable` over `getTraderTokens` rows with passing buys; picking one opens its chart
+  with every window and control drawn as time bands, his buys on it, and the picked window's
+  breakdown, whose trades open in the chart's own trades panel). Open work:
+  [roadmap/entry-context.md](../roadmap/entry-context.md).
 - **One in-memory evaluator, in Rust only.** Token tables whose rows are RAM-resident on the backend (the
   lab Simulated table; the live Holdings composition) page/sort/filter through
   `trading_core::api::table_eval::apply_table_request` with a per-table `ColResolver` grammar; the shared

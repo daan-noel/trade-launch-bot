@@ -1184,6 +1184,8 @@ impl TradeRepo {
             mint_address: String,
             slot: i64,
             tx_index: i32,
+            leg_index: i16,
+            block_time: DateTime<Utc>,
             wallet_address: String,
             trade_type: String,
             amount_lamports: i64,
@@ -1195,7 +1197,7 @@ impl TradeRepo {
 
         let rows: Vec<PrintRow> = sqlx::query_as(
             r#"
-            SELECT t.mint_address, t.slot, t.tx_index,
+            SELECT t.mint_address, t.slot, t.tx_index, t.leg_index, t.block_time,
                    COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address,
                    t.trade_type, t.amount_lamports, t.ix_labels,
                    t.cu_limit, t.cu_price, t.tip_lamports
@@ -1225,6 +1227,8 @@ impl TradeRepo {
                 mint_address: r.mint_address,
                 slot: r.slot,
                 tx_index: r.tx_index,
+                leg_index: r.leg_index,
+                block_time: r.block_time,
                 wallet_address: r.wallet_address,
                 is_buy: r.trade_type == "buy",
                 amount_lamports: r.amount_lamports,
@@ -1234,6 +1238,46 @@ impl TradeRepo {
                 tip_lamports: r.tip_lamports,
             })
             .collect())
+    }
+
+    /// Every BUY transaction one wallet made in `since..=until`, most recent first,
+    /// legs collapsed on `(mint, slot, tx_index)`: the anchors the Entry Context page
+    /// reads the tape before. At most `limit` rows.
+    ///
+    /// Wallet-scoped, so it rides the lab's `idx_trades_wallet_time`. An unknown
+    /// address has no trades and answers empty.
+    pub async fn wallet_buy_txs(
+        &self,
+        wallet: &str,
+        since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<WalletBuyTx>> {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<WalletBuyTx> = sqlx::query_as(
+            r#"
+            SELECT mint_address, slot, tx_index,
+                   MIN(block_time) AS block_time,
+                   SUM(amount_lamports)::BIGINT AS amount_lamports
+            FROM trades
+            WHERE wallet_id = $1
+              AND trade_type = 'buy'
+              AND block_time >= $2
+              AND ($3::timestamptz IS NULL OR block_time <= $3)
+            GROUP BY mint_address, slot, tx_index
+            ORDER BY slot DESC, tx_index DESC
+            LIMIT $4
+            "#,
+        )
+        .bind(wallet_id)
+        .bind(since)
+        .bind(until)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     /// The oldest instant `trades` can still answer for: the start of the oldest
@@ -1793,6 +1837,17 @@ pub struct SlotWindow {
     pub hi_time: DateTime<Utc>,
 }
 
+/// One buy transaction of one wallet ([`TradeRepo::wallet_buy_txs`]): where it sits
+/// on the mint's tape and the SOL its buy legs spent.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct WalletBuyTx {
+    pub mint_address: String,
+    pub slot: i64,
+    pub tx_index: i32,
+    pub block_time: DateTime<Utc>,
+    pub amount_lamports: i64,
+}
+
 /// One leg inside a [`SlotWindow`] — the ix shape, the fee budget, the side, the
 /// size, and its tape position. Deliberately not a [`Trade`]: this read fans out
 /// over many mints, and the model's reserves / signature / price reconstruction
@@ -1804,6 +1859,13 @@ pub struct TapePrint {
     /// mint — `block_time` ties across a whole slot and cannot order two prints.
     pub slot: i64,
     pub tx_index: i32,
+    /// Which leg of its transaction this is. A reader counting TRANSACTIONS the way
+    /// the engine does (`TradeLite::leg_index == 0`) needs it; filtering on it in
+    /// SQL would drop the later-leg buys.
+    pub leg_index: i16,
+    /// Second-precision and shared by a whole slot: a seconds-window bound, never
+    /// an order.
+    pub block_time: DateTime<Utc>,
     pub wallet_address: String,
     pub is_buy: bool,
     pub amount_lamports: i64,

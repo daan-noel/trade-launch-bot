@@ -72,6 +72,12 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/wallets/{wallet}/pre-entry-ix",
                 web::post().to(handlers::pre_entry_ix::probe_pre_entry_ix),
             )
+            // Entry Context: the tape in the W seconds before each of a wallet's
+            // buys, read under one tag. POST because the body carries the tag.
+            .route(
+                "/wallets/{wallet}/entry-context",
+                web::post().to(handlers::entry_context::entry_context),
+            )
             // ── Analysis-owned ix_labels pattern sets (Trader Analysis flow
             //    lens): the same vol/non-vol classification a fingerprint's
             //    ix_patterns drives, for tokens that belong to no cohort.

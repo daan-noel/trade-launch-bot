@@ -17,6 +17,7 @@ export const labNav: NavConfig = {
     { kind: 'item', to: '/creation-stats', label: 'Creation Stats' },
     { kind: 'item', to: '/tokens', label: 'Tokens' },
     { kind: 'item', to: '/analysis/trader', label: 'Trader Analysis' },
+    { kind: 'item', to: '/analysis/entry-context', label: 'Entry Context' },
     {
       kind: 'group',
       label: 'Strategies',

@@ -83,6 +83,8 @@ export const STORAGE_KEYS = {
    *  knobs). Separate from the query draft: the lens outlives one wallet. */
   traderFlowLens: `${PREFIX}form.traderFlowLens`,
   traderPreEntryProbe: `${PREFIX}form.traderPreEntryProbe`,
+  /** Entry Context form draft (wallet, range, window, grouping, filter lines). */
+  entryContextConfig: `${PREFIX}form.entryContext`,
 
   // ── strategy surfaces ─────────────────────────────────────────────────────
   sweepConfig: `${PREFIX}sweep.config`,

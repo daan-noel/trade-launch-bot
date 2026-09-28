@@ -13,6 +13,7 @@ const HomePage = lazy(() => import('@lab/pages/home/LabHomePage').then((m) => ({
 const CreationStatsPage = lazy(() => import('@lab/pages/creation-stats/CreationStatsPage').then((m) => ({ default: m.CreationStatsPage })));
 const TokensPage = lazy(() => import('@lab/pages/tokens/LabTokensPage').then((m) => ({ default: m.LabTokensPage })));
 const TraderAnalysisPage = lazy(() => import('@lab/pages/analysis/TraderAnalysisPage').then((m) => ({ default: m.TraderAnalysisPage })));
+const EntryContextPage = lazy(() => import('@lab/pages/analysis/EntryContextPage').then((m) => ({ default: m.EntryContextPage })));
 const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) => ({ default: m.ProfilesPage })));
 const RulesPage = lazy(() => import('@lab/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
 const FingerprintsPage = lazy(() => import('@lab/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
@@ -52,6 +53,7 @@ export default function App() {
                 <Route path="tokens" element={<TokensPage />} />
                 <Route path="analysis" element={<Navigate to="/analysis/trader" replace />} />
                 <Route path="analysis/trader" element={<TraderAnalysisPage />} />
+                <Route path="analysis/entry-context" element={<EntryContextPage />} />
                 <Route path="profiles" element={<ProfilesPage />} />
                 <Route path="strategies/rules" element={<RulesPage />} />
                 <Route path="strategies/fingerprints" element={<FingerprintsPage />} />

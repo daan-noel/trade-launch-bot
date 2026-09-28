@@ -541,6 +541,8 @@ mod tests {
             mint_address: "M".into(),
             slot,
             tx_index,
+            leg_index: 0,
+            block_time: DateTime::<Utc>::UNIX_EPOCH,
             wallet_address: "W".into(),
             is_buy,
             amount_lamports: lamports,

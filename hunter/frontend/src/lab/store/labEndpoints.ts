@@ -19,6 +19,10 @@ import type {
   FlowDiscoveryResult,
 } from 'types';
 import type { IxPatternSet, IxPatternSetDraft } from 'lib/flow/ixPatternSets';
+import type {
+  EntryContextRequest,
+  EntryContextResponse,
+} from '@lab/lib/entryContext/types';
 import type { MetricSeriesResponse } from 'lib/strategy/metricPanes';
 import type { InspectRequest, InspectRun } from '@lab/services/replayInspect';
 import type {
@@ -580,6 +584,15 @@ export const labApi = baseApi.injectEndpoints({
         body,
       }),
     }),
+    // Entry Context: the W seconds before each of a wallet's buys, read under one
+    // tag. A POST query (the body carries the tag), cached by its small args.
+    getEntryContext: builder.query<EntryContextResponse, EntryContextRequest>({
+      query: ({ wallet, ...body }) => ({
+        url: `/api/wallets/${encodeURIComponent(wallet)}/entry-context`,
+        method: 'POST',
+        body,
+      }),
+    }),
     deleteIxPatternSet: builder.mutation<void, string>({
       query: (id) => ({
         url: `/api/ix-pattern-sets/${encodeURIComponent(id)}`,
@@ -625,4 +638,5 @@ export const {
   useUpdateIxPatternSetMutation,
   useDeleteIxPatternSetMutation,
   useProbePreEntryIxMutation,
+  useGetEntryContextQuery,
 } = labApi;
