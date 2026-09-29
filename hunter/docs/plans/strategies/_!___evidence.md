@@ -10,7 +10,8 @@ This file keeps the measurements a rule, a law or an open line stands on. A clos
 one row in the ledger of section 7, and a step keeps its row in its case file. A cut section's
 full write-up is in git at `9f8ce4c5`, or at `8b01c18b` when it is missing there; a script named
 here and absent from disk is at the same commits, unless its own frame block says it is in no
-commit at all. Section numbers are never reused: a number is a
+commit at all. A study script is one-time (derive 13): a script named here is the run that
+produced the number, and most are in no commit. Section numbers are never reused: a number is a
 permanent address, so cutting a section leaves a gap rather than renumbering the ones after it.
 A missing number is a section that was cut, not a page that is missing here.
 
@@ -2052,7 +2053,7 @@ wrote; the counter (`toolkit/hitrate.py`) is scored on whether it gives back wha
                      the fake trader takes 80 % of A's chances and 70 % of B's, reacts in 1-3
                      slots, holds at most 5 coins, is off 10:00-12:00 UTC; build days 09-01/03/05,
                      check days 09-02/04/06. Scripts `mid-tape/hr_synth.py`, `hr_hand.py`,
-                     `hr_8dtx.py`, `hr_overfit.py`
+                     and two one-time scripts on `hr_core` for the 8dtx2t rows (in no commit)
 ```
 
 | spelling measured | chances | hit rate | build / check | cover | per-moment lift |

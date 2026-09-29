@@ -11,14 +11,8 @@ the five decision nodes its members answer.
 | `hunter/_local/solo-nodes.csv` | one row per node, every aggregate below, over the 26 only |
 | `hunter/_local/solo-nodes/` | the same split one file per node - `0-node-summary.csv` then `1-hot-tape-re-entry.csv` .. `5-deep-age-big-clip.csv`, numbered by net SOL, each sorted `use_it = yes` first |
 | `hunter/_local/roster-nodes.xlsx` | sheets `NODE SUMMARY` and `NODE 1..5`, the same rows colour-coded per node with rejected wallets greyed |
-| [rb-coselect.py](rb-coselect.py) | establishes independence - which wallets are one machine |
-| [rb-actor-sheet.py](rb-actor-sheet.py) | the ranking, `t` and its bootstrap; writes the workbook and `solo-traders-base.csv` |
-| [rb-actor-tape-share.py](rb-actor-tape-share.py) | tape share on coins a wallet prints: wash vs reader (evidence 5.1) |
-| [rb-solo-nodes.py](rb-solo-nodes.py) | the node anatomy in this file, the per-node files, and the `NODE *` sheets |
 
-**Run order is `rb-actor-sheet.py` then `rb-solo-nodes.py`.** The first rewrites the whole
-workbook, which drops the `NODE *` sheets; the second re-adds them and turns
-`solo-traders-base.csv` into `solo-traders.csv`.
+The files above come from one-time scripts: a new roster is a new study, on the toolkit.
 
 Window 08-27 .. 09-03, `census.rb_ep2`. Selection and the actor split:
 [_!___evidence.md](_!___evidence.md) 5.1-5.2.
@@ -332,7 +326,7 @@ Reachability differs by node, and the seat decides it, not the margin:
 | --- | --- | --- |
 | instant launch | **no** | entry inside 11 s of creation; consumed in about two slots |
 | mid-tape one-shot | **open, and the door is found** | behind the slow-wall launch door with the permission the burst-start print books **+6.97 % a trade** on 986 trades and clears the client gate at 95.9 %, against -3.33 behind the best public door ([_!___evidence.md](_!___evidence.md) 6.4). It fails the tail and the per-day ticket floor - 16/177/210/24/28/9 a day, over fifty twice in six (4.8) |
-| hot-tape re-entry | **red here** at lag_115 | terms read off their buys capture a **+0.29 %** price move, where this node's 1.10 % NET margin implies **+3.65 %** (evidence 7, the H1 row). At a zero fee the cell still loses. **`margin` in this file is net of the 125 bps fee** (`rb-solo-nodes.py` 140), so convert before comparing: `move = (margin + 2.5)/0.9875`. The lag does NOT pay on the buy leg on an aged coin: mean -0.66 %, cheaper than the decision print only 22.5 % of the time - a direction factor is a property of tape DENSITY, not of a side |
+| hot-tape re-entry | **red here** at lag_115 | terms read off their buys capture a **+0.29 %** price move, where this node's 1.10 % NET margin implies **+3.65 %** (evidence 7, the H1 row). At a zero fee the cell still loses. **`margin` in this file is net of the 125 bps fee**, so convert before comparing: `move = (margin + 2.5)/0.9875`. The lag does NOT pay on the buy leg on an aged coin: mean -0.66 %, cheaper than the decision print only 22.5 % of the time - a direction factor is a property of tape DENSITY, not of a side |
 | quiet deep-age | **red here** at lag_115 | the burst they follow lasts ~80 ms, so the fill is after it. Campaign-break v0 is a different sentence and is red too at 115 ms (evidence 7) |
 | deep-age big clip | **red here** at lag_115 | the public size buy books red; whether a size print is his tell is unscored: needs a hit-rate read (derive 5.0). He starts the burst half the time (evidence 7) |
 

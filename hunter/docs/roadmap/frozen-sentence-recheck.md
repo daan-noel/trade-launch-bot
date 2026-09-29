@@ -121,12 +121,12 @@ need re-checking:
 1. **Confirm the tape.** `hunter/lake-data/trades/dt=*` must hold 30 consecutive sealed days.
    *If days are missing they are gone for good* - Postgres drops at 30 days and the lake
    export is hand-run. Nothing below is worth doing on a gapped tape.
-2. **Rebuild the study tape** over the full window, in the schema `study-kernel/cvx_export.py`
-   produces (`mint, slot, tx_index, t_ms, reserve_lamports, amount_lamports, side, wallet_id,
+2. **Rebuild the study tape** over the full window, in the study tape's schema (`mint, slot, tx_index, t_ms, reserve_lamports, amount_lamports, side, wallet_id,
    payer_id, proxied, build, creator_id`), last leg per `(mint, slot, tx_index)`.
-3. **Rebuild the door labels** with `study-kernel/cvx_door_export.py` over the same window.
-4. **Re-run the sentence unchanged**: the event with `cvx_burst.py`, the book and the gates
-   with `cvx_audit_refrozen.py`, the client gate with `cvx_build_holdout.py`.
+3. **Rebuild the door labels** over the same window, with a script written for the recheck on
+   the toolkit from the door's definition (section 1).
+4. **Re-run the sentence unchanged**: the event with a script written the same way, the book and
+   the gates with `cvx_audit_refrozen.py`, the client gate with `cvx_build_holdout.py`.
 5. **Read the gates in this order**, and stop at the first failure:
 
 | | pass | fail |

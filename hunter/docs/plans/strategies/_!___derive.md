@@ -174,7 +174,7 @@ only that this event has no edge without a door.
 
 Working file: copy [node-template.md](node-derivation/node-template.md) to
 `<node>-rule-<n>.md`. Scripts live in `node-derivation/<node>/`, one per step, each
-opening with its step and question (section 13 says which are tracked).
+opening with its step and question; each is one-time (section 13).
 
 ---
 
@@ -534,7 +534,7 @@ coins and returns the shortest clock (law 26).
 
 | # | question | how | decide |
 | --- | --- | --- | --- |
-| 8.1 | How does it close? | `trigger.excess_intensity(..., cases="close", controls="hold")` for a print trigger; `hazard.closing_hazard(S, w, pool)` on the pool the sentence selects: chance its next print is the close, by profit x time held, at **fine** bins | A hazard jump at a profit band is a take profit; at a loss band a stop; a flat band waiting for time is a clock. Coarse bins mis-place the stop (-20 % coarse, -25..-40 % fine on rule 1's member; unrecorded - 1.14 books only the -25 % stop) |
+| 8.1 | How does it close? | `hazard.closing_hazard(S, w, pool)` on the pool the sentence selects: chance its next print is the close, by profit x time held, at **fine** bins | A hazard jump at a profit band is a take profit; at a loss band a stop; a flat band waiting for time is a clock. Coarse bins mis-place the stop (-20 % coarse, -25..-40 % fine on rule 1's member; unrecorded - 1.14 books only the -25 % stop) |
 | 8.2 | Book families against that bracket | `exits.X(kind=...)` for bracket, scale, sellbuy, trail, ride, fade, dump | The bracket is the default until a family beats it on money **and** bars. Read at the actor's own hold, not at a 1800 s horizon on a 20 s node. The families are the X candidates of the money ladder (section 10): an exit swap is a step like a term, so X is re-read on every selected pool |
 
 The exit comes from the story's failure mode, and both families are always read side by side:
@@ -768,7 +768,7 @@ The next unseen lake days after the holdout is the clean test.
 | a verdict (kill, PASS, red, next step) | wherever it is recorded, it names the line that decided it and the number: "5.2 PASS, peak +12.61 %" (evidence 1.27), never "a 5.2 kill" alone |
 | a change to a method line (a veto, a gate, a routing) | the same edit lists every recorded verdict the old line decided and re-reads it from the numbers already stored, or queues the re-read in the workflow; a line in section 5.2 changes `seat.veto` in the same commit |
 | what is open next | [_!___workflow.md](_!___workflow.md), only when the open list changes |
-| the scripts | `node-derivation/<node>/`, local scratch. A script is tracked only when a rule or a gate needs it re-run: name it in the root `.gitignore` |
+| the scripts | `node-derivation/<node>/`. A study script is one-time: written for one test, on the toolkit (the tape, the facts, the costs, `hitrate`), and deleted once its numbers are a chain row. Only the toolkit, the kernel and the scripts a rule or a gate re-runs are kept, named in the root `.gitignore` |
 
 Evidence shape. Write all six slots every time; empty is a value:
 

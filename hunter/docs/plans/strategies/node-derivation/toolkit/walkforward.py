@@ -18,7 +18,10 @@ to the grid (a tie to the side nearer the current value). Then, outside this mod
   cut_noise(F, frac)                        SD of the SOL a random `frac` of the tickets carries,
                                             per half: the size a real cut must beat
 
-THE LADDER (derive 10) builds one conjunction; E runs it on the acted label, D / P / X on money.
+THE LADDER (derive 10) builds one conjunction; E runs it on the hit rate (hitrate.measure, derive
+5.0), D / P / X on money. The ladder takes its score from the caller's `make`, so the same loop
+serves both: for E, `value` is the hit rate of the chances that pass the terms (None under
+hitrate.HITS_MIN hits or 10 % cover), and `lab` is his entries.
   ladder(fam, step, value, root, beam, depth)   beam search on the fit rows: the best sentence
                                             at each depth, one term per family
   walk_ladder(fam, key, make, lab, run, halves, draws)
@@ -241,7 +244,7 @@ def walk_ladder(fam, key, make, lab, run, halves, draws=20, beam=5, depth=15, se
     depth need not hold the previous one's terms (the beam: a term may wait for its partner), so
     a depth that fails does not stop the ladder. The finished sentence is the deepest depth that
     counts in both folds with both holding the same (family, side): one idea read at two grains
-    (derive 10 families) is one term. `step` (the lift over the previous depth) is a read.
+    (derive 10 families) is one term. `step` (the gain over the previous depth) is a read.
     key[c] = (fact, side, value). Returns (per-fold path tables, that depth, both folds' terms
     there); depth 0 is no sentence."""
     rng = np.random.default_rng(seed)

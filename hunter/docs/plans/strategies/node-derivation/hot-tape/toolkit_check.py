@@ -1,18 +1,13 @@
 """The toolkit against the hot-tape record: each method step re-run through toolkit/, next to the
 number the step-numbered script recorded (evidence 1.11-1.17).
 
-  trigger    8fStGV reacts to a public SELL >= 1 SOL at 25-200 ms (peak lift 8.1, case step 21);
-             AbQcLH to a burst start at 25-50 ms (9.9); sssssw to a BUY >= 1 at 75-100 ms (9.2)
   seat       the members that pay book +2.2..+2.3 %/trade at RACE cap15 (1.11)
   contrast   the sells 8fStGV buys vs those it ignores, same coin: 15 recipes in 5 s against 7,
              3.94 SOL bought in 2 s against 0.40, a new high 5.4 s ago against 80.3, a seller
              who bought 20.5 s ago against 50.8 (medians, case step 24)
   hazard     753 closes of rule 1's kind on the permission's pool; sells hard at +15..+20 % (1.17)
 
-Random controls are drawn in a different order than the original scripts, so lifts agree to
-sampling noise, not to the digit.
-
-  python toolkit_check.py [trigger] [seat] [contrast] [hazard]
+  python toolkit_check.py [seat] [contrast] [hazard]
 """
 from __future__ import annotations
 
@@ -25,7 +20,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from toolkit import candidates, contrast, hazard, seat, tapes, trigger
+from toolkit import candidates, contrast, hazard, seat, tapes
 from toolkit.book import ledger
 
 pd.set_option("display.width", 400)
@@ -33,20 +28,11 @@ pd.set_option("display.max_columns", 30)
 
 
 def main() -> None:
-    parts = sys.argv[1:] or ["trigger", "seat", "contrast", "hazard"]
+    parts = sys.argv[1:] or ["seat", "contrast", "hazard"]
     t0 = time.time()
     S = tapes.load("study", tapes.roster(NODE_NAME))
     w = {p: S.wallet(p) for p in ("8fStGV", "AbQcLH", "49uohd", "sssssw")}
     print("study tape, instruments %s  %ds" % (sorted(S.ids.values()), time.time() - t0), flush=True)
-
-    if "trigger" in parts:
-        out = trigger.excess_intensity(S, {p: [w[p]] for p in ("8fStGV", "AbQcLH", "sssssw")})
-        for p, cls in (("8fStGV", "sell>=1"), ("AbQcLH", "burst_start"), ("sssssw", "buy>=1")):
-            lift = out[p][0]
-            print("\n%s: cases %s, peak of %s = %s at %s ms" % (p, out[p][2], cls,
-                                                               *reversed(trigger.peak(lift, cls))))
-            print(lift.loc[["sell>=1", "buy>=1", "burst_start", "down>=2%", "up>=3%"]].to_string())
-        print("  %ds" % (time.time() - t0), flush=True)
 
     if "seat" in parts:
         for p in ("8fStGV", "AbQcLH", "49uohd", "sssssw"):

@@ -10,6 +10,10 @@ prints is 0.50 when the fact says nothing, above 0.50 when the wallet prefers HI
   label_acted(C, S, wallet_id, window=0.5)
                                 adds `act` to a candidate table: the wallet bought <= window s
                                 after the candidate print (the diagnostic that splits C / Kc)
+
+Both only PROPOSE facts for the E ladder. Whether a spelling is his is its hit rate and cover
+(hitrate.py, derive 5.0): `act` here is not a hit - it has no reaction window, no free-to-act
+rule and no market-wide chances.
 """
 from __future__ import annotations
 

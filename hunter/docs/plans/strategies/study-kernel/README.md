@@ -21,16 +21,15 @@ The node-derivation toolkit and the hot-tape scripts import these three files
 ## Local, not tracked
 
 The study tape and the study scripts live on the workstation only (the root `.gitignore` ignores
-`*.py` and `*.parquet` here). The tape is a week of curve prints exported chain-ordered from
-`aa.pxf` by `cvx_export.py`: `cvx_prints.parquet` with its sidecars (`cvx_tok`, `cvx_ix`,
-`cvx_swdoor`, `cvx_meta`). A study script's result lives in its evidence section, not in the script.
+`*.py` and `*.parquet` here). The tape is a week of curve prints, chain-ordered, from `aa.pxf`:
+`cvx_prints.parquet` with its sidecars (`cvx_tok`, `cvx_ix`, `cvx_swdoor`, `cvx_meta`). A new tape
+comes from the lake through `toolkit.lake_export`. A study script's result lives in its evidence section, not in the script.
 
 The local tools that are checks rather than studies, and are run before believing a book:
 
 | tool | what it checks | evidence |
 | --- | --- | --- |
-| `kernel_test1.py`, `kernel_test2.py`, `kernel_test3.py` | the kernel: a recorded exit-fill table to the cent; random fires lose on every exit at the verdict fill; the unarmed stop | - |
-| `funnel.py` | the raw tape is the universe: how many tokens and prints survive each column, so a filter cannot hide in the query that builds a table | strategy law 15 |
+| `kernel_test1.py`, `kernel_test3.py` | the kernel: a recorded exit-fill table to the cent; the unarmed stop | - |
 | `cvx_replay3.py` | the roster's own decisions through this kernel at four seats (THEIRS, RACE, PEER, FOLLOW); episodes built from the position, tracked to the token, bags reported. Run it before believing any node verdict. It stops two errors: pricing an entry at `v[their buy]` charges their displacement, and scoring only 1-buy-1-sell episodes takes a re-entry trader's worst trades | 1.4 |
 | `cvx_build_holdout.py` | the client gate: per-build books, leave-one-build-out, a bootstrap over builds | 3.1a |
 | `cvx_audit_seat.py`, `cvx_audit_floor.py`, `cvx_audit_refrozen.py` | the implementation audit: seat stress one leg at a time, concurrency and capital, the ticket floor per day | 4.8 |

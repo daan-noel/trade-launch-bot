@@ -17,7 +17,7 @@ reuses the method and the toolkit, and gets its own case file and script folder 
 | [launch-group-3ix.md](launch-group-3ix.md) | 3ix Create_v2 + ATA + Buy: the launch crew's first sell as X, one outside buyer as E | open: +8.98 %/trade 15/18 days on 09-01 .. 21; its E machine stopped 09-22 (forward: 3 trades) |
 | [mid-tape-rule-1.md](mid-tape-rule-1.md) | fill-copy chain on 9Uq8GV / 8dtx2t / ApfmkS | prior spelling; not the live derivation |
 | [mid-tape-rule-2.md](mid-tape-rule-2.md) | fill-copy chain on 9999hu | prior spelling; not the live derivation |
-| [mid-tape/README.md](mid-tape/README.md) | every mid-tape script, by step | re-running a mid-tape step |
+| [mid-tape/README.md](mid-tape/README.md) | the mid-tape scripts kept: the hit-rate proof and rule 3b's audit | re-running them |
 | `data/` | candidate tables, holdout tapes, outputs and logs; not tracked, rebuilt by the scripts | - |
 
 ## Deriving the next node
@@ -40,6 +40,7 @@ which reads `DATABASE_URL` from `hunter/.env`). The shared study kernel stays in
 `../study-kernel/` - `kernel.py` (the one pricing kernel), `tape.py`, `cvx.py` - with the study
 tape `cvx_prints.parquet` and its sidecars, which the other studies use too.
 
-What is tracked: the toolkit, each case folder's `_paths.py`, the three kernel files, and the
-scripts a rule or a gate needs re-run, named in the root `.gitignore`. A step script is local
-scratch: its step and its numbers are a chain row. `data/` is never tracked.
+What is kept: the toolkit, each case folder's `_paths.py`, the three kernel files, and the
+scripts a rule or a gate needs re-run, named in the root `.gitignore`. A step script is one-time:
+written for one test on the toolkit, deleted once its step and its numbers are a chain row. `data/`
+is never tracked.
