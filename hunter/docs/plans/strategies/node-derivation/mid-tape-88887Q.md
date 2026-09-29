@@ -17,7 +17,7 @@ wallet writes its rows here.
 | 1 Pick | done | row `3-4`: RACE +52.94 on 6/6 days, +64.56 SOL his own, hold p50 22.6 s |
 | 2 Portrait | **not done** | no portrait exists |
 | 3 His exit | **not done** | no exit read |
-| 4 Test each clause | started | row `5.1 88887Q`: he answers a seller at a loss (lift 5.27), a recent seller (4.16), a sell >= 1 SOL (8.49). Which of those sells he takes is unread |
+| 4 Test each clause | started | row `5.1 88887Q`: his 5.1 class is a seller at a loss, a recent seller, a sell >= 1 SOL, unscored: needs a hit-rate read (derive 5.0). Which of those sells he takes is unread |
 | 5 Our version | partly | row `5.2 88887Q`: behind his buy the cost is 6.55-7.53 % and the peak leftover +3.13 to +6.45 %, with **no control** beside it |
 | 6 Fit D, P, X | no | - |
 | 7 Coverage | done | section 5 of this file |
@@ -67,8 +67,8 @@ expensive error is marking something tried that was never properly read.
 | E2 silence, then a spend | not tried | - | the whole family |
 | E3 an operator's plan is unfinished | not tried | - | the whole family |
 | E4 a count crosses a line | not tried | - | the whole family |
-| E5 after sellers | partly | his 5.1 class: a seller at a loss, a recent seller, a sell >= 1 SOL, all at lift 3.45-8.49 | which of those sells he takes (6.1), and the same under his own exit |
-| E6 this print | partly | sell >= 0.5 and down >= 2 % are in the 5.1 scan at 7.24-7.25 | read inside a ladder |
+| E5 after sellers | partly | his 5.1 class: a seller at a loss, a recent seller, a sell >= 1 SOL, unscored: needs a hit-rate read (derive 5.0) | which of those sells he takes (6.1), and the same under his own exit |
+| E6 this print | partly | sell >= 0.5 and down >= 2 % are in the 5.1 scan, unscored: needs a hit-rate read (derive 5.0) | read inside a ladder |
 | E7 clock | not tried | - | the whole family |
 | P1 curve position | not tried | - | the whole family |
 | P2 windowed tape metrics | partly | a held state was read: `nw5` rank 0.65, `nb2` 0.60, rising nb2 >= 4 / npro2 >= 1 cover 11-12 % | the family inside a ladder |

@@ -304,7 +304,7 @@ rule's last `window` closes against the `window` before them, and flags `decayin
 **both** win rate and expectancy (mean SOL/trade) fell.
 
 Requiring both is the load-bearing choice. Win rate alone flips on a single tail trade —
-and the wallet-analysis work found repeatedly that hit rate is the *wrong* ranking signal
+and the wallet-analysis work found repeatedly that win rate is the *wrong* ranking signal
 (see the [refuted-lines ledger](../../history/2026-09-03-refuted-lines-ledger.md)); expectancy alone flips on one outlier.
 
 A rule with fewer than `2 × window` closes is reported with `decaying: false`, never

@@ -17,7 +17,7 @@ wallet writes its rows here.
 | 1 Pick | done | row `3-4`: RACE +4.22 on 6/6 days, hold 9.7 / 16.0 / 16.2 s |
 | 2 Portrait | **not done** | the shape is read (section 5 below); the 20 trades and the logic are not |
 | 3 His exit | **read** | row `exit read 9Uq8GV` below: a clock at about 15-16 s, the first exit on this node read with `toolkit.own_exit` |
-| 4 Test each clause | started | he answers a buy >= 1 SOL (lift 4.75); which of those buys is unread |
+| 4 Test each clause | started | a buy >= 1 SOL is his 5.1 class, unscored: needs a hit-rate read (derive 5.0); which of those buys is unread |
 | 5 Our version | partly | leftover on his coins is +4.12 %/trade at clock 45, with **no control** |
 | 6 Fit D, P, X | partly | public doors besides slow-wall are red, and all of it predates his exit being read |
 | 7 Coverage | done | section 5 of this file |
@@ -76,7 +76,7 @@ expensive error is marking something tried that was never properly read.
 | E3 an operator's plan is unfinished | not tried | - | the whole family |
 | E4 a count crosses a line | not tried | - | the whole family |
 | E5 after sellers | not tried | - | the whole family |
-| E6 this print | partly | a buy >= 1 SOL, lift 4.75 in the 5.1 scan | which of those buys he takes (6.1) |
+| E6 this print | partly | a buy >= 1 SOL in the 5.1 scan, unscored: needs a hit-rate read (derive 5.0) | which of those buys he takes (6.1) |
 | E7 clock | not tried | - | the whole family |
 | P1 curve position | not tried | - | the whole family |
 | P2 windowed tape metrics | not tried | - | the whole family |

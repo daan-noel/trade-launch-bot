@@ -137,7 +137,7 @@ better coins are still not an entry.** 119 creators carry the hi band in the tap
 one 22.7 % and 29 of them 80 %, so it is ev 3.1's rotating client and must be refreshed daily.
 
 **Volume is not a swing** (law 23). The same bands read on episodes give the hi band 8.18 % of
-coins producing a playable +50 % swing against a 5.33 % pool control - a 1.5x lift, not the 4.7x
+coins producing a playable +50 % swing against a 5.33 % pool control - 1.5x the control, not the 4.7x
 the volume table suggests. The door's real work is exclusion: the low band runs 0.66 %.
 
 **The 24-point gap, which is the whole problem.** Firing at the true episode low against firing

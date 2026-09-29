@@ -29,8 +29,9 @@ vsol 30, the curve completes (migration) at vsol 115.
 2. **The buy moves the price >= 1.90 %:** a real size, not dust.
 3. **The buyer is new to the coin:** its first trade on it.
 
-E holds 4.65 % of his buys against a 0.70 % base, and covers 61.6 % of his positions
-(workflow "Next on 8dtx2t").
+E's hit rate is **0.77 %**: of the chances E gives anywhere on the market while he is free, he
+takes about 1 in 130, against 0.11 % by luck, and it covers 60.3 % of his entries (evidence 5.8,
+09-01 .. 09-06). E is part of his rule; the terms that pick his 1 in 130 are missing.
 
 **Why he expects a rise:** a quiet coin plus a fresh buyer spending real money is a new
 decision, not churn or a holder adding. A green jump after silence is visible, so others
@@ -38,7 +39,7 @@ follow, and he wants in before them. The tape agrees: fires that 2+ other prints
 inside 83 ms book +8.23 % at the fire's own price; fires nobody answers book -1.41 % (row "E
 fire race at our seat 8dtx2t all").
 
-**Which wake-ups he takes (about 1 in 120).** His quiet picks against the other quiet fires,
+**Which wake-ups he takes (about 1 in 130).** His quiet picks against the other quiet fires,
 same direction on fit and test days (row "E fire his quiet picks 8dtx2t all"):
 
 | His picks (p50) | Others (p50) | Likely reason |
@@ -58,7 +59,7 @@ without his prints, they still book +2.30 % (row "E fire his own push removed 8d
 the gap to +3.04 % is inside what resampling the same trades produces. What the two books share
 is that 3 trades of 296 carry them: the other 293 lose either way, where his own close leaves
 +9.32 SOL under its top 1 %. So at our seat his picks have no body to copy, and the open
-question is not his push but how he finds the 1 wake-up in 120 that runs.
+question is not his push but how he finds the 1 wake-up in 130 that runs.
 
 The one row of that table tested on its own confirms it. "The buyer wins on its other coins"
 tells his pick (AUC 0.61 on the fit days, 0.63 on the test days) and tells a trade that pays
@@ -95,7 +96,7 @@ ends.
 
 ## Open
 
-1. **How he picks 1 wake-up in 120.** The table shows what his picks look like, yet those
+1. **How he picks 1 wake-up in 130.** The table shows what his picks look like, yet those
    filters lose at our seat.
 2. **Whether wallets copy his buys.** His own push is not what his picks pay on, so a following
    crowd is what is left of "being himself".

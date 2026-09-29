@@ -50,7 +50,7 @@ Plain words: <one sentence>.
 
 | slot | where it comes from | evidence |
 | --- | --- | --- |
-| E, the trigger | <member, print class, lag, lift> | |
+| E, the trigger | <member, print class, W, hit rate, cover> | |
 | E, the terms | <within-coin contrast; then money on the sentence's own pool> | |
 | P | <the losers against the winners at the fire> | |
 | X | <the member's closing hazard on the selected pool; then money> | |
@@ -79,7 +79,7 @@ One row per step, in order, dead ends included. The phase is [_!___derive.md](..
 
 ## 3. The member book
 
-| member | RACE cap15 | days | its trigger (peak lift, lag) | its exit | status |
+| member | RACE cap15 | days | its trigger (hit rate, cover, W) | its exit | status |
 | --- | ---: | :---: | --- | --- | --- |
 
 ---

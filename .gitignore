@@ -151,6 +151,10 @@ __pycache__/
 !hunter/docs/plans/strategies/node-derivation/hot-tape/toolkit_check.py
 !hunter/docs/plans/strategies/node-derivation/mid-tape/mt_d8_replay.py
 !hunter/docs/plans/strategies/node-derivation/mid-tape/mt_d8_fillcheck.py
+!hunter/docs/plans/strategies/node-derivation/mid-tape/hr_prep.py
+!hunter/docs/plans/strategies/node-derivation/mid-tape/hr_core.py
+!hunter/docs/plans/strategies/node-derivation/mid-tape/hr_synth.py
+!hunter/docs/plans/strategies/node-derivation/mid-tape/hr_hand.py
 hunter/docs/plans/strategies/node-derivation/data/
 !hunter/docs/plans/strategies/study-kernel/kernel.py
 !hunter/docs/plans/strategies/study-kernel/tape.py

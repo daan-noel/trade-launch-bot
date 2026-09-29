@@ -203,7 +203,7 @@ own realised break-even**, never against a fixed percentage carried over from an
 On the unselected mid-tape parent under trail50 c600 (evidence 4.3): `P = .20`, `W = 84.7 %`,
 `L = 31.6 %`, so `E = -8.8 %` a trade. Holding `W` fixed, the book breaks even at `L <= 16.3`.
 Holding `L` fixed, it breaks even at `P >= .29`. **Halving the loser cost is worth exactly as
-much as lifting the hit rate by nine points**, and the terms that mark a collapse - bundle share,
+much as raising the win rate by nine points**, and the terms that mark a collapse - bundle share,
 dev holding, fresh-wallet share, creator sold, create structure - are already in hand.
 
 The documented-project book cannot answer it: its door enters at age >= 300 s and reserve 50-85,
@@ -225,8 +225,8 @@ time**, and it is red on its own on the full tape (-151 SOL over 13,602 trades, 
 conjunction term is supposed to look like.
 
 **A second L-term is independent of it and stronger.** How many of the solo 26 are already in the
-coin at our decision print cuts the -50 % rate to a **0.37 lift**, against **0.82** for
-activity-matched random wallets and **0.98** for the ten roster wallets under the profit
+coin at our decision print cuts the -50 % rate to **0.37x**, against **0.82x** for
+activity-matched random wallets and **0.98x** for the ten roster wallets under the profit
 cut - and it reads the same outside the roster's own selection window, so it is judgement
 rather than circularity. Stacked with the bundle term it turns a -14.62 %/trade population into
 **+3.86 %/trade** (evidence 6.8). Agreement is a gate on the LOSS only: firing *after* they land
@@ -335,7 +335,7 @@ on the toll is telling you its median coin does not move.
 
 1. Profit is someone else's future net inflow while we hold. There is no other source.
 2. `E = P.W - (1-P).L - toll`, and break-even `L/(W+L)` moves with the entry and the exit.
-3. Cutting the loser cost is worth as much as raising the hit rate, and on a book with a left
+3. Cutting the loser cost is worth as much as raising the win rate, and on a book with a left
    tail it is answered (1.3).
 4. Price contains all landed flow. Only who, how many, and whether they are still in is unpriced.
 5. Our seat is 115 ms on both legs; edges consumed inside it are closed, edges that develop over
@@ -501,7 +501,7 @@ are, and their refresh is part of the system.
 
 That a coin keeps living:
 
-| selector | label | lift | evidence |
+| selector | label | x rate | evidence |
 | --- | --- | ---: | --- |
 | launch-build door | reaches reserve 60 with a late peak | **4-6x on all 30 days** | 3.1 - 736,800 coins, 22-day untouched holdout, no decay |
 | launch door + initial buy >= 2 SOL | produces a playable big move | 4.63x per coin (**1.21x per print**) | 3.2 - holdout |
@@ -603,10 +603,10 @@ Three facts hold across all five:
 
 ## 5.3 Agreement rises with age
 
-Co-selection lift between two of the 26, against the geometric mean of the pair's entry age
-(Spearman 0.794 on 325 pairs, evidence 5.3):
+Co-selection between two of the 26, in times chance, against the geometric mean of the pair's
+entry age (Spearman 0.794 on 325 pairs, evidence 5.3):
 
-| both enter at | pairs | median lift |
+| both enter at | pairs | median x chance |
 | --- | ---: | ---: |
 | under 30 s | 60 | **0.17** (they anti-select) |
 | 30-120 s | 125 | 0.96 |
@@ -768,10 +768,12 @@ exists; derive 11 says what it refuses. Where both appear, the number is derive'
 8. **Freeze, then a disjoint holdout, never trimmed.** A red block means the story is wrong.
 9. **Score the worst day, not the best.**
 10. **Report the artifact detectors beside every result** (the list: derive 11).
-11. **Lift belongs to the event, money to the gates.**
-12. **Measure lift on the grain the book collapses to.** Per-print and per-coin lift can invert
-    (2.68x per print against 0.74x per coin on the same event; unrecorded). **A 4.63x per-coin lift is 1.21x
-    per print** (evidence 3.2).
+11. **Hit rate and cover belong to the event, money to the gates.** Whether the event is his is
+    hit rate and cover (derive 5.0); whether it pays is money.
+12. **Count chances on the grain the rule fires on.** A state counts by its rising edge, never by
+    the moment. Per-print and per-coin counts differ and can invert (2.68x per print against 0.74x
+    per coin on the same event; unrecorded). **A 4.63x per-coin rate is 1.21x per print**
+    (evidence 3.2).
 13. **Per-trade engine reconciliation before belief**, against the published book, never against a
     recomputation - a recomputation shares the bug you are hunting.
 14. **The finding sets the metric.** Implement a rule in the terms it was derived in; when the
@@ -966,7 +968,7 @@ is the definition and the row is the shorthand. Nothing here is the only home of
 | Compare "his coins" with a control | Forward conditioning; truncate the path at his arrival |
 | Read a candidate set as a universe | Matched negatives come from the full print population |
 | Keep or drop a coin on its future (its print count or life) | No coin floor anywhere: a >= 60 prints floor turns a -3.1 %/trade rule into +5.00 % |
-| Report a coin-level lift as if a rule could fire on it | Restate per print. 4.63x per coin is 1.21x per print |
+| Report a coin-level rate as if a rule could fire on it | Restate per print. 4.63x per coin is 1.21x per print |
 | Price the fill one or two slots after the trigger, or drop the trigger's slot | Last print landed by `fire + 115 ms`, both legs |
 | Take the next print after the signal as the fill | +8 to +12 pp of pure look-ahead |
 | Fill an exit at its trigger level | A stop fills about 3.5 % past the level |

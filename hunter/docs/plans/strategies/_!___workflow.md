@@ -19,7 +19,7 @@ nodes. A node is picked here, then derived by [_!___derive.md](_!___derive.md).
 | --- | --- | --- |
 | hot-tape re-entry | **rule 1 passes every ship bar**; the clean test is next | section 1 |
 | mid-tape one-shot | **open**: 8aaRWu E is not spelled (identity leftover PASSES; **0.25 %** of family prints acted; named `build` list is the market at **0.29 %** or a 5.3 % corner; silence-then-K is a **1.8 %** corner; run_k>=2 leftover PASSES at **0.63 %** slice; Two lists agree K>=2 leftover cover<10 at **1.77 %** slice; First run here leftover PASSES at **0.50 %** slice / rank **0.501**, median acted 0; Size buy leftover PASSES at **0.56 %** slice / rank **0.530**; `alone_in_slot` rank **0.354** low, leftover PASSES at **0.08 %** slice). Occupancy red; its-coins occupancy **-1.96 %** so D cannot fix this class. Next **6.1** remaining this-print unread (this-wallet / neighborhood / lake fee), not 7.1 / phase 8. **8dtx2t rule 3b** (first position) is red on every lake day (-3.1 %/trade): its study book read a future coin floor. 88887Q / 3Xk2Eu leftover exists under the peak-leftover veto. ApfmkS is volume manufacture | section 2 |
-| deep-age big clip | red: a public size print is not the tell (response equals the base); the remainder is which coin, not which print | evidence 7, agreement in section 4 |
+| deep-age big clip | red on money: the public size buy does not ship; whether a size print is his tell is unscored: needs a hit-rate read (derive 5.0) | evidence 7, agreement in section 4 |
 | quiet deep-age | red: the token-silence burst it follows lasts ~80 ms, so a 115 ms fill is after it | evidence 7 |
 | instant launch | dead at this seat: consumed inside ~2 slots | strategy 8.1 (age-0 launch ramps) |
 
@@ -126,8 +126,9 @@ Working file:
   ladder P 8dtx2t all"). **The root class was wrong**: rows "the rest 8dtx2t all" and "6.1
   ladder, quiet root 8dtx2t all" retire clip_step_up for this member and freeze
   **E = a public buy opening a 0.4 s quiet AND its own move >= 1.90 % AND a wallet new to this
-  coin** - 4.65 % acted on a 0.70 % base, cover 61.6 %, both folds finishing at depth 2 against
-  clip_step_up's 2.30 % and 44.6 % at depth 1. 5.2 on it passes at both seats and is **thin**
+  coin** - hit rate 0.77 %, cover 60.3 %, luck 0.11 % at W = 1 slot (evidence 5.8); the ladder
+  finishes at depth 2 in both folds, against clip_step_up at depth 1 (acted 2.30 %, cover
+  44.6 %). 5.2 on it passes at both seats and is **thin**
   (row "5.2 ladder E, quiet root 8dtx2t all"): peak leftover **+0.57 %** at 83 ms against the old
   E's +2.15 %, so naming his fires better leaves less behind him. Next: where inside this E the
   leftover sits (its own move quintiles on the behind row), then the money ladder over D, P and X
@@ -141,7 +142,7 @@ Working file:
   re-derived sentence red on the replay's every-day book.
 - **Do not:** copy a fill; fire at buy-minus-L; prefer 8aaRWu's priced burst family over identity;
   pick seed_racer as E; AND two views of one family as the event (one family is one term); drop four identity
-  classes because `structure_burst` has the highest 5.1 lift; treat structure_burst / tool as 6.1
+  classes because `structure_burst` ranks first in 5.1; treat structure_burst / tool as 6.1
   terms (they do not separate among family prints); skip `clip_step_up` as a 6.1 term (47.6 % vs
   28.5 %); kill leftover existence on reaction cost when peak leftover still pays; freeze E /
   run 7.1 while acted is 0.3 % of the class, 0.5-0.8 % of a this-printer slice, 0.29 % of a
@@ -179,7 +180,7 @@ The number stands; the verdict does not. Each line names what it needs.
 | line | what stands | what it needs |
 | --- | --- | --- |
 | L-selection (which coin goes to -50 %) | bundle share < 0.20 cuts the rate 14.1 % -> 2.3 % on door-v3 MONEY and lifts the book +5.39 -> +10.43 SOL inside a fixed reserve band; red alone on the full tape (evidence 3.7) | a sentence that clears the client gate (section 3) |
-| agreement among the solo 26 | 0.37 lift on the -50 % rate against a 0.82 random null, out of sample, stacks with bundle share (evidence 6.8) | an ix-structure or tape-state twin; as named wallets it is refused as a term |
+| agreement among the solo 26 | 0.37x the -50 % rate against 0.82x for a random null, out of sample, stacks with bundle share (evidence 6.8) | an ix-structure or tape-state twin; as named wallets it is refused as a term |
 | state-conditional exits | a loss-only cut takes L 31.5 -> 10.1 while W holds, break-even 23.4 % -> 9.0 %, and triples the tickets (evidence 4.7) | a sentence whose added round trips pay their toll |
 | the independent-machine count (hot-tape) | a money gradient, -4.08 % -> -2.99 %, that does not cross zero (evidence 1.11) | the machine vector fitted, not cut |
 | documented-project rule | holdouts +1.46 % and +0.64 %/trade, 4/7 each, under 1 SE from zero (evidence 3.3) | paper |

@@ -17,7 +17,7 @@ wallet writes its rows here.
 | 1 Pick | done | row `3-4`: RACE +16.34 on 6/6 days, >20 % losses 0.8 %, harvest hold |
 | 2 Portrait | done | [mid-tape-8dtx2t-logic.md](mid-tape-8dtx2t-logic.md) |
 | 3 His exit | done | rows `the exit read` .. `exit holdout 8dtx2t all`: four branches, 15.98 SOL against his 15.91 on the holdout |
-| 4 Test each clause | done | rows `the rest 8dtx2t all`, `6.1 ladder, quiet root 8dtx2t all`: E = a buy opening a 0.4 s quiet, its own move >= 1.90 %, a wallet new to the coin |
+| 4 Test each clause | partly | rows `the rest 8dtx2t all`, `6.1 ladder, quiet root 8dtx2t all`: E = a buy opening a 0.4 s quiet, its own move >= 1.90 %, a wallet new to the coin. Its hit rate is 0.77 % at 60.3 % cover (evidence 5.8): the terms that pick his 1 chance in 130 are unread |
 | 5 Our version | started | row `E fire race at our seat 8dtx2t all` reads the race; the four next events of derive 5.4 are unread |
 | 6 Fit D, P, X | partly | rows `E AND the launch door 8dtx2t all`, `xfrozen holdout`: green on 4/4 study days, **-0.29 % on 2/5 holdout days**. That door is a rate with no count floor under it |
 | 7 Coverage | done | section 5 of this file |
@@ -64,7 +64,7 @@ expensive error is marking something tried that was never properly read.
 | D4 loss door | partly | bundle share, creator share and top-holder share separate his pick in the 87-fact scan | none of them is booked as a door on the frozen E under his own exit |
 | D5 off-chain | not tried | - | the whole family |
 | E1 a listed ix structure acts | not tried | - | the whole family: his 5.1 scan names no build list |
-| E2 silence, then a spend | tried | `6.1 ladder, quiet root 8dtx2t all`: a buy opening a 0.4 s quiet is his root class, 4.65 % acted on a 0.70 % base, cover 61.6 % | - |
+| E2 silence, then a spend | partly | `6.1 ladder, quiet root 8dtx2t all`: a buy opening a 0.4 s quiet is his root class. Hit rate 0.77 % on every coin (1 chance in 130), luck 0.11 %, cover 60.3 % (evidence 5.8): part of his rule, terms missing | the terms that raise the hit rate (6.1 ladder on hit rate, derive 5.0) |
 | E3 an operator's plan is unfinished | tried | `the rest 8dtx2t all`: clip_step_up is retired for him, beaten by the coin step and the quiet root on both axes | - |
 | E4 a count crosses a line | not tried | - | the whole family: no count's rising edge has been read as his fire |
 | E5 after sellers | not tried | - | the whole family. His 5.1 scan reads buy_after_sells at 6.26 against the E group's 7.76, never as its own root |
@@ -76,7 +76,7 @@ expensive error is marking something tried that was never properly read.
 | P4 ix makeup of the recent tape | not tried | - | the whole family |
 | P5 tape state already true | partly | the quiet before the print is inside E; `n_pro` is the best money fact at 0.471, which is chance | the rest of the family |
 | X1 static | tried | 136 walked exits, all static, all red; his own is not static | - |
-| X2 the tape stops | tried | silence is refuted: he sells into a busy tape, lift 0.05 | - |
+| X2 the tape stops | tried | he sells into a busy tape; his read exit (section 2) books his close with no silence branch | - |
 | X3 another actor acts | tried | a sell threshold, a buyer arriving and a price target are all refuted on his sells | - |
 | R re-entry | not tried | - | 27 % of his positions are re-entries and no row reads them. One open position a coin is assumed, never measured |
 | S size | not tried | - | every book is at 0.2 SOL; the clip is never swept, and the real test runs at 0.03 SOL (derive 12.12) |
@@ -87,11 +87,12 @@ expensive error is marking something tried that was never properly read.
 
 **Unread, in the order to run it:**
 
-1. **5.4, an earlier sign.** His event is answered by other bots inside our 83 ms, and those answered fires are the whole book (+13.50 % at the fire's price, -3.05 % at our fill). A state that is true before the wake-up print is the one place his reason survives our seat.
-2. **5.4, the second leg.** The first pullback after an answered burst: his reason still holds and the race is over.
-3. **R.** 27 % of his positions are re-entries, and nothing reads them.
-4. **D2.** The URI family, once a sidecar covers every coin.
-5. **D1 with a count floor.** The launch door failed the holdout because its rate has no floor under its count. That is a repair to derive on the study and read on days this sentence has never seen.
+1. **The E ladder on hit rate (derive 5.0, 6.1).** E takes 1 chance in 130 at 60.3 % cover. Each step adds the term that most raises the hit rate on the days it was not built on, until his rule is near 100 % or no term beats chance.
+2. **5.4, an earlier sign.** His event is answered by other bots inside our 83 ms, and those answered fires are the whole book (+13.50 % at the fire's price, -3.05 % at our fill). A state that is true before the wake-up print is the one place his reason survives our seat.
+3. **5.4, the second leg.** The first pullback after an answered burst: his reason still holds and the race is over.
+4. **R.** 27 % of his positions are re-entries, and nothing reads them.
+5. **D2.** The URI family, once a sidecar covers every coin.
+6. **D1 with a count floor.** The launch door failed the holdout because its rate has no floor under its count. That is a repair to derive on the study and read on days this sentence has never seen.
 
 The next step itself is [_!___workflow.md](../_!___workflow.md) section 2, which points
 here for the list.

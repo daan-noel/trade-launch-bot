@@ -151,8 +151,8 @@ the recheck tests one thing. Add them only after the sentence passes on its own.
   creation slot, computed strictly before the trigger. On the door-v3 book it takes the -50 %
   rate from 14.1 % to 2.3 % and the book from +5.39 to +10.43 SOL. It is red on its own on the
   full tape (-151 SOL), which is what a conjunction term should look like.
-- **agreement among the solo 26** - the strongest loss-side term measured (a 0.37 lift on the
-  -50 % rate against a 0.82 activity-matched null, holding outside the window the roster was
+- **agreement among the solo 26** - the strongest loss-side term measured (0.37x the
+  -50 % rate against 0.82x for an activity-matched null, holding outside the window the roster was
   fitted on). **It is a thermometer, never a term**: naming their coins is wallet identity. It
   says the loss axis is real; a durable version has to be written in ix structure or tape
   state.

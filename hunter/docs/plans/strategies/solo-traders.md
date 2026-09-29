@@ -155,14 +155,16 @@ router or terminal buy of 0.5-1 SOL that opens the burst - and filled at 115 ms 
 books **+2.6 to +6.7 % a trade on every exit family** on **8dtx's coins**, and
 **-1.5 to -13 %** on the full tape with no door ([_!___evidence.md](_!___evidence.md) 5.4). That
 ceiling does not transfer to the two largest books: on `9999hu` / `88887Q` coins at age >= 15 s
-the same seat is +0.39 %/trade or red, and neither wallet names burst START (lift 1.02 / 1.14).
+the same seat is +0.39 %/trade or red; whether either wallet fires on burst START is unscored:
+needs a hit-rate read (derive 5.0).
 Create cgroup include is the market (concentration 0.87-1.16). Their prints stay out; their mint
 list is never a door ([_!___evidence.md](_!___evidence.md) 7, mid-tape rows). `8dtx` and `3Xk2` run durable-nonce
 racer builds: what is closed is copying their fill, not the decision they make. `3Xk2Eu` has no
-prints on the last-leg tape. `9Uq8GV` names the event (buy >= 1 lift 4.75) and leftover on their
-coins is +4.12 %/trade at clock 45; public doors besides slow-wall are red. `8aaRWu` names a
-structure restart on every-leg study (`structure_burst` lift 4.84 @ 25-50 ms; priced burst_start
-5.95) and leftover behind a 115 ms fill PASSES (parent union cost 1.20 %, peak +8.84 %); he takes
+prints on the last-leg tape. `9Uq8GV`'s event (buy >= 1) is unscored: needs a hit-rate read
+(derive 5.0); leftover on their coins is +4.12 %/trade at clock 45; public doors besides
+slow-wall are red. `8aaRWu`'s structure restart on every-leg study (`structure_burst` @ 25-50 ms;
+priced burst_start) is unscored: needs a hit-rate read (derive 5.0); leftover behind a 115 ms
+fill PASSES (parent union cost 1.20 %, peak +8.84 %); he takes
 **0.25 %** of those family prints; occupancy of that family is red, including on its coins
 (**-1.96 %**). Ignored leftover **+5.42 %**. This-printer 6.1 ranks `fresh_return` (0.51 % of
 that slice); a named `build` list is the market (3 public recipes, **0.29 %**) or a 5.3 %
@@ -283,25 +285,26 @@ position behind each one.
 the thinnest evidence in the file, and `9RNZnq`'s headline 8.25 % rests on 211 trades with a 90 %
 interval of 4.90 to 11.89. The shape is interesting; the level is not established.
 
-The public leftover of this node at 115 ms is **red**: a size buy on a live mid-life tape
-is not his tell (response equals the base), and he starts the burst himself half the time
+The public leftover of this node at 115 ms is **red**; whether a size buy on a live mid-life
+tape is his tell is unscored: needs a hit-rate read (derive 5.0), and he starts the burst
+himself half the time
 ([_!___evidence.md](_!___evidence.md) 7, the G1 row). The on-tape remainder is which coin (C6).
 
 ---
 
 ## 4. Agreement on coins rises steeply with entry age
 
-Co-selection lift between two of the 26 is not flat across the set. Against the geometric mean of
-the pair's entry age, Spearman is **0.794** on 325 pairs (`p = 7e-72`):
+Co-selection between two of the 26, in times chance, is not flat across the set. Against the
+geometric mean of the pair's entry age, Spearman is **0.794** on 325 pairs (`p = 7e-72`):
 
-| both enter at | pairs | median lift | pairs at lift >= 2 |
+| both enter at | pairs | median x chance | pairs at >= 2x chance |
 | --- | ---: | ---: | ---: |
 | under 30 s | 60 | 0.17 | 0.0 % |
 | 30-120 s | 125 | 0.96 | 17.6 % |
 | 120-400 s | 108 | 2.26 | 71.3 % |
 | over 400 s | 32 | 3.50 | 96.9 % |
 
-Under 30 s, independent professionals **anti-select** each other: a median lift of 0.17 means they
+Under 30 s, independent professionals **anti-select** each other: a median of 0.17x chance means they
 land on the same coin far less often than chance. That is the `instant launch` node, and it says
 the coin choice there is close to arbitrary between them - consistent with its book being a
 lottery on a floor entry. Over 400 s, which is `quiet deep-age` and `deep-age big clip` territory,
@@ -329,15 +332,15 @@ Reachability differs by node, and the seat decides it, not the margin:
 | --- | --- | --- |
 | instant launch | **no** | entry inside 11 s of creation; consumed in about two slots |
 | mid-tape one-shot | **open, and the door is found** | behind the slow-wall launch door with the permission the burst-start print books **+6.97 % a trade** on 986 trades and clears the client gate at 95.9 %, against -3.33 behind the best public door ([_!___evidence.md](_!___evidence.md) 6.4). It fails the tail and the per-day ticket floor - 16/177/210/24/28/9 a day, over fifty twice in six (4.8) |
-| hot-tape re-entry | **red here** at lag_115 | terms that separate their buys from the tape at lift 2.0-2.2 capture a **+0.29 %** price move, where this node's 1.10 % NET margin implies **+3.65 %** (evidence 7, the H1 row). At a zero fee the cell still loses. **`margin` in this file is net of the 125 bps fee** (`rb-solo-nodes.py` 140), so convert before comparing: `move = (margin + 2.5)/0.9875`. The lag does NOT pay on the buy leg on an aged coin: mean -0.66 %, cheaper than the decision print only 22.5 % of the time - a direction factor is a property of tape DENSITY, not of a side |
+| hot-tape re-entry | **red here** at lag_115 | terms read off their buys capture a **+0.29 %** price move, where this node's 1.10 % NET margin implies **+3.65 %** (evidence 7, the H1 row). At a zero fee the cell still loses. **`margin` in this file is net of the 125 bps fee** (`rb-solo-nodes.py` 140), so convert before comparing: `move = (margin + 2.5)/0.9875`. The lag does NOT pay on the buy leg on an aged coin: mean -0.66 %, cheaper than the decision print only 22.5 % of the time - a direction factor is a property of tape DENSITY, not of a side |
 | quiet deep-age | **red here** at lag_115 | the burst they follow lasts ~80 ms, so the fill is after it. Campaign-break v0 is a different sentence and is red too at 115 ms (evidence 7) |
-| deep-age big clip | **red here** at lag_115 | a public size print is not the tell (response = base). He starts the burst half the time (evidence 7) |
+| deep-age big clip | **red here** at lag_115 | the public size buy books red; whether a size print is his tell is unscored: needs a hit-rate read (derive 5.0). He starts the burst half the time (evidence 7) |
 
 **What the 26 are for, measured (C6).** Their creation-sequence set is **not** a door: 143
 sequences covering 95.3 % of coins and 97.3 % of prints, concentration 1.02, and -23.07 SOL
 when traded as one. What they carry is **agreement** - how many of them are already in a coin
 at our decision print - and that is the strongest single term this program has on the **loss**
-axis: a 0.37 lift on the -50 % rate against 0.82 for activity-matched random wallets and 0.98
+axis: 0.37x the -50 % rate against 0.82x for activity-matched random wallets and 0.98x
 for the ten roster wallets that failed the profit cut, holding outside the window the roster
 was fitted on ([_!___evidence.md](_!___evidence.md) 6.8). **It never enters a sentence** - naming their
 coins is wallet identity and their mint list is not a gate - and it never gates an entry, since

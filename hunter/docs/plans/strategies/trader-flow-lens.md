@@ -207,7 +207,7 @@ produced the claim.
   (2026-08-30 17:48 UTC). A NULL fee is unknown, never a wildcard hit.
 
 The count sentence says how many rows are unknown. Folding them into `no-match`
-would let retention quietly shape the hit rate.
+would let retention quietly shape the match rate.
 
 ### Wiring
 

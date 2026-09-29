@@ -11,7 +11,7 @@ named, in plain words and with the line it is computed at, under "Study code nam
 ```python
 import sys; sys.path.insert(0, "<path to node-derivation>")
 import toolkit                                   # puts study-kernel (kernel, tape, cvx) on sys.path
-from toolkit import tapes, seat, trigger, contrast, candidates, book, walkforward, exits, hazard
+from toolkit import tapes, seat, trigger, contrast, candidates, book, walkforward, exits, hazard, hitrate
 
 S = tapes.load("study", tapes.roster("hot-tape re-entry"))   # the tape, the members marked
 w = S.wallet("8fStGV")                                        # a member's wallet id
@@ -44,7 +44,8 @@ lines (copy [../hot-tape/_paths.py](../hot-tape/_paths.py)).
 | pick / 4.0 | 1, 4.0 | tape share on coins he prints; lake `ix_labels` for `InitUserVolumeAccumulator`, bundled `TransferChecked`, `CreateCoinAndBuy` | drop volume manufacture before FIND E (evidence 5.1). [rb-actor-tape-share.py](../../rb-actor-tape-share.py) is the share script for a machine |
 | `facts` | all | `Run(S, r)`: `.j(w)`, `.recipes(k, w)`, `.wallets(k, w)`, `.bought(k, w)`, `.sold(k, w)`, `.move(k, w)`, `.holders()`, `.holders_and_seller(flag)`, `.pub_bought_incl(w)` | the public tape state at every print. `.holders()` counts reserve-sized bags above zero, and a full exit leaves float residue, so it reads about distinct buyers, not holders (evidence 1.22) |
 | `seat` | 3-4, 5.2 | `episodes(S, w)`; `seat_book(S, E, caps)`; `reaction(S, E, trigger_fn, max_trig)`; `leftover(S, w, E, trigger_fn, max_trig=0.3)`, `leftover_summary(L)`, `veto(L, n)` | positions (k, ks, pnl, peak, held); RACE / FOLLOW clock books; `reaction`: lag, ahead and a clock (5.3 columns); `leftover`: per acted and ignored ticket the reaction cost, peak leftover at its hold p10 / p50 / p90, missed, break-even first; the summary's **behind** row is the derive 5.2 veto; `veto`: its one reader - `PASS` / `kill` (why: peak<=0, missed>=50, race) / `corner`, a `thin` flag under `THIN_PEAK`, cost reported and never a line |
-| `trigger` | 5.1, 8.1 | `excess_intensity(S, {group: [ids]}, cases="buy"/"close", controls="coin"/"hold", near="node"/"group")`; `peak(lift, cls)` | lift and excess tables, class x lag bin (14 lag bins to 5 s). Classes: WHO (`tool` `nonce` `direct` `pro` `seed_racer`), this-print history, then priced screens. Identity beats a priced class when both spike. [derive section 5](../../_!___derive.md#print-classes-51-scan) |
+| `hitrate` | 5.0, 5.1, 6.1 | `grid(coin, slot, t, day)`; `edges(g, C, public, merge=W)`; `measure(g, chances, entries, positions, W, cap, active, days)`; `luck(...)`; `lags(g, chances, entries)`, `reaction_window(lag)`; `active_spans(trade_t)`, `most_open(positions)` | whether a spelling is his: chances on every coin while he is free, hits inside his reaction window W, **hit rate** and **cover**, the exclusion counts. Its proof is `mid-tape/hr_synth.py` (a fake trader with known rules) and `mid-tape/hr_hand.py` (a hand count sharing no code): re-run both after any change to it. [derive 5.0](../../_!___derive.md#50-is-it-his-hit-rate-and-cover) |
+| `trigger` | 8.1 | `excess_intensity(S, {group: [ids]}, cases="buy"/"close", controls="coin"/"hold", near="node"/"group")`; `peak(lift, cls)` | per-print excess tables, class x lag bin (14 lag bins to 5 s), against random controls. Classes: WHO (`tool` `nonce` `direct` `pro` `seed_racer`), this-print history, then priced screens. A per-moment ratio: it scores nothing about whether a class is his, which is `hitrate` (derive 5.0) |
 | `contrast` | 6.1 | `label_acted(C, S, w, window)`; `strat_rank(acted, ignored, cols)` | the within-coin rank of each fact (0.50 = nothing) |
 | `candidates` | 6.1-6.2, 12.3 | `build(S, trigger, floor, exit, actor, extra, runs)` | one row per trigger print: 26 standard facts, the exit outcome (y, x, why, hold, v0, v1), actor diagnostics (act, act_lag, act_pre, act_in). `runs` limits the coins |
 | `book` | every book | `mask`, `occupy(C, m, cool_sl, max_per_coin)`, `fires(C, spec)`, `Occupier(run, k, xs).keep(m, e)` (occupy for the ladder's many masks and exits), `ledger(F, days)`, `capped(F)`, `reprice(F, b)`, `save` / `load` | the ledger of derive section 11 |
@@ -59,7 +60,7 @@ lines (copy [../hot-tape/_paths.py](../hot-tape/_paths.py)).
 S = tapes.load("study", tapes.roster(NODE))
 w = {p: S.wallet(p) for p in MEMBERS}
 E = {p: seat.seat_book(S, seat.episodes(S, w[p]), caps=(15.0,)) for p in MEMBERS}       # 4
-lift = trigger.excess_intensity(S, {p: [w[p]] for p in PAYERS})                          # 5.1
+H = hitrate.measure(g, hitrate.edges(g, C, pub, W), entries, positions, W, cap, active)  # 5.0-5.1
 L = seat.leftover(S, w[p], E[p], lambda run: <the trigger class as a mask>)              # 5.2
 C = contrast.label_acted(candidates.build(S, <trigger on its coins>), S, w[p], window)   # 6.1
 contrast.strat_rank(C[C.act == 1], C[(C.act == 0) & C.run.isin(C[C.act == 1].run)], facts)
@@ -80,5 +81,8 @@ the spec chosen - nothing re-fitted.
   `fade` also waits for public buying to dry up, so a coin sitting flat with buyers still
   printing never trips it.
 - `candidates.build` computes every fact before the floor; a full tape takes about a minute.
-- `trigger.excess_intensity` draws random controls: lifts agree between runs to sampling noise,
-  not to the digit.
+- `trigger.excess_intensity` draws random controls: its tables agree between runs to sampling
+  noise, not to the digit.
+- `hitrate` reads its own tape arrays (`grid`), not a `tapes.Session`; the 5.0 counts in
+  evidence 5.8 run on `mid-tape/hr_prep.py`'s curve tape. The ladder (`walkforward`, `contrast`)
+  still scores on the acted label, not on `hitrate`.

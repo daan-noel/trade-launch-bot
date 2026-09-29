@@ -64,11 +64,11 @@ expensive error is marking something tried that was never properly read.
 | D4 loss door | partly | the loss door lifts -6.52 to -3.92 % and stays 0/5 | the same under his own exit |
 | D5 off-chain | no data | outside the data scope (derive 2.0) | - |
 | E1 a listed ix structure acts | partly | a public-app build is a term of the tightened sentence | a build list of its own, read as E1 rather than as one term |
-| E2 silence, then a spend | not tried | - | the whole family. `structure_burst` is in the 5.1 scan at lift 4.25 and was never taken as a root |
-| E3 an operator's plan is unfinished | not tried | - | `clip_step_up` reads 4.64 in the 5.1 scan and is never read as a root |
+| E2 silence, then a spend | not tried | - | the whole family. `structure_burst` is in the 5.1 scan, unscored: needs a hit-rate read (derive 5.0), and is never taken as a root |
+| E3 an operator's plan is unfinished | not tried | - | `clip_step_up` is in the 5.1 scan, unscored: needs a hit-rate read (derive 5.0), and is never read as a root |
 | E4 a count crosses a line | not tried | - | the whole family |
-| E5 after sellers | not tried | - | `buy_after_sells` reads 4.27 in the 5.1 scan and is never read as a root |
-| E6 this print | tried | the 6.1 ladder spells E in both folds; `alone_in_slot`, its own top 5.1 tell, is 0.08 % acted and sits at depth 6 | - |
+| E5 after sellers | not tried | - | `buy_after_sells` is in the 5.1 scan, unscored: needs a hit-rate read (derive 5.0), and is never read as a root |
+| E6 this print | tried | the 6.1 ladder spells E in both folds; `alone_in_slot`, one of its 5.1 classes, is 0.08 % acted and sits at depth 6 | - |
 | E7 clock | not tried | - | the whole family |
 | P1 curve position | partly | `room` under the wall is the only separator (AUC 0.636); its best money cut is -4.46 % on 0/6 | the same under his own exit |
 | P2 windowed tape metrics | partly | `nb5` and `mv10` are ladder terms; the 24 mode x exit cells split on the 60 s move are all red | the same under his own exit |
@@ -82,7 +82,7 @@ expensive error is marking something tried that was never properly read.
 | S size | not tried | - | every book is at 0.2 SOL |
 | 5.4 an earlier sign | not tried | - | `mv10` is the term that fires on the move already in the price; the state before it is unread |
 | 5.4 a slower part of the same move | not tried | - | his hold p50 is 50 s, the longest of the node: a later, slower entry is plausible for him |
-| 5.4 the other side | not tried | - | he avoids sells (0.15-1.39 in the 5.1 scan) |
+| 5.4 the other side | not tried | - | sells in the 5.1 scan are unscored: needs a hit-rate read (derive 5.0) |
 | 5.4 another of his decisions | not tried | - | his re-entries and adds |
 
 **Unread, in the order to run it:**

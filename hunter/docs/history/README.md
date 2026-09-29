@@ -18,6 +18,7 @@ rule now lives).
 | Entry | One-line |
 | --- | --- |
 | [Refuted search lines, 07 -> 09](2026-09-03-refuted-lines-ledger.md) | The whole pre-2026-09-03 search program in one table: signal rounds 2-11, every wallet clone, the token/crew/fingerprint screens, the island and 6ix lines - what each concluded, and the nine laws that survive |
+| [Lift refuted as a rule's score](2026-09-29-lift-refuted-as-rule-score.md) | Per-moment lift ranked narrow corners and wrong rules above a known true rule; hit rate and cover replace it |
 
 The methodology that replaced it:
 [_!___strategy.md](../plans/strategies/_!___strategy.md).

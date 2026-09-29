@@ -261,8 +261,8 @@ are [node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md) sec
 
 | reading | what it measured | why it is withdrawn | the guard it left |
 | --- | --- | --- | --- |
-| "they are slow; we land ahead 68-85 %" | time since the last public buy >= 1 SOL, p50 1.29 s | a waiting time: it reads about a second whether or not anyone reacts; their gap from the previous print is 79 ms | latency is excess intensity from an identified trigger print |
-| lull, then wake, within the mint | `wake_z` 0.660, `quiet60_z` 0.418 on 93,588 buys against same-coin non-buys | the wake half discriminates (lift 4.5) and costs +5.98 % to react to at 115 ms; the lull half is reachable and predicts nothing; the conjunction covers 1.2 % of their buys | reaction cost and coverage beside every lift |
+| "they are slow; we land ahead 68-85 %" | time since the last public buy >= 1 SOL, p50 1.29 s | a waiting time: it reads about a second whether or not anyone reacts; their gap from the previous print is 79 ms | latency is measured from an identified trigger print, by the lag spike |
+| lull, then wake, within the mint | `wake_z` 0.660, `quiet60_z` 0.418 on 93,588 buys against same-coin non-buys | the wake half discriminates within the coin and costs +5.98 % to react to at 115 ms; the lull half is reachable and predicts nothing; the conjunction covers 1.2 % of their buys | reaction cost and cover beside every hit rate |
 | their moment, modelled | a within-mint model reads AUC 0.72 on held-out coins | fired on the tape it books -4.2 to -10.6 %/trade, 0/8, on a cheap fill | imitation is bounded by the median trade (strategy law 28) |
 | they are the demand | fires pay +2.37 % 7/8 when one of the six buys inside our hold | they put 2-5 % of the move's SOL in: detectors of a move, not its cause | a member's arrival is a diagnostic split, never a door |
 | the exit, searched | 480 causal shapes on 95,135 episodes: best -2.35 % behind their print, +0.21 % ahead, ceiling +53 % | swept with D and P empty, to 1800 s on a 19.9 s hold, six wallets pooled; its first grid read +8.30 % from a lookahead that index order fixes to -2.38 % | strategy laws 23, 24, 26, 27 |
@@ -802,12 +802,13 @@ member's closing sell on 0-0.5 %.
   list is not D. Not phase 8. Identity is the candidate. ApfmkS is volume
   manufacture,
   not a reader: drop at pick (derive 4.0; tape share 0.45 % SOL, VolAcc + TransferChecked unique
-  in the 26). 5.1 on it is flat (peak lift 1.44; mid-tape-rule-1.md step 5.2f).
+  in the 26). 5.1 on it is unscored: needs a hit-rate read (derive 5.0) (mid-tape-rule-1.md step 5.2f).
 - **49uohd's sell >= 1, read only:** behind its buy the cost is 2.69 % and peak leftover
   **+6.42 %**, so leftover exists on that class at our seat (cost is not a kill); ahead of it
-  (57.5 % of tickets) its own buy is the leftover. Its 5.1 peak is a node print
-  (6.4 at 25-50 ms); the sell class is its second band (3.3-3.7 at 150-300 ms, the member book of
-  [hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md)). 1.16's lag 260 ms and 96.8 % ahead
+  (57.5 % of tickets) its own buy is the leftover. Its 5.1 read - a node print
+  at 25-50 ms, the sell class at 150-300 ms (the member book of
+  [hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md)) - is unscored: needs a hit-rate read
+  (derive 5.0). 1.16's lag 260 ms and 96.8 % ahead
   count its buys 100-500 ms after the sell; this row counts those within 300 ms.
 
 Script: [b2_leftover.py](node-derivation/hot-tape/b2_leftover.py); the function is
@@ -1041,7 +1042,7 @@ frame  2026-08-08 .. 09-07, 736,800 coins. Days 08-09 .. 08-30 are a 22-day hold
 ```
 
 **On every one of the 30 days**, door coins reach the soft label (reserve 60 with the peak 60 s
-or more after birth) at **8.5-19.6 % against a pool of 1.9-4.3 %** - a **4-6x lift with no decay
+or more after birth) at **8.5-19.6 % against a pool of 1.9-4.3 %** - **4-6x the pool's rate with no decay
 across the holdout**.
 
 | door | coins | builds | forward wall rate | pool |
@@ -1079,7 +1080,7 @@ frame  last-leg week, 6.76 days of prints, doors from 3.1.
 
 A one-week print tape holds **34 slow-wall builds (26 at the 8 % cut), and a build stays in
 the door a median of 2 days** (p90 five). The door refreshes daily and keeps finding one, so
-the 30-day survival lift never decays (3.1) - but the identity behind it turns over every
+the 30-day survival rate ratio never decays (3.1) - but the identity behind it turns over every
 couple of days.
 
 That decides what a book behind this door actually is. **One creation build,
@@ -1106,16 +1107,16 @@ wrong axis. The gate that replaces it is in
 **A week of prints is about one profitable client.** Thirty days would hold roughly 150
 slow-wall builds. That, and not another AND, is what the door-behind sentences are waiting on.
 
-## 3.2 Coin-level lift, and the denominator that decides whether a rule can fire on it
+## 3.2 Coin-level rate ratio, and the denominator that decides whether a rule can fire on it
 
-| population | lift on "produces a playable big episode" |
+| population | x rate on "produces a playable big episode" |
 | --- | --- |
 | door 20+/8 %, coin level | 3.02x fit / **3.17x holdout** |
 | door + initial buy >= 2 SOL, coin level | 3.13x fit / **4.63x holdout** |
 | door 20+/8 %, **per print** | **0.98x** |
 | door + initial buy >= 2, **per print** | **1.21x** |
 
-`door + ib >= 2` is **2.0 % of coins and 6.1 % of prints**, and that ratio is where the lift
+`door + ib >= 2` is **2.0 % of coins and 6.1 % of prints**, and that ratio is where the rate ratio
 goes. **Restate every selection claim per print before using it in a plan.**
 
 ## 3.3 The metadata document
@@ -1186,40 +1187,36 @@ every one resolves against the lake's `ix_labels`:
 
 The `tool` bit alone merges at least 83 of these into one boolean.
 
-**The print he answers is the LAST print before him, not presence in a window.** Read as presence
-anywhere in 5 s the effect is 1.3-1.8x; read as the identity of the immediately preceding public
-print it is 3-10x on the same structures. His median gap to that print is **59 ms**.
+Which print he answers - the last print before him or presence in a window - is unscored: needs a
+hit-rate read (derive 5.0). His median gap to the immediately preceding public print is **59 ms**.
 
-**The big routers are frequent and not selective**, which is why watching the chain and measuring
-the tape disagree. On his re-entries, the trigger print is:
+On his re-entries, the trigger print is:
 
-| app | before **his** re-entry | before a **control** moment | lift |
-| --- | ---: | ---: | ---: |
-| Axiom Trade | **24.6 %** | **32.6 %** | **0.75** |
-| GMGN Bot | 4.4 % | 5.6 % | 0.79 |
-| Terminal | 7.5 % | 8.2 % | 0.91 |
-| DFlow | 3.2 % | 3.6 % | 0.89 |
-| Photon / OKX | 0.5 / 0.8 % | 0.5 / 0.8 % | 0.98 / 0.97 |
-| **Pump.Fun direct** | **23.4 %** | **14.8 %** | **1.58** |
+| app | before **his** re-entry |
+| --- | ---: |
+| Axiom Trade | **24.6 %** |
+| GMGN Bot | 4.4 % |
+| Terminal | 7.5 % |
+| DFlow | 3.2 % |
+| Photon / OKX | 0.5 / 0.8 % |
+| **Pump.Fun direct** | **23.4 %** |
 
-Axiom is the commonest print before him because it is 29 % of the whole tape; the control moments
-on the same coins carry MORE of it than his moments do. What he answers is a bot going direct to
-Pump.Fun, three of them carrying **Lighthouse** - an on-chain assertion program only a careful
-builder uses.
+Axiom is the commonest print before him, and it is 29 % of the whole tape. Which app he answers -
+the big routers, or a bot going direct to Pump.Fun, three of them carrying **Lighthouse** (an
+on-chain assertion program only a careful builder uses) - is unscored: needs a hit-rate read
+(derive 5.0).
 
-**It survives every control.** His trigger print is a buy 64.5 % of the time against the control's
-51.6 %, and 3.1x the size (median 0.377 SOL against 0.120) - and "a public buy >= 1 SOL" is
-already spelled on this member and already red (D11-D13). So every moment is binned by the trigger
-print's side, its size quintile and the tape's loudness (30 cells), the lift is read inside each
-cell, and the null shuffles which of a coin's own moments are his:
+His trigger print is a buy 64.5 % of the time against the control's 51.6 %, and 3.1x the size
+(median 0.377 SOL against 0.120) - and "a public buy >= 1 SOL" is already spelled on this member
+and already red (D11-D13). So a structure read controls the trigger print's side, its size
+quintile and the tape's loudness (30 cells), and the null shuffles which of a coin's own moments
+are his:
 
 | | result |
 | --- | --- |
-| structures at adjusted lift >= 1.50 | **18**, against a chance 95th percentile of **1** |
-| best adjusted lift | **6.04**, against a chance best of **1.68** |
-| holding in both halves of the days | **15** |
-| the trigger print is one of those 15 | **14.9 % of his re-entries against 3.1 % of controls (4.73x)** |
-| ... and a buy of >= 0.25 SOL | **10.52 % against 2.18 % (4.83x)**, over derive 10's 10 % cover floor |
+| which structures he answers, inside those cells | unscored: needs a hit-rate read (derive 5.0) |
+| the 15 named structures, as his trigger print | **14.9 % of his re-entries** |
+| ... and a buy of >= 0.25 SOL | **10.52 %** of his re-entries, over derive 10's 10 % cover floor |
 
 **And on its own it does not pay.** That sentence names no wallet, so 6.2 books it on all 106,347
 coins at our seat, against the same buy with the structures unnamed and against every other
@@ -1382,21 +1379,20 @@ That has a consequence beyond bookkeeping. **An average over a pool whose top 1 
 does not bound a subset of it.** "Even perfect selection of his picks loses on average, therefore
 no selection can win" is not valid, and it was used to close this member's event. It is withdrawn.
 
-**The event predicts the member and not the runner.** The label that points at the money is
+**The event does not predict the runner.** The label that points at the money is
 bounded: P(the best price reaches +100 % inside 30 minutes at our seat). Over **306,767 fires on
 11,147 coins strided across the whole tape**, so every day weighs evenly:
 
-| what fires | fires | reaches +100 % | lift |
+| what fires | fires | reaches +100 % | x rate |
 | --- | ---: | ---: | ---: |
 | any public buy >= 0.25 SOL | 306,767 | 19.45 % | 1.00 |
 | the 15 named structures | 36,472 | 19.71 % | **1.01** |
 | every other structure | 270,295 | 19.42 % | 1.00 |
 | the structures plus `mvk < 2.045` | 13,506 | 20.01 % | 1.03 |
 
-The same event is the trigger print before **4.83x** as many of that member's re-entries as of a
-control moment. **4.83x on the member, 1.01x on the runner.** Whatever those structures know about
-his attention, they know nothing about whether the coin moves, and no exit that waits for a runner
-can be rescued by that E.
+On the member the event is unscored: needs a hit-rate read (derive 5.0); **on the runner it is
+1.01x.** Whatever those structures know about his attention, they know nothing about whether the
+coin moves, and no exit that waits for a runner can be rescued by that E.
 
 **And the tail cannot be fitted on six days.** The 6.1 ladder on the tail label, 162 cuts in 12
 families with the event itself among them, both folds, against the label shuffled across whole
@@ -1437,7 +1433,7 @@ book (C1, ledger) has 8 of 646.
 
 **The trap first.** On the raw panel the reserve at the fire looks like the strongest
 L-predictor ever measured: L-rate **0.01 % in the lowest quintile against 34.10 % in the
-highest**, a 4.58x lift on the binary `v >= 40`. It predicts nothing. Below `v_entry` 42.43
+highest**, 4.58x the rate on the binary `v >= 40`. It predicts nothing. Below `v_entry` 42.43
 a -50 % is arithmetically unreachable (1.3), so the reserve separates trades that *can*
 collapse from trades that cannot. This is C1's scope error in the opposite direction, and it
 is why every row below is read **inside a reserve band**.
@@ -1483,7 +1479,7 @@ same time.** It does not ship - the parent's tail and hold are why - but the L a
 predictable at decision time, on a book that has one, from the launch bundle.
 
 **And it is not alone.** A second, independent L-term - how many of the solo 26 are already in
-the coin - is stronger still (L-rate lift **0.37** against a matched-random null of 0.82), and
+the coin - is stronger still (**0.37x** the L-rate against a matched-random null of 0.82), and
 the two stack: `bundle < 0.20 AND A >= 1` reads an **8.77 %** L-rate and **+3.86 %/trade**
 against -14.62 % for the whole reachable population. Controls, transfer and the full table are
 in 6.8.
@@ -1523,7 +1519,7 @@ trailing 7 days, banded by how many reached 20 trades, read forward on the NEXT 
 | group base | | 17.2 % | 4.2 % | |
 
 Read on episodes instead of volume the same bands give 8.18 % of hi-band coins producing a
-playable +50 % swing against a 5.33 % pool control: a **1.5x lift, not 4.7x**. Volume is not a
+playable +50 % swing against a 5.33 % pool control: **1.5x the pool's rate, not 4.7x**. Volume is not a
 swing (law 23), and the door's real work is exclusion - the low band runs 0.66 %. 119 creators
 carry the hi band, 29 of them 80 % of it, so it is 3.1's rotating client and refreshes daily.
 Asked the other way - does creator history reopen *leftover* - it stays red, and both readings
@@ -1578,7 +1574,7 @@ behind several addresses all land at or below their null:
 | attempt | link | real | null |
 | --- | --- | ---: | ---: |
 | crew co-occurrence | creators sharing >= 2 selective wallets | CU preset agrees 67.2 % | 73.9 % |
-| crew loyalty, 27-setting sweep | wallets on >= 2 coins of each creator | CU lift <= 2 pts anywhere | - |
+| crew loyalty, 27-setting sweep | wallets on >= 2 coins of each creator | CU agreement gain <= 2 pts anywhere | - |
 | the same, rotation shape | linked creators run sequentially | 3.7 % | 9.3 % |
 | day-matched succession | a stopping creator's crew reappears on a new address | 25.3 % at J >= 0.2 | 33.3 % |
 | config reuse | the exact configured buy carries across addresses | 1,350 values on >= 2 creators | 1,460 |
@@ -1625,12 +1621,12 @@ The rest of the group decays the same way. **This closes E for the group on ever
 Break-even is `p = L / (W + L)`, and `L` is set by where you enter. Same coins, same
 `tp100 / trail50 / cap1200` exit:
 
-| entry quality | cost of a miss | break-even hit rate | required lift over base |
+| entry quality | cost of a miss | break-even win rate | required x base rate |
 | --- | ---: | ---: | ---: |
 | arbitrary moment on a door coin | **-17 %** | 14.5 % | about **78x** |
 | at the episode trough | **+2.2 %** | about 0 | about **1x** |
 
-**The cost of a miss is 19 points apart on entry position alone, and break-even 14.5.** Never quote a required lift without the entry
+**The cost of a miss is 19 points apart on entry position alone, and break-even 14.5.** Never quote a required rate ratio without the entry
 quality it assumes.
 
 ## 4.2 Break-even is also set by the exit
@@ -1925,10 +1921,10 @@ carries.**
 
 ## 5.3 Agreement between independent traders rises with entry age
 
-Co-selection lift between two of the 26 against the geometric mean of the pair's entry age:
+Co-selection between two of the 26, in x chance, against the geometric mean of the pair's entry age:
 Spearman **0.794** on 325 pairs (`p = 7e-72`).
 
-| both enter at | pairs | median lift | pairs at lift >= 2 |
+| both enter at | pairs | median x chance | pairs at >= 2x chance |
 | --- | ---: | ---: | ---: |
 | under 30 s | 60 | **0.17** | 0.0 % |
 | 30-120 s | 125 | 0.96 | 17.6 % |
@@ -2041,6 +2037,69 @@ Brands are not machines: Axiom, Terminal and GMGN are buy/sell symmetric (the te
 the seed-builder cohort is the racer layer. **A build's instruction name and its compute-budget
 order separate a campaign client from its generic twin on the same instruction set** - one
 concentrates about 21 buys per coin and is green, the other sprays about 2.7 per coin and is red.
+
+## 5.8 Hit rate and cover find a known rule; lift does not
+
+The measure behind derive 5.0. A fake trader reads the real tape and buys by two rules we
+wrote; the counter (`toolkit/hitrate.py`) is scored on whether it gives back what we wrote.
+
+```
+  D  none            E  rule A: a buy opening a 0.4 s quiet, its own move >= 1.9 %, a wallet
+                        new to the coin, vsol < 40, SOL >= 2.0; rule B: 20+ buys in 2 s at
+                        vsol 72-78; plus 60 random buys a day (the unknown rest of him)
+  P  none            X  a random hold of 5-60 s    R  one open a coin    S  none (no money)
+  frame              curve tape 09-01 .. 09-06, every leg, 10.7 M prints (`mid-tape/hr_prep.py`);
+                     the fake trader takes 80 % of A's chances and 70 % of B's, reacts in 1-3
+                     slots, holds at most 5 coins, is off 10:00-12:00 UTC; build days 09-01/03/05,
+                     check days 09-02/04/06. Scripts `mid-tape/hr_synth.py`, `hr_hand.py`,
+                     `hr_8dtx.py`, `hr_overfit.py`
+```
+
+| spelling measured | chances | hit rate | build / check | cover | per-moment lift |
+| --- | ---: | ---: | --- | ---: | ---: |
+| rule A (true: 80.5 %) | 2,705 | **80.4 %** | 80.2 / 80.4 | 57.0 % | 571 |
+| rule B (true: 69.1 %) | 1,899 | **69.2 %** | 68.5 / 69.9 | 34.5 % | 34 |
+| A or B | 4,602 | 75.7 % | 75.2 / 76.2 | 91.4 % | 61 |
+| A without "new wallet" | 3,159 | 68.8 % | | 57.0 % | 483 |
+| A without "quiet" | 17,202 | 12.5 % | | 56.6 % | 73 |
+| A at SOL >= 1.5 (looser) | 7,181 | 30.2 % | | 57.0 % | 212 |
+| A at vsol < 45 (looser) | 4,577 | 47.5 % | | 57.1 % | 332 |
+| A at SOL >= 3.0 (narrower) | 569 | 81.4 % | | 12.1 % | 557 |
+| A at vsol < 35 (narrower) | 1,009 | 80.1 % | | 21.2 % | 663 |
+| A moved to vsol 40-50 | 3,567 | 0.2 % | | 0.2 % | 0.7 |
+| B at 15+ buys | 3,407 | 30.3 % | | 27.1 % | 26 |
+| random buys | 2,599 | 0.6 % | | 0.4 % | 1.0 |
+
+- **The counter gives back what was written:** 80.4 against 80.5 and 69.2 against 69.1, the same
+  on the build and the check days. The covers add to 91.4 %; the other 9 % are the random buys.
+- **Every wrong spelling scores lower.** A narrower piece of the true rule keeps its hit rate and
+  loses cover (81.4 % at 12.1 %), so the rule is the widest spelling at the top hit rate.
+- **Lift ranks wrong.** It puts both narrow pieces of A (557, 663) above A itself (571), and "A
+  without quiet" (73, a 12.5 % hit rate) above the true rule B (34).
+- **W is read from the spike.** The fake trader's lags come back 1-3 slots (spike end 3); its hit
+  rate climbs to 80.4 % at W = 3 and holds there to W = 50, while a random spelling keeps rising
+  slowly (0.6 % at 3, 2.9 % at 50). On 8dtx2t the spike is 0-1 slots (1,546 of 2,145 entries), the
+  p95 of the same lags 31: a percentile reads the unrelated chances that sit before every buy.
+- **A flicker is one chance.** Counted edge by edge, rule B read 72.8 % against its true 69.1 %:
+  a skipped flicker and a taken one 2 slots later merge into one hit.
+- **Counted by the moment, a state inflates the market count.** "4+ buys in 2 s at vsol 40-70" is
+  true on 534 k prints a day and turns true 37.6 k times: 14x.
+- **The hand count agrees:** a per-print loop sharing no code with the counter gives the same
+  chances and hits on 300 of 300 coins (242,090 prints).
+- **Off hours:** inferring them from 15-90 min gaps in his own trades moves rule A by 0.2 points.
+
+On 8dtx2t (same tape, W = 1, cap 4, off 12.7 h in 17 gaps over 30 min, 2,547 entries):
+
+| spelling | chances | hits | hit rate | build / check | cover | luck | per-moment lift |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |
+| E (frozen: 0.4 s quiet, move >= 1.90 %, new wallet) | 199,678 | 1,536 | **0.77 %** | 0.70 / 0.85 | 60.3 % | 0.11 % | 16.6 |
+| E and vsol < 45 | 103,518 | 1,401 | 1.35 % | 1.24 / 1.50 | 55.0 % | 0.15 % | 29.5 |
+| E and vsol < 45 and SOL >= 0.5 | 76,862 | 1,088 | 1.42 % | 1.27 / 1.60 | 42.7 % | 0.15 % | 26.9 |
+| a buy moving >= 1.9 % | 596,284 | 2,122 | 0.36 % | 0.33 / 0.38 | 83.3 % | 0.07 % | 6.6 |
+
+His own prints read as public change no hit (1,536 either way). Of 252 narrow cells of E (vsol x
+SOL x quiet), the best at 4 build hits reads 4.49 % there and 1.12 % on the check days; at 30+
+build hits the top cells hold on the check days (2.27 against 2.60 %). No cell passes 4 %.
 
 # 6. THE CONJUNCTION SPACE
 
@@ -2158,8 +2217,8 @@ Monotone in A, in every band, a 3-5x reduction. **Three controls, and it survive
 
 | arm | in the roster's selection window | outside it (09-04 ..) |
 | --- | ---: | ---: |
-| **solo 26**, A >= 1 lift | **0.40** | **0.37** |
-| **solo 26**, A >= 2 lift | 0.33 | **0.18** |
+| **solo 26**, A >= 1, x L-rate | **0.40** | **0.37** |
+| **solo 26**, A >= 2, x L-rate | 0.33 | **0.18** |
 | rejected 10 (same roster, failed `t >= 2`) | 0.91 | 0.98 |
 | matched-random wallets, mean of 20 draws | 0.77 (p5 0.66, p95 0.87) | 0.82 (p5 0.64, p95 0.92) |
 
@@ -2169,7 +2228,7 @@ null's 5th percentile, and the ten roster wallets that failed the profit cut sit
 
 **And it transfers.** The 26 are chosen on 08-27..09-03, which overlaps this tape, so the
 in-window number is circular. On 09-04 onward - outside the selection window entirely - the
-lift is **0.37 and 0.18**, unchanged, while rejected stays at 0.98 and random at 0.82. On 193
+L-rate ratio is **0.37 and 0.18**, unchanged, while rejected stays at 0.98 and random at 0.82. On 193
 A >= 1 trades and 62 A >= 2 trades, so the count is small and the effect is large.
 
 ### It stacks with bundle share, and together they turn the sign
@@ -2230,14 +2289,14 @@ The ledger: every rule booked, one row each, with the coordinate that produced i
 | C5 quiet deep-age, token-silence burst start | D keep / document / keep+ep . E first buy >= 0.5 after >= 10 token-silent slots . P age>=400 / v / quiet / creator . X trail40 c600 | keep+P **-32.46 SOL, 0/8, 200 first/day**; document **-3.63**; keep+ep **-9.46**; both halves red | **does not ship.** DELAY: the burst lasts ~80 ms |
 | C5 quiet deep-age, returning-pro restart | D keep / document . E returning professional after 10-slot build silence . P age>=400 / v / quiet / creator . X trail40 c600 | keep+P **-1.88 SOL, 1/8, 37/day**; document +0.40 (7.5/day, top1 94 %, hold -0.05) | **does not ship.** Does not describe GZmUDs on this tape |
 | G1 deep-age big clip, public size buy | D keep / document / slow-wall . E non-racer buy >= 1.0 SOL . P age>=200 / v 45-80 / live n60>=20 / creator . X trail40 c600 | keep+P **-13.19 SOL, 1/8, 125 first/day**; document +1.75 (16/day, top1 78 %); slow-wall +4.69 (33/day, top1 116 %, wo-top1 -0.77) | **does not ship**. Response equals base. Size print is not the tell |
-| Mid-tape instruments, all seven members | D cgroup / keep / not-dump / not-3ix / sw5 . E named by response . X clock 45 / tp30 / trail40 . seat lag_115 | 9Uq8GV ceiling +4.12 %/trade, names buy>=1; 8aaRWu +1.72 % clock 45 off slow-wall, lift 1.33; ApfmkS volume manufacture, drop at pick; 9999hu / 88887Q name sell >= 1 | **does not ship.** All members measured. Slow-wall cell is C2 |
+| Mid-tape instruments, all seven members | D cgroup / keep / not-dump / not-3ix / sw5 . E named by response . X clock 45 / tp30 / trail40 . seat lag_115 | 9Uq8GV ceiling +4.12 %/trade, names buy>=1; 8aaRWu +1.72 % clock 45 off slow-wall; ApfmkS volume manufacture, drop at pick; 9999hu / 88887Q name sell >= 1 | **does not ship.** All members measured. Slow-wall cell is C2 |
 | Mid-tape episodes 1/2/3+ four unpriced facts | D n_pro / n_pro_60 / n_hold / creator in / last-pro . E burst START . P age/v . X clock 45 / trail40 . seat lag_115 | all red; closest n_pro_60>=2 + creator in **-0.92 %/trade, 1/8**. Ep1 state does not separate return coins. Gap p50 56 s | **does not ship.** Four facts are the market on this event |
-| Mid-tape holder book at episode open | D never_sold / dev / sold_back / pro_hold / last_pro_hold / top1 . E burst START . P age/v . X clock 45 / trail40 . seat lag_115 | all red; last_pro_hold>=0.15 lift 3.50 then **-3.57 %/trade**. Ep1 book does not name return coins | **does not ship.** Tokens remaining is not D on this event |
+| Mid-tape holder book at episode open | D never_sold / dev / sold_back / pro_hold / last_pro_hold / top1 . E burst START . P age/v . X clock 45 / trail40 . seat lag_115 | all red; last_pro_hold>=0.15 books **-3.57 %/trade**. Ep1 book does not name return coins | **does not ship.** Tokens remaining is not D on this event |
 | Mid-tape 9Uq8GV | D unread . E buy >= 1 (burst start, nb2 / npro rising edges beside it) . P none . X clock 15 (prior) . R one per coin . S 0.2 . seat lag_115 | buy>=1 behind cost **4.99 %**, peak leftover **+4.01 %** (cover 87.5 %); every class and rising edge peak +1.65..+3.91 %, none a race; 6.2 occupancy of buy >= 1 + terms 0/8 | **5.2 PASS at FOLLOW** (peak +4.01 %), **occupancy red** (step 5.2d). Next 6.1 (which prints), 7.1 only after; not phase 8 |
 | Mid-tape 8dtx2t burst start | D none . E public burst start on the fires it takes . P none . X none . R one per coin . S 0.2 . seat lag_115 | behind cost **5.39 %** (98.6 % over 2 %), peak +0.71 % at hold p50; buy>=1 +2.15 %, buy>=0.5 +1.65 %, nb2 rising edges +1.18 / +3.17 %; pro -0.35 % and npro2 rising edge -1.01 % killed | **5.2 PASS, thin.** Not its E: 5.1 on every leg names clip_step_up (mid-tape-rule-3.md). Public burst START stays C2 (workflow 2) |
 | Mid-tape 9999hu (88887Q is the same tell) | D unread . E sell >= 1 (every other print class and the frenzy's rising-edge states carry the same leftover) . P none . X tp15 / sl40 / 70 s, a prior read on the acted pool . R one per coin . S 0.2 . seat lag_115 | sell >= 1 behind cost **8.97 %** (88887Q 7.01 %), peak leftover **+12.61 %** (1.27); other classes cost 6.95..22.61 %, peak +5.51..+12.23 %; rising edges cost 7.87..8.54 %, peak +7.66..+11.84 %; occupancy -3.53 % 0/8; age <= 16.3 s +3.85 % 7/7 is the launch first-sell; acted tp15 sl40 t70 +1.61 % 7/7, top 1 % 42.8 %, capped -7.42 SOL | **5.2 PASS at FOLLOW** (peak +12.61 %), **occupancy red**, 1.9 % of its coins' sells >= 1 acted. Next 6.1 (which sells), 7.1 only after; not phase 8 on the acted pool (derive 6.2) |
-| Mid-tape ApfmkS | D none . E none: volume manufacture, not a reader . P none . X none . R one per coin . S 0.2 . seat lag_115 | tape share 0.13 % prints / 0.45 % SOL; `InitUserVolumeAccumulator` 7.7 % and bundled `TransferChecked` 40.8 % of prints (unique in the 26); CreateCoinAndBuy 1 mint; 5.1 peak lift 1.44 | **drop at pick** (derive 4.0). Not FIND E |
-| Mid-tape 8aaRWu | D unread (E not spelled) . E identity family; named `build` list is the market (0.29 %) or a 5.3 % corner; silence-then-K cover **1.8 %**, leftover cover<10; run_k>=2 leftover PASSES at **0.63 %** slice; Two lists agree K>=2 leftover cover<10 at **1.77 %** slice; First run here leftover PASSES at **0.50 %** slice / rank **0.501** . Size buy leftover PASSES at **0.56 %** slice / rank **0.530** . `alone_in_slot` rank **0.354** low, leftover PASSES at **0.08 %** slice . P none (frame age >= 10 s) . X none . R one per coin . S 0.2 . seat 83 ms, 115 ms beside it | parent leftover cost **1.08 %**, peak **+9.51 %**, cover 94.4 % (115 ms 1.17 / +8.88); ignored leftover **+5.42 %**; fresh_return leftover **+9.31 %**, ignored **+7.08 %**; named-list lift>=3 leftover cover<10, ignored peak **+14.34 %**; arrival slot_gap rank **0.506**; sil10 run_k>=2 leftover cover<10 (115 ms peak<=0); run_k>=2 behind peak **+19.29 %**, ignored +10.65 %; 2bu K>=2 leftover cover<10, all-ignored peak **+23.12 %**; 2bu K>=1 leftover PASSES cover 29.9 %, behind **+8.56 %**, ignored **+8.76 %**, slice **0.50 %**; first_here leftover PASSES cover 12.4 %, behind **+7.72 %**, all-ignored **+7.45 %**, slice **0.50 %**; buy>=1 leftover PASSES cover 16.8 %, behind **+17.07 %**, all-ignored **+6.45 %**, slice **0.56 %**; `alone_in_slot` leftover PASSES cover 23.5 %, behind **+8.71 %**, all-ignored **+2.65 %**, slice **0.08 %**, acted ahead **89.9 %**; occupancy re-read **-4.12 %** 0/6; its-coins **-1.96 %** 0/6; 7.1 framed before first buy **+2.24 %** 6/6 (top1 58 %); 7.3 framed parent **-3.76 %** 0/6 n=276,018 | **5.2 PASS. E not spelled.** Next 6.1 remaining this-print unread (this-wallet / neighborhood / lake fee), not 7.1 / phase 8. Its-coins occupancy red: D cannot fix this class. Do not AND. Identity beats priced |
+| Mid-tape ApfmkS | D none . E none: volume manufacture, not a reader . P none . X none . R one per coin . S 0.2 . seat lag_115 | tape share 0.13 % prints / 0.45 % SOL; `InitUserVolumeAccumulator` 7.7 % and bundled `TransferChecked` 40.8 % of prints (unique in the 26); CreateCoinAndBuy 1 mint; 5.1 unscored: needs a hit-rate read (derive 5.0) | **drop at pick** (derive 4.0). Not FIND E |
+| Mid-tape 8aaRWu | D unread (E not spelled) . E identity family; named `build` list is the market (0.29 %) or a 5.3 % corner; silence-then-K cover **1.8 %**, leftover cover<10; run_k>=2 leftover PASSES at **0.63 %** slice; Two lists agree K>=2 leftover cover<10 at **1.77 %** slice; First run here leftover PASSES at **0.50 %** slice / rank **0.501** . Size buy leftover PASSES at **0.56 %** slice / rank **0.530** . `alone_in_slot` rank **0.354** low, leftover PASSES at **0.08 %** slice . P none (frame age >= 10 s) . X none . R one per coin . S 0.2 . seat 83 ms, 115 ms beside it | parent leftover cost **1.08 %**, peak **+9.51 %**, cover 94.4 % (115 ms 1.17 / +8.88); ignored leftover **+5.42 %**; fresh_return leftover **+9.31 %**, ignored **+7.08 %**; named-list leftover cover<10, ignored peak **+14.34 %**; arrival slot_gap rank **0.506**; sil10 run_k>=2 leftover cover<10 (115 ms peak<=0); run_k>=2 behind peak **+19.29 %**, ignored +10.65 %; 2bu K>=2 leftover cover<10, all-ignored peak **+23.12 %**; 2bu K>=1 leftover PASSES cover 29.9 %, behind **+8.56 %**, ignored **+8.76 %**, slice **0.50 %**; first_here leftover PASSES cover 12.4 %, behind **+7.72 %**, all-ignored **+7.45 %**, slice **0.50 %**; buy>=1 leftover PASSES cover 16.8 %, behind **+17.07 %**, all-ignored **+6.45 %**, slice **0.56 %**; `alone_in_slot` leftover PASSES cover 23.5 %, behind **+8.71 %**, all-ignored **+2.65 %**, slice **0.08 %**, acted ahead **89.9 %**; occupancy re-read **-4.12 %** 0/6; its-coins **-1.96 %** 0/6; 7.1 framed before first buy **+2.24 %** 6/6 (top1 58 %); 7.3 framed parent **-3.76 %** 0/6 n=276,018 | **5.2 PASS. E not spelled.** Next 6.1 remaining this-print unread (this-wallet / neighborhood / lake fee), not 7.1 / phase 8. Its-coins occupancy red: D cannot fix this class. Do not AND. Identity beats priced |
 | Mid-tape 8dtx2t rule 3b (first position) | D holders <= 46 . E public clip_step_up buy, own step >= 4.4 %, reserve <= 40, a new wallet, age >= 1 s . P <= 4 sells >= 1 SOL in 30 s, <= 25 prints in 5 s . X +40 % / -30 % / 17 s . R one per coin . S 0.2 . seat 83 ms, every leg, every lake coin born from 09-01 | study **-3.15 %** 0/6, holdout **-3.35 %** 0/5, 09-11..09-13 **-3.14 %** 0/3, about 2,000 a day; engine spelling every day -3.27 % (interval -3.60 .. -2.96), 50 ms -2.55 %. The study's +5.00 % 6/6 read only coins that end with >= 60 prints and >= 60 s: 40.4 % of fires sit on coins that end shorter, at -14.2 .. -14.9 %. By age at the fire: 1-3 s -3.15 %, 3-10 s -5.28 % (together 47 % of fires), 10-30 s -3.17 %, 30-300 s -1.3 .. -1.8 % | **red on every fire.** A future floor in the candidate table ([backtest-audit.md](backtest-audit.md) U1); E, D, P, X were read on survivors, on first positions only (derive 3: re-entry is R) and from age 1 s (derive 9: the frame is age >= 10 s) |
 | **C8 four-slot inventory walk** | D documented . E token-silence >=10 slots . P creator in . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 | **+47.54 SOL, 7/7, hold +13.33, LOO +13.90, boot 99.7 %**; tickets 47/170/220/192/140/125/63 (tracks documented births); plus is **age < 60 s** (+48.23); age>=60 **-0.82**; 818 / 1,622 fires sit at local index 0 and carry +46.08 (strategy law 31); on keep-create without the keep+ep50 sidecar the event books -1,034.87 (law 30) | **does not ship**. Launch book, not mid-tape. Day 0 = 47 is a 6.2 h stub. Tail 40 %. Inventory has no mid-tape 4-tuple that pays |
 | **C9 four new events** | D n_pro>=8 . E four unused events, one at a time: staged-leg first buy (S1) . unfinished-budget print (S3) . price under a rebuy bot's own exit (S4) . after-flush first buy (S12), which is the one the book below reads . P creator+age/v+cu . X trail40 c600 . R unlimited . S 0.2 . seat lag_115 . age>=60 | **+8.73 SOL, 5/7, hold +2.03, LOO +5.93, boot 98.5 %, top client 32 %**; tickets 21/72/170/143/58/35/39; peak/trough 8.1x, top2 58 %; wo top1 **+1.41**; top1 84 %. Fires over the walk: S12 53,225 (age p50 159 s), S1 7,882 (age p50 60 s), S3 338 (age p50 **0 s**), S4 92 | **does not ship**. TYPE fails. Client gate clears. Floor 4/7. Tail. Not the next parent. Each of the other three is red on its own ground: **S1** pays only behind slow-wall (+5.42, 3/6, 24 first/day, 12 clients, top 52 %) - C2's door in costume; **S3** fires at launch, so mid-tape occupancy is 2 trades; **S4** starves under is_pro (2 rebuy bots, 92 fires, about 0 SOL) and C10 re-walks it without that cut |
