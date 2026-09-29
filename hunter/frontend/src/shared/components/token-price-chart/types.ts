@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { FlowTag } from 'lib/flow/classifyFlow';
 import type { FlowLineVisibility } from './flowLineVisibility';
 import type { LensMatch } from './lensTint';
@@ -398,6 +399,37 @@ export interface TokenPriceChartProps {
    *  reading its counts from here can never quote a number the tint disagrees
    *  with. Fires with empty matches when nothing is armed. */
   onHighlightLensMatch?: (matches: ChartLensMatches) => void;
+  /**
+   * An extra toolbar line under the chart's own, filled by the host. It gets the
+   * controls of the **host range**: a second range, the host's own (e.g. an
+   * analysis window), drawn as an indigo band with its own drag-select. It is
+   * independent of the reader's range select (Tools, teal band), which keeps
+   * driving {@link onRangeChange} and the trades list; the two drag modes are
+   * exclusive, so one drag never draws both.
+   */
+  toolbarRow?: (ctl: ChartRangeControl) => ReactNode;
+  /**
+   * The host range's span on load, and again whenever the span, the token or the
+   * grouping changes (a host-range drag replaces it until then). Snapped to bars
+   * by {@link rangeForSpan}.
+   */
+  defaultRange?: ChartTimeSpan | null;
+  /** The host range's chip text before its length (e.g. `Analysis`). */
+  hostRangeLabel?: string;
+  /** Fired when the host range changes (a drag, `selectSpan`, the default); null
+   *  when cleared. Never fired by the reader's range select. */
+  onHostRangeChange?: (range: ChartRangeSelectionDetail | null) => void;
+}
+
+/** The host range's controls, handed to {@link TokenPriceChartProps.toolbarRow}. */
+export interface ChartRangeControl {
+  /** The host range's drag-select is armed (pan/zoom paused). */
+  picking: boolean;
+  setPicking: (on: boolean) => void;
+  /** Drop the host range. */
+  clear: () => void;
+  /** Set a wall-clock span as the host range (snapped like {@link TokenPriceChartProps.defaultRange}). */
+  selectSpan: (span: ChartTimeSpan) => void;
 }
 
 /** The per-lens result of one rebucket — see `lensTint.buildLensMatch`. */

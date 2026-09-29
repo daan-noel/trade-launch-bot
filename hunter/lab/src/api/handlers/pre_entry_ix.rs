@@ -546,6 +546,7 @@ mod tests {
             wallet_address: "W".into(),
             is_buy,
             amount_lamports: lamports,
+            token_amount: lamports,
             ix_labels: Some(serde_json::json!(labels)),
             cu_limit: None,
             cu_price: None,

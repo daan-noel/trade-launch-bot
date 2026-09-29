@@ -118,6 +118,12 @@ export const CHART_COLORS = {
   rangeBandBorder: 'rgba(19, 206, 175, 0.7)',
   rangeBandLabelBg: 'rgba(19, 206, 175, 0.92)',
   rangeBandLabelText: '#0a1a17',
+  /** The host's own range (`toolbarRow` / `defaultRange`, e.g. an analysis
+   *  window): indigo, so it never reads as the reader's teal range select. */
+  hostBandFill: 'rgba(129, 140, 248, 0.14)',
+  hostBandBorder: 'rgba(129, 140, 248, 0.8)',
+  hostBandLabelBg: 'rgba(129, 140, 248, 0.92)',
+  hostBandLabelText: '#11132b',
 } as const;
 
 /** Crosshair tooltip / toolbar — distinct hue per field on dark panels. */
@@ -139,7 +145,7 @@ export const PUMP_INITIAL_VIRTUAL_SOL = 30;
  * `PUMP_SWAP_VIRTUAL_QUOTE_SOL`.
  */
 export const PUMP_SWAP_VIRTUAL_QUOTE_SOL = 17.584505288;
-const PUMP_INITIAL_VIRTUAL_TOKEN = 1_073_000_000_000_000;
+export const PUMP_INITIAL_VIRTUAL_TOKEN = 1_073_000_000_000_000;
 const PUMP_INITIAL_REAL_TOKEN = 793_100_000_000_000;
 
 /** Spot price (SOL per raw token) when the bonding curve completes. */
@@ -287,8 +293,8 @@ export function responsiveChartHeight(
  */
 export const DEFAULT_BAR_SPACING = 6;
 
-/** Shared by dual-axis charts so range-select teardown restores the same policy. */
-export const DUAL_CHART_HANDLE_SCALE = {
+/** The token chart's scale gestures, shared so range-select teardown restores the same policy. */
+export const CHART_HANDLE_SCALE = {
   mouseWheel: true,
   pinch: true,
   axisPressedMouseMove: { time: true, price: true },

@@ -195,6 +195,14 @@ export const sharedApi = baseApi.injectEndpoints({
             : { ...t, instruction_labels: normalizeIxLabels(t.instruction_labels) },
         ),
     }),
+    // Full token rows for an explicit mint list (`POST /api/tokens/batch`, 500 per
+    // call). Strategy pages and the Entry Context market table enrich a mint set
+    // the list endpoint does not already hold.
+    getTokensBatch: builder.query<TokenRecord[], string[]>({
+      query: (mints) => ({ url: '/api/tokens/batch', method: 'POST', body: { mints } }),
+      transformResponse: (rows: TokenRecord[]) =>
+        rows.map((t) => ({ ...t, created_at_ms: Date.parse(t.created_at) })),
+    }),
     // Wallet profiles — read by the chart-marker consumers (Swing detection,
     // Sync token) to overlay tracked wallets. Folded into the cache so those two
     // pages dedupe a shared fetch and reuse it across navigation instead of each
@@ -479,6 +487,7 @@ export const {
   useGetCreationStatsQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
+  useLazyGetTokensBatchQuery,
   useGetSolPriceQuery,
   useLazyGetSolPriceQuery,
   useGetSettingsQuery,

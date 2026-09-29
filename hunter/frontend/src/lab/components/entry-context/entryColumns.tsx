@@ -1,81 +1,150 @@
 import type { ColumnDef } from 'components/table/types';
 import { DateCell } from 'components/table/DateCell';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
+import { IX_ABBREV_LEGEND } from 'lib/ixLabels';
+import { patternKey } from 'lib/flow/volumePatterns';
+import { LensButton, LensSpacer } from 'components/tokens/LensControls';
+// Deep import: type-only w.r.t. lightweight-charts (see `LensControls`).
+import { CHART_COLORS } from 'components/token-price-chart/constants';
+import { preEntryColumns } from '@lab/components/analysis/preEntryColumns';
+import type { PreEntryVerdict } from '@lab/lib/preEntryProbeTypes';
 import { ENTRY_AXES, formatAxis } from '@lab/lib/entryContext/axes';
-import {
-  entryKey,
-  UNKNOWN_REASON_TEXT,
-  type EntryGroupRow,
-  type EntryRow,
-} from '@lab/lib/entryContext/types';
+import type { EntryGroupRow, EntryRow } from '@lab/lib/entryContext/types';
 
 /**
- * Entry rows: when he bought, whether the entry clears the filter, then one
- * column per axis in `ENTRY_AXES` — generated, so an axis defined there is a
- * column here with its definition as the header tooltip.
+ * Entry rows: which token and when he bought, the pre-entry probe's own columns
+ * while the probe is on (the same set Trader Analysis shows per token), then one
+ * column per axis in `ENTRY_AXES` with its definition as the header tooltip. The
+ * table's filter row filters on every one of them.
  */
 export function entryColumns(
   windowSecs: number,
-  passing: ReadonlySet<string>,
+  tokenLabel: (mint: string) => string,
+  verdictOf: ((e: EntryRow) => PreEntryVerdict | undefined) | null,
+  probeSlots: number,
 ): ColumnDef<EntryRow>[] {
   const axisCols: ColumnDef<EntryRow>[] = ENTRY_AXES.map((a) => ({
     key: a.key,
     label: a.label,
     tooltip: a.definition(windowSecs),
-    group: 'axes',
+    group: a.group,
     render: (e) => (e.unknown_reason ? <span className="text-text-dim">-</span> : formatAxis(a, a.get(e))),
     sortValue: (e) => (e.unknown_reason ? null : a.get(e)),
     searchValue: () => '',
     filterNumber: (e) => (e.unknown_reason ? null : a.get(e)),
   }));
+  const ofGroup = (g: string) => axisCols.filter((c) => c.group === g);
   return [
     {
+      key: 'token',
+      label: 'Token',
+      group: 'buy',
+      render: (e) => (
+        <AddressDisplay
+          address={e.mint_address}
+          kind="token"
+          display={tokenLabel(e.mint_address)}
+          className="font-semibold"
+          stopPropagation
+        />
+      ),
+      sortValue: (e) => tokenLabel(e.mint_address),
+      searchValue: (e) => `${tokenLabel(e.mint_address)} ${e.mint_address}`,
+    },
+    {
       key: 'at',
-      label: 'His buy',
-      tooltip: 'Block time of his buy transaction (tape order is slot, tx index).',
+      label: 'Time',
+      group: 'buy',
+      tooltip: 'When he bought.',
       render: (e) => <DateCell iso={e.at} />,
       sortValue: (e) => e.slot * 10_000 + e.tx_index,
       searchValue: (e) => e.at,
     },
-    {
-      key: 'pass',
-      label: 'Filter',
-      tooltip: 'Whether this entry clears every filter line. Unknown entries never pass.',
-      render: (e) =>
-        e.unknown_reason ? (
-          <span title={`Unknown: ${UNKNOWN_REASON_TEXT[e.unknown_reason]}`}>
-            <Badge variant="warning" size="sm">
-              Unknown
-            </Badge>
-          </span>
-        ) : passing.has(entryKey(e)) ? (
-          <Badge variant="accent" size="sm">
-            Pass
-          </Badge>
-        ) : (
-          <Badge variant="neutral" size="sm">
-            Out
-          </Badge>
-        ),
-      sortValue: (e) => (e.unknown_reason ? -1 : passing.has(entryKey(e)) ? 1 : 0),
-      searchValue: () => '',
-      filterOptions: [
-        { value: 'pass', label: 'Pass' },
-        { value: 'out', label: 'Out' },
-        { value: 'unknown', label: 'Unknown' },
-      ],
-      filterOptionValue: (e) => (e.unknown_reason ? 'unknown' : passing.has(entryKey(e)) ? 'pass' : 'out'),
-    },
-    ...axisCols,
+    ...ofGroup('buy'),
+    ...(verdictOf ? preEntryColumns<EntryRow>(verdictOf, probeSlots) : []),
+    ...axisCols.filter((c) => c.group !== 'buy'),
   ];
 }
 
+/** The breakdown's time span: the analysis window, or the range picked on the chart. */
+const IN_RANGE = 'in the analysis range (the last seconds before his buy, or the range you picked on the chart)';
+
 const pctText = (v: number | null) => (v == null ? '-' : `${v.toFixed(0)}%`);
 
-/** One entry's window broken down by structure. */
-export function groupColumns(): ColumnDef<EntryGroupRow>[] {
+/** Arms the chart's structure highlight from a Structure cell (`useTokenHighlight`). */
+export interface StructureLens {
+  /** Arm this exact ordered structure; the armed one again disarms it. */
+  toggle: (labels: readonly string[]) => void;
+  /** `patternKey` of the armed structure, so its row renders the button lit. */
+  armedKey: string | null;
+}
+
+/** The Structure column of both structure tables: one narrow line, so the number
+ *  columns stay on screen. Under Exact it is the ordered sequence abbreviated
+ *  (`abbreviateIxLabels`), the full list on hover and click-to-copy; under
+ *  Template / Program the group's name. With a `lens`, an Exact row carries the
+ *  trades table's highlight button: it washes every candle with that structure. */
+export function structureColumn<R extends { key: string; labels?: string[] }>(
+  lens?: StructureLens | null,
+): ColumnDef<R> {
+  const button = (g: R) => {
+    if (!lens) return null;
+    if (!g.labels?.length) return <LensSpacer />;
+    const armed = lens.armedKey === patternKey(g.labels);
+    return (
+      <LensButton
+        armed={armed}
+        color={CHART_COLORS.lensStructure}
+        title={armed ? 'Stop highlighting this ix structure' : 'Highlight every candle with this exact ordered structure'}
+        onClick={() => lens.toggle(g.labels!)}
+      />
+    );
+  };
+  return {
+    key: 'key',
+    label: 'Structure',
+    group: 'structure',
+    width: '200px',
+    tooltip:
+      'Instructions in order, abbreviated. Hover a cell for the full list.' +
+      (lens ? ' Click the target to highlight that structure on the chart.' : '') +
+      `
+
+${IX_ABBREV_LEGEND}`,
+    render: (g) => (
+      <span className="flex min-w-0 items-center gap-1">
+        {button(g)}
+        {g.labels ? (
+          <IxLabelsDisplay labels={g.labels} compact copyJson className="min-w-0 flex-1" />
+        ) : (
+          <span className="block min-w-0 flex-1 truncate font-mono text-[11px]" title={g.key}>
+            {g.key}
+          </span>
+        )}
+      </span>
+    ),
+    searchValue: (g) => g.key,
+  };
+}
+
+/** Group banners of a buy's breakdown table. */
+export const GROUP_TABLE_LABELS: Record<string, string> = {
+  structure: 'Structure',
+  buys: 'Buys',
+  sells: 'Sells',
+  spread: 'Spread',
+};
+
+/** Buys columns in the buy color, Sells in the sell color (the candle colors); a 0
+ *  or empty cell is dim. */
+const SIDE_TINT: Readonly<Record<string, string>> = { buys: 'text-buy', sells: 'text-sell' };
+
+/** One buy's window, by structure. `lens` wires the Structure cell's highlight button. */
+export function groupColumns(lens?: StructureLens | null): ColumnDef<EntryGroupRow>[] {
   const num = (
+    group: string,
     key: string,
     label: string,
     tooltip: string,
@@ -84,31 +153,27 @@ export function groupColumns(): ColumnDef<EntryGroupRow>[] {
   ): ColumnDef<EntryGroupRow> => ({
     key,
     label,
+    group,
     tooltip,
-    render: (g) => fmt(get(g)),
+    render: (g) => {
+      const v = get(g);
+      return <span className={v ? SIDE_TINT[group] : 'text-white/30'}>{fmt(v)}</span>;
+    },
     sortValue: get,
     searchValue: () => '',
     filterNumber: get,
   });
-  const sol = (v: number | null) => (v == null ? '-' : v.toFixed(3));
+  const sol = (v: number | null) => (v == null ? '-' : `◎${v.toFixed(3)}`);
   const int = (v: number | null) => (v == null ? '-' : String(v));
   return [
-    {
-      key: 'key',
-      label: 'Structure',
-      width: '420px',
-      render: (g) =>
-        g.labels ? (
-          <IxLabelsDisplay labels={g.labels} maxHeight="4.5rem" copyJson />
-        ) : (
-          <span className="font-mono text-[11px]">{g.key}</span>
-        ),
-      searchValue: (g) => g.key,
-    },
+    structureColumn<EntryGroupRow>(lens),
     {
       key: 'tagged',
-      label: 'Tag',
-      tooltip: 'Buy transactions of this structure that carried the target tag.',
+      label: 'Target',
+      group: 'structure',
+      tooltip:
+        'Is this structure the target?\n' +
+        "'tag' = all its buys matched the target. '3/5' = 3 of its 5 buys did. '-' = none.",
       render: (g) =>
         g.tag_buy_tx > 0 ? (
           <Badge variant="accent" size="sm">
@@ -120,13 +185,41 @@ export function groupColumns(): ColumnDef<EntryGroupRow>[] {
       sortValue: (g) => g.tag_buy_tx,
       searchValue: () => '',
     },
-    num('buy_tx', 'Buy TXs', 'Buy transactions of this structure in the window.', (g) => g.buy_tx, int),
-    num('buy_tx_share', 'Tx %', 'Its buy transactions over every buy transaction in the window.', (g) => g.buy_tx_share_pct, pctText),
-    num('buy_sol', 'Buy SOL', 'SOL its buys spent in the window.', (g) => g.buy_sol, sol),
-    num('buy_sol_share', 'SOL %', 'Its buy SOL over every buy SOL in the window.', (g) => g.buy_sol_share_pct, pctText),
-    num('sell_tx', 'Sell TXs', 'Sell transactions of this structure in the window.', (g) => g.sell_tx, int),
-    num('sell_sol', 'Sell SOL', 'SOL its sells took out in the window.', (g) => g.sell_sol, sol),
-    num('wallets', 'Wallets', 'Distinct wallets among its prints.', (g) => g.wallets, int),
-    num('buy_secs', 'Buy secs', 'Distinct one-second buckets holding one of its buys.', (g) => g.buy_secs, int),
+    num('buys', 'buy_tx', 'Buys', `How many buy transactions this structure made ${IN_RANGE}.`, (g) => g.buy_tx, int),
+    num(
+      'buys',
+      'buy_tx_share',
+      'Tx %',
+      `Of all buy transactions ${IN_RANGE}, the % this structure made.\nExample: 25 buys, 5 by it = 20%.`,
+      (g) => g.buy_tx_share_pct,
+      pctText,
+    ),
+    num('buys', 'buy_sol', 'Buy SOL', `SOL this structure spent on buys ${IN_RANGE}.`, (g) => g.buy_sol, sol),
+    num(
+      'buys',
+      'buy_sol_share',
+      'SOL %',
+      `Of all SOL spent on buys ${IN_RANGE}, the % this structure spent.\nExample: 10 SOL of buys, 2 SOL by it = 20%.`,
+      (g) => g.buy_sol_share_pct,
+      pctText,
+    ),
+    num('sells', 'sell_tx', 'Sells', `How many sell transactions this structure made ${IN_RANGE}.`, (g) => g.sell_tx, int),
+    num('sells', 'sell_sol', 'Sell SOL', `SOL this structure's sells took out ${IN_RANGE}.`, (g) => g.sell_sol, sol),
+    num(
+      'spread',
+      'wallets',
+      'Wallets',
+      `How many different wallets used this structure ${IN_RANGE}.\n1 = one wallet; many = a shared tool or a crowd.`,
+      (g) => g.wallets,
+      int,
+    ),
+    num(
+      'spread',
+      'buy_secs',
+      'Buy secs',
+      `In how many different seconds this structure bought ${IN_RANGE}.\n1 = all its buys in the same second (a burst); high = spread out.`,
+      (g) => g.buy_secs,
+      int,
+    ),
   ];
 }

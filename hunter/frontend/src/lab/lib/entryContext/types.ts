@@ -8,6 +8,7 @@
  */
 
 import type { FlowSide, FlowTag } from 'lib/flow/classifyFlow';
+import type { PreEntryUnknownReason } from '@lab/lib/preEntryProbeTypes';
 
 export type EntryGroupBy = 'exact' | 'template' | 'program';
 
@@ -16,11 +17,45 @@ export interface EntryContextRequest {
   /** UTC RFC3339. Anchors are the wallet's buys with `from <= block_time <= to`. */
   from: string;
   to?: string | null;
+  /** Analysis window, seconds: the shares, counts and structure breakdown. */
   window_secs: number;
+  /** Probe window, slots: did the target land in the P slots before his buy. */
+  probe_slots: number;
   /** ONE tag definition in the fingerprint `tags` shape. `side` / `sticky` are
-   *  left out when unset: the engine's parser refuses a null. */
-  tag: { match: FlowTag['match']; side?: FlowSide; sticky?: true };
+   *  left out when unset: the engine's parser refuses a null. Absent = no target:
+   *  the windows are still read and every share is null. */
+  tag?: EntryTargetTag;
   group_by: EntryGroupBy;
+}
+
+/** ONE tag definition in the fingerprint `tags` shape. `side` / `sticky` are left
+ *  out when unset: the engine's parser refuses a null. */
+export interface EntryTargetTag {
+  match: FlowTag['match'];
+  side?: FlowSide;
+  sticky?: true;
+}
+
+/** `POST /api/wallets/{wallet}/entry-context/range`: one picked range of one token,
+ *  read exactly as an entry's window (the range is the window, the same length
+ *  before it the control). His own trades are left out. */
+export interface EntryRangeRequest {
+  wallet: string;
+  mint: string;
+  /** UTC RFC3339, closed bounds. */
+  from: string;
+  to: string;
+  /** The last slot the range holds. */
+  end_slot: number;
+  probe_slots: number;
+  group_by: EntryGroupBy;
+  tag?: EntryTargetTag;
+}
+
+export interface EntryRangeResponse {
+  /** The range as one entry's read: `window` = the range, `control` = before it. */
+  read: EntryRow;
+  window_secs: number;
 }
 
 /** One window read on both halves of the tag. Counts are transactions (the
@@ -58,12 +93,34 @@ export interface EntryGroupRow {
   buy_sol_share_pct: number | null;
 }
 
-export type EntryUnknownReason = 'tape-truncated' | 'no-fee-readings';
+/** The probe's own reasons (`UNKNOWN_HINT` explains each); an anchor here is a buy
+ *  he made, so `no-entry` never occurs. */
+export type EntryUnknownReason = Exclude<PreEntryUnknownReason, 'no-entry'>;
 
-export const UNKNOWN_REASON_TEXT: Record<EntryUnknownReason, string> = {
-  'tape-truncated': 'the read reaches past the oldest tape the trades table still holds',
-  'no-fee-readings': 'the tag pins fee fields and no print in the window carries a fee reading',
-};
+/** The tagged print nearest ahead of his buy inside the probe window. */
+export interface NearestTag {
+  /** Slots back from his. `0` = his own slot: co-arrival, not a readable trigger. */
+  lag_slots: number;
+  /** Transactions ahead of his in the same slot; null a slot or more away. */
+  lag_tx: number | null;
+  /** Seconds back by block time (second precision). */
+  lag_secs: number;
+  /** Its template grain (`program|CU|ATA|N|S|F`), whatever `group_by` is. */
+  key: string;
+  /** Its exact ordered ix labels (absent when the print has none). */
+  labels?: string[];
+}
+
+/** The pre-entry probe's read over its slot window: tagged transactions (either
+ *  side, on the tag's side) and the SOL they moved, the same one window earlier, and
+ *  the nearest one. The page applies min hits / min SOL. */
+export interface ProbeRead {
+  hits: number;
+  sol: number;
+  control_hits: number;
+  control_sol: number;
+  nearest: NearestTag | null;
+}
 
 /** One anchor: the trader's buy transaction and the window before it. */
 export interface EntryRow {
@@ -79,6 +136,7 @@ export interface EntryRow {
   /** Largest first (buy tx, then buy SOL). */
   groups: EntryGroupRow[];
   groups_omitted: number;
+  probe: ProbeRead;
 }
 
 export interface EntryContextResponse {
@@ -86,6 +144,7 @@ export interface EntryContextResponse {
   truncated: boolean;
   max_entries: number;
   window_secs: number;
+  probe_slots: number;
   group_by: EntryGroupBy;
   tape_floor?: string | null;
 }
@@ -93,3 +152,31 @@ export interface EntryContextResponse {
 /** Stable identity of one anchor. */
 export const entryKey = (e: Pick<EntryRow, 'mint_address' | 'slot' | 'tx_index'>): string =>
   `${e.mint_address}:${e.slot}:${e.tx_index}`;
+
+/** `POST /api/wallets/{wallet}/entry-context/scan`: every token traded in the range.
+ *  A point is a buy of the target. The body is the buys read's. */
+export type EntryScanRequest = EntryContextRequest;
+
+/** One target buy, read exactly as a buy is (`at` is that buy, `sol` 0, the window
+ *  is the W seconds before it, the breakdown cut to its top row), plus what came after. */
+export interface ScanMoment extends EntryRow {
+  /** The last trade's price at the moment, SOL per raw token (his trades left out). */
+  price?: number;
+  /** Price change from `price` to the last trade price `after_secs` later, percent.
+   *  No trade in between = 0. Null with no price at the moment. */
+  ret_pct: [number | null, number | null];
+  /** Seconds from the moment to his next buy on the token; absent when he bought no more. */
+  next_buy_secs?: number;
+}
+
+export interface EntryScanResponse {
+  moments: ScanMoment[];
+  /** The moment cap cut the scan short (most recent tokens kept). */
+  truncated: boolean;
+  /** Tokens checked. */
+  mints: number;
+  window_secs: number;
+  probe_slots: number;
+  /** The two horizons `ret_pct` is read at, seconds. */
+  after_secs: [number, number];
+}

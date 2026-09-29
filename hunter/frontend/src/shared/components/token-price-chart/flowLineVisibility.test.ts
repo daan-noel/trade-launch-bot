@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   anyFlowLineVisible,
   flowLineVisibilityFromPrefs,
-  flowLineVisibilityKey,
 } from './flowLineVisibility';
 
 describe('flowLineVisibilityFromPrefs', () => {
@@ -36,21 +35,9 @@ describe('flowLineVisibilityFromPrefs', () => {
 });
 
 describe('anyFlowLineVisible', () => {
-  it('is the left price scale visibility — false only when both curves are off', () => {
+  it('is false only when both curves are off', () => {
     expect(anyFlowLineVisible({ tagged: false, untagged: false })).toBe(false);
     expect(anyFlowLineVisible({ tagged: true, untagged: false })).toBe(true);
     expect(anyFlowLineVisible({ tagged: false, untagged: true })).toBe(true);
-  });
-});
-
-describe('flowLineVisibilityKey', () => {
-  it('distinguishes which curve is hidden — the shared axis rescales either way', () => {
-    const keys = new Set([
-      flowLineVisibilityKey({ tagged: true, untagged: false }),
-      flowLineVisibilityKey({ tagged: false, untagged: true }),
-      flowLineVisibilityKey({ tagged: true, untagged: true }),
-      flowLineVisibilityKey({ tagged: false, untagged: false }),
-    ]);
-    expect(keys.size).toBe(4);
   });
 });

@@ -44,7 +44,9 @@ side effect of editing a lens. It ADDS the set's entries to a chosen tag of a ch
 fingerprint (what the tag lists stays): exact rows under `ix_shape` with their pins, grain
 ids under `ix_template`, program names under `program`. Group labels have no home on a
 tag and are dropped. The PUT carries the whole row (criteria, wildcard, tags): an omitted
-axis would silently widen the fingerprint.
+axis would silently widen the fingerprint. The controls sit behind a switch that defaults
+off (`UiToggles.lensPromoteOn`, one preference for Trader Analysis and Entry Context);
+off, nothing mounts and the fingerprints list is not fetched.
 
 ## The lens' switches
 
@@ -187,7 +189,7 @@ followed by N buys from one tool, which is a count and a size, not a boolean.
 `[entry_slot - 2W, entry_slot - W)` — the same shape, same thresholds, one window
 earlier. Reported per row and summed in the bar:
 
-    matched 41/120 · control 38/120 · median lag 3 slots
+    before 41/120 · earlier 38/120 · median lag 3 slots
 
 Presence before an entry is a conditional with no denominator: a structure a
 crowd shares is on the tape before everything, and a filter alone can only ever
@@ -247,7 +249,7 @@ the counts below follow it. `All` is the default: turning the probe on adds
 columns, never removes rows from a table someone is already reading.
 
 The summary sentence is computed over every PROBED row, never over the visible
-ones, so `matched 591/1748 · control 540/1748` keeps saying what the filter is
+ones, so `before 591/1748 · control 540/1748` keeps saying what the filter is
 hiding. That is the whole reason narrowing is a view over the answer rather than
 a narrower question: a filter whose own counts move with it can only ever show
 confirmations.
@@ -262,7 +264,7 @@ this strip only carries the question asked with it.
 
 - **Per-group lines.** The overlay draws one `@set` series and one `@!set` series,
   so groups are compared by toggling chips rather than side by side. N series on
-  the left scale is the next step if the comparison earns it.
+  the price axis is the next step if the comparison earns it.
 - **Entry-aligned aggregate.** The probe answers presence per token; the panel
   answers shape. Aligning every entry at `t = 0` and plotting mean net
   target-structure flow over `t−10s … t+30s` is a fold over the same per-token

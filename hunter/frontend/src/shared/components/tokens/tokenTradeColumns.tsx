@@ -8,6 +8,7 @@ import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
+import { LensButton, LensSpacer } from 'components/tokens/LensControls';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeFees';
 import { patternKey } from 'lib/flow/volumePatterns';
@@ -57,69 +58,6 @@ export interface TokenTradeColumnsOpts {
   onLensStructure?: ((labels: readonly string[]) => void) | null;
   /** `patternKey` of the armed structure, so matching rows render the button lit. */
   lensStructureKey?: string | null;
-}
-
-/** Target glyph for a highlight-lens toggle — reads as "find this everywhere". */
-function LensIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" aria-hidden className="size-3">
-      <circle cx="8" cy="8" r="3.25" stroke="currentColor" strokeWidth="1.4" />
-      <path
-        d="M8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** The glyph's box. A button and its spacer MUST share it: a row that renders one
- *  and a row that renders neither would start their content at different x, which
- *  reads as a ragged column. */
-const LENS_SLOT = 'block size-3 shrink-0 p-px';
-
-/** Holds the slot open on a row that has nothing to arm (no labels captured). */
-function LensSpacer() {
-  return <span className={LENS_SLOT} aria-hidden />;
-}
-
-/**
- * The one control that arms a highlight lens. Lit while its target is the armed
- * one, so a row can say "this is what the chart is washing" without a legend.
- */
-function LensButton({
-  armed,
-  color,
-  title,
-  onClick,
-}: {
-  armed: boolean;
-  color: string;
-  title: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={armed}
-      title={title}
-      onClick={(e) => {
-        // Several hosts make the row itself selectable; arming a lens must not
-        // also move the table's selection.
-        e.stopPropagation();
-        onClick();
-      }}
-      className={cn(
-        LENS_SLOT,
-        'rounded transition focus:outline-none focus-visible:ring-1 focus-visible:ring-primary',
-        armed ? 'opacity-100' : 'opacity-30 hover:opacity-90',
-      )}
-      style={{ color: armed ? color : undefined }}
-    >
-      <LensIcon />
-    </button>
-  );
 }
 
 /** What the Wallet column actually holds — stated on the column, because reading it

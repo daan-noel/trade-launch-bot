@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   CHART_COLORS,
   compareWalletColor,
@@ -7,6 +7,8 @@ import {
   tradesInRange,
   type ChartEventMarker,
   type ChartMetric,
+  type ChartRangeControl,
+  type ChartRangeSelectionDetail,
   type ChartTimeBand,
   type ChartTimeSpan,
   type ChartValueLane,
@@ -15,7 +17,7 @@ import {
 import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
 import { useFlowLensContext } from 'context/FlowLensContext';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
-import { useTokenHighlight } from 'components/tokens/useTokenHighlight';
+import { useTokenHighlight, type TokenHighlight } from 'components/tokens/useTokenHighlight';
 import { useIxPatternTarget, type TagTape } from 'hooks/useIxPatternTarget';
 import { tradeFlowReasons } from 'lib/flow/flowChartData';
 import { classifyOptsForTag } from 'lib/flow/tapeClassify';
@@ -96,6 +98,19 @@ interface TokenTradeChartProps {
   timeBandCoverage?: ChartTimeSpan | null;
   /** One condition's reading drawn against its threshold, in its own pane. */
   valueLane?: ChartValueLane | null;
+  /** The trades table under the chart (bar/range picks list their trades). Default on. */
+  tradesPanel?: boolean;
+  /** See `TokenPriceChartProps.toolbarRow`: the host range's controls. */
+  toolbarRow?: (ctl: ChartRangeControl) => ReactNode;
+  /** See `TokenPriceChartProps.defaultRange`. */
+  defaultRange?: ChartTimeSpan | null;
+  /** See `TokenPriceChartProps.hostRangeLabel`. */
+  hostRangeLabel?: string;
+  /** See `TokenPriceChartProps.onHostRangeChange`. */
+  onHostRangeChange?: (range: ChartRangeSelectionDetail | null) => void;
+  /** A host-owned highlight (`useTokenHighlight` on the same trades and mint), for a
+   *  host whose own table arms the lenses. Default: the chart's own. */
+  highlight?: TokenHighlight | null;
 }
 
 /**
@@ -122,6 +137,12 @@ export function TokenTradeChart({
   timeBands = null,
   timeBandCoverage = null,
   valueLane = null,
+  tradesPanel = true,
+  toolbarRow,
+  defaultRange = null,
+  hostRangeLabel,
+  onHostRangeChange,
+  highlight: hostHighlight = null,
 }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
   const [metric, setMetric] = useState<ChartMetric>('price');
@@ -139,7 +160,8 @@ export function TokenTradeChart({
   const trades = tradesData ?? EMPTY_TRADES;
   // Ephemeral per-token highlight lenses. Keyed on the mint so switching tokens
   // can't carry a wallet or a structure onto candles it has nothing to do with.
-  const highlight = useTokenHighlight(trades, mint);
+  const ownHighlight = useTokenHighlight(trades, mint);
+  const highlight = hostHighlight ?? ownHighlight;
 
   const profileWalletsBase = useProfileWallets();
   // Spotlight the focused wallet: flag it highlighted if it's already tracked,
@@ -259,8 +281,7 @@ export function TokenTradeChart({
   const symbol = detail.symbol || detail.name || mint;
   const priceLabel = metric === 'mc' ? `MC (${unit})` : unit;
 
-  return (
-    <div className="border-t border-white/7 pt-2">
+  const chart = (
       <TokenPriceChart
         symbol={symbol}
         id={mint}
@@ -290,7 +311,17 @@ export function TokenTradeChart({
         timeBands={timeBands}
         timeBandCoverage={timeBandCoverage}
         valueLane={valueLane}
+        toolbarRow={toolbarRow}
+        defaultRange={defaultRange}
+        hostRangeLabel={hostRangeLabel}
+        onHostRangeChange={onHostRangeChange}
       />
+  );
+  if (!tradesPanel) return chart;
+
+  return (
+    <div className="border-t border-white/7 pt-2">
+      {chart}
 
       <BarTradesPanel
         trades={selectionTrades}

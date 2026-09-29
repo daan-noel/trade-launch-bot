@@ -1189,6 +1189,7 @@ impl TradeRepo {
             wallet_address: String,
             trade_type: String,
             amount_lamports: i64,
+            token_amount: i64,
             ix_labels: Option<sqlx::types::Json<serde_json::Value>>,
             cu_limit: Option<i64>,
             cu_price: Option<i64>,
@@ -1199,7 +1200,7 @@ impl TradeRepo {
             r#"
             SELECT t.mint_address, t.slot, t.tx_index, t.leg_index, t.block_time,
                    COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address,
-                   t.trade_type, t.amount_lamports, t.ix_labels,
+                   t.trade_type, t.amount_lamports, t.token_amount, t.ix_labels,
                    t.cu_limit, t.cu_price, t.tip_lamports
             FROM UNNEST($1::text[], $2::bigint[], $3::bigint[])
                  AS win(mint_address, lo_slot, hi_slot)
@@ -1232,6 +1233,7 @@ impl TradeRepo {
                 wallet_address: r.wallet_address,
                 is_buy: r.trade_type == "buy",
                 amount_lamports: r.amount_lamports,
+                token_amount: r.token_amount,
                 ix_labels: r.ix_labels.map(|j| j.0),
                 cu_limit: r.cu_limit,
                 cu_price: r.cu_price,
@@ -1275,6 +1277,31 @@ impl TradeRepo {
         .bind(since)
         .bind(until)
         .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Every mint traded in `since..=until`: its first and last trade there, by
+    /// tape position and block time. The market side of the Entry Context scan.
+    pub async fn traded_mint_spans(
+        &self,
+        since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Vec<MintSpan>> {
+        let rows: Vec<MintSpan> = sqlx::query_as(
+            r#"
+            SELECT mint_address,
+                   MIN(slot) AS first_slot, MIN(block_time) AS first_time,
+                   MAX(slot) AS last_slot, MAX(block_time) AS last_time
+            FROM trades
+            WHERE block_time >= $1
+              AND ($2::timestamptz IS NULL OR block_time <= $2)
+            GROUP BY mint_address
+            "#,
+        )
+        .bind(since)
+        .bind(until)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -1848,6 +1875,16 @@ pub struct WalletBuyTx {
     pub amount_lamports: i64,
 }
 
+/// One mint's first and last trade in a range ([`TradeRepo::traded_mint_spans`]).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MintSpan {
+    pub mint_address: String,
+    pub first_slot: i64,
+    pub first_time: DateTime<Utc>,
+    pub last_slot: i64,
+    pub last_time: DateTime<Utc>,
+}
+
 /// One leg inside a [`SlotWindow`] — the ix shape, the fee budget, the side, the
 /// size, and its tape position. Deliberately not a [`Trade`]: this read fans out
 /// over many mints, and the model's reserves / signature / price reconstruction
@@ -1869,6 +1906,8 @@ pub struct TapePrint {
     pub wallet_address: String,
     pub is_buy: bool,
     pub amount_lamports: i64,
+    /// Raw token units the leg moved: with `amount_lamports`, its price ([`TapePrint::price`]).
+    pub token_amount: i64,
     /// The tx's ordered instruction labels. `None` on a pre-`0002` row that has no
     /// labels to read — unknowable, never an empty sequence.
     pub ix_labels: Option<serde_json::Value>,
@@ -1877,6 +1916,15 @@ pub struct TapePrint {
     pub cu_limit: Option<i64>,
     pub cu_price: Option<i64>,
     pub tip_lamports: Option<i64>,
+}
+
+impl TapePrint {
+    /// The leg's execution price, SOL per raw token unit (the `price_per_token`
+    /// every trade read derives, [`price_of`]); `None` when it moved no tokens.
+    pub fn price(&self) -> Option<f64> {
+        (self.token_amount > 0)
+            .then(|| price_of(lamports_to_sol(self.amount_lamports), self.token_amount as f64))
+    }
 }
 
 /// One token a wallet traded in the window, with the wallet's interaction stats

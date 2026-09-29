@@ -21,10 +21,8 @@ import type {
   ChartEventMarker,
   ChartRangeSelectionDetail,
 } from 'components/token-price-chart/types';
-import { ixLabelsActions } from 'lib/ixLabels';
-import { CHART_COLORS } from 'components/token-price-chart/constants';
-import type { LensMatch } from 'components/token-price-chart/lensTint';
 import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
+import { LensChips } from 'components/tokens/LensControls';
 import type { TradeRecord } from 'types';
 
 const EMPTY_TRADES: TradeRecord[] = [];
@@ -368,106 +366,6 @@ export function BarTradesPanel({
   );
 }
 
-
-/** Short address for a chip — the address itself is a column away. */
-function shortAddr(addr: string): string {
-  return addr.length > 12 ? `${addr.slice(0, 4)}…${addr.slice(-4)}` : addr;
-}
-
-/** `+4.21` / `-0.08` — sign always shown, because the sign is the point. */
-function signedSol(match: LensMatch): string {
-  const net = match.buySol - match.sellSol;
-  return `${net >= 0 ? '+' : '−'}${Math.abs(net).toFixed(3)}`;
-}
-
-/**
- * One armed lens, stated in full: what is washed, how much of the token it is,
- * and the button that turns it off.
- *
- * The counts come from the CHART's own match (`onHighlightLensMatch`), not from a
- * second pass over the rows — a chip that quoted a different number from the wash
- * beside it would make the reader distrust both.
- */
-function LensChip({
-  color,
-  label,
-  title,
-  match,
-  note,
-  onClear,
-}: {
-  color: string;
-  label: string;
-  title: string;
-  match: LensMatch;
-  note?: string | null;
-  onClear: () => void;
-}) {
-  const total = match.buys + match.sells;
-  return (
-    <span
-      className="inline-flex max-w-full items-center gap-1.5 rounded border px-1.5 py-px font-mono text-[10px]"
-      style={{ borderColor: `${color}99`, backgroundColor: `${color}1f`, color }}
-      title={title}
-    >
-      <span className="truncate">{label}</span>
-      <span className="text-text-dim">
-        {total} tx ({match.buys}b/{match.sells}s) · net {signedSol(match)} SOL
-      </span>
-      {note && <span className="text-text-dim">· {note}</span>}
-      <button
-        type="button"
-        onClick={onClear}
-        title="Stop highlighting"
-        className="leading-none opacity-70 hover:opacity-100"
-      >
-        ×
-      </button>
-    </span>
-  );
-}
-
-/**
- * The armed highlight lenses for this token, shown wherever the trades panel is —
- * including with no candle selected, so the control that disarms a lens never
- * hides behind the table it is washing.
- *
- * Counts are bar-aligned: they cover exactly the trades the chart could paint, so
- * dust legs the candles drop are absent here too.
- */
-function LensChips({ highlight }: { highlight: TokenHighlight }) {
-  const { lens, matches, structureLabels, unlabeled, toggleWallet, toggleStructure } =
-    highlight;
-  const structureText = structureLabels ? ixLabelsActions([...structureLabels]) : '';
-  return (
-    <div className="mb-2 flex flex-wrap items-center gap-2">
-      {lens.wallet && (
-        <LensChip
-          color={CHART_COLORS.lensWallet}
-          label={shortAddr(lens.wallet)}
-          title={`${lens.wallet} — every candle this wallet traded in is washed gold`}
-          match={matches.wallet}
-          onClear={() => toggleWallet(null)}
-        />
-      )}
-      {lens.structureKey && (
-        <LensChip
-          color={CHART_COLORS.lensStructure}
-          label={structureText || 'ix structure'}
-          title={
-            `${structureText}
-
-Every candle carrying this EXACT ordered structure is ` +
-            `washed cyan. View-only — no fingerprint or rule reads it.`
-          }
-          match={matches.structure}
-          note={unlabeled > 0 ? `${unlabeled} unlabeled` : null}
-          onClear={() => toggleStructure(null)}
-        />
-      )}
-    </div>
-  );
-}
 
 /**
  * The lens twin of {@link IxPatternBar}: what a badge click writes when the page owns

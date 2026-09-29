@@ -10,7 +10,7 @@ import type { PriceUnit } from 'types';
 import { createChartTimeFormatters } from './chartTimezone';
 import {
   CHART_COLORS,
-  DUAL_CHART_HANDLE_SCALE,
+  CHART_HANDLE_SCALE,
   createChartPriceFormatter,
 } from './constants';
 import type { ChartGroupMode } from './types';
@@ -26,31 +26,23 @@ import type { ChartGroupMode } from './types';
  * constructor belongs here, next to the lazily-loaded charts.
  */
 
-/** Optional extras for {@link createChartOptions}. */
-export interface CreateChartOptionsExtras {
-  /**
-   * Dual left+right price scales with independent units (e.g. flow overlay +
-   * token price). Enables the left scale and omits the chart-level
-   * `localization.priceFormatter` so each series' own `priceFormat` owns its
-   * axis ticks — a single chart formatter would paint both scales the same.
-   */
-  dualPriceScale?: boolean;
-}
+const PRICE_SCALE_MARGINS = { top: 0.1, bottom: 0.1 };
 
-const DUAL_PRICE_SCALE_MARGINS = { top: 0.1, bottom: 0.1 };
-
+/**
+ * One price axis (right). Every series on the token chart - the candles and the
+ * `@tag` / `@!tag` flow lines, drawn as cohort curve prices - shares it, so one
+ * zoom moves them all and no series can drift off the others' scale.
+ */
 export function createChartOptions(
   width: number,
   height: number,
   groupMode: ChartGroupMode = 'time',
   priceUnit: PriceUnit = 'SOL',
   timezone?: string,
-  extras?: CreateChartOptionsExtras,
 ): DeepPartial<ChartOptions> {
   const slotTimeFormatter = (time: number) => String(time);
   const timeFormatters =
     groupMode === 'time' && timezone ? createChartTimeFormatters(timezone) : null;
-  const dual = extras?.dualPriceScale === true;
 
   return {
     width,
@@ -65,19 +57,10 @@ export function createChartOptions(
     },
     rightPriceScale: {
       borderColor: CHART_COLORS.border,
-      ...(dual ? { scaleMargins: DUAL_PRICE_SCALE_MARGINS, autoScale: true } : {}),
+      scaleMargins: PRICE_SCALE_MARGINS,
+      autoScale: true,
     },
-    ...(dual
-      ? {
-          leftPriceScale: {
-            visible: true,
-            borderColor: CHART_COLORS.border,
-            scaleMargins: DUAL_PRICE_SCALE_MARGINS,
-            autoScale: true,
-          },
-          handleScale: { ...DUAL_CHART_HANDLE_SCALE },
-        }
-      : {}),
+    handleScale: { ...CHART_HANDLE_SCALE },
     timeScale: {
       borderColor: CHART_COLORS.border,
       timeVisible: groupMode === 'time',
@@ -94,9 +77,7 @@ export function createChartOptions(
       horzLine: { color: CHART_COLORS.crosshair },
     },
     localization: {
-      // Dual-axis charts must NOT set a chart-level priceFormatter — it overrides
-      // every series' priceFormat and forces left+right through one unit.
-      ...(dual ? {} : { priceFormatter: createChartPriceFormatter(priceUnit) }),
+      priceFormatter: createChartPriceFormatter(priceUnit),
       ...(groupMode === 'slot'
         ? { timeFormatter: slotTimeFormatter }
         : timeFormatters

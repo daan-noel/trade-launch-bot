@@ -1,0 +1,177 @@
+import { cn } from 'lib/cn';
+import { ixLabelsActions } from 'lib/ixLabels';
+// Deep imports: type-only w.r.t. lightweight-charts, so a host outside the chart
+// chunk can draw the lens controls without loading the charting library.
+import { CHART_COLORS } from 'components/token-price-chart/constants';
+import type { LensMatch } from 'components/token-price-chart/lensTint';
+import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
+
+/*
+ * The highlight-lens controls (`useTokenHighlight`): the target button that arms a
+ * lens from a row, and the chips that state and disarm the armed ones. One set, so
+ * every table that arms a lens (the trades table, the Entry Context breakdown)
+ * draws the same control.
+ */
+
+/** Target glyph for a highlight-lens toggle — reads as "find this everywhere". */
+function LensIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden className="size-3">
+      <circle cx="8" cy="8" r="3.25" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/** The glyph's box. A button and its spacer MUST share it: a row that renders one
+ *  and a row that renders neither would start their content at different x, which
+ *  reads as a ragged column. */
+const LENS_SLOT = 'block size-3 shrink-0 p-px';
+
+/** Holds the slot open on a row that has nothing to arm (no labels captured). */
+export function LensSpacer() {
+  return <span className={LENS_SLOT} aria-hidden />;
+}
+
+/**
+ * The one control that arms a highlight lens. Lit while its target is the armed
+ * one, so a row can say "this is what the chart is washing" without a legend.
+ */
+export function LensButton({
+  armed,
+  color,
+  title,
+  onClick,
+}: {
+  armed: boolean;
+  color: string;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={armed}
+      title={title}
+      onClick={(e) => {
+        // Several hosts make the row itself selectable; arming a lens must not
+        // also move the table's selection.
+        e.stopPropagation();
+        onClick();
+      }}
+      className={cn(
+        LENS_SLOT,
+        'rounded transition focus:outline-none focus-visible:ring-1 focus-visible:ring-primary',
+        armed ? 'opacity-100' : 'opacity-30 hover:opacity-90',
+      )}
+      style={{ color: armed ? color : undefined }}
+    >
+      <LensIcon />
+    </button>
+  );
+}
+
+/** Short address for a chip — the address itself is a column away. */
+function shortAddr(addr: string): string {
+  return addr.length > 12 ? `${addr.slice(0, 4)}…${addr.slice(-4)}` : addr;
+}
+
+/** `+4.21` / `-0.08` — sign always shown, because the sign is the point. */
+function signedSol(match: LensMatch): string {
+  const net = match.buySol - match.sellSol;
+  return `${net >= 0 ? '+' : '−'}${Math.abs(net).toFixed(3)}`;
+}
+
+/**
+ * One armed lens, stated in full: what is washed, how much of the token it is,
+ * and the button that turns it off.
+ *
+ * The counts come from the CHART's own match (`onHighlightLensMatch`), not from a
+ * second pass over the rows — a chip that quoted a different number from the wash
+ * beside it would make the reader distrust both.
+ */
+function LensChip({
+  color,
+  label,
+  title,
+  match,
+  note,
+  onClear,
+}: {
+  color: string;
+  label: string;
+  title: string;
+  match: LensMatch;
+  note?: string | null;
+  onClear: () => void;
+}) {
+  const total = match.buys + match.sells;
+  return (
+    <span
+      className="inline-flex max-w-full items-center gap-1.5 rounded border px-1.5 py-px font-mono text-[10px]"
+      style={{ borderColor: `${color}99`, backgroundColor: `${color}1f`, color }}
+      title={title}
+    >
+      <span className="truncate">{label}</span>
+      <span className="text-text-dim">
+        {total} tx ({match.buys}b/{match.sells}s) · net {signedSol(match)} SOL
+      </span>
+      {note && <span className="text-text-dim">· {note}</span>}
+      <button
+        type="button"
+        onClick={onClear}
+        title="Stop highlighting"
+        className="leading-none opacity-70 hover:opacity-100"
+      >
+        ×
+      </button>
+    </span>
+  );
+}
+
+/**
+ * The armed highlight lenses for this token, shown wherever the trades panel is —
+ * including with no candle selected, so the control that disarms a lens never
+ * hides behind the table it is washing.
+ *
+ * Counts are bar-aligned: they cover exactly the trades the chart could paint, so
+ * dust legs the candles drop are absent here too.
+ */
+export function LensChips({ highlight }: { highlight: TokenHighlight }) {
+  const { lens, matches, structureLabels, unlabeled, toggleWallet, toggleStructure } =
+    highlight;
+  const structureText = structureLabels ? ixLabelsActions([...structureLabels]) : '';
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-2">
+      {lens.wallet && (
+        <LensChip
+          color={CHART_COLORS.lensWallet}
+          label={shortAddr(lens.wallet)}
+          title={`${lens.wallet} — every candle this wallet traded in is washed gold`}
+          match={matches.wallet}
+          onClear={() => toggleWallet(null)}
+        />
+      )}
+      {lens.structureKey && (
+        <LensChip
+          color={CHART_COLORS.lensStructure}
+          label={structureText || 'ix structure'}
+          title={
+            `${structureText}
+
+Every candle carrying this EXACT ordered structure is ` +
+            `washed cyan. View-only — no fingerprint or rule reads it.`
+          }
+          match={matches.structure}
+          note={unlabeled > 0 ? `${unlabeled} unlabeled` : null}
+          onClear={() => toggleStructure(null)}
+        />
+      )}
+    </div>
+  );
+}

@@ -31,6 +31,29 @@ export interface RangeBandDef {
   dashed?: boolean;
 }
 
+/** A band's four colors; the default is the reader's range select (teal). */
+export interface RangeBandColors {
+  fill: string;
+  border: string;
+  labelBg: string;
+  labelText: string;
+}
+
+const RANGE_SELECT_COLORS: RangeBandColors = {
+  fill: CHART_COLORS.rangeBandFill,
+  border: CHART_COLORS.rangeBandBorder,
+  labelBg: CHART_COLORS.rangeBandLabelBg,
+  labelText: CHART_COLORS.rangeBandLabelText,
+};
+
+/** The host range's band (indigo): see `TokenPriceChartProps.toolbarRow`. */
+export const HOST_RANGE_COLORS: RangeBandColors = {
+  fill: CHART_COLORS.hostBandFill,
+  border: CHART_COLORS.hostBandBorder,
+  labelBg: CHART_COLORS.hostBandLabelBg,
+  labelText: CHART_COLORS.hostBandLabelText,
+};
+
 /** Label chip rectangle in media (CSS) pixels — used for drawing and hit-testing. */
 interface LabelRect {
   left: number;
@@ -75,7 +98,10 @@ function roundRectPath(
 
 /** Translucent band fill + boundary lines — drawn behind the price series. */
 class RangeBandRenderer implements IPrimitivePaneRenderer {
-  constructor(private readonly _band: RenderedBand | null) {}
+  constructor(
+    private readonly _band: RenderedBand | null,
+    private readonly _colors: RangeBandColors,
+  ) {}
 
   draw(target: CanvasRenderingTarget2D): void {
     const band = this._band;
@@ -87,10 +113,10 @@ class RangeBandRenderer implements IPrimitivePaneRenderer {
       if (width <= 0) return;
 
       ctx.save();
-      ctx.fillStyle = CHART_COLORS.rangeBandFill;
+      ctx.fillStyle = this._colors.fill;
       ctx.fillRect(left, 0, width, bitmapSize.height);
 
-      ctx.strokeStyle = CHART_COLORS.rangeBandBorder;
+      ctx.strokeStyle = this._colors.border;
       ctx.lineWidth = Math.max(1, Math.round(Math.min(hr, vr)));
       if (band.dashed) ctx.setLineDash([4 * vr, 3 * vr]);
       ctx.beginPath();
@@ -106,7 +132,10 @@ class RangeBandRenderer implements IPrimitivePaneRenderer {
 
 /** Label chip naming the range — drawn above the series so it stays readable. */
 class RangeLabelRenderer implements IPrimitivePaneRenderer {
-  constructor(private readonly _band: RenderedBand | null) {}
+  constructor(
+    private readonly _band: RenderedBand | null,
+    private readonly _colors: RangeBandColors,
+  ) {}
 
   draw(target: CanvasRenderingTarget2D): void {
     const band = this._band;
@@ -126,11 +155,11 @@ class RangeLabelRenderer implements IPrimitivePaneRenderer {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
-      ctx.fillStyle = CHART_COLORS.rangeBandLabelBg;
+      ctx.fillStyle = this._colors.labelBg;
       roundRectPath(ctx, chipLeft, chipTop, chipWidth, chipHeight, 3 * s);
       ctx.fill();
 
-      ctx.fillStyle = CHART_COLORS.rangeBandLabelText;
+      ctx.fillStyle = this._colors.labelText;
       ctx.fillText(label, cx, chipTop + chipHeight / 2);
       ctx.restore();
     });
@@ -138,22 +167,28 @@ class RangeLabelRenderer implements IPrimitivePaneRenderer {
 }
 
 class RangeBandView implements IPrimitivePaneView {
-  constructor(private readonly _band: RenderedBand | null) {}
+  constructor(
+    private readonly _band: RenderedBand | null,
+    private readonly _colors: RangeBandColors,
+  ) {}
   zOrder(): PrimitivePaneViewZOrder {
     return 'bottom';
   }
   renderer(): IPrimitivePaneRenderer {
-    return new RangeBandRenderer(this._band);
+    return new RangeBandRenderer(this._band, this._colors);
   }
 }
 
 class RangeLabelView implements IPrimitivePaneView {
-  constructor(private readonly _band: RenderedBand | null) {}
+  constructor(
+    private readonly _band: RenderedBand | null,
+    private readonly _colors: RangeBandColors,
+  ) {}
   zOrder(): PrimitivePaneViewZOrder {
     return 'top';
   }
   renderer(): IPrimitivePaneRenderer {
-    return new RangeLabelRenderer(this._band);
+    return new RangeLabelRenderer(this._band, this._colors);
   }
 }
 
@@ -164,6 +199,8 @@ export class RangeSelectPlugin
   private _requestUpdate: (() => void) | null = null;
   private _def: RangeBandDef | null = null;
   private _band: RenderedBand | null = null;
+
+  constructor(private readonly _colors: RangeBandColors = RANGE_SELECT_COLORS) {}
 
   attached({ chart, requestUpdate }: SeriesAttachedParameter<UTCTimestamp>): void {
     this._chart = chart;
@@ -234,7 +271,7 @@ export class RangeSelectPlugin
   }
 
   paneViews(): readonly IPrimitivePaneView[] {
-    return [new RangeBandView(this._band), new RangeLabelView(this._band)];
+    return [new RangeBandView(this._band, this._colors), new RangeLabelView(this._band, this._colors)];
   }
 }
 

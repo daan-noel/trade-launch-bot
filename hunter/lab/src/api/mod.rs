@@ -78,6 +78,18 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/wallets/{wallet}/entry-context",
                 web::post().to(handlers::entry_context::entry_context),
             )
+            // One picked range of one token, read like an entry's window (the
+            // Entry Context chart's range picker).
+            .route(
+                "/wallets/{wallet}/entry-context/range",
+                web::post().to(handlers::entry_context::entry_context_range),
+            )
+            // Moments checked every few seconds on each token he bought, read like
+            // an entry, with the price after (the logic-as-a-signal card).
+            .route(
+                "/wallets/{wallet}/entry-context/scan",
+                web::post().to(handlers::entry_context::entry_context_scan),
+            )
             // ── Analysis-owned ix_labels pattern sets (Trader Analysis flow
             //    lens): the same vol/non-vol classification a fingerprint's
             //    ix_patterns drives, for tokens that belong to no cohort.

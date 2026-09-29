@@ -2,28 +2,28 @@ import { Badge } from 'components/ui/Badge';
 import { Input } from 'components/ui/Input';
 import { Switch } from 'components/ui/Switch';
 import { cn } from 'lib/cn';
-import type { PreEntryProbe, PreEntryShow } from './usePreEntryProbe';
+import type { PreEntryShow, ProbeControlsModel } from './usePreEntryProbe';
 
 const SHOW_OPTIONS: { value: PreEntryShow; label: string; title: string }[] = [
   {
     value: 'all',
     label: 'All',
-    title: 'Every row, with the verdict as columns. The honest default — the misses are what say whether the hits mean anything.',
+    title: 'Every row. Keep this to see the misses too: they tell whether the hits mean anything.',
   },
   {
     value: 'matched',
     label: 'Before',
-    title: 'Only tokens where a lens structure cleared the thresholds before the entry. Read the summary beside it: the counts there stay over the WHOLE row set, so the denominator does not move with the filter.',
+    title: 'Only rows where the lens structure traded in the window before his entry. The summary still counts every row.',
   },
   {
     value: 'no-match',
     label: 'Absent',
-    title: 'Only tokens where no lens structure cleared the thresholds before the entry — where the thesis fails.',
+    title: 'Only rows where it did not trade in the window before his entry.',
   },
   {
     value: 'unknown',
     label: 'Unknown',
-    title: 'Only rows that could not be answered: no buy leg in the window, tape past retention, or fee pins with no fee readings.',
+    title: 'Only rows the data cannot answer: too old for the stored history, or missing fee data the pattern set needs.',
   },
 ];
 
@@ -40,7 +40,7 @@ const SHOW_OPTIONS: { value: PreEntryShow; label: string; title: string }[] = [
  * match count and the unknowns are named — a filter alone can only ever show
  * confirmations.
  */
-export function PreEntryProbeControls({ probe }: { probe: PreEntryProbe }) {
+export function PreEntryProbeControls({ probe }: { probe: ProbeControlsModel }) {
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-white/8 pt-2">
       <Badge variant={probe.on ? 'accent' : 'neutral'} size="sm">
@@ -49,7 +49,7 @@ export function PreEntryProbeControls({ probe }: { probe: PreEntryProbe }) {
 
       <label className="flex items-center gap-1.5 text-[11px] text-text-dim">
         <Switch checked={probe.on} onChange={probe.setOn} label="Probe pre-entry structures" />
-        <span title="For every token on screen: did a structure from this lens land on the tape BEFORE the trader's first buy? Adds the Pre-entry columns; narrow the table to one verdict with Show, or filter on any of the columns directly.">
+        <span title="For each row: did the lens structure trade in the slots right before his entry? Adds the Pre-entry columns. Use Show to keep one answer.">
           Probe
         </span>
       </label>
@@ -58,18 +58,18 @@ export function PreEntryProbeControls({ probe }: { probe: PreEntryProbe }) {
 
       <NumberKnob
         label="Window"
-        suffix="slots"
-        title="How far back from the entry to look, in slots (~400ms each). The control window is the SAME width, one window earlier — that is what the Control column counts."
-        value={probe.windowSlots}
-        min={1}
-        max={2000}
-        step={5}
-        onChange={probe.setWindowSlots}
+        suffix={probe.window.suffix}
+        title={probe.window.title}
+        value={probe.window.value}
+        min={probe.window.min}
+        max={probe.window.max}
+        step={probe.window.step}
+        onChange={probe.window.set}
         disabled={!probe.on}
       />
       <NumberKnob
         label="Min hits"
-        title="Matching transactions needed in the window before the token counts as matched. 1 is presence; raise it when the event you mean is a BURST from one tool rather than a single print."
+        title="How many of its transactions the window needs to count as Before. 1 = at least one. Raise it to require a burst."
         value={probe.minHits}
         min={1}
         max={999}
@@ -79,7 +79,7 @@ export function PreEntryProbeControls({ probe }: { probe: PreEntryProbe }) {
       />
       <NumberKnob
         label="Min SOL"
-        title="Σ SOL of the matching prints needed. 0 is presence; a dust print and a 40 SOL burst are otherwise the same verdict."
+        title="How much SOL its transactions need to move to count as Before. 0 = any amount."
         value={probe.minSol}
         min={0}
         max={10_000}
@@ -101,7 +101,7 @@ export function PreEntryProbeControls({ probe }: { probe: PreEntryProbe }) {
             probe.summary && (
               <span
                 className="font-mono text-[11px] text-text"
-                title="Matched / rows probed, beside the same count in the control window one W earlier. A control count as high as the match count means the structure sits before everything on this tape, not before his entries."
+                title="Before: rows where the target traded right before his buy. Earlier: rows where it also traded in the same number of slots just before that. Earlier close to Before = the target is always there, not tied to his buy."
               >
                 {probe.summary}
               </span>
@@ -116,7 +116,7 @@ export function PreEntryProbeControls({ probe }: { probe: PreEntryProbe }) {
 /** Which verdict the TABLE keeps. A row filter, not a re-probe: the answers are
  *  already in hand, so every click is instant and the summary — computed over
  *  every probed row — does not move with it. */
-function ShowControl({ probe }: { probe: PreEntryProbe }) {
+function ShowControl({ probe }: { probe: ProbeControlsModel }) {
   return (
     <div className="flex items-center gap-1">
       <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">Show</span>
@@ -140,6 +140,9 @@ function ShowControl({ probe }: { probe: PreEntryProbe }) {
               )}
             >
               {o.label}
+              {probe.on && probe.counts && (
+                <span className="ml-1 font-mono text-[9px] opacity-60">{probe.counts[o.value]}</span>
+              )}
             </button>
           );
         })}

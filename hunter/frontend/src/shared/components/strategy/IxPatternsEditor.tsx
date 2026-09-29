@@ -6,6 +6,7 @@ import { CloseIcon, PlusIcon, SearchIcon, TrashIcon } from 'components/ui/icons'
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { cn } from 'lib/cn';
 import { formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
+import { IxAbbrevLine } from 'components/ui/IxLabelsDisplay';
 import {
   MAX_TX_COMPUTE_UNITS,
   rowPinsFee,
@@ -41,15 +42,6 @@ export function clearPrompt(patterns: string[][] | IxPatternRow[]): string {
 /** Above this many rows the list gets a filter box — below it, scanning beats typing. */
 const FILTER_THRESHOLD = 6;
 
-/** `"Compute Budget: SetComputeUnitLimit"` becomes `"SetComputeUnitLimit"`.
- *
- *  The program half is what a sequence repeats most and varies least, so it is the
- *  half worth dropping to fit a row on one line. The full label stays one hover (row
- *  `title`) and one click (expand) away. */
-function shortLabel(label: string): string {
-  const i = label.lastIndexOf(': ');
-  return i === -1 ? label : label.slice(i + 2);
-}
 
 /**
  * Editor for a tag's `ix_shape` matcher: each row is an exact ordered ix-label
@@ -335,7 +327,6 @@ function PatternRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- labelsKey SSOT
   }, [labelsKey]);
 
-  const summary = labels.length === 0 ? 'empty — add labels' : labels.map(shortLabel).join(' › ');
 
   return (
     <li
@@ -359,7 +350,7 @@ function PatternRow({
             labels.length === 0 ? 'italic text-text-dim/60' : 'text-text-mid',
           )}
         >
-          {summary}
+          {labels.length === 0 ? 'empty — add labels' : <IxAbbrevLine labels={labels} />}
         </button>
         {rowPinsFee(row) && (
           <span

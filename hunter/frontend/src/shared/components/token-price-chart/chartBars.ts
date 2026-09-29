@@ -15,7 +15,7 @@ import type {
   OhlcBar,
 } from './types';
 
-function tradeTimestampSec(blockTime: string): number | null {
+export function tradeTimestampSec(blockTime: string): number | null {
   const ms = Date.parse(blockTime);
   if (Number.isNaN(ms)) return null;
   return Math.floor(ms / 1000);
@@ -46,8 +46,9 @@ export function tokenCreatedAtSec(createdAt?: string | null): number | null {
   return tradeTimestampSec(createdAt);
 }
 
-/** Nominal Solana slot duration, used only to place a bar that holds no trade. */
-const SLOT_SECS = 0.4;
+/** Nominal Solana slot duration: places a bar that holds no trade, and turns a
+ *  slot count into seconds for a reader ("25 slots, about 10s"). */
+export const SLOT_SECS = 0.4;
 
 /**
  * Wall-clock instant (epoch seconds, fractional) each bar's coverage **ends** at —
@@ -223,6 +224,18 @@ export function tradeSpotPriceSol(trade: ChartTrade): number | null {
  * missing or non-finite, so callers fall back to the post-trade price.
  */
 export function preTradeSpotPriceSol(trade: ChartTrade): number | null {
+  const pre = preTradeReserves(trade);
+  if (pre == null) return null;
+  const preSpot = pre.sol / pre.token;
+  return preSpot > 0 && Number.isFinite(preSpot) ? preSpot : null;
+}
+
+/**
+ * The reserve pair (SOL, raw token) *before* this trade executed — the state
+ * {@link preTradeSpotPriceSol} prices. Same constant-product recovery: the token
+ * leg is undone and SOL follows from `k = vsol·vtoken`.
+ */
+export function preTradeReserves(trade: ChartTrade): { sol: number; token: number } | null {
   const postVsol = trade.reserve_sol ?? trade.real_reserve_sol;
   const postVtoken = trade.reserve_token ?? trade.real_token_reserves;
   const tokenAmount = trade.token_amount;
@@ -242,9 +255,8 @@ export function preTradeSpotPriceSol(trade: ChartTrade): number | null {
       ? postVtoken + tokenAmount
       : postVtoken - tokenAmount;
   if (preVtoken <= 0) return null;
-  const k = postVsol * postVtoken;
-  const preSpot = k / (preVtoken * preVtoken);
-  return preSpot > 0 && Number.isFinite(preSpot) ? preSpot : null;
+  const preVsol = (postVsol * postVtoken) / preVtoken;
+  return preVsol > 0 && Number.isFinite(preVsol) ? { sol: preVsol, token: preVtoken } : null;
 }
 
 /**
@@ -292,6 +304,17 @@ export function tradeMarketCapSol(trade: ChartTrade): number | null {
   return TOKEN_TOTAL_SUPPLY * spot;
 }
 
+/** Chart Y value of a spot price (SOL per raw token): the price itself or its
+ *  FDV MC, after display conversion - the ONE conversion every overlay on the
+ *  price axis goes through, so none can sit on a different scale than the bars. */
+export function priceSolChartValue(
+  priceInSol: number,
+  metric: ChartMetric,
+  toValue: (priceInSol: number) => number,
+): number {
+  return toValue(metric === 'price' ? priceInSol : TOKEN_TOTAL_SUPPLY * priceInSol);
+}
+
 /** Chart Y value for token ATH (spot SOL or FDV MC), after display conversion. */
 export function athChartValue(
   athPriceInSol: number | null | undefined,
@@ -299,9 +322,7 @@ export function athChartValue(
   toValue: (priceInSol: number) => number,
 ): number | null {
   if (athPriceInSol == null || athPriceInSol <= 0) return null;
-  const solValue =
-    metric === 'price' ? athPriceInSol : TOKEN_TOTAL_SUPPLY * athPriceInSol;
-  return toValue(solValue);
+  return priceSolChartValue(athPriceInSol, metric, toValue);
 }
 
 /** Chart Y value for pump.fun migration (graduation) price, after display conversion. */
@@ -309,11 +330,7 @@ export function migrationChartValue(
   metric: ChartMetric,
   toValue: (priceInSol: number) => number,
 ): number {
-  const solValue =
-    metric === 'price'
-      ? PUMP_MIGRATION_SPOT_PRICE_SOL
-      : TOKEN_TOTAL_SUPPLY * PUMP_MIGRATION_SPOT_PRICE_SOL;
-  return toValue(solValue);
+  return priceSolChartValue(PUMP_MIGRATION_SPOT_PRICE_SOL, metric, toValue);
 }
 
 export function chartValueForTrade(

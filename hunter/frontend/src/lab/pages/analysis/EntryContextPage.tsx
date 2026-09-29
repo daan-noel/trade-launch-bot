@@ -1,78 +1,118 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { skipToken } from '@reduxjs/toolkit/query/react';
+import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { tokenColumns } from 'components/tokens/tokenColumns';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
-import { Checkbox } from 'components/ui/Checkbox';
-import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
+import { Accordion } from 'components/ui/Accordion';
+import { Input } from 'components/ui/Input';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
-import { Input } from 'components/ui/Input';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Select } from 'components/ui/Select';
+import { inspectFromMint } from 'components/strategy/inspectTarget';
 import { FlowLensProvider } from 'context/FlowLensContext';
 import { useTimezone } from 'context/TimezoneContext';
+import { useDebouncedValue } from 'hooks/useDebouncedValue';
 import { useLocalStorage } from 'hooks/useLocalStorage';
-import { useProfileWallets } from 'hooks/useProfileWallets';
-import { STORAGE_KEYS } from 'lib/storage';
+import { ACCORDION_IDS, STORAGE_KEYS } from 'lib/storage';
 import { apiErrorMessage } from 'store/apiSlice';
-import { datetimeLocalToUtcWallClock, utcIsoToDatetimeLocal } from 'utils/date';
 import type { TraderTokenRow } from 'types';
 import { FlowLensBar } from '@lab/components/analysis/FlowLensBar';
+import { FIELD_LABEL, TraderQueryInputs } from '@lab/components/analysis/TraderQueryInputs';
+import {
+  clampInt,
+  CUSTOM_PRESET,
+  DAY_MS,
+  DEFAULT_DAYS,
+  MAX_DAYS,
+  shortAddr,
+  wallClockToUtcIso,
+} from '@lab/components/analysis/traderQuery';
+import {
+  DEFAULT_PROBE_WINDOW_SLOTS,
+  PROBE_SLOT_KNOB,
+  type PreEntryShow,
+  type ProbeControlsModel,
+} from '@lab/components/analysis/usePreEntryProbe';
 import { useTraderFlowLens } from '@lab/components/analysis/useTraderFlowLens';
-import { EntryFilterBar } from '@lab/components/entry-context/EntryFilterBar';
+import { EntryDetail } from '@lab/components/entry-context/EntryDetail';
 import { EntrySummary } from '@lab/components/entry-context/EntrySummary';
-import { EntryTokenDetail } from '@lab/components/entry-context/EntryTokenDetail';
-import { compileFilter, rollupByToken, type AxisCondition } from '@lab/lib/entryContext/analysis';
-import { entryKey, type EntryGroupBy, type EntryRow } from '@lab/lib/entryContext/types';
+import { MarketScan } from '@lab/components/entry-context/MarketScan';
+import { entryColumns } from '@lab/components/entry-context/entryColumns';
+import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
+import { entryLogic } from '@lab/lib/entryContext/logic';
+import { entryVerdict, rollupByToken } from '@lab/lib/entryContext/analysis';
+import { entryGroupLabels } from '@lab/lib/entryContext/axes';
+import {
+  entryKey,
+  type EntryGroupBy,
+  type EntryRow,
+  type EntryContextRequest,
+  type EntryTargetTag,
+} from '@lab/lib/entryContext/types';
+import { probeStateCounts, probeSummary, type PreEntryVerdict } from '@lab/lib/preEntryProbeTypes';
 import { useGetEntryContextQuery, useGetTraderTokensQuery } from '@lab/store/labEndpoints';
 
-const DAY_MS = 86_400_000;
-const CUSTOM_PRESET = 'custom';
-const PRESETS = [
-  { value: '1', label: '1 day' },
-  { value: '3', label: '3 days' },
-  { value: '7', label: '7 days' },
-  { value: '14', label: '14 days' },
-  { value: '30', label: '30 days' },
-  { value: CUSTOM_PRESET, label: 'Custom', description: 'Exact from → to' },
-] as const;
-
 const GROUP_BY_OPTIONS: { value: EntryGroupBy; label: string; title: string }[] = [
-  { value: 'exact', label: 'Exact ix shape', title: 'The full ordered ix_labels sequence' },
-  { value: 'template', label: 'Template', title: 'The coarse grain program|CU|ATA|N|S|F' },
-  { value: 'program', label: 'Program', title: "The transaction's main program" },
+  { value: 'exact', label: 'Exact ix shape', title: 'Full instruction list: every build is its own row' },
+  { value: 'template', label: 'Template', title: 'Similar builds merged (program plus a few flags)' },
+  { value: 'program', label: 'Program', title: 'Main program only: all its builds in one row' },
 ];
 
-const COLUMN_GROUP_LABELS: Record<string, string> = { entry_ctx: 'Entry context' };
+/** Analysis window W, seconds: the server's own ceiling. */
+const MAX_WINDOW_SECS = 600;
+/** How long a probe-window edit settles before it re-reads. */
+const PROBE_DEBOUNCE_MS = 350;
+
+const TOKEN_GROUP_LABELS: Record<string, string> = { entry_ctx: 'His buys here' };
+/** The buys table's filter row is this page's filter: open, and starting from the
+ *  page's question (target over half the window's buy transactions). */
+const DEFAULT_BUY_FILTERS: Record<string, string> = { tx_share: '>50' };
+/** Columns the buys table opens with hidden (all stay in the Columns panel): the
+ *  SOL twins and side reads, so the answer columns fit on screen. */
+const BUY_COLS_HIDDEN: Readonly<Record<string, boolean>> = {
+  pe_sol: false,
+  tag_buy_sol: false,
+  buy_sol: false,
+  ctl_sol_share: false,
+  top_tx_share: false,
+};
 const EMPTY_ENTRIES: EntryRow[] = [];
 const EMPTY_ROWS: TraderTokenRow[] = [];
 
-const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
-
-/** Persisted draft (`mt:form.entryContext`). */
+/** Persisted draft (`mt:form.entryContext`). Two windows with two jobs: the
+ *  ANALYSIS window (`windowSecs`, the shares and breakdown, applied on Analyze) and
+ *  the PROBE window (`probeSlots`, "did it land in the slots before him", live). */
 interface EntryForm {
   wallet: string;
   days: string;
   from: string;
   to: string;
-  windowSecs: string;
   groupBy: EntryGroupBy;
-  filters: AxisCondition[];
-  onlyPassing: boolean;
+  windowSecs: string;
+  probeOn: boolean;
+  show: PreEntryShow;
+  probeSlots: number;
+  minHits: number;
+  minSol: number;
 }
 
 const DEFAULT_FORM: EntryForm = {
   wallet: '',
-  days: '7',
+  days: String(DEFAULT_DAYS),
   from: '',
   to: '',
-  windowSecs: '30',
   groupBy: 'exact',
-  // The finding this page was built for: the target made over half the buys.
-  filters: [{ axis: 'tx_share', cond: '>50' }],
-  onlyPassing: true,
+  // On: "did the target land before his buy" is this page's pool.
+  windowSecs: '30',
+  probeOn: true,
+  // The pool: his buy is after the target's signal.
+  show: 'matched',
+  probeSlots: DEFAULT_PROBE_WINDOW_SLOTS,
+  minHits: 1,
+  minSol: 0,
 };
 
 /** A committed query — set on Analyze only, so typing never refetches. */
@@ -85,20 +125,24 @@ interface EntryQuery {
 }
 
 /**
- * **Entry Context** — what the tape looked like in the `W` seconds before each of a
- * trader's buys, read under one target tag (the flow lens' set, narrowed by its
- * chips), with the same read one `W` earlier as the control.
+ * **Entry Context** — what the tape looked like in the `W` seconds before EVERY buy
+ * of a trader, read under one target tag (the flow lens' set, narrowed by its
+ * chips), with the window before it as the control.
  *
- * Two sections over the same filtered entries:
- * - **Summary**: how many entries clear the filter, the target share's
- *   distribution against its control window, and which structures fill the
- *   windows.
- * - **Tokens**: the tokens with passing entries; picking one opens its chart with
- *   every window drawn, his buys on it, and the picked window's breakdown.
+ * Built from the Trader Analysis parts, so the same feature reads the same on both
+ * pages: the query row (`TraderQueryInputs`), the flow lens with the pre-entry
+ * probe strip inside it (each buy is a `PreEntryVerdict`, so the probe's Show,
+ * summary and columns are the ones Trader Analysis uses), the table filter row as
+ * the filter, the analytics card chrome for the summary, and the shared token
+ * table + inspect modal for the tokens.
  *
- * Every per-entry number is an axis in `@lab/lib/entryContext/axes.ts`; the filter,
- * columns and summary render from that list. The numbers are the engine's
- * `m_flow` reads over the window (`entry_context.rs`), his own trades excluded.
+ * The buys table's filters are the idea. The summary counts his buys against that
+ * idea, for the target's signal and for every structure. The buys and tokens on
+ * screen are the ones that pass. The market section is a second token table: every
+ * buy of the target in the range whose window passes those filters.
+ * Every per-buy number is an axis (`@lab/lib/entryContext/axes.ts`); the numbers
+ * are the engine's `m_flow` reads over the window (`entry_context.rs`), his own
+ * trades excluded.
  */
 export function EntryContextPage() {
   const { timezone } = useTimezone();
@@ -109,78 +153,143 @@ export function EntryContextPage() {
     [setForm],
   );
   const [query, setQuery] = useState<EntryQuery | null>(null);
-  const [inspected, setInspected] = useState<string | null>(null);
+  const [inspected, setInspected] = useState<{ mint: string; symbol?: string | null } | null>(null);
+  // The buys table's filtered cohort (pre-pagination), reported by the table.
+  const [tableRows, setTableRows] = useState<EntryRow[] | null>(null);
+  // The buys table's filters in force: the logic the summary tests.
+  const [buyFilters, setBuyFilters] = useState<Readonly<Record<string, string>>>(DEFAULT_BUY_FILTERS);
 
   const lens = useTraderFlowLens(query?.wallet ?? null);
-  const profileWallets = useProfileWallets();
-  const isCustom = f.days === CUSTOM_PRESET;
+  const tag = lens.value.tag;
 
   const run = (walletOverride?: string) => {
     const wallet = (walletOverride ?? f.wallet).trim();
     if (!wallet) return;
-    const days = Math.max(1, Number.parseInt(f.days, 10) || 7);
-    const toUtc = (wall: string, bound: 'lower' | 'upper') => {
-      const utc = datetimeLocalToUtcWallClock(wall, timezone, bound);
-      return utc ? `${utc}Z` : '';
-    };
-    const from = isCustom && f.from ? toUtc(f.from, 'lower') : new Date(Date.now() - days * DAY_MS).toISOString();
+    const isCustom = f.days === CUSTOM_PRESET;
+    const days = clampInt(f.days, DEFAULT_DAYS, 1, MAX_DAYS);
     setInspected(null);
     setQuery({
       wallet,
-      from,
-      to: isCustom ? toUtc(f.to, 'upper') : '',
-      windowSecs: Math.min(600, Math.max(1, Number(f.windowSecs) || 30)),
+      from:
+        isCustom && f.from
+          ? wallClockToUtcIso(f.from, timezone, 'lower')
+          : new Date(Date.now() - days * DAY_MS).toISOString(),
+      to: isCustom ? wallClockToUtcIso(f.to, timezone, 'upper') : '',
+      windowSecs: Math.min(MAX_WINDOW_SECS, Math.max(1, Number(f.windowSecs) || 30)),
       groupBy: f.groupBy,
     });
   };
 
-  // The target is the lens tag as it stands, so a chip click re-reads the page the
-  // same way it re-tints the charts.
-  const tag = lens.value.tag;
-  const ctx = useGetEntryContextQuery(
-    query && tag
-      ? {
-          wallet: query.wallet,
-          from: query.from,
-          to: query.to || null,
-          window_secs: query.windowSecs,
-          group_by: query.groupBy,
-          // Absent, not null: the engine's tag parser reads a present `side` as a
-          // side and refuses null.
-          tag: {
+  const probeSlots = useDebouncedValue(
+    Math.min(PROBE_SLOT_KNOB.max, Math.max(PROBE_SLOT_KNOB.min, Math.round(f.probeSlots))),
+    PROBE_DEBOUNCE_MS,
+  );
+  // No set picked still reads every window and its breakdown; only the target
+  // columns need a tag.
+  // The target as the server takes it, built once for the buys read and a buy's
+  // range read. Absent, not null: the engine's tag parser refuses a null side.
+  const targetTag = useMemo<EntryTargetTag | undefined>(
+    () =>
+      tag
+        ? {
             match: tag.match,
             ...(tag.side ? { side: tag.side } : {}),
-            ...(tag.sticky ? { sticky: true } : {}),
-          },
-        }
-      : skipToken,
+            ...(tag.sticky ? { sticky: true as const } : {}),
+          }
+        : undefined,
+    [tag],
   );
+  // The committed read: his buys. The market scan is its own section.
+  const ctxRequest = useMemo<EntryContextRequest | null>(
+    () =>
+      query
+        ? {
+            wallet: query.wallet,
+            from: query.from,
+            to: query.to || null,
+            window_secs: query.windowSecs,
+            probe_slots: probeSlots,
+            group_by: query.groupBy,
+            ...(targetTag ? { tag: targetTag } : {}),
+          }
+        : null,
+    [query, probeSlots, targetTag],
+  );
+  const ctx = useGetEntryContextQuery(ctxRequest ?? skipToken);
   const tokens = useGetTraderTokensQuery(
     query ? { wallet: query.wallet, days: 1, limit: 0, from: query.from, to: query.to, with: [] } : skipToken,
   );
-
   const entries = ctx.data?.entries ?? EMPTY_ENTRIES;
-  const windowSecs = ctx.data?.window_secs ?? query?.windowSecs ?? 30;
-  const filter = useMemo(() => compileFilter(f.filters), [f.filters]);
-  const passingEntries = useMemo(() => entries.filter(filter.pass), [entries, filter]);
-  const passing = useMemo(() => new Set(passingEntries.map(entryKey)), [passingEntries]);
-  const rollup = useMemo(() => rollupByToken(entries, passing), [entries, passing]);
-  const tokensPassing = useMemo(
-    () => [...rollup.values()].filter((r) => r.passing > 0).length,
-    [rollup],
+  const readWindow = ctx.data?.window_secs ?? query?.windowSecs ?? 30;
+
+  // Each buy as the probe's verdict — the Trader Analysis probe's own shape.
+  const verdicts = useMemo(() => {
+    const t = { minHits: f.minHits, minSol: f.minSol };
+    return new Map<EntryRow, PreEntryVerdict>(entries.map((e) => [e, entryVerdict(e, t)]));
+  }, [entries, f.minHits, f.minSol]);
+
+  // Show narrows the table's INPUT set; the probe summary counts every buy read.
+  const probeRows = useMemo(
+    () =>
+      f.probeOn && f.show !== 'all' ? entries.filter((e) => verdicts.get(e)?.state === f.show) : entries,
+    [entries, verdicts, f.probeOn, f.show],
   );
+  // A new query starts from the unfiltered set. Nothing else resets it: the table
+  // re-reports on every input change, and a parent reset would land after it.
+  useEffect(() => setTableRows(null), [query]);
+  const shown = tableRows ?? probeRows;
+  const shownSet = useMemo(() => new Set(shown), [shown]);
+
+  const probe: ProbeControlsModel = {
+    on: f.probeOn,
+    setOn: (probeOn) => patch({ probeOn }),
+    show: f.show,
+    setShow: (show) => patch({ show }),
+    window: {
+      ...PROBE_SLOT_KNOB,
+      value: f.probeSlots,
+      set: (probeSlots) => patch({ probeSlots }),
+    },
+    minHits: f.minHits,
+    setMinHits: (minHits) => patch({ minHits }),
+    minSol: f.minSol,
+    setMinSol: (minSol) => patch({ minSol }),
+    summary: ctx.data ? probeSummary([...verdicts.values()], 0) : null,
+    counts: ctx.data ? probeStateCounts([...verdicts.values()], 0) : null,
+    loading: ctx.isFetching,
+    error: ctx.error ? apiErrorMessage(ctx.error, 'Failed to read the windows') : null,
+    blocked: !query ? 'press Analyze' : !tag ? 'pick a pattern set above: it is the target' : null,
+  };
 
   const tokenRows = tokens.data ?? EMPTY_ROWS;
-  const tableRows = useMemo(
-    () =>
-      tokenRows.filter((r) => {
-        const roll = rollup.get(r.mint_address);
-        return roll != null && (!f.onlyPassing || roll.passing > 0);
-      }),
-    [tokenRows, rollup, f.onlyPassing],
+  const symbolOf = useMemo(() => {
+    const m = new Map(tokenRows.map((r) => [r.mint_address, r.symbol || r.name] as const));
+    return (mint: string) => m.get(mint) || shortAddr(mint);
+  }, [tokenRows]);
+
+  const verdictOf = useMemo(
+    () => (f.probeOn ? (e: EntryRow) => verdicts.get(e) : null),
+    [f.probeOn, verdicts],
+  );
+  const signaled = useCallback((e: EntryRow) => verdicts.get(e)?.state === 'matched', [verdicts]);
+  const buyColumns = useMemo(
+    () => entryColumns(readWindow, symbolOf, verdictOf, probeSlots),
+    [readWindow, symbolOf, verdictOf, probeSlots],
+  );
+  const logic = useMemo(
+    () => entryLogic(buyFilters, buyColumns, verdictOf, f.show),
+    [buyFilters, buyColumns, verdictOf, f.show],
   );
 
-  const columns = useMemo(() => {
+  const buyGroupLabels = useMemo(() => entryGroupLabels(readWindow, probeSlots), [readWindow, probeSlots]);
+
+  const rollup = useMemo(() => rollupByToken(entries, shownSet), [entries, shownSet]);
+  const tokenTableRows = useMemo(
+    () => tokenRows.filter((r) => (rollup.get(r.mint_address)?.shown ?? 0) > 0),
+    [tokenRows, rollup],
+  );
+
+  const tokenCols = useMemo(() => {
     const base = tokenColumns() as unknown as ColumnDef<TraderTokenRow>[];
     let lastIdentity = -1;
     base.forEach((c, i) => {
@@ -192,27 +301,27 @@ export function EntryContextPage() {
         key: 'ec_entries',
         label: 'Buys',
         group: 'entry_ctx',
-        tooltip: 'His buy transactions on this token in the range.',
+        tooltip: 'His buys on this token.',
         render: (r) => at(r)?.entries ?? '-',
         sortValue: (r) => at(r)?.entries ?? null,
         searchValue: () => '',
         filterNumber: (r) => at(r)?.entries ?? null,
       },
       {
-        key: 'ec_passing',
-        label: 'Passing',
+        key: 'ec_shown',
+        label: 'On screen',
         group: 'entry_ctx',
-        tooltip: 'Of those, the buys that clear every filter line.',
-        render: (r) => at(r)?.passing ?? '-',
-        sortValue: (r) => at(r)?.passing ?? null,
+        tooltip: 'Of those, buys left after the filters.',
+        render: (r) => at(r)?.shown ?? '-',
+        sortValue: (r) => at(r)?.shown ?? null,
         searchValue: () => '',
-        filterNumber: (r) => at(r)?.passing ?? null,
+        filterNumber: (r) => at(r)?.shown ?? null,
       },
       {
         key: 'ec_best_tx',
-        label: 'Best tag tx %',
+        label: 'Best target tx %',
         group: 'entry_ctx',
-        tooltip: 'The highest target tx share among this token\'s passing buys.',
+        tooltip: "Highest Target tx % among this token's buys on screen.",
         render: (r) => {
           const v = at(r)?.bestTxShare;
           return v == null ? '-' : `${v.toFixed(0)}%`;
@@ -225,11 +334,6 @@ export function EntryContextPage() {
     return [...base.slice(0, lastIdentity + 1), ...ctxCols, ...base.slice(lastIdentity + 1)];
   }, [rollup]);
 
-  const inspectedEntries = useMemo(
-    () => (inspected ? entries.filter((e) => e.mint_address === inspected) : EMPTY_ENTRIES),
-    [entries, inspected],
-  );
-
   const loading = ctx.isFetching || tokens.isFetching;
   const error = apiErrorMessage(ctx.error ?? tokens.error, 'Failed to load entry context');
 
@@ -238,195 +342,187 @@ export function EntryContextPage() {
       <div className="p-4">
         <h2 className="text-lg font-extrabold text-text">Entry Context</h2>
         <p className="mt-0.5 text-xs text-text-dim">
-          What the tape looked like in the seconds before each of a trader&apos;s buys, read
-          under one target tag (the lens below), with the window before it as the control. His
-          own trades are left out of every number.
+          For every buy of a wallet: the target you pick in the lens, the probe for whether that
+          target traded in the slots before him, and filters on the buys table (for example Target tx %
+          &gt; 50). The table above the buys is his / matched for every entry, and for entries whose signal is the ix you selected.
+          Market scan lists every token where a buy of that structure has the same filters true in the window before it.
+          His own trades are never counted.
         </p>
 
         <SectionDivider />
 
+        {/* Inputs */}
         <div className="mb-3 flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-            Wallet address
-            <Input
-              value={f.wallet}
-              onChange={(e) => patch({ wallet: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') run();
-              }}
-              placeholder="Solana base58 address"
-              className="min-w-[420px] font-mono font-normal normal-case tracking-normal"
-            />
-          </label>
-          {profileWallets.length > 0 && (
-            <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-              Tracked wallet
-              <Select
-                value={profileWallets.some((w) => w.address === f.wallet) ? f.wallet : ''}
-                onChange={(e) => {
-                  if (!e.target.value) return;
-                  patch({ wallet: e.target.value });
-                  run(e.target.value);
+          <TraderQueryInputs
+            wallet={f.wallet}
+            onWallet={(wallet) => patch({ wallet })}
+            onPickWallet={(wallet) => {
+              patch({ wallet });
+              run(wallet);
+            }}
+            days={f.days}
+            from={f.from}
+            to={f.to}
+            onRange={(r) => patch(r)}
+            onEnter={() => run()}
+            timezone={timezone}
+          >
+            <label
+              className={FIELD_LABEL}
+              title="Seconds before each buy to analyze (shares, counts, structures). Earlier = the same length just before that. Applied on Analyze. The probe has its own window, in slots."
+            >
+              Analysis window (s)
+              <Input
+                type="number"
+                min={1}
+                max={MAX_WINDOW_SECS}
+                value={f.windowSecs}
+                onChange={(e) => patch({ windowSecs: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') run();
                 }}
-                className="min-w-[200px] font-normal normal-case tracking-normal"
+                className="w-[90px] font-normal normal-case tracking-normal"
+              />
+            </label>
+            <label
+              className={FIELD_LABEL}
+              title="How transactions are grouped into structures. Exact = full instruction list. Template = similar builds merged. Program = main program only."
+            >
+              Break down by
+              <Select
+                value={f.groupBy}
+                onChange={(e) => patch({ groupBy: e.target.value as EntryGroupBy })}
+                className="min-w-37.5 font-normal normal-case tracking-normal"
               >
-                <option value="">Pick a profile wallet…</option>
-                {profileWallets.map((w) => (
-                  <option key={w.address} value={w.address}>
-                    {w.label} · {shortAddr(w.address)}
+                {GROUP_BY_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value} title={o.title}>
+                    {o.label}
                   </option>
                 ))}
               </Select>
             </label>
-          )}
-          <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-            His buys in
-            <DateTimeRangePicker
-              aria-label="Buy range"
-              size="sm"
-              timeZone={timezone}
-              emptyLabel="Pick a range"
-              customPreset={CUSTOM_PRESET}
-              presets={[...PRESETS]}
-              value={{
-                preset: f.days,
-                from: isCustom
-                  ? f.from
-                  : utcIsoToDatetimeLocal(
-                      new Date(Date.now() - (Number.parseInt(f.days, 10) || 7) * DAY_MS).toISOString(),
-                      timezone,
-                    ),
-                to: isCustom ? f.to : '',
-              }}
-              onChange={({ preset, from, to }) =>
-                preset === CUSTOM_PRESET
-                  ? patch({ days: CUSTOM_PRESET, from, to })
-                  : patch({ days: preset, from: '', to: '' })
-              }
-            />
-          </label>
-          <label
-            className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim"
-            title="Window W in seconds: the tape read is [his buy - W, his buy), and the control is the W before that."
-          >
-            Window (s)
-            <Input
-              type="number"
-              min={1}
-              max={600}
-              value={f.windowSecs}
-              onChange={(e) => patch({ windowSecs: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') run();
-              }}
-              className="w-[90px] font-normal normal-case tracking-normal"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-            Break down by
-            <Select
-              value={f.groupBy}
-              onChange={(e) => patch({ groupBy: e.target.value as EntryGroupBy })}
-              className="min-w-[150px] font-normal normal-case tracking-normal"
+            <IconButton
+              variant="primary"
+              size="lg"
+              onClick={() => run()}
+              disabled={loading || !f.wallet.trim()}
+              label={loading ? 'Loading…' : 'Analyze'}
+              title={loading ? 'Loading…' : 'Analyze'}
             >
-              {GROUP_BY_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value} title={o.title}>
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <IconButton
-            variant="primary"
-            size="lg"
-            onClick={() => run()}
-            disabled={loading || !f.wallet.trim()}
-            label={loading ? 'Loading…' : 'Analyze'}
-            title={loading ? 'Loading…' : 'Analyze'}
-          >
-            {loading ? <SpinnerIcon /> : <SearchIcon />}
-          </IconButton>
+              {loading ? <SpinnerIcon /> : <SearchIcon />}
+            </IconButton>
+          </TraderQueryInputs>
         </div>
 
-        <FlowLensBar lens={lens} wallet={query?.wallet ?? null} />
-        {!tag && (
-          <p className="mb-2 text-xs text-warning">
-            Pick a pattern set in the lens above: its narrowed structures are the target tag every
-            share is read against.
-          </p>
-        )}
-
-        <EntryFilterBar
-          lines={f.filters}
-          onChange={(filters) => patch({ filters })}
-          errors={filter.errors}
-          windowSecs={windowSecs}
-        />
-
         {error && <p className="mb-2 text-sm text-red">{error}</p>}
-        {ctx.data?.truncated && (
-          <p className="mb-2 text-xs text-warning">
-            More than {ctx.data.max_entries} buys in this range: only the most recent{' '}
-            {ctx.data.max_entries} are read. Narrow the range to read them all.
-          </p>
-        )}
+
+        <FlowLensBar lens={lens} wallet={query?.wallet ?? null} probe={probe} />
 
         {query && ctx.data && (
-          <>
-            <h3 className="mb-2 text-xs font-bold uppercase tracking-widest text-text-dim">Summary</h3>
-            <EntrySummary
-              entries={entries}
-              passing={passingEntries}
-              tokensPassing={tokensPassing}
-              windowSecs={windowSecs}
-            />
+          <EntrySummary
+            entries={entries}
+            logic={logic}
+            signaled={signaled}
+            probeOn={f.probeOn}
+          />
+        )}
 
-            <SectionDivider />
-
-            <div className="mb-2 flex items-center gap-3">
-              <h3 className="text-xs font-bold uppercase tracking-widest text-text-dim">Tokens</h3>
-              <label className="flex items-center gap-2 text-xs text-text-dim">
-                <Checkbox
-                  boxSize="sm"
-                  checked={f.onlyPassing}
-                  onChange={(e) => patch({ onlyPassing: e.target.checked })}
-                />
-                Only tokens with a passing buy
-              </label>
-            </div>
-            <TokenTable
-              columns={columns}
-              rows={tableRows}
-              existingKeys={ALL_TOKEN_INFO_KEYS}
-              mintSetFilter
-              charts
-              searchable
-              colFilters
-              colToggle
-              hoverable
-              loading={loading}
-              groupLabels={COLUMN_GROUP_LABELS}
-              tableId="entry_context_tokens"
-              resetKey={`${f.onlyPassing}|${JSON.stringify(f.filters)}`}
-              highlightWallet={query.wallet}
-              titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
-              selectedKey={inspected}
-              onSelect={setInspected}
-              emptyMessage="No tokens with a passing buy"
-              flowPatternKeys={lens.keys}
-            />
-            {inspected && (
-              <EntryTokenDetail
-                key={inspected}
-                mint={inspected}
-                entries={inspectedEntries}
-                passing={passing}
-                wallet={query.wallet}
-                windowSecs={windowSecs}
-                flowPatternKeys={lens.keys}
+        {query && entries.length > 0 && (
+          <DataTable
+            columns={buyColumns}
+            rows={probeRows}
+            rowKey={entryKey}
+            rowDetail={(e) => (
+              <EntryDetail
+                entry={e}
+                query={{
+                  wallet: query.wallet,
+                  windowSecs: readWindow,
+                  probeSlots,
+                  groupBy: query.groupBy,
+                  tag: targetTag,
+                }}
               />
             )}
+            tableId="entry_context_buys"
+            defaultCols={BUY_COLS_HIDDEN}
+            defaultSort={{ col: 'at', dir: 'desc' }}
+            searchable
+            colFilters
+            defaultColFilters={DEFAULT_BUY_FILTERS}
+            colToggle
+            hoverable
+            loading={ctx.isFetching}
+            groupLabels={buyGroupLabels}
+            resetKey={`${f.probeOn}|${f.show}`}
+            onFilteredRowsChange={setTableRows}
+            onColFiltersChange={setBuyFilters}
+            emptyMessage={
+              tag
+                ? 'No buys match the filters'
+                : 'No buys match the filters. The target columns need a pattern set picked in the lens above.'
+            }
+          />
+        )}
+
+        {query && tokenRows.length > 0 && entries.length > 0 && (
+          <>
+            <SectionDivider />
+            <Accordion
+              title={`Tokens (${tokenTableRows.length})`}
+              padding="sm"
+              bordered={false}
+              storageKey={ACCORDION_IDS.entryContextTokens}
+            >
+              <TokenTable
+                columns={tokenCols}
+                rows={tokenTableRows}
+                existingKeys={ALL_TOKEN_INFO_KEYS}
+                mintSetFilter
+                charts
+                chartsDefaultOn
+                searchable
+                colFilters
+                colToggle
+                hoverable
+                loading={loading}
+                groupLabels={TOKEN_GROUP_LABELS}
+                tableId="entry_context_tokens"
+                resetKey={`${shown.length}`}
+                highlightWallet={query.wallet}
+                titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
+                selectedKey={inspected?.mint ?? null}
+                onSelect={(mint) => {
+                  const row = mint ? tokenTableRows.find((r) => r.mint_address === mint) : null;
+                  setInspected(mint ? { mint, symbol: row?.symbol } : null);
+                }}
+                emptyMessage="No tokens with a buy on screen"
+                flowPatternKeys={lens.keys}
+              />
+            </Accordion>
           </>
+        )}
+
+        {query && ctxRequest && (
+          <>
+            <SectionDivider />
+            <MarketScan
+              scanRequest={ctxRequest}
+              logic={logic}
+              wallet={query.wallet}
+              flowPatternKeys={lens.keys}
+              hasTarget={!!tag}
+            />
+          </>
+        )}
+
+        {inspected && (
+          <LazyLabTokenInspectModal
+            target={inspectFromMint(inspected.mint, inspected.symbol)}
+            titleSuffix="Token inspect"
+            flowPatternKeys={lens.keys}
+            onClose={() => setInspected(null)}
+          />
         )}
       </div>
     </FlowLensProvider>

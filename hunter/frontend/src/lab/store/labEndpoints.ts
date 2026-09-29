@@ -22,6 +22,10 @@ import type { IxPatternSet, IxPatternSetDraft } from 'lib/flow/ixPatternSets';
 import type {
   EntryContextRequest,
   EntryContextResponse,
+  EntryRangeRequest,
+  EntryRangeResponse,
+  EntryScanRequest,
+  EntryScanResponse,
 } from '@lab/lib/entryContext/types';
 import type { MetricSeriesResponse } from 'lib/strategy/metricPanes';
 import type { InspectRequest, InspectRun } from '@lab/services/replayInspect';
@@ -593,6 +597,20 @@ export const labApi = baseApi.injectEndpoints({
         body,
       }),
     }),
+    getEntryRange: builder.query<EntryRangeResponse, EntryRangeRequest>({
+      query: ({ wallet, ...body }) => ({
+        url: `/api/wallets/${encodeURIComponent(wallet)}/entry-context/range`,
+        method: 'POST',
+        body,
+      }),
+    }),
+    getEntryScan: builder.query<EntryScanResponse, EntryScanRequest>({
+      query: ({ wallet, ...body }) => ({
+        url: `/api/wallets/${encodeURIComponent(wallet)}/entry-context/scan`,
+        method: 'POST',
+        body,
+      }),
+    }),
     deleteIxPatternSet: builder.mutation<void, string>({
       query: (id) => ({
         url: `/api/ix-pattern-sets/${encodeURIComponent(id)}`,
@@ -639,4 +657,6 @@ export const {
   useDeleteIxPatternSetMutation,
   useProbePreEntryIxMutation,
   useGetEntryContextQuery,
+  useGetEntryRangeQuery,
+  useGetEntryScanQuery,
 } = labApi;

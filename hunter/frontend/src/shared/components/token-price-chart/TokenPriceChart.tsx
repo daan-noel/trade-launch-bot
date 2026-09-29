@@ -15,18 +15,18 @@ import {
 import {
   alignFlowToBars,
   buildFlowLines,
+  EMPTY_FLOW_LINES,
   flowAt,
-  flowSeriesScale,
   formatFlowTokenCount,
   FLOW_NON_VOL_LINE_COLOR,
   FLOW_VOL_LINE_COLOR,
   type FlowBasis,
+  type FlowLinePoint,
   type FlowLines,
 } from 'lib/flow/flowChartData';
 import { classifyOptsForTag } from 'lib/flow/tapeClassify';
 import { tagSentence } from 'lib/strategy/tagsDoc';
 import { useFlowLensContext } from 'context/FlowLensContext';
-import { attachDualPriceScaleSync, type DualPriceScaleSync } from './dualPriceScaleSync';
 import {
   barsShape,
   captureChartViewport,
@@ -39,6 +39,7 @@ import {
   aggregateTradesToBarsBySlot,
   athChartValue,
   migrationChartValue,
+  priceSolChartValue,
   barAgeSec,
   barsToCandleData,
   barsToLineData,
@@ -67,7 +68,7 @@ import {
   createChartPriceFormat,
   createChartPriceFormatter,
   DEFAULT_CHART_PREFS,
-  DUAL_CHART_HANDLE_SCALE,
+  CHART_HANDLE_SCALE,
   LINE_SERIES_OPTIONS,
   LS_CHART_PREFS_KEY,
   responsiveChartHeight,
@@ -81,7 +82,8 @@ import { RangeSelectTooltip, formatRangeDuration } from './RangeSelectTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef, type MarkerShape } from './walletMarkersPlugin';
 import { BarTintPlugin, EMPTY_BAR_TINTS, asBarTintPrimitive } from './barTintPlugin';
 import { EMPTY_LENS_MATCH, buildLensMatch } from './lensTint';
-import { RangeSelectPlugin, asRangePrimitive } from './rangeSelectPlugin';
+import { HOST_RANGE_COLORS, RangeSelectPlugin, asRangePrimitive } from './rangeSelectPlugin';
+import { rangeForSpan } from './barTrades';
 import { barTimeAtClientX } from './paneCoords';
 import {
   TimeBandsPlugin,
@@ -92,7 +94,6 @@ import {
 import {
   applyFlowLineVisibility,
   flowLineVisibilityFromPrefs,
-  flowLineVisibilityKey,
   type FlowLineVisibility,
 } from './flowLineVisibility';
 import type {
@@ -550,6 +551,10 @@ export function TokenPriceChart({
   flowBasis = 'cost_sol',
   highlightLens = null,
   onHighlightLensMatch,
+  toolbarRow,
+  defaultRange = null,
+  hostRangeLabel = 'Range',
+  onHostRangeChange,
 }: TokenPriceChartProps) {
   // Tracked-wallet markers are a project-wide invariant: EVERY token trade chart
   // renders them. Callers may supply `profileWallets` (e.g. `TokenTradeChart`,
@@ -592,6 +597,8 @@ export function TokenPriceChart({
   onBarClickRef.current = onBarClick;
   const onRangeChangeRef = useRef(onRangeChange);
   onRangeChangeRef.current = onRangeChange;
+  const onHostRangeChangeRef = useRef(onHostRangeChange);
+  onHostRangeChangeRef.current = onHostRangeChange;
   const onCrosshairTimeChangeRef = useRef(onCrosshairTimeChange);
   onCrosshairTimeChangeRef.current = onCrosshairTimeChange;
   const onVisibleTimeRangeChangeRef = useRef(onVisibleTimeRangeChange);
@@ -607,10 +614,11 @@ export function TokenPriceChart({
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
   const rangeSelectPrimRef = useRef<RangeSelectPlugin | null>(null);
+  const hostRangePrimRef = useRef<RangeSelectPlugin | null>(null);
   const timeBandsPrimRef = useRef<TimeBandsPlugin | null>(null);
   const barTintPrimRef = useRef<BarTintPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
-  const alignedFlowLinesRef = useRef<FlowLines>({ tagged: [], untagged: [] });
+  const alignedFlowLinesRef = useRef<FlowLines>(EMPTY_FLOW_LINES);
   const valueLaneSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   /** One price line per authored threshold — a band draws both of its edges. */
   const valueLaneLinesRef = useRef<IPriceLine[]>([]);
@@ -672,8 +680,21 @@ export function TokenPriceChart({
   const flowLinesAvailableRef = useRef(flowLinesAvailable);
   flowLinesAvailableRef.current = flowLinesAvailable;
   const { timezone: chartTimezone } = useTimezone();
-  const [rangeSelectMode, setRangeSelectMode] = useState(false);
+  const [rangeSelectMode, setRangeSelectModeRaw] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
+  // The host range (`toolbarRow`): its own band and drag mode, never the reader's.
+  const [hostPickMode, setHostPickModeRaw] = useState(false);
+  const [hostRange, setHostRange] = useState<ChartRangeSelection | null>(null);
+  // The two drag modes are exclusive: one drag draws one band.
+  const setRangeSelectMode = useCallback((on: boolean) => {
+    setRangeSelectModeRaw(on);
+    if (on) setHostPickModeRaw(false);
+  }, []);
+  const setHostPickMode = useCallback((on: boolean) => {
+    setHostPickModeRaw(on);
+    if (on) setRangeSelectModeRaw(false);
+  }, []);
+  const dragTarget: 'range' | 'host' | null = rangeSelectMode ? 'range' : hostPickMode ? 'host' : null;
   const [crosshair, setCrosshair] = useState<ChartCrosshairInfo | null>(null);
   const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
   const [rangeTooltip, setRangeTooltip] = useState<ChartRangeTooltipState | null>(null);
@@ -707,14 +728,6 @@ export function TokenPriceChart({
   /** Shape of the bar array currently ON the chart — the baseline a saved logical
    *  range is translated from when the next `setData` shifts the indices. */
   const renderedBarsShapeRef = useRef<BarsShape | null>(null);
-  const scaleSyncRef = useRef<DualPriceScaleSync | null>(null);
-  /** "The user owns the Y axis" — held OUTSIDE the sync closure so it survives a
-   *  chart teardown/recreate (any `loading`/`error`/empty flip rebuilds the chart,
-   *  and losing the flag there handed the axis straight back to autoScale). */
-  const manualPriceZoomRef = useRef(false);
-  /** Non-data inputs that change what the price axes MEAN. Only these justify
-   *  dropping a hand-set Y zoom; a new trade never does. */
-  const flowScaleResetKeyRef = useRef<string | null>(null);
   const snapshotVisibleViewport = useCallback((chart: IChartApi): ChartViewport | null => {
     if (shouldFitContentRef.current) return null;
     const logical = chart.timeScale().getVisibleLogicalRange();
@@ -851,8 +864,12 @@ export function TokenPriceChart({
   rangeStatsRef.current = rangeStats;
   const selectedRangeRef = useRef(selectedRange);
   selectedRangeRef.current = selectedRange;
-  const rangeSelectModeRef = useRef(rangeSelectMode);
-  rangeSelectModeRef.current = rangeSelectMode;
+  const dragArmedRef = useRef(dragTarget != null);
+  dragArmedRef.current = dragTarget != null;
+  const hostStats = useMemo(
+    () => (hostRange ? computeRangeStats(sortedTrades, hostRange, groupMode, intervalSec) : null),
+    [hostRange, sortedTrades, groupMode, intervalSec],
+  );
 
   // crosshair-move fires on every pixel; without coalescing each move triggers a
   // full TokenPriceChart + ChartToolbar re-render. Collect the latest tooltip
@@ -981,16 +998,36 @@ export function TokenPriceChart({
       visibleViewportRef.current = null;
       renderedBarsShapeRef.current = null;
       mountedSeriesStyleRef.current = null;
-      // A different token / bucketing means a different axis — the previous Y
-      // zoom is meaningless, so hand the scale back to autoScale.
-      manualPriceZoomRef.current = false;
       prevIdRef.current = id;
       prevGroupingKeyRef.current = groupingKey;
       setSliderWindow(null);
       // Range bounds are in the old grouping's units (slot vs bucket-sec) — drop them.
       setSelectedRange(null);
+      setHostRange(null);
     }
   }, [id, groupingKey]);
+
+  // A different token, bucketing, unit, metric or style is a different axis: the
+  // previous hand-set Y zoom means nothing there, so the one price axis refits.
+  // A new trade or a flow-line toggle is not - the library keeps a dragged zoom
+  // until the axis is double-clicked.
+  useEffect(() => {
+    if (!showChart) return;
+    chartRef.current?.priceScale('right').applyOptions({ autoScale: true });
+  }, [id, groupingKey, priceUnit, metric, style, showChart]);
+
+  // The host range's default, (re)set when the span, the token or the grouping
+  // changes — after the reset above, which runs first in the same flush. Not on
+  // new trades: a live print must not overwrite the host range's own drag.
+  const defaultFrom = defaultRange?.from ?? null;
+  const defaultTo = defaultRange?.to ?? null;
+  const hasTrades = sortedTrades.length > 0;
+  useEffect(() => {
+    if (defaultFrom == null || defaultTo == null || !hasTrades) return;
+    setHostRange(
+      rangeForSpan(sortedTradesRef.current, { from: defaultFrom, to: defaultTo }, groupMode, intervalSec),
+    );
+  }, [defaultFrom, defaultTo, id, groupingKey, groupMode, intervalSec, hasTrades]);
 
   useEffect(() => {
     if (!showChart) return;
@@ -1007,17 +1044,17 @@ export function TokenPriceChart({
     setChartHeight(initialHeight);
     const chart = createChart(
       el,
-      createChartOptions(width, initialHeight, groupMode, priceUnit, chartTimezone, {
-        dualPriceScale: true,
-      }),
+      createChartOptions(width, initialHeight, groupMode, priceUnit, chartTimezone),
     );
     chartRef.current = chart;
 
+    // The flow lines share the candles' price axis: each is drawn at its cohort
+    // curve price (`cohortCurvePriceSol`), so its axis label reads a price in the
+    // candles' unit and the legend carries the cohort's net.
     const taggedSeries = chart.addSeries(LineSeries, {
       color: FLOW_VOL_LINE_COLOR,
       lineWidth: 2,
-      priceScaleId: 'left',
-      title: 'Vol makers (∑net)',
+      title: 'Vol makers',
       lastValueVisible: true,
       priceLineVisible: false,
       visible: false,
@@ -1025,21 +1062,13 @@ export function TokenPriceChart({
     const untaggedSeries = chart.addSeries(LineSeries, {
       color: FLOW_NON_VOL_LINE_COLOR,
       lineWidth: 2,
-      priceScaleId: 'left',
-      title: 'Non-tagged (∑net)',
+      title: 'Non-tagged',
       lastValueVisible: true,
       priceLineVisible: false,
       visible: false,
     });
-    chart.priceScale('left').applyOptions({ visible: false });
     taggedSeriesRef.current = taggedSeries;
     untaggedSeriesRef.current = untaggedSeries;
-
-    const scaleSync = attachDualPriceScaleSync(chart, el, {
-      isPaused: () => rangeSelectModeRef.current,
-      manualZoom: manualPriceZoomRef,
-    });
-    scaleSyncRef.current = scaleSync;
 
     // Width-only resize. Feeding contentRect.height back into applyOptions fights
     // the fixed parent height and the inspect-modal scrollbar (content grows →
@@ -1194,9 +1223,9 @@ export function TokenPriceChart({
     const groupModeAtMount = groupMode;
     const intervalAtMount = intervalSec;
     chart.subscribeClick((param) => {
-      // In range-select mode the pointer-drag handler owns clicks; don't also
-      // toggle a bar selection.
-      if (rangeSelectModeRef.current) return;
+      // While a drag-select is armed the pointer-drag handler owns clicks; don't
+      // also toggle a bar selection.
+      if (dragArmedRef.current) return;
 
       if (!param.time) {
         onBarClickRef.current?.(null);
@@ -1252,8 +1281,6 @@ export function TokenPriceChart({
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
       chart.timeScale().unsubscribeVisibleTimeRangeChange(onVisibleTimeRangeChange);
-      scaleSync.detach();
-      scaleSyncRef.current = null;
       if (crosshairRafRef.current != null) {
         cancelAnimationFrame(crosshairRafRef.current);
         crosshairRafRef.current = null;
@@ -1265,6 +1292,7 @@ export function TokenPriceChart({
       walletMarkersPrimRef.current = null;
       barTintPrimRef.current = null;
       rangeSelectPrimRef.current = null;
+      hostRangePrimRef.current = null;
       seriesRef.current = null;
       taggedSeriesRef.current = null;
       untaggedSeriesRef.current = null;
@@ -1282,8 +1310,6 @@ export function TokenPriceChart({
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || !showChart) return;
-    // Dual-axis: do not set chart-level localization.priceFormatter — it would
-    // override the left (flow) series formatters. Main series owns its labels.
     series.applyOptions({ priceFormat: createChartPriceFormat(priceUnit) });
   }, [priceUnit, showChart]);
 
@@ -1355,6 +1381,10 @@ export function TokenPriceChart({
         existing.detachPrimitive(asRangePrimitive(rangeSelectPrimRef.current));
         rangeSelectPrimRef.current = null;
       }
+      if (hostRangePrimRef.current) {
+        existing.detachPrimitive(asRangePrimitive(hostRangePrimRef.current));
+        hostRangePrimRef.current = null;
+      }
       if (timeBandsPrimRef.current) {
         existing.detachPrimitive(asTimeBandsPrimitive(timeBandsPrimRef.current));
         timeBandsPrimRef.current = null;
@@ -1388,6 +1418,10 @@ export function TokenPriceChart({
     series.attachPrimitive(asRangePrimitive(rangePrim));
     rangeSelectPrimRef.current = rangePrim;
 
+    const hostPrim = new RangeSelectPlugin(HOST_RANGE_COLORS);
+    series.attachPrimitive(asRangePrimitive(hostPrim));
+    hostRangePrimRef.current = hostPrim;
+
     const bandsPrim = new TimeBandsPlugin();
     series.attachPrimitive(asTimeBandsPrimitive(bandsPrim));
     timeBandsPrimRef.current = bandsPrim;
@@ -1413,12 +1447,10 @@ export function TokenPriceChart({
     }
   }, [bars, style, showChart, groupingKey, priceUnit, highlightBarKey, snapshotVisibleViewport]);
 
-  // `@tag` / `@!tag` cumulative overlay (left price scale). No tag that classifies
-  // ⇒ no lines, and the toolbar toggle says why.
+  // `@tag` / `@!tag` cumulative overlay, on the candles' own price axis. No tag
+  // that classifies ⇒ no lines, and the toolbar toggle says why.
   const flowLines = useMemo(() => {
-    if (!classifyOpts) {
-      return { tagged: [], untagged: [] } satisfies FlowLines;
-    }
+    if (!classifyOpts) return EMPTY_FLOW_LINES;
     return buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, classifyOpts);
   }, [sortedTrades, groupMode, intervalSec, flowBasis, classifyOpts]);
   const alignedFlowLines = useMemo(() => alignFlowToBars(flowLines, bars), [flowLines, bars]);
@@ -1426,52 +1458,20 @@ export function TokenPriceChart({
 
   useEffect(() => {
     if (!showChart) return;
-    const tokenScale = flowSeriesScale(flowBasis as FlowBasis);
-    const priceFormat =
-      flowBasis === 'token'
-        ? {
-            type: 'custom' as const,
-            formatter: (v: number) => {
-              const n = v * tokenScale;
-              if (Math.abs(n) >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
-              if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-              if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
-              return n.toFixed(0);
-            },
-            minMove: 0.01,
-          }
-        : {
-            type: 'custom' as const,
-            formatter: createChartPriceFormatter(priceUnit),
-            minMove: 0.01,
-          };
-    const toData = (pts: { time: UTCTimestamp; value: number }[]) =>
-      pts.map((p) => ({
-        time: p.time,
-        value:
-          flowBasis === 'token' ? p.value / tokenScale : toValue(p.value),
-      }));
+    // Each point is drawn at its cohort curve price, converted exactly as the bars
+    // are - so net 0 sits on the first candle's open and one zoom moves every
+    // series. A point with no curve price (a token reserve driven past 0) is a gap.
+    const toData = (pts: readonly FlowLinePoint[]) =>
+      pts.map((p) => {
+        const value = priceSolChartValue(p.priceSol, metric, toValue);
+        return Number.isFinite(value) ? { time: p.time, value } : { time: p.time };
+      });
+    const priceFormat = createChartPriceFormat(priceUnit);
     taggedSeriesRef.current?.applyOptions({ priceFormat });
     untaggedSeriesRef.current?.applyOptions({ priceFormat });
-    const chart = chartRef.current;
-    if (chart) {
-      // Re-fit only when what an axis MEANS changed (overlay toggled, unit/basis
-      // switched) — never on a data update. `alignedFlowLines` and `toValue` are
-      // deps of this effect and both churn on every live trade / SOL-price tick,
-      // so an unconditional re-fit here re-armed autoScale continuously and threw
-      // away the user's hand-set price zoom.
-      // Per-curve, not just any-curve: hiding one rescales the shared left axis
-      // to the other, which is exactly a change in what the axis MEANS.
-      const resetKey = `${flowLinesAvailable}|${flowLineVisibilityKey(flowLineVis)}|${flowBasis}|${priceUnit}|${style}|${groupingKey}`;
-      if (flowScaleResetKeyRef.current !== resetKey) {
-        flowScaleResetKeyRef.current = resetKey;
-        scaleSyncRef.current?.reset();
-      }
-    }
     applyFlowLineVisibility({
       taggedSeries: taggedSeriesRef.current,
       untaggedSeries: untaggedSeriesRef.current,
-      chart,
       visibility: flowLineVis,
       available: flowLinesAvailable,
     });
@@ -1479,7 +1479,7 @@ export function TokenPriceChart({
     untaggedSeriesRef.current?.setData(toData(alignedFlowLines.untagged));
   }, [
     alignedFlowLines,
-    flowBasis,
+    metric,
     priceUnit,
     toValue,
     flowLineVis,
@@ -1796,6 +1796,29 @@ export function TokenPriceChart({
     });
   }, [selectedRange, rangeStats, rangeSelectMode, showChart, style, groupingKey]);
 
+  // The host range's band: indigo, its chip `<label> · <length>`. Same keys as the
+  // range band above, for the same reasons.
+  useEffect(() => {
+    const prim = hostRangePrimRef.current;
+    if (!prim || !showChart) return;
+    prim.setBand(
+      hostRange
+        ? {
+            loTime: Math.min(hostRange.lo, hostRange.hi) as UTCTimestamp,
+            hiTime: Math.max(hostRange.lo, hostRange.hi) as UTCTimestamp,
+            label: hostStats ? `${hostRangeLabel} · ${formatRangeDuration(hostStats.durationMs)}` : hostRangeLabel,
+            dashed: false,
+          }
+        : null,
+    );
+  }, [hostRange, hostStats, hostRangeLabel, hostPickMode, showChart, style, groupingKey]);
+
+  useEffect(() => {
+    onHostRangeChangeRef.current?.(
+      hostRange ? { lo: hostRange.lo, hi: hostRange.hi, groupMode, intervalSec } : null,
+    );
+  }, [hostRange, groupMode, intervalSec]);
+
   // Surface the committed range (with grouping context) to the parent so it can
   // list the range's trades below the chart. `selectedRange` is reset to null on
   // id/grouping changes, so this also clears the parent's selection on those.
@@ -1807,14 +1830,18 @@ export function TokenPriceChart({
     );
   }, [selectedRange, groupMode, intervalSec]);
 
-  // Drag-to-select a time range. Active only in range-select mode: disable the
-  // chart's pan/zoom so a horizontal drag draws a band instead of scrolling,
-  // and snap both edges to the nearest bar via the logical coordinate.
+  // Drag-to-select a time range, into the reader's range (range-select mode) or
+  // the host range (host pick mode): disable the chart's pan/zoom so a horizontal
+  // drag draws a band instead of scrolling, and snap both edges to the nearest
+  // bar via the logical coordinate.
   useEffect(() => {
-    if (!showChart || !rangeSelectMode) return;
+    if (!showChart || !dragTarget) return;
     const el = containerRef.current;
     const chart = chartRef.current;
     if (!el || !chart) return;
+    const isHost = dragTarget === 'host';
+    const primRef = isHost ? hostRangePrimRef : rangeSelectPrimRef;
+    const commit = isHost ? setHostRange : setSelectedRange;
 
     chart.applyOptions({ handleScroll: false, handleScale: false });
     el.style.cursor = 'crosshair';
@@ -1834,7 +1861,7 @@ export function TokenPriceChart({
       startX = e.clientX;
       startTime = t;
       try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-      rangeSelectPrimRef.current?.setBand({
+      primRef.current?.setBand({
         loTime: t as UTCTimestamp,
         hiTime: t as UTCTimestamp,
         dashed: true,
@@ -1845,7 +1872,7 @@ export function TokenPriceChart({
       if (!dragging || startTime == null) return;
       const t = coordToBarTime(e.clientX);
       if (t == null) return;
-      rangeSelectPrimRef.current?.setBand({
+      primRef.current?.setBand({
         loTime: Math.min(startTime, t) as UTCTimestamp,
         hiTime: Math.max(startTime, t) as UTCTimestamp,
         dashed: true,
@@ -1858,20 +1885,20 @@ export function TokenPriceChart({
       try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
       const t = coordToBarTime(e.clientX);
       // A drag too short to clear the threshold reads as a click → clear. Drop
-      // the draft band directly too: if no selection existed, setSelectedRange
-      // is a no-op and the band effect won't fire to clear the pointerdown dot.
+      // the draft band directly too: if no selection existed, the commit is a
+      // no-op and the band effect won't fire to clear the pointerdown dot.
       if (startTime == null || t == null || Math.abs(e.clientX - startX) < 4) {
         startTime = null;
-        rangeSelectPrimRef.current?.setBand(null);
-        setSelectedRange(null);
+        primRef.current?.setBand(null);
+        commit(null);
         return;
       }
-      setSelectedRange({ lo: Math.min(startTime, t), hi: Math.max(startTime, t) });
+      commit({ lo: Math.min(startTime, t), hi: Math.max(startTime, t) });
       startTime = null;
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelectedRange(null);
+      if (e.key === 'Escape') commit(null);
     };
 
     el.addEventListener('pointerdown', onPointerDown);
@@ -1891,12 +1918,11 @@ export function TokenPriceChart({
       if (chartRef.current === chart) {
         chart.applyOptions({
           handleScroll: true,
-          handleScale: { ...DUAL_CHART_HANDLE_SCALE },
+          handleScale: { ...CHART_HANDLE_SCALE },
         });
-        scaleSyncRef.current?.rearm();
       }
     };
-  }, [showChart, fixedHeight, groupingKey, groupMode, priceUnit, chartTimezone, rangeSelectMode]);
+  }, [showChart, fixedHeight, groupingKey, groupMode, priceUnit, chartTimezone, dragTarget]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -2080,6 +2106,20 @@ export function TokenPriceChart({
         onFlowLinesChange={handleFlowLinesChange}
         onRangeSelectModeChange={setRangeSelectMode}
       />
+      {toolbarRow && (
+        <div
+          className="flex flex-wrap items-center gap-2 border-b px-3 py-1.5"
+          style={{ borderColor: CHART_COLORS.border }}
+        >
+          {toolbarRow({
+            picking: hostPickMode,
+            setPicking: setHostPickMode,
+            clear: () => setHostRange(null),
+            selectSpan: (span) =>
+              setHostRange(rangeForSpan(sortedTradesRef.current, span, groupMode, intervalSec)),
+          })}
+        </div>
+      )}
       <div className="relative" style={{ height: chartHeight, width: '100%' }}>
         <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
         {barTooltip && (

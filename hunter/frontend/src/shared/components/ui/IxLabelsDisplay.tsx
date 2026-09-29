@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties, type MouseEvent } from 'react';
-import { formatIxLabelsText } from 'lib/ixLabels';
+import { abbreviateIxLabelParts, formatIxLabelsText, IX_ABBREV_SEP } from 'lib/ixLabels';
 import { cn } from 'lib/cn';
 
 export interface IxLabelsDisplayProps {
@@ -10,6 +10,10 @@ export interface IxLabelsDisplayProps {
   maxHeight?: string;
   /** Shown when `labels` is empty. Omit to render nothing. */
   empty?: string;
+  /** One-line mode for a narrow column: the sequence abbreviated
+   *  (`abbreviateIxLabelParts`) on a single truncated line, the full list on hover,
+   *  click still copies. */
+  compact?: boolean;
   className?: string;
   style?: CSSProperties;
 }
@@ -23,6 +27,7 @@ export function IxLabelsDisplay({
   copyJson = false,
   maxHeight,
   empty,
+  compact = false,
   className,
   style,
 }: IxLabelsDisplayProps) {
@@ -45,6 +50,24 @@ export function IxLabelsDisplay({
     }
   };
 
+  if (compact) {
+    return (
+      <span
+        onClick={copyJson ? copy : undefined}
+        title={`${json}${copyJson ? `\n\n${copied ? 'Copied!' : 'Click to copy JSON'}` : ''}`}
+        className={cn(
+          'block truncate font-mono text-[11px] text-text-mid',
+          copyJson && 'cursor-pointer',
+          copied && 'text-primary',
+          className,
+        )}
+        style={style}
+      >
+        <IxAbbrevLine labels={labels} />
+      </span>
+    );
+  }
+
   return (
     <pre
       onClick={copyJson ? copy : undefined}
@@ -63,5 +86,25 @@ export function IxLabelsDisplay({
     >
       {json}
     </pre>
+  );
+}
+
+/**
+ * An ix sequence as its abbreviation line: dim arrows between instructions, setup
+ * codes (compute, accounts, transfers) dim and the program actions bright, so the
+ * eye lands on what the transaction does. Inline, no chrome - the caller owns the
+ * box, truncation and hover.
+ */
+export function IxAbbrevLine({ labels }: { labels: readonly string[] }) {
+  const parts = useMemo(() => abbreviateIxLabelParts(labels), [labels]);
+  return (
+    <>
+      {parts.map((p, i) => (
+        <span key={i}>
+          {i > 0 && <span className="px-1 text-text-dim/50">{IX_ABBREV_SEP}</span>}
+          <span className={p.setup ? 'text-text-dim' : 'font-semibold text-text'}>{p.code}</span>
+        </span>
+      ))}
+    </>
   );
 }

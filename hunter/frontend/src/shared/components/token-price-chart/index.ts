@@ -1,6 +1,6 @@
 export { TokenPriceChart } from './TokenPriceChart';
 export { tradeBarTime, tradeBarSlot } from './chartBars';
-export { tradesInBar, tradesInRange } from './barTrades';
+export { rangeForSpan, rangeSpan, tradesInBar, tradesInRange, type RangeTapeSpan } from './barTrades';
 export { CHART_COLORS, COMPARE_MARKER_COLORS, compareWalletColor } from './constants';
 export type { LensBarTint, LensMatch } from './lensTint';
 export { EMPTY_LENS_MATCH } from './lensTint';
@@ -9,6 +9,7 @@ export type {
   ChartMetric,
   ChartBarSelection,
   ChartEventMarker,
+  ChartRangeControl,
   ChartRangeSelectionDetail,
   ChartVisibleTimeRange,
   ChartTimeBand,

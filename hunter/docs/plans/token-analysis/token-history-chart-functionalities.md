@@ -399,59 +399,36 @@ Because bars are rebuilt whenever interval/group/metric/trades change, the chart
   a `requestAnimationFrame` because lightweight-charts re-lays-out on the next frame).
 - On first mount the chart `fitContent()`s once, then preserves the user's view.
 
-### 10b. Vertical (price) scale — manual Y zoom is sticky (`dualPriceScaleSync.ts`)
+### 10b. Vertical (price) scale - one axis for every series
 
-The chart runs **two price scales**: right = token price/MC, left = the cumulative
-`@tag` / `@!tag` flow overlay. Both flow curves share that left scale and the tagged curve
-normally dwarfs the rest, which is why the toolbar toggles them **separately**
-(`flowLineVisibility.ts`): hiding `@tag` lets the left scale autoscale to `@!tag` alone,
-the only way its shape is readable. The scale itself
-is visible iff at least one curve is — and the autoscale-reset key carries BOTH flags, since
-hiding either one changes what the axis means. `attachDualPriceScaleSync` keeps their Y zoom in lockstep — a drag on one axis
-mirrors the *relative* zoom onto the other via `setVisibleRange`, which implicitly turns
-that scale's `autoScale` off.
+The chart has **one** price axis (right). The candles and the `@tag` / `@!tag` flow
+lines all sit on it, so one zoom moves every series and no line can drift off the
+candles' scale.
 
-Re-arming `autoScale` is therefore a normal part of the dance, but it must **never** be
-driven by a data update. `subscribeVisibleLogicalRangeChange` fires for programmatic range
-changes too — a live trade means `setData` **plus** the §10a viewport restore, i.e. two
-range changes — so an unconditional re-arm there wiped a hand-set price zoom on the next
-trade. The same held for the flow-overlay effect, whose `alignedFlowLines`/`toValue` deps
-churn on every trade and every SOL/USD tick.
+A flow line is drawn at its **cohort curve price** (`cohortCurvePriceSol`,
+`lib/flow/flowChartData.ts`): the spot the bonding curve would sit at if, from the chart's
+first trade, only that cohort had traded. On the curve price is `vsol / vtoken` with
+`vsol * vtoken = k`, so a SOL net moves the SOL reserve (`(anchor.sol + netSol)^2 / k`)
+and a token net moves the token reserve (`k / (anchor.token - netToken)^2`; `value_sol`
+maps through its token count). `amount_sol` is the curve-side leg, so the SOL mapping is
+exact. The anchor is the curve before the chart's first trade (`preTradeReserves`), so
+net 0 draws on the first candle's open. Example: anchor 30 SOL, a cohort net +10 SOL draws
+at (40/30)^2 = 1.78x the start price. The point then goes through `priceSolChartValue`,
+the same price/MC + unit conversion the bars use. A line's axis label is therefore a price
+in the candles' unit; the cohort's net itself is in the toolbar readout and the bar
+tooltip (section 9).
 
-The rule, mirroring lightweight-charts' own semantics:
+The lines live on the **curve only**: they end at the first AMM trade (`FlowLines.endTime`),
+because the curve mapping does not hold on a pool.
 
-- **The library's own `autoScale` option is the authority.** lightweight-charts clears it
-  inside `PriceScale.scaleTo` (its axis scale gesture) and sets it in `PriceScale.reset`
-  (axis double-click), so `priceScale(id).options().autoScale === false` *is* the record of
-  who owns the axis. `syncManualFromChart` latches `manualPriceZoom` from it before every
-  re-arm. The one thing it must discount is our **own** mirror write: `setVisibleRange` also
-  clears `autoScale`, so the mirrored scale id goes into `ourAutoScaleOff` and its `false`
-  is not read as user intent.
-- A pointer-down inside an axis gutter (hit-tested against `priceScale(id).width()`)
-  followed by a drag latches the same flag. Kept as a second signal because the hit-test
-  catches the gesture a frame earlier — but it is **not** sufficient on its own: it sees only
-  a drag that *starts* in a gutter, so it missed pinch/touch scaling and any chart whose
-  container rect does not line up with the axis (the position-detail modal). The gesture's
-  **origin** is still the right signal for the hit-test — inferring it from "only one scale's
-  range moved" misfires whenever a body pan leaves the flow line flat, which would freeze Y
-  on an ordinary horizontal drag.
-- The flag lives in a **ref owned by the component**, passed in as `opts.manualZoom`, not in
-  the sync closure. The chart is destroyed and rebuilt on any `loading`/`error`/empty flip
-  (`showChart` is a dep of the create effect), and a closure-local flag handed the axis back
-  to autoScale on the way through. It is cleared only when `id`/`groupingKey` changes, i.e.
-  when the axis means something else.
-- `attachDualPriceScaleSync` returns a handle, not a bare disposer:
-  **`rearm()`** re-fits unless the user holds manual control (use for any data-driven
-  refit), **`reset()`** drops manual control and re-fits (only for changes to what an axis
-  *means* — overlay toggled, unit/basis switched), `detach()` disposes.
-  Call `rearmDualAutoScale` directly only from inside the sync module.
-- Double-click **on a price axis** always resets Y (the library's native gesture);
-  double-click on the chart **body** re-fits only when the user has not taken manual
-  control, so resetting the time zoom can't silently drop the price zoom.
+Hiding a line only hides it (`flowLineVisibility.ts`). Autoscale fits every visible series,
+so when a hidden line was the tallest the axis refits - candles and the other line together,
+never one relative to the other.
 
-Consumers key their `reset()` on a string of the non-data inputs
-(`flowLinesVisible|flowBasis|priceUnit|style|groupingKey`) held in a ref, so a data update
-can never reach it.
+Y zoom is lightweight-charts' own: an axis drag turns that axis' `autoScale` off and it stays
+off through live trades until the axis is double-clicked. The chart re-arms `autoScale` only
+when the axis means something else - a change of token, grouping, unit, metric or style
+(`TokenPriceChart`'s refit effect). Never on a data update or a line toggle.
 
 ### 10c. Bottom range slider (`ChartRangeSlider.tsx`)
 
@@ -502,16 +479,17 @@ hover/tooltip states (`crosshair`, `barTooltip`, `rangeTooltip`,
 
 1. **New per-bar marker** → build a `SeriesMarker[]` like `buildTradeMarkers`, or a canvas
    `ISeriesPrimitive` plugin (as `walletMarkersPlugin.ts`) when you need custom geometry/hit-testing.
-2. **New overlay line** → create a `LineSeries`, feed it `{ time, value, color? }` points, and
-   key it so the recreate-effect can diff it.
+2. **New overlay line** → create a `LineSeries` on the one price axis, feed it
+   `{ time, value, color? }` points converted through `priceSolChartValue`, and key it so the
+   recreate-effect can diff it. A quantity that is not a price needs its mapping onto price
+   first (as `cohortCurvePriceSol`), never a second axis.
 3. **New full-height band** → follow `rangeSelectPlugin.ts`
    (`ISeriesPrimitive` paint + a hit-testable label chip + a React tooltip).
 4. **New toggle** → add a control in `ChartToolbar.tsx`, thread the prop/handler, and decide
    persisted (localStorage) vs. session state. Keep `aria-pressed`/tooltips for icon-only buttons.
 5. **Respect the viewport — both axes.** Horizontally: never `fitContent()` on data
-   refresh; capture/restore via `chartViewport.ts`. Vertically: never call
-   `rearmDualAutoScale` from an effect whose deps include trade/bar data — go through the
-   sync handle's `rearm()` (see §10b), and reserve `reset()` for changes to what an axis
-   means.
+   refresh; capture/restore via `chartViewport.ts`. Vertically: never re-arm `autoScale`
+   from an effect whose deps include trade/bar data - only when what the axis means changes
+   (see §10b).
 6. **Honor metric/unit** — route every displayed price through the metric converter and
    `createChartPriceFormatter(priceUnit)`.

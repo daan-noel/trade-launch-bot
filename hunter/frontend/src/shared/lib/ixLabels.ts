@@ -204,3 +204,98 @@ export function ixLabelsMatchFilter(
     ? ixLabelsMatchJson(filter.needles, list)
     : ixLabelsMatchText(filter.needles, list);
 }
+
+/** Boilerplate instructions every build carries, as 1-2 letter codes, each with
+ *  the words the legend spells it out in. */
+const IX_ABBREV: Readonly<Record<string, readonly [code: string, meaning: string]>> = {
+  'Compute Budget: SetComputeUnitLimit': ['CL', 'compute limit'],
+  'Compute Budget: SetComputeUnitPrice': ['CP', 'compute price'],
+  'Associated Token: Create': ['A', 'token account create'],
+  'Associated Token: CreateIdempotent': ['A+', 'token account create (idempotent)'],
+  'System Program: Transfer': ['T', 'SOL transfer'],
+  'System Program: AdvanceNonceAccount': ['N', 'nonce'],
+  'System Program: CreateAccount': ['NA', 'new account'],
+  'System Program: CreateAccountWithSeed': ['SA', 'seeded account'],
+  'Token Program: CloseAccount': ['X', 'close account'],
+  'Token Program: SyncNative': ['SN', 'sync native'],
+  'Memo Program: Memo': ['M', 'memo'],
+};
+
+/** Leading characters an unnamed program's id keeps (`6Vo3`). */
+const PROGRAM_ID_CHARS = 4;
+
+/** Capitals of a CamelCase word: `BuyExactSolIn` -> `BESI`, `Buy` -> `B`. */
+const initials = (word: string) => word.match(/[A-Z0-9]/g)?.join('') || word.slice(0, 2);
+
+/** `Unknown (6Vo3245e)` -> `6Vo3`, `Pump.Fun` -> `PF`, `Axiom Trade` -> `AT`,
+ *  a one-word name its first two letters (`Bundler` -> `Bu`). */
+function abbrevProgram(program: string): string {
+  const unknown = /^Unknown \((.+)\)$/.exec(program);
+  if (unknown) return unknown[1].slice(0, PROGRAM_ID_CHARS);
+  const words = program.split(/[ .]+/).filter(Boolean);
+  return words.length > 1 ? words.map((w) => w[0].toUpperCase()).join('') : program.slice(0, 2);
+}
+
+/** One abbreviated instruction. `setup` = boilerplate (compute, accounts,
+ *  transfers): drawn dim so the program actions stand out. */
+export interface IxAbbrevPart {
+  code: string;
+  setup: boolean;
+}
+
+/** One label short: a fixed code for boilerplate, else `Program:Action` initials. */
+function abbrevLabel(label: string): IxAbbrevPart {
+  const fixed = IX_ABBREV[label];
+  if (fixed) return { code: fixed[0], setup: true };
+  const i = label.lastIndexOf(': ');
+  return {
+    code: i === -1 ? label : `${abbrevProgram(label.slice(0, i))}:${initials(label.slice(i + 2))}`,
+    setup: false,
+  };
+}
+
+/** What the codes mean, for a column header or legend - built from the same table. */
+export const IX_ABBREV_LEGEND = [
+  ...Object.values(IX_ABBREV).map(([code, meaning]) => `${code} = ${meaning}`),
+  'Program:Action by initials, e.g. PF:B = Pump.Fun Buy, 6Vo3:B = unnamed program 6Vo3... Buy',
+  '×N = the same instruction N times in a row',
+].join('\n');
+
+/** Separator between abbreviated instructions: an arrow reads as "then". */
+export const IX_ABBREV_SEP = '→';
+
+/**
+ * **The one-line form of an exact ix sequence**, in on-chain order and as short as
+ * it can read: boilerplate as 1-2 letter codes (`CL` compute limit, `CP` compute
+ * price, `A+` token account, `T` transfer, ... - see {@link IX_ABBREV_LEGEND}), any
+ * other label as `Program:Action` initials (`PF:B` Pump.Fun Buy, `6Vo3:B` an unnamed
+ * program by its id's first 4 characters), a run of one label as `×N`. Parts, so a
+ * renderer can dim the setup codes (`IxLabelsDisplay` `compact`).
+ */
+export function abbreviateIxLabelParts(labels: readonly string[]): IxAbbrevPart[] {
+  const out: IxAbbrevPart[] = [];
+  let prev: IxAbbrevPart | null = null;
+  let run = 0;
+  const flush = () => {
+    if (prev) out.push(run > 1 ? { ...prev, code: `${prev.code}×${run}` } : prev);
+  };
+  for (const l of labels) {
+    const a = abbrevLabel(l);
+    if (prev && a.code === prev.code) {
+      run += 1;
+      continue;
+    }
+    flush();
+    prev = a;
+    run = 1;
+  }
+  flush();
+  return out;
+}
+
+/** The same as text: `CL → CP → A+ → 6Vo3:B → T×2`. */
+export function abbreviateIxLabels(labels: readonly string[]): string {
+  return abbreviateIxLabelParts(labels)
+    .map((p) => p.code)
+    .join(` ${IX_ABBREV_SEP} `);
+}

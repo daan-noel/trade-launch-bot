@@ -3,7 +3,6 @@ import type { ColumnDef } from 'components/table/types';
 import { tokenColumns } from 'components/tokens/tokenColumns';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
-import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
@@ -31,57 +30,27 @@ import { Select } from 'components/ui/Select';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { FlowLensProvider } from 'context/FlowLensContext';
 import { useTimezone } from 'context/TimezoneContext';
-import { datetimeLocalToUtcWallClock, utcIsoToDatetimeLocal } from 'utils/date';
+import { utcIsoToDatetimeLocal } from 'utils/date';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useGetTraderTokensQuery } from '@lab/store/labEndpoints';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { compareWalletColor } from 'components/token-price-chart/constants';
-import type { ProfileWalletInfo } from 'components/token-price-chart/types';
+import { FIELD_LABEL, TraderQueryInputs } from '@lab/components/analysis/TraderQueryInputs';
+import {
+  clampInt,
+  CUSTOM_PRESET,
+  DEFAULT_DAYS,
+  MAX_DAYS,
+  shortAddr,
+  wallClockToUtcIso,
+} from '@lab/components/analysis/traderQuery';
 import type { TraderTokenRow } from 'types';
 
-// Look-back clamp mirrors the backend (`MAX_WINDOW_DAYS` in
-// `lab/src/api/handlers/wallets.rs`), and bounds the custom range's SPAN too.
 // Max tokens uses the zero-as-unbound sentinel (`0` / blank ⇒ every mint in the
 // window) — same as mint-trades `limit<=0` and the rule editor's Max total.
-const DEFAULT_DAYS = 7;
 const DEFAULT_LIMIT = 0;
-const MAX_DAYS = 90;
-const DAY_MS = 86_400_000;
-
-/** The picker's custom-range sentinel — `days` holds this instead of a day count
- *  while the window is an explicit `from`/`to` pair. */
-const CUSTOM_PRESET = 'custom';
-
-const TRADER_LOOKBACK_PRESETS = [
-  { value: '1', label: '1 day' },
-  { value: '3', label: '3 days' },
-  { value: '7', label: '7 days' },
-  { value: '14', label: '14 days' },
-  { value: '30', label: '30 days' },
-  { value: '60', label: '60 days' },
-  { value: '90', label: '90 days' },
-  {
-    value: CUSTOM_PRESET,
-    label: 'Custom',
-    description: `Exact from → to, max ${MAX_DAYS}d span`,
-  },
-] as const;
-
-/** A wall-clock `YYYY-MM-DDTHH:mm` in `tz` for an instant — the picker's wire
- *  shape. Seeds the popover draft from whatever window is active, so switching a
- *  day preset to Custom starts from that preset's bounds instead of blank. */
-const msToWallClock = (ms: number, tz: string) =>
-  utcIsoToDatetimeLocal(new Date(ms).toISOString(), tz);
-
-/** The picker's wall-clock (project zone) → the UTC RFC3339 instant the API
- *  takes. `bound` keeps a DST-ambiguous hour inside the range (see
- *  `datetimeLocalToUtcWallClock`). Blank in ⇒ blank out (no bound). */
-const wallClockToUtcIso = (wall: string, tz: string, bound: 'lower' | 'upper') => {
-  const utc = datetimeLocalToUtcWallClock(wall, tz, bound);
-  return utc ? `${utc}Z` : '';
-};
 
 /** Group header labels. Only the appended wallet groups are named — the shared
  *  token groups keep the blank header every other token table shows, so the two
@@ -120,34 +89,6 @@ function windowLabel(q: TraderQuery, tz: string): string {
   return `the last ${q.days}d`;
 }
 
-const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
-
-/** The tracked wallets grouped by their profile name, for the picker's optgroups.
- *  `mine`-profile wallets sort first so your own wallet is easy to reach. */
-function groupByProfile(wallets: ProfileWalletInfo[]): { profileName: string; wallets: ProfileWalletInfo[] }[] {
-  const order: string[] = [];
-  const byName = new Map<string, ProfileWalletInfo[]>();
-  for (const w of wallets) {
-    const name = w.profileName ?? 'Untitled';
-    let bucket = byName.get(name);
-    if (!bucket) {
-      bucket = [];
-      byName.set(name, bucket);
-      order.push(name);
-    }
-    bucket.push(w);
-  }
-  return order
-    .map((profileName) => ({ profileName, wallets: byName.get(profileName)! }))
-    .sort((a, b) => Number(b.wallets[0]?.isMine) - Number(a.wallets[0]?.isMine));
-}
-
-const clampInt = (raw: string, fallback: number, min: number, max: number) => {
-  const n = parseInt(raw, 10);
-  return Math.min(max, Math.max(min, Number.isFinite(n) ? n : fallback));
-};
-
-/** Parse Max tokens: blank / 0 / non-finite ⇒ 0 (unlimited); positive stays as asked. */
 /**
  * The comparison wallets a query actually carries, from the draft set and the
  * primary it is read against.
@@ -160,6 +101,7 @@ const clampInt = (raw: string, fallback: number, min: number, max: number) => {
 const comparisonWire = (compare: string[], primary: string): string[] =>
   compare.filter((a) => a !== primary).slice(0, MAX_COMPARE_WALLETS);
 
+/** Parse Max tokens: blank / 0 / non-finite ⇒ 0 (unlimited); positive stays as asked. */
 const parseLimit = (raw: string) => {
   const trimmed = raw.trim();
   if (!trimmed) return 0;
@@ -310,10 +252,6 @@ export function TraderAnalysisPage() {
   const lens = useTraderFlowLens(query?.wallet ?? null);
 
   const profileWallets = useProfileWallets();
-  const profileGroups = useMemo(() => groupByProfile(profileWallets), [profileWallets]);
-  // Reflect the picker's selection only while the input still holds a known
-  // tracked address; typing a custom address falls back to the placeholder.
-  const pickedWallet = profileWallets.some((w) => w.address === walletInput) ? walletInput : '';
   // Co-trade surfaces follow the COMMITTED query, never the draft: the columns
   // read `co_traders`, which only the rows fetched under that query carry.
   const comparisonActive = (query?.with.length ?? 0) > 0;
@@ -404,24 +342,13 @@ export function TraderAnalysisPage() {
     // does: "what did he do here" and "what was on the tape before he did it"
     // read as one question. Present only while the probe is on, so the ordinary
     // page keeps exactly the layout it had.
-    const pre = probe.on ? preEntryColumns(probe.verdicts) : [];
+    const pre = probe.on
+      ? preEntryColumns<TraderTokenRow>((r) => probe.verdicts.get(r.mint_address), probe.window.value)
+      : [];
     return [...base.slice(0, at), ...walletTokenColumns(), ...pre, ...co, ...base.slice(at)];
   }, [comparisonActive, profileWallets, query, coFocus, probe.on, probe.verdicts]);
 
   const isCustomWindow = daysInput === CUSTOM_PRESET;
-  // Seed instant for the day presets. Recomputed only when the preset (or zone)
-  // changes rather than every render — it feeds a draft and a trigger hint, not
-  // the query, which resolves its own `now` at Analyze time.
-  const presetFromWallClock = useMemo(
-    () =>
-      isCustomWindow
-        ? ''
-        : msToWallClock(
-            Date.now() - clampInt(daysInput, DEFAULT_DAYS, 1, MAX_DAYS) * DAY_MS,
-            timezone,
-          ),
-    [isCustomWindow, daysInput, timezone],
-  );
 
   const run = (walletOverride?: string) => {
     const wallet = (walletOverride ?? walletInput).trim();
@@ -531,65 +458,18 @@ export function TraderAnalysisPage() {
 
       {/* Inputs */}
       <div className="mb-3 flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-          Wallet address
-          <Input
-            value={walletInput}
-            onChange={(e) => patch({ wallet: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') run();
-            }}
-            placeholder="Solana base58 address"
-            className="min-w-[420px] font-mono font-normal normal-case tracking-normal"
-          />
-        </label>
-        {profileWallets.length > 0 && (
-          <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-            Tracked wallet
-            <Select
-              value={pickedWallet}
-              onChange={(e) => handlePickWallet(e.target.value)}
-              className="min-w-[200px] font-normal normal-case tracking-normal"
-            >
-              <option value="">Pick a profile wallet…</option>
-              {profileGroups.map((group) => (
-                <optgroup key={group.profileName} label={group.profileName}>
-                  {group.wallets.map((w) => (
-                    <option key={w.address} value={w.address}>
-                      {shortAddr(w.address)}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </Select>
-          </label>
-        )}
-        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-          Look-back
-          <DateTimeRangePicker
-            aria-label="Look-back window"
-            size="sm"
-            timeZone={timezone}
-            emptyLabel="Pick a range"
-            customPreset={CUSTOM_PRESET}
-            presets={[...TRADER_LOOKBACK_PRESETS]}
-            // A day preset still hands the picker its resolved bounds, so the
-            // trigger reads "7 days · 08/18 → now" and switching to Custom opens
-            // on that window instead of a blank calendar. Only `from` is seeded:
-            // a rolling preset's upper bound IS now, which the trigger renders.
-            value={{
-              preset: daysInput,
-              from: isCustomWindow ? fromInput : presetFromWallClock,
-              to: isCustomWindow ? toInput : '',
-            }}
-            onChange={({ preset, from, to }) =>
-              preset === CUSTOM_PRESET
-                ? patch({ days: CUSTOM_PRESET, from, to })
-                : patch({ days: preset, from: '', to: '' })
-            }
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
+        <TraderQueryInputs
+          wallet={walletInput}
+          onWallet={(wallet) => patch({ wallet })}
+          onPickWallet={handlePickWallet}
+          days={daysInput}
+          from={fromInput}
+          to={toInput}
+          onRange={(r) => patch(r)}
+          onEnter={() => run()}
+          timezone={timezone}
+        />
+        <label className={FIELD_LABEL}>
           Max tokens
           <Input
             type="number"
@@ -606,7 +486,7 @@ export function TraderAnalysisPage() {
           />
         </label>
         {profileWallets.length > 0 && (
-          <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
+          <label className={FIELD_LABEL}>
             Compare with
             <Select
               value=""

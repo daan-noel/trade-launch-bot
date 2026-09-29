@@ -1,26 +1,29 @@
 import type { ColumnDef } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
+import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
+import { IX_ABBREV_LEGEND } from 'lib/ixLabels';
 import { formatDecimalTrim } from 'utils/format';
-import type { TraderTokenRow } from 'types';
 import {
   formatLag,
   lagSortValue,
+  slotsText,
   UNKNOWN_HINT,
   type PreEntryVerdict,
 } from '@lab/lib/preEntryProbeTypes';
 
 /**
- * Trader Analysis **pre-entry** columns — for each token, whether a structure
- * from the flow lens landed on the tape before this trader entered, how far
- * ahead of him it was, and how often the same thing happens in the window
- * before that one.
+ * **Pre-entry** columns — for each row (a token on Trader Analysis, one buy on
+ * Entry Context), whether a structure from the flow lens landed on the tape
+ * before this trader entered, how far ahead of him it was, and how often the same
+ * thing happens in the window before that one. One set of columns for every page
+ * that asks, so the verdict reads the same everywhere.
  *
  * Columns rather than a hard row filter, on purpose. Narrowing runs through the
  * table's own filter row, so the unfiltered denominator and the CONTROL count
  * stay on screen while the filter is on: a filter alone can only ever show
  * confirmations, and a structure a crowd shares sits before everything.
  *
- * The verdicts arrive as a per-mint map, not as row fields — `TraderTokenRow` is
+ * The verdict is looked up per row (`at`), not read off a row field — the row is
  * the server's shape and this is a question asked about it, re-asked whenever
  * the window or the lens narrowing changes.
  *
@@ -42,24 +45,27 @@ const STATE_VARIANT = {
 } as const;
 
 /** Why this row reads the way it does, spelled out on hover. */
-function stateTitle(v: PreEntryVerdict): string {
+function stateTitle(v: PreEntryVerdict, last: string, earlier: string): string {
   if (v.state === 'unknown') {
     return v.unknown_reason
       ? `Unknown — ${UNKNOWN_HINT[v.unknown_reason]}`
       : 'Unknown';
   }
-  const hits = `${v.hits} matching print${v.hits === 1 ? '' : 's'} (${formatDecimalTrim(v.sol, 3)} SOL)`;
-  const control = `${v.control_hits} in the control window before it`;
+  const hits = `${v.hits} target transaction${v.hits === 1 ? '' : 's'} (${formatDecimalTrim(v.sol, 3)} SOL) ${last}`;
+  const control = `${v.control_hits} ${earlier}`;
   return v.state === 'matched'
-    ? `A lens structure landed ahead of the entry: ${hits}; ${control}`
-    : `No lens structure cleared the thresholds before the entry: ${hits}; ${control}`;
+    ? `Before: the target traded right before his buy.\n${hits}; ${control}.`
+    : `Absent: not enough of the target right before his buy.\n${hits}; ${control}.`;
 }
 
-export function preEntryColumns(
-  verdicts: ReadonlyMap<string, PreEntryVerdict>,
-): ColumnDef<TraderTokenRow>[] {
-  const at = (r: TraderTokenRow) => verdicts.get(r.mint_address);
-
+export function preEntryColumns<R>(
+  at: (row: R) => PreEntryVerdict | undefined,
+  /** The probe window, for the tooltips to spell out. */
+  windowSlots: number,
+): ColumnDef<R>[] {
+  const n = windowSlots;
+  const last = `in the last ${slotsText(n)} before his buy`;
+  const earlier = `from ${2 * n} to ${n} slots before his buy`;
   return [
     {
       key: 'pe_state',
@@ -67,13 +73,16 @@ export function preEntryColumns(
       group: 'pre_entry',
       width: '92px',
       tooltip:
-        'Did a lens structure land on the tape before this trader entered? Unknown = the row cannot be answered (no buy leg, tape past retention, or fee pins with no fee readings) — never counted as absent.',
+        `Did the target trade ${last}?\n` +
+        'Before = yes, at least the probe minimums (Min hits, Min SOL).\n' +
+        'Absent = no.\n' +
+        'Unknown = the stored data cannot tell (never counted as Absent). Hover a cell for its counts.',
       sortable: true,
       render: (r) => {
         const v = at(r);
         if (!v) return <span className="text-text-dim">-</span>;
         return (
-          <span title={stateTitle(v)}>
+          <span title={stateTitle(v, last, earlier)}>
             <Badge variant={STATE_VARIANT[v.state]} size="sm">
               {STATE_LABEL[v.state]}
             </Badge>
@@ -99,7 +108,9 @@ export function preEntryColumns(
       group: 'pre_entry',
       width: '96px',
       tooltip:
-        "How far ahead of the entry the NEAREST match landed. 'same slot' means it did not lead the entry at all — at a seat that reads the tape a slot late, that is co-arrival, not a trigger.",
+        'How long before his buy the closest target transaction traded.\n' +
+        `Example: ${slotsText(3)} = it traded that long before him.\n` +
+        "'same slot' = in his own slot: it landed with him, it did not lead him.",
       sortable: true,
       render: (r) => {
         const v = at(r);
@@ -110,8 +121,8 @@ export function preEntryColumns(
             className={sameSlot ? 'text-warning' : undefined}
             title={
               sameSlot
-                ? 'The nearest match is in the trader’s own slot — nothing led his entry here'
-                : `${v.nearest_lag_slots} slots ahead of the entry`
+                ? 'The closest one is in his own slot: it did not lead him'
+                : `${v.nearest_lag_slots} slots before his entry`
             }
           >
             {formatLag(v)}
@@ -131,13 +142,14 @@ export function preEntryColumns(
       group: 'pre_entry',
       width: '70px',
       tooltip:
-        'Matching transactions in the window before the entry (legs collapsed per tx), and their Σ SOL on hover.',
+        `How many target transactions traded ${last}. Hover a number for their SOL.\n` +
+        'Example: 5 = the target bought or sold 5 times right before him.',
       sortable: true,
       render: (r) => {
         const v = at(r);
         if (!v) return <span className="text-text-dim">-</span>;
         return (
-          <span title={`${formatDecimalTrim(v.sol, 3)} SOL of matching prints`}>
+          <span title={`${formatDecimalTrim(v.sol, 3)} SOL`}>
             {v.hits || '-'}
           </span>
         );
@@ -151,11 +163,11 @@ export function preEntryColumns(
       label: 'Hit SOL',
       group: 'pre_entry',
       width: '80px',
-      tooltip: 'Σ SOL of the matching prints in the window before the entry.',
+      tooltip: `SOL the target's transactions moved ${last}.`,
       sortable: true,
       render: (r) => {
         const v = at(r);
-        return v && v.hits > 0 ? formatDecimalTrim(v.sol, 3) : <span className="text-text-dim">-</span>;
+        return v && v.hits > 0 ? `◎${formatDecimalTrim(v.sol, 3)}` : <span className="text-text-dim">-</span>;
       },
       sortValue: (r) => at(r)?.sol ?? null,
       searchValue: () => '',
@@ -165,14 +177,19 @@ export function preEntryColumns(
       key: 'pe_unit',
       label: 'Matched',
       group: 'pre_entry',
-      width: '140px',
-      tooltip:
-        'Which unit of the lens matched nearest the entry: the grain id, or the exact row’s group.',
+      width: '200px',
+      tooltip: `The ix structure of the target transaction closest to his buy, abbreviated. Hover a cell for the full list.
+
+${IX_ABBREV_LEGEND}`,
       sortable: true,
       render: (r) => {
-        const unit = at(r)?.matched_unit;
+        const v = at(r);
+        const unit = v?.matched_unit;
+        if (v?.matched_labels?.length) {
+          return <IxLabelsDisplay labels={v.matched_labels} compact copyJson />;
+        }
         return unit ? (
-          <span className="truncate" title={unit}>
+          <span className="block truncate" title={unit}>
             {unit}
           </span>
         ) : (
@@ -184,11 +201,14 @@ export function preEntryColumns(
     },
     {
       key: 'pe_control',
-      label: 'Control',
+      label: 'Earlier',
       group: 'pre_entry',
       width: '80px',
       tooltip:
-        'Matching prints in the window one W EARLIER — the same question asked where the entry is not. A count as high as Hits means the structure sits before everything on this tape, not before his entries.',
+        `Hits, but one step earlier: target transactions ${earlier}.\n` +
+        'It answers: is the target always there, or did it show up for his buy?\n' +
+        'Example: Hits 5, Earlier 0 = it showed up right before him. Hits 5, Earlier 5 = it is always there.\n' +
+        'Orange = the earlier stretch alone would also count as Before.',
       sortable: true,
       render: (r) => {
         const v = at(r);
@@ -198,8 +218,8 @@ export function preEntryColumns(
             className={v.control_matched ? 'text-warning' : undefined}
             title={
               v.control_matched
-                ? `The control window clears the same thresholds (${formatDecimalTrim(v.control_sol, 3)} SOL) — this structure is not specific to the entry`
-                : `${formatDecimalTrim(v.control_sol, 3)} SOL in the control window`
+                ? `The earlier stretch alone would also count as Before (${formatDecimalTrim(v.control_sol, 3)} SOL): the target is not tied to his buy`
+                : `${formatDecimalTrim(v.control_sol, 3)} SOL ${earlier}`
             }
           >
             {v.control_hits || '-'}

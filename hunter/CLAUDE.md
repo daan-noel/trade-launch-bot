@@ -213,8 +213,9 @@ recorded divergences: [docs/arch/strategies.md](docs/arch/strategies.md).
   millions of rows, so **`count(*)` is the only honest check** and a wiped study reads as a
   study that found nothing. Local `docker_data.vhdx` is non-sparse and mounted without
   `discard`, so a study round's bytes are charged to `C:` at write time and refunded only by
-  an offline compaction — size the round against free space first, and record a dropped
-  schema's DDL in `hunter/_local/dropped-schemas/`.
+  an offline compaction — size the round against free space first, keep a result a later
+  session needs as parquet under `D:\Bot-cold\` (never a long-lived schema), and record a
+  dropped schema's DDL in `hunter/_local/dropped-schemas/`.
   [db-patterns.md](docs/plans/database/db-patterns.md).
 - **`/api/tokens` differs by bin** (same wire contract): `live` pages from Postgres, `lab`
   runs the in-RAM engine over a snapshot. `SEED_TRACKING_LIMIT` is the tracking-cache seed

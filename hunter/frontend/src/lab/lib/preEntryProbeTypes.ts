@@ -11,6 +11,7 @@
 
 import type { IxPattern, IxPatternSetKind } from 'lib/flow/ixPatternSets';
 import type { FlowSide } from 'lib/flow/classifyFlow';
+import { SLOT_SECS } from 'components/token-price-chart/chartBars';
 
 /** One row's anchor: the trader's FIRST buy on the mint, as the token table
  *  already carries it. The tape position is `(slot, tx_index)` — `block_time`
@@ -58,6 +59,9 @@ export interface PreEntryVerdict {
   nearest_lag_slots: number | null;
   nearest_lag_tx: number | null;
   matched_unit?: string;
+  /** The nearest match's exact ix labels, when the probe knows them: the Matched
+   *  cell then draws its abbreviation line instead of the unit id. */
+  matched_labels?: string[];
   control_hits: number;
   control_sol: number;
   control_matched: boolean;
@@ -74,10 +78,10 @@ export interface PreEntryProbeResponse {
 }
 
 export const UNKNOWN_HINT: Record<PreEntryUnknownReason, string> = {
-  'no-entry': 'the window caught no buy leg, so there is no entry to sit before',
-  'tape-truncated': 'the probe window reaches past the oldest tape still stored',
+  'no-entry': 'no buy by him was found, so there is nothing to look before',
+  'tape-truncated': 'the window is older than the stored trade history',
   'no-fee-readings':
-    'the set pins fee fields and no print in the window carries a fee reading',
+    'the pattern set needs fee data and no trade in the window has it',
 };
 
 /**
@@ -127,9 +131,25 @@ export function probeSummary(
     .filter((n): n is number => n != null)
     .sort((a, b) => a - b);
   const median = lags.length ? lags[Math.floor(lags.length / 2)] : null;
-  const parts = [`matched ${matched}/${total}`, `control ${control}/${total}`];
+  const parts = [`before ${matched}/${total}`, `earlier ${control}/${total}`];
   if (median != null) parts.push(`median lag ${median.toFixed(1)} slots`);
   if (unknown > 0) parts.push(`${unknown} unknown`);
   if (skipped > 0) parts.push(`${skipped} not probed`);
   return parts.join(' · ');
+}
+
+/** Rows per Show button: each verdict state, plus `all` = every row asked
+ *  (`skipped` rows have no verdict but still sit in the table). */
+export function probeStateCounts(
+  verdicts: readonly PreEntryVerdict[],
+  skipped: number,
+): Record<PreEntryState | 'all', number> {
+  const out = { all: verdicts.length + skipped, matched: 0, 'no-match': 0, unknown: 0 };
+  for (const v of verdicts) out[v.state] += 1;
+  return out;
+}
+
+/** A slot count for a reader:`25 slots (about 10s)`. */
+export function slotsText(n: number): string {
+  return `${n} slot${n === 1 ? '' : 's'} (about ${Math.max(1, Math.round(n * SLOT_SECS))}s)`;
 }

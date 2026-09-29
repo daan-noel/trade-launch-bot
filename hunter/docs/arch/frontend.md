@@ -479,6 +479,10 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   sold there. Lane colors, the side tag and the exit-reason→condition match
   (`parseMetricExitTarget`) are shared with the live strip, so the two timelines can
   never label the same condition differently.
+  `TokenPriceChart` also takes a host `toolbarRow` (an extra toolbar line handed the chart's
+  `ChartRangeControl`: arm drag-select, clear, `selectSpan`) and a `defaultRange` wall-clock span
+  it selects on load and on token/grouping change; `rangeForSpan` / `rangeSpan`
+  (`barTrades.ts`) are the one span-to-bars mapping both ways.
   The shared `TokenTradeChart`/`TokenPriceChart` take an optional `highlightWallet` — its
   markers render at ~2.4x the base radius (with a `HIGHLIGHT_MIN_RADIUS` floor so a
   wide zoom can't shrink it into the crowd) plus a gold glow+ring
@@ -1278,7 +1282,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   stored set; removing a grain is the chip's separate `×`.
   Detail: [@plans/strategies/trader-flow-lens.md](@plans/strategies/trader-flow-lens.md).
 - **Trader Analysis pre-entry probe (`lab/components/analysis/usePreEntryProbe.ts` +
-  `PreEntryProbeControls.tsx` + `preEntryColumns.tsx`, wire types in `lab/lib/preEntryProbeTypes.ts`).**
+  `PreEntryProbeControls.tsx` + `preEntryColumns.tsx`, wire types in `lab/lib/preEntryProbeTypes.ts`;
+  the strip reads a `ProbeControlsModel` and the columns take any row type, so Entry Context
+  asks the same question through the same controls and columns).**
   The lens asked across every token at once: did a structure from this set land on the tape
   BEFORE the trader's first buy on that mint. `POST /api/wallets/:wallet/pre-entry-ix` takes one
   anchor per row on screen (`wallet_entry_slot`/`_tx_index`/`_at`, already on the row), the window
@@ -1301,26 +1307,86 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   tape in the `W` seconds before EVERY buy transaction of one wallet (re-entries included), read
   under one target tag: the flow lens' set narrowed by its chips (`lens.value.tag`, the same tag
   the charts tint with). `POST /api/wallets/:wallet/entry-context` (`lab/src/api/handlers/entry_context.rs`)
-  takes `{from, to, window_secs, tag, group_by}`; anchors come from `wallet_buy_txs`, prints from
-  `prints_in_slot_windows` with the wallet excluded in SQL. Each anchor's prints strictly ahead of
-  his `(slot, tx_index)` fold through the engine's own `TagState`, and the window is read with the
-  registry's `m_flow` reads on both halves — `buy_tx_count`/`buy_sol @tag` and `@!tag` over
-  `[Ws]`, and the control over `[Ws@W]` (both spans closed, as the engine's are). The target
-  share is `@tag / (@tag + @!tag)` of those reads, so it is exactly what a rule would read, not an
-  approximation. The same fold breaks the window down by structure (`exact` labels, `template`
-  grain, or `program`), classifying each print with the verdict `TagState::on_trade` returned —
-  one copy of the matchers. A tag needing history before the window (`sticky`, `creator`,
-  `creation_slot`) is refused. `unknown` (tape past retention, fee pins with no fee reading)
-  never passes a filter and is never a zero. **Axes** (`lib/entryContext/axes.ts`) are the
-  extension point: every per-entry number is one `EntryAxis` (key, label, unit, one-line
-  definition, getter); the filter bar, the entry columns, the token roll-up and the summary all
-  render from that list. The filter is a list of `{axis, cond}` lines in the table grammar
-  (`>50`, `<5 | >90`), ANDed, persisted with the form (`mt:form.entryContext`). Two sections read
-  the filtered entries: **Summary** (entries / readable / passing tiles, the share histogram
-  window vs control, the structure board: presence, largest-in, mean shares) and **Tokens** (the
-  shared `TokenTable` over `getTraderTokens` rows with passing buys; picking one opens its chart
-  with every window and control drawn as time bands, his buys on it, and the picked window's
-  breakdown, whose trades open in the chart's own trades panel). Open work:
+  takes `{from, to, window_secs, probe_slots, tag?, group_by}` — two windows with two jobs: the
+  ANALYSIS window `window_secs` (shares, counts, breakdown; set in the query row, applied on
+  Analyze) and the PROBE window `probe_slots` (did the target land in `[entry − P, entry)`
+  slots, control `[entry − 2P, entry − P)`, as `pre_entry_ix` cuts it; the lens bar's slot knob,
+  `PROBE_SLOT_KNOB` + `DEFAULT_PROBE_WINDOW_SLOTS` shared with Trader Analysis). With no `tag` (no lens set picked) the windows
+  and their breakdown are still read and every share is null. Anchors come from `wallet_buy_txs`,
+  prints from `prints_in_slot_windows` with the wallet excluded in SQL, both on the **batch**
+  pool (the API pool's 8 s statement ceiling cancels a busy wallet's read). The read is
+  `read_entry_context` (handler → service), exercised against the real table by the ignored
+  `lab/tests/entry_context_db.rs`. Each anchor's prints strictly ahead of his `(slot, tx_index)`
+  fold through the engine's own `TagState`, and the window is read with the registry's `m_flow`
+  reads on both halves — `buy_tx_count`/`buy_sol @tag` and `@!tag` over `[Ws]`, and the control
+  over `[Ws@W]` (both spans closed, as the engine's are). The target share is
+  `@tag / (@tag + @!tag)` of those reads, so it is exactly what a rule would read. The same fold
+  breaks the window down by structure (`exact` labels, `template` grain, or `program`),
+  classifying each print with the verdict `TagState::on_trade` returned — one copy of the
+  matchers — and reports the probe read (`probe`: tagged transactions and their SOL in the probe
+  window and its control, and the nearest one's slots, same-slot tx gap, seconds and structure). A tag needing the coin's history (`creator`, `creation_slot`) is
+  refused. `sticky` is scoped per read: the window, control, probe and probe control each fold
+  their own tag state from their own start, so a wallet carries the tag from its first target
+  trade inside that span. It can read below the same tag's live (whole-history) sticky, and the
+  page says so in its status line.
+  **Built from the Trader Analysis parts — one component per feature.** The query row is
+  `TraderQueryInputs` (+ `traderQuery.ts`: presets, wall-clock ⇄ UTC, tracked-wallet groups),
+  shared with Trader Analysis. The probe is the Trader Analysis probe: each buy becomes a
+  `PreEntryVerdict` (`entryVerdict` — tagged transactions, buys and sells on the tag's side,
+  against min hits / min SOL; `unknown` never folded into a miss), so the strip inside the lens
+  bar (`PreEntryProbeControls`, fed a `ProbeControlsModel`), its Show, `probeSummary` and `preEntryColumns` (generic over the row type) are
+  the same code on both pages. The filter is the buys table's own filter row, opened by
+  `DataTable`'s `defaultColFilters` (starts at target tx share `>50`, values persist with the
+  table's prefs): Show narrows the table's input, and the table's filtered cohort (`onFilteredRowsChange`) drives the summary and
+  the tokens — the Trader Analysis contract. **Axes** (`lib/entryContext/axes.ts`) are the
+  extension point: every per-buy share or count is one `EntryAxis` (key, label, unit, one-line
+  definition, getter) and becomes a column with its definition as the tooltip; presence of the
+  target is the probe's verdict, not an axis. A row expands (the table's `rowDetail`) into
+  `EntryDetail`: the shared `TokenTradeChart` without its card (his trades spotlit, the lens set
+  classifying the flow; candle click and the toolbar's range select list their trades below, as
+  on every chart) with an **Analysis range** toolbar line (`toolbarRow`). That line drives the
+  chart's **host range**, a second range with its own indigo band and drag mode, exclusive with
+  but independent of the reader's teal range select (`ChartRangeControl`, `onHostRangeChange`).
+  It opens on the analysis window (`defaultRange`), whose numbers are the row's own; **Pick
+  range** arms the host range's drag-select, and a dragged range
+  (`rangeSpan`: wall-clock span + last slot) is read by `POST
+  /api/wallets/:wallet/entry-context/range` as an entry window ending at the range's end (same
+  fold, the same length before it as the control, his trades excluded); **Reset** re-selects the
+  window (`selectSpan`). Below the chart: the range's axis tiles and structure breakdown; **Break down by** picks how a window's transactions group into
+  structures in that breakdown (`exact` ix sequence, `template` grain, `program`).
+  The breakdown's structure column (`structureColumn`): under `exact` it is
+  `IxLabelsDisplay`'s one-line `compact` mode (`IxAbbrevLine`: dim arrows, setup codes dim, program actions bright) over `abbreviateIxLabelParts` (`lib/ixLabels.ts`: the
+  exact sequence in order, boilerplate as 1-2 letter codes, the rest `Program:Action` initials,
+  e.g. `CL → CP → A+ → 6Vo3:B → T×2`; the column header shows `IX_ABBREV_LEGEND`; the pattern-set
+  editor's collapsed rows use the same form), full list on hover, click copies, so the number columns stay on screen. In `EntryDetail` an
+  `exact` Structure cell carries the trades table's highlight button (`LensButton`, shared with
+  the `LensChips` in `components/tokens/LensControls.tsx`); it arms the chart's structure lens
+  through a host-owned `useTokenHighlight` (`TokenTradeChart`'s `highlight` prop), washing every
+  candle with that exact structure. The probe's Matched column reads the
+  template grain whatever the breakdown. The buys table opens with the SOL twins and side reads
+  hidden (`defaultCols`). Columns are banded by group: every `EntryAxis` names its group, and
+  `entryGroupLabels(w, probeSlots)` labels the buys table (his buy, probe, target, everyone,
+  earlier, with the seconds and slots spelled out); the breakdown carries its own bands. The UI calls the control window **Earlier** (`Earlier tx %`, the probe's
+  `Earlier` column), and every header tooltip states its time span and a numeric example
+  (`EntryAxis.definition`, `preEntryColumns(at, windowSlots)`, `slotsText`). The
+  summary is one `StatTable` (`cohortTable` in `lib/entryContext/counts.ts`): rows **Target
+  signal** (his entries whose probe signal is the selected ix structure) and **All entries**
+  (every entry of his), columns **Buys** and **Tokens**. A cell is `his / matched`. His is the
+  row's count; matched is how many of those pass the idea. A token counts when one of its buys
+  does. **Scan market** (`MarketScan`) is its own section under that token table. It runs
+  `POST /api/wallets/:wallet/entry-context/scan` on demand. Each point is a buy of the target,
+  and the window is the `W` seconds before that buy
+  ([plans/strategies/entry-context-scan.md](../plans/strategies/entry-context-scan.md)). A second
+  token table lists each token that has a buy whose window passes the idea, and that token's
+  chart marks those buys (his buys stay marked). The idea is the buys table's filter row, minus the probe
+  columns: the table reports its filters (`onColFiltersChange`), `entryLogic`
+  (`lib/entryContext/logic.ts`) sorts them into scope (token, time, his SOL), probe (`pe_*`,
+  including Show) and idea (every other signal column: Target tx % and whatever filter is added
+  next), and checks a buy with the table's own predicate (`columnFilterPredicate`). The buys
+  table and the token table show the rows that pass those filters; the tokens are the shared
+  `TokenTable` (charts on, in a collapsible `Accordion` whose state persists as
+  `ACCORDION_IDS.entryContextTokens`) over `getTraderTokens` rows with a matched buy on screen,
+  opening the shared inspect modal. Open work:
   [roadmap/entry-context.md](../roadmap/entry-context.md).
 - **One in-memory evaluator, in Rust only.** Token tables whose rows are RAM-resident on the backend (the
   lab Simulated table; the live Holdings composition) page/sort/filter through

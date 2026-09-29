@@ -6,6 +6,7 @@ import { narrowedSetPayload } from 'lib/flow/ixPatternSets';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useProbePreEntryIxMutation } from '@lab/store/labEndpoints';
 import {
+  probeStateCounts,
   probeSummary,
   type PreEntryProbeRequest,
   type PreEntryVerdict,
@@ -26,21 +27,36 @@ interface ProbePrefs {
   minSol: number;
 }
 
+const MAX_WINDOW_SLOTS = 2_000;
+
+/** Default probe window, slots: wide enough to hold a decision node plus the burst
+ *  that follows it, short enough that "before he entered" still describes a
+ *  trigger. Shared by every page that runs the probe. */
+export const DEFAULT_PROBE_WINDOW_SLOTS = 25;
+
+/** The probe window knob's unit, meaning and bounds — one spelling for every page
+ *  that asks "did it land in the slots before his entry". */
+export const PROBE_SLOT_KNOB: Omit<ProbeWindowKnob, 'value' | 'set'> = {
+  suffix: 'slots',
+  title:
+    'How many slots before his buy to check (1 slot = about 0.4s). Earlier = the same number of slots just before that.',
+  min: 1,
+  max: MAX_WINDOW_SLOTS,
+  step: 5,
+};
+
 const DEFAULT_PREFS: ProbePrefs = {
   on: false,
   // Columns first: turning the probe on must not silently remove rows from a
   // table the user is already reading. The narrowing is one click away.
   show: 'all',
-  // Wide enough to hold a decision node plus the burst that follows it, short
-  // enough that "before he entered" still describes a trigger.
-  windowSlots: 25,
+  windowSlots: DEFAULT_PROBE_WINDOW_SLOTS,
   // Presence by default; the two floors are what separate a dust print from the
   // event, and are the user's to raise.
   minHits: 1,
   minSol: 0,
 };
 
-const MAX_WINDOW_SLOTS = 2_000;
 /** Knob edits settle before a probe fires — a number input dragged from 5 to 50
  *  would otherwise fan out one full-table read per keystroke. */
 const DEBOUNCE_MS = 350;
@@ -50,31 +66,51 @@ const DEBOUNCE_MS = 350;
  *  filter. A filter whose own counts move with it can only show confirmations. */
 export type PreEntryShow = 'all' | 'matched' | 'no-match' | 'unknown';
 
-export interface PreEntryProbe {
+/** The probe's look-back knob: its value, unit and meaning come from the page
+ *  asking (slots on Trader Analysis, seconds on Entry Context). */
+export interface ProbeWindowKnob {
+  value: number;
+  set: (n: number) => void;
+  suffix: string;
+  title: string;
+  min: number;
+  max: number;
+  step: number;
+}
+
+/** What the probe strip (`PreEntryProbeControls`) reads and drives — every page
+ *  that asks "did the target land before his entry" hands it this, so the
+ *  question looks and reads the same wherever it is asked. */
+export interface ProbeControlsModel {
   on: boolean;
   setOn: (on: boolean) => void;
   show: PreEntryShow;
   setShow: (show: PreEntryShow) => void;
-  /** Row predicate for the page's filter chain. Inert while the probe is off,
-   *  while `show` is `all`, and before any answer has landed. */
-  passes: (mint: string) => boolean;
-  windowSlots: number;
-  setWindowSlots: (n: number) => void;
+  window: ProbeWindowKnob;
   minHits: number;
   setMinHits: (n: number) => void;
   minSol: number;
   setMinSol: (n: number) => void;
-  /** Verdict per mint. Empty while off, loading, or unanswerable. */
-  verdicts: Map<string, PreEntryVerdict>;
-  /** `matched 41/120 · control 38/120 · median lag 3.0 slots` — the counts the
+  /** `before 41/120 · earlier 38/120 · median lag 3.0 slots` — the counts the
    *  filter has to be read against. `null` when nothing has been probed. */
   summary: string | null;
-  /** Rows the backend could not reach (its own anchor ceiling). */
-  skipped: number;
+  /** Rows each Show button would keep, over every probed row. `null` when
+   *  nothing has been probed. */
+  counts: Record<PreEntryShow, number> | null;
   loading: boolean;
   error: string | null;
   /** Why the probe cannot run right now, or `null` when it can. */
   blocked: string | null;
+}
+
+export interface PreEntryProbe extends ProbeControlsModel {
+  /** Row predicate for the page's filter chain. Inert while the probe is off,
+   *  while `show` is `all`, and before any answer has landed. */
+  passes: (mint: string) => boolean;
+  /** Verdict per mint. Empty while off, loading, or unanswerable. */
+  verdicts: Map<string, PreEntryVerdict>;
+  /** Rows the backend could not reach (its own anchor ceiling). */
+  skipped: number;
 }
 
 /**
@@ -209,6 +245,11 @@ export function usePreEntryProbe(
     [prefs.on, prefs.show, verdicts],
   );
 
+  const counts = useMemo(
+    () => (summary == null ? null : probeStateCounts([...verdicts.values()], skipped)),
+    [summary, verdicts, skipped],
+  );
+
   const patch = useCallback(
     (p: Partial<ProbePrefs>) => setPrefs((prev) => ({ ...prev, ...p })),
     [setPrefs],
@@ -220,14 +261,18 @@ export function usePreEntryProbe(
     show: prefs.show ?? 'all',
     setShow: (show) => patch({ show }),
     passes,
-    windowSlots: prefs.windowSlots,
-    setWindowSlots: (windowSlots) => patch({ windowSlots }),
+    window: {
+      ...PROBE_SLOT_KNOB,
+      value: prefs.windowSlots,
+      set: (windowSlots) => patch({ windowSlots }),
+    },
     minHits: prefs.minHits,
     setMinHits: (minHits) => patch({ minHits }),
     minSol: prefs.minSol,
     setMinSol: (minSol) => patch({ minSol }),
     verdicts,
     summary,
+    counts,
     skipped,
     loading: isLoading,
     error,

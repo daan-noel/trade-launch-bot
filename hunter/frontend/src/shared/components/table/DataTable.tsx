@@ -6,7 +6,8 @@ import { Select } from 'components/ui/Select';
 import { PinIcon } from 'components/ui/icons';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
-import { parseNumericPredicate, type FilterSpec } from './numericFilter';
+import { type FilterSpec } from './numericFilter';
+import { columnFilterPredicate } from './columnFilter';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { usePinnedRows } from './usePinnedRows';
 import {
@@ -249,6 +250,13 @@ interface DataTableProps<R> {
   toolbarTrailing?: ReactNode;
   /** Per-column filter row toggle (toolbar "Filters"). Default on. */
   colFilters?: boolean;
+  /**
+   * Opt-in: the filter row IS this table's filter. It opens by default, starts
+   * from these values (`{ [colKey]: text }`), and the values persist with the
+   * table's prefs (`tableId` required to persist), so a page whose question is
+   * a filter never loads with it hidden or blank. Omit for the plain toggle.
+   */
+  defaultColFilters?: Record<string, string>;
   /** Column-visibility panel toggle (toolbar "Columns"). Default on. */
   colToggle?: boolean;
   hoverable?: boolean;
@@ -332,6 +340,10 @@ interface DataTableProps<R> {
    *  server-side summary would. In server mode this equals the current page.
    *  Pass a stable (useCallback) handler; `processed` is memoized. */
   onFilteredRowsChange?: (rows: R[]) => void;
+  /** Fires with the column filters in force (settled, trimmed-empty dropped) whenever
+   *  they change, for a page that reasons about the filter itself (evaluate it with
+   *  `columnFilterPredicate`). Pass a stable handler. */
+  onColFiltersChange?: (filters: Readonly<Record<string, string>>) => void;
   /**
    * Opt-in row pinning. Adds a pin toggle in the `#` cell and floats pinned rows in
    * a section above the page on every page, deduped from the paged body. Pinned rows
@@ -357,6 +369,7 @@ export function DataTable<R>({
   toolbarLeading,
   toolbarTrailing,
   colFilters = true,
+  defaultColFilters,
   colToggle = true,
   hoverable = true,
   tableId,
@@ -375,6 +388,7 @@ export function DataTable<R>({
   cellGroupClassName,
   onVisibleRowsChange,
   onFilteredRowsChange,
+  onColFiltersChange,
   sameValueTints = false,
   followSelected = true,
   pinnable = false,
@@ -414,7 +428,13 @@ export function DataTable<R>({
     tableId ? getTablePrefs(tableId).pinsHidden ?? false : false,
   );
   const [search, setSearch] = useState('');
-  const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
+  // Read once: persisted values win over the caller's defaults.
+  const [initialColFilters] = useState<Record<string, string>>(() =>
+    defaultColFilters
+      ? ((tableId ? getTablePrefs(tableId).colFilters : undefined) ?? defaultColFilters)
+      : {},
+  );
+  const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>(initialColFilters);
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() =>
     tableId
       ? loadVisibleCols(tableId, columns as ColumnDef<unknown>[], defaultCols)
@@ -436,14 +456,16 @@ export function DataTable<R>({
   // Revealing the filter row is page chrome, so it persists with the table's
   // other prefs — a table you always filter opens ready to filter.
   const [showFilterRow, setShowFilterRow] = useState(() =>
-    tableId ? getTablePrefs(tableId).filtersOpen ?? false : false,
+    (tableId ? getTablePrefs(tableId).filtersOpen : undefined) ?? !!defaultColFilters,
   );
+  const persistColFilters = !!defaultColFilters;
   // Debounced mirrors of the search box / per-column filter inputs. Both the
   // server-side emit and the client-side `processed` filter read these so a
   // burst of keystrokes coalesces into a single query/recompute instead of one
   // per character (the client list can be large — see TOKENS_LIST_LIMIT).
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [debouncedColFilters, setDebouncedColFilters] = useState<Record<string, string>>({});
+  const [debouncedColFilters, setDebouncedColFilters] =
+    useState<Record<string, string>>(initialColFilters);
 
   // Controlled callers pass `selectedKey` (string | null); an explicit null then
   // means "nothing selected" and must win over any stale internal selection (e.g.
@@ -518,11 +540,12 @@ export function DataTable<R>({
           pinsCollapsed,
           pinsHidden,
           filtersOpen: showFilterRow,
+          ...(persistColFilters ? { colFilters: colFiltersMap } : {}),
         }),
       PREFS_PERSIST_MS,
     );
     return () => window.clearTimeout(id);
-  }, [tableId, pageSize, sortKeys, pinsCollapsed, pinsHidden, showFilterRow]);
+  }, [tableId, pageSize, sortKeys, pinsCollapsed, pinsHidden, showFilterRow, persistColFilters, colFiltersMap]);
 
   // Drop sort levels for columns that disappeared or never accepted sort
   // (stale localStorage / renamed keys), so the next click is primary again.
@@ -612,23 +635,14 @@ export function DataTable<R>({
   // wins; else a numeric column whose filter text is a comparison/range
   // (`>5`, `1..10`) gets a numeric predicate; else substring on displayed text.
   const activeColFilters = useMemo(() => {
-    const out: {
-      col: ColumnDef<R>;
-      raw: string;
-      needle: string;
-      numeric: ((n: number) => boolean) | null;
-    }[] = [];
+    const out: ((row: R) => boolean)[] = [];
     // Server mode applies the per-column filters itself; resolving them locally
     // would be dead work (`processed` short-circuits to `rows` below).
     if (serverSide) return out;
     for (const [key, raw] of Object.entries(debouncedColFilters)) {
-      const text = raw.trim();
-      if (!text) continue;
       const col = columns.find((c) => c.key === key);
-      if (!col) continue;
-      const numeric =
-        col.filterMatch || !col.filterNumber ? null : parseNumericPredicate(text);
-      out.push({ col, raw: text, needle: text.toLowerCase(), numeric });
+      const pred = col ? columnFilterPredicate(col, raw) : null;
+      if (pred) out.push(pred);
     }
     return out;
   }, [serverSide, debouncedColFilters, columns]);
@@ -664,21 +678,8 @@ export function DataTable<R>({
         const blob = searchTextByRow?.get(row as object);
         if (!blob || !blob.includes(searchLower)) return false;
       }
-      for (const { col, raw, needle, numeric } of activeColFilters) {
-        if (col.filterMatch) {
-          if (!col.filterMatch(row, raw)) return false;
-        } else if (col.filterOptions) {
-          const optVal = col.filterOptionValue
-            ? col.filterOptionValue(row)
-            : (col.filterValue ?? col.searchValue)(row);
-          if (optVal !== raw) return false;
-        } else if (numeric) {
-          const n = col.filterNumber!(row);
-          if (n == null || !numeric(n)) return false;
-        } else {
-          const value = (col.filterValue ?? col.searchValue)(row);
-          if (!value.toLowerCase().includes(needle)) return false;
-        }
+      for (const pred of activeColFilters) {
+        if (!pred(row)) return false;
       }
       return true;
     });
@@ -910,6 +911,10 @@ export function DataTable<R>({
   useEffect(() => {
     onFilteredRowsChange?.(processed);
   }, [processed, onFilteredRowsChange]);
+
+  useEffect(() => {
+    onColFiltersChange?.(cleanedColFilters);
+  }, [cleanedColFilters, onColFiltersChange]);
   // Same-value tints (opt-in): computed over the on-screen page only, so the
   // palette stays scoped to what the eye is actually comparing. `rowKey` is
   // deliberately excluded from the deps — callers pass it inline, so depending

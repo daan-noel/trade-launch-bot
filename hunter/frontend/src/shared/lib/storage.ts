@@ -138,6 +138,10 @@ export const ACCORDION_IDS = {
   familySearchAdvanced: 'familySearch.advanced',
   /** Flow discovery: the group list beside the selected group's detail. */
   flowDiscoveryGroups: 'flowDiscovery.groups',
+  /** Entry Context: the token table under the buys. */
+  entryContextTokens: 'entryContext.tokens',
+  /** Entry Context: the market-scan token table. */
+  entryContextMarket: 'entryContext.market',
 } as const;
 
 /** App-wide show/hide switches, stored together under `mt:ui.toggles`. */
@@ -161,6 +165,9 @@ export interface UiToggles {
   consoleArmsOpen?: boolean;
   /** Tokens: narrow the board to tracked mints (the All / Tracked scope). */
   tokensTrackedOnly?: boolean;
+  /** Trader Analysis + Entry Context flow lens: show the add-to-fingerprint-tag
+   *  controls. Defaults off, so a lens cannot reach a live rule by a stray click. */
+  lensPromoteOn?: boolean;
 }
 
 // ── raw string accessors ────────────────────────────────────────────────────
@@ -283,6 +290,8 @@ export interface TablePrefs {
   pinsHidden?: boolean;
   /** Column-filter row revealed under the header. */
   filtersOpen?: boolean;
+  /** Column-filter values, only for a table that opts in (`defaultColFilters`). */
+  colFilters?: Record<string, string>;
 }
 
 type TablePrefsMap = Record<string, TablePrefs>;

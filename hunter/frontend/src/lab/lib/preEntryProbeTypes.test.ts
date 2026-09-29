@@ -59,7 +59,7 @@ describe('lagSortValue', () => {
 });
 
 describe('probeSummary', () => {
-  it('carries the control count beside the match count', () => {
+  it('carries the earlier count beside the match count', () => {
     // A presence count with no denominator is not evidence: a structure a crowd
     // shares sits before everything, and only the control number says so.
     const rows = [
@@ -68,8 +68,8 @@ describe('probeSummary', () => {
       verdict({ mint_address: 'C', state: 'unknown', unknown_reason: 'no-entry', nearest_lag_slots: null }),
     ];
     const s = probeSummary(rows, 0);
-    expect(s).toContain('matched 1/3');
-    expect(s).toContain('control 1/3');
+    expect(s).toContain('before 1/3');
+    expect(s).toContain('earlier 1/3');
     expect(s).toContain('1 unknown');
   });
 

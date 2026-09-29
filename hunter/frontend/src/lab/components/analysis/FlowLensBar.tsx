@@ -23,6 +23,7 @@ import { tagField, useStrategyRegistry } from 'lib/strategy/registry';
 import { isProgramWorkingId, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import { tagNames, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
 import { defaultTagName, tagLabel } from 'lib/flow/tapeClassify';
+import { useUiToggle } from 'hooks/useUiPrefs';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
@@ -30,7 +31,7 @@ import {
 } from 'store/sharedEndpoints';
 import type { FlowSide } from 'lib/flow/classifyFlow';
 import { PreEntryProbeControls } from './PreEntryProbeControls';
-import type { PreEntryProbe } from './usePreEntryProbe';
+import type { ProbeControlsModel } from './usePreEntryProbe';
 import type { TraderFlowLens } from './useTraderFlowLens';
 
 const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
@@ -70,7 +71,7 @@ export function FlowLensBar({
   wallet: string | null;
   /** The pre-entry probe asked WITH this lens — its set, its narrowing, its
    *  side, the same wallet excluded. Absent ⇒ the bar is the lens alone. */
-  probe?: PreEntryProbe;
+  probe?: ProbeControlsModel;
 }) {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
@@ -585,7 +586,27 @@ function RenameControl({ lens }: { lens: TraderFlowLens }) {
  * a side effect of editing a lens. It ADDS - what the tag already lists stays - and
  * group labels have no home on a tag and are dropped.
  */
-function PromoteToFingerprint({
+function PromoteToFingerprint(props: {
+  setKind: IxPatternSetKind;
+  set: { patterns: IxPattern[]; working_templates: string[] };
+}) {
+  // Off by default: the controls (and the fingerprints fetch) mount only once
+  // switched on, so a lens cannot reach a live rule by a stray click.
+  const [on, setOn] = useUiToggle('lensPromoteOn', false);
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-white/7 pt-2">
+      <label className="flex items-center gap-1.5">
+        <Switch checked={on} onChange={setOn} label="Enable add to fingerprint tag" />
+        <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">
+          Add to fingerprint tag
+        </span>
+      </label>
+      {on && <PromoteControls {...props} />}
+    </div>
+  );
+}
+
+function PromoteControls({
   setKind,
   set,
 }: {
@@ -640,10 +661,7 @@ function PromoteToFingerprint({
   };
 
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-white/7 pt-2">
-      <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">
-        Add to fingerprint tag
-      </span>
+    <>
       <Select
         fieldSize="sm"
         value={targetId}
@@ -692,6 +710,6 @@ function PromoteToFingerprint({
         </span>
       )}
       {status && <span className="text-[11px] text-text-dim">{status}</span>}
-    </div>
+    </>
   );
 }

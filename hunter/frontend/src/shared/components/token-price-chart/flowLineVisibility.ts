@@ -1,12 +1,11 @@
-import type { IChartApi, ISeriesApi } from 'lightweight-charts';
+import type { ISeriesApi } from 'lightweight-charts';
 
 /**
  * Per-series visibility for the cumulative `@tag` / `@!tag` flow overlay.
  *
- * The two curves share the LEFT price scale, and tagged normally dwarfs non-tagged —
- * so with both drawn the non-tagged curve is pinned to the axis floor and its shape
- * is unreadable. Hiding one lets the left scale autoscale to the other, which is
- * the point of splitting the toolbar toggle in two.
+ * Both curves sit on the candles' price axis at their cohort curve price, so a
+ * toggle only shows or hides a line - it never rescales the other one relative to
+ * the candles.
  */
 export type FlowLineVisibility = {
   tagged: boolean;
@@ -15,15 +14,11 @@ export type FlowLineVisibility = {
 
 export const DEFAULT_FLOW_LINE_VISIBILITY: FlowLineVisibility = { tagged: true, untagged: true };
 
-/** True when at least one curve is drawn — the left price scale's visibility. */
+/** True when at least one curve is drawn. */
 export function anyFlowLineVisible(v: FlowLineVisibility): boolean {
   return v.tagged || v.untagged;
 }
 
-/** Stable key of what an axis MEANS, for the autoscale-reset guard. */
-export function flowLineVisibilityKey(v: FlowLineVisibility): string {
-  return `${v.tagged}|${v.untagged}`;
-}
 
 /**
  * Legacy persisted prefs stored ONE boolean (`showFlowLines`) for both curves.
@@ -43,9 +38,9 @@ export function flowLineVisibilityFromPrefs(prefs: {
 }
 
 /**
- * Show/hide the two overlay series and their shared left price scale. Call from
- * an effect that also depends on the structural series deps (style / grouping /
- * interval), so the toggles survive a series recreation.
+ * Show/hide the two overlay series. Call from an effect that also depends on the
+ * structural series deps (style / grouping / interval), so the toggles survive a
+ * series recreation.
  *
  * `available` is the classification gate (a tag with at least one matcher)
  * — it is per-chart, never per-series, so it forces both curves off together.
@@ -53,14 +48,10 @@ export function flowLineVisibilityFromPrefs(prefs: {
 export function applyFlowLineVisibility(args: {
   taggedSeries: ISeriesApi<'Line'> | null;
   untaggedSeries: ISeriesApi<'Line'> | null;
-  chart: IChartApi | null;
   visibility: FlowLineVisibility;
   available?: boolean;
 }): void {
-  const { taggedSeries, untaggedSeries, chart, visibility, available = true } = args;
-  const tagged = available && visibility.tagged;
-  const untagged = available && visibility.untagged;
-  taggedSeries?.applyOptions({ visible: tagged });
-  untaggedSeries?.applyOptions({ visible: untagged });
-  chart?.priceScale('left').applyOptions({ visible: tagged || untagged });
+  const { taggedSeries, untaggedSeries, visibility, available = true } = args;
+  taggedSeries?.applyOptions({ visible: available && visibility.tagged });
+  untaggedSeries?.applyOptions({ visible: available && visibility.untagged });
 }

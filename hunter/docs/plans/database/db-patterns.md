@@ -158,6 +158,17 @@ that is later dropped still costs 37 GB of `C:` until the VHDX is compacted offl
 detached).
 
 So: create study tables **LOGGED**, or export the result and drop the schema in the same
-session. Size the round against free space on `C:` before it runs — the cost is charged to
+session. A result a later session needs is kept as parquet under `D:\Bot-cold\`, never as
+a long-lived schema — `hunter_bot` holds only original data (`public` + its hypertable
+chunks). Size the round against free space on `C:` before it runs — the cost is charged to
 the host disk at write time and refunded only by a compaction. Record what a dropped schema
 held in `hunter/_local/dropped-schemas/`, since the DDL is the only trace left.
+
+**Monthly, or when the `C-drive low space warning` task fires (C: under 30 GB):** dump the
+DDL of every non-original schema and drop them. With Docker still running, trim the guest
+disk: `wsl -d docker-desktop -e sh -c "nsenter -t 1 -m -u -i -n -p fstrim -v
+/mnt/docker-desktop-disk"` — trim alone returns nothing to `C:`, but without it the
+compaction finds no free blocks. Then compact from ONE elevated script: stop
+`hunter-postgres` cleanly, kill Docker Desktop, `wsl --shutdown`, `fsutil sparse setflag
+<vhdx> 0` (`Optimize-VHD` refuses a sparse-flagged file), `Optimize-VHD -Mode Full`,
+`docker desktop start`. Trim + compact takes about two minutes.

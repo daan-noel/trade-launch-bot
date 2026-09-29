@@ -376,7 +376,9 @@ export function WalletAnalyticsPanel({
   );
 }
 
-function ChartCard({
+/** A titled analytics card (ⓘ tip, right-side hint) — the one card chrome every
+ *  wallet-study summary uses (Trader Analysis charts, Entry Context summary). */
+export function ChartCard({
   title,
   tip,
   hint,

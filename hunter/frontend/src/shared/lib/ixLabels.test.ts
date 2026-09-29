@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  abbreviateIxLabelParts,
+  abbreviateIxLabels,
   configuredIxLabels,
   formatIxLabelsText,
   isIxLabelJsonFilter,
@@ -140,5 +142,41 @@ describe('parseIxLabelFilter / ixLabelsMatchFilter', () => {
     expect(isIxLabelJsonFilter('["a"]')).toBe(true);
     expect(isIxLabelJsonFilter('Buy')).toBe(false);
     expect(isIxLabelJsonFilter('[oops')).toBe(false);
+  });
+});
+
+describe('abbreviateIxLabels', () => {
+  it('keeps the order, shortens each label, and counts a run', () => {
+    expect(
+      abbreviateIxLabels([
+        'Compute Budget: SetComputeUnitLimit',
+        'Compute Budget: SetComputeUnitPrice',
+        'Associated Token: CreateIdempotent',
+        'Unknown (6Vo3245e): Buy',
+        'System Program: Transfer',
+        'System Program: Transfer',
+      ]),
+    ).toBe('CL → CP → A+ → 6Vo3:B → T×2');
+  });
+
+  it('names any other program by its first word', () => {
+    expect(
+      abbreviateIxLabels(['Pump.Fun: Buy', 'Axiom Trade: Buy', 'Bundler: Tip', 'Pump.Fun: BuyExactSolIn']),
+    ).toBe('PF:B → AT:B → Bu:T → PF:BESI');
+    expect(abbreviateIxLabels([])).toBe('');
+  });
+
+  it('flags the setup codes, not the program actions', () => {
+    expect(
+      abbreviateIxLabelParts(['Compute Budget: SetComputeUnitLimit', 'Unknown (6Vo3245e): Buy']),
+    ).toEqual([
+      { code: 'CL', setup: true },
+      { code: '6Vo3:B', setup: false },
+    ]);
+  });
+
+  it('tells two orders apart', () => {
+    const a = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy'];
+    expect(abbreviateIxLabels(a)).not.toBe(abbreviateIxLabels([...a].reverse()));
   });
 });
