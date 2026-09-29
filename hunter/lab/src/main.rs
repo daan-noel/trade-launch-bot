@@ -57,6 +57,14 @@ async fn main() -> anyhow::Result<()> {
         return run_lake_export(include_today).await;
     }
 
+    // `lab sweep-dead-slots` — delete the local `trades` legs of blocks the chain
+    // never finalized, then exit. The sync appends and never deletes, so the
+    // server's own sweep cannot reach rows already copied here; the sync script
+    // runs this after every pull, before the lake seals a day.
+    if std::env::args().nth(1).as_deref() == Some("sweep-dead-slots") {
+        return run_sweep_dead_slots().await;
+    }
+
     // `lab migrate-v2 --dry-run [--database-url <url>]` — convert every stored rule,
     // fingerprint and run snapshot to the v2 metric system inside a transaction that is
     // rolled back, print what would change and any row that would not convert, then
@@ -268,6 +276,24 @@ async fn main() -> anyhow::Result<()> {
         error!("Fatal: {e} — exiting non-zero so the supervisor restarts the process");
     }
     outcome
+}
+
+/// `lab sweep-dead-slots`: run the dead-slot sweep to the newest local leg, exit.
+async fn run_sweep_dead_slots() -> anyhow::Result<()> {
+    let settings = config::Settings::from_env().context("Failed to load configuration")?;
+    let storage::postgres::DbPools { batch: batch_db, .. } =
+        storage::postgres::connect(&settings).await?;
+    let sweep = trading_core::services::dead_slot_sweep::DeadSlotSweep::new(
+        batch_db,
+        &settings.canonical_rpc_url,
+    )
+    .context("CANONICAL_RPC_URL is empty or a Helius endpoint - the sweep is off")?;
+    let totals = sweep.catch_up().await?;
+    println!(
+        "sweep-dead-slots complete: {} window(s), {} dead slot(s), {} leg(s) deleted",
+        totals.windows, totals.dead_slots, totals.legs_deleted
+    );
+    Ok(())
 }
 
 /// `lab lake-export`: connect the batch pool, export sealed days into the lake, exit.

@@ -26,6 +26,10 @@
   --color-border: #2a2a2a;
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  /* Mono carries the filter/condition grammar, so operators render as typed:
+     JetBrains Mono's contextual ligatures draw `>=` as one glyph that reads as
+     `=` at 11px, and `!=` as a not-equal sign. Inherited by inputs through preflight. */
+  --font-mono--font-feature-settings: 'calt' 0, 'liga' 0;
 }
 
 /* ------------------------------------------------------------------ *

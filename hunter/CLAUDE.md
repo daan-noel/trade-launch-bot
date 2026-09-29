@@ -18,7 +18,9 @@ discipline). This file is hunter-specific only.
 | `lab` | **bin** | ANALYSIS box: sweep/backtest, replay/simulate, `LocalState`. NO keys / NO gRPC; never depends on the executor |
 
 Each bin is its own composition root (`tokio::select!`). Helius LaserStream is the **sole**
-live transport; the `trades` table *is* that feed. The frontend is two apps over a shared
+live transport; the `trades` table *is* that feed, read at `processed`: legs of abandoned
+forks land in it and the dead-slot sweep deletes them after finalization
+([dead-slot-sweep](docs/plans/ingest/dead-slot-sweep.md)). The frontend is two apps over a shared
 core mirroring the split (`src/shared` · `src/live` · `src/lab`, `@live`/`@lab` aliases) —
 mode is **build-time**, never a runtime capability check.
 
@@ -86,6 +88,7 @@ cargo test  -p hunter-live             # add -- --ignored for integration (needs
 cargo run   -p hunter-live             # live box: .env + Postgres + Helius gRPC   (LIVE_PORT :8130)
 cargo run   -p hunter-lab              # analysis box: Postgres only, no keys/gRPC (LAB_PORT  :8140)
 cargo run   -p hunter-lab  -- lake-export         # sealed days: local PG -> Parquet lake ($SWEEP_LAKE_DIR)
+cargo run   -p hunter-lab  -- sweep-dead-slots    # delete local legs of never-finalized blocks (the sync runs it)
 cargo run   -p hunter-live -- probe <ladder|fanout|pin-senders|simulate-*|sim-matrix|holdings>
 cd frontend; npm run dev               # both apps: live :5173, lab :5174
 npm run build:live                     # tsc (BOTH trees) + vite → lab-free dist/index.html (the EC2 artifact)

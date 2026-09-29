@@ -116,6 +116,13 @@ pub mod keys {
     /// brief toggle-off must not wipe the protection. `None` ⇒ never enabled.
     pub const DUPLICATE_IDENTITY_SINCE: Setting<Option<String>> =
         Setting::new("strategy.duplicate_identity_since", || None);
+    /// The dead-slot sweep's cursor (RFC3339): every `trades` row received
+    /// before it has been checked against the finalized chain. Job state, not an
+    /// operator setting, so it is NOT an [`AppSettings`] field: the sweep reads it
+    /// with [`SettingsRepo::get_one`] and writes it with [`SettingsRepo::set_one`].
+    /// Per database, like every row here. `None` ⇒ start from the oldest chunk.
+    pub const DEAD_SLOT_SWEEP_THROUGH: Setting<Option<String>> =
+        Setting::new("ingest.dead_slot_sweep_through", || None);
 }
 
 /// Global, server-wide settings — the assembled, strongly-typed view of the
@@ -252,6 +259,19 @@ impl SettingsRepo {
             .await?;
         let map: HashMap<String, Value> = rows.into_iter().collect();
         Ok(AppSettings::from_map(&map))
+    }
+
+    /// Read one setting's row, falling back to its default exactly as
+    /// [`Self::load_all`] does.
+    pub async fn get_one<T: DeserializeOwned>(&self, setting: &Setting<T>) -> anyhow::Result<T> {
+        let row: Option<Value> =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key = $1")
+                .bind(setting.key)
+                .fetch_optional(&self.pool)
+                .await?;
+        let map: HashMap<String, Value> =
+            row.into_iter().map(|v| (setting.key.to_string(), v)).collect();
+        Ok(pick(&map, setting))
     }
 
     /// Atomically upsert one typed setting's row. Touches only this key.

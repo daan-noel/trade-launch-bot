@@ -109,7 +109,13 @@ local DBs.
 7b. **Mirrors the strategy tables** (`fingerprints` → `strategy_rules` → `strategy_runs` → `strategy_run_metrics` → `strategy_positions`, FK-safe order) **full-table, server wins, non-destructive** — no watermark (tiny vs. `trades`). For each table: `INSERT ... ON CONFLICT DO UPDATE` so new server rows are added and status/exit-fill changes propagate — but **no local row is deleted**, so the lab keeps its accumulated history (rows the server deleted/aged out) and its own lab-authored rows (the lab UI's create/update/delete-rule handlers write straight to the local DB for local backtest/paper authoring). Server-side deletes are deliberately **not** propagated — a rule/position deleted on the live box lingers on the lab until removed manually (the trade-off for retaining old local data). The one exception is a single **constraint-conflict resolver** on `strategy_runs`: it also has `UNIQUE(rule_id, mode, run_seq)`, so a divergent local run sharing that triple under a different id is dropped first (server wins) or the insert would abort — this fires only on a genuine collision, never on age. (A leftover `_ec2_sync_seen_ids` table from an older tombstone-delete scheme is dropped on every run.) The lab reads these mirrored rows for both the positions table/summary **and** the rules-table counters (open/pending/total/win/loss): the lab has no runtime cache, so its `list_*_rules` handlers compute those counters in SQL via `StrategyRepo::rule_counters_for_latest_paper_runs` (latest paper run per rule) instead of a cache read. Without this sync the lab shows all-zero counters.
 8. **Syncs `_sqlx_migrations`** from the server so the local backend doesn't re-apply migrations.
 9. **Detaches** — drops the foreign server (removing the server password from the local catalog) and kills the tunnel (in a `finally`, so it's cleaned up even on error).
-10. **Optional lake export** (`-ExportLake`) — after detach, runs
+10. **Sweeps dead slots** — runs `cargo run -p hunter-lab -- sweep-dead-slots`, which
+    deletes the local `trades` legs of blocks the chain never finalized (ingest reads at
+    `processed`). This script appends and never deletes, so the server's own sweep cannot
+    reach rows already copied here. Public RPC only, never Helius; a failure warns and
+    the sync still completes. `-SkipDeadSlotSweep` skips it. See
+    [dead-slot-sweep.md](../docs/plans/ingest/dead-slot-sweep.md).
+11. **Optional lake export** (`-ExportLake`) — after detach, runs
     `cargo run -p hunter-lab -- lake-export` (adds `--include-today` when
     `-IncludeToday` was set) so hop-1 sync and hop-2 Parquet seal are one command
     for current-day simulate/sweep.

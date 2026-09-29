@@ -5,6 +5,7 @@
 //! wallet_reconcile, wallet_tokens) stay in the `backend` crate.
 
 pub mod clients;
+pub mod dead_slot_sweep;
 pub mod helius_rpc;
 pub mod http;
 pub mod pda;

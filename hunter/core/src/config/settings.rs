@@ -29,6 +29,12 @@ pub struct Settings {
     /// `helius_api_key` via x-token.
     pub helius_laserstream_url: String,
 
+    /// Plain Solana JSON-RPC the dead-slot sweep asks which slots hold a
+    /// finalized block (`CANONICAL_RPC_URL`). The public endpoint by default: the
+    /// sweep never spends Helius budget, and refuses a Helius URL. Empty ⇒ the
+    /// sweep is off.
+    pub canonical_rpc_url: String,
+
     // --- NATS relay (shared, OPTIONAL) ---
     /// A third-party NATS relay rebroadcasting Helius `transactionNotification`
     /// frames for the bonding curve. Empty (the default) disables the NATS
@@ -92,6 +98,7 @@ impl Settings {
             helius_api_key: env_or("HELIUS_API_KEY", ""),
             helius_rpc_url: env_or("HELIUS_RPC_URL", ""),
             helius_laserstream_url: env_or("HELIUS_LASERSTREAM_URL", ""),
+            canonical_rpc_url: env_or("CANONICAL_RPC_URL", "https://api.mainnet-beta.solana.com"),
             nats_url: env_or("NATS_URL", ""),
             nats_subject: env_or("NATS_SUBJECT", "helius.raw.bondingcurve"),
             database_url: required("DATABASE_URL")?,

@@ -1421,6 +1421,14 @@ async fn run() -> anyhow::Result<()> {
         engine_handle.clone(),
         core_state.batch_db.clone(),
     ));
+    // Deletes the `trades` legs of blocks the chain abandoned (ingest reads at
+    // `processed`). Off the hot path, on the batch pool, against the public RPC.
+    if let Some(sweep) = trading_core::services::dead_slot_sweep::DeadSlotSweep::new(
+        core_state.batch_db.clone(),
+        &settings.canonical_rpc_url,
+    ) {
+        tokio::spawn(sweep.run());
+    }
 
     // Recovery reaper is spawned inside the engine loop (needs fill_tx + in-flight
     // guards) — see `strategies::engine::decision_loop`.

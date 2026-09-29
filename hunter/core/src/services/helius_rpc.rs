@@ -411,6 +411,33 @@ impl HeliusRpc {
         Ok(result.as_i64())
     }
 
+    /// The highest finalized slot: every slot at or below it is settled, so a
+    /// slot there with no block will never get one.
+    pub async fn get_finalized_slot(&self) -> anyhow::Result<u64> {
+        let result = self
+            .call("getSlot", json!([{"commitment": "finalized"}]))
+            .await?;
+        result
+            .as_u64()
+            .ok_or_else(|| anyhow!("getSlot(finalized): unexpected result type"))
+    }
+
+    /// Every slot in `start..=end` that holds a finalized block, ascending. A
+    /// slot in the range above the finalized tip is simply absent, so the caller
+    /// bounds `end` by [`Self::get_finalized_slot`] before reading an absence as
+    /// a skipped slot. The node caps a call at 500,000 slots.
+    pub async fn get_finalized_blocks(&self, start: u64, end: u64) -> anyhow::Result<Vec<u64>> {
+        let result = self
+            .call("getBlocks", json!([start, end, {"commitment": "finalized"}]))
+            .await?;
+        result
+            .as_array()
+            .ok_or_else(|| anyhow!("getBlocks: unexpected result type"))?
+            .iter()
+            .map(|v| v.as_u64().ok_or_else(|| anyhow!("getBlocks: non-integer slot")))
+            .collect()
+    }
+
     pub async fn get_transactions_for_address_full_page_enc(
         &self,
         address: &str,

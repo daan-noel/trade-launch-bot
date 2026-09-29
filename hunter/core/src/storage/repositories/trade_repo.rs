@@ -1329,6 +1329,92 @@ impl TradeRepo {
         Ok(floor)
     }
 
+    /// The newest leg's `block_time`: one probe of `trades_block_time_idx`,
+    /// newest chunk first. `None` on an empty table.
+    pub async fn newest_block_time(&self) -> anyhow::Result<Option<DateTime<Utc>>> {
+        let newest: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT block_time FROM trades ORDER BY block_time DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(newest)
+    }
+
+    /// Every slot with a leg received in `[from, to)`, with the earliest
+    /// `block_time` among its legs. Feeds the dead-slot sweep, which judges a
+    /// window of received time and resumes from the first slot it could not
+    /// judge yet. `block_time` bounds the scan to the window's chunks.
+    pub async fn slots_between(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<SlotSeen>> {
+        let rows: Vec<SlotSeen> = sqlx::query_as(
+            r#"
+            SELECT slot, MIN(block_time) AS first_seen
+            FROM trades
+            WHERE block_time >= $1 AND block_time < $2
+            GROUP BY slot
+            "#,
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Delete every leg in `slots` received in `[from, to)`. The dead-slot
+    /// sweep's only write: those slots hold no finalized block, so each leg is a
+    /// transaction the chain never kept. Returns the rows removed.
+    ///
+    /// One `DELETE` per `(mint, slot)`: on a compressed chunk a delete filtered by
+    /// slot alone decompresses every segment in the window and trips
+    /// `timescaledb.max_tuples_decompressed_per_dml_transaction`, while the
+    /// segment column (`mint_address`) and the leading order column (`slot`)
+    /// narrow it to the batches holding those legs. Each statement commits on
+    /// its own; a retry re-finds whatever is left.
+    pub async fn delete_slots_between(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        slots: &[i64],
+    ) -> anyhow::Result<u64> {
+        if slots.is_empty() {
+            return Ok(0);
+        }
+        let pairs: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT mint_address, slot
+            FROM trades
+            WHERE block_time >= $1 AND block_time < $2 AND slot = ANY($3)
+            "#,
+        )
+        .bind(from)
+        .bind(to)
+        .bind(slots)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut deleted = 0u64;
+        for (mint, slot) in pairs {
+            let done = sqlx::query(
+                r#"
+                DELETE FROM trades
+                WHERE block_time >= $1 AND block_time < $2
+                  AND mint_address = $3 AND slot = $4
+                "#,
+            )
+            .bind(from)
+            .bind(to)
+            .bind(&mint)
+            .bind(slot)
+            .execute(&self.pool)
+            .await?;
+            deleted += done.rows_affected();
+        }
+        Ok(deleted)
+    }
+
     /// Find all trades for a token in execution order (slot, tx_index, leg_index).
     /// LEFT-joins `wallet_dict` to recover each trade's wallet address (orphaned
     /// wallet ids fall back to the `unknown:<id>` sentinel, never dropping a row).
@@ -1883,6 +1969,14 @@ pub struct MintSpan {
     pub first_time: DateTime<Utc>,
     pub last_slot: i64,
     pub last_time: DateTime<Utc>,
+}
+
+/// One slot seen in a received-time window ([`TradeRepo::slots_between`]).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SlotSeen {
+    pub slot: i64,
+    /// Earliest `block_time` among the slot's legs in the window.
+    pub first_seen: DateTime<Utc>,
 }
 
 /// One leg inside a [`SlotWindow`] — the ix shape, the fee budget, the side, the

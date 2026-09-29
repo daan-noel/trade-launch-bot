@@ -160,6 +160,7 @@ param(
   [switch]$IncludeRawTxs,                                                 # also sync raw_txs (BYTEA payloads, large; off by default)
   [switch]$IncludeToday,                                                  # also pull today's still-open chunk (partial day; default = sealed days only)
   [switch]$ExportLake,                                                    # after sync: run `cargo run -p hunter-lab -- lake-export` (passes --include-today when -IncludeToday)
+  [switch]$SkipDeadSlotSweep,                                             # skip `cargo run -p hunter-lab -- sweep-dead-slots` (runs by default after the pull, before any lake export)
   [int]   $FdwFetchSize    = 10000,                                       # postgres_fdw fetch_size (smaller = gentler on 4GB EC2 RAM; was 50000)
   [int]   $HypertableChunkHours = 2,                                      # trades/raw_txs pull window size (hours); smaller = safer on EC2 RAM + commits/visible progress sooner (was 6)
   [int]   $ChunkRetries    = 4,                                           # retries per chunk on transient FDW/tunnel drops
@@ -1177,13 +1178,33 @@ ON CONFLICT (id) DO UPDATE SET
   $doneWindow = if ($IncludeToday) { "through $sealedCutoff UTC, incl. today's partial chunk" } else { "sealed days through $sealedCutoff UTC" }
   Write-Host "Incremental sync complete ($doneWindow; server credentials removed from local catalog)."
 
-  # ---- 10. Optional hop-2: PG -> Parquet lake (couples current-day analysis) ---
+  $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+
+  # ---- 10. Dead-slot sweep: drop legs of blocks the chain never finalized -----
+  # This sync appends and never deletes, so the server's own sweep cannot reach
+  # rows already copied here. Runs before the lake export so a sealed day never
+  # carries them; a failure only warns, since the next run's sweep catches up and
+  # lake-export re-seals any day whose row count changed.
+  if (-not $SkipDeadSlotSweep) {
+    Write-Host ""
+    Write-Host "Sweeping dead slots (public RPC, no Helius)..."
+    Push-Location $repoRoot
+    try {
+      & cargo run -p hunter-lab -- sweep-dead-slots
+      if ($LASTEXITCODE -ne 0) {
+        Write-Warning "sweep-dead-slots failed (exit $LASTEXITCODE) -- local trades may still hold legs of abandoned forks; re-run: cargo run -p hunter-lab -- sweep-dead-slots"
+      }
+    } finally {
+      Pop-Location
+    }
+  }
+
+  # ---- 11. Optional hop-2: PG -> Parquet lake (couples current-day analysis) ---
   # Keeps simulate/sweep on one command instead of a separate `lake-export` hop.
   # Runs AFTER detach so a long DuckDB export never holds the FDW server mapping.
   if ($ExportLake) {
     Write-Host ""
     Write-Host "Exporting Parquet lake (hop 2)..."
-    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
     $exportArgs = @('run', '-p', 'hunter-lab', '--', 'lake-export')
     if ($IncludeToday) { $exportArgs += '--include-today' }
     Push-Location $repoRoot
