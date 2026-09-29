@@ -8,9 +8,10 @@ is the open queue; [_!___terms.md](_!___terms.md) is every word; [_!___metrics.m
 is what the engine measures. Code: [node-derivation/toolkit](node-derivation/toolkit/README.md). Worked
 example: [node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md). A node's
 working file starts from [node-derivation/node-template.md](node-derivation/node-template.md).
-Two more this method leans on by name: the roster of members is
-[solo-traders.md](solo-traders.md), and every number passes
-[backtest-audit.md](backtest-audit.md) before it is reported as a result. Those five are the
+Three more this method leans on by name: the roster of members is
+[solo-traders.md](solo-traders.md), whether a condition is his entry rule is
+[entry-condition-measurement.md](entry-condition-measurement.md), and every number passes
+[backtest-audit.md](backtest-audit.md) before it is reported as a result. Those six are the
 whole of what derive needs outside the seven.
 
 **Every measured number here names its book.** A figure in this file is a pointer into
@@ -283,44 +284,15 @@ crowded tape, new high).
 
 ### 5.0 Is it his: hit rate and cover
 
-One question decides whether a class, a term or a conjunction is his: **when it happens
-anywhere on the market, does he buy?** Every 5.1 and 6.1 verdict is this count
-(`toolkit/hitrate.py`; its proof is evidence 5.8).
+Whether a condition is his entry rule is one question: **when it happens on the market, does
+he buy?** Count every moment it becomes true on any coin while he is free to buy (a **chance**),
+and whether he buys that coin within his reaction time (a **hit**).
 
-```
-  his entry   his first buy on a coin while flat (a re-entry after a close is an entry)
-  chance      a public print where the spelling turns true on a coin after being false for
-              more than W slots - on EVERY coin, not only his - counted only while he is free:
-                not holding that coin, not in flight to it (a later chance inside an entry's
-                window), under his most-open count, not inside 30 min with none of his trades
-  W           his reaction window: the end of his lag spike (`hitrate.reaction_window`)
-  hit         his entry lands within W slots after the chance
-  hit rate    hits / chances          100 % = he takes every chance: his rule
-  cover       hits / his entries      how much of him it explains
-  luck        the hit rate with each chance moved to a random print of its own coin
-```
+- **Hit rate = hits / chances**: 100 % is his rule.
+- **Cover = hits / his buys**: how much of his buying it explains.
 
-Example: a day holds 500 of his entries; the spelling gives 200 chances; he buys 150 of them.
-Hit rate 150 / 200 = **75 %**, cover 150 / 500 = **30 %**.
-
-- **The rule is the widest spelling at the top hit rate.** A narrower piece of the true rule
-  keeps its hit rate and loses cover (81.4 % at 12.1 % cover against the true 80.4 % at 57.0 %,
-  evidence 5.8), so hit rate is never read without cover.
-- **A low hit rate with real cover is part of his rule, with terms missing.** 6.1 adds them.
-  8dtx2t's frozen E reads 0.77 % (1 chance in 130) at 60.3 % cover, luck 0.11 % (evidence 5.8).
-- **His logic is several rules.** Each is read on its own; their covers add toward 100 %.
-- **A number counts at >= 30 hits** on the half it was built on, and holds on the days it was
-  not built on (`hitrate.HITS_MIN`).
-- **W is the end of the spike, never a lag percentile.** On a spelling that fires often an
-  unrelated chance always sits a few slots before his buy: 8dtx2t's spike ends at 1 slot where
-  the p95 reads 31.
-- **A flicker is one chance, and a state is counted by its rising edge, never by the moment.**
-  Counted by the moment, "4+ buys in 2 s" is true 14 times as often as it turns true.
-- **His own prints never enter the facts.** A chance must land before his entry and he is
-  holding from his first buy, so his own print cannot score a hit.
-- **Lift is not a score.** Per-moment lift is hit rate divided by his base rate: it hides how
-  far from 100 % a spelling is, and it ranks narrow corners and wrong rules above the true one
-  (evidence 5.8). No verdict here reads it.
+Every 5.1 and 6.1 verdict is this count. The full method, from scratch:
+[entry-condition-measurement.md](entry-condition-measurement.md).
 
 ### Print classes (5.1 scan)
 

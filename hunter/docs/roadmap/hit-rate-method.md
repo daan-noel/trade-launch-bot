@@ -1,7 +1,7 @@
 # Hit rate and cover: open work
 
 Whether a spelling is a trader's rule is its hit rate and cover
-([derive 5.0](../plans/strategies/_!___derive.md), proof in
+([entry-condition-measurement.md](../plans/strategies/entry-condition-measurement.md), proof in
 [evidence 5.8](../plans/strategies/_!___evidence.md)). The counter is
 [toolkit/hitrate.py](../plans/strategies/node-derivation/toolkit/README.md). What does not read
 it yet:

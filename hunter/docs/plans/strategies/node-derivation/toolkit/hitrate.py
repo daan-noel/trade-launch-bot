@@ -1,4 +1,4 @@
-"""Is a spelling his rule: hit rate and cover (derive 5.0).
+"""Is a spelling his rule: hit rate and cover (entry-condition-measurement.md, derive 5.0).
 
 One question: when the spelling happens anywhere on the market, does he buy?
 
