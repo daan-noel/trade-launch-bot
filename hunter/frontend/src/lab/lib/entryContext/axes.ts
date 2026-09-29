@@ -11,13 +11,17 @@
  * `m_flow` reads (see `entry_context.rs`).
  */
 
-import type { EntryRow } from './types';
+import type { EntryGroupRow, EntryRow } from './types';
+
+/** The breakdown row of the signal's structure, if the probe found a signal. */
+export const signalGroup = (e: EntryRow): EntryGroupRow | undefined => e.groups.find((g) => g.signal);
 
 export type AxisUnit = 'pct' | 'pp' | 'tx' | 'sol';
 
-/** The column group an axis sits in: his own buy, the target in the last `W`
- *  seconds, everyone in the last `W` seconds, or the `W` seconds before that. */
-export type AxisGroup = 'buy' | 'target' | 'all' | 'control';
+/** The column group an axis sits in: his own buy, the signal's structure, the
+ *  target in the last `W` seconds, the target in the `W` seconds before that, or
+ *  everyone in the last `W` seconds. `ENTRY_AXES` lists them in this order. */
+export type AxisGroup = 'buy' | 'signal' | 'target' | 'control' | 'all';
 
 /** Group banner labels for the buys table, with the time spelled out. `w` is the
  *  analysis window in seconds, `probeSlots` the probe's (its own column group). */
@@ -25,9 +29,10 @@ export function entryGroupLabels(w: number, probeSlots?: number): Record<string,
   return {
     buy: 'His buy',
     pre_entry: probeSlots != null ? `Probe: last ${probeSlots} slots before him` : 'Probe: slots before him',
+    signal: `Signal structure: last ${w}s before him`,
     target: `Target: last ${w}s before him`,
+    control: `Target earlier: ${2 * w}s to ${w}s before him`,
     all: `Everyone: last ${w}s before him`,
-    control: `Earlier: ${2 * w}s to ${w}s before him`,
   };
 }
 
@@ -54,6 +59,8 @@ const last = (w: number) => `in the last ${w}s before his buy`;
 /** The earlier stretch, spelled out: the same length, just before the last one. */
 const earlier = (w: number) => `from ${2 * w}s to ${w}s before his buy`;
 const NOT_HIS = 'His own buys are never counted.';
+const SIGNAL =
+  'The signal = the target transaction the Probe found nearest before his buy; its structure is one of the target structures.';
 
 export const ENTRY_AXES: readonly EntryAxis[] = [
   {
@@ -64,6 +71,56 @@ export const ENTRY_AXES: readonly EntryAxis[] = [
     digits: 3,
     definition: () => 'SOL he spent on this buy.',
     get: (e) => e.sol,
+  },
+  {
+    key: 'sig_buy_tx',
+    label: 'Signal TXs',
+    group: 'signal',
+    unit: 'tx',
+    digits: 0,
+    definition: (w) =>
+      `How many buy transactions the signal's structure made ${last(w)}, target or not.
+` +
+      `Example: 25 buys, 12 of them with that structure = 12.
+${SIGNAL} Blank = no signal.`,
+    get: (e) => signalGroup(e)?.buy_tx ?? null,
+  },
+  {
+    key: 'sig_tx_share',
+    label: 'Signal tx %',
+    group: 'signal',
+    unit: 'pct',
+    digits: 0,
+    definition: (w) =>
+      `Of all buy transactions ${last(w)}, the % made with the signal's structure.
+` +
+      `Example: 25 buys, 12 with it = 48%.
+${SIGNAL}`,
+    get: (e) => signalGroup(e)?.buy_tx_share_pct ?? null,
+  },
+  {
+    key: 'sig_buy_sol',
+    label: 'Signal SOL',
+    group: 'signal',
+    unit: 'sol',
+    digits: 2,
+    definition: (w) =>
+      `SOL the signal's structure spent on buys ${last(w)}, target or not.
+${SIGNAL}`,
+    get: (e) => signalGroup(e)?.buy_sol ?? null,
+  },
+  {
+    key: 'sig_sol_share',
+    label: 'Signal SOL %',
+    group: 'signal',
+    unit: 'pct',
+    digits: 0,
+    definition: (w) =>
+      `Of all SOL spent on buys ${last(w)}, the % spent with the signal's structure.
+` +
+      `Example: 10 SOL of buys, 4 SOL with it = 40%.
+${SIGNAL}`,
+    get: (e) => signalGroup(e)?.buy_sol_share_pct ?? null,
   },
   {
     key: 'tx_share',
@@ -111,38 +168,6 @@ export const ENTRY_AXES: readonly EntryAxis[] = [
     earlier: (e) => e.control.tag_buy_sol,
   },
   {
-    key: 'buy_tx',
-    label: 'All buys',
-    group: 'all',
-    unit: 'tx',
-    digits: 0,
-    definition: (w) => `How many buy transactions everyone made ${last(w)}, target or not. ${NOT_HIS}`,
-    get: (e) => e.window.buy_tx,
-    earlier: (e) => e.control.buy_tx,
-  },
-  {
-    key: 'buy_sol',
-    label: 'All buy SOL',
-    group: 'all',
-    unit: 'sol',
-    digits: 2,
-    definition: (w) => `SOL everyone spent on buys ${last(w)}, target or not. ${NOT_HIS}`,
-    get: (e) => e.window.buy_sol,
-    earlier: (e) => e.control.buy_sol,
-  },
-  {
-    key: 'top_tx_share',
-    label: 'Top structure tx %',
-    group: 'all',
-    unit: 'pct',
-    digits: 0,
-    definition: (w) =>
-      `The one structure that made the most buy transactions ${last(w)}, and its % of them, target or not.\n` +
-      `Example: 25 buys, 15 by one structure = 60%.\n` +
-      `Equal to Target tx % = the target was that structure.`,
-    get: (e) => e.groups[0]?.buy_tx_share_pct ?? null,
-  },
-  {
     key: 'ctl_tx_share',
     label: 'Earlier tx %',
     group: 'control',
@@ -179,6 +204,70 @@ export const ENTRY_AXES: readonly EntryAxis[] = [
       e.window.tx_share_pct == null || e.control.tx_share_pct == null
         ? null
         : e.window.tx_share_pct - e.control.tx_share_pct,
+  },
+  {
+    key: 'buy_tx',
+    label: 'All buys',
+    group: 'all',
+    unit: 'tx',
+    digits: 0,
+    definition: (w) => `How many buy transactions everyone made ${last(w)}, target or not. ${NOT_HIS}`,
+    get: (e) => e.window.buy_tx,
+    earlier: (e) => e.control.buy_tx,
+  },
+  {
+    key: 'buy_sol',
+    label: 'All buy SOL',
+    group: 'all',
+    unit: 'sol',
+    digits: 2,
+    definition: (w) => `SOL everyone spent on buys ${last(w)}, target or not. ${NOT_HIS}`,
+    get: (e) => e.window.buy_sol,
+    earlier: (e) => e.control.buy_sol,
+  },
+  {
+    key: 'top_buy_tx',
+    label: 'Top structure TXs',
+    group: 'all',
+    unit: 'tx',
+    digits: 0,
+    definition: (w) =>
+      `How many buy transactions the one busiest structure made ${last(w)}, target or not.\n` +
+      `Example: 25 buys, 15 by one structure = 15. ${NOT_HIS}`,
+    get: (e) => e.groups[0]?.buy_tx ?? null,
+  },
+  {
+    key: 'top_tx_share',
+    label: 'Top structure tx %',
+    group: 'all',
+    unit: 'pct',
+    digits: 0,
+    definition: (w) =>
+      `The one structure that made the most buy transactions ${last(w)}, and its % of them, target or not.\n` +
+      `Example: 25 buys, 15 by one structure = 60%.\n` +
+      `Equal to Target tx % = the target was that structure.`,
+    get: (e) => e.groups[0]?.buy_tx_share_pct ?? null,
+  },
+  {
+    key: 'top_buy_sol',
+    label: 'Top structure SOL',
+    group: 'all',
+    unit: 'sol',
+    digits: 2,
+    definition: (w) =>
+      `SOL the same busiest structure (most buy transactions) spent on buys ${last(w)}, target or not. ${NOT_HIS}`,
+    get: (e) => e.groups[0]?.buy_sol ?? null,
+  },
+  {
+    key: 'top_sol_share',
+    label: 'Top structure SOL %',
+    group: 'all',
+    unit: 'pct',
+    digits: 0,
+    definition: (w) =>
+      `Of all SOL spent on buys ${last(w)}, the % spent by the same busiest structure.\n` +
+      `Example: 10 SOL of buys, 6 SOL by that structure = 60%.`,
+    get: (e) => e.groups[0]?.buy_sol_share_pct ?? null,
   },
 ];
 

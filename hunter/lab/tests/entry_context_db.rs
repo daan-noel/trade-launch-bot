@@ -24,7 +24,7 @@ async fn a_real_wallet_reads_every_buy_and_its_window() {
         "from": (Utc::now() - Duration::days(1)).to_rfc3339(),
         "window_secs": 30,
         "probe_slots": 25,
-        "group_by": "program",
+        
         "tag": { "match": { "program": ["Pump.Fun"] }, "side": "buy" },
     }))
     .expect("body");
@@ -71,7 +71,7 @@ async fn a_real_wallet_reads_every_buy_and_its_window() {
         "from": (e.at - Duration::seconds(30)).to_rfc3339(),
         "to": e.at.to_rfc3339(),
         "end_slot": e.slot - 1,
-        "group_by": "program",
+        
         "tag": { "match": { "program": ["Pump.Fun"] }, "side": "buy" },
     }))
     .expect("range body");

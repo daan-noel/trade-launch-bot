@@ -10,7 +10,6 @@ import { Input } from 'components/ui/Input';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { SectionDivider } from 'components/ui/SectionDivider';
-import { Select } from 'components/ui/Select';
 import { inspectFromMint } from 'components/strategy/inspectTarget';
 import { FlowLensProvider } from 'context/FlowLensContext';
 import { useTimezone } from 'context/TimezoneContext';
@@ -47,19 +46,12 @@ import { entryVerdict, rollupByToken } from '@lab/lib/entryContext/analysis';
 import { entryGroupLabels } from '@lab/lib/entryContext/axes';
 import {
   entryKey,
-  type EntryGroupBy,
   type EntryRow,
   type EntryContextRequest,
   type EntryTargetTag,
 } from '@lab/lib/entryContext/types';
 import { probeStateCounts, probeSummary, type PreEntryVerdict } from '@lab/lib/preEntryProbeTypes';
 import { useGetEntryContextQuery, useGetTraderTokensQuery } from '@lab/store/labEndpoints';
-
-const GROUP_BY_OPTIONS: { value: EntryGroupBy; label: string; title: string }[] = [
-  { value: 'exact', label: 'Exact ix shape', title: 'Full instruction list: every build is its own row' },
-  { value: 'template', label: 'Template', title: 'Similar builds merged (program plus a few flags)' },
-  { value: 'program', label: 'Program', title: 'Main program only: all its builds in one row' },
-];
 
 /** Analysis window W, seconds: the server's own ceiling. */
 const MAX_WINDOW_SECS = 600;
@@ -90,7 +82,6 @@ interface EntryForm {
   days: string;
   from: string;
   to: string;
-  groupBy: EntryGroupBy;
   windowSecs: string;
   probeOn: boolean;
   show: PreEntryShow;
@@ -104,7 +95,6 @@ const DEFAULT_FORM: EntryForm = {
   days: String(DEFAULT_DAYS),
   from: '',
   to: '',
-  groupBy: 'exact',
   // On: "did the target land before his buy" is this page's pool.
   windowSecs: '30',
   probeOn: true,
@@ -121,7 +111,6 @@ interface EntryQuery {
   from: string;
   to: string;
   windowSecs: number;
-  groupBy: EntryGroupBy;
 }
 
 /**
@@ -176,7 +165,6 @@ export function EntryContextPage() {
           : new Date(Date.now() - days * DAY_MS).toISOString(),
       to: isCustom ? wallClockToUtcIso(f.to, timezone, 'upper') : '',
       windowSecs: Math.min(MAX_WINDOW_SECS, Math.max(1, Number(f.windowSecs) || 30)),
-      groupBy: f.groupBy,
     });
   };
 
@@ -209,7 +197,6 @@ export function EntryContextPage() {
             to: query.to || null,
             window_secs: query.windowSecs,
             probe_slots: probeSlots,
-            group_by: query.groupBy,
             ...(targetTag ? { tag: targetTag } : {}),
           }
         : null,
@@ -384,23 +371,6 @@ export function EntryContextPage() {
                 className="w-[90px] font-normal normal-case tracking-normal"
               />
             </label>
-            <label
-              className={FIELD_LABEL}
-              title="How transactions are grouped into structures. Exact = full instruction list. Template = similar builds merged. Program = main program only."
-            >
-              Break down by
-              <Select
-                value={f.groupBy}
-                onChange={(e) => patch({ groupBy: e.target.value as EntryGroupBy })}
-                className="min-w-37.5 font-normal normal-case tracking-normal"
-              >
-                {GROUP_BY_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value} title={o.title}>
-                    {o.label}
-                  </option>
-                ))}
-              </Select>
-            </label>
             <IconButton
               variant="primary"
               size="lg"
@@ -439,7 +409,6 @@ export function EntryContextPage() {
                   wallet: query.wallet,
                   windowSecs: readWindow,
                   probeSlots,
-                  groupBy: query.groupBy,
                   tag: targetTag,
                 }}
               />

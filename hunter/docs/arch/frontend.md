@@ -1307,7 +1307,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   tape in the `W` seconds before EVERY buy transaction of one wallet (re-entries included), read
   under one target tag: the flow lens' set narrowed by its chips (`lens.value.tag`, the same tag
   the charts tint with). `POST /api/wallets/:wallet/entry-context` (`lab/src/api/handlers/entry_context.rs`)
-  takes `{from, to, window_secs, probe_slots, tag?, group_by}` — two windows with two jobs: the
+  takes `{from, to, window_secs, probe_slots, tag?}` — two windows with two jobs: the
   ANALYSIS window `window_secs` (shares, counts, breakdown; set in the query row, applied on
   Analyze) and the PROBE window `probe_slots` (did the target land in `[entry − P, entry)`
   slots, control `[entry − 2P, entry − P)`, as `pre_entry_ix` cuts it; the lens bar's slot knob,
@@ -1352,8 +1352,11 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   (`rangeSpan`: wall-clock span + last slot) is read by `POST
   /api/wallets/:wallet/entry-context/range` as an entry window ending at the range's end (same
   fold, the same length before it as the control, his trades excluded); **Reset** re-selects the
-  window (`selectSpan`). Below the chart: the range's axis tiles and structure breakdown; **Break down by** picks how a window's transactions group into
-  structures in that breakdown (`exact` ix sequence, `template` grain, `program`).
+  window (`selectSpan`). Below the chart: the range's axis tiles and structure breakdown, one row per exact ix
+  sequence (how broad the target is belongs to the flow lens: an Exact set or a Templates set,
+  which also takes program names). The row of the signal (the probe's nearest target
+  transaction) carries a `signal` badge and stays past the row cap; the buys table's Signal
+  structure columns read it.
   The breakdown's structure column (`structureColumn`): under `exact` it is
   `IxLabelsDisplay`'s one-line `compact` mode (`IxAbbrevLine`: dim arrows, setup codes dim, program actions bright) over `abbreviateIxLabelParts` (`lib/ixLabels.ts`: the
   exact sequence in order, boilerplate as 1-2 letter codes, the rest `Program:Action` initials,

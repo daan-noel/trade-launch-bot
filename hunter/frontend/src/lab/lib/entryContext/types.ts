@@ -10,8 +10,6 @@
 import type { FlowSide, FlowTag } from 'lib/flow/classifyFlow';
 import type { PreEntryUnknownReason } from '@lab/lib/preEntryProbeTypes';
 
-export type EntryGroupBy = 'exact' | 'template' | 'program';
-
 export interface EntryContextRequest {
   wallet: string;
   /** UTC RFC3339. Anchors are the wallet's buys with `from <= block_time <= to`. */
@@ -25,7 +23,6 @@ export interface EntryContextRequest {
    *  left out when unset: the engine's parser refuses a null. Absent = no target:
    *  the windows are still read and every share is null. */
   tag?: EntryTargetTag;
-  group_by: EntryGroupBy;
 }
 
 /** ONE tag definition in the fingerprint `tags` shape. `side` / `sticky` are left
@@ -48,7 +45,6 @@ export interface EntryRangeRequest {
   /** The last slot the range holds. */
   end_slot: number;
   probe_slots: number;
-  group_by: EntryGroupBy;
   tag?: EntryTargetTag;
 }
 
@@ -91,6 +87,9 @@ export interface EntryGroupRow {
   buy_secs: number;
   buy_tx_share_pct: number | null;
   buy_sol_share_pct: number | null;
+  /** The signal's structure: the group of the probe's nearest target print. Kept
+   *  in the breakdown even past its cap. */
+  signal?: true;
 }
 
 /** The probe's own reasons (`UNKNOWN_HINT` explains each); an anchor here is a buy
@@ -105,7 +104,7 @@ export interface NearestTag {
   lag_tx: number | null;
   /** Seconds back by block time (second precision). */
   lag_secs: number;
-  /** Its template grain (`program|CU|ATA|N|S|F`), whatever `group_by` is. */
+  /** Its template grain (`program|CU|ATA|N|S|F`). */
   key: string;
   /** Its exact ordered ix labels (absent when the print has none). */
   labels?: string[];
@@ -145,7 +144,6 @@ export interface EntryContextResponse {
   max_entries: number;
   window_secs: number;
   probe_slots: number;
-  group_by: EntryGroupBy;
   tape_floor?: string | null;
 }
 

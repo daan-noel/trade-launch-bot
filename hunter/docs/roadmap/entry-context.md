@@ -12,6 +12,6 @@ before each of a wallet's buys under one target tag. What it does not do yet:
 3. **Engine share metric.** The target share is read as `@tag / (@tag + @!tag)` of `buy_tx_count`
    and `buy_sol`. A rule cannot say that today: shipping a finding as a rule needs a buy-side
    share metric in `m_flow` (tx and SOL), with its registry definition.
-4. **More breakdown axes.** Fee preset (CU limit, CU price, tip) and wallet as `group_by` keys.
+4. **More breakdown axes.** A breakdown by fee preset (CU limit, CU price, tip) or by wallet, next to the exact ix structure.
 5. **Target from a breakdown row.** Clicking a structure in the breakdown to make it the target
    (write it into the lens set).

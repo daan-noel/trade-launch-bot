@@ -9,8 +9,7 @@
 //! same for `buy_sol`. The control window is the same read one `W` earlier
 //! (`[Ws@W]`), so every number carries the baseline it is judged against.
 //!
-//! The same fold breaks the window down by structure (exact ix shape, template grain
-//! or program), classifying each print with the verdict the tag state returned — one
+//! The same fold breaks the window down by exact ix structure, classifying each print with the verdict the tag state returned — one
 //! copy of the matchers, so a breakdown row can never disagree with the headline.
 //!
 //! The studied wallet is excluded from the tape in SQL: his own tool's structure
@@ -31,7 +30,7 @@ use hunter_engine::metrics::registry::Metric;
 use hunter_engine::metrics::tags::config::{compile_tags, validate_tags, TagPatterns};
 use hunter_engine::metrics::tags::state::TagState;
 use hunter_engine::metrics::template_grain::{
-    grain, grain_hash_from_labels_value, program_hash_from_labels_value, program_owned,
+    grain, grain_hash_from_labels_value, program_hash_from_labels_value,
 };
 use hunter_engine::metrics::trade_keys::{
     ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash,
@@ -73,19 +72,6 @@ const MAX_GROUPS: usize = 30;
 
 // ── Request ─────────────────────────────────────────────────────────────────
 
-/// What a breakdown row groups the window's prints by.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GroupBy {
-    /// The full ordered `ix_labels` sequence.
-    #[default]
-    Exact,
-    /// The coarse template grain `program|CU|ATA|N|S|F`.
-    Template,
-    /// The transaction's main program.
-    Program,
-}
-
 /// `POST /api/wallets/{wallet}/entry-context` body.
 #[derive(Debug, Deserialize)]
 pub struct EntryContextBody {
@@ -108,8 +94,6 @@ pub struct EntryContextBody {
     /// share reads `None`.
     #[serde(default)]
     pub tag: Option<serde_json::Value>,
-    #[serde(default)]
-    pub group_by: GroupBy,
 }
 
 /// `POST /api/wallets/{wallet}/entry-context/range` body: one token, one picked
@@ -127,8 +111,6 @@ pub struct EntryRangeBody {
     pub probe_slots: i64,
     #[serde(default)]
     pub tag: Option<serde_json::Value>,
-    #[serde(default)]
-    pub group_by: GroupBy,
 }
 
 fn default_window_secs() -> f64 {
@@ -174,10 +156,9 @@ pub struct WindowRead {
 /// One breakdown row: the window's prints of one structure.
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupRow {
-    /// The group's identity in the requested vocabulary (labels joined by ` > `
-    /// for `exact`, the grain id, or the program name).
+    /// The group's identity: its exact ordered ix labels joined by ` > `.
     pub key: String,
-    /// The ordered labels, `exact` only — what a pattern set stores.
+    /// The ordered labels — what a pattern set stores. Absent on `(no labels)`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     pub buy_tx: u32,
@@ -194,6 +175,10 @@ pub struct GroupRow {
     pub buy_tx_share_pct: Option<f64>,
     /// This group's buy SOL over every buy SOL in the window.
     pub buy_sol_share_pct: Option<f64>,
+    /// The signal's group: the one the probe's nearest tagged print belongs to.
+    /// Kept in the breakdown even past `MAX_GROUPS`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub signal: bool,
 }
 
 /// The tagged print nearest ahead of his buy inside the probe window — how close
@@ -208,8 +193,7 @@ pub struct NearestTag {
     pub lag_tx: Option<i64>,
     /// Seconds back by block time (second precision, shared by a whole slot).
     pub lag_secs: f64,
-    /// Its template grain (`program|CU|ATA|N|S|F`), whatever `group_by` the
-    /// breakdown uses: the sort and search key.
+    /// Its template grain (`program|CU|ATA|N|S|F`): the sort and search key.
     pub key: String,
     /// Its exact ordered ix labels, for the Matched cell's abbreviation line.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -257,7 +241,6 @@ pub struct EntryContextResponse {
     pub max_entries: i64,
     pub window_secs: f64,
     pub probe_slots: i64,
-    pub group_by: GroupBy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tape_floor: Option<DateTime<Utc>>,
 }
@@ -315,17 +298,14 @@ fn fee_keys(p: &TapePrint) -> FeeKeys {
     )
 }
 
-/// The group a print belongs to, and its labels when the vocabulary is `exact`.
-fn group_key(p: &TapePrint, by: GroupBy) -> (String, Option<Vec<String>>) {
+/// The group a print belongs to (its exact ordered ix labels, joined by ` > `), and
+/// those labels.
+fn group_key(p: &TapePrint) -> (String, Option<Vec<String>>) {
     let labels = p.ix_labels.as_ref().map(normalize_labels).unwrap_or_default();
     if labels.is_empty() {
         return ("(no labels)".into(), None);
     }
-    match by {
-        GroupBy::Exact => (labels.join(" > "), Some(labels)),
-        GroupBy::Template => (grain(&labels), None),
-        GroupBy::Program => (program_owned(&labels), None),
-    }
+    (labels.join(" > "), Some(labels))
 }
 
 /// `part / whole` in percent, `None` on an empty whole.
@@ -412,7 +392,6 @@ fn fold_entry(
     patterns: &TagPatterns,
     window_secs: f64,
     probe_slots: i64,
-    by: GroupBy,
 ) -> EntryRow {
     let win = WindowSpec::secs(window_secs);
     let ctl = WindowSpec { size: window_secs, lag: window_secs, unit: WindowUnit::Sec };
@@ -481,7 +460,7 @@ fn fold_entry(
         let tagged = tagged_in(SCOPE_WINDOW);
         window_prints += 1;
         window_has_fee |= !t.fee.is_empty();
-        let (key, labels) = group_key(p, by);
+        let (key, labels) = group_key(p);
         let g = groups.entry(key).or_default();
         if g.labels.is_none() {
             g.labels = labels;
@@ -507,11 +486,11 @@ fn fold_entry(
     let control = read_window(&states[state_of(SCOPE_CONTROL)], ctl, anchor.block_time);
     let unknown_reason = (patterns.builds.pins_fee() && window_prints > 0 && !window_has_fee)
         .then_some(UnknownReason::NoFeeReadings);
+    let signal_key = nearest.map(|(.., p)| group_key(p).0);
 
     let mut rows: Vec<GroupRow> = groups
         .into_iter()
         .map(|(key, g)| GroupRow {
-            key,
             labels: g.labels,
             buy_tx: g.buy_tx,
             sell_tx: g.sell_tx,
@@ -522,6 +501,8 @@ fn fold_entry(
             buy_secs: g.buy_secs.len() as u32,
             buy_tx_share_pct: pct(f64::from(g.buy_tx), f64::from(window.buy_tx)),
             buy_sol_share_pct: pct(g.buy_sol, window.buy_sol),
+            signal: signal_key.as_ref() == Some(&key),
+            key,
         })
         .collect();
     rows.sort_by(|a, b| {
@@ -531,15 +512,20 @@ fn fold_entry(
             .then_with(|| a.key.cmp(&b.key))
     });
     let groups_omitted = rows.len().saturating_sub(MAX_GROUPS) as u32;
+    // The signal's row stays, in the last kept place, when the cap would cut it.
+    if let Some(i) = rows.iter().position(|r| r.signal).filter(|&i| i >= MAX_GROUPS) {
+        rows.swap(i, MAX_GROUPS - 1);
+    }
     rows.truncate(MAX_GROUPS);
     probe.nearest = nearest.map(|(slot, tx, at_ms, p)| {
         let lag_slots = anchor.slot - slot;
+        let labels = p.ix_labels.as_ref().map(normalize_labels).unwrap_or_default();
         NearestTag {
             lag_slots,
             lag_tx: (lag_slots == 0).then(|| i64::from(anchor.tx_index) - i64::from(tx)),
             lag_secs: (entry_ms - at_ms) as f64 / 1000.0,
-            key: group_key(p, GroupBy::Template).0,
-            labels: p.ix_labels.as_ref().map(normalize_labels).unwrap_or_default(),
+            key: grain(&labels),
+            labels,
         }
     });
 
@@ -669,7 +655,7 @@ pub async fn read_entry_range(
         tracing::warn!("entry context range: tape floor unreadable: {e}");
         None
     });
-    let mut read = fold_entry(&anchor, &prints, &patterns, w, pw, body.group_by);
+    let mut read = fold_entry(&anchor, &prints, &patterns, w, pw);
     if tape_floor.is_some_and(|f| body.from - (body.to - body.from) < f) {
         read.unknown_reason = Some(UnknownReason::TapeTruncated);
     }
@@ -774,7 +760,7 @@ pub async fn read_entry_context(
                 };
             }
             let prints = by_mint.get(&a.mint_address).unwrap_or(&empty);
-            let mut e = fold_entry(a, prints, &patterns, w, pw, body.group_by);
+            let mut e = fold_entry(a, prints, &patterns, w, pw);
             if !targeted {
                 untarget(&mut e);
             }
@@ -788,7 +774,6 @@ pub async fn read_entry_context(
         max_entries: MAX_ENTRIES,
         window_secs: w,
         probe_slots: pw,
-        group_by: body.group_by,
         tape_floor,
     })
 }
@@ -890,9 +875,14 @@ fn point_of(
     };
     let end = prints.partition_point(|p| (p.slot, p.tx_index) < (trigger.slot, trigger.tx_index));
     let start = prints.partition_point(|p| p.block_time < t - reach).min(end);
-    let mut read = fold_entry(&anchor, &prints[start..end], patterns, w, pw, GroupBy::Template);
-    // Only what a logic reads: the top row (Top structure), no label lists.
-    read.groups.truncate(1);
+    let mut read = fold_entry(&anchor, &prints[start..end], patterns, w, pw);
+    // Only what a logic reads: the top row (Top structure) and the signal's row, no
+    // label lists.
+    let mut i = 0;
+    read.groups.retain(|g| {
+        i += 1;
+        i == 1 || g.signal
+    });
     read.groups_omitted = 0;
     if let Some(n) = read.probe.nearest.as_mut() {
         n.labels.clear();
@@ -1135,14 +1125,14 @@ mod tests {
             // A sell is on neither side of a BUY share.
             print(104, 0, 92, SIX, false, 5.0, "a"),
         ];
-        let e = fold_entry(&anchor(110, 0, 100), &prints, &six_tag(), 30.0, 25, GroupBy::Program);
+        let e = fold_entry(&anchor(110, 0, 100), &prints, &six_tag(), 30.0, 25);
         assert_eq!((e.window.tag_buy_tx, e.window.buy_tx), (3, 4));
         assert_eq!(e.window.tx_share_pct, Some(75.0));
         let sol = e.window.sol_share_pct.unwrap();
         assert!((sol - 100.0 * 1.2 / 1.5).abs() < 1e-9, "{sol}");
         assert_eq!(e.window.tag_sell_tx, 1);
         // Breakdown agrees with the headline: 6Vo is the top row with every tagged buy.
-        assert_eq!(e.groups[0].key, "Unknown (6Vo3245e)");
+        assert_eq!(e.groups[0].key, format!("Compute Budget: SetComputeUnitLimit > {SIX}"));
         assert_eq!((e.groups[0].buy_tx, e.groups[0].tag_buy_tx), (3, 3));
         assert_eq!(e.groups[0].buy_tx_share_pct, Some(75.0));
         // The probe (25 slots) sees every tagged transaction, the sell included (the
@@ -1157,6 +1147,23 @@ mod tests {
         assert_eq!(total, e.window.buy_tx);
     }
 
+    /// The signal row is the breakdown group of the probe's nearest tagged print, and
+    /// it survives the group cap.
+    #[test]
+    fn the_signal_row_is_the_nearest_tagged_prints_group() {
+        let six_b = "Unknown (6Vo3245e): BuyExactIn";
+        let mut prints: Vec<TapePrint> = (0..MAX_GROUPS as i32 + 5)
+            .map(|i| print(80, i, 80, &format!("Other{i}: Buy"), true, 1.0, "x"))
+            .collect();
+        prints.push(print(85, 0, 85, SIX, true, 0.1, "a"));
+        prints.push(print(89, 0, 99, six_b, true, 0.1, "b"));
+        let e = fold_entry(&anchor(90, 5, 100), &prints, &six_tag(), 30.0, 25);
+        let signal: Vec<&GroupRow> = e.groups.iter().filter(|g| g.signal).collect();
+        assert_eq!(signal.len(), 1);
+        assert!(signal[0].key.ends_with(six_b), "{}", signal[0].key);
+        assert_eq!(e.groups.len(), MAX_GROUPS);
+    }
+
     /// `[entry - W, entry]` by block time, and in his own slot only the txs ahead of
     /// his; everything one W earlier is the control.
     #[test]
@@ -1168,7 +1175,7 @@ mod tests {
             print(90, 2, 100, SIX, true, 1.0, "d"),       // his slot, ahead of him
             print(90, 7, 100, SIX, true, 1.0, "e"),       // his slot, after him
         ];
-        let e = fold_entry(&anchor(90, 5, 100), &prints, &six_tag(), 30.0, 25, GroupBy::Exact);
+        let e = fold_entry(&anchor(90, 5, 100), &prints, &six_tag(), 30.0, 25);
         assert_eq!((e.window.tag_buy_tx, e.window.buy_tx), (1, 2));
         // The nearest target is the one in his own slot, 3 transactions ahead of him.
         let n = e.probe.nearest.as_ref().expect("a tagged print in the probe window");
@@ -1181,7 +1188,7 @@ mod tests {
     #[test]
     fn no_target_reads_the_breakdown_and_no_share() {
         let prints = vec![print(50, 0, 90, SIX, true, 1.0, "a")];
-        let mut e = fold_entry(&anchor(90, 5, 100), &prints, &TagPatterns::default(), 30.0, 25, GroupBy::Program);
+        let mut e = fold_entry(&anchor(90, 5, 100), &prints, &TagPatterns::default(), 30.0, 25);
         untarget(&mut e);
         assert_eq!((e.window.tag_buy_tx, e.window.buy_tx), (0, 1));
         assert_eq!(e.window.tx_share_pct, None);
@@ -1190,7 +1197,7 @@ mod tests {
 
     #[test]
     fn an_empty_window_has_no_share() {
-        let e = fold_entry(&anchor(90, 5, 100), &[], &six_tag(), 30.0, 25, GroupBy::Exact);
+        let e = fold_entry(&anchor(90, 5, 100), &[], &six_tag(), 30.0, 25);
         assert_eq!(e.window.buy_tx, 0);
         assert_eq!(e.window.tx_share_pct, None);
         assert!(e.groups.is_empty());
@@ -1209,7 +1216,7 @@ mod tests {
             print(89, 0, 98, "Pump.Fun: Buy", true, 9.0, "e"), // untagged
             print(90, 7, 100, SIX, true, 1.0, "f"), // his slot, after him
         ];
-        let e = fold_entry(&anchor(90, 5, 100), &prints, &six_tag(), 30.0, 2, GroupBy::Exact);
+        let e = fold_entry(&anchor(90, 5, 100), &prints, &six_tag(), 30.0, 2);
         assert_eq!((e.probe.hits, e.probe.control_hits), (1, 2));
         assert!((e.probe.sol - 0.5).abs() < 1e-9 && (e.probe.control_sol - 3.0).abs() < 1e-9);
         let n = e.probe.nearest.as_ref().unwrap();
@@ -1225,7 +1232,7 @@ mod tests {
         let mut leg = print(50, 1, 90, SIX, true, 0.5, "b");
         leg.leg_index = 1;
         let prints = vec![print(50, 1, 90, SIX, true, 0.5, "a"), leg];
-        let e = fold_entry(&anchor(90, 5, 100), &prints, &six_tag(), 30.0, 25, GroupBy::Exact);
+        let e = fold_entry(&anchor(90, 5, 100), &prints, &six_tag(), 30.0, 25);
         assert_eq!(e.window.buy_tx, 1);
         assert!((e.window.buy_sol - 1.0).abs() < 1e-9);
         assert_eq!(e.groups[0].wallets, 2);
@@ -1246,17 +1253,17 @@ mod tests {
             print(70, 0, 92, SIX, true, 1.0, "y"),
             print(80, 0, 95, "Pump.Fun: Buy", true, 1.0, "y"),
         ];
-        let e = fold_entry(&anchor(90, 5, 100), &prints, &tag, 30.0, 25, GroupBy::Program);
+        let e = fold_entry(&anchor(90, 5, 100), &prints, &tag, 30.0, 25);
         assert_eq!((e.window.tag_buy_tx, e.window.buy_tx), (2, 3));
         assert_eq!((e.control.tag_buy_tx, e.control.buy_tx), (2, 2));
-        let pump = e.groups.iter().find(|g| g.key == "Pump.Fun").unwrap();
+        let pump = e.groups.iter().find(|g| g.key.ends_with("Pump.Fun: Buy")).unwrap();
         assert_eq!((pump.buy_tx, pump.tag_buy_tx), (2, 1));
         // Probe [65, 90) holds y's two buys; x's slot-60 buy sits in the probe
         // control [40, 65), untagged there: its 6Vo buy is before that span.
         assert_eq!((e.probe.hits, e.probe.control_hits), (2, 0));
         // The same tag without sticky: only the 6Vo prints carry it.
         let plain = compile_target(&serde_json::json!({ "match": { "program": ["Unknown (6Vo3245e)"] } })).unwrap();
-        let e = fold_entry(&anchor(90, 5, 100), &prints, &plain, 30.0, 25, GroupBy::Program);
+        let e = fold_entry(&anchor(90, 5, 100), &prints, &plain, 30.0, 25);
         assert_eq!((e.window.tag_buy_tx, e.control.tag_buy_tx), (1, 1));
     }
 
@@ -1278,7 +1285,7 @@ mod tests {
             block_time: at(100),
             amount_lamports: 0,
         };
-        let e = fold_entry(&anchor, &prints, &six_tag(), 20.0, 25, GroupBy::Program);
+        let e = fold_entry(&anchor, &prints, &six_tag(), 20.0, 25);
         assert_eq!((e.window.tag_buy_tx, e.window.buy_tx), (2, 3));
         assert_eq!((e.control.tag_buy_tx, e.control.buy_tx), (2, 2));
     }
@@ -1316,11 +1323,10 @@ mod tests {
             "to": "2026-09-20T00:00:45.5Z",
             "end_slot": 123,
             "probe_slots": 5,
-            "group_by": "program",
             "tag": { "match": { "program": ["X"] }, "sticky": true },
         }))
         .expect("range body");
-        assert_eq!((body.end_slot, body.probe_slots, body.group_by), (123, 5, GroupBy::Program));
+        assert_eq!((body.end_slot, body.probe_slots), (123, 5));
         assert_eq!((body.to - body.from).num_milliseconds(), 45_500);
     }
 
@@ -1331,10 +1337,8 @@ mod tests {
             "from": "2026-09-20T00:00:00Z",
             "window_secs": 30,
             "tag": { "match": { "program": ["X"] }, "side": "buy" },
-            "group_by": "template",
         }))
         .expect("body");
-        assert_eq!(body.group_by, GroupBy::Template);
         assert!(body.to.is_none());
         assert!(body.tag.is_some());
         let untagged: EntryContextBody =
@@ -1342,7 +1346,7 @@ mod tests {
         assert!(untagged.tag.is_none());
         assert_eq!(untagged.window_secs, 30.0);
         assert_eq!(untagged.probe_slots, 25);
-        let e = fold_entry(&anchor(90, 5, 100), &[], &six_tag(), 30.0, 25, GroupBy::Exact);
+        let e = fold_entry(&anchor(90, 5, 100), &[], &six_tag(), 30.0, 25);
         let v = serde_json::to_value(&e).unwrap();
         for k in ["mint_address", "slot", "tx_index", "at", "sol", "window", "control", "groups", "groups_omitted", "probe"] {
             assert!(v.get(k).is_some(), "{k}");
@@ -1414,7 +1418,6 @@ mod tests {
             "from": "2026-09-20T00:00:00Z",
             "window_secs": 30,
             "probe_slots": 25,
-            "group_by": "exact",
         }))
         .expect("scan body");
         assert_eq!((body.base.window_secs, body.base.probe_slots), (30.0, 25));

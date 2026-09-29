@@ -12,7 +12,7 @@ import { apiErrorMessage } from 'store/apiSlice';
 import { useGetTokenDetailQuery, useGetTokenTradesQuery } from 'store/sharedEndpoints';
 import { formatTimestampMs } from 'utils/date';
 import { AXIS_BY_KEY, formatAxis } from '@lab/lib/entryContext/axes';
-import type { EntryGroupBy, EntryRow, EntryTargetTag } from '@lab/lib/entryContext/types';
+import type { EntryRow, EntryTargetTag } from '@lab/lib/entryContext/types';
 import type { TradeRecord } from 'types';
 import { useGetEntryRangeQuery } from '@lab/store/labEndpoints';
 import { GROUP_TABLE_LABELS, groupColumns } from './entryColumns';
@@ -27,7 +27,6 @@ export interface EntryDetailQuery {
   wallet: string;
   windowSecs: number;
   probeSlots: number;
-  groupBy: EntryGroupBy;
   tag?: EntryTargetTag;
 }
 
@@ -46,7 +45,7 @@ export interface EntryDetailQuery {
  * The chart is the shared trade chart without its card: his trades spotlit, the
  * lens set classifying the flow. The breakdown's Structure
  * cells carry the trades table's highlight button: it washes every candle with
- * that exact structure (Exact grouping only; a Template / Program row is a group).
+ * that exact structure.
  */
 export function EntryDetail({ entry, query }: { entry: EntryRow; query: EntryDetailQuery }) {
   const { timezone } = useTimezone();
@@ -88,7 +87,6 @@ export function EntryDetail({ entry, query }: { entry: EntryRow; query: EntryDet
           to: new Date(picked.to * 1000).toISOString(),
           end_slot: picked.endSlot,
           probe_slots: query.probeSlots,
-          group_by: query.groupBy,
           ...(query.tag ? { tag: query.tag } : {}),
         }
       : skipToken,

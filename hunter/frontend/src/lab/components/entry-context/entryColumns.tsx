@@ -173,16 +173,26 @@ export function groupColumns(lens?: StructureLens | null): ColumnDef<EntryGroupR
       group: 'structure',
       tooltip:
         'Is this structure the target?\n' +
-        "'tag' = all its buys matched the target. '3/5' = 3 of its 5 buys did. '-' = none.",
+        "'tag' = all its buys matched the target. '3/5' = 3 of its 5 buys did. '-' = none.\n" +
+        "'signal' = the structure of the target transaction the Probe found nearest before his buy.",
       render: (g) =>
-        g.tag_buy_tx > 0 ? (
-          <Badge variant="accent" size="sm">
-            {g.tag_buy_tx === g.buy_tx ? 'tag' : `${g.tag_buy_tx}/${g.buy_tx}`}
-          </Badge>
+        g.tag_buy_tx > 0 || g.signal ? (
+          <span className="flex items-center gap-1">
+            {g.signal && (
+              <Badge variant="warning" size="sm">
+                signal
+              </Badge>
+            )}
+            {g.tag_buy_tx > 0 && (
+              <Badge variant="accent" size="sm">
+                {g.tag_buy_tx === g.buy_tx ? 'tag' : `${g.tag_buy_tx}/${g.buy_tx}`}
+              </Badge>
+            )}
+          </span>
         ) : (
           <span className="text-text-dim">-</span>
         ),
-      sortValue: (g) => g.tag_buy_tx,
+      sortValue: (g) => (g.signal ? 1e9 : 0) + g.tag_buy_tx,
       searchValue: () => '',
     },
     num('buys', 'buy_tx', 'Buys', `How many buy transactions this structure made ${IN_RANGE}.`, (g) => g.buy_tx, int),
