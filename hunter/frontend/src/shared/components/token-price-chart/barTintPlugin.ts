@@ -15,8 +15,9 @@ import { lensLaneHeight } from './lensLanePlugin';
 import type { LensBarTint } from './lensTint';
 
 /**
- * Faint vertical washes behind the candles — "the thing you picked happened HERE,
- * and this is how much of the candle it was". The highlight lane below the candles
+ * Faint vertical washes behind the candles — "the thing you picked happened HERE".
+ * Every wash draws at one alpha, so a layer is one flat color from bar to bar and
+ * several armed layers stay apart by hue alone. The highlight lane below the candles
  * (`lensLanePlugin`) is what finds a hit at a glance; the wash only ties a lane
  * mark to the candle above it, so it stays faint and stops at the lane's top.
  *
@@ -27,7 +28,7 @@ import type { LensBarTint } from './lensTint';
  * where several hit shows each — the cell a reader is actually hunting for.
  *
  * Vocabulary-free like the rest of this folder: a layer is a color and a list of
- * (bar, share, trades). The chart never learns that one of them means "a wallet"
+ * (bar, trades). The chart never learns that one of them means "a wallet"
  * and another "an ix structure".
  */
 export interface BarTintLayer {
@@ -47,12 +48,10 @@ export const EMPTY_BAR_TINTS: BarTintState = { layers: [], laneRows: 0 };
 const FULL_WIDTH_RATIO = 0.9;
 /** A wash narrower than this reads as a hairline artifact, so it is widened to it. */
 const MIN_WIDTH = 1.5;
-/** Alpha at share→0. Barely there: the lane already says "a hit is here", the wash
- *  only has to point at the candle. */
-const MIN_ALPHA = 0.06;
-/** Alpha at share→1 — a bar the target owns outright. Capped below opaque so the
- *  candle and its wick stay readable through the wash. */
-const MAX_ALPHA = 0.22;
+/** Every wash's alpha. Faint on purpose: the lane already says "a hit is here", the
+ *  wash only has to point at the candle, and the candle and its wick stay readable
+ *  through it. */
+const WASH_ALPHA = 0.18;
 
 interface RenderedWash {
   /** Media-space left edge. */
@@ -120,9 +119,9 @@ export class BarTintPlugin
   private _chart: IChartApiBase<UTCTimestamp> | null = null;
   private _requestUpdate: (() => void) | null = null;
   private _laneRows = 0;
-  /** Bar key → the layers hitting it, in layer order. Built once per `setTints`, so
+  /** Bar key → the colors of the layers hitting it, in layer order. Built once per `setTints`, so
    *  a pan or zoom only re-projects coordinates. */
-  private _byBar = new Map<number, { color: string; tint: LensBarTint }[]>();
+  private _byBar = new Map<number, string[]>();
   private _washes: RenderedWash[] = [];
 
   attached({ chart, requestUpdate }: SeriesAttachedParameter<UTCTimestamp>): void {
@@ -136,12 +135,12 @@ export class BarTintPlugin
   }
 
   setTints(state: BarTintState): void {
-    const byBar = new Map<number, { color: string; tint: LensBarTint }[]>();
+    const byBar = new Map<number, string[]>();
     for (const layer of state.layers) {
       for (const tint of layer.tints) {
         const hits = byBar.get(tint.barTime);
-        if (hits) hits.push({ color: layer.color, tint });
-        else byBar.set(tint.barTime, [{ color: layer.color, tint }]);
+        if (hits) hits.push(layer.color);
+        else byBar.set(tint.barTime, [layer.color]);
       }
     }
     this._byBar = byBar;
@@ -166,11 +165,11 @@ export class BarTintPlugin
       if (x == null) continue;
       const width = Math.max(MIN_WIDTH, full / hits.length);
       const left = x - (width * hits.length) / 2;
-      hits.forEach(({ color, tint }, i) => {
+      hits.forEach((color, i) => {
         washes.push({
           x: left + i * width,
           width,
-          alpha: MIN_ALPHA + (MAX_ALPHA - MIN_ALPHA) * Math.min(1, Math.max(0, tint.share)),
+          alpha: WASH_ALPHA,
           color,
         });
       });

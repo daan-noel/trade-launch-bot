@@ -7,18 +7,15 @@ import {
 import type { ChartGroupMode, ChartLensItem, ChartMetric, ChartTrade, OhlcBar } from './types';
 
 /**
- * Per-bar strength of a highlight lens — "how much of this candle is the thing
- * you picked".
+ * One bar a highlight lens hits — "the thing you picked traded in this candle".
  *
- * A candle is almost never 100% one wallet or one ix structure, so a binary tint
- * overstates every bar it paints. The share is what makes the overlay honest:
- * one dust leg in a busy slot renders faint, a slot the target owns renders solid.
+ * Every hit draws at one strength, so a lens reads as one flat color and several
+ * armed lenses stay apart by hue alone. How much it moved is the lane mark's height
+ * and the size labels, never the wash.
  */
 export interface LensBarTint {
   /** Bar key — bucket-start seconds in time mode, slot number in slot mode. */
   barTime: number;
-  /** Matched SOL / bar SOL, clamped to [0, 1]. */
-  share: number;
   /** The matched trades in this bar, in chart order — what the size labels under
    *  the wash and the hover list print, so neither can disagree with the wash. */
   trades: readonly ChartTrade[];
@@ -62,11 +59,10 @@ function lensBarKey(
 /**
  * Bucket the trades a lens matches against the bars already on the chart.
  *
- * The dust/validity guards here MIRROR `collectTradeBuckets` on purpose: the
- * denominator is `OhlcBar.volume`, so counting a trade the bar itself dropped
- * would paint a share above 1 on a candle that never held it. A bar key the chart
- * has no bar for is skipped rather than drawn at a coordinate the reader can't
- * check against a candle.
+ * The dust/validity guards here MIRROR `collectTradeBuckets` on purpose: a trade
+ * the bar itself dropped would paint a hit, a size label and a SOL total on a
+ * candle that never held it. A bar key the chart has no bar for is skipped rather
+ * than drawn at a coordinate the reader can't check against a candle.
  */
 export function buildLensMatch(
   trades: readonly ChartTrade[],
@@ -78,10 +74,9 @@ export function buildLensMatch(
 ): LensMatch {
   if (bars.length === 0) return EMPTY_LENS_MATCH;
 
-  const barVolume = new Map<number, number>();
-  for (const bar of bars) barVolume.set(bar.time as number, bar.volume);
+  const barTimes = new Set<number>();
+  for (const bar of bars) barTimes.add(bar.time as number);
 
-  const matchedSol = new Map<number, number>();
   const matchedTrades = new Map<number, ChartTrade[]>();
   let buys = 0;
   let sells = 0;
@@ -94,12 +89,11 @@ export function buildLensMatch(
     if (!matches(trade)) continue;
 
     const key = lensBarKey(trade, groupMode, intervalSec);
-    if (key == null || !barVolume.has(key)) continue;
+    if (key == null || !barTimes.has(key)) continue;
 
     // `?? 1` mirrors the bucket math: a row with no recorded SOL still counts as
-    // one unit of volume there, so the ratio stays in the same currency.
+    // one unit of volume there, so the SOL totals stay in the same currency.
     const sol = trade.amount_sol ?? 1;
-    matchedSol.set(key, (matchedSol.get(key) ?? 0) + sol);
     const inBar = matchedTrades.get(key);
     if (inBar) inBar.push(trade);
     else matchedTrades.set(key, [trade]);
@@ -113,14 +107,7 @@ export function buildLensMatch(
   }
 
   const tint: LensBarTint[] = [];
-  for (const [barTime, sol] of matchedSol) {
-    const denom = barVolume.get(barTime) ?? 0;
-    tint.push({
-      barTime,
-      share: denom > 0 ? Math.min(1, sol / denom) : 1,
-      trades: matchedTrades.get(barTime) ?? [],
-    });
-  }
+  for (const [barTime, inBar] of matchedTrades) tint.push({ barTime, trades: inBar });
   tint.sort((a, b) => a.barTime - b.barTime);
 
   return {

@@ -27,7 +27,7 @@ import type { ChartLensSizeLabels, ChartTrade } from './types';
  * price scale's bottom margin), so no candle is ever drawn under a row.
  *
  * Vocabulary-free like the rest of this folder: a row is a label, a color and
- * (bar, share, trades) hits.
+ * (bar, trades) hits.
  */
 export interface LensLaneRow {
   label: string;

@@ -428,7 +428,7 @@ export interface TokenPriceChartProps {
   /** Ephemeral highlight lenses — see {@link ChartHighlightLens}. */
   highlightLens?: ChartHighlightLens | null;
   /** What each armed lens actually matched, reported back after every rebucket.
-   *  The chart owns this math (the share is over `OhlcBar.volume`), so a host
+   *  The chart owns this math (hits are keyed to the bars it draws), so a host
    *  reading its counts from here can never quote a number the tint disagrees
    *  with. Fires with empty matches when nothing is armed. */
   onHighlightLensMatch?: (matches: ChartLensMatches) => void;

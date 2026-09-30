@@ -816,9 +816,9 @@ export function TokenPriceChart({
   // ── Highlight lenses ────────────────────────────────────────────────────────
   //
   // "Where did this wallet trade / where did this structure appear", washed behind
-  // the candles. Computed HERE and nowhere else: the share a wash paints is
-  // matched SOL over `OhlcBar.volume`, so it can only be honest in the one place
-  // that owns the bars. `onHighlightLensMatch` hands the same numbers back out so
+  // the candles. Computed HERE and nowhere else: a hit is keyed to the bars this
+  // chart draws, so it can only be honest in the one place that owns the bars.
+  // `onHighlightLensMatch` hands the same numbers back out so
   // a host's chips can never quote a different count from the tint.
   // Wallets first, then structures, each in arming order — the lane's row order.
   const lensItems = useMemo(() => {
