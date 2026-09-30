@@ -70,7 +70,7 @@ describe('buildWalletMarkerDefs — comparison tier', () => {
       [wallet('M', { isCompared: true, isMine: true }), wallet('D', { isCompared: true, isDev: true })],
     );
     const byLetter = new Map(defs.map((d) => [d.letter, d]));
-    expect(byLetter.get('★')!.shape).toBe('diamond');
+    expect(byLetter.get('★')!.shape).toBe('arrowUp');
     expect(byLetter.get('D')!.shape).toBe('triangle');
     // Class wins the shape, but both still carry the comparison ring/size tier.
     expect(defs.every((d) => d.compared)).toBe(true);
@@ -114,5 +114,33 @@ describe('buildWalletMarkerDefs — comparison tier', () => {
       'F',
       'C',
     ]);
+  });
+});
+
+describe('buildWalletMarkerDefs — lens tier', () => {
+  it('draws a lens wallet as a diamond, below focus and above the comparison set', () => {
+    const defs = defsFor(
+      [trade('C', 'buy'), trade('L', 'buy'), trade('F', 'buy')],
+      [
+        wallet('C', { isCompared: true }),
+        wallet('L', { isLensed: true }),
+        wallet('F', { isHighlighted: true }),
+      ],
+    );
+    const byLetter = new Map(defs.map((d) => [d.letter, d]));
+    expect(byLetter.get('L')!.shape).toBe('diamond');
+    expect(byLetter.get('L')!.lensed).toBe(true);
+    expect(byLetter.get('L')!.highlighted).toBeFalsy();
+    const order = [...defs].sort((a, b) => a.stackIndex - b.stackIndex).map((d) => d.letter);
+    expect(order).toEqual(['F', 'L', 'C']);
+  });
+});
+
+describe('buildWalletMarkerDefs — mine arrow', () => {
+  it('points a mine marker up on a buy and down on a sell', () => {
+    const defs = defsFor([trade('M', 'buy'), trade('M', 'sell')], [wallet('M', { isMine: true })]);
+    const byType = new Map(defs.map((d) => [d.type, d.shape]));
+    expect(byType.get('buy')).toBe('arrowUp');
+    expect(byType.get('sell')).toBe('arrowDown');
   });
 });

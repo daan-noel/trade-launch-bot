@@ -499,7 +499,7 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   `COMPARE_MIN_RADIUS` floor and an outer ring in the marker's OWN color, and the
   comparison tier outranks the lifecycle tier on size (whose marker it is beats which leg
   it was). Class still wins the silhouette, so a compared `mine`/dev wallet keeps its
-  diamond/triangle and only the ring and size carry the tier. Size and shape are
+  arrow/triangle and only the ring and size carry the tier. Size and shape are
   deliberately redundant: size is the cue that survives a color-blind read, shape the one
   that survives zooming out, and the tier has to hold at both.
   While the list is non-empty every OTHER tracked wallet is flagged `dimmed` — drawn at

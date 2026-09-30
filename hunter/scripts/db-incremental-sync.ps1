@@ -1178,7 +1178,9 @@ ON CONFLICT (id) DO UPDATE SET
   $doneWindow = if ($IncludeToday) { "through $sealedCutoff UTC, incl. today's partial chunk" } else { "sealed days through $sealedCutoff UTC" }
   Write-Host "Incremental sync complete ($doneWindow; server credentials removed from local catalog)."
 
-  $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+  # hunter-lab finds its `.env` by walking UP from the CWD, and it lives in
+  # `hunter/`, so run cargo from here -- the monorepo root has no `.env`.
+  $hunterDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
   # ---- 10. Dead-slot sweep: drop legs of blocks the chain never finalized -----
   # This sync appends and never deletes, so the server's own sweep cannot reach
@@ -1188,7 +1190,7 @@ ON CONFLICT (id) DO UPDATE SET
   if (-not $SkipDeadSlotSweep) {
     Write-Host ""
     Write-Host "Sweeping dead slots (public RPC, no Helius)..."
-    Push-Location $repoRoot
+    Push-Location $hunterDir
     try {
       & cargo run -p hunter-lab -- sweep-dead-slots
       if ($LASTEXITCODE -ne 0) {
@@ -1207,7 +1209,7 @@ ON CONFLICT (id) DO UPDATE SET
     Write-Host "Exporting Parquet lake (hop 2)..."
     $exportArgs = @('run', '-p', 'hunter-lab', '--', 'lake-export')
     if ($IncludeToday) { $exportArgs += '--include-today' }
-    Push-Location $repoRoot
+    Push-Location $hunterDir
     try {
       & cargo @exportArgs
       if ($LASTEXITCODE -ne 0) {

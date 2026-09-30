@@ -32,6 +32,8 @@ import type { ChartLensSizeLabels, ChartTrade } from './types';
 export interface LensLaneRow {
   label: string;
   color: string;
+  /** The row's background — the host tells kinds of rows apart with it. */
+  track: string;
   tints: readonly LensBarTint[];
 }
 
@@ -61,7 +63,6 @@ const MARK_WIDTH_RATIO = 0.7;
 const FONT = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
 const AXIS_FONT = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
 const TEXT_PAD = 2;
-const TRACK = 'rgba(255, 255, 255, 0.05)';
 const SEPARATOR = 'rgba(255, 255, 255, 0.12)';
 /** Numbers are a quiet readout beside the marks: dim, unboxed, so the marks stay
  *  what the eye lands on. */
@@ -83,6 +84,26 @@ function fitRowHeight(rows: number, paneH: number): number | null {
 export function lensLaneHeight(rows: number, paneH: number): number {
   const h = fitRowHeight(rows, paneH);
   return h == null ? 0 : TOP_GAP + rows * (h + ROW_GAP) - ROW_GAP + BOTTOM_PAD;
+}
+
+/**
+ * The row under pane-y `y`, or `null` when `y` is above the lane or out of every
+ * row. A row's hover band takes half the gap on each side, so the pointer never
+ * falls between two rows.
+ */
+export function laneRowAt(y: number, rows: number, paneH: number): number | null {
+  const rowH = fitRowHeight(rows, paneH);
+  if (rowH == null) return null;
+  const first = paneH - lensLaneHeight(rows, paneH) + TOP_GAP;
+  const i = Math.floor((y - first + ROW_GAP / 2) / (rowH + ROW_GAP));
+  return i >= 0 && i < rows ? i : null;
+}
+
+/** One lane row's trades in one bar — what hovering its mark lists. */
+export interface LensLaneHit {
+  label: string;
+  color: string;
+  trades: readonly ChartTrade[];
 }
 
 /** SOL a mark stands for: buys, or buys and sells when every side is printed. */
@@ -137,6 +158,7 @@ interface RenderedMark {
 interface RenderedRow {
   label: string;
   color: string;
+  track: string;
   marks: RenderedMark[];
 }
 
@@ -164,7 +186,7 @@ class LensLaneRenderer implements IPrimitivePaneRenderer {
       let hidden = 0;
       let top = laneTop + TOP_GAP;
       for (const row of this._rows) {
-        ctx.fillStyle = TRACK;
+        ctx.fillStyle = row.track;
         ctx.fillRect(0, top, width, rowH);
 
         const inView = row.marks.filter((m) => m.x >= -this._markW && m.x <= width + this._markW);
@@ -236,6 +258,8 @@ class LensLaneAxisRenderer implements IPrimitivePaneRenderer {
       for (const row of this._rows) {
         ctx.fillStyle = CHART_COLORS.background;
         ctx.fillRect(0, top - 1, mediaSize.width, rowH + 2);
+        ctx.fillStyle = row.track;
+        ctx.fillRect(0, top, mediaSize.width, rowH);
         ctx.fillStyle = row.color;
         ctx.fillRect(0, top, 3, rowH);
         ctx.fillText(fitMiddle(ctx, row.label, mediaSize.width - 8), 6, top + rowH / 2);
@@ -266,7 +290,9 @@ export class LensLanePlugin
   private _requestUpdate: (() => void) | null = null;
   /** Per row: each hit's mark height and text, built once per `setState` — a pan
    *  or zoom only re-projects x. */
-  private _prepared: { label: string; color: string; hits: Omit<RenderedMark, 'x'>[]; times: number[] }[] = [];
+  private _prepared: { label: string; color: string; track: string; hits: Omit<RenderedMark, 'x'>[]; times: number[] }[] = [];
+  /** Per row: bar key → that bar's matched trades, for the hover. */
+  private _tradesByBar: Map<number, readonly ChartTrade[]>[] = [];
   private _rendered: RenderedRow[] = [];
   private _markW = MIN_MARK_W;
 
@@ -293,13 +319,40 @@ export class LensLanePlugin
     this._prepared = state.rows.map((row, r) => ({
       label: row.label,
       color: row.color,
+      track: row.track,
       times: row.tints.map((t) => t.barTime),
       hits: row.tints.map((t, i) => ({
         height: max > 0 ? Math.sqrt(sols[r][i] / max) : 0,
         text: laneText(t.trades, state.sizeLabels),
       })),
     }));
+    this._tradesByBar = state.rows.map((row) => new Map(row.tints.map((t) => [t.barTime, t.trades])));
     this._requestUpdate?.();
+  }
+
+  /**
+   * The row mark under the pointer: the row at pane-y `y` and its trades in the
+   * hovered bar, or `null` when the pointer is off the lane or that row has no
+   * mark there. The host shows only this row's trades while it is non-null.
+   */
+  hitAt(y: number, barTime: number): LensLaneHit | null {
+    const chart = this._chart;
+    if (!chart || this._prepared.length === 0) return null;
+    const row = laneRowAt(y, this._prepared.length, chart.paneSize(0).height);
+    if (row == null) return null;
+    const trades = this._tradesByBar[row]?.get(barTime);
+    if (!trades || trades.length === 0) return null;
+    const { label, color } = this._prepared[row];
+    return { label, color, trades };
+  }
+
+  /** True when pane-y `y` is inside the lane strip — the candle tooltip stays off there. */
+  containsY(y: number): boolean {
+    const chart = this._chart;
+    if (!chart || this._prepared.length === 0) return false;
+    const paneH = chart.paneSize(0).height;
+    const h = lensLaneHeight(this._prepared.length, paneH);
+    return h > 0 && y >= paneH - h;
   }
 
   updateAllViews(): void {
@@ -317,7 +370,7 @@ export class LensLanePlugin
         const x = ts.timeToCoordinate(time as UTCTimestamp);
         if (x != null) marks.push({ x, ...row.hits[i] });
       });
-      return { label: row.label, color: row.color, marks };
+      return { label: row.label, color: row.color, track: row.track, marks };
     });
   }
 

@@ -12,7 +12,7 @@
 > - Toolbar: [`ChartToolbar.tsx`](../../frontend/src/shared/components/token-price-chart/ChartToolbar.tsx)
 > - Bottom zoom/pan slider: [`ChartRangeSlider.tsx`](../../frontend/src/shared/components/token-price-chart/ChartRangeSlider.tsx)
 > - Canvas plugins: [`rangeSelectPlugin.ts`](../../frontend/src/shared/components/token-price-chart/rangeSelectPlugin.ts), [`walletMarkersPlugin.ts`](../../frontend/src/shared/components/token-price-chart/walletMarkersPlugin.ts)
-> - Tooltips: `BarCrosshairTooltip.tsx`, `WalletMarkersTooltip.tsx`, `RangeSelectTooltip.tsx`, field renderers `BarCrosshairFields.tsx` / `BarFlowFields.tsx`
+> - Tooltips: `BarCrosshairTooltip.tsx`, `LensLaneTooltip.tsx`, `WalletMarkersTooltip.tsx`, `RangeSelectTooltip.tsx`, field renderers `BarCrosshairFields.tsx` / `BarFlowFields.tsx`
 > - Viewport & time helpers: [`chartViewport.ts`](../../frontend/src/shared/components/token-price-chart/chartViewport.ts), [`chartTimezone.ts`](../../frontend/src/shared/components/token-price-chart/chartTimezone.ts)
 > - Bar math: [`chartBars.ts`](../../frontend/src/shared/components/token-price-chart/chartBars.ts)
 > - Shared types / constants: [`types.ts`](../../frontend/src/shared/components/token-price-chart/types.ts), [`constants.ts`](../../frontend/src/shared/components/token-price-chart/constants.ts)
@@ -294,7 +294,13 @@ survives zooming in.
 structures cool (cyan, blue, violet, green). Each hue is a clear step from the next and the
 lane draws them solid, so two items read apart without a legend. An item takes the first free
 slot of its family when armed and keeps it until disarmed, so arming or disarming one never
-repaints the others. Arming a fifth of one kind drops the oldest of that kind.
+repaints the others. Arming a fifth of one kind drops the oldest of that kind. The row
+backgrounds split the same way (`LENS_TRACK_COLORS`): a warm tint behind wallet rows and a
+cool one behind structure rows, in the lane and behind the row names, so which rows are
+wallets reads before any mark or label.
+
+**An armed wallet is also a diamond on the marker layer** (section 8): the lane says when, the
+diamond says which leg and which side. It is drawn in its lens color, the same as its lane row.
 
 **The wash behind the candles is faint** (alpha 0.06 to 0.22) and stops at the lane's top: it only ties a lane mark to its candle.
 It is share-weighted, never binary: its alpha tracks matched SOL over `OhlcBar.volume`, so
@@ -321,10 +327,11 @@ a mark's height. With sizes on, the number sits beside its mark, horizontal
 strip's switch picks `buys` (default), `all` (`+buy −sell`) or `off`; the choice persists in
 `UiToggles.lensSizeLabels`. A number sits in the gap between its mark and the next one and is
 dropped when it does not fit, since a number drawn across another mark cannot be read; an
-`N sizes hidden · zoom in` hint counts the dropped ones. Hovering a highlighted candle
-lists its matched trades in the bar tooltip: item colors, side, SOL, network fee (`fee_sol`) and
-wallet, largest first. Lane, wash and hover list all read the same `LensBarTint.trades`, so they
-cannot disagree.
+`N sizes hidden · zoom in` hint counts the dropped ones. Hovering a lane mark opens
+`LensLaneTooltip` with that row's trades in that bar and nothing else: side, SOL, network fee
+(`fee_sol`) and wallet, largest first. Another row's trades in the same bar show on its own
+mark, and the candle's numbers show over the candles (section 9). Lane, wash and lane tooltip all
+read the same `LensBarTint.trades`, so they cannot disagree.
 
 **The counts on the chips come from the chart**, via `onHighlightLensMatch` — not from a
 second pass over the rows. They are bar-aligned by construction, so a chip can never quote a
@@ -370,6 +377,11 @@ trades are marked with a colored **circle** drawn by `WalletMarkersPlugin`
   they never overlap.
 - Each circle is filled with the wallet's palette color (`WALLET_MARKER_COLORS`, cycled), bears
   the first letter of the profile/wallet name, and uses a green (buy) / red (sell) border.
+- The silhouette carries the wallet's class (`walletShape`): arrow = `mine` (up on a buy, down on a sell, no letter), triangle = dev,
+  hexagon = the page's focused wallet (largest, gold glow and ring), diamond = a wallet armed as a
+  highlight lens (6c; ~1.8x, its lens color, no glow or ring, so it stays below the focus),
+  square = the comparison set, circle = everyone else. Nearest the bar stack the focus, then
+  lens diamonds, then the comparison set, then the rest.
 - Hovering a circle (`containsPoint`, distance < radius) opens `WalletMarkersTooltip`, listing
   each wallet at that bar: profile name / shortened address, optional tags, and buy/sell counts
   - total SOL. The per-bar summary comes from `buildWalletBarActivityMap`
@@ -384,8 +396,12 @@ component decides **which single tooltip to show** (others are cleared), roughly
 priority:
 
 1. **Range label** hovered → `RangeSelectTooltip` (§6)
-2. **Wallet marker** hovered → `WalletMarkersTooltip` (§8)
-3. Otherwise, over the main series → **bar tooltip** `BarCrosshairTooltip`
+2. **Highlight lane** hovered → `LensLaneTooltip` on a mark (the row's trades in that bar, §6c),
+   nothing on an empty spot; the lane strip never shows the bar tooltip
+   (`LensLanePlugin.containsY` / `hitAt`)
+3. **Wallet marker** hovered → `WalletMarkersTooltip` (§8)
+4. Otherwise, over the main series → **bar tooltip** `BarCrosshairTooltip`, the candle's own
+   numbers only
 
 The **bar tooltip** and the toolbar readout carry **disjoint** facts — never the same ones
 twice, since both are on screen simultaneously:
@@ -514,7 +530,7 @@ as plain `Slot N` strings instead.
 
 **Session-only UI state**: `rangeSelectMode`, `selectedRange`, `selectedBar`, and the
 hover/tooltip states (`crosshair`, `barTooltip`, `rangeTooltip`,
-`walletMarkersTooltip`), plus `sliderWindow`.
+`walletMarkersTooltip`, `laneTooltip`), plus `sliderWindow`.
 
 ---
 

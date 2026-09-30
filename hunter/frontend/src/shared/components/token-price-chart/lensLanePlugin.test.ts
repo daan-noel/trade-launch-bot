@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { laneText, lensLaneHeight } from './lensLanePlugin';
+import { laneRowAt, laneText, lensLaneHeight } from './lensLanePlugin';
 import type { ChartTrade } from './types';
 
 const t = (trade_type: 'buy' | 'sell', amount_sol: number): ChartTrade => ({
@@ -35,5 +35,19 @@ describe('lensLaneHeight', () => {
   it('never takes more than the lane share of the pane', () => {
     // 8 rows in a short pane squeeze instead of covering the candles.
     expect(lensLaneHeight(8, 200)).toBeLessThanOrEqual(200 * 0.4);
+  });
+});
+
+describe('laneRowAt', () => {
+  // 2 rows in a 400 px pane: 20 px rows, 2 px apart, the first at y = 355.
+  it('finds the row under the pointer, top row first', () => {
+    expect(laneRowAt(356, 2, 400)).toBe(0);
+    expect(laneRowAt(386, 2, 400)).toBe(1);
+  });
+
+  it('is null over the candles and below the last row', () => {
+    expect(laneRowAt(340, 2, 400)).toBeNull();
+    expect(laneRowAt(399, 2, 400)).toBeNull();
+    expect(laneRowAt(356, 0, 400)).toBeNull();
   });
 });

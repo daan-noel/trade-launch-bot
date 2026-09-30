@@ -79,6 +79,16 @@ export const LENS_COLORS = {
   structure: ['#22d3ee', '#3b82f6', '#a78bfa', '#34d399'],
 } as const;
 
+/**
+ * Highlight-lane row backgrounds, one per lens kind: a warm tint behind wallet
+ * rows and a cool one behind structure rows, the same split as `LENS_COLORS`, so
+ * which rows are wallets reads from the lane itself before any mark or label.
+ */
+export const LENS_TRACK_COLORS = {
+  wallet: 'rgba(251, 191, 36, 0.10)',
+  structure: 'rgba(56, 189, 248, 0.10)',
+} as const;
+
 export const CHART_COLORS = {
   up: CANDLE_UP,
   down: CANDLE_DOWN,
@@ -224,7 +234,7 @@ export const COMPARE_MARKER_COLORS = [
  * can lie.
  *
  * A `mine` wallet keeps its own fixed color — the one identity the chart never
- * recolors — and leans on its diamond silhouette plus the comparison ring to
+ * recolors — and leans on its arrow silhouette plus the comparison ring to
  * carry the tier instead.
  */
 export function compareWalletColor(

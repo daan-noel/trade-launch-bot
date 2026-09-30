@@ -167,46 +167,52 @@ export function TokenTradeChart({
   // Spotlight the focused wallet: flag it highlighted if it's already tracked,
   // otherwise append a synthetic marker entry so an arbitrary input address
   // still shows its buys/sells. The other tracked wallets ride along unchanged.
-  // Every armed wallet lens gets the focus treatment on the marker layer too — the
-  // wash says WHEN, the oversized marker says which leg and which side — and a
-  // synthetic one takes its lens color. The page's own `highlightWallet` keeps
-  // the focus gold, since that one is the reason the page is open.
-  // Flattened to a primitive (`addr=color,…`) so the memo below survives the
-  // hook's fresh item list.
+  // Every armed wallet lens gets its own tier on the marker layer — a diamond in its
+  // lens color, the same color as its lane row, smaller than the focus — so the
+  // lane says WHEN and the diamond says which leg and which side. The page's own
+  // `highlightWallet` keeps the gold hexagon, since that one is the reason the
+  // page is open.
+  // The lens list is flattened to a primitive (`addr=color,…`) so the memo below
+  // survives the hook's fresh item list.
   const focusAddr = highlightWallet?.trim() || null;
-  const spotlightKey = [
-    ...(focusAddr ? [`${focusAddr}=${CHART_COLORS.highlightRing}`] : []),
-    ...highlight.items
-      .filter((i) => i.kind === 'wallet' && i.key !== focusAddr)
-      .map((i) => `${i.key}=${i.color}`),
-  ].join(',');
+  const lensKey = highlight.items
+    .filter((i) => i.kind === 'wallet' && i.key !== focusAddr)
+    .map((i) => `${i.key}=${i.color}`)
+    .join(',');
   // Comparison list flattened to a primitive so the memo below survives a caller
   // that rebuilds the array every render.
   const compareKey = (compareWallets ?? []).join(',');
-  // Three marker tiers out of one pass: the spotlight wallet, the comparison set,
-  // and the rest of the tracked crowd — which DIMS while a comparison is running.
+  // Four marker tiers out of one pass: the focused wallet, the lens wallets, the
+  // comparison set, and the rest of the tracked crowd — which DIMS while a
+  // comparison is running.
   const profileWallets = useMemo(() => {
-    const spotlight = new Map(
-      (spotlightKey ? spotlightKey.split(',') : []).map((e) => e.split('=') as [string, string]),
+    const lensed = new Map(
+      (lensKey ? lensKey.split(',') : []).map((e) => e.split('=') as [string, string]),
     );
     const compareSlot = new Map(
       (compareKey ? compareKey.split(',') : []).filter(Boolean).map((a, i) => [a, i] as const),
     );
-    if (spotlight.size === 0 && compareSlot.size === 0) return profileWalletsBase;
+    if (!focusAddr && lensed.size === 0 && compareSlot.size === 0) return profileWalletsBase;
     // Dimming is only ever relative to something worth reading against: with no
     // comparison armed the crowd IS the content, so it stays at full strength.
     const comparing = compareSlot.size > 0;
+    const short = (address: string) => `${address.slice(0, 4)}…${address.slice(-4)}`;
 
-    const unmatched = new Map(spotlight);
+    let focusSeen = false;
     const flagged: ProfileWalletInfo[] = profileWalletsBase.map((w) => {
-      const isHighlighted = spotlight.has(w.address);
-      unmatched.delete(w.address);
+      const isHighlighted = w.address === focusAddr;
+      if (isHighlighted) focusSeen = true;
+      const lensColor = lensed.get(w.address);
+      lensed.delete(w.address);
       const slot = compareSlot.get(w.address);
+      compareSlot.delete(w.address);
+      // An armed lens wins over the comparison set: the diamond and its color are
+      // what the lane row beside it shows.
+      if (lensColor != null) return { ...w, isLensed: true, color: lensColor };
       if (slot == null) {
         if (isHighlighted) return { ...w, isHighlighted: true };
         return comparing ? { ...w, dimmed: true } : w;
       }
-      compareSlot.delete(w.address);
       return {
         ...w,
         isCompared: true,
@@ -216,28 +222,33 @@ export function TokenTradeChart({
       };
     });
 
-    // Anything still in the map has no profile entry — append it in slot order so
-    // a synthetic comparison wallet keeps the color its slot owns.
+    // Anything still in the maps has no profile entry — append it. Comparison
+    // wallets go in slot order so a synthetic one keeps the color its slot owns.
     for (const [address, slot] of compareSlot) {
-      const isHighlighted = unmatched.delete(address);
+      if (lensed.has(address)) continue;
+      const isHighlighted = address === focusAddr;
+      if (isHighlighted) focusSeen = true;
       flagged.push({
         address,
-        label: `${address.slice(0, 4)}…${address.slice(-4)}`,
+        label: short(address),
         color: compareWalletColor(slot),
         isCompared: true,
         ...(isHighlighted ? { isHighlighted } : {}),
       });
     }
-    for (const [address, color] of unmatched) {
+    for (const [address, color] of lensed) {
+      flagged.push({ address, label: short(address), color, isLensed: true });
+    }
+    if (focusAddr && !focusSeen) {
       flagged.push({
-        address,
-        label: `${address.slice(0, 4)}…${address.slice(-4)}`,
-        color,
+        address: focusAddr,
+        label: short(focusAddr),
+        color: CHART_COLORS.highlightRing,
         isHighlighted: true,
       });
     }
     return flagged;
-  }, [profileWalletsBase, spotlightKey, compareKey]);
+  }, [profileWalletsBase, focusAddr, lensKey, compareKey]);
 
   const toChartValue = useCallback(
     (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),

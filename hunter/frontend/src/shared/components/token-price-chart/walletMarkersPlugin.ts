@@ -15,10 +15,21 @@ import type {
 import { DEFAULT_BAR_SPACING } from './constants';
 
 /** Silhouette encodes wallet CLASS (orthogonal to color=identity, border=direction):
- *  diamond = the user's own (`mine`) wallet, triangle = the token's dev/creator
- *  wallet, hexagon = the focused/input wallet, square = a wallet in the active
+ *  arrow = the user's own (`mine`) wallet, up on a buy and down on a sell;
+ *  triangle = the token's dev/creator wallet, hexagon = the focused/input wallet,
+ *  diamond = a wallet armed as a highlight lens, square = a wallet in the active
  *  comparison set, circle = every other tracked wallet. */
-export type MarkerShape = 'circle' | 'diamond' | 'triangle' | 'hexagon' | 'square';
+export type MarkerShape =
+  | 'circle'
+  | 'diamond'
+  | 'triangle'
+  | 'hexagon'
+  | 'arrowUp'
+  | 'arrowDown'
+  | 'square';
+
+/** An arrow carries no letter: its shape already says "yours". */
+const isArrow = (shape: MarkerShape) => shape === 'arrowUp' || shape === 'arrowDown';
 
 export interface WalletMarkerDef {
   barTime: UTCTimestamp;
@@ -40,6 +51,10 @@ export interface WalletMarkerDef {
   highlighted?: boolean;
   /** Glow/outer-ring color for a highlighted marker. */
   ringColor?: string;
+  /** Wallet armed as a highlight lens — the tier under focus: a diamond in the lens
+   *  color, larger than the crowd but smaller than the focus, with no glow or
+   *  ring, so the page's own wallet stays the one that stands out most. */
+  lensed?: boolean;
   /** Comparison-set wallet — the tier between focus and the crowd: larger than
    *  base, its own floor radius, and an outer ring in its OWN color. The ring
    *  reuses the fill rather than introducing a hue because color already means
@@ -62,6 +77,7 @@ interface RenderedPoint {
   role?: 'first_buy' | 'sell_all';
   highlighted?: boolean;
   ringColor?: string;
+  lensed?: boolean;
   compared?: boolean;
   dimmed?: boolean;
 }
@@ -74,6 +90,7 @@ const MIN_RADIUS = 2.5;  // CSS px — floor when zoomed out
 const MAX_RADIUS = 7;    // CSS px — cap when zoomed in (regular tier)
 const LIFECYCLE_MULT = 1.25; // first_buy / sell_all, relative to base
 const COMPARE_MULT = 1.7;    // comparison-set wallet, relative to base
+const LENS_MULT = 1.8;       // wallet armed as a highlight lens, relative to base
 const HIGHLIGHT_MULT = 2.4;  // focused wallet, relative to base
 /** The focused wallet must be findable at any zoom, so its marker also gets an
  *  absolute floor — at wide zoom the base unit sits at MIN_RADIUS and a pure
@@ -85,12 +102,16 @@ const HIGHLIGHT_MIN_RADIUS = 7;
  *  above GLYPH_MIN_RADIUS on purpose — a compared marker always shows its
  *  letter, which is what separates two compared wallets from each other. */
 const COMPARE_MIN_RADIUS = 5.5;
+/** Same floor for a lens wallet: its diamond has to read as one when zoomed out. */
+const LENS_MIN_RADIUS = 5.5;
 /** Opacity for the un-compared crowd while a comparison is active. */
 const DIM_ALPHA = 0.55;
 const GLYPH_MIN_RADIUS = 3.5; // below this the disc is too small for a legible letter
 const GAP = 5;      // CSS px gap between bar edge and nearest marker EDGE
 const SPACING = 2;  // CSS px between stacked marker edges
-/** Diamond/hexagon/square need a slightly larger bound than a circle to fit the glyph. */
+/** Stem half-width of an arrow, as a fraction of its half-height. */
+const ARROW_STEM = 0.38;
+/** Diamond/hexagon/square/arrow need a slightly larger bound than a circle to fit the glyph. */
 const POLY_SCALE = 1.15;
 
 /** Trace a marker silhouette centered at (cx, cy). Radius is in device px. */
@@ -119,6 +140,21 @@ function traceShape(
     // Axis-aligned square of half-side rr — its vertical extent is exactly rr,
     // which is what the stacking/hit math already assumes for a POLY_SCALE shape.
     ctx.rect(cx - rr, cy - rr, rr * 2, rr * 2);
+    return;
+  }
+  if (isArrow(shape)) {
+    // A head over a stem, pointing the way the trade went: `mine`. It fits the same
+    // rr box as the other polygons, so stacking and hit math hold unchanged.
+    const d = shape === 'arrowUp' ? 1 : -1;
+    const stem = rr * ARROW_STEM;
+    ctx.moveTo(cx, cy - d * rr);
+    ctx.lineTo(cx + rr, cy);
+    ctx.lineTo(cx + stem, cy);
+    ctx.lineTo(cx + stem, cy + d * rr);
+    ctx.lineTo(cx - stem, cy + d * rr);
+    ctx.lineTo(cx - stem, cy);
+    ctx.lineTo(cx - rr, cy);
+    ctx.closePath();
     return;
   }
   if (shape === 'triangle') {
@@ -217,7 +253,7 @@ class WalletMarkersRenderer implements IPrimitivePaneRenderer {
         // Glyph scales with the disc; skip it once the disc is too small to read,
         // and on the dimmed crowd at any size — a field of letters is exactly the
         // noise the comparison tiers have to be read against.
-        if (p.radius >= GLYPH_MIN_RADIUS && !p.dimmed) {
+        if (p.radius >= GLYPH_MIN_RADIUS && !p.dimmed && !isArrow(p.shape)) {
           ctx.font = `bold ${Math.round(p.radius * 1.15 * s)}px sans-serif`;
           ctx.fillStyle = '#fff';
           ctx.fillText(p.letter, cx, cy);
@@ -294,17 +330,19 @@ export class WalletMarkersPlugin
       const baseY = series.priceToCoordinate(d.barEdgePrice);
       if (x == null || baseY == null) continue;
 
-      // Tiers, outermost first: focus > comparison > lifecycle > base. Comparison
-      // outranks lifecycle so a compared wallet's mid-position add stays bigger
-      // than an uncompared wallet's entry — the question on screen is whose
-      // marker this is, not which leg it was.
+      // Tiers, outermost first: focus > lens > comparison > lifecycle > base.
+      // Comparison outranks lifecycle so a compared wallet's mid-position add
+      // stays bigger than an uncompared wallet's entry — the question on screen is
+      // whose marker this is, not which leg it was.
       const radius = d.highlighted
         ? Math.max(HIGHLIGHT_MIN_RADIUS, unit * HIGHLIGHT_MULT)
-        : d.compared
-          ? Math.max(COMPARE_MIN_RADIUS, unit * COMPARE_MULT)
-          : d.role
-            ? unit * LIFECYCLE_MULT
-            : unit;
+        : d.lensed
+          ? Math.max(LENS_MIN_RADIUS, unit * LENS_MULT)
+          : d.compared
+            ? Math.max(COMPARE_MIN_RADIUS, unit * COMPARE_MULT)
+            : d.role
+              ? unit * LIFECYCLE_MULT
+              : unit;
       const dir = d.type === 'sell' ? -1 : 1;
       const stackKey = `${d.barTime}:${d.type}`;
       // Extent, not radius: a diamond/hexagon reaches POLY_SCALE further out.
@@ -324,6 +362,7 @@ export class WalletMarkersPlugin
         role: d.role,
         highlighted: d.highlighted,
         ringColor: d.ringColor,
+        lensed: d.lensed,
         compared: d.compared,
         dimmed: d.dimmed,
       });

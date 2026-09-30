@@ -66,6 +66,7 @@ import { STORAGE_KEYS } from 'lib/storage';
 import {
   CANDLE_SERIES_OPTIONS,
   CHART_COLORS,
+  LENS_TRACK_COLORS,
   CHART_INTERVALS,
   createChartPriceFormat,
   createChartPriceFormatter,
@@ -78,7 +79,8 @@ import {
 } from './constants';
 import { PRICE_SCALE_MARGINS, createChartOptions, SERIES_BY_STYLE } from './chartOptions';
 import { getString, setString } from 'lib/storage';
-import { BarCrosshairTooltip, type LensTooltipRow } from './BarCrosshairTooltip';
+import { BarCrosshairTooltip } from './BarCrosshairTooltip';
+import { LensLaneTooltip } from './LensLaneTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';
 import { RangeSelectTooltip, formatRangeDuration } from './RangeSelectTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef, type MarkerShape } from './walletMarkersPlugin';
@@ -117,6 +119,7 @@ import type {
   ChartRangeSelection,
   ChartRangeTooltipState,
   ChartWalletMarkersTooltipState,
+  ChartLensLaneTooltipState,
   ChartTrade,
   OhlcBar,
   ProfileWalletInfo,
@@ -299,30 +302,31 @@ export function sortSeriesMarkers(
   return [...markers].sort((a, b) => (a.time as number) - (b.time as number));
 }
 
-/** Silhouette per wallet CLASS: `mine` → diamond (identity wins, permanent),
- *  dev/creator → triangle, else focused/input → hexagon, else comparison-set →
- *  square, else circle. Focus still layers its gold ring on top of whatever
- *  shape, so a focused `mine` wallet stays a diamond and a focused dev stays a
- *  triangle — and a compared `mine`/dev wallet keeps its class shape while the
+/** Silhouette per wallet CLASS: `mine` → arrow in the trade's direction (identity
+ *  wins, permanent), dev/creator → triangle, else focused/input → hexagon, else
+ *  lens-armed → diamond, else comparison-set → square, else circle. Focus still
+ *  layers its gold ring on top of whatever shape, so a focused `mine` wallet stays
+ *  an arrow and a focused dev stays a triangle — and a compared `mine`/dev wallet keeps its class shape while the
  *  comparison ring carries the tier.
  *
  *  Shape is deliberately redundant with size here rather than economical: size
  *  is the cue that survives a color-blind read, shape is the one that survives
  *  zooming out, and the comparison tier has to hold at both. */
-function walletShape(w: ProfileWalletInfo): MarkerShape {
-  if (w.isMine) return 'diamond';
+function walletShape(w: ProfileWalletInfo, type: 'buy' | 'sell'): MarkerShape {
+  if (w.isMine) return type === 'buy' ? 'arrowUp' : 'arrowDown';
   if (w.isDev) return 'triangle';
   if (w.isHighlighted) return 'hexagon';
+  if (w.isLensed) return 'diamond';
   if (w.isCompared) return 'square';
   return 'circle';
 }
 
-/** Rank inside a bar's stack: focus, then the comparison set, then everyone else.
+/** Rank inside a bar's stack: focus, lens wallets, the comparison set, then everyone else.
  *  The stack packs outward from the bar edge, so the oversized tiers take the
  *  rows nearest the bar where nothing can crowd them and the dimmed crowd gets
  *  pushed out behind them. Order within a tier is unchanged. */
 const walletTier = (w: ProfileWalletInfo): number =>
-  w.isHighlighted ? 2 : w.isCompared ? 1 : 0;
+  w.isHighlighted ? 3 : w.isLensed ? 2 : w.isCompared ? 1 : 0;
 
 function focusFirst(wallets: ProfileWalletInfo[]): ProfileWalletInfo[] {
   if (wallets.length < 2 || !wallets.some((w) => walletTier(w) > 0)) return wallets;
@@ -430,10 +434,11 @@ export function buildWalletMarkerDefs(
         borderColor: CHART_COLORS.buy,
         type: 'buy',
         stackIndex: buyStack++,
-        shape: walletShape(w),
+        shape: walletShape(w, 'buy'),
         role: roles.get(`${w.address}:${t}:buy`),
         highlighted: w.isHighlighted,
         ringColor: CHART_COLORS.highlightRing,
+        lensed: w.isLensed,
         compared: w.isCompared,
         dimmed: w.dimmed,
       });
@@ -448,10 +453,11 @@ export function buildWalletMarkerDefs(
         borderColor: CHART_COLORS.sell,
         type: 'sell',
         stackIndex: sellStack++,
-        shape: walletShape(w),
+        shape: walletShape(w, 'sell'),
         role: roles.get(`${w.address}:${t}:sell`),
         highlighted: w.isHighlighted,
         ringColor: CHART_COLORS.highlightRing,
+        lensed: w.isLensed,
         compared: w.isCompared,
         dimmed: w.dimmed,
       });
@@ -715,6 +721,7 @@ export function TokenPriceChart({
   const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
   const [rangeTooltip, setRangeTooltip] = useState<ChartRangeTooltipState | null>(null);
   const [walletMarkersTooltip, setWalletMarkersTooltip] = useState<ChartWalletMarkersTooltipState | null>(null);
+  const [laneTooltip, setLaneTooltip] = useState<ChartLensLaneTooltipState | null>(null);
   /** Visible window mirrored from the chart's time scale, drives the range slider. */
   const [sliderWindow, setSliderWindow] = useState<{ from: number; to: number } | null>(null);
   const walletActivityMapRef = useRef<Map<number, WalletBarActivity[]>>(new Map());
@@ -824,7 +831,7 @@ export function TokenPriceChart({
   const lensSizeLabels = highlightLens?.sizeLabels ?? 'buys';
 
   // One pass per armed item, keyed by `lensItemId` — the map the chips, the washes
-  // and the hover list all read.
+  // and the lane hover all read.
   const lensMatches = useMemo<ChartLensMatches>(() => {
     const out = new Map<string, LensMatch>();
     for (const item of lensItems) {
@@ -847,26 +854,6 @@ export function TokenPriceChart({
       })),
     [lensItems, lensMatches],
   );
-
-  // Bar key → every armed item's matched trades there, for the hover list. A trade
-  // two items both match is listed once, carrying both colors.
-  const lensBarRows = useMemo(() => {
-    const out = new Map<number, LensTooltipRow[]>();
-    for (const item of lensItems) {
-      const match = lensMatches.get(lensItemId(item));
-      if (!match) continue;
-      for (const tint of match.tint) {
-        let rows = out.get(tint.barTime);
-        if (!rows) out.set(tint.barTime, (rows = []));
-        for (const trade of tint.trades) {
-          const row = rows.find((r) => r.trade === trade);
-          if (row) row.colors.push(item.color);
-          else rows.push({ trade, colors: [item.color] });
-        }
-      }
-    }
-    return out;
-  }, [lensItems, lensMatches]);
 
   const formatChartPrice = useMemo(
     () => createChartPriceFormatter(priceUnit),
@@ -925,6 +912,7 @@ export function TokenPriceChart({
     barTooltip: ChartBarTooltipState | null;
     rangeTooltip: ChartRangeTooltipState | null;
     walletMarkersTooltip: ChartWalletMarkersTooltipState | null;
+    laneTooltip: ChartLensLaneTooltipState | null;
     crosshairTimeSec: number | null;
   } | null>(null);
   const groupModeRef = useRef(groupMode);
@@ -1012,6 +1000,7 @@ export function TokenPriceChart({
     const rows = lensItems.map((item) => ({
       label: item.label,
       color: item.color,
+      track: LENS_TRACK_COLORS[item.kind],
       tints: lensMatches.get(lensItemId(item))?.tint ?? [],
     }));
     const layers = rows.filter((r) => r.tints.length > 0);
@@ -1187,6 +1176,7 @@ export function TokenPriceChart({
       setBarTooltip(next.barTooltip);
       setRangeTooltip(next.rangeTooltip);
       setWalletMarkersTooltip(next.walletMarkersTooltip);
+      setLaneTooltip(next.laneTooltip);
       if (!applyingExternalCrosshairRef.current) {
         onCrosshairTimeChangeRef.current?.(next.crosshairTimeSec);
       }
@@ -1206,6 +1196,7 @@ export function TokenPriceChart({
         barTooltip: null as ChartBarTooltipState | null,
         rangeTooltip: null as ChartRangeTooltipState | null,
         walletMarkersTooltip: null as ChartWalletMarkersTooltipState | null,
+        laneTooltip: null as ChartLensLaneTooltipState | null,
         crosshairTimeSec: null as number | null,
       };
       pendingCrosshairRef.current = next;
@@ -1223,6 +1214,9 @@ export function TokenPriceChart({
       };
       const setCrosshairTimeSec = (v: number | null) => {
         next.crosshairTimeSec = v;
+      };
+      const setLaneTooltip = (v: ChartLensLaneTooltipState | null) => {
+        next.laneTooltip = v;
       };
       // Schedule the single per-frame flush; every early return below has already
       // recorded its intent into `next` via the shadowed setters above.
@@ -1286,6 +1280,18 @@ export function TokenPriceChart({
       // reads exactly like a metric that never moved. `buildBarWallEndSec` has an
       // answer for every bar, so `null` now means only what it says.
       setCrosshairTimeSec(barWallEndSecRef.current.get(Number(param.time)) ?? null);
+      // The highlight lane answers for its own strip: a mark lists only its row's
+      // trades in this bar, and the candle's numbers stay off anywhere in the lane.
+      const inPricePane = (param.paneIndex ?? 0) === 0;
+      const lane = inPricePane && param.point ? lensLanePrimRef.current : null;
+      if (lane && param.point && lane.containsY(param.point.y)) {
+        const hit = lane.hitAt(param.point.y, bar.time as number);
+        setLaneTooltip(hit ? { ...hit, point: param.point, barTime: bar.time } : null);
+        setBarTooltip(null);
+        setWalletMarkersTooltip(null);
+        return;
+      }
+
       const onWalletMarker =
         param.point != null &&
         (walletMarkersPrimRef.current?.containsPoint(param.point.x, param.point.y) ?? false);
@@ -1405,6 +1411,7 @@ export function TokenPriceChart({
       onVisibleTimeRangeChangeRef.current?.(null);
       setRangeTooltip(null);
       setWalletMarkersTooltip(null);
+      setLaneTooltip(null);
     };
   }, [showChart, fixedHeight, groupingKey, groupMode, priceUnit, chartTimezone]);
 
@@ -2238,7 +2245,13 @@ export function TokenPriceChart({
             formatFlow={formatFlow}
             formatTime={formatBarTime}
             containerWidth={chartWidth}
-            lensRows={lensBarRows.get(barTooltip.barTime as number) ?? null}
+          />
+        )}
+        {laneTooltip && (
+          <LensLaneTooltip
+            tooltip={laneTooltip}
+            formatTime={formatBarTime}
+            containerWidth={chartWidth}
           />
         )}
         {walletMarkersTooltip && (

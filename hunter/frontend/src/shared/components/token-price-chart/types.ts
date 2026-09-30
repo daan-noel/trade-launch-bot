@@ -61,9 +61,13 @@ export interface ProfileWalletInfo {
    *  wallet on the Trader Analysis page) — its markers render larger with a
    *  glow + gold outer ring so they stand out among the other tracked wallets. */
   isHighlighted?: boolean;
+  /** True for a wallet armed as a highlight lens — a diamond in its lens color,
+   *  sized between the focus and the comparison set, with no glow or ring, so it
+   *  is easy to find without competing with the focused wallet. */
+  isLensed?: boolean;
   /** True for the token's dev/creator wallet — gets its own triangle silhouette
    *  + a fixed static color (`CHART_COLORS.dev`) so dev entries/exits (first_buy,
-   *  sell_all) are unmistakable and never collide with the `mine` diamond. */
+   *  sell_all) are unmistakable and never collide with the `mine` arrow. */
   isDev?: boolean;
   /** True for a wallet in the active comparison set (Trader Analysis "Compare
    *  with") — draws a square silhouette at ~1.7x with an outer ring in its own
@@ -309,6 +313,15 @@ export interface WalletBarActivity {
 export interface ChartWalletMarkersTooltipState {
   point: { x: number; y: number };
   wallets: WalletBarActivity[];
+}
+
+/** Hovering one highlight-lane mark: that row's trades in that bar, nothing else. */
+export interface ChartLensLaneTooltipState {
+  point: { x: number; y: number };
+  barTime: UTCTimestamp;
+  label: string;
+  color: string;
+  trades: readonly ChartTrade[];
 }
 
 export interface ChartBarTooltipState {
