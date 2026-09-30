@@ -604,12 +604,16 @@ export const labApi = baseApi.injectEndpoints({
         body,
       }),
     }),
+    // The backend stores each scan's result and answers the same request from it.
+    // `refresh` reads again; it is left out of the cache key, so a re-scan lands
+    // in the entry the page already shows.
     getEntryScan: builder.query<EntryScanResponse, EntryScanRequest>({
       query: ({ wallet, ...body }) => ({
         url: `/api/wallets/${encodeURIComponent(wallet)}/entry-context/scan`,
         method: 'POST',
         body,
       }),
+      serializeQueryArgs: ({ queryArgs: { refresh: _refresh, ...key } }) => key,
     }),
     deleteIxPatternSet: builder.mutation<void, string>({
       query: (id) => ({
@@ -659,4 +663,5 @@ export const {
   useGetEntryContextQuery,
   useGetEntryRangeQuery,
   useGetEntryScanQuery,
+  useLazyGetEntryScanQuery,
 } = labApi;

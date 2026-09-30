@@ -18,15 +18,15 @@ const read = (tag: number, all: number): EntryWindowRead => ({
   sol_share_pct: all > 0 ? (100 * tag) / all : null,
 });
 
-/** A buy. `hits` is the probe (the target signaled); `tag` of 10 is its share. */
-const buy = (mint: string, tag: number, hits = 0): EntryRow => ({
+/** A buy. `hits` is the probe (the target signaled); `tag` of `all` is its share. */
+const buy = (mint: string, tag: number, hits = 0, all = 10): EntryRow => ({
   mint_address: mint,
   slot: 1,
   tx_index: 0,
   at: '2026-09-20T00:00:00Z',
   sol: 1,
-  window: read(tag, 10),
-  control: read(0, 10),
+  window: read(tag, all),
+  control: read(0, all),
   groups: [],
   groups_omitted: 0,
   probe: {
@@ -34,7 +34,7 @@ const buy = (mint: string, tag: number, hits = 0): EntryRow => ({
     sol: hits,
     control_hits: 0,
     control_sol: 0,
-    nearest: hits > 0 ? { lag_slots: 0, lag_tx: null, lag_secs: 0, key: 'k' } : null,
+    nearest: hits > 0 ? { lag_slots: 0, lag_tx: null, lag_secs: 0, key: 'k', slot: 0, tx_index: 0 } : null,
   },
 });
 
@@ -51,20 +51,36 @@ describe('cohortTable', () => {
     { ...buy('D', 9, 1), unknown_reason: 'tape-truncated' as const },
   ];
 
-  it('counts his buys and tokens, target signal against every structure', () => {
+  it('counts his buys and tokens; the all row skips a filter that needs the selected IXs', () => {
     const t = cohortTable(entries, logic, signaled, true);
     expect(t.target.buys).toEqual({ his: 2, matched: 1 });
     expect(t.target.tokens).toEqual({ his: 1, matched: 1 });
-    expect(t.all.buys).toEqual({ his: 4, matched: 2 });
-    expect(t.all.tokens).toEqual({ his: 3, matched: 2 });
+    // Target tx % is the only filter: the all row has none to ask, so every buy passes.
+    expect(t.all.buys).toEqual({ his: 4, matched: 4 });
+    expect(t.all.tokens).toEqual({ his: 3, matched: 3 });
   });
 
-  it('a second filter narrows matched and leaves his', () => {
+  it('a second target filter narrows the pool row only', () => {
     const both = entryLogic({ tx_share: '>50', sol_share: '>80' }, cols, null, 'all');
     const t = cohortTable(entries, both, signaled, true);
-    // A is 80/80, B is 90/90. sol share > 80 keeps B only, on the all row.
-    expect(t.all.buys).toMatchObject({ his: 4, matched: 1 });
+    // A is 80/80: sol share > 80 drops it from the pool row.
     expect(t.target.buys).toMatchObject({ his: 2, matched: 0 });
+    expect(t.all.buys).toMatchObject({ his: 4, matched: 4 });
+  });
+
+  it('a filter that needs no IXs narrows both rows', () => {
+    const mixed = entryLogic({ tx_share: '>50', buy_tx: '>10' }, cols, null, 'all');
+    const busy = [
+      buy('A', 16, 1, 20), // pool, 80%, 20 buys: passes both
+      buy('A', 4, 1, 5), // pool, 80%, 5 buys: fails All buys
+      buy('B', 18, 0, 20), // not pool, 20 buys
+      buy('C', 1, 0, 5), // not pool, 5 buys
+    ];
+    const t = cohortTable(busy, mixed, signaled, true);
+    expect(t.target.buys).toEqual({ his: 2, matched: 1 });
+    // The all row asks All buys > 10 only: A's first buy and B's.
+    expect(t.all.buys).toEqual({ his: 4, matched: 2 });
+    expect(t.all.tokens).toEqual({ his: 3, matched: 2 });
   });
 
   it('with the probe off the target row is empty', () => {

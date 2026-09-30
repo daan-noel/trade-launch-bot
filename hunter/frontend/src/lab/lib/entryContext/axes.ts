@@ -23,6 +23,10 @@ export type AxisUnit = 'pct' | 'pp' | 'tx' | 'sol';
  *  everyone in the last `W` seconds. `ENTRY_AXES` lists them in this order. */
 export type AxisGroup = 'buy' | 'signal' | 'target' | 'control' | 'all';
 
+/** A group read through the selected IXs (the target): a filter on it only means
+ *  something in the pool. `buy` and `all` read the same whatever IXs came before. */
+export const needsIxs = (g: AxisGroup): boolean => g === 'signal' || g === 'target' || g === 'control';
+
 /** Group banner labels for the buys table, with the time spelled out. `w` is the
  *  analysis window in seconds, `probeSlots` the probe's (its own column group). */
 export function entryGroupLabels(w: number, probeSlots?: number): Record<string, string> {

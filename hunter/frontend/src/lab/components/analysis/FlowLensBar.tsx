@@ -160,7 +160,7 @@ export function FlowLensBar({
     <div className="mb-3 rounded-md border border-white/8 bg-white/2 p-2.5">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="info" size="sm">
-          Flow lens
+          Target IXs
         </Badge>
 
         <Select
@@ -170,7 +170,7 @@ export function FlowLensBar({
           title="Pattern set every chart on this page classifies with"
           className="max-w-[22rem]"
         >
-          <option value="">No lens - charts show no tag lines</option>
+          <option value="">No target IXs - charts show no tag lines</option>
           {sets.map((s) => {
             const k = kindOf(s);
             const n = k === 'templates' ? s.working_templates.length : s.patterns.length;
@@ -499,9 +499,9 @@ function SideControl({ lens }: { lens: TraderFlowLens }) {
   const { data: reg } = useStrategyRegistry();
   const field = tagField(reg, 'side');
   const options: { value: FlowSide | null; label: string; title: string }[] = [
-    { value: null, label: 'Both', title: 'buys and sells can carry the lens tag' },
-    { value: 'buy', label: 'Buy', title: 'only buys can carry the lens tag' },
-    { value: 'sell', label: 'Sell', title: 'only sells can carry the lens tag' },
+    { value: null, label: 'Both', title: 'buys and sells can carry the target tag' },
+    { value: 'buy', label: 'Buy', title: 'only buys can carry the target tag' },
+    { value: 'sell', label: 'Sell', title: 'only sells can carry the target tag' },
   ];
   return (
     <div className="flex items-center gap-1">
@@ -685,7 +685,7 @@ function PromoteControls({
           value={tag}
           onChange={(e) => setTagName(e.target.value)}
           className="max-w-40 font-mono"
-          title="The fingerprint tag the lens entries are added to"
+          title="The fingerprint tag the Target IXs entries are added to"
         >
           {(names.includes(tag) ? names : [...names, tag]).map((t) => (
             <option key={t} value={t}>
@@ -700,7 +700,7 @@ function PromoteControls({
         variant="ghost"
         disabled={!target || isLoading}
         onClick={() => void copy()}
-        title={`Add this lens' ${n} entr${n === 1 ? 'y' : 'ies'} to ${writes}. What the tag already lists stays.`}
+        title={`Add the Target IXs' ${n} entr${n === 1 ? 'y' : 'ies'} to ${writes}. What the tag already lists stays.`}
       >
         Add {n} to {tagLabel(tag)}
       </Button>

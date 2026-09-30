@@ -112,17 +112,21 @@ export function TabsTrigger({ value, className, children, ...props }: TabsTrigge
 
 interface TabsPanelProps extends HTMLAttributes<HTMLDivElement> {
   value: string;
+  /** Hide the panel when inactive instead of unmounting it, so its state survives a switch. */
+  keepMounted?: boolean;
   children: ReactNode;
 }
 
-export function TabsPanel({ value, className, children, ...props }: TabsPanelProps) {
+export function TabsPanel({ value, keepMounted, className, children, ...props }: TabsPanelProps) {
   const { value: activeValue, variant } = useTabsContext();
+  const active = activeValue === value;
 
-  if (activeValue !== value) return null;
+  if (!active && !keepMounted) return null;
 
   return (
     <div
       role="tabpanel"
+      hidden={!active}
       className={cn(variant === 'underline' ? 'pt-4' : 'pt-3', className)}
       {...props}
     >

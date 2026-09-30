@@ -85,6 +85,11 @@ export const STORAGE_KEYS = {
   traderPreEntryProbe: `${PREFIX}form.traderPreEntryProbe`,
   /** Entry Context form draft (wallet, range, window, grouping, filter lines). */
   entryContextConfig: `${PREFIX}form.entryContext`,
+  /** Entry Context: the last Analyze, its range fixed at the press, so the page
+   *  comes back as it was left. */
+  entryContextQuery: `${PREFIX}form.entryContextQuery`,
+  /** Entry Context: the scan request Scan market was pressed for. */
+  entryContextScan: `${PREFIX}form.entryContextScan`,
 
   // ── strategy surfaces ─────────────────────────────────────────────────────
   sweepConfig: `${PREFIX}sweep.config`,

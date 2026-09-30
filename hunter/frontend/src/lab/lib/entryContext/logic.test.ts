@@ -32,7 +32,7 @@ const entry = (win: EntryWindowRead, ctl: EntryWindowRead, lag: number | null, s
     sol: win.tag_buy_sol,
     control_hits: ctl.tag_buy_tx,
     control_sol: ctl.tag_buy_sol,
-    nearest: lag == null ? null : { lag_slots: lag, lag_tx: null, lag_secs: 1, key: 'k' },
+    nearest: lag == null ? null : { lag_slots: lag, lag_tx: null, lag_secs: 1, key: 'k', slot: 0, tx_index: 0 },
   },
 });
 
@@ -87,5 +87,24 @@ describe('entryLogic', () => {
     // c's probe still matches (1 hit, Show = matched). Only the idea rejects it.
     expect([a, b, c].map(logic.probe)).toEqual([true, true, true]);
     expect(logic.last(c)).toBe(false);
+  });
+
+  it('marks the filters that need the selected IXs, and leaves them out of anyIx', () => {
+    const t = { minHits: 1, minSol: 0 };
+    const verdictOf = (e: EntryRow) => entryVerdict(e, t);
+    const withProbe = entryColumns(30, (m) => m, verdictOf, 25);
+    const filters = { entry_sol: '>2', pe_hits: '>=1', tx_share: '>50', sig_tx_share: '>0', buy_tx: '>=10' };
+    const logic = entryLogic(filters, withProbe, verdictOf, 'all');
+    expect(Object.fromEntries(logic.conditions.map((x) => [x.key, x.needsIxs]))).toEqual({
+      entry_sol: false,
+      pe_hits: true,
+      tx_share: true,
+      sig_tx_share: true,
+      buy_tx: false,
+    });
+    // Neither has a signal (no breakdown rows), so the idea fails both. anyIx asks
+    // All buys >= 10 alone, and both have 10.
+    expect([a, c].map(logic.idea)).toEqual([false, false]);
+    expect([a, c].map(logic.anyIx)).toEqual([true, true]);
   });
 });

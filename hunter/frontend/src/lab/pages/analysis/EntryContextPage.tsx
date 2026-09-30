@@ -10,12 +10,13 @@ import { Input } from 'components/ui/Input';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { SectionDivider } from 'components/ui/SectionDivider';
+import { Tabs, TabsList, TabsPanel, TabsTrigger } from 'components/ui/Tabs';
 import { inspectFromMint } from 'components/strategy/inspectTarget';
 import { FlowLensProvider } from 'context/FlowLensContext';
 import { useTimezone } from 'context/TimezoneContext';
 import { useDebouncedValue } from 'hooks/useDebouncedValue';
 import { useLocalStorage } from 'hooks/useLocalStorage';
-import { ACCORDION_IDS, STORAGE_KEYS } from 'lib/storage';
+import { ACCORDION_IDS, getTablePrefs, setTablePrefs, STORAGE_KEYS } from 'lib/storage';
 import { apiErrorMessage } from 'store/apiSlice';
 import type { TraderTokenRow } from 'types';
 import { FlowLensBar } from '@lab/components/analysis/FlowLensBar';
@@ -38,11 +39,14 @@ import {
 import { useTraderFlowLens } from '@lab/components/analysis/useTraderFlowLens';
 import { EntryDetail } from '@lab/components/entry-context/EntryDetail';
 import { EntrySummary } from '@lab/components/entry-context/EntrySummary';
+import { IdeaFilters } from '@lab/components/entry-context/IdeaFilters';
 import { MarketScan } from '@lab/components/entry-context/MarketScan';
+import { type TokenView, TokenViewToggle } from '@lab/components/entry-context/TokenViewToggle';
 import { entryColumns } from '@lab/components/entry-context/entryColumns';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { entryLogic } from '@lab/lib/entryContext/logic';
-import { entryVerdict, rollupByToken } from '@lab/lib/entryContext/analysis';
+import { hisTokens } from '@lab/lib/entryContext/overlap';
+import { atDecision, entryVerdict, rollupByToken } from '@lab/lib/entryContext/analysis';
 import { entryGroupLabels } from '@lab/lib/entryContext/axes';
 import {
   entryKey,
@@ -62,6 +66,7 @@ const TOKEN_GROUP_LABELS: Record<string, string> = { entry_ctx: 'His buys here' 
 /** The buys table's filter row is this page's filter: open, and starting from the
  *  page's question (target over half the window's buy transactions). */
 const DEFAULT_BUY_FILTERS: Record<string, string> = { tx_share: '>50' };
+const BUYS_TABLE_ID = 'entry_context_buys';
 /** Columns the buys table opens with hidden (all stay in the Columns panel): the
  *  SOL twins and side reads, so the answer columns fit on screen. */
 const BUY_COLS_HIDDEN: Readonly<Record<string, boolean>> = {
@@ -88,6 +93,8 @@ interface EntryForm {
   probeSlots: number;
   minHits: number;
   minSol: number;
+  /** The buys table's filters while the Filters switch is off; `null` = on. */
+  pausedFilters: Record<string, string> | null;
 }
 
 const DEFAULT_FORM: EntryForm = {
@@ -103,9 +110,11 @@ const DEFAULT_FORM: EntryForm = {
   probeSlots: DEFAULT_PROBE_WINDOW_SLOTS,
   minHits: 1,
   minSol: 0,
+  pausedFilters: null,
 };
 
-/** A committed query — set on Analyze only, so typing never refetches. */
+/** A committed query — set on Analyze only, so typing never refetches. Saved, so
+ *  the page comes back as it was left; a preset range stays the one Analyze fixed. */
 interface EntryQuery {
   wallet: string;
   from: string;
@@ -141,15 +150,46 @@ export function EntryContextPage() {
     (p: Partial<EntryForm>) => setForm((prev) => ({ ...DEFAULT_FORM, ...prev, ...p })),
     [setForm],
   );
-  const [query, setQuery] = useState<EntryQuery | null>(null);
+  const [query, setQuery] = useLocalStorage<EntryQuery | null>(STORAGE_KEYS.entryContextQuery, null);
   const [inspected, setInspected] = useState<{ mint: string; symbol?: string | null } | null>(null);
   // The buys table's filtered cohort (pre-pagination), reported by the table.
   const [tableRows, setTableRows] = useState<EntryRow[] | null>(null);
   // The buys table's filters in force: the logic the summary tests.
-  const [buyFilters, setBuyFilters] = useState<Readonly<Record<string, string>>>(DEFAULT_BUY_FILTERS);
+  // His entries | Market. Both panels stay mounted: the market reads the buys table's filters.
+  const [tab, setTab] = useState<'his' | 'market'>('his');
+  const filtersOn = f.pausedFilters == null;
+  const [buyFilters, setBuyFilters] = useState<Readonly<Record<string, string>>>(
+    filtersOn ? DEFAULT_BUY_FILTERS : {},
+  );
+  // Bumped by an edit in the Filters section: the buys table remounts and reads the
+  // edited filters from its saved prefs.
+  const [buysTableVersion, setBuysTableVersion] = useState(0);
+  const applyFilters = useCallback((next: Readonly<Record<string, string>>) => {
+    setBuyFilters(next);
+    setTablePrefs(BUYS_TABLE_ID, { ...getTablePrefs(BUYS_TABLE_ID), colFilters: { ...next } });
+    setBuysTableVersion((v) => v + 1);
+  }, []);
+  // Off parks the filters in the form and clears the table's; on puts them back.
+  const toggleFilters = (on: boolean) => {
+    if (on === filtersOn) return;
+    if (on) applyFilters(f.pausedFilters ?? {});
+    else applyFilters({});
+    patch({ pausedFilters: on ? null : { ...buyFilters } });
+  };
+  const editFilter = (key: string, text: string) => {
+    const next = { ...(f.pausedFilters ?? buyFilters) };
+    if (text) next[key] = text;
+    else delete next[key];
+    if (filtersOn) applyFilters(next);
+    else patch({ pausedFilters: next });
+  };
+  // Pool / Pass filters: which of his tokens the token table lists.
+  const [tokenView, setTokenView] = useState<TokenView>('pass');
 
   const lens = useTraderFlowLens(query?.wallet ?? null);
   const tag = lens.value.tag;
+  // The selected IXs in words. A set's name is a label, never who made the buys.
+  const setWords = tag ? `the pattern set "${tag.name}"` : 'no pattern set';
 
   const run = (walletOverride?: string) => {
     const wallet = (walletOverride ?? f.wallet).trim();
@@ -206,7 +246,11 @@ export function EntryContextPage() {
   const tokens = useGetTraderTokensQuery(
     query ? { wallet: query.wallet, days: 1, limit: 0, from: query.from, to: query.to, with: [] } : skipToken,
   );
-  const entries = ctx.data?.entries ?? EMPTY_ENTRIES;
+  // Pool buys are read behind their signal, as the market's buys are (`atDecision`).
+  const entries = useMemo(
+    () => atDecision(ctx.data?.entries ?? EMPTY_ENTRIES, { minHits: f.minHits, minSol: f.minSol }, f.probeOn),
+    [ctx.data, f.minHits, f.minSol, f.probeOn],
+  );
   const readWindow = ctx.data?.window_secs ?? query?.windowSecs ?? 30;
 
   // Each buy as the probe's verdict — the Trader Analysis probe's own shape.
@@ -267,14 +311,29 @@ export function EntryContextPage() {
     () => entryLogic(buyFilters, buyColumns, verdictOf, f.show),
     [buyFilters, buyColumns, verdictOf, f.show],
   );
+  // Each token he bought, by how his buys on it sit against the pool and the filters.
+  const his = useMemo(() => hisTokens(entries, logic, signaled, f.probeOn), [entries, logic, signaled, f.probeOn]);
+  // The Filters section's chips: the parked filters while the switch is off.
+  const chipFilters = f.pausedFilters ?? buyFilters;
+  const chips = useMemo(
+    () => entryLogic(chipFilters, buyColumns, verdictOf, f.show).conditions.filter((c) => c.key in chipFilters),
+    [chipFilters, buyColumns, verdictOf, f.show],
+  );
 
   const buyGroupLabels = useMemo(() => entryGroupLabels(readWindow, probeSlots), [readWindow, probeSlots]);
 
   const rollup = useMemo(() => rollupByToken(entries, shownSet), [entries, shownSet]);
-  const tokenTableRows = useMemo(
+  // Pool = a buy in the buys table's input (the probe's Show); Pass filters = a buy on screen.
+  const poolMints = useMemo(() => new Set(probeRows.map((e) => e.mint_address)), [probeRows]);
+  const poolTokenRows = useMemo(
+    () => tokenRows.filter((r) => poolMints.has(r.mint_address)),
+    [tokenRows, poolMints],
+  );
+  const passTokenRows = useMemo(
     () => tokenRows.filter((r) => (rollup.get(r.mint_address)?.shown ?? 0) > 0),
     [tokenRows, rollup],
   );
+  const tokenTableRows = tokenView === 'pool' ? poolTokenRows : passTokenRows;
 
   const tokenCols = useMemo(() => {
     const base = tokenColumns() as unknown as ColumnDef<TraderTokenRow>[];
@@ -329,11 +388,8 @@ export function EntryContextPage() {
       <div className="p-4">
         <h2 className="text-lg font-extrabold text-text">Entry Context</h2>
         <p className="mt-0.5 text-xs text-text-dim">
-          For every buy of a wallet: the target you pick in the lens, the probe for whether that
-          target traded in the slots before him, and filters on the buys table (for example Target tx %
-          &gt; 50). The table above the buys is his / matched for every entry, and for entries whose signal is the ix you selected.
-          Market scan lists every token where a buy of that structure has the same filters true in the window before it.
-          His own trades are never counted.
+          A token pool (an ix structure traded just before the buy) and filters on the window before
+          it, read on his buys and on the whole market. His own trades are never counted.
         </p>
 
         <SectionDivider />
@@ -386,104 +442,134 @@ export function EntryContextPage() {
 
         {error && <p className="mb-2 text-sm text-red">{error}</p>}
 
+        <SectionTitle>Token pool</SectionTitle>
         <FlowLensBar lens={lens} wallet={query?.wallet ?? null} probe={probe} />
 
-        {query && ctx.data && (
-          <EntrySummary
-            entries={entries}
-            logic={logic}
-            signaled={signaled}
-            probeOn={f.probeOn}
-          />
-        )}
+        <SectionTitle>Filters</SectionTitle>
+        <IdeaFilters conditions={chips} onEdit={editFilter} on={filtersOn} onToggle={toggleFilters} />
 
-        {query && entries.length > 0 && (
-          <DataTable
-            columns={buyColumns}
-            rows={probeRows}
-            rowKey={entryKey}
-            rowDetail={(e) => (
-              <EntryDetail
-                entry={e}
-                query={{
-                  wallet: query.wallet,
-                  windowSecs: readWindow,
-                  probeSlots,
-                  tag: targetTag,
-                }}
+        <Tabs value={tab} onValueChange={(v) => setTab(v as 'his' | 'market')} className="mt-3">
+          <TabsList>
+            <TabsTrigger value="his">His entries</TabsTrigger>
+            <TabsTrigger value="market">Market</TabsTrigger>
+          </TabsList>
+
+          <TabsPanel value="his" keepMounted>
+            {query && ctx.data && (
+              <EntrySummary
+                entries={entries}
+                logic={logic}
+                signaled={signaled}
+                probeOn={f.probeOn}
+                pool={`${setWords}, within ${probeSlots} slots`}
+                ixFilters={filtersOn ? chips.filter((c) => c.needsIxs).length : 0}
+                anyFilters={filtersOn ? chips.filter((c) => !c.needsIxs).length : 0}
               />
             )}
-            tableId="entry_context_buys"
-            defaultCols={BUY_COLS_HIDDEN}
-            defaultSort={{ col: 'at', dir: 'desc' }}
-            searchable
-            colFilters
-            defaultColFilters={DEFAULT_BUY_FILTERS}
-            colToggle
-            hoverable
-            loading={ctx.isFetching}
-            groupLabels={buyGroupLabels}
-            resetKey={`${f.probeOn}|${f.show}`}
-            onFilteredRowsChange={setTableRows}
-            onColFiltersChange={setBuyFilters}
-            emptyMessage={
-              tag
-                ? 'No buys match the filters'
-                : 'No buys match the filters. The target columns need a pattern set picked in the lens above.'
-            }
-          />
-        )}
 
-        {query && tokenRows.length > 0 && entries.length > 0 && (
-          <>
-            <SectionDivider />
-            <Accordion
-              title={`Tokens (${tokenTableRows.length})`}
-              padding="sm"
-              bordered={false}
-              storageKey={ACCORDION_IDS.entryContextTokens}
-            >
-              <TokenTable
-                columns={tokenCols}
-                rows={tokenTableRows}
-                existingKeys={ALL_TOKEN_INFO_KEYS}
-                mintSetFilter
-                charts
-                chartsDefaultOn
+            {query && entries.length > 0 && (
+              <DataTable
+                key={buysTableVersion}
+                columns={buyColumns}
+                rows={probeRows}
+                rowKey={entryKey}
+                rowDetail={(e) => (
+                  <EntryDetail
+                    entry={e}
+                    query={{
+                      wallet: query.wallet,
+                      windowSecs: readWindow,
+                      probeSlots,
+                      tag: targetTag,
+                    }}
+                  />
+                )}
+                tableId={BUYS_TABLE_ID}
+                defaultCols={BUY_COLS_HIDDEN}
+                defaultSort={{ col: 'at', dir: 'desc' }}
                 searchable
-                colFilters
+                colFilters={filtersOn}
+                defaultColFilters={DEFAULT_BUY_FILTERS}
                 colToggle
                 hoverable
-                loading={loading}
-                groupLabels={TOKEN_GROUP_LABELS}
-                tableId="entry_context_tokens"
-                resetKey={`${shown.length}`}
-                highlightWallet={query.wallet}
-                titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
-                selectedKey={inspected?.mint ?? null}
-                onSelect={(mint) => {
-                  const row = mint ? tokenTableRows.find((r) => r.mint_address === mint) : null;
-                  setInspected(mint ? { mint, symbol: row?.symbol } : null);
-                }}
-                emptyMessage="No tokens with a buy on screen"
-                flowPatternKeys={lens.keys}
+                loading={ctx.isFetching}
+                groupLabels={buyGroupLabels}
+                resetKey={`${f.probeOn}|${f.show}`}
+                onFilteredRowsChange={setTableRows}
+                onColFiltersChange={setBuyFilters}
+                emptyMessage={
+                  tag
+                    ? 'No buys match the filters'
+                    : 'No buys match the filters. The target columns need a pattern set picked in Target IXs above.'
+                }
               />
-            </Accordion>
-          </>
-        )}
+            )}
 
-        {query && ctxRequest && (
-          <>
-            <SectionDivider />
-            <MarketScan
-              scanRequest={ctxRequest}
-              logic={logic}
-              wallet={query.wallet}
-              flowPatternKeys={lens.keys}
-              hasTarget={!!tag}
-            />
-          </>
-        )}
+            {query && tokenRows.length > 0 && entries.length > 0 && (
+              <>
+                <SectionDivider />
+                <Accordion
+                  toggleLabel="Tokens"
+                  header={
+                    <TokenViewToggle
+                      value={tokenView}
+                      onChange={setTokenView}
+                      pool={poolTokenRows.length}
+                      pass={passTokenRows.length}
+                    />
+                  }
+                  padding="sm"
+                  bordered={false}
+                  storageKey={ACCORDION_IDS.entryContextTokens}
+                >
+                  <TokenTable
+                    columns={tokenCols}
+                    rows={tokenTableRows}
+                    existingKeys={ALL_TOKEN_INFO_KEYS}
+                    mintSetFilter
+                    charts
+                    chartsDefaultOn
+                    searchable
+                    colFilters
+                    colToggle
+                    hoverable
+                    loading={loading}
+                    groupLabels={TOKEN_GROUP_LABELS}
+                    tableId="entry_context_tokens"
+                    resetKey={`${shown.length}|${tokenView}`}
+                    highlightWallet={query.wallet}
+                    titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
+                    selectedKey={inspected?.mint ?? null}
+                    onSelect={(mint) => {
+                      const row = mint ? tokenTableRows.find((r) => r.mint_address === mint) : null;
+                      setInspected(mint ? { mint, symbol: row?.symbol } : null);
+                    }}
+                    emptyMessage={tokenView === 'pool' ? 'No tokens in the pool' : 'No tokens with a buy on screen'}
+                    flowPatternKeys={lens.keys}
+                  />
+                </Accordion>
+              </>
+            )}
+          </TabsPanel>
+
+          <TabsPanel value="market" keepMounted>
+            {query && ctxRequest ? (
+              <>
+                <MarketScan
+                  scanRequest={ctxRequest}
+                  logic={logic}
+                  wallet={query.wallet}
+                  flowPatternKeys={lens.keys}
+                  hasTarget={!!tag}
+                  pool={setWords}
+                  his={his}
+                />
+              </>
+            ) : (
+              <p className="text-xs text-text-dim">Analyze a wallet first: the market scan uses its range and window.</p>
+            )}
+          </TabsPanel>
+        </Tabs>
 
         {inspected && (
           <LazyLabTokenInspectModal
@@ -496,4 +582,8 @@ export function EntryContextPage() {
       </div>
     </FlowLensProvider>
   );
+}
+
+function SectionTitle({ children }: { children: string }) {
+  return <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-text-dim">{children}</h3>;
 }

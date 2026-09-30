@@ -75,6 +75,12 @@ pub fn discovery_result_path(root: &Path) -> PathBuf {
     root.join("flow-discovery").join("last.json")
 }
 
+/// On-disk Entry Context scan results (`<root>/entry-scan/`), one file per scan
+/// request. See [`crate::state::entry_scan_cache`].
+pub fn entry_scan_dir(root: &Path) -> PathBuf {
+    root.join("entry-scan")
+}
+
 /// On-disk last-rule-search-result file (`<root>/rule-search/last.json`).
 pub fn rule_search_result_path(root: &Path) -> PathBuf {
     root.join("rule-search").join("last.json")

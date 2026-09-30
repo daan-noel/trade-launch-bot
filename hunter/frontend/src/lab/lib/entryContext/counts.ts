@@ -1,8 +1,9 @@
 /**
- * The Entry Context summary: two rows (Target signal, and All entries)
- * by two columns (buys, tokens). Each cell is his / matched — how many sit in
- * that row, and how many of those pass the idea (`EntryLogic.idea`, the buys
- * table's filters).
+ * The Entry Context summary: two rows (In pool, and All his buys) by two
+ * columns (buys, tokens). Each cell is his / matched — how many sit in that row,
+ * and how many of those pass the filters the row asks: the pool row the whole
+ * idea (`EntryLogic.idea`), the all row only the filters that need no selected
+ * IXs (`EntryLogic.anyIx`), since a buy outside the pool has no target to read.
  */
 
 import type { EntryLogic } from './logic';
@@ -23,7 +24,7 @@ export interface CohortSide {
 export interface CohortTable {
   /** The probe found the target in the slots before the buy. */
   target: CohortSide;
-  /** Every readable buy in scope, whichever structure signaled. */
+  /** Every readable buy in scope, whatever IXs came before; `matched` asks `anyIx`. */
   all: CohortSide;
 }
 
@@ -38,6 +39,16 @@ function tokens(buys: readonly EntryRow[], idea: (e: EntryRow) => boolean): { hi
   return { his: hit.size, matched };
 }
 
+/** His buys the page counts: readable, and in scope (His SOL, Token, Time). */
+export const hisBuys = (entries: readonly EntryRow[], logic: EntryLogic): EntryRow[] =>
+  entries.filter((e) => !e.unknown_reason && logic.inScope(e));
+
+/** Is a buy of his in the pool: the probe found the target before it. */
+export const inPool =
+  (logic: EntryLogic, signaled: (e: EntryRow) => boolean, probeOn: boolean) =>
+  (e: EntryRow): boolean =>
+    probeOn && signaled(e) && logic.probe(e);
+
 /**
  * `signaled` is the probe's own verdict (the target's transaction landed in the
  * probe window). Probe-column filters (`logic.probe`) tighten that signal; they
@@ -49,10 +60,9 @@ export function cohortTable(
   signaled: (e: EntryRow) => boolean,
   probeOn: boolean,
 ): CohortTable {
-  const signal = (e: EntryRow) => probeOn && signaled(e) && logic.probe(e);
-  const his = entries.filter((e) => !e.unknown_reason && logic.inScope(e));
-  const targetBuys = his.filter(signal);
-  const hisTokens = tokens(his, logic.idea);
+  const his = hisBuys(entries, logic);
+  const targetBuys = his.filter(inPool(logic, signaled, probeOn));
+  const hisTokens = tokens(his, logic.anyIx);
   const targetTokens = tokens(targetBuys, logic.idea);
 
   return {
@@ -61,7 +71,7 @@ export function cohortTable(
       tokens: cell(targetTokens.his, targetTokens.matched),
     },
     all: {
-      buys: cell(his.length, his.filter(logic.idea).length),
+      buys: cell(his.length, his.filter(logic.anyIx).length),
       tokens: cell(hisTokens.his, hisTokens.matched),
     },
   };

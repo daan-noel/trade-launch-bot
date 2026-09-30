@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { probeSummary } from '@lab/lib/preEntryProbeTypes';
 import { ENTRY_AXES, formatAxis } from './axes';
-import { entryVerdict, rollupByToken, structureBoard } from './analysis';
+import { atDecision, entryVerdict, rollupByToken, structureBoard } from './analysis';
 import type { EntryGroupRow, EntryRow, EntryWindowRead } from './types';
 
 const read = (tag: number, all: number): EntryWindowRead => ({
@@ -52,7 +52,7 @@ const entry = (
     sol: win.tag_buy_sol,
     control_hits: ctl.tag_buy_tx,
     control_sol: ctl.tag_buy_sol,
-    nearest: win.tag_buy_tx > 0 ? { lag_slots: 3, lag_tx: null, lag_secs: 1, key: '6Vo' } : null,
+    nearest: win.tag_buy_tx > 0 ? { lag_slots: 3, lag_tx: null, lag_secs: 1, key: '6Vo', slot: 0, tx_index: 0 } : null,
   },
 });
 
@@ -63,6 +63,25 @@ const empty = entry('B', 3, read(0, 0), read(0, 0));
 const lost: EntryRow = { ...entry('B', 4, read(9, 9), read(9, 9)), unknown_reason: 'tape-truncated' };
 const all = [hit, miss, empty, lost];
 const PRESENCE = { minHits: 1, minSol: 0 };
+
+describe('the seat a buy is read from', () => {
+  // Behind the signal the target made 2 of 2 buys; by his own buy a third buy landed.
+  const seat = { window: read(2, 2), control: read(0, 1), groups: [], groups_omitted: 0 };
+  const pooled: EntryRow = { ...entry('A', 1, read(2, 3), read(0, 1)), at_signal: seat };
+  const outside: EntryRow = { ...entry('A', 2, read(0, 3), read(0, 1)) };
+
+  it('reads a pool buy behind its signal, and any other buy at his own', () => {
+    const [a, b] = atDecision([pooled, outside], PRESENCE, true);
+    expect(a.window).toEqual(read(2, 2));
+    expect(a.probe).toBe(pooled.probe);
+    expect(b).toBe(outside);
+  });
+
+  it('keeps his own seat when the probe is off or its thresholds leave the buy out', () => {
+    expect(atDecision([pooled], PRESENCE, false)[0]).toBe(pooled);
+    expect(atDecision([pooled], { minHits: 5, minSol: 0 }, true)[0]).toBe(pooled);
+  });
+});
 
 describe('entry context verdict', () => {
   it('is the probe verdict: matched / no-match / unknown on min hits and SOL', () => {

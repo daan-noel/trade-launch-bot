@@ -2,26 +2,42 @@ import { useMemo } from 'react';
 import { cohortTable } from '@lab/lib/entryContext/counts';
 import type { EntryLogic } from '@lab/lib/entryContext/logic';
 import type { EntryRow } from '@lab/lib/entryContext/types';
-import { CardIntro, StatTable } from './StatTable';
+import { PassTable, type PassCell } from './StatTable';
+import { HIS_HELP } from './summaryHelp';
 
 const n = (v: number) => v.toLocaleString();
+const cell = (c: { his: number; matched: number }, tip: (pass: string, all: string) => string): PassCell => ({
+  all: c.his,
+  pass: c.matched,
+  tip: tip(n(c.matched), n(c.his)),
+});
 
 /**
- * His buys against the idea (the buys table's filters). Two rows: buys where the
- * probe found the target, and every buy. Two columns: buys and tokens. A token
- * counts when one of its buys does.
+ * His buys against the idea (the filters). Two rows: his buys in the token pool
+ * (the probe found the target before them), which use every filter; and every buy
+ * of his, which uses only the filters that need no selected IXs. Per row, buys and
+ * tokens before and after the filters. A token counts when one of its buys does.
  */
 export function EntrySummary({
   entries,
   logic,
   signaled,
   probeOn,
+  pool,
+  ixFilters,
+  anyFilters,
 }: {
   entries: EntryRow[];
   logic: EntryLogic;
   /** The probe's verdict: the target's transaction landed in the probe window. */
   signaled: (e: EntryRow) => boolean;
   probeOn: boolean;
+  /** What the pool is, in words: `6Vo3 in the 3 slots before his buy`. */
+  pool: string;
+  /** Target IXs filters in force: the all row skips them. */
+  ixFilters: number;
+  /** Any IXs filters in force. */
+  anyFilters: number;
 }) {
   const table = useMemo(
     () => cohortTable(entries, logic, signaled, probeOn),
@@ -30,37 +46,50 @@ export function EntrySummary({
 
   if (entries.length === 0) return null;
 
-  const idea = logic.conditions.filter((c) => c.kind === 'signal' && !c.key.startsWith('pe_'));
+  const all = table.all.buys.his;
+  const inPool = table.target.buys.his;
+  const poolBuys = cell(table.target.buys, (p, a) => `${p} of his ${a} buys in the pool pass every filter.`);
+  const allBuys = cell(table.all.buys, (p, a) => `${p} of his ${a} buys pass the Any IXs filters.`);
 
   return (
-    <div className="mb-4 flex flex-col gap-2">
-      <CardIntro>
-        his / matched. His = buys in that row. Matched = those that pass the filters in the buys table
-        {idea.length > 0
-          ? ` (${idea.map((c) => `${c.label} ${c.text}`).join(', ')})`
-          : ' (none set yet, so every buy matches)'}
-        . A token counts when one of its buys does.
-      </CardIntro>
-      <StatTable
-        columns={[
-          { label: 'Buys', tip: 'his / matched' },
-          { label: 'Tokens', tip: 'A token counts when at least one of its buys does.' },
-        ]}
+    <div className="mb-4 flex flex-col gap-1.5">
+      <PassTable
+        groups={['Buys', 'Tokens']}
+        help={HIS_HELP.table(poolBuys, allBuys)}
         rows={[
           {
-            key: 'target',
-            label: 'Target signal',
-            tip: 'His entries whose signal is the ix structure you selected. Matched = those that also pass the filters.',
-            cells: [`${n(table.target.buys.his)} / ${n(table.target.buys.matched)}`, `${n(table.target.tokens.his)} / ${n(table.target.tokens.matched)}`],
+            key: 'pool',
+            label: 'In pool',
+            sub: probeOn ? `his buys right after the selected IXs (${pool})` : 'Probe off: no pool',
+            help: probeOn ? HIS_HELP.pool(pool, poolBuys) : HIS_HELP.poolOff,
+            uses: 'every',
+            usesNote: `${ixFilters} + ${anyFilters} set`,
+            cells: [
+              poolBuys,
+              cell(table.target.tokens, (p, a) => `${p} of their ${a} tokens have a buy that passes every filter.`),
+            ],
+            highlight: true,
           },
           {
             key: 'all',
-            label: 'All entries',
-            tip: 'Every entry of his. Matched = those that pass the filters.',
-            cells: [`${n(table.all.buys.his)} / ${n(table.all.buys.matched)}`, `${n(table.all.tokens.his)} / ${n(table.all.tokens.matched)}`],
+            label: 'All his buys',
+            sub: 'every buy of his, any IXs',
+            help: HIS_HELP.all(allBuys),
+            uses: 'any',
+            usesNote: `${anyFilters} set${ixFilters > 0 ? ` · ${ixFilters} Target IXs skipped` : ''}`,
+            cells: [
+              allBuys,
+              cell(table.all.tokens, (p, a) => `${p} of his ${a} tokens have a buy that passes the Any IXs filters.`),
+            ],
           },
         ]}
       />
+      {probeOn && all > 0 && (
+        <p className="text-[11px] text-text-dim">
+          In pool = {Math.round((inPool / all) * 100)}% of his buys ({inPool.toLocaleString()} of{' '}
+          {all.toLocaleString()}).
+        </p>
+      )}
     </div>
   );
 }

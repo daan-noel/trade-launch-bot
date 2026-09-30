@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from 'lib/cn';
 import { useHoverPinPopover } from 'hooks/useHoverPinPopover';
@@ -16,7 +17,9 @@ interface InfoTooltipProps {
   /** Bold heading line (optional). */
   title?: string;
   /** Explanation body. */
-  body: string;
+  body?: string;
+  /** A laid-out body (labelled lines, styled terms), in place of or under `body`. */
+  children?: ReactNode;
   /**
    * Optional ASCII figure drawn above the body — for controls whose meaning is a
    * shape (two states side by side, a before/after) that a paragraph has to
@@ -41,6 +44,7 @@ const WIDTH = 320; // wide enough for detailed help paragraphs
 export function InfoTooltip({
   title,
   body,
+  children,
   figure,
   side = 'bottom',
   className,
@@ -99,9 +103,16 @@ export function InfoTooltip({
                 {figure}
               </span>
             )}
-            <span className="block whitespace-pre-line text-[11px] font-normal normal-case leading-snug tracking-normal text-text-dim">
-              {body}
-            </span>
+            {body && (
+              <span className="block whitespace-pre-line text-[11px] font-normal normal-case leading-snug tracking-normal text-text-dim">
+                {body}
+              </span>
+            )}
+            {children && (
+              <span className="block text-[11px] font-normal normal-case leading-snug tracking-normal text-text-dim">
+                {children}
+              </span>
+            )}
           </div>,
           document.body,
         )}

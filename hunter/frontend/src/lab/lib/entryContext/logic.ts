@@ -14,8 +14,10 @@
  *   Earlier check and named, which can only make Earlier match MORE often, so a
  *   comparison against Earlier errs low.
  *
- * `counts.ts` counts his buys against the idea (`idea`): Target signal, and All
- * entries. The probe filters stay the pool (`probe`), not the idea.
+ * `counts.ts` counts his buys against the idea: the pool row against `idea`, the
+ * all row against `anyIx` (the idea without the filters that need the selected
+ * IXs, `LogicCondition.needsIxs`). The probe filters stay the pool (`probe`), not
+ * the idea.
  */
 
 import type { ColumnDef } from 'components/table/types';
@@ -23,7 +25,7 @@ import { columnFilterPredicate } from 'components/table/columnFilter';
 import { parseNumericPredicate } from 'components/table/numericFilter';
 import type { PreEntryShow } from '@lab/components/analysis/usePreEntryProbe';
 import type { PreEntryVerdict } from '@lab/lib/preEntryProbeTypes';
-import { AXIS_BY_KEY } from './axes';
+import { AXIS_BY_KEY, needsIxs } from './axes';
 import type { EntryRow } from './types';
 
 type Verdict = (e: EntryRow) => PreEntryVerdict | undefined;
@@ -40,6 +42,9 @@ export interface LogicCondition {
   kind: 'scope' | 'signal';
   /** A signal also checked on the Earlier stretch. */
   earlierChecked: boolean;
+  /** Read through the selected IXs (probe, Target, Signal, Earlier): the pool rows
+   *  use it, the all rows skip it. */
+  needsIxs: boolean;
 }
 
 export interface EntryLogic {
@@ -56,6 +61,8 @@ export interface EntryLogic {
    * whatever column filter is added next). True for every buy when none are set.
    */
   idea: (e: EntryRow) => boolean;
+  /** The idea without the filters that need the selected IXs: what an all row asks. */
+  anyIx: (e: EntryRow) => boolean;
   /** Probe-column filters (hits, SOL, Show). True for every buy when none are set. */
   probe: (e: EntryRow) => boolean;
 }
@@ -108,25 +115,29 @@ export function entryLogic(
   const last: ((e: EntryRow) => boolean)[] = [];
   const earlier: ((e: EntryRow) => boolean)[] = [];
   const idea: ((e: EntryRow) => boolean)[] = [];
+  const anyIx: ((e: EntryRow) => boolean)[] = [];
   const probe: ((e: EntryRow) => boolean)[] = [];
 
   const add = (col: ColumnDef<EntryRow>, text: string) => {
     const pred = columnFilterPredicate(col, text);
     if (!pred) return;
     const axis = AXIS_BY_KEY.get(col.key);
-    const isScope = SCOPE_KEYS.has(col.key) || axis?.group === 'buy' || (!axis && !col.key.startsWith('pe_'));
+    const isProbe = col.key.startsWith('pe_');
+    const isScope = SCOPE_KEYS.has(col.key) || axis?.group === 'buy' || (!axis && !isProbe);
     if (isScope) {
       scope.push(pred);
-      conditions.push({ key: col.key, label: col.label, text, kind: 'scope', earlierChecked: false });
+      conditions.push({ key: col.key, label: col.label, text, kind: 'scope', earlierChecked: false, needsIxs: false });
       return;
     }
+    const ix = isProbe || (axis != null && needsIxs(axis.group));
     const twin = axis ? axisTwin(col.key, text) : verdictOf ? probeTwin(col.key, text, verdictOf) : null;
     last.push(pred);
     if (twin) earlier.push(twin);
     // The probe is the pool (did the target signal). Every other signal filter is
     // the idea, and another one added later joins it.
-    (col.key.startsWith('pe_') ? probe : idea).push(pred);
-    conditions.push({ key: col.key, label: col.label, text, kind: 'signal', earlierChecked: twin != null });
+    (isProbe ? probe : idea).push(pred);
+    if (!ix) anyIx.push(pred);
+    conditions.push({ key: col.key, label: col.label, text, kind: 'signal', earlierChecked: twin != null, needsIxs: ix });
   };
 
   for (const [key, raw] of Object.entries(filters)) {
@@ -145,6 +156,7 @@ export function entryLogic(
     last: all(last),
     earlier: all(earlier),
     idea: all(idea),
+    anyIx: all(anyIx),
     probe: all(probe),
   };
 }

@@ -104,6 +104,9 @@ export interface NearestTag {
   lag_tx: number | null;
   /** Seconds back by block time (second precision). */
   lag_secs: number;
+  /** Its own tape position. */
+  slot: number;
+  tx_index: number;
   /** Its template grain (`program|CU|ATA|N|S|F`). */
   key: string;
   /** Its exact ordered ix labels (absent when the print has none). */
@@ -121,8 +124,20 @@ export interface ProbeRead {
   nearest: NearestTag | null;
 }
 
+/** The window, its control and its breakdown, read from one seat. */
+export interface SeatRead {
+  window: EntryWindowRead;
+  control: EntryWindowRead;
+  groups: EntryGroupRow[];
+  groups_omitted: number;
+}
+
 /** One anchor: the trader's buy transaction and the window before it. */
 export interface EntryRow {
+  /** The same read from the seat right behind the signal (the probe's nearest
+   *  target print): what a bot firing on that print reads, and what the scan reads
+   *  for that print. Absent with no signal. */
+  at_signal?: SeatRead;
   mint_address: string;
   slot: number;
   tx_index: number;
@@ -153,10 +168,14 @@ export const entryKey = (e: Pick<EntryRow, 'mint_address' | 'slot' | 'tx_index'>
 
 /** `POST /api/wallets/{wallet}/entry-context/scan`: every token traded in the range.
  *  A point is a buy of the target. The body is the buys read's. */
-export type EntryScanRequest = EntryContextRequest;
+export interface EntryScanRequest extends EntryContextRequest {
+  /** Read the market again and replace the stored result of this request. */
+  refresh?: boolean;
+}
 
-/** One target buy, read exactly as a buy is (`at` is that buy, `sol` 0, the window
- *  is the W seconds before it, the breakdown cut to its top row), plus what came after. */
+/** One target buy, read as a buy landing right behind it is (`at` is that buy, `sol`
+ *  0, the window is the W seconds up to and with it, the breakdown cut to its top
+ *  row), plus what came after. */
 export interface ScanMoment extends EntryRow {
   /** The last trade's price at the moment, SOL per raw token (his trades left out). */
   price?: number;
@@ -177,4 +196,6 @@ export interface EntryScanResponse {
   probe_slots: number;
   /** The two horizons `ret_pct` is read at, seconds. */
   after_secs: [number, number];
+  /** When the market was read, UTC ISO. A stored result keeps the time of its read. */
+  scanned_at: string;
 }

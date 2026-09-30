@@ -13,7 +13,7 @@ const SHOW_OPTIONS: { value: PreEntryShow; label: string; title: string }[] = [
   {
     value: 'matched',
     label: 'Before',
-    title: 'Only rows where the lens structure traded in the window before his entry. The summary still counts every row.',
+    title: 'Only rows where a Target IXs structure traded in the window before his entry. The summary still counts every row.',
   },
   {
     value: 'no-match',
@@ -49,7 +49,7 @@ export function PreEntryProbeControls({ probe }: { probe: ProbeControlsModel }) 
 
       <label className="flex items-center gap-1.5 text-[11px] text-text-dim">
         <Switch checked={probe.on} onChange={probe.setOn} label="Probe pre-entry structures" />
-        <span title="For each row: did the lens structure trade in the slots right before his entry? Adds the Pre-entry columns. Use Show to keep one answer.">
+        <span title="For each row: did a Target IXs structure trade in the slots right before his entry? Adds the Pre-entry columns. Use Show to keep one answer.">
           Probe
         </span>
       </label>

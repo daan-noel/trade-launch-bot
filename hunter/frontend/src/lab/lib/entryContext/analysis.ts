@@ -24,6 +24,18 @@ const clears = (hits: number, sol: number, t: ProbeThresholds) =>
 /** One entry as the probe's verdict: did the target land in the probe's slots
  *  before his buy, how near, and did the control window clear the same test.
  *  `unknown` when the tape cannot answer — never folded into `no-match`. */
+/**
+ * His buys as the page reads them. A buy in the pool (the probe matched) is read
+ * from the seat behind its signal: what his bot saw when the target buy landed,
+ * and the read the market scan gives that same buy, so one signal passes or fails
+ * the same on both sides. Every other buy keeps the read at his own buy.
+ */
+export function atDecision(entries: readonly EntryRow[], t: ProbeThresholds, probeOn: boolean): EntryRow[] {
+  return entries.map((e) =>
+    probeOn && e.at_signal && entryVerdict(e, t).state === 'matched' ? { ...e, ...e.at_signal } : e,
+  );
+}
+
 export function entryVerdict(e: EntryRow, t: ProbeThresholds): PreEntryVerdict {
   const p = e.probe;
   const known = !e.unknown_reason;

@@ -386,7 +386,7 @@ function FlowLensStrip({
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <Badge variant={isTemplates ? 'success' : 'info'} size="sm">
-        Flow lens · {isTemplates ? 'Templates' : 'Exact'}
+        Target IXs · {isTemplates ? 'Templates' : 'Exact'}
       </Badge>
       <span className="font-mono text-[11px] text-text-dim" title="entries in the whole stored set">
         {total} {isTemplates ? 'id' : 'shape'}

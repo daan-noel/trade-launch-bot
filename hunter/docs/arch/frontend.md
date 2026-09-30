@@ -1256,7 +1256,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   the run-summary builder; the summary's Max drawdown is `maxDrawdownSol` over the Equity chart's
   points.
 - **Trader Analysis flow lens (`lab/components/analysis/FlowLensBar.tsx` +
-  `useTraderFlowLens.ts`).** The page's tokens belong to no cohort, so there is no fingerprint to read
+  `useTraderFlowLens.ts`; labeled **Target IXs** in the UI, here and on the trades panel's badge).** The page's tokens belong to no cohort, so there is no fingerprint to read
   lists off and the charts' vol/non-vol overlay has nothing to classify with. The lens is
   the second owner of that same fact: a named `ix_pattern_sets` row (lab-only table, CRUD at
   `/api/ix-pattern-sets`) whose **kind** is insert-only — `exact` (ordered `ix_labels` plus
@@ -1372,16 +1372,64 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   earlier, with the seconds and slots spelled out); the breakdown carries its own bands. The UI calls the control window **Earlier** (`Earlier tx %`, the probe's
   `Earlier` column), and every header tooltip states its time span and a numeric example
   (`EntryAxis.definition`, `preEntryColumns(at, windowSlots)`, `slotsText`). The
-  summary is one `StatTable` (`cohortTable` in `lib/entryContext/counts.ts`): rows **Target
-  signal** (his entries whose probe signal is the selected ix structure) and **All entries**
-  (every entry of his), columns **Buys** and **Tokens**. A cell is `his / matched`. His is the
-  row's count; matched is how many of those pass the idea. A token counts when one of its buys
-  does. **Scan market** (`MarketScan`) is its own section under that token table. It runs
-  `POST /api/wallets/:wallet/entry-context/scan` on demand. Each point is a buy of the target,
-  and the window is the `W` seconds before that buy
-  ([plans/strategies/entry-context-scan.md](../plans/strategies/entry-context-scan.md)). A second
-  token table lists each token that has a buy whose window passes the idea, and that token's
-  chart marks those buys (his buys stay marked). The idea is the buys table's filter row, minus the probe
+  summary is one `PassTable` (`cohortTable` in `lib/entryContext/counts.ts`): rows **In pool**
+  (his buys whose probe found the selected ix structure, with the set and probe slots under the
+  label) and **All his buys**; groups **Buys** and **Tokens**, each with columns **all**, **pass
+  filters** and **pass %**. The pool row's Buys pass-filters cell is highlighted, and a line
+  under the table gives the pool's share of his buys. A token counts when one of its buys does.
+  A filter is one of two kinds (`LogicCondition.needsIxs`, from `needsIxs(group)` in
+  `lib/entryContext/axes.ts`): **Target IXs** (the probe, signal, target and control columns,
+  read through the selected IXs) and **Any IXs** (his buy and the everyone columns). An In pool
+  row asks every filter (`EntryLogic.idea`); an all row asks only the Any IXs ones
+  (`EntryLogic.anyIx`), since a buy outside the pool has no selected IXs to read. The table says
+  so without a hover: each row has a plain second line and a **Filters used** cell (`Target IXs +
+  Any IXs`, or `Any IXs only`, with how many are set and skipped). The popovers are three per
+  table: **How to read** (a funnel figure of the live numbers) and one per row label, each a
+  list of labelled lines (Counts, Filters, Why, Now) where Now is the row's live numbers; column
+  headers and numbers carry a hover line. All of that text lives once in
+  `components/entry-context/summaryHelp.ts` as data (`Help`), and `HelpText.tsx` renders it,
+  styling the fixed terms (`selected IXs`, `pool`, `Target IXs`, `Any IXs`) the same everywhere
+  (`Term`), the Filters section's two line labels included. `InfoTooltip` takes `children` for
+  such a laid-out body.
+  The page's sections are titled **Token pool** (the lens bar with the probe) and **Filters**:
+  `IdeaFilters` shows the buys table's filter conditions as chips on two lines, **Target IXs**
+  (In pool rows only) and **Any IXs** (every row), and edits them: an edit is written
+  to the table's saved prefs (`setTablePrefs`) and the table remounts with it; a new condition
+  is added in the table's filter row. Its switch turns the conditions off: they are parked in the
+  form (`pausedFilters`, persisted), the table's are cleared and its filter row hidden, so every buy
+  passes and the page shows the pool; on writes them back. Below them the page is two tabs: **His entries** (the summary, the buys table,
+  his token table) and **Market** (`MarketScan`). Both panels stay mounted (`TabsPanel
+  keepMounted`), because the market reads the buys table's filters and keeps its scan across a
+  switch. **Scan market** runs `POST /api/wallets/:wallet/entry-context/scan` on demand: every
+  buy of the target, each read from the seat right behind it (the `W` seconds up to and with it;
+  `seat_behind`). Each of his entries carries the same read behind its signal (`at_signal`), and
+  the page reads a pool buy from it (`atDecision`), so one target buy passes or fails the filters
+  the same on both tabs
+  ([plans/strategies/entry-context-scan.md](../plans/strategies/entry-context-scan.md)). The
+  handler stores each response as a file under `<lake root>/entry-scan/`
+  (`lab/src/state/entry_scan_cache.rs`, keyed by the wallet and the body, newest 8 kept) and
+  answers the same request from it; `refresh: true` reads again and replaces the file. The page
+  saves the last Analyze (`STORAGE_KEYS.entryContextQuery`, a preset range fixed at the press)
+  and the request Scan was pressed for (`entryContextScan`), so a reload or a return to the page
+  shows the stored scan with its `scanned_at` time. **Re-scan** sends `refresh` for the same
+  request (`getEntryScan` leaves `refresh` out of its cache key); an open range keeps its start
+  and takes the trades since. The page
+  keeps the buys that pass the idea as points and groups them into chances. Under the summary a
+  boxed strip shows the chance count and the controls that shape it (Max pause, whether a failing
+  buy ends a chance, which buys the charts mark); what a chance is, how they end and the count at
+  each max pause are two `HelpTip` popovers (`CHANCE_HELP` in `summaryHelp.ts`). Between the two,
+  `OverlapDiagram` draws his tokens against the market's as three overlapping sets (the pool, the
+  passing tokens inside it, his tokens), to scale: `lib/entryContext/overlapLayout.ts` sizes each
+  shape and each shared area by its token count. A part's counts sit inside it when they fit and
+  under the drawing with a line to the part when they do not; an empty area shows nothing. `lib/entryContext/overlap.ts` gives each
+  token of his one class (`point`: a pool buy of his that passes the idea; `signal`: a pool buy,
+  the idea fails; `bought`: never in the pool) and each token one zone (`pass`, `pool`,
+  `outside`); an area is a zone by a class. A count in the diagram lists its area in the token
+  table, whose **His buys** column reads the same map. Its summary is the
+  same `PassTable`: **In pool** (the target's buys the scan could read, and their tokens) and
+  **All market** (every token traded in the range, the response's `mints`; its Buys cell and
+  its Tokens pass-filters cell are `-`, because the scan reads only the target's buys). Its token table lists each token with
+  a chance; its chart marks each chance (his buys stay marked). The idea is the buys table's filter row, minus the probe
   columns: the table reports its filters (`onColFiltersChange`), `entryLogic`
   (`lib/entryContext/logic.ts`) sorts them into scope (token, time, his SOL), probe (`pe_*`,
   including Show) and idea (every other signal column: Target tx % and whatever filter is added
@@ -1389,7 +1437,10 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   table and the token table show the rows that pass those filters; the tokens are the shared
   `TokenTable` (charts on, in a collapsible `Accordion` whose state persists as
   `ACCORDION_IDS.entryContextTokens`) over `getTraderTokens` rows with a matched buy on screen,
-  opening the shared inspect modal. Open work:
+  opening the shared inspect modal. Both token tables carry a **Pool / Pass filters** switch
+  (`TokenViewToggle`) in their header: Pool lists every token with a buy in the pool (his: the
+  buys table's input after Show; market: the scan's readable buys), Pass filters the ones with
+  a buy that passes. Open work:
   [roadmap/entry-context.md](../roadmap/entry-context.md).
 - **One in-memory evaluator, in Rust only.** Token tables whose rows are RAM-resident on the backend (the
   lab Simulated table; the live Holdings composition) page/sort/filter through

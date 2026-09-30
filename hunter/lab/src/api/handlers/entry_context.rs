@@ -15,7 +15,8 @@
 //! The studied wallet is excluded from the tape in SQL: his own tool's structure
 //! would otherwise sit in every window he is measured against.
 //!
-//! Nothing here writes.
+//! Nothing here writes to the database. A scan's result is kept on disk
+//! ([`entry_scan_cache`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -36,6 +37,8 @@ use hunter_engine::metrics::trade_keys::{
     ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash,
 };
 use hunter_engine::metrics::{Cursor, Side, TradeLite, WindowSpec, WindowUnit, NOMINAL_SLOT_SECS};
+use crate::lake;
+use crate::state::entry_scan_cache;
 use trading_core::config::constants::lamports_to_sol;
 use trading_core::state::core_state::CoreState;
 use trading_core::storage::repositories::trade_repo::{MintSpan, SlotWindow, TapePrint, TradeRepo, WalletBuyTx};
@@ -193,6 +196,9 @@ pub struct NearestTag {
     pub lag_tx: Option<i64>,
     /// Seconds back by block time (second precision, shared by a whole slot).
     pub lag_secs: f64,
+    /// Its own tape position: where [`seat_behind`] stands to read what it showed.
+    pub slot: i64,
+    pub tx_index: i32,
     /// Its template grain (`program|CU|ATA|N|S|F`): the sort and search key.
     pub key: String,
     /// Its exact ordered ix labels, for the Matched cell's abbreviation line.
@@ -230,6 +236,20 @@ pub struct EntryRow {
     /// Breakdown rows past [`MAX_GROUPS`], left out.
     pub groups_omitted: u32,
     pub probe: ProbeRead,
+    /// The same read from the seat right behind the signal (the probe's nearest
+    /// target print): what a bot firing on that print reads, and what the scan
+    /// reads for that print. Absent with no signal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_signal: Option<SeatRead>,
+}
+
+/// The window, its control and its breakdown, read from one seat.
+#[derive(Debug, Clone, Serialize)]
+pub struct SeatRead {
+    pub window: WindowRead,
+    pub control: WindowRead,
+    pub groups: Vec<GroupRow>,
+    pub groups_omitted: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -524,6 +544,8 @@ fn fold_entry(
             lag_slots,
             lag_tx: (lag_slots == 0).then(|| i64::from(anchor.tx_index) - i64::from(tx)),
             lag_secs: (entry_ms - at_ms) as f64 / 1000.0,
+            slot,
+            tx_index: tx,
             key: grain(&labels),
             labels,
         }
@@ -541,15 +563,48 @@ fn fold_entry(
         groups: rows,
         groups_omitted,
         probe,
+        at_signal: None,
     }
+}
+
+/// The read from the seat right behind the transaction at `(slot, tx_index)`: the
+/// window and the probe hold that transaction, as they do for a buy following it.
+/// One read for both sides: the scan stands behind each target buy, and his entry
+/// stands behind the target print he followed.
+fn seat_behind(
+    mint: &str,
+    (slot, tx_index, at): (i64, i32, DateTime<Utc>),
+    prints: &[TapePrint],
+    patterns: &TagPatterns,
+    w: f64,
+    pw: i64,
+) -> EntryRow {
+    let anchor = WalletBuyTx {
+        mint_address: mint.to_string(),
+        slot,
+        tx_index: tx_index + 1,
+        block_time: at,
+        amount_lamports: 0,
+    };
+    fold_entry(&anchor, prints, patterns, w, pw)
+}
+
+/// His entry read again from behind its signal; `None` with no signal.
+fn at_signal(e: &EntryRow, prints: &[TapePrint], patterns: &TagPatterns, w: f64, pw: i64) -> Option<SeatRead> {
+    let n = e.probe.nearest.as_ref()?;
+    let at = e.at - Duration::milliseconds((n.lag_secs * 1000.0).round() as i64);
+    let r = seat_behind(&e.mint_address, (n.slot, n.tx_index, at), prints, patterns, w, pw);
+    Some(SeatRead { window: r.window, control: r.control, groups: r.groups, groups_omitted: r.groups_omitted })
 }
 
 /// One slot range per mint covering every anchor's reads — the analysis `2W` and
 /// the probe's `2P` — overlapping ranges merged so a print is fetched once however
 /// many anchors share it.
 fn mint_windows(anchors: &[&WalletBuyTx], window_secs: f64, probe_slots: i64) -> Vec<SlotWindow> {
-    let back_slots = ((2.0 * window_secs / MIN_SLOT_SECS).ceil() as i64).max(2 * probe_slots) + 1;
-    let back_ms = ((2.0 * window_secs * 1000.0).round() as i64).max(2 * probe_slots * MAX_SLOT_MS);
+    // The signal sits up to `P` slots back, and its own read ([`at_signal`]) spans `2W` before it.
+    let back_slots = ((2.0 * window_secs / MIN_SLOT_SECS).ceil() as i64).max(2 * probe_slots) + probe_slots + 1;
+    let back_ms =
+        ((2.0 * window_secs * 1000.0).round() as i64).max(2 * probe_slots * MAX_SLOT_MS) + probe_slots * MAX_SLOT_MS;
     let back = Duration::milliseconds(back_ms) + Duration::seconds(TIME_SLACK_SECS);
     let mut sorted: Vec<&WalletBuyTx> = anchors.to_vec();
     sorted.sort_by(|a, b| (&a.mint_address, a.slot).cmp(&(&b.mint_address, b.slot)));
@@ -757,11 +812,14 @@ pub async fn read_entry_context(
                     groups: Vec::new(),
                     groups_omitted: 0,
                     probe: ProbeRead::default(),
+                    at_signal: None,
                 };
             }
             let prints = by_mint.get(&a.mint_address).unwrap_or(&empty);
             let mut e = fold_entry(a, prints, &patterns, w, pw);
-            if !targeted {
+            if targeted {
+                e.at_signal = at_signal(&e, prints, &patterns, w, pw);
+            } else {
                 untarget(&mut e);
             }
             e
@@ -782,6 +840,8 @@ pub async fn read_entry_context(
 
 /// Horizons the price change after a point is read at, seconds.
 const AFTER_SECS: [i64; 2] = [30, 120];
+/// The scan's read, as [`scan_key`] names it. Changes with what a [`ScanMoment`] holds.
+const SCAN_READ: &str = "follower-seat";
 /// Points per scan. Past it the scan stops (most recent first) and says so.
 const MAX_SCAN_MOMENTS: usize = 100_000;
 
@@ -791,11 +851,14 @@ const MAX_SCAN_MOMENTS: usize = 100_000;
 pub struct EntryScanBody {
     #[serde(flatten)]
     pub base: EntryContextBody,
+    /// `true` reads the market again and replaces the stored result of this request.
+    #[serde(default)]
+    pub refresh: bool,
 }
 
-/// One target buy on one mint: read exactly as a buy is (`at` is that buy, `sol`
-/// 0, the window is the `W` seconds before it, the breakdown cut to its top row),
-/// plus what came after.
+/// One target buy on one mint: read as a buy landing right behind it is (`at` is
+/// that buy, `sol` 0, the window is the `W` seconds up to and with it, the breakdown
+/// cut to its top row), plus what came after.
 #[derive(Debug, Serialize)]
 pub struct ScanMoment {
     #[serde(flatten)]
@@ -821,6 +884,8 @@ pub struct EntryScanResponse {
     pub window_secs: f64,
     pub probe_slots: i64,
     pub after_secs: [i64; 2],
+    /// When the market was read. A stored result keeps the time of its read.
+    pub scanned_at: DateTime<Utc>,
 }
 
 /// The last trade price at or before `t`, his trades left out.
@@ -852,8 +917,8 @@ fn each_target_buy<'a>(
     out
 }
 
-/// One target buy: the anchor is that buy, so the window is the `W` seconds before
-/// it and the buy itself is not in the share. Priced at the buy, then after.
+/// One target buy, read from the seat right behind it ([`seat_behind`]). The row
+/// keeps the buy's own position. Priced at the buy, then after.
 #[allow(clippy::too_many_arguments)]
 fn point_of(
     mint: &str,
@@ -866,16 +931,11 @@ fn point_of(
     reach: Duration,
 ) -> ScanMoment {
     let t = trigger.block_time;
-    let anchor = WalletBuyTx {
-        mint_address: mint.to_string(),
-        slot: trigger.slot,
-        tx_index: trigger.tx_index,
-        block_time: t,
-        amount_lamports: 0,
-    };
-    let end = prints.partition_point(|p| (p.slot, p.tx_index) < (trigger.slot, trigger.tx_index));
+    let end = prints.partition_point(|p| (p.slot, p.tx_index) <= (trigger.slot, trigger.tx_index));
     let start = prints.partition_point(|p| p.block_time < t - reach).min(end);
-    let mut read = fold_entry(&anchor, &prints[start..end], patterns, w, pw);
+    let seat = (trigger.slot, trigger.tx_index, t);
+    let mut read = seat_behind(mint, seat, &prints[start..end], patterns, w, pw);
+    read.tx_index = trigger.tx_index;
     // Only what a logic reads: the top row (Top structure) and the signal's row, no
     // label lists.
     let mut i = 0;
@@ -1010,6 +1070,7 @@ pub async fn read_entry_scan(
         window_secs: w,
         probe_slots: pw,
         after_secs: AFTER_SECS,
+        scanned_at: Utc::now(),
     })
 }
 
@@ -1057,16 +1118,48 @@ pub async fn entry_context_range(
     }
 }
 
-/// `POST /api/wallets/{wallet}/entry-context/scan`.
+/// What a scan result is stored under: the wallet and every field of the body
+/// that changes the read. An open `to` stays open, so the stored result is the
+/// range as it stood at the scan. [`SCAN_READ`] names the read itself: a result
+/// stored under another read is never served.
+fn scan_key(wallet: &str, b: &EntryContextBody) -> String {
+    format!(
+        "{SCAN_READ}|{wallet}|{}|{}|{}|{}|{}",
+        b.from.to_rfc3339(),
+        b.to.map(|t| t.to_rfc3339()).unwrap_or_default(),
+        b.window_secs,
+        b.probe_slots,
+        b.tag.as_ref().map(|t| t.to_string()).unwrap_or_default(),
+    )
+}
+
+/// `POST /api/wallets/{wallet}/entry-context/scan`. A request scanned before is
+/// answered from its stored result ([`entry_scan_cache`]); `refresh` reads again.
 pub async fn entry_context_scan(
     state: web::Data<Arc<CoreState>>,
     path: web::Path<String>,
     body: web::Json<EntryScanBody>,
 ) -> impl Responder {
     let wallet = path.into_inner();
+    let key = scan_key(&wallet, &body.base);
+    let dir = lake::entry_scan_dir(&lake::lake_root());
+    if !body.refresh {
+        if let Some(json) = entry_scan_cache::load(&dir, &key).await {
+            return HttpResponse::Ok().content_type("application/json").body(json);
+        }
+    }
     let repo = TradeRepo::new(state.batch_db.clone());
-    match read_entry_scan(&repo, &wallet, &body).await {
-        Ok(r) => HttpResponse::Ok().json(r),
+    match read_entry_scan(&repo, &wallet, &body).await.map(|r| serde_json::to_vec(&r)) {
+        Ok(Ok(json)) => {
+            if let Err(e) = entry_scan_cache::store(&dir, &key, &json).await {
+                tracing::warn!("entry context scan: result not stored for {wallet}: {e}");
+            }
+            HttpResponse::Ok().content_type("application/json").body(json)
+        }
+        Ok(Err(e)) => {
+            tracing::error!("entry context scan: response not serialized for {wallet}: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({ "error": "serialize error" }))
+        }
         Err(EntryContextError::Bad(msg)) => {
             HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
         }
@@ -1359,11 +1452,12 @@ mod tests {
         }
     }
 
-    /// A point is a buy of the target. The window is the seconds before that buy,
-    /// so the buy itself is not in its own share. A sell, and a buy of another
-    /// structure, are not points. Sticky does not carry the tag onto the next buy.
+    /// A point is a buy of the target. The window is the seconds up to that buy and
+    /// holds it, as the window of a buy following it does; the probe's nearest is the
+    /// buy itself. A sell, and a buy of another structure, are not points. Sticky
+    /// does not carry the tag onto the next buy.
     #[test]
-    fn a_market_point_is_a_target_buy_and_excludes_itself() {
+    fn a_market_point_is_a_target_buy_and_holds_itself() {
         let prints = vec![
             print(10, 0, 70, SIX, true, 1.0, "a"),
             print(20, 0, 90, "Pump.Fun: Buy", true, 1.0, "b"),
@@ -1377,9 +1471,12 @@ mod tests {
         let m = point_of("M", hits[1], &prints, &[], &patterns, 30.0, 25, Duration::seconds(60));
         assert_eq!(m.read.at, at(100));
         assert_eq!(m.read.sol, 0.0);
-        assert_eq!((m.read.window.tag_buy_tx, m.read.window.buy_tx), (1, 2));
+        assert_eq!((m.read.slot, m.read.tx_index), (30, 0));
+        assert_eq!((m.read.window.tag_buy_tx, m.read.window.buy_tx), (2, 3));
+        // 1 + 10 SOL of the target in 12 SOL of buys.
         let sol = m.read.window.sol_share_pct.unwrap();
-        assert!((sol - 50.0).abs() < 1e-9, "{sol}");
+        assert!((sol - 1100.0 / 12.0).abs() < 1e-9, "{sol}");
+        assert_eq!(m.read.probe.nearest.as_ref().map(|n| (n.lag_slots, n.lag_tx)), Some((0, Some(1))));
 
         let sticky = compile_target(&serde_json::json!({
             "match": { "program": ["Unknown (6Vo3245e)"] },
@@ -1391,6 +1488,26 @@ mod tests {
             print(20, 0, 80, "Pump.Fun: Buy", true, 1.0, "same"),
         ];
         assert_eq!(each_target_buy(&carried, &sticky, at(0), None).len(), 1);
+    }
+
+    /// His entry, read behind its signal, is the scan's read of that target buy: a
+    /// print landing between the signal and his buy is in his window and in neither.
+    #[test]
+    fn his_entry_behind_its_signal_reads_as_the_scan_does() {
+        let prints = vec![
+            print(10, 0, 70, SIX, true, 1.0, "a"),
+            print(30, 0, 100, SIX, true, 2.0, "d"),
+            print(31, 0, 100, "Pump.Fun: Buy", true, 5.0, "late"),
+        ];
+        let patterns = six_tag();
+        let his = fold_entry(&anchor(32, 0, 101), &prints, &patterns, 30.0, 25);
+        assert_eq!(his.window.buy_tx, 2, "his own window: from 71 s on, with the late print");
+        let seat = at_signal(&his, &prints, &patterns, 30.0, 25).unwrap();
+        let hits = each_target_buy(&prints, &patterns, at(0), None);
+        let m = point_of("M", hits[1], &prints, &[], &patterns, 30.0, 25, Duration::seconds(60));
+        assert_eq!(seat.window, m.read.window);
+        assert_eq!(seat.control, m.read.control);
+        assert_eq!((seat.window.tag_buy_tx, seat.window.buy_tx), (2, 2));
     }
 
     /// The point is priced at that buy, and the price is read again 30 s and 120 s later.
