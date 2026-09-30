@@ -1419,9 +1419,13 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   buy ends a chance, which buys the charts mark); what a chance is, how they end and the count at
   each max pause are two `HelpTip` popovers (`CHANCE_HELP` in `summaryHelp.ts`). Between the two,
   `OverlapDiagram` draws his tokens against the market's as three overlapping sets (the pool, the
-  passing tokens inside it, his tokens), to scale: `lib/entryContext/overlapLayout.ts` sizes each
-  shape and each shared area by its token count. A part's counts sit inside it when they fit and
-  under the drawing with a line to the part when they do not; an empty area shows nothing. `lib/entryContext/overlap.ts` gives each
+  passing tokens inside it, his tokens), to one scale: `lib/entryContext/overlapLayout.ts` gives
+  every token the same area, so the three ellipses and their overlaps follow the token counts.
+  Inside his ellipse, his tokens at a point and his tokens with a failing signal are circles in
+  the part they belong to; the rest of a part is his tokens with no signal. Under the drawing,
+  each part of his ellipse lists its counts as one group with its total, tied to the part by a
+  line; a button hides the groups and their lines, and his parts then show their counts alone; an
+  empty area draws nothing. `lib/entryContext/overlap.ts` gives each
   token of his one class (`point`: a pool buy of his that passes the idea; `signal`: a pool buy,
   the idea fails; `bought`: never in the pool) and each token one zone (`pass`, `pool`,
   `outside`); an area is a zone by a class. A count in the diagram lists its area in the token
