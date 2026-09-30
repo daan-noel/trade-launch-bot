@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type CSSProperties } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
 import { IxPatternBar, TagStageControls } from 'components/tokens/IxPatternBar';
@@ -170,12 +170,14 @@ export function BarTradesPanel({
 
   // Pulled apart rather than passed as one object: `useTokenHighlight` returns a
   // fresh literal every render, and depending on it would rebuild every column —
-  // and re-render the whole table — on each one. The four pieces are stable
-  // (two `useCallback`s and two strings).
+  // and re-render the whole table — on each one. The pieces are `useCallback`s
+  // that change only when the armed set does.
   const onLensWallet = highlight?.toggleWallet ?? null;
   const onLensStructure = highlight?.toggleStructure ?? null;
-  const armedLensWallet = highlight?.lens.wallet ?? null;
-  const armedLensStructureKey = highlight?.lens.structureKey ?? null;
+  const lensWalletColor = highlight?.walletColor ?? null;
+  const lensStructureColor = highlight?.structureColor ?? null;
+  const lensColorsOf = highlight?.colorsOf ?? null;
+  const lensActive = highlight?.active ?? false;
 
   const tagFieldTitle = useMemo(
     () => (key: string) => tagField(reg, key)?.title ?? key,
@@ -185,9 +187,9 @@ export function BarTradesPanel({
     () =>
       tokenTradeColumns(price.unitLabel, {
         onLensWallet,
-        lensWallet: armedLensWallet,
+        lensWalletColor,
         onLensStructure,
-        lensStructureKey: armedLensStructureKey,
+        lensStructureColor,
         flowTagName,
         flowReasons,
         stage,
@@ -201,8 +203,8 @@ export function BarTradesPanel({
       tagFieldTitle,
       onLensWallet,
       onLensStructure,
-      armedLensWallet,
-      armedLensStructureKey,
+      lensWalletColor,
+      lensStructureColor,
     ],
   );
 
@@ -214,67 +216,56 @@ export function BarTradesPanel({
     [trades, focusAddr],
   );
 
-  // The wallet LENS and the page's focused wallet are the same signal — "this is
-  // the trader you are looking at" — so they share the gold, exactly as they share
-  // it on the chart. The structure lens is a different question and takes its own
-  // edge; the row background is already spoken for three ways over.
-  const lensWalletAddr = armedLensWallet;
-  const isStructureMatch = highlight?.isStructureMatch ?? null;
-  const structureArmed = armedLensStructureKey != null;
+  // A row an armed lens item matches takes that item's color (the first one, in
+  // arming order, when it matches several) — the same color as its wash on the
+  // chart. The color is runtime, so it rides a CSS variable the classes read.
+  const rowStyle = useMemo(() => {
+    if (!lensActive || !lensColorsOf) return undefined;
+    return (t: TradeRecord): CSSProperties | undefined => {
+      const colors = lensColorsOf(t);
+      return colors.length > 0 ? ({ '--row-lens': colors[0] } as CSSProperties) : undefined;
+    };
+  }, [lensActive, lensColorsOf]);
 
   const rowClassName = useMemo(() => {
     const mineCount = myWalletAddresses?.size ?? 0;
-    if (
-      entryExitMap.size === 0 &&
-      mineCount === 0 &&
-      !focusAddr &&
-      !lensWalletAddr &&
-      !structureArmed
-    ) {
+    if (entryExitMap.size === 0 && mineCount === 0 && !focusAddr && !lensActive) {
       return undefined;
     }
     return (t: TradeRecord) => {
       const kind = entryExitMap.get(t.tx_signature);
       // The focused wallet outranks the entry/exit tint for the row background —
       // finding HIM is the whole reason the page is open, and the fill's own
-      // direction is still on the row in its side column.
-      const focused =
-        (!!focusAddr && t.wallet_address === focusAddr) ||
-        (!!lensWalletAddr && t.wallet_address === lensWalletAddr);
+      // direction is still on the row in its side column. A lens match is the same
+      // kind of signal ("the thing I picked"), in its own color.
+      const focused = !!focusAddr && t.wallet_address === focusAddr;
+      const lensed = !focused && lensActive && !!lensColorsOf && lensColorsOf(t).length > 0;
       // Tints are the chart's marker colors (`CHART_COLORS.entry` / `.exit` /
       // `.signalEntry`), so a row and the marker above it read as one event.
       const base = focused
         ? 'bg-[#fde047]/16 hover:bg-[#fde047]/24 font-semibold'
-        : kind === 'entry'
-          ? 'bg-[#02c076]/12 hover:bg-[#02c076]/20'
-          : kind === 'exit'
-            ? 'bg-[#f6465d]/12 hover:bg-[#f6465d]/20'
-            : kind === 'signal'
-              ? 'bg-[#5dade2]/12 hover:bg-[#5dade2]/20'
-              : '';
-      // Left accent: focus (gold, 4px) beats "my trade" (amber, 2px) — a wallet
+        : lensed
+          ? 'bg-(--row-lens)/16 hover:bg-(--row-lens)/24 font-semibold'
+          : kind === 'entry'
+            ? 'bg-[#02c076]/12 hover:bg-[#02c076]/20'
+            : kind === 'exit'
+              ? 'bg-[#f6465d]/12 hover:bg-[#f6465d]/20'
+              : kind === 'signal'
+                ? 'bg-[#5dade2]/12 hover:bg-[#5dade2]/20'
+                : '';
+      // Left accent: focus / lens (4px) beats "my trade" (amber, 2px) — a wallet
       // can be both, and only one border fits.
       const accent = focused
         ? 'border-l-4 border-l-[#fde047]'
-        : t.wallet_address && myWalletAddresses?.has(t.wallet_address)
-          ? 'border-l-2 border-l-[#fbbf24]'
-          : '';
-      // Right edge, not the background: a row can be the focused wallet AND carry
-      // the armed structure, and that overlap is the cell worth spotting.
-      const structure =
-        structureArmed && isStructureMatch?.(t) ? 'border-r-2 border-r-[#22d3ee]' : '';
-      return [base, accent, structure].filter(Boolean).join(' ') || undefined;
+        : lensed
+          ? 'border-l-4 border-l-(--row-lens)'
+          : t.wallet_address && myWalletAddresses?.has(t.wallet_address)
+            ? 'border-l-2 border-l-[#fbbf24]'
+            : '';
+      return [base, accent].filter(Boolean).join(' ') || undefined;
     };
-  }, [
-    entryExitMap,
-    myWalletAddresses,
-    focusAddr,
-    lensWalletAddr,
-    structureArmed,
-    isStructureMatch,
-  ]);
+  }, [entryExitMap, myWalletAddresses, focusAddr, lensActive, lensColorsOf]);
 
-  const lensActive = highlight?.active ?? false;
   if (!external && !bar && !range) {
     return lensActive && highlight ? (
       <div className={className}>
@@ -348,6 +339,7 @@ export function BarTradesPanel({
         colFilters
         hoverable
         rowClassName={rowClassName}
+        rowStyle={rowStyle}
         emptyMessage={emptyMessage}
         // `trades` is a fresh selection every time the host's chart click/drag
         // (or `external`) changes — outside this table's own state — so a new

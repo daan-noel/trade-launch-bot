@@ -17,7 +17,7 @@ import { formatFeePins } from 'lib/strategy/ixPatternRows';
 import { stageValueOf, stageValueText, type TagStage } from 'hooks/useIxPatternTarget';
 // Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
 // colors come along without dragging the charting library into this chunk.
-import { CHART_COLORS } from 'components/token-price-chart/constants';
+import { LENS_COLORS } from 'components/token-price-chart/constants';
 
 export interface TokenTradeColumnsOpts {
   /**
@@ -47,8 +47,9 @@ export interface TokenTradeColumnsOpts {
    * the Wallet cell. Nothing is persisted: this only washes candles and rows.
    */
   onLensWallet?: ((address: string) => void) | null;
-  /** The armed wallet, so its own rows render the button lit. */
-  lensWallet?: string | null;
+  /** The color an armed wallet washes in (`null` = not armed), so its rows render
+   *  the button lit in that color. */
+  lensWalletColor?: ((address: string) => string | null) | null;
   /**
    * Arms the ephemeral IX-STRUCTURE lens from a row. Deliberately separate from the
    * tag badge, which lives one column over and SAVES to the fingerprint the engine
@@ -56,8 +57,8 @@ export interface TokenTradeColumnsOpts {
    * rule classifies.
    */
   onLensStructure?: ((labels: readonly string[]) => void) | null;
-  /** `patternKey` of the armed structure, so matching rows render the button lit. */
-  lensStructureKey?: string | null;
+  /** The color an armed structure (by `patternKey`) washes in, `null` = not armed. */
+  lensStructureColor?: ((key: string) => string | null) | null;
 }
 
 /** What the Wallet column actually holds — stated on the column, because reading it
@@ -114,9 +115,9 @@ export function tokenTradeColumns(
   const stage = opts?.stage ?? null;
   const title = opts?.tagFieldTitle ?? ((k: string) => k);
   const onLensWallet = opts?.onLensWallet ?? null;
-  const lensWallet = opts?.lensWallet ?? null;
+  const lensWalletColor = opts?.lensWalletColor ?? null;
   const onLensStructure = opts?.onLensStructure ?? null;
-  const lensStructureKey = opts?.lensStructureKey ?? null;
+  const lensStructureColor = opts?.lensStructureColor ?? null;
 
   const leading: ColumnDef<TradeRecord>[] = [];
 
@@ -204,15 +205,17 @@ export function tokenTradeColumns(
         : ''),
     render: (t) => {
       const labels = t.instruction_labels ?? [];
+      const armedColor =
+        labels.length > 0 ? (lensStructureColor?.(patternKey(labels)) ?? null) : null;
       return (
         <span className="flex items-start gap-1">
           {onLensStructure &&
             (labels.length > 0 ? (
               <LensButton
-                armed={lensStructureKey === patternKey(labels)}
-                color={CHART_COLORS.lensStructure}
+                armed={armedColor != null}
+                color={armedColor ?? LENS_COLORS.structure[0]}
                 title={
-                  lensStructureKey === patternKey(labels)
+                  armedColor != null
                     ? 'Stop highlighting this ix structure'
                     : 'Highlight every candle and row with this exact ordered structure'
                 }
@@ -269,30 +272,33 @@ export function tokenTradeColumns(
           ? 'Click the target to wash every candle this wallet traded in. View-only — ' +
             'nothing is saved, and it clears with the token.\n\n'
           : '') + WALLET_IS_VENUE_CREDIT_TIP,
-      render: (t) => (
-        <span className="flex items-start gap-1">
-          {onLensWallet &&
-            (t.wallet_address ? (
-              <LensButton
-                armed={lensWallet === t.wallet_address}
-                color={CHART_COLORS.lensWallet}
-                title={
-                  lensWallet === t.wallet_address
-                    ? 'Stop highlighting this wallet'
-                    : t.is_proxied === true
-                      ? 'Highlight every row credited to this ROUTER PDA — that is every ' +
-                        'customer it routed, not one trader'
-                      : 'Highlight every candle and row this wallet traded in'
-                }
-                onClick={() => onLensWallet(t.wallet_address)}
-              />
-            ) : (
-              <LensSpacer />
-            ))}
-          <AddressDisplay address={t.wallet_address} kind="account" />
-          <ProxyBadge isProxied={t.is_proxied} />
-        </span>
-      ),
+      render: (t) => {
+        const armedColor = t.wallet_address ? (lensWalletColor?.(t.wallet_address) ?? null) : null;
+        return (
+          <span className="flex items-start gap-1">
+            {onLensWallet &&
+              (t.wallet_address ? (
+                <LensButton
+                  armed={armedColor != null}
+                  color={armedColor ?? LENS_COLORS.wallet[0]}
+                  title={
+                    armedColor != null
+                      ? 'Stop highlighting this wallet'
+                      : t.is_proxied === true
+                        ? 'Highlight every row credited to this ROUTER PDA — that is every ' +
+                          'customer it routed, not one trader'
+                        : 'Highlight every candle and row this wallet traded in'
+                  }
+                  onClick={() => onLensWallet(t.wallet_address)}
+                />
+              ) : (
+                <LensSpacer />
+              ))}
+            <AddressDisplay address={t.wallet_address} kind="account" />
+            <ProxyBadge isProxied={t.is_proxied} />
+          </span>
+        );
+      },
       sortValue: (t) => t.wallet_address,
       // The flag is searchable by word, so `proxy` selects the router rows and
       // `direct` the ones that signed — the split every per-wallet read depends on.

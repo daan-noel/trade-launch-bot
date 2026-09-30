@@ -2,8 +2,12 @@ import { cn } from 'lib/cn';
 import { ixLabelsActions } from 'lib/ixLabels';
 // Deep imports: type-only w.r.t. lightweight-charts, so a host outside the chart
 // chunk can draw the lens controls without loading the charting library.
-import { CHART_COLORS } from 'components/token-price-chart/constants';
-import type { LensMatch } from 'components/token-price-chart/lensTint';
+import {
+  EMPTY_LENS_MATCH,
+  lensItemId,
+  type LensMatch,
+} from 'components/token-price-chart/lensTint';
+import type { ChartLensSizeLabels } from 'components/token-price-chart/types';
 import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
 
 /*
@@ -100,14 +104,12 @@ function LensChip({
   label,
   title,
   match,
-  note,
   onClear,
 }: {
   color: string;
   label: string;
   title: string;
   match: LensMatch;
-  note?: string | null;
   onClear: () => void;
 }) {
   const total = match.buys + match.sells;
@@ -121,7 +123,6 @@ function LensChip({
       <span className="text-text-dim">
         {total} tx ({match.buys}b/{match.sells}s) · net {signedSol(match)} SOL
       </span>
-      {note && <span className="text-text-dim">· {note}</span>}
       <button
         type="button"
         onClick={onClear}
@@ -130,6 +131,45 @@ function LensChip({
       >
         ×
       </button>
+    </span>
+  );
+}
+
+/** The size-label switch: what prints under each wash. */
+const SIZE_MODES: { mode: ChartLensSizeLabels; label: string; title: string }[] = [
+  { mode: 'buys', label: 'buys', title: 'Print the SOL size of each highlighted buy under its candle' },
+  { mode: 'all', label: 'all', title: 'Print the SOL size of every highlighted trade: +buy, −sell' },
+  { mode: 'off', label: 'off', title: 'No size labels' },
+];
+
+function SizeLabelSwitch({
+  mode,
+  onChange,
+}: {
+  mode: ChartLensSizeLabels;
+  onChange: (mode: ChartLensSizeLabels) => void;
+}) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 font-mono text-[10px] text-text-dim"
+      title="SOL size of each highlighted trade, printed under its candle. Largest first, three per candle, then +k. Hover a candle for size, fee and wallet."
+    >
+      sizes
+      {SIZE_MODES.map((m) => (
+        <button
+          key={m.mode}
+          type="button"
+          title={m.title}
+          aria-pressed={mode === m.mode}
+          onClick={() => onChange(m.mode)}
+          className={cn(
+            'rounded px-1 leading-4',
+            mode === m.mode ? 'bg-white/10 text-text' : 'hover:text-text',
+          )}
+        >
+          {m.label}
+        </button>
+      ))}
     </span>
   );
 }
@@ -143,34 +183,59 @@ function LensChip({
  * dust legs the candles drop are absent here too.
  */
 export function LensChips({ highlight }: { highlight: TokenHighlight }) {
-  const { lens, matches, structureLabels, unlabeled, toggleWallet, toggleStructure } =
-    highlight;
-  const structureText = structureLabels ? ixLabelsActions([...structureLabels]) : '';
+  const { items, matches, unlabeled, remove, clear, sizeLabels, setSizeLabels } = highlight;
+  const anyStructure = items.some((i) => i.kind === 'structure');
   return (
     <div className="mb-2 flex flex-wrap items-center gap-2">
-      {lens.wallet && (
-        <LensChip
-          color={CHART_COLORS.lensWallet}
-          label={shortAddr(lens.wallet)}
-          title={`${lens.wallet} — every candle this wallet traded in is washed gold`}
-          match={matches.wallet}
-          onClear={() => toggleWallet(null)}
-        />
-      )}
-      {lens.structureKey && (
-        <LensChip
-          color={CHART_COLORS.lensStructure}
-          label={structureText || 'ix structure'}
-          title={
-            `${structureText}
+      {items.map((item) => {
+        const match = matches.get(lensItemId(item)) ?? EMPTY_LENS_MATCH;
+        if (item.kind === 'wallet') {
+          return (
+            <LensChip
+              key={lensItemId(item)}
+              color={item.color}
+              label={shortAddr(item.key)}
+              title={`${item.key} — every candle this wallet traded in is washed in this color`}
+              match={match}
+              onClear={() => remove(item)}
+            />
+          );
+        }
+        const text = item.labels ? ixLabelsActions([...item.labels]) : '';
+        return (
+          <LensChip
+            key={lensItemId(item)}
+            color={item.color}
+            label={text || 'ix structure'}
+            title={
+              `${text}
 
 Every candle carrying this EXACT ordered structure is ` +
-            `washed cyan. View-only — no fingerprint or rule reads it.`
-          }
-          match={matches.structure}
-          note={unlabeled > 0 ? `${unlabeled} unlabeled` : null}
-          onClear={() => toggleStructure(null)}
-        />
+              `washed in this color. View-only — no fingerprint or rule reads it.`
+            }
+            match={match}
+            onClear={() => remove(item)}
+          />
+        );
+      })}
+      {anyStructure && unlabeled > 0 && (
+        <span
+          className="font-mono text-[10px] text-text-dim"
+          title="Trades with no captured ix structure — a structure lens cannot match them"
+        >
+          {unlabeled} unlabeled
+        </span>
+      )}
+      <SizeLabelSwitch mode={sizeLabels} onChange={setSizeLabels} />
+      {items.length > 1 && (
+        <button
+          type="button"
+          onClick={clear}
+          className="text-[10px] text-text-dim hover:text-text"
+          title="Stop highlighting everything"
+        >
+          clear all
+        </button>
       )}
     </div>
   );

@@ -4,7 +4,7 @@ import {
   tradeBarSlot,
   tradeBarTime,
 } from './chartBars';
-import type { ChartGroupMode, ChartMetric, ChartTrade, OhlcBar } from './types';
+import type { ChartGroupMode, ChartLensItem, ChartMetric, ChartTrade, OhlcBar } from './types';
 
 /**
  * Per-bar strength of a highlight lens — "how much of this candle is the thing
@@ -19,6 +19,9 @@ export interface LensBarTint {
   barTime: number;
   /** Matched SOL / bar SOL, clamped to [0, 1]. */
   share: number;
+  /** The matched trades in this bar, in chart order — what the size labels under
+   *  the wash and the hover list print, so neither can disagree with the wash. */
+  trades: readonly ChartTrade[];
 }
 
 /** What one lens found across the token's whole history. */
@@ -79,6 +82,7 @@ export function buildLensMatch(
   for (const bar of bars) barVolume.set(bar.time as number, bar.volume);
 
   const matchedSol = new Map<number, number>();
+  const matchedTrades = new Map<number, ChartTrade[]>();
   let buys = 0;
   let sells = 0;
   let buySol = 0;
@@ -96,6 +100,9 @@ export function buildLensMatch(
     // one unit of volume there, so the ratio stays in the same currency.
     const sol = trade.amount_sol ?? 1;
     matchedSol.set(key, (matchedSol.get(key) ?? 0) + sol);
+    const inBar = matchedTrades.get(key);
+    if (inBar) inBar.push(trade);
+    else matchedTrades.set(key, [trade]);
     if (trade.trade_type === 'buy') {
       buys += 1;
       buySol += sol;
@@ -108,7 +115,11 @@ export function buildLensMatch(
   const tint: LensBarTint[] = [];
   for (const [barTime, sol] of matchedSol) {
     const denom = barVolume.get(barTime) ?? 0;
-    tint.push({ barTime, share: denom > 0 ? Math.min(1, sol / denom) : 1 });
+    tint.push({
+      barTime,
+      share: denom > 0 ? Math.min(1, sol / denom) : 1,
+      trades: matchedTrades.get(barTime) ?? [],
+    });
   }
   tint.sort((a, b) => a.barTime - b.barTime);
 
@@ -121,4 +132,26 @@ export function buildLensMatch(
     firstBarTime: tint.length > 0 ? tint[0].barTime : null,
     lastBarTime: tint.length > 0 ? tint[tint.length - 1].barTime : null,
   };
+}
+
+/** A lens item's identity — the key of its entry in `ChartLensMatches`. */
+export function lensItemId(item: Pick<ChartLensItem, 'kind' | 'key'>): string {
+  return `${item.kind}:${item.key}`;
+}
+
+/** Does `trade` belong to this lens item? Structure identity is ordered, exact and
+ *  whole-sequence — the key `volumePatterns.patternKey` builds, inlined so this
+ *  folder stays portable. A set/subset match here would silently mean something
+ *  else than it does everywhere else in the app. */
+export function lensItemMatches(item: ChartLensItem, trade: ChartTrade): boolean {
+  if (item.kind === 'wallet') return trade.wallet_address === item.key;
+  const labels = trade.instruction_labels;
+  return !!labels && labels.length > 0 && JSON.stringify(labels) === item.key;
+}
+
+/** A matched trade's SOL size as the chart prints it under a wash: 3 decimals
+ *  below 1 SOL, 2 up to 100, whole SOL above. */
+export function formatLensSol(sol: number): string {
+  const a = Math.abs(sol);
+  return a >= 100 ? a.toFixed(0) : a >= 1 ? a.toFixed(2) : a.toFixed(3);
 }

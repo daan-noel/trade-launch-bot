@@ -1,4 +1,14 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import { cn } from 'lib/cn';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
@@ -306,6 +316,10 @@ interface DataTableProps<R> {
   /** Optional extra className(s) applied to each data row's `<tr>`. Useful for
    *  per-row highlights (e.g. marking entry/exit trades). */
   rowClassName?: (row: R) => string | undefined;
+  /** Optional inline style for each data row's `<tr>` — for a per-row value a
+   *  class cannot carry (a runtime color, set as a CSS variable that
+   *  `rowClassName` reads). */
+  rowStyle?: (row: R) => CSSProperties | undefined;
   /** Optional extra className(s) applied to each data `<td>` based on its
    *  column group key. Called once per visible cell; return undefined to skip. */
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
@@ -385,6 +399,7 @@ export function DataTable<R>({
   loading = false,
   resetKey,
   rowClassName,
+  rowStyle,
   cellGroupClassName,
   onVisibleRowsChange,
   onFilteredRowsChange,
@@ -489,6 +504,8 @@ export function DataTable<R>({
   rowDetailRef.current = rowDetail;
   const rowClassNameRef = useRef(rowClassName);
   rowClassNameRef.current = rowClassName;
+  const rowStyleRef = useRef(rowStyle);
+  rowStyleRef.current = rowStyle;
   const cellGroupClassNameRef = useRef(cellGroupClassName);
   cellGroupClassNameRef.current = cellGroupClassName;
   const onSelectRef = useRef(onSelect);
@@ -509,6 +526,11 @@ export function DataTable<R>({
     () => (rowClassName ? (row: R) => rowClassNameRef.current!(row) : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [!!rowClassName],
+  );
+  const stableRowStyle = useMemo(
+    () => (rowStyle ? (row: R) => rowStyleRef.current!(row) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [!!rowStyle],
   );
   const stableCellGroupClassName = useMemo(
     () =>
@@ -1296,6 +1318,7 @@ export function DataTable<R>({
                     rowDetail={stableRowDetail}
                     colCount={colCount}
                     rowClassName={stableRowClassName}
+                    rowStyle={stableRowStyle}
                     cellGroupClassName={stableCellGroupClassName}
                     valueTints={valueTints}
                     pinningEnabled
@@ -1334,6 +1357,7 @@ export function DataTable<R>({
                       rowDetail={stableRowDetail}
                       colCount={colCount}
                       rowClassName={stableRowClassName}
+                      rowStyle={stableRowStyle}
                       cellGroupClassName={stableCellGroupClassName}
                       valueTints={valueTints}
                       pinningEnabled={pinningEnabled}
@@ -1381,6 +1405,7 @@ interface TableRowProps<R> {
   rowDetail?: (row: R) => ReactNode;
   colCount: number;
   rowClassName?: (row: R) => string | undefined;
+  rowStyle?: (row: R) => CSSProperties | undefined;
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
   /** `${rowKey}\0${colKey}` → same-value background class; null when the tints
    *  are off. Identity is stable while the page + columns are unchanged, so it
@@ -1421,6 +1446,7 @@ function TableRowInner<R>({
   rowDetail,
   colCount,
   rowClassName,
+  rowStyle,
   cellGroupClassName,
   valueTints,
   pinningEnabled,
@@ -1452,7 +1478,13 @@ function TableRowInner<R>({
         // The `thead` pins at `top-0` over the page scroll, so a plain
         // scroll-into-view can park the row underneath it. The margin reserves
         // the header band (group banner + sort row + filter row).
-        style={isSelected ? SELECTED_SCROLL_MARGIN : undefined}
+        style={
+          rowStyle
+            ? { ...rowStyle(row), ...(isSelected ? SELECTED_SCROLL_MARGIN : null) }
+            : isSelected
+              ? SELECTED_SCROLL_MARGIN
+              : undefined
+        }
         onClick={
           selectable
             ? (e) => {

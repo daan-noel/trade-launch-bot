@@ -76,12 +76,12 @@ import {
 } from './constants';
 import { createChartOptions, SERIES_BY_STYLE } from './chartOptions';
 import { getString, setString } from 'lib/storage';
-import { BarCrosshairTooltip } from './BarCrosshairTooltip';
+import { BarCrosshairTooltip, type LensTooltipRow } from './BarCrosshairTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';
 import { RangeSelectTooltip, formatRangeDuration } from './RangeSelectTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef, type MarkerShape } from './walletMarkersPlugin';
 import { BarTintPlugin, EMPTY_BAR_TINTS, asBarTintPrimitive } from './barTintPlugin';
-import { EMPTY_LENS_MATCH, buildLensMatch } from './lensTint';
+import { buildLensMatch, lensItemId, lensItemMatches, type LensMatch } from './lensTint';
 import { HOST_RANGE_COLORS, RangeSelectPlugin, asRangePrimitive } from './rangeSelectPlugin';
 import { rangeForSpan } from './barTrades';
 import { barTimeAtClientX } from './paneCoords';
@@ -101,6 +101,8 @@ import type {
   ChartCrosshairInfo,
   ChartGroupMode,
   ChartInterval,
+  ChartLensItem,
+  ChartLensMatches,
   ChartStyle,
   ChartBarTooltipState,
   ChartEventMarker,
@@ -115,6 +117,8 @@ import type {
 } from './types';
 
 type ChartPrefs = typeof DEFAULT_CHART_PREFS;
+
+const EMPTY_LENS_ITEMS: readonly ChartLensItem[] = [];
 
 function loadPrefs(): ChartPrefs {
   try {
@@ -794,35 +798,43 @@ export function TokenPriceChart({
   // matched SOL over `OhlcBar.volume`, so it can only be honest in the one place
   // that owns the bars. `onHighlightLensMatch` hands the same numbers back out so
   // a host's chips can never quote a different count from the tint.
-  const lensWallet = highlightLens?.wallet?.trim() || null;
-  const lensStructureKey = highlightLens?.structureKey || null;
+  const lensItems = highlightLens?.items ?? EMPTY_LENS_ITEMS;
+  const lensSizeLabels = highlightLens?.sizeLabels ?? 'buys';
 
-  const walletLensMatch = useMemo(
-    () =>
-      lensWallet
-        ? buildLensMatch(sortedTrades, bars, groupMode, intervalSec, metric, (t) =>
-            t.wallet_address === lensWallet,
-          )
-        : EMPTY_LENS_MATCH,
-    [lensWallet, sortedTrades, bars, groupMode, intervalSec, metric],
-  );
+  // One pass per armed item, keyed by `lensItemId` — the map the chips, the washes
+  // and the hover list all read.
+  const lensMatches = useMemo<ChartLensMatches>(() => {
+    const out = new Map<string, LensMatch>();
+    for (const item of lensItems) {
+      out.set(
+        lensItemId(item),
+        buildLensMatch(sortedTrades, bars, groupMode, intervalSec, metric, (t) =>
+          lensItemMatches(item, t),
+        ),
+      );
+    }
+    return out;
+  }, [lensItems, sortedTrades, bars, groupMode, intervalSec, metric]);
 
-  const structureLensMatch = useMemo(
-    () =>
-      lensStructureKey
-        ? buildLensMatch(sortedTrades, bars, groupMode, intervalSec, metric, (t) => {
-            // Ordered, exact, whole-sequence — the identity `volumePatterns.patternKey`
-            // builds. Inlined rather than imported so this folder stays portable; a
-            // set/subset match here would silently mean something else than it does
-            // everywhere else in the app.
-            const labels = t.instruction_labels;
-            return (
-              !!labels && labels.length > 0 && JSON.stringify(labels) === lensStructureKey
-            );
-          })
-        : EMPTY_LENS_MATCH,
-    [lensStructureKey, sortedTrades, bars, groupMode, intervalSec, metric],
-  );
+  // Bar key → every armed item's matched trades there, for the hover list. A trade
+  // two items both match is listed once, carrying both colors.
+  const lensBarRows = useMemo(() => {
+    const out = new Map<number, LensTooltipRow[]>();
+    for (const item of lensItems) {
+      const match = lensMatches.get(lensItemId(item));
+      if (!match) continue;
+      for (const tint of match.tint) {
+        let rows = out.get(tint.barTime);
+        if (!rows) out.set(tint.barTime, (rows = []));
+        for (const trade of tint.trades) {
+          const row = rows.find((r) => r.trade === trade);
+          if (row) row.colors.push(item.color);
+          else rows.push({ trade, colors: [item.color] });
+        }
+      }
+    }
+    return out;
+  }, [lensItems, lensMatches]);
 
   const formatChartPrice = useMemo(
     () => createChartPriceFormatter(priceUnit),
@@ -965,28 +977,19 @@ export function TokenPriceChart({
   // no tints — without them an armed lens silently blanks on a line/candle flip.
   useEffect(() => {
     if (!showChart) return;
-    const hasWallet = walletLensMatch.tint.length > 0;
-    const hasStructure = structureLensMatch.tint.length > 0;
+    const layers = lensItems
+      .map((item) => ({
+        color: item.color,
+        tints: lensMatches.get(lensItemId(item))?.tint ?? [],
+      }))
+      .filter((layer) => layer.tints.length > 0);
     barTintPrimRef.current?.setTints(
-      !hasWallet && !hasStructure
-        ? EMPTY_BAR_TINTS
-        : {
-            primary: hasWallet
-              ? { color: CHART_COLORS.lensWallet, tints: walletLensMatch.tint }
-              : null,
-            secondary: hasStructure
-              ? { color: CHART_COLORS.lensStructure, tints: structureLensMatch.tint }
-              : null,
-          },
+      layers.length === 0 ? EMPTY_BAR_TINTS : { layers, sizeLabels: lensSizeLabels },
     );
-  }, [walletLensMatch, structureLensMatch, showChart, style, bars]);
+  }, [lensItems, lensMatches, lensSizeLabels, showChart, style, bars]);
 
   const onHighlightLensMatchRef = useRef(onHighlightLensMatch);
   onHighlightLensMatchRef.current = onHighlightLensMatch;
-  const lensMatches = useMemo(
-    () => ({ wallet: walletLensMatch, structure: structureLensMatch }),
-    [walletLensMatch, structureLensMatch],
-  );
   useEffect(() => {
     onHighlightLensMatchRef.current?.(lensMatches);
   }, [lensMatches]);
@@ -2129,6 +2132,7 @@ export function TokenPriceChart({
             formatFlow={formatFlow}
             formatTime={formatBarTime}
             containerWidth={chartWidth}
+            lensRows={lensBarRows.get(barTooltip.barTime as number) ?? null}
           />
         )}
         {walletMarkersTooltip && (

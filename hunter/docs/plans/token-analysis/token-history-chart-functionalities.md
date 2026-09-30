@@ -263,19 +263,26 @@ before any click. That count is the whole warning: `tags` is not part of fingerp
 identity, so a write does not fork the row - it lands on the same id and every rule bound
 to it starts reading that tag differently.
 
-### 6c. Highlight lenses (where did this wallet / this ix structure appear)
+### 6c. Highlight lenses (where did these wallets / these ix structures appear)
 
-Two independent, **ephemeral** lenses over one token's history: *when did this wallet trade*
-and *when did this exact ordered ix structure appear*. Either, both, or neither. Each is
-armed from the trades table's target button — the Wallet cell for the first, the `ix_labels`
-cell for the second — and disarmed by the same button or its chip's `x`.
+**Ephemeral** lenses over one token's history: *when did these wallets trade* and *when did
+these exact ordered ix structures appear*. Up to four wallets and four structures are armed at
+once, each in its own color. Each is armed from the trades table's target button (the Wallet
+cell for a wallet, the `ix_labels` cell for a structure) and disarmed by the same button or its
+chip's `x`.
 
 | Piece | Where | Job |
 | --- | --- | --- |
-| `useTokenHighlight` | `components/tokens/` | holds both targets, disarms both when the mint changes, exposes row predicates |
-| `buildLensMatch` | `token-price-chart/lensTint.ts` | buckets the matched trades against the bars already drawn |
-| `BarTintPlugin` | `token-price-chart/barTintPlugin.ts` | the washes themselves, `zOrder: 'bottom'` |
-| `LensChips` | inside `BarTradesPanel` | states what is armed, what it matched, and turns it off |
+| `useTokenHighlight` | `components/tokens/` | holds the armed items and their colors, disarms all when the mint changes, exposes `colorsOf` / `walletColor` / `structureColor` |
+| `buildLensMatch` | `token-price-chart/lensTint.ts` | buckets one item's matched trades against the bars already drawn, keeping each bar's matched trades |
+| `BarTintPlugin` | `token-price-chart/barTintPlugin.ts` | the washes (`zOrder: 'bottom'`) and the size labels (`zOrder: 'top'`) |
+| `LensChips` | inside `BarTradesPanel` | states what is armed, what it matched, the size-label switch, and turns items off |
+
+**Colors come in two families** (`LENS_COLORS`): wallets warm (gold, orange, lime, pink),
+structures cool (cyan, blue, violet, mint). Within a family the hues are neighbours, so several
+wallets read as "wallets" first and as which one second. An item takes the first free slot of
+its family when armed and keeps it until disarmed, so arming or disarming one never repaints
+the others. Arming a fifth of one kind drops the oldest of that kind.
 
 **A wash is share-weighted, never binary.** Its alpha tracks matched SOL over
 `OhlcBar.volume`, so one dust leg in a busy slot renders faint and a slot the target owns
@@ -284,17 +291,30 @@ renders solid. A binary tint would overstate every bar it paints, and in time mo
 mirrors `collectTradeBuckets`' dust and validity guards exactly: counting a trade the bar
 itself dropped puts the share above 1 on a candle that never held it.
 
-**The two lenses cannot share a channel.** A candlestick carries exactly one `borderColor`,
-so the plugin splits the bar slot instead — wallet washes the left half, structure the right,
-full width when only one is armed. The overlap is the cell a reader is hunting for, so it
-must stay visible rather than resolve to whichever layer draws last. The same split reaches
-the table: a wallet match takes the gold row background (the signal `highlightWallet` already
-owns, since "the trader you are looking at" is one question however it was picked) and a
-structure match takes a cyan right edge.
+**Items cannot share a channel.** A candlestick carries exactly one `borderColor`, so the
+plugin splits the bar slot among the items that hit THAT bar, in arming order — full width when
+one item owns the bar, however many are armed. The overlap is the cell a reader is hunting for,
+so it must stay visible rather than resolve to whichever layer draws last. The table follows the
+same colors: a matched row takes the background and left edge of the first item it matches
+(`--row-lens`, set through `DataTable`'s `rowStyle`), and each armed target button lights in its
+item's color. The page's own `highlightWallet` keeps the focus gold and outranks a lens. Every
+armed wallet also gets the spotlit marker treatment; one with no profile entry gets a synthetic
+marker in its lens color.
+
+**Sizes print under the washes.** Each matched trade's SOL size (`amount_sol`, `formatLensSol`)
+is drawn as rotated text stacked up from the bottom of the price pane, in its item's color,
+under that item's share of the bar: the three largest per bar and item, then `+k`. The chip
+strip's switch picks `buys` (default), `all` (`+buy` / `−sell`) or `off`; the choice persists
+in `UiToggles.lensSizeLabels`. Label columns that would overlap are resolved by SOL, the
+biggest column keeps its place, and a `sizes hidden on N bars · zoom in` hint counts the rest,
+so a hidden size never reads as a bar without a match. Hovering a washed candle lists its
+matched trades in the bar tooltip: item colors, side, SOL, network fee (`fee_sol`) and wallet,
+largest first. Labels, hover list and wash all read the same `LensBarTint.trades`, so they
+cannot disagree.
 
 **The counts on the chips come from the chart**, via `onHighlightLensMatch` — not from a
 second pass over the rows. They are bar-aligned by construction, so a chip can never quote a
-number the wash beside it disagrees with. The structure chip also reports the token's
+number the wash beside it disagrees with. With a structure armed, the strip also reports the token's
 **unlabeled** trades: a structure lens can say nothing about a row whose `instruction_labels`
 were never captured, and `0 matches` over a pile of them means "not recorded", not "unique".
 

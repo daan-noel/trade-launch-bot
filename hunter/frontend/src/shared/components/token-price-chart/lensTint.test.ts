@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { aggregateTradesToBars, aggregateTradesToBarsBySlot } from './chartBars';
-import { buildLensMatch } from './lensTint';
+import { buildLensMatch, formatLensSol, lensItemMatches } from './lensTint';
 import type { ChartTrade } from './types';
 
 /**
@@ -42,8 +42,8 @@ describe('buildLensMatch', () => {
     const m = buildLensMatch(trades, bars, 'slot', 1, 'price', (t) => t.wallet_address === 'A');
 
     expect(m.tint).toEqual([
-      { barTime: 10, share: 0.25 },
-      { barTime: 11, share: 1 },
+      { barTime: 10, share: 0.25, trades: [trades[0]] },
+      { barTime: 11, share: 1, trades: [trades[2]] },
     ]);
     expect(m.buys).toBe(2);
     expect(m.buySol).toBe(5);
@@ -62,7 +62,9 @@ describe('buildLensMatch', () => {
     const bars = bySlot(trades);
     const m = buildLensMatch(trades, bars, 'slot', 1, 'price', (t) => t.wallet_address === 'A');
 
-    expect(m.tint).toEqual([{ barTime: 10, share: 1 }]);
+    // The dust leg is dropped from the bar's trade list too: a size label for a
+    // trade the candle never held would point at nothing.
+    expect(m.tint).toEqual([{ barTime: 10, share: 1, trades: [trades[1]] }]);
     expect(m.buys).toBe(1);
     expect(m.buySol).toBe(2);
   });
@@ -109,18 +111,42 @@ describe('buildLensMatch', () => {
       trade({ slot: 13, instruction_labels: null }),
     ];
     const key = JSON.stringify(['Create', 'Buy']);
-    const m = buildLensMatch(trades, bySlot(trades), 'slot', 1, 'price', (t) => {
-      const labels = t.instruction_labels;
-      return !!labels && labels.length > 0 && JSON.stringify(labels) === key;
-    });
+    const item = { kind: 'structure' as const, key, color: '#000000' };
+    const m = buildLensMatch(trades, bySlot(trades), 'slot', 1, 'price', (t) =>
+      lensItemMatches(item, t),
+    );
 
     // A reorder, a superset and an unlabeled row are all misses.
-    expect(m.tint).toEqual([{ barTime: 10, share: 1 }]);
+    expect(m.tint).toEqual([{ barTime: 10, share: 1, trades: [trades[0]] }]);
   });
 
   it('matches nothing when no bars are on the chart', () => {
     const m = buildLensMatch([trade({ slot: 10 })], [], 'slot', 1, 'price', () => true);
     expect(m.tint).toEqual([]);
     expect(m.firstBarTime).toBeNull();
+  });
+
+  it('keeps every matched trade of a bar, in chart order', () => {
+    const trades = [
+      trade({ slot: 10, wallet_address: 'A', amount_sol: 0.5 }),
+      trade({ slot: 10, wallet_address: 'B', amount_sol: 3 }),
+      trade({ slot: 10, wallet_address: 'A', amount_sol: 0.2 }),
+    ];
+    const item = { kind: 'wallet' as const, key: 'A', color: '#000000' };
+    const m = buildLensMatch(trades, bySlot(trades), 'slot', 1, 'price', (t) =>
+      lensItemMatches(item, t),
+    );
+
+    expect(m.tint).toHaveLength(1);
+    expect(m.tint[0].trades.map((t) => t.amount_sol)).toEqual([0.5, 0.2]);
+  });
+});
+
+describe('formatLensSol', () => {
+  it('prints three decimals under 1 SOL, two under 100, none above', () => {
+    expect(formatLensSol(0.0421)).toBe('0.042');
+    expect(formatLensSol(1.234)).toBe('1.23');
+    expect(formatLensSol(123.4)).toBe('123');
+    expect(formatLensSol(-0.5)).toBe('0.500');
   });
 });

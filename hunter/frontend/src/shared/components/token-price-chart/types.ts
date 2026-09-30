@@ -35,6 +35,9 @@ export interface ChartTrade {
   cu_limit?: number | null;
   cu_price?: number | null;
   tip_lamports?: number | null;
+  /** Network fee of this trade's transaction, SOL (`TradeRecord.fee_sol`) — read
+   *  by the highlight-lens hover list. */
+  fee_sol?: number | null;
 }
 
 /** A tag attached to a wallet's owning profile. */
@@ -105,9 +108,27 @@ export interface ChartEventMarker {
   role?: 'fill' | 'signal';
 }
 
+/** What a highlight lens item points at: one wallet, or one exact ix structure. */
+export type ChartLensKind = 'wallet' | 'structure';
+
+/** One armed highlight target. */
+export interface ChartLensItem {
+  kind: ChartLensKind;
+  /** The wallet address, or for a structure `JSON.stringify(ordered
+   *  instruction_labels)` — the same identity `lib/flow/volumePatterns.patternKey`
+   *  builds, so "the same structure" means exactly one thing across the app.
+   *  Ordered and exact: never a set match. */
+  key: string;
+  /** Wash, label and chip color — `LENS_COLORS[kind][slot]`, fixed while armed. */
+  color: string;
+}
+
+/** Which matched trades print their SOL size under the washed candles. */
+export type ChartLensSizeLabels = 'buys' | 'all' | 'off';
+
 /**
  * Ephemeral "show me where this happened" targets, painted as washes behind the
- * candles. Both are optional and independent — either, both, or neither.
+ * candles — any number of wallets and ix structures, each in its own color.
  *
  * View-only by construction: nothing here is persisted and nothing reads it but
  * the tint. It is deliberately NOT the same channel as `flowPatternKeys`, which is
@@ -115,12 +136,9 @@ export interface ChartEventMarker {
  * be able to change how a live rule splits flow.
  */
 export interface ChartHighlightLens {
-  /** Wallet whose trades wash their candles. */
-  wallet?: string | null;
-  /** `JSON.stringify(ordered instruction_labels)` — the same identity
-   *  `lib/flow/volumePatterns.patternKey` builds, so "the same structure" means
-   *  exactly one thing across the app. Ordered and exact: never a set match. */
-  structureKey?: string | null;
+  items: readonly ChartLensItem[];
+  /** Size labels under the washes. Default `buys`. */
+  sizeLabels?: ChartLensSizeLabels;
 }
 
 export type ChartGroupMode = 'time' | 'slot';
@@ -432,11 +450,9 @@ export interface ChartRangeControl {
   selectSpan: (span: ChartTimeSpan) => void;
 }
 
-/** The per-lens result of one rebucket — see `lensTint.buildLensMatch`. */
-export interface ChartLensMatches {
-  wallet: LensMatch;
-  structure: LensMatch;
-}
+/** The per-item result of one rebucket (`lensTint.buildLensMatch`), keyed by
+ *  `lensItemId`. An armed item with no match still has an entry. */
+export type ChartLensMatches = ReadonlyMap<string, LensMatch>;
 
 export interface ChartToolbarProps {
   symbol: string;

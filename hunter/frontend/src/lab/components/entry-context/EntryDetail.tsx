@@ -55,9 +55,11 @@ export function EntryDetail({ entry, query }: { entry: EntryRow; query: EntryDet
   const { data: trades } = useGetTokenTradesQuery(mint);
   // The chart's highlight, owned here so the breakdown's Structure cells arm it.
   const highlight = useTokenHighlight(trades ?? EMPTY_TRADES, mint);
-  const { toggleStructure } = highlight;
-  const armedKey = highlight.lens.structureKey ?? null;
-  const groupCols = useMemo(() => groupColumns({ toggle: toggleStructure, armedKey }), [toggleStructure, armedKey]);
+  const { toggleStructure, structureColor } = highlight;
+  const groupCols = useMemo(
+    () => groupColumns({ toggle: toggleStructure, colorOf: structureColor }),
+    [toggleStructure, structureColor],
+  );
 
   const buySec = Date.parse(entry.at) / 1000;
   const analysis = useMemo(

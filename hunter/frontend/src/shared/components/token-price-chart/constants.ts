@@ -58,6 +58,24 @@ export const CHART_STYLE_LABELS: Record<ChartStyle, string> = {
  *  Buy/sell direction aliases these (see `CHART_COLORS.buy`/`.sell`). */
 const CANDLE_UP = '#089981';
 const CANDLE_DOWN = '#f23645';
+/** The focus gold: the spotlit wallet's marker ring and the first wallet lens. */
+const FOCUS_GOLD = '#fde047';
+
+/**
+ * Highlight-lens washes behind the candles — an EPHEMERAL "where did this happen"
+ * overlay, never a saved classification. One family per lens kind, so a wallet
+ * never reads as a structure: wallets warm, structures cool. Inside a family the
+ * hues are neighbours on purpose — several armed wallets read as "wallets" first
+ * and as which one second. Slot 0 of wallets is the focus gold, so one wallet
+ * reads the same whether you armed it or the page did; slot 0 of structures is
+ * cyan, the one hue no marker, candle or flow line claims.
+ *
+ * The length of a family is how many items of that kind can be armed at once.
+ */
+export const LENS_COLORS = {
+  wallet: [FOCUS_GOLD, '#fb923c', '#bef264', '#f9a8d4'],
+  structure: ['#22d3ee', '#60a5fa', '#c084fc', '#6ee7b7'],
+} as const;
 
 export const CHART_COLORS = {
   up: CANDLE_UP,
@@ -106,13 +124,7 @@ export const CHART_COLORS = {
   /** Glow + outer ring for the focused/highlighted wallet marker (Trader
    *  Analysis input wallet). Gold, distinct from `mine` so a wallet can be both
    *  the focus AND one of yours without the two signals colliding. */
-  highlightRing: '#fde047',
-  /** Highlight-lens washes behind the candles — an EPHEMERAL "where did this
-   *  happen" overlay, never a saved classification. Wallet reuses the focus gold
-   *  so one wallet reads the same whether you armed it or the page did; structure
-   *  takes cyan, the one hue no marker, candle or flow line claims. */
-  lensWallet: '#fde047',
-  lensStructure: '#22d3ee',
+  highlightRing: FOCUS_GOLD,
   /** User-drawn range selection band (teal wash + solid label chip) */
   rangeBandFill: 'rgba(19, 206, 175, 0.12)',
   rangeBandBorder: 'rgba(19, 206, 175, 0.7)',

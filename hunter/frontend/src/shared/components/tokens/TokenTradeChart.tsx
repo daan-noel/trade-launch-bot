@@ -167,30 +167,40 @@ export function TokenTradeChart({
   // Spotlight the focused wallet: flag it highlighted if it's already tracked,
   // otherwise append a synthetic marker entry so an arbitrary input address
   // still shows its buys/sells. The other tracked wallets ride along unchanged.
-  // An armed wallet lens gets the focus treatment on the marker layer too — the
-  // wash says WHEN, the oversized gold marker says which leg and which side. The
-  // page's own `highlightWallet` still wins when both are set, since that one is
-  // the reason the page is open.
-  const spotlightWallet = highlightWallet?.trim() || highlight.lens.wallet || null;
+  // Every armed wallet lens gets the focus treatment on the marker layer too — the
+  // wash says WHEN, the oversized marker says which leg and which side — and a
+  // synthetic one takes its lens color. The page's own `highlightWallet` keeps
+  // the focus gold, since that one is the reason the page is open.
+  // Flattened to a primitive (`addr=color,…`) so the memo below survives the
+  // hook's fresh item list.
+  const focusAddr = highlightWallet?.trim() || null;
+  const spotlightKey = [
+    ...(focusAddr ? [`${focusAddr}=${CHART_COLORS.highlightRing}`] : []),
+    ...highlight.items
+      .filter((i) => i.kind === 'wallet' && i.key !== focusAddr)
+      .map((i) => `${i.key}=${i.color}`),
+  ].join(',');
   // Comparison list flattened to a primitive so the memo below survives a caller
   // that rebuilds the array every render.
   const compareKey = (compareWallets ?? []).join(',');
   // Three marker tiers out of one pass: the spotlight wallet, the comparison set,
   // and the rest of the tracked crowd — which DIMS while a comparison is running.
   const profileWallets = useMemo(() => {
-    const addr = spotlightWallet;
+    const spotlight = new Map(
+      (spotlightKey ? spotlightKey.split(',') : []).map((e) => e.split('=') as [string, string]),
+    );
     const compareSlot = new Map(
       (compareKey ? compareKey.split(',') : []).filter(Boolean).map((a, i) => [a, i] as const),
     );
-    if (!addr && compareSlot.size === 0) return profileWalletsBase;
+    if (spotlight.size === 0 && compareSlot.size === 0) return profileWalletsBase;
     // Dimming is only ever relative to something worth reading against: with no
     // comparison armed the crowd IS the content, so it stays at full strength.
     const comparing = compareSlot.size > 0;
 
-    let matched = false;
+    const unmatched = new Map(spotlight);
     const flagged: ProfileWalletInfo[] = profileWalletsBase.map((w) => {
-      const isHighlighted = w.address === addr;
-      if (isHighlighted) matched = true;
+      const isHighlighted = spotlight.has(w.address);
+      unmatched.delete(w.address);
       const slot = compareSlot.get(w.address);
       if (slot == null) {
         if (isHighlighted) return { ...w, isHighlighted: true };
@@ -209,23 +219,25 @@ export function TokenTradeChart({
     // Anything still in the map has no profile entry — append it in slot order so
     // a synthetic comparison wallet keeps the color its slot owns.
     for (const [address, slot] of compareSlot) {
+      const isHighlighted = unmatched.delete(address);
       flagged.push({
         address,
         label: `${address.slice(0, 4)}…${address.slice(-4)}`,
         color: compareWalletColor(slot),
         isCompared: true,
+        ...(isHighlighted ? { isHighlighted } : {}),
       });
     }
-    if (addr && !matched) {
+    for (const [address, color] of unmatched) {
       flagged.push({
-        address: addr,
-        label: `${addr.slice(0, 4)}…${addr.slice(-4)}`,
-        color: CHART_COLORS.highlightRing,
+        address,
+        label: `${address.slice(0, 4)}…${address.slice(-4)}`,
+        color,
         isHighlighted: true,
       });
     }
     return flagged;
-  }, [profileWalletsBase, spotlightWallet, compareKey]);
+  }, [profileWalletsBase, spotlightKey, compareKey]);
 
   const toChartValue = useCallback(
     (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),

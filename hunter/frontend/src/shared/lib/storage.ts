@@ -21,6 +21,8 @@
  *    over defaults, writes new.
  */
 
+import type { ChartLensSizeLabels } from 'components/token-price-chart/types';
+
 const PREFIX = 'mt:';
 
 /** The complete set of app localStorage keys (already prefixed). */
@@ -173,6 +175,8 @@ export interface UiToggles {
   /** Trader Analysis + Entry Context flow lens: show the add-to-fingerprint-tag
    *  controls. Defaults off, so a lens cannot reach a live rule by a stray click. */
   lensPromoteOn?: boolean;
+  /** Token charts: which highlighted trades print their SOL size under the wash. */
+  lensSizeLabels?: ChartLensSizeLabels;
 }
 
 // ── raw string accessors ────────────────────────────────────────────────────
