@@ -62,19 +62,21 @@ const CANDLE_DOWN = '#f23645';
 const FOCUS_GOLD = '#fde047';
 
 /**
- * Highlight-lens washes behind the candles — an EPHEMERAL "where did this happen"
- * overlay, never a saved classification. One family per lens kind, so a wallet
- * never reads as a structure: wallets warm, structures cool. Inside a family the
- * hues are neighbours on purpose — several armed wallets read as "wallets" first
- * and as which one second. Slot 0 of wallets is the focus gold, so one wallet
- * reads the same whether you armed it or the page did; slot 0 of structures is
- * cyan, the one hue no marker, candle or flow line claims.
+ * Highlight-lens colors: the lane marks, the washes, the chips and the matched
+ * rows — an EPHEMERAL "where did this happen" overlay, never a saved
+ * classification. One family per lens kind, so a wallet never reads as a
+ * structure: wallets warm, structures cool. Inside a family each hue is a clear
+ * step from the next (cyan, blue, violet, green), drawn solid in the lane, so two
+ * structures side by side read apart at a glance. Slot 0
+ * of wallets is the focus gold, so one wallet reads the same whether you armed it
+ * or the page did; slot 0 of structures is cyan, the one hue no marker, candle or
+ * flow line claims.
  *
  * The length of a family is how many items of that kind can be armed at once.
  */
 export const LENS_COLORS = {
   wallet: [FOCUS_GOLD, '#fb923c', '#bef264', '#f9a8d4'],
-  structure: ['#22d3ee', '#60a5fa', '#c084fc', '#6ee7b7'],
+  structure: ['#22d3ee', '#3b82f6', '#a78bfa', '#34d399'],
 } as const;
 
 export const CHART_COLORS = {

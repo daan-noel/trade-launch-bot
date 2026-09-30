@@ -150,6 +150,9 @@ pub struct PreEntryVerdict {
     /// is co-arrival, not something a seat at p50 +1 slot could have read.
     pub nearest_lag_slots: Option<i64>,
     pub nearest_lag_tx: Option<i64>,
+    /// The nearest match's own `tx_index`, sent with `nearest_lag_tx` (lag 0 only)
+    /// so a reader sees both block positions: his is this plus the lag.
+    pub nearest_tx_index: Option<i32>,
     /// Which unit matched nearest: the grain id, or the exact row's group.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_unit: Option<String>,
@@ -332,8 +335,9 @@ fn collapse(prints: &[TapePrint], side: Option<bool>) -> Vec<PrintTx> {
 struct WindowTally {
     hits: u32,
     lamports: i64,
-    /// Nearest match to the anchor (largest tape position below it).
-    nearest: Option<(i64, i64, String)>,
+    /// Nearest match to the anchor (largest tape position below it):
+    /// `(lag_slots, lag_tx, unit, its tx_index)`.
+    nearest: Option<(i64, i64, String, i32)>,
 }
 
 impl WindowTally {
@@ -346,9 +350,9 @@ impl WindowTally {
         let better = self
             .nearest
             .as_ref()
-            .is_none_or(|(s, t, _)| (lag_slots, lag_tx) < (*s, *t));
+            .is_none_or(|(s, t, _, _)| (lag_slots, lag_tx) < (*s, *t));
         if better {
-            self.nearest = Some((lag_slots, lag_tx, unit));
+            self.nearest = Some((lag_slots, lag_tx, unit, tx.tx_index));
         }
     }
 
@@ -494,9 +498,9 @@ pub async fn probe_pre_entry_ix(
         // The tx delta is reported only at lag 0, where it IS the whole distance.
         // A slot away it is the difference between two unrelated block positions,
         // and shipping it invites a reader to treat it as a finer lag.
-        let (nearest_lag_slots, nearest_lag_tx, matched_unit) = match win.nearest {
-            Some((s, t, u)) => (Some(s), (s == 0).then_some(t), Some(u)),
-            None => (None, None, None),
+        let (nearest_lag_slots, nearest_lag_tx, nearest_tx_index, matched_unit) = match win.nearest {
+            Some((s, t, u, i)) => (Some(s), (s == 0).then_some(t), (s == 0).then_some(i), Some(u)),
+            None => (None, None, None, None),
         };
         verdicts.push(PreEntryVerdict {
             mint_address: a.mint,
@@ -506,6 +510,7 @@ pub async fn probe_pre_entry_ix(
             sol: lamports_to_sol(win.lamports),
             nearest_lag_slots,
             nearest_lag_tx,
+            nearest_tx_index,
             matched_unit,
             control_hits: ctl.hits,
             control_sol: lamports_to_sol(ctl.lamports),
@@ -525,6 +530,7 @@ fn unknown(mint: &str, reason: UnknownReason) -> PreEntryVerdict {
         sol: 0.0,
         nearest_lag_slots: None,
         nearest_lag_tx: None,
+        nearest_tx_index: None,
         matched_unit: None,
         control_hits: 0,
         control_sol: 0.0,

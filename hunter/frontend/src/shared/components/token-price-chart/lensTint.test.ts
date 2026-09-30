@@ -111,7 +111,7 @@ describe('buildLensMatch', () => {
       trade({ slot: 13, instruction_labels: null }),
     ];
     const key = JSON.stringify(['Create', 'Buy']);
-    const item = { kind: 'structure' as const, key, color: '#000000' };
+    const item = { kind: 'structure' as const, key };
     const m = buildLensMatch(trades, bySlot(trades), 'slot', 1, 'price', (t) =>
       lensItemMatches(item, t),
     );
@@ -132,7 +132,7 @@ describe('buildLensMatch', () => {
       trade({ slot: 10, wallet_address: 'B', amount_sol: 3 }),
       trade({ slot: 10, wallet_address: 'A', amount_sol: 0.2 }),
     ];
-    const item = { kind: 'wallet' as const, key: 'A', color: '#000000' };
+    const item = { kind: 'wallet' as const, key: 'A' };
     const m = buildLensMatch(trades, bySlot(trades), 'slot', 1, 'price', (t) =>
       lensItemMatches(item, t),
     );

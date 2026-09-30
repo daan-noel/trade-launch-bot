@@ -58,6 +58,8 @@ export interface PreEntryVerdict {
    *  where `nearest_lag_tx` is the entire distance. */
   nearest_lag_slots: number | null;
   nearest_lag_tx: number | null;
+  /** The nearest match's own `tx_index` (lag 0 only); his is this plus the lag. */
+  nearest_tx_index?: number | null;
   matched_unit?: string;
   /** The nearest match's exact ix labels, when the probe knows them: the Matched
    *  cell then draws its abbreviation line instead of the unit id. */

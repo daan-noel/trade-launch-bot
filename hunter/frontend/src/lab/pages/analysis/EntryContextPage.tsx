@@ -47,7 +47,7 @@ import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenI
 import { entryLogic } from '@lab/lib/entryContext/logic';
 import { hisTokens } from '@lab/lib/entryContext/overlap';
 import { atDecision, entryVerdict, rollupByToken } from '@lab/lib/entryContext/analysis';
-import { entryGroupLabels } from '@lab/lib/entryContext/axes';
+import { AXIS_FAMILIES, entryGroupLabels, groupsHiddenIn } from '@lab/lib/entryContext/axes';
 import {
   entryKey,
   type EntryRow,
@@ -78,6 +78,12 @@ const BUY_COLS_HIDDEN: Readonly<Record<string, boolean>> = {
 };
 const EMPTY_ENTRIES: EntryRow[] = [];
 const EMPTY_ROWS: TraderTokenRow[] = [];
+
+/** The main tabs stand out from the family sub-tabs inside them: larger, boxed,
+ *  each with its count, over a framed panel. */
+const MAIN_TAB = 'px-6 py-3 text-sm';
+const MAIN_TAB_COUNT = 'ml-2 rounded bg-white/6 px-1.5 py-0.5 font-mono text-[11px] font-normal text-text-mid';
+const MAIN_PANEL = 'rounded-b-md rounded-tr-md border border-t-0 border-white/8 bg-bg-card/40 p-3';
 
 /** Persisted draft (`mt:form.entryContext`). Two windows with two jobs: the
  *  ANALYSIS window (`windowSecs`, the shares and breakdown, applied on Analyze) and
@@ -157,6 +163,11 @@ export function EntryContextPage() {
   // The buys table's filters in force: the logic the summary tests.
   // His entries | Market. Both panels stay mounted: the market reads the buys table's filters.
   const [tab, setTab] = useState<'his' | 'market'>('his');
+  // Tokens passing the filters in the last market scan, for the Market tab's label.
+  const [marketTokens, setMarketTokens] = useState<number | null>(null);
+  // The buys table's sub-tab: which idea family's columns it shows.
+  const [family, setFamily] = useState(AXIS_FAMILIES[0].key);
+  const hiddenGroups = useMemo(() => groupsHiddenIn(family), [family]);
   const filtersOn = f.pausedFilters == null;
   const [buyFilters, setBuyFilters] = useState<Readonly<Record<string, string>>>(
     filtersOn ? DEFAULT_BUY_FILTERS : {},
@@ -446,15 +457,30 @@ export function EntryContextPage() {
         <FlowLensBar lens={lens} wallet={query?.wallet ?? null} probe={probe} />
 
         <SectionTitle>Filters</SectionTitle>
-        <IdeaFilters conditions={chips} onEdit={editFilter} on={filtersOn} onToggle={toggleFilters} />
+        <IdeaFilters
+          conditions={chips}
+          onEdit={editFilter}
+          on={filtersOn}
+          onToggle={toggleFilters}
+          family={family}
+          onFamily={setFamily}
+        />
 
-        <Tabs value={tab} onValueChange={(v) => setTab(v as 'his' | 'market')} className="mt-3">
+        <Tabs value={tab} onValueChange={(v) => setTab(v as 'his' | 'market')} variant="contained" className="mt-4">
           <TabsList>
-            <TabsTrigger value="his">His entries</TabsTrigger>
-            <TabsTrigger value="market">Market</TabsTrigger>
+            <TabsTrigger value="his" className={MAIN_TAB}>
+              His entries
+              {tableRows && <span className={MAIN_TAB_COUNT}>{tableRows.length.toLocaleString()} buys</span>}
+            </TabsTrigger>
+            <TabsTrigger value="market" className={MAIN_TAB}>
+              Market
+              {marketTokens != null && (
+                <span className={MAIN_TAB_COUNT}>{marketTokens.toLocaleString()} tokens</span>
+              )}
+            </TabsTrigger>
           </TabsList>
 
-          <TabsPanel value="his" keepMounted>
+          <TabsPanel value="his" keepMounted className={MAIN_PANEL}>
             {query && ctx.data && (
               <EntrySummary
                 entries={entries}
@@ -468,41 +494,53 @@ export function EntryContextPage() {
             )}
 
             {query && entries.length > 0 && (
-              <DataTable
-                key={buysTableVersion}
-                columns={buyColumns}
-                rows={probeRows}
-                rowKey={entryKey}
-                rowDetail={(e) => (
-                  <EntryDetail
-                    entry={e}
-                    query={{
-                      wallet: query.wallet,
-                      windowSecs: readWindow,
-                      probeSlots,
-                      tag: targetTag,
-                    }}
-                  />
-                )}
-                tableId={BUYS_TABLE_ID}
-                defaultCols={BUY_COLS_HIDDEN}
-                defaultSort={{ col: 'at', dir: 'desc' }}
-                searchable
-                colFilters={filtersOn}
-                defaultColFilters={DEFAULT_BUY_FILTERS}
-                colToggle
-                hoverable
-                loading={ctx.isFetching}
-                groupLabels={buyGroupLabels}
-                resetKey={`${f.probeOn}|${f.show}`}
-                onFilteredRowsChange={setTableRows}
-                onColFiltersChange={setBuyFilters}
-                emptyMessage={
-                  tag
-                    ? 'No buys match the filters'
-                    : 'No buys match the filters. The target columns need a pattern set picked in Target IXs above.'
-                }
-              />
+              <>
+                <Tabs value={family} onValueChange={setFamily} className="mb-2">
+                  <TabsList>
+                    {AXIS_FAMILIES.map((fam) => (
+                      <TabsTrigger key={fam.key} value={fam.key} className="px-3 py-1.5 text-xs">
+                        {fam.label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+                <DataTable
+                  key={buysTableVersion}
+                  columns={buyColumns}
+                  rows={probeRows}
+                  rowKey={entryKey}
+                  rowDetail={(e) => (
+                    <EntryDetail
+                      entry={e}
+                      query={{
+                        wallet: query.wallet,
+                        windowSecs: readWindow,
+                        probeSlots,
+                        tag: targetTag,
+                      }}
+                    />
+                  )}
+                  tableId={BUYS_TABLE_ID}
+                  defaultCols={BUY_COLS_HIDDEN}
+                  defaultSort={{ col: 'at', dir: 'desc' }}
+                  searchable
+                  colFilters={filtersOn}
+                  defaultColFilters={DEFAULT_BUY_FILTERS}
+                  colToggle
+                  hoverable
+                  loading={ctx.isFetching}
+                  groupLabels={buyGroupLabels}
+                  hiddenGroups={hiddenGroups}
+                  resetKey={`${f.probeOn}|${f.show}`}
+                  onFilteredRowsChange={setTableRows}
+                  onColFiltersChange={setBuyFilters}
+                  emptyMessage={
+                    tag
+                      ? 'No buys match the filters'
+                      : 'No buys match the filters. The target columns need a pattern set picked in Target IXs above.'
+                  }
+                />
+              </>
             )}
 
             {query && tokenRows.length > 0 && entries.length > 0 && (
@@ -552,7 +590,7 @@ export function EntryContextPage() {
             )}
           </TabsPanel>
 
-          <TabsPanel value="market" keepMounted>
+          <TabsPanel value="market" keepMounted className={MAIN_PANEL}>
             {query && ctxRequest ? (
               <>
                 <MarketScan
@@ -563,6 +601,7 @@ export function EntryContextPage() {
                   hasTarget={!!tag}
                   pool={setWords}
                   his={his}
+                  onPassTokens={setMarketTokens}
                 />
               </>
             ) : (

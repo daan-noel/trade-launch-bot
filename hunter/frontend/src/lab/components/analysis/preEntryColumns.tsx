@@ -58,6 +58,13 @@ function stateTitle(v: PreEntryVerdict, last: string, earlier: string): string {
     : `Absent: not enough of the target right before his buy.\n${hits}; ${control}.`;
 }
 
+/** A same-slot lag's two block positions: `closest target tx: 100, his buy tx: 150 -> −50 tx`. */
+function txIndexLine(v: PreEntryVerdict): string {
+  const { nearest_tx_index: target, nearest_lag_tx: lag } = v;
+  if (target == null || lag == null) return 'same slot as his buy';
+  return `closest target tx: ${target}, his buy tx: ${target + lag} -> −${lag} tx`;
+}
+
 export function preEntryColumns<R>(
   at: (row: R) => PreEntryVerdict | undefined,
   /** The probe window, for the tooltips to spell out. */
@@ -110,7 +117,8 @@ export function preEntryColumns<R>(
       tooltip:
         'How long before his buy the closest target transaction traded.\n' +
         `Example: ${slotsText(3)} = it traded that long before him.\n` +
-        "'same slot' = in his own slot: it landed with him, it did not lead him.",
+        "'same slot' = in his own slot: it landed with him, it did not lead him.\n" +
+        "'−N tx' = tx index gap in that slot (his buy tx − target tx).",
       sortable: true,
       render: (r) => {
         const v = at(r);
@@ -121,7 +129,7 @@ export function preEntryColumns<R>(
             className={sameSlot ? 'text-warning' : undefined}
             title={
               sameSlot
-                ? 'The closest one is in his own slot: it did not lead him'
+                ? txIndexLine(v)
                 : `${v.nearest_lag_slots} slots before his entry`
             }
           >

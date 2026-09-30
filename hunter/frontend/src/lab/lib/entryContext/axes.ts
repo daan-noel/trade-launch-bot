@@ -23,6 +23,35 @@ export type AxisUnit = 'pct' | 'pp' | 'tx' | 'sol';
  *  everyone in the last `W` seconds. `ENTRY_AXES` lists them in this order. */
 export type AxisGroup = 'buy' | 'signal' | 'target' | 'control' | 'all';
 
+/**
+ * An idea family: one aspect of the tape at his buy, one sub-tab of the buys
+ * table. A sub-tab shows its family's column groups plus the ones no family owns
+ * (his buy, the probe); every row and every filter are shared, so a condition set
+ * in one sub-tab keeps applying in the others. A new family is one entry here and
+ * one group on its axes.
+ */
+export interface AxisFamily {
+  key: string;
+  /** Sub-tab label. */
+  label: string;
+  groups: readonly AxisGroup[];
+}
+
+export const AXIS_FAMILIES: readonly AxisFamily[] = [
+  { key: 'ix', label: 'IX structure', groups: ['signal', 'target', 'control', 'all'] },
+];
+
+/** The family a buys-table column belongs to; `null` = shown in every sub-tab
+ *  (his buy, the probe). */
+export const familyOf = (key: string): string | null => {
+  const g = AXIS_BY_KEY.get(key)?.group;
+  return AXIS_FAMILIES.find((f) => g != null && f.groups.includes(g))?.key ?? null;
+};
+
+/** The column groups `family`'s sub-tab hides: every other family's. */
+export const groupsHiddenIn = (family: string): AxisGroup[] =>
+  AXIS_FAMILIES.filter((f) => f.key !== family).flatMap((f) => f.groups);
+
 /** A group read through the selected IXs (the target): a filter on it only means
  *  something in the pool. `buy` and `all` read the same whatever IXs came before. */
 export const needsIxs = (g: AxisGroup): boolean => g === 'signal' || g === 'target' || g === 'control';

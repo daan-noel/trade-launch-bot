@@ -80,6 +80,24 @@ export function shiftLogicalRange(
   };
 }
 
+/**
+ * The opening view for a focus range `[lo, hi]` (bar times): the range centered,
+ * taking `share` of the visible width. Null when no bar falls inside it.
+ */
+export function focusLogicalRange(
+  bars: readonly { time: UTCTimestamp }[],
+  lo: number,
+  hi: number,
+  share: number,
+): LogicalRange | null {
+  const first = lowerBound(bars, Math.min(lo, hi));
+  const last = lowerBound(bars, Math.max(lo, hi) + 1e-9) - 1;
+  if (first > last) return null;
+  const center = (first + last) / 2;
+  const half = (last - first + 1) / share / 2;
+  return { from: (center - half) as LogicalRange['from'], to: (center + half) as LogicalRange['to'] };
+}
+
 export function captureChartViewport(
   logical: LogicalRange,
   shape: BarsShape | null,

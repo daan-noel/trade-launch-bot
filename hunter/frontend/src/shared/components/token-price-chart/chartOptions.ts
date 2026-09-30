@@ -26,7 +26,7 @@ import type { ChartGroupMode } from './types';
  * constructor belongs here, next to the lazily-loaded charts.
  */
 
-const PRICE_SCALE_MARGINS = { top: 0.1, bottom: 0.1 };
+export const PRICE_SCALE_MARGINS = { top: 0.1, bottom: 0.1 };
 
 /**
  * One price axis (right). Every series on the token chart - the candles and the

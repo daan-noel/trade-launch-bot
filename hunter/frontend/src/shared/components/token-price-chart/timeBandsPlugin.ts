@@ -60,10 +60,16 @@ interface RenderedLane {
   rects: Array<[number, number]>;
 }
 
+/** Pixels kept free under the band for a given pane height. */
+export type BottomInset = (paneH: number) => number;
+
+const NO_INSET: BottomInset = () => 0;
+
 class TimeBandsRenderer implements IPrimitivePaneRenderer {
   constructor(
     private readonly _lanes: RenderedLane[],
     private readonly _track: [number, number] | null,
+    private readonly _inset: BottomInset,
   ) {}
 
   draw(target: CanvasRenderingTarget2D): void {
@@ -77,7 +83,7 @@ class TimeBandsRenderer implements IPrimitivePaneRenderer {
       ctx.textBaseline = 'middle';
       ctx.font = LABEL_FONT;
 
-      let top = mediaSize.height - BOTTOM_PAD - total;
+      let top = mediaSize.height - this._inset(mediaSize.height) - BOTTOM_PAD - total;
       for (const lane of this._lanes) {
         // The track is what separates "never satisfied" from "no data here". Without
         // it an empty lane and an uncovered stretch of chart look identical.
@@ -112,6 +118,7 @@ class TimeBandsPaneView implements IPrimitivePaneView {
   constructor(
     private readonly _lanes: RenderedLane[],
     private readonly _track: [number, number] | null,
+    private readonly _inset: BottomInset,
   ) {}
 
   /** Under the crosshair and markers — the band is context, not a reading. */
@@ -120,7 +127,7 @@ class TimeBandsPaneView implements IPrimitivePaneView {
   }
 
   renderer(): IPrimitivePaneRenderer {
-    return new TimeBandsRenderer(this._lanes, this._track);
+    return new TimeBandsRenderer(this._lanes, this._track, this._inset);
   }
 }
 
@@ -133,6 +140,7 @@ export class TimeBandsPlugin
   private _coverage: TimeBandSpan | null = null;
   private _rendered: RenderedLane[] = [];
   private _track: [number, number] | null = null;
+  private _inset: BottomInset = NO_INSET;
 
   attached({ chart, requestUpdate }: SeriesAttachedParameter<UTCTimestamp>): void {
     this._chart = chart;
@@ -152,6 +160,12 @@ export class TimeBandsPlugin
   setLanes(lanes: TimeBandLane[], coverage: TimeBandSpan | null): void {
     this._lanes = lanes;
     this._coverage = coverage;
+    this._requestUpdate?.();
+  }
+
+  /** Keep the band above another strip at the pane bottom (the highlight lane). */
+  setBottomInset(inset: BottomInset): void {
+    this._inset = inset;
     this._requestUpdate?.();
   }
 
@@ -194,7 +208,7 @@ export class TimeBandsPlugin
   }
 
   paneViews(): readonly IPrimitivePaneView[] {
-    return [new TimeBandsPaneView(this._rendered, this._track)];
+    return [new TimeBandsPaneView(this._rendered, this._track, this._inset)];
   }
 }
 

@@ -119,8 +119,10 @@ export interface ChartLensItem {
    *  builds, so "the same structure" means exactly one thing across the app.
    *  Ordered and exact: never a set match. */
   key: string;
-  /** Wash, label and chip color — `LENS_COLORS[kind][slot]`, fixed while armed. */
+  /** Lane, wash and chip color — `LENS_COLORS[kind][slot]`, fixed while armed. */
   color: string;
+  /** Short name for the lane row: an abbreviated address or ix sequence. */
+  label: string;
 }
 
 /** Which matched trades print their SOL size under the washed candles. */
@@ -429,7 +431,8 @@ export interface TokenPriceChartProps {
   /**
    * The host range's span on load, and again whenever the span, the token or the
    * grouping changes (a host-range drag replaces it until then). Snapped to bars
-   * by {@link rangeForSpan}.
+   * by {@link rangeForSpan}. The chart also opens zoomed to it: centered, a
+   * quarter of the width.
    */
   defaultRange?: ChartTimeSpan | null;
   /** The host range's chip text before its length (e.g. `Analysis`). */

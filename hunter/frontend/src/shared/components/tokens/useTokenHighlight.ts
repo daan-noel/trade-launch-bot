@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { patternKey } from 'lib/flow/volumePatterns';
+import { abbreviateIxLabels } from 'lib/ixLabels';
 import { useUiToggle } from 'hooks/useUiPrefs';
 import { LENS_COLORS } from 'components/token-price-chart/constants';
 import {
@@ -79,7 +80,12 @@ function toggleItem(
   if (sameKind.length >= palette.length) next = next.filter((i) => i !== sameKind[0]);
   const used = new Set(next.filter((i) => i.kind === kind).map((i) => i.color));
   const color = palette.find((c) => !used.has(c)) ?? palette[0];
-  next.push({ kind, key, color, labels });
+  const label = labels
+    ? abbreviateIxLabels(labels)
+    : key.length > 12
+      ? `${key.slice(0, 4)}…${key.slice(-4)}`
+      : key;
+  next.push({ kind, key, color, label, labels });
   return next;
 }
 

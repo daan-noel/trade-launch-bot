@@ -130,6 +130,7 @@ export function MarketScan({
   hasTarget,
   pool,
   his,
+  onPassTokens,
 }: {
   scanRequest: EntryScanRequest | null;
   logic: EntryLogic;
@@ -140,6 +141,8 @@ export function MarketScan({
   pool: string;
   /** Each token he bought in the range, with its class. */
   his: ReadonlyMap<string, HisToken>;
+  /** Tokens passing the filters in the scan on screen; `null` = no scan. */
+  onPassTokens?: (n: number | null) => void;
 }) {
   const key = JSON.stringify(scanRequest);
   const { timezone } = useTimezone();
@@ -180,6 +183,7 @@ export function MarketScan({
     return map;
   }, [chances]);
   const mints = useMemo(() => [...byMint.keys()], [byMint]);
+  useEffect(() => onPassTokens?.(market ? mints.length : null), [onPassTokens, market, mints]);
   // The pool: tokens with a buy the scan could read.
   const poolMints = useMemo(
     () => [...new Set(moments.filter((m) => !m.unknown_reason).map((m) => m.mint_address))],

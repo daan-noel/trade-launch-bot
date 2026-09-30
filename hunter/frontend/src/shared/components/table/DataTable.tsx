@@ -289,6 +289,12 @@ interface DataTableProps<R> {
    */
   groupLabels?: Record<string, string>;
   /**
+   * Column groups (`ColumnDef.group`) not drawn and not offered in the Columns
+   * panel, for a page that shows one set of groups at a time (sub-tabs over one
+   * table). A filter on a hidden column still applies. Omit to show every group.
+   */
+  hiddenGroups?: readonly string[];
+  /**
    * Initial sort column + direction (client-side mode). Sets the table's starting
    * order without locking it — the user can still re-sort by clicking headers.
    * Omit to start unsorted (rows render in the order passed).
@@ -392,6 +398,7 @@ export function DataTable<R>({
   selectable = true,
   paginate = true,
   groupLabels,
+  hiddenGroups,
   defaultSort,
   serverSide = false,
   serverTotal,
@@ -581,9 +588,13 @@ export function DataTable<R>({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colKeysSig]);
 
+  // Keyed on the group names, so a caller's fresh array each render is no change.
+  const hiddenKey = hiddenGroups?.join(',') ?? '';
+  const hidden = useMemo(() => new Set(hiddenKey ? hiddenKey.split(',') : []), [hiddenKey]);
+  const shownCol = useCallback((c: ColumnDef<R>) => !hidden.has(c.group ?? ''), [hidden]);
   const visCols = useMemo(
-    () => columns.filter((c) => visibleCols.has(c.key)),
-    [columns, visibleCols],
+    () => columns.filter((c) => visibleCols.has(c.key) && shownCol(c)),
+    [columns, visibleCols, shownCol],
   );
 
   // Assign each visible column a group index (consecutive same-group cols share
@@ -1020,14 +1031,14 @@ export function DataTable<R>({
     if (!showColPanel) return null;
     const grouped: { group: string; cols: ColumnDef<R>[] }[] = [];
     for (const col of columns) {
-      if (col.sortOnly) continue;
+      if (col.sortOnly || !shownCol(col)) continue;
       const g = col.group ?? '';
       const last = grouped[grouped.length - 1];
       if (last && last.group === g) last.cols.push(col);
       else grouped.push({ group: g, cols: [col] });
     }
     return grouped;
-  }, [showColPanel, columns]);
+  }, [showColPanel, columns, shownCol]);
 
   const toggleColVisibility = useCallback((key: string, checked: boolean) => {
     setVisibleCols((prev) => {

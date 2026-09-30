@@ -275,18 +275,30 @@ chip's `x`.
 | --- | --- | --- |
 | `useTokenHighlight` | `components/tokens/` | holds the armed items and their colors, disarms all when the mint changes, exposes `colorsOf` / `walletColor` / `structureColor` |
 | `buildLensMatch` | `token-price-chart/lensTint.ts` | buckets one item's matched trades against the bars already drawn, keeping each bar's matched trades |
-| `BarTintPlugin` | `token-price-chart/barTintPlugin.ts` | the washes (`zOrder: 'bottom'`) and the size labels (`zOrder: 'top'`) |
+| `LensLanePlugin` | `token-price-chart/lensLanePlugin.ts` | the highlight lane under the candles, row names in the price-axis gutter |
+| `BarTintPlugin` | `token-price-chart/barTintPlugin.ts` | faint washes behind the candles, `zOrder: 'bottom'` |
 | `LensChips` | inside `BarTradesPanel` | states what is armed, what it matched, the size-label switch, and turns items off |
 
-**Colors come in two families** (`LENS_COLORS`): wallets warm (gold, orange, lime, pink),
-structures cool (cyan, blue, violet, mint). Within a family the hues are neighbours, so several
-wallets read as "wallets" first and as which one second. An item takes the first free slot of
-its family when armed and keeps it until disarmed, so arming or disarming one never repaints
-the others. Arming a fifth of one kind drops the oldest of that kind.
+**The lane is where a highlight is found.** Under the candles, one row per armed item
+(wallets first, then structures, each in arming order), with a solid mark on every bar the
+item appears in, so where it shows up across the whole token reads at a glance. A row with
+no marks means the item never appeared on this token, which is why every armed item keeps
+its row. The row's name sits in the price-axis gutter, level with the row. The host reserves
+the lane's height (`lensLaneHeight`) through the price scale's bottom margin, so no candle or
+flow line is ever drawn under a row, and the condition time bands (`timeBandsPlugin`) move up over it. Rows thin down
+when many are armed and the lane never takes more than 40 % of the pane. The range slider
+under the chart repeats the rows as thin bands of ticks over the whole token, so the overview
+survives zooming in.
 
-**A wash is share-weighted, never binary.** Its alpha tracks matched SOL over
-`OhlcBar.volume`, so one dust leg in a busy slot renders faint and a slot the target owns
-renders solid. A binary tint would overstate every bar it paints, and in time mode — where a
+**Colors come in two families** (`LENS_COLORS`): wallets warm (gold, orange, lime, pink),
+structures cool (cyan, blue, violet, green). Each hue is a clear step from the next and the
+lane draws them solid, so two items read apart without a legend. An item takes the first free
+slot of its family when armed and keeps it until disarmed, so arming or disarming one never
+repaints the others. Arming a fifth of one kind drops the oldest of that kind.
+
+**The wash behind the candles is faint** (alpha 0.06 to 0.22) and stops at the lane's top: it only ties a lane mark to its candle.
+It is share-weighted, never binary: its alpha tracks matched SOL over `OhlcBar.volume`, so
+one dust leg in a busy slot renders faintest and a slot the target owns renders strongest. A binary tint would overstate every bar it paints, and in time mode — where a
 60s candle holds many wallets — it would be actively misleading. `buildLensMatch` therefore
 mirrors `collectTradeBuckets`' dust and validity guards exactly: counting a trade the bar
 itself dropped puts the share above 1 on a candle that never held it.
@@ -301,15 +313,17 @@ item's color. The page's own `highlightWallet` keeps the focus gold and outranks
 armed wallet also gets the spotlit marker treatment; one with no profile entry gets a synthetic
 marker in its lens color.
 
-**Sizes print under the washes.** Each matched trade's SOL size (`amount_sol`, `formatLensSol`)
-is drawn as rotated text stacked up from the bottom of the price pane, in its item's color,
-under that item's share of the bar: the three largest per bar and item, then `+k`. The chip
-strip's switch picks `buys` (default), `all` (`+buy` / `−sell`) or `off`; the choice persists
-in `UiToggles.lensSizeLabels`. Label columns that would overlap are resolved by SOL, the
-biggest column keeps its place, and a `sizes hidden on N bars · zoom in` hint counts the rest,
-so a hidden size never reads as a bar without a match. Hovering a washed candle lists its
-matched trades in the bar tooltip: item colors, side, SOL, network fee (`fee_sol`) and wallet,
-largest first. Labels, hover list and wash all read the same `LensBarTint.trades`, so they
+**Sizes live in the lane.** A mark's height grows with the square root of the SOL it moved in
+that bar, on one scale for every row (the biggest bar of any row over the whole token), so
+the same SOL draws the same height in any row, the big hits stand out, and a pan never changes
+a mark's height. With sizes on, the number sits beside its mark, horizontal
+(`laneText`): one trade prints its SOL, several print the sum and count, `0.700 (2)`. The chip
+strip's switch picks `buys` (default), `all` (`+buy −sell`) or `off`; the choice persists in
+`UiToggles.lensSizeLabels`. A number sits in the gap between its mark and the next one and is
+dropped when it does not fit, since a number drawn across another mark cannot be read; an
+`N sizes hidden · zoom in` hint counts the dropped ones. Hovering a highlighted candle
+lists its matched trades in the bar tooltip: item colors, side, SOL, network fee (`fee_sol`) and
+wallet, largest first. Lane, wash and hover list all read the same `LensBarTint.trades`, so they
 cannot disagree.
 
 **The counts on the chips come from the chart**, via `onHighlightLensMatch` — not from a
@@ -450,6 +464,10 @@ off through live trades until the axis is double-clicked. The chart re-arms `aut
 when the axis means something else - a change of token, grouping, unit, metric or style
 (`TokenPriceChart`'s refit effect). Never on a data update or a line toggle.
 
+The axis keeps `PRICE_SCALE_MARGINS` (10 % top and bottom) plus, while highlights are armed,
+the highlight lane's height (6c) added to the bottom margin. It is set again whenever the lane's
+row count, the pane's height or the chart itself changes.
+
 ### 10c. Bottom range slider (`ChartRangeSlider.tsx`)
 
 Shown when there is more than one bar. It's a miniature scrollbar over the full data span with
@@ -461,6 +479,11 @@ a teal "window" marking the visible range. Three drag modes:
 It enforces a minimum window (`MIN_WINDOW_RATIO`) and calls
 `chart.timeScale().setVisibleRange(from, to)` on change; conversely it syncs back from the
 chart's visible range so dragging on the chart updates the slider.
+
+While highlights are armed (6c) the track also carries the highlight lane's rows as thin bands
+of colored ticks over the full span (`marks`), so where each highlight sits in the whole token
+stays visible while the chart is zoomed in. The track grows with the rows (16 px, or 7 px per row when
+that is taller), so every row keeps a readable band.
 
 ---
 

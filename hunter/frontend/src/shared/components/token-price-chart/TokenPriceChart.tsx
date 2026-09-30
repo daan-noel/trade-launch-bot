@@ -7,6 +7,7 @@ import {
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type ITimeScaleApi,
   type LogicalRangeChangeEventHandler,
   type SeriesMarker,
   type Time,
@@ -30,6 +31,7 @@ import { useFlowLensContext } from 'context/FlowLensContext';
 import {
   barsShape,
   captureChartViewport,
+  focusLogicalRange,
   reapplyChartViewport,
   type BarsShape,
   type ChartViewport,
@@ -74,13 +76,19 @@ import {
   responsiveChartHeight,
   TOKEN_TOTAL_SUPPLY,
 } from './constants';
-import { createChartOptions, SERIES_BY_STYLE } from './chartOptions';
+import { PRICE_SCALE_MARGINS, createChartOptions, SERIES_BY_STYLE } from './chartOptions';
 import { getString, setString } from 'lib/storage';
 import { BarCrosshairTooltip, type LensTooltipRow } from './BarCrosshairTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';
 import { RangeSelectTooltip, formatRangeDuration } from './RangeSelectTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef, type MarkerShape } from './walletMarkersPlugin';
 import { BarTintPlugin, EMPTY_BAR_TINTS, asBarTintPrimitive } from './barTintPlugin';
+import {
+  EMPTY_LENS_LANE,
+  LensLanePlugin,
+  asLensLanePrimitive,
+  lensLaneHeight,
+} from './lensLanePlugin';
 import { buildLensMatch, lensItemId, lensItemMatches, type LensMatch } from './lensTint';
 import { HOST_RANGE_COLORS, RangeSelectPlugin, asRangePrimitive } from './rangeSelectPlugin';
 import { rangeForSpan } from './barTrades';
@@ -330,6 +338,9 @@ function walletGlyph(w: ProfileWalletInfo): string {
 /** Below this fraction of the episode's peak balance, a sell is treated as a full
  *  exit (fee/rounding dust rarely leaves the balance at exactly zero). */
 const SELL_ALL_DUST_FRACTION = 0.02;
+
+/** The share of the chart's width a host default range opens at, centered. */
+const DEFAULT_RANGE_VIEW_SHARE = 0.25;
 
 export function buildWalletMarkerDefs(
   // Must be in canonical order (`slot → tx_index → leg_index`) — position tracking
@@ -621,6 +632,7 @@ export function TokenPriceChart({
   const hostRangePrimRef = useRef<RangeSelectPlugin | null>(null);
   const timeBandsPrimRef = useRef<TimeBandsPlugin | null>(null);
   const barTintPrimRef = useRef<BarTintPlugin | null>(null);
+  const lensLanePrimRef = useRef<LensLanePlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
   const alignedFlowLinesRef = useRef<FlowLines>(EMPTY_FLOW_LINES);
   const valueLaneSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
@@ -724,6 +736,9 @@ export function TokenPriceChart({
   selectedBarTimeRef.current = selectedBarTime;
 
   const shouldFitContentRef = useRef(true);
+  /** Whether THIS chart instance has had the opening view applied; reset with
+   *  every new chart, so a teardown before the first paint re-applies it. */
+  const openingViewAppliedRef = useRef(false);
   const prevIdRef = useRef(id);
   const prevGroupingKeyRef = useRef(groupingKey);
   const visibleViewportRef = useRef<ChartViewport | null>(null);
@@ -798,7 +813,14 @@ export function TokenPriceChart({
   // matched SOL over `OhlcBar.volume`, so it can only be honest in the one place
   // that owns the bars. `onHighlightLensMatch` hands the same numbers back out so
   // a host's chips can never quote a different count from the tint.
-  const lensItems = highlightLens?.items ?? EMPTY_LENS_ITEMS;
+  // Wallets first, then structures, each in arming order — the lane's row order.
+  const lensItems = useMemo(() => {
+    const items = highlightLens?.items ?? EMPTY_LENS_ITEMS;
+    return [
+      ...items.filter((i) => i.kind === 'wallet'),
+      ...items.filter((i) => i.kind !== 'wallet'),
+    ];
+  }, [highlightLens?.items]);
   const lensSizeLabels = highlightLens?.sizeLabels ?? 'buys';
 
   // One pass per armed item, keyed by `lensItemId` — the map the chips, the washes
@@ -815,6 +837,16 @@ export function TokenPriceChart({
     }
     return out;
   }, [lensItems, sortedTrades, bars, groupMode, intervalSec, metric]);
+
+  // The lane's rows mirrored onto the range slider, in the lane's order.
+  const sliderMarks = useMemo(
+    () =>
+      lensItems.map((item) => ({
+        color: item.color,
+        times: (lensMatches.get(lensItemId(item))?.tint ?? []).map((t) => t.barTime),
+      })),
+    [lensItems, lensMatches],
+  );
 
   // Bar key → every armed item's matched trades there, for the hover list. A trade
   // two items both match is listed once, carrying both colors.
@@ -977,16 +1009,59 @@ export function TokenPriceChart({
   // no tints — without them an armed lens silently blanks on a line/candle flip.
   useEffect(() => {
     if (!showChart) return;
-    const layers = lensItems
-      .map((item) => ({
-        color: item.color,
-        tints: lensMatches.get(lensItemId(item))?.tint ?? [],
-      }))
-      .filter((layer) => layer.tints.length > 0);
+    const rows = lensItems.map((item) => ({
+      label: item.label,
+      color: item.color,
+      tints: lensMatches.get(lensItemId(item))?.tint ?? [],
+    }));
+    const layers = rows.filter((r) => r.tints.length > 0);
     barTintPrimRef.current?.setTints(
-      layers.length === 0 ? EMPTY_BAR_TINTS : { layers, sizeLabels: lensSizeLabels },
+      layers.length === 0 ? EMPTY_BAR_TINTS : { layers, laneRows: rows.length },
     );
-  }, [lensItems, lensMatches, lensSizeLabels, showChart, style, bars]);
+    // Every armed item keeps its row, matched or not: an empty row says "never
+    // appeared on this token", which a missing row cannot.
+    lensLanePrimRef.current?.setState(
+      rows.length === 0 ? EMPTY_LENS_LANE : { rows, sizeLabels: lensSizeLabels },
+    );
+    // The chart-rebuild keys too: a rebuilt chart hands over fresh plugins with no state.
+  }, [lensItems, lensMatches, lensSizeLabels, showChart, style, bars, groupingKey, priceUnit, chartTimezone]);
+
+  // The lane's strip is reserved under the candles through the price scale's
+  // bottom margin, so no candle or flow line is ever drawn beneath a row. Read off
+  // the pane's real height a frame later — a condition-value pane added in the
+  // same flush takes its share first. The time bands move up over the lane.
+  const laneRows = lensItems.length;
+  const hasValueLane = !!valueLane && valueLane.points.length > 0;
+  useEffect(() => {
+    if (!showChart) return;
+    const raf = requestAnimationFrame(() => {
+      const chart = chartRef.current;
+      if (!chart) return;
+      const paneH = chart.panes()[0]?.getHeight() ?? 0;
+      const laneH = paneH > 0 ? lensLaneHeight(laneRows, paneH) : 0;
+      chart.priceScale('right').applyOptions({
+        scaleMargins: {
+          top: PRICE_SCALE_MARGINS.top,
+          bottom: laneH > 0 ? PRICE_SCALE_MARGINS.bottom + laneH / paneH : PRICE_SCALE_MARGINS.bottom,
+        },
+      });
+      timeBandsPrimRef.current?.setBottomInset((h) => lensLaneHeight(laneRows, h));
+    });
+    return () => cancelAnimationFrame(raf);
+    // Every key the chart itself is rebuilt on, since a rebuilt chart starts from
+    // the default margins.
+  }, [
+    laneRows,
+    chartHeight,
+    hasValueLane,
+    showChart,
+    style,
+    fixedHeight,
+    groupingKey,
+    groupMode,
+    priceUnit,
+    chartTimezone,
+  ]);
 
   const onHighlightLensMatchRef = useRef(onHighlightLensMatch);
   onHighlightLensMatchRef.current = onHighlightLensMatch;
@@ -998,6 +1073,7 @@ export function TokenPriceChart({
   useEffect(() => {
     if (prevIdRef.current !== id || prevGroupingKeyRef.current !== groupingKey) {
       shouldFitContentRef.current = true;
+      openingViewAppliedRef.current = false;
       visibleViewportRef.current = null;
       renderedBarsShapeRef.current = null;
       mountedSeriesStyleRef.current = null;
@@ -1032,6 +1108,20 @@ export function TokenPriceChart({
     );
   }, [defaultFrom, defaultTo, id, groupingKey, groupMode, intervalSec, hasTrades]);
 
+  /** The opening view: a host default range focused (centered, a quarter of the
+   *  width), otherwise the whole tape. Queued by the library until its next paint. */
+  const applyOpeningView = (ts: ITimeScaleApi<Time>, bars: readonly OhlcBar[]) => {
+    const focus =
+      defaultFrom != null && defaultTo != null
+        ? rangeForSpan(sortedTradesRef.current, { from: defaultFrom, to: defaultTo }, groupMode, intervalSec)
+        : null;
+    const view = focus ? focusLogicalRange(bars, focus.lo, focus.hi, DEFAULT_RANGE_VIEW_SHARE) : null;
+    if (view) ts.setVisibleLogicalRange(view);
+    else ts.fitContent();
+    openingViewAppliedRef.current = true;
+    visibleViewportRef.current = null;
+  };
+
   useEffect(() => {
     if (!showChart) return;
 
@@ -1050,6 +1140,7 @@ export function TokenPriceChart({
       createChartOptions(width, initialHeight, groupMode, priceUnit, chartTimezone),
     );
     chartRef.current = chart;
+    openingViewAppliedRef.current = false;
 
     // The flow lines share the candles' price axis: each is drawn at its cohort
     // curve price (`cohortCurvePriceSol`), so its axis label reads a price in the
@@ -1254,8 +1345,14 @@ export function TokenPriceChart({
     });
 
     const onVisibleLogicalRangeChange: LogicalRangeChangeEventHandler = (logical) => {
-      if (shouldFitContentRef.current || isRestoringViewportRef.current || logical == null) {
-        return;
+      if (isRestoringViewportRef.current || logical == null) return;
+      if (shouldFitContentRef.current) {
+        // The opening view is queued until the chart paints, so it is done only
+        // when the chart reports it. A report before the apply is the library's
+        // default view; a chart torn down before its first paint (StrictMode's
+        // double mount on a cached token) applies the opening view again.
+        if (!openingViewAppliedRef.current) return;
+        shouldFitContentRef.current = false;
       }
       if (!seriesRef.current) return;
       visibleViewportRef.current = captureChartViewport(logical, renderedBarsShapeRef.current);
@@ -1294,6 +1391,7 @@ export function TokenPriceChart({
       markersPluginRef.current = null;
       walletMarkersPrimRef.current = null;
       barTintPrimRef.current = null;
+      lensLanePrimRef.current = null;
       rangeSelectPrimRef.current = null;
       hostRangePrimRef.current = null;
       seriesRef.current = null;
@@ -1347,7 +1445,9 @@ export function TokenPriceChart({
       }
       renderedBarsShapeRef.current = nextShape;
 
-      if (savedViewport) {
+      if (shouldFitContentRef.current) {
+        applyOpeningView(ts, bars);
+      } else if (savedViewport) {
         isRestoringViewportRef.current = true;
         reapplyChartViewport(ts, savedViewport, bars);
         requestAnimationFrame(() => {
@@ -1396,6 +1496,10 @@ export function TokenPriceChart({
         existing.detachPrimitive(asBarTintPrimitive(barTintPrimRef.current));
         barTintPrimRef.current = null;
       }
+      if (lensLanePrimRef.current) {
+        existing.detachPrimitive(asLensLanePrimitive(lensLanePrimRef.current));
+        lensLanePrimRef.current = null;
+      }
       chart.removeSeries(existing);
       seriesRef.current = null;
     }
@@ -1429,6 +1533,10 @@ export function TokenPriceChart({
     series.attachPrimitive(asTimeBandsPrimitive(bandsPrim));
     timeBandsPrimRef.current = bandsPrim;
 
+    const lanePrim = new LensLanePlugin();
+    series.attachPrimitive(asLensLanePrimitive(lanePrim));
+    lensLanePrimRef.current = lanePrim;
+
     if (style === 'line') {
       series.setData(barsToLineData(bars));
     } else {
@@ -1438,9 +1546,7 @@ export function TokenPriceChart({
     renderedBarsShapeRef.current = nextShape;
 
     if (shouldFitContentRef.current) {
-      ts.fitContent();
-      shouldFitContentRef.current = false;
-      visibleViewportRef.current = null;
+      applyOpeningView(ts, bars);
     } else if (savedViewport) {
       isRestoringViewportRef.current = true;
       reapplyChartViewport(ts, savedViewport, bars);
@@ -2157,6 +2263,7 @@ export function TokenPriceChart({
           from={sliderWindow?.from ?? (bars[0].time as number)}
           to={sliderWindow?.to ?? (bars[bars.length - 1].time as number)}
           onChange={handleSliderChange}
+          marks={sliderMarks}
         />
       )}
     </div>

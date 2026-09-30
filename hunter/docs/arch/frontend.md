@@ -1341,7 +1341,11 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   the tokens — the Trader Analysis contract. **Axes** (`lib/entryContext/axes.ts`) are the
   extension point: every per-buy share or count is one `EntryAxis` (key, label, unit, one-line
   definition, getter) and becomes a column with its definition as the tooltip; presence of the
-  target is the probe's verdict, not an axis. A row expands (the table's `rowDetail`) into
+  target is the probe's verdict, not an axis. Each axis group belongs to one idea family
+  (`AXIS_FAMILIES`, today **IX structure**), and the buys table has one sub-tab per family: the
+  sub-tab only picks the column groups shown (`DataTable`'s `hiddenGroups`, which keeps a hidden
+  column's filter in force), with his buy and the probe columns in every sub-tab; rows, filters
+  and the Market tab are shared. A row expands (the table's `rowDetail`) into
   `EntryDetail`: the shared `TokenTradeChart` without its card (his trades spotlit, the lens set
   classifying the flow; candle click and the toolbar's range select list their trades below, as
   on every chart) with an **Analysis range** toolbar line (`toolbarRow`). That line drives the
@@ -1392,12 +1396,16 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   (`Term`), the Filters section's two line labels included. `InfoTooltip` takes `children` for
   such a laid-out body.
   The page's sections are titled **Token pool** (the lens bar with the probe) and **Filters**:
-  `IdeaFilters` shows the buys table's filter conditions as chips on two lines, **Target IXs**
-  (In pool rows only) and **Any IXs** (every row), and edits them: an edit is written
+  `IdeaFilters` shows the buys table's filter conditions as chips, all at once whatever the
+  sub-tab: one block per idea family plus one for his buy and the probe, each with its count, a
+  family's name a button that switches the buys table to its sub-tab; inside a block the chips sit
+  on two lines, **Target IXs** (In pool rows only) and **Any IXs** (every row). It edits them: an edit is written
   to the table's saved prefs (`setTablePrefs`) and the table remounts with it; a new condition
   is added in the table's filter row. Its switch turns the conditions off: they are parked in the
   form (`pausedFilters`, persisted), the table's are cleared and its filter row hidden, so every buy
-  passes and the page shows the pool; on writes them back. Below them the page is two tabs: **His entries** (the summary, the buys table,
+  passes and the page shows the pool; on writes them back. Below them the page is two main tabs,
+  large and boxed over a framed panel, each with its count (buys on screen; tokens passing in the
+  last market scan, `MarketScan`'s `onPassTokens`): **His entries** (the summary, the buys table,
   his token table) and **Market** (`MarketScan`). Both panels stay mounted (`TabsPanel
   keepMounted`), because the market reads the buys table's filters and keeps its scan across a
   switch. **Scan market** runs `POST /api/wallets/:wallet/entry-context/scan` on demand: every

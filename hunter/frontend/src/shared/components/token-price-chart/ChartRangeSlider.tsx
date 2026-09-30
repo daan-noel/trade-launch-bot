@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { CHART_COLORS } from './constants';
 
 type DragMode = 'from' | 'to' | 'pan';
@@ -14,7 +14,28 @@ type ChartRangeSliderProps = {
   to: number;
   /** Called continuously while dragging with the requested window. */
   onChange: (from: number, to: number) => void;
+  /** Highlight-lane rows mirrored onto the track: one thin band per row, a tick at
+   *  every bar key (same units as `min`/`max`) the row hits — so where each
+   *  highlight sits in the whole token stays visible while the chart is zoomed in. */
+  marks?: readonly SliderMarkRow[] | null;
 };
+
+export interface SliderMarkRow {
+  color: string;
+  times: readonly number[];
+}
+
+/** Track resolution for ticks: hits closer than 1/1000 of the span share a tick. */
+const MARK_BUCKETS = 1000;
+/** Track height with no highlight rows. */
+const BASE_TRACK_H = 16;
+/** Each highlight row's band on the track — the track grows to give every row this. */
+const MARK_ROW_H = 7;
+
+/** Track height for `rows` highlight rows: the base, or taller so each row keeps its band. */
+function trackHeight(rows: number): number {
+  return Math.max(BASE_TRACK_H, rows * MARK_ROW_H);
+}
 
 /** Handle width in px; centered on its edge so it slightly overhangs the window. */
 const HANDLE_W = 10;
@@ -27,7 +48,7 @@ const MIN_WINDOW_RATIO = 0.01;
  * edge, drag the middle to pan. It drives the chart via `onChange` and is kept
  * in sync by the parent re-feeding `from`/`to` from the chart's visible range.
  */
-export function ChartRangeSlider({ min, max, from, to, onChange }: ChartRangeSliderProps) {
+export function ChartRangeSlider({ min, max, from, to, onChange, marks = null }: ChartRangeSliderProps) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
     mode: DragMode;
@@ -103,15 +124,40 @@ export function ChartRangeSlider({ min, max, from, to, onChange }: ChartRangeSli
     };
   };
 
+  const markRects = useMemo(() => {
+    if (!marks?.length || span <= 0) return null;
+    const rowH = trackHeight(marks.length) / marks.length;
+    return marks.flatMap((row, r) => {
+      const buckets = new Set<number>();
+      for (const t of row.times) {
+        buckets.add(Math.round(((t - min) / span) * MARK_BUCKETS));
+      }
+      return [...buckets].map((b) => ({ key: `${r}:${b}`, x: b, y: r * rowH, h: rowH, color: row.color }));
+    });
+  }, [marks, min, span]);
+
   if (span <= 0) return null;
+  const trackH = trackHeight(marks?.length ?? 0);
 
   return (
     <div className="select-none px-2 pb-2 pt-1">
       <div
         ref={trackRef}
-        className="relative h-4 rounded"
-        style={{ backgroundColor: CHART_COLORS.grid }}
+        className="relative rounded"
+        style={{ height: trackH, backgroundColor: CHART_COLORS.grid }}
       >
+        {markRects && (
+          <svg
+            className="pointer-events-none absolute inset-0 size-full"
+            viewBox={`0 0 ${MARK_BUCKETS} ${trackH}`}
+            preserveAspectRatio="none"
+            aria-hidden
+          >
+            {markRects.map((m) => (
+              <rect key={m.key} x={m.x - 1.5} y={m.y} width={3} height={m.h} fill={m.color} />
+            ))}
+          </svg>
+        )}
         <div
           className="absolute bottom-0 top-0 cursor-grab active:cursor-grabbing"
           style={{

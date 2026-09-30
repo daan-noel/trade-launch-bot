@@ -137,9 +137,9 @@ function LensChip({
 
 /** The size-label switch: what prints under each wash. */
 const SIZE_MODES: { mode: ChartLensSizeLabels; label: string; title: string }[] = [
-  { mode: 'buys', label: 'buys', title: 'Print the SOL size of each highlighted buy under its candle' },
-  { mode: 'all', label: 'all', title: 'Print the SOL size of every highlighted trade: +buy, −sell' },
-  { mode: 'off', label: 'off', title: 'No size labels' },
+  { mode: 'buys', label: 'buys', title: 'Beside each lane mark: the SOL its buys moved in that candle' },
+  { mode: 'all', label: 'all', title: 'Beside each lane mark: +buy SOL and −sell SOL in that candle' },
+  { mode: 'off', label: 'off', title: 'No numbers in the lane' },
 ];
 
 function SizeLabelSwitch({
@@ -152,7 +152,7 @@ function SizeLabelSwitch({
   return (
     <span
       className="inline-flex items-center gap-1 font-mono text-[10px] text-text-dim"
-      title="SOL size of each highlighted trade, printed under its candle. Largest first, three per candle, then +k. Hover a candle for size, fee and wallet."
+      title="The number beside each mark in the highlight lane under the chart: one trade prints its SOL, several print the sum and (count). A taller mark moved more SOL. Hover a candle for each trade's size, fee and wallet."
     >
       sizes
       {SIZE_MODES.map((m) => (
@@ -195,7 +195,7 @@ export function LensChips({ highlight }: { highlight: TokenHighlight }) {
               key={lensItemId(item)}
               color={item.color}
               label={shortAddr(item.key)}
-              title={`${item.key} — every candle this wallet traded in is washed in this color`}
+              title={`${item.key} — every candle this wallet traded in is marked in its lane row, in this color`}
               match={match}
               onClear={() => remove(item)}
             />
@@ -211,7 +211,7 @@ export function LensChips({ highlight }: { highlight: TokenHighlight }) {
               `${text}
 
 Every candle carrying this EXACT ordered structure is ` +
-              `washed in this color. View-only — no fingerprint or rule reads it.`
+              `marked in its lane row, in this color. View-only — no fingerprint or rule reads it.`
             }
             match={match}
             onClear={() => remove(item)}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LogicalRange, UTCTimestamp } from 'lightweight-charts';
-import { barsShape, shiftLogicalRange } from './chartViewport';
+import { barsShape, focusLogicalRange, shiftLogicalRange } from './chartViewport';
 
 /**
  * The regression this locks: every live trade re-runs `setData` with a whole new
@@ -51,5 +51,22 @@ describe('shiftLogicalRange', () => {
       from: 1,
       to: 2,
     });
+  });
+});
+
+describe('focusLogicalRange', () => {
+  it('centers the range at a quarter of the view', () => {
+    // Bars 12..15 (indices 2..5) are the range: 4 bars wide, center 3.5.
+    const bars = barsAt([10, 11, 12, 13, 14, 15, 16, 17]);
+    expect(focusLogicalRange(bars, 12, 15, 0.25)).toEqual(range(-4.5, 11.5));
+  });
+
+  it('snaps to the bars inside the range', () => {
+    const bars = barsAt([10, 20, 30, 40]);
+    expect(focusLogicalRange(bars, 15, 35, 0.5)).toEqual(range(-0.5, 3.5));
+  });
+
+  it('is null when no bar falls inside', () => {
+    expect(focusLogicalRange(barsAt([10, 20]), 12, 18, 0.25)).toBeNull();
   });
 });

@@ -143,7 +143,10 @@ export function lensItemId(item: Pick<ChartLensItem, 'kind' | 'key'>): string {
  *  whole-sequence — the key `volumePatterns.patternKey` builds, inlined so this
  *  folder stays portable. A set/subset match here would silently mean something
  *  else than it does everywhere else in the app. */
-export function lensItemMatches(item: ChartLensItem, trade: ChartTrade): boolean {
+export function lensItemMatches(
+  item: Pick<ChartLensItem, 'kind' | 'key'>,
+  trade: ChartTrade,
+): boolean {
   if (item.kind === 'wallet') return trade.wallet_address === item.key;
   const labels = trade.instruction_labels;
   return !!labels && labels.length > 0 && JSON.stringify(labels) === item.key;
