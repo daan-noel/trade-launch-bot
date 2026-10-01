@@ -1,0 +1,166 @@
+# Owner decisions: when the owner pumps, holds, dumps and pumps again
+
+**What this file does.** Once every trade is split into owner and outsider
+([owner-split.md](owner-split.md)), this file is the method to find **why and when the owner
+acts**: when it pumps, holds the price, rides, dumps, gives up, or pumps again. A trading rule is
+then built from those decisions: buy when the owner commits, stay while it rides, sell just before
+it dumps.
+
+The method works for any launch group. Numbers measured so far are in section 6.
+
+Numbers marked **start value** are first guesses, to be tuned on data.
+
+---
+
+## 1. The idea: each coin is a small business for the owner
+
+- **It spends**: its own SOL to push the price up, and its time.
+- **It earns**: outsiders' SOL. The owner's profit is what outsiders pay for its tokens.
+- **Its risk**: outsiders holding a big bag can sell first and take the profit instead.
+
+So the owner **keeps pumping while it expects outsiders to pay more than the pump costs, and dumps
+when that stops**. Every reason in section 3 is one way to read that at a given moment.
+
+The owner does not live on creator fees: its own trades are most of the coin's volume, so it pays
+most of those fees itself.
+
+## 2. The owner's decisions, and how each one shows on the chart
+
+| decision | how we see it (start values) |
+| --- | --- |
+| commit | the owner puts 1 SOL or more into the coin within its first 5 s |
+| pump step | owner buys push the price up 10 % or more |
+| hold the band | the price stays within +-10 % for 20 s while the owner keeps buying and selling |
+| one-shot dump | the price falls in one slot ([owner-split.md](owner-split.md), "fall") |
+| waterfall dump | the price falls in several steps, less than 30 s apart |
+| ride | the owner could cash out (its profit reached its usual level), but keeps buying and the price rises another 20 % or more |
+| migrate | the coin completes its curve (on pump.fun, about 110 SOL in the pool) |
+| give up | the owner dumps before its profit reaches its usual level |
+| second pump | after a dump, the owner buys 1 SOL or more within 60 s and the price climbs 20 % or more from the bottom |
+
+## 3. The owner's reasons
+
+Each reason is something we can read at any moment of a coin, and the decision it should lead to.
+
+**1. "I have made enough."** The owner dumps once its profit (what its tokens are worth now, minus
+what it paid) reaches its usual cash-out amount.
+*Example: on a 4.16 coin the owner usually cashes out at about 4.9 SOL of profit.*
+
+**2. "Buyers are here - sell to them now."** When outsiders suddenly buy (1 SOL or more within 3 s)
+and the owner is already near its profit level, it dumps into them.
+*Example: owner profit is at 60 % of its usual level, then outsiders buy 1.4 SOL in 2 s: dump.*
+
+**3. "Nobody is coming."** If no real buyers show up in the first ~15-20 s, the owner gives up and
+dumps early, at less profit.
+
+**4. "Real buyers carry it - push it to the end."** If outsiders keep buying on their own after
+the owner reached its profit level, it does not dump: it rides the coin up to migration, where the
+reward is bigger.
+
+**5. "Hold the price and wait."** The owner keeps the price flat in a band while waiting for the
+next wave of buyers, then dumps into it.
+
+**6. "My next coin needs me."** When the owner launches or starts pumping another coin, it dumps
+this one.
+
+**7. "Early holders are dangerous."** If outsiders bought a big bag early (or are already selling in
+the first 10 s), they could dump on the owner, so it dumps first.
+
+**8. "Sell while the pool can take my bag."** The bigger the owner's bag against the SOL in the
+pool, the more its own sell crashes the price. It dumps while the pool can still absorb it.
+
+**9. "Dump all at once, or bit by bit."** If buyers stop all at once, the owner dumps in one go. If
+slow buyers keep trickling in, it sells a little into each one (a waterfall).
+
+**10. "Is pumping still worth it?"** The owner watches how much outsider money each SOL of its
+pumping brings in. When that falls, it stops pumping and dumps soon.
+*Example: in the last 30 s the owner put in 2 SOL and outsiders 3 SOL (1.5 each); before, it was
+3 per SOL: falling.*
+
+**11. "The holders are gone - pumping again is safe."** After a dump, outsiders who held before
+it sell their tokens. Once most of them have left, few outsiders are left who could sell into a
+new pump, so the owner pumps again. If outsiders still hold a big bag, it does not pump again.
+*Example: after the dump outsiders hold 2 % of the supply: second pump likely. They still hold
+15 %: no second pump.*
+
+**12. "Use what worked, launch when people are awake."** The owner reuses a coin name that worked
+before, and launches more in the audience's hours (21-24 UTC).
+
+**13. "I am working a session."** When the owner launches several coins close together, it is
+actively working them; a lone coin is more often a test it drops.
+
+**Not reasons** (measured, they do not hold):
+- A fixed timer, a fixed price, a fixed budget, or a fixed amount of outsider money as the dump
+  trigger.
+- The owner's buys minus its sells over the last few seconds: the owner buys and sells at the same
+  time, so this flips all the time, long before any dump.
+- Creator fees as the owner's income (section 1).
+
+## 4. How a reason is tested
+
+1. **Write down every moment.** For each coin, one row per trade, with what each reason reads at
+   that moment - using only the past, never a later trade.
+2. **Mark the decisions** of section 2 on the same rows.
+3. **Does the decision follow the reason far more than usual?** Compare: how often the owner dumps
+   within a few seconds right after the reason holds, against how often it dumps at any moment.
+   *Example: the owner dumps within 3 s at about 1 % of all moments, but at about 4 % of the moments
+   right after outsiders bought 1 SOL in 3 s: four times more often. That reason matters.*
+   A reason that changes nothing (about 1x) is not what drives the owner.
+4. **Is there time to act?** The gap between the reason and the decision must leave room for our
+   order (we fill about 0.1 s later).
+5. **Recent days first, old days to check.** Tune on the last ~2 weeks; it counts only if it also
+   holds on the 2 weeks before.
+6. **Look at the misses.** When the reason holds but the owner does not act, what happens next (a
+   ride, a migration, a slow death)? That is where a rule loses money.
+
+## 5. From reasons to a trading rule
+
+| part of the rule | built from |
+| --- | --- |
+| which coins to trade | 12, 13, and the commit decision |
+| when to buy | right after the owner commits, unless reason 7 holds |
+| when to sell before a dump | 1, 2, 3, 10 |
+| when to stay | 4 |
+| how to sell in a waterfall | 9, read once the first step down lands |
+| when to buy again | 11 |
+
+Every line of a rule names the reason it reads.
+
+## 6. Measured so far
+
+On 7ix (case file: [node-derivation/launch-group-7ix.md](node-derivation/launch-group-7ix.md)):
+
+| reason | what the tape shows |
+| --- | --- |
+| 1 | the owner's profit at its first dump is tight: on 4.16 coins 3.95 / 4.90 / 6.32 SOL (10 % / median / 75 %) |
+| 2 | the owner dumps 3.7-4.1 times more often right after outsiders buy 1 SOL or more in 3 s |
+| 3 | early dumps below the profit level land at age 14-19 s (median), at 68-84 % of the level |
+| 4 | coins that migrate reach the owner's profit level later (median age 34 s, against 7 s) |
+| 5 | the price reaches its dump level 25-60 s before the dump, and holds there |
+| 7 | outsiders selling more than 1.3 SOL by age 10 s: the trade books -8.8 / -24.5 % |
+| 12 | reused name: +21 / +26 % a trade; born 21-24 UTC +34 / +29 %, against 11-15 UTC -9 / +10 % |
+| 13 | no other launch in the last 10 min: -12.1 / -6.5 % a trade; four or more: +13.4 / +7.4 % |
+| fixed triggers | a fixed time, price, budget or outsider amount starts the dump within 5 s on 19 % of coins at most |
+| buys minus sells | selling when it turns negative: -1.8 .. -3.4 % a trade |
+
+(Pairs like "+21 / +26" are the two periods of the case file.)
+
+**Exit test on 7ix.** Buy at the first trade at age 1 s or more; both orders fill 0.115 s after the
+decision; 0.03 SOL a trade; max_cost 0.13 / 0.65 / 4.16. The usual profit level was set on coins of
+09-01 .. 09-14 (0.35 / 0.72 / 4.48 SOL). The owner here is the earlier, simpler split (the crew tag
+plus wallet groups), not the full method of [owner-split.md](owner-split.md).
+
+| sell when | 09-01 .. 14 | 09-15 .. 27 | days in profit |
+| --- | ---: | ---: | --- |
+| reasons 1 + 2: owner profit at 60 % of its level AND outsiders buy 1 SOL in 3 s | +20.9 % | +24.2 % | 13 of 14, 11 of 12 |
+| reason 1 alone: owner profit at its level | +3.9 % | +6.6 % | 10 of 14, 10 of 12 |
+| the owner stops buying while the price drops | -6.9 % | +12.7 % | fails: it comes after the crash |
+| the owner's bag shrinks below its usual low | -4.1 % | -5.4 % | fails: the bag swings while the owner trades both ways |
+| perfect exit (knowing the future) | +27.5 % | +29.0 % | |
+
+How the 7ix owner dumps: 41 % in one go (within 3 s), 39 % over 3-60 s, 19 % over more than 60 s.
+Nothing measured so far warns of a waterfall before it starts.
+
+On 6ix, buying at age 1 s loses even with the perfect exit (-8.3 / -6.7 %): the price does not
+rise while the volume network trades the coin. There, the open question is when to buy, not when
+to sell.
