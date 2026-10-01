@@ -4,7 +4,7 @@ import {
   tradeBarSlot,
   tradeBarTime,
 } from './chartBars';
-import type { ChartGroupMode, ChartLensItem, ChartMetric, ChartTrade, OhlcBar } from './types';
+import type { ChartGroupMode, ChartLensItem, ChartLensPins, ChartMetric, ChartTrade, OhlcBar } from './types';
 
 /**
  * One bar a highlight lens hits — "the thing you picked traded in this candle".
@@ -126,17 +126,37 @@ export function lensItemId(item: Pick<ChartLensItem, 'kind' | 'key'>): string {
   return `${item.kind}:${item.key}`;
 }
 
+/** The fields a structure lens may pin, in key order. */
+export const LENS_PIN_FIELDS = ['cu_limit', 'cu_price', 'tip_lamports'] as const;
+
+/** A structure lens item's key: the ordered labels as `volumePatterns.patternKey`
+ *  builds them (inlined so this folder stays portable), then the pins when there
+ *  are any — `["A","B"]|cu_limit=300000`. Unpinned it is the bare pattern key. */
+export function structureLensKey(labels: readonly string[], pins?: ChartLensPins | null): string {
+  const base = JSON.stringify(labels);
+  const set = LENS_PIN_FIELDS.filter((f) => pins?.[f] != null);
+  return set.length > 0 ? `${base}|${set.map((f) => `${f}=${pins![f]}`).join(',')}` : base;
+}
+
 /** Does `trade` belong to this lens item? Structure identity is ordered, exact and
- *  whole-sequence — the key `volumePatterns.patternKey` builds, inlined so this
- *  folder stays portable. A set/subset match here would silently mean something
- *  else than it does everywhere else in the app. */
+ *  whole-sequence; a set/subset match here would silently mean something else than
+ *  it does everywhere else in the app. A pin needs the trade's reading to equal it,
+ *  and a missing reading never satisfies one: the engine's `FeeSpec::matches`. */
 export function lensItemMatches(
-  item: Pick<ChartLensItem, 'kind' | 'key'>,
+  item: Pick<ChartLensItem, 'kind' | 'key' | 'pins'>,
   trade: ChartTrade,
 ): boolean {
   if (item.kind === 'wallet') return trade.wallet_address === item.key;
   const labels = trade.instruction_labels;
-  return !!labels && labels.length > 0 && JSON.stringify(labels) === item.key;
+  if (!labels || labels.length === 0) return false;
+  const read: ChartLensPins = {};
+  for (const f of LENS_PIN_FIELDS) {
+    if (item.pins?.[f] == null) continue;
+    const v = trade[f];
+    if (v == null) return false;
+    read[f] = v;
+  }
+  return structureLensKey(labels, read) === item.key;
 }
 
 /** A matched trade's SOL size as the chart prints it under a wash: 3 decimals

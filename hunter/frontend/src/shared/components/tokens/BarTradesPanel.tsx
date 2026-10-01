@@ -329,7 +329,7 @@ export function BarTradesPanel({
           <IxPatternBar target={patternTarget} readOnly={flowReadOnly} />
         )}
       </div>
-      {highlight && lensActive && <LensChips highlight={highlight} />}
+      {highlight && <LensChips highlight={highlight} />}
       <DataTable
         tableId={tableId}
         columns={columns}

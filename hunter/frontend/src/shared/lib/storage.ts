@@ -22,6 +22,7 @@
  */
 
 import type { ChartLensSizeLabels } from 'components/token-price-chart/types';
+import type { IxPatternFeeMask } from 'lib/strategy/ixPatternRows';
 
 const PREFIX = 'mt:';
 
@@ -177,6 +178,8 @@ export interface UiToggles {
   lensPromoteOn?: boolean;
   /** Token charts: which highlighted trades print their SOL size under the wash. */
   lensSizeLabels?: ChartLensSizeLabels;
+  /** Token charts: which fee fields a structure highlight click pins off its trade. */
+  lensPins?: IxPatternFeeMask;
 }
 
 // ── raw string accessors ────────────────────────────────────────────────────

@@ -4,7 +4,6 @@ import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { IX_ABBREV_LEGEND } from 'lib/ixLabels';
-import { patternKey } from 'lib/flow/volumePatterns';
 import { LensButton, LensSpacer } from 'components/tokens/LensControls';
 // Deep import: type-only w.r.t. lightweight-charts (see `LensControls`).
 import { LENS_COLORS } from 'components/token-price-chart/constants';
@@ -117,11 +116,12 @@ const pctText = (v: number | null) => (v == null ? '-' : `${v.toFixed(0)}%`);
 
 /** Arms the chart's structure highlight from a Structure cell (`useTokenHighlight`). */
 export interface StructureLens {
-  /** Add this exact ordered structure; an armed one again removes it. */
+  /** Add this exact ordered structure, unpinned (a breakdown row has no single
+   *  fee reading to copy); an armed one again removes it. */
   toggle: (labels: readonly string[]) => void;
-  /** The color an armed structure (by `patternKey`) washes in, `null` = not armed,
-   *  so its row renders the button lit in that color. */
-  colorOf: (key: string) => string | null;
+  /** The color the unpinned structure washes in, `null` = not armed, so its row
+   *  renders the button lit in that color. */
+  colorOf: (labels: readonly string[]) => string | null;
 }
 
 /** The Structure column of both structure tables: one narrow line, so the number
@@ -135,7 +135,7 @@ export function structureColumn<R extends { key: string; labels?: string[] }>(
   const button = (g: R) => {
     if (!lens) return null;
     if (!g.labels?.length) return <LensSpacer />;
-    const armedColor = lens.colorOf(patternKey(g.labels));
+    const armedColor = lens.colorOf(g.labels);
     const armed = armedColor != null;
     return (
       <LensButton

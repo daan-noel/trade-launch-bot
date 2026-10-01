@@ -116,13 +116,24 @@ export interface ChartEventMarker {
 export type ChartLensKind = 'wallet' | 'structure';
 
 /** One armed highlight target. */
+/** Fee fields a structure lens pins: absent = any value, set = the trade's reading
+ *  must equal it. The chart-side twin of `lib/strategy/ixPatternRows.IxPatternFee`
+ *  (a guard test keeps the two matchers equal). */
+export interface ChartLensPins {
+  cu_limit?: number;
+  cu_price?: number;
+  tip_lamports?: number;
+}
+
 export interface ChartLensItem {
   kind: ChartLensKind;
-  /** The wallet address, or for a structure `JSON.stringify(ordered
-   *  instruction_labels)` — the same identity `lib/flow/volumePatterns.patternKey`
-   *  builds, so "the same structure" means exactly one thing across the app.
-   *  Ordered and exact: never a set match. */
+  /** The wallet address, or for a structure `structureLensKey(labels, pins)`:
+   *  `JSON.stringify(ordered instruction_labels)` — the same identity
+   *  `lib/flow/volumePatterns.patternKey` builds — plus the pins when there are
+   *  any. Ordered and exact: never a set match. */
   key: string;
+  /** A structure's fee pins; absent = the structure alone, any budget. */
+  pins?: ChartLensPins;
   /** Lane, wash and chip color — `LENS_COLORS[kind][slot]`, fixed while armed. */
   color: string;
   /** Short name for the lane row: an abbreviated address or ix sequence. */

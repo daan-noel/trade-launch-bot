@@ -346,6 +346,17 @@ feature: asking *where else did this shape appear* must not change how a live ru
 flow. The identity is shared, though — both match on `patternKey`, ordered and exact, so "the
 same structure" means one thing across the app.
 
+**A structure lens can pin the fee budget.** The chip strip's `highlight pin` toggles
+(`FeePinToggles`: cu_limit, cu_price, tip; persisted in `UiToggles.lensPins`) pick which of the
+clicked trade's readings a trades-table click copies onto the lens. All off = the structure
+alone, any CU and fee. A pin needs the trade's reading to equal it and a missing reading never
+satisfies one, the engine's `FeeSpec::matches` (`lensItemMatches`, guarded equal to
+`ixPatternRows.rowMatchesTrade`). The key is `structureLensKey(labels, pins)`, so the same
+structure armed under two presets is two items, each with its own color and lane row; the chip
+and lane label carry the pins (`CL → B · cu 300,000 @ 1,000`). The mask is the highlight's own,
+not the tag stage's, so arming a highlight never changes what a tag click writes. The Entry
+Context breakdown arms its structures unpinned: a breakdown row has no single reading to copy.
+
 The chip strip renders even with **no candle selected**, which is the only reason the panel
 draws at all in that state: the control that disarms a lens must not hide behind the table it
 is washing.

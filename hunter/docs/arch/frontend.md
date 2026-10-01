@@ -1374,7 +1374,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `exact` Structure cell carries the trades table's highlight button (`LensButton`, shared with
   the `LensChips` in `components/tokens/LensControls.tsx`); it arms the chart's structure lens
   through a host-owned `useTokenHighlight` (`TokenTradeChart`'s `highlight` prop), washing every
-  candle with that exact structure. The probe's Matched column reads the
+  candle with that exact structure, unpinned (the trades table's click can pin its CU and fee,
+  `token-history-chart-functionalities.md` section 6c). The probe's Matched column reads the
   template grain whatever the breakdown. The buys table opens with the SOL twins and side reads
   hidden (`defaultCols`). Columns are banded by group: every `EntryAxis` names its group, and
   `entryGroupLabels(w, probeSlots)` labels the buys table (his buy, probe, target, everyone,

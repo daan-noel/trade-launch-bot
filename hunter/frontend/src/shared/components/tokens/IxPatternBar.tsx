@@ -1,65 +1,13 @@
 import { useState } from 'react';
 
-import { Checkbox } from 'components/ui/Checkbox';
+import { FeePinToggles } from 'components/tokens/FeePinToggles';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
 import { HOST_SHAPES_TAG, type IxPatternTarget, type StageMatcher, type TagStage } from 'hooks/useIxPatternTarget';
 import { tagLabel } from 'lib/flow/tapeClassify';
-import { type IxPatternFeeField, type IxPatternFeeMask } from 'lib/strategy/ixPatternRows';
 import { tagField, useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
 import { TAG_NAME_RE } from 'lib/strategy/tagsDoc';
-
-const FEE_PIN_TOGGLES: { field: IxPatternFeeField; label: string; title: string }[] = [
-  {
-    field: 'cu_limit',
-    label: 'cu_limit',
-    title: 'Copy this tx\'s cu_limit onto the added shape. Off (the default) adds the ix shape alone, even when the tx has a limit.',
-  },
-  {
-    field: 'cu_price',
-    label: 'cu_price',
-    title: 'Copy this tx\'s cu_price. Many clients recompute this per transaction: pin it only when you have seen it hold.',
-  },
-  {
-    field: 'tip_lamports',
-    label: 'tip',
-    title: 'Copy this tx\'s tip. A tip is an auction bid and almost never a stable identity.',
-  },
-];
-
-/**
- * Sticky fee-field modifiers for an `ix_shape` click. Checking cu_limit then clicking
- * a tx adds that tx's ix shape plus its cu_limit - not the other two. All off = the
- * shape alone (any budget).
- */
-export function FeePinToggles({
-  mask,
-  onChange,
-  disabled = false,
-}: {
-  mask: IxPatternFeeMask;
-  onChange: (next: IxPatternFeeMask) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <span className="inline-flex flex-wrap items-center gap-1.5" title="Fee fields copied from the clicked tx onto the ix shape. Default off = any budget.">
-      <span className="text-[9px] uppercase tracking-wide text-text-dim/60">pin</span>
-      {FEE_PIN_TOGGLES.map(({ field, label, title }) => (
-        <label key={field} className="inline-flex cursor-pointer items-center gap-0.5" title={title}>
-          <Checkbox
-            boxSize="sm"
-            checked={!!mask[field]}
-            disabled={disabled}
-            onChange={() => onChange({ ...mask, [field]: !mask[field] })}
-            aria-label={`Pin ${label} from the clicked tx`}
-          />
-          <span className="font-mono text-[10px] text-text-dim">{label}</span>
-        </label>
-      ))}
-    </span>
-  );
-}
 
 /** A matcher's registry title and summary, for a switch or a caption. */
 function matcherTitle(reg: StrategyRegistry | undefined, m: StageMatcher): string {

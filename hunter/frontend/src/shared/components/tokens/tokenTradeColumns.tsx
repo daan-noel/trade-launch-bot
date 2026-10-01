@@ -11,7 +11,6 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { LensButton, LensSpacer } from 'components/tokens/LensControls';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeFees';
-import { patternKey } from 'lib/flow/volumePatterns';
 import { tagLabel } from 'lib/flow/tapeClassify';
 import { formatFeePins } from 'lib/strategy/ixPatternRows';
 import { stageValueOf, stageValueText, type TagStage } from 'hooks/useIxPatternTarget';
@@ -56,9 +55,10 @@ export interface TokenTradeColumnsOpts {
    * reads - asking "where else did this shape appear" must never change how a live
    * rule classifies.
    */
-  onLensStructure?: ((labels: readonly string[]) => void) | null;
-  /** The color an armed structure (by `patternKey`) washes in, `null` = not armed. */
-  lensStructureColor?: ((key: string) => string | null) | null;
+  onLensStructure?: ((labels: readonly string[], from: TradeRecord) => void) | null;
+  /** The color the structure a click on this row would toggle washes in (labels
+   *  plus the highlight's pins off this row), `null` = not armed. */
+  lensStructureColor?: ((labels: readonly string[], from: TradeRecord) => string | null) | null;
 }
 
 /** What the Wallet column actually holds — stated on the column, because reading it
@@ -206,7 +206,7 @@ export function tokenTradeColumns(
     render: (t) => {
       const labels = t.instruction_labels ?? [];
       const armedColor =
-        labels.length > 0 ? (lensStructureColor?.(patternKey(labels)) ?? null) : null;
+        labels.length > 0 ? (lensStructureColor?.(labels, t) ?? null) : null;
       return (
         <span className="flex items-start gap-1">
           {onLensStructure &&
@@ -219,7 +219,7 @@ export function tokenTradeColumns(
                     ? 'Stop highlighting this ix structure'
                     : 'Highlight every candle and row with this exact ordered structure'
                 }
-                onClick={() => onLensStructure(labels)}
+                onClick={() => onLensStructure(labels, t)}
               />
             ) : (
               <LensSpacer />

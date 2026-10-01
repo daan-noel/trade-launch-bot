@@ -8,7 +8,9 @@ import {
   type LensMatch,
 } from 'components/token-price-chart/lensTint';
 import type { ChartLensSizeLabels } from 'components/token-price-chart/types';
+import { FeePinToggles } from 'components/tokens/FeePinToggles';
 import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
+import { formatFeePins } from 'lib/strategy/ixPatternRows';
 
 /*
  * The highlight-lens controls (`useTokenHighlight`): the target button that arms a
@@ -177,13 +179,15 @@ function SizeLabelSwitch({
 /**
  * The armed highlight lenses for this token, shown wherever the trades panel is —
  * including with no candle selected, so the control that disarms a lens never
- * hides behind the table it is washing.
+ * hides behind the table it is washing. Next to them, which fee fields a structure
+ * click pins: shown before anything is armed, since it decides what the first
+ * click arms.
  *
  * Counts are bar-aligned: they cover exactly the trades the chart could paint, so
  * dust legs the candles drop are absent here too.
  */
 export function LensChips({ highlight }: { highlight: TokenHighlight }) {
-  const { items, matches, unlabeled, remove, clear, sizeLabels, setSizeLabels } = highlight;
+  const { items, matches, unlabeled, remove, clear, sizeLabels, setSizeLabels, pinMask, setPinMask } = highlight;
   const anyStructure = items.some((i) => i.kind === 'structure');
   return (
     <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -202,16 +206,19 @@ export function LensChips({ highlight }: { highlight: TokenHighlight }) {
           );
         }
         const text = item.labels ? ixLabelsActions([...item.labels]) : '';
+        const pins = item.pins ? formatFeePins(item.pins) : '';
         return (
           <LensChip
             key={lensItemId(item)}
             color={item.color}
-            label={text || 'ix structure'}
+            label={`${text || 'ix structure'}${pins ? ` · ${pins}` : ''}`}
             title={
-              `${text}
+              `${text}${pins ? `
+pinned: ${pins}` : ''}
 
-Every candle carrying this EXACT ordered structure is ` +
-              `marked in its lane row, in this color. View-only — no fingerprint or rule reads it.`
+Every candle carrying this EXACT ordered structure` +
+              (pins ? ' with these fee readings' : ', any CU and fee,') +
+              ` is marked in its lane row, in this color. View-only — no fingerprint or rule reads it.`
             }
             match={match}
             onClear={() => remove(item)}
@@ -226,7 +233,8 @@ Every candle carrying this EXACT ordered structure is ` +
           {unlabeled} unlabeled
         </span>
       )}
-      <SizeLabelSwitch mode={sizeLabels} onChange={setSizeLabels} />
+      {items.length > 0 && <SizeLabelSwitch mode={sizeLabels} onChange={setSizeLabels} />}
+      <FeePinToggles mask={pinMask} onChange={setPinMask} onto="the highlighted structure" label="highlight pin" />
       {items.length > 1 && (
         <button
           type="button"

@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { aggregateTradesToBars, aggregateTradesToBarsBySlot } from './chartBars';
-import { buildLensMatch, formatLensSol, lensItemMatches } from './lensTint';
-import type { ChartTrade } from './types';
+import { FEE_FIELDS, rowMatchesTrade, type IxPatternRow } from 'lib/strategy/ixPatternRows';
+import {
+  LENS_PIN_FIELDS,
+  buildLensMatch,
+  formatLensSol,
+  lensItemMatches,
+  structureLensKey,
+} from './lensTint';
+import type { ChartLensPins, ChartTrade } from './types';
 
 /**
  * The tint's whole claim is "the thing you picked traded in THAT candle". It can
@@ -146,5 +153,53 @@ describe('formatLensSol', () => {
     expect(formatLensSol(1.234)).toBe('1.23');
     expect(formatLensSol(123.4)).toBe('123');
     expect(formatLensSol(-0.5)).toBe('0.500');
+  });
+});
+
+describe('pinned structure lens', () => {
+  const labels = ['ComputeBudget:SetLimit', 'Pump:Buy'];
+  const pinned = (pins?: ChartLensPins) => ({
+    kind: 'structure' as const,
+    key: structureLensKey(labels, pins),
+    ...(pins ? { pins } : {}),
+  });
+
+  it('keys an unpinned structure as the bare pattern key', () => {
+    expect(structureLensKey(labels)).toBe(JSON.stringify(labels));
+    expect(structureLensKey(labels, {})).toBe(JSON.stringify(labels));
+    expect(structureLensKey(labels, { cu_price: 1000, cu_limit: 300_000 })).toBe(
+      `${JSON.stringify(labels)}|cu_limit=300000,cu_price=1000`,
+    );
+  });
+
+  it('needs every pinned reading to equal its pin, and ignores the rest', () => {
+    const item = pinned({ cu_limit: 300_000 });
+    const t = (p: Partial<ChartTrade>) => trade({ slot: 1, instruction_labels: labels, ...p });
+    expect(lensItemMatches(item, t({ cu_limit: 300_000, cu_price: 5 }))).toBe(true);
+    expect(lensItemMatches(item, t({ cu_limit: 200_000 }))).toBe(false);
+    // A missing reading never satisfies a pin.
+    expect(lensItemMatches(item, t({ cu_limit: null }))).toBe(false);
+    // Unpinned: any budget.
+    expect(lensItemMatches(pinned(), t({ cu_limit: 200_000 }))).toBe(true);
+  });
+
+  // The chart folder inlines the engine's fee match to stay portable; this keeps
+  // the copy equal to `ixPatternRows.rowMatchesTrade`.
+  it('agrees with rowMatchesTrade on every pin/reading combination', () => {
+    expect([...LENS_PIN_FIELDS]).toEqual([...FEE_FIELDS]);
+    const readings = [null, 0, 7];
+    const pinsOf = [undefined, 0, 7];
+    for (const cuLimit of pinsOf)
+      for (const tip of pinsOf)
+        for (const rl of readings)
+          for (const rt of readings) {
+            const pins: ChartLensPins = {};
+            if (cuLimit != null) pins.cu_limit = cuLimit;
+            if (tip != null) pins.tip_lamports = tip;
+            const row: IxPatternRow = { labels, ...pins };
+            const tr = trade({ slot: 1, instruction_labels: labels, cu_limit: rl, tip_lamports: rt });
+            const item = pinned(Object.keys(pins).length > 0 ? pins : undefined);
+            expect(lensItemMatches(item, tr)).toBe(rowMatchesTrade(row, labels, tr));
+          }
   });
 });
