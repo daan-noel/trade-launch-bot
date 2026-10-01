@@ -6,6 +6,7 @@ import {
   dowHourInTz,
   rankedPnlBarRows,
   toPnlPoints,
+  tradeOfBuy,
   walletHoldSeconds,
   walletRowCounts,
   walletRowNetSol,
@@ -174,6 +175,26 @@ describe('per-token figures', () => {
     expect(walletRowNetSol(r)).toBeNull();
     expect(walletRowPct(r)).toBeNull();
     expect(walletRowOpenSol(r)).toBeNull();
+  });
+});
+
+describe('tradeOfBuy', () => {
+  it('finds the round trip a buy opened or added to', () => {
+    const first = closed(0.5, 1, { entry_slot: 100, entry_tx_index: 3, exit_slot: 200, exit_tx_index: 5 });
+    const again = open(null);
+    again.entry_slot = 300;
+    again.entry_tx_index = 0;
+    const r = row([first, again]);
+    expect(tradeOfBuy(r, 100, 3)).toBe(first);
+    expect(tradeOfBuy(r, 150, 0)).toBe(first);
+    expect(tradeOfBuy(r, 200, 5)).toBe(first);
+    expect(tradeOfBuy(r, 350, 9)).toBe(again);
+  });
+
+  it('is null for a buy the episodes do not reach', () => {
+    const r = row([closed(0.5, 1, { entry_slot: 100, entry_tx_index: 3, exit_slot: 200, exit_tx_index: 5 })]);
+    expect(tradeOfBuy(r, 100, 2)).toBeNull();
+    expect(tradeOfBuy(r, 250, 0)).toBeNull();
   });
 });
 

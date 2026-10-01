@@ -37,6 +37,7 @@ import {
   type ProbeControlsModel,
 } from '@lab/components/analysis/usePreEntryProbe';
 import { useTraderFlowLens } from '@lab/components/analysis/useTraderFlowLens';
+import { tradeOfBuy } from '@lab/components/analysis/walletPnlStats';
 import { EntryDetail } from '@lab/components/entry-context/EntryDetail';
 import { EntrySummary } from '@lab/components/entry-context/EntrySummary';
 import { IdeaFilters } from '@lab/components/entry-context/IdeaFilters';
@@ -314,9 +315,18 @@ export function EntryContextPage() {
     [f.probeOn, verdicts],
   );
   const signaled = useCallback((e: EntryRow) => verdicts.get(e)?.state === 'matched', [verdicts]);
+  // His round trip each buy belongs to, read off the token rows already loaded.
+  const tradeOf = useMemo(() => {
+    if (!tokens.data) return null;
+    const byMint = new Map(tokens.data.map((r) => [r.mint_address, r] as const));
+    return (e: EntryRow) => {
+      const r = byMint.get(e.mint_address);
+      return r ? tradeOfBuy(r, e.slot, e.tx_index) : null;
+    };
+  }, [tokens.data]);
   const buyColumns = useMemo(
-    () => entryColumns(readWindow, symbolOf, verdictOf, probeSlots),
-    [readWindow, symbolOf, verdictOf, probeSlots],
+    () => entryColumns(readWindow, symbolOf, verdictOf, probeSlots, tradeOf),
+    [readWindow, symbolOf, verdictOf, probeSlots, tradeOf],
   );
   const logic = useMemo(
     () => entryLogic(buyFilters, buyColumns, verdictOf, f.show),

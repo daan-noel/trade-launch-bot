@@ -89,7 +89,7 @@ function StaticAge({ seconds }: { seconds: number | null }) {
 
 /** A signed percent, green when it went the wallet's way. Sign and tone follow
  *  the printed value, so one that rounds to zero reads `0%`, neutral. */
-function SignedPct({ pct }: { pct: number | null }) {
+export function SignedPct({ pct }: { pct: number | null }) {
   if (pct == null) return <>-</>;
   const text = formatDecimalTrim(pct, 1);
   const shown = Number(text);

@@ -9,6 +9,9 @@ import { LensButton, LensSpacer } from 'components/tokens/LensControls';
 // Deep import: type-only w.r.t. lightweight-charts (see `LensControls`).
 import { LENS_COLORS } from 'components/token-price-chart/constants';
 import { preEntryColumns } from '@lab/components/analysis/preEntryColumns';
+import { WALLET_STATS } from '@lab/components/analysis/walletPnlStats';
+import { SignedPct } from '@lab/components/analysis/walletTokenColumns';
+import type { WalletEpisode, WalletEpisodeStatus } from 'types';
 import type { PreEntryVerdict } from '@lab/lib/preEntryProbeTypes';
 import { ENTRY_AXES, formatAxis } from '@lab/lib/entryContext/axes';
 import type { EntryGroupRow, EntryRow } from '@lab/lib/entryContext/types';
@@ -24,6 +27,9 @@ export function entryColumns(
   tokenLabel: (mint: string) => string,
   verdictOf: ((e: EntryRow) => PreEntryVerdict | undefined) | null,
   probeSlots: number,
+  /** His round trip this buy belongs to (`tradeOfBuy`), for the probe group's
+   *  PnL % column; `null` while his token rows are not loaded. */
+  tradeOf: ((e: EntryRow) => WalletEpisode | null) | null = null,
 ): ColumnDef<EntryRow>[] {
   const axisCols: ColumnDef<EntryRow>[] = ENTRY_AXES.map((a) => ({
     key: a.key,
@@ -64,8 +70,44 @@ export function entryColumns(
     },
     ...ofGroup('buy'),
     ...(verdictOf ? preEntryColumns<EntryRow>(verdictOf, probeSlots) : []),
+    ...(verdictOf && tradeOf ? [tradePctColumn(tradeOf)] : []),
     ...axisCols.filter((c) => c.group !== 'buy'),
   ];
+}
+
+/** Why a buy's trade has no PnL %, on hover. */
+const NO_PCT: Record<WalletEpisodeStatus, string> = {
+  closed: '',
+  open: 'Still holding: no exact PnL until it sells.',
+  incomplete: 'Incomplete trade: it cannot be priced exactly.',
+};
+
+/** His result on the round trip this buy opened or added to, beside the probe's
+ *  verdict on the same buy. A filter on it picks which buys are asked (a scope in
+ *  `entryLogic`, the key carries no `pe_` prefix), never a signal. */
+function tradePctColumn(tradeOf: (e: EntryRow) => WalletEpisode | null): ColumnDef<EntryRow> {
+  const pct = (e: EntryRow) => tradeOf(e)?.pnl_pct ?? null;
+  return {
+    key: 'his_pnl_pct',
+    label: WALLET_STATS.tradePct.label,
+    group: 'pre_entry',
+    width: '78px',
+    tooltip:
+      `His result on the trade this buy belongs to. ${WALLET_STATS.tradePct.def}\n` +
+      `Every buy of one round trip shows the same number. '-' = still holding, incomplete, or the trade closed outside the dates.`,
+    sortable: true,
+    render: (e) => {
+      const ep = tradeOf(e);
+      return (
+        <span title={ep ? NO_PCT[ep.status] || undefined : 'The trade closed outside the dates.'}>
+          <SignedPct pct={ep?.pnl_pct ?? null} />
+        </span>
+      );
+    },
+    sortValue: pct,
+    searchValue: () => '',
+    filterNumber: pct,
+  };
 }
 
 /** The breakdown's time span: the analysis window, or the range picked on the chart. */

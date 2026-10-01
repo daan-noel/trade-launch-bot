@@ -268,6 +268,19 @@ export function walletRowPct(r: TraderTokenRow): number | null {
   return capital > 0 ? weightedReturnPct(net, capital) : null;
 }
 
+/** The trade one of his buys on this token belongs to: the round trip that opened
+ *  at or before the buy's tape position `(slot, txIndex)` and had not closed before
+ *  it. `null` when the episodes do not reach that buy (a trade that closed outside
+ *  the window). */
+export function tradeOfBuy(r: TraderTokenRow, slot: number, txIndex: number): WalletEpisode | null {
+  const before = (aSlot: number, aTx: number, bSlot: number, bTx: number) => aSlot < bSlot || (aSlot === bSlot && aTx <= bTx);
+  for (const ep of r.episodes) {
+    if (!before(ep.entry_slot, ep.entry_tx_index, slot, txIndex)) continue;
+    if (ep.exit_slot == null || before(slot, txIndex, ep.exit_slot, ep.exit_tx_index ?? 0)) return ep;
+  }
+  return null;
+}
+
 /** Σ of a token's open-trade estimates; `null` when none is priced. */
 export function walletRowOpenSol(r: TraderTokenRow): number | null {
   let sum: number | null = null;

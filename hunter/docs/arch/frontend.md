@@ -1378,7 +1378,10 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   template grain whatever the breakdown. The buys table opens with the SOL twins and side reads
   hidden (`defaultCols`). Columns are banded by group: every `EntryAxis` names its group, and
   `entryGroupLabels(w, probeSlots)` labels the buys table (his buy, probe, target, everyone,
-  earlier, with the seconds and slots spelled out); the breakdown carries its own bands. The UI calls the control window **Earlier** (`Earlier tx %`, the probe's
+  earlier, with the seconds and slots spelled out); the breakdown carries its own bands. The probe
+  band ends with his **PnL %** on the round trip each buy opened or added to (`tradeOfBuy` in
+  `walletPnlStats.ts` over the page's `getTraderTokens` episodes, `WALLET_STATS.tradePct`);
+  a filter on it is a scope, like Token and Time, never a signal. The UI calls the control window **Earlier** (`Earlier tx %`, the probe's
   `Earlier` column), and every header tooltip states its time span and a numeric example
   (`EntryAxis.definition`, `preEntryColumns(at, windowSlots)`, `slotsText`). The
   summary is one `PassTable` (`cohortTable` in `lib/entryContext/counts.ts`): rows **In pool**
