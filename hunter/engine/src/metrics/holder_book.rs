@@ -23,13 +23,17 @@
 //! that stood at that buy, so a reload changes no tracked token's reading, and the
 //! value moves only on this token's own prints (no cross-epoch bump).
 //!
+//! **The biggest holders** ([`TopHolders`]): the book also ranks the bags by size and
+//! keeps the pool's token reserve the last print left, so it reads how far the price
+//! falls if the biggest holders sold their whole bags at once ([`dump_drop_pct`]).
+//!
 //! **Opened only when a loaded rule reads it.** The book holds one entry per wallet
 //! that ever bought the token; a track opens it through
 //! [`TokenTrack::ensure_holder_book`](super::track::TokenTrack::ensure_holder_book)
 //! only when some rule reads a wallet class. It needs the wallet and label columns
 //! ([`Metric::needs_wallet_identity`](super::registry::Metric::needs_wallet_identity), [`Metric::needs_ix_labels`](super::registry::Metric::needs_ix_labels)).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use chrono::NaiveDate;
 
@@ -77,6 +81,43 @@ pub fn stamp_by_day(trades: &mut [TradeLite], tables: &[(NaiveDate, HashedSet)])
     }
 }
 
+/// The biggest holders of a coin: the largest bags, by tokens held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopHolders {
+    /// The single biggest holder.
+    One,
+    /// The 10 biggest (every holder when there are fewer).
+    Ten,
+    /// The biggest 1 % of holders, rounded up: 300 holders = 3.
+    OnePct,
+    /// The biggest 10 % of holders, rounded up: 300 holders = 30.
+    TenPct,
+}
+
+impl TopHolders {
+    /// How many wallets the group is out of `holders`; at least 1 while anyone holds.
+    pub fn size(self, holders: usize) -> usize {
+        let n = match self {
+            Self::One => 1,
+            Self::Ten => 10,
+            Self::OnePct => holders.div_ceil(100),
+            Self::TenPct => holders.div_ceil(10),
+        };
+        n.min(holders)
+    }
+}
+
+/// How far the price falls, in percent, when `sold` tokens are sold into a pool
+/// holding `pool_tokens` in one go, before fees. The pool keeps SOL x tokens
+/// constant, and price = SOL / tokens, so the price after is the price before x
+/// `(pool_tokens / (pool_tokens + sold))^2`. Example: a pool of 100 tokens and 10
+/// SOL (price 0.1), 25 tokens sold: 1 - (100 / 125)^2 = 36 %, and the pool ends at
+/// 8 SOL and 125 tokens (price 0.064).
+pub fn dump_drop_pct(pool_tokens: f64, sold: f64) -> f64 {
+    let keep = pool_tokens / (pool_tokens + sold);
+    (1.0 - keep * keep) * 100.0
+}
+
 /// A first-buy group is bundled at this many wallets in one (slot, build).
 pub const BUNDLE_MIN_WALLETS: u32 = 3;
 
@@ -116,11 +157,20 @@ pub struct HolderBookState {
     bundled: f64,
     /// A print arrived without a token amount: the book no longer adds up.
     broken: bool,
+    /// Every bag above zero as `(tokens as bits, wallet)`: a non-negative `f64`'s bits
+    /// sort as the number does, so the last entries are the biggest bags.
+    ranked: BTreeSet<(u64, u64)>,
+    /// The pool's token reserve the last priced print left (`priced_reserve_sol /
+    /// price`); `0` before one.
+    pool_tokens: f64,
 }
 
 impl HolderBookState {
     /// Fold one print: move the wallet's bag, then class a first buy.
     pub fn on_trade(&mut self, t: &TradeLite) {
+        if t.price > 0.0 && t.priced_reserve_sol > 0.0 {
+            self.pool_tokens = t.priced_reserve_sol / t.price;
+        }
         if self.broken {
             return;
         }
@@ -137,9 +187,16 @@ impl HolderBookState {
             .bags
             .entry(t.wallet_hash)
             .or_insert(Bag { tokens: 0.0, group: None, public: None });
-        let new = (bag.tokens + signed).max(0.0);
-        let delta = new - bag.tokens;
+        let old = bag.tokens;
+        let new = (old + signed).max(0.0);
+        let delta = new - old;
         bag.tokens = new;
+        if old > 0.0 {
+            self.ranked.remove(&(old.to_bits(), t.wallet_hash));
+        }
+        if new > 0.0 {
+            self.ranked.insert((new.to_bits(), t.wallet_hash));
+        }
         let (group, public) = (bag.group, bag.public);
         self.live += delta;
         if let Some(g) = group {
@@ -183,6 +240,24 @@ impl HolderBookState {
         let bag = self.bags.get_mut(&t.wallet_hash).expect("folded above");
         bag.group = Some(g);
         bag.public = public;
+    }
+
+    /// Wallets holding more than zero tokens.
+    pub fn holders(&self) -> usize {
+        self.ranked.len()
+    }
+
+    /// How far the price falls, in percent, if `top`'s wallets sold their whole bags
+    /// at once into the pool the last print left ([`dump_drop_pct`]). `0` while
+    /// nobody holds; `NaN` before a priced print or once the book lost a print's
+    /// amount.
+    pub fn top_dump_drop_pct(&self, top: TopHolders) -> f64 {
+        if self.broken || self.pool_tokens <= 0.0 {
+            return f64::NAN;
+        }
+        let n = top.size(self.ranked.len());
+        let sold: f64 = self.ranked.iter().rev().take(n).map(|(bits, _)| f64::from_bits(*bits)).sum();
+        dump_drop_pct(self.pool_tokens, sold)
     }
 
     /// `m_holdings.bag_share_pct @class`: the class's share of live supply, in
@@ -309,6 +384,50 @@ mod tests {
         assert_eq!(b.bag_share_pct(BUNDLED), 0.0);
         b.on_trade(&print(Side::Sell, 1, 100.0, 12, 7, None));
         assert_eq!(b.bag_share_pct(PUBLIC_APP), 100.0);
+    }
+
+    /// A print that leaves the pool at `pool` tokens (price 1e-6, so SOL = pool x 1e-6).
+    fn priced(side: Side, wallet: u64, tokens: f64, pool: f64) -> TradeLite {
+        TradeLite { price: 1e-6, priced_reserve_sol: pool * 1e-6, ..print(side, wallet, tokens, 1, 7, BOT) }
+    }
+
+    #[test]
+    fn the_drop_is_the_constant_product_price_after_the_sale() {
+        // 100 tokens and 10 SOL; 25 sold: 8 SOL and 125 tokens, price 0.1 -> 0.064.
+        assert!((dump_drop_pct(100.0, 25.0) - 36.0).abs() < 1e-9);
+        assert_eq!(dump_drop_pct(100.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn a_group_is_the_biggest_bags_and_never_empty_while_anyone_holds() {
+        assert_eq!([0, 5, 300].map(|h| TopHolders::One.size(h)), [0, 1, 1]);
+        assert_eq!([5, 300].map(|h| TopHolders::Ten.size(h)), [5, 10]);
+        assert_eq!([5, 300, 301].map(|h| TopHolders::OnePct.size(h)), [1, 3, 4]);
+        assert_eq!([5, 300].map(|h| TopHolders::TenPct.size(h)), [1, 30]);
+    }
+
+    #[test]
+    fn the_top_holders_drop_reads_the_biggest_bags_against_the_pool() {
+        let mut b = HolderBookState::default();
+        assert!(b.top_dump_drop_pct(TopHolders::One).is_nan());
+        // Bags 30, 20, 10, 5; the last print leaves 500 in the pool.
+        for (w, n) in [(1, 30.0), (2, 20.0), (3, 10.0), (4, 5.0)] {
+            b.on_trade(&priced(Side::Buy, w, n, 600.0));
+        }
+        b.on_trade(&priced(Side::Sell, 4, 5.0, 500.0));
+        assert_eq!(b.holders(), 3);
+        let drop = |sold: f64| dump_drop_pct(500.0, sold);
+        assert!((b.top_dump_drop_pct(TopHolders::One) - drop(30.0)).abs() < 1e-9);
+        assert!((b.top_dump_drop_pct(TopHolders::Ten) - drop(60.0)).abs() < 1e-9);
+        // A sell moves a bag down the ranking: wallet 1 holds 5 after selling 25.
+        b.on_trade(&priced(Side::Sell, 1, 25.0, 525.0));
+        assert!((b.top_dump_drop_pct(TopHolders::One) - dump_drop_pct(525.0, 20.0)).abs() < 1e-9);
+        assert!((b.top_dump_drop_pct(TopHolders::TenPct) - dump_drop_pct(525.0, 20.0)).abs() < 1e-9);
+        // Everyone out: nobody can sell, so nothing falls.
+        for (w, n) in [(1, 5.0), (2, 20.0), (3, 10.0)] {
+            b.on_trade(&priced(Side::Sell, w, n, 560.0));
+        }
+        assert_eq!(b.top_dump_drop_pct(TopHolders::Ten), 0.0);
     }
 
     #[test]

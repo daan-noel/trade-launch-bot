@@ -19,9 +19,10 @@ export const signalGroup = (e: EntryRow): EntryGroupRow | undefined => e.groups.
 export type AxisUnit = 'pct' | 'pp' | 'tx' | 'sol';
 
 /** The column group an axis sits in: his own buy, the signal's structure, the
- *  target in the last `W` seconds, the target in the `W` seconds before that, or
- *  everyone in the last `W` seconds. `ENTRY_AXES` lists them in this order. */
-export type AxisGroup = 'buy' | 'signal' | 'target' | 'control' | 'all';
+ *  target in the last `W` seconds, the target in the `W` seconds before that,
+ *  everyone in the last `W` seconds, or the coin's biggest holders. `ENTRY_AXES`
+ *  lists them in this order. */
+export type AxisGroup = 'buy' | 'signal' | 'target' | 'control' | 'all' | 'holders';
 
 /**
  * An idea family: one aspect of the tape at his buy, one sub-tab of the buys
@@ -39,6 +40,7 @@ export interface AxisFamily {
 
 export const AXIS_FAMILIES: readonly AxisFamily[] = [
   { key: 'ix', label: 'IX structure', groups: ['signal', 'target', 'control', 'all'] },
+  { key: 'holders', label: 'Top holders', groups: ['holders'] },
 ];
 
 /** The family a buys-table column belongs to; `null` = shown in every sub-tab
@@ -66,6 +68,7 @@ export function entryGroupLabels(w: number, probeSlots?: number): Record<string,
     target: `Target: last ${w}s before him`,
     control: `Target earlier: ${2 * w}s to ${w}s before him`,
     all: `Everyone: last ${w}s before him`,
+    holders: 'Top holders: price drop if they sell all at once',
   };
 }
 
@@ -94,6 +97,15 @@ const earlier = (w: number) => `from ${2 * w}s to ${w}s before his buy`;
 const NOT_HIS = 'His own buys are never counted.';
 const SIGNAL =
   'The signal = the target transaction the Probe found nearest before his buy; its structure is one of the target structures.';
+
+/** A top-holder column's tooltip: which wallets, then how the drop is worked out. */
+const holderDrop = (who: string, sold: string, example: string) =>
+  `How far the price falls if ${who} sold all their tokens at once, right before his buy.\n` +
+  `1. Each wallet's tokens = bought - sold, from every trade since the coin was made (his own wallet left out).\n` +
+  `2. T = ${sold}. P = tokens in the pool after the last trade before him.\n` +
+  `3. Drop = 1 - (P / (P + T))^2. The pool keeps SOL x tokens fixed, so selling T tokens into it divides the price by ((P + T) / P)^2. Fees left out.\n` +
+  `Example: P = 500M, ${example}\n` +
+  `Blank = the coin is older than the stored trades, so its early holders are unknown.`;
 
 export const ENTRY_AXES: readonly EntryAxis[] = [
   {
@@ -301,6 +313,58 @@ ${SIGNAL}`,
       `Of all SOL spent on buys ${last(w)}, the % spent by the same busiest structure.\n` +
       `Example: 10 SOL of buys, 6 SOL by that structure = 60%.`,
     get: (e) => e.groups[0]?.buy_sol_share_pct ?? null,
+  },
+  {
+    key: 'top1_drop',
+    label: 'Top 1',
+    group: 'holders',
+    unit: 'pct',
+    digits: 1,
+    definition: () =>
+      holderDrop('the biggest holder', "the biggest holder's tokens", 'T = 30M: 1 - (500 / 530)^2 = 11.0%.'),
+    get: (e) => e.holders?.top1_drop_pct ?? null,
+  },
+  {
+    key: 'top10_drop',
+    label: 'Top 10',
+    group: 'holders',
+    unit: 'pct',
+    digits: 1,
+    definition: () =>
+      holderDrop(
+        'the 10 biggest holders together',
+        'the tokens of the 10 biggest holders (all of them when there are fewer)',
+        'T = 95M: 1 - (500 / 595)^2 = 29.4%.',
+      ),
+    get: (e) => e.holders?.top10_drop_pct ?? null,
+  },
+  {
+    key: 'top1pct_drop',
+    label: 'Top 1%',
+    group: 'holders',
+    unit: 'pct',
+    digits: 1,
+    definition: () =>
+      holderDrop(
+        'the biggest 1% of holders together',
+        'the tokens of the biggest 1% of holders, rounded up (300 holders = 3, under 100 = 1)',
+        '3 wallets hold T = 60M: 1 - (500 / 560)^2 = 20.3%.',
+      ),
+    get: (e) => e.holders?.top1pct_drop_pct ?? null,
+  },
+  {
+    key: 'top10pct_drop',
+    label: 'Top 10%',
+    group: 'holders',
+    unit: 'pct',
+    digits: 1,
+    definition: () =>
+      holderDrop(
+        'the biggest 10% of holders together',
+        'the tokens of the biggest 10% of holders, rounded up (300 holders = 30)',
+        '30 wallets hold T = 140M: 1 - (500 / 640)^2 = 39.0%.',
+      ),
+    get: (e) => e.holders?.top10pct_drop_pct ?? null,
   },
 ];
 

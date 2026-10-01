@@ -1342,10 +1342,15 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   extension point: every per-buy share or count is one `EntryAxis` (key, label, unit, one-line
   definition, getter) and becomes a column with its definition as the tooltip; presence of the
   target is the probe's verdict, not an axis. Each axis group belongs to one idea family
-  (`AXIS_FAMILIES`, today **IX structure**), and the buys table has one sub-tab per family: the
-  sub-tab only picks the column groups shown (`DataTable`'s `hiddenGroups`, which keeps a hidden
-  column's filter in force), with his buy and the probe columns in every sub-tab; rows, filters
-  and the Market tab are shared. A row expands (the table's `rowDetail`) into
+  (`AXIS_FAMILIES`: **IX structure**, **Top holders**), and the buys table has one sub-tab per
+  family: the sub-tab only picks the column groups shown (`DataTable`'s `hiddenGroups`, which
+  keeps a hidden column's filter in force), with his buy and the probe columns in every sub-tab;
+  rows, filters and the Market tab are shared. **Top holders** is four columns, Top 1 / Top 10 /
+  Top 1% / Top 10%: the price drop if that group of the biggest holders sold its whole bags at
+  once, `1 - (P / (P + T))^2` with `T` their tokens and `P` the pool's token reserve, read per
+  seat by `lab/src/api/handlers/entry_holders.rs` (every seat of the buys read and the scan) from
+  the coin's whole history folded through the engine's `holder_book`; a coin created before the
+  tape floor has no read. A row expands (the table's `rowDetail`) into
   `EntryDetail`: the shared `TokenTradeChart` without its card (his trades spotlit, the lens set
   classifying the flow; candle click and the toolbar's range select list their trades below, as
   on every chart) with an **Analysis range** toolbar line (`toolbarRow`). That line drives the

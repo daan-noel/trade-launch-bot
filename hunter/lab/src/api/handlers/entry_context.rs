@@ -15,6 +15,9 @@
 //! The studied wallet is excluded from the tape in SQL: his own tool's structure
 //! would otherwise sit in every window he is measured against.
 //!
+//! Each seat also carries its top-holder read ([`entry_holders`]): the price drop if
+//! the coin's biggest holders sold their whole bags at once.
+//!
 //! Nothing here writes to the database. A scan's result is kept on disk
 //! ([`entry_scan_cache`]).
 
@@ -37,6 +40,7 @@ use hunter_engine::metrics::trade_keys::{
     ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash,
 };
 use hunter_engine::metrics::{Cursor, Side, TradeLite, WindowSpec, WindowUnit, NOMINAL_SLOT_SECS};
+use super::entry_holders::{holders_at, HolderAsk, HolderRead};
 use crate::lake;
 use crate::state::entry_scan_cache;
 use trading_core::config::constants::lamports_to_sol;
@@ -241,6 +245,10 @@ pub struct EntryRow {
     /// reads for that print. Absent with no signal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at_signal: Option<SeatRead>,
+    /// The top-holder read at the seat; absent when the coin's history is not all
+    /// on the tape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holders: Option<HolderRead>,
 }
 
 /// The window, its control and its breakdown, read from one seat.
@@ -250,6 +258,8 @@ pub struct SeatRead {
     pub control: WindowRead,
     pub groups: Vec<GroupRow>,
     pub groups_omitted: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holders: Option<HolderRead>,
 }
 
 #[derive(Debug, Serialize)]
@@ -564,7 +574,32 @@ fn fold_entry(
         groups_omitted,
         probe,
         at_signal: None,
+        holders: None,
     }
+}
+
+/// The top-holder read at each entry's own seat and at its signal's.
+async fn fill_entry_holders(
+    repo: &TradeRepo,
+    wallet: &str,
+    entries: &mut [EntryRow],
+    tape_floor: Option<DateTime<Utc>>,
+) -> Result<(), EntryContextError> {
+    let mut asks = Vec::new();
+    for e in entries.iter() {
+        asks.push(HolderAsk { mint: e.mint_address.clone(), seat: (e.slot, e.tx_index), at: e.at });
+        if let (Some(_), Some(n)) = (&e.at_signal, &e.probe.nearest) {
+            asks.push(HolderAsk { mint: e.mint_address.clone(), seat: (n.slot, n.tx_index + 1), at: e.at });
+        }
+    }
+    let reads = holders_at(repo, wallet, &asks, tape_floor).await.map_err(EntryContextError::Db)?;
+    for e in entries.iter_mut() {
+        e.holders = reads.get(&(e.mint_address.clone(), (e.slot, e.tx_index))).copied();
+        if let (Some(s), Some(n)) = (e.at_signal.as_mut(), &e.probe.nearest) {
+            s.holders = reads.get(&(e.mint_address.clone(), (n.slot, n.tx_index + 1))).copied();
+        }
+    }
+    Ok(())
 }
 
 /// The read from the seat right behind the transaction at `(slot, tx_index)`: the
@@ -594,7 +629,13 @@ fn at_signal(e: &EntryRow, prints: &[TapePrint], patterns: &TagPatterns, w: f64,
     let n = e.probe.nearest.as_ref()?;
     let at = e.at - Duration::milliseconds((n.lag_secs * 1000.0).round() as i64);
     let r = seat_behind(&e.mint_address, (n.slot, n.tx_index, at), prints, patterns, w, pw);
-    Some(SeatRead { window: r.window, control: r.control, groups: r.groups, groups_omitted: r.groups_omitted })
+    Some(SeatRead {
+        window: r.window,
+        control: r.control,
+        groups: r.groups,
+        groups_omitted: r.groups_omitted,
+        holders: None,
+    })
 }
 
 /// One slot range per mint covering every anchor's reads — the analysis `2W` and
@@ -796,7 +837,7 @@ pub async fn read_entry_context(
     let by_mint = prints_by_mint(repo, wallet, mint_windows(&readable, w, pw)).await?;
 
     let empty: Vec<TapePrint> = Vec::new();
-    let entries: Vec<EntryRow> = anchors
+    let mut entries: Vec<EntryRow> = anchors
         .iter()
         .map(|a| {
             if !covered(a) {
@@ -813,6 +854,7 @@ pub async fn read_entry_context(
                     groups_omitted: 0,
                     probe: ProbeRead::default(),
                     at_signal: None,
+                    holders: None,
                 };
             }
             let prints = by_mint.get(&a.mint_address).unwrap_or(&empty);
@@ -825,6 +867,7 @@ pub async fn read_entry_context(
             e
         })
         .collect();
+    fill_entry_holders(repo, wallet, &mut entries, tape_floor).await?;
 
     Ok(EntryContextResponse {
         entries,
@@ -841,7 +884,7 @@ pub async fn read_entry_context(
 /// Horizons the price change after a point is read at, seconds.
 const AFTER_SECS: [i64; 2] = [30, 120];
 /// The scan's read, as [`scan_key`] names it. Changes with what a [`ScanMoment`] holds.
-const SCAN_READ: &str = "follower-seat";
+const SCAN_READ: &str = "follower-seat-holders";
 /// Points per scan. Past it the scan stops (most recent first) and says so.
 const MAX_SCAN_MOMENTS: usize = 100_000;
 
@@ -1061,6 +1104,15 @@ pub async fn read_entry_scan(
             }
             moments.push(m);
         }
+    }
+    // The seat right behind each target buy, as its window reads.
+    let asks: Vec<HolderAsk> = moments
+        .iter()
+        .map(|m| HolderAsk { mint: m.read.mint_address.clone(), seat: (m.read.slot, m.read.tx_index + 1), at: m.read.at })
+        .collect();
+    let reads = holders_at(repo, wallet, &asks, tape_floor).await.map_err(EntryContextError::Db)?;
+    for m in &mut moments {
+        m.read.holders = reads.get(&(m.read.mint_address.clone(), (m.read.slot, m.read.tx_index + 1))).copied();
     }
 
     Ok(EntryScanResponse {

@@ -250,6 +250,11 @@ impl TradeRepo {
         Self { pool }
     }
 
+    /// The pool this repo reads, for a sibling repo on the same connection pool.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Insert a trade. `ON CONFLICT DO NOTHING` on the natural dedup key
     /// `(block_time, tx_signature, leg_index)` — the table's PRIMARY KEY. This was
     /// `DO UPDATE` under the old schema; per the TimescaleDB plan we switch to
@@ -1242,6 +1247,58 @@ impl TradeRepo {
             .collect())
     }
 
+    /// Every leg of each window's mint in its slot range, in tape order, as a holder
+    /// book folds it ([`HolderPrint`]): only the columns that move a bag and the
+    /// pool's reserve pair, so a mint's whole history stays a lean read. Legs whose
+    /// holder is `exclude_wallet` are left out.
+    pub async fn holder_tape(
+        &self,
+        windows: &[SlotWindow],
+        exclude_wallet: Option<&str>,
+    ) -> anyhow::Result<Vec<HolderPrint>> {
+        if windows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let exclude_id = match exclude_wallet {
+            Some(w) => WalletDictRepo::new(self.pool.clone()).id_for(w).await?,
+            None => None,
+        };
+        let mints: Vec<String> = windows.iter().map(|w| w.mint_address.clone()).collect();
+        let lo_slots: Vec<i64> = windows.iter().map(|w| w.lo_slot).collect();
+        let hi_slots: Vec<i64> = windows.iter().map(|w| w.hi_slot).collect();
+        let lo_time = windows.iter().map(|w| w.lo_time).min().expect("non-empty");
+        let hi_time = windows.iter().map(|w| w.hi_time).max().expect("non-empty");
+        // A proxied leg names a router's PDA, which forwards the tokens: the payer
+        // behind it is the holder (0014).
+        let rows: Vec<HolderPrint> = sqlx::query_as(
+            r#"
+            SELECT * FROM (
+                SELECT t.mint_address, t.slot, t.tx_index,
+                       CASE WHEN t.is_proxied THEN t.payer_id ELSE t.wallet_id END AS holder_id,
+                       t.trade_type = 'buy' AS is_buy, t.token_amount,
+                       t.reserve_lamports, t.reserve_token, t.leg_index
+                FROM UNNEST($1::text[], $2::bigint[], $3::bigint[])
+                     AS win(mint_address, lo_slot, hi_slot)
+                JOIN trades t
+                  ON t.mint_address = win.mint_address
+                 AND t.slot BETWEEN win.lo_slot AND win.hi_slot
+                 AND t.block_time BETWEEN $4 AND $5
+            ) h
+            WHERE $6::int IS NULL OR h.holder_id IS DISTINCT FROM $6
+            ORDER BY h.mint_address, h.slot, h.tx_index, h.leg_index
+            "#,
+        )
+        .bind(&mints)
+        .bind(&lo_slots)
+        .bind(&hi_slots)
+        .bind(lo_time)
+        .bind(hi_time)
+        .bind(exclude_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Every BUY transaction one wallet made in `since..=until`, most recent first,
     /// legs collapsed on `(mint, slot, tx_index)`: the anchors the Entry Context page
     /// reads the tape before. At most `limit` rows.
@@ -1948,6 +2005,25 @@ pub struct SlotWindow {
     pub hi_slot: i64,
     pub lo_time: DateTime<Utc>,
     pub hi_time: DateTime<Utc>,
+}
+
+/// One leg as a holder book folds it ([`TradeRepo::holder_tape`]).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct HolderPrint {
+    pub mint_address: String,
+    pub slot: i64,
+    pub tx_index: i32,
+    /// Who holds the leg's tokens: the payer on a proxied leg, else the wallet the
+    /// venue credited. `None` = a proxied leg with no payer captured.
+    pub holder_id: Option<i32>,
+    pub is_buy: bool,
+    /// Raw token units the leg moved.
+    pub token_amount: i64,
+    /// The reserve pair the leg left (`reserve_sol` in lamports, `reserve_token` raw):
+    /// the curve's virtual pair, or the AMM pool's priced pair.
+    pub reserve_lamports: Option<i64>,
+    pub reserve_token: Option<i64>,
+    pub leg_index: i16,
 }
 
 /// One buy transaction of one wallet ([`TradeRepo::wallet_buy_txs`]): where it sits

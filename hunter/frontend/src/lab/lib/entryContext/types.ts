@@ -124,12 +124,25 @@ export interface ProbeRead {
   nearest: NearestTag | null;
 }
 
+/** The price drop, in percent, if each group of the coin's biggest holders sold
+ *  its whole bags at once, read at a seat (`entry_holders.rs`). */
+export interface HolderRead {
+  /** Wallets holding more than zero tokens. */
+  holders: number;
+  top1_drop_pct: number;
+  top10_drop_pct: number;
+  top1pct_drop_pct: number;
+  top10pct_drop_pct: number;
+}
+
 /** The window, its control and its breakdown, read from one seat. */
 export interface SeatRead {
   window: EntryWindowRead;
   control: EntryWindowRead;
   groups: EntryGroupRow[];
   groups_omitted: number;
+  /** Absent when the coin's history is not all on the tape. */
+  holders?: HolderRead;
 }
 
 /** One anchor: the trader's buy transaction and the window before it. */
@@ -138,6 +151,9 @@ export interface EntryRow {
    *  target print): what a bot firing on that print reads, and what the scan reads
    *  for that print. Absent with no signal. */
   at_signal?: SeatRead;
+  /** The top-holder read at his seat; absent when the coin's history is not all on
+   *  the tape. */
+  holders?: HolderRead;
   mint_address: string;
   slot: number;
   tx_index: number;
