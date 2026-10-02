@@ -37,7 +37,7 @@ hide three things:
 
 | kind | IDs | what it is | why only the owner shows it |
 | --- | --- | --- | --- |
-| Sure facts | A1-A4 | creator, create transaction, creation-slot buy, owner-only program | owner by definition |
+| Sure facts | A1-A4 | creator, create transaction, creation-slot buy, owner-only build | owner by definition, or by a build the rest of the market does not use |
 | Transfer ends | T1-T3 | sells more than it bought; buys and never sells; the matching pair | an outsider gets tokens only by buying, and sells what it holds |
 | Shared machinery | S1-S6 | private structure, owner payer, shared transaction, fresh wallet | one script or one key holder sits behind all of them |
 | Paid machines | M1-M3 | a machine operator (bundle or lockstep, its sister wallets joined) that loses steadily | a machine that keeps losing is paid by someone |
@@ -64,6 +64,7 @@ hide three things:
 | payer | the account that signed and paid the fee (`trades.payer_id`); a **service payer** pays for thousands of unrelated users |
 | sniper | a bot that buys brand-new coins in their first slots, on many unrelated coins every day. An outsider |
 | creation slot | the slot of the transaction that creates the coin |
+| the group's coins | the coins with the group's creation facts (create instruction list and CU price), the only set A4 measures against: it is fixed at birth, so it never depends on the split |
 | the owner's coins | every coin in the market where a sure fact (A) of this owner appears, not only the group's coins |
 | loses steadily | over all its coins in the market: net SOL (sells minus buys) below zero over the last four weeks (M3) |
 | bag | the tokens someone holds now, as read from its trades |
@@ -79,9 +80,10 @@ hide three things:
 | --- | --- | --- |
 | every trade of the group's coins: instructions, CU limit, CU price, tip, slot, block position, wallet, payer, routing flag | PG `trades` (payer and routing are PG only, about 30 days) | the rules read all of them |
 | the creator, creation slot and create transaction of each coin | PG `tokens` | sure facts A1-A3 |
+| per instruction list (fees ignored): its trades on the group's coins and on all coins, and on how many group coins | the whole market (lake) | A4: owner-only build? |
 | per structure, at every match level: its trades on the owner's coins and on all other coins | the whole market (lake) | S1: private or public? |
 | per payer: coins and wallets it pays for, per day | the whole market (PG) | S3: owner key or service? |
-| per trader: first-slot buys per day, on how many coins and creators | the whole market (PG) | A3: sniper or bundle? |
+| per trader: first-slot buys over the window, on how many coins and creators | the whole market (PG) | A3: sniper or bundle? |
 | per wallet, over the last four weeks: coins, buys, sells, coins ended empty, coins behind, net SOL | the whole market (lake) | T2 and M3 |
 | per machine-linked wallet pair: how many market coins both trade | the whole market (lake) | M2: sisters or strangers? |
 
@@ -100,15 +102,34 @@ Every rule is a test, a start value, and the reason only the owner passes it.
 | A1 | the creator: the wallet that signs the create transaction | it is the dev |
 | A2 | every other wallet inside the create transaction | one transaction is signed by one key holder |
 | A3 | every buy in the creation slot, except a sniper's | nobody can see a coin before it exists; only the dev's bundle and the snipers' bots land in its own slot |
-| A4 | every trade through a program only this owner uses (7ix: `9ddjzq`) | nobody else holds that program |
+| A4 | every trade with an **owner-only build**: an instruction list (fees ignored) that the rest of the market does not use | the owner's script or program runs mostly on the owner's coins; a public app runs on every coin |
 
 **Sniper (A3).** A creation-slot buyer whose trader buys in the first three slots of many unrelated
-coins. Start value: 20 or more coins that day, from 10 or more creators, 20 % or less of them this
-owner's coins. A sniper is an outsider and stays one on that coin. Size is a hint, never the test:
-many snipers buy 0.5-1 SOL.
+coins. Start value: 20 or more coins over the window (two weeks), from 10 or more creators, 20 % or
+less of them the group's coins. Breadth is counted over the window, never per day: a sniper with a
+quiet day still snipes hundreds of unrelated coins (one buys the first slots of 88 coins in 13 days,
+about 7 a day, and wins 102 SOL). A sniper is an outsider and stays one on that coin. Size is a
+hint, never the test: many snipers buy 0.5-1 SOL.
 
-Example: in coin X's creation slot, W4 buys 1.4 SOL (first slots of 2 coins today, both from this
-creator: owner) and W5 buys 0.62 SOL (first slots of 1,690 coins today: sniper, outsider).
+Example: in coin X's creation slot, W4 buys 1.4 SOL (first slots of 2 coins in two weeks, both from
+this creator: owner) and W5 buys 0.62 SOL (first slots of 1,690 coins a day: sniper, outsider).
+
+**Owner-only build (A4).** An instruction list is the owner's when 30 % or more of its trades in the
+whole market are on the group's coins, on 5 or more group coins, from 2 or more creators. The group's
+coins are about 0.14 % of the market, so 30 % is about 200 times what chance gives; a public app's
+build sits on every coin and scores under 1 %. A4 needs no owner found first, so it starts the split
+on a group with no known program, where S1 has nothing to grow from.
+
+- **Fees are left out.** CU limit, CU price and tip are config the owner changes at will; with fees
+  in the key, fee variants of plain builds mix in public users.
+- **30 %, not 80 %.** One owner's tools serve several launch builds, so its share on any one group
+  stays well under 80 %: on 7ix the crew program works 706 coins in two weeks, 418 of them 7ix coins.
+- It finds the owner's programs without being told their names: on 7ix the `9ddjzq` lists, on 5ix
+  41 unknown programs (each about 58 % on the group's coins, run through 52,540 throwaway wallets)
+  plus the plain Pump.Fun sell lists that sell for 4 or 12 wallets in one transaction.
+
+Example: a build used 10,000 times in two weeks, 5,800 of them on 300 of the group's coins from 280
+creators, is the owner's; an app's default buy, used on every coin of the market, is not.
 
 ### T. Transfer ends - owner because the tokens moved (step 2)
 
@@ -257,6 +278,13 @@ but all its sold tokens are late: it fails C1.
 Snipers are never judged by C1 and C2: they sell early into the first buyers, so their sells can
 land in a drop too. A3 makes them outsiders.
 
+**A one-key link is judged at its source.** The wallets S2 (users of an owner structure), S4 (paid
+for by an owner payer) and S5 (inside an owner wallet's transaction) add do the buyer and volume
+jobs, so as a set they never pass C1-C2, though one key holder sits behind each. The structure (S1)
+and the payer (S3) that bring them in are judged; the wallet sets are not. Measured: on 5ix the S4
+and S5 sets pass 14-17 % while their wallets carry the multi-wallet sellers' money, and judging them
+drops the split from 100 % to 59 % of that money; on 7ix the structure users pass 47 %.
+
 **The calibration sets.** Tune C1 and C2 so that the sure owner (A wallets) passes and a known
 outsider fails. The known outsider is **a wide bot that wins**: a wallet on 100 or more coins that
 ends the window ahead (net SOL above zero, behind on fewer than half its coins), leaving out every
@@ -338,7 +366,7 @@ it stays that, except where a line says it changes from then on.
 | --- | --- | --- | --- |
 | 1 | from the creator, or inside the create transaction | owner | A1, A2 |
 | 2 | a creation-slot buy by a trader that is not a sniper | owner | A3 |
-| 3 | through the owner-only program, or with an owner structure | owner (even on a brand-new wallet's first trade) | A4, S1 |
+| 3 | with an owner-only build, or with an owner structure | owner (even on a brand-new wallet's first trade) | A4, S1 |
 | 4 | a sell that takes the trader's bag on this coin below zero | owner, and its later trades on this coin | T1 |
 | 5 | from a wallet on the buy-only machine list | owner | T2 |
 | 6 | paid for by an owner payer | owner | S3 |
@@ -369,6 +397,8 @@ zero.
   bot in every market number (coins, ends empty, net result).
 - **A public structure carries no ownership**: when the owner's machine and real users share one
   app build (a plain Axiom buy), the build cannot tell them apart; only M1-M3 on the wallet can.
+- **A group whose builds are all public**: A4 finds nothing, and the split rests on A1-A3, T, S3-S5
+  and M.
 
 ---
 
@@ -395,7 +425,10 @@ zero.
 | trades while the coin is quiet | a trade far from other trades and price moves | on a busy coin there is no quiet: on 9eLn every group trades 0.1-0.4 s after another trader |
 | a buy after 2 or more empty slots | a buy that reacts to no print (a bot reacts 1-2 slots after one), so the dev buys to wake the coin | people click 1-5 s after the chart moves, and many bots fire on age or market cap: 27 % of small wallets' buys land after 2+ empty slots, against 34 % of the 9ddjzq program's; 78 % of quiet buys are owner against 75 % of all buys |
 | restart kick | a buy after 2+ empty slots at a bottom (price 30 %+ under the coin's high so far), after the owner has sold | at a bottom a quiet buy is owner as often as any buy (25 % against 26 %); the outsider kickers are 1,192 wallets, 31 of them on 3 or more coins |
-| structure loyalty, CU limit free | an exact structure (ix list + CU price + tip, any CU limit) with 80 % or more of its market trades on the crew's coins | built on one half of the month and used on the other, every print it marks is already owner (it finds 64-83 % of owner SOL); outsider money it adds: 0.05 %. The winning wide bots' structures put 0.0-0.8 % of their market trades on the crew's coins, spread over 285-47,000 coins |
+| build loyalty with fees in the key | A4 on the exact structure (ix list + CU price + tip, with or without the CU limit) | 7ix with `9ddjzq` hidden, at 30 %: marks 6.1 % (exact) and 10.3 % (CU limit free) of outsider money, against 0.00 % for the ix list alone: fee variants of plain builds mix in public users |
+| build loyalty at 80 % | A4 with 80 % of the build's market trades on the group's coins | 7ix with `9ddjzq` hidden: finds 1-15 % of owner SOL, against 86 % at 30 %; the crew program also works coins of other launch builds (706 coins, 418 of them 7ix). Between 20 % and 50 % the result is flat |
+| a buy in slot +1 by a non-sniper | the creation slot widened by one: apps show a coin only from slot +2 (app buyers among non-snipers: 1 % in slot 0, 9 % in slot +1, 24 % in slot +2) | adds 0 SOL on 7ix (the crew's bundle sits in slot 0); on 5ix those buyers pass C1-C2 on 31 % of coins: outsiders |
+| sniper breadth counted per day | A3 with 20 coins and 10 creators that day | a sniper with quiet days passes as owner: on 5ix 16 winning wide bots, 19 % of their money marked owner, against 1.4 % with breadth over the window |
 | C1 as "most sells land inside drops" | | volume wallets sell all through the coin's life; the crew's own wallets meet it on 24 % of coins |
 | C1-C2 on one wallet | | 54 % of the crew's own program wallets fail alone |
 | V3 counting presence | seconds in which outsiders trade at all | tiny retail trades fill half the seconds |
@@ -439,6 +472,40 @@ built on 09-15 .. 10-01, checked on 09-02 .. 14:
 | test coin 2FW3 (09-20) | two sniper operators at slot +2 (3 wallets, +575 SOL; 5 wallets, +311 SOL) stay outsiders |
 | money per coin (09-01 .. 14, earlier split) | crew wallets +3.81 SOL median, ahead on 69 %; creator +0.74, ahead on 99 %; one crew group -4.44 a coin (its job is buying) |
 | wallets go stale | wallet groups from 09-01 .. 14 carry 50-66 % of the crew program's SOL on most later days, 35-36 % on 09-25 and 09-27 |
+
+**A4 on a group with no known program.** Coins born 09-17 .. 30, market facts from every trade of
+those days. "Answer-key owner" is the owner named without the split: on 7ix the full split built
+with `9ddjzq`; on 5ix (`Create_v2, ATA CreateIdempotent, BuyV2` at CU price 6,666,666, 2,313 coins,
+150,248 SOL) the traders of sell transactions carrying 2 or more wallets, on 2 or more coins, plus
+the creator and the create transaction.
+
+| what | 7ix, `9ddjzq` hidden | 5ix |
+| --- | ---: | ---: |
+| answer-key owner SOL found by MARK without A4 | 17 % | 56 % |
+| ... with A4 | 86-92 % | 90 % (the answer-key wallets' buys: 49 % -> 96 %) |
+| ... after GROW without A4 | 23 % | 100 % (through S3-S5) |
+| ... final split without A4, one-key links judged by C1-C2 | 23 % | 59 % |
+| ... final split with A4, one-key links judged at the source | 99.8 % | 100 % |
+| outsider money A4 marks | 0.00 % (7ix answer key) | 0.00 % of the winning wide bots' money |
+| winning wide bots' money in the final split (sniper breadth over the window) | 3.0 % (the answer key: 4.1 %) | 1.5 % |
+| A4 built on one week, used on the other | 86 %, 0 SOL outsider | |
+| owner instruction lists found | 22 (19 carry `9ddjzq`, one is the create transaction) | 41 programs, 40 plain lists |
+| final split: owner ahead of outsiders / V2 median / V2 >= 80 % | | 98 % of coins / 0.95 / 93 % of coins (without A4: 98 % / 0.70 / 34 %) |
+
+The 5ix split is the `5ix owner split` fingerprint: its `volume` tag holds the 41 programs, the 40
+lists, the creator and 18,447 owner wallets (sticky). It agrees with the split on 99.7 % of SOL
+(100 % of the owner SOL, 3.9 % of the outsider SOL), and 99 % of coins are within 5 points of the
+split's owner share.
+
+A tag reads forward: sticky marks a wallet's trades only from its first tagged trade on. The split
+labels the wallet's whole history on the coin. So the wallet list holds every owner wallet with an
+owner trade before the first trade a build matcher catches. A wallet the list leaves out keeps
+those trades on the outsider side while its later sells go to the owner. Example: on
+`Ad8zvok8gZebkyLYCWP63Jj9xeopiVTR5773Tndwpump`, four bundle wallets buy 5 SOL in the creation slot
+and later sell in the owner's batch. Without them in the list, the outsider side has 14.5 SOL of
+46.4 SOL; with them, 2.1 SOL. Then the two net lines look alike, though the owner trades most of
+the money. The list holds the creation-slot owner wallets, so the snipers in that slot stay
+outside the tag.
 
 On 6ix: one network of 2,136 wallets trades 84 % of all 6ix coins and makes 58 % of their volume;
 107 creators are its own wallets. It ends about even (-0.01 SOL a coin); the creator is ahead on

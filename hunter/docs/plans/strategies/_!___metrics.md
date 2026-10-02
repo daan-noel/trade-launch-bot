@@ -132,14 +132,13 @@ compiled once per reload (`compile_tags` into `EngineState::fp_tags`), never per
 
 1. Off the tag's `side` (absent = both), the trade cannot carry it.
 2. It carries the tag when ANY stateless matcher holds (`program`, `ix_shape`,
-   `ix_template`, `ix_contains`, `ix_lacks`, `wallet`, `creator`, `creation_slot`) or its
+   `ix_template`, `ix_contains`, `ix_lacks`, `wallet`, `creator`) or its
    wallet is in the sticky set; else `cluster`, checked last because it counts every trade
    it reads into its slot group.
 3. Else the trade is the rest.
 
-`creation_slot` is a buy in the coin's creation slot: nobody reacts to a coin inside its
-own block, so those buys are the dev's birth bundle (sniper builds carry about 2 % of that
-SOL on the 7ix crew). With `sticky`, the bundle's later sells stay on the tag too.
+A tag has no creation-slot matcher: a creation-slot buyer is the rest unless another
+matcher (a wallet, a build) names it, so the snipers in that slot stay outside the tag.
 
 Both halves keep every total (`SplitTotals`: SOL, prints and transactions per side), so a
 metric reads the same way whichever half a condition names, and `tag_share_pct @!tag` is the

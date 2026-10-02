@@ -133,7 +133,7 @@ its v1 label (`stall > 3`), shown raw.
 fingerprint defines in its `tags` document (`metrics::tags`): `@volume` the trades that
 carry it, `@!volume` the rest. A trade carries a tag when ANY of its `match` entries holds
 (`program`, `ix_shape`, `ix_template`, `ix_contains`, `ix_lacks`, `wallet`, `creator`,
-`creation_slot`, `cluster`), on the tag's `side` only; `sticky` keeps the tag on a wallet
+`cluster`), on the tag's `side` only; `sticky` keeps the tag on a wallet
 that carried it once. Every trade lands on one half. The fold keeps one `TagState` per (coin, fingerprint, tag) a loaded rule
 reads - lifetime totals for both halves, one window per span, the sticky set, the cluster
 groups and each half's bag - and one template view per (fingerprint, tag) an `m_slot` /

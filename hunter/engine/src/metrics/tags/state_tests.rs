@@ -393,29 +393,9 @@ fn a_cluster_tags_from_the_nth_close_member() {
     assert_eq!(lift(&st), before, "another fee preset is another group");
 }
 
-/// A buy in the creation slot carries the tag, and under `sticky` so do that wallet's
-/// later trades (the bundle's dump); a creation-slot sell and a later-slot buy do not.
+/// A creation-slot buyer is the rest unless a matcher names it, like any other trade.
 #[test]
-fn creation_slot_buyers_carry_the_tag() {
-    let mut st = tag(json!({ "match": { "creator": true, "creation_slot": true }, "sticky": true }));
-    st.set_creator(wallet_hash("dev"));
-    let mut launch = crew_trade(Side::Buy, 0.5, "dev", 100);
-    launch.is_launch = true;
-    st.on_trade(&launch, c(100));
-    st.on_trade(&crew_trade(Side::Buy, 2.0, "bundle", 100), c(100));
-    st.on_trade(&crew_trade(Side::Sell, 0.2, "flipper", 100), c(100));
-    st.on_trade(&crew_trade(Side::Sell, 1.0, "bundle", 105), c(105));
-    st.on_trade(&crew_trade(Side::Buy, 3.0, "retail", 105), c(105));
-    let at = ts(0.0);
-    assert_eq!(read(&st, Metric::BuySol, false, LIFE, at, c(105)), 2.5, "the creator's and the bundle's buys");
-    assert_eq!(read(&st, Metric::SellSol, false, LIFE, at, c(105)), 1.0, "the bundle's dump, through sticky");
-    assert_eq!(read(&st, Metric::BuySol, true, LIFE, at, c(105)), 3.0, "retail only");
-    assert_eq!(read(&st, Metric::SellSol, true, LIFE, at, c(105)), 0.2, "a creation-slot sell is not a birth buy");
-}
-
-/// Without the matcher a creation-slot buyer is the rest, like any other trade.
-#[test]
-fn creation_slot_buyers_are_the_rest_without_the_matcher() {
+fn creation_slot_buyers_are_the_rest() {
     let mut st = tag(json!({ "match": { "creator": true } }));
     st.set_creator(wallet_hash("dev"));
     let mut launch = crew_trade(Side::Buy, 0.5, "dev", 100);

@@ -193,8 +193,6 @@ pub struct TagState {
     creator_wallet_hash: Option<u64>,
     lifetime: SplitTotals,
     windows: BTreeMap<WindowKey, TagWindow>,
-    /// The creation slot, from the launch print. `None` until it is folded.
-    birth_slot: Option<u64>,
     /// Cluster groups of the slot being folded; cleared when the slot moves.
     cluster_slot: u64,
     cluster_groups: Vec<ClusterGroup>,
@@ -214,7 +212,6 @@ impl TagState {
             creator_wallet_hash: None,
             lifetime: SplitTotals::default(),
             windows: BTreeMap::new(),
-            birth_slot: None,
             cluster_slot: 0,
             cluster_groups: Vec::new(),
             tagged_tokens: 0.0,
@@ -256,9 +253,6 @@ impl TagState {
     pub fn on_trade(&mut self, t: &TradeLite, cur: Cursor) -> bool {
         if !t.sol.is_finite() || t.sol < 0.0 {
             return false;
-        }
-        if t.is_launch && self.birth_slot.is_none() {
-            self.birth_slot = Some(t.slot);
         }
         if t.priced_reserve_sol.is_finite() && t.priced_reserve_sol > 0.0 && t.price.is_finite() && t.price > 0.0 {
             self.last_vsol = t.priced_reserve_sol;
@@ -349,7 +343,6 @@ impl TagState {
         let p = &self.patterns;
         p.marks(t.marker_bits)
             || (p.creator && self.creator_wallet_hash == Some(t.wallet_hash))
-            || (p.creation_slot && t.side == Side::Buy && self.birth_slot == Some(t.slot))
             || (p.sticky && self.sticky_wallets.contains(&t.wallet_hash))
             || p.builds.matches(t.ix_hash, t.fee)
             || t.program_hash.is_some_and(|h| p.programs.contains(&h))

@@ -75,7 +75,6 @@ is the table in `engine/src/metrics/v1_map.rs` (the migration's source, section 
         "ix_lacks":    ["Photon"],
         "wallet":      ["7xk..."],
         "creator":     true,
-        "creation_slot": true,
         "cluster":     {"min_prints": 3, "sol_tol_pct": 10}
       },
       "side":    "sell",
@@ -88,8 +87,8 @@ is the table in `engine/src/metrics/v1_map.rs` (the migration's source, section 
 A trade carries the tag when **any** `match` entry holds, on the given `side` only. The
 matchers are read in a fixed order and `cluster` last, because a cluster counts every trade
 it reads into its slot group (today's classifier order). `sticky`: a wallet that carried
-the tag once carries it for the rest of the coin. `creation_slot` (a matcher): a buy in the
-coin's creation slot carries the tag. Built-in tags need no
+the tag once carries it for the rest of the coin. A creation-slot buyer is the rest unless
+a matcher names it. Built-in tags need no
 config and serve `m_holdings.bag_share_pct` only: `bundled` (first buy in a slot where
 >= 3 wallets first bought with one ix shape) and `public_app` (first buy through an app with
 > 100 buyers the day before). Tag names are `[a-z0-9_]{1,24}`.

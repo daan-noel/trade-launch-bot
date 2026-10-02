@@ -1324,7 +1324,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   breaks the window down by structure (`exact` labels, `template` grain, or `program`),
   classifying each print with the verdict `TagState::on_trade` returned — one copy of the
   matchers — and reports the probe read (`probe`: tagged transactions and their SOL in the probe
-  window and its control, and the nearest one's slots, same-slot tx gap, seconds and structure). A tag needing the coin's history (`creator`, `creation_slot`) is
+  window and its control, and the nearest one's slots, same-slot tx gap, seconds and structure). A tag needing the coin's history (`creator`) is
   refused. `sticky` is scoped per read: the window, control, probe and probe control each fold
   their own tag state from their own start, so a wallet carries the tag from its first target
   trade inside that span. It can read below the same tag's live (whole-history) sticky, and the

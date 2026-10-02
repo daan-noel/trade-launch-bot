@@ -212,7 +212,7 @@ statically-mounted host must not pull `lightweight-charts` into its chunk (see
 
 The panel's **`@tag`** column is the editing control for one tag of the target
 fingerprint's `tags` document: the badge says which half of the split the chart put the
-row on (`@tag`, `@!tag`, or `neither` for a creation-slot buyer the tag excludes), and a
+row on (`@tag` or `@!tag`), and a
 click adds that row's value to the tag - or removes it when listed - and **saves
 immediately**. The value is the row's exact ix shape (plus any fee fields pinned in the
 strip), its ix template, its program or its wallet, whichever matcher the strip

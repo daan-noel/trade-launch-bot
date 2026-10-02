@@ -157,7 +157,7 @@ fn a_flow_classifier_becomes_the_volume_tag() {
     assert_eq!(none["volume"]["match"]["ix_shape"], json!([]));
     // "Neither" has no v2 half: converting it is refused, never guessed.
     let err = convert_metric_config(&json!({ "m_flow_ix": { "creation_slot_buyers": "excluded" } })).unwrap_err();
-    assert!(err.contains("match.creation_slot"), "{err}");
+    assert!(err.contains("has no v2 form"), "{err}");
 }
 
 /// Every stored rule and fingerprint converts to a v2 document that parses. Point

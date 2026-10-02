@@ -666,9 +666,9 @@ pub fn convert_metric_config(cfg: &Value) -> Result<Value, String> {
             t.insert("sticky".into(), json!(true));
         }
         if f.get("creation_slot_buyers").and_then(Value::as_str) == Some("excluded") {
-            // v2 has no "neither" half: a creation-slot buyer is the dev's volume or the
-            // rest, and which one changes the rule's numbers, so the author decides.
-            return Err("m_flow_ix.creation_slot_buyers \"excluded\" has no v2 form: put the                         creation-slot buyers on the tag (match.creation_slot) or leave them in the rest"
+            // v2 has no "neither" half: a creation-slot buyer is the rest unless a matcher
+            // names it, and that changes the rule's numbers, so the author decides.
+            return Err("m_flow_ix.creation_slot_buyers \"excluded\" has no v2 form: a creation-slot                         buyer is the rest unless a matcher (wallet, ix_shape, program) names it"
                 .into());
         }
         tags.insert(TAG_VOLUME.into(), Value::Object(t));

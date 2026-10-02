@@ -16,7 +16,7 @@ The crew is one fingerprint tag, `volume`; the dump list is a second, `dump`.
 | crew Tier 1: the 9ddjzq program heads the tx | tag `volume`, matcher `program: ["Unknown (9ddjzq...)"]`, matched on `TradeLite::program_hash` through `template_grain::program_id_hash` | **added**: the `program` matcher |
 | crew Tier 2: the creator; a wallet once tagged on this coin | tag `volume`, matcher `creator: true`, option `sticky: true` | exists |
 | crew Tier 3: >= 3 same-slot prints, same ix, side, CU limit, CU price, tip, SOL within 10 % | tag `volume`, matcher `cluster: {"min_prints": 3, "sol_tol_pct": 10}` | **added** (causal: a print carries the tag once it is the 3rd close print of its group) |
-| creation-slot buyers are crew (the dev's birth bundle, chain 33) | tag `volume`, matcher `creation_slot: true`; with `sticky`, their later sells too | **added** |
+| creation-slot buyers are crew (the dev's birth bundle, chain 33) | no spelling: a tag has no creation-slot matcher, and the bundle wallets are fresh on each coin | **open** |
 | crew profit | `m_holdings.profit_sol @volume` (SOL) | **added**: the tag's bag liquidated into the curve at this print, minus its net SOL in |
 | outsider buys over 3 s / 10 s | `m_flow.buy_sol @!volume [3s]` / `[10s]` | exists |
 | age | `m_state.age_sec` | exists |
@@ -52,7 +52,7 @@ The re-spelt book is `launch-group-7ix/g7_engine_ref.py`; the engine is compared
 
 1. Python: re-spell section 2 in `g7_audit4.py`, book both rules, write the per-ticket reference
    (entry print, exit print, reason, pct).
-2. Engine: the `program`, `cluster` and `creation_slot` matchers,
+2. Engine: the `program` and `cluster` matchers,
    `m_holdings.profit_sol`; unit tests against hand-built tapes, including
    `every_metric_is_live_reachable`.
 3. Engine: `enter.lock: "token"`, stages with deadlines, `m_position.stage_sec`; tests for the

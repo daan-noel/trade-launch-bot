@@ -90,8 +90,8 @@ tp 10 % / clock 20 s about +2 %/trade.
 Crew = Tier 1 | 2 | 3 as in chain 17, plus every wallet that buys in the creation slot: the dev's
 volume, 97.9 % of that slot's non-crew SOL (chain 33). The sentence and book below still read
 them as neutral; the crew spelling (f 0.5, targets 0.13 1.46, 0.65 1.43, 4.16 3.95 SOL) is booked
-in chain 33. The engine spells it as the `volume` tag's `creation_slot` matcher; the stored rules
-move to it once the engine-vs-Python parity on that spelling passes.
+in chain 33. The engine has no spelling for it: a tag has no creation-slot matcher, so the
+stored rules read the creation-slot buyers as outsiders.
 
 ```
 E  first print at age >= 1 s, 0.03 SOL
@@ -210,7 +210,7 @@ recent-week fit), and the replay audit of section 4 covers candidate 1 only.
 | 30 creation-slot buyers | Are the creation-slot buyers outsiders? | 2-3 non-crew wallets per coin buy in the creation slot: SOL p50 0.6-1.8 (**15.8 on 4.16**), 20-40 % of them sell in the crew's dump slot, 10-45 % of what the split called outsider buys. | A spelling error in the split: they are not the audience. | g7_birth.py |
 | 31 corrected split | Counted as crew, or as neither? | Under the unchanged rule: as crew FINAL +35.52 / +46.46, 16/22, +3.24 SOL, BROAD +18.86 / +26.22, +4.51; neutral FINAL +41.55 / +45.25, 16/22, +3.46, BROAD +20.67 / +22.25, 20/22, +4.51. | Superseded by chain 33: the pick was a score gap, and the dump-slot sells mark them as the crew's side. | g7_birth.py |
 | 32 re-tune | Which signal, ride and guard values under the corrected split? | At the crew's first wave (study, door3): crew profit / target p10 / p50 0.65 / 1.00, outsider buys over 3 s p50 0.64 SOL. Grid f 0.5-0.7, burst 0.3-1.0, ride line 15-30 s, guard 2-3 SOL: burst 1.0 leads on both doors (0.3-0.5 fire too early); f 0.5 and 0.6 differ by < 1 point; ride line 20 s leads; guard 2 SOL lifts the day count on both doors (FINAL 16 -> 18/22, BROAD 20 -> 22/22). | Candidate 4. | g7_retune.py |
-| 33 creation-slot buyers are the dev's volume | Crew, crew minus sniper builds, or neutral? (engine spelling, closed windows, tape to 09-26) | Non-crew creation-slot buyers on door3: 2,009 wallets on 625 coins; sniper builds (`AdvanceNonceAccount` / `CreateAccountWithSeed`) are 822 wallets but **2.1 % of the SOL**; `ATA Create, Buy` carries 6,201 of 6,475 SOL. Targets as crew: 0.13 1.46, 0.65 1.43, 4.16 3.95 SOL. Cell f 0.5, burst 1.0, ride line 20 s, guard 2 SOL: as crew FINAL +36.01 / +52.86, 21/24 days, +3.45 SOL; BROAD +22.59 / +33.29, **26/26**, worst day +2.9 %, **+5.48 SOL**. Neutral, candidate 4's cell: FINAL +38.42 / +52.29, 20/24, +3.47; BROAD +19.78 / +27.27, 24/26, +4.69. Dropping sniper builds from the crew moves FINAL < 1 point and costs BROAD 0.14 SOL and 2 days. | Creation-slot buyers are crew (sticky), with no sniper carve-out; f moves to 0.5. The engine's `exclude_creation_slot` is replaced by a `creation_slot` matcher. | g7_birthcrew.py |
+| 33 creation-slot buyers are the dev's volume | Crew, crew minus sniper builds, or neutral? (engine spelling, closed windows, tape to 09-26) | Non-crew creation-slot buyers on door3: 2,009 wallets on 625 coins; sniper builds (`AdvanceNonceAccount` / `CreateAccountWithSeed`) are 822 wallets but **2.1 % of the SOL**; `ATA Create, Buy` carries 6,201 of 6,475 SOL. Targets as crew: 0.13 1.46, 0.65 1.43, 4.16 3.95 SOL. Cell f 0.5, burst 1.0, ride line 20 s, guard 2 SOL: as crew FINAL +36.01 / +52.86, 21/24 days, +3.45 SOL; BROAD +22.59 / +33.29, **26/26**, worst day +2.9 %, **+5.48 SOL**. Neutral, candidate 4's cell: FINAL +38.42 / +52.29, 20/24, +3.47; BROAD +19.78 / +27.27, 24/26, +4.69. Dropping sniper builds from the crew moves FINAL < 1 point and costs BROAD 0.14 SOL and 2 days. | Creation-slot buyers are crew (sticky), with no sniper carve-out; f moves to 0.5. | g7_birthcrew.py |
 
 ---
 

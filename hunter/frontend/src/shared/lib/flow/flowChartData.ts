@@ -70,7 +70,7 @@ export interface FlowLinePoint {
 }
 
 /** `tagged` = the trades carrying the tag (`@tag`); `untagged` = the rest (`@!tag`).
- *  A trade the tag excludes (a creation-slot buyer) is on neither line.
+ *  A trade without a readable amount is on neither line.
  *
  *  Both lines live on the bonding curve only: they end at the first AMM trade
  *  (`endTime` = their last point), since the curve mapping does not hold on a

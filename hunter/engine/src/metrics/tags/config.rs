@@ -11,7 +11,6 @@
 //!       "ix_lacks":    ["Photon"],
 //!       "wallet":      ["7xk..."],
 //!       "creator":     true,
-//!       "creation_slot": true,
 //!       "cluster":     {"min_prints": 3, "sol_tol_pct": 10}
 //!     },
 //!     "side": "sell",
@@ -59,8 +58,6 @@ pub struct TagPatterns {
     pub lacks: u16,
     pub wallets: HashedSet,
     pub creator: bool,
-    /// A buy that lands in the coin's creation slot qualifies.
-    pub creation_slot: bool,
     pub cluster: Option<Cluster>,
     /// Only trades on this side can carry the tag.
     pub side: Option<Side>,
@@ -127,9 +124,6 @@ pub const TAG_FIELDS: &[TagFieldSpec] = &[
     TagFieldSpec { key: "creator", kind: "match", value_type: "bool", title: "Creator",
         summary: "The trader is the coin's creator.",
         example: "true : the dev's own buys and sells." },
-    TagFieldSpec { key: "creation_slot", kind: "match", value_type: "bool", title: "Creation-slot buyer",
-        summary: "The trade is a buy that landed in the coin's creation slot. Nobody reacts to a coin inside its own block: those buys are the dev's birth bundle, plus a few snipers.",
-        example: "true with sticky : the bundle wallets and their later dump carry volume." },
     TagFieldSpec { key: "cluster", kind: "match", value_type: "cluster", title: "Same-slot cluster",
         summary: "The trade is the Nth or later print in one slot with the same ix shape, side and fees, its SOL within P % of the first. Checked last.",
         example: "{\"min_prints\": 3, \"sol_tol_pct\": 10} : the 3rd of three matching 0.5 SOL buys in one slot." },
@@ -156,7 +150,7 @@ pub fn tags_json() -> Value {
         .collect();
     json!({
         "summary": "A tag is a named trade list. It splits every coin's trades in two: @name = the trades that carry it, @!name = the rest.",
-        "example": "volume = program 9ddjzq or a 3-print cluster or the creator or a creation-slot buyer, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
+        "example": "volume = program 9ddjzq or a 3-print cluster or the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
         "fields": fields,
         "markers": markers,
         "builtin": [
@@ -262,11 +256,10 @@ fn parse_tag(name: &str, def: &Value) -> Result<TagPatterns, String> {
                 }
             }
             "creator" => p.creator = parse_bool(v, &here)?,
-            "creation_slot" => p.creation_slot = parse_bool(v, &here)?,
             "cluster" => p.cluster = Some(parse_cluster(v, &here)?),
             other => {
                 return Err(format!(
-                    "{at}.match: unknown matcher `{other}` (known: program, ix_shape, ix_template, ix_contains, ix_lacks, wallet, creator, creation_slot, cluster)"
+                    "{at}.match: unknown matcher `{other}` (known: program, ix_shape, ix_template, ix_contains, ix_lacks, wallet, creator, cluster)"
                 ))
             }
         }
@@ -398,7 +391,6 @@ mod tests {
                     "ix_contains": ["Axiom Trade"],
                     "wallet": ["w1"],
                     "creator": true,
-                    "creation_slot": true,
                     "cluster": {"min_prints": 3, "sol_tol_pct": 10}
                 },
                 "sticky": true
@@ -409,7 +401,7 @@ mod tests {
         let tags = compile_tags(&doc);
         assert_eq!(tags.len(), 2);
         let v = tags.iter().find(|t| t.name == "volume").unwrap();
-        assert!(v.patterns.sticky && v.patterns.creator && v.patterns.creation_slot);
+        assert!(v.patterns.sticky && v.patterns.creator);
         assert_eq!(v.patterns.cluster, Some(Cluster { min_prints: 3, sol_tol_pct: 10 }));
         assert!(v.patterns.templates().is_some());
         let d = tags.iter().find(|t| t.name == "dump").unwrap();
@@ -431,6 +423,7 @@ mod tests {
             (json!({"v": {"match": {"creator": true}, "contagion": true}}), "unknown key"),
             (json!({"v": {"match": {"creator": true}, "exclude_creation_slot": true}}), "unknown key"),
             (json!({"v": {"match": {"nope": 1}}}), "unknown matcher"),
+            (json!({"v": {"match": {"creation_slot": true}}}), "unknown matcher"),
         ] {
             let err = validate_tags(&doc).unwrap_err();
             assert!(err.contains(needle), "{doc} -> {err}");
@@ -441,7 +434,7 @@ mod tests {
     fn the_documented_vocabulary_is_the_parsed_one() {
         let doc = tags_json();
         let keys: Vec<&str> = doc["fields"].as_array().unwrap().iter().map(|f| f["key"].as_str().unwrap()).collect();
-        for k in ["program", "ix_shape", "ix_template", "ix_contains", "ix_lacks", "wallet", "creator", "creation_slot", "cluster"] {
+        for k in ["program", "ix_shape", "ix_template", "ix_contains", "ix_lacks", "wallet", "creator", "cluster"] {
             assert!(keys.contains(&k), "matcher {k} undocumented");
         }
         for k in ["side", "sticky"] {

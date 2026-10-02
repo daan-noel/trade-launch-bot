@@ -111,8 +111,6 @@ function MatcherEditor({
     }
     case 'creator':
       return <p className="text-[11px] text-text-dim">Every trade by the coin's creator.</p>;
-    case 'creation_slot':
-      return <p className="text-[11px] text-text-dim">Every buy that lands in the coin's creation slot (the dev's birth bundle). Add Sticky to keep their later sells on the tag.</p>;
     case 'cluster': {
       const c = match.cluster ?? { min_prints: 3, sol_tol_pct: 10 };
       return (
@@ -132,8 +130,6 @@ function startValue(k: MatcherKey): Partial<TagMatch> {
   switch (k) {
     case 'creator':
       return { creator: true };
-    case 'creation_slot':
-      return { creation_slot: true };
     case 'cluster':
       return { cluster: { min_prints: 3, sol_tol_pct: 10 } };
     default:

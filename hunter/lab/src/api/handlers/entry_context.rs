@@ -279,16 +279,13 @@ pub struct EntryContextResponse {
 
 /// Compile the target tag with the engine's parser, refusing matchers that need the
 /// coin's history before the window: this read folds the window alone, so the
-/// creator or the creation slot would classify from nothing. `sticky` is accepted
+/// creator would classify from nothing. `sticky` is accepted
 /// and scoped to each read's own span (see [`fold_entry`]).
 fn compile_target(def: &serde_json::Value) -> Result<TagPatterns, String> {
     let doc = serde_json::json!({ "target": def });
     validate_tags(&doc)?;
-    let history = ["creator", "creation_slot"];
-    if let Some(m) = def.get("match").and_then(serde_json::Value::as_object) {
-        if let Some(k) = history.iter().find(|k| m.contains_key(**k)) {
-            return Err(format!("`{k}` needs the coin's history before the window; this read folds the window only"));
-        }
+    if def.get("match").and_then(serde_json::Value::as_object).is_some_and(|m| m.contains_key("creator")) {
+        return Err("`creator` needs the coin's history before the window; this read folds the window only".into());
     }
     compile_tags(&doc)
         .into_iter()
@@ -1437,12 +1434,7 @@ mod tests {
 
     #[test]
     fn history_matchers_are_refused() {
-        for def in [
-            serde_json::json!({ "match": { "creator": true } }),
-            serde_json::json!({ "match": { "creation_slot": true } }),
-        ] {
-            assert!(compile_target(&def).is_err(), "{def}");
-        }
+        assert!(compile_target(&serde_json::json!({ "match": { "creator": true } })).is_err());
         let sticky = serde_json::json!({ "match": { "program": ["X"] }, "sticky": true });
         assert!(compile_target(&sticky).is_ok());
         assert!(compile_target(&serde_json::json!({ "match": {} })).is_err());

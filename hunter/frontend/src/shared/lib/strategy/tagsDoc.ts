@@ -2,7 +2,7 @@
 // two, `@name` (the trades that carry it) and `@!name` (the rest). The frontend mirror
 // of `hunter_engine::metrics::tags::config`:
 //
-//   { "volume": { "match": { "program": [...], "creation_slot": true,
+//   { "volume": { "match": { "program": [...], "creator": true,
 //                            "cluster": {"min_prints": 3, "sol_tol_pct": 10} },
 //                 "side": "sell", "sticky": true } }
 //
@@ -38,8 +38,6 @@ export interface TagMatch {
   ix_lacks?: string[];
   wallet?: string[];
   creator?: boolean;
-  /** A buy in the coin's creation slot: the dev's birth bundle. */
-  creation_slot?: boolean;
   cluster?: Cluster;
 }
 
@@ -82,7 +80,6 @@ export function tagsFromJson(doc: unknown): TagDef[] {
     for (const k of STRING_LIST_MATCHERS) if (m[k] !== undefined) match[k] = strings(m[k]);
     if (m.ix_shape !== undefined) match.ix_shape = parseIxPatternRows(m.ix_shape);
     if (typeof m.creator === 'boolean') match.creator = m.creator;
-    if (typeof m.creation_slot === 'boolean') match.creation_slot = m.creation_slot;
     if (isObj(m.cluster)) {
       match.cluster = {
         min_prints: Number(m.cluster.min_prints),
@@ -110,7 +107,7 @@ export function matcherUsed(m: TagMatch, k: MatcherKey): boolean {
 
 /** The matchers a tag uses, in the classifier's fixed order (cluster last). */
 export function usedMatchers(t: TagDef): MatcherKey[] {
-  const order: MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks', 'wallet', 'creator', 'creation_slot', 'cluster'];
+  const order: MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks', 'wallet', 'creator', 'cluster'];
   return order.filter((k) => matcherUsed(t.match, k));
 }
 
@@ -127,7 +124,6 @@ export function tagsToJson(tags: TagDef[]): Obj {
     const shapes = serializeIxPatternRows(t.match.ix_shape ?? []);
     if (shapes.length) match.ix_shape = shapes;
     if (t.match.creator) match.creator = true;
-    if (t.match.creation_slot) match.creation_slot = true;
     if (t.match.cluster) match.cluster = { ...t.match.cluster };
     const def: Obj = { match };
     if (t.side) def.side = t.side;
@@ -162,7 +158,6 @@ export function tagSentence(t: TagDef): string {
   list(m.ix_lacks, 'lacks all of');
   if (m.wallet?.length) parts.push(`${m.wallet.length} wallet${m.wallet.length === 1 ? '' : 's'}`);
   if (m.creator) parts.push('the creator');
-  if (m.creation_slot) parts.push('creation-slot buyers');
   if (m.cluster) parts.push(`a same-slot cluster of ${m.cluster.min_prints}+ prints within ${m.cluster.sol_tol_pct} % SOL`);
   const opts: string[] = [];
   if (t.side) opts.push(`${t.side}s only`);

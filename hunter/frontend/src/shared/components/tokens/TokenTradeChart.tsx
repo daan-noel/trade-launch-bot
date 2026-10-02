@@ -276,8 +276,7 @@ export function TokenTradeChart({
 
   // The tag the lines and the badges classify with: the staging draft, else the
   // page's lens, else the host fingerprint's picked tag. Classified over the FULL
-  // history, not the selection - sticky, cluster and the creation slot are
-  // forward-only - with the lens' exclusions, the same pass the lines draw from.
+  // history, not the selection - sticky and cluster are forward-only - with the lens' exclusions, the same pass the lines draw from.
   const lens = useFlowLensContext();
   const persistTarget = useIxPatternTarget({
     fingerprintId: flowFingerprintId,

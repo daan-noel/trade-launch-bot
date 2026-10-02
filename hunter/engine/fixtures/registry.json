@@ -1501,7 +1501,7 @@
         "summary": "Wallets whose first buy went through an app with 100+ buyers the day before."
       }
     ],
-    "example": "volume = program 9ddjzq or a 3-print cluster or the creator or a creation-slot buyer, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
+    "example": "volume = program 9ddjzq or a 3-print cluster or the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
     "fields": [
       {
         "example": "\"program\": [\"Axiom Trade\"] : every Axiom trade, whatever its instruction list.",
@@ -1557,14 +1557,6 @@
         "kind": "match",
         "summary": "The trader is the coin's creator.",
         "title": "Creator",
-        "value_type": "bool"
-      },
-      {
-        "example": "true with sticky : the bundle wallets and their later dump carry volume.",
-        "key": "creation_slot",
-        "kind": "match",
-        "summary": "The trade is a buy that landed in the coin's creation slot. Nobody reacts to a coin inside its own block: those buys are the dev's birth bundle, plus a few snipers.",
-        "title": "Creation-slot buyer",
         "value_type": "bool"
       },
       {

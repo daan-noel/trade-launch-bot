@@ -160,24 +160,8 @@ describe('classifyFlowTrades: cluster', () => {
   });
 });
 
-describe('classifyFlowTrades: creation_slot', () => {
-  it('creation-slot buyers carry the tag, and their dump through sticky (creation_slot_buyers_carry_the_tag)', () => {
-    const t = tag({ creator: true, creation_slot: true }, { sticky: true });
-    const out = classifyFlowTrades(
-      [
-        tr('dev', 0.5, CREATE_BUY, { slot: 100 }),
-        tr('bundle', 2, ['Pump.Fun: Buy'], { slot: 100 }),
-        tr('flipper', 0.2, ['Pump.Fun: Sell'], { slot: 100, side: 'sell' }),
-        tr('bundle', 1, ['Pump.Fun: Sell'], { slot: 105, side: 'sell' }),
-        tr('retail', 3, ['Pump.Fun: Buy'], { slot: 105 }),
-      ],
-      { tag: t, creatorWallet: 'dev' },
-    );
-    expect(out.map((x) => x.reason)).toEqual(['creator', 'creation_slot', null, 'sticky', null]);
-    expect(out[1]).toMatchObject({ half: 'tagged', taggedSol: 2, untaggedSol: 0 });
-  });
-
-  it('without the matcher a creation-slot buyer is the rest (creation_slot_buyers_are_the_rest_without_the_matcher)', () => {
+describe('classifyFlowTrades: creation slot', () => {
+  it('a creation-slot buyer is the rest unless a matcher names it (creation_slot_buyers_are_the_rest)', () => {
     const out = classifyFlowTrades(
       [tr('dev', 0.5, CREATE_BUY, { slot: 100 }), tr('bundle', 2, ['Pump.Fun: Buy'], { slot: 100 })],
       { tag: tag({ creator: true }), creatorWallet: 'dev' },

@@ -8,17 +8,16 @@
  *
  *  1. On the tag's `side` (absent = both), the trade carries the tag when ANY matcher
  *     holds - program, ix_shape, ix_template, ix_contains, ix_lacks, wallet, creator,
- *     creation_slot (a buy in the coin's creation slot), then the sticky set, then
- *     `cluster` LAST (it counts the trade into its slot group, so it runs only when
- *     nothing else qualified it).
+ *     then the sticky set, then `cluster` LAST (it counts the trade into its slot
+ *     group, so it runs only when nothing else qualified it).
  *  2. Else the trade is the rest (`@!tag`).
  *
  *  Trades must be the coin's FULL history in canonical order (slot -> tx_index ->
- *  leg_index): sticky, cluster and the creation slot are all forward-only state. */
+ *  leg_index): sticky and cluster are forward-only state. */
 
 import { anyRowMatchesTrade, type IxPatternRow } from 'lib/strategy/ixPatternRows';
 import type { MatcherKey, TagDef } from 'lib/strategy/tagsDoc';
-import { isLaunchGrain, templateGrain, templateProgram } from 'lib/strategy/templateGrain';
+import { templateGrain, templateProgram } from 'lib/strategy/templateGrain';
 
 /** The tag a surface classifies against: a fingerprint tag, a lens set read as one,
  *  or a staging draft. `name` is display only (`@name`). */
@@ -32,11 +31,10 @@ export interface FlowTradeLite {
   /** Read as a magnitude, whatever sign convention the caller uses. */
   sol: number;
   ix_labels: readonly string[] | null | undefined;
-  /** Which leg this is. A trade without one is off-side under a sided tag, is never
-   *  a creation-slot buyer, and forms its own cluster groups. */
+  /** Which leg this is. A trade without one is off-side under a sided tag and forms
+   *  its own cluster groups. */
   side?: FlowSide | null;
-  /** The trade's slot. Read by `cluster` (groups per slot) and `creation_slot`;
-   *  absent reads as slot 0. */
+  /** The trade's slot. Read by `cluster` (groups per slot); absent reads as slot 0. */
   slot?: number | null;
   /** The fee budget this tx declared: read by fee-pinned ix shapes and by the
    *  cluster's group identity. Absent = not captured. */
@@ -50,7 +48,7 @@ export interface FlowClassifyOptions {
   /** The coin's creator wallet - the `creator` matcher's subject. */
   creatorWallet?: string | null;
   /** Analysis-only (a flow lens): wallets that always read as the rest and never
-   *  move sticky, cluster or creation-slot state - the studied trader itself, so a
+   *  move sticky or cluster state - the studied trader itself, so a
    *  lens does not classify its own subject. The engine has no such option. */
   excludeWallets?: ReadonlySet<string> | null;
 }
@@ -95,7 +93,6 @@ interface CompiledTag {
   lacks: readonly string[];
   wallets: ReadonlySet<string>;
   creator: boolean;
-  creationSlot: boolean;
 }
 
 function compile(tag: FlowTag): CompiledTag {
@@ -109,7 +106,6 @@ function compile(tag: FlowTag): CompiledTag {
     // The engine hashes `s.trim()` for wallets only.
     wallets: new Set((m.wallet ?? []).map((w) => w.trim()).filter(Boolean)),
     creator: m.creator === true,
-    creationSlot: m.creation_slot === true,
   };
 }
 
@@ -126,7 +122,6 @@ function matchReason(
   labels: readonly string[],
   creatorWallet: string | null,
   sticky: ReadonlySet<string> | null,
-  birthSlot: number | null,
 ): FlowReason | null {
   // Program, template and shape need labels (engine `*_hash` = None on none).
   const has = labels.length > 0;
@@ -138,7 +133,6 @@ function matchReason(
   if (c.lacks.length > 0 && !hasMarker(labels, c.lacks)) return 'ix_lacks';
   if (t.wallet_address && c.wallets.has(t.wallet_address)) return 'wallet';
   if (c.creator && creatorWallet && t.wallet_address === creatorWallet) return 'creator';
-  if (c.creationSlot && t.side === 'buy' && birthSlot !== null && (t.slot ?? 0) === birthSlot) return 'creation_slot';
   if (sticky?.has(t.wallet_address)) return 'sticky';
   return null;
 }
@@ -158,7 +152,6 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
   const sticky = tag.sticky ? new Set<string>() : null;
   // Engine `set_creator`: under creator + sticky the creator starts in the set.
   if (sticky && c.creator && creatorWallet) sticky.add(creatorWallet);
-  let birthSlot: number | null = null;
   let clusterSlot = 0;
   let groups: ClusterGroup[] = [];
 
@@ -205,10 +198,9 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
       push(t, 'excluded', null, 0);
       continue;
     }
-    if (birthSlot === null && isLaunchGrain(labels)) birthSlot = slot;
 
     const onSide = tag.side == null || tag.side === t.side;
-    let reason: FlowReason | null = onSide ? matchReason(c, t, labels, creatorWallet, sticky, birthSlot) : null;
+    let reason: FlowReason | null = onSide ? matchReason(c, t, labels, creatorWallet, sticky) : null;
     if (onSide && reason === null && clusterHit(t, labels, sol, slot)) reason = 'cluster';
     if (reason !== null) {
       sticky?.add(t.wallet_address);
