@@ -34,6 +34,7 @@ use trading_core::{
 use trading_core::ingest::TraderHook;
 
 use super::db_writer::DbWriteOp;
+use super::early_trades::{EarlyTrades, EARLY_TRADE_CAP};
 use super::held_pools::HeldPoolGate;
 
 pub const DB_QUEUE_CAP: usize = 16384;
@@ -82,6 +83,8 @@ pub struct ShedCounters {
     pub db_writes: AtomicU64,
     /// Durable ops deferred onto the retry buffer (not shed — still pending).
     pub db_deferred: AtomicU64,
+    /// Trades evicted from a full [`EarlyTrades`] queue before their create came.
+    pub early_trades: AtomicU64,
 }
 
 pub struct IngestConsumer {
@@ -150,6 +153,9 @@ impl IngestConsumer {
         // True when any semantic event from the current tx was processed (used
         // to decide whether to persist its RawTx blob).
         let mut tracked_in_current_tx = false;
+        // Trades decoded ahead of their token's create (see `early_trades`). Owned
+        // by this task alone, so no lock.
+        let mut early = EarlyTrades::default();
 
         loop {
             tokio::select! {
@@ -163,14 +169,33 @@ impl IngestConsumer {
                             };
                             if !e.is_mayhem_mode || track_mayhem {
                                 tracked_in_current_tx = true;
+                                let replay = early.on_create(
+                                    &e.mint,
+                                    &e.signature,
+                                    e.slot,
+                                    e.initial_buy_tokens.is_some(),
+                                );
                                 self.on_token_created(e, persist_raw).await;
+                                for t in replay {
+                                    self.on_trade(t, persist_raw).await;
+                                }
                             }
                         }
                         IngestEvent::Trade(e) => {
                             let persist_raw = self.settings_rx.borrow().persist_raw;
+                            early.observe_slot(e.slot);
+                            for t in early.release_overdue() {
+                                self.on_trade(t, persist_raw).await;
+                            }
                             if self.token_cache.contains_key(&e.mint) {
                                 tracked_in_current_tx = true;
+                                let after = early.release_after(&e.mint, &e.signature);
                                 self.on_trade(e, persist_raw).await;
+                                for t in after {
+                                    self.on_trade(t, persist_raw).await;
+                                }
+                            } else if early.park(e) {
+                                self.note_early_trade_evicted();
                             }
                         }
                         IngestEvent::TokenMigrated(e) => {
@@ -652,6 +677,19 @@ impl IngestConsumer {
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 warn!(lane, "Strategy channel closed — ping not delivered");
             }
+        }
+    }
+
+    /// A full early-trade queue evicted a trade whose create may still come - a
+    /// possible lost trade, so it is loud (first, then every Nth).
+    fn note_early_trade_evicted(&self) {
+        let n = self.shed.early_trades.fetch_add(1, Ordering::Relaxed) + 1;
+        if n == 1 || n.is_multiple_of(STRATEGY_SHED_LOG_EVERY) {
+            warn!(
+                evicted_total = n,
+                cap = EARLY_TRADE_CAP,
+                "early-trade queue full - a trade decoded before its create may be lost"
+            );
         }
     }
 

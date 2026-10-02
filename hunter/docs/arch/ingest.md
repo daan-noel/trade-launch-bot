@@ -245,12 +245,15 @@ Losing the block metas hands the blockhash cache back to its watchdog, so `Cache
 | `mod.rs` | `spawn_ingest(...)` — builds `Ingest`, starts it, spawns consumer + db_writer tasks, starts watchdog thread; returns `IngestSpawnResult` |
 | `held_pools.rs` | `HeldPoolGate` — keeps PumpSwap pools subscribed for unsettled **real** positions even when `track_post_migration` is off (feed harvest + sell-confirm) |
 | `consumer.rs` | `IngestConsumer` — translates `IngestEvent` → `trading_core` types; fans out to token_cache, DB, strategy, SSE, trader; handles `track_mayhem` / `track_post_migration` policy transitions |
+| `early_trades.rs` | `EarlyTrades` - holds a trade that arrives before its mint's `TokenCreated` (bounded queue, `EARLY_TRADE_SLOTS` window) and hands it back for replay after the creation tx's own trade |
 | `db_writer.rs` | `DbWriter` — batches (1000 ops / 150ms), dedups, persists; stamps `DbHeartbeat` after a flush **only if ≥1 row persisted** (`any_ok`); signals `TradeSignals` per `(wallet,mint)`; `DbWriteOp` variants: `Raw(RawBlobJob)` · `Token` · `Wallet` · `Trade` · `Metrics` · `Migration` |
 | `watchdog.rs` | `DbHeartbeat` (atomic ms stamp), `BootGate` (latched by the engine loop; disarms the watchdog during startup), `spawn_watchdog` (OS thread); force-exits when live, booted, and no successful write within `watchdog_stall_timeout_secs` (no queue-depth gate — catches upstream stalls too) |
 
 ### Consumer event handlers
 
 `on_token_created` (Token+Wallet+Metrics+cache+ping+SSE) · `on_trade` (Trade+Wallet+Metrics+reserves+inline AMM account-list harvest+ping+SSE) · `on_token_migrated` (pool gate+Migration+ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only)
+
+**A trade can arrive before its create.** Creates and trades decode on two lanes that share one event channel, so a buy bundled right behind a create (same slot, next tx) can reach the consumer while its mint is not in `token_cache`. Such a trade is parked in `EarlyTrades`, never dropped: the create takes it back and it is applied right after the creation tx's own trade (at once when the create carried no dev buy), so the token sees chain order. A parked trade whose create does not come within `EARLY_TRADE_SLOTS` slots belongs to an untracked mint (excluded Mayhem, evicted from the cache) and expires. A full queue evicts its oldest trade, counted in `ShedCounters::early_trades` and logged at WARN. A trade for an untracked mint is still never persisted.
 
 AMM `Trade` events may carry `amm_swap_accounts` (the top-level PumpSwap swap's resolved account list, harvested by `decode_amm_live_pb`, one per pool per tx). `on_trade` feeds it to `TraderHook::observe_amm_swap_accounts` inline (pure CPU — replaces the old spawned RPC `prewarm_amm_pool`); `amm_pool_prewarmed` still means "trader cache warm for this mint", and a rejected parse just retries on the next swap.
 
