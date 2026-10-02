@@ -2,9 +2,10 @@
 
 `/api/tokens` pages from Postgres ([token-list-backend.md](../plans/frontend/token-list-backend.md)).
 A sort or filter on a `tokens_info` column (volume, price, market cap, trade count, dead,
-migrated, ...) joins all 1.83M `tokens` rows to `tokens_info` before the `LIMIT`: 1.1-2.2 s
-through the lab handler (deferred join, vacuumed tables, 1 parallel worker). Every other
-request is 0.5 s or less.
+migrated, ...) joins all 1.83M `tokens` rows to `tokens_info` before the `LIMIT`. Through the
+lab handler (deferred join, vacuumed tables, 4 parallel workers): a sort alone 0.5-0.6 s, a
+filter plus a sort 1.55 s (count and page each ~0.5 s, sharing the Docker VM's 6 cores).
+Every other request is 0.25 s or less.
 
 `tokens_info` carries no index but its primary key, and stays that way in the shared schema:
 live upserts every touched mint's row on each ~150 ms ingest flush, so an index on a stats
@@ -12,16 +13,14 @@ column is an index write per row there, and the `LEFT JOIN` cannot walk an index
 nullable side anyway (the ~57k tokens with no `tokens_info` row must interleave by the
 `mint_address` tiebreak).
 
-## Options (decision open)
+## Remaining option (decision open)
 
-1. **More parallel workers on the workstation Postgres.** `POSTGRES_MAX_PARALLEL_PER_GATHER`
-   is 1 (the 2 vCPU box's value). At 4, in `psql`, a `volume` page measures 0.95 s -> 0.62 s
-   warm and a `dead = no` count 0.89 s -> 0.47 s. Needs the key in `hunter/.env` + `.env.example` and a
-   Postgres container recreate.
-2. **Lab-only `tokens_info` indexes + a `tokens_info`-driven top-N query** (a `UNION ALL` of
-   info rows walked by index and info-less tokens, merged on the sort key). Sub-100 ms for
-   the indexed columns, at the cost of one index per sortable column and a second page-query
-   shape held at parity with the first.
+**Lab-only `tokens_info` indexes + a `tokens_info`-driven top-N query** (a `UNION ALL` of info
+rows walked by index and info-less tokens, merged on the sort key). Sub-100 ms for a sort on
+an indexed column. Costs: ~100-150 MB of disk per indexed column, a slower sync (every
+appended or updated `tokens_info` row writes each index), a second page-query shape held at
+parity with the first. It does not help a filter's `COUNT` (still a full join, ~0.5 s) or the
+cross-table sorts (`market_cap`, the FEP ratios), which no single-table index serves.
 
 ## Done when
 

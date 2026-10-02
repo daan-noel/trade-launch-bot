@@ -32,17 +32,22 @@ What keeps a page fast at 1.83M tokens:
   them). Lab-only, so the live ingest path pays no index write.
 - **Visibility map**: `db-incremental-sync.ps1` runs `VACUUM (ANALYZE) tokens,
   tokens_info` after each pull, so the index-only scans skip the heap.
+- **Parallel workers**: the workstation Postgres runs `POSTGRES_MAX_PARALLEL_PER_GATHER=4`
+  (its Docker VM has 6 cores); the live box keeps 1.
 
-Measured through the lab handler on the workstation (256 MB `shared_buffers`, 1 parallel
-worker), warm / first request:
+Measured through the lab handler on the workstation (256 MB `shared_buffers`, 4 parallel
+workers), warm:
 
 | Request | Time |
 | --- | --- |
-| Default page (newest first), page 1 or 500 | 0.2 s / 1.0 s |
-| Search (`pepe`, or a full mint) | 0.02-0.04 s / 0.1 s |
-| Sort on a `tokens` column (`symbol`) | 0.5 s / 0.6 s |
-| Sort on a `tokens_info` column (`volume`) | 1.1 s / 1.3 s |
-| Filter + sort on `tokens_info` columns (`dead = no`, `volume`) | 1.9 s / 2.2 s |
+| Default page (newest first), page 1 or 500 | 0.18 s |
+| Search (`pepe`, or a full mint) | 0.02 s |
+| Sort on a `tokens` column (`symbol`) | 0.25 s |
+| Sort on a `tokens_info` or cross-table column (`volume`, `market_cap`) | 0.5-0.6 s |
+| Filter + sort on `tokens_info` columns (`dead = no`, `volume`) | 1.55 s |
+
+The last row is CPU-bound: its count and page each join every row (~0.5 s alone), and the two
+run at once on the VM's 6 cores.
 
 A sort or filter on a `tokens_info` column still joins every row (no index there). Open
 work: [token-list-stats-sort.md](../../roadmap/token-list-stats-sort.md).
