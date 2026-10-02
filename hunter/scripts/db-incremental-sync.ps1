@@ -1178,6 +1178,20 @@ ON CONFLICT (id) DO UPDATE SET
   $doneWindow = if ($IncludeToday) { "through $sealedCutoff UTC, incl. today's partial chunk" } else { "sealed days through $sealedCutoff UTC" }
   Write-Host "Incremental sync complete ($doneWindow; server credentials removed from local catalog)."
 
+  # ---- 9a. Vacuum the token-list tables ----------------------------------------
+  # The Tokens page pages these two tables from Postgres. This sync only appends to
+  # `tokens`, and autovacuum visits an insert-only table rarely, so its visibility
+  # map lags: the list's index-only scans then fetch the heap per row (765k fetches,
+  # ~1 s on every count and sort at 1.8M tokens). ANALYZE keeps the planner's row
+  # counts current after a large append. A failure only warns.
+  Write-Host ""
+  Write-Host "Vacuuming tokens + tokens_info (Tokens page index-only scans)..."
+  try {
+    Invoke-LocalSqlFile "VACUUM (ANALYZE) tokens, tokens_info;"
+  } catch {
+    Write-Warning "VACUUM tokens/tokens_info failed -- the Tokens page stays slower until the next run: $_"
+  }
+
   # hunter-lab finds its `.env` by walking UP from the CWD, and it lives in
   # `hunter/`, so run cargo from here -- the monorepo root has no `.env`.
   $hunterDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path

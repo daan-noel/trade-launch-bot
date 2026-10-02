@@ -22,16 +22,29 @@ count — never the whole universe, never a RAM copy of it.
 a unique key, so Postgres drops a join a query never references: the unfiltered count scans
 `tokens` alone. A `LATERAL` join there blocks that removal.
 
-Measured at 1.83M tokens on the workstation (256 MB `shared_buffers`), warm cache:
+What keeps a page fast at 1.83M tokens:
+
+- **Deferred join** (`find_list_page`): a `page` CTE picks the page's mints carrying only
+  the columns its `WHERE`/`ORDER BY` read; the full projection is built for those rows
+  alone. Projecting first drags the wide `jsonb` columns of every row through the sort.
+- **Search indexes** (lab migration `0007`): trigram GIN on `LOWER(symbol)` and
+  `LOWER(mint_address)`, the exact expressions `search_clause` emits (a guard test pins
+  them). Lab-only, so the live ingest path pays no index write.
+- **Visibility map**: `db-incremental-sync.ps1` runs `VACUUM (ANALYZE) tokens,
+  tokens_info` after each pull, so the index-only scans skip the heap.
+
+Measured through the lab handler on the workstation (256 MB `shared_buffers`, 1 parallel
+worker), warm / first request:
 
 | Request | Time |
 | --- | --- |
-| Default page (newest first) + unfiltered count | ~1.9 s (the count; the page is ~3 ms) |
-| Search `pepe` | ~2.8 s |
-| Filter on a `tokens_info` column (`dead = no`) | ~4.3 s |
-| Sort on a `tokens_info` column (`volume`) | ~8 s, at the `api` pool's 8 s `statement_timeout` |
+| Default page (newest first), page 1 or 500 | 0.2 s / 1.0 s |
+| Search (`pepe`, or a full mint) | 0.02-0.04 s / 0.1 s |
+| Sort on a `tokens` column (`symbol`) | 0.5 s / 0.6 s |
+| Sort on a `tokens_info` column (`volume`) | 1.1 s / 1.3 s |
+| Filter + sort on `tokens_info` columns (`dead = no`, `volume`) | 1.9 s / 2.2 s |
 
-A filter or sort on a `tokens_info` column joins every row, so it costs a full scan. Open
+A sort or filter on a `tokens_info` column still joins every row (no index there). Open
 work: [token-list-stats-sort.md](../../roadmap/token-list-stats-sort.md).
 
 ## Tracked-only — the in-RAM cache

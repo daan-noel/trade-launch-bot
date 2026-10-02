@@ -58,3 +58,23 @@ pub async fn run(pool: &PgPool) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use trading_core::api::handlers::tokens::{build_where_and_order, TokenQuery};
+    use trading_core::api::table_query::TableRequest;
+
+    /// The Tokens-search trigram indexes (`0007`) serve the search only while their
+    /// expressions are exactly the ones `search_clause` emits; a drift silently turns
+    /// every search back into a full `tokens` scan.
+    #[test]
+    fn search_trigram_indexes_match_the_search_clause() {
+        let req: TableRequest = serde_json::from_value(serde_json::json!({"search": "pepe"})).unwrap();
+        let built = build_where_and_order(&TokenQuery::from_table_request(&req), chrono::Utc::now());
+        let migration = include_str!("../../migrations/0007_token_search_trgm.sql");
+        for col in ["symbol", "mint_address"] {
+            assert!(built.where_sql.contains(&format!("LOWER(t.{col}) LIKE")), "search no longer LOWER(t.{col}): {}", built.where_sql);
+            assert!(migration.contains(&format!("gin (LOWER({col}) gin_trgm_ops)")), "0007 lost its LOWER({col}) index");
+        }
+    }
+}

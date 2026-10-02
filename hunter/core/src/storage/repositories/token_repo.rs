@@ -569,6 +569,13 @@ impl TokenRepo {
     /// pageable — there is no recency window or row cap here (the 7-day window only
     /// governs the live *cache* seed, not this list). Deep `OFFSET` scans-and-
     /// discards; acceptable for now (see the plan's keyset note).
+    ///
+    /// Deferred join: the `page` CTE picks the page's mints carrying only the
+    /// columns its WHERE/ORDER read, then the full ~28-column projection is built
+    /// for those `limit` rows alone. Projecting every column before the `LIMIT`
+    /// drags the wide `jsonb` columns of all 1.8M rows through the sort: a `volume`
+    /// sort takes 5-10 s that way, ~1.6 s this way. `order_sql` always ends in a
+    /// `mint_address` tiebreak, so the outer re-sort reproduces the page order.
     pub async fn find_list_page(
         &self,
         where_sql: &str,
@@ -582,8 +589,12 @@ impl TokenRepo {
         let limit_ph = args.len() + 1;
         let offset_ph = args.len() + 2;
         let sql = format!(
-            "{} WHERE {} ORDER BY {} LIMIT ${} OFFSET ${}",
-            Self::list_row_select(), where_sql, order_sql, limit_ph, offset_ph,
+            "WITH page AS (SELECT t.mint_address {from} WHERE {where_sql} \
+                           ORDER BY {order_sql} LIMIT ${limit_ph} OFFSET ${offset_ph}) \
+             {select} WHERE t.mint_address IN (SELECT mint_address FROM page) \
+             ORDER BY {order_sql}",
+            from = Self::LIST_FROM,
+            select = Self::list_row_select(),
         );
         let mut query = sqlx::query_as::<_, TokenListRow>(&sql);
         query = bind_sql_args(query, args);
@@ -893,6 +904,17 @@ mod parity_tests {
             // The pager's `total` and the `/api/tokens/mints` set run the same WHERE
             // without the page query's ORDER/LIMIT — they must cover the same rows.
             let built = scoped(&query, &mints, now);
+            // A mid-list page (`LIMIT 2 OFFSET 2`) is the same slice of the order —
+            // the deferred join cuts the page before the full projection.
+            let page2: Vec<String> = repo
+                .find_list_page(&built.where_sql, &built.order_sql, &built.args, 2, 2)
+                .await
+                .expect("page 2")
+                .into_iter()
+                .map(|r| r.mint_address)
+                .collect();
+            let want2: Vec<String> = ram.iter().skip(2).take(2).cloned().collect();
+            assert_eq!(page2, want2, "PAGE-2 MISMATCH for case: {label}");
             let count = repo.count_list(&built.where_sql, &built.args).await.expect("count");
             assert_eq!(count as usize, ram.len(), "COUNT MISMATCH for case: {label}");
             let mut set = repo.find_list_mints(&built.where_sql, &built.args).await.expect("mints");
