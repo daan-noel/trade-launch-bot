@@ -41,7 +41,7 @@ Builds trader → DB pools → caches → `CoreState` → `DeployState`. Long-li
 - optional **HTTP server** (core + deploy routes)
 
 Plus fire-and-forget spawns off the boot path: boot wallet reconcile, SOL-balance refresh
-(30s), token-cache eviction, token-list DB-base refresh, SSE render bridge. `probe`
+(30s), token-cache eviction, SSE render bridge. `probe`
 subcommand (`probe <ladder|fanout|check-nonces|simulate-*|holdings|cashback-*>`) runs a
 one-shot validation against live infra and exits before any DB/ingest/HTTP startup.
 
@@ -54,8 +54,8 @@ keys / no HELIUS gRPC required). Builds DB pools → empty `TokenCache` → `Cor
 - **SOL price poller**
 - optional **HTTP server** (core + local routes)
 
-Plus on boot: grouped-sweep orphan reconcile (crash recovery), token-list DB-base refresh,
-SSE render bridge. The token list is served from the DB base (no live ingest feeds it).
+Plus on boot: grouped-sweep orphan reconcile (crash recovery), SSE render bridge. The token
+list pages from Postgres (no live ingest feeds the cache, so `tracked` is always 0).
 
 ## State structs — narrow-state handler convention
 
@@ -74,7 +74,7 @@ injected with. Handlers take the **narrowest** state they need:
 | --- | --- |
 | `db` (api), `batch_db` | workload-isolated Postgres pools (`db`=fast handlers, `batch_db`=heavy jobs) |
 | `helius_rpc_url`, `helius_laserstream_url`, `helius_api_key`, `pump_program_id` | endpoint/config literals |
-| `token_cache`, `token_list` | live token state + staleness-bounded `/api/tokens` snapshot |
+| `token_cache`, `token_list` | live token state + staleness-bounded snapshot of it (the `/api/tokens` tracked view) |
 | `sse_tx`, `sse_frame_tx` | cold SSE event lane + pre-rendered frame fan-out |
 | `settings` (watch), `sol_price` (watch) | in-memory settings source-of-truth + SOL/USD |
 | `*_repo()` accessors | thin per-call repo handles (token/trade/settings/analysis/creation-stats/wallet/profile/tag; strategy: `RuleRepo`/`FingerprintRepo`/`StrategyRepo`) |
@@ -148,6 +148,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 
 | Handler file | Owns |
 | --- | --- |
+| `handlers/tokens/list.rs` | `list_tokens` (`POST /api/tokens`), `list_token_mints` (`POST /api/tokens/mints`) — one SQL page + `COUNT` per request; tracked-only reads the in-RAM cache |
 | `handlers/tokens/tokens.rs` | `get_token`, `get_trades` (token detail/trades reads) |
 | `handlers/tokens/batch.rs` | `post_tokens_batch` (up to 500 mints, `tokens LEFT JOIN tokens_info`) |
 | `handlers/tokens/creation_stats.rs` | `get_creation_stats`, `get_grouped_creation_stats` |
@@ -173,7 +174,6 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 
 | Handler file | Owns |
 | --- | --- |
-| `handlers/tokens/list.rs` | `list_tokens` (`GET /api/tokens`, in-RAM engine over a full snapshot) |
 | `handlers/tokens/metric_series.rs` | `GET /api/tokens/{mint}/metric-series` - every chart read of every metric at every **event** (rule-authoring chart panes). The columns are `hunter_engine::metrics::chart_reads` of each registry metric: untagged and, when `fingerprint_id` names a fingerprint, each of its tags and that tag's negation; over the life, each `windows` span (`10,30s,30sl@1,20p`), and since age 0 plus each `ages` anchor (`5,60` seconds), so a rule's `[age5s]` read has its column. A metric added to the registry draws with no handler change. `entry_time` + `entry_price` anchor the `m_position` reads on an inspected run's entry fill; without the pair those columns are omitted. Folds through the shared sparse tick grid (`hunter_engine::metrics::grid`), same as the sweep precompute: a trade-only fold mis-samples every time-decaying metric. Bounded by `MAX_SERIES_ROWS`, reporting `truncated`/`covered_until`. Seeds the creator wallet (the `creator` matcher and a `sticky` tag's first member) off one `tokens` read before the first fold, and loads the lake's wallet column whenever tags are read or a recorded metric is wallet-keyed (`Metric::needs_wallet_identity`) - an unseeded creator books the dev's trades on the other side of every split, and an identity-less fold reads every trade as one wallet; both draw a wrong pane rather than an error |
 | `handlers/system/jobs.rs` | `job_status`, `cancel/result` for simulations |
 | `handlers/strategies/engine.rs` | generic `simulate` (detached → 202) + its result page/summary/matched (+ batch `POST …/simulate/summaries`) — one surface for every rule (`rule_id` or inline `draft`) |
@@ -188,7 +188,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | File | Owns |
 | --- | --- |
 | `token_cache.rs` | `TokenCache` = `DashMap<mint, TokenState>`; slim `CachedTrade` projection; wallet-interned `u32`; runtime-bounded eviction (`run_token_cache_eviction`) |
-| `token_list_cache.rs` | `TokenListCache` — staleness-bounded snapshot for `/api/tokens` (live overlay + DB base; `run_token_list_db_refresh`) |
+| `token_list_cache.rs` | `TokenListCache` — staleness-bounded snapshot of the live cache for `/api/tokens` (tracked-only view + `tracked` count) |
 | `token_metrics.rs` | price / market-cap / volume / ATH computation |
 | `trade_signals.rs` | `TradeSignals` — wakeup hub: `(wallet,mint)` lane + mint-only lane. **Notify over poll** (held by `DeployState`) |
 

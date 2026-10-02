@@ -220,9 +220,10 @@ recorded divergences: [docs/arch/strategies.md](docs/arch/strategies.md).
   session needs as parquet under `D:\Bot-cold\` (never a long-lived schema), and record a
   dropped schema's DDL in `hunter/_local/dropped-schemas/`.
   [db-patterns.md](docs/plans/database/db-patterns.md).
-- **`/api/tokens` differs by bin** (same wire contract): `live` pages from Postgres, `lab`
-  runs the in-RAM engine over a snapshot. `SEED_TRACKING_LIMIT` is the tracking-cache seed
-  cap, not the list cap. [token-list-backend.md](docs/plans/frontend/token-list-backend.md).
+- **`/api/tokens` pages from Postgres in both bins** (one core handler): each request reads
+  one filtered, sorted page plus its `COUNT`, never the whole universe. The in-RAM snapshot
+  holds only the tracked live cache. `SEED_TRACKING_LIMIT` is the tracking-cache seed cap,
+  not the list cap. [token-list-backend.md](docs/plans/frontend/token-list-backend.md).
 
 ## Hot-path landmines
 

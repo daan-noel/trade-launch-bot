@@ -124,8 +124,6 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategy-rules/{id}",
                 web::delete().to(handlers::strategies::engine::delete_rule),
             )
-            // Token list (unified TableRequest POST; no swing-chain stats on live)
-            .route("/tokens", web::post().to(handlers::tokens::list_tokens))
             // Token sync
             .route("/token/sync", web::post().to(handlers::tokens::sync_token))
             .route("/token/sync/preview", web::post().to(handlers::tokens::preview_sync))

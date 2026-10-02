@@ -18,10 +18,6 @@ use actix_web::web;
 pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
-            // Token list (unified TableRequest POST)
-            .route("/tokens", web::post().to(handlers::tokens::list_tokens))
-            // Matched mint-address set only (same filter body).
-            .route("/tokens/mints", web::post().to(handlers::tokens::list_token_mints))
             // Redesign: every metric's series over a token's trades (chart panes)
             .route(
                 "/tokens/{mint}/metric-series",

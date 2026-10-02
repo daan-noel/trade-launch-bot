@@ -30,14 +30,14 @@ pub fn query_error_config() -> web::QueryConfig {
 }
 
 /// Register the mode-agnostic **core** routes shared by every backend bin:
-/// SSE stream, settings/price, profiles/wallets/tags, token reads + creation
-/// stats + batch. Deploy and local bins compose this with their own route configs
+/// SSE stream, settings/price, profiles/wallets/tags, the token list, token reads,
+/// creation stats and batch. Deploy and local bins compose this with their own route configs
 /// (e.g. `App::new().configure(configure_core_routes).configure(configure_deploy_routes)`).
 ///
 /// Routes are registered with full `/api/...` paths (not a nested scope) so several
 /// configure fns compose without scope-prefix juggling. Static token paths
-/// (`/tokens/creation-stats`, `/tokens/batch`) are registered before `/tokens/{mint}`
-/// so they aren't captured as a mint.
+/// (`/tokens/creation-stats`, `/tokens/batch`, `/tokens/mints`) are registered
+/// before `/tokens/{mint}` so they aren't captured as a mint.
 pub fn configure_core_routes(cfg: &mut web::ServiceConfig) {
     cfg
         // Real-time SSE stream
@@ -60,6 +60,9 @@ pub fn configure_core_routes(cfg: &mut web::ServiceConfig) {
             web::post().to(handlers::tokens::get_grouped_creation_tokens),
         )
         .route("/api/tokens/batch", web::post().to(handlers::tokens::post_tokens_batch))
+        // Token list (unified TableRequest POST) + its matched mint set
+        .route("/api/tokens", web::post().to(handlers::tokens::list_tokens))
+        .route("/api/tokens/mints", web::post().to(handlers::tokens::list_token_mints))
         // Token reads
         .route("/api/tokens/{mint}", web::get().to(handlers::tokens::get_token))
         .route("/api/tokens/{mint}/trades", web::get().to(handlers::tokens::get_trades))

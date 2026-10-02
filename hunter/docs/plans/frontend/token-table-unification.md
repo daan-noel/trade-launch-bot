@@ -76,8 +76,8 @@ Locked semantics (identical across backends):
 
 | Backend | Where | Feeds |
 | --- | --- | --- |
-| **SQL** | `handlers::tokens::sql` (live) + `strategy_repo` (positions/matched) | Tokens page (live), Positions, Paper, Matched, Old-run history |
-| **Rust in-RAM** | `trading_core::api::table_eval::apply_table_request` | Simulated (lab), Tokens page (lab in-RAM engine via `TokenQuery`), **Wallet Holdings** (live composed scan) |
+| **SQL** | `handlers::tokens::sql` + `strategy_repo` (positions/matched) | Tokens page (both bins), Positions, Paper, Matched, Old-run history |
+| **Rust in-RAM** | `trading_core::api::table_eval::apply_table_request` | Simulated (lab), Tokens tracked-only view (`TokenQuery`), **Wallet Holdings** (live composed scan) |
 
 The in-RAM evaluator is generic over a **`ColResolver`** (frontend key → `{field,kind}`);
 the shared **enrichment** half of that grammar is the SSOT

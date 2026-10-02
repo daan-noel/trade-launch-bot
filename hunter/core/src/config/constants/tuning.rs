@@ -134,12 +134,6 @@ pub const POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS: i64 = 3 * 3600; // 3 hours
 /// previous 25_000 made the boot seed scan + resident cache exceed the 4 GB
 /// box during high-volume hours (2026-07-27..29 OOM/watchdog crash loop).
 pub const SEED_TRACKING_LIMIT: i64 = 5_000;
-/// Lab's in-RAM token-list snapshot base cap. `lab` runs on the workstation (big
-/// RAM, speed-critical analysis) and wants the WHOLE token universe resident, so its
-/// snapshot loads up to this many rows — bounded-but-huge, well past the expected
-/// 100K+, rather than literally unbounded (a backstop if `tokens` ever grows to
-/// millions locally). Lab-only; never used by the live box.
-pub const LAB_TOKEN_LIST_LIMIT: i64 = 1_000_000;
 /// Only tokens created within this window are pulled into the startup cache seed.
 /// Tokens older than this aren't tracked live until they trade again.
 pub const SEED_ACTIVITY_WINDOW_DAYS: i64 = 7;
@@ -152,10 +146,6 @@ pub const SEED_ACTIVITY_WINDOW_DAYS: i64 = 7;
 /// window makes it one definition on both sides. Widening it is a rule change, not a
 /// tuning knob — every `prior_launches` threshold is denominated in it.
 pub const PRIOR_LAUNCH_WINDOW_DAYS: i64 = 30;
-/// Lab's token-list snapshot window: how far back the full in-RAM list base reaches.
-/// Wider than the live tracking seed window because lab analyzes historical tokens,
-/// not just the live-tracked recent set. Tune up for deeper local history.
-pub const LAB_TOKEN_LIST_WINDOW_DAYS: i64 = 90;
 /// Hard cap on retained in-memory trade history per token. The live token cache
 /// (`state::token_cache`, which re-exports this) keeps only the most recent
 /// `MAX_TRADES_RETAINED` trades; the oldest are trimmed from the front once the vec
@@ -220,9 +210,6 @@ pub const TOKEN_CACHE_EVICT_INTERVAL_SECONDS: u64 = 120; // 2 minutes
 /// evicted from the in-memory cache. A mint with an open position is always
 /// exempt so an open exit never strands.
 pub const TOKEN_CACHE_EVICT_IDLE_SECONDS: i64 = 2700; // 45 min
-
-/// How often the background task refreshes the DB-backed token-list snapshot.
-pub const TOKEN_LIST_DB_REFRESH_SECS: u64 = 120;
 
 #[cfg(test)]
 mod slippage_tests {

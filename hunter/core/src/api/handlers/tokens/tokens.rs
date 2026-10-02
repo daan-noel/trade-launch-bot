@@ -282,8 +282,8 @@ impl From<&TokenState> for TokenDetail {
 
 #[derive(Serialize)]
 pub struct TokensListResponse {
-    /// Filtered count over the whole merged universe (live cache overlaying the
-    /// DB base) — what the table's pager needs.
+    /// Filtered count over the whole `tokens` universe (SQL `COUNT`), or over the
+    /// tracked subset when `tracked_only` — what the table's pager needs.
     pub total: usize,
     /// Filtered count restricted to the live, cache-tracked subset. Always
     /// `<= total`; the UI shows it alongside `total` as "tracked vs all".
@@ -304,93 +304,52 @@ pub struct TokensListResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// Filter → sort → page → serialize+ETag the token list (the CPU core of
-/// `list_tokens`). Returns the response body bytes and their content-hash ETag.
-pub fn build_tokens_list(
-    state: &CoreState,
-    q: &TokenQuery,
-    limit_q: i64,
-    offset_q: i64,
-    tracked_only: bool,
-) -> (Vec<u8>, String) {
+/// The tracked-only token list: filter → sort → page the live cache subset (the
+/// small resident set) in RAM. `total == tracked` here. The full list is paged
+/// from Postgres by `list::list_tokens`; this view needs no DB round-trip.
+pub fn tracked_tokens_page(state: &CoreState, q: &TokenQuery, limit: usize, offset: usize) -> TokensListResponse {
     let now = chrono::Utc::now();
-
-    // Shared, pre-sorted (newest-first) snapshot of the whole list. Rebuilt at
-    // most once per staleness window across all clients, so a request does not
-    // clone the entire cache on every poll.
     let snapshot = state.token_list.get(&state.token_cache, now);
-
-    // When `tracked_only`, restrict to the live cache subset; otherwise use the
-    // full merged universe (live cache overlaying the DB base).
-    let mut matched: Vec<&TokenSummary> = if tracked_only {
-        snapshot.tracked_filtered(|t| q.matches(t, now))
-    } else {
-        // Full-fidelity server-side reduction: global filters + search + per-column
-        // filters (mirrors `tokenPassesFilters` and the DataTable). Filter by
-        // reference — non-matching rows are never cloned. The snapshot merges the
-        // live cache over the DB base (whole seeded universe), so the list includes
-        // mints already evicted from the cache, newest-first.
-        snapshot.merged_filtered(|t| q.matches(t, now))
-    };
-
-    // `total` is the FILTERED count — that's what the table's pager needs.
+    let mut matched = snapshot.tracked_filtered(|t| q.matches(t, now));
     let total = matched.len();
-
-    // Same reduction, restricted to the live cache-tracked subset. Cheap: the
-    // resident set is small (post-eviction) relative to the merged universe.
-    // When already in tracked_only mode, `total` == `tracked`.
-    let tracked = if tracked_only {
-        total
-    } else {
-        snapshot.tracked_filtered_count(|t| q.matches(t, now))
-    };
-
     // The snapshot is already newest-first, so the default view needs no sort;
     // only explicit sort levels re-order (sorting precedes paging).
     q.sort_refs(&mut matched);
+    let items = matched.into_iter().skip(offset).take(limit).cloned().collect();
+    TokensListResponse { total, tracked: total, items }
+}
 
-    let limit = limit_q.max(1).min(50_000) as usize;
-    let offset = offset_q.max(0) as usize;
-    // Materialise (clone) only the requested page.
-    let items: Vec<TokenSummary> = matched
+/// Filtered count over the live cache subset — the `tracked` figure reported beside
+/// the SQL `total`, through the SAME predicate the SQL `WHERE` reproduces.
+pub fn tracked_count(state: &CoreState, q: &TokenQuery) -> usize {
+    let now = chrono::Utc::now();
+    let snapshot = state.token_list.get(&state.token_cache, now);
+    snapshot.tracked_filtered_count(|t| q.matches(t, now))
+}
+
+/// The matched `mint_address` set over the live cache subset (tracked-only
+/// `/api/tokens/mints`). Order is unspecified: the caller wants the set.
+pub fn tracked_mints(state: &CoreState, q: &TokenQuery) -> Vec<String> {
+    let now = chrono::Utc::now();
+    let snapshot = state.token_list.get(&state.token_cache, now);
+    snapshot
+        .tracked_filtered(|t| q.matches(t, now))
         .into_iter()
-        .skip(offset)
-        .take(limit)
-        .cloned()
-        .collect();
-    let resp = TokensListResponse { total, tracked, items };
+        .map(|t| t.mint_address.clone())
+        .collect()
+}
 
-    // Serialize + fingerprint here, off the async worker pool. The ETag is a
-    // content hash of the page bytes, so a poll that produces a byte-identical
-    // page (no new tokens/trades — `age` is not in the body, so it never churns
-    // the hash) can revalidate to a bodyless 304 instead of resending.
-    let body = serde_json::to_vec(&resp).unwrap_or_default();
+/// Serialize a list response and fingerprint it: `(body, etag)`. The ETag is a
+/// content hash of the page bytes, so a poll that produces a byte-identical page
+/// (no new tokens/trades — `age` is not in the body, so it never churns the hash)
+/// can revalidate to a bodyless 304 instead of resending.
+pub fn serialize_with_etag(resp: &TokensListResponse) -> (Vec<u8>, String) {
+    let body = serde_json::to_vec(resp).unwrap_or_default();
     let mut hasher = DefaultHasher::new();
     body.hash(&mut hasher);
     let etag = format!("\"{:016x}\"", hasher.finish());
     (body, etag)
 }
-
-/// Filter-only projection of the token list to just the matched `mint_address`
-/// set. Runs the SAME `q.matches` reduction as [`build_tokens_list`] but skips
-/// sort/page/serialize and clones only the mint strings — the lean backend for a
-/// "run over every filtered token" action, so fanning out over the full filtered
-/// set does not ship ~20k full token rows over the wire. Order is unspecified:
-/// the caller wants the set, not a page.
-pub fn collect_filtered_mints(state: &CoreState, q: &TokenQuery, tracked_only: bool) -> Vec<String> {
-    let now = chrono::Utc::now();
-    let snapshot = state.token_list.get(&state.token_cache, now);
-    let matched: Vec<&TokenSummary> = if tracked_only {
-        snapshot.tracked_filtered(|t| q.matches(t, now))
-    } else {
-        snapshot.merged_filtered(|t| q.matches(t, now))
-    };
-    matched.into_iter().map(|t| t.mint_address.clone()).collect()
-}
-
-// `list_tokens` (the `POST /api/tokens` handler) lives in the `lab` crate
-// (`api::handlers::tokens::list`) because it takes `LocalState`; it calls the core
-// `build_tokens_list` below.
 
 /// `GET /api/tokens/:mint` — token detail from in-memory cache; falls back to DB.
 pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>) -> impl Responder {
@@ -1063,17 +1022,10 @@ impl TokenQuery {
         }
     }
 
-    /// Public wrapper around `matches` for the live SQL handler, which computes the
-    /// `tracked` count in-RAM over the cache subset using the SAME predicate the SQL
-    /// WHERE reproduces for the full universe.
+    /// Public wrapper around `matches` for the SQL-vs-in-RAM parity test, so a
+    /// test can reproduce the in-RAM filter to diff against the SQL page.
     pub fn matches_public(&self, t: &TokenSummary, now: DateTime<Utc>) -> bool {
         self.matches(t, now)
-    }
-
-    /// `TokenQuery` is `Clone`; this alias documents the intent at the call site
-    /// (moving a copy into the blocking `tracked`-count closure).
-    pub fn clone_for_tracked(&self) -> Self {
-        self.clone()
     }
 
     /// Public wrapper around `sort_refs` for the SQL-vs-in-RAM parity test, so a

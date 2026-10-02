@@ -526,41 +526,11 @@ impl TokenRepo {
         Ok(rows.into_iter().map(Token::from).collect())
     }
 
-    /// Load the token-list rows (`tokens LEFT JOIN tokens_info`) created since
-    /// `since`, newest-first, capped at `limit`. Backs the DB-base of the
-    /// `GET /api/tokens` snapshot so the list reflects the whole seeded universe —
-    /// including mints already evicted from the live cache — not just resident
-    /// ones. Bounded on both axes (recency window + row cap), index-servable via
-    /// `idx_tokens_created_at`, so it never scans the full, forever-growing
-    /// `tokens` table. Mirrors `find_recent_active`'s bounding contract.
-    pub async fn find_list_rows(
-        &self,
-        limit: i64,
-        since: DateTime<Utc>,
-    ) -> anyhow::Result<Vec<TokenListRow>> {
-        let sql = format!(
-            // `created_at DESC, mint_address DESC` matches the in-RAM snapshot's
-            // `newest_first` order (token_list_cache) so the two pre-sorted halves
-            // stay mergeable and the LIMIT boundary is deterministic across refreshes.
-            "{} WHERE t.created_at >= $1 ORDER BY t.created_at DESC, t.mint_address DESC LIMIT $2",
-            Self::list_row_select()
-        );
-        let rows = sqlx::query_as::<_, TokenListRow>(&sql)
-            .bind(since)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?;
-
-        Ok(rows)
-    }
-
-    /// The full `TokenListRow` `SELECT … FROM tokens t LEFT JOIN tokens_info i`
-    /// projection shared by the mint-scoped list lookups (`find_list_rows`,
-    /// `find_list_rows_for_mints`, `find_list_row_by_mint`) — one definition so the
-    /// ~28-column projection (market_cap via [`MARKET_CAP_SQL`] included) can't drift
-    /// between them; each caller appends only its own `WHERE`. The paged
-    /// `find_list_page` builds its own SELECT because it sources `last_synced_at`
-    /// from [`LIST_FROM`]'s lateral join rather than the correlated subquery here.
+    /// The full `TokenListRow` projection over [`Self::LIST_FROM`], shared by every
+    /// list read (`find_list_page`, `find_list_rows_for_mints`,
+    /// `find_list_row_by_mint`) — one definition so the ~28-column projection
+    /// (market_cap via [`MARKET_CAP_SQL`] included) can't drift between them; each
+    /// caller appends only its own `WHERE` / `ORDER BY`.
     fn list_row_select() -> String {
         format!(
             "SELECT t.mint_address, t.creator_wallet, t.name, t.symbol, \
@@ -571,26 +541,28 @@ impl TokenRepo {
                     i.ath_price, i.ath_timestamp, i.volume_sol, \
                     {MARKET_CAP_SQL} AS market_cap, i.trade_count, \
                     i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, \
-                    (SELECT MAX(s.last_synced_at) FROM token_sync_state s \
-                       WHERE s.mint_address = t.mint_address) AS last_synced_at, \
-                    i.lifetime_secs, \
+                    sync.last_synced_at, i.lifetime_secs, \
                     i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol, \
                     i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol \
-             FROM tokens t \
-             LEFT JOIN tokens_info i ON i.mint_address = t.mint_address"
+             {}",
+            Self::LIST_FROM
         )
     }
 
-    /// Fragment shared by the DB-paged list methods: the `tokens t LEFT JOIN
-    /// tokens_info i` core plus a `LEFT JOIN LATERAL` that surfaces the per-mint
-    /// `last_synced_at` as `sync.last_synced_at`, so the dynamic WHERE/ORDER built
-    /// by `api::handlers::tokens::sql` can reference it as a plain column.
+    /// The token-list `FROM`: `tokens t`, `tokens_info i`, and the per-mint
+    /// `last_synced_at` as `sync.last_synced_at`, so the dynamic WHERE/ORDER built by
+    /// `api::handlers::tokens::sql` can reference all three as plain columns. Both
+    /// joins are `LEFT JOIN`s on a key unique on the joined side (`tokens_info`'s
+    /// primary key; the `GROUP BY mint_address`), so Postgres drops whichever one a
+    /// query never references: an unfiltered `count_list` scans `tokens` alone. A
+    /// `LATERAL` join here would defeat that and cost the count ~3 s at 1.8M tokens.
     const LIST_FROM: &'static str = "FROM tokens t \
          LEFT JOIN tokens_info i ON i.mint_address = t.mint_address \
-         LEFT JOIN LATERAL (SELECT MAX(s.last_synced_at) AS last_synced_at \
-                              FROM token_sync_state s WHERE s.mint_address = t.mint_address) sync ON true";
+         LEFT JOIN (SELECT s.mint_address, MAX(s.last_synced_at) AS last_synced_at \
+                      FROM token_sync_state s GROUP BY s.mint_address) sync \
+                ON sync.mint_address = t.mint_address";
 
-    /// DB-paged token-list page for the live bin's `/api/tokens`. Takes the
+    /// One page of the token list (`POST /api/tokens`, both bins). Takes the
     /// pre-built `WHERE`/`ORDER BY` bodies + positional args from
     /// `api::handlers::tokens::sql::build_where_and_order`, appends `LIMIT`/`OFFSET`,
     /// and returns one page of `TokenListRow`. The whole `tokens` universe is
@@ -610,19 +582,8 @@ impl TokenRepo {
         let limit_ph = args.len() + 1;
         let offset_ph = args.len() + 2;
         let sql = format!(
-            "SELECT t.mint_address, t.creator_wallet, t.name, t.symbol, \
-                    t.bonding_curve_address, t.initial_supply_token, \
-                    t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction, \
-                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled, \
-                    t.ix_labels, t.creation_tx_signature, t.created_at, \
-                    i.ath_price, i.ath_timestamp, i.volume_sol, \
-                    {MARKET_CAP_SQL} AS market_cap, i.trade_count, \
-                    i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, \
-                    sync.last_synced_at, i.lifetime_secs, \
-                    i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol, \
-                    i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol \
-             {} WHERE {} ORDER BY {} LIMIT ${} OFFSET ${}",
-            Self::LIST_FROM, where_sql, order_sql, limit_ph, offset_ph,
+            "{} WHERE {} ORDER BY {} LIMIT ${} OFFSET ${}",
+            Self::list_row_select(), where_sql, order_sql, limit_ph, offset_ph,
         );
         let mut query = sqlx::query_as::<_, TokenListRow>(&sql);
         query = bind_sql_args(query, args);
@@ -638,6 +599,15 @@ impl TokenRepo {
         let mut query = sqlx::query_scalar::<_, i64>(&sql);
         query = bind_sql_args_scalar(query, args);
         Ok(query.fetch_one(&self.pool).await?)
+    }
+
+    /// The `mint_address` set matching the same `WHERE` the page uses, unordered —
+    /// `POST /api/tokens/mints`, the lean "run over every filtered token" read.
+    pub async fn find_list_mints(&self, where_sql: &str, args: &[SqlArg]) -> anyhow::Result<Vec<String>> {
+        let sql = format!("SELECT t.mint_address {} WHERE {}", Self::LIST_FROM, where_sql);
+        let mut query = sqlx::query_scalar::<_, String>(&sql);
+        query = bind_sql_args_scalar(query, args);
+        Ok(query.fetch_all(&self.pool).await?)
     }
 
     /// Load the full `Token` rows for an explicit set of mints (`mint = ANY($1)`,
@@ -832,13 +802,19 @@ mod parity_tests {
         refs.into_iter().map(|t| t.mint_address.clone()).collect()
     }
 
-    /// SQL engine result, restricted to the fixture mints for the same determinism.
-    async fn sql_mints(repo: &TokenRepo, query: &TokenQuery, fixture: &[&str], now: DateTime<Utc>) -> Vec<String> {
+    /// The SQL fragments for `query`, ANDed with a fixture-scope guard so the SQL
+    /// engine sees only the seeded rows (same determinism as `in_ram_mints`).
+    fn scoped(query: &TokenQuery, fixture: &[&str], now: DateTime<Utc>) -> crate::api::handlers::tokens::BuiltQuery {
         let mut built = build_where_and_order(query, now);
-        // AND a fixture-scope guard so we compare only the seeded rows.
         let ph = built.args.len() + 1;
         built.where_sql = format!("({}) AND t.mint_address = ANY(${ph})", built.where_sql);
         built.args.push(SqlArg::StrArray(fixture.iter().map(|s| s.to_string()).collect()));
+        built
+    }
+
+    /// SQL engine result, restricted to the fixture mints for the same determinism.
+    async fn sql_mints(repo: &TokenRepo, query: &TokenQuery, fixture: &[&str], now: DateTime<Utc>) -> Vec<String> {
+        let built = scoped(query, fixture, now);
         let rows = repo
             .find_list_page(&built.where_sql, &built.order_sql, &built.args, 10_000, 0)
             .await
@@ -913,6 +889,17 @@ mod parity_tests {
             let ram = in_ram_mints(&repo, &query, &mints, now).await;
             let sql = sql_mints(&repo, &query, &mints, now).await;
             assert_eq!(sql, ram, "PARITY MISMATCH for case: {label}\n  sql={sql:?}\n  ram={ram:?}");
+
+            // The pager's `total` and the `/api/tokens/mints` set run the same WHERE
+            // without the page query's ORDER/LIMIT — they must cover the same rows.
+            let built = scoped(&query, &mints, now);
+            let count = repo.count_list(&built.where_sql, &built.args).await.expect("count");
+            assert_eq!(count as usize, ram.len(), "COUNT MISMATCH for case: {label}");
+            let mut set = repo.find_list_mints(&built.where_sql, &built.args).await.expect("mints");
+            let mut want = ram.clone();
+            set.sort();
+            want.sort();
+            assert_eq!(set, want, "MINT-SET MISMATCH for case: {label}");
         }
 
         // Explicit default-order tiebreak assertion: both engines agreeing isn't

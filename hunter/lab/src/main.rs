@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Database — the three workload-isolated pools + migrations. `api_db` backs the
     // fast handlers, `batch_db` the heavy sweep/backtest jobs; `db` (hot) backs the
-    // boot reconcile + settings load + token-list refresh (no ingest/strategy here).
+    // boot reconcile + settings load (no ingest/strategy here).
     let storage::postgres::DbPools {
         hot: db,
         api: api_db,
@@ -155,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
     let sol_price = Arc::new(sol_price_tx);
 
     // In-memory token cache (empty: no live ingest feeds it locally). The token
-    // list is served from the DB base, kept fresh by the refresh task below.
+    // list pages from Postgres (`handlers::tokens::list`), so nothing seeds it.
     let token_cache = Arc::new(state::token_cache::TokenCache::new());
 
     let core_state = Arc::new(state::core_state::CoreState::new(
@@ -171,17 +171,6 @@ async fn main() -> anyhow::Result<()> {
         sol_price.clone(),
     ));
     let local_state = Arc::new(state::local_state::LocalState::new(core_state.clone()));
-
-    // Keep the token-list DB base fresh so `GET /api/tokens` reflects the whole
-    // token universe held in RAM. Lab (workstation, big RAM) loads the FULL set —
-    // uncapped-but-bounded by `LAB_TOKEN_LIST_LIMIT` over a wide window — so its
-    // filter/sort/page runs in memory at analysis speed. Fire-and-forget.
-    tokio::spawn(state::token_list_cache::run_token_list_db_refresh(
-        core_state.token_repo(),
-        core_state.token_list.clone(),
-        trading_core::config::constants::LAB_TOKEN_LIST_LIMIT,
-        trading_core::config::constants::LAB_TOKEN_LIST_WINDOW_DAYS,
-    ));
 
     // Return analysis caches to the OS once nothing is using them. Gated on
     // `LocalState::is_idle`, so it never competes with a sweep or a backtest.
