@@ -71,10 +71,44 @@ Definition of done: `cargo check` / clippy / tests clean on `hunter-engine`, `hu
 
 ## 4. Status
 
-Steps 1-7 are built; the parity table is section 6 of the case file. The six stored rules
-use section 1: `cashout` and `burst` as signals, the age split on `always`, `open` then
-`ride`. Exit labels are `crew cashout`, `ride burst`, and `dev dumps`. Each max_cost keeps
-its own target. FINAL keeps the print-count door; BROAD keeps the pool door. Open:
-- `lab lake-export` through the newest day, then re-run `g7_engine_sim.py` so the 09-22 .. 09-24
-  coins join the engine side.
+Steps 1-7 are built; the parity table is section 6 of the case file. The rule spelling is
+section 1: `cashout` and `burst` as signals, the age split on `always`, `open` then `ride`.
+Exit labels are `crew cashout`, `ride burst`, and `dev dumps`. Each max_cost keeps its own
+target (0.13 0.833, 0.65 1.178, 4.16 4.908 SOL; 0.6 x for the burst clause). FINAL keeps the
+print-count door; BROAD keeps the pool door. No rule is stored: the old-list rules are deleted
+(the crew left that list on 09-28); the six old-list fingerprints `7ix crew <door> <max_cost>`
+and the twelve test fingerprints stay.
+
+**Parity on the full owner split (10-02).** The crew tag is `program`, `creator`, `cluster`,
+sticky (migration 0023 removes `creation_slot`). Unsaved drafts on 12 test fingerprints (`7ix
+owner <door> <max_cost> <old|new>-list`: the stored criteria, the new create list without
+`ExtendAccount` for `new`, tags `volume`, `dump` and the owner split's `owner`), 09-02 .. 10-01,
+`lag_115`, `pumpfun_impact`, 0.03 SOL, copycat guard off, curve prints only. Reading A is the stored
+params; reading B reads outsider buys on `@!owner` at 0.75 / 1.5 SOL, the `owner` tag holding the
+owner split's structures as core-level and exact `ix_shape` rows. The reference is a Python
+replay re-spelt from the engine's definitions (lake trades, closed millisecond windows, the
+cluster counting only trades no other matcher took, a latched ride guard read on the next 200 ms
+tick, the 300 s dead pool, the close fee).
+
+| | engine tickets / reference | SOL engine / reference | %/trade engine | days in profit |
+| --- | --- | --- | ---: | --- |
+| A BROAD | 585 / 585 | +4.374 / +4.382 | +24.74 | 23/26 |
+| A FINAL | 223 / 223 | +3.302 / +3.307 | +48.99 | 20/24 |
+| B BROAD | 726 / 726 | +4.158 / +4.172 | +18.95 | 24/26 |
+| B FINAL | 262 / 262 | +3.245 / +3.251 | +40.98 | 19/24 |
+
+Every ticket exists on both sides. Of 1,796, 99 differ: 41 by the reported exit time only (same
+fill), 48 by an exit fill one print away (the 115 ms boundary at millisecond rounding, or tick
+against print timing; -0.034 SOL together), 10 by an entry fill one print away (+0.003 SOL), and
+one coin where the reference sells on the latched guard and the engine does not (-0.005 SOL in
+each reading). Reading B does not beat A: the stored reading stays.
+
+Open:
+- **The crew moved to the new create list on 09-28.** The stored fingerprints match the old list
+  and take no coin after 09-28; on the new list, A BROAD books 31 tickets, +0.355 SOL, +37.9 % a
+  trade over 09-28 .. 10-01. Paper trading needs the rules saved on new-list fingerprints.
+- **FINAL on the new list is nearly empty** (3 tickets): `name_reuse_count` counts earlier coins of
+  the same create list, and the crew reuses names across both 7ix lists. An identity tally across
+  a group's lists is the extension the door needs.
 - Paper trading, then real at 0.03 SOL.
+- The lake keeps 30 days: 09-01 is gone, so a re-run starts 09-02.

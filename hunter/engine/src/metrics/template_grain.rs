@@ -15,7 +15,7 @@ use crate::hash::fnv1a;
 /// Head = first non-boilerplate label. Boilerplate is compute-budget, ATA, token
 /// program setup, memos, and the system-program nonce/seed/fee/create-account
 /// instructions — the same set `ixg.head` skips.
-fn is_boilerplate(label: &str) -> bool {
+pub(crate) fn is_boilerplate(label: &str) -> bool {
     label.starts_with("Compute Budget:")
         || label.starts_with("Associated Token:")
         || label.starts_with("Token Program:")

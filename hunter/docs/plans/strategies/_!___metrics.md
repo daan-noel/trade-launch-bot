@@ -156,6 +156,20 @@ kept: an edit moves a live coin's future, never its past.
   vs `CreateIdempotent`: four sequences for one behaviour. A list holding some of them books
   the rest as `@!tag`, and an outsider gate then fires on bot traffic. Audit a list by
   variant, never by example.
+- **A core row (`"level": "core"`) carries every variant of a build.** It matches the
+  trade's build CORE (`trade_keys::core_labels`, hashed into `TradeLite::core_hash`): the
+  ordered labels without the extras a sender adds, drops or moves (`is_core_extra`: the
+  template's boilerplate, every System Program instruction, Lighthouse), with pump.fun's verb
+  variants merged (`Buy` / `BuyV2` / `BuyExactSolIn` -> `BUY`, `Sell` / `SellV2` -> `SELL`,
+  `Create` / `Create_v2` -> `CREATE`). An app's own instructions stay, in order. The row may
+  also pin `side`, the fee fields, and `marks`: the extras exactly, as text (`core_marks_text`:
+  the present flags `CL CP N L M S C W`, then `T<transfers> A<account opens>`; order never
+  counts, the two counts do). One row `{"labels": ["Pump.Fun: Sell"], "level": "core",
+  "side": "sell", "cu_price": 167000}` matches `[CU limit, CU price, Pump.Fun Sell]` and
+  `[CU price, CU limit, Memo, Pump.Fun SellV2]` at that price. `side` and `marks` without the
+  core level are refused. The engine, the chart's `ixCore.ts` and the owner split assert one
+  set of vectors, `engine/fixtures/ix_core_parity.json`; the levels a list is built at are
+  the owner split's ([owner-split.md](owner-split.md), "Match levels").
 - **`program` catches every build a tool compiles.** The head program
   (`template_grain::program_owned`: the first instruction past compute budget, system,
   token, associated-token and memo) keeps its name across builds; the 7ix crew's program

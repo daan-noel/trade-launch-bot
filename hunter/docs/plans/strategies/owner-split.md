@@ -53,7 +53,7 @@ hide three things:
 | owner | everyone who makes fake demand on the coin: the dev, every wallet it controls, every machine it hires | a volume service paid by the dev is owner, though it is not the dev |
 | outsider | everyone else: real money. Kinds in section 5 | a sniper, a person clicking a buy button, a trading bot that wins |
 | trader | who really made a trade: the credited wallet, except when that wallet is a **routing wallet** (a service wallet that thousands of users trade through); then it is the fee payer | every rule that says "wallet" reads the trader |
-| structure | how a trade's transaction is built. Its **core** is what it does: the app's own instructions and the trade verb, in order (Buy, BuyV2 and BuyExactSolIn are one verb). Its **marks** are what a sender adds, drops or moves: nonce, Lighthouse, memo, System transfers, token-account open and close, the order of the two CU instructions. Its **numbers** are the CU limit, CU price and tip. A script keeps its core and rotates the rest | core `Pump.Fun BUY`, marks `nonce, 1 transfer`, CU price 167,000, tip 0 |
+| structure | how a trade's transaction is built. Its **core** is what it does: the labels left once the extras are dropped (compute budget, every System Program instruction, token-program and token-account instructions, memo, Lighthouse), in order, with pump.fun's verb variants merged (Buy, BuyV2, BuyExactSolIn are BUY; Sell, SellV2 are SELL; Create, Create_v2 are CREATE); an app's own instructions stay. Its **marks** are the extras: which are present (CL CU limit, CP CU price, N nonce, L Lighthouse, M memo, S seed or created account, C account close, W wrap), never their order, plus two counts (T System transfers, A token-account opens). Its **numbers** are the CU limit, CU price and tip. A script keeps its core and rotates the rest | core `Pump.Fun: BUY`, marks `CL CP N T1 A0`, CU price 167,000, tip 0; a 6Vo3 buy: core `6Vo3245 BondingCurveV3`, marks `CL CP C T1 A3` |
 | transfer | tokens moved between wallets without a trade. Not on the tape; we see only its two ends (rules T1-T3) | wallet B buys 93.4 M tokens, wallet E sells 93.4 M it never bought |
 | machine | a script trading through several wallets at once: a **bundle** (3 or more wallets in one slot, one app, one side) or a **lockstep pair** (two wallets whose trades match one to one within 0.5 s). All wallets of one operator are judged as one | 4 wallets buying through Terminal in one slot: one trader's multi-wallet button |
 
@@ -153,7 +153,7 @@ Start from the owner found by A and T. Repeat S1-S6 until a round adds nothing.
 
 | ID | rule | start value | why |
 | --- | --- | --- | --- |
-| S1 | **a private structure** becomes an owner structure when (a) its trades are mostly owner, AND (b) the rest of the market does not use it, AND (c) it runs on a timer OR its wallets also use another owner structure | (a) 95 % or more of its trades, from 5 or more owner wallets; (b) 80 % or more of its market trades on the owner's coins; (c) first seen within 1 s of its usual age on 60 % of its coins, or 50 % of its wallets use another owner structure | a script keeps its build and fees while its wallets change |
+| S1 | **a private structure** becomes an owner structure when (a) its trades are mostly owner, AND (b) the rest of the market does not use it, AND (c) it runs on a timer OR its wallets also use another owner structure | (a) 95 % or more of its trades, from 5 or more owner wallets, or every trade owner except those of one narrow wallet (under 100 market coins in the month); (b) 80 % or more of its market trades on the owner's coins; (c) first seen within 1 s of its usual age on 60 % of its coins, or 50 % of its wallets use another owner structure | a script keeps its build and fees while its wallets change |
 | S2 | a wallet that uses an owner structure | one trade is enough | the structure is the owner's script |
 | S3 | **an owner payer**: pays for an owner wallet, and is not a service | 80 % or more of the trades it pays for are on the owner's coins, and fewer than 50 coins a day | a key that pays only for the owner's wallets is the owner's key |
 | S4 | a wallet paid for by an owner payer | one trade is enough | finds owner wallets hiding in public apps |
@@ -178,8 +178,25 @@ A structure is owner at any level where S1 (a)-(c) hold, so the loosest passing 
 variant the script rotates. A private program passes at level 1. A public app's core fails there (its
 users share it) and passes only at a level that carries the owner's own fee, or never. Example: on
 FohR the owner's buys carry computed CU limits (96,591 and 100,139, never twice the same), so level 7
-misses them; level 3 (`Pump.Fun BUY`, CU price 167,000) matches them, and the market uses that pair
-only on the owner's coins.
+never repeats; level 3 (`Pump.Fun SELL`, CU price 167,000) holds 15 trades of 9 wallets on two
+weeks of the group's coins, 83 % of its market trades on the owner's coins.
+
+**A level is a tag row.** The volume list (and the fingerprint the engine runs) holds each owner
+structure at its own level: level 7 as an exact `ix_shape` row (labels, CU limit, CU price, tip),
+levels 1-6 as a core row (`"level": "core"`, the core's labels, the side, and the marks, CU price
+and tip the level pins). A pin on a reading the trade lacks (no CU price, no tip) is left off, so
+that row matches any value there. On 7ix: 167 core rows and 85 exact rows (the program's own
+structures are the `program` matcher), with the creator and 6,861 owner wallets, sticky. It
+matches the split on 99.64 % of SOL on 09-15 .. 10-01 and 99.83 % on 09-02 .. 14, and the engine
+folds it to the same owner SOL as the Python model on all 1,300 coins (to 0.000001 SOL; the lab's
+`metric-series`, `m_flow.buy_sol` / `sell_sol` @volume and @!volume): owner 93.39 % of SOL
+against the split's 93.56 % on 09-15 .. 10-01, 94.28 % against 94.24 % on 09-02 .. 14.
+
+**One narrow wallet does not block S1 (a).** The wallet under question is itself one of the
+structure's users, so when it is the only non-owner user, its own trades would keep the structure
+below 95 %. Example: on FohR, 14 of the 15 level-3 trades above are owner; the 15th is wallet 4CPn
+(one coin in the month, bought 1.96 SOL at 5 s, sold 6 s later). A wide trader never gets this pass:
+a winning bot on 9,259 coins that used an owner fee once stays outsider.
 
 **Private or public (S1 b).** A structure that shows up on thousands of other coins is a public app
 setting (Axiom, GMGN, a plain Pump.Fun trade with the default fee) and says nothing about who traded.
@@ -453,9 +470,10 @@ built on 09-15 .. 10-01, checked on 09-02 .. 14:
 
 | what | result |
 | --- | --- |
-| the split | owner 93.4 % of SOL; owner ahead on 97 % of coins; V2 passes on 81 % of coins (median 94 %); V3 median 1.7 % of seconds |
-| old days (V7) | owner 92.7 % against 94.2 % for a split built there; 1.65 % of outsider money marked owner (173 SOL) |
-| outsider reference | wide bots that win over the month marked owner on 1.4-2.3 % of their money, none of it by M |
+| the split | 1,333 coins (the old instruction list on any day, the new one with CU price 1000 from 09-28); owner 93.6 % of SOL; owner ahead on 97 % of coins; V2 passes on 82 % of coins (median 94 %); V3 median 1.6 % of seconds |
+| old days (V7) | owner 93.1 % against 94.2 % for a split built there; 1.77 % of outsider money marked owner (186 SOL) |
+| outsider reference | wide bots that win over the month marked owner on 1.1-2.1 % of their money, none of it by M |
+| match levels (S1) | a list of exact structures built on one half of the month finds 81 % of owner SOL on the other half one way and 53 % the other; the core with all 7 levels finds 93 % and 89 %, adding 0.00-0.05 % of outsider money. The crew program rotates up to 201-549 exact variants of one core. Owner structures passing on 09-15 .. 10-01: level 1: 6, level 2: 16, level 3: 135, level 4: 12, level 5: 272, level 6: 367, exact: 448 |
 | calibration of C1-C2, judged as sets | crew program wallets 66 %, creators 90 %, creation-slot owner buys 70 %; snipers 44 %, wide bots 4 %; T1 wallets 35-45 % (they sell all through the coin's life, so T sets are never judged by C) |
 | few structures carry the owner | 372 instruction lists; the top 10 carry 83 % of its SOL; 161 used only by the owner carry 95 % |
 | structures outlive wallets | the 09-01 .. 14 structures bring in 859 unseen wallets on 09-15 .. 27 (16,000 SOL) and 0.4 % outsider money |
@@ -464,11 +482,12 @@ built on 09-15 .. 10-01, checked on 09-02 .. 14:
 | transfers (T1) | wallets selling more than they bought move 6.2-6.3 % of all SOL; 88-95 % already owner by other rules; the rest (550-1,000 SOL) is the crew's plain sell script at new CU prices |
 | buying machines (T2) | 283 market wallets buy 10 or more coins and never sell (28,600 SOL in two weeks); 30-39 trade the crew's coins (94-200 SOL there) |
 | transfer pairs (T3) | a shortfall finds a matching holder on the same coin 21-35 % of the time; on a random other coin 1.5-1.9 % |
-| machine operators (M) | 09-15 .. 10-01: 1,433 operators with a machine sign; 971 lose steadily (1,085 wallets, 2,364 SOL on the crew's coins), 462 do not (2,958 SOL) and stay outsiders; the largest operator has 15 wallets |
+| machine operators (M) | 09-15 .. 10-01: 1,599 operators with a machine sign; 1,138 lose steadily (1,263 wallets), 461 do not and stay outsiders |
 | sister wallets (M2) | of 5,947 machine-linked pairs, 1,596 trade 80 % or more of the same market coins |
 | test coin 9eLn (09-25) | M moves its owner share from 9 % to 42 %. The Axiom money left outsider (81 wallets, 74 SOL) looks like app users: button sizes (median 0.20 SOL), first buy at 52 s (owner Axiom wallets: 0.78 SOL at 30 s), 2 trades, about 14 coins a day, -0.02 SOL a coin, 15 % with a machine sign |
 | test coin Eu8n, second swing (09-20, age 146-568 s) | two outsiders buy 7.9 and 3.0 SOL at the bottom, 58 bots follow within a minute, the owner sells 1.3 SOL; M marks 6 % of it owner: a real swing |
 | test coin 9wyA (09-24) | 4 Terminal sister wallets (+12.5 SOL together) and two early flip bots (+236 and +485 SOL on 6,055 and 8,853 coins) stay outsiders |
+| test coin FohR (09-28, old instruction list) | outside the coin set until the list filter took the old list on every day; now 94.7 % owner. Wallet 4CPn (one coin in the month) is owner through its fee setting (S1 level 3 with one narrow wallet) |
 | test coin 2FW3 (09-20) | two sniper operators at slot +2 (3 wallets, +575 SOL; 5 wallets, +311 SOL) stay outsiders |
 | money per coin (09-01 .. 14, earlier split) | crew wallets +3.81 SOL median, ahead on 69 %; creator +0.74, ahead on 99 %; one crew group -4.44 a coin (its job is buying) |
 | wallets go stale | wallet groups from 09-01 .. 14 carry 50-66 % of the crew program's SOL on most later days, 35-36 % on 09-25 and 09-27 |
@@ -491,6 +510,10 @@ the creator and the create transaction.
 | A4 built on one week, used on the other | 86 %, 0 SOL outsider | |
 | owner instruction lists found | 22 (19 carry `9ddjzq`, one is the create transaction) | 41 programs, 40 plain lists |
 | final split: owner ahead of outsiders / V2 median / V2 >= 80 % | | 98 % of coins / 0.95 / 93 % of coins (without A4: 98 % / 0.70 / 34 %) |
+
+The 7ix split is the `7ix owner split` fingerprints (one per instruction list): the `volume` tag
+holds `9ddjzq`, the creator, the owner structures as 167 core rows and 85 exact rows ("A level is
+a tag row", section 3) and 6,861 owner wallets (sticky).
 
 The 5ix split is the `5ix owner split` fingerprint: its `volume` tag holds the 41 programs, the 40
 lists, the creator and 18,447 owner wallets (sticky). It agrees with the split on 99.7 % of SOL

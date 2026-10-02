@@ -345,6 +345,7 @@ impl TagState {
             || (p.creator && self.creator_wallet_hash == Some(t.wallet_hash))
             || (p.sticky && self.sticky_wallets.contains(&t.wallet_hash))
             || p.builds.matches(t.ix_hash, t.fee)
+            || p.builds.matches_core(t.core_hash, t.side, t.core_marks, t.fee)
             || t.program_hash.is_some_and(|h| p.programs.contains(&h))
             || t.template_hash.is_some_and(|h| p.templates.contains(&h))
             || (t.wallet_hash != 0 && p.wallets.contains(&t.wallet_hash))

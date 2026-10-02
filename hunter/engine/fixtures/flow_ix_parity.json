@@ -10,7 +10,7 @@
     "trade still produces a plausible number. Every case below fixes one rule of the",
     "classifier; add a case here, not to one suite, when the rules change.",
     "",
-    "`patterns` are ordered ix_labels sequences. Trades are in canonical order",
+    "`patterns` are ordered ix_labels sequences (exact) or row objects; a `\"level\": \"core\"` row matches by build core (ix_core_parity.json). Trades are in canonical order",
     "(slot -> tx_index -> leg_index); contagion is forward-only, so order is load-",
     "bearing and the arrays must not be re-sorted by either reader."
   ],
@@ -124,6 +124,49 @@
         { "wallet": "w2", "side": "sell", "sol": 2.0, "labels": ["Pump.Fun: Sell"] }
       ],
       "expect": { "tagged_buy": 0.0, "tagged_sell": 0.0, "untagged_buy": 1.0, "untagged_sell": 2.0 }
+    },
+    {
+      "name": "core row: every buy variant of one core, sells stay out",
+      "patterns": [{"labels": ["Pump.Fun: Buy"], "level": "core", "side": "buy"}],
+      "creator": null,
+      "trades": [
+        {"wallet": "c1", "side": "buy", "sol": 1.0, "labels": ["Compute Budget: SetComputeUnitLimit", "Compute Budget: SetComputeUnitPrice", "Associated Token: CreateIdempotent", "Pump.Fun: Buy"]},
+        {"wallet": "c2", "side": "buy", "sol": 2.0, "labels": ["Compute Budget: SetComputeUnitPrice", "Compute Budget: SetComputeUnitLimit", "Memo Program: Memo", "Pump.Fun: BuyV2"]},
+        {"wallet": "c3", "side": "buy", "sol": 4.0, "labels": ["System Program: AdvanceNonceAccount", "Pump.Fun: BuyExactSolIn"]},
+        {"wallet": "c4", "side": "sell", "sol": 8.0, "labels": ["Compute Budget: SetComputeUnitLimit", "Compute Budget: SetComputeUnitPrice", "Pump.Fun: Sell"]}
+      ],
+      "expect": {"tagged_buy": 7.0, "tagged_sell": 0.0, "untagged_buy": 0.0, "untagged_sell": 8.0}
+    },
+    {
+      "name": "core row with marks: only the same extras, in any order",
+      "patterns": [{"labels": ["Pump.Fun: Sell"], "level": "core", "marks": "CL CP T0 A0"}],
+      "creator": null,
+      "trades": [
+        {"wallet": "m1", "side": "sell", "sol": 1.0, "labels": ["Compute Budget: SetComputeUnitPrice", "Compute Budget: SetComputeUnitLimit", "Pump.Fun: Sell"]},
+        {"wallet": "m2", "side": "sell", "sol": 2.0, "labels": ["Compute Budget: SetComputeUnitLimit", "Compute Budget: SetComputeUnitPrice", "Memo Program: Memo", "Pump.Fun: Sell"]},
+        {"wallet": "m3", "side": "sell", "sol": 4.0, "labels": ["Compute Budget: SetComputeUnitLimit", "Compute Budget: SetComputeUnitPrice", "Pump.Fun: SellV2", "System Program: Transfer"]}
+      ],
+      "expect": {"tagged_buy": 0.0, "tagged_sell": 1.0, "untagged_buy": 0.0, "untagged_sell": 6.0}
+    },
+    {
+      "name": "core row: an app's own instructions stay in the core",
+      "patterns": [{"labels": ["Axiom Trade: ix#05", "Axiom Trade: ix#00"], "level": "core"}],
+      "creator": null,
+      "trades": [
+        {"wallet": "a1", "side": "buy", "sol": 1.0, "labels": ["Compute Budget: SetComputeUnitLimit", "Compute Budget: SetComputeUnitPrice", "Axiom Trade: ix#05", "Axiom Trade: ix#00", "System Program: Transfer"]},
+        {"wallet": "a2", "side": "buy", "sol": 2.0, "labels": ["Compute Budget: SetComputeUnitLimit", "Compute Budget: SetComputeUnitPrice", "Axiom Trade: ix#00", "System Program: Transfer"]}
+      ],
+      "expect": {"tagged_buy": 1.0, "tagged_sell": 0.0, "untagged_buy": 2.0, "untagged_sell": 0.0}
+    },
+    {
+      "name": "an exact row stays exact beside the core level",
+      "patterns": [["Compute Budget: SetComputeUnitLimit", "Pump.Fun: Sell"]],
+      "creator": null,
+      "trades": [
+        {"wallet": "e1", "side": "sell", "sol": 1.0, "labels": ["Compute Budget: SetComputeUnitLimit", "Pump.Fun: Sell"]},
+        {"wallet": "e2", "side": "sell", "sol": 2.0, "labels": ["Compute Budget: SetComputeUnitLimit", "Pump.Fun: SellV2"]}
+      ],
+      "expect": {"tagged_buy": 0.0, "tagged_sell": 1.0, "untagged_buy": 0.0, "untagged_sell": 2.0}
     }
   ]
 }

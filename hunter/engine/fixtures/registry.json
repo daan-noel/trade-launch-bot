@@ -1512,11 +1512,11 @@
         "value_type": "program[]"
       },
       {
-        "example": "[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"] with cu_price 1000.",
+        "example": "[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"] with cu_price 1000; {\"labels\": [\"Pump.Fun: Sell\"], \"level\": \"core\", \"side\": \"sell\", \"cu_price\": 167000}.",
         "key": "ix_shape",
         "kind": "match",
-        "summary": "The transaction's exact ordered instruction list is one of these, optionally pinned to its fee preset (CU limit, CU price, tip).",
-        "title": "Exact ix shape",
+        "summary": "The transaction's ordered instruction list is one of these, optionally pinned to its fee preset (CU limit, CU price, tip). A row with level core matches every variant of the build that keeps its core (the list without compute budget, System, token-account, memo and Lighthouse instructions, pump.fun's Buy / Sell / Create variants merged), optionally pinned to a side and to its extras (marks CL CP N L M S C W, T<transfers> A<account opens>).",
+        "title": "Ix shape",
         "value_type": "ix_shape[]"
       },
       {

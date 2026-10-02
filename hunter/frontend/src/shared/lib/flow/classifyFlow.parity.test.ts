@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 // never be added to one language's suite alone.
 import fixture from '../../../../../engine/fixtures/flow_ix_parity.json';
 
+import { parseIxPatternRow, type IxPatternRow } from 'lib/strategy/ixPatternRows';
+
 import { classifyFlowTrades, type FlowTag } from './classifyFlow';
 
 /**
@@ -27,7 +29,8 @@ interface FixtureTrade {
 
 interface FixtureCase {
   name: string;
-  patterns: string[][];
+  /** Exact label arrays or stored row objects (core rows included). */
+  patterns: unknown[];
   creator: string | null;
   trades: FixtureTrade[];
   expect: { tagged_buy: number; tagged_sell: number; untagged_buy: number; untagged_sell: number };
@@ -44,7 +47,10 @@ describe('classifyFlow matches the shared parity fixture', () => {
     it(c.name, () => {
       const tag: FlowTag = {
         name: 'volume',
-        match: { ix_shape: c.patterns.map((labels) => ({ labels })), creator: true },
+        match: {
+          ix_shape: c.patterns.map((p) => parseIxPatternRow(p)).filter((r): r is IxPatternRow => r !== null),
+          creator: true,
+        },
         side: null,
         sticky: true,
       };

@@ -6,6 +6,7 @@ import { CloseIcon, PlusIcon, SearchIcon, TrashIcon } from 'components/ui/icons'
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { cn } from 'lib/cn';
 import { formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
+import { coreMarksFromText } from 'lib/strategy/ixCore';
 import { IxAbbrevLine } from 'components/ui/IxLabelsDisplay';
 import {
   MAX_TX_COMPUTE_UNITS,
@@ -250,8 +251,86 @@ function FeePins({
   };
   const overLimit = row.cu_limit != null && row.cu_limit > MAX_TX_COMPUTE_UNITS;
 
+  const core = row.level === 'core';
+  const setLevel = (toCore: boolean) => {
+    const next = { ...row };
+    if (toCore) next.level = 'core';
+    else {
+      delete next.level;
+      delete next.side;
+      delete next.marks;
+    }
+    onChange(next);
+  };
+  const marksBad = core && row.marks != null && coreMarksFromText(row.marks) === null;
+
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5 border-t border-white/8 pt-1.5">
+      <span
+        className="shrink-0 text-[9px] uppercase tracking-wide text-text-dim/60"
+        title="Exact: this ix list only. Core: every variant of the build that keeps its core - the list without compute budget, System, token-account, memo and Lighthouse instructions, with Buy / BuyV2 / BuyExactSolIn (and Sell, Create) merged."
+      >
+        level
+      </span>
+      {(['exact', 'core'] as const).map((lv) => (
+        <button
+          key={lv}
+          type="button"
+          disabled={disabled}
+          aria-pressed={(lv === 'core') === core}
+          onClick={() => setLevel(lv === 'core')}
+          className={cn(
+            'rounded px-1.5 font-mono text-[9px]',
+            (lv === 'core') === core ? 'bg-accent/20 text-accent' : 'text-text-dim/70 hover:text-text-mid',
+          )}
+        >
+          {lv}
+        </button>
+      ))}
+      {core && (
+        <>
+          <label className="flex items-center gap-1" title="Only this side's trades match; blank matches both.">
+            <span className="font-mono text-[9px] text-text-dim/70">side</span>
+            <select
+              className="rounded bg-white/5 px-1 font-mono text-[10px]"
+              disabled={disabled}
+              value={row.side ?? ''}
+              onChange={(e) => {
+                const next = { ...row };
+                if (e.target.value === 'buy' || e.target.value === 'sell') next.side = e.target.value;
+                else delete next.side;
+                onChange(next);
+              }}
+            >
+              <option value="">any</option>
+              <option value="buy">buy</option>
+              <option value="sell">sell</option>
+            </select>
+          </label>
+          <label
+            className="flex items-center gap-1"
+            title="The build's extras must be exactly these: flags CL CP N L M S C W when present, then T<System transfers> A<account opens>. Blank matches any extras."
+          >
+            <span className="font-mono text-[9px] text-text-dim/70">marks</span>
+            <Input
+              fieldSize="sm"
+              className="w-32 font-mono text-[10px]"
+              disabled={disabled}
+              value={row.marks ?? ''}
+              onChange={(e) => {
+                const next = { ...row };
+                const v = e.target.value.trim();
+                if (v === '') delete next.marks;
+                else next.marks = v;
+                onChange(next);
+              }}
+              placeholder="any extras"
+              aria-label="marks pin"
+            />
+          </label>
+          {marksBad && <span className="text-[9px] text-danger">unknown mark - flags CL CP N L M S C W, counts T&lt;n&gt; A&lt;n&gt;</span>}
+        </>
+      )}
       <span
         className="shrink-0 text-[9px] uppercase tracking-wide text-text-dim/60"
         title="Pin this build to one client's fee budget. Every field left blank matches any value — an all-blank row is an ix-only entry and behaves exactly as it always has."
@@ -352,6 +431,14 @@ function PatternRow({
         >
           {labels.length === 0 ? 'empty — add labels' : <IxAbbrevLine labels={labels} />}
         </button>
+        {row.level === 'core' && (
+          <span
+            className="shrink-0 rounded bg-accent/15 px-1 font-mono text-[9px] text-accent"
+            title={`core level - matches every variant of this build${row.side ? `, ${row.side} only` : ''}${row.marks ? `, extras exactly ${row.marks}` : ''}`}
+          >
+            core
+          </span>
+        )}
         {rowPinsFee(row) && (
           <span
             className="shrink-0 rounded bg-accent/15 px-1 font-mono text-[9px] text-accent"

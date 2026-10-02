@@ -10,7 +10,8 @@ const BOILERPLATE_EXACT = new Set([
   'System Program: CreateAccount',
 ]);
 
-function isBoilerplate(label: string): boolean {
+/** Engine `template_grain::is_boilerplate`. The core's extras start from this list. */
+export function isBoilerplate(label: string): boolean {
   return (
     label.startsWith('Compute Budget:') ||
     label.startsWith('Associated Token:') ||

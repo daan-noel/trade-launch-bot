@@ -1,3 +1,5 @@
+import { coreKey, coreMarks, coreMarksFromText } from './ixCore';
+
 /**
  * One `ix_patterns` row as it is STORED — an ordered label sequence, optionally
  * pinned to the fee budget the sending client compiles.
@@ -23,9 +25,17 @@ export interface IxPatternFee {
   tip_lamports?: number | null;
 }
 
-/** A stored `ix_patterns` row, fee and all. */
+/** A stored `ix_patterns` row, fee and all.
+ *
+ *  `level: 'core'` (engine `BuildPatterns`, `"level": "core"`) matches every variant
+ *  of the build that keeps its core ([coreLabels]) instead of the exact sequence; it
+ *  may also pin the side and the extras (`marks`, engine `core_marks_text`). An exact
+ *  row carries neither. */
 export interface IxPatternRow extends IxPatternFee {
   labels: string[];
+  level?: 'core';
+  side?: 'buy' | 'sell';
+  marks?: string;
 }
 
 export const FEE_FIELDS = ['cu_limit', 'cu_price', 'tip_lamports'] as const;
@@ -44,6 +54,11 @@ export type IxPatternFeeSource = Pick<IxPatternFee, IxPatternFeeField>;
  *  backend's `MAX_TX_COMPUTE_UNITS`. */
 export const MAX_TX_COMPUTE_UNITS = 1_400_000;
 
+/** Whether a row is core-level. */
+export function rowIsCore(row: IxPatternRow): boolean {
+  return row.level === 'core';
+}
+
 /** Parse one stored row. `null` when it is neither shape, or carries no labels —
  *  the same rows the backend's parser refuses. */
 export function parseIxPatternRow(raw: unknown): IxPatternRow | null {
@@ -59,6 +74,16 @@ export function parseIxPatternRow(raw: unknown): IxPatternRow | null {
     const v = obj[f];
     if (typeof v === 'number' && Number.isInteger(v) && v >= 0) row[f] = v;
   }
+  if (obj.level != null && obj.level !== 'exact' && obj.level !== 'core') return null;
+  if (obj.level === 'core') {
+    row.level = 'core';
+    if (obj.side === 'buy' || obj.side === 'sell') row.side = obj.side;
+    else if (obj.side != null) return null;
+    if (typeof obj.marks === 'string') {
+      if (coreMarksFromText(obj.marks) === null) return null;
+      row.marks = obj.marks;
+    } else if (obj.marks != null) return null;
+  } else if (obj.side != null || obj.marks != null) return null;
   return row;
 }
 
@@ -82,8 +107,13 @@ export function rowPinsFee(row: IxPatternFee): boolean {
  */
 export function serializeIxPatternRow(row: IxPatternRow): string[] | Record<string, unknown> {
   const labels = row.labels.map((l) => l.trim()).filter(Boolean);
-  if (!rowPinsFee(row)) return labels;
+  if (!rowPinsFee(row) && !rowIsCore(row)) return labels;
   const out: Record<string, unknown> = { labels };
+  if (rowIsCore(row)) {
+    out.level = 'core';
+    if (row.side) out.side = row.side;
+    if (row.marks != null) out.marks = row.marks;
+  }
   for (const f of FEE_FIELDS) {
     if (row[f] != null) out[f] = row[f];
   }
@@ -121,6 +151,11 @@ export function patternRowKey(row: IxPatternRow): string {
 
 function cloneRow(row: IxPatternRow): IxPatternRow {
   const out: IxPatternRow = { labels: [...row.labels] };
+  if (rowIsCore(row)) {
+    out.level = 'core';
+    if (row.side) out.side = row.side;
+    if (row.marks != null) out.marks = row.marks;
+  }
   for (const f of FEE_FIELDS) {
     if (row[f] != null) out[f] = row[f];
   }
@@ -183,13 +218,22 @@ export function feeMatchesTrade(row: IxPatternFee, t: IxPatternFeeSource): boole
   return true;
 }
 
-/** Labels exact-match AND the row's pins accept this tx's budget. */
+/** A trade as a row reads it: its budget, and its side for a core row's side pin. */
+export type IxPatternTradeSource = IxPatternFeeSource & { side?: 'buy' | 'sell' | null };
+
+/** An exact row: labels exact-match AND the pins accept this tx's budget. A core row
+ *  (engine `CoreSpec`): the cores match, the side and the extras match when pinned,
+ *  and the pins accept the budget. */
 export function rowMatchesTrade(
   row: IxPatternRow,
   labels: readonly string[],
-  t: IxPatternFeeSource,
+  t: IxPatternTradeSource,
 ): boolean {
-  return patternKey(row.labels) === patternKey(labels) && feeMatchesTrade(row, t);
+  if (!rowIsCore(row)) return patternKey(row.labels) === patternKey(labels) && feeMatchesTrade(row, t);
+  if (coreKey(row.labels) !== coreKey(labels)) return false;
+  if (row.side && t.side !== row.side) return false;
+  if (row.marks != null && coreMarksFromText(row.marks) !== coreMarks(labels)) return false;
+  return feeMatchesTrade(row, t);
 }
 
 /** Whether any stored row accepts this trade — the engine's list match.
@@ -201,7 +245,7 @@ export function rowMatchesTrade(
 export function anyRowMatchesTrade(
   rows: readonly IxPatternRow[],
   labels: readonly string[],
-  t: IxPatternFeeSource,
+  t: IxPatternTradeSource,
 ): boolean {
   return rows.some((r) => rowMatchesTrade(r, labels, t));
 }
@@ -231,7 +275,7 @@ function spliceShape(
   const out: IxPatternRow[] = [];
   let placed = false;
   for (const p of patterns) {
-    if (patternKey(p.labels) !== shape) {
+    if (rowIsCore(p) || patternKey(p.labels) !== shape) {
       out.push(cloneRow(p));
       continue;
     }
@@ -265,7 +309,7 @@ export function togglePatternRow(
   if (labels.length === 0) return patterns.map(cloneRow);
   const next: IxPatternRow = { ...cloneRow(row), labels };
   const shape = patternKey(labels);
-  const ofShape = patterns.filter((p) => patternKey(p.labels) === shape);
+  const ofShape = patterns.filter((p) => !rowIsCore(p) && patternKey(p.labels) === shape);
 
   if (!rowPinsFee(next)) {
     const hasWild = ofShape.some((p) => !rowPinsFee(p));
@@ -301,7 +345,7 @@ export function addUnpinnedPatterns(
     const cleaned = labels.map((l) => l.trim()).filter(Boolean);
     if (cleaned.length === 0) continue;
     const shape = patternKey(cleaned);
-    if (next.some((r) => patternKey(r.labels) === shape && !rowPinsFee(r))) continue;
+    if (next.some((r) => !rowIsCore(r) && patternKey(r.labels) === shape && !rowPinsFee(r))) continue;
     next = spliceShape(next, shape, [{ labels: cleaned }]);
   }
   return next;
@@ -314,7 +358,7 @@ export function removeUnpinnedPatterns(
   labelsList: readonly (readonly string[])[],
 ): IxPatternRow[] {
   const drop = new Set(labelsList.map((l) => patternKey([...l])));
-  return patterns.filter((r) => rowPinsFee(r) || !drop.has(patternKey(r.labels))).map(cloneRow);
+  return patterns.filter((r) => rowIsCore(r) || rowPinsFee(r) || !drop.has(patternKey(r.labels))).map(cloneRow);
 }
 
 /**
@@ -337,7 +381,8 @@ export function removeUnpinnedPatterns(
 export function withPreservedFees(patterns: string[][], prev: unknown): IxPatternRow[] {
   const byShape = new Map<string, IxPatternRow[]>();
   for (const row of parseIxPatternRows(prev)) {
-    if (!rowPinsFee(row)) continue;
+    // A core row is a level, not a sequence: a labels-only surface keeps it whole.
+    if (!rowPinsFee(row) && !rowIsCore(row)) continue;
     const key = patternKey(row.labels);
     byShape.set(key, [...(byShape.get(key) ?? []), row]);
   }

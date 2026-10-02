@@ -22,7 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::trade_keys::ix_hash;
+use super::trade_keys::{core_hash, core_marks_from_text, ix_hash};
+use super::Side;
 
 /// The fee budget of one transaction, packed.
 ///
@@ -238,12 +239,57 @@ impl FeeSpec {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BuildPatterns {
     by_shape: BTreeMap<u64, Vec<FeeSpec>>,
+    /// Core-level rows (`"level": "core"`), keyed by [`core_hash`]: one row matches
+    /// every variant of a build that keeps its core.
+    by_core: BTreeMap<u64, Vec<CoreSpec>>,
+}
+
+/// What a core-level row pins beside its core: the side, the extras
+/// ([`core_marks`](super::trade_keys::core_marks), all of them or none) and the fee.
+/// An absent field accepts any reading, as in [`FeeSpec`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CoreSpec {
+    pub side: Option<Side>,
+    pub marks: Option<u32>,
+    pub fee: FeeSpec,
+}
+
+impl CoreSpec {
+    fn matches(&self, side: Side, marks: u32, fee: FeeKeys) -> bool {
+        self.side.is_none_or(|s| s == side) && self.marks.is_none_or(|m| m == marks) && self.fee.matches(fee)
+    }
+}
+
+/// A row's `level`: `"exact"` (the default) or `"core"`.
+fn row_level(obj: &serde_json::Map<String, Value>) -> Option<&str> {
+    match obj.get("level") {
+        None | Some(Value::Null) => Some("exact"),
+        Some(Value::String(s)) if s == "exact" || s == "core" => Some(s.as_str()),
+        Some(_) => None,
+    }
+}
+
+fn row_side(obj: &serde_json::Map<String, Value>) -> Option<Option<Side>> {
+    match obj.get("side") {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::String(s)) if s == "buy" => Some(Some(Side::Buy)),
+        Some(Value::String(s)) if s == "sell" => Some(Some(Side::Sell)),
+        Some(_) => None,
+    }
+}
+
+fn row_marks(obj: &serde_json::Map<String, Value>) -> Option<Option<u32>> {
+    match obj.get("marks") {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::String(s)) => core_marks_from_text(s).ok().map(Some),
+        Some(_) => None,
+    }
 }
 
 impl BuildPatterns {
     /// Shapes with no fee criterion — what every list was before fee capture.
     pub fn from_hashes(hashes: BTreeSet<u64>) -> Self {
-        Self { by_shape: hashes.into_iter().map(|h| (h, vec![FeeSpec::wildcard()])).collect() }
+        Self { by_shape: hashes.into_iter().map(|h| (h, vec![FeeSpec::wildcard()])).collect(), by_core: BTreeMap::new() }
     }
 
     /// Compile ordered label sequences, all fee-wildcard.
@@ -284,10 +330,14 @@ impl BuildPatterns {
     pub fn parse(rows: &[Value]) -> Option<Self> {
         let mut out = Self::default();
         for row in rows {
-            let (labels, spec) = match row {
-                Value::Array(labels) => (labels, FeeSpec::wildcard()),
+            let (labels, spec, core) = match row {
+                Value::Array(labels) => (labels, FeeSpec::wildcard(), None),
                 Value::Object(obj) => {
-                    (obj.get("labels")?.as_array()?, FeeSpec::from_row(obj)?)
+                    let core = match row_level(obj)? {
+                        "core" => Some((row_side(obj)?, row_marks(obj)?)),
+                        _ => None,
+                    };
+                    (obj.get("labels")?.as_array()?, FeeSpec::from_row(obj)?, core)
                 }
                 _ => return None,
             };
@@ -295,8 +345,20 @@ impl BuildPatterns {
             for l in labels {
                 seq.push(l.as_str()?);
             }
-            if !seq.is_empty() {
-                out.insert(ix_hash(&seq), spec);
+            if seq.is_empty() {
+                continue;
+            }
+            match core {
+                None => out.insert(ix_hash(&seq), spec),
+                // The row's labels may be any variant of the build or the core itself:
+                // both reduce to one core.
+                Some((side, marks)) => {
+                    let specs = out.by_core.entry(core_hash(&seq)?).or_default();
+                    let row = CoreSpec { side, marks, fee: spec };
+                    if !specs.contains(&row) {
+                        specs.push(row);
+                    }
+                }
             }
         }
         Some(out)
@@ -315,6 +377,23 @@ impl BuildPatterns {
                     let Some(l) = l.as_array() else {
                         return Err(format!("{key}[{i}].labels must be an array of strings"));
                     };
+                    if row_level(obj).is_none() {
+                        return Err(format!("{key}[{i}].level must be \"exact\" or \"core\""));
+                    }
+                    let core = row_level(obj) == Some("core");
+                    for f in ["side", "marks"] {
+                        if !core && obj.get(f).is_some_and(|v| !v.is_null()) {
+                            return Err(format!("{key}[{i}].{f} needs \"level\": \"core\""));
+                        }
+                    }
+                    if row_side(obj).is_none() {
+                        return Err(format!("{key}[{i}].side must be \"buy\" or \"sell\""));
+                    }
+                    if let Some(Value::String(m)) = obj.get("marks") {
+                        core_marks_from_text(m).map_err(|e| format!("{key}[{i}].marks: {e}"))?;
+                    } else if obj.get("marks").is_some_and(|v| !v.is_null()) {
+                        return Err(format!("{key}[{i}].marks must be a text like \"CL CP T1 A1\""));
+                    }
                     for f in ["cu_limit", "cu_price", "tip_lamports"] {
                         match obj.get(f) {
                             None | Some(Value::Null) => {}
@@ -364,14 +443,30 @@ impl BuildPatterns {
         self.by_shape.get(&h).is_some_and(|specs| specs.iter().any(|s| s.matches(fee)))
     }
 
+    /// Whether a core-level row accepts this trade: its core is listed AND some row for
+    /// that core accepts its side, extras and budget.
+    pub fn matches_core(&self, core_hash: Option<u64>, side: Side, marks: u32, fee: FeeKeys) -> bool {
+        let Some(h) = core_hash else {
+            return false;
+        };
+        self.by_core.get(&h).is_some_and(|rows| rows.iter().any(|r| r.matches(side, marks, fee)))
+    }
+
     /// Whether any entry pins a fee field — i.e. whether this list needs the fee
     /// columns to classify the way it is written.
     pub fn pins_fee(&self) -> bool {
         self.by_shape.values().flatten().any(|s| !s.is_wildcard())
+            || self.by_core.values().flatten().any(|r| !r.fee.is_wildcard())
+    }
+
+    /// Whether any row is core-level: a reader that has only an exact hash cannot
+    /// classify the way the list is written.
+    pub fn has_core(&self) -> bool {
+        !self.by_core.is_empty()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.by_shape.is_empty()
+        self.by_shape.is_empty() && self.by_core.is_empty()
     }
 
     /// Number of distinct ix shapes on the list.
@@ -383,6 +478,47 @@ impl BuildPatterns {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::metrics::trade_keys::{core_hash, core_marks};
+
+    /// One core row matches every variant of its build, on its pinned side, extras and
+    /// fee; an exact row of the same labels still matches only that sequence.
+    #[test]
+    fn a_core_row_matches_every_variant_of_its_build() {
+        let rows = serde_json::json!([
+            { "labels": ["Pump.Fun: Sell"], "level": "core", "side": "sell", "cu_price": 167000 },
+            { "labels": ["Compute Budget: SetComputeUnitPrice", "Pump.Fun: Buy"], "level": "core", "marks": "CP T0 A0" },
+        ]);
+        assert!(BuildPatterns::validate(rows.as_array().unwrap(), "k").is_ok());
+        let b = BuildPatterns::parse(rows.as_array().unwrap()).expect("parses");
+        let fee = |p| FeeKeys::new(None, Some(p), None);
+        let hit = |labels: &[&str], side, f| b.matches_core(core_hash(labels), side, core_marks(labels), f);
+        // Every sell variant, any extras, at the pinned price.
+        assert!(hit(&["Compute Budget: SetComputeUnitLimit", "Compute Budget: SetComputeUnitPrice", "Pump.Fun: Sell"], Side::Sell, fee(167000)));
+        assert!(hit(&["Memo Program: Memo", "Pump.Fun: SellV2", "System Program: Transfer"], Side::Sell, fee(167000)));
+        assert!(!hit(&["Pump.Fun: Sell"], Side::Sell, fee(166999)), "the fee pin holds");
+        assert!(!hit(&["Pump.Fun: Sell"], Side::Buy, fee(167000)), "the side pin holds");
+        // The marks pin: the same extras only, whatever their order.
+        assert!(hit(&["Pump.Fun: BuyV2", "Compute Budget: SetComputeUnitPrice"], Side::Buy, FeeKeys::default()));
+        assert!(!hit(&["Compute Budget: SetComputeUnitPrice", "Memo Program: Memo", "Pump.Fun: Buy"], Side::Buy, FeeKeys::default()));
+        assert!(b.has_core() && b.pins_fee());
+        assert!(!b.matches(Some(ix_hash(&["Pump.Fun: Sell"])), fee(167000)), "a core row is not an exact row");
+    }
+
+    #[test]
+    fn core_fields_need_the_core_level() {
+        for (row, want) in [
+            (serde_json::json!([{ "labels": ["A"], "side": "sell" }]), "needs \"level\": \"core\""),
+            (serde_json::json!([{ "labels": ["A"], "level": "exact", "marks": "T0" }]), "needs \"level\": \"core\""),
+            (serde_json::json!([{ "labels": ["A"], "level": "wide" }]), "level must be"),
+            (serde_json::json!([{ "labels": ["A"], "level": "core", "side": "both" }]), "side must be"),
+            (serde_json::json!([{ "labels": ["A"], "level": "core", "marks": "CU" }]), "unknown core mark"),
+        ] {
+            let err = BuildPatterns::validate(row.as_array().unwrap(), "k").unwrap_err();
+            assert!(err.contains(want), "{err}");
+            assert!(BuildPatterns::parse(row.as_array().unwrap()).is_none() || want.contains("needs"));
+        }
+    }
 
     #[test]
     fn a_real_zero_is_not_an_absent_reading() {

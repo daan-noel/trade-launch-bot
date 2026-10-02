@@ -5,7 +5,8 @@
 //!   "volume": {
 //!     "match": {
 //!       "program":     ["Unknown (9ddjzq...)"],
-//!       "ix_shape":    [["A","B"], {"labels": ["A","C"], "cu_price": 1000}],
+//!       "ix_shape":    [["A","B"], {"labels": ["A","C"], "cu_price": 1000},
+//!                       {"labels": ["Pump.Fun: Sell"], "level": "core", "side": "sell", "marks": "CL CP T0 A0"}],
 //!       "ix_template": ["Axiom Trade|CU|ATA|1|0|0"],
 //!       "ix_contains": ["Axiom Trade"],
 //!       "ix_lacks":    ["Photon"],
@@ -106,9 +107,9 @@ pub const TAG_FIELDS: &[TagFieldSpec] = &[
     TagFieldSpec { key: "program", kind: "match", value_type: "program[]", title: "Program",
         summary: "The transaction's main program (its first instruction past compute budget, system, token, ATA and memo) is one of these. Catches every build a tool ships.",
         example: "\"program\": [\"Axiom Trade\"] : every Axiom trade, whatever its instruction list." },
-    TagFieldSpec { key: "ix_shape", kind: "match", value_type: "ix_shape[]", title: "Exact ix shape",
-        summary: "The transaction's exact ordered instruction list is one of these, optionally pinned to its fee preset (CU limit, CU price, tip).",
-        example: "[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"] with cu_price 1000." },
+    TagFieldSpec { key: "ix_shape", kind: "match", value_type: "ix_shape[]", title: "Ix shape",
+        summary: "The transaction's ordered instruction list is one of these, optionally pinned to its fee preset (CU limit, CU price, tip). A row with level core matches every variant of the build that keeps its core (the list without compute budget, System, token-account, memo and Lighthouse instructions, pump.fun's Buy / Sell / Create variants merged), optionally pinned to a side and to its extras (marks CL CP N L M S C W, T<transfers> A<account opens>).",
+        example: "[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"] with cu_price 1000; {\"labels\": [\"Pump.Fun: Sell\"], \"level\": \"core\", \"side\": \"sell\", \"cu_price\": 167000}." },
     TagFieldSpec { key: "ix_template", kind: "match", value_type: "ix_template[]", title: "Ix template",
         summary: "The transaction's coarse template (program|CU|ATA|N|S|F) is one of these. The only matcher, with program, the slot and wave families can read.",
         example: "\"Axiom Trade|CU|ATA|1|0|0\"." },

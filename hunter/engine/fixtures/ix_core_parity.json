@@ -1,0 +1,189 @@
+{
+  "_comment": [
+    "Shared build-core vectors, asserted by every implementation of the core:",
+    "  Rust    hunter/engine/src/metrics/trade_keys.rs  (core_labels / core_marks, the SSOT)",
+    "  TS      hunter/frontend/src/shared/lib/strategy/ixCore.ts  (the chart's port)",
+    "  Python  the owner split's core_labels / marks_of (owner-split.md, 'Match levels')",
+    "",
+    "`core` is the labels left once the extras are dropped, pump.fun verbs merged;",
+    "`marks` is the extras' text form: present flags CL CP N L M S C W, then T<transfers> A<account opens>.",
+    "Add a case here, not to one suite, when the core changes."
+  ],
+  "cases": [
+    {
+      "name": "buy variants: Buy",
+      "labels": [
+        "Compute Budget: SetComputeUnitLimit",
+        "Compute Budget: SetComputeUnitPrice",
+        "Associated Token: CreateIdempotent",
+        "Pump.Fun: Buy"
+      ],
+      "core": [
+        "Pump.Fun: BUY"
+      ],
+      "marks": "CL CP T0 A1"
+    },
+    {
+      "name": "buy variants: BuyExactSolIn",
+      "labels": [
+        "Compute Budget: SetComputeUnitLimit",
+        "Compute Budget: SetComputeUnitPrice",
+        "Associated Token: CreateIdempotent",
+        "Pump.Fun: BuyExactSolIn"
+      ],
+      "core": [
+        "Pump.Fun: BUY"
+      ],
+      "marks": "CL CP T0 A1"
+    },
+    {
+      "name": "buy variants: BuyV2",
+      "labels": [
+        "Compute Budget: SetComputeUnitLimit",
+        "Compute Budget: SetComputeUnitPrice",
+        "Associated Token: CreateIdempotent",
+        "Pump.Fun: BuyV2"
+      ],
+      "core": [
+        "Pump.Fun: BUY"
+      ],
+      "marks": "CL CP T0 A1"
+    },
+    {
+      "name": "CU pair in either order, memo, SellV2",
+      "labels": [
+        "Compute Budget: SetComputeUnitPrice",
+        "Compute Budget: SetComputeUnitLimit",
+        "Memo Program: Memo",
+        "Pump.Fun: SellV2"
+      ],
+      "core": [
+        "Pump.Fun: SELL"
+      ],
+      "marks": "CL CP M T0 A0"
+    },
+    {
+      "name": "nonce, Lighthouse, transfer",
+      "labels": [
+        "System Program: AdvanceNonceAccount",
+        "Lighthouse: ix#0f",
+        "Compute Budget: SetComputeUnitLimit",
+        "Compute Budget: SetComputeUnitPrice",
+        "Pump.Fun: Sell",
+        "System Program: Transfer"
+      ],
+      "core": [
+        "Pump.Fun: SELL"
+      ],
+      "marks": "CL CP N L T1 A0"
+    },
+    {
+      "name": "6Vo3: three account opens, close, transfer; the app's own ix stays",
+      "labels": [
+        "Compute Budget: SetComputeUnitLimit",
+        "Compute Budget: SetComputeUnitPrice",
+        "Associated Token: CreateIdempotent",
+        "Associated Token: CreateIdempotent",
+        "Associated Token: CreateIdempotent",
+        "Unknown (6Vo3245eszAb5wuqEMw8mGdbfRUdKbHhDHP5LcaGuTAB): BondingCurveV3",
+        "Token Program: CloseAccount",
+        "System Program: Transfer"
+      ],
+      "core": [
+        "Unknown (6Vo3245eszAb5wuqEMw8mGdbfRUdKbHhDHP5LcaGuTAB): BondingCurveV3"
+      ],
+      "marks": "CL CP C T1 A3"
+    },
+    {
+      "name": "nonce + seed build",
+      "labels": [
+        "System Program: AdvanceNonceAccount",
+        "System Program: Transfer",
+        "System Program: CreateAccountWithSeed",
+        "Token 2022: InitializeAccount3",
+        "Pump.Fun: BuyExactSolIn"
+      ],
+      "core": [
+        "Pump.Fun: BUY"
+      ],
+      "marks": "N S T1 A0"
+    },
+    {
+      "name": "Axiom keeps both of its ixs, in order",
+      "labels": [
+        "Compute Budget: SetComputeUnitLimit",
+        "Compute Budget: SetComputeUnitPrice",
+        "Axiom Trade: ix#05",
+        "Axiom Trade: ix#00",
+        "System Program: Transfer"
+      ],
+      "core": [
+        "Axiom Trade: ix#05",
+        "Axiom Trade: ix#00"
+      ],
+      "marks": "CL CP T1 A0"
+    },
+    {
+      "name": "create: Create_v2 and Create are one verb",
+      "labels": [
+        "Compute Budget: SetComputeUnitLimit",
+        "Compute Budget: SetComputeUnitPrice",
+        "System Program: Transfer",
+        "Pump.Fun: Create_v2",
+        "Pump.Fun: ExtendAccount",
+        "Associated Token: CreateIdempotent",
+        "Pump.Fun: Buy"
+      ],
+      "core": [
+        "Pump.Fun: CREATE",
+        "Pump.Fun: ExtendAccount",
+        "Pump.Fun: BUY"
+      ],
+      "marks": "CL CP T1 A1"
+    },
+    {
+      "name": "create: Create",
+      "labels": [
+        "Pump.Fun: Create",
+        "Associated Token: Create",
+        "Pump.Fun: Buy"
+      ],
+      "core": [
+        "Pump.Fun: CREATE",
+        "Pump.Fun: BUY"
+      ],
+      "marks": "T0 A1"
+    },
+    {
+      "name": "wrap and Token-2022 close",
+      "labels": [
+        "Compute Budget: SetComputeUnitLimit",
+        "Token Program: SyncNative",
+        "Pump.Fun: Sell",
+        "Token 2022: CloseAccount"
+      ],
+      "core": [
+        "Pump.Fun: SELL"
+      ],
+      "marks": "CL C W T0 A0"
+    },
+    {
+      "name": "extras only: an empty core",
+      "labels": [
+        "System Program: Transfer"
+      ],
+      "core": [],
+      "marks": "T1 A0"
+    },
+    {
+      "name": "a core is its own core",
+      "labels": [
+        "Pump.Fun: SELL"
+      ],
+      "core": [
+        "Pump.Fun: SELL"
+      ],
+      "marks": "T0 A0"
+    }
+  ]
+}

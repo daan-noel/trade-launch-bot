@@ -152,7 +152,10 @@ export function tagSentence(t: TagDef): string {
     if (xs?.length) parts.push(`${what} ${xs.length > 3 ? `${xs.slice(0, 3).join(', ')} (+${xs.length - 3})` : xs.join(', ')}`);
   };
   list(m.program, 'program');
-  if (m.ix_shape?.length) parts.push(`${m.ix_shape.length} exact ix shape${m.ix_shape.length === 1 ? '' : 's'}`);
+  const nCore = (m.ix_shape ?? []).filter((r) => r.level === 'core').length;
+  const nExact = (m.ix_shape?.length ?? 0) - nCore;
+  if (nExact) parts.push(`${nExact} exact ix shape${nExact === 1 ? '' : 's'}`);
+  if (nCore) parts.push(`${nCore} core ix shape${nCore === 1 ? '' : 's'}`);
   list(m.ix_template, 'ix template');
   list(m.ix_contains, 'contains');
   list(m.ix_lacks, 'lacks all of');

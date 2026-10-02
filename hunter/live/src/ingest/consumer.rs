@@ -327,8 +327,8 @@ impl IngestConsumer {
         };
         // Hash from the event labels before nulling the cache projection — keeps
         // flow-split metrics correct while avoiding hash work under DashMap.
-        let (ix_hash, wallet_hash, marker_bits, template_hash, program_hash, build_hash, is_launch) = {
-            use hunter_engine::metrics::trade_keys::{build_hash, ix_hash_opt, marker_bits, wallet_hash};
+        let (ix_hash, wallet_hash, marker_bits, template_hash, program_hash, build_hash, core_hash, core_marks, is_launch) = {
+            use hunter_engine::metrics::trade_keys::{build_hash, core_hash, core_marks, ix_hash_opt, marker_bits, wallet_hash};
             use hunter_engine::metrics::template_grain::{grain_hash, is_launch, program_hash};
             (
                 ix_hash_opt(&e.instruction_labels),
@@ -337,6 +337,8 @@ impl IngestConsumer {
                 grain_hash(&e.instruction_labels),
                 program_hash(&e.instruction_labels),
                 build_hash(&e.instruction_labels),
+                core_hash(&e.instruction_labels),
+                core_marks(&e.instruction_labels),
                 is_launch(&e.instruction_labels),
             )
         };
@@ -367,6 +369,8 @@ impl IngestConsumer {
                     template_hash,
                     program_hash,
                     build_hash,
+                    core_hash,
+                    core_marks,
                     is_launch,
                 );
                 let tp = if is_amm && !token_state.amm_pool_prewarmed {

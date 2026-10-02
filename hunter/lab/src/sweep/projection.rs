@@ -16,8 +16,8 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use hunter_engine::metrics::trade_keys::{
-    build_hash_from_labels_value, ix_hash_from_labels_json, ix_hash_from_labels_value,
-    marker_bits_from_labels_value, wallet_hash,
+    build_hash_from_labels_value, core_keys_from_labels_value, ix_hash_from_labels_json,
+    ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash,
 };
 use hunter_engine::metrics::template_grain::{
     grain_hash_from_labels_json, grain_hash_from_labels_value, is_launch_from_labels_json,
@@ -116,6 +116,10 @@ pub struct FlowKeys {
     /// FNV-1a of the build recipe (`flow_ix::build_hash`); `None` when labels are
     /// missing.
     pub build_hash: Option<u64>,
+    /// FNV-1a of the build core and the packed extras (`trade_keys::core_hash` /
+    /// `core_marks`); `None` / `0` when labels are missing.
+    pub core_hash: Option<u64>,
+    pub core_marks: u32,
     /// `Pump.Fun: Create*` present on the labels.
     pub is_launch: bool,
     /// The transaction's declared fee budget, carried beside `ix_hash` because the
@@ -134,11 +138,14 @@ impl FlowKeys {
     /// is always the bare-array form.
     pub fn from_stored(ix_labels: Option<&str>, wallet: Option<&str>) -> Self {
         let parsed = ix_labels.and_then(|j| serde_json::from_str::<Value>(j).ok());
+        let (core_hash, core_marks) = parsed.as_ref().map(core_keys_from_labels_value).unwrap_or((None, 0));
         Self {
             ix_hash: ix_labels.and_then(ix_hash_from_labels_json),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
             marker_bits: parsed.as_ref().map(marker_bits_from_labels_value).unwrap_or(0),
             build_hash: parsed.as_ref().and_then(build_hash_from_labels_value),
+            core_hash,
+            core_marks,
             template_hash: ix_labels.and_then(grain_hash_from_labels_json),
             program_hash: ix_labels.and_then(program_hash_from_labels_json),
             is_launch: ix_labels.is_some_and(is_launch_from_labels_json),
@@ -158,6 +165,7 @@ impl FlowKeys {
     /// Postgres `Trade` shape, which (unlike the lake's export) still carries
     /// **either** persisted shape, so it must go through the shape-complete reader.
     pub fn from_value(ix_labels: &Value, wallet: Option<&str>, fee: FeeKeys) -> Self {
+        let (core_hash, core_marks) = core_keys_from_labels_value(ix_labels);
         Self {
             ix_hash: ix_hash_from_labels_value(ix_labels),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
@@ -165,6 +173,8 @@ impl FlowKeys {
             template_hash: grain_hash_from_labels_value(ix_labels),
             program_hash: program_hash_from_labels_value(ix_labels),
             build_hash: build_hash_from_labels_value(ix_labels),
+            core_hash,
+            core_marks,
             is_launch: is_launch_from_labels_value(ix_labels),
             fee,
         }
@@ -261,6 +271,8 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
         template_hash: ct.flow.template_hash,
         program_hash: ct.flow.program_hash,
         build_hash: ct.flow.build_hash,
+        core_hash: ct.flow.core_hash,
+        core_marks: ct.flow.core_marks,
         is_launch: ct.flow.is_launch,
         on_curve: ct.on_curve,
         fee: ct.flow.fee,

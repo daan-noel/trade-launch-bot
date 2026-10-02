@@ -7,7 +7,7 @@ use super::state::*;
 use crate::metrics::fee::FeeKeys;
 use crate::metrics::registry::Metric;
 use crate::metrics::template_grain::program_id_hash;
-use crate::metrics::trade_keys::{ix_hash, ix_hash_opt, marker_mask, wallet_hash};
+use crate::metrics::trade_keys::{core_hash, core_marks, ix_hash, ix_hash_opt, marker_mask, wallet_hash};
 use crate::metrics::{Cursor, Side, TradeLite, Ts, WindowSpec};
 use chrono::{Duration, TimeZone, Utc};
 use serde_json::{json, Value};
@@ -179,13 +179,14 @@ fn windowed_running_totals_equal_a_brute_force_refold() {
 }
 
 /// The shared parity fixture (twin: the chart's `classifyFlow.parity.test.ts`). A case's
-/// `patterns` + `creator` is a tag with those shapes, the creator matcher and `sticky`.
+/// `patterns` + `creator` is a tag with those shapes (exact arrays or row objects, core
+/// rows included), the creator matcher and `sticky`.
 #[test]
 fn the_shared_parity_fixture() {
     #[derive(serde::Deserialize)]
     struct Case {
         name: String,
-        patterns: Vec<Vec<String>>,
+        patterns: Vec<Value>,
         creator: Option<String>,
         trades: Vec<FixtureTrade>,
         expect: Expect,
@@ -219,7 +220,12 @@ fn the_shared_parity_fixture() {
         for (i, t) in case.trades.iter().enumerate() {
             let side = if t.side == "buy" { Side::Buy } else { Side::Sell };
             let ix = t.labels.as_deref().and_then(ix_hash_opt);
-            st.on_trade(&trade(side, t.sol, ix, wallet_hash(&t.wallet), i as f64), c(0));
+            let mut tl = trade(side, t.sol, ix, wallet_hash(&t.wallet), i as f64);
+            if let Some(l) = t.labels.as_deref() {
+                tl.core_hash = core_hash(l);
+                tl.core_marks = core_marks(l);
+            }
+            st.on_trade(&tl, c(0));
         }
         let now = ts(case.trades.len() as f64);
         for (m, negated, want, label) in [

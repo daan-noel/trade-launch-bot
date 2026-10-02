@@ -50,8 +50,10 @@ what it paid) reaches its usual cash-out amount.
 and the owner is already near its profit level, it dumps into them.
 *Example: owner profit is at 60 % of its usual level, then outsiders buy 1.4 SOL in 2 s: dump.*
 
-**3. "Nobody is coming."** If no real buyers show up in the first ~15-20 s, the owner gives up and
-dumps early, at less profit.
+**3. "Take the small crowd."** Early in the coin's life the owner dumps into a small outsider crowd
+instead of waiting for its usual profit.
+*Example: at age 13-16 s, outsiders buy 0.6 SOL over 10 s with the price at its peak and the owner's
+profit at half its level: it dumps into them.*
 
 **4. "Real buyers carry it - push it to the end."** If outsiders keep buying on their own after
 the owner reached its profit level, it does not dump: it rides the coin up to migration, where the
@@ -101,16 +103,19 @@ actively working them; a lone coin is more often a test it drops.
 1. **Write down every moment.** For each coin, one row per trade, with what each reason reads at
    that moment - using only the past, never a later trade.
 2. **Mark the decisions** of section 2 on the same rows.
-3. **Does the decision follow the reason far more than usual?** Compare: how often the owner dumps
-   within a few seconds right after the reason holds, against how often it dumps at any moment.
-   *Example: the owner dumps within 3 s at about 1 % of all moments, but at about 4 % of the moments
-   right after outsiders bought 1 SOL in 3 s: four times more often. That reason matters.*
-   A reason that changes nothing (about 1x) is not what drives the owner.
-4. **Is there time to act?** The gap between the reason and the decision must leave room for our
+3. **Does the decision follow the reason?** A **chance** is the reason turning true (after being
+   false for more than W seconds) while the owner still holds; a **hit** is the decision landing
+   within W seconds after it. **Hit rate** = hits / chances; **cover** = decisions with a hit before
+   them / all decisions. *Example: outsiders buying 1 SOL in 3 s turns true 622 times before 682
+   cash-out dumps; 110 dumps follow within 3 s: hit rate 18 %, cover 16 %.*
+4. **Does it pay as an exit?** Book it: buy at the first trade at age 1 s or more, sell when the
+   reason fires, both fills 0.115 s after the decision, 0.03 SOL. A reason that reads the owner well
+   but books no better than holding is not an exit.
+5. **Is there time to act?** The gap between the reason and the decision must leave room for our
    order (we fill about 0.1 s later).
-5. **Recent days first, old days to check.** Tune on the last ~2 weeks; it counts only if it also
+6. **Recent days first, old days to check.** Tune on the last ~2 weeks; it counts only if it also
    holds on the 2 weeks before.
-6. **Look at the misses.** When the reason holds but the owner does not act, what happens next (a
+7. **Look at the misses.** When the reason holds but the owner does not act, what happens next (a
    ride, a migration, a slow death)? That is where a rule loses money.
 
 ## 5. From reasons to a trading rule
@@ -126,15 +131,31 @@ actively working them; a lone coin is more often a test it drops.
 
 Every line of a rule names the reason it reads.
 
+**An exit is a sequence of stages, one per owner decision.** The owner does not run one trigger: it
+cashes out early, or rides, then dumps into a burst, or carries the coin to migration. The exit
+follows it stage by stage:
+
+| stage | sell when | the owner's decision it reads |
+| --- | --- | --- |
+| open | its profit reaches its level, or 60 % of it while outsiders buy 1 SOL in 3 s, before age 20 s | 1 + 2: a quick cash-out |
+| open -> ride | the same signal at age 20 s or later: do not sell, ride | 4: outside money carries the coin |
+| ride, first 30 s | outsiders buy 2 SOL over 10 s | 2: it dumps into the burst |
+| any stage | the pool reaches 110 SOL | migrate |
+| any stage | the owner's dump instruction prints | it is out |
+| any stage | 1,000 s after the buy | the slowest migrations |
+
+A decision that looks the same as another one at the moment it starts has no stage: the exit pays
+for it, and the entry has to avoid it (section 6, the early dump).
+
 ## 6. Measured so far
 
 On 7ix (case file: [node-derivation/launch-group-7ix.md](node-derivation/launch-group-7ix.md)):
 
 | reason | what the tape shows |
 | --- | --- |
-| 1 | the owner's profit at its first dump is tight: on 4.16 coins 3.95 / 4.90 / 6.32 SOL (10 % / median / 75 %) |
-| 2 | the owner dumps 3.7-4.1 times more often right after outsiders buy 1 SOL or more in 3 s |
-| 3 | early dumps below the profit level land at age 14-19 s (median), at 68-84 % of the level |
+| 1 | the crew tag alone reads the owner's profit at its first dump as tight: on 4.16 coins 3.95 / 4.90 / 6.32 SOL (10 % / median / 75 %). On the full split it spreads: just before the cash-out dump (the owner-majority fall where it sells most), 4.16 coins 1.6 / 3.7 / 7.2 SOL (25 % / median / 75 %), the dev's own wallets 2.6 / 4.4 / 7.6; the dump's size is tighter (the owner sells 26 / 39 / 50 SOL) |
+| 2 | outsiders buying 1 SOL or more in 3 s: hit rate 11.5 / 17.7 %, cover 15 / 16 % against the cash-out dump (W 3 s, lag median 1.8-2.0 s); as the only exit, +12.5 / +17.2 % a trade, 12 of 17 and 12 of 13 days |
+| 3 | of the dev's dumps that land on a held trade, 62 % come before any signal: age 13-16 s (median), the dev's profit at half its level, outsiders buying 0.6 SOL over 10 s, the price at its peak. At that print, coins that dump and coins that ride read alike (age, outsider SOL, outsider buyers, pool, the dev's buying pace); every early-sell stage tried books 0.02-0.46 SOL below holding |
 | 4 | coins that migrate reach the owner's profit level later (median age 34 s, against 7 s) |
 | 5 | the price reaches its dump level 25-60 s before the dump, and holds there |
 | 7 | outsiders selling more than 1.3 SOL by age 10 s: the trade books -8.8 / -24.5 % |
@@ -157,6 +178,37 @@ plus wallet groups), not the full method of [owner-split.md](owner-split.md).
 | the owner stops buying while the price drops | -6.9 % | +12.7 % | fails: it comes after the crash |
 | the owner's bag shrinks below its usual low | -4.1 % | -5.4 % | fails: the bag swings while the owner trades both ways |
 | perfect exit (knowing the future) | +27.5 % | +29.0 % | |
+
+**Staged exit on the full split** ([owner-split.md](owner-split.md)). The stages of section 5;
+the owner's profit is its own wallets' (the creator, the create transaction, the creation-slot
+buys, the program); the levels are its median profit at its first sell wave on 09-02 .. 14 (0.13
+2.85, 0.65 1.48, 4.16 3.90 SOL); max_cost 0.13 / 0.65 / 4.16 with 44 SOL or more in the pool at the
+buy; fills 0.115 s after the decision, 0.03 SOL.
+
+| | 09-02 .. 14 | 09-15 .. 10-01 |
+| --- | ---: | ---: |
+| trades | 529 | 218 |
+| % a trade / median, bursts of 1 SOL over 3 s and 2 SOL over 10 s | +16.7 / -46.7 | +30.0 / -3.6 |
+| days in profit | 10 of 13 | 10 of 14 |
+| bursts of 0.75 SOL over 3 s and 1.5 SOL over 10 s | +22.0, 13 of 13 days | +30.4, 12 of 14 days |
+| bursts read as everyone but the dev's own wallets (the paid machines count), 1 / 2 SOL | +21.2, 13 of 13 days | +33.7, 12 of 14 days |
+| the dev's profit replaced by the full owner's profit | +15.3 | +19.0 |
+| plus an early stage (before 20 s, outsiders 0.75 SOL over 10 s, price at its peak) | +13.5, median -0.2, 12 of 13 days | +21.3, median +3.1, 12 of 14 days |
+
+Exits on 09-02 .. 14: quick cash-out 84 at +13 %; ride burst 56 at +104 %; pool at 110 SOL 41 at
++404 %; the dev's dump instruction 344 at -46 %. The perfect exit books +107 % a trade on every coin
+bought at age 1 s.
+
+The burst sizes belong to the flow they read: real outsiders buy less than outsiders plus the paid
+machines, so their sizes are smaller, and both readings book the same. In the engine, over 09-02 ..
+10-01 with the engine's crew (no creation-slot buyers), the stored reading leads: BROAD +24.7 %
+against +19.0 % a trade, FINAL +49.0 % against +41.0 %
+([7ix-crew-rule-engine.md](../../roadmap/7ix-crew-rule-engine.md), section 4).
+
+**Which coins.** The dev dumps early on about half its coins whatever the first second shows (65 /
+53 % of door coins). A door raises the result by picking bigger rides, not fewer early dumps: 6 or
+fewer prints by 1 s with a name an earlier 7ix coin used books +34.8 / +44.9 % a trade (165 / 105
+coins), its early dumps 59 / 47 %. Outsiders already in for 0.5-1.5 SOL by 1 s book +2.7 / +11.0 %.
 
 How the 7ix owner dumps: 41 % in one go (within 3 s), 39 % over 3-60 s, 19 % over more than 60 s.
 Nothing measured so far warns of a waterfall before it starts.

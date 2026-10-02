@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::grouping::normalize_labels;
 use crate::hash::{fnv1a_byte, fnv1a_bytes, FNV_OFFSET};
+use crate::metrics::template_grain;
 
 /// Stable hash of an ordered instruction-label sequence (exact-order match
 /// semantics, same as the fingerprint matcher's `ix_labels`). Labels are
@@ -66,6 +67,131 @@ pub fn build_hash(labels: &[impl AsRef<str>]) -> Option<u64> {
 /// so both persisted shapes read alike (see [`ix_hash_from_labels_value`]).
 pub fn build_hash_from_labels_value(labels: &Value) -> Option<u64> {
     build_hash(&normalize_labels(labels))
+}
+
+// ── Build core ───────────────────────────────────────────────────────────────
+
+/// Whether a label is an EXTRA around a trade: something a sender adds, drops or moves
+/// without changing what the transaction does. The template grain's boilerplate
+/// ([`template_grain::is_boilerplate`]) plus every System Program instruction and the
+/// Lighthouse guard. A build's [core](core_labels) is what is left.
+pub fn is_core_extra(label: &str) -> bool {
+    template_grain::is_boilerplate(label) || label.starts_with("System Program:") || label.starts_with("Lighthouse")
+}
+
+/// One label of a core: pump.fun's verb variants merged (`Buy`, `BuyV2`,
+/// `BuyExactSolIn` -> `BUY`; `Sell`, `SellV2` -> `SELL`; `Create`, `Create_v2` ->
+/// `CREATE`). Every other label, an app's own instruction included, is itself. An
+/// already-merged verb maps to itself, so a core is its own core.
+fn core_verb(label: &str) -> &str {
+    if let Some(rest) = label.strip_prefix("Pump.Fun: ") {
+        if rest.starts_with("Buy") || rest == "BUY" {
+            return "Pump.Fun: BUY";
+        }
+        if rest.starts_with("Sell") || rest == "SELL" {
+            return "Pump.Fun: SELL";
+        }
+        if rest.starts_with("Create") || rest == "CREATE" {
+            return "Pump.Fun: CREATE";
+        }
+    }
+    label
+}
+
+/// A build's core: its labels without the [extras](is_core_extra), in order, with
+/// pump.fun's verb variants merged. A dev who rotates small variants of one build
+/// (a memo added, the compute-budget pair swapped, `BuyV2` for `Buy`, a nonce) keeps
+/// one core. The offline twin is the owner split's `core_labels`
+/// (`owner-split.md`, "Match levels").
+pub fn core_labels<S: AsRef<str>>(labels: &[S]) -> Vec<&str> {
+    labels.iter().map(AsRef::as_ref).filter(|l| !is_core_extra(l)).map(core_verb).collect()
+}
+
+/// [`ix_hash`] of the [core](core_labels); `None` when labels are absent (the same
+/// sentinel as [`ix_hash_opt`]). A build of extras only has an empty core, which is
+/// a real core with its own hash.
+pub fn core_hash(labels: &[impl AsRef<str>]) -> Option<u64> {
+    (!labels.is_empty()).then(|| ix_hash(&core_labels(labels)))
+}
+
+/// The extras of a build, packed: presence flags in bits 0-7 ([`CORE_MARK_FLAGS`]),
+/// the System `Transfer` count in bits 8-15 and the `Associated Token: Create*`
+/// count in bits 16-23 (both capped at 255). Order never counts; the two counts do.
+/// Text form: [`core_marks_text`].
+pub fn core_marks(labels: &[impl AsRef<str>]) -> u32 {
+    let mut flags = 0u32;
+    let (mut transfers, mut opens) = (0u32, 0u32);
+    for l in labels {
+        let l = l.as_ref();
+        for (bit, (_, test)) in CORE_MARK_FLAGS.iter().enumerate() {
+            if test(l) {
+                flags |= 1 << bit;
+            }
+        }
+        if l == "System Program: Transfer" {
+            transfers += 1;
+        }
+        if l.starts_with("Associated Token: Create") {
+            opens += 1;
+        }
+    }
+    flags | (transfers.min(255) << 8) | (opens.min(255) << 16)
+}
+
+/// The presence flags of [`core_marks`], in their bit and text order.
+#[allow(clippy::type_complexity)]
+pub const CORE_MARK_FLAGS: [(&str, fn(&str) -> bool); 8] = [
+    ("CL", |l| l == "Compute Budget: SetComputeUnitLimit"),
+    ("CP", |l| l == "Compute Budget: SetComputeUnitPrice"),
+    ("N", |l| l == "System Program: AdvanceNonceAccount"),
+    ("L", |l| l.starts_with("Lighthouse")),
+    ("M", |l| l.starts_with("Memo Program")),
+    ("S", |l| l.starts_with("System Program: CreateAccount")),
+    ("C", |l| l.ends_with(": CloseAccount")),
+    ("W", |l| l.ends_with(": SyncNative")),
+];
+
+/// [`core_marks`] as text: the present flags in [`CORE_MARK_FLAGS`] order, then
+/// `T<transfers> A<account opens>` — `"CL CP C T1 A3"`.
+pub fn core_marks_text(marks: u32) -> String {
+    let mut out: Vec<String> = CORE_MARK_FLAGS
+        .iter()
+        .enumerate()
+        .filter(|(bit, _)| marks & (1 << bit) != 0)
+        .map(|(_, (name, _))| (*name).to_string())
+        .collect();
+    out.push(format!("T{}", (marks >> 8) & 0xff));
+    out.push(format!("A{}", (marks >> 16) & 0xff));
+    out.join(" ")
+}
+
+/// Parse [`core_marks_text`]. Tokens in any order; a missing count reads `0`; an
+/// unknown token or a count past 255 is an error.
+pub fn core_marks_from_text(text: &str) -> Result<u32, String> {
+    let mut marks = 0u32;
+    for tok in text.split_whitespace() {
+        if let Some(bit) = CORE_MARK_FLAGS.iter().position(|(n, _)| *n == tok) {
+            marks |= 1 << bit;
+            continue;
+        }
+        let (shift, n) = match (tok.strip_prefix('T'), tok.strip_prefix('A')) {
+            (Some(n), _) => (8, n),
+            (_, Some(n)) => (16, n),
+            _ => return Err(format!("unknown core mark `{tok}` (flags CL CP N L M S C W, counts T<n> A<n>)")),
+        };
+        let n: u32 = n.parse().map_err(|_| format!("core mark `{tok}` needs a count"))?;
+        if n > 255 {
+            return Err(format!("core mark `{tok}` exceeds 255"));
+        }
+        marks = (marks & !(0xff << shift)) | (n << shift);
+    }
+    Ok(marks)
+}
+
+/// [`core_hash`] and [`core_marks`] over labels decoded into a [`Value`].
+pub fn core_keys_from_labels_value(labels: &Value) -> (Option<u64>, u32) {
+    let l = normalize_labels(labels);
+    (core_hash(&l), core_marks(&l))
 }
 
 /// Programs every sender's transaction carries around the trade, whatever app sent
@@ -282,6 +408,44 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    /// The shared core vectors (twins: the chart's `ixCore.test.ts`, the owner split's
+    /// `core_labels` / `marks_of`): every implementation reduces a build alike.
+    #[test]
+    fn the_shared_core_fixture() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            name: String,
+            labels: Vec<String>,
+            core: Vec<String>,
+            marks: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            cases: Vec<Case>,
+        }
+        let f: Fixture =
+            serde_json::from_str(include_str!("../../fixtures/ix_core_parity.json")).expect("fixture parses");
+        assert!(!f.cases.is_empty());
+        for c in f.cases {
+            assert_eq!(core_labels(&c.labels), c.core, "case {:?}: core", c.name);
+            assert_eq!(core_marks_text(core_marks(&c.labels)), c.marks, "case {:?}: marks", c.name);
+            assert_eq!(core_marks_from_text(&c.marks), Ok(core_marks(&c.labels)), "case {:?}: marks text", c.name);
+            assert_eq!(core_hash(&c.labels), Some(ix_hash(&c.core)), "case {:?}: hash", c.name);
+            // A core is its own core.
+            assert_eq!(core_labels(&c.core), c.core, "case {:?}: idempotent", c.name);
+        }
+    }
+
+    #[test]
+    fn core_marks_text_reads_any_order_and_refuses_junk() {
+        assert_eq!(core_marks_from_text("A3 CP CL T1"), core_marks_from_text("CL CP T1 A3"));
+        assert_eq!(core_marks_from_text(""), Ok(0));
+        assert!(core_marks_from_text("CU").is_err());
+        assert!(core_marks_from_text("T").is_err());
+        assert!(core_marks_from_text("A256").is_err());
+        assert_eq!(core_hash(&[] as &[&str]), None, "absent labels stay the missing sentinel");
+    }
 
     #[test]
     fn ix_hash_is_order_and_boundary_sensitive() {

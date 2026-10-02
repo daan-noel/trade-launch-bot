@@ -98,6 +98,10 @@ pub struct CachedTrade {
     /// FNV-1a of the build recipe (engine `flow_ix::build_hash`); `None` when
     /// labels are empty/missing.
     pub build_hash: Option<u64>,
+    /// FNV-1a of the build core and the packed extras (engine `trade_keys::core_hash`
+    /// / `core_marks`); `None` / `0` when labels are empty/missing.
+    pub core_hash: Option<u64>,
+    pub core_marks: u32,
     pub is_launch: bool,
     pub on_curve: bool,
     /// The transaction's declared fee budget, copied straight off the [`Trade`] —
@@ -125,6 +129,8 @@ impl CachedTrade {
             hunter_engine::metrics::template_grain::grain_hash(&labels),
             hunter_engine::metrics::template_grain::program_hash(&labels),
             hunter_engine::metrics::trade_keys::build_hash(&labels),
+            hunter_engine::metrics::trade_keys::core_hash(&labels),
+            hunter_engine::metrics::trade_keys::core_marks(&labels),
             hunter_engine::metrics::template_grain::is_launch(&labels),
         )
     }
@@ -141,6 +147,8 @@ impl CachedTrade {
         template_hash: Option<u64>,
         program_hash: Option<u64>,
         build_hash: Option<u64>,
+        core_hash: Option<u64>,
+        core_marks: u32,
         is_launch: bool,
     ) -> Self {
         Self {
@@ -166,6 +174,8 @@ impl CachedTrade {
             template_hash,
             program_hash,
             build_hash,
+            core_hash,
+            core_marks,
             is_launch,
             on_curve: t.venue != "amm",
             // `cu_limit` is a `u64` on the model but a `u32` on the chain (the
@@ -512,6 +522,8 @@ impl TokenState {
         template_hash: Option<u64>,
         program_hash: Option<u64>,
         build_hash: Option<u64>,
+        core_hash: Option<u64>,
+        core_marks: u32,
         is_launch: bool,
     ) {
         self.apply_aggregates(&trade);
@@ -526,6 +538,8 @@ impl TokenState {
                 template_hash,
                 program_hash,
                 build_hash,
+                core_hash,
+                core_marks,
                 is_launch,
             );
         self.push_trade_capped(cached);

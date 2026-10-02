@@ -675,6 +675,8 @@ async fn replay_for_position(
 /// the canonical `price_per_token`, REAL reserves (absent ⇒ `NaN`, which reads as
 /// "alive" rather than dead), the PRICED reserve for impact, and the flow hashes.
 fn trade_lite(t: &Trade) -> TradeLite {
+    let (core_hash, core_marks) =
+        hunter_engine::metrics::trade_keys::core_keys_from_labels_value(&t.instruction_labels);
     TradeLite {
         side: if t.trade_type == TradeType::Buy { Side::Buy } else { Side::Sell },
         sol: t.amount_sol,
@@ -702,6 +704,8 @@ fn trade_lite(t: &Trade) -> TradeLite {
         build_hash: hunter_engine::metrics::trade_keys::build_hash_from_labels_value(
             &t.instruction_labels,
         ),
+        core_hash,
+        core_marks,
         is_launch: hunter_engine::metrics::template_grain::is_launch_from_labels_value(
             &t.instruction_labels,
         ),

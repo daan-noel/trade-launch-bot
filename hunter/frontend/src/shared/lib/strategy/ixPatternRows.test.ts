@@ -286,3 +286,32 @@ describe('feeMaskActive / formatFeePins', () => {
     );
   });
 });
+
+describe('core-level rows', () => {
+  const core = { labels: ['Pump.Fun: Sell'], level: 'core' as const, side: 'sell' as const, marks: 'CL CP T0 A0', cu_price: 167000 };
+
+  it('round-trips level, side, marks and pins', () => {
+    const parsed = parseIxPatternRow(serializeIxPatternRow(core));
+    expect(parsed).toEqual(core);
+    expect(serializeIxPatternRow({ labels: ['Pump.Fun: Sell'], level: 'core' })).toEqual({ labels: ['Pump.Fun: Sell'], level: 'core' });
+  });
+
+  it('refuses what the engine refuses', () => {
+    expect(parseIxPatternRow({ labels: ['A'], side: 'sell' })).toBeNull();
+    expect(parseIxPatternRow({ labels: ['A'], level: 'wide' })).toBeNull();
+    expect(parseIxPatternRow({ labels: ['A'], level: 'core', marks: 'CU' })).toBeNull();
+  });
+
+  it('matches every variant of the build, on side, extras and fee', () => {
+    const t = { side: 'sell' as const, cu_price: 167000 };
+    expect(rowMatchesTrade(core, ['Compute Budget: SetComputeUnitPrice', 'Compute Budget: SetComputeUnitLimit', 'Pump.Fun: SellV2'], t)).toBe(true);
+    expect(rowMatchesTrade(core, ['Compute Budget: SetComputeUnitLimit', 'Compute Budget: SetComputeUnitPrice', 'Memo Program: Memo', 'Pump.Fun: Sell'], t)).toBe(false);
+    expect(rowMatchesTrade(core, ['Compute Budget: SetComputeUnitLimit', 'Compute Budget: SetComputeUnitPrice', 'Pump.Fun: Sell'], { ...t, side: 'buy' })).toBe(false);
+  });
+
+  it('survives a save from a labels-only surface and the exact-row staging helpers', () => {
+    expect(withPreservedFees([['Pump.Fun: Sell']], [serializeIxPatternRow(core)])).toEqual([core]);
+    expect(removeUnpinnedPatterns([core], [['Pump.Fun: Sell']])).toEqual([core]);
+    expect(togglePatternRow([core], { labels: ['Pump.Fun: Sell'] })).toEqual([core, { labels: ['Pump.Fun: Sell'] }]);
+  });
+});

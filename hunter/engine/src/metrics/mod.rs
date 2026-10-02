@@ -223,6 +223,16 @@ pub struct TradeLite {
     /// absent. What `m_build_window` counts distinct values of.
     #[serde(default)]
     pub build_hash: Option<u64>,
+    /// FNV-1a of this trade's build CORE ([`trade_keys::core_hash`]): the ordered
+    /// labels without the extras a sender rotates (compute budget, System, token
+    /// accounts, memo, Lighthouse), pump.fun's verb variants merged. `None` when labels
+    /// are absent. What a core-level `ix_shape` entry matches.
+    #[serde(default)]
+    pub core_hash: Option<u64>,
+    /// The extras of that build ([`trade_keys::core_marks`]): presence flags plus the
+    /// transfer and account-open counts. Read only beside [`core_hash`](Self::core_hash).
+    #[serde(default)]
+    pub core_marks: u32,
     /// Curve vs AMM. Default `true` so a pre-field event-log line still joins
     /// the burst prefix (the harvest universe is the curve). AMM prints do not.
     #[serde(default = "default_true")]
@@ -274,6 +284,8 @@ impl Default for TradeLite {
             template_hash: None,
             program_hash: None,
             build_hash: None,
+            core_hash: None,
+            core_marks: 0,
             on_curve: true,
             is_launch: false,
             fee: FeeKeys::default(),
