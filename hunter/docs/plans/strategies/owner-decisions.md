@@ -1,218 +1,214 @@
-# Owner decisions: when the owner pumps, holds, dumps and pumps again
+# Owner decisions: the method that finds a group's rule
 
-**What this file does.** Once every trade is split into owner and outsider
-([owner-split.md](owner-split.md)), this file is the method to find **why and when the owner
-acts**: when it pumps, holds the price, rides, dumps, gives up, or pumps again. A trading rule is
-then built from those decisions: buy when the owner commits, stay while it rides, sell just before
-it dumps.
+**What this file is.** The workflow for any launch group. Trades are already split into owner
+and outsider ([owner-split.md](owner-split.md)). This file finds **why and when the owner
+acts**, then builds the rule from those decisions: buy when the next act is "keeps working the
+coin", stay while it rides, sell just before it dumps.
 
-The method works for any launch group. Numbers measured so far are in section 6.
+A correction to the workflow is written here, in the session it is accepted. A group's regions,
+levels, lead times, and booked stages go in that group's case file, written when a run produces
+them.
 
-Numbers marked **start value** are first guesses, to be tuned on data.
+The picture and sections 1-7 are the workflow. Cuts for a run come from the fit week.
 
 ---
 
-## 1. The idea: each coin is a small business for the owner
+## The picture
 
-- **It spends**: its own SOL to push the price up, and its time.
-- **It earns**: outsiders' SOL. The owner's profit is what outsiders pay for its tokens.
-- **Its risk**: outsiders holding a big bag can sell first and take the profit instead.
+```
+owner-split: each trade is owner or outsider
+        |
+        v
+fit week = the latest 7 days of the group's prints
+        |
+        v
+every print while the owner still holds
+        |
+        +-- label = the owner's NEXT act
+        +-- attach = past readings only, at several spans
+        |
+        v
+a region = a small set of readings where one next act
+           becomes common, and the other acts do not
+        |
+        +-- same readings, same next act, any age  --> one logic
+        +-- one next act, two different pasts      --> two logics
+        |
+        v
+inside the fit week the cut recurs on most days
+        |
+        +-- lead long enough to fill  --> a stage
+        +-- lead too short to fill    --> the logic stands;
+                                         the sell is the dump print
+        |
+        v
+the stage books more than ignoring it, on the fit week
+        |
+        v
+entry (keeps working) / stay (ride, hold, migrate) / exit (a sell)
+        |
+older weeks sit beside the result:
+  same region still splits?  --> the logic held; write that week's level
+  a different reading splits --> a logic change; write it down
+neither one moves this week's level
+```
 
-So the owner **keeps pumping while it expects outsiders to pay more than the pump costs, and dumps
-when that stops**. Every reason in section 3 is one way to read that at a given moment.
+---
 
-The owner does not live on creator fees: its own trades are most of the coin's volume, so it pays
-most of those fees itself.
+## 1. The owner
 
-## 2. The owner's decisions, and how each one shows on the chart
+Each coin is a small business for the owner.
 
-| decision | how we see it (start values) |
+- **It spends** its own SOL to push the price, and its time.
+- **It earns** outsiders' SOL. Its profit is what outsiders pay for its tokens.
+- **Its risk** is outsiders holding a bag that can sell first.
+
+It keeps working the coin while it expects outsiders to pay more than the next push costs, and
+it dumps when that stops. A name in section 6 is applied **after** a region splits. The figures
+inside those names are examples of a reading.
+
+Its income is that profit. Its own trades are most of the coin's volume, so creator fees are
+mostly fees it pays itself.
+
+## 2. A decision
+
+A **decision** is a branch in the next act, read from the past only.
+
+The **next act** is whatever the owner does next, while it still holds:
+
+| next act | what the tape shows |
 | --- | --- |
-| commit | the owner puts 1 SOL or more into the coin within its first 5 s |
-| pump step | owner buys push the price up 10 % or more |
-| hold the band | the price stays within +-10 % for 20 s while the owner keeps buying and selling |
-| one-shot dump | the price falls in one slot ([owner-split.md](owner-split.md), "fall") |
-| waterfall dump | the price falls in several steps, less than 30 s apart |
-| ride | the owner could cash out (its profit reached its usual level), but keeps buying and the price rises another 20 % or more |
-| migrate | the coin completes its curve (on pump.fun, about 110 SOL in the pool) |
-| give up | the owner dumps before its profit reaches its usual level |
-| second pump | after a dump, the owner buys 1 SOL or more within 60 s and the price climbs 20 % or more from the bottom |
+| buys again | the owner buys and the price is pushed |
+| sits | a gap with no owner trade while the coin goes on |
+| sells part | an owner sell that leaves most of the bag |
+| sells most, one fall | an owner-majority [fall](owner-split.md) in one drop |
+| sells in steps | an owner-majority fall made of several drops |
+| pumps again | after a fall, the owner buys and the price climbs off the bottom |
+| migrate | the coin completes the curve |
+| moves on | the owner launches or starts pushing another coin |
 
-## 3. The owner's reasons
+A **logic** is one region of past readings where that next act becomes common. The list of
+logics is however many regions survive section 4. Age does not make a new logic. Two ages with
+the same readings and the same next act are one logic. One dump with two different pasts is two
+logics.
 
-Each reason is something we can read at any moment of a coin, and the decision it should lead to.
+A fall is the one defined in [owner-split.md](owner-split.md). That definition tells the acts
+apart. It is not a decision window.
 
-**1. "I have made enough."** The owner dumps once its profit (what its tokens are worth now, minus
-what it paid) reaches its usual cash-out amount.
-*Example: on a 4.16 coin the owner usually cashes out at about 4.9 SOL of profit.*
+## 3. Readings, spans, levels
 
-**2. "Buyers are here - sell to them now."** When outsiders suddenly buy (1 SOL or more within 3 s)
-and the owner is already near its profit level, it dumps into them.
-*Example: owner profit is at 60 % of its usual level, then outsiders buy 1.4 SOL in 2 s: dump.*
+Every reading below is attached. The search keeps the ones that separate the next act.
 
-**3. "Take the small crowd."** Early in the coin's life the owner dumps into a small outsider crowd
-instead of waiting for its usual profit.
-*Example: at age 13-16 s, outsiders buy 0.6 SOL over 10 s with the price at its peak and the owner's
-profit at half its level: it dumps into them.*
-
-**4. "Real buyers carry it - push it to the end."** If outsiders keep buying on their own after
-the owner reached its profit level, it does not dump: it rides the coin up to migration, where the
-reward is bigger.
-
-**5. "Hold the price and wait."** The owner keeps the price flat in a band while waiting for the
-next wave of buyers, then dumps into it.
-
-**6. "My next coin needs me."** When the owner launches or starts pumping another coin, it dumps
-this one.
-
-**7. "Early holders are dangerous."** If outsiders bought a big bag early (or are already selling in
-the first 10 s), they could dump on the owner, so it dumps first.
-
-**8. "Sell while the pool can take my bag."** The bigger the owner's bag against the SOL in the
-pool, the more its own sell crashes the price. It dumps while the pool can still absorb it.
-
-**9. "Dump all at once, or bit by bit."** If buyers stop all at once, the owner dumps in one go. If
-slow buyers keep trickling in, it sells a little into each one (a waterfall).
-
-**10. "Is pumping still worth it?"** The owner watches how much outsider money each SOL of its
-pumping brings in. When that falls, it stops pumping and dumps soon.
-*Example: in the last 30 s the owner put in 2 SOL and outsiders 3 SOL (1.5 each); before, it was
-3 per SOL: falling.*
-
-**11. "The holders are gone - pumping again is safe."** After a dump, outsiders who held before
-it sell their tokens. Once most of them have left, few outsiders are left who could sell into a
-new pump, so the owner pumps again. If outsiders still hold a big bag, it does not pump again.
-*Example: after the dump outsiders hold 2 % of the supply: second pump likely. They still hold
-15 %: no second pump.*
-
-**12. "Use what worked, launch when people are awake."** The owner reuses a coin name that worked
-before, and launches more in the audience's hours (21-24 UTC).
-
-**13. "I am working a session."** When the owner launches several coins close together, it is
-actively working them; a lone coin is more often a test it drops.
-
-**Not reasons** (measured, they do not hold):
-- A fixed timer, a fixed price, a fixed budget, or a fixed amount of outsider money as the dump
-  trigger.
-- The owner's buys minus its sells over the last few seconds: the owner buys and sells at the same
-  time, so this flips all the time, long before any dump.
-- Creator fees as the owner's income (section 1).
-
-## 4. How a reason is tested
-
-1. **Write down every moment.** For each coin, one row per trade, with what each reason reads at
-   that moment - using only the past, never a later trade.
-2. **Mark the decisions** of section 2 on the same rows.
-3. **Does the decision follow the reason?** A **chance** is the reason turning true (after being
-   false for more than W seconds) while the owner still holds; a **hit** is the decision landing
-   within W seconds after it. **Hit rate** = hits / chances; **cover** = decisions with a hit before
-   them / all decisions. *Example: outsiders buying 1 SOL in 3 s turns true 622 times before 682
-   cash-out dumps; 110 dumps follow within 3 s: hit rate 18 %, cover 16 %.*
-4. **Does it pay as an exit?** Book it: buy at the first trade at age 1 s or more, sell when the
-   reason fires, both fills 0.115 s after the decision, 0.03 SOL. A reason that reads the owner well
-   but books no better than holding is not an exit.
-5. **Is there time to act?** The gap between the reason and the decision must leave room for our
-   order (we fill about 0.1 s later).
-6. **Recent days first, old days to check.** Tune on the last ~2 weeks; it counts only if it also
-   holds on the 2 weeks before.
-7. **Look at the misses.** When the reason holds but the owner does not act, what happens next (a
-   ride, a migration, a slow death)? That is where a rule loses money.
-
-## 5. From reasons to a trading rule
-
-| part of the rule | built from |
+| reading | what it is |
 | --- | --- |
-| which coins to trade | 12, 13, and the commit decision |
-| when to buy | right after the owner commits, unless reason 7 holds |
-| when to sell before a dump | 1, 2, 3, 10 |
-| when to stay | 4 |
-| how to sell in a waterfall | 9, read once the first step down lands |
-| when to buy again | 11 |
+| owner profit | tokens marked to market, minus what the owner paid |
+| bag vs pool | the owner's bag against the SOL in the pool |
+| since last owner buy | time since the owner's last buy |
+| since last owner sell | time since the owner's last sell |
+| outsider buys | outsider SOL, buyer count, largest buy |
+| outsider sells | outsider sell SOL |
+| price vs peak | price against the high so far |
+| flatness | how tight the price has sat, over a span |
+| pool | SOL in the pool |
+| age | time since creation |
+| other coin | the owner launched, or is pushing, another coin |
 
-Every line of a rule names the reason it reads.
+Each flow, each flatness, and each "since" is stored at several spans at once: one slot, 1 s,
+3 s, 10 s, 30 s, since the last owner act, since creation, and the change from a short span to
+a longer one. The span a region uses is the span that separates its next act. A level (a SOL
+amount, a percent, a pool size, a clock) is the cut where that separation is sharpest on the
+fit week.
 
-**An exit is a sequence of stages, one per owner decision.** The owner does not run one trigger: it
-cashes out early, or rides, then dumps into a burst, or carries the coin to migration. The exit
-follows it stage by stage:
+A figure named in a session is an example of a reading until the fit week shows that it splits.
 
-| stage | sell when | the owner's decision it reads |
+The owner tag is part of the reading. On the prints that feed a region, owner flow has to be
+owner. Owner buys counted as outsider are a different region, and the region is rebuilt once
+the tag is corrected.
+
+## 4. How a logic is found
+
+Run this on the fit week (section 5).
+
+1. **One row per print** while the owner still holds. The row's label is the next act. The row's
+   readings use only prints already in the past.
+2. **Search the readings and the spans** for a small set where one next act is common and the
+   others are not. Each such set is a candidate region.
+3. **Merge and split.** Same readings and the same next act are one logic, at any age. One act
+   with two pasts is two logics. A region that matches no name in section 6 is still a logic.
+4. **The cut recurs across days.** The same readings separate the next act on most days of the
+   fit week, and the level stays in a tight range across those days. A cut that appears on one
+   day is noise. The owner moves a level from week to week, not from day to day. The shape of a
+   logic (which readings separate the act) moves rarely; the level moves easily.
+5. **Measure the lead.** The lead is the time from the readings turning true until the act. It
+   is whatever the tape shows for that logic. A lead of about 0.1 s or more leaves room for the
+   fill. A shorter lead is a real logic, and the order lands on the act itself: the sell is the
+   dump print (section 7).
+6. **Book it.** Fills are 0.115 s after the decision, 0.03 SOL, unless the group's case file
+   sets another size. A region becomes a stage when acting on it books more than ignoring it,
+   on the fit week. A region that reads the owner and books no better than ignoring it is not a
+   stage.
+7. **Read the misses.** Where the readings hold and the owner takes another act, record that
+   act. That is where a stage gives money back.
+
+## 5. The fit week
+
+The **fit week** is the latest 7 days of the group's prints. It is the owner's current market.
+Logics and levels are fit on that week only.
+
+Each older week answers two questions, and nothing else:
+
+| question | what is written down |
+| --- | --- |
+| Does the same region still split the next act? | the logic held |
+| If it held, where did the level sit? | that week's level, so the drift is visible |
+| Does a different reading split the act? | a logic change |
+
+An older week does not move this week's level. A region that fails to split on an older week
+stays in the rule when it splits on the fit week. A region that splits only on an older week
+stays out of the rule. Weeks are not averaged.
+
+## 6. Names
+
+A name is written on a region after it separates. These are the names already in use. A new
+region with no fitting name keeps its readings as its name.
+
+| name | the reading it points at |
+| --- | --- |
+| "I have made enough." | owner profit reaches the level this region uses |
+| "Buyers are here - sell to them now." | outsider buys over the region's span, with profit already near its level |
+| "Take the small crowd." | a small outsider crowd, profit short of its level |
+| "Real buyers carry it." | outsiders keep buying after profit reached its level; the next act is ride or migrate |
+| "Hold the price and wait." | the price sits flat while the owner keeps trading, then a sell into the next buyers |
+| "My next coin needs me." | a launch or a push on another coin, then a sell here |
+| "Early holders are dangerous." | outsiders hold or sell a bag the owner does not want under it |
+| "Sell while the pool can take my bag." | bag vs pool, the sell lands while the pool can still absorb it |
+| "All at once, or in steps." | buyers stop, one fall; buyers trickle, sells in steps |
+| "Is pumping still worth it?" | outsider SOL per SOL the owner pushes, and that ratio falling |
+| "The holders are gone." | after a fall, outsiders who held through it have sold; a new pump is safe |
+| "Use what worked." | a reused name, or the hours the owner chooses to launch |
+| "I am working a session." | several launches close together, against a lone coin |
+
+Any SOL amount, percent, span, or age written next to a name elsewhere is an example. The fit
+week sets the level.
+
+## 7. From logics to the rule
+
+One stage per logic that survives section 4.
+
+| stage | when it acts | the next act it reads |
 | --- | --- | --- |
-| open | its profit reaches its level, or 60 % of it while outsiders buy 1 SOL in 3 s, before age 20 s | 1 + 2: a quick cash-out |
-| open -> ride | the same signal at age 20 s or later: do not sell, ride | 4: outside money carries the coin |
-| ride, first 30 s | outsiders buy 2 SOL over 10 s | 2: it dumps into the burst |
-| any stage | the pool reaches 110 SOL | migrate |
-| any stage | the owner's dump instruction prints | it is out |
-| any stage | 1,000 s after the buy | the slowest migrations |
+| entry | the readings say the owner keeps working the coin, and the lead covers the fill | buys again |
+| stay | the readings say ride, sit, or migrate | buys again, sits, migrate |
+| exit | the readings say a sell, including while the position is down | sells part, sells most, sells in steps, moves on |
+| dump print | the owner's dump instruction prints | the act itself, when no earlier exit landed |
+| migrate print | the curve completes and no post-migration tape exists | the backtest closes at this print |
 
-A decision that looks the same as another one at the moment it starts has no stage: the exit pays
-for it, and the entry has to avoid it (section 6, the early dump).
+After the curve completes, the live rule has its own stage. That stage is fit the same way once
+post-migration prints exist: a hold and a trail are readings, and the fit week sets their
+levels. Until those prints exist, the backtest closes at the migration print.
 
-## 6. Measured so far
+A pool size, a clock, or a profit percent is a stage only when it is the level of a region that
+survives section 4.
 
-On 7ix (case file: [node-derivation/launch-group-7ix.md](node-derivation/launch-group-7ix.md)):
-
-| reason | what the tape shows |
-| --- | --- |
-| 1 | the crew tag alone reads the owner's profit at its first dump as tight: on 4.16 coins 3.95 / 4.90 / 6.32 SOL (10 % / median / 75 %). On the full split it spreads: just before the cash-out dump (the owner-majority fall where it sells most), 4.16 coins 1.6 / 3.7 / 7.2 SOL (25 % / median / 75 %), the dev's own wallets 2.6 / 4.4 / 7.6; the dump's size is tighter (the owner sells 26 / 39 / 50 SOL) |
-| 2 | outsiders buying 1 SOL or more in 3 s: hit rate 11.5 / 17.7 %, cover 15 / 16 % against the cash-out dump (W 3 s, lag median 1.8-2.0 s); as the only exit, +12.5 / +17.2 % a trade, 12 of 17 and 12 of 13 days |
-| 3 | of the dev's dumps that land on a held trade, 62 % come before any signal: age 13-16 s (median), the dev's profit at half its level, outsiders buying 0.6 SOL over 10 s, the price at its peak. At that print, coins that dump and coins that ride read alike (age, outsider SOL, outsider buyers, pool, the dev's buying pace); every early-sell stage tried books 0.02-0.46 SOL below holding |
-| 4 | coins that migrate reach the owner's profit level later (median age 34 s, against 7 s) |
-| 5 | the price reaches its dump level 25-60 s before the dump, and holds there |
-| 7 | outsiders selling more than 1.3 SOL by age 10 s: the trade books -8.8 / -24.5 % |
-| 12 | reused name: +21 / +26 % a trade; born 21-24 UTC +34 / +29 %, against 11-15 UTC -9 / +10 % |
-| 13 | no other launch in the last 10 min: -12.1 / -6.5 % a trade; four or more: +13.4 / +7.4 % |
-| fixed triggers | a fixed time, price, budget or outsider amount starts the dump within 5 s on 19 % of coins at most |
-| buys minus sells | selling when it turns negative: -1.8 .. -3.4 % a trade |
-
-(Pairs like "+21 / +26" are the two periods of the case file.)
-
-**Exit test on 7ix.** Buy at the first trade at age 1 s or more; both orders fill 0.115 s after the
-decision; 0.03 SOL a trade; max_cost 0.13 / 0.65 / 4.16. The usual profit level was set on coins of
-09-01 .. 09-14 (0.35 / 0.72 / 4.48 SOL). The owner here is the earlier, simpler split (the crew tag
-plus wallet groups), not the full method of [owner-split.md](owner-split.md).
-
-| sell when | 09-01 .. 14 | 09-15 .. 27 | days in profit |
-| --- | ---: | ---: | --- |
-| reasons 1 + 2: owner profit at 60 % of its level AND outsiders buy 1 SOL in 3 s | +20.9 % | +24.2 % | 13 of 14, 11 of 12 |
-| reason 1 alone: owner profit at its level | +3.9 % | +6.6 % | 10 of 14, 10 of 12 |
-| the owner stops buying while the price drops | -6.9 % | +12.7 % | fails: it comes after the crash |
-| the owner's bag shrinks below its usual low | -4.1 % | -5.4 % | fails: the bag swings while the owner trades both ways |
-| perfect exit (knowing the future) | +27.5 % | +29.0 % | |
-
-**Staged exit on the full split** ([owner-split.md](owner-split.md)). The stages of section 5;
-the owner's profit is its own wallets' (the creator, the create transaction, the creation-slot
-buys, the program); the levels are its median profit at its first sell wave on 09-02 .. 14 (0.13
-2.85, 0.65 1.48, 4.16 3.90 SOL); max_cost 0.13 / 0.65 / 4.16 with 44 SOL or more in the pool at the
-buy; fills 0.115 s after the decision, 0.03 SOL.
-
-| | 09-02 .. 14 | 09-15 .. 10-01 |
-| --- | ---: | ---: |
-| trades | 529 | 218 |
-| % a trade / median, bursts of 1 SOL over 3 s and 2 SOL over 10 s | +16.7 / -46.7 | +30.0 / -3.6 |
-| days in profit | 10 of 13 | 10 of 14 |
-| bursts of 0.75 SOL over 3 s and 1.5 SOL over 10 s | +22.0, 13 of 13 days | +30.4, 12 of 14 days |
-| bursts read as everyone but the dev's own wallets (the paid machines count), 1 / 2 SOL | +21.2, 13 of 13 days | +33.7, 12 of 14 days |
-| the dev's profit replaced by the full owner's profit | +15.3 | +19.0 |
-| plus an early stage (before 20 s, outsiders 0.75 SOL over 10 s, price at its peak) | +13.5, median -0.2, 12 of 13 days | +21.3, median +3.1, 12 of 14 days |
-
-Exits on 09-02 .. 14: quick cash-out 84 at +13 %; ride burst 56 at +104 %; pool at 110 SOL 41 at
-+404 %; the dev's dump instruction 344 at -46 %. The perfect exit books +107 % a trade on every coin
-bought at age 1 s.
-
-The burst sizes belong to the flow they read: real outsiders buy less than outsiders plus the paid
-machines, so their sizes are smaller, and both readings book the same. In the engine, over 09-02 ..
-10-01 with the engine's crew (no creation-slot buyers), the stored reading leads: BROAD +24.7 %
-against +19.0 % a trade, FINAL +49.0 % against +41.0 %
-([7ix-crew-rule-engine.md](../../roadmap/7ix-crew-rule-engine.md), section 4).
-
-**Which coins.** The dev dumps early on about half its coins whatever the first second shows (65 /
-53 % of door coins). A door raises the result by picking bigger rides, not fewer early dumps: 6 or
-fewer prints by 1 s with a name an earlier 7ix coin used books +34.8 / +44.9 % a trade (165 / 105
-coins), its early dumps 59 / 47 %. Outsiders already in for 0.5-1.5 SOL by 1 s book +2.7 / +11.0 %.
-
-How the 7ix owner dumps: 41 % in one go (within 3 s), 39 % over 3-60 s, 19 % over more than 60 s.
-Nothing measured so far warns of a waterfall before it starts.
-
-On 6ix, buying at age 1 s loses even with the perfect exit (-8.3 / -6.7 %): the price does not
-rise while the volume network trades the coin. There, the open question is when to buy, not when
-to sell.
+The number of stages is the number of regions that survive. Every line of the rule names the
+region it reads.

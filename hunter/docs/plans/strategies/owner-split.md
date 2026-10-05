@@ -1,423 +1,359 @@
 # Owner split: whose money is each trade
 
-## Summary
+Every trade on a coin is **owner** or **outsider**.
 
-**What it does.** Splits every trade on a coin into **owner** (fake demand: the dev, its wallets,
-the machines it hires) and **outsider** (real money). Every later reading (owner profit, outsider
-buying, the dump, the owner's decisions in [owner-decisions.md](owner-decisions.md)) stands on it.
-It works for any launch group and any chart shape; section 6 says what to re-tune per shape.
+- **Owner** is fake demand: the dev, the dev's wallets, and the machines the dev hires.
+- **Outsider** is real money.
 
-**The core idea.** The owner uses many wallets, and wallets change every day. But the owner cannot
-hide three things:
+Owner profit, outsider buying, the dump, and the owner's decisions in
+[owner-decisions.md](owner-decisions.md) stand on this split.
 
-1. **Its machinery repeats.** Its scripts keep the same transaction build and fee settings, and the
-   same fee payer, while the wallets change.
-2. **Its tokens move without trades.** It buys with one wallet, moves the tokens by transfer, and
-   sells with another. So some wallets sell what they never bought, and some buy and never sell.
-3. **Its paid machines lose on purpose.** A volume service is paid off the chart, so on the chart
-   it loses a little on most coins, for weeks. No real trader can do that.
+## At a glance
 
-**The workflow.**
+Three steps. The six facts are step 1. Rule ids on one fact are the same fact.
 
+**1. Mark, on coins that already ended.** The whole tape is known, including the dump. Six facts
+name the owner.
+
+**2. Grow, then check.** A known owner's transaction shape, and the key that pays its fees, name
+the next wallet. Repeat until a round adds no wallet. Then ask whether those sellers left when
+the price fell. They cashed out: keep that shape or key. Real traders were pulled in: drop it,
+and grow again without it.
+
+**3. Tag a trade that just arrived.** The coin is still running. Walk the [numbered list](#the-numbered-list)
+from the top. The first line that matches is the answer. Do not read the lines under it.
+
+- A line matches: this trade is owner. Later trades of that wallet on this coin are owner.
+- No line matches: this trade is outsider. The next trade of that wallet is judged again.
+
+### The six facts
+
+- **Create (A1, A2).** Signed the launch. Every wallet in that transaction is the owner.
+- **Birth (A5, A3).** Bought with the launch, before anyone else can see the coin. A sniper that
+  does this on many coins is real money.
+- **One transaction (B, S5).** Several sells in one transaction. Two or ten is the same. Every
+  wallet in it is the owner, and so are the buys they already made on this coin.
+- **Shape (D, A4, S1, S2).** One transaction shape is a large share of this coin, or a script
+  used almost only on this group's coins.
+- **Hidden move (T1, T2, T3).** Sold tokens the wallet never bought, or only buys and never sells.
+- **Wallets (W, L, S3, S4, S6).** Trades almost only these coins, fresh wallets cash out together,
+  or the key that pays the fee.
+
+```mermaid
+flowchart TD
+  done["Finished coins. The life of the coin is already on the tape"] --> mark["Step 1. The six facts mark the owner"]
+
+  mark --> create["Create. Signed the launch"]
+  mark --> birth["Birth. Bought with the launch. A sniper is real money"]
+  mark --> tx["One transaction. Several sells together. Two or ten is the same"]
+  mark --> shape["Shape. A large share of this coin, or almost only these coins"]
+  mark --> hidden["Hidden move. Sold tokens they never bought"]
+  mark --> wallets["Wallets. Almost only these coins, or the key that pays"]
+
+  create --> known["Those wallets are owner on that coin"]
+  birth --> known
+  tx --> known
+  shape --> known
+  hidden --> known
+  wallets --> known
+
+  known --> grow["Step 2. Their shape, and the key that pays their fees, mark the next wallet. Repeat until a round adds none"]
+  grow --> check{"Did those sellers leave when the price fell?"}
+  check -->|Yes. They cashed out on the dump| keep["Keep that shape or key"]
+  check -->|No. Real traders were pulled in| drop["Drop it. Grow again without it"]
+  drop --> grow
+
+  keep --> arrive["Step 3. A trade arrives on a coin that is still running"]
+  arrive --> walk["Walk the numbered list from the top. The first line that matches is the answer"]
+  walk --> owner["A line matches. Owner. Later trades of that wallet on this coin are owner"]
+  walk --> outsider["No line matches. Outsider. The next trade of that wallet is judged again"]
 ```
- 1 COLLECT   the group's coins + market-wide facts (every coin, every wallet)
-     |
- 2 MARK      sure facts (A) and transfer ends (T)            -> first owner lists
-     |
- 3 GROW      shared machinery (S) and paid machines (M)      -> repeat until nothing new
-     |
- 4 CLEAN     judge each added set by its job                 -> throw out the wrong ones
-     |
- 5 VERIFY    money, chart, eye check, old days, luck         -> pass, or fix and repeat
-     |
- USE LIVE    one decision order per trade, for the engine
-```
 
-**The four kinds of evidence.** Every rule belongs to one kind.
+## The three steps
 
-| kind | IDs | what it is | why only the owner shows it |
+### 1. Mark
+
+Runs on coins whose life is already over. The dump is on the tape, so a transaction that holds
+several sells is visible.
+
+Each fact is one way the same person shows up. A wallet any fact names is the owner on that coin.
+Where the fact says so, the buys that wallet already made on the coin are the owner's too.
+
+The numbers for each fact are in [The six facts](#the-six-facts).
+
+### 2. Grow, then check
+
+Marking finds the first wallets. Those wallets reveal the next ones.
+
+- They keep using one transaction shape the rest of the market hardly uses. The next wallet that
+  uses it is the owner.
+- One key pays their fees, and that key pays almost only on the owner's coins. Every wallet that
+  key pays for is the owner.
+- The new wallets reveal the next shape or key.
+- Stop when a round adds no wallet.
+
+The check asks one question about each shape or key this step added: did those sellers leave when
+the price fell?
+
+- Yes. They sold before the dump finished and little of the bag was left. Keep it.
+- No. The shape or key pulled in people who held through the drop. Drop it, and grow again
+  without it.
+
+The create, the birth, the hidden move, a wallet that trades almost only these coins, and fresh
+wallets cashing out together are not checked this way. They are already one person. The numbers
+are in [Checks](#checks).
+
+### 3. Tag a trade that just arrived
+
+The coin is still running, so the dump may not have happened yet. Each trade is judged when it
+lands, from what is already known: the create, the lists built from finished coins, the bag, and
+the shape of this transaction.
+
+Walk [the numbered list](#the-numbered-list) from line 1. The first line that matches decides
+this trade. The lines under it are not read.
+
+- Line 5 matches a sell whose core is two or more `Pump.Fun: SELL`. This trade is owner. Every
+  wallet in that transaction is owner on this coin, and the buys they already made here are owner
+  too. Stop.
+- Lines 1 through 12 all miss. This trade is outsider.
+- Once a wallet is owner on this coin, its later trades match line 9 and stay owner.
+- A trade that matches nothing does not freeze the wallet. Its next trade walks the list again.
+
+A birth buy is often a public `Pump.Fun: BUY`, so the list carries those wallets. The multi-sell
+carries one row per pack size, so the sell matches on a wallet the list has not seen yet. That
+wallet then joins the list, and its earlier buys on the coin match too.
+
+## Words the facts use
+
+**Trader.** The credited wallet. When that wallet is a routing wallet, a service wallet thousands
+of users trade through, the trader is the fee payer. Every fact that says "wallet" reads the trader.
+
+**Structure.** How a transaction is built.
+
+- The **core** is the labels left once the extras are dropped: compute budget, every System Program
+  instruction, token-program and token-account instructions, memo, Lighthouse. Order stays.
+  Pump.fun verbs merge: Buy, BuyV2, and BuyExactSolIn are BUY; Sell and SellV2 are SELL; Create
+  and Create_v2 are CREATE. An app's own instructions stay.
+- The **marks** are which extras are present (CL CU limit, CP CU price, N nonce, L Lighthouse,
+  M memo, S seed or created account, C account close, W wrap), never their order, plus two counts
+  (T system transfers, A token-account opens).
+- The **numbers** are the CU limit, the CU price, and the tip. A script keeps its core and rotates
+  the rest.
+
+**The group's coins.** Coins with the group's creation facts (create instruction list, and CU price
+or `max_sol_cost`). Fixed at birth, so they never depend on the split.
+
+**Fall.** A drop is a slot where the price falls 10% or more. A fall is one drop (a one-shot dump),
+or drops less than 30 s apart (a waterfall). The main fall is the coin's deepest.
+
+## The six facts
+
+Each fact is the one-line version above, with the numbers.
+
+### The create (A1, A2)
+
+The person who launches the coin.
+
+- The wallet that signs the create is the dev.
+- Every other wallet in that same transaction is the same person.
+- All of them are the owner.
+
+### The birth (A5, A3)
+
+Buys that land before anyone else can see the coin.
+
+- A buy within 15 ms of the create, measured from the create's block time, is the owner. The
+  instruction list does not matter.
+- A buy later in the creation slot is the owner too.
+- A sniper is the exception: a bot that buys the first slots of 20 or more coins over two weeks,
+  from 10 or more creators, with at most 20% of them this group's. The count is over the two
+  weeks, never one day.
+- That sniper is real money, and stays real money on this coin.
+- Buy size is not the test.
+
+### The same transaction (B, S5)
+
+Wallets inside one transaction are one person.
+
+- The dump is this: one transaction contains several Pump.Fun sells.
+- Two sells or ten sells is the same fact. The count does not matter.
+- A SOL transfer, a compute-budget instruction, or an account close in that transaction is the
+  same person. They sit outside the core, so the match is the same.
+- Every wallet in the transaction is the owner on this coin.
+- The buys those wallets made earlier on this coin are the owner's too.
+- A wallet in one transaction with a wallet already known to be the owner is the owner too.
+- A transaction with only one sell is an ordinary trade. This fact does not mark it.
+- The matcher is exact on the core, so the tag holds one row for each count that shows up.
+
+### The script's shape (D, A4, S1, S2)
+
+The owner repeats one transaction shape. It shows up in two places.
+
+- On one coin: a shape that is at least 20% of the trades, or 20% of the SOL, with at least 10
+  trades, is the owner on that coin.
+- That one-coin shape is the instruction list plus its CU price. The CU limit is left out.
+  Snipers' creation-slot buys are left out of the share.
+- Every wallet using that shape on that coin is the owner, including the trades it already made
+  there. This reading needs no other coin.
+- A shape used on 10,000 or more coins in the market is a public app, so this fact leaves it out.
+- Across the market: an instruction list, fees left out, is the owner's script when 30% or more of
+  its trades sit on this group's coins, on at least 5 group coins, from at least 2 creators.
+- Fees are the CU limit, the CU price, and the tip. The owner changes them at will.
+- Every wallet that trades with that script is the owner. One trade is enough.
+- After some owner wallets are known, a shape those wallets keep using, and that the rest of the
+  market hardly uses, is the same script.
+- Hardly used: 80% or more of its market trades are on the owner's coins.
+- Kept using: 95% or more of its trades are already owner, from 5 or more owner wallets. One extra
+  wallet on under 100 coins in the month still leaves the shape owner.
+- It also runs on a timer, first seen within 1 s of its usual age on 60% of its coins, or half its
+  wallets already use another owner shape.
+- The next wallet that uses it is the owner.
+- The shape is matched at [Match levels](#match-levels), loosest first. A memo, a verb variant, or
+  a fresh CU limit is still the same script.
+- The script and the paying key are applied again until a round adds no wallet.
+
+### The hidden move (T1, T2, T3)
+
+Tokens pass between the owner's wallets with no trade on the tape.
+
+- A wallet that sells more than it bought is the owner on that coin. The test is a sell that takes
+  its bag below zero by more than 1% of the sell.
+- It joins the owner list for other coins when the same thing happens on 2 or more coins.
+- A wallet that buys 10 or more coins, with 20 or more buys, and never sells anywhere, is the owner
+  on every coin it buys.
+- The wallet that still holds, whose bag matches the seller's missing tokens within 0.5%, and is
+  the only such wallet, is the wallet that handed them over.
+- When the seller also bought on the coin, the missing tokens do not show, and this fact misses
+  both wallets.
+
+### Wallets that are not real traders (W, L, S3, S4, S6)
+
+A real trader spreads over the market. The owner does not.
+
+- A wallet on 3 or more of this group's coins, with 80% or more of its coins inside the group, is
+  the owner on every coin it trades.
+- A fresh wallet is on 4 or fewer coins in the whole market.
+- Three or more fresh wallets that each sell their whole bag in the same slot, and never buy the
+  coin again, are one person cashing out. They are the owner on that coin, including the buys they
+  made earlier there.
+- The key that pays the fee, when 80% or more of what it pays is on the owner's coins and it pays
+  for fewer than 50 coins a day, is the owner's key.
+- Every wallet that key pays for is the owner. One trade is enough.
+- A wallet whose first trade ever is on the owner's coins, with an owner shape or the owner's
+  paying key, and with no trade in the 14 days before, is the owner.
+- A key that pays for thousands of unrelated users is a service. This fact leaves it out.
+- A buying machine on fewer than 10 coins is below the test.
+- A volume service that trades many devs' coins is a hired machine, so it is owner, but it trades
+  too widely for the group test and its wallets are not fresh, so these tests miss it.
+
+## Outsider
+
+Real money, once the six facts have passed. The birth fact names the sniper. The other kinds:
+
+- **Button buyer.** Buys a size an app offers as a button: 0.1 / 0.5 / 1 SOL after the venue fee
+  (0.099, 0.494, 0.988), or a dollar button at the day's SOL price, or a size 15 or more traders
+  used in the same hour.
+- **Bottom-fisher.** One buy of 1-3 SOL on many coins, about 30 a day, out within minutes, ahead
+  on most coins.
+- **Herd bot.** Many coins a day, joins within seconds of a big buy, ends empty, market result
+  around even.
+- **Racer.** Pays a high priority fee to land first.
+
+## The numbered list
+
+This is step 3. Go down the list. The first line that matches decides this trade. Do not read the
+lines under it.
+
+| order | the trade | result | fact |
 | --- | --- | --- | --- |
-| Sure facts | A1-A4 | creator, create transaction, creation-slot buy, owner-only build | owner by definition, or by a build the rest of the market does not use |
-| Transfer ends | T1-T3 | sells more than it bought; buys and never sells; the matching pair | an outsider gets tokens only by buying, and sells what it holds |
-| Shared machinery | S1-S6 | private structure, owner payer, shared transaction, fresh wallet | one script or one key holder sits behind all of them |
-| Paid machines | M1-M3 | a machine operator (bundle or lockstep, its sister wallets joined) that loses steadily | a machine that keeps losing is paid by someone |
+| 1 | from the creator, or inside the create transaction | owner | create |
+| 2 | a buy in the creation slot, within 15 ms of the create | owner, and the wallet on this coin | birth |
+| 3 | a creation-slot buy after that window, by a trader that is not a sniper | owner | birth |
+| 4 | an owner script, on one coin or across the market | owner, even on a new wallet's first trade | script's shape |
+| 5 | a sell whose core is two or more `Pump.Fun: SELL` | owner, and the wallet on this coin | same transaction |
+| 6 | a sell that takes the bag on this coin below zero | owner, and its later trades on this coin | hidden move |
+| 7 | a wallet on the buy-only list | owner | hidden move |
+| 8 | paid for by the owner's key | owner | wallets |
+| 9 | an owner wallet already found | owner | any fact that listed it |
+| 10 | in one transaction with an owner wallet | owner | same transaction |
+| 11 | a fresh wallet selling out in a slot where 2 or more other fresh wallets do | owner, from that sell on | wallets |
+| 12 | a shape that has reached 20% of this coin's trades or SOL so far | owner, and the wallets using it on this coin | script's shape |
+| 13 | anything else, snipers included | outsider | |
 
----
+In the engine, a rule reads structures (lines 1, 4, 5, 10) and the bag (line 6), which the engine
+already keeps per wallet. A wallet is never a term in a rule
+([_!___strategy.md](_!___strategy.md) T5). Lines 2, 3, 7, 8, and 9 read lists built daily. The tag
+carries line 2 as wallets, because a birth buy is often a public `Pump.Fun: BUY`, and line 5 as one
+core row per pack size. Live, line 6 turns a trader owner only from its first sell below zero.
 
-## 1. Words
+## Match levels
 
-**The six core words.**
-
-| word | meaning | example |
-| --- | --- | --- |
-| owner | everyone who makes fake demand on the coin: the dev, every wallet it controls, every machine it hires | a volume service paid by the dev is owner, though it is not the dev |
-| outsider | everyone else: real money. Kinds in section 5 | a sniper, a person clicking a buy button, a trading bot that wins |
-| trader | who really made a trade: the credited wallet, except when that wallet is a **routing wallet** (a service wallet that thousands of users trade through); then it is the fee payer | every rule that says "wallet" reads the trader |
-| structure | how a trade's transaction is built. Its **core** is what it does: the labels left once the extras are dropped (compute budget, every System Program instruction, token-program and token-account instructions, memo, Lighthouse), in order, with pump.fun's verb variants merged (Buy, BuyV2, BuyExactSolIn are BUY; Sell, SellV2 are SELL; Create, Create_v2 are CREATE); an app's own instructions stay. Its **marks** are the extras: which are present (CL CU limit, CP CU price, N nonce, L Lighthouse, M memo, S seed or created account, C account close, W wrap), never their order, plus two counts (T System transfers, A token-account opens). Its **numbers** are the CU limit, CU price and tip. A script keeps its core and rotates the rest | core `Pump.Fun: BUY`, marks `CL CP N T1 A0`, CU price 167,000, tip 0; a 6Vo3 buy: core `6Vo3245 BondingCurveV3`, marks `CL CP C T1 A3` |
-| transfer | tokens moved between wallets without a trade. Not on the tape; we see only its two ends (rules T1-T3) | wallet B buys 93.4 M tokens, wallet E sells 93.4 M it never bought |
-| machine | a script trading through several wallets at once: a **bundle** (3 or more wallets in one slot, one app, one side) or a **lockstep pair** (two wallets whose trades match one to one within 0.5 s). All wallets of one operator are judged as one | 4 wallets buying through Terminal in one slot: one trader's multi-wallet button |
-
-**Other terms.**
-
-| term | meaning |
-| --- | --- |
-| payer | the account that signed and paid the fee (`trades.payer_id`); a **service payer** pays for thousands of unrelated users |
-| sniper | a bot that buys brand-new coins in their first slots, on many unrelated coins every day. An outsider |
-| creation slot | the slot of the transaction that creates the coin |
-| the group's coins | the coins with the group's creation facts (create instruction list and CU price), the only set A4 measures against: it is fixed at birth, so it never depends on the split |
-| the owner's coins | every coin in the market where a sure fact (A) of this owner appears, not only the group's coins |
-| loses steadily | over all its coins in the market: net SOL (sells minus buys) below zero over the last four weeks (M3) |
-| bag | the tokens someone holds now, as read from its trades |
-| drop | a slot where the price falls 10 % or more |
-| fall | one drop (a one-shot dump), or drops less than 30 s apart (a waterfall). The **main fall** is the coin's deepest |
-| start value | a first guess for a threshold, tuned on data |
-
----
-
-## 2. Step 1 - COLLECT
-
-| what | from | why |
-| --- | --- | --- |
-| every trade of the group's coins: instructions, CU limit, CU price, tip, slot, block position, wallet, payer, routing flag | PG `trades` (payer and routing are PG only, about 30 days) | the rules read all of them |
-| the creator, creation slot and create transaction of each coin | PG `tokens` | sure facts A1-A3 |
-| per instruction list (fees ignored): its trades on the group's coins and on all coins, and on how many group coins | the whole market (lake) | A4: owner-only build? |
-| per structure, at every match level: its trades on the owner's coins and on all other coins | the whole market (lake) | S1: private or public? |
-| per payer: coins and wallets it pays for, per day | the whole market (PG) | S3: owner key or service? |
-| per trader: first-slot buys over the window, on how many coins and creators | the whole market (PG) | A3: sniper or bundle? |
-| per wallet, over the last four weeks: coins, buys, sells, coins ended empty, coins behind, net SOL | the whole market (lake) | T2 and M3 |
-| per machine-linked wallet pair: how many market coins both trade | the whole market (lake) | M2: sisters or strangers? |
-
-Build on the last ~2 weeks. Check on the 2 weeks before (step 5).
-
----
-
-## 3. Steps 2 and 3 - MARK and GROW: the rules
-
-Every rule is a test, a start value, and the reason only the owner passes it.
-
-### A. Sure facts - owner with no test (step 2)
-
-| ID | rule | why |
-| --- | --- | --- |
-| A1 | the creator: the wallet that signs the create transaction | it is the dev |
-| A2 | every other wallet inside the create transaction | one transaction is signed by one key holder |
-| A3 | every buy in the creation slot, except a sniper's | nobody can see a coin before it exists; only the dev's bundle and the snipers' bots land in its own slot |
-| A4 | every trade with an **owner-only build**: an instruction list (fees ignored) that the rest of the market does not use | the owner's script or program runs mostly on the owner's coins; a public app runs on every coin |
-
-**Sniper (A3).** A creation-slot buyer whose trader buys in the first three slots of many unrelated
-coins. Start value: 20 or more coins over the window (two weeks), from 10 or more creators, 20 % or
-less of them the group's coins. Breadth is counted over the window, never per day: a sniper with a
-quiet day still snipes hundreds of unrelated coins (one buys the first slots of 88 coins in 13 days,
-about 7 a day, and wins 102 SOL). A sniper is an outsider and stays one on that coin. Size is a
-hint, never the test: many snipers buy 0.5-1 SOL.
-
-Example: in coin X's creation slot, W4 buys 1.4 SOL (first slots of 2 coins in two weeks, both from
-this creator: owner) and W5 buys 0.62 SOL (first slots of 1,690 coins a day: sniper, outsider).
-
-**Owner-only build (A4).** An instruction list is the owner's when 30 % or more of its trades in the
-whole market are on the group's coins, on 5 or more group coins, from 2 or more creators. The group's
-coins are about 0.14 % of the market, so 30 % is about 200 times what chance gives; a public app's
-build sits on every coin and scores under 1 %. A4 needs no owner found first, so it starts the split
-on a group with no known program, where S1 has nothing to grow from.
-
-- **Fees are left out.** CU limit, CU price and tip are config the owner changes at will; with fees
-  in the key, fee variants of plain builds mix in public users.
-- **30 %, not 80 %.** One owner's tools serve several launch builds, so its share on any one group
-  stays well under 80 %: on 7ix the crew program works 706 coins in two weeks, 418 of them 7ix coins.
-- It finds the owner's programs without being told their names: on 7ix the `9ddjzq` lists, on 5ix
-  41 unknown programs (each about 58 % on the group's coins, run through 52,540 throwaway wallets)
-  plus the plain Pump.Fun sell lists that sell for 4 or 12 wallets in one transaction.
-
-Example: a build used 10,000 times in two weeks, 5,800 of them on 300 of the group's coins from 280
-creators, is the owner's; an app's default buy, used on every coin of the market, is not.
-
-### T. Transfer ends - owner because the tokens moved (step 2)
-
-| ID | rule | start value | why |
-| --- | --- | --- | --- |
-| T1 | **sells more than it bought** on the coin | a sell takes its bag below zero (more than 1 % of the sell) | an outsider gets tokens only by buying; the rest came by transfer from the owner's buyer wallets |
-| T2 | **buys on many coins and never sells** anywhere in the market | 10 or more coins, 20 or more buys, no sell, in the window | nobody buys that much and never sells; it is a hired buying machine whose tokens leave by transfer |
-| T3 | **the other end of a T1 transfer**: a wallet that only bought on the coin and still holds, whose bag equals one T1 wallet's shortfall | within 0.5 %, and it is the only wallet that matches | it handed its tokens to the seller |
-
-- T1 is a fact about the coin: the wallet is owner there. It joins the owner wallet list (for other
-  coins) only when it repeats on 2 or more coins.
-- T2 is owner on every coin it buys.
-
-Examples. T1: wallet E has no buy on coin X and sells 4.5 SOL of it in three sells, at 1.5 s, 8.6 s
-and 13 s. T2: one wallet makes 25,270 buys on 16,141 coins in a month, and not one sell. T3: E sold
-93.4 M tokens it never bought; B bought 93.4 M and never sold.
-
-### S. Shared machinery - grows from known owner (step 3)
-
-Start from the owner found by A and T. Repeat S1-S6 until a round adds nothing.
-
-| ID | rule | start value | why |
-| --- | --- | --- | --- |
-| S1 | **a private structure** becomes an owner structure when (a) its trades are mostly owner, AND (b) the rest of the market does not use it, AND (c) it runs on a timer OR its wallets also use another owner structure | (a) 95 % or more of its trades, from 5 or more owner wallets, or every trade owner except those of one narrow wallet (under 100 market coins in the month); (b) 80 % or more of its market trades on the owner's coins; (c) first seen within 1 s of its usual age on 60 % of its coins, or 50 % of its wallets use another owner structure | a script keeps its build and fees while its wallets change |
-| S2 | a wallet that uses an owner structure | one trade is enough | the structure is the owner's script |
-| S3 | **an owner payer**: pays for an owner wallet, and is not a service | 80 % or more of the trades it pays for are on the owner's coins, and fewer than 50 coins a day | a key that pays only for the owner's wallets is the owner's key |
-| S4 | a wallet paid for by an owner payer | one trade is enough | finds owner wallets hiding in public apps |
-| S5 | a wallet in one transaction with an owner wallet | one transaction is enough | one transaction is signed by one key holder |
-| S6 | a fresh wallet whose first trade ever is on the owner's coins, with an owner structure or payer | no trade in the 14 days before | a wallet born into the owner's job |
-
-**Match levels (S1).** A dev rotates small variants of one build (a memo added, the CU
-instructions swapped, BuyV2 instead of Buy, a computed CU limit that differs on every
-transaction), so S1 judges every structure at seven levels, loosest first:
+A script rotates small variants of one build, so the script's shape is judged at seven levels,
+loosest first. A shape is owner at any level where the market tests hold, and the loosest passing
+level catches every variant.
 
 | level | the trade matches when it has the same |
 | --- | --- |
 | 1 | core and side |
-| 2 | core, side and marks |
-| 3 | core, side and CU price |
-| 4 | core, side and tip |
-| 5 | core, side, CU price and tip |
-| 6 | core, side, marks, CU price and tip |
-| 7 | exact instruction list, CU limit, CU price and tip |
+| 2 | core, side, and marks |
+| 3 | core, side, and CU price |
+| 4 | core, side, and tip |
+| 5 | core, side, CU price, and tip |
+| 6 | core, side, marks, CU price, and tip |
+| 7 | exact instruction list, CU limit, CU price, and tip |
 
-A structure is owner at any level where S1 (a)-(c) hold, so the loosest passing level catches every
-variant the script rotates. A private program passes at level 1. A public app's core fails there (its
-users share it) and passes only at a level that carries the owner's own fee, or never. Example: on
-FohR the owner's buys carry computed CU limits (96,591 and 100,139, never twice the same), so level 7
-never repeats; level 3 (`Pump.Fun SELL`, CU price 167,000) holds 15 trades of 9 wallets on two
-weeks of the group's coins, 83 % of its market trades on the owner's coins.
+A private program passes at level 1. A public app passes only at a level that carries the owner's
+own fee, or never. The volume list holds level 7 as an exact instruction-list row, and levels 1-6
+as a core row: the core's labels, the side, and whichever of marks, CU price, and tip that level
+pins. A pin the trade lacks is left off, so that row matches any value there.
 
-**A level is a tag row.** The volume list (and the fingerprint the engine runs) holds each owner
-structure at its own level: level 7 as an exact `ix_shape` row (labels, CU limit, CU price, tip),
-levels 1-6 as a core row (`"level": "core"`, the core's labels, the side, and the marks, CU price
-and tip the level pins). A pin on a reading the trade lacks (no CU price, no tip) is left off, so
-that row matches any value there. On 7ix: 167 core rows and 85 exact rows (the program's own
-structures are the `program` matcher), with the creator and 6,861 owner wallets, sticky. It
-matches the split on 99.64 % of SOL on 09-15 .. 10-01 and 99.83 % on 09-02 .. 14, and the engine
-folds it to the same owner SOL as the Python model on all 1,300 coins (to 0.000001 SOL; the lab's
-`metric-series`, `m_flow.buy_sol` / `sell_sol` @volume and @!volume): owner 93.39 % of SOL
-against the split's 93.56 % on 09-15 .. 10-01, 94.28 % against 94.24 % on 09-02 .. 14.
+## Checks
 
-**One narrow wallet does not block S1 (a).** The wallet under question is itself one of the
-structure's users, so when it is the only non-owner user, its own trades would keep the structure
-below 95 %. Example: on FohR, 14 of the 15 level-3 trades above are owner; the 15th is wallet 4CPn
-(one coin in the month, bought 1.96 SOL at 5 s, sold 6 s later). A wide trader never gets this pass:
-a winning bot on 9,259 coins that used an owner fee once stays outsider.
+This is the question in step 2. These do not mark a trade. They drop a script or a paying key that
+pulled in the wrong wallets.
+The create, the birth, the hidden move, the group wallet, and the fresh-wallet cash-out are not
+judged here. A set is one shape, one paying key, or all the wallets one rule added.
 
-**Private or public (S1 b).** A structure that shows up on thousands of other coins is a public app
-setting (Axiom, GMGN, a plain Pump.Fun trade with the default fee) and says nothing about who traded.
+Only the seller is judged by how it exits. A buyer that never sells is judged by the hidden move.
+A set that trades both ways and ends empty is judged at the shape or the key that brought it in.
 
-| structure | on the owner's coins | on all other coins | share | verdict |
-| --- | ---: | ---: | ---: | --- |
-| Pump.Fun Sell, CU 160,000, price 621,000 | 2,700 | 300 | 90 % | private: owner script |
-| Axiom default buy | 4,800 | 550,000 | 0.9 % | public: says nothing |
-
-**Owner settings inside a public app.** An app's users pay the app's live default fee, which moves
-during the day for everyone together. A script inside the same app often keeps its own fixed fee.
-Because the structure includes the fee, such a script is its own structure, and S1 judges it.
-Example: most 6Vo3 buys pay tip 3,063 at 14:05 and 2,101 at 14:20; a set of wallets pays CU price
-80,000 and tip 0 all day: its own structure.
-
-**Service or owner (S3).** A service pays for thousands of wallets on thousands of coins and says
-nothing. A routing wallet is the opposite case: thousands of payers trade through it, so its payers
-are the traders.
-
-### M. Paid machines - owner with no tie to this owner (step 3)
-
-**Why.** A volume service sells volume to many devs at once. The dev pays it off the chart (a plain
-SOL transfer). Its trading pays the venue fee and slippage, so on the chart it loses a little on
-most coins, for weeks. A real trading bot that does this goes broke; a machine that keeps losing is
-paid by someone, so its trades are fake demand.
-
-Example for one coin: the dev pays the service 2 SOL. The service trades 50 SOL and loses 0.8 SOL
-in fees and slippage, so it nets +1.2 SOL. The dev sells his bag into the busy coin. On the chart
-we see only the service's -0.8.
-
-A paid machine works for many devs, so it has **no tie to this owner** (no shared program,
-structure or payer, and a small share of its coins are this owner's). It is found by what it is.
-
-**Many real traders use machines too.** Trading apps offer multi-wallet buttons (one click buys from
-3-10 wallets), snipers spread one buy over several wallets to land in the first slots, and traders
-split size so scanners and copy-traders do not see one big holder. So a machine proves **one
-operator**, never the owner. Whose money it is shows in the operator's result: a paid machine
-loses, a real trader wins or breaks even.
-
-Three steps, in order:
-
-| ID | step | start value | why |
-| --- | --- | --- | --- |
-| M1 | **machine sign**: the wallet is in a **bundle** (3 or more wallets in one slot, one app, one side) or a **lockstep pair** (two wallets whose trades match one to one: same count of 2 or more, same sides in order, each within 0.5 s) on a group coin | snipers and the coin's first 3 slots left out | one script sent them |
-| M2 | **one operator**: two machine-sign wallets that acted together and trade nearly the same market coins are sister wallets of one operator; a wallet with no sister is its own operator | the coins both trade are 80 % or more of the larger wallet's coins | one operator runs its wallets on the same coins; strangers who meet in one slot do not share their coin lists |
-| M3 | **loses steadily**: the operator's wallets, added together, end below zero in the market | combined net SOL below zero over the last four weeks | a paid machine loses over time; a real bot wins over time, even with a bad fortnight |
-
-An operator that passes M3 is owner: all its wallets, on all their coins.
-
-- M1 groups a bundle by **app**, not exact structure: a service rotates small variants of one build
-  (with or without a nonce or an extra instruction).
-- M1 leaves out snipers: they bundle at birth and often lose too, and A3 already makes them outsiders.
-- M2 judges the operator as one: its wallets win and lose by turns, so one wallet alone says nothing.
-- An operator that **wins** is never owner: it is a real trader (section 5).
-
-Examples.
-- **Owner:** wallets 124302 and 124303 trade 6 times each on coin 9eLn on the same seconds (M1),
-  trade the same ~110 market coins (M2), and lose 19-25 SOL each (M3).
-- **Owner:** 3 wallets buy through Axiom in one slot of 9eLn (M1) and trade the same ~456 market
-  coins (M2). Together they lose 35.8 SOL in one fortnight and win 10.2 in the other: -25.6 over the
-  month (M3).
-- **Outsider:** 4 wallets buy through Terminal in one slot (M1) and trade the same ~305 market coins
-  (M2), but together they end +12.5 SOL (M3 fails). One trader with a multi-wallet button.
-- **Outsider:** 3 sniper wallets buy 0.198 SOL each at slot +2 and trade the same ~3,600 coins, ending
-  +575 SOL together.
-
----
-
-## 4. Step 4 - CLEAN: judge each added set by its job
-
-S and M can pull in wrong things (other bots, copy traders, a service payer under its threshold).
-Everything step 3 added, not A or T, is checked as a **set**: one structure, one payer, or all the
-wallets one rule added. Never one wallet: the owner splits jobs, and a buyer wallet passes its
-tokens to a seller wallet by transfer, so alone it looks like it still holds.
-
-**The owner has three jobs. Only the seller is judged by how it exits.**
-
-| job | what the set does | judged by |
+| check | stays when | what it reads |
 | --- | --- | --- |
-| seller | sells, and makes the fall | C1 and C2 |
-| buyer | buys and hands the tokens on; never sells | T rules only |
-| volume machine | trades both ways, ends empty, loses steadily | M rules only |
+| C1 | 40% or less of its sold tokens are late. A set with no sells passes | a sold token is late when sold after the main fall begins, except a sell while that drop had fallen less than half its way |
+| C2 | at the end of the main fall, 10% or less of its biggest bag before the fall | the owner has cashed out |
 
-| ID | check | start value | why |
-| --- | --- | --- | --- |
-| C1 | **sells first, never late.** A sold token is late when sold after the main fall begins, unless it is sold while its drop slot had fallen less than half its way (those first sells make the drop) | 40 % or less of its sold tokens are late; a set with no sells passes | the owner's sells make the fall; outsiders sell after it, at the lower price |
-| C2 | **empty when the main fall ends** (right after a one-shot dump, at the bottom of a waterfall) | 10 % or less of its biggest bag before the fall | the owner has cashed out; an outsider is still holding |
+A set stays when C1 and C2 both pass on 60% or more of its coins with a fall, over at least 5
+coins. Fewer coins, and the set stays untested. Tune the two so the creator passes and a wide bot
+that wins fails: a wallet on 100 or more coins, net SOL above zero, behind on fewer than half its
+coins, that never used the owner's program and never created a coin. Snipers are not judged here.
 
-A set **stays** when C1 and C2 both pass on 60 % or more of its coins with a fall, over at least 5
-coins. A set with fewer stays untested. When a rule's set fails, the rule is dropped, its wallets
-leave the owner side, and step 3 runs again without it.
+The six facts hold for every chart shape. C1, C2, and the verify checks below are retuned per shape.
 
-Example: a fast exit bot sells its whole bag 0.4 s after the dump. It ends empty like the owner,
-but all its sold tokens are late: it fails C1.
-
-Snipers are never judged by C1 and C2: they sell early into the first buyers, so their sells can
-land in a drop too. A3 makes them outsiders.
-
-**A one-key link is judged at its source.** The wallets S2 (users of an owner structure), S4 (paid
-for by an owner payer) and S5 (inside an owner wallet's transaction) add do the buyer and volume
-jobs, so as a set they never pass C1-C2, though one key holder sits behind each. The structure (S1)
-and the payer (S3) that bring them in are judged; the wallet sets are not. Measured: on 5ix the S4
-and S5 sets pass 14-17 % while their wallets carry the multi-wallet sellers' money, and judging them
-drops the split from 100 % to 59 % of that money; on 7ix the structure users pass 47 %.
-
-**The calibration sets.** Tune C1 and C2 so that the sure owner (A wallets) passes and a known
-outsider fails. The known outsider is **a wide bot that wins**: a wallet on 100 or more coins that
-ends the window ahead (net SOL above zero, behind on fewer than half its coins), leaving out every
-wallet that ever used the owner's program or created a coin. A wide bot that loses is no reference:
-it may be a paid machine.
-
----
-
-## 5. Outsider kinds
-
-Real money comes in kinds that behave differently. A reading of "who arrived" names the kind. A
-machine operator that loses steadily is not here: it is M, owner. Any of these kinds may trade
-through several wallets at once; that makes it a machine, not the owner.
-
-| kind | how it is recognised | how it behaves |
+| shape | the fall | C1 and C2 |
 | --- | --- | --- |
-| sniper | buys in the first slots of many unrelated coins every day (A3) | buys at birth, sells into the first buyers |
-| button buyer | buys a size an app offers as a button: 0.1 / 0.5 / 1 SOL after the venue fee (0.099, 0.494, 0.988), or a dollar button at the day's SOL price; a size 15 or more traders used in the same hour | a person clicking: arrives when the coin shows up in their app, sells by hand |
-| bottom-fisher | one buy of 1-3 SOL on many coins (about 30 a day), out within minutes, ahead on most coins | a buy after a quiet spell can start a wave of others, which it sells into |
-| herd bot | many coins a day, joins within seconds of a big buy, ends empty, market result around even | follows prints and price within a slot or two |
-| racer | pays a high priority fee to land first (1.3 SOL on one buy) | a trader buying a moment it believes in; no owner pays that to make volume |
+| steady rise, one-shot dump | the one dump | on the main fall |
+| waterfall | the drops less than 30 s apart, read as one fall | C1 on every step; C2 at the bottom |
+| many swings | each fall | C1 on every fall; C2 only on the last, since the owner may buy again |
+| slow bleed, no dump | none | untested; the set stays on the facts alone |
+| heavy outside trading | as above | each group sets its own values from the coins that pass |
 
----
+| check | good when |
+| --- | --- |
+| V1 owner money, per coin, bags included | the owner ends behind the outsiders on 30% of coins or fewer, and its usual loss is 10% of its money or less |
+| V2 share of price movement from owner trades | 80% or more |
+| V3 share of seconds where outsiders move 0.5 SOL or more | 20% or less. Money, not the presence of a tiny trade |
+| V4 share of outsider SOL in their busiest 10% of seconds | 50% or more |
+| V5 an outsider wallet or shape trading like a script, 10 or more 3 s windows in a row | none. Each one found is reviewed as a missed owner |
+| V6 eye check, price and both flows on one axis | the owner line has the chart's shape. A stretch where the outsider line follows the chart is a real swing when the owner does not sell into it and the tokens sold there were bought there |
+| V7 the lists, used on the 2 weeks before | they still find the owner, and less than 2% of outsider money is marked owner |
+| V8 shuffle who traded inside each coin, keep the times | the fact finds far more on the real tape |
 
-## 6. What changes per chart shape
+V1 reads the owner side as a whole. A buyer wallet loses while a seller wallet collects. Rebuild
+every day from the last two weeks: wallets change fast, shapes and paying keys slowly.
 
-The rules A, T, S and M read who traded and how, never the chart, so they hold for every shape.
-Two things read the chart and are re-tuned per group: the clean checks C1-C2 (they read falls) and
-the chart checks V2-V5 (their start values assume an owner who makes most of the trades).
+A fresh wallet on a public app, at that app's default fee, that buys once and sells what it bought,
+matches none of the six facts.
 
-| shape | what a fall is | C1 and C2 | chart checks V2-V5 |
-| --- | --- | --- | --- |
-| steady rise, one-shot dump (7ix) | the one dump | on the main fall | start values as written |
-| waterfall dump | the drops less than 30 s apart, read as one fall | C1 on every step down; C2 at the bottom | as written |
-| many up-down swings | each fall | C1 on every fall; C2 only on the last fall, since the owner may buy again after a fall (a second pump) | lower V2 and raise V3 on coins with heavy outside trading |
-| slow bleed, no dump | none | untestable; the set stays on A, T, S, M and V1 alone | lower V2 |
-| heavy outside trading | as above | as above | each group sets its own values from its coins that pass C1-C2, V5 and the eye check |
-
-A group with many swings also shows **real swings**: stretches where real traders take over (a big
-buy at the bottom, a herd of bots behind it). There the outsider line follows the chart, and that is
-not a split error (V6).
-
----
-
-## 7. Step 5 - VERIFY
-
-| ID | check | good when (start value) | why |
-| --- | --- | --- | --- |
-| V1 | **owner money, per coin**: all SOL the owner side put in and took out, plus its leftover tokens at the last price; the same for outsiders, read by kind | the owner ends behind the outsiders on 30 % of coins or fewer, and its usual loss is 10 % of its money or less | the owner runs the coin to take outsiders' money |
-| V2 | share of all price movement made by owner trades | 80 % or more | the owner's trades alone redraw the chart |
-| V3 | share of the coin's seconds in which outsiders move 0.5 SOL or more | 20 % or less | real outsiders come rarely and in bursts |
-| V4 | share of outsider SOL in their busiest 10 % of seconds | 50 % or more | bursts, not a stream |
-| V5 | an "outsider" wallet or structure trading like a script (10 or more 3 s windows in a row, similar sizes) | none; each one found is reviewed as a missed owner | real people do not trade every few seconds for minutes |
-| V6 | **eye check**: price, owner flow and outsider flow on one time axis, for a random sample plus every coin that fails V1-V5 | the owner line has the chart's shape; the outsider line is flat with a few steps | the user's check |
-| V7 | **old days**: the lists built on recent days, used on the 2 weeks before | they still find the owner (wallets they never saw included); less than 2 % of outsider money is marked owner; V1-V5 pass | rules must hold on days they never saw |
-| V8 | **luck**: shuffle who traded inside each coin (keep the times) and run each rule again | the rule finds far more on the real tape | a rule that luck reproduces is dropped |
-
-Notes:
-- **V1 never judges one wallet.** A buyer wallet loses by design while a seller wallet collects.
-  Normal: the owner ends ahead. Also normal: the owner loses a little because smart outsiders (often
-  snipers) sold early.
-- **V3 counts money, never presence**: many tiny retail trades fill the seconds while carrying little.
-- **V6, three readings.** Bad split: the outsider line is busy and smooth all the time (a script
-  was counted as outsider), or the chart moves where the owner line does not (part of the owner is
-  missing). **Not a bad split: a real swing**, where the outsider line follows the chart for a
-  stretch. Tell it from a missed owner by the money: the owner does not sell into it, and the
-  tokens sold in it were bought in it.
-
-**Rebuild every day** from the last ~2 weeks: wallets change fast, structures and payers slowly.
-
----
-
-## 8. Use live - one decision per trade
-
-Go down the list; the first line that matches decides. Once a trader is owner or outsider on a coin,
-it stays that, except where a line says it changes from then on.
-
-| order | the trade | result | rule |
-| --- | --- | --- | --- |
-| 1 | from the creator, or inside the create transaction | owner | A1, A2 |
-| 2 | a creation-slot buy by a trader that is not a sniper | owner | A3 |
-| 3 | with an owner-only build, or with an owner structure | owner (even on a brand-new wallet's first trade) | A4, S1 |
-| 4 | a sell that takes the trader's bag on this coin below zero | owner, and its later trades on this coin | T1 |
-| 5 | from a wallet on the buy-only machine list | owner | T2 |
-| 6 | paid for by an owner payer | owner | S3 |
-| 7 | from an owner wallet (owner wallets, transfer pairs, wallets of losing machine operators) | owner | S2, S4, S6, T3, M3 |
-| 8 | in one transaction with an owner wallet's trade | owner | S5 |
-| 9 | anything else, snipers included | outsider | |
-
-In the engine, a rule reads structures (lines 1, 3, 8) and the bag (line 4), which the engine
-already keeps per wallet, never wallet lists: a wallet is never a term in a rule
-([_!___strategy.md](_!___strategy.md) T5). Lines 2, 5, 6 and 7 read lists built daily (snipers,
-buy-only machines, owner payers, owner wallets including losing machine operators); they are support
-while we measure what each adds. Live, line 4 turns a trader owner only from its first sell below
-zero.
-
----
-
-## 9. Where the split stays blind
-
-- **A one-time hidden wallet**: fresh, through a public app, at the app's default fee, paid by itself
-  or a service payer, that buys once and sells what it bought. Nothing on the trade ties it to the
-  owner. It is caught only by V5 (a steady outsider flow), by its later trades (S5, or an owner
-  structure or payer), or by funding (where its SOL came from), which we do not hold: reading it
-  costs Helius calls, which need approval.
-- **A buyer whose tokens go to a seller that also bought** on the coin: the seller's sells look
-  covered, so T1 and T3 miss both.
-- **A buying machine kept under 10 coins** (T2).
-- **A paid machine's solo wallet**: with no bundle and no lockstep partner (M1) it looks like a herd
-  bot in every market number (coins, ends empty, net result).
-- **A public structure carries no ownership**: when the owner's machine and real users share one
-  app build (a plain Axiom buy), the build cannot tell them apart; only M1-M3 on the wallet can.
-- **A group whose builds are all public**: A4 finds nothing, and the split rests on A1-A3, T, S3-S5
-  and M.
-
----
 
 ## Appendix A - tested and not used
 
@@ -446,6 +382,12 @@ zero.
 | build loyalty at 80 % | A4 with 80 % of the build's market trades on the group's coins | 7ix with `9ddjzq` hidden: finds 1-15 % of owner SOL, against 86 % at 30 %; the crew program also works coins of other launch builds (706 coins, 418 of them 7ix). Between 20 % and 50 % the result is flat |
 | a buy in slot +1 by a non-sniper | the creation slot widened by one: apps show a coin only from slot +2 (app buyers among non-snipers: 1 % in slot 0, 9 % in slot +1, 24 % in slot +2) | adds 0 SOL on 7ix (the crew's bundle sits in slot 0); on 5ix those buyers pass C1-C2 on 31 % of coins: outsiders |
 | sniper breadth counted per day | A3 with 20 coins and 10 creators that day | a sniper with quiet days passes as owner: on 5ix 16 winning wide bots, 19 % of their money marked owner, against 1.4 % with breadth over the window |
+| losing machine operators as owner (M1-M3) | a machine sign (a bundle of 3+ wallets in one slot and app, or a lockstep pair), sister wallets trading the same market coins joined into one operator, and the operator below zero over the market: owner | the wallets it adds lose to the owner on the group's coins, so they are its prey: on 3ix 0.54 they put in 2,125 SOL net while the creation crew takes out 1,887, and they buy late (median slot +314 .. +523); on 7ix they end -349 SOL (bags counted) while the owner ends +3,344. On a group whose builds are all public, 3 wallets in one slot through one app is any crowd |
+| heavy loser on wide breadth | a wallet on 20+ market coins losing 1 SOL or more a coin: a paid volume service | adds 27 SOL on 3ix 0.54; on 5ix it adds 262 SOL, of which the known owner holds only 28 % |
+| build loyalty on the family | A4 against every coin with the group's create instruction list (all `max_sol_cost` or CU price slices), 20 times chance | finds the 3ix 0.54 owner's buy script (49 % of its trades on the family, 9 % on the slice) but assumes one family is one owner; the same create list carries several owners split by CU limit, CU price, `max_sol_cost` or spendable SOL. D finds the same script on each coin it dominates (3ix owner 93.8 % against 94.3 %) |
+| D on the bare instruction list, or at 10 % | the pattern without its CU price, or a 10 % share | at 10 % it takes 1.9-3.5 % of the winning wide bots' money on 5ix and 7ix; without the CU price, plain public builds dominate small coins |
+| a tag of exact lists only | the owner tag holds whole instruction lists (with a CU price pin where needed) | on new 5ix coins it catches 84.0 % of owner SOL with 2,952 rows; core and exact rows catch 88.2 % with 663 ("How a split becomes a tag") |
+| wallet loyalty at 30 % | W with 30 % of the wallet's market coins in the group | on 5ix the split's outsiders hold 40 such wallets with 41 SOL (0.03 % of the volume), small losers; W at 80 % keeps the owner and leaves them |
 | C1 as "most sells land inside drops" | | volume wallets sell all through the coin's life; the crew's own wallets meet it on 24 % of coins |
 | C1-C2 on one wallet | | 54 % of the crew's own program wallets fail alone |
 | V3 counting presence | seconds in which outsiders trade at all | tiny retail trades fill half the seconds |
@@ -465,16 +407,15 @@ the owner meet it on 35 too. Beating chance proves coordination, not ownership.
 
 ## Appendix B - measured
 
-On 7ix (case file: [node-derivation/launch-group-7ix.md](node-derivation/launch-group-7ix.md)),
-built on 09-15 .. 10-01, checked on 09-02 .. 14:
+On 7ix, built on 09-15 .. 10-01, checked on 09-02 .. 14:
 
 | what | result |
 | --- | --- |
 | the split | 1,333 coins (the old instruction list on any day, the new one with CU price 1000 from 09-28); owner 93.6 % of SOL; owner ahead on 97 % of coins; V2 passes on 82 % of coins (median 94 %); V3 median 1.6 % of seconds |
 | old days (V7) | owner 93.1 % against 94.2 % for a split built there; 1.77 % of outsider money marked owner (186 SOL) |
 | outsider reference | wide bots that win over the month marked owner on 1.1-2.1 % of their money, none of it by M |
-| match levels (S1) | a list of exact structures built on one half of the month finds 81 % of owner SOL on the other half one way and 53 % the other; the core with all 7 levels finds 93 % and 89 %, adding 0.00-0.05 % of outsider money. The crew program rotates up to 201-549 exact variants of one core. Owner structures passing on 09-15 .. 10-01: level 1: 6, level 2: 16, level 3: 135, level 4: 12, level 5: 272, level 6: 367, exact: 448 |
 | calibration of C1-C2, judged as sets | crew program wallets 66 %, creators 90 %, creation-slot owner buys 70 %; snipers 44 %, wide bots 4 %; T1 wallets 35-45 % (they sell all through the coin's life, so T sets are never judged by C) |
+| match levels (S1) | a list of exact structures built on one half of the month finds 81 % of owner SOL on the other half one way and 53 % the other; the core with all 7 levels finds 93 % and 89 %, adding 0.00-0.05 % of outsider money. The crew program rotates up to 201-549 exact variants of one core. Owner structures passing on 09-15 .. 10-01: level 1: 6, level 2: 16, level 3: 135, level 4: 12, level 5: 272, level 6: 367, exact: 448 |
 | few structures carry the owner | 372 instruction lists; the top 10 carry 83 % of its SOL; 161 used only by the owner carry 95 % |
 | structures outlive wallets | the 09-01 .. 14 structures bring in 859 unseen wallets on 09-15 .. 27 (16,000 SOL) and 0.4 % outsider money |
 | a wallet has a few jobs | an owner wallet uses 3 structures (median; 8 at p90); its main one covers 59 % of its trades |
@@ -506,29 +447,97 @@ the creator and the create transaction.
 | ... final split without A4, one-key links judged by C1-C2 | 23 % | 59 % |
 | ... final split with A4, one-key links judged at the source | 99.8 % | 100 % |
 | outsider money A4 marks | 0.00 % (7ix answer key) | 0.00 % of the winning wide bots' money |
-| winning wide bots' money in the final split (sniper breadth over the window) | 3.0 % (the answer key: 4.1 %) | 1.5 % |
+| winning wide bots' money in the final split (sniper breadth over the window) | 3.0 % (the answer key: 4.1 %) | 1.4 % |
 | A4 built on one week, used on the other | 86 %, 0 SOL outsider | |
 | owner instruction lists found | 22 (19 carry `9ddjzq`, one is the create transaction) | 41 programs, 40 plain lists |
-| final split: owner ahead of outsiders / V2 median / V2 >= 80 % | | 98 % of coins / 0.95 / 93 % of coins (without A4: 98 % / 0.70 / 34 %) |
+| final split: owner ahead of outsiders / V2 median / V2 >= 80 % | | 99 % of coins / 0.95 / 92 % of coins (without A4: 98 % / 0.70 / 34 %) |
 
-The 7ix split is the `7ix owner split` fingerprints (one per instruction list): the `volume` tag
-holds `9ddjzq`, the creator, the owner structures as 167 core rows and 85 exact rows ("A level is
-a tag row", section 3) and 6,861 owner wallets (sticky).
+**How a split becomes a tag.** One build serves every group. Every structure of the group's trades
+is read at each match level (core levels 1-6, the exact list alone, the exact list with its CU price,
+level 7), and a row passes when it is 90 % or more owner SOL on the group, has 10 or more trades
+there and runs on fewer than 10,000 market coins. The tag holds the fewest passing rows that still
+cover every trade the passing rows cover (biggest row first), the creator, and the owner wallets
+with an owner trade before their first trade a row catches (sticky). A row applies on every coin of
+the fingerprint, while D reads one coin, so the tag can carry some outsider money the split leaves
+out.
 
-The 5ix split is the `5ix owner split` fingerprint: its `volume` tag holds the 41 programs, the 40
-lists, the creator and 18,447 owner wallets (sticky). It agrees with the split on 99.7 % of SOL
-(100 % of the owner SOL, 3.9 % of the outsider SOL), and 99 % of coins are within 5 points of the
-split's owner share.
+| fingerprint (tag) | rows (core / exact) | wallets | agrees with the split on SOL | coins within 5 points | rows alone carry |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 7ix, both create lists, 224 coins (`volume` and `owner`) | 54 / 5 | 170 | 99.8 % | 99 % | 99.3 % of owner SOL |
+| `5ix owner split` (`volume`) | 1,159 / 53 | 13,631 | 99.6 % | 99 % | 90.0 % |
+| `3ix 0.54 owner split` (`volume`) | 11 / 7 | 127 | 99.3 % | 91 % | 98.4 % |
+
+**Core rows reach new coins.** Rows chosen on the first 60 % of a group's coins by birth and read on
+the other 40 %:
+
+| group | rows | owner SOL caught on the new coins | outsider SOL caught | rows needed |
+| --- | --- | ---: | ---: | ---: |
+| 5ix | exact lists only | 84.0 % | 1.6 % | 2,952 |
+| 5ix | core and exact | 88.2 % | 2.6 % | 663 |
+| 7ix | exact lists only | 98.2 % | 0.0 % | 49 |
+| 7ix | core and exact | 98.2 % | 0.1 % | 38 |
+| 3ix 0.54 | either | 98.0 % | 25.8 % | 16-17 |
+
+Core rows alone, without the exact levels, catch less (5ix 85.1 %, 7ix 95.0 %): some owner builds
+pass only as one exact list. The owner bar (80-95 %) moves none of these by more than half a point.
+A wallet list adds under one point on new coins, since the owner's wallets rotate. On 3ix 0.54 the
+outsider SOL caught is the owner's own buy script (CU price 950,000, 664 market coins) on coins where
+it stays under D's 20 %; the split leaves those trades outsider. On 7ix the exact row `ATA Create,
+Pump.Fun Buy` (no CU instructions, 229 market coins, 84 creation-slot buys of 1,038 SOL, all owner)
+catches the owner's creation-slot bundle buy on a new coin before any wallet list knows the wallet.
+
+With W and L in place of M1-M3 the 5ix split
+keeps 100 % of the answer key, and the owner share moves from 91.7 % to 90.5 %; D adds 4 SOL.
+
+The 5ix outsiders are 9.5 % of the SOL (median coin 5.1 %, 81 % of coins under 10 %). They are wide
+traders: 64 % of their SOL comes from wallets on 100 or more market coins in two weeks, and wallets
+seen on one coin only carry 84 SOL. The largest unknown program among them, `6Vo3245e`, is
+a public app (115,735 coins, 101,397 wallets, 0.4 % of its trades on 5ix). Measured the way the
+chart reads the tag, a median coin has 5 % outsider SOL on 5ix against 7 % on 7ix.
 
 A tag reads forward: sticky marks a wallet's trades only from its first tagged trade on. The split
 labels the wallet's whole history on the coin. So the wallet list holds every owner wallet with an
-owner trade before the first trade a build matcher catches. A wallet the list leaves out keeps
-those trades on the outsider side while its later sells go to the owner. Example: on
-`Ad8zvok8gZebkyLYCWP63Jj9xeopiVTR5773Tndwpump`, four bundle wallets buy 5 SOL in the creation slot
-and later sell in the owner's batch. Without them in the list, the outsider side has 14.5 SOL of
-46.4 SOL; with them, 2.1 SOL. Then the two net lines look alike, though the owner trades most of
-the money. The list holds the creation-slot owner wallets, so the snipers in that slot stay
-outside the tag.
+owner trade before the first trade a build matcher catches, including the birth-bundle wallets,
+whose buy core is often a public `Pump.Fun: BUY`. The exit burst is on the shape list, one core
+row per pack size, so the sell matches on a wallet the list has not seen; that wallet is on the
+list as well, so its earlier buys match. A wallet the list leaves out keeps those trades on the
+outsider side while its later sells go to the owner.
+
+On `Ad8zvok8gZebkyLYCWP63Jj9xeopiVTR5773Tndwpump` the birth-bundle wallets buy in the creation
+slot and sell in the 12-sell burst at 19:21:36. The buys and the burst are volume. A single-wallet
+app sell in that same second stays outside the burst, and a sniper later in the creation slot
+stays outside the birth bundle. On
+`4u5L6sfpur3PreYvirLxJiKbuBaqFtGcmS6G7tXMpump` the three plain buys beside the create are volume
+through the wallet list, and the slot-+242 dump is volume through the 12-sell core.
+
+**The stored tag, coins born 09-15 .. 10-01.** `5ix owner split` holds 816 core rows, including
+one pure `Pump.Fun: SELL` core for every pack size from 2 to 12 (size 1 stays pinned to its CU
+price), and 17,677 wallets, 4,046 of them the birth bundle. `3ix 0.54 owner split` holds 222
+wallets, 95 of them the birth bundle, and no pack-size row. On 7ix the tag holds 13 rows plus a `dump` tag. Birth-bundle wallets on top of the shared 170 are 12, 28, 14,
+40, 0, 4, 2, 28, 0 and 20 across the five max-cost bands, new list then old list.
+3ix and 7ix dumps are a pinned single sell and, on 7ix, the `9ddjzq` dump instructions.
+
+**3ix 0.54: a group whose builds are all public.** 3ix:Buy (`Create_v2, ATA CreateIdempotent,
+Buy`, no CU instructions) with `max_sol_cost` 0.54 SOL: 80 coins born 09-17 .. 30, 13,618 SOL,
+median coin 78 SOL, 36 % of coins rise with no real drop and fall in one slot. The groups with
+`max_sol_cost` under 0.054 SOL are not tradable: someone buys the whole curve in the creation slot.
+
+| what | M1-M3, no D, W, L | no M1-M3, D, W, L | + W and L | + D (final) |
+| --- | ---: | ---: | ---: | ---: |
+| owner share of SOL | 92.3 % | 50.7 % | 90.5 % | 93.8 % |
+| owner ahead of outsiders (V1) | 93.8 % of coins | 90.0 % | 95.0 % | 95.0 % |
+| V2 median / coins >= 80 % | 0.94 / 85 % | 0.75 / 44 % | 0.92 / 79 % | 0.93 / 89 % |
+
+D finds 81 dominant (coin, pattern) pairs; the main one is the owner's buy script (`CU Price,
+CU Limit, ATA CreateIdempotent, Buy` at CU price 950,000, on 664 market coins, 4,077 SOL here).
+Read as the chart reads it, a median coin has 5.2 % outsider SOL (75 % of
+coins at or under 8.3 %, the highest 31 %), against 7 % on 7ix and 5 % on 5ix. The tape carries
+curve trades only, so a coin's life after migration (35 coins, all pushed there by the W wallets)
+is not in any of these numbers.
+
+On 7ix (the 162 coins of the exact create list born 09-17 .. 30) the same method gives owner
+74.7 % of SOL (69.1 % without D, 81.8 % with M1-M3), owner ahead on 95.1 % of coins, V2 median
+0.85; D adds the `9ddjzq` lists A4 misses on this coin set (980 SOL).
 
 On 6ix: one network of 2,136 wallets trades 84 % of all 6ix coins and makes 58 % of their volume;
 107 creators are its own wallets. It ends about even (-0.01 SOL a coin); the creator is ahead on
