@@ -64,8 +64,9 @@
 - **A copy rule mirrors his percent.** The Copy page edits the episode in the same
   builder as a rule. A shortcut `{ "copy": { "min_buy_sol" } }` still expands to two
   stages that send the position back and forth, because `m_print.sold_bag_pct` is
-  empty on a tick and a partial line is idle once it arrives. Saving writes that
-  episode with `"copy": true` and `sell_of: "bag"`.
+  empty on a tick and a partial line is idle once it arrives. The stored form is
+  that episode with `"copy": true` and `sell_of: "bag"`, so a further entry
+  condition is part of the rule a save and a bundle export keep.
 - **`always` lines close regardless of stage.** `stop_loss`, `take_profit` and every
   authored `always` line are read before the stage's own lines, and `Dead`, `Migrated` and
   `Manual` close all. That is the catastrophe path: a stub in a rug must not wait for its

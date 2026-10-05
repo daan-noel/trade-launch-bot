@@ -172,11 +172,17 @@ fn a_deadline_loop_without_a_wait_is_refused() {
 }
 
 #[test]
-fn a_copy_rule_stores_only_its_min_buy_and_refuses_a_mixed_document() {
+fn a_copy_shortcut_canonicalizes_to_the_episode_and_refuses_a_mixed_document() {
     let copy = json!({ "copy": { "min_buy_sol": 0.04 } });
     let p = RuleParams::parse(&copy).unwrap();
     assert!(matches!(p.copy, Some(CopyForm::Spec(s)) if s.min_buy_sol == 0.04));
-    assert_eq!(p.to_value(), copy);
+    let stored = p.to_value();
+    assert_eq!(stored.get("copy").and_then(|v| v.as_bool()), Some(true));
+    assert!(stored.get("enter").is_some());
+    assert!(stored.get("stages").is_some());
+    let again = RuleParams::parse(&stored).unwrap();
+    assert!(matches!(again.copy, Some(CopyForm::Document)));
+    assert_eq!(again.to_value(), stored);
     assert!(!p.enter_on_arm());
     let expanded = p.expand_copy();
     assert!(expanded.copy.is_none());

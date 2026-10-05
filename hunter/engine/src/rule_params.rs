@@ -122,9 +122,10 @@ pub struct Sell {
 }
 
 /// A copy shortcut: follow one wallet. The wallet lives on the fingerprint's
-/// `targets` tag. Stored params are `{ "copy": { "min_buy_sol" } }`.
-/// [`CopySpec::expand`] builds the episode the fold reads until the Copy editor
-/// saves that episode as a document.
+/// `targets` tag. `{ "copy": { "min_buy_sol" } }` is only an input.
+/// [`CopySpec::expand`] builds the episode, and [`RuleParams::to_value`] stores
+/// that episode with `"copy": true`, so later entry conditions are part of the
+/// rule and travel in a sync.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CopySpec {
     /// Smallest buy of his, in SOL, that can open ours.
@@ -134,7 +135,8 @@ pub struct CopySpec {
 /// How a copy rule is stored.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CopyForm {
-    /// `{ "copy": { "min_buy_sol" } }`. The compiler expands it.
+    /// `{ "copy": { "min_buy_sol" } }`, accepted on read. [`RuleParams::to_value`]
+    /// writes the episode instead, so this form is not what a bundle exports.
     Spec(CopySpec),
     /// `"copy": true` beside the episode the Copy editor authored.
     Document,
@@ -666,8 +668,12 @@ impl RuleParams {
     // ── Serialize (the inverse of parse) ─────────────────────────────────────
 
     pub fn to_value(&self) -> Value {
-        if let Some(CopyForm::Spec(c)) = self.copy {
-            return json!({ "copy": { "min_buy_sol": c.min_buy_sol } });
+        // The shortcut cannot carry another entry condition. Canonical form is the
+        // episode, so a save and a bundle export keep whatever the editor added.
+        if let Some(CopyForm::Spec(_)) = self.copy {
+            let mut episode = self.expand_copy();
+            episode.copy = Some(CopyForm::Document);
+            return episode.to_value();
         }
         let mut root = Map::new();
         let e = &self.enter;

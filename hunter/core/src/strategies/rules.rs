@@ -94,9 +94,9 @@ pub fn normalize_tags(tags: &[String]) -> Vec<String> {
 // Generic engine (fingerprint + metrics) rule CRUD
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A copy rule's params carry `copy`: either `{ "min_buy_sol" }` or `true` beside
-/// the episode the Copy editor saved. Pause-all and the metric Rules page use
-/// this so each board acts on its own rows.
+/// A copy rule's params carry `copy`: `true` beside the episode, or the old
+/// `{ "min_buy_sol" }` shortcut a save has not yet rewritten. Pause-all and the
+/// metric Rules page use this so each board acts on its own rows.
 pub fn is_copy_params(params: &serde_json::Value) -> bool {
     params.get("copy").is_some()
 }

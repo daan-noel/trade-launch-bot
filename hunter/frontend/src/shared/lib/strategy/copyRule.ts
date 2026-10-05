@@ -2,7 +2,7 @@ import type { StrategyRule } from 'lib/strategy/types';
 import { familyName, findFamily, findMetric, type FamilySpec, type StrategyRegistry } from 'lib/strategy/registry';
 import { ruleDocFromJson, type RuleDoc } from 'lib/strategy/ruleDoc';
 
-/** A copy rule stores `copy`: `{ min_buy_sol }` or `true` beside the episode. */
+/** A copy rule stores `copy: true` beside the episode. `{ min_buy_sol }` is an old shortcut the editor still opens. */
 export function isCopyRule(rule: Pick<StrategyRule, 'params'>): boolean {
   const copy = rule.params.copy;
   return copy === true || (copy != null && typeof copy === 'object');

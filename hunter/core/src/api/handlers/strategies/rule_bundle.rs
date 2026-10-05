@@ -312,9 +312,19 @@ fn bundle_rule_from(r: &StrategyRule) -> BundleRule {
         buy_amount_lamports: r.buy_amount_lamports,
         max_concurrent_tokens: r.max_concurrent_tokens,
         max_total_tokens: r.max_total_tokens,
-        params: r.params.clone(),
+        // Same canonical form a save stores. A copy shortcut still sitting in the
+        // row exports as the episode, so an added entry condition is in the bundle.
+        params: canonical_rule_params(&r.params),
         tags: r.tags.clone(),
         updated_at: r.updated_at,
+    }
+}
+
+/// `RuleParams::to_value`, or the raw JSON when this box cannot parse it.
+fn canonical_rule_params(params: &serde_json::Value) -> serde_json::Value {
+    match hunter_engine::v1::parse_params_any(params) {
+        Ok(p) => p.to_value(),
+        Err(_) => params.clone(),
     }
 }
 

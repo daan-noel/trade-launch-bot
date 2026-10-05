@@ -113,9 +113,10 @@ One rule follows one wallet, stored as the fingerprint's
 `targets` tag. The builder edits the copy readings (`m_print.flat_before`,
 `m_print.sold_bag_pct`) and the enter gate `m_flow.buy_sol @targets [1p]`; a sell
 line may say `sell_of: "bag"`, which sells that print's percent of the tokens we
-still hold. Those readings stay out of the metric rule catalog. A stored shortcut
-`{ "copy": { "min_buy_sol" } }` still expands to that episode; saving from the
-editor writes the episode with `"copy": true`. Pause All and Stop All on each
+still hold. Those readings stay out of the metric rule catalog. A shortcut
+`{ "copy": { "min_buy_sol" } }` is accepted on read and canonicalizes to the
+episode with `"copy": true`. That episode is what a save stores and what a
+bundle exports, so a further entry condition is part of the rule. Pause All and Stop All on each
 page act on that page's rows. The same `reduce` still decides the episode.
 
 **A line idle in its target stage never acts** (`CompiledLine::idle_in`, read by
