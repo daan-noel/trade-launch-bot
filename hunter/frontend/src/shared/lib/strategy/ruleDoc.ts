@@ -109,6 +109,8 @@ export interface ReEntry {
   max_per_coin: number;
 }
 
+export type CopyFollow = 'bought' | 'all';
+
 export interface RuleDoc {
   enter: Enter;
   take_profit: number | null;
@@ -119,6 +121,11 @@ export interface RuleDoc {
   reentry: ReEntry | null;
   exclusive: boolean;
   priority: number;
+  /**
+   * Whose prints a copy position exits on. `bought` is the wallet that opened
+   * it. `all` is every wallet on `targets`. Absent is `all`.
+   */
+  follow?: CopyFollow;
 }
 
 let nextId = 0;
@@ -249,6 +256,9 @@ export function ruleDocFromJson(raw: unknown): RuleDoc {
       }))
     : [];
   const re = isObj(o.reentry) ? o.reentry : null;
+  if (o.follow != null && o.follow !== 'bought' && o.follow !== 'all') {
+    throw new Error('follow must be "bought" or "all"');
+  }
   return {
     enter: {
       event: condsFromJson(e.event),
@@ -267,6 +277,7 @@ export function ruleDocFromJson(raw: unknown): RuleDoc {
       : null,
     exclusive: o.exclusive === true,
     priority: typeof o.priority === 'number' ? o.priority : 0,
+    follow: o.follow === 'bought' || o.follow === 'all' ? o.follow : undefined,
   };
 }
 
@@ -332,6 +343,7 @@ export function ruleDocToJson(d: RuleDoc): Obj {
   if (d.reentry) root.reentry = { cooldown_sec: d.reentry.cooldown_sec, max_per_coin: d.reentry.max_per_coin };
   if (d.exclusive) root.exclusive = true;
   if (d.priority !== 0) root.priority = d.priority;
+  if (d.follow) root.follow = d.follow;
   return root;
 }
 

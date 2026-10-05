@@ -54,7 +54,7 @@ export function copyViewParams(raw: unknown): unknown {
 
 /** The document a new copy rule opens on. */
 export function copyEpisodeDoc(minBuySol = 0.04): RuleDoc {
-  return ruleDocFromJson(copyEpisodeParams(minBuySol));
+  return { ...ruleDocFromJson(copyEpisodeParams(minBuySol)), follow: 'bought' };
 }
 
 /** Stamp the episode so the save stays on the Copy page. */
@@ -96,22 +96,4 @@ export function copyEditorRegistry(reg: StrategyRegistry): StrategyRegistry {
       };
     });
   return { ...reg, families, copy: [] };
-}
-
-/**
- * Fingerprints that belong to the Copy page: every rule on them is a copy rule.
- * A fingerprint a metric rule also uses stays on the Fingerprints page.
- */
-export function copyFingerprintIds(rules: Pick<StrategyRule, 'fingerprint_id' | 'params'>[]): Set<string> {
-  const byFp = new Map<string, boolean>();
-  for (const rule of rules) {
-    const copy = isCopyRule(rule);
-    const prev = byFp.get(rule.fingerprint_id);
-    byFp.set(rule.fingerprint_id, prev == null ? copy : prev && copy);
-  }
-  const ids = new Set<string>();
-  for (const [id, copy] of byFp) {
-    if (copy) ids.add(id);
-  }
-  return ids;
 }

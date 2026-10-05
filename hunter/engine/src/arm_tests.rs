@@ -62,6 +62,7 @@ fn held(entry: f64, peak: f64, trough: f64, stage: u8, stage_since: f64) -> Ente
         stage_since: at(stage_since),
         sold_bps: 0,
         entry_priced_reserve: f64::NAN,
+        followed: None,
     }
 }
 
@@ -467,5 +468,69 @@ fn a_bag_mirror_sells_his_percent_of_what_we_still_hold() {
         r.held_step(&track, &held(1.0, 1.0, 1.0, 1, 2.0), at(3.0)),
         HeldAction::Sell { reason: ExitReason::Line("his sell"), bps: None, of_bag: false, then_stage: Some(0) },
         "100 % of what he still holds closes our bag"
+    );
+}
+
+/// Two wallets share `targets`. `follow: bought` sells on the wallet that opened
+/// the position. The other wallet's print does not. A price line still does.
+#[test]
+fn follow_bought_sells_only_the_wallet_that_opened_the_position() {
+    let r = compile(json!({
+        "copy": true,
+        "follow": "bought",
+        "take_profit": 50.0,
+        "enter": { "event": [{ "metric": "m_flow.buy_sol", "tag": "targets", "span": "1p", "is": [{ "operator": ">=", "value": 0.04 }] }] },
+        "stages": [
+            { "name": "a", "on": [{ "if": [{ "metric": "m_print.sold_bag_pct", "tag": "targets", "is": [{ "operator": ">", "value": 0 }] }], "sell": "his sell", "sell_of": "bag", "go": "b" }] },
+            { "name": "b", "on": [{ "if": [{ "metric": "m_print.sold_bag_pct", "tag": "targets", "is": [{ "operator": ">", "value": 0 }] }], "sell": "his sell", "sell_of": "bag", "go": "a" }] }
+        ]
+    }));
+    assert!(r.follow_bought);
+    assert!(r.always.iter().any(|l| !l.reads_print), "take profit reads our price");
+    assert!(r.stages[0].on[0].reads_print);
+    let dump = compile(json!({
+        "copy": true,
+        "follow": "bought",
+        "always": [{ "if": [{ "metric": "m_flow.sell_tx_count", "tag": "dump", "span": "1p", "is": [{ "operator": ">=", "value": 1 }] }], "sell": "dump" }]
+    }));
+    assert!(dump.always[0].reads_print, "the dump exit is this print");
+
+    let tags = compile_tags(&json!({ "targets": { "match": { "wallet": ["a", "b"] } } }));
+    let mut track = TokenTrack::new(t0());
+    track.ensure_tag(FingerprintId(Uuid::from_u128(2)), tags[0].key, &tags[0].patterns, &[]);
+    let a = wallet_hash("a");
+    let b = wallet_hash("b");
+    let leg = |track: &mut TokenTrack, who: u64, side: Side, tokens: f64, price: f64, secs: f64| {
+        track.on_trade(TradeLite {
+            side,
+            sol: 1.0,
+            price,
+            token_amount: tokens,
+            wallet_hash: who,
+            at: at(secs),
+            ..Default::default()
+        });
+    };
+    leg(&mut track, a, Side::Buy, 1_000.0, 1.0, 1.0);
+    leg(&mut track, b, Side::Buy, 400.0, 1.0, 2.0);
+    let mut ours = held(1.0, 1.0, 1.0, 0, 1.0);
+    ours.followed = Some(a);
+    assert_eq!(r.held_step(&track, &ours, at(2.0)), HeldAction::None, "his buy is not a sell, and the other wallet does not open a second pile");
+
+    leg(&mut track, b, Side::Sell, 200.0, 1.0, 3.0);
+    assert_eq!(r.held_step(&track, &ours, at(3.0)), HeldAction::None, "the other wallet's sell leaves our pile");
+
+    leg(&mut track, a, Side::Sell, 200.0, 1.0, 4.0);
+    assert_eq!(
+        r.held_step(&track, &ours, at(4.0)),
+        HeldAction::Sell { reason: ExitReason::Line("his sell"), bps: Some(2000), of_bag: true, then_stage: Some(1) },
+        "20 % of the wallet we followed sells 20 % of ours"
+    );
+
+    leg(&mut track, b, Side::Sell, 200.0, 2.0, 5.0);
+    assert_eq!(
+        r.held_step(&track, &ours, at(5.0)),
+        HeldAction::Sell { reason: ExitReason::TakeProfit, bps: None, of_bag: false, then_stage: None },
+        "a price exit still acts on our pile while the other wallet prints"
     );
 }

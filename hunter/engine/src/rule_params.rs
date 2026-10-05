@@ -142,6 +142,39 @@ pub enum CopyForm {
     Document,
 }
 
+/// Whose prints a held copy position listens to.
+///
+/// The fingerprint's `targets` list is still who may open the buy. This says
+/// which of those wallets can move the position after that. Absent means
+/// [`All`](Self::All). [`Each`](Self::Each) is named and refused: one position
+/// per wallet needs a second arm on the coin, which the fold does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyFollow {
+    /// Any wallet on `targets` can sell the one pile.
+    #[default]
+    All,
+    /// Only the wallet whose buy opened this position.
+    Bought,
+}
+
+impl CopyFollow {
+    fn parse(v: &Value) -> Result<Self, String> {
+        match v.as_str() {
+            Some("all") => Ok(Self::All),
+            Some("bought") => Ok(Self::Bought),
+            Some("each") => Err("follow \"each\" needs one position per wallet, which is not available yet".into()),
+            _ => Err("follow must be \"bought\" or \"all\"".into()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Bought => "bought",
+        }
+    }
+}
+
 /// Buys on one coin after a copy rule has closed, then it stops re-arming.
 const COPY_MAX_PER_COIN: u32 = 100;
 
@@ -229,6 +262,8 @@ pub struct RuleParams {
     /// [`Self::expand_copy`] is what the compiler reads. A [`CopyForm::Document`]
     /// is that episode, already written out.
     pub copy: Option<CopyForm>,
+    /// Whose sells this copy position follows. [`CopyFollow::All`] when absent.
+    pub follow: CopyFollow,
 }
 
 // ── Parse ────────────────────────────────────────────────────────────────────
@@ -423,7 +458,12 @@ impl RuleParams {
         ];
         if bag {
             keys.push("copy");
+            keys.push("follow");
         }
+        let follow = match root.get("follow") {
+            None | Some(Value::Null) => CopyFollow::All,
+            Some(v) => CopyFollow::parse(v)?,
+        };
         unknown_keys(root, &keys, "params")?;
         let mut signals = BTreeMap::new();
         if let Some(s) = root.get("signals") {
@@ -475,6 +515,7 @@ impl RuleParams {
                 Some(v) => v.as_i64().and_then(|n| i32::try_from(n).ok()).ok_or("priority must be a whole number")?,
             },
             copy: form,
+            follow,
         };
         p.validate()?;
         Ok(p)
@@ -487,6 +528,9 @@ impl RuleParams {
                 return Err("copy.min_buy_sol must be above 0".into());
             }
             return Ok(());
+        }
+        if self.follow != CopyFollow::All && self.copy.is_none() {
+            return Err("follow belongs on a copy rule".into());
         }
         for (k, v, lo, hi) in [
             ("take_profit", self.take_profit, 0.0, f64::INFINITY),
@@ -723,6 +767,9 @@ impl RuleParams {
         }
         if self.copy.is_some() {
             root.insert("copy".into(), json!(true));
+        }
+        if self.follow != CopyFollow::All {
+            root.insert("follow".into(), json!(self.follow.as_str()));
         }
         Value::Object(root)
     }

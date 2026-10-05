@@ -110,7 +110,14 @@ since the current stage began, so "in the first 30 s of the ride" needs no deadl
 builder as Rules. The lab page adds the same Simulate tab (`?tab=simulate`), and
 that tab lists copy rules only; the Rules Simulate tab lists metric rules only.
 The wallets to follow live on the fingerprint's `targets` tag, one or more.
-The builder edits pool state, price, flow, and position, plus the copy readings
+`follow` says whose prints move the position after the buy. `bought` remembers
+the wallet of the buy that opened it, on the in-flight buy and on the position
+row, and a print exit (a target sell, or a `[1p]` line such as the dump) fires
+only for that wallet. A price line and a dead coin still act on our own pile.
+`all`, and a document that omits `follow`, lets any target wallet's print sell
+the one pile. `each` is refused: one pile per wallet needs a second position
+on the coin. One position per coin remains, so another target's buy does not
+add a second pile. The builder edits pool state, price, flow, and position, plus the copy readings
 (`m_print.flat_before`, `m_print.sold_bag_pct`). The enter gate is
 `m_flow.buy_sol @targets [1p]`; a sell
 line may say `sell_of: "bag"`, which sells that print's percent of the tokens we

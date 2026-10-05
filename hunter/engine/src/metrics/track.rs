@@ -84,6 +84,10 @@ pub struct TokenTrack {
     /// and deliberately NOT the `liquidity_sol` reading. See
     /// [`TradeLite::priced_reserve_sol`].
     priced_reserves: f64,
+    /// Wallet of the print folded last. Cleared on a tick, so a print line cannot
+    /// fire from a clock. One word per coin: the tag stays shared, and a position
+    /// compares this with the wallet its own buy remembered.
+    last_print_wallet: Option<u64>,
 }
 
 impl TokenTrack {
@@ -109,7 +113,13 @@ impl TokenTrack {
             burst_wave: BurstWaveState::default(),
             creator_wallet_hash: None,
             priced_reserves: f64::NAN,
+            last_print_wallet: None,
         }
+    }
+
+    /// The wallet behind the print folded last. `None` after a tick.
+    pub fn print_wallet(&self) -> Option<u64> {
+        self.last_print_wallet
     }
 
     // ── Registration (idempotent; a reload re-registers) ─────────────────────
@@ -213,6 +223,7 @@ impl TokenTrack {
         // every slot window on the coin.
         self.cur_slot = self.cur_slot.max(t.slot);
         self.n_prints += 1;
+        self.last_print_wallet = Some(t.wallet_hash);
         self.price_lifetime.on_trade(t.price, t.at);
         self.flow_lifetime.on_trade(t.side, t.sol);
         let cur = self.cursor();
@@ -285,6 +296,7 @@ impl TokenTrack {
             s.on_tick();
         }
         self.burst_wave.on_tick();
+        self.last_print_wallet = None;
     }
 
     // ── Cursors and raw readings ─────────────────────────────────────────────

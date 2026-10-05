@@ -622,6 +622,7 @@ pub fn adopt_holding_into_engine(
     let token = state.tokens.get_mut(&mint)?;
     let entry_depth = pos.entry_priced_reserve().unwrap_or(f64::NAN);
     let mut ctx = EnteredCtx::at_fill(position, entry_price, created_at, entry_depth);
+    ctx.followed = pos.followed_wallet();
     ctx.move_to(pos.scale_stage, pos.stage_since().unwrap_or(created_at));
     ctx.sold_bps = pos.sold_bps();
     token.arms.insert(rule_id, ArmState::Entered(ctx));
@@ -759,7 +760,13 @@ pub fn adopt_buy_submitted_into_engine(
         rule_id,
         // `lamports: 0` — an adopted arm never re-sends on its own; an engine
         // retry falls back to the rule's configured amount (none for manual).
-        ArmState::EntryPending { intent: intent.clone(), position, attempts: 1, lamports: 0 },
+        ArmState::EntryPending {
+            intent: intent.clone(),
+            position,
+            attempts: 1,
+            lamports: 0,
+            followed: pos.followed_wallet(),
+        },
     );
 
     let ctr = state.counters.entry(rule_id).or_insert(RuleCounters::default());

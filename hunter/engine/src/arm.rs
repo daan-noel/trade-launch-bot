@@ -17,6 +17,8 @@
 //! precomputed series. The walk is generic, so a sweep scan decides exactly as the fold
 //! does instead of re-implementing it.
 
+use std::collections::BTreeMap;
+
 use smallvec::SmallVec;
 
 use crate::cap::Cap;
@@ -30,7 +32,7 @@ use crate::metrics::series::SeriesColumn;
 use crate::metrics::state::StateMetrics;
 use crate::metrics::track::TokenTrack;
 use crate::metrics::{metric_spec, MetricRef, Ts, WindowUnit};
-use crate::rule_params::{Cond, DeadlineBasis, EntryLock, Line, ReEntry, MAX_SELL_BPS};
+use crate::rule_params::{Cond, CopyFollow, DeadlineBasis, EntryLock, Line, ReEntry, MAX_SELL_BPS};
 
 /// One metric condition, ready to read: what to read, under which fingerprint, and the
 /// DNF it is judged against.
@@ -63,6 +65,12 @@ pub trait CoinReads {
     fn age_sec(&self, now: Ts) -> f64;
     /// The slot of the coin's latest print (the `slot` entry lock).
     fn cur_slot(&self) -> u64;
+    /// The wallet behind the print folded last. `None` on a tick, and until the
+    /// first print. A copy position bound to one wallet compares this with the
+    /// wallet its buy remembered.
+    fn print_wallet(&self) -> Option<u64> {
+        None
+    }
 }
 
 impl CoinReads for TokenTrack {
@@ -84,6 +92,11 @@ impl CoinReads for TokenTrack {
     #[inline]
     fn cur_slot(&self) -> u64 {
         TokenTrack::cur_slot(self)
+    }
+
+    #[inline]
+    fn print_wallet(&self) -> Option<u64> {
+        TokenTrack::print_wallet(self)
     }
 }
 
@@ -148,6 +161,9 @@ pub struct CompiledLine {
     pub sell: Option<CompiledSell>,
     /// Stage index to move to.
     pub go: Option<u8>,
+    /// A condition reads the print being decided (`m_print`, or a `[1p]` span).
+    /// A copy position bound to one wallet ignores the line on anyone else's print.
+    reads_print: bool,
 }
 
 impl CompiledLine {
@@ -401,6 +417,9 @@ pub struct CompiledRule {
     pub priority: i32,
     /// `false` ⇒ skip arming and new entries; exits on held positions still run.
     pub entry_enabled: bool,
+    /// A held copy position exits on print lines only when the print is the
+    /// wallet its buy remembered. Price lines and a dead coin still act.
+    pub follow_bought: bool,
 }
 
 /// How a line that sells with no label names itself: its first live metric condition,
@@ -472,7 +491,7 @@ impl Compiler {
         i
     }
 
-    fn lines(&mut self, lines: &[Line]) -> Vec<CompiledLine> {
+    fn lines(&mut self, lines: &[Line], signals: &BTreeMap<&'static str, Vec<Vec<Cond>>>) -> Vec<CompiledLine> {
         lines
             .iter()
             .filter(|l| !l.off)
@@ -485,6 +504,7 @@ impl Compiler {
                     of_bag: s.of_bag,
                 }),
                 go: l.go.map(|g| self.stage(g)),
+                reads_print: line_reads_print(l, signals),
             })
             .collect()
     }
@@ -498,8 +518,26 @@ impl Compiler {
             )],
             sell: Some(CompiledSell { reason, bps: None, of_bag: false }),
             go: None,
+            reads_print: false,
         }
     }
+}
+
+/// A print fact: `m_print`, or a span of this one print (`[1p]`). A position
+/// metric and a longer window are the coin or our own pile, not one wallet's print.
+fn watches_this_print(r: &MetricRef) -> bool {
+    use crate::metrics::registry::Family;
+    r.metric.family() == Family::Print || r.span.window.is_some_and(|w| w.unit == WindowUnit::Print && w.size == 1.0)
+}
+
+fn line_reads_print(line: &Line, signals: &BTreeMap<&'static str, Vec<Vec<Cond>>>) -> bool {
+    line.when.iter().any(|c| match c {
+        Cond::Metric { r, off: false, .. } => watches_this_print(r),
+        Cond::Signal { name, off: false, .. } => signals.get(name).is_some_and(|groups| {
+            groups.iter().flatten().any(|g| matches!(g, Cond::Metric { r, off: false, .. } if watches_this_print(r)))
+        }),
+        _ => false,
+    })
 }
 
 impl CompiledRule {
@@ -547,11 +585,11 @@ impl CompiledRule {
         if let Some(tp) = p.take_profit {
             always.push(cx.pnl_line(Operator::Gte, tp, ExitReason::TakeProfit));
         }
-        always.extend(cx.lines(&p.always));
+        always.extend(cx.lines(&p.always, &p.signals));
         let mut stages: Vec<CompiledStage> = Vec::with_capacity(p.stages.len());
         for (i, s) in p.stages.iter().enumerate() {
-            let on = cx.lines(&s.on);
-            let at_end = cx.lines(&s.at_end);
+            let on = cx.lines(&s.on, &p.signals);
+            let at_end = cx.lines(&s.at_end, &p.signals);
             stages.push(CompiledStage {
                 name: s.name,
                 ends: s.ends.map(|d| (d.basis, d.secs)),
@@ -634,6 +672,7 @@ impl CompiledRule {
             exclusive: p.exclusive,
             priority: p.priority,
             entry_enabled: rule.entry_enabled,
+            follow_bought: p.follow == CopyFollow::Bought,
         }
     }
 
@@ -831,7 +870,8 @@ impl CompiledRule {
     /// holds acts; a line idle in the current stage ([`CompiledLine::idle_in`]) never
     /// does.
     pub fn held_step<R: CoinReads + ?Sized>(&self, reads: &R, held: &EnteredCtx, now: Ts) -> HeldAction {
-        match self.held_line(reads, &held.position_ctx(), held.stage, now) {
+        let bound = self.follow_bought.then_some(held.followed);
+        match self.held_line_bound(reads, &held.position_ctx(), held.stage, now, bound) {
             HeldStep::None => HeldAction::None,
             HeldStep::Line(l) => Self::act(l, reads, Some(&held.position_ctx()), now),
             HeldStep::Move(stage) => HeldAction::Move { stage },
@@ -841,7 +881,29 @@ impl CompiledRule {
     /// [`held_step`](Self::held_step) naming the line that acted — for a caller that
     /// counts exits by line (the lab sweep).
     pub fn held_line<R: CoinReads + ?Sized>(&self, reads: &R, pos: &PositionCtx, stage: u8, now: Ts) -> HeldStep<'_> {
-        let acts = |l: &&CompiledLine| !l.idle_in(stage) && self.line_holds(l, reads, Some(pos), now);
+        self.held_line_bound(reads, pos, stage, now, None)
+    }
+
+    /// `bound` is `Some(wallet)` when this position copies one wallet: a print
+    /// line holds only when the print is that wallet. `None` inside means the
+    /// buy never recorded a wallet, so a print line does not fire. Price lines
+    /// are not print lines, and a deadline move is not a line.
+    fn held_line_bound<R: CoinReads + ?Sized>(
+        &self,
+        reads: &R,
+        pos: &PositionCtx,
+        stage: u8,
+        now: Ts,
+        bound: Option<Option<u64>>,
+    ) -> HeldStep<'_> {
+        let acts = |l: &&CompiledLine| {
+            if let Some(want) = bound {
+                if l.reads_print && reads.print_wallet() != want {
+                    return false;
+                }
+            }
+            !l.idle_in(stage) && self.line_holds(l, reads, Some(pos), now)
+        };
         if let Some(l) = self.always.iter().find(acts) {
             return HeldStep::Line(l);
         }
@@ -928,6 +990,9 @@ pub struct EnteredCtx {
     pub sold_bps: u16,
     /// See [`PositionCtx::entry_priced_reserve`].
     pub entry_priced_reserve: f64,
+    /// The wallet whose buy opened this position, when the rule follows that
+    /// wallet alone. `None` for every other rule.
+    pub followed: Option<u64>,
 }
 
 impl EnteredCtx {
@@ -943,6 +1008,7 @@ impl EnteredCtx {
             stage_since: at,
             sold_bps: 0,
             entry_priced_reserve,
+            followed: None,
         }
     }
 
@@ -974,7 +1040,7 @@ pub enum ArmState {
     Armed,
     /// A buy is in flight; the position row exists. `lamports` is the submitted size,
     /// frozen so retries resize identically (`0` ⇒ the rule's configured amount).
-    EntryPending { intent: IntentId, position: PositionId, attempts: u32, lamports: u64 },
+    EntryPending { intent: IntentId, position: PositionId, attempts: u32, lamports: u64, followed: Option<u64> },
     /// Entry filled; the position is held and walking its stages.
     Entered(EnteredCtx),
     /// A sell is in flight, closing (a portion of) the bag for `reason`. `held` is the
@@ -1001,6 +1067,15 @@ impl ArmState {
         match self {
             ArmState::EntryPending { position, .. } => Some(*position),
             ArmState::Entered(ctx) | ArmState::ExitPending { held: ctx, .. } => Some(ctx.position),
+            _ => None,
+        }
+    }
+
+    /// The wallet a copy buy remembered, from the in-flight buy or the open bag.
+    pub fn followed_wallet(&self) -> Option<u64> {
+        match self {
+            ArmState::EntryPending { followed, .. } => *followed,
+            ArmState::Entered(ctx) | ArmState::ExitPending { held: ctx, .. } => ctx.followed,
             _ => None,
         }
     }

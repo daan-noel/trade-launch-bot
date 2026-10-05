@@ -179,6 +179,22 @@ function RuleEditorInner({
               <LabelTip tip={RULE_FIELD_HELP.name}>Name</LabelTip>
               <Input fieldSize="sm" value={ruleName} onChange={(e) => setRuleName(e.target.value)} />
             </label>
+            {scope === 'copy' && (
+              <label className="flex w-52 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
+                <span>Follow</span>
+                <Select
+                  fieldSize="sm"
+                  value={doc.follow ?? 'all'}
+                  disabled={conditionsLocked}
+                  onChange={(e) =>
+                    patch((d) => ({ ...d, follow: e.target.value === 'bought' ? 'bought' : 'all' }))
+                  }
+                >
+                  <option value="bought">the wallet we bought</option>
+                  <option value="all">every target wallet</option>
+                </Select>
+              </label>
+            )}
             <div className="flex w-36 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
               <LabelTip tip={RULE_FIELD_HELP.mode}>Mode</LabelTip>
               <div className="flex items-center gap-1">

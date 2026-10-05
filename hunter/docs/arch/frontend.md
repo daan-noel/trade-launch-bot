@@ -696,7 +696,7 @@ next load (no per-metric frontend work).
   fingerprint-scoped grouped endpoints (`useFingerprintMatchesFor`, the row-driven
   twin of `useFingerprintMatches`). One `CreationWindowPicker` drives charts and table, and
   a heatmap tile click narrows the table to that recurring weekly slot. The prop is
-  optional because those endpoints are lab-only and `shared` cannot import `@lab`; cross-page selection via `?rule=` / `?fp=`
+  optional because those endpoints are lab-only and `shared` cannot import `@lab`. The library is tabbed from `FINGERPRINT_PURPOSES` (`lib/strategy/fingerprintPurpose.ts`): General, plus one tab per purpose. A fingerprint sits on a purpose tab when every rule that uses it matches that purpose and no other; an unused fingerprint, or one shared across purposes, stays on General. The tab is `?purpose=` (absent means General). A `?fp=` link opens the tab that owns that fingerprint. Adding a purpose is one entry in that list. The metric-rule picker still omits a fingerprint a single purpose owns; the Copy editor lists it. Cross-page selection via `?rule=` / `?fp=`
   (`useSelectionSearchParam` + `lib/strategy/nav.ts` — same-tab Router `Link`,
   Ctrl/middle-click still opens a new tab). Rules support soft-archive via
   `is_enabled` (Enable/Disable endpoints; Disabled hidden by default on Rules +

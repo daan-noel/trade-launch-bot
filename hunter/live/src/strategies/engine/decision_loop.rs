@@ -595,18 +595,15 @@ async fn dispatch(
             Effect::PositionUpdate(delta) => {
                 // The entry's depth lives on the engine's held context; the sink
                 // persists it with the entry fill so a restart can read it back.
+                let arm = state.tokens.get(&delta.mint).and_then(|t| t.arms.get(&delta.rule));
                 let entry_depth = (delta.status == hunter_engine::event::PositionStatus::Holding)
-                    .then(|| {
-                        state
-                            .tokens
-                            .get(&delta.mint)
-                            .and_then(|t| t.arms.get(&delta.rule))
-                            .and_then(|arm| arm.held())
-                            .map(|held| held.entry_priced_reserve)
-                    })
+                    .then(|| arm.and_then(|a| a.held()).map(|held| held.entry_priced_reserve))
                     .flatten()
                     .filter(|v| v.is_finite());
-                sink.on_position_update(delta.clone(), entry_depth).await
+                let followed = (delta.status == hunter_engine::event::PositionStatus::BuySubmitted)
+                    .then(|| arm.and_then(|a| a.followed_wallet()))
+                    .flatten();
+                sink.on_position_update(delta.clone(), entry_depth, followed).await
             }
             Effect::ArmedChanged(delta) => {
                 // A skipped entry is a trade that did not happen, and a silent one

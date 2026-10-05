@@ -212,4 +212,21 @@ fn a_copy_document_keeps_the_episode_the_editor_wrote() {
     assert_eq!(again.enter.event.len(), 2);
     assert!(again.stages[0].on[0].sell.unwrap().of_bag);
     assert_eq!(parsed.to_value(), stored);
+    assert_eq!(parsed.follow, CopyFollow::All);
+}
+
+#[test]
+fn follow_bought_roundtrips_and_each_is_refused() {
+    let mut episode = RuleParams::parse(&json!({ "copy": { "min_buy_sol": 0.04 } })).unwrap().expand_copy();
+    episode.copy = Some(CopyForm::Document);
+    episode.follow = CopyFollow::Bought;
+    let stored = episode.to_value();
+    assert_eq!(stored.get("follow").and_then(|v| v.as_str()), Some("bought"));
+    let parsed = RuleParams::parse(&stored).unwrap();
+    assert_eq!(parsed.follow, CopyFollow::Bought);
+    assert_eq!(parsed.to_value(), stored);
+    let each = json!({ "copy": true, "follow": "each", "enter": { "event": [] } });
+    assert!(RuleParams::parse(&each).unwrap_err().contains("each"));
+    let bare = json!({ "follow": "bought", "enter": { "event": [] } });
+    assert!(RuleParams::parse(&bare).unwrap_err().contains("unknown"));
 }

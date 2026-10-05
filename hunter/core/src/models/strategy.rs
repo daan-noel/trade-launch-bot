@@ -433,6 +433,11 @@ pub const EXTRA_STAGE_SINCE: &str = "stage_since";
 /// (`StrategyRepo::reopen_paper_partial_exits`) instead of being closed whole.
 pub const EXTRA_EXIT_PENDING_PARTIAL: &str = "exit_pending_partial";
 
+/// `extra` key holding the wallet hash of the buy a copy rule followed, as a
+/// decimal string. A restart reads it back onto the position so print exits
+/// stay on that wallet. Absent on every other position.
+pub const EXTRA_FOLLOWED_WALLET: &str = "followed_wallet";
+
 impl StrategyPosition {
     /// The reverted-transaction fees an `EntryFailed` row carries
     /// ([`EXTRA_REVERTED_FEE_LAMPORTS`]), in SOL; 0 when absent.
@@ -461,6 +466,13 @@ impl StrategyPosition {
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|t| t.with_timezone(&Utc))
             .or(self.entry_time)
+    }
+
+    /// The wallet a copy buy remembered ([`EXTRA_FOLLOWED_WALLET`]). `None` when
+    /// the position follows every target, or the row predates the binding.
+    pub fn followed_wallet(&self) -> Option<u64> {
+        let v = self.extra.get(EXTRA_FOLLOWED_WALLET)?;
+        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
     }
 
     /// In the runtime holding index: buy in flight or held. These are the states

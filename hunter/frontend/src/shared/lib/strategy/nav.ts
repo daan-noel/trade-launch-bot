@@ -4,7 +4,8 @@
  * the target selected.
  *
  * Params: `?rule=<id>` on the lab/live Rules or Copy page, `?tab=simulate` for the
- * lab Simulate board on that same page, `?fp=<id>` on Fingerprints. Same shape as
+ * lab Simulate board on that same page, `?fp=<id>` and `?purpose=` on Fingerprints.
+ * Same shape as
  * Tokens `?mint=` / Sweep `?run=`. Prefer Router `Link` (same-tab); Ctrl/middle-click
  * still opens a new tab with the param intact.
  *
@@ -39,6 +40,11 @@ export const STRATEGY_PATHS = {
 export const STRATEGY_PARAMS = {
   rule: 'rule',
   fingerprint: 'fp',
+  /**
+   * Fingerprints page tab. Absent = General. A registered purpose id (today
+   * `copy`) opens that purpose's tab.
+   */
+  purpose: 'purpose',
   /** Lab Rules or Copy page board. Absent = the rule list. `simulate` = Simulate. */
   tab: 'tab',
 } as const;

@@ -66,7 +66,10 @@
   stages that send the position back and forth, because `m_print.sold_bag_pct` is
   empty on a tick and a partial line is idle once it arrives. The stored form is
   that episode with `"copy": true` and `sell_of: "bag"`, so a further entry
-  condition is part of the rule a save and a bundle export keep.
+  condition is part of the rule a save and a bundle export keep. `follow: "bought"`
+  sizes that percent from the wallet whose buy opened the position; another
+  target's sell does not. `follow` absent, or `"all"`, sizes it from whichever
+  target printed.
 - **`always` lines close regardless of stage.** `stop_loss`, `take_profit` and every
   authored `always` line are read before the stage's own lines, and `Dead`, `Migrated` and
   `Manual` close all. That is the catastrophe path: a stub in a rug must not wait for its

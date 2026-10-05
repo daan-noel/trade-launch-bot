@@ -482,14 +482,14 @@ impl Sink {
     /// transition's PG write has committed ([`Self::send_after_write`]).
     /// `entry_depth` is the engine's entry depth (`EnteredCtx::entry_priced_reserve`),
     /// read on a `Holding` transition; the first-entry write persists it.
-    pub async fn on_position_update(&mut self, delta: PositionDelta, entry_depth: Option<f64>) {
+    pub async fn on_position_update(&mut self, delta: PositionDelta, entry_depth: Option<f64>, followed: Option<u64>) {
         // Captured before the handlers run: a terminal transition drops the
         // registry row, and the re-roll below needs the run this position belonged
         // to (positions keep writing to the run they were born in).
         let owner = self.registry.get(delta.position).map(|m| (m.run_id, m.pg_id));
         let finalized = match delta.status {
             PositionStatus::BuySubmitted => {
-                self.on_buy_submitted(&delta).await;
+                self.on_buy_submitted(&delta, followed).await;
                 false
             }
             PositionStatus::Holding => {
@@ -632,7 +632,7 @@ impl Sink {
 
     // ── PositionUpdate handlers ───────────────────────────────────────────────
 
-    async fn on_buy_submitted(&mut self, delta: &PositionDelta) {
+    async fn on_buy_submitted(&mut self, delta: &PositionDelta, followed: Option<u64>) {
         // A staged manual episode (fresh per-episode rule id, never in `rules`)
         // gets the fixed manual identity: real mode, the one manual run, and the
         // handler's pre-minted PG id.
@@ -694,6 +694,11 @@ impl Sink {
         );
         pos.token_program_id = token_program_id.clone();
         pos.status = "BuySubmitted".to_string();
+        if let Some(w) = followed {
+            pos.extra = serde_json::json!({
+                trading_core::models::strategy::EXTRA_FOLLOWED_WALLET: w.to_string()
+            });
+        }
         if let Some(m) = &staged {
             // The handler already 202'd this id — the row must be born with it.
             pos.id = m.pg_id;

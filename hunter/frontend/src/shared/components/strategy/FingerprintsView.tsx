@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
@@ -15,6 +15,7 @@ import {
 } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { Modal } from 'components/ui/Modal';
+import { Tabs, TabsList, TabsTrigger } from 'components/ui/Tabs';
 import { EmptyState } from 'components/ui/EmptyState';
 import { PageHeader } from 'components/ui/PageHeader';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
@@ -24,7 +25,16 @@ import { ruleChainCell } from './RuleParamsSummary';
 import { RULE_WORDS_TIP_DELAY_MS, RuleHoverTip } from './RuleHoverTip';
 import { capsDisplayText } from './capsRuleColumns';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
-import { copyFingerprintIds } from 'lib/strategy/copyRule';
+import {
+  FINGERPRINT_PURPOSES,
+  GENERAL_FINGERPRINT_PURPOSE,
+  fingerprintBoardHref,
+  fingerprintPurposes,
+  fingerprintRuleHref,
+  isFingerprintPurposeId,
+  purposeOf,
+  type FingerprintPurposeId,
+} from 'lib/strategy/fingerprintPurpose';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
@@ -42,7 +52,7 @@ import {
 } from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { FP_CONFIG_LISTS } from './FingerprintParamsSummary';
-import { flowDiscoveryHref, rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
+import { flowDiscoveryHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { fingerprintAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import {
   lamportsToSol,
@@ -125,9 +135,14 @@ const COLOR_COLS: {
 function FingerprintUsedByDetail({
   rules,
   fingerprint,
+  boardHref,
+  boardLabel,
 }: {
   rules: StrategyRule[];
   fingerprint?: Fingerprint | null;
+  /** Page the rules on this fingerprint live on. */
+  boardHref: string;
+  boardLabel: string;
 }) {
   if (rules.length === 0) {
     return (
@@ -141,10 +156,10 @@ function FingerprintUsedByDetail({
           Used by {rules.length} rule{rules.length === 1 ? '' : 's'}
         </p>
         <Link
-          to={rulesHref()}
+          to={boardHref}
           className="text-[11px] text-accent hover:text-primary hover:underline"
         >
-          Open Rules →
+          Open {boardLabel} →
         </Link>
       </div>
       <ul className="grid gap-2 sm:grid-cols-2">
@@ -158,7 +173,7 @@ function FingerprintUsedByDetail({
               className="flex w-full"
             >
               <Link
-                to={rulesHref(r.id)}
+                to={fingerprintRuleHref(r)}
                 className="flex w-full flex-col gap-2 rounded-md border border-info/25 bg-info/8 px-3 py-2.5 text-left transition-colors hover:border-accent/40 hover:bg-info/14"
               >
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -190,8 +205,10 @@ function FingerprintUsedByDetail({
 
 /**
  * Fingerprint library, shared by the live and lab apps: the match specs rules
- * reference. List (used-by count) + create/edit form (SOL inputs, lamports at
- * the API boundary) + used-by-guarded delete. Selecting a row expands the
+ * reference. Tabs come from `FINGERPRINT_PURPOSES`: General, plus one tab per
+ * purpose. A fingerprint sits on a purpose tab when every rule that uses it is
+ * of that purpose. List (used-by count) + create/edit form (SOL inputs, lamports
+ * at the API boundary) + used-by-guarded delete. Selecting a row expands the
  * rules that reference it.
  */
 export function FingerprintsView({
@@ -207,12 +224,13 @@ export function FingerprintsView({
   onViewMatches?: (fingerprint: Fingerprint) => void;
 } = {}) {
   const { data: fps = [], isLoading } = useGetFingerprintsQuery();
-  const { data: rules = [] } = useGetStrategyRulesQuery();
+  const { data: rules = [], isLoading: rulesLoading } = useGetStrategyRulesQuery();
   const [createFp, { isLoading: creating }] = useCreateFingerprintMutation();
   const [updateFp, { isLoading: updating }] = useUpdateFingerprintMutation();
   const [deleteFp] = useDeleteFingerprintMutation();
 
   const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.fingerprint);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [editing, setEditing] = useState<Fingerprint | 'new' | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -226,17 +244,90 @@ export function FingerprintsView({
     return map;
   }, [rules]);
 
+  const purposes = useMemo(() => fingerprintPurposes(rules), [rules]);
+  const ready = !rulesLoading;
+  const fpParam = searchParams.get(STRATEGY_PARAMS.fingerprint);
+  const purposeParam = searchParams.get(STRATEGY_PARAMS.purpose);
+
+  // The selected fingerprint decides the tab, so a `?fp=` link opens the tab
+  // that owns it. With no selection, `?purpose=` does. General omits the param.
+  const active: FingerprintPurposeId = useMemo(() => {
+    if (ready && fpParam) {
+      const owned = purposeOf(fpParam, purposes);
+      if (owned !== GENERAL_FINGERPRINT_PURPOSE) return owned;
+      if (isFingerprintPurposeId(purposeParam) && purposeParam !== GENERAL_FINGERPRINT_PURPOSE) {
+        return GENERAL_FINGERPRINT_PURPOSE;
+      }
+    }
+    return isFingerprintPurposeId(purposeParam) ? purposeParam : GENERAL_FINGERPRINT_PURPOSE;
+  }, [ready, fpParam, purposeParam, purposes]);
+
+  useEffect(() => {
+    if (!ready || !fpParam) return;
+    const owned = purposeOf(fpParam, purposes);
+    const want = owned === GENERAL_FINGERPRINT_PURPOSE ? null : owned;
+    if ((want == null && purposeParam == null) || purposeParam === want) return;
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (want) next.set(STRATEGY_PARAMS.purpose, want);
+        else next.delete(STRATEGY_PARAMS.purpose);
+        return next;
+      },
+      { replace: true },
+    );
+  }, [ready, fpParam, purposeParam, purposes, setSearchParams]);
+
+  const setPurpose = useCallback(
+    (id: string) => {
+      if (!isFingerprintPurposeId(id)) return;
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (id === GENERAL_FINGERPRINT_PURPOSE) next.delete(STRATEGY_PARAMS.purpose);
+          else next.set(STRATEGY_PARAMS.purpose, id);
+          const fp = next.get(STRATEGY_PARAMS.fingerprint);
+          if (fp && purposeOf(fp, purposes) !== id) next.delete(STRATEGY_PARAMS.fingerprint);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [purposes, setSearchParams],
+  );
+
+  const counts = useMemo(() => {
+    const c = new Map<FingerprintPurposeId, number>();
+    c.set(GENERAL_FINGERPRINT_PURPOSE, 0);
+    for (const p of FINGERPRINT_PURPOSES) c.set(p.id, 0);
+    if (!ready) return c;
+    for (const fp of fps) {
+      const id = purposeOf(fp.id, purposes);
+      c.set(id, (c.get(id) ?? 0) + 1);
+    }
+    return c;
+  }, [fps, purposes, ready]);
+
+  const activePurpose = FINGERPRINT_PURPOSES.find((p) => p.id === active);
+  const boardHref = fingerprintBoardHref(active);
+  const boardLabel = activePurpose?.label ?? 'Rules';
+
   const rowDetail = useCallback(
     (fp: Fingerprint) => (
-      <FingerprintUsedByDetail rules={rulesByFp.get(fp.id) ?? []} fingerprint={fp} />
+      <FingerprintUsedByDetail
+        rules={rulesByFp.get(fp.id) ?? []}
+        fingerprint={fp}
+        boardHref={boardHref}
+        boardLabel={boardLabel}
+      />
     ),
-    [rulesByFp],
+    [rulesByFp, boardHref, boardLabel],
   );
 
   const visible = useMemo(() => {
-    const hidden = copyFingerprintIds(rules);
-    return fps.filter((f) => !hidden.has(f.id));
-  }, [fps, rules]);
+    if (!ready) return [];
+    return fps.filter((f) => purposeOf(f.id, purposes) === active);
+  }, [fps, purposes, active, ready]);
 
   const valueColors = useMemo(
     () => computeSameValueCellClasses(visible, (r) => r.id, COLOR_COLS),
@@ -451,7 +542,7 @@ export function FingerprintsView({
       <PageHeader
         className="mb-0"
         title="Fingerprints"
-        description="Match specs · select a row to see which rules use it"
+        description="Match specs, split by what uses them. Select a row to see which rules use it."
         actions={
           <>
             <div className="grow" />
@@ -469,17 +560,36 @@ export function FingerprintsView({
         }
       />
       {err && <p className="text-xs text-red">{err}</p>}
+      <Tabs value={active} onValueChange={setPurpose}>
+        <TabsList>
+          <TabsTrigger value={GENERAL_FINGERPRINT_PURPOSE}>
+            General
+            <span className="ml-1.5 tabular-nums text-[11px] text-text-dim">
+              {counts.get(GENERAL_FINGERPRINT_PURPOSE) ?? 0}
+            </span>
+          </TabsTrigger>
+          {FINGERPRINT_PURPOSES.map((p) => (
+            <TabsTrigger key={p.id} value={p.id}>
+              {p.label}
+              <span className="ml-1.5 tabular-nums text-[11px] text-text-dim">{counts.get(p.id) ?? 0}</span>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
       <DataTable
+        key={active}
         columns={columns}
         rows={visible}
         rowKey={fingerprintRowKey}
-        loading={isLoading}
+        loading={isLoading || !ready}
         searchable
         colFilters
         colToggle
         tableId="fingerprints-v2"
         pinnable
-        emptyMessage="No fingerprints yet — create one to start authoring rules."
+        emptyMessage={
+          activePurpose?.empty ?? 'No fingerprints yet — create one to start authoring rules.'
+        }
         selectedKey={selectedKey}
         onSelect={setSelectedKey}
         rowDetail={rowDetail}
@@ -535,7 +645,15 @@ export function FingerprintsView({
         {editing !== null && (
           <div className="flex flex-col gap-3">
             {editingId && editing !== 'new' && (
-              <FingerprintUsedByDetail rules={editingRules} fingerprint={editing} />
+              <FingerprintUsedByDetail
+                rules={editingRules}
+                fingerprint={editing}
+                boardHref={fingerprintBoardHref(purposeOf(editingId, purposes))}
+                boardLabel={
+                  FINGERPRINT_PURPOSES.find((p) => p.id === purposeOf(editingId, purposes))?.label ??
+                  'Rules'
+                }
+              />
             )}
             <FingerprintForm
               key={editing === 'new' ? 'new' : editing.id}

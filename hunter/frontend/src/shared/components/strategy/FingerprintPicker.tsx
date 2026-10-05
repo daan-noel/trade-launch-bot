@@ -11,7 +11,7 @@ import {
   useGetStrategyRulesQuery,
   useCreateFingerprintMutation,
 } from 'store/sharedEndpoints';
-import { copyFingerprintIds } from 'lib/strategy/copyRule';
+import { copyFingerprintIds } from 'lib/strategy/fingerprintPurpose';
 import { FingerprintForm } from './FingerprintForm';
 import {
   FingerprintOptionBody,

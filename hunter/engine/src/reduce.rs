@@ -274,21 +274,22 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             token.unsettle();
             match token.arms.get(&rule_id).cloned() {
-                Some(ArmState::EntryPending { intent: pend, position, .. }) if pend == intent => {
+                Some(ArmState::EntryPending { intent: pend, position, followed, .. }) if pend == intent => {
                     // Peak/trough start at the fill: before any run-up
                     // `retrace` measures the drop from entry (a soft stop);
                     // before any dip `bounce` equals `pnl`. `room_taken` reads the
                     // depth of the last print folded here: in simulate the fill
                     // print itself (the replay confirms right after folding it).
-                    token.arms.insert(
-                        rule_id,
-                        ArmState::Entered(EnteredCtx::at_fill(
-                            position,
-                            fill.price,
-                            fill.at,
-                            token.track.current_priced_reserves(),
-                        )),
+                    // The followed wallet was remembered at the buy decision, not
+                    // at this fill: later prints have already replaced it on the track.
+                    let mut entered = EnteredCtx::at_fill(
+                        position,
+                        fill.price,
+                        fill.at,
+                        token.track.current_priced_reserves(),
                     );
+                    entered.followed = followed;
+                    token.arms.insert(rule_id, ArmState::Entered(entered));
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
                         rule: rule_id,
@@ -369,7 +370,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             token.unsettle();
             match token.arms.get(&rule_id).cloned() {
-                Some(ArmState::EntryPending { intent: pend, position, attempts, lamports })
+                Some(ArmState::EntryPending { intent: pend, position, attempts, lamports, followed })
                     if pend == intent =>
                 {
                     // Retry size: frozen at submit on the arm; `0` (a boot-adopted
@@ -423,6 +424,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                                 position,
                                 attempts: attempts + 1,
                                 lamports: retry_lamports,
+                                followed,
                             },
                         );
                         fx.push(Effect::SubmitBuy {
@@ -581,7 +583,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             token.unsettle();
             token.arms.insert(
                 rule,
-                ArmState::EntryPending { intent: intent.clone(), position, attempts: 1, lamports },
+                ArmState::EntryPending { intent: intent.clone(), position, attempts: 1, lamports, followed: None },
             );
             // A manual episode is never *blocked* by the copycat guard (the
             // operator's call always wins — manual already bypasses entry
@@ -746,7 +748,9 @@ enum ArmDecision {
     /// one instant the failing readings still exist, and `decide_arm` is where the
     /// track is in hand. It is `Some` only for `Unsatisfiable`.
     Disarm(DisarmReason, Option<Box<EntryBlockers>>),
-    Enter,
+    /// `followed` is the wallet whose buy opened a copy position that tracks
+    /// that wallet alone. `None` for every other entry.
+    Enter { followed: Option<u64> },
     /// Completing print whose filters failed — lock the slot, stay Armed.
     SpendSlot,
     /// Leftover fail on a print that would otherwise enter — lock the slot,
@@ -1260,7 +1264,15 @@ fn decide_arm(
                 return ArmDecision::None;
             }
             match c.try_enter(&token.track, now, token.entry_locks.get(&rule_id).copied(), on_print) {
-                EntryVerdict::Enter => ArmDecision::Enter,
+                EntryVerdict::Enter => {
+                    let followed = if c.follow_bought {
+                        let Some(w) = token.track.print_wallet() else { return ArmDecision::None };
+                        Some(w)
+                    } else {
+                        None
+                    };
+                    ArmDecision::Enter { followed }
+                },
                 EntryVerdict::SpendSlot => ArmDecision::SpendSlot,
                 EntryVerdict::Exhaust => ArmDecision::Exhaust,
                 EntryVerdict::No => ArmDecision::None,
@@ -1340,7 +1352,7 @@ fn apply_decision(
     if state.observing
         && matches!(
             decision,
-            ArmDecision::Enter | ArmDecision::Exit(_) | ArmDecision::PartialExit { .. } | ArmDecision::Move(_)
+            ArmDecision::Enter { .. } | ArmDecision::Exit(_) | ArmDecision::PartialExit { .. } | ArmDecision::Move(_)
         )
     {
         return;
@@ -1366,7 +1378,7 @@ fn apply_decision(
             token.arms.insert(rule_id, ArmState::Disarmed(reason));
             fx.push(disarmed(mint, rule_id, reason, detail));
         }
-        ArmDecision::Enter => {
+        ArmDecision::Enter { followed } => {
             let slot = token.track.cur_slot();
             if slot != 0 {
                 token.entry_locks.insert(rule_id, slot);
@@ -1401,6 +1413,7 @@ fn apply_decision(
                     position,
                     attempts: 1,
                     lamports: buy_lamports,
+                    followed,
                 },
             );
             fx.push(Effect::SubmitBuy {
