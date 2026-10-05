@@ -62,9 +62,12 @@ export function withCopyFlag(params: Record<string, unknown>): Record<string, un
   return { ...params, copy: true };
 }
 
+/** Families the Copy editor offers in full. Copy readings (`m_print`) are added after. */
+const COPY_FAMILIES = ['m_state', 'm_price', 'm_flow', 'm_position'] as const;
+
 /**
- * The catalog the Copy editor picks from: the copy readings, grouped by family,
- * plus `m_flow.buy_sol` — the enter gate the episode is written in.
+ * The catalog the Copy editor picks from: pool state, price, flow, and position,
+ * plus the copy readings (`m_print.flat_before`, `m_print.sold_bag_pct`).
  */
 export function copyEditorRegistry(reg: StrategyRegistry): StrategyRegistry {
   const byFamily = new Map<string, FamilySpec['metrics']>();
@@ -76,11 +79,13 @@ export function copyEditorRegistry(reg: StrategyRegistry): StrategyRegistry {
     if (!list.some((m) => m.path === path)) list.push(spec);
     byFamily.set(name, list);
   };
-  push('m_flow.buy_sol');
+  for (const name of COPY_FAMILIES) {
+    const fam = findFamily(reg, name);
+    if (!fam) continue;
+    for (const m of fam.metrics) push(m.path);
+  }
   for (const m of reg.copy ?? []) push(m.path);
-  const families: FamilySpec[] = [...byFamily.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([name, metrics]) => {
+  const families: FamilySpec[] = [...byFamily.entries()].map(([name, metrics]) => {
       const fam = findFamily(reg, name);
       return {
         name,

@@ -109,9 +109,10 @@ since the current stage began, so "in the first 30 s of the ride" needs no deadl
 **Copy** is a separate page (`/strategies/copy`) with the same board and the same
 builder as Rules. The lab page adds the same Simulate tab (`?tab=simulate`), and
 that tab lists copy rules only; the Rules Simulate tab lists metric rules only.
-One rule follows one wallet, stored as the fingerprint's
-`targets` tag. The builder edits the copy readings (`m_print.flat_before`,
-`m_print.sold_bag_pct`) and the enter gate `m_flow.buy_sol @targets [1p]`; a sell
+The wallets to follow live on the fingerprint's `targets` tag, one or more.
+The builder edits pool state, price, flow, and position, plus the copy readings
+(`m_print.flat_before`, `m_print.sold_bag_pct`). The enter gate is
+`m_flow.buy_sol @targets [1p]`; a sell
 line may say `sell_of: "bag"`, which sells that print's percent of the tokens we
 still hold. Those readings stay out of the metric rule catalog. A shortcut
 `{ "copy": { "min_buy_sol" } }` is accepted on read and canonicalizes to the
