@@ -241,15 +241,20 @@ same-tab navigation (and Ctrl/middle-click new tabs) land with the row selected.
 
 | Param | Page | Helper |
 |---|---|---|
-| `?rule=<id>` | `/strategies/rules`, `/strategies/simulate` | `rulesHref` / `simulateHref` |
+| `?rule=<id>` | `/strategies/rules` (`?tab=simulate` opens the Simulate board) | `rulesHref` / `simulateHref` |
+| `?rule=<id>` | `/strategies/copy` (`?tab=simulate` opens that page's Simulate board) | `copyHref` / `simulateHref(id, 'copy')` |
 | `?fp=<id>` | `/strategies/fingerprints` | `fingerprintsHref(id)` |
 
-- `lib/strategy/nav.ts` — path + href builders (SSOT for cross-links). Simulate is
-  lab-only — never link to it from the live app.
+- `lib/strategy/nav.ts` — path + href builders (SSOT for cross-links). The Simulate
+  board is lab-only (`?tab=simulate` on `/strategies/rules` and `/strategies/copy`).
+  Never link to it from the live app. `/strategies/simulate` redirects onto the
+  Rules tab and keeps the query. A copy rule's Simulate link stays on Copy.
 - `hooks/useSelectionSearchParam(param)` — bidirectional `selectedKey` ↔ search param
   (`replace: true` on user select; URL seeds on load / back-forward).
 - Fingerprints "Used by" → `rulesHref`; Rules (lab `linkToSimulate`) → `simulateHref`;
-  Simulate rule name → `rulesHref`; fingerprint cells → `fingerprintsHref`.
+  Copy (lab `linkToSimulate`) → `simulateHref(id, 'copy')`; Simulate rule name →
+  `rulesHref` or `copyHref` for the board that listed it; fingerprint cells →
+  `fingerprintsHref`.
 - Sweep group Used-by chips → `rulesHref`; matched fingerprint → `fingerprintsHref`. The
   chip's **best** badge is `jsonValuesEqual(rule.params, group.best_params)`
   (`lib/strategy/matchRuleIdentity.ts`): key order is ignored, every array stays

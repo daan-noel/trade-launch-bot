@@ -4,7 +4,7 @@
 
 `grouped_sweep.rs` applied the saved-fingerprint scope as a `corpus.tokens.retain(...)`
 *after* `LakeSource::load`, so `token_cap` was a `LIMIT` on a `created_at DESC` scan over
-**all** candidate tokens rather than over matched ones. Flow discovery and metric discovery
+**all** candidate tokens rather than over matched ones. Flow discovery
 had already been moved to `matching_mints` (scope before the trade scan, `docs/arch/sweep.md`
 rule 1); the grouped sweep never was, and the doc's rule read as if it already covered it.
 

@@ -91,8 +91,6 @@ pub async fn fetch_sim_histories_from(
         with_flow,
         // Hash-resolved flow keys only — no consumer here reads label text.
         with_flow_text: false,
-        // Only family search reads the oracle curve; every other run pays zero.
-        with_oracle: false,
     };
 
     let corpus = LakeSource::new(root).load(&sel).await?;

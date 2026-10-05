@@ -53,8 +53,6 @@ import {
 } from './genericAxes';
 import { SWEEP_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { tidySolDecimal } from 'utils/format';
-import { STORAGE_KEYS } from 'lib/storage';
-import type { DiscoverySweepHandoff } from '@lab/lib/metricDiscoveryTypes';
 
 /** Backend `MAX_COMBOS` default + `HARD_MAX_COMBOS` backstop (mirror). */
 const DEFAULT_MAX_COMBOS = 100000;
@@ -332,48 +330,6 @@ export function GenericSweepConfigForm({
     setConfig(() => runToConfig(reuseRun, DEFAULTS));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reuseNonce]);
-
-  // Apply a one-shot discovery → sweep seed written by MetricDiscoveryPage.
-  useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(STORAGE_KEYS.sweepDiscoverySeed);
-      if (!raw) return;
-      sessionStorage.removeItem(STORAGE_KEYS.sweepDiscoverySeed);
-      const handoff = JSON.parse(raw) as DiscoverySweepHandoff;
-      if (!handoff?.seed?.axes || !Array.isArray(handoff.seed.axes)) return;
-      const axes = handoff.includeOptional
-        ? [...handoff.seed.axes, ...(handoff.seed.optional_axes ?? [])]
-        : handoff.seed.axes;
-      const rows = axesSpecToRows(axes);
-      if (rows.length === 0) return;
-      setConfig((prev) => ({
-        ...DEFAULTS,
-        ...prev,
-        axisRows: rows,
-        createdAfter: handoff.createdAfter || prev.createdAfter || DEFAULTS.createdAfter,
-        createdBefore: handoff.createdBefore || prev.createdBefore || DEFAULTS.createdBefore,
-        curveOnly: handoff.curveOnly ?? prev.curveOnly,
-        tokenCap: Math.min(
-          MAX_TOKEN_CAP,
-          Math.max(1, handoff.tokenCap || prev.tokenCap || DEFAULTS.tokenCap),
-        ),
-        buyAmountSol: tidySolDecimal(handoff.buyAmountSol || prev.buyAmountSol || DEFAULTS.buyAmountSol),
-        ixLabelsFilter: handoff.ixLabelsFilter || prev.ixLabelsFilter || '',
-        // The tags the discovery run screened with, so a seeded `@tag` axis reads the
-        // same trades; marked as loaded for the scope so its own tags do not replace
-        // them. Without them, the scope fingerprint's tags load as usual.
-        ...(isObj(handoff.tags)
-          ? { tags: handoff.tags, tagsFromFingerprintId: handoff.fingerprintId ?? null }
-          : {}),
-        seedFingerprintId: handoff.fingerprintId ?? prev.seedFingerprintId,
-        groupBy: handoff.fingerprintId ? [] : prev.groupBy ?? DEFAULTS.groupBy,
-        minTokens: handoff.fingerprintId ? 1 : prev.minTokens ?? DEFAULTS.minTokens,
-      }));
-    } catch {
-      /* ignore malformed handoff */
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const config: GenericSweepConfig = {
     ...DEFAULTS,

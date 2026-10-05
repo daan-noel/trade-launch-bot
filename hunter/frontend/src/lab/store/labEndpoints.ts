@@ -36,19 +36,7 @@ import type {
   Fingerprint,
 } from 'lib/strategy/types';
 import type { GroupField } from '@lab/components/sweep/groupedTypes';
-import type {
-  MetricDiscoveryResult,
-  MetricDiscoveryStartArgs,
-} from '@lab/lib/metricDiscoveryTypes';
-import type {
-  RuleSearchResult,
-  RuleSearchStartArgs,
-} from '@lab/lib/ruleSearchTypes';
 import type { PartitionSpec } from '@lab/components/sweep/groupedTypes';
-import type {
-  FamilySearchResult,
-  FamilySearchStartArgs,
-} from '@lab/lib/familySearchTypes';
 import type {
   PreEntryProbeRequest,
   PreEntryProbeResponse,
@@ -492,65 +480,6 @@ export const labApi = baseApi.injectEndpoints({
       }),
       invalidatesTags: ['Fingerprint'],
     }),
-    // Metric-combo discovery pipeline (screen → family → validate). Returns
-    // `202 { run_id }` and runs detached; collect via getMetricDiscovery once the
-    // `metric_discovery_finished` SSE fires (same shape as flow discovery).
-    startMetricDiscovery: builder.mutation<
-      { run_id: string; status: string },
-      MetricDiscoveryStartArgs
-    >({
-      query: (body) => ({
-        url: '/api/strategies/metric-discovery',
-        method: 'POST',
-        body,
-      }),
-    }),
-    getMetricDiscovery: builder.query<MetricDiscoveryResult, string>({
-      query: (runId) => `/api/strategies/metric-discovery/${encodeURIComponent(runId)}`,
-    }),
-    // Last cached pipeline result — rehydrates the page after a reload. 404 ⇒ none.
-    getLastMetricDiscovery: builder.query<MetricDiscoveryResult, void>({
-      query: () => '/api/strategies/metric-discovery/last',
-    }),
-    // Rule search — registry-role champion for one fingerprint + range. Returns
-    // `202 { run_id }` and runs detached; collect via getRuleSearch once the
-    // `rule_search_finished` SSE fires.
-    startRuleSearch: builder.mutation<
-      { run_id: string; status: string },
-      RuleSearchStartArgs
-    >({
-      query: (body) => ({
-        url: '/api/strategies/rule-search',
-        method: 'POST',
-        body,
-      }),
-    }),
-    getRuleSearch: builder.query<RuleSearchResult, string>({
-      query: (runId) => `/api/strategies/rule-search/${encodeURIComponent(runId)}`,
-    }),
-    getLastRuleSearch: builder.query<RuleSearchResult, void>({
-      query: () => '/api/strategies/rule-search/last',
-    }),
-    // Family search — grades one fingerprint's sibling family, fitting the
-    // ordering broad and taking the level from the held-out target cohort.
-    // Same detached shape as rule search: `202 { run_id }`, then collect via
-    // getFamilySearch once `family_search_finished` fires.
-    startFamilySearch: builder.mutation<
-      { run_id: string; status: string },
-      FamilySearchStartArgs
-    >({
-      query: (body) => ({
-        url: '/api/strategies/family-search',
-        method: 'POST',
-        body,
-      }),
-    }),
-    getFamilySearch: builder.query<FamilySearchResult, string>({
-      query: (runId) => `/api/strategies/family-search/${encodeURIComponent(runId)}`,
-    }),
-    getLastFamilySearch: builder.query<FamilySearchResult, void>({
-      query: () => '/api/strategies/family-search/last',
-    }),
     // ── Flow lens: analysis-owned pattern sets (exact ix_labels or templates) ─
     // The study twin of a fingerprint's lists — same classifier, different
     // owner, so a wallet study can split vol/non-vol on tokens that belong to
@@ -646,15 +575,6 @@ export const {
   useLazyGetFlowDiscoveryQuery,
   useGetLastFlowDiscoveryQuery,
   useBindFlowDiscoveryMutation,
-  useStartMetricDiscoveryMutation,
-  useLazyGetMetricDiscoveryQuery,
-  useGetLastMetricDiscoveryQuery,
-  useStartRuleSearchMutation,
-  useLazyGetRuleSearchQuery,
-  useGetLastRuleSearchQuery,
-  useStartFamilySearchMutation,
-  useLazyGetFamilySearchQuery,
-  useGetLastFamilySearchQuery,
   useGetIxPatternSetsQuery,
   useCreateIxPatternSetMutation,
   useUpdateIxPatternSetMutation,

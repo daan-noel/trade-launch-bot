@@ -72,12 +72,6 @@ export const STORAGE_KEYS = {
   swingCriteria: `${PREFIX}swing.criteria`,
   /** Flow-discovery form draft. */
   flowDiscoveryConfig: `${PREFIX}form.flowDiscovery`,
-  /** Metric-discovery form draft. */
-  metricDiscoveryConfig: `${PREFIX}form.metricDiscovery`,
-  /** Rule-search form draft. */
-  ruleSearchConfig: `${PREFIX}form.ruleSearch`,
-  /** Family-search form draft. */
-  familySearchConfig: `${PREFIX}form.familySearch`,
   /** Replay-viewer form draft (log dir/date, mint, window, step knobs). */
   replayConfig: `${PREFIX}form.replay`,
   /** Trader-analysis form draft (wallet, look-back days, max tokens). */
@@ -99,8 +93,6 @@ export const STORAGE_KEYS = {
   /** Simulate run parameters — created window + fill/cost model. The controls
    *  bound what a run scans and how it prices, so they outlive one page visit. */
   simulateRunPrefs: `${PREFIX}simulate.runPrefs`,
-  /** Pending discovery → sweep seed (sessionStorage). Cleared once the sweep form applies it. */
-  sweepDiscoverySeed: `${PREFIX}sweep.discoverySeed`,
   /** Base key for persisted sweep run selection; append `.${strategyId}` for per-strategy key. */
   sweepSel: `${PREFIX}sweep.sel`,
   /** Sweep results "show not-fired tokens" toggle. Deliberately NOT shared with
@@ -142,8 +134,6 @@ export const ACCORDION_IDS = {
   metricSelectorInspect: 'metricSelector.inspect',
   /** Generic sweep "Run details" panel. */
   sweepDetailsGeneric: 'sweep.detailsOpen.generic',
-  /** Family search: the execution/scope knobs behind the two required fields. */
-  familySearchAdvanced: 'familySearch.advanced',
   /** Flow discovery: the group list beside the selected group's detail. */
   flowDiscoveryGroups: 'flowDiscovery.groups',
   /** Entry Context: the token table under the buys. */
@@ -402,7 +392,6 @@ const LEGACY_JSON_MOVES: { from: string; to: string; field?: string }[] = [
   { from: `${PREFIX}dashboard.grouped.fingerprintId`, to: STORAGE_KEYS.pageCreationStats, field: 'groupedFingerprintId' },
   // Second-namespace escapees + one-off raw keys → the registry.
   { from: 'hunter.lab.flowDiscovery.config', to: STORAGE_KEYS.flowDiscoveryConfig },
-  { from: 'hunter.lab.metricDiscovery.config', to: STORAGE_KEYS.metricDiscoveryConfig },
   { from: `${PREFIX}metric-panes`, to: STORAGE_KEYS.metricPanes },
   { from: `${PREFIX}console-trade-log`, to: STORAGE_KEYS.consoleTradeLog },
 ];

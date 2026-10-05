@@ -90,7 +90,7 @@ export type FieldFilterValue = string | number | boolean;
 /**
  * Build the `field_filters` request map from the picker's raw text — **the one
  * builder** for every surface that sends it (grouped sweep, flow discovery,
- * metric discovery, the creation-stats dashboard).
+ * the creation-stats dashboard).
  *
  * It exists because those surfaces each rolled their own loop over
  * `parseNumbers`, which silently dropped anything non-numeric — so when the

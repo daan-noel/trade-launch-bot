@@ -4,7 +4,8 @@ import { cn } from 'lib/cn';
 type PageHeaderSize = 'page' | 'tool';
 
 interface PageHeaderProps {
-  title: ReactNode;
+  /** Omit when the page already names itself (a tab) and only the actions remain. */
+  title?: ReactNode;
   /** One-line job description — what this surface is for. */
   description?: ReactNode;
   /** Primary / secondary actions (buttons) aligned to the right. */
@@ -33,6 +34,7 @@ export function PageHeader({
   size = 'tool',
   className,
 }: PageHeaderProps) {
+  const hasHeading = title != null || description != null;
   return (
     <div
       className={cn(
@@ -40,12 +42,14 @@ export function PageHeader({
         className,
       )}
     >
-      <div className="flex min-w-0 flex-wrap items-baseline gap-3">
-        <h1 className={titleClass[size]}>{title}</h1>
-        {description != null && (
-          <span className="text-sm text-text-mid">{description}</span>
-        )}
-      </div>
+      {hasHeading && (
+        <div className="flex min-w-0 flex-wrap items-baseline gap-3">
+          {title != null && <h1 className={titleClass[size]}>{title}</h1>}
+          {description != null && (
+            <span className="text-sm text-text-mid">{description}</span>
+          )}
+        </div>
+      )}
       {actions != null && (
         <div className="flex w-full shrink-0 flex-wrap items-center gap-2">{actions}</div>
       )}

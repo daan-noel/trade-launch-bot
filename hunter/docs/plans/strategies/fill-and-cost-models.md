@@ -424,8 +424,8 @@ which `worst_case` very much is not.
   it report pricing it was never computed under, and its numbers double-counted
   execution cost, so there was nothing worth relabelling. A `cost_model` naming a
   model that no longer exists is a decode error, not a fallback.
-- **`localStorage` outlives a deploy.** Saved Simulate / sweep / rule-search /
-  family-search configs can still name a removed model, so each reads its cost model
+- **`localStorage` outlives a deploy.** Saved Simulate / sweep configs can still
+  name a removed model, so each reads its cost model
   through `storedCostModel()` rather than spreading it into a request. Without that,
   the backend's strict decode is a 400 on every run from a value the user cannot see
   or clear.

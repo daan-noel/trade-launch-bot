@@ -132,30 +132,6 @@ pub struct LocalState {
     /// shouldn't have to re-run just to be looked at again. See
     /// [`super::discovery_result_cache`].
     pub discovery_result: Arc<DiscoveryResultCache>,
-    /// Single-flight gate for the metric-combo discovery **pipeline** (screen →
-    /// family → validate). Mutually exclusive with [`Self::sweep_running`] and
-    /// [`Self::discovery_running`] — all three are Duck/RAM hungry.
-    pub metric_discovery_running: Arc<AtomicBool>,
-    /// Cooperative cancel for the in-flight pipeline run.
-    pub metric_discovery_cancel: Arc<AtomicBool>,
-    /// Progress cell for `/api/jobs/status` recovery (pipeline phase).
-    pub metric_discovery_progress: Arc<ProgressCell>,
-    /// Last pipeline result as its JSON DTO, keyed by `run_id`. In-RAM single-slot
-    /// (single-flight run) — an authoring aid, not durable state, so a lab restart
-    /// simply re-runs. `None` until the first pipeline completes.
-    pub metric_discovery_result: Arc<RwLock<Option<(Uuid, serde_json::Value)>>>,
-    /// Single-flight gate for rule search. Mutually exclusive with sweep /
-    /// flow-discovery / metric-discovery.
-    pub rule_search_running: Arc<AtomicBool>,
-    pub rule_search_cancel: Arc<AtomicBool>,
-    pub rule_search_progress: Arc<ProgressCell>,
-    pub rule_search_result: Arc<super::rule_search_cache::RuleSearchCache>,
-    /// Single-flight gate for family search. Mutually exclusive with every other
-    /// heavy job — it holds two corpora at once, so it is the RAM-hungriest of them.
-    pub family_search_running: Arc<AtomicBool>,
-    pub family_search_cancel: Arc<AtomicBool>,
-    pub family_search_progress: Arc<ProgressCell>,
-    pub family_search_result: Arc<super::family_search_cache::FamilySearchCache>,
 }
 
 impl LocalState {
@@ -175,18 +151,6 @@ impl LocalState {
             discovery_cancel: Arc::new(AtomicBool::new(false)),
             discovery_progress: Arc::new(ProgressCell::default()),
             discovery_result: Arc::new(DiscoveryResultCache::new()),
-            metric_discovery_running: Arc::new(AtomicBool::new(false)),
-            metric_discovery_cancel: Arc::new(AtomicBool::new(false)),
-            metric_discovery_progress: Arc::new(ProgressCell::default()),
-            metric_discovery_result: Arc::new(RwLock::new(None)),
-            rule_search_running: Arc::new(AtomicBool::new(false)),
-            rule_search_cancel: Arc::new(AtomicBool::new(false)),
-            rule_search_progress: Arc::new(ProgressCell::default()),
-            rule_search_result: Arc::new(super::rule_search_cache::RuleSearchCache::new()),
-            family_search_running: Arc::new(AtomicBool::new(false)),
-            family_search_cancel: Arc::new(AtomicBool::new(false)),
-            family_search_progress: Arc::new(ProgressCell::default()),
-            family_search_result: Arc::new(super::family_search_cache::FamilySearchCache::new()),
         }
     }
 
@@ -197,12 +161,6 @@ impl LocalState {
             Some("a grouped sweep is already running — wait or cancel it first")
         } else if self.discovery_running.load(Acquire) {
             Some("a flow-discovery job is already running — wait or cancel it first")
-        } else if self.metric_discovery_running.load(Acquire) {
-            Some("a metric-discovery pipeline is already running — wait or cancel it first")
-        } else if self.rule_search_running.load(Acquire) {
-            Some("a rule-search job is already running — wait or cancel it first")
-        } else if self.family_search_running.load(Acquire) {
-            Some("a family-search job is already running — wait or cancel it first")
         } else {
             None
         }
@@ -225,9 +183,6 @@ impl LocalState {
         match kind {
             HeavyJob::Sweep => &self.sweep_running,
             HeavyJob::Discovery => &self.discovery_running,
-            HeavyJob::MetricDiscovery => &self.metric_discovery_running,
-            HeavyJob::RuleSearch => &self.rule_search_running,
-            HeavyJob::FamilySearch => &self.family_search_running,
         }
     }
 
@@ -239,10 +194,8 @@ impl LocalState {
         if flag.compare_exchange(false, true, AcqRel, Acquire).is_err() {
             return Err(kind.busy_msg());
         }
-        // Mutual exclusion over EVERY other heavy job, derived from `HeavyJob::ALL`
-        // rather than hand-enumerated per variant: the old shape listed the other
-        // three inside each arm, so adding a job meant editing every arm and a miss
-        // let two RAM-hungry jobs run together.
+        // Mutual exclusion over every other heavy job comes from `HeavyJob::ALL`,
+        // so a new variant is excluded without editing each arm.
         let other = HeavyJob::ALL
             .iter()
             .any(|&k| !k.same_as(kind) && self.running_flag(k).load(Acquire));
@@ -261,20 +214,11 @@ impl LocalState {
 pub enum HeavyJob {
     Sweep,
     Discovery,
-    MetricDiscovery,
-    RuleSearch,
-    FamilySearch,
 }
 
 impl HeavyJob {
     /// Every variant — the list `claim_heavy` derives mutual exclusion from.
-    pub const ALL: [HeavyJob; 5] = [
-        HeavyJob::Sweep,
-        HeavyJob::Discovery,
-        HeavyJob::MetricDiscovery,
-        HeavyJob::RuleSearch,
-        HeavyJob::FamilySearch,
-    ];
+    pub const ALL: [HeavyJob; 2] = [HeavyJob::Sweep, HeavyJob::Discovery];
 
     fn same_as(self, other: HeavyJob) -> bool {
         self == other
@@ -284,9 +228,6 @@ impl HeavyJob {
         match self {
             HeavyJob::Sweep => "a grouped sweep is already running",
             HeavyJob::Discovery => "a flow-discovery job is already running",
-            HeavyJob::MetricDiscovery => "a metric-discovery pipeline is already running",
-            HeavyJob::RuleSearch => "a rule-search job is already running",
-            HeavyJob::FamilySearch => "a family-search job is already running",
         }
     }
 }

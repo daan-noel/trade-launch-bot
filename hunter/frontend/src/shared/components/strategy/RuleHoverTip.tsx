@@ -73,24 +73,47 @@ export function RuleDetailCard({
 }
 
 /**
- * Wrap a rule-name (or chip) so hover shows {@link RuleDetailCard}. Portal +
- * open-only mount keeps dense tables cheap.
+ * Wrap a cell so hover shows the rule. Portal + open-only mount keeps dense
+ * tables cheap. `openDelayMs` holds the panel until the pointer has rested
+ * that long. `wordsOnly` is the In words reading and nothing else.
  */
 export function RuleHoverTip({
   rule,
   fingerprint,
   children,
   side = 'bottom',
+  openDelayMs = 0,
+  fillCell = false,
+  wordsOnly = false,
+  className,
 }: {
   rule: StrategyRule;
   fingerprint?: Fingerprint | null;
   children: ReactNode;
   side?: 'top' | 'bottom';
+  openDelayMs?: number;
+  /** Cover the whole cell. The column's `td` must be `relative`. */
+  fillCell?: boolean;
+  /** In words only: the sentence reading, with no name, caps, or chain. */
+  wordsOnly?: boolean;
+  className?: string;
 }) {
   return (
     <HoverPopover
       side={side}
-      content={<RuleDetailCard rule={rule} fingerprint={fingerprint} />}
+      openDelayMs={openDelayMs}
+      fillCell={fillCell}
+      className={className}
+      width={wordsOnly ? 880 : undefined}
+      content={
+        wordsOnly ? (
+          <div className="normal-case tracking-normal">
+            <RuleWords params={rule.params} watch={fingerprint?.name} />
+          </div>
+        ) : (
+          <RuleDetailCard rule={rule} fingerprint={fingerprint} />
+        )
+      }
     >
       {children}
     </HoverPopover>

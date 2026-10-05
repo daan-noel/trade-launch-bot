@@ -256,7 +256,6 @@ fn run_window(
         with_signatures: false,
         with_flow: true,
         with_flow_text: false,
-        with_oracle: false,
     };
     let src = LakeSource::new(lake_root());
     let fp = door_fp();

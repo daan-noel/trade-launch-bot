@@ -191,7 +191,6 @@ async fn main() {
             with_signatures: true,
             with_flow: true,
             with_flow_text: false,
-            with_oracle: false,
         };
         let corpus = source.load(&sel).await.expect("lake load");
         let by_mint: HashMap<String, Arc<Vec<CorpusTrade>>> =

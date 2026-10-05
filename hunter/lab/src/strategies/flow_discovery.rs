@@ -740,7 +740,6 @@ mod tests {
                 ..Default::default()
             },
             identity: None,
-            peak_after: None,
         }
     }
 

@@ -442,9 +442,6 @@ fn lake_hash(root: &Path, sel: &Selection) -> String {
     // Same reason as `with_signatures`: a hash-resolved flow load and a
     // text-carrying discovery load produce different rows over the same mints.
     sel.with_flow_text.hash(&mut h);
-    // Same reason again: an oracle load carries a `peak_after` column a plain sweep
-    // load does not, so the two can never share a cache entry.
-    sel.with_oracle.hash(&mut h);
     sel.created_after.map(|t| t.timestamp_millis()).hash(&mut h);
     sel.created_before.map(|t| t.timestamp_millis()).hash(&mut h);
     if let Some(mints) = &sel.mints {
@@ -760,7 +757,7 @@ fn load_corpus_tokens(
 
         if cur_mint.as_deref() != Some(mint.as_str()) {
             if let Some(prev) = cur_mint.take() {
-                push_token(&mut tokens, prev, &symbols, &created, &mut cur_trades, sel.with_oracle);
+                push_token(&mut tokens, prev, &symbols, &created, &mut cur_trades);
             }
             cur_mint = Some(mint.clone());
         }
@@ -795,7 +792,7 @@ fn load_corpus_tokens(
         });
     }
     if let Some(prev) = cur_mint.take() {
-        push_token(&mut tokens, prev, &symbols, &created, &mut cur_trades, sel.with_oracle);
+        push_token(&mut tokens, prev, &symbols, &created, &mut cur_trades);
     }
     Ok(tokens)
 }
@@ -808,7 +805,6 @@ fn push_token(
     symbols: &HashMap<&str, &str>,
     created: &HashMap<&str, i64>,
     trades: &mut Vec<CorpusTrade>,
-    with_oracle: bool,
 ) {
     let symbol = symbols.get(mint.as_str()).copied().unwrap_or_default().to_string();
     // Fall back to the first trade's block time if the token row is missing a
@@ -819,9 +815,6 @@ fn push_token(
         .map(micros_to_utc)
         .unwrap_or_else(|| trades.first().map(|t| t.block_time).unwrap_or_else(Utc::now));
     let trades = std::mem::take(trades);
-    // One backward pass over the buffer already in hand — never a second walk of the
-    // corpus, and nothing at all when the run didn't ask for the oracle.
-    let peak_after = with_oracle.then(|| Arc::new(crate::sweep::projection::suffix_peak(&trades)));
     out.push(CorpusToken {
         symbol,
         mint,
@@ -830,7 +823,6 @@ fn push_token(
         fp: TokenFingerprint::default(),
         // Filled by `attach_fingerprints` from the same tokens-dimension row.
         identity: None,
-        peak_after,
     });
 }
 
@@ -1154,7 +1146,6 @@ mod parity_tests {
             with_signatures: false,
             with_flow: false,
             with_flow_text: false,
-            with_oracle: false,
         };
         let with_sigs = Selection { with_signatures: true, ..base.clone() };
 
@@ -1240,7 +1231,6 @@ mod parity_tests {
             with_signatures: false,
             with_flow: true,
             with_flow_text: false,
-            with_oracle: false,
         };
         let plain = Selection { per_mint_cap: SWEEP_DEFAULT_PER_MINT_CAP, ..windowed.clone() };
 
@@ -1275,7 +1265,6 @@ mod parity_tests {
             with_signatures: false,
             with_flow: true,
             with_flow_text: false,
-            with_oracle: false,
         };
         let seed = src.load(&probe).await.expect("probe corpus load");
         assert!(!seed.tokens.is_empty(), "lake returned no tokens — populate it first");

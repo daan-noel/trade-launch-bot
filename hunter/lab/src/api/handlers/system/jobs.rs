@@ -1,6 +1,5 @@
 //! Cross-cutting status + control for long-running background jobs (grouped
-//! sweep, flow-discovery, metric-discovery, rule-search, family-search, rule
-//! simulation), so a
+//! sweep, flow-discovery, rule simulation), so a
 //! freshly-loaded or reconnecting dashboard can recover the in-flight progress
 //! that SSE (future-only) can't replay.
 //!
@@ -42,12 +41,6 @@ struct JobsStatus {
     simulations: Vec<SimulationStatus>,
     /// Present iff the single-flight flow-discovery job is running.
     discovery: Option<SweepStatus>,
-    /// Present iff the single-flight metric-discovery pipeline is running.
-    metric_discovery: Option<SweepStatus>,
-    /// Present iff the single-flight rule-search job is running.
-    rule_search: Option<SweepStatus>,
-    /// Present iff the single-flight family-search job is running.
-    family_search: Option<SweepStatus>,
 }
 
 /// `GET /api/jobs/status` — snapshot of every running background job.
@@ -61,27 +54,6 @@ pub async fn job_status(state: web::Data<Arc<LocalState>>) -> impl Responder {
 
     let discovery = if state.discovery_running.load(Ordering::Acquire) {
         let (processed, total) = state.discovery_progress.snapshot();
-        Some(SweepStatus { processed, total })
-    } else {
-        None
-    };
-
-    let metric_discovery = if state.metric_discovery_running.load(Ordering::Acquire) {
-        let (processed, total) = state.metric_discovery_progress.snapshot();
-        Some(SweepStatus { processed, total })
-    } else {
-        None
-    };
-
-    let rule_search = if state.rule_search_running.load(Ordering::Acquire) {
-        let (processed, total) = state.rule_search_progress.snapshot();
-        Some(SweepStatus { processed, total })
-    } else {
-        None
-    };
-
-    let family_search = if state.family_search_running.load(Ordering::Acquire) {
-        let (processed, total) = state.family_search_progress.snapshot();
         Some(SweepStatus { processed, total })
     } else {
         None
@@ -104,9 +76,6 @@ pub async fn job_status(state: web::Data<Arc<LocalState>>) -> impl Responder {
         sweep,
         simulations,
         discovery,
-        metric_discovery,
-        rule_search,
-        family_search,
     })
 }
 

@@ -86,7 +86,7 @@ import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { useFlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { STORAGE_KEYS } from 'lib/storage';
-import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
+import { copyHref, rulesHref, STRATEGY_PARAMS, type StrategyBoard } from 'lib/strategy/nav';
 import {
   ruleRowClass,
   COST_MODELS,
@@ -231,17 +231,22 @@ function localInputToIso(local: string): string | undefined {
 }
 
 /**
- * Full-corpus simulate for saved rules (lab app, FE3.2). Replaces the per-strategy
- * simulate flows with one generic surface: run a saved rule over the whole lake,
- * show every rule's funnel summary as sortable/filterable columns, and list the
- * per-token positions of the selected rule below. The dry-run panel (unsaved-draft
- * loop) lives in the rule editor; this page is for persisted rules.
+ * Full-corpus simulate for saved rules (lab app). One surface for both boards:
+ * the Rules tab lists metric rules, the Copy tab lists copy rules. Run a saved
+ * rule over the whole lake, show every rule's funnel summary as sortable/filterable
+ * columns, and list the per-token positions of the selected rule below. The
+ * dry-run panel (unsaved-draft loop) lives in the rule editor; this page is for
+ * persisted rules.
  */
-export function SimulatePage() {
+export function SimulatePage({ board = 'rules' }: { board?: StrategyBoard }) {
+  const copyBoard = board === 'copy';
   const { data: loadedRules = [], isLoading } = useGetStrategyRulesQuery();
-  const rules = useMemo(() => loadedRules.filter((r) => !isCopyRule(r)), [loadedRules]);
+  const rules = useMemo(
+    () => loadedRules.filter((r) => isCopyRule(r) === copyBoard),
+    [loadedRules, copyBoard],
+  );
   const { data: fps = [] } = useGetFingerprintsQuery();
-  const actions = useRuleActions();
+  const actions = useRuleActions({ board });
   const [enable] = useEnableStrategyRuleMutation();
   const [disable] = useDisableStrategyRuleMutation();
   const [start] = useStartEngineSimulationMutation();
@@ -298,10 +303,11 @@ export function SimulatePage() {
   /** Soft-archived rules are hidden by default — toggle to review them. */
   const [showDisabled, setShowDisabled] = useUiToggle('showDisabledRules', false);
   /** Tag chip selection — URL-backed (`?tags=`/`?notags=`) + sticky for this page. */
-  const [tagFilter, setTagFilter] = useTagFilter('simulate');
+  const [tagFilter, setTagFilter] = useTagFilter(copyBoard ? 'copy-simulate' : 'simulate');
   /** Paper/Real scope — URL-backed (`?mode=`) + sticky for this page. Narrowing
-   *  here also narrows what every bulk-simulate button targets. */
-  const [modeFilter, setModeFilter] = useModeFilter('simulate');
+   *  here also narrows what every bulk-simulate button targets. Copy keeps its
+   *  own key so a Rules simulate filter does not land on the Copy board. */
+  const [modeFilter, setModeFilter] = useModeFilter(copyBoard ? 'copy-simulate' : 'simulate');
   const [opErr, setOpErr] = useState<string | null>(null);
   const handleRef = useRef<{ close: () => void } | null>(null);
   const hydratedIds = useRef<Set<string>>(new Set());
@@ -486,7 +492,14 @@ export function SimulatePage() {
 
   const columns = useMemo<ColumnDef<StrategyRule>[]>(
     () => [
-      ...buildColumns(runs, fpById, fpTints, (tag) => setTagFilter(includeOnly(tag))),
+      ...buildColumns(
+        runs,
+        fpById,
+        fpTints,
+        (tag) => setTagFilter(includeOnly(tag)),
+        copyBoard ? copyHref : rulesHref,
+        copyBoard ? 'copy' : 'rule',
+      ),
       {
         key: 'execute',
         label: 'Execute',
@@ -508,7 +521,7 @@ export function SimulatePage() {
     ],
     // runRule closes over stable RTK/setState refs; runs drives the disabled state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [runs, fpById, fpTints],
+    [runs, fpById, fpTints, copyBoard],
   );
 
   // Only the selected rule's positions render below the table; every rule's summary
@@ -520,10 +533,8 @@ export function SimulatePage() {
   const selectedRun = selectedRuleId ? runs[selectedRuleId] : undefined;
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 p-4">
       <PageHeader
-        title="Simulate"
-        description="Lake backtest for saved rules · drafts use Rules dry-run"
         className="mb-0"
         actions={
           <>
@@ -679,14 +690,16 @@ export function SimulatePage() {
         loading={isLoading}
         pinnable
         searchable
-        tableId="simulate-rules"
+        tableId={copyBoard ? 'simulate-copy-rules' : 'simulate-rules'}
         // `visibleRules` is pre-filtered by the mode/tag pickers and the
         // disabled-rules toggle above, outside the table's own state.
         resetKey={`${modeFilter}|${tagFilter.include.join(',')}|${tagFilter.exclude.join(',')}|${showDisabled}`}
         emptyMessage={
           enabledRules.length > 0
             ? 'No rules match the current mode / tag filters.'
-            : 'No rules yet — author one on the Rules page.'
+            : copyBoard
+              ? 'No copy rules yet — author one on the Copy tab.'
+              : 'No rules yet — author one on the Rules page.'
         }
         selectedKey={selectedRuleId}
         onSelect={setSelectedRuleId}
@@ -1150,6 +1163,8 @@ function buildColumns(
   fpById: Map<string, Fingerprint>,
   fpTints: Map<string, string>,
   onTagClick: (tag: string) => void,
+  openHref: (ruleId: string) => string,
+  noun: 'rule' | 'copy',
 ): ColumnDef<StrategyRule>[] {
   const runOf = (r: StrategyRule) => runs[r.id];
   const summaryOf = (r: StrategyRule) => runOf(r)?.summary;
@@ -1207,9 +1222,9 @@ function buildColumns(
               <span className="font-medium text-text">{r.rule_name}</span>
               <RuleExclusiveMark params={r.params} />
               <Link
-                to={rulesHref(r.id)}
-                title={`Open rule “${r.rule_name}”`}
-                aria-label={`Open rule ${r.rule_name}`}
+                to={openHref(r.id)}
+                title={`Open ${noun} “${r.rule_name}”`}
+                aria-label={`Open ${noun} ${r.rule_name}`}
                 className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
                 onClick={(e) => e.stopPropagation()}
               >

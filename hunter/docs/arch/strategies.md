@@ -107,7 +107,9 @@ fill lands (`ArmState::ExitPending.then_stage`). `m_position.stage_sec` reads th
 since the current stage began, so "in the first 30 s of the ride" needs no deadline.
 
 **Copy** is a separate page (`/strategies/copy`) with the same board and the same
-builder as Rules. One rule follows one wallet, stored as the fingerprint's
+builder as Rules. The lab page adds the same Simulate tab (`?tab=simulate`), and
+that tab lists copy rules only; the Rules Simulate tab lists metric rules only.
+One rule follows one wallet, stored as the fingerprint's
 `targets` tag. The builder edits the copy readings (`m_print.flat_before`,
 `m_print.sold_bag_pct`) and the enter gate `m_flow.buy_sol @targets [1p]`; a sell
 line may say `sell_of: "bag"`, which sells that print's percent of the tokens we
@@ -551,10 +553,6 @@ column of a tagged read is `SeriesColumn::tagged(read, fingerprint)`.
 writes the chosen ix shapes into one named tag's `match.ix_shape` on the find-or-created
 fingerprint, keeping every other tag and that tag's other options (a new tag takes the
 posted `side`), validated before the write.
-`POST /api/strategies/rule-search` fills registry roles for one fingerprint and
-datetime range and boards a champion `RuleParams` (Promote → inactive paper).
-Governing workflow:
-[`_!___strategy.md`](../plans/strategies/_!___strategy.md).
 
 ## Two-phase first-slot fingerprint gate
 
@@ -609,7 +607,7 @@ trade**, so simulate and live resolve at the same point.
   dry-run classifies with the rule's fingerprint `tags`.
 - **`strategies/flow_discovery.rs`** + **`api/handlers/strategies/flow_discovery.rs`** —
   lab-only job: score trade ix-structures per fingerprint group -> bind them into a
-  fingerprint tag (mutual `409` with sweep / metric-discovery / rule-search).
+  fingerprint tag (mutual `409` with a grouped sweep).
 - **`sweep/generic/`** — the precompute-then-scan grouped sweep. `GenericSweepStrategy`
   implements the existing `sweep::strategy::Strategy` trait (so partition / two-phase
   pool / `GroupSink` persistence / refine / `ComboAgg` and the whole

@@ -73,8 +73,7 @@ The fix keeps that bound with a **fixed-size** array instead of a per-label map:
   fields (`exit_label`, `exit_metric_slot`), and every exit-resolution path (the walk,
   the indexed `resolve_exit_indexed`, the AVX-512 `resolve_exit_simd`, and the
   frozen-tail resolve) records the selling line's tag - zero recomputation, zero extra
-  allocation. A replay outcome, which carries only the label, is slotted by the same
-  numbering (`scan::line_slot_of`).
+  allocation.
 - The label is the one live and simulate record (`ExitReason::Line`): the line's
   authored label, else its first live condition as written
   (`m_position.retrace_pct >= 3`, `m_flow.buy_sol @!volume [10s] >= 2`).

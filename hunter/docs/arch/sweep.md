@@ -214,7 +214,7 @@ shape alone. `duck::FLOW_READ_COLS` names all five once — the three fee column
 field. `Selection.with_flow_text` keeps
 the raw text as well and is set by exactly one caller — flow *discovery*, which
 reports label shapes and groups by wallet address. Everything else (sweep, simulate,
-metric-series, metric-discovery) classifies from the hashes, so its rows are the
+metric-series) classifies from the hashes, so its rows are the
 slimmer shape. The start body carries an optional `tags` document - the same shape as
 a fingerprint's `tags` - applied **corpus-wide** for that run (not per fingerprint): every
 tagged column is scoped to `axes::SWEEP_FLOW_FP`, and each token's series registers the
@@ -341,9 +341,9 @@ touch*. Four rules keep that bounded — the first is the one that matters:
 1. **Scope before you load, never after.** A caller scoped to a saved fingerprint
    resolves it to an explicit `Selection::mints` via `LakeSource::matching_mints`,
    which reads the **tokens dimension only** (one small Parquet file) and applies the
-   engine `fingerprint::matches` SSOT. Filtering *after* `load` — the old flow- and
-   metric-discovery shape — reads the full trade history of every token in the window
-   and then discards all but the matching handful, which was essentially the entire
+   engine `fingerprint::matches` SSOT. Filtering *after* `load` reads the full
+   trade history of every token in the window and then discards all but the
+   matching handful, which was essentially the entire
    cost of a scoped run. Consequence to know: under this shape `token_cap` bounds
    **matched** tokens, not candidates, so a scoped run covers the same set the
    matched-token count chip reports.
@@ -360,8 +360,8 @@ touch*. Four rules keep that bounded — the first is the one that matters:
    `parity_tests::uncapped_plain_scan_matches_the_windowed_scan` pins the two shapes
    row-identical (order included — the fold's f64 summation is order-sensitive).
 4. **Reuse the corpus across runs.** `sweep_corpus_cache` is keyed on
-   `LakeSource::selection_hash` = *(selection, lake version)*. Grouped sweep, flow
-   discovery, metric discovery, and rule search all read and write it, so re-running any of them
+   `LakeSource::selection_hash` = *(selection, lake version)*. Grouped sweep and flow
+   discovery both read and write it, so re-running either of them
    over one selection — the normal tune-and-re-run loop — costs one Parquet read
    rather than one each, and a fresh `lake-export` moves the lake version so a stale
    corpus can never be served. Always cache the **unfiltered** selection corpus: the
@@ -373,183 +373,6 @@ touch*. Four rules keep that bounded — the first is the one that matters:
 **Single-rule simulate shares the lake too — ONE row type.** The `.../simulate` backtests read the **same** lake through the **same** `LakeSource::load`/`SweepTrade`; there is no separate `SimTrade`. The only difference is `Selection::with_signatures`: the sweep loads it `false` (rows stay slim — the trigger is resolved by index, not signature), simulate loads it `true` so `SweepTrade::tx_signature` (an `Option<Box<str>>`, `None` on the sweep) is populated for the result tables' Solscan links. Shared entry point `strategies::sim_fetch::fetch_sim_histories` (uncapped per-mint, `curve_only: false`, stale-lake warn). The trades Parquet schema carries `tx_signature` (~88 B/row, only read when `with_signatures`); DuckDB reads use `union_by_name=true` so pre-migration day files null-fill until a full re-export. Because one loader + one type serve both, sim↔sweep pricing is parity by construction; `lake::duck::parity_tests::signature_flag_changes_only_the_signature` (auto-runs when `$SWEEP_LAKE_DIR` points at a populated lake, self-skips otherwise — not `--ignored`) pins that the flag touches nothing but `tx_signature`, and `duck::tests::reader_columns_are_canonical` ties the reader's column names to `lake/schema.rs`.
 
 **Full audit (all migrated except one narrow, accepted exception).** Every bulk trade-history read path under `lab/src/` is lake-sourced: grouped sweep, simulate, and the backtests — all through `sim_fetch::fetch_sim_history_one`/`fetch_sim_histories` (uncapped, full-history, `curve_only` applied at load, since the projected `CorpusTrade` has no `venue`). A batch path resolves its **entire** mint list in one `fetch_sim_histories` call (one DuckDB scan, mints staged into a temp table) rather than a per-mint PG fan-out. The only remaining PG touch on the `trades` table is `grouped_sweep.rs`'s `resolve_fill_signatures` (called from `list_token_results`): a bounded, indexed `(mint, slot, side)` lookup against `TradeRepo` that back-fills `entry_tx`/`exit_tx` Solscan links for a combo's fills, since the sweep loads `Selection::with_signatures = false` (see above) and its slim `CorpusTrade` never carries a signature. This is a deliberate keep — it's a handful of indexed point-lookups, not a bulk scan, and the alternative (threading `tx_signature` through every sweep row) costs ~88 B/row for a field only the drill-in view needs. Everything else PG still serves in `lab` (sweep run/group/combo/result metadata, `strategy_rules`/`strategy_runs`/`strategy_positions`, the `tokens`/`tokens_info` dimension + candidate scan, the token-list boot seed) is dimension/job state, not trade history, and was never a lake-migration candidate.
-
-## Metric-combo discovery pipeline (`lab/src/discovery/`)
-
-Lab-only, built entirely on top of the generic sweep engine above (no new engine)
-— an automated baseline-select → screen → family-grid → joint-interacting →
-out-of-sample-validate pipeline whose **primary deliverable is a grouped-sweep seed**
-(`SweepSeed` / `AxisSpec[]`): which metrics deserve axes, which narrowed value menus (incl. `off`)
-are worth gridding, and which families must be gridded jointly. Promote into the
-shared rule editor remains a secondary exit on OOS survivors. Nothing ships to
-EC2; live/paper are untouched. Registry-driven throughout: a metric added to
-`METRICS` needs no pipeline edit (its family, unit, accepted spans and monotonic flag are
-all it reads).
-
-| File | Role |
-| --- | --- |
-| `discovery/objective.rs` | `DiscoveryWeights` (tunable constants below) + `discovery_score(ComboStats) → Ranked \| BelowMinClosed \| NoFire` — a pure re-rank over persisted `ComboMetrics`, not a `checklist_score`/kernel edit (that stays the live/paper/sweep SSOT). The min-N gate is **cohort-aware**: `effective_min_closed = clamp(min_closed_frac × cohort, min_closed_floor, min_closed)` relaxes it on a regime-scoped cohort (never tightens it), and `confidence = n_closed / min_closed` discounts what the relaxed gate lets through, so a thin combo ranks low instead of vanishing |
-| `discovery/baseline.rs` | **Layer 0**: `BaselineGrid` → one single-combo segment per `(tp, sl)` in ONE additive pass → `BaselineSelection{chosen, candidates, all_unprofitable}`. Layers 1–3 screen against the winner. Runs only when the grid holds 2+ brackets; a one-bracket grid is the caller naming a baseline. Fits on the **train slice only** — a bracket chosen with the held-out slice in view leaks into every Layer-1 number |
-| `discovery/candidates.rs` | `screen_plan` (registry → screenable metrics + `SkipReason`) → `collect_percentiles` (measured `[p05..p99]` per metric, via the engine's own `MetricSeries` — deliberately **not** DuckDB SQL, else percentile semantics could drift from `hunter_engine`) → `build_menus` (`p10/p25/p50/p75/p90` + `off`, rounded by unit) → feeds `AxesModel` directly; the hand-derived table in [axis-value-candidates.md](../plans/sweep/axis-value-candidates.md) is now generated, not authored |
-| `discovery/screen.rs` | Layer 1: `ScreenStrategy`, an additive scan mode (`GenericSweepStrategy::share_precompute`) that sweeps every candidate metric alone against the run's TP/SL baseline over **one** shared per-token precompute (~6N combos, not 6^N) → `Verdict{Keep\|DropNoEdge\|DropNegative\|DropSpike\|DropThin\|DropNoBaseline}` per metric → ranked shortlist. Every `ResponsePoint` carries win rate / median pnl% / **SOL** beside the unitless score, and the bare bracket's own row is hoisted to `ScreenReport::baseline_stats` — the reference line every `lift` is a delta against |
-| `discovery/family.rs` | Layer 2: `plan_families` groups the Layer-1 shortlist by the registry `Family` (`m_state`, `m_price`, `m_flow`, ...), grids within each family, then runs an O(families²) pairwise interaction check (pin A's best, sweep B) -> `Independent \| Interacting \| Inconclusive`. **L2b** builds connected components of undirected `Interacting` pairs and product-grids them under `FamilyLimits` (enforced, not advisory) -> `JointResult` winners. **L1b** is the *synergy rescue*: the strongest winner is pinned and up to `rescue_cap` Layer-1 rejects re-screened under it through the same `classify`, so a metric with no standalone lift can still earn an axis - flagged `rescued`, because that lift is conditional on the pin |
-| `discovery/validate.rs` | Layer 3: `split_tokens` (age-based train/validate split) + `validate_candidates` re-scores each Layer-2 family **and** joint winner on the held-out slice via `simulate_one_combo` under the run's own `Pricing`/`as_of` → `ValidationVerdict{Holds\|Degraded\|Failed\|ThinValidate\|NoFireValidate\|UnrankableTrain}` (the two "can't tell" outcomes are never silently a pass). The slice carries its **own** cohort-scaled gate (`effective_min_closed`), reported so `ThinValidate` reads as a statement about the slice's size rather than about the candidate |
-| `discovery/seed.rs` | `build_sweep_seed` — Keep axes (`off` + narrowed) + TP/SL menus expanded ±1 rung on the canonical ladders + near-miss `optional_axes` + cluster notes. Near-miss is `DropNoEdge` **or `DropSpike`** with a positive-scoring pick, **and every `DropNegative` at any sign**; the ladder re-prices exactly what each of them failed on — a losing baseline for the negative lead, an unsupported peak for the spike. The seed note counts the three classes separately and flags the spikes unstable, since a spike converts far less often than the other two. Pure projection onto the same `AxisSpec` wire the generic sweep consumes |
-| `discovery/pipeline.rs` | `run_pipeline` — splits the cohort first, selects the baseline (L0) and fits Layers 1–2 (+ L1b/L2b) on train, validates on the held-out slice (a degenerate split fits the whole cohort and reports `no_validation` rather than a vacuous pass). `diagnose` emits the run-level findings a reader would otherwise have to derive across sections: which gate ran, whether the reference line was profitable, how much of the field died for want of data, how much power the validate slice had |
-| `discovery/dto.rs` + `api/handlers/strategies/metric_discovery.rs` | `PipelineDto` (incl. `sweep_seed`, `diagnostics`, `baseline_selection`, `cohort_capped`) + `POST /api/strategies/metric-discovery` (+`/cancel`/`/last`/`/{run_id}`, SSE progress, single-flight mutually exclusive with sweep / flow-discovery / rule-search, cohort scoping by fingerprint/`ix_labels`/field filters, `take_profit_menu`/`stop_loss_menu` for L0). The handler is the only layer that knows `token_cap`, so it is the only one that can set `cohort_capped` — and it does so **on the result**, not only as an SSE notice a reader has long since missed |
-| `frontend/src/lab/pages/strategies/MetricDiscoveryPage.tsx` | diagnostics + reference line (with the measured bracket table) → shortlist with money columns → drops ordered most-actionable-first → rescues → family winners + joint grids + interaction map → validation; primary **Open as sweep** writes a sessionStorage handoff that `GenericSweepConfigForm` applies once; **Promote…** secondary on winners |
-
-**Objective (Layer 1's ranking core):** `robust_profit × fire_rate × win_component ×
-min_n_gate × confidence`, where `robust_profit` is the combo's **capital-weighted
-return** — the SSOT `weighted_return_pct(Σ pnl, Σ capital)`, which under the sweep's
-fixed per-trade notional reduces exactly to `mean_pnl_pct` (pinned by a no-DB guard test;
-**percent-of-vsol sizing inside a sweep breaks that identity and needs a real capital
-sum**) — with an open-position mark discounted by `OPEN_HAIRCUT`,
-`win_component` blends `win_rate` with a capped `profit_factor`, `min_n_gate` hard-zeroes
-any combo under the cohort's **effective** gate (the anti-overfit backbone — no profit%
-lets a 4-trade "edge" rank), and `confidence` discounts the band between that gate and
-`MIN_CLOSED` so a relaxed gate buys a lower rank, not equal trust. The score is
-unitless: it ranks, and only the money columns beside it can be checked against a trade. **Open (unpinned) constant:** `OPEN_HAIRCUT` / `profit_factor` cap /
-`MIN_CLOSED` / plateau-penalty weight are seeded from the `axis-value-candidates.md`
-anchors but never validated-and-pinned as a permanent tuning — revisit once a discovery
-run's picks are checked against live/paper outcomes.
-
-**The profit centre is sign-locked to money, never a median.** `Keep` requires a positive
-score, and the score's sign is the centre's sign — so a median centre demands a positive
-*median trade*, i.e. a **win rate above 50%**, and rejects every asymmetric-payoff combo,
-which is the shape this cohort trades. Whale resistance lives in `win_component`
-(`win_rate ×` capped `profit_factor`), which out-ranks a whale-carried combo ~3× on its
-own; the centre is not a second copy of that job.
-
-**The rank is only meaningful above zero.** The score is multiplicative over a *signed*
-profit term, so below zero a higher `fire_rate` scores **worse** and a bare `max_by`
-returns whichever option trades least. Every argmax — `select_baseline`'s bracket,
-`classify`'s `best_value` (which `narrow` then builds Layer 2's range around) — ranks over
-the positive picks only, and falls back to realised ◎ when none is positive.
-
-**Reading a run** — four things decide whether a shortlist means anything, and each is
-stated on the result rather than left to be inferred:
-
-- **The reference line** (`screen.baseline_stats`): the chosen bracket's own bare
-  result. A `lift` is a delta against it, so a shortlist read without it cannot
-  separate "makes money" from "loses less than doing nothing". When it is negative the
-  page says so and every `Keep` is a rescue, not an improvement.
-- **The gate that ran** (`screen.effective_min_closed`): a regime-scoped cohort cannot
-  afford the corpus-wide 20-closed gate, so it is relaxed toward the floor and the run
-  reports both numbers. `DropThin` is a statement about cohort size, never evidence
-  that a metric has no edge.
-- **The cohort's reach against that gate**: the scan opens at most one position per
-  token, so `n_closed <= fit_tokens` and a gate must fire on `gate / fit_tokens` of the
-  slice merely to be scored. Past a quarter, the p75/p90 rungs — the ones most likely to
-  carry an edge — cannot clear the gate whatever they screen, and `diagnose` states the
-  arithmetic rather than letting a field of `DropThin` read as "no edge here".
-- **`cohort_capped`**: a cap hit means the run scored the newest N *matched* tokens,
-  not the range that was asked for.
-
-**Honest L1 limit:** Layer 1 is univariate, so a metric with no standalone lift never
-reaches a family grid on its own. L1b's synergy rescue is the bounded repair — the
-strongest winner pinned, up to `rescue_cap` rejects re-screened under it — and it is
-deliberately *conditional*: a rescued axis is valid alongside that pin, not by itself,
-and carries the `rescued` flag everywhere it appears. Rejects the rescue does not
-reclaim can still be seeded as `optional_axes`, or added by hand in the sweep form.
-
-**Perf shape is scan/precompute-bound, not fold-bound** (few combos; cost is the corpus
-load + per-token `MetricSeries` build + the exit scan). A discovery run should therefore
-pick a **tighter RAM reserve** (bigger resident series wave, fewer precompute rebuilds)
-rather than inherit the interactive sweep's defaults — see `discovery/screen.rs`'s knob
-table. **Leave the AVX-512 toggle off**: it does not beat the index path (§ exit-scan
-path). The dominant lever regardless is precompute reuse: one corpus load + one
-series-union precompute shared across every metric screen, not N re-loads — and, because
-a metric-exit rule costs ~15× a TP/SL one, batching many axes into one run rather than
-splitting them across runs.
-
-**Data reality:** the fingerprint dimension (`tokens`/`tokens_info`) covers only ~7% of
-the tradable universe (a backfill gap, not a design choice) — this throttles Layer-2/3
-*grouping/scoping* only; Layer-1 metric-axis screening runs over the full trade corpus
-unaffected. Default to a tight single-regime cohort (one fingerprint scope or
-`ix_labels`-only): the cohort-aware gate is what makes that affordable, and the run
-reports the relaxed gate so the trade-off stays visible. Widen when the `DropThin` tally
-dominates the drop table.
-
-## Rule search (`lab/src/rule_search/`)
-
-Lab-only job that finds one champion `RuleParams` for a **single fingerprint** and
-a datetime range. Sibling of grouped sweep / flow discovery / metric discovery — not
-a sweep mode. The form does not expose metrics, windows, or thresholds; those come
-from this range's cuts and the registry. An incumbent rule is compare-only (never a
-seed). Governing workflow:
-[_!___strategy.md](../plans/strategies/_!___strategy.md).
-
-| File | Role |
-| --- | --- |
-| `rule_search/roles.rs` | Registry flags → entry roles / exit bags / compete keys. New registry rows join by flags. |
-| `rule_search/cuts.rs` | Cohort windows + phase samples → threshold menus (peak contrast primary; run-lead / launch / fill-moment extras; dump-lead / giveback-lead / after-dump / outcome held on exit). Declared `m_position` exits stay on the menu. |
-| `rule_search/generator.rs` | Entry fillings × exit bags → complete `RuleParams`. Empty entry and empty exit are combos. One extra phase per metric beside peak. Extra OR on the top 5 after scoring; same-phase retune on the top 3. |
-| `rule_search/scorer.rs` | `CompiledRule` series walk (shared entry across bags) then copycat (+ caps) time-order merge. Horizon is Simulate's (`as_of` / corpus last trade), not sweep's per-token tail cap. |
-| `rule_search/report.rs` | Report columns are `run_replay` for the board (champion, empty-entry, incumbent, archive). Paying replays rank by authority SOL, then tighter fill spread. Extra archive slice when the top slice has no paying replay. Verdict refuse / ungated / candidate. Optimistic fill is `FirstInWindow`. |
-| `api/handlers/strategies/rule_search.rs` | `POST /api/strategies/rule-search` (+`/cancel`/`/last`/`/{run_id}`). `202` after fingerprint/incumbent admission; corpus load and search run detached. SSE progress, persist last result under `$SWEEP_LAKE_DIR/rule-search/last.json`. Fingerprint mint scan **before** the lake load. `as_of` freezes at session open. Single-flight vs sweep / flow-discovery / metric-discovery. |
-| `frontend/src/lab/pages/strategies/RuleSearchPage.tsx` | Form (required fingerprint, range, buy, fill, cost, copycat default ON, optional incumbent) → board (verdict, three columns, champion params, archive, Promote / Simulate) |
-
-Fill/cost defaults: worst fill + `pumpfun_impact`. Buy and caps come from the
-incumbent when one is set, else the form. Copycat is ON unless the request sets it
-off — empty-entry vs champion needs the guard.
-
-## Family search (`lab/src/family_search/`)
-
-Lab-only job that grades **one fingerprint's sibling family**: siblings share
-`ix_labels` and differ on exactly one axis, resolved mechanically off the
-`fingerprints` table. Only an **exact** predicate has a position to order a family
-by, so a range-valued axis makes two rows non-siblings rather than collapsing to a
-bound. Rank comes from a pooled fit across the
-family, level from the held-out target cohort alone. Rule search is not modified;
-every change to shared sweep code is additive.
-
-| File | Role |
-| --- | --- |
-| `family_search/family.rs` | Sibling resolve off the `fingerprints` table. Same shape, identical on every axis but one; a dropped axis is a different population, not a sibling. A family of one degrades to single-cohort. Unpinned ties land on the first axis in `AXES`. |
-| `family_search/generator.rs` | Signature-earned candidates (rule search's cut table, read-only), **composed to the working shape**: entry ANDs of 0–4 *quantities* densest-first (a floor+ceiling band is ONE quantity, so a 3-idea entry writes 5 clauses), exit ORs of 2–5 alarms drawing at most one clause per end-event family (flow · organic · stall-clock · liquidity-ceiling · price-trail). The quota buckets on the family **set** — with multi-family bags a first-alarm bucket holds nearly everything — and `by_family` reports coverage. Price trail stays in the library, flagged. **Standing terms** (D10) ride at the end of every bag and the control, searched by nothing. `ungated_control` is the exit-less diagnostic, kept apart. |
-| `family_search/score.rs` | Pooled fit `Σpnl_sol / Σentry_sol` and pooled win rate `Σwins / Σcloses` (never a mean of per-cohort rates), Spearman ρ as the procedure's self-test, the **two-sided selection** (first ranked candidate clearing both the ungated control's win rate and a positive return, read narrow), the narrow re-check — which grades an entry term by win rate and an exit term by return, because grading both on money deletes every entry condition — and `wilson_low_pct`, the 95% lower bound that says when a win-rate clearance is inside the sample's own noise. |
-| `family_search/enrich.rs` | The only stage that can make a rule **denser**. Offers each earned idea the fitted skeleton lacks, judges it in its own side's currency, and confirms every acceptance against the rule as it grows so two forms of one idea cannot both get in. Bounded at 12 trials + 3 accepts, all on the resident target cohort. |
-| `family_search/oracle.rs` | Capture ratio against the oracle exit — the best price printed after the fill, priced through the same cost and fill as the realized exit. `n_no_upside` is its own line and grades the **entry**. Also the cohort's net-move distribution and `execution_band_pct`, which the cost gate reads, and the two counterfactuals regret is graded against: `best_after_pnl_sol` (the best exit still ahead of a close) and `terminal_pnl_sol` (holding to the last print). |
-| `family_search/diagnose.rs` | Reliability diagnostics on the finalist (D13), all on the resident target: **threshold ladders** (`x0.5..x1.5`, plateau vs a spike), **alarm regret** (each alarm's closes against both counterfactuals — only when the alarm both leaves real upside AND loses to holding on is it cutting winners), **entry redundancy** (solo score + veto-set overlap, which drop-one ablation cannot see because a sibling covers for the clause), and **per-clause fill sensitivity** (drop-one contribution under both pricings; a flip or a collapse means the contribution is the fill model). Grades only — nothing here reaches selection, or the held-out cohort is leaked. |
-| `family_search/attribution.rs` | Per authored exit slot: n, **wins**, Σpnl_sol, Σentry_sol, a **standing** flag, plus the **authored threshold against the mean realized gross return** - offered only where the two are one quantity (`m_position.pnl_pct`), so a stop that gaps past its level is visible without blaming gapping for execution cost. Bucketing mirrors `ComboAgg::record`, pinned equal by a no-DB test. |
-| `family_search/gates.rs` | Four gates: freshness refuse (D7), **cost-clearance refuse** (D8), the axis-duplication refuse (an entry clause whose admit rate tracks the varied axis at \|ρ\| ≥ 0.8), and the lagging-entry-clause diagnostic. |
-| `family_search/report.rs` | Board payload + the portrait prose. Every candidate row carries the rank-only `fit_ret_pct` beside the reportable `target_ret_pct`. |
-| `api/handlers/strategies/family_search.rs` | `POST /api/strategies/family-search` (+`/cancel`/`/last`/`/{run_id}`). Scope resolves for every member up front (dimension-only), then the **target cohort stays resident** while fit siblings load one at a time. Persists the last result under `$SWEEP_LAKE_DIR/family-search/last.json`. Single-flight against every other heavy job. |
-
-The board is `/strategies/family-search` in the lab app — see
-[frontend.md](frontend.md) "Lab **Family search**".
-
-Two tiers: the fit stage stops at `score_combos`' archive fold (it needs a ranking,
-and candidates are near-free against the token walk), and `run_replay` is the
-authority pass on the **target cohort and the finalist only**.
-
-Buy size, caps, fill, cost and the copycat setting come from the **request** only. An
-incumbent rule is a display column and supplies none of them — cost is U-shaped under
-`pumpfun_impact`, so an incumbent's buy size silently moves the economics, and its
-caps change which tokens are entered at all.
-
-`Selection::with_oracle` is the one additive corpus field the job adds: it builds
-`CorpusToken::peak_after` (`projection::suffix_peak`) at load, 4 B/row, opt-in, and
-folded into `lake_hash` so an oracle load and a plain load cannot share a cache entry.
-
-**Execution honesty (D8).** Before the generator runs, the ungated control's authority
-pass supplies a rule-free oracle distribution, and the **median net move over every
-priceable entry** (losers included — a winners-only median is positive by construction)
-is compared against `execution_band_pct`, one round trip priced on a flat trade at the
-run's buy and the cohort's median pool depth. Under `margin × band` the search is
-refused before a candidate exists; between there and one band the run is badged
-`thin`, because a rule takes only a fraction of the best available exit. A refusal
-**boards a report** with an empty library rather than erroring — the measurement is the
-finding. The finalist then carries a **dual-pricing spread**: a second replay of that
-one rule at `FirstInWindow` + `pumpfun_fee_only` (the zero-impact bound, so the spread
-isolates fill luck from sizing cost), intersected with the authority pass
-on mint so both returns cover one taken set, with any drift counted rather than
-averaged over. An edge no larger than its own spread is priced on fill luck.
-
-A corpus load cannot be cancelled mid-flight, so `check_cancelled` runs after the scope
-resolve, before every sibling load, and before the authority pass — those checkpoints
-are the whole cancellation story.
 
 ## Adding a strategy
 

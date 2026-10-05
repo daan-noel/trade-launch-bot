@@ -1,5 +1,6 @@
 import { lazy } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { RULES_SIMULATE_TAB, STRATEGY_PARAMS, STRATEGY_PATHS } from 'lib/strategy/nav';
 import { AppProviders } from 'context/AppProviders';
 import { AppLayout } from 'components/layout/AppLayout';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
@@ -19,10 +20,6 @@ const RulesPage = lazy(() => import('@lab/pages/strategies/RulesPage').then((m) 
 const CopyPage = lazy(() => import('@lab/pages/strategies/CopyPage').then((m) => ({ default: m.CopyPage })));
 const FingerprintsPage = lazy(() => import('@lab/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
 const FlowDiscoveryPage = lazy(() => import('@lab/pages/strategies/FlowDiscoveryPage').then((m) => ({ default: m.FlowDiscoveryPage })));
-const MetricDiscoveryPage = lazy(() => import('@lab/pages/strategies/MetricDiscoveryPage').then((m) => ({ default: m.MetricDiscoveryPage })));
-const RuleSearchPage = lazy(() => import('@lab/pages/strategies/RuleSearchPage').then((m) => ({ default: m.RuleSearchPage })));
-const FamilySearchPage = lazy(() => import('@lab/pages/strategies/FamilySearchPage').then((m) => ({ default: m.FamilySearchPage })));
-const SimulatePage = lazy(() => import('@lab/pages/strategies/SimulatePage').then((m) => ({ default: m.SimulatePage })));
 const GenericSweepPage = lazy(() => import('@lab/pages/strategies/sweep/GenericSweepPage').then((m) => ({ default: m.GenericSweepPage })));
 const InventoryPage = lazy(() => import('@lab/pages/strategies/InventoryPage').then((m) => ({ default: m.InventoryPage })));
 const ReplayViewerPage = lazy(() => import('@lab/pages/strategies/ReplayViewerPage').then((m) => ({ default: m.ReplayViewerPage })));
@@ -36,6 +33,14 @@ function MetricPanesRedirect() {
   const mint = params.get('mint');
   const to = mint ? `/tokens?mint=${encodeURIComponent(mint)}` : '/tokens';
   return <Navigate to={to} replace />;
+}
+
+/** Simulate lives on the Rules page. Keep `?rule=` and the rest of the query. */
+function SimulateRedirect() {
+  const { search } = useLocation();
+  const params = new URLSearchParams(search);
+  params.set(STRATEGY_PARAMS.tab, RULES_SIMULATE_TAB);
+  return <Navigate to={`${STRATEGY_PATHS.rules}?${params.toString()}`} replace />;
 }
 
 export default function App() {
@@ -60,10 +65,7 @@ export default function App() {
                 <Route path="strategies/copy" element={<CopyPage />} />
                 <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
                 <Route path="strategies/flow-discovery" element={<FlowDiscoveryPage />} />
-                <Route path="strategies/metric-discovery" element={<MetricDiscoveryPage />} />
-                <Route path="strategies/rule-search" element={<RuleSearchPage />} />
-                <Route path="strategies/family-search" element={<FamilySearchPage />} />
-                <Route path="strategies/simulate" element={<SimulatePage />} />
+                <Route path="strategies/simulate" element={<SimulateRedirect />} />
                 <Route path="strategies/metric-panes" element={<MetricPanesRedirect />} />
                 <Route path="strategies/sweep" element={<GenericSweepPage />} />
                 <Route path="strategies/replay" element={<ReplayViewerPage />} />

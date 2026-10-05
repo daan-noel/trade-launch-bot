@@ -178,12 +178,6 @@ pub(crate) fn line_tags(rule: &CompiledRule) -> Vec<ExitTag> {
     tags
 }
 
-/// The aggregate slot of the line labelled `label` in `rule` — how a replay outcome's
-/// `ExitReason::Line` is bucketed exactly as the sweep buckets it.
-pub(crate) fn line_slot_of(rule: &CompiledRule, label: &str) -> Option<u8> {
-    line_tags(rule).into_iter().find(|t| t.label == Some(label)).and_then(|t| t.slot)
-}
-
 /// How an exit is recorded on the outcome.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ExitTag {

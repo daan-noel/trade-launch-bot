@@ -1,17 +1,22 @@
 /**
- * Cross-page deep links for strategy surfaces (Rules ↔ Fingerprints ↔ Simulate…).
+ * Cross-page deep links for strategy surfaces (Rules, Fingerprints, the Simulate tab).
  * Selection lives in the query string so navigation (same-tab or new-tab) keeps
  * the target selected.
  *
- * Params: `?rule=<id>` on Rules/Simulate, `?fp=<id>` on Fingerprints — same shape
- * as Tokens `?mint=` / Sweep `?run=`. Prefer Router `Link` (same-tab); Ctrl/middle-click
+ * Params: `?rule=<id>` on the lab/live Rules or Copy page, `?tab=simulate` for the
+ * lab Simulate board on that same page, `?fp=<id>` on Fingerprints. Same shape as
+ * Tokens `?mint=` / Sweep `?run=`. Prefer Router `Link` (same-tab); Ctrl/middle-click
  * still opens a new tab with the param intact.
  *
- * Simulate is lab-only (`/strategies/simulate`); don't link to it from the live app.
+ * Simulate is lab-only. Never link to it from the live app. A copy rule's
+ * Simulate link stays on `/strategies/copy`; a metric rule's stays on
+ * `/strategies/rules`.
  */
 
 export const STRATEGY_PATHS = {
   rules: '/strategies/rules',
+  /** Copy board. Lab adds `?tab=simulate` for that page's Simulate tab. */
+  copy: '/strategies/copy',
   fingerprints: '/strategies/fingerprints',
   /** The unified real-trade Console — attention / open / manual trade / waiting /
    *  recent. Replaces the old Floor + Trade pages (both redirect here). */
@@ -22,22 +27,37 @@ export const STRATEGY_PATHS = {
   ops: '/console',
   /** Live Portfolio — cross-rule money. */
   portfolio: '/portfolio',
-  /** Lab app only. */
+  /**
+   * Legacy Simulate path. The lab app redirects it onto the Rules page
+   * Simulate tab (`?tab=simulate`). Not a page of its own.
+   */
   simulate: '/strategies/simulate',
   /** Lab app only. */
   flowDiscovery: '/strategies/flow-discovery',
-  /** Lab app only. */
-  ruleSearch: '/strategies/rule-search',
 } as const;
 
 export const STRATEGY_PARAMS = {
   rule: 'rule',
   fingerprint: 'fp',
+  /** Lab Rules or Copy page board. Absent = the rule list. `simulate` = Simulate. */
+  tab: 'tab',
 } as const;
+
+/** Which strategy page a deep link lands on. */
+export type StrategyBoard = 'rules' | 'copy';
+
+/** Value of {@link STRATEGY_PARAMS.tab} that opens the Simulate board. */
+export const RULES_SIMULATE_TAB = 'simulate';
 
 export function rulesHref(ruleId?: string | null): string {
   if (!ruleId) return STRATEGY_PATHS.rules;
   return `${STRATEGY_PATHS.rules}?${STRATEGY_PARAMS.rule}=${encodeURIComponent(ruleId)}`;
+}
+
+/** Copy board, with `rule` selected. Omits `tab`, so it opens the rule list. */
+export function copyHref(ruleId?: string | null): string {
+  if (!ruleId) return STRATEGY_PATHS.copy;
+  return `${STRATEGY_PATHS.copy}?${STRATEGY_PARAMS.rule}=${encodeURIComponent(ruleId)}`;
 }
 
 /** Live per-rule Evidence page (positions summary + traded history). */
@@ -50,10 +70,13 @@ export function fingerprintsHref(fpId?: string | null): string {
   return `${STRATEGY_PATHS.fingerprints}?${STRATEGY_PARAMS.fingerprint}=${encodeURIComponent(fpId)}`;
 }
 
-/** Lab-only. */
-export function simulateHref(ruleId?: string | null): string {
-  if (!ruleId) return STRATEGY_PATHS.simulate;
-  return `${STRATEGY_PATHS.simulate}?${STRATEGY_PARAMS.rule}=${encodeURIComponent(ruleId)}`;
+/** Lab-only. Opens the Simulate tab of Rules or Copy, with `rule` selected. */
+export function simulateHref(ruleId?: string | null, board: StrategyBoard = 'rules'): string {
+  const q = new URLSearchParams();
+  q.set(STRATEGY_PARAMS.tab, RULES_SIMULATE_TAB);
+  if (ruleId) q.set(STRATEGY_PARAMS.rule, ruleId);
+  const path = board === 'copy' ? STRATEGY_PATHS.copy : STRATEGY_PATHS.rules;
+  return `${path}?${q.toString()}`;
 }
 
 /** Lab-only. Deep-link to Flow discovery scoped to a saved fingerprint —
@@ -61,12 +84,6 @@ export function simulateHref(ruleId?: string | null): string {
 export function flowDiscoveryHref(fpId?: string | null): string {
   if (!fpId) return STRATEGY_PATHS.flowDiscovery;
   return `${STRATEGY_PATHS.flowDiscovery}?${STRATEGY_PARAMS.fingerprint}=${encodeURIComponent(fpId)}`;
-}
-
-/** Lab-only. Deep-link to Rule search scoped to a saved fingerprint. */
-export function ruleSearchHref(fpId?: string | null): string {
-  if (!fpId) return STRATEGY_PATHS.ruleSearch;
-  return `${STRATEGY_PATHS.ruleSearch}?${STRATEGY_PARAMS.fingerprint}=${encodeURIComponent(fpId)}`;
 }
 
 /** The calendar windows the portfolio/history surfaces share. `custom` means the

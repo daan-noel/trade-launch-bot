@@ -302,57 +302,6 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/flow-discovery/{run_id}",
                 web::get().to(handlers::strategies::flow_discovery::get_flow_discovery),
-            )
-            // ── Metric-combo discovery pipeline (screen → family → validate) ──
-            .route(
-                "/strategies/metric-discovery",
-                web::post().to(handlers::strategies::metric_discovery::start_metric_discovery),
-            )
-            .route(
-                "/strategies/metric-discovery/cancel",
-                web::post().to(handlers::strategies::metric_discovery::cancel_metric_discovery),
-            )
-            .route(
-                "/strategies/metric-discovery/last",
-                web::get().to(handlers::strategies::metric_discovery::get_last_metric_discovery),
-            )
-            .route(
-                "/strategies/metric-discovery/{run_id}",
-                web::get().to(handlers::strategies::metric_discovery::get_metric_discovery),
-            )
-            // ── Rule search (registry-role champion for one fingerprint + range) ──
-            .route(
-                "/strategies/rule-search",
-                web::post().to(handlers::strategies::rule_search::start_rule_search),
-            )
-            .route(
-                "/strategies/rule-search/cancel",
-                web::post().to(handlers::strategies::rule_search::cancel_rule_search),
-            )
-            .route(
-                "/strategies/rule-search/last",
-                web::get().to(handlers::strategies::rule_search::get_last_rule_search),
-            )
-            .route(
-                "/strategies/rule-search/{run_id}",
-                web::get().to(handlers::strategies::rule_search::get_rule_search),
-            )
-            // ── Family search (one fingerprint's sibling family: fit broad, level narrow) ──
-            .route(
-                "/strategies/family-search",
-                web::post().to(handlers::strategies::family_search::start_family_search),
-            )
-            .route(
-                "/strategies/family-search/cancel",
-                web::post().to(handlers::strategies::family_search::cancel_family_search),
-            )
-            .route(
-                "/strategies/family-search/last",
-                web::get().to(handlers::strategies::family_search::get_last_family_search),
-            )
-            .route(
-                "/strategies/family-search/{run_id}",
-                web::get().to(handlers::strategies::family_search::get_family_search),
             ),
     );
 }

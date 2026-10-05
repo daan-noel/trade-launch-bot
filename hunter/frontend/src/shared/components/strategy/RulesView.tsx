@@ -86,6 +86,9 @@ import {
 /** Closed trades behind Win% / Avg% / Exp (entered + terminal). */
 const strategyRuleRowKey = (r: StrategyRule) => r.id;
 
+/** Rules and Copy: the Chain cell must be hovered this long before the wording opens. */
+const RULE_CHAIN_TIP_DELAY_MS = 1_000;
+
 function closedCount(r: StrategyRule): number {
   return (r.win_count ?? 0) + (r.loss_count ?? 0);
 }
@@ -98,8 +101,10 @@ export interface RuleLiveCounts {
 export interface RulesViewProps {
   /** Lab-only dry-run render-prop forwarded to the editor (FE3). */
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
-  /** Lab-only: show a link icon that opens Simulate with this rule selected. */
+  /** Lab-only: show a link icon that opens this board's Simulate tab with this rule selected. */
   linkToSimulate?: boolean;
+  /** Lab Rules tab: the tab already names the board, so omit the page heading. */
+  hideHeading?: boolean;
   /** Live-only: open/pending counts from the Live Status SSOT (not list_rules). */
   ruleLiveCounts?: Record<string, RuleLiveCounts>;
   /** Live-only: show scoreboard columns from rule-list wire (PnL, Avg%, Exp, Win%, W/L, N). */
@@ -156,6 +161,7 @@ function RuleConfigEditedMark({ rule }: { rule: StrategyRule }) {
 export function RulesView({
   renderDryRun,
   linkToSimulate,
+  hideHeading,
   ruleLiveCounts,
   showScores,
   scoreScope,
@@ -737,27 +743,25 @@ export function RulesView({
       label: 'Name',
       group: 'rule',
       render: (r) => (
-        <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
-          <div className="flex min-w-40 flex-col items-center gap-1">
-            <div className="flex items-center justify-center gap-1">
-              <span className="cursor-default font-medium text-text">{r.rule_name}</span>
-              <RuleExclusiveMark params={r.params} />
-              <RuleConfigEditedMark rule={r} />
-              {linkToSimulate && (
-                <Link
-                  to={simulateHref(r.id)}
-                  title={`Simulate “${r.rule_name}”`}
-                  aria-label={`Simulate ${r.rule_name}`}
-                  className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <LinkIcon className="h-3.5 w-3.5" />
-                </Link>
-              )}
-            </div>
-            <RuleLabels tags={r.tags} onTagClick={(tag) => setTagFilter(includeOnly(tag))} />
+        <div className="flex min-w-40 flex-col items-center gap-1">
+          <div className="flex items-center justify-center gap-1">
+            <span className="font-medium text-text">{r.rule_name}</span>
+            <RuleExclusiveMark params={r.params} />
+            <RuleConfigEditedMark rule={r} />
+            {linkToSimulate && (
+              <Link
+                to={simulateHref(r.id, copyBoard ? 'copy' : 'rules')}
+                title={`Simulate “${r.rule_name}”`}
+                aria-label={`Simulate ${r.rule_name}`}
+                className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <LinkIcon className="h-3.5 w-3.5" />
+              </Link>
+            )}
           </div>
-        </RuleHoverTip>
+          <RuleLabels tags={r.tags} onTagClick={(tag) => setTagFilter(includeOnly(tag))} />
+        </div>
       ),
       searchValue: (r) => [r.rule_name, ...(r.tags ?? [])].join(' '),
       sortValue: (r) => r.rule_name,
@@ -836,7 +840,26 @@ export function RulesView({
     ...buildFingerprintRuleColumns(fpById, {
       cellClassName: (r) => fpTints.get(`${r.id}\0fingerprint`),
     }),
-    ...buildRuleTradeColumns(),
+    ...buildRuleTradeColumns<StrategyRule>().map((col) =>
+      col.key === 'params'
+        ? {
+            ...col,
+            cellClassName: (r) =>
+              ['relative', col.cellClassName?.(r)].filter(Boolean).join(' '),
+            render: (r) => (
+              <RuleHoverTip
+                rule={r}
+                fingerprint={fpById.get(r.fingerprint_id)}
+                openDelayMs={RULE_CHAIN_TIP_DELAY_MS}
+                fillCell
+                wordsOnly
+              >
+                {col.render(r)}
+              </RuleHoverTip>
+            ),
+          }
+        : col,
+    ),
     {
       key: 'execute',
       label: 'Execute',
@@ -938,16 +961,20 @@ export function RulesView({
       >
         <PageHeader
           className="mb-0"
-          title={copyBoard ? 'Copy' : showScores ? 'Rules Control' : 'Rules'}
+          title={
+            hideHeading ? undefined : copyBoard ? 'Copy' : showScores ? 'Rules Control' : 'Rules'
+          }
           // The sticky strip carries only what you steer the board with while
           // scrolling — which rows, and the bulk actions. Everything that decides
           // how a number is computed lives on the scoreboard it governs, below.
           description={
-            copyBoard
-              ? 'Follow one wallet. The builder edits the buy and each sell the same way as a rule.'
-              : showScores
-                ? 'Pause from Execute or Evidence — scoring controls sit on the scoreboard'
-                : undefined
+            hideHeading
+              ? undefined
+              : copyBoard
+                ? 'Follow one wallet. The builder edits the buy and each sell the same way as a rule.'
+                : showScores
+                  ? 'Pause from Execute or Evidence — scoring controls sit on the scoreboard'
+                  : undefined
           }
           actions={
             <>

@@ -12,6 +12,4 @@ pub mod job_progress;
 pub mod analysis_cache;
 pub mod discovery_result_cache;
 pub mod entry_scan_cache;
-pub mod family_search_cache;
-pub mod rule_search_cache;
 pub mod sim_results;

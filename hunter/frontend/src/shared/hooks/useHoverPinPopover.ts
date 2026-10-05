@@ -27,6 +27,12 @@ export interface UseHoverPinPopoverOptions {
   width: number;
   /** Delay before hover-dismiss so the pointer can cross the gap (ms). */
   closeDelayMs?: number;
+  /**
+   * How long the pointer must stay on the trigger before hover opens the panel.
+   * `0` opens immediately. While the panel is still closed, a click is left to
+   * the page (row select); once open, click still pins.
+   */
+  openDelayMs?: number;
 }
 
 export interface HoverPinTriggerHandlers {
@@ -68,11 +74,14 @@ export function useHoverPinPopover<T extends HTMLElement = HTMLElement>({
   side = 'bottom',
   width,
   closeDelayMs = HOVER_PIN_CLOSE_DELAY_MS,
+  openDelayMs = 0,
 }: UseHoverPinPopoverOptions): UseHoverPinPopoverResult<T> {
   const anchorRef = useRef<T | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pinnedRef = useRef(false);
+  const openRef = useRef(false);
 
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -85,6 +94,13 @@ export function useHoverPinPopover<T extends HTMLElement = HTMLElement>({
     if (closeTimerRef.current != null) {
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
+    }
+  }, []);
+
+  const clearOpenTimer = useCallback(() => {
+    if (openTimerRef.current != null) {
+      clearTimeout(openTimerRef.current);
+      openTimerRef.current = null;
     }
   }, []);
 
@@ -112,17 +128,35 @@ export function useHoverPinPopover<T extends HTMLElement = HTMLElement>({
 
   const openNow = useCallback(() => {
     clearCloseTimer();
+    clearOpenTimer();
+    openRef.current = true;
     setOpen(true);
     // Preliminary position (panel height may still be 0); layout effect remeasures.
     reposition();
-  }, [clearCloseTimer, reposition]);
+  }, [clearCloseTimer, clearOpenTimer, reposition]);
 
   const close = useCallback(() => {
     clearCloseTimer();
+    clearOpenTimer();
+    openRef.current = false;
     setPinned(false);
     setOpen(false);
     setCoords(null);
-  }, [clearCloseTimer]);
+  }, [clearCloseTimer, clearOpenTimer]);
+
+  const scheduleOpen = useCallback(() => {
+    clearCloseTimer();
+    if (openRef.current || pinnedRef.current) return;
+    if (openTimerRef.current != null) return;
+    if (openDelayMs <= 0) {
+      openNow();
+      return;
+    }
+    openTimerRef.current = setTimeout(() => {
+      openTimerRef.current = null;
+      openNow();
+    }, openDelayMs);
+  }, [clearCloseTimer, openDelayMs, openNow]);
 
   const scheduleClose = useCallback(() => {
     if (pinnedRef.current) return;
@@ -130,14 +164,23 @@ export function useHoverPinPopover<T extends HTMLElement = HTMLElement>({
     closeTimerRef.current = setTimeout(() => {
       closeTimerRef.current = null;
       if (pinnedRef.current) return;
+      openRef.current = false;
       setOpen(false);
       setCoords(null);
     }, closeDelayMs);
   }, [clearCloseTimer, closeDelayMs]);
 
+  const cancelHover = useCallback(() => {
+    clearOpenTimer();
+    scheduleClose();
+  }, [clearOpenTimer, scheduleClose]);
+
   const togglePin = useCallback(
     (e: ReactMouseEvent) => {
       if (isNestedInteractive(e.target, anchorRef.current)) return;
+      // A delayed tip stays closed until the hover wait finishes, so a click
+      // on the trigger still selects the row.
+      if (!openRef.current && openDelayMs > 0) return;
       e.preventDefault();
       e.stopPropagation();
       if (pinnedRef.current) {
@@ -145,11 +188,13 @@ export function useHoverPinPopover<T extends HTMLElement = HTMLElement>({
         return;
       }
       clearCloseTimer();
+      clearOpenTimer();
+      openRef.current = true;
       setPinned(true);
       setOpen(true);
       reposition();
     },
-    [clearCloseTimer, close, reposition],
+    [clearCloseTimer, clearOpenTimer, close, openDelayMs, reposition],
   );
 
   const onBlur = useCallback(
@@ -197,7 +242,13 @@ export function useHoverPinPopover<T extends HTMLElement = HTMLElement>({
     };
   }, [open, close]);
 
-  useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
+  useEffect(
+    () => () => {
+      clearCloseTimer();
+      clearOpenTimer();
+    },
+    [clearCloseTimer, clearOpenTimer],
+  );
 
   return {
     open,
@@ -207,9 +258,9 @@ export function useHoverPinPopover<T extends HTMLElement = HTMLElement>({
     anchorRef,
     panelRef,
     triggerHandlers: {
-      onMouseEnter: openNow,
-      onMouseLeave: scheduleClose,
-      onFocus: openNow,
+      onMouseEnter: scheduleOpen,
+      onMouseLeave: cancelHover,
+      onFocus: scheduleOpen,
       onBlur,
       onClick: togglePin,
     },

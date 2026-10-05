@@ -531,7 +531,7 @@ pub async fn start_grouped_sweep(
         }
     };
 
-    // Single-flight vs flow-discovery / metric-discovery / rule-search (shared Duck/RAM).
+    // Single-flight vs flow-discovery (shared Duck/RAM).
     // Claimed synchronously so a concurrent request gets its 409 immediately; the
     // spawned job owns the matching release (`run_grouped_sweep_job`'s `Gate`).
     if let Err(msg) = state.claim_heavy(crate::state::local_state::HeavyJob::Sweep) {
@@ -737,8 +737,6 @@ async fn run_grouped_sweep_job(
         with_flow,
         // Hash-resolved flow keys only — no consumer here reads label text.
         with_flow_text: false,
-        // Only family search reads the oracle curve; every other run pays zero.
-        with_oracle: false,
     };
 
     // Load the corpus from the immutable Parquet lake via DuckDB (the sole sweep
@@ -762,7 +760,7 @@ async fn run_grouped_sweep_job(
     // the newest-N slice — silently, since the run still reported a healthy token
     // count. `matching_mints` answers the same question off the tokens dimension
     // alone (one small Parquet file, no trade scan), so the load below only ever
-    // touches matched mints. Same contract as flow / metric discovery.
+    // touches matched mints. Same contract as flow discovery.
     let mut scope_fp: Option<Fingerprint> = None;
     let mut scope_capped = false;
     if let Some(fp_id) = b.fingerprint_id {
@@ -2374,8 +2372,6 @@ pub async fn list_token_results(
             with_flow: run.tags.is_some() || axes_need_trade_keys(&run.axes_spec, run.tags.as_ref()).unwrap_or(true),
             // Hash-resolved flow keys only — no consumer here reads label text.
             with_flow_text: false,
-            // Only family search reads the oracle curve; every other run pays zero.
-            with_oracle: false,
         };
         let root = crate::lake::lake_root();
         match LakeSource::new(root).load(&sel).await {

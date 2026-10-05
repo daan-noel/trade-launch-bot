@@ -1,44 +1,96 @@
-import { useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { RulesView } from 'components/strategy/RulesView';
+import { Tabs, TabsList, TabsPanel, TabsTrigger } from 'components/ui/Tabs';
+import { LoadingState } from 'components/ui/LoadingState';
+import { formatDocumentTitle } from 'components/layout/documentTitle';
 import { DryRunPanel } from '@lab/components/strategy/DryRunPanel';
 import { LabRuleEvidence } from '@lab/components/strategy/LabRuleEvidence';
+import { labNav } from '@lab/nav';
+import { MODE_PARAM } from 'lib/strategy/mode';
+import { RULES_SIMULATE_TAB, STRATEGY_PARAMS } from 'lib/strategy/nav';
+import { TAG_PARAMS } from 'lib/strategy/tags';
+
+const SimulatePage = lazy(() =>
+  import('@lab/pages/strategies/SimulatePage').then((m) => ({ default: m.SimulatePage })),
+);
+
+type RulesBoard = 'rules' | 'simulate';
+
+function boardFromParams(params: URLSearchParams): RulesBoard {
+  return params.get(STRATEGY_PARAMS.tab) === RULES_SIMULATE_TAB ? 'simulate' : 'rules';
+}
 
 /**
- * Rules page (lab app) — the same scoreboard + Evidence cockpit as live Rules
- * Control, minus what only exists on a box that trades.
+ * Lab Rules page. One page, two boards: Rules (scoreboard, editor, dry-run,
+ * Evidence) and Simulate (lake backtest of saved rules). Only the active board
+ * mounts. `/strategies/simulate` redirects here with `?tab=simulate`.
  *
- * The scoreboard columns (PnL / Avg% / Exp / Win% / W-L / N) and the TOTAL rollup are
- * position rollups, not live-engine facts, so they mean the same thing here: this is
- * where you rank rules on their **real** results and drill into a fill. Two lab-only
- * panels are injected on top — dry-run (simulate an unsaved draft) and Evidence with
- * the metric-pane inspect.
- *
- * Deliberately NOT passed: `ruleLiveCounts`. Those come from the live SSE status
- * slice (the engine's in-memory open/pending bags) and this box runs no engine —
- * `RulesView` drops the live columns and the TOTAL strip falls back to the DB open
- * count, so the board degrades honestly instead of showing a stale "live" number.
+ * Switching boards drops `mode` / `tags` / `notags` and keeps `rule`. Each board
+ * then restores its own stored scope (Rules Control vs Simulate). Those params
+ * are shared names on one URL, so leaving them in place would copy one board's
+ * filter onto the other.
  */
 export function RulesPage() {
+  const [params, setParams] = useSearchParams();
+  const board = boardFromParams(params);
   const [scoreScope, setScoreScope] = useState<'current' | 'all'>('all');
-  // The ledger to rank on lives in RulesView's mode picker + its "score all rules
-  // on this ledger" modifier — one control, not a second Paper/Real vocabulary.
+
+  useEffect(() => {
+    const page = board === 'simulate' ? 'Simulate' : 'Rules';
+    document.title = formatDocumentTitle(labNav.identity.appTitle, page);
+  }, [board]);
+
+  const setBoard = useCallback(
+    (next: string) => {
+      const boardNext: RulesBoard = next === RULES_SIMULATE_TAB ? 'simulate' : 'rules';
+      if (boardNext === board) return;
+      setParams(
+        (prev) => {
+          const nextParams = new URLSearchParams(prev);
+          if (boardNext === 'simulate') nextParams.set(STRATEGY_PARAMS.tab, RULES_SIMULATE_TAB);
+          else nextParams.delete(STRATEGY_PARAMS.tab);
+          nextParams.delete(MODE_PARAM);
+          nextParams.delete(TAG_PARAMS.include);
+          nextParams.delete(TAG_PARAMS.exclude);
+          return nextParams;
+        },
+        { replace: true },
+      );
+    },
+    [board, setParams],
+  );
 
   return (
-    <RulesView
-      linkToSimulate
-      showScores
-      scoreScope={scoreScope}
-      onScoreScopeChange={setScoreScope}
-      renderDryRun={(draft, canRun) => <DryRunPanel draft={draft} canRun={canRun} />}
-      renderAnalyze={({ ruleId, rule, clear }) => (
-        <LabRuleEvidence
-          key={ruleId}
-          ruleId={ruleId}
-          rule={rule}
-          onClose={clear}
+    <Tabs value={board} onValueChange={setBoard}>
+      <TabsList className="px-4">
+        <TabsTrigger value="rules">Rules</TabsTrigger>
+        <TabsTrigger value="simulate">Simulate</TabsTrigger>
+      </TabsList>
+      <TabsPanel value="rules" className="pt-0">
+        <RulesView
+          linkToSimulate
+          hideHeading
+          showScores
           scoreScope={scoreScope}
+          onScoreScopeChange={setScoreScope}
+          renderDryRun={(draft, canRun) => <DryRunPanel draft={draft} canRun={canRun} />}
+          renderAnalyze={({ ruleId, rule, clear }) => (
+            <LabRuleEvidence
+              key={ruleId}
+              ruleId={ruleId}
+              rule={rule}
+              onClose={clear}
+              scoreScope={scoreScope}
+            />
+          )}
         />
-      )}
-    />
+      </TabsPanel>
+      <TabsPanel value="simulate" className="pt-0">
+        <Suspense fallback={<LoadingState label="Loading simulate…" />}>
+          <SimulatePage />
+        </Suspense>
+      </TabsPanel>
+    </Tabs>
   );
 }

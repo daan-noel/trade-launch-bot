@@ -406,10 +406,9 @@ None of these is derivable from a definition alone, and each has cost a search r
 
 **Where a lifetime floor earns its place.** A liveness floor is worth ~12.5 pp of mean PnL by
 ablation on a broad universe (it holds the `Dead` exit rate down), but a windowed hot gate
-risks selecting post-move moments created by the move it gates on, which the entry-timing
-diagnostic (`family_search::gates`) catches. When it flags one, swap the windowed gate for
-`m_flow.gross_sol >= 30` rather than drop liveness; the same holds for any entry whose
-window gate points downward (a quiet-tape gate).
+risks selecting post-move moments created by the move it gates on. When a windowed
+gate does that, swap it for `m_flow.gross_sol >= 30` rather than drop liveness; the
+same holds for any entry whose window gate points downward (a quiet-tape gate).
 
 > **Refuted as a selection gate** on `fs3-00` (OOS 07-29..08-09): a crowd floor
 > (`>= 20` replacing `gross_sol >= 45`) anti-selects monotonically: -0.75 %/ep against
@@ -492,7 +491,7 @@ the failure looks like a strict gate.
 | `prior_launches` | `0` is a real value; unknown is `NaN` | seeding `0` without a creator would widen `= 0` to every coin whose creator the feed failed to resolve |
 | | the tally must be primed | a fresh process reads every creator as new: `EngineState::prime_creator_launches`, live from `TokenRepo::creator_launch_counts` at boot, simulate over `[corpus_start - 30d, corpus_start)` |
 | | the window is part of the rule | every threshold is denominated in `PRIOR_LAUNCH_WINDOW_DAYS` (30); widening it re-scales every authored condition |
-| | unavailable on lake-corpus paths | the lake's tokens dimension has no creator, so grouped sweep, rule search and family search leave it `None` (`lab/src/lake/duck.rs`), which fails a configured axis closed. Use simulate |
+| | unavailable on lake-corpus paths | the lake's tokens dimension has no creator, so a grouped sweep leaves it `None` (`lab/src/lake/duck.rs`), which fails a configured axis closed. Use simulate |
 | `name_reuse_count` | one counter, `fingerprint::identity_launches::IdentityLaunches` | the engine stamps it at `TokenCreated`; simulate's candidate scan stamps from one built off `tokens` (`fingerprint_axes::stamp_name_reuse_count`), so scan and replay agree |
 | | named builds only | a fingerprint reading it must also pin `ix_labels`; the tally holds those builds' launches only |
 | | primed with timestamps on both paths | simulate primes every creation of the build over `[since - 30d, until)` (`engine_sim::load_identity_rows`); live primes the last 30 days once per build, on the reload that first names it |

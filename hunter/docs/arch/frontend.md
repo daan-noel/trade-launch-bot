@@ -47,7 +47,10 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   `/strategies/armed`, `/strategies/monitor`, query preserved) · **Portfolio** (`/portfolio`) · **Wallet**. Rules Evidence is
   `/strategies/rules/:ruleId`. Lab flattens single-child groups (Tokens, Trader Analysis
   are leaf links). Metric panes are not a peer nav item — they live in lab Tokens detail
-  (`/strategies/metric-panes` redirects to `/tokens?mint=`). The per-app **color** is NOT in the nav config — it's
+  (`/strategies/metric-panes` redirects to `/tokens?mint=`). Simulate is the second tab of
+  lab Rules (`/strategies/rules?tab=simulate`) and of lab Copy (`/strategies/copy?tab=simulate`);
+  `/strategies/simulate` redirects to the Rules tab and keeps the query. Each Simulate
+  board lists only that page's rules. The per-app **color** is NOT in the nav config — it's
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
 **Operator clarity (jobs):** Wallet = bag overview (funding/cashback + holdings; manual
@@ -652,7 +655,8 @@ next load (no per-metric frontend work).
   Signal groups join with `v`, further right than `if`, on the same tree line.
   A metric family stays a filled color mark.
   The Rules and Simulate params cell (`ruleChainCell`) is that same Signal row,
-  Buy chain, and Sell chain. Sweep tables keep the full line chips (`ruleParamsCell`),
+  Buy chain, and Sell chain. On the Rules and Copy tables, hovering that Chain
+  cell for 1 second opens the In words reading. Sweep tables keep the full line chips (`ruleParamsCell`),
   `FingerprintPicker`/`FingerprintForm` (registry-driven
   `metric_config` section + `IxPatternsEditor` for `m_flow_ix.ix_patterns` — **one
   line per pattern**, the sequence rendered short (`AdvanceNonceAccount ›
@@ -707,8 +711,8 @@ next load (no per-metric frontend work).
   ([rule-tags.md](@plans/strategies/rule-tags.md)).
   Beside the tag chips sits the **trade-mode scope** — `RuleModeFilter`
   (All / PAPER / REAL + counts over shared `ModeToggle`) over `useModeFilter`
-  (`?mode=` in the URL, sticky per board: Rules, Rules Control and Simulate each
-  keep their own key).   Ops surfaces (Console / History / Portfolio) use
+  (`?mode=` in the URL, sticky per board: Rules, Rules Control, Simulate, Copy,
+  and Copy Simulate each keep their own key).   Ops surfaces (Console / History / Portfolio) use
   `ModeToggle` directly (`layout="ops"`). Datetime windows use
   `DateTimeRangePicker`; single civil days use `DatePicker`; other exclusive
   non-mode filters (score scope) use `ToggleGroup`; panel swaps use `Tabs`;
@@ -729,8 +733,8 @@ next load (no per-metric frontend work).
   `bg-<color>` would collapse the row's selection and pin washes; a row-level
   `box-shadow` is not an option either under `border-collapse: collapse`. Locked
   by `lib/strategy/mode.test.ts`. Fingerprints "Used by" → Rules;
-  Rules/Simulate fingerprint cells → Fingerprints; lab Rules → Simulate
-  (`linkToSimulate`); Simulate rule name → Rules. Sweep Used-by / matched fp,
+  Rules/Simulate fingerprint cells → Fingerprints; lab Rules → the Simulate tab
+  (`linkToSimulate`); Simulate rule name → the Rules tab. Sweep Used-by / matched fp,
   Flow Discovery seed/target badges, and live Armed rule names also deep-link),
   `RuleParamsSummary` (`ruleParamsCell` — TP/SL + in/out metric chips, plus `evt` /
   `evt/s` chips for `entry_event` when authored; used by Rules,
@@ -856,74 +860,6 @@ here.
   table of every idea (name, status, idea, example; meaning, why, parameters and books open
   on a click), grouped by slot and family. `inventory.test.ts` parses the real file, so a format change in the
   markdown fails the test instead of dropping rows.
-- Lab **Rule search** (`/strategies/rule-search`, `RuleSearchPage`) — one required
-  fingerprint + datetime range + buy/fill/cost/copycat (default ON) + optional
-  incumbent (compare only). Job kind `rule_search` in `BackgroundJobsContext`
-  (SSE `rule_search_*`, single-flight vs sweep / flow-discovery / metric-discovery).
-  The page collects the board on `rule_search_finished` (then GET) — no poll
-  deadline. Board: refuse / ungated / candidate, champion vs empty-entry vs incumbent
-  (authority SOL ranks, then tighter fill spread; first-in-window quoted beside
-  it), `ruleParamsCell` for the champion, top archive, diagnostics (cut phases),
-  Promote (`src:rule-search`) and a draft Simulate of the unsaved champion. Under the
-  picker `@lab/components/family/TagsNote` states the fingerprint's tags in one sentence
-  each (the search reads them; no tags = tagged reads left out), and every clause label
-  renders through `@lab/components/family/Clause`, which explains it on hover from the
-  registry definition of the metric path the label opens with.
-- Lab **Metric-combo discovery** (`/strategies/metric-discovery`, `MetricDiscoveryPage`,
-  types `@lab/lib/metricDiscoveryTypes`) — sends `entry_span` / `exit_span` (a window,
-  validated by `parseWindowSpec`) and a `tags` document: the scoping fingerprint's own
-  tags, or on an unscoped run a picked fingerprint's. Every row names its read by the
-  backend `label` and explains it with `readPhrase` + `metricHelp`; skipped and menu-gap
-  reads are grouped by reason in plain words. "Open as sweep" hands the run's tags to the
-  sweep form beside the seed.
-- Lab **Family search** (`/strategies/family-search`, `FamilySearchPage` +
-  `@lab/components/family/FamilySearchBoard`) — rule search's sibling over a whole
-  **fingerprint family**. Job kind `family_search` in `BackgroundJobsContext` (SSE
-  `family_search_*`, single-flight against every other heavy job), same
-  finished-then-GET collection with no poll deadline; each cohort's matched count
-  arrives as a `family_search_notice` toast, because that count is the run's cheapest
-  scope guard.
-  The form is **two required fields** (fingerprint + created range) plus buy size;
-  fill / cost / copycat / slots / token cap / varied axis / freshness slack /
-  concurrency caps / incumbent sit in one persisted `Accordion` whose collapsed badge
-  states what they currently are. Every one of them is sent from the form: a saved
-  rule supplies none of them, so there is no control whose value can silently come
-  from somewhere else. Standing exit terms are written `read op value`
-  (`m_state.liquidity_sol >= 85`), the spelling the attribution table prints; the target's
-  tags show under the picker (`TagsNote`) and board clauses explain on hover (`Clause`).
-  The board is ordered as the argument it makes — **verdict → portrait → execution →
-  grade → evidence**. The verdict (`lab/lib/familySearchVerdict.ts`, unit-tested)
-  blends nothing: it names which of six gates decided (clears execution · family ·
-  rank transfer ρ · beats the ungated control · clauses hold up · freshness) and prints
-  all six beside the headline with their numbers, so a reader who disagrees can see the
-  deciding line. The headline ladder is ordered by what invalidates what — a refused
-  cohort (the search never ran, which is not the same statement as "found nothing"),
-  then a missing draft, then **fill luck** (whether the number is real at all), then a
-  gate that costs money, then single-cohort, then a collapsed ρ, then thin headroom,
-  and last **Fragile draft** — the D13 per-clause findings, which come last because
-  they judge a draft that already cleared everything structural. `familyRobustness`
-  only *counts* backend verdicts; it never re-derives one, and a finding downgrades a
-  draft rather than removing it, because the backend keeps diagnostics out of
-  selection. The four D13 sections each pair a table with the sentence that makes it
-  actionable; `LadderRow` draws a threshold ladder as a bar strip scaled from the
-  ladder's own minimum, since scaling from zero flattens exactly the differences the
-  chart exists to resolve.
-  Then the portrait prose (the product); the **Execution** section — cost clearance
-  (the typical best available exit against one round trip, in `x`) ∥ fill spread (the
-  same closes repriced at the friendliest honest fill); the grade as three cards —
-  draft (held-out level) ∥ ungated control ∥ oracle capture, with an incumbent demoted
-  to a dashed `display only` strip — the draft's clauses, the family table, per-alarm
-  attribution with an **Asked → got** column (the authored threshold against the mean
-  realized *gross* return, rendered only where the units match), the narrow re-check,
-  the entry-timing table, the entry-gate ρ table, and the archive.
-  **`fit_ret_pct` is dimmed and labelled `rank only` wherever it appears**: it
-  produced the ordering and is negative for every candidate on the reference family
-  while the winner pays +31% on the held-out cohort, so printing it as a level is the
-  one mistake the fit/validate split exists to prevent. Promote (`src:family-search`)
-  binds to the **run's** target fingerprint rather than the form's current pick, and
-  Simulate replays the unsaved draft through `DryRunDetail`. A freshness refusal is
-  caught by message and rendered with the sync command that fixes it — it is the
-  likeliest first-run failure and the backend gate is fatal, not advisory.
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary + trades table),
   boundary-clean. Finished dry-run trades share Simulate's chart path: `useRowOverlay`
@@ -931,7 +867,11 @@ here.
   row/chart select → `LabTokenInspectModal` with metric panes pinned to the live draft
   via `ruleOverride` (params + fingerprint). Shared episode-marker fetch lives in
   `@lab/hooks/useSimMintEpisodeOverlay`.
-  Lab `SimulatePage` (`/strategies/simulate`) runs saved rules over the full lake and
+  Lab Simulate is the second tab of `RulesPage` (`/strategies/rules?tab=simulate`) and of
+  lab `CopyPage` (`/strategies/copy?tab=simulate`, `SimulatePage` with `board="copy"`).
+  Switching tabs drops `mode` / `tags` / `notags` and keeps `rule`, so each board
+  restores its own stored scope (Copy uses `copy-simulate`, distinct from Rules
+  `simulate`). It runs saved rules over the full lake and
   shows the `SimulatedSummary` rollup as separate DataTable columns (Mode, Entered /
   Closed / Win % / Avg PnL / Total PnL, plus a Run status) so sort/search/filter work
   per field. On load it hydrates *every* rule's resident sim summary in **one**

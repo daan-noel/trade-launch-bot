@@ -16,22 +16,8 @@ Query script (throwaway, session scratchpad): DuckDB over
 `$SWEEP_LAKE_DIR/trades/dt=*/data.parquet`. Re-derive any time; the percentile
 anchors below are the permanent record.
 
-> **Now generated.** `lab/src/discovery/candidates.rs` (`screen_plan` →
-> `collect_percentiles` → `build_menus`) derives this ladder and these menus for any
-> cohort straight off the metric registry (`METRICS`) - measured through the engine's own
-> `MetricSeries`, not re-derived in SQL. The tables below stay as the recorded
-> ground truth for the 2026-07 lake and as the sanity check a generated menu is
-> compared against; a **new** metric needs no hand-derivation pass. Module
-> map + architecture: [../../arch/sweep.md](../../arch/sweep.md) "Metric-combo
-> discovery pipeline".
-
-**Open decision carried forward (D1 — never pinned):** the discovery objective
-(`robust_profit × fire_rate × win_component × min_n_gate` in `discovery/objective.rs`)
-runs on tunable constants — `OPEN_HAIRCUT` (unrealized-mark discount), the
-`profit_factor` cap, `MIN_CLOSED` (the anti-overfit floor below which a combo scores
-zero), and the plateau-penalty weight. They're seeded from the percentile anchors below,
-not validated against real outcomes. Pin the final set here, in a new subsection, once a
-discovery run's picks are checked against live/paper results.
+The tables below are the authored menus for the generic sweep's axes, measured on the
+2026-07 lake. A new metric gets its rungs written here.
 
 Subsets used:
 - **ALL** - every curve trade moment.
