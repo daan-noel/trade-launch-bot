@@ -174,18 +174,43 @@ export function LineEditor({
               </label>
               {sellOn && (
                 <>
-                  <Input
-                    fieldSize="sm"
-                    className="w-16"
-                    numeric
-                    unit="%"
-                    placeholder="all"
-                    title={`Blank sells everything left. A percent sells that share of the first buy's bag (at most ${MAX_SELL_PCT}) and the line must also go to another stage.`}
-                    numericValue={line.sell?.pct ?? null}
-                    disabled={ctx.disabled}
-                    onNumericChange={(n) => onChange({ ...line, sell: { label: line.sell?.label ?? '', pct: n } })}
-                  />
-                  <span className="whitespace-nowrap">{line.sell?.pct != null ? 'of the first bag, as' : 'everything, as'}</span>
+                  {ctx.bagMirror && (
+                    <label className="flex items-center gap-1" title="Sell the percent this print took of his bag, of the tokens we still hold.">
+                      <input
+                        type="checkbox"
+                        className="accent-accent"
+                        checked={line.sell?.ofBag === true}
+                        disabled={ctx.disabled}
+                        onChange={(e) =>
+                          onChange({
+                            ...line,
+                            sell: {
+                              label: line.sell?.label ?? '',
+                              pct: e.target.checked ? null : (line.sell?.pct ?? null),
+                              ofBag: e.target.checked,
+                            },
+                          })
+                        }
+                      />
+                      his %
+                    </label>
+                  )}
+                  {!line.sell?.ofBag && (
+                    <Input
+                      fieldSize="sm"
+                      className="w-16"
+                      numeric
+                      unit="%"
+                      placeholder="all"
+                      title={`Blank sells everything left. A percent sells that share of the first buy's bag (at most ${MAX_SELL_PCT}) and the line must also go to another stage.`}
+                      numericValue={line.sell?.pct ?? null}
+                      disabled={ctx.disabled}
+                      onNumericChange={(n) => onChange({ ...line, sell: { label: line.sell?.label ?? '', pct: n, ofBag: false } })}
+                    />
+                  )}
+                  <span className="whitespace-nowrap">
+                    {line.sell?.ofBag ? 'of what we still hold, as' : line.sell?.pct != null ? 'of the first bag, as' : 'everything, as'}
+                  </span>
                   <Input
                     fieldSize="sm"
                     className="w-40"
@@ -193,7 +218,12 @@ export function LineEditor({
                     placeholder={autoLineLabel(line)}
                     title="The exit reason this sell books. Blank uses the first condition."
                     disabled={ctx.disabled}
-                    onChange={(e) => onChange({ ...line, sell: { label: e.target.value, pct: line.sell?.pct ?? null } })}
+                    onChange={(e) =>
+                      onChange({
+                        ...line,
+                        sell: { label: e.target.value, pct: line.sell?.pct ?? null, ofBag: line.sell?.ofBag },
+                      })
+                    }
                   />
                 </>
               )}

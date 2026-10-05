@@ -135,7 +135,11 @@ export function lineExitLabel(l: Line): string {
 export function actionSentence(l: Line): string {
   const parts: string[] = [];
   if (l.sell) {
-    const what = l.sell.pct != null ? `sell ${formatMetricThreshold(l.sell.pct)} % of the first bag` : 'sell everything';
+    const what = l.sell.ofBag
+      ? 'sell that percent of what we still hold'
+      : l.sell.pct != null
+        ? `sell ${formatMetricThreshold(l.sell.pct)} % of the first bag`
+        : 'sell everything';
     parts.push(`${what} as "${lineExitLabel(l)}"`);
   }
   if (l.go) parts.push(`go to ${l.go}`);

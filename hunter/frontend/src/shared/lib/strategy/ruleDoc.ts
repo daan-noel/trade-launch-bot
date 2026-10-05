@@ -52,8 +52,10 @@ export type Cond = MetricCond | SignalCond;
 export interface Sell {
   /** The exit reason. Empty = labelled from the line's first condition. */
   label: string;
-  /** Percent of the FIRST buy's bag; `null` = everything left. */
+  /** Percent of the FIRST buy's bag; `null` = everything left. Ignored when `ofBag`. */
   pct: number | null;
+  /** Sell `m_print.sold_bag_pct` of the tokens still held. Copy rules only. */
+  ofBag?: boolean;
 }
 
 /** `if <conditions> -> sell and/or go`. */
@@ -201,6 +203,7 @@ function lineFromJson(v: unknown): Line {
   let sell: Sell | null = null;
   if (o.sell === true) sell = { label: '', pct: numOrNull(o.sell_pct) };
   else if (typeof o.sell === 'string') sell = { label: o.sell, pct: numOrNull(o.sell_pct) };
+  if (sell && o.sell_of === 'bag') sell = { ...sell, pct: null, ofBag: true };
   return { id: newId(), if: condsFromJson(o.if), sell, go: str(o.go) ?? null, off: o.off === true };
 }
 
@@ -290,7 +293,8 @@ function lineToJson(l: Line): Obj {
   if (l.if.length) o.if = l.if.map(condToJson);
   if (l.sell) {
     o.sell = l.sell.label.trim() ? l.sell.label.trim() : true;
-    if (l.sell.pct != null) o.sell_pct = l.sell.pct;
+    if (l.sell.ofBag) o.sell_of = 'bag';
+    else if (l.sell.pct != null) o.sell_pct = l.sell.pct;
   }
   if (l.go) o.go = l.go;
   if (l.off) o.off = true;

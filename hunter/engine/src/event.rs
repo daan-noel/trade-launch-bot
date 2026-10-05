@@ -421,7 +421,9 @@ pub enum Event {
 
 /// How much of a held bag a sell should close. `All` is today's full-bag path;
 /// `BpsOfInitial` sells that many basis points of the **initial** entry bag
-/// (partial exits / scale-out / manual Sell N%). See `docs/plans/strategies/partial-exits.md`.
+/// (partial exits / scale-out / manual Sell N%). `BpsOfRemaining` sells that many
+/// basis points of the tokens still held (a copy of someone else's partial sell).
+/// See `docs/plans/strategies/partial-exits.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Portion {
     /// Close 100% of the remaining bag.
@@ -429,19 +431,23 @@ pub enum Portion {
     All,
     /// Sell `bps / 10_000` of the initial token amount (clamped to remaining at exec).
     BpsOfInitial(u16),
+    /// Sell `bps / 10_000` of the tokens still held.
+    BpsOfRemaining(u16),
 }
 
 impl Portion {
     /// Whether this portion leaves a stub behind (a Holding-preserving fill).
     pub fn is_partial(self) -> bool {
-        matches!(self, Self::BpsOfInitial(_))
+        matches!(self, Self::BpsOfInitial(_) | Self::BpsOfRemaining(_))
     }
 
     /// Exact integer token units to sell for this portion.
     ///
     /// `BpsOfInitial` sizes off the **initial** bag (`initial * bps / 10_000`) and
-    /// clamps to the still-held remainder (`initial - sold`). `All` sells the
-    /// entire remainder. Shared by live exec, paper, lab replay, and orphan sells
+    /// clamps to the still-held remainder (`initial - sold`). `BpsOfRemaining` sizes
+    /// off that remainder. `All` sells the entire remainder. A remaining-bag percent
+    /// that rounds to zero tokens still sells one when any remain, so a small bag
+    /// makes progress. Shared by live exec, paper, lab replay, and orphan sells
     /// — one formula so legs cannot drift (see `docs/plans/strategies/partial-exits.md`).
     pub fn token_amount(self, initial: u64, sold: u64) -> u64 {
         let remaining = initial.saturating_sub(sold);
@@ -449,6 +455,11 @@ impl Portion {
             Self::All => remaining,
             Self::BpsOfInitial(bps) => {
                 let want = (u128::from(initial) * u128::from(bps) / 10_000) as u64;
+                want.min(remaining)
+            }
+            Self::BpsOfRemaining(bps) => {
+                let want = (u128::from(remaining) * u128::from(bps) / 10_000) as u64;
+                let want = if want == 0 && remaining > 0 && bps > 0 { 1 } else { want };
                 want.min(remaining)
             }
         }
@@ -626,5 +637,9 @@ mod portion_tests {
         assert_eq!(Portion::All.token_amount(initial, 7000), 3000);
         assert_eq!(Portion::All.token_amount(initial, 0), 10_000);
         assert_eq!(Portion::BpsOfInitial(5000).token_amount(initial, 8000), 2000);
+        // 30% of what is still held, then a percent that rounds to zero still sells one.
+        assert_eq!(Portion::BpsOfRemaining(3000).token_amount(initial, 0), 3000);
+        assert_eq!(Portion::BpsOfRemaining(5000).token_amount(initial, 3000), 3500);
+        assert_eq!(Portion::BpsOfRemaining(1).token_amount(10, 0), 1);
     }
 }

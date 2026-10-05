@@ -30,6 +30,7 @@ export const liveNav: NavConfig = {
       basePath: '/strategies',
       items: [
         { to: '/strategies/rules', label: 'Rules' },
+        { to: '/strategies/copy', label: 'Copy' },
         { to: '/strategies/fingerprints', label: 'Fingerprints' },
         { to: '/strategies/guide', label: 'Guide' },
       ],

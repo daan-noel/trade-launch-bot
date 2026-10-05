@@ -7,6 +7,7 @@ import { fingerprintParamsCell } from './FingerprintParamsSummary';
 import { capsDisplayText } from './capsRuleColumns';
 import { lamportsToSol, type Fingerprint, type StrategyRule } from 'lib/strategy/types';
 import { useStrategyRegistry } from 'lib/strategy/registry';
+import { copyViewParams } from 'lib/strategy/copyRule';
 import { ruleDocFromJson } from 'lib/strategy/ruleDoc';
 import { RuleSentences } from './rule/RuleSentences';
 
@@ -15,7 +16,7 @@ function RuleWords({ params, watch }: { params: unknown; watch?: string }) {
   const { data: reg } = useStrategyRegistry();
   if (!reg) return null;
   try {
-    return <RuleSentences doc={ruleDocFromJson(params)} reg={reg} watch={watch} />;
+    return <RuleSentences doc={ruleDocFromJson(copyViewParams(params))} reg={reg} watch={watch} />;
   } catch {
     return null;
   }

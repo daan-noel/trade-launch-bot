@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use super::config::TagPatterns;
-use crate::hash::HashedSet;
+use crate::hash::{HashedMap, HashedSet};
 use crate::metrics::fee::FeeKeys;
 use crate::metrics::flow_window::push_sorted;
 use crate::metrics::registry::Metric;
@@ -202,6 +202,17 @@ pub struct TagState {
     /// `vsol` and `vtok` after the last folded trade: the curve a bag sells into.
     last_vsol: f64,
     last_vtok: f64,
+    /// Token bag of each wallet that has carried the tag, floored at zero.
+    bags: HashedMap<f64>,
+    /// The last fold was a trade. A tick clears it, so the print readings below are
+    /// `NaN` and a line on them cannot fire again until the next trade.
+    on_print: bool,
+    /// `m_print.sold_bag_pct` for the print folded last. `0` when that print was not a
+    /// sized sell by a wallet carrying the tag.
+    print_sold_bag_pct: f64,
+    /// `m_print.flat_before` for the print folded last. `1` when a tagged wallet held
+    /// nothing before it, `0` otherwise.
+    print_flat_before: f64,
 }
 
 impl TagState {
@@ -218,6 +229,10 @@ impl TagState {
             rest_tokens: 0.0,
             last_vsol: f64::NAN,
             last_vtok: f64::NAN,
+            bags: HashedMap::default(),
+            on_print: false,
+            print_sold_bag_pct: f64::NAN,
+            print_flat_before: f64::NAN,
         }
     }
 
@@ -251,6 +266,11 @@ impl TagState {
     /// unreadable), so a reader that breaks the window down by structure classifies
     /// each trade with this one verdict instead of a second copy of the matchers.
     pub fn on_trade(&mut self, t: &TradeLite, cur: Cursor) -> bool {
+        // A print fact: replace the last reading even when this trade cannot fold, so a
+        // stale sell percent cannot fire on the next decision.
+        self.on_print = true;
+        self.print_sold_bag_pct = 0.0;
+        self.print_flat_before = 0.0;
         if !t.sol.is_finite() || t.sol < 0.0 {
             return false;
         }
@@ -261,6 +281,9 @@ impl TagState {
         let tagged = self.fold_tagged(t);
         if tagged && self.patterns.sticky {
             self.sticky_wallets.insert(t.wallet_hash);
+        }
+        if tagged {
+            self.note_bag(t);
         }
         // A missing amount poisons that half's bag for good: NaN propagates, and
         // `profit_sol` reads NaN rather than a bag short by one trade.
@@ -284,9 +307,53 @@ impl TagState {
     }
 
     pub fn on_tick(&mut self, now: Ts, cur: Cursor) {
+        self.on_print = false;
         for w in self.windows.values_mut() {
             let now_pos = w.spec.now_pos(now, cur);
             w.evict(now_pos);
+        }
+    }
+
+    /// `m_print.sold_bag_pct` / `m_print.flat_before` for the print folded last.
+    ///
+    /// `NaN` on a tick. A negated tag reads `0`: the bag belongs to the wallets that
+    /// carry the tag, and the rest is not one wallet.
+    pub fn print_bag(&self, metric: Metric, negated: bool) -> f64 {
+        if !self.on_print {
+            return f64::NAN;
+        }
+        if negated {
+            return 0.0;
+        }
+        match metric {
+            Metric::SoldBagPct => self.print_sold_bag_pct,
+            Metric::FlatBefore => self.print_flat_before,
+            _ => f64::NAN,
+        }
+    }
+
+    /// Record this print against the tagged wallet's token bag, then fold the print in.
+    ///
+    /// The percent is of the bag **before** the print. A missing token amount leaves
+    /// the bag where it was and the sell percent `NaN`.
+    fn note_bag(&mut self, t: &TradeLite) {
+        let before = self.bags.get(&t.wallet_hash).copied().unwrap_or(0.0);
+        let before = if before.is_finite() { before.max(0.0) } else { 0.0 };
+        self.print_flat_before = if before == 0.0 { 1.0 } else { 0.0 };
+        let amount_ok = t.token_amount.is_finite() && t.token_amount >= 0.0;
+        if t.side == Side::Sell {
+            self.print_sold_bag_pct = if amount_ok && before > 0.0 {
+                100.0 * t.token_amount.min(before) / before
+            } else {
+                f64::NAN
+            };
+        }
+        if amount_ok {
+            let delta = match t.side {
+                Side::Buy => t.token_amount,
+                Side::Sell => -t.token_amount,
+            };
+            self.bags.insert(t.wallet_hash, (before + delta).max(0.0));
         }
     }
 

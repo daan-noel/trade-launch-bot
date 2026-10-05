@@ -203,7 +203,10 @@ function LineAction({
   blocksBuy: boolean;
 }) {
   const parts: string[] = [];
-  if (line.sells != null) parts.push(line.sell_pct != null ? `sell ${line.sell_pct}% "${line.sells}"` : `sell "${line.sells}"`);
+  if (line.sells != null) {
+    const size = line.sell_of_bag ? 'sell his %' : line.sell_pct != null ? `sell ${line.sell_pct}%` : 'sell';
+    parts.push(`${size} "${line.sells}"`);
+  }
   if (line.goes_to != null) parts.push(`→ ${stageName(line.goes_to)}`);
   return (
     <span

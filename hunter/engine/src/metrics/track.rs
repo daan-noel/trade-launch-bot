@@ -381,7 +381,10 @@ impl TokenTrack {
                 Metric::UniqueIxTemplates => self.slot_read(r, fp),
                 _ => f64::NAN,
             },
-            Family::Print => self.print_wallet.as_ref().map_or(f64::NAN, |p| p.value(m)),
+            Family::Print => match m {
+                Metric::SoldBagPct | Metric::FlatBefore => self.tag_print(r, fp),
+                _ => self.print_wallet.as_ref().map_or(f64::NAN, |p| p.value(m)),
+            },
             Family::Slot => self.slot_read(r, fp),
             Family::Wave => match r.tag {
                 None => self.burst_wave.value(m, None),
@@ -392,6 +395,13 @@ impl TokenTrack {
             },
             Family::Position => f64::NAN,
         }
+    }
+
+    /// `m_print.sold_bag_pct` / `flat_before`: the tag's print reading. No tag state
+    /// reads `NaN` (a tick, or a fingerprint that never opened the tag).
+    fn tag_print(&self, r: MetricRef, fp: Option<FingerprintId>) -> f64 {
+        let Some(t) = r.tag else { return f64::NAN };
+        fp.and_then(|fp| self.tags.get(&(fp, t.key))).map_or(f64::NAN, |st| st.print_bag(r.metric, t.negated))
     }
 
     /// A slot-prefix read: untagged, or through the tag's template view. A tagged read

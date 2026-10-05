@@ -24,6 +24,7 @@ export const labNav: NavConfig = {
       basePath: '/strategies',
       items: [
         { to: '/strategies/rules', label: 'Rules' },
+        { to: '/strategies/copy', label: 'Copy' },
         { to: '/strategies/fingerprints', label: 'Fingerprints' },
         { to: '/strategies/flow-discovery', label: 'Flow discovery' },
         { to: '/strategies/metric-discovery', label: 'Metric discovery' },

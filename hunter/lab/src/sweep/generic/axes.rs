@@ -297,7 +297,7 @@ impl AxesModel {
         rp.enter.filters = entry.into_iter().map(|(r, cs)| cond(r, cs)).collect();
         rp.always = exit
             .into_iter()
-            .map(|(r, cs)| Line { when: vec![cond(r, cs)], sell: Some(Sell { label: None, pct: None }), go: None, off: false })
+            .map(|(r, cs)| Line { when: vec![cond(r, cs)], sell: Some(Sell { label: None, pct: None, of_bag: false }), go: None, off: false })
             .collect();
         rp
     }

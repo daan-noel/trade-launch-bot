@@ -73,6 +73,7 @@ import {
   signedToneClass,
   winRateGradeClass,
 } from 'lib/signedTone';
+import { isCopyRule } from 'lib/strategy/copyRule';
 import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { weightedReturnPct } from 'lib/strategy/runSummary';
 import {
@@ -115,6 +116,8 @@ export interface RulesViewProps {
     rule: StrategyRule;
     clear: () => void;
   }) => ReactNode;
+  /** Copy lists copy rules and edits them in the same builder, over the copy readings. */
+  board?: 'rules' | 'copy';
 }
 
 /** "This rule was edited while its current run was still scoring."
@@ -158,12 +161,14 @@ export function RulesView({
   scoreScope,
   onScoreScopeChange,
   renderAnalyze,
+  board = 'rules',
 }: RulesViewProps) {
+  const copyBoard = board === 'copy';
   const dispatch = useDispatch();
   const { data: fps = [] } = useGetFingerprintsQuery();
   const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
 
-  const actions = useRuleActions({ renderDryRun });
+  const actions = useRuleActions({ renderDryRun, board });
   // Cross-box rule sync (workstation lab <-> EC2 live). Lives beside the board
   // rather than inside the editor: a bundle is a SET of rules, and the diff it
   // previews spans the fingerprints they share.
@@ -182,12 +187,12 @@ export function RulesView({
   const [showDisabled, setShowDisabled] = useUiToggle('showDisabledRules', false);
   /** Tag chip selection — URL-backed (`?tags=`/`?notags=`) + sticky per app. */
   const [tagFilter, setTagFilter] = useTagFilter(
-    showScores ? 'rules-control' : 'rules',
+    copyBoard ? (showScores ? 'copy-control' : 'copy') : showScores ? 'rules-control' : 'rules',
   );
   /** Paper/Real scope — URL-backed (`?mode=`) + sticky per app. Live Control and
    *  the lab board keep separate scopes; they are different jobs. */
   const [modeFilter, setModeFilter] = useModeFilter(
-    showScores ? 'rules-control' : 'rules',
+    copyBoard ? (showScores ? 'copy-control' : 'copy') : showScores ? 'rules-control' : 'rules',
   );
   /**
    * The modifier that turns the mode picker from a row filter into a **ledger**:
@@ -221,10 +226,14 @@ export function RulesView({
     [modeFilter],
   );
 
-  const { data: rules = [], isLoading } = useGetStrategyRulesQuery(
+  const { data: loadedRules = [], isLoading } = useGetStrategyRulesQuery(
     scoreScope || scoreMode !== 'own'
       ? { scope: scoreScope, mode: scoreMode === 'own' ? undefined : scoreMode }
       : undefined,
+  );
+  const rules = useMemo(
+    () => loadedRules.filter((r) => (copyBoard ? isCopyRule(r) : !isCopyRule(r))),
+    [loadedRules, copyBoard],
   );
   const selectedRule = useMemo(
     () => (selectedKey ? rules.find((r) => r.id === selectedKey) : undefined),
@@ -508,7 +517,7 @@ export function RulesView({
     });
     void run(async () => {
       try {
-        await pauseAll(mode).unwrap();
+        await pauseAll({ mode, board: copyBoard ? 'copy' : undefined }).unwrap();
         clearPausing(ids);
       } catch (e) {
         clearPausing(ids);
@@ -524,7 +533,7 @@ export function RulesView({
         : `Stop ALL active paper rules and close every open position?`;
     if (!window.confirm(warn)) return;
     void run(async () => {
-      const res = await stopAll(mode).unwrap();
+      const res = await stopAll({ mode, board: copyBoard ? 'copy' : undefined }).unwrap();
       if (res.action_id && (res.total ?? 0) > 0) {
         setStopByMode((prev) => ({
           ...prev,
@@ -929,14 +938,16 @@ export function RulesView({
       >
         <PageHeader
           className="mb-0"
-          title={showScores ? 'Rules Control' : 'Rules'}
+          title={copyBoard ? 'Copy' : showScores ? 'Rules Control' : 'Rules'}
           // The sticky strip carries only what you steer the board with while
           // scrolling — which rows, and the bulk actions. Everything that decides
           // how a number is computed lives on the scoreboard it governs, below.
           description={
-            showScores
-              ? 'Pause from Execute or Evidence — scoring controls sit on the scoreboard'
-              : undefined
+            copyBoard
+              ? 'Follow one wallet. The builder edits the buy and each sell the same way as a rule.'
+              : showScores
+                ? 'Pause from Execute or Evidence — scoring controls sit on the scoreboard'
+                : undefined
           }
           actions={
             <>
@@ -1017,8 +1028,8 @@ export function RulesView({
               <IconButton
                 variant="success"
                 size="lg"
-                label="New rule"
-                title="New rule"
+                label={copyBoard ? 'New copy' : 'New rule'}
+                title={copyBoard ? 'New copy' : 'New rule'}
                 onClick={actions.openNew}
               >
                 <PlusIcon />
@@ -1230,7 +1241,7 @@ export function RulesView({
         loading={isLoading}
         searchable
         colFilters
-        tableId="strategy-rules"
+        tableId={copyBoard ? 'copy-rules' : 'strategy-rules'}
         pinnable
         // `visibleRules` is pre-filtered by the tag/mode pickers and the
         // disabled-rules toggle above — none of which the table's own
@@ -1241,8 +1252,12 @@ export function RulesView({
         resetKey={`${rowModeFilter}|${tagFilter.include.join(',')}|${tagFilter.exclude.join(',')}|${showDisabled}`}
         emptyMessage={
           enabledRules.length > 0
-            ? 'No rules match the current mode / label filters.'
-            : 'No rules yet — create one from a fingerprint.'
+            ? copyBoard
+              ? 'No copy rules match the current mode / label filters.'
+              : 'No rules match the current mode / label filters.'
+            : copyBoard
+              ? 'No copy rules yet — create one from a fingerprint.'
+              : 'No rules yet — create one from a fingerprint.'
         }
         selectedKey={selectedKey}
         onSelect={setSelectedKey}

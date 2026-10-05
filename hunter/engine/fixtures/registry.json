@@ -1,4 +1,48 @@
 {
+  "copy": [
+    {
+      "eq_tolerance": 0.5,
+      "example": "m_print.sold_bag_pct @targets >= 30 : this sell took 30 % or more of a target wallet's bag.",
+      "hue": 252,
+      "monotonic": false,
+      "name": "sold_bag_pct",
+      "note": "0 when this print is not a sell by a wallet carrying the tag. 100 when the sell empties the bag. NaN on a tick, and when that sell has no token amount. A negated tag reads 0.",
+      "path": "m_print.sold_bag_pct",
+      "phrase": "share of his bag this sell took",
+      "position": false,
+      "spans": {
+        "life": true,
+        "since_age": false,
+        "slice": false,
+        "window": false
+      },
+      "summary": "Percent of this wallet's token bag, measured before this print, that this sell removes.",
+      "tag_level": "trade",
+      "tags": "required",
+      "unit": "percent"
+    },
+    {
+      "eq_tolerance": 0.5,
+      "example": "m_print.flat_before @targets = 1 : a target wallet held nothing before this print.",
+      "hue": 256,
+      "monotonic": false,
+      "name": "flat_before",
+      "note": "0 when the wallet already held, or the print's wallet does not carry the tag. NaN on a tick. A negated tag reads 0.",
+      "path": "m_print.flat_before",
+      "phrase": "this wallet held nothing before this print",
+      "position": false,
+      "spans": {
+        "life": true,
+        "since_age": false,
+        "slice": false,
+        "window": false
+      },
+      "summary": "1 when this print's wallet carries the tag and held no tokens of this coin before it.",
+      "tag_level": "trade",
+      "tags": "required",
+      "unit": "flag"
+    }
+  ],
   "families": [
     {
       "example": "m_state.liquidity_sol >= 14 : at least 14 real SOL sits in the pool.",
@@ -1409,7 +1453,7 @@
       "title": "At the deadline"
     },
     {
-      "example": "cashout and age_sec < 20 -> sell \"spike\".",
+      "example": "pnl_pct >= 15 -> sell 50% of the first bag, go to stub.",
       "key": "line",
       "summary": "If every condition holds: sell (all, or a percent of the first buy's bag) and/or move to another stage. A line that moves to the stage the position is already in does nothing there, unless it sells everything.",
       "title": "Line"

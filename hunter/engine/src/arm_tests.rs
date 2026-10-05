@@ -3,6 +3,11 @@
 
 use super::*;
 use crate::event::RuleId;
+use crate::fingerprint::FingerprintId;
+use crate::metrics::tags::config::compile_tags;
+use crate::metrics::tags::TagKey;
+use crate::metrics::trade_keys::wallet_hash;
+use crate::metrics::track::TokenTrack;
 use crate::metrics::{Side, Span, TradeLite, WindowSpec};
 use crate::rule_params::RuleParams;
 use chrono::{Duration, TimeZone, Utc};
@@ -256,13 +261,13 @@ fn a_stage_plan_walks_one_step_per_evaluation() {
     hot.on_trade(print(1.0, 35.0, 5.0));
     assert_eq!(
         r.held_step(&hot, &held(1.0, 1.0, 1.0, 0, 0.0), at(10.0)),
-        HeldAction::Sell { reason: ExitReason::Line("spike"), bps: None, then_stage: None }
+        HeldAction::Sell { reason: ExitReason::Line("spike"), bps: None, of_bag: false, then_stage: None }
     );
     assert_eq!(r.held_step(&hot, &held(1.0, 1.0, 1.0, 0, 0.0), at(20.0)), HeldAction::Move { stage: 1 }, "the deadline");
     assert_eq!(r.held_step(&hot, &held(1.0, 1.0, 1.0, 1, 20.0), at(25.0)), HeldAction::Move { stage: 2 });
     assert_eq!(
         r.held_step(&hot, &held(1.0, 1.0, 1.0, 2, 25.0), at(25.2)),
-        HeldAction::Sell { reason: ExitReason::Line("burst"), bps: None, then_stage: None },
+        HeldAction::Sell { reason: ExitReason::Line("burst"), bps: None, of_bag: false, then_stage: None },
         "the ride's line is read from the next evaluation"
     );
     assert_eq!(r.held_step(&hot, &held(1.0, 1.0, 1.0, 2, 25.0), at(55.0)), HeldAction::Move { stage: 3 });
@@ -271,7 +276,7 @@ fn a_stage_plan_walks_one_step_per_evaluation() {
     top.on_trade(print(1.0, 85.0, 5.0));
     assert_eq!(
         r.held_step(&top, &held(1.0, 1.0, 1.0, 3, 55.0), at(60.0)),
-        HeldAction::Sell { reason: ExitReason::Line("top"), bps: None, then_stage: None },
+        HeldAction::Sell { reason: ExitReason::Line("top"), bps: None, of_bag: false, then_stage: None },
         "always lines apply in every stage"
     );
 }
@@ -299,12 +304,12 @@ fn one_signal_splits_on_age_in_always() {
     hot.on_trade(print(1.0, 35.0, 5.0));
     assert_eq!(
         r.held_step(&hot, &held(1.0, 1.0, 1.0, 0, 0.0), at(10.0)),
-        HeldAction::Sell { reason: ExitReason::Line("spike"), bps: None, then_stage: None }
+        HeldAction::Sell { reason: ExitReason::Line("spike"), bps: None, of_bag: false, then_stage: None }
     );
     assert_eq!(r.held_step(&hot, &held(1.0, 1.0, 1.0, 0, 0.0), at(20.0)), HeldAction::Move { stage: 1 });
     assert_eq!(
         r.held_step(&hot, &held(1.0, 1.0, 1.0, 1, 20.0), at(20.2)),
-        HeldAction::Sell { reason: ExitReason::Line("burst"), bps: None, then_stage: None },
+        HeldAction::Sell { reason: ExitReason::Line("burst"), bps: None, of_bag: false, then_stage: None },
         "the ride line is read from the next evaluation"
     );
     assert_eq!(r.held_step(&hot, &held(1.0, 1.0, 1.0, 1, 20.0), at(55.0)), HeldAction::None);
@@ -324,7 +329,7 @@ fn a_checkpoint_acts_at_its_deadline() {
     assert_eq!(r.held_step(&t, &held(1.0, 1.0, 0.9, 0, 0.0), at(30.0)), HeldAction::None, "before the deadline");
     assert_eq!(
         r.held_step(&t, &held(1.0, 1.0, 0.9, 0, 0.0), at(60.0)),
-        HeldAction::Sell { reason: ExitReason::Line("weak at 60 s"), bps: None, then_stage: None }
+        HeldAction::Sell { reason: ExitReason::Line("weak at 60 s"), bps: None, of_bag: false, then_stage: None }
     );
     let mut up = TokenTrack::new(t0());
     up.on_trade(print(1.2, 20.0, 1.0));
@@ -342,7 +347,7 @@ fn a_partial_sell_carries_its_share_and_next_stage() {
     t.on_trade(print(1.6, 20.0, 1.0));
     assert_eq!(
         r.held_step(&t, &held(1.0, 1.6, 1.0, 0, 0.0), at(2.0)),
-        HeldAction::Sell { reason: ExitReason::Line("half"), bps: Some(5000), then_stage: Some(1) }
+        HeldAction::Sell { reason: ExitReason::Line("half"), bps: Some(5000), of_bag: false, then_stage: Some(1) }
     );
 }
 
@@ -369,7 +374,7 @@ fn a_line_idle_in_its_target_stage_does_not_act() {
     dipped.on_trade(print(1.52, 20.0, 2.0));
     assert_eq!(
         r.held_step(&dipped, &held(1.0, 2.0, 1.0, 1, 2.0), at(3.0)),
-        HeldAction::Sell { reason: ExitReason::Line("trail"), bps: None, then_stage: None },
+        HeldAction::Sell { reason: ExitReason::Line("trail"), bps: None, of_bag: false, then_stage: None },
         "the stage's own line is read while the always move still holds"
     );
 
@@ -384,7 +389,7 @@ fn a_line_idle_in_its_target_stage_does_not_act() {
     up.on_trade(print(2.2, 20.0, 1.0));
     assert_eq!(
         bank.held_step(&up, &held(1.0, 2.2, 1.0, 0, 0.0), at(2.0)),
-        HeldAction::Sell { reason: ExitReason::Line("bank"), bps: Some(5000), then_stage: Some(1) }
+        HeldAction::Sell { reason: ExitReason::Line("bank"), bps: Some(5000), of_bag: false, then_stage: Some(1) }
     );
     assert_eq!(bank.held_step(&up, &held(1.0, 2.2, 1.0, 1, 2.0), at(3.0)), HeldAction::None, "banked once");
 }
@@ -423,4 +428,44 @@ fn off_items_are_not_compiled() {
     assert_eq!(r.filters.len(), 1);
     assert_eq!(r.always.len(), 1);
     assert!(r.mono_kills.is_empty(), "the parked upper bound is not a kill");
+}
+
+/// A target sells 30 % of his bag: we sell 30 % of what we still hold. A tick clears
+/// the print, so the other stage does not sell again. A sell that empties him closes us.
+#[test]
+fn a_bag_mirror_sells_his_percent_of_what_we_still_hold() {
+    let r = compile(json!({ "copy": { "min_buy_sol": 0.04 } }));
+    assert!(r.copy);
+    assert!(r.buffers.tags.iter().any(|t| t.trade && t.key == TagKey::of("targets")));
+    assert!(!r.buffers.print_wallet, "the bag lives on the tag, not the all-wallet map");
+
+    let tags = compile_tags(&json!({ "targets": { "match": { "wallet": ["ksi"] } } }));
+    let mut track = TokenTrack::new(t0());
+    track.ensure_tag(FingerprintId(Uuid::from_u128(2)), tags[0].key, &tags[0].patterns, &[]);
+
+    let leg = |track: &mut TokenTrack, side: Side, tokens: f64, secs: f64| {
+        track.on_trade(TradeLite {
+            side,
+            sol: 0.1,
+            price: 1.0,
+            token_amount: tokens,
+            wallet_hash: wallet_hash("ksi"),
+            at: at(secs),
+            ..Default::default()
+        });
+    };
+    leg(&mut track, Side::Buy, 1_000.0, 1.0);
+    leg(&mut track, Side::Sell, 300.0, 2.0);
+    assert_eq!(
+        r.held_step(&track, &held(1.0, 1.0, 1.0, 0, 0.0), at(2.0)),
+        HeldAction::Sell { reason: ExitReason::Line("his sell"), bps: Some(3000), of_bag: true, then_stage: Some(1) }
+    );
+    track.on_tick(at(2.5), None);
+    assert_eq!(r.held_step(&track, &held(1.0, 1.0, 1.0, 1, 2.0), at(2.5)), HeldAction::None, "a tick is not his next sell");
+    leg(&mut track, Side::Sell, 700.0, 3.0);
+    assert_eq!(
+        r.held_step(&track, &held(1.0, 1.0, 1.0, 1, 2.0), at(3.0)),
+        HeldAction::Sell { reason: ExitReason::Line("his sell"), bps: None, of_bag: false, then_stage: Some(0) },
+        "100 % of what he still holds closes our bag"
+    );
 }

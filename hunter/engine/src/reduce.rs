@@ -313,15 +313,12 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     if portion.is_partial() {
                         // Partial fill: keep the bag open, resume peak/trough, and move to
                         // the stage the selling line named (a manual partial stays put).
-                        let bps = match portion {
-                            Portion::BpsOfInitial(b) => b,
-                            Portion::All => 0, // unreachable via is_partial
-                        };
+                        let add = portion_sold_bps(portion, held.sold_bps);
                         let mut next = held;
                         if let Some(t) = then_stage {
                             next.move_to(t, fill.at);
                         }
-                        next.sold_bps = next.sold_bps.saturating_add(bps);
+                        next.sold_bps = next.sold_bps.saturating_add(add);
                         let stage = next.stage;
                         let position = next.position;
                         token.arms.insert(rule_id, ArmState::Entered(next));
@@ -756,9 +753,10 @@ enum ArmDecision {
     /// end the episode. A later slot does not become the first fire.
     Exhaust,
     Exit(ExitReason),
-    /// Partial sell: `sell_bps` of the first bag; the fill restores Entered in
+    /// Partial sell. `of_remaining` sizes `sell_bps` off the tokens still held;
+    /// otherwise off the first bag. The fill restores Entered in
     /// `then_stage`.
-    PartialExit { reason: ExitReason, sell_bps: u16, then_stage: Option<u8> },
+    PartialExit { reason: ExitReason, sell_bps: u16, of_remaining: bool, then_stage: Option<u8> },
     /// Move the held position to another stage, from the next evaluation.
     Move(u8),
 }
@@ -1278,13 +1276,13 @@ fn decide_arm(
                 HeldAction::None => ArmDecision::None,
                 HeldAction::Move { stage } => ArmDecision::Move(stage),
                 HeldAction::Sell { reason, bps: None, .. } => ArmDecision::Exit(reason),
-                HeldAction::Sell { reason, bps: Some(b), then_stage } => {
-                    // A partial sell that would take the bag past what is left sells
-                    // the rest instead.
-                    if u32::from(held.sold_bps) + u32::from(b) >= 10_000 {
+                HeldAction::Sell { reason, bps: Some(b), of_bag, then_stage } => {
+                    // A partial of the first bag that would take it past what is left
+                    // sells the rest. A remaining-bag percent is already of what is left.
+                    if !of_bag && u32::from(held.sold_bps) + u32::from(b) >= 10_000 {
                         ArmDecision::Exit(reason)
                     } else {
-                        ArmDecision::PartialExit { reason, sell_bps: b, then_stage }
+                        ArmDecision::PartialExit { reason, sell_bps: b, of_remaining: of_bag, then_stage }
                     }
                 }
             }
@@ -1470,13 +1468,17 @@ fn apply_decision(
                 }));
             }
         }
-        ArmDecision::PartialExit { reason, sell_bps, then_stage } => {
+        ArmDecision::PartialExit { reason, sell_bps, of_remaining, then_stage } => {
             let Some(ArmState::Entered(held)) = token.arms.get(&rule_id).cloned() else {
                 return;
             };
             let position = held.position;
             let stage = held.stage;
-            let portion = Portion::BpsOfInitial(sell_bps);
+            let portion = if of_remaining {
+                Portion::BpsOfRemaining(sell_bps)
+            } else {
+                Portion::BpsOfInitial(sell_bps)
+            };
             let intent = state.next_intent(rule_id, mint.clone());
             token.arms.insert(
                 rule_id,
@@ -1507,6 +1509,21 @@ fn apply_decision(
                 stage_since: None,
             }));
         }
+    }
+}
+
+/// How many basis points of the **first** bag this portion books as sold.
+///
+/// A remaining-bag percent is that percent of what is still unsold, so a 50 %
+/// sell after a 30 % sell books 35 % of the first bag (half of the 70 % left).
+fn portion_sold_bps(portion: Portion, already: u16) -> u16 {
+    match portion {
+        Portion::BpsOfInitial(b) => b,
+        Portion::BpsOfRemaining(b) => {
+            let left = 10_000u32.saturating_sub(u32::from(already));
+            (left * u32::from(b) / 10_000) as u16
+        }
+        Portion::All => 0,
     }
 }
 

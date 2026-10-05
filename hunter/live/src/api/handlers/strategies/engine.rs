@@ -484,20 +484,29 @@ pub async fn stop_rule(
 // ── Bulk lifecycle (Pause All / Stop All — one `trade_mode` at a time) ─────────
 
 /// `?mode=real|paper` selector for the bulk lifecycle endpoints.
+/// `board=copy` is the Copy page; absent is the metric Rules page.
 #[derive(serde::Deserialize)]
 pub struct ModeParam {
     pub mode: String,
+    #[serde(default)]
+    pub board: Option<String>,
 }
 
-/// Deactivate every active rule of `mode`. Returns the count paused.
-async fn pause_all_of_mode(app_state: &DeployState, mode: &str) -> Result<usize, HttpResponse> {
+fn copy_board(board: Option<&str>) -> bool {
+    board == Some("copy")
+}
+
+/// Deactivate every active rule of `mode` on one board. Returns the count paused.
+async fn pause_all_of_mode(app_state: &DeployState, mode: &str, copy: bool) -> Result<usize, HttpResponse> {
     let rules = app_state
         .rule_repo
         .list()
         .await
         .map_err(|e| server_error("pause-all: list rules", e))?;
     let mut paused = 0usize;
-    for mut rule in rules.into_iter().filter(|r| r.is_active && r.trade_mode == mode) {
+    for mut rule in rules.into_iter().filter(|r| {
+        r.is_active && r.trade_mode == mode && rules::is_copy_params(&r.params) == copy
+    }) {
         rule.is_active = false;
         rule.updated_at = Utc::now();
         app_state
@@ -517,7 +526,7 @@ pub async fn pause_all_rules(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<ModeParam>,
 ) -> impl Responder {
-    match pause_all_of_mode(&app_state, &query.mode).await {
+    match pause_all_of_mode(&app_state, &query.mode, copy_board(query.board.as_deref())).await {
         Ok(paused) => HttpResponse::Ok().json(json!({ "paused": paused })),
         Err(resp) => resp,
     }
@@ -531,11 +540,27 @@ pub async fn stop_all_rules(
     query: web::Query<ModeParam>,
 ) -> impl Responder {
     let mode = query.mode.as_str();
+    let want_copy = copy_board(query.board.as_deref());
     // Same "already handed off" filter as the per-rule stop — see `stop_rule`.
+    let copy_rules = match app_state.rule_repo.list().await {
+        Ok(rows) => rows
+            .into_iter()
+            .filter(|r| rules::is_copy_params(&r.params))
+            .map(|r| r.id)
+            .collect::<HashSet<_>>(),
+        Err(e) => return server_error("stop-all: list rules", e),
+    };
     let open = match app_state.strategy_repo.find_open_positions().await {
         Ok(all) => all
             .into_iter()
-            .filter(|p| p.mode == mode && action_progress::stop_in_flight(&p.status))
+            .filter(|p| {
+                let on_board = if want_copy {
+                    p.rule_id.is_some_and(|id| copy_rules.contains(&id))
+                } else {
+                    p.rule_id.is_none_or(|id| !copy_rules.contains(&id))
+                };
+                p.mode == mode && on_board && action_progress::stop_in_flight(&p.status)
+            })
             .collect::<Vec<_>>(),
         Err(e) => return server_error("stop-all: list open positions", e),
     };
@@ -550,11 +575,11 @@ pub async fn stop_all_rules(
         None,
         position_ids,
     );
-    if !app_state.engine.close_mode(mode == "real").await {
+    if !app_state.engine.close_mode(mode == "real", want_copy).await {
         return engine_unavailable("stop-all", "engine channel closed");
     }
 
-    let paused = match pause_all_of_mode(&app_state, mode).await {
+    let paused = match pause_all_of_mode(&app_state, mode, want_copy).await {
         Ok(n) => n,
         Err(resp) => return resp,
     };

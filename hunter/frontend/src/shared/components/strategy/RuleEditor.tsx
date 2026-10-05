@@ -8,6 +8,7 @@ import { Button } from 'components/ui/Button';
 import { Tabs, TabsList, TabsTrigger, TabsPanel } from 'components/ui/Tabs';
 import { cn } from 'lib/cn';
 import { useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
+import { copyEditorRegistry, copyEpisodeDoc, copyViewParams, withCopyFlag } from 'lib/strategy/copyRule';
 import { emptyRuleDoc, ruleDocFromJson, ruleDocToJson, type RuleDoc } from 'lib/strategy/ruleDoc';
 import { tagNames } from 'lib/strategy/tagsDoc';
 import { validateRuleDoc } from 'lib/strategy/validate';
@@ -49,6 +50,8 @@ export interface RuleEditorProps {
    *  panel rendered beneath the builder. Injected by the lab page so the shared editor
    *  never imports the lab-only simulate endpoints. */
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
+  /** Copy board: the picker is the copy readings, and a sell can mirror his bag. */
+  scope?: 'metric' | 'copy';
 }
 
 /** Wrapper that waits for the registry (the editor renders entirely from it). */
@@ -61,11 +64,13 @@ export function RuleEditor(props: RuleEditorProps) {
 }
 
 /** Read the stored params; a document the editor cannot read opens empty with the
- *  reason shown, so it is never silently overwritten by a save. */
-function initialDoc(initial: StrategyRule | undefined): { doc: RuleDoc; error: string | null } {
-  if (!initial) return { doc: emptyRuleDoc(), error: null };
+ *  reason shown, so it is never silently overwritten by a save. A copy shortcut
+ *  opens as the episode it expands to. */
+function initialDoc(initial: StrategyRule | undefined, scope: 'metric' | 'copy'): { doc: RuleDoc; error: string | null } {
+  if (!initial) return { doc: scope === 'copy' ? copyEpisodeDoc() : emptyRuleDoc(), error: null };
   try {
-    return { doc: ruleDocFromJson(initial.params), error: null };
+    const raw = scope === 'copy' ? copyViewParams(initial.params) : initial.params;
+    return { doc: ruleDocFromJson(raw), error: null };
   } catch (e) {
     return { doc: emptyRuleDoc(), error: e instanceof Error ? e.message : String(e) };
   }
@@ -78,8 +83,10 @@ function RuleEditorInner({
   submitting,
   error,
   renderDryRun,
-  registry,
+  registry: fullRegistry,
+  scope = 'metric',
 }: RuleEditorProps & { registry: StrategyRegistry }) {
+  const registry = scope === 'copy' ? copyEditorRegistry(fullRegistry) : fullRegistry;
   const [ruleName, setRuleName] = useState(initial?.rule_name ?? '');
   const [mode, setMode] = useState<TradeMode>(initial?.trade_mode ?? 'paper');
   const [buySol, setBuySol] = useState<number | null>(lamportsToSol(initial?.buy_amount_lamports));
@@ -95,10 +102,11 @@ function RuleEditorInner({
     [fingerprints, fingerprintId],
   );
 
-  const [{ doc: firstDoc, error: loadError }] = useState(() => initialDoc(initial));
+  const [{ doc: firstDoc, error: loadError }] = useState(() => initialDoc(initial, scope));
   const [doc, setDoc] = useState<RuleDoc>(firstDoc);
   const [tab, setTab] = useState<'builder' | 'json' | 'words'>('builder');
-  const [jsonText, setJsonText] = useState(() => JSON.stringify(ruleDocToJson(firstDoc), null, 2));
+  const storedParams = (d: RuleDoc) => (scope === 'copy' ? withCopyFlag(ruleDocToJson(d)) : ruleDocToJson(d));
+  const [jsonText, setJsonText] = useState(() => JSON.stringify(storedParams(firstDoc), null, 2));
   const [jsonError, setJsonError] = useState<string | null>(loadError);
   const [modeUnlocked, setModeUnlocked] = useState(false);
 
@@ -123,14 +131,14 @@ function RuleEditorInner({
   const syncFromJson = (text: string) => {
     setJsonText(text);
     try {
-      setDoc(ruleDocFromJson(JSON.parse(text)));
+      setDoc(ruleDocFromJson(scope === 'copy' ? copyViewParams(JSON.parse(text)) : JSON.parse(text)));
       setJsonError(null);
     } catch (e) {
       setJsonError(e instanceof Error ? e.message : 'invalid JSON');
     }
   };
   const switchTab = (next: string) => {
-    if (next === 'json') setJsonText(JSON.stringify(ruleDocToJson(doc), null, 2));
+    if (next === 'json') setJsonText(JSON.stringify(storedParams(doc), null, 2));
     setTab(next as 'builder' | 'json' | 'words');
   };
 
@@ -157,7 +165,7 @@ function RuleEditorInner({
         buy_amount_lamports: buyLamports,
         max_concurrent_tokens: maxConcurrent ?? 0,
         max_total_tokens: maxTotal ?? 0,
-        params: ruleDocToJson(doc),
+        params: storedParams(doc),
         tags: labels,
       }
     : null;
@@ -202,7 +210,12 @@ function RuleEditorInner({
           <LabelTip tip={RULE_FIELD_HELP.fingerprint}>
             Watch {conditionsLocked && <span className="text-text-dim/60">(locked: rule live)</span>}
           </LabelTip>
-          <FingerprintPicker value={fingerprintId} onChange={setFingerprintId} disabled={conditionsLocked} />
+          <FingerprintPicker
+            value={fingerprintId}
+            onChange={setFingerprintId}
+            disabled={conditionsLocked}
+            pool={scope === 'copy' ? 'copy' : 'rules'}
+          />
           <FingerprintParamsById id={fingerprintId} />
           {fingerprintId && (
             <p className="text-[11px] text-text-dim">
@@ -235,6 +248,7 @@ function RuleEditorInner({
             maxTotal={maxTotal}
             onMaxTotal={setMaxTotal}
             tags={fpTags}
+            bagMirror={scope === 'copy'}
           />
         </TabsPanel>
         <TabsPanel value="json">

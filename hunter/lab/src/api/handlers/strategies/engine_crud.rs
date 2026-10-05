@@ -381,9 +381,12 @@ pub async fn disable_rule(
 }
 
 /// `?mode=real|paper` selector for bulk pause (lab twin of the live handler).
+/// `board=copy` is the Copy page; absent is the metric Rules page.
 #[derive(serde::Deserialize)]
 pub struct ModeParam {
     pub mode: String,
+    #[serde(default)]
+    pub board: Option<String>,
 }
 
 /// POST `/api/strategy-rules/pause-all?mode=real|paper` — flip `is_active=false`
@@ -393,10 +396,10 @@ pub async fn pause_all_rules(
     app_state: web::Data<Arc<LocalState>>,
     query: web::Query<ModeParam>,
 ) -> impl Responder {
-    pause_all_of_mode(&app_state, query.mode.as_str()).await
+    pause_all_of_mode(&app_state, query.mode.as_str(), query.board.as_deref() == Some("copy")).await
 }
 
-async fn pause_all_of_mode(state: &LocalState, mode: &str) -> HttpResponse {
+async fn pause_all_of_mode(state: &LocalState, mode: &str, copy: bool) -> HttpResponse {
     let rules = match rule_repo(state).list().await {
         Ok(v) => v,
         Err(e) => return srv_err("pause-all: list rules", e),
@@ -404,7 +407,7 @@ async fn pause_all_of_mode(state: &LocalState, mode: &str) -> HttpResponse {
     let mut paused = 0usize;
     for mut rule in rules
         .into_iter()
-        .filter(|r| r.is_active && r.trade_mode == mode)
+        .filter(|r| r.is_active && r.trade_mode == mode && rules::is_copy_params(&r.params) == copy)
     {
         rule.is_active = false;
         rule.updated_at = chrono::Utc::now();
@@ -465,7 +468,7 @@ pub async fn stop_all_rules(
     query: web::Query<ModeParam>,
 ) -> impl Responder {
     let mode = query.mode.as_str();
-    let pause_resp = pause_all_of_mode(&app_state, mode).await;
+    let pause_resp = pause_all_of_mode(&app_state, mode, query.board.as_deref() == Some("copy")).await;
     if !pause_resp.status().is_success() {
         return pause_resp;
     }

@@ -233,8 +233,9 @@ pub enum EngineCommand {
     /// `ManualClose` for each (a no-op for any not currently Holding).
     CloseRule { rule_id: Uuid },
     /// Force-close every open position of one **trade mode** (Stop All). Same as
-    /// [`Self::CloseRule`] applied to every position matching `real`.
-    CloseMode { real: bool },
+    /// [`Self::CloseRule`] applied to every position matching `real`. `copy` selects
+    /// the Copy board; otherwise the metric Rules board.
+    CloseMode { real: bool, copy: bool },
     /// Book one **PG** position closed after its bag was cleared off-chain (an
     /// external / manual wallet sell) — the loop resolves it via the sink registry
     /// and folds an [`Event::ExternallyCleared`], which closes the position at `fill`
@@ -439,10 +440,10 @@ impl EngineHandle {
     }
 
     /// Ask the loop to force-close every open position of one trade mode (Stop All).
-    /// Returns `false` only if the loop channel is closed (shutting down).
-    pub async fn close_mode(&self, real: bool) -> bool {
+    /// `copy` is the Copy board. Returns `false` only if the loop channel is closed.
+    pub async fn close_mode(&self, real: bool, copy: bool) -> bool {
         self.cmd_tx
-            .send(EngineCommand::CloseMode { real })
+            .send(EngineCommand::CloseMode { real, copy })
             .await
             .is_ok()
     }

@@ -180,9 +180,13 @@ struct LineOut {
     /// The exit label the line sells with.
     #[serde(skip_serializing_if = "Option::is_none")]
     sells: Option<String>,
-    /// Percent of the first bag a partial sell takes; absent = everything left.
+    /// Percent of the first bag a partial sell takes; absent = everything left,
+    /// or a bag-mirror sell (`sell_of_bag`).
     #[serde(skip_serializing_if = "Option::is_none")]
     sell_pct: Option<f64>,
+    /// Sell `m_print.sold_bag_pct` of the tokens still held.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    sell_of_bag: bool,
     /// The stage index the line moves to.
     #[serde(skip_serializing_if = "Option::is_none")]
     goes_to: Option<u8>,
@@ -296,6 +300,7 @@ fn line_out(l: &LineRead) -> LineOut {
         holds: l.holds,
         sells: l.sells.map(|r| r.label().into_owned()),
         sell_pct: l.sell_bps.map(|b| f64::from(b) / 100.0),
+        sell_of_bag: l.of_bag,
         goes_to: l.goes_to,
     }
 }

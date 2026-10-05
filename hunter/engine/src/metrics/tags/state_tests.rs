@@ -444,3 +444,30 @@ fn an_edited_definition_moves_the_future_not_the_past() {
     st.on_trade(&trade(Side::Buy, 4.0, None, wallet_hash("A"), 2.0), c(0));
     assert_eq!(read(&st, Metric::BuySol, false, LIFE, ts(2.0), c(0)), 3.0);
 }
+
+#[test]
+fn a_tagged_sell_reads_the_percent_of_the_bag_it_took() {
+    let mut st = tag(json!({ "match": { "wallet": ["ksi"] } }));
+    let w = wallet_hash("ksi");
+    let leg = |st: &mut TagState, side: Side, tokens: f64, secs: f64| {
+        let mut t = trade(side, 0.1, None, w, secs);
+        t.token_amount = tokens;
+        st.on_trade(&t, c(0));
+    };
+    leg(&mut st, Side::Buy, 1_000.0, 1.0);
+    assert_eq!(st.print_bag(Metric::FlatBefore, false), 1.0, "the buy opened an empty bag");
+    assert_eq!(st.print_bag(Metric::SoldBagPct, false), 0.0, "a buy sells nothing");
+    leg(&mut st, Side::Sell, 300.0, 2.0);
+    assert_eq!(st.print_bag(Metric::FlatBefore, false), 0.0);
+    assert!((st.print_bag(Metric::SoldBagPct, false) - 30.0).abs() < 1e-9);
+    assert_eq!(st.print_bag(Metric::SoldBagPct, true), 0.0, "a negated tag is not his bag");
+    let mut other = trade(Side::Sell, 0.1, None, wallet_hash("else"), 3.0);
+    other.token_amount = 300.0;
+    st.on_trade(&other, c(0));
+    assert_eq!(st.print_bag(Metric::SoldBagPct, false), 0.0, "someone else's sell is not the tag");
+    leg(&mut st, Side::Sell, 700.0, 4.0);
+    assert!((st.print_bag(Metric::SoldBagPct, false) - 100.0).abs() < 1e-9, "the rest of the bag");
+    st.on_tick(ts(5.0), c(0));
+    assert!(st.print_bag(Metric::SoldBagPct, false).is_nan(), "a tick is not a print");
+    assert!(st.print_bag(Metric::FlatBefore, false).is_nan());
+}

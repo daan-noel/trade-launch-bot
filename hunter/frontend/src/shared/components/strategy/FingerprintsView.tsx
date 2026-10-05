@@ -23,6 +23,7 @@ import { FingerprintForm } from './FingerprintForm';
 import { ruleChainCell } from './RuleParamsSummary';
 import { capsDisplayText } from './capsRuleColumns';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
+import { copyFingerprintIds } from 'lib/strategy/copyRule';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
@@ -217,9 +218,14 @@ export function FingerprintsView({
     [rulesByFp],
   );
 
+  const visible = useMemo(() => {
+    const hidden = copyFingerprintIds(rules);
+    return fps.filter((f) => !hidden.has(f.id));
+  }, [fps, rules]);
+
   const valueColors = useMemo(
-    () => computeSameValueCellClasses(fps, (r) => r.id, COLOR_COLS),
-    [fps],
+    () => computeSameValueCellClasses(visible, (r) => r.id, COLOR_COLS),
+    [visible],
   );
 
   const cellTint =
@@ -450,7 +456,7 @@ export function FingerprintsView({
       {err && <p className="text-xs text-red">{err}</p>}
       <DataTable
         columns={columns}
-        rows={fps}
+        rows={visible}
         rowKey={fingerprintRowKey}
         loading={isLoading}
         searchable

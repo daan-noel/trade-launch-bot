@@ -19,6 +19,8 @@ import type { StrategyRule } from 'lib/strategy/types';
 export interface UseRuleActionsOptions {
   /** Lab-only dry-run render-prop forwarded to the editor (see RulesView FE3). */
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
+  /** Copy board: the editor offers the copy readings and stamps `copy: true`. */
+  board?: 'rules' | 'copy';
 }
 
 export interface RuleActions {
@@ -45,7 +47,7 @@ export interface RuleActions {
  * duplicating the mutation wiring. Execute-column actions (activate/pause/stop,
  * simulate) stay on each host page — they differ by app.
  */
-export function useRuleActions({ renderDryRun }: UseRuleActionsOptions = {}): RuleActions {
+export function useRuleActions({ renderDryRun, board = 'rules' }: UseRuleActionsOptions = {}): RuleActions {
   const [createRule, { isLoading: creating }] = useCreateStrategyRuleMutation();
   const [updateRule, { isLoading: updating }] = useUpdateStrategyRuleMutation();
   const [deleteRule] = useDeleteStrategyRuleMutation();
@@ -99,7 +101,15 @@ export function useRuleActions({ renderDryRun }: UseRuleActionsOptions = {}): Ru
 
   const editorNode = (
     <Modal
-      title={editing && editing !== 'new' && editing.id ? 'Edit rule' : 'New rule'}
+      title={
+        editing && editing !== 'new' && editing.id
+          ? board === 'copy'
+            ? 'Edit copy'
+            : 'Edit rule'
+          : board === 'copy'
+            ? 'New copy'
+            : 'New rule'
+      }
       open={editing !== null}
       onClose={() => setEditing(null)}
       size="xxl"
@@ -112,6 +122,7 @@ export function useRuleActions({ renderDryRun }: UseRuleActionsOptions = {}): Ru
           submitting={creating || updating}
           error={err}
           renderDryRun={renderDryRun}
+          scope={board === 'copy' ? 'copy' : 'metric'}
         />
       )}
     </Modal>

@@ -8,8 +8,10 @@ import { cn } from 'lib/cn';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
+  useGetStrategyRulesQuery,
   useCreateFingerprintMutation,
 } from 'store/sharedEndpoints';
+import { copyFingerprintIds } from 'lib/strategy/copyRule';
 import { FingerprintForm } from './FingerprintForm';
 import {
   FingerprintOptionBody,
@@ -23,6 +25,8 @@ export interface FingerprintPickerProps {
   onChange: (id: string) => void;
   disabled?: boolean;
   className?: string;
+  /** `copy` lists every fingerprint, including ones a copy rule owns. */
+  pool?: 'rules' | 'copy';
 }
 
 /**
@@ -37,21 +41,24 @@ export function FingerprintPicker({
   onChange,
   disabled,
   className,
+  pool = 'rules',
 }: FingerprintPickerProps) {
   const { data: fps = [], isLoading } = useGetFingerprintsQuery();
+  const { data: rules = [] } = useGetStrategyRulesQuery();
+  const hidden = useMemo(() => (pool === 'copy' ? new Set<string>() : copyFingerprintIds(rules)), [pool, rules]);
   const [createFp, { isLoading: creating }] = useCreateFingerprintMutation();
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const options: SearchableSelectOption<Fingerprint>[] = useMemo(
     () =>
-      fps.map((f) => ({
+      fps.filter((f) => !hidden.has(f.id)).map((f) => ({
         value: f.id,
         label: fingerprintSelectLabel(f),
         searchText: fingerprintParamsSearchText(f),
         data: f,
       })),
-    [fps],
+    [fps, hidden],
   );
 
   const submit = async (draft: FingerprintDraft) => {

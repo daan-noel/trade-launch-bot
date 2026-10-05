@@ -96,7 +96,16 @@ impl Buffers {
                 Metric::UniqueIxTemplates => self.template_read(r),
                 _ => {}
             },
-            Family::Print => self.print_wallet = true,
+            Family::Print => match r.metric {
+                // The bag readings live on the tag, one wallet at a time. The
+                // all-wallet last-buy map stays closed unless a rule reads it.
+                Metric::SoldBagPct | Metric::FlatBefore => {
+                    if let Some(t) = r.tag {
+                        self.tag_entry(t.key, t.name).trade = true;
+                    }
+                }
+                _ => self.print_wallet = true,
+            },
             Family::Slot => self.template_read(r),
             Family::Wave => {
                 if r.tag.is_some() {

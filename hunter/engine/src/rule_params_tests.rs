@@ -170,3 +170,40 @@ fn a_deadline_loop_without_a_wait_is_refused() {
     ] });
     assert!(RuleParams::parse(&implicit_next).is_ok(), "b waits 5 s each time round");
 }
+
+#[test]
+fn a_copy_rule_stores_only_its_min_buy_and_refuses_a_mixed_document() {
+    let copy = json!({ "copy": { "min_buy_sol": 0.04 } });
+    let p = RuleParams::parse(&copy).unwrap();
+    assert!(matches!(p.copy, Some(CopyForm::Spec(s)) if s.min_buy_sol == 0.04));
+    assert_eq!(p.to_value(), copy);
+    assert!(!p.enter_on_arm());
+    let expanded = p.expand_copy();
+    assert!(expanded.copy.is_none());
+    assert_eq!(expanded.enter.event.len(), 2);
+    assert_eq!(expanded.stages.len(), 2);
+    assert!(expanded.stages[0].on[0].sell.unwrap().of_bag);
+    let mixed = json!({ "copy": { "min_buy_sol": 0.04 }, "stages": [] });
+    assert!(RuleParams::parse(&mixed).unwrap_err().contains("only"));
+    let bag = json!({ "stages": [
+        { "name": "a", "on": [{ "if": [c("m_position.pnl_pct", ">=", 10.0)], "sell": true, "sell_of": "bag", "go": "b" }] },
+        { "name": "b" }
+    ] });
+    assert!(RuleParams::parse(&bag).unwrap_err().contains("sell_of"));
+}
+
+#[test]
+fn a_copy_document_keeps_the_episode_the_editor_wrote() {
+    let spec = RuleParams::parse(&json!({ "copy": { "min_buy_sol": 0.04 } })).unwrap();
+    let mut episode = spec.expand_copy();
+    episode.copy = Some(CopyForm::Document);
+    let stored = episode.to_value();
+    assert_eq!(stored.get("copy").and_then(|v| v.as_bool()), Some(true));
+    let parsed = RuleParams::parse(&stored).unwrap();
+    assert!(matches!(parsed.copy, Some(CopyForm::Document)));
+    let again = parsed.expand_copy();
+    assert!(again.copy.is_none());
+    assert_eq!(again.enter.event.len(), 2);
+    assert!(again.stages[0].on[0].sell.unwrap().of_bag);
+    assert_eq!(parsed.to_value(), stored);
+}

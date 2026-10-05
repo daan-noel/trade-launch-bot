@@ -130,8 +130,11 @@ impl CompiledSignal {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompiledSell {
     pub reason: ExitReason,
-    /// Basis points of the FIRST buy's bag; `None` = everything left.
+    /// Basis points of the FIRST buy's bag; `None` = everything left, unless `of_bag`.
     pub bps: Option<u16>,
+    /// Size the sell from `m_print.sold_bag_pct` at decision time, as a percent of the
+    /// tokens still held. `bps` is filled then. At 100 the sell closes the bag.
+    pub of_bag: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,8 +155,14 @@ impl CompiledLine {
     /// nothing to do: moving to where the position already is would only restart the
     /// stage clock and hide every line below it, and a partial sell would sell again on
     /// every print. Such a line does not act while the position is in `stage`.
+    /// Sells the whole remaining bag. A bag-mirror line does not: its size is decided
+    /// when it fires, and it may leave a stub.
+    fn sells_whole(&self) -> bool {
+        self.sell.is_some_and(|s| s.bps.is_none() && !s.of_bag)
+    }
+
     pub fn idle_in(&self, stage: u8) -> bool {
-        self.go == Some(stage) && !matches!(self.sell, Some(CompiledSell { bps: None, .. }))
+        self.go == Some(stage) && !self.sells_whole()
     }
 }
 
@@ -180,9 +189,10 @@ pub enum HeldStep<'a> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HeldAction {
     None,
-    /// Sell (all, or `bps` of the first bag); a partial sell then moves to `then_stage`
+    /// Sell. `bps: None` closes the bag. `of_bag` means `bps` is of the tokens still
+    /// held; otherwise `bps` is of the first buy. A partial sell moves to `then_stage`
     /// when its fill lands.
-    Sell { reason: ExitReason, bps: Option<u16>, then_stage: Option<u8> },
+    Sell { reason: ExitReason, bps: Option<u16>, of_bag: bool, then_stage: Option<u8> },
     /// Move to another stage, from the next print or tick.
     Move { stage: u8 },
 }
@@ -356,6 +366,8 @@ pub struct CompiledRule {
     pub fingerprint_id: FingerprintId,
     pub trade_mode: TradeMode,
     pub buy_amount_lamports: u64,
+    /// A copy rule. Pause-all and stop-all on the metric Rules page leave it alone.
+    pub copy: bool,
     /// Percent-of-pool sizing, resolved per entry (the pool is only known then).
     pub size_pct_of_pool: Option<f64>,
     /// Both caps arrive already decoded ([`Cap`]).
@@ -470,6 +482,7 @@ impl Compiler {
                 sell: l.sell.map(|s| CompiledSell {
                     reason: ExitReason::Line(s.label.unwrap_or_else(|| auto_label(l))),
                     bps: s.pct.map(|p| (p * 100.0).round().clamp(1.0, f64::from(MAX_SELL_BPS)) as u16),
+                    of_bag: s.of_bag,
                 }),
                 go: l.go.map(|g| self.stage(g)),
             })
@@ -483,7 +496,7 @@ impl Compiler {
             conds: vec![CondReq::Metric(
                 self.req(MetricRef::life(Metric::PnlPct), vec![vec![Condition { operator: op, value }]]),
             )],
-            sell: Some(CompiledSell { reason, bps: None }),
+            sell: Some(CompiledSell { reason, bps: None, of_bag: false }),
             go: None,
         }
     }
@@ -493,7 +506,8 @@ impl CompiledRule {
     /// Pre-chew a loaded rule. Its params are already parsed and validated, so this is a
     /// pure structural walk.
     pub fn compile(rule: &LoadedRule) -> Self {
-        let p = &rule.params;
+        let expanded = rule.params.copy.map(|_| rule.params.expand_copy());
+        let p = expanded.as_ref().unwrap_or(&rule.params);
         let mut cx = Compiler {
             fp: rule.fingerprint_id,
             signal_index: p.signals.keys().copied().collect(),
@@ -597,6 +611,7 @@ impl CompiledRule {
         Self {
             id: rule.id,
             fingerprint_id: rule.fingerprint_id,
+            copy: rule.params.copy.is_some(),
             trade_mode: rule.trade_mode,
             buy_amount_lamports: rule.buy_amount_lamports,
             size_pct_of_pool: p.enter.size_pct_of_pool,
@@ -776,9 +791,36 @@ impl CompiledRule {
         elapsed >= secs
     }
 
-    fn act(l: &CompiledLine) -> HeldAction {
+    /// `sell_of: bag`. The percent is `m_print.sold_bag_pct` on this line, read now.
+    /// 100 closes the bag. Anything else is that percent of the tokens still held.
+    fn bag_sell<R: CoinReads + ?Sized>(
+        l: &CompiledLine,
+        reason: ExitReason,
+        go: Option<u8>,
+        reads: &R,
+        pos: Option<&PositionCtx>,
+        now: Ts,
+    ) -> HeldAction {
+        let pct = l.conds.iter().find_map(|c| match c {
+            CondReq::Metric(m) if m.r.metric == Metric::SoldBagPct => Some(m.read(reads, pos, now)),
+            _ => None,
+        });
+        let Some(pct) = pct else { return HeldAction::None };
+        if !pct.is_finite() || pct <= 0.0 {
+            return HeldAction::None;
+        }
+        let bps = (pct * 100.0).round();
+        if bps >= 10_000.0 {
+            return HeldAction::Sell { reason, bps: None, of_bag: false, then_stage: go };
+        }
+        let bps = bps.clamp(1.0, 9_999.0) as u16;
+        HeldAction::Sell { reason, bps: Some(bps), of_bag: true, then_stage: go }
+    }
+
+    fn act<R: CoinReads + ?Sized>(l: &CompiledLine, reads: &R, pos: Option<&PositionCtx>, now: Ts) -> HeldAction {
         match (l.sell, l.go) {
-            (Some(s), go) => HeldAction::Sell { reason: s.reason, bps: s.bps, then_stage: go },
+            (Some(s), go) if s.of_bag => Self::bag_sell(l, s.reason, go, reads, pos, now),
+            (Some(s), go) => HeldAction::Sell { reason: s.reason, bps: s.bps, of_bag: false, then_stage: go },
             (None, Some(stage)) => HeldAction::Move { stage },
             (None, None) => HeldAction::None,
         }
@@ -791,7 +833,7 @@ impl CompiledRule {
     pub fn held_step<R: CoinReads + ?Sized>(&self, reads: &R, held: &EnteredCtx, now: Ts) -> HeldAction {
         match self.held_line(reads, &held.position_ctx(), held.stage, now) {
             HeldStep::None => HeldAction::None,
-            HeldStep::Line(l) => Self::act(l),
+            HeldStep::Line(l) => Self::act(l, reads, Some(&held.position_ctx()), now),
             HeldStep::Move(stage) => HeldAction::Move { stage },
         }
     }
@@ -819,8 +861,8 @@ impl CompiledRule {
     }
 
     /// `act` for a caller holding a [`HeldStep::Line`].
-    pub fn line_action(l: &CompiledLine) -> HeldAction {
-        Self::act(l)
+    pub fn line_action<R: CoinReads + ?Sized>(l: &CompiledLine, reads: &R, pos: Option<&PositionCtx>, now: Ts) -> HeldAction {
+        Self::act(l, reads, pos, now)
     }
 
     /// Every metric condition, in authoring order: entry (event, final filters,

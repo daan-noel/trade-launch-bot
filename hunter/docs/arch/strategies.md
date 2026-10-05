@@ -100,11 +100,21 @@ takes at most one action:
    acts, and when none does the rule moves to `then` (default: the next stage);
 3. else the stage's `on` lines in order; the first that holds acts.
 
-`Dead` outranks all three (`reduce::decide_arm`). A line sells the whole bag, or
-`sell_pct` of the first buy's bag, and may move (`go`). A move takes effect from the next
+`Dead` outranks all three (`reduce::decide_arm`). A line sells the whole bag
+or `sell_pct` of the first buy's bag, and may move (`go`). A move takes effect from the next
 print or tick, where the new stage's lines are first read; a partial sell moves when its
 fill lands (`ArmState::ExitPending.then_stage`). `m_position.stage_sec` reads the time
 since the current stage began, so "in the first 30 s of the ride" needs no deadline.
+
+**Copy** is a separate page (`/strategies/copy`) with the same board and the same
+builder as Rules. One rule follows one wallet, stored as the fingerprint's
+`targets` tag. The builder edits the copy readings (`m_print.flat_before`,
+`m_print.sold_bag_pct`) and the enter gate `m_flow.buy_sol @targets [1p]`; a sell
+line may say `sell_of: "bag"`, which sells that print's percent of the tokens we
+still hold. Those readings stay out of the metric rule catalog. A stored shortcut
+`{ "copy": { "min_buy_sol" } }` still expands to that episode; saving from the
+editor writes the episode with `"copy": true`. Pause All and Stop All on each
+page act on that page's rows. The same `reduce` still decides the episode.
 
 **A line idle in its target stage never acts** (`CompiledLine::idle_in`, read by
 `held_line`, so live, simulate and the sweep agree). A line whose `go` names the stage the

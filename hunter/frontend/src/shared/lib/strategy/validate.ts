@@ -160,7 +160,7 @@ export function validateRuleDoc(
     // A stage's own line that goes to that stage and keeps part of the bag would never
     // act there (the engine's `CompiledLine::idle_in`).
     const notToItself = (l: Line, lineAt: string) => {
-      const sellsAll = l.sell != null && l.sell.pct == null;
+      const sellsAll = l.sell != null && l.sell.pct == null && !l.sell.ofBag;
       if (l.go === s.name && !sellsAll) errors.push(`${lineAt} goes to its own stage \`${s.name}\`, where it would never act`);
     };
     s.on.forEach((l, i) => {

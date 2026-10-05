@@ -24,6 +24,7 @@ const SettingsPage = lazy(() =>
   import('@live/pages/settings/LiveSettingsPage').then((m) => ({ default: m.LiveSettingsPage })),
 );
 const RulesPage = lazy(() => import('@live/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
+const CopyPage = lazy(() => import('@live/pages/strategies/CopyPage').then((m) => ({ default: m.CopyPage })));
 const FingerprintsPage = lazy(() => import('@live/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
 const GuidePage = lazy(() => import('components/strategy/StrategyGuide').then((m) => ({ default: m.StrategyGuide })));
 const ConsolePage = lazy(() => import('@live/pages/console/ConsolePage').then((m) => ({ default: m.ConsolePage })));
@@ -88,6 +89,7 @@ export default function App() {
               <Route path="strategies/armed" element={<Navigate to="/console" replace />} />
               <Route path="strategies/monitor" element={<Navigate to="/console" replace />} />
               <Route path="strategies/rules" element={<RulesPage />} />
+              <Route path="strategies/copy" element={<CopyPage />} />
               <Route path="strategies/rules/:ruleId" element={<RuleAnalyzePage />} />
               <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
               <Route path="strategies/guide" element={<GuidePage />} />

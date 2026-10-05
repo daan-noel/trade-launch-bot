@@ -187,6 +187,7 @@ export function RuleChain({
   maxTotal,
   onMaxTotal,
   tags,
+  bagMirror,
 }: {
   doc: RuleDoc;
   patch: (f: (d: RuleDoc) => RuleDoc) => void;
@@ -199,6 +200,8 @@ export function RuleChain({
   maxTotal: number | null;
   onMaxTotal: (n: number | null) => void;
   tags: readonly string[];
+  /** Copy editor: sell lines can mirror his percent of what we still hold. */
+  bagMirror?: boolean;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const toggle = (key: string) => setOpen((cur) => (cur === key ? null : key));
@@ -210,7 +213,7 @@ export function RuleChain({
   const signalNames = doc.signals.map((s) => s.name);
   const stageNames = doc.stages.map((s) => s.name);
   const buyCtx: CondContext = { reg: registry, tags, signals: signalNames, beforeBuy: true, disabled: locked };
-  const sellCtx: CondContext = { ...buyCtx, beforeBuy: false };
+  const sellCtx: CondContext = { ...buyCtx, beforeBuy: false, bagMirror };
   const buyOpen: BuyKey | null = open === 'on' || open === 'if' || open === 'giveup' || open === 'lock' ? open : null;
   const buy = buyChips(doc, true, buyOpen);
   const when = buy.filter((c) => c.group === 'when');

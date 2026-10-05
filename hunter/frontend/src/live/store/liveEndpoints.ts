@@ -125,8 +125,10 @@ export interface RuleLineRead extends RulePart {
   holds: boolean;
   /** The exit label the line sells with; absent = the line only moves. */
   sells?: string;
-  /** Percent of the first bag; absent = everything left. */
+  /** Percent of the first bag; absent = everything left, or a bag-mirror sell. */
   sell_pct?: number;
+  /** Sell `m_print.sold_bag_pct` of the tokens still held. */
+  sell_of_bag?: boolean;
   /** Stage index the line moves to. */
   goes_to?: number;
 }

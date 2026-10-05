@@ -12,6 +12,7 @@ import { ROLE, signalChipStyle } from 'lib/strategy/roleColors';
 import { refLabel } from 'lib/strategy/metricRef';
 import { buyChips, buyGateConds, sellGlance, signalChip } from 'lib/strategy/ruleChain';
 import { GateFaces } from './rule/MetricMark';
+import { copyViewParams } from 'lib/strategy/copyRule';
 import { ruleDocFromJson, type Cond, type Line, type RuleDoc } from 'lib/strategy/ruleDoc';
 import { condLabel, condSentence, deadlineSentence, lineExitLabel } from 'lib/strategy/sentences';
 
@@ -33,7 +34,7 @@ function chip(text: ReactNode, cls?: string, style?: CSSProperties, title?: stri
 /** The rule, or why it cannot be read (a format-1 document from an old sweep combo). */
 function parse(raw: unknown): { doc: RuleDoc } | { error: string } {
   try {
-    return { doc: ruleDocFromJson(raw ?? {}) };
+    return { doc: ruleDocFromJson(copyViewParams(raw ?? {})) };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
@@ -69,7 +70,10 @@ function Conds({ conds }: { conds: Cond[] }) {
 
 function actionChip(l: Line): ReactNode {
   const parts: string[] = [];
-  if (l.sell) parts.push(`${l.sell.pct != null ? `sell ${formatDecimalTrim(l.sell.pct, 1)}%` : 'sell'} "${lineExitLabel(l)}"`);
+  if (l.sell) {
+    const size = l.sell.ofBag ? 'sell his %' : l.sell.pct != null ? `sell ${formatDecimalTrim(l.sell.pct, 1)}%` : 'sell';
+    parts.push(`${size} "${lineExitLabel(l)}"`);
+  }
   if (l.go) parts.push(`→ ${l.go}`);
   return chip(parts.join(' '), l.sell ? 'text-warning' : 'text-accent');
 }

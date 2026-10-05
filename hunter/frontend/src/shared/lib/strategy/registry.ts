@@ -120,17 +120,23 @@ export interface StrategyRegistry {
   spans: SpanKindSpec[];
   tags: TagsSpec;
   rule_parts: RulePartSpec[];
+  /** Readings the Copy editor offers. Omitted from `families`, so a metric rule cannot pick them. */
+  copy?: MetricSpec[];
 }
 
-/** Every metric, family by family in registry order. */
+/** Every metric, family by family in registry order, then the copy readings. */
 export function allMetrics(reg: StrategyRegistry | undefined): MetricSpec[] {
-  return reg ? reg.families.flatMap((f) => f.metrics) : [];
+  if (!reg) return [];
+  return [...reg.families.flatMap((f) => f.metrics), ...(reg.copy ?? [])];
 }
 
-/** A metric by path (`m_flow.buy_sol`). */
+/** A metric by path (`m_flow.buy_sol`). Copy readings live beside the families. */
 export function findMetric(reg: StrategyRegistry | undefined, path: string): MetricSpec | undefined {
   const fam = familyName(path);
-  return reg?.families.find((f) => f.name === fam)?.metrics.find((m) => m.path === path);
+  return (
+    reg?.families.find((f) => f.name === fam)?.metrics.find((m) => m.path === path) ??
+    reg?.copy?.find((m) => m.path === path)
+  );
 }
 
 /** A family by name (`m_flow`). */

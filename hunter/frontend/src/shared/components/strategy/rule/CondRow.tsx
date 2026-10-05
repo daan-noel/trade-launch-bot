@@ -34,6 +34,8 @@ export interface CondContext {
   signals: readonly string[];
   /** Before the buy: our position does not exist, so its metrics are not offered. */
   beforeBuy: boolean;
+  /** Copy editor: a sell can take his percent of what we still hold. */
+  bagMirror?: boolean;
   disabled?: boolean;
 }
 

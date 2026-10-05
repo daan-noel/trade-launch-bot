@@ -198,6 +198,8 @@ pub enum Metric {
     BuyerIsNew,
     // m_print
     SinceBuySec,
+    SoldBagPct,
+    FlatBefore,
     // m_slot
     SlotThisJoined,
     SlotThisHasTag,
@@ -471,6 +473,16 @@ pub const METRICS: &[MetricSpec] = &[
       "Seconds since the wallet behind this print last bought this coin.",
       "m_print.since_buy_sec <= 5 : this wallet bought 5 s ago or less (on a sell: a 5 s flip).",
       "NaN when that wallet never bought, and on a tick.", NT, TR, S::LIFE, false, 0.5, 248),
+    m(M::SoldBagPct, F::Print, "sold_bag_pct", "share of his bag this sell took", U::Percent,
+      "Percent of this wallet's token bag, measured before this print, that this sell removes.",
+      "m_print.sold_bag_pct @targets >= 30 : this sell took 30 % or more of a target wallet's bag.",
+      "0 when this print is not a sell by a wallet carrying the tag. 100 when the sell empties the bag. NaN on a tick, and when that sell has no token amount. A negated tag reads 0.",
+      RT, TR, S::LIFE, false, 0.5, 252),
+    m(M::FlatBefore, F::Print, "flat_before", "this wallet held nothing before this print", U::Flag,
+      "1 when this print's wallet carries the tag and held no tokens of this coin before it.",
+      "m_print.flat_before @targets = 1 : a target wallet held nothing before this print.",
+      "0 when the wallet already held, or the print's wallet does not carry the tag. NaN on a tick. A negated tag reads 0.",
+      RT, TR, S::LIFE, false, 0.5, 256),
     // ── m_slot ──
     m(M::SlotThisJoined, F::Slot, "this_joined", "this print joined the slot's buys", U::Flag,
       "1 when this print just joined the slot's buy group: a curve buy with an ix template, not the create.",
@@ -718,7 +730,7 @@ pub const RULE_PARTS: &[PartSpec] = &[
         example: "m_flow.buy_sol @!volume < 1 -> sell \"dead at 20 s\"." },
     PartSpec { key: "line", title: "Line",
         summary: "If every condition holds: sell (all, or a percent of the first buy's bag) and/or move to another stage. A line that moves to the stage the position is already in does nothing there, unless it sells everything.",
-        example: "cashout and age_sec < 20 -> sell \"spike\"." },
+        example: "pnl_pct >= 15 -> sell 50% of the first bag, go to stub." },
     PartSpec { key: "take_profit", title: "Take profit %",
         summary: "Shortcut for an always line: sell when m_position.pnl_pct reaches this.",
         example: "100 : sell at +100 %." },
@@ -734,6 +746,35 @@ pub const RULE_PARTS: &[PartSpec] = &[
 ];
 
 // ── The document ─────────────────────────────────────────────────────────────
+
+/// Copy readings. The rule catalog omits them; the Copy page lists them.
+fn is_copy_metric(id: Metric) -> bool {
+    matches!(id, Metric::SoldBagPct | Metric::FlatBefore)
+}
+
+fn metric_json(m: &MetricSpec) -> Value {
+    json!({
+        "name": m.name,
+        "path": m.path(),
+        "phrase": m.phrase,
+        "unit": m.unit.as_str(),
+        "summary": m.summary,
+        "example": m.example,
+        "note": m.note,
+        "tags": tag_use_str(m.tags),
+        "tag_level": tag_level_str(m.tag_level),
+        "spans": {
+            "life": m.spans.life,
+            "window": m.spans.window,
+            "since_age": m.spans.since_age,
+            "slice": m.spans.slice,
+        },
+        "monotonic": m.monotonic,
+        "eq_tolerance": m.eq_tolerance,
+        "hue": m.hue,
+        "position": m.family == Family::Position,
+    })
+}
 
 fn tag_use_str(t: TagUse) -> &'static str {
     match t {
@@ -760,30 +801,8 @@ pub fn registry_json() -> Value {
         .map(|f| {
             let metrics: Vec<Value> = METRICS
                 .iter()
-                .filter(|m| m.family == f.id)
-                .map(|m| {
-                    json!({
-                        "name": m.name,
-                        "path": m.path(),
-                        "phrase": m.phrase,
-                        "unit": m.unit.as_str(),
-                        "summary": m.summary,
-                        "example": m.example,
-                        "note": m.note,
-                        "tags": tag_use_str(m.tags),
-                        "tag_level": tag_level_str(m.tag_level),
-                        "spans": {
-                            "life": m.spans.life,
-                            "window": m.spans.window,
-                            "since_age": m.spans.since_age,
-                            "slice": m.spans.slice,
-                        },
-                        "monotonic": m.monotonic,
-                        "eq_tolerance": m.eq_tolerance,
-                        "hue": m.hue,
-                        "position": m.family == Family::Position,
-                    })
-                })
+                .filter(|m| m.family == f.id && !is_copy_metric(m.id))
+                .map(metric_json)
                 .collect();
             json!({
                 "name": f.name,
@@ -797,6 +816,7 @@ pub fn registry_json() -> Value {
     json!({
         "operators": ["<", "<=", ">", ">=", "=", "!="],
         "families": families,
+        "copy": METRICS.iter().filter(|m| is_copy_metric(m.id)).map(metric_json).collect::<Vec<_>>(),
         "spans": super::span::span_kinds_json(),
         "tags": super::tags::config::tags_json(),
         "rule_parts": RULE_PARTS.iter().map(|p| json!({

@@ -960,9 +960,26 @@ async fn handle_command(
                     .collect(),
             )
         }
-        EngineCommand::CloseMode { real } => {
+        EngineCommand::CloseMode { real, copy } => {
             let mode = if real { TradeMode::Real } else { TradeMode::Paper };
-            let positions = registry.positions_for_mode(mode);
+            // Each board's Stop All closes that board's positions. A position with
+            // no compiled rule counts on the metric board.
+            let positions: Vec<_> = registry
+                .positions_for_mode(mode)
+                .into_iter()
+                .filter(|position| {
+                    let is_copy = registry.get(*position).is_some_and(|m| {
+                        state.rules.get(&m.rule_id).is_some_and(|c| c.copy)
+                    });
+                    if copy {
+                        is_copy
+                    } else {
+                        registry.get(*position).is_none_or(|m| {
+                            state.rules.get(&m.rule_id).is_none_or(|c| !c.copy)
+                        })
+                    }
+                })
+                .collect();
             info!(?mode, positions = positions.len(), "engine: stop-all — closing open positions");
             EventBatch::many(
                 positions

@@ -80,8 +80,11 @@ pub struct LineRead {
     pub holds: bool,
     /// The exit reason when the line sells.
     pub sells: Option<ExitReason>,
-    /// Basis points of the first bag for a partial sell.
+    /// Basis points of the first bag for a partial sell. Absent when the line sells
+    /// everything, or sizes itself from `m_print.sold_bag_pct` (`of_bag`).
     pub sell_bps: Option<u16>,
+    /// The sell takes `m_print.sold_bag_pct` of the tokens still held.
+    pub of_bag: bool,
     /// The stage index it moves to.
     pub goes_to: Option<u8>,
 }
@@ -207,6 +210,7 @@ pub fn read_rule(rule: &CompiledRule, track: &TokenTrack, pos: Option<&PositionC
             }),
             sells: l.sell.map(|s| s.reason),
             sell_bps: l.sell.and_then(|s| s.bps),
+            of_bag: l.sell.is_some_and(|s| s.of_bag),
             goes_to: l.go,
         })
         .collect();

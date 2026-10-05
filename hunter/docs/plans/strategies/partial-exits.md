@@ -23,9 +23,12 @@
    `CompiledRule::compile`. No parallel mini-language that can drift: every exit family
    (fixed ROI, time stop, trailing, flow fade) is a rung trigger for free, and so is any
    metric added later.
-3. **Sizes are a percent of the INITIAL bag**, never of the remainder (`Portion::BpsOfInitial`,
-   basis points internally): fractions compose without compounding drift, and exec does
-   exact integer token math. A line without `sell_pct` sells all remaining, so dust is swept.
+3. **A written `sell_pct` is a percent of the INITIAL bag**, never of the remainder
+   (`Portion::BpsOfInitial`, basis points internally): fractions compose without compounding
+   drift, and exec does exact integer token math. A line without `sell_pct` sells all
+   remaining, so dust is swept. A copy rule is the exception, and it is not a line in
+   this grammar: it sells the percent of the tokens still held that the target's sell
+   took of his bag (`Portion::BpsOfRemaining`). At 100 that sell closes the bag.
 4. **The portion travels on the existing `SubmitSell` effect** as a field, not a new
    effect variant; the same vocabulary serves manual partial sells.
 5. **Durable truth is a per-position fills ledger** (`position_fills`), not wider
@@ -54,9 +57,15 @@
 - **A partial line must move.** `sell_pct` is in `(0, 99]` (`MAX_SELL_PCT`), and a line
   carrying it must also `go`, or it would sell again on the next print; the parser refuses
   both. The stage moves when the partial FILL lands, not when the sell is sent.
-- **A partial that would overshoot sells the rest.** When the sold share plus this line's
-  would reach the whole bag, `reduce` sends a full close instead, so rungs need not sum to
-  anything.
+- **A partial that would overshoot sells the rest.** When the sold share of the first bag
+  plus this line's would reach the whole bag, `reduce` sends a full close instead, so rungs
+  need not sum to anything. A copy rule's percent is already of what remains, so it
+  does not use that sum; a reading of 100 closes the bag on its own.
+- **A copy rule mirrors his percent.** The Copy page edits the episode in the same
+  builder as a rule. A shortcut `{ "copy": { "min_buy_sol" } }` still expands to two
+  stages that send the position back and forth, because `m_print.sold_bag_pct` is
+  empty on a tick and a partial line is idle once it arrives. Saving writes that
+  episode with `"copy": true` and `sell_of: "bag"`.
 - **`always` lines close regardless of stage.** `stop_loss`, `take_profit` and every
   authored `always` line are read before the stage's own lines, and `Dead`, `Migrated` and
   `Manual` close all. That is the catastrophe path: a stub in a rug must not wait for its

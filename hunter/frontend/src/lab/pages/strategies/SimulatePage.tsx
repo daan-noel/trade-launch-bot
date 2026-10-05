@@ -65,6 +65,7 @@ import {
   useGetFingerprintsQuery,
   useGetStrategyRulesQuery,
 } from 'store/sharedEndpoints';
+import { isCopyRule } from 'lib/strategy/copyRule';
 import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { useRuleActions } from 'components/strategy/useRuleActions';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
@@ -237,7 +238,8 @@ function localInputToIso(local: string): string | undefined {
  * loop) lives in the rule editor; this page is for persisted rules.
  */
 export function SimulatePage() {
-  const { data: rules = [], isLoading } = useGetStrategyRulesQuery();
+  const { data: loadedRules = [], isLoading } = useGetStrategyRulesQuery();
+  const rules = useMemo(() => loadedRules.filter((r) => !isCopyRule(r)), [loadedRules]);
   const { data: fps = [] } = useGetFingerprintsQuery();
   const actions = useRuleActions();
   const [enable] = useEnableStrategyRuleMutation();

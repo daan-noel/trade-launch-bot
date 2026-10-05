@@ -94,6 +94,13 @@ pub fn normalize_tags(tags: &[String]) -> Vec<String> {
 // Generic engine (fingerprint + metrics) rule CRUD
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// A copy rule's params carry `copy`: either `{ "min_buy_sol" }` or `true` beside
+/// the episode the Copy editor saved. Pause-all and the metric Rules page use
+/// this so each board acts on its own rows.
+pub fn is_copy_params(params: &serde_json::Value) -> bool {
+    params.get("copy").is_some()
+}
+
 /// The authored inputs for a new generic rule. `params` is the raw JSON body —
 /// [`build_rule`] parses/validates it against the metric registry
 /// ([`RuleParams::parse`]) and stores the canonical serialization.

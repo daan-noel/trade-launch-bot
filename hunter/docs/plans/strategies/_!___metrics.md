@@ -52,7 +52,7 @@ metric, whose trades, over what stretch.
 | `m_flow` | money moving, all trades or one tag's | `flow_lifetime`, `flow_window`, `flow_slice`, `tags::state` |
 | `m_holdings` | what a tag or wallet class holds | `tags::state` (`profit_sol`), `holder_book` (`bag_share_pct`) |
 | `m_crowd` | who shows up | `crowd_window`, `build_window`, `crowd_after_age`, `burst_slot` |
-| `m_print` | the print being read | `print_wallet` |
+| `m_print` | the print being read | `print_wallet` (`since_buy_sec`); `tags::state` (`sold_bag_pct`, `flat_before`, copy page only) |
 | `m_slot` | this slot's buys | `burst_slot` |
 | `m_wave` | this buy wave | `burst_wave` |
 | `m_position` | our trade | `position` (read from `PositionCtx`, never the coin) |

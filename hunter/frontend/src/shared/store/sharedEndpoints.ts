@@ -405,15 +405,21 @@ export const sharedApi = baseApi.injectEndpoints({
       invalidatesTags: ['StrategyRule'],
     }),
     // Bulk lifecycle scoped to one trade mode — mirror the per-row Pause / Stop.
-    pauseAllStrategyRules: builder.mutation<{ paused: number }, TradeMode>({
-      query: (mode) => ({ url: `/api/strategy-rules/pause-all?mode=${mode}`, method: 'POST' }),
+    pauseAllStrategyRules: builder.mutation<{ paused: number }, { mode: TradeMode; board?: 'copy' }>({
+      query: ({ mode, board }) => ({
+        url: `/api/strategy-rules/pause-all?mode=${mode}${board === 'copy' ? '&board=copy' : ''}`,
+        method: 'POST',
+      }),
       invalidatesTags: ['StrategyRule'],
     }),
     stopAllStrategyRules: builder.mutation<
       { action_id: string; total: number; paused: number; closing: boolean; mode: string },
-      TradeMode
+      { mode: TradeMode; board?: 'copy' }
     >({
-      query: (mode) => ({ url: `/api/strategy-rules/stop-all?mode=${mode}`, method: 'POST' }),
+      query: ({ mode, board }) => ({
+        url: `/api/strategy-rules/stop-all?mode=${mode}${board === 'copy' ? '&board=copy' : ''}`,
+        method: 'POST',
+      }),
       invalidatesTags: ['StrategyRule'],
     }),
     updateSettings: builder.mutation<AppSettings, Partial<AppSettings>>({

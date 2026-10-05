@@ -115,7 +115,33 @@ pub struct Sell {
     pub label: Option<&'static str>,
     /// Percent of the FIRST buy's bag; `None` = everything left.
     pub pct: Option<f64>,
+    /// Sell the percent `m_print.sold_bag_pct` reads, of the tokens still held.
+    /// Set only by a copy rule's compiler expansion. The stored grammar has no
+    /// `sell_of` key.
+    pub of_bag: bool,
 }
+
+/// A copy shortcut: follow one wallet. The wallet lives on the fingerprint's
+/// `targets` tag. Stored params are `{ "copy": { "min_buy_sol" } }`.
+/// [`CopySpec::expand`] builds the episode the fold reads until the Copy editor
+/// saves that episode as a document.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CopySpec {
+    /// Smallest buy of his, in SOL, that can open ours.
+    pub min_buy_sol: f64,
+}
+
+/// How a copy rule is stored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CopyForm {
+    /// `{ "copy": { "min_buy_sol" } }`. The compiler expands it.
+    Spec(CopySpec),
+    /// `"copy": true` beside the episode the Copy editor authored.
+    Document,
+}
+
+/// Buys on one coin after a copy rule has closed, then it stops re-arming.
+const COPY_MAX_PER_COIN: u32 = 100;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
@@ -197,6 +223,10 @@ pub struct RuleParams {
     pub reentry: Option<ReEntry>,
     pub exclusive: bool,
     pub priority: i32,
+    /// Set on a copy rule. A [`CopyForm::Spec`] leaves the other fields empty and
+    /// [`Self::expand_copy`] is what the compiler reads. A [`CopyForm::Document`]
+    /// is that episode, already written out.
+    pub copy: Option<CopyForm>,
 }
 
 // ── Parse ────────────────────────────────────────────────────────────────────
@@ -269,9 +299,13 @@ fn parse_conds(v: Option<&Value>, at: &str) -> Result<Vec<Cond>, String> {
     arr(v, at)?.iter().enumerate().map(|(i, c)| parse_cond(c, &format!("{at}[{i}]"))).collect()
 }
 
-fn parse_line(v: &Value, at: &str) -> Result<Line, String> {
+fn parse_line(v: &Value, at: &str, bag: bool) -> Result<Line, String> {
     let o = obj(v, at)?;
-    unknown_keys(o, &["if", "sell", "sell_pct", "go", "off"], at)?;
+    let mut keys = vec!["if", "sell", "sell_pct", "go", "off"];
+    if bag {
+        keys.push("sell_of");
+    }
+    unknown_keys(o, &keys, at)?;
     let when = parse_conds(o.get("if"), &format!("{at}.if"))?;
     let label = match o.get("sell") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => None,
@@ -283,7 +317,18 @@ fn parse_line(v: &Value, at: &str) -> Result<Line, String> {
     if pct.is_some() && label.is_none() {
         return Err(format!("{at}: sell_pct without sell"));
     }
-    let sell = label.map(|label| Sell { label, pct });
+    let of_bag = match o.get("sell_of") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(s)) if s == "bag" => true,
+        Some(_) => return Err(format!("{at}.sell_of must be \"bag\"")),
+    };
+    if of_bag && label.is_none() {
+        return Err(format!("{at}: sell_of without sell"));
+    }
+    if of_bag && pct.is_some() {
+        return Err(format!("{at}: sell_of replaces sell_pct"));
+    }
+    let sell = label.map(|label| Sell { label, pct, of_bag });
     let go = o.get("go").map(|g| name(g, &format!("{at}.go"))).transpose()?;
     if sell.is_none() && go.is_none() {
         return Err(format!("{at} does nothing: give it `sell` and/or `go`"));
@@ -291,12 +336,12 @@ fn parse_line(v: &Value, at: &str) -> Result<Line, String> {
     Ok(Line { when, sell, go, off: flag(o, "off", at)? })
 }
 
-fn parse_lines(v: Option<&Value>, at: &str) -> Result<Vec<Line>, String> {
+fn parse_lines(v: Option<&Value>, at: &str, bag: bool) -> Result<Vec<Line>, String> {
     let Some(v) = v else { return Ok(Vec::new()) };
-    arr(v, at)?.iter().enumerate().map(|(i, l)| parse_line(l, &format!("{at}[{i}]"))).collect()
+    arr(v, at)?.iter().enumerate().map(|(i, l)| parse_line(l, &format!("{at}[{i}]"), bag)).collect()
 }
 
-fn parse_stage(v: &Value, at: &str) -> Result<Stage, String> {
+fn parse_stage(v: &Value, at: &str, bag: bool) -> Result<Stage, String> {
     let o = obj(v, at)?;
     unknown_keys(o, &["name", "ends", "on", "at_end", "then"], at)?;
     let name = name(o.get("name").ok_or_else(|| format!("{at} needs a name"))?, &format!("{at}.name"))?;
@@ -325,8 +370,8 @@ fn parse_stage(v: &Value, at: &str) -> Result<Stage, String> {
     Ok(Stage {
         name,
         ends,
-        on: parse_lines(o.get("on"), &format!("{at}.on"))?,
-        at_end: parse_lines(o.get("at_end"), &format!("{at}.at_end"))?,
+        on: parse_lines(o.get("on"), &format!("{at}.on"), bag)?,
+        at_end: parse_lines(o.get("at_end"), &format!("{at}.at_end"), bag)?,
         then: o.get("then").map(|t| self::name(t, &format!("{at}.then"))).transpose()?,
     })
 }
@@ -348,11 +393,36 @@ impl RuleParams {
     /// Parse **and validate**. The one entry point rule save and rule load share.
     pub fn parse(json: &Value) -> Result<Self, String> {
         let root = obj(json, "params")?;
-        unknown_keys(
-            root,
-            &["enter", "take_profit", "stop_loss", "signals", "always", "stages", "reentry", "exclusive", "priority"],
-            "params",
-        )?;
+        let (bag, form) = match root.get("copy") {
+            None => (false, None),
+            Some(v) if v.as_object().is_some() => {
+                if root.len() != 1 {
+                    return Err("a copy shortcut is only { \"copy\": { \"min_buy_sol\" } }".into());
+                }
+                return Ok({
+                    let p = Self { copy: Some(CopyForm::Spec(CopySpec::parse(Some(v))?)), ..Self::default() };
+                    p.validate()?;
+                    p
+                });
+            }
+            Some(Value::Bool(true)) => (true, Some(CopyForm::Document)),
+            Some(_) => return Err("copy is true, or { \"min_buy_sol\" }".into()),
+        };
+        let mut keys = vec![
+            "enter",
+            "take_profit",
+            "stop_loss",
+            "signals",
+            "always",
+            "stages",
+            "reentry",
+            "exclusive",
+            "priority",
+        ];
+        if bag {
+            keys.push("copy");
+        }
+        unknown_keys(root, &keys, "params")?;
         let mut signals = BTreeMap::new();
         if let Some(s) = root.get("signals") {
             for (k, groups) in obj(s, "signals")? {
@@ -384,10 +454,14 @@ impl RuleParams {
             take_profit: root.get("take_profit").filter(|v| !v.is_null()).map(|v| num(v, "take_profit")).transpose()?,
             stop_loss: root.get("stop_loss").filter(|v| !v.is_null()).map(|v| num(v, "stop_loss")).transpose()?,
             signals,
-            always: parse_lines(root.get("always"), "always")?,
+            always: parse_lines(root.get("always"), "always", bag)?,
             stages: match root.get("stages") {
                 None | Some(Value::Null) => Vec::new(),
-                Some(s) => arr(s, "stages")?.iter().enumerate().map(|(i, st)| parse_stage(st, &format!("stages[{i}]"))).collect::<Result<_, _>>()?,
+                Some(s) => arr(s, "stages")?
+                    .iter()
+                    .enumerate()
+                    .map(|(i, st)| parse_stage(st, &format!("stages[{i}]"), bag))
+                    .collect::<Result<_, _>>()?,
             },
             reentry,
             exclusive: match root.get("exclusive") {
@@ -398,6 +472,7 @@ impl RuleParams {
                 None | Some(Value::Null) => 0,
                 Some(v) => v.as_i64().and_then(|n| i32::try_from(n).ok()).ok_or("priority must be a whole number")?,
             },
+            copy: form,
         };
         p.validate()?;
         Ok(p)
@@ -405,6 +480,12 @@ impl RuleParams {
 
     /// The cross-part rules the shape walk cannot see.
     fn validate(&self) -> Result<(), String> {
+        if let Some(CopyForm::Spec(c)) = self.copy {
+            if !(c.min_buy_sol.is_finite() && c.min_buy_sol > 0.0) {
+                return Err("copy.min_buy_sol must be above 0".into());
+            }
+            return Ok(());
+        }
         for (k, v, lo, hi) in [
             ("take_profit", self.take_profit, 0.0, f64::INFINITY),
             ("stop_loss", self.stop_loss, 0.0, f64::INFINITY),
@@ -487,12 +568,14 @@ impl RuleParams {
             if let Some(g) = l.go {
                 target(g, at)?;
             }
-            if let Some(Sell { pct: Some(p), .. }) = l.sell {
-                if !(p > 0.0 && p <= MAX_SELL_PCT) {
-                    return Err(format!("{at}.sell_pct must be above 0 and at most {MAX_SELL_PCT}"));
-                }
-                if l.go.is_none() {
-                    return Err(format!("{at}: a partial sell must also `go` to another stage, or it would sell again on the next print"));
+            if let Some(sell) = l.sell {
+                if let Some(p) = sell.pct {
+                    if !(p > 0.0 && p <= MAX_SELL_PCT) {
+                        return Err(format!("{at}.sell_pct must be above 0 and at most {MAX_SELL_PCT}"));
+                    }
+                    if l.go.is_none() {
+                        return Err(format!("{at}: a partial sell must also `go` to another stage, or it would sell again on the next print"));
+                    }
                 }
             }
             Ok(())
@@ -505,7 +588,7 @@ impl RuleParams {
             // never acts there (`CompiledLine::idle_in`): refuse it rather than keep a
             // dead line.
             let not_to_itself = |l: &Line, at: &str| -> Result<(), String> {
-                let sells_all = matches!(l.sell, Some(Sell { pct: None, .. }));
+                let sells_all = matches!(l.sell, Some(Sell { pct: None, of_bag: false, .. }));
                 if l.go == Some(s.name) && !sells_all {
                     return Err(format!("{at} goes to its own stage `{}`, where it would never act", s.name));
                 }
@@ -583,6 +666,9 @@ impl RuleParams {
     // ── Serialize (the inverse of parse) ─────────────────────────────────────
 
     pub fn to_value(&self) -> Value {
+        if let Some(CopyForm::Spec(c)) = self.copy {
+            return json!({ "copy": { "min_buy_sol": c.min_buy_sol } });
+        }
         let mut root = Map::new();
         let e = &self.enter;
         let mut enter = Map::new();
@@ -629,11 +715,17 @@ impl RuleParams {
         if self.priority != 0 {
             root.insert("priority".into(), json!(self.priority));
         }
+        if self.copy.is_some() {
+            root.insert("copy".into(), json!(true));
+        }
         Value::Object(root)
     }
 
     /// The rule buys on arming alone: no live entry condition at all.
     pub fn enter_on_arm(&self) -> bool {
+        if matches!(self.copy, Some(CopyForm::Spec(_))) {
+            return false;
+        }
         let live = |c: &[Cond]| c.iter().any(|c| !c.is_off());
         !live(&self.enter.event) && !live(&self.enter.filters) && !live(&self.enter.final_filters)
     }
@@ -641,6 +733,9 @@ impl RuleParams {
     /// Every live metric reference the rule reads, in every part — what a loader asks
     /// "which columns and buffers does this rule need" of.
     pub fn metric_refs(&self) -> Vec<MetricRef> {
+        if self.copy.is_some() {
+            return self.expand_copy().metric_refs();
+        }
         let mut out = Vec::new();
         let mut take = |conds: &[Cond]| {
             for c in conds {
@@ -666,6 +761,72 @@ impl RuleParams {
     /// Every line: `always`, then each stage's `on` and `at_end`.
     pub fn all_lines(&self) -> impl Iterator<Item = &Line> {
         self.always.iter().chain(self.stages.iter().flat_map(|s| s.on.iter().chain(s.at_end.iter())))
+    }
+
+    /// The episode a copy rule runs. A non-copy rule returns itself. A document
+    /// returns itself with the flag cleared, so a later walk does not expand again.
+    pub fn expand_copy(&self) -> Self {
+        match self.copy {
+            Some(CopyForm::Spec(spec)) => spec.expand(),
+            Some(CopyForm::Document) => {
+                let mut p = self.clone();
+                p.copy = None;
+                p
+            }
+            None => self.clone(),
+        }
+    }
+}
+
+impl CopySpec {
+    fn parse(v: Option<&Value>) -> Result<Self, String> {
+        let o = obj(v.ok_or("copy is missing")?, "copy")?;
+        unknown_keys(o, &["min_buy_sol"], "copy")?;
+        let min_buy_sol = num(o.get("min_buy_sol").ok_or("copy.min_buy_sol is missing")?, "copy.min_buy_sol")?;
+        Ok(Self { min_buy_sol })
+    }
+
+    /// Buy when the tagged wallet buys at least `min_buy_sol` from a flat bag.
+    /// Each of his later sells sells that print's percent of the tokens we still hold.
+    /// Two stages send the position back and forth so the next sell can fire. The
+    /// Copy editor opens this same document.
+    fn expand(self) -> RuleParams {
+        use crate::metrics::evaluator::{Condition, Operator};
+        use crate::metrics::{Metric, Span, TagRef};
+
+        let targets = TagRef::parse("targets").expect("targets");
+        let one_print = Span::parse(Some("1p"), None).expect("1p");
+        let tagged = |metric| MetricRef { metric, tag: Some(targets), span: Span::LIFE };
+        let cond = |r: MetricRef, operator, value| Cond::Metric {
+            r,
+            is: vec![vec![Condition { operator, value }]],
+            off: false,
+        };
+        let mirror = |go: &'static str| Line {
+            when: vec![cond(tagged(Metric::SoldBagPct), Operator::Gt, 0.0)],
+            sell: Some(Sell { label: Some(crate::intern::intern("his sell")), pct: None, of_bag: true }),
+            go: Some(crate::intern::intern(go)),
+            off: false,
+        };
+        RuleParams {
+            enter: Enter {
+                event: vec![
+                    cond(
+                        MetricRef { metric: Metric::BuySol, tag: Some(targets), span: one_print },
+                        Operator::Gte,
+                        self.min_buy_sol,
+                    ),
+                    cond(tagged(Metric::FlatBefore), Operator::Eq, 1.0),
+                ],
+                ..Enter::default()
+            },
+            stages: vec![
+                Stage { name: crate::intern::intern("a"), ends: None, on: vec![mirror("b")], at_end: Vec::new(), then: None },
+                Stage { name: crate::intern::intern("b"), ends: None, on: vec![mirror("a")], at_end: Vec::new(), then: None },
+            ],
+            reentry: Some(ReEntry { cooldown_sec: 0.0, max_per_coin: COPY_MAX_PER_COIN }),
+            ..RuleParams::default()
+        }
     }
 }
 
@@ -705,6 +866,9 @@ fn line_to_value(l: &Line) -> Value {
         o.insert("sell".into(), s.label.map_or(json!(true), |t| json!(t)));
         if let Some(p) = s.pct {
             o.insert("sell_pct".into(), json!(p));
+        }
+        if s.of_bag {
+            o.insert("sell_of".into(), json!("bag"));
         }
     }
     if let Some(g) = l.go {

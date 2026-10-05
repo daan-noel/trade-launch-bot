@@ -396,7 +396,7 @@ pub(crate) fn assemble(entry: &EntryFilling, exit: &ExitBag) -> RuleParams {
     rp.enter.filters = conds_from(&entry.clauses);
     rp.always = conds_from(&exit.clauses)
         .into_iter()
-        .map(|c| Line { when: vec![c], sell: Some(Sell { label: None, pct: None }), go: None, off: false })
+        .map(|c| Line { when: vec![c], sell: Some(Sell { label: None, pct: None, of_bag: false }), go: None, off: false })
         .collect();
     rp
 }
