@@ -172,7 +172,7 @@ kept: an edit moves a live coin's future, never its past.
   the owner split's ([owner-split.md](owner-split.md), "Match levels").
 - **`program` catches every build a tool compiles.** The head program
   (`template_grain::program_owned`: the first instruction past compute budget, system,
-  token, associated-token and memo) keeps its name across builds; the 7ix crew's program
+  token, associated-token and memo) keeps its name across builds; one crew program
   ships ~25 sequences and keeps adding more, which an exact list books as the rest until
   someone adds them.
 - **`ix_contains` / `ix_lacks` are mechanisms, not snapshots.** A marker is one bit the

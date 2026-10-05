@@ -221,6 +221,23 @@ export function feeMatchesTrade(row: IxPatternFee, t: IxPatternFeeSource): boole
 /** A trade as a row reads it: its budget, and its side for a core row's side pin. */
 export type IxPatternTradeSource = IxPatternFeeSource & { side?: 'buy' | 'sell' | null };
 
+/** Keys of a label array, memoized per array: the chart tests every row against every
+ *  trade, so a tag of a thousand rows would otherwise re-serialize each pair. */
+interface LabelKeys {
+  exact: string;
+  core: string;
+  marks: number;
+}
+const labelKeysCache = new WeakMap<readonly string[], LabelKeys>();
+function labelKeys(labels: readonly string[]): LabelKeys {
+  let k = labelKeysCache.get(labels);
+  if (!k) {
+    k = { exact: patternKey(labels), core: coreKey(labels), marks: coreMarks(labels) };
+    labelKeysCache.set(labels, k);
+  }
+  return k;
+}
+
 /** An exact row: labels exact-match AND the pins accept this tx's budget. A core row
  *  (engine `CoreSpec`): the cores match, the side and the extras match when pinned,
  *  and the pins accept the budget. */
@@ -229,10 +246,12 @@ export function rowMatchesTrade(
   labels: readonly string[],
   t: IxPatternTradeSource,
 ): boolean {
-  if (!rowIsCore(row)) return patternKey(row.labels) === patternKey(labels) && feeMatchesTrade(row, t);
-  if (coreKey(row.labels) !== coreKey(labels)) return false;
+  const r = labelKeys(row.labels);
+  const k = labelKeys(labels);
+  if (!rowIsCore(row)) return r.exact === k.exact && feeMatchesTrade(row, t);
+  if (r.core !== k.core) return false;
   if (row.side && t.side !== row.side) return false;
-  if (row.marks != null && coreMarksFromText(row.marks) !== coreMarks(labels)) return false;
+  if (row.marks != null && coreMarksFromText(row.marks) !== k.marks) return false;
   return feeMatchesTrade(row, t);
 }
 

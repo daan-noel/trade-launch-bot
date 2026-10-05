@@ -87,7 +87,7 @@ fn a_pnl_latch_becomes_two_stages() {
     assert_eq!(armed[0]["if"][0]["metric"], "m_position.retrace_pct");
 }
 
-/// `arm` clauses (the 7ix ride): start holds the exits and one `go` line per clause;
+/// `arm` clauses (a ride): start holds the exits and one `go` line per clause;
 /// `since_armed` becomes `stage_sec` in the armed stage.
 #[test]
 fn arm_clauses_become_go_lines() {

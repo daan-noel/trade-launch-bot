@@ -8,7 +8,7 @@ fn c(metric: &str, op: &str, v: f64) -> Value {
     json!({ "metric": metric, "is": [{ "operator": op, "value": v }] })
 }
 
-/// The 7ix BROAD 0.65 rule, written the way a person reads it.
+/// A staged rule: signals, a go line, tagged reads, and fixed exits.
 fn crew_rule() -> Value {
     json!({
         "enter": {

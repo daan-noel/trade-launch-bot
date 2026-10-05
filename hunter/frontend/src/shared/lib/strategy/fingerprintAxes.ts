@@ -196,7 +196,7 @@ export const AXES: readonly AxisDef[] = [
     unit: 'count',
     phase: 'instant',
     definition:
-      "How many EARLIER coins of this creation build (the exact ordered instruction labels of the creation transaction) had this coin's name and symbol, lowercased and without spaces, over the last 30 days. `>= 1` = the build is re-using a name. Example: a 7ix coin named PEPE, when 7ix already launched a PEPE last week, reads 1. Needs an `ix_labels` axis on the same row; unknown (fails closed) for a blank name or symbol.",
+      "How many EARLIER coins of this creation build (the exact ordered instruction labels of the creation transaction) had this coin's name and symbol, lowercased and without spaces, over the last 30 days. `>= 1` = the build is re-using a name. Example: a coin named PEPE, when this build already launched a PEPE last week, reads 1. Needs an `ix_labels` axis on the same row; unknown (fails closed) for a blank name or symbol.",
   },
 ] as const;
 
