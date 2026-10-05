@@ -1,6 +1,5 @@
 import {
   forwardRef,
-  useCallback,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -255,16 +254,70 @@ export const Textarea = forwardRef<
     [],
   );
 
-  const resize = useCallback(() => {
-    const el = innerRef.current;
-    if (!el || !autoResize) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  }, [autoResize]);
+  // Height the resize grip last set. Null ⇒ follow the text.
+  const userHeight = useRef<number | null>(null);
 
   useLayoutEffect(() => {
-    resize();
-  }, [resize, value]);
+    const el = innerRef.current;
+    if (!el || !autoResize) return;
+
+    // True while `fit` itself is the thing changing the box, so the observer
+    // does not record that write as a user drag.
+    let fromUs = false;
+    // Last height `fit` wrote. A grip drag moves the box off this number; a
+    // width change does not, and that one still refits to the wrapped text.
+    let applied = -1;
+
+    const fit = () => {
+      // Pattern rows stay mounted under `display: none`. scrollHeight is 0
+      // there, and writing it locks the field at 0px after the row opens.
+      // Leave height unset and refit once the element has a box.
+      if (el.getClientRects().length === 0) {
+        el.style.height = '';
+        applied = -1;
+        return;
+      }
+      fromUs = true;
+      if (userHeight.current != null) {
+        el.style.height = `${userHeight.current}px`;
+        applied = el.offsetHeight;
+        return;
+      }
+      el.style.height = 'auto';
+      const content = el.scrollHeight;
+      if (content < 1) {
+        el.style.height = '';
+        applied = -1;
+        fromUs = false;
+        return;
+      }
+      el.style.height = `${content}px`;
+      // border-box: a height of scrollHeight still clips by the border, which
+      // then shows a scrollbar and wraps another line. Add that overflow back.
+      const extra = el.scrollHeight - el.clientHeight;
+      if (extra > 0) el.style.height = `${el.offsetHeight + extra}px`;
+      applied = el.offsetHeight;
+    };
+
+    fit();
+
+    const ro = new ResizeObserver(() => {
+      if (fromUs) {
+        fromUs = false;
+        return;
+      }
+      if (el.getClientRects().length === 0) return;
+      const h = el.offsetHeight;
+      if (applied >= 0 && Math.abs(h - applied) > 1) {
+        userHeight.current = h;
+        applied = h;
+        return;
+      }
+      if (userHeight.current == null) fit();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [autoResize, value]);
 
   return (
     <textarea
@@ -273,8 +326,9 @@ export const Textarea = forwardRef<
       value={value}
       className={cn(
         fieldClassName({ size: fieldSize, variant, className }),
-        'leading-snug',
-        autoResize ? 'resize-none overflow-hidden' : 'resize-y',
+        // Floor keeps a field readable if it is measured before it is shown.
+        // The grip always works; auto-resize only picks the starting height.
+        'min-h-8 resize-y overflow-auto leading-snug',
       )}
       {...props}
     />
