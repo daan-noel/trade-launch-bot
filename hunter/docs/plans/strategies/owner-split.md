@@ -10,9 +10,9 @@ Owner profit, outsider buying, the dump, and the owner's decisions in
 
 ## At a glance
 
-Three steps. The six facts are step 1. Rule ids on one fact are the same fact.
+Three steps. The seven facts are step 1. Rule ids on one fact are the same fact.
 
-**1. Mark, on coins that already ended.** The whole tape is known, including the dump. Six facts
+**1. Mark, on coins that already ended.** The whole tape is known, including the dump. Seven facts
 name the owner.
 
 **2. Grow, then check.** A known owner's transaction shape, and the key that pays its fees, name
@@ -26,7 +26,7 @@ from the top. The first line that matches is the answer. Do not read the lines u
 - A line matches: this trade is owner. Later trades of that wallet on this coin are owner.
 - No line matches: this trade is outsider. The next trade of that wallet is judged again.
 
-### The six facts
+### The seven facts
 
 - **Create (A1, A2).** Signed the launch. Every wallet in that transaction is the owner.
 - **Birth (A5, A3).** Bought with the launch, before anyone else can see the coin. A sniper that
@@ -35,18 +35,21 @@ from the top. The first line that matches is the answer. Do not read the lines u
   wallet in it is the owner, and so are the buys they already made on this coin.
 - **Shape (D, A4, S1, S2).** One transaction shape is a large share of this coin, or a script
   used almost only on this group's coins.
+- **Wake-up.** A buy list that keeps being the first trade after 2 seconds with no trade. At
+  least 5 buys, and at least 4 of every 5 of them.
 - **Hidden move (T1, T2, T3).** Sold tokens the wallet never bought, or only buys and never sells.
 - **Wallets (W, L, S3, S4, S6).** Trades almost only these coins, fresh wallets cash out together,
   or the key that pays the fee.
 
 ```mermaid
 flowchart TD
-  done["Finished coins. The life of the coin is already on the tape"] --> mark["Step 1. The six facts mark the owner"]
+  done["Finished coins. The life of the coin is already on the tape"] --> mark["Step 1. The seven facts mark the owner"]
 
   mark --> create["Create. Signed the launch"]
   mark --> birth["Birth. Bought with the launch. A sniper is real money"]
   mark --> tx["One transaction. Several sells together. Two or ten is the same"]
   mark --> shape["Shape. A large share of this coin, or almost only these coins"]
+  mark --> wake["Wake-up. The buy that keeps ending a 2 second silence"]
   mark --> hidden["Hidden move. Sold tokens they never bought"]
   mark --> wallets["Wallets. Almost only these coins, or the key that pays"]
 
@@ -54,6 +57,7 @@ flowchart TD
   birth --> known
   tx --> known
   shape --> known
+  wake --> known
   hidden --> known
   wallets --> known
 
@@ -79,7 +83,7 @@ several sells is visible.
 Each fact is one way the same person shows up. A wallet any fact names is the owner on that coin.
 Where the fact says so, the buys that wallet already made on the coin are the owner's too.
 
-The numbers for each fact are in [The six facts](#the-six-facts).
+The numbers for each fact are in [The seven facts](#the-seven-facts).
 
 ### 2. Grow, then check
 
@@ -115,7 +119,7 @@ this trade. The lines under it are not read.
 - Line 5 matches a sell whose core is two or more `Pump.Fun: SELL`. This trade is owner. Every
   wallet in that transaction is owner on this coin, and the buys they already made here are owner
   too. Stop.
-- Lines 1 through 12 all miss. This trade is outsider.
+- Lines 1 through 13 all miss. This trade is outsider.
 - Once a wallet is owner on this coin, its later trades match line 9 and stay owner.
 - A trade that matches nothing does not freeze the wallet. Its next trade walks the list again.
 
@@ -146,7 +150,7 @@ or `max_sol_cost`). Fixed at birth, so they never depend on the split.
 **Fall.** A drop is a slot where the price falls 10% or more. A fall is one drop (a one-shot dump),
 or drops less than 30 s apart (a waterfall). The main fall is the coin's deepest.
 
-## The six facts
+## The seven facts
 
 Each fact is the one-line version above, with the numbers.
 
@@ -212,6 +216,22 @@ The owner repeats one transaction shape. It shows up in two places.
   a fresh CU limit is still the same script.
 - The script and the paying key are applied again until a round adds no wallet.
 
+### The wake-up
+
+The owner buys when nobody else is buying, so the tape does not go dead.
+
+- On one coin, a buy instruction list is the owner's volume pattern when it buys at least 5
+  times, and at least 4 of every 5 of those buys are the first trade after 2 seconds with no
+  trade.
+- The 2 seconds is the time since the previous transaction on that coin.
+- The list is the full instruction list. The core of a plain pump buy is only `Pump.Fun: BUY`,
+  so the core is not this test.
+- A list the market uses widely still passes on a coin where its buys are the ones that end the
+  silence. On a coin where the same list trades inside the crowd, it fails.
+- Every wallet using that list on the coin is the owner, including a buy that landed while the
+  tape was busy.
+- One buy after a pause is an ordinary trade. The repetition is the fact.
+
 ### The hidden move (T1, T2, T3)
 
 Tokens pass between the owner's wallets with no trade on the tape.
@@ -248,7 +268,7 @@ A real trader spreads over the market. The owner does not.
 
 ## Outsider
 
-Real money, once the six facts have passed. The birth fact names the sniper. The other kinds:
+Real money, once the seven facts have passed. The birth fact names the sniper. The other kinds:
 
 - **Button buyer.** Buys a size an app offers as a button: 0.1 / 0.5 / 1 SOL after the venue fee
   (0.099, 0.494, 0.988), or a dollar button at the day's SOL price, or a size 15 or more traders
@@ -278,13 +298,16 @@ lines under it.
 | 10 | in one transaction with an owner wallet | owner | same transaction |
 | 11 | a fresh wallet selling out in a slot where 2 or more other fresh wallets do | owner, from that sell on | wallets |
 | 12 | a shape that has reached 20% of this coin's trades or SOL so far | owner, and the wallets using it on this coin | script's shape |
-| 13 | anything else, snipers included | outsider | |
+| 13 | a buy list with at least 5 buys on this coin, at least 4 of every 5 the first trade after 2 seconds with no trade | owner, and the wallets using it on this coin | wake-up |
+| 14 | anything else, snipers included | outsider | |
 
 In the engine, a rule reads structures (lines 1, 4, 5, 10) and the bag (line 6), which the engine
 already keeps per wallet. A wallet is never a term in a rule
 ([_!___strategy.md](_!___strategy.md) T5). Lines 2, 3, 7, 8, and 9 read lists built daily. The tag
 carries line 2 as wallets, because a birth buy is often a public `Pump.Fun: BUY`, and line 5 as one
 core row per pack size. Live, line 6 turns a trader owner only from its first sell below zero.
+Line 13 reads the gaps on this coin. The list passes once 5 buys have landed and 4 of every 5
+followed 2 seconds with no trade.
 
 ## Match levels
 
@@ -327,7 +350,7 @@ coins. Fewer coins, and the set stays untested. Tune the two so the creator pass
 that wins fails: a wallet on 100 or more coins, net SOL above zero, behind on fewer than half its
 coins, that never used the owner's program and never created a coin. Snipers are not judged here.
 
-The six facts hold for every chart shape. C1, C2, and the verify checks below are retuned per shape.
+The seven facts hold for every chart shape. C1, C2, and the verify checks below are retuned per shape.
 
 | shape | the fall | C1 and C2 |
 | --- | --- | --- |
@@ -352,7 +375,7 @@ V1 reads the owner side as a whole. A buyer wallet loses while a seller wallet c
 every day from the last two weeks: wallets change fast, shapes and paying keys slowly.
 
 A fresh wallet on a public app, at that app's default fee, that buys once and sells what it bought,
-matches none of the six facts.
+matches none of the seven facts.
 
 
 ## Appendix A - tested and not used
