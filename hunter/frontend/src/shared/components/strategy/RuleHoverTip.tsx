@@ -72,6 +72,9 @@ export function RuleDetailCard({
   );
 }
 
+/** How long the pointer rests before the In words reading opens. */
+export const RULE_WORDS_TIP_DELAY_MS = 1_000;
+
 /**
  * Wrap a cell so hover shows the rule. Portal + open-only mount keeps dense
  * tables cheap. `openDelayMs` holds the panel until the pointer has rested

@@ -31,7 +31,7 @@ import { ModeBadge } from './ModeBadge';
 import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
 import { buildRuleTradeColumns } from './ruleParamsColumns';
 import { RuleExclusiveMark } from './RuleParamsSummary';
-import { RuleHoverTip } from './RuleHoverTip';
+import { RULE_WORDS_TIP_DELAY_MS, RuleHoverTip } from './RuleHoverTip';
 import { RuleLabels } from './RuleLabels';
 import { RuleModeFilter } from './RuleModeFilter';
 import { RuleSyncModal } from './RuleSyncModal';
@@ -85,9 +85,6 @@ import {
 
 /** Closed trades behind Win% / Avg% / Exp (entered + terminal). */
 const strategyRuleRowKey = (r: StrategyRule) => r.id;
-
-/** Rules and Copy: the Chain cell must be hovered this long before the wording opens. */
-const RULE_CHAIN_TIP_DELAY_MS = 1_000;
 
 function closedCount(r: StrategyRule): number {
   return (r.win_count ?? 0) + (r.loss_count ?? 0);
@@ -742,7 +739,7 @@ export function RulesView({
       key: 'rule_name',
       label: 'Name',
       group: 'rule',
-      render: (r) => (
+      render: (r: StrategyRule) => (
         <div className="flex min-w-40 flex-col items-center gap-1">
           <div className="flex items-center justify-center gap-1">
             <span className="font-medium text-text">{r.rule_name}</span>
@@ -771,7 +768,7 @@ export function RulesView({
       key: 'status',
       label: 'Status',
       group: 'rule',
-      render: (r) => {
+      render: (r: StrategyRule) => {
         if (!r.is_enabled) {
           return <Badge variant="danger">Disabled</Badge>;
         }
@@ -798,7 +795,7 @@ export function RulesView({
       key: 'mode',
       label: 'Mode',
       group: 'rule',
-      render: (r) => (
+      render: (r: StrategyRule) => (
         <ModeBadge mode={r.trade_mode} />
       ),
       searchValue: (r) => r.trade_mode,
@@ -844,13 +841,13 @@ export function RulesView({
       col.key === 'params'
         ? {
             ...col,
-            cellClassName: (r) =>
+            cellClassName: (r: StrategyRule) =>
               ['relative', col.cellClassName?.(r)].filter(Boolean).join(' '),
-            render: (r) => (
+            render: (r: StrategyRule) => (
               <RuleHoverTip
                 rule={r}
                 fingerprint={fpById.get(r.fingerprint_id)}
-                openDelayMs={RULE_CHAIN_TIP_DELAY_MS}
+                openDelayMs={RULE_WORDS_TIP_DELAY_MS}
                 fillCell
                 wordsOnly
               >
@@ -863,7 +860,7 @@ export function RulesView({
     {
       key: 'execute',
       label: 'Execute',
-      render: (r) => {
+      render: (r: StrategyRule) => {
         if (!r.is_enabled) {
           return (
             <IconButton

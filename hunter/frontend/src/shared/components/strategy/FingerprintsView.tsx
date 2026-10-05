@@ -21,6 +21,7 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { ModeBadge } from './ModeBadge';
 import { FingerprintForm } from './FingerprintForm';
 import { ruleChainCell } from './RuleParamsSummary';
+import { RULE_WORDS_TIP_DELAY_MS, RuleHoverTip } from './RuleHoverTip';
 import { capsDisplayText } from './capsRuleColumns';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { copyFingerprintIds } from 'lib/strategy/copyRule';
@@ -118,9 +119,16 @@ const COLOR_COLS: {
 
 /** Expanded row detail: rules that reference this fingerprint, with the same
  *  params summary as the Rules table so you can tell them apart at a glance.
+ *  Hovering a card for 1 second opens that rule's In words reading.
  *  Each card navigates to Rules with that rule selected (`?rule=`). Same-tab
  *  by default; Ctrl/middle-click still opens a new tab. */
-function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
+function FingerprintUsedByDetail({
+  rules,
+  fingerprint,
+}: {
+  rules: StrategyRule[];
+  fingerprint?: Fingerprint | null;
+}) {
   if (rules.length === 0) {
     return (
       <EmptyState compact message="Not used by any rules — safe to delete." />
@@ -142,30 +150,37 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
       <ul className="grid gap-2 sm:grid-cols-2">
         {rules.map((r) => (
           <li key={r.id}>
-            <Link
-              to={rulesHref(r.id)}
-              className="flex flex-col gap-2 rounded-md border border-info/25 bg-info/8 px-3 py-2.5 text-left transition-colors hover:border-accent/40 hover:bg-info/14"
-              title={`Open rule “${r.rule_name}”`}
+            <RuleHoverTip
+              rule={r}
+              fingerprint={fingerprint}
+              wordsOnly
+              openDelayMs={RULE_WORDS_TIP_DELAY_MS}
+              className="flex w-full"
             >
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-text">
-                  {r.rule_name}
-                </span>
-                <LinkIcon className="h-3.5 w-3.5 shrink-0 text-accent" />
-                <ModeBadge mode={r.trade_mode} />
-                <Badge
-                  variant={!r.is_enabled ? 'danger' : r.is_active ? 'success' : 'neutral'}
-                  size="sm"
-                >
-                  {!r.is_enabled ? 'Disabled' : r.is_active ? 'Active' : 'Idle'}
-                </Badge>
-              </div>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-text-dim">
-                <span>buy {lamportsToSol(r.buy_amount_lamports)}◎</span>
-                <span>caps {capsDisplayText(r)}</span>
-              </div>
-              {ruleChainCell(r.params)}
-            </Link>
+              <Link
+                to={rulesHref(r.id)}
+                className="flex w-full flex-col gap-2 rounded-md border border-info/25 bg-info/8 px-3 py-2.5 text-left transition-colors hover:border-accent/40 hover:bg-info/14"
+              >
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-text">
+                    {r.rule_name}
+                  </span>
+                  <LinkIcon className="h-3.5 w-3.5 shrink-0 text-accent" />
+                  <ModeBadge mode={r.trade_mode} />
+                  <Badge
+                    variant={!r.is_enabled ? 'danger' : r.is_active ? 'success' : 'neutral'}
+                    size="sm"
+                  >
+                    {!r.is_enabled ? 'Disabled' : r.is_active ? 'Active' : 'Idle'}
+                  </Badge>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-text-dim">
+                  <span>buy {lamportsToSol(r.buy_amount_lamports)}◎</span>
+                  <span>caps {capsDisplayText(r)}</span>
+                </div>
+                {ruleChainCell(r.params)}
+              </Link>
+            </RuleHoverTip>
           </li>
         ))}
       </ul>
@@ -213,7 +228,7 @@ export function FingerprintsView({
 
   const rowDetail = useCallback(
     (fp: Fingerprint) => (
-      <FingerprintUsedByDetail rules={rulesByFp.get(fp.id) ?? []} />
+      <FingerprintUsedByDetail rules={rulesByFp.get(fp.id) ?? []} fingerprint={fp} />
     ),
     [rulesByFp],
   );
@@ -519,7 +534,9 @@ export function FingerprintsView({
       >
         {editing !== null && (
           <div className="flex flex-col gap-3">
-            {editingId && <FingerprintUsedByDetail rules={editingRules} />}
+            {editingId && editing !== 'new' && (
+              <FingerprintUsedByDetail rules={editingRules} fingerprint={editing} />
+            )}
             <FingerprintForm
               key={editing === 'new' ? 'new' : editing.id}
               initial={editing === 'new' ? undefined : editing}
