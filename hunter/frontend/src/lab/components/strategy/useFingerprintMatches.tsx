@@ -62,7 +62,6 @@ import {
   clampBucketToRange,
   resolveCreationWindow,
   type CreationBucket,
-  type CreationRangePreset,
   type CreationWindow,
 } from 'components/creation-stats/creationStats';
 import { formatWithCommas } from 'utils/format';
@@ -77,17 +76,13 @@ const GroupedCreationTrendChart = lazy(() =>
 );
 
 /** Look-back window (days) the scoped endpoint applies when no `from` is sent —
- *  mirrors the backend `DEFAULT_WINDOW_DAYS` in `creation_stats.rs`. Surfaced so
- *  the count chip / modal can label the window honestly, and the modal's own
- *  window opens on the same span the count chip reports. */
+ *  mirrors the backend `DEFAULT_WINDOW_DAYS` in `creation_stats.rs`. The count
+ *  chip omits `from`, so it reports this span. */
 export const FINGERPRINT_MATCH_WINDOW_DAYS = 30;
 
-/** The modal's initial window — the count chip's default span, as a picker value. */
-const INITIAL_WINDOW: CreationWindow = {
-  preset: String(FINGERPRINT_MATCH_WINDOW_DAYS) as CreationRangePreset,
-  from: '',
-  to: '',
-};
+/** The matches modal opens on the last day. A shortcut preset, so the bound
+ *  stays a rolling look-back instead of a frozen pair of instants. */
+const INITIAL_WINDOW: CreationWindow = { preset: '1', from: '', to: '' };
 
 const INITIAL_QUERY: TableQuery = {
   page: 1,
@@ -112,8 +107,9 @@ interface MatchScope {
   cell?: { dow: number; hour: number } | null;
 }
 
-/** The whole-window, UTC scope — what the lazy count chip asks for (no tile, no
- *  look-back override), and the modal's initial state. */
+/** The count chip's scope: no tile and no `from`, so the backend applies its
+ *  own {@link FINGERPRINT_MATCH_WINDOW_DAYS} window. The modal does not use
+ *  this — it opens on {@link INITIAL_WINDOW}. */
 const DEFAULT_SCOPE: MatchScope = { tz: 'UTC' };
 
 /** Build the scoped-token args (fingerprint scope ⇒ group_by/group_key ignored

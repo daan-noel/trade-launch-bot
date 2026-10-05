@@ -310,8 +310,9 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   patches table rows; detail/chart `TokenTradeChart` appends the same frames into
   RTK `getTokenTrades` via `useWatchTokenTradesLive`; scroll-into-view on select;
   table stream toggle labeled **STREAM ON/OFF** so it is not confused with the
-  header trading kill switch; slim page-owned `TokensFilterBar` (Created /
-  Dead / Migrated) above the table — not inside `DataTable`; `?mint=`
+  header trading kill switch; slim page-owned `TokensFilterBar` (Created
+  defaults to the last day / Dead / Migrated) above the table — not inside
+  `DataTable`; `?mint=`
   deep-links selection), Profiles, Settings (`pages/settings/` — 2-col
   content-sized Trading / Notifications / Tracking / Reliability grid
   (`items-start`, no viewport stretch); page-level Saved/error feedback;
