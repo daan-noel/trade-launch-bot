@@ -12,8 +12,8 @@ use trading_core::api::table_eval::{apply_table_request, resolve_token_enrichmen
 use trading_core::api::table_query::{Page, TableRequest};
 
 use crate::services::portfolio::{self, cash_summary, partition_cash, HoldingsTableSummary};
-use trading_core::strategies::kernel::weighted_return_pct;
 use crate::state::deploy_state::DeployState;
+use trading_core::strategies::kernel::weighted_return_pct;
 
 /// Column grammar for the server-paged Holdings table: frontend column key → the
 /// serialized [`portfolio::PortfolioHolding`] JSON field + type. Row-owned wallet
@@ -131,7 +131,10 @@ pub async fn portfolio_holdings_summary(
 ) -> impl Responder {
     let mut req = body.into_inner();
     // Measure the whole filtered set (holdings are tens of rows; 1000 covers all).
-    req.pagination = Page { page: 1, page_size: 1000 };
+    req.pagination = Page {
+        page: 1,
+        page_size: 1000,
+    };
     req.sorting.clear();
     let holdings = match portfolio::list_holdings_cached(app_state.get_ref(), false).await {
         Ok(h) => h,

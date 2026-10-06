@@ -15,7 +15,6 @@
 // a WSOL token account (buy) / unwraps proceeds (sell) and closes it afterward.
 // ============================================================
 
-use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 use super::{AmmGlobalConfig, AmmPoolInfo, PumpFunTrader};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol::{
@@ -24,6 +23,7 @@ use crate::protocol::{
     AMM_POOL_BASE_VAULT_OFFSET, AMM_POOL_COIN_CREATOR_OFFSET, AMM_POOL_IS_CASHBACK_OFFSET,
     AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET, AMM_POOL_VIRTUAL_QUOTE_OFFSET,
 };
+use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 use serde_json::json;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -118,7 +118,9 @@ impl PumpFunTrader {
 
             // Recent blockhash (not durable nonce): the swap already carries ~27
             // accounts, and a nonce-advance would push the legacy tx over 1232 bytes.
-            let tx = self.build_recent_tx(ixs, self.config.signer.as_ref()).await?;
+            let tx = self
+                .build_recent_tx(ixs, self.config.signer.as_ref())
+                .await?;
             let sig = self.send_transaction(&tx).await?;
             info!(
                 "📤 AMM buy sent — sig: {} | SOL: {} | {}ms",
@@ -131,7 +133,10 @@ impl PumpFunTrader {
             self.user_token_accounts
                 .insert(token_mint.to_string(), user_base);
             if confirm {
-                match self.confirm_transaction(&sig, self.config.retry.confirm_max_retries).await {
+                match self
+                    .confirm_transaction(&sig, self.config.retry.confirm_max_retries)
+                    .await
+                {
                     Ok(()) => {
                         info!(
                             "✅ AMM buy confirmed — sig: {} | {}ms",
@@ -145,7 +150,10 @@ impl PumpFunTrader {
                             && classify_swap_revert(custom, SwapRoute::Amm, SwapDirection::Buy)
                                 == SwapRetryDecision::RefreshCoinCreator =>
                     {
-                        match self.refresh_amm_pool_info(token_mint, base_token_program_id).await {
+                        match self
+                            .refresh_amm_pool_info(token_mint, base_token_program_id)
+                            .await
+                        {
                             Ok(Some(vault)) => {
                                 info!(
                                     "🔄 AMM buy reverted on a stale coin_creator; refreshed the \
@@ -292,7 +300,10 @@ impl PumpFunTrader {
                     && classify_swap_revert(*custom, SwapRoute::Amm, SwapDirection::Sell)
                         == SwapRetryDecision::RefreshCoinCreator
                 {
-                    match self.refresh_amm_pool_info(token_mint, base_token_program_id).await {
+                    match self
+                        .refresh_amm_pool_info(token_mint, base_token_program_id)
+                        .await
+                    {
                         Ok(Some(vault)) => {
                             info!(
                                 "🔄 AMM sell reverted on a stale coin_creator; refreshed the \
@@ -359,8 +370,11 @@ impl PumpFunTrader {
         let base_amount_out = amm_buy_base_amount_out(base_out, slippage_bps);
 
         let quote_tp = protocol::TOKEN; // WSOL is legacy SPL
-        let user_base =
-            get_associated_token_address_with_program_id(user, &pool.base_mint, &pool.base_token_program);
+        let user_base = get_associated_token_address_with_program_id(
+            user,
+            &pool.base_mint,
+            &pool.base_token_program,
+        );
         let user_quote =
             get_associated_token_address_with_program_id(user, &protocol::WSOL_MINT, &quote_tp);
 
@@ -385,21 +399,24 @@ impl PumpFunTrader {
         let mut data = BUY_DISC.to_vec();
         data.extend_from_slice(&base_amount_out.to_le_bytes()); // base_amount_out
         data.extend_from_slice(&spendable.to_le_bytes()); // max_quote_amount_in
-        // track_volume: OptionBool (1 byte). Only accrue cashback volume for
-        // cashback coins — accruing requires the user_volume_accumulator to be
-        // initialized, so default off for non-cashback tokens.
+                                                          // track_volume: OptionBool (1 byte). Only accrue cashback volume for
+                                                          // cashback coins — accruing requires the user_volume_accumulator to be
+                                                          // initialized, so default off for non-cashback tokens.
         data.push(u8::from(pool.is_cashback_coin));
         ixs.push(Instruction {
             program_id: protocol::PUMP_SWAP,
-            accounts: self.amm_swap_accounts(
-                &pool, user, &cfg, user_base, user_quote, quote_tp, true,
-            ),
+            accounts: self
+                .amm_swap_accounts(&pool, user, &cfg, user_base, user_quote, quote_tp, true),
             data,
         });
 
         // Unwrap any leftover WSOL (and recover the account rent) back to SOL.
         ixs.push(spl_token::instruction::close_account(
-            &quote_tp, &user_quote, user, user, &[],
+            &quote_tp,
+            &user_quote,
+            user,
+            user,
+            &[],
         )?);
 
         Ok((ixs, user_base))
@@ -473,9 +490,8 @@ impl PumpFunTrader {
         data.extend_from_slice(&min_quote_out.to_le_bytes());
         ixs.push(Instruction {
             program_id: protocol::PUMP_SWAP,
-            accounts: self.amm_swap_accounts(
-                &pool, user, &cfg, user_base, user_quote, quote_tp, false,
-            ),
+            accounts: self
+                .amm_swap_accounts(&pool, user, &cfg, user_base, user_quote, quote_tp, false),
             data,
         });
 
@@ -484,7 +500,11 @@ impl PumpFunTrader {
         // post-clear `close_token_account` tx, not bundled here — a bundled close
         // would revert the whole sell if any base dust remained.
         ixs.push(spl_token::instruction::close_account(
-            &quote_tp, &user_quote, fund, user, &[],
+            &quote_tp,
+            &user_quote,
+            fund,
+            user,
+            &[],
         )?);
 
         Ok(ixs)
@@ -520,25 +540,25 @@ impl PumpFunTrader {
         );
 
         let mut accounts = vec![
-            AccountMeta::new(pool.pool, false),                       // 0  pool
-            AccountMeta::new(*user, true),                            // 1  user (signer)
-            AccountMeta::new_readonly(global_config, false),          // 2  global_config
-            AccountMeta::new_readonly(pool.base_mint, false),         // 3  base_mint
-            AccountMeta::new_readonly(pool.quote_mint, false),        // 4  quote_mint
-            AccountMeta::new(user_base, false),                       // 5  user_base_token_account
-            AccountMeta::new(user_quote, false),                      // 6  user_quote_token_account
-            AccountMeta::new(pool.pool_base_token_account, false),    // 7  pool_base_token_account
-            AccountMeta::new(pool.pool_quote_token_account, false),   // 8  pool_quote_token_account
-            AccountMeta::new_readonly(pf_recipient, false),           // 9  protocol_fee_recipient
-            AccountMeta::new(pf_recipient_ta, false),                 // 10 protocol_fee_recipient_token_account
+            AccountMeta::new(pool.pool, false),                     // 0  pool
+            AccountMeta::new(*user, true),                          // 1  user (signer)
+            AccountMeta::new_readonly(global_config, false),        // 2  global_config
+            AccountMeta::new_readonly(pool.base_mint, false),       // 3  base_mint
+            AccountMeta::new_readonly(pool.quote_mint, false),      // 4  quote_mint
+            AccountMeta::new(user_base, false),                     // 5  user_base_token_account
+            AccountMeta::new(user_quote, false),                    // 6  user_quote_token_account
+            AccountMeta::new(pool.pool_base_token_account, false),  // 7  pool_base_token_account
+            AccountMeta::new(pool.pool_quote_token_account, false), // 8  pool_quote_token_account
+            AccountMeta::new_readonly(pf_recipient, false),         // 9  protocol_fee_recipient
+            AccountMeta::new(pf_recipient_ta, false), // 10 protocol_fee_recipient_token_account
             AccountMeta::new_readonly(pool.base_token_program, false), // 11 base_token_program
-            AccountMeta::new_readonly(quote_token_program, false),    // 12 quote_token_program
-            AccountMeta::new_readonly(system_program::id(), false),    // 13 system_program
+            AccountMeta::new_readonly(quote_token_program, false), // 12 quote_token_program
+            AccountMeta::new_readonly(system_program::id(), false), // 13 system_program
             AccountMeta::new_readonly(spl_associated_token_account::id(), false), // 14 associated_token_program
-            AccountMeta::new_readonly(event_authority, false),        // 15 event_authority
-            AccountMeta::new_readonly(protocol::PUMP_SWAP, false),    // 16 program
-            AccountMeta::new(cc_ata, false),                          // 17 coin_creator_vault_ata
-            AccountMeta::new_readonly(cc_authority, false),           // 18 coin_creator_vault_authority
+            AccountMeta::new_readonly(event_authority, false), // 15 event_authority
+            AccountMeta::new_readonly(protocol::PUMP_SWAP, false), // 16 program
+            AccountMeta::new(cc_ata, false),                   // 17 coin_creator_vault_ata
+            AccountMeta::new_readonly(cc_authority, false),    // 18 coin_creator_vault_authority
         ];
         // Per-user volume accumulator — always derived from the instruction
         // `user` (not the trader's cached wallet UVA) so holder-sims and any
@@ -553,9 +573,13 @@ impl PumpFunTrader {
             // tracked; readonly otherwise (matches real swaps). user_volume_
             // accumulator is always writable on the buy path.
             if pool.is_cashback_coin {
-                accounts.push(AccountMeta::new(self.amm_global_volume_accumulator, false)); // 19
+                accounts.push(AccountMeta::new(self.amm_global_volume_accumulator, false));
+            // 19
             } else {
-                accounts.push(AccountMeta::new_readonly(self.amm_global_volume_accumulator, false));
+                accounts.push(AccountMeta::new_readonly(
+                    self.amm_global_volume_accumulator,
+                    false,
+                ));
             }
             accounts.push(AccountMeta::new(user_uva, false)); // 20
         }
@@ -571,14 +595,20 @@ impl PumpFunTrader {
         // is required — keeping it shifts pool_v2 out of its remaining-account
         // slot and reverts with InvalidPoolV2 (6062).
         if pool.is_cashback_coin {
-            let cashback_ata =
-                get_associated_token_address_with_program_id(&user_uva, &protocol::WSOL_MINT, &quote_token_program);
+            let cashback_ata = get_associated_token_address_with_program_id(
+                &user_uva,
+                &protocol::WSOL_MINT,
+                &quote_token_program,
+            );
             accounts.push(AccountMeta::new(cashback_ata, false)); // writable
             if !with_volume {
                 accounts.push(AccountMeta::new(user_uva, false)); // writable, sell-only
             }
             if !pool.needs_pool_v2 {
-                accounts.push(AccountMeta::new_readonly(protocol::PUMP_AMM_CASHBACK_GLOBAL, false));
+                accounts.push(AccountMeta::new_readonly(
+                    protocol::PUMP_AMM_CASHBACK_GLOBAL,
+                    false,
+                ));
             }
         } else if let Some(marker) = pool.fee_share_marker {
             // Non-cashback swaps carry a single per-coin "fee-share" marker
@@ -685,7 +715,11 @@ impl PumpFunTrader {
         needs_pool_v2: bool,
     ) -> bool {
         let ata = |owner: &Pubkey| {
-            get_associated_token_address_with_program_id(owner, &protocol::WSOL_MINT, &protocol::TOKEN)
+            get_associated_token_address_with_program_id(
+                owner,
+                &protocol::WSOL_MINT,
+                &protocol::TOKEN,
+            )
         };
         // Buy (volume block present): uva at index 20, before_pk = cashback_ata.
         if let Some(Ok(uva)) = keys.get(20).map(|s| Pubkey::from_str(s)) {
@@ -758,11 +792,9 @@ impl PumpFunTrader {
         base_token_program_id: &str,
         reuse_layout: Option<(bool, Option<Pubkey>)>,
     ) -> Result<AmmPoolInfo> {
-        let account = self
-            .rpc
-            .get_account(&pool)
-            .await
-            .with_context(|| format!("PumpSwap pool {} not found (is the token migrated?)", pool))?;
+        let account = self.rpc.get_account(&pool).await.with_context(|| {
+            format!("PumpSwap pool {} not found (is the token migrated?)", pool)
+        })?;
         let data = &account.data;
         if data.len() < AMM_POOL_MIN_LEN {
             bail!("PumpSwap pool account too short: {} bytes", data.len());
@@ -858,7 +890,10 @@ impl PumpFunTrader {
         // them. Errored sigs are filtered before `getTransaction`, so the common
         // case still stops at the first good swap (~1 `getTransaction`).
         let sigs = self
-            .rpc_json("getSignaturesForAddress", json!([pool_str, { "limit": 50 }]))
+            .rpc_json(
+                "getSignaturesForAddress",
+                json!([pool_str, { "limit": 50 }]),
+            )
             .await?;
         let program_str = protocol::PUMP_SWAP.to_string();
 
@@ -883,8 +918,7 @@ impl PumpFunTrader {
                 // the next candidate may still yield the layout.
                 Err(_) => continue,
             };
-            if let Some((needs_pool_v2, marker)) =
-                extract_swap_layout(&tx, &program_str, &pool_str)
+            if let Some((needs_pool_v2, marker)) = extract_swap_layout(&tx, &program_str, &pool_str)
             {
                 let marker = match marker {
                     Some(m) => Some(Pubkey::from_str(&m)?),
@@ -918,7 +952,11 @@ impl PumpFunTrader {
     /// nothing else warms this entry.) Only the very first call per process
     /// fetches inline.
     async fn amm_config(&self) -> Result<AmmGlobalConfig> {
-        if let Some((c, fetched)) = *self.amm_global_config.lock().unwrap_or_else(|p| p.into_inner()) {
+        if let Some((c, fetched)) = *self
+            .amm_global_config
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+        {
             if fetched.elapsed() >= AMM_CONFIG_MAX_AGE {
                 self.spawn_amm_config_refresh();
             }
@@ -927,7 +965,10 @@ impl PumpFunTrader {
 
         // Cold (first call this process) — fetch inline.
         let cfg = fetch_amm_config(&self.rpc, &self.amm_global_config_pda).await?;
-        *self.amm_global_config.lock().unwrap_or_else(|p| p.into_inner()) = Some((cfg, Instant::now()));
+        *self
+            .amm_global_config
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some((cfg, Instant::now()));
         Ok(cfg)
     }
 
@@ -937,7 +978,10 @@ impl PumpFunTrader {
     /// stale read re-tries).
     fn spawn_amm_config_refresh(&self) {
         use std::sync::atomic::Ordering;
-        if self.amm_config_refresh_inflight.swap(true, Ordering::AcqRel) {
+        if self
+            .amm_config_refresh_inflight
+            .swap(true, Ordering::AcqRel)
+        {
             return;
         }
         let rpc = self.rpc.clone();
@@ -988,7 +1032,10 @@ impl PumpFunTrader {
         if base_res == 0 || quote_vault == 0 {
             bail!("PumpSwap pool has zero reserves");
         }
-        Ok((base_res, quote_vault + u128::from(pool_virtual_quote(&pool_acc.data))))
+        Ok((
+            base_res,
+            quote_vault + u128::from(pool_virtual_quote(&pool_acc.data)),
+        ))
     }
 
     /// Pool reserves with a WS-cache fast path: serve a fresh AMM snapshot for
@@ -997,11 +1044,7 @@ impl PumpFunTrader {
     /// otherwise read the pool on-chain. Curve snapshots
     /// are never served here (the cache is venue-tagged), so a just-migrated
     /// token reads on-chain until its first AMM trade lands.
-    async fn amm_reserves_cached(
-        &self,
-        mint: &str,
-        pool: &AmmPoolInfo,
-    ) -> Result<(u128, u128)> {
+    async fn amm_reserves_cached(&self, mint: &str, pool: &AmmPoolInfo) -> Result<(u128, u128)> {
         if let Some(r) = self.reserve_cache.get_fresh(
             mint,
             std::time::Duration::from_millis(self.config.cache.reserve_max_age_ms),
@@ -1102,7 +1145,11 @@ impl PumpFunTrader {
     /// fails to parse, or if the facts are not internally consistent for this
     /// mint (base mint + canonical pool must match, so a corrupt/wrong row can
     /// never poison the cache into building a wrong-pool tail). Zero RPC.
-    pub fn seed_amm_pool_facts(&self, token_mint: &str, facts: &crate::types::AmmPoolFacts) -> bool {
+    pub fn seed_amm_pool_facts(
+        &self,
+        token_mint: &str,
+        facts: &crate::types::AmmPoolFacts,
+    ) -> bool {
         if self.amm_pool_cache.contains_key(token_mint) {
             return false;
         }
@@ -1206,7 +1253,11 @@ impl PumpFunTrader {
         // Account immediately before pool_v2 (or before buyback when no pool_v2):
         // cashback → cashback_ata (or legacy CASHBACK_GLOBAL); non-cashback →
         // fee-share marker.
-        let before_pk = pk(if needs_pool_v2 { n.checked_sub(4)? } else { n - 3 })?;
+        let before_pk = pk(if needs_pool_v2 {
+            n.checked_sub(4)?
+        } else {
+            n - 3
+        })?;
         let (is_cashback_coin, fee_share_marker) =
             if before_pk == protocol::PUMP_AMM_CASHBACK_GLOBAL {
                 (true, None)
@@ -1293,8 +1344,7 @@ impl PumpFunTrader {
     ) -> Result<Pubkey> {
         if let Some(o) = token_account_override {
             let pk = Pubkey::from_str(o).context("invalid token_account_override")?;
-            self.user_token_accounts
-                .insert(token_mint.to_string(), pk);
+            self.user_token_accounts.insert(token_mint.to_string(), pk);
             return Ok(pk);
         }
         match self.resolve_cached_token_account(token_mint).await? {
@@ -1390,7 +1440,10 @@ fn extract_swap_layout(
         }
         // Older layout: the 3rd-from-last slot IS the per-coin fee-share marker and
         // there is no `pool_v2`.
-        let marker = accounts.get(n - 3).and_then(|v| v.as_str()).map(str::to_string);
+        let marker = accounts
+            .get(n - 3)
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         return Some((false, marker));
     }
     None
@@ -1559,7 +1612,10 @@ mod tests {
         let mut data = vec![0u8; 301];
         data[245..253].copy_from_slice(&17_584_505_288u64.to_le_bytes());
         assert_eq!(super::pool_virtual_quote(&data), 17_584_505_288);
-        assert_eq!(super::pool_virtual_quote(&data[..crate::protocol::AMM_POOL_MIN_LEN]), 0);
+        assert_eq!(
+            super::pool_virtual_quote(&data[..crate::protocol::AMM_POOL_MIN_LEN]),
+            0
+        );
     }
 
     // --- AMM swap transaction-size guards -------------------------------------
@@ -1622,8 +1678,11 @@ mod tests {
         let legacy = protocol::TOKEN;
         let wsol = protocol::WSOL_MINT;
         let pool = worst_case_pool();
-        let user_base =
-            get_associated_token_address_with_program_id(user, &pool.base_mint, &pool.base_token_program);
+        let user_base = get_associated_token_address_with_program_id(
+            user,
+            &pool.base_mint,
+            &pool.base_token_program,
+        );
         let user_quote = get_associated_token_address_with_program_id(user, &wsol, &legacy);
         let mut ixs = compute_budget_ixs();
         ixs.push(create_associated_token_account_idempotent(
@@ -1632,7 +1691,9 @@ mod tests {
             &pool.base_mint,
             &pool.base_token_program,
         ));
-        ixs.push(create_associated_token_account_idempotent(user, user, &wsol, &legacy));
+        ixs.push(create_associated_token_account_idempotent(
+            user, user, &wsol, &legacy,
+        ));
         ixs.push(system_instruction::transfer(user, &user_quote, 1_000_000));
         ixs.push(spl_token::instruction::sync_native(&legacy, &user_quote).unwrap());
         let mut data = BUY_DISC.to_vec();
@@ -1644,8 +1705,14 @@ mod tests {
             accounts: t.amm_swap_accounts(&pool, user, &cfg(), user_base, user_quote, legacy, true),
             data,
         });
-        ixs.push(spl_token::instruction::close_account(&legacy, &user_quote, user, user, &[]).unwrap());
-        ixs.push(system_instruction::transfer(user, &Pubkey::new_unique(), 200_000)); // jito tip
+        ixs.push(
+            spl_token::instruction::close_account(&legacy, &user_quote, user, user, &[]).unwrap(),
+        );
+        ixs.push(system_instruction::transfer(
+            user,
+            &Pubkey::new_unique(),
+            200_000,
+        )); // jito tip
         ixs
     }
 
@@ -1653,21 +1720,40 @@ mod tests {
         let legacy = protocol::TOKEN;
         let wsol = protocol::WSOL_MINT;
         let pool = worst_case_pool();
-        let user_base =
-            get_associated_token_address_with_program_id(user, &pool.base_mint, &pool.base_token_program);
+        let user_base = get_associated_token_address_with_program_id(
+            user,
+            &pool.base_mint,
+            &pool.base_token_program,
+        );
         let user_quote = get_associated_token_address_with_program_id(user, &wsol, &legacy);
         let mut ixs = compute_budget_ixs();
-        ixs.push(create_associated_token_account_idempotent(user, user, &wsol, &legacy));
+        ixs.push(create_associated_token_account_idempotent(
+            user, user, &wsol, &legacy,
+        ));
         let mut data = SELL_DISC.to_vec();
         data.extend_from_slice(&0u64.to_le_bytes()); // base_amount_in
         data.extend_from_slice(&0u64.to_le_bytes()); // min_quote_amount_out
         ixs.push(Instruction {
             program_id: protocol::PUMP_SWAP,
-            accounts: t.amm_swap_accounts(&pool, user, &cfg(), user_base, user_quote, legacy, false),
+            accounts: t.amm_swap_accounts(
+                &pool,
+                user,
+                &cfg(),
+                user_base,
+                user_quote,
+                legacy,
+                false,
+            ),
             data,
         });
-        ixs.push(spl_token::instruction::close_account(&legacy, &user_quote, user, user, &[]).unwrap());
-        ixs.push(system_instruction::transfer(user, &Pubkey::new_unique(), 200_000)); // jito tip
+        ixs.push(
+            spl_token::instruction::close_account(&legacy, &user_quote, user, user, &[]).unwrap(),
+        );
+        ixs.push(system_instruction::transfer(
+            user,
+            &Pubkey::new_unique(),
+            200_000,
+        )); // jito tip
         ixs
     }
 
@@ -1784,7 +1870,10 @@ mod tests {
             // A swap's account list doesn't carry the raw coin_creator — the
             // harvested entry stores the default sentinel; `needs_pool_v2` is
             // recovered from the observed pool_v2 account and must round-trip.
-            let expect = AmmPoolInfo { coin_creator: Pubkey::default(), ..pool };
+            let expect = AmmPoolInfo {
+                coin_creator: Pubkey::default(),
+                ..pool
+            };
             assert_eq!(got, expect, "is_buy={is_buy}, cashback={is_cashback}");
         }
     }
@@ -1812,7 +1901,10 @@ mod tests {
             "fresh trader must accept a valid snapshot"
         );
         let seeded = *t_b.amm_pool_cache.get(&mint.to_string()).unwrap();
-        assert_eq!(seeded, cached, "seed must reproduce the harvested facts verbatim");
+        assert_eq!(
+            seeded, cached,
+            "seed must reproduce the harvested facts verbatim"
+        );
 
         // Idempotent: seeding an already-cached mint is a no-op `false` (a live
         // harvest / cold read always wins over a possibly-stale seed).
@@ -1825,7 +1917,11 @@ mod tests {
         let mint = Pubkey::new_unique();
         let pool = harvestable_pool(&t, mint, protocol::TOKEN, false);
         let keys = swap_keys(&t, &pool, false);
-        assert!(t.observe_amm_swap_accounts(&mint.to_string(), &protocol::TOKEN.to_string(), &keys));
+        assert!(t.observe_amm_swap_accounts(
+            &mint.to_string(),
+            &protocol::TOKEN.to_string(),
+            &keys
+        ));
         let facts = t.amm_pool_facts_snapshot(&mint.to_string()).unwrap();
 
         // Same facts under a DIFFERENT mint: base_mint / canonical pool no longer
@@ -1923,7 +2019,9 @@ mod tests {
             })
         };
         let filler = |n: usize| {
-            (0..n).map(|_| Pubkey::new_unique().to_string()).collect::<Vec<_>>()
+            (0..n)
+                .map(|_| Pubkey::new_unique().to_string())
+                .collect::<Vec<_>>()
         };
 
         // pool_v2 layout: [pool, _, _, base_mint, …, pool_v2, buyback, buyback_wsol].
@@ -1962,7 +2060,10 @@ mod tests {
         let msg = Message::new_with_nonce(build_sell_ixs(&t, &user), Some(&user), &nonce, &user);
         let size = wire_size(&msg);
         eprintln!("worst-case AMM sell + nonce     = {size} B (limit {TX_LIMIT})");
-        assert!(size <= TX_LIMIT, "cashback AMM sell + nonce = {size} B (limit {TX_LIMIT})");
+        assert!(
+            size <= TX_LIMIT,
+            "cashback AMM sell + nonce = {size} B (limit {TX_LIMIT})"
+        );
     }
 
     #[test]
@@ -1972,7 +2073,10 @@ mod tests {
         let msg = Message::new(&build_buy_ixs(&t, &user), Some(&user));
         let size = wire_size(&msg);
         eprintln!("worst-case AMM buy  + blockhash = {size} B (limit {TX_LIMIT})");
-        assert!(size <= TX_LIMIT, "cashback AMM buy + blockhash = {size} B (limit {TX_LIMIT})");
+        assert!(
+            size <= TX_LIMIT,
+            "cashback AMM buy + blockhash = {size} B (limit {TX_LIMIT})"
+        );
     }
 
     #[test]
@@ -1986,6 +2090,9 @@ mod tests {
         let msg = Message::new_with_nonce(build_buy_ixs(&t, &user), Some(&user), &nonce, &user);
         let size = wire_size(&msg);
         eprintln!("worst-case AMM buy  + nonce     = {size} B (limit {TX_LIMIT})");
-        assert!(size > TX_LIMIT, "expected cashback AMM buy + nonce > {TX_LIMIT}, got {size} B");
+        assert!(
+            size > TX_LIMIT,
+            "expected cashback AMM buy + nonce > {TX_LIMIT}, got {size} B"
+        );
     }
 }

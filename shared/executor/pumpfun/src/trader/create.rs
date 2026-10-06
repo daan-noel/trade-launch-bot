@@ -18,8 +18,7 @@ use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     signature::{Keypair, Signer},
-    system_program,
-    sysvar,
+    system_program, sysvar,
     transaction::VersionedTransaction,
 };
 use spl_associated_token_account::{
@@ -81,8 +80,14 @@ impl PumpFunTrader {
         confirm: bool,
     ) -> Result<String> {
         let buy_lamports = executor_core::sol_to_lamports(dev_buy_sol);
-        let dev_buy = DevBuy { sol: dev_buy_sol, lamports: buy_lamports, slippage_bps, variant };
-        self.create_token_inner(mint, args, Some(dev_buy), confirm).await
+        let dev_buy = DevBuy {
+            sol: dev_buy_sol,
+            lamports: buy_lamports,
+            slippage_bps,
+            variant,
+        };
+        self.create_token_inner(mint, args, Some(dev_buy), confirm)
+            .await
     }
 
     /// Token-2022 `create_v2` — the current pump.fun default. Returns the tx signature.
@@ -107,8 +112,14 @@ impl PumpFunTrader {
         confirm: bool,
     ) -> Result<String> {
         let buy_lamports = executor_core::sol_to_lamports(dev_buy_sol);
-        let dev_buy = DevBuy { sol: dev_buy_sol, lamports: buy_lamports, slippage_bps, variant };
-        self.create_token_v2_inner(mint, args, Some(dev_buy), confirm).await
+        let dev_buy = DevBuy {
+            sol: dev_buy_sol,
+            lamports: buy_lamports,
+            slippage_bps,
+            variant,
+        };
+        self.create_token_v2_inner(mint, args, Some(dev_buy), confirm)
+            .await
     }
 
     async fn create_token_inner(
@@ -138,8 +149,19 @@ impl PumpFunTrader {
             dev_buy,
             0,
         )?;
-        self.send_create_tx(ixs, wallet, mint, confirm, &mint_pk, args.creator, token_program, false, false, t0)
-            .await
+        self.send_create_tx(
+            ixs,
+            wallet,
+            mint,
+            confirm,
+            &mint_pk,
+            args.creator,
+            token_program,
+            false,
+            false,
+            t0,
+        )
+        .await
     }
 
     async fn create_token_v2_inner(
@@ -196,7 +218,13 @@ impl PumpFunTrader {
     ) -> Result<Vec<Instruction>> {
         let mut core = Vec::with_capacity(3);
         core.push(create_ix);
-        core.extend(self.dev_buy_core_ixs(mint, creator, token_program, cashback_enabled, dev_buy)?);
+        core.extend(self.dev_buy_core_ixs(
+            mint,
+            creator,
+            token_program,
+            cashback_enabled,
+            dev_buy,
+        )?);
 
         let compute = &self.config.compute;
         let cu_limit = if dev_buy.is_some() {
@@ -316,8 +344,12 @@ impl PumpFunTrader {
         cashback_enabled: bool,
         dev_buy: Option<DevBuy>,
     ) -> Result<Vec<Instruction>> {
-        let Some(DevBuy { sol: dev_buy_sol, lamports: buy_lamports, slippage_bps, variant }) =
-            dev_buy
+        let Some(DevBuy {
+            sol: dev_buy_sol,
+            lamports: buy_lamports,
+            slippage_bps,
+            variant,
+        }) = dev_buy
         else {
             return Ok(Vec::new());
         };
@@ -336,12 +368,8 @@ impl PumpFunTrader {
         let token_program_pk = token_program.pubkey();
         let user_ata =
             get_associated_token_address_with_program_id(&wallet, mint, &token_program_pk);
-        let ata_ix = create_associated_token_account_idempotent(
-            &wallet,
-            &wallet,
-            mint,
-            &token_program_pk,
-        );
+        let ata_ix =
+            create_associated_token_account_idempotent(&wallet, &wallet, mint, &token_program_pk);
         let pdas = self.derive_token_pdas(mint, &creator, &token_program_pk, cashback_enabled);
         // The curve is created in THIS tx, so it has no on-chain state to read — its
         // live reserves are the protocol-constant fresh-curve reserves. Feed those
@@ -433,12 +461,7 @@ impl PumpFunTrader {
                 t0.elapsed().as_millis()
             );
         }
-        self.warm_post_create_cache(
-            mint_pk,
-            &creator,
-            &token_program.pubkey(),
-            cashback_enabled,
-        );
+        self.warm_post_create_cache(mint_pk, &creator, &token_program.pubkey(), cashback_enabled);
         let _ = is_mayhem_mode;
         Ok(sig)
     }
@@ -454,30 +477,32 @@ pub(super) fn derive_create_accounts(
         Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &protocol::PUMP_FUN).0;
     let associated_bonding_curve =
         get_associated_token_address_with_program_id(&bonding_curve, mint, &token_program_pk);
-    let mint_authority =
-        Pubkey::find_program_address(&[b"mint-authority"], &protocol::PUMP_FUN).0;
+    let mint_authority = Pubkey::find_program_address(&[b"mint-authority"], &protocol::PUMP_FUN).0;
     let global = Pubkey::find_program_address(&[b"global"], &protocol::PUMP_FUN).0;
     let metadata = if is_v2 {
         None
     } else {
-        Some(Pubkey::find_program_address(
-            &[
-                b"metadata",
-                protocol::MPL_TOKEN_METADATA.as_ref(),
-                mint.as_ref(),
-            ],
-            &protocol::MPL_TOKEN_METADATA,
+        Some(
+            Pubkey::find_program_address(
+                &[
+                    b"metadata",
+                    protocol::MPL_TOKEN_METADATA.as_ref(),
+                    mint.as_ref(),
+                ],
+                &protocol::MPL_TOKEN_METADATA,
+            )
+            .0,
         )
-        .0)
     };
     let (mayhem_global_params, mayhem_sol_vault, mayhem_state, mayhem_token_vault) = if is_v2 {
         let global_params =
             Pubkey::find_program_address(&[b"global-params"], &protocol::MAYHEM_PROGRAM).0;
-        let sol_vault =
-            Pubkey::find_program_address(&[b"sol-vault"], &protocol::MAYHEM_PROGRAM).0;
-        let mayhem_state =
-            Pubkey::find_program_address(&[b"mayhem-state", mint.as_ref()], &protocol::MAYHEM_PROGRAM)
-                .0;
+        let sol_vault = Pubkey::find_program_address(&[b"sol-vault"], &protocol::MAYHEM_PROGRAM).0;
+        let mayhem_state = Pubkey::find_program_address(
+            &[b"mayhem-state", mint.as_ref()],
+            &protocol::MAYHEM_PROGRAM,
+        )
+        .0;
         let mayhem_token_vault =
             get_associated_token_address_with_program_id(&sol_vault, mint, &token_program_pk);
         (
@@ -629,8 +654,14 @@ mod tests {
             global_pda: d(&[b"global"], &protocol::PUMP_FUN),
             fee_recipient: Pubkey::new_unique(),
             global_volume_accumulator: d(&[b"global_volume_accumulator"], &protocol::PUMP_FUN),
-            user_volume_accumulator: d(&[b"user_volume_accumulator", wallet.as_ref()], &protocol::PUMP_FUN),
-            fee_config: d(&[b"fee_config", protocol::PUMP_FUN.as_ref()], &protocol::FEE_PROGRAM),
+            user_volume_accumulator: d(
+                &[b"user_volume_accumulator", wallet.as_ref()],
+                &protocol::PUMP_FUN,
+            ),
+            fee_config: d(
+                &[b"fee_config", protocol::PUMP_FUN.as_ref()],
+                &protocol::FEE_PROGRAM,
+            ),
             stable_quote_mint: None,
         });
         t
@@ -655,7 +686,12 @@ mod tests {
             wallet,
             TokenProgram::Token2022,
             false,
-            Some(DevBuy { sol: 0.02, lamports: 20_000_000, slippage_bps: None, variant: BundleBuyVariant::BuyExactSolIn }),
+            Some(DevBuy {
+                sol: 0.02,
+                lamports: 20_000_000,
+                slippage_bps: None,
+                variant: BundleBuyVariant::BuyExactSolIn,
+            }),
             0,
         )
         .unwrap()
@@ -676,7 +712,10 @@ mod tests {
         let msg = solana_sdk::message::Message::new(&ixs, Some(&wallet));
         let size = wire_size(&msg);
         eprintln!("create_v2 + dev-buy legacy = {size} B (limit 1232)");
-        assert!(size > 1232, "expected legacy create_v2+dev-buy > 1232, got {size} B");
+        assert!(
+            size > 1232,
+            "expected legacy create_v2+dev-buy > 1232, got {size} B"
+        );
     }
 
     /// The fix: compiling the SAME instruction set as a v0 tx against the launch
@@ -696,13 +735,17 @@ mod tests {
             key: Pubkey::new_unique(),
             addresses: crate::alt::launch_alt_addresses(),
         };
-        let msg = v0::Message::try_compile(&wallet, &ixs, std::slice::from_ref(&alt), Hash::default())
-            .expect("compile v0 create tx");
+        let msg =
+            v0::Message::try_compile(&wallet, &ixs, std::slice::from_ref(&alt), Hash::default())
+                .expect("compile v0 create tx");
         let size = 1
             + 64 * msg.header.num_required_signatures as usize
             + VersionedMessage::V0(msg.clone()).serialize().len();
         eprintln!("create_v2 + dev-buy v0+ALT  = {size} B (limit 1232)");
-        assert!(size <= 1232, "expected v0+ALT create_v2+dev-buy <= 1232, got {size} B");
+        assert!(
+            size <= 1232,
+            "expected v0+ALT create_v2+dev-buy <= 1232, got {size} B"
+        );
         // The ALT must actually be doing the work — at least the immutable programs
         // + constant PDAs (>= 12) should resolve through it, not inline.
         assert!(
@@ -850,7 +893,15 @@ mod tests {
         let create_ix = build_create_v2_ix(&mint.pubkey(), wallet, &args, &accounts).unwrap();
 
         let got = t
-            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None, 0)
+            .assemble_create_ixs(
+                create_ix.clone(),
+                &mint.pubkey(),
+                wallet,
+                TokenProgram::Token2022,
+                false,
+                None,
+                0,
+            )
             .unwrap();
 
         let compute = &t.config.compute;
@@ -888,7 +939,12 @@ mod tests {
                 wallet,
                 TokenProgram::Token2022,
                 false,
-                Some(DevBuy { sol: 0.02, lamports: 20_000_000, slippage_bps: None, variant: BundleBuyVariant::BuyExactSolIn }),
+                Some(DevBuy {
+                    sol: 0.02,
+                    lamports: 20_000_000,
+                    slippage_bps: None,
+                    variant: BundleBuyVariant::BuyExactSolIn,
+                }),
                 0,
             )
             .unwrap();
@@ -897,8 +953,17 @@ mod tests {
         // buy from the SAME `build_curve_buy_core` SSOT the leg builds through (v1
         // buy_exact_sol_in ⇒ no extra WSOL ATA).
         let token_program_pk = TokenProgram::Token2022.pubkey();
-        let user_ata = get_associated_token_address_with_program_id(&wallet, &mint.pubkey(), &token_program_pk);
-        let ata_ix = create_associated_token_account_idempotent(&wallet, &wallet, &mint.pubkey(), &token_program_pk);
+        let user_ata = get_associated_token_address_with_program_id(
+            &wallet,
+            &mint.pubkey(),
+            &token_program_pk,
+        );
+        let ata_ix = create_associated_token_account_idempotent(
+            &wallet,
+            &wallet,
+            &mint.pubkey(),
+            &token_program_pk,
+        );
         let pdas = t.derive_token_pdas(&mint.pubkey(), &wallet, &token_program_pk, false);
         let min_out = compute_curve_buy_min_out(
             20_000_000,
@@ -908,8 +973,13 @@ mod tests {
         );
         let buy_ix = t
             .build_curve_buy_core(
-                BundleBuyVariant::BuyExactSolIn, &wallet, &mint.pubkey(), &pdas, &user_ata,
-                20_000_000, min_out,
+                BundleBuyVariant::BuyExactSolIn,
+                &wallet,
+                &mint.pubkey(),
+                &pdas,
+                &user_ata,
+                20_000_000,
+                min_out,
             )
             .unwrap()
             .buy_ix;
@@ -973,7 +1043,11 @@ mod tests {
         assert_eq!(ixs.len(), 7, "v2 dev-buy fuses the WSOL quote ATA");
         let buy_ix = &ixs[5];
         assert_eq!(buy_ix.program_id, protocol::PUMP_FUN);
-        assert_eq!(buy_ix.accounts.len(), 27, "must be the 27-account v2 buy layout");
+        assert_eq!(
+            buy_ix.accounts.len(),
+            27,
+            "must be the 27-account v2 buy layout"
+        );
     }
 
     /// An authored `create_layout` reshapes the create tx — a lean `[Core]`
@@ -997,14 +1071,32 @@ mod tests {
 
         // Default: the canonical 4-ix create-only shape.
         let canonical = t
-            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None, 0)
+            .assemble_create_ixs(
+                create_ix.clone(),
+                &mint.pubkey(),
+                wallet,
+                TokenProgram::Token2022,
+                false,
+                None,
+                0,
+            )
             .unwrap();
         assert_eq!(canonical.len(), 4);
 
         // Authored lean `[Core]` → just the create ix.
-        t.set_create_layout(Some(IxLayout { steps: vec![DecoStep::Core] }));
+        t.set_create_layout(Some(IxLayout {
+            steps: vec![DecoStep::Core],
+        }));
         let lean = t
-            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None, 0)
+            .assemble_create_ixs(
+                create_ix.clone(),
+                &mint.pubkey(),
+                wallet,
+                TokenProgram::Token2022,
+                false,
+                None,
+                0,
+            )
             .unwrap();
         assert_eq!(lean.len(), 1);
         assert_eq!(lean[0], create_ix, "Core placed opaque, byte-identical");

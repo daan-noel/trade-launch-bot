@@ -47,7 +47,8 @@ impl ReserveCache {
     /// negative, and >= 100 % values are ignored.
     pub fn update_amm_fee(&self, mint: &str, fee_bps: f64) {
         if fee_bps.is_finite() && (0.0..10_000.0).contains(&fee_bps) {
-            self.amm_fee_bps.insert(mint.to_string(), fee_bps.round() as u64);
+            self.amm_fee_bps
+                .insert(mint.to_string(), fee_bps.round() as u64);
         }
     }
 

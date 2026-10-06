@@ -71,7 +71,10 @@ pub async fn enrich_one(
     let Some(holding) = state.trader.get_token_account_for_mint(mint).await? else {
         return Ok(None);
     };
-    Ok(enrich_holdings(state, vec![holding]).await.into_iter().next())
+    Ok(enrich_holdings(state, vec![holding])
+        .await
+        .into_iter()
+        .next())
 }
 
 async fn enrich_holdings(

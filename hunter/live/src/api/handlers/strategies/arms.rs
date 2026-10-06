@@ -33,7 +33,10 @@ async fn enrich_arms(pool: &PgPool, arms: Vec<StrategyArm>) -> Vec<ArmResponse> 
     mints.sort_unstable();
     mints.dedup();
     let by_mint: HashMap<String, _> = match fetch_by_mints(pool, &mints).await {
-        Ok(rows) => rows.into_iter().map(|r| (r.mint_address.clone(), r)).collect(),
+        Ok(rows) => rows
+            .into_iter()
+            .map(|r| (r.mint_address.clone(), r))
+            .collect(),
         Err(e) => {
             tracing::warn!("arms enrichment fetch failed: {e}");
             HashMap::new()
@@ -64,12 +67,17 @@ pub async fn query_arms(
     let body = body.into_inner();
     let (limit, offset) = body.pagination.bounds();
     let query = ArmQuery::from(body);
-    match (repo.arms_paged(limit, offset, &query).await, repo.count_arms(&query).await) {
+    match (
+        repo.arms_paged(limit, offset, &query).await,
+        repo.count_arms(&query).await,
+    ) {
         // Bare array + `X-Total-Count`, matching every other server-paged table
         // on this stack — one response shape means one client-side page reader.
         (Ok(arms), Ok(total)) => {
             let items = enrich_arms(&app_state.db, arms).await;
-            HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(items)
+            HttpResponse::Ok()
+                .insert_header(("X-Total-Count", total.to_string()))
+                .json(items)
         }
         (Err(e), _) | (_, Err(e)) => {
             tracing::warn!("query_arms failed: {e}");

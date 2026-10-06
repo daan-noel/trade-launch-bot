@@ -45,7 +45,10 @@ const GIVE_UP_AFTER: Duration = Duration::from_secs(180);
 /// `find_open_positions` is "not End/EntryFailed", so every already-stuck row of
 /// the rule was in the watch set with no work behind it.
 pub fn stop_in_flight(status: &str) -> bool {
-    !matches!(status, "End" | "EntryFailed" | "ExitStuck" | "ExitUnconfirmed")
+    !matches!(
+        status,
+        "End" | "EntryFailed" | "ExitStuck" | "ExitUnconfirmed"
+    )
 }
 
 /// Emit one `action_progress` frame (best-effort; no subscribers → send is a no-op).
@@ -169,7 +172,9 @@ pub fn spawn_stop_watcher(
 
     // Subscribe first — close fires immediately after this returns.
     let mut rx = sse_tx.subscribe();
-    emit(&sse_tx, action_id, "stop", rule_id, "running", 0, total, None);
+    emit(
+        &sse_tx, action_id, "stop", rule_id, "running", 0, total, None,
+    );
 
     tokio::spawn(async move {
         let mut tally = Tally {
@@ -217,7 +222,16 @@ pub fn spawn_stop_watcher(
 
             if (changed || heartbeat) && !tally.remaining.is_empty() {
                 let done = tally.done();
-                emit(&sse_tx, action_id, "stop", rule_id, "running", done, tally.total, None);
+                emit(
+                    &sse_tx,
+                    action_id,
+                    "stop",
+                    rule_id,
+                    "running",
+                    done,
+                    tally.total,
+                    None,
+                );
             }
         }
 
@@ -228,7 +242,16 @@ pub fn spawn_stop_watcher(
                 "stop watcher: gave up with positions still open"
             );
         }
-        emit(&sse_tx, action_id, "stop", rule_id, status, tally.done(), tally.total, error);
+        emit(
+            &sse_tx,
+            action_id,
+            "stop",
+            rule_id,
+            status,
+            tally.done(),
+            tally.total,
+            error,
+        );
     });
 }
 

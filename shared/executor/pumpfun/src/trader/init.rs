@@ -65,7 +65,10 @@ impl PumpFunTrader {
             info!(
                 "✅ Launch ALT loaded: {} ({} addresses)",
                 alt_address,
-                self.launch_alt.as_ref().map(|a| a.addresses.len()).unwrap_or(0)
+                self.launch_alt
+                    .as_ref()
+                    .map(|a| a.addresses.len())
+                    .unwrap_or(0)
             );
         }
 
@@ -129,10 +132,7 @@ impl PumpFunTrader {
     /// at byte 1013 — see the `Global` struct in the pump IDL. `stable_quote_mint`
     /// is best-effort: a shorter/older account or a default (all-zero) slot yields
     /// `None` (the claim path is skipped).
-    async fn cached_global_read(
-        &self,
-        global_pda: &Pubkey,
-    ) -> Result<(Pubkey, Option<Pubkey>)> {
+    async fn cached_global_read(&self, global_pda: &Pubkey) -> Result<(Pubkey, Option<Pubkey>)> {
         let cell = GLOBAL_READ_CACHE.get_or_init(|| Mutex::new(None));
 
         // Fast path: a fresh cached read (fee_recipient is process-global, so any

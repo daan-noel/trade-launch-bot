@@ -248,12 +248,19 @@ mod tests {
     #[test]
     fn valid_subset_is_pumpfun_only_and_kind_stable() {
         let all: Vec<_> = valid_variants(VenueId::PumpFun).collect();
-        assert_eq!(all.len(), CATALOG.len(), "every catalog row is a pump variant today");
+        assert_eq!(
+            all.len(),
+            CATALOG.len(),
+            "every catalog row is a pump variant today"
+        );
         for v in valid_variants(VenueId::PumpFun) {
             assert_eq!(v.venue, VenueId::PumpFun);
         }
         let buys: Vec<_> = valid_of_kind(VenueId::PumpFun, VariantKind::Buy).collect();
-        assert!(buys.len() >= 4, "buy, buy_exact_sol_in, buy_v2, buy_exact_quote_in_v2 (+amm_buy)");
+        assert!(
+            buys.len() >= 4,
+            "buy, buy_exact_sol_in, buy_v2, buy_exact_quote_in_v2 (+amm_buy)"
+        );
         for b in &buys {
             assert_eq!(b.kind, VariantKind::Buy);
         }
@@ -286,7 +293,10 @@ mod tests {
         );
         assert_eq!(spec("sell").unwrap().disc, Some(protocol::SELL_DISC));
         assert_eq!(spec("create").unwrap().disc, Some(protocol::CREATE_DISC));
-        assert_eq!(spec("create_v2").unwrap().disc, Some(protocol::CREATE_V2_DISC));
+        assert_eq!(
+            spec("create_v2").unwrap().disc,
+            Some(protocol::CREATE_V2_DISC)
+        );
         // AMM shares the curve buy/sell Anchor discriminator (program disambiguates).
         assert_eq!(spec("amm_buy").unwrap().disc, spec("buy").unwrap().disc);
         assert_eq!(spec("amm_sell").unwrap().disc, spec("sell").unwrap().disc);

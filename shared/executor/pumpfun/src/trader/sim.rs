@@ -74,7 +74,10 @@ impl PumpFunTrader {
 
         // Same slippage floor the live buy would compute from live reserves.
         let reserves = match slippage_bps {
-            Some(_) => self.curve_reserves(token_mint, &pdas.bonding_curve).await.ok(),
+            Some(_) => self
+                .curve_reserves(token_mint, &pdas.bonding_curve)
+                .await
+                .ok(),
             None => None,
         };
         let min_tokens_out = super::buy::compute_curve_buy_min_out(
@@ -113,7 +116,11 @@ impl PumpFunTrader {
     ) -> Result<SimOutcome> {
         let owner = self.config.signer.pubkey();
         self.ensure_token_pdas(token_mint).await?;
-        if self.resolve_cached_token_account(token_mint).await?.is_none() {
+        if self
+            .resolve_cached_token_account(token_mint)
+            .await?
+            .is_none()
+        {
             bail!("No token account cached/found for mint {token_mint}");
         }
         let user_token_account = self
@@ -160,7 +167,10 @@ impl PumpFunTrader {
             .context("PDAs not cached")?;
 
         let reserves = match slippage_bps {
-            Some(_) => self.curve_reserves(token_mint, &pdas.bonding_curve).await.ok(),
+            Some(_) => self
+                .curve_reserves(token_mint, &pdas.bonding_curve)
+                .await
+                .ok(),
             None => None,
         };
         let min_sol_output = super::sell::compute_curve_sell_min_out(
@@ -299,7 +309,11 @@ impl PumpFunTrader {
     pub async fn get_token_largest_holder(
         &self,
         mint: &str,
-    ) -> Result<(Pubkey /*owner*/, Pubkey /*token_account*/, u64 /*amount*/)> {
+    ) -> Result<(
+        Pubkey, /*owner*/
+        Pubkey, /*token_account*/
+        u64,    /*amount*/
+    )> {
         let resp = self
             .rpc_json(
                 "getTokenLargestAccounts",

@@ -50,14 +50,17 @@ pub fn launch_alt_addresses() -> Vec<Pubkey> {
         protocol::MPL_TOKEN_METADATA,
         protocol::MAYHEM_PROGRAM,
         // --- mints / fixed recipients ---
-        protocol::WSOL_MINT,                    // v2 bundle-leg quote mint
+        protocol::WSOL_MINT, // v2 bundle-leg quote mint
         protocol::PUMP_CURVE_FEE_RECIPIENT,
         protocol::PUMP_AMM_BUYBACK_FEE_RECIPIENT, // v2 bundle-leg buyback recipient
         // --- constant-seed PDAs (fixed address; contents may change) ---
         pda(&[b"mint-authority"], &protocol::PUMP_FUN),
         pda(&[b"global"], &protocol::PUMP_FUN),
         pda(&[b"global_volume_accumulator"], &protocol::PUMP_FUN),
-        pda(&[b"fee_config", protocol::PUMP_FUN.as_ref()], &protocol::FEE_PROGRAM),
+        pda(
+            &[b"fee_config", protocol::PUMP_FUN.as_ref()],
+            &protocol::FEE_PROGRAM,
+        ),
         pda(&[b"global-params"], &protocol::MAYHEM_PROGRAM),
         pda(&[b"sol-vault"], &protocol::MAYHEM_PROGRAM),
     ]

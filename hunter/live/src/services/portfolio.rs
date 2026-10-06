@@ -19,12 +19,14 @@ use tracing::warn;
 
 use trading_core::config::constants::lamports_to_sol;
 use trading_core::models::portfolio::{unrealized_pnl, ManagedMint};
-use trading_core::storage::repositories::trade_repo::AvgEntry;
 use trading_core::models::MarkQuote;
-use trading_core::state::token_cache::mark_quote;
-use trading_core::strategies::kernel::{modeled_cost_basis, weighted_return_pct, CostModel};
 use trading_core::models::{cash_symbol, AssetKind, StrategyPosition};
-use trading_core::storage::token_enrichment::{fetch_by_mints, TokenEnrichment, TokenEnrichmentRow};
+use trading_core::state::token_cache::mark_quote;
+use trading_core::storage::repositories::trade_repo::AvgEntry;
+use trading_core::storage::token_enrichment::{
+    fetch_by_mints, TokenEnrichment, TokenEnrichmentRow,
+};
+use trading_core::strategies::kernel::{modeled_cost_basis, weighted_return_pct, CostModel};
 
 use crate::services::clients::jupiter;
 use crate::state::deploy_state::DeployState;
@@ -199,7 +201,8 @@ pub fn native_sol_balance(state: &DeployState) -> (Option<f64>, Option<f64>) {
         return (None, None);
     };
     // Wallet balances fit in i64; clamp rather than panic on a corrupt cache.
-    let sol = trading_core::config::constants::lamports_to_sol(lamports.min(i64::MAX as u64) as i64);
+    let sol =
+        trading_core::config::constants::lamports_to_sol(lamports.min(i64::MAX as u64) as i64);
     let usd = state.latest_sol_price().map(|rate| sol * rate);
     (Some(sol), usd)
 }
@@ -340,7 +343,10 @@ pub async fn summary(state: &DeployState) -> anyhow::Result<PortfolioSummary> {
         .expect("00:00:00 is a valid time")
         .and_utc();
     let realized_pnl_today_sol = trading_core::config::constants::lamports_to_sol(
-        state.strategy_repo().realized_pnl_lamports_since(start_of_day).await?,
+        state
+            .strategy_repo()
+            .realized_pnl_lamports_since(start_of_day)
+            .await?,
     );
 
     // Active real rules live in the generic `strategy_rules` table (RuleRepo).
@@ -437,11 +443,20 @@ fn range_window(
     to: Option<chrono::DateTime<chrono::Utc>>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Window {
-    let bounded = |label, since| Window { label, since, until: None };
+    let bounded = |label, since| Window {
+        label,
+        since,
+        until: None,
+    };
     match range {
         "today" => bounded(
             "today",
-            Some(now.date_naive().and_hms_opt(0, 0, 0).expect("00:00:00").and_utc()),
+            Some(
+                now.date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .expect("00:00:00")
+                    .and_utc(),
+            ),
         ),
         "7d" => bounded("7d", Some(now - chrono::Duration::days(7))),
         "30d" => bounded("30d", Some(now - chrono::Duration::days(30))),
@@ -466,7 +481,11 @@ pub async fn performance(
     mode: &str,
 ) -> anyhow::Result<PortfolioPerformance> {
     let now = chrono::Utc::now();
-    let Window { label: range_label, since, until } = range_window(range, from, to, now);
+    let Window {
+        label: range_label,
+        since,
+        until,
+    } = range_window(range, from, to, now);
     let mode = if mode == "paper" { "paper" } else { "real" };
     let by_rule = state
         .strategy_repo()
@@ -478,10 +497,8 @@ pub async fn performance(
     let realized_pnl_sol: f64 = by_rule.iter().map(|r| r.realized_pnl_sol).sum();
     // Σ pnl / Σ capital across the rules — never a mean of their percents.
     let closed_entry_sol: f64 = by_rule.iter().map(|r| r.closed_entry_sol).sum();
-    let return_pct = trading_core::strategies::kernel::weighted_return_pct(
-        realized_pnl_sol,
-        closed_entry_sol,
-    );
+    let return_pct =
+        trading_core::strategies::kernel::weighted_return_pct(realized_pnl_sol, closed_entry_sol);
     let win_rate = if closed > 0 {
         (win as f64 / closed as f64) * 100.0
     } else {
@@ -531,7 +548,11 @@ pub async fn closes_series(
     rule_id: Option<uuid::Uuid>,
 ) -> anyhow::Result<ClosesSeries> {
     let now = chrono::Utc::now();
-    let Window { label: range_label, since, until } = range_window(range, from, to, now);
+    let Window {
+        label: range_label,
+        since,
+        until,
+    } = range_window(range, from, to, now);
     let mode = if mode == "paper" { "paper" } else { "real" };
     let repo = state.strategy_repo();
     let (closes, entry_failed) = tokio::try_join!(
@@ -644,7 +665,11 @@ fn holding_cost_basis(entry: &AvgEntry, decimals: u8, ui_amount: f64, costs: &Co
             lamports_to_sol(paid) * share
         }
         // SOL/raw → SOL/ui so it shares a unit basis with the per-UI-token amount.
-        _ => modeled_cost_basis(entry.avg_entry_price * 10f64.powi(decimals as i32), ui_amount, costs),
+        _ => modeled_cost_basis(
+            entry.avg_entry_price * 10f64.powi(decimals as i32),
+            ui_amount,
+            costs,
+        ),
     }
 }
 
@@ -753,67 +778,67 @@ async fn compose(
                 pnl,
                 mark_sol_per_ui,
             ) = if kind == AssetKind::Cash {
-                    let price_usd = Some(1.0);
-                    let value_usd = Some(h.ui_amount);
-                    (
-                        price_usd,
-                        value_usd,
-                        None,
-                        None,
-                        None,
-                        HoldingPnl {
-                            cost_basis_sol: None,
-                            unrealized_pnl_sol: None,
-                            unrealized_pnl_pct: None,
-                        },
-                        None,
-                    )
-                } else {
-                    // ONE price per holding, in two currencies. The curve spot wins
-                    // whenever the live cache has the mint: the cost basis is an
-                    // on-chain SOL fill, so marking it against a third party's USD
-                    // quote divided by a separately-polled SOL/USD rate puts two
-                    // different price universes on the two legs of one ratio and lets
-                    // them drift. Jupiter is the fallback for a bag the engine never
-                    // tracked (a transferred/airdropped mint), which has no curve
-                    // mark to prefer.
-                    let curve = curve_marks.get(&h.mint);
-                    let mark_sol_per_ui = resolve_mark_sol_per_ui(
-                        curve,
-                        h.decimals,
-                        entry.and_then(|e| e.price_usd),
-                        sol_usd,
-                    );
-                    // USD is a display currency, derived from whichever mark priced
-                    // the PnL so the two columns cannot tell different stories.
-                    let price_usd = match (mark_sol_per_ui, sol_usd, curve.is_some()) {
-                        (Some(m), Some(su), true) => Some(m * su),
-                        _ => entry.and_then(|e| e.price_usd),
-                    };
-                    let value_usd = price_usd.map(|p| p * h.ui_amount);
-                    let pnl = holding_pnl(
-                        avg_entries.get(&h.mint),
-                        mark_sol_per_ui,
-                        h.decimals,
-                        h.ui_amount,
-                        curve.and_then(|q| q.reserve_sol).or_else(|| {
-                            cached
-                                .as_ref()
-                                .and_then(|s| s.current_reserve_sol)
-                                .filter(|r| r.is_finite() && *r > 0.0)
-                        }),
-                        curve.and_then(|q| q.venue_fee_bps),
-                    );
-                    (
-                        price_usd,
-                        value_usd,
-                        entry.and_then(|e| e.liquidity),
-                        entry.and_then(|e| e.price_change_24h),
-                        entry.and_then(|e| e.token_created_at.clone()),
-                        pnl,
-                        mark_sol_per_ui,
-                    )
+                let price_usd = Some(1.0);
+                let value_usd = Some(h.ui_amount);
+                (
+                    price_usd,
+                    value_usd,
+                    None,
+                    None,
+                    None,
+                    HoldingPnl {
+                        cost_basis_sol: None,
+                        unrealized_pnl_sol: None,
+                        unrealized_pnl_pct: None,
+                    },
+                    None,
+                )
+            } else {
+                // ONE price per holding, in two currencies. The curve spot wins
+                // whenever the live cache has the mint: the cost basis is an
+                // on-chain SOL fill, so marking it against a third party's USD
+                // quote divided by a separately-polled SOL/USD rate puts two
+                // different price universes on the two legs of one ratio and lets
+                // them drift. Jupiter is the fallback for a bag the engine never
+                // tracked (a transferred/airdropped mint), which has no curve
+                // mark to prefer.
+                let curve = curve_marks.get(&h.mint);
+                let mark_sol_per_ui = resolve_mark_sol_per_ui(
+                    curve,
+                    h.decimals,
+                    entry.and_then(|e| e.price_usd),
+                    sol_usd,
+                );
+                // USD is a display currency, derived from whichever mark priced
+                // the PnL so the two columns cannot tell different stories.
+                let price_usd = match (mark_sol_per_ui, sol_usd, curve.is_some()) {
+                    (Some(m), Some(su), true) => Some(m * su),
+                    _ => entry.and_then(|e| e.price_usd),
                 };
+                let value_usd = price_usd.map(|p| p * h.ui_amount);
+                let pnl = holding_pnl(
+                    avg_entries.get(&h.mint),
+                    mark_sol_per_ui,
+                    h.decimals,
+                    h.ui_amount,
+                    curve.and_then(|q| q.reserve_sol).or_else(|| {
+                        cached
+                            .as_ref()
+                            .and_then(|s| s.current_reserve_sol)
+                            .filter(|r| r.is_finite() && *r > 0.0)
+                    }),
+                    curve.and_then(|q| q.venue_fee_bps),
+                );
+                (
+                    price_usd,
+                    value_usd,
+                    entry.and_then(|e| e.liquidity),
+                    entry.and_then(|e| e.price_change_24h),
+                    entry.and_then(|e| e.token_created_at.clone()),
+                    pnl,
+                    mark_sol_per_ui,
+                )
+            };
 
             // Straight off the SOL mark that priced the PnL — not `value_usd / sol_usd`,
             // which would round-trip a SOL number through USD and back and land a few
@@ -908,7 +933,10 @@ mod tests {
     /// pro-rata to the tokens still held - no model.
     #[test]
     fn a_captured_flow_is_the_basis() {
-        let paid = AvgEntry { wallet_paid_lamports: Some(1_012_727_000), ..modeled() };
+        let paid = AvgEntry {
+            wallet_paid_lamports: Some(1_012_727_000),
+            ..modeled()
+        };
         // 1000 UI at 6 dp = 1e9 raw: the whole bag.
         let p = holding_pnl(Some(&paid), None, 6, 1000.0, None, None);
         assert!((p.cost_basis_sol.unwrap() - 1.012727).abs() < 1e-12);
@@ -932,8 +960,7 @@ mod tests {
         let p = holding_pnl(Some(&modeled()), Some(2e-3), 6, 1000.0, None, None);
 
         let want_basis = 1.0 * (1.0 + fee) + costs.fixed_buy_sol;
-        let want_pnl =
-            2.0 * (1.0 - fee) - costs.fixed_sell_sol - costs.close_fee_sol - want_basis;
+        let want_pnl = 2.0 * (1.0 - fee) - costs.fixed_sell_sol - costs.close_fee_sol - want_basis;
         assert!((p.cost_basis_sol.unwrap() - want_basis).abs() < 1e-12);
         assert!((p.unrealized_pnl_sol.unwrap() - want_pnl).abs() < 1e-12);
 
@@ -1004,17 +1031,41 @@ mod tests {
             decimals: 6,
             token_account: format!("ata-{mint}"),
             token_program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".into(),
-            symbol: Some(if kind == AssetKind::Cash { "USDC".into() } else { "MEME".into() }),
+            symbol: Some(if kind == AssetKind::Cash {
+                "USDC".into()
+            } else {
+                "MEME".into()
+            }),
             asset_kind: kind,
-            price_usd: Some(if kind == AssetKind::Cash { 1.0 } else { value_usd / ui }),
+            price_usd: Some(if kind == AssetKind::Cash {
+                1.0
+            } else {
+                value_usd / ui
+            }),
             value_usd: Some(value_usd),
             liquidity: None,
-            price_change_24h: if kind == AssetKind::Cash { None } else { Some(5.0) },
+            price_change_24h: if kind == AssetKind::Cash {
+                None
+            } else {
+                Some(5.0)
+            },
             token_created_at: None,
             value_sol: Some(value_usd / 100.0),
-            cost_basis_sol: if kind == AssetKind::Cash { None } else { Some(1.0) },
-            unrealized_pnl_sol: if kind == AssetKind::Cash { None } else { Some(0.5) },
-            unrealized_pnl_pct: if kind == AssetKind::Cash { None } else { Some(50.0) },
+            cost_basis_sol: if kind == AssetKind::Cash {
+                None
+            } else {
+                Some(1.0)
+            },
+            unrealized_pnl_sol: if kind == AssetKind::Cash {
+                None
+            } else {
+                Some(0.5)
+            },
+            unrealized_pnl_pct: if kind == AssetKind::Cash {
+                None
+            } else {
+                Some(50.0)
+            },
             managed_by: None,
             token: TokenEnrichment::default(),
         }
@@ -1053,7 +1104,11 @@ mod tests {
     /// beside a curve mark must not move the number.
     #[test]
     fn curve_spot_beats_the_jupiter_quote() {
-        let curve = MarkQuote { price: 1e-7, reserve_sol: Some(30.0), venue_fee_bps: None };
+        let curve = MarkQuote {
+            price: 1e-7,
+            reserve_sol: Some(30.0),
+            venue_fee_bps: None,
+        };
         // A wildly different Jupiter quote is present and must be ignored.
         let got = resolve_mark_sol_per_ui(Some(&curve), 6, Some(999.0), Some(200.0));
         assert_eq!(got, Some(1e-7 * 1e6));
@@ -1072,7 +1127,11 @@ mod tests {
     #[test]
     fn a_junk_curve_price_degrades_to_the_fallback() {
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let curve = MarkQuote { price: bad, reserve_sol: None, venue_fee_bps: None };
+            let curve = MarkQuote {
+                price: bad,
+                reserve_sol: None,
+                venue_fee_bps: None,
+            };
             assert_eq!(
                 resolve_mark_sol_per_ui(Some(&curve), 6, Some(20.0), Some(200.0)),
                 Some(0.1),
@@ -1087,6 +1146,9 @@ mod tests {
     fn no_price_anywhere_yields_no_mark() {
         assert_eq!(resolve_mark_sol_per_ui(None, 6, None, Some(200.0)), None);
         assert_eq!(resolve_mark_sol_per_ui(None, 6, Some(20.0), None), None);
-        assert_eq!(resolve_mark_sol_per_ui(None, 6, Some(20.0), Some(0.0)), None);
+        assert_eq!(
+            resolve_mark_sol_per_ui(None, 6, Some(20.0), Some(0.0)),
+            None
+        );
     }
 }

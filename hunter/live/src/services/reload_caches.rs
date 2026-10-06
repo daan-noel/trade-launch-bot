@@ -31,7 +31,11 @@ pub struct ReloadCachesResponse {
 }
 
 fn step_ok(name: &'static str, detail: Option<String>) -> ReloadStep {
-    ReloadStep { name, ok: true, detail }
+    ReloadStep {
+        name,
+        ok: true,
+        detail,
+    }
 }
 
 fn step_err(name: &'static str, detail: String) -> ReloadStep {
@@ -87,12 +91,8 @@ pub async fn reload_all(state: &DeployState) -> ReloadCachesResponse {
             state
                 .held_pools
                 .track_migrated_many(&outcome.held_migrated_mints);
-            amm_pool_facts::seed_from_db(
-                &state.trader,
-                &state.db,
-                &outcome.held_migrated_mints,
-            )
-            .await;
+            amm_pool_facts::seed_from_db(&state.trader, &state.db, &outcome.held_migrated_mints)
+                .await;
             steps.push(step_ok(
                 "token_cache",
                 Some(format!(

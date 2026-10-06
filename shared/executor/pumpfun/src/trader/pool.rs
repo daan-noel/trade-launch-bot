@@ -48,10 +48,14 @@ impl PumpFunTrader {
     /// (space, rent) for a token account of the given program — legacy vs 2022.
     fn space_rent_for(&self, token_program: TokenProgram) -> (u64, u64) {
         match token_program {
-            TokenProgram::Legacy => (self.engine.token_account_space, self.engine.token_account_rent),
-            TokenProgram::Token2022 => {
-                (self.engine.token_2022_account_space, self.engine.token_2022_account_rent)
-            }
+            TokenProgram::Legacy => (
+                self.engine.token_account_space,
+                self.engine.token_account_rent,
+            ),
+            TokenProgram::Token2022 => (
+                self.engine.token_2022_account_space,
+                self.engine.token_2022_account_rent,
+            ),
         }
     }
 
@@ -59,7 +63,13 @@ impl PumpFunTrader {
         let program_id = token_program.pubkey();
         let seed = self.next_seed();
         let (space, rent) = self.space_rent_for(token_program);
-        build_template_with_seed(&self.config.signer.pubkey(), &program_id, &seed, space, rent)
+        build_template_with_seed(
+            &self.config.signer.pubkey(),
+            &program_id,
+            &seed,
+            space,
+            rent,
+        )
     }
 
     pub(super) async fn fill_buy_pool(&self, token_program: TokenProgram) -> Result<()> {
@@ -126,7 +136,8 @@ impl PumpFunTrader {
                     .map(|d| d.as_nanos())
                     .unwrap_or_default()
             );
-            if let Ok(template) = build_template_with_seed(&owner, &program_id, &seed, space, rent) {
+            if let Ok(template) = build_template_with_seed(&owner, &program_id, &seed, space, rent)
+            {
                 pool.lock().await.push(template);
             }
         });

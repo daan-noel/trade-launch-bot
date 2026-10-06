@@ -38,14 +38,11 @@ use trading_core::models::{
     trade::{Trade, TradeType},
 };
 use trading_core::storage::repositories::{
-    raw_tx_repo::RawTxRepo,
-    token_info_repo::TokenInfoRepo,
-    token_repo::TokenRepo,
-    trade_repo::TradeRepo,
-    wallet_repo::WalletRepo,
+    raw_tx_repo::RawTxRepo, token_info_repo::TokenInfoRepo, token_repo::TokenRepo,
+    trade_repo::TradeRepo, wallet_repo::WalletRepo,
 };
 
-use super::helius_rpc::{HeliusRpc, SignatureEntry, wrap_transaction_result};
+use super::helius_rpc::{wrap_transaction_result, HeliusRpc, SignatureEntry};
 
 /// Signatures per JSON-RPC batch request — one HTTP round-trip fetches this many
 /// transactions instead of one request each. Cuts latency, not Helius credits
@@ -180,14 +177,10 @@ pub fn derive_bonding_curve(mint: &str, pump_program_id: &str) -> anyhow::Result
 pub fn validate_mint_address(mint: &str) -> Result<(), SyncError> {
     let mint = mint.trim();
     if mint.is_empty() {
-        return Err(SyncError::InvalidMint(
-            "Mint address is required.".into(),
-        ));
+        return Err(SyncError::InvalidMint("Mint address is required.".into()));
     }
     Pubkey::from_str(mint).map_err(|_| {
-        SyncError::InvalidMint(
-            "Not a valid mint address. Enter a Solana base58 public key.".into(),
-        )
+        SyncError::InvalidMint("Not a valid mint address. Enter a Solana base58 public key.".into())
     })?;
     Ok(())
 }
@@ -199,9 +192,8 @@ pub async fn preflight(
 ) -> Result<String, SyncError> {
     validate_mint_address(mint)?;
     let mint = mint.trim();
-    let bonding_curve = derive_bonding_curve(mint, pump_program_id).map_err(|e| {
-        SyncError::InvalidMint(format!("Not a valid mint address: {e}"))
-    })?;
+    let bonding_curve = derive_bonding_curve(mint, pump_program_id)
+        .map_err(|e| SyncError::InvalidMint(format!("Not a valid mint address: {e}")))?;
 
     let exists = rpc
         .account_exists(&bonding_curve)
@@ -245,14 +237,7 @@ pub async fn run_token_sync(
         None => preflight(&rpc, &mint, &ctx.pump_program_id).await?,
     };
 
-    send_progress(
-        &progress_tx,
-        "validating",
-        1,
-        1,
-        "Bonding curve verified",
-    )
-    .await?;
+    send_progress(&progress_tx, "validating", 1, 1, "Bonding curve verified").await?;
 
     // Seed a {pool → mint} index so post-migration PumpSwap (AMM) swaps — which
     // carry the pool, not the base mint — resolve back to this mint, letting both
@@ -262,7 +247,8 @@ pub async fn run_token_sync(
     if let Ok(pool) = derive_pump_swap_pool(&mint, &ctx.pump_program_id) {
         pool_index.insert(pool, mint.clone());
     }
-    let decoder = HeliusDecoder::new(StdArc::new(Protocol::pump_fun())).with_pool_index(pool_index.clone());
+    let decoder =
+        HeliusDecoder::new(StdArc::new(Protocol::pump_fun())).with_pool_index(pool_index.clone());
 
     let info_repo = TokenInfoRepo::new(ctx.db.clone());
 
@@ -313,8 +299,7 @@ pub async fn run_token_sync(
     // ("Fetch New") uses the signatures + dedup + batched-getTransaction path: it
     // only downloads the few genuinely-new txs, cheaper than paying gTFA's per-tx
     // rate over a whole range that live ingest mostly already saved.
-    let (fetched, newest_curve_sig, newest_curve_slot): (Vec<FetchedTx>, _, _) = if !req
-        .incremental
+    let (fetched, newest_curve_sig, newest_curve_slot): (Vec<FetchedTx>, _, _) = if !req.incremental
     {
         // Stream gTFA pages: decode + flush every `FLUSH_BACKFILL_ROWS` so the
         // heavy raw-tx frames never accumulate over the whole (possibly huge)
@@ -437,8 +422,7 @@ pub async fn run_token_sync(
         // rpc path re-fetches everything so decoder fixes propagate via the trades
         // ON CONFLICT DO UPDATE — dedup is intentionally incremental-only.
         let to_fetch = if req.incremental {
-            let candidates: Vec<String> =
-                signatures.iter().map(|e| e.signature.clone()).collect();
+            let candidates: Vec<String> = signatures.iter().map(|e| e.signature.clone()).collect();
             let saved = TradeRepo::new(ctx.db.clone())
                 .saved_signatures(&mint, "curve", &candidates)
                 .await
@@ -454,7 +438,10 @@ pub async fn run_token_sync(
                     "fetching_transactions",
                     0,
                     kept.len() as u64,
-                    &format!("Skipping {skipped} already-saved tx; downloading {}", kept.len()),
+                    &format!(
+                        "Skipping {skipped} already-saved tx; downloading {}",
+                        kept.len()
+                    ),
                 )
                 .await?;
             }
@@ -702,7 +689,11 @@ pub async fn preview_sync(
         .flatten()
         .map(|i| i.is_migrated)
         .unwrap_or(false)
-        || ctx.token_cache.get(&mint).map(|e| e.is_migrated).unwrap_or(false);
+        || ctx
+            .token_cache
+            .get(&mint)
+            .map(|e| e.is_migrated)
+            .unwrap_or(false);
 
     // Post-migration AMM pool — only counted when the sync would include it.
     if req.include_post_migrate && is_migrated {
@@ -732,7 +723,8 @@ pub async fn preview_sync(
                     let saved = trade_repo
                         .distinct_signature_count(&mint, "amm")
                         .await
-                        .map_err(|e| SyncError::Internal(e.to_string()))? as usize;
+                        .map_err(|e| SyncError::Internal(e.to_string()))?
+                        as usize;
                     (saved + amm_new, amm_new_capped)
                 }
             };
@@ -795,7 +787,9 @@ async fn try_replay(
     {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("token_sync: {venue} LaserStream replay failed ({e}); falling back to RPC");
+            tracing::warn!(
+                "token_sync: {venue} LaserStream replay failed ({e}); falling back to RPC"
+            );
             return None;
         }
     };
@@ -888,7 +882,14 @@ async fn sync_amm_trades(
         None
     };
 
-    send_progress(progress_tx, "fetching_signatures", 0, 0, "Fetching AMM pool signatures").await?;
+    send_progress(
+        progress_tx,
+        "fetching_signatures",
+        0,
+        0,
+        "Fetching AMM pool signatures",
+    )
+    .await?;
 
     // Decoded AMM rows persist via `persist_backfill`, which propagates any write
     // failure; the caller stamps the AMM watermark only on `Ok`, so a failed write
@@ -916,10 +917,21 @@ async fn sync_amm_trades(
                 newest_sig = Some(sig);
                 newest_slot = Some(slot as i64);
             }
-            decode_amm_batch(decoder, &page, &mut amm_txs, &mut amm_trades, &mut amm_wallets);
+            decode_amm_batch(
+                decoder,
+                &page,
+                &mut amm_txs,
+                &mut amm_trades,
+                &mut amm_wallets,
+            );
             if amm_txs.len() + amm_trades.len() >= FLUSH_BACKFILL_ROWS {
                 persist_backfill(
-                    trade_repo, tx_repo, wallet_repo, "amm", &amm_txs, &amm_trades,
+                    trade_repo,
+                    tx_repo,
+                    wallet_repo,
+                    "amm",
+                    &amm_txs,
+                    &amm_trades,
                     &mut amm_wallets,
                 )
                 .await?;
@@ -936,8 +948,15 @@ async fn sync_amm_trades(
     } else {
         // Incremental tries the LaserStream replay window first, then falls back to
         // the signatures + dedup path. Both are dedup-bounded, so decode in one shot.
-        let (fetched, newest_amm_sig, newest_amm_slot) = if let Some((txs, sig, slot)) =
-            try_replay(ctx, &pool, prev_amm_slot, last_synced_at, "amm", progress_tx).await
+        let (fetched, newest_amm_sig, newest_amm_slot) = if let Some((txs, sig, slot)) = try_replay(
+            ctx,
+            &pool,
+            prev_amm_slot,
+            last_synced_at,
+            "amm",
+            progress_tx,
+        )
+        .await
         {
             // LaserStream replay served the new AMM txs for zero Helius credits.
             (txs, sig, slot.map(|s| s as i64))
@@ -963,8 +982,7 @@ async fn sync_amm_trades(
 
             // Skip AMM swaps already saved (e.g. by live ingest) so we don't
             // re-fetch them from Helius.
-            let candidates: Vec<String> =
-                signatures.iter().map(|e| e.signature.clone()).collect();
+            let candidates: Vec<String> = signatures.iter().map(|e| e.signature.clone()).collect();
             let saved = trade_repo
                 .saved_signatures(mint, "amm", &candidates)
                 .await
@@ -986,7 +1004,13 @@ async fn sync_amm_trades(
             "Decoding AMM trades",
         )
         .await?;
-        decode_amm_batch(decoder, &fetched, &mut amm_txs, &mut amm_trades, &mut amm_wallets);
+        decode_amm_batch(
+            decoder,
+            &fetched,
+            &mut amm_txs,
+            &mut amm_trades,
+            &mut amm_wallets,
+        );
         (newest_amm_sig, newest_amm_slot)
     };
 
@@ -1131,7 +1155,14 @@ fn persist_tx(update: &SubscribeUpdateTransaction, slot: u64, block_time: DateTi
     let info = update.transaction.as_ref();
     let signature = info.map(|i| i.signature.clone()).unwrap_or_default();
     let tx_index = info.map(|i| i.index as i32).unwrap_or(0);
-    RawTx::new(signature, slot as i64, block_time, tx_index, encode_payload(update), 1)
+    RawTx::new(
+        signature,
+        slot as i64,
+        block_time,
+        tx_index,
+        encode_payload(update),
+        1,
+    )
 }
 
 /// Fetch ONE archival `getTransactionsForAddress` (gTFA) page for `address`,
@@ -1153,7 +1184,13 @@ async fn gtfa_fetch_page(
     // migrate-slot gate relies on it). `base64` so each item lowers to protobuf
     // via `rpc_to_protobuf` (see `fetched_from_rpc`).
     let (data, next) = rpc
-        .get_transactions_for_address_full_page_enc(address, "asc", GTFA_PAGE_LIMIT, cursor, "base64")
+        .get_transactions_for_address_full_page_enc(
+            address,
+            "asc",
+            GTFA_PAGE_LIMIT,
+            cursor,
+            "base64",
+        )
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
 
@@ -1334,9 +1371,10 @@ async fn fetch_transactions(
                 let mut out = Vec::with_capacity(batch.len());
                 for (entry, tx) in batch.iter().zip(txs.into_iter()) {
                     if let Some(tx) = tx {
-                        if let Some(ft) =
-                            fetched_from_rpc(entry.slot, &wrap_transaction_result(&entry.signature, &tx))
-                        {
+                        if let Some(ft) = fetched_from_rpc(
+                            entry.slot,
+                            &wrap_transaction_result(&entry.signature, &tx),
+                        ) {
                             out.push(ft);
                         }
                     }
@@ -1474,7 +1512,11 @@ pub(crate) fn trade_from_ingest_event(e: &ingest_pumpfun::event::Trade) -> Trade
         real_token_reserves: e.reserves.real_token,
         instruction_type: e.instruction_type.clone(),
         instruction_labels: serde_json::json!(e.instruction_labels),
-        venue: match e.venue { Venue::Curve => "curve", Venue::Amm => "amm" }.to_string(),
+        venue: match e.venue {
+            Venue::Curve => "curve",
+            Venue::Amm => "amm",
+        }
+        .to_string(),
     }
 }
 
@@ -1490,7 +1532,10 @@ fn token_from_ingest_event(e: ingest_pumpfun::event::TokenCreated) -> Token {
         bonding_curve_address: e.bonding_curve,
         initial_supply_token: e.initial_buy_tokens,
         initial_buy_sol: e.initial_buy_sol,
-        initial_buy_instruction: e.initial_buy_instruction.as_ref().map(|_| serde_json::Value::Null),
+        initial_buy_instruction: e
+            .initial_buy_instruction
+            .as_ref()
+            .map(|_| serde_json::Value::Null),
         cu_limit: e.cu_limit,
         cu_price: e.cu_price,
         is_mayhem_mode: e.is_mayhem_mode,
@@ -1512,10 +1557,10 @@ mod amm_verification {
     //! Ignored by default (needs network + a Helius key). Run with:
     //!   HELIUS_RPC_URL="<url>" cargo test -p backend amm_pool_derivation -- --ignored --nocapture
     use super::*;
-    use trading_core::config::constants::{PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, WSOL_MINT};
-    use ingest_pumpfun::decode::HeliusDecoder;
     use crate::services::helius_rpc::wrap_transaction_result;
+    use ingest_pumpfun::decode::HeliusDecoder;
     use serde_json::{json, Value};
+    use trading_core::config::constants::{PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, WSOL_MINT};
 
     async fn rpc(client: &reqwest::Client, url: &str, method: &str, params: Value) -> Value {
         let body = json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
@@ -1590,7 +1635,12 @@ mod amm_verification {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .chain(tx["meta"]["preTokenBalances"].as_array().into_iter().flatten())
+                .chain(
+                    tx["meta"]["preTokenBalances"]
+                        .as_array()
+                        .into_iter()
+                        .flatten(),
+                )
                 .filter_map(|b| b["mint"].as_str())
                 .find(|m| *m != WSOL_MINT)
                 .map(|m| m.to_string());
@@ -1636,10 +1686,9 @@ mod amm_verification {
             idx.insert(derived.clone(), base_mint.clone());
             let amm_decoder =
                 HeliusDecoder::new(StdArc::new(Protocol::pump_fun())).with_pool_index(idx);
-            let update = ingest_pumpfun::backfill::rpc_to_protobuf(
-                &wrap_transaction_result(sig, &tx_b64),
-            )
-            .expect("canonical swap must lower to protobuf");
+            let update =
+                ingest_pumpfun::backfill::rpc_to_protobuf(&wrap_transaction_result(sig, &tx_b64))
+                    .expect("canonical swap must lower to protobuf");
             let trades: Vec<_> = match amm_decoder.decode_amm_protobuf(&update, Utc::now()) {
                 DecodeOutput::Events(events) => events
                     .into_iter()
@@ -1662,22 +1711,21 @@ mod amm_verification {
                 // user_quote_amount @ [112..120]) and find the event for `derived`.
                 let derived_event = logs.iter().find_map(|log| {
                     let encoded = log.strip_prefix("Program data: ")?;
-                    let bytes = base64::Engine::decode(
-                        &base64::engine::general_purpose::STANDARD,
-                        encoded,
-                    )
-                    .ok()?;
+                    let bytes =
+                        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                            .ok()?;
                     if bytes.len() < 152 {
                         return None;
                     }
                     let disc = &bytes[..8];
-                    let is_swap = disc == trading_core::config::constants::PUMP_SWAP_BUY_EVENT_DISCRIMINATOR
-                        || disc == trading_core::config::constants::PUMP_SWAP_SELL_EVENT_DISCRIMINATOR;
+                    let is_swap = disc
+                        == trading_core::config::constants::PUMP_SWAP_BUY_EVENT_DISCRIMINATOR
+                        || disc
+                            == trading_core::config::constants::PUMP_SWAP_SELL_EVENT_DISCRIMINATOR;
                     if !is_swap || bs58::encode(&bytes[120..152]).into_string() != derived {
                         return None;
                     }
-                    let quote_lamports =
-                        u64::from_le_bytes(bytes[112..120].try_into().unwrap());
+                    let quote_lamports = u64::from_le_bytes(bytes[112..120].try_into().unwrap());
                     Some((bytes.len(), quote_lamports as f64 / 1e9))
                 });
                 match derived_event {
@@ -1688,7 +1736,9 @@ mod amm_verification {
                         empty_no_event += 1;
                         println!("EMPTY {sig} reason=no-derived-event-in-logs");
                     }
-                    Some((_, quote_sol)) if trading_core::models::trade::Trade::is_dust(quote_sol) => {
+                    Some((_, quote_sol))
+                        if trading_core::models::trade::Trade::is_dust(quote_sol) =>
+                    {
                         // Below the 10k-lamport ingest dust floor — dropped on purpose,
                         // on BOTH live and backfill. Correct behavior, not a gap.
                         empty_dust += 1;
@@ -1766,13 +1816,11 @@ mod amm_verification {
             let Some(encoded) = log.strip_prefix("Program data: ") else {
                 continue;
             };
-            let bytes = match base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD,
-                encoded,
-            ) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
+            let bytes =
+                match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
             if bytes.len() < 152 {
                 continue;
             }
@@ -1834,8 +1882,8 @@ mod amm_verification {
     #[tokio::test]
     #[ignore = "requires HELIUS_RPC_URL with the archival API + network"]
     async fn gtfa_base64_decodes_via_protobuf() {
-        use ingest_pumpfun::backfill::rpc_to_protobuf;
         use base64::{engine::general_purpose::STANDARD, Engine};
+        use ingest_pumpfun::backfill::rpc_to_protobuf;
         use solana_sdk::{message::VersionedMessage, transaction::VersionedTransaction};
 
         let url = std::env::var("HELIUS_RPC_URL").expect("set HELIUS_RPC_URL");
@@ -1843,7 +1891,13 @@ mod amm_verification {
         let decoder = HeliusDecoder::new(StdArc::new(Protocol::pump_fun()));
 
         let (data, _token) = helius
-            .get_transactions_for_address_full_page_enc(PUMP_FUN_PROGRAM_ID, "desc", 25, None, "base64")
+            .get_transactions_for_address_full_page_enc(
+                PUMP_FUN_PROGRAM_ID,
+                "desc",
+                25,
+                None,
+                "base64",
+            )
             .await
             .expect("gTFA base64 call failed — endpoint may not honor encoding=base64");
         assert!(!data.is_empty(), "gTFA base64 returned no transactions");
@@ -1854,14 +1908,20 @@ mod amm_verification {
                 continue;
             };
             let vtx: VersionedTransaction = bincode::deserialize(
-                &STANDARD.decode(tx_b64).expect("gTFA base64 tx not decodable"),
+                &STANDARD
+                    .decode(tx_b64)
+                    .expect("gTFA base64 tx not decodable"),
             )
             .expect("gTFA base64 tx not bincode VersionedTransaction");
 
             // Confirm versioned txs carry loadedAddresses (the field the protobuf
             // decoder needs for correct account attribution).
             if matches!(vtx.message, VersionedMessage::V0(_)) {
-                let lut = |k: &str| item["meta"]["loadedAddresses"][k].as_array().is_some_and(|a| !a.is_empty());
+                let lut = |k: &str| {
+                    item["meta"]["loadedAddresses"][k]
+                        .as_array()
+                        .is_some_and(|a| !a.is_empty())
+                };
                 if lut("writable") || lut("readonly") {
                     versioned_with_lut += 1;
                 }
@@ -1870,9 +1930,7 @@ mod amm_verification {
             let Some(update) = rpc_to_protobuf(&wrap_transaction_result("", item)) else {
                 continue;
             };
-            if let DecodeOutput::Events(events) =
-                decoder.decode_protobuf(&update, Utc::now())
-            {
+            if let DecodeOutput::Events(events) = decoder.decode_protobuf(&update, Utc::now()) {
                 decoded += 1;
                 for e in &events {
                     if let IngestEvent::Trade(t) = e {
@@ -1907,9 +1965,9 @@ mod backfill_persistence {
     //!   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/hunter_bot"
     //!   cargo test -p backend backfill_persistence -- --ignored --nocapture
     use super::*;
-    use trading_core::models::trade::TradeType;
     use sqlx::postgres::PgPoolOptions;
     use sqlx::PgPool;
+    use trading_core::models::trade::TradeType;
     use uuid::Uuid;
 
     async fn test_pool() -> Option<PgPool> {
@@ -1977,7 +2035,9 @@ mod backfill_persistence {
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
     async fn persist_backfill_writes_whole_batch_and_returns_ok() {
-        let Some(pool) = test_pool().await else { return };
+        let Some(pool) = test_pool().await else {
+            return;
+        };
         let trade_repo = TradeRepo::new(pool.clone());
         let tx_repo = RawTxRepo::new(pool.clone());
         let wallet_repo = WalletRepo::new(pool.clone());
@@ -2005,7 +2065,11 @@ mod backfill_persistence {
         )
         .await;
         assert!(res.is_ok(), "happy path must return Ok: {res:?}");
-        assert_eq!(wallets.len(), 1, "wallet list deduped before the bulk touch");
+        assert_eq!(
+            wallets.len(),
+            1,
+            "wallet list deduped before the bulk touch"
+        );
 
         let saved = trade_repo
             .find_by_mint_all(&mint)
@@ -2034,7 +2098,9 @@ mod backfill_persistence {
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
     async fn persist_backfill_propagates_insert_failure() {
-        let Some(pool) = test_pool().await else { return };
+        let Some(pool) = test_pool().await else {
+            return;
+        };
         let trade_repo = TradeRepo::new(pool.clone());
         let tx_repo = RawTxRepo::new(pool.clone());
         let wallet_repo = WalletRepo::new(pool.clone());
@@ -2074,7 +2140,9 @@ mod backfill_persistence {
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
     async fn find_by_mints_all_groups_per_mint_in_order() {
-        let Some(pool) = test_pool().await else { return };
+        let Some(pool) = test_pool().await else {
+            return;
+        };
         let trade_repo = TradeRepo::new(pool.clone());
 
         let mint_a = uniq("MINT-batchA-");

@@ -44,7 +44,9 @@ impl BundleBuyVariant {
             "buy_exact_sol_in" => Ok(Self::BuyExactSolIn),
             "buy_v2" => Ok(Self::BuyV2),
             "buy_exact_quote_in" => Ok(Self::BuyExactQuoteIn),
-            other => Err(TradeError::Other(format!("unknown bundle buy variant: {other}"))),
+            other => Err(TradeError::Other(format!(
+                "unknown bundle buy variant: {other}"
+            ))),
         }
     }
 
@@ -121,11 +123,8 @@ impl PumpFunTrader {
         let pdas = self.derive_token_pdas(mint, creator, &token_program_pk, cashback_enabled);
         self.token_pdas.insert(mint_str.clone(), pdas);
 
-        let user_token_account = get_associated_token_address_with_program_id(
-            &signer.pubkey(),
-            mint,
-            &token_program_pk,
-        );
+        let user_token_account =
+            get_associated_token_address_with_program_id(&signer.pubkey(), mint, &token_program_pk);
         self.user_token_accounts
             .insert(mint_str.clone(), user_token_account);
 
@@ -247,11 +246,27 @@ impl PumpFunTrader {
         min_tokens_out: u64,
     ) -> Result<BuyCore> {
         if variant.uses_v2_accounts() {
-            self.curve_buy_core_v2(variant, buyer, mint, pdas, user_base_ata, buy_lamports, min_tokens_out)
+            self.curve_buy_core_v2(
+                variant,
+                buyer,
+                mint,
+                pdas,
+                user_base_ata,
+                buy_lamports,
+                min_tokens_out,
+            )
         } else {
             // Only the v1 SOL-in / tokens-out encodings (`buy`, `buy_exact_sol_in`)
             // reach here; both are handled directly by the v1 builder.
-            self.curve_buy_core_v1(variant, buyer, mint, pdas, user_base_ata, buy_lamports, min_tokens_out)
+            self.curve_buy_core_v1(
+                variant,
+                buyer,
+                mint,
+                pdas,
+                user_base_ata,
+                buy_lamports,
+                min_tokens_out,
+            )
         }
     }
 
@@ -318,7 +333,10 @@ impl PumpFunTrader {
         };
 
         // The v1 buy carries no ATA beyond the wallet's base token ATA.
-        Ok(BuyCore { buy_ix, extra_atas: Vec::new() })
+        Ok(BuyCore {
+            buy_ix,
+            extra_atas: Vec::new(),
+        })
     }
 
     fn curve_buy_core_v2(
@@ -357,11 +375,8 @@ impl PumpFunTrader {
             &quote_mint,
             &quote_token_program,
         );
-        let associated_quote_user = get_associated_token_address_with_program_id(
-            buyer,
-            &quote_mint,
-            &quote_token_program,
-        );
+        let associated_quote_user =
+            get_associated_token_address_with_program_id(buyer, &quote_mint, &quote_token_program);
         let associated_creator_vault = get_associated_token_address_with_program_id(
             &pdas.creator_vault,
             &quote_mint,
@@ -371,8 +386,10 @@ impl PumpFunTrader {
         // the main bonding-curve program — the IDL pins `seeds::program = fee_program`.
         // Deriving it under `PUMP_FUN` yields a different address and the v2 buy reverts
         // with Anchor `ConstraintSeeds` (custom 2006).
-        let (sharing_config, _) =
-            Pubkey::find_program_address(&[b"sharing-config", mint.as_ref()], &protocol::FEE_PROGRAM);
+        let (sharing_config, _) = Pubkey::find_program_address(
+            &[b"sharing-config", mint.as_ref()],
+            &protocol::FEE_PROGRAM,
+        );
         let (user_volume_accumulator, _) = Pubkey::find_program_address(
             &[b"user_volume_accumulator", buyer.as_ref()],
             &protocol::PUMP_FUN,
@@ -470,8 +487,14 @@ mod tests {
             global_pda: d(&[b"global"], &protocol::PUMP_FUN),
             fee_recipient: Pubkey::new_unique(),
             global_volume_accumulator: d(&[b"global_volume_accumulator"], &protocol::PUMP_FUN),
-            user_volume_accumulator: d(&[b"user_volume_accumulator", bundler.pubkey().as_ref()], &protocol::PUMP_FUN),
-            fee_config: d(&[b"fee_config", protocol::PUMP_FUN.as_ref()], &protocol::FEE_PROGRAM),
+            user_volume_accumulator: d(
+                &[b"user_volume_accumulator", bundler.pubkey().as_ref()],
+                &protocol::PUMP_FUN,
+            ),
+            fee_config: d(
+                &[b"fee_config", protocol::PUMP_FUN.as_ref()],
+                &protocol::FEE_PROGRAM,
+            ),
             stable_quote_mint: None,
         });
         (t, bundler)
@@ -526,11 +549,22 @@ mod tests {
             &mint,
             &token_program,
         );
-        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000, layout: IxLayout::canonical_buy() };
+        let leg = BundleLegParams {
+            slippage_bps: 500,
+            cu_limit: 250_000,
+            cu_price: 750_000,
+            tip_lamports: 200_000,
+            layout: IxLayout::canonical_buy(),
+        };
         let core = t
             .build_curve_buy_core(
-                BundleBuyVariant::BuyV2, &bundler.pubkey(), &mint, &pdas, &user_base_ata,
-                10_000_000, 1,
+                BundleBuyVariant::BuyV2,
+                &bundler.pubkey(),
+                &mint,
+                &pdas,
+                &user_base_ata,
+                10_000_000,
+                1,
             )
             .unwrap();
         let ixs = assemble_leg(&t, core, base_ata, &leg, bundler.pubkey());
@@ -543,15 +577,29 @@ mod tests {
             key: Pubkey::new_unique(),
             addresses: crate::alt::launch_alt_addresses(),
         };
-        let vmsg = v0::Message::try_compile(&bundler.pubkey(), &ixs, std::slice::from_ref(&alt), Hash::default())
-            .expect("compile v0 bundle leg");
+        let vmsg = v0::Message::try_compile(
+            &bundler.pubkey(),
+            &ixs,
+            std::slice::from_ref(&alt),
+            Hash::default(),
+        )
+        .expect("compile v0 bundle leg");
         let v0_size = 1
             + 64 * vmsg.header.num_required_signatures as usize
             + VersionedMessage::V0(vmsg.clone()).serialize().len();
         eprintln!("v2 bundle leg: legacy = {legacy} B, v0+ALT = {v0_size} B (limit 1232)");
-        assert!(!vmsg.address_table_lookups.is_empty(), "v0 leg did not reference the ALT");
-        assert!(v0_size < legacy, "ALT must shrink the leg: v0 {v0_size} >= legacy {legacy}");
-        assert!(v0_size <= 1232, "v2 leg over limit even with ALT: {v0_size} B");
+        assert!(
+            !vmsg.address_table_lookups.is_empty(),
+            "v0 leg did not reference the ALT"
+        );
+        assert!(
+            v0_size < legacy,
+            "ALT must shrink the leg: v0 {v0_size} >= legacy {legacy}"
+        );
+        assert!(
+            v0_size <= 1232,
+            "v2 leg over limit even with ALT: {v0_size} B"
+        );
     }
 
     /// The atomic-launch reserve simulation: index 0 is the curve AFTER create +
@@ -570,8 +618,14 @@ mod tests {
             "co-buy leg 0 faces the post-dev-buy curve, not the empty one"
         );
         for w in seq.windows(2) {
-            assert!(w[1].1 > w[0].1, "each later co-buy faces a higher quote reserve");
-            assert!(w[1].0 < w[0].0, "each later co-buy faces a lower token reserve");
+            assert!(
+                w[1].1 > w[0].1,
+                "each later co-buy faces a higher quote reserve"
+            );
+            assert!(
+                w[1].0 < w[0].0,
+                "each later co-buy faces a lower token reserve"
+            );
         }
     }
 
@@ -581,7 +635,10 @@ mod tests {
         let (t, _bundler) = trader_with_global();
         let fresh = crate::price::fresh_curve_reserves();
         let seq = t.simulate_launch_leg_reserves(0, &[10_000_000]);
-        assert_eq!(seq[0], fresh, "no dev-buy ⇒ first co-buy sees the fresh curve");
+        assert_eq!(
+            seq[0], fresh,
+            "no dev-buy ⇒ first co-buy sees the fresh curve"
+        );
     }
 
     #[test]
@@ -636,11 +693,22 @@ mod tests {
             &mint,
             &token_program,
         );
-        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000, layout: IxLayout::canonical_buy() };
+        let leg = BundleLegParams {
+            slippage_bps: 500,
+            cu_limit: 250_000,
+            cu_price: 750_000,
+            tip_lamports: 200_000,
+            layout: IxLayout::canonical_buy(),
+        };
         let core = t
             .build_curve_buy_core(
-                BundleBuyVariant::Buy, &bundler.pubkey(), &mint, &pdas, &user_ata,
-                10_000_000, 1,
+                BundleBuyVariant::Buy,
+                &bundler.pubkey(),
+                &mint,
+                &pdas,
+                &user_ata,
+                10_000_000,
+                1,
             )
             .unwrap();
         let out = assemble_leg(&t, core, ata_ix.clone(), &leg, bundler.pubkey());
@@ -652,7 +720,11 @@ mod tests {
         assert_eq!(out[3].program_id, protocol::PUMP_FUN); // opaque Core buy
         assert_eq!(
             out[4],
-            system_instruction::transfer(&bundler.pubkey(), &t.engine.jito_tip_account, leg.tip_lamports)
+            system_instruction::transfer(
+                &bundler.pubkey(),
+                &t.engine.jito_tip_account,
+                leg.tip_lamports
+            )
         );
     }
 
@@ -671,18 +743,33 @@ mod tests {
             get_associated_token_address_with_program_id(&bundler.pubkey(), &mint, &token_program);
         let core = t
             .build_curve_buy_core(
-                BundleBuyVariant::BuyV2, &bundler.pubkey(), &mint, &pdas, &user_base_ata,
-                10_000_000, 1,
+                BundleBuyVariant::BuyV2,
+                &bundler.pubkey(),
+                &mint,
+                &pdas,
+                &user_base_ata,
+                10_000_000,
+                1,
             )
             .unwrap();
 
-        let expected =
-            Pubkey::find_program_address(&[b"sharing-config", mint.as_ref()], &protocol::FEE_PROGRAM).0;
+        let expected = Pubkey::find_program_address(
+            &[b"sharing-config", mint.as_ref()],
+            &protocol::FEE_PROGRAM,
+        )
+        .0;
         let wrong =
-            Pubkey::find_program_address(&[b"sharing-config", mint.as_ref()], &protocol::PUMP_FUN).0;
+            Pubkey::find_program_address(&[b"sharing-config", mint.as_ref()], &protocol::PUMP_FUN)
+                .0;
         // Account 18 in the v2 buy is `sharing_config` (see the IDL account order).
-        assert_eq!(core.buy_ix.accounts[18].pubkey, expected, "sharing_config must be a fee-program PDA");
-        assert_ne!(core.buy_ix.accounts[18].pubkey, wrong, "must not use the old PUMP_FUN derivation");
+        assert_eq!(
+            core.buy_ix.accounts[18].pubkey, expected,
+            "sharing_config must be a fee-program PDA"
+        );
+        assert_ne!(
+            core.buy_ix.accounts[18].pubkey, wrong,
+            "must not use the old PUMP_FUN derivation"
+        );
     }
 
     #[test]
@@ -706,11 +793,22 @@ mod tests {
             &protocol::WSOL_MINT,
             &spl_token::id(),
         );
-        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000, layout: IxLayout::canonical_buy() };
+        let leg = BundleLegParams {
+            slippage_bps: 500,
+            cu_limit: 250_000,
+            cu_price: 750_000,
+            tip_lamports: 200_000,
+            layout: IxLayout::canonical_buy(),
+        };
         let core = t
             .build_curve_buy_core(
-                BundleBuyVariant::BuyV2, &bundler.pubkey(), &mint, &pdas, &user_base_ata,
-                10_000_000, 1,
+                BundleBuyVariant::BuyV2,
+                &bundler.pubkey(),
+                &mint,
+                &pdas,
+                &user_base_ata,
+                10_000_000,
+                1,
             )
             .unwrap();
         let out = assemble_leg(&t, core, base_ata.clone(), &leg, bundler.pubkey());
@@ -723,7 +821,11 @@ mod tests {
         assert_eq!(out[4].program_id, protocol::PUMP_FUN); // opaque Core buy
         assert_eq!(
             out[5],
-            system_instruction::transfer(&bundler.pubkey(), &t.engine.jito_tip_account, leg.tip_lamports)
+            system_instruction::transfer(
+                &bundler.pubkey(),
+                &t.engine.jito_tip_account,
+                leg.tip_lamports
+            )
         );
     }
 }

@@ -79,7 +79,8 @@ fn json_positions(positions: Vec<StrategyPosition>) -> HttpResponse {
 
 fn list_error(what: &str, e: anyhow::Error) -> HttpResponse {
     tracing::error!("Failed to {what}: {e}");
-    HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to load positions"}))
+    HttpResponse::InternalServerError()
+        .json(serde_json::json!({"error": "Failed to load positions"}))
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +158,10 @@ pub async fn list_positions(
     let _strategy = path.into_inner();
     let sid = GENERIC_STRATEGY_ID;
     let (limit, offset) = query.bounds();
-    match repo(&app_state).find_positions_by_strategy(sid, limit, offset).await {
+    match repo(&app_state)
+        .find_positions_by_strategy(sid, limit, offset)
+        .await
+    {
         Ok(positions) => json_positions(positions),
         Err(e) => list_error("list positions", e),
     }
@@ -172,7 +176,10 @@ pub async fn get_positions_by_mint(
     let (_strategy, mint) = path.into_inner();
     let sid = GENERIC_STRATEGY_ID;
     let (limit, offset) = query.bounds();
-    match repo(&app_state).find_holding_by_mint(sid, &mint, limit, offset).await {
+    match repo(&app_state)
+        .find_holding_by_mint(sid, &mint, limit, offset)
+        .await
+    {
         Ok(positions) => json_positions(positions),
         Err(e) => list_error("load positions for mint", e),
     }
@@ -201,7 +208,10 @@ pub async fn get_positions_by_wallet(
     let (_strategy, wallet) = path.into_inner();
     let sid = GENERIC_STRATEGY_ID;
     let (limit, offset) = query.bounds();
-    match repo(&app_state).find_holding_by_wallet(sid, &wallet, limit, offset).await {
+    match repo(&app_state)
+        .find_holding_by_wallet(sid, &wallet, limit, offset)
+        .await
+    {
         Ok(positions) => json_positions(positions),
         Err(e) => list_error("load positions for wallet", e),
     }
@@ -215,7 +225,9 @@ pub async fn get_position(
     let (_strategy, position_id) = path.into_inner();
     match repo(&app_state).find_position(position_id).await {
         Ok(Some(position)) => HttpResponse::Ok().json(PositionResponse::from(position)),
-        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "Position not found"})),
+        Ok(None) => {
+            HttpResponse::NotFound().json(serde_json::json!({"error": "Position not found"}))
+        }
         Err(e) => {
             tracing::error!("Failed to get position {position_id}: {e}");
             HttpResponse::InternalServerError()
@@ -373,7 +385,7 @@ pub async fn close_position(
                 }));
             }
             verify_position(&app_state, pos).await
-        },
+        }
 
         "retry" | "dump" => {
             let dump = action == "dump";
@@ -607,7 +619,11 @@ pub async fn manual_buy_position(
 
     // One open position per mint (double-click double-buys included, M3): the
     // serialized engine loop also dedups, but reject early with an honest 409.
-    match app_state.strategy_repo.has_open_real_position_on_mint(&body.mint_address).await {
+    match app_state
+        .strategy_repo
+        .has_open_real_position_on_mint(&body.mint_address)
+        .await
+    {
         Ok(true) => {
             return HttpResponse::Conflict().json(serde_json::json!({
                 "error": "An open position already exists for this mint — use its row actions"
@@ -620,8 +636,10 @@ pub async fn manual_buy_position(
         }
     }
 
-    let exit = (body.tp_pct.is_some() || body.sl_pct.is_some())
-        .then_some(ManualExit { tp_pct: body.tp_pct, sl_pct: body.sl_pct });
+    let exit = (body.tp_pct.is_some() || body.sl_pct.is_some()).then_some(ManualExit {
+        tp_pct: body.tp_pct,
+        sl_pct: body.sl_pct,
+    });
     let pg_id = Uuid::new_v4();
     let lamports = sol_to_lamports(amount_sol).max(0) as u64;
     if !app_state
@@ -686,8 +704,10 @@ pub async fn set_manual_exit(
         }));
     }
 
-    let exit = (body.tp_pct.is_some() || body.sl_pct.is_some())
-        .then_some(ManualExit { tp_pct: body.tp_pct, sl_pct: body.sl_pct });
+    let exit = (body.tp_pct.is_some() || body.sl_pct.is_some()).then_some(ManualExit {
+        tp_pct: body.tp_pct,
+        sl_pct: body.sl_pct,
+    });
     let json = exit.map(|e| serde_json::json!({ "tp_pct": e.tp_pct, "sl_pct": e.sl_pct }));
     if let Err(e) = app_state
         .strategy_repo
@@ -703,7 +723,9 @@ pub async fn set_manual_exit(
     HttpResponse::Ok().json(serde_json::json!({ "updated": true, "manual_exit": json }))
 }
 
-fn orphan_deps_from_state(app_state: &DeployState) -> crate::strategies::engine::orphan_exit::OrphanExitDeps {
+fn orphan_deps_from_state(
+    app_state: &DeployState,
+) -> crate::strategies::engine::orphan_exit::OrphanExitDeps {
     use crate::strategies::engine::orphan_exit::OrphanExitDeps;
     OrphanExitDeps {
         strategy_repo: app_state.strategy_repo.clone(),
@@ -718,7 +740,9 @@ fn orphan_deps_from_state(app_state: &DeployState) -> crate::strategies::engine:
     }
 }
 
-fn reaper_deps_from_state(app_state: &DeployState) -> crate::strategies::engine::reapers::ReaperDeps {
+fn reaper_deps_from_state(
+    app_state: &DeployState,
+) -> crate::strategies::engine::reapers::ReaperDeps {
     crate::strategies::engine::reapers::ReaperDeps {
         strategy_repo: app_state.strategy_repo.clone(),
         trade_repo: app_state.trade_repo(),
@@ -730,7 +754,6 @@ fn reaper_deps_from_state(app_state: &DeployState) -> crate::strategies::engine:
         fill_tx: app_state.engine_fill_tx.clone(),
         settings: app_state.settings.subscribe(),
         sse_tx: app_state.sse_tx.clone(),
-        onchain_bag_check:
-            crate::strategies::engine::reapers::onchain_bag_check_from_env(),
+        onchain_bag_check: crate::strategies::engine::reapers::onchain_bag_check_from_env(),
     }
 }

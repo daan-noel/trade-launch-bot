@@ -20,9 +20,7 @@ use actix_web::{web, HttpResponse, Responder};
 use chrono::Utc;
 use serde_json::{json, Value};
 use trading_core::api::handlers::strategies::rule_bundle;
-use trading_core::api::handlers::strategies::rule_positions::{
-    self, ScoreScope, ScoreScopeParam,
-};
+use trading_core::api::handlers::strategies::rule_positions::{self, ScoreScope, ScoreScopeParam};
 use trading_core::models::Fingerprint;
 use trading_core::strategies::rules::{self, apply_rule_update, RuleDraft, RuleError};
 use uuid::Uuid;
@@ -97,7 +95,10 @@ pub async fn list_fingerprints(app_state: web::Data<Arc<DeployState>>) -> impl R
         .map(|fp| {
             let mut v = serde_json::to_value(fp).unwrap_or_else(|_| json!({}));
             if let Value::Object(map) = &mut v {
-                map.insert("used_by".into(), json!(usage.get(&fp.id).copied().unwrap_or(0)));
+                map.insert(
+                    "used_by".into(),
+                    json!(usage.get(&fp.id).copied().unwrap_or(0)),
+                );
             }
             v
         })
@@ -133,9 +134,7 @@ pub async fn create_fingerprint(
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
-    if let Err(e) =
-        hunter_engine::metrics::tags::config::validate_tags(&fp.tags)
-    {
+    if let Err(e) = hunter_engine::metrics::tags::config::validate_tags(&fp.tags) {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
     match app_state.fingerprint_repo.insert(&fp).await {
@@ -159,9 +158,7 @@ pub async fn update_fingerprint(
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
-    if let Err(e) =
-        hunter_engine::metrics::tags::config::validate_tags(&fp.tags)
-    {
+    if let Err(e) = hunter_engine::metrics::tags::config::validate_tags(&fp.tags) {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
     match app_state.fingerprint_repo.update(&fp).await {
@@ -292,12 +289,8 @@ pub async fn create_rule(
         Ok(d) => d,
         Err(e) => return HttpResponse::BadRequest().json(json!({"error": e})),
     };
-    match rules::create_with_fp_check(
-        &app_state.rule_repo,
-        &app_state.fingerprint_repo,
-        &draft,
-    )
-    .await
+    match rules::create_with_fp_check(&app_state.rule_repo, &app_state.fingerprint_repo, &draft)
+        .await
     {
         Ok((rule, warning)) => {
             schedule_engine_reload(&app_state);
@@ -324,12 +317,8 @@ pub async fn update_rule(
         return HttpResponse::NotFound().json(json!({"error": "rule not found"}));
     };
     apply_rule_update(&mut rule, &body);
-    match rules::save_with_fp_check(
-        &app_state.rule_repo,
-        &app_state.fingerprint_repo,
-        &mut rule,
-    )
-    .await
+    match rules::save_with_fp_check(&app_state.rule_repo, &app_state.fingerprint_repo, &mut rule)
+        .await
     {
         Ok(warning) => {
             schedule_engine_reload(&app_state);
@@ -497,16 +486,21 @@ fn copy_board(board: Option<&str>) -> bool {
 }
 
 /// Deactivate every active rule of `mode` on one board. Returns the count paused.
-async fn pause_all_of_mode(app_state: &DeployState, mode: &str, copy: bool) -> Result<usize, HttpResponse> {
+async fn pause_all_of_mode(
+    app_state: &DeployState,
+    mode: &str,
+    copy: bool,
+) -> Result<usize, HttpResponse> {
     let rules = app_state
         .rule_repo
         .list()
         .await
         .map_err(|e| server_error("pause-all: list rules", e))?;
     let mut paused = 0usize;
-    for mut rule in rules.into_iter().filter(|r| {
-        r.is_active && r.trade_mode == mode && rules::is_copy_params(&r.params) == copy
-    }) {
+    for mut rule in rules
+        .into_iter()
+        .filter(|r| r.is_active && r.trade_mode == mode && rules::is_copy_params(&r.params) == copy)
+    {
         rule.is_active = false;
         rule.updated_at = Utc::now();
         app_state

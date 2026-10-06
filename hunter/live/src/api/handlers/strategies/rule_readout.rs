@@ -115,7 +115,12 @@ fn part_out(p: ReadPart) -> PartOut {
             out.part = "always";
             out.line = Some(line);
         }
-        ReadPart::Stage { stage, name, at_end, line } => {
+        ReadPart::Stage {
+            stage,
+            name,
+            at_end,
+            line,
+        } => {
             out.part = "stage";
             out.stage = Some(stage);
             out.stage_name = Some(name);
@@ -306,13 +311,20 @@ fn line_out(l: &LineRead) -> LineOut {
 }
 
 fn signal_out(s: &SignalRead) -> SignalOut {
-    SignalOut { name: s.name, holds: s.holds }
+    SignalOut {
+        name: s.name,
+        holds: s.holds,
+    }
 }
 
 fn condition_series_out(c: &ConditionSeries) -> ConditionSeriesOut {
     ConditionSeriesOut {
         meta: condition_meta(c.part, c.req.r, &c.req.conds),
-        values: c.values.iter().map(|v| v.is_finite().then_some(*v)).collect(),
+        values: c
+            .values
+            .iter()
+            .map(|v| v.is_finite().then_some(*v))
+            .collect(),
         ok: c.ok.clone(),
     }
 }
@@ -370,10 +382,7 @@ struct ResolvedRule {
 /// interchangeable to someone looking at an empty panel: a deleted rule has nothing
 /// to compile and unparseable params are a different problem. Collapsing them into
 /// one blank strip hides which it is.
-async fn load_rule(
-    app_state: &DeployState,
-    rule_uuid: Uuid,
-) -> Result<LoadedRule, HttpResponse> {
+async fn load_rule(app_state: &DeployState, rule_uuid: Uuid) -> Result<LoadedRule, HttpResponse> {
     let rule_row = match app_state.rule_repo.find(rule_uuid).await {
         Ok(Some(r)) => r,
         Ok(None) => return Err(not_found("that rule is deleted")),
@@ -501,11 +510,17 @@ async fn load_tag_ctx(
     let creator_wallet_hash = match app_state.core.token_repo().find_by_mint(mint).await {
         Ok(Some(t)) if !t.creator_wallet.is_empty() => Some(wallet_hash(&t.creator_wallet)),
         _ => {
-            tracing::warn!(mint, "readout replay: no creator wallet — creator and sticky tags unseeded");
+            tracing::warn!(
+                mint,
+                "readout replay: no creator wallet — creator and sticky tags unseeded"
+            );
             None
         }
     };
-    TagCtx { tags, creator_wallet_hash }
+    TagCtx {
+        tags,
+        creator_wallet_hash,
+    }
 }
 
 /// The token's stored trades up to `until`, as the engine's `TradeLite`.
@@ -574,12 +589,19 @@ async fn replay_created_at(
 /// (`m_holdings.bag_share_pct @public_app`). Read-only: a day never stored stays
 /// unknown and the read is `null`, so a request never computes a table (one
 /// `GROUP BY` over a day of `trades`).
-async fn stamp_build_breadth(app_state: &DeployState, rule: &CompiledRule, lites: &mut [TradeLite]) {
+async fn stamp_build_breadth(
+    app_state: &DeployState,
+    rule: &CompiledRule,
+    lites: &mut [TradeLite],
+) {
     if !rule.buffers.holder_book {
         return;
     }
-    let days: std::collections::BTreeSet<chrono::NaiveDate> =
-        lites.iter().filter(|t| t.side == Side::Buy).map(|t| t.at.date_naive()).collect();
+    let days: std::collections::BTreeSet<chrono::NaiveDate> = lites
+        .iter()
+        .filter(|t| t.side == Side::Buy)
+        .map(|t| t.at.date_naive())
+        .collect();
     let repo = BuildBreadthRepo::new(app_state.core.db.clone());
     let mut tables = Vec::with_capacity(days.len());
     for day in days {
@@ -615,7 +637,10 @@ fn replay_stage(
     let (entered, _) = entry?;
     Some(match read_at {
         ReadAt::Entry => (0, entered),
-        ReadAt::Exit => (position.scale_stage, position.stage_since().unwrap_or(entered)),
+        ReadAt::Exit => (
+            position.scale_stage,
+            position.stage_since().unwrap_or(entered),
+        ),
     })
 }
 
@@ -638,19 +663,30 @@ async fn replay_for_position(
         ReadAt::Exit => position.exit_time.or(position.entry_time),
     };
     let Some(at) = at else {
-        return Err(not_found("this position never filled — no instant to read at"));
+        return Err(not_found(
+            "this position never filled — no instant to read at",
+        ));
     };
 
     let trades = load_trades(app_state, &position.mint_address, at).await?;
-    let tag_ctx =
-        load_tag_ctx(app_state, &position.mint_address, &rule.compiled, rule.fingerprint_id).await;
+    let tag_ctx = load_tag_ctx(
+        app_state,
+        &position.mint_address,
+        &rule.compiled,
+        rule.fingerprint_id,
+    )
+    .await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
     let mut lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
     stamp_build_breadth(app_state, &rule.compiled, &mut lites).await;
     let entry = entry_fill(position);
     let stage = replay_stage(position, entry, read_at);
-    let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
+    let ResolvedRule {
+        id: rule_id,
+        compiled,
+        fingerprint_id,
+    } = rule;
 
     // Off the reactor: this walks every trade the token made before `at`, which for a
     // busy token is tens of thousands of folds. Small next to the lab's full series,
@@ -661,7 +697,10 @@ async fn replay_for_position(
             &compiled,
             lites,
             &ReplayCtx {
-                created_at, entry, stage, tags,
+                created_at,
+                entry,
+                stage,
+                tags,
             },
             at,
         )
@@ -670,8 +709,7 @@ async fn replay_for_position(
 
     out.map(|readout| (readout, rule_id)).map_err(|e| {
         tracing::error!("readout replay: fold task failed: {e}");
-        HttpResponse::InternalServerError()
-            .json(serde_json::json!({ "error": "replay failed" }))
+        HttpResponse::InternalServerError().json(serde_json::json!({ "error": "replay failed" }))
     })
 }
 
@@ -683,7 +721,11 @@ fn trade_lite(t: &Trade) -> TradeLite {
     let (core_hash, core_marks) =
         hunter_engine::metrics::trade_keys::core_keys_from_labels_value(&t.instruction_labels);
     TradeLite {
-        side: if t.trade_type == TradeType::Buy { Side::Buy } else { Side::Sell },
+        side: if t.trade_type == TradeType::Buy {
+            Side::Buy
+        } else {
+            Side::Sell
+        },
         sol: t.amount_sol,
         price: t.chart_spot_price().unwrap_or(t.price_per_token),
         reserve_sol: t.real_reserve_sol.unwrap_or(f64::NAN),
@@ -736,8 +778,7 @@ fn trade_lite(t: &Trade) -> TradeLite {
 /// move, which is exactly what the polling UI does.
 fn engine_error(e: EngineReloadError) -> HttpResponse {
     tracing::warn!(error = %e, "rule readout: engine unavailable");
-    HttpResponse::ServiceUnavailable()
-        .json(serde_json::json!({ "error": "engine unavailable" }))
+    HttpResponse::ServiceUnavailable().json(serde_json::json!({ "error": "engine unavailable" }))
 }
 
 /// GET /api/strategies/{strategy}/positions/{position_id}/metrics[?at=exit|entry]
@@ -904,8 +945,17 @@ async fn series_response(
     let created_at = replay_created_at(app_state, &mint, &trades).await;
     let mut lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
     stamp_build_breadth(app_state, &rule.compiled, &mut lites).await;
-    let SeriesAnchor { position_id, centre, entry, stage } = anchor;
-    let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
+    let SeriesAnchor {
+        position_id,
+        centre,
+        entry,
+        stage,
+    } = anchor;
+    let ResolvedRule {
+        id: rule_id,
+        compiled,
+        fingerprint_id,
+    } = rule;
 
     // The fold still runs from creation; only recording starts here. Pre-roll is the
     // rule's own widest metric window, floored at a minute, because the question a
@@ -924,7 +974,10 @@ async fn series_response(
             &compiled,
             lites,
             &ReplayCtx {
-                created_at, entry, stage, tags,
+                created_at,
+                entry,
+                stage,
+                tags,
             },
             as_of,
             Some(MAX_READOUT_SERIES_ROWS),
@@ -1031,7 +1084,11 @@ pub async fn get_armed_metric_series(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<ArmedSeriesQuery>,
 ) -> impl Responder {
-    let ArmedSeriesQuery { mint, rule, armed_at } = query.into_inner();
+    let ArmedSeriesQuery {
+        mint,
+        rule,
+        armed_at,
+    } = query.into_inner();
     if let Err(e) = validate_solana_address(&mint) {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
@@ -1043,7 +1100,12 @@ pub async fn get_armed_metric_series(
         &app_state,
         mint,
         resolved,
-        SeriesAnchor { position_id: None, centre: armed_at, entry: None, stage: None },
+        SeriesAnchor {
+            position_id: None,
+            centre: armed_at,
+            entry: None,
+            stage: None,
+        },
     )
     .await
 }

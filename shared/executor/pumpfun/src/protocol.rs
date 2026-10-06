@@ -42,8 +42,7 @@ pub const TOKEN_2022: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPx
 pub const ASSOCIATED_TOKEN_PROGRAM: Pubkey =
     pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 /// Metaplex Token Metadata program (legacy `create` CPI).
-pub const MPL_TOKEN_METADATA: Pubkey =
-    pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+pub const MPL_TOKEN_METADATA: Pubkey = pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 /// Pump.mayhem program (`create_v2` mayhem-mode accounts).
 pub const MAYHEM_PROGRAM: Pubkey = pubkey!("MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e");
 

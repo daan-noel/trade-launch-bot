@@ -216,5 +216,4 @@ impl PumpFunTrader {
             confirmed,
         })
     }
-
 }

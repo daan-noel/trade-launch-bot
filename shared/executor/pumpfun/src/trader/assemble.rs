@@ -45,12 +45,12 @@ pub fn assemble(layout: &IxLayout, parts: IxParts) -> Vec<Instruction> {
     let mut out = Vec::with_capacity(layout.steps.len() + parts.core.len() + parts.ata.len());
     for step in &layout.steps {
         match step {
-            DecoStep::CuLimit => {
-                out.push(ComputeBudgetInstruction::set_compute_unit_limit(parts.cu_limit))
-            }
-            DecoStep::CuPrice => {
-                out.push(ComputeBudgetInstruction::set_compute_unit_price(parts.cu_price))
-            }
+            DecoStep::CuLimit => out.push(ComputeBudgetInstruction::set_compute_unit_limit(
+                parts.cu_limit,
+            )),
+            DecoStep::CuPrice => out.push(ComputeBudgetInstruction::set_compute_unit_price(
+                parts.cu_price,
+            )),
             DecoStep::CreateAta => out.extend_from_slice(&parts.ata),
             DecoStep::Core => out.extend_from_slice(&parts.core),
             // The Jito tip MUST stay an inline `system_instruction::transfer`:
@@ -72,7 +72,11 @@ mod tests {
     use executor_core::LayoutKind;
 
     fn ix(tag: u8) -> Instruction {
-        Instruction { program_id: Pubkey::new_unique(), accounts: vec![], data: vec![tag] }
+        Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![],
+            data: vec![tag],
+        }
     }
 
     fn parts(core: Vec<Instruction>, ata: Vec<Instruction>) -> IxParts {
@@ -110,12 +114,14 @@ mod tests {
     fn partial_layout_emits_only_listed_steps() {
         let core = vec![ix(9)];
         let ata = vec![ix(1)];
-        let lean = IxLayout { steps: vec![DecoStep::CreateAta, DecoStep::Core] };
+        let lean = IxLayout {
+            steps: vec![DecoStep::CreateAta, DecoStep::Core],
+        };
         let out = assemble(&lean, parts(core.clone(), ata.clone()));
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].data, vec![1]);
         assert_eq!(out[1], core[0]); // Core placed opaque, byte-identical
-        // Sanity: this lean layout is a legal non-snipe buy.
+                                     // Sanity: this lean layout is a legal non-snipe buy.
         assert!(lean.validate(LayoutKind::Buy, false).is_ok());
     }
 
@@ -123,7 +129,9 @@ mod tests {
     #[test]
     fn tip_is_inline_system_transfer() {
         let out = assemble(
-            &IxLayout { steps: vec![DecoStep::Tip] },
+            &IxLayout {
+                steps: vec![DecoStep::Tip],
+            },
             parts(vec![ix(9)], vec![]),
         );
         assert_eq!(out.len(), 1);

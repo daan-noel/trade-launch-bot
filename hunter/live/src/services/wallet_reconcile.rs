@@ -20,9 +20,9 @@ use std::collections::HashSet;
 
 use tracing::{info, warn};
 
+use crate::trader::{PumpFunTrader, WalletHolding};
 use trading_core::models::is_expected_non_position;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
-use crate::trader::{PumpFunTrader, WalletHolding};
 
 /// One on-chain token balance the wallet holds that no open position accounts for
 /// — surfaced for manual review, never auto-acted-on.
@@ -64,8 +64,11 @@ pub async fn reconcile_wallet_holdings(
     // still hold a bag whose
     // sell failed), i.e. exactly the states where tokens may legitimately sit in
     // the wallet. The unified `strategy_positions` table makes this one query.
-    let tracked: HashSet<String> =
-        strategy_repo.distinct_unsettled_real_mints().await?.into_iter().collect();
+    let tracked: HashSet<String> = strategy_repo
+        .distinct_unsettled_real_mints()
+        .await?
+        .into_iter()
+        .collect();
 
     let flagged: Vec<UnattributedHolding> = unattributed(&holdings, &tracked)
         .into_iter()
@@ -124,12 +127,7 @@ mod tests {
     fn flags_only_untracked_non_expected_mints() {
         let wsol = trading_core::config::constants::WSOL_MINT;
         let usdc = trading_core::config::constants::USDC_MINT;
-        let holdings = vec![
-            holding("AAA"),
-            holding("BBB"),
-            holding(wsol),
-            holding(usdc),
-        ];
+        let holdings = vec![holding("AAA"), holding("BBB"), holding(wsol), holding(usdc)];
         let tracked: HashSet<String> = ["AAA".to_string()].into_iter().collect();
 
         let flagged = unattributed(&holdings, &tracked);
@@ -141,8 +139,7 @@ mod tests {
     #[test]
     fn no_flags_when_everything_is_tracked() {
         let holdings = vec![holding("AAA"), holding("BBB")];
-        let tracked: HashSet<String> =
-            ["AAA".to_string(), "BBB".to_string()].into_iter().collect();
+        let tracked: HashSet<String> = ["AAA".to_string(), "BBB".to_string()].into_iter().collect();
         assert!(unattributed(&holdings, &tracked).is_empty());
     }
 

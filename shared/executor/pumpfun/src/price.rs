@@ -120,9 +120,15 @@ mod tests {
 
     #[test]
     fn buy_min_out_is_unprotected_without_slippage_or_reserves() {
-        assert_eq!(curve_buy_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF), 1);
+        assert_eq!(
+            curve_buy_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF),
+            1
+        );
         assert_eq!(curve_buy_min_out(1_000_000, Some(500), None, FEE_BUF), 1);
-        assert_eq!(curve_buy_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF), 1);
+        assert_eq!(
+            curve_buy_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF),
+            1
+        );
     }
 
     #[test]
@@ -130,15 +136,24 @@ mod tests {
         let reserves = Some((1_000_000_000u128, 30_000_000u128));
         let loose = curve_buy_min_out(1_000_000, Some(5_000), reserves, FEE_BUF); // 50%
         let tight = curve_buy_min_out(1_000_000, Some(100), reserves, FEE_BUF); // 1%
-        assert!(tight >= loose, "tighter slippage must demand at least as many tokens");
+        assert!(
+            tight >= loose,
+            "tighter slippage must demand at least as many tokens"
+        );
         assert!(loose >= 1 && tight >= 1, "floor is always >= 1");
     }
 
     #[test]
     fn sell_min_out_is_unprotected_without_slippage_or_reserves() {
-        assert_eq!(curve_sell_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF), 1);
+        assert_eq!(
+            curve_sell_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF),
+            1
+        );
         assert_eq!(curve_sell_min_out(1_000_000, Some(500), None, FEE_BUF), 1);
-        assert_eq!(curve_sell_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF), 1);
+        assert_eq!(
+            curve_sell_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF),
+            1
+        );
     }
 
     /// The dev-buy leg derives its floor from the SAME `curve_buy_min_out` as
@@ -152,8 +167,14 @@ mod tests {
         let unprotected = curve_buy_min_out(1_000_000_000, None, reserves, FEE_BUF);
         let loose = curve_buy_min_out(1_000_000_000, Some(5_000), reserves, FEE_BUF);
         let tight = curve_buy_min_out(1_000_000_000, Some(100), reserves, FEE_BUF);
-        assert_eq!(unprotected, 1, "no slippage → no floor even on a fresh curve");
-        assert!(tight >= loose && loose >= 1, "protected floor rises with tighter slippage");
+        assert_eq!(
+            unprotected, 1,
+            "no slippage → no floor even on a fresh curve"
+        );
+        assert!(
+            tight >= loose && loose >= 1,
+            "protected floor rises with tighter slippage"
+        );
     }
 
     /// A single `apply_curve_buy` moves the curve the right direction: quote reserve
@@ -168,8 +189,16 @@ mod tests {
         assert!(vt1 < vt0, "token reserve must fall on a buy");
         // Net added to the quote reserve is buy_lamports minus the fee buffer.
         let net = 20_000_000u128 * (10_000 - FEE_BUF) / 10_000;
-        assert_eq!(vq1 - vq0, net, "quote reserve grows by exactly the net-of-fee input");
-        assert_eq!(vt0 - vt1, vt0 * net / (vq0 + net), "tokens out follow constant product");
+        assert_eq!(
+            vq1 - vq0,
+            net,
+            "quote reserve grows by exactly the net-of-fee input"
+        );
+        assert_eq!(
+            vt0 - vt1,
+            vt0 * net / (vq0 + net),
+            "tokens out follow constant product"
+        );
     }
 
     /// Replaying create → dev-buy → co-buy1 → co-buy2 produces a MONOTONE curve: each
@@ -185,7 +214,10 @@ mod tests {
         let mut prev_vq = 0u128;
         let mut prev_floor = u64::MAX;
         for _ in 0..4 {
-            assert!(r.1 > prev_vq, "each leg faces a strictly higher quote reserve");
+            assert!(
+                r.1 > prev_vq,
+                "each leg faces a strictly higher quote reserve"
+            );
             let floor = curve_buy_min_out(leg_spend, Some(500), Some(r), FEE_BUF);
             assert!(
                 floor <= prev_floor,

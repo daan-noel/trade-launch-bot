@@ -7,11 +7,11 @@
 // and pool replenishment so the next buy starts warm.
 // ============================================================
 
-use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, TxAnchor};
 use super::PumpFunTrader;
 use crate::error::{Context, Result, TradeError};
 use crate::protocol;
 use crate::types::TokenProgram;
+use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, TxAnchor};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -35,8 +35,7 @@ use tracing::{info, warn};
 /// signature is on disk before any tokens can arrive, so a crash anywhere after
 /// signing is recoverable). Boxed so it threads through the buy path without
 /// making it generic; `None` on paths that don't need the marker (manual buys).
-pub type BuySignedHook =
-    Box<dyn FnOnce(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+pub type BuySignedHook = Box<dyn FnOnce(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
 /// What a snipe buy produced: the submitted signature **and** the token account
 /// that specific buy funded.
@@ -241,7 +240,8 @@ impl PumpFunTrader {
             // Curve PDAs via the shared derivation (same source of truth as the
             // query path). `Pubkey` is `Copy`, so the locals below are copies and
             // `pdas` is still moved into the cache.
-            let pdas = self.derive_token_pdas(mint, creator_pubkey, &token_program_pk, cashback_enabled);
+            let pdas =
+                self.derive_token_pdas(mint, creator_pubkey, &token_program_pk, cashback_enabled);
             // `bonding_curve` is read below for the manual-path slippage reserve
             // read; the rest of the curve PDAs are consumed inside
             // `build_curve_buy_ixs` straight off `pdas` (it's `Copy`, so the insert
@@ -263,21 +263,22 @@ impl PumpFunTrader {
             //     happens either way), so always target the real ATA and prefix
             //     an idempotent create-ATA ix — a no-op if it already exists, and
             //     no create-with-seed account for indexers like GMGN to miss.
-            let (user_token_account, template_opt) = if let Some(existing) = user_token_account_override {
-                (existing, None)
-            } else if skip_ata_check {
-                let template = self.acquire_buy_template(token_program).await?;
-                let account = template.user_token_account;
-                self.replenish_pool_async(token_program);
-                (account, Some(template))
-            } else {
-                let ata = get_associated_token_address_with_program_id(
-                    &signer.pubkey(),
-                    mint,
-                    &token_program_pk,
-                );
-                (ata, None)
-            };
+            let (user_token_account, template_opt) =
+                if let Some(existing) = user_token_account_override {
+                    (existing, None)
+                } else if skip_ata_check {
+                    let template = self.acquire_buy_template(token_program).await?;
+                    let account = template.user_token_account;
+                    self.replenish_pool_async(token_program);
+                    (account, Some(template))
+                } else {
+                    let ata = get_associated_token_address_with_program_id(
+                        &signer.pubkey(),
+                        mint,
+                        &token_program_pk,
+                    );
+                    (ata, None)
+                };
 
             // Convenience cache for cold/manual sells that have no account in hand.
             // NOT the source of truth: it is keyed by mint, so concurrent buys on
@@ -381,7 +382,10 @@ impl PumpFunTrader {
             // instruction build; `anchor_ms`/`send_ms` are re-measured per loop turn
             // so a stale-creator heal reports the send that actually landed rather
             // than the one that reverted.
-            let mut stages = SubmitStages { prep_ms: t0.elapsed().as_millis() as u64, ..Default::default() };
+            let mut stages = SubmitStages {
+                prep_ms: t0.elapsed().as_millis() as u64,
+                ..Default::default()
+            };
             // The send happens inside an `async` block whose value is the signature,
             // so the elapsed time rides out through a cell rather than the return.
             let send_ms = AtomicU64::new(0);
@@ -438,7 +442,10 @@ impl PumpFunTrader {
                     } else {
                         self.send_transaction(&tx).await?
                     };
-                    send_ms.store(send_started.elapsed().as_millis() as u64, AtomicOrdering::Relaxed);
+                    send_ms.store(
+                        send_started.elapsed().as_millis() as u64,
+                        AtomicOrdering::Relaxed,
+                    );
                     info!(
                         "📤 Buy sent — sig: {} | SOL: {} | {}ms",
                         sig,
@@ -484,7 +491,9 @@ impl PumpFunTrader {
                             }
                             // Unchanged creator or the refresh itself failed — stop
                             // rather than re-pay fees on a resend that can't fix anything.
-                            Ok(None) | Err(_) => return sent.map(|s| (s, user_token_account, stages)),
+                            Ok(None) | Err(_) => {
+                                return sent.map(|s| (s, user_token_account, stages))
+                            }
                         }
                     }
                 }
@@ -516,7 +525,13 @@ impl PumpFunTrader {
         let mut ixs = Vec::with_capacity(6);
         ixs.extend_from_slice(&self.engine.cu_ixs_curve_buy);
         ixs.extend(account_creation_ixs);
-        ixs.push(self.curve_buy_ix(mint, pdas, user_token_account, buy_lamports, min_tokens_out)?);
+        ixs.push(self.curve_buy_ix(
+            mint,
+            pdas,
+            user_token_account,
+            buy_lamports,
+            min_tokens_out,
+        )?);
         ixs.push(self.jito_tip_ix(tip_level));
 
         Ok(ixs)
@@ -585,11 +600,20 @@ mod tests {
     #[test]
     fn min_out_is_unprotected_without_slippage_or_reserves() {
         // No slippage tolerance → no floor.
-        assert_eq!(compute_curve_buy_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF), 1);
+        assert_eq!(
+            compute_curve_buy_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF),
+            1
+        );
         // Slippage set but no reserves in hand → no floor (never blocks the buy).
-        assert_eq!(compute_curve_buy_min_out(1_000_000, Some(500), None, FEE_BUF), 1);
+        assert_eq!(
+            compute_curve_buy_min_out(1_000_000, Some(500), None, FEE_BUF),
+            1
+        );
         // Zero reserves (degenerate read) → no floor rather than a panic.
-        assert_eq!(compute_curve_buy_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF), 1);
+        assert_eq!(
+            compute_curve_buy_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF),
+            1
+        );
     }
 
     #[test]
@@ -597,7 +621,10 @@ mod tests {
         let reserves = Some((1_000_000_000u128, 30_000_000u128));
         let loose = compute_curve_buy_min_out(1_000_000, Some(5_000), reserves, FEE_BUF); // 50%
         let tight = compute_curve_buy_min_out(1_000_000, Some(100), reserves, FEE_BUF); // 1%
-        assert!(tight >= loose, "tighter slippage must demand at least as many tokens");
+        assert!(
+            tight >= loose,
+            "tighter slippage must demand at least as many tokens"
+        );
         assert!(loose >= 1 && tight >= 1, "floor is always >= 1");
     }
 }

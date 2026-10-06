@@ -26,10 +26,12 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
-use trading_core::config::constants::PUMP_SWAP_PROGRAM_ID;
 use ingest_laserstream::{build_subscribe_request, connect, Auth, GrpcConfig};
 use ingest_pumpfun::proto::geyser::subscribe_update::UpdateOneof;
-use ingest_pumpfun::proto::geyser::{CommitmentLevel, SubscribeRequest, SubscribeUpdateTransaction};
+use ingest_pumpfun::proto::geyser::{
+    CommitmentLevel, SubscribeRequest, SubscribeUpdateTransaction,
+};
+use trading_core::config::constants::PUMP_SWAP_PROGRAM_ID;
 
 /// Outbound request queue depth (just the single initial subscribe).
 const REQUEST_QUEUE_CAP: usize = 4;
@@ -109,7 +111,11 @@ pub async fn replay_account_from_slot(
     loop {
         // Idle window resets every message: long for the first (cold connect),
         // short between messages (separates a replay burst from live silence).
-        let idle = if got_any { IDLE_TIMEOUT } else { FIRST_MSG_TIMEOUT };
+        let idle = if got_any {
+            IDLE_TIMEOUT
+        } else {
+            FIRST_MSG_TIMEOUT
+        };
 
         tokio::select! {
             _ = &mut hard_deadline => {

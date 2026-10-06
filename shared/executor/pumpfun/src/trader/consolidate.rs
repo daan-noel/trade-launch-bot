@@ -22,10 +22,10 @@
 // sell. A hunter caller must pass `into: Some(account_the_position_holds)`.
 // ============================================================
 
-use executor_core::SimOutcome;
 use super::PumpFunTrader;
 use crate::error::{Context, Result};
 use crate::types::TokenProgram;
+use executor_core::SimOutcome;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 use spl_associated_token_account::{
     get_associated_token_address_with_program_id,
@@ -93,8 +93,9 @@ impl PumpFunTrader {
                 .await
                 .context("consolidation sendTransaction")?
                 .to_string();
-            if let Err(e) =
-                self.confirm_transaction(&sig, self.config.retry.confirm_max_retries).await
+            if let Err(e) = self
+                .confirm_transaction(&sig, self.config.retry.confirm_max_retries)
+                .await
             {
                 warn!(
                     mint = %mint, account = %orphan_str,
@@ -159,7 +160,11 @@ impl PumpFunTrader {
                 balance,
                 decimals,
             )?;
-            plans.push(OrphanPlan { orphan, balance, ixs });
+            plans.push(OrphanPlan {
+                orphan,
+                balance,
+                ixs,
+            });
         }
         Ok(plans)
     }
@@ -239,10 +244,24 @@ fn build_orphan_ixs(
     if balance > 0 {
         let transfer_ix = match token_program {
             TokenProgram::Legacy => spl_token::instruction::transfer_checked(
-                token_program_pk, orphan, mint, dest, owner, &[], balance, decimals,
+                token_program_pk,
+                orphan,
+                mint,
+                dest,
+                owner,
+                &[],
+                balance,
+                decimals,
             )?,
             TokenProgram::Token2022 => spl_token_2022::instruction::transfer_checked(
-                token_program_pk, orphan, mint, dest, owner, &[], balance, decimals,
+                token_program_pk,
+                orphan,
+                mint,
+                dest,
+                owner,
+                &[],
+                balance,
+                decimals,
             )?,
         };
         ixs.push(transfer_ix);
@@ -277,7 +296,15 @@ mod tests {
         let orphan = pk(4);
         let tp = spl_token::id();
         let ixs = build_orphan_ixs(
-            &owner, &mint, &tp, TokenProgram::Legacy, &canonical, true, &orphan, 1_000, 6,
+            &owner,
+            &mint,
+            &tp,
+            TokenProgram::Legacy,
+            &canonical,
+            true,
+            &orphan,
+            1_000,
+            6,
         )
         .unwrap();
         // create-ATA (ATA program) + transfer_checked (token program) + close (token program).
@@ -288,13 +315,24 @@ mod tests {
         // transfer_checked: source=orphan, dest=canonical present in account metas.
         let metas: Vec<Pubkey> = ixs[1].accounts.iter().map(|m| m.pubkey).collect();
         assert!(metas.contains(&orphan), "transfer source is the orphan");
-        assert!(metas.contains(&canonical), "transfer dest is the canonical ATA");
+        assert!(
+            metas.contains(&canonical),
+            "transfer dest is the canonical ATA"
+        );
     }
 
     #[test]
     fn empty_orphan_skips_transfer() {
         let ixs = build_orphan_ixs(
-            &pk(1), &pk(2), &spl_token::id(), TokenProgram::Legacy, &pk(3), true, &pk(4), 0, 6,
+            &pk(1),
+            &pk(2),
+            &spl_token::id(),
+            TokenProgram::Legacy,
+            &pk(3),
+            true,
+            &pk(4),
+            0,
+            6,
         )
         .unwrap();
         // Zero balance: only create-ATA + close (no transfer of 0).
@@ -306,12 +344,26 @@ mod tests {
     fn token_2022_routes_to_2022_program() {
         let tp = spl_token_2022::id();
         let ixs = build_orphan_ixs(
-            &pk(1), &pk(2), &tp, TokenProgram::Token2022, &pk(3), true, &pk(4), 500, 9,
+            &pk(1),
+            &pk(2),
+            &tp,
+            TokenProgram::Token2022,
+            &pk(3),
+            true,
+            &pk(4),
+            500,
+            9,
         )
         .unwrap();
         assert_eq!(ixs.len(), 3);
-        assert_eq!(ixs[1].program_id, tp, "Token-2022 transfer routes to the 2022 program");
-        assert_eq!(ixs[2].program_id, tp, "Token-2022 close routes to the 2022 program");
+        assert_eq!(
+            ixs[1].program_id, tp,
+            "Token-2022 transfer routes to the 2022 program"
+        );
+        assert_eq!(
+            ixs[2].program_id, tp,
+            "Token-2022 close routes to the 2022 program"
+        );
     }
 
     #[test]
@@ -323,17 +375,33 @@ mod tests {
         let orphan = pk(4);
         let tp = spl_token::id();
         let ixs = build_orphan_ixs(
-            &owner, &mint, &tp, TokenProgram::Legacy, &seeded_dest, false, &orphan, 1_000, 6,
+            &owner,
+            &mint,
+            &tp,
+            TokenProgram::Legacy,
+            &seeded_dest,
+            false,
+            &orphan,
+            1_000,
+            6,
         )
         .unwrap();
         // transfer + close only: creating an ATA here would mint a THIRD account
         // (derived from owner+mint, not `seeded_dest`) and pay its rent for nothing.
-        assert_eq!(ixs.len(), 2, "named destination = transfer + close, no create");
+        assert_eq!(
+            ixs.len(),
+            2,
+            "named destination = transfer + close, no create"
+        );
         assert!(
-            ixs.iter().all(|i| i.program_id != spl_associated_token_account::id()),
+            ixs.iter()
+                .all(|i| i.program_id != spl_associated_token_account::id()),
             "no ATA-program ix when the destination was named by the caller"
         );
         let metas: Vec<Pubkey> = ixs[0].accounts.iter().map(|m| m.pubkey).collect();
-        assert!(metas.contains(&seeded_dest), "transfer dest is the named account");
+        assert!(
+            metas.contains(&seeded_dest),
+            "transfer dest is the named account"
+        );
     }
 }
