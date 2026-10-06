@@ -16,6 +16,7 @@ import { SearchableSelect } from 'components/ui/SearchableSelect';
 import { ModeBadge } from 'components/strategy/ModeBadge';
 import { ModeToggle } from 'components/strategy/ModeToggle';
 import { cn } from 'lib/cn';
+import { useConsoleRuleScope } from '@live/pages/console/consolePurpose';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import type { HistoryRange } from 'lib/strategy/nav';
 import type { HistoryCohortApi } from '@live/pages/console/historyCohort';
@@ -78,12 +79,14 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
   ruleNameOf?: (id: string) => string | null;
 }) {
   const { data: rules = [] } = useGetStrategyRulesQuery();
+  const { purpose, copyIds } = useConsoleRuleScope();
   const ruleOptions = useMemo(
     () =>
       [...rules]
+        .filter((r) => (purpose === 'copy' ? copyIds.has(r.id) : !copyIds.has(r.id)))
         .map((r) => ({ value: r.id, label: r.rule_name || r.id.slice(0, 8), data: r }))
         .sort((a, b) => a.label.localeCompare(b.label)),
-    [rules],
+    [rules, purpose, copyIds],
   );
   const statusOptions = useMemo(
     () =>

@@ -40,7 +40,8 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   gating. `identity` (`{subtitle, badge, glyph?, pulse?}`) drives the Header logo block. Live nav
   (`liveNav`) = `Live Trading` / `LIVE` (pulsing) + Live-mode toggle; lab nav (`labNav`) =
   `Research & Backtesting` / `LAB`, no toggle.   Live money nav is collapsed to
-  **Console** (`/console` — one page: the Attention/Open+Manual-trade/Waiting lanes plus the
+  **Console** (`/console` — one page: General / Copy tabs (`?purpose=copy`, absent
+  is General) over the Attention/Open+Manual-trade/Waiting lanes plus the
   **History** and **Arms** sections (both collapsible, and collapsed means NO fetch —
   the body unmounts, since each pays for a server page plus an aggregate);
   redirects from `/floor`, `/trade`, `/ops`, `/positions`, `/live-trading`,
@@ -54,9 +55,10 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
 **Operator clarity (jobs):** Wallet = bag overview (funding/cashback/account-rent + holdings; manual
-trading moved to the Console); **Console = the one real-trade surface** (SSE SSOT; lanes
-top-to-bottom: ⚠ Attention with per-status actions mirroring the backend close matrix,
-Open ∥ Manual-trade panel (buy 202→SSE, TP/SL, sell-all-by-mint, Holding Sell ALL / 25% / 50%, persistent trade log),
+trading moved to the Console); **Console = the one real-trade surface** (SSE SSOT; a
+General / Copy tab scopes the live lanes and the History and Arms cohorts together;
+lanes top-to-bottom: ⚠ Attention with per-status actions mirroring the backend close matrix,
+Open ∥ Manual-trade panel on General only (buy 202→SSE, TP/SL, sell-all-by-mint, Holding Sell ALL / 25% / 50%, persistent trade log),
 collapsible Waiting, then **History**; rows carry origin dot / status+sub-chips / dead-pool ❗ /
 MTM / stale-age cue; row select opens the detail modal — hero with graded PnL% /
 colored exit-reason pills / ops chips (dead, banked %, parked), the same close-action
@@ -268,8 +270,7 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   app-root or route/table chunks up front — it must stay reachable only through a `lazy()`
   boundary, so it downloads when a chart actually mounts. Call sites use
   `LazyTokenTradeChart` / `LazyLabTokenInspect(Modal)` / `LazyTokenChartsGrid` /
-  `LazyFloorMintChart` (live Console + `FloorPositionDetail`; Console manual-trade
-  passes `chrome="compact"` so the toolbar collapses behind a Tools toggle; the
+  `LazyFloorMintChart` (`FloorPositionDetail`; the
   candle/range selection is **controlled** — a host wires `useBarTradesSelection` and
   renders the trades table itself, see below) /
   `LazyLivePositionInspectModal` (live Rules + Rule Analyze). Lab Flow Discovery

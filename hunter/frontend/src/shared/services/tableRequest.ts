@@ -53,9 +53,8 @@ function specToStorage(spec: FilterSpec, storageUnit: AmountStorageUnit): Filter
     const max = typeof spec.max === 'number' ? amountToStorageUnit(spec.max, storageUnit) : spec.max;
     return { op: 'between', min, max };
   }
-  if (spec.op === 'in') return spec;
-  if (typeof spec.val === 'number') {
-    return { ...spec, val: amountToStorageUnit(spec.val, storageUnit) };
+  if (spec.op !== 'in' && spec.op !== 'nin' && typeof spec.val === 'number') {
+    return { op: spec.op, val: amountToStorageUnit(spec.val, storageUnit) };
   }
   return spec;
 }

@@ -102,14 +102,16 @@ export function portfolioHref(range?: HistoryRange): string {
 }
 
 /** Console deep-link query keys (notification click-through + Home + the History
- *  cohort filter bar). `tab` is legacy (the Console is one page of lanes) —
- *  accepted but ignored.
+ *  cohort filter bar). `tab` is a legacy lane hint — accepted but ignored.
+ *  `purpose` is the page's General / Copy tab (absent is General).
  *
  *  The `h*` keys drive the History section's single cohort (charts deck **and**
  *  table read the same ones), so a Portfolio "History" link lands on exactly the
  *  cohort it promised. */
 export const OPS_PARAMS = {
   tab: 'tab',
+  /** General / Copy. Absent is General; `copy` is the Copy tab. */
+  purpose: 'purpose',
   mode: 'mode',
   status: 'status',
   mint: 'mint',
@@ -176,11 +178,12 @@ export function consoleHistoryHref(opts: {
   return `${STRATEGY_PATHS.console}?${q.toString()}`;
 }
 
-/** @deprecated The Console has no tabs — kept only for old link compatibility. */
+/** @deprecated Lane hint from the old tabbed Console. Ignored. The page tabs
+ *  are General / Copy (`OPS_PARAMS.purpose`). */
 export type OpsTab = 'waiting' | 'open' | 'attention' | 'recent';
 
 export function consoleHref(opts?: {
-  /** Legacy tab hint — ignored by the Console (lanes are always visible). */
+  /** Legacy lane hint. Ignored. Lanes stay visible; General / Copy is `purpose`. */
   tab?: OpsTab;
   mode?: string;
   status?: string;

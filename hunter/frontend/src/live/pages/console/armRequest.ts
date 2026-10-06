@@ -17,6 +17,8 @@ import {
   type TableRequestBody,
 } from 'services/tableRequest';
 import type { AmountStorageUnit } from 'lib/priceUnitSnapshot';
+import type { RulePurposeScope } from './consolePurpose';
+import { withPurposeRuleScope } from './consolePurpose';
 import type { ArmCohort } from './armCohort';
 
 export interface ArmRequestInput {
@@ -29,6 +31,8 @@ export interface ArmRequestInput {
   /** PriceUnit amount columns (`tokenAmountColKeys(columns)`) — a typed operand
    *  converts display → storage unit before the server compare. */
   amountCols?: ReadonlyMap<string, AmountStorageUnit>;
+  /** Console General / Copy tab. Absent on a caller that is not the Console. */
+  ruleScope?: RulePurposeScope | null;
 }
 
 /** Server-side filters contributed by the cohort bar — everything except the
@@ -59,11 +63,15 @@ export function armRange(cohort: ArmCohort): { from?: string; to?: string } | un
   };
 }
 
-function withCohort(base: TableRequestBody, cohort: ArmCohort): TableRequestBody {
+function withCohort(
+  base: TableRequestBody,
+  cohort: ArmCohort,
+  ruleScope?: RulePurposeScope | null,
+): TableRequestBody {
   const range = armRange(cohort);
   return {
     ...base,
-    filters: { ...base.filters, ...armCohortFilters(cohort) },
+    filters: withPurposeRuleScope({ ...base.filters, ...armCohortFilters(cohort) }, ruleScope),
     ...(range ? { range } : {}),
   };
 }
@@ -74,8 +82,9 @@ export function armTableBody({
   query,
   numericCols,
   amountCols,
+  ruleScope,
 }: ArmRequestInput): TableRequestBody {
-  return withCohort(toTableRequest(query, numericCols, { amountCols }), cohort);
+  return withCohort(toTableRequest(query, numericCols, { amountCols }), cohort, ruleScope);
 }
 
 /** The same population with pagination + sort dropped — for the funnel. */
@@ -84,8 +93,9 @@ export function armSummaryBody({
   query,
   numericCols,
   amountCols,
+  ruleScope,
 }: ArmRequestInput): TableRequestBody {
-  return withCohort(toSummaryBody(query, numericCols, { amountCols }), cohort);
+  return withCohort(toSummaryBody(query, numericCols, { amountCols }), cohort, ruleScope);
 }
 
 /**
@@ -101,7 +111,7 @@ export function armPopulationKey(input: ArmRequestInput): string {
 }
 
 /** Identity of the cohort bar alone — what should snap the table to page 1. */
-export function armCohortKey(cohort: ArmCohort): string {
+export function armCohortKey(cohort: ArmCohort, ruleScope?: RulePurposeScope | null): string {
   return [
     cohort.range,
     cohort.fromIso ?? '',
@@ -109,5 +119,6 @@ export function armCohortKey(cohort: ArmCohort): string {
     cohort.ruleId ?? '',
     cohort.mode,
     cohort.reason ?? '',
+    ruleScope ? `${ruleScope.kind}:${ruleScope.ids.join(',')}` : '',
   ].join('|');
 }

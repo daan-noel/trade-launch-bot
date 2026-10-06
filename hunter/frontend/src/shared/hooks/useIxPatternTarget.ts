@@ -181,6 +181,29 @@ export function resolveIxPatternTarget(input: {
 /** Display name of the ad-hoc tag a host's bare key set classifies with. */
 export const HOST_SHAPES_TAG = 'shapes';
 
+/**
+ * The tag a chart classifies with.
+ *
+ * A loaded fingerprint row uses that row's tag. A chosen id whose row is not
+ * in hand classifies nothing. Only a host with no id falls back to an ad-hoc
+ * tag of its exact ix-shape labels.
+ */
+export function flowClassifyTag(input: {
+  target: { tags: unknown } | null;
+  targetId: string | null;
+  tagName: string;
+  savedShapes: readonly (readonly string[])[];
+}): FlowTag | null {
+  if (input.target) return flowTagOf(input.target.tags, input.tagName);
+  if (input.targetId) return null;
+  return input.savedShapes.length > 0
+    ? shapeTag(
+        HOST_SHAPES_TAG,
+        input.savedShapes.map((labels) => ({ labels: [...labels] })),
+      )
+    : null;
+}
+
 export interface IxPatternTarget extends TagStage {
   /** Fingerprint a click writes to; `null` ⇒ read-only. */
   target: Fingerprint | null;
@@ -193,9 +216,9 @@ export interface IxPatternTarget extends TagStage {
   /** Pick the tag a click writes and the chart classifies with. A name the target
    *  does not define yet is a new tag: the first click creates it. */
   setTagName: (name: string) => void;
-  /** The tag the chart classifies with: the target's tag as stored, or - with no
-   *  target - an ad-hoc tag of the host's exact shapes. `null` ⇒ nothing classifies
-   *  (a new tag before its first click). */
+  /** The tag the chart classifies with: the loaded row's tag. A chosen id whose
+   *  row is not loaded classifies nothing. With no id, an ad-hoc tag of the
+   *  host's exact shapes. `null` also means a new tag before its first click. */
   tag: FlowTag | null;
   /** `tag`'s exact shapes as keys, for a host that still hands keys down. */
   keys: ReadonlySet<string> | null;
@@ -222,7 +245,10 @@ export interface IxPatternTarget extends TagStage {
  *
  * @param fingerprintId the host's fingerprint - the write target when known
  * @param savedKeys     the host's key set; matched against only without an id, and
- *                      classified with as an ad-hoc shape tag when nothing resolves
+ *                      classified with as an ad-hoc shape tag only when no id is
+ *                      chosen. A known id whose row is not loaded yet classifies
+ *                      nothing: the key set is exact ix-shape labels and drops
+ *                      pins, core rows, and every other matcher.
  * @param enabled       `false` on a read-only host, which skips the fetches
  */
 export function useIxPatternTarget({
@@ -266,15 +292,18 @@ export function useIxPatternTarget({
   const names = useMemo(() => tagNames(target?.tags), [target]);
   const tagName = pickedTag ?? defaultTagName(target?.tags);
 
-  const tag = useMemo<FlowTag | null>(() => {
-    if (target) return flowTagOf(target.tags, tagName);
-    return savedShapes.length > 0 ? shapeTag(HOST_SHAPES_TAG, savedShapes.map((labels) => ({ labels }))) : null;
-  }, [target, tagName, savedShapes]);
-
-  const keys = useMemo(
-    () => (target ? flowPatternKeysFromTags(target.tags, tagName) : (savedKeys ?? null)),
-    [target, tagName, savedKeys],
+  const tag = useMemo(
+    () => flowClassifyTag({ target, targetId, tagName, savedShapes }),
+    [target, targetId, tagName, savedShapes],
   );
+
+  const keys = useMemo(() => {
+    if (target) return flowPatternKeysFromTags(target.tags, tagName);
+    // Same gate as `flowClassifyTag`: a known row that has not loaded yet must
+    // not hand its label-only key set down as if it were the tag.
+    if (targetId) return null;
+    return savedKeys ?? null;
+  }, [target, targetId, tagName, savedKeys]);
 
   const activeRuleCount = useMemo(
     () => (targetId ? rules.filter((r) => r.fingerprint_id === targetId && r.is_active).length : 0),

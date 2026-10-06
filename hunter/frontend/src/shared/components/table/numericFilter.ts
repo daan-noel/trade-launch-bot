@@ -10,18 +10,18 @@ const CMP_RE = /^(>=|<=|==|!=|>|<|=)\s*(-?\d+(?:\.\d+)?)$/;
 const RANGE_RE = /^(-?\d+(?:\.\d+)?)\s*\.\.\s*(-?\d+(?:\.\d+)?)$/;
 
 /** The backend `FilterOp` set (see `trading_core::api::table_query::FilterOp`). */
-export type FilterOp = 'contains' | 'eq' | 'neq' | 'in' | 'gt' | 'gte' | 'lt' | 'lte' | 'between';
+export type FilterOp = 'contains' | 'eq' | 'neq' | 'in' | 'nin' | 'gt' | 'gte' | 'lt' | 'lte' | 'between';
 
 /** A structured per-column filter — the parsed shape sent to the server. `between`
- *  carries `min`/`max`; `in` carries an array in `val` (set membership, e.g. a pasted
- *  mint set — the operand field is `val` to match the backend `FilterSpec.val`); every
- *  other op carries a single `val`. Operands are `string | number` so date-range
- *  filters (RFC3339 strings) share the same shape as numeric ones; the backend reads
- *  each operand by the column's type. */
+ *  carries `min`/`max`; `in` and `nin` carry an array in `val` (set membership,
+ *  e.g. a pasted mint set — the operand field is `val` to match the backend
+ *  `FilterSpec.val`); every other op carries a single `val`. Operands are
+ *  `string | number` so date-range filters (RFC3339 strings) share the same shape
+ *  as numeric ones; the backend reads each operand by the column's type. */
 export type FilterSpec =
-  | { op: Exclude<FilterOp, 'between' | 'in'>; val: string | number }
+  | { op: Exclude<FilterOp, 'between' | 'in' | 'nin'>; val: string | number }
   | { op: 'between'; min: string | number; max: string | number }
-  | { op: 'in'; val: (string | number)[] };
+  | { op: 'in' | 'nin'; val: (string | number)[] };
 
 /**
  * Parse a per-column numeric-filter string into a structured {@link FilterSpec}

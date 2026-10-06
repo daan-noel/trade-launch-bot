@@ -25,6 +25,7 @@ import { useUiToggle } from 'hooks/useUiPrefs';
 import type { TableQuery } from 'components/table/types';
 import type { ArmFunnel } from 'lib/strategy/types';
 import { hasArmCohortParams, useArmCohort } from '@live/pages/console/armCohort';
+import { useConsoleRuleScope } from '@live/pages/console/consolePurpose';
 import { armPopulationKey, armSummaryBody } from '@live/pages/console/armRequest';
 import { ArmFunnelStrip } from './ArmFunnelStrip';
 import { ArmsFilterBar } from './ArmsFilterBar';
@@ -67,6 +68,7 @@ function ArmsSectionBody() {
   // render, or the table refetches continuously.
   const [nowMs] = useState(() => Date.now());
   const cohort = useArmCohort(nowMs);
+  const { scope: ruleScope, matches, rulesReady } = useConsoleRuleScope();
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const { data: rules = [] } = useGetStrategyRulesQuery();
@@ -85,8 +87,8 @@ function ArmsSectionBody() {
   const amountCols = useMemo(() => tokenAmountColKeys(columns), [columns]);
 
   const input = useMemo(
-    () => ({ cohort, query, numericCols, amountCols }),
-    [cohort, query, numericCols, amountCols],
+    () => ({ cohort, query, numericCols, amountCols, ruleScope }),
+    [cohort, query, numericCols, amountCols, ruleScope],
   );
   // Page/sort deliberately excluded — paging the table must not re-run the
   // aggregate.
@@ -99,6 +101,7 @@ function ArmsSectionBody() {
   const [funnelLoading, setFunnelLoading] = useState(true);
 
   useEffect(() => {
+    if (!rulesReady) return;
     const ctrl = new AbortController();
     setFunnelLoading(true);
     fetchArmsSummary(armSummaryBody(input), ctrl.signal)
@@ -115,12 +118,14 @@ function ArmsSectionBody() {
     return () => ctrl.abort();
     // `input` changes identity per render; the population key is the real dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summaryKey]);
+  }, [summaryKey, rulesReady]);
 
   // Live arm/disarm frames invalidate the cohort — coalesced into one refetch of
   // the funnel and the table's current page. A reconnect / `sse_resync` bumps too:
   // the gap's frames are gone.
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const matchesRef = useRef(matches);
+  matchesRef.current = matches;
   useEffect(() => {
     const bump = () => {
       if (timer.current) return;
@@ -129,7 +134,10 @@ function ArmsSectionBody() {
         setReloadNonce((n) => n + 1);
       }, COALESCE_MS);
     };
-    const h = connectArmedChanged(() => bump(), bump);
+    const h = connectArmedChanged((d) => {
+      if (!matchesRef.current(d.rule_id)) return;
+      bump();
+    }, bump);
     return () => {
       h.close();
       if (timer.current) {

@@ -998,6 +998,28 @@ pub(crate) fn push_filter_predicate(
                 .push_bind(vals)
                 .push("::text[])");
         }
+        // Complement of `In`. NULL stays: a manual position's rule id is not a
+        // member of the excluded set, and `NULL <> ALL(...)` would drop it.
+        (FilterKind::Text, FilterOp::Nin) => {
+            let Some(arr) = spec.val.as_array() else {
+                return;
+            };
+            let vals: Vec<String> = arr
+                .iter()
+                .filter_map(as_text)
+                .take(MAX_FILTER_IN_VALUES)
+                .collect();
+            if vals.is_empty() {
+                return;
+            }
+            qb.push(" AND (")
+                .push(col)
+                .push(" IS NULL OR ")
+                .push(col)
+                .push(" <> ALL(")
+                .push_bind(vals)
+                .push("::text[]))");
+        }
         // A numeric op on a text column is meaningless → drop.
         (FilterKind::Text, _) => {}
 
@@ -1036,8 +1058,8 @@ pub(crate) fn push_filter_predicate(
         (FilterKind::IxLabels, _) => {}
 
         // -- Numeric columns: numeric comparisons -------------------------------
-        // `In` is a text-only set op; on a numeric column it's a no-op.
-        (FilterKind::Numeric, FilterOp::In) => {}
+        // `In` / `Nin` are text-only set ops; on a numeric column they're a no-op.
+        (FilterKind::Numeric, FilterOp::In | FilterOp::Nin) => {}
         (FilterKind::Numeric, FilterOp::Between) => {
             let (Some(min), Some(max)) = (as_number(&spec.min), as_number(&spec.max)) else {
                 return;
@@ -1064,7 +1086,9 @@ pub(crate) fn push_filter_predicate(
                 // number typed into a numeric column filter).
                 FilterOp::Contains => "=",
                 FilterOp::Between => unreachable!("handled above"),
-                FilterOp::In => unreachable!("handled by the numeric In arm above"),
+                FilterOp::In | FilterOp::Nin => {
+                    unreachable!("handled by the numeric In arm above")
+                }
             };
             qb.push(" AND ")
                 .push(col)
@@ -4543,6 +4567,25 @@ mod filter_sql_tests {
             sql.contains("sp.status"),
             "status filter must reach SQL: {sql}"
         );
+    }
+
+    #[test]
+    fn nin_on_text_keeps_null_rule_ids() {
+        // Console General excludes copy-rule ids. A manual episode's rule id is
+        // NULL or a one-off uuid, and both have to stay.
+        let sql = where_sql(
+            "rule_id",
+            FilterSpec {
+                op: FilterOp::Nin,
+                val: serde_json::json!(["11111111-1111-1111-1111-111111111111"]),
+                ..Default::default()
+            },
+        );
+        assert!(
+            sql.contains("IS NULL OR"),
+            "nin must keep a null rule id: {sql}"
+        );
+        assert!(sql.contains("<> ALL("), "nin must exclude the set: {sql}");
     }
 
     #[test]

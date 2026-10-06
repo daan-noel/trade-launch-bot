@@ -12,6 +12,7 @@ import { IconButton } from 'components/ui/IconButton';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { PageHeader } from 'components/ui/PageHeader';
+import { Tabs, TabsList, TabsTrigger } from 'components/ui/Tabs';
 import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { BuyIcon, LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
@@ -22,7 +23,12 @@ import { useSseStatus } from 'hooks/useSseStatus';
 import { useUiToggle } from 'hooks/useUiPrefs';
 import { cn } from 'lib/cn';
 import { STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
+import { fingerprintRuleHref } from 'lib/strategy/fingerprintPurpose';
 import { OPS_PARAMS, rulesHref } from 'lib/strategy/nav';
+import {
+  ruleMatchesPurpose,
+  useConsoleRuleScope,
+} from '@live/pages/console/consolePurpose';
 import type { ModeFilter } from 'lib/strategy/mode';
 import { formatCompact } from 'utils/format';
 import {
@@ -37,7 +43,6 @@ import { ConsoleHistorySection } from '@live/components/history/ConsoleHistorySe
 import { FloorBookStrip } from '@live/components/floor/FloorBookStrip';
 import { FloorPositionDetail } from '@live/components/floor/FloorPositionDetail';
 import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
-import { LazyFloorMintChart } from '@live/components/floor/LazyFloorMintChart';
 import {
   ArmedRuleConditions,
   LivePositionConditions,
@@ -140,9 +145,10 @@ function loadTradeLog(): LogEntry[] {
 
 /**
  * The unified real-trade Console (`/console`) — replaces Floor + Trade.
- * Lanes, top to bottom: ATTENTION (always first — every row has an action),
- * OPEN beside the MANUAL TRADE panel, WAITING (collapsible), then HISTORY and
- * ARMS (both collapsible, both fetch nothing while closed).
+ * A General / Copy tab scopes every lane. Top to bottom: ATTENTION (always
+ * first — every row has an action), OPEN beside the MANUAL TRADE panel
+ * (General only), WAITING (collapsible), then HISTORY and ARMS (both
+ * collapsible, both fetch nothing while closed).
  *
  * The three lanes above History are the **cockpit**: live, SSE-driven, scoped to
  * what is still actionable. History is the **review** surface — server-paged over
@@ -218,7 +224,28 @@ export function ConsolePage() {
 
   // Shared RTK cache — the History section already holds this, so naming the
   // scoped rule costs no extra request.
-  const { data: strategyRules = [] } = useGetStrategyRulesQuery();
+  const { data: strategyRules = [], isSuccess: rulesReady } = useGetStrategyRulesQuery();
+  const {
+    purpose,
+    setPurpose,
+    copyIds,
+    matches,
+    rulesReady: purposeReady,
+  } = useConsoleRuleScope();
+  const hRule = params.get(OPS_PARAMS.hRule);
+  const aRule = params.get(OPS_PARAMS.aRule);
+  // A deep link that names one purpose's rule opens that tab. Mixed pins stay
+  // put; switching tabs drops the pins that do not belong.
+  useEffect(() => {
+    if (!rulesReady) return;
+    const pinned = [ruleParam, hRule, aRule].filter((id): id is string => !!id);
+    if (pinned.length === 0) return;
+    const wantCopy = pinned.map((id) => copyIds.has(id));
+    if (wantCopy.some((flag) => flag !== wantCopy[0])) return;
+    const want = wantCopy[0] ? 'copy' : 'general';
+    if (want === purpose) return;
+    setPurpose(want, { keepRules: true });
+  }, [rulesReady, ruleParam, hRule, aRule, copyIds, purpose, setPurpose]);
   const scopedRuleLabel = ruleParam
     ? (strategyRules.find((r) => r.id === ruleParam)?.rule_name || `${ruleParam.slice(0, 8)}…`)
     : null;
@@ -324,9 +351,13 @@ export function ConsolePage() {
   );
 
   // ── Lane partitioning (status truth from the slice; zero inference) ─────────
-  const openAll = useMemo(
+  const openBook = useMemo(
     () => Object.values(openMap).filter((r) => modeOk(r.mode, modeFilter)),
     [openMap, modeFilter],
+  );
+  const openAll = useMemo(
+    () => (purposeReady ? openBook.filter((r) => matches(r.ruleId, r.origin)) : []),
+    [openBook, matches, purposeReady],
   );
   const attentionRows = useMemo(() => openAll.filter(isAttention), [openAll]);
   const openRows = useMemo(() => {
@@ -336,9 +367,27 @@ export function ConsolePage() {
     return rows;
   }, [openAll, ruleParam, statusFilter]);
   const waitingRows = useMemo(() => {
-    const rows = Object.values(armedMap).filter((r) => modeOk(r.tradeMode, modeFilter));
+    if (!purposeReady) return [];
+    const rows = Object.values(armedMap).filter(
+      (r) => modeOk(r.tradeMode, modeFilter) && matches(r.ruleId),
+    );
     return ruleParam ? rows.filter((r) => r.ruleId === ruleParam) : rows;
-  }, [armedMap, modeFilter, ruleParam]);
+  }, [armedMap, modeFilter, ruleParam, matches, purposeReady]);
+  const purposeCounts = useMemo(() => {
+    let general = 0;
+    let copy = 0;
+    if (!purposeReady) return { general, copy };
+    const bump = (ruleId: string | null | undefined, origin?: string | null) => {
+      if (ruleMatchesPurpose('copy', copyIds, ruleId, origin)) copy += 1;
+      else general += 1;
+    };
+    for (const r of openBook) bump(r.ruleId, r.origin);
+    for (const r of Object.values(armedMap)) {
+      if (!modeOk(r.tradeMode, modeFilter)) continue;
+      bump(r.ruleId);
+    }
+    return { general, copy };
+  }, [openBook, armedMap, modeFilter, copyIds, purposeReady]);
   const totalDeployed = openAll.reduce((s, r) => s + (r.entrySol ?? 0), 0);
 
   const openMtmByRule = useMemo(() => {
@@ -522,7 +571,7 @@ export function ConsolePage() {
     }
     // A tracked row should be closed through ITS actions (position-aware,
     // engine-coordinated) — the wallet sweep is for external/Phantom bags.
-    const tracked = openAll.find((r) => r.mint_address === mint && r.mode === 'real');
+    const tracked = openBook.find((r) => r.mint_address === mint && r.mode === 'real');
     const prompt = tracked
       ? `A tracked position exists for ${mint.slice(0, 8)}… (${tracked.status}). Prefer its row's Sell. Sweep the WALLET balance anyway?`
       : `Sell the wallet's ENTIRE balance of ${mint.slice(0, 8)}…? For external bags with no tracked row.`;
@@ -539,9 +588,15 @@ export function ConsolePage() {
     } finally {
       setSellingMint(false);
     }
-  }, [tradeMint, openAll, sellToken, pushLog]);
+  }, [tradeMint, openBook, sellToken, pushLog]);
 
   // ── Shared cells ────────────────────────────────────────────────────────────
+  const ruleHrefOf = useMemo(() => {
+    const hrefs = new Map<string, string>();
+    for (const rule of strategyRules) hrefs.set(rule.id, fingerprintRuleHref(rule));
+    return hrefs;
+  }, [strategyRules]);
+
   const ruleLink = (ruleId: string | null, name: string | null, origin?: string) => {
     if (origin === 'manual' || (!ruleId && name === 'manual')) {
       return <span className="text-text-dim">manual</span>;
@@ -550,7 +605,7 @@ export function ConsolePage() {
     const label = name ?? ruleId.slice(0, 8);
     return (
       <Link
-        to={rulesHref(ruleId)}
+        to={ruleHrefOf.get(ruleId) ?? rulesHref(ruleId)}
         className="inline-flex items-center gap-0.5 text-accent hover:text-primary hover:underline"
         onClick={(e) => e.stopPropagation()}
         title="Open Rules Evidence"
@@ -876,7 +931,7 @@ export function ConsolePage() {
     ],
     // tokenCell/actionsCell close over live book + busy/SSE — rebuild when those move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sseLive, openMark, busyId, modeFilter, holdingByMint],
+    [sseLive, openMark, busyId, modeFilter, holdingByMint, ruleHrefOf],
   );
 
   const waitingCols: ColumnDef<LiveArmedRow>[] = useMemo(
@@ -924,7 +979,7 @@ export function ConsolePage() {
         searchValue: () => '',
       },
     ],
-    [],
+    [ruleHrefOf],
   );
 
   // ── Deep-link detail modals (row click → position param) ────────────────────
@@ -1064,6 +1119,7 @@ export function ConsolePage() {
 
   const [waitingOpen, setWaitingOpen] = useUiToggle('consoleWaitingOpen', false);
   const [manualOpen, setManualOpen] = useUiToggle('consoleManualOpen', true);
+  const showManual = purpose === 'general';
 
   // Deep-link mint prefills force the manual panel open for that visit.
   useEffect(() => {
@@ -1156,6 +1212,12 @@ export function ConsolePage() {
 
       {/* Sticky KPI strip — stays visible while scanning the cockpit. */}
       <div className="sticky top-14 z-30 -mx-1 border-b border-white/6 bg-bg/90 px-1 py-2 backdrop-blur-md">
+        <Tabs value={purpose} onValueChange={setPurpose} className="mb-2">
+          <TabsList>
+            <TabsTrigger value="general">General ({purposeCounts.general})</TabsTrigger>
+            <TabsTrigger value="copy">Copy ({purposeCounts.copy})</TabsTrigger>
+          </TabsList>
+        </Tabs>
         <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
           <StatTile
             label="Attention"
@@ -1246,7 +1308,7 @@ export function ConsolePage() {
             // outside the table's own search/sort/filter state — without this
             // the table can strand pagination on a page that no longer exists
             // once the mode flip shrinks the row set.
-            resetKey={modeFilter}
+            resetKey={`${modeFilter}|${purpose}`}
             emptyMessage="Nothing needs attention."
             selectedKey={selectedKey}
             onSelect={(key) => {
@@ -1261,7 +1323,7 @@ export function ConsolePage() {
       <div
         className={cn(
           'grid grid-cols-1 gap-3',
-          manualOpen && 'xl:grid-cols-[minmax(0,1fr)_300px]',
+          showManual && manualOpen && 'xl:grid-cols-[minmax(0,1fr)_300px]',
         )}
       >
         <section className="min-w-0">
@@ -1289,7 +1351,7 @@ export function ConsolePage() {
             tableId="console-open"
             // `openRows` is filtered by mode, the scoped-rule chip, and the
             // status chip — all outside the table's own state.
-            resetKey={`${modeFilter}|${ruleParam ?? ''}|${statusFilter ?? ''}`}
+            resetKey={`${modeFilter}|${purpose}|${ruleParam ?? ''}|${statusFilter ?? ''}`}
             emptyMessage="No open positions."
             selectedKey={selectedKey}
             onSelect={(key) => {
@@ -1299,6 +1361,7 @@ export function ConsolePage() {
           />
         </section>
 
+        {showManual && (
         <section className="flex min-w-0 flex-col gap-2">
           <button
             type="button"
@@ -1393,15 +1456,6 @@ export function ConsolePage() {
                 </div>
               </div>
 
-              {tradeMintValid && (
-                <LazyFloorMintChart
-                  mint={tradeMint.trim()}
-                  tableId="console-trade-chart"
-                  chrome="compact"
-                  height={220}
-                />
-              )}
-
               {log.length > 0 && (
                 <div className="rounded-lg border border-white/6 bg-bg-panel p-2">
                   <h3 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-text-dim">
@@ -1429,6 +1483,7 @@ export function ConsolePage() {
             </>
           )}
         </section>
+        )}
       </div>
 
       {/* WAITING — armed rules, collapsible. */}
@@ -1452,7 +1507,7 @@ export function ConsolePage() {
             renderChartCardExtra={waitingChartCardExtra}
             tableId="console-waiting"
             // `waitingRows` is filtered by mode + the scoped-rule chip.
-            resetKey={`${modeFilter}|${ruleParam ?? ''}`}
+            resetKey={`${modeFilter}|${purpose}|${ruleParam ?? ''}`}
             emptyMessage="No armed (waiting) rules."
             selectedKey={selectedKey}
             onSelect={(key) => {

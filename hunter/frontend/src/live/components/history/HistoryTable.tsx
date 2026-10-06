@@ -47,6 +47,7 @@ import { useFlowPatternSourceForRule } from 'hooks/useFlowPatternKeys';
 import { useServerTable } from 'hooks/useServerTable';
 import type { RulePositionRecord } from 'types';
 import type { AmountStorageUnit } from 'lib/priceUnitSnapshot';
+import { useConsoleRuleScope } from '@live/pages/console/consolePurpose';
 import type { HistoryCohort } from '@live/pages/console/historyCohort';
 import {
   historyCohortKey,
@@ -251,16 +252,17 @@ export const HistoryTable = memo(function HistoryTable({
 }) {
   const focus = cohort.focus;
   const clientScanFocus = historyNeedsClientScan(cohort);
+  const { scope: ruleScope, rulesReady } = useConsoleRuleScope();
 
   // Cohort + chart focus + this table's own filters, through the one builder the
   // summary and the charts also use — see `historyRequest`.
   const body = useMemo(
     () =>
       historyTableBody(
-        { cohort, query, numericCols, amountCols, timezone },
+        { cohort, query, numericCols, amountCols, timezone, ruleScope },
         clientScanFocus ? HEAT_SCAN_PAGE_SIZE : undefined,
       ),
-    [cohort, query, numericCols, amountCols, timezone, clientScanFocus],
+    [cohort, query, numericCols, amountCols, timezone, clientScanFocus, ruleScope],
   );
   const ownKeys = useMemo(() => new Set(columns.map((c) => c.key)), [columns]);
 
@@ -270,7 +272,7 @@ export const HistoryTable = memo(function HistoryTable({
   );
 
   const { items, total, loading, error } = useServerTable<RulePositionRecord>(
-    true,
+    rulesReady,
     body,
     fetchPage,
     undefined,
@@ -285,7 +287,7 @@ export const HistoryTable = memo(function HistoryTable({
     [items, cohort, timezone],
   );
 
-  const cohortKey = historyCohortKey(cohort, timezone);
+  const cohortKey = historyCohortKey(cohort, timezone, {}, ruleScope);
 
   // The selected row's full DB record — this is why History owns the closed
   // detail modal rather than the Console page: a position from any date opens

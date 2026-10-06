@@ -25,6 +25,8 @@ import {
   type TableRequestBody,
 } from 'services/tableRequest';
 import type { AmountStorageUnit } from 'lib/priceUnitSnapshot';
+import type { RulePurposeScope } from './consolePurpose';
+import { withPurposeRuleScope } from './consolePurpose';
 import type { HistoryCohort } from './historyCohort';
 import {
   dayBoundsUtcIso,
@@ -64,6 +66,8 @@ export interface HistoryRequestInput {
    *  converts display → storage unit before the server compare. */
   amountCols?: ReadonlyMap<string, AmountStorageUnit>;
   timezone: string;
+  /** Console General / Copy tab. Absent on surfaces that are not the Console. */
+  ruleScope?: RulePurposeScope | null;
 }
 
 /**
@@ -167,23 +171,27 @@ function withCohort(
   cohort: HistoryCohort,
   timezone: string,
   opts: HistoryScopeOpts = {},
+  ruleScope?: RulePurposeScope | null,
 ): TableRequestBody {
   const range = historyRange(cohort, timezone, opts);
   return {
     ...base,
-    filters: { ...base.filters, ...historyCohortFilters(cohort, opts) },
+    filters: withPurposeRuleScope(
+      { ...base.filters, ...historyCohortFilters(cohort, opts) },
+      ruleScope,
+    ),
     ...(range ? { range } : {}),
   };
 }
 
 /** One **page** of the History table (honors pagination + sort). */
 export function historyTableBody(
-  { cohort, query, numericCols, amountCols, timezone }: HistoryRequestInput,
+  { cohort, query, numericCols, amountCols, timezone, ruleScope }: HistoryRequestInput,
   /** Wide first page for the client-scanned lenses. */
   scanPageSize?: number,
 ): TableRequestBody {
   const base = toTableRequest(query, numericCols, { amountCols });
-  const body = withCohort(base, cohort, timezone);
+  const body = withCohort(base, cohort, timezone, {}, ruleScope);
   return scanPageSize ? { ...body, pagination: { page: 1, pageSize: scanPageSize } } : body;
 }
 
@@ -193,10 +201,16 @@ export function historyTableBody(
  * by construction, which is the whole point of this module.
  */
 export function historySummaryBody(
-  { cohort, query, numericCols, amountCols, timezone }: HistoryRequestInput,
+  { cohort, query, numericCols, amountCols, timezone, ruleScope }: HistoryRequestInput,
   opts: HistoryScopeOpts = {},
 ): TableRequestBody {
-  return withCohort(toSummaryBody(query, numericCols, { amountCols }), cohort, timezone, opts);
+  return withCohort(
+    toSummaryBody(query, numericCols, { amountCols }),
+    cohort,
+    timezone,
+    opts,
+    ruleScope,
+  );
 }
 
 /**
@@ -210,6 +224,7 @@ export function historyCohortKey(
   cohort: HistoryCohort,
   timezone: string,
   opts: HistoryScopeOpts = {},
+  ruleScope?: RulePurposeScope | null,
 ): string {
   return JSON.stringify({
     r: cohort.range,
@@ -224,6 +239,7 @@ export function historyCohortKey(
     mig: cohort.migrated,
     foc: opts.includeFocus === false ? null : cohort.focus,
     tz: timezone,
+    purpose: ruleScope ?? null,
   });
 }
 
@@ -233,10 +249,10 @@ export function historyCohortKey(
  * walk: neither may re-run just because the user turned a page or re-sorted.
  */
 export function historyPopulationKey(
-  { cohort, query, timezone }: Omit<HistoryRequestInput, 'numericCols' | 'amountCols'>,
+  { cohort, query, timezone, ruleScope }: Omit<HistoryRequestInput, 'numericCols' | 'amountCols'>,
   opts: HistoryScopeOpts = {},
 ): string {
-  return `${historyCohortKey(cohort, timezone, opts)}|${JSON.stringify({
+  return `${historyCohortKey(cohort, timezone, opts, ruleScope)}|${JSON.stringify({
     s: query.search,
     c: query.colFilters,
     sf: query.structuredFilters,

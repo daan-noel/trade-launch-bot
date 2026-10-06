@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveIxPatternTarget } from './useIxPatternTarget';
+import { flowClassifyTag, resolveIxPatternTarget } from './useIxPatternTarget';
 
 /**
  * The precedence rule behind every Tagged-badge write. The cases that matter are the
@@ -82,5 +82,50 @@ describe('resolveIxPatternTarget', () => {
     expect(r.targetId).toBe('picked-fp');
     expect(r.inferred).toBe(false);
     expect(r.offHost).toBe(false);
+  });
+});
+
+describe('flowClassifyTag', () => {
+  const volume = {
+    volume: {
+      match: { ix_shape: [['Buy']], program: ['Axiom Trade'], creator: true },
+      sticky: true,
+    },
+  };
+
+  it('uses the loaded fingerprint tag, matchers included', () => {
+    const tag = flowClassifyTag({
+      target: { tags: volume },
+      targetId: 'fp',
+      tagName: 'volume',
+      savedShapes: [['Buy']],
+    });
+    expect(tag?.name).toBe('volume');
+    expect(tag?.match.program).toEqual(['Axiom Trade']);
+    expect(tag?.match.creator).toBe(true);
+    expect(tag?.sticky).toBe(true);
+  });
+
+  it('draws nothing while a known fingerprint row is not loaded', () => {
+    expect(
+      flowClassifyTag({
+        target: null,
+        targetId: 'fp',
+        tagName: 'volume',
+        savedShapes: [['Buy']],
+      }),
+    ).toBeNull();
+  });
+
+  it('keeps the label-only tag for a host with no fingerprint id', () => {
+    const tag = flowClassifyTag({
+      target: null,
+      targetId: null,
+      tagName: 'volume',
+      savedShapes: [['Buy']],
+    });
+    expect(tag?.name).toBe('shapes');
+    expect(tag?.match.ix_shape).toEqual([{ labels: ['Buy'] }]);
+    expect(tag?.match.program).toBeUndefined();
   });
 });

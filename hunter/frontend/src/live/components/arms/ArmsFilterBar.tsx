@@ -13,6 +13,7 @@ import {
 } from 'components/ui/dateTimeRangePickerUtils';
 import { SearchableSelect } from 'components/ui/SearchableSelect';
 import { ModeToggle } from 'components/strategy/ModeToggle';
+import { useConsoleRuleScope } from '@live/pages/console/consolePurpose';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import type { HistoryRange } from 'lib/strategy/nav';
 import { ARM_END_LABEL } from '@live/components/floor/liveChartCards';
@@ -54,12 +55,14 @@ export const ArmsFilterBar = memo(function ArmsFilterBar({
   armedCount: number | null;
 }) {
   const { data: rules = [] } = useGetStrategyRulesQuery();
+  const { purpose, copyIds } = useConsoleRuleScope();
   const ruleOptions = useMemo(
     () =>
       [...rules]
+        .filter((r) => (purpose === 'copy' ? copyIds.has(r.id) : !copyIds.has(r.id)))
         .map((r) => ({ value: r.id, label: r.rule_name || r.id.slice(0, 8), data: r }))
         .sort((a, b) => a.label.localeCompare(b.label)),
-    [rules],
+    [rules, purpose, copyIds],
   );
   const reasonOptions = useMemo(
     () =>

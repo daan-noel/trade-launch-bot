@@ -33,6 +33,7 @@ import { fetchAllTablePages } from 'lib/strategy/fetchPositionChartSeries';
 import { DEFAULT_POSITIONS_QUERY } from 'hooks/useServerTable';
 import type { TableQuery } from 'components/table/types';
 import type { PositionsSummary, RulePositionRecord } from 'types';
+import { useConsoleRuleScope } from '@live/pages/console/consolePurpose';
 import { useHistoryCohort } from '@live/pages/console/historyCohort';
 import {
   historyNeedsClientScan,
@@ -134,6 +135,7 @@ function HistorySectionBody({
   // render, or the table refetches continuously.
   const [nowMs] = useState(() => Date.now());
   const cohort = useHistoryCohort(nowMs);
+  const { scope: ruleScope, matches, rulesReady } = useConsoleRuleScope();
   // Table + strip reload on every position frame; the (up to CHART_SCAN_MAX row)
   // charts walk only on a close, the one transition that moves a chart.
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -155,8 +157,8 @@ function HistorySectionBody({
   const amountCols = useMemo(() => tokenAmountColKeys(columns), [columns]);
 
   const input = useMemo(
-    () => ({ cohort, query, numericCols, amountCols, timezone }),
-    [cohort, query, numericCols, amountCols, timezone],
+    () => ({ cohort, query, numericCols, amountCols, timezone, ruleScope }),
+    [cohort, query, numericCols, amountCols, timezone, ruleScope],
   );
   const clientScan = historyNeedsClientScan(cohort);
   // Page/sort deliberately excluded — paging the table must not re-run the
@@ -165,13 +167,13 @@ function HistorySectionBody({
   // the lens), so clicking through chart cells re-fetches one aggregate row
   // instead of the whole cohort.
   const summaryKey = useMemo(
-    () => `${historyPopulationKey({ cohort, query, timezone })}|${reloadNonce}`,
-    [cohort, query, timezone, reloadNonce],
+    () => `${historyPopulationKey({ cohort, query, timezone, ruleScope })}|${reloadNonce}`,
+    [cohort, query, timezone, ruleScope, reloadNonce],
   );
   const parentKey = useMemo(
     () =>
-      `${historyPopulationKey({ cohort, query, timezone }, { includeFocus: false })}|${walkNonce}`,
-    [cohort, query, timezone, walkNonce],
+      `${historyPopulationKey({ cohort, query, timezone, ruleScope }, { includeFocus: false })}|${walkNonce}`,
+    [cohort, query, timezone, ruleScope, walkNonce],
   );
 
   const [summary, setSummary] = useState<PositionsSummary | null>(null);
@@ -182,6 +184,7 @@ function HistorySectionBody({
 
   // The aggregate — exact over the whole filtered population, no rows shipped.
   useEffect(() => {
+    if (!rulesReady) return;
     const ctrl = new AbortController();
     setSummaryLoading(true);
     fetchPortfolioPositionsSummary(historySummaryBody(input), ctrl.signal)
@@ -198,10 +201,11 @@ function HistorySectionBody({
     return () => ctrl.abort();
     // `input` changes identity per render; the population key is the real dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summaryKey]);
+  }, [summaryKey, rulesReady]);
 
   // The **parent** cohort (no chart focus) for the deck — it lenses itself.
   useEffect(() => {
+    if (!rulesReady) return;
     const ctrl = new AbortController();
     setChartsLoading(true);
     fetchAllTablePages(
@@ -224,7 +228,7 @@ function HistorySectionBody({
       });
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parentKey]);
+  }, [parentKey, rulesReady]);
 
   // The parent population, with only the cohort-level client needle applied —
   // the deck and the exit strip take it from here and lens it themselves.
@@ -256,8 +260,8 @@ function HistorySectionBody({
   const walkPending = useRef(false);
   // Read from the handler without resubscribing: a frame from a rule or mode the
   // cohort excludes cannot change a row it shows.
-  const scopeRef = useRef({ ruleId: cohort.ruleId, mode: cohort.mode });
-  scopeRef.current = { ruleId: cohort.ruleId, mode: cohort.mode };
+  const scopeRef = useRef({ ruleId: cohort.ruleId, mode: cohort.mode, matches });
+  scopeRef.current = { ruleId: cohort.ruleId, mode: cohort.mode, matches };
   useEffect(() => {
     const bump = (withWalk: boolean) => {
       walkPending.current ||= withWalk;
@@ -271,8 +275,9 @@ function HistorySectionBody({
     };
     const h = connectStrategyPositionUpdate(
       (d) => {
-        const { ruleId, mode } = scopeRef.current;
+        const { ruleId, mode, matches: onTab } = scopeRef.current;
         if (ruleId && d.rule_id !== ruleId) return;
+        if (d.rule_id && !onTab(d.rule_id)) return;
         if (mode !== 'all' && d.trade_mode && d.trade_mode !== mode) return;
         bump(TERMINAL_STATUSES.has(d.status));
       },

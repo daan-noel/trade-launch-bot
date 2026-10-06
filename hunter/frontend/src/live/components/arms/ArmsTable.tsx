@@ -31,6 +31,7 @@ import { ARM_END_LABEL, ArmChartCardExtra, armEndBadge } from '@live/components/
 import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
 import type { ArmCohort } from '@live/pages/console/armCohort';
 import { armCohortKey, armTableBody } from '@live/pages/console/armRequest';
+import { useConsoleRuleScope } from '@live/pages/console/consolePurpose';
 import { ArmBlockedByCell } from './armBlockers';
 import { ArmDetailModal } from './ArmDetailModal';
 
@@ -178,9 +179,10 @@ export const ArmsTable = memo(function ArmsTable({
   /** Bumped by live arm SSE frames — refetches the current page. */
   reloadNonce: number;
 }) {
+  const { scope: ruleScope, rulesReady } = useConsoleRuleScope();
   const body = useMemo(
-    () => armTableBody({ cohort, query, numericCols, amountCols }),
-    [cohort, query, numericCols, amountCols],
+    () => armTableBody({ cohort, query, numericCols, amountCols, ruleScope }),
+    [cohort, query, numericCols, amountCols, ruleScope],
   );
   const ownKeys = useMemo(() => new Set(columns.map((c) => c.key)), [columns]);
   const fetchPage = useCallback(
@@ -188,7 +190,7 @@ export const ArmsTable = memo(function ArmsTable({
     [],
   );
   const { items, total, loading, error } = useServerTable<StrategyArmRecord>(
-    true,
+    rulesReady,
     body,
     fetchPage,
     undefined,
@@ -237,7 +239,7 @@ export const ArmsTable = memo(function ArmsTable({
         serverSide
         serverTotal={total}
         onQueryChange={onQueryChange}
-        resetKey={armCohortKey(cohort)}
+        resetKey={armCohortKey(cohort, ruleScope)}
         defaultSort={{ col: 'armed_at', dir: 'desc' }}
         defaultPageSize={25}
         tableId="console-arms"

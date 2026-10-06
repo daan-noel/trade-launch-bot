@@ -201,6 +201,22 @@ fn row_matches(row: &Value, field: &str, kind: ColKind, spec: &FilterSpec) -> bo
             }
             None => true,
         },
+        // Complement of `In`. An absent field stays (SQL `IS NULL OR <> ALL`).
+        // An empty operand is not a constraint.
+        (ColKind::Text, FilterOp::Nin) => match spec.val.as_array() {
+            Some(arr) => {
+                let set: Vec<String> = arr.iter().filter_map(operand_text).collect();
+                if set.is_empty() {
+                    true
+                } else {
+                    match field_text(row, field) {
+                        None => true,
+                        Some(hay) => !set.iter().any(|s| *s == hay),
+                    }
+                }
+            }
+            None => true,
+        },
         // Other numeric op on a text field → not a constraint.
         (ColKind::Text, _) => true,
 
@@ -228,6 +244,8 @@ fn row_matches(row: &Value, field: &str, kind: ColKind, spec: &FilterSpec) -> bo
         },
         (ColKind::IxLabels, _) => true,
 
+        // Set ops are text-only. On a number they are not a constraint.
+        (ColKind::Number, FilterOp::In | FilterOp::Nin) => true,
         (ColKind::Number, FilterOp::Between) => {
             match (operand_num(&spec.min), operand_num(&spec.max)) {
                 (Some(min), Some(max)) => {

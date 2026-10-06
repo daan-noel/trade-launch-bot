@@ -146,7 +146,9 @@ pub fn as_flag(v: &serde_json::Value) -> Option<bool> {
 /// only substring op on text columns (current `ILIKE '%…%'` behavior); the numeric
 /// ops require a numeric-typed column (see `strategy_repo` whitelists). `In` is a
 /// set-membership op on a **text** column — its operand is a JSON **array** in
-/// `val` (e.g. a pasted mint set), lowered to `col = ANY($n::text[])`.
+/// `val` (e.g. a pasted mint set), lowered to `col = ANY($n::text[])`. `Nin` is
+/// the complement on a text column: `col IS NULL OR col <> ALL($n::text[])`, so
+/// a row with no value (a manual position's rule id) stays in the kept set.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FilterOp {
@@ -158,6 +160,8 @@ pub enum FilterOp {
     /// (`exit_reason != NoEntry`).
     Neq,
     In,
+    /// Text-column complement of [`FilterOp::In`]. NULL stays included.
+    Nin,
     Gt,
     Gte,
     Lt,
