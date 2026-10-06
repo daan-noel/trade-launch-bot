@@ -30,13 +30,15 @@ from the top. The first line that matches is the answer. Do not read the lines u
 
 - **Create (A1, A2).** Signed the launch. Every wallet in that transaction is the owner.
 - **Birth (A5, A3).** Bought with the launch, before anyone else can see the coin. A sniper that
-  does this on many coins is real money.
+  does this on many coins is real money. A big buy in the first seconds is the owner only when
+  the creator buys again after it.
 - **One transaction (B, S5).** Several sells in one transaction. Two or ten is the same. Every
   wallet in it is the owner, and so are the buys they already made on this coin.
-- **Shape (D, A4, S1, S2).** One transaction shape is a large share of this coin, or a script
-  used almost only on this group's coins.
-- **Wake-up.** A buy list that keeps being the first trade after 2 seconds with no trade. At
-  least 5 buys, and at least 4 of every 5 of them.
+- **Shape (D, A4, S1, S2).** One transaction shape is 20% of the trades or SOL inside the
+  run where it prints, or one instruction list prints 20 times from more than one wallet,
+  including a public app, or a script used almost only on this group's coins.
+- **Wake-up.** The same buy list is used 5 or more times on a coin, by one wallet or by
+  several, and the first of those buys ends 2 seconds with no trade.
 - **Hidden move (T1, T2, T3).** Sold tokens the wallet never bought, or only buys and never sells.
 - **Wallets (W, L, S3, S4, S6).** Trades almost only these coins, fresh wallets cash out together,
   or the key that pays the fee.
@@ -46,10 +48,10 @@ flowchart TD
   done["Finished coins. The life of the coin is already on the tape"] --> mark["Step 1. The seven facts mark the owner"]
 
   mark --> create["Create. Signed the launch"]
-  mark --> birth["Birth. Bought with the launch. A sniper is real money"]
+  mark --> birth["Birth. Bought with the launch. A sniper is real money. A big buy in the first seconds is the owner only when the creator buys again"]
   mark --> tx["One transaction. Several sells together. Two or ten is the same"]
-  mark --> shape["Shape. A large share of this coin, or almost only these coins"]
-  mark --> wake["Wake-up. The buy that keeps ending a 2 second silence"]
+  mark --> shape["Shape. 20% of the run, or 20 prints from more than one wallet. Public app included, or almost only these coins"]
+  mark --> wake["Wake-up. The same list is bought 5 times, by one wallet or several. The first buy ends a 2 second silence"]
   mark --> hidden["Hidden move. Sold tokens they never bought"]
   mark --> wallets["Wallets. Almost only these coins, or the key that pays"]
 
@@ -116,11 +118,11 @@ the shape of this transaction.
 Walk [the numbered list](#the-numbered-list) from line 1. The first line that matches decides
 this trade. The lines under it are not read.
 
-- Line 5 matches a sell whose core is two or more `Pump.Fun: SELL`. This trade is owner. Every
+- Line 6 matches a sell whose core is two or more `Pump.Fun: SELL`. This trade is owner. Every
   wallet in that transaction is owner on this coin, and the buys they already made here are owner
   too. Stop.
-- Lines 1 through 13 all miss. This trade is outsider.
-- Once a wallet is owner on this coin, its later trades match line 9 and stay owner.
+- Lines 1 through 15 all miss. This trade is outsider.
+- Once a wallet is owner on this coin, its later trades match line 10 and stay owner.
 - A trade that matches nothing does not freeze the wallet. Its next trade walks the list again.
 
 A birth buy is often a public `Pump.Fun: BUY`, so the list carries those wallets. The multi-sell
@@ -164,7 +166,7 @@ The person who launches the coin.
 
 ### The birth (A5, A3)
 
-Buys that land before anyone else can see the coin.
+Buys that land with the launch, and a big buy in the first seconds after it.
 
 - A buy within 15 ms of the create, measured from the create's block time, is the owner. The
   instruction list does not matter.
@@ -173,7 +175,13 @@ Buys that land before anyone else can see the coin.
   from 10 or more creators, with at most 20% of them this group's. The count is over the two
   weeks, never one day.
 - That sniper is real money, and stays real money on this coin.
-- Buy size is not the test.
+- Buy size is not the test inside the creation slot.
+- After the creation slot, a big buy in the first seconds is judged by what the creator does next.
+- The creator already holds his coins from the launch. A buy large enough to pay him is his exit,
+  so he sells. He buys again only when the new money is too small to cash out.
+- When the creator sells into that buy, the buy is real money.
+- When the creator buys again after it, the buy is the owner. A big buy he pays through is his own.
+- The instruction list does not matter.
 
 ### The same transaction (B, S5)
 
@@ -193,13 +201,22 @@ Wallets inside one transaction are one person.
 
 The owner repeats one transaction shape. It shows up in two places.
 
-- On one coin: a shape that is at least 20% of the trades, or 20% of the SOL, with at least 10
-  trades, is the owner on that coin.
-- That one-coin shape is the instruction list plus its CU price. The CU limit is left out.
+- On one coin, either test is enough.
+- A shape that is at least 20% of the trades, or 20% of the SOL, inside its own run, with at
+  least 10 trades, is the owner on that coin.
+- The run is the stretch from that shape's first print on the coin to its last. Trades outside
+  that stretch are not in the share. A long tape after the shape stops does not dilute it.
+- That share reads the instruction list plus its CU price. The CU limit is left out.
   Snipers' creation-slot buys are left out of the share.
-- Every wallet using that shape on that coin is the owner, including the trades it already made
-  there. This reading needs no other coin.
-- A shape used on 10,000 or more coins in the market is a public app, so this fact leaves it out.
+- Or the same instruction list prints at least 20 times, from more than one wallet. The CU
+  price is left out. One wallet printing that list 20 times is a trader, and this test leaves
+  that wallet out.
+- This holds for every list. A public app the market uses on many coins is the same test. A
+  count of market coins does not take either test back out. The owner manufactures volume with
+  public apps, and a pass is owner either way.
+- Every wallet using that list on that coin is the owner, including a wallet that uses it once,
+  and including the trades it already made there. This reading needs no other coin.
+- The checks do not drop either test.
 - Across the market: an instruction list, fees left out, is the owner's script when 30% or more of
   its trades sit on this group's coins, on at least 5 group coins, from at least 2 creators.
 - Fees are the CU limit, the CU price, and the tip. The owner changes them at will.
@@ -218,19 +235,26 @@ The owner repeats one transaction shape. It shows up in two places.
 
 ### The wake-up
 
-The owner buys when nobody else is buying, so the tape does not go dead.
+The owner buys the same way again, and the run starts when nobody else is buying, so the tape
+does not go dead. This fact reads every instruction list. A public app and a private program
+are the same test.
 
-- On one coin, a buy instruction list is the owner's volume pattern when it buys at least 5
-  times, and at least 4 of every 5 of those buys are the first trade after 2 seconds with no
-  trade.
-- The 2 seconds is the time since the previous transaction on that coin.
+- On one coin, the same instruction list is owner volume when it is bought 5 or more times,
+  and the first of those buys is the first trade after 2 seconds with no trade.
+- The buys can come from one wallet or from several. A wallet that buys the list only once
+  stays outsider, and that buy stays out of the count.
+- The 2 seconds is the time since the previous transaction on that coin. It applies to the
+  first buy of the run only. The later buys may land close together, because the run itself
+  keeps the tape busy.
+- Buys that all land inside a busy tape, with no 2 second silence before the first, stay
+  outsider. Repeating a trade inside a crowd is an ordinary trader.
+- One buy after a pause is an ordinary trade. The repetition is the fact.
 - The list is the full instruction list. The core of a plain pump buy is only `Pump.Fun: BUY`,
   so the core is not this test.
-- A list the market uses widely still passes on a coin where its buys are the ones that end the
-  silence. On a coin where the same list trades inside the crowd, it fails.
-- Every wallet using that list on the coin is the owner, including a buy that landed while the
-  tape was busy.
-- One buy after a pause is an ordinary trade. The repetition is the fact.
+- When the list passes neither the 20% share of its run nor the 20-print count, this fact is
+  what marks the repeating wallets.
+- The wallets that repeat the list in that run are owner on the coin, including their buys of
+  the list before the fifth. Their other trades on the coin are owner too.
 
 ### The hidden move (T1, T2, T3)
 
@@ -289,25 +313,38 @@ lines under it.
 | 1 | from the creator, or inside the create transaction | owner | create |
 | 2 | a buy in the creation slot, within 15 ms of the create | owner, and the wallet on this coin | birth |
 | 3 | a creation-slot buy after that window, by a trader that is not a sniper | owner | birth |
-| 4 | an owner script, on one coin or across the market | owner, even on a new wallet's first trade | script's shape |
-| 5 | a sell whose core is two or more `Pump.Fun: SELL` | owner, and the wallet on this coin | same transaction |
-| 6 | a sell that takes the bag on this coin below zero | owner, and its later trades on this coin | hidden move |
-| 7 | a wallet on the buy-only list | owner | hidden move |
-| 8 | paid for by the owner's key | owner | wallets |
-| 9 | an owner wallet already found | owner | any fact that listed it |
-| 10 | in one transaction with an owner wallet | owner | same transaction |
-| 11 | a fresh wallet selling out in a slot where 2 or more other fresh wallets do | owner, from that sell on | wallets |
-| 12 | a shape that has reached 20% of this coin's trades or SOL so far | owner, and the wallets using it on this coin | script's shape |
-| 13 | a buy list with at least 5 buys on this coin, at least 4 of every 5 the first trade after 2 seconds with no trade | owner, and the wallets using it on this coin | wake-up |
-| 14 | anything else, snipers included | outsider | |
+| 4 | a big buy in the first seconds after the creation slot, once the creator has bought again after it. A buy the creator sells into does not match | owner, and the wallet on this coin | birth |
+| 5 | an owner script, on one coin or across the market | owner, even on a new wallet's first trade | script's shape |
+| 6 | a sell whose core is two or more `Pump.Fun: SELL` | owner, and the wallet on this coin | same transaction |
+| 7 | a sell that takes the bag on this coin below zero | owner, and its later trades on this coin | hidden move |
+| 8 | a wallet on the buy-only list | owner | hidden move |
+| 9 | paid for by the owner's key | owner | wallets |
+| 10 | an owner wallet already found | owner | any fact that listed it |
+| 11 | in one transaction with an owner wallet | owner | same transaction |
+| 12 | a fresh wallet selling out in a slot where 2 or more other fresh wallets do | owner, from that sell on | wallets |
+| 13 | an instruction list plus its CU price with at least 10 prints whose run, from the first of them on this coin through this print, is at least 20% of the trades or SOL in that stretch, public app included | owner, and the wallets using it on this coin | script's shape |
+| 14 | an instruction list with at least 20 prints on this coin from more than one wallet. One wallet's own prints do not pass | owner, and the wallets using it on this coin | script's shape |
+| 15 | a buy of one list, once wallets that each bought that list more than once have 5 or more such buys on this coin and the first of them followed 2 seconds with no trade | owner, and those wallets on this coin | wake-up |
+| 16 | anything else, snipers included | outsider | |
 
-In the engine, a rule reads structures (lines 1, 4, 5, 10) and the bag (line 6), which the engine
+In the engine, a rule reads structures (lines 1, 5, 6, 11) and the bag (line 7), which the engine
 already keeps per wallet. A wallet is never a term in a rule
-([_!___strategy.md](_!___strategy.md) T5). Lines 2, 3, 7, 8, and 9 read lists built daily. The tag
-carries line 2 as wallets, because a birth buy is often a public `Pump.Fun: BUY`, and line 5 as one
-core row per pack size. Live, line 6 turns a trader owner only from its first sell below zero.
-Line 13 reads the gaps on this coin. The list passes once 5 buys have landed and 4 of every 5
-followed 2 seconds with no trade.
+([_!___strategy.md](_!___strategy.md) T5). Lines 2, 3, 8, 9, and 10 read lists built daily. The tag
+carries line 2 as wallets, because a birth buy is often a public `Pump.Fun: BUY`, and line 6 as one
+core row per pack size. Live, line 4 waits for the creator's next trade. A later buy by the creator
+marks that big buy owner. A sell by the creator leaves it outsider. Live, line 7 turns a trader
+owner only from its first sell below zero.
+Line 13 is the instruction list plus its CU price. The run is the stretch from that shape's
+first print on this coin through this print. It passes at 10 prints and 20% of the trades or
+SOL inside that run, for a public app the same way as any other list. A count of market coins
+does not cancel it. Line 14 is the instruction list, CU price left out. It passes at 20 prints
+from more than one wallet. One wallet printing the list 20 times stays a trader. A public app
+passes the same way, and a count of market coins does not cancel it. Line 15 reads one list's
+gaps on this coin, for every list. The list passes once its 5th buy from a repeating wallet has
+landed, if the first of those buys followed 2 seconds with no trade. The buys can come from one
+wallet or from several. A wallet that bought the list only once stays outsider. A list under
+that 20% share, and under 20 prints from more than one wallet, stays outsider when nobody
+repeats it.
 
 ## Match levels
 
@@ -325,8 +362,11 @@ level catches every variant.
 | 6 | core, side, marks, CU price, and tip |
 | 7 | exact instruction list, CU limit, CU price, and tip |
 
-A private program passes at level 1. A public app passes only at a level that carries the owner's
-own fee, or never. The volume list holds level 7 as an exact instruction-list row, and levels 1-6
+A private program passes at level 1. A public app passes the market tests only at a level that
+carries the owner's own fee, or never. The one-coin tests are separate from these levels. The
+20% share is the instruction list plus its CU price, read on the run from its first print to its
+last. The 20-print count is the instruction list from more than one wallet, and the CU price is
+left out. A wide market does not cancel either. The volume list holds level 7 as an exact instruction-list row, and levels 1-6
 as a core row: the core's labels, the side, and whichever of marks, CU price, and tip that level
 pins. A pin the trade lacks is left off, so that row matches any value there.
 
@@ -334,8 +374,8 @@ pins. A pin the trade lacks is left off, so that row matches any value there.
 
 This is the question in step 2. These do not mark a trade. They drop a script or a paying key that
 pulled in the wrong wallets.
-The create, the birth, the hidden move, the group wallet, and the fresh-wallet cash-out are not
-judged here. A set is one shape, one paying key, or all the wallets one rule added.
+The create, the birth, the hidden move, the group wallet, the fresh-wallet cash-out, and the
+one-coin 20% share and the one-coin 20-print count are not judged here. A set is one shape, one paying key, or all the wallets one rule added.
 
 Only the seller is judged by how it exits. A buyer that never sells is judged by the hidden move.
 A set that trades both ways and ends empty is judged at the shape or the key that brought it in.
@@ -375,7 +415,8 @@ V1 reads the owner side as a whole. A buyer wallet loses while a seller wallet c
 every day from the last two weeks: wallets change fast, shapes and paying keys slowly.
 
 A fresh wallet on a public app, at that app's default fee, that buys once and sells what it bought,
-matches none of the seven facts.
+matches none of the seven facts while that list stays under 20% of its run, fewer than 20 wallets
+print it, and the wallet does not repeat the list.
 
 
 ## Appendix A - tested and not used
@@ -477,12 +518,14 @@ the creator and the create transaction.
 
 **How a split becomes a tag.** One build serves every group. Every structure of the group's trades
 is read at each match level (core levels 1-6, the exact list alone, the exact list with its CU price,
-level 7), and a row passes when it is 90 % or more owner SOL on the group, has 10 or more trades
-there and runs on fewer than 10,000 market coins. The tag holds the fewest passing rows that still
+level 7), and a row passes when it is 90 % or more owner SOL on the group and has 10 or more trades
+there. A one-coin shape at 20 % of the trades or SOL inside its own run passes with them, including a list the
+market uses on 10,000 coins or more. The run is the stretch from that shape's first print on the coin to its last.
+An instruction list with at least 20 prints from more than one wallet on that coin passes too. The CU price is left out of that count, and one wallet's prints do not pass. The tag holds the fewest passing rows that still
 cover every trade the passing rows cover (biggest row first), the creator, and the owner wallets
 with an owner trade before their first trade a row catches (sticky). A row applies on every coin of
 the fingerprint, while D reads one coin, so the tag can carry some outsider money the split leaves
-out.
+out. The rows in the table stay under 10,000 market coins.
 
 | fingerprint (tag) | rows (core / exact) | wallets | agrees with the split on SOL | coins within 5 points | rows alone carry |
 | --- | ---: | ---: | ---: | ---: | ---: |
