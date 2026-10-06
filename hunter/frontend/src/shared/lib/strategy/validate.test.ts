@@ -19,7 +19,7 @@ import {
   type RuleDoc,
 } from './ruleDoc';
 import { autoLineLabel, condSentence, lineSentence } from './sentences';
-import { tagsFromJson, tagsToJson, validateTags, withTagListValue } from './tagsDoc';
+import { emptyTag, tagsFromJson, tagsToJson, validateTags, withTagListValue } from './tagsDoc';
 import { validateRuleDoc } from './validate';
 
 const reg = JSON.parse(registryRaw) as StrategyRegistry;
@@ -212,6 +212,17 @@ describe('tags', () => {
     const doc = withTagListValue({ volume: { match: { creator: true }, sticky: true } }, 'volume', 'program', 'Axiom Trade');
     expect(doc).toEqual({ volume: { match: { program: ['Axiom Trade'], creator: true }, sticky: true } });
     expect(withTagListValue(doc, 'targets', 'wallet', 'w1')).toMatchObject({ targets: { match: { wallet: ['w1'] } } });
+  });
+
+  it('refuses a blank ix row instead of saving an empty match', () => {
+    const dump = emptyTag('dump');
+    dump.match = { ix_shape: [{ labels: ['  '] }] };
+    const volume = emptyTag('volume');
+    volume.match = { ix_shape: [{ labels: ['Pump.Fun: Buy'] }] };
+    expect(validateTags([dump, volume], reg).join('\n')).toMatch(/dump.*instruction label/);
+    expect(tagsToJson([dump, volume])).toEqual({
+      volume: { match: { ix_shape: [['Pump.Fun: Buy']] } },
+    });
   });
 
   it('names every mistake the engine refuses', () => {

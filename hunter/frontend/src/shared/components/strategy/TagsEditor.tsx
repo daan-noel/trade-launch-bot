@@ -17,6 +17,7 @@ import {
   emptyTag,
   hasTemplateView,
   TAG_NAME_RE,
+  unclassifiableTagError,
   usedMatchers,
   type MatcherKey,
   tagSentence,
@@ -152,6 +153,7 @@ function TagCard({
 }) {
   // A matcher stays on screen while being filled in, even before it holds a value.
   const shown = (Object.keys(tag.match) as MatcherKey[]).filter((k) => tag.match[k] !== undefined);
+  const bare = unclassifiableTagError(tag);
   const matchFields = reg.tags.fields.filter((f) => f.kind === 'match');
   const unused = matchFields.filter((f) => !shown.includes(f.key as MatcherKey));
   const nameOk = TAG_NAME_RE.test(tag.name);
@@ -171,6 +173,7 @@ function TagCard({
 
       <span className="text-[11px] font-semibold text-text">A trade has this tag if ANY of these holds:</span>
       {shown.length === 0 && <p className="text-[11px] italic text-text-dim/70">No matcher yet: no trade can carry this tag.</p>}
+      {bare && shown.length > 0 && <p className="text-[11px] text-red">{bare}</p>}
       {shown.map((k, i) => {
         const f = tagField(reg, k);
         return (

@@ -9,7 +9,8 @@
 // A trade carries the tag when ANY `match` entry holds, on the tag's `side` only.
 // `tagsToJson` is the one writer: every surface that adds to a tag goes through
 // `withTagListValue` / `withTagShape`, so a save never drops a key another surface
-// wrote. Removing a tag's last matcher value removes the tag: the engine refuses a
+// wrote. A matcher counts only when a value survives that write. A blank ix row is
+// dropped, and a tag that then matches nothing is left out: the engine refuses a
 // tag no trade could carry.
 
 import {
@@ -96,13 +97,36 @@ export function tagsFromJson(doc: unknown): TagDef[] {
   });
 }
 
-/** Whether a matcher is in use (a non-empty list, `creator: true`, a cluster). */
+function textCounts(xs: readonly string[]): boolean {
+  return xs.some((s) => s.trim());
+}
+
+/** A row the save keeps: at least one instruction label after trimming. */
+function shapeCounts(rows: readonly IxPatternRow[]): boolean {
+  return rows.some((r) => r.labels.some((l) => l.trim()));
+}
+
+/** Whether a matcher is in use. A list counts only when a value survives the save
+ *  (blank strings and blank ix rows are dropped). `creator: true` and a cluster count. */
 export function matcherUsed(m: TagMatch, k: MatcherKey): boolean {
   const v = m[k];
   if (v === undefined) return false;
-  if (Array.isArray(v)) return v.length > 0;
+  if (k === 'ix_shape') return shapeCounts(m.ix_shape ?? []);
+  if (Array.isArray(v)) return textCounts(v as string[]);
   if (typeof v === 'boolean') return v;
   return true;
+}
+
+/** Why no trade could carry `t`, or null when one could. A blank ix row names no
+ *  matcher: the save drops it, and an empty match is refused. */
+export function unclassifiableTagError(t: TagDef): string | null {
+  if (usedMatchers(t).length > 0) return null;
+  const at = `Tag \`${t.name || '(no name)'}\``;
+  const shapes = t.match.ix_shape ?? [];
+  if (shapes.length > 0 && !shapeCounts(shapes)) {
+    return `${at} has no matcher, so no trade could carry it: an ix shape needs at least one instruction label`;
+  }
+  return `${at} has no matcher, so no trade could carry it`;
 }
 
 /** The matchers a tag uses, in the classifier's fixed order (cluster last). */
@@ -116,6 +140,7 @@ export function usedMatchers(t: TagDef): MatcherKey[] {
 export function tagsToJson(tags: TagDef[]): Obj {
   const out: Obj = {};
   for (const t of tags) {
+    if (usedMatchers(t).length === 0) continue;
     const match: Obj = {};
     for (const k of STRING_LIST_MATCHERS) {
       const list = (t.match[k] ?? []).map((s) => s.trim()).filter(Boolean);
@@ -149,17 +174,20 @@ export function tagSentence(t: TagDef): string {
   const m = t.match;
   const parts: string[] = [];
   const list = (xs: string[] | undefined, what: string) => {
-    if (xs?.length) parts.push(`${what} ${xs.length > 3 ? `${xs.slice(0, 3).join(', ')} (+${xs.length - 3})` : xs.join(', ')}`);
+    const kept = (xs ?? []).map((s) => s.trim()).filter(Boolean);
+    if (kept.length) parts.push(`${what} ${kept.length > 3 ? `${kept.slice(0, 3).join(', ')} (+${kept.length - 3})` : kept.join(', ')}`);
   };
   list(m.program, 'program');
-  const nCore = (m.ix_shape ?? []).filter((r) => r.level === 'core').length;
-  const nExact = (m.ix_shape?.length ?? 0) - nCore;
+  const shapes = (m.ix_shape ?? []).filter((r) => r.labels.some((l) => l.trim()));
+  const nCore = shapes.filter((r) => r.level === 'core').length;
+  const nExact = shapes.length - nCore;
   if (nExact) parts.push(`${nExact} exact ix shape${nExact === 1 ? '' : 's'}`);
   if (nCore) parts.push(`${nCore} core ix shape${nCore === 1 ? '' : 's'}`);
   list(m.ix_template, 'ix template');
   list(m.ix_contains, 'contains');
   list(m.ix_lacks, 'lacks all of');
-  if (m.wallet?.length) parts.push(`${m.wallet.length} wallet${m.wallet.length === 1 ? '' : 's'}`);
+  const wallets = (m.wallet ?? []).map((s) => s.trim()).filter(Boolean);
+  if (wallets.length) parts.push(`${wallets.length} wallet${wallets.length === 1 ? '' : 's'}`);
   if (m.creator) parts.push('the creator');
   if (m.cluster) parts.push(`a same-slot cluster of ${m.cluster.min_prints}+ prints within ${m.cluster.sol_tol_pct} % SOL`);
   const opts: string[] = [];
@@ -181,7 +209,8 @@ export function validateTags(tags: TagDef[], reg: StrategyRegistry | undefined):
     if (builtin.includes(t.name)) errors.push(`${at} is a built-in wallet class; pick another name`);
     if (seen.has(t.name)) errors.push(`Two tags are named \`${t.name}\``);
     seen.add(t.name);
-    if (usedMatchers(t).length === 0) errors.push(`${at} has no matcher, so no trade could carry it`);
+    const bare = unclassifiableTagError(t);
+    if (bare) errors.push(bare);
     for (const s of t.match.ix_template ?? []) {
       if (s.trim() && !s.includes('|')) {
         errors.push(`${at}: \`${s}\` is not a template (program|CU|ATA|N|S|F); a bare program name goes under Program`);
