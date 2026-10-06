@@ -165,7 +165,7 @@ export function IxPatternRowsEditor({
           No patterns — flow metrics stay NaN until you add at least one structure.
         </p>
       ) : (
-        <ul className="flex max-h-64 flex-col gap-1 overflow-y-auto pr-1">
+        <ul className="flex max-h-96 flex-col gap-1 overflow-y-auto pr-1">
           {patterns.map((p, i) => (
             <PatternRow
               key={i}
@@ -267,7 +267,7 @@ function FeePins({
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5 border-t border-white/8 pt-1.5">
       <span
-        className="shrink-0 text-[9px] uppercase tracking-wide text-text-dim/60"
+        className="shrink-0 text-[11px] uppercase tracking-wide text-text-dim"
         title="Exact: this ix list only. Core: every variant of the build that keeps its core - the list without compute budget, System, token-account, memo and Lighthouse instructions, with Buy / BuyV2 / BuyExactSolIn (and Sell, Create) merged."
       >
         level
@@ -280,7 +280,7 @@ function FeePins({
           aria-pressed={(lv === 'core') === core}
           onClick={() => setLevel(lv === 'core')}
           className={cn(
-            'rounded px-1.5 font-mono text-[9px]',
+            'rounded px-1.5 font-mono text-[11px]',
             (lv === 'core') === core ? 'bg-accent/20 text-accent' : 'text-text-dim/70 hover:text-text-mid',
           )}
         >
@@ -290,7 +290,7 @@ function FeePins({
       {core && (
         <>
           <label className="flex items-center gap-1" title="Only this side's trades match; blank matches both.">
-            <span className="font-mono text-[9px] text-text-dim/70">side</span>
+            <span className="font-mono text-[11px] text-text-dim">side</span>
             <select
               className="rounded bg-white/5 px-1 font-mono text-[10px]"
               disabled={disabled}
@@ -311,7 +311,7 @@ function FeePins({
             className="flex items-center gap-1"
             title="The build's extras must be exactly these: flags CL CP N L M S C W when present, then T<System transfers> A<account opens>. Blank matches any extras."
           >
-            <span className="font-mono text-[9px] text-text-dim/70">marks</span>
+            <span className="font-mono text-[11px] text-text-dim">marks</span>
             <Input
               fieldSize="sm"
               className="w-32 font-mono text-[10px]"
@@ -332,14 +332,14 @@ function FeePins({
         </>
       )}
       <span
-        className="shrink-0 text-[9px] uppercase tracking-wide text-text-dim/60"
+        className="shrink-0 text-[11px] uppercase tracking-wide text-text-dim"
         title="Pin this build to one client's fee budget. Every field left blank matches any value — an all-blank row is an ix-only entry and behaves exactly as it always has."
       >
         pin
       </span>
       {FEE_INPUTS.map(({ field, label, placeholder, title }) => (
         <label key={field} className="flex items-center gap-1" title={title}>
-          <span className="font-mono text-[9px] text-text-dim/70">{label}</span>
+          <span className="font-mono text-[11px] text-text-dim">{label}</span>
           <Input
             fieldSize="sm"
             className="w-24 font-mono text-[10px]"
@@ -359,7 +359,7 @@ function FeePins({
         </span>
       )}
       {!rowPinsFee(row) && (
-        <span className="text-[9px] text-text-dim/50">ix only — matches any budget</span>
+        <span className="text-[11px] text-text-dim/70">ix only — matches any budget</span>
       )}
     </div>
   );
@@ -425,11 +425,11 @@ function PatternRow({
           title={labels.length > 0 ? labels.join('\n') : 'Add labels'}
           aria-expanded={expanded}
           className={cn(
-            'min-w-0 flex-1 truncate text-left font-mono text-[10px] hover:text-text',
-            labels.length === 0 ? 'italic text-text-dim/60' : 'text-text-mid',
+            'min-w-0 flex-1 truncate text-left font-mono text-[12px] hover:text-text',
+            labels.length === 0 ? 'italic text-red' : 'text-text-mid',
           )}
         >
-          {labels.length === 0 ? 'empty — add labels' : <IxAbbrevLine labels={labels} />}
+          {labels.length === 0 ? 'no instruction label yet' : <IxAbbrevLine labels={labels} />}
         </button>
         {row.level === 'core' && (
           <span
@@ -441,7 +441,7 @@ function PatternRow({
         )}
         {rowPinsFee(row) && (
           <span
-            className="shrink-0 rounded bg-accent/15 px-1 font-mono text-[9px] text-accent"
+            className="shrink-0 rounded bg-warning/15 px-1 font-mono text-[11px] text-warning"
             title={pinTitle(row)}
           >
             fee

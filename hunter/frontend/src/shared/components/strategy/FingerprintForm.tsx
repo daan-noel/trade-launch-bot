@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Input } from 'components/ui/Input';
-import { Select } from 'components/ui/Select';
 import { IconButton } from 'components/ui/IconButton';
-import { CloseIcon, SaveIcon, SpinnerIcon, RefreshIcon } from 'components/ui/icons';
+import { CloseIcon, RefreshIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
@@ -13,13 +12,14 @@ import {
   AXES,
   axisDef,
   criteriaProblems,
+  formatPredicate,
   type AxisDef,
   type AxisId,
   type Criteria,
 } from 'lib/strategy/fingerprintAxes';
 import { axisPredicateText } from 'lib/strategy/fingerprintGrammar';
 import { useStrategyRegistry } from 'lib/strategy/registry';
-import { feePinWarning, tagsFromJson, tagsToJson, validateTags, type TagDef } from 'lib/strategy/tagsDoc';
+import { tagsFromJson, tagsToJson, validateTags, type TagDef } from 'lib/strategy/tagsDoc';
 import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import type { HelpTip } from 'lib/strategy/strategyHelp';
 import { LabelTip } from './LabelTip';
@@ -171,6 +171,21 @@ const NAME_HELP: HelpTip = {
     'Left blank, or written in the generated grammar, it re-derives from the axes on every edit. A nickname you type is never overwritten: it is the only record of WHY this fingerprint exists, and the axes can always be re-read.',
 };
 
+/** What the axes currently select, in the same words the boxes show. */
+function identitySentence(s: FormState): string {
+  if (s.wildcard) return 'Matches every token. No creation-shape axes.';
+  const bits: string[] = [];
+  for (const def of NUMERIC_AXES) {
+    const state = axisConditionState(s.conditions[def.id] ?? '', def);
+    if (state.kind === 'ok') bits.push(`${def.label} ${formatPredicate(def.id, state.predicate)}`);
+  }
+  const { labels } = parseIxLabelsText(s.ix_labels);
+  if (configuredIxLabels(labels)) bits.push('an instruction-label sequence');
+  if (bits.length === 0) return 'No axis yet. Add one, or match every token.';
+  if (bits.length === 1) return `Matches coins where ${bits[0]}.`;
+  return `Matches coins where ${bits.slice(0, -1).join(', ')}, and ${bits[bits.length - 1]}.`;
+}
+
 const WILDCARD_HELP: HelpTip = {
   title: 'Match every token',
   body:
@@ -241,7 +256,6 @@ export function FingerprintForm({
   // Mirrors the backend gate, so the form fails fast instead of on a 400.
   const criterionCount = s.wildcard ? 1 : Object.keys(criteria).length;
   const tagErrors = useMemo(() => validateTags(s.tags, registry), [s.tags, registry]);
-  const tagWarning = useMemo(() => feePinWarning(s.tags), [s.tags]);
   const problems = useMemo(
     () => [...(s.wildcard ? [] : [...badAxes, ...criteriaProblems(criteria)]), ...tagErrors],
     [s.wildcard, badAxes, criteria, tagErrors],
@@ -265,169 +279,175 @@ export function FingerprintForm({
     );
   };
 
+  const closedAxes = NUMERIC_AXES.filter((def) => !openAxes.includes(def.id));
+  const save = () => {
+    const body = toDraft(s);
+    if (!body.name) body.name = fingerprintAutoName(body);
+    onSubmit(body);
+  };
+
   return (
     <div className="flex flex-col gap-3">
-      <section className="flex flex-col gap-3 rounded-lg border border-white/10 bg-white/2 p-3">
-      <h3 className="text-[13px] font-semibold text-text">
-        <span className="mr-1.5 text-accent">1.</span>Which coins: the creation shape a rule watches
-      </h3>
-      <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-        <LabelTip tip={NAME_HELP}>Name</LabelTip>
-        <div className="flex items-center gap-1">
-          <Input
-            fieldSize="sm"
-            className="min-w-0 flex-1"
-            value={s.name}
-            onChange={(e) => set('name', e.target.value)}
-            placeholder={autoNameIsReal ? autoName : 'auto-filled from axes'}
-          />
-          <IconButton
-            variant="ghost"
-            size="sm"
-            disabled={submitting || !autoNameIsReal || s.name === autoName}
-            onClick={() => {
-              prevAutoRef.current = autoName;
-              set('name', autoName);
-            }}
-            title="Reset to auto-name from axes"
-            aria-label="Reset to auto-name from axes"
-          >
-            <RefreshIcon />
-          </IconButton>
-        </div>
-      </label>
-
-      <label className="flex cursor-pointer items-start gap-1.5 text-[11px] text-text-mid">
-        <Checkbox
-          className="mt-0.5"
-          checked={s.wildcard}
-          disabled={submitting}
-          onChange={() => set('wildcard', !s.wildcard)}
-        />
-        <LabelTip tip={WILDCARD_HELP}>match every token (wildcard)</LabelTip>
-      </label>
-
-      {!s.wildcard && (
-        <div className="flex flex-col gap-2">
-          {NUMERIC_AXES.filter((def) => openAxes.includes(def.id)).map((def) => (
-            <div key={def.id} className="flex items-start gap-1">
-              <div className="min-w-0 flex-1">{axisRow(def)}</div>
-              <IconButton
-                variant="ghost"
-                size="sm"
-                className="mt-5"
-                disabled={submitting}
-                title={`Remove ${def.label}`}
-                aria-label={`Remove ${def.label}`}
-                onClick={() => {
-                  setCondition(def.id, '');
-                  setOpenAxes((ids) => ids.filter((id) => id !== def.id));
-                }}
-              >
-                <CloseIcon />
-              </IconButton>
-            </div>
-          ))}
-          {ixOpen && (
-            <div className="flex items-start gap-1">
-              <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11px] text-text-dim">
-                <LabelTip tip={{ title: axisDef('ix_labels').label, body: axisDef('ix_labels').definition }}>
-                  {axisDef('ix_labels').label} (JSON array)
-                </LabelTip>
-                <IxLabelsInput
-                  value={s.ix_labels}
-                  onValueChange={(v) => set('ix_labels', v)}
-                  disabled={submitting}
-                  error={ixParsed.error}
-                />
-              </label>
-              <IconButton
-                variant="ghost"
-                size="sm"
-                className="mt-5"
-                disabled={submitting}
-                title="Remove instruction labels"
-                aria-label="Remove instruction labels"
-                onClick={() => {
-                  set('ix_labels', '');
-                  setIxOpen(false);
-                }}
-              >
-                <CloseIcon />
-              </IconButton>
-            </div>
-          )}
-          <label className="flex items-center gap-2 text-[11px] text-text-dim">
-            <span>Add axis</span>
-            <Select
-              className="w-48"
-              value=""
-              disabled={submitting}
-              onChange={(e) => {
-                const id = e.target.value;
-                if (id === 'ix_labels') setIxOpen(true);
-                else if (id) setOpenAxes((ids) => (ids.includes(id as AxisId) ? ids : [...ids, id as AxisId]));
-              }}
-            >
-              <option value="">choose</option>
-              {NUMERIC_AXES.filter((def) => !openAxes.includes(def.id)).map((def) => (
-                <option key={def.id} value={def.id}>
-                  {def.label}
-                </option>
-              ))}
-              {!ixOpen && <option value="ix_labels">{axisDef('ix_labels').label}</option>}
-            </Select>
-          </label>
-        </div>
-      )}
-      </section>
-
-      {registry && (
-        <section className="flex flex-col gap-2 rounded-lg border border-white/10 bg-white/2 p-3">
+      <div className="grid items-start gap-3 md:grid-cols-[minmax(17rem,24rem)_minmax(0,1fr)]">
+        <section className="flex max-h-[min(64vh,48rem)] flex-col gap-3 overflow-y-auto rounded-lg border border-white/10 bg-white/2 p-3">
           <h3 className="text-[13px] font-semibold text-text">
-            <span className="mr-1.5 text-accent">2.</span>Tags: whose trades a rule can read
-            <GuideButton className="ml-2" />
+            <span className="mr-1.5 text-accent">1.</span>Which coins
           </h3>
-          <TagsEditor tags={s.tags} onChange={(t) => set('tags', t)} reg={registry} disabled={submitting} />
-          {tagWarning && <p className="text-[11px] text-amber-300">⚠ {tagWarning}</p>}
-        </section>
-      )}
+          <label className="flex flex-col gap-1 text-[12px] text-text-dim">
+            <LabelTip tip={NAME_HELP}>Name</LabelTip>
+            <div className="flex items-center gap-1">
+              <Input
+                fieldSize="sm"
+                className="min-w-0 flex-1"
+                value={s.name}
+                onChange={(e) => set('name', e.target.value)}
+                placeholder={autoNameIsReal ? autoName : 'auto-filled from axes'}
+              />
+              <IconButton
+                variant="ghost"
+                size="sm"
+                disabled={submitting || !autoNameIsReal || s.name === autoName}
+                onClick={() => {
+                  prevAutoRef.current = autoName;
+                  set('name', autoName);
+                }}
+                title="Reset to auto-name from axes"
+                aria-label="Reset to auto-name from axes"
+              >
+                <RefreshIcon />
+              </IconButton>
+            </div>
+            <span className="text-[11px] text-text-dim/80">
+              Filled from the axes. A name you type stays.
+            </span>
+          </label>
 
-      <div className="flex items-center justify-between gap-2">
-        <span className="min-w-0 text-[11px] text-text-dim/80">
-          {problems.length > 0 ? (
-            <span className="text-red">{problems[0]}</span>
-          ) : criterionCount === 0 ? (
-            <span className="text-red">needs ≥1 match criterion</span>
-          ) : s.wildcard ? (
-            'matches EVERY token · no creation-shape axes'
-          ) : (
-            `${criterionCount} axis${criterionCount === 1 ? '' : 'es'}`
+          <label className="flex cursor-pointer items-start gap-1.5 text-[12px] text-text-mid">
+            <Checkbox
+              className="mt-0.5"
+              checked={s.wildcard}
+              disabled={submitting}
+              onChange={() => set('wildcard', !s.wildcard)}
+            />
+            <LabelTip tip={WILDCARD_HELP}>Match every token</LabelTip>
+          </label>
+
+          {!s.wildcard && (
+            <div className="flex flex-col gap-2">
+              <span className="text-[12px] font-semibold text-text">Axes</span>
+              {openAxes.length === 0 && !ixOpen && (
+                <p className="text-[12px] text-text-dim">No axis yet.</p>
+              )}
+              {NUMERIC_AXES.filter((def) => openAxes.includes(def.id)).map((def) => (
+                <div key={def.id} className="flex items-start gap-1">
+                  <div className="min-w-0 flex-1">{axisRow(def)}</div>
+                  <IconButton
+                    variant="ghost"
+                    size="sm"
+                    className="mt-5"
+                    disabled={submitting}
+                    title={`Remove ${def.label}`}
+                    aria-label={`Remove ${def.label}`}
+                    onClick={() => {
+                      setCondition(def.id, '');
+                      setOpenAxes((ids) => ids.filter((id) => id !== def.id));
+                    }}
+                  >
+                    <CloseIcon />
+                  </IconButton>
+                </div>
+              ))}
+              {ixOpen && (
+                <div className="flex items-start gap-1">
+                  <label className="flex min-w-0 flex-1 flex-col gap-1 text-[12px] text-text-dim">
+                    <LabelTip tip={{ title: axisDef('ix_labels').label, body: axisDef('ix_labels').definition }}>
+                      {axisDef('ix_labels').label}
+                    </LabelTip>
+                    <IxLabelsInput
+                      value={s.ix_labels}
+                      onValueChange={(v) => set('ix_labels', v)}
+                      disabled={submitting}
+                      error={ixParsed.error}
+                    />
+                  </label>
+                  <IconButton
+                    variant="ghost"
+                    size="sm"
+                    className="mt-5"
+                    disabled={submitting}
+                    title="Remove instruction labels"
+                    aria-label="Remove instruction labels"
+                    onClick={() => {
+                      set('ix_labels', '');
+                      setIxOpen(false);
+                    }}
+                  >
+                    <CloseIcon />
+                  </IconButton>
+                </div>
+              )}
+              {(closedAxes.length > 0 || !ixOpen) && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {closedAxes.map((def) => (
+                    <Button
+                      key={def.id}
+                      variant="ghost"
+                      size="xs"
+                      disabled={submitting}
+                      onClick={() => setOpenAxes((ids) => (ids.includes(def.id) ? ids : [...ids, def.id]))}
+                    >
+                      + {def.label}
+                    </Button>
+                  ))}
+                  {!ixOpen && (
+                    <Button variant="ghost" size="xs" disabled={submitting} onClick={() => setIxOpen(true)}>
+                      + {axisDef('ix_labels').label}
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
           )}
-        </span>
+          <p className="text-[12px] leading-snug text-text-mid">{identitySentence(s)}</p>
+        </section>
+
+        {registry && (
+          <section className="flex max-h-[min(64vh,48rem)] flex-col gap-2 overflow-y-auto rounded-lg border border-white/10 bg-white/2 p-3">
+            <h3 className="sticky top-0 z-10 -mx-3 -mt-3 border-b border-white/10 bg-bg-panel px-3 py-2 text-[13px] font-semibold text-text">
+              <span className="mr-1.5 text-accent">2.</span>Tags: whose trades a rule can read
+              <GuideButton className="ml-2" />
+            </h3>
+            <TagsEditor tags={s.tags} onChange={(t) => set('tags', t)} reg={registry} disabled={submitting} />
+          </section>
+        )}
+      </div>
+
+      <div className="flex items-start justify-between gap-3 border-t border-white/10 pt-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5 text-[12px]">
+          {problems.length > 0 ? (
+            problems.map((p) => (
+              <span key={p} className="text-red">
+                {p}
+              </span>
+            ))
+          ) : criterionCount === 0 ? (
+            <span className="text-red">Needs at least one match criterion.</span>
+          ) : (
+            <span className="text-text-dim">Ready to save.</span>
+          )}
+        </div>
         <div className="flex shrink-0 gap-2">
           {onCancel && (
-            <Button variant="ghost" size="sm" onClick={onCancel} disabled={submitting}>
+            <Button variant="ghost" size="md" onClick={onCancel} disabled={submitting}>
               Cancel
             </Button>
           )}
-          <IconButton
-            variant="primary"
-            size="lg"
-            disabled={!canSubmit}
-            onClick={() => {
-              const body = toDraft(s);
-              if (!body.name) body.name = fingerprintAutoName(body);
-              onSubmit(body);
-            }}
-            label={submitting ? 'Saving…' : initial ? 'Save' : 'Create'}
-            title={submitting ? 'Saving…' : initial ? 'Save' : 'Create'}
-          >
-            {submitting ? <SpinnerIcon /> : <SaveIcon />}
-          </IconButton>
+          <Button variant="primary" size="md" disabled={!canSubmit} onClick={save}>
+            {submitting ? 'Saving…' : initial ? 'Save' : 'Create'}
+          </Button>
         </div>
       </div>
-      {error && <p className="text-[11px] text-red">{error}</p>}
+      {error && <p className="text-[12px] text-red">{error}</p>}
     </div>
   );
 }

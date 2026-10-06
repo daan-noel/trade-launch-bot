@@ -639,6 +639,7 @@ export function FingerprintsView({
       />
       <Modal
         title={editingId ? 'Edit fingerprint' : 'New fingerprint'}
+        size="xl"
         open={editing !== null}
         onClose={() => setEditing(null)}
       >

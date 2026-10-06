@@ -100,7 +100,7 @@ export function FingerprintPicker({
         </IconButton>
       </div>
 
-      <Modal title="New fingerprint" open={open} onClose={() => setOpen(false)}>
+      <Modal title="New fingerprint" size="xl" open={open} onClose={() => setOpen(false)}>
         <FingerprintForm
           onSubmit={submit}
           onCancel={() => setOpen(false)}

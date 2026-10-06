@@ -11,10 +11,13 @@ import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { CloseIcon, PlusIcon } from 'components/ui/icons';
+import { cn } from 'lib/cn';
+import { rowPinsFee } from 'lib/strategy/ixPatternRows';
 import { ixMarkers, tagField, type StrategyRegistry, type TagFieldSpec } from 'lib/strategy/registry';
 import { freshName } from 'lib/strategy/ruleDoc';
 import {
   emptyTag,
+  feePinWarning,
   hasTemplateView,
   TAG_NAME_RE,
   unclassifiableTagError,
@@ -25,6 +28,26 @@ import {
   type TagMatch,
 } from 'lib/strategy/tagsDoc';
 import { IxPatternRowsEditor } from './IxPatternsEditor';
+
+const SIDES: { value: TagDef['side']; label: string }[] = [
+  { value: null, label: 'Both' },
+  { value: 'buy', label: 'Buys' },
+  { value: 'sell', label: 'Sells' },
+];
+
+/** What the tag tab says before the card is open. */
+function tagTabStatus(tag: TagDef): { tone: 'bad' | 'warn' | 'ok'; label: string } {
+  if (!TAG_NAME_RE.test(tag.name)) return { tone: 'bad', label: 'bad name' };
+  if (unclassifiableTagError(tag)) {
+    const shapes = tag.match.ix_shape ?? [];
+    const named = shapes.some((r) => r.labels.some((l) => l.trim()));
+    return { tone: 'bad', label: shapes.length > 0 && !named ? 'needs a label' : 'needs a matcher' };
+  }
+  if ((tag.match.ix_shape ?? []).some(rowPinsFee)) return { tone: 'warn', label: 'fee pin' };
+  return { tone: 'ok', label: 'ready' };
+}
+
+const TAB_DOT = { bad: 'bg-red', warn: 'bg-warning', ok: 'bg-green' } as const;
 
 function fieldTip(f: TagFieldSpec | undefined): string {
   return f ? `${f.summary}\n\nExample: ${f.example}` : '';
@@ -157,19 +180,20 @@ function TagCard({
   const matchFields = reg.tags.fields.filter((f) => f.kind === 'match');
   const unused = matchFields.filter((f) => !shown.includes(f.key as MatcherKey));
   const nameOk = TAG_NAME_RE.test(tag.name);
+  const pinWarning = feePinWarning([tag]);
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-white/10 bg-bg-card p-2">
+    <div className="flex flex-col gap-2 rounded-md border border-white/10 bg-bg-card p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-semibold text-text-dim">Tag</span>
-        <Input fieldSize="sm" className="w-36 font-mono" value={tag.name} disabled={disabled} onChange={(e) => onChange({ ...tag, name: e.target.value })} />
-        <span className="text-[11px] text-text-dim">
-          rules read <code>@{tag.name}</code> (trades with it) and <code>@!{tag.name}</code> (the rest)
+        <span className="text-[12px] font-semibold text-text-dim">Name</span>
+        <Input fieldSize="sm" className="w-48 font-mono" value={tag.name} disabled={disabled} onChange={(e) => onChange({ ...tag, name: e.target.value })} />
+        <span className="text-[12px] text-text-mid">
+          rules read <code className="text-text">@{tag.name || '…'}</code> and <code className="text-text">@!{tag.name || '…'}</code>
         </span>
         <IconButton className="ml-auto" variant="ghost" size="sm" disabled={disabled} onClick={onRemove} title="Remove tag" aria-label="Remove tag">
           <CloseIcon />
         </IconButton>
       </div>
-      {!nameOk && <p className="text-[11px] text-red">A tag name is 1 to 24 characters of a-z, 0-9 and _.</p>}
+      {!nameOk && <p className="text-[12px] text-red">A tag name is 1 to 24 characters of a-z, 0-9 and _.</p>}
 
       <span className="text-[11px] font-semibold text-text">A trade has this tag if ANY of these holds:</span>
       {shown.length === 0 && <p className="text-[11px] italic text-text-dim/70">No matcher yet: no trade can carry this tag.</p>}
@@ -199,6 +223,11 @@ function TagCard({
               </IconButton>
             </div>
             <MatcherEditor k={k} match={tag.match} reg={reg} disabled={disabled} onChange={(match) => onChange({ ...tag, match })} />
+            {k === 'ix_shape' && pinWarning && (
+              <p className="rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-[12px] leading-snug text-warning">
+                {pinWarning}
+              </p>
+            )}
           </div>
         );
       })}
@@ -221,23 +250,41 @@ function TagCard({
         </Select>
       )}
 
-      <div className="flex flex-wrap items-center gap-3 border-t border-white/5 pt-1.5 text-[11px] text-text-dim">
-        <label className="flex items-center gap-1">
-          {tagField(reg, 'side')?.title ?? 'Side'}
-          <InfoTooltip body={fieldTip(tagField(reg, 'side'))} />
-          <Select className="w-28" value={tag.side ?? ''} disabled={disabled} onChange={(e) => onChange({ ...tag, side: (e.target.value || null) as TagDef['side'] })}>
-            <option value="">buys and sells</option>
-            <option value="buy">buys only</option>
-            <option value="sell">sells only</option>
-          </Select>
+      <div className="flex flex-col gap-2 border-t border-white/5 pt-2 text-[12px] text-text-dim">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1">
+            {tagField(reg, 'side')?.title ?? 'Side'}
+            <InfoTooltip body={fieldTip(tagField(reg, 'side'))} />
+          </span>
+          {SIDES.map((opt) => (
+            <Button
+              key={opt.label}
+              variant="ghost"
+              size="xs"
+              active={(tag.side ?? null) === opt.value}
+              disabled={disabled}
+              onClick={() => onChange({ ...tag, side: opt.value })}
+            >
+              {opt.label}
+            </Button>
+          ))}
+        </div>
+        <label className="flex items-start gap-1.5">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-accent"
+            disabled={disabled}
+            checked={tag.sticky}
+            onChange={(e) => onChange({ ...tag, sticky: e.target.checked })}
+          />
+          <span>
+            <span className="inline-flex items-center gap-1 text-text-mid">
+              {tagField(reg, 'sticky')?.title ?? 'Sticky'}
+              <InfoTooltip body={fieldTip(tagField(reg, 'sticky'))} />
+            </span>
+            <span className="mt-0.5 block text-text-dim">{tagField(reg, 'sticky')?.summary}</span>
+          </span>
         </label>
-        {(['sticky'] as const).map((k) => (
-          <label key={k} className="flex items-center gap-1">
-            <input type="checkbox" className="accent-accent" disabled={disabled} checked={tag[k]} onChange={(e) => onChange({ ...tag, [k]: e.target.checked })} />
-            {tagField(reg, k)?.title ?? k}
-            <InfoTooltip body={fieldTip(tagField(reg, k))} />
-          </label>
-        ))}
       </div>
       <p className="text-[11px] text-text-dim/80">{tagSentence(tag)}</p>
       {usedMatchers(tag).length > 0 && !hasTemplateView(tag) && (
@@ -260,29 +307,68 @@ export function TagsEditor({
   reg: StrategyRegistry;
   disabled?: boolean;
 }) {
-  const set = (i: number, t: TagDef) => onChange(tags.map((x, j) => (j === i ? t : x)));
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const active = tags.find((t) => t.id === activeId) ?? tags[0] ?? null;
+  const activeIndex = active ? tags.findIndex((t) => t.id === active.id) : -1;
+  const add = () => {
+    const next = emptyTag(freshName(tags.length ? 'tag' : 'volume', tags.map((t) => t.name)));
+    onChange([...tags, next]);
+    setActiveId(next.id);
+  };
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-start gap-2">
-        <div className="flex min-w-0 flex-1 flex-col">
-          <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-text">
-            Tags
-            <InfoTooltip title="Tags" body={`${reg.tags.summary}\n\nExample: ${reg.tags.example}`} />
-          </span>
-          <span className="text-[11px] text-text-dim">{reg.tags.summary}</span>
-        </div>
-        <Button variant="subtle" size="xs" disabled={disabled} onClick={() => onChange([...tags, emptyTag(freshName(tags.length ? 'tag' : 'volume', tags.map((t) => t.name)))])}>
+      <p className="text-[12px] leading-snug text-text-dim">
+        {reg.tags.summary}
+        <InfoTooltip className="ml-1" title="Tags" body={`${reg.tags.summary}\n\nExample: ${reg.tags.example}`} />
+      </p>
+      <div className="flex items-end gap-1 overflow-x-auto">
+        {tags.map((t) => {
+          const status = tagTabStatus(t);
+          const on = t.id === active?.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              aria-pressed={on}
+              onClick={() => setActiveId(t.id)}
+              className={cn(
+                'flex shrink-0 flex-col items-start rounded-md border px-2.5 py-1 text-left',
+                on ? 'border-accent bg-accent/10' : 'border-white/10 hover:border-white/20',
+              )}
+            >
+              <span className="flex items-center gap-1.5 font-mono text-[12px] text-text">
+                <span className={cn('size-1.5 rounded-full', TAB_DOT[status.tone])} />
+                {t.name || '(no name)'}
+              </span>
+              <span className={cn('text-[11px]', status.tone === 'bad' ? 'text-red' : status.tone === 'warn' ? 'text-warning' : 'text-text-dim')}>
+                {status.label}
+              </span>
+            </button>
+          );
+        })}
+        <Button variant="subtle" size="xs" className="mb-1 shrink-0" disabled={disabled} onClick={add}>
           <PlusIcon className="size-3" /> tag
         </Button>
       </div>
       {tags.length === 0 && (
-        <p className="text-[11px] italic text-text-dim/70">
+        <p className="text-[12px] italic text-text-dim/70">
           No tags: metrics that need a tag (holdings, transaction counts, slot and wave tag reads) read nothing on this fingerprint.
         </p>
       )}
-      {tags.map((t, i) => (
-        <TagCard key={t.id} tag={t} reg={reg} disabled={disabled} onChange={(n) => set(i, n)} onRemove={() => onChange(tags.filter((_, j) => j !== i))} />
-      ))}
+      {active && activeIndex >= 0 && (
+        <TagCard
+          key={active.id}
+          tag={active}
+          reg={reg}
+          disabled={disabled}
+          onChange={(n) => onChange(tags.map((x, j) => (j === activeIndex ? n : x)))}
+          onRemove={() => {
+            const rest = tags.filter((t) => t.id !== active.id);
+            onChange(rest);
+            setActiveId(rest[Math.max(0, activeIndex - 1)]?.id ?? null);
+          }}
+        />
+      )}
       <p className="text-[11px] text-text-dim/60">
         Built-in wallet classes, no setup needed: {reg.tags.builtin.map((b) => `@${b.name} (${b.summary})`).join(' ')}
       </p>
