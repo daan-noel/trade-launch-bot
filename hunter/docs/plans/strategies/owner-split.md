@@ -3,354 +3,250 @@
 Every trade on a coin is **owner** or **outsider**.
 
 - **Owner** is fake demand: the dev, the dev's wallets, and the machines the dev hires.
-- **Outsider** is real money.
+- **Outsider** is real money: a person or a bot trading for itself.
 
 Owner profit, outsider buying, the dump, and the owner's decisions in
 [owner-decisions.md](owner-decisions.md) stand on this split.
 
+Names in the tables are short on purpose. Each one is spelled out in [Terms](#terms) at the end.
+
 ## At a glance
 
-Three steps. The seven facts are step 1. Rule ids on one fact are the same fact.
+Four steps. A later step leaves an earlier answer as it stands.
 
-**1. Mark, on coins that already ended.** The whole tape is known, including the dump. Seven facts
-name the owner.
+**1. Mark.** The coin has ended. Find the first **owner** wallets.
 
-**2. Grow, then check.** A known owner's transaction shape, and the key that pays its fees, name
-the next wallet. Repeat until a round adds no wallet. Then ask whether those sellers left when
-the price fell. They cashed out: keep that shape or key. Real traders were pulled in: drop it,
-and grow again without it.
+**2. Grow.** Copy that wallet's other buys, at any count, and the next wallet. Repeat until a round adds nobody.
 
-**3. Tag a trade that just arrived.** The coin is still running. Walk the [numbered list](#the-numbered-list)
-from the top. The first line that matches is the answer. Do not read the lines under it.
+**3. Check.** Keep or drop only a new **ix structure**, **ix template**, or **fee payer** that Grow wants to reuse on other wallets. Sellers who cashed out stay **owner**. Sellers who held through the drop stay **outsider**, and Grow runs again without that one.
 
-- A line matches: this trade is owner. Later trades of that wallet on this coin are owner.
-- No line matches: this trade is outsider. The next trade of that wallet is judged again.
-
-### The seven facts
-
-- **Create (A1, A2).** Signed the launch. Every wallet in that transaction is the owner.
-- **Birth (A5, A3).** Bought with the launch, before anyone else can see the coin. A sniper that
-  does this on many coins is real money. A big buy in the first seconds is the owner only when
-  the creator buys again after it.
-- **One transaction (B, S5).** Several sells in one transaction. Two or ten is the same. Every
-  wallet in it is the owner, and so are the buys they already made on this coin.
-- **Shape (D, A4, S1, S2).** One transaction shape is 20% of the trades or SOL inside the
-  run where it prints, or one instruction list prints 20 times from more than one wallet,
-  including a public app, or a script used almost only on this group's coins.
-- **Wake-up.** The same buy list is used 5 or more times on a coin, by one wallet or by
-  several, and the first of those buys ends 2 seconds with no trade.
-- **Hidden move (T1, T2, T3).** Sold tokens the wallet never bought, or only buys and never sells.
-- **Wallets (W, L, S3, S4, S6).** Trades almost only these coins, fresh wallets cash out together,
-  or the key that pays the fee.
+**4. Tag.** A live trade. Walk from row 1. The first row that matches is the answer. A match is **owner**, and that wallet's earlier buys on this coin are **owner** too. No match is **outsider**, and the next trade is judged again.
 
 ```mermaid
 flowchart TD
-  done["Finished coins. The life of the coin is already on the tape"] --> mark["Step 1. The seven facts mark the owner"]
-
-  mark --> create["Create. Signed the launch"]
-  mark --> birth["Birth. Bought with the launch. A sniper is real money. A big buy in the first seconds is the owner only when the creator buys again"]
-  mark --> tx["One transaction. Several sells together. Two or ten is the same"]
-  mark --> shape["Shape. 20% of the run, or 20 prints from more than one wallet. Public app included, or almost only these coins"]
-  mark --> wake["Wake-up. The same list is bought 5 times, by one wallet or several. The first buy ends a 2 second silence"]
-  mark --> hidden["Hidden move. Sold tokens they never bought"]
-  mark --> wallets["Wallets. Almost only these coins, or the key that pays"]
-
-  create --> known["Those wallets are owner on that coin"]
-  birth --> known
-  tx --> known
-  shape --> known
-  wake --> known
-  hidden --> known
-  wallets --> known
-
-  known --> grow["Step 2. Their shape, and the key that pays their fees, mark the next wallet. Repeat until a round adds none"]
-  grow --> check{"Did those sellers leave when the price fell?"}
-  check -->|Yes. They cashed out on the dump| keep["Keep that shape or key"]
-  check -->|No. Real traders were pulled in| drop["Drop it. Grow again without it"]
+  mark["1. Mark. Finished coin. Find the first owner wallets"] --> grow["2. Grow. Copy their other buys, any count. Then the next wallet. Repeat until a round adds none"]
+  grow --> check{"3. Check. A new instruction list or fee payer only. Did they sell out when the price fell?"}
+  check -->|Yes. They sold out| keep["Keep. That list or fee payer stays owner"]
+  check -->|No. They held through the drop| drop["Drop. It stays outsider. Grow again without it"]
   drop --> grow
-
-  keep --> arrive["Step 3. A trade arrives on a coin that is still running"]
-  arrive --> walk["Walk the numbered list from the top. The first line that matches is the answer"]
-  walk --> owner["A line matches. Owner. Later trades of that wallet on this coin are owner"]
-  walk --> outsider["No line matches. Outsider. The next trade of that wallet is judged again"]
+  keep --> tag["4. Tag. A live trade. Walk from the top. The first match wins"]
+  tag --> owner["A row matches. Owner. That wallet's earlier buys on this coin are owner too"]
+  tag --> outsider["No row matches. Outsider. The next trade is judged again"]
 ```
 
-## The three steps
+## 1. Mark
 
-### 1. Mark
+The coin has ended, so the dump is on the tape. These rules find the first **owner** wallets. No owner wallet is known yet.
 
-Runs on coins whose life is already over. The dump is on the tape, so a transaction that holds
-several sells is visible.
+### Launch
 
-Each fact is one way the same person shows up. A wallet any fact names is the owner on that coin.
-Where the fact says so, the buys that wallet already made on the coin are the owner's too.
+The dev's wallets sit in the transaction that creates the coin.
 
-The numbers for each fact are in [The seven facts](#the-seven-facts).
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Creator | **owner** | The wallet that creates the coin is the dev. | The wallet that signs the create is **owner** on that coin. | On DdTt, the wallet that signs the create is **owner** from the first trade through the dump. |
+| Same transaction | **owner** | The dev packs a helper wallet into the create. It is the same person. | Every other wallet in that create transaction is **owner** on that coin. | The DdTt create also holds a second wallet. That wallet never trades DdTt again. It is **owner** on DdTt too. |
 
-### 2. Grow, then check
+### Birth
 
-Marking finds the first wallets. Those wallets reveal the next ones.
+In the first seconds the dev buys their own coin. A real buyer is either too late to see it, or so large that the dev sells into them and the rise stops.
 
-- They keep using one transaction shape the rest of the market hardly uses. The next wallet that
-  uses it is the owner.
-- One key pays their fees, and that key pays almost only on the owner's coins. Every wallet that
-  key pays for is the owner.
-- The new wallets reveal the next shape or key.
-- Stop when a round adds no wallet.
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Instant buy | **owner** | A real buyer cannot see the coin 15 ms after it is created. That buy is the dev. | A buy within **15 ms** of the create is **owner**. Size and **ix structure** are ignored. | A buy lands 10 ms after the create, in the creation slot, through a public `Pump.Fun: BUY`. That buy and that wallet are **owner** on this coin. |
+| Creation slot | **owner** | Apps show the coin only after the creation slot. A buy inside that slot is the dev filling the launch. | A later buy in the creation slot is **owner** when the wallet is under the sniper counts in the next row. | A buy lands later in the same slot as the create. The wallet has opened 6 coins in two weeks. The buy is **owner**. |
+| Sniper | **outsider** | This bot opens many launches from many creators. It hunts the market. It is not running this coin. | A bot that buys the opening of **20** or more coins, from **10** or more creators, with at most **20%** of them in this **launch group**, over two weeks, is **outsider**. | A bot buys the creation slot of 40 coins in two weeks, from 15 creators. Only 2 of those coins are this launch group. Those buys stay **outsider**. |
+| Rise continues | **owner** | The dev plants a big early buy that looks like a sniper, then keeps buying. A real buy that large is the profit the dev sells into. | A big buy in the first seconds after the creation slot is **owner** when the creator buys again after it. The **ix structure** is ignored. | On DdTt, slot 453178755, 1.5 s after the create, two buys of 1.66 SOL and 1.48 SOL use `AdvanceNonceAccount`, `Axiom Trade: ix#05`, `Axiom Trade: ix#00`, `Transfer`. The creator buys again after them and the coin rises to 78.6 SOL. Those buys are **owner**. |
+| Rise stops | **outsider** | The dev sells into a big early buy and the rise ends. That buyer was real money. | A big buy the creator sells into is **outsider**. | A 2 SOL buy lands 2 s after the create. The creator sells into it and the rise ends. That buy is **outsider**. |
 
-The check asks one question about each shape or key this step added: did those sellers leave when
-the price fell?
+### Bundle
 
-- Yes. They sold before the dump finished and little of the bag was left. Keep it.
-- No. The shape or key pulled in people who held through the drop. Drop it, and grow again
-  without it.
+The dev sells from many wallets in one transaction, so the dump looks like a crowd.
 
-The create, the birth, the hidden move, a wallet that trades almost only these coins, and fresh
-wallets cashing out together are not checked this way. They are already one person. The numbers
-are in [Checks](#checks).
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Several sells | **owner** | One person packed those sells. Real sellers each land in their own transaction. | Two or more Pump.fun sells in one transaction are one person. Every wallet in it is **owner**, and each wallet's earlier buys on this coin are **owner** too. Two sells or ten is the same. | One transaction holds 12 `Pump.Fun: SELL` from 12 wallets, plus a SOL transfer and a compute-budget instruction. All 12 wallets are **owner** on this coin, including the buys they made earlier here. One sell in a transaction stays unmatched. |
 
-### 3. Tag a trade that just arrived
+### Repeat
 
-The coin is still running, so the dump may not have happened yet. Each trade is judged when it
-lands, from what is already known: the create, the lists built from finished coins, the bag, and
-the shape of this transaction.
+The dev's volume is one **ix structure**, many times, from many wallets. One person repeating their own list is a trader.
 
-Walk [the numbered list](#the-numbered-list) from line 1. The first line that matches decides
-this trade. The lines under it are not read.
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Dominates | **owner** | The dev's script is a large share of this coin while that script is active. | The **ix structure** plus its CU price is at least **20%** of the trades, or **20%** of the SOL, from its first trade on this coin to its last, with at least **10** trades. Sniper buys in the creation slot are left out of the share. Every wallet that uses it here is **owner**, including a wallet that uses it once. A public app takes the same test. | One ix structure plus its CU price trades 40 times between its first trade and its last. Those 40 are 25% of the trades in that stretch. A wallet that used it once, in the middle of the climb, is **owner** on this coin. |
+| Many wallets | **owner** | The dev rotates wallets through one script so the volume looks like a crowd. | The same **ix structure** trades **20** or more times from more than one wallet. CU price is ignored. | On 8AB1, `Axiom Trade: ix#05`, `Axiom Trade: ix#00`, `Transfer` trades 97 times from 94 wallets, from soon after launch through the 78.2 SOL peak. All 94 wallets are **owner** on 8AB1. |
+| One wallet | **outsider** | One person trading their own size many times is a trader. The dev spreads the same list across wallets. | One wallet using an **ix structure** 20 times stays **outsider**. | omego trades 20 times on one coin, almost all through one ix structure or his program `bDZu`. One wallet, so those trades stay **outsider**. |
 
-- Line 6 matches a sell whose core is two or more `Pump.Fun: SELL`. This trade is owner. Every
-  wallet in that transaction is owner on this coin, and the buys they already made here are owner
-  too. Stop.
-- Lines 1 through 15 all miss. This trade is outsider.
-- Once a wallet is owner on this coin, its later trades match line 10 and stay owner.
-- A trade that matches nothing does not freeze the wallet. Its next trade walks the list again.
+### Script
 
-A birth buy is often a public `Pump.Fun: BUY`, so the list carries those wallets. The multi-sell
-carries one row per pack size, so the sell matches on a wallet the list has not seen yet. That
-wallet then joins the list, and its earlier buys on the coin match too.
+The dev's **ix structure** shows up mostly on this launch group's coins, from more than one creator wallet.
 
-## Words the facts use
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Mostly here | **owner** | The dev reuses one script on their own launches. A new wallet on that script is the same dev. | **30%** or more of this **ix structure**'s trades sit on this launch group's coins, on at least **5** of those coins, from at least **2** creators. CU price is ignored. One trade marks the wallet **owner**. | An ix structure has 100 trades in the market. 40 sit on this launch group's coins, across 6 coins and 3 creators. A new wallet that uses it once is **owner**. |
 
-**Trader.** The credited wallet. When that wallet is a routing wallet, a service wallet thousands
-of users trade through, the trader is the fee payer. Every fact that says "wallet" reads the trader.
+### Wake
 
-**Structure.** How a transaction is built.
+When the tape goes quiet, the dev buys with the same **ix structure** to make the coin look alive.
 
-- The **core** is the labels left once the extras are dropped: compute budget, every System Program
-  instruction, token-program and token-account instructions, memo, Lighthouse. Order stays.
-  Pump.fun verbs merge: Buy, BuyV2, and BuyExactSolIn are BUY; Sell and SellV2 are SELL; Create
-  and Create_v2 are CREATE. An app's own instructions stay.
-- The **marks** are which extras are present (CL CU limit, CP CU price, N nonce, L Lighthouse,
-  M memo, S seed or created account, C account close, W wrap), never their order, plus two counts
-  (T system transfers, A token-account opens).
-- The **numbers** are the CU limit, the CU price, and the tip. A script keeps its core and rotates
-  the rest.
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| After silence | **owner** | The dev restarts a dead tape. A person clicks once. The dev repeats the same list. | The same **ix structure** is bought **5** or more times, and the first of those buys ends **2 seconds** with no trade. The buys can come from one wallet or from several. Wallets that buy it more than once are **owner**, including their earlier buys of it. | The coin has no trade for 2.4 s. Then one ix structure is bought 5 times by two wallets, and each wallet buys it more than once. Both wallets are **owner** on this coin. |
+| Used once | **outsider** | One buy after a pause is a person clicking. | A wallet that buys that **ix structure** only once stays **outsider**, and that buy stays out of the count of 5. | A third wallet buys the same ix structure once inside that stretch. That wallet stays **outsider**. |
 
-**The group's coins.** Coins with the group's creation facts (create instruction list, and CU price
-or `max_sol_cost`). Fixed at birth, so they never depend on the split.
+### Hidden
 
-**Fall.** A drop is a slot where the price falls 10% or more. A fall is one drop (a one-shot dump),
-or drops less than 30 s apart (a waterfall). The main fall is the coin's deepest.
+The dev moves tokens from one wallet to another with no buy and no sell. The **token bag** is buys minus sells. A transfer is not a trade, so the bag ignores it, and the sell shows tokens the wallet never bought.
 
-## The seven facts
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Below zero | **owner** | The dev sent tokens to this wallet off the tape, then this wallet sold them. | A sell that takes the token bag below zero, by more than **1%** of the sell, is **owner** on that coin. The same sell on **2** coins marks the wallet on its other coins. | A wallet sells 1,000 tokens and bought none on the tape. The bag goes to -200. The wallet is **owner** here. The same gap on a second coin marks it on the other coins it trades. |
+| Never sells | **owner** | This wallet's job is to create demand. It buys and never takes profit. | A wallet with **10** or more coins, **20** or more buys, and no sell anywhere is **owner** on every coin it buys. | A wallet buys 12 coins, 25 buys, and has no sell on any coin. It is **owner** on all 12. |
+| Matching holder | **owner** | The wallet still holding the missing tokens is the one that sent them. | A wallet sells tokens it never bought, so the bag goes below zero. Exactly one other wallet on this coin holds that same amount, within **0.5%**. That holder is **owner** too. | B sells 1,000 tokens and bought none. A still holds 1,000. No other wallet holds about 1,000. A sent the tokens to B with no trade. A is **owner**. |
+| Bag balances | **outsider** | This seller bought the tokens on the tape. There is no hidden send to find. | The seller bought these tokens on this coin, then sold them. The bag ends at zero or above. The seller stays **outsider**. | B buys 1,000 tokens here and sells 1,000. The bag ends at 0. B stays **outsider**. |
 
-Each fact is the one-line version above, with the numbers.
+### Loyal
 
-### The create (A1, A2)
+The dev's wallets trade this launch group and little else. Brand-new wallets that all cash out in one moment are the dev leaving.
 
-The person who launches the coin.
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Stays in group | **owner** | A real trader's coins are spread across the market. This wallet lives on this dev's launches. | **3** or more launch-group coins, and **80%** or more of the wallet's coins are in the **launch group**. The wallet is **owner** on every coin it trades. | A wallet trades 8 coins and 7 are this launch group. It is **owner** on all 8. The 8th coin is outside the launch group, and it is still **owner** because this wallet is. |
+| Fresh cash-out | **owner** | The dev cashes out through new wallets in one moment, then abandons them. | A fresh wallet has traded **4** coins or fewer in the whole market. **3** or more of them each sell their whole bag in the **same slot**, then never buy this coin again. They are **owner**, and so are their earlier buys here. | Three wallets have each traded only 3 coins ever. In one slot, each sells every token it holds on this coin, and none buys this coin again. All three are **owner**, including the buys they made here before that sell. |
+| Wide service | **outsider** | A hired service works many devs, so its coins are spread out and its wallets are old. | A volume service that trades many devs' coins is too wide for the 80% test, and its wallets are above the fresh-wallet count. Loyal leaves it **outsider**. | A volume service trades hundreds of creators. Its share of this launch group is far under 80%, and its wallets have traded far more than 4 coins. Loyal leaves those trades **outsider**. |
 
-- The wallet that signs the create is the dev.
-- Every other wallet in that same transaction is the same person.
-- All of them are the owner.
+## 2. Grow
 
-### The birth (A5, A3)
+Starts from wallets Mark named. Follow that wallet's other buys, then the next wallet. Repeat until a round adds nobody.
 
-Buys that land with the launch, and a big buy in the first seconds after it.
+### Backfill
 
-- A buy within 15 ms of the create, measured from the create's block time, is the owner. The
-  instruction list does not matter.
-- A buy later in the creation slot is the owner too.
-- A sniper is the exception: a bot that buys the first slots of 20 or more coins over two weeks,
-  from 10 or more creators, with at most 20% of them this group's. The count is over the two
-  weeks, never one day.
-- That sniper is real money, and stays real money on this coin.
-- Buy size is not the test inside the creation slot.
-- After the creation slot, a big buy in the first seconds is judged by what the creator does next.
-- The creator already holds his coins from the launch. A buy large enough to pay him is his exit,
-  so he sells. He buys again only when the new money is too small to cash out.
-- When the creator sells into that buy, the buy is real money.
-- When the creator buys again after it, the buy is the owner. A big buy he pays through is his own.
-- The instruction list does not matter.
+A wallet already named **owner** bought earlier on this coin. Those buys are the same dev, at any count.
 
-### The same transaction (B, S5)
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Earlier buys | **owner** | The buy that built the bag is the same dev as the later sell. | A marked wallet's buys on this coin are **owner**. | On DdTt the sell ix structure `AdvanceNonceAccount`, `Axiom Trade: ix#00`, `Transfer` is already **owner**. The same wallets bought at slot 453178755. Those earlier buys are **owner**. |
+| Their ix structure | **owner** | The dev's own buy script stays the dev's script on this coin. The 20-trade test is for wallets not yet known. | The **ix structure** on those buys is **owner** on this coin. Any count is enough. | Those buys use `AdvanceNonceAccount`, `Axiom Trade: ix#05`, `Axiom Trade: ix#00`, `Transfer`. It trades 3 times. The count is under 20, and the ix structure is still **owner** on DdTt. |
 
-Wallets inside one transaction are one person.
+### Spread
 
-- The dump is this: one transaction contains several Pump.Fun sells.
-- Two sells or ten sells is the same fact. The count does not matter.
-- A SOL transfer, a compute-budget instruction, or an account close in that transaction is the
-  same person. They sit outside the core, so the match is the same.
-- Every wallet in the transaction is the owner on this coin.
-- The buys those wallets made earlier on this coin are the owner's too.
-- A wallet in one transaction with a wallet already known to be the owner is the owner too.
-- A transaction with only one sell is an ordinary trade. This fact does not mark it.
-- The matcher is exact on the core, so the tag holds one row for each count that shows up.
+A known dev wallet points at the next wallet. They share one transaction, a private **ix template**, a fixed time after creation, or the **fee payer**.
 
-### The script's shape (D, A4, S1, S2)
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Beside an owner | **owner** | Two wallets in one transaction are one person. | A wallet in the **same transaction** as an **owner** wallet is **owner** on this coin. | A is already **owner**. One transaction holds A's sell and B's sell. B is **owner** on this coin. |
+| Kept template | **owner** | The dev keeps one private tool shape. The next wallet on that shape is the same dev. | **5** or more of this dev's wallets use one **ix template**. Of its trades, **80%** are on **this dev's coins** and **95%** are trades those wallets already made. The next wallet that uses it once is **owner**. One extra wallet on fewer than **100** coins in the month can use it too. | One Axiom ix template is used 100 times. 75 times are this dev's wallets on this dev's coins. 20 times are this dev's wallets on other coins. 5 times are other people on this dev's coins. The coin count is 80 (75+5). The wallet count is 95 (75+20). Five of this dev's wallets use it. Wallet B uses it once. B is **owner**. |
+| On a timer | **owner** | The dev's script fires at a set age of the coin. A person does not hit that same second on most coins. | The first trade of this **ix template** lands within **1 s** of its usual time after creation, on **60%** of its coins. The next wallet is **owner**. The same mark applies when half its wallets already use another owner **ix template**. | The first trade is about 30 s after creation. On 6 of 10 coins it lands within 1 s of 30 s. A new wallet trades it at 30.4 s and is **owner**. |
+| Fee payer | **owner** | The dev pays the fee for many wallets from one account. That account reveals every wallet it pays for. | The **fee payer** spends **80%** or more of what it pays on **this dev's coins**, and it pays on fewer than **50** coins a day. Every wallet it pays is **owner**. One trade is enough. | One fee payer pays the fee for 30 wallets. 85% of that is on this dev's coins, across 20 coins a day. A new wallet uses it for one buy and is **owner**. |
+| Service payer | **outsider** | A public app pays the fee for thousands of strangers. The payer is the app. | A **fee payer** that pays the fee for thousands of different people leaves those wallets **outsider**. | One fee payer pays trades on 4,000 coins a day for thousands of users. A wallet that uses it for one buy stays **outsider**. |
+| First trade | **owner** | The dev opens a quiet wallet. Its first trade is already the dev's tool, on the dev's coin. | The wallet has no trade for **14** days. Its first trade is on **this dev's coins**, through an owner **ix structure**, **ix template**, or **fee payer**. That wallet is **owner**. | A wallet has no trade for 14 days. Its first trade is a buy on one of this dev's coins, and this dev's fee payer pays the fee. That wallet is **owner**. |
 
-The owner repeats one transaction shape. It shows up in two places.
+### Stop
 
-- On one coin, either test is enough.
-- A shape that is at least 20% of the trades, or 20% of the SOL, inside its own run, with at
-  least 10 trades, is the owner on that coin.
-- The run is the stretch from that shape's first print on the coin to its last. Trades outside
-  that stretch are not in the share. A long tape after the shape stops does not dilute it.
-- That share reads the instruction list plus its CU price. The CU limit is left out.
-  Snipers' creation-slot buys are left out of the share.
-- Or the same instruction list prints at least 20 times, from more than one wallet. The CU
-  price is left out. One wallet printing that list 20 times is a trader, and this test leaves
-  that wallet out.
-- This holds for every list. A public app the market uses on many coins is the same test. A
-  count of market coins does not take either test back out. The owner manufactures volume with
-  public apps, and a pass is owner either way.
-- Every wallet using that list on that coin is the owner, including a wallet that uses it once,
-  and including the trades it already made there. This reading needs no other coin.
-- The checks do not drop either test.
-- Across the market: an instruction list, fees left out, is the owner's script when 30% or more of
-  its trades sit on this group's coins, on at least 5 group coins, from at least 2 creators.
-- Fees are the CU limit, the CU price, and the tip. The owner changes them at will.
-- Every wallet that trades with that script is the owner. One trade is enough.
-- After some owner wallets are known, a shape those wallets keep using, and that the rest of the
-  market hardly uses, is the same script.
-- Hardly used: 80% or more of its market trades are on the owner's coins.
-- Kept using: 95% or more of its trades are already owner, from 5 or more owner wallets. One extra
-  wallet on under 100 coins in the month still leaves the shape owner.
-- It also runs on a timer, first seen within 1 s of its usual age on 60% of its coins, or half its
-  wallets already use another owner shape.
-- The next wallet that uses it is the owner.
-- The shape is matched at [Match levels](#match-levels), loosest first. A memo, a verb variant, or
-  a fresh CU limit is still the same script.
-- The script and the paying key are applied again until a round adds no wallet.
+A round finds no new wallet, **ix structure**, **ix template**, or **fee payer**. Grow ends.
 
-### The wake-up
+## 3. Check
 
-The owner buys the same way again, and the run starts when nobody else is buying, so the tape
-does not go dead. This fact reads every instruction list. A public app and a private program
-are the same test.
+Only a new **ix structure**, **ix template**, or **fee payer** that Grow wants to reuse on other wallets. The dev sells out when the price falls. A seller who holds through the drop is real money. The numbers are [C1 and C2](#checks).
 
-- On one coin, the same instruction list is owner volume when it is bought 5 or more times,
-  and the first of those buys is the first trade after 2 seconds with no trade.
-- The buys can come from one wallet or from several. A wallet that buys the list only once
-  stays outsider, and that buy stays out of the count.
-- The 2 seconds is the time since the previous transaction on that coin. It applies to the
-  first buy of the run only. The later buys may land close together, because the run itself
-  keeps the tape busy.
-- Buys that all land inside a busy tape, with no 2 second silence before the first, stay
-  outsider. Repeating a trade inside a crowd is an ordinary trader.
-- One buy after a pause is an ordinary trade. The repetition is the fact.
-- The list is the full instruction list. The core of a plain pump buy is only `Pump.Fun: BUY`,
-  so the core is not this test.
-- When the list passes neither the 20% share of its run nor the 20-print count, this fact is
-  what marks the repeating wallets.
-- The wallets that repeat the list in that run are owner on the coin, including their buys of
-  the list before the fifth. Their other trades on the coin are owner too.
+### Stay
 
-### The hidden move (T1, T2, T3)
+Mark's answers, and a script copied from a wallet already **owner** on this coin, stay **owner**.
 
-Tokens pass between the owner's wallets with no trade on the tape.
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Mark's answers | **owner** | Mark already watched the whole coin, including the dump. Asking again would drop dev buys that are real. | Launch, Birth, Bundle, Repeat, Script, Wake, Hidden, and Loyal stay **owner**. | Repeat names the 97-trade Axiom ix structure on 8AB1. Check leaves that answer as it stands. It stays **owner**. |
+| This coin | **owner** | The wallet is already the dev. Its buy script on this coin is the dev's script at any count. | An **ix structure** Grow copies from a marked wallet stays **owner** on that coin at any count. | Grow copies the 3-trade Axiom buy ix structure on DdTt from wallets already **owner**. Check leaves the 20-trade test for other wallets. It stays **owner** on DdTt. |
 
-- A wallet that sells more than it bought is the owner on that coin. The test is a sell that takes
-  its bag below zero by more than 1% of the sell.
-- It joins the owner list for other coins when the same thing happens on 2 or more coins.
-- A wallet that buys 10 or more coins, with 20 or more buys, and never sells anywhere, is the owner
-  on every coin it buys.
-- The wallet that still holds, whose bag matches the seller's missing tokens within 0.5%, and is
-  the only such wallet, is the wallet that handed them over.
-- When the seller also bought on the coin, the missing tokens do not show, and this fact misses
-  both wallets.
+### Test
 
-### Wallets that are not real traders (W, L, S3, S4, S6)
+Did those sellers cash out on the way down. A set is one ix structure, one ix template, one fee payer, or the wallets one rule added.
 
-A real trader spreads over the market. The owner does not.
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Cashed out | **owner** | The dev sells out when the price falls. They take the profit and leave a small bag. | The set stays **owner** when **40%** or less of its sold tokens are sold after the **big drop** starts, and **10%** or less of its biggest bag is left at the end of that drop, on **60%** of at least **5** coins with a drop. A sell while that drop is still under halfway counts as early. A set with no sells passes the first half. | On 8 coins with a drop, the wallets sell on the way down and hold under 10% of the bag at the bottom, on 5 of the 8. The ix structure stays **owner**. |
+| Too few coins | **owner** | There are too few dumps to judge the exit. Leave it until more coins exist. | Fewer than **5** coins with a drop. Check leaves the set **owner** and untested. | A fee payer shows up on 2 coins. It stays **owner** until more coins exist. |
+| Held the bag | **outsider** | These sellers held through the drop. That is a real buyer, or a bot that did not get out. | The sellers still hold most of the bag after the drop, so that **ix structure**, **ix template**, or **fee payer** is **outsider**. Grow runs again without it. | The wallets that use this Axiom ix structure still hold most of the bag after the drop, on most of their coins. It is **outsider**, and Grow continues without it. |
 
-- A wallet on 3 or more of this group's coins, with 80% or more of its coins inside the group, is
-  the owner on every coin it trades.
-- A fresh wallet is on 4 or fewer coins in the whole market.
-- Three or more fresh wallets that each sell their whole bag in the same slot, and never buy the
-  coin again, are one person cashing out. They are the owner on that coin, including the buys they
-  made earlier there.
-- The key that pays the fee, when 80% or more of what it pays is on the owner's coins and it pays
-  for fewer than 50 coins a day, is the owner's key.
-- Every wallet that key pays for is the owner. One trade is enough.
-- A wallet whose first trade ever is on the owner's coins, with an owner shape or the owner's
-  paying key, and with no trade in the 14 days before, is the owner.
-- A key that pays for thousands of unrelated users is a service. This fact leaves it out.
-- A buying machine on fewer than 10 coins is below the test.
-- A volume service that trades many devs' coins is a hired machine, so it is owner, but it trades
-  too widely for the group test and its wallets are not fresh, so these tests miss it.
+## 4. Tag
+
+A trade on a coin that is still running. Walk from row 1. The first row that matches is the answer. Rows under it are left unread.
+
+### Follow
+
+The buy that built the bag is the same dev as the trade that just matched.
+
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| Earlier buys | **owner** | The chart's buy and the later sell are the same money. | The wallet's earlier buys on this coin become **owner**. | Row 6 marks a wallet **owner** because it sits in a 12-sell transaction. The buy that wallet made 30 s earlier on this coin becomes **owner** too. |
+| That ix structure | **owner** | Those buys used the dev's script. Later uses of it on this coin are the dev, at any count. | The **ix structure** those buys used becomes **owner** on this coin. Any count is enough. | Those earlier buys use an ix structure that has traded 3 times. That ix structure becomes **owner** on this coin, so the buy and the later sell move together. |
+
+A trade that matches no row leaves the wallet free. Its next trade walks the rows again.
+
+### First
+
+Rows 1 to 4. The launch and the first seconds. Same human reasons as Launch and Birth.
+
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| 1. Creator | **owner** | The wallet that creates the coin, and any wallet packed into that transaction, is the dev. | The creator, or any wallet in the create transaction. | The wallet that signs the create, and a second wallet inside that same transaction, are **owner**. |
+| 2. Instant buy | **owner** | A real buyer cannot see the coin 15 ms after it is created. | A buy within **15 ms** of the create. The wallet stays **owner** on this coin. | A buy 10 ms after the create, through a public `Pump.Fun: BUY`, is **owner**, and that wallet's later trades here are **owner**. |
+| 3. Creation slot | **owner** | A buy inside the creation slot, before apps show the coin, is the dev filling the launch. | A later buy in the creation slot by a wallet under the sniper counts. | A buy later in the create's slot, from a wallet that has opened 6 coins in two weeks, is **owner**. |
+| 4. Big early buy | **owner** | The dev plants a big early buy, then keeps buying. A buy the dev sells into is real money. | A big buy in the first seconds after the creation slot, once the creator has bought again after it. A buy the creator sells into stays unmatched. | On DdTt, 1.66 SOL and 1.48 SOL land 1.5 s after the create. The creator buys again and the coin rises to 78.6 SOL. Those buys become **owner**. A 2 SOL buy the creator sells into stays **outsider**. |
+
+### Known
+
+Rows 5 and 6. A script already kept, or sells packed into one transaction.
+
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| 5. Known shape | **owner** | This instruction list or tool shape was already kept for this dev. A new wallet on it is the same dev. | An **ix structure** or **ix template** Mark, Grow, or Check kept, including on a new wallet's first trade. | A private program kept by Script, or an ix template Check kept because its sellers cashed out. One trade is **owner**. |
+| 6. Bundled sells | **owner** | One person packed those sells so the dump looks like a crowd. | Two or more `Pump.Fun: SELL` in this transaction. Every wallet in it is **owner** on this coin. | 12 sells in one transaction. All 12 wallets are **owner**, including buys they already made on this coin. |
+
+### Wallet
+
+Rows 7 to 12. The bag, the fee payer, a wallet already named.
+
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| 7. Below zero | **owner** | This wallet sold tokens it never bought. The dev sent them in with no trade. | This sell takes the token bag on this coin below zero. Later trades of this wallet on this coin are **owner**. | The wallet sells 1,000 tokens after buying none here. This sell is **owner**, and the next trade of this wallet here is **owner**. |
+| 8. Buy-only | **owner** | This wallet only buys. Its job is demand, and it never takes profit. | The wallet has **10** coins, **20** buys, and no sell anywhere. | A wallet with 12 coins and 25 buys and no sell is **owner** on this trade. |
+| 9. Fee payer | **owner** | This account pays the fee for the dev's wallets. | The **fee payer** is one Check kept. | The payer pays this trade. 85% of what it pays is on this dev's coins, on under 50 coins a day. This trade is **owner**. |
+| 10. Known wallet | **owner** | This wallet was already named the dev on this coin. | This wallet is already **owner** on this coin. | Any later trade of a wallet Mark, Grow, or an earlier row named. |
+| 11. Beside an owner | **owner** | Two wallets in one transaction are one person. | This transaction also contains an **owner** wallet. | Wallet B sells in the same transaction as wallet A, and A is already **owner**. B is **owner**. |
+| 12. Fresh cash-out | **owner** | New wallets all empty in one moment. That is the dev leaving. | A fresh wallet has traded **4** coins or fewer in the whole market. It sells its whole bag in a slot where **2** or more other fresh wallets do the same. From that sell on, the wallet is **owner**. | Three wallets have each traded only 3 coins ever. In one slot, each sells its whole bag. Those sells are **owner**. |
+
+### Coin
+
+Rows 13 to 16. What this coin has shown so far. Same tests as Repeat and Wake, read up to this trade.
+
+| Rule | Side | Why | Explanation | Example |
+| --- | --- | --- | --- | --- |
+| 13. Dominates | **owner** | This script is a large share of the coin from its first trade through this one. | This **ix structure** plus its CU price has at least **10** trades, and **20%** of the trades or SOL from its first trade through this one. A public app takes the same test. | From its first trade through this one, the ix structure is 40 trades and 25% of the trades in that stretch. This trade, and the wallets using it here, are **owner**. |
+| 14. Many wallets | **owner** | The dev rotates wallets through one script. One wallet repeating itself is a trader. | This **ix structure** has **20** trades on this coin from more than one wallet. CU price is ignored. | On 8AB1, `Axiom Trade: ix#05`, `Axiom Trade: ix#00`, `Transfer` reaches 20 trades and the trades come from a second wallet. Those trades are **owner**. omego's 20 trades from one wallet stay unmatched, so they stay **outsider** until another row matches. |
+| 15. After silence | **owner** | The dev restarts a dead tape by repeating one script. One buy after a pause is a person. | Wallets that each bought one **ix structure** more than once have **5** or more such buys, and the first followed **2 seconds** with no trade. A wallet that bought it once stays **outsider**. | The tape is quiet 2.4 s, then two wallets buy one ix structure five times between them, each more than once. Those wallets are **owner**. A one-time buyer in the same stretch stays **outsider**. |
+| 16. Anyone else | **outsider** | No dev sign matched. One normal trade stays real money until a later trade says otherwise. | No row above matched. | A sniper, a button-size buy, or one normal trade. This trade is **outsider**, and the wallet is judged again on its next trade. |
+
+In the engine, a rule reads ix structures (rows 1, 5, 6, 11) and the token bag (row 7), which the engine already keeps per wallet. A wallet is never a term in a rule ([_!___strategy.md](_!___strategy.md) T5). Rows 2, 3, 8, 9, and 10 read rows built daily. The tag carries row 2 as wallets, because a birth buy is often a public `Pump.Fun: BUY`, and row 6 as one core row per pack size. Live, row 4 waits for the creator's next trade. A later buy by the creator marks that big buy **owner**. A sell by the creator leaves it **outsider**. Live, row 7 turns a wallet **owner** only from its first sell below zero.
 
 ## Outsider
 
-Real money, once the seven facts have passed. The birth fact names the sniper. The other kinds:
+Real money, once Mark, Grow, and Check have passed. Birth names the sniper. The other kinds:
 
-- **Button buyer.** Buys a size an app offers as a button: 0.1 / 0.5 / 1 SOL after the venue fee
-  (0.099, 0.494, 0.988), or a dollar button at the day's SOL price, or a size 15 or more traders
-  used in the same hour.
-- **Bottom-fisher.** One buy of 1-3 SOL on many coins, about 30 a day, out within minutes, ahead
-  on most coins.
-- **Herd bot.** Many coins a day, joins within seconds of a big buy, ends empty, market result
-  around even.
+- **Button buyer.** Buys a size an app offers as a button: 0.1 / 0.5 / 1 SOL after the venue fee (0.099, 0.494, 0.988), or a dollar button at the day's SOL price, or a size 15 or more traders used in the same hour.
+- **Bottom-fisher.** One buy of 1-3 SOL on many coins, about 30 a day, out within minutes, ahead on most coins.
+- **Herd bot.** Many coins a day, joins within seconds of a big buy, ends empty, market result around even.
 - **Racer.** Pays a high priority fee to land first.
-
-## The numbered list
-
-This is step 3. Go down the list. The first line that matches decides this trade. Do not read the
-lines under it.
-
-| order | the trade | result | fact |
-| --- | --- | --- | --- |
-| 1 | from the creator, or inside the create transaction | owner | create |
-| 2 | a buy in the creation slot, within 15 ms of the create | owner, and the wallet on this coin | birth |
-| 3 | a creation-slot buy after that window, by a trader that is not a sniper | owner | birth |
-| 4 | a big buy in the first seconds after the creation slot, once the creator has bought again after it. A buy the creator sells into does not match | owner, and the wallet on this coin | birth |
-| 5 | an owner script, on one coin or across the market | owner, even on a new wallet's first trade | script's shape |
-| 6 | a sell whose core is two or more `Pump.Fun: SELL` | owner, and the wallet on this coin | same transaction |
-| 7 | a sell that takes the bag on this coin below zero | owner, and its later trades on this coin | hidden move |
-| 8 | a wallet on the buy-only list | owner | hidden move |
-| 9 | paid for by the owner's key | owner | wallets |
-| 10 | an owner wallet already found | owner | any fact that listed it |
-| 11 | in one transaction with an owner wallet | owner | same transaction |
-| 12 | a fresh wallet selling out in a slot where 2 or more other fresh wallets do | owner, from that sell on | wallets |
-| 13 | an instruction list plus its CU price with at least 10 prints whose run, from the first of them on this coin through this print, is at least 20% of the trades or SOL in that stretch, public app included | owner, and the wallets using it on this coin | script's shape |
-| 14 | an instruction list with at least 20 prints on this coin from more than one wallet. One wallet's own prints do not pass | owner, and the wallets using it on this coin | script's shape |
-| 15 | a buy of one list, once wallets that each bought that list more than once have 5 or more such buys on this coin and the first of them followed 2 seconds with no trade | owner, and those wallets on this coin | wake-up |
-| 16 | anything else, snipers included | outsider | |
-
-In the engine, a rule reads structures (lines 1, 5, 6, 11) and the bag (line 7), which the engine
-already keeps per wallet. A wallet is never a term in a rule
-([_!___strategy.md](_!___strategy.md) T5). Lines 2, 3, 8, 9, and 10 read lists built daily. The tag
-carries line 2 as wallets, because a birth buy is often a public `Pump.Fun: BUY`, and line 6 as one
-core row per pack size. Live, line 4 waits for the creator's next trade. A later buy by the creator
-marks that big buy owner. A sell by the creator leaves it outsider. Live, line 7 turns a trader
-owner only from its first sell below zero.
-Line 13 is the instruction list plus its CU price. The run is the stretch from that shape's
-first print on this coin through this print. It passes at 10 prints and 20% of the trades or
-SOL inside that run, for a public app the same way as any other list. A count of market coins
-does not cancel it. Line 14 is the instruction list, CU price left out. It passes at 20 prints
-from more than one wallet. One wallet printing the list 20 times stays a trader. A public app
-passes the same way, and a count of market coins does not cancel it. Line 15 reads one list's
-gaps on this coin, for every list. The list passes once its 5th buy from a repeating wallet has
-landed, if the first of those buys followed 2 seconds with no trade. The buys can come from one
-wallet or from several. A wallet that bought the list only once stays outsider. A list under
-that 20% share, and under 20 prints from more than one wallet, stays outsider when nobody
-repeats it.
 
 ## Match levels
 
-A script rotates small variants of one build, so the script's shape is judged at seven levels,
-loosest first. A shape is owner at any level where the market tests hold, and the loosest passing
-level catches every variant.
+An **ix template** is one tool plus its markers. The owner rotates small variants, so Spread judges that ix template at seven levels, loosest first. It is **owner** at any level where the market tests hold, and the loosest passing level catches every variant.
+
+The **core** is the labels left once compute budget, every System Program instruction, token-account instructions, memo, and Lighthouse are dropped. Order stays. Pump.fun verbs merge: Buy, BuyV2, and BuyExactSolIn are BUY; Sell and SellV2 are SELL; Create and Create_v2 are CREATE. An app's own instructions stay.
+
+The **marks** are which extras are present (CL CU limit, CP CU price, N nonce, L Lighthouse, M memo, S seed or created account, C account close, W wrap), never their order, plus two counts (T system transfers, A token-account opens).
+
+The **numbers** are the CU limit, the CU price, and the tip.
 
 | level | the trade matches when it has the same |
 | --- | --- |
@@ -360,25 +256,18 @@ level catches every variant.
 | 4 | core, side, and tip |
 | 5 | core, side, CU price, and tip |
 | 6 | core, side, marks, CU price, and tip |
-| 7 | exact instruction list, CU limit, CU price, and tip |
+| 7 | exact ix structure, CU limit, CU price, and tip |
 
-A private program passes at level 1. A public app passes the market tests only at a level that
-carries the owner's own fee, or never. The one-coin tests are separate from these levels. The
-20% share is the instruction list plus its CU price, read on the run from its first print to its
-last. The 20-print count is the instruction list from more than one wallet, and the CU price is
-left out. A wide market does not cancel either. The volume list holds level 7 as an exact instruction-list row, and levels 1-6
-as a core row: the core's labels, the side, and whichever of marks, CU price, and tip that level
-pins. A pin the trade lacks is left off, so that row matches any value there.
+A private program passes at level 1. A public app passes only at a level that carries the dev's own fee, or never. Repeat on one coin is a separate test. The 20% share is the **ix structure** plus its CU price, from its first trade on the coin to its last. The 20-trade count is the **ix structure** from more than one wallet, and the CU price is left out. A wide market leaves a pass in place. Stored rows hold level 7 as an exact ix structure, and levels 1-6 as a core row: the core's labels, the side, and whichever of marks, CU price, and tip that level pins. A pin the trade lacks is left off, so that row matches any value there.
 
 ## Checks
 
-This is the question in step 2. These do not mark a trade. They drop a script or a paying key that
-pulled in the wrong wallets.
-The create, the birth, the hidden move, the group wallet, the fresh-wallet cash-out, and the
-one-coin 20% share and the one-coin 20-print count are not judged here. A set is one shape, one paying key, or all the wallets one rule added.
+This is step 3. These rows keep or drop an **ix structure**, an **ix template**, or a **fee payer** that Grow wants to reuse on other wallets. They leave a single trade unmarked.
 
-Only the seller is judged by how it exits. A buyer that never sells is judged by the hidden move.
-A set that trades both ways and ends empty is judged at the shape or the key that brought it in.
+Launch, Birth, Bundle, Repeat, Script, Wake, Hidden, Loyal, and an ix structure Grow copies onto the coin where the wallet is already **owner**, stay **owner**. Check leaves them unread. A set is one ix structure, one ix template, one fee payer, or all the wallets one rule added.
+
+Only the seller is judged by how it exits. A buyer that never sells is judged by Hidden.
+A set that trades both ways and ends empty is judged at the ix structure or the fee payer that brought it in.
 
 | check | stays when | what it reads |
 | --- | --- | --- |
@@ -390,7 +279,7 @@ coins. Fewer coins, and the set stays untested. Tune the two so the creator pass
 that wins fails: a wallet on 100 or more coins, net SOL above zero, behind on fewer than half its
 coins, that never used the owner's program and never created a coin. Snipers are not judged here.
 
-The seven facts hold for every chart shape. C1, C2, and the verify checks below are retuned per shape.
+Mark holds for every chart shape. C1, C2, and the verify checks below are retuned per shape.
 
 | shape | the fall | C1 and C2 |
 | --- | --- | --- |
@@ -414,12 +303,12 @@ The seven facts hold for every chart shape. C1, C2, and the verify checks below 
 V1 reads the owner side as a whole. A buyer wallet loses while a seller wallet collects. Rebuild
 every day from the last two weeks: wallets change fast, shapes and paying keys slowly.
 
-A fresh wallet on a public app, at that app's default fee, that buys once and sells what it bought,
-matches none of the seven facts while that list stays under 20% of its run, fewer than 20 wallets
-print it, and the wallet does not repeat the list.
+A fresh wallet on a public app, at that app's default fee, that buys once and sells what it bought, stays **outsider** while that **ix structure** stays under 20% of the stretch from its first trade to its last, fewer than 20 trades come from more than one wallet, and the wallet buys that ix structure once.
 
 
 ## Appendix A - tested and not used
+
+The rows below keep the names used when they were measured. The names in the rules above are spelled out in [Terms](#terms).
 
 | idea | what it is | why not |
 | --- | --- | --- |
@@ -521,7 +410,7 @@ is read at each match level (core levels 1-6, the exact list alone, the exact li
 level 7), and a row passes when it is 90 % or more owner SOL on the group and has 10 or more trades
 there. A one-coin shape at 20 % of the trades or SOL inside its own run passes with them, including a list the
 market uses on 10,000 coins or more. The run is the stretch from that shape's first print on the coin to its last.
-An instruction list with at least 20 prints from more than one wallet on that coin passes too. The CU price is left out of that count, and one wallet's prints do not pass. The tag holds the fewest passing rows that still
+An instruction list with at least 20 prints from more than one wallet on that coin passes too. The CU price is left out of that count, and one wallet's prints do not pass. An ix structure a marked wallet uses for its buys on that coin is owner on that coin at any count. The tag holds the fewest passing rows that still
 cover every trade the passing rows cover (biggest row first), the creator, and the owner wallets
 with an owner trade before their first trade a row catches (sticky). A row applies on every coin of
 the fingerprint, while D reads one coin, so the tag can carry some outsider money the split leaves
@@ -616,3 +505,39 @@ On the whole market, 09-26 (28,819 coins created):
 | creation-slot money | creators buy 80,861 SOL; other transactions in the creation slot 77,772 SOL (55,787 buys on 15,627 coins) |
 | snipers in it | buyers on more than 50 coins that day make 34,135 of those buys (33,707 SOL, median 0.62 SOL); buyers on 50 or fewer make 21,724 (44,132 SOL, median 1.3-1.4 SOL) |
 | payers | 234,149 trades paid by another account; three service payers pay on 3,405-4,999 coins each; 3,678 payers pay for 6-20 wallets on a median of 1 coin (one operator each) |
+
+## Terms
+
+Each row above uses these names. **Why** is why the dev behaves that way. **Explanation** is the test. **Example** is one case with the numbers.
+
+**Owner.** Fake demand. The dev, the dev's wallets, and the machines the dev hires.
+
+**Outsider.** Real money. A person, or a bot trading for itself.
+
+**Dev.** The person who launches the coin and fakes the chart.
+
+**Tape.** The buys and sells. A token transfer is off the tape. The rules can see only what the tape shows.
+
+**Token bag.** Buys minus sells for one wallet on one coin. A transfer is not a trade, so it leaves the bag unchanged. A sell of tokens that arrived by transfer takes the bag below zero.
+
+**Ix structure.** The exact instruction list of one transaction, in order. Order and repeats count. `AdvanceNonceAccount`, `Axiom Trade: ix#05`, `Axiom Trade: ix#00`, `Transfer` is one ix structure. A different order is a different ix structure.
+
+**Ix template.** The tool name plus a few markers (`CU`, `ATA`, `N`, `S`, `F`). Looser than an ix structure. `Axiom Trade|CU|ATA|N|F` is one ix template, and many ix structures share it. The dev rotates small variants, so Spread tests the ix template at the seven match levels, loosest first.
+
+**The 80 and the 95.** Two counts of the same uses of one ix template. The **80%** counts the coin: that share of the uses sit on this dev's coins. The **95%** counts the wallet: that share of the uses were already made by this dev's wallets. A use can fall in one count and miss the other. Of 100 uses, 75 can be this dev's wallets on this dev's coins, 20 this dev's wallets on other coins, and 5 other people on this dev's coins. The coin count is 80 (75+5). The wallet count is 95 (75+20).
+
+**Fee payer.** The account that pays the transaction fee. Also called the fee key. When the credited wallet is a routing wallet that thousands of users share, the rules read the fee payer.
+
+**Launch group.** Coins born from the same creation ix structure, and the same CU price or `max_sol_cost`. Fixed at birth. The Script rule and the Loyal 80% test read this group.
+
+**This dev's coins.** Every coin already counted as this dev's. The list starts as the launch group: Mark finds the owner wallets there. A coin outside the group joins when one of those wallets is already **owner** on it. Loyal does this when a wallet has 3 or more launch-group coins and 80% of its coins are in the group: that wallet is owner on every coin it trades, including the one outside the group. Hidden does this when the same below-zero sell happens on 2 coins: the wallet is owner on its other coins. The 80% in Kept template and Fee payer counts trades on this list.
+
+**CU price.** The priority fee on the transaction. Repeat's 20% share includes it. Repeat's 20-trade count leaves it out.
+
+**Slot.** One moment on the chain. Several transactions can land in the same slot. The creation slot is the slot that holds the create.
+
+**Fresh wallet.** A wallet that has traded 4 coins or fewer in the whole market.
+
+**Big drop.** The coin's deepest price drop. A drop is a slot where the price falls 10% or more. Drops less than 30 s apart count as one drop. Also called the main fall. Check reads this drop.
+
+**Run.** From an ix structure's first trade on a coin to its last trade on that coin.
