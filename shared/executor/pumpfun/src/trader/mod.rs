@@ -18,6 +18,7 @@
 //   init.rs  — venue `initialize` (engine.initialize + global account + seed pools)
 //   buy.rs   — `buy_token`               (hot path)
 //   sell.rs  — `sell_token`, `execute_sell` (hot path)
+//   reclaim.rs — batch close / burn-and-close for stranded rent (off hot path)
 //   amm.rs   — PumpSwap AMM buy/sell
 //   create.rs / bundle_buy.rs — launch + bundle buys
 //   pool.rs  — buy-template seed pool
@@ -30,15 +31,16 @@ mod amm;
 mod assemble;
 mod bundle_buy;
 mod buy;
-mod consolidate;
-mod create;
 #[cfg(feature = "claim")]
 pub mod claim;
+mod consolidate;
+mod create;
 mod init;
 mod pool;
 #[cfg(feature = "probe")]
 pub mod probe;
 mod query;
+mod reclaim;
 mod reserves;
 mod sell;
 pub mod sim;

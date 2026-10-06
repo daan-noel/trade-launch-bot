@@ -146,7 +146,11 @@ fn creator_recheck_verdict(used: Option<&str>, chain: String) -> CreatorRecheck 
 /// Re-read the curve's creator after a 2006: one `getMultipleAccounts`, only after a
 /// confirmed revert. A changed creator is written to the token cache, so every later
 /// order on the mint derives its vault from it.
-async fn recheck_curve_creator(deps: &RealExecDeps, mint: &str, used: Option<&str>) -> CreatorRecheck {
+async fn recheck_curve_creator(
+    deps: &RealExecDeps,
+    mint: &str,
+    used: Option<&str>,
+) -> CreatorRecheck {
     let chain = match deps.trader.get_creator_from_mint_pda(mint).await {
         Ok(creator) => creator,
         Err(e) => return CreatorRecheck::Failed(e.to_string()),
@@ -190,11 +194,17 @@ fn classify_sell_confirm<E>(
 ) -> SellConfirmAction {
     match state {
         Ok(SigStatus::Reverted { custom }) if used_migrated == now_migrated => {
-            let route = if used_migrated { SwapRoute::Amm } else { SwapRoute::Curve };
+            let route = if used_migrated {
+                SwapRoute::Amm
+            } else {
+                SwapRoute::Curve
+            };
             SellConfirmAction::Reclassify(classify_swap_revert(*custom, route, SwapDirection::Sell))
         }
         Ok(SigStatus::Reverted { .. }) => SellConfirmAction::Reclassify(SwapRetryDecision::Retry),
-        Ok(SigStatus::Succeeded) | Ok(SigStatus::Pending) | Err(_) => SellConfirmAction::WaitConfirm,
+        Ok(SigStatus::Succeeded) | Ok(SigStatus::Pending) | Err(_) => {
+            SellConfirmAction::WaitConfirm
+        }
     }
 }
 
@@ -306,7 +316,8 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     let sol_amount = order.lamports as f64 / 1_000_000_000.0;
 
     // SOL earmark — released on Fatal / sink terminal / sell-start / reaper drop.
-    deps.trader.commit_sol_for_position(order.pg_id.to_string(), order.lamports);
+    deps.trader
+        .commit_sol_for_position(order.pg_id.to_string(), order.lamports);
 
     // Adopt a fill from signatures this position already submitted (engine retry
     // or crash between sign and confirm) before sending again. First attempt
@@ -325,12 +336,18 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     // tokens entirely rather than chase them on the AMM. Cache-only (in-RAM) read —
     // no DB/RPC on the snipe hot path; the migrate-during-window race is caught in
     // `confirm_entry` below.
-    if deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(false) {
+    if deps
+        .token_cache
+        .get(&order.mint)
+        .map(|e| e.value().is_migrated)
+        .unwrap_or(false)
+    {
         info!(
             mint = %order.mint,
             "real buy skipped — token already migrated (curve snipe would revert)"
         );
-        deps.trader.release_sol_for_position(&order.pg_id.to_string());
+        deps.trader
+            .release_sol_for_position(&order.pg_id.to_string());
         note_entry_error(
             &deps,
             &order,
@@ -379,7 +396,7 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
                                 attempt = attempt.saturating_add(1);
                                 if attempt >= 8 {
                                     return Err(
-                                        "row missing or already Holding after retries".into(),
+                                        "row missing or already Holding after retries".into()
                                     );
                                 }
                                 tokio::time::sleep(Duration::from_millis(25)).await;
@@ -408,7 +425,11 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     // Prior submitted sigs (engine Retry after a confirmed safe revert) climb
     // the tip ladder. Pending/ambiguous outcomes never resend here — that would
     // risk a double-buy if the first tx is still in flight.
-    let tip_level = deps.buy_journal.sigs(order.pg_id).len().min(u8::MAX as usize) as u8;
+    let tip_level = deps
+        .buy_journal
+        .sigs(order.pg_id)
+        .len()
+        .min(u8::MAX as usize) as u8;
 
     // Reuse the account a previous attempt for this position funded (if any), so a
     // retry buys into the SAME account instead of drawing another seeded one. With
@@ -514,9 +535,10 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     let send_error = match &submit {
         Some(Ok(_)) => None,
         Some(Err(e)) => Some(format!("buy send failed: {e}")),
-        None => {
-            Some(format!("buy send timed out after {}s", BUY_SEND_TIMEOUT.as_secs()))
-        }
+        None => Some(format!(
+            "buy send timed out after {}s",
+            BUY_SEND_TIMEOUT.as_secs()
+        )),
     };
     // Say it out loud the moment it happens. A send that fails AFTER the tx is
     // signed otherwise vanishes: the arms below prefer the on-chain verdict, so the
@@ -535,15 +557,8 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     };
     match (submitted_sig, signed_sig) {
         (Some(sig), _) | (None, Some(sig)) => {
-            let outcome = confirm_entry(
-                &deps,
-                &guard_sig,
-                &wallet,
-                &order,
-                &sig,
-                ENTRY_FEED_WINDOW,
-            )
-            .await;
+            let outcome =
+                confirm_entry(&deps, &guard_sig, &wallet, &order, &sig, ENTRY_FEED_WINDOW).await;
             // The last unmeasured entry segment: ACK → this bot seeing its own buy
             // on the feed. It spans leader inclusion AND the feed's return trip, and
             // the two are only separable by pairing it with `feed_lag` — on its own
@@ -613,7 +628,11 @@ async fn resolve_sibling_account(
         info!(mint = %mint, account = %acct, "re-buying into the account a live sibling holds");
         return Some(acct);
     }
-    match deps.strategy_repo.find_reusable_token_account(wallet, mint, "real").await {
+    match deps
+        .strategy_repo
+        .find_reusable_token_account(wallet, mint, "real")
+        .await
+    {
         Ok(Some(acct)) => {
             info!(mint = %mint, account = %acct, "re-buying into the account this mint is already held in");
             Some(acct)
@@ -642,8 +661,10 @@ async fn adopt_existing_fill(
                 return Some((sig.clone(), SigLegs::from(obs)));
             }
         }
-        if let Ok(Some(legs)) =
-            deps.trade_repo.find_fill_by_signature(wallet, &order.mint, sig, first_signed_at).await
+        if let Ok(Some(legs)) = deps
+            .trade_repo
+            .find_fill_by_signature(wallet, &order.mint, sig, first_signed_at)
+            .await
         {
             if legs.token_amount > PARTIAL_FILL_THRESHOLD {
                 info!(mint = %order.mint, sig = %sig, "adopted existing buy fill before re-send");
@@ -664,13 +685,17 @@ async fn emit_entry_filled(
     // The account this position's buy actually funded. Falls back to the per-mint
     // cache only when the buy returned no fact (never-signed / adopt paths) — that
     // cache is unreliable under concurrent same-mint snipes (see `SnipeBuy`).
-    let token_account =
-        funded_account.or_else(|| deps.trader.cached_token_account(&order.mint));
+    let token_account = funded_account.or_else(|| deps.trader.cached_token_account(&order.mint));
     deps.fill_sigs.put(
         order.intent.clone(),
         // Earliest leg — the buy's `entry_slot`, matching `first_block_time`
         // semantics (`legs.last_block_time` is the fill's exit-side stamp).
-        FillSigs { sigs: vec![sig], token_account, slot: legs.first_slot, print: None },
+        FillSigs {
+            sigs: vec![sig],
+            token_account,
+            slot: legs.first_slot,
+            print: None,
+        },
     );
     let _ = deps
         .fill_tx
@@ -694,8 +719,11 @@ async fn emit_entry_filled(
 /// transaction whose flow was never captured falls back to the curve-side amount,
 /// loudly — that row's PnL is not all-in.
 pub(crate) fn booked_wallet_sol(legs: &SigLegs, mint: &str, side: &str) -> f64 {
-    let (sol, exact) =
-        if side == "buy" { legs.wallet_paid_sol() } else { legs.wallet_received_sol() };
+    let (sol, exact) = if side == "buy" {
+        legs.wallet_paid_sol()
+    } else {
+        legs.wallet_received_sol()
+    };
     if !exact {
         warn!(mint = %mint, side, "real fill: no wallet flow captured, booking the curve-side amount");
     }
@@ -753,7 +781,8 @@ async fn emit_entry_outcome(
         }
         EntryOutcome::Fatal(cause) => {
             note_entry_error(deps, order, &cause).await;
-            deps.trader.release_sol_for_position(&order.pg_id.to_string());
+            deps.trader
+                .release_sol_for_position(&order.pg_id.to_string());
             let _ = deps
                 .fill_tx
                 .send(Event::FillFailed {
@@ -769,22 +798,20 @@ async fn emit_entry_outcome(
         // been indexed yet are indistinguishable from the row alone, and only the
         // first one is a bug. Status is deliberately unchanged — the tx was signed,
         // so it may still execute, and only the reaper may retire the row.
-        EntryOutcome::Ambiguous => {
-            match send_error {
-                Some(cause) => {
-                    note_entry_error(
-                        deps,
-                        order,
-                        &format!("{cause} (tx was signed; left BuySubmitted for the reaper)"),
-                    )
-                    .await;
-                }
-                None => warn!(
-                    mint = %order.mint,
-                    "real buy outcome ambiguous — left BuySubmitted for the reaper"
-                ),
+        EntryOutcome::Ambiguous => match send_error {
+            Some(cause) => {
+                note_entry_error(
+                    deps,
+                    order,
+                    &format!("{cause} (tx was signed; left BuySubmitted for the reaper)"),
+                )
+                .await;
             }
-        }
+            None => warn!(
+                mint = %order.mint,
+                "real buy outcome ambiguous — left BuySubmitted for the reaper"
+            ),
+        },
     }
 }
 
@@ -798,7 +825,11 @@ async fn emit_entry_outcome(
 async fn note_entry_error(deps: &RealExecDeps, order: &BuyOrder, cause: &str) {
     warn!(mint = %order.mint, pg = %order.pg_id, "real buy attempt did not fill: {cause}");
     for _ in 0..NOTE_ENTRY_ERROR_ATTEMPTS {
-        match deps.strategy_repo.note_last_entry_error(order.pg_id, cause).await {
+        match deps
+            .strategy_repo
+            .note_last_entry_error(order.pg_id, cause)
+            .await
+        {
             Ok(true) => return,
             Ok(false) => tokio::time::sleep(NOTE_ENTRY_ERROR_BACKOFF).await,
             Err(e) => {
@@ -851,14 +882,21 @@ async fn confirm_entry(
     window: Duration,
 ) -> EntryOutcome {
     let mint = order.mint.as_str();
-    if let Some(legs) = poll_feed_buy(deps, wallet, mint, sig, order.decided_at, guard, window).await {
+    if let Some(legs) =
+        poll_feed_buy(deps, wallet, mint, sig, order.decided_at, guard, window).await
+    {
         return EntryOutcome::Filled(legs);
     }
     // Race (option a): the token migrated during the buy window. The feed poll above
     // saw no own-leg over the full window, and a curve snipe into a completed curve
     // cannot fill — so give up decisively instead of chasing the AMM or spending a
     // `signature_state_detailed` RPC just to confirm the inevitable curve revert.
-    if deps.token_cache.get(mint).map(|e| e.value().is_migrated).unwrap_or(false) {
+    if deps
+        .token_cache
+        .get(mint)
+        .map(|e| e.value().is_migrated)
+        .unwrap_or(false)
+    {
         warn!(
             mint = %mint,
             "buy unfilled and token migrated during window — giving up (curve-only snipe)"
@@ -869,10 +907,16 @@ async fn confirm_entry(
     }
     let status = deps.trader.signature_state_detailed(sig).await;
     if matches!(status, Ok(SigStatus::Reverted { .. })) {
-        let fee =
-            note_reverted_fee(&deps.strategy_repo, order.pg_id, COMPUTE_UNIT_LIMIT_CURVE_BUY).await;
+        let fee = note_reverted_fee(
+            &deps.strategy_repo,
+            order.pg_id,
+            COMPUTE_UNIT_LIMIT_CURVE_BUY,
+        )
+        .await;
         if let Some(id) = deps.registry.engine_id(order.pg_id) {
-            deps.registry.update(id, |m| m.reverted_buy_fee_sol += lamports_to_sol(fee as i64));
+            deps.registry.update(id, |m| {
+                m.reverted_buy_fee_sol += lamports_to_sol(fee as i64)
+            });
         }
     }
     match classify_silent_send(&status) {
@@ -897,8 +941,16 @@ async fn confirm_entry(
             }
         }
         SilentSendOutcome::WaitThenSettle => {
-            match poll_feed_buy(deps, wallet, mint, sig, order.decided_at, guard, EXTENDED_FEED_WINDOW)
-                .await
+            match poll_feed_buy(
+                deps,
+                wallet,
+                mint,
+                sig,
+                order.decided_at,
+                guard,
+                EXTENDED_FEED_WINDOW,
+            )
+            .await
             {
                 Some(legs) => EntryOutcome::Filled(legs),
                 None => EntryOutcome::Ambiguous,
@@ -986,9 +1038,19 @@ async fn poll_feed_buy(
         guard,
         window,
         BUY_LEGS_QUERY_EVERY,
-        || deps.trade_signals.observed_legs(sig).map(SigLegs::from).and_then(filled),
+        || {
+            deps.trade_signals
+                .observed_legs(sig)
+                .map(SigLegs::from)
+                .and_then(filled)
+        },
         || async move {
-            deps.trade_repo.find_fill_by_signature(wallet, mint, sig, since).await.ok().flatten().and_then(filled)
+            deps.trade_repo
+                .find_fill_by_signature(wallet, mint, sig, since)
+                .await
+                .ok()
+                .flatten()
+                .and_then(filled)
         },
     )
     .await
@@ -1016,7 +1078,11 @@ pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
     let _mint_guard = match deps.inflight.try_begin_exit_mint(&order.mint) {
         Some(guard) => guard,
         None => {
-            let Some(guard) = deps.inflight.begin_exit_mint(&order.mint, EXIT_MINT_WAIT).await else {
+            let Some(guard) = deps
+                .inflight
+                .begin_exit_mint(&order.mint, EXIT_MINT_WAIT)
+                .await
+            else {
                 // Nothing was sent, so a retry is safe: the engine re-decides it.
                 warn!(pg = %order.pg_id, mint = %order.mint,
                     "real sell: mint exit lock still held after {}s — handing the exit back",
@@ -1041,7 +1107,8 @@ pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
     };
 
     // Release FIRST — must fire even if the process crashes mid-exit.
-    deps.trader.release_sol_for_position(&order.pg_id.to_string());
+    deps.trader
+        .release_sol_for_position(&order.pg_id.to_string());
 
     if order.token_amount == 0 {
         // Nothing to sell — treat as cleared at zero.
@@ -1049,7 +1116,12 @@ pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
             .fill_tx
             .send(Event::FillConfirmed {
                 intent: order.intent.clone(),
-                fill: Fill { price: 0.0, sol: 0.0, token_amount: 0, at: chrono::Utc::now() },
+                fill: Fill {
+                    price: 0.0,
+                    sol: 0.0,
+                    token_amount: 0,
+                    at: chrono::Utc::now(),
+                },
             })
             .await;
         return;
@@ -1077,7 +1149,10 @@ pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
     {
         true
     } else {
-        deps.token_info_repo.is_migrated(&order.mint).await.unwrap_or(false)
+        deps.token_info_repo
+            .is_migrated(&order.mint)
+            .await
+            .unwrap_or(false)
     };
 
     // Route state OWNED BY THIS LOOP. Seeded from the durable flag, latched true by a
@@ -1091,7 +1166,11 @@ pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
         // Loop-owned latch OR the live cache (ingest may flip it true mid-hold) — so
         // the FIRST attempt already routes to the AMM when migration is known.
         let is_migrated = route_migrated
-            || deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(false);
+            || deps
+                .token_cache
+                .get(&order.mint)
+                .map(|e| e.value().is_migrated)
+                .unwrap_or(false);
 
         let submit = {
             let send = submit_one_sell(&deps, &order, attempt, is_migrated, cashback);
@@ -1168,11 +1247,18 @@ pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
         };
 
         let now_migrated = route_migrated
-            || deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(is_migrated);
+            || deps
+                .token_cache
+                .get(&order.mint)
+                .map(|e| e.value().is_migrated)
+                .unwrap_or(is_migrated);
         let state = deps.trader.signature_state_detailed(&sig).await;
         if matches!(state, Ok(SigStatus::Reverted { .. })) {
-            let cu_limit =
-                if is_migrated { COMPUTE_UNIT_LIMIT_AMM } else { COMPUTE_UNIT_LIMIT_CURVE_SELL };
+            let cu_limit = if is_migrated {
+                COMPUTE_UNIT_LIMIT_AMM
+            } else {
+                COMPUTE_UNIT_LIMIT_CURVE_SELL
+            };
             note_reverted_fee(&deps.strategy_repo, order.pg_id, cu_limit).await;
         }
         match classify_sell_confirm(&state, is_migrated, now_migrated) {
@@ -1237,7 +1323,9 @@ pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
                         return;
                     }
                     SwapRetryDecision::RefreshCreator => {
-                        match recheck_curve_creator(&deps, &order.mint, order.creator.as_deref()).await {
+                        match recheck_curve_creator(&deps, &order.mint, order.creator.as_deref())
+                            .await
+                        {
                             CreatorRecheck::Changed(creator) => {
                                 warn!(mint = %order.mint, attempt, creator = %creator,
                                     "curve sell reverted 2006 on a reassigned creator — resending with the chain creator");
@@ -1250,7 +1338,11 @@ pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
                         }
                     }
                     SwapRetryDecision::RefreshCoinCreator => {
-                        match deps.trader.refresh_amm_pool_info(&order.mint, &base_program).await {
+                        match deps
+                            .trader
+                            .refresh_amm_pool_info(&order.mint, &base_program)
+                            .await
+                        {
                             Ok(Some(_)) => {}
                             Ok(None) | Err(_) => {
                                 fail_exit(&deps, &order, &sell_sigs, FillFailReason::Fatal).await;
@@ -1334,17 +1426,28 @@ async fn fail_exit(
     reason: FillFailReason,
 ) {
     if !sell_sigs.is_empty() {
-        let token_account =
-            order.token_account.clone().or_else(|| deps.trader.cached_token_account(&order.mint));
+        let token_account = order
+            .token_account
+            .clone()
+            .or_else(|| deps.trader.cached_token_account(&order.mint));
         deps.fill_sigs.put(
             order.intent.clone(),
             // A failed sell has no resolved legs, so no slot to record.
-            FillSigs { sigs: sell_sigs.to_vec(), token_account, slot: None, print: None },
+            FillSigs {
+                sigs: sell_sigs.to_vec(),
+                token_account,
+                slot: None,
+                print: None,
+            },
         );
     }
     let _ = deps
         .fill_tx
-        .send(Event::FillFailed { intent: order.intent.clone(), reason, at: Some(Utc::now()) })
+        .send(Event::FillFailed {
+            intent: order.intent.clone(),
+            reason,
+            at: Some(Utc::now()),
+        })
         .await;
 }
 
@@ -1354,12 +1457,19 @@ async fn finish_cleared_sell(
     sell_sigs: &[String],
     legs: SigLegs,
 ) {
-    let token_account =
-        order.token_account.clone().or_else(|| deps.trader.cached_token_account(&order.mint));
+    let token_account = order
+        .token_account
+        .clone()
+        .or_else(|| deps.trader.cached_token_account(&order.mint));
     deps.fill_sigs.put(
         order.intent.clone(),
         // Latest leg — the sell's `exit_slot`, matching `last_block_time` below.
-        FillSigs { sigs: sell_sigs.to_vec(), token_account, slot: legs.last_slot, print: None },
+        FillSigs {
+            sigs: sell_sigs.to_vec(),
+            token_account,
+            slot: legs.last_slot,
+            print: None,
+        },
     );
     let wallet = deps.trader.wallet_pubkey();
     // The sell that empties the account, with no sibling still holding the mint,
@@ -1387,7 +1497,10 @@ async fn finish_cleared_sell(
         .await;
 
     // Sibling book-close when the wallet mint bag is gone (PG net — no RPC).
-    let engine_tx = deps.engine_fill_tx.clone().unwrap_or_else(|| deps.fill_tx.clone());
+    let engine_tx = deps
+        .engine_fill_tx
+        .clone()
+        .unwrap_or_else(|| deps.fill_tx.clone());
     let _ = orphan_exit::close_siblings_if_mint_cleared(
         &deps.strategy_repo,
         &deps.trade_repo,
@@ -1401,12 +1514,19 @@ async fn finish_cleared_sell(
     .await;
 
     // Fire-and-forget rent reclaim — the close this fill already booked the fee of.
+    // The account this position funded, not the per-mint cache: two buys on one
+    // mint fund two accounts, and the cache holds only the last one.
     if reclaims {
         let trader = deps.trader.clone();
         let mint = order.mint.clone();
+        let account = order.token_account.clone();
         tokio::spawn(async move {
-            if let Err(err) = trader.close_token_account(&mint, None).await {
-                tracing::debug!(mint = %mint, "rent-reclaim close skipped: {err}");
+            if let Err(err) = trader.close_token_account(&mint, account.as_deref()).await {
+                tracing::warn!(
+                    mint = %mint,
+                    account = account.as_deref().unwrap_or("-"),
+                    "rent-reclaim close failed: {err}"
+                );
             }
         });
     }
@@ -1422,7 +1542,10 @@ async fn has_other_open_position(
     mint: &str,
     exclude_position: Uuid,
 ) -> bool {
-    match repo.has_other_open_position_on_mint(wallet, mint, "real", exclude_position).await {
+    match repo
+        .has_other_open_position_on_mint(wallet, mint, "real", exclude_position)
+        .await
+    {
         Ok(other) => other,
         Err(err) => {
             warn!(mint = %mint, "rent-reclaim other-open check failed; deferring: {err}");
@@ -1486,13 +1609,19 @@ async fn confirm_sell(
         return None;
     }
     let cleared = |legs: SigLegs| {
-        (legs.token_amount.saturating_add(PARTIAL_FILL_THRESHOLD) >= order.token_amount).then_some(legs)
+        (legs.token_amount.saturating_add(PARTIAL_FILL_THRESHOLD) >= order.token_amount)
+            .then_some(legs)
     };
     await_own_legs(
         guard,
         window,
         SELL_LEGS_QUERY_EVERY,
-        || deps.trade_signals.sum_observed_legs(sell_sigs).map(SigLegs::from).and_then(cleared),
+        || {
+            deps.trade_signals
+                .sum_observed_legs(sell_sigs)
+                .map(SigLegs::from)
+                .and_then(cleared)
+        },
         || async move {
             deps.trade_repo
                 .sum_legs_by_signatures(wallet, &order.mint, sell_sigs, TradeType::Sell, since)
@@ -1566,7 +1695,10 @@ mod tests {
         )
         .await;
         assert!(legs.is_some(), "the landed leg resolves the wait");
-        assert!(started.elapsed() < Duration::from_millis(1_800), "the wake was lost");
+        assert!(
+            started.elapsed() < Duration::from_millis(1_800),
+            "the wake was lost"
+        );
     }
 
     /// A leg the preview holds resolves the wait with no Postgres query at all.
@@ -1592,7 +1724,11 @@ mod tests {
         )
         .await;
         assert!(legs.is_some());
-        assert_eq!(queries.load(Ordering::Relaxed), 0, "no query when the preview has the leg");
+        assert_eq!(
+            queries.load(Ordering::Relaxed),
+            0,
+            "no query when the preview has the leg"
+        );
     }
 
     /// With nothing landing for the key, the fallback queries once and then waits
@@ -1643,8 +1779,7 @@ mod tests {
 
     #[test]
     fn classify_silent_send_buy_slippage_resends() {
-        let status: Result<SigStatus, ()> =
-            Ok(SigStatus::Reverted { custom: Some(6002) });
+        let status: Result<SigStatus, ()> = Ok(SigStatus::Reverted { custom: Some(6002) });
         assert_eq!(classify_silent_send(&status), SilentSendOutcome::Resend);
     }
 
@@ -1654,22 +1789,30 @@ mod tests {
     fn creator_recheck_retries_only_on_a_different_creator() {
         let chain = || "A6DG6oSc9NFhYmUDmATaPc97tjhjy2DjhWkabKANxBcv".to_string();
         assert_eq!(
-            creator_recheck_verdict(Some("A6DG6oSc9NFhYmUDmATaPc97tjhjy2DjhWkabKANxBcv"), chain()),
+            creator_recheck_verdict(
+                Some("A6DG6oSc9NFhYmUDmATaPc97tjhjy2DjhWkabKANxBcv"),
+                chain()
+            ),
             CreatorRecheck::Unchanged
         );
         assert_eq!(
-            creator_recheck_verdict(Some("7E9jfxCczubz4FXkkVKzUMHXGwzJxyppC4m7y3ew8ATg"), chain()),
+            creator_recheck_verdict(
+                Some("7E9jfxCczubz4FXkkVKzUMHXGwzJxyppC4m7y3ew8ATg"),
+                chain()
+            ),
             CreatorRecheck::Changed(chain())
         );
         // Derived from the cached PDAs, which the re-read just rewrote: one resend
         // with the explicit creator, and a second 2006 then compares equal.
-        assert_eq!(creator_recheck_verdict(None, chain()), CreatorRecheck::Changed(chain()));
+        assert_eq!(
+            creator_recheck_verdict(None, chain()),
+            CreatorRecheck::Changed(chain())
+        );
     }
 
     #[test]
     fn classify_silent_send_2006_refreshes() {
-        let status: Result<SigStatus, ()> =
-            Ok(SigStatus::Reverted { custom: Some(2006) });
+        let status: Result<SigStatus, ()> = Ok(SigStatus::Reverted { custom: Some(2006) });
         assert_eq!(
             classify_silent_send(&status),
             SilentSendOutcome::RefreshCreatorThenResend
@@ -1678,15 +1821,17 @@ mod tests {
 
     #[test]
     fn classify_silent_send_structural_gives_up() {
-        let status: Result<SigStatus, ()> =
-            Ok(SigStatus::Reverted { custom: Some(6022) });
+        let status: Result<SigStatus, ()> = Ok(SigStatus::Reverted { custom: Some(6022) });
         assert_eq!(classify_silent_send(&status), SilentSendOutcome::GiveUp);
     }
 
     #[test]
     fn classify_silent_send_succeeded_waits() {
         let status: Result<SigStatus, ()> = Ok(SigStatus::Succeeded);
-        assert_eq!(classify_silent_send(&status), SilentSendOutcome::WaitThenSettle);
+        assert_eq!(
+            classify_silent_send(&status),
+            SilentSendOutcome::WaitThenSettle
+        );
     }
 
     #[test]
@@ -1716,8 +1861,7 @@ mod tests {
     /// re-confirm, and the AMM pool address is a pure PDA derivation.
     #[test]
     fn curve_sell_6005_reroutes_to_amm_without_an_rpc_reconfirm() {
-        let state: Result<SigStatus, ()> =
-            Ok(SigStatus::Reverted { custom: Some(6005) });
+        let state: Result<SigStatus, ()> = Ok(SigStatus::Reverted { custom: Some(6005) });
         assert_eq!(
             classify_sell_confirm(&state, false, false),
             SellConfirmAction::Reclassify(SwapRetryDecision::RerouteMigrated),
@@ -1731,8 +1875,7 @@ mod tests {
 
     #[test]
     fn classify_sell_confirm_route_change_retries_on_revert() {
-        let state: Result<SigStatus, ()> =
-            Ok(SigStatus::Reverted { custom: Some(6003) });
+        let state: Result<SigStatus, ()> = Ok(SigStatus::Reverted { custom: Some(6003) });
         assert_eq!(
             classify_sell_confirm(&state, false, true),
             SellConfirmAction::Reclassify(SwapRetryDecision::Retry)

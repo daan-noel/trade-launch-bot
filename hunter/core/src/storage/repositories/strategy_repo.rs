@@ -2,24 +2,24 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sqlx::{types::Json, PgPool};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::api::ix_label_filter::IxLabelFilter;
-use crate::api::table_query::{as_flag, FilterOp, FilterSpec, MAX_FILTER_IN_VALUES, TableRequest};
+use crate::api::table_query::{as_flag, FilterOp, FilterSpec, TableRequest, MAX_FILTER_IN_VALUES};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::models::portfolio::mark_bag;
-use crate::strategies::kernel::{weighted_return_pct, CostModel};
-use crate::strategies::run_rollup::{self, RunRollup};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
-    MarkQuote, EXTRA_ENTRY_PRICED_RESERVE, EXTRA_EXIT_PENDING_PARTIAL, EXTRA_REVERTED_FEE_LAMPORTS,
-    EXTRA_STAGE_SINCE,
-    ExitReasonCounts, PositionsSummary, StrategyPosition, StrategyRun, StrategyRunMetrics,
+    ExitReasonCounts, MarkQuote, PositionsSummary, StrategyPosition, StrategyRun,
+    StrategyRunMetrics, EXTRA_ENTRY_PRICED_RESERVE, EXTRA_EXIT_PENDING_PARTIAL,
+    EXTRA_REVERTED_FEE_LAMPORTS, EXTRA_STAGE_SINCE,
 };
 use crate::storage::token_enrichment::{
     enrich_filter_sql, enrich_sort_sql, FilterKind, TokenEnrichmentRow, ENRICH_SELECT,
 };
+use crate::strategies::kernel::{weighted_return_pct, CostModel};
+use crate::strategies::run_rollup::{self, RunRollup};
 
 // `entry_sol`/`exit_sol` are human SOL (f64) in the model but stored as exact
 // lamports (`entry_lamports`/`exit_lamports`, BIGINT) in the column, mirroring
@@ -468,7 +468,11 @@ fn map_rule_counters(rows: Vec<RuleCountersRow>) -> HashMap<Uuid, RuleCounters> 
     rows.into_iter()
         .map(|r| {
             let closed = r.win + r.loss;
-            let win_rate = if closed > 0 { r.win as f64 / closed as f64 * 100.0 } else { 0.0 };
+            let win_rate = if closed > 0 {
+                r.win as f64 / closed as f64 * 100.0
+            } else {
+                0.0
+            };
             // Canonical capital-weighted return — sign-locked to `total_pnl_sol`.
             let return_pct =
                 weighted_return_pct(r.total_pnl_lamports as f64, r.closed_entry_lamports as f64);
@@ -526,7 +530,10 @@ fn metrics_exit_sql_pred(col: &str) -> String {
         .chain(["Open", "NoEntry", "Migrated"])
         .map(|l| format!("'{l}'"))
         .collect();
-    format!("({col} IS NOT NULL AND {col} <> '' AND {col} NOT IN ({}))", named.join(", "))
+    format!(
+        "({col} IS NOT NULL AND {col} <> '' AND {col} NOT IN ({}))",
+        named.join(", ")
+    )
 }
 
 /// Raw aggregate row behind [`StrategyRepo::positions_summary`]. Lamport sums are
@@ -677,7 +684,8 @@ const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint_addres
 
 /// `POSITION_COLS` qualified with the `sp` alias — for the paged read that JOINs
 /// `tokens` (so the server can sort/filter by token-enrichment columns too).
-const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp.mode, sp.mint_address, \
+const POSITION_COLS_SP: &str =
+    "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp.mode, sp.mint_address, \
     sp.wallet, sp.token_program_id, sp.token_account, sp.target_price, sp.target_token_amount, \
     sp.target_time, sp.target_tx, sp.target_slot, \
     sp.entry_price, sp.entry_token_amount, sp.entry_lamports, \
@@ -742,7 +750,11 @@ impl From<TableRequest> for PositionQuery {
         PositionQuery {
             search: req.search,
             filters: req.filters.into_iter().collect(),
-            sort: req.sorting.into_iter().map(|s| (s.col, s.dir.is_desc())).collect(),
+            sort: req
+                .sorting
+                .into_iter()
+                .map(|s| (s.col, s.dir.is_desc()))
+                .collect(),
             time_from: range.from,
             time_to: range.to,
         }
@@ -936,28 +948,42 @@ pub(crate) fn push_filter_predicate(
     match (kind, spec.op) {
         // -- Text columns: only substring / exact string match ------------------
         (FilterKind::Text, FilterOp::Contains) => {
-            let Some(text) = as_text(&spec.val) else { return };
+            let Some(text) = as_text(&spec.val) else {
+                return;
+            };
             let needle = format!("%{}%", like_escape(&text));
             qb.push(" AND ").push(col).push(" ILIKE ").push_bind(needle);
         }
         (FilterKind::Text, FilterOp::Eq) => {
             // Exact (escaped, no wildcards) — case-insensitive to match Contains.
-            let Some(text) = as_text(&spec.val) else { return };
-            qb.push(" AND ").push(col).push(" ILIKE ").push_bind(like_escape(&text));
+            let Some(text) = as_text(&spec.val) else {
+                return;
+            };
+            qb.push(" AND ")
+                .push(col)
+                .push(" ILIKE ")
+                .push_bind(like_escape(&text));
         }
         (FilterKind::Text, FilterOp::Neq) => {
             // Exact inequality — same case-insensitive escape as Eq. Needed by
             // focus chips (`status:open` ⇒ status neq End, `status:fired` ⇒
             // exit_reason neq NoEntry); without this arm those filters were
             // silently dropped (unknown text ops are no-ops).
-            let Some(text) = as_text(&spec.val) else { return };
-            qb.push(" AND ").push(col).push(" NOT ILIKE ").push_bind(like_escape(&text));
+            let Some(text) = as_text(&spec.val) else {
+                return;
+            };
+            qb.push(" AND ")
+                .push(col)
+                .push(" NOT ILIKE ")
+                .push_bind(like_escape(&text));
         }
         // Set membership: `val` is a JSON array → `col = ANY($n::text[])`. Operands
         // are trimmed/non-empty and capped (backstop; the UI caps too). An empty or
         // non-array operand drops the predicate.
         (FilterKind::Text, FilterOp::In) => {
-            let Some(arr) = spec.val.as_array() else { return };
+            let Some(arr) = spec.val.as_array() else {
+                return;
+            };
             let vals: Vec<String> = arr
                 .iter()
                 .filter_map(as_text)
@@ -966,7 +992,11 @@ pub(crate) fn push_filter_predicate(
             if vals.is_empty() {
                 return;
             }
-            qb.push(" AND ").push(col).push(" = ANY(").push_bind(vals).push("::text[])");
+            qb.push(" AND ")
+                .push(col)
+                .push(" = ANY(")
+                .push_bind(vals)
+                .push("::text[])");
         }
         // A numeric op on a text column is meaningless → drop.
         (FilterKind::Text, _) => {}
@@ -981,7 +1011,10 @@ pub(crate) fn push_filter_predicate(
         }
         (FilterKind::Bool, FilterOp::Neq) => {
             let Some(b) = as_flag(&spec.val) else { return };
-            qb.push(" AND ").push(col).push(" IS DISTINCT FROM ").push_bind(b);
+            qb.push(" AND ")
+                .push(col)
+                .push(" IS DISTINCT FROM ")
+                .push_bind(b);
         }
         // Ordering / set ops on a boolean are meaningless → drop.
         (FilterKind::Bool, _) => {}
@@ -989,9 +1022,16 @@ pub(crate) fn push_filter_predicate(
         // -- Instruction labels: the one ix-label grammar (JSON ordered-exact vs
         // text any-substring), one `text[]` bind. Blank input drops the predicate.
         (FilterKind::IxLabels, FilterOp::Contains | FilterOp::Eq) => {
-            let Some(text) = as_text(&spec.val) else { return };
-            let Some(sql) = IxLabelFilter::parse(&text).sql(col) else { return };
-            qb.push(" AND ").push(sql.before).push_bind(sql.bind).push(sql.after);
+            let Some(text) = as_text(&spec.val) else {
+                return;
+            };
+            let Some(sql) = IxLabelFilter::parse(&text).sql(col) else {
+                return;
+            };
+            qb.push(" AND ")
+                .push(sql.before)
+                .push_bind(sql.bind)
+                .push(sql.after);
         }
         (FilterKind::IxLabels, _) => {}
 
@@ -1010,7 +1050,9 @@ pub(crate) fn push_filter_predicate(
                 .push_bind(max);
         }
         (FilterKind::Numeric, op) => {
-            let Some(val) = as_number(&spec.val) else { return };
+            let Some(val) = as_number(&spec.val) else {
+                return;
+            };
             let sql_op = match op {
                 FilterOp::Eq => "=",
                 FilterOp::Neq => "!=",
@@ -1024,7 +1066,12 @@ pub(crate) fn push_filter_predicate(
                 FilterOp::Between => unreachable!("handled above"),
                 FilterOp::In => unreachable!("handled by the numeric In arm above"),
             };
-            qb.push(" AND ").push(col).push(' ').push(sql_op).push(' ').push_bind(val);
+            qb.push(" AND ")
+                .push(col)
+                .push(' ')
+                .push(sql_op)
+                .push(' ')
+                .push_bind(val);
         }
     }
 }
@@ -1043,10 +1090,16 @@ fn push_position_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
             .push(")");
     }
     if let Some(from) = query.time_from {
-        qb.push(" AND ").push(POSITION_WHEN_SQL).push(" >= ").push_bind(from);
+        qb.push(" AND ")
+            .push(POSITION_WHEN_SQL)
+            .push(" >= ")
+            .push_bind(from);
     }
     if let Some(to) = query.time_to {
-        qb.push(" AND ").push(POSITION_WHEN_SQL).push(" < ").push_bind(to);
+        qb.push(" AND ")
+            .push(POSITION_WHEN_SQL)
+            .push(" < ")
+            .push_bind(to);
     }
     for (key, spec) in &query.filters {
         if let Some((col, kind)) = position_filter_sql(key) {
@@ -1076,7 +1129,11 @@ fn push_position_order(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
             qb.push(", ");
         }
         first = false;
-        qb.push(sql).push(if desc { " DESC NULLS LAST" } else { " ASC NULLS LAST" });
+        qb.push(sql).push(if desc {
+            " DESC NULLS LAST"
+        } else {
+            " ASC NULLS LAST"
+        });
     }
     qb.push(", sp.id DESC");
 }
@@ -1144,7 +1201,11 @@ fn push_token_order(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Positio
             qb.push(", ");
         }
         first = false;
-        qb.push(sql).push(if desc { " DESC NULLS LAST" } else { " ASC NULLS LAST" });
+        qb.push(sql).push(if desc {
+            " DESC NULLS LAST"
+        } else {
+            " ASC NULLS LAST"
+        });
     }
     qb.push(", t.mint_address DESC");
 }
@@ -1482,13 +1543,17 @@ impl StrategyRepo {
             }
             // Keep the parent row valid for the in-flight insert; there is nothing
             // to roll up yet, and the caller marks the run as draining.
-            self.set_run_status(run_id, status, Some(Utc::now())).await?;
+            self.set_run_status(run_id, status, Some(Utc::now()))
+                .await?;
             return Ok(RunFinalize::Finalized { unsettled: 0 });
         }
         let rollup = run_rollup::roll_up(run_id, &positions);
         self.upsert_metrics(&rollup.row).await?;
-        self.set_run_status(run_id, status, Some(Utc::now())).await?;
-        Ok(RunFinalize::Finalized { unsettled: rollup.unsettled })
+        self.set_run_status(run_id, status, Some(Utc::now()))
+            .await?;
+        Ok(RunFinalize::Finalized {
+            unsettled: rollup.unsettled,
+        })
     }
 
     /// Runs still marked `Running` that **no active rule is feeding** — the rule was
@@ -1946,7 +2011,8 @@ impl StrategyRepo {
         offset: i64,
         query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        self.find_positions_paged(Some(("sp.run_id", run_id)), None, limit, offset, query).await
+        self.find_positions_paged(Some(("sp.run_id", run_id)), None, limit, offset, query)
+            .await
     }
 
     /// Page-bounded positions for a rule across all its runs — the by-rule view
@@ -1958,7 +2024,8 @@ impl StrategyRepo {
         offset: i64,
         query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        self.find_positions_paged(Some(("sp.rule_id", rule_id)), None, limit, offset, query).await
+        self.find_positions_paged(Some(("sp.rule_id", rule_id)), None, limit, offset, query)
+            .await
     }
 
     /// Page-bounded positions across **all rules and runs** — the Console History
@@ -1971,7 +2038,8 @@ impl StrategyRepo {
         offset: i64,
         query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        self.find_positions_paged(None, None, limit, offset, query).await
+        self.find_positions_paged(None, None, limit, offset, query)
+            .await
     }
 
     /// Page-bounded positions for a rule across **all runs except one** — the
@@ -2029,7 +2097,10 @@ impl StrategyRepo {
         }
         push_position_where(&mut qb, query);
         push_position_order(&mut qb, query);
-        qb.push(" LIMIT ").push_bind(limit).push(" OFFSET ").push_bind(offset);
+        qb.push(" LIMIT ")
+            .push_bind(limit)
+            .push(" OFFSET ")
+            .push_bind(offset);
         let rows = qb
             .build_query_as::<StrategyPositionDbRow>()
             .fetch_all(&self.pool)
@@ -2044,7 +2115,8 @@ impl StrategyRepo {
         run_id: Uuid,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
-        self.count_positions(Some(("sp.run_id", run_id)), None, query).await
+        self.count_positions(Some(("sp.run_id", run_id)), None, query)
+            .await
     }
 
     /// Count of positions for a rule across all its runs (matching `query`).
@@ -2053,7 +2125,8 @@ impl StrategyRepo {
         rule_id: Uuid,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
-        self.count_positions(Some(("sp.rule_id", rule_id)), None, query).await
+        self.count_positions(Some(("sp.rule_id", rule_id)), None, query)
+            .await
     }
 
     /// Filtered count across all rules and runs — pairs with
@@ -2070,7 +2143,8 @@ impl StrategyRepo {
         exclude_run_id: Uuid,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
-        self.count_positions(Some(("sp.rule_id", rule_id)), Some(exclude_run_id), query).await
+        self.count_positions(Some(("sp.rule_id", rule_id)), Some(exclude_run_id), query)
+            .await
     }
 
     /// Shared count behind the count views — same JOIN + WHERE as
@@ -2125,8 +2199,14 @@ impl StrategyRepo {
         qb.push_bind(mints).push(")");
         push_token_where(&mut qb, query);
         push_token_order(&mut qb, query);
-        qb.push(" LIMIT ").push_bind(limit).push(" OFFSET ").push_bind(offset);
-        let rows = qb.build_query_as::<TokenEnrichmentRow>().fetch_all(&self.pool).await?;
+        qb.push(" LIMIT ")
+            .push_bind(limit)
+            .push(" OFFSET ")
+            .push_bind(offset);
+        let rows = qb
+            .build_query_as::<TokenEnrichmentRow>()
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows)
     }
 
@@ -2157,7 +2237,8 @@ impl StrategyRepo {
         query: &PositionQuery,
         mark_of: impl Fn(&str) -> Option<MarkQuote>,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary(Some(("sp.run_id", run_id)), None, query, mark_of).await
+        self.positions_summary(Some(("sp.run_id", run_id)), None, query, mark_of)
+            .await
     }
 
     /// Rule-wide position aggregates across all runs (real-rule lifetime history).
@@ -2167,7 +2248,8 @@ impl StrategyRepo {
         query: &PositionQuery,
         mark_of: impl Fn(&str) -> Option<MarkQuote>,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary(Some(("sp.rule_id", rule_id)), None, query, mark_of).await
+        self.positions_summary(Some(("sp.rule_id", rule_id)), None, query, mark_of)
+            .await
     }
 
     /// Aggregates across **all rules and runs** — the Console History summary
@@ -2327,12 +2409,22 @@ impl StrategyRepo {
         let row: PositionsSummaryRow = qb.build_query_as().fetch_one(&self.pool).await?;
 
         let closed = row.win + row.loss;
-        let win_rate = if closed > 0 { row.win as f64 / closed as f64 * 100.0 } else { 0.0 };
+        let win_rate = if closed > 0 {
+            row.win as f64 / closed as f64 * 100.0
+        } else {
+            0.0
+        };
         // Canonical capital-weighted return (lamports ratio is scale-invariant), so
         // this figure's sign is locked to `total_pnl_sol`.
-        let return_pct =
-            weighted_return_pct(row.total_pnl_lamports as f64, row.closed_entry_lamports as f64);
-        let avg_hold_secs = if closed > 0 { row.sum_hold_secs / closed as f64 } else { 0.0 };
+        let return_pct = weighted_return_pct(
+            row.total_pnl_lamports as f64,
+            row.closed_entry_lamports as f64,
+        );
+        let avg_hold_secs = if closed > 0 {
+            row.sum_hold_secs / closed as f64
+        } else {
+            0.0
+        };
 
         // Mark the open positions to the caller-supplied current price, pricing the
         // hypothetical close through the **same** `CostModel` the sim and the sweep
@@ -2364,8 +2456,13 @@ impl StrategyRepo {
             .filter_map(|m| {
                 let entry_price = m.entry_price.filter(|p| *p > 0.0)?;
                 let held = m.held_amount(entry_price);
-                mark_bag(m.cost_basis_sol(entry_price), held, mark_of(&m.mint_address), &costs)
-                    .map(|p| p.unrealized_pnl_sol)
+                mark_bag(
+                    m.cost_basis_sol(entry_price),
+                    held,
+                    mark_of(&m.mint_address),
+                    &costs,
+                )
+                .map(|p| p.unrealized_pnl_sol)
             })
             .sum();
 
@@ -2433,7 +2530,14 @@ impl StrategyRepo {
         Ok(rows
             .into_iter()
             .map(
-                |(id, mint_address, entry_price, entry_lamports, entry_token_amount, sold_token_amount)| {
+                |(
+                    id,
+                    mint_address,
+                    entry_price,
+                    entry_lamports,
+                    entry_token_amount,
+                    sold_token_amount,
+                )| {
                     OpenPositionBag {
                         position_id: Some(id),
                         mint_address,
@@ -2459,7 +2563,8 @@ impl StrategyRepo {
         &self,
         strategy_id: &str,
     ) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
-        self.rule_counters_for_latest_runs(strategy_id, "paper").await
+        self.rule_counters_for_latest_runs(strategy_id, "paper")
+            .await
     }
 
     /// Latest-run counters for every rule in `mode` (`paper` or `real`). Shared by
@@ -2598,10 +2703,7 @@ impl StrategyRepo {
     /// Most recent terminal closes (`End` / `EntryFailed`) across all rules —
     /// Recent hydrate. A stuck/unconfirmed exit is OPEN and never lands here.
     /// Ordered by exit time (fallback `updated_at`), newest first. Bounded.
-    pub async fn find_recent_closed(
-        &self,
-        limit: i64,
-    ) -> anyhow::Result<Vec<StrategyPosition>> {
+    pub async fn find_recent_closed(&self, limit: i64) -> anyhow::Result<Vec<StrategyPosition>> {
         let limit = limit.clamp(1, 200);
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
@@ -2652,10 +2754,7 @@ impl StrategyRepo {
     /// (`status='End'`) on/after `since` — the "realized today" KPI (pass 00:00
     /// UTC). Same `exit_lamports − entry_lamports` basis as [`Self::positions_summary`].
     /// A failed exit realized nothing bookable, so `End`-only.
-    pub async fn realized_pnl_lamports_since(
-        &self,
-        since: DateTime<Utc>,
-    ) -> anyhow::Result<i64> {
+    pub async fn realized_pnl_lamports_since(&self, since: DateTime<Utc>) -> anyhow::Result<i64> {
         let sum: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(exit_lamports - entry_lamports), 0)::BIGINT \
              FROM strategy_positions \
@@ -2847,7 +2946,10 @@ impl StrategyRepo {
         .bind(strategy_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(|(id, mode, e)| ((id, mode), e.0)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(id, mode, e)| ((id, mode), e.0))
+            .collect())
     }
 
     /// The latest run per rule for a given `mode` (one row per `rule_id`, highest
@@ -3007,7 +3109,11 @@ impl StrategyRepo {
             entry_time,
             None,
             Some(0),
-            if entry_tx.is_empty() { None } else { Some(entry_tx) },
+            if entry_tx.is_empty() {
+                None
+            } else {
+                Some(entry_tx)
+            },
         )
         .await?;
         tx.commit().await?;
@@ -3042,7 +3148,10 @@ impl StrategyRepo {
         exit_slot: Option<u64>,
     ) -> anyhow::Result<StrategyPosition> {
         let sig0 = match sig_kind {
-            FillSigKind::Own => tx_signatures.first().map(|s| s.as_str()).filter(|s| !s.is_empty()),
+            FillSigKind::Own => tx_signatures
+                .first()
+                .map(|s| s.as_str())
+                .filter(|s| !s.is_empty()),
             FillSigKind::Print => None,
         };
         let next_stage = stage.after.map(i16::from);
@@ -3175,10 +3284,7 @@ impl StrategyRepo {
     /// `(sold_ok, sol_ok)` — both true when the denormalized caches match
     /// `Σ position_fills` for `side = 'sell'`. Used by the no-hot-path guard test
     /// when a DATABASE_URL is available; also callable from ops/debug.
-    pub async fn sell_aggregates_match_ledger(
-        &self,
-        id: Uuid,
-    ) -> anyhow::Result<(bool, bool)> {
+    pub async fn sell_aggregates_match_ledger(&self, id: Uuid) -> anyhow::Result<(bool, bool)> {
         let row: Option<(i64, i64, i64, i64)> = sqlx::query_as(
             "SELECT p.sold_token_amount, p.exit_sol_lamports_total, \
                     COALESCE((SELECT SUM(f.token_amount) FROM position_fills f \
@@ -3218,7 +3324,10 @@ impl StrategyRepo {
     /// Positions stuck in `BuySubmitted` for a mode — the buy-recovery reaper
     /// checks each row's submitted signatures against the feed/chain and
     /// adopts/waits/drops (never blindly deletes — tokens may exist on-chain).
-    pub async fn find_all_buy_submitted(&self, mode: &str) -> anyhow::Result<Vec<StrategyPosition>> {
+    pub async fn find_all_buy_submitted(
+        &self,
+        mode: &str,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
              WHERE status = 'BuySubmitted' AND mode = $1 ORDER BY updated_at ASC"
@@ -3325,7 +3434,10 @@ impl StrategyRepo {
     /// positions that were entered or are being entered (every status but
     /// `EntryFailed`, which the engine rolls back). What `max_total_tokens` counts, so
     /// boot can seed the engine's lifetime counter. One indexed query.
-    pub async fn count_live_run_entries(&self, rule_ids: &[Uuid]) -> anyhow::Result<Vec<(Uuid, String, i64)>> {
+    pub async fn count_live_run_entries(
+        &self,
+        rule_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<(Uuid, String, i64)>> {
         if rule_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -3678,6 +3790,35 @@ impl StrategyRepo {
         Ok(exists)
     }
 
+    /// Mints and token accounts of unsettled real positions for `wallet`.
+    /// Same status set as [`Self::has_other_open_position_on_mint`]. A rent sweep
+    /// leaves those accounts open: a buy retry and a sibling sell both reuse the
+    /// account the position funded. A mint with any such row is also kept out of
+    /// the dust burn, because the bag may sit in an account the row did not record.
+    pub async fn open_real_rent_guards(
+        &self,
+        wallet: &str,
+    ) -> anyhow::Result<(HashSet<String>, HashSet<String>)> {
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT mint_address, token_account FROM strategy_positions \
+             WHERE wallet = $1 AND mode = 'real' \
+               AND status IN ('BuySubmitted','Holding','ExitPending',\
+                              'ExitStuck','ExitUnconfirmed')",
+        )
+        .bind(wallet)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut mints = HashSet::new();
+        let mut accounts = HashSet::new();
+        for (mint, account) in rows {
+            mints.insert(mint);
+            if let Some(account) = account {
+                accounts.insert(account);
+            }
+        }
+        Ok((mints, accounts))
+    }
+
     /// Flip **real** positions stuck in `ExitPending` past `stale_after` (orphaned
     /// mid-exit) to `ExitStuck` — but ONLY those NOT eligible for the bag-cleared
     /// heal (S4 fix: a landed-but-feed-lagged sell must be booked `End` by
@@ -3913,7 +4054,9 @@ impl StrategyRepo {
         let mut by_position: HashMap<Uuid, (bool, Vec<crate::models::ExitFillLeg>)> =
             HashMap::new();
         for r in rows {
-            let entry = by_position.entry(r.position_id).or_insert((r.exit_stamped, Vec::new()));
+            let entry = by_position
+                .entry(r.position_id)
+                .or_insert((r.exit_stamped, Vec::new()));
             entry.1.push(crate::models::ExitFillLeg {
                 sell_bps: crate::models::bps_of_bag(
                     r.token_amount.max(0) as u64,
@@ -4024,7 +4167,11 @@ mod position_col_guard {
     #[test]
     fn position_col_lists_stay_aliased_copies() {
         let base = cols(POSITION_COLS);
-        assert!(base.len() > 30, "sanity: base list parsed as {} cols", base.len());
+        assert!(
+            base.len() > 30,
+            "sanity: base list parsed as {} cols",
+            base.len()
+        );
         for (alias, list) in [("sp", POSITION_COLS_SP), ("p", POSITION_COLS_P)] {
             let expected: Vec<String> = base.iter().map(|c| format!("{alias}.{c}")).collect();
             assert_eq!(
@@ -4053,10 +4200,13 @@ mod position_col_guard {
         // Slice out `update_position`'s SQL literal so the scan cannot be fooled by
         // the dedicated writers' own `UPDATE`s elsewhere in this file.
         let src = include_str!("strategy_repo.rs");
-        let from = src.find("pub async fn update_position").expect("update_position moved");
+        let from = src
+            .find("pub async fn update_position")
+            .expect("update_position moved");
         let set_list = &src[from..];
-        let set_list =
-            &set_list[..set_list.find("WHERE id = $1").expect("update_position SQL shape changed")];
+        let set_list = &set_list[..set_list
+            .find("WHERE id = $1")
+            .expect("update_position SQL shape changed")];
         for col in OWNED {
             assert!(
                 !set_list.contains(col),
@@ -4081,18 +4231,28 @@ mod position_col_guard {
         let entry_price = entry_sol / tokens as f64;
         let exit_price = exit_sol / tokens as f64;
         let pnl_pct = (exit_price - entry_price) / entry_price * 100.0;
-        assert!((pnl_pct - 20.0).abs() < 0.01, "expected ~20% capital return");
+        assert!(
+            (pnl_pct - 20.0).abs() < 0.01,
+            "expected ~20% capital return"
+        );
 
         let wrong_exit = exit_sol / (tokens as f64 / 1e6);
         let wrong_pnl = (wrong_exit - entry_price) / entry_price * 100.0;
-        assert!(wrong_pnl > 1_000_000.0, "1e6-scaled exit price must not be used");
+        assert!(
+            wrong_pnl > 1_000_000.0,
+            "1e6-scaled exit price must not be used"
+        );
     }
 
     /// No-DB SSOT: the sold-bps derivation used by boot adopt / SSE must match
     /// integer `sold * 10_000 / entry` (same formula as `StrategyPosition::sold_bps`).
     #[test]
     fn sold_bps_matches_integer_scale_out_formula() {
-        let cases = [(1_000_000u64, 700_000u64, 7000u16), (1_000_000, 0, 0), (0, 0, 0)];
+        let cases = [
+            (1_000_000u64, 700_000u64, 7000u16),
+            (1_000_000, 0, 0),
+            (0, 0, 0),
+        ];
         for (entry, sold, expect) in cases {
             let bps = if entry == 0 {
                 0
@@ -4116,7 +4276,10 @@ mod position_col_guard {
             MAX_ENTRY_ERROR_LEN + 3
         );
         // Short input is passed through untouched.
-        assert_eq!(truncate_chars("reverted 6002", MAX_ENTRY_ERROR_LEN), "reverted 6002");
+        assert_eq!(
+            truncate_chars("reverted 6002", MAX_ENTRY_ERROR_LEN),
+            "reverted 6002"
+        );
     }
 }
 
@@ -4143,7 +4306,11 @@ mod filter_sql_tests {
     /// The `WHERE` fragment for a bare time window (no filters) — the cohort
     /// predicate the Console History range bar drives.
     fn range_sql(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> String {
-        let query = PositionQuery { time_from: from, time_to: to, ..Default::default() };
+        let query = PositionQuery {
+            time_from: from,
+            time_to: to,
+            ..Default::default()
+        };
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT 1 WHERE true");
         push_position_where(&mut qb, &query);
         qb.sql().to_string()
@@ -4151,19 +4318,33 @@ mod filter_sql_tests {
 
     #[test]
     fn range_bounds_are_half_open_over_the_when_instant() {
-        let t = DateTime::parse_from_rfc3339("2026-08-01T00:00:00Z").unwrap().with_timezone(&Utc);
+        let t = DateTime::parse_from_rfc3339("2026-08-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let sql = range_sql(Some(t), Some(t));
         // `from` inclusive / `to` exclusive, so adjacent windows can't
         // double-count a close that lands exactly on the boundary.
-        assert!(sql.contains(&format!("{POSITION_WHEN_SQL} >=")), "missing from-bound: {sql}");
-        assert!(sql.contains(&format!("{POSITION_WHEN_SQL} <")), "missing to-bound: {sql}");
-        assert!(!sql.contains("<="), "the `to` bound must be exclusive: {sql}");
+        assert!(
+            sql.contains(&format!("{POSITION_WHEN_SQL} >=")),
+            "missing from-bound: {sql}"
+        );
+        assert!(
+            sql.contains(&format!("{POSITION_WHEN_SQL} <")),
+            "missing to-bound: {sql}"
+        );
+        assert!(
+            !sql.contains("<="),
+            "the `to` bound must be exclusive: {sql}"
+        );
     }
 
     #[test]
     fn no_range_emits_no_time_predicate() {
         let sql = range_sql(None, None);
-        assert!(!sql.contains("COALESCE(sp.exit_time"), "unbounded cohort must not filter: {sql}");
+        assert!(
+            !sql.contains("COALESCE(sp.exit_time"),
+            "unbounded cohort must not filter: {sql}"
+        );
     }
 
     #[test]
@@ -4176,12 +4357,22 @@ mod filter_sql_tests {
                 ..Default::default()
             },
         );
-        assert!(rule.contains("sp.rule_id::text"), "rule filter must reach SQL: {rule}");
+        assert!(
+            rule.contains("sp.rule_id::text"),
+            "rule filter must reach SQL: {rule}"
+        );
         let mode = where_sql(
             "mode",
-            FilterSpec { op: FilterOp::Eq, val: serde_json::json!("paper"), ..Default::default() },
+            FilterSpec {
+                op: FilterOp::Eq,
+                val: serde_json::json!("paper"),
+                ..Default::default()
+            },
         );
-        assert!(mode.contains("sp.mode"), "mode filter must reach SQL: {mode}");
+        assert!(
+            mode.contains("sp.mode"),
+            "mode filter must reach SQL: {mode}"
+        );
     }
 
     /// A flag column binds a real `bool`, for every spelling the UI can send. As a
@@ -4201,7 +4392,10 @@ mod filter_sql_tests {
                     },
                 );
                 assert!(sql.contains(" = $1"), "{key}={val} must bind a bool: {sql}");
-                assert!(!sql.contains("ILIKE"), "{key}={val} must not text-compare: {sql}");
+                assert!(
+                    !sql.contains("ILIKE"),
+                    "{key}={val} must not text-compare: {sql}"
+                );
             }
         }
     }
@@ -4213,7 +4407,11 @@ mod filter_sql_tests {
     fn unrecognized_flag_operand_drops_the_predicate() {
         let sql = where_sql(
             "migrated",
-            FilterSpec { op: FilterOp::Eq, val: serde_json::json!("maybe"), ..Default::default() },
+            FilterSpec {
+                op: FilterOp::Eq,
+                val: serde_json::json!("maybe"),
+                ..Default::default()
+            },
         );
         assert!(!sql.contains("is_migrated"), "must drop, not guess: {sql}");
     }
@@ -4231,19 +4429,35 @@ mod filter_sql_tests {
         let sql = where_sql("entry_sol", num(FilterOp::Gt, 0.5));
         // Multiplied, never divided by 1e9: the divide is truncated in the exact
         // SQL path (see the u64 instruction-args reference).
-        assert!(sql.contains("sp.entry_lamports * 0.000000001"), "wrong unit lift: {sql}");
-        assert!(!sql.contains("/ 1e9"), "divide-by-1e9 is banned here: {sql}");
+        assert!(
+            sql.contains("sp.entry_lamports * 0.000000001"),
+            "wrong unit lift: {sql}"
+        );
+        assert!(
+            !sql.contains("/ 1e9"),
+            "divide-by-1e9 is banned here: {sql}"
+        );
     }
 
     fn num(op: FilterOp, v: f64) -> FilterSpec {
-        FilterSpec { op, val: serde_json::json!(v), ..Default::default() }
+        FilterSpec {
+            op,
+            val: serde_json::json!(v),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn gt_on_numeric_col_emits_numeric_predicate() {
         let sql = where_sql("volume", num(FilterOp::Gt, 100.0));
-        assert!(sql.contains("i.volume_sol >"), "expected numeric compare, got: {sql}");
-        assert!(!sql.contains("::text"), "numeric op must not cast to text: {sql}");
+        assert!(
+            sql.contains("i.volume_sol >"),
+            "expected numeric compare, got: {sql}"
+        );
+        assert!(
+            !sql.contains("::text"),
+            "numeric op must not cast to text: {sql}"
+        );
         assert!(!sql.contains("ILIKE"), "numeric op must not ILIKE: {sql}");
     }
 
@@ -4257,14 +4471,20 @@ mod filter_sql_tests {
         };
         let sql = where_sql("market_cap", spec);
         assert!(sql.contains("BETWEEN"), "expected BETWEEN, got: {sql}");
-        assert!(!sql.contains("::text"), "between must not cast to text: {sql}");
+        assert!(
+            !sql.contains("::text"),
+            "between must not cast to text: {sql}"
+        );
     }
 
     #[test]
     fn numeric_op_on_text_col_is_dropped() {
         // `symbol` is a Text column; a `gt` on it is meaningless → no predicate.
         let sql = where_sql("symbol", num(FilterOp::Gt, 5.0));
-        assert!(!sql.contains(" AND "), "numeric op on text col must be dropped: {sql}");
+        assert!(
+            !sql.contains(" AND "),
+            "numeric op on text col must be dropped: {sql}"
+        );
     }
 
     #[test]
@@ -4275,7 +4495,10 @@ mod filter_sql_tests {
             ..Default::default()
         };
         let sql = where_sql("symbol", spec);
-        assert!(sql.contains("t.symbol ILIKE"), "text contains must ILIKE: {sql}");
+        assert!(
+            sql.contains("t.symbol ILIKE"),
+            "text contains must ILIKE: {sql}"
+        );
     }
 
     #[test]
@@ -4286,7 +4509,10 @@ mod filter_sql_tests {
             ..Default::default()
         };
         let sql = where_sql("volume", spec);
-        assert!(!sql.contains(" AND "), "non-numeric val on numeric op must be dropped: {sql}");
+        assert!(
+            !sql.contains(" AND "),
+            "non-numeric val on numeric op must be dropped: {sql}"
+        );
     }
 
     #[test]
@@ -4309,8 +4535,14 @@ mod filter_sql_tests {
                 ..Default::default()
             },
         );
-        assert!(sql.contains("NOT ILIKE"), "text neq must emit NOT ILIKE: {sql}");
-        assert!(sql.contains("sp.status"), "status filter must reach SQL: {sql}");
+        assert!(
+            sql.contains("NOT ILIKE"),
+            "text neq must emit NOT ILIKE: {sql}"
+        );
+        assert!(
+            sql.contains("sp.status"),
+            "status filter must reach SQL: {sql}"
+        );
     }
 
     #[test]
@@ -4318,8 +4550,14 @@ mod filter_sql_tests {
         // `pnl_pct` is a computed column — `>0` must lower to a numeric compare over
         // the shared percentage expression (× 100), not be dropped.
         let sql = where_sql("pnl_pct", num(FilterOp::Gt, 0.0));
-        assert!(sql.contains("* 100"), "pnl_pct filter must use the percent expr: {sql}");
-        assert!(sql.contains(" > "), "pnl_pct `>0` must emit a numeric compare: {sql}");
+        assert!(
+            sql.contains("* 100"),
+            "pnl_pct filter must use the percent expr: {sql}"
+        );
+        assert!(
+            sql.contains(" > "),
+            "pnl_pct `>0` must emit a numeric compare: {sql}"
+        );
     }
 
     #[test]
@@ -4331,7 +4569,10 @@ mod filter_sql_tests {
             sql.contains("exit_sol_lamports_total"),
             "pnl_sol filter must use the realized-lamports expr: {sql}"
         );
-        assert!(sql.contains(" > "), "pnl_sol `>0` must emit a numeric compare: {sql}");
+        assert!(
+            sql.contains(" > "),
+            "pnl_sol `>0` must emit a numeric compare: {sql}"
+        );
     }
 
     /// No-DB SSOT guard: both PnL columns must be built from the ONE realized
@@ -4373,7 +4614,10 @@ mod filter_sql_tests {
     fn holding_is_numeric_filterable() {
         // The "Holding" column is the raw exit-token count — numeric-filterable.
         let sql = where_sql("holding", num(FilterOp::Gte, 1000.0));
-        assert!(sql.contains("sp.exit_token_amount >="), "holding must compare on the token count: {sql}");
+        assert!(
+            sql.contains("sp.exit_token_amount >="),
+            "holding must compare on the token count: {sql}"
+        );
     }
 
     #[test]
@@ -4385,6 +4629,9 @@ mod filter_sql_tests {
             ..Default::default()
         };
         let sql = where_sql("current_price", spec);
-        assert!(sql.contains("i.current_price >="), "numeric string must compare: {sql}");
+        assert!(
+            sql.contains("i.current_price >="),
+            "numeric string must compare: {sql}"
+        );
     }
 }

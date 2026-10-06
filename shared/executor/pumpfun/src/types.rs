@@ -75,6 +75,31 @@ impl TokenProgram {
     }
 }
 
+/// One token account the wallet owns, including a zero balance. The holdings
+/// scan drops those; rent reclaim exists to close them.
+#[derive(Debug, Clone)]
+pub struct OwnedTokenAccount {
+    pub pubkey: Pubkey,
+    pub mint: Pubkey,
+    pub program_id: Pubkey,
+    pub amount: u64,
+    pub lamports: u64,
+    pub frozen: bool,
+    /// Token-2022 withheld transfer-fee units. Non-zero makes `close_account`
+    /// revert until the fee is harvested.
+    pub withheld: u64,
+}
+
+/// How many accounts a rent batch confirmed, and the lamports those accounts
+/// held. A re-read of the wallet is the figure the UI shows; this is the
+/// fallback when that re-read fails.
+#[derive(Debug, Default, Clone)]
+pub struct ReclaimSendReport {
+    pub closed: usize,
+    pub closed_lamports: u64,
+    pub errors: Vec<String>,
+}
+
 /// One token account entry in the wallet — pure on-chain data.
 #[derive(Debug, Clone, Serialize)]
 pub struct WalletHolding {

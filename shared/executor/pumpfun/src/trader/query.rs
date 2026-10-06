@@ -10,6 +10,7 @@
 use super::{PumpFunTrader, TokenPDAs};
 use crate::error::{bail, Result, TradeError};
 use crate::protocol::{self, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+use crate::types::OwnedTokenAccount;
 use solana_sdk::pubkey::Pubkey;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::collections::HashMap;
@@ -40,9 +41,7 @@ impl PumpFunTrader {
 
     /// Return all non-zero token accounts held by the trader's wallet.
     /// Uses raw JSON-RPC via reqwest to avoid extra Solana SDK dependencies.
-    pub async fn get_all_token_accounts(
-        &self,
-    ) -> Result<Vec<crate::types::WalletHolding>> {
+    pub async fn get_all_token_accounts(&self) -> Result<Vec<crate::types::WalletHolding>> {
         let wallet = self.wallet_pubkey();
         let rpc_url = self.rpc_url();
 
@@ -128,6 +127,54 @@ impl PumpFunTrader {
         Ok(holdings)
     }
 
+    /// Every token account the wallet owns, zero balances included. Two
+    /// `getTokenAccountsByOwner` calls (legacy and Token-2022), concurrent.
+    /// An error from either program fails the scan: a partial list would
+    /// under-count the rent and look like the missing accounts were already closed.
+    pub async fn list_owned_token_accounts(&self) -> Result<Vec<OwnedTokenAccount>> {
+        let wallet = self.wallet_pubkey();
+        let rpc_url = self.rpc_url();
+        let req = |prog: &str| {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getTokenAccountsByOwner",
+                "params": [
+                    wallet.clone(),
+                    { "programId": prog },
+                    { "encoding": "jsonParsed", "commitment": "confirmed" }
+                ]
+            })
+        };
+        let (spl, t22) = tokio::join!(
+            async {
+                let resp: serde_json::Value = self
+                    .http
+                    .post(rpc_url)
+                    .json(&req(TOKEN_PROGRAM_ID))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                parse_owned_token_accounts(&resp)
+            },
+            async {
+                let resp: serde_json::Value = self
+                    .http
+                    .post(rpc_url)
+                    .json(&req(TOKEN_2022_PROGRAM_ID))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                parse_owned_token_accounts(&resp)
+            },
+        );
+        let mut accounts = spl?;
+        accounts.extend(t22?);
+        Ok(accounts)
+    }
+
     /// Return the wallet's holding for a single `mint`, or `None` if not held.
     ///
     /// A single `getTokenAccountsByOwner` call with a **mint filter** — no full
@@ -178,7 +225,10 @@ impl PumpFunTrader {
             let token_account = account["pubkey"].as_str().unwrap_or("").to_string();
             // The owning token program (classic vs Token-2022) is the account
             // owner, not derivable from the mint filter alone.
-            let token_program_id = account["account"]["owner"].as_str().unwrap_or("").to_string();
+            let token_program_id = account["account"]["owner"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
 
             return Ok(Some(crate::types::WalletHolding {
                 mint: mint.to_string(),
@@ -210,10 +260,7 @@ impl PumpFunTrader {
     /// JSON-RPC error object, a rate-limit body, or any other malformed response
     /// must not be able to impersonate "holds nothing" (that read a landed-sell
     /// heal onto positions that still held their tokens).
-    pub async fn get_all_token_accounts_for_mint(
-        &self,
-        mint: &str,
-    ) -> Result<Vec<(Pubkey, u64)>> {
+    pub async fn get_all_token_accounts_for_mint(&self, mint: &str) -> Result<Vec<(Pubkey, u64)>> {
         let wallet = self.wallet_pubkey();
         let rpc_url = self.rpc_url();
         let body = serde_json::json!({
@@ -267,10 +314,7 @@ impl PumpFunTrader {
     /// Hot-path callers (e.g. the TPSL sell retry loop) use this so repeated
     /// attempts don't each re-query — the lookup happens once and every later
     /// attempt hits the cache (zero RPC).
-    pub async fn resolve_cached_token_account(
-        &self,
-        mint: &str,
-    ) -> Result<Option<Pubkey>> {
+    pub async fn resolve_cached_token_account(&self, mint: &str) -> Result<Option<Pubkey>> {
         if let Some(pk) = self.user_token_accounts.get(mint).map(|r| *r) {
             return Ok(Some(pk));
         }
@@ -295,11 +339,10 @@ impl PumpFunTrader {
         &self,
         bonding_curve: &Pubkey,
     ) -> Result<(u128, u128)> {
-        let acct = self
-            .rpc
-            .get_account(bonding_curve)
-            .await
-            .map_err(|e| TradeError::Other(format!("read bonding curve {bonding_curve}: {e}")))?;
+        let acct =
+            self.rpc.get_account(bonding_curve).await.map_err(|e| {
+                TradeError::Other(format!("read bonding curve {bonding_curve}: {e}"))
+            })?;
         let d = &acct.data;
         if d.len() < 24 {
             bail!("bonding curve account too short: {} bytes", d.len());
@@ -392,12 +435,16 @@ impl PumpFunTrader {
         cashback_enabled: bool,
     ) -> TokenPDAs {
         let bonding_curve = self.bonding_curve_pda(mint);
-        let (bonding_curve_v2, _) =
-            Pubkey::find_program_address(&[b"bonding-curve-v2", mint.as_ref()], &protocol::PUMP_FUN);
+        let (bonding_curve_v2, _) = Pubkey::find_program_address(
+            &[b"bonding-curve-v2", mint.as_ref()],
+            &protocol::PUMP_FUN,
+        );
         let associated_bonding_curve =
             get_associated_token_address_with_program_id(&bonding_curve, mint, token_program);
-        let (creator_vault, _) =
-            Pubkey::find_program_address(&[b"creator-vault", creator.as_ref()], &protocol::PUMP_FUN);
+        let (creator_vault, _) = Pubkey::find_program_address(
+            &[b"creator-vault", creator.as_ref()],
+            &protocol::PUMP_FUN,
+        );
         TokenPDAs {
             token_program: *token_program,
             bonding_curve,
@@ -482,12 +529,13 @@ impl PumpFunTrader {
 
         // Both independent accounts in one request — this gates every manual
         // buy/sell, so keep it a single round-trip.
-        let accounts = self.rpc.get_multiple_accounts(&[bonding_curve, *mint]).await?;
-        let [bonding_acct, mint_acct]: [Option<_>; 2] = accounts
-            .try_into()
-            .map_err(|_| {
-                TradeError::Other("getMultipleAccounts returned an unexpected count".into())
-            })?;
+        let accounts = self
+            .rpc
+            .get_multiple_accounts(&[bonding_curve, *mint])
+            .await?;
+        let [bonding_acct, mint_acct]: [Option<_>; 2] = accounts.try_into().map_err(|_| {
+            TradeError::Other("getMultipleAccounts returned an unexpected count".into())
+        })?;
         let account = bonding_acct
             .ok_or_else(|| TradeError::Other("bonding curve account not found".into()))?;
         let mint_account =
@@ -701,7 +749,9 @@ impl PumpFunTrader {
             .get(mint_address)
             .map(|r| r.creator_vault)
             .ok_or_else(|| {
-                TradeError::Other(format!("creator_vault missing after refresh for {mint_address}"))
+                TradeError::Other(format!(
+                    "creator_vault missing after refresh for {mint_address}"
+                ))
             })?;
         if prev_vault == Some(new_vault) {
             return Ok(None);
@@ -713,7 +763,10 @@ impl PumpFunTrader {
     /// (`is_migrated` + `cashback_enabled`). Also overwrites the cached [`TokenPDAs`] so the
     /// next sell attempt builds with current PDAs. OFF the hot path — called only after a
     /// structural sell revert (6024 or 6005) to recover without marking ExitFailed.
-    pub async fn refresh_curve_facts(&self, mint_address: &str) -> Result<crate::types::CurveFacts> {
+    pub async fn refresh_curve_facts(
+        &self,
+        mint_address: &str,
+    ) -> Result<crate::types::CurveFacts> {
         let mint = Pubkey::from_str(mint_address)?;
         let routing = self.read_curve_routing(&mint).await?;
         self.token_pdas.insert(
@@ -740,6 +793,77 @@ impl PumpFunTrader {
 /// holds nothing; a JSON-RPC `error`, a truncated body, or a rate-limit payload
 /// means we do not know — and callers treat "holds nothing" as proof a sell landed,
 /// so the two must never collapse into the same value.
+/// Decode one program's `getTokenAccountsByOwner` body into owned accounts,
+/// zero balances included. A missing `result.value` is an error, same rule as
+/// [`parse_token_accounts_by_owner`]: an RPC failure must not look like an
+/// empty wallet.
+fn parse_owned_token_accounts(resp: &serde_json::Value) -> Result<Vec<OwnedTokenAccount>> {
+    let Some(accounts) = resp["result"]["value"].as_array() else {
+        if let Some(err) = resp.get("error") {
+            bail!("getTokenAccountsByOwner failed: {err}");
+        }
+        bail!("getTokenAccountsByOwner returned no result: {resp}");
+    };
+    let mut out = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        let Some(pubkey_str) = account["pubkey"].as_str() else {
+            continue;
+        };
+        let Ok(pubkey) = Pubkey::from_str(pubkey_str) else {
+            continue;
+        };
+        let info = &account["account"]["data"]["parsed"]["info"];
+        let Some(mint_str) = info["mint"].as_str() else {
+            continue;
+        };
+        let Ok(mint) = Pubkey::from_str(mint_str) else {
+            continue;
+        };
+        let Some(owner_str) = account["account"]["owner"].as_str() else {
+            continue;
+        };
+        let Ok(program_id) = Pubkey::from_str(owner_str) else {
+            continue;
+        };
+        let amount: u64 = info["tokenAmount"]["amount"]
+            .as_str()
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        let lamports = account["account"]["lamports"].as_u64().unwrap_or(0);
+        let frozen = info["state"].as_str() == Some("frozen");
+        out.push(OwnedTokenAccount {
+            pubkey,
+            mint,
+            program_id,
+            amount,
+            lamports,
+            frozen,
+            withheld: withheld_amount(info),
+        });
+    }
+    Ok(out)
+}
+
+fn withheld_amount(info: &serde_json::Value) -> u64 {
+    let Some(exts) = info.get("extensions").and_then(|e| e.as_array()) else {
+        return 0;
+    };
+    for ext in exts {
+        if ext.get("extension").and_then(|n| n.as_str()) != Some("transferFeeAmount") {
+            continue;
+        }
+        let withheld = &ext["state"]["withheldAmount"];
+        if let Some(s) = withheld.as_str() {
+            return s.parse().unwrap_or(0);
+        }
+        if let Some(n) = withheld.as_u64() {
+            return n;
+        }
+    }
+    0
+}
+
 fn parse_token_accounts_by_owner(
     resp: &serde_json::Value,
     mint: &str,
@@ -771,7 +895,7 @@ fn parse_token_accounts_by_owner(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_token_accounts_by_owner;
+    use super::{parse_owned_token_accounts, parse_token_accounts_by_owner};
     use serde_json::json;
 
     const MINT: &str = "FfuX44yjzy5dn9KGprdyaSS86SfKA8XMzbiEUry1pump";
@@ -789,7 +913,9 @@ mod tests {
     #[test]
     fn empty_wallet_is_ok_empty() {
         let resp = json!({ "jsonrpc": "2.0", "id": 1, "result": { "value": [] } });
-        assert!(parse_token_accounts_by_owner(&resp, MINT).unwrap().is_empty());
+        assert!(parse_token_accounts_by_owner(&resp, MINT)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -816,11 +942,76 @@ mod tests {
 
     #[test]
     fn malformed_body_is_err_not_empty() {
-        for resp in [json!({}), json!({ "result": null }), json!({ "result": { "value": {} } })] {
+        for resp in [
+            json!({}),
+            json!({ "result": null }),
+            json!({ "result": { "value": {} } }),
+        ] {
             assert!(
                 parse_token_accounts_by_owner(&resp, MINT).is_err(),
                 "malformed body must not read as an empty wallet: {resp}"
             );
         }
+    }
+
+    #[test]
+    fn owned_scan_keeps_empty_accounts_and_their_lamports() {
+        let resp = json!({
+            "result": { "value": [{
+                "pubkey": ACCT,
+                "account": {
+                    "lamports": 2_039_280,
+                    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+                    "data": { "parsed": { "info": {
+                        "mint": MINT,
+                        "state": "initialized",
+                        "tokenAmount": { "amount": "0", "decimals": 6 },
+                        "extensions": [{
+                            "extension": "transferFeeAmount",
+                            "state": { "withheldAmount": "0" }
+                        }]
+                    }}}
+                }
+            }]}
+        });
+        let out = parse_owned_token_accounts(&resp).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].amount, 0);
+        assert_eq!(out[0].lamports, 2_039_280);
+        assert!(!out[0].frozen);
+        assert_eq!(out[0].withheld, 0);
+        assert_eq!(out[0].mint.to_string(), MINT);
+    }
+
+    #[test]
+    fn frozen_and_withheld_fees_are_visible() {
+        let resp = json!({
+            "result": { "value": [{
+                "pubkey": ACCT,
+                "account": {
+                    "lamports": 2_100_000,
+                    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "data": { "parsed": { "info": {
+                        "mint": MINT,
+                        "state": "frozen",
+                        "tokenAmount": { "amount": "1", "decimals": 6 },
+                        "extensions": [{
+                            "extension": "transferFeeAmount",
+                            "state": { "withheldAmount": 5 }
+                        }]
+                    }}}
+                }
+            }]}
+        });
+        let out = parse_owned_token_accounts(&resp).unwrap();
+        assert!(out[0].frozen);
+        assert_eq!(out[0].withheld, 5);
+        assert_eq!(out[0].amount, 1);
+    }
+
+    #[test]
+    fn owned_scan_rejects_an_rpc_error() {
+        let resp = json!({ "error": { "code": -32005, "message": "Too many requests" } });
+        assert!(parse_owned_token_accounts(&resp).is_err());
     }
 }

@@ -3,11 +3,11 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
-use trading_core::config::constants::{resolve_sell_slippage_bps, validate_slippage_bps};
-use trading_core::models::wallet::validate_solana_address;
 use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
 use crate::state::deploy_state::DeployState;
+use trading_core::config::constants::{resolve_sell_slippage_bps, validate_slippage_bps};
+use trading_core::models::wallet::validate_solana_address;
 
 /// Max mints accepted per `get_prices` request. The `ids` list is fanned into a
 /// single Jupiter URL, so an unbounded list is a cheap amplification vector —
@@ -55,7 +55,9 @@ async fn resolve_buy_routing_retry(
             Ok(r) => return Ok(r),
             Err(e) => {
                 if attempt < ATTEMPTS {
-                    tracing::debug!("resolve_buy_routing attempt {attempt} failed for {mint}: {e}; retrying");
+                    tracing::debug!(
+                        "resolve_buy_routing attempt {attempt} failed for {mint}: {e}; retrying"
+                    );
                     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 }
                 last_err = Some(e);
@@ -76,7 +78,6 @@ fn resolve_sell_slippage(app_state: &DeployState, request: Option<u64>) -> Optio
 /// re-pays fees on a sell that can't clear it, so the loop stops and the close
 /// no-ops on the leftover dust.
 const SELL_ALL_MAX_PASSES: usize = 3;
-
 
 /// POST /api/solana/wallet/sell — "Sell All": clear the wallet's entire balance
 /// of `mint`, then reclaim rent by closing the now-empty token account.
@@ -139,9 +140,13 @@ pub async fn manual_sell(
         match last {
             Ok(a) => a,
             Err(e) => {
-                tracing::warn!("manual_sell: account enumeration failed for {}: {e}", body.mint_address);
-                return HttpResponse::InternalServerError()
-                    .json(serde_json::json!({ "error": format!("Could not list token accounts: {e}") }));
+                tracing::warn!(
+                    "manual_sell: account enumeration failed for {}: {e}",
+                    body.mint_address
+                );
+                return HttpResponse::InternalServerError().json(
+                    serde_json::json!({ "error": format!("Could not list token accounts: {e}") }),
+                );
             }
         }
     };
@@ -178,14 +183,18 @@ pub async fn manual_sell(
                 // rejects with BondingCurveComplete (6005). Re-resolving per pass also
                 // keeps `is_cashback` fresh. Retried (B6) so a transient
                 // getMultipleAccounts blip doesn't fail the trade.
-                let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint_address).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!("manual_sell: resolve_buy_routing failed for {}: {e}", body.mint_address);
-                        last_err = Some(format!("Could not resolve token: {e}"));
-                        break;
-                    }
-                };
+                let routing =
+                    match resolve_buy_routing_retry(&app_state.trader, &body.mint_address).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::warn!(
+                                "manual_sell: resolve_buy_routing failed for {}: {e}",
+                                body.mint_address
+                            );
+                            last_err = Some(format!("Could not resolve token: {e}"));
+                            break;
+                        }
+                    };
                 // is_cashback gates only the bonding-curve sell's
                 // user_volume_accumulator account; the AMM reads cashback from the
                 // pool on-chain. Take it from the live routing read (B1) — NOT the
@@ -263,8 +272,11 @@ pub async fn manual_sell(
         let mint = body.mint_address.clone();
         let account_str = account_pk.to_string();
         tokio::spawn(async move {
-            if let Err(err) = trader.close_token_account(&mint, Some(account_str.as_str())).await {
-                tracing::debug!(mint = %mint, account = %account_str, "rent-reclaim close skipped: {err}");
+            if let Err(err) = trader
+                .close_token_account(&mint, Some(account_str.as_str()))
+                .await
+            {
+                tracing::warn!(mint = %mint, account = %account_str, "rent-reclaim close failed: {err}");
             }
         });
     }
@@ -372,8 +384,7 @@ pub async fn get_wallet_tokens(app_state: web::Data<Arc<DeployState>>) -> impl R
         Ok(enriched) => HttpResponse::Ok().json(enriched),
         Err(e) => {
             tracing::warn!("get_wallet_tokens failed: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({ "error": e.to_string() }))
+            HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
         }
     }
 }
@@ -397,8 +408,7 @@ pub async fn get_wallet_token(
         Ok(holding) => HttpResponse::Ok().json(holding),
         Err(e) => {
             tracing::warn!("get_wallet_token failed mint={mint}: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({ "error": e.to_string() }))
+            HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
         }
     }
 }

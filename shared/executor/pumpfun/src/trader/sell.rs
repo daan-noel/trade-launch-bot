@@ -8,11 +8,11 @@
 // assembles, signs, sends, and confirms one sell tx.
 // ============================================================
 
-use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, TxAnchor};
 use super::{PumpFunTrader, TokenPDAs};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol;
 use crate::types::TokenProgram;
+use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, TxAnchor};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -71,7 +71,10 @@ impl PumpFunTrader {
                     // so don't sit on a fixed backoff while the token dumps. Loop
                     // straight into the next attempt, which escalates the tip and
                     // takes a fresh nonce.
-                    let e = TradeError::Other(format!("Sell returned false on attempt {}", attempt + 1));
+                    let e = TradeError::Other(format!(
+                        "Sell returned false on attempt {}",
+                        attempt + 1
+                    ));
                     error!("❌ {}", e);
                     last_err = Some(e);
                 }
@@ -183,9 +186,12 @@ impl PumpFunTrader {
         // reads the cached account, so populate it here.
         if let Some(token_account) = token_account_override {
             let pk = Pubkey::from_str(token_account).context("Invalid token_account_override")?;
-            self.user_token_accounts
-                .insert(token_mint.to_string(), pk);
-        } else if self.resolve_cached_token_account(token_mint).await?.is_none() {
+            self.user_token_accounts.insert(token_mint.to_string(), pk);
+        } else if self
+            .resolve_cached_token_account(token_mint)
+            .await?
+            .is_none()
+        {
             bail!("No token account found for mint {token_mint}");
         }
 
@@ -204,8 +210,10 @@ impl PumpFunTrader {
         .await
     }
 
-    /// Fire-and-forget rent reclaim: close the wallet's (already-emptied) token
-    /// account for `token_mint`, returning its ~0.002 SOL rent to the wallet.
+    /// Fire-and-forget rent reclaim: close one already-emptied token account for
+    /// `token_mint`, returning its ~0.002 SOL rent to the wallet. Pass the account
+    /// the position funded. `None` falls back to the per-mint cache, which holds
+    /// only the last account seen for that mint.
     /// OFF the exit hot path — uses a RECENT BLOCKHASH (no durable nonce slot),
     /// NO Jito tip, and does NOT confirm. SPL `close_account` reverts if the
     /// account still holds any balance, so this is only meaningful after the
@@ -365,7 +373,8 @@ impl PumpFunTrader {
             let reserves: Option<(u128, u128)> = match (slippage_bps, reserves_override) {
                 (None, _) => None,
                 (Some(_), Some(r)) => Some(r),
-                (Some(_), None) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await {
+                (Some(_), None) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await
+                {
                     Ok(r) => Some(r),
                     Err(e) => {
                         warn!("curve sell slippage: reserve read failed ({e}); using min_out=1");
@@ -399,9 +408,8 @@ impl PumpFunTrader {
             // mode (forge's ephemeral wallets) there is no slot to hold.
             // `Standard`: a sell must not degrade off the durable nonce — a long
             // hold is exactly the case a blockhash can't cover.
-            let (tx, nonce_to_refresh) = self
-                .build_trade_tx(ixs, signer, TxAnchor::Standard)
-                .await?;
+            let (tx, nonce_to_refresh) =
+                self.build_trade_tx(ixs, signer, TxAnchor::Standard).await?;
             info!("🔁 Sell — token: {}", token_mint);
 
             let res: Result<Option<String>> = async {
@@ -606,9 +614,18 @@ mod tests {
 
     #[test]
     fn sell_min_out_is_unprotected_without_slippage_or_reserves() {
-        assert_eq!(compute_curve_sell_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF), 1);
-        assert_eq!(compute_curve_sell_min_out(1_000_000, Some(500), None, FEE_BUF), 1);
-        assert_eq!(compute_curve_sell_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF), 1);
+        assert_eq!(
+            compute_curve_sell_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF),
+            1
+        );
+        assert_eq!(
+            compute_curve_sell_min_out(1_000_000, Some(500), None, FEE_BUF),
+            1
+        );
+        assert_eq!(
+            compute_curve_sell_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF),
+            1
+        );
     }
 
     #[test]
@@ -616,7 +633,10 @@ mod tests {
         let reserves = Some((1_000_000_000u128, 30_000_000u128));
         let loose = compute_curve_sell_min_out(1_000_000, Some(5_000), reserves, FEE_BUF); // 50%
         let tight = compute_curve_sell_min_out(1_000_000, Some(100), reserves, FEE_BUF); // 1%
-        assert!(tight >= loose, "tighter slippage must demand at least as many lamports");
+        assert!(
+            tight >= loose,
+            "tighter slippage must demand at least as many lamports"
+        );
         assert!(loose >= 1 && tight >= 1, "floor is always >= 1");
     }
 
@@ -670,17 +690,15 @@ mod tests {
         let t = dummy_trader();
         let owner = t.config.signer.pubkey();
         let uta = Pubkey::new_unique();
-        let close_ix = spl_token::instruction::close_account(
-            &spl_token::id(),
-            &uta,
-            &owner,
-            &owner,
-            &[],
-        )
-        .expect("build close ix");
+        let close_ix =
+            spl_token::instruction::close_account(&spl_token::id(), &uta, &owner, &owner, &[])
+                .expect("build close ix");
         let msg = Message::new(&[close_ix], Some(&owner));
         let size = wire_size(&msg);
         eprintln!("standalone close tx = {size} B (limit {TX_LIMIT})");
-        assert!(size <= TX_LIMIT, "standalone close = {size} B (limit {TX_LIMIT})");
+        assert!(
+            size <= TX_LIMIT,
+            "standalone close = {size} B (limit {TX_LIMIT})"
+        );
     }
 }

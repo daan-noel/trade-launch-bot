@@ -24,9 +24,15 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             // The execution costs every PnL number on this box is net of, so the
             // frontend's live mark tip nets a bag with the same constants the
             // engine does instead of a hardcoded copy.
-            .route("/meta/cost-model", web::get().to(handlers::strategies::engine::cost_model))
+            .route(
+                "/meta/cost-model",
+                web::get().to(handlers::strategies::engine::cost_model),
+            )
             // Live armed (token, rule) snapshot for the monitor.
-            .route("/strategies/armed", web::get().to(handlers::strategies::engine::list_armed))
+            .route(
+                "/strategies/armed",
+                web::get().to(handlers::strategies::engine::list_armed),
+            )
             // What the fold currently reads for one ARMED (token, rule) — the
             // Waiting row's "what is it waiting on". Literal path, three segments,
             // so it never contests the four-segment `{strategy}/positions/…` set.
@@ -67,8 +73,14 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 web::post().to(handlers::strategies::engine::apply_strategy_bundle),
             )
             // Fingerprints CRUD (shared by many rules).
-            .route("/fingerprints", web::get().to(handlers::strategies::engine::list_fingerprints))
-            .route("/fingerprints", web::post().to(handlers::strategies::engine::create_fingerprint))
+            .route(
+                "/fingerprints",
+                web::get().to(handlers::strategies::engine::list_fingerprints),
+            )
+            .route(
+                "/fingerprints",
+                web::post().to(handlers::strategies::engine::create_fingerprint),
+            )
             .route(
                 "/fingerprints/{id}",
                 web::get().to(handlers::strategies::engine::get_fingerprint),
@@ -82,8 +94,14 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 web::delete().to(handlers::strategies::engine::delete_fingerprint),
             )
             // Generic rules CRUD + activate/pause/stop.
-            .route("/strategy-rules", web::get().to(handlers::strategies::engine::list_rules))
-            .route("/strategy-rules", web::post().to(handlers::strategies::engine::create_rule))
+            .route(
+                "/strategy-rules",
+                web::get().to(handlers::strategies::engine::list_rules),
+            )
+            .route(
+                "/strategy-rules",
+                web::post().to(handlers::strategies::engine::create_rule),
+            )
             // Bulk lifecycle (Pause All / Stop All), scoped by `?mode=real|paper` —
             // literal segments, registered before `{id}/...` so they never bind `{id}`.
             .route(
@@ -118,20 +136,41 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategy-rules/{id}/runs",
                 web::get().to(handlers::strategies::engine::list_rule_runs),
             )
-            .route("/strategy-rules/{id}", web::get().to(handlers::strategies::engine::get_rule))
-            .route("/strategy-rules/{id}", web::put().to(handlers::strategies::engine::update_rule))
+            .route(
+                "/strategy-rules/{id}",
+                web::get().to(handlers::strategies::engine::get_rule),
+            )
+            .route(
+                "/strategy-rules/{id}",
+                web::put().to(handlers::strategies::engine::update_rule),
+            )
             .route(
                 "/strategy-rules/{id}",
                 web::delete().to(handlers::strategies::engine::delete_rule),
             )
             // Token sync
             .route("/token/sync", web::post().to(handlers::tokens::sync_token))
-            .route("/token/sync/preview", web::post().to(handlers::tokens::preview_sync))
+            .route(
+                "/token/sync/preview",
+                web::post().to(handlers::tokens::preview_sync),
+            )
             // Live mode toggle
-            .route("/system/live", web::get().to(handlers::system::get_live_mode))
-            .route("/system/live", web::put().to(handlers::system::set_live_mode))
-            .route("/system/curve-source", web::get().to(handlers::system::get_curve_source))
-            .route("/system/curve-source", web::put().to(handlers::system::set_curve_source))
+            .route(
+                "/system/live",
+                web::get().to(handlers::system::get_live_mode),
+            )
+            .route(
+                "/system/live",
+                web::put().to(handlers::system::set_live_mode),
+            )
+            .route(
+                "/system/curve-source",
+                web::get().to(handlers::system::get_curve_source),
+            )
+            .route(
+                "/system/curve-source",
+                web::put().to(handlers::system::set_curve_source),
+            )
             .route(
                 "/system/reload-caches",
                 web::post().to(handlers::system::reload_caches),
@@ -221,10 +260,22 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             // Portfolio/PnL reads (Holdings + Home + Live-Trading) — enriched
             // holdings with cost basis/PnL/bot tag, the wallet summary, and the
             // cross-strategy open-positions roll-up.
-            .route("/portfolio/holdings", web::get().to(handlers::trading::get_portfolio_holdings))
-            .route("/portfolio/holdings/query", web::post().to(handlers::trading::query_portfolio_holdings))
-            .route("/portfolio/holdings/summary", web::post().to(handlers::trading::portfolio_holdings_summary))
-            .route("/portfolio/summary", web::get().to(handlers::trading::get_portfolio_summary))
+            .route(
+                "/portfolio/holdings",
+                web::get().to(handlers::trading::get_portfolio_holdings),
+            )
+            .route(
+                "/portfolio/holdings/query",
+                web::post().to(handlers::trading::query_portfolio_holdings),
+            )
+            .route(
+                "/portfolio/holdings/summary",
+                web::post().to(handlers::trading::portfolio_holdings_summary),
+            )
+            .route(
+                "/portfolio/summary",
+                web::get().to(handlers::trading::get_portfolio_summary),
+            )
             // Cross-rule History page (B1) — registered before the bare
             // `/portfolio/positions` GET; distinct method + `/query` suffix, no clash.
             .route(
@@ -235,7 +286,10 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/portfolio/positions/summary",
                 web::post().to(handlers::trading::query_portfolio_positions_summary),
             )
-            .route("/portfolio/positions", web::get().to(handlers::trading::get_portfolio_positions))
+            .route(
+                "/portfolio/positions",
+                web::get().to(handlers::trading::get_portfolio_positions),
+            )
             .route(
                 "/portfolio/recent-closes",
                 web::get().to(handlers::trading::get_portfolio_recent_closes),
@@ -250,16 +304,44 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::trading::get_portfolio_closes_series),
             )
             // On-chain Solana queries
-            .route("/solana/wallet/tokens", web::get().to(handlers::trading::get_wallet_tokens))
-            .route("/solana/wallet/tokens/{mint}", web::get().to(handlers::trading::get_wallet_token))
-            .route("/solana/prices", web::get().to(handlers::trading::get_prices))
-            .route("/solana/wallet/sell", web::post().to(handlers::trading::manual_sell))
+            .route(
+                "/solana/wallet/tokens",
+                web::get().to(handlers::trading::get_wallet_tokens),
+            )
+            .route(
+                "/solana/wallet/tokens/{mint}",
+                web::get().to(handlers::trading::get_wallet_token),
+            )
+            .route(
+                "/solana/prices",
+                web::get().to(handlers::trading::get_prices),
+            )
+            .route(
+                "/solana/wallet/sell",
+                web::post().to(handlers::trading::manual_sell),
+            )
             .route(
                 "/solana/wallet/{wallet}/token/{mint}",
                 web::get().to(handlers::trading::get_wallet_token_balance),
             )
             // Cashback
-            .route("/cashback/status", web::get().to(handlers::trading::get_cashback_status))
-            .route("/cashback/claim", web::post().to(handlers::trading::claim_cashback)),
+            .route(
+                "/cashback/status",
+                web::get().to(handlers::trading::get_cashback_status),
+            )
+            .route(
+                "/cashback/claim",
+                web::post().to(handlers::trading::claim_cashback),
+            )
+            // Stranded token-account rent. Status is one wallet scan; recover
+            // closes empty accounts (and, on burn_dust, unsellable dust).
+            .route(
+                "/wallet/rent",
+                web::get().to(handlers::trading::get_rent_status),
+            )
+            .route(
+                "/wallet/rent/recover",
+                web::post().to(handlers::trading::recover_rent),
+            ),
     );
 }

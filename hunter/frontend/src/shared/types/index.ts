@@ -804,6 +804,37 @@ export interface CashbackClaimResult {
   pots: CashbackClaimOutcome[];
 }
 
+/** One kind of stranded token-account rent. Lamports are raw integers. */
+export interface RentBucket {
+  accounts: number;
+  lamports: number;
+}
+
+/** GET /api/wallet/rent — what the trading wallet still has locked in token accounts. */
+export interface RentStatus {
+  empty: RentBucket;
+  empty_legacy: number;
+  empty_token2022: number;
+  dust: RentBucket;
+  wrapped: RentBucket;
+  blocked: RentBucket;
+  /** Empty accounts, and dust, left because an open position still needs them. */
+  open_position: RentBucket;
+  held: number;
+  multi_account_mints: number;
+  dust_raw_max: number;
+}
+
+/** POST /api/wallet/rent/recover. */
+export interface RentRecoverResult {
+  closed: number;
+  still_open: number;
+  lamports_returned: number;
+  skipped_inflight: number;
+  error_count: number;
+  errors: string[];
+}
+
 export interface TokenDetailRecord {
   mint_address: string;
   name: string;

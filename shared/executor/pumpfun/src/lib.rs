@@ -28,10 +28,10 @@
 pub mod alt;
 pub mod catalog;
 pub mod constants;
-pub mod protocol;
-pub mod types;
 mod price;
+pub mod protocol;
 mod trader;
+pub mod types;
 
 // Re-export the engine's `config` + `error` modules at this crate's root so both
 // the `pump_trader::config` / `pump_trader::error` consumer paths AND the
@@ -48,11 +48,10 @@ pub use executor_core::error::{Result, TradeError};
 pub use executor_core::{
     classify_swap_revert, pump_error_name, AccountDelta, DecoStep, Engine, IxLayout, LayoutKind,
     NonceAuthCheck, NonceTxState, SigStatus, SimOutcome, SwapDirection, SwapRetryDecision,
-    SwapRoute, Venue,
-    VenueId, AMM_BUY_SLIPPAGE_BELOW_MIN_BASE, AMM_EXCEEDED_SLIPPAGE, AMM_INVALID_POOL_V2,
-    ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE, CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT,
-    CURVE_MISSING_USER_VOLUME_ACCUMULATOR, CURVE_TOO_LITTLE_SOL_RECEIVED,
-    CURVE_TOO_MUCH_SOL_REQUIRED,
+    SwapRoute, Venue, VenueId, AMM_BUY_SLIPPAGE_BELOW_MIN_BASE, AMM_EXCEEDED_SLIPPAGE,
+    AMM_INVALID_POOL_V2, ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE,
+    CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT, CURVE_MISSING_USER_VOLUME_ACCUMULATOR,
+    CURVE_TOO_LITTLE_SOL_RECEIVED, CURVE_TOO_MUCH_SOL_REQUIRED,
 };
 
 // --- pump venue items ---
@@ -63,8 +62,8 @@ pub use trader::claim::{ClaimOutcome, PotStatus};
 pub use trader::probe::{EndpointResult, FanoutReport, SenderPinRecommendation};
 pub use trader::{BundleBuyVariant, BundleLegParams, BuySignedHook, DevBuy, PumpFunTrader};
 pub use types::{
-    AmmPoolFacts, BuyRouting, CreateTokenArgs, CreateTokenV2Args, TokenBalance, TokenProgram,
-    WalletHolding,
+    AmmPoolFacts, BuyRouting, CreateTokenArgs, CreateTokenV2Args, OwnedTokenAccount,
+    ReclaimSendReport, TokenBalance, TokenProgram, WalletHolding,
 };
 
 // The variant catalog (SSOT for on-chain instruction selection) — the orchestrator

@@ -13,6 +13,7 @@ import { PageHeader } from 'components/ui/PageHeader';
 import { walletColumns, WALLET_KEYS } from '@live/components/wallet/walletColumns';
 import { HoldingsSummaryBar } from '@live/components/wallet/HoldingsSummaryBar';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
+import { RentCard } from '@live/components/wallet/RentCard';
 import { isCashHolding, isCashMint } from 'lib/assetKind';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
@@ -568,6 +569,8 @@ export function MyWalletPage() {
       {summary && <HoldingsSummaryBar summary={summary} />}
 
       <CashbackCard />
+
+      <RentCard onRecovered={refreshAll} />
 
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}

@@ -43,6 +43,9 @@ export const baseApi = createApi({
     'StrategyPaper',
     'Profiles',
     'Cashback',
+    // Stranded token-account rent on the wallet page. Its own tag: a recover
+    // must refresh this card and not the cashback pots.
+    'Rent',
     'GroupedSweep',
     'GroupedSweepGroups',
     'TokenBatch',

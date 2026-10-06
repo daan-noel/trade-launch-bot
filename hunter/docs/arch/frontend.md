@@ -53,7 +53,7 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   board lists only that page's rules. The per-app **color** is NOT in the nav config — it's
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
-**Operator clarity (jobs):** Wallet = bag overview (funding/cashback + holdings; manual
+**Operator clarity (jobs):** Wallet = bag overview (funding/cashback/account-rent + holdings; manual
 trading moved to the Console); **Console = the one real-trade surface** (SSE SSOT; lanes
 top-to-bottom: ⚠ Attention with per-status actions mirroring the backend close matrix,
 Open ∥ Manual-trade panel (buy 202→SSE, TP/SL, sell-all-by-mint, Holding Sell ALL / 25% / 50%, persistent trade log),
@@ -323,7 +323,8 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   `StrategyStrip`; portfolio tags stay fresh via `usePortfolioRealtime`), SyncToken
   (`/tokens/sync`, legacy `/token/sync` redirects),
   MyWallet (**bag overview** — Funding (SOL + USDC) + trading KPIs + meme-positions
-  table; row select opens detail + live `LazyTokenTradeChart` below (ingest
+  table; account-rent card lists empty / dust / wrapped / blocked token accounts
+  and recovers them; row select opens detail + live `LazyTokenTradeChart` below (ingest
   `trade_executed` → RTK trades cache); cash not selectable; Console link; row-triggered
   buy dialog only — the old free-text header modals are gone; table
   reloads on position/our-wallet SSE),

@@ -9,6 +9,8 @@ import type {
   OpenPositionMark,
   CashbackStatus,
   CashbackClaimResult,
+  RentStatus,
+  RentRecoverResult,
   PositionFill,
 } from 'types';
 import type { ArmedEntry } from 'lib/strategy/types';
@@ -449,6 +451,16 @@ export const liveApi = baseApi.injectEndpoints({
       query: () => ({ url: '/api/cashback/claim', method: 'POST' }),
       invalidatesTags: ['Cashback'],
     }),
+    // Stranded token-account rent. One wallet scan, not polled. Recover closes
+    // empty accounts (and unwraps WSOL); burn_dust also destroys dust balances.
+    getRentStatus: builder.query<RentStatus, void>({
+      query: () => '/api/wallet/rent',
+      providesTags: ['Rent'],
+    }),
+    recoverRent: builder.mutation<RentRecoverResult, { burn_dust: boolean }>({
+      query: (body) => ({ url: '/api/wallet/rent/recover', method: 'POST', body }),
+      invalidatesTags: ['Rent', 'WalletHoldings'],
+    }),
     // Generic-engine armed snapshot for the live monitor — the currently-armed
     // (token, rule) pairs. Live deltas ride the `strategy_armed_changed` SSE;
     // this is the initial + reconnect refetch.
@@ -523,6 +535,8 @@ export const {
   useGetArmedMetricSeriesQuery,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
+  useGetRentStatusQuery,
+  useRecoverRentMutation,
   useGetLiveModeQuery,
   useSetLiveModeMutation,
   useGetCurveSourceQuery,

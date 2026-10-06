@@ -7,13 +7,6 @@ deploy keep the figures they were booked with; they are not re-booked. Open:
 
 1. **Deploy.** Migration `0019_trade_payer_net.sql` and the live binary ship together;
    until then the server books curve-side amounts.
-2. **Rent stranded in empty token accounts.** The wallet holds 532 empty Token-2022
-   accounts (1.14 SOL of rent, measured 2026-09-14), most from before 2026-09-07. A
-   sweep that closes every empty account returns it. One path that still strands
-   rent: each buy funds a fresh account, but the reclaim closes the per-mint cached
-   one (`close_token_account(mint, None)`), so the account a concurrent buy on the same
-   mint funded stays open. Closing the account the position funded
-   (`FillSigs::token_account`) closes that path.
-3. **Study kernel.** `study-kernel/kernel.py` `net_project` mirrors the linear formula
+2. **Study kernel.** `study-kernel/kernel.py` `net_project` mirrors the linear formula
    the engine no longer uses; `net` (the exact curve) is the engine's formula, less
    the per-side fixed cost and the close.
