@@ -1317,7 +1317,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   read from definite entries in the range (one print before him, quiet for 5 seconds,
   a stored ceiling); a setting two entries share is kept, and a single definite entry
   is the whole set. The box shows that list. Typing replaces it, and clearing the box
-  reads the entries again. A crowded buy whose ceiling is not stored stays blank. Each signal badges its structure row,
+  reads the entries again. A curve buy stores that ceiling on `trades.swap_ix`. A crowded buy whose ceiling is not stored stays blank. Each signal badges its structure row,
   pins its own chart marker, and has its own column group (IX TXs / tx % / SOL / SOL %, and
   the same four for reserve).
   The breakdown's structure column (`structureColumn`): under `exact` it is

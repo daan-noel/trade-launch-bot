@@ -27,7 +27,7 @@ pub const OWN_TX_LOOKUP_SLACK: chrono::Duration = chrono::Duration::hours(1);
 /// ceiling guard in `tests` both read it, so adding a bound column cannot leave a
 /// stale copy behind (it did once — the doc said 18 while the guard still asserted
 /// 15, and neither was the truth).
-const TRADE_INSERT_BINDS_PER_ROW: usize = 22;
+const TRADE_INSERT_BINDS_PER_ROW: usize = 23;
 
 /// Rows per `insert_many` statement. A single Postgres statement is capped at
 /// 65535 bind parameters (the wire protocol's int16 count), and sqlx 0.6 silently
@@ -221,6 +221,9 @@ impl TryFrom<TradeDbRow> for Trade {
             // (0002+ trades); `Null` when not selected or an unbackfilled old row.
             instruction_labels: r.ix_labels.map(|j| j.0).unwrap_or(serde_json::Value::Null),
             venue: r.venue,
+            // History reads do not project `swap_ix`. The entry-context query reads
+            // the ceiling itself.
+            swap_ix: None,
         })
     }
 }
@@ -285,9 +288,9 @@ impl TradeRepo {
                  reserve_lamports, reserve_token,
                  slot, tx_index, leg_index, block_time, tx_signature, ix_labels,
                  fee_lamports, cu_limit, cu_price, tip_lamports,
-                 payer_id, is_proxied, payer_net_lamports, venue_fee_bps)
+                 payer_id, is_proxied, payer_net_lamports, venue_fee_bps, swap_ix)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                    $16, $17, $18, $19, $20, $21, $22)
+                    $16, $17, $18, $19, $20, $21, $22, $23)
             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
             "#,
         )
@@ -313,6 +316,7 @@ impl TradeRepo {
         .bind(trade.is_proxied)
         .bind(trade.payer_net_lamports)
         .bind(trade.venue_fee_bps.map(|f| f as f32))
+        .bind(trade.swap_ix.as_ref().map(sqlx::types::Json))
         .execute(&self.pool)
         .await?;
 
@@ -397,7 +401,7 @@ impl TradeRepo {
                   reserve_lamports, reserve_token, slot, tx_index, leg_index, \
                   block_time, tx_signature, ix_labels, fee_lamports, \
                   cu_limit, cu_price, tip_lamports, payer_id, is_proxied, payer_net_lamports, \
-                  venue_fee_bps) ",
+                  venue_fee_bps, swap_ix) ",
             );
             qb.push_values(chunk.iter().zip(sig_chunk), |mut b, (t, sig)| {
                 let wallet_id = wallet_ids.get(&t.wallet_address).copied().unwrap_or_default();
@@ -426,7 +430,8 @@ impl TradeRepo {
                     )
                     .push_bind(t.is_proxied)
                     .push_bind(t.payer_net_lamports)
-                    .push_bind(t.venue_fee_bps.map(|f| f as f32));
+                    .push_bind(t.venue_fee_bps.map(|f| f as f32))
+                    .push_bind(t.swap_ix.as_ref().map(sqlx::types::Json));
             });
             qb.push(" ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING");
             qb.build().execute(&self.pool).await?;
@@ -1322,16 +1327,25 @@ impl TradeRepo {
         };
         let rows: Vec<WalletBuyTx> = sqlx::query_as(
             r#"
-            SELECT mint_address, slot, tx_index,
-                   MIN(block_time) AS block_time,
-                   SUM(amount_lamports)::BIGINT AS amount_lamports,
-                   SUM(token_amount)::BIGINT AS token_amount
-            FROM trades
-            WHERE wallet_id = $1
-              AND trade_type = 'buy'
-              AND block_time >= $2
-              AND ($3::timestamptz IS NULL OR block_time <= $3)
-            GROUP BY mint_address, slot, tx_index
+            SELECT mint_address, slot, tx_index, block_time,
+                   amount_lamports, token_amount,
+                   CASE
+                     WHEN btrim(ceiling) ~ '^[0-9]{1,18}$' THEN ceiling::bigint
+                   END AS max_cost_lamports
+            FROM (
+                SELECT mint_address, slot, tx_index,
+                       MIN(block_time) AS block_time,
+                       SUM(amount_lamports)::BIGINT AS amount_lamports,
+                       SUM(token_amount)::BIGINT AS token_amount,
+                       (array_agg(swap_ix ORDER BY leg_index)
+                          FILTER (WHERE swap_ix IS NOT NULL))[1]->>'max_cost_lamports' AS ceiling
+                FROM trades
+                WHERE wallet_id = $1
+                  AND trade_type = 'buy'
+                  AND block_time >= $2
+                  AND ($3::timestamptz IS NULL OR block_time <= $3)
+                GROUP BY mint_address, slot, tx_index
+            ) buys
             ORDER BY slot DESC, tx_index DESC
             LIMIT $4
             "#,

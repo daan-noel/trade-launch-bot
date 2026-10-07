@@ -184,6 +184,7 @@ mod tests {
             instruction_labels: Vec::new(),
             amm_swap_accounts: None,
             curve_creator: None,
+            swap_ix: None,
         }
     }
 

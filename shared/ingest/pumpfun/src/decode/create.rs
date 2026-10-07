@@ -5,9 +5,10 @@ use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
 use tracing::{debug, warn};
 
-use crate::event::{BuyInstructionArgs, CreatorActivityEvent, CreatorActivityKind, IngestEvent, TokenCreated};
+use crate::event::{CreatorActivityEvent, CreatorActivityKind, IngestEvent, TokenCreated};
 use crate::protocol::Protocol;
 
+use super::swap_ix::first_buy_ix;
 use super::Decoder;
 use super::trade::DecodedTradeEvent;
 
@@ -89,7 +90,7 @@ impl Decoder {
             .unwrap_or(false);
         let bonding_curve = create_log.and_then(|e| e.bonding_curve.clone())
             .or_else(|| pump_accounts.get(2).cloned());
-        let initial_buy_instruction = extract_pump_buy_instruction_data(pump_ix_datas, p);
+        let initial_buy_instruction = first_buy_ix(pump_ix_datas, p);
 
         let token_program_id = create_log
             .and_then(|e| e.token_program.clone())
@@ -216,45 +217,6 @@ pub(super) fn decode_create_events_from_logs(logs: &[&str], disc: &[u8; 8]) -> V
         }
     }
     events
-}
-
-// ── Buy instruction args ──────────────────────────────────────────────────────
-
-#[derive(BorshDeserialize)]
-struct BuyArgs { token_amount: u64, max_sol_cost: u64 }
-#[derive(BorshDeserialize)]
-struct BuyExactArgs { spendable_sol_in: u64, min_tokens_out: u64 }
-
-fn parse_buy_ix(data: &[u8], p: &Protocol) -> Option<BuyInstructionArgs> {
-    if data.len() < 8 { return None; }
-    let d = &p.discriminators;
-    let (disc, rest) = data.split_at(8);
-    let mut buf = rest;
-    if disc == d.buy {
-        let a = BuyArgs::deserialize(&mut buf).ok()?;
-        return Some(BuyInstructionArgs::Buy { token_amount: a.token_amount, max_sol_cost: a.max_sol_cost });
-    }
-    if disc == d.buy_v2 {
-        let a = BuyArgs::deserialize(&mut buf).ok()?;
-        return Some(BuyInstructionArgs::BuyV2 { token_amount: a.token_amount, max_sol_cost: a.max_sol_cost });
-    }
-    if disc == d.buy_exact_sol_in {
-        let a = BuyExactArgs::deserialize(&mut buf).ok()?;
-        return Some(BuyInstructionArgs::BuyExactSolIn { spendable_sol_in: a.spendable_sol_in, min_tokens_out: a.min_tokens_out });
-    }
-    if disc == d.buy_exact_quote_in {
-        let a = BuyExactArgs::deserialize(&mut buf).ok()?;
-        return Some(BuyInstructionArgs::BuyExactQuoteIn { spendable_sol_in: a.spendable_sol_in, min_tokens_out: a.min_tokens_out });
-    }
-    if disc == d.buy_exact_quote_in_v2 {
-        let a = BuyExactArgs::deserialize(&mut buf).ok()?;
-        return Some(BuyInstructionArgs::BuyExactQuoteInV2 { spendable_sol_in: a.spendable_sol_in, min_tokens_out: a.min_tokens_out });
-    }
-    None
-}
-
-fn extract_pump_buy_instruction_data(datas: &[&[u8]], p: &Protocol) -> Option<BuyInstructionArgs> {
-    datas.iter().find_map(|&d| parse_buy_ix(d, p))
 }
 
 // ── Create instruction args decode ────────────────────────────────────────────

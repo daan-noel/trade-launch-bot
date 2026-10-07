@@ -429,6 +429,8 @@ pub(super) fn build_amm_trade(
         instruction_labels,
         amm_swap_accounts,
         curve_creator: None,
+        // AMM swap args are a later arm. The column exists; this leg leaves it empty.
+        swap_ix: None,
     }
 }
 

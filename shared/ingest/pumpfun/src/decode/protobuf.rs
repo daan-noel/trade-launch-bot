@@ -20,6 +20,7 @@ use super::instructions::{
     FeeBudget,
     InstructionKind,
 };
+use super::swap_ix::{buy_ixs_in_order, parse_buy_ix, BuyCursor};
 use super::trade::{
     build_amm_trade, compute_sol_change, compute_sol_change_lamports,
     decode_pump_swap_trades_from_inner, decode_pump_swap_trades_from_logs,
@@ -351,9 +352,16 @@ impl Decoder {
         // Step 3: build IngestEvents.
         let mut events: Vec<IngestEvent> = Vec::new();
         let has_create = kinds.iter().any(|k| matches!(k, InstructionKind::Create));
+        // Buy instructions in execution order. Each buy event takes the next one;
+        // a sell takes none, so it cannot shift the buy that follows it.
+        let mut buys = BuyCursor::new(buy_ixs_in_order(
+            pump_ix_data_in_order(message, meta, &keys, &p.programs.pump_fun.bytes),
+            p,
+        ));
 
         // 3a: one Trade per decoded TradeEvent.
         for (leg_index, ev) in decoded_events.iter().enumerate() {
+            let swap_ix = buys.take(ev.is_buy);
             if ev.sol_amount < p.min_trade_sol {
                 continue;
             }
@@ -394,6 +402,7 @@ impl Decoder {
                 instruction_labels: instruction_labels.clone(),
                 amm_swap_accounts: None,
                 curve_creator: ev.curve_creator,
+                swap_ix,
             }));
         }
 
@@ -407,6 +416,12 @@ impl Decoder {
                 }
                 if let Some(pump_ix) = pump_ixs.first() {
                     let ix_accounts = resolve_pump_accounts_pb(pump_ix, &keys);
+                    let swap_ix = if matches!(kind, InstructionKind::Buy) {
+                        parse_buy_ix(pump_ix.data, p)
+                            .or_else(|| pump_ixs.iter().find_map(|ix| parse_buy_ix(ix.data, p)))
+                    } else {
+                        None
+                    };
                     if let Some(ev) = self.decode_trade_from_balances_pb(
                         *kind, &signature, info.index as u32, slot, received_at,
                         &ix_accounts, &all_keys,
@@ -416,6 +431,7 @@ impl Decoder {
                         fee_budget,
                         payer_net_lamports,
                         &sender,
+                        swap_ix,
                     ) {
                         events.push(ev);
                     }
@@ -623,6 +639,7 @@ impl Decoder {
         fee_budget: FeeBudget,
         payer_net_lamports: Option<i64>,
         sender: &TxSender<'_, '_>,
+        swap_ix: Option<crate::event::BuyInstructionArgs>,
     ) -> Option<IngestEvent> {
         let p = &self.protocol;
         let mint = pump_accounts.get(2).filter(|s| !s.is_empty())?.to_string();
@@ -681,6 +698,7 @@ impl Decoder {
             // No event to read it from; the account list alone does not say which
             // key the vault was derived from.
             curve_creator: None,
+            swap_ix,
         }))
     }
 }
@@ -736,6 +754,37 @@ fn decode_trade_events_from_inner_pb(pump_ixs: &[PbIx], p: &Protocol) -> Vec<Dec
 }
 
 // ── Protobuf helpers ──────────────────────────────────────────────────────────
+
+/// Pump instruction bytes in execution order: each outer instruction, then the
+/// inner instructions invoked from it. Outer-then-every-inner would pair a
+/// router's inner buy with a later top-level buy.
+fn pump_ix_data_in_order<'a>(
+    message: &'a scb::Message,
+    meta: &'a scb::TransactionStatusMeta,
+    keys: &LazyKeys,
+    pump_id_bytes: &[u8],
+) -> Vec<&'a [u8]> {
+    let is_pump = |idx: u32| keys.raw(idx as usize) == Some(pump_id_bytes);
+    let mut inners: Vec<Vec<&[u8]>> = vec![Vec::new(); message.instructions.len()];
+    for group in &meta.inner_instructions {
+        let Some(bucket) = inners.get_mut(group.index as usize) else { continue };
+        for ix in &group.instructions {
+            if is_pump(ix.program_id_index) {
+                bucket.push(ix.data.as_slice());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (i, ix) in message.instructions.iter().enumerate() {
+        if is_pump(ix.program_id_index) {
+            out.push(ix.data.as_slice());
+        }
+        if let Some(inner) = inners.get(i) {
+            out.extend(inner.iter().copied());
+        }
+    }
+    out
+}
 
 fn find_program_pb_ixs<'a>(
     message: &'a scb::Message,

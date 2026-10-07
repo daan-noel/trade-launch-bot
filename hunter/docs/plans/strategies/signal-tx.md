@@ -37,6 +37,8 @@ CEILING   max_sol_cost = curve_sol * 1.0125 * (1 + slippage)
 
 `vsol` and `vtok` are the virtual reserves a print left behind (`reserve_lamports`, `reserve_token`). His filled SOL can differ from `curve_sol` when other prints land before him. `token_amount` and `max_sol_cost` stay the numbers he set at the signal. A wallet on another fee uses that fee's multiplier in place of `1.0125`.
 
+`max_sol_cost` is `max_cost_lamports` on `trades.swap_ix`. The column is null on a row written before migration 0024, on a sell, and on an AMM swap. A crowded reserve match stays blank on those rows.
+
 ## Part 1. Reserve match
 
 Names the transaction. His ceiling has to equal that print's quote.

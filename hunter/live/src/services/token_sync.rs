@@ -1517,6 +1517,7 @@ pub(crate) fn trade_from_ingest_event(e: &ingest_pumpfun::event::Trade) -> Trade
             Venue::Amm => "amm",
         }
         .to_string(),
+        swap_ix: e.swap_ix.as_ref().map(crate::ingest::swap_ix::buy_ix_json),
     }
 }
 

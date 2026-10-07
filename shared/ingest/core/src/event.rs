@@ -157,6 +157,11 @@ pub struct Trade {
     /// launch. Raw 32-byte key, no allocation on the per-trade path. `None` on AMM
     /// trades, the balance-delta fallback, and events too short to carry it.
     pub curve_creator: Option<[u8; 32]>,
+    /// The curve swap instruction this leg executed. Buy variants only: a sell
+    /// layout and an AMM swap are later arms of [`BuyInstructionArgs`], and until
+    /// they exist this stays `None` on those legs. `None` also when the instruction
+    /// bytes were not in hand. Per leg, so two buys in one transaction keep two ceilings.
+    pub swap_ix: Option<BuyInstructionArgs>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

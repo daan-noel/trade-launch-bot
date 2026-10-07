@@ -131,6 +131,14 @@ pub struct Trade {
     /// Trading venue: `"curve"` (pump.fun bonding curve) or `"amm"` (post-migration
     /// PumpSwap pool). Drives the per-venue incremental fetch boundary.
     pub venue: String,
+
+    /// The curve swap instruction this leg executed (`trades.swap_ix`, migration
+    /// 0024). Same document as `tokens.initial_buy_instruction`: a `type` plus that
+    /// variant's fields. `None` on a row written before 0024, on a sell, and on an
+    /// AMM swap until those layouts are parsed. A later variant is a new `type`,
+    /// not a new column.
+    #[serde(default)]
+    pub swap_ix: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +207,7 @@ impl Trade {
             instruction_type: "Unknown".to_string(),
             instruction_labels: serde_json::Value::Array(vec![]),
             venue: "curve".to_string(),
+            swap_ix: None,
         }
     }
 }

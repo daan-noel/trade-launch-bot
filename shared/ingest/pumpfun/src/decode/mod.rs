@@ -23,6 +23,7 @@ mod create;
 mod instructions;
 mod program_registry;
 mod protobuf;
+mod swap_ix;
 mod trade;
 
 pub use program_registry::program_friendly_name;

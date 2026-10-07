@@ -197,6 +197,7 @@ live is gone; the host persists it into `tokens.meta` — see
 | `decode/program_registry.rs` | program names, `ANCHOR_IX`/`EXPLICIT_IX`, `IxKey` widths |
 | `decode/program_registry.rs` | `program_friendly_name` — program-id → name table (SSOT for naming), backed by a `OnceLock<HashMap>`. Grow via the `unknown-programs` harvest |
 | `decode/create.rs` | `decode_create_events_from_logs` |
+| `decode/swap_ix.rs` | Curve buy-instruction args. One parser for the create path and every curve trade. A sell or AMM layout is a later arm of the same document |
 | `raw_tx.rs` (ingest-core) | `encode_payload` (protobuf wire bytes), `build_raw_tx_event` — **`raw-tx` feature** |
 | `backfill.rs` (ingest-core) | `rpc_to_protobuf` (RPC result → protobuf) + the JSON-RPC pager — **`rpc-backfill` feature** |
 
@@ -283,6 +284,14 @@ truncated suffix) so unknowns are self-identifying in the persisted
 persist `raw_txs`** (migration 0002 promoted `ix_labels` onto `trades` for
 exactly this reason). Only *top-level* instructions are labeled (inner CPIs are
 used for trade recovery, not labels).
+
+**Curve swap args (`trades.swap_ix`).** The same decode reads the pump buy
+instruction that produced each leg and stores its args: `type` plus that
+variant's fields, the document `tokens.initial_buy_instruction` already uses.
+Buy instructions are taken in execution order (each outer instruction, then the
+inner instructions it invoked) and zipped onto buy events. A sell consumes
+none. A sell layout and an AMM swap are later `type` values on this column.
+`None` is "not captured".
 
 A key is not a name and does not pretend to be one; it is an identity. Before it
 existed, every Axiom instruction collapsed to one string and a router's buy was

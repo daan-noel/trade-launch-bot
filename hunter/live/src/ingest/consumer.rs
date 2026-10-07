@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use ingest_pumpfun::{
     IngestHandle,
-    event::{BuyInstructionArgs, CreatorActivityEvent, IngestEvent, LiquidityEvent, Side, TokenCreated, TokenMigrated, Trade as IlTrade, Venue},
+    event::{CreatorActivityEvent, IngestEvent, LiquidityEvent, Side, TokenCreated, TokenMigrated, Trade as IlTrade, Venue},
 };
 
 use trading_core::{
@@ -718,7 +718,7 @@ fn token_from_event(e: TokenCreated) -> Token {
         bonding_curve_address: e.bonding_curve,
         initial_supply_token: e.initial_buy_tokens,
         initial_buy_sol: e.initial_buy_sol,
-        initial_buy_instruction: e.initial_buy_instruction.as_ref().map(buy_ix_to_json),
+        initial_buy_instruction: e.initial_buy_instruction.as_ref().map(super::swap_ix::buy_ix_json),
         cu_limit: e.cu_limit,
         cu_price: e.cu_price,
         is_mayhem_mode: e.is_mayhem_mode,
@@ -775,6 +775,7 @@ fn trade_from_event(e: &IlTrade) -> Trade {
         instruction_type: e.instruction_type.clone(),
         instruction_labels: Value::Null,
         venue: venue_str(e.venue).to_string(),
+        swap_ix: e.swap_ix.as_ref().map(super::swap_ix::buy_ix_json),
     }
 }
 
@@ -794,36 +795,6 @@ fn venue_str(venue: Venue) -> &'static str {
 
 fn labels_to_json(labels: &[String]) -> Value {
     json!(labels)
-}
-
-fn buy_ix_to_json(args: &BuyInstructionArgs) -> Value {
-    match args {
-        BuyInstructionArgs::Buy { token_amount, max_sol_cost } => json!({
-            "type": "Buy",
-            "token_amount": token_amount,
-            "max_cost_lamports": max_sol_cost,
-        }),
-        BuyInstructionArgs::BuyV2 { token_amount, max_sol_cost } => json!({
-            "type": "BuyV2",
-            "token_amount": token_amount,
-            "max_cost_lamports": max_sol_cost,
-        }),
-        BuyInstructionArgs::BuyExactSolIn { spendable_sol_in, min_tokens_out } => json!({
-            "type": "BuyExactSolIn",
-            "spendable_lamports_in": spendable_sol_in,
-            "min_tokens_out": min_tokens_out,
-        }),
-        BuyInstructionArgs::BuyExactQuoteIn { spendable_sol_in, min_tokens_out } => json!({
-            "type": "BuyExactQuoteIn",
-            "spendable_lamports_in": spendable_sol_in,
-            "min_tokens_out": min_tokens_out,
-        }),
-        BuyInstructionArgs::BuyExactQuoteInV2 { spendable_sol_in, min_tokens_out } => json!({
-            "type": "BuyExactQuoteInV2",
-            "spendable_lamports_in": spendable_sol_in,
-            "min_tokens_out": min_tokens_out,
-        }),
-    }
 }
 
 fn pool_is_live(state: &TokenState, now: chrono::DateTime<chrono::Utc>) -> bool {
