@@ -38,7 +38,8 @@ function NavItem({ to, children }: { to: string; children: ReactNode }) {
       end={to === '/'}
       className={({ isActive }) =>
         cn(
-          'rounded-md px-3 py-1.5 text-[13px] font-medium transition-all duration-150',
+          // The link owns its label: one line, never shrink. The nav owns scrolling.
+          'shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-[13px] font-medium transition-all duration-150',
           // Active highlight rides `--color-primary`, so it's teal on live and
           // cyan on lab with no per-mode branch.
           isActive
@@ -73,7 +74,7 @@ export function Header({ nav, rightSlot }: { nav: NavConfig; rightSlot?: ReactNo
 
   return (
     <header className="sticky top-0 z-100 border-b border-white/6 bg-bg/75 backdrop-blur-xl backdrop-saturate-150">
-      <div className="flex h-14 items-center gap-5 px-5">
+      <div className="flex min-h-14 min-w-0 items-center gap-5 px-5">
         <Link
           to="/"
           className="group flex shrink-0 items-center gap-2.5 transition-opacity hover:opacity-90"
@@ -97,21 +98,27 @@ export function Header({ nav, rightSlot }: { nav: NavConfig; rightSlot?: ReactNo
 
         <div className="hidden h-5 w-px shrink-0 bg-white/8 md:block" aria-hidden />
 
-        <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-visible rounded-lg border border-white/6 bg-white/3 p-1">
-          {nav.items.map((entry) =>
-            entry.kind === 'item' ? (
-              <NavItem key={entry.to} to={entry.to}>
-                {entry.label}
-              </NavItem>
-            ) : (
-              <NavDropdown
-                key={entry.label}
-                label={entry.label}
-                isActive={location.pathname.startsWith(entry.basePath)}
-                items={entry.items}
-              />
-            ),
-          )}
+        {/* Scrollport and row are different elements. A flex row that can shrink
+            its children wraps the labels before any overflow exists, so the bar
+            never scrolls. The nav owns the width and the scrollbar; the inner
+            row is max-content and does not wrap. */}
+        <nav className="min-w-0 flex-1 overflow-x-auto rounded-lg border border-white/6 bg-white/3">
+          <div className="flex w-max items-center gap-0.5 p-1">
+            {nav.items.map((entry) =>
+              entry.kind === 'item' ? (
+                <NavItem key={entry.to} to={entry.to}>
+                  {entry.label}
+                </NavItem>
+              ) : (
+                <NavDropdown
+                  key={entry.label}
+                  label={entry.label}
+                  isActive={location.pathname.startsWith(entry.basePath)}
+                  items={entry.items}
+                />
+              ),
+            )}
+          </div>
         </nav>
 
         <div className="ml-auto flex shrink-0 items-center gap-2.5">
