@@ -234,8 +234,11 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
 
 - `Header.tsx` — data-driven from `NavConfig` (`navTypes.ts`); renders `identity` (name + `badge`
   chip + `subtitle` + `glyph`) and highlights active nav with `primary` utilities (no per-mode class
-  map — highlighting is `primary`-utility driven, never a per-mode accent module). Live-mode kill switch injected via `rightSlot` (live
-  passes `@live/components/LiveModeControl`). Shared: SOL/USD mirror, timezone, price-unit toggle.
+  map — highlighting is `primary`-utility driven, never a per-mode accent module). The nav is the
+  scrollport (`min-w-0 overflow-x-auto`); the link row inside is max-content and does not wrap, so a
+  narrow window scrolls the list instead of breaking labels. Live-mode kill switch injected via
+  `rightSlot` (live passes `@live/components/LiveModeControl`). Shared: SOL/USD mirror, timezone,
+  price-unit toggle.
 
 ### Per-app skin (`src/index.css`, `index.html` / `lab.html`)
 
@@ -1322,8 +1325,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   buy (`BuyExactSolIn`, `BuyExactQuoteIn`, `BuyExactQuoteInV2`) reads its slippage from
   `min_tokens_out` against `spendable_sol_in`. A ceiling reading is not tried on a floor
   buy, and a floor reading is not tried on a ceiling buy. A setting two entries of that
-  family share is kept, and a single definite entry of that family is the whole set. Each setting shows as `ceiling 20% · 133` or `floor 20% · 4`. Typing a percent replaces the
-  set, and **use entries** reads them again. A count click keeps only those buys. Definite
+  family share is kept, and a single definite entry of that family is the whole set. The derived options show as text, for example `10, 20, 30`. The toggle on makes that text an input. With the toggle off the request sends no list. A count click keeps only those buys. Definite
   is the filled gold tile and the gold rail on its row: `★ DEFINITE`, the quiet seconds,
   and the quote. Crowded is an outline that names the matched slippage. Blank says
   `no bound stored`, `no quote or floor matched`, or `several matched`. A curve buy stores its ceiling or its floor

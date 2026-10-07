@@ -92,15 +92,27 @@ export function formatQuote(sol: number): string {
   return sol.toFixed(4);
 }
 
-/** Slippage percents from a comma-separated box. Blank leaves the reading to the entries. */
-export function parseSlippagePct(raw: string): number[] {
-  return raw
-    .split(/[,\s]+/)
-    .map((s) => Number(s))
-    .filter((n) => Number.isFinite(n) && n >= 0 && n < 500);
+/** The derived options as one line: `10, 20, 30`. A percent that both families read shows once. */
+export function slippageText(readings: readonly SlippageReading[]): string {
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const r of readings) {
+    const t = formatSlip(r.pct);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    parts.push(t);
+  }
+  return parts.join(', ');
 }
 
-export function readingLabel(r: SlippageReading): string {
-  const family = r.family === 'floor' ? 'floor ' : r.family === 'ceiling' ? 'ceiling ' : '';
-  return `${family}${formatSlip(r.pct)}% · ${r.entries}`;
+/** Slippage percents from a comma-separated box. */
+export function parseSlippagePct(raw: string): number[] {
+  const out: number[] = [];
+  for (const part of raw.split(/[,\s]+/)) {
+    const s = part.trim();
+    if (!s) continue;
+    const n = Number(s);
+    if (Number.isFinite(n) && n >= 0 && n < 500) out.push(n);
+  }
+  return out;
 }

@@ -1,6 +1,7 @@
 import type { ColumnDef } from 'components/table/types';
 import { DateCell } from 'components/table/DateCell';
 import { Input } from 'components/ui/Input';
+import { Switch } from 'components/ui/Switch';
 import { cn } from 'lib/cn';
 import { FIELD_LABEL } from '@lab/components/analysis/TraderQueryInputs';
 import { entryKey } from '@lab/lib/entryContext/types';
@@ -9,8 +10,8 @@ import {
   formatQuote,
   formatSlip,
   isDefinite,
-  readingLabel,
   signalCounts,
+  slippageText,
   type SignalFocus,
 } from '@lab/lib/entryContext/signal';
 import type { TraderTokenRow } from 'types';
@@ -26,12 +27,14 @@ export interface SignalPanelProps {
   onFocus: (next: SignalFocus) => void;
   slotsBefore: number;
   slackLamports: number;
-  /** `auto` shows the readings. `manual` shows `slippage`. */
-  slippageMode: 'auto' | 'manual';
+  /** Off shows the derived options as text. On is the comma-separated box. */
+  slippageOn: boolean;
+  /** The box, for example `10, 20, 30`. Sent only while `slippageOn`. */
   slippage: string;
   onSlotsBefore: (n: number) => void;
   onSlack: (n: number) => void;
-  onSlippage: (raw: string, mode: 'auto' | 'manual') => void;
+  onSlippageOn: (on: boolean) => void;
+  onSlippage: (raw: string) => void;
 }
 
 const NUM = 'w-[72px] font-normal normal-case tracking-normal';
@@ -78,55 +81,23 @@ export function SignalPanel(p: SignalPanelProps) {
                 className="w-[88px] font-normal normal-case tracking-normal"
               />
             </label>
-            <div className="min-w-[180px]">
-              <div className={FIELD_LABEL}>Slippage set</div>
-              {p.slippageMode === 'auto' ? (
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {p.readings.length > 0 ? (
-                    p.readings.map((r) => (
-                      <span
-                        key={r.pct}
-                        className="rounded-md border border-warning/50 bg-warning/15 px-2 py-0.5 text-[11px] font-bold text-warning"
-                        title="Read from definite entries. A setting two entries share is kept."
-                      >
-                        {readingLabel(r)}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-[11px] text-text-dim">
-                      {p.ready ? 'no definite entry in this range' : 'from his definite entries'}
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <div className="mt-1 flex items-center gap-2">
-                  <Input
-                    value={p.slippage}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      p.onSlippage(v, v.trim() ? 'manual' : 'auto');
-                    }}
-                    className="w-[120px] font-normal normal-case tracking-normal"
-                    title="Percents, comma-separated. Clear the box to read the entries again."
-                  />
-                  <button
-                    type="button"
-                    className="text-[11px] text-info underline-offset-2 hover:underline"
-                    onClick={() => p.onSlippage('', 'auto')}
-                  >
-                    use entries
-                  </button>
-                </div>
-              )}
-              {p.slippageMode === 'auto' && (
-                <input
-                  value=""
-                  placeholder="type % to override"
-                  onChange={(e) => {
-                    if (e.target.value.trim()) p.onSlippage(e.target.value, 'manual');
-                  }}
-                  className="mt-1 w-[140px] bg-transparent text-[11px] text-text placeholder:text-text-dim/70 focus:outline-none"
+            <div>
+              <div className="flex items-center gap-2">
+                <span className={FIELD_LABEL}>Slippage</span>
+                <Switch checked={p.slippageOn} onChange={p.onSlippageOn} label="Edit slippage" />
+              </div>
+              {p.slippageOn ? (
+                <Input
+                  value={p.slippage}
+                  placeholder="10, 20, 30"
+                  title="Percents, comma-separated. These are the options the match tries."
+                  onChange={(e) => p.onSlippage(e.target.value)}
+                  className="mt-1 w-[140px] font-normal normal-case tracking-normal"
                 />
+              ) : (
+                <div className="mt-1 text-sm font-normal normal-case tracking-normal text-text">
+                  {slippageText(p.readings) || (p.ready ? 'no definite entry' : '—')}
+                </div>
               )}
             </div>
           </div>

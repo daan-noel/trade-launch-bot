@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { matchesSignal, signalCounts } from './signal';
+import { matchesSignal, parseSlippagePct, signalCounts, slippageText } from './signal';
 import type { EntryRow, ReserveCall } from './types';
 
 const call = (kind: ReserveCall['kind']): ReserveCall => ({ kind });
@@ -37,5 +37,23 @@ describe('signal counts', () => {
 
   it('keeps a definite click on the gold rows only', () => {
     expect(entries.filter((e) => matchesSignal(e, 'definite'))).toHaveLength(2);
+  });
+});
+
+describe('slippage text', () => {
+  it('reads a comma-separated box', () => {
+    expect(parseSlippagePct('10, 20, 30')).toEqual([10, 20, 30]);
+    expect(parseSlippagePct('')).toEqual([]);
+  });
+
+  it('shows the derived options once each', () => {
+    expect(
+      slippageText([
+        { pct: 10, entries: 4, family: 'ceiling' },
+        { pct: 20, entries: 133, family: 'ceiling' },
+        { pct: 30, entries: 2, family: 'floor' },
+        { pct: 20, entries: 1, family: 'floor' },
+      ]),
+    ).toBe('10, 20, 30');
   });
 });

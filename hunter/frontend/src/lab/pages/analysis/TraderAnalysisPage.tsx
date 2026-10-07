@@ -50,7 +50,7 @@ import {
   wallClockToUtcIso,
 } from '@lab/components/analysis/traderQuery';
 import { SignalPanel, isDefinite, signalTokenColumns } from '@lab/components/entry-context/SignalPanel';
-import { DEFINITE_ROW, matchesSignal, parseSlippagePct, type SignalFocus } from '@lab/lib/entryContext/signal';
+import { DEFINITE_ROW, matchesSignal, parseSlippagePct, slippageText, type SignalFocus } from '@lab/lib/entryContext/signal';
 import type { EntryRow } from '@lab/lib/entryContext/types';
 import type { TraderTokenRow } from 'types';
 
@@ -191,9 +191,10 @@ interface TraderForm {
   coBuckets: CoBucketKey[];
   /** Slots before his buy. Reserve match reads this window. */
   slotsBefore: number;
-  /** Reserve-match slippages, percent, comma-separated. Ignored while auto. */
+  /** Off shows the derived options as text and sends no list. */
+  slippageOn: boolean;
+  /** Comma-separated percents. Sent only while `slippageOn`. */
   slippage: string;
-  slippageMode: 'auto' | 'manual';
   slackLamports: number;
 }
 /** Stable empty default for the persisted bucket set — a fresh `[]` per render
@@ -211,8 +212,8 @@ const DEFAULT_FORM: TraderForm = {
   coMin: 1,
   coBuckets: [],
   slotsBefore: 2,
+  slippageOn: false,
   slippage: '',
-  slippageMode: 'auto',
   slackLamports: 1,
 };
 
@@ -239,8 +240,8 @@ export function TraderAnalysisPage() {
     coMin = 1,
     coBuckets = EMPTY_BUCKETS,
     slotsBefore: slotsBeforeInput = 2,
-    slippage: slippageInput = '',
-    slippageMode = 'auto',
+    slippageOn = false,
+    slippage = '',
     slackLamports: slackInput = 1,
   } = form;
   const patch = useCallback(
@@ -350,9 +351,9 @@ export function TraderAnalysisPage() {
   }, []);
   const slotsBefore = useDebouncedValue(Math.min(50, Math.max(0, Math.round(slotsBeforeInput))), 350);
   const slackLamports = useDebouncedValue(Math.max(0, Math.round(slackInput)), 350);
-  const slippageRaw = useDebouncedValue(slippageInput, 350);
-  const slippagePct = useMemo(() => parseSlippagePct(slippageRaw), [slippageRaw]);
-  const autoSlippage = slippageMode !== 'manual';
+  const slipDraft = useMemo(() => ({ on: slippageOn, text: slippage }), [slippageOn, slippage]);
+  const slip = useDebouncedValue(slipDraft, 350);
+  const slippagePct = useMemo(() => parseSlippagePct(slip.text), [slip.text]);
   const signalRequest = useMemo(() => {
     if (!query) return null;
     const from = query.from || new Date(Date.now() - query.days * DAY_MS).toISOString();
@@ -364,9 +365,9 @@ export function TraderAnalysisPage() {
       probe_slots: DEFAULT_PROBE_WINDOW_SLOTS,
       slots_before: slotsBefore,
       slack_lamports: slackLamports,
-      ...(autoSlippage || slippagePct.length === 0 ? {} : { slippage_pct: slippagePct }),
+      ...(slip.on && slippagePct.length > 0 ? { slippage_pct: slippagePct } : {}),
     };
-  }, [query, slotsBefore, slackLamports, autoSlippage, slippagePct]);
+  }, [query, slotsBefore, slackLamports, slip.on, slippagePct]);
   const signal = useGetEntryContextQuery(signalRequest ?? skipToken);
   const signalEntries = signal.data?.entries ?? EMPTY_SIGNAL;
   const byMint = useMemo(() => {
@@ -673,11 +674,21 @@ Not queried: a wallet cannot compare against itself, and the read takes the firs
         onFocus={setSignalFocus}
         slotsBefore={slotsBeforeInput}
         slackLamports={slackInput}
-        slippageMode={slippageMode}
-        slippage={slippageInput}
+        slippageOn={slippageOn}
+        slippage={slippage}
         onSlotsBefore={(slotsBefore) => patch({ slotsBefore })}
         onSlack={(slackLamports) => patch({ slackLamports })}
-        onSlippage={(slippage, mode) => patch({ slippage, slippageMode: mode })}
+        onSlippageOn={(on) =>
+          patch(
+            on
+              ? {
+                  slippageOn: true,
+                  slippage: slippage || slippageText(signal.data?.slippage_readings ?? []),
+                }
+              : { slippageOn: false },
+          )
+        }
+        onSlippage={(next) => patch({ slippage: next })}
       />
 
       {query && !isFetching && !error && (

@@ -45,7 +45,7 @@ import { MarketScan } from '@lab/components/entry-context/MarketScan';
 import { type TokenView, TokenViewToggle } from '@lab/components/entry-context/TokenViewToggle';
 import { entryColumns } from '@lab/components/entry-context/entryColumns';
 import { SignalPanel } from '@lab/components/entry-context/SignalPanel';
-import { DEFINITE_ROW, matchesSignal, parseSlippagePct, type SignalFocus } from '@lab/lib/entryContext/signal';
+import { DEFINITE_ROW, matchesSignal, parseSlippagePct, slippageText, type SignalFocus } from '@lab/lib/entryContext/signal';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { entryLogic } from '@lab/lib/entryContext/logic';
 import { hisTokens } from '@lab/lib/entryContext/overlap';
@@ -102,10 +102,10 @@ interface EntryForm {
   probeSlots: number;
   /** Slots before his buy. Reserve match reads this window. */
   slotsBefore: number;
-  /** Reserve-match slippages, percent, comma-separated. Ignored while `slippageMode` is `auto`. */
+  /** Off shows the derived options as text and sends no list. */
+  slippageOn: boolean;
+  /** Comma-separated percents. Sent only while `slippageOn`. */
   slippage: string;
-  /** `auto` reads the slippage set from definite entries. `manual` sends `slippage`. */
-  slippageMode: 'auto' | 'manual';
   /** Lamports a quote may miss the ceiling's curve SOL by. */
   slackLamports: number;
   minHits: number;
@@ -126,8 +126,8 @@ const DEFAULT_FORM: EntryForm = {
   show: 'matched',
   probeSlots: DEFAULT_PROBE_WINDOW_SLOTS,
   slotsBefore: 2,
+  slippageOn: false,
   slippage: '',
-  slippageMode: 'auto',
   slackLamports: 1,
   minHits: 1,
   minSol: 0,
@@ -241,9 +241,12 @@ export function EntryContextPage() {
     PROBE_DEBOUNCE_MS,
   );
   const slackLamports = useDebouncedValue(Math.max(0, Math.round(f.slackLamports)), PROBE_DEBOUNCE_MS);
-  const autoSlippage = f.slippageMode !== 'manual';
-  const slippageRaw = useDebouncedValue(f.slippage, PROBE_DEBOUNCE_MS);
-  const slippagePct = useMemo(() => parseSlippagePct(slippageRaw), [slippageRaw]);
+  const slipDraft = useMemo(
+    () => ({ on: f.slippageOn, text: f.slippage }),
+    [f.slippageOn, f.slippage],
+  );
+  const slip = useDebouncedValue(slipDraft, PROBE_DEBOUNCE_MS);
+  const slippagePct = useMemo(() => parseSlippagePct(slip.text), [slip.text]);
   const probeSlots = useDebouncedValue(
     Math.min(PROBE_SLOT_KNOB.max, Math.max(PROBE_SLOT_KNOB.min, Math.round(f.probeSlots))),
     PROBE_DEBOUNCE_MS,
@@ -274,16 +277,16 @@ export function EntryContextPage() {
             window_secs: query.windowSecs,
             probe_slots: probeSlots,
             slots_before: slotsBefore,
-            ...(autoSlippage || slippagePct.length === 0 ? {} : { slippage_pct: slippagePct }),
+            ...(slip.on && slippagePct.length > 0 ? { slippage_pct: slippagePct } : {}),
             slack_lamports: slackLamports,
             ...(targetTag ? { tag: targetTag } : {}),
           }
         : null,
-    [query, probeSlots, slotsBefore, autoSlippage, slippagePct, slackLamports, targetTag],
+    [query, probeSlots, slotsBefore, slip.on, slippagePct, slackLamports, targetTag],
   );
   const ctx = useGetEntryContextQuery(ctxRequest ?? skipToken);
-  const derivedPct = ctx.data?.slippage_pct;
-  const resolvedSlippage = autoSlippage ? (derivedPct ?? []) : slippagePct;
+  const slipReadings = ctx.data?.slippage_readings ?? [];
+  const usedSlippage = slip.on && slippagePct.length > 0 ? slippagePct : (ctx.data?.slippage_pct ?? []);
   const tokens = useGetTraderTokensQuery(
     query ? { wallet: query.wallet, days: 1, limit: 0, from: query.from, to: query.to, with: [] } : skipToken,
   );
@@ -508,11 +511,18 @@ export function EntryContextPage() {
           onFocus={setSignalFocus}
           slotsBefore={f.slotsBefore}
           slackLamports={f.slackLamports}
-          slippageMode={f.slippageMode}
+          slippageOn={f.slippageOn}
           slippage={f.slippage}
           onSlotsBefore={(slotsBefore) => patch({ slotsBefore })}
           onSlack={(slackLamports) => patch({ slackLamports })}
-          onSlippage={(slippage, slippageMode) => patch({ slippage, slippageMode })}
+          onSlippageOn={(on) =>
+            patch(
+              on
+                ? { slippageOn: true, slippage: f.slippage || slippageText(slipReadings) }
+                : { slippageOn: false },
+            )
+          }
+          onSlippage={(slippage) => patch({ slippage })}
         />
 
         <SectionTitle>Filters</SectionTitle>
@@ -576,7 +586,7 @@ export function EntryContextPage() {
                         windowSecs: readWindow,
                         probeSlots,
                         slotsBefore,
-                        slippagePct: resolvedSlippage,
+                        slippagePct: usedSlippage,
                         slackLamports,
                         tag: targetTag,
                       }}
