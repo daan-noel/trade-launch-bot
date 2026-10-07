@@ -1045,12 +1045,17 @@ DROP TABLE IF EXISTS _ec2_sync_seen_ids;
 -- ON CONFLICT (id) resolves only the PK, so a lab-authored fingerprint matching a
 -- server one under a different id would abort the whole insert on the secondary key.
 -- Both sides run find_or_create against the same identity, so this is reachable, not
--- theoretical. Resolve it first, server wins: re-point every local rule at the SERVER
--- id, then drop the now-unreferenced local duplicate. Re-pointing is what makes the
--- delete legal -- the FK is NO ACTION, so a still-referenced row cannot be dropped and
--- the run would fail loudly rather than take a lab rule's fingerprint with it. The
--- match uses the SAME md5(jsonb::text) expressions as the index, so a row that would
--- collide is exactly a row this finds.
+-- theoretical. Server wins, in an order the two constraints allow:
+--   1. Park the local row's tags (a per-id sentinel). Rules still reference it, so
+--      the FK holds, and the identity slot opens.
+--   2. Insert the server row. Re-pointing first is illegal: the server id is not
+--      local yet (`strategy_rules_fingerprint_id_fkey`). Inserting first is illegal
+--      too: the local row still owns that identity.
+--   3. Re-point every local rule at the server id, then drop the parked local row.
+-- The FK is NO ACTION, so a still-referenced row cannot be dropped and the run
+-- fails loudly rather than take a lab rule's fingerprint with it. The match uses
+-- the SAME md5(jsonb::text) expressions as the index, so a row that would collide
+-- is exactly a row this finds.
 BEGIN;
 CREATE TEMP TABLE _fp_identity_dupes ON COMMIT DROP AS
 SELECT l.id AS local_id, r.id AS server_id
@@ -1060,16 +1065,20 @@ JOIN ec2_sync_src.fingerprints r
  AND l.wildcard = r.wildcard
  AND md5(l.tags::text) = md5(r.tags::text)
 WHERE l.id <> r.id;
-UPDATE strategy_rules sr SET fingerprint_id = d.server_id, updated_at = now()
-FROM _fp_identity_dupes d WHERE sr.fingerprint_id = d.local_id;
-DELETE FROM fingerprints l USING _fp_identity_dupes d WHERE l.id = d.local_id;
-COMMIT;
-
+UPDATE fingerprints l
+SET tags = jsonb_build_object('_sync_park', l.id::text),
+    updated_at = now()
+FROM _fp_identity_dupes d
+WHERE l.id = d.local_id;
 INSERT INTO fingerprints ($(Get-ColList 'fingerprints'))
 SELECT $(Get-SelList 'fingerprints' 'f')
 FROM ec2_sync_src.fingerprints f
 ON CONFLICT (id) DO UPDATE SET
   $(Get-UpsertSet 'fingerprints' @('id'));
+UPDATE strategy_rules sr SET fingerprint_id = d.server_id, updated_at = now()
+FROM _fp_identity_dupes d WHERE sr.fingerprint_id = d.local_id;
+DELETE FROM fingerprints l USING _fp_identity_dupes d WHERE l.id = d.local_id;
+COMMIT;
 
 \echo '-- strategy_rules'
 -- Post-0004 redesign columns + 0002 tags (rule_repo::RULE_COLS) -- NOT the
