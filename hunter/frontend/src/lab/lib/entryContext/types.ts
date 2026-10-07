@@ -19,10 +19,8 @@ export interface EntryContextRequest {
   window_secs: number;
   /** Probe window, slots: did the target land in the P slots before his buy. */
   probe_slots: number;
-  /** Slots before his buy that both signal methods read. */
+  /** Slots before his buy that reserve match reads. */
   slots_before?: number;
-  /** Slots after his buy. An ix-pick shape that also buys there is dropped. */
-  slots_after?: number;
   /** Reserve-match slippages, in percent. `20` is 20%. Absent: derive the set
    *  from definite entries in this read. */
   slippage_pct?: number[];
@@ -55,7 +53,6 @@ export interface EntryRangeRequest {
   end_slot: number;
   probe_slots: number;
   slots_before?: number;
-  slots_after?: number;
   slippage_pct?: number[];
   slack_lamports?: number;
   tag?: EntryTargetTag;
@@ -100,9 +97,6 @@ export interface EntryGroupRow {
   buy_secs: number;
   buy_tx_share_pct: number | null;
   buy_sol_share_pct: number | null;
-  /** The ix-pick signal's structure: the group of the probe's nearest target print.
-   *  Kept in the breakdown even past its cap. */
-  signal?: true;
   /** The reserve-match signal's structure: the only transaction in the 2 slots
    *  before him. Kept past the cap. Absent when that window is empty or crowded. */
   reserve?: true;
@@ -189,11 +183,33 @@ export interface EntryRow {
   groups: EntryGroupRow[];
   groups_omitted: number;
   probe: ProbeRead;
-  /** The instruction-pick signal. Absent when no buy in the slots before him survives. */
-  ix_pick?: ReservePrint;
   /** The reserve-match signal. Absent when that window is empty, or crowded and
    *  his ceiling is missing or matches no print. */
   reserve?: ReservePrint;
+  /** Which reserve outcome this entry is. Absent on a response from before the field. */
+  reserve_call?: ReserveCall;
+}
+
+/** How reserve match read one entry. `definite` is the loud case. */
+export type ReserveKind = 'definite' | 'single' | 'crowded' | 'no_ceiling' | 'no_match' | 'several' | 'empty';
+
+/** Reserve match, in the words both pages show. */
+export interface ReserveCall {
+  kind: ReserveKind;
+  /** Percent. Present on `definite` (read here) and `crowded` (matched). */
+  slippage_pct?: number;
+  /** Seconds of silence before the one print. */
+  quiet_secs?: number;
+  /** The named print's quote, in SOL. */
+  quote_sol?: number;
+}
+
+/** One slippage the definite entries of one buy family agree on, and how many read it. */
+export interface SlippageReading {
+  pct: number;
+  entries: number;
+  /** `ceiling` is `Buy` / `BuyV2`. `floor` is `BuyExactSolIn` and the exact-quote buys. */
+  family?: 'ceiling' | 'floor';
 }
 
 export interface EntryContextResponse {
@@ -205,6 +221,8 @@ export interface EntryContextResponse {
   /** Slippage percents the reserve match used. Derived from definite entries when
    *  the request leaves `slippage_pct` out. */
   slippage_pct: number[];
+  /** The set the definite entries produced, with a count on each setting. */
+  slippage_readings?: SlippageReading[];
   tape_floor?: string | null;
 }
 

@@ -19,8 +19,7 @@ import { GROUP_TABLE_LABELS, groupColumns } from './entryColumns';
 
 const EMPTY_TRADES: TradeRecord[] = [];
 
-/** Chart markers for the two signals on this read. Each pins to the trade at
- *  that `(slot, tx_index)`. */
+/** Chart marker for the reserve-match print. It pins to the trade at that `(slot, tx_index)`. */
 function signalMarkers(trades: TradeRecord[], entry: EntryRow): ChartEventMarker[] {
   const mark = (slot: number, txIndex: number, label: string): ChartEventMarker | null => {
     const t =
@@ -37,11 +36,6 @@ function signalMarkers(trades: TradeRecord[], entry: EntryRow): ChartEventMarker
     };
   };
   const out: ChartEventMarker[] = [];
-  const ix = entry.ix_pick;
-  if (ix) {
-    const m = mark(ix.slot, ix.tx_index, 'ix');
-    if (m) out.push(m);
-  }
   if (entry.reserve) {
     const m = mark(entry.reserve.slot, entry.reserve.tx_index, 'reserve');
     if (m) out.push(m);
@@ -58,7 +52,6 @@ export interface EntryDetailQuery {
   windowSecs: number;
   probeSlots: number;
   slotsBefore: number;
-  slotsAfter: number;
   slippagePct: number[];
   slackLamports: number;
   tag?: EntryTargetTag;
@@ -124,7 +117,6 @@ export function EntryDetail({ entry, query }: { entry: EntryRow; query: EntryDet
           end_slot: picked.endSlot,
           probe_slots: query.probeSlots,
           slots_before: query.slotsBefore,
-          slots_after: query.slotsAfter,
           slippage_pct: query.slippagePct,
           slack_lamports: query.slackLamports,
           ...(query.tag ? { tag: query.tag } : {}),

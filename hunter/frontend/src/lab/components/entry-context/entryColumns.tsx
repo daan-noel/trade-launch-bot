@@ -14,6 +14,7 @@ import type { WalletEpisode, WalletEpisodeStatus } from 'types';
 import type { PreEntryVerdict } from '@lab/lib/preEntryProbeTypes';
 import { ENTRY_AXES, formatAxis } from '@lab/lib/entryContext/axes';
 import type { EntryGroupRow, EntryRow } from '@lab/lib/entryContext/types';
+import { signalBuyColumns } from './SignalPanel';
 
 /**
  * Entry rows: which token and when he bought, the pre-entry probe's own columns
@@ -67,34 +68,7 @@ export function entryColumns(
       sortValue: (e) => e.slot * 10_000 + e.tx_index,
       searchValue: (e) => e.at,
     },
-    {
-      key: 'signals',
-      label: 'Signals',
-      group: 'buy',
-      tooltip:
-        'ix = instruction pick found a buy in the slots before him.\n' +
-        'reserve = reserve match found the print he priced.\n' +
-        'A crowded buy with no stored ceiling shows no reserve badge.',
-      render: (e) =>
-        e.ix_pick || e.reserve ? (
-          <span className="flex items-center gap-1">
-            {e.ix_pick && (
-              <Badge variant="warning" size="sm">
-                ix
-              </Badge>
-            )}
-            {e.reserve && (
-              <Badge variant="info" size="sm">
-                reserve
-              </Badge>
-            )}
-          </span>
-        ) : (
-          <span className="text-text-dim">-</span>
-        ),
-      sortValue: (e) => (e.reserve ? 2 : 0) + (e.ix_pick ? 1 : 0),
-      searchValue: () => '',
-    },
+    ...signalBuyColumns(),
     ...ofGroup('buy'),
     ...(verdictOf ? preEntryColumns<EntryRow>(verdictOf, probeSlots) : []),
     ...(verdictOf && tradeOf ? [tradePctColumn(tradeOf)] : []),
@@ -246,16 +220,10 @@ export function groupColumns(lens?: StructureLens | null): ColumnDef<EntryGroupR
       tooltip:
         'Is this structure the target?\n' +
         "'tag' = all its buys matched the target. '3/5' = 3 of its 5 buys did. '-' = none.\n" +
-        "'ix' = the structure of the target transaction the Probe found nearest before his buy.\n" +
-        "'reserve' = the structure of the only transaction in the 2 slots before him.",
+        "'reserve' = the structure of the print reserve match named.",
       render: (g) =>
-        g.tag_buy_tx > 0 || g.signal || g.reserve ? (
+        g.tag_buy_tx > 0 || g.reserve ? (
           <span className="flex items-center gap-1">
-            {g.signal && (
-              <Badge variant="warning" size="sm">
-                ix
-              </Badge>
-            )}
             {g.reserve && (
               <Badge variant="info" size="sm">
                 reserve
@@ -270,7 +238,7 @@ export function groupColumns(lens?: StructureLens | null): ColumnDef<EntryGroupR
         ) : (
           <span className="text-text-dim">-</span>
         ),
-      sortValue: (g) => (g.signal || g.reserve ? 1e9 : 0) + g.tag_buy_tx,
+      sortValue: (g) => (g.reserve ? 1e9 : 0) + g.tag_buy_tx,
       searchValue: () => '',
     },
     num('buys', 'buy_tx', 'Buys', `How many buy transactions this structure made ${IN_RANGE}.`, (g) => g.buy_tx, int),

@@ -13,16 +13,13 @@
 
 import type { EntryGroupRow, EntryRow } from './types';
 
-/** The breakdown row of the ix-pick signal's structure. */
-export const signalGroup = (e: EntryRow): EntryGroupRow | undefined => e.groups.find((g) => g.signal);
 /** The breakdown row of the reserve-match signal's structure. */
 export const reserveGroup = (e: EntryRow): EntryGroupRow | undefined => e.groups.find((g) => g.reserve);
 
 export type AxisUnit = 'pct' | 'pp' | 'tx' | 'sol';
 
-/** The column group an axis sits in. `signal` is the instruction-pick print.
- *  `reserve` is the reserve-match print. */
-export type AxisGroup = 'buy' | 'signal' | 'reserve' | 'target' | 'control' | 'all' | 'holders';
+/** The column group an axis sits in. `reserve` is the reserve-match print. */
+export type AxisGroup = 'buy' | 'reserve' | 'target' | 'control' | 'all' | 'holders';
 
 /**
  * An idea family: one aspect of the tape at his buy, one sub-tab of the buys
@@ -39,7 +36,7 @@ export interface AxisFamily {
 }
 
 export const AXIS_FAMILIES: readonly AxisFamily[] = [
-  { key: 'ix', label: 'IX structure', groups: ['signal', 'reserve', 'target', 'control', 'all'] },
+  { key: 'ix', label: 'IX structure', groups: ['reserve', 'target', 'control', 'all'] },
   { key: 'holders', label: 'Top holders', groups: ['holders'] },
 ];
 
@@ -64,7 +61,6 @@ export function entryGroupLabels(w: number, probeSlots?: number, slotsBefore = 2
   return {
     buy: 'His buy',
     pre_entry: probeSlots != null ? `Probe: last ${probeSlots} slots before him` : 'Probe: slots before him',
-    signal: `IX signal: ${slotsBefore} slots before him`,
     reserve: `Reserve signal: ${slotsBefore} slots before him`,
     target: `Target: last ${w}s before him`,
     control: `Target earlier: ${2 * w}s to ${w}s before him`,
@@ -96,10 +92,8 @@ const last = (w: number) => `in the last ${w}s before his buy`;
 /** The earlier stretch, spelled out: the same length, just before the last one. */
 const earlier = (w: number) => `from ${2 * w}s to ${w}s before his buy`;
 const NOT_HIS = 'His own buys are never counted.';
-const IX =
-  'The ix signal = the closest buy in the slots before him that survives instruction pick: racers drop when a plain buy is present, and a shape that also buys in the slot after him drops. It does not depend on the Target IX set.';
 const RESERVE =
-  'The reserve signal = the print in the slots before him whose quote matches his ceiling at one of his slippages, within the lamport slack. One print in that window is the signal on its own. Blank when several prints sit there and his buy ceiling is not stored, or none of them match.';
+  'The reserve signal = the print in the slots before him whose quote matches his ceiling, or whose token floor matches his min_tokens_out, at one slippage of that family. One print in that window is the signal on its own. Blank when several prints match, when his bound is not stored, or when none match.';
 
 /** A top-holder column's tooltip: which wallets, then how the drop is worked out. */
 const holderDrop = (who: string, sold: string, example: string) =>
@@ -119,56 +113,6 @@ export const ENTRY_AXES: readonly EntryAxis[] = [
     digits: 3,
     definition: () => 'SOL he spent on this buy.',
     get: (e) => e.sol,
-  },
-  {
-    key: 'sig_buy_tx',
-    label: 'IX TXs',
-    group: 'signal',
-    unit: 'tx',
-    digits: 0,
-    definition: (w) =>
-      `How many buy transactions the signal's structure made ${last(w)}, target or not.
-` +
-      `Example: 25 buys, 12 of them with that structure = 12.
-${IX} Blank = no signal.`,
-    get: (e) => signalGroup(e)?.buy_tx ?? null,
-  },
-  {
-    key: 'sig_tx_share',
-    label: 'IX tx %',
-    group: 'signal',
-    unit: 'pct',
-    digits: 0,
-    definition: (w) =>
-      `Of all buy transactions ${last(w)}, the % made with the signal's structure.
-` +
-      `Example: 25 buys, 12 with it = 48%.
-${IX}`,
-    get: (e) => signalGroup(e)?.buy_tx_share_pct ?? null,
-  },
-  {
-    key: 'sig_buy_sol',
-    label: 'IX SOL',
-    group: 'signal',
-    unit: 'sol',
-    digits: 2,
-    definition: (w) =>
-      `SOL the signal's structure spent on buys ${last(w)}, target or not.
-${IX}`,
-    get: (e) => signalGroup(e)?.buy_sol ?? null,
-  },
-  {
-    key: 'sig_sol_share',
-    label: 'IX SOL %',
-    group: 'signal',
-    unit: 'pct',
-    digits: 0,
-    definition: (w) =>
-      `Of all SOL spent on buys ${last(w)}, the % spent with the signal's structure.
-` +
-      `Example: 10 SOL of buys, 4 SOL with it = 40%.
-${IX}`,
-    get: (e) => signalGroup(e)?.buy_sol_share_pct ?? null,
   },
   {
     key: 'rsv_buy_tx',

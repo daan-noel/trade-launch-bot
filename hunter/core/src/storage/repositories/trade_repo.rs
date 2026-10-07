@@ -50,7 +50,9 @@ pub struct TradeRepo {
 
 impl Clone for TradeRepo {
     fn clone(&self) -> Self {
-        Self { pool: self.pool.clone() }
+        Self {
+            pool: self.pool.clone(),
+        }
     }
 }
 
@@ -106,7 +108,6 @@ fn replayable_trade(row: TradeDbRow) -> anyhow::Result<Trade> {
         .map(|s| crate::config::constants::approx_real_sol_reserves(s, &trade.venue));
     Ok(trade)
 }
-
 
 /// One row read from the new `trades` table LEFT-joined to `wallet_dict`. All
 /// amounts are integers (lamports / raw token units); `tx_signature` is the raw
@@ -404,7 +405,10 @@ impl TradeRepo {
                   venue_fee_bps, swap_ix) ",
             );
             qb.push_values(chunk.iter().zip(sig_chunk), |mut b, (t, sig)| {
-                let wallet_id = wallet_ids.get(&t.wallet_address).copied().unwrap_or_default();
+                let wallet_id = wallet_ids
+                    .get(&t.wallet_address)
+                    .copied()
+                    .unwrap_or_default();
                 b.push_bind(&t.mint_address)
                     .push_bind(wallet_id)
                     .push_bind(trade_type_str(t.trade_type))
@@ -514,7 +518,11 @@ impl TradeRepo {
         let mut by_slot: HashMap<(String, u64), (Option<String>, Option<String>)> = HashMap::new();
         for (mint, slot, trade_type, sig_bytes) in rows {
             let entry = by_slot.entry((mint, slot as u64)).or_default();
-            let slot_side = if trade_type == "buy" { &mut entry.0 } else { &mut entry.1 };
+            let slot_side = if trade_type == "buy" {
+                &mut entry.0
+            } else {
+                &mut entry.1
+            };
             if slot_side.is_none() {
                 *slot_side = Some(sig_bytes_to_base58(&sig_bytes));
             }
@@ -524,8 +532,11 @@ impl TradeRepo {
         for (mint, slot, want_buy) in keys.iter().cloned() {
             if let Some((buy_sig, sell_sig)) = by_slot.get(&(mint.clone(), slot)) {
                 // Prefer the requested side; fall back to the other side's trade.
-                let (preferred, fallback) =
-                    if want_buy { (buy_sig, sell_sig) } else { (sell_sig, buy_sig) };
+                let (preferred, fallback) = if want_buy {
+                    (buy_sig, sell_sig)
+                } else {
+                    (sell_sig, buy_sig)
+                };
                 if let Some(sig) = preferred.clone().or_else(|| fallback.clone()) {
                     out.insert((mint, slot, want_buy), sig);
                 }
@@ -618,7 +629,10 @@ impl TradeRepo {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|(b,)| sig_bytes_to_base58(&b)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(b,)| sig_bytes_to_base58(&b))
+            .collect())
     }
 
     /// Count of distinct transaction signatures already saved for a token on a
@@ -656,7 +670,10 @@ impl TradeRepo {
         mint: &str,
         trade_type: TradeType,
     ) -> anyhow::Result<Option<Trade>> {
-        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone())
+            .id_for(wallet)
+            .await?
+        else {
             return Ok(None);
         };
         let row = sqlx::query_as::<_, TradeDbRow>(
@@ -744,7 +761,10 @@ impl TradeRepo {
         if mints.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone())
+            .id_for(wallet)
+            .await?
+        else {
             return Ok(std::collections::HashMap::new());
         };
         // Σ over the wallet's buy legs, grouped per mint. Kept integer in SQL
@@ -785,22 +805,24 @@ impl TradeRepo {
 
         Ok(rows
             .into_iter()
-            .map(|(mint, total_cost_lamports, total_token_amount, wallet_paid_lamports)| {
-                let avg_entry_price = if total_token_amount > 0 {
-                    lamports_to_sol(total_cost_lamports) / total_token_amount as f64
-                } else {
-                    0.0
-                };
-                (
-                    mint,
-                    AvgEntry {
-                        avg_entry_price,
-                        total_token_amount: total_token_amount as u64,
-                        total_cost_lamports,
-                        wallet_paid_lamports,
-                    },
-                )
-            })
+            .map(
+                |(mint, total_cost_lamports, total_token_amount, wallet_paid_lamports)| {
+                    let avg_entry_price = if total_token_amount > 0 {
+                        lamports_to_sol(total_cost_lamports) / total_token_amount as f64
+                    } else {
+                        0.0
+                    };
+                    (
+                        mint,
+                        AvgEntry {
+                            avg_entry_price,
+                            total_token_amount: total_token_amount as u64,
+                            total_cost_lamports,
+                            wallet_paid_lamports,
+                        },
+                    )
+                },
+            )
             .collect())
     }
 
@@ -826,11 +848,15 @@ impl TradeRepo {
         until: Option<DateTime<Utc>>,
         limit: i64,
     ) -> anyhow::Result<Vec<WalletTradedMint>> {
-        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone())
+            .id_for(wallet)
+            .await?
+        else {
             return Ok(Vec::new());
         };
         let by_id = HashMap::from([(wallet_id, wallet.to_string())]);
-        self.traded_mints_agg(&by_id, None, since, until, limit).await
+        self.traded_mints_agg(&by_id, None, since, until, limit)
+            .await
     }
 
     /// The same per-`(wallet, mint)` rollup as [`wallet_traded_mints`](Self::wallet_traded_mints),
@@ -868,7 +894,8 @@ impl TradeRepo {
         if by_id.is_empty() {
             return Ok(Vec::new());
         }
-        self.traded_mints_agg(&by_id, Some(mints), since, until, 0).await
+        self.traded_mints_agg(&by_id, Some(mints), since, until, 0)
+            .await
     }
 
     /// The shared `(wallet_id, mint)` aggregate behind both readers above — ONE
@@ -1031,7 +1058,10 @@ impl TradeRepo {
     /// curve and before migration 0020, which marks at the curve fee).
     ///
     /// One `idx_trades_mint_order` backward scan per mint (~7 ms each locally).
-    pub async fn latest_pools(&self, mints: &[String]) -> anyhow::Result<HashMap<String, MarkQuote>> {
+    pub async fn latest_pools(
+        &self,
+        mints: &[String],
+    ) -> anyhow::Result<HashMap<String, MarkQuote>> {
         if mints.is_empty() {
             return Ok(HashMap::new());
         }
@@ -1088,7 +1118,10 @@ impl TradeRepo {
         if mints.is_empty() {
             return Ok(Vec::new());
         }
-        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone())
+            .id_for(wallet)
+            .await?
+        else {
             return Ok(Vec::new());
         };
         #[derive(sqlx::FromRow)]
@@ -1322,23 +1355,29 @@ impl TradeRepo {
         until: Option<DateTime<Utc>>,
         limit: i64,
     ) -> anyhow::Result<Vec<WalletBuyTx>> {
-        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone())
+            .id_for(wallet)
+            .await?
+        else {
             return Ok(Vec::new());
         };
         let rows: Vec<WalletBuyTx> = sqlx::query_as(
             r#"
             SELECT mint_address, slot, tx_index, block_time,
                    amount_lamports, token_amount,
-                   CASE
-                     WHEN btrim(ceiling) ~ '^[0-9]{1,18}$' THEN ceiling::bigint
-                   END AS max_cost_lamports
+                   CASE WHEN btrim(ix->>'max_cost_lamports') ~ '^[0-9]{1,18}$'
+                        THEN (ix->>'max_cost_lamports')::bigint END AS max_cost_lamports,
+                   CASE WHEN btrim(ix->>'spendable_lamports_in') ~ '^[0-9]{1,18}$'
+                        THEN (ix->>'spendable_lamports_in')::bigint END AS spendable_lamports_in,
+                   CASE WHEN btrim(ix->>'min_tokens_out') ~ '^[0-9]{1,18}$'
+                        THEN (ix->>'min_tokens_out')::bigint END AS min_tokens_out
             FROM (
                 SELECT mint_address, slot, tx_index,
                        MIN(block_time) AS block_time,
                        SUM(amount_lamports)::BIGINT AS amount_lamports,
                        SUM(token_amount)::BIGINT AS token_amount,
                        (array_agg(swap_ix ORDER BY leg_index)
-                          FILTER (WHERE swap_ix IS NOT NULL))[1]->>'max_cost_lamports' AS ceiling
+                          FILTER (WHERE swap_ix IS NOT NULL))[1] AS ix
                 FROM trades
                 WHERE wallet_id = $1
                   AND trade_type = 'buy'
@@ -1409,11 +1448,10 @@ impl TradeRepo {
     /// The newest leg's `block_time`: one probe of `trades_block_time_idx`,
     /// newest chunk first. `None` on an empty table.
     pub async fn newest_block_time(&self) -> anyhow::Result<Option<DateTime<Utc>>> {
-        let newest: Option<DateTime<Utc>> = sqlx::query_scalar(
-            "SELECT block_time FROM trades ORDER BY block_time DESC LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let newest: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT block_time FROM trades ORDER BY block_time DESC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(newest)
     }
 
@@ -1496,8 +1534,7 @@ impl TradeRepo {
     /// LEFT-joins `wallet_dict` to recover each trade's wallet address (orphaned
     /// wallet ids fall back to the `unknown:<id>` sentinel, never dropping a row).
     pub async fn find_by_mint_all(&self, mint: &str) -> anyhow::Result<Vec<Trade>> {
-        let rows = sqlx::query_as::<_, TradeDbRow>(
-            &format!(
+        let rows = sqlx::query_as::<_, TradeDbRow>(&format!(
             "SELECT {TRADE_HISTORY_COLUMNS} {TRADE_HISTORY_FROM} WHERE t.mint_address = $1 \
              {TRADE_HISTORY_ORDER}"
         ))
@@ -1528,8 +1565,7 @@ impl TradeRepo {
         mint: &str,
         until: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Vec<Trade>> {
-        let rows = sqlx::query_as::<_, TradeDbRow>(
-            &format!(
+        let rows = sqlx::query_as::<_, TradeDbRow>(&format!(
             "SELECT {TRADE_HISTORY_COLUMNS} {TRADE_HISTORY_FROM} WHERE t.mint_address = $1 \
              AND t.block_time <= $2 {TRADE_HISTORY_ORDER}"
         ))
@@ -1641,8 +1677,7 @@ impl TradeRepo {
         // an `Option<i64>` lets one SQL string serve both the capped and full-history
         // callers without string-building the query.
         let limit_opt: Option<i64> = if limit <= 0 { None } else { Some(limit) };
-        let rows = sqlx::query_as::<_, TradeDbRow>(
-            &format!(
+        let rows = sqlx::query_as::<_, TradeDbRow>(&format!(
             "SELECT {TRADE_HISTORY_COLUMNS} {TRADE_HISTORY_FROM} WHERE t.mint_address = $1 \
              {TRADE_HISTORY_ORDER} LIMIT $2 OFFSET $3"
         ))
@@ -1706,7 +1741,10 @@ impl TradeRepo {
         if signatures.is_empty() {
             return Ok(None);
         }
-        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone())
+            .id_for(wallet)
+            .await?
+        else {
             return Ok(None);
         };
         // Translate the position's base58 signatures to raw bytes for the BYTEA filter.
@@ -1797,7 +1835,10 @@ impl TradeRepo {
         wallet: &str,
         mint: &str,
     ) -> anyhow::Result<i64> {
-        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone())
+            .id_for(wallet)
+            .await?
+        else {
             return Ok(0);
         };
         // Sum the integer token_amount column with a buy/sell sign — exact raw units.
@@ -1891,10 +1932,10 @@ impl TradeRepo {
                 "#
             );
             let mut stream = sqlx::query_as::<_, SeedTradeRow>(&sql)
-            .bind(chunk)
-            .bind(per_mint_cap)
-            .bind(since)
-            .fetch(&self.pool);
+                .bind(chunk)
+                .bind(per_mint_cap)
+                .bind(since)
+                .fetch(&self.pool);
 
             // Rows are mint-contiguous (ORDER BY mint_address) and each mint lives
             // entirely within this chunk, so group on the mint boundary and flush.
@@ -2055,13 +2096,21 @@ pub struct WalletBuyTx {
     pub tx_index: i32,
     pub block_time: DateTime<Utc>,
     pub amount_lamports: i64,
-    /// Raw tokens his buy legs received. The reserve match quotes this size
+    /// Raw tokens his buy legs received. A ceiling reserve match quotes this size
     /// against each earlier print's reserves.
     pub token_amount: i64,
-    /// `max_sol_cost` from his buy instruction, lamports. `None` until that
-    /// instruction is stored: a crowded reserve match cannot run without it.
+    /// `max_sol_cost` from a `Buy` or `BuyV2`, lamports. `None` on a floor buy,
+    /// on a ceiling of `u64::MAX` (no bound), and on a row written before the
+    /// instruction was stored.
     #[sqlx(default)]
     pub max_cost_lamports: Option<i64>,
+    /// `spendable_sol_in` from a `BuyExactSolIn`, `BuyExactQuoteIn`, or
+    /// `BuyExactQuoteInV2`, lamports. `None` on a ceiling buy.
+    #[sqlx(default)]
+    pub spendable_lamports_in: Option<i64>,
+    /// `min_tokens_out` from a floor buy, raw tokens. `0` or `1` is no bound.
+    #[sqlx(default)]
+    pub min_tokens_out: Option<i64>,
 }
 
 /// One mint's first and last trade in a range ([`TradeRepo::traded_mint_spans`]).
@@ -2123,8 +2172,12 @@ impl TapePrint {
     /// The leg's execution price, SOL per raw token unit (the `price_per_token`
     /// every trade read derives, [`price_of`]); `None` when it moved no tokens.
     pub fn price(&self) -> Option<f64> {
-        (self.token_amount > 0)
-            .then(|| price_of(lamports_to_sol(self.amount_lamports), self.token_amount as f64))
+        (self.token_amount > 0).then(|| {
+            price_of(
+                lamports_to_sol(self.amount_lamports),
+                self.token_amount as f64,
+            )
+        })
     }
 }
 
@@ -2373,7 +2426,10 @@ mod tests {
     fn wallet_flow_keeps_its_sign() {
         assert_eq!(legs(Some(-101_250_000)).wallet_paid_sol(), (0.10125, true));
         assert_eq!(legs(Some(98_000_000)).wallet_received_sol(), (0.098, true));
-        assert_eq!(legs(Some(-125_000)).wallet_received_sol(), (-0.000125, true));
+        assert_eq!(
+            legs(Some(-125_000)).wallet_received_sol(),
+            (-0.000125, true)
+        );
         // No captured flow: the curve-side amount, flagged inexact.
         assert_eq!(legs(None).wallet_received_sol(), (0.1, false));
     }
@@ -2437,7 +2493,11 @@ mod tests {
     /// Self-skips without a reachable `DATABASE_URL`, so a keyless run stays green.
     async fn probe_pool() -> Option<PgPool> {
         let url = std::env::var("DATABASE_URL").ok()?;
-        PgPoolOptions::new().max_connections(2).connect(&url).await.ok()
+        PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .ok()
     }
 
     /// The per-mint window read against real tape: the binds encode, the UNNEST
@@ -2446,7 +2506,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
     async fn prints_in_slot_windows_reads_each_window_in_order() {
-        let Some(pool) = probe_pool().await else { return };
+        let Some(pool) = probe_pool().await else {
+            return;
+        };
         let repo = TradeRepo::new(pool.clone());
 
         // Anchor on real tape rather than a fixture: the point of this test is the
@@ -2475,14 +2537,24 @@ mod tests {
         let mut last = (0i64, 0i32);
         for p in &prints {
             assert_eq!(p.mint_address, mint);
-            assert!(p.slot >= win.lo_slot && p.slot <= win.hi_slot, "slot {} outside", p.slot);
-            assert!((p.slot, p.tx_index) >= last, "rows must arrive in execution order");
+            assert!(
+                p.slot >= win.lo_slot && p.slot <= win.hi_slot,
+                "slot {} outside",
+                p.slot
+            );
+            assert!(
+                (p.slot, p.tx_index) >= last,
+                "rows must arrive in execution order"
+            );
             last = (p.slot, p.tx_index);
         }
 
         // The oldest chunk start is what a truncated probe window runs into.
         let floor = repo.tape_floor().await.expect("tape floor");
-        assert!(floor.is_some_and(|f| f <= at), "floor must not sit after live tape");
+        assert!(
+            floor.is_some_and(|f| f <= at),
+            "floor must not sit after live tape"
+        );
     }
 
     /// An empty window list is answered without touching the database — the
@@ -2494,7 +2566,11 @@ mod tests {
                 .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
                 .expect("lazy pool"),
         );
-        assert!(repo.prints_in_slot_windows(&[], None).await.unwrap().is_empty());
+        assert!(repo
+            .prints_in_slot_windows(&[], None)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     /// A row with no reserve snapshot has UNKNOWN depth. Reading it as 0 would
@@ -2502,7 +2578,12 @@ mod tests {
     #[test]
     fn pre_trade_real_sol_is_none_without_a_snapshot() {
         assert_eq!(
-            pre_trade_real_sol(None, Some(sol_to_lamports(2.5)), Some("curve"), TradeType::Buy),
+            pre_trade_real_sol(
+                None,
+                Some(sol_to_lamports(2.5)),
+                Some("curve"),
+                TradeType::Buy
+            ),
             None
         );
     }
@@ -2535,14 +2616,24 @@ mod tests {
     fn reserve_sol_round_trips_through_lamports() {
         let sol = 30.123_456_789_f64;
         let stored = sol_to_lamports(sol);
-        assert_eq!(stored, 30_123_456_789, "SOL → lamports keeps 9-decimal precision");
+        assert_eq!(
+            stored, 30_123_456_789,
+            "SOL → lamports keeps 9-decimal precision"
+        );
         let back = lamports_to_sol(stored);
-        assert!((back - sol).abs() < 1e-9, "lamports → SOL recovers the value");
+        assert!(
+            (back - sol).abs() < 1e-9,
+            "lamports → SOL recovers the value"
+        );
     }
 
     async fn test_pool() -> Option<PgPool> {
         let url = std::env::var("DATABASE_URL").ok()?;
-        PgPoolOptions::new().max_connections(2).connect(&url).await.ok()
+        PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .ok()
     }
 
     /// A fresh, valid base58 transaction signature (the column stores its bytes).
@@ -2592,7 +2683,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
     async fn find_fill_by_signature_sums_multi_leg() {
-        let Some(pool) = test_pool().await else { return };
+        let Some(pool) = test_pool().await else {
+            return;
+        };
         let repo = TradeRepo::new(pool.clone());
         let (wallet, mint, sig) = (unique("W"), unique("M"), unique_sig());
 
@@ -2601,7 +2694,17 @@ mod tests {
         insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, 1, 0.4, 400).await;
         // A foreign buy on the SAME (wallet, mint) under a different signature —
         // a concurrent same-token position's fill (decision #2). Must NOT leak in.
-        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &unique_sig(), 0, 9.9, 9999).await;
+        insert_leg(
+            &repo,
+            &wallet,
+            &mint,
+            TradeType::Buy,
+            &unique_sig(),
+            0,
+            9.9,
+            9999,
+        )
+        .await;
 
         let legs = repo
             .find_fill_by_signature(&wallet, &mint, &sig, Utc::now())
@@ -2609,14 +2712,23 @@ mod tests {
             .expect("query")
             .expect("the signature's legs are summed, not None");
         assert_eq!(legs.token_amount, 1000, "Σtokens across both legs");
-        assert!((legs.amount_sol - 1.0).abs() < 1e-6, "Σsol across both legs");
+        assert!(
+            (legs.amount_sol - 1.0).abs() < 1e-6,
+            "Σsol across both legs"
+        );
         // Weighted-average price = Σsol / Σtokens, not a per-leg price.
-        assert!((legs.price_per_token() - 0.001).abs() < 1e-9, "weighted-avg fill price");
+        assert!(
+            (legs.price_per_token() - 0.001).abs() < 1e-9,
+            "weighted-avg fill price"
+        );
 
         // The `since` bound is applied: an anchor past the legs plus the slack finds nothing.
         let past_the_legs = Utc::now() + OWN_TX_LOOKUP_SLACK + chrono::Duration::minutes(1);
         assert!(
-            repo.find_fill_by_signature(&wallet, &mint, &sig, past_the_legs).await.expect("query").is_none(),
+            repo.find_fill_by_signature(&wallet, &mint, &sig, past_the_legs)
+                .await
+                .expect("query")
+                .is_none(),
             "legs before since - slack are out of the lookup"
         );
 
@@ -2626,7 +2738,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
     async fn sum_legs_by_signatures_isolates_own_sells_and_short_circuits_empty() {
-        let Some(pool) = test_pool().await else { return };
+        let Some(pool) = test_pool().await else {
+            return;
+        };
         let repo = TradeRepo::new(pool.clone());
         let (wallet, mint) = (unique("W"), unique("M"));
         let (mine_a, mine_b, theirs) = (unique_sig(), unique_sig(), unique_sig());
@@ -2635,7 +2749,17 @@ mod tests {
         insert_leg(&repo, &wallet, &mint, TradeType::Sell, &mine_a, 0, 0.3, 300).await;
         insert_leg(&repo, &wallet, &mint, TradeType::Sell, &mine_b, 0, 0.2, 200).await;
         // …while a concurrent same-token position sold under its own signature.
-        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &theirs, 0, 5.0, 5000).await;
+        insert_leg(
+            &repo,
+            &wallet,
+            &mint,
+            TradeType::Sell,
+            &theirs,
+            0,
+            5.0,
+            5000,
+        )
+        .await;
 
         // Empty signature set short-circuits to None (never a full-table scan).
         assert!(
@@ -2658,14 +2782,23 @@ mod tests {
             .expect("query")
             .expect("own sell legs summed");
         assert_eq!(legs.token_amount, 500, "only THIS position's sells summed");
-        assert!((legs.amount_sol - 0.5).abs() < 1e-6, "concurrent position's sell excluded");
+        assert!(
+            (legs.amount_sol - 0.5).abs() < 1e-6,
+            "concurrent position's sell excluded"
+        );
 
         // Side filter holds: no Buy legs exist, so a Buy query over the sell sigs is None.
         assert!(
-            repo.sum_legs_by_signatures(&wallet, &mint, &[mine_a, mine_b], TradeType::Buy, Utc::now())
-                .await
-                .expect("query")
-                .is_none(),
+            repo.sum_legs_by_signatures(
+                &wallet,
+                &mint,
+                &[mine_a, mine_b],
+                TradeType::Buy,
+                Utc::now()
+            )
+            .await
+            .expect("query")
+            .is_none(),
             "trade_type filter excludes the sell legs"
         );
 
@@ -2680,7 +2813,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
     async fn orphaned_wallet_id_trade_is_still_returned() {
-        let Some(pool) = test_pool().await else { return };
+        let Some(pool) = test_pool().await else {
+            return;
+        };
         let repo = TradeRepo::new(pool.clone());
         let mint = unique("M");
 
@@ -2706,7 +2841,11 @@ mod tests {
         .expect("insert orphan trade");
 
         let trades = repo.find_by_mint_all(&mint).await.expect("query");
-        assert_eq!(trades.len(), 1, "orphaned-wallet trade must NOT be dropped by the join");
+        assert_eq!(
+            trades.len(),
+            1,
+            "orphaned-wallet trade must NOT be dropped by the join"
+        );
         assert_eq!(
             trades[0].wallet_address,
             format!("unknown:{orphan_id}"),
@@ -2723,7 +2862,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
     async fn find_by_mint_paged_zero_limit_is_unbounded() {
-        let Some(pool) = test_pool().await else { return };
+        let Some(pool) = test_pool().await else {
+            return;
+        };
         let repo = TradeRepo::new(pool.clone());
         let (wallet, mint) = (unique("W"), unique("M"));
 
@@ -2737,7 +2878,11 @@ mod tests {
 
         // `0` (and any non-positive limit) ⇒ every row, no LIMIT clause.
         let all = repo.find_by_mint_paged(&mint, 0, 0).await.expect("query");
-        assert_eq!(all.len() as u32, ROWS, "limit <= 0 returns the full history");
+        assert_eq!(
+            all.len() as u32,
+            ROWS,
+            "limit <= 0 returns the full history"
+        );
         let neg = repo.find_by_mint_paged(&mint, -1, 0).await.expect("query");
         assert_eq!(neg.len() as u32, ROWS, "a negative limit is also unbounded");
 

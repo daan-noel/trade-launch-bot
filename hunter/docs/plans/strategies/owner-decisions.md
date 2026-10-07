@@ -1,7 +1,7 @@
 # Owner decisions: the method that finds a group's rule
 
 **What this file is.** The workflow for any launch group. Trades are already split into owner
-and outsider ([owner-split.md](owner-split.md)). This file finds **why and when the owner
+and outsider ([_!___owner-split.md](_!___owner-split.md)). This file finds **why and when the owner
 acts**, then builds the rule from those decisions: buy when the next act is "keeps working the
 coin", stay while it rides, sell just before it dumps.
 
@@ -81,7 +81,7 @@ The **next act** is whatever the owner does next, while it still holds:
 | buys again | the owner buys and the price is pushed |
 | sits | a gap with no owner trade while the coin goes on |
 | sells part | an owner sell that leaves most of the bag |
-| sells most, one fall | an owner-majority [fall](owner-split.md) in one drop |
+| sells most, one fall | an owner-majority [fall](_!___owner-split.md) in one drop |
 | sells in steps | an owner-majority fall made of several drops |
 | pumps again | after a fall, the owner buys and the price climbs off the bottom |
 | migrate | the coin completes the curve |
@@ -92,7 +92,7 @@ logics is however many regions survive section 4. Age does not make a new logic.
 the same readings and the same next act are one logic. One dump with two different pasts is two
 logics.
 
-A fall is the one defined in [owner-split.md](owner-split.md). That definition tells the acts
+A fall is the one defined in [_!___owner-split.md](_!___owner-split.md). That definition tells the acts
 apart. It is not a decision window.
 
 ## 3. Readings, spans, levels

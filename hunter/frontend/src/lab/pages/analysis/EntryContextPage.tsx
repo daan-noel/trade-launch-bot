@@ -44,6 +44,8 @@ import { IdeaFilters } from '@lab/components/entry-context/IdeaFilters';
 import { MarketScan } from '@lab/components/entry-context/MarketScan';
 import { type TokenView, TokenViewToggle } from '@lab/components/entry-context/TokenViewToggle';
 import { entryColumns } from '@lab/components/entry-context/entryColumns';
+import { SignalPanel } from '@lab/components/entry-context/SignalPanel';
+import { DEFINITE_ROW, matchesSignal, parseSlippagePct, type SignalFocus } from '@lab/lib/entryContext/signal';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { entryLogic } from '@lab/lib/entryContext/logic';
 import { hisTokens } from '@lab/lib/entryContext/overlap';
@@ -98,10 +100,8 @@ interface EntryForm {
   probeOn: boolean;
   show: PreEntryShow;
   probeSlots: number;
-  /** Slots before his buy, shared by both signal methods. */
+  /** Slots before his buy. Reserve match reads this window. */
   slotsBefore: number;
-  /** Slots after his buy. Ix pick drops a shape that buys again there. */
-  slotsAfter: number;
   /** Reserve-match slippages, percent, comma-separated. Ignored while `slippageMode` is `auto`. */
   slippage: string;
   /** `auto` reads the slippage set from definite entries. `manual` sends `slippage`. */
@@ -126,7 +126,6 @@ const DEFAULT_FORM: EntryForm = {
   show: 'matched',
   probeSlots: DEFAULT_PROBE_WINDOW_SLOTS,
   slotsBefore: 2,
-  slotsAfter: 1,
   slippage: '',
   slippageMode: 'auto',
   slackLamports: 1,
@@ -212,6 +211,8 @@ export function EntryContextPage() {
   };
   // Pool / Pass filters: which of his tokens the token table lists.
   const [tokenView, setTokenView] = useState<TokenView>('pass');
+  // Which signal count is held. `all` leaves the table on the probe's Show.
+  const [signalFocus, setSignalFocus] = useState<SignalFocus>('all');
 
   const lens = useTraderFlowLens(query?.wallet ?? null);
   const tag = lens.value.tag;
@@ -237,10 +238,6 @@ export function EntryContextPage() {
 
   const slotsBefore = useDebouncedValue(
     Math.min(50, Math.max(0, Math.round(f.slotsBefore))),
-    PROBE_DEBOUNCE_MS,
-  );
-  const slotsAfter = useDebouncedValue(
-    Math.min(50, Math.max(0, Math.round(f.slotsAfter))),
     PROBE_DEBOUNCE_MS,
   );
   const slackLamports = useDebouncedValue(Math.max(0, Math.round(f.slackLamports)), PROBE_DEBOUNCE_MS);
@@ -277,13 +274,12 @@ export function EntryContextPage() {
             window_secs: query.windowSecs,
             probe_slots: probeSlots,
             slots_before: slotsBefore,
-            slots_after: slotsAfter,
             ...(autoSlippage || slippagePct.length === 0 ? {} : { slippage_pct: slippagePct }),
             slack_lamports: slackLamports,
             ...(targetTag ? { tag: targetTag } : {}),
           }
         : null,
-    [query, probeSlots, slotsBefore, slotsAfter, autoSlippage, slippagePct, slackLamports, targetTag],
+    [query, probeSlots, slotsBefore, autoSlippage, slippagePct, slackLamports, targetTag],
   );
   const ctx = useGetEntryContextQuery(ctxRequest ?? skipToken);
   const derivedPct = ctx.data?.slippage_pct;
@@ -305,11 +301,11 @@ export function EntryContextPage() {
   }, [entries, f.minHits, f.minSol]);
 
   // Show narrows the table's INPUT set; the probe summary counts every buy read.
-  const probeRows = useMemo(
-    () =>
-      f.probeOn && f.show !== 'all' ? entries.filter((e) => verdicts.get(e)?.state === f.show) : entries,
-    [entries, verdicts, f.probeOn, f.show],
-  );
+  const probeRows = useMemo(() => {
+    const shown =
+      f.probeOn && f.show !== 'all' ? entries.filter((e) => verdicts.get(e)?.state === f.show) : entries;
+    return signalFocus === 'all' ? shown : entries.filter((e) => matchesSignal(e, signalFocus));
+  }, [entries, verdicts, f.probeOn, f.show, signalFocus]);
   // A new query starts from the unfiltered set. Nothing else resets it: the table
   // re-reports on every input change, and a parent reset would land after it.
   useEffect(() => setTableRows(null), [query]);
@@ -502,70 +498,22 @@ export function EntryContextPage() {
         <SectionTitle>Token pool</SectionTitle>
         <FlowLensBar lens={lens} wallet={query?.wallet ?? null} probe={probe} />
 
-        <SectionTitle>Signal</SectionTitle>
-        <div className="mb-3 flex flex-wrap items-end gap-x-4 gap-y-2">
-          <label className={FIELD_LABEL} title="Slots before his buy. Both methods read this window.">
-            Slots before
-            <Input
-              type="number"
-              min={0}
-              max={50}
-              value={f.slotsBefore}
-              onChange={(e) => patch({ slotsBefore: Number(e.target.value) })}
-              className="w-[72px] font-normal normal-case tracking-normal"
-            />
-          </label>
-          <label
-            className={FIELD_LABEL}
-            title="Ix pick drops a buy whose exact instruction list also appears on a buy in this many slots after him."
-          >
-            Slot after
-            <Input
-              type="number"
-              min={0}
-              max={50}
-              value={f.slotsAfter}
-              onChange={(e) => patch({ slotsAfter: Number(e.target.value) })}
-              className="w-[72px] font-normal normal-case tracking-normal"
-            />
-          </label>
-          <label
-            className={FIELD_LABEL}
-            title="Read from definite entries: one print before him, quiet for 5 seconds, ceiling stored. A setting that two entries share is kept. Type to override; clear the box to read the entries again."
-          >
-            Slippage %
-            <Input
-              value={autoSlippage ? (derivedPct ?? []).join(', ') : f.slippage}
-              placeholder="from entries"
-              onChange={(e) => {
-                const v = e.target.value;
-                if (!v.trim()) patch({ slippageMode: 'auto', slippage: '' });
-                else patch({ slippageMode: 'manual', slippage: v });
-              }}
-              className="w-[120px] font-normal normal-case tracking-normal"
-            />
-          </label>
-          <label
-            className={FIELD_LABEL}
-            title="A candidate quote may differ from the ceiling's curve SOL by this many lamports and still match. 1 covers the rounding of the ceiling."
-          >
-            Slack, lamports
-            <Input
-              type="number"
-              min={0}
-              value={f.slackLamports}
-              onChange={(e) => patch({ slackLamports: Number(e.target.value) })}
-              className="w-[88px] font-normal normal-case tracking-normal"
-            />
-          </label>
-          <p className="max-w-xl text-[11px] leading-snug text-text-dim">
-            Ix pick uses every other buy in the slots before him: drop racers when a plain buy is present, drop a shape
-            that returns in the slot after him, take the closest. Slippage is read from definite entries and filled in
-            here. Reserve match names the one print in those slots, or, when several sit there, the print whose quote
-            is within the slack of his ceiling at one of these slippages. A crowded buy stays blank on reserve until
-            his max_sol_cost is stored.
-          </p>
-        </div>
+        <SignalPanel
+          entries={entries}
+          ready={!!ctx.data}
+          loading={ctx.isFetching}
+          truncated={!!ctx.data?.truncated}
+          readings={ctx.data?.slippage_readings ?? []}
+          focus={signalFocus}
+          onFocus={setSignalFocus}
+          slotsBefore={f.slotsBefore}
+          slackLamports={f.slackLamports}
+          slippageMode={f.slippageMode}
+          slippage={f.slippage}
+          onSlotsBefore={(slotsBefore) => patch({ slotsBefore })}
+          onSlack={(slackLamports) => patch({ slackLamports })}
+          onSlippage={(slippage, slippageMode) => patch({ slippage, slippageMode })}
+        />
 
         <SectionTitle>Filters</SectionTitle>
         <IdeaFilters
@@ -628,7 +576,6 @@ export function EntryContextPage() {
                         windowSecs: readWindow,
                         probeSlots,
                         slotsBefore,
-                        slotsAfter,
                         slippagePct: resolvedSlippage,
                         slackLamports,
                         tag: targetTag,
@@ -646,7 +593,8 @@ export function EntryContextPage() {
                   loading={ctx.isFetching}
                   groupLabels={buyGroupLabels}
                   hiddenGroups={hiddenGroups}
-                  resetKey={`${f.probeOn}|${f.show}`}
+                  resetKey={`${f.probeOn}|${f.show}|${signalFocus}`}
+                  rowClassName={(e) => (e.reserve_call?.kind === 'definite' ? DEFINITE_ROW : undefined)}
                   onFilteredRowsChange={setTableRows}
                   onColFiltersChange={setBuyFilters}
                   emptyMessage={
@@ -736,14 +684,6 @@ export function EntryContextPage() {
       </div>
     </FlowLensProvider>
   );
-}
-
-/** Slippage percents from a comma-separated box. Blank leaves the reading to the entries. */
-function parseSlippagePct(raw: string): number[] {
-  return raw
-    .split(/[,\s]+/)
-    .map((s) => Number(s))
-    .filter((n) => Number.isFinite(n) && n >= 0 && n < 500);
 }
 
 function SectionTitle({ children }: { children: string }) {

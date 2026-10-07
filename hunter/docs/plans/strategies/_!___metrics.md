@@ -169,7 +169,7 @@ kept: an edit moves a live coin's future, never its past.
   `[CU price, CU limit, Memo, Pump.Fun SellV2]` at that price. `side` and `marks` without the
   core level are refused. The engine, the chart's `ixCore.ts` and the owner split assert one
   set of vectors, `engine/fixtures/ix_core_parity.json`; the levels a list is built at are
-  the owner split's ([owner-split.md](owner-split.md), "Match levels").
+  the owner split's ([_!___owner-split.md](_!___owner-split.md), "Match levels").
 - **`program` catches every build a tool compiles.** The head program
   (`template_grain::program_owned`: the first instruction past compute budget, system,
   token, associated-token and memo) keeps its name across builds; one crew program

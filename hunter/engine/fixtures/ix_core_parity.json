@@ -3,7 +3,7 @@
     "Shared build-core vectors, asserted by every implementation of the core:",
     "  Rust    hunter/engine/src/metrics/trade_keys.rs  (core_labels / core_marks, the SSOT)",
     "  TS      hunter/frontend/src/shared/lib/strategy/ixCore.ts  (the chart's port)",
-    "  Python  the owner split's core_labels / marks_of (owner-split.md, 'Match levels')",
+    "  Python  the owner split's core_labels / marks_of (_!___owner-split.md, 'Match levels')",
     "",
     "`core` is the labels left once the extras are dropped, pump.fun verbs merged;",
     "`marks` is the extras' text form: present flags CL CP N L M S C W, then T<transfers> A<account opens>.",

@@ -102,7 +102,7 @@ fn core_verb(label: &str) -> &str {
 /// pump.fun's verb variants merged. A dev who rotates small variants of one build
 /// (a memo added, the compute-budget pair swapped, `BuyV2` for `Buy`, a nonce) keeps
 /// one core. The offline twin is the owner split's `core_labels`
-/// (`owner-split.md`, "Match levels").
+/// (`_!___owner-split.md`, "Match levels").
 pub fn core_labels<S: AsRef<str>>(labels: &[S]) -> Vec<&str> {
     labels.iter().map(AsRef::as_ref).filter(|l| !is_core_extra(l)).map(core_verb).collect()
 }

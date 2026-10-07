@@ -1116,6 +1116,13 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   sentence under the inputs names the window the rows were read over, not just a day count. The 90d
   clamp is the backend's (`resolve_window`), which also swaps a reversed pair and, on an over-long
   span, keeps the upper bound — the page reads end-first.
+- **Trader Analysis signal.** The same `SignalPanel` as Entry Context, under the flow lens,
+  for whatever wallet Analyze read. It calls `POST /api/wallets/:wallet/entry-context` with
+  the page's range and the panel's slots, slack and slippage, and no target tag. The token
+  table's **Reserve match** column rolls the token's buys up
+  (`★ 2 definite · 1 crowded`). A token with a definite buy takes the gold rail.
+  Opening the count lists each buy. A count click on the panel keeps
+  the tokens that have a buy of that kind.
 - **Trader Analysis wallet columns (`lab/components/analysis/walletTokenColumns.tsx`).** The page
   splices `walletTokenColumns()` into `tokenColumns()` directly after the **identity** block, so the
   wallet's position reads before the token's own activity/price/market fields. The splice happens at
@@ -1307,19 +1314,22 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   fold, the same length before it as the control, his trades excluded); **Reset** re-selects the
   window (`selectSpan`). Below the chart: the range's axis tiles and structure breakdown, one row per exact ix
   sequence (how broad the target is belongs to the flow lens: an Exact set or a Templates set,
-  which also takes program names). The Signal section, under Token pool, finds two prints on
-  its own settings, independent of the target set. `ix` is instruction pick over the other
-  buys in the slots before him (default 2): racers drop when a plain buy is present, a shape
-  that also buys in the slot after him (default 1) drops, and the closest remaining buy is
-  the signal. `reserve` is reserve match on the same slots before him: one print there is the
-  signal; several match when a print's quote is within the lamport slack (default 1) of
-  `max_sol_cost / (1.0125 * (1 + slippage))` for one slippage in the list. The list is
-  read from definite entries in the range (one print before him, quiet for 5 seconds,
-  a stored ceiling); a setting two entries share is kept, and a single definite entry
-  is the whole set. The box shows that list. Typing replaces it, and clearing the box
-  reads the entries again. A curve buy stores that ceiling on `trades.swap_ix`. A crowded buy whose ceiling is not stored stays blank. Each signal badges its structure row,
-  pins its own chart marker, and has its own column group (IX TXs / tx % / SOL / SOL %, and
-  the same four for reserve).
+  which also takes program names). The Signal section, under Token pool, is one card
+  (`SignalPanel`, the same component Trader Analysis renders under its lens). Reserve match
+  names the transaction. `slots before` defaults to 2. Slack and the slippage set belong to
+  reserve match. The set is read from definite entries (one print before him, quiet for 5
+  seconds). A ceiling buy (`Buy`, `BuyV2`) reads its slippage from `max_sol_cost`. A floor
+  buy (`BuyExactSolIn`, `BuyExactQuoteIn`, `BuyExactQuoteInV2`) reads its slippage from
+  `min_tokens_out` against `spendable_sol_in`. A ceiling reading is not tried on a floor
+  buy, and a floor reading is not tried on a ceiling buy. A setting two entries of that
+  family share is kept, and a single definite entry of that family is the whole set. Each setting shows as `ceiling 20% · 133` or `floor 20% · 4`. Typing a percent replaces the
+  set, and **use entries** reads them again. A count click keeps only those buys. Definite
+  is the filled gold tile and the gold rail on its row: `★ DEFINITE`, the quiet seconds,
+  and the quote. Crowded is an outline that names the matched slippage. Blank says
+  `no bound stored`, `no quote or floor matched`, or `several matched`. A curve buy stores its ceiling or its floor
+  on `trades.swap_ix`. Reserve match badges its structure row, pins its chart
+  marker, and has its own column group (Reserve TXs / tx % / SOL / SOL %). The buys table carries
+  **Reserve match** in the his-buy band.
   The breakdown's structure column (`structureColumn`): under `exact` it is
   `IxLabelsDisplay`'s one-line `compact` mode (`IxAbbrevLine`: dim arrows, setup codes dim, program actions bright) over `abbreviateIxLabelParts` (`lib/ixLabels.ts`: the
   exact sequence in order, boilerplate as 1-2 letter codes, the rest `Program:Action` initials,
