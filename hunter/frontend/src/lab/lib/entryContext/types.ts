@@ -19,6 +19,15 @@ export interface EntryContextRequest {
   window_secs: number;
   /** Probe window, slots: did the target land in the P slots before his buy. */
   probe_slots: number;
+  /** Slots before his buy that both signal methods read. */
+  slots_before?: number;
+  /** Slots after his buy. An ix-pick shape that also buys there is dropped. */
+  slots_after?: number;
+  /** Reserve-match slippages, in percent. `20` is 20%. Absent: derive the set
+   *  from definite entries in this read. */
+  slippage_pct?: number[];
+  /** Lamports a candidate quote may miss the ceiling's curve SOL by. */
+  slack_lamports?: number;
   /** ONE tag definition in the fingerprint `tags` shape. `side` / `sticky` are
    *  left out when unset: the engine's parser refuses a null. Absent = no target:
    *  the windows are still read and every share is null. */
@@ -45,6 +54,10 @@ export interface EntryRangeRequest {
   /** The last slot the range holds. */
   end_slot: number;
   probe_slots: number;
+  slots_before?: number;
+  slots_after?: number;
+  slippage_pct?: number[];
+  slack_lamports?: number;
   tag?: EntryTargetTag;
 }
 
@@ -87,9 +100,18 @@ export interface EntryGroupRow {
   buy_secs: number;
   buy_tx_share_pct: number | null;
   buy_sol_share_pct: number | null;
-  /** The signal's structure: the group of the probe's nearest target print. Kept
-   *  in the breakdown even past its cap. */
+  /** The ix-pick signal's structure: the group of the probe's nearest target print.
+   *  Kept in the breakdown even past its cap. */
   signal?: true;
+  /** The reserve-match signal's structure: the only transaction in the 2 slots
+   *  before him. Kept past the cap. Absent when that window is empty or crowded. */
+  reserve?: true;
+}
+
+/** The only transaction in the 2 slots before his buy. */
+export interface ReservePrint {
+  slot: number;
+  tx_index: number;
 }
 
 /** The probe's own reasons (`UNKNOWN_HINT` explains each); an anchor here is a buy
@@ -167,6 +189,11 @@ export interface EntryRow {
   groups: EntryGroupRow[];
   groups_omitted: number;
   probe: ProbeRead;
+  /** The instruction-pick signal. Absent when no buy in the slots before him survives. */
+  ix_pick?: ReservePrint;
+  /** The reserve-match signal. Absent when that window is empty, or crowded and
+   *  his ceiling is missing or matches no print. */
+  reserve?: ReservePrint;
 }
 
 export interface EntryContextResponse {
@@ -175,6 +202,9 @@ export interface EntryContextResponse {
   max_entries: number;
   window_secs: number;
   probe_slots: number;
+  /** Slippage percents the reserve match used. Derived from definite entries when
+   *  the request leaves `slippage_pct` out. */
+  slippage_pct: number[];
   tape_floor?: string | null;
 }
 

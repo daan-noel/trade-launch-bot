@@ -1196,6 +1196,8 @@ impl TradeRepo {
             amount_lamports: i64,
             token_amount: i64,
             ix_labels: Option<sqlx::types::Json<serde_json::Value>>,
+            reserve_lamports: Option<i64>,
+            reserve_token: Option<i64>,
             cu_limit: Option<i64>,
             cu_price: Option<i64>,
             tip_lamports: Option<i64>,
@@ -1206,6 +1208,7 @@ impl TradeRepo {
             SELECT t.mint_address, t.slot, t.tx_index, t.leg_index, t.block_time,
                    COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address,
                    t.trade_type, t.amount_lamports, t.token_amount, t.ix_labels,
+                   t.reserve_lamports, t.reserve_token,
                    t.cu_limit, t.cu_price, t.tip_lamports
             FROM UNNEST($1::text[], $2::bigint[], $3::bigint[])
                  AS win(mint_address, lo_slot, hi_slot)
@@ -1239,6 +1242,8 @@ impl TradeRepo {
                 is_buy: r.trade_type == "buy",
                 amount_lamports: r.amount_lamports,
                 token_amount: r.token_amount,
+                reserve_lamports: r.reserve_lamports,
+                reserve_token: r.reserve_token,
                 ix_labels: r.ix_labels.map(|j| j.0),
                 cu_limit: r.cu_limit,
                 cu_price: r.cu_price,
@@ -1319,7 +1324,8 @@ impl TradeRepo {
             r#"
             SELECT mint_address, slot, tx_index,
                    MIN(block_time) AS block_time,
-                   SUM(amount_lamports)::BIGINT AS amount_lamports
+                   SUM(amount_lamports)::BIGINT AS amount_lamports,
+                   SUM(token_amount)::BIGINT AS token_amount
             FROM trades
             WHERE wallet_id = $1
               AND trade_type = 'buy'
@@ -2035,6 +2041,13 @@ pub struct WalletBuyTx {
     pub tx_index: i32,
     pub block_time: DateTime<Utc>,
     pub amount_lamports: i64,
+    /// Raw tokens his buy legs received. The reserve match quotes this size
+    /// against each earlier print's reserves.
+    pub token_amount: i64,
+    /// `max_sol_cost` from his buy instruction, lamports. `None` until that
+    /// instruction is stored: a crowded reserve match cannot run without it.
+    #[sqlx(default)]
+    pub max_cost_lamports: Option<i64>,
 }
 
 /// One mint's first and last trade in a range ([`TradeRepo::traded_mint_spans`]).
@@ -2078,6 +2091,10 @@ pub struct TapePrint {
     pub amount_lamports: i64,
     /// Raw token units the leg moved: with `amount_lamports`, its price ([`TapePrint::price`]).
     pub token_amount: i64,
+    /// Virtual reserves this leg left, lamports and raw tokens. The reserve match
+    /// quotes a later buy against them. `None` when the row has no pair.
+    pub reserve_lamports: Option<i64>,
+    pub reserve_token: Option<i64>,
     /// The tx's ordered instruction labels. `None` on a pre-`0002` row that has no
     /// labels to read — unknowable, never an empty sequence.
     pub ix_labels: Option<serde_json::Value>,

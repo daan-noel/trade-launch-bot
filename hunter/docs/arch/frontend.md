@@ -1307,9 +1307,19 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   fold, the same length before it as the control, his trades excluded); **Reset** re-selects the
   window (`selectSpan`). Below the chart: the range's axis tiles and structure breakdown, one row per exact ix
   sequence (how broad the target is belongs to the flow lens: an Exact set or a Templates set,
-  which also takes program names). The row of the signal (the probe's nearest target
-  transaction) carries a `signal` badge and stays past the row cap; the buys table's Signal
-  structure columns read it.
+  which also takes program names). The Signal section, under Token pool, finds two prints on
+  its own settings, independent of the target set. `ix` is instruction pick over the other
+  buys in the slots before him (default 2): racers drop when a plain buy is present, a shape
+  that also buys in the slot after him (default 1) drops, and the closest remaining buy is
+  the signal. `reserve` is reserve match on the same slots before him: one print there is the
+  signal; several match when a print's quote is within the lamport slack (default 1) of
+  `max_sol_cost / (1.0125 * (1 + slippage))` for one slippage in the list. The list is
+  read from definite entries in the range (one print before him, quiet for 5 seconds,
+  a stored ceiling); a setting two entries share is kept, and a single definite entry
+  is the whole set. The box shows that list. Typing replaces it, and clearing the box
+  reads the entries again. A crowded buy whose ceiling is not stored stays blank. Each signal badges its structure row,
+  pins its own chart marker, and has its own column group (IX TXs / tx % / SOL / SOL %, and
+  the same four for reserve).
   The breakdown's structure column (`structureColumn`): under `exact` it is
   `IxLabelsDisplay`'s one-line `compact` mode (`IxAbbrevLine`: dim arrows, setup codes dim, program actions bright) over `abbreviateIxLabelParts` (`lib/ixLabels.ts`: the
   exact sequence in order, boilerplate as 1-2 letter codes, the rest `Program:Action` initials,

@@ -4,7 +4,7 @@ import { DataTable } from 'components/table/DataTable';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { useTokenHighlight } from 'components/tokens/useTokenHighlight';
 import { rangeForSpan, rangeSpan, type RangeTapeSpan } from 'components/token-price-chart/barTrades';
-import type { ChartRangeControl, ChartRangeSelectionDetail } from 'components/token-price-chart/types';
+import type { ChartEventMarker, ChartRangeControl, ChartRangeSelectionDetail } from 'components/token-price-chart/types';
 import { Button } from 'components/ui/Button';
 import { StatTile } from 'components/ui/StatTile';
 import { useTimezone } from 'context/TimezoneContext';
@@ -18,6 +18,36 @@ import { useGetEntryRangeQuery } from '@lab/store/labEndpoints';
 import { GROUP_TABLE_LABELS, groupColumns } from './entryColumns';
 
 const EMPTY_TRADES: TradeRecord[] = [];
+
+/** Chart markers for the two signals on this read. Each pins to the trade at
+ *  that `(slot, tx_index)`. */
+function signalMarkers(trades: TradeRecord[], entry: EntryRow): ChartEventMarker[] {
+  const mark = (slot: number, txIndex: number, label: string): ChartEventMarker | null => {
+    const t =
+      trades.find((x) => x.slot === slot && x.tx_index === txIndex && x.leg_index === 0) ??
+      trades.find((x) => x.slot === slot && x.tx_index === txIndex);
+    if (!t) return null;
+    return {
+      kind: 'entry',
+      time: t.block_time,
+      priceInSol: t.price_per_token,
+      txSignature: t.tx_signature,
+      label,
+      role: 'signal',
+    };
+  };
+  const out: ChartEventMarker[] = [];
+  const ix = entry.ix_pick;
+  if (ix) {
+    const m = mark(ix.slot, ix.tx_index, 'ix');
+    if (m) out.push(m);
+  }
+  if (entry.reserve) {
+    const m = mark(entry.reserve.slot, entry.reserve.tx_index, 'reserve');
+    if (m) out.push(m);
+  }
+  return out;
+}
 const GROUP_COLS_HIDDEN: Readonly<Record<string, boolean>> = { sell_sol: false, buy_secs: false };
 /** The numbers read for the selected range, in this order (defined once, in `axes.ts`). */
 const RANGE_AXES = ['tx_share', 'sol_share', 'tag_buy_tx', 'buy_tx', 'ctl_tx_share', 'tx_share_lift'] as const;
@@ -27,6 +57,10 @@ export interface EntryDetailQuery {
   wallet: string;
   windowSecs: number;
   probeSlots: number;
+  slotsBefore: number;
+  slotsAfter: number;
+  slippagePct: number[];
+  slackLamports: number;
   tag?: EntryTargetTag;
 }
 
@@ -89,6 +123,10 @@ export function EntryDetail({ entry, query }: { entry: EntryRow; query: EntryDet
           to: new Date(picked.to * 1000).toISOString(),
           end_slot: picked.endSlot,
           probe_slots: query.probeSlots,
+          slots_before: query.slotsBefore,
+          slots_after: query.slotsAfter,
+          slippage_pct: query.slippagePct,
+          slack_lamports: query.slackLamports,
           ...(query.tag ? { tag: query.tag } : {}),
         }
       : skipToken,
@@ -136,6 +174,7 @@ export function EntryDetail({ entry, query }: { entry: EntryRow; query: EntryDet
     <div className="flex flex-col gap-2 p-2">
       <LazyTokenTradeChart
         detail={detail ?? null}
+        eventMarkers={signalMarkers(trades ?? EMPTY_TRADES, entry)}
         highlightWallet={query.wallet}
         tableId="entry_context_chart"
         toolbarRow={toolbarRow}

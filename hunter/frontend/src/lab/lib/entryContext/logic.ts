@@ -42,8 +42,8 @@ export interface LogicCondition {
   kind: 'scope' | 'signal';
   /** A signal also checked on the Earlier stretch. */
   earlierChecked: boolean;
-  /** Read through the selected IXs (probe, Target, Signal, Earlier): the pool rows
-   *  use it, the all rows skip it. */
+  /** Read through the selected IXs (probe, Target, Earlier): the pool rows
+   *  use it, the all rows skip it. The ix and reserve signal columns do not. */
   needsIxs: boolean;
 }
 

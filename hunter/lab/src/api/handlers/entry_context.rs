@@ -21,7 +21,7 @@
 //! Nothing here writes to the database. A scan's result is kept on disk
 //! ([`entry_scan_cache`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
@@ -95,6 +95,21 @@ pub struct EntryContextBody {
     /// as its control.
     #[serde(default = "default_probe_slots")]
     pub probe_slots: i64,
+    /// Slots before his buy that both signal methods read. Default 2.
+    #[serde(default = "default_slots_before")]
+    pub slots_before: i64,
+    /// Slots after his buy. An ix-pick candidate whose instruction list also
+    /// appears on a buy in this window is dropped. Default 1.
+    #[serde(default = "default_slots_after")]
+    pub slots_after: i64,
+    /// Reserve-match slippage settings, in percent. `20` is 20%. Absent: derive
+    /// the set from the definite entries in this read.
+    #[serde(default)]
+    pub slippage_pct: Option<Vec<f64>>,
+    /// Lamports a candidate quote may differ from the ceiling's curve SOL and
+    /// still match. Default 1.
+    #[serde(default = "default_slack_lamports")]
+    pub slack_lamports: i64,
     /// ONE tag definition, in the fingerprint `tags` document's shape
     /// (`{"match": {...}, "side": "buy"}`), validated by the engine's own parser.
     /// Absent: no target — the windows and their breakdown are still read, and every
@@ -116,6 +131,16 @@ pub struct EntryRangeBody {
     pub end_slot: i64,
     #[serde(default = "default_probe_slots")]
     pub probe_slots: i64,
+    #[serde(default = "default_slots_before")]
+    pub slots_before: i64,
+    #[serde(default = "default_slots_after")]
+    pub slots_after: i64,
+    /// Reserve-match slippage settings, in percent. Absent: no slippage, so a
+    /// crowded reserve match does not run on this one range.
+    #[serde(default)]
+    pub slippage_pct: Option<Vec<f64>>,
+    #[serde(default = "default_slack_lamports")]
+    pub slack_lamports: i64,
     #[serde(default)]
     pub tag: Option<serde_json::Value>,
 }
@@ -127,6 +152,25 @@ fn default_window_secs() -> f64 {
 fn default_probe_slots() -> i64 {
     25
 }
+
+fn default_slots_before() -> i64 {
+    2
+}
+
+fn default_slots_after() -> i64 {
+    1
+}
+
+fn default_slack_lamports() -> i64 {
+    1
+}
+
+/// Pump curve fee, 125 bps, as the multiplier on curve SOL.
+const CURVE_FEE: f64 = 1.0125;
+/// Quiet tape before the one prior print, required before a slippage reading is trusted.
+const SILENCE: Duration = Duration::seconds(5);
+/// Widest signal window accepted, in slots.
+const MAX_SIGNAL_SLOTS: i64 = 50;
 
 // ── Response ────────────────────────────────────────────────────────────────
 
@@ -182,10 +226,23 @@ pub struct GroupRow {
     pub buy_tx_share_pct: Option<f64>,
     /// This group's buy SOL over every buy SOL in the window.
     pub buy_sol_share_pct: Option<f64>,
-    /// The signal's group: the one the probe's nearest tagged print belongs to.
+    /// The ix-pick signal's group: the one the probe's nearest tagged print belongs to.
     /// Kept in the breakdown even past `MAX_GROUPS`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub signal: bool,
+    /// The reserve-match signal's group: the one print in the 2 slots before him.
+    /// Kept in the breakdown even past `MAX_GROUPS`. Several prints in that window
+    /// leave this false — naming one of them needs the ceiling on his buy instruction.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reserve: bool,
+}
+
+/// The reserve-match signal: the only transaction in the 2 slots before his buy.
+/// Absent when that window holds none, or more than one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReservePrint {
+    pub slot: i64,
+    pub tx_index: i32,
 }
 
 /// The tagged print nearest ahead of his buy inside the probe window — how close
@@ -240,6 +297,14 @@ pub struct EntryRow {
     /// Breakdown rows past [`MAX_GROUPS`], left out.
     pub groups_omitted: u32,
     pub probe: ProbeRead,
+    /// The instruction-pick signal: the closest surviving buy in the slots before
+    /// him. Absent when that window holds no buy that survives the rules.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ix_pick: Option<ReservePrint>,
+    /// The reserve-match signal. Absent when the slots before him hold no print,
+    /// or several and his buy ceiling is not stored or matches none of them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserve: Option<ReservePrint>,
     /// The same read from the seat right behind the signal (the probe's nearest
     /// target print): what a bot firing on that print reads, and what the scan
     /// reads for that print. Absent with no signal.
@@ -271,6 +336,9 @@ pub struct EntryContextResponse {
     pub max_entries: i64,
     pub window_secs: f64,
     pub probe_slots: i64,
+    /// Slippage percents the reserve match used. Derived from definite entries
+    /// when the request leaves `slippage_pct` out; the request's list when it sends one.
+    pub slippage_pct: Vec<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tape_floor: Option<DateTime<Utc>>,
 }
@@ -404,6 +472,202 @@ const SCOPE_CONTROL: usize = 1;
 const SCOPE_PROBE: usize = 2;
 const SCOPE_PROBE_CONTROL: usize = 3;
 
+/// How the two signal methods read one entry. Independent of the target tag.
+struct SignalOpts {
+    slots_before: i64,
+    slots_after: i64,
+    /// Fractions: `0.20` is 20%.
+    slippages: Vec<f64>,
+    slack_lamports: i64,
+}
+
+impl Default for SignalOpts {
+    fn default() -> Self {
+        Self { slots_before: 2, slots_after: 1, slippages: vec![0.20], slack_lamports: 1 }
+    }
+}
+
+fn signal_opts(before: i64, after: i64, pct: &[f64], slack: i64) -> SignalOpts {
+    let slippages: Vec<f64> =
+        pct.iter().copied().filter(|p| p.is_finite() && (0.0..500.0).contains(p)).map(|p| p / 100.0).collect();
+    SignalOpts { slots_before: before, slots_after: after, slippages, slack_lamports: slack.max(0) }
+}
+
+fn labels_of(p: &TapePrint) -> Vec<String> {
+    p.ix_labels.as_ref().map(normalize_labels).unwrap_or_default()
+}
+
+fn is_racer(labels: &[String]) -> bool {
+    labels.iter().any(|l| l.contains("AdvanceNonceAccount") || l.contains("CreateAccountWithSeed"))
+}
+
+/// `vsol * token_amount / (vtok - token_amount)`, in lamports, rounded up.
+/// The curve charges that next lamport.
+fn quote_lamports(vsol: i64, vtok: i64, tokens: i64) -> Option<i64> {
+    if vsol <= 0 || vtok <= tokens || tokens <= 0 {
+        return None;
+    }
+    let den = (vtok - tokens) as i128;
+    let num = (vsol as i128) * (tokens as i128);
+    i64::try_from((num + den - 1) / den).ok()
+}
+
+/// `max_sol_cost / (1.0125 * (1 + slippage))`, rounded to lamports.
+fn curve_target(max_cost: i64, slippage: f64) -> i64 {
+    (max_cost as f64 / (CURVE_FEE * (1.0 + slippage))).round() as i64
+}
+
+/// Buys in `[entry - before, entry)` and buys in the `after` slots past his slot.
+fn ix_windows<'a>(
+    anchor: &WalletBuyTx,
+    prints: &'a [TapePrint],
+    before: i64,
+    after: i64,
+) -> (Vec<&'a TapePrint>, Vec<&'a TapePrint>) {
+    let lo = anchor.slot - before;
+    let hi = anchor.slot + after;
+    let mut prior = Vec::new();
+    let mut later = Vec::new();
+    for p in prints {
+        if p.leg_index != 0 || !p.is_buy {
+            continue;
+        }
+        if (p.slot, p.tx_index) < (anchor.slot, anchor.tx_index) && p.slot >= lo {
+            prior.push(p);
+        } else if p.slot > anchor.slot && p.slot <= hi {
+            later.push(p);
+        }
+    }
+    (prior, later)
+}
+
+/// Instruction pick: drop racers when a plain buy is present, drop a shape that
+/// also buys in the slots after him, then take the closest print before him.
+fn ix_pick<'a>(cands: Vec<&'a TapePrint>, after: &[&TapePrint]) -> Option<&'a TapePrint> {
+    if cands.is_empty() {
+        return None;
+    }
+    let mut kept = cands;
+    if kept.iter().any(|p| !is_racer(&labels_of(p))) {
+        kept.retain(|p| !is_racer(&labels_of(p)));
+    }
+    let after_keys: HashSet<Vec<String>> = after.iter().map(|p| labels_of(p)).collect();
+    kept.retain(|p| !after_keys.contains(&labels_of(p)));
+    kept.into_iter().max_by_key(|p| (p.slot, p.tx_index))
+}
+
+/// Slippage percent from one definite entry, in tenths of a percent (`200` = 20.0%).
+/// One print in the slots before him, nothing in the 5 seconds before that print,
+/// and his ceiling reproduces the snapped setting within `slack` lamports.
+fn slippage_tenths(anchor: &WalletBuyTx, prints: &[TapePrint], slots_before: i64, slack: i64) -> Option<i32> {
+    let lo = anchor.slot - slots_before;
+    let mut prior: Vec<&TapePrint> = Vec::new();
+    for p in prints {
+        if (p.slot, p.tx_index) >= (anchor.slot, anchor.tx_index) {
+            break;
+        }
+        if p.leg_index != 0 || p.slot < lo {
+            continue;
+        }
+        prior.push(p);
+    }
+    if prior.len() != 1 {
+        return None;
+    }
+    let (sig_slot, sig_tx) = (prior[0].slot, prior[0].tx_index);
+    let last = prints
+        .iter()
+        .filter(|p| p.slot == sig_slot && p.tx_index == sig_tx)
+        .max_by_key(|p| p.leg_index)?;
+    let noisy = prints.iter().any(|p| {
+        (p.slot, p.tx_index) < (sig_slot, sig_tx) && last.block_time - p.block_time < SILENCE
+    });
+    if noisy {
+        return None;
+    }
+    let max_cost = anchor.max_cost_lamports?;
+    let (vsol, vtok) = (last.reserve_lamports?, last.reserve_token?);
+    let quote = quote_lamports(vsol, vtok, anchor.token_amount)?;
+    let raw = max_cost as f64 / (quote as f64 * CURVE_FEE) - 1.0;
+    if !raw.is_finite() || !(0.0..5.0).contains(&raw) {
+        return None;
+    }
+    let tenths = (raw * 1000.0).round() as i32;
+    let fraction = tenths as f64 / 1000.0;
+    if (quote - curve_target(max_cost, fraction)).abs() > slack {
+        return None;
+    }
+    Some(tenths)
+}
+
+/// His slippage set, in percent. A setting counts when at least two definite
+/// entries read it. A single definite entry is the whole set.
+fn slippage_set(
+    anchors: &[&WalletBuyTx],
+    by_mint: &HashMap<String, Vec<TapePrint>>,
+    slots_before: i64,
+    slack: i64,
+) -> Vec<f64> {
+    let mut counts: BTreeMap<i32, u32> = BTreeMap::new();
+    let mut readings = 0u32;
+    for a in anchors {
+        let Some(prints) = by_mint.get(&a.mint_address) else { continue };
+        let Some(tenths) = slippage_tenths(a, prints, slots_before, slack) else { continue };
+        readings += 1;
+        *counts.entry(tenths).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n >= 2 || readings == 1)
+        .map(|(tenths, _)| tenths as f64 / 10.0)
+        .collect()
+}
+
+/// Reserve match. One transaction in the slots before him is the signal. Several
+/// match when a candidate's quote is within `slack` lamports of
+/// `max_sol_cost / (1.0125 * (1 + slippage))` for one slippage. No ceiling stored
+/// leaves a crowded window unmatched.
+fn reserve_of<'a>(
+    anchor: &WalletBuyTx,
+    prints: &'a [TapePrint],
+    opts: &SignalOpts,
+) -> Option<&'a TapePrint> {
+    let lo = anchor.slot - opts.slots_before;
+    let mut cands: Vec<&TapePrint> = Vec::new();
+    for p in prints {
+        if (p.slot, p.tx_index) >= (anchor.slot, anchor.tx_index) {
+            break;
+        }
+        if p.leg_index != 0 || p.slot < lo {
+            continue;
+        }
+        cands.push(p);
+    }
+    if cands.len() == 1 {
+        return Some(cands[0]);
+    }
+    let (max_cost, tokens) = (anchor.max_cost_lamports?, anchor.token_amount);
+    if cands.is_empty() || tokens <= 0 {
+        return None;
+    }
+    let matched: Vec<&TapePrint> = cands
+        .into_iter()
+        .filter(|p| {
+            let (Some(vsol), Some(vtok)) = (p.reserve_lamports, p.reserve_token) else { return false };
+            let Some(q) = quote_lamports(vsol, vtok, tokens) else { return false };
+            opts.slippages.iter().any(|s| (q - curve_target(max_cost, *s)).abs() <= opts.slack_lamports)
+        })
+        .collect();
+    if matched.len() == 1 {
+        return Some(matched[0]);
+    }
+    if matched.len() > 1 {
+        let (_, after) = ix_windows(anchor, prints, opts.slots_before, opts.slots_after);
+        return ix_pick(matched, &after);
+    }
+    None
+}
+
 /// Fold one anchor's tape: `prints` is the mint's read in tape order, the trader
 /// already excluded. Returns the entry with its window, control and breakdown.
 ///
@@ -419,6 +683,17 @@ fn fold_entry(
     patterns: &TagPatterns,
     window_secs: f64,
     probe_slots: i64,
+) -> EntryRow {
+    fold_signaled(anchor, prints, patterns, window_secs, probe_slots, &SignalOpts::default())
+}
+
+fn fold_signaled(
+    anchor: &WalletBuyTx,
+    prints: &[TapePrint],
+    patterns: &TagPatterns,
+    window_secs: f64,
+    probe_slots: i64,
+    opts: &SignalOpts,
 ) -> EntryRow {
     let win = WindowSpec::secs(window_secs);
     let ctl = WindowSpec { size: window_secs, lag: window_secs, unit: WindowUnit::Sec };
@@ -513,7 +788,11 @@ fn fold_entry(
     let control = read_window(&states[state_of(SCOPE_CONTROL)], ctl, anchor.block_time);
     let unknown_reason = (patterns.builds.pins_fee() && window_prints > 0 && !window_has_fee)
         .then_some(UnknownReason::NoFeeReadings);
-    let signal_key = nearest.map(|(.., p)| group_key(p).0);
+    let (prior, after) = ix_windows(anchor, prints, opts.slots_before, opts.slots_after);
+    let ix = ix_pick(prior, &after);
+    let reserve = reserve_of(anchor, prints, opts);
+    let signal_key = ix.map(|p| group_key(p).0);
+    let reserve_key = reserve.map(|p| group_key(p).0);
 
     let mut rows: Vec<GroupRow> = groups
         .into_iter()
@@ -529,6 +808,7 @@ fn fold_entry(
             buy_tx_share_pct: pct(f64::from(g.buy_tx), f64::from(window.buy_tx)),
             buy_sol_share_pct: pct(g.buy_sol, window.buy_sol),
             signal: signal_key.as_ref() == Some(&key),
+            reserve: reserve_key.as_ref() == Some(&key),
             key,
         })
         .collect();
@@ -539,9 +819,24 @@ fn fold_entry(
             .then_with(|| a.key.cmp(&b.key))
     });
     let groups_omitted = rows.len().saturating_sub(MAX_GROUPS) as u32;
-    // The signal's row stays, in the last kept place, when the cap would cut it.
-    if let Some(i) = rows.iter().position(|r| r.signal).filter(|&i| i >= MAX_GROUPS) {
-        rows.swap(i, MAX_GROUPS - 1);
+    // An ix or reserve row that the cap would cut swaps into the last kept place
+    // that is not itself an ix or reserve row, so pinning one leaves the other.
+    let outsiders: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| *i >= MAX_GROUPS && (r.signal || r.reserve))
+        .map(|(i, _)| i)
+        .collect();
+    let mut seat = MAX_GROUPS;
+    for i in outsiders {
+        while seat > 0 && (rows[seat - 1].signal || rows[seat - 1].reserve) {
+            seat -= 1;
+        }
+        if seat == 0 {
+            break;
+        }
+        seat -= 1;
+        rows.swap(i, seat);
     }
     rows.truncate(MAX_GROUPS);
     probe.nearest = nearest.map(|(slot, tx, at_ms, p)| {
@@ -570,6 +865,8 @@ fn fold_entry(
         groups: rows,
         groups_omitted,
         probe,
+        ix_pick: ix.map(|p| ReservePrint { slot: p.slot, tx_index: p.tx_index }),
+        reserve: reserve.map(|p| ReservePrint { slot: p.slot, tx_index: p.tx_index }),
         at_signal: None,
         holders: None,
     }
@@ -617,6 +914,8 @@ fn seat_behind(
         tx_index: tx_index + 1,
         block_time: at,
         amount_lamports: 0,
+        token_amount: 0,
+        max_cost_lamports: None,
     };
     fold_entry(&anchor, prints, patterns, w, pw)
 }
@@ -638,9 +937,27 @@ fn at_signal(e: &EntryRow, prints: &[TapePrint], patterns: &TagPatterns, w: f64,
 /// One slot range per mint covering every anchor's reads — the analysis `2W` and
 /// the probe's `2P` — overlapping ranges merged so a print is fetched once however
 /// many anchors share it.
-fn mint_windows(anchors: &[&WalletBuyTx], window_secs: f64, probe_slots: i64) -> Vec<SlotWindow> {
+fn check_signal(before: i64, after: i64, slack: i64) -> Result<(), EntryContextError> {
+    if !(0..=MAX_SIGNAL_SLOTS).contains(&before) || !(0..=MAX_SIGNAL_SLOTS).contains(&after) {
+        return Err(EntryContextError::Bad(format!("signal slots must be 0..={MAX_SIGNAL_SLOTS}")));
+    }
+    if slack < 0 {
+        return Err(EntryContextError::Bad("slack_lamports must be >= 0".into()));
+    }
+    Ok(())
+}
+
+fn mint_windows(
+    anchors: &[&WalletBuyTx],
+    window_secs: f64,
+    probe_slots: i64,
+    slots_before: i64,
+    slots_after: i64,
+) -> Vec<SlotWindow> {
     // The signal sits up to `P` slots back, and its own read ([`at_signal`]) spans `2W` before it.
-    let back_slots = ((2.0 * window_secs / MIN_SLOT_SECS).ceil() as i64).max(2 * probe_slots) + probe_slots + 1;
+    let back_slots =
+        ((2.0 * window_secs / MIN_SLOT_SECS).ceil() as i64).max(2 * probe_slots) + probe_slots + 1;
+    let back_slots = back_slots.max(slots_before);
     let back_ms =
         ((2.0 * window_secs * 1000.0).round() as i64).max(2 * probe_slots * MAX_SLOT_MS) + probe_slots * MAX_SLOT_MS;
     let back = Duration::milliseconds(back_ms) + Duration::seconds(TIME_SLACK_SECS);
@@ -653,14 +970,14 @@ fn mint_windows(anchors: &[&WalletBuyTx], window_secs: f64, probe_slots: i64) ->
         let hi_time = a.block_time + Duration::seconds(TIME_SLACK_SECS);
         match out.last_mut() {
             Some(w) if w.mint_address == a.mint_address && lo_slot <= w.hi_slot => {
-                w.hi_slot = w.hi_slot.max(a.slot);
+                w.hi_slot = w.hi_slot.max(a.slot + slots_after);
                 w.lo_time = w.lo_time.min(lo_time);
                 w.hi_time = w.hi_time.max(hi_time);
             }
             _ => out.push(SlotWindow {
                 mint_address: a.mint_address.clone(),
                 lo_slot,
-                hi_slot: a.slot,
+                hi_slot: a.slot + slots_after,
                 lo_time,
                 hi_time,
             }),
@@ -728,6 +1045,7 @@ pub async fn read_entry_range(
     if !(1..=MAX_PROBE_SLOTS).contains(&pw) {
         return Err(EntryContextError::Bad(format!("probe_slots must be 1..={MAX_PROBE_SLOTS}")));
     }
+    check_signal(body.slots_before, body.slots_after, body.slack_lamports)?;
     let (patterns, targeted) = compile_optional(body.tag.as_ref())?;
 
     let anchor = WalletBuyTx {
@@ -736,8 +1054,16 @@ pub async fn read_entry_range(
         tx_index: 0,
         block_time: body.to,
         amount_lamports: 0,
+        token_amount: 0,
+        max_cost_lamports: None,
     };
-    let windows = mint_windows(&[&anchor], w, pw);
+    let sig = signal_opts(
+        body.slots_before,
+        body.slots_after,
+        body.slippage_pct.as_deref().unwrap_or(&[]),
+        body.slack_lamports,
+    );
+    let windows = mint_windows(&[&anchor], w, pw, sig.slots_before, sig.slots_after);
     let mut prints = repo
         .prints_in_slot_windows(&windows, Some(wallet))
         .await
@@ -748,7 +1074,7 @@ pub async fn read_entry_range(
         tracing::warn!("entry context range: tape floor unreadable: {e}");
         None
     });
-    let mut read = fold_entry(&anchor, &prints, &patterns, w, pw);
+    let mut read = fold_signaled(&anchor, &prints, &patterns, w, pw, &sig);
     if tape_floor.is_some_and(|f| body.from - (body.to - body.from) < f) {
         read.unknown_reason = Some(UnknownReason::TapeTruncated);
     }
@@ -767,6 +1093,7 @@ fn check_body(body: &EntryContextBody) -> Result<(), EntryContextError> {
     if !(1..=MAX_PROBE_SLOTS).contains(&body.probe_slots) {
         return Err(EntryContextError::Bad(format!("probe_slots must be 1..={MAX_PROBE_SLOTS}")));
     }
+    check_signal(body.slots_before, body.slots_after, body.slack_lamports)?;
     if body.to.is_some_and(|to| to < body.from) {
         return Err(EntryContextError::Bad("`to` is before `from`".into()));
     }
@@ -831,7 +1158,21 @@ pub async fn read_entry_context(
     let covered = |a: &WalletBuyTx| tape_floor.is_none_or(|f| a.block_time - reach >= f);
 
     let readable: Vec<&WalletBuyTx> = anchors.iter().filter(|a| covered(a)).collect();
-    let by_mint = prints_by_mint(repo, wallet, mint_windows(&readable, w, pw)).await?;
+    let mut sig = signal_opts(
+        body.slots_before,
+        body.slots_after,
+        body.slippage_pct.as_deref().unwrap_or(&[]),
+        body.slack_lamports,
+    );
+    let by_mint = prints_by_mint(repo, wallet, mint_windows(&readable, w, pw, sig.slots_before, sig.slots_after)).await?;
+    // No list in the request: the definite entries in this read set the slippage.
+    let slippage_pct = if body.slippage_pct.as_ref().is_some_and(|v| !v.is_empty()) {
+        sig.slippages.iter().map(|s| s * 100.0).collect()
+    } else {
+        let derived = slippage_set(&readable, &by_mint, sig.slots_before, sig.slack_lamports);
+        sig.slippages = derived.iter().copied().map(|p| p / 100.0).collect();
+        derived
+    };
 
     let empty: Vec<TapePrint> = Vec::new();
     let mut entries: Vec<EntryRow> = anchors
@@ -850,12 +1191,14 @@ pub async fn read_entry_context(
                     groups: Vec::new(),
                     groups_omitted: 0,
                     probe: ProbeRead::default(),
+                    ix_pick: None,
+                    reserve: None,
                     at_signal: None,
                     holders: None,
                 };
             }
             let prints = by_mint.get(&a.mint_address).unwrap_or(&empty);
-            let mut e = fold_entry(a, prints, &patterns, w, pw);
+            let mut e = fold_signaled(a, prints, &patterns, w, pw, &sig);
             if targeted {
                 e.at_signal = at_signal(&e, prints, &patterns, w, pw);
             } else {
@@ -872,6 +1215,7 @@ pub async fn read_entry_context(
         max_entries: MAX_ENTRIES,
         window_secs: w,
         probe_slots: pw,
+        slippage_pct,
         tape_floor,
     })
 }
@@ -1241,6 +1585,8 @@ mod tests {
             is_buy,
             amount_lamports: (sol * 1e9) as i64,
             token_amount: (sol * 1e9) as i64,
+            reserve_lamports: None,
+            reserve_token: None,
             ix_labels: Some(serde_json::json!(["Compute Budget: SetComputeUnitLimit", label])),
             cu_limit: None,
             cu_price: None,
@@ -1249,7 +1595,15 @@ mod tests {
     }
 
     fn anchor(slot: i64, tx: i32, secs: i64) -> WalletBuyTx {
-        WalletBuyTx { mint_address: "M".into(), slot, tx_index: tx, block_time: at(secs), amount_lamports: 1_000_000_000 }
+        WalletBuyTx {
+            mint_address: "M".into(),
+            slot,
+            tx_index: tx,
+            block_time: at(secs),
+            amount_lamports: 1_000_000_000,
+            token_amount: 0,
+            max_cost_lamports: None,
+        }
     }
 
     fn six_tag() -> TagPatterns {
@@ -1304,6 +1658,113 @@ mod tests {
         assert_eq!(signal.len(), 1);
         assert!(signal[0].key.ends_with(six_b), "{}", signal[0].key);
         assert_eq!(e.groups.len(), MAX_GROUPS);
+    }
+
+    /// One transaction in the 2 slots before him is the reserve signal, on its
+    /// group. A second transaction in that window leaves no reserve signal.
+    #[test]
+    fn one_print_in_the_two_slots_before_him_is_the_reserve_signal() {
+        let lone = print(89, 2, 99, SIX, true, 1.0, "a");
+        let e = fold_entry(&anchor(90, 5, 100), &[lone], &six_tag(), 30.0, 25);
+        assert_eq!(e.reserve, Some(ReservePrint { slot: 89, tx_index: 2 }));
+        assert!(e.groups.iter().any(|g| g.reserve && g.key.ends_with(SIX)));
+
+        let crowded = [
+            print(88, 0, 98, SIX, true, 1.0, "a"),
+            print(89, 2, 99, "Pump.Fun: Buy", true, 1.0, "b"),
+        ];
+        let e = fold_entry(&anchor(90, 5, 100), &crowded, &six_tag(), 30.0, 25);
+        assert!(e.reserve.is_none());
+        assert!(e.groups.iter().all(|g| !g.reserve));
+    }
+
+    /// Instruction pick ignores the target tag: it drops a racer when a plain buy
+    /// exists, drops a shape that buys again in the next slot, and keeps the closest.
+    #[test]
+    fn ix_pick_drops_racers_and_shapes_that_return_then_takes_the_closest() {
+        let racer = "System Program: AdvanceNonceAccount";
+        let prints = vec![
+            print(88, 0, 98, racer, true, 1.0, "r"),
+            print(89, 1, 99, "Pump.Fun: Buy", true, 1.0, "a"),
+            print(89, 4, 99, SIX, true, 1.0, "b"),
+            print(91, 0, 101, SIX, true, 1.0, "later"),
+        ];
+        let e = fold_entry(&anchor(90, 5, 100), &prints, &six_tag(), 30.0, 25);
+        // The racer drops because a plain buy exists. SIX returns in the next slot.
+        // The remaining buy is Pump.Fun at tx 1.
+        assert_eq!(e.ix_pick, Some(ReservePrint { slot: 89, tx_index: 1 }));
+    }
+
+    /// A crowded window matches the print whose quote is within 1 lamport of the
+    /// ceiling divided by the fee and the slippage.
+    #[test]
+    fn reserve_match_picks_the_quote_within_one_lamport() {
+        let tokens = 1_000_000_i64;
+        let vsol = 30_000_000_000_i64;
+        let vtok = 1_000_000_000_000_i64;
+        let quote = quote_lamports(vsol, vtok, tokens).unwrap();
+        let max_cost = (quote as f64 * CURVE_FEE * 1.20).round() as i64;
+        let mut hit = print(89, 2, 99, SIX, true, 1.0, "a");
+        hit.reserve_lamports = Some(vsol);
+        hit.reserve_token = Some(vtok);
+        let mut other = print(88, 0, 98, "Pump.Fun: Buy", true, 2.0, "b");
+        other.reserve_lamports = Some(vsol / 2);
+        other.reserve_token = Some(vtok);
+        let mut anchor = anchor(90, 5, 100);
+        anchor.token_amount = tokens;
+        anchor.max_cost_lamports = Some(max_cost);
+        let e = fold_entry(&anchor, &[other, hit], &six_tag(), 30.0, 25);
+        assert_eq!(e.reserve, Some(ReservePrint { slot: 89, tx_index: 2 }));
+    }
+
+    /// Two quiet definite entries at 20% are the set. One entry at 15% does not join it.
+    #[test]
+    fn definite_entries_set_the_slippage() {
+        let tokens = 1_000_000_i64;
+        let vsol = 30_000_000_000_i64;
+        let vtok = 1_000_000_000_000_i64;
+        let quote = quote_lamports(vsol, vtok, tokens).unwrap();
+        let ceiling = |slip: f64| (quote as f64 * CURVE_FEE * (1.0 + slip)).round() as i64;
+        let mut prints = Vec::new();
+        let mut anchors = Vec::new();
+        for slot in [100_i64, 300] {
+            prints.push(print(slot - 20, 0, slot - 20, "Pump.Fun: Buy", true, 1.0, "old"));
+            let mut sigp = print(slot - 1, 0, slot - 1, SIX, true, 1.0, "sig");
+            sigp.reserve_lamports = Some(vsol);
+            sigp.reserve_token = Some(vtok);
+            prints.push(sigp);
+            let mut a = anchor(slot, 0, slot);
+            a.token_amount = tokens;
+            a.max_cost_lamports = Some(ceiling(0.20));
+            anchors.push(a);
+        }
+        prints.push(print(480, 0, 480, "Pump.Fun: Buy", true, 1.0, "old"));
+        let mut lone = print(499, 0, 499, SIX, true, 1.0, "sig");
+        lone.reserve_lamports = Some(vsol);
+        lone.reserve_token = Some(vtok);
+        prints.push(lone);
+        let mut once = anchor(500, 0, 500);
+        once.token_amount = tokens;
+        once.max_cost_lamports = Some(ceiling(0.15));
+        anchors.push(once);
+        // Outside the 2 slots, two seconds before the signal: the reading is not trusted.
+        prints.push(print(690, 0, 697, "Pump.Fun: Buy", true, 1.0, "near"));
+        let mut crowded_quiet = print(699, 0, 699, SIX, true, 1.0, "sig");
+        crowded_quiet.reserve_lamports = Some(vsol);
+        crowded_quiet.reserve_token = Some(vtok);
+        prints.push(crowded_quiet);
+        let mut noisy = anchor(700, 0, 700);
+        noisy.token_amount = tokens;
+        noisy.max_cost_lamports = Some(ceiling(0.25));
+        anchors.push(noisy);
+
+        let refs: Vec<&WalletBuyTx> = anchors.iter().collect();
+        let mut by_mint = HashMap::new();
+        by_mint.insert("M".into(), prints);
+        assert_eq!(slippage_set(&refs, &by_mint, 2, 1), vec![20.0]);
+
+        let one: Vec<&WalletBuyTx> = vec![&anchors[0]];
+        assert_eq!(slippage_set(&one, &by_mint, 2, 1), vec![20.0]);
     }
 
     /// `[entry - W, entry]` by block time, and in his own slot only the txs ahead of
@@ -1426,6 +1887,8 @@ mod tests {
             tx_index: 0,
             block_time: at(100),
             amount_lamports: 0,
+            token_amount: 0,
+            max_cost_lamports: None,
         };
         let e = fold_entry(&anchor, &prints, &six_tag(), 20.0, 25);
         assert_eq!((e.window.tag_buy_tx, e.window.buy_tx), (2, 3));
@@ -1445,7 +1908,7 @@ mod tests {
         let a = anchor(1_000, 0, 100);
         let b = anchor(1_050, 0, 120);
         let far = anchor(9_000, 0, 5_000);
-        let ws = mint_windows(&[&a, &b, &far], 30.0, 25);
+        let ws = mint_windows(&[&a, &b, &far], 30.0, 25, 0, 0);
         assert_eq!(ws.len(), 2);
         assert_eq!(ws[0].hi_slot, 1_050);
         assert!(ws[0].lo_slot <= 1_000 - 240);
@@ -1483,6 +1946,7 @@ mod tests {
         assert!(untagged.tag.is_none());
         assert_eq!(untagged.window_secs, 30.0);
         assert_eq!(untagged.probe_slots, 25);
+        assert!(untagged.slippage_pct.is_none());
         let e = fold_entry(&anchor(90, 5, 100), &[], &six_tag(), 30.0, 25);
         let v = serde_json::to_value(&e).unwrap();
         for k in ["mint_address", "slot", "tx_index", "at", "sol", "window", "control", "groups", "groups_omitted", "probe"] {

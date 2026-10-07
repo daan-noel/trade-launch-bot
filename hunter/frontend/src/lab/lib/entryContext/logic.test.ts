@@ -99,12 +99,12 @@ describe('entryLogic', () => {
       entry_sol: false,
       pe_hits: true,
       tx_share: true,
-      sig_tx_share: true,
+      sig_tx_share: false,
       buy_tx: false,
     });
-    // Neither has a signal (no breakdown rows), so the idea fails both. anyIx asks
-    // All buys >= 10 alone, and both have 10.
+    // Neither has an ix signal (no breakdown rows), so IX tx % fails both, and that
+    // filter applies to every row: it does not depend on the selected IXs.
     expect([a, c].map(logic.idea)).toEqual([false, false]);
-    expect([a, c].map(logic.anyIx)).toEqual([true, true]);
+    expect([a, c].map(logic.anyIx)).toEqual([false, false]);
   });
 });

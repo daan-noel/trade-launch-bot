@@ -553,6 +553,8 @@ mod tests {
             is_buy,
             amount_lamports: lamports,
             token_amount: lamports,
+            reserve_lamports: None,
+            reserve_token: None,
             ix_labels: Some(serde_json::json!(labels)),
             cu_limit: None,
             cu_price: None,
