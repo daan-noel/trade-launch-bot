@@ -294,3 +294,30 @@ export function ChartIcon({ className }: IconProps) {
     </Svg>
   );
 }
+
+/** Clipboard — copy the current value. */
+export function ClipboardIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <rect x="5" y="4.5" width="10" height="12" rx="1.2" {...stroke} />
+      <path d="M8 4.5V3.8a.8.8 0 0 1 .8-.8h2.4a.8.8 0 0 1 .8.8v.7" {...stroke} />
+      <path d="M8 9.5h4M8 12.5h3" {...stroke} />
+    </Svg>
+  );
+}
+
+/** Curly braces — open the set as JSON. */
+export function JsonIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path
+        d="M7.4 5.2c-1.3.5-2 1.3-2 2.5v1c0 .7-.4 1.1-1.1 1.2.7.1 1.1.5 1.1 1.2v1c0 1.2.7 2 2 2.5"
+        {...stroke}
+      />
+      <path
+        d="M12.6 5.2c1.3.5 2 1.3 2 2.5v1c0 .7.4 1.1 1.1 1.2-.7.1-1.1.5-1.1 1.2v1c0 1.2-.7 2-2 2.5"
+        {...stroke}
+      />
+    </Svg>
+  );
+}

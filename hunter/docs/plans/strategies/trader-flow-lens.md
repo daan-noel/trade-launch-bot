@@ -109,8 +109,9 @@ muted reads *"muted by the lens chips: click to classify with it again"* instead
 
 ## Page surface
 
-`FlowLensBar` (Trader Analysis, above the analytics deck): set picker (shows
-kind), create-time Templates / Exact toggle (default Templates), the JSON box,
+`FlowLensBar` (Trader Analysis, above the analytics deck, and Entry Context): set
+picker (shows kind). The new-set button opens the name and the Template / Exact
+structure choice (default Template). The JSON box,
 narrowing chips (group names on exact, one per grain on templates), the two
 classifier switches, rename / delete / copy-JSON, and copy-to-fingerprint.
 

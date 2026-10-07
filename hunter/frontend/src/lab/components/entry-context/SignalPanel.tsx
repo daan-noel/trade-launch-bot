@@ -3,7 +3,6 @@ import { DateCell } from 'components/table/DateCell';
 import { Input } from 'components/ui/Input';
 import { Switch } from 'components/ui/Switch';
 import { cn } from 'lib/cn';
-import { FIELD_LABEL } from '@lab/components/analysis/TraderQueryInputs';
 import { entryKey } from '@lab/lib/entryContext/types';
 import type { EntryRow, SlippageReading } from '@lab/lib/entryContext/types';
 import {
@@ -11,7 +10,7 @@ import {
   formatSlip,
   isDefinite,
   signalCounts,
-  slippageText,
+  slippageOptions,
   type SignalFocus,
 } from '@lab/lib/entryContext/signal';
 import type { TraderTokenRow } from 'types';
@@ -25,83 +24,104 @@ export interface SignalPanelProps {
   readings: readonly SlippageReading[];
   focus: SignalFocus;
   onFocus: (next: SignalFocus) => void;
+  /** A derived slippage to keep. `null` shows every buy. */
+  slipPick: number | null;
+  onSlipPick: (pct: number | null) => void;
   slotsBefore: number;
-  slackLamports: number;
-  /** Off shows the derived options as text. On is the comma-separated box. */
+  /** Off shows each derived slippage as a button. On is the comma-separated box. */
   slippageOn: boolean;
   /** The box, for example `10, 20, 30`. Sent only while `slippageOn`. */
   slippage: string;
   onSlotsBefore: (n: number) => void;
-  onSlack: (n: number) => void;
   onSlippageOn: (on: boolean) => void;
   onSlippage: (raw: string) => void;
 }
 
-const NUM = 'w-[72px] font-normal normal-case tracking-normal';
+const KNOB = 'text-[9px] font-bold uppercase leading-none tracking-widest text-text-dim';
+const FIELD = 'h-7 w-16 py-0 font-mono';
 
 /**
- * Reserve match. It names the transaction. A count click keeps only those buys.
+ * Reserve match. It names the signal tx he priced. A count click keeps only those buys.
  */
 export function SignalPanel(p: SignalPanelProps) {
   const c = signalCounts(p.entries);
   const pick = (next: SignalFocus) => p.onFocus(p.focus === next ? 'all' : next);
   const n = (v: number) => (p.ready ? v.toLocaleString() : '—');
+  const slips = slippageOptions(p.readings);
+  const slipOn = (pct: number) => p.slipPick != null && formatSlip(p.slipPick) === formatSlip(pct);
 
   return (
-    <section className="mb-3">
-      <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-text-dim">Signal</h3>
-      <div>
-        <article className="rounded-md border border-info/30 bg-info/5 p-3">
-          <header className="mb-2">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-info">Reserve match</div>
-            <div className="text-[11px] text-text-dim">names the transaction</div>
-          </header>
-          <div className="mb-3 flex flex-wrap items-end gap-3">
-            <label className={FIELD_LABEL} title="Slots before his buy.">
-              Slots before
+    <section className="@container min-w-0">
+      <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-text-dim">
+        Reserve match - signal tx
+      </h3>
+      <article className="rounded-md border border-info/30 bg-info/5 px-3 py-2">
+        {/* One line when this section has the full page. In the side-by-side
+            column the counts drop under the knobs so they stay inside the card. */}
+        <div className="flex flex-col gap-2 @5xl:flex-row @5xl:flex-wrap @5xl:items-center @5xl:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+            <label
+              className="inline-flex items-center gap-1.5"
+              title="Slots before his buy. Reserve match reads this window for the signal tx."
+            >
+              <span className={KNOB}>Slots before</span>
               <Input
                 type="number"
                 min={0}
                 max={50}
                 value={p.slotsBefore}
                 onChange={(e) => p.onSlotsBefore(Number(e.target.value))}
-                className={NUM}
+                aria-label="Slots before"
+                className={FIELD}
               />
             </label>
-            <label
-              className={FIELD_LABEL}
-              title="A candidate quote may differ from the ceiling's curve SOL by this many lamports and still match."
-            >
-              Slack, lamports
+            <span className="inline-flex items-center gap-1.5">
+              <span className={KNOB}>Slippage</span>
+              <Switch checked={p.slippageOn} onChange={p.onSlippageOn} label="Edit slippage" />
+            </span>
+            {p.slippageOn ? (
               <Input
-                type="number"
-                min={0}
-                value={p.slackLamports}
-                onChange={(e) => p.onSlack(Number(e.target.value))}
-                className="w-[88px] font-normal normal-case tracking-normal"
+                value={p.slippage}
+                placeholder="10, 20, 30"
+                title="Percents, comma-separated. These are the options the match tries."
+                aria-label="Slippage percents"
+                onChange={(e) => p.onSlippage(e.target.value)}
+                className="h-7 w-36 py-0 font-normal normal-case tracking-normal"
               />
-            </label>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className={FIELD_LABEL}>Slippage</span>
-                <Switch checked={p.slippageOn} onChange={p.onSlippageOn} label="Edit slippage" />
-              </div>
-              {p.slippageOn ? (
-                <Input
-                  value={p.slippage}
-                  placeholder="10, 20, 30"
-                  title="Percents, comma-separated. These are the options the match tries."
-                  onChange={(e) => p.onSlippage(e.target.value)}
-                  className="mt-1 w-[140px] font-normal normal-case tracking-normal"
-                />
-              ) : (
-                <div className="mt-1 text-sm font-normal normal-case tracking-normal text-text">
-                  {slippageText(p.readings) || (p.ready ? 'no definite entry' : '—')}
-                </div>
-              )}
-            </div>
+            ) : slips.length > 0 ? (
+              <span className="inline-flex flex-wrap items-center gap-1">
+                {slips.map((pct) => {
+                  const on = slipOn(pct);
+                  const label = `${formatSlip(pct)}%`;
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => p.onSlipPick(on ? null : pct)}
+                      title={
+                        on
+                          ? `Showing buys at ${label}. Click again for every slippage.`
+                          : `Show only buys whose signal slippage is ${label}.`
+                      }
+                      className={cn(
+                        'inline-flex h-7 items-center rounded border px-2 text-[11px] font-normal leading-none',
+                        on
+                          ? 'border-info bg-info/25 font-bold text-info'
+                          : 'border-white/20 text-text hover:border-info/50',
+                      )}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </span>
+            ) : (
+              <span className="text-[11px] leading-none text-text-dim">
+                {p.ready ? 'no definite entry' : '—'}
+              </span>
+            )}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <CountTile
               tone="gold"
               active={p.focus === 'definite'}
@@ -131,6 +151,7 @@ export function SignalPanel(p: SignalPanelProps) {
               }
             />
           </div>
+        </div>
           {p.ready && c.single > 0 && (
             <button
               type="button"
@@ -143,10 +164,12 @@ export function SignalPanel(p: SignalPanelProps) {
               {c.single.toLocaleString()} one print, slippage not read
             </button>
           )}
-        </article>
-      </div>
-      {p.focus !== 'all' && (
-        <p className="mt-1 text-[11px] text-text-dim">Showing these buys. Click the count again for every buy.</p>
+      </article>
+      {(p.focus !== 'all' || p.slipPick != null) && (
+        <p className="mt-1 text-[11px] text-text-dim">
+          {p.slipPick != null ? `Showing ${formatSlip(p.slipPick)}% slippage. ` : 'Showing these buys. '}
+          Click the selection again for every buy.
+        </p>
       )}
       {(p.loading || p.truncated) && (
         <p className="mt-1 text-[11px] text-text-dim">
@@ -184,11 +207,22 @@ function CountTile({
     <button
       type="button"
       onClick={onClick}
-      className={cn('min-w-[108px] rounded-md border px-3 py-2 text-left', face)}
+      title={detail}
+      className={cn(
+        'inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-2.5 text-left',
+        face,
+      )}
     >
-      <div className="text-lg font-bold leading-none">{tone === 'gold' ? `★ ${value}` : value}</div>
-      <div className="mt-1 text-[10px] font-bold uppercase tracking-wider">{label}</div>
-      <div className="text-[10px] opacity-80">{detail}</div>
+      <span className="inline-flex w-12 shrink-0 items-center justify-end gap-0.5 text-sm font-bold leading-none">
+        {tone === 'gold' && <span aria-hidden>★</span>}
+        <span className="tabular-nums">{value}</span>
+      </span>
+      <span className="flex flex-col justify-center gap-0.5 leading-none">
+        <span className="text-[10px] font-bold uppercase tracking-wider">{label}</span>
+        <span className="whitespace-nowrap text-[10px] font-normal normal-case tracking-normal opacity-80">
+          {detail}
+        </span>
+      </span>
     </button>
   );
 }
@@ -197,14 +231,14 @@ function CountTile({
 export function ReserveCell({ entry }: { entry: EntryRow }) {
   const call = entry.reserve_call;
   if (!call) {
-    return <span className="text-text-dim">{entry.reserve ? 'reserve' : '—'}</span>;
+    return <span className="text-text-dim">{entry.reserve ? 'signal tx' : '—'}</span>;
   }
   if (call.kind === 'definite') {
     return (
       <div className="leading-tight">
         <div className="font-bold text-warning">★ DEFINITE · {formatSlip(call.slippage_pct)}%</div>
         <div className="text-[10px] text-text-dim">
-          {call.quiet_secs != null ? `quiet ${call.quiet_secs}s` : 'quiet'} · one print before him
+          one print in the slots before him
         </div>
         {call.quote_sol != null && (
           <div className="text-[10px] text-text-dim">quote {formatQuote(call.quote_sol)} SOL</div>
@@ -244,7 +278,7 @@ export function ReserveCell({ entry }: { entry: EntryRow }) {
     return (
       <div className="leading-tight text-text-dim">
         <div>— no quote or floor matched</div>
-        <div className="text-[10px]">nothing within the slack</div>
+        <div className="text-[10px]">no earlier tx equals his bound</div>
       </div>
     );
   }
@@ -279,14 +313,14 @@ export function signalBuyColumns(): ColumnDef<EntryRow>[] {
   return [
     {
       key: 'reserve_call',
-      label: 'Reserve match',
+      label: 'Signal tx',
       group: 'buy',
       tooltip:
-        'Reserve match names the transaction he priced.\n' +
-        'DEFINITE = one print before him, quiet for 5 seconds, slippage read from his ceiling.\n' +
-        'CROWDED = several prints, and one quote matches his ceiling, or one floor matches his min_tokens_out.\n' +
+        'Reserve match names the signal tx he priced.\n' +
+        'DEFINITE = one print in the slots before him, slippage read from his bound.\n' +
+        'CROWDED = several prints, and one quote equals his ceiling, or one floor equals his min_tokens_out.\n' +
         'A floor buy is BuyExactSolIn or an exact-quote buy. Its slippage is not a ceiling slippage.\n' +
-        'Blank = crowded with no stored bound, nothing within the slack, or several prints matched.',
+        'Blank = crowded with no stored bound, no earlier tx equals his bound, or several prints matched.',
       render: (e) => <ReserveCell entry={e} />,
       sortValue: (e) => RESERVE_RANK[e.reserve_call?.kind ?? 'empty'] ?? 0,
       searchValue: (e) => e.reserve_call?.kind ?? '',
@@ -328,9 +362,9 @@ export function signalTokenColumns(
   return [
     {
       key: 'sig_reserve',
-      label: 'Reserve match',
+      label: 'Signal tx',
       group: 'reserve',
-      tooltip: 'This token\'s buys, by reserve match. ★ is a definite entry.',
+      tooltip: 'This token\'s buys, by the signal tx reserve match named. ★ is a definite entry.',
       render: (r) => {
         const buys = buysOf(r);
         const opened = open.has(r.mint_address);

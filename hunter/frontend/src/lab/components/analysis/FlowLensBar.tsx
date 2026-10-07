@@ -1,11 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
-import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Switch } from 'components/ui/Switch';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
+import {
+  CheckIcon,
+  ClipboardIcon,
+  CloseIcon,
+  EditIcon,
+  JsonIcon,
+  PlusIcon,
+  TrashIcon,
+} from 'components/ui/icons';
 import { cn } from 'lib/cn';
 import {
   formatPatternsJson,
@@ -39,15 +48,27 @@ const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
 const KIND_OPTIONS: { value: IxPatternSetKind; label: string; title: string }[] = [
   {
     value: 'templates',
-    label: 'Templates',
+    label: 'Template',
     title: 'Grain ids (program|CU|ATA|N|S|F) and program names: a tag\'s ix template / program matchers',
   },
   {
     value: 'exact',
-    label: 'Exact',
+    label: 'Exact structure',
     title: 'Full ix_labels sequences, optional fee pins: a tag\'s exact ix shape matcher',
   },
 ];
+
+const KNOB = 'text-[9px] font-bold uppercase leading-none tracking-widest text-text-dim';
+
+/**
+ * IX gate and reserve match. A wide window puts them in one row. A narrow
+ * window stacks them, one section per row.
+ */
+export function GateRow({ children }: { children: ReactNode }) {
+  return (
+    <div className="mb-3 grid grid-cols-1 items-start gap-3 xl:grid-cols-2">{children}</div>
+  );
+}
 
 /**
  * The Trader Analysis **flow lens** control strip: which analysis-owned pattern set
@@ -56,7 +77,8 @@ const KIND_OPTIONS: { value: IxPatternSetKind; label: string; title: string }[] 
  * A wallet study has no fingerprint, so the chart stack has no tag to read and the
  * overlay never draws. This bar supplies one from `ix_pattern_sets` instead: the
  * narrowed set as matchers, with the lens' own side and sticky switches. Kind is
- * chosen at create (Templates or Exact); the set picker is the switch. Charts, the
+ * chosen when the set is created. The name and the Template / Exact structure
+ * choice open from the new-set button. The set picker is the switch. Charts, the
  * tag column and badge clicks all follow the selected set.
  *
  * Nothing here can reach a rule: a set is analysis-only, and the one path into the
@@ -73,8 +95,9 @@ export function FlowLensBar({
    *  side, the same wallet excluded. Absent ⇒ the bar is the lens alone. */
   probe?: ProbeControlsModel;
 }) {
-  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteMode, setPasteMode] = useState<'edit' | 'create' | null>(null);
   const [pasteText, setPasteText] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newKind, setNewKind] = useState<IxPatternSetKind>('templates');
   const [copied, setCopied] = useState(false);
@@ -84,19 +107,22 @@ export function FlowLensBar({
   const stickyField = tagField(reg, 'sticky');
   const kind = set ? kindOf(set) : newKind;
   const isTemplates = kind === 'templates';
+  const pasteKind: IxPatternSetKind = pasteMode === 'create' ? newKind : kind;
+  const pasteIsTemplates = pasteKind === 'templates';
   const classifying = keys?.size ?? 0;
   const storedCount = isTemplates ? (set?.working_templates.length ?? 0) : (set?.patterns.length ?? 0);
+  const setName = newName.trim() || defaultSetName(wallet, newKind);
 
   const parsedPatterns = useMemo(
-    () => (!isTemplates && pasteText.trim() ? parsePastedPatterns(pasteText) : null),
-    [isTemplates, pasteText],
+    () => (!pasteIsTemplates && pasteText.trim() ? parsePastedPatterns(pasteText) : null),
+    [pasteIsTemplates, pasteText],
   );
   const parsedGrains = useMemo(
-    () => (isTemplates && pasteText.trim() ? parsePastedGrains(pasteText) : null),
-    [isTemplates, pasteText],
+    () => (pasteIsTemplates && pasteText.trim() ? parsePastedGrains(pasteText) : null),
+    [pasteIsTemplates, pasteText],
   );
 
-  const pasteReady = isTemplates
+  const pasteReady = pasteIsTemplates
     ? (parsedGrains?.grains.length ?? 0) > 0
     : (parsedPatterns?.patterns.length ?? 0) > 0;
 
@@ -104,17 +130,33 @@ export function FlowLensBar({
   // to read what a lens actually holds. Same text `Copy JSON` writes (one
   // serializer), and it round-trips back through the parser, so the viewer and the
   // editor are the same control — read it, change a line, Replace.
-  const togglePaste = () => {
-    const next = !pasteOpen;
-    setPasteOpen(next);
-    if (next && set && storedCount > 0) setPasteText(setJson(set, isTemplates));
+  const openEditJson = () => {
+    if (pasteMode === 'edit') {
+      setPasteMode(null);
+      return;
+    }
+    setPasteMode('edit');
+    if (set && storedCount > 0) setPasteText(setJson(set, isTemplates));
+  };
+
+  const openCreatePaste = () => {
+    if (pasteMode === 'create') {
+      setPasteMode(null);
+      return;
+    }
+    setCreateOpen(true);
+    setPasteMode('create');
+    setPasteText('');
   };
 
   // A set swap while the box is open would leave another set's JSON on screen
-  // looking like this one's.
+  // looking like this one's. A successful create changes the selected set and
+  // closes the form with it.
   useEffect(() => {
-    setPasteOpen(false);
+    setPasteMode(null);
     setPasteText('');
+    setCreateOpen(false);
+    setNewName('');
   }, [lens.setId]);
 
   useEffect(() => {
@@ -123,11 +165,14 @@ export function FlowLensBar({
     return () => clearTimeout(t);
   }, [copied]);
 
+  const create = () => void lens.createSet(setName, newKind);
+
   const applyPaste = async (mode: 'replace' | 'merge') => {
-    if (isTemplates) {
+    const creating = pasteMode === 'create' || !set;
+    if (pasteIsTemplates) {
       if (!parsedGrains || parsedGrains.grains.length === 0) return;
-      if (!set) {
-        await lens.createSet(newName.trim() || defaultSetName(wallet, newKind), newKind, [], parsedGrains.grains);
+      if (creating || !set) {
+        await lens.createSet(setName, 'templates', [], parsedGrains.grains);
       } else {
         const next =
           mode === 'replace'
@@ -137,13 +182,8 @@ export function FlowLensBar({
       }
     } else {
       if (!parsedPatterns || parsedPatterns.patterns.length === 0) return;
-      if (!set) {
-        await lens.createSet(
-          newName.trim() || defaultSetName(wallet, newKind),
-          newKind,
-          parsedPatterns.patterns,
-          [],
-        );
+      if (creating || !set) {
+        await lens.createSet(setName, 'exact', parsedPatterns.patterns, []);
       } else {
         const next =
           mode === 'replace'
@@ -153,149 +193,177 @@ export function FlowLensBar({
       }
     }
     setPasteText('');
-    setPasteOpen(false);
+    setPasteMode(null);
   };
 
   return (
-    <div className="mb-3 rounded-md border border-white/8 bg-white/2 p-2.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="info" size="sm">
-          Target IXs
-        </Badge>
-
+    <section className="min-w-0">
+      <h3 className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-text-dim">
+        IX gate - token pool
+      </h3>
+      <div className="rounded-md border border-white/8 bg-white/2 p-2.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <span className={KNOB} title="The instruction set that names the token pool.">
+          Target IX
+        </span>
         <Select
           fieldSize="sm"
           value={lens.setId ?? ''}
           onChange={(e) => lens.selectSet(e.target.value || null)}
-          title="Pattern set every chart on this page classifies with"
-          className="max-w-[22rem]"
+          title="Pattern set every chart on this page classifies with. None leaves the charts without tag lines."
+          aria-label="Target IX"
+          className="h-7 w-72 max-w-full py-0"
         >
-          <option value="">No target IXs - charts show no tag lines</option>
+          <option value="">None</option>
           {sets.map((s) => {
             const k = kindOf(s);
             const n = k === 'templates' ? s.working_templates.length : s.patterns.length;
+            const unit = k === 'templates' ? 'template' : 'pattern';
             return (
               <option key={s.id} value={s.id}>
-                {s.name} ({n} {k === 'templates' ? 'grain' : 'pattern'}
-                {n === 1 ? '' : 's'} · {k})
-                {s.wallet_address ? ` · ${shortAddr(s.wallet_address)}` : ''}
+                {`${s.name} · ${n} ${unit}${n === 1 ? '' : 's'}${
+                  s.wallet_address ? ` · ${shortAddr(s.wallet_address)}` : ''
+                }`}
               </option>
             );
           })}
         </Select>
 
-        {set ? (
+        {set && (
+          <span
+            className="font-mono text-[11px] leading-none text-text-dim"
+            title={
+              isTemplates
+                ? 'Grains currently classifying / grains in the set'
+                : 'Patterns currently classifying / patterns in the set'
+            }
+          >
+            {isTemplates ? 'template' : 'exact'} · {classifying}/{storedCount}
+          </span>
+        )}
+
+        <IconButton
+          size="sm"
+          variant="ghost"
+          active={createOpen}
+          title="New set"
+          aria-label="New set"
+          onClick={() => {
+            setCreateOpen((open) => {
+              const next = !open;
+              if (!next && pasteMode === 'create') setPasteMode(null);
+              return next;
+            });
+          }}
+        >
+          <PlusIcon />
+        </IconButton>
+
+        {set && (
           <>
-            <Badge variant={isTemplates ? 'success' : 'info'} size="sm">
-              {isTemplates ? 'Templates' : 'Exact'}
-            </Badge>
-            <span
-              className="font-mono text-[11px] text-text-dim"
+            <IconButton
+              size="sm"
+              variant="ghost"
+              active={pasteMode === 'edit'}
               title={
                 isTemplates
-                  ? 'Grains currently classifying / grains in the set'
-                  : 'Patterns currently classifying / patterns in the set'
+                  ? "Show this set's grain ids as JSON. Edit them there, or paste new ones in."
+                  : "Show this set's ix_labels sequences as JSON. Edit them there, or paste new ones in."
               }
+              aria-label={pasteMode === 'edit' ? 'Hide JSON' : 'Show JSON'}
+              onClick={openEditJson}
             >
-              {classifying}/{storedCount} classifying
-            </span>
-            <Button
-              size="xs"
+              <JsonIcon />
+            </IconButton>
+            <IconButton
+              size="sm"
               variant="ghost"
-              active={pasteOpen}
-              onClick={togglePaste}
-              title={
-                isTemplates
-                  ? "Show this set's grain ids as JSON — edit them there, or paste new ones in"
-                  : "Show this set's ix_labels sequences as JSON — edit them there, or paste new ones in"
-              }
-            >
-              {pasteOpen ? 'Hide JSON' : 'Show JSON'}
-            </Button>
-            <Button
-              size="xs"
-              variant="ghost"
+              title="Copy the whole set to the clipboard as re-pastable JSON"
+              aria-label={copied ? 'Copied' : 'Copy JSON'}
               onClick={() => {
                 void navigator.clipboard?.writeText(setJson(set, isTemplates));
                 setCopied(true);
               }}
-              title="Copy the whole set to the clipboard as re-pastable JSON"
             >
-              {copied ? 'Copied ✓' : 'Copy JSON'}
-            </Button>
+              {copied ? <CheckIcon /> : <ClipboardIcon />}
+            </IconButton>
             <RenameControl lens={lens} />
-            <Button
-              size="xs"
-              variant="danger"
-              onClick={() => void lens.deleteSet()}
-              title="Delete this pattern set"
-            >
-              Delete
-            </Button>
-          </>
-        ) : (
-          <>
-            <ToggleGroup
+            <IconButton
               size="sm"
-              tone="neutral"
-              aria-label="New set vocabulary"
-              value={newKind}
-              onChange={setNewKind}
-              options={KIND_OPTIONS}
-            />
-            <Input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder={defaultSetName(wallet, newKind)}
-              className="w-[220px] font-normal normal-case tracking-normal"
-            />
-            <Button
-              size="xs"
-              variant="primary"
-              onClick={() =>
-                void lens.createSet(newName.trim() || defaultSetName(wallet, newKind), newKind)
-              }
+              variant="danger"
+              title="Delete this pattern set"
+              aria-label="Delete this pattern set"
+              onClick={() => void lens.deleteSet()}
             >
-              New set
-            </Button>
-            <Button size="xs" variant="ghost" onClick={togglePaste}>
-              {pasteOpen ? 'Close paste' : newKind === 'templates' ? 'Paste grains' : 'Paste patterns'}
-            </Button>
+              <TrashIcon />
+            </IconButton>
           </>
         )}
+      </div>
 
-        <span className="mx-1 h-4 w-px bg-white/10" />
+      {createOpen && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-black/20 px-2 py-1.5">
+          <span className={KNOB}>New set</span>
+          <ToggleGroup
+            size="sm"
+            tone="neutral"
+            aria-label="New set kind"
+            value={newKind}
+            onChange={setNewKind}
+            options={KIND_OPTIONS}
+          />
+          <Input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') create();
+            }}
+            placeholder={defaultSetName(wallet, newKind)}
+            aria-label="New set name"
+            className="h-7 w-52 py-0 font-normal normal-case tracking-normal"
+          />
+          <Button size="sm" variant="primary" onClick={create}>
+            Create
+          </Button>
+          <Button size="sm" variant="ghost" active={pasteMode === 'create'} onClick={openCreatePaste}>
+            {pasteMode === 'create' ? 'Hide paste' : 'Paste'}
+          </Button>
+        </div>
+      )}
 
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
         <SideControl lens={lens} />
-
-        <span className="mx-1 h-4 w-px bg-white/10" />
-
         {/* Not sticky is the lens' default: it asks which STRUCTURES surround a
             moment, and a sticky wallet set answers which wallets ever matched. */}
-        <label className="flex items-center gap-1.5 text-[11px] text-text-dim">
+        <label className="inline-flex h-7 items-center gap-1.5">
           <Switch
             checked={lens.contagion}
             onChange={lens.setContagion}
             label={stickyField?.title ?? 'Sticky'}
           />
-          <span title={stickyField ? `${stickyField.summary}\n\nExample: ${stickyField.example}` : undefined}>
+          <span
+            className={KNOB}
+            title={stickyField ? `${stickyField.summary}\n\nExample: ${stickyField.example}` : undefined}
+          >
             {stickyField?.title ?? 'Sticky'}
           </span>
         </label>
-        <label className="flex items-center gap-1.5 text-[11px] text-text-dim">
+        <label className="inline-flex h-7 items-center gap-1.5">
           <Switch
             checked={lens.excludeSelf}
             onChange={lens.setExcludeSelf}
             label="Exclude the studied wallet"
             disabled={!wallet}
           />
-          <span title="Keep the studied trader's own trades out of the split, so the lines describe what happened AROUND them.">
+          <span
+            className={KNOB}
+            title="Keep the studied trader's own trades out of the split, so the lines describe what happened around them."
+          >
             Exclude self
           </span>
         </label>
-
-        {lens.saving && <span className="text-[11px] text-text-dim">Saving…</span>}
-        {lens.error && <span className="text-[11px] text-red">{lens.error}</span>}
+        {lens.saving && <span className="text-[11px] leading-none text-text-dim">Saving…</span>}
+        {lens.error && <span className="text-[11px] leading-none text-red">{lens.error}</span>}
       </div>
 
       {/* Narrowing chips — one launch client (exact) or one build template
@@ -362,14 +430,14 @@ export function FlowLensBar({
         </div>
       )}
 
-      {pasteOpen && (
+      {pasteMode != null && (
         <div className="mt-2">
           <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-text-dim">
             <span className="text-[9px] font-bold uppercase tracking-widest">
-              {isTemplates ? 'Grains' : 'Patterns'} JSON
+              {pasteIsTemplates ? 'Grains' : 'Patterns'} JSON
             </span>
             <span>
-              {set
+              {pasteMode === 'edit' && set
                 ? `The whole stored set — ${storedCount} ${isTemplates ? 'grain' : 'pattern'}${storedCount === 1 ? '' : 's'}, narrowing not applied. Edit and Replace to save it back.`
                 : 'Paste a set to create one.'}
             </span>
@@ -380,7 +448,7 @@ export function FlowLensBar({
             rows={6}
             spellCheck={false}
             placeholder={
-              kind === 'templates'
+              pasteIsTemplates
                 ? 'Paste ["Axiom Trade|CU", "GMGN|ATA"]\nor one grain id per line'
                 : 'Paste [["Compute Budget: SetComputeUnitLimit","…"], …]\n' +
                   'or [{ "tool": "Axiom Trade", "ix_labels": ["…"], "cu_limit": 300000 }, …]\n' +
@@ -389,7 +457,7 @@ export function FlowLensBar({
             className="w-full rounded-md border border-white/10 bg-black/30 p-2 font-mono text-[11px] text-text outline-none focus:border-primary/50"
           />
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
-            {isTemplates ? (
+            {pasteIsTemplates ? (
               <>
                 {parsedGrains?.error && <span className="text-red">{parsedGrains.error}</span>}
                 {parsedGrains && !parsedGrains.error && (
@@ -429,9 +497,9 @@ export function FlowLensBar({
               disabled={!pasteReady}
               onClick={() => void applyPaste('replace')}
             >
-              {set ? 'Replace set' : 'Create set'}
+              {pasteMode === 'edit' && set ? 'Replace set' : 'Create set'}
             </Button>
-            {set && (
+            {pasteMode === 'edit' && set && (
               <Button
                 size="xs"
                 variant="ghost"
@@ -449,7 +517,8 @@ export function FlowLensBar({
       {probe && <PreEntryProbeControls probe={probe} />}
 
       {set && storedCount > 0 && <PromoteToFingerprint setKind={kind} set={set} />}
-    </div>
+      </div>
+    </section>
   );
 }
 
@@ -504,14 +573,14 @@ function SideControl({ lens }: { lens: TraderFlowLens }) {
     { value: 'sell', label: 'Sell', title: 'only sells can carry the target tag' },
   ];
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1.5">
       <span
-        className="text-[9px] font-bold uppercase tracking-widest text-text-dim"
+        className={KNOB}
         title={field ? `${field.summary}\n\nExample: ${field.example}` : undefined}
       >
         {field?.title ?? 'Side'}
       </span>
-      <div className="flex overflow-hidden rounded-md border border-white/10">
+      <div className="flex h-7 items-stretch overflow-hidden rounded-md border border-white/10">
         {options.map((o) => {
           const on = lens.side === o.value;
           return (
@@ -521,7 +590,7 @@ function SideControl({ lens }: { lens: TraderFlowLens }) {
               onClick={() => lens.setSide(o.value)}
               title={o.title}
               className={cn(
-                'px-2 py-0.5 text-[11px] transition-colors',
+                'inline-flex items-center px-2 text-[11px] leading-none transition-colors',
                 on ? 'bg-primary/20 text-primary' : 'text-text-dim hover:text-text',
               )}
             >
@@ -537,18 +606,24 @@ function RenameControl({ lens }: { lens: TraderFlowLens }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
   if (!lens.set) return null;
+  const save = () => {
+    void lens.renameSet(name);
+    setEditing(false);
+  };
   if (!editing) {
     return (
-      <Button
-        size="xs"
+      <IconButton
+        size="sm"
         variant="ghost"
+        title="Rename this set"
+        aria-label="Rename this set"
         onClick={() => {
           setName(lens.set?.name ?? '');
           setEditing(true);
         }}
       >
-        Rename
-      </Button>
+        <EditIcon />
+      </IconButton>
     );
   }
   return (
@@ -556,22 +631,26 @@ function RenameControl({ lens }: { lens: TraderFlowLens }) {
       <Input
         value={name}
         onChange={(e) => setName(e.target.value)}
-        className="w-[200px] font-normal normal-case tracking-normal"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') save();
+          if (e.key === 'Escape') setEditing(false);
+        }}
+        aria-label="Set name"
+        className="h-7 w-40 py-0 font-normal normal-case tracking-normal"
         autoFocus
       />
-      <Button
-        size="xs"
-        variant="primary"
-        onClick={() => {
-          void lens.renameSet(name);
-          setEditing(false);
-        }}
+      <IconButton size="sm" variant="primary" title="Save name" aria-label="Save name" onClick={save}>
+        <CheckIcon />
+      </IconButton>
+      <IconButton
+        size="sm"
+        variant="ghost"
+        title="Cancel rename"
+        aria-label="Cancel rename"
+        onClick={() => setEditing(false)}
       >
-        Save
-      </Button>
-      <Button size="xs" variant="link" onClick={() => setEditing(false)}>
-        Cancel
-      </Button>
+        <CloseIcon />
+      </IconButton>
     </span>
   );
 }

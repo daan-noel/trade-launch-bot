@@ -220,13 +220,13 @@ export function groupColumns(lens?: StructureLens | null): ColumnDef<EntryGroupR
       tooltip:
         'Is this structure the target?\n' +
         "'tag' = all its buys matched the target. '3/5' = 3 of its 5 buys did. '-' = none.\n" +
-        "'reserve' = the structure of the print reserve match named.",
+        "'signal tx' = the structure of the signal tx reserve match named.",
       render: (g) =>
         g.tag_buy_tx > 0 || g.reserve ? (
           <span className="flex items-center gap-1">
             {g.reserve && (
               <Badge variant="info" size="sm">
-                reserve
+                signal tx
               </Badge>
             )}
             {g.tag_buy_tx > 0 && (

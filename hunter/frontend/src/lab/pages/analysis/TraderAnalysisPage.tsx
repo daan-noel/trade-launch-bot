@@ -15,7 +15,7 @@ import {
   passesCoFilter,
 } from '@lab/components/analysis/coTrade';
 import { coTradeColumns } from '@lab/components/analysis/coTradeColumns';
-import { FlowLensBar } from '@lab/components/analysis/FlowLensBar';
+import { FlowLensBar, GateRow } from '@lab/components/analysis/FlowLensBar';
 import { preEntryColumns } from '@lab/components/analysis/preEntryColumns';
 import { DEFAULT_PROBE_WINDOW_SLOTS, usePreEntryProbe } from '@lab/components/analysis/usePreEntryProbe';
 import { TraderChartCardExtra } from '@lab/components/analysis/TraderChartCardExtra';
@@ -50,7 +50,15 @@ import {
   wallClockToUtcIso,
 } from '@lab/components/analysis/traderQuery';
 import { SignalPanel, isDefinite, signalTokenColumns } from '@lab/components/entry-context/SignalPanel';
-import { DEFINITE_ROW, matchesSignal, parseSlippagePct, slippageText, type SignalFocus } from '@lab/lib/entryContext/signal';
+import {
+  DEFINITE_ROW,
+  matchesSignal,
+  matchesSlippage,
+  formatSlip,
+  parseSlippagePct,
+  slippageText,
+  type SignalFocus,
+} from '@lab/lib/entryContext/signal';
 import type { EntryRow } from '@lab/lib/entryContext/types';
 import type { TraderTokenRow } from 'types';
 
@@ -66,7 +74,7 @@ const COLUMN_GROUP_LABELS: Record<string, string> = {
   wallet_curve: 'Bonding curve',
   co_trade: 'Co-trade',
   pre_entry: 'Pre-entry ix',
-  reserve: 'Reserve match',
+  reserve: 'Signal tx',
 };
 
 /** Stable empty reference so derived memos don't recompute while loading. */
@@ -195,7 +203,6 @@ interface TraderForm {
   slippageOn: boolean;
   /** Comma-separated percents. Sent only while `slippageOn`. */
   slippage: string;
-  slackLamports: number;
 }
 /** Stable empty default for the persisted bucket set — a fresh `[]` per render
  *  would re-run every memo that keys off it. */
@@ -214,7 +221,6 @@ const DEFAULT_FORM: TraderForm = {
   slotsBefore: 2,
   slippageOn: false,
   slippage: '',
-  slackLamports: 1,
 };
 
 export function TraderAnalysisPage() {
@@ -242,7 +248,6 @@ export function TraderAnalysisPage() {
     slotsBefore: slotsBeforeInput = 2,
     slippageOn = false,
     slippage = '',
-    slackLamports: slackInput = 1,
   } = form;
   const patch = useCallback(
     (p: Partial<TraderForm>) => setForm((prev) => ({ ...prev, ...p })),
@@ -344,13 +349,13 @@ export function TraderAnalysisPage() {
   // lens' own set + narrowing + side, over the rows already on screen.
   const probe = usePreEntryProbe(query?.wallet ?? null, rows, lens);
   const [signalFocus, setSignalFocus] = useState<SignalFocus>('all');
+  const [slipPick, setSlipPick] = useState<number | null>(null);
   const [openMints, setOpenMints] = useState<string[]>([]);
   const openMintSet = useMemo(() => new Set(openMints), [openMints]);
   const toggleMint = useCallback((mint: string) => {
     setOpenMints((prev) => (prev.includes(mint) ? prev.filter((m) => m !== mint) : [...prev, mint]));
   }, []);
   const slotsBefore = useDebouncedValue(Math.min(50, Math.max(0, Math.round(slotsBeforeInput))), 350);
-  const slackLamports = useDebouncedValue(Math.max(0, Math.round(slackInput)), 350);
   const slipDraft = useMemo(() => ({ on: slippageOn, text: slippage }), [slippageOn, slippage]);
   const slip = useDebouncedValue(slipDraft, 350);
   const slippagePct = useMemo(() => parseSlippagePct(slip.text), [slip.text]);
@@ -364,12 +369,16 @@ export function TraderAnalysisPage() {
       window_secs: 30,
       probe_slots: DEFAULT_PROBE_WINDOW_SLOTS,
       slots_before: slotsBefore,
-      slack_lamports: slackLamports,
       ...(slip.on && slippagePct.length > 0 ? { slippage_pct: slippagePct } : {}),
     };
-  }, [query, slotsBefore, slackLamports, slip.on, slippagePct]);
+  }, [query, slotsBefore, slip.on, slippagePct]);
   const signal = useGetEntryContextQuery(signalRequest ?? skipToken);
   const signalEntries = signal.data?.entries ?? EMPTY_SIGNAL;
+  const slipReadings = signal.data?.slippage_readings ?? [];
+  useEffect(() => {
+    if (slipPick == null || !signal.data) return;
+    if (!slipReadings.some((r) => formatSlip(r.pct) === formatSlip(slipPick))) setSlipPick(null);
+  }, [signal.data, slipReadings, slipPick]);
   const byMint = useMemo(() => {
     const m = new Map<string, EntryRow[]>();
     for (const e of signalEntries) {
@@ -505,10 +514,14 @@ export function TraderAnalysisPage() {
   );
   const signalRows = useMemo(
     () =>
-      signalFocus === 'all'
+      signalFocus === 'all' && slipPick == null
         ? rowsForTable
-        : rowsForTable.filter((r) => (byMint.get(r.mint_address) ?? []).some((e) => matchesSignal(e, signalFocus))),
-    [rowsForTable, signalFocus, byMint],
+        : rowsForTable.filter((r) =>
+            (byMint.get(r.mint_address) ?? []).some(
+              (e) => matchesSignal(e, signalFocus) && matchesSlippage(e, slipPick),
+            ),
+          ),
+    [rowsForTable, signalFocus, slipPick, byMint],
   );
 
   return (
@@ -662,6 +675,7 @@ Not queried: a wallet cannot compare against itself, and the read takes the firs
 
       {error && <p className="mb-2 text-sm text-red">{error}</p>}
 
+      <GateRow>
       <FlowLensBar lens={lens} wallet={query?.wallet ?? null} probe={probe} />
 
       <SignalPanel
@@ -672,13 +686,14 @@ Not queried: a wallet cannot compare against itself, and the read takes the firs
         readings={signal.data?.slippage_readings ?? []}
         focus={signalFocus}
         onFocus={setSignalFocus}
+        slipPick={slipPick}
+        onSlipPick={setSlipPick}
         slotsBefore={slotsBeforeInput}
-        slackLamports={slackInput}
         slippageOn={slippageOn}
         slippage={slippage}
         onSlotsBefore={(slotsBefore) => patch({ slotsBefore })}
-        onSlack={(slackLamports) => patch({ slackLamports })}
-        onSlippageOn={(on) =>
+        onSlippageOn={(on) => {
+          if (on) setSlipPick(null);
           patch(
             on
               ? {
@@ -686,10 +701,11 @@ Not queried: a wallet cannot compare against itself, and the read takes the firs
                   slippage: slippage || slippageText(signal.data?.slippage_readings ?? []),
                 }
               : { slippageOn: false },
-          )
-        }
+          );
+        }}
         onSlippage={(next) => patch({ slippage: next })}
       />
+      </GateRow>
 
       {query && !isFetching && !error && (
         <p className="mb-3 text-xs text-text-dim">
@@ -802,7 +818,7 @@ Not queried: a wallet cannot compare against itself, and the read takes the firs
           // `rowsForTable` is narrowed by the co-trade depth/bucket controls,
           // the pre-entry probe, and the focus lens chips — all outside the
           // table's own state.
-          resetKey={`${coOnly}|${coFocus ?? ''}|${coMinEff}|${coBuckets.join(',')}|${probe.on}|${probe.show}|${JSON.stringify(focus)}|${signalFocus}`}
+          resetKey={`${coOnly}|${coFocus ?? ''}|${coMinEff}|${coBuckets.join(',')}|${probe.on}|${probe.show}|${JSON.stringify(focus)}|${signalFocus}|${slipPick ?? ''}`}
           rowClassName={(r) => ((byMint.get(r.mint_address) ?? []).some(isDefinite) ? DEFINITE_ROW : undefined)}
           highlightWallet={query.wallet}
           compareWallets={query.with}

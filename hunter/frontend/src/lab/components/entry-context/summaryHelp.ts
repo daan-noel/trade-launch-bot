@@ -182,7 +182,7 @@ export const FILTER_LINE_HELP = {
   ix: {
     lines: [
       { label: 'What', text: 'Filters that check the selected IXs.' },
-      { label: 'Columns', text: 'Probe, Signal, Target, Earlier, Tx % jump.' },
+      { label: 'Columns', text: 'Probe, Signal tx, Target, Earlier, Tx % jump.' },
       { label: 'Used by', text: 'In pool rows only.' },
       { label: 'Example', text: '"Target tx % > 50" = the selected IXs made over half the buys.' },
     ],

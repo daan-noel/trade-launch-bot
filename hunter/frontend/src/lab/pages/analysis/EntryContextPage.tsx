@@ -19,7 +19,7 @@ import { useLocalStorage } from 'hooks/useLocalStorage';
 import { ACCORDION_IDS, getTablePrefs, setTablePrefs, STORAGE_KEYS } from 'lib/storage';
 import { apiErrorMessage } from 'store/apiSlice';
 import type { TraderTokenRow } from 'types';
-import { FlowLensBar } from '@lab/components/analysis/FlowLensBar';
+import { FlowLensBar, GateRow } from '@lab/components/analysis/FlowLensBar';
 import { FIELD_LABEL, TraderQueryInputs } from '@lab/components/analysis/TraderQueryInputs';
 import {
   clampInt,
@@ -45,7 +45,15 @@ import { MarketScan } from '@lab/components/entry-context/MarketScan';
 import { type TokenView, TokenViewToggle } from '@lab/components/entry-context/TokenViewToggle';
 import { entryColumns } from '@lab/components/entry-context/entryColumns';
 import { SignalPanel } from '@lab/components/entry-context/SignalPanel';
-import { DEFINITE_ROW, matchesSignal, parseSlippagePct, slippageText, type SignalFocus } from '@lab/lib/entryContext/signal';
+import {
+  DEFINITE_ROW,
+  matchesSignal,
+  matchesSlippage,
+  parseSlippagePct,
+  formatSlip,
+  slippageText,
+  type SignalFocus,
+} from '@lab/lib/entryContext/signal';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { entryLogic } from '@lab/lib/entryContext/logic';
 import { hisTokens } from '@lab/lib/entryContext/overlap';
@@ -106,8 +114,6 @@ interface EntryForm {
   slippageOn: boolean;
   /** Comma-separated percents. Sent only while `slippageOn`. */
   slippage: string;
-  /** Lamports a quote may miss the ceiling's curve SOL by. */
-  slackLamports: number;
   minHits: number;
   minSol: number;
   /** The buys table's filters while the Filters switch is off; `null` = on. */
@@ -128,7 +134,6 @@ const DEFAULT_FORM: EntryForm = {
   slotsBefore: 2,
   slippageOn: false,
   slippage: '',
-  slackLamports: 1,
   minHits: 1,
   minSol: 0,
   pausedFilters: null,
@@ -213,6 +218,7 @@ export function EntryContextPage() {
   const [tokenView, setTokenView] = useState<TokenView>('pass');
   // Which signal count is held. `all` leaves the table on the probe's Show.
   const [signalFocus, setSignalFocus] = useState<SignalFocus>('all');
+  const [slipPick, setSlipPick] = useState<number | null>(null);
 
   const lens = useTraderFlowLens(query?.wallet ?? null);
   const tag = lens.value.tag;
@@ -240,7 +246,6 @@ export function EntryContextPage() {
     Math.min(50, Math.max(0, Math.round(f.slotsBefore))),
     PROBE_DEBOUNCE_MS,
   );
-  const slackLamports = useDebouncedValue(Math.max(0, Math.round(f.slackLamports)), PROBE_DEBOUNCE_MS);
   const slipDraft = useMemo(
     () => ({ on: f.slippageOn, text: f.slippage }),
     [f.slippageOn, f.slippage],
@@ -278,14 +283,17 @@ export function EntryContextPage() {
             probe_slots: probeSlots,
             slots_before: slotsBefore,
             ...(slip.on && slippagePct.length > 0 ? { slippage_pct: slippagePct } : {}),
-            slack_lamports: slackLamports,
             ...(targetTag ? { tag: targetTag } : {}),
           }
         : null,
-    [query, probeSlots, slotsBefore, slip.on, slippagePct, slackLamports, targetTag],
+    [query, probeSlots, slotsBefore, slip.on, slippagePct, targetTag],
   );
   const ctx = useGetEntryContextQuery(ctxRequest ?? skipToken);
   const slipReadings = ctx.data?.slippage_readings ?? [];
+  useEffect(() => {
+    if (slipPick == null || !ctx.data) return;
+    if (!slipReadings.some((r) => formatSlip(r.pct) === formatSlip(slipPick))) setSlipPick(null);
+  }, [ctx.data, slipReadings, slipPick]);
   const usedSlippage = slip.on && slippagePct.length > 0 ? slippagePct : (ctx.data?.slippage_pct ?? []);
   const tokens = useGetTraderTokensQuery(
     query ? { wallet: query.wallet, days: 1, limit: 0, from: query.from, to: query.to, with: [] } : skipToken,
@@ -307,8 +315,9 @@ export function EntryContextPage() {
   const probeRows = useMemo(() => {
     const shown =
       f.probeOn && f.show !== 'all' ? entries.filter((e) => verdicts.get(e)?.state === f.show) : entries;
-    return signalFocus === 'all' ? shown : entries.filter((e) => matchesSignal(e, signalFocus));
-  }, [entries, verdicts, f.probeOn, f.show, signalFocus]);
+    const focused = signalFocus === 'all' ? shown : entries.filter((e) => matchesSignal(e, signalFocus));
+    return focused.filter((e) => matchesSlippage(e, slipPick));
+  }, [entries, verdicts, f.probeOn, f.show, signalFocus, slipPick]);
   // A new query starts from the unfiltered set. Nothing else resets it: the table
   // re-reports on every input change, and a parent reset would land after it.
   useEffect(() => setTableRows(null), [query]);
@@ -444,8 +453,9 @@ export function EntryContextPage() {
       <div className="p-4">
         <h2 className="text-lg font-extrabold text-text">Entry Context</h2>
         <p className="mt-0.5 text-xs text-text-dim">
-          A token pool (an ix structure traded just before the buy) and filters on the window before
-          it, read on his buys and on the whole market. His own trades are never counted.
+          An IX gate (an instruction structure traded just before the buy) names the token pool.
+          Reserve match names the signal tx he priced. Filters read the window before the buy, on
+          his buys and on the whole market. His own trades are never counted.
         </p>
 
         <SectionDivider />
@@ -498,7 +508,7 @@ export function EntryContextPage() {
 
         {error && <p className="mb-2 text-sm text-red">{error}</p>}
 
-        <SectionTitle>Token pool</SectionTitle>
+        <GateRow>
         <FlowLensBar lens={lens} wallet={query?.wallet ?? null} probe={probe} />
 
         <SignalPanel
@@ -509,21 +519,23 @@ export function EntryContextPage() {
           readings={ctx.data?.slippage_readings ?? []}
           focus={signalFocus}
           onFocus={setSignalFocus}
+          slipPick={slipPick}
+          onSlipPick={setSlipPick}
           slotsBefore={f.slotsBefore}
-          slackLamports={f.slackLamports}
           slippageOn={f.slippageOn}
           slippage={f.slippage}
           onSlotsBefore={(slotsBefore) => patch({ slotsBefore })}
-          onSlack={(slackLamports) => patch({ slackLamports })}
-          onSlippageOn={(on) =>
+          onSlippageOn={(on) => {
+            if (on) setSlipPick(null);
             patch(
               on
                 ? { slippageOn: true, slippage: f.slippage || slippageText(slipReadings) }
                 : { slippageOn: false },
-            )
-          }
+            );
+          }}
           onSlippage={(slippage) => patch({ slippage })}
         />
+        </GateRow>
 
         <SectionTitle>Filters</SectionTitle>
         <IdeaFilters
@@ -587,7 +599,6 @@ export function EntryContextPage() {
                         probeSlots,
                         slotsBefore,
                         slippagePct: usedSlippage,
-                        slackLamports,
                         tag: targetTag,
                       }}
                     />
@@ -603,7 +614,7 @@ export function EntryContextPage() {
                   loading={ctx.isFetching}
                   groupLabels={buyGroupLabels}
                   hiddenGroups={hiddenGroups}
-                  resetKey={`${f.probeOn}|${f.show}|${signalFocus}`}
+                  resetKey={`${f.probeOn}|${f.show}|${signalFocus}|${slipPick ?? ''}`}
                   rowClassName={(e) => (e.reserve_call?.kind === 'definite' ? DEFINITE_ROW : undefined)}
                   onFilteredRowsChange={setTableRows}
                   onColFiltersChange={setBuyFilters}

@@ -43,13 +43,16 @@ const SHOW_OPTIONS: { value: PreEntryShow; label: string; title: string }[] = [
 export function PreEntryProbeControls({ probe }: { probe: ProbeControlsModel }) {
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-white/8 pt-2">
-      <Badge variant={probe.on ? 'accent' : 'neutral'} size="sm">
+      <Badge variant={probe.on ? 'accent' : 'neutral'} size="sm" className="h-7">
         Pre-entry
       </Badge>
 
-      <label className="flex items-center gap-1.5 text-[11px] text-text-dim">
+      <label className="inline-flex h-7 items-center gap-1.5">
         <Switch checked={probe.on} onChange={probe.setOn} label="Probe pre-entry structures" />
-        <span title="For each row: did a Target IXs structure trade in the slots right before his entry? Adds the Pre-entry columns. Use Show to keep one answer.">
+        <span
+          className="text-[9px] font-bold uppercase leading-none tracking-widest text-text-dim"
+          title="For each row: did a Target IXs structure trade in the slots right before his entry? Adds the Pre-entry columns. Use Show to keep one answer."
+        >
           Probe
         </span>
       </label>
@@ -118,9 +121,9 @@ export function PreEntryProbeControls({ probe }: { probe: ProbeControlsModel }) 
  *  every probed row — does not move with it. */
 function ShowControl({ probe }: { probe: ProbeControlsModel }) {
   return (
-    <div className="flex items-center gap-1">
-      <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">Show</span>
-      <div className="flex overflow-hidden rounded-md border border-white/10">
+    <div className="flex items-center gap-1.5">
+      <span className="text-[9px] font-bold uppercase leading-none tracking-widest text-text-dim">Show</span>
+      <div className="flex h-7 items-stretch overflow-hidden rounded-md border border-white/10">
         {SHOW_OPTIONS.map((o) => {
           const on = probe.show === o.value;
           return (
@@ -131,7 +134,7 @@ function ShowControl({ probe }: { probe: ProbeControlsModel }) {
               onClick={() => probe.setShow(o.value)}
               title={o.title}
               className={cn(
-                'px-2 py-0.5 text-[11px] transition-colors',
+                'inline-flex items-center px-2 text-[11px] leading-none transition-colors',
                 !probe.on
                   ? 'text-text-dim/40'
                   : on
@@ -176,8 +179,8 @@ function NumberKnob({
   disabled?: boolean;
 }) {
   return (
-    <label className="flex items-center gap-1 text-[11px] text-text-dim" title={title}>
-      <span className="text-[9px] font-bold uppercase tracking-widest">{label}</span>
+    <label className="inline-flex h-7 items-center gap-1.5 text-[11px] text-text-dim" title={title}>
+      <span className="text-[9px] font-bold uppercase leading-none tracking-widest">{label}</span>
       <Input
         type="number"
         fieldSize="sm"
@@ -192,7 +195,7 @@ function NumberKnob({
           const n = Number(raw);
           if (Number.isFinite(n)) onChange(Math.min(Math.max(n, min), max));
         }}
-        className="w-[72px] font-mono"
+        className="h-7 w-16 py-0 font-mono"
       />
       {suffix && <span>{suffix}</span>}
     </label>

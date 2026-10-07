@@ -1120,9 +1120,11 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   clamp is the backend's (`resolve_window`), which also swaps a reversed pair and, on an over-long
   span, keeps the upper bound — the page reads end-first.
 - **Trader Analysis signal.** The same `SignalPanel` as Entry Context, under the flow lens,
-  for whatever wallet Analyze read. It calls `POST /api/wallets/:wallet/entry-context` with
-  the page's range and the panel's slots, slack and slippage, and no target tag. The token
-  table's **Reserve match** column rolls the token's buys up
+  for whatever wallet Analyze read. The lens sits under **IX gate - token pool**. The panel
+  is titled **Reserve match - signal tx**. On a wide window the two share one row (`GateRow`)
+  and stack when the window is narrow. It calls `POST /api/wallets/:wallet/entry-context`
+  with the page's range and the panel's slots and slippage, and no target tag. The token
+  table's **Signal tx** column rolls the token's buys up
   (`★ 2 definite · 1 crowded`). A token with a definite buy takes the gold rail.
   Opening the count lists each buy. A count click on the panel keeps
   the tokens that have a buy of that kind.
@@ -1210,12 +1212,13 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   the run-summary builder; the summary's Max drawdown is `maxDrawdownSol` over the Equity chart's
   points.
 - **Trader Analysis flow lens (`lab/components/analysis/FlowLensBar.tsx` +
-  `useTraderFlowLens.ts`; labeled **Target IXs** in the UI, here and on the trades panel's badge).** The page's tokens belong to no cohort, so there is no fingerprint to read
+  `useTraderFlowLens.ts`).** The picker is labeled **Target IX**. The trades panel's badge stays **Target IXs**. The page's tokens belong to no cohort, so there is no fingerprint to read
   lists off and the charts' vol/non-vol overlay has nothing to classify with. The lens is
   the second owner of that same fact: a named `ix_pattern_sets` row (lab-only table, CRUD at
   `/api/ix-pattern-sets`) whose **kind** is insert-only — `exact` (ordered `ix_labels` plus
   optional fee pins) or `templates` (working-template grain ids). The set picker is the
-  switch; charts, the Vol column, and badge clicks all follow the selected set's kind via
+  switch. A new set (its name, and Template or Exact structure) opens from the new-set
+  button. Charts, the Vol column, and badge clicks all follow the selected set's kind via
   `classifyOptsForTape` (`exact` → `'tagged'` / labels+fees, `templates` → `'working'` / grain).
   Keys ride the existing `flowPatternKeys` prop path; the classifier options, fee pins, and the
   badge write target ride `context/FlowLensContext`, which the page provides and
@@ -1317,21 +1320,22 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   fold, the same length before it as the control, his trades excluded); **Reset** re-selects the
   window (`selectSpan`). Below the chart: the range's axis tiles and structure breakdown, one row per exact ix
   sequence (how broad the target is belongs to the flow lens: an Exact set or a Templates set,
-  which also takes program names). The Signal section, under Token pool, is one card
+  which also takes program names). The page's first section is **IX gate - token pool**
+  (the lens bar with the probe). Under it, **Reserve match - signal tx** is one card
   (`SignalPanel`, the same component Trader Analysis renders under its lens). Reserve match
-  names the transaction. `slots before` defaults to 2. Slack and the slippage set belong to
-  reserve match. The set is read from definite entries (one print before him, quiet for 5
-  seconds). A ceiling buy (`Buy`, `BuyV2`) reads its slippage from `max_sol_cost`. A floor
+  names the signal tx. `slots before` defaults to 2. The slippage set belongs to
+  reserve match. A candidate matches only when its quote or floor equals the frozen
+  fire number. The set is read from definite entries (one print in the slots before
+  him). A ceiling buy (`Buy`, `BuyV2`) reads its slippage from `max_sol_cost`. A floor
   buy (`BuyExactSolIn`, `BuyExactQuoteIn`, `BuyExactQuoteInV2`) reads its slippage from
   `min_tokens_out` against `spendable_sol_in`. A ceiling reading is not tried on a floor
   buy, and a floor reading is not tried on a ceiling buy. A setting two entries of that
-  family share is kept, and a single definite entry of that family is the whole set. The derived options show as text, for example `10, 20, 30`. The toggle on makes that text an input. With the toggle off the request sends no list. A count click keeps only those buys. Definite
-  is the filled gold tile and the gold rail on its row: `★ DEFINITE`, the quiet seconds,
-  and the quote. Crowded is an outline that names the matched slippage. Blank says
+  family share is kept, and a single definite entry of that family is the whole set. Each derived slippage is a button, for example `10%` `20%` `30%`. A click keeps the buys whose signal read or matched that percent; a second click clears it. The toggle on replaces the buttons with an input. With the toggle off the request sends no list. A count click keeps only those buys. Definite
+  is the filled gold tile and the gold rail on its row: `★ DEFINITE` and the quote. Crowded is an outline that names the matched slippage. Blank says
   `no bound stored`, `no quote or floor matched`, or `several matched`. A curve buy stores its ceiling or its floor
-  on `trades.swap_ix`. Reserve match badges its structure row, pins its chart
-  marker, and has its own column group (Reserve TXs / tx % / SOL / SOL %). The buys table carries
-  **Reserve match** in the his-buy band.
+  on `trades.swap_ix`. Reserve match badges its structure row **signal tx**, pins that
+  label on its chart marker, and has its own column group (Signal TXs / tx % / SOL / SOL %).
+  The buys table carries **Signal tx** in the his-buy band.
   The breakdown's structure column (`structureColumn`): under `exact` it is
   `IxLabelsDisplay`'s one-line `compact` mode (`IxAbbrevLine`: dim arrows, setup codes dim, program actions bright) over `abbreviateIxLabelParts` (`lib/ixLabels.ts`: the
   exact sequence in order, boilerplate as 1-2 letter codes, the rest `Program:Action` initials,
@@ -1370,7 +1374,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   styling the fixed terms (`selected IXs`, `pool`, `Target IXs`, `Any IXs`) the same everywhere
   (`Term`), the Filters section's two line labels included. `InfoTooltip` takes `children` for
   such a laid-out body.
-  The page's sections are titled **Token pool** (the lens bar with the probe) and **Filters**:
+  The page's sections are titled **IX gate - token pool** (the lens bar with the probe),
+  **Reserve match - signal tx**, and **Filters**. On a wide window the first two share one
+  row (`GateRow`) and stack when the window is narrow.
   `IdeaFilters` shows the buys table's filter conditions as chips, all at once whatever the
   sub-tab: one block per idea family plus one for his buy and the probe, each with its count, a
   family's name a button that switches the buys table to its sub-tab; inside a block the chips sit

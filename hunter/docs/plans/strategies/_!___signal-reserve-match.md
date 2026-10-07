@@ -6,7 +6,7 @@ Reserve match names the **signal tx**: the earlier transaction he prices when he
 
 20% **slippage** is `(1 + 0.20)` on a `Buy`. It is `(1 - 0.20)` on a `BuyExactSolIn`.
 
-The window is the 2 slots before his entry. An earlier tx is before him when `(slot, tx_index)` is strictly earlier than his buy.
+The window is the 2 slots before his entry. It is his latency window. An earlier tx is before him when `(slot, tx_index)` is strictly earlier than his buy.
 
 | Name | Meaning |
 | --- | --- |
@@ -178,10 +178,7 @@ At **fire**, against the **signal tx**:
 
 ### · Definite entry
 
-A **definite entry** is his buy when both of these are true:
-
-- Exactly one other tx sits in the 2 slots before him.
-- No trade hits the mint for the 5 seconds before that tx.
+A **definite entry** is his buy when exactly one other tx sits in the 2 slots before him.
 
 That one tx is the **signal tx**. Read **slippage** from it. Repeat on every **definite entry**. The values that repeat are his set.
 

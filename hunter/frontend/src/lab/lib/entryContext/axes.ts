@@ -61,7 +61,7 @@ export function entryGroupLabels(w: number, probeSlots?: number, slotsBefore = 2
   return {
     buy: 'His buy',
     pre_entry: probeSlots != null ? `Probe: last ${probeSlots} slots before him` : 'Probe: slots before him',
-    reserve: `Reserve signal: ${slotsBefore} slots before him`,
+    reserve: `Signal tx: ${slotsBefore} slots before him`,
     target: `Target: last ${w}s before him`,
     control: `Target earlier: ${2 * w}s to ${w}s before him`,
     all: `Everyone: last ${w}s before him`,
@@ -93,7 +93,7 @@ const last = (w: number) => `in the last ${w}s before his buy`;
 const earlier = (w: number) => `from ${2 * w}s to ${w}s before his buy`;
 const NOT_HIS = 'His own buys are never counted.';
 const RESERVE =
-  'The reserve signal = the print in the slots before him whose quote matches his ceiling, or whose token floor matches his min_tokens_out, at one slippage of that family. One print in that window is the signal on its own. Blank when several prints match, when his bound is not stored, or when none match.';
+  'The signal tx is the print in the slots before him whose quote equals his ceiling, or whose token floor equals his min_tokens_out, at one slippage of that family. Reserve match names it. One print in that window is the signal tx on its own. Blank when several prints match, when his bound is not stored, or when none equals it.';
 
 /** A top-holder column's tooltip: which wallets, then how the drop is worked out. */
 const holderDrop = (who: string, sold: string, example: string) =>
@@ -116,44 +116,44 @@ export const ENTRY_AXES: readonly EntryAxis[] = [
   },
   {
     key: 'rsv_buy_tx',
-    label: 'Reserve TXs',
+    label: 'Signal TXs',
     group: 'reserve',
     unit: 'tx',
     digits: 0,
     definition: (w) =>
-      `How many buy transactions the reserve signal's structure made ${last(w)}.\n` +
+      `How many buy transactions the signal tx's structure made ${last(w)}.\n` +
       `Example: 25 buys, 12 of them with that structure = 12.\n${RESERVE}`,
     get: (e) => reserveGroup(e)?.buy_tx ?? null,
   },
   {
     key: 'rsv_tx_share',
-    label: 'Reserve tx %',
+    label: 'Signal tx %',
     group: 'reserve',
     unit: 'pct',
     digits: 0,
     definition: (w) =>
-      `Of all buy transactions ${last(w)}, the % made with the reserve signal's structure.\n` +
+      `Of all buy transactions ${last(w)}, the % made with the signal tx's structure.\n` +
       `Example: 25 buys, 12 with it = 48%.\n${RESERVE}`,
     get: (e) => reserveGroup(e)?.buy_tx_share_pct ?? null,
   },
   {
     key: 'rsv_buy_sol',
-    label: 'Reserve SOL',
+    label: 'Signal SOL',
     group: 'reserve',
     unit: 'sol',
     digits: 2,
     definition: (w) =>
-      `SOL the reserve signal's structure spent on buys ${last(w)}.\n${RESERVE}`,
+      `SOL the signal tx's structure spent on buys ${last(w)}.\n${RESERVE}`,
     get: (e) => reserveGroup(e)?.buy_sol ?? null,
   },
   {
     key: 'rsv_sol_share',
-    label: 'Reserve SOL %',
+    label: 'Signal SOL %',
     group: 'reserve',
     unit: 'pct',
     digits: 0,
     definition: (w) =>
-      `Of all SOL spent on buys ${last(w)}, the % spent with the reserve signal's structure.\n` +
+      `Of all SOL spent on buys ${last(w)}, the % spent with the signal tx's structure.\n` +
       `Example: 10 SOL of buys, 4 SOL with it = 40%.\n${RESERVE}`,
     get: (e) => reserveGroup(e)?.buy_sol_share_pct ?? null,
   },

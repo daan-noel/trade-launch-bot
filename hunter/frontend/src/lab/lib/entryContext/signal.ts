@@ -1,6 +1,6 @@
 /**
  * Reserve match, as both pages count and filter it.
- * It names the transaction. A definite entry is one print, quiet, slippage read here.
+ * It names the transaction. A definite entry is one print in the slots before him.
  */
 
 import type { EntryRow, ReserveKind, SlippageReading } from './types';
@@ -92,17 +92,30 @@ export function formatQuote(sol: number): string {
   return sol.toFixed(4);
 }
 
-/** The derived options as one line: `10, 20, 30`. A percent that both families read shows once. */
-export function slippageText(readings: readonly SlippageReading[]): string {
+/** Derived slippages, once each, in the order the readings arrived. */
+export function slippageOptions(readings: readonly SlippageReading[]): number[] {
   const seen = new Set<string>();
-  const parts: string[] = [];
+  const out: number[] = [];
   for (const r of readings) {
     const t = formatSlip(r.pct);
     if (!t || seen.has(t)) continue;
     seen.add(t);
-    parts.push(t);
+    out.push(r.pct);
   }
-  return parts.join(', ');
+  return out;
+}
+
+/** The derived options as one line: `10, 20, 30`. A percent that both families read shows once. */
+export function slippageText(readings: readonly SlippageReading[]): string {
+  return slippageOptions(readings).map((pct) => formatSlip(pct)).join(', ');
+}
+
+/** A selected derived slippage keeps the buys whose signal read or matched it.
+ *  `null` keeps every buy. */
+export function matchesSlippage(e: EntryRow, pct: number | null): boolean {
+  if (pct == null) return true;
+  const got = e.reserve_call?.slippage_pct;
+  return got != null && formatSlip(got) === formatSlip(pct);
 }
 
 /** Slippage percents from a comma-separated box. */

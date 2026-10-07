@@ -24,8 +24,6 @@ export interface EntryContextRequest {
   /** Reserve-match slippages, in percent. `20` is 20%. Absent: derive the set
    *  from definite entries in this read. */
   slippage_pct?: number[];
-  /** Lamports a candidate quote may miss the ceiling's curve SOL by. */
-  slack_lamports?: number;
   /** ONE tag definition in the fingerprint `tags` shape. `side` / `sticky` are
    *  left out when unset: the engine's parser refuses a null. Absent = no target:
    *  the windows are still read and every share is null. */
@@ -54,7 +52,6 @@ export interface EntryRangeRequest {
   probe_slots: number;
   slots_before?: number;
   slippage_pct?: number[];
-  slack_lamports?: number;
   tag?: EntryTargetTag;
 }
 

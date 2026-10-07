@@ -37,7 +37,7 @@ function signalMarkers(trades: TradeRecord[], entry: EntryRow): ChartEventMarker
   };
   const out: ChartEventMarker[] = [];
   if (entry.reserve) {
-    const m = mark(entry.reserve.slot, entry.reserve.tx_index, 'reserve');
+    const m = mark(entry.reserve.slot, entry.reserve.tx_index, 'signal tx');
     if (m) out.push(m);
   }
   return out;
@@ -53,7 +53,6 @@ export interface EntryDetailQuery {
   probeSlots: number;
   slotsBefore: number;
   slippagePct: number[];
-  slackLamports: number;
   tag?: EntryTargetTag;
 }
 
@@ -118,7 +117,6 @@ export function EntryDetail({ entry, query }: { entry: EntryRow; query: EntryDet
           probe_slots: query.probeSlots,
           slots_before: query.slotsBefore,
           slippage_pct: query.slippagePct,
-          slack_lamports: query.slackLamports,
           ...(query.tag ? { tag: query.tag } : {}),
         }
       : skipToken,

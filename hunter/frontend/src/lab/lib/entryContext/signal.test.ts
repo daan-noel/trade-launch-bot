@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { matchesSignal, parseSlippagePct, signalCounts, slippageText } from './signal';
+import { matchesSignal, matchesSlippage, parseSlippagePct, signalCounts, slippageText } from './signal';
 import type { EntryRow, ReserveCall } from './types';
 
 const call = (kind: ReserveCall['kind']): ReserveCall => ({ kind });
@@ -55,5 +55,16 @@ describe('slippage text', () => {
         { pct: 20, entries: 1, family: 'floor' },
       ]),
     ).toBe('10, 20, 30');
+  });
+
+  it('keeps the buys at one derived slippage', () => {
+    const at = (pct: number | undefined): EntryRow =>
+      row({ kind: 'definite', slippage_pct: pct });
+    const entries = [at(20), at(15), at(20.04), at(undefined)];
+    expect(entries.filter((e) => matchesSlippage(e, null))).toHaveLength(4);
+    expect(entries.filter((e) => matchesSlippage(e, 20)).map((e) => e.reserve_call?.slippage_pct)).toEqual([
+      20, 20.04,
+    ]);
+    expect(entries.filter((e) => matchesSlippage(e, 15))).toHaveLength(1);
   });
 });
