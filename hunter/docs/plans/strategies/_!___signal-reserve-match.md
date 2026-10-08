@@ -1,376 +1,330 @@
 # Reserve match
 
-Reserve match names the **signal tx**: the earlier transaction he prices when he builds his buy.
+Names the **signal tx**: the earlier transaction he prices when he builds his buy.
 
-`1.0125` is the pump.fun fee (1.25%). A wallet on another fee uses that fee in place of `1.0125`.
+Two pictures. The first is the progress for any new wallet: find the **formula**, recover **`curve_sol`** or a fixed SOL and **`token_amount`**, then match those two against the reserves. The candidates under it are the lines a **definite entry** may keep. The second picture is that progress on 8dtx, a spot `Buy`, and `BuyExactSolIn`. The sheet is the same steps, one column per kept line.
 
-20% **slippage** is `(1 + 0.20)` on a `Buy`. It is `(1 - 0.20)` on a `BuyExactSolIn`.
+`1.0125` is the pump.fun fee, on top of pool SOL. In lamports the strip is `floor(G * 10000 / 10125)`. SOL amounts are marked ◎. Percents are marked %. Pool SOL is `amount_lamports`. `max_sol_cost` is `max_cost_lamports`. `spendable_sol_in` is `spendable_lamports_in`. Token amounts stay token amounts.
 
-The window is the 2 slots before his entry. It is his latency window. An earlier tx is before him when `(slot, tx_index)` is strictly earlier than his buy.
-
-| Name | Meaning |
-| --- | --- |
-| `vsol`, `vtok` | Pool reserves on a tx (`reserve_lamports`, `reserve_token`). |
-| `curve_sol` | SOL he prices into the pool at **fire**. |
-| `token_amount` | Tokens a `Buy` stores. **Frozen**. |
-| `max_sol_cost` | Most SOL a `Buy` stores. The bound on what he pays. |
-| `spendable_sol_in` | SOL a `BuyExactSolIn` stores. **Frozen**. |
-| `min_tokens_out` | Fewest tokens a `BuyExactSolIn` stores. The bound on what he receives. |
-
-`max_sol_cost` is `max_cost_lamports` on `trades.swap_ix`. `spendable_sol_in` is `spendable_lamports_in`, and `min_tokens_out` is `min_tokens_out`, on the same document. The document is the pump buy in the transaction, including a buy another program invoked. It is null on a row written before migration 0024, on a sell, and on an AMM swap. With no document, a buy that has several earlier txs stays unnamed.
-
-The SOL the pool takes at land is `amount_lamports` on the trade. The tokens the fill receives are `token_amount` on the trade.
-
-[Instruction pick](_!___signal-ix-pick.md) is a separate reference. Nothing in the product runs it.
+A **definite entry** already has the numbers. The **formula** is the line those entries keep, the one whose number repeats. A **basis** is the input that line starts from. Three bases: the gross SOL **`G`**, **`curve_sol`**, or a fixed SOL **`S`**. The same basis is written onto `Buy` or `BuyExactSolIn`. The instruction chooses the two stored fields. A **crowded entry** runs the kept line. **`vsol`** and **`vtok`** in the match are the reserves before that tx.
 
 ---
 
-## 1. How he sets the values on his tx
+## Workflow
 
-He decides the instruction, the buy size, and the **slippage** at **fire**. He prices them against the **signal tx** (`vsol`, `vtok` on that tx). The tx stores those numbers, then he fires.
+### Progress
 
-Other txs can land before his tx. The pool at land is then a different pool. One stored number stays the **fire** number. The other fill number moves, and it has to stay inside the bound he stored.
-
-### · Buy
-
-`Buy` and `BuyV2` store **token_amount** and **max_sol_cost**.
-
-**token_amount** is **frozen**. It is the same number at **fire** and on the **landed** tx.
-
-**curve_sol** is the SOL those tokens cost at the **signal tx**. **max_sol_cost** is computed from that **curve_sol**, the fee, and **slippage**. The SOL the pool takes when the tx **lands** is a different number once other txs have landed between the **signal tx** and his entry. A buy between pushes that landed SOL up, toward **max_sol_cost**. His payment stays under **max_sol_cost**.
-
-At **fire**, against the **signal tx**:
+A **definite entry** finds the **formula**. A **crowded entry** recovers **`curve_sol`** or a fixed SOL, and **`token_amount`**, then matches those two.
 
 ```
-+----------------------------------------------------------+
-| Buy                                                      |
-| curve_sol = 0.530172839 SOL, slippage 20%                |
-+----------------------------------------------------------+
-        signal tx: vsol, vtok
-                      |
-                      v
-        token_amount = floor( vtok * curve_sol / (vsol + curve_sol) )
-                      |
-                      v
-        max_sol_cost = ceil( curve_sol * 1.0125 * (1 + 0.20) )
-        1.0125 is the pump.fun fee
-        (1 + 0.20) is slippage
+new wallet. each buy, look back 2 slots.
+            |
+     +------+------+
+     |             |
+  one tx        several
+     |             |
+     v             v
+ DEFINITE entry           CROWDED entry
+ **signal** = that tx     not named yet
+ **formula** unknown      a kept **formula** first
+
+definite buys first.
+until a **formula** is kept, every crowded buy stays unnamed.
+
+------------------------------------------------------------
+1  FIND THE **FORMULA**.  definite buys of this wallet only.
+   the signal tx is known.  the formula is not.
+------------------------------------------------------------
+
+  known                               unknown
+  the one earlier tx                  his **formula**
+  it is the **signal**
+  **vsol**, **vtok** before that tx
+
+  **Buy**             **token_amount**     **max_sol_cost**
+  **BuyExactSolIn**   **spendable_sol_in** **min_tokens_out**
+
+  a **basis** is the input the line starts from.
+  gross SOL **G**, **curve_sol**, or a fixed SOL **S**.
+  the lines are the candidates below.
+
+  same number on every definite entry     **KEEP**  his line
+  a different number each time            **DROP**  next line
+
+------------------------------------------------------------
+2  RECOVER THE PAIR.  crowded buys only.
+   the kept formula returns these two.
+   landed pool SOL and tokens received stay out.
+------------------------------------------------------------
+
+  SOL size       **curve_sol**, or a fixed SOL **S**
+  token size     **token_amount**
+
+  **Buy**            **token_amount**,    **max_sol_cost**
+  **BuyExactSolIn**  **spendable_sol_in**, **min_tokens_out**
+
+------------------------------------------------------------
+3  MATCH.  each earlier tx in the 2 slots.
+   the pair from step 2 enters this check.
+   **vsol**, **vtok** are the reserves before that tx.
+------------------------------------------------------------
+
+  **curve_sol** and **token_amount**
+    floor( vtok * curve_sol / (vsol + curve_sol) ) = token_amount
+
+  fixed SOL **S** and **token_amount**
+    floor( vtok * S / vsol ) = token_amount
+
+  one tx passes the check                         that tx is the **signal**
+  two or more pass the check                      unnamed
+  earlier txs, none pass                          unnamed
+  no earlier tx                                   unnamed
+  crowded **Buy**, **max_sol_cost** unlimited     unnamed
+  crowded **BuyExactSolIn**, **min_tokens_out**
+    is 0 or 1                                     unnamed
+  crowded, the size does not repeat              unnamed
+
+  a definite buy stays the signal.
+  the one earlier tx needs no formula.
 ```
 
-`ceil` rounds up to the next lamport. The pool charges that next lamport, and **max_sol_cost** has to cover `curve_sol * 1.0125 * (1 + slippage)` or the buy fails. A fraction of a lamport cannot be stored.
+### Candidates
 
-> He decides **curve_sol** = `530,172,839` lamports (`0.530172839` SOL) and **slippage** 20%. He reads the **signal tx**: `vsol = 39,825,996,407`, `vtok = 808,266,030,621,502`.
->
-> How many tokens that SOL buys on that pool. This number is **frozen** in the tx:
->
-> ```
-> vsol + curve_sol = 40,356,169,246
-> vtok * curve_sol / (vsol + curve_sol) = 10,618,468,108,549.141
-> token_amount = floor( ... ) = 10,618,468,108,549
-> ```
->
-> `0.141` of a token is not a token. `floor` drops it.
->
-> Most SOL he will pay. The fee comes first, then room for the pool to move:
->
-> ```
-> curve_sol * 1.0125                 = 536,799,999.4875
-> 536,799,999.4875 * (1 + 0.20)      = 644,159,999.385
-> max_sol_cost = ceil( ... )         = 644,160,000
-> ```
->
-> `0.385` of a lamport is not enough. `ceil` stores the next lamport, `0.644160000` SOL.
->
-> No tx lands between the **signal tx** and his entry. The pool is still that pool, so it takes `530,172,839` lamports for the same **token_amount**. Mint and signatures: [References](#references).
-
-> He decides the same **curve_sol** = `530,172,839` lamports and the same **slippage** 20%, on another mint. The cap arithmetic is the same, so **max_sol_cost** = `644,160,000` again. The pool he reads is a different **signal tx**: `vsol = 43,175,797,262`, `vtok = 745,556,588,736,212`.
->
-> ```
-> vsol + curve_sol = 43,705,970,101
-> vtok * curve_sol / (vsol + curve_sol) = 9,043,932,725,254.599
-> token_amount = floor( ... ) = 9,043,932,725,254
-> ```
->
-> That **token_amount** is **frozen**. One buy then lands, and the pool he actually hits is `vsol = 43,566,379,496`, `vtok = 738,872,508,933,578`. The tx still demands the same **token_amount**, so the pool charges a new SOL:
->
-> ```
-> vtok - token_amount = 729,828,576,208,324
-> vsol * token_amount / (vtok - token_amount) = 539,868,426.764
-> SOL the pool takes = ceil( ... ) = 539,868,427
-> ```
->
-> `9,695,588` lamports above the **curve_sol** he priced. His payment is that SOL times the fee:
->
-> ```
-> 539,868,427 * 1.0125 = 546,616,782.3375
-> ```
->
-> `546,616,782` lamports is still under **max_sol_cost** `644,160,000`, so the buy lands. Mint and signatures: [References](#references).
-
-### · BuyExactSolIn
-
-`BuyExactSolIn`, `BuyExactQuoteIn`, and `BuyExactQuoteInV2` store **spendable_sol_in** and **min_tokens_out**.
-
-**spendable_sol_in** is **frozen**, and so is **curve_sol** = `floor( spendable_sol_in / 1.0125 )`. The SOL the pool takes at land is that size on every buy of this spend. **spendable_sol_in** is the same size on every buy of this kind, so it does not name the **signal tx**.
-
-**min_tokens_out** does name it, because the token quote at **fire** depends on that tx's `vsol` and `vtok`. The tokens he receives when the tx **lands** are a different number once other txs have landed between the **signal tx** and his entry. They stay above **min_tokens_out**. A buy between pushes that landed token amount down, toward **min_tokens_out**.
-
-At **fire**, against the **signal tx**:
+A **basis** is the input a line starts from. Three bases. Each is written onto `Buy` or `BuyExactSolIn`. `Buy` stores **`token_amount`** and **`max_sol_cost`**. `BuyExactSolIn` stores **`spendable_sol_in`** and **`min_tokens_out`**. A definite entry keeps the line whose number repeats. The same basis can keep another **slippage**, or another fixed SOL.
 
 ```
-+----------------------------------------------------------+
-| BuyExactSolIn                                            |
-| spendable_sol_in = 0.500000000 SOL, slippage 20%         |
-+----------------------------------------------------------+
-        spendable_sol_in = 0.500000000 SOL
-                      |
-                      v
-        curve_sol = floor( spendable_sol_in / 1.0125 )
-        1.0125 is the pump.fun fee
-                      |
-                      v
-        tokens = floor( vtok * curve_sol / (vsol + curve_sol) )
-                      |
-                      v
-        min_tokens_out = floor( tokens * (1 - 0.20) )
-        (1 - 0.20) is slippage
+**Spend**   input the gross SOL **G**.  **curve_sol** is **G** after the fee.
+  curve_sol    = floor( G * 10000 / 10125 )
+  token_amount = floor( vtok * curve_sol / (vsol + curve_sol) )
+
+  **Buy**              8dtx keeps this.  G = ◎0.5368.  slippage 20%.
+    max_sol_cost = G * (1 + slippage)
+
+  **BuyExactSolIn**    worked wallet.  G = ◎0.50.  slippage 20%.
+    spendable_sol_in = G
+    min_tokens_out   = floor( token_amount * (1 - slippage) )
+
+**Curve**   input **curve_sol**.
+  token_amount = floor( vtok * curve_sol / (vsol + curve_sol) )
+
+  **Buy**
+    max_sol_cost = ceil( curve_sol * 1.0125 * (1 + slippage) )
+
+  **BuyExactSolIn**
+    spendable_sol_in = ceil( curve_sol * 1.0125 * (1 + slippage) )
+    min_tokens_out   = floor( token_amount * (1 - slippage) )
+
+**Spot**    input a fixed SOL **S**.
+  token_amount = floor( vtok * S / vsol )
+
+  **Buy**              8fSt keeps this.  S = ◎0.30.
+    max_sol_cost = ◎0.33
+
+  **BuyExactSolIn**
+    min_tokens_out   = floor( token_amount * (1 - slippage) )
+    spendable_sol_in is a fixed SOL
 ```
 
-`floor` drops the fraction. A fraction of a lamport is not a lamport. A fraction of a token is not a token.
+### Worked buys
 
-> He decides **spendable_sol_in** = `500,000,000` lamports (`0.500000000` SOL) and **slippage** 20%. He reads a **signal tx** at `vsol = 30,000,000,000`, `vtok = 1,073,000,000,000,000`.
->
-> The fee comes off first. The pool does not receive it:
->
-> ```
-> spendable_sol_in / 1.0125 = 493,827,160.493827
-> curve_sol = floor( ... ) = 493,827,160
-> ```
->
-> `0.493` of a lamport is not a lamport. `floor` drops it. This **curve_sol** is **frozen** with **spendable_sol_in**.
->
-> How many tokens that SOL buys on the **signal tx**:
->
-> ```
-> vsol + curve_sol = 30,493,827,160
-> vtok * curve_sol / (vsol + curve_sol) = 17,376,518,201,528.365
-> tokens = floor( ... ) = 17,376,518,201,528
-> ```
->
-> Fewest tokens he will accept if the pool moves before he lands:
->
-> ```
-> tokens * (1 - 0.20) = 13,901,214,561,222.4
-> min_tokens_out = floor( ... ) = 13,901,214,561,222
-> ```
->
-> `0.4` of a token is not a token. `floor` drops it. This pool is the arithmetic. The two buys below are real, and their pools are not this 30 SOL pool.
+```
+his buy. look back 2 slots.
+            |
+     +------+------+
+     |             |
+  one tx        several
+     |             |
+     v             v
+ DEFINITE entry       CROWDED entry
+ that tx is the signal    formula already known
+ formula is unknown   run it, then match
 
-> He decides **spendable_sol_in** = `500,000,000` on two mints, and both txs store **min_tokens_out** = `12,530,789,183,073`. The fee is off first, so both put the same SOL into the pool: `493,827,159` lamports.
->
-> On `6XCU…` the **signal tx** is `vsol = 30,987,654,320`, `vtok = 1,038,800,796,845,859`. No tx lands between, so the fill receives `16,294,914,379,839` tokens.
->
-> On `9p5M…` he prices a **signal tx** with those same reserves. One buy lands between and leaves `vsol = 31,679,012,344`, `vtok = 1,016,130,163,732,735`. **spendable_sol_in** is still `500,000,000`. The pool takes the same `493,827,159` lamports and pays `15,596,779,105,649` tokens, because `vsol` is higher and `vtok` is lower. That is still above **min_tokens_out**. Mint and signatures: [References](#references).
+------------------------------------------------------------
+0  FIND THE FORMULA.  a **definite entry**.
+   numbers are on the buy.  the formula is not.
+   each trader keeps his own.  another trader, another line.
+------------------------------------------------------------
+
+  KNOWN                               UNKNOWN
+  the one earlier tx                  his **basis**
+  **vsol**, **vtok** before that tx   the number that repeats
+
+  **Buy**             **token_amount**     **max_sol_cost**
+  **BuyExactSolIn**   **spendable_sol_in** **min_tokens_out**
+
+  on a definite constant-product fill, pool SOL = **curve_sol**
+  on a spot fill, pool SOL stays off **S**
+
+  same number on every definite entry     **KEEP**  his formula
+  a different number each time            **DROP**  try the next line
+
+------------------------------------------------------------
+1  DEFINITE  8dtx.  basis **Spend**.  on **Buy**.
+   the repeating integer is **G**.
+   **curve_sol** is **G** after the fee.
+------------------------------------------------------------
+
+  READ
+    **token_amount**          10,618,468,108,549
+    **max_sol_cost**          ◎0.64416
+    **pool SOL**              ◎0.530172839   = **curve_sol**
+
+  **CANDIDATE**  his gross. the same **G** on every definite buy.
+    **G**            = 536,800,000 lamports   = ◎0.5368
+    **slippage**     = 20%
+    **max_sol_cost** = G * (1 + slippage)
+                     = 536,800,000 * 120 / 100
+                     = 644,160,000             = ◎0.64416
+    **KEEP** for 8dtx
+
+  **CANDIDATE**  his **curve_sol** and **token_amount**.
+    **curve_sol**    = floor( G * 10000 / 10125 )
+                     = floor( 536,800,000 * 10000 / 10125 )
+                     = 530,172,839             = ◎0.530172839
+    **token_amount** = floor( vtok * curve_sol / (vsol + curve_sol) )
+    it matches his definite buys.  **KEEP** for 8dtx
+    8fSt keeps a different token formula
+
+------------------------------------------------------------
+2  CROWDED  8dtx.  run that kept line.
+------------------------------------------------------------
+
+  READ
+    **token_amount**          9,043,932,725,254    stays
+    **max_sol_cost**          ◎0.64416
+    **pool SOL**              ◎0.539868427         leave out
+
+  SOLVE
+    **G**         = 644,160,000 * 100 / 120
+                  = 536,800,000             = ◎0.5368
+    **curve_sol** = floor( 536,800,000 * 10000 / 10125 )
+                  = 530,172,839             = ◎0.530172839
+
+  MATCH   reserves before the tx
+    floor( vtok * curve_sol / (vsol + curve_sol) ) = **token_amount**
+    **signal**    pool SOL ◎0.530172839    **KEEP**
+    other         pool SOL ◎0.504036734    **DROP**
+    one keeper. that tx is the signal
+
+------------------------------------------------------------
+3  DEFINITE  BuyExactSolIn.  basis **Spend**.  ◎30 pool.
+   **token_amount** = tokens received.
+   the **formula** down to **min_tokens_out** is what is found.
+------------------------------------------------------------
+
+  READ
+    **curve_sol**             ◎0.493827160
+                              = floor( 500,000,000 * 10000 / 10125 )
+    **token_amount**          17,376,518,201,528   = tokens received
+    **min_tokens_out**        13,901,214,561,222
+
+  **CANDIDATE**
+    **min_tokens_out** = floor( token_amount * (1 - **slippage**) )
+    **slippage** = 1 - 13,901,214,561,222 / 17,376,518,201,528  =  20%
+    next definite buy of this wallet gives the same **slippage**
+    **KEEP** for him.  another wallet can keep another **slippage**
+
+------------------------------------------------------------
+4  CROWDED  same wallet.  run that kept formula backwards.
+------------------------------------------------------------
+
+  READ
+    **min_tokens_out**        12,530,789,183,073
+    tokens received           16,294,914,379,839   leave out
+                              15,596,779,105,649   leave out
+
+  SOLVE
+    floor( token_amount * (1 - 20%) ) = 12,530,789,183,073
+    token_amount = 15,663,486,478,842
+
+  MATCH   reserves before the tx
+    floor( vtok * curve_sol / (vsol + curve_sol) ) = token_amount
+    one pass. that tx is the signal
+
+------------------------------------------------------------
+5  SPOT  8fSt.  basis **Spot**.
+   try lines.  keep only what repeats.
+------------------------------------------------------------
+
+  TRY   **token_amount** = floor( vtok * curve_sol / (vsol + curve_sol) )
+        changes from buy to buy                 **DROP**
+
+  TRY   **token_amount** = floor( vtok * S / vsol )
+        every **definite entry**   S = ◎0.30    **KEEP**
+
+  TRY   a cap line that solves S from **max_sol_cost**
+        **max_sol_cost** = ◎0.33 on every buy
+        it does not yield S                     **DROP**
+        pool SOL stays above ◎0.30
+
+  CROWDED   S is ◎0.30
+        keep the tx where
+          floor( vtok * ◎0.30 / vsol ) = **token_amount**
+        pool SOL stays out
+
+------------------------------------------------------------
+6  NAME
+------------------------------------------------------------
+
+  one tx passes                                   that tx is the **signal**
+  two or more pass                                unnamed
+  earlier txs, none pass                          unnamed
+  no earlier tx                                   unnamed
+  crowded **Buy**, **max_sol_cost** unlimited     unnamed
+  crowded **BuyExactSolIn**, **min_tokens_out**
+    is 0 or 1                                     unnamed
+  crowded, the size does not repeat              unnamed
+
+  a definite buy stays the signal.
+  the one earlier tx needs no formula.
+```
 
 ---
 
-## 2. How slippage is derived
+## Sheet
 
-### · Definite entry
+| | Spend `Buy`, 8dtx | Spot `Buy`, 8fSt | Spend `BuyExactSolIn` |
+| --- | --- | --- | --- |
+| **1. Definite entry.** One earlier tx is the **signal**. Both results are known. The **formula** is not. | **`token_amount`** and **`max_sol_cost`** are in the ix. Pool SOL on this fill equals **`curve_sol`**. **`G`** is not in the ix. | **`token_amount`** is in the ix. Pool SOL is above `S` on every fill, so it is not the size. | **`spendable_sol_in`** is **`G`**. **`curve_sol`** = `floor(G * 10000 / 10125)` = pool SOL. Tokens received = **`token_amount`** at the signal. **`min_tokens_out`** is in the ix. |
+| **Formula a definite entry finds** | **Spend.** **`G`** = `◎0.5368`. **`slippage`** = 20%. **`max_sol_cost`** = `G * (1 + slippage)` = `◎0.64416`. **`curve_sol`** = `floor(G * 10000 / 10125)` = `◎0.530172839`. **`token_amount`** = `floor(vtok * curve_sol / (vsol + curve_sol))`. The repeating integer is **`G`**. **`curve_sol`** is **`G`** after the fee. | **Spot.** **`token_amount`** = `floor(vtok * S / vsol)`. Every **definite entry** gives `S` = `◎0.30`. **`max_sol_cost`** = `◎0.33`. | **Spend.** **`G`** = `◎0.50`. **`curve_sol`** = `floor(G * 10000 / 10125)`. **`min_tokens_out`** = `floor(token_amount * (1 - slippage))`, and **`slippage`** = `1 - min_tokens_out / token_amount`. This wallet keeps 20%. **Curve** and **Spot** are the other two bases. |
+| **2. Crowded entry.** Recover the number from the **signal** moment. | **`token_amount`** stays the ix value. **`G`** = `max_sol_cost * 100 / 120` = `◎0.5368`. **`curve_sol`** = `floor(G * 10000 / 10125)`. Landed pool SOL stays out. | `S` is already `◎0.30`. The cap does not recover it. | **`curve_sol`** is known from the spend. The signal-moment **`token_amount`** is derived from the stored **`min_tokens_out`** by the **formula** row 1 found. Tokens received stay out. |
+| **3. Which earlier tx** in the 2 slots. **`vsol`**, **`vtok`** are the reserves before that tx. | `floor(vtok * curve_sol / (vsol + curve_sol))` = **`token_amount`**. The keeper put `◎0.530172839` into the pool. The other tx put `◎0.504036734`. | `floor(vtok * ◎0.30 / vsol)` = **`token_amount`**. Pool SOL stays out. | **`curve_sol`** is known. The **`token_amount`** in the check is the one derived from **`min_tokens_out`** by the found **formula**. Tokens received stay out. `floor(vtok * curve_sol / (vsol + curve_sol))` = **`token_amount`**. |
 
-A **definite entry** is his buy when exactly one other tx sits in the 2 slots before him.
+8dtx, one buy between. **`G`** = `◎0.5368` and **`slippage`** = 20% give **`max_sol_cost`** `◎0.64416` and **`curve_sol`** `◎0.530172839`. The **signal** quoted that **`curve_sol`** for the stored **`token_amount`**. The other tx put `◎0.504036734` into the pool. Landed pool SOL `◎0.539868427` stays out.
 
-That one tx is the **signal tx**. Read **slippage** from it. Repeat on every **definite entry**. The values that repeat are his set.
+`BuyExactSolIn`, the found **formula** run backwards. On the ◎30 pool **`token_amount`** is `17,376,518,201,528` and **`min_tokens_out`** is `13,901,214,561,222`, so those **definite** numbers find **`slippage`** = 20% for that wallet. A **crowded entry** from the same wallet stores **`min_tokens_out`** = `12,530,789,183,073`. The signal-moment **`token_amount`** is what that same found **formula** returns for that stored min: `floor(token_amount * (1 - 20%))` = `12,530,789,183,073` gives **`token_amount`** `15,663,486,478,842`. The fill receives `16,294,914,379,839` or `15,596,779,105,649`. Those stay out. The match uses `15,663,486,478,842` and **`curve_sol`**.
 
-`Buy` and `BuyExactSolIn` are read apart. A **slippage** read on a `Buy` is not tried on a `BuyExactSolIn`. On 8dtx the `Buy` set is one value, 20%, read on 133 entries. Another wallet's set can be several values, for example 15% and 25%.
+A crowded buy stays unnamed when **`max_sol_cost`** is unlimited, when **`min_tokens_out`** is 0 or 1, when the size does not repeat, when no earlier tx passes, when two or more pass, or when the 2 slots hold no earlier tx. A definite buy stays named. The one earlier tx is the signal.
 
-### · Buy
-
-`vsol` and `vtok` are the **signal tx**. **token_amount** and **max_sol_cost** are the **frozen** numbers on his buy.
-
-```
-curve_sol = ceil( vsol * token_amount / (vtok - token_amount) )
-slippage  = max_sol_cost / (curve_sol * 1.0125) - 1
-```
-
-> The 8dtx buy above, once its **signal tx** is known. **token_amount** = `10,618,468,108,549`, **max_sol_cost** = `644,160,000`, `vsol = 39,825,996,407`, `vtok = 808,266,030,621,502`.
->
-> SOL those tokens cost on that pool, which is the **curve_sol** he decided:
->
-> ```
-> vtok - token_amount = 797,647,562,512,953
-> vsol * token_amount / (vtok - token_amount) = 530,172,838.99999
-> curve_sol = ceil( ... ) = 530,172,839
-> ```
->
-> **slippage** from the cap he stored:
->
-> ```
-> curve_sol * 1.0125 = 536,799,999.4875
-> 644,160,000 / 536,799,999.4875 - 1 = 0.200000001
-> ```
->
-> That is his 20% set.
-
-### · BuyExactSolIn
-
-**spendable_sol_in** and **min_tokens_out** are on his buy. `vsol` and `vtok` are the **signal tx**.
-
-```
-curve_sol = floor( spendable_sol_in / 1.0125 )
-tokens    = floor( vtok * curve_sol / (vsol + curve_sol) )
-slippage  = 1 - min_tokens_out / tokens
-```
-
----
-
-## 3. How the signal tx is found
-
-Use this when several earlier txs sit in the 2 slots. **slippage** is already known from **definite entries** (part 2).
-
-The search replays the **frozen** **fire** numbers. On a `Buy` those are **max_sol_cost** and **token_amount**. On a `BuyExactSolIn` those are **min_tokens_out** and **curve_sol**. The SOL the pool takes at land, and the tokens the fill receives, stay out of the test.
-
-One earlier tx matches: that tx is the **signal tx**. Several match: no **signal tx** is named.
-
-### · Buy
-
-`Buy` and `BuyV2`. Each **slippage** in the `Buy` set is tried.
-
-```
-+----------------------------------------------------------+
-| SIGNAL TX  Buy                                           |
-+----------------------------------------------------------+
-        curve_sol = floor( max_sol_cost / (1.0125 * (1 + slippage)) )
-                      |
-                      v
-        for each earlier tx:
-            its curve_sol = ceil( vsol * token_amount / (vtok - token_amount) )
-                      |
-                      v
-        its curve_sol = curve_sol  ->  that tx is the signal tx
-```
-
-**max_sol_cost** and **token_amount** are on his buy. `vsol` and `vtok` are that earlier tx. The **curve_sol** in the test is the **fire** size, recovered from **max_sol_cost**.
-
-> His buy stores **max_sol_cost** = `644,160,000` and **token_amount** = `10,618,468,108,549`. From part 2 his **slippage** is 20%. Two earlier txs sit in the window.
->
-> Undo the cap. This is the **curve_sol** he decided at **fire**:
->
-> ```
-> 644,160,000 / (1.0125 * (1 + 0.20)) = 530,172,839.506
-> curve_sol = floor( ... ) = 530,172,839
-> ```
->
-> He built the cap with `ceil`, so the undo uses `floor`. Rounding `530,172,839.506` to the nearest lamport gives `530,172,840`, one lamport above the SOL he decided.
->
-> Each earlier tx: what SOL does this pool charge for the **frozen** **token_amount**?
->
-> The **signal tx**, `vsol = 39,825,996,407`, `vtok = 808,266,030,621,502`:
->
-> ```
-> vsol * token_amount / (vtok - token_amount) = 530,172,838.99999
-> ceil( ... ) = 530,172,839
-> ```
->
-> That equals the **curve_sol** he decided. This tx is the **signal tx**.
->
-> The other tx, `vsol = 38,838,342,087`, `vtok = 828,820,137,546,460`:
->
-> ```
-> vsol * token_amount / (vtok - token_amount) = 504,036,733.539
-> ceil( ... ) = 504,036,734
-> ```
->
-> `504,036,734` is not `530,172,839`, so that tx is not the one he priced.
->
-> The pool takes `530,172,839` lamports at land on this buy, and `539,868,427` on the buy in part 1 where one tx lands between. The search uses `530,172,839` either way. Mint and signatures: [References](#references).
-
-### · BuyExactSolIn
-
-`BuyExactSolIn`, `BuyExactQuoteIn`, and `BuyExactQuoteInV2`. Each **slippage** in the `BuyExactSolIn` set is tried. **spendable_sol_in** is the same on every buy, so the test uses **min_tokens_out**.
-
-```
-+----------------------------------------------------------+
-| SIGNAL TX  BuyExactSolIn                                 |
-+----------------------------------------------------------+
-        curve_sol = floor( spendable_sol_in / 1.0125 )
-                      |
-                      v
-        for each earlier tx, for each slippage:
-            tokens         = floor( vtok * curve_sol / (vsol + curve_sol) )
-            min_tokens_out = floor( tokens * (1 - slippage) )
-                      |
-                      v
-        that min_tokens_out = his min_tokens_out  ->  that tx is the signal tx
-```
-
-> His buy stores **spendable_sol_in** = `500,000,000` and **min_tokens_out** = `13,901,214,561,222`. From part 2 his **slippage** is 20%. **spendable_sol_in** is the same on every buy of this size, so the test uses **min_tokens_out**.
->
-> Fee off first. This **curve_sol** is **frozen**, and it is the same at every candidate:
->
-> ```
-> 500,000,000 / 1.0125 = 493,827,160.493827
-> curve_sol = floor( ... ) = 493,827,160
-> ```
->
-> Each earlier tx: how few tokens would he have accepted on this pool?
->
-> The **signal tx**, `vsol = 30,000,000,000`, `vtok = 1,073,000,000,000,000`. Part 1 already has `tokens = 17,376,518,201,528`.
->
-> ```
-> tokens * (1 - 0.20) = 13,901,214,561,222.4
-> floor( ... ) = 13,901,214,561,222
-> ```
->
-> That equals the **min_tokens_out** he stored.
->
-> Another tx whose pool is `0.1` SOL higher, `vsol = 30,100,000,000`, same `vtok`:
->
-> ```
-> vtok * curve_sol / (vsol + curve_sol) = 17,319,720,736,763.161
-> tokens = floor( ... ) = 17,319,720,736,763
-> tokens * (1 - 0.20) = 13,855,776,589,410.4
-> floor( ... ) = 13,855,776,589,410
-> ```
->
-> `13,855,776,589,410` is not the **min_tokens_out** he stored, so that tx is not the one he priced.
->
-> On the two real buys in part 1 the stored **min_tokens_out** is `12,530,789,183,073` on both, and the fills receive `16,294,914,379,839` and `15,596,779,105,649` tokens. The search compares **min_tokens_out**. Those two fill sizes stay out of it. Mint and signatures: [References](#references).
-
-### · No signal tx
-
-- **max_sol_cost** = `u64::MAX`, or **min_tokens_out** is `0` or `1`. He set no bound. The **definite entry** yields no **slippage**, and the search above stays blank.
-- No earlier tx in the 2 slots.
-- **max_sol_cost** or **min_tokens_out** is stored, and no earlier tx equals it.
-- Two earlier txs equal it.
+The pages run the constant-product test. A spot wallet is named on a **definite entry**. A **crowded** spot buy stays unnamed on the pages. [Instruction pick](_!___signal-ix-pick.md) does not run.
 
 ---
 
 ## References
 
-### · Part 1 and part 3. The 8dtx Buy, pool unchanged
+### · 8dtx Buy, pool unchanged
 
 Token `71CNvMdcDkv4rzY83SM72QAkHPLGBHnPYrM4nW48pump`.
 
 | Role | Signature |
 | --- | --- |
-| His buy. **max_sol_cost** = `644,160,000`. **token_amount** = `10,618,468,108,549`. Pool takes `530,172,839` lamports. | `56To4KyGuoqssqtXGSsv5n68eXzDAFrfSFgAhn2Nc5UHY3hUw31ReBefVREh44TtMnnmBVrF7XtihohW5L8SNWm4` |
-| **Signal tx**. **curve_sol** = `0.530172839` SOL. | `2zn4BZqbqoEjwYbLRnaUHdSDyGHbFPBw3JdTE4wrntHCu36hz1SYZyTh61qUswG5uSe7DpCJqE6BG1coBwPwnSuF` |
-| Other tx in the same 2 slots. **curve_sol** = `0.504036734` SOL. | `xdJAEFYGC9HrmaARyQK2TXwYQBxbERbamHgiVDuduZk8LeXDyia4tAGraZ8qGqqA6XmJYwUsaruPvdj5bxuNkxQ` |
+| His buy. **G** = `◎0.5368`. **max_sol_cost** = `◎0.64416`. **token_amount** = `10,618,468,108,549`. Pool takes `◎0.530172839`. | `56To4KyGuoqssqtXGSsv5n68eXzDAFrfSFgAhn2Nc5UHY3hUw31ReBefVREh44TtMnnmBVrF7XtihohW5L8SNWm4` |
+| **Signal tx**. **curve_sol** = `◎0.530172839`. | `2zn4BZqbqoEjwYbLRnaUHdSDyGHbFPBw3JdTE4wrntHCu36hz1SYZyTh61qUswG5uSe7DpCJqE6BG1coBwPwnSuF` |
+| Other tx in the same 2 slots. **curve_sol** = `◎0.504036734`. | `xdJAEFYGC9HrmaARyQK2TXwYQBxbERbamHgiVDuduZk8LeXDyia4tAGraZ8qGqqA6XmJYwUsaruPvdj5bxuNkxQ` |
 
-### · Part 1 and part 3. The 8dtx Buy, one tx between
+### · 8dtx Buy, one tx between
 
 Token `9iff9a1YyKqRnQsuz6W4jJNvz1da2uaPzBdX9Uaapump`.
 
 | Role | Signature |
 | --- | --- |
-| His buy. **max_sol_cost** = `644,160,000`. **token_amount** = `9,043,932,725,254`. Pool takes `539,868,427` lamports. | `5otC9vpm5R3mYE1E8umkymax8uEouzx2cZhp84W6nn9BGYfcoAKHtir95koZPA5GJuX3yLQXoMMyvqtPVtcsMGA4` |
-| **Signal tx**. **curve_sol** = `530,172,839` lamports for that **token_amount**. | `5VG2GzaVVfWRh1xkdvVycN77dgPuRpbJeVzbgewj4ucAtrRk8hECYH6zkk1xL9HD8GimSEq4JRdSyXPx9JGLF7rV` |
+| His buy. **G** = `◎0.5368`. **max_sol_cost** = `◎0.64416`. **token_amount** = `9,043,932,725,254`. Pool takes `◎0.539868427`. | `5otC9vpm5R3mYE1E8umkymax8uEouzx2cZhp84W6nn9BGYfcoAKHtir95koZPA5GJuX3yLQXoMMyvqtPVtcsMGA4` |
+| **Signal tx**. **curve_sol** = `◎0.530172839` for that **token_amount**. | `5VG2GzaVVfWRh1xkdvVycN77dgPuRpbJeVzbgewj4ucAtrRk8hECYH6zkk1xL9HD8GimSEq4JRdSyXPx9JGLF7rV` |
 | The buy that lands between. | `Ldc71ZFZy8yQj43bgow3H7jAsmW8z3UoC5wKX1W5tafK5qkRzCTeTTXPFnsPsciNL5Yc5y8pLqNWPDE89yragps` |
 
-### · Part 1 and part 3. `spendable_sol_in = 0.500000000` SOL
+### · BuyExactSolIn, `spendable_sol_in = ◎0.500000000`
 
-**min_tokens_out** in the formula block is the formula at `vsol = 30` SOL and `vtok = 1,073,000,000,000,000`. The two buys below store **min_tokens_out** = `12,530,789,183,073`, and each puts `493,827,159` lamports into the pool.
+The arithmetic pool is `vsol = ◎30`, `vtok = 1,073,000,000,000,000`: `curve_sol` = `◎0.493827160`, tokens = `17,376,518,201,528`, `min_tokens_out` = `13,901,214,561,222`. The two buys below store `min_tokens_out` = `12,530,789,183,073` and each put `◎0.493827159` into the pool.
 
 | Role | Signature |
 | --- | --- |
@@ -380,9 +334,9 @@ Token `9iff9a1YyKqRnQsuz6W4jJNvz1da2uaPzBdX9Uaapump`.
 | **Signal tx** for that buy. | `CRo8wJsVmqurTVSgrgdx4zvHNHatmq8SoiomNVYQKsnW38imvAhwZxZM2aWdP7r92k9daHaB9yJmttpVJfmzogD` |
 | The buy that lands between. | `5xyhUrtEMU3T746Zdbpdixmgz3Hu32thHuuVVifKn8U6SBzejJHsAYjZFKC1J4zmyY43oUKCV2HV4QZ59emoH66K` |
 
-The earlier `nngvws…` buy is the same **spendable_sol_in** on a deeper pool. Its **min_tokens_out** is `4,738,803,122,455`. The fill receives `5,923,503,890,959` tokens. The pool takes `493,827,159` lamports.
+The earlier `nngvws` buy is the same spend on a deeper pool. Its `min_tokens_out` is `4,738,803,122,455`. The fill receives `5,923,503,890,959` tokens. The pool takes `◎0.493827159`.
 
 | Role | Signature |
 | --- | --- |
 | His buy. Token `nngvwsDSqGbGQGTJVs3titwhvjfgVd8zVs6ZFAnpump`. | `326vtZHfkNi7cKq6jCwkavFKqthrk5jUKTYqmJ4JnJDnmadSipg47Kxo4Lu33c4xs7WCADXoJVdUvjraoEY7byXH` |
-| Earlier tx in the 2 slots. `vsol = 51.557118973` SOL. | `nmGrpQHAmG5QGjG6EKuer9LnQ7jDuT3v6gycFr9n1vA4jn8nm5HthDUAKfzzwTUsesRg8gEaAdo9m7HJAm58SqF` |
+| Earlier tx in the 2 slots. `vsol = ◎51.557118973`. | `nmGrpQHAmG5QGjG6EKuer9LnQ7jDuT3v6gycFr9n1vA4jn8nm5HthDUAKfzzwTUsesRg8gEaAdo9m7HJAm58SqF` |
