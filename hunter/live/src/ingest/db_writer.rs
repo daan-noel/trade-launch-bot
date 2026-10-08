@@ -14,7 +14,6 @@ use tracing::{error, warn};
 
 use trading_core::{
     models::{raw_tx::RawTx, token::Token, trade::Trade},
-    state::token_metrics::TokenMetricsWrite,
     state::trade_signals::TradeSignals,
     storage::repositories::{
         raw_tx_repo::RawTxRepo, token_info_repo::TokenInfoRepo, token_repo::TokenRepo,
@@ -35,7 +34,6 @@ pub enum DbWriteOp {
     Token(Token),
     Wallet(String),
     Trade(Trade),
-    Metrics(TokenMetricsWrite),
     Migration { mint: String },
 }
 
@@ -115,7 +113,6 @@ impl DbWriter {
         let mut raws: Vec<RawBlobJob> = Vec::new();
         let mut wallets: HashSet<String> = HashSet::new();
         let mut trades: HashMap<(String, i32), Trade> = HashMap::new();
-        let mut metrics: HashMap<String, TokenMetricsWrite> = HashMap::new();
         let mut migrations: HashSet<String> = HashSet::new();
 
         for op in ops {
@@ -127,9 +124,6 @@ impl DbWriter {
                 }
                 DbWriteOp::Trade(t) => {
                     trades.insert((t.tx_signature.clone(), t.leg_index as i32), t);
-                }
-                DbWriteOp::Metrics(m) => {
-                    metrics.insert(m.mint.clone(), m);
                 }
                 DbWriteOp::Migration { mint } => {
                     migrations.insert(mint);
@@ -230,49 +224,9 @@ impl DbWriter {
             self.trade_signals.notify(&t.wallet_address, &t.mint_address);
         }
 
-        // Metrics — one batched multi-row upsert instead of a per-mint fan-out. The
-        // old `buffer_unordered` path held several pool connections at once and issued
-        // one round-trip per distinct mint; under a saturated pool that was the ingest
-        // write most likely to time out `acquire()`. Fall back to per-row on failure so
-        // one bad row can't drop the whole batch (mirrors tokens/raws/trades above).
-        if !metrics.is_empty() {
-            let rows: Vec<TokenMetricsWrite> = metrics.into_values().collect();
-            match self.info_repo.upsert_metrics_many(&rows).await {
-                Ok(()) => any_ok = true,
-                Err(e) => {
-                    warn!("DbWriter: metrics bulk upsert failed ({e}); retrying per-row");
-                    for m in &rows {
-                        match self
-                            .info_repo
-                            .upsert_metrics(
-                                &m.mint,
-                                m.ath_price,
-                                m.ath_timestamp,
-                                m.age_seconds,
-                                m.volume_sol,
-                                m.market_cap,
-                                m.trade_count,
-                                m.last_trade_at,
-                                m.current_price,
-                                m.is_dead,
-                                m.is_migrated,
-                                m.lifetime_secs,
-                                m.first_slot_buy_sol,
-                                m.first_slot_sell_sol,
-                                m.curve_peak_reserve_sol,
-                                m.curve_peak_at,
-                            )
-                            .await
-                        {
-                            Ok(()) => any_ok = true,
-                            Err(e) => warn!("DbWriter: metrics {}: {e}", m.mint),
-                        }
-                    }
-                }
-            }
-        }
-
-        // Migrations.
+        // Migrations. `tokens_info` market stats are not on this queue: the
+        // 30 s flush and the cache-eviction write own them, so a full trade
+        // batch cannot drop the only copy of a mint's stats.
         for mint in &migrations {
             match self.info_repo.update_migration_status(mint, true).await {
                 Ok(()) => any_ok = true,

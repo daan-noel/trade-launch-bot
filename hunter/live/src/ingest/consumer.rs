@@ -25,10 +25,10 @@ use trading_core::{
         token::{create_meta, Token},
         trade::{Trade, TradeType},
     },
-    state::token_cache::{TokenCache, TokenState},
+    state::token_cache::{write_token_metrics, TokenCache, TokenState},
     state::token_metrics::metrics_from_state,
     state::trade_signals::TradeSignals,
-    storage::repositories::settings_repo::AppSettings,
+    storage::repositories::{settings_repo::AppSettings, token_info_repo::TokenInfoRepo},
 };
 
 use trading_core::ingest::TraderHook;
@@ -104,6 +104,9 @@ pub struct IngestConsumer {
     held_pools: HeldPoolGate,
     /// Real trading wallet — used to early-observe own legs for fill confirm.
     trading_wallet: String,
+    /// Final `tokens_info` write when Mayhem tracking is switched off and those
+    /// mints leave the cache. The periodic flush uses its own repo.
+    info_repo: TokenInfoRepo,
     shed: Arc<ShedCounters>,
 }
 
@@ -122,6 +125,7 @@ impl IngestConsumer {
         ingest_handle: Arc<IngestHandle>,
         held_pools: HeldPoolGate,
         trading_wallet: String,
+        info_repo: TokenInfoRepo,
     ) -> (Self, Arc<ShedCounters>) {
         let shed = Arc::new(ShedCounters::default());
         (
@@ -138,6 +142,7 @@ impl IngestConsumer {
                 ingest_handle,
                 held_pools,
                 trading_wallet,
+                info_repo,
                 shed: shed.clone(),
             },
             shed,
@@ -240,7 +245,7 @@ impl IngestConsumer {
                     };
 
                     if prev_mayhem && !mayhem {
-                        self.evict_mayhem_tokens();
+                        self.evict_mayhem_tokens().await;
                     }
                     prev_mayhem = mayhem;
 
@@ -279,14 +284,15 @@ impl IngestConsumer {
         // fingerprint match BEFORE the durable enqueue, so a backpressured DbWriter
         // can't delay an entry decision (H2). The strategy reads `token_cache`, not
         // the DB, so this ordering is safe.
-        let token_state = TokenState::new(token.clone());
-        let metrics = metrics_from_state(&mint, &token_state);
+        let mut token_state = TokenState::new(token.clone());
+        // The 30 s flush writes the row. It is not enqueued with the trades:
+        // that queue drops a metrics write when it is full, and nothing retries it.
+        token_state.metrics_unsaved = true;
         self.token_cache.insert(mint.clone(), token_state);
         self.ping_strategy(mint.clone(), IngestKind::TokenCreated, Some(received_at));
 
         self.enqueue_db_durable(DbWriteOp::Token(token));
         self.enqueue_db_durable(DbWriteOp::Wallet(creator));
-        self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
 
         self.emit_sse(SseEvent::TokenCreated {
             mint_address: mint,
@@ -354,13 +360,15 @@ impl IngestConsumer {
         // last-leg clear under backpressure).
         //
         // Keep the DashMap mut guard short: precomputed hashes + AMM observe outside.
-        let (metrics, amm_token_program) = match self.token_cache.get_mut(&mint) {
+        let amm_token_program = match self.token_cache.get_mut(&mint) {
             Some(mut token_state) => {
                 // Before the strategy ping below, so an order decided on this print
                 // derives its creator vault from the creator this print passed.
                 if let Some(creator) = e.curve_creator {
                     token_state.observe_curve_creator(creator, e.slot);
                 }
+                // `add_trade_hashed` marks the mint unsaved. The 30 s flush writes
+                // `tokens_info`; this path does not enqueue that write.
                 token_state.add_trade_hashed(
                     core_trade,
                     ix_hash,
@@ -373,14 +381,13 @@ impl IngestConsumer {
                     core_marks,
                     is_launch,
                 );
-                let tp = if is_amm && !token_state.amm_pool_prewarmed {
+                if is_amm && !token_state.amm_pool_prewarmed {
                     token_state.token.token_program_id.clone()
                 } else {
                     None
-                };
-                (Some(metrics_from_state(&mint, &token_state)), tp)
+                }
             }
-            None => (None, None),
+            None => None,
         };
         if let (Some(token_program), Some(keys)) =
             (amm_token_program, e.amm_swap_accounts.as_deref())
@@ -443,10 +450,6 @@ impl IngestConsumer {
         // Wake mint-lane watchers after the Trade write is queued (or deferred).
         self.trade_signals.notify_mint(&mint);
 
-        if let Some(metrics) = metrics {
-            self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
-        }
-
         self.emit_sse(SseEvent::TradeExecuted {
             mint_address: mint,
             wallet,
@@ -490,12 +493,9 @@ impl IngestConsumer {
             self.held_pools.track_migrated(&mint);
         }
 
-        let metrics = self.token_cache.get_mut(&mint).map(|mut token_state| {
+        if let Some(mut token_state) = self.token_cache.get_mut(&mint) {
             token_state.is_migrated = true;
-            metrics_from_state(&mint, &token_state)
-        });
-        if let Some(metrics) = metrics {
-            self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
+            token_state.metrics_unsaved = true;
         }
 
         // Ping the strategy (re-routes any in-flight exit to the AMM) off the in-RAM
@@ -536,19 +536,33 @@ impl IngestConsumer {
 
     // ── Policy transitions ─────────────────────────────────────────────────────
 
-    fn evict_mayhem_tokens(&self) {
+    async fn evict_mayhem_tokens(&self) {
         let mints: Vec<String> = self
             .token_cache
             .iter()
             .filter(|e| e.token.is_mayhem_mode)
             .map(|e| e.key().clone())
             .collect();
+        let mut rows = Vec::with_capacity(mints.len());
         for mint in &mints {
-            self.token_cache.remove(mint);
+            if let Some(state) = self.token_cache.get(mint) {
+                rows.push(metrics_from_state(mint, &state));
+            }
+        }
+        let failed: std::collections::HashSet<String> =
+            write_token_metrics(&self.info_repo, &rows).await.into_iter().collect();
+        let mut dropped = 0usize;
+        for row in &rows {
+            if failed.contains(&row.mint) {
+                continue;
+            }
+            self.token_cache.remove(&row.mint);
+            dropped += 1;
         }
         info!(
-            "Tracking: Mayhem disabled — evicted {} Mayhem token(s) from cache",
-            mints.len()
+            dropped,
+            kept = failed.len(),
+            "Tracking: Mayhem disabled — evicted Mayhem token(s) from cache"
         );
     }
 

@@ -187,7 +187,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 
 | File | Owns |
 | --- | --- |
-| `token_cache.rs` | `TokenCache` = `DashMap<mint, TokenState>`; slim `CachedTrade` projection; wallet-interned `u32`; runtime-bounded eviction (`run_token_cache_eviction`) |
+| `token_cache.rs` | `TokenCache` = `DashMap<mint, TokenState>`; slim `CachedTrade` projection; wallet-interned `u32`; runtime-bounded eviction (`run_token_cache_eviction`); `tokens_info` flush of changed mints (`run_token_info_flush`, 30 s) |
 | `token_list_cache.rs` | `TokenListCache` — staleness-bounded snapshot of the live cache for `/api/tokens` (tracked-only view + `tracked` count) |
 | `token_metrics.rs` | price / market-cap / volume / ATH computation |
 | `trade_signals.rs` | `TradeSignals` — wakeup hub: `(wallet,mint)` lane + mint-only lane. **Notify over poll** (held by `DeployState`) |

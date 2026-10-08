@@ -115,8 +115,14 @@ non-blocking `try_send` on the hot `db_tx` (cap 16384) so a PG stall never
 awaits on the ingest consumer (create/trade pings stay unblocked). On Full the
 op is deferred into a bounded retry buffer (cap 4096) drained by a background
 task with `send().await`; only when that buffer is also full is the write shed
-(counted). Recomputable writes (`Metrics`/`Raw`) use `try_send` (dropped on
-Full). Own-wallet trades also call `TradeSignals::observe_own_leg` before the
+(counted). `Raw` uses `try_send` (dropped on Full). `tokens_info` is not on
+this queue. A create, trade, or migration sets `TokenState::metrics_unsaved`.
+`run_token_info_flush` writes each marked mint once every 30 s
+(`TOKEN_INFO_FLUSH_INTERVAL_SECONDS`) and clears the mark; a failed write sets
+the mark again. Eviction, and turning Mayhem tracking off, write every leaving
+mint and remove it only after that write succeeds. The live token list is
+patched from the trade stream; the 90 s page poll is the reader this interval
+follows. Own-wallet trades also call `TradeSignals::observe_own_leg` before the
 durable enqueue so buy/sell confirm can resolve without waiting on DbWriter.
 See `@plans/ingest/backpressure-watchdog.md`.
 
@@ -247,12 +253,12 @@ Losing the block metas hands the blockhash cache back to its watchdog, so `Cache
 | `held_pools.rs` | `HeldPoolGate` — keeps PumpSwap pools subscribed for unsettled **real** positions even when `track_post_migration` is off (feed harvest + sell-confirm) |
 | `consumer.rs` | `IngestConsumer` — translates `IngestEvent` → `trading_core` types; fans out to token_cache, DB, strategy, SSE, trader; handles `track_mayhem` / `track_post_migration` policy transitions |
 | `early_trades.rs` | `EarlyTrades` - holds a trade that arrives before its mint's `TokenCreated` (bounded queue, `EARLY_TRADE_SLOTS` window) and hands it back for replay after the creation tx's own trade |
-| `db_writer.rs` | `DbWriter` — batches (1000 ops / 150ms), dedups, persists; stamps `DbHeartbeat` after a flush **only if ≥1 row persisted** (`any_ok`); signals `TradeSignals` per `(wallet,mint)`; `DbWriteOp` variants: `Raw(RawBlobJob)` · `Token` · `Wallet` · `Trade` · `Metrics` · `Migration` |
+| `db_writer.rs` | `DbWriter` — batches (1000 ops / 150ms), dedups, persists; stamps `DbHeartbeat` after a flush **only if ≥1 row persisted** (`any_ok`); signals `TradeSignals` per `(wallet,mint)`; `DbWriteOp` variants: `Raw(RawBlobJob)` · `Token` · `Wallet` · `Trade` · `Migration`. `tokens_info` stats are the separate 30 s flush |
 | `watchdog.rs` | `DbHeartbeat` (atomic ms stamp), `BootGate` (latched by the engine loop; disarms the watchdog during startup), `spawn_watchdog` (OS thread); force-exits when live, booted, and no successful write within `watchdog_stall_timeout_secs` (no queue-depth gate — catches upstream stalls too) |
 
 ### Consumer event handlers
 
-`on_token_created` (Token+Wallet+Metrics+cache+ping+SSE) · `on_trade` (Trade+Wallet+Metrics+reserves+inline AMM account-list harvest+ping+SSE) · `on_token_migrated` (pool gate+Migration+ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only)
+`on_token_created` (Token+Wallet+cache, mark stats unsaved+ping+SSE) · `on_trade` (Trade+Wallet+cache, mark stats unsaved+reserves+inline AMM account-list harvest+ping+SSE) · `on_token_migrated` (pool gate+Migration+mark stats unsaved) · `on_creator_activity` (ping) · `on_liquidity` (SSE only)
 
 **A trade can arrive before its create.** Creates and trades decode on two lanes that share one event channel, so a buy bundled right behind a create (same slot, next tx) can reach the consumer while its mint is not in `token_cache`. Such a trade is parked in `EarlyTrades`, never dropped: the create takes it back and it is applied right after the creation tx's own trade (at once when the create carried no dev buy), so the token sees chain order. A parked trade whose create does not come within `EARLY_TRADE_SLOTS` slots belongs to an untracked mint (excluded Mayhem, evicted from the cache) and expires. A full queue evicts its oldest trade, counted in `ShedCounters::early_trades` and logged at WARN. A trade for an untracked mint is still never persisted.
 

@@ -10,8 +10,9 @@ use tracing::{info, warn};
 use crate::config::constants::{
     market_cap_sol, DEAD_MEANINGFUL_TRADE_SOL,
     INITIAL_VIRTUAL_TOKEN_RESERVES, TOKEN_CACHE_EVICT_IDLE_SECONDS,
-    TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
+    TOKEN_CACHE_EVICT_INTERVAL_SECONDS, TOKEN_INFO_FLUSH_INTERVAL_SECONDS,
 };
+use crate::state::token_metrics::{metrics_from_state, TokenMetricsWrite};
 use crate::storage::repositories::token_info_repo::TokenInfoRepo;
 use crate::models::strategy::MarkQuote;
 use crate::models::token::Token;
@@ -364,6 +365,11 @@ pub struct TokenState {
     /// Wall-clock time of the last successful manual sync, if any. Populated from
     /// `tokens_info.last_synced_at` on seed and refreshed after each sync.
     pub last_synced_at: Option<DateTime<Utc>>,
+    /// In-memory stats differ from the last successful `tokens_info` write.
+    /// Set on a live create, trade, or migration. The 30 s flush clears it
+    /// after copying a snapshot; a failed write sets it again. Seed and
+    /// `token_sync` leave it clear because they persist metrics themselves.
+    pub metrics_unsaved: bool,
 
     /// Token-local wallet interner: maps each distinct wallet address to a dense
     /// `u32` id (`CachedTrade::wallet`) and back. The only resident copy of each
@@ -437,6 +443,7 @@ impl TokenState {
             curve_creator: None,
             curve_creator_slot: 0,
             last_synced_at: None,
+            metrics_unsaved: false,
             interner: WalletInterner::default(),
         }
     }
@@ -505,6 +512,7 @@ impl TokenState {
 
     /// Append a live trade and update aggregate metrics.
     pub fn add_trade(&mut self, trade: Trade) {
+        self.metrics_unsaved = true;
         self.apply_aggregates(&trade);
         let cached = self.intern_trade(&trade);
         self.push_trade_capped(cached);
@@ -526,6 +534,7 @@ impl TokenState {
         core_marks: u32,
         is_launch: bool,
     ) {
+        self.metrics_unsaved = true;
         self.apply_aggregates(&trade);
         let wallet = self.interner.intern(&trade.wallet_address);
         let cached =
@@ -755,59 +764,88 @@ pub fn mark_quote(cache: &TokenCache, mint: &str) -> Option<MarkQuote> {
 // Runtime eviction
 // ---------------------------------------------------------------------------
 
-/// One dead token's final metrics, copied out of the cache so the DB write that
-/// persists them runs with **no shard guard held**.
-///
-/// This type exists for one reason: `TokenCache` is a `DashMap`, and a
-/// `DashMap` guard must never be alive across an `.await`. Its shard lock is an
-/// unbounded spinlock (`dashmap::lock::RwLock::write` is
-/// `loop { try_write() else cpu_relax() }` — it never parks and never yields),
-/// so holding a guard across a round trip lets the worker thread pick up an
-/// ingest trade on the same shard, spin at 100% CPU inside a non-async loop, and
-/// never return to the scheduler to poll the future that would release the
-/// guard. Both worker threads wedge, every task on the runtime stops, and only
-/// the watchdog — on its own OS thread — ends it, ~90 s later. Every field is
-/// `Copy`, so the snapshot costs nothing next to that.
-#[derive(Clone, Copy)]
-struct DeadFlush {
-    ath_price: Option<f64>,
-    ath_timestamp: Option<DateTime<Utc>>,
-    age_secs: i64,
-    volume_sol_total: f64,
-    market_cap: Option<f64>,
-    trade_count: i64,
-    last_trade_at: Option<DateTime<Utc>>,
-    current_price: Option<f64>,
-    is_migrated: bool,
-    lifetime_secs: Option<i64>,
-    first_slot_buy_sol: f64,
-    first_slot_sell_sol: f64,
-    curve_peak_reserve_sol: Option<f64>,
-    curve_peak_at: Option<DateTime<Utc>>,
+/// Copy out one `tokens_info` snapshot per mint whose stats changed, and clear
+/// the mark. A trade that lands after the clear sets the mark again, so the
+/// next flush writes the newer numbers. The `DashMap` guard ends with each
+/// iteration: it must not be alive across the later `.await` (the shard lock
+/// spins and never yields).
+pub fn take_unsaved_metrics(token_cache: &TokenCache) -> Vec<TokenMetricsWrite> {
+    let mints: Vec<String> = token_cache
+        .iter()
+        .filter(|e| e.value().metrics_unsaved)
+        .map(|e| e.key().clone())
+        .collect();
+    let mut rows = Vec::with_capacity(mints.len());
+    for mint in mints {
+        let Some(mut state) = token_cache.get_mut(&mint) else {
+            continue;
+        };
+        if !state.metrics_unsaved {
+            continue;
+        }
+        state.metrics_unsaved = false;
+        rows.push(metrics_from_state(&mint, &state));
+    }
+    rows
 }
 
-impl DeadFlush {
-    /// Take the snapshot. `now` is the sweep's single clock read, so the
-    /// `is_dead` verdict and `lifetime_secs` agree.
-    fn of(state: &TokenState, now: DateTime<Utc>) -> Self {
-        Self {
-            ath_price: state.ath_price,
-            ath_timestamp: state.ath_timestamp,
-            age_secs: now
-                .signed_duration_since(state.token.created_at)
-                .num_seconds(),
-            volume_sol_total: state.volume_sol_total,
-            market_cap: state.market_cap,
-            trade_count: state.trade_count as i64,
-            last_trade_at: state.last_trade_at,
-            current_price: state.current_price,
-            is_migrated: state.is_migrated,
-            lifetime_secs: state.lifetime_secs(now),
-            first_slot_buy_sol: state.first_slot_buy_sol,
-            first_slot_sell_sol: state.first_slot_sell_sol,
-            curve_peak_reserve_sol: state.curve_peak_reserve_sol,
-            curve_peak_at: state.curve_peak_at,
+/// Put the mark back after a failed write. A mint that has already left the
+/// cache is skipped: eviction owns that final write.
+pub fn remark_metrics_unsaved(token_cache: &TokenCache, mints: &[String]) {
+    for mint in mints {
+        if let Some(mut state) = token_cache.get_mut(mint) {
+            state.metrics_unsaved = true;
         }
+    }
+}
+
+/// Upsert `tokens_info` for these snapshots. Returns the mints that still
+/// failed after the per-row retry. An empty input writes nothing.
+pub async fn write_token_metrics(
+    info_repo: &TokenInfoRepo,
+    rows: &[TokenMetricsWrite],
+) -> Vec<String> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    match info_repo.upsert_metrics_many(rows).await {
+        Ok(()) => Vec::new(),
+        Err(e) => {
+            warn!("token info bulk upsert failed ({e}); retrying per row");
+            let mut failed = Vec::new();
+            for row in rows {
+                if let Err(err) = info_repo.upsert_metrics_row(row).await {
+                    warn!("token info {}: {err}", row.mint);
+                    failed.push(row.mint.clone());
+                }
+            }
+            failed
+        }
+    }
+}
+
+/// Write changed token stats every [`TOKEN_INFO_FLUSH_INTERVAL_SECONDS`].
+/// Off the trade queue: a full trade batch cannot drop these. The first tick
+/// is skipped so a booting process finishes seeding before the first write.
+pub async fn run_token_info_flush(token_cache: Arc<TokenCache>, info_repo: TokenInfoRepo) {
+    let mut tick = tokio::time::interval(Duration::from_secs(TOKEN_INFO_FLUSH_INTERVAL_SECONDS));
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        let rows = take_unsaved_metrics(&token_cache);
+        if rows.is_empty() {
+            continue;
+        }
+        let n = rows.len();
+        let failed = write_token_metrics(&info_repo, &rows).await;
+        if !failed.is_empty() {
+            remark_metrics_unsaved(&token_cache, &failed);
+        }
+        info!(
+            saved = n - failed.len(),
+            failed = failed.len(),
+            "token info flush"
+        );
     }
 }
 
@@ -855,8 +893,10 @@ fn token_is_evictable(state: &TokenState, now: DateTime<Utc>, idle_secs: i64, he
 ///
 /// Off the hot path: a coarse interval; collect-then-remove so no shard guard is
 /// held across the removals and the map is never mutated mid-iteration (mirrors
-/// `evict_mayhem_tokens`). The dead-token flush snapshots into [`DeadFlush`] for
-/// the same reason — see that type for why a guard must never reach an `.await`.
+/// `evict_mayhem_tokens`). Every leaving mint is snapshotted and written first,
+/// quiet or dead, and removed only after that write succeeds. A failed write
+/// leaves the mint cached so the next sweep retries. The snapshot is copied out
+/// before the `.await`: a `DashMap` guard must not live across it.
 pub async fn run_token_cache_eviction<F>(
     token_cache: Arc<TokenCache>,
     is_held: F,
@@ -886,50 +926,31 @@ where
             continue;
         }
 
-        // Flush the final is_dead=true + lifetime_secs verdict for dead tokens
-        // before removing them. The last trade-triggered metrics write had
-        // is_dead=false (quiet period not yet elapsed), so without this flush the
-        // DB would never see the authoritative dead verdict.
+        // The last periodic write may predate the dead verdict (it flips on
+        // silence, with no new trade to mark the mint unsaved). Snapshot every
+        // leaving mint, then drop only the ones whose write landed.
+        let mut rows = Vec::with_capacity(stale.len());
         for mint in &stale {
-            // The guard `get` returns is released by the end of this statement,
-            // BEFORE the round trip below. See `DeadFlush`.
-            let flush = token_cache
-                .get(mint)
-                .filter(|state| state.is_dead(now))
-                .map(|state| DeadFlush::of(&state, now));
-
-            if let Some(f) = flush {
-                if let Err(e) = info_repo
-                    .upsert_metrics(
-                        mint,
-                        f.ath_price,
-                        f.ath_timestamp,
-                        Some(f.age_secs),
-                        f.volume_sol_total,
-                        f.market_cap,
-                        f.trade_count,
-                        f.last_trade_at,
-                        f.current_price,
-                        true,
-                        f.is_migrated,
-                        f.lifetime_secs,
-                        f.first_slot_buy_sol,
-                        f.first_slot_sell_sol,
-                        f.curve_peak_reserve_sol,
-                        f.curve_peak_at,
-                    )
-                    .await
-                {
-                    warn!("TokenCache eviction: metrics flush for {mint}: {e}");
-                }
+            if let Some(state) = token_cache.get(mint) {
+                rows.push(metrics_from_state(mint, &state));
             }
-            token_cache.remove(mint);
+        }
+        let failed: std::collections::HashSet<String> =
+            write_token_metrics(&info_repo, &rows).await.into_iter().collect();
+        let mut dropped = 0usize;
+        for row in &rows {
+            if failed.contains(&row.mint) {
+                continue;
+            }
+            token_cache.remove(&row.mint);
+            dropped += 1;
         }
 
         let appends = TRADE_BUFFER_APPENDS.swap(0, AtomicOrdering::Relaxed);
         let copies = TRADE_BUFFER_COPIES.swap(0, AtomicOrdering::Relaxed);
         info!(
-            dropped = stale.len(),
+            dropped,
+            kept = failed.len(),
             idle_secs = TOKEN_CACHE_EVICT_IDLE_SECONDS,
             remain = token_cache.len(),
             trade_appends = appends,
@@ -971,6 +992,25 @@ mod tests {
     }
 
     const IDLE: i64 = TOKEN_CACHE_EVICT_IDLE_SECONDS;
+
+    #[test]
+    fn take_unsaved_metrics_clears_only_marked_tokens() {
+        let cache = TokenCache::new();
+        let mut marked = TokenState::new(token_created_at(Utc::now()));
+        marked.metrics_unsaved = true;
+        cache.insert("A".into(), marked);
+        cache.insert("B".into(), TokenState::new(token_created_at(Utc::now())));
+
+        let rows = take_unsaved_metrics(&cache);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].mint, "A");
+        assert!(!cache.get("A").unwrap().metrics_unsaved);
+        assert!(take_unsaved_metrics(&cache).is_empty());
+
+        remark_metrics_unsaved(&cache, &["A".into()]);
+        assert!(cache.get("A").unwrap().metrics_unsaved);
+        assert_eq!(take_unsaved_metrics(&cache).len(), 1);
+    }
 
     /// Orders take the launch creator until a print carries the curve's current
     /// one, then that one; an older print arriving late never rewinds it.

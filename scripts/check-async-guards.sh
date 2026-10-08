@@ -12,7 +12,8 @@
 # nothing replays, and it is invisible in a review diff.
 #
 # The rule: copy what you need out of the map, drop the guard, then `.await`.
-# `hunter/core/src/state/token_cache.rs` (`DeadFlush`) is the reference shape.
+# `hunter/core/src/state/token_cache.rs` (`metrics_from_state` snapshot before
+# `write_token_metrics`) is the reference shape.
 #
 #     sh scripts/check-async-guards.sh
 #

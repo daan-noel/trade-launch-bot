@@ -8,7 +8,7 @@ filter plus a sort 1.55 s (count and page each ~0.5 s, sharing the Docker VM's 6
 Every other request is 0.25 s or less.
 
 `tokens_info` carries no index but its primary key, and stays that way in the shared schema:
-live upserts every touched mint's row on each ~150 ms ingest flush, so an index on a stats
+live upserts each changed mint on a 30 s flush, and once more when the mint leaves the cache, so an index on a stats
 column is an index write per row there, and the `LEFT JOIN` cannot walk an index on its
 nullable side anyway (the ~57k tokens with no `tokens_info` row must interleave by the
 `mint_address` tiebreak).

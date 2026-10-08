@@ -206,6 +206,11 @@ pub const ANALYSIS_SCAN_PAGE: i64 = 5_000;
 
 /// How often the runtime token-cache eviction sweep runs.
 pub const TOKEN_CACHE_EVICT_INTERVAL_SECONDS: u64 = 120; // 2 minutes
+/// How often changed in-memory token stats are written to `tokens_info`.
+/// Trading reads the cache, and the live token list is patched from the trade
+/// stream; this interval follows the 90 s database poll that re-reads the table.
+/// One row per mint that changed, not one row per trade.
+pub const TOKEN_INFO_FLUSH_INTERVAL_SECONDS: u64 = 30;
 /// A tracked token inactive for at least this long with no open position is
 /// evicted from the in-memory cache. A mint with an open position is always
 /// exempt so an open exit never strands.

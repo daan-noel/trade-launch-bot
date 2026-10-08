@@ -156,6 +156,7 @@ pub async fn spawn_ingest(
         handle.clone(),
         held_pools.clone(),
         trading_wallet,
+        trading_core::storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone()),
     );
 
     let db_writer = DbWriter::new(db, trade_signals, heartbeat.clone());

@@ -214,9 +214,33 @@ impl TokenInfoRepo {
         Ok(())
     }
 
+    /// One-row form of [`Self::upsert_metrics_many`], used when a bulk flush fails
+    /// and each snapshot has to be retried on its own.
+    pub async fn upsert_metrics_row(&self, m: &TokenMetricsWrite) -> anyhow::Result<()> {
+        self.upsert_metrics(
+            &m.mint,
+            m.ath_price,
+            m.ath_timestamp,
+            m.age_seconds,
+            m.volume_sol,
+            m.market_cap,
+            m.trade_count,
+            m.last_trade_at,
+            m.current_price,
+            m.is_dead,
+            m.is_migrated,
+            m.lifetime_secs,
+            m.first_slot_buy_sol,
+            m.first_slot_sell_sol,
+            m.curve_peak_reserve_sol,
+            m.curve_peak_at,
+        )
+        .await
+    }
+
     /// Batched form of [`Self::upsert_metrics`] — one multi-row
     /// `INSERT … ON CONFLICT DO UPDATE` per flush instead of one statement per mint.
-    /// The db_writer flushes every distinct mint touched in a ~150 ms window; the old
+    /// The token-info flush writes every mint marked unsaved in a 30 s window; the old
     /// per-mint fan-out held several pool connections at once and issued one
     /// round-trip per mint, making it the ingest write most likely to exhaust the
     /// pool under load. This holds ONE connection for one round-trip per chunk.

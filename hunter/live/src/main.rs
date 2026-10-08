@@ -1530,6 +1530,16 @@ async fn run() -> anyhow::Result<()> {
         ));
     }
 
+    // `tokens_info` on its own timer, off the trade queue. A full trade batch
+    // used to drop every metrics write, and a mint could leave the cache with
+    // trades stored and no stats row.
+    {
+        let token_cache = token_cache.clone();
+        let info_repo =
+            trading_core::storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone());
+        tokio::spawn(state::token_cache::run_token_info_flush(token_cache, info_repo));
+    }
+
     // Initialize SOL price cache immediately, then start the poller.
     match services::sol_price::fetch_latest_sol_price().await {
         Ok(price) => {

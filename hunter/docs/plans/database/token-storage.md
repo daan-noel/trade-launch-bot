@@ -6,7 +6,7 @@ split by **write pattern**, not just by concept:
 | Table | Write profile | Holds |
 | --- | --- | --- |
 | `tokens` | **write-once** (insert at creation) | static creation facts |
-| `tokens_info` | **hot-updated** (every metric recompute) | live market metrics |
+| `tokens_info` | **periodic** (every changed mint, every 30 s, plus once when the mint leaves the cache) | live market metrics |
 | `token_sync_state` | hot-updated (every sync) | per-venue ingest watermarks |
 
 Scope: **table structure only** (no repos / Rust / API / frontend). Designed for
@@ -19,7 +19,8 @@ child table for repeated groups).
 ## Design principles
 
 1. **Split by write pattern.** `tokens` is immutable after creation; `tokens_info`
-   is rewritten constantly. In Postgres MVCC every UPDATE writes a dead tuple, so
+   is rewritten on its own cadence (each changed mint, every 30 s, plus once when
+   the mint leaves the cache). In Postgres MVCC every UPDATE writes a dead tuple, so
    keeping the immutable facts in their own table means a metrics update never
    rewrites (or vacuum-churns) the wide static row.
 2. **Three concerns, not two.** Static creation facts, live market metrics, and
