@@ -51,6 +51,8 @@ interface TokenTradeChartExternalSelection {
 
 interface TokenTradeChartProps {
   detail: TokenDetailRecord | null;
+  /** Mint to chart when `detail` has not arrived. Entry/exit markers still draw. */
+  mint?: string | null;
   /** Strategy entry/exit points to overlay (TPSL result inspection). */
   eventMarkers?: ChartEventMarker[] | null;
   /** See {@link TokenTradeChartExternalSelection}. */
@@ -122,6 +124,7 @@ interface TokenTradeChartProps {
  */
 export function TokenTradeChart({
   detail,
+  mint: mintProp = null,
   eventMarkers = null,
   externalSelection = null,
   tableId,
@@ -149,7 +152,7 @@ export function TokenTradeChart({
   // A pick inside the chart hands control back from any external selection.
   const selection = useBarTradesSelection(externalSelection?.onClear);
 
-  const mint = detail?.mint_address ?? '';
+  const mint = detail?.mint_address || mintProp || '';
   // Live append: `trade_executed` → RTK `getTokenTrades` cache (shared watch set).
   useWatchTokenTradesLive(mint || null);
   const {
@@ -297,10 +300,10 @@ export function TokenTradeChart({
     return EMPTY_TRADES;
   }, [trades, selection.bar, selection.range, externalSelection]);
 
-  if (!detail) return null;
+  if (!mint) return null;
 
   const tradesError = apiErrorMessage(tradesErrorRaw, 'Failed to load trades');
-  const symbol = detail.symbol || detail.name || mint;
+  const symbol = detail?.symbol || detail?.name || mint.slice(0, 8);
   const priceLabel = metric === 'mc' ? `MC (${unit})` : unit;
 
   const chart = (
@@ -316,12 +319,12 @@ export function TokenTradeChart({
         metric={metric}
         onMetricChange={setMetric}
         {...selection.chartProps}
-        athPriceInSol={detail.ath_price ?? null}
-        creatorWallet={detail.creator_wallet}
-        isMigrated={detail.is_migrated}
-        isMayhemMode={detail.is_mayhem_mode}
-        isCashbackEnabled={detail.is_cashback_enabled}
-        tokenCreatedAt={detail.created_at}
+        athPriceInSol={detail?.ath_price ?? null}
+        creatorWallet={detail?.creator_wallet}
+        isMigrated={detail?.is_migrated}
+        isMayhemMode={detail?.is_mayhem_mode}
+        isCashbackEnabled={detail?.is_cashback_enabled}
+        tokenCreatedAt={detail?.created_at}
         eventMarkers={eventMarkers}
         profileWallets={profileWallets}
         onCrosshairTimeChange={onCrosshairTimeChange}

@@ -6,8 +6,8 @@
  * asks each row for two things: an overlay (markers) and a header extra (facts).
  * The two lanes answer differently on purpose:
  *
- *   • **Open** has an entry fill, so it draws the same entry marker its inspect
- *     modal does, through the one `InspectTarget` adapter.
+ *   • **Open** draws the same entry/exit markers its inspect modal does: the
+ *     row's entry, plus every episode on the mint (a laddering exit included).
  *   • **Waiting / Arms** has no fill at all. A chart marker needs a price, and an
  *     arming episode has none — so these cards carry NO markers and put the
  *     episode's facts (when it armed, how long it waited, how it ended) in the
@@ -15,7 +15,9 @@
  *     a line the token never traded at.
  */
 
-import { markerRowOverlay, type InspectTarget } from 'components/strategy/inspectTarget';
+import { useMemo } from 'react';
+import type { InspectTarget } from 'components/strategy/inspectTarget';
+import { useMintEpisodeMarkers } from 'hooks/useMintEpisodeMarkers';
 import { Badge } from 'components/ui/Badge';
 import { ElapsedCell } from 'components/table/ElapsedCell';
 import { DateCell } from 'components/table/DateCell';
@@ -36,9 +38,22 @@ export function inspectFromLiveOpen(r: LiveOpenRow): InspectTarget {
   };
 }
 
-/** Entry markers for an Open lane chart card — the same overlay the row's
- *  inspect modal draws. Hoisted: a fresh closure would remount every card. */
-export const liveOpenRowOverlay = markerRowOverlay(inspectFromLiveOpen);
+/** Entry/exit markers for an Open lane chart card — the same overlay the row's
+ *  inspect modal draws. A hook so each card can read the mint's episodes. */
+export function useLiveOpenRowOverlay(row: LiveOpenRow) {
+  const focus = useMemo(
+    () => inspectFromLiveOpen(row),
+    [row.mint_address, row.entryTime, row.entryPrice, row.exitReason],
+  );
+  const eventMarkers = useMintEpisodeMarkers({
+    mint: row.mint_address,
+    mode: row.mode,
+    focus,
+    focusPositionId: row.positionId,
+    focusMode: 'fallback',
+  });
+  return { eventMarkers };
+}
 
 /** How an arming episode ended, as a badge. `null` reason = still waiting. */
 export function armEndBadge(reason: string | null | undefined) {

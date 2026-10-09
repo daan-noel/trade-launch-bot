@@ -56,7 +56,7 @@ import { PositionChartCardExtra } from 'components/strategy/PositionChartCardExt
 import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
 import {
   ArmChartCardExtra,
-  liveOpenRowOverlay,
+  useLiveOpenRowOverlay,
 } from '@live/components/floor/liveChartCards';
 import {
   useCloseRulePositionMutation,
@@ -343,6 +343,7 @@ export function ConsolePage() {
             exitPrice: null,
             exitReason: r.exitReason,
             isOpen: true,
+            status: r.status,
           }}
         />
       );
@@ -1345,7 +1346,7 @@ export function ConsolePage() {
             searchable
             colFilters
             charts
-            useRowOverlay={liveOpenRowOverlay}
+            useRowOverlay={useLiveOpenRowOverlay}
             useRowChartFlowPatternSource={useOpenRowFlowPatternSource}
             renderChartCardExtra={openChartCardExtra}
             tableId="console-open"

@@ -23,7 +23,7 @@ import {
   tokenAmountColKeys,
   tokenNumericColKeys,
 } from 'components/tokens/sharedTokenColumns';
-import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
+import { useRulePositionChartOverlay } from 'hooks/useMintEpisodeMarkers';
 import {
   PositionChartCardExtra,
   positionChartFactsFromRule,
@@ -74,10 +74,6 @@ const RULE_POSITION_AMOUNT_COLS = tokenAmountColKeys(RULE_POSITION_COLUMNS);
 
 /** Positions key by `id`, not by mint — a rule can re-enter the same token. */
 const positionRowKey = (r: RulePositionRecord) => r.id;
-
-/** The row's own entry/exit/target fills on its chart card — the same overlay the
- *  inspect modal draws, through the one `InspectTarget` adapter. */
-const rulePositionRowOverlay = markerRowOverlay(inspectFromPosition);
 
 /** Hold / PnL / exit-reason in the card header, so a card reads like its row. */
 const rulePositionChartCardExtra = (r: RulePositionRecord) => (
@@ -256,7 +252,7 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
         // fetch, and selecting a rule must not fire 20 of them. The choice then
         // persists per `tableId`.
         charts
-        useRowOverlay={rulePositionRowOverlay}
+        useRowOverlay={useRulePositionChartOverlay}
         renderChartCardExtra={rulePositionChartCardExtra}
         flowPatternKeys={flowSource.keys}
         flowFingerprintId={flowSource.fingerprintId}

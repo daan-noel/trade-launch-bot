@@ -15,7 +15,7 @@ import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { PinIcon } from 'components/ui/icons';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
-import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
+import { Pagination, DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from './Pagination';
 import { type FilterSpec } from './numericFilter';
 import { columnFilterPredicate } from './columnFilter';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
@@ -417,11 +417,14 @@ export function DataTable<R>({
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
+    const options = pageSizeOptions ?? PAGE_SIZE_OPTIONS;
     if (tableId) {
       const stored = getTablePrefs(tableId).pageSize;
-      if (stored != null) return stored;
+      // Only a size the rows-per-page control can select. Anything else leaves
+      // the dropdown on one value and the row count on another.
+      if (typeof stored === 'number' && options.includes(stored)) return stored;
     }
-    return defaultPageSize;
+    return options.includes(defaultPageSize) ? defaultPageSize : DEFAULT_PAGE_SIZE;
   });
   const [sortKeys, setSortKeys] = useState<SortEntry[]>(() => {
     let initial: SortEntry[] = [];

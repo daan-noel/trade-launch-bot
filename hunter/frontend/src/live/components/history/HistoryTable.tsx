@@ -17,7 +17,7 @@ import { memo, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { COMPACT_TOKEN_DEFAULT_COLS } from 'components/tokens/sharedTokenColumns';
-import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
+import { useRulePositionChartOverlay } from 'hooks/useMintEpisodeMarkers';
 import {
   PositionChartCardExtra,
   positionChartFactsFromRule,
@@ -62,10 +62,6 @@ const historyPnlPct = (r: RulePositionRecord) => pnlPctFromSol(r.pnl_sol, r.entr
 
 /** Stable row key — hoisted so DataTable doesn't see a fresh closure each render. */
 const historyPositionRowKey = (r: RulePositionRecord) => r.id;
-
-/** Entry/exit/target fill markers on each chart card — the same overlay the row's
- *  inspect modal draws, through the one `InspectTarget` adapter. */
-const historyRowOverlay = markerRowOverlay(inspectFromPosition);
 
 /** Hold / PnL / exit-reason facts in the chart card header, so a card reads like
  *  its table row. Hoisted — a fresh closure would remount every card. */
@@ -336,7 +332,7 @@ export const HistoryTable = memo(function HistoryTable({
         searchable
         colFilters
         charts
-        useRowOverlay={historyRowOverlay}
+        useRowOverlay={useRulePositionChartOverlay}
         renderChartCardExtra={historyChartCardExtra}
         useRowChartFlowPatternSource={useHistoryRowFlowPatternSource}
         loading={loading}

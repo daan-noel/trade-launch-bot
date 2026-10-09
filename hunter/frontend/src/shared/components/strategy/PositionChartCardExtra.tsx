@@ -1,6 +1,7 @@
 import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { Badge } from 'components/ui/Badge';
 import { exitReasonBadge, solOf } from 'components/strategy/strategyColumns';
+import { OPEN_STATUS_LABEL, openStatusBadgeVariant } from 'lib/strategy/positionStatus';
 import { formatDurationShort } from 'utils/format';
 import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { cn } from 'lib/cn';
@@ -19,6 +20,9 @@ export interface PositionChartCardFacts {
   exitPrice: number | null;
   exitReason: string | null;
   isOpen: boolean;
+  /** Engine status (`Holding`, `ExitPending`, …). Shown in place of a generic
+   *  "open" chip so a chart card matches its table row. */
+  status?: string | null;
   /** When charts collapse re-entries to one mint card. */
   episodeCount?: number;
   entryError?: string | null;
@@ -49,10 +53,12 @@ export function PositionChartCardExtra({ facts }: { facts: PositionChartCardFact
     exitPrice,
     exitReason,
     isOpen,
+    status,
     episodeCount,
     entryError,
   } = facts;
   const multi = (episodeCount ?? 1) > 1;
+  const statusLabel = status ? (OPEN_STATUS_LABEL[status] ?? status) : null;
 
   return (
     <span className="ml-auto flex flex-col items-end gap-1 rounded-md border border-white/8 bg-white/3 px-2 py-1 text-[11px]">
@@ -71,12 +77,15 @@ export function PositionChartCardExtra({ facts }: { facts: PositionChartCardFact
           </span>
         )}
         {isOpen ? (
-          <Badge variant="info" size="sm">
-            open
+          <Badge variant={status ? openStatusBadgeVariant(status) : 'info'} size="sm">
+            {statusLabel ?? 'open'}
           </Badge>
         ) : (
           exitReasonBadge(exitReason, pnlSol, entryError)
         )}
+        {isOpen && (exitReason || entryError)
+          ? exitReasonBadge(exitReason, pnlSol, entryError)
+          : null}
       </span>
       <span className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
         {pnlSol != null && Number.isFinite(pnlSol) ? (
@@ -98,13 +107,17 @@ export function PositionChartCardExtra({ facts }: { facts: PositionChartCardFact
         )}
       </span>
       <span className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5 text-text-dim">
-        {entryPrice != null && (
+        {(entryPrice != null || exitPrice != null) && (
           <span>
-            entry <PriceCell sol={entryPrice} />
+            {entryPrice != null && (
+              <>
+                entry <PriceCell sol={entryPrice} />
+              </>
+            )}
+            {entryPrice != null && exitPrice != null && ' · '}
             {exitPrice != null && (
               <>
-                {' '}
-                · exit <PriceCell sol={exitPrice} />
+                exit <PriceCell sol={exitPrice} />
               </>
             )}
           </span>
@@ -203,8 +216,9 @@ export function positionChartFactsFromRule(r: RulePositionRecord): PositionChart
     entrySol: r.entry_sol ?? solOf(r.entry_price, r.entry_token_amount),
     entryPrice: r.entry_price,
     exitPrice: r.exit_price,
-    exitReason: open ? null : r.exit_reason,
+    exitReason: r.exit_reason,
     isOpen: open,
+    status: r.status,
     entryError: r.last_entry_error,
   };
 }

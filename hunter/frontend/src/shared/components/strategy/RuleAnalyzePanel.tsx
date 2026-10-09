@@ -15,7 +15,7 @@ import {
   positionColumns,
   POSITION_KEYS,
 } from 'components/strategy/strategyColumns';
-import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
+import { useRulePositionChartOverlay } from 'hooks/useMintEpisodeMarkers';
 import {
   PositionChartCardExtra,
   positionChartFactsFromRule,
@@ -54,8 +54,6 @@ import { signedToneClass } from 'lib/signedTone';
 
 const STRATEGY_SEG = 'generic';
 const POS_NUMERIC = numericColKeys(positionColumns);
-const posRowOverlay = markerRowOverlay(inspectFromPosition);
-
 /**
  * Evidence-table deviation from the appended token-info defaults. The row is a
  * closed position, so the token's `token_amount` is the size actually held —
@@ -369,7 +367,8 @@ export function RuleAnalyzePanel({
   useEffect(() => {
     setFocus([]);
     setScope(initialScopeKind === 'all' ? { kind: 'all' } : { kind: 'current' });
-    setQuery(DEFAULT_POSITIONS_QUERY);
+    // The pager owns page size, including the value restored from saved prefs.
+    setQuery((q) => ({ ...DEFAULT_POSITIONS_QUERY, pageSize: q.pageSize }));
     setOpErr(null);
     setPausing(false);
     setInspectId(null);
@@ -812,7 +811,7 @@ export function RuleAnalyzePanel({
         serverSide
         serverTotal={total}
         onQueryChange={setQuery}
-        useRowOverlay={posRowOverlay}
+        useRowOverlay={useRulePositionChartOverlay}
         charts
         chartsDefaultOn
         flowPatternKeys={flowSource.keys}

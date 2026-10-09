@@ -4,6 +4,10 @@ import { Input } from 'components/ui/Input';
 
 export const DEFAULT_PAGE_SIZE = 10;
 
+/** Sizes the rows-per-page control can select. A saved size outside this list is
+ *  ignored — otherwise the control shows one size and the table keeps another. */
+export const PAGE_SIZE_OPTIONS = [5, 10, 25, 50, 100];
+
 interface PaginationProps {
   currentPage: number;
   totalPages: number;
@@ -54,7 +58,7 @@ export function Pagination({
   totalPages,
   totalItems,
   pageSize = DEFAULT_PAGE_SIZE,
-  pageSizeOptions = [5, 10, 25, 50, 100],
+  pageSizeOptions = PAGE_SIZE_OPTIONS,
   onPageChange,
   onPageSizeChange,
 }: PaginationProps) {

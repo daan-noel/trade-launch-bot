@@ -199,6 +199,7 @@ function TokenChartCard<R>({
       <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
         <LazyTokenTradeChart
           key={mint}
+          mint={mint}
           detail={detail ?? null}
           eventMarkers={eventMarkers ?? null}
           highlightWallet={highlightWallet ?? null}

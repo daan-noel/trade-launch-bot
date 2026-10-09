@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TableQuery } from 'components/table/types';
+import { DEFAULT_PAGE_SIZE } from 'components/table/Pagination';
 
-/** Initial view-state for a positions / results table: page 1, default size, no
- *  sort/filter. Pages seed `posQuery` with this, then replace it from DataTable. */
+/** Initial view-state for a positions / results table: page 1, the pager's
+ *  default size, no sort/filter. Pages seed with this, then replace it from
+ *  DataTable (including a page size restored from saved prefs). */
 export const DEFAULT_POSITIONS_QUERY: TableQuery = {
   page: 1,
-  pageSize: 20,
+  pageSize: DEFAULT_PAGE_SIZE,
   sortKeys: [],
   search: '',
   colFilters: {},
