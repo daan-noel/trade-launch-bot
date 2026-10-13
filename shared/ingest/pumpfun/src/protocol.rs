@@ -60,7 +60,9 @@ pub struct Discriminators {
     pub buy_v2: [u8; 8],
     pub buy_exact_quote_in_v2: [u8; 8],
     /// `buy_v3` / `sell_v3` / `buy_exact_quote_in_v3` — the 17-account curve trades.
-    /// Same fill as v2. A SOL coin uses them; a non-SOL quote is dropped before ingest.
+    /// Same fill as v2. A SOL coin uses them. A non-SOL quote is named on the
+    /// token (`quote_mint`) and stays out of the tape while `INGEST_NON_SOL_QUOTE`
+    /// is off.
     pub buy_v3: [u8; 8],
     pub sell_v3: [u8; 8],
     pub buy_exact_quote_in_v3: [u8; 8],

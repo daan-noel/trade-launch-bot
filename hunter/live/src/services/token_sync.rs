@@ -1584,6 +1584,7 @@ fn token_from_ingest_event(e: ingest_pumpfun::event::TokenCreated) -> Token {
         cu_price: e.cu_price,
         is_mayhem_mode: e.is_mayhem_mode,
         is_cashback_enabled: e.is_cashback_enabled,
+        quote_mint: e.quote_mint,
         instruction_labels: serde_json::json!(e.instruction_labels),
         creation_tx_signature: e.signature,
         creation_slot: Some(e.slot),

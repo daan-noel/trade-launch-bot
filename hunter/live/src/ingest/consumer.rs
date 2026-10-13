@@ -305,6 +305,15 @@ impl IngestConsumer {
     async fn on_trade(&self, e: IlTrade, _persist_raw: bool) {
         // The feed's own clock, for the send path's `ack_slot` (one relaxed atomic).
         self.trade_signals.observe_slot(e.slot);
+        // A stored non-SOL quote coin: the trade amount is quote units. Leave it
+        // out of the SOL tape. No such row exists while `INGEST_NON_SOL_QUOTE` is off.
+        if self
+            .token_cache
+            .get(&e.mint)
+            .is_some_and(|s| s.token.quote_mint.is_some())
+        {
+            return;
+        }
         let mint = e.mint.clone();
         let wallet = e.wallet.clone();
 
@@ -737,6 +746,7 @@ fn token_from_event(e: TokenCreated) -> Token {
         cu_price: e.cu_price,
         is_mayhem_mode: e.is_mayhem_mode,
         is_cashback_enabled: e.is_cashback_enabled,
+        quote_mint: e.quote_mint,
         instruction_labels: labels_to_json(&e.instruction_labels),
         creation_tx_signature: e.signature,
         creation_slot: Some(e.slot),

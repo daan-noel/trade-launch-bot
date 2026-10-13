@@ -4,11 +4,16 @@
 -- Pump.Fun:  buy_v3, sell_v3, buy_exact_quote_in_v3
 -- PumpSwap:  buy_v2, sell_v2, buy_exact_quote_in_v2
 --
--- `trades` is compressed after 7 days, and an UPDATE that reaches a compressed
--- chunk decompresses it under a hard tuple cap. This rewrites only uncompressed
--- chunks, plus the small tables that copy the same labels. A compressed chunk
--- holds prints from before these instructions were in the label table only when
--- the upgrade is older than the compression horizon.
+-- `trades` is compressed after 7 days. An UPDATE on the hypertable plans every
+-- chunk, and a compressed chunk then decompresses under a hard tuple cap. The
+-- rewrite below names each uncompressed chunk table. A compressed chunk holds
+-- prints from before these instructions were in the label table only when the
+-- upgrade is older than the compression horizon.
+--
+-- The hot pool sets statement_timeout to 60s. This file is one transaction, and
+-- the chunk rewrite is one statement longer than that. The override lasts for
+-- this transaction only.
+SET LOCAL statement_timeout = 0;
 
 CREATE OR REPLACE FUNCTION hunter_rename_ix_label(label text) RETURNS text
 LANGUAGE sql IMMUTABLE AS $$
@@ -98,23 +103,29 @@ DECLARE
     rec record;
 BEGIN
     FOR rec IN
-        SELECT range_start, range_end
+        SELECT chunk_schema, chunk_name
         FROM timescaledb_information.chunks
         WHERE hypertable_name = 'trades'
           AND NOT is_compressed
     LOOP
-        UPDATE trades
-           SET ix_labels = hunter_rename_ix_labels(ix_labels)
-         WHERE block_time >= rec.range_start::timestamptz
-           AND block_time < rec.range_end::timestamptz
-           AND (
-                ix_labels::text LIKE '%ix#07051dc4f5176550%'
-             OR ix_labels::text LIKE '%ix#1c92de7726c469d5%'
-             OR ix_labels::text LIKE '%ix#e1f7501ed5b38488%'
-             OR ix_labels::text LIKE '%PumpSwap: ix#b817ee6167c5d33d%'
-             OR ix_labels::text LIKE '%PumpSwap: ix#5df6823ce7e940b2%'
-             OR ix_labels::text LIKE '%PumpSwap: ix#c2ab1c46684d5b2f%'
-           );
+        EXECUTE format(
+            'UPDATE %I.%I
+                SET ix_labels = hunter_rename_ix_labels(ix_labels)
+              WHERE ix_labels::text LIKE %L
+                 OR ix_labels::text LIKE %L
+                 OR ix_labels::text LIKE %L
+                 OR ix_labels::text LIKE %L
+                 OR ix_labels::text LIKE %L
+                 OR ix_labels::text LIKE %L',
+            rec.chunk_schema,
+            rec.chunk_name,
+            '%ix#07051dc4f5176550%',
+            '%ix#1c92de7726c469d5%',
+            '%ix#e1f7501ed5b38488%',
+            '%PumpSwap: ix#b817ee6167c5d33d%',
+            '%PumpSwap: ix#5df6823ce7e940b2%',
+            '%PumpSwap: ix#c2ab1c46684d5b2f%'
+        );
     END LOOP;
 END $$;
 

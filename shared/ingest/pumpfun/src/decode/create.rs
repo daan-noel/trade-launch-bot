@@ -44,7 +44,8 @@ impl Decoder {
 
         let ix_info = decode_create_info(create_data, p);
         let create_log = decoded_create_events.iter().find(|e| e.mint == mint);
-        if non_sol_quote(create_log, pump_accounts, &p.programs.wsol.base58) {
+        let quote_mint = quote_mint_address(create_log, pump_accounts, &p.programs.wsol.base58);
+        if quote_mint.is_some() && !INGEST_NON_SOL_QUOTE {
             debug!(sig = %signature, mint = %mint, "skipping non-SOL quote create");
             return vec![];
         }
@@ -152,6 +153,7 @@ impl Decoder {
                 cu_price,
                 is_mayhem_mode,
                 is_cashback_enabled,
+                quote_mint,
                 instruction_labels,
                 signature: signature.to_string(),
                 slot,
@@ -294,22 +296,33 @@ fn decode_create_info(data: &[u8], p: &Protocol) -> Option<CreateInstructionInfo
     })
 }
 
-/// A create whose quote is not SOL. The event's `quote_mint` wins: all zeros is
-/// SOL, including a create that passed wrapped SOL. With no event, the optional
-/// 17th account (index 16) is the quote mint.
-pub(super) fn non_sol_quote(
+/// Off: a coin priced in anything but SOL is decoded and then dropped.
+/// On: that coin is stored with [`TokenCreated::quote_mint`] set. Its trades
+/// stay out of the SOL tape either way — the amount is quote units, not lamports.
+pub(super) const INGEST_NON_SOL_QUOTE: bool = false;
+
+/// Quote asset for this create. `None` is SOL: the event's all-zero key, or a
+/// 17th account that is empty, wrapped SOL, or the system program. Any other
+/// mint is the quote.
+pub(super) fn quote_mint_address(
     create_log: Option<&DecodedCreateEvent>,
     pump_accounts: &[String],
     wsol: &str,
-) -> bool {
+) -> Option<String> {
     if let Some(ev) = create_log {
-        return ev.quote_mint != [0u8; 32];
+        if ev.quote_mint == [0u8; 32] {
+            return None;
+        }
+        return Some(bs58::encode(ev.quote_mint).into_string());
     }
     match pump_accounts.get(16) {
-        Some(q) if !q.is_empty() && q != wsol && q != "11111111111111111111111111111111" => true,
-        _ => false,
+        Some(q) if !q.is_empty() && q != wsol && q != "11111111111111111111111111111111" => {
+            Some(q.clone())
+        }
+        _ => None,
     }
 }
+
 
 fn pump_user_account(pump_accounts: &[String], is_v2: bool) -> Option<String> {
     let idx = if is_v2 { 5 } else { 7 };
@@ -400,11 +413,32 @@ mod tests {
     #[test]
     fn a_non_sol_quote_is_skipped_and_wrapped_sol_is_not() {
         let wsol = "So11111111111111111111111111111111111111112";
-        assert!(!non_sol_quote(None, &[], wsol));
+        assert!(quote_mint_address(None, &[], wsol).is_none());
         let mut accounts = vec![String::new(); 16];
         accounts.push(wsol.to_string());
-        assert!(!non_sol_quote(None, &accounts, wsol));
+        assert!(quote_mint_address(None, &accounts, wsol).is_none());
         accounts[16] = "NotSol".to_string();
-        assert!(non_sol_quote(None, &accounts, wsol));
+        assert_eq!(
+            quote_mint_address(None, &accounts, wsol).as_deref(),
+            Some("NotSol")
+        );
+        let sol = DecodedCreateEvent {
+            name: String::new(),
+            symbol: String::new(),
+            uri: String::new(),
+            mint: String::new(),
+            bonding_curve: None,
+            user: String::new(),
+            creator: String::new(),
+            token_program: None,
+            token_total_supply: 0,
+            is_mayhem_mode: false,
+            is_cashback_enabled: false,
+            quote_mint: [0u8; 32],
+        };
+        assert!(quote_mint_address(Some(&sol), &[], wsol).is_none());
+        let mut paired = sol;
+        paired.quote_mint = [9u8; 32];
+        assert!(quote_mint_address(Some(&paired), &[], wsol).is_some());
     }
 }

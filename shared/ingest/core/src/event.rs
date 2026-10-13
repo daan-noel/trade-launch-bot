@@ -221,6 +221,11 @@ pub struct TokenCreated {
     pub cu_price: Option<u64>,
     pub is_mayhem_mode: bool,
     pub is_cashback_enabled: bool,
+    /// Quote asset this coin is priced in, base58. `None` is SOL: the create
+    /// event's all-zero key, or a create that passed wrapped SOL. Any other mint
+    /// is USDC or a pump-coin quote. Ingest of those coins is gated by
+    /// `INGEST_NON_SOL_QUOTE`.
+    pub quote_mint: Option<String>,
     pub instruction_labels: Vec<String>,
     pub signature: String,
     pub slot: u64,

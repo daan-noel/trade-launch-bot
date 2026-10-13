@@ -299,10 +299,14 @@ Buy instructions are taken in execution order (each outer instruction, then the
 inner instructions it invoked) and zipped onto buy events. A sell consumes
 none. A sell layout and an AMM swap are later `type` values on this column.
 
-A create whose `quote_mint` is not the all-zero key is not ingested. That key is
-SOL, including a create that passed wrapped SOL. USDC and a pump-coin quote stay
-out, and so do the fills in that create transaction.
-`None` is "not captured".
+`tokens.quote_mint` is the asset the coin is priced in. Null is SOL, including a
+create that passed wrapped SOL. A row with no quote recorded is SOL. Any other
+mint is that quote: USDC or a pump coin, the same column.
+
+`INGEST_NON_SOL_QUOTE` in the pump create decoder is off. A non-SOL create is
+decoded, then dropped, and so are the fills in that transaction. Flip the
+constant to store the coin with `quote_mint` set. A trade of a coin that has a
+quote mint is not written as SOL: the amount is quote units.
 
 A key is not a name and does not pretend to be one; it is an identity. Before it
 existed, every Axiom instruction collapsed to one string and a router's buy was

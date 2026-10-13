@@ -35,6 +35,12 @@ pub struct Token {
     pub is_mayhem_mode: bool,
     /// Whether cashback was enabled at token creation (create_v2 only).
     pub is_cashback_enabled: bool,
+    /// Quote asset this coin is priced in. `None` is SOL, including a create
+    /// that passed wrapped SOL. A missing value is SOL. Any other mint is USDC
+    /// or a pump-coin quote. Non-SOL coins are not written while
+    /// `INGEST_NON_SOL_QUOTE` is off.
+    #[serde(default)]
+    pub quote_mint: Option<String>,
     /// Instruction labels from the create transaction.
     pub instruction_labels: Value,
     /// Transaction signature of the creation instruction.
@@ -105,6 +111,7 @@ impl Token {
             cu_price,
             is_mayhem_mode,
             is_cashback_enabled,
+            quote_mint: None,
             instruction_labels,
             creation_tx_signature,
             creation_slot,

@@ -58,6 +58,7 @@ async fn pump_fun_events_project_onto_the_schema() {
         cu_price: Some(1_000),
         is_mayhem_mode: false,
         is_cashback_enabled: false,
+        quote_mint: None,
         instruction_labels: vec!["Create".to_string()],
         signature: "create_sig".to_string(),
         slot: 100,

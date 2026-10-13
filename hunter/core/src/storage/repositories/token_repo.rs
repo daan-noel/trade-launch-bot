@@ -73,6 +73,7 @@ struct TokenDbRow {
     cu_price: Option<i64>,
     is_mayhem_mode: bool,
     is_cashback_enabled: bool,
+    quote_mint: Option<String>,
     ix_labels: Json<Value>,
     creation_tx_signature: String,
     creation_slot: Option<i64>,
@@ -96,6 +97,7 @@ struct TokenScanDbRow {
     cu_price: Option<i64>,
     is_mayhem_mode: bool,
     is_cashback_enabled: bool,
+    quote_mint: Option<String>,
     ix_labels: Json<Value>,
     creation_tx_signature: String,
     creation_slot: Option<i64>,
@@ -120,6 +122,7 @@ impl From<TokenScanDbRow> for Token {
             cu_price: r.cu_price,
             is_mayhem_mode: r.is_mayhem_mode,
             is_cashback_enabled: r.is_cashback_enabled,
+            quote_mint: r.quote_mint,
             ix_labels: r.ix_labels,
             creation_tx_signature: r.creation_tx_signature,
             creation_slot: r.creation_slot,
@@ -197,6 +200,7 @@ impl From<TokenDbRow> for Token {
             cu_price: r.cu_price.map(|v| v as u64),
             is_mayhem_mode: r.is_mayhem_mode,
             is_cashback_enabled: r.is_cashback_enabled,
+            quote_mint: r.quote_mint,
             instruction_labels: r.ix_labels.0,
             creation_tx_signature: r.creation_tx_signature,
             creation_slot: r.creation_slot.map(|v| v as u64),
@@ -223,15 +227,15 @@ impl From<TokenDbRow> for Token {
 /// query's wire contract is decoupled from the physical table layout.
 const TOKEN_COLS: &str = "mint_address, creator_wallet, name, symbol, token_program_id, \
     bonding_curve_address, initial_supply_token, initial_buy_lamports, initial_buy_instruction, \
-    cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, creation_tx_signature, \
-    creation_slot, created_at";
+    cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, quote_mint, ix_labels, \
+    creation_tx_signature, creation_slot, created_at";
 
 /// Same as [`TOKEN_COLS`] but prefixed for a `tokens t` join and extended with
 /// first-slot fingerprint columns from `tokens_info`.
 const TOKEN_SCAN_SELECT: &str = "t.mint_address, t.creator_wallet, t.name, t.symbol, \
     t.token_program_id, t.bonding_curve_address, t.initial_supply_token, t.initial_buy_lamports, \
     t.initial_buy_instruction, t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled, \
-    t.ix_labels, t.creation_tx_signature, t.creation_slot, t.created_at, \
+    t.quote_mint, t.ix_labels, t.creation_tx_signature, t.creation_slot, t.created_at, \
     ti.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol, \
     ti.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol";
 
@@ -252,7 +256,7 @@ impl TokenRepo {
             "INSERT INTO tokens \
              (mint_address, creator_wallet, name, symbol, token_program_id, \
               bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, \
-              cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, \
+              cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, quote_mint, ix_labels, \
               creation_tx_signature, creation_slot, meta, created_at) ",
         );
         qb.push_values(tokens, |mut b, t| {
@@ -272,6 +276,7 @@ impl TokenRepo {
                 .push_bind(t.cu_price.map(|v| v as i64))
                 .push_bind(t.is_mayhem_mode)
                 .push_bind(t.is_cashback_enabled)
+                .push_bind(t.quote_mint.as_ref())
                 .push_bind(Json(&t.instruction_labels))
                 .push_bind(&t.creation_tx_signature)
                 .push_bind(t.creation_slot.map(|v| v as i64))
@@ -289,9 +294,9 @@ impl TokenRepo {
             r#"
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
-                    bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
+                    bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, quote_mint, ix_labels,
                     creation_tx_signature, creation_slot, meta, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             ON CONFLICT (mint_address) DO NOTHING
             "#,
         )
@@ -310,6 +315,7 @@ impl TokenRepo {
         .bind(token.cu_price.map(|v| v as i64))
         .bind(token.is_mayhem_mode)
         .bind(token.is_cashback_enabled)
+        .bind(token.quote_mint.as_ref())
         .bind(Json(&token.instruction_labels))
         .bind(&token.creation_tx_signature)
         .bind(token.creation_slot.map(|v| v as i64))
@@ -327,9 +333,9 @@ impl TokenRepo {
             r#"
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
-                    bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
+                    bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, quote_mint, ix_labels,
                     creation_tx_signature, creation_slot, meta, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             ON CONFLICT (mint_address) DO UPDATE SET
                 creator_wallet = EXCLUDED.creator_wallet,
                 name = EXCLUDED.name,
@@ -344,6 +350,7 @@ impl TokenRepo {
                 cu_price = EXCLUDED.cu_price,
                 is_mayhem_mode = EXCLUDED.is_mayhem_mode,
                 is_cashback_enabled = EXCLUDED.is_cashback_enabled,
+                quote_mint = EXCLUDED.quote_mint,
                 ix_labels = EXCLUDED.ix_labels,
                 creation_tx_signature = EXCLUDED.creation_tx_signature,
                 creation_slot = COALESCE(EXCLUDED.creation_slot, tokens.creation_slot),
@@ -369,6 +376,7 @@ impl TokenRepo {
         .bind(token.cu_price.map(|v| v as i64))
         .bind(token.is_mayhem_mode)
         .bind(token.is_cashback_enabled)
+        .bind(token.quote_mint.as_ref())
         .bind(Json(&token.instruction_labels))
         .bind(&token.creation_tx_signature)
         .bind(token.creation_slot.map(|v| v as i64))
