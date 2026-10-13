@@ -640,7 +640,7 @@ a graduation.
 Study, engine: 603 tickets, +4.47 %, 6/6, top 1 % 12.9 % (Python 604, +4.51 %).
 
 Not measured here: the days after 09-10 (the clean test), a tip above 0.000225 SOL a leg, failed
-buys, and live paper, which books `worst_case` fills rather than this seat.
+buys, and a live paper day.
 
 ## 1.24 Rule 1's exit, re-read on its own trades: only a post-selection wall target beats the bracket
 

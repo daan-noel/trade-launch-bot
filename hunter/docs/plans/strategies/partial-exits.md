@@ -226,7 +226,7 @@ Money over capital per episode, 2026-07-22..08-09 (`first` fill, n = 229):
 | bank 50% @ +10 | 72.5% | −0.05 |
 | bank 50% @ +25 | 52.8% | −0.55 |
 
-Under the `worst` fill live paper books, the same comparison is −3.68 %/ep for the control
+Under `worst_case`, the same comparison is −3.68 %/ep for the control
 against −4.22 %/ep for `bank 50% @ +15` (n = 218 each). The shorter 07-22..07-28 window
 agrees in direction against a much stronger control (+5.25 %/ep vs +3.31…+4.55).
 

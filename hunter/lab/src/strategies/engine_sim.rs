@@ -86,7 +86,7 @@ pub struct EngineSimRequest {
     #[serde(default)]
     pub until: Option<DateTime<Utc>>,
     /// Which fill model prices the round-trips. Defaults to
-    /// [`FillModel::WorstCase`] — the pessimistic bound live paper + the sweep book.
+    /// [`FillModel::WorstCase`], the sweep's pessimistic bound. Live paper books `lag_115`.
     /// The other models (`first_in_window` / `signal_price`, aliased `first` /
     /// `signal`) exist only for the sim's fill-sensitivity analysis: they reprice the
     /// *same* taken set to separate fill pessimism from a genuine absence of edge (the
@@ -538,7 +538,7 @@ async fn run_engine_backtest(
                 std::slice::from_ref(&loaded),
                 std::slice::from_ref(&fp),
                 replay_tokens,
-                // Defaults to worst-case (what live paper books); the request can select
+                // Defaults to worst-case. Live paper books lag_115; the request can select
                 // `first`/`signal` for the fill-sensitivity reprice (honest bottom line).
                 ReplayConfig {
                     as_of: Utc::now(),

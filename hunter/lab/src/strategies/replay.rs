@@ -155,7 +155,8 @@ pub struct ReplayConfig {
     /// advances toward (plan 5.1: run-time as-of). Captured once by the caller.
     pub as_of: Ts,
     /// Which trade in the fill window prices entry/exit fills. Defaults to
-    /// [`FillModel::WorstCase`] (what live paper books); other models exist only for
+    /// [`FillModel::WorstCase`] (the sweep default). Live paper books `lag_115`.
+    /// Other models exist only for
     /// fill-sensitivity analysis (flow-scalper lever #2).
     pub fill_model: FillModel,
     /// Duplicate-identity (copycat) guard — mirrors live's

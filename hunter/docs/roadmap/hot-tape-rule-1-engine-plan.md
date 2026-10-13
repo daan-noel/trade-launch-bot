@@ -74,8 +74,8 @@ fill; a second code (`hot-tape/r1_exact_check.py`) rebuilds every ticket. Frozen
 - 1d. The crowd cap at 369 left as is: the full replays run in minutes.
 - 1e. The price metrics' registry text says spot, and so does the `TradeLite::price` doc.
 - 1f. `m_state.on_curve`; `CorpusTrade` carries the venue from the lake and the PG tail.
-- 1g. `LagMs` entry leg takes the exit leg's rule. It moves simulate and the grouped sweep; live
-  paper books `worst_case` on both legs and is untouched. `lag_*` runs stored before 2026-09-11 price
+- 1g. `LagMs` entry leg takes the exit leg's rule. Simulate and the grouped sweep choose it;
+  live paper books `LagMs(115)` on both legs. `lag_*` runs stored before 2026-09-11 price
   the entry on the last buy and do not compare.
 - 1h. `_!___metrics.md`, `fill-and-cost-models.md`, `arch/strategies.md`; unit tests on each
   metric and on the fill; `every_metric_is_live_reachable` reads every metric.
@@ -119,9 +119,8 @@ days after 09-10 are still to read, once, engine and reference together.
 
 ### Step 4: paper
 
-Open decision first: live paper (`exec_paper`) books `worst_case` on both legs, not the `LagMs(115)`
-seat the rule is validated under, so a paper day would grade a different fill. Either paper gains the
-lag model or the paper book is read against a simulate run under `worst_case`. Then: every new coin
+Live paper (`exec_paper`) books `LagMs(115)` on both legs, the seat this rule is validated under.
+Then: every new coin
 tracked from birth; a restart rebuilds the buyer set and the wallet -> last-buy map from a complete
 history; the per-token maps fit the 4 GB box. A pass bar is written before the first day; a real
 decide-to-fill delay is logged on every ticket; each paper day is replayed in simulate and must

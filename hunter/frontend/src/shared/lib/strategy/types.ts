@@ -376,15 +376,14 @@ export type FillModelId =
   | `lag_${number}`;
 
 /** Selectable fill models for the Simulate / dry-run controls, ordered as a
- *  pessimism spectrum. `worst_case` is the default (live-paper parity) and
- *  `signal_price` the unreachable ceiling; the two `next_slot_*` models are the
- *  reachable middle — same window, minus the signal's own slot. The two `lag_*`
- *  presets are the bot's own measured decide-to-fill p50 / p90. */
+ *  pessimism spectrum. `worst_case` is the sweep default and `signal_price` the
+ *  unreachable ceiling; the two `next_slot_*` models are the reachable middle.
+ *  Live paper books `lag_115`. */
 export const FILL_MODELS: ReadonlyArray<{ id: FillModelId; label: string; hint: string }> = [
-  { id: 'worst_case', label: 'Worst-case', hint: 'Adverse fill — live paper + sweep parity (default)' },
+  { id: 'worst_case', label: 'Worst-case', hint: 'Adverse fill — the pessimistic bound, and the sweep default' },
   { id: 'first_in_window', label: 'First-in-window', hint: 'Next print after the signal — may be same-slot, so partly unreachable' },
-  { id: 'lag_115', label: 'Lag 115 ms (p50)', hint: "The bot's measured decide-to-fill median — first print at least 115 ms after the signal" },
-  { id: 'lag_235', label: 'Lag 235 ms (p90)', hint: "The bot's decide-to-fill p90 — the stress read; a real edge survives it" },
+  { id: 'lag_115', label: 'Lag 115 ms (p50)', hint: 'Last print landed by the signal plus 115 ms — the measured decide-to-fill median. Live paper books this.' },
+  { id: 'lag_235', label: 'Lag 235 ms (p90)', hint: 'Last print landed by the signal plus 235 ms — the p90 stress read' },
   { id: 'next_slot_first', label: 'Next-slot first', hint: 'First print at slot S+1 — earliest a +1-slot landing can hit' },
   { id: 'next_slot_median', label: 'Next-slot median', hint: 'Adverse median at slot S+1 — mid-dispersion, still a real print' },
   { id: 'signal_price', label: 'Signal price', hint: 'Zero-slippage — optimistic bound' },

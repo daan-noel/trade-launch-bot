@@ -2,11 +2,12 @@
 //! `SubmitBuy`/`SubmitSell` into a `FillConfirmed` the engine folds exactly like a
 //! real fill.
 //!
-//! Fills use the **worst-case** adverse window shared with lab simulate/sweep
-//! ([`trading_core::strategies::paper_fill`]): after the trigger/fire trade, the
-//! fill is the highest buy (entry) or lowest price (exit) in trigger slot `S` +
-//! the next observed slot within [`MAX_FILL_WAIT_SLOTS`]. The executor polls the
-//! token-cache trade feed until that window is indexed (or a short deadline).
+//! Fills use `FillModel::LagMs(115)` from
+//! [`trading_core::strategies::paper_fill`]: the last priced print of either side
+//! whose ingest time is at or before the signal plus 115 ms, the measured
+//! decide-to-fill median. The executor sleeps until that instant, reads the
+//! token cache once more if the newest print is still behind the deadline, and
+//! books that print. Simulate still chooses its own model; this is the live seat.
 //! **Both legs** use `market_fill_on_empty_window = true`, exactly like lab
 //! replay/simulate and the sweep: an empty window books the trigger/fire trade's
 //! own spot instead of failing.
@@ -50,25 +51,29 @@ use hunter_engine::event::{Event, Fill, FillFailReason, IntentId};
 use trading_core::state::token_cache::{CachedTrade, TokenCache};
 use trading_core::strategies::kernel::{buy_fill, sell_proceeds, CostModel};
 use trading_core::strategies::paper_fill::{
-    exit_fill_window_closed, find_worst_case_paper_entry_at, find_worst_case_paper_exit_at,
-    PaperFill,
+    find_paper_entry_at, find_paper_exit_at, FillModel, PaperFill,
 };
 
 use super::{FillSigStore, FillSigs, PositionId, PositionRegistry, PrintKey, TargetSnapshot};
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
-/// How long to wait for the fill window to index before giving up.
+/// How long to wait for the signal print to show up in the cache before giving up.
 const FILL_WAIT: Duration = Duration::from_secs(2);
 const FILL_POLL: Duration = Duration::from_millis(100);
+/// One extra read after the deadline, for a print decoded but not yet cached.
+const LAG_GRACE: Duration = Duration::from_millis(50);
 
-/// Fill a paper buy at the worst-case adverse price after `trigger_abs_idx`.
+/// Live paper's seat. Not a setting: every paper fill books this.
+const PAPER_LAG: FillModel = FillModel::LagMs(115);
+
+/// Fill a paper buy at the lag-115 print after `trigger_abs_idx`.
 ///
 /// `trigger_abs_idx` is the absolute cache trade index of the deciding trade
 /// (`trades_base + offset`). `None` means no trade yet (enter-on-arm) — wait for
 /// the first print and use that as the trigger. When a trigger resolves, its
 /// snapshot is written to [`PositionMeta::target_snapshot`] so the sink can persist
-/// `target_*` alongside the worst-case entry fill. Empty window market-fills at
+/// `target_*` alongside the lag entry fill. Empty window market-fills at
 /// the trigger (`market_fill_on_empty_window = true`) so live paper takes the
 /// same position set as lab replay/sweep.
 #[allow(clippy::too_many_arguments)]
@@ -112,7 +117,7 @@ pub async fn run_entry(
     let _ = fill_tx.send(event).await;
 }
 
-/// Fill a paper sell at the worst-case adverse price after `fire_abs_idx`.
+/// Fill a paper sell at the lag-115 print after `fire_abs_idx`.
 /// An empty window market-fills at the fire trade (`true`, same as replay/sweep);
 /// a window that cannot be priced at all falls back to the token's last known
 /// spot. `FillFailed` is left for the one case with no price anywhere — an
@@ -216,29 +221,58 @@ fn target_snapshot_from(t: &CachedTrade) -> TargetSnapshot {
     }
 }
 
+fn lag_due(signal_at: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+    signal_at + chrono::Duration::milliseconds(115)
+}
+
+/// Sleep until `signal + 115 ms`, then once more if the cache's newest print is
+/// still behind that deadline. `true` means the caller should price now.
+async fn lag_elapsed(
+    signal_at: chrono::DateTime<chrono::Utc>,
+    newest: Option<chrono::DateTime<chrono::Utc>>,
+    graced: &mut bool,
+    deadline: tokio::time::Instant,
+) -> bool {
+    let due = lag_due(signal_at);
+    let timed_out = tokio::time::Instant::now() >= deadline;
+    if chrono::Utc::now() < due && !timed_out {
+        let wait = (due - chrono::Utc::now()).to_std().unwrap_or(Duration::ZERO);
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::sleep(wait.min(remaining)).await;
+        return false;
+    }
+    if newest.is_some_and(|t| t >= due) || *graced || timed_out {
+        return true;
+    }
+    *graced = true;
+    tokio::time::sleep(LAG_GRACE).await;
+    false
+}
+
 async fn wait_entry_fill(
     token_cache: &Arc<TokenCache>,
     mint: &str,
     mut trigger_abs: Option<u64>,
 ) -> Option<(ResolvedFill, TargetSnapshot)> {
     let deadline = tokio::time::Instant::now() + FILL_WAIT;
+    let mut graced = false;
     loop {
         if let Some((trades, base)) = cache_trades(token_cache, mint) {
-            if trigger_abs.is_none() {
-                if !trades.is_empty() {
-                    trigger_abs = Some(base + trades.len() as u64 - 1);
-                }
+            if trigger_abs.is_none() && !trades.is_empty() {
+                trigger_abs = Some(base + trades.len() as u64 - 1);
             }
             if let Some(t_abs) = trigger_abs {
                 if let Some(rel) = abs_to_rel(t_abs, base, trades.len()) {
-                    let trigger_slot = trades[rel].slot;
-                    let max_slot = trades.last().map(|t| t.slot).unwrap_or(trigger_slot);
-                    let timed_out = tokio::time::Instant::now() >= deadline;
-                    if exit_fill_window_closed(trigger_slot, max_slot) || timed_out {
+                    let newest = trades.last().map(|t| t.block_time);
+                    if lag_elapsed(trades[rel].block_time, newest, &mut graced, deadline).await {
+                        let (trades, base) = cache_trades(token_cache, mint)?;
+                        let rel = abs_to_rel(t_abs, base, trades.len())?;
                         let trigger = target_snapshot_from(&trades[rel]);
-                        return find_worst_case_paper_entry_at(trades.as_slice(), rel, true)
-                            .map(|f| (ResolvedFill::priced_by(&trades, &f, pool_fee_bps(token_cache, mint)), trigger));
+                        return find_paper_entry_at(trades.as_slice(), rel, true, PAPER_LAG).map(|f| {
+                            (ResolvedFill::priced_by(&trades, &f, pool_fee_bps(token_cache, mint)), trigger)
+                        });
                     }
+                    continue;
                 } else if t_abs < base {
                     // Trigger trimmed out of the retained window — fail closed.
                     return None;
@@ -246,16 +280,6 @@ async fn wait_entry_fill(
             }
         }
         if tokio::time::Instant::now() >= deadline {
-            // Last chance resolve if we have a trigger in-window.
-            if let (Some(t_abs), Some((trades, base))) =
-                (trigger_abs, cache_trades(token_cache, mint))
-            {
-                if let Some(rel) = abs_to_rel(t_abs, base, trades.len()) {
-                    let trigger = target_snapshot_from(&trades[rel]);
-                    return find_worst_case_paper_entry_at(trades.as_slice(), rel, true)
-                        .map(|f| (ResolvedFill::priced_by(&trades, &f, pool_fee_bps(token_cache, mint)), trigger));
-                }
-            }
             return None;
         }
         tokio::time::sleep(FILL_POLL).await;
@@ -268,30 +292,36 @@ async fn wait_exit_fill(
     fire_abs: Option<u64>,
 ) -> Option<ResolvedFill> {
     // No fire trade at all (mint never cached / every trade trimmed) — there is no
-    // window to wait for, so price it at the last known spot straight away.
+    // print to wait for, so price it at the last known spot straight away.
     let Some(fire_abs) = fire_abs.or_else(|| latest_trade_abs_idx(token_cache, mint)) else {
         return last_known_price_fill(token_cache, mint);
     };
     let deadline = tokio::time::Instant::now() + FILL_WAIT;
+    let mut graced = false;
     loop {
-        let timed_out = tokio::time::Instant::now() >= deadline;
         if let Some((trades, base)) = cache_trades(token_cache, mint) {
             match abs_to_rel(fire_abs, base, trades.len()) {
                 Some(rel) => {
-                    let fire_slot = trades[rel].slot;
-                    let max_slot = trades.last().map(|t| t.slot).unwrap_or(fire_slot);
-                    if exit_fill_window_closed(fire_slot, max_slot) || timed_out {
-                        return find_worst_case_paper_exit_at(trades.as_slice(), rel, true)
+                    let newest = trades.last().map(|t| t.block_time);
+                    if lag_elapsed(trades[rel].block_time, newest, &mut graced, deadline).await {
+                        let Some((trades, base)) = cache_trades(token_cache, mint) else {
+                            return last_known_price_fill(token_cache, mint);
+                        };
+                        let Some(rel) = abs_to_rel(fire_abs, base, trades.len()) else {
+                            return last_known_price_fill(token_cache, mint);
+                        };
+                        return find_paper_exit_at(trades.as_slice(), rel, true, PAPER_LAG)
                             .map(|f| ResolvedFill::priced_by(&trades, &f, pool_fee_bps(token_cache, mint)))
                             .or_else(|| last_known_price_fill(token_cache, mint));
                     }
+                    continue;
                 }
                 // Fire trade trimmed out of the retained window while we waited.
                 None if fire_abs < base => return last_known_price_fill(token_cache, mint),
                 None => {}
             }
         }
-        if timed_out {
+        if tokio::time::Instant::now() >= deadline {
             return last_known_price_fill(token_cache, mint);
         }
         tokio::time::sleep(FILL_POLL).await;
@@ -386,6 +416,20 @@ mod tests {
         )
     }
 
+    fn at_ms(mut t: Trade, at: chrono::DateTime<chrono::Utc>) -> Trade {
+        t.block_time = at;
+        t
+    }
+
+    fn lag_window() -> Arc<TokenCache> {
+        let t0 = Utc::now() - ChronoDuration::minutes(10);
+        cache_with(vec![
+            at_ms(trade(1.0, 1_000_000, 100, 0), t0),
+            at_tx(at_ms(trade(2.0, 1_000_000, 100, 0), t0 + ChronoDuration::milliseconds(50)), 1),
+            at_ms(trade(0.5, 1_000_000, 101, 1), t0 + ChronoDuration::milliseconds(400)),
+        ])
+    }
+
     /// Place a print at its own intra-slot position, so two prints in one slot have
     /// distinct `PrintKey`s the way real ones do.
     fn at_tx(mut t: Trade, tx_index: u32) -> Trade {
@@ -409,8 +453,8 @@ mod tests {
     /// — `None` walked the engine's retries into a permanent `ExitStuck`.
     #[tokio::test]
     async fn exit_market_fills_when_window_has_no_trade() {
-        // Fire at slot 100; the only later print is past MAX_FILL_WAIT_SLOTS, so it
-        // closes the window without being IN it — an empty window, resolved now.
+        // Fire at slot 100. The only later print is 5s out, past the 115 ms
+        // deadline, so the fill prices at the fire.
         let cache = cache_with(vec![
             trade(1.0, 1_000_000, 100, 0),
             trade(0.4, 1_000_000, 100 + MAX_FILL_WAIT_SLOTS + 1, 5),
@@ -420,25 +464,25 @@ mod tests {
         assert_eq!(fill.print.map(|p| p.slot), Some(100), "and names the fire print");
     }
 
-    fn populated_window() -> Arc<TokenCache> {
-        cache_with(vec![
-            trade(1.0, 1_000_000, 100, 0),                 // fire  @ 1e-6
-            at_tx(trade(0.5, 1_000_000, 101, 1), 1),       // in window, lowest
-            at_tx(trade(0.9, 1_000_000, 101, 1), 2),       // in window
-            trade(0.1, 1_000_000, 100 + MAX_FILL_WAIT_SLOTS + 1, 5), // closes it, out of window
-        ])
+    /// A print inside 115 ms prices the fill. A worse print after that does not,
+    /// however far the slot window still runs.
+    #[tokio::test]
+    async fn exit_takes_the_last_print_inside_the_lag() {
+        let cache = lag_window();
+        let fill = wait_exit_fill(&cache, MINT, Some(0)).await.expect("lag fill");
+        assert!((fill.price - 2e-6).abs() < 1e-12, "last print inside 115 ms, not the later low");
+        assert_eq!(fill.print.map(|p| (p.slot, p.tx_index)), Some((100, 1)));
     }
 
-    /// Worst-case adversity is unchanged by the market-fill fallback: when the
-    /// window *does* have prints, the exit still takes the lowest of them, and the
-    /// fill names THAT print, not the fire print, so the trades table tints the row
-    /// the price came from.
+    /// Same seat on the buy: the last print inside 115 ms, and the trigger snapshot
+    /// stays the signal the decision fired on.
     #[tokio::test]
-    async fn exit_still_takes_the_worst_price_in_a_populated_window() {
-        let cache = populated_window();
-        let fill = wait_exit_fill(&cache, MINT, Some(0)).await.expect("windowed fill");
-        assert!((fill.price - 0.5e-6).abs() < 1e-12, "lowest price in the window");
-        assert_eq!(fill.print.map(|p| (p.slot, p.tx_index)), Some((101, 1)));
+    async fn entry_takes_the_last_print_inside_the_lag() {
+        let cache = lag_window();
+        let (fill, trigger) = wait_entry_fill(&cache, MINT, Some(0)).await.expect("lag fill");
+        assert!((fill.price - 2e-6).abs() < 1e-12, "last print inside 115 ms, not the later low");
+        assert_eq!(fill.print.map(|p| (p.slot, p.tx_index)), Some((100, 1)));
+        assert!((trigger.price - 1e-6).abs() < 1e-12, "trigger stays the signal");
     }
 
     /// The executor hands the sink the print under the fill's intent, before the
@@ -450,26 +494,26 @@ mod tests {
         let store = FillSigStore::new();
         let (tx, mut rx) = mpsc::channel(1);
         let intent = IntentId { rule: RuleId(uuid::Uuid::nil()), mint: Mint::from(MINT), seq: 7 };
-        run_exit(tx, populated_window(), store.clone(), intent.clone(), MINT.into(), 1_000, true, Some(0))
+        run_exit(tx, lag_window(), store.clone(), intent.clone(), MINT.into(), 1_000, true, Some(0))
             .await;
         let Some(Event::FillConfirmed { fill, .. }) = rx.recv().await else {
             panic!("expected a FillConfirmed");
         };
         // The money is the kernel's sell — fee, fixed leg and close — at the print's
         // spot, never a bare `tokens × price`.
-        let want = sell_proceeds(1_000.0, 0.5e-6, None, &CostModel::pumpfun_with_impact(), true);
+        let want = sell_proceeds(1_000.0, 2e-6, None, &CostModel::pumpfun_with_impact(), true);
         assert!((fill.sol - want).abs() < 1e-15, "{} vs {want}", fill.sol);
-        assert!(fill.sol < 1_000.0 * 0.5e-6);
+        assert!(fill.sol < 1_000.0 * 2e-6);
         let fs = store.take(&intent).expect("print stashed under the intent");
         assert!(fs.sigs.is_empty() && fs.slot.is_none() && fs.token_account.is_none());
-        assert_eq!(fs.print.map(|p| (p.slot, p.tx_index)), Some((101, 1)));
+        assert_eq!(fs.print.map(|p| (p.slot, p.tx_index)), Some((100, 1)));
     }
 
     /// A migrated token's paper sell pays its PumpSwap pool's own fee (95 bps here),
     /// not the curve's 125.
     #[tokio::test]
     async fn exit_on_a_pumpswap_pool_pays_the_pool_fee() {
-        let cache = populated_window();
+        let cache = lag_window();
         cache.get_mut(MINT).unwrap().current_venue_fee_bps = Some(95.0);
         let (tx, mut rx) = mpsc::channel(1);
         let intent = IntentId {
@@ -482,9 +526,9 @@ mod tests {
             panic!("expected a FillConfirmed");
         };
         let amm = CostModel { fee_bps_per_leg: 95.0, ..CostModel::pumpfun_with_impact() };
-        let want = sell_proceeds(1_000.0, 0.5e-6, None, &amm, true);
+        let want = sell_proceeds(1_000.0, 2e-6, None, &amm, true);
         assert!((fill.sol - want).abs() < 1e-15, "{} vs {want}", fill.sol);
-        let curve = sell_proceeds(1_000.0, 0.5e-6, None, &CostModel::pumpfun_with_impact(), true);
+        let curve = sell_proceeds(1_000.0, 2e-6, None, &CostModel::pumpfun_with_impact(), true);
         assert!(fill.sol > curve, "a cheaper pool fee returns more than the curve fee");
     }
 
@@ -530,8 +574,8 @@ pub fn latest_trade_abs_idx(token_cache: &TokenCache, mint: &str) -> Option<u64>
 /// The trigger snapshot for a **real** entry — the most recent cached print at
 /// dispatch time, which is the trade the fold just decided on.
 ///
-/// Paper resolves its trigger inside the fill loop (it has to: the worst-case
-/// fill is chosen relative to it). Real submits immediately and learns its fill
+/// Paper resolves its trigger inside the fill loop (the lag fill is chosen
+/// relative to it). Real submits immediately and learns its fill
 /// slot only on confirm, so the trigger has to be captured here or it is lost.
 /// Without it a real position stores `entry_slot` with no `target_slot` to
 /// subtract, and the row cannot answer what it cost to be late (mig 0004).

@@ -14,7 +14,7 @@
 //!   settlement detection, the live freshness gate (plan 4.2).
 //! * [`exec_real`] — `SubmitBuy`/`SubmitSell` → executor submit-and-return; fills
 //!   confirmed from the trades feed + a confirmation watchdog (plan 4.3).
-//! * [`exec_paper`] — worst-case paper fill model → `FillConfirmed` (plan 4.4).
+//! * [`exec_paper`] — lag-115 paper fill → `FillConfirmed` (plan 4.4).
 //! * [`sinks`] — `PositionUpdate` → PG writer, `ArmedChanged` → SSE (plan 4.5).
 //! * [`run_config`] — the diffable digest of what a run is running under, so a rule
 //!   edited mid-run is stamped on the run instead of silently re-defining it.

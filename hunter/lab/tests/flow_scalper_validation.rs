@@ -300,7 +300,7 @@ struct Report {
     exit_mix: Vec<(String, usize)>,
 }
 
-/// Default (worst-case) fill — what live paper books; the existing probes use this.
+/// Default (worst-case) fill. The existing probes use this. Live paper books lag_115.
 fn run(label: &'static str, params: serde_json::Value, tokens: &[CorpusToken]) -> Report {
     run_with_fill(label, params, tokens, FillModel::WorstCase)
 }
@@ -630,7 +630,7 @@ fn flow_scalper_deep_dip() {
 /// while omego lands same-slot. This probe reprices the SAME taken set under three
 /// fill models to bound how much of the ~4%/round loss is fill pessimism vs a genuine
 /// absence of edge:
-///   * `worst`  — the current adverse bound (what live paper books);
+///   * `worst`  — the current adverse bound;
 ///   * `first`  — the first print after the signal (a neutral "next trade" reaction);
 ///   * `signal` — the trigger/fire spot, zero slippage (the optimistic same-slot bound).
 /// Read: if even `signal` is ≤0 the strategy is dead; if `worst`≤0 but `signal`>0 the

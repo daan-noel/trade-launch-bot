@@ -215,6 +215,11 @@ function RuleEditorInner({
                   </IconButton>
                 )}
               </div>
+              {mode === 'paper' && (
+                <span className="text-[10px] leading-tight text-text-dim" title="The last print landed by the signal plus 115 ms.">
+                  Fill: lag 115 ms
+                </span>
+              )}
             </div>
           </div>
           <div className="flex min-w-0 flex-col gap-1 text-[11px] text-text-dim">

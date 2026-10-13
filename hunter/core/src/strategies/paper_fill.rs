@@ -60,10 +60,11 @@ fn paper_fill_from<T: TradeRow>(trades: &[T], idx: usize) -> PaperFill {
 
 /// Which trade in the fill window prices a paper/sim fill.
 ///
-/// [`WorstCase`](FillModel::WorstCase) is the **only** model live paper and the
-/// grouped-sweep use (adverse on both legs); the others exist for the sim's
-/// fill-sensitivity analysis — how much of the modeled ~4%/round cost is fill
-/// *pessimism* vs a genuine absence of edge (flow-scalper lever #2). Every model
+/// [`WorstCase`](FillModel::WorstCase) is the grouped-sweep default (adverse on
+/// both legs). Live paper books `LagMs(115)`. The other
+/// models exist for the sim's fill-sensitivity analysis — how much of the modeled
+/// ~4%/round cost is fill *pessimism* vs a genuine absence of edge (flow-scalper
+/// lever #2). Every model
 /// shares the same fill **eligibility** (the window + a qualifying trade must
 /// exist), so the taken-position SET is identical across models and only the fill
 /// PRICE varies — a controlled reprice, not a different entry population.
@@ -80,7 +81,8 @@ fn paper_fill_from<T: TradeRow>(trades: &[T], idx: usize) -> PaperFill {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FillModel {
     /// Entry = highest qualifying buy, exit = lowest price in the window. The
-    /// pessimistic bound; what live paper and the sweep book.
+    /// pessimistic bound. The grouped sweep defaults to it. Live paper books
+    /// `LagMs(115)`.
     #[default]
     WorstCase,
     /// Entry/exit = the FIRST qualifying trade after the signal in the window — a
@@ -516,8 +518,8 @@ pub fn find_paper_exit_at<T: TradeRow>(
     }
 }
 
-/// Worst-case entry (adverse). The model live paper + sweep use — a thin wrapper so
-/// they never carry a [`FillModel`]; see [`find_paper_entry_at`].
+/// Worst-case entry (adverse). The sweep's thin wrapper so it never carries a
+/// [`FillModel`]; see [`find_paper_entry_at`]. Live paper books `LagMs(115)`.
 pub fn find_worst_case_paper_entry_at<T: TradeRow>(
     trades: &[T],
     target_idx: usize,
@@ -531,7 +533,8 @@ pub fn find_worst_case_paper_entry_at<T: TradeRow>(
     )
 }
 
-/// Worst-case exit (adverse). Live paper + sweep wrapper; see [`find_paper_exit_at`].
+/// Worst-case exit (adverse). The sweep's wrapper; see [`find_paper_exit_at`].
+/// Live paper books `LagMs(115)`.
 pub fn find_worst_case_paper_exit_at<T: TradeRow>(
     trades: &[T],
     fire_idx: usize,

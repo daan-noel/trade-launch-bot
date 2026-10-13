@@ -14,12 +14,12 @@ they are). Code: [`core/src/strategies/paper_fill.rs`](../../../core/src/strateg
 
 | dropdown | mode | picks / charges | use it when |
 | --- | --- | --- | --- |
-| Fill | `worst_case` | most adverse print in the window | you want the pessimistic bound, or parity with live paper / the sweep |
+| Fill | `worst_case` | most adverse print in the window | you want the pessimistic bound, or the sweep default |
 | Fill | `first_in_window` | the *next* print after the signal | you want the loosest "we react to the tape" reading |
 | Fill | `next_slot_first` | the first print at slot **S+1** | you want the earliest price a +1-slot landing can reach |
 | Fill | `next_slot_median` | the adverse median at slot **S+1** | you want the middle of the fill dispersion, not either tail |
 | Fill | `signal_price` | the signal trade's own spot | you want the zero-slippage ceiling |
-| Fill | `lag_<ms>` | the last print that has landed by signal + `<ms>` | **you want the verdict.** The only model keyed to the bot's measured reaction time |
+| Fill | `lag_<ms>` | the last print that has landed by signal + `<ms>` | **you want the verdict.** Live paper books `lag_115` |
 | Cost | `pumpfun_impact` | fee + tip + **our own** `B/vsol` impact | **the default, and the answer.** The only size-aware one |
 | Cost | `pumpfun_fee_only` | fee + tip | you want a zero-impact upper bound — the "any edge at all?" screen |
 
@@ -268,8 +268,7 @@ legs.
 
 ## Which fill model to use
 
-- **`worst_case`** — what live paper always books and what every surface defaults to,
-  so it is the only setting with sweep↔paper parity. It is also the right model
+- **`worst_case`** — the pessimistic bound, and the sweep default. It is also the right model
   for **stop-type exits**: a stop fires *because* price is falling, so the next prints
   really are skewed lower — the pessimism is not a safety margin, it is the mechanism.
   Its cost: it penalises short holds and fast exits hardest, so a grid run under it
@@ -292,7 +291,7 @@ legs.
   an upper bound. **If a strategy is not profitable under `signal_price`, no amount of
   speed will save it** — that is exactly the question this mode answers, and the reason
   it exists.
-- **`lag_ms`** — the one that settles an argument. The slot models give a bound; a
+- **`lag_ms`** — the one that settles an argument, and the seat live paper books at 115 ms. The slot models give a bound; a
   negative under `next_slot_first` only proves "negative at ~400 ms" and says nothing
   about 115 ms. Grade the candidate at the measured decide→fill number and read the
   sign there. Run 50 / 115 / 200 together: where the sign flips tells you whether there
@@ -435,10 +434,8 @@ which `worst_case` very much is not.
   run, so there is no repricing them — re-run.
 - Simulate, dry-run and the grouped sweep all take both dropdowns (the sweep carries
   them as one `Pricing` struct, so a scan can never get a fill model without a cost
-  model). **Live paper is the exception: it always books `worst_case`** — it has no
-  choice, since it fills forward off the live feed. That is what makes `worst_case`
-  the only setting with sweep↔paper parity. Its money goes through the same kernel
-  (`pumpfun_impact`, each fill against its print's own depth).
+  model). Live paper books `lag_115` (a constant, not a dropdown) and its money goes
+  through the same kernel (`pumpfun_impact`, each fill against its print's own depth).
 - **A live rule's open positions** are marked through `pumpfun_impact` too, off the
   mint's live cache price and depth (`MarkQuote`), against the SOL the entry actually
   paid — so the unrealized figure on the positions panel is comparable to a backtest's

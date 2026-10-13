@@ -76,7 +76,7 @@ export const RULE_FIELD_HELP = {
   mode: {
     title: 'Trade mode',
     body: [
-      'paper — simulate fills from the live trade feed. No wallet, no on-chain spend. Use for testing rules.',
+      'paper — fills from the live trade feed at lag 115 ms: the last print landed by the signal plus 115 ms. No wallet, no on-chain spend.',
       '',
       'real — send actual buys/sells on-chain. Spends SOL from the configured wallet.',
       '',
@@ -166,9 +166,8 @@ export const EXECUTION_MODEL_HELP = {
       'switching model reprices a fixed trade set; it never changes which trades you took.',
       '',
       'WHICH TO USE:',
-      '  • Worst-case      the floor, and the only setting matching live paper (which cannot',
-      '                    choose). Right for stops: a stop fires because price is falling, so',
-      '                    the next prints really are lower. Penalises short holds hardest.',
+      '  • Worst-case      the pessimistic bound, and the sweep default. Right for stops: a stop fires because price is falling, so',
+      '                    the next prints really are lower. Penalises short holds hardest. Live paper books lag 115 ms.',
       '  • First-in-window the realistic fast bot — use it to ask “is there edge at all”.',
       '  • Signal price    zero slippage, an upper bound. If a rule loses HERE, no amount of',
       '                    speed can save it.',

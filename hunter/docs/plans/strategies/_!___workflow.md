@@ -37,7 +37,7 @@ days must pass every bar, the tail included. Working file:
 [node-derivation/hot-tape-rule-1.md](node-derivation/hot-tape-rule-1.md).
 
 - **Next:** book the untouched days after 09-10, rule 1 and rule 1b side by side, with the same
-  code; then paper at the 115 ms seat (live paper books `worst_case` fills, not this seat); then
+  code; then paper (live paper fills at lag 115 ms); then
   small real.
 - **Kills it:** a ship bar failing on the clean days.
 - **The loss-door clone joins the clean test** (evidence 1.28): rule 1 and rule 1b with
