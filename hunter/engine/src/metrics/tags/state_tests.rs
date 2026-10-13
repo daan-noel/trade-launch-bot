@@ -471,3 +471,45 @@ fn a_tagged_sell_reads_the_percent_of_the_bag_it_took() {
     assert!(st.print_bag(Metric::SoldBagPct, false).is_nan(), "a tick is not a print");
     assert!(st.print_bag(Metric::FlatBefore, false).is_nan());
 }
+
+/// `bag_sold_pct` is the tag's sells over the span, as a percent of every tagged
+/// wallet's tokens added together at the span's start. One wallet emptying its own
+/// slice is a small share of that bag.
+#[test]
+fn bag_sold_pct_is_the_combined_bag_at_the_start_of_the_span() {
+    let mut st = tag(json!({ "match": { "wallet": ["a", "b"] } }));
+    let w = WindowSpec::secs(2.0);
+    st.ensure_window(w);
+    let a = wallet_hash("a");
+    let b = wallet_hash("b");
+    let leg = |st: &mut TagState, wallet: u64, side: Side, tokens: f64, secs: f64| {
+        let mut t = trade(side, 0.1, None, wallet, secs);
+        t.token_amount = tokens;
+        st.on_trade(&t, c(0));
+    };
+    let pct = |st: &TagState, secs: f64| st.value(Metric::BagSoldPct, false, Some(w), ts(secs), c(0));
+    leg(&mut st, a, Side::Buy, 800.0, 0.0);
+    leg(&mut st, b, Side::Buy, 200.0, 0.2);
+    leg(&mut st, b, Side::Sell, 100.0, 3.0);
+    let sliver = pct(&st, 3.0);
+    assert!((sliver - 10.0).abs() < 1e-9, "half of b's bag is 10 % of the combined bag, got {sliver}");
+    leg(&mut st, a, Side::Sell, 400.0, 5.0);
+    leg(&mut st, b, Side::Sell, 50.0, 6.0);
+    let dump = pct(&st, 6.0);
+    assert!((dump - 50.0).abs() < 1e-9, "the span's sells over the bag at its start, got {dump}");
+    leg(&mut st, a, Side::Buy, 300.0, 6.5);
+    let with_buy = pct(&st, 6.5);
+    assert!(
+        (with_buy - 50.0).abs() < 1e-9,
+        "a buy inside the span is not part of the starting bag, got {with_buy}"
+    );
+    assert_eq!(pct(&st, 9.0), 0.0, "a later span that sells nothing reads 0");
+    assert!(st.value(Metric::BagSoldPct, false, Some(WindowSpec::secs(3.0)), ts(6.0), c(0)).is_nan());
+    let mut bare = tag(json!({ "match": { "wallet": ["a"] } }));
+    bare.ensure_window(w);
+    let mut missing = trade(Side::Sell, 0.1, None, a, 1.0);
+    missing.token_amount = f64::NAN;
+    bare.on_trade(&missing, c(0));
+    assert!(bare.value(Metric::BagSoldPct, false, Some(w), ts(1.0), c(0)).is_nan());
+    assert!(st.value(Metric::BagSoldPct, true, Some(w), ts(6.0), c(0)).is_nan(), "the other half held nothing");
+}

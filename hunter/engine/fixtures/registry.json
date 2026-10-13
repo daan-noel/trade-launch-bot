@@ -511,6 +511,27 @@
           "tag_level": "wallet_class",
           "tags": "required",
           "unit": "percent"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_holdings.bag_sold_pct @volume [2s] >= 50 : volume sells in the last 2 s took half or more of the bag the volume trades held 2 s ago.",
+          "hue": 214,
+          "monotonic": false,
+          "name": "bag_sold_pct",
+          "note": "The bag is every wallet carrying the tag, added together. A buy during the span is not part of that starting bag. Above 100 when the sells exceed it. 0 when the tag held a bag and sold nothing. NaN when it held nothing at the start of the span, and once a tagged print had no token amount.",
+          "path": "m_holdings.bag_sold_pct",
+          "phrase": "share of the tag's bag its sells took",
+          "position": false,
+          "spans": {
+            "life": false,
+            "since_age": false,
+            "slice": false,
+            "window": true
+          },
+          "summary": "Percent of the tag's token bag, measured at the start of the span, that the tag's sells during the span remove.",
+          "tag_level": "trade",
+          "tags": "required",
+          "unit": "percent"
         }
       ],
       "name": "m_holdings",

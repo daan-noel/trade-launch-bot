@@ -57,7 +57,7 @@ fn probe_fp() -> Fingerprint {
         criteria: Criteria::new(),
         tags: json!({
             "volume": { "match": { "ix_shape": [VOL_LABELS], "creator": true }, "sticky": true },
-            "dump": { "match": { "ix_shape": [NONVOL_LABELS] }, "side": "sell" },
+            "dump": { "match": { "ix_shape": [NONVOL_LABELS] } },
             "targets": { "match": { "wallet": COPY_TARGETS } },
             "working": { "match": { "program": ["Pump.Fun"] } }
         }),
@@ -82,8 +82,8 @@ fn variants(m: &MetricSpec) -> Vec<Map<String, Value>> {
         spans.push((None, None));
     }
     if m.spans.window {
-        // The probe's trades span slots 100..110 and a handful of prints: every window
-        // covers them, and a slice nests inside.
+        // The script sits inside every window. Two buys land before those windows, so a
+        // tag can already be holding a bag when the span starts. A slice nests inside.
         for (w, s) in [("10s", "2s"), ("20sl", "4sl"), ("50p", "4p")] {
             spans.push((Some(w), m.spans.slice.then_some(s)));
         }
@@ -212,6 +212,27 @@ fn drive(state: &mut EngineState, mint: &Mint) -> Vec<Effect> {
             creator_stand_in_wallet_hash: None,
         },
     ));
+    // Outside every probe window (10 s at the read, 20 slots back from 110, the last
+    // 50 prints). `bag_sold_pct` is the bag held at the start of the span, so these
+    // two buys land first and the fillers after them push them out of the print window.
+    for (vol, wallet) in [(true, WALLETS[0]), (false, WALLETS[1])] {
+        fx.extend(reduce(
+            state,
+            Event::Trade {
+                mint: mint.clone(),
+                trade: trade(Side::Buy, 1.0, 1.0, 40.0, -5.0, 70, vol, wallet),
+            },
+        ));
+    }
+    for _ in 0..45 {
+        fx.extend(reduce(
+            state,
+            Event::Trade {
+                mint: mint.clone(),
+                trade: trade(Side::Buy, 0.1, 1.0, 40.0, -4.0, 70, false, WALLETS[0]),
+            },
+        ));
+    }
     let script = [
         (Side::Buy, 1.0, 1.0, 40.0, 1.0, 100u64, true, WALLETS[0]),
         (Side::Buy, 2.0, 1.4, 42.0, 2.0, 102, false, WALLETS[1]),

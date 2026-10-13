@@ -90,6 +90,7 @@ cargo run   -p hunter-lab              # analysis box: Postgres only, no keys/gR
 cargo run   -p hunter-lab  -- lake-export         # sealed days: local PG -> Parquet lake ($SWEEP_LAKE_DIR)
 cargo run   -p hunter-lab  -- sweep-dead-slots    # delete local legs of never-finalized blocks (the sync runs it)
 cargo run   -p hunter-live -- probe <ladder|fanout|pin-senders|simulate-*|sim-matrix|holdings>
+cargo run   -p hunter-live -- sync-mints [--incremental] <mint>...   # curve + AMM backfill into local Postgres; no wallet keys
 cd frontend; npm run dev               # both apps: live :5173, lab :5174
 npm run build:live                     # tsc (BOTH trees) + vite → lab-free dist/index.html (the EC2 artifact)
 npm run lint                           # import-boundary gate ONLY: shared⊬@live/@lab, live⊬@lab, lab⊬@live

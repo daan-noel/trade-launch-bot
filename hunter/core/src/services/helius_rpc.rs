@@ -450,7 +450,9 @@ impl HeliusRpc {
             "transactionDetails": "full",
             "encoding": encoding,
             "commitment": "confirmed",
-            "maxSupportedTransactionVersion": 0,
+            // 1, not 0: a page that contains a version-1 transaction is rejected
+            // outright when the client only claims support through version 0.
+            "maxSupportedTransactionVersion": 1,
             "sortOrder": sort_order,
             "limit": limit,
             "filters": { "status": "succeeded" }

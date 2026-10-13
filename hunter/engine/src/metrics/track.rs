@@ -376,6 +376,9 @@ impl TokenTrack {
                 (Metric::BagSharePct, Some(t)) => {
                     self.holder_book.as_ref().map_or(f64::NAN, |b| b.bag_share_pct(t.name))
                 }
+                (Metric::BagSoldPct, Some(t)) => fp
+                    .and_then(|fp| self.tags.get(&(fp, t.key)))
+                    .map_or(f64::NAN, |st| st.value(m, t.negated, r.span.window, now, cur)),
                 _ => f64::NAN,
             },
             Family::Crowd => match m {

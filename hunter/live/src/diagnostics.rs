@@ -1,14 +1,13 @@
-//! Offline decoder diagnostics. Two commands, one loop:
+//! Offline commands that exit before the live bin requires wallet keys:
 //!
 //! * `unknown-programs` reads the persisted `trades.ix_labels` and ranks the
 //!   program IDs the labeler still cannot name.
 //! * `decode-harvest` takes those programs back to the chain and works out what
 //!   their instructions are called, then prints paste-ready rows for
-//!   `ingest_pumpfun::decode::program_registry`.
-//!
-//! Neither touches the trading path: both exit before the live bin requires
-//! wallet keys, and `decode-harvest` is the only one that spends Helius credits
-//! (one `getTransactionsForAddress` per program, not one per transaction).
+//!   `ingest_pumpfun::decode::program_registry`. One `getTransactionsForAddress`
+//!   per program.
+//! * `sync-mints` backfills each mint's curve and post-migration AMM tape
+//!   through `token_sync` into the local database.
 
 use anyhow::{anyhow, Context};
 use serde_json::Value;
@@ -495,6 +494,82 @@ fn arg_i64(args: &[String], flag: &str, default: i64) -> i64 {
 
 fn arg_usize(args: &[String], flag: &str, default: usize) -> usize {
     arg_val(args, flag).and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+/// `sync-mints <mint> ...` — full curve + AMM backfill into the local database.
+///
+/// Uses the same `token_sync` path as `POST /api/token/sync` with post-migration
+/// included, so the rows are the decoder's trades, not a side file. Fetch All
+/// unless `--incremental`, which skips curve transactions already saved and
+/// still backfills the AMM tape. Exits before trading keys are loaded. Needs
+/// `HELIUS_RPC_URL` and `DATABASE_URL`.
+pub async fn run_sync_mints(settings: &config::Settings, mints: Vec<String>) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    use dashmap::DashMap;
+    use tokio::sync::{mpsc, Notify};
+
+    use crate::services::token_sync::{self, TokenSyncContext, TokenSyncRequest};
+    use trading_core::config::constants::PUMP_FUN_PROGRAM_ID;
+
+    let incremental = mints.iter().any(|a| a == "--incremental");
+    let mints: Vec<String> = mints.into_iter().filter(|a| a != "--incremental").collect();
+    if mints.is_empty() {
+        return Err(anyhow!(
+            "sync-mints [--incremental] <mint> ... — Fetch All unless --incremental, which skips curve txs already saved"
+        ));
+    }
+    if settings.helius_rpc_url.trim().is_empty() {
+        return Err(anyhow!("sync-mints needs HELIUS_RPC_URL"));
+    }
+
+    let pools = trading_core::storage::postgres::connect(settings).await?;
+    for mint in &mints {
+        println!("sync {mint}");
+        let ctx = TokenSyncContext {
+            db: pools.batch.clone(),
+            token_cache: Arc::new(DashMap::new()),
+            helius_rpc_url: settings.helius_rpc_url.clone(),
+            helius_laserstream_url: String::new(),
+            helius_api_key: settings.helius_api_key.clone(),
+            pump_program_id: PUMP_FUN_PROGRAM_ID.to_string(),
+            pool_index: Arc::new(DashMap::new()),
+            pools_changed: Arc::new(Notify::new()),
+            slot_anchor: None,
+        };
+        let req = TokenSyncRequest {
+            mint_address: mint.clone(),
+            include_post_migrate: true,
+            incremental,
+            verified_bonding_curve: None,
+        };
+        let (tx, mut rx) = mpsc::channel(256);
+        let printer = tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                print!("{line}");
+            }
+        });
+        token_sync::run_token_sync(ctx, req, tx)
+            .await
+            .map_err(|e| anyhow!("{mint}: {}", e.message()))?;
+        printer.await.ok();
+    }
+
+    let rows: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT mint_address, venue, count(*)::bigint \
+         FROM trades \
+         WHERE mint_address = ANY($1) \
+         GROUP BY 1, 2 \
+         ORDER BY 1, 2",
+    )
+    .bind(&mints)
+    .fetch_all(&pools.batch)
+    .await?;
+    println!();
+    for (mint, venue, n) in rows {
+        println!("{mint}  {venue}  {n}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

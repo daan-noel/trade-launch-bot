@@ -66,7 +66,7 @@ import {
   useGetStrategyRulesQuery,
 } from 'store/sharedEndpoints';
 import { isCopyRule } from 'lib/strategy/copyRule';
-import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
+import { RULE_WORDS_TIP_DELAY_MS, RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { useRuleActions } from 'components/strategy/useRuleActions';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
 import { ModeBadge } from 'components/strategy/ModeBadge';
@@ -1216,31 +1216,29 @@ function buildColumns(
       label: 'Name',
       group: 'rule',
       render: (r) => (
-        <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
-          <div className="flex min-w-40 cursor-default flex-col items-center gap-1">
-            <div className="flex items-center justify-center gap-1">
-              <span className="font-medium text-text">{r.rule_name}</span>
-              <RuleExclusiveMark params={r.params} />
-              <Link
-                to={openHref(r.id)}
-                title={`Open ${noun} “${r.rule_name}”`}
-                aria-label={`Open ${noun} ${r.rule_name}`}
-                className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <LinkIcon className="h-3.5 w-3.5" />
-              </Link>
-            </div>
-            <RuleLabels tags={r.tags} onTagClick={onTagClick} />
-            <span className="text-[10px] text-text-dim">
-              {!r.is_enabled
-                ? 'disabled'
-                : r.is_active
-                  ? 'armed on live'
-                  : 'idle on live'}
-            </span>
+        <div className="flex min-w-40 flex-col items-center gap-1">
+          <div className="flex items-center justify-center gap-1">
+            <span className="font-medium text-text">{r.rule_name}</span>
+            <RuleExclusiveMark params={r.params} />
+            <Link
+              to={openHref(r.id)}
+              title={`Open ${noun} “${r.rule_name}”`}
+              aria-label={`Open ${noun} ${r.rule_name}`}
+              className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <LinkIcon className="h-3.5 w-3.5" />
+            </Link>
           </div>
-        </RuleHoverTip>
+          <RuleLabels tags={r.tags} onTagClick={onTagClick} />
+          <span className="text-[10px] text-text-dim">
+            {!r.is_enabled
+              ? 'disabled'
+              : r.is_active
+                ? 'armed on live'
+                : 'idle on live'}
+          </span>
+        </div>
       ),
       searchValue: (r) =>
         [r.rule_name, ...(r.tags ?? []), !r.is_enabled ? 'disabled' : r.is_active ? 'active' : 'idle'].join(
@@ -1261,7 +1259,26 @@ function buildColumns(
     ...buildFingerprintRuleColumns(fpById, {
       cellClassName: (r) => fpTints.get(`${r.id}\0fingerprint`),
     }),
-    ...buildRuleTradeColumns(),
+    ...buildRuleTradeColumns<StrategyRule>().map((col) =>
+      col.key === 'params'
+        ? {
+            ...col,
+            cellClassName: (r: StrategyRule) =>
+              ['relative', col.cellClassName?.(r)].filter(Boolean).join(' '),
+            render: (r: StrategyRule) => (
+              <RuleHoverTip
+                rule={r}
+                fingerprint={fpById.get(r.fingerprint_id)}
+                openDelayMs={RULE_WORDS_TIP_DELAY_MS}
+                fillCell
+                wordsOnly
+              >
+                {col.render(r)}
+              </RuleHoverTip>
+            ),
+          }
+        : col,
+    ),
     {
       key: 'sim_run',
       label: 'Run',

@@ -104,11 +104,57 @@ impl SplitTotals {
     }
 }
 
+/// Token amounts of one half over a window. Buys and sells stay apart: the bag at the
+/// start of the span is the bag now, minus buys in the span, plus sells in the span.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct TokSide {
+    buy: f64,
+    sell: f64,
+}
+
+impl TokSide {
+    /// `tokens` is buy-positive, sell-negative, with `-0.0` for a zero-token sell.
+    fn add_signed(&mut self, tokens: f64) {
+        if !tokens.is_sign_negative() {
+            self.buy += tokens;
+        } else {
+            self.sell -= tokens;
+        }
+    }
+
+    fn sub_signed(&mut self, tokens: f64) {
+        if !tokens.is_sign_negative() {
+            self.buy -= tokens;
+        } else {
+            self.sell += tokens;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct TokSplit {
+    tagged: TokSide,
+    rest: TokSide,
+}
+
+impl TokSplit {
+    fn half(&mut self, tagged: bool) -> &mut TokSide {
+        if tagged {
+            &mut self.tagged
+        } else {
+            &mut self.rest
+        }
+    }
+}
+
 /// One entry of a window buffer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Entry {
     /// Buy positive, sell negative (`-0.0` for a zero-SOL sell).
     signed: f64,
+    /// Token amount, same sign as `signed`. `bag_sold_pct` reads it; a flow window
+    /// that shares this deque carries it too.
+    tokens: f64,
     tagged: bool,
     first_leg: bool,
 }
@@ -120,20 +166,23 @@ struct TagWindow {
     spec: WindowSpec,
     buf: VecDeque<(i64, Entry)>,
     totals: SplitTotals,
+    tok: TokSplit,
 }
 
 impl TagWindow {
     fn new(spec: WindowSpec) -> Self {
-        Self { spec, buf: VecDeque::new(), totals: SplitTotals::default() }
+        Self { spec, buf: VecDeque::new(), totals: SplitTotals::default(), tok: TokSplit::default() }
     }
 
-    fn push(&mut self, side: Side, sol: f64, tagged: bool, first_leg: bool, pos: i64, now_pos: i64) {
-        let signed = match side {
-            Side::Buy => sol,
-            Side::Sell => -sol,
+    fn push(&mut self, t: &TradeLite, tagged: bool, pos: i64, now_pos: i64) {
+        let (signed, tokens) = match t.side {
+            Side::Buy => (t.sol, t.token_amount),
+            Side::Sell => (-t.sol, -t.token_amount),
         };
-        push_sorted(&mut self.buf, pos, Entry { signed, tagged, first_leg });
-        self.totals.half(tagged).add(side, sol, first_leg);
+        let first_leg = t.leg_index == 0;
+        push_sorted(&mut self.buf, pos, Entry { signed, tokens, tagged, first_leg });
+        self.totals.half(tagged).add(t.side, t.sol, first_leg);
+        self.tok.half(tagged).add_signed(tokens);
         self.evict(now_pos);
     }
 
@@ -145,6 +194,7 @@ impl TagWindow {
             }
             self.buf.pop_front();
             self.totals.half(e.tagged).sub_signed(e.signed, e.first_leg);
+            self.tok.half(e.tagged).sub_signed(e.tokens);
         }
     }
 
@@ -164,6 +214,25 @@ impl TagWindow {
                 break;
             }
             out.half(e.tagged).sub_signed(e.signed, e.first_leg);
+        }
+        out
+    }
+
+    /// Token totals over `[lo, hi]`, corrected the same way as [`totals_at`](Self::totals_at).
+    fn tokens_at(&self, now_pos: i64) -> TokSplit {
+        let (lo, hi) = self.spec.bounds(now_pos);
+        let mut out = self.tok;
+        for &(pos, e) in self.buf.iter() {
+            if pos >= lo {
+                break;
+            }
+            out.half(e.tagged).sub_signed(e.tokens);
+        }
+        for &(pos, e) in self.buf.iter().rev() {
+            if pos <= hi {
+                break;
+            }
+            out.half(e.tagged).sub_signed(e.tokens);
         }
         out
     }
@@ -301,7 +370,7 @@ impl TagState {
         for w in self.windows.values_mut() {
             let pos = w.spec.pos(t.at, cur.at_trade(t));
             let now_pos = w.spec.now_pos(t.at, cur);
-            w.push(t.side, t.sol, tagged, first_leg, pos, now_pos);
+            w.push(t, tagged, pos, now_pos);
         }
         tagged
     }
@@ -361,11 +430,28 @@ impl TagState {
     pub fn value(&self, metric: Metric, negated: bool, window: Option<WindowSpec>, now: Ts, cur: Cursor) -> f64 {
         match window {
             None if metric == Metric::ProfitSol => self.profit_sol(negated),
+            Some(spec) if metric == Metric::BagSoldPct => self.bag_sold_pct(negated, spec, now, cur),
             None => self.lifetime.value(metric, negated),
             Some(spec) => match self.windows.get(&spec.key()) {
                 Some(w) => w.totals_at(spec.now_pos(now, cur)).value(metric, negated),
                 None => f64::NAN,
             },
+        }
+    }
+
+    /// `bag_sold_pct`: sells in the span, as a percent of the half's token bag at the
+    /// span's start. The bag now already includes the span, so the start is
+    /// `bag_now - buys + sells`.
+    fn bag_sold_pct(&self, negated: bool, spec: WindowSpec, now: Ts, cur: Cursor) -> f64 {
+        let Some(w) = self.windows.get(&spec.key()) else { return f64::NAN };
+        let tok = w.tokens_at(spec.now_pos(now, cur));
+        let half = if negated { tok.rest } else { tok.tagged };
+        let bag_now = if negated { self.rest_tokens } else { self.tagged_tokens };
+        let start = bag_now - half.buy + half.sell;
+        if start > 0.0 && half.sell.is_finite() {
+            100.0 * half.sell / start
+        } else {
+            f64::NAN
         }
     }
 

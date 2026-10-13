@@ -1052,6 +1052,10 @@ async fn run() -> anyhow::Result<()> {
             )
             .await;
         }
+        Some("sync-mints") => {
+            return diagnostics::run_sync_mints(&settings, std::env::args().skip(2).collect())
+                .await;
+        }
         _ => {}
     }
 

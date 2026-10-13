@@ -50,7 +50,7 @@ metric, whose trades, over what stretch.
 | `m_state` | the pool now | `state` |
 | `m_price` | the chart | `price_lifetime`, `price_window` |
 | `m_flow` | money moving, all trades or one tag's | `flow_lifetime`, `flow_window`, `flow_slice`, `tags::state` |
-| `m_holdings` | what a tag or wallet class holds | `tags::state` (`profit_sol`), `holder_book` (`bag_share_pct`) |
+| `m_holdings` | what a tag or wallet class holds | `tags::state` (`profit_sol`, `bag_sold_pct`), `holder_book` (`bag_share_pct`) |
 | `m_crowd` | who shows up | `crowd_window`, `build_window`, `crowd_after_age`, `burst_slot` |
 | `m_print` | the print being read | `print_wallet` (`since_buy_sec`); `tags::state` (`sold_bag_pct`, `flat_before`, copy page only) |
 | `m_slot` | this slot's buys | `burst_slot` |
@@ -224,7 +224,7 @@ rules read it.
 
 ### Levels and built-ins
 
-- **Trade level** (`m_flow`, `m_holdings.profit_sol`): one `TagState` per (fingerprint,
+- **Trade level** (`m_flow`, `m_holdings.profit_sol`, `m_holdings.bag_sold_pct`): one `TagState` per (fingerprint,
   tag), any matcher.
 - **Template level** (`m_slot`, `m_wave`, `m_crowd.unique_ix_templates`): the slot and wave
   keep one buffer per coin and apply the tag when read, through its ix-template view

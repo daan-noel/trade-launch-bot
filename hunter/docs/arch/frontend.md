@@ -661,7 +661,7 @@ next load (no per-metric frontend work).
   Signal groups join with `v`, further right than `if`, on the same tree line.
   A metric family stays a filled color mark.
   The Rules and Simulate params cell (`ruleChainCell`) is that same Signal row,
-  Buy chain, and Sell chain.   On the Rules and Copy tables, hovering that Chain
+  Buy chain, and Sell chain.   On the Rules, Copy, and Simulate tables, hovering that Chain
   cell for 1 second opens the In words reading. A fingerprint's Used-by rules
   open that same reading on a 1 second hover. Sweep tables keep the full line chips (`ruleParamsCell`),
   `FingerprintPicker`/`FingerprintForm` (registry-driven

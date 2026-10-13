@@ -189,6 +189,7 @@ pub enum Metric {
     // m_holdings
     ProfitSol,
     BagSharePct,
+    BagSoldPct,
     // m_crowd
     UniqueWallets,
     TradesPerWallet,
@@ -443,6 +444,11 @@ pub const METRICS: &[MetricSpec] = &[
       "m_holdings.bag_share_pct @bundled >= 30 : bundle-bought wallets hold 30 % of the supply.",
       "Classes: bundled (first buy in a slot where 3+ wallets first bought with one ix shape), public_app (first buy through an app with 100+ buyers the day before). NaN while nobody holds.",
       RT, WC, S::LIFE, false, 0.01, 210),
+    m(M::BagSoldPct, F::Holdings, "bag_sold_pct", "share of the tag's bag its sells took", U::Percent,
+      "Percent of the tag's token bag, measured at the start of the span, that the tag's sells during the span remove.",
+      "m_holdings.bag_sold_pct @volume [2s] >= 50 : volume sells in the last 2 s took half or more of the bag the volume trades held 2 s ago.",
+      "The bag is every wallet carrying the tag, added together. A buy during the span is not part of that starting bag. Above 100 when the sells exceed it. 0 when the tag held a bag and sold nothing. NaN when it held nothing at the start of the span, and once a tagged print had no token amount.",
+      RT, TR, S::WINDOW, false, 0.5, 214),
     // ── m_crowd ──
     m(M::UniqueWallets, F::Crowd, "unique_wallets", "different wallets", U::Count,
       "Different wallets that traded.",
