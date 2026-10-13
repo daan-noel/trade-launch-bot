@@ -72,6 +72,10 @@ hence `[build] jobs = 4` and `[profile.dev] debug = "line-tables-only"`. All of 
   doesn't change a decision, delete it.
 - **Modular & concise.** handler → service → repo, one responsibility per module. Short
   answers; a non-trivial plan goes in a `*-plan.md`, not inline.
+- **Do not format the Rust tree.** [rustfmt.toml](rustfmt.toml) sets
+  `disable_all_formatting`. Default rustfmt wraps calls at 60 columns, struct
+  literals at 18, and alphabetizes `mod` lines, so `cargo fmt` and format-on-save
+  rewrite untouched code.
 - **Deploy target is a 2vCPU / 4GB EC2 box.** Only `*-live` bins + their shared crates ship
   there; `*-lab` + DuckDB/arrow/parquet/rayon stay on the workstation. Never raise cache
   caps/TTLs or add a pool on the server — sync to the workstation instead.

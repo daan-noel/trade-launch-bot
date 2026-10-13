@@ -1,0 +1,4 @@
+# Committed Rust keeps its hand layout. Default rustfmt wraps calls at 60
+# columns, struct literals at 18, and alphabetizes `mod` lines, so a format
+# pass rewrites untouched code. Leave formatting off.
+disable_all_formatting = true
