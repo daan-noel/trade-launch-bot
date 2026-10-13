@@ -180,8 +180,8 @@ function RuleEditorInner({
               <Input fieldSize="sm" value={ruleName} onChange={(e) => setRuleName(e.target.value)} />
             </label>
             {scope === 'copy' && (
-              <label className="flex w-52 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
-                <span>Follow</span>
+              <label className="flex w-56 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
+                <LabelTip tip={RULE_FIELD_HELP.follow}>Whose sell</LabelTip>
                 <Select
                   fieldSize="sm"
                   value={doc.follow ?? 'all'}
@@ -190,12 +190,12 @@ function RuleEditorInner({
                     patch((d) => ({ ...d, follow: e.target.value === 'bought' ? 'bought' : 'all' }))
                   }
                 >
-                  <option value="bought">the wallet we bought</option>
-                  <option value="all">every target wallet</option>
+                  <option value="bought">only the wallet we bought</option>
+                  <option value="all">any watched wallet</option>
                 </Select>
               </label>
             )}
-            <div className="flex w-36 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
+            <div className="flex w-44 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
               <LabelTip tip={RULE_FIELD_HELP.mode}>Mode</LabelTip>
               <div className="flex items-center gap-1">
                 <Select fieldSize="sm" className="w-24" value={mode} onChange={(e) => setMode(e.target.value as TradeMode)} disabled={modeLocked}>
@@ -216,9 +216,9 @@ function RuleEditorInner({
                 )}
               </div>
               {mode === 'paper' && (
-                <span className="text-[10px] leading-tight text-text-dim" title="The last print landed by the signal plus 115 ms.">
-                  Fill: lag 115 ms
-                </span>
+                <LabelTip tip={RULE_FIELD_HELP.paperFill} className="text-[10px] leading-tight">
+                  Last trade by +115 ms
+                </LabelTip>
               )}
             </div>
           </div>

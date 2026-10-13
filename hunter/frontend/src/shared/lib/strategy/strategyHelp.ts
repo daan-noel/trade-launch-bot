@@ -76,11 +76,31 @@ export const RULE_FIELD_HELP = {
   mode: {
     title: 'Trade mode',
     body: [
-      'paper — fills from the live trade feed at lag 115 ms: the last print landed by the signal plus 115 ms. No wallet, no on-chain spend.',
+      'paper — practice on the live trade feed. No wallet, no on-chain spend. The fill is the last trade by 115 ms after the signal.',
       '',
       'real — send actual buys/sells on-chain. Spends SOL from the configured wallet.',
       '',
       'Locked after create — unlock the padlock to flip paper↔real. That only affects future buys; open positions keep their original mode. Sizing/caps stay editable while live; the fingerprint and the conditions lock once active.',
+    ].join('\n'),
+  },
+  paperFill: {
+    title: 'Paper fill',
+    body: [
+      'The fill price is the last trade that has arrived by 115 ms after the signal. The buy and the sell use the same rule.',
+      '',
+      'Every paper rule uses this. To price a replay another way, pick a fill model on Simulate or Sweep.',
+    ].join('\n'),
+  },
+  follow: {
+    title: 'Whose sell we copy',
+    body: [
+      'After our buy, a sell from a watched wallet can sell our coins.',
+      '',
+      'Only the wallet we bought: we remember that wallet. A sell from anyone else does not touch this position.',
+      '',
+      'Any watched wallet: the first watched wallet to sell sells our one pile.',
+      '',
+      'A price exit and a dead coin still close the position. One coin stays one pile, so another watched wallet buying it does not open a second position.',
     ].join('\n'),
   },
   buy: {

@@ -48,6 +48,7 @@ export function RentCard({ onRecovered }: { onRecovered?: () => void }) {
       setActionError(null);
       setSuccess(null);
       setBurnOpen(false);
+      let recovered = false;
       try {
         const res = await recover({ burn_dust: burnDust }).unwrap();
         setSuccess(resultMessage(res));
@@ -55,13 +56,23 @@ export function RentCard({ onRecovered }: { onRecovered?: () => void }) {
           const more = res.error_count > res.errors.length ? ` (+${res.error_count - res.errors.length} more)` : '';
           setActionError(`${res.errors.join('; ')}${more}`);
         }
-        onRecovered?.();
+        recovered = true;
       } catch (e) {
         setActionError(
           `Recover failed: ${apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error'}`,
         );
       } finally {
         setMode(null);
+      }
+      // A throw here is the holdings refresh, not the close. Reporting it as
+      // "Recover failed" hides a close that already landed.
+      if (!recovered) return;
+      try {
+        onRecovered?.();
+      } catch (e) {
+        setActionError(
+          `Recovered, but refreshing holdings failed: ${e instanceof Error ? e.message : 'unknown error'}`,
+        );
       }
     },
     [recover, onRecovered],

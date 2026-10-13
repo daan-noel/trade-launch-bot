@@ -218,9 +218,22 @@ export function MyWalletPage() {
   // Jupiter oracle for the CURRENT page's mints (liquidity / 24h / cold marks).
   // No interval — SSE tips live Value/Price; refetch on bag refresh / focus below.
   const pageMints = useMemo(() => items.map((h) => h.mint_address).sort(), [items]);
-  const { data: prices, refetch: refetchPrices } = useGetWalletPricesQuery(pageMints, {
+  const {
+    data: prices,
+    refetch: refetchPrices,
+    isUninitialized: pricesUninitialized,
+  } = useGetWalletPricesQuery(pageMints, {
     skip: pageMints.length === 0,
   });
+  // `refetch` throws Redux Toolkit error 38 while this query is skipped. Empty
+  // token accounts, which rent recovery closes, are not holdings rows, so the
+  // page is often in that skipped state when Recover runs.
+  const pricesStartedRef = useRef(false);
+  pricesStartedRef.current = !pricesUninitialized;
+  const refetchPricesIfStarted = useCallback(() => {
+    if (!pricesStartedRef.current) return;
+    void refetchPrices();
+  }, [refetchPrices]);
 
   const { usdRate } = useUsdRate();
   const usdRateRef = useRef(usdRate);
@@ -330,9 +343,9 @@ export function MyWalletPage() {
     setTips({});
     reload();
     refreshSummary();
-    void refetchPrices();
+    refetchPricesIfStarted();
     dispatch(liveApi.util.invalidateTags(['WalletHoldings']));
-  }, [reload, refreshSummary, refetchPrices, dispatch]);
+  }, [reload, refreshSummary, refetchPricesIfStarted, dispatch]);
 
   const { data: profiles } = useGetProfilesQuery();
   const mineWalletsRef = useRef<Set<string>>(new Set());
@@ -350,20 +363,18 @@ export function MyWalletPage() {
       setTips({});
       reload();
       refreshSummary();
-      void refetchPrices();
+      refetchPricesIfStarted();
     });
-  }, [reload, refreshSummary, refetchPrices]);
+  }, [reload, refreshSummary, refetchPricesIfStarted]);
 
   // Quiet bags / Jupiter oracle fields: refresh when the tab becomes visible.
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState === 'visible' && pageMints.length > 0) {
-        void refetchPrices();
-      }
+      if (document.visibilityState === 'visible') refetchPricesIfStarted();
     };
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
-  }, [refetchPrices, pageMints.length]);
+  }, [refetchPricesIfStarted]);
 
   // After a manual buy/sell submit: wait for our fill on the ingest feed (or a
   // short timeout), then refresh — no RPC polling. `prevAmount` kept for call-
