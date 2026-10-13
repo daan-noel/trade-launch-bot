@@ -586,6 +586,15 @@ export function tokenTradeColumns(
       filterNumber: (t) => t.tx_index,
     },
     {
+      key: 'source',
+      label: 'Source',
+      tooltip:
+        'Who wrote the row. Live is LaserStream ingest (receive time). Sync is token-sync (chain time, whole seconds).',
+      render: (t) => (t.source === 1 ? 'sync' : 'live'),
+      sortValue: (t) => t.source ?? 0,
+      searchValue: (t) => (t.source === 1 ? 'sync' : 'live'),
+    },
+    {
       key: 'time',
       label: 'Time (UTC)',
       width: '108px',

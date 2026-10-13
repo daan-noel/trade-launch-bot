@@ -40,6 +40,7 @@ export function liveTradeToTradeRecord(t: LiveTrade): TradeRecord {
     tx_signature: t.tx_signature,
     tx_index: t.tx_index ?? 0,
     leg_index: t.leg_index ?? 0,
+    source: 0,
     slot: t.slot,
     block_time: t.timestamp,
     reserve_sol: t.reserve_sol ?? null,

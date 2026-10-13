@@ -27,7 +27,7 @@ pub const OWN_TX_LOOKUP_SLACK: chrono::Duration = chrono::Duration::hours(1);
 /// ceiling guard in `tests` both read it, so adding a bound column cannot leave a
 /// stale copy behind (it did once — the doc said 18 while the guard still asserted
 /// 15, and neither was the truth).
-const TRADE_INSERT_BINDS_PER_ROW: usize = 23;
+const TRADE_INSERT_BINDS_PER_ROW: usize = 24;
 
 /// Rows per `insert_many` statement. A single Postgres statement is capped at
 /// 65535 bind parameters (the wire protocol's int16 count), and sqlx 0.6 silently
@@ -86,7 +86,7 @@ const TRADE_HISTORY_COLUMNS: &str = "t.mint_address, \
     t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels, \
     t.fee_lamports, t.cu_limit, t.cu_price, t.tip_lamports, t.venue_fee_bps, \
     p.address AS payer_address, \
-    COALESCE(t.is_proxied, w.is_proxy) AS is_proxied";
+    COALESCE(t.is_proxied, w.is_proxy) AS is_proxied, t.source";
 
 /// The tables [`TRADE_HISTORY_COLUMNS`] reads.
 const TRADE_HISTORY_FROM: &str = "FROM trades t \
@@ -166,6 +166,10 @@ struct TradeDbRow {
     // 0020. Defaulted like the rest; NULL on curve rows and amm rows before 0020.
     #[sqlx(default)]
     venue_fee_bps: Option<f32>,
+    /// 0026. `0` live, `1` token-sync. Defaulted so a read that does not project
+    /// the column still maps; a history read does project it.
+    #[sqlx(default)]
+    source: i16,
 }
 
 impl TryFrom<TradeDbRow> for Trade {
@@ -225,6 +229,7 @@ impl TryFrom<TradeDbRow> for Trade {
             // History reads do not project `swap_ix`. The entry-context query reads
             // the ceiling itself.
             swap_ix: None,
+            source: r.source,
         })
     }
 }
@@ -289,9 +294,9 @@ impl TradeRepo {
                  reserve_lamports, reserve_token,
                  slot, tx_index, leg_index, block_time, tx_signature, ix_labels,
                  fee_lamports, cu_limit, cu_price, tip_lamports,
-                 payer_id, is_proxied, payer_net_lamports, venue_fee_bps, swap_ix)
+                 payer_id, is_proxied, payer_net_lamports, venue_fee_bps, swap_ix, source)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                    $16, $17, $18, $19, $20, $21, $22, $23)
+                    $16, $17, $18, $19, $20, $21, $22, $23, $24)
             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
             "#,
         )
@@ -318,6 +323,7 @@ impl TradeRepo {
         .bind(trade.payer_net_lamports)
         .bind(trade.venue_fee_bps.map(|f| f as f32))
         .bind(trade.swap_ix.as_ref().map(sqlx::types::Json))
+        .bind(trade.source)
         .execute(&self.pool)
         .await?;
 
@@ -337,8 +343,9 @@ impl TradeRepo {
     /// Chunked at [`TRADE_INSERT_CHUNK`]: a single statement is capped at 65535
     /// bind parameters (the wire protocol's int16 count), and sqlx 0.6 has no
     /// guard — it writes `len() as i16`, so past the ceiling the count silently
-    /// wraps and Postgres rejects the malformed Parse/Bind ("DB parse error"). At
-    /// 14 binds/row the chunk stays well under the ceiling. Each chunk is safe to
+    /// wraps and Postgres rejects the malformed Parse/Bind ("DB parse error"). The
+    /// chunk is [`TRADE_INSERT_PARAM_BUDGET`] / [`TRADE_INSERT_BINDS_PER_ROW`],
+    /// under that ceiling. Each chunk is safe to
     /// retry (DO NOTHING is idempotent).
     pub async fn insert_many(&self, trades: &[Trade]) -> anyhow::Result<()> {
         if trades.is_empty() {
@@ -402,7 +409,7 @@ impl TradeRepo {
                   reserve_lamports, reserve_token, slot, tx_index, leg_index, \
                   block_time, tx_signature, ix_labels, fee_lamports, \
                   cu_limit, cu_price, tip_lamports, payer_id, is_proxied, payer_net_lamports, \
-                  venue_fee_bps, swap_ix) ",
+                  venue_fee_bps, swap_ix, source) ",
             );
             qb.push_values(chunk.iter().zip(sig_chunk), |mut b, (t, sig)| {
                 let wallet_id = wallet_ids
@@ -435,7 +442,8 @@ impl TradeRepo {
                     .push_bind(t.is_proxied)
                     .push_bind(t.payer_net_lamports)
                     .push_bind(t.venue_fee_bps.map(|f| f as f32))
-                    .push_bind(t.swap_ix.as_ref().map(sqlx::types::Json));
+                    .push_bind(t.swap_ix.as_ref().map(sqlx::types::Json))
+                    .push_bind(t.source);
             });
             qb.push(" ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING");
             qb.build().execute(&self.pool).await?;
@@ -590,10 +598,9 @@ impl TradeRepo {
     ///
     /// `candidates` is the list of signatures the sync is about to fetch; the query
     /// intersects against it (`tx_signature = ANY($3)`) so Postgres returns only the
-    /// already-saved sigs among that page. The slot floor now reads the venue's
-    /// watermark from `token_sync_state.last_slot` (was `tokens_info.last_synced_*`),
-    /// COALESCEd to 0 before the first sync stamps a watermark. An empty `candidates`
-    /// short-circuits to an empty set.
+    /// already-saved sigs among that page. No slot cutoff: a live row can sit below
+    /// the sync watermark, and hiding it is what made incremental sync re-download
+    /// and insert a second copy. An empty `candidates` short-circuits to an empty set.
     pub async fn saved_signatures(
         &self,
         mint: &str,
@@ -616,11 +623,6 @@ impl TradeRepo {
             WHERE t.mint_address = $1
               AND t.venue = $2
               AND t.tx_signature = ANY($3)
-              AND t.slot >= COALESCE(
-                  (SELECT s.last_slot
-                   FROM token_sync_state s
-                   WHERE s.mint_address = $1 AND s.venue = $2),
-                  0)
             "#,
         )
         .bind(mint)
@@ -632,6 +634,46 @@ impl TradeRepo {
         Ok(rows
             .into_iter()
             .map(|(b,)| sig_bytes_to_base58(&b))
+            .collect())
+    }
+
+    /// Legs already stored for these signatures on this mint and venue.
+    ///
+    /// No slot cutoff. Live `block_time` is the receive clock and sync writes the
+    /// chain second, so the primary key `(block_time, tx_signature, leg_index)`
+    /// does not collide and `ON CONFLICT DO NOTHING` does not drop the copy.
+    /// Token-sync calls this at insert time and skips a leg that is already here.
+    /// An empty `signatures` short-circuits to an empty set.
+    pub async fn existing_legs(
+        &self,
+        mint: &str,
+        venue: &str,
+        signatures: &[String],
+    ) -> anyhow::Result<HashSet<(String, i16)>> {
+        if signatures.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let candidate_bytes: Vec<Vec<u8>> = signatures
+            .iter()
+            .map(|s| sig_base58_to_bytes(s))
+            .collect::<anyhow::Result<_>>()?;
+        let rows: Vec<(Vec<u8>, i16)> = sqlx::query_as(
+            r#"
+            SELECT tx_signature, leg_index
+            FROM trades
+            WHERE mint_address = $1
+              AND venue = $2
+              AND tx_signature = ANY($3)
+            "#,
+        )
+        .bind(mint)
+        .bind(venue)
+        .bind(&candidate_bytes)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(sig, leg)| (sig_bytes_to_base58(&sig), leg))
             .collect())
     }
 
@@ -2438,7 +2480,8 @@ mod tests {
     /// (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,
     /// reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time,
     /// tx_signature, ix_labels, fee_lamports, cu_limit, cu_price, tip_lamports,
-    /// payer_id, is_proxied, payer_net_lamports, venue_fee_bps); one Postgres statement is capped at 65535 (sqlx 0.6
+    /// payer_id, is_proxied, payer_net_lamports, venue_fee_bps, swap_ix, source);
+    /// one Postgres statement is capped at 65535 (sqlx 0.6
     /// wraps `len() as i16` past it → a Postgres parse error). Pin the chunk so
     /// adding a bound column re-checks the ceiling here instead of surfacing as a
     /// runtime parse error on the backfill path.

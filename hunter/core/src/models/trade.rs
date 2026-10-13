@@ -89,16 +89,17 @@ pub struct Trade {
     pub venue_fee_bps: Option<f64>,
     pub tx_signature: String,
     /// Position of this trade's transaction within its block. Real on the live
-    /// LaserStream feed and on LaserStream-replay backfill. On the RPC backfill path
-    /// the true block position is unavailable, so token_sync stamps a per-slot
-    /// monotonic proxy in gTFA chain order (`stamp_proxy_tx_index`): it orders trades
-    /// within a slot but is NOT the absolute block index — don't compare it across
-    /// sources.
+    /// LaserStream feed and on LaserStream-replay backfill. The RPC backfill path
+    /// has no block position, so token_sync stamps a per-slot counter in page
+    /// order (`stamp_proxy_tx_index`): the oldest frame in the slot run is 0.
+    /// That counter orders trades within the slot and is not the block index.
     pub tx_index: u32,
     /// Index of this trade within the transaction (0 = first pump leg).
     pub leg_index: u32,
     pub slot: u64,
-    /// On-chain block time from Solana (second precision).
+    /// Live ingest writes the receive clock (sub-second). Token-sync writes the
+    /// chain `blockTime`, a whole second. Solana does not provide milliseconds,
+    /// and the receive clock cannot be recovered later.
     pub block_time: DateTime<Utc>,
     /// When this trade was ingested (sub-second precision).
     pub received_at: DateTime<Utc>,
@@ -139,6 +140,11 @@ pub struct Trade {
     /// not a new column.
     #[serde(default)]
     pub swap_ix: Option<serde_json::Value>,
+
+    /// Who wrote the row (`trades.source`, migration 0026). `0` is live
+    /// LaserStream ingest. `1` is token-sync. Same meaning as `raw_txs.source`.
+    #[serde(default)]
+    pub source: i16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +214,7 @@ impl Trade {
             instruction_labels: serde_json::Value::Array(vec![]),
             venue: "curve".to_string(),
             swap_ix: None,
+            source: 0,
         }
     }
 }

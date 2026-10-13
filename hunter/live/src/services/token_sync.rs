@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     str::FromStr,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -417,10 +418,10 @@ pub async fn run_token_sync(
         )
         .await?;
 
-        // Incremental syncs skip transactions already saved (e.g. by live ingest)
-        // so we don't re-spend getTransaction credits on them. "Fetch All" via the
-        // rpc path re-fetches everything so decoder fixes propagate via the trades
-        // ON CONFLICT DO UPDATE — dedup is intentionally incremental-only.
+        // Incremental syncs skip signatures already stored for this mint and venue
+        // so we don't re-spend getTransaction credits on them. Fetch All still
+        // downloads every page; `persist_backfill` drops a leg that is already
+        // stored. Neither path overwrites a stored leg.
         let to_fetch = if req.incremental {
             let candidates: Vec<String> = signatures.iter().map(|e| e.signature.clone()).collect();
             let saved = TradeRepo::new(ctx.db.clone())
@@ -1049,8 +1050,9 @@ async fn persist_backfill(
         .insert_many(txs)
         .await
         .map_err(|e| SyncError::Internal(format!("{venue} tx bulk insert failed: {e}")))?;
+    let fresh = drop_saved_trades(trade_repo, venue, trades).await?;
     trade_repo
-        .insert_many(trades)
+        .insert_many(&fresh)
         .await
         .map_err(|e| SyncError::Internal(format!("{venue} trade bulk insert failed: {e}")))?;
     wallets.sort();
@@ -1100,20 +1102,14 @@ fn fetched_from_rpc(slot: u64, wrapped: &Value) -> Option<FetchedTx> {
 /// only a monotonic-within-slot proxy — so never join/compare it against live
 /// `tx_index`.
 ///
-/// **Within-slot direction.** gTFA's `"asc"` orders *across slots* (oldest-first),
-/// but within one slot the page returns transactions **newest-first** — verified
-/// against the curve reserve chain (DB: same-slot rows chain correctly under
-/// `tx_index DESC`, never `ASC`, when stamped in incoming order). So we assign the
-/// counter **in reverse within each slot**: the last frame of a slot run gets index
-/// 0, the first gets the highest. That makes `tx_index ASC` match true on-chain
-/// execution order, so every downstream consumer (swing scan, chart, sweep) can
-/// trust `slot ASC → tx_index ASC → leg_index ASC` with no reserve-chain
-/// reconstruction.
+/// Callers hand frames oldest-first: gTFA `"asc"` and `getSignaturesForAddress`
+/// (slot-ascending, last entry newest). Within a slot the same order holds, so the
+/// first frame of a slot run is index 0. History then sorts `tx_index ASC` in
+/// execution order.
 ///
 /// `frames` MUST be slot-ascending (every caller sorts first). The counter is
-/// per-call, so a single slot split across two streamed gTFA pages restarts —
-/// negligible for one account's history, and at worst reorders that one boundary
-/// slot's intra-slot ties.
+/// per-call, so a single slot split across two streamed gTFA pages restarts at 0
+/// on the next page.
 fn stamp_proxy_tx_index(frames: &mut [FetchedTx]) {
     let mut i = 0;
     while i < frames.len() {
@@ -1123,15 +1119,59 @@ fn stamp_proxy_tx_index(frames: &mut [FetchedTx]) {
         while j < frames.len() && frames[j].slot == slot {
             j += 1;
         }
-        // gTFA returns the slot's txs newest-first, so reverse: the run's LAST
-        // frame is the slot's first on-chain tx (index 0).
-        let run_len = (j - i) as u64;
         for (k, ft) in frames[i..j].iter_mut().enumerate() {
             if let Some(info) = ft.update.transaction.as_mut() {
-                info.index = run_len - 1 - k as u64;
+                info.index = k as u64;
             }
         }
         i = j;
+    }
+}
+
+/// Drop legs whose `(mint, venue, signature, leg)` is already in `trades`.
+///
+/// The insert conflict key includes `block_time`. Live writes the receive clock
+/// and sync writes the chain second, so `ON CONFLICT DO NOTHING` does not see the
+/// live row. This filter is the dedup, on every sync path, including a full AMM
+/// gTFA download.
+async fn drop_saved_trades(
+    trade_repo: &TradeRepo,
+    venue: &str,
+    trades: &[Trade],
+) -> Result<Vec<Trade>, SyncError> {
+    if trades.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut sigs_by_mint: HashMap<&str, Vec<String>> = HashMap::new();
+    for t in trades {
+        sigs_by_mint
+            .entry(t.mint_address.as_str())
+            .or_default()
+            .push(t.tx_signature.clone());
+    }
+    let mut saved: HashMap<String, HashSet<(String, i16)>> = HashMap::new();
+    for (mint, sigs) in sigs_by_mint {
+        let mut uniq = sigs;
+        uniq.sort();
+        uniq.dedup();
+        let legs = trade_repo
+            .existing_legs(mint, venue, &uniq)
+            .await
+            .map_err(|e| SyncError::Internal(format!("{venue} saved-leg lookup failed: {e}")))?;
+        saved.insert(mint.to_string(), legs);
+    }
+    Ok(trades
+        .iter()
+        .filter(|t| !already_stored(&saved, t))
+        .cloned()
+        .collect())
+}
+
+/// True when this leg is in the set `existing_legs` returned for its mint.
+fn already_stored(saved: &HashMap<String, HashSet<(String, i16)>>, trade: &Trade) -> bool {
+    match saved.get(&trade.mint_address) {
+        Some(legs) => legs.contains(&(trade.tx_signature.clone(), trade.leg_index as i16)),
+        None => false,
     }
 }
 
@@ -1173,8 +1213,8 @@ fn persist_tx(update: &SubscribeUpdateTransaction, slot: u64, block_time: DateTi
 ///
 /// The full ("Fetch All") backfill streams these pages, decoding + flushing each
 /// so the whole history never materializes at once. ~0.1 credit/tx at a 1000-tx
-/// page vs 1 credit/tx for per-sig `getTransaction`. Like the rpc "Fetch All"
-/// path it returns every tx, so decoder fixes propagate via the trades upsert.
+/// page vs 1 credit/tx for per-sig `getTransaction`. The page returns every tx;
+/// `persist_backfill` drops a leg already stored for the mint and venue.
 async fn gtfa_fetch_page(
     rpc: &HeliusRpc,
     address: &str,
@@ -1518,6 +1558,9 @@ pub(crate) fn trade_from_ingest_event(e: &ingest_pumpfun::event::Trade) -> Trade
         }
         .to_string(),
         swap_ix: e.swap_ix.as_ref().map(crate::ingest::swap_ix::buy_ix_json),
+        // Every caller of this translator is token-sync. Live ingest builds its
+        // own `Trade` and leaves `source` at 0.
+        source: 1,
     }
 }
 
@@ -1548,6 +1591,234 @@ fn token_from_ingest_event(e: ingest_pumpfun::event::TokenCreated) -> Token {
         first_slot_sell_sol: None,
         meta: create_meta(e.uri.as_deref()),
         created_at: e.block_time,
+    }
+}
+
+#[cfg(test)]
+mod proxy_and_dedup {
+    use super::*;
+    use ingest_pumpfun::proto::geyser::SubscribeUpdateTransactionInfo;
+
+    fn frame(slot: u64) -> FetchedTx {
+        FetchedTx {
+            slot,
+            block_time: DateTime::UNIX_EPOCH,
+            update: SubscribeUpdateTransaction {
+                slot,
+                transaction: Some(SubscribeUpdateTransactionInfo {
+                    signature: Vec::new(),
+                    is_vote: false,
+                    transaction: None,
+                    meta: None,
+                    index: 99,
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn proxy_index_follows_page_order() {
+        let mut frames = vec![frame(1), frame(1), frame(1), frame(2)];
+        stamp_proxy_tx_index(&mut frames);
+        let indexes: Vec<u64> = frames
+            .iter()
+            .map(|f| f.update.transaction.as_ref().unwrap().index)
+            .collect();
+        assert_eq!(indexes, vec![0, 1, 2, 0]);
+    }
+
+    #[test]
+    fn a_saved_leg_on_one_mint_does_not_drop_the_other() {
+        let curve = Trade::new(
+            "CurveMint".into(),
+            "W".into(),
+            TradeType::Buy,
+            0.5,
+            1_000,
+            "SameSig".into(),
+            1,
+            DateTime::UNIX_EPOCH,
+        );
+        let mut amm = Trade::new(
+            "AmmMint".into(),
+            "W".into(),
+            TradeType::Sell,
+            0.5,
+            1_000,
+            "SameSig".into(),
+            1,
+            DateTime::UNIX_EPOCH,
+        );
+        amm.venue = "amm".into();
+        let mut saved: HashMap<String, HashSet<(String, i16)>> = HashMap::new();
+        saved.insert("CurveMint".into(), HashSet::from([("SameSig".into(), 0)]));
+        assert!(already_stored(&saved, &curve));
+        assert!(!already_stored(&saved, &amm));
+    }
+
+    /// One leg of a slot, for the reserve-chain reindex of stored sync rows.
+    struct ReserveLeg {
+        sig: u32,
+        is_buy: bool,
+        token_amount: u64,
+        post_token: u64,
+        /// `Some` keeps the live block index. `None` is a sync row to assign.
+        live_index: Option<u32>,
+    }
+
+    fn implied_pre(leg: &ReserveLeg) -> Option<u64> {
+        if leg.is_buy {
+            leg.post_token.checked_add(leg.token_amount)
+        } else {
+            leg.post_token.checked_sub(leg.token_amount)
+        }
+    }
+
+    /// Sync `tx_index` values keyed by signature, in reserve-chain order.
+    ///
+    /// A buy's pre-trade token reserve is `post + token_amount`; a sell's is
+    /// `post - token_amount`. The predecessor is the leg whose post reserve
+    /// equals that pre reserve. `None` when that chain does not cover every leg
+    /// exactly once, when one signature is not contiguous, or when the integers
+    /// between two live neighbors cannot hold the sync rows.
+    fn sync_indexes(legs: &[ReserveLeg]) -> Option<HashMap<u32, u32>> {
+        let mut by_post: HashMap<u64, usize> = HashMap::new();
+        for (i, leg) in legs.iter().enumerate() {
+            if by_post.insert(leg.post_token, i).is_some() {
+                return None;
+            }
+        }
+        let mut succ = vec![None; legs.len()];
+        let mut pred = vec![false; legs.len()];
+        for (i, leg) in legs.iter().enumerate() {
+            let pre = implied_pre(leg)?;
+            if let Some(&p) = by_post.get(&pre) {
+                if p == i || succ[p].is_some() {
+                    return None;
+                }
+                succ[p] = Some(i);
+                pred[i] = true;
+            }
+        }
+        let mut starts = (0..legs.len()).filter(|&i| !pred[i]);
+        let start = starts.next()?;
+        if starts.next().is_some() {
+            return None;
+        }
+        let mut order = Vec::with_capacity(legs.len());
+        let mut cur = Some(start);
+        while let Some(i) = cur {
+            order.push(i);
+            if order.len() > legs.len() {
+                return None;
+            }
+            cur = succ[i];
+        }
+        if order.len() != legs.len() {
+            return None;
+        }
+
+        let mut seq: Vec<(u32, Option<u32>)> = Vec::new();
+        for &i in &order {
+            let leg = &legs[i];
+            if let Some((sig, live)) = seq.last() {
+                if *sig == leg.sig {
+                    if *live != leg.live_index {
+                        return None;
+                    }
+                    continue;
+                }
+            }
+            if seq.iter().any(|(sig, _)| *sig == leg.sig) {
+                return None;
+            }
+            seq.push((leg.sig, leg.live_index));
+        }
+
+        let mut out = HashMap::new();
+        let mut i = 0;
+        while i < seq.len() {
+            if seq[i].1.is_some() {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < seq.len() && seq[i].1.is_none() {
+                i += 1;
+            }
+            let count = (i - start) as u32;
+            let prev_live = seq[..start].iter().rev().find_map(|(_, live)| *live);
+            let next_live = seq.get(i).and_then(|(_, live)| *live);
+            let first = match (prev_live, next_live) {
+                (Some(prev), Some(next)) => {
+                    if next <= prev || next - prev - 1 < count {
+                        return None;
+                    }
+                    prev + 1
+                }
+                (Some(prev), None) => prev + 1,
+                (None, Some(next)) => {
+                    if next < count {
+                        return None;
+                    }
+                    next - count
+                }
+                (None, None) => 0,
+            };
+            for (k, (sig, _)) in seq[start..i].iter().enumerate() {
+                out.insert(*sig, first + k as u32);
+            }
+        }
+        Some(out)
+    }
+
+    fn buy(sig: u32, amount: u64, post: u64, live: Option<u32>) -> ReserveLeg {
+        ReserveLeg {
+            sig,
+            is_buy: true,
+            token_amount: amount,
+            post_token: post,
+            live_index: live,
+        }
+    }
+
+    #[test]
+    fn sync_only_slot_numbers_the_reserve_chain_from_zero() {
+        // Stored newest-first. Chain is post 100 → 90 → 80.
+        let legs = vec![buy(3, 10, 80, None), buy(1, 10, 100, None), buy(2, 10, 90, None)];
+        let got = sync_indexes(&legs).unwrap();
+        assert_eq!(got.get(&1), Some(&0));
+        assert_eq!(got.get(&2), Some(&1));
+        assert_eq!(got.get(&3), Some(&2));
+    }
+
+    #[test]
+    fn sync_row_takes_the_integer_between_its_live_neighbors() {
+        let legs = vec![
+            buy(1, 10, 100, Some(10)),
+            buy(2, 10, 90, None),
+            buy(3, 10, 80, Some(20)),
+        ];
+        let got = sync_indexes(&legs).unwrap();
+        assert_eq!(got.get(&2), Some(&11));
+        assert!(!got.contains_key(&1));
+    }
+
+    #[test]
+    fn a_gap_too_small_for_the_sync_rows_is_left_alone() {
+        let legs = vec![
+            buy(1, 10, 100, Some(10)),
+            buy(2, 10, 90, None),
+            buy(3, 10, 80, None),
+            buy(4, 10, 70, Some(11)),
+        ];
+        assert!(sync_indexes(&legs).is_none());
+    }
+
+    #[test]
+    fn a_broken_reserve_chain_is_left_alone() {
+        let legs = vec![buy(1, 10, 100, None), buy(2, 10, 50, None)];
+        assert!(sync_indexes(&legs).is_none());
     }
 }
 

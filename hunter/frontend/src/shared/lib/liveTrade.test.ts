@@ -45,6 +45,7 @@ describe('liveTradeToTradeRecord', () => {
     expect(row.trade_type).toBe('buy');
     expect(row.tx_index).toBe(42);
     expect(row.leg_index).toBe(1);
+    expect(row.source).toBe(0);
     expect(row.venue).toBe('curve');
   });
 

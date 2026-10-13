@@ -16,7 +16,7 @@ See also: [laserstream-workflow.md](./laserstream-workflow.md).
 | `trading_core/src/services/helius_rpc.rs` | `getSignaturesForAddress`, `getTransaction`, `getTransactionsForAddress` (gTFA) |
 | `trading_core/src/services/laserstream_replay.rs` | gRPC replay path for free incremental syncs |
 | `trading_core/src/storage/repositories/token_info_repo.rs` | Sync watermarks, `upsert_metrics`, migration status |
-| `trading_core/src/storage/repositories/trade_repo.rs` | Trade inserts, `saved_signatures()`, `ON CONFLICT DO UPDATE` |
+| `trading_core/src/storage/repositories/trade_repo.rs` | Trade inserts, `saved_signatures()`, `existing_legs()` |
 | `shared/ingest/pumpfun/src/decode/mod.rs` | **Shared** `Decoder` (alias `HeliusDecoder`) |
 | `live/src/ingest/db_writer.rs` | **Shared** `TokenMetricsWrite` struct |
 
@@ -32,9 +32,9 @@ Downloads only transactions newer than the stored watermark.
    replay from the stored slot over Yellowstone gRPC for **zero Helius credits**.
 3. **RPC fallback** — `getSignaturesForAddress(bonding_curve, until = prev_sig)` then batched
    `getTransaction`.
-4. **Dedup** — skip any signature already in `TradeRepo::saved_signatures(mint, "curve")` so live
-   ingest's already-saved trades aren't re-downloaded (the credit saver — see
-   [[token-sync-credit-reduction]]).
+4. **Dedup** — skip any signature already in `TradeRepo::saved_signatures(mint, "curve")` so a
+   trade already stored for that mint and venue is not downloaded again. The lookup has no slot
+   cutoff: a live row can sit below the watermark.
 
 ### Full backfill ("Fetch All") — `incremental = false`
 
@@ -42,14 +42,14 @@ Downloads the entire history via archival `getTransactionsForAddress` (gTFA), cu
 `GTFA_PAGE_LIMIT = 1000` txs/page (full txs in each page, ≈0.1 credit/tx vs 1 credit/tx for per-sig
 `getTransaction`).
 
-**No dedup, deliberately.** Re-fetching everything lets decoder fixes propagate through the trades
-`ON CONFLICT (tx_signature, leg_index) DO UPDATE` (updates `price_per_token` + the four reserve
-columns). If an old decoder bug made reserves wrong or a trade invisible, Fetch All re-decodes and
-overwrites the row. Dedup is intentionally incremental-only.
+gTFA has no signature filter, so Fetch All still downloads every page. `persist_backfill` then
+drops any leg whose `(mint, venue, tx_signature, leg_index)` is already in `trades`. The primary
+key does not catch that leg: live `block_time` is the receive clock and sync writes the chain
+second, so `ON CONFLICT DO NOTHING` inserts a second row. A stored leg is left as written.
 
-`saved_signatures()` bounds its scan to `slot >= last_synced_curve_slot`: incremental fetches only
-signatures newer than the watermark, so anything below it can't recur and is skipped. Returns a
-`HashSet<String>` for O(1) membership.
+`saved_signatures()` returns the candidates already stored for the mint and venue, with no slot
+cutoff. Returns a `HashSet<String>` for O(1) membership. Incremental uses it to skip the download.
+The insert-time check is per leg, so a full refetch can still add a leg that is not stored yet.
 
 ## Data flow
 
@@ -71,7 +71,7 @@ POST /api/token/sync ─▶ preflight (validate mint, bonding-curve check)
         decode (shared HeliusDecoder)
         TokenCreated / Trade / Migration / Liquidity
                        ▼
-        persist_backfill: bulk raw_txs + trades (ON CONFLICT DO UPDATE) + wallet touch
+        persist_backfill: bulk raw_txs + trades (skip a stored leg, else ON CONFLICT DO NOTHING) + wallet touch
                        ▼
         migrated? ─▶ sync_amm_trades  (separate watermark: last_synced_amm_*)
                        ▼
@@ -91,8 +91,8 @@ POST /api/token/sync ─▶ preflight (validate mint, bonding-curve check)
   the token's `{pool → mint}` up front, so post-migration AMM swaps resolve through the same
   `decode_protobuf` call (no separate explicit-pool entry point). The persisted payload is the
   verbatim protobuf wire bytes via `raw_tx::encode_payload` (inline, since token_sync has no
-  DbWriter), identical to the live path — backfill rows land in `raw_txs` with `source=1` (sync)
-  for later analysis.
+  DbWriter), identical to the live path. Backfill rows land with `source=1` on both `raw_txs` and
+  `trades` (live ingest writes `source=0`). Sync `block_time` stays the chain second.
 - **`TokenMetricsWrite`** — token_sync builds it via `metrics_from_state` and writes through the same
   `TokenInfoRepo::upsert_metrics` the DbWriter uses, so metrics are computed identically. This is the
   shared surface noted in [[laserstream-ingest-migration]].
@@ -134,6 +134,6 @@ Stored in `tokens_info`: `last_synced_at`, `last_synced_curve_sig/slot`, `last_s
 
 ## Related
 
-- [[token-sync-credit-reduction]] — incremental dedup vs `saved_signatures`; Fetch All re-fetches on purpose.
+- [[token-sync-credit-reduction]] — incremental dedup vs `saved_signatures`. Fetch All still downloads every page; a stored leg is not inserted again.
 - [[laserstream-ingest-migration]] — ingest keeps only decoder + `TokenMetricsWrite`, shared here.
-- [[amm-reserves-preswap-bug]] — the decoder fix a full re-sync propagates via `ON CONFLICT DO UPDATE`.
+- [[amm-reserves-preswap-bug]] — a full re-sync does not overwrite a leg already stored.

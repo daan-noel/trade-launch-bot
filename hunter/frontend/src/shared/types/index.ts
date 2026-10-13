@@ -1172,8 +1172,12 @@ export interface TradeRecord {
   tip_lamports?: number | null;
   tx_signature: string;
   /** Position of this trade's transaction within its block — the real intra-slot
-   *  ordering key. Part of the canonical trade order `slot → tx_index → leg_index`. */
+   *  ordering key. Part of the canonical trade order `slot → tx_index → leg_index`.
+   *  On a token-sync row this is a per-slot proxy, not the block position. */
   tx_index: number;
+  /** Who wrote the row. `0` (or absent) is live LaserStream ingest. `1` is
+   *  token-sync. Matches `trades.source`. */
+  source?: number;
   leg_index: number;
   slot: number;
   block_time: string;

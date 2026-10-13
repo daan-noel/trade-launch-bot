@@ -790,6 +790,7 @@ fn trade_from_event(e: &IlTrade) -> Trade {
         instruction_labels: Value::Null,
         venue: venue_str(e.venue).to_string(),
         swap_ix: e.swap_ix.as_ref().map(super::swap_ix::buy_ix_json),
+        source: 0,
     }
 }
 

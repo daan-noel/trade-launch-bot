@@ -125,9 +125,11 @@ CREATE INDEX IF NOT EXISTS idx_trades_mint_order
 
 Notes
 
-- PK `(block_time, tx_signature, leg_index)` doubles as exactly-once dedup
-  (`ON CONFLICT DO NOTHING`): `block_time` is deterministic per confirmed tx and the
-  signature is globally unique, so re-delivery collides exactly.
+- PK `(block_time, tx_signature, leg_index)` dedups a replay from the same writer.
+  Live ingest stamps `block_time` from the receive clock. Token-sync stamps the chain
+  `blockTime` (a whole second). Those two clocks do not collide, so a sync of a trade
+  the feed already stored inserts a second row unless the writer drops the leg first
+  (`trades.source` records which writer: 0 live, 1 sync).
 - **`block_time` NOT NULL is an ingest constraint** — it's the partition key, can't be
   NULL. If a live tx update lands before its block-meta, stamp `block_time` from a small
   in-memory `slot→block_time` map (you already consume block-meta for `tx_index`).
