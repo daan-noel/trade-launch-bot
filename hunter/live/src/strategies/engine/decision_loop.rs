@@ -101,6 +101,13 @@ pub fn spawn_engine(deps: EngineDeps) -> EngineHandles {
     let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(256);
     let (fill_tx, fill_rx) = mpsc::channel::<Event>(1024);
     let handle = EngineHandle::new(cmd_tx);
+    let (vol_tx, vol_rx) = mpsc::channel::<(uuid::Uuid, u64)>(64);
+    super::volume_save::spawn(
+        vol_rx,
+        deps.fp_repo.clone(),
+        handle.clone(),
+        deps.sse_tx.clone(),
+    );
     let armed = ArmedRegistry::new();
     let positions = PositionRegistry::new();
     let inflight = InFlightGuards::new();
@@ -112,6 +119,7 @@ pub fn spawn_engine(deps: EngineDeps) -> EngineHandles {
         armed.clone(),
         positions.clone(),
         inflight.clone(),
+        vol_tx,
     ));
     EngineHandles {
         handle,
@@ -148,6 +156,7 @@ async fn run_loop(
     armed: ArmedRegistry,
     registry: PositionRegistry,
     inflight: InFlightGuards,
+    vol_tx: mpsc::Sender<(uuid::Uuid, u64)>,
 ) {
     let EngineDeps {
         mut ping_rx,
@@ -384,7 +393,7 @@ async fn run_loop(
                     .await;
                     let armed = hydrator.after_reload(&before, &mut state, &mut producer, &token_cache);
                     dispatch(
-                        armed, &state, &mut sink, &registry, &real_deps, &token_cache, &settings,
+                        armed, &state, &mut sink, &registry, &real_deps, &token_cache, &settings, &vol_tx,
                     )
                     .await;
                     if acks.len() > 1 {
@@ -424,7 +433,7 @@ async fn run_loop(
                     .await;
                     let armed = hydrator.after_reload(&before, &mut state, &mut producer, &token_cache);
                     dispatch(
-                        armed, &state, &mut sink, &registry, &real_deps, &token_cache, &settings,
+                        armed, &state, &mut sink, &registry, &real_deps, &token_cache, &settings, &vol_tx,
                     )
                     .await;
                     let _ = ack.send(result);
@@ -463,7 +472,7 @@ async fn run_loop(
             Some(loaded) = hydrate_rx.recv() => {
                 let armed = hydrator.apply(loaded, &mut state, &mut producer, &token_cache);
                 dispatch(
-                    armed, &state, &mut sink, &registry, &real_deps, &token_cache, &settings,
+                    armed, &state, &mut sink, &registry, &real_deps, &token_cache, &settings, &vol_tx,
                 )
                 .await;
                 EventBatch::none()
@@ -518,7 +527,7 @@ async fn run_loop(
             }
             let effects = reduce(&mut state, event);
             dispatch(
-                effects, &state, &mut sink, &registry, &real_deps, &token_cache, &settings,
+                effects, &state, &mut sink, &registry, &real_deps, &token_cache, &settings, &vol_tx,
             )
             .await;
         }
@@ -588,6 +597,7 @@ async fn dispatch(
     real_deps: &RealExecDeps,
     token_cache: &Arc<TokenCache>,
     settings: &watch::Receiver<AppSettings>,
+    vol_tx: &mpsc::Sender<(uuid::Uuid, u64)>,
 ) {
     // Pass 1 — registry/SSE (+ background PG for BuySubmitted / ExitPending).
     for fx in &effects {
@@ -620,6 +630,14 @@ async fn dispatch(
                 sink.on_armed_changed(delta)
             }
             Effect::StageMoved(mv) => sink.on_stage_moved(mv),
+            Effect::SaveVolumeList {
+                fingerprint,
+                ix_hash,
+            } => {
+                if vol_tx.try_send((fingerprint.0, *ix_hash)).is_err() {
+                    warn!(fingerprint = %fingerprint.0, "volume list dropped: writer queue is full");
+                }
+            }
             Effect::SubmitBuy { .. } | Effect::SubmitSell { .. } => {}
         }
     }

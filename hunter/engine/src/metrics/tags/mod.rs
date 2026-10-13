@@ -3,9 +3,9 @@
 //!
 //! A fingerprint's `tags` document names each tag and how a trade qualifies
 //! ([`config`]); every coin the fingerprint matches then keeps one [`state::TagState`]
-//! per tag a loaded rule reads. A tag is a list, not a meaning: `volume` (the dev's
-//! volume-making trades), `dump` (the dev's dump sells), `targets` (wallets to copy) and
-//! `working` (tool templates) are all the same thing with different matchers.
+//! per tag a loaded rule reads. `dump`, `targets` and `working` are matcher lists.
+//! The tag named `volume` is the volume pattern: the loaded lists, then the live
+//! label in [`volume_walk`]. A rule that does not read `@volume` does not build that walk.
 //!
 //! Two built-in wallet classes need no config and are read only by
 //! `m_holdings.bag_share_pct`: [`BUNDLED`] and [`PUBLIC_APP`].
@@ -14,6 +14,7 @@ pub mod config;
 pub mod state;
 #[cfg(test)]
 mod state_tests;
+mod volume_walk;
 
 use crate::hash::{fnv1a_bytes, FNV_OFFSET};
 

@@ -55,7 +55,7 @@ export interface TagDef {
   match: TagMatch;
   /** Only buys, or only sells, can carry the tag. `null` = both. */
   side: 'buy' | 'sell' | null;
-  /** A wallet that carried the tag once carries it for the rest of the coin. */
+  /** Later trades of a matched wallet carry the tag. A trade already printed stays as it was. */
   sticky: boolean;
 }
 

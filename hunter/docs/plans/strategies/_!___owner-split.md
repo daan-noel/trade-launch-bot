@@ -12,7 +12,7 @@ Names in the tables are short on purpose. Each one is spelled out in [Terms](#te
 
 ## At a glance
 
-Three times. [Before this coin](#before-this-coin) is the fingerprint already loaded. [On live](#on-live) reads only that. [Label the tape](#label-the-tape) and [Write the next fingerprint](#write-the-next-fingerprint) run after the coin ends. A rotating wallet is not on the fingerprint. A saved list does not save the wallet, and a saved wallet does not add its other lists.
+Three times. [Before this coin](#before-this-coin) is the fingerprint already loaded. [On live](#on-live) reads that, and when it misses, [Label the tape](#label-the-tape) runs on the same print for the volume tag only. A list that passes is written off the print into [Write the next fingerprint](#write-the-next-fingerprint). A rotating wallet is not on the fingerprint. A saved list does not save the wallet, and a saved wallet does not add its other lists.
 
 ### Before this coin
 
@@ -71,10 +71,10 @@ Sticky looks forward. A trade already printed stays as it was.
         no
         v
 +------------------------------------------------------------------+
-|  3. NO                                                           |
+|  3. LABEL THE TAPE, ON THIS PRINT                                |
 +------------------------------------------------------------------+
-|  outsider.                                                       |
-|  judge this wallet again on its next trade.                      |
+|  the volume tag only. dump does not walk this.                   |
+|  a list that passes is written off the print.                    |
 +------------------------------------------------------------------+
 ```
 
@@ -83,8 +83,8 @@ Sticky looks forward. A trade already printed stays as it was.
 A yes stops the trade. A list on that same trade is still written. The wallet is not.
 
 ```text
-THE COIN HAS ENDED
-Not on the live print. First decide the trade.
+ON THIS PRINT
+The loaded pattern missed. The volume tag decides the trade here.
 
 +------------------------------------------------------------------+
 |  1. OUTSIDER?                                                    |
@@ -347,7 +347,7 @@ Did those sellers cash out on the way down. A set is one ix structure, one ix te
 
 ## 4. Tag
 
-This is [On live](#on-live). A print reads only the loaded fingerprint: the creator, a wallet that comes back, or a saved list. A match starts sticky. Sticky covers later trades of that wallet, and it does not relabel a trade that already printed. The rows below are [Label the tape](#label-the-tape). They do not run on the print.
+This is [On live](#on-live). A print reads the loaded fingerprint first: the creator, a wallet that comes back, or a saved list. A match starts sticky. Sticky covers later trades of that wallet, and it does not relabel a trade that already printed. When the fingerprint misses, the volume tag walks the rows below that it can decide from the print. Dump and every other tag do not. A this-coin row sticks the wallet and does not save it. A list row queues the list; the write happens off the print.
 
 ### Follow
 
@@ -406,7 +406,7 @@ Rows 15 to 18. What this coin has shown so far. Same tests as Repeat and Wake, r
 | 17. After silence | **owner** | The dev restarts a dead tape by repeating one script. One buy after a pause is a person. | Wallets that each bought one **ix structure** more than once have **5** or more such buys, and the first followed **2 seconds** with no trade. Those wallets are stored on this coin. The **ix structure** is not stored. A wallet that bought it once stays **outsider**. | The tape is quiet 2.4 s, then two wallets buy one ix structure five times between them, each more than once. Those wallets are stored. A one-time buyer in the same stretch stays **outsider**. |
 | 18. Anyone else | **outsider** | No dev sign matched. One normal trade stays real money until a later trade says otherwise. | No row above matched. | A sniper, a button-size buy, or one normal trade. This trade is **outsider**, and the wallet is judged again on its next trade. |
 
-The live print does not walk these rows. It reads the fingerprint in [On live](#on-live). A wallet is never a term in a rule ([_!___strategy.md](_!___strategy.md) T5). These rows label the coin after it ends. A this-coin row sticks the wallet on that coin and does not save it. Row 7 sticks the wallets in a buy pack on this coin and leaves the lists off. Row 8 saves the private list and does not save the wallets. Rows 15 and 16 save the list and leave the wallet free. Row 9 sticks the below-zero pair on this coin. A second coin saves that wallet.
+The volume tag walks the rows it can decide from the print, after the loaded fingerprint misses. Dump and every other tag do not. A wallet is never a term in a rule ([_!___strategy.md](_!___strategy.md) T5). A this-coin row sticks the wallet on that coin and does not save it. Row 7 sticks the wallets in a buy pack on this coin and leaves the lists off. Row 8 saves the private list and does not save the wallets. Rows 15 and 16 save the list and leave the wallet free. Row 9 sticks the below-zero pair on this coin. A second coin saves that wallet. Sniper, timer, the gate, and wallets that come back need a market lookup and stay unmatched until that lookup exists.
 
 ## Outsider
 

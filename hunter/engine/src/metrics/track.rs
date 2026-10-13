@@ -254,8 +254,21 @@ impl TokenTrack {
             pw.on_trade(t.price, spec.pos(t.at, at), spec.now_pos(t.at, cur));
         }
         for tag in self.tags.values_mut() {
+            tag.seed_born(self.created_at);
             tag.on_trade(&t, cur);
         }
+    }
+
+    /// Volume lists queued since the last take. Empty when no loaded rule reads `volume`.
+    pub fn take_volume_saves(&mut self) -> Vec<(FingerprintId, u64)> {
+        let mut out = Vec::new();
+        for ((fp, _), tag) in &mut self.tags {
+            let (n, pending) = tag.take_volume_pending();
+            for ix in &pending[..n as usize] {
+                out.push((*fp, *ix));
+            }
+        }
+        out
     }
 
     /// Advance time to `now` without a trade: evict stale window entries so a quiet

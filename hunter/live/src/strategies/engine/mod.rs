@@ -40,6 +40,7 @@ pub mod reload_scheduler;
 pub mod run_config;
 pub mod sell_backfill;
 pub mod sinks;
+pub mod volume_save;
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -1641,10 +1641,10 @@
         "value_type": "side"
       },
       {
-        "example": "true : a wallet caught in a volume cluster stays volume for its later trades.",
+        "example": "A wallet matches once. Its next trade, on any list, carries the tag. The trade before that match stays as it was.",
         "key": "sticky",
         "kind": "option",
-        "summary": "A wallet that carried the tag once carries it for the rest of the coin.",
+        "summary": "From the first trade that matches, every later trade of that wallet on this coin carries the tag, on any list. A trade that already printed stays as it was.",
         "title": "Sticky",
         "value_type": "bool"
       }

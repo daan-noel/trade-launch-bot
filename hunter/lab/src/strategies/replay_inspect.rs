@@ -153,6 +153,7 @@ enum InspectEffect {
     },
     ArmedChanged { mint: String, rule: RuleId, state: ArmedStateTag },
     StageMoved { position: PositionId, rule: RuleId, mint: String, stage: u8, since: Ts },
+    SaveVolumeList { fingerprint: uuid::Uuid, ix_hash: u64 },
 }
 
 impl From<&Effect> for InspectEffect {
@@ -192,6 +193,13 @@ impl From<&Effect> for InspectEffect {
                 mint: m.mint.to_string(),
                 stage: m.stage,
                 since: m.since,
+            },
+            Effect::SaveVolumeList {
+                fingerprint,
+                ix_hash,
+            } => InspectEffect::SaveVolumeList {
+                fingerprint: fingerprint.0,
+                ix_hash: *ix_hash,
             },
         }
     }
@@ -459,6 +467,7 @@ fn effect_touches_mint(fx: &Effect, mint: &str) -> bool {
         Effect::PositionUpdate(PositionDelta { mint: m, .. }) => m.as_str() == mint,
         Effect::ArmedChanged(d) => d.mint.as_str() == mint,
         Effect::StageMoved(m) => m.mint.as_str() == mint,
+        Effect::SaveVolumeList { .. } => false,
     }
 }
 

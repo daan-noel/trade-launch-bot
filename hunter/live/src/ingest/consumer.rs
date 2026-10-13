@@ -357,6 +357,9 @@ impl IngestConsumer {
                 is_launch(&e.instruction_labels),
             )
         };
+        if let Some(h) = ix_hash {
+            trading_core::state::ix_labels::remember(h, &e.instruction_labels);
+        }
         core_trade.instruction_labels = Value::Null;
 
         // ── Hot path first (H2) ────────────────────────────────────────────────

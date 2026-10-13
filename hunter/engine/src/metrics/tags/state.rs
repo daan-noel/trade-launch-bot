@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use super::config::TagPatterns;
+use super::volume_walk::{Verdict, VolumeWalk};
 use crate::hash::{HashedMap, HashedSet};
 use crate::metrics::fee::FeeKeys;
 use crate::metrics::flow_window::push_sorted;
@@ -256,6 +257,11 @@ struct ClusterGroup {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TagState {
     patterns: TagPatterns,
+    /// The volume tag's live label. `None` for dump and every other tag.
+    walk: Option<VolumeWalk>,
+    /// Partner wallets the last label named. Inserted into sticky with this print's wallet.
+    partners: [u64; 8],
+    partner_n: u8,
     /// Wallets that carried the tag, under `sticky`. Membership only — one lookup per
     /// trade, on already-hashed addresses.
     sticky_wallets: HashedSet,
@@ -287,6 +293,9 @@ pub struct TagState {
 impl TagState {
     pub fn new(patterns: TagPatterns) -> Self {
         Self {
+            walk: patterns.volume_walk.then(VolumeWalk::default),
+            partners: [0; 8],
+            partner_n: 0,
             patterns,
             sticky_wallets: HashedSet::default(),
             creator_wallet_hash: None,
@@ -323,6 +332,26 @@ impl TagState {
         if &self.patterns != patterns {
             self.patterns = patterns.clone();
         }
+        if patterns.volume_walk && self.walk.is_none() {
+            self.walk = Some(VolumeWalk::default());
+        } else if !patterns.volume_walk {
+            self.walk = None;
+        }
+    }
+
+    /// The coin's create time, for the instant-buy label. No-op unless this is the volume tag.
+    pub fn seed_born(&mut self, created: Ts) {
+        if let Some(w) = self.walk.as_mut() {
+            w.seed_born(created.timestamp_millis());
+        }
+    }
+
+    /// Lists the volume label queued since the last take. Empty for every other tag.
+    pub(crate) fn take_volume_pending(&mut self) -> (u8, [u64; 8]) {
+        match self.walk.as_mut() {
+            Some(w) => w.take_pending(),
+            None => (0, [0; 8]),
+        }
     }
 
     pub fn ensure_window(&mut self, spec: WindowSpec) {
@@ -347,9 +376,17 @@ impl TagState {
             self.last_vsol = t.priced_reserve_sol;
             self.last_vtok = t.priced_reserve_sol / t.price;
         }
+        self.partner_n = 0;
         let tagged = self.fold_tagged(t);
         if tagged && self.patterns.sticky {
-            self.sticky_wallets.insert(t.wallet_hash);
+            if t.wallet_hash != 0 {
+                self.sticky_wallets.insert(t.wallet_hash);
+            }
+            for w in &self.partners[..self.partner_n as usize] {
+                if *w != 0 {
+                    self.sticky_wallets.insert(*w);
+                }
+            }
         }
         if tagged {
             self.note_bag(t);
@@ -480,7 +517,29 @@ impl TagState {
     /// here, and only when nothing else qualified it).
     fn fold_tagged(&mut self, t: &TradeLite) -> bool {
         let on_side = self.patterns.side.is_none_or(|s| s == t.side);
-        on_side && (self.matches(t) || self.cluster_hit(t))
+        if !on_side {
+            return false;
+        }
+        let beside = self
+            .walk
+            .as_ref()
+            .is_some_and(|w| w.beside(t, &self.sticky_wallets));
+        let matched = self.matches(t) || self.cluster_hit(t);
+        let Some(w) = self.walk.as_mut() else {
+            return matched;
+        };
+        w.observe(t);
+        if matched {
+            w.push(t);
+            return true;
+        }
+        let v: Verdict = w.label(t, self.creator_wallet_hash, beside);
+        w.push(t);
+        if v.owner {
+            self.partners = v.partners;
+            self.partner_n = v.n;
+        }
+        v.owner
     }
 
     /// Whether this trade would carry the tag on its matchers alone (the cluster rule

@@ -29,6 +29,13 @@ import {
 } from 'lib/strategy/tagsDoc';
 import { IxPatternRowsEditor } from './IxPatternsEditor';
 
+/** Matchers that read this trade's instruction list. */
+const LIST_MATCHERS: readonly MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks'];
+/** Matchers that read who sent the trade. */
+const WHO_MATCHERS: readonly MatcherKey[] = ['wallet', 'creator', 'cluster'];
+/** What the volume pattern stores. Everything else on a volume tag stays visible, not dropped. */
+const VOLUME_STORED: readonly MatcherKey[] = ['ix_shape', 'wallet', 'creator'];
+
 const SIDES: { value: TagDef['side']; label: string }[] = [
   { value: null, label: 'Both' },
   { value: 'buy', label: 'Buys' },
@@ -161,6 +168,230 @@ function startValue(k: MatcherKey): Partial<TagMatch> {
   }
 }
 
+function matcherGroups(unused: TagFieldSpec[]): { label: string; fields: TagFieldSpec[] }[] {
+  const list = unused.filter((f) => LIST_MATCHERS.includes(f.key as MatcherKey));
+  const who = unused.filter((f) => WHO_MATCHERS.includes(f.key as MatcherKey));
+  const rest = unused.filter((f) => !list.includes(f) && !who.includes(f));
+  return [
+    { label: "This trade's list", fields: list },
+    { label: 'Who', fields: who },
+    { label: 'Other', fields: rest },
+  ].filter((g) => g.fields.length > 0);
+}
+
+function MatcherSelect({
+  unused,
+  disabled,
+  onPick,
+}: {
+  unused: TagFieldSpec[];
+  disabled?: boolean;
+  onPick: (k: MatcherKey) => void;
+}) {
+  if (unused.length === 0) return null;
+  return (
+    <Select
+      className="w-56"
+      value=""
+      disabled={disabled}
+      onChange={(e) => {
+        const k = e.target.value as MatcherKey;
+        if (k) onPick(k);
+      }}
+    >
+      <option value="">+ add a matcher...</option>
+      {matcherGroups(unused).map((g) => (
+        <optgroup key={g.label} label={g.label}>
+          {g.fields.map((f) => (
+            <option key={f.key} value={f.key} title={f.summary}>
+              {f.title}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </Select>
+  );
+}
+
+function SideAndSticky({
+  tag,
+  onChange,
+  reg,
+  disabled,
+}: {
+  tag: TagDef;
+  onChange: (t: TagDef) => void;
+  reg: StrategyRegistry;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-2 border-t border-white/5 pt-2 text-[12px] text-text-dim">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1">
+          {tagField(reg, 'side')?.title ?? 'Side'}
+          <InfoTooltip body={fieldTip(tagField(reg, 'side'))} />
+        </span>
+        {SIDES.map((opt) => (
+          <Button
+            key={opt.label}
+            variant="ghost"
+            size="xs"
+            active={(tag.side ?? null) === opt.value}
+            disabled={disabled}
+            onClick={() => onChange({ ...tag, side: opt.value })}
+          >
+            {opt.label}
+          </Button>
+        ))}
+      </div>
+      <label className="flex items-start gap-1.5">
+        <input
+          type="checkbox"
+          className="mt-0.5 accent-accent"
+          disabled={disabled}
+          checked={tag.sticky}
+          onChange={(e) => onChange({ ...tag, sticky: e.target.checked })}
+        />
+        <span>
+          <span className="inline-flex items-center gap-1 text-text-mid">
+            {tagField(reg, 'sticky')?.title ?? 'Sticky'}
+            <InfoTooltip body={fieldTip(tagField(reg, 'sticky'))} />
+          </span>
+          <span className="mt-0.5 block text-text-dim">{tagField(reg, 'sticky')?.summary}</span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
+function VolumePatternCard({
+  tag,
+  onChange,
+  onRemove,
+  reg,
+  disabled,
+}: {
+  tag: TagDef;
+  onChange: (t: TagDef) => void;
+  onRemove: () => void;
+  reg: StrategyRegistry;
+  disabled?: boolean;
+}) {
+  const shown = (Object.keys(tag.match) as MatcherKey[]).filter((k) => tag.match[k] !== undefined);
+  const extra = shown.filter((k) => !VOLUME_STORED.includes(k));
+  const bare = unclassifiableTagError(tag);
+  const pinWarning = feePinWarning([tag]);
+  const setMatch = (match: TagMatch) => onChange({ ...tag, match });
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-white/10 bg-bg-card p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[12px] font-semibold text-text-dim">Name</span>
+        <span className="font-mono text-[13px] text-text">volume</span>
+        <span className="text-[12px] text-text-mid">
+          The name stays volume. Rules read <code className="text-text">@volume</code> and <code className="text-text">@!volume</code>.
+        </span>
+        <IconButton className="ml-auto" variant="ghost" size="sm" disabled={disabled} onClick={onRemove} title="Remove tag" aria-label="Remove tag">
+          <CloseIcon />
+        </IconButton>
+      </div>
+      <p className="text-[12px] leading-snug text-text-dim">
+        Volume pattern. You edit what is already stored. The steps below are the workflow for <code className="text-text">@volume</code> only. Dump stays a matcher list.
+      </p>
+
+      <section className="flex flex-col gap-2 rounded border border-white/10 p-2">
+        <h4 className="text-[12px] font-semibold text-text">Before this coin</h4>
+        <p className="text-[11px] leading-snug text-text-dim">Stored on this fingerprint. A rotating wallet is not stored here.</p>
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] font-semibold text-text">Lists</span>
+          <span className="text-[11px] text-text-dim">Instruction lists saved from earlier coins. A wallet that uses one is owner. The wallet is not saved.</span>
+          <IxPatternRowsEditor rows={tag.match.ix_shape ?? []} onChange={(ix_shape) => setMatch({ ...tag.match, ix_shape })} disabled={disabled} />
+          {pinWarning && (
+            <p className="rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-[12px] leading-snug text-warning">{pinWarning}</p>
+          )}
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] font-semibold text-text">Wallets that come back</span>
+          <span className="text-[11px] text-text-dim">Same slot after 20 coins, below zero on 2 coins, never sells, stays in the group.</span>
+          <LinesInput value={tag.match.wallet ?? []} disabled={disabled} split={/[\s,]+/} placeholder="one wallet per line" onChange={(wallet) => setMatch({ ...tag.match, wallet })} />
+        </div>
+        <label className="flex items-start gap-1.5 text-[12px] text-text-mid">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-accent"
+            disabled={disabled}
+            checked={tag.match.creator === true}
+            onChange={(e) => setMatch({ ...tag.match, creator: e.target.checked })}
+          />
+          <span>
+            Creator
+            <span className="mt-0.5 block text-[11px] text-text-dim">The flag is on. The creator's address is not stored.</span>
+          </span>
+        </label>
+      </section>
+
+      <section className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[12px] leading-snug text-text-dim">
+        <h4 className="text-[12px] font-semibold text-text">On live</h4>
+        <p>Each print. A yes stops. Sticky looks forward.</p>
+        <ol className="list-decimal space-y-1 pl-4">
+          <li>Creator, a saved wallet, or sticky already on. Owner from this trade on. Its other lists are not saved.</li>
+          <li>This trade's list is a saved list. Owner. Sticky starts. The wallet is not saved.</li>
+          <li>Otherwise Label the tape runs.</li>
+        </ol>
+      </section>
+
+      <section className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[12px] leading-snug text-text-dim">
+        <h4 className="text-[12px] font-semibold text-text">Label the tape</h4>
+        <p>This coin, on the print, when the loaded pattern missed. A yes stops. A list on that same trade is still written.</p>
+        <ol className="list-decimal space-y-1 pl-4">
+          <li>Outsider. Sniper, Rise stops, Sold into, Timer, Wide service, Service payer, One wallet, Used once. Save nothing.</li>
+          <li>Owner on this coin. Sticky starts. The wallet is not saved. A plain list in a pack is not saved.</li>
+          <li>A list. Private list, Many wallets, Dominates, Mostly here. Those trades are owner. The list is queued. The wallet is not saved.</li>
+          <li>No match. Outsider. The next trade is judged again.</li>
+        </ol>
+      </section>
+
+      <section className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[12px] leading-snug text-text-dim">
+        <h4 className="text-[12px] font-semibold text-text">Write the next fingerprint</h4>
+        <p>Off the print. A list the print queues is appended to the lists above, then the fingerprint reloads. A this-coin wallet is not written. Wallets that come back, and the gate for Kept template, On a timer, and Fee payer, are the next counter.</p>
+      </section>
+
+      {extra.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <span className="text-[11px] font-semibold text-text">Also stored on this tag</span>
+          {extra.map((k) => {
+            const f = tagField(reg, k);
+            return (
+              <div key={k} className="flex flex-col gap-1 rounded border border-white/5 p-1.5">
+                <div className="flex items-center gap-1 text-[11px] text-text">
+                  <span className="font-semibold">{f?.title ?? k}</span>
+                  <IconButton
+                    variant="ghost"
+                    size="sm"
+                    disabled={disabled}
+                    title="Remove this matcher"
+                    aria-label="Remove matcher"
+                    onClick={() => {
+                      const next = { ...tag.match };
+                      delete next[k];
+                      setMatch(next);
+                    }}
+                  >
+                    <CloseIcon />
+                  </IconButton>
+                </div>
+                <MatcherEditor k={k} match={tag.match} reg={reg} disabled={disabled} onChange={setMatch} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {bare && <p className="text-[11px] text-red">{bare}</p>}
+      <SideAndSticky tag={tag} onChange={onChange} reg={reg} disabled={disabled} />
+      <p className="text-[11px] text-text-dim/80">{tagSentence(tag)}</p>
+    </div>
+  );
+}
+
 function TagCard({
   tag,
   onChange,
@@ -231,61 +462,12 @@ function TagCard({
           </div>
         );
       })}
-      {unused.length > 0 && (
-        <Select
-          className="w-56"
-          value=""
-          disabled={disabled}
-          onChange={(e) => {
-            const k = e.target.value as MatcherKey;
-            if (k) onChange({ ...tag, match: { ...tag.match, ...startValue(k) } });
-          }}
-        >
-          <option value="">+ add a matcher...</option>
-          {unused.map((f) => (
-            <option key={f.key} value={f.key} title={f.summary}>
-              {f.title}: {f.summary}
-            </option>
-          ))}
-        </Select>
-      )}
-
-      <div className="flex flex-col gap-2 border-t border-white/5 pt-2 text-[12px] text-text-dim">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1">
-            {tagField(reg, 'side')?.title ?? 'Side'}
-            <InfoTooltip body={fieldTip(tagField(reg, 'side'))} />
-          </span>
-          {SIDES.map((opt) => (
-            <Button
-              key={opt.label}
-              variant="ghost"
-              size="xs"
-              active={(tag.side ?? null) === opt.value}
-              disabled={disabled}
-              onClick={() => onChange({ ...tag, side: opt.value })}
-            >
-              {opt.label}
-            </Button>
-          ))}
-        </div>
-        <label className="flex items-start gap-1.5">
-          <input
-            type="checkbox"
-            className="mt-0.5 accent-accent"
-            disabled={disabled}
-            checked={tag.sticky}
-            onChange={(e) => onChange({ ...tag, sticky: e.target.checked })}
-          />
-          <span>
-            <span className="inline-flex items-center gap-1 text-text-mid">
-              {tagField(reg, 'sticky')?.title ?? 'Sticky'}
-              <InfoTooltip body={fieldTip(tagField(reg, 'sticky'))} />
-            </span>
-            <span className="mt-0.5 block text-text-dim">{tagField(reg, 'sticky')?.summary}</span>
-          </span>
-        </label>
-      </div>
+      <MatcherSelect
+        unused={unused}
+        disabled={disabled}
+        onPick={(k) => onChange({ ...tag, match: { ...tag.match, ...startValue(k) } })}
+      />
+      <SideAndSticky tag={tag} onChange={onChange} reg={reg} disabled={disabled} />
       <p className="text-[11px] text-text-dim/80">{tagSentence(tag)}</p>
       {usedMatchers(tag).length > 0 && !hasTemplateView(tag) && (
         <p className="text-[11px] text-text-dim/60">
@@ -311,7 +493,16 @@ export function TagsEditor({
   const active = tags.find((t) => t.id === activeId) ?? tags[0] ?? null;
   const activeIndex = active ? tags.findIndex((t) => t.id === active.id) : -1;
   const add = () => {
-    const next = emptyTag(freshName(tags.length ? 'tag' : 'volume', tags.map((t) => t.name)));
+    const name = freshName('tag', tags.map((t) => t.name));
+    const next = emptyTag(name);
+    onChange([...tags, next]);
+    setActiveId(next.id);
+  };
+  const hasVolume = tags.some((t) => t.name === 'volume');
+  const addVolume = () => {
+    const next = emptyTag('volume');
+    next.sticky = true;
+    next.match = { creator: true };
     onChange([...tags, next]);
     setActiveId(next.id);
   };
@@ -320,6 +511,9 @@ export function TagsEditor({
       <p className="text-[12px] leading-snug text-text-dim">
         {reg.tags.summary}
         <InfoTooltip className="ml-1" title="Tags" body={`${reg.tags.summary}\n\nExample: ${reg.tags.example}`} />
+      </p>
+      <p className="text-[12px] leading-snug text-text-dim">
+        The volume tag stores the volume pattern. Open it for the workflow. Any other tag, including dump, is a matcher list.
       </p>
       <div className="flex items-end gap-1 overflow-x-auto">
         {tags.map((t) => {
@@ -349,6 +543,11 @@ export function TagsEditor({
         <Button variant="subtle" size="xs" className="mb-1 shrink-0" disabled={disabled} onClick={add}>
           <PlusIcon className="size-3" /> tag
         </Button>
+        {!hasVolume && (
+          <Button variant="subtle" size="xs" className="mb-1 shrink-0" disabled={disabled} onClick={addVolume}>
+            <PlusIcon className="size-3" /> volume
+          </Button>
+        )}
       </div>
       {tags.length === 0 && (
         <p className="text-[12px] italic text-text-dim/70">
@@ -356,18 +555,33 @@ export function TagsEditor({
         </p>
       )}
       {active && activeIndex >= 0 && (
-        <TagCard
-          key={active.id}
-          tag={active}
-          reg={reg}
-          disabled={disabled}
-          onChange={(n) => onChange(tags.map((x, j) => (j === activeIndex ? n : x)))}
-          onRemove={() => {
-            const rest = tags.filter((t) => t.id !== active.id);
-            onChange(rest);
-            setActiveId(rest[Math.max(0, activeIndex - 1)]?.id ?? null);
-          }}
-        />
+        active.name === 'volume' ? (
+          <VolumePatternCard
+            key={active.id}
+            tag={active}
+            reg={reg}
+            disabled={disabled}
+            onChange={(n) => onChange(tags.map((x, j) => (j === activeIndex ? n : x)))}
+            onRemove={() => {
+              const rest = tags.filter((t) => t.id !== active.id);
+              onChange(rest);
+              setActiveId(rest[Math.max(0, activeIndex - 1)]?.id ?? null);
+            }}
+          />
+        ) : (
+          <TagCard
+            key={active.id}
+            tag={active}
+            reg={reg}
+            disabled={disabled}
+            onChange={(n) => onChange(tags.map((x, j) => (j === activeIndex ? n : x)))}
+            onRemove={() => {
+              const rest = tags.filter((t) => t.id !== active.id);
+              onChange(rest);
+              setActiveId(rest[Math.max(0, activeIndex - 1)]?.id ?? null);
+            }}
+          />
+        )
       )}
       <p className="text-[11px] text-text-dim/60">
         Built-in wallet classes, no setup needed: {reg.tags.builtin.map((b) => `@${b.name} (${b.summary})`).join(' ')}

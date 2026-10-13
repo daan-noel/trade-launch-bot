@@ -63,6 +63,8 @@ pub struct TagPatterns {
     /// Only trades on this side can carry the tag.
     pub side: Option<Side>,
     pub sticky: bool,
+    /// The tag named `volume`. The live label runs only for this tag.
+    pub volume_walk: bool,
 }
 
 impl TagPatterns {
@@ -132,8 +134,8 @@ pub const TAG_FIELDS: &[TagFieldSpec] = &[
         summary: "Only buys, or only sells, can carry the tag. Absent = both.",
         example: "\"sell\" : a dump list judges sells only." },
     TagFieldSpec { key: "sticky", kind: "option", value_type: "bool", title: "Sticky",
-        summary: "A wallet that carried the tag once carries it for the rest of the coin.",
-        example: "true : a wallet caught in a volume cluster stays volume for its later trades." },
+        summary: "From the first trade that matches, every later trade of that wallet on this coin carries the tag, on any list. A trade that already printed stays as it was.",
+        example: "A wallet matches once. Its next trade, on any list, carries the tag. The trade before that match stays as it was." },
 ];
 
 /// The tag vocabulary for the registry document.
@@ -221,6 +223,7 @@ fn parse_tag(name: &str, def: &Value) -> Result<TagPatterns, String> {
             other => return Err(format!("{at}: unknown key `{other}` (expected match, side, sticky)")),
         }
     }
+    p.volume_walk = name == crate::v1::TAG_VOLUME;
     let m = obj
         .get("match")
         .and_then(Value::as_object)
@@ -402,11 +405,12 @@ mod tests {
         let tags = compile_tags(&doc);
         assert_eq!(tags.len(), 2);
         let v = tags.iter().find(|t| t.name == "volume").unwrap();
-        assert!(v.patterns.sticky && v.patterns.creator);
+        assert!(v.patterns.sticky && v.patterns.creator && v.patterns.volume_walk);
         assert_eq!(v.patterns.cluster, Some(Cluster { min_prints: 3, sol_tol_pct: 10 }));
         assert!(v.patterns.templates().is_some());
         let d = tags.iter().find(|t| t.name == "dump").unwrap();
         assert_eq!(d.patterns.side, Some(Side::Sell));
+        assert!(!d.patterns.volume_walk);
         assert!(d.patterns.templates().is_none());
     }
 

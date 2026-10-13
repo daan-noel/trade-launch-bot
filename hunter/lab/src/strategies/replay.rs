@@ -644,7 +644,7 @@ impl Replay {
             }
             Effect::PositionUpdate(delta) => self.on_position_update(delta),
             // A stage lives in the engine's own state here; nothing to persist.
-            Effect::ArmedChanged(_) | Effect::StageMoved(_) => {}
+            Effect::ArmedChanged(_) | Effect::StageMoved(_) | Effect::SaveVolumeList { .. } => {}
         }
     }
 
