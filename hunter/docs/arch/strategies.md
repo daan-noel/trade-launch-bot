@@ -126,6 +126,10 @@ still hold. Those readings stay out of the metric rule catalog. A shortcut
 episode with `"copy": true`. That episode is what a save stores and what a
 bundle exports, so a further entry condition is part of the rule. Pause All and Stop All on each
 page act on that page's rows. The same `reduce` still decides the episode.
+A copy fingerprint matches every new mint, so the fold arms the rule on each one
+to see whether a target wallet trades there. That watch stays in the fold. The
+sink does not publish it: no Waiting row, no `strategy_arms` row, no
+`strategy_armed_changed` frame. The buy arrives as a position update.
 
 **A line idle in its target stage never acts** (`CompiledLine::idle_in`, read by
 `held_line`, so live, simulate and the sweep agree). A line whose `go` names the stage the

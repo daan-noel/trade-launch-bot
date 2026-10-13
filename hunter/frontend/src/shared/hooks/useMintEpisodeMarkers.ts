@@ -73,20 +73,18 @@ export function useMintEpisodeMarkers({
 }
 
 /**
- * Chart-card overlay for a live/paper position row. Same markers the inspect
- * modal draws: this episode, plus every other episode on the mint (re-entries
- * and scale-out legs). Falls back to the row alone while that read is in flight.
+ * Chart-card overlay for one live/paper position row. The card is that position:
+ * its entry, and its exit from the row (`exit_legs`, else the exit stamp). A
+ * landed exit on the row is the arrow. The mint's other episodes stay on the
+ * inspect modal (`useMintEpisodeMarkers`).
  */
 export function useRulePositionChartOverlay(row: RulePositionRecord): {
   eventMarkers: ChartEventMarker[];
 } {
-  const focus = useMemo(
-    () => inspectFromPosition(row),
+  const eventMarkers = useMemo(
+    () => buildEventMarkers(inspectFromPosition(row)),
     [
-      row.id,
       row.mint_address,
-      row.symbol,
-      row.mode,
       row.target_time,
       row.target_price,
       row.target_tx,
@@ -100,12 +98,5 @@ export function useRulePositionChartOverlay(row: RulePositionRecord): {
       row.exit_legs,
     ],
   );
-  const eventMarkers = useMintEpisodeMarkers({
-    mint: row.mint_address,
-    mode: row.mode,
-    focus,
-    focusPositionId: row.id,
-    focusMode: 'fallback',
-  });
   return { eventMarkers };
 }

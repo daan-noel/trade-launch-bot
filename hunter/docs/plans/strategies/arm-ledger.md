@@ -9,6 +9,11 @@ Tuesday" has no answer, and a rule's selectivity is unmeasurable.
 from the arm to whatever ended it. A position is what happens when an episode ends in
 `entered`; every other ending is a token the rule watched and did not buy.
 
+A copy rule is the exception. Its fingerprint matches every new mint, so an arm
+is a watch for a target wallet, not an episode an operator reviews.
+`on_armed_changed` returns before the registry and the ledger. The position row
+is the record of a copy that bought.
+
 ## The table
 
 ```

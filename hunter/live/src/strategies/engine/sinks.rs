@@ -135,6 +135,9 @@ struct RuleInfo {
     /// What the rule + its fingerprint currently say, as a diffable digest. The run
     /// carries the same value, so a reload can tell an edit from a no-op reload.
     config: RunConfigSig,
+    /// A copy rule watches every mint its fingerprint matches. That arm stays in
+    /// the fold and is not an operator event.
+    copy: bool,
 }
 
 /// The run a rule is currently writing into, **with the mode it was opened for**.
@@ -330,6 +333,7 @@ impl Sink {
                 // The digest reads the SAME rendered params the run row freezes, so
                 // the snapshot and the signature can never describe different params.
                 let config = RunConfigSig::compute(r, &params, fps);
+                let copy = trading_core::strategies::rules::is_copy_params(&params);
                 (
                     r.id,
                     RuleInfo {
@@ -343,6 +347,7 @@ impl Sink {
                         max_total: r.total_cap().bounded().map(i64::from),
                         params,
                         config,
+                        copy,
                     },
                 )
             })
@@ -579,8 +584,17 @@ impl Sink {
 
     /// Consume one `ArmedChanged`: push the arming SSE (armed state is push-only
     /// under the redesign — there is no PG row for an un-entered arm).
+    ///
+    /// A copy rule is the exception. Its fingerprint matches every new mint so the
+    /// fold can see a target wallet's buy, and that watch is not published: no
+    /// Waiting row, no `strategy_arms` row, no `strategy_armed_changed` frame.
+    /// The buy arrives as a position update. A rule the sink no longer has loaded
+    /// still publishes, so a disarm can clear a row the client already holds.
     pub fn on_armed_changed(&self, delta: &ArmedDelta) {
         let info = self.rules.get(&delta.rule);
+        if info.is_some_and(|i| i.copy) {
+            return;
+        }
         let (state, reason, armed_at) = match delta.state {
             ArmedStateTag::Armed => {
                 let (armed_at, fresh) = self.armed.set_armed(delta.rule.0, delta.mint.to_string());
@@ -645,6 +659,7 @@ impl Sink {
                 max_total: None,
                 params: serde_json::json!({}),
                 config: RunConfigSig::absent(),
+                copy: false,
             },
             (None, None) => {
                 warn!(rule = %delta.rule.0, "engine sink: BuySubmitted for unknown rule — skipping");
@@ -1460,6 +1475,94 @@ fn entry_blockers_json(b: &EntryBlockers) -> serde_json::Value {
             "conditions": condition_expr_to_value(&r.conds),
         })).collect::<Vec<_>>(),
     })
+}
+
+#[cfg(test)]
+mod copy_watch_is_not_published {
+    //! A copy rule arms on every mint its fingerprint matches. That watch stays
+    //! in the fold. The sink must not turn it into a Waiting row or an SSE frame.
+    use super::*;
+    use hunter_engine::event::{ArmedDelta, ArmedStateTag, DisarmReason, Mint, TradeMode};
+    use hunter_engine::fingerprint::FingerprintId;
+    use hunter_engine::rule_params::{CopyForm, RuleParams};
+    use uuid::Uuid;
+
+    fn rule(id: u128, copy: bool) -> LoadedRule {
+        let mut params = RuleParams::default();
+        if copy {
+            params.copy = Some(CopyForm::Document);
+        }
+        LoadedRule {
+            id: RuleId(Uuid::from_u128(id)),
+            fingerprint_id: FingerprintId(Uuid::from_u128(1)),
+            trade_mode: TradeMode::Paper,
+            buy_amount_lamports: 1,
+            max_concurrent_tokens: 0,
+            max_total_tokens: 0,
+            params,
+            entry_enabled: true,
+        }
+    }
+
+    fn delta(rule: RuleId, mint: &str, state: ArmedStateTag) -> ArmedDelta {
+        ArmedDelta {
+            mint: Mint(mint.into()),
+            rule,
+            state,
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn a_copy_watch_publishes_nothing_and_a_metric_arm_does() {
+        // A lazy pool starts its manager on the current runtime. The test itself
+        // stays synchronous: nothing here awaits.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let _guard = rt.enter();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused/unused")
+            .expect("lazy pool");
+        let (sse_tx, mut sse_rx) = broadcast::channel(8);
+        let mut sink = Sink::new(
+            StrategyRepo::new(pool),
+            Arc::new(TokenCache::new()),
+            sse_tx,
+            PositionRegistry::new(),
+            ArmedRegistry::new(),
+            ArmLedger::disabled(),
+            FillSigStore::new(),
+            "wallet".to_string(),
+            None,
+            None,
+        );
+        let copy = rule(2, true);
+        let metric = rule(3, false);
+        sink.set_rules(&[copy.clone(), metric.clone()], &[], &[]);
+
+        sink.on_armed_changed(&delta(copy.id, "MintCopy", ArmedStateTag::Armed));
+        sink.on_armed_changed(&delta(
+            copy.id,
+            "MintCopy",
+            ArmedStateTag::Disarmed(DisarmReason::Dead),
+        ));
+        assert!(sink.armed.snapshot().is_empty(), "a copy watch is not a Waiting row");
+        assert!(sse_rx.try_recv().is_err(), "a copy watch sends no frame");
+
+        sink.on_armed_changed(&delta(metric.id, "MintMetric", ArmedStateTag::Armed));
+        let rows = sink.armed.snapshot();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].mint_address, "MintMetric");
+        match sse_rx.try_recv() {
+            Ok(SseEvent::StrategyArmedChanged { mint_address, state, .. }) => {
+                assert_eq!(mint_address, "MintMetric");
+                assert_eq!(state, "armed");
+            }
+            other => panic!("metric arm must publish, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]

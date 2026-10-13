@@ -1,6 +1,9 @@
 import { useMemo, type CSSProperties } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
+import { useProfileWallets } from 'hooks/useProfileWallets';
+import { tagsFromJson } from 'lib/strategy/tagsDoc';
+import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import { IxPatternBar, TagStageControls } from 'components/tokens/IxPatternBar';
 import { Badge } from 'components/ui/Badge';
 import { useTimezone } from 'context/TimezoneContext';
@@ -26,7 +29,14 @@ import { LensChips } from 'components/tokens/LensControls';
 import type { TradeRecord } from 'types';
 
 const EMPTY_TRADES: TradeRecord[] = [];
+const EMPTY_ADDRS: ReadonlySet<string> = new Set();
 const tradeRowKey = (t: TradeRecord) => t.id;
+
+/** Wallets listed on a fingerprint's `targets` tag: the wallets a copy rule follows. */
+function copyTargetsOf(tags: unknown): ReadonlySet<string> {
+  const wallets = tagsFromJson(tags).find((t) => t.name === 'targets')?.match.wallet;
+  return wallets && wallets.length > 0 ? new Set(wallets) : EMPTY_ADDRS;
+}
 
 /** A selection that lives outside the chart's own bar/range click (e.g. a swing
  *  leg picked in a separate results table) but drives this panel the same way.
@@ -140,6 +150,23 @@ export function BarTradesPanel({
 }: BarTradesPanelProps) {
   const { timezone } = useTimezone();
   const price = usePriceDisplay();
+  const profileWallets = useProfileWallets();
+  const trackedWallets = useMemo(
+    () => new Set(profileWallets.filter((w) => !w.isMine).map((w) => w.address)),
+    [profileWallets],
+  );
+  const mineWallets = useMemo(
+    () => new Set(profileWallets.filter((w) => w.isMine).map((w) => w.address)),
+    [profileWallets],
+  );
+  const { data: fingerprints } = useGetFingerprintsQuery(undefined, {
+    skip: !flowFingerprintId,
+  });
+  const copyTargetWallets = useMemo(() => {
+    if (!flowFingerprintId) return EMPTY_ADDRS;
+    const fp = fingerprints?.find((f) => f.id === flowFingerprintId);
+    return fp ? copyTargetsOf(fp.tags) : EMPTY_ADDRS;
+  }, [fingerprints, flowFingerprintId]);
 
   // A page-wide flow lens (Trader Analysis) OWNS the set on pages with no
   // fingerprint behind their tokens. When one is provided it is the write target:
@@ -194,6 +221,9 @@ export function BarTradesPanel({
         flowReasons,
         stage,
         tagFieldTitle,
+        trackedWallets,
+        mineWallets,
+        copyTargetWallets,
       }),
     [
       price.unitLabel,
@@ -205,6 +235,9 @@ export function BarTradesPanel({
       onLensStructure,
       lensWalletColor,
       lensStructureColor,
+      trackedWallets,
+      mineWallets,
+      copyTargetWallets,
     ],
   );
 

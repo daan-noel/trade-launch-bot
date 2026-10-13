@@ -59,6 +59,12 @@ export interface TokenTradeColumnsOpts {
   /** The color the structure a click on this row would toggle washes in (labels
    *  plus the highlight's pins off this row), `null` = not armed. */
   lensStructureColor?: ((labels: readonly string[], from: TradeRecord) => string | null) | null;
+  /** Tracked profile wallets that are not the user's own (`is_tracked`, not `mine`). */
+  trackedWallets?: ReadonlySet<string> | null;
+  /** The user's own profile wallets (`profile_type === 'mine'`). */
+  mineWallets?: ReadonlySet<string> | null;
+  /** Wallets on this chart's fingerprint `targets` tag. A separate badge from tracked. */
+  copyTargetWallets?: ReadonlySet<string> | null;
 }
 
 /** What the Wallet column actually holds — stated on the column, because reading it
@@ -82,6 +88,59 @@ const WALLET_IS_VENUE_CREDIT_TIP =
  * 92.5% of them behind a single address, so counting it as a trader tops every
  * leaderboard with a PDA and deflates unique-wallet breadth on the same tokens.
  */
+/** Copy targets, own wallets, and other tracked wallets. Own wallets are `mine`,
+ *  never also `tracked`. */
+function WalletKindBadges({
+  address,
+  tracked,
+  mine,
+  copyTargets,
+}: {
+  address: string | null | undefined;
+  tracked: ReadonlySet<string> | null;
+  mine: ReadonlySet<string> | null;
+  copyTargets: ReadonlySet<string> | null;
+}) {
+  if (!address) return null;
+  const isCopy = copyTargets?.has(address) ?? false;
+  const isMine = mine?.has(address) ?? false;
+  const isTracked = !isMine && (tracked?.has(address) ?? false);
+  if (!isCopy && !isMine && !isTracked) return null;
+  return (
+    <>
+      {isCopy && (
+        <Badge size="sm" variant="accent" title="Copy target: a wallet this rule follows">
+          copy
+        </Badge>
+      )}
+      {isMine && (
+        <Badge size="sm" variant="warning" title="Own wallet">
+          mine
+        </Badge>
+      )}
+      {isTracked && (
+        <Badge size="sm" variant="info" title="Tracked wallet">
+          tracked
+        </Badge>
+      )}
+    </>
+  );
+}
+
+function walletKindWords(
+  address: string | null | undefined,
+  tracked: ReadonlySet<string> | null,
+  mine: ReadonlySet<string> | null,
+  copyTargets: ReadonlySet<string> | null,
+): string {
+  if (!address) return '';
+  const words: string[] = [];
+  if (copyTargets?.has(address)) words.push('copy');
+  if (mine?.has(address)) words.push('mine');
+  else if (tracked?.has(address)) words.push('tracked');
+  return words.join(' ');
+}
+
 function ProxyBadge({ isProxied }: { isProxied?: boolean | null }) {
   if (isProxied !== true) return null;
   return (
@@ -118,6 +177,9 @@ export function tokenTradeColumns(
   const lensWalletColor = opts?.lensWalletColor ?? null;
   const onLensStructure = opts?.onLensStructure ?? null;
   const lensStructureColor = opts?.lensStructureColor ?? null;
+  const trackedWallets = opts?.trackedWallets ?? null;
+  const mineWallets = opts?.mineWallets ?? null;
+  const copyTargetWallets = opts?.copyTargetWallets ?? null;
 
   const leading: ColumnDef<TradeRecord>[] = [];
 
@@ -296,14 +358,27 @@ export function tokenTradeColumns(
               ))}
             <AddressDisplay address={t.wallet_address} kind="account" />
             <ProxyBadge isProxied={t.is_proxied} />
+            <WalletKindBadges
+              address={t.wallet_address}
+              tracked={trackedWallets}
+              mine={mineWallets}
+              copyTargets={copyTargetWallets}
+            />
           </span>
         );
       },
       sortValue: (t) => t.wallet_address,
       // The flag is searchable by word, so `proxy` selects the router rows and
       // `direct` the ones that signed — the split every per-wallet read depends on.
+      // `tracked` / `copy` find those wallets the same way.
       searchValue: (t) =>
-        `${t.wallet_address} ${t.is_proxied === true ? 'proxy router' : t.is_proxied === false ? 'direct' : ''}`,
+        [
+          t.wallet_address,
+          t.is_proxied === true ? 'proxy router' : t.is_proxied === false ? 'direct' : '',
+          walletKindWords(t.wallet_address, trackedWallets, mineWallets, copyTargetWallets),
+        ]
+          .filter(Boolean)
+          .join(' '),
     },
     {
       key: 'payer',
@@ -317,7 +392,15 @@ export function tokenTradeColumns(
         'unbackfillable, since raw_txs keeps only 3 days.',
       render: (t) =>
         t.payer_address ? (
-          <AddressDisplay address={t.payer_address} kind="account" />
+          <span className="flex items-start gap-1">
+            <AddressDisplay address={t.payer_address} kind="account" />
+            <WalletKindBadges
+              address={t.payer_address}
+              tracked={trackedWallets}
+              mine={mineWallets}
+              copyTargets={copyTargetWallets}
+            />
+          </span>
         ) : (
           <span
             className="text-text-dim"
@@ -327,7 +410,10 @@ export function tokenTradeColumns(
           </span>
         ),
       sortValue: (t) => t.payer_address ?? '',
-      searchValue: (t) => t.payer_address ?? '',
+      searchValue: (t) =>
+        [t.payer_address ?? '', walletKindWords(t.payer_address, trackedWallets, mineWallets, copyTargetWallets)]
+          .filter(Boolean)
+          .join(' '),
     },
     {
       key: 'sol',

@@ -146,7 +146,9 @@ arm ledger about the same episode.
 loses a row the instant it disarms; the **Arms** section pages `strategy_arms` over a
 date range and keeps every episode, including the ones that never traded. Two readers
 of one fact on purpose — the lane must patch per-event with no round trip
-([arm-ledger.md](@plans/strategies/arm-ledger.md)).
+([arm-ledger.md](@plans/strategies/arm-ledger.md)). A copy rule is absent from both:
+the sink does not publish its watch of every new mint. A copy buy shows up as a
+position.
 
 **Live trading notify SSOT (one EventSource, writers):**
 
@@ -297,7 +299,9 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   `tradesInRange`) is the ONE matcher keying trades exactly as the chart bars them, and
   `BarTradesPanel` renders the table (entry/exit/signal row tint from `eventMarkers`,
   matched on `tx_signature` in the chart marker colors, a fill outranking a signal on the
-  same print; own-wallet accent). A paper or sim fill's signature is the print it was priced
+  same print; own-wallet accent). The Wallet and Payer cells badge an own wallet
+  (`mine`, warning) apart from any other tracked profile wallet (`tracked`, info),
+  and, separately, a wallet on that chart's fingerprint `targets` tag (`copy`). A paper or sim fill's signature is the print it was priced
   against, so its rows tint like a real fill's. `TokenTradeChart` puts it under its chart and can yield it to an outside pick
   via `externalSelection`; `FloorPositionDetail` uses `MintBarTradesPanel` — same RTK Query
   cache the chart filled, so no extra request — placed **below** the chart ∥ fills grid,
@@ -1096,7 +1100,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   money, so they never share a chart — but NOT rule-scoped: the chart's subject is the token's
   whole traded history. The focused episode is substituted into the union (so it keeps the
   ledger's fresher legs) and tagged `◂`. The per-row chart-card decks stay single-episode by
-  design: there a card *is* one position row, and folding them is `chartsGroupByMint`'s job.
+  design: a card draws that row's entry and exit (`exit_legs`, else the exit stamp), so a
+  landed exit on the row is the arrow. Folding a mint's episodes onto one chart is the
+  inspect modal's job; `chartsGroupByMint` folds the rows on the page.
   The chart toolbar's Events toggle covers the whole overlay, arrows *and* dashed fill-price
   lines; on a ladder each line is titled by its share (`Exit 70%`) so N legs don't read as one
   exit drawn N times. Position tables (Evidence / Simulate / Dry-run / Sweep) share
