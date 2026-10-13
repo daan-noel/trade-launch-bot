@@ -34,9 +34,14 @@ pub(super) fn classify_pump_ix(
         || bytes.starts_with(&d.buy_exact_quote_in)
         || bytes.starts_with(&d.buy_v2)
         || bytes.starts_with(&d.buy_exact_quote_in_v2)
+        || bytes.starts_with(&d.buy_v3)
+        || bytes.starts_with(&d.buy_exact_quote_in_v3)
     {
         InstructionKind::Buy
-    } else if bytes.starts_with(&d.sell) || bytes.starts_with(&d.sell_v2) {
+    } else if bytes.starts_with(&d.sell)
+        || bytes.starts_with(&d.sell_v2)
+        || bytes.starts_with(&d.sell_v3)
+    {
         InstructionKind::Sell
     } else if bytes.starts_with(&d.create_ix) || bytes.starts_with(&d.create_v2_ix) {
         InstructionKind::Create
@@ -57,18 +62,41 @@ pub(super) fn determine_instruction_type(
 
     if has_buy && has_sell {
         let (buy_sol, sell_sol) = decoded_events.iter().fold((0.0, 0.0), |(b, s), ev| {
-            if ev.is_buy { (b + ev.sol_amount, s) } else { (b, s + ev.sol_amount) }
+            if ev.is_buy {
+                (b + ev.sol_amount, s)
+            } else {
+                (b, s + ev.sol_amount)
+            }
         });
-        if buy_sol > sell_sol { return "Buy".to_string(); }
-        if sell_sol > buy_sol { return "Sell".to_string(); }
+        if buy_sol > sell_sol {
+            return "Buy".to_string();
+        }
+        if sell_sol > buy_sol {
+            return "Sell".to_string();
+        }
         let bc = kinds.iter().filter(|k| **k == InstructionKind::Buy).count();
-        let sc = kinds.iter().filter(|k| **k == InstructionKind::Sell).count();
-        return if bc >= sc { "Buy".to_string() } else { "Sell".to_string() };
+        let sc = kinds
+            .iter()
+            .filter(|k| **k == InstructionKind::Sell)
+            .count();
+        return if bc >= sc {
+            "Buy".to_string()
+        } else {
+            "Sell".to_string()
+        };
     }
-    if has_buy { return "Buy".to_string(); }
-    if has_sell { return "Sell".to_string(); }
-    if kinds.contains(&InstructionKind::Create) { return "Create".to_string(); }
-    if kinds.contains(&InstructionKind::Migrate) { return "Migrate".to_string(); }
+    if has_buy {
+        return "Buy".to_string();
+    }
+    if has_sell {
+        return "Sell".to_string();
+    }
+    if kinds.contains(&InstructionKind::Create) {
+        return "Create".to_string();
+    }
+    if kinds.contains(&InstructionKind::Migrate) {
+        return "Migrate".to_string();
+    }
     "Unknown".to_string()
 }
 
@@ -208,7 +236,11 @@ pub(super) fn label_instruction(
     }
 
     if program_id == tok_id.as_str() || program_id == tok22_id.as_str() {
-        let friendly = if program_id == tok_id.as_str() { "Token Program" } else { "Token 2022" };
+        let friendly = if program_id == tok_id.as_str() {
+            "Token Program"
+        } else {
+            "Token 2022"
+        };
         if let Some(name) = data_bytes.and_then(token_ix_name) {
             return format!("{friendly}: {name}");
         }
@@ -264,27 +296,51 @@ fn label_from_parsed_or_unknown(friendly: &str, parsed_type: Option<&str>) -> St
 fn system_ix_name(data: &[u8]) -> Option<&'static str> {
     let disc = u32::from_le_bytes(data.get(0..4)?.try_into().ok()?);
     Some(match disc {
-        0 => "CreateAccount", 1 => "Assign", 2 => "Transfer",
-        3 => "CreateAccountWithSeed", 4 => "AdvanceNonceAccount",
-        5 => "WithdrawNonceAccount", 6 => "InitializeNonceAccount",
-        7 => "AuthorizeNonceAccount", 8 => "Allocate",
-        9 => "AllocateWithSeed", 10 => "AssignWithSeed",
-        11 => "TransferWithSeed", 12 => "UpgradeNonceAccount",
+        0 => "CreateAccount",
+        1 => "Assign",
+        2 => "Transfer",
+        3 => "CreateAccountWithSeed",
+        4 => "AdvanceNonceAccount",
+        5 => "WithdrawNonceAccount",
+        6 => "InitializeNonceAccount",
+        7 => "AuthorizeNonceAccount",
+        8 => "Allocate",
+        9 => "AllocateWithSeed",
+        10 => "AssignWithSeed",
+        11 => "TransferWithSeed",
+        12 => "UpgradeNonceAccount",
         _ => return None,
     })
 }
 
 fn token_ix_name(data: &[u8]) -> Option<&'static str> {
     Some(match data.first()? {
-        0 => "InitializeMint", 1 => "InitializeAccount", 2 => "InitializeMultisig",
-        3 => "Transfer", 4 => "Approve", 5 => "Revoke", 6 => "SetAuthority",
-        7 => "MintTo", 8 => "Burn", 9 => "CloseAccount", 10 => "FreezeAccount",
-        11 => "ThawAccount", 12 => "TransferChecked", 13 => "ApproveChecked",
-        14 => "MintToChecked", 15 => "BurnChecked", 16 => "InitializeAccount2",
-        17 => "SyncNative", 18 => "InitializeAccount3", 19 => "InitializeMultisig2",
-        20 => "InitializeMint2", 21 => "GetAccountDataSize",
-        22 => "InitializeImmutableOwner", 23 => "AmountToUiAmount",
-        24 => "UiAmountToAmount", 25 => "InitializeMintCloseAuthority",
+        0 => "InitializeMint",
+        1 => "InitializeAccount",
+        2 => "InitializeMultisig",
+        3 => "Transfer",
+        4 => "Approve",
+        5 => "Revoke",
+        6 => "SetAuthority",
+        7 => "MintTo",
+        8 => "Burn",
+        9 => "CloseAccount",
+        10 => "FreezeAccount",
+        11 => "ThawAccount",
+        12 => "TransferChecked",
+        13 => "ApproveChecked",
+        14 => "MintToChecked",
+        15 => "BurnChecked",
+        16 => "InitializeAccount2",
+        17 => "SyncNative",
+        18 => "InitializeAccount3",
+        19 => "InitializeMultisig2",
+        20 => "InitializeMint2",
+        21 => "GetAccountDataSize",
+        22 => "InitializeImmutableOwner",
+        23 => "AmountToUiAmount",
+        24 => "UiAmountToAmount",
+        25 => "InitializeMintCloseAuthority",
         _ => return None,
     })
 }
@@ -293,8 +349,10 @@ fn ata_ix_name(data: Option<&[u8]>) -> Option<&'static str> {
     match data {
         Some(b) if b.is_empty() => Some("Create"),
         Some(b) => match b[0] {
-            0 => Some("Create"), 1 => Some("CreateIdempotent"),
-            2 => Some("RecoverNested"), _ => None,
+            0 => Some("Create"),
+            1 => Some("CreateIdempotent"),
+            2 => Some("RecoverNested"),
+            _ => None,
         },
         None => None,
     }
@@ -325,7 +383,12 @@ mod tests {
         let p = Protocol::pump_fun();
         // Our own venue, through the same computed table as everyone else.
         assert_eq!(
-            label_instruction(&p.programs.pump_fun.base58, None, Some(&disc("sell_v2")), &p),
+            label_instruction(
+                &p.programs.pump_fun.base58,
+                None,
+                Some(&disc("sell_v2")),
+                &p
+            ),
             "Pump.Fun: SellV2",
         );
         // A named router.
@@ -378,17 +441,37 @@ mod tests {
         let buyish = [0x00, 0xc0, 0x19, 0x81, 0x1d, 0, 0, 0, 0, 0];
         let sellish = [0x01, 0xc0, 0x19, 0x81, 0x1d, 0, 0, 0, 0, 0];
         assert_eq!(
-            label_instruction("FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9", None, Some(&buyish), &p),
+            label_instruction(
+                "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9",
+                None,
+                Some(&buyish),
+                &p
+            ),
             "Axiom Trade: ix#00",
         );
         assert_ne!(
-            label_instruction("FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9", None, Some(&sellish), &p),
-            label_instruction("FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9", None, Some(&buyish), &p),
+            label_instruction(
+                "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9",
+                None,
+                Some(&sellish),
+                &p
+            ),
+            label_instruction(
+                "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9",
+                None,
+                Some(&buyish),
+                &p
+            ),
         );
         // The same payload read eight bytes wide would fork on the amount.
         let other_amount = [0x00, 0x2d, 0x31, 0x01, 0, 0, 0, 0, 0, 0];
         assert_eq!(
-            label_instruction("FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9", None, Some(&other_amount), &p),
+            label_instruction(
+                "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9",
+                None,
+                Some(&other_amount),
+                &p
+            ),
             "Axiom Trade: ix#00",
         );
     }
@@ -403,7 +486,12 @@ mod tests {
             "System Program: Unknown",
         );
         assert_eq!(
-            label_instruction("term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3", None, None, &p),
+            label_instruction(
+                "term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3",
+                None,
+                None,
+                &p
+            ),
             "Terminal: Unknown",
         );
     }
@@ -417,7 +505,10 @@ mod tests {
         let b = label_instruction(MEMO_PROGRAM_ID, None, Some(b"totally different"), &p);
         assert_eq!(a, "Memo Program: Memo");
         assert_eq!(a, b);
-        assert_eq!(label_instruction(MEMO_PROGRAM_ID, None, None, &p), "Memo Program: Unknown");
+        assert_eq!(
+            label_instruction(MEMO_PROGRAM_ID, None, None, &p),
+            "Memo Program: Unknown"
+        );
     }
 
     #[test]
@@ -426,6 +517,27 @@ mod tests {
         assert_eq!(
             classify_pump_ix(true, Some(&disc("sell_v2")), &p),
             Some(InstructionKind::Sell),
+        );
+        assert_eq!(
+            classify_pump_ix(true, Some(&disc("buy_v3")), &p),
+            Some(InstructionKind::Buy),
+        );
+        assert_eq!(
+            classify_pump_ix(true, Some(&disc("sell_v3")), &p),
+            Some(InstructionKind::Sell),
+        );
+        assert_eq!(
+            label_instruction(&p.programs.pump_fun.base58, None, Some(&disc("buy_v3")), &p,),
+            "Pump.Fun: BuyV3",
+        );
+        assert_eq!(
+            label_instruction(
+                &p.programs.pump_swap.base58,
+                None,
+                Some(&disc("buy_v2")),
+                &p,
+            ),
+            "PumpSwap: BuyV2",
         );
         assert_eq!(
             determine_instruction_type(&[InstructionKind::Sell], &[]),

@@ -232,11 +232,36 @@ pub struct TokenCreated {
 /// The host serializes this to JSON for DB persistence.
 #[derive(Debug, Clone)]
 pub enum BuyInstructionArgs {
-    Buy { token_amount: u64, max_sol_cost: u64 },
-    BuyV2 { token_amount: u64, max_sol_cost: u64 },
-    BuyExactSolIn { spendable_sol_in: u64, min_tokens_out: u64 },
-    BuyExactQuoteIn { spendable_sol_in: u64, min_tokens_out: u64 },
-    BuyExactQuoteInV2 { spendable_sol_in: u64, min_tokens_out: u64 },
+    Buy {
+        token_amount: u64,
+        max_sol_cost: u64,
+    },
+    BuyV2 {
+        token_amount: u64,
+        max_sol_cost: u64,
+    },
+    BuyExactSolIn {
+        spendable_sol_in: u64,
+        min_tokens_out: u64,
+    },
+    BuyExactQuoteIn {
+        spendable_sol_in: u64,
+        min_tokens_out: u64,
+    },
+    BuyExactQuoteInV2 {
+        spendable_sol_in: u64,
+        min_tokens_out: u64,
+    },
+    /// `buy_v3`. Same two amounts as `BuyV2`.
+    BuyV3 {
+        token_amount: u64,
+        max_sol_cost: u64,
+    },
+    /// `buy_exact_quote_in_v3`. Same two amounts as `BuyExactQuoteInV2`.
+    BuyExactQuoteInV3 {
+        spendable_sol_in: u64,
+        min_tokens_out: u64,
+    },
 }
 
 // ── TokenMigrated ─────────────────────────────────────────────────────────────

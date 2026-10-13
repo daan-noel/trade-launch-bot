@@ -59,53 +59,114 @@ const REGISTRY: &[(&str, &str)] = &[
     (TOKEN_PROGRAM_ID, "Token Program"),
     (TOKEN_2022_PROGRAM_ID, "Token 2022"),
     (ASSOCIATED_TOKEN_PROGRAM_ID, "Associated Token"),
-    ("AddressLookupTab1e1111111111111111111111111", "Address Lookup Table"),
-    ("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s", "Token Metadata"),
+    (
+        "AddressLookupTab1e1111111111111111111111111",
+        "Address Lookup Table",
+    ),
+    (
+        "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+        "Token Metadata",
+    ),
     (MEMO_PROGRAM_ID, "Memo Program"),
-
     // ── DEX venues & launchpads (stable, verified addresses) ─────────────────
-    ("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", "Raydium AMM v4"),
-    ("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK", "Raydium CLMM"),
-    ("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C", "Raydium CPMM"),
-    ("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj", "Raydium LaunchLab"),
-    ("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc", "Orca Whirlpool"),
-    ("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", "Meteora DLMM"),
-    ("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB", "Meteora Dynamic AMM"),
-    ("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", "Meteora DAMM V2"),
+    (
+        "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+        "Raydium AMM v4",
+    ),
+    (
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+        "Raydium CLMM",
+    ),
+    (
+        "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+        "Raydium CPMM",
+    ),
+    (
+        "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+        "Raydium LaunchLab",
+    ),
+    (
+        "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+        "Orca Whirlpool",
+    ),
+    (
+        "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+        "Meteora DLMM",
+    ),
+    (
+        "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
+        "Meteora Dynamic AMM",
+    ),
+    (
+        "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+        "Meteora DAMM V2",
+    ),
     ("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN", "Meteora DBC"),
     ("PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY", "Phoenix"),
-    ("2wT8Yq49kHgDzXuPxZSaeLaH1qbmGXWEYUdrsBBWvv3F", "Lifinity V2"),
+    (
+        "2wT8Yq49kHgDzXuPxZSaeLaH1qbmGXWEYUdrsBBWvv3F",
+        "Lifinity V2",
+    ),
     ("MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG", "Moonshot"),
-
     // ── Aggregators / routers ────────────────────────────────────────────────
-    ("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", "Jupiter Aggregator V6"),
-    ("6m2CDdhRgxpH4WjvdzxAYbGxwdGUz5MziiL5jek2kBma", "OKX DEX Router"),
+    (
+        "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+        "Jupiter Aggregator V6",
+    ),
+    (
+        "6m2CDdhRgxpH4WjvdzxAYbGxwdGUz5MziiL5jek2kBma",
+        "OKX DEX Router",
+    ),
     // Second OKX deployment. Its own on-chain IDL self-names it "OKX: DEX Router".
-    ("proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u", "OKX DEX Router"),
-    ("DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH", "DFlow Aggregator"),
+    (
+        "proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u",
+        "OKX DEX Router",
+    ),
+    (
+        "DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH",
+        "DFlow Aggregator",
+    ),
     // Self-named in its on-chain IDL (`debot_router`).
-    ("G7MVcM9YzGxrmLtmobUgyt8A6WhQ2dgQX3aSJcPejdEp", "deBot Router"),
-
+    (
+        "G7MVcM9YzGxrmLtmobUgyt8A6WhQ2dgQX3aSJcPejdEp",
+        "deBot Router",
+    ),
     // ── Retail front-ends. Each name is corroborated by the instruction set the
     //    program runs (see ANCHOR_IX): a vanity prefix alone does not qualify. ─
-    ("FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9", "Axiom Trade"),
+    (
+        "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9",
+        "Axiom Trade",
+    ),
     ("BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW", "Photon"),
     ("GMgnVFR8Jb39LoXsEVzb3DvBy3ywCmdmJquHUy1Lrkqb", "GMGN Bot"),
     ("GMGNreQcJFufBiCTLDBgKhYEfEe9B454UjpDr5CaSLA1", "GMGN Bot"),
     ("term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3", "Terminal"),
-    ("troyXT7Ty3s2rjJe4bqWaroUrS4Fjd8rbHHNHxcACF4", "Trojan Trade"),
-    ("TroYL71c8P2XNtDxHs98VtVLuiASJ7Ao5FvUoKyp3Bk", "Trojan Trade"),
+    (
+        "troyXT7Ty3s2rjJe4bqWaroUrS4Fjd8rbHHNHxcACF4",
+        "Trojan Trade",
+    ),
+    (
+        "TroYL71c8P2XNtDxHs98VtVLuiASJ7Ao5FvUoKyp3Bk",
+        "Trojan Trade",
+    ),
     ("MaestroAAe9ge5HTc64VbBQZ6fP77pwvrhM8i1XWSAx", "Maestro"),
-    ("b1oomGGqPKGD6errbyfbVMBuzSC8WtAAYo8MwNafWW1", "Bloom Router"),
-
+    (
+        "b1oomGGqPKGD6errbyfbVMBuzSC8WtAAYo8MwNafWW1",
+        "Bloom Router",
+    ),
     // ── Transaction guards. Not venues: they assert state and abort the tx.
     //    Lighthouse is inserted by the WALLET (Phantom et al.), so its presence
     //    is a property of the signer's client, not of the trade. ──────────────
     ("L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95", "Lighthouse"),
-
     // ── Arbitrage/MEV programs, named by behaviour only ──────────────────────
-    ("FAdo9NCw1ssek6Z6yeWzWjhLVsr8uiCwcWNUnKgzTnHe", "Arbitrage Bot"),
-    ("9Zzf9QqTy3TkyXysvJBsXyuRjda5aXCEJ9vXfL2HKSYv", "Arbitrage Bot"),
+    (
+        "FAdo9NCw1ssek6Z6yeWzWjhLVsr8uiCwcWNUnKgzTnHe",
+        "Arbitrage Bot",
+    ),
+    (
+        "9Zzf9QqTy3TkyXysvJBsXyuRjda5aXCEJ9vXfL2HKSYv",
+        "Arbitrage Bot",
+    ),
 ];
 
 fn registry() -> &'static HashMap<&'static str, &'static str> {
@@ -141,15 +202,23 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("add_quote_mint", "AddQuoteMint"),
             ("admin_set_creator", "AdminSetCreator"),
             ("admin_set_idl_authority", "AdminSetIdlAuthority"),
-            ("admin_update_token_incentives", "AdminUpdateTokenIncentives"),
+            (
+                "admin_update_token_incentives",
+                "AdminUpdateTokenIncentives",
+            ),
             ("buy", "Buy"),
             ("buy_exact_quote_in_v2", "BuyExactQuoteInV2"),
+            ("buy_exact_quote_in_v3", "BuyExactQuoteInV3"),
             ("buy_exact_sol_in", "BuyExactSolIn"),
             ("buy_v2", "BuyV2"),
+            ("buy_v3", "BuyV3"),
             ("claim_cashback", "ClaimCashback"),
             ("claim_cashback_v2", "ClaimCashbackV2"),
             ("claim_token_incentives", "ClaimTokenIncentives"),
-            ("close_user_volume_accumulator", "CloseUserVolumeAccumulator"),
+            (
+                "close_user_volume_accumulator",
+                "CloseUserVolumeAccumulator",
+            ),
             ("collect_creator_fee", "CollectCreatorFee"),
             ("collect_creator_fee_v2", "CollectCreatorFeeV2"),
             ("create", "Create"),
@@ -157,15 +226,22 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("distribute_creator_fees", "DistributeCreatorFees"),
             ("distribute_creator_fees_v2", "DistributeCreatorFeesV2"),
             ("extend_account", "ExtendAccount"),
-            ("get_minimum_distributable_fee", "GetMinimumDistributableFee"),
+            (
+                "get_minimum_distributable_fee",
+                "GetMinimumDistributableFee",
+            ),
             ("init_user_volume_accumulator", "InitUserVolumeAccumulator"),
             ("initialize", "Initialize"),
             ("migrate", "Migrate"),
-            ("migrate_bonding_curve_creator", "MigrateBondingCurveCreator"),
+            (
+                "migrate_bonding_curve_creator",
+                "MigrateBondingCurveCreator",
+            ),
             ("migrate_v2", "Migrate_v2"),
             ("remove_quote_mint", "RemoveQuoteMint"),
             ("sell", "Sell"),
             ("sell_v2", "SellV2"),
+            ("sell_v3", "SellV3"),
             ("set_creator", "SetCreator"),
             ("set_mayhem_virtual_params", "SetMayhemVirtualParams"),
             ("set_metaplex_creator", "SetMetaplexCreator"),
@@ -185,12 +261,20 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
         PUMP_SWAP_PROGRAM_ID,
         &[
             ("admin_set_coin_creator", "AdminSetCoinCreator"),
-            ("admin_update_token_incentives", "AdminUpdateTokenIncentives"),
+            (
+                "admin_update_token_incentives",
+                "AdminUpdateTokenIncentives",
+            ),
             ("buy", "Buy"),
             ("buy_exact_quote_in", "BuyExactQuoteIn"),
+            ("buy_exact_quote_in_v2", "BuyExactQuoteInV2"),
+            ("buy_v2", "BuyV2"),
             ("claim_cashback", "ClaimCashback"),
             ("claim_token_incentives", "ClaimTokenIncentives"),
-            ("close_user_volume_accumulator", "CloseUserVolumeAccumulator"),
+            (
+                "close_user_volume_accumulator",
+                "CloseUserVolumeAccumulator",
+            ),
             ("collect_coin_creator_fee", "CollectCoinCreatorFee"),
             ("create_config", "CreateConfig"),
             ("create_pool", "CreatePool"),
@@ -200,13 +284,17 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("init_user_volume_accumulator", "InitUserVolumeAccumulator"),
             ("migrate_pool_coin_creator", "MigratePoolCoinCreator"),
             ("sell", "Sell"),
+            ("sell_v2", "SellV2"),
             ("set_coin_creator", "SetCoinCreator"),
             ("set_reserved_fee_recipients", "SetReservedFeeRecipients"),
             ("sync_user_volume_accumulator", "SyncUserVolumeAccumulator"),
             ("toggle_cashback_enabled", "ToggleCashbackEnabled"),
             ("toggle_mayhem_mode", "ToggleMayhemMode"),
             ("transfer_creator_fees_to_pump", "TransferCreatorFeesToPump"),
-            ("transfer_creator_fees_to_pump_v2", "TransferCreatorFeesToPumpV2"),
+            (
+                "transfer_creator_fees_to_pump_v2",
+                "TransferCreatorFeesToPumpV2",
+            ),
             ("update_admin", "UpdateAdmin"),
             ("update_buyback_config", "UpdateBuybackConfig"),
             ("update_fee_config", "UpdateFeeConfig"),
@@ -227,12 +315,21 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("route", "Route"),
             ("route_with_token_ledger", "RouteWithTokenLedger"),
             ("set_token_ledger", "SetTokenLedger"),
-            ("shared_accounts_exact_out_route", "SharedAccountsExactOutRoute"),
+            (
+                "shared_accounts_exact_out_route",
+                "SharedAccountsExactOutRoute",
+            ),
             ("shared_accounts_route", "SharedAccountsRoute"),
-            ("shared_accounts_route_with_token_ledger", "SharedAccountsRouteWithTokenLedger"),
+            (
+                "shared_accounts_route_with_token_ledger",
+                "SharedAccountsRouteWithTokenLedger",
+            ),
             ("exact_out_route_v2", "ExactOutRouteV2"),
             ("route_v2", "RouteV2"),
-            ("shared_accounts_exact_out_route_v2", "SharedAccountsExactOutRouteV2"),
+            (
+                "shared_accounts_exact_out_route_v2",
+                "SharedAccountsExactOutRouteV2",
+            ),
             ("shared_accounts_route_v2", "SharedAccountsRouteV2"),
         ],
     ),
@@ -242,14 +339,23 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
         &[
             ("close_empty_token_account", "CloseEmptyTokenAccount"),
             ("close_order", "CloseOrder"),
-            ("create_referral_token_account_idempotent", "CreateReferralTokenAccountIdempotent"),
+            (
+                "create_referral_token_account_idempotent",
+                "CreateReferralTokenAccountIdempotent",
+            ),
             ("fill_order", "FillOrder"),
-            ("init_market_ledger_idempotent", "InitMarketLedgerIdempotent"),
+            (
+                "init_market_ledger_idempotent",
+                "InitMarketLedgerIdempotent",
+            ),
             ("open_order", "OpenOrder"),
             ("swap", "Swap"),
             ("swap2", "Swap2"),
             ("swap2_with_destination", "Swap2WithDestination"),
-            ("swap2_with_destination_native", "Swap2WithDestinationNative"),
+            (
+                "swap2_with_destination_native",
+                "Swap2WithDestinationNative",
+            ),
             ("swap_with_destination", "SwapWithDestination"),
             ("swap_with_destination_native", "SwapWithDestinationNative"),
             ("transfer_fee", "TransferFee"),
@@ -268,7 +374,10 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("claim_cashback_pumpfun", "ClaimCashbackPumpfun"),
             ("claim_cashback_pumpswap", "ClaimCashbackPumpswap"),
             ("create_token_account", "CreateTokenAccount"),
-            ("create_token_account_with_seed", "CreateTokenAccountWithSeed"),
+            (
+                "create_token_account_with_seed",
+                "CreateTokenAccountWithSeed",
+            ),
             ("proxy_swap", "ProxySwap"),
             ("swap", "Swap"),
             ("swap_tob_v3", "SwapTobV3"),
@@ -287,9 +396,15 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("claim", "Claim"),
             ("claim_cashback_pumpfun", "ClaimCashbackPumpfun"),
             ("claim_cashback_pumpswap", "ClaimCashbackPumpswap"),
-            ("create_ata_with_close_authority", "CreateAtaWithCloseAuthority"),
+            (
+                "create_ata_with_close_authority",
+                "CreateAtaWithCloseAuthority",
+            ),
             ("create_token_account", "CreateTokenAccount"),
-            ("create_token_account_with_seed", "CreateTokenAccountWithSeed"),
+            (
+                "create_token_account_with_seed",
+                "CreateTokenAccountWithSeed",
+            ),
             ("init_token_ledger", "InitTokenLedger"),
             ("proxy_swap", "ProxySwap"),
             ("set_token_ledger", "SetTokenLedger"),
@@ -299,8 +414,14 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("swap_tob_v2", "SwapTobV2"),
             ("swap_tob_v3", "SwapTobV3"),
             ("swap_tob_with_receiver", "SwapTobWithReceiver"),
-            ("swap_tob_with_receiver_token_ledger", "SwapTobWithReceiverTokenLedger"),
-            ("swap_tob_with_receiver_token_ledger_v3", "SwapTobWithReceiverTokenLedgerV3"),
+            (
+                "swap_tob_with_receiver_token_ledger",
+                "SwapTobWithReceiverTokenLedger",
+            ),
+            (
+                "swap_tob_with_receiver_token_ledger_v3",
+                "SwapTobWithReceiverTokenLedgerV3",
+            ),
             ("swap_tob_with_receiver_v3", "SwapTobWithReceiverV3"),
             ("swap_tob_with_token_ledger", "SwapTobWithTokenLedger"),
             ("swap_tob_with_token_ledger_v3", "SwapTobWithTokenLedgerV3"),
@@ -316,7 +437,10 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
         "G7MVcM9YzGxrmLtmobUgyt8A6WhQ2dgQX3aSJcPejdEp",
         &[
             ("create_token_account", "CreateTokenAccount"),
-            ("create_token_account_with_seed", "CreateTokenAccountWithSeed"),
+            (
+                "create_token_account_with_seed",
+                "CreateTokenAccountWithSeed",
+            ),
             ("initialize_router_fee_config", "InitializeRouterFeeConfig"),
             ("recover_stuck_sol", "RecoverStuckSol"),
             ("recover_stuck_token", "RecoverStuckToken"),
@@ -327,7 +451,6 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("swap_compact", "SwapCompact"),
         ],
     ),
-
     // ── DEX venues: swap-family instructions only; admin ixs fall through
     //    to a key. These barely appear on a curve tape but are on the path
     //    once a token graduates. ─────────────────────────────────────────
@@ -359,9 +482,15 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     // Meteora DAMM V2.
-    ("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", &[("swap", "Swap")]),
+    (
+        "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+        &[("swap", "Swap")],
+    ),
     // Meteora DBC (dynamic bonding curve).
-    ("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN", &[("swap", "Swap")]),
+    (
+        "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
+        &[("swap", "Swap")],
+    ),
     // Moonshot.
     (
         "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",
@@ -372,7 +501,6 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("migrate_funds", "MigrateFunds"),
         ],
     ),
-
     // ── Retail front-ends. Names below are read from each program's own
     //    `Program log: Instruction:` lines and re-derive the discriminator
     //    that produced them; `router_names_are_reachable…` pins that. ────
@@ -391,17 +519,12 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
     // GMGN Bot.
     (
         "GMgnVFR8Jb39LoXsEVzb3DvBy3ywCmdmJquHUy1Lrkqb",
-        &[
-            ("buy", "Buy"),
-            ("sell", "Sell"),
-        ],
+        &[("buy", "Buy"), ("sell", "Sell")],
     ),
     // GMGN Bot, second deployment.
     (
         "GMGNreQcJFufBiCTLDBgKhYEfEe9B454UjpDr5CaSLA1",
-        &[
-            ("swap", "Swap"),
-        ],
+        &[("swap", "Swap")],
     ),
     // Photon.
     (
@@ -450,16 +573,28 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
             ("pump_swap_v3", "PumpSwapV3"),
             ("bonding_curve_v3", "BondingCurveV3"),
             ("sell_pump_swap_percentage", "SellPumpSwapPercentage"),
-            ("sell_bonding_curve_percentage", "SellBondingCurvePercentage"),
-            ("sell_pump_swap_exact_quote_out", "SellPumpSwapExactQuoteOut"),
-            ("create_coin_and_buy_bonding_curve_v3", "CreateCoinAndBuyBondingCurveV3"),
+            (
+                "sell_bonding_curve_percentage",
+                "SellBondingCurvePercentage",
+            ),
+            (
+                "sell_pump_swap_exact_quote_out",
+                "SellPumpSwapExactQuoteOut",
+            ),
+            (
+                "create_coin_and_buy_bonding_curve_v3",
+                "CreateCoinAndBuyBondingCurveV3",
+            ),
         ],
     ),
     // Unnamed router.
     (
         "m9obQHAPyZeZ88w7XUY8Te6a8rBmhXsfKco7u8G8tnB",
         &[
-            ("pump_bonding_curve_buy_with_volume_v2", "PumpBondingCurveBuyWithVolumeV2"),
+            (
+                "pump_bonding_curve_buy_with_volume_v2",
+                "PumpBondingCurveBuyWithVolumeV2",
+            ),
             ("pump_swap_sell", "PumpSwapSell"),
             ("pump_swap_buy_with_volume", "PumpSwapBuyWithVolume"),
             ("pump_bonding_curve_sell", "PumpBondingCurveSell"),
@@ -517,23 +652,17 @@ const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
     // Unnamed sell-side router.
     (
         "7bopoA2tnvDYEfp54FhgNDiLR9wSPcEs9J7FaUGURsXj",
-        &[
-            ("sell_pump_pumpswap", "SellPumpPumpswap"),
-        ],
+        &[("sell_pump_pumpswap", "SellPumpPumpswap")],
     ),
     // Unnamed balance guard.
     (
         "tRunsb6NB127ES14E5Y6pUf3dfJC8DJMPTcbEaWZSLe",
-        &[
-            ("balance_below", "BalanceBelow"),
-        ],
+        &[("balance_below", "BalanceBelow")],
     ),
     // Unnamed forwarder.
     (
         "pumpapii17v9uhRiokHwhG3yWYtB6hgJRmsSC5p5bb2",
-        &[
-            ("forward", "Forward"),
-        ],
+        &[("forward", "Forward")],
     ),
 ];
 
@@ -627,10 +756,19 @@ fn ix_tables() -> &'static HashMap<&'static str, IxTable> {
                 .iter()
                 .map(|(name, display)| (hex(&anchor_discriminator(name)), *display))
                 .collect();
-            out.insert(program_id, IxTable { key: IxKey::Disc8, names });
+            out.insert(
+                program_id,
+                IxTable {
+                    key: IxKey::Disc8,
+                    names,
+                },
+            );
         }
         for (program_id, key, ixs) in EXPLICIT_IX {
-            let names = ixs.iter().map(|(k, display)| ((*k).to_string(), *display)).collect();
+            let names = ixs
+                .iter()
+                .map(|(k, display)| ((*k).to_string(), *display))
+                .collect();
             out.insert(program_id, IxTable { key: *key, names });
         }
         out
@@ -660,7 +798,10 @@ pub(super) fn program_ix_key(program_id: &str) -> IxKey {
     if let Some(k) = key_overrides().get(program_id) {
         return *k;
     }
-    ix_tables().get(program_id).map(|t| t.key).unwrap_or(IxKey::Tag1)
+    ix_tables()
+        .get(program_id)
+        .map(|t| t.key)
+        .unwrap_or(IxKey::Tag1)
 }
 
 /// The stable instruction key for `data` under `key`, or `None` when `data` is
@@ -713,7 +854,11 @@ mod tests {
     #[test]
     fn registry_has_no_duplicate_ids() {
         // A dup would mean the last row silently wins — catch it at build time.
-        assert_eq!(registry().len(), REGISTRY.len(), "duplicate program id in REGISTRY");
+        assert_eq!(
+            registry().len(),
+            REGISTRY.len(),
+            "duplicate program id in REGISTRY"
+        );
     }
 
     #[test]
@@ -725,7 +870,11 @@ mod tests {
         let mut all = anchor.clone();
         all.extend(explicit.iter().copied());
         let unique: std::collections::BTreeSet<&str> = all.iter().copied().collect();
-        assert_eq!(unique.len(), all.len(), "a program id appears in two ix tables");
+        assert_eq!(
+            unique.len(),
+            all.len(),
+            "a program id appears in two ix tables"
+        );
         assert_eq!(ix_tables().len(), unique.len());
     }
 
@@ -761,6 +910,9 @@ mod tests {
             ("buy_exact_quote_in", d.buy_exact_quote_in),
             ("buy_v2", d.buy_v2),
             ("buy_exact_quote_in_v2", d.buy_exact_quote_in_v2),
+            ("buy_v3", d.buy_v3),
+            ("sell_v3", d.sell_v3),
+            ("buy_exact_quote_in_v3", d.buy_exact_quote_in_v3),
             ("create", d.create_ix),
             ("create_v2", d.create_v2_ix),
             ("migrate", d.migrate_ix),
@@ -771,7 +923,11 @@ mod tests {
             ("extend_account", d.extend_account),
             ("collect_creator_fee", d.collect_creator_fee),
         ] {
-            assert_eq!(anchor_discriminator(name), bytes, "discriminator drift on `{name}`");
+            assert_eq!(
+                anchor_discriminator(name),
+                bytes,
+                "discriminator drift on `{name}`"
+            );
         }
     }
 
@@ -782,7 +938,10 @@ mod tests {
         assert_eq!(program_instruction_name(jup, Some(&route)), Some("Route"));
         assert_eq!(program_instruction_name(jup, Some(&[0u8; 8])), None);
         // An unrecognised discriminator still yields a stable identity.
-        assert_eq!(program_instruction_label(jup, Some(&[0u8; 8])), "ix#0000000000000000");
+        assert_eq!(
+            program_instruction_label(jup, Some(&[0u8; 8])),
+            "ix#0000000000000000"
+        );
         // Program with no ix table → keyed by its first byte, never named.
         assert_eq!(
             program_instruction_name("AddressLookupTab1e1111111111111111111111111", Some(&route)),
@@ -806,16 +965,28 @@ mod tests {
         assert_eq!(program_instruction_label(jpour, Some(&disc)), "SellPumpfun");
         // One-byte dispatch tag: the trailing u64 argument must not fork it.
         let b3 = "B3111yJCeHBcA1bizdJjUFPALfhAfSRnAbJzGUtnt56A";
-        assert_eq!(program_instruction_label(b3, Some(&[0x04, 0, 0xa3, 0xe1, 0x11, 0, 0, 0])), "SwapWithSolFeeLog");
-        assert_eq!(program_instruction_label(b3, Some(&[0x04, 0, 0x2d, 0x31, 0x01, 0, 0, 0])), "SwapWithSolFeeLog");
+        assert_eq!(
+            program_instruction_label(b3, Some(&[0x04, 0, 0xa3, 0xe1, 0x11, 0, 0, 0])),
+            "SwapWithSolFeeLog"
+        );
+        assert_eq!(
+            program_instruction_label(b3, Some(&[0x04, 0, 0x2d, 0x31, 0x01, 0, 0, 0])),
+            "SwapWithSolFeeLog"
+        );
         // Axiom logs no instruction names, so it gets identity only. `decode-harvest`
         // measures exactly two leading tags across its traffic (`00` and `01`) —
         // reading eight bytes instead would fold the u64 argument into the key and
         // fork one instruction into a hundred labels.
         let axiom = "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9";
         assert_eq!(program_ix_key(axiom), IxKey::Tag1);
-        assert_eq!(program_instruction_label(axiom, Some(&[0x01, 0xc0, 0x19, 0x81, 0x1d, 0, 0, 0, 0, 0])), "ix#01");
-        assert_eq!(program_instruction_label(axiom, Some(&[0x00, 0x2d, 0x31, 0x01, 0, 0, 0, 0, 0, 0])), "ix#00");
+        assert_eq!(
+            program_instruction_label(axiom, Some(&[0x01, 0xc0, 0x19, 0x81, 0x1d, 0, 0, 0, 0, 0])),
+            "ix#01"
+        );
+        assert_eq!(
+            program_instruction_label(axiom, Some(&[0x00, 0x2d, 0x31, 0x01, 0, 0, 0, 0, 0, 0])),
+            "ix#00"
+        );
     }
 
     #[test]
@@ -824,16 +995,56 @@ mod tests {
         // `Program log: Instruction:` line. They are the evidence the router
         // names rest on; if a name is ever edited, this stops resolving.
         for (program_id, disc_hex, expect) in [
-            ("term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3", "a0bbe397d2052255", "V2BuyExactInPumpFun"),
-            ("term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3", "def8e0a674678e2f", "V2SellExactOutPumpFun"),
-            ("GMgnVFR8Jb39LoXsEVzb3DvBy3ywCmdmJquHUy1Lrkqb", "33e685a4017f83ad", "Sell"),
-            ("BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW", "1b4f0265289c23b3", "PumpBuyV2"),
-            ("troyXT7Ty3s2rjJe4bqWaroUrS4Fjd8rbHHNHxcACF4", "4d4df51d1cf91bee", "FeeTransferWithTip"),
-            ("MaestroAAe9ge5HTc64VbBQZ6fP77pwvrhM8i1XWSAx", "8409d42d2771d736", "MultiSwap2"),
-            ("6Vo3245eszAb5wuqEMw8mGdbfRUdKbHhDHP5LcaGuTAB", "af051981a0d8389d", "PumpSwapV3"),
-            ("6Vo3245eszAb5wuqEMw8mGdbfRUdKbHhDHP5LcaGuTAB", "f4f8e72d8fd1dc8f", "SellBondingCurvePercentage"),
-            ("m9obQHAPyZeZ88w7XUY8Te6a8rBmhXsfKco7u8G8tnB", "096a17f82988f538", "PumpSwapSell"),
-            ("tRunsb6NB127ES14E5Y6pUf3dfJC8DJMPTcbEaWZSLe", "fe4e6f93cfd683df", "BalanceBelow"),
+            (
+                "term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3",
+                "a0bbe397d2052255",
+                "V2BuyExactInPumpFun",
+            ),
+            (
+                "term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3",
+                "def8e0a674678e2f",
+                "V2SellExactOutPumpFun",
+            ),
+            (
+                "GMgnVFR8Jb39LoXsEVzb3DvBy3ywCmdmJquHUy1Lrkqb",
+                "33e685a4017f83ad",
+                "Sell",
+            ),
+            (
+                "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",
+                "1b4f0265289c23b3",
+                "PumpBuyV2",
+            ),
+            (
+                "troyXT7Ty3s2rjJe4bqWaroUrS4Fjd8rbHHNHxcACF4",
+                "4d4df51d1cf91bee",
+                "FeeTransferWithTip",
+            ),
+            (
+                "MaestroAAe9ge5HTc64VbBQZ6fP77pwvrhM8i1XWSAx",
+                "8409d42d2771d736",
+                "MultiSwap2",
+            ),
+            (
+                "6Vo3245eszAb5wuqEMw8mGdbfRUdKbHhDHP5LcaGuTAB",
+                "af051981a0d8389d",
+                "PumpSwapV3",
+            ),
+            (
+                "6Vo3245eszAb5wuqEMw8mGdbfRUdKbHhDHP5LcaGuTAB",
+                "f4f8e72d8fd1dc8f",
+                "SellBondingCurvePercentage",
+            ),
+            (
+                "m9obQHAPyZeZ88w7XUY8Te6a8rBmhXsfKco7u8G8tnB",
+                "096a17f82988f538",
+                "PumpSwapSell",
+            ),
+            (
+                "tRunsb6NB127ES14E5Y6pUf3dfJC8DJMPTcbEaWZSLe",
+                "fe4e6f93cfd683df",
+                "BalanceBelow",
+            ),
         ] {
             let mut data = [0u8; 8];
             for (i, b) in data.iter_mut().enumerate() {

@@ -294,9 +294,14 @@ used for trade recovery, not labels).
 **Curve swap args (`trades.swap_ix`).** The same decode reads the pump buy
 instruction that produced each leg and stores its args: `type` plus that
 variant's fields, the document `tokens.initial_buy_instruction` already uses.
+`buy_v3` and `buy_exact_quote_in_v3` store the same amounts as the v2 buys.
 Buy instructions are taken in execution order (each outer instruction, then the
 inner instructions it invoked) and zipped onto buy events. A sell consumes
 none. A sell layout and an AMM swap are later `type` values on this column.
+
+A create whose `quote_mint` is not the all-zero key is not ingested. That key is
+SOL, including a create that passed wrapped SOL. USDC and a pump-coin quote stay
+out, and so do the fills in that create transaction.
 `None` is "not captured".
 
 A key is not a name and does not pretend to be one; it is an identity. Before it

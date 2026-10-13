@@ -47,5 +47,21 @@ pub(crate) fn buy_ix_json(args: &BuyInstructionArgs) -> Value {
             "spendable_lamports_in": spendable_sol_in,
             "min_tokens_out": min_tokens_out,
         }),
+        BuyInstructionArgs::BuyV3 {
+            token_amount,
+            max_sol_cost,
+        } => json!({
+            "type": "BuyV3",
+            "token_amount": token_amount,
+            "max_cost_lamports": max_sol_cost,
+        }),
+        BuyInstructionArgs::BuyExactQuoteInV3 {
+            spendable_sol_in,
+            min_tokens_out,
+        } => json!({
+            "type": "BuyExactQuoteInV3",
+            "spendable_lamports_in": spendable_sol_in,
+            "min_tokens_out": min_tokens_out,
+        }),
     }
 }

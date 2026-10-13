@@ -17,14 +17,13 @@ use crate::protocol::Protocol;
 use super::create::decode_create_events_from_logs;
 use super::instructions::{
     classify_pump_ix, determine_instruction_type, label_instruction, system_transfer_lamports,
-    FeeBudget,
-    InstructionKind,
+    FeeBudget, InstructionKind,
 };
 use super::swap_ix::{buy_ixs_in_order, parse_buy_ix, BuyCursor};
 use super::trade::{
     build_amm_trade, compute_sol_change, compute_sol_change_lamports,
-    decode_pump_swap_trades_from_inner, decode_pump_swap_trades_from_logs,
-    decode_trade_event_body, decode_trade_events_from_logs, DecodedAmmTrade, DecodedTradeEvent,
+    decode_pump_swap_trades_from_inner, decode_pump_swap_trades_from_logs, decode_trade_event_body,
+    decode_trade_events_from_logs, DecodedAmmTrade, DecodedTradeEvent,
 };
 use super::{DecodeOutput, Decoder, TxRelevance};
 
@@ -167,7 +166,11 @@ impl<'k, 'a> TxSender<'k, 'a> {
             net += delta(b.account_index as usize).unwrap_or(0);
         }
         for b in meta.pre_token_balances.iter().filter(|b| owned(b)) {
-            if !meta.post_token_balances.iter().any(|p| p.account_index == b.account_index) {
+            if !meta
+                .post_token_balances
+                .iter()
+                .any(|p| p.account_index == b.account_index)
+            {
                 net += delta(b.account_index as usize).unwrap_or(0);
             }
         }
@@ -201,10 +204,22 @@ impl Decoder {
         relevance: TxRelevance,
         received_at: DateTime<Utc>,
     ) -> DecodeOutput {
-        let info = match update.transaction.as_ref() { Some(i) => i, None => return DecodeOutput::Ignored };
-        let tx = match info.transaction.as_ref() { Some(t) => t, None => return DecodeOutput::Ignored };
-        let message = match tx.message.as_ref() { Some(m) => m, None => return DecodeOutput::Ignored };
-        let meta = match info.meta.as_ref() { Some(m) => m, None => return DecodeOutput::Ignored };
+        let info = match update.transaction.as_ref() {
+            Some(i) => i,
+            None => return DecodeOutput::Ignored,
+        };
+        let tx = match info.transaction.as_ref() {
+            Some(t) => t,
+            None => return DecodeOutput::Ignored,
+        };
+        let message = match tx.message.as_ref() {
+            Some(m) => m,
+            None => return DecodeOutput::Ignored,
+        };
+        let meta = match info.meta.as_ref() {
+            Some(m) => m,
+            None => return DecodeOutput::Ignored,
+        };
 
         // `Create` is `Curve` plus a routing hint — one decode path, so the tag
         // can never change what gets decoded.
@@ -296,10 +311,22 @@ impl Decoder {
         update: &SubscribeUpdateTransaction,
         received_at: DateTime<Utc>,
     ) -> DecodeOutput {
-        let info = match update.transaction.as_ref() { Some(i) => i, None => return DecodeOutput::Ignored };
-        let tx = match info.transaction.as_ref() { Some(t) => t, None => return DecodeOutput::Ignored };
-        let message = match tx.message.as_ref() { Some(m) => m, None => return DecodeOutput::Ignored };
-        let meta = match info.meta.as_ref() { Some(m) => m, None => return DecodeOutput::Ignored };
+        let info = match update.transaction.as_ref() {
+            Some(i) => i,
+            None => return DecodeOutput::Ignored,
+        };
+        let tx = match info.transaction.as_ref() {
+            Some(t) => t,
+            None => return DecodeOutput::Ignored,
+        };
+        let message = match tx.message.as_ref() {
+            Some(m) => m,
+            None => return DecodeOutput::Ignored,
+        };
+        let meta = match info.meta.as_ref() {
+            Some(m) => m,
+            None => return DecodeOutput::Ignored,
+        };
         self.decode_amm_live_pb(info, message, meta, update.slot, received_at)
     }
 
@@ -329,7 +356,8 @@ impl Decoder {
         // when the log scan is empty OR the logs were truncated, taking whichever
         // source yields more events. (A plain `is_empty()` fallback missed PARTIAL
         // truncation — 3 of 4 events is non-empty, so the recovery never ran.)
-        let mut decoded_events = decode_trade_events_from_logs(&logs, &p.discriminators.trade_event, p.lamports_per_sol);
+        let mut decoded_events =
+            decode_trade_events_from_logs(&logs, &p.discriminators.trade_event, p.lamports_per_sol);
         let logs_truncated = logs.iter().any(|l| l.contains("Log truncated"));
         if should_consult_inner_events(decoded_events.len(), logs_truncated) {
             let pump_ixs = find_program_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
@@ -339,7 +367,18 @@ impl Decoder {
             }
         }
 
-        let decoded_create_events = decode_create_events_from_logs(&logs, &p.discriminators.create_event);
+        let decoded_create_events =
+            decode_create_events_from_logs(&logs, &p.discriminators.create_event);
+        // A non-SOL quote (USDC, or a pump coin) is not ingested. Drop its fills
+        // here so the balance fallback cannot rebuild them as SOL.
+        let non_sol_mints: Vec<&str> = decoded_create_events
+            .iter()
+            .filter(|e| e.quote_mint != [0u8; 32])
+            .map(|e| e.mint.as_str())
+            .collect();
+        if !non_sol_mints.is_empty() {
+            decoded_events.retain(|ev| !non_sol_mints.contains(&ev.mint.as_str()));
+        }
 
         // Step 1b: instruction kinds.
         let kinds = collect_kinds_pb(message, meta, &keys, p);
@@ -366,7 +405,11 @@ impl Decoder {
                 continue;
             }
             let side = if ev.is_buy { Side::Buy } else { Side::Sell };
-            let price = if ev.token_amount > 0 { ev.sol_amount / ev.token_amount as f64 } else { 0.0 };
+            let price = if ev.token_amount > 0 {
+                ev.sol_amount / ev.token_amount as f64
+            } else {
+                0.0
+            };
             events.push(IngestEvent::Trade(Trade {
                 mint: ev.mint.clone(),
                 wallet: ev.user.clone(),
@@ -398,7 +441,11 @@ impl Decoder {
                     real_sol_lamports: Some(ev.real_sol_reserves_lamports),
                 },
                 venue: Venue::Curve,
-                instruction_type: if ev.is_buy { "Buy".to_string() } else { "Sell".to_string() },
+                instruction_type: if ev.is_buy {
+                    "Buy".to_string()
+                } else {
+                    "Sell".to_string()
+                },
                 instruction_labels: instruction_labels.clone(),
                 amm_swap_accounts: None,
                 curve_creator: ev.curve_creator,
@@ -407,7 +454,7 @@ impl Decoder {
         }
 
         // 3b: balance-delta fallback (no TradeEvent log, but has Buy/Sell instruction).
-        if decoded_events.is_empty() {
+        if decoded_events.is_empty() && non_sol_mints.is_empty() {
             let pump_ixs = find_program_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
             let all_keys = keys.all();
             for kind in &kinds {
@@ -423,10 +470,17 @@ impl Decoder {
                         None
                     };
                     if let Some(ev) = self.decode_trade_from_balances_pb(
-                        *kind, &signature, info.index as u32, slot, received_at,
-                        &ix_accounts, &all_keys,
-                        &meta.pre_balances, &meta.post_balances,
-                        &meta.pre_token_balances, &meta.post_token_balances,
+                        *kind,
+                        &signature,
+                        info.index as u32,
+                        slot,
+                        received_at,
+                        &ix_accounts,
+                        &all_keys,
+                        &meta.pre_balances,
+                        &meta.post_balances,
+                        &meta.pre_token_balances,
+                        &meta.post_token_balances,
                         instruction_labels.clone(),
                         fee_budget,
                         payer_net_lamports,
@@ -448,11 +502,20 @@ impl Decoder {
                 let all_keys = keys.all();
                 let pump_ix_datas: Vec<&[u8]> = pump_ixs.iter().map(|ix| ix.data).collect();
                 events.extend(self.decode_create(
-                    &signature, slot, received_at, received_at,
-                    create_ix.data, &ix_accounts, &all_keys,
-                    &decoded_events, &decoded_create_events,
-                    &instruction_type, instruction_labels.clone(),
-                    fee_budget.cu_limit, fee_budget.cu_price, &pump_ix_datas,
+                    &signature,
+                    slot,
+                    received_at,
+                    received_at,
+                    create_ix.data,
+                    &ix_accounts,
+                    &all_keys,
+                    &decoded_events,
+                    &decoded_create_events,
+                    &instruction_type,
+                    instruction_labels.clone(),
+                    fee_budget.cu_limit,
+                    fee_budget.cu_price,
+                    &pump_ix_datas,
                 ));
             }
         }
@@ -512,8 +575,7 @@ impl Decoder {
         let mut amm_trades = decode_pump_swap_trades_from_logs(&logs, p);
         let logs_truncated = logs.iter().any(|l| l.contains("Log truncated"));
         if should_consult_inner_events(amm_trades.len(), logs_truncated) {
-            let swap_ixs =
-                find_program_pb_ixs(message, meta, &keys, &p.programs.pump_swap.bytes);
+            let swap_ixs = find_program_pb_ixs(message, meta, &keys, &p.programs.pump_swap.bytes);
             let datas: Vec<&[u8]> = swap_ixs.iter().map(|ix| ix.data).collect();
             let inner = decode_pump_swap_trades_from_inner(&datas, p);
             if inner.len() > amm_trades.len() {
@@ -555,7 +617,9 @@ impl Decoder {
                 if &ix.data[..8] != buy && &ix.data[..8] != sell {
                     continue;
                 }
-                let Some(&pool_idx) = ix.accounts.first() else { continue };
+                let Some(&pool_idx) = ix.accounts.first() else {
+                    continue;
+                };
                 let pool = keys.get(pool_idx as usize);
                 if pool.is_empty()
                     || harvested.iter().any(|(seen, _)| seen == pool)
@@ -580,9 +644,20 @@ impl Decoder {
                 .find(|(pool, list)| pool == &ev.pool && !list.is_empty())
                 .map(|(_, list)| Box::new(std::mem::take(list)));
             events.push(IngestEvent::Trade(build_amm_trade(
-                ev, mint, &signature, slot, received_at, received_at,
-                labels.clone(), info.index as u32, i as u32, accounts, fee_budget,
-                payer_net_lamports, sender.payer(), sender.is_proxied(&ev.user),
+                ev,
+                mint,
+                &signature,
+                slot,
+                received_at,
+                received_at,
+                labels.clone(),
+                info.index as u32,
+                i as u32,
+                accounts,
+                fee_budget,
+                payer_net_lamports,
+                sender.payer(),
+                sender.is_proxied(&ev.user),
             )));
         }
 
@@ -657,16 +732,27 @@ impl Decoder {
             _ => return None,
         };
 
-        let sol_amount = compute_sol_change(bonding_curve, account_keys, pre_balances, post_balances);
+        let sol_amount =
+            compute_sol_change(bonding_curve, account_keys, pre_balances, post_balances);
         let sol_lamports =
             compute_sol_change_lamports(bonding_curve, account_keys, pre_balances, post_balances);
-        let token_amount = compute_token_change_pb(&user_ata, &mint, account_keys, pre_token_balances, post_token_balances);
+        let token_amount = compute_token_change_pb(
+            &user_ata,
+            &mint,
+            account_keys,
+            pre_token_balances,
+            post_token_balances,
+        );
 
         if sol_amount < p.min_trade_sol {
             return None;
         }
 
-        let price = if token_amount > 0 { sol_amount / token_amount as f64 } else { 0.0 };
+        let price = if token_amount > 0 {
+            sol_amount / token_amount as f64
+        } else {
+            0.0
+        };
 
         Some(IngestEvent::Trade(Trade {
             is_proxied: sender.is_proxied(&user),
@@ -692,7 +778,10 @@ impl Decoder {
             received_at,
             reserves: Reserves::default(),
             venue: Venue::Curve,
-            instruction_type: match side { Side::Buy => "Buy".to_string(), Side::Sell => "Sell".to_string() },
+            instruction_type: match side {
+                Side::Buy => "Buy".to_string(),
+                Side::Sell => "Sell".to_string(),
+            },
             instruction_labels,
             amm_swap_accounts: None,
             // No event to read it from; the account list alone does not say which
@@ -720,7 +809,8 @@ fn compute_token_change_pb(
     // u64); `uiAmount` is the decimal-scaled view. Parse the raw form to `u64` so the
     // delta stays exact — no `f64` round-trip.
     let find_amount = |balances: &[scb::TokenBalance]| -> u64 {
-        balances.iter()
+        balances
+            .iter()
             .find(|tb| tb.account_index == ata_idx && tb.mint == mint)
             .and_then(|tb| tb.ui_token_amount.as_ref())
             .and_then(|u| u.amount.parse::<u64>().ok())
@@ -739,10 +829,7 @@ fn decode_trade_events_from_inner_pb(pump_ixs: &[PbIx], p: &Protocol) -> Vec<Dec
 
     for ix in pump_ixs {
         let bytes = ix.data;
-        if bytes.len() < 16
-            || &bytes[..8] != anchor_disc
-            || &bytes[8..16] != trade_disc
-        {
+        if bytes.len() < 16 || &bytes[..8] != anchor_disc || &bytes[8..16] != trade_disc {
             continue;
         }
         match decode_trade_event_body(&bytes[16..], p.lamports_per_sol) {
@@ -767,7 +854,9 @@ fn pump_ix_data_in_order<'a>(
     let is_pump = |idx: u32| keys.raw(idx as usize) == Some(pump_id_bytes);
     let mut inners: Vec<Vec<&[u8]>> = vec![Vec::new(); message.instructions.len()];
     for group in &meta.inner_instructions {
-        let Some(bucket) = inners.get_mut(group.index as usize) else { continue };
+        let Some(bucket) = inners.get_mut(group.index as usize) else {
+            continue;
+        };
         for ix in &group.instructions {
             if is_pump(ix.program_id_index) {
                 bucket.push(ix.data.as_slice());
@@ -797,13 +886,19 @@ fn find_program_pb_ixs<'a>(
 
     for ix in &message.instructions {
         if is_pump(ix.program_id_index) {
-            out.push(PbIx { accounts: &ix.accounts, data: &ix.data });
+            out.push(PbIx {
+                accounts: &ix.accounts,
+                data: &ix.data,
+            });
         }
     }
     for group in &meta.inner_instructions {
         for ix in &group.instructions {
             if is_pump(ix.program_id_index) {
-                out.push(PbIx { accounts: &ix.accounts, data: &ix.data });
+                out.push(PbIx {
+                    accounts: &ix.accounts,
+                    data: &ix.data,
+                });
             }
         }
     }
@@ -853,7 +948,10 @@ fn build_labels_pb(
     p: &Protocol,
 ) -> (Vec<String>, FeeBudget) {
     // Charged once for the whole tx; stamped on every leg it produced.
-    let mut budget = FeeBudget { fee_lamports: fee_lamports_opt(meta.fee), ..Default::default() };
+    let mut budget = FeeBudget {
+        fee_lamports: fee_lamports_opt(meta.fee),
+        ..Default::default()
+    };
     let cb_bytes = p.programs.compute_budget.bytes.as_ref();
     let sys_bytes = p.programs.system.bytes.as_ref();
 
@@ -883,7 +981,11 @@ fn resolve_pump_accounts_pb(ix: &PbIx, keys: &LazyKeys) -> Vec<String> {
         .iter()
         .filter_map(|&i| {
             let s = keys.get(i as usize);
-            if s.is_empty() { None } else { Some(s.to_string()) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
         })
         .collect()
 }
@@ -923,8 +1025,8 @@ fn should_consult_inner_events(log_event_count: usize, logs_truncated: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::should_consult_inner_events;
+    use super::*;
     use crate::protocol::Protocol;
     use std::sync::Arc;
 
@@ -997,7 +1099,11 @@ mod tests {
         /// A top-level ix that names accounts - a transfer's `[from, to]` is the
         /// only thing separating a tip from a router's own rake.
         fn ix_with(mut self, program_id_index: u32, accounts: Vec<u8>, data: Vec<u8>) -> Self {
-            self.ixs.push(scb::CompiledInstruction { program_id_index, accounts, data });
+            self.ixs.push(scb::CompiledInstruction {
+                program_id_index,
+                accounts,
+                data,
+            });
             self
         }
         fn fee(mut self, lamports: u64) -> Self {
@@ -1239,13 +1345,7 @@ mod tests {
             .loaded_readonly(swap_key())
             .loaded_readonly(other_key(2))
             .build();
-        let message = info
-            .transaction
-            .as_ref()
-            .unwrap()
-            .message
-            .as_ref()
-            .unwrap();
+        let message = info.transaction.as_ref().unwrap().message.as_ref().unwrap();
         let meta = info.meta.as_ref().unwrap();
         let lazy = LazyKeys::new(message, meta);
         assert_eq!(lazy.raw.len(), 4);
@@ -1479,7 +1579,9 @@ mod tests {
         #[test]
         fn a_transaction_that_sets_no_compute_budget_reads_none() {
             let p = Protocol::pump_fun();
-            let info = tx_with(&p).ix_with(1, vec![2, 3], transfer_ix(5_000)).build();
+            let info = tx_with(&p)
+                .ix_with(1, vec![2, 3], transfer_ix(5_000))
+                .build();
             let b = budget_of(&info, &p);
             assert_eq!(b.cu_limit, None);
             assert_eq!(b.cu_price, None);
@@ -1623,7 +1725,10 @@ mod tests {
             assert_eq!(compute_rail(&b), 1_000_000);
             assert_eq!(b.tip_lamports, Some(2_000_000));
             // priority spend = compute rail + tip rail = 0.003 SOL.
-            assert_eq!(compute_rail(&b) + u128::from(b.tip_lamports.unwrap()), 3_000_000);
+            assert_eq!(
+                compute_rail(&b) + u128::from(b.tip_lamports.unwrap()),
+                3_000_000
+            );
         }
     }
 
@@ -1643,9 +1748,19 @@ mod tests {
             }
         }
 
-        fn net(pre: Vec<u64>, post: Vec<u64>, pre_tok: Vec<scb::TokenBalance>, post_tok: Vec<scb::TokenBalance>) -> Option<i64> {
+        fn net(
+            pre: Vec<u64>,
+            post: Vec<u64>,
+            pre_tok: Vec<scb::TokenBalance>,
+            post_tok: Vec<scb::TokenBalance>,
+        ) -> Option<i64> {
             let payer = other_key(1);
-            let info = Tx::default().key(payer).key(other_key(2)).key(other_key(3)).signers(1).build();
+            let info = Tx::default()
+                .key(payer)
+                .key(other_key(2))
+                .key(other_key(3))
+                .signers(1)
+                .build();
             let message = info.transaction.as_ref().unwrap().message.as_ref().unwrap();
             let mut meta = info.meta.clone().unwrap();
             meta.pre_balances = pre;

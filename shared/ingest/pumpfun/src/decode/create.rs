@@ -9,8 +9,8 @@ use crate::event::{CreatorActivityEvent, CreatorActivityKind, IngestEvent, Token
 use crate::protocol::Protocol;
 
 use super::swap_ix::first_buy_ix;
-use super::Decoder;
 use super::trade::DecodedTradeEvent;
+use super::Decoder;
 
 impl Decoder {
     /// Decode a Create / Create_v2 instruction into TokenCreated +
@@ -44,13 +44,23 @@ impl Decoder {
 
         let ix_info = decode_create_info(create_data, p);
         let create_log = decoded_create_events.iter().find(|e| e.mint == mint);
+        if non_sol_quote(create_log, pump_accounts, &p.programs.wsol.base58) {
+            debug!(sig = %signature, mint = %mint, "skipping non-SOL quote create");
+            return vec![];
+        }
         let tok22 = &p.programs.token_2022.base58;
         let is_v2 = ix_info.as_ref().map(|i| i.is_v2).unwrap_or(false)
             || create_log
                 .and_then(|e| e.token_program.as_deref())
                 .is_some_and(|p| p == tok22.as_str());
 
-        let creator = resolve_creator_wallet(ix_info.as_ref(), create_log, pump_accounts, is_v2, account_keys);
+        let creator = resolve_creator_wallet(
+            ix_info.as_ref(),
+            create_log,
+            pump_accounts,
+            is_v2,
+            account_keys,
+        );
         if creator.is_empty() {
             warn!("Create: cannot determine creator for tx {signature}");
             return vec![];
@@ -70,33 +80,42 @@ impl Decoder {
         let total_supply = create_log.map(|e| e.token_total_supply);
         let initial_buy_sol = initial_create_event.map(|ev| ev.sol_amount);
 
-        let name = create_log.map(|e| e.name.clone())
+        let name = create_log
+            .map(|e| e.name.clone())
             .or_else(|| ix_info.as_ref().map(|i| i.name.clone()))
             .unwrap_or_else(|| "Unknown".to_string());
-        let symbol = create_log.map(|e| e.symbol.clone())
+        let symbol = create_log
+            .map(|e| e.symbol.clone())
             .or_else(|| ix_info.as_ref().map(|i| i.symbol.clone()))
             .unwrap_or_else(|| "UNKNOWN".to_string());
         // Off-chain metadata pointer (IPFS/Arweave) carried by the create ix and its
         // log. Absence is itself a signal, so an empty string maps to `None` rather
         // than being persisted verbatim.
-        let uri = create_log.map(|e| e.uri.clone())
+        let uri = create_log
+            .map(|e| e.uri.clone())
             .or_else(|| ix_info.as_ref().map(|i| i.uri.clone()))
             .filter(|u| !u.is_empty());
-        let is_mayhem_mode = create_log.map(|e| e.is_mayhem_mode)
+        let is_mayhem_mode = create_log
+            .map(|e| e.is_mayhem_mode)
             .or_else(|| ix_info.as_ref().map(|i| i.is_mayhem_mode))
             .unwrap_or(false);
-        let is_cashback_enabled = create_log.map(|e| e.is_cashback_enabled)
+        let is_cashback_enabled = create_log
+            .map(|e| e.is_cashback_enabled)
             .or_else(|| ix_info.as_ref().map(|i| i.is_cashback_enabled))
             .unwrap_or(false);
-        let bonding_curve = create_log.and_then(|e| e.bonding_curve.clone())
+        let bonding_curve = create_log
+            .and_then(|e| e.bonding_curve.clone())
             .or_else(|| pump_accounts.get(2).cloned());
         let initial_buy_instruction = first_buy_ix(pump_ix_datas, p);
 
         let token_program_id = create_log
             .and_then(|e| e.token_program.clone())
             .or_else(|| {
-                if is_v2 { Some(p.programs.token_2022.base58.clone()) }
-                else { Some(p.programs.token.base58.clone()) }
+                if is_v2 {
+                    Some(p.programs.token_2022.base58.clone())
+                } else {
+                    Some(p.programs.token.base58.clone())
+                }
             });
 
         debug!(
@@ -167,7 +186,6 @@ struct RawCreateEvent {
     token_program: [u8; 32],
     is_mayhem_mode: bool,
     is_cashback_enabled: bool,
-    #[allow(dead_code)]
     quote_mint: [u8; 32],
     #[allow(dead_code)]
     virtual_quote_reserves: u64,
@@ -185,12 +203,19 @@ pub(super) struct DecodedCreateEvent {
     pub(super) token_total_supply: u64,
     pub(super) is_mayhem_mode: bool,
     pub(super) is_cashback_enabled: bool,
+    /// All zeros is a SOL coin. Any other mint is a quote this decoder does not ingest.
+    pub(super) quote_mint: [u8; 32],
 }
 
-pub(super) fn decode_create_events_from_logs(logs: &[&str], disc: &[u8; 8]) -> Vec<DecodedCreateEvent> {
+pub(super) fn decode_create_events_from_logs(
+    logs: &[&str],
+    disc: &[u8; 8],
+) -> Vec<DecodedCreateEvent> {
     let mut events = Vec::new();
     for log in logs {
-        let Some(encoded) = log.strip_prefix("Program data: ") else { continue; };
+        let Some(encoded) = log.strip_prefix("Program data: ") else {
+            continue;
+        };
         let bytes = match STANDARD.decode(encoded) {
             Ok(b) => b,
             Err(_) => continue,
@@ -212,6 +237,7 @@ pub(super) fn decode_create_events_from_logs(logs: &[&str], disc: &[u8; 8]) -> V
                 token_total_supply: raw.token_total_supply,
                 is_mayhem_mode: raw.is_mayhem_mode,
                 is_cashback_enabled: raw.is_cashback_enabled,
+                quote_mint: raw.quote_mint,
             }),
             Err(e) => warn!("Failed to Borsh-decode CreateEvent: {e}"),
         }
@@ -232,18 +258,21 @@ struct CreateInstructionInfo {
 }
 
 fn decode_create_info(data: &[u8], p: &Protocol) -> Option<CreateInstructionInfo> {
-    if data.len() < 16 { return None; }
+    if data.len() < 16 {
+        return None;
+    }
     let d = &p.discriminators;
     let disc = &data[..8];
     let is_v2 = disc == d.create_v2_ix;
-    if disc != d.create_ix && !is_v2 { return None; }
+    if disc != d.create_ix && !is_v2 {
+        return None;
+    }
 
     let mut offset = 8;
     let name = read_anchor_string(data, &mut offset)?;
     let symbol = read_anchor_string(data, &mut offset)?;
     let uri = read_anchor_string(data, &mut offset)?;
-    let creator = read_pubkey(data, &mut offset)
-        .map(|pk| bs58::encode(pk).into_string())?;
+    let creator = read_pubkey(data, &mut offset).map(|pk| bs58::encode(pk).into_string())?;
 
     let (is_mayhem_mode, is_cashback_enabled) = if is_v2 {
         let m = data.get(offset).copied().unwrap_or(0) == 1;
@@ -254,7 +283,32 @@ fn decode_create_info(data: &[u8], p: &Protocol) -> Option<CreateInstructionInfo
         (false, false)
     };
 
-    Some(CreateInstructionInfo { name, symbol, uri, creator, is_v2, is_mayhem_mode, is_cashback_enabled })
+    Some(CreateInstructionInfo {
+        name,
+        symbol,
+        uri,
+        creator,
+        is_v2,
+        is_mayhem_mode,
+        is_cashback_enabled,
+    })
+}
+
+/// A create whose quote is not SOL. The event's `quote_mint` wins: all zeros is
+/// SOL, including a create that passed wrapped SOL. With no event, the optional
+/// 17th account (index 16) is the quote mint.
+pub(super) fn non_sol_quote(
+    create_log: Option<&DecodedCreateEvent>,
+    pump_accounts: &[String],
+    wsol: &str,
+) -> bool {
+    if let Some(ev) = create_log {
+        return ev.quote_mint != [0u8; 32];
+    }
+    match pump_accounts.get(16) {
+        Some(q) if !q.is_empty() && q != wsol && q != "11111111111111111111111111111111" => true,
+        _ => false,
+    }
 }
 
 fn pump_user_account(pump_accounts: &[String], is_v2: bool) -> Option<String> {
@@ -269,11 +323,23 @@ fn resolve_creator_wallet(
     is_v2: bool,
     account_keys: &[&str],
 ) -> String {
-    if let Some(ev) = create_log { return ev.creator.clone(); }
-    if let Some(ix) = ix_info { if !ix.creator.is_empty() { return ix.creator.clone(); } }
-    if let Some(user) = pump_user_account(pump_accounts, is_v2) { return user; }
-    account_keys.first().copied().filter(|s| !s.is_empty())
-        .map(|s| s.to_string()).unwrap_or_default()
+    if let Some(ev) = create_log {
+        return ev.creator.clone();
+    }
+    if let Some(ix) = ix_info {
+        if !ix.creator.is_empty() {
+            return ix.creator.clone();
+        }
+    }
+    if let Some(user) = pump_user_account(pump_accounts, is_v2) {
+        return user;
+    }
+    account_keys
+        .first()
+        .copied()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_default()
 }
 
 fn read_pubkey(data: &[u8], offset: &mut usize) -> Option<[u8; 32]> {
@@ -286,7 +352,9 @@ fn read_anchor_string(data: &[u8], offset: &mut usize) -> Option<String> {
     let len_bytes: [u8; 4] = data.get(*offset..*offset + 4)?.try_into().ok()?;
     let len = u32::from_le_bytes(len_bytes) as usize;
     *offset += 4;
-    let s = std::str::from_utf8(data.get(*offset..*offset + len)?).ok()?.to_string();
+    let s = std::str::from_utf8(data.get(*offset..*offset + len)?)
+        .ok()?
+        .to_string();
     *offset += len;
     Some(s)
 }
@@ -327,5 +395,16 @@ mod tests {
         let data = create_ix_bytes(&p, "N", "S", "ipfs://QmLongerThanTheOthers");
         let info = decode_create_info(&data, &p).expect("decodes");
         assert_eq!(info.creator, bs58::encode([7u8; 32]).into_string());
+    }
+
+    #[test]
+    fn a_non_sol_quote_is_skipped_and_wrapped_sol_is_not() {
+        let wsol = "So11111111111111111111111111111111111111112";
+        assert!(!non_sol_quote(None, &[], wsol));
+        let mut accounts = vec![String::new(); 16];
+        accounts.push(wsol.to_string());
+        assert!(!non_sol_quote(None, &accounts, wsol));
+        accounts[16] = "NotSol".to_string();
+        assert!(non_sol_quote(None, &accounts, wsol));
     }
 }

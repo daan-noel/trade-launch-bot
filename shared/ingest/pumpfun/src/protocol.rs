@@ -14,14 +14,17 @@ pub struct ProgramId {
 impl ProgramId {
     pub fn from_base58(s: &str) -> Result<Self, crate::error::IngestError> {
         let vec = bs58::decode(s).into_vec().map_err(|e| {
-            crate::error::IngestError::InvalidProgramId { id: s.to_string(), reason: e.to_string() }
-        })?;
-        let bytes: [u8; 32] = vec.try_into().map_err(|_| {
             crate::error::IngestError::InvalidProgramId {
                 id: s.to_string(),
-                reason: "expected 32 bytes for a Solana public key".into(),
+                reason: e.to_string(),
             }
         })?;
+        let bytes: [u8; 32] =
+            vec.try_into()
+                .map_err(|_| crate::error::IngestError::InvalidProgramId {
+                    id: s.to_string(),
+                    reason: "expected 32 bytes for a Solana public key".into(),
+                })?;
         Ok(Self {
             bytes,
             base58: s.to_string(),
@@ -56,6 +59,11 @@ pub struct Discriminators {
     pub buy_exact_quote_in: [u8; 8],
     pub buy_v2: [u8; 8],
     pub buy_exact_quote_in_v2: [u8; 8],
+    /// `buy_v3` / `sell_v3` / `buy_exact_quote_in_v3` — the 17-account curve trades.
+    /// Same fill as v2. A SOL coin uses them; a non-SOL quote is dropped before ingest.
+    pub buy_v3: [u8; 8],
+    pub sell_v3: [u8; 8],
+    pub buy_exact_quote_in_v3: [u8; 8],
     pub create_ix: [u8; 8],
     pub create_v2_ix: [u8; 8],
     pub migrate_ix: [u8; 8],
@@ -206,6 +214,9 @@ impl Protocol {
                 buy_exact_quote_in: [0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70],
                 buy_v2: [0xb8, 0x17, 0xee, 0x61, 0x67, 0xc5, 0xd3, 0x3d],
                 buy_exact_quote_in_v2: [0xc2, 0xab, 0x1c, 0x46, 0x68, 0x4d, 0x5b, 0x2f],
+                buy_v3: [0x07, 0x05, 0x1d, 0xc4, 0xf5, 0x17, 0x65, 0x50],
+                sell_v3: [0x1c, 0x92, 0xde, 0x77, 0x26, 0xc4, 0x69, 0xd5],
+                buy_exact_quote_in_v3: [0xe1, 0xf7, 0x50, 0x1e, 0xd5, 0xb3, 0x84, 0x88],
                 create_ix: [0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77],
                 create_v2_ix: [0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4],
                 migrate_ix: [0x9b, 0xea, 0xe7, 0x92, 0xec, 0x9e, 0xa2, 0x1e],

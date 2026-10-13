@@ -64,6 +64,20 @@ pub(super) fn parse_buy_ix(data: &[u8], p: &Protocol) -> Option<BuyInstructionAr
             min_tokens_out: a.min_tokens_out,
         });
     }
+    if disc == d.buy_v3 {
+        let a = BuyArgs::deserialize(&mut buf).ok()?;
+        return Some(BuyInstructionArgs::BuyV3 {
+            token_amount: a.token_amount,
+            max_sol_cost: a.max_sol_cost,
+        });
+    }
+    if disc == d.buy_exact_quote_in_v3 {
+        let a = BuyExactArgs::deserialize(&mut buf).ok()?;
+        return Some(BuyInstructionArgs::BuyExactQuoteInV3 {
+            spendable_sol_in: a.spendable_sol_in,
+            min_tokens_out: a.min_tokens_out,
+        });
+    }
     None
 }
 
@@ -78,6 +92,8 @@ fn is_buy_disc(data: &[u8], p: &Protocol) -> bool {
         || disc == d.buy_exact_sol_in
         || disc == d.buy_exact_quote_in
         || disc == d.buy_exact_quote_in_v2
+        || disc == d.buy_v3
+        || disc == d.buy_exact_quote_in_v3
 }
 
 /// Buy instructions in execution order. A create or a sell is skipped, so it
@@ -168,6 +184,19 @@ mod tests {
             })
         ));
         assert!(cursor.take(true).is_none());
+    }
+
+    #[test]
+    fn buy_v3_reads_the_same_two_amounts_as_buy_v2() {
+        let p = Protocol::pump_fun();
+        let raw = buy_bytes(&p.discriminators.buy_v3, 11, 22);
+        assert!(matches!(
+            parse_buy_ix(&raw, &p),
+            Some(BuyInstructionArgs::BuyV3 {
+                token_amount: 11,
+                max_sol_cost: 22
+            })
+        ));
     }
 
     #[test]
