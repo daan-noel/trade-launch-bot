@@ -577,6 +577,15 @@ export function tokenTradeColumns(
       filterNumber: (t) => t.slot,
     },
     {
+      key: 'tx_index',
+      label: 'Tx index',
+      tooltip: 'Position of this transaction within its slot. Trade order is slot, then tx index, then leg.',
+      render: (t) => <span className="tabular-nums">{t.tx_index}</span>,
+      sortValue: (t) => t.tx_index,
+      searchValue: (t) => String(t.tx_index),
+      filterNumber: (t) => t.tx_index,
+    },
+    {
       key: 'time',
       label: 'Time (UTC)',
       width: '108px',
