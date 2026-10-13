@@ -209,6 +209,12 @@ LEFT JOIN tokens_info i USING (mint_address);
 
 ---
 
+## Retention
+
+`tokens` follows the `trades` retention horizon. The daily `prune_retained_catalog` job (`0025`) reads that policy's `drop_after` and deletes a token older than the horizon once no remaining trade names its mint. `tokens_info` and `token_sync_state` cascade. A token launched earlier stays while a retained trade still names it. `db-incremental-sync.ps1` does not copy a mint older than the same horizon, so a pruned token stays pruned.
+
+---
+
 ## Open design questions
 
 - **`market_cap`** — derived in the view (chosen). Promote to a cached, indexed
@@ -220,8 +226,5 @@ LEFT JOIN tokens_info i USING (mint_address);
   pins `ENRICH_SELECT` to the const.
 - **`name` / `symbol`** — static (chosen). Move to `tokens_info` only if on-chain
   metadata renames must be tracked over time.
-- **`tokens` retention** — unbounded growth (one row per token ever created). On a
-  RAM-constrained box, decide whether long-dead tokens get archived/pruned, given
-  `trades` is already retention-bounded (old tokens can't be recomputed anyway).
 - **`is_dead` / `is_migrated`** — two booleans (chosen; they're orthogonal). Revisit
   as a single `lifecycle` enum only if the stages become mutually exclusive.

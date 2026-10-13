@@ -125,6 +125,8 @@ startup), so a SELECT needs only the bound. For example, the signature lookups i
 
 Tables that don't need time-based aging (strategy rules, positions, sweep results) use standard B-tree PKs + targeted indexes. Sweep results use the `retention.rs` compaction strategy (retain per-metric extremes, ~660 rows/group) instead of time-based deletion.
 
+`tokens` and `wallet_dict` are not hypertables. They follow the `trades` horizon through the daily `prune_retained_catalog` job (`0025`), which reads that policy's `drop_after` rather than storing a second interval. A token older than the horizon is deleted when no remaining trade names it. A `wallet_dict` id is deleted when no remaining trade uses it.
+
 ## Sweep Result Retention
 
 Retention is applied **write-time**, in the grouped-sweep handler, before results are

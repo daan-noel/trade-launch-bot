@@ -44,7 +44,7 @@
   lab keeps its accumulated history (rows the server has since deleted/aged out) and
   its lab-authored local-only rows. Conflict policy:
     wallet_dict      PK(id) / UNIQUE(address)                    -> MERGE (server wins by id; local-only old ids kept)
-    tokens           PK(mint_address)                            -> DO NOTHING (write-once)
+    tokens           PK(mint_address)                            -> DO NOTHING (write-once; only inside the trades retention horizon)
     tokens_info      PK(mint_address)                            -> DO UPDATE (newer updated_at wins)
     trades           PK(block_time, tx_signature, leg_index)     -> DO NOTHING (append-only)
     raw_txs          PK(block_time, tx_signature)                -> DO NOTHING (append-only; opt-in)
@@ -801,6 +801,14 @@ END `$`$;
   Write-Host "  wallet_dict         full mirror (local max id $walletWm; informational only)"
   Write-Host "  trades >=           $tradesWm"
   Write-Host "  tokens >=           $tokensWm"
+  $tradeHorizon = Get-LocalScalar "SELECT (config->>'drop_after') FROM timescaledb_information.jobs WHERE hypertable_name = 'trades' AND proc_name = 'policy_retention'"
+  if (-not $tradeHorizon) { throw "trades retention policy is missing" }
+  # Literal bounds so FDW prunes on the server. A mint older than the trades
+  # horizon is not copied: the catalog job deletes it on both sides, and a
+  # missing-local fill of those rows is what puts a pruned token back.
+  $tokenFloor = Get-LocalScalar "SELECT (now() - interval '$tradeHorizon')::text"
+  $tokenSince = Get-LocalScalar "SELECT GREATEST('$tokensWm'::timestamptz, '$tokenFloor'::timestamptz)::text"
+  Write-Host "  tokens floor        $tokenFloor  (trades retention $tradeHorizon)"
   Write-Host "  tokens_info >=      $tinfoWm"
   if ($IncludeRawTxs) {
     $rawWm = Get-LocalScalar "SELECT COALESCE(MAX(block_time), '1970-01-01 00:00:00+00')::text FROM raw_txs"
@@ -904,10 +912,10 @@ COMMIT;
   if ($RepairFrom) { Write-Host "tokens + tokens_info: skipped (repair mode)." } else {
   Invoke-LocalSqlFileRetry @"
 \echo '-- tokens'
--- created_at>=watermark is the fast path (FDW pushes it down), but server tokens
--- can arrive with a created_at EARLIER than the local max (out-of-order discovery,
--- backfills). Those would be skipped, yet their tokens_info row may still be pulled
--- below -> FK violation. So also pull any server token whose mint is missing locally.
+-- Two pushed-down ranges, both inside the trades retention horizon. Newer than
+-- the local max is the fast path. The second range is the out-of-order / missing
+-- mint fill, and it stops at the horizon: a mint older than that is not copied,
+-- or the next sync would restore every token the catalog job just deleted.
 -- Name-matched column list, read from the catalog (not `SELECT t.*`): local and
 -- server can hold the SAME columns in a DIFFERENT physical order (e.g. creation_slot
 -- was appended last on the server via ALTER TABLE ADD COLUMN, but sits mid-table
@@ -915,8 +923,15 @@ COMMIT;
 INSERT INTO tokens ($(Get-ColList 'tokens'))
 SELECT $(Get-SelList 'tokens' 't')
 FROM ec2_sync_src.tokens t
-WHERE t.created_at >= '$tokensWm'::timestamptz
-   OR NOT EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = t.mint_address)
+WHERE t.created_at >= '$tokenSince'::timestamptz
+ON CONFLICT (mint_address) DO NOTHING;
+
+INSERT INTO tokens ($(Get-ColList 'tokens'))
+SELECT $(Get-SelList 'tokens' 't')
+FROM ec2_sync_src.tokens t
+WHERE t.created_at >= '$tokenFloor'::timestamptz
+  AND t.created_at < '$tokensWm'::timestamptz
+  AND NOT EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = t.mint_address)
 ON CONFLICT (mint_address) DO NOTHING;
 
 \echo '-- tokens_info'

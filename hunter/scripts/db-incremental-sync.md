@@ -129,7 +129,7 @@ local DBs.
 | Table | Conflict key | Action |
 | --- | --- | --- |
 | `wallet_dict` | `id` / `address` | **MERGE** — UPSERT server rows by id (server wins), drop local rows the server reassigned, **keep local-only old ids** (self-healing) |
-| `tokens` | `mint_address` | DO NOTHING |
+| `tokens` | `mint_address` | DO NOTHING. Only mints inside the `trades` retention horizon; a missing mint older than that horizon is not backfilled |
 | `tokens_info` | `mint_address` | DO UPDATE — newer `updated_at` wins |
 | `token_sync_state` | `(mint_address, venue)` | DO UPDATE — newer `last_synced_at` wins |
 | `trades` | `(block_time, tx_signature, leg_index)` | DO NOTHING (append-only; includes `ix_labels`) |

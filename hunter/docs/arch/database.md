@@ -82,7 +82,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 
 ### Core trading
 
-- `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_lamports(BIGINT), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), initial_buy_instruction(JSONB; keys `max_cost_lamports`/`spendable_lamports_in`), creation_slot(BIGINT), created_at
+- `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_lamports(BIGINT), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), initial_buy_instruction(JSONB; keys `max_cost_lamports`/`spendable_lamports_in`), creation_slot(BIGINT), created_at. The daily `prune_retained_catalog` job deletes a row older than the `trades` retention horizon once no remaining trade names the mint (`tokens_info` and `token_sync_state` cascade).
 - `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral priced pair: the curve's virtual reserves; on amm rows the quote vault + PumpSwap's virtual quote `PUMP_SWAP_VIRTUAL_QUOTE_SOL` and the base vault - an amm row written before the decoder priced with it holds the bare vault), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`), **`ix_labels`(JSONB, migration 0002, forward-only)**, **`fee_lamports`(BIGINT NULL, migration 0005, forward-only)**, **`cu_limit`/`cu_price`/`tip_lamports`(BIGINT NULL, migration 0013, forward-only)**, **`payer_id`(INTEGER NULL) / `is_proxied`(BOOLEAN NULL, migration 0014, forward-only)**, **`payer_net_lamports`(BIGINT NULL, migration 0019, forward-only)**, **`venue_fee_bps`(REAL NULL, migration 0020, forward-only: the fee a PumpSwap swap charged over the pool's constant-product amount; NULL on curve rows)**, **`swap_ix`(JSONB NULL, migration 0024, forward-only: the curve swap instruction, same document as `tokens.initial_buy_instruction`; NULL on a sell, an AMM swap, and every row written before 0024)**; price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
   - **`fee_lamports` is per-TRANSACTION, the table is per-LEG.** It is the on-chain
     `meta.fee` (base signature fee + priority fee) read straight off the feed at decode
@@ -187,7 +187,8 @@ One family — there are no per-strategy sweep tables, only these four:
   sets it from `trades.is_proxied`; migration 0015 backfills the 930 addresses that
   are off-curve, which no keypair can sign for. That test is a property of the 32
   bytes, so it reaches history whose transactions the feed dropped long ago —
-  `is_proxied` alone cannot, because it only ever sees new trades.
+  `is_proxied` alone cannot, because it only ever sees new trades. The same daily
+  job deletes an id that no remaining trade uses as `wallet_id` or `payer_id`.
 - `wallet_profiles`, `wallets`, `wallet_profile_tags` — profile/wallet/tag CRUD
 - `app_settings` — key/value(JSONB); keys: `ingest.*`, `ui.*`, `trade.*`
 
@@ -215,6 +216,7 @@ One family — there are no per-strategy sweep tables, only these four:
 
 - Always bound queries — paginate/time-window/stream. Never `SELECT *` full `trades`/`raw_txs`.
 - New high-volume tables → TimescaleDB hypertable with `add_compression_policy` + `add_retention_policy` (see `@plans/database/trades-storage.md` for the pattern). Chunk lifecycle is declarative — there is no `maintenance.rs` partition loop to extend. <!-- ref-ok: absence is the rule -->
+- `tokens` and `wallet_dict` follow the `trades` retention horizon via the daily `prune_retained_catalog` job (`0025`). The horizon is that policy's `drop_after`, not a second interval.
 - Bulk-insert must chunk by `floor(65535 / binds_per_row)` — sqlx 0.6 has no guard against the 65535 bind-param ceiling. `trade_repo` derives its chunk from one `TRADE_INSERT_BINDS_PER_ROW` constant rather than a hand-copied number, so a column-add shrinks it without anyone remembering to.
 - **A wallet-level aggregate excludes `wallet_dict.is_proxy`.** Those ids are
   programs, and each one carries many unrelated people's fills — counting one as a
