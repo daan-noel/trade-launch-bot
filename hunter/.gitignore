@@ -24,7 +24,7 @@ _local/
 
 # Environment secrets
 .env
-.env.backup
+.env.backup*
 .env.local
 .env.*.local
 
