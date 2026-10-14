@@ -802,7 +802,7 @@ const POSITION_WHEN_SQL: &str = "COALESCE(sp.exit_time, sp.entry_time, sp.create
 // into the two consts below — `concat!` cannot take a `const &str`, and both
 // whitelists must hand back a `&'static str`.
 #[allow(dead_code)]
-const PNL_LAMPORTS_SQL: &str = "((CASE WHEN sp.sold_token_amount > 0 \
+pub(crate) const PNL_LAMPORTS_SQL: &str = "((CASE WHEN sp.sold_token_amount > 0 \
      THEN sp.exit_sol_lamports_total ELSE sp.exit_lamports END) - sp.entry_lamports)";
 
 /// Canonical SQL for the position **PnL%** column, in the same **percentage**

@@ -28,6 +28,7 @@ export function CopyPage() {
       wallets={walletAssign.wallets}
       walletFor={walletAssign.walletFor}
       assignWallet={walletAssign.assignWallet}
+      walletOf={walletAssign.walletOf}
       renderAnalyze={({ ruleId, rule, clear }) => (
         <LiveCopyEvidence
           key={ruleId}

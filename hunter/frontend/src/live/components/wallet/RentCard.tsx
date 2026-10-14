@@ -27,8 +27,15 @@ function resultMessage(res: RentRecoverResult): string {
 /** Rent still locked in token accounts the exit did not close. Empty accounts
  *  and wrapped SOL recover with a close. Dust is a separate burn: the tokens
  *  are destroyed. Open positions are left alone. */
-export function RentCard({ onRecovered }: { onRecovered?: () => void }) {
-  const { data, isLoading, isFetching, error, refetch } = useGetRentStatusQuery();
+export function RentCard({
+  onRecovered,
+  wallet,
+}: {
+  onRecovered?: () => void;
+  /** The wallet to scan; absent = the primary. */
+  wallet?: string;
+}) {
+  const { data, isLoading, isFetching, error, refetch } = useGetRentStatusQuery(wallet);
   const [recover, { isLoading: isRecovering }] = useRecoverRentMutation();
   const [burnOpen, setBurnOpen] = useState(false);
   const [mode, setMode] = useState<'close' | 'burn' | null>(null);
@@ -50,7 +57,7 @@ export function RentCard({ onRecovered }: { onRecovered?: () => void }) {
       setBurnOpen(false);
       let recovered = false;
       try {
-        const res = await recover({ burn_dust: burnDust }).unwrap();
+        const res = await recover({ burn_dust: burnDust, wallet }).unwrap();
         setSuccess(resultMessage(res));
         if (res.error_count > 0) {
           const more = res.error_count > res.errors.length ? ` (+${res.error_count - res.errors.length} more)` : '';
@@ -75,7 +82,7 @@ export function RentCard({ onRecovered }: { onRecovered?: () => void }) {
         );
       }
     },
-    [recover, onRecovered],
+    [recover, onRecovered, wallet],
   );
 
   const loadError = error ? apiErrorMessage(error, 'Failed to read token accounts') : null;

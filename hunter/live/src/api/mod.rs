@@ -155,6 +155,14 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             .route("/wallets/assignments", web::get().to(handlers::wallets::assignments))
             .route("/wallets/move", web::post().to(handlers::wallets::begin_move))
             .route("/wallets/move/resume", web::post().to(handlers::wallets::resume_move))
+            .route("/wallets/move/preview", web::get().to(handlers::wallets::preview_move))
+            .route("/wallets/{pubkey}/nonces", web::get().to(handlers::wallets::nonces))
+            .route("/wallets/{pubkey}/activity", web::get().to(handlers::wallets::activity))
+            .route("/wallets/{pubkey}/send", web::post().to(handlers::wallets::send_sol))
+            .route("/wallets/{pubkey}/name", web::put().to(handlers::wallets::rename))
+            .route("/wallets/{pubkey}/archive", web::post().to(handlers::wallets::archive))
+            .route("/wallets/{pubkey}/restart", web::post().to(handlers::wallets::restart))
+            .route("/wallets/{pubkey}/restore", web::post().to(handlers::wallets::restore))
             .route(
                 "/wallets/{pubkey}/primary",
                 web::post().to(handlers::wallets::set_primary),

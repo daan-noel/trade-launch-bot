@@ -305,6 +305,10 @@ impl Sink {
         }
     }
 
+    pub(super) fn wallets(&self) -> &Arc<WalletRuntime> {
+        &self.wallets
+    }
+
     /// Stage a manual-buy episode (called by the loop's command handler BEFORE the
     /// `ManualBuy` event folds, so the `BuySubmitted` delta finds it).
     pub fn stage_manual(&mut self, rule: RuleId, staged: StagedManual) {

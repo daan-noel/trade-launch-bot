@@ -15,7 +15,11 @@ use uuid::Uuid;
 
 use crate::state::deploy_state::DeployState;
 use crate::wallets::{self, key_ref_for, parse_secret, valid_name, write_keypair, WalletRuntime};
+use trading_core::config::constants::{lamports_to_sol, sol_to_lamports};
 use trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo;
+
+/// How many activity rows the wallet drawer shows.
+const ACTIVITY_LIMIT: i64 = 50;
 
 /// A cached balance older than this is re-read, in one batched call for every
 /// stale wallet. The push feed refreshes a watched wallet only when it changes.
@@ -58,6 +62,26 @@ pub struct AdoptEnvBody {
     pub name: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct SendBody {
+    pub to: String,
+    pub sol: f64,
+    /// The destination may be outside the registry. The page asks for the
+    /// source wallet's name before it sets this.
+    #[serde(default)]
+    pub external: bool,
+}
+
+#[derive(Deserialize)]
+pub struct RenameBody {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+pub struct PreviewQuery {
+    pub from: String,
+}
+
 pub async fn list(state: web::Data<Arc<DeployState>>) -> impl Responder {
     let repo = TraderWalletRepo::new(state.db.clone());
     let wallets = match repo.list().await {
@@ -77,7 +101,8 @@ pub async fn list(state: web::Data<Arc<DeployState>>) -> impl Responder {
             "nonce_count": wallet.nonce_count,
             "rule_count": wallet.rule_count,
             "open_positions": wallet.open_positions,
-            "sol": lamports.map(|l| l as f64 / 1_000_000_000.0),
+            "pnl_24h_sol": lamports_to_sol(wallet.pnl_24h_lamports),
+            "sol": lamports.map(|l| lamports_to_sol(l as i64)),
             "key_loaded": state.wallets.signer(&wallet.pubkey).map(|k| k.pubkey().to_string()) == Some(wallet.pubkey.clone()),
             "readiness": readiness,
             "readiness_reason": readiness.reason(),
@@ -171,6 +196,7 @@ pub async fn create(state: web::Data<Arc<DeployState>>, body: web::Json<CreateBo
     if let Err(e) = repo.insert(&pubkey, &body.name, &key_ref, primary).await {
         return HttpResponse::InternalServerError().json(err(e.to_string()));
     }
+    let _ = repo.log_activity(&pubkey, "created", serde_json::json!({ "name": body.name }), &[]).await;
     state
         .wallets
         .insert_loaded(pubkey.clone(), body.name.clone(), Arc::new(keypair), Vec::new(), primary)
@@ -224,6 +250,7 @@ pub async fn import(state: web::Data<Arc<DeployState>>, body: web::Json<ImportBo
     if let Err(e) = repo.insert(&pubkey, &body.name, &key_ref, primary).await {
         return HttpResponse::InternalServerError().json(err(e.to_string()));
     }
+    let _ = repo.log_activity(&pubkey, "imported", serde_json::json!({ "name": body.name }), &[]).await;
     state
         .wallets
         .insert_loaded(pubkey.clone(), body.name.clone(), Arc::new(keypair), Vec::new(), primary)
@@ -263,6 +290,7 @@ pub async fn set_primary(
     match repo.set_primary(&pubkey).await {
         Ok(true) => {
             state.wallets.note_primary(&pubkey);
+            let _ = repo.log_activity(&pubkey, "set_primary", serde_json::json!({}), &[]).await;
             HttpResponse::Ok().json(serde_json::json!({ "pubkey": pubkey }))
         }
         Ok(false) => HttpResponse::BadRequest().json(err("wallet is not active")),
@@ -358,6 +386,90 @@ pub async fn adopt_env(
     let name = body.name.as_deref().unwrap_or(wallets::ENV_WALLET_NAME);
     match wallets::adopt_env(&state.db, &state.wallets, name).await {
         Ok(report) => HttpResponse::Ok().json(report),
+        Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
+    }
+}
+
+pub async fn preview_move(
+    state: web::Data<Arc<DeployState>>,
+    query: web::Query<PreviewQuery>,
+) -> impl Responder {
+    match wallets::preview_move(&state.db, &state.wallets, &query.from).await {
+        Ok(preview) => HttpResponse::Ok().json(preview),
+        Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
+    }
+}
+
+pub async fn nonces(state: web::Data<Arc<DeployState>>, path: web::Path<String>) -> impl Responder {
+    match wallets::list_nonces(&state.db, &state.wallets, &path.into_inner()).await {
+        Ok(rows) => HttpResponse::Ok().json(rows),
+        Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
+    }
+}
+
+pub async fn activity(state: web::Data<Arc<DeployState>>, path: web::Path<String>) -> impl Responder {
+    let repo = TraderWalletRepo::new(state.db.clone());
+    match repo.activity(&path.into_inner(), ACTIVITY_LIMIT).await {
+        Ok(rows) => HttpResponse::Ok().json(rows),
+        Err(e) => HttpResponse::InternalServerError().json(err(e.to_string())),
+    }
+}
+
+pub async fn send_sol(
+    state: web::Data<Arc<DeployState>>,
+    path: web::Path<String>,
+    body: web::Json<SendBody>,
+) -> impl Responder {
+    let lamports = sol_to_lamports(body.sol);
+    if !body.sol.is_finite() || lamports <= 0 {
+        return HttpResponse::BadRequest().json(err("amount must be above zero"));
+    }
+    let from = path.into_inner();
+    match wallets::send_sol(&state.db, &state.wallets, &from, &body.to, lamports as u64, body.external).await {
+        Ok(signature) => HttpResponse::Ok().json(serde_json::json!({ "signature": signature })),
+        Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
+    }
+}
+
+pub async fn rename(
+    state: web::Data<Arc<DeployState>>,
+    path: web::Path<String>,
+    body: web::Json<RenameBody>,
+) -> impl Responder {
+    match wallets::rename(&state.db, &state.wallets, &path.into_inner(), body.name.trim()).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "name": body.name.trim() })),
+        Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
+    }
+}
+
+/// Start the wallet's trader again on the nonce set it runs, after an init
+/// that failed on something passing (an RPC error at boot).
+pub async fn restart(state: web::Data<Arc<DeployState>>, path: web::Path<String>) -> impl Responder {
+    let pubkey = path.into_inner();
+    let Some(nonces) = state.wallets.nonces(&pubkey) else {
+        return HttpResponse::BadRequest().json(err("wallet is not loaded"));
+    };
+    if let Err(e) = state.wallets.rebuild(&pubkey, nonces).await {
+        return HttpResponse::BadRequest().json(err(e.to_string()));
+    }
+    let init_error = state.wallets.init_error(&pubkey);
+    let repo = TraderWalletRepo::new(state.db.clone());
+    let _ = repo
+        .log_activity(&pubkey, "restarted", serde_json::json!({ "init_error": init_error }), &[])
+        .await;
+    HttpResponse::Ok().json(serde_json::json!({ "init_error": init_error }))
+}
+
+pub async fn archive(state: web::Data<Arc<DeployState>>, path: web::Path<String>) -> impl Responder {
+    match wallets::archive(&state.db, &state.wallets, &path.into_inner()).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "archived": true })),
+        Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
+    }
+}
+
+pub async fn restore(state: web::Data<Arc<DeployState>>, path: web::Path<String>) -> impl Responder {
+    match wallets::restore(&state.db, &state.wallets, &path.into_inner()).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "restored": true })),
         Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
     }
 }

@@ -6,15 +6,58 @@
 //! updates into its durable-nonce slots), and a feed that cannot carry them
 //! simply never emits the matching [`crate::feed::FeedUpdate`] variants.
 
+use tokio::sync::watch;
+
+/// The account pubkeys (base58) to watch. A host that adds accounts at runtime
+/// keeps the sender from [`Self::live`]; every connection resubscribes when the
+/// list changes. A fixed list never changes.
+#[derive(Clone)]
+pub struct WatchedAccounts(watch::Receiver<Vec<String>>);
+
+impl WatchedAccounts {
+    pub fn fixed(accounts: Vec<String>) -> Self {
+        Self(watch::channel(accounts).1)
+    }
+
+    pub fn live(accounts: Vec<String>) -> (watch::Sender<Vec<String>>, Self) {
+        let (tx, rx) = watch::channel(accounts);
+        (tx, Self(rx))
+    }
+
+    pub fn current(&self) -> Vec<String> {
+        self.0.borrow().clone()
+    }
+
+    /// A receiver whose `changed()` fires on the next update. Errs at once on a
+    /// fixed list, whose sender is gone.
+    pub fn subscribe(&self) -> watch::Receiver<Vec<String>> {
+        let mut rx = self.0.clone();
+        rx.borrow_and_update();
+        rx
+    }
+}
+
+impl Default for WatchedAccounts {
+    fn default() -> Self {
+        Self::fixed(Vec::new())
+    }
+}
+
+impl From<Vec<String>> for WatchedAccounts {
+    fn from(accounts: Vec<String>) -> Self {
+        Self::fixed(accounts)
+    }
+}
+
 /// Host callbacks for the non-transaction updates a subscription can carry.
 ///
 /// Both callbacks run ON THE SUPERVISOR TASK — they must be cheap and
 /// non-blocking (parse + store; no I/O, no `.await`).
 #[derive(Default)]
 pub struct PushHooks {
-    /// Extra account pubkeys (base58) to watch. Updates arrive at
-    /// [`Self::on_account`]. Empty ⇒ no accounts filter.
-    pub watch_accounts: Vec<String>,
+    /// Extra accounts to watch. Updates arrive at [`Self::on_account`].
+    /// Empty ⇒ no accounts filter.
+    pub watch_accounts: WatchedAccounts,
     /// Called on every block-meta update with `(slot, blockhash,
     /// block_time_unix_secs)`. `Some` ⇒ a block-meta filter is added to the
     /// subscription.
@@ -42,7 +85,7 @@ impl PushHooks {
 
     pub fn account_filter(&self) -> Vec<String> {
         if self.on_account.is_some() {
-            self.watch_accounts.clone()
+            self.watch_accounts.current()
         } else {
             Vec::new()
         }
@@ -89,11 +132,26 @@ mod tests {
         );
 
         let accounts = PushHooks {
-            watch_accounts: vec!["wallet".into()],
+            watch_accounts: vec!["wallet".to_string()].into(),
             on_account: Some(Box::new(|_, _, _, _| {})),
             ..Default::default()
         };
         assert!(accounts.wants_stream());
+    }
+
+    /// A live list reports a change to every connection; a fixed one never does,
+    /// so the supervisor can turn its arm off instead of spinning on it.
+    #[tokio::test]
+    async fn a_live_account_list_signals_changes_and_a_fixed_one_does_not() {
+        let (tx, live) = WatchedAccounts::live(vec!["a".to_string()]);
+        let mut rx = live.subscribe();
+        tx.send(vec!["a".to_string(), "b".to_string()]).unwrap();
+        rx.changed().await.expect("live list changed");
+        assert_eq!(live.current(), vec!["a".to_string(), "b".to_string()]);
+
+        let fixed = WatchedAccounts::fixed(vec!["a".to_string()]);
+        assert!(fixed.subscribe().changed().await.is_err(), "a fixed list has no sender");
+        assert_eq!(fixed.current(), vec!["a".to_string()]);
     }
 
     /// An account list without an `on_account` hook (or a hook without accounts)
@@ -105,13 +163,13 @@ mod tests {
         assert!(none.account_filter().is_empty());
 
         let accounts_no_hook = PushHooks {
-            watch_accounts: vec!["a".into()],
+            watch_accounts: vec!["a".to_string()].into(),
             ..Default::default()
         };
         assert!(accounts_no_hook.account_filter().is_empty());
 
         let wired = PushHooks {
-            watch_accounts: vec!["a".into()],
+            watch_accounts: vec!["a".to_string()].into(),
             on_block_meta: Some(Box::new(|_, _, _| {})),
             on_account: Some(Box::new(|_, _, _, _| {})),
         };

@@ -65,6 +65,8 @@ pub async fn provision_nonces(
     let rpc = RpcClient::new(runtime.rpc_url().to_string());
     let rent = rpc.get_minimum_balance_for_rent_exemption(80).await?;
     let mut made = 0u8;
+    let mut sigs = Vec::with_capacity(count as usize);
+    let mut failed = None;
     for _ in 0..count {
         let nonce = Keypair::new();
         let ixs = system_instruction::create_nonce_account(
@@ -73,12 +75,62 @@ pub async fn provision_nonces(
             &owner.pubkey(),
             rent,
         );
-        send(runtime, &owner, ixs, &[&nonce]).await?;
+        match send(runtime, &owner, ixs, &[&nonce]).await {
+            Ok(sig) => sigs.push(sig),
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
+        }
         repo.insert_nonce(&nonce.pubkey().to_string(), wallet).await?;
         made += 1;
     }
-    sync_trader(runtime, &repo, wallet).await?;
-    Ok(made)
+    // The ones that landed are recorded and running even when a later one failed.
+    if made > 0 {
+        let _ = repo
+            .log_activity(wallet, "nonces_created", serde_json::json!({ "count": made }), &sigs)
+            .await;
+        sync_trader(runtime, &repo, wallet).await?;
+    }
+    match failed {
+        Some(e) => Err(e.context(format!("created {made} of {count} nonce accounts"))),
+        None => Ok(made),
+    }
+}
+
+/// One registered nonce account and what the chain says about it.
+#[derive(Debug, Serialize)]
+pub struct NonceView {
+    pub pubkey: String,
+    /// The chain names this wallet as the authority.
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+/// The wallet's registered nonce accounts, checked in one `getMultipleAccounts`.
+pub async fn list_nonces(pool: &PgPool, runtime: &WalletRuntime, wallet: &str) -> Result<Vec<NonceView>> {
+    let repo = TraderWalletRepo::new(pool.clone());
+    let wallet_pk = Pubkey::from_str(wallet).context("wallet pubkey")?;
+    let rows = repo.nonces_for(wallet).await?;
+    let pks = rows.iter().map(|n| Pubkey::from_str(&n.pubkey)).collect::<Result<Vec<_>, _>>()?;
+    if pks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rpc = RpcClient::new(runtime.rpc_url().to_string());
+    let accounts = rpc.get_multiple_accounts(&pks).await.context("read nonce accounts")?;
+    Ok(pks
+        .iter()
+        .zip(accounts.iter())
+        .map(|(pk, account)| {
+            let check = check_nonce_account(*pk, account.as_ref(), &wallet_pk);
+            let error = match (&check.error, check.authority) {
+                (Some(e), _) => Some(e.clone()),
+                (None, Some(other)) if !check.matches_wallet => Some(format!("authority is {other}")),
+                _ => None,
+            };
+            NonceView { pubkey: pk.to_string(), ok: check.matches_wallet, error }
+        })
+        .collect())
 }
 
 /// Record nonce accounts `wallet` already owns on chain. One `getMultipleAccounts`
@@ -131,6 +183,8 @@ pub async fn attach_nonces(
         }
     }
     if report.attached > 0 {
+        let detail = serde_json::json!({ "attached": report.attached, "rejected": report.rejected.len() });
+        let _ = repo.log_activity(wallet, "nonces_attached", detail, &[]).await;
         sync_trader(runtime, &repo, wallet).await?;
     }
     Ok(report)
@@ -162,6 +216,7 @@ pub async fn adopt_env(pool: &PgPool, runtime: &WalletRuntime, name: &str) -> Re
             let primary = runtime.primary_pubkey() == env.pubkey;
             repo.insert(&env.pubkey, name, &key_ref, primary).await?;
             runtime.rename(&env.pubkey, name);
+            let _ = repo.log_activity(&env.pubkey, "registered_env", serde_json::json!({ "name": name }), &[]).await;
         }
     }
     let nonces: Vec<String> = env.nonces.iter().map(|n| n.to_string()).collect();

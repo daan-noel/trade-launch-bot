@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use anyhow::{bail, Context, Result};
 use solana_sdk::pubkey::Pubkey;
@@ -102,12 +102,17 @@ pub struct WalletRuntime {
     primary: RwLock<String>,
     env: RwLock<Option<EnvWallet>>,
     /// Registry rows that are archived. The env key never revives one.
-    archived: HashSet<String>,
+    archived: RwLock<HashSet<String>>,
     pub directory: Arc<WalletDirectory>,
     pub freeze: Arc<WalletFreeze>,
     factory: TraderFactory,
     keystore_dir: Option<PathBuf>,
     kek: Option<Kek>,
+    /// The push feed's account list, set once ingest is wired. Every change to
+    /// the loaded wallets or their nonces is published here.
+    account_watch: OnceLock<tokio::sync::watch::Sender<Vec<String>>>,
+    /// One move advances at a time, whether the driver or a request runs it.
+    pub move_lock: tokio::sync::Mutex<()>,
 }
 
 impl WalletRuntime {
@@ -116,12 +121,32 @@ impl WalletRuntime {
             slots: RwLock::new(HashMap::new()),
             primary: RwLock::new(String::new()),
             env: RwLock::new(None),
-            archived: HashSet::new(),
+            archived: RwLock::new(HashSet::new()),
             directory: Arc::new(WalletDirectory::default()),
             freeze: Arc::new(WalletFreeze::new()),
             factory,
             keystore_dir,
             kek,
+            account_watch: OnceLock::new(),
+            move_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Hand the push feed's sender over; later wallet changes resubscribe it.
+    pub fn set_account_watch(&self, tx: tokio::sync::watch::Sender<Vec<String>>) {
+        let _ = self.account_watch.set(tx);
+    }
+
+    fn publish_watch(&self) {
+        if let Some(tx) = self.account_watch.get() {
+            let next = self.watch_accounts();
+            tx.send_if_modified(|current| {
+                if *current == next {
+                    return false;
+                }
+                *current = next;
+                true
+            });
         }
     }
 
@@ -178,7 +203,9 @@ impl WalletRuntime {
             pubkey: pubkey.clone(),
             nonces: env.nonces.clone(),
         });
-        if self.archived.contains(&pubkey) || self.slots.read().expect("wallets").contains_key(&pubkey) {
+        if self.archived.read().expect("wallets").contains(&pubkey)
+            || self.slots.read().expect("wallets").contains_key(&pubkey)
+        {
             return;
         }
         self.slots.write().expect("wallets").insert(
@@ -238,6 +265,14 @@ impl WalletRuntime {
         self.slots.read().expect("wallets").get(pubkey).map(|s| s.trader.clone())
     }
 
+    /// Every loaded wallet's trader, by name.
+    pub fn loaded_traders(&self) -> Vec<Arc<PumpFunTrader>> {
+        let slots = self.slots.read().expect("wallets");
+        let mut rows: Vec<(&String, &Slot)> = slots.iter().collect();
+        rows.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+        rows.into_iter().map(|(_, s)| s.trader.clone()).collect()
+    }
+
     pub fn signer(&self, pubkey: &str) -> Option<Arc<Keypair>> {
         self.slots.read().expect("wallets").get(pubkey).map(|s| s.signer.clone())
     }
@@ -248,6 +283,27 @@ impl WalletRuntime {
 
     pub fn init_error(&self, pubkey: &str) -> Option<String> {
         self.slots.read().expect("wallets").get(pubkey).and_then(|s| s.init_error.clone())
+    }
+
+    /// Drop an archived wallet's trader. Its key file stays; a restore reloads it.
+    pub fn unload(&self, pubkey: &str) {
+        self.slots.write().expect("wallets").remove(pubkey);
+        self.archived.write().expect("wallets").insert(pubkey.to_string());
+        self.publish_watch();
+    }
+
+    /// An archived wallet back in service: its key from the file, its nonces from the registry.
+    pub async fn restore(&self, pubkey: &str, name: &str, key_ref: &str, nonces: Vec<Pubkey>) -> Result<()> {
+        let dir = self.keystore_dir.as_ref().context("WALLET_KEYSTORE is not set")?;
+        let kek = self.kek.as_ref().context("WALLET_KEK is not set")?;
+        let keypair = keystore::read_keypair(dir, key_ref, kek)?;
+        if keypair.pubkey().to_string() != pubkey {
+            bail!("keystore file {key_ref} does not match pubkey {pubkey}");
+        }
+        self.archived.write().expect("wallets").remove(pubkey);
+        self.insert_loaded(pubkey.to_string(), name.to_string(), Arc::new(keypair), nonces, false)
+            .await;
+        Ok(())
     }
 
     pub fn rename(&self, pubkey: &str, name: &str) {
@@ -311,6 +367,9 @@ impl WalletRuntime {
                 out.push(nonce.to_string());
             }
         }
+        // Sorted so an unchanged set compares equal and never resubscribes.
+        out.sort_unstable();
+        out.dedup();
         out
     }
 
@@ -351,6 +410,7 @@ impl WalletRuntime {
         if primary || self.primary_pubkey().is_empty() {
             self.note_primary(&pubkey);
         }
+        self.publish_watch();
         trader
     }
 
@@ -371,6 +431,7 @@ impl WalletRuntime {
                 init_error,
             },
         );
+        self.publish_watch();
         Ok(())
     }
 }
@@ -390,8 +451,8 @@ pub async fn load_keystore(
     let kek = Kek::from_passphrase(&passphrase);
     let repo = TraderWalletRepo::new(pool.clone());
     let records = repo.records().await?;
-    let mut runtime = WalletRuntime::empty(factory, Some(dir.clone()), Some(kek));
-    runtime.archived = records
+    let runtime = WalletRuntime::empty(factory, Some(dir.clone()), Some(kek));
+    *runtime.archived.write().expect("wallets") = records
         .iter()
         .filter(|r| r.status == "archived")
         .map(|r| r.pubkey.clone())

@@ -4,14 +4,22 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
+use super::{trader_or_400, WalletParam};
 use crate::state::deploy_state::DeployState;
 
 /// GET /api/wallet/rent
 ///
 /// One scan of both token programs, plus the open-position rows. Not polled:
 /// the wallet card reads it on mount and after a recover.
-pub async fn get_rent_status(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
-    match crate::services::rent::status(app_state.get_ref()).await {
+pub async fn get_rent_status(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<WalletParam>,
+) -> impl Responder {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    match crate::services::rent::status(app_state.get_ref(), &trader).await {
         Ok(status) => HttpResponse::Ok().json(status),
         Err(e) => {
             tracing::warn!("get_rent_status failed: {e}");
@@ -56,13 +64,18 @@ impl Drop for RecoverGuard {
 /// mint with an exit in flight are left alone. Off the trade hot path.
 pub(crate) async fn recover_rent(
     app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<WalletParam>,
     body: web::Json<RecoverRequest>,
 ) -> impl Responder {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
     let Some(_guard) = RecoverGuard::try_acquire() else {
         return HttpResponse::Conflict()
             .json(serde_json::json!({ "error": "A rent recover is already in progress" }));
     };
-    match crate::services::rent::recover(app_state.get_ref(), body.burn_dust).await {
+    match crate::services::rent::recover(app_state.get_ref(), &trader, body.burn_dust).await {
         Ok(result) => HttpResponse::Ok().json(result),
         Err(e) => {
             tracing::warn!("recover_rent failed: {e}");

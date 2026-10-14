@@ -125,6 +125,16 @@ impl DeployState {
         }
     }
 
+    /// The trader a wallet-scoped read or action uses: `wallet` when given, else
+    /// the primary at this moment (not the one at boot). Err names a wallet this
+    /// box has not loaded.
+    pub fn trader_for(&self, wallet: Option<&str>) -> Result<Arc<PumpFunTrader>, String> {
+        match wallet.map(str::trim).filter(|w| !w.is_empty()) {
+            None => Ok(self.wallets.primary_trader()),
+            Some(w) => self.wallets.trader(w).ok_or_else(|| format!("wallet {w} is not loaded")),
+        }
+    }
+
     pub fn is_live(&self) -> bool {
         *self.live_mode.borrow()
     }

@@ -206,6 +206,13 @@ export interface SellTokenArgs {
   /// live balance, so no amount is sent.
   token_account?: string;
   slippage_bps?: number;
+  /** The wallet to sell from. Absent = the primary. */
+  wallet?: string;
+}
+
+/** `?wallet=` for a wallet-scoped read; absent = the primary. */
+function walletQs(wallet?: string | null | void): string {
+  return wallet ? `?wallet=${encodeURIComponent(wallet)}` : '';
 }
 
 /**
@@ -305,7 +312,7 @@ export const liveApi = baseApi.injectEndpoints({
     // no sync success to misreport (M2). TP/SL optional; absent = tracked-only.
     manualBuyPosition: builder.mutation<
       { position_id: string },
-      { mint_address: string; amount_sol: number; tp_pct?: number; sl_pct?: number }
+      { mint_address: string; amount_sol: number; tp_pct?: number; sl_pct?: number; wallet?: string }
     >({
       query: (body) => ({ url: '/api/positions/manual-buy', method: 'POST', body }),
     }),
@@ -441,24 +448,29 @@ export const liveApi = baseApi.injectEndpoints({
     // Accrued pump.fun cashback — a read-only on-chain status (two account
     // reads). Cached, not polled: cashback accrues slowly, so the wallet card
     // refreshes on mount / after a claim, never on the live price tick.
-    getCashbackStatus: builder.query<CashbackStatus, void>({
-      query: () => '/api/cashback/status',
+    // `wallet` absent = the primary, here and on the rent pair below.
+    getCashbackStatus: builder.query<CashbackStatus, string | void>({
+      query: (wallet) => `/api/cashback/status${walletQs(wallet)}`,
       providesTags: ['Cashback'],
     }),
     // Sweep both pots back to the wallet as native SOL. Off the trade hot path;
     // invalidates the status so the card reflects the drained balance.
-    claimCashback: builder.mutation<CashbackClaimResult, void>({
-      query: () => ({ url: '/api/cashback/claim', method: 'POST' }),
+    claimCashback: builder.mutation<CashbackClaimResult, string | void>({
+      query: (wallet) => ({ url: `/api/cashback/claim${walletQs(wallet)}`, method: 'POST' }),
       invalidatesTags: ['Cashback'],
     }),
     // Stranded token-account rent. One wallet scan, not polled. Recover closes
     // empty accounts (and unwraps WSOL); burn_dust also destroys dust balances.
-    getRentStatus: builder.query<RentStatus, void>({
-      query: () => '/api/wallet/rent',
+    getRentStatus: builder.query<RentStatus, string | void>({
+      query: (wallet) => `/api/wallet/rent${walletQs(wallet)}`,
       providesTags: ['Rent'],
     }),
-    recoverRent: builder.mutation<RentRecoverResult, { burn_dust: boolean }>({
-      query: (body) => ({ url: '/api/wallet/rent/recover', method: 'POST', body }),
+    recoverRent: builder.mutation<RentRecoverResult, { burn_dust: boolean; wallet?: string }>({
+      query: ({ wallet, ...body }) => ({
+        url: `/api/wallet/rent/recover${walletQs(wallet)}`,
+        method: 'POST',
+        body,
+      }),
       invalidatesTags: ['Rent', 'WalletHoldings'],
     }),
     // Generic-engine armed snapshot for the live monitor — the currently-armed
@@ -541,6 +553,52 @@ export const liveApi = baseApi.injectEndpoints({
       }),
       invalidatesTags: ['TraderWallet'],
     }),
+    attachNonces: builder.mutation<NonceAttachReport, { pubkey: string; nonces: string[] }>({
+      query: ({ pubkey, nonces }) => ({
+        url: `/api/wallets/${pubkey}/nonces/attach`,
+        method: 'POST',
+        body: { nonces },
+      }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    adoptEnvWallet: builder.mutation<NonceAttachReport, { name?: string }>({
+      query: (body) => ({ url: '/api/wallets/adopt-env', method: 'POST', body }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    getWalletNonces: builder.query<WalletNonce[], string>({
+      query: (pubkey) => `/api/wallets/${pubkey}/nonces`,
+      providesTags: ['TraderWallet'],
+    }),
+    getWalletActivity: builder.query<WalletActivity[], string>({
+      query: (pubkey) => `/api/wallets/${pubkey}/activity`,
+      providesTags: ['TraderWallet'],
+    }),
+    getMovePreview: builder.query<MovePreview, string>({
+      query: (from) => `/api/wallets/move/preview?from=${encodeURIComponent(from)}`,
+    }),
+    sendWalletSol: builder.mutation<
+      { signature: string },
+      { pubkey: string; to: string; sol: number; external: boolean }
+    >({
+      query: ({ pubkey, ...body }) => ({ url: `/api/wallets/${pubkey}/send`, method: 'POST', body }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    renameWallet: builder.mutation<{ name: string }, { pubkey: string; name: string }>({
+      query: ({ pubkey, name }) => ({ url: `/api/wallets/${pubkey}/name`, method: 'PUT', body: { name } }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    archiveWallet: builder.mutation<{ archived: boolean }, string>({
+      query: (pubkey) => ({ url: `/api/wallets/${pubkey}/archive`, method: 'POST' }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    restartWallet: builder.mutation<{ init_error: string | null }, string>({
+      query: (pubkey) => ({ url: `/api/wallets/${pubkey}/restart`, method: 'POST' }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    restoreWallet: builder.mutation<{ restored: boolean }, string>({
+      query: (pubkey) => ({ url: `/api/wallets/${pubkey}/restore`, method: 'POST' }),
+      invalidatesTags: ['TraderWallet'],
+    }),
     beginWalletMove: builder.mutation<WalletMove, { from: string; to: string }>({
       query: (body) => ({ url: '/api/wallets/move', method: 'POST', body }),
       invalidatesTags: ['TraderWallet'],
@@ -572,9 +630,62 @@ export interface TraderWalletRow {
   rule_count: number;
   open_positions: number;
   sol: number | null;
+  /** Realized SOL PnL of this wallet's real positions closed in the last 24 h. */
+  pnl_24h_sol: number;
   key_loaded: boolean;
+  readiness: WalletReadiness;
+  readiness_reason: string;
+  /** Why the wallet's trader failed to start, when it did. */
+  init_error: string | null;
   created_at: string;
   archived_at: string | null;
+}
+
+/** Whether a wallet can sign the next entry; `needs_sol` is a warning and still signs. */
+export type WalletReadiness = 'ready' | 'needs_sol' | 'needs_nonces' | 'init_failed' | 'no_key';
+
+export function walletCanSign(readiness: WalletReadiness): boolean {
+  return readiness === 'ready' || readiness === 'needs_sol';
+}
+
+/** The `.env` key, while its pubkey or nonce accounts are not in the registry. */
+export interface EnvWalletStatus {
+  pubkey: string;
+  registered: boolean;
+  unattached_nonces: number;
+  can_register: boolean;
+}
+
+export interface NonceAttachReport {
+  attached: number;
+  already: number;
+  rejected: { pubkey: string; reason: string }[];
+}
+
+/** A registered nonce account; `ok` = the chain names this wallet as its authority. */
+export interface WalletNonce {
+  pubkey: string;
+  ok: boolean;
+  error: string | null;
+}
+
+export interface WalletActivity {
+  id: number;
+  kind: string;
+  detail: Record<string, unknown>;
+  signatures: string[];
+  at: string;
+}
+
+/** Everything a move would carry, read before it starts. */
+export interface MovePreview {
+  rules: { rule_id: string; rule_name: string; is_active: boolean }[];
+  primary: boolean;
+  tokens: { mint: string; amount: number; decimals: number }[];
+  nonces: number;
+  sol_lamports: number;
+  open_positions: number;
+  in_flight: number;
 }
 
 export interface WalletMove {
@@ -590,6 +701,7 @@ export interface WalletMove {
 export interface TraderWalletBook {
   wallets: TraderWalletRow[];
   move: WalletMove | null;
+  env_wallet: EnvWalletStatus | null;
 }
 
 export interface WalletAssignment {
@@ -632,4 +744,14 @@ export const {
   useBeginWalletMoveMutation,
   useResumeWalletMoveMutation,
   useAssignRuleWalletMutation,
+  useAttachNoncesMutation,
+  useAdoptEnvWalletMutation,
+  useGetWalletNoncesQuery,
+  useGetWalletActivityQuery,
+  useGetMovePreviewQuery,
+  useSendWalletSolMutation,
+  useRenameWalletMutation,
+  useArchiveWalletMutation,
+  useRestoreWalletMutation,
+  useRestartWalletMutation,
 } = liveApi;

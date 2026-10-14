@@ -30,7 +30,7 @@ use trading_core::strategies::kernel::{modeled_cost_basis, weighted_return_pct, 
 
 use crate::services::clients::jupiter;
 use crate::state::deploy_state::DeployState;
-use crate::trader::WalletHolding;
+use crate::trader::{PumpFunTrader, WalletHolding};
 
 /// One enriched wallet holding with cost basis, unrealized PnL, and the bot that
 /// manages it (if any). The Holdings-page row and Home top-holdings widget both
@@ -127,32 +127,35 @@ pub struct PortfolioSummary {
 /// trade (`?fresh=true` on the query endpoint) busts it so post-trade reads are fresh.
 const HOLDINGS_TTL: Duration = Duration::from_secs(8);
 
-/// Short-TTL cache of the composed holdings (see [`HOLDINGS_TTL`]). Held on
-/// [`DeployState`]; there is exactly one bot wallet per process, so a single slot
-/// suffices. `Default` = empty (cold). Concurrent misses coalesce on
-/// [`Self::inflight`] so a TTL expiry never stampede wallet RPC + Jupiter + DB.
+type HoldingsCell = Arc<tokio::sync::OnceCell<Result<Arc<Vec<PortfolioHolding>>, String>>>;
+type HoldingsSlot = (Instant, Arc<Vec<PortfolioHolding>>);
+
+/// Short-TTL cache of the composed holdings (see [`HOLDINGS_TTL`]), one slot per
+/// wallet pubkey. Held on [`DeployState`]. `Default` = empty (cold). Concurrent
+/// misses on one wallet coalesce on [`Self::inflight`] so a TTL expiry never
+/// stampedes wallet RPC + Jupiter + DB.
 #[derive(Default)]
 pub struct HoldingsCache {
-    inner: Mutex<Option<(Instant, Arc<Vec<PortfolioHolding>>)>>,
-    /// Shared in-flight refresh. Cleared when the leader finishes (ok or err).
-    inflight: Mutex<Option<Arc<tokio::sync::OnceCell<Result<Arc<Vec<PortfolioHolding>>, String>>>>>,
+    inner: Mutex<HashMap<String, HoldingsSlot>>,
+    /// Shared in-flight refresh per wallet. Cleared when the leader finishes (ok or err).
+    inflight: Mutex<HashMap<String, HoldingsCell>>,
 }
 
 impl HoldingsCache {
-    async fn get_fresh(&self) -> Option<Arc<Vec<PortfolioHolding>>> {
-        match self.inner.lock().await.as_ref() {
+    async fn get_fresh(&self, wallet: &str) -> Option<Arc<Vec<PortfolioHolding>>> {
+        match self.inner.lock().await.get(wallet) {
             Some((at, v)) if at.elapsed() < HOLDINGS_TTL => Some(v.clone()),
             _ => None,
         }
     }
 
-    async fn put(&self, v: Arc<Vec<PortfolioHolding>>) {
-        *self.inner.lock().await = Some((Instant::now(), v));
+    async fn put(&self, wallet: &str, v: Arc<Vec<PortfolioHolding>>) {
+        self.inner.lock().await.insert(wallet.to_string(), (Instant::now(), v));
     }
 
-    /// Drop the cached scan so the next read re-scans (called after a confirmed trade).
+    /// Drop every cached scan so the next read re-scans (called after a confirmed trade).
     pub async fn invalidate(&self) {
-        *self.inner.lock().await = None;
+        self.inner.lock().await.clear();
     }
 }
 
@@ -196,8 +199,8 @@ pub struct HoldingsTableSummary {
 
 /// Native wallet SOL from the push-fed trader cache (no RPC). Returns
 /// `(sol, usd)` — USD is `None` when the SOL/USD poller has not landed yet.
-pub fn native_sol_balance(state: &DeployState) -> (Option<f64>, Option<f64>) {
-    let Some(lamports) = state.trader.cached_balance_lamports() else {
+pub fn native_sol_balance(state: &DeployState, trader: &PumpFunTrader) -> (Option<f64>, Option<f64>) {
+    let Some(lamports) = trader.cached_balance_lamports() else {
         return (None, None);
     };
     // Wallet balances fit in i64; clamp rather than panic on a corrupt cache.
@@ -253,9 +256,12 @@ pub fn cash_summary(cash: &[&PortfolioHolding]) -> (Vec<CashHoldingSummary>, f64
 
 /// Enriched holdings + cost basis + unrealized PnL + bot tag for the bot wallet —
 /// **one live scan**, uncached. Prefer [`list_holdings_cached`] on read paths.
-pub async fn list_holdings(state: &DeployState) -> anyhow::Result<Vec<PortfolioHolding>> {
-    let holdings = state.trader.get_all_token_accounts().await?;
-    compose(state, holdings).await
+pub async fn list_holdings(
+    state: &DeployState,
+    trader: &PumpFunTrader,
+) -> anyhow::Result<Vec<PortfolioHolding>> {
+    let holdings = trader.get_all_token_accounts().await?;
+    compose(state, trader, holdings).await
 }
 
 /// Cache-first holdings: reuse a warm scan (< [`HOLDINGS_TTL`]) or run one and warm
@@ -265,30 +271,30 @@ pub async fn list_holdings(state: &DeployState) -> anyhow::Result<Vec<PortfolioH
 /// Concurrent misses share a single in-flight refresh (no lock held across I/O).
 pub async fn list_holdings_cached(
     state: &DeployState,
+    trader: &PumpFunTrader,
     force: bool,
 ) -> anyhow::Result<Arc<Vec<PortfolioHolding>>> {
+    let wallet = trader.wallet_pubkey();
     if force {
         // Drop coalescing so a post-trade read always starts a fresh scan.
-        *state.holdings_cache.inflight.lock().await = None;
-        state.holdings_cache.invalidate().await;
-    } else if let Some(v) = state.holdings_cache.get_fresh().await {
+        state.holdings_cache.inflight.lock().await.remove(&wallet);
+        state.holdings_cache.inner.lock().await.remove(&wallet);
+    } else if let Some(v) = state.holdings_cache.get_fresh(&wallet).await {
         return Ok(v);
     }
 
-    let cell = {
-        let mut g = state.holdings_cache.inflight.lock().await;
-        if let Some(c) = g.as_ref() {
-            c.clone()
-        } else {
-            let c = Arc::new(tokio::sync::OnceCell::new());
-            *g = Some(c.clone());
-            c
-        }
-    };
+    let cell = state
+        .holdings_cache
+        .inflight
+        .lock()
+        .await
+        .entry(wallet.clone())
+        .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+        .clone();
 
     let out = cell
         .get_or_init(|| async {
-            match list_holdings(state).await {
+            match list_holdings(state, trader).await {
                 Ok(v) => Ok(Arc::new(v)),
                 Err(e) => Err(format!("{e:#}")),
             }
@@ -298,24 +304,25 @@ pub async fn list_holdings_cached(
 
     {
         let mut g = state.holdings_cache.inflight.lock().await;
-        if g.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cell)) {
-            *g = None;
+        if g.get(&wallet).is_some_and(|c| Arc::ptr_eq(c, &cell)) {
+            g.remove(&wallet);
         }
     }
 
     match out {
         Ok(v) => {
-            state.holdings_cache.put(v.clone()).await;
+            state.holdings_cache.put(&wallet, v.clone()).await;
             Ok(v)
         }
         Err(e) => Err(anyhow::anyhow!(e)),
     }
 }
 
-/// Wallet-wide summary (Home KPIs). Reuses [`list_holdings`] for the value/PnL
-/// totals, then layers the real-money strategy aggregates on top.
-pub async fn summary(state: &DeployState) -> anyhow::Result<PortfolioSummary> {
-    let holdings = list_holdings_cached(state, false).await?;
+/// Wallet-wide summary (Home KPIs) for one wallet's holdings. Reuses
+/// [`list_holdings`] for the value/PnL totals, then layers the real-money
+/// strategy aggregates (all wallets) on top.
+pub async fn summary(state: &DeployState, trader: &PumpFunTrader) -> anyhow::Result<PortfolioSummary> {
+    let holdings = list_holdings_cached(state, trader, false).await?;
     let (cash, positions) = partition_cash(&holdings);
 
     let mut cash_value_usd = 0.0;
@@ -691,10 +698,11 @@ fn status_rank(status: &str) -> u8 {
 /// future single-mint post-trade patch can share one code path.
 async fn compose(
     state: &DeployState,
+    trader: &PumpFunTrader,
     holdings: Vec<WalletHolding>,
 ) -> anyhow::Result<Vec<PortfolioHolding>> {
     let mints: Vec<String> = holdings.iter().map(|h| h.mint.clone()).collect();
-    let wallet = state.trader.wallet_pubkey();
+    let wallet = trader.wallet_pubkey();
     let sol_usd = state.latest_sol_price();
 
     // Cache-first migration/cashback fallback for mints the live stream never saw
@@ -713,7 +721,7 @@ async fn compose(
     let strategy_repo = state.strategy_repo();
     let (jupiter, chain_facts, avg_entries, enrich_rows, managed) = tokio::join!(
         jupiter::fetch_prices(&mints),
-        state.trader.resolve_curve_facts_batch(&uncached),
+        trader.resolve_curve_facts_batch(&uncached),
         trade_repo.avg_entry_by_wallet_and_mints(&wallet, &mints),
         fetch_by_mints(&state.db, &mints),
         strategy_repo.managed_mints(true),

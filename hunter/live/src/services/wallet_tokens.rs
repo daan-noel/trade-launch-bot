@@ -4,7 +4,7 @@ use tracing::warn;
 use crate::services::clients::jupiter;
 use crate::services::portfolio::{self, PortfolioHolding};
 use crate::state::deploy_state::DeployState;
-use crate::trader::WalletHolding;
+use crate::trader::{PumpFunTrader, WalletHolding};
 
 #[derive(Debug, Serialize)]
 pub struct EnrichedWalletHolding {
@@ -55,23 +55,27 @@ impl From<&PortfolioHolding> for EnrichedWalletHolding {
 /// the same warm scan the portfolio surfaces already run, so N dashboard polls
 /// cost at most one scan per TTL window. (The single-mint `enrich_one` below stays
 /// an uncached targeted read: it's the post-trade balance confirm and must be fresh.)
-pub async fn list_enriched(state: &DeployState) -> anyhow::Result<Vec<EnrichedWalletHolding>> {
-    let holdings = portfolio::list_holdings_cached(state, false).await?;
+pub async fn list_enriched(
+    state: &DeployState,
+    trader: &PumpFunTrader,
+) -> anyhow::Result<Vec<EnrichedWalletHolding>> {
+    let holdings = portfolio::list_holdings_cached(state, trader, false).await?;
     Ok(holdings.iter().map(EnrichedWalletHolding::from).collect())
 }
 
-/// Enrich a single mint's holding for the trader's wallet, or `None` if the
+/// Enrich a single mint's holding for `trader`'s wallet, or `None` if the
 /// wallet holds none of it. A cheap one-mint read (single RPC + one Jupiter
 /// price) used to confirm a balance change after a manual trade without
 /// re-scanning and re-pricing the whole wallet.
 pub async fn enrich_one(
     state: &DeployState,
+    trader: &PumpFunTrader,
     mint: &str,
 ) -> anyhow::Result<Option<EnrichedWalletHolding>> {
-    let Some(holding) = state.trader.get_token_account_for_mint(mint).await? else {
+    let Some(holding) = trader.get_token_account_for_mint(mint).await? else {
         return Ok(None);
     };
-    Ok(enrich_holdings(state, vec![holding])
+    Ok(enrich_holdings(state, trader, vec![holding])
         .await
         .into_iter()
         .next())
@@ -79,6 +83,7 @@ pub async fn enrich_one(
 
 async fn enrich_holdings(
     state: &DeployState,
+    trader: &PumpFunTrader,
     holdings: Vec<WalletHolding>,
 ) -> Vec<EnrichedWalletHolding> {
     let mints: Vec<String> = holdings.iter().map(|h| h.mint.clone()).collect();
@@ -99,7 +104,7 @@ async fn enrich_holdings(
     // — fire them together.
     let (jupiter, chain_facts) = tokio::join!(
         jupiter::fetch_prices(&mints),
-        state.trader.resolve_curve_facts_batch(&uncached),
+        trader.resolve_curve_facts_batch(&uncached),
     );
     let jupiter = match jupiter {
         Ok(prices) => prices,

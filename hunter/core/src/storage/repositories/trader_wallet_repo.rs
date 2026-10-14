@@ -6,8 +6,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::trader_wallet::{
-    OpenWalletPosition, TraderNonce, TraderWallet, TraderWalletRecord, WalletMove,
+    OpenWalletPosition, TraderNonce, TraderWallet, TraderWalletRecord, WalletActivity, WalletMove,
+    WalletRule,
 };
+use crate::storage::repositories::strategy_repo::PNL_LAMPORTS_SQL;
 
 #[derive(Clone)]
 pub struct TraderWalletRepo {
@@ -25,6 +27,7 @@ struct WalletRow {
     nonce_count: i64,
     rule_count: i64,
     open_positions: i64,
+    pnl_24h_lamports: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -55,6 +58,15 @@ struct MoveRow {
 }
 
 #[derive(sqlx::FromRow)]
+struct ActivityRow {
+    id: i64,
+    kind: String,
+    detail: serde_json::Value,
+    signatures: Vec<String>,
+    at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
 struct AssignRow {
     rule_id: Uuid,
     wallet: String,
@@ -76,16 +88,20 @@ impl TraderWalletRepo {
     }
 
     pub async fn list(&self) -> sqlx::Result<Vec<TraderWallet>> {
-        let rows = sqlx::query_as::<_, WalletRow>(
+        let rows = sqlx::query_as::<_, WalletRow>(&format!(
             "SELECT w.pubkey, w.name, w.status, w.is_primary, w.created_at, w.archived_at, \
                     (SELECT count(*) FROM trader_nonces n WHERE n.authority = w.pubkey AND n.status = 'live') AS nonce_count, \
                     (SELECT count(*) FROM rule_wallets r WHERE r.wallet = w.pubkey) AS rule_count, \
                     (SELECT count(*) FROM strategy_positions p \
                        WHERE p.wallet = w.pubkey AND p.mode = 'real' \
-                         AND p.status NOT IN ('End', 'EntryFailed')) AS open_positions \
+                         AND p.status NOT IN ('End', 'EntryFailed')) AS open_positions, \
+                    (SELECT COALESCE(SUM({PNL_LAMPORTS_SQL}), 0)::BIGINT FROM strategy_positions sp \
+                       WHERE sp.wallet = w.pubkey AND sp.mode = 'real' AND sp.status = 'End' \
+                         AND sp.entry_lamports IS NOT NULL \
+                         AND sp.exit_time >= now() - interval '24 hours') AS pnl_24h_lamports \
              FROM trader_wallets w \
-             ORDER BY w.is_primary DESC, w.created_at",
-        )
+             ORDER BY w.is_primary DESC, w.created_at"
+        ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|r| TraderWallet {
@@ -98,7 +114,86 @@ impl TraderWalletRepo {
             nonce_count: r.nonce_count,
             rule_count: r.rule_count,
             open_positions: r.open_positions,
+            pnl_24h_lamports: r.pnl_24h_lamports,
         }).collect())
+    }
+
+    pub async fn rename(&self, pubkey: &str, name: &str) -> sqlx::Result<()> {
+        sqlx::query("UPDATE trader_wallets SET name = $2 WHERE pubkey = $1")
+            .bind(pubkey)
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// An archived wallet back to active, never primary.
+    pub async fn restore(&self, pubkey: &str) -> sqlx::Result<bool> {
+        let n = sqlx::query(
+            "UPDATE trader_wallets SET status = 'active', archived_at = NULL \
+             WHERE pubkey = $1 AND status = 'archived'",
+        )
+        .bind(pubkey)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(n == 1)
+    }
+
+    /// The rules that name `wallet`, by name.
+    pub async fn rules_for(&self, wallet: &str) -> sqlx::Result<Vec<WalletRule>> {
+        let rows: Vec<(Uuid, String, bool)> = sqlx::query_as(
+            "SELECT r.id, r.rule_name, r.is_active FROM rule_wallets w \
+             JOIN strategy_rules r ON r.id = w.rule_id \
+             WHERE w.wallet = $1 ORDER BY r.rule_name",
+        )
+        .bind(wallet)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(rule_id, rule_name, is_active)| WalletRule { rule_id, rule_name, is_active })
+            .collect())
+    }
+
+    pub async fn log_activity(
+        &self,
+        wallet: &str,
+        kind: &str,
+        detail: serde_json::Value,
+        signatures: &[String],
+    ) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO wallet_activity (wallet, kind, detail, signatures) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(wallet)
+        .bind(kind)
+        .bind(detail)
+        .bind(signatures)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn activity(&self, wallet: &str, limit: i64) -> sqlx::Result<Vec<WalletActivity>> {
+        let rows = sqlx::query_as::<_, ActivityRow>(
+            "SELECT id, kind, detail, signatures, at FROM wallet_activity \
+             WHERE wallet = $1 ORDER BY at DESC, id DESC LIMIT $2",
+        )
+        .bind(wallet)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| WalletActivity {
+                id: r.id,
+                kind: r.kind,
+                detail: r.detail,
+                signatures: r.signatures,
+                at: r.at,
+            })
+            .collect())
     }
 
     pub async fn records(&self) -> sqlx::Result<Vec<TraderWalletRecord>> {

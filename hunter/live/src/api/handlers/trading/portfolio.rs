@@ -11,6 +11,7 @@ use serde_json::Value;
 use trading_core::api::table_eval::{apply_table_request, resolve_token_enrichment_key, ColKind};
 use trading_core::api::table_query::{Page, TableRequest};
 
+use super::{trader_or_400, WalletParam};
 use crate::services::portfolio::{self, cash_summary, partition_cash, HoldingsTableSummary};
 use crate::state::deploy_state::DeployState;
 use trading_core::strategies::kernel::weighted_return_pct;
@@ -68,8 +69,15 @@ fn holdings_to_values(holdings: &[&portfolio::PortfolioHolding]) -> Vec<Value> {
 /// live-trade feed. Includes cash (USDC) with `asset_kind: "cash"`; consumers that
 /// want meme bags only must filter. The Holdings **page** uses the paged POST
 /// below (positions only); both share the short-TTL scan cache.
-pub async fn get_portfolio_holdings(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
-    match portfolio::list_holdings_cached(app_state.get_ref(), false).await {
+pub async fn get_portfolio_holdings(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<WalletParam>,
+) -> impl Responder {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    match portfolio::list_holdings_cached(app_state.get_ref(), &trader, false).await {
         Ok(holdings) => HttpResponse::Ok().json(holdings.as_ref()),
         Err(e) => {
             tracing::warn!("get_portfolio_holdings failed: {e}");
@@ -87,6 +95,9 @@ pub async fn get_portfolio_holdings(app_state: web::Data<Arc<DeployState>>) -> i
 pub struct HoldingsQueryParams {
     #[serde(default)]
     pub fresh: bool,
+    /// The wallet whose holdings to read. Absent = the primary.
+    #[serde(default)]
+    pub wallet: Option<String>,
 }
 
 /// `POST /api/portfolio/holdings/query[?fresh=true]`
@@ -102,7 +113,11 @@ pub async fn query_portfolio_holdings(
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     let req = body.into_inner();
-    let holdings = match portfolio::list_holdings_cached(app_state.get_ref(), query.fresh).await {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let holdings = match portfolio::list_holdings_cached(app_state.get_ref(), &trader, query.fresh).await {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!("query_portfolio_holdings failed: {e}");
@@ -127,8 +142,13 @@ pub async fn query_portfolio_holdings(
 /// table so the bar agrees with the meme-position grid.
 pub async fn portfolio_holdings_summary(
     app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<WalletParam>,
     body: web::Json<TableRequest>,
 ) -> impl Responder {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
     let mut req = body.into_inner();
     // Measure the whole filtered set (holdings are tens of rows; 1000 covers all).
     req.pagination = Page {
@@ -136,7 +156,7 @@ pub async fn portfolio_holdings_summary(
         page_size: 1000,
     };
     req.sorting.clear();
-    let holdings = match portfolio::list_holdings_cached(app_state.get_ref(), false).await {
+    let holdings = match portfolio::list_holdings_cached(app_state.get_ref(), &trader, false).await {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!("portfolio_holdings_summary failed: {e}");
@@ -146,7 +166,7 @@ pub async fn portfolio_holdings_summary(
     };
     let (cash, positions) = partition_cash(&holdings);
     let (cash_holdings, cash_usd, cash_sol) = cash_summary(&cash);
-    let (sol_balance_sol, sol_balance_usd) = portfolio::native_sol_balance(app_state.get_ref());
+    let (sol_balance_sol, sol_balance_usd) = portfolio::native_sol_balance(app_state.get_ref(), &trader);
 
     let values = holdings_to_values(&positions);
     let (rows, _) = apply_table_request(&values, &req, holdings_resolve);
@@ -216,8 +236,15 @@ pub async fn portfolio_holdings_summary(
 ///
 /// Wallet-wide roll-up (value SOL/USD, total unrealized PnL, held-bag count,
 /// realized PnL today, active real rules, open real positions) — the Home KPI row.
-pub async fn get_portfolio_summary(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
-    match portfolio::summary(app_state.get_ref()).await {
+pub async fn get_portfolio_summary(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<WalletParam>,
+) -> impl Responder {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    match portfolio::summary(app_state.get_ref(), &trader).await {
         Ok(summary) => HttpResponse::Ok().json(summary),
         Err(e) => {
             tracing::warn!("get_portfolio_summary failed: {e}");

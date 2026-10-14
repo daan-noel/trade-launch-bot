@@ -21,8 +21,8 @@ const fmtSol = (lamports: number): string =>
 /** Accrued pump.fun cashback + a one-click reclaim. The status is a read-only
  *  on-chain read (cached, not polled); claim sweeps both pots to native SOL and
  *  refreshes the figure. Self-contained so it can drop onto any wallet view. */
-export function CashbackCard() {
-  const { data, isLoading, isFetching, refetch } = useGetCashbackStatusQuery();
+export function CashbackCard({ wallet }: { /** Absent = the primary. */ wallet?: string } = {}) {
+  const { data, isLoading, isFetching, refetch } = useGetCashbackStatusQuery(wallet);
   const [claim, { isLoading: isClaiming }] = useClaimCashbackMutation();
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -34,7 +34,7 @@ export function CashbackCard() {
     setError(null);
     setSuccess(null);
     try {
-      const res = await claim().unwrap();
+      const res = await claim(wallet).unwrap();
       const failed = res.pots.filter((p) => p.error);
       const parts: string[] = [];
       if (res.claimed_lamports > 0) parts.push(`${fmtSol(res.claimed_lamports)} SOL`);
@@ -54,7 +54,7 @@ export function CashbackCard() {
         `Reclaim failed: ${apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error'}`,
       );
     }
-  }, [claim]);
+  }, [claim, wallet]);
 
   return (
     <div className="mb-4 rounded-lg border border-border bg-bg-panel/50 p-4">

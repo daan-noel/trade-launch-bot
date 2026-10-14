@@ -1020,11 +1020,16 @@ async fn handle_command(
                     .collect(),
             )
         }
-        EngineCommand::ManualBuy { pg_id, mint, lamports, exit } => {
+        EngineCommand::ManualBuy { pg_id, mint, lamports, exit, wallet } => {
             // Fresh per-episode rule id: keys the arm, the intents, and the
             // synthesized exit rule. Staged with the sink BEFORE the fold so the
             // BuySubmitted delta creates the row with the handler's pre-minted id.
             let rule = RuleId(uuid::Uuid::new_v4());
+            // The episode's rule names the chosen wallet, in memory only: the sink
+            // and the buy resolve it before this rule id is ever reused or reloaded.
+            if wallet.is_some() {
+                sink.wallets().directory.assign(rule.0, wallet);
+            }
             sink.stage_manual(
                 rule,
                 super::sinks::StagedManual {

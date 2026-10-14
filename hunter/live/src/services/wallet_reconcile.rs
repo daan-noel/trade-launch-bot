@@ -80,14 +80,17 @@ pub async fn reconcile_wallet_holdings(
         })
         .collect();
 
+    let wallet = trader.wallet_pubkey();
     if flagged.is_empty() {
         info!(
+            wallet = %wallet,
             held = holdings.len(),
             tracked = tracked.len(),
             "Wallet reconcile: every on-chain token balance is attributed to an open position"
         );
     } else {
         warn!(
+            wallet = %wallet,
             held = holdings.len(),
             tracked = tracked.len(),
             unattributed = flagged.len(),

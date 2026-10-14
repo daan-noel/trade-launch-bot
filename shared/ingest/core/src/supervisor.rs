@@ -610,6 +610,10 @@ async fn run_once<V: IngestVenue, F: Feed>(
     idle_check.tick().await; // consume the immediate first tick
 
     let pools_changed = venue.pools_changed();
+    // A fixed account list has no sender, so its `changed()` errs at once; the
+    // flag turns the arm off instead of spinning on it.
+    let mut watched_rx = lanes.push.watch_accounts.subscribe();
+    let mut watched_live = true;
 
     loop {
         tokio::select! {
@@ -699,6 +703,27 @@ async fn run_once<V: IngestVenue, F: Feed>(
                     blocks_meta = sub_blocks_meta,
                     "ingest: pool set changed — resubscribed"
                 );
+            }
+
+            // The host added or dropped a watched account (a wallet or one of its
+            // nonce accounts). Same apply path as a pool change.
+            result = watched_rx.changed(), if watched_live && caps.server_filter => {
+                if result.is_err() {
+                    watched_live = false;
+                    continue;
+                }
+                if !caps.in_place_resubscribe {
+                    info!(feed = name, "ingest: watched accounts changed — reconnecting to apply them");
+                    done!(DisconnectReason::Graceful);
+                }
+                let sub = build_subscription(venue, caps, scope, None, policy, &lanes.push);
+                sub_blocks_meta = sub.blocks_meta;
+                let n = sub.watch_accounts.len();
+                if let Err(e) = conn.resubscribe(sub).await {
+                    error!(feed = name, "ingest: resubscribe failed — {e}");
+                    done!(DisconnectReason::of(&e));
+                }
+                info!(feed = name, watched = n, "ingest: watched accounts changed — resubscribed");
             }
 
             result = lanes.live_rx.changed() => {

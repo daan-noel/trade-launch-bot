@@ -124,6 +124,18 @@ export interface RulesViewProps {
   wallets?: { pubkey: string; name: string }[];
   walletFor?: (ruleId: string) => string | null;
   assignWallet?: (ruleId: string, wallet: string | null) => Promise<void>;
+  /** Live only. The wallet a real rule's next entry signs with, for the Wallet column. */
+  walletOf?: (rule: StrategyRule) => RuleWalletCell | null;
+}
+
+/** What the Wallet column shows for one real rule. */
+export interface RuleWalletCell {
+  name: string;
+  /** No wallet named: the rule falls back to the primary. */
+  viaPrimary: boolean;
+  canSign: boolean;
+  /** Why it cannot sign, when it cannot. */
+  reason: string;
 }
 
 /** "This rule was edited while its current run was still scoring."
@@ -172,6 +184,7 @@ export function RulesView({
   wallets,
   walletFor,
   assignWallet,
+  walletOf,
 }: RulesViewProps) {
   const copyBoard = board === 'copy';
   const dispatch = useDispatch();
@@ -808,6 +821,32 @@ export function RulesView({
       searchValue: (r) => r.trade_mode,
       sortValue: (r) => r.trade_mode,
     },
+    ...(walletOf
+      ? ([
+        {
+          key: 'wallet',
+          label: 'Wallet',
+          group: 'rule',
+          render: (r: StrategyRule) => {
+            const w = r.trade_mode === 'real' ? walletOf(r) : null;
+            if (!w) return <span className="text-text-dim">—</span>;
+            return (
+              <span
+                className="inline-flex items-center gap-1.5"
+                title={w.canSign ? undefined : `Cannot sign: ${w.reason}`}
+              >
+                <span className={`size-1.5 shrink-0 rounded-full ${w.canSign ? 'bg-green' : 'bg-red'}`} />
+                <span className={w.viaPrimary ? 'text-text-dim' : 'text-text'}>
+                  {w.viaPrimary ? `primary (${w.name})` : w.name}
+                </span>
+              </span>
+            );
+          },
+          searchValue: (r) => (r.trade_mode === 'real' ? (walletOf(r)?.name ?? '') : ''),
+          sortValue: (r) => (r.trade_mode === 'real' ? (walletOf(r)?.name ?? '') : ''),
+        },
+      ] as ColumnDef<StrategyRule>[])
+      : []),
     ...(ruleLiveCounts
       ? ([
         {
@@ -943,6 +982,7 @@ export function RulesView({
     pausingIds,
     stopByRule,
     ruleLiveCounts,
+    walletOf,
     fpTints,
     setTagFilter,
     enable,

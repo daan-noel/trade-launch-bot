@@ -250,6 +250,8 @@ pub enum EngineCommand {
         mint: String,
         lamports: u64,
         exit: Option<ManualExit>,
+        /// The wallet that pays; `None` = the primary.
+        wallet: Option<String>,
     },
     /// Set / replace / clear a manual position's TP/SL post-entry — the loop
     /// resolves the engine position via the registry and folds a
@@ -466,9 +468,10 @@ impl EngineHandle {
         mint: String,
         lamports: u64,
         exit: Option<ManualExit>,
+        wallet: Option<String>,
     ) -> bool {
         self.cmd_tx
-            .send(EngineCommand::ManualBuy { pg_id, mint, lamports, exit })
+            .send(EngineCommand::ManualBuy { pg_id, mint, lamports, exit, wallet })
             .await
             .is_ok()
     }

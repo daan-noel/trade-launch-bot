@@ -334,9 +334,14 @@ export function fetchHoldingsPage(
   body: TableRequestBody,
   signal?: AbortSignal,
   fresh = false,
+  wallet?: string | null,
 ): Promise<{ items: import('types').WalletHolding[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (fresh) qs.set('fresh', 'true');
+  if (wallet) qs.set('wallet', wallet);
+  const q = qs.toString();
   return postTablePage(
-    `/api/portfolio/holdings/query${fresh ? '?fresh=true' : ''}`,
+    `/api/portfolio/holdings/query${q ? `?${q}` : ''}`,
     body,
     (json) => json as import('types').WalletHolding[],
     signal,
@@ -344,12 +349,15 @@ export function fetchHoldingsPage(
 }
 
 /** GET-shaped POST for the Holdings summary bar — same filter body as the table so
- *  the totals cover exactly the filtered population (pagination/sorting ignored). */
+ *  the totals cover exactly the filtered population (pagination/sorting ignored).
+ *  `wallet` absent = the primary. */
 export function fetchHoldingsSummary(
   body: TableRequestBody,
   signal?: AbortSignal,
+  wallet?: string | null,
 ): Promise<HoldingsTableSummary> {
-  return request(`${API_BASE}/api/portfolio/holdings/summary`, {
+  const q = wallet ? `?wallet=${encodeURIComponent(wallet)}` : '';
+  return request(`${API_BASE}/api/portfolio/holdings/summary${q}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),

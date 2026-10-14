@@ -16,6 +16,27 @@ pub struct TraderWallet {
     pub nonce_count: i64,
     pub rule_count: i64,
     pub open_positions: i64,
+    /// Realized SOL PnL of this wallet's real positions closed in the last 24 h,
+    /// in lamports: the position ledger's own `PNL_LAMPORTS_SQL`.
+    pub pnl_24h_lamports: i64,
+}
+
+/// One action taken on a wallet, for the page's activity list.
+#[derive(Debug, Clone, Serialize)]
+pub struct WalletActivity {
+    pub id: i64,
+    pub kind: String,
+    pub detail: serde_json::Value,
+    pub signatures: Vec<String>,
+    pub at: DateTime<Utc>,
+}
+
+/// A rule that names this wallet.
+#[derive(Debug, Clone, Serialize)]
+pub struct WalletRule {
+    pub rule_id: Uuid,
+    pub rule_name: String,
+    pub is_active: bool,
 }
 
 /// The row plus the keystore filename. Stays inside the live process.

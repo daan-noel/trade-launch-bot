@@ -1147,6 +1147,8 @@ async fn run() -> anyhow::Result<()> {
         }
     };
     let trader = wallets.primary_trader();
+    // An open wallet move keeps advancing on its own, including one a restart interrupted.
+    live::wallets::spawn_move_driver(db.clone(), wallets.clone());
 
     // Boot wallet-balance sweep (buy-in-flight recovery): list
     // the wallet's on-chain token accounts once and flag any balance no open
@@ -1154,17 +1156,20 @@ async fn run() -> anyhow::Result<()> {
     // marker persist, or any bug the durable `BuySubmitted` marker doesn't cover.
     // Read-only + advisory (logs for review, never sells/deletes), spawned off the
     // boot critical path so its RPC scan never delays ingest/HTTP startup.
+    // Every loaded wallet, one after another: one token-account listing each.
     {
-        let trader = trader.clone();
+        let traders = wallets.loaded_traders();
         let strategy_repo =
             trading_core::storage::repositories::strategy_repo::StrategyRepo::new(db.clone());
         tokio::spawn(async move {
-            if let Err(e) = services::wallet_reconcile::reconcile_wallet_holdings(
-                &trader, &strategy_repo,
-            )
-            .await
-            {
-                warn!("Boot wallet reconcile failed (advisory only): {e}");
+            for trader in traders {
+                if let Err(e) = services::wallet_reconcile::reconcile_wallet_holdings(
+                    &trader, &strategy_repo,
+                )
+                .await
+                {
+                    warn!(wallet = %trader.wallet_pubkey(), "Boot wallet reconcile failed (advisory only): {e}");
+                }
             }
         });
     }
@@ -1250,7 +1255,11 @@ async fn run() -> anyhow::Result<()> {
         // balance tracks at feed speed: a pushed `lamports` refreshes that
         // wallet's affordability cache, so the steady-state `getBalance` poll
         // below stays a slow safety fallback.
-        let watch_accounts = wallets.watch_accounts();
+        // A wallet created, imported, provisioned or moved later publishes its new
+        // accounts through this sender, and the feed resubscribes in place.
+        let (watch_tx, watch_accounts) =
+            ingest_pumpfun::WatchedAccounts::live(wallets.watch_accounts());
+        wallets.set_account_watch(watch_tx);
         let account_book = wallets.clone();
         ingest_pumpfun::PushHooks {
             watch_accounts,

@@ -45,7 +45,7 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   **History** and **Arms** sections (both collapsible, and collapsed means NO fetch —
   the body unmounts, since each pays for a server page plus an aggregate);
   redirects from `/floor`, `/trade`, `/ops`, `/positions`, `/live-trading`,
-  `/strategies/armed`, `/strategies/monitor`, query preserved) · **Portfolio** (`/portfolio`) · **Wallet** · **Wallets** (`/wallets`, live only: create, import, primary, nonce provision, and the resumable move). Rules Evidence is
+  `/strategies/armed`, `/strategies/monitor`, query preserved) · **Portfolio** (`/portfolio`) · **Wallet** (`?wallet=` picks which wallet; absent = the primary) · **Wallets** (`/wallets`, live only: readiness per wallet, the env-wallet banner, In use / Idle / Archived tabs, a per-wallet panel for rules, nonces, and activity, send SOL, rename, archive, restore, and the server-driven move with its preview). Rules Evidence is
   `/strategies/rules/:ruleId`. Lab flattens single-child groups (Tokens, Trader Analysis
   are leaf links). Metric panes are not a peer nav item — they live in lab Tokens detail
   (`/strategies/metric-panes` redirects to `/tokens?mint=`). Simulate is the second tab of
@@ -742,72 +742,28 @@ next load (no per-metric frontend work).
   always-shown bucket and every fingerprint-scoped list; used by Rules, Simulate, and
   `FingerprintPicker`). `IxLabelsChip` and `FlowPatternsChip` share `ContentsChip`: a
   count body over a `hashHue` ribbon of the **contents**, since neither axis is its
-  count — the tooltip carries the sequences and a click copies them as JSON. An
-  unconfigured pattern set stays visible as a dimmed `flow✗`, because an empty set is
-  the verdict "every trade classifies organic", not a dropped criterion.
-**Two pattern lists, one vocabulary — plus working grains.** `registry.ts` owns
-`IxPatternList` (`tagged` = `m_flow_ix.ix_patterns`, `dump` = `m_dump_ix.ix_patterns`)
-with `patternsForList` / `metricConfigWithList` over it, so every staging surface says
-which list a click means: the fingerprint form renders the dump editor, the
-flow-discovery cart carries a `staging into [tagged|dump|working]` toggle that reseeds the
-draft from the list it is about to overwrite. The trades-table badge strip
-(`IxPatternBar` over `useIxPatternTarget`) carries those two **and** a third list,
-`working` — `m_burst_slot.working_templates` (a `|` id is a grain, a bare name is a
-program), a different vocabulary, so it is not an `IxPatternList` arm. A badge
-click writes immediately, so the strip has to name its target. On `working` the
-strip's `grain | program` switch chooses which spelling a click writes; default
-is grain. Next to tagged/dump, `FeePinToggles` (`cu_limit` / `cu_price` /
-`tip`) are sticky modifiers for the next badge click: all off (the default) writes
-the ix structure only, even when the tx carries a budget; checking `cu_limit` then
-clicking a tx writes `{labels, cu_limit}` from **that** tx. Per ix-labels sequence
-the list holds either one catch-all or one-or-more pins — never both, because a
-catch-all already matches every budget and a pin beside it cannot narrow. A pin
-click on a catch-all **narrows** (drops the catch-all, keeps the pin); pins off
-on a pinned shape **widens**. Pressed / Vol checked state follows engine matching:
-an ix-only row stays selected on every trade of that shape. Hidden on `working` and on a
-read-only run snapshot. A trader-analysis lens set is one vocabulary, chosen at
-create: `exact` (ix_labels + fee pins, same catch-all-vs-pin rule) or `templates`
-(grain ids, no pins). The set picker is the switch; badges follow that kind
-through `classifyOptsForTape`. Each group is written by its OWN writer, and a build may sit on
-BOTH ix lists — the normal configuration, since the two answer different questions
-about one transaction.
-
-The list a surface is on renames what it shows, because the two ix columns are otherwise
-identical: the trades-table badge reads `Tagged`/`Untagged` on the tagged list and
-`Dump`/`Not dump` on the dump one (`patternList` on `tokenTradeColumns`), contagion
-notes are suppressed under `dump` (the reasons map is the flow split's verdict, and
-`m_dump_ix` has no wallet rule to spread one), and a row the OTHER list also counts is
-marked `also tagged` / `also dump` from `otherListKeys` — information, not a conflict,
-and the one place a reader learns the two groups' numbers are not disjoint.
-On `working` the badge reads `Working`/`Other` against the grain id
-(`templateGrain`), with no contagion notes. Flow discovery stages all three lists
-— tagged and dump as ix rows, working as grain ids. Bind-from-group creates a
-fingerprint from tagged or dump only; working grains require an existing row
-(`Update`). `DumpPatternsChip` is the
-`FlowPatternsChip` twin — absent when the list is empty, where the flow chip stays
-visible as `flow✗`, since an empty dump list leaves `dump_*` reading NaN rather than
-re-pointing another metric. `WorkingTemplatesChip` (`work N`) and `TargetWalletsChip`
-(`copy N`) are the grain-list and address-list twins, absent when empty.
+  count. The tooltip carries the sequences and a click copies them as JSON.
+**Tags, not pattern lists.** A fingerprint's trade lists live in `tags`
+(`TagsEditor`): one named tag, matchers `ix_shape`, `ix_template`, `program`,
+`ix_contains`, `ix_lacks`, `wallet` and `creator`. Rules read `@name` and `@!name`.
+The trades-table badge (`IxPatternBar` over `useIxPatternTarget`) writes one of
+`ix_shape`, `ix_template`, `program` or `wallet` on the chart's tag, and the caption
+names that tag. `FeePinToggles` (`cu_limit`, `cu_price`, `tip`) are sticky modifiers
+for the next `ix_shape` click: all off writes the ix list only; checking `cu_limit`
+then clicking a trade writes that trade's limit onto the row. A sweep chart that has
+no live fingerprint passes the run's stored tag as `flowFrozen` and classifies with
+every matcher; nothing on that chart writes. A trader-analysis lens set is its own
+list, chosen at create: `exact` (ix rows plus fee pins) or `templates` (grain ids).
+The set picker is the switch. Copying a set writes it onto a fingerprint tag
+(`ix_shape`, or `ix_template` / `program` for grains).
 
 **Every fingerprint-scoped list is one table.** `FP_CONFIG_LISTS`
-(`FingerprintParamsSummary`) carries one entry per group that declares
-`fingerprint_config` — `m_flow_ix`, `m_dump_ix`, `m_burst_slot`, `m_copy` — each with
-its chip, its column key and label, its flat search text and its contents identity.
-The four surfaces that show a fingerprint all loop it: `fingerprintParamsCell` (chips),
-`fingerprintParamsSearchText` (picker + rules filter), `fingerprintIdentityKey` (the
-whole-fingerprint sort key) and `FingerprintsView` (one generated column each, plus the
-same-value tint, which keys on the CONTENTS so two rows reading `copy 1` only tint
-together when it is the same wallet).
-
-The table exists because `metric_config` is row identity
-(`fingerprints_identity_uniq` = criteria + wildcard + `metric_config`), so a list the
-UI does not show is a difference the page cannot express. Written out by hand these
-call sites carried `flow` and `dump` only, and the two groups added after them shipped
-with a form control and a chip but no column, no search term and no sort key — a copy
-fingerprint, which is a wildcard and so has no axis chips at all, showed nothing
-whatsoever of the wallet it follows. A guard test beside it (`components/strategy/fingerprintConfigLists.test.ts`) reads
-the Rust registry and fails when a group declares `fingerprint_config` with no entry
-here.
+(`FingerprintParamsSummary`) is the tags entry: its chip, its column, its search
+text and its contents identity. `fingerprintParamsCell`, `fingerprintParamsSearchText`,
+`fingerprintIdentityKey` and `FingerprintsView` all loop it, so a tag the table does
+not show is a difference the page cannot express. `tags` is part of
+`fingerprints_identity_uniq` (criteria + wildcard + tags). A guard test beside it
+(`components/strategy/fingerprintConfigLists.test.ts`) fails when that entry is dropped.
 
 - Lab **Flow discovery** (`/strategies/flow-discovery`, `FlowDiscoveryPage`) — corpus
   window + optional **Scope by saved fingerprint** (sends `fingerprint_id`; engine
@@ -1221,8 +1177,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   judged by its own labels or grain, no forward wallet tagging) and **excludes the studied wallet**, because
   it answers "which structures surround this moment", not "who is in the volume crew". A badge under
   a lens writes to the pattern set, never a fingerprint; the one path into the engine is the explicit
-  **Copy to fingerprint** (exact → `m_flow_ix.ix_patterns` with fees kept; templates →
-  `m_burst_slot.working_templates`). Paste on an exact set accepts a `{ "patterns": [...] }` study file, a
+  **Copy to fingerprint** (exact rows onto the tag's `ix_shape`, grains onto
+  `ix_template` or `program`). Paste on an exact set accepts a `{ "patterns": [...] }` study file, a
   `[{ tool, ix_labels, cu_limit? }]` list, bare label arrays, or one JSON array per line, and reports
   accepted / duplicate / skipped counts (`lib/flow/ixPatternSets.ts`). Paste on a templates set accepts
   grain ids (JSON string array or one per line) and rejects ix_labels payloads. **Show JSON** opens that

@@ -14,6 +14,7 @@ import { walletColumns, WALLET_KEYS } from '@live/components/wallet/walletColumn
 import { HoldingsSummaryBar } from '@live/components/wallet/HoldingsSummaryBar';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
 import { RentCard } from '@live/components/wallet/RentCard';
+import { useSelectedWallet, WalletPicker } from '@live/components/wallet/WalletPicker';
 import { isCashHolding, isCashMint } from 'lib/assetKind';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
@@ -89,6 +90,9 @@ export function MyWalletPage() {
   const [sellToken] = useSellTokenMutation();
   const [searchParams, setSearchParams] = useSearchParams();
   const mintFromUrl = searchParams.get('mint');
+  const [wallet, setWallet] = useSelectedWallet();
+  const walletRef = useRef(wallet);
+  walletRef.current = wallet;
 
   // Server-side table view-state (paging/sort/filter). `TokenTable` emits the
   // query (already folding in the mint-set filter) and we serialize it to the
@@ -175,7 +179,7 @@ export function MyWalletPage() {
   const fetchPage = useCallback((body: unknown, signal: AbortSignal) => {
     const fresh = freshRef.current;
     freshRef.current = false;
-    return fetchHoldingsPage(body as TableRequestBody, signal, fresh);
+    return fetchHoldingsPage(body as TableRequestBody, signal, fresh, walletRef.current);
   }, []);
 
   const {
@@ -185,6 +189,16 @@ export function MyWalletPage() {
     error: tableError,
     reload,
   } = useServerTable<WalletHolding>(true, tableBody, fetchPage);
+
+  // Another wallet is another holdings scan; the body did not change, so reload.
+  const firstWalletRef = useRef(true);
+  useEffect(() => {
+    if (firstWalletRef.current) {
+      firstWalletRef.current = false;
+      return;
+    }
+    reload();
+  }, [wallet, reload]);
 
   // Summary bar totals over the whole *filtered* population (server-computed) —
   // refetched only when the filter-relevant body changes or after a trade.
@@ -203,7 +217,7 @@ export function MyWalletPage() {
   const refreshSummary = useCallback(() => setSummaryNonce((n) => n + 1), []);
   useEffect(() => {
     const ctrl = new AbortController();
-    fetchHoldingsSummary(summaryBody, ctrl.signal)
+    fetchHoldingsSummary(summaryBody, ctrl.signal, wallet)
       .then((s) => {
         if (!ctrl.signal.aborted) setSummary(s);
       })
@@ -211,9 +225,9 @@ export function MyWalletPage() {
         /* non-blocking; keep last-known summary */
       });
     return () => ctrl.abort();
-    // `summaryBody` is captured via `summaryKey`; refetch on filter change or trade.
+    // `summaryBody` is captured via `summaryKey`; refetch on filter, wallet, or trade.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summaryKey, summaryNonce]);
+  }, [summaryKey, summaryNonce, wallet]);
 
   // Jupiter oracle for the CURRENT page's mints (liquidity / 24h / cold marks).
   // No interval — SSE tips live Value/Price; refetch on bag refresh / focus below.
@@ -429,6 +443,7 @@ export function MyWalletPage() {
           mint_address: mint,
           ...(tokenAccount ? { token_account: tokenAccount } : {}),
           ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
+          ...(wallet ? { wallet } : {}),
         }).unwrap();
         setActionSuccess('Sell submitted — confirming on-chain…');
         void confirmTrade(mint, prevAmount, 'Sell');
@@ -440,7 +455,7 @@ export function MyWalletPage() {
         setSellingMint(null);
       }
     },
-    [sellToken, confirmTrade],
+    [sellToken, confirmTrade, wallet],
   );
 
   // Gate every manual sell on the bot-managed check: if a live strategy holds
@@ -514,14 +529,18 @@ export function MyWalletPage() {
     setBuyDialog(null);
 
     try {
-      const res = await manualBuy({ mint_address: mint, amount_sol: solAmount }).unwrap();
+      const res = await manualBuy({
+        mint_address: mint,
+        amount_sol: solAmount,
+        ...(wallet ? { wallet } : {}),
+      }).unwrap();
       setActionSuccess(`Buy submitted — position ${res.position_id.slice(0, 8)}… tracked in Console`);
     } catch (e) {
       setActionError(
         `Buy failed: ${apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error'}`,
       );
     }
-  }, [buyDialog, manualBuy]);
+  }, [buyDialog, manualBuy, wallet]);
 
   const columns = useMemo(
     () =>
@@ -547,6 +566,7 @@ export function MyWalletPage() {
             <Badge variant="primary" className="font-mono">
               {total} positions
             </Badge>
+            <WalletPicker value={wallet} onChange={setWallet} />
 
             <div className="grow" />
 
@@ -579,9 +599,9 @@ export function MyWalletPage() {
 
       {summary && <HoldingsSummaryBar summary={summary} />}
 
-      <CashbackCard />
+      <CashbackCard wallet={wallet} />
 
-      <RentCard onRecovered={refreshAll} />
+      <RentCard onRecovered={refreshAll} wallet={wallet} />
 
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}

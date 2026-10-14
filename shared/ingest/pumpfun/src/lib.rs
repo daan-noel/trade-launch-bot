@@ -46,6 +46,7 @@ pub mod venue;
 
 pub use ingest_core::{
     Commitment, FeedCaps, IngestConfig, IngestError, IngestEvent, PushHooks, Result, StreamScope,
+    WatchedAccounts,
 };
 
 /// The Yellowstone gRPC feed. Consumers that open their own short-lived stream

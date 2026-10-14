@@ -4,6 +4,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Serialize;
 
+use super::{trader_or_400, WalletParam};
 use crate::state::deploy_state::DeployState;
 
 /// Per-pot cashback figures shaped for the wallet UI. Lamports stay as raw
@@ -33,8 +34,15 @@ struct CashbackStatusJson {
 /// Read-only cashback balance across both pots (two `getAccountInfo` calls, no
 /// transaction). Off the trade hot path. The frontend caches this generously —
 /// cashback accrues slowly and never needs the live price poll.
-pub async fn get_cashback_status(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
-    match crate::services::cashback::status_cached(app_state.get_ref()).await {
+pub async fn get_cashback_status(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<WalletParam>,
+) -> impl Responder {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    match crate::services::cashback::status_cached(app_state.get_ref(), &trader).await {
         Ok(pots) => {
             let total_claimable_lamports = pots.iter().map(|p| p.claimable()).sum();
             let body = CashbackStatusJson {
@@ -105,7 +113,14 @@ impl Drop for ClaimGuard {
 /// Sweep accrued cashback from both pots back to the wallet as native SOL.
 /// Off the trade hot path (recent blockhash, no nonce, no Jito tip); pots with
 /// zero claimable are skipped on-trader so no empty/reverting tx is sent.
-pub async fn claim_cashback(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
+pub async fn claim_cashback(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<WalletParam>,
+) -> impl Responder {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
     // Reject a second in-flight claim instead of double-sending. The guard
     // releases the flag on drop (incl. a panic across the `.await`), so a
     // failed claim can't wedge a permanent 409.
@@ -114,7 +129,7 @@ pub async fn claim_cashback(app_state: web::Data<Arc<DeployState>>) -> impl Resp
             .json(serde_json::json!({ "error": "A cashback claim is already in progress" }));
     };
 
-    let result = app_state.trader.claim_cashback(true).await;
+    let result = trader.claim_cashback(true).await;
 
     match result {
         Ok(outcomes) => {

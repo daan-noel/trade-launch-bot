@@ -46,7 +46,7 @@ pub use dedupe::SignatureDedupe;
 pub use error::{IngestError, Result};
 pub use event::IngestEvent;
 pub use feed::{Feed, FeedCaps, FeedConn, FeedError, FeedUpdate, StreamScope, Subscription};
-pub use push::PushHooks;
+pub use push::{PushHooks, WatchedAccounts};
 pub use session::{FeedLanes, Ingest, IngestHandle};
 pub use supervisor::FeedPolicy;
 pub use venue::{DecodeOutput, IngestVenue, PoolIndex};

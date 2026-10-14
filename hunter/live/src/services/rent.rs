@@ -1,4 +1,4 @@
-//! Stranded token-account rent on the trading wallet.
+//! Stranded token-account rent on one trading wallet.
 //!
 //! A buy funds a fresh account. The exit closes the one that position recorded.
 //! Anything left empty (a close that did not land, a second account on the same
@@ -15,6 +15,7 @@ use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
 use crate::state::deploy_state::DeployState;
+use crate::trader::PumpFunTrader;
 
 /// Raw units at or under which a non-empty account is dust. A full sell leaves
 /// a handful of units; a live bag is orders of magnitude larger. 10_000 raw is
@@ -154,9 +155,13 @@ const ERRORS_SHOWN: usize = 5;
 /// Re-read the wallet, close empty accounts and unwrap WSOL, and when
 /// `burn_dust` is set also burn dust and close those accounts. Confirms each
 /// batch, then re-reads so the counts are what is left on chain.
-pub async fn recover(state: &DeployState, burn_dust: bool) -> anyhow::Result<RentRecoverResult> {
-    let accounts = state.trader.list_owned_token_accounts().await?;
-    let wallet = state.trader.wallet_pubkey();
+pub async fn recover(
+    state: &DeployState,
+    trader: &PumpFunTrader,
+    burn_dust: bool,
+) -> anyhow::Result<RentRecoverResult> {
+    let accounts = trader.list_owned_token_accounts().await?;
+    let wallet = trader.wallet_pubkey();
     let (open_mints, open_accounts) = state.strategy_repo.open_real_rent_guards(&wallet).await?;
     let classified = classify_rent(&accounts, &open_mints, &open_accounts);
 
@@ -181,15 +186,15 @@ pub async fn recover(state: &DeployState, burn_dust: bool) -> anyhow::Result<Ren
         });
     }
 
-    let mut report = state.trader.close_token_accounts(&close).await?;
+    let mut report = trader.close_token_accounts(&close).await?;
     if burn_dust {
         merge_report(
             &mut report,
-            state.trader.burn_and_close_token_accounts(&burn).await?,
+            trader.burn_and_close_token_accounts(&burn).await?,
         );
     }
 
-    match state.trader.list_owned_token_accounts().await {
+    match trader.list_owned_token_accounts().await {
         Ok(left) => {
             let still: HashSet<String> = left.into_iter().map(|a| a.pubkey.to_string()).collect();
             let mut closed = 0u32;
@@ -234,9 +239,9 @@ pub async fn recover(state: &DeployState, burn_dust: bool) -> anyhow::Result<Ren
     }
 }
 
-pub async fn status(state: &DeployState) -> anyhow::Result<RentStatus> {
-    let accounts = state.trader.list_owned_token_accounts().await?;
-    let wallet = state.trader.wallet_pubkey();
+pub async fn status(state: &DeployState, trader: &PumpFunTrader) -> anyhow::Result<RentStatus> {
+    let accounts = trader.list_owned_token_accounts().await?;
+    let wallet = trader.wallet_pubkey();
     let (open_mints, open_accounts) = state.strategy_repo.open_real_rent_guards(&wallet).await?;
     Ok(classify_rent(&accounts, &open_mints, &open_accounts).status)
 }

@@ -17,6 +17,7 @@ import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { BuyIcon, LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { ModeToggle } from 'components/strategy/ModeToggle';
+import { useSelectedWallet, WalletPicker } from '@live/components/wallet/WalletPicker';
 import { useFlowPatternSourceForRule } from 'hooks/useFlowPatternKeys';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useSseStatus } from 'hooks/useSseStatus';
@@ -516,6 +517,8 @@ export function ConsolePage() {
   const [tradeSol, setTradeSol] = useState('0.05');
   const [tradeTp, setTradeTp] = useState('');
   const [tradeSl, setTradeSl] = useState('');
+  // The wallet the manual buy and the wallet sweep use; `?wallet=`, absent = the primary.
+  const [tradeWallet, setTradeWallet] = useSelectedWallet();
   const [buying, setBuying] = useState(false);
   const [sellingMint, setSellingMint] = useState(false);
   useEffect(() => {
@@ -553,6 +556,7 @@ export function ConsolePage() {
         amount_sol: sol,
         ...(tp !== undefined ? { tp_pct: tp } : {}),
         ...(sl !== undefined ? { sl_pct: sl } : {}),
+        ...(tradeWallet ? { wallet: tradeWallet } : {}),
       }).unwrap();
       pushLog('Buy', mint, `◎${sol} submitted → position ${res.position_id.slice(0, 8)}…`, true);
     } catch (e) {
@@ -562,7 +566,7 @@ export function ConsolePage() {
     } finally {
       setBuying(false);
     }
-  }, [tradeMint, tradeSol, tradeTp, tradeSl, manualBuy, pushLog]);
+  }, [tradeMint, tradeSol, tradeTp, tradeSl, tradeWallet, manualBuy, pushLog]);
 
   const handleSellAllByMint = useCallback(async () => {
     const mint = tradeMint.trim();
@@ -580,7 +584,7 @@ export function ConsolePage() {
     setActionErr(null);
     setSellingMint(true);
     try {
-      await sellToken({ mint_address: mint }).unwrap();
+      await sellToken({ mint_address: mint, ...(tradeWallet ? { wallet: tradeWallet } : {}) }).unwrap();
       pushLog('Sell all', mint, 'wallet balance swept', true);
     } catch (e) {
       const msg = apiErrorMessage(e as never) ?? 'unknown error';
@@ -589,7 +593,7 @@ export function ConsolePage() {
     } finally {
       setSellingMint(false);
     }
-  }, [tradeMint, openBook, sellToken, pushLog]);
+  }, [tradeMint, openBook, sellToken, tradeWallet, pushLog]);
 
   // ── Shared cells ────────────────────────────────────────────────────────────
   const ruleHrefOf = useMemo(() => {
@@ -1432,6 +1436,7 @@ export function ConsolePage() {
                       className="w-16"
                     />
                   </label>
+                  <WalletPicker value={tradeWallet} onChange={setTradeWallet} />
                 </div>
                 <div className="flex items-center gap-2">
                   <IconButton

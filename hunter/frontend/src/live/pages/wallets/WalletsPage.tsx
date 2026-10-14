@@ -1,27 +1,41 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
+import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
-import { Modal } from 'components/ui/Modal';
+import { InlineAlert, Modal } from 'components/ui/Modal';
 import { PageHeader } from 'components/ui/PageHeader';
-import { Select } from 'components/ui/Select';
+import { StatTile } from 'components/ui/StatTile';
+import { Tabs, TabsList, TabsTrigger } from 'components/ui/Tabs';
 import { apiErrorMessage } from 'store/baseApi';
 import {
-  useBeginWalletMoveMutation,
+  useAdoptEnvWalletMutation,
   useCreateTraderWalletMutation,
   useGetTraderWalletsQuery,
   useImportTraderWalletMutation,
-  useProvisionNoncesMutation,
+  useAttachNoncesMutation,
   useResumeWalletMoveMutation,
-  useSetPrimaryWalletMutation,
+  walletCanSign,
+  type EnvWalletStatus,
   type TraderWalletRow,
   type WalletMove,
 } from '@live/store/liveEndpoints';
 
+import { MoveDialog, SendSolDialog } from './WalletDialogs';
+import { WalletPanel } from './WalletPanel';
+import {
+  READINESS_LABEL,
+  READINESS_VARIANT,
+  shortKey,
+  solText,
+  walletTab,
+  type WalletTab,
+} from './walletFormat';
+
 const STEPS = ['quiesce', 'inflight', 'bags', 'nonces', 'sol', 'verify', 'done'] as const;
 
 const STEP_LABEL: Record<string, string> = {
-  quiesce: 'Point rules at the new wallet',
+  quiesce: 'Point rules and the primary flag at the new wallet',
   inflight: 'Wait for entries and sells in flight',
   bags: 'Move token balances',
   nonces: 'Hand nonce authority across',
@@ -30,188 +44,181 @@ const STEP_LABEL: Record<string, string> = {
   done: 'Archive the old wallet',
 };
 
-function shortKey(pubkey: string): string {
-  if (pubkey.length <= 12) return pubkey;
-  return `${pubkey.slice(0, 4)}...${pubkey.slice(-4)}`;
-}
-
-function solText(sol: number | null): string {
-  if (sol == null) return '-';
-  return sol.toFixed(4);
-}
+/** Faster while a move runs, so its steps show as they land. */
+const POLL_MS = 15000;
+const POLL_MOVE_MS = 2000;
 
 export function WalletsPage() {
+  const [fastPoll, setFastPoll] = useState(false);
   const { data, isLoading, error, refetch } = useGetTraderWalletsQuery(undefined, {
-    pollingInterval: 15000,
+    pollingInterval: fastPoll ? POLL_MOVE_MS : POLL_MS,
   });
-  const [createWallet, createState] = useCreateTraderWalletMutation();
-  const [importWallet, importState] = useImportTraderWalletMutation();
-  const [setPrimary] = useSetPrimaryWalletMutation();
-  const [provision] = useProvisionNoncesMutation();
-  const [beginMove, beginState] = useBeginWalletMoveMutation();
+  const wallets = useMemo(() => data?.wallets ?? [], [data]);
+  const move = data?.move && !data.move.finished_at ? data.move : null;
+  useEffect(() => setFastPoll(move != null), [move]);
+
+  const [tab, setTab] = useState<WalletTab>('in_use');
+  const [adding, setAdding] = useState<'create' | 'import' | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [moving, setMoving] = useState<string | null>(null);
+  const [sending, setSending] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [resumeMove, resumeState] = useResumeWalletMoveMutation();
 
-  const [creating, setCreating] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [name, setName] = useState('');
-  const [secret, setSecret] = useState('');
-  const [formError, setFormError] = useState<string | null>(null);
-  const [moving, setMoving] = useState<TraderWalletRow | null>(null);
-  const [dest, setDest] = useState('');
-  const [confirmName, setConfirmName] = useState('');
-  const [nonceFor, setNonceFor] = useState<TraderWalletRow | null>(null);
-  const [nonceCount, setNonceCount] = useState('5');
-  const [actionError, setActionError] = useState<string | null>(null);
-
-  const wallets = data?.wallets ?? [];
-  const move = data?.move && !data.move.finished_at ? data.move : null;
-  const active = wallets.filter((w) => w.status === 'active');
-  const ordered = useMemo(() => {
-    const rank = (w: TraderWalletRow) =>
-      w.status === 'draining' ? 1 : w.status === 'archived' ? 2 : w.is_primary ? -1 : 0;
-    return [...wallets].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  const byKey = useMemo(() => new Map(wallets.map((w) => [w.pubkey, w])), [wallets]);
+  const shown = useMemo(
+    () =>
+      wallets
+        .filter((w) => walletTab(w) === tab)
+        .sort((a, b) => Number(b.is_primary) - Number(a.is_primary) || a.name.localeCompare(b.name)),
+    [wallets, tab],
+  );
+  const counts = useMemo(() => {
+    const c: Record<WalletTab, number> = { in_use: 0, idle: 0, archived: 0 };
+    for (const w of wallets) c[walletTab(w)] += 1;
+    return c;
   }, [wallets]);
 
-  const busy = createState.isLoading || importState.isLoading || beginState.isLoading || resumeState.isLoading;
-
-  const submitCreate = async () => {
-    setFormError(null);
-    try {
-      await createWallet({ name: name.trim() }).unwrap();
-      setCreating(false);
-      setName('');
-    } catch (e) {
-      setFormError(apiErrorMessage(e as never) ?? 'Create failed');
-    }
-  };
-
-  const submitImport = async () => {
-    setFormError(null);
-    try {
-      await importWallet({ name: name.trim(), private_key: secret }).unwrap();
-      setSecret('');
-      setName('');
-      setImporting(false);
-    } catch (e) {
-      setFormError(apiErrorMessage(e as never) ?? 'Import failed');
-    }
-  };
-
-  const run = async (fn: () => Promise<unknown>) => {
-    setActionError(null);
-    try {
-      await fn();
-    } catch (e) {
-      setActionError(apiErrorMessage(e as never) ?? 'Request failed');
-    }
-  };
+  const live = wallets.filter((w) => w.status !== 'archived');
+  const totalSol = live.reduce((s, w) => s + (w.sol ?? 0), 0);
+  const ready = live.filter((w) => walletCanSign(w.readiness)).length;
+  const pnl24h = live.reduce((s, w) => s + w.pnl_24h_sol, 0);
+  const primary = wallets.find((w) => w.is_primary);
+  const opened = openKey ? byKey.get(openKey) : undefined;
+  const movingRow = moving ? byKey.get(moving) : undefined;
+  const sendingRow = sending ? byKey.get(sending) : undefined;
 
   return (
     <div className="flex flex-col gap-4 p-4">
       <PageHeader
         title="Wallets"
-        description="Active wallets sign entries. A move carries balances and nonce authority, then archives the old wallet."
+        description="Each rule signs with its own wallet or the primary. A move carries rules, bags, nonce authority, and SOL, then archives the old wallet."
         actions={
           <div className="flex gap-2">
             <Button size="sm" variant="ghost" onClick={() => refetch()}>
               Refresh
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setFormError(null);
-                setName('');
-                setImporting(true);
-              }}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setAdding('import')}>
               Import
             </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                setFormError(null);
-                setName('');
-                setCreating(true);
-              }}
-            >
+            <Button size="sm" onClick={() => setAdding('create')}>
               Create
             </Button>
           </div>
         }
       />
 
-      {error && <p className="text-[12px] text-red">{apiErrorMessage(error) ?? 'Could not load wallets'}</p>}
-      {actionError && <p className="text-[12px] text-red">{actionError}</p>}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <StatTile label="Total SOL" value={solText(totalSol)} />
+        <StatTile
+          label="Can trade"
+          value={`${ready} / ${live.length}`}
+          tone={ready === live.length ? 'default' : 'red'}
+        />
+        <StatTile label="Primary" value={primary?.name ?? '-'} />
+        <StatTile
+          label="PnL 24h"
+          value={`${pnl24h >= 0 ? '+' : ''}${solText(pnl24h)}`}
+          tone={pnl24h > 0 ? 'green' : pnl24h < 0 ? 'red' : 'default'}
+          info="Realized SOL of real positions closed in the last 24 h, summed over the wallets that bought them."
+        />
+        <StatTile label="Move" value={move ? STEP_LABEL[move.step] ?? move.step : 'none'} size="md" />
+      </div>
+
+      {data?.env_wallet && <EnvBanner env={data.env_wallet} />}
+      {error && <InlineAlert variant="error">{apiErrorMessage(error) ?? 'Could not load wallets'}</InlineAlert>}
+      {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
       {isLoading && <p className="text-[12px] text-text-dim">Loading wallets...</p>}
 
-      {move && <MoveCard move={move} wallets={wallets} busy={resumeState.isLoading} onResume={() => run(() => resumeMove().unwrap())} />}
+      {move && (
+        <MoveCard
+          move={move}
+          wallets={wallets}
+          busy={resumeState.isLoading}
+          onResume={async () => {
+            setActionError(null);
+            try {
+              await resumeMove().unwrap();
+            } catch (e) {
+              setActionError(apiErrorMessage(e as never) ?? 'Resume failed');
+            }
+          }}
+        />
+      )}
+
+      <Tabs value={tab} onValueChange={(v) => setTab(v as WalletTab)}>
+        <TabsList>
+          <TabsTrigger value="in_use">In use ({counts.in_use})</TabsTrigger>
+          <TabsTrigger value="idle">Idle ({counts.idle})</TabsTrigger>
+          <TabsTrigger value="archived">Archived ({counts.archived})</TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       <div className="overflow-x-auto rounded-md border border-white/10">
         <table className="w-full text-left text-[12px]">
           <thead className="text-[11px] text-text-dim">
             <tr className="border-b border-white/10">
               <th className="px-3 py-2 font-medium">Wallet</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium">SOL</th>
-              <th className="px-3 py-2 font-medium">Nonces</th>
-              <th className="px-3 py-2 font-medium">Rules</th>
-              <th className="px-3 py-2 font-medium">Open</th>
-              <th className="px-3 py-2 font-medium">Actions</th>
+              <th className="px-3 py-2 font-medium">State</th>
+              <th className="px-3 py-2 text-right font-medium">SOL</th>
+              <th className="px-3 py-2 text-right font-medium">Nonces</th>
+              <th className="px-3 py-2 text-right font-medium">Rules</th>
+              <th className="px-3 py-2 text-right font-medium">Open</th>
+              <th className="px-3 py-2 text-right font-medium">PnL 24h</th>
+              <th className="px-3 py-2 font-medium" />
             </tr>
           </thead>
           <tbody>
-            {ordered.map((w) => (
-              <tr key={w.pubkey} className="border-b border-white/5">
+            {shown.map((w) => (
+              <tr
+                key={w.pubkey}
+                className="cursor-pointer border-b border-white/5 hover:bg-white/3"
+                onClick={() => setOpenKey(w.pubkey)}
+              >
                 <td className="px-3 py-2">
                   <div className="font-medium text-text">
+                    {w.is_primary ? '★ ' : ''}
                     {w.name}
-                    {w.is_primary ? ' (primary)' : ''}
                   </div>
                   <div className="font-mono text-[11px] text-text-dim" title={w.pubkey}>
                     {shortKey(w.pubkey)}
-                    {w.key_loaded ? '' : ' (key not on this box)'}
                   </div>
                 </td>
-                <td className="px-3 py-2 capitalize">{w.status}</td>
-                <td className="px-3 py-2 tabular-nums">{solText(w.sol)}</td>
-                <td className="px-3 py-2 tabular-nums">{w.nonce_count}</td>
-                <td className="px-3 py-2 tabular-nums">{w.rule_count}</td>
-                <td className="px-3 py-2 tabular-nums">{w.open_positions}</td>
                 <td className="px-3 py-2">
-                  <div className="flex flex-wrap gap-1">
-                    {w.status === 'active' && !w.is_primary && (
-                      <Button size="xs" variant="ghost" onClick={() => run(() => setPrimary(w.pubkey).unwrap())}>
-                        Set as primary
-                      </Button>
-                    )}
-                    {w.status === 'active' && w.key_loaded && (
-                      <Button size="xs" variant="ghost" onClick={() => { setNonceFor(w); setNonceCount('5'); setActionError(null); }}>
-                        Provision nonces
-                      </Button>
-                    )}
-                    {w.status === 'active' && w.key_loaded && !move && (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => {
-                          setMoving(w);
-                          setDest(active.find((o) => o.pubkey !== w.pubkey)?.pubkey ?? '');
-                          setConfirmName('');
-                          setActionError(null);
-                        }}
-                      >
-                        Move
-                      </Button>
-                    )}
-                  </div>
+                  {w.status === 'active' ? (
+                    <Badge variant={READINESS_VARIANT[w.readiness]} title={w.init_error ?? w.readiness_reason}>
+                      {READINESS_LABEL[w.readiness]}
+                    </Badge>
+                  ) : (
+                    <Badge variant="neutral">{w.status}</Badge>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">{solText(w.sol)}</td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">{w.nonce_count}</td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">{w.rule_count}</td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">{w.open_positions}</td>
+                <td
+                  className={`px-3 py-2 text-right font-mono tabular-nums ${
+                    w.pnl_24h_sol > 0 ? 'text-green' : w.pnl_24h_sol < 0 ? 'text-red' : 'text-text-dim'
+                  }`}
+                >
+                  {w.pnl_24h_sol === 0 ? '-' : `${w.pnl_24h_sol > 0 ? '+' : ''}${solText(w.pnl_24h_sol)}`}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <Button size="xs" variant={walletCanSign(w.readiness) ? 'ghost' : 'primary'}>
+                    {fixLabel(w)}
+                  </Button>
                 </td>
               </tr>
             ))}
-            {!isLoading && ordered.length === 0 && (
+            {!isLoading && shown.length === 0 && (
               <tr>
-                <td className="px-3 py-4 text-text-dim" colSpan={7}>
-                  No wallets in the registry. The env key still signs until one is created.
+                <td className="px-3 py-4 text-text-dim" colSpan={8}>
+                  {tab === 'in_use'
+                    ? 'No wallet in use. The env key still signs until one is registered.'
+                    : tab === 'idle'
+                      ? 'No idle wallet.'
+                      : 'No archived wallet.'}
                 </td>
               </tr>
             )}
@@ -219,101 +226,164 @@ export function WalletsPage() {
         </table>
       </div>
 
-      <Modal title="Create wallet" open={creating} onClose={() => setCreating(false)}>
-        <div className="flex flex-col gap-3 text-[12px]">
-          <p className="text-text-dim">The server generates the key. This page only sees the pubkey. Fund it and provision nonces before it can trade.</p>
-          <label className="flex flex-col gap-1 text-text-dim">
-            Name
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="desk-2" autoComplete="off" />
-          </label>
-          {formError && <p className="text-red">{formError}</p>}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setCreating(false)}>Cancel</Button>
-            <Button disabled={busy || !name.trim()} onClick={submitCreate}>Create</Button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal title="Import wallet" open={importing} onClose={() => { setImporting(false); setSecret(''); }}>
-        <div className="flex flex-col gap-3 text-[12px]">
-          <p className="text-text-dim">Paste a base58 secret or a JSON byte array. It is encrypted on arrival and dropped from the request.</p>
-          <label className="flex flex-col gap-1 text-text-dim">
-            Name
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="desk-2" autoComplete="off" />
-          </label>
-          <label className="flex flex-col gap-1 text-text-dim">
-            Private key
-            <Input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" />
-          </label>
-          {formError && <p className="text-red">{formError}</p>}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => { setImporting(false); setSecret(''); }}>Cancel</Button>
-            <Button disabled={busy || !name.trim() || !secret.trim()} onClick={submitImport}>Import</Button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal title={moving ? `Move ${moving.name}` : 'Move'} open={moving != null} onClose={() => setMoving(null)}>
-        {moving && (
-          <div className="flex flex-col gap-3 text-[12px]">
-            <p className="text-text-dim">
-              Rules that name {moving.name} move first. In-flight entries and sells finish, then balances, nonce authority, and SOL move. The old wallet is archived only after that checks out.
-            </p>
-            <label className="flex flex-col gap-1 text-text-dim">
-              Destination
-              <Select value={dest} onChange={(e) => setDest(e.target.value)}>
-                <option value="">Choose a wallet</option>
-                {active.filter((w) => w.pubkey !== moving.pubkey && w.key_loaded).map((w) => (
-                  <option key={w.pubkey} value={w.pubkey}>{w.name}</option>
-                ))}
-              </Select>
-            </label>
-            <label className="flex flex-col gap-1 text-text-dim">
-              Type {moving.name} to confirm
-              <Input value={confirmName} onChange={(e) => setConfirmName(e.target.value)} autoComplete="off" />
-            </label>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setMoving(null)}>Cancel</Button>
-              <Button
-                disabled={busy || !dest || confirmName !== moving.name}
-                onClick={() =>
-                  run(async () => {
-                    await beginMove({ from: moving.pubkey, to: dest }).unwrap();
-                    setMoving(null);
-                  })
-                }
-              >
-                Start move
-              </Button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      <Modal title={nonceFor ? `Nonces for ${nonceFor.name}` : 'Nonces'} open={nonceFor != null} onClose={() => setNonceFor(null)}>
-        {nonceFor && (
-          <div className="flex flex-col gap-3 text-[12px]">
-            <p className="text-text-dim">Creates rent-exempt nonce accounts owned by this wallet. 1 to 16.</p>
-            <Input value={nonceCount} onChange={(e) => setNonceCount(e.target.value)} inputMode="numeric" />
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setNonceFor(null)}>Cancel</Button>
-              <Button
-                disabled={busy}
-                onClick={() =>
-                  run(async () => {
-                    const count = Number(nonceCount);
-                    await provision({ pubkey: nonceFor.pubkey, count }).unwrap();
-                    setNonceFor(null);
-                  })
-                }
-              >
-                Provision
-              </Button>
-            </div>
-          </div>
-        )}
-      </Modal>
+      {adding && <AddWalletDialog mode={adding} onClose={() => setAdding(null)} />}
+      {opened && (
+        <WalletPanel
+          wallet={opened}
+          wallets={wallets}
+          moveOpen={move != null}
+          onClose={() => setOpenKey(null)}
+          onMove={() => {
+            setOpenKey(null);
+            setMoving(opened.pubkey);
+          }}
+          onSend={() => setSending(opened.pubkey)}
+        />
+      )}
+      {movingRow && <MoveDialog source={movingRow} wallets={wallets} onClose={() => setMoving(null)} />}
+      {sendingRow && <SendSolDialog source={sendingRow} wallets={wallets} onClose={() => setSending(null)} />}
     </div>
+  );
+}
+
+/** The row button names the first thing to fix; a wallet that can trade just opens. */
+function fixLabel(w: TraderWalletRow): string {
+  if (w.status !== 'active') return 'Open';
+  if (w.readiness === 'needs_nonces') return 'Add nonces';
+  if (w.readiness === 'init_failed') return 'See error';
+  return 'Open';
+}
+
+/** The `.env` key runs but is not in the registry, or its nonces are not attached. */
+function EnvBanner({ env }: { env: EnvWalletStatus }) {
+  const [adopt, adoptState] = useAdoptEnvWalletMutation();
+  const [name, setName] = useState('main');
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  if (env.registered && env.unattached_nonces === 0) return null;
+
+  const submit = async () => {
+    setErr(null);
+    try {
+      const res = await adopt(env.registered ? {} : { name: name.trim() }).unwrap();
+      setMsg(`Registered. Attached ${res.attached} nonce account(s)${res.rejected.length ? `, rejected ${res.rejected.length}` : ''}.`);
+    } catch (e) {
+      setErr(apiErrorMessage(e as never) ?? 'Failed');
+    }
+  };
+
+  return (
+    <section className="rounded-md border border-warning/40 bg-warning/8 p-3 text-[12px]">
+      <div className="mb-1 font-medium text-warning">
+        {env.registered ? 'NONCE_ACCOUNTS are not attached' : 'The .env wallet is not in the registry'}
+      </div>
+      <p className="mb-2 text-text-mid">
+        {shortKey(env.pubkey)} signs from WALLET_PRIVATE_KEY.{' '}
+        {env.registered
+          ? `${env.unattached_nonces} of its NONCE_ACCOUNTS are not recorded, so it may run without them after a restart.`
+          : 'Until it is registered it cannot be moved, archived, or given new nonces. Registering saves its key file and attaches NONCE_ACCOUNTS after a chain check.'}
+      </p>
+      {!env.can_register && !env.registered ? (
+        <p className="text-text-dim">Set WALLET_KEYSTORE and WALLET_KEK first.</p>
+      ) : (
+        <div className="flex items-end gap-2">
+          {!env.registered && (
+            <label className="flex flex-col gap-1 text-text-dim">
+              Name
+              <Input value={name} onChange={(e) => setName(e.target.value)} className="w-40" autoComplete="off" />
+            </label>
+          )}
+          <Button size="sm" disabled={adoptState.isLoading || (!env.registered && !name.trim())} onClick={submit}>
+            {adoptState.isLoading ? 'Working...' : env.registered ? 'Attach NONCE_ACCOUNTS' : 'Bring it in'}
+          </Button>
+        </div>
+      )}
+      {msg && <p className="mt-2 text-green">{msg}</p>}
+      {err && <p className="mt-2 text-red">{err}</p>}
+    </section>
+  );
+}
+
+/** Create a key on the server, or import one with the nonce accounts it already owns. */
+function AddWalletDialog({ mode, onClose }: { mode: 'create' | 'import'; onClose: () => void }) {
+  const [create, createState] = useCreateTraderWalletMutation();
+  const [importWallet, importState] = useImportTraderWalletMutation();
+  const [attach, attachState] = useAttachNoncesMutation();
+  const [name, setName] = useState('');
+  const [secret, setSecret] = useState('');
+  const [nonces, setNonces] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const busy = createState.isLoading || importState.isLoading || attachState.isLoading;
+
+  const submit = async () => {
+    setError(null);
+    try {
+      if (mode === 'create') {
+        await create({ name: name.trim() }).unwrap();
+      } else {
+        const made = await importWallet({ name: name.trim(), private_key: secret }).unwrap();
+        setSecret('');
+        const list = nonces.split(/[\s,]+/).filter(Boolean);
+        if (list.length > 0) {
+          const res = await attach({ pubkey: made.pubkey, nonces: list }).unwrap();
+          if (res.rejected.length > 0) {
+            setError(`Imported. Rejected nonces: ${res.rejected.map((r) => `${shortKey(r.pubkey)} (${r.reason})`).join(', ')}`);
+            return;
+          }
+        }
+      }
+      onClose();
+    } catch (e) {
+      setError(apiErrorMessage(e as never) ?? 'Failed');
+    }
+  };
+
+  return (
+    <Modal
+      title={mode === 'create' ? 'Create wallet' : 'Import wallet'}
+      open
+      onClose={() => {
+        setSecret('');
+        onClose();
+      }}
+    >
+      <div className="flex flex-col gap-3 text-[12px]">
+        <p className="text-text-dim">
+          {mode === 'create'
+            ? 'The server generates the key. This page only sees the pubkey. Fund it and add nonces before it can trade.'
+            : 'Paste a base58 secret or a JSON byte array. It is encrypted on arrival and never returned. Importing the .env key registers it with its NONCE_ACCOUNTS.'}
+        </p>
+        <label className="flex flex-col gap-1 text-text-dim">
+          Name
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="desk-2" autoComplete="off" />
+        </label>
+        {mode === 'import' && (
+          <>
+            <label className="flex flex-col gap-1 text-text-dim">
+              Private key
+              <Input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" />
+            </label>
+            <label className="flex flex-col gap-1 text-text-dim">
+              Nonce accounts it already owns (optional)
+              <textarea
+                value={nonces}
+                onChange={(e) => setNonces(e.target.value)}
+                rows={3}
+                placeholder="One per line"
+                className="rounded-md border border-white/10 bg-bg-card px-2 py-1 font-mono text-[11px] text-text"
+              />
+            </label>
+          </>
+        )}
+        {error && <InlineAlert variant="error">{error}</InlineAlert>}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button disabled={busy || !name.trim() || (mode === 'import' && !secret.trim())} onClick={submit}>
+            {busy ? 'Working...' : mode === 'create' ? 'Create' : 'Import'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -330,22 +400,28 @@ function MoveCard({
 }) {
   const nameOf = (pubkey: string) => wallets.find((w) => w.pubkey === pubkey)?.name ?? shortKey(pubkey);
   const at = STEPS.indexOf(move.step as (typeof STEPS)[number]);
+  const waiting = move.step === 'inflight' && move.error != null;
+  const failed = move.error != null && !waiting;
   return (
     <section className="rounded-md border border-white/10 bg-white/3 p-3 text-[12px]">
       <div className="mb-2 flex items-center justify-between gap-3">
         <div>
           <div className="font-medium text-text">Move in progress</div>
-          <div className="text-text-dim">{nameOf(move.from_wallet)} to {nameOf(move.to_wallet)}</div>
+          <div className="text-text-dim">
+            {nameOf(move.from_wallet)} to {nameOf(move.to_wallet)}. The server advances it on its own.
+          </div>
         </div>
-        <Button size="sm" disabled={busy || move.step === 'done'} onClick={onResume}>
-          {busy ? 'Working…' : 'Resume'}
-        </Button>
+        {failed && (
+          <Button size="sm" disabled={busy} onClick={onResume}>
+            {busy ? 'Working...' : 'Retry step'}
+          </Button>
+        )}
       </div>
-      {move.error && <p className="mb-2 text-red">{move.error}</p>}
+      {move.error && <p className={`mb-2 ${failed ? 'text-red' : 'text-warning'}`}>{move.error}</p>}
       <ol className="flex flex-col gap-1">
         {STEPS.map((step, i) => (
-          <li key={step} className={i < at ? 'text-text-dim' : i === at ? 'text-text' : 'text-text-dim/70'}>
-            {i < at ? 'done' : i === at ? 'now' : 'wait'} - {STEP_LABEL[step]}
+          <li key={step} className={i < at ? 'text-green' : i === at ? 'text-text' : 'text-text-dim/70'}>
+            {i < at ? '✓' : i === at ? '→' : '·'} {STEP_LABEL[step]}
           </li>
         ))}
       </ol>

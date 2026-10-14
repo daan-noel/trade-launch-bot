@@ -578,6 +578,9 @@ pub struct ManualBuyRequest {
     pub tp_pct: Option<f64>,
     #[serde(default)]
     pub sl_pct: Option<f64>,
+    /// The wallet that pays. Absent = the primary.
+    #[serde(default)]
+    pub wallet: Option<String>,
 }
 
 /// POST /api/positions/manual-buy
@@ -618,6 +621,16 @@ pub async fn manual_buy_position(
         }
     }
 
+    let wallet = body.wallet.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string);
+    if let Some(w) = &wallet {
+        let readiness = app_state.wallets.readiness(w, None);
+        if !readiness.can_sign() {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!("wallet cannot sign: {}", readiness.reason())
+            }));
+        }
+    }
+
     // One open position per mint (double-click double-buys included, M3): the
     // serialized engine loop also dedups, but reject early with an honest 409.
     match app_state
@@ -645,7 +658,7 @@ pub async fn manual_buy_position(
     let lamports = sol_to_lamports(amount_sol).max(0) as u64;
     if !app_state
         .engine
-        .manual_buy(pg_id, body.mint_address.clone(), lamports, exit)
+        .manual_buy(pg_id, body.mint_address.clone(), lamports, exit, wallet)
         .await
     {
         return HttpResponse::InternalServerError()

@@ -18,10 +18,61 @@ use spl_associated_token_account::{
 };
 use sqlx::PgPool;
 
-use trading_core::models::trader_wallet::WalletMove;
+use serde::Serialize;
+use tracing::warn;
+use trading_core::models::trader_wallet::{WalletMove, WalletRule};
 use trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo;
 
 use super::runtime::WalletRuntime;
+
+/// Everything a move would carry, read before it starts.
+#[derive(Debug, Serialize)]
+pub struct MovePreview {
+    pub rules: Vec<WalletRule>,
+    pub primary: bool,
+    pub tokens: Vec<PreviewToken>,
+    pub nonces: usize,
+    pub sol_lamports: u64,
+    pub open_positions: usize,
+    /// Positions still buying or selling; the move waits for these.
+    pub in_flight: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PreviewToken {
+    pub mint: String,
+    pub amount: u64,
+    pub decimals: u8,
+}
+
+/// One token-account listing and one balance read of the source; the rest is Postgres.
+pub async fn preview(pool: &PgPool, runtime: &WalletRuntime, from: &str) -> Result<MovePreview> {
+    let repo = TraderWalletRepo::new(pool.clone());
+    let record = repo
+        .records()
+        .await?
+        .into_iter()
+        .find(|r| r.pubkey == from)
+        .context("source wallet is not registered")?;
+    let source = runtime.trader(from).context("source wallet is not loaded")?;
+    let tokens = source
+        .get_all_token_accounts()
+        .await?
+        .into_iter()
+        .filter(|h| h.amount > 0)
+        .map(|h| PreviewToken { mint: h.mint, amount: h.amount, decimals: h.decimals })
+        .collect();
+    let open = repo.open_positions(from).await?;
+    Ok(MovePreview {
+        rules: repo.rules_for(from).await?,
+        primary: record.is_primary,
+        tokens,
+        nonces: repo.nonces_for(from).await?.len(),
+        sol_lamports: source.get_sol_balance().await?,
+        in_flight: open.iter().filter(|p| INFLIGHT.contains(&p.status.as_str())).count(),
+        open_positions: open.len(),
+    })
+}
 
 const FEE_RESERVE: u64 = 10_000;
 const INFLIGHT: &[&str] = &[
@@ -33,7 +84,7 @@ const INFLIGHT: &[&str] = &[
 
 pub async fn start(
     pool: &PgPool,
-    runtime: &WalletRuntime,
+    runtime: &Arc<WalletRuntime>,
     from: &str,
     to: &str,
 ) -> Result<WalletMove> {
@@ -64,11 +115,53 @@ pub async fn start(
     }
     require_loaded(runtime, from)?;
     require_loaded(runtime, to)?;
-    repo.insert_move(from, to).await?;
-    resume(pool, runtime).await
+    let mv = repo.insert_move(from, to).await?;
+    let _ = repo
+        .log_activity(from, "move_started", serde_json::json!({ "to": to }), &[])
+        .await;
+    // The driver advances it; the request returns at once.
+    kick(pool.clone(), runtime.clone());
+    Ok(mv)
+}
+
+/// Advance the open move once in the background. A busy lock means it is
+/// already advancing.
+pub fn kick(pool: PgPool, runtime: Arc<WalletRuntime>) {
+    tokio::spawn(async move {
+        if let Err(e) = resume(&pool, &runtime).await {
+            warn!("wallet move: {e:#}");
+        }
+    });
+}
+
+/// How often the driver re-checks an open move that is waiting on in-flight work.
+const DRIVE_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Keeps an open move going across waits and restarts. It retries a move that
+/// is waiting (`inflight`) or was interrupted (no error); a move that failed
+/// waits for a manual Resume, which re-runs the failed step.
+pub fn spawn_driver(pool: PgPool, runtime: Arc<WalletRuntime>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let repo = TraderWalletRepo::new(pool.clone());
+        loop {
+            tokio::time::sleep(DRIVE_EVERY).await;
+            let Ok(Some(mv)) = repo.open_move().await else {
+                continue;
+            };
+            if mv.error.is_some() && mv.step != "inflight" {
+                continue;
+            }
+            if let Err(e) = resume(&pool, &runtime).await {
+                warn!("wallet move: {e:#}");
+            }
+        }
+    })
 }
 
 pub async fn resume(pool: &PgPool, runtime: &WalletRuntime) -> Result<WalletMove> {
+    let Ok(_lock) = runtime.move_lock.try_lock() else {
+        bail!("the move is already advancing");
+    };
     let repo = TraderWalletRepo::new(pool.clone());
     let Some(mv) = repo.open_move().await? else {
         bail!("no move is in progress");
@@ -148,7 +241,11 @@ async fn advance(pool: &PgPool, runtime: &WalletRuntime, mv: &WalletMove) -> Res
             "verify" => {
                 verify(&repo, &mv.from_wallet).await?;
                 repo.set_status(&mv.from_wallet, "archived").await?;
+                runtime.unload(&mv.from_wallet);
                 repo.set_move_step(mv.id, "done", None, true).await?;
+                let detail = serde_json::json!({ "from": mv.from_wallet, "to": mv.to_wallet });
+                let _ = repo.log_activity(&mv.from_wallet, "move_done", detail.clone(), &[]).await;
+                let _ = repo.log_activity(&mv.to_wallet, "move_received", detail, &[]).await;
                 return Ok(());
             }
             "done" => return Ok(()),

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
+use super::{trader_or_400, WalletParam};
 use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
 use crate::state::deploy_state::DeployState;
@@ -37,6 +38,9 @@ pub struct SellRequest {
     /// defaults to no floor (min_out = 1, "sell all"). `0` is a 400 — omit the
     /// field to ask for no floor.
     pub slippage_bps: Option<u64>,
+    /// The wallet to sell from. Absent = the primary.
+    #[serde(default)]
+    pub wallet: Option<String>,
 }
 
 /// `resolve_buy_routing` with a tiny retry (B6). It does one `getMultipleAccounts`;
@@ -105,6 +109,10 @@ pub async fn manual_sell(
     if let Err(e) = validate_slippage_bps("slippage_bps", body.slippage_bps) {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
+    let trader = match trader_or_400(&app_state, body.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
 
     // N2 fix: claim the engine's per-mint exit lock for the whole sweep so a
     // wallet-level "Sell All" can never race a concurrent bot/orphan exit on the
@@ -126,10 +134,7 @@ pub async fn manual_sell(
         const ATTEMPTS: usize = 2;
         let mut last: Result<Vec<(_, _)>, _> = Ok(Vec::new());
         for attempt in 1..=ATTEMPTS {
-            last = app_state
-                .trader
-                .get_all_token_accounts_for_mint(&body.mint_address)
-                .await;
+            last = trader.get_all_token_accounts_for_mint(&body.mint_address).await;
             if last.is_ok() {
                 break;
             }
@@ -184,7 +189,7 @@ pub async fn manual_sell(
                 // keeps `is_cashback` fresh. Retried (B6) so a transient
                 // getMultipleAccounts blip doesn't fail the trade.
                 let routing =
-                    match resolve_buy_routing_retry(&app_state.trader, &body.mint_address).await {
+                    match resolve_buy_routing_retry(&trader, &body.mint_address).await {
                         Ok(r) => r,
                         Err(e) => {
                             tracing::warn!(
@@ -204,7 +209,7 @@ pub async fn manual_sell(
 
                 // Read THIS account's live balance directly (not the cache-first
                 // single-account resolver, which can't target a specific account).
-                let amount = match app_state.trader.get_account_balance_raw(account_pk).await {
+                let amount = match trader.get_account_balance_raw(account_pk).await {
                     Ok(a) => a,
                     Err(e) => {
                         last_err = Some(e.to_string());
@@ -215,8 +220,7 @@ pub async fn manual_sell(
                     break;
                 }
                 let sell_result = if routing.is_migrated {
-                    app_state
-                        .trader
+                    trader
                         .amm_sell(
                             &body.mint_address,
                             amount,
@@ -237,8 +241,7 @@ pub async fn manual_sell(
                         // bool to match the `sell_token` branch.
                         .map(|sig| sig.is_some())
                 } else {
-                    app_state
-                        .trader
+                    trader
                         .sell_token(
                             &body.mint_address,
                             amount,
@@ -268,7 +271,7 @@ pub async fn manual_sell(
         // Jito tip — so it never blocks the response and cheaply no-ops if
         // sub-threshold dust kept the account funded. Mirrors the strategy exit's
         // close step (see tpsl_sniper_* `sell_and_close_position`).
-        let trader = app_state.trader.clone();
+        let trader = trader.clone();
         let mint = body.mint_address.clone();
         let account_str = account_pk.to_string();
         tokio::spawn(async move {
@@ -303,18 +306,24 @@ pub async fn manual_sell(
         use trading_core::models::trade::TradeType;
         let state = app_state.get_ref().clone();
         let mint = body.mint_address.clone();
+        let wallet = trader.wallet_pubkey();
         tokio::spawn(async move {
-            let wallet = state.trader.wallet_pubkey();
             for _ in 0..RECONCILE_MAX_ATTEMPTS {
-                // Open real `Holding` positions for this mint (repo filters mode='real').
-                let positions = match state.strategy_repo.find_open_by_mint(&mint, "real").await {
-                    Ok(p) if p.is_empty() => break, // nothing to reconcile
-                    Ok(p) => p,
+                // Open real `Holding` positions for this mint (repo filters mode='real'),
+                // bought by the wallet that sold. Another wallet's bag on the mint is untouched.
+                let positions: Vec<_> = match state.strategy_repo.find_open_by_mint(&mint, "real").await {
+                    Ok(p) => p
+                        .into_iter()
+                        .filter(|pos| state.wallets.for_position(&pos.wallet, &state.trader).0 == wallet)
+                        .collect(),
                     Err(e) => {
                         tracing::warn!(mint = %mint, "manual-sell reconcile: open-position query failed: {e}");
                         break;
                     }
                 };
+                if positions.is_empty() {
+                    break; // nothing to reconcile
+                }
                 // Confirm via the trades feed that the bag is really cleared before
                 // closing — the on-chain sell may not have indexed yet (index lag).
                 let cleared = matches!(
@@ -379,8 +388,15 @@ pub async fn manual_sell(
 ///
 /// Returns all non-zero token accounts held by the trader's wallet,
 /// enriched with symbol (from token cache) and current USD price (Jupiter).
-pub async fn get_wallet_tokens(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
-    match wallet_tokens::list_enriched(app_state.get_ref()).await {
+pub async fn get_wallet_tokens(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<WalletParam>,
+) -> impl Responder {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    match wallet_tokens::list_enriched(app_state.get_ref(), &trader).await {
         Ok(enriched) => HttpResponse::Ok().json(enriched),
         Err(e) => {
             tracing::warn!("get_wallet_tokens failed: {e}");
@@ -398,13 +414,18 @@ pub async fn get_wallet_tokens(app_state: web::Data<Arc<DeployState>>) -> impl R
 pub async fn get_wallet_token(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<String>,
+    query: web::Query<WalletParam>,
 ) -> impl Responder {
     let mint = path.into_inner();
     if let Err(e) = validate_solana_address(&mint) {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
     }
-    match wallet_tokens::enrich_one(app_state.get_ref(), &mint).await {
+    let trader = match trader_or_400(&app_state, query.wallet.as_deref()) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    match wallet_tokens::enrich_one(app_state.get_ref(), &trader, &mint).await {
         Ok(holding) => HttpResponse::Ok().json(holding),
         Err(e) => {
             tracing::warn!("get_wallet_token failed mint={mint}: {e}");
