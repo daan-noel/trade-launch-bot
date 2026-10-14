@@ -20,6 +20,7 @@ import {
   useRestartWalletMutation,
   useRestoreWalletMutation,
   useSetPrimaryWalletMutation,
+  useSyncWalletMutation,
   walletCanSign,
   type TraderWalletRow,
 } from '@live/store/liveEndpoints';
@@ -161,7 +162,9 @@ function Overview({
           <ul className="flex flex-col gap-1.5">
             <Check ok={wallet.key_loaded} label="Key loaded on this box">
               {!wallet.key_loaded && (
-                <span className="text-text-dim">Run wallet-sync to bring the key file here.</span>
+                <span className={wallet.load_error ? 'text-red' : 'text-text-dim'}>
+                  {wallet.load_error ?? 'Run wallet-sync to bring the key file here, then Refresh.'}
+                </span>
               )}
             </Check>
             <Check ok={wallet.nonce_count > 0} label={`${wallet.nonce_count} nonce account(s)`}>
@@ -248,7 +251,7 @@ function Overview({
           <div className="flex items-end gap-2">
             <label className="flex flex-col gap-1 text-text-dim">
               Name
-              <Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" className="w-48" />
+              <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={32} autoComplete="off" className="w-48" />
             </label>
             <Button
               size="sm"
@@ -318,13 +321,23 @@ function RulesTab({ wallet, wallets, run }: { wallet: TraderWalletRow; wallets: 
 }
 
 function NoncesTab({ wallet, run }: { wallet: TraderWalletRow; run: Run }) {
-  const { data: nonces = [], isFetching, refetch } = useGetWalletNoncesQuery(wallet.pubkey);
+  const { data: nonces = [], isFetching } = useGetWalletNoncesQuery(wallet.pubkey);
+  const [sync, syncState] = useSyncWalletMutation();
   const [provision, provisionState] = useProvisionNoncesMutation();
   const [attach, attachState] = useAttachNoncesMutation();
   const [count, setCount] = useState('5');
   const [pasted, setPasted] = useState('');
   const [report, setReport] = useState<string | null>(null);
   const active = wallet.status === 'active';
+
+  // Finds every nonce account the chain names this wallet the authority of,
+  // attaches the new ones, retires the ones it lost, and re-reads the balance.
+  const doSync = () =>
+    run(async () => {
+      const res = await sync(wallet.pubkey).unwrap();
+      const note = res.history_error ? `. History not read: ${res.history_error}` : '';
+      setReport(`${res.nonces} on chain: attached ${res.attached}, retired ${res.retired}${note}`);
+    });
 
   const doAttach = () =>
     run(async () => {
@@ -340,8 +353,8 @@ function NoncesTab({ wallet, run }: { wallet: TraderWalletRow; run: Run }) {
       <section>
         <div className="mb-1.5 flex items-center gap-2">
           <span className="font-medium text-text">Registered</span>
-          <Button size="xs" variant="ghost" onClick={() => refetch()} disabled={isFetching}>
-            {isFetching ? 'Checking...' : 'Check on chain'}
+          <Button size="xs" variant="ghost" onClick={doSync} disabled={isFetching || syncState.isLoading}>
+            {syncState.isLoading ? 'Reading chain...' : 'Find on chain'}
           </Button>
         </div>
         {nonces.length === 0 ? (

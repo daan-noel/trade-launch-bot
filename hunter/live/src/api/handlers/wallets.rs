@@ -1,7 +1,6 @@
 //! Wallet registry. Responses carry pubkeys and names. The private key is
 //! encrypted on import and is not returned.
 
-use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +13,7 @@ use solana_sdk::signature::Signer;
 use uuid::Uuid;
 
 use crate::state::deploy_state::DeployState;
-use crate::wallets::{self, key_ref_for, parse_secret, valid_name, write_keypair, WalletRuntime};
+use crate::wallets::{self, key_ref_for, name_error, parse_secret, write_keypair, WalletRuntime};
 use trading_core::config::constants::{lamports_to_sol, sol_to_lamports};
 use trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo;
 
@@ -55,11 +54,6 @@ pub struct NonceBody {
 #[derive(Deserialize)]
 pub struct AttachBody {
     pub nonces: Vec<String>,
-}
-
-#[derive(Deserialize)]
-pub struct AdoptEnvBody {
-    pub name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -107,13 +101,17 @@ pub async fn list(state: web::Data<Arc<DeployState>>) -> impl Responder {
             "readiness": readiness,
             "readiness_reason": readiness.reason(),
             "init_error": state.wallets.init_error(&wallet.pubkey),
+            "load_error": state.wallets.load_error(&wallet.pubkey),
             "created_at": wallet.created_at,
             "archived_at": wallet.archived_at,
         }));
     }
     let open = repo.open_move().await.ok().flatten();
-    let env = env_status(&state.wallets, &repo, &pubkeys).await;
-    HttpResponse::Ok().json(serde_json::json!({ "wallets": out, "move": open, "env_wallet": env }))
+    // Active wallets and none primary: entries on rules without a wallet fail
+    // closed until one is set.
+    let primary_missing =
+        wallets.iter().any(|w| w.status == "active") && !wallets.iter().any(|w| w.is_primary && w.status != "archived");
+    HttpResponse::Ok().json(serde_json::json!({ "wallets": out, "move": open, "primary_missing": primary_missing }))
 }
 
 /// Cached balances, with every missing or stale one read in a single
@@ -150,31 +148,7 @@ async fn balances(runtime: &WalletRuntime, pubkeys: &[&str]) -> Vec<Option<u64>>
     out
 }
 
-/// The env key's state for the "bring it in" banner. `None` when no env key is set.
-async fn env_status(
-    runtime: &WalletRuntime,
-    repo: &TraderWalletRepo,
-    registered: &[&str],
-) -> Option<serde_json::Value> {
-    let env = runtime.env_wallet()?;
-    let attached: HashSet<String> = repo
-        .nonces_for(&env.pubkey)
-        .await
-        .map(|rows| rows.into_iter().map(|n| n.pubkey).collect())
-        .unwrap_or_default();
-    let unattached = env.nonces.iter().filter(|n| !attached.contains(&n.to_string())).count();
-    Some(serde_json::json!({
-        "pubkey": env.pubkey,
-        "registered": registered.contains(&env.pubkey.as_str()),
-        "unattached_nonces": unattached,
-        "can_register": runtime.can_manage_keys(),
-    }))
-}
-
 pub async fn create(state: web::Data<Arc<DeployState>>, body: web::Json<CreateBody>) -> impl Responder {
-    if !valid_name(&body.name) {
-        return HttpResponse::BadRequest().json(err("name must be lowercase letters, digits, and dashes"));
-    }
     let Some(dir) = state.wallets.keystore_dir().cloned() else {
         return HttpResponse::BadRequest().json(err("WALLET_KEYSTORE is not set"));
     };
@@ -182,17 +156,17 @@ pub async fn create(state: web::Data<Arc<DeployState>>, body: web::Json<CreateBo
         return HttpResponse::BadRequest().json(err("WALLET_KEK is not set"));
     };
     let repo = TraderWalletRepo::new(state.db.clone());
-    if let Err(resp) = name_free(&repo, &body.name).await {
-        return resp;
-    }
+    let primary = match check_new(&repo, &body.name).await {
+        Ok(primary) => primary,
+        Err(resp) => return resp,
+    };
     let keypair = solana_sdk::signature::Keypair::new();
     let secret = keypair.to_bytes();
-    let key_ref = key_ref_for(&body.name);
+    let pubkey = keypair.pubkey().to_string();
+    let key_ref = key_ref_for(&pubkey);
     if let Err(e) = write_keypair(&dir, &key_ref, &secret, kek) {
         return HttpResponse::BadRequest().json(err(e.to_string()));
     }
-    let pubkey = keypair.pubkey().to_string();
-    let primary = state.wallets.primary_pubkey().is_empty();
     if let Err(e) = repo.insert(&pubkey, &body.name, &key_ref, primary).await {
         return HttpResponse::InternalServerError().json(err(e.to_string()));
     }
@@ -205,9 +179,6 @@ pub async fn create(state: web::Data<Arc<DeployState>>, body: web::Json<CreateBo
 }
 
 pub async fn import(state: web::Data<Arc<DeployState>>, body: web::Json<ImportBody>) -> impl Responder {
-    if !valid_name(&body.name) {
-        return HttpResponse::BadRequest().json(err("name must be lowercase letters, digits, and dashes"));
-    }
     let Some(dir) = state.wallets.keystore_dir().cloned() else {
         return HttpResponse::BadRequest().json(err("WALLET_KEYSTORE is not set"));
     };
@@ -231,41 +202,42 @@ pub async fn import(state: web::Data<Arc<DeployState>>, body: web::Json<ImportBo
     if let Some(existing) = records.iter().find(|r| r.pubkey == pubkey) {
         return HttpResponse::BadRequest().json(err(format!("this key is already registered as {}", existing.name)));
     }
-    // The env key is already running with its nonce accounts. Registering it
-    // keeps that trader and attaches NONCE_ACCOUNTS instead of starting it bare.
-    if state.wallets.env_wallet().is_some_and(|env| env.pubkey == pubkey) {
-        return match wallets::adopt_env(&state.db, &state.wallets, &body.name).await {
-            Ok(report) => HttpResponse::Ok().json(serde_json::json!({ "pubkey": pubkey, "name": body.name, "nonces": report })),
-            Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
-        };
-    }
-    if let Err(resp) = name_free(&repo, &body.name).await {
-        return resp;
-    }
-    let key_ref = key_ref_for(&body.name);
+    let primary = match check_new(&repo, &body.name).await {
+        Ok(primary) => primary,
+        Err(resp) => return resp,
+    };
+    let key_ref = key_ref_for(&pubkey);
     if let Err(e) = write_keypair(&dir, &key_ref, &secret, kek) {
         return HttpResponse::BadRequest().json(err(e.to_string()));
     }
-    let primary = state.wallets.primary_pubkey().is_empty();
     if let Err(e) = repo.insert(&pubkey, &body.name, &key_ref, primary).await {
         return HttpResponse::InternalServerError().json(err(e.to_string()));
     }
     let _ = repo.log_activity(&pubkey, "imported", serde_json::json!({ "name": body.name }), &[]).await;
-    state
+    // An imported key may already hold SOL and own nonce accounts. A failed read
+    // still loads the wallet bare; Refresh reads it again.
+    let (nonces, sync) = match wallets::sync_new(&state.db, &state.wallets, &keypair.pubkey()).await {
+        Ok((nonces, report)) => (nonces, Ok(report)),
+        Err(e) => (Vec::new(), Err(format!("{e:#}"))),
+    };
+    let trader = state
         .wallets
-        .insert_loaded(pubkey.clone(), body.name.clone(), Arc::new(keypair), Vec::new(), primary)
+        .insert_loaded(pubkey.clone(), body.name.clone(), Arc::new(keypair), nonces, primary)
         .await;
-    HttpResponse::Ok().json(serde_json::json!({ "pubkey": pubkey, "name": body.name }))
+    if let Ok(report) = &sync {
+        trader.update_balance_lamports_cache(report.sol_lamports);
+    }
+    HttpResponse::Ok().json(serde_json::json!({ "pubkey": pubkey, "name": body.name, "sync": sync }))
 }
 
-async fn name_free(repo: &TraderWalletRepo, name: &str) -> Result<(), HttpResponse> {
-    match repo.records().await {
-        Ok(rows) if rows.iter().any(|r| r.name == name) => {
-            Err(HttpResponse::BadRequest().json(err(format!("a wallet named {name} already exists"))))
-        }
-        Ok(_) => Ok(()),
-        Err(e) => Err(HttpResponse::InternalServerError().json(err(e.to_string()))),
+/// A new wallet's name is free, and whether it becomes primary: it does when
+/// no active row is. Read from the registry, never from what is loaded.
+async fn check_new(repo: &TraderWalletRepo, name: &str) -> Result<bool, HttpResponse> {
+    let records = repo.records().await.map_err(|e| HttpResponse::InternalServerError().json(err(e.to_string())))?;
+    if let Some(e) = name_error(&records, name, None) {
+        return Err(HttpResponse::BadRequest().json(err(e)));
     }
+    Ok(!records.iter().any(|r| r.is_primary && r.status != "archived"))
 }
 
 /// Refuses a wallet whose trader cannot sign: entries pointed at it would fail
@@ -379,17 +351,6 @@ pub async fn attach(
     }
 }
 
-pub async fn adopt_env(
-    state: web::Data<Arc<DeployState>>,
-    body: web::Json<AdoptEnvBody>,
-) -> impl Responder {
-    let name = body.name.as_deref().unwrap_or(wallets::ENV_WALLET_NAME);
-    match wallets::adopt_env(&state.db, &state.wallets, name).await {
-        Ok(report) => HttpResponse::Ok().json(report),
-        Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
-    }
-}
-
 pub async fn preview_move(
     state: web::Data<Arc<DeployState>>,
     query: web::Query<PreviewQuery>,
@@ -398,6 +359,39 @@ pub async fn preview_move(
         Ok(preview) => HttpResponse::Ok().json(preview),
         Err(e) => HttpResponse::BadRequest().json(err(e.to_string())),
     }
+}
+
+/// Re-read one wallet's balance and nonce accounts from the chain and store them.
+pub async fn sync(state: web::Data<Arc<DeployState>>, path: web::Path<String>) -> impl Responder {
+    match wallets::sync_wallet(&state.db, &state.wallets, &path.into_inner()).await {
+        Ok(report) => HttpResponse::Ok().json(report),
+        Err(e) => HttpResponse::BadRequest().json(err(format!("{e:#}"))),
+    }
+}
+
+/// The page's Refresh: re-read the registry (rows and key files a sync or
+/// another session added, archives, renames, the primary), then [`sync`] every
+/// active wallet, one after another. A failure is that wallet's entry, never
+/// the whole reply.
+pub async fn sync_all(state: web::Data<Arc<DeployState>>) -> impl Responder {
+    if let Err(e) = state.wallets.reload(&state.db).await {
+        return HttpResponse::InternalServerError().json(err(format!("reload wallets: {e:#}")));
+    }
+    let repo = TraderWalletRepo::new(state.db.clone());
+    let records = match repo.records().await {
+        Ok(rows) => rows,
+        Err(e) => return HttpResponse::InternalServerError().json(err(e.to_string())),
+    };
+    let mut out = serde_json::Map::new();
+    for record in records.iter().filter(|r| r.status == "active") {
+        let result = wallets::sync_wallet(&state.db, &state.wallets, &record.pubkey).await;
+        let entry = match result {
+            Ok(report) => serde_json::json!({ "ok": report }),
+            Err(e) => serde_json::json!({ "error": format!("{e:#}") }),
+        };
+        out.insert(record.pubkey.clone(), entry);
+    }
+    HttpResponse::Ok().json(out)
 }
 
 pub async fn nonces(state: web::Data<Arc<DeployState>>, path: web::Path<String>) -> impl Responder {

@@ -34,7 +34,8 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
 
 /// One-shot, no-/low-SOL probes for the tx-latency changes. Runs after the
 /// trader is initialized (so the tip cache and nonce slots are warm) and exits
-/// before any DB/ingest/HTTP startup. Subcommands:
+/// before ingest/HTTP startup. `--wallet <name|pubkey>` picks the keystore
+/// wallet that signs; absent means the primary. Subcommands:
 ///   probe ladder [levels]                      — Jito tip escalation ladder
 ///                                                (read-only, zero SOL)
 ///   probe fanout [lamports] [--tip] [--confirm] — fan-out self-transfer to all
@@ -45,9 +46,6 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
 ///                                              — fanout with tip, rank by accept
 ///                                                latency, print (and optionally
 ///                                                write) HELIUS_FAST_SENDER_URLS
-///   probe check-nonces                         — read-only audit that every
-///                                                configured nonce account's
-///                                                authority is the wallet (zero SOL)
 ///   probe simulate-sell <mint> [amount] [slippage_bps] [--cashback]
 ///                                              [--holder <pubkey>|--largest-holder]
 ///                                              — simulate a real curve sell
@@ -136,29 +134,6 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
                     env_path.display()
                 );
             }
-        }
-        "check-nonces" => {
-            // Read-only audit of the FULL nonce pool: confirms every configured
-            // nonce account's authority is the current wallet (so a re-auth
-            // landed everywhere, not just on the slots a fan-out probe used).
-            let wallet = trader.wallet_pubkey();
-            let checks = trader.check_nonce_authorities().await;
-            println!("Nonce authorization audit — wallet {wallet}:");
-            let mut ok = 0usize;
-            for c in &checks {
-                match (&c.error, c.matches_wallet, c.authority) {
-                    (Some(e), _, _) => println!("  ❌ {}  ERROR: {e}", c.pubkey),
-                    (None, true, _) => {
-                        ok += 1;
-                        println!("  ✅ {}  authority == wallet", c.pubkey);
-                    }
-                    (None, false, Some(auth)) => {
-                        println!("  ❌ {}  authority = {auth}  (NOT the wallet)", c.pubkey)
-                    }
-                    (None, false, None) => println!("  ❌ {}  not an initialized nonce", c.pubkey),
-                }
-            }
-            println!("  {ok}/{} nonce accounts authorized to the wallet", checks.len());
         }
         "holdings" => {
             let holdings = trader.get_all_token_accounts().await?;
@@ -544,7 +519,7 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             }
         }
         other => anyhow::bail!(
-            "unknown probe '{other}'. Use: ladder | fanout | pin-senders | check-nonces | \
+            "unknown probe '{other}'. Use: ladder | fanout | pin-senders | \
              simulate-buy | simulate-sell | simulate-amm-buy | simulate-amm-sell | sim-matrix | \
              consolidate-dryrun [--into <acct>] [--execute] | \
              sweep-sell-dryrun | holdings | cashback-status | \
@@ -1081,8 +1056,8 @@ async fn run() -> anyhow::Result<()> {
         "Configuration loaded"
     );
 
-    // The env key is optional once WALLET_KEYSTORE is set. Probe and an empty
-    // registry still need it. Fee/tip knobs come from env (see `FeeTuning`).
+    // Fee/tip knobs come from env (see `FeeTuning`). Every signing key lives in
+    // the keystore; `WALLET_PRIVATE_KEY` is only registered into it below.
     let nonce_accounts = secrets
         .nonce_accounts
         .iter()
@@ -1094,27 +1069,6 @@ async fn run() -> anyhow::Result<()> {
         sender_urls: secrets.helius_sender_urls.clone(),
         fees: fee_tuning.clone(),
     };
-    // A failed init is degraded, never fatal: every buy/sell/claim path bails at the
-    // "Not initialized" guard, so trading fail-closes on its own. Killing the process
-    // instead takes the DB pools, ingest and the HTTP surface down with it, which turns
-    // one bad Helius reply into a dark box. Boot on, trade never.
-    let env_trader = if let Some(key) = secrets.wallet_private_key.as_deref() {
-        let signer = Arc::new(parse_wallet_keypair(key).context("Failed to parse trader wallet private key")?);
-        let (trader, init_error) = wallet_factory.build(signer.clone(), nonce_accounts.clone()).await;
-        Some(live::wallets::EnvTrader { trader, signer, nonces: nonce_accounts.clone(), init_error })
-    } else {
-        None
-    };
-
-    // Probe mode: `cargo run -p hunter-live -- probe <subcommand>` runs a
-    // one-shot, no-/low-SOL validation of the latency changes against live infra,
-    // then exits before touching the DB / ingest / HTTP server. See `run_probe`.
-    if std::env::args().nth(1).as_deref() == Some("probe") {
-        let env = env_trader
-            .as_ref()
-            .context("probe needs WALLET_PRIVATE_KEY")?;
-        return run_probe(&env.trader, std::env::args().skip(2).collect()).await;
-    }
 
     // Database — connect the three workload-isolated pools and run migrations. `db`
     // (hot) backs ingest/strategy/maintenance/seed/caches; `api_db` backs the fast
@@ -1126,26 +1080,35 @@ async fn run() -> anyhow::Result<()> {
         batch: batch_db,
     } = trading_core::storage::postgres::connect(&settings).await?;
 
-    // The env key runs beside the registry until it is brought in, so importing
-    // another wallet never strands the env wallet's open bags.
-    let wallets = match live::wallets::load_keystore(&db, wallet_factory.clone()).await? {
-        Some(runtime) => {
-            if let Some(env) = env_trader {
-                runtime.adopt_env(env);
-            }
-            runtime.fallback_primary();
-            if runtime.is_empty() {
-                anyhow::bail!("WALLET_KEYSTORE has no active wallet and WALLET_PRIVATE_KEY is unset");
-            }
-            Arc::new(runtime)
+    // An env key is written into the keystore and the registry once, with its
+    // nonce accounts. A failure is logged and boot goes on with the registry.
+    if let Some(key) = secrets.wallet_private_key.as_deref() {
+        let signer = parse_wallet_keypair(key).context("Failed to parse WALLET_PRIVATE_KEY")?;
+        if let Err(e) = live::wallets::register_env_key(&db, &settings.helius_rpc_url, &signer, &nonce_accounts).await {
+            tracing::error!("WALLET_PRIVATE_KEY was not registered: {e:#}");
         }
-        None => {
-            let env = env_trader.context(
-                "WALLET_KEYSTORE is unset and WALLET_PRIVATE_KEY is missing",
-            )?;
-            Arc::new(live::wallets::WalletRuntime::legacy(env, wallet_factory))
-        }
-    };
+    }
+
+    // Probe mode: `cargo run -p hunter-live -- probe <subcommand>` runs a
+    // one-shot, no-/low-SOL validation of the latency changes against live infra,
+    // then exits before ingest / HTTP. See `run_probe`.
+    if std::env::args().nth(1).as_deref() == Some("probe") {
+        let mut args: Vec<String> = std::env::args().skip(2).collect();
+        let wanted = match args.iter().position(|a| a == "--wallet") {
+            Some(i) => {
+                let name = args.get(i + 1).cloned().context("--wallet needs a name or pubkey")?;
+                args.drain(i..=i + 1);
+                Some(name)
+            }
+            None => None,
+        };
+        let trader = live::wallets::load_one(&db, wallet_factory, wanted.as_deref()).await?;
+        return run_probe(&trader, args).await;
+    }
+
+    // Every active wallet signs with its own key. One whose key does not load
+    // is shown with its error and signs nothing; the rest run.
+    let wallets = Arc::new(live::wallets::load_keystore(&db, wallet_factory.clone()).await?);
     let trader = wallets.primary_trader();
     // An open wallet move keeps advancing on its own, including one a restart interrupted.
     live::wallets::spawn_move_driver(db.clone(), wallets.clone());

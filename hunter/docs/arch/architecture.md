@@ -42,8 +42,9 @@ Builds trader → DB pools → caches → `CoreState` → `DeployState`. Long-li
 
 Plus fire-and-forget spawns off the boot path: boot wallet reconcile, SOL-balance refresh
 (30s), token-cache eviction, SSE render bridge. `probe`
-subcommand (`probe <ladder|fanout|check-nonces|simulate-*|holdings|cashback-*>`) runs a
-one-shot validation against live infra and exits before any DB/ingest/HTTP startup.
+subcommand (`probe <ladder|fanout|simulate-*|holdings|cashback-*> [--wallet <name>]`) runs a
+one-shot validation against live infra with one keystore wallet (the primary when
+`--wallet` is absent) and exits before ingest/HTTP startup.
 
 ### `lab/src/main.rs` — analysis
 

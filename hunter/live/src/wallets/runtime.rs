@@ -13,6 +13,7 @@ use sqlx::PgPool;
 
 use crate::trader::{PumpFunTrader, TraderConfig, SENDER_KEEP_WARM_MS};
 use trading_core::config::FeeTuning;
+use trading_core::models::trader_wallet::TraderWalletRecord;
 use trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo;
 
 use super::directory::WalletDirectory;
@@ -20,31 +21,12 @@ use super::freeze::WalletFreeze;
 use super::keystore::{self, Kek};
 use super::readiness::{Readiness, SlotFacts};
 
-/// The name an unregistered env wallet runs under.
-pub const ENV_WALLET_NAME: &str = "main";
-
 pub struct Slot {
     pub name: String,
     pub trader: Arc<PumpFunTrader>,
     pub signer: Arc<Keypair>,
     pub nonces: Vec<Pubkey>,
     /// Why `initialize` failed. The trader then refuses every buy and sell.
-    pub init_error: Option<String>,
-}
-
-/// `WALLET_PRIVATE_KEY` and `NONCE_ACCOUNTS`, kept so the Wallets page can
-/// bring them into the registry.
-#[derive(Clone)]
-pub struct EnvWallet {
-    pub pubkey: String,
-    pub nonces: Vec<Pubkey>,
-}
-
-/// The env trader built at boot, before the registry is read.
-pub struct EnvTrader {
-    pub trader: Arc<PumpFunTrader>,
-    pub signer: Arc<Keypair>,
-    pub nonces: Vec<Pubkey>,
     pub init_error: Option<String>,
 }
 
@@ -100,8 +82,10 @@ impl TraderFactory {
 pub struct WalletRuntime {
     slots: RwLock<HashMap<String, Slot>>,
     primary: RwLock<String>,
-    env: RwLock<Option<EnvWallet>>,
-    /// Registry rows that are archived. The env key never revives one.
+    /// Active rows whose key did not load on this box, and why. That wallet
+    /// signs nothing; every other wallet runs.
+    load_errors: RwLock<HashMap<String, String>>,
+    /// Registry rows that are archived.
     archived: RwLock<HashSet<String>>,
     pub directory: Arc<WalletDirectory>,
     pub freeze: Arc<WalletFreeze>,
@@ -120,7 +104,7 @@ impl WalletRuntime {
         Self {
             slots: RwLock::new(HashMap::new()),
             primary: RwLock::new(String::new()),
-            env: RwLock::new(None),
+            load_errors: RwLock::new(HashMap::new()),
             archived: RwLock::new(HashSet::new()),
             directory: Arc::new(WalletDirectory::default()),
             freeze: Arc::new(WalletFreeze::new()),
@@ -148,13 +132,6 @@ impl WalletRuntime {
                 true
             });
         }
-    }
-
-    /// The env key alone, with no keystore: one slot, no files.
-    pub fn legacy(env: EnvTrader, factory: TraderFactory) -> Self {
-        let runtime = Self::empty(factory, None, None);
-        runtime.adopt_env(env);
-        runtime
     }
 
     pub fn can_manage_keys(&self) -> bool {
@@ -195,56 +172,6 @@ impl WalletRuntime {
         )
     }
 
-    /// Run the env key unless the registry already loaded that pubkey or
-    /// archived it. It becomes primary only when the registry names none.
-    pub fn adopt_env(&self, env: EnvTrader) {
-        let pubkey = env.signer.pubkey().to_string();
-        *self.env.write().expect("wallets") = Some(EnvWallet {
-            pubkey: pubkey.clone(),
-            nonces: env.nonces.clone(),
-        });
-        if self.archived.read().expect("wallets").contains(&pubkey)
-            || self.slots.read().expect("wallets").contains_key(&pubkey)
-        {
-            return;
-        }
-        self.slots.write().expect("wallets").insert(
-            pubkey.clone(),
-            Slot {
-                name: ENV_WALLET_NAME.to_string(),
-                trader: env.trader,
-                signer: env.signer,
-                nonces: env.nonces,
-                init_error: env.init_error,
-            },
-        );
-        if self.primary_pubkey().is_empty() {
-            self.note_primary(&pubkey);
-        }
-    }
-
-    /// The env key's pubkey and nonce accounts, when `WALLET_PRIVATE_KEY` is set.
-    pub fn env_wallet(&self) -> Option<EnvWallet> {
-        self.env.read().expect("wallets").clone()
-    }
-
-    /// With no primary named anywhere, the first loaded wallet by name.
-    pub fn fallback_primary(&self) {
-        if !self.primary_pubkey().is_empty() {
-            return;
-        }
-        let first = {
-            let slots = self.slots.read().expect("wallets");
-            slots
-                .iter()
-                .min_by(|a, b| a.1.name.cmp(&b.1.name))
-                .map(|(pubkey, _)| pubkey.clone())
-        };
-        if let Some(pubkey) = first {
-            self.note_primary(&pubkey);
-        }
-    }
-
     pub fn primary_pubkey(&self) -> String {
         self.primary.read().expect("wallets").clone()
     }
@@ -255,6 +182,14 @@ impl WalletRuntime {
         *self.primary.write().expect("wallets") = pubkey.to_string();
     }
 
+    /// Why an active row's key did not load on this box.
+    pub fn load_error(&self, pubkey: &str) -> Option<String> {
+        self.load_errors.read().expect("wallets").get(pubkey).cloned()
+    }
+
+    /// The process trader the single-wallet pages are built with at boot: the
+    /// primary, else any loaded wallet. Entries never fall back to it; with no
+    /// primary named, an entry on a rule without a wallet fails closed.
     pub fn primary_trader(&self) -> Arc<PumpFunTrader> {
         let pubkey = self.primary_pubkey();
         self.trader(&pubkey)
@@ -377,15 +312,77 @@ impl WalletRuntime {
         let repo = TraderWalletRepo::new(pool.clone());
         let rows = repo.assignments().await?;
         self.directory.replace_assignments(rows);
-        if let Some(primary) = repo
+        // Only a row names the primary. None named leaves it empty, and an
+        // entry on a rule without a wallet then fails closed.
+        let primary = repo
             .records()
             .await?
             .into_iter()
-            .find(|r| r.is_primary)
-        {
-            self.note_primary(&primary.pubkey);
-        }
+            .find(|r| r.is_primary && r.status != "archived")
+            .map(|r| r.pubkey)
+            .unwrap_or_default();
+        self.note_primary(&primary);
         Ok(())
+    }
+
+    /// Bring the loaded set in line with the registry without a restart:
+    /// load rows that are new here (a sync, another session), unload archived
+    /// ones, follow renames and nonce sets, and re-read the primary and the
+    /// rule assignments. Holds `move_lock` so a move never sees it half done.
+    pub async fn reload(&self, pool: &PgPool) -> Result<()> {
+        let _move = self.move_lock.lock().await;
+        let repo = TraderWalletRepo::new(pool.clone());
+        let records = repo.records().await?;
+        for record in &records {
+            if record.status == "archived" {
+                if self.slots.read().expect("wallets").contains_key(&record.pubkey) {
+                    self.unload(&record.pubkey);
+                }
+                self.archived.write().expect("wallets").insert(record.pubkey.clone());
+                continue;
+            }
+            self.archived.write().expect("wallets").remove(&record.pubkey);
+            let nonces = record_nonces(&repo, &record.pubkey).await?;
+            let loaded = self.slots.read().expect("wallets").get(&record.pubkey).map(|s| s.nonces.clone());
+            match loaded {
+                Some(running) => {
+                    self.rename(&record.pubkey, &record.name);
+                    let same: HashSet<Pubkey> = running.into_iter().collect();
+                    if same != nonces.iter().copied().collect::<HashSet<_>>() {
+                        self.rebuild(&record.pubkey, nonces).await?;
+                    }
+                }
+                None => self.load_record(record, nonces).await,
+            }
+        }
+        self.reload_directory(pool).await
+    }
+
+    /// Decrypt one row's key and start its trader. A key that is missing,
+    /// does not decrypt, or names another pubkey is kept as that wallet's
+    /// load error; nothing else stops.
+    async fn load_record(&self, record: &TraderWalletRecord, nonces: Vec<Pubkey>) {
+        match self.read_record_key(record) {
+            Ok(keypair) => {
+                self.load_errors.write().expect("wallets").remove(&record.pubkey);
+                self.insert_loaded(record.pubkey.clone(), record.name.clone(), Arc::new(keypair), nonces, false)
+                    .await;
+            }
+            Err(e) => {
+                tracing::error!(wallet = %record.pubkey, name = %record.name, "wallet key did not load, that wallet signs nothing: {e:#}");
+                self.load_errors.write().expect("wallets").insert(record.pubkey.clone(), format!("{e:#}"));
+            }
+        }
+    }
+
+    fn read_record_key(&self, record: &TraderWalletRecord) -> Result<Keypair> {
+        let dir = self.keystore_dir.as_ref().context("WALLET_KEYSTORE is not set")?;
+        let kek = self.kek.as_ref().context("WALLET_KEK is not set")?;
+        let keypair = keystore::read_keypair(dir, &record.key_ref, kek)?;
+        if keypair.pubkey().to_string() != record.pubkey {
+            bail!("keystore file {} does not match pubkey {}", record.key_ref, record.pubkey);
+        }
+        Ok(keypair)
     }
 
     pub async fn insert_loaded(
@@ -407,7 +404,7 @@ impl WalletRuntime {
                 init_error,
             },
         );
-        if primary || self.primary_pubkey().is_empty() {
+        if primary {
             self.note_primary(&pubkey);
         }
         self.publish_watch();
@@ -436,57 +433,69 @@ impl WalletRuntime {
     }
 }
 
-/// Load every active and draining wallet. `None` when the keystore is off, so
-/// the env key keeps signing alone. The primary stays empty when no row claims
-/// it; the caller adopts the env key, then [`WalletRuntime::fallback_primary`].
-pub async fn load_keystore(
-    pool: &PgPool,
-    factory: TraderFactory,
-) -> Result<Option<WalletRuntime>> {
+/// The keystore directory and passphrase from the environment. Both are
+/// required: every key this process signs with lives in the keystore.
+pub fn keystore_env() -> Result<(PathBuf, Kek)> {
     let dir = match std::env::var("WALLET_KEYSTORE") {
-        Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
-        _ => return Ok(None),
+        Ok(dir) if !dir.trim().is_empty() => trading_core::config::env_paths::resolve(&dir),
+        _ => bail!("WALLET_KEYSTORE is not set"),
     };
-    let passphrase = std::env::var("WALLET_KEK").context("WALLET_KEYSTORE is set and WALLET_KEK is missing")?;
-    let kek = Kek::from_passphrase(&passphrase);
+    let passphrase = std::env::var("WALLET_KEK").context("WALLET_KEK is not set")?;
+    Ok((dir, Kek::from_passphrase(&passphrase)))
+}
+
+async fn record_nonces(repo: &TraderWalletRepo, pubkey: &str) -> Result<Vec<Pubkey>> {
+    repo.nonces_for(pubkey)
+        .await?
+        .into_iter()
+        .map(|n| n.pubkey.parse::<Pubkey>())
+        .collect::<Result<Vec<_>, _>>()
+        .context("nonce pubkey")
+}
+
+/// Load every active and draining wallet. A wallet whose key does not load
+/// is shown with its error and signs nothing; boot stops only when no wallet
+/// loaded at all. The primary is the row that claims it, or none.
+pub async fn load_keystore(pool: &PgPool, factory: TraderFactory) -> Result<WalletRuntime> {
+    let (dir, kek) = keystore_env()?;
+    let runtime = WalletRuntime::empty(factory, Some(dir), Some(kek));
+    runtime.reload(pool).await?;
+    if runtime.is_empty() {
+        let errors = runtime.load_errors.read().expect("wallets").clone();
+        if errors.is_empty() {
+            bail!("the wallet registry has no active wallet; set WALLET_PRIVATE_KEY once to register one");
+        }
+        let detail: Vec<String> = errors.into_iter().map(|(pubkey, e)| format!("{pubkey}: {e}")).collect();
+        bail!("no wallet key loaded: {}", detail.join("; "));
+    }
+    Ok(runtime)
+}
+
+/// One wallet's trader alone, by name or pubkey, else the primary. `probe`
+/// signs with it; no other wallet is decrypted.
+pub async fn load_one(pool: &PgPool, factory: TraderFactory, wanted: Option<&str>) -> Result<Arc<PumpFunTrader>> {
+    let (dir, kek) = keystore_env()?;
     let repo = TraderWalletRepo::new(pool.clone());
     let records = repo.records().await?;
-    let runtime = WalletRuntime::empty(factory, Some(dir.clone()), Some(kek));
-    *runtime.archived.write().expect("wallets") = records
-        .iter()
-        .filter(|r| r.status == "archived")
-        .map(|r| r.pubkey.clone())
-        .collect();
-    for record in &records {
-        if record.status == "archived" {
-            continue;
-        }
-        let keypair = keystore::read_keypair(&dir, &record.key_ref, runtime.kek.as_ref().unwrap())
-            .with_context(|| format!("wallet {} ({})", record.name, record.pubkey))?;
-        if keypair.pubkey().to_string() != record.pubkey {
-            bail!("keystore file {} does not match pubkey {}", record.key_ref, record.pubkey);
-        }
-        let nonces = repo
-            .nonces_for(&record.pubkey)
-            .await?
-            .into_iter()
-            .map(|n| n.pubkey.parse::<Pubkey>())
-            .collect::<Result<Vec<_>, _>>()
-            .context("nonce pubkey")?;
-        runtime
-            .insert_loaded(
-                record.pubkey.clone(),
-                record.name.clone(),
-                Arc::new(keypair),
-                nonces,
-                record.is_primary,
-            )
-            .await;
+    let record = match wanted {
+        Some(w) => records
+            .iter()
+            .find(|r| r.pubkey == w || keystore::same_name(&r.name, w))
+            .with_context(|| format!("no wallet named {w}"))?,
+        None => records
+            .iter()
+            .find(|r| r.is_primary && r.status != "archived")
+            .context("no primary wallet; pass --wallet <name>")?,
+    };
+    if record.status == "archived" {
+        bail!("wallet {} is archived", record.name);
     }
-    // `insert_loaded` names the first loaded wallet primary; only a row may.
-    if !records.iter().any(|r| r.is_primary && r.status != "archived") {
-        runtime.note_primary("");
+    let runtime = WalletRuntime::empty(factory, Some(dir), Some(kek));
+    let keypair = runtime.read_record_key(record)?;
+    let nonces = record_nonces(&repo, &record.pubkey).await?;
+    let (trader, init_error) = runtime.factory.build(Arc::new(keypair), nonces).await;
+    if let Some(e) = init_error {
+        bail!("wallet {} trader init failed: {e}", record.name);
     }
-    runtime.reload_directory(pool).await?;
-    Ok(Some(runtime))
+    Ok(trader)
 }

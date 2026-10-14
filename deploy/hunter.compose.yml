@@ -153,8 +153,14 @@ services:
       # very `up --build` it needs to survive. Overrides env_file (compose
       # precedence: `environment` wins), so .env stays workstation-shaped.
       EVENT_LOG_DIR: /var/lib/hunter/event_log
+      # Wallet envelope files. A bind mount, not a named volume, so
+      # wallet-sync.ps1 copies them onto the host directory the bot reads.
+      # Relative to deploy/: `../hunter/keystore` is the same folder the .env's
+      # `./keystore` names.
+      WALLET_KEYSTORE: /keystore
     volumes:
       - eventlog:/var/lib/hunter
+      - ../hunter/keystore:/keystore
     depends_on:
       postgres:
         condition: service_healthy

@@ -316,6 +316,15 @@ impl TraderWalletRepo {
         Ok(())
     }
 
+    /// The chain no longer names this row's authority as the nonce's authority.
+    pub async fn retire_nonce(&self, pubkey: &str) -> sqlx::Result<()> {
+        sqlx::query("UPDATE trader_nonces SET status = 'retired' WHERE pubkey = $1")
+            .bind(pubkey)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_nonce_authority(&self, nonce: &str, authority: &str) -> sqlx::Result<()> {
         sqlx::query("UPDATE trader_nonces SET authority = $2 WHERE pubkey = $1")
             .bind(nonce)

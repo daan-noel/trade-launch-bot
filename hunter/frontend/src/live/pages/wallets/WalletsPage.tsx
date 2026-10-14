@@ -9,14 +9,13 @@ import { StatTile } from 'components/ui/StatTile';
 import { Tabs, TabsList, TabsTrigger } from 'components/ui/Tabs';
 import { apiErrorMessage } from 'store/baseApi';
 import {
-  useAdoptEnvWalletMutation,
   useCreateTraderWalletMutation,
   useGetTraderWalletsQuery,
   useImportTraderWalletMutation,
   useAttachNoncesMutation,
   useResumeWalletMoveMutation,
+  useSyncAllWalletsMutation,
   walletCanSign,
-  type EnvWalletStatus,
   type TraderWalletRow,
   type WalletMove,
 } from '@live/store/liveEndpoints';
@@ -50,7 +49,7 @@ const POLL_MOVE_MS = 2000;
 
 export function WalletsPage() {
   const [fastPoll, setFastPoll] = useState(false);
-  const { data, isLoading, error, refetch } = useGetTraderWalletsQuery(undefined, {
+  const { data, isLoading, error } = useGetTraderWalletsQuery(undefined, {
     pollingInterval: fastPoll ? POLL_MOVE_MS : POLL_MS,
   });
   const wallets = useMemo(() => data?.wallets ?? [], [data]);
@@ -64,6 +63,23 @@ export function WalletsPage() {
   const [sending, setSending] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [resumeMove, resumeState] = useResumeWalletMoveMutation();
+  const [syncAll, syncState] = useSyncAllWalletsMutation();
+
+  // Refresh re-reads every wallet's balance and nonce accounts from the chain
+  // and stores them; the list refetches on the mutation's invalidation.
+  const refresh = async () => {
+    setActionError(null);
+    try {
+      const res = await syncAll().unwrap();
+      const failed = Object.entries(res).flatMap(([pk, r]) => {
+        const msg = r.error ?? r.ok?.history_error;
+        return msg ? [`${byKey.get(pk)?.name ?? shortKey(pk)}: ${msg}`] : [];
+      });
+      if (failed.length) setActionError(failed.join('; '));
+    } catch (e) {
+      setActionError(apiErrorMessage(e as never) ?? 'Refresh failed');
+    }
+  };
 
   const byKey = useMemo(() => new Map(wallets.map((w) => [w.pubkey, w])), [wallets]);
   const shown = useMemo(
@@ -95,8 +111,8 @@ export function WalletsPage() {
         description="Each rule signs with its own wallet or the primary. A move carries rules, bags, nonce authority, and SOL, then archives the old wallet."
         actions={
           <div className="flex gap-2">
-            <Button size="sm" variant="ghost" onClick={() => refetch()}>
-              Refresh
+            <Button size="sm" variant="ghost" onClick={refresh} disabled={syncState.isLoading}>
+              {syncState.isLoading ? 'Reading chain...' : 'Refresh'}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setAdding('import')}>
               Import
@@ -125,7 +141,11 @@ export function WalletsPage() {
         <StatTile label="Move" value={move ? STEP_LABEL[move.step] ?? move.step : 'none'} size="md" />
       </div>
 
-      {data?.env_wallet && <EnvBanner env={data.env_wallet} />}
+      {data?.primary_missing && (
+        <InlineAlert variant="error">
+          No primary wallet is set. Rules without their own wallet do not buy until you set one.
+        </InlineAlert>
+      )}
       {error && <InlineAlert variant="error">{apiErrorMessage(error) ?? 'Could not load wallets'}</InlineAlert>}
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
       {isLoading && <p className="text-[12px] text-text-dim">Loading wallets...</p>}
@@ -254,56 +274,6 @@ function fixLabel(w: TraderWalletRow): string {
   return 'Open';
 }
 
-/** The `.env` key runs but is not in the registry, or its nonces are not attached. */
-function EnvBanner({ env }: { env: EnvWalletStatus }) {
-  const [adopt, adoptState] = useAdoptEnvWalletMutation();
-  const [name, setName] = useState('main');
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  if (env.registered && env.unattached_nonces === 0) return null;
-
-  const submit = async () => {
-    setErr(null);
-    try {
-      const res = await adopt(env.registered ? {} : { name: name.trim() }).unwrap();
-      setMsg(`Registered. Attached ${res.attached} nonce account(s)${res.rejected.length ? `, rejected ${res.rejected.length}` : ''}.`);
-    } catch (e) {
-      setErr(apiErrorMessage(e as never) ?? 'Failed');
-    }
-  };
-
-  return (
-    <section className="rounded-md border border-warning/40 bg-warning/8 p-3 text-[12px]">
-      <div className="mb-1 font-medium text-warning">
-        {env.registered ? 'NONCE_ACCOUNTS are not attached' : 'The .env wallet is not in the registry'}
-      </div>
-      <p className="mb-2 text-text-mid">
-        {shortKey(env.pubkey)} signs from WALLET_PRIVATE_KEY.{' '}
-        {env.registered
-          ? `${env.unattached_nonces} of its NONCE_ACCOUNTS are not recorded, so it may run without them after a restart.`
-          : 'Until it is registered it cannot be moved, archived, or given new nonces. Registering saves its key file and attaches NONCE_ACCOUNTS after a chain check.'}
-      </p>
-      {!env.can_register && !env.registered ? (
-        <p className="text-text-dim">Set WALLET_KEYSTORE and WALLET_KEK first.</p>
-      ) : (
-        <div className="flex items-end gap-2">
-          {!env.registered && (
-            <label className="flex flex-col gap-1 text-text-dim">
-              Name
-              <Input value={name} onChange={(e) => setName(e.target.value)} className="w-40" autoComplete="off" />
-            </label>
-          )}
-          <Button size="sm" disabled={adoptState.isLoading || (!env.registered && !name.trim())} onClick={submit}>
-            {adoptState.isLoading ? 'Working...' : env.registered ? 'Attach NONCE_ACCOUNTS' : 'Bring it in'}
-          </Button>
-        </div>
-      )}
-      {msg && <p className="mt-2 text-green">{msg}</p>}
-      {err && <p className="mt-2 text-red">{err}</p>}
-    </section>
-  );
-}
-
 /** Create a key on the server, or import one with the nonce accounts it already owns. */
 function AddWalletDialog({ mode, onClose }: { mode: 'create' | 'import'; onClose: () => void }) {
   const [create, createState] = useCreateTraderWalletMutation();
@@ -323,6 +293,10 @@ function AddWalletDialog({ mode, onClose }: { mode: 'create' | 'import'; onClose
       } else {
         const made = await importWallet({ name: name.trim(), private_key: secret }).unwrap();
         setSecret('');
+        if (made.sync.Err) {
+          setError(`Imported. The chain read failed (${made.sync.Err}); press Refresh to read it again.`);
+          return;
+        }
         const list = nonces.split(/[\s,]+/).filter(Boolean);
         if (list.length > 0) {
           const res = await attach({ pubkey: made.pubkey, nonces: list }).unwrap();
@@ -351,11 +325,11 @@ function AddWalletDialog({ mode, onClose }: { mode: 'create' | 'import'; onClose
         <p className="text-text-dim">
           {mode === 'create'
             ? 'The server generates the key. This page only sees the pubkey. Fund it and add nonces before it can trade.'
-            : 'Paste a base58 secret or a JSON byte array. It is encrypted on arrival and never returned. Importing the .env key registers it with its NONCE_ACCOUNTS.'}
+            : 'Paste a base58 secret or a JSON byte array. It is encrypted on arrival and never returned. Its balance and the nonce accounts it uses are read from the chain.'}
         </p>
         <label className="flex flex-col gap-1 text-text-dim">
           Name
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="desk-2" autoComplete="off" />
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Desk 2" maxLength={32} autoComplete="off" />
         </label>
         {mode === 'import' && (
           <>
@@ -364,7 +338,7 @@ function AddWalletDialog({ mode, onClose }: { mode: 'create' | 'import'; onClose
               <Input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" />
             </label>
             <label className="flex flex-col gap-1 text-text-dim">
-              Nonce accounts it already owns (optional)
+              More nonce accounts it owns (optional; the chain read finds the ones it uses)
               <textarea
                 value={nonces}
                 onChange={(e) => setNonces(e.target.value)}

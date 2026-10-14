@@ -25,7 +25,7 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use hunter_engine::arm::ArmState;
 use hunter_engine::event::{
@@ -760,12 +760,19 @@ fn dispatch_buy(
             // writes and three registry churns for a wall that cannot have moved.
             // `Fatal` is the honest classification: its contract is exactly "a
             // resend would hit the same wall".
+            // A rule without a wallet signs with the primary. With none named the
+            // entry fails closed; it never borrows another wallet. The offline
+            // runtime (no wallets loaded) keeps the process trader.
             let signing_wallet = {
                 let resolved = real_deps.wallets.directory.resolve(rule.0);
-                if resolved.is_empty() {
+                if !resolved.is_empty() {
+                    resolved
+                } else if real_deps.wallets.is_empty() {
                     real_deps.trader.wallet_pubkey()
                 } else {
-                    resolved
+                    error!(mint = %mint_s, rule = %rule.0, "real buy: no primary wallet is set; set one on the Wallets page");
+                    fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
+                    return;
                 }
             };
             // A rule names a wallet this box cannot sign for: refuse rather than

@@ -59,6 +59,8 @@ export function activityText(kind: string, detail: Record<string, unknown>): str
       return `Created ${String(detail.count ?? '')} nonce account(s)`;
     case 'nonces_attached':
       return `Attached ${String(detail.attached ?? '')} nonce account(s)`;
+    case 'nonces_synced':
+      return `Read from chain: attached ${String(detail.attached ?? 0)}, retired ${String(detail.retired ?? 0)} nonce account(s)`;
     case 'sol_sent':
       return `Sent ${sol(detail.lamports)} to ${key(detail.to)}${detail.external ? ' (outside)' : ''}`;
     case 'sol_received':

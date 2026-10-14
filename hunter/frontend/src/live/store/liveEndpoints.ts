@@ -537,7 +537,10 @@ export const liveApi = baseApi.injectEndpoints({
       query: (body) => ({ url: '/api/wallets', method: 'POST', body }),
       invalidatesTags: ['TraderWallet'],
     }),
-    importTraderWallet: builder.mutation<{ pubkey: string; name: string }, { name: string; private_key: string }>({
+    importTraderWallet: builder.mutation<
+      { pubkey: string; name: string; sync: { Ok?: WalletSyncReport; Err?: string } },
+      { name: string; private_key: string }
+    >({
       query: (body) => ({ url: '/api/wallets/import', method: 'POST', body }),
       invalidatesTags: ['TraderWallet'],
     }),
@@ -561,8 +564,12 @@ export const liveApi = baseApi.injectEndpoints({
       }),
       invalidatesTags: ['TraderWallet'],
     }),
-    adoptEnvWallet: builder.mutation<NonceAttachReport, { name?: string }>({
-      query: (body) => ({ url: '/api/wallets/adopt-env', method: 'POST', body }),
+    syncWallet: builder.mutation<WalletSyncReport, string>({
+      query: (pubkey) => ({ url: `/api/wallets/${pubkey}/sync`, method: 'POST' }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    syncAllWallets: builder.mutation<Record<string, { ok?: WalletSyncReport; error?: string }>, void>({
+      query: () => ({ url: '/api/wallets/sync', method: 'POST' }),
       invalidatesTags: ['TraderWallet'],
     }),
     getWalletNonces: builder.query<WalletNonce[], string>({
@@ -637,6 +644,8 @@ export interface TraderWalletRow {
   readiness_reason: string;
   /** Why the wallet's trader failed to start, when it did. */
   init_error: string | null;
+  /** Why the wallet's key file did not load on this box; it signs nothing. */
+  load_error: string | null;
   created_at: string;
   archived_at: string | null;
 }
@@ -648,18 +657,19 @@ export function walletCanSign(readiness: WalletReadiness): boolean {
   return readiness === 'ready' || readiness === 'needs_sol';
 }
 
-/** The `.env` key, while its pubkey or nonce accounts are not in the registry. */
-export interface EnvWalletStatus {
-  pubkey: string;
-  registered: boolean;
-  unattached_nonces: number;
-  can_register: boolean;
-}
-
 export interface NonceAttachReport {
   attached: number;
   already: number;
   rejected: { pubkey: string; reason: string }[];
+}
+
+/** One wallet re-read from the chain: its balance and the nonce accounts it is the authority of. */
+export interface WalletSyncReport {
+  sol_lamports: number;
+  nonces: number;
+  attached: number;
+  retired: number;
+  history_error: string | null;
 }
 
 /** A registered nonce account; `ok` = the chain names this wallet as its authority. */
@@ -701,7 +711,8 @@ export interface WalletMove {
 export interface TraderWalletBook {
   wallets: TraderWalletRow[];
   move: WalletMove | null;
-  env_wallet: EnvWalletStatus | null;
+  /** Active wallets exist and none is primary: rules without a wallet do not buy. */
+  primary_missing: boolean;
 }
 
 export interface WalletAssignment {
@@ -745,7 +756,8 @@ export const {
   useResumeWalletMoveMutation,
   useAssignRuleWalletMutation,
   useAttachNoncesMutation,
-  useAdoptEnvWalletMutation,
+  useSyncWalletMutation,
+  useSyncAllWalletsMutation,
   useGetWalletNoncesQuery,
   useGetWalletActivityQuery,
   useGetMovePreviewQuery,

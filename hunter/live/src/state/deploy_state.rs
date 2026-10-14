@@ -130,7 +130,13 @@ impl DeployState {
     /// box has not loaded.
     pub fn trader_for(&self, wallet: Option<&str>) -> Result<Arc<PumpFunTrader>, String> {
         match wallet.map(str::trim).filter(|w| !w.is_empty()) {
-            None => Ok(self.wallets.primary_trader()),
+            None => {
+                let primary = self.wallets.primary_pubkey();
+                if primary.is_empty() && !self.wallets.is_empty() {
+                    return Err("no primary wallet is set; name a wallet or set a primary".to_string());
+                }
+                Ok(self.wallets.primary_trader())
+            }
             Some(w) => self.wallets.trader(w).ok_or_else(|| format!("wallet {w} is not loaded")),
         }
     }

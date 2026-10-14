@@ -6,29 +6,35 @@ Lab has no keys and no Wallets page. A lab save of a rule does not write the wal
 
 ## Where a key lives
 
-The private key is an envelope file under `WALLET_KEYSTORE` (`name.enc`, AES-256-GCM, the same shape Forge uses). `WALLET_KEK` is the one passphrase, in each machine's environment. Postgres stores the pubkey, the name, the status (`active`, `draining`, `archived`), and `key_ref` (the filename only). The key is never in Postgres, an API response, or a log. A write never replaces an existing file: a second wallet under a taken name is refused before anything is stored.
+Every key hunter-live signs with is an envelope file under `WALLET_KEYSTORE` (`<pubkey>.enc`, AES-256-GCM, the same shape Forge uses). `WALLET_KEK` is the one passphrase, set in each machine's `.env` by hand and never copied by a script. Both are required at boot. Postgres stores the pubkey, the name, the status (`active`, `draining`, `archived`), and `key_ref` (the filename only). The key is never in Postgres, an API response, or a log. A write never replaces an existing file. Rows from before pubkey filenames keep their `<name>.enc` file; `key_ref` names whichever file it is.
 
-An active or draining wallet whose file is missing or does not decrypt fails boot. Archived wallets are not decrypted.
+A name is a label: 1 to 32 characters, trimmed, no control characters, unique ignoring case (`trader_wallets_name_ci`). Rename changes the label only. Create, import, rename, and env registration all check it through `ops::name_error`.
+
+An active or draining wallet whose file is missing, does not decrypt, or names another pubkey is kept as that wallet's load error (shown on the page) and signs nothing; every other wallet loads. Boot stops only when no wallet loads at all. Archived wallets are not decrypted.
 
 ## The env wallet
 
-`WALLET_PRIVATE_KEY` and `NONCE_ACCOUNTS` load at boot beside the registry, named `main`, unless the registry already loaded that pubkey or archived it. It is primary only when no registry row is. Probe mode uses the env key and exits before the database. With `WALLET_KEYSTORE` unset it is the only wallet.
+`WALLET_PRIVATE_KEY` is never signed with. While it is set, boot writes it into the keystore and the registry (`wallets::register_env_key`) and attaches the `NONCE_ACCOUNTS` the chain confirms it owns. A new row is named `main` (or the next free `main N`) and is primary only when no active row is. A row that already exists keeps its name and status, and becomes primary only when no active row is; an archived one stays archived; a missing key file is written from the env key. A second boot changes nothing. Boot logs `WALLET_PRIVATE_KEY is registered in the keystore` at warn; empty both variables after that. An empty registry is started the same way.
 
-"Bring it in" (`POST /api/wallets/adopt-env`, or importing the same key) writes its file, inserts its row, and attaches `NONCE_ACCOUNTS`. A row that already exists keeps its name and only gets the missing nonces. The running trader is rebuilt only when its nonce set changes. After that the env key is needed only by `probe`.
+`probe` signs with one keystore wallet: `--wallet <name|pubkey>`, or the primary. It decrypts that wallet only and exits before ingest and HTTP.
 
 ## Readiness
 
-Each loaded wallet reports one state, the first missing piece in the order it is fixed: `no_key` (not loaded here, or the key does not match), `needs_nonces`, `init_failed` (the trader's `initialize` error is kept and shown), `needs_sol` (cached balance under `LOW_SOL_LAMPORTS`, 0.01 SOL), `ready`. `needs_sol` still signs; the per-buy balance floor decides each entry. Assigning a rule to, setting as primary, or manually buying with a wallet that cannot sign is refused. A rule whose wallet is not loaded on this box fails its entry; it never buys with another wallet. The balance floor reads the wallet that pays.
+Each loaded wallet reports one state, the first missing piece in the order it is fixed: `no_key` (not loaded here, or the key does not match; the load error says why), `needs_nonces`, `init_failed` (the trader's `initialize` error is kept and shown), `needs_sol` (cached balance under `LOW_SOL_LAMPORTS`, 0.01 SOL), `ready`. `needs_sol` still signs; the per-buy balance floor decides each entry. Assigning a rule to, setting as primary, or manually buying with a wallet that cannot sign is refused. A rule whose wallet is not loaded on this box fails its entry; it never buys with another wallet. The balance floor reads the wallet that pays.
 
 ## Nonces
 
 A wallet cannot trade without nonce accounts. Provision creates 1 to 16 rent-exempt accounts; it checks the registry row before spending. Attach records accounts the wallet already owns: one `getMultipleAccounts` reads them all and `executor_core::check_nonce_account` keeps only those whose authority is this wallet. A move hands them over with `authorize_nonce_account`, so the addresses stay the same.
 
-The push feed watches every loaded wallet and its nonces. A change to that set (create, import, provision, attach, move, archive, restore) resubscribes the feed in place through `WatchedAccounts`; no restart.
+Refresh reads the chain's view of a wallet and stores it: `POST /api/wallets/{pubkey}/sync` for one, `POST /api/wallets/sync` for the page, which first re-reads the registry (`WalletRuntime::reload`: loads rows and key files new on this box, unloads archived ones, follows renames, nonce sets, the primary, and rule assignments) under `move_lock`. Import runs the chain read before the trader starts. Candidates are the registered nonces and every `nonceAccount` a System instruction names in the wallet's newest and oldest 100 transactions (Helius `getTransactionsForAddress`). A trading wallet advances every nonce it rotates through, so the newest page carries the live set. One `getMultipleAccounts` at `confirmed` reads the wallet's balance and every candidate. New confirmed nonces are attached, and registered ones the chain no longer confirms are retired. The balance cache is refreshed, and the trader is rebuilt when its nonce set changed. `getProgramAccounts` cannot do this on Helius: V1 refuses the System Program, and V2 pages through the whole keyspace. A nonce that is never advanced and was created outside both history pages is not found; attach it by pubkey. Sync runs on a click, never on a timer.
+
+The push feed watches every loaded wallet and its nonces. A change to that set (create, import, provision, attach, sync, move, archive, restore) resubscribes the feed in place through `WatchedAccounts`; no restart.
 
 ## Assignment
 
-`rule_wallets` is its own table. It is not a column on `strategy_rules` and it is not inside params, so a lab save and `db-incremental-sync.ps1` do not copy it or clear it. The primary is `trader_wallets.is_primary`, one row at a time. A manual buy may name a wallet; it is assigned to that one buy's episode rule in memory only.
+`rule_wallets` is its own table. It is not a column on `strategy_rules` and it is not inside params, so a lab save and `db-incremental-sync.ps1` do not copy it or clear it. A manual buy may name a wallet; it is assigned to that one buy's episode rule in memory only.
+
+The primary is `trader_wallets.is_primary`, at most one row (a unique index), and only a row names it: nothing in memory picks one. Create and import make the new wallet primary when no active row is, read from the registry. Set primary needs a wallet that can sign; archive refuses the primary; a move hands it to the destination. With active wallets and none primary, an entry on a rule without a wallet fails closed with an error log, a wallet-scoped read or action without `?wallet=` is refused, and the page shows a banner. A primary that cannot sign fails its rules closed; nothing switches to another wallet.
 
 The decision kernel never sees a wallet. Live builds one trader per loaded wallet. Fills look the position pubkey up on that book.
 
@@ -59,6 +65,9 @@ One move at a time, and it runs on the server. Starting one inserts the row and 
 
 ## Sync
 
-`hunter/scripts/wallet-sync.ps1` runs on the workstation. `-SshTarget` names the server. It does not hook into `db-incremental-sync.ps1`. Both `.env` files set `WALLET_KEYSTORE`; a relative value resolves against `hunter/` on each side. On the server, `deploy/hunter.compose.yml` bind-mounts `hunter/keystore` into the live container at `/keystore`, so a synced file is the file the bot reads. Both machines use the same `WALLET_KEK`.
+`hunter/scripts/wallet-sync.ps1 -Direction ServerToLocal|LocalToServer [-DryRun]` runs on the workstation; `-SshTarget` names the server. Each run copies one way and the source wins. It does not hook into `db-incremental-sync.ps1`. Both `.env` files set `WALLET_KEYSTORE`; a relative value resolves against `hunter/` on each side. On the server, `deploy/hunter.compose.yml` bind-mounts `hunter/keystore` into the live container at `/keystore`, so a synced file is the file the bot reads. Both machines use the same `WALLET_KEK`.
 
-It copies missing `.enc` files both ways and stops when the same filename has different bytes. It never deletes a file. It copies wallet rows both ways. Status, primary, nonce authority, and an in-progress move stay as they are on the server. A wallet row is inserted on a side only when that side has the file. It does not move SOL and it does not touch trades, positions, rules, fingerprints, or `.env`. A wallet can sign only on the box that has its file.
+It stops before writing when either side has a move in progress, when one filename holds different bytes on each side, when a wallet's `key_ref` differs, or when a source name belongs to another wallet on the target. Otherwise it copies missing key files source to target (add-only, never deletes or replaces), then in one transaction: overwrites or adds every source wallet whose file is on the target, makes the source primary the only target primary, copies nonces and finished moves, and sets each shared rule's assignment to the source's. A wallet only the target has is left alone. `-DryRun` prints that plan and writes nothing. Afterwards it checks the target for exactly one active primary and a key file behind every active row. Trades, positions, rules, fingerprints, `.env`, and the KEK are never copied.
+
+The target loads the result when its Wallets page Refresh runs (below).
+

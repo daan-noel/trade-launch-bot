@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use trading_core::models::trader_wallet::TraderWalletRecord;
 use trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo;
 
-use super::keystore::valid_name;
+use super::keystore::{same_name, valid_name};
 use super::mover::{require_loaded, send};
 use super::runtime::WalletRuntime;
 
@@ -21,6 +21,28 @@ use super::runtime::WalletRuntime;
 const SEND_FEE_RESERVE: u64 = 10_000;
 /// Above this a wallet still holds SOL worth sending before it is archived.
 const ARCHIVE_DUST_LAMPORTS: u64 = 1_000_000;
+
+pub const NAME_RULE: &str = "name must be 1 to 32 characters, with no leading or trailing space";
+
+/// Why `name` cannot label a wallet (other than `except`), or `None`. The one
+/// name check behind create, import, rename and env registration.
+pub fn name_error(records: &[TraderWalletRecord], name: &str, except: Option<&str>) -> Option<String> {
+    if !valid_name(name) {
+        return Some(NAME_RULE.to_string());
+    }
+    records
+        .iter()
+        .find(|r| Some(r.pubkey.as_str()) != except && same_name(&r.name, name))
+        .map(|r| format!("a wallet named {} already exists", r.name))
+}
+
+/// `base`, or `base 2`, `base 3`... whichever no wallet uses yet.
+pub fn free_name(records: &[TraderWalletRecord], base: &str) -> String {
+    (1..)
+        .map(|n| if n == 1 { base.to_string() } else { format!("{base} {n}") })
+        .find(|name| name_error(records, name, None).is_none())
+        .expect("an unbounded range always has a free name")
+}
 
 async fn record(repo: &TraderWalletRepo, pubkey: &str) -> Result<TraderWalletRecord> {
     repo.records()
@@ -94,17 +116,14 @@ pub async fn send_sol(
 }
 
 pub async fn rename(pool: &PgPool, runtime: &WalletRuntime, pubkey: &str, name: &str) -> Result<()> {
-    if !valid_name(name) {
-        bail!("name must be lowercase letters, digits, and dashes");
-    }
     let repo = TraderWalletRepo::new(pool.clone());
     let records = repo.records().await?;
     let current = records.iter().find(|r| r.pubkey == pubkey).context("wallet is not registered")?;
     if current.name == name {
         return Ok(());
     }
-    if records.iter().any(|r| r.name == name) {
-        bail!("a wallet named {name} already exists");
+    if let Some(e) = name_error(&records, name, Some(pubkey)) {
+        bail!(e);
     }
     // The key file keeps its filename (`key_ref`); only the label changes.
     repo.rename(pubkey, name).await?;
@@ -172,4 +191,36 @@ pub async fn restore(pool: &PgPool, runtime: &WalletRuntime, pubkey: &str) -> Re
     repo.restore(pubkey).await?;
     let _ = repo.log_activity(pubkey, "restored", serde_json::json!({}), &[]).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(pubkey: &str, name: &str) -> TraderWalletRecord {
+        TraderWalletRecord {
+            pubkey: pubkey.to_string(),
+            name: name.to_string(),
+            status: "active".to_string(),
+            key_ref: format!("{pubkey}.enc"),
+            is_primary: false,
+        }
+    }
+
+    #[test]
+    fn a_name_is_taken_whatever_its_case_except_by_itself() {
+        let rows = vec![row("A", "Main"), row("B", "desk")];
+        assert!(name_error(&rows, "main", None).is_some());
+        assert!(name_error(&rows, "MAIN", Some("A")).is_none());
+        assert!(name_error(&rows, "Desk", Some("A")).is_some());
+        assert!(name_error(&rows, " x", None).is_some());
+        assert!(name_error(&rows, "Main Sniper", None).is_none());
+    }
+
+    #[test]
+    fn the_free_name_skips_every_taken_one() {
+        let rows = vec![row("A", "main"), row("B", "Main 2")];
+        assert_eq!(free_name(&rows, "main"), "main 3");
+        assert_eq!(free_name(&[], "main"), "main");
+    }
 }

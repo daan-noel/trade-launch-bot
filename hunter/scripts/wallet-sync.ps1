@@ -1,26 +1,45 @@
 <#
 .SYNOPSIS
-  Copy Hunter wallet files and wallet rows between this workstation and the server.
+  Copy Hunter wallet files and wallet rows from one box to the other, in the
+  direction you name.
 
 .DESCRIPTION
-  Run this on the workstation. -SshTarget is the server. It does not hook into
-  db-incremental-sync.ps1, and it does not move SOL.
+  Run this on the workstation. -SshTarget is the server. -Direction picks the
+  source; the source wins. It does not move SOL and does not hook into
+  db-incremental-sync.ps1.
 
-  Files: every name.enc under WALLET_KEYSTORE, both directions, add-only.
-  The same filename with different bytes stops the run. Nothing is deleted.
+  Stops before writing anything when either side has a wallet move in
+  progress, when the same key filename holds different bytes on each side,
+  when a wallet has a different key_ref on each side, or when a source name
+  is taken by another wallet on the target.
 
-  Rows: trader_wallets, trader_nonces, wallet_moves, rule_wallets.
-  A new pubkey is inserted on the other side only after its file is there.
-  When both sides already have a pubkey, the server's status, primary flag,
-  and nonce authority win, and server moves replace the local move rows.
-  A rule assignment the server already has wins. A local-only assignment is
-  pushed when the server has that rule and that wallet.
-  Trades, positions, rules, fingerprints, and .env are not touched.
+  Files: every *.enc under WALLET_KEYSTORE, source to target, add-only.
+  Nothing is deleted or replaced.
+
+  Rows, source to target, in one transaction:
+    trader_wallets  every source wallet whose key file is on the target is
+                    inserted or overwritten (name, status, primary,
+                    archived_at). The source primary becomes the only target
+                    primary. A wallet only the target has stays as it is.
+    trader_nonces   every source nonce whose authority is on the target.
+    wallet_moves    finished source moves are copied by id.
+    rule_wallets    for every rule both sides have, the target assignment
+                    becomes the source assignment (set or cleared).
+  Trades, positions, rules, fingerprints, .env, and WALLET_KEK are never
+  touched or copied.
+
+  After writing it checks the target: exactly one active primary, and every
+  active wallet's key file present. Press Refresh on the target's Wallets
+  page: it re-reads the registry, decrypts new key files, and reads balances
+  and nonces from the chain.
 
 .EXAMPLE
-  ./scripts/wallet-sync.ps1 -SshTarget ubuntu@1.2.3.4
+  ./scripts/wallet-sync.ps1 -Direction ServerToLocal -DryRun
+  ./scripts/wallet-sync.ps1 -Direction LocalToServer
 #>
 param(
+  [Parameter(Mandatory = $true)][ValidateSet('ServerToLocal', 'LocalToServer')][string]$Direction,
+  [switch]$DryRun,
   [string]$SshTarget = 'ubuntu@35.158.128.131',
   [string]$SshKey = $(foreach ($p in "$PSScriptRoot/../aws-ec2-key.pem", "$HOME/.ssh/aws-ec2-key.pem") { if (Test-Path $p) { $p; break } }),
   [string]$RemoteDir = '~/trade-launch-bot/hunter',
@@ -79,7 +98,7 @@ if (-not $localStore) { throw "WALLET_KEYSTORE is unset in hunter/.env" }
 if (-not [System.IO.Path]::IsPathRooted($localStore)) {
   $localStore = Join-Path $HunterDir $localStore
 }
-if (-not (Test-Path $localStore)) { throw "Local keystore directory does not exist: $localStore" }
+New-Item -ItemType Directory -Force -Path $localStore | Out-Null
 
 if (Test-Path $SshKey) {
   icacls $SshKey /reset | Out-Null
@@ -138,6 +157,11 @@ $remoteEnv = Read-EnvFileFromText $remoteText
 if (-not $remoteEnv['WALLET_KEYSTORE']) { throw "WALLET_KEYSTORE is unset in the server .env" }
 if (-not $remoteEnv['POSTGRES_PASSWORD']) { throw "POSTGRES_PASSWORD is missing from the server .env" }
 $remoteStore = $remoteEnv['WALLET_KEYSTORE']
+if (-not $remoteStore.StartsWith('/')) {
+  $remoteHunter = (Invoke-Ssh "cd $RemoteDir && pwd" | Select-Object -First 1).Trim()
+  $remoteStore = "$remoteHunter/" + ($remoteStore -replace '^\./', '')
+}
+Invoke-Ssh "mkdir -p '$remoteStore'" | Out-Null
 $remoteUser = if ($remoteEnv['POSTGRES_USER']) { $remoteEnv['POSTGRES_USER'] } else { 'postgres' }
 $remoteDb = if ($remoteEnv['POSTGRES_DB']) { $remoteEnv['POSTGRES_DB'] } else { $Database }
 if ($RemotePgPort -le 0) {
@@ -145,38 +169,31 @@ if ($RemotePgPort -le 0) {
   $RemotePgPort = [int]$portRaw
 }
 
+$toServer = $Direction -eq 'LocalToServer'
+$srcLabel = if ($toServer) { 'local' } else { 'server' }
+$dstLabel = if ($toServer) { 'server' } else { 'local' }
+Write-Host "Direction: $srcLabel -> $dstLabel$(if ($DryRun) { ' (dry run, nothing is written)' })"
+
 Write-Host "Comparing envelope files ..."
 $localNames = @(Get-ChildItem -Path $localStore -Filter '*.enc' -File | ForEach-Object { $_.Name })
 $remoteListing = Invoke-Ssh "find '$remoteStore' -maxdepth 1 -type f -name '*.enc' -printf '%f\n'"
 $remoteNames = @($remoteListing | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
-$allNames = @($localNames + $remoteNames | Select-Object -Unique)
-foreach ($name in $allNames) {
+foreach ($name in @($localNames + $remoteNames | Select-Object -Unique)) {
   if ($name -match '[\\/]' -or $name -eq '.' -or $name -eq '..') { throw "Refusing keystore name '$name'" }
-  $onLocal = $localNames -contains $name
-  $onRemote = $remoteNames -contains $name
-  if ($onLocal -and $onRemote) {
-    $localHash = (Get-FileHash -Algorithm SHA256 (Join-Path $localStore $name)).Hash.ToLower()
-    $remoteHashLine = Invoke-Ssh "sha256sum '$remoteStore/$name'"
-    $remoteHash = (($remoteHashLine | Select-Object -First 1) -split '\s+')[0].ToLower()
-    if ($localHash -ne $remoteHash) {
-      throw "Envelope '$name' differs between this machine and the server. Nothing was copied."
-    }
+}
+foreach ($name in $localNames) {
+  if ($remoteNames -notcontains $name) { continue }
+  $localHash = (Get-FileHash -Algorithm SHA256 (Join-Path $localStore $name)).Hash.ToLower()
+  $remoteHashLine = Invoke-Ssh "sha256sum '$remoteStore/$name'"
+  $remoteHash = (($remoteHashLine | Select-Object -First 1) -split '\s+')[0].ToLower()
+  if ($localHash -ne $remoteHash) {
+    throw "Envelope '$name' differs between this machine and the server. Nothing was copied."
   }
 }
-foreach ($name in $allNames) {
-  $onLocal = $localNames -contains $name
-  $onRemote = $remoteNames -contains $name
-  if ($onLocal -and -not $onRemote) {
-    Write-Host "  push $name"
-    & scp @sshOpts (Join-Path $localStore $name) "${SshTarget}:${remoteStore}/"
-    if ($LASTEXITCODE -ne 0) { throw "scp push failed for $name" }
-  } elseif ($onRemote -and -not $onLocal) {
-    Write-Host "  pull $name"
-    & scp @sshOpts "${SshTarget}:${remoteStore}/$name" (Join-Path $localStore $name)
-    if ($LASTEXITCODE -ne 0) { throw "scp pull failed for $name" }
-  }
-}
-$landed = @(Get-ChildItem -Path $localStore -Filter '*.enc' -File | ForEach-Object { $_.Name })
+$srcFiles = if ($toServer) { $localNames } else { $remoteNames }
+$dstFiles = if ($toServer) { $remoteNames } else { $localNames }
+$copyFiles = @($srcFiles | Where-Object { $dstFiles -notcontains $_ })
+$dstFilesAfter = @($dstFiles + $copyFiles | Select-Object -Unique)
 
 Write-Host "Opening tunnel local:${TunnelLocalPort} -> ${SshTarget}:${RemotePgPort} ..."
 $fwd = "127.0.0.1:${TunnelLocalPort}:127.0.0.1:${RemotePgPort}"
@@ -192,14 +209,19 @@ try {
   }
   if (-not $ok) { throw "Tunnel port $TunnelLocalPort never opened" }
 
-  function Invoke-Psql([string]$password, [int]$port, [string]$user, [string]$db, [string]$sql) {
+  $localDb = @{ Password = $LocalPgPassword; Port = $LocalPgPort; User = $LocalPgUser; Db = $Database }
+  $serverDb = @{ Password = $remoteEnv['POSTGRES_PASSWORD']; Port = $TunnelLocalPort; User = $remoteUser; Db = $remoteDb }
+  $src = if ($toServer) { $localDb } else { $serverDb }
+  $dst = if ($toServer) { $serverDb } else { $localDb }
+
+  function Invoke-Psql($conn, [string]$sql) {
     $prev = $env:PGPASSWORD
-    $env:PGPASSWORD = $password
+    $env:PGPASSWORD = $conn.Password
     $f = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.sql'
     $errf = "$f.err"
     [System.IO.File]::WriteAllText($f, $sql, $Utf8NoBom)
     try {
-      $out = & psql -h 127.0.0.1 -p $port -U $user -d $db -v ON_ERROR_STOP=1 -f $f 2>$errf
+      $out = & psql -h 127.0.0.1 -p $conn.Port -U $conn.User -d $conn.Db -v ON_ERROR_STOP=1 -f $f 2>$errf
       if ($LASTEXITCODE -ne 0) {
         $err = if (Test-Path $errf) { Get-Content $errf -Raw } else { '' }
         throw "psql failed: $err"
@@ -211,12 +233,12 @@ try {
     }
   }
 
-  function Get-CsvRows([string]$password, [int]$port, [string]$user, [string]$db, [string]$sql) {
+  function Get-CsvRows($conn, [string]$sql) {
     $prev = $env:PGPASSWORD
-    $env:PGPASSWORD = $password
+    $env:PGPASSWORD = $conn.Password
     $errf = [System.IO.Path]::GetTempFileName()
     try {
-      $raw = & psql -h 127.0.0.1 -p $port -U $user -d $db -v ON_ERROR_STOP=1 --csv -c $sql 2>$errf
+      $raw = & psql -h 127.0.0.1 -p $conn.Port -U $conn.User -d $conn.Db -v ON_ERROR_STOP=1 --csv -c $sql 2>$errf
       if ($LASTEXITCODE -ne 0) {
         $err = if (Test-Path $errf) { Get-Content $errf -Raw } else { '' }
         throw "psql failed: $err"
@@ -230,124 +252,146 @@ try {
     }
   }
 
+  function Test-True([string]$v) { $v -eq '1' -or $v -eq 't' -or $v -eq 'true' }
+
   $walletSql = "SELECT pubkey, name, status, key_ref, (is_primary::int)::text AS is_primary, created_at::text AS created_at, COALESCE(archived_at::text, '') AS archived_at FROM trader_wallets ORDER BY pubkey"
   $nonceSql = "SELECT pubkey, authority, status FROM trader_nonces ORDER BY pubkey"
   $moveSql = "SELECT id::text AS id, from_wallet, to_wallet, step, COALESCE(error, '') AS error, started_at::text AS started_at, COALESCE(finished_at::text, '') AS finished_at FROM wallet_moves ORDER BY started_at"
   $ruleSql = "SELECT rule_id::text AS rule_id, wallet FROM rule_wallets ORDER BY rule_id"
+  $ruleIdSql = "SELECT id::text AS id FROM strategy_rules"
 
   Write-Host "Reading wallet rows ..."
-  $localWallets = Get-CsvRows $LocalPgPassword $LocalPgPort $LocalPgUser $Database $walletSql
-  $serverWallets = Get-CsvRows $remoteEnv['POSTGRES_PASSWORD'] $TunnelLocalPort $remoteUser $remoteDb $walletSql
-  $localNonces = Get-CsvRows $LocalPgPassword $LocalPgPort $LocalPgUser $Database $nonceSql
-  $serverNonces = Get-CsvRows $remoteEnv['POSTGRES_PASSWORD'] $TunnelLocalPort $remoteUser $remoteDb $nonceSql
-  $serverMoves = Get-CsvRows $remoteEnv['POSTGRES_PASSWORD'] $TunnelLocalPort $remoteUser $remoteDb $moveSql
-  $localAssign = Get-CsvRows $LocalPgPassword $LocalPgPort $LocalPgUser $Database $ruleSql
-  $serverAssign = Get-CsvRows $remoteEnv['POSTGRES_PASSWORD'] $TunnelLocalPort $remoteUser $remoteDb $ruleSql
-  $serverRuleIds = @(Get-CsvRows $remoteEnv['POSTGRES_PASSWORD'] $TunnelLocalPort $remoteUser $remoteDb "SELECT id::text AS id FROM strategy_rules" | ForEach-Object { $_.id })
+  $srcWallets = Get-CsvRows $src $walletSql
+  $dstWallets = Get-CsvRows $dst $walletSql
+  $srcNonces = Get-CsvRows $src $nonceSql
+  $srcMoves = Get-CsvRows $src $moveSql
+  $dstMoves = Get-CsvRows $dst $moveSql
+  $srcAssign = Get-CsvRows $src $ruleSql
+  $dstAssign = Get-CsvRows $dst $ruleSql
+  $srcRuleIds = @(Get-CsvRows $src $ruleIdSql | ForEach-Object { $_.id })
+  $dstRuleIds = @(Get-CsvRows $dst $ruleIdSql | ForEach-Object { $_.id })
 
-  $serverByKey = @{}; foreach ($r in $serverWallets) { $serverByKey[$r.pubkey] = $r }
-  $localByKey = @{}; foreach ($r in $localWallets) { $localByKey[$r.pubkey] = $r }
-  $serverNonceKeys = @{}; foreach ($r in $serverNonces) { $serverNonceKeys[$r.pubkey] = $r }
-  $localNonceKeys = @{}; foreach ($r in $localNonces) { $localNonceKeys[$r.pubkey] = $r }
-  $serverAssignByRule = @{}; foreach ($r in $serverAssign) { $serverAssignByRule[$r.rule_id] = $r }
+  # A move changes wallets, nonces, and rules step by step; a copy taken
+  # halfway would land a state neither side ever had.
+  foreach ($m in @($srcMoves + $dstMoves)) {
+    if (-not $m.finished_at) { throw "A wallet move ($($m.id)) is in progress. Let it finish, then sync." }
+  }
 
-  $pushWallet = @()
-  $pullWallet = @()
-  foreach ($r in $localWallets) {
-    if ($serverByKey.ContainsKey($r.pubkey)) {
-      if ($serverByKey[$r.pubkey].key_ref -ne $r.key_ref) {
-        throw "Wallet $($r.pubkey) has key_ref '$($r.key_ref)' here and '$($serverByKey[$r.pubkey].key_ref)' on the server."
-      }
-      continue
+  $dstByKey = @{}; foreach ($r in $dstWallets) { $dstByKey[$r.pubkey] = $r }
+  $srcKeys = @($srcWallets | ForEach-Object { $_.pubkey })
+  $syncWallets = @()
+  foreach ($r in $srcWallets) {
+    if ($dstByKey.ContainsKey($r.pubkey) -and $dstByKey[$r.pubkey].key_ref -ne $r.key_ref) {
+      throw "Wallet $($r.pubkey) has key_ref '$($r.key_ref)' on $srcLabel and '$($dstByKey[$r.pubkey].key_ref)' on $dstLabel."
     }
-    if ($landed -notcontains $r.key_ref) { Write-Warning "Skip push of $($r.name): $($r.key_ref) is not on this machine."; continue }
-    $pushWallet += $r
+    if ($dstFilesAfter -notcontains $r.key_ref) { Write-Warning "Skip $($r.name): $($r.key_ref) is not on $srcLabel either."; continue }
+    $clash = $dstWallets | Where-Object { $_.pubkey -ne $r.pubkey -and $_.name.ToLower() -eq $r.name.ToLower() } | Select-Object -First 1
+    if ($clash -and $srcKeys -notcontains $clash.pubkey) {
+      throw "The name '$($r.name)' belongs to another wallet ($($clash.pubkey)) on $dstLabel. Rename one of them first."
+    }
+    $syncWallets += $r
   }
-  foreach ($r in $serverWallets) {
-    if ($localByKey.ContainsKey($r.pubkey)) { continue }
-    if ($landed -notcontains $r.key_ref) { Write-Warning "Skip pull of $($r.name): $($r.key_ref) is not on this machine."; continue }
-    $pullWallet += $r
-  }
+  $targetKeys = @($dstWallets | ForEach-Object { $_.pubkey }) + @($syncWallets | ForEach-Object { $_.pubkey })
+  $srcPrimary = $syncWallets | Where-Object { (Test-True $_.is_primary) -and $_.status -ne 'archived' } | Select-Object -First 1
 
-  $serverSql = New-Object System.Text.StringBuilder
-  [void]$serverSql.AppendLine('BEGIN;')
-  foreach ($r in $pushWallet) {
-    $status = if ($r.status -eq 'archived') { 'archived' } else { 'active' }
-    $archived = if ($status -eq 'archived' -and $r.archived_at) { (Sql-Quote $r.archived_at) + '::timestamptz' } else { 'NULL' }
-    [void]$serverSql.AppendLine(@"
-INSERT INTO trader_wallets (pubkey, name, status, key_ref, is_primary, created_at, archived_at)
-VALUES ($(Sql-Quote $r.pubkey), $(Sql-Quote $r.name), $(Sql-Quote $status), $(Sql-Quote $r.key_ref), false, $(Sql-Quote $r.created_at)::timestamptz, $archived)
-ON CONFLICT (pubkey) DO NOTHING;
-"@)
+  $sql = New-Object System.Text.StringBuilder
+  [void]$sql.AppendLine('BEGIN;')
+  if ($srcPrimary) { [void]$sql.AppendLine('UPDATE trader_wallets SET is_primary = false WHERE is_primary;') }
+  # Names move in two passes so two wallets swapping names never collide midway.
+  foreach ($r in $syncWallets) {
+    if ($dstByKey.ContainsKey($r.pubkey)) {
+      [void]$sql.AppendLine("UPDATE trader_wallets SET name = $(Sql-Quote ('~sync~' + $r.pubkey)) WHERE pubkey = $(Sql-Quote $r.pubkey);")
+    }
   }
-  $serverPubkeys = @($serverWallets | ForEach-Object { $_.pubkey }) + @($pushWallet | ForEach-Object { $_.pubkey })
-  foreach ($n in $localNonces) {
-    if ($serverNonceKeys.ContainsKey($n.pubkey)) { continue }
-    if ($serverPubkeys -notcontains $n.authority) { continue }
-    [void]$serverSql.AppendLine("INSERT INTO trader_nonces (pubkey, authority, status) VALUES ($(Sql-Quote $n.pubkey), $(Sql-Quote $n.authority), $(Sql-Quote $n.status)) ON CONFLICT (pubkey) DO NOTHING;")
-  }
-  foreach ($a in $localAssign) {
-    if ($serverAssignByRule.ContainsKey($a.rule_id)) { continue }
-    if ($serverRuleIds -notcontains $a.rule_id) { Write-Warning "Skip assignment $($a.rule_id): the server has no such rule."; continue }
-    if ($serverPubkeys -notcontains $a.wallet) { continue }
-    [void]$serverSql.AppendLine("INSERT INTO rule_wallets (rule_id, wallet) VALUES ($(Sql-Quote $a.rule_id)::uuid, $(Sql-Quote $a.wallet)) ON CONFLICT (rule_id) DO NOTHING;")
-  }
-  [void]$serverSql.AppendLine('COMMIT;')
-
-  $localSql = New-Object System.Text.StringBuilder
-  [void]$localSql.AppendLine('BEGIN;')
-  [void]$localSql.AppendLine('UPDATE trader_wallets SET is_primary = false WHERE is_primary;')
-  $localTargets = @{}
-  foreach ($r in $serverWallets) { if ($landed -contains $r.key_ref -or $localByKey.ContainsKey($r.pubkey)) { $localTargets[$r.pubkey] = $r } }
-  foreach ($r in $pullWallet) { $localTargets[$r.pubkey] = $r }
-  foreach ($r in $localTargets.Values) {
-    $primary = if ($r.is_primary -eq '1' -or $r.is_primary -eq 't' -or $r.is_primary -eq 'true') { 'true' } else { 'false' }
+  foreach ($r in $syncWallets) {
+    $primary = if ($srcPrimary -and $r.pubkey -eq $srcPrimary.pubkey) { 'true' } else { 'false' }
     $archived = if ($r.archived_at) { (Sql-Quote $r.archived_at) + '::timestamptz' } else { 'NULL' }
-    [void]$localSql.AppendLine(@"
+    [void]$sql.AppendLine(@"
 INSERT INTO trader_wallets (pubkey, name, status, key_ref, is_primary, created_at, archived_at)
 VALUES ($(Sql-Quote $r.pubkey), $(Sql-Quote $r.name), $(Sql-Quote $r.status), $(Sql-Quote $r.key_ref), $primary, $(Sql-Quote $r.created_at)::timestamptz, $archived)
 ON CONFLICT (pubkey) DO UPDATE SET
   name = EXCLUDED.name,
   status = EXCLUDED.status,
-  key_ref = EXCLUDED.key_ref,
   is_primary = EXCLUDED.is_primary,
   archived_at = EXCLUDED.archived_at;
 "@)
   }
-  foreach ($n in $serverNonces) {
-    if (-not $localTargets.ContainsKey($n.authority) -and -not $localByKey.ContainsKey($n.authority)) { continue }
-    [void]$localSql.AppendLine(@"
+  foreach ($n in $srcNonces) {
+    if ($targetKeys -notcontains $n.authority) { continue }
+    [void]$sql.AppendLine(@"
 INSERT INTO trader_nonces (pubkey, authority, status)
 VALUES ($(Sql-Quote $n.pubkey), $(Sql-Quote $n.authority), $(Sql-Quote $n.status))
 ON CONFLICT (pubkey) DO UPDATE SET authority = EXCLUDED.authority, status = EXCLUDED.status;
 "@)
   }
-  [void]$localSql.AppendLine('DELETE FROM wallet_moves;')
-  foreach ($m in $serverMoves) {
-    $known = { param($pk) $localTargets.ContainsKey($pk) -or $localByKey.ContainsKey($pk) }
-    if (-not (& $known $m.from_wallet) -or -not (& $known $m.to_wallet)) { continue }
+  foreach ($m in $srcMoves) {
+    if ($targetKeys -notcontains $m.from_wallet -or $targetKeys -notcontains $m.to_wallet) { continue }
     $err = if ($m.error) { Sql-Quote $m.error } else { 'NULL' }
-    $fin = if ($m.finished_at) { (Sql-Quote $m.finished_at) + '::timestamptz' } else { 'NULL' }
-    [void]$localSql.AppendLine(@"
+    [void]$sql.AppendLine(@"
 INSERT INTO wallet_moves (id, from_wallet, to_wallet, step, error, started_at, finished_at)
-VALUES ($(Sql-Quote $m.id)::uuid, $(Sql-Quote $m.from_wallet), $(Sql-Quote $m.to_wallet), $(Sql-Quote $m.step), $err, $(Sql-Quote $m.started_at)::timestamptz, $fin);
+VALUES ($(Sql-Quote $m.id)::uuid, $(Sql-Quote $m.from_wallet), $(Sql-Quote $m.to_wallet), $(Sql-Quote $m.step), $err, $(Sql-Quote $m.started_at)::timestamptz, $(Sql-Quote $m.finished_at)::timestamptz)
+ON CONFLICT (id) DO NOTHING;
 "@)
   }
-  foreach ($a in $serverAssign) {
-    if (-not $localTargets.ContainsKey($a.wallet) -and -not $localByKey.ContainsKey($a.wallet)) { continue }
-    [void]$localSql.AppendLine(@"
-INSERT INTO rule_wallets (rule_id, wallet)
-VALUES ($(Sql-Quote $a.rule_id)::uuid, $(Sql-Quote $a.wallet))
-ON CONFLICT (rule_id) DO UPDATE SET wallet = EXCLUDED.wallet;
-"@)
+  $srcAssignByRule = @{}; foreach ($a in $srcAssign) { $srcAssignByRule[$a.rule_id] = $a.wallet }
+  $dstAssignByRule = @{}; foreach ($a in $dstAssign) { $dstAssignByRule[$a.rule_id] = $a.wallet }
+  $assignChanges = 0
+  foreach ($rule in $srcRuleIds) {
+    if ($dstRuleIds -notcontains $rule) { continue }
+    $want = $srcAssignByRule[$rule]
+    $have = $dstAssignByRule[$rule]
+    if ($want -eq $have) { continue }
+    if ($want) {
+      if ($targetKeys -notcontains $want) { Write-Warning "Skip rule $rule assignment: wallet $want is not on $dstLabel."; continue }
+      [void]$sql.AppendLine("INSERT INTO rule_wallets (rule_id, wallet) VALUES ($(Sql-Quote $rule)::uuid, $(Sql-Quote $want)) ON CONFLICT (rule_id) DO UPDATE SET wallet = EXCLUDED.wallet;")
+    } else {
+      [void]$sql.AppendLine("DELETE FROM rule_wallets WHERE rule_id = $(Sql-Quote $rule)::uuid;")
+    }
+    $assignChanges++
   }
-  [void]$localSql.AppendLine('COMMIT;')
+  [void]$sql.AppendLine('COMMIT;')
 
-  Write-Host "Writing server rows (new wallets only; existing status stays) ..."
-  Invoke-Psql $remoteEnv['POSTGRES_PASSWORD'] $TunnelLocalPort $remoteUser $remoteDb $serverSql.ToString() | Out-Null
-  Write-Host "Writing local rows (server status, primary, nonces, and moves win) ..."
-  Invoke-Psql $LocalPgPassword $LocalPgPort $LocalPgUser $Database $localSql.ToString() | Out-Null
-  Write-Host "Wallet sync finished."
+  Write-Host ""
+  Write-Host "Plan ($srcLabel -> $dstLabel):"
+  Write-Host "  key files to copy: $($copyFiles.Count) $($copyFiles -join ', ')"
+  foreach ($r in $syncWallets) {
+    $verb = if ($dstByKey.ContainsKey($r.pubkey)) { 'update' } else { 'add' }
+    $tag = if ($srcPrimary -and $r.pubkey -eq $srcPrimary.pubkey) { ' primary' } else { '' }
+    Write-Host "  wallet ${verb}: $($r.name) ($($r.pubkey)) $($r.status)$tag"
+  }
+  if (-not $srcPrimary) { Write-Warning "$srcLabel has no active primary; the $dstLabel primary is left as it is." }
+  Write-Host "  rule assignments changed: $assignChanges"
+  if ($DryRun) { Write-Host "Dry run: nothing was written."; return }
+
+  foreach ($name in $copyFiles) {
+    if ($toServer) {
+      Write-Host "  push $name"
+      & scp @sshOpts (Join-Path $localStore $name) "${SshTarget}:${remoteStore}/"
+    } else {
+      Write-Host "  pull $name"
+      & scp @sshOpts "${SshTarget}:${remoteStore}/$name" (Join-Path $localStore $name)
+    }
+    if ($LASTEXITCODE -ne 0) { throw "scp failed for $name; no rows were written" }
+  }
+
+  Write-Host "Writing $dstLabel rows ..."
+  Invoke-Psql $dst $sql.ToString() | Out-Null
+
+  Write-Host "Checking $dstLabel ..."
+  $after = Get-CsvRows $dst $walletSql
+  $primaries = @($after | Where-Object { (Test-True $_.is_primary) -and $_.status -ne 'archived' })
+  if ($primaries.Count -ne 1) { Write-Warning "$dstLabel has $($primaries.Count) active primary wallets; set one on its Wallets page." }
+  $filesNow = if ($toServer) {
+    @(Invoke-Ssh "find '$remoteStore' -maxdepth 1 -type f -name '*.enc' -printf '%f\n'" | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+  } else {
+    @(Get-ChildItem -Path $localStore -Filter '*.enc' -File | ForEach-Object { $_.Name })
+  }
+  foreach ($r in $after) {
+    if ($r.status -ne 'archived' -and $filesNow -notcontains $r.key_ref) {
+      Write-Warning "$($r.name) ($($r.pubkey)) is active on $dstLabel but $($r.key_ref) is not there; it cannot sign."
+    }
+  }
+  Write-Host "Wallet sync finished. Press Refresh on the $dstLabel Wallets page to load the changes."
 } finally {
   if ($script:tunnel -and -not $script:tunnel.HasExited) { Stop-Process -Id $script:tunnel.Id -Force -ErrorAction SilentlyContinue }
   if ($script:askpassFile -and (Test-Path $script:askpassFile)) {

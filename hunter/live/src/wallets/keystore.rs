@@ -37,21 +37,23 @@ impl Kek {
     }
 }
 
-/// A wallet name is the filename stem. It cannot leave the keystore directory.
+/// A wallet name is a label only; the key file is named by pubkey. Trimmed,
+/// 1 to 32 characters, no control characters. Two names that differ only in
+/// case are the same name (`same_name`).
 pub fn valid_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
-        return false;
-    }
-    let rest_ok = chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    rest_ok && name.len() <= 32
+    let count = name.chars().count();
+    name == name.trim() && (1..=32).contains(&count) && !name.chars().any(char::is_control)
 }
 
-pub fn key_ref_for(name: &str) -> String {
-    format!("{name}.enc")
+/// Names compare case-insensitively, as `trader_wallets_name_ci` does.
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// A key file is named by its pubkey, so a rename never touches it and two
+/// wallets never compete for a filename.
+pub fn key_ref_for(pubkey: &str) -> String {
+    format!("{pubkey}.enc")
 }
 
 fn blob_path(dir: &Path, key_ref: &str) -> Result<PathBuf> {
@@ -155,12 +157,15 @@ mod tests {
     use solana_sdk::signature::Signer;
 
     #[test]
-    fn a_name_is_a_single_stem() {
+    fn a_name_is_a_trimmed_label() {
         assert!(valid_name("main"));
-        assert!(valid_name("scale-2"));
+        assert!(valid_name("Main Sniper 2"));
+        assert!(valid_name("../x"));
         assert!(!valid_name(""));
-        assert!(!valid_name("../x"));
-        assert!(!valid_name("Main"));
+        assert!(!valid_name(" main"));
+        assert!(!valid_name("a	b"));
+        assert!(!valid_name(&"x".repeat(33)));
+        assert!(same_name("Main", "main"));
     }
 
     #[test]
