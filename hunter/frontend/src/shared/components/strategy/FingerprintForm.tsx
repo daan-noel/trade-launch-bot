@@ -24,7 +24,7 @@ import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNa
 import type { HelpTip } from 'lib/strategy/strategyHelp';
 import { LabelTip } from './LabelTip';
 import { TagsEditor } from './TagsEditor';
-import { GuideButton } from './StrategyGuide';
+import { VolumeGuideButton } from './VolumeGuide';
 import {
   AxisConditionInput,
   axisConditionProblem,
@@ -415,7 +415,7 @@ export function FingerprintForm({
           <section className="flex max-h-[min(64vh,48rem)] flex-col gap-2 overflow-y-auto rounded-lg border border-white/10 bg-white/2 p-3">
             <h3 className="sticky top-0 z-10 -mx-3 -mt-3 border-b border-white/10 bg-bg-panel px-3 py-2 text-[13px] font-semibold text-text">
               <span className="mr-1.5 text-accent">2.</span>Tags: whose trades a rule can read
-              <GuideButton className="ml-2" />
+              <VolumeGuideButton className="ml-2" />
             </h3>
             <TagsEditor tags={s.tags} onChange={(t) => set('tags', t)} reg={registry} disabled={submitting} />
           </section>

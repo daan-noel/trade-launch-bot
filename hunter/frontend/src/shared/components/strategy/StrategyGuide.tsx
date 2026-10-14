@@ -1,6 +1,6 @@
-// The Guide: how a rule runs and what every word means. The workflow and the terms
-// are the only text written here; every rule part, span, tag matcher, family and metric
-// is rendered from the registry's one definition with its example.
+// The Guide: how a rule runs, drawn as a picture, then every word from the registry.
+// The picture is the only workflow text written here. Every rule part, span, tag matcher,
+// family and metric is rendered from the registry's one definition with its example.
 
 import { useMemo, useState, type ReactNode } from 'react';
 
@@ -10,6 +10,7 @@ import { Modal } from 'components/ui/Modal';
 import { cn } from 'lib/cn';
 import { metricRowStyle, metricTone } from 'lib/strategy/metricColors';
 import { useStrategyRegistry, type MetricSpec, type StrategyRegistry } from 'lib/strategy/registry';
+import { Card, Chip, DownJoin, Fall, Lane, Pass } from './GuidePicture';
 
 const TERMS: [string, string, string][] = [
   ['fingerprint', 'Which coins a rule watches (the creation shape), plus its tags.', 'cu_price = 1000 and 3 ix'],
@@ -43,6 +44,152 @@ function Row({ name, summary, example, note, mono = true }: { name: ReactNode; s
   );
 }
 
+function RuleWorkflow() {
+  return (
+    <div className="flex flex-col gap-4 pb-2">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span className="text-[13px] font-semibold text-text">One rule on one coin</span>
+        <span className="text-[11px] text-text-dim">Watch, then buy, then sell</span>
+        <span className="ml-auto flex items-center gap-3 text-[11px] text-text-mid">
+          <span className="flex items-center gap-1.5">
+            <span className="size-2 rounded-sm bg-green" />
+            Buys
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="size-2 rounded-sm border border-white/40" />
+            Tries again
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="size-2 rounded-sm bg-red" />
+            Stops the coin
+          </span>
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-start gap-4">
+        <div className="flex min-w-0 flex-1 flex-col pl-10">
+          <Pass n={1} title="Watch">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Card>
+                <strong className="text-[12px] text-text">Fingerprint matches</strong>
+                <Chip>Rule sees the coin</Chip>
+              </Card>
+              <Card>
+                <strong className="text-[12px] text-text">No match</strong>
+                <Chip tone="drop">Never seen</Chip>
+              </Card>
+            </div>
+          </Pass>
+          <DownJoin />
+          <Pass n={2} title="Buy When" hint={<Chip>On starts a try</Chip>}>
+            <Lane
+              ask={
+                <Card>
+                  <strong className="text-[12px] text-text">Only If</strong>
+                  <span className="text-[11px] text-text-dim">Must hold on that try</span>
+                </Card>
+              }
+              via="Holds"
+            >
+              <Chip>This try can buy</Chip>
+            </Lane>
+            <Fall label="Miss" />
+            <Lane ask={<Card><strong className="text-[12px] text-text">Only If misses</strong></Card>} via="Miss">
+              <Chip>This try fails</Chip>
+              <Chip tone="drop">Once Per Coin stops</Chip>
+              <Chip>Else tries again</Chip>
+            </Lane>
+          </Pass>
+          <DownJoin />
+          <Pass n={3} title="Keep Looking" hint={<span className="text-[11px] text-text-dim">When On may start the next try</span>}>
+            <div className="grid gap-2 sm:grid-cols-3">
+              <Card>
+                <strong className="text-[12px] text-text">Any Print</strong>
+                <span className="text-[11px] text-text-dim">Every trade and clock tick where On is true</span>
+              </Card>
+              <Card>
+                <strong className="text-[12px] text-text">Once Per Coin</strong>
+                <span className="text-[11px] text-text-dim">The first trade where On is true. A tick never tries</span>
+                <Chip tone="drop">A failed Only If stops</Chip>
+              </Card>
+              <Card>
+                <strong className="text-[12px] text-text">Once Per Slot</strong>
+                <span className="text-[11px] text-text-dim">Once per block, the first moment On is true</span>
+              </Card>
+            </div>
+            <Lane
+              ask={
+                <Card>
+                  <strong className="text-[12px] text-text">Give Up</strong>
+                  <span className="text-[11px] text-text-dim">A try that would otherwise buy. No Give Up line: the try buys</span>
+                </Card>
+              }
+              via="Holds"
+            >
+              <Chip tone="keep">Buys</Chip>
+            </Lane>
+            <Fall label="Miss" />
+            <Lane ask={<Card><strong className="text-[12px] text-text">Give Up misses</strong></Card>} via="Miss">
+              <Chip tone="drop">Stops the coin</Chip>
+            </Lane>
+          </Pass>
+          <DownJoin />
+          <Pass n={4} title="Sell" hint={<span className="text-[11px] text-text-dim">Every print. The first line that holds acts</span>}>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Chip>TP / SL, when set</Chip>
+              <span className="text-[12px] text-text-dim">→</span>
+              <Chip>Always</Chip>
+              <span className="text-[12px] text-text-dim">→</span>
+              <Chip>Open stage</Chip>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Card>
+                <strong className="text-[12px] text-text">A line holds</strong>
+                <Chip>Sells</Chip>
+                <Chip>Or moves stage</Chip>
+              </Card>
+              <Card>
+                <strong className="text-[12px] text-text">Deadline</strong>
+                <Chip>At-deadline lines once</Chip>
+                <Chip>Then the next stage</Chip>
+              </Card>
+            </div>
+          </Pass>
+          <DownJoin />
+          <Pass n={5} title="Again">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <Card>
+                <strong className="text-[12px] text-text">Buy again on</strong>
+                <Chip>Wait after the sell</Chip>
+                <Chip>Watch the coin again</Chip>
+                <span className="text-[11px] text-text-dim">Up to the buy limit</span>
+              </Card>
+              <Card>
+                <strong className="text-[12px] text-text">Buy again off</strong>
+                <Chip>One buy</Chip>
+              </Card>
+              <Card>
+                <strong className="text-[12px] text-text">Booked reason</strong>
+                <Chip>The line's label</Chip>
+                <Chip>First condition, if the label is blank</Chip>
+              </Card>
+            </div>
+          </Pass>
+        </div>
+        <Card className="w-full shrink-0 sm:w-52">
+          <strong className="text-[12px] text-text">Limits</strong>
+          <Chip>Fixed buy</Chip>
+          <Chip>Or % of pool</Chip>
+          <Chip>At once</Chip>
+          <Chip>Total</Chip>
+          <Chip>Exclusive</Chip>
+          <span className="text-[11px] text-text-dim">Two exclusive rules: the higher priority buys</span>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 function accepts(m: MetricSpec): string {
   const tag = m.tags === 'none' ? 'no tag' : m.tags === 'required' ? `needs a ${m.tag_level === 'wallet_class' ? 'wallet class' : 'tag'}` : 'tag optional';
   const spans = [
@@ -64,26 +211,9 @@ export function StrategyGuideBody({ reg }: { reg: StrategyRegistry }) {
   }, [reg, needle]);
   return (
     <div className="flex flex-col gap-1 pb-4">
-      <H>How a rule runs</H>
-      <ol className="list-decimal pl-5 text-[12px] leading-relaxed text-text-mid">
-        <li>
-          <b>Watch.</b> The coin matches the fingerprint, or the rule never sees it.
-        </li>
-        <li>
-          <b>Buy When.</b> On starts a try. Only If must hold, or this try fails. Once Per Coin has no next try, so that miss stops the coin.
-          <b>Keep Looking.</b> Any Print tries every trade and clock tick. Once Per Coin tries on the first matching trade, and a clock tick never tries. Once Per Slot tries once per block. Give Up failing stops the coin.
-        </li>
-        <li>
-          <b>Sell.</b> After the buy, every print: TP/SL when it is set, then Always, then the open stage. The first line that holds sells and/or moves.
-          At a deadline the at-deadline lines run once, then the rule moves to the next stage.
-        </li>
-        <li>
-          <b>Again.</b> After a sell, wait, then watch the coin again, up to the buy limit.
-        </li>
-        <li>
-          <b>Reason.</b> The sell is booked with the line's label, or with its first condition when the label is blank.
-        </li>
-      </ol>
+      <div className="border-b border-white/10 pb-4">
+        <RuleWorkflow />
+      </div>
 
       <H>Terms</H>
       {TERMS.map(([n, s, e]) => (
