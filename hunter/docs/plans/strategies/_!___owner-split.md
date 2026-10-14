@@ -12,54 +12,181 @@ Names in the tables are short on purpose. Each one is spelled out in [Terms](#te
 
 ## At a glance
 
-Two times. [Build](#build) runs once, offline, over the launch group's coins: Mark, Grow and Check label every trade, and the passing rows and the wallets that come back are stored on the fingerprint. [While a rule runs](#while-a-rule-runs) only reads that stored tag. Nothing writes it while rules run. A stored row does not store the wallet, and a stored wallet does not add its other lists.
+Two times. [Build](#build) runs once, offline, over the launch group's coins: Mark, Grow and Check label every trade, and the passing rows and the wallets that come back are stored on the fingerprint. [While a rule runs](#while-a-rule-runs) only reads that stored tag. Nothing writes it while rules run. A stored row does not store the wallet, and a stored wallet does not add its other lists. The build command is open work: [owner-split-builder.md](../../roadmap/owner-split-builder.md).
+
+The pictures restate the rules below in one place. A number here and a number in a rule table are the same number; the table is the definition.
 
 ### Build
 
-```text
-STORED ON THE FINGERPRINT, ONCE
-Mark, Grow and Check label the launch group's coins.
-A this-coin wallet is not stored.
+Workstation and lake only, never the live box.
 
-+------------------------------------------------------------------+
-|  ROWS: ix structure or ix core, see Match levels                 |
-+------------------------------------------------------------------+
-|  90% or more owner SOL on the group, 10 or more trades           |
-|  the fewest rows that cover every passing trade                  |
-+------------------------------------------------------------------+
-|  WALLETS THAT COME BACK                                          |
-+------------------------------------------------------------------+
-|  inside the recent window, at build time                         |
-|  Same slot, 20 coins                                             |
-|  Below zero, 2 coins                                             |
-|  Never sells                                                     |
-|  Stays in group                                                  |
-+------------------------------------------------------------------+
-|  CREATOR                                                         |
-|  the flag is on. the address is not stored.                      |
-+------------------------------------------------------------------+
+```text
+INPUT
+  launch group = coins born from one creation ix structure, plus one CU price
+                 or max_sol_cost
+  every coin has ended, so the dump is on the tape
+  every market trade of the build window (about two weeks)
+  no owner wallet is known yet
+        |
+        v
++-------------------------------------------------------------------------------+
+| STEP 1. MARK: label every trade on every coin                                 |
+|   this coin = the wallet is owner on that coin only, never stored             |
+|   stored    = written onto the fingerprint                                    |
++-------------------------------------------------------------------------------+
+| LAUNCH  Creator ............ signer of the create                 owner       |
+|         Same transaction ... other wallets in the create          owner       |
+| BIRTH   Instant buy ........ buy 15 ms or less after the create   owner       |
+|         Creation slot ...... later buy in that slot, wallet                   |
+|                              under the sniper counts              owner       |
+|         Creation-slot ...... 2+ wallets, buys 100 ms or less                  |
+|           bundle             apart, in that slot                  owner       |
+|         Bought twice ....... one wallet, 2+ buys in that slot     owner       |
+|         Sniper ............. 20+ coins, 10+ creators, 20% or                  |
+|                              less in the group, two weeks         OUTSIDER    |
+|         Rise continues ..... big early buy, creator buys again    owner       |
+|         Rise stops ......... big early buy the creator sells into OUTSIDER    |
+| BUNDLE  Several sells ...... 2+ Pump.fun sells in one tx          owner       |
+|         Several lists ...... 2+ buys within 100 ms on 2+                      |
+|                              ix structures                        owner       |
+|         Private list ....... 2+ wallets within 100 ms on one                  |
+|                              private ix structure                 owner       |
+|                              -> that ix structure is a row candidate          |
+| REPEAT  Dominates .......... ix structure + CU price is 20%+ of               |
+|                              trades or SOL over its run, 10+      owner       |
+|         Many wallets ....... ix structure, 20+ trades, 2+ wallets owner       |
+|         One wallet ......... one wallet, 20 uses                  OUTSIDER    |
+| PAIR    Same slot .......... 1x buy and 2x buy in one slot, the               |
+|                              smaller sells about 60 s later       owner       |
+|                              -> on 20+ coins both wallets come back           |
+| SCRIPT  Mostly here ........ 30%+ of the structure's trades in                |
+|                              the group, 5+ coins, 2+ creators     owner       |
+| WAKE    After silence ...... 2 s silence, then 5+ buys of one                 |
+|                              structure by repeat buyers           owner       |
+|         Used once .......... bought that structure once           OUTSIDER    |
+| HIDDEN  Below zero ......... a sell takes the bag below zero                  |
+|                              by more than 1% of the sell          owner       |
+|                              -> on 2+ coins the wallet comes back             |
+|         Same amount ........ A buys X and never sells, B sells                |
+|                              X (0.5%) and never bought            owner       |
+|         Never sells ........ 10+ coins, 20+ buys, no sell         owner       |
+|                              -> the wallet comes back                         |
+|         Matching holder .... the one wallet holding the                       |
+|                              missing amount                       owner       |
+|         Bag balances ....... bought what it sold                  OUTSIDER    |
+| LOYAL   Stays in group ..... 3+ group coins, 80%+ of its coins                |
+|                              in the group                         owner       |
+|                              -> the wallet comes back                         |
+|         Fresh cash-out ..... 4 coins or fewer ever, 3+ empty                  |
+|                              their bag in one slot                owner       |
+|         Wide service ....... too wide for 80%, old wallets        OUTSIDER    |
+| VICTIM  Sold into .......... owners sell after its buy, it                    |
+|                              exits under half its cost            OUTSIDER    |
++-------------------------------------------------------------------------------+
+        |
+        v
++-------------------------------------------------------------------------------+
+| STEP 2. GROW: start from the marked wallets, find the next one                |
+|   Backfill  Earlier buys ........ a marked wallet's earlier buys   owner      |
+|             The list stays put .. its app list is not copied to anyone        |
+|   Spread    Beside an owner ..... same tx as an owner wallet       owner      |
+|             First trade ......... 14 days quiet, first trade on this          |
+|                                   dev's coin through an owner ix              |
+|                                   structure or ix core             owner      |
+|   repeat until a round adds nobody (Stop)                                     |
+|                                                                               |
+|   NOT IN THE BUILD: Kept template, On a timer (need an ix template),          |
+|                     Fee payer, Service payer (need the fee payer)             |
++-------------------------------------------------------------------------------+
+        |
+        v
++-------------------------------------------------------------------------------+
+| STEP 3. CHECK: judge only a new ix structure or ix core Grow reuses           |
+|   Stay  Mark's answers ...... stay as Mark left them                          |
+|         This coin ........... a stored wallet stays; its list is not added    |
+|   Test  a set = one ix structure, one ix core, or one rule's wallets          |
+|         C1  40% or less of its sold tokens sold after the big drop starts     |
+|         C2  10% or less of its biggest bag left at the drop's bottom          |
+|         both on 60%+ of at least 5 coins with a drop                          |
+|           pass ............ Cashed out ..... stays owner                      |
+|           under 5 coins ... Too few coins .. stays owner, untested            |
+|           fail ............ Held the bag ... OUTSIDER, Grow runs again        |
++-------------------------------------------------------------------------------+
+        |
+        v
++-------------------------------------------------------------------------------+
+| STEP 4. CHOOSE THE ROWS: every ix structure read at seven match levels        |
+|                                                                               |
+|   level  row            matches on                                            |
+|   1      ix core        core, side                                            |
+|   2      ix core        core, side, marks                                     |
+|   3      ix core        core, side, CU price                                  |
+|   4      ix core        core, side, tip                                       |
+|   5      ix core        core, side, CU price, tip                             |
+|   6      ix core        core, side, marks, CU price, tip                      |
+|   7      ix structure   exact list, CU limit, CU price, tip                   |
+|                                                                               |
+|   a row passes at 90%+ owner SOL on the group and 10+ trades                  |
+|   one-coin rows pass too: Dominates (structure + CU price), Many wallets      |
+|   keep the fewest rows that still cover every passing trade, biggest first    |
+|   a plain shared core (a bare Pump.Fun: BUY) fails and stays out              |
++-------------------------------------------------------------------------------+
+        |
+        v
++-------------------------------------------------------------------------------+
+| STEP 5. CHOOSE THE WALLETS: only wallets that come back                       |
+|   Same slot (20 coins), Below zero (2 coins), Never sells, Stays in group     |
+|   and latest trade on the group inside the recent window                      |
+|   (the gap that covers 90% of returns, counted to the build's last coin)      |
+|   never stored: a this-coin wallet, a birth-bundle wallet, a proxy            |
++-------------------------------------------------------------------------------+
+        |
+        v
++===============================================================================+
+| WRITE tags.volume ON THE FINGERPRINT, ONCE, REPLACED WHOLE                    |
+|   match.ix_shape  ix structure rows and ix core rows (level core)             |
+|   match.wallet    the wallets that come back                                  |
+|   match.creator   true (the flag; the address is not stored)                  |
+|   sticky          true                                                        |
++===============================================================================+
 ```
 
 ### While a rule runs
 
-```text
-ONE PRINT
-Read only the stored tag. A yes stops.
-Sticky looks forward. A trade already printed stays as it was.
-Nothing is written.
+The live bin and lab replay run the same engine.
 
-+------------------------------------------------------------------+
-|  CREATOR, A STORED WALLET, A STORED ROW, OR STICKY ALREADY ON?   |
-+==================================================================+
-|  YES  owner.                                                     |
-|       sticky covers every later trade of that wallet here.       |
-+------------------------------------------------------------------+
+```text
+fingerprint loaded -> tag compiled once (ix_shape rows, wallet set, creator)
         |
-        no
         v
-+------------------------------------------------------------------+
-|  outsider.                                                       |
-+------------------------------------------------------------------+
+EACH TRADE, ONE PRINT
+        |
+        v
++-------------------------------------------------------------------------------+
+| 1. The creator, a stored wallet, or a wallet already sticky on this coin?     |
++-------------------------------------------------------------------------------+
+        | yes ---> OWNER
+        | no
+        v
++-------------------------------------------------------------------------------+
+| 2. Its ix structure matches a stored row?                                     |
+|    exact row  the same ordered list, plus its fee pins                        |
+|    core row   the same ix core, plus its side, marks and fee pins             |
++-------------------------------------------------------------------------------+
+        | yes ---> OWNER, and sticky starts for this wallet on this coin
+        | no
+        v
+     OUTSIDER
+
+Sticky covers this wallet's later trades on this coin only.
+A trade already printed never changes.
+
+Rules read the tag:  m_flow.buy_sol @volume   = owner money
+                     m_flow.buy_sol @!volume  = outsider money (real demand)
+
+Nothing is written: no row is added, no wallet is replaced.
+Sticky lives in memory, for this coin only.
+A stored tag ages; a rebuild reruns the Build offline.
 ```
 
 ## 1. Mark
