@@ -151,6 +151,7 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             .route("/wallets", web::get().to(handlers::wallets::list))
             .route("/wallets", web::post().to(handlers::wallets::create))
             .route("/wallets/import", web::post().to(handlers::wallets::import))
+            .route("/wallets/adopt-env", web::post().to(handlers::wallets::adopt_env))
             .route("/wallets/assignments", web::get().to(handlers::wallets::assignments))
             .route("/wallets/move", web::post().to(handlers::wallets::begin_move))
             .route("/wallets/move/resume", web::post().to(handlers::wallets::resume_move))
@@ -161,6 +162,10 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/wallets/{pubkey}/nonces",
                 web::post().to(handlers::wallets::provision),
+            )
+            .route(
+                "/wallets/{pubkey}/nonces/attach",
+                web::post().to(handlers::wallets::attach),
             )
             .route(
                 "/wallets/rules/{id}",

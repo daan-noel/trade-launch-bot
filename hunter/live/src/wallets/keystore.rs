@@ -89,7 +89,16 @@ pub fn write_keypair(dir: &Path, key_ref: &str, secret: &[u8], kek: &Kek) -> Res
     };
     std::fs::create_dir_all(dir)?;
     let path = blob_path(dir, key_ref)?;
-    std::fs::write(path, serde_json::to_vec_pretty(&blob)?)?;
+    // Never replace a file: it may be the only copy of another wallet's key.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => anyhow::anyhow!("keystore file {key_ref} already exists"),
+            _ => anyhow::Error::new(e).context(format!("create keystore file {}", path.display())),
+        })?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(&blob)?)?;
     Ok(())
 }
 
@@ -163,6 +172,18 @@ mod tests {
         write_keypair(&dir, "main.enc", &secret, &kek).unwrap();
         let back = read_keypair(&dir, "main.enc", &kek).unwrap();
         assert_eq!(kp.pubkey(), back.pubkey());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_second_write_to_the_same_name_keeps_the_first_key() {
+        let dir = std::env::temp_dir().join(format!("hunter-keystore-{}", uuid::Uuid::new_v4()));
+        let kek = Kek::from_passphrase("test-passphrase");
+        let first = Keypair::new();
+        write_keypair(&dir, "main.enc", &first.to_bytes(), &kek).unwrap();
+        let err = write_keypair(&dir, "main.enc", &Keypair::new().to_bytes(), &kek).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+        assert_eq!(read_keypair(&dir, "main.enc", &kek).unwrap().pubkey(), first.pubkey());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

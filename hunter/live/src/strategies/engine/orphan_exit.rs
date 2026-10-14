@@ -145,7 +145,8 @@ pub fn spawn_orphan_sell(
     let trade_repo = deps.trade_repo.clone();
     let registry = deps.registry.clone();
     let engine_fill_tx = deps.fill_tx.clone();
-    let wallet = deps.trader.wallet_pubkey();
+    // Siblings share this position's bag only under the wallet that bought it.
+    let (wallet, _) = deps.wallets.for_position(&position.wallet, &deps.trader);
     let exit_reason = position
         .exit_reason
         .clone()
@@ -508,7 +509,6 @@ pub async fn reconcile_externally_cleared_holdings(deps: &OrphanExitDeps) {
     if mints.is_empty() {
         return;
     }
-    let wallet = deps.trader.wallet_pubkey();
     let mut closed = 0u32;
     for mint in mints {
         let positions = match deps.strategy_repo.find_open_by_mint(&mint, "real").await {
@@ -519,8 +519,18 @@ pub async fn reconcile_externally_cleared_holdings(deps: &OrphanExitDeps) {
             }
         };
         for pos in positions {
-            let fill =
-                fill_from_latest_sell(&deps.trade_repo, &deps.trader, &wallet, &pos).await;
+            // The mint was found cleared under SOME wallet. Each row is cleared
+            // only when the wallet that bought it holds none.
+            let (wallet, trader) = deps.wallets.for_position(&pos.wallet, &deps.trader);
+            let net = deps
+                .trade_repo
+                .net_token_amount_by_wallet_and_mint(&wallet, &mint)
+                .await
+                .unwrap_or(i64::MAX);
+            if net > BAG_CLEARED_THRESHOLD_RAW {
+                continue;
+            }
+            let fill = fill_from_latest_sell(&deps.trade_repo, &trader, &wallet, &pos).await;
             match book_cleared_or_park(deps, &pos, fill).await {
                 Ok(()) => closed += 1,
                 Err(e) => warn!(position_id = %pos.id, "orphan_exit: cleared-Holding book failed: {e}"),

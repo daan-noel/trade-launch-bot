@@ -108,15 +108,7 @@ impl ReaperDeps {
         &self,
         position: &StrategyPosition,
     ) -> (String, Arc<PumpFunTrader>) {
-        let recorded = position.wallet.as_str();
-        if !recorded.is_empty() && recorded != "paper" {
-            let trader = self
-                .wallets
-                .trader(recorded)
-                .unwrap_or_else(|| self.trader.clone());
-            return (recorded.to_string(), trader);
-        }
-        (self.trader.wallet_pubkey(), self.trader.clone())
+        self.wallets.for_position(&position.wallet, &self.trader)
     }
 
     fn orphan_deps(&self) -> OrphanExitDeps {

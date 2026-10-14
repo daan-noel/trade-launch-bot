@@ -760,11 +760,6 @@ fn dispatch_buy(
             // writes and three registry churns for a wall that cannot have moved.
             // `Fatal` is the honest classification: its contract is exactly "a
             // resend would hit the same wall".
-            if !real_deps.trader.can_commit_buy(lamports) {
-                warn!(mint = %mint_s, lamports, "real buy blocked by SOL balance-floor guard");
-                fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
-                return;
-            }
             let signing_wallet = {
                 let resolved = real_deps.wallets.directory.resolve(rule.0);
                 if resolved.is_empty() {
@@ -773,10 +768,24 @@ fn dispatch_buy(
                     resolved
                 }
             };
-            let signing_trader = real_deps
-                .wallets
-                .trader(&signing_wallet)
-                .unwrap_or_else(|| real_deps.trader.clone());
+            // A rule names a wallet this box cannot sign for: refuse rather than
+            // spend another wallet's SOL under that wallet's name. The offline
+            // runtime (no wallets loaded) keeps the process trader.
+            let signing_trader = match real_deps.wallets.trader(&signing_wallet) {
+                Some(trader) => trader,
+                None if real_deps.wallets.is_empty() => real_deps.trader.clone(),
+                None => {
+                    warn!(mint = %mint_s, wallet = %signing_wallet, "real buy: wallet is not loaded");
+                    fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
+                    return;
+                }
+            };
+            // The floor reads the wallet that pays, not the primary.
+            if !signing_trader.can_commit_buy(lamports) {
+                warn!(mint = %mint_s, lamports, wallet = %signing_wallet, "real buy blocked by SOL balance-floor guard");
+                fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
+                return;
+            }
             if let Some(max_sol) = settings.borrow().max_committed_sol {
                 let ceiling = sol_to_lamports(max_sol).max(0) as u64;
                 let committed = signing_trader.committed_lamports();

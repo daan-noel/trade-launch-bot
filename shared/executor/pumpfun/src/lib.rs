@@ -46,7 +46,7 @@ pub use executor_core::config::{
 };
 pub use executor_core::error::{Result, TradeError};
 pub use executor_core::{
-    classify_swap_revert, pump_error_name, AccountDelta, DecoStep, Engine, IxLayout, LayoutKind,
+    check_nonce_account, classify_swap_revert, pump_error_name, AccountDelta, DecoStep, Engine, IxLayout, LayoutKind,
     NonceAuthCheck, NonceTxState, SigStatus, SimOutcome, SwapDirection, SwapRetryDecision,
     SwapRoute, Venue, VenueId, AMM_BUY_SLIPPAGE_BELOW_MIN_BASE, AMM_EXCEEDED_SLIPPAGE,
     AMM_INVALID_POOL_V2, ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE,

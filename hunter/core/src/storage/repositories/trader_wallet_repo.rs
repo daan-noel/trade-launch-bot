@@ -207,9 +207,12 @@ impl TraderWalletRepo {
             .collect())
     }
 
+    /// The caller has the chain's word that `authority` owns `pubkey`, so a row
+    /// naming another authority, or retired, is overwritten.
     pub async fn insert_nonce(&self, pubkey: &str, authority: &str) -> sqlx::Result<()> {
         sqlx::query(
-            "INSERT INTO trader_nonces (pubkey, authority, status) VALUES ($1, $2, 'live')",
+            "INSERT INTO trader_nonces (pubkey, authority, status) VALUES ($1, $2, 'live') \
+             ON CONFLICT (pubkey) DO UPDATE SET authority = EXCLUDED.authority, status = 'live'",
         )
         .bind(pubkey)
         .bind(authority)

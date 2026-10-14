@@ -95,7 +95,7 @@ pub async fn resume(pool: &PgPool, runtime: &WalletRuntime) -> Result<WalletMove
     }
 }
 
-fn require_loaded(runtime: &WalletRuntime, pubkey: &str) -> Result<()> {
+pub(super) fn require_loaded(runtime: &WalletRuntime, pubkey: &str) -> Result<()> {
     match runtime.signer(pubkey) {
         Some(key) if key.pubkey().to_string() == pubkey => Ok(()),
         _ => bail!("wallet {pubkey} is not loaded"),
@@ -345,47 +345,7 @@ async fn verify(repo: &TraderWalletRepo, from: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn provision_nonces(
-    pool: &PgPool,
-    runtime: &WalletRuntime,
-    wallet: &str,
-    count: u8,
-) -> Result<u8> {
-    if !runtime.can_manage_keys() {
-        bail!("wallet keystore is not configured");
-    }
-    if count == 0 || count > 16 {
-        bail!("nonce count must be 1 to 16");
-    }
-    require_loaded(runtime, wallet)?;
-    let owner = runtime.signer(wallet).context("wallet key")?;
-    let rpc = RpcClient::new(runtime.rpc_url().to_string());
-    let rent = rpc.get_minimum_balance_for_rent_exemption(80).await?;
-    let repo = TraderWalletRepo::new(pool.clone());
-    let mut made = 0u8;
-    for _ in 0..count {
-        let nonce = Keypair::new();
-        let ixs = system_instruction::create_nonce_account(
-            &owner.pubkey(),
-            &nonce.pubkey(),
-            &owner.pubkey(),
-            rent,
-        );
-        send(runtime, &owner, ixs, &[&nonce]).await?;
-        repo.insert_nonce(&nonce.pubkey().to_string(), wallet).await?;
-        made += 1;
-    }
-    let nonces = repo
-        .nonces_for(wallet)
-        .await?
-        .into_iter()
-        .map(|n| n.pubkey.parse())
-        .collect::<Result<Vec<Pubkey>, _>>()?;
-    runtime.rebuild(wallet, nonces).await?;
-    Ok(made)
-}
-
-async fn send(
+pub(super) async fn send(
     runtime: &WalletRuntime,
     payer: &Arc<Keypair>,
     ixs: Vec<solana_sdk::instruction::Instruction>,

@@ -447,41 +447,47 @@ impl Engine {
         let mut out = Vec::with_capacity(self.nonce_pubkeys.len());
         for pk in &self.nonce_pubkeys {
             let check = match self.rpc.get_account(pk).await {
-                Ok(account) => match nonce_utils::state_from_account(&account) {
-                    Ok(State::Initialized(data)) => NonceAuthCheck {
-                        pubkey: *pk,
-                        initialized: true,
-                        authority: Some(data.authority),
-                        matches_wallet: data.authority == wallet,
-                        error: None,
-                    },
-                    Ok(_) => NonceAuthCheck {
-                        pubkey: *pk,
-                        initialized: false,
-                        authority: None,
-                        matches_wallet: false,
-                        error: Some("account is not an initialized nonce".to_string()),
-                    },
-                    Err(e) => NonceAuthCheck {
-                        pubkey: *pk,
-                        initialized: false,
-                        authority: None,
-                        matches_wallet: false,
-                        error: Some(format!("decode nonce state: {e}")),
-                    },
-                },
-                Err(e) => NonceAuthCheck {
-                    pubkey: *pk,
-                    initialized: false,
-                    authority: None,
-                    matches_wallet: false,
-                    error: Some(format!("get_account: {e}")),
-                },
+                Ok(account) => check_nonce_account(*pk, Some(&account), &wallet),
+                Err(e) => NonceAuthCheck::failed(*pk, format!("get_account: {e}")),
             };
             out.push(check);
         }
         out
     }
+}
+
+impl NonceAuthCheck {
+    fn failed(pubkey: Pubkey, error: String) -> Self {
+        Self { pubkey, initialized: false, authority: None, matches_wallet: false, error: Some(error) }
+    }
+}
+
+/// Decode one fetched account as a nonce whose authority should be `wallet`.
+/// `None` is an account that does not exist. The one decode behind
+/// [`Engine::check_nonce_authorities`] and a host's batched check of nonce
+/// accounts it has not configured yet.
+pub fn check_nonce_account(
+    pubkey: Pubkey,
+    account: Option<&solana_sdk::account::Account>,
+    wallet: &Pubkey,
+) -> NonceAuthCheck {
+    let Some(account) = account else {
+        return NonceAuthCheck::failed(pubkey, "account does not exist".to_string());
+    };
+    match nonce_utils::state_from_account(account) {
+        Ok(State::Initialized(data)) => NonceAuthCheck {
+            pubkey,
+            initialized: true,
+            authority: Some(data.authority),
+            matches_wallet: data.authority == *wallet,
+            error: None,
+        },
+        Ok(_) => NonceAuthCheck::failed(pubkey, "account is not an initialized nonce".to_string()),
+        Err(e) => NonceAuthCheck::failed(pubkey, format!("decode nonce state: {e}")),
+    }
+}
+
+impl Engine {
 
     pub async fn fetch_nonce_hash_async(&self, pubkey: &Pubkey) -> Result<Hash> {
         let account = self

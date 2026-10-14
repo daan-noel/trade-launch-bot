@@ -435,7 +435,8 @@ pub async fn close_position(
             }
 
             // Bag already gone (Trade sell / sibling) — book closed, no sell RPC.
-            let wallet = app_state.trader.wallet_pubkey();
+            // Read under the wallet that bought it: another wallet's net is not this bag.
+            let (wallet, trader) = app_state.wallets.for_position(&pos.wallet, &app_state.trader);
             if let Ok(net) = app_state
                 .trade_repo()
                 .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
@@ -444,7 +445,7 @@ pub async fn close_position(
                 if net <= BAG_CLEARED_THRESHOLD_RAW {
                     let fill = orphan_exit::fill_from_latest_sell(
                         &app_state.trade_repo(),
-                        &app_state.trader,
+                        &trader,
                         &wallet,
                         &pos,
                     )
@@ -498,7 +499,7 @@ async fn verify_position(
 
     match pos.status.as_str() {
         "ExitUnconfirmed" => {
-            let wallet = app_state.trader.wallet_pubkey();
+            let (wallet, trader) = app_state.wallets.for_position(&pos.wallet, &app_state.trader);
             let net = match app_state
                 .trade_repo()
                 .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
@@ -513,7 +514,7 @@ async fn verify_position(
             if net <= BAG_CLEARED_THRESHOLD_RAW {
                 let fill = orphan_exit::fill_from_latest_sell(
                     &app_state.trade_repo(),
-                    &app_state.trader,
+                    &trader,
                     &wallet,
                     &pos,
                 )

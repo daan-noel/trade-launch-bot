@@ -22,7 +22,7 @@ use actix_web::{web, App, HttpServer};
 // `http_auth` middleware — one SSOT copy across hunter live/lab + forge live.
 use http_auth::{require_bearer_auth, ApiAuth};
 
-use live::trader::{PumpFunTrader, TraderConfig, SENDER_KEEP_WARM_MS};
+use live::trader::PumpFunTrader;
 
 fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
     let bytes = bs58::decode(base58_key)
@@ -1089,44 +1089,19 @@ async fn run() -> anyhow::Result<()> {
         .map(|s| s.parse::<solana_sdk::pubkey::Pubkey>())
         .collect::<Result<Vec<_>, _>>()
         .context("Failed to parse NONCE_ACCOUNTS as pubkeys")?;
+    let wallet_factory = live::wallets::TraderFactory {
+        rpc_url: settings.helius_rpc_url.clone(),
+        sender_urls: secrets.helius_sender_urls.clone(),
+        fees: fee_tuning.clone(),
+    };
+    // A failed init is degraded, never fatal: every buy/sell/claim path bails at the
+    // "Not initialized" guard, so trading fail-closes on its own. Killing the process
+    // instead takes the DB pools, ingest and the HTTP surface down with it, which turns
+    // one bad Helius reply into a dark box. Boot on, trade never.
     let env_trader = if let Some(key) = secrets.wallet_private_key.as_deref() {
-        let signer: Arc<dyn solana_sdk::signature::Signer + Send + Sync> =
-            Arc::new(parse_wallet_keypair(key).context("Failed to parse trader wallet private key")?);
-        let mut trader_config = TraderConfig::new(
-            settings.helius_rpc_url.clone(),
-            secrets.helius_sender_urls.clone(),
-            signer,
-            nonce_accounts.clone(),
-        );
-        trader_config.jito.min_sol = fee_tuning.jito_min_tip_sol;
-        trader_config.jito.max_sol = fee_tuning.jito_max_tip_sol;
-        trader_config.jito.percentile = fee_tuning.jito_tip_percentile;
-        trader_config.compute.price_micro_lamports = fee_tuning.cu_price_micro_lamports;
-        // RPC-reduction tuning: the LaserStream push hooks below keep the blockhash
-        // cache ~400 ms fresh and re-arm nonce slots at feed speed, so the executor's
-        // pollers are demoted to stall fallbacks. 10 s watchdog tick (fetches only
-        // when the feed stalls); 30 s max-age stays well inside the ~60 s hash
-        // validity window; the 2 s first-delay lets the nonce push win before the
-        // fallback poll spends reads.
-        trader_config.cache.blockhash_refresh_ms = 10_000;
-        trader_config.cache.blockhash_max_age_ms = 30_000;
-        trader_config.nonce.refresh_first_delay_ms = 2_000;
-        // A selective rule buys minutes apart and the Sender drops an idle socket
-        // after 10 s, so without the pinger every buy pays DNS + TCP on the send.
-        trader_config.sender.keep_warm_ms = Some(SENDER_KEEP_WARM_MS);
-        let trader_config = Arc::new(trader_config);
-
-        // A failed init is degraded, never fatal: it leaves `global_account` unset, and
-        // every buy/sell/claim path bails at that "Not initialized" guard before it reads
-        // rent, so trading fail-closes on its own. Killing the process instead takes the
-        // DB pools, ingest and the whole HTTP surface down with it, which turns one bad
-        // Helius reply into a dark box: the read-only pages serve Postgres and need no
-        // trader at all. Boot on, trade never.
-        let mut trader = PumpFunTrader::new(trader_config);
-        if let Err(e) = trader.initialize().await {
-            error!("Trader init failed — NO-TRADE mode, trading stays fail-closed: {e:#}");
-        }
-        Some(Arc::new(trader))
+        let signer = Arc::new(parse_wallet_keypair(key).context("Failed to parse trader wallet private key")?);
+        let (trader, init_error) = wallet_factory.build(signer.clone(), nonce_accounts.clone()).await;
+        Some(live::wallets::EnvTrader { trader, signer, nonces: nonce_accounts.clone(), init_error })
     } else {
         None
     };
@@ -1135,10 +1110,10 @@ async fn run() -> anyhow::Result<()> {
     // one-shot, no-/low-SOL validation of the latency changes against live infra,
     // then exits before touching the DB / ingest / HTTP server. See `run_probe`.
     if std::env::args().nth(1).as_deref() == Some("probe") {
-        let trader = env_trader
+        let env = env_trader
             .as_ref()
             .context("probe needs WALLET_PRIVATE_KEY")?;
-        return run_probe(trader, std::env::args().skip(2).collect()).await;
+        return run_probe(&env.trader, std::env::args().skip(2).collect()).await;
     }
 
     // Database — connect the three workload-isolated pools and run migrations. `db`
@@ -1151,31 +1126,24 @@ async fn run() -> anyhow::Result<()> {
         batch: batch_db,
     } = trading_core::storage::postgres::connect(&settings).await?;
 
-    let wallet_factory = live::wallets::TraderFactory {
-        rpc_url: settings.helius_rpc_url.clone(),
-        sender_urls: secrets.helius_sender_urls.clone(),
-        fees: fee_tuning.clone(),
-    };
+    // The env key runs beside the registry until it is brought in, so importing
+    // another wallet never strands the env wallet's open bags.
     let wallets = match live::wallets::load_keystore(&db, wallet_factory.clone()).await? {
         Some(runtime) => {
+            if let Some(env) = env_trader {
+                runtime.adopt_env(env);
+            }
+            runtime.fallback_primary();
             if runtime.is_empty() {
-                let trader = env_trader.clone().context(
-                    "WALLET_KEYSTORE has no active wallet and WALLET_PRIVATE_KEY is unset",
-                )?;
-                runtime.adopt_legacy(trader.wallet_pubkey(), trader, nonce_accounts.clone());
+                anyhow::bail!("WALLET_KEYSTORE has no active wallet and WALLET_PRIVATE_KEY is unset");
             }
             Arc::new(runtime)
         }
         None => {
-            let trader = env_trader.clone().context(
+            let env = env_trader.context(
                 "WALLET_KEYSTORE is unset and WALLET_PRIVATE_KEY is missing",
             )?;
-            Arc::new(live::wallets::WalletRuntime::legacy(
-                trader.wallet_pubkey(),
-                trader,
-                nonce_accounts.clone(),
-                wallet_factory,
-            ))
+            Arc::new(live::wallets::WalletRuntime::legacy(env, wallet_factory))
         }
     };
     let trader = wallets.primary_trader();
