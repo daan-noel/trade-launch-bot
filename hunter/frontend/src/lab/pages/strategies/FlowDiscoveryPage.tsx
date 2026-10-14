@@ -55,16 +55,18 @@ import {
   suggestStructure,
   type StructureSuggestion,
 } from '@lab/components/flow/flowDiscoverySuggest';
-import { StructureTable, type RankedState } from '@lab/components/flow/StructureTable';
+import { StructureTable, type BudgetState, type RankedState } from '@lab/components/flow/StructureTable';
 import { TokenPreviewPanel } from '@lab/components/flow/TokenPreviewPanel';
 import { defaultTagName, flowTagOf, shapeTag, tagLabel, withDraftMatch } from 'lib/flow/tapeClassify';
 import {
   addPatternRows,
   anyRowMatchesTrade,
+  feeMaskActive,
   patternRowKey,
   removePatternRows,
   rowFamilyState,
   rowFromTrade,
+  rowPinsFee,
   serializeIxPatternRows,
   togglePatternRow,
   type IxPatternFeeMask,
@@ -94,6 +96,7 @@ import {
   type FlowDiscoveryStartArgs,
 } from '@lab/store/labEndpoints';
 import type {
+  FlowDiscoveryFeeVariant,
   FlowDiscoveryGroup,
   FlowDiscoveryResult,
   FlowDiscoveryStructure,
@@ -272,19 +275,59 @@ function stagedRow(
   return row;
 }
 
+/** Every fee field: what a budget check pins when no fee-pin field is on. */
+const ALL_FEE_PINS: IxPatternFeeMask = { cu_limit: true, cu_price: true, tip_lamports: true };
+
+/**
+ * The row a budget check writes: the shape (or its core) pinned to that one budget,
+ * through the fee-pin fields when any are on, else through every field it carries.
+ * `null` when the fields on pick nothing the budget carries - the row would be the
+ * bare shape, which is the row check's job.
+ */
+function budgetRow(
+  labels: readonly string[],
+  core: boolean,
+  v: FlowDiscoveryFeeVariant,
+  feePins: IxPatternFeeMask,
+): IxPatternRow | null {
+  const row = rowFromTrade(core ? coreLabels(labels) : labels, v, feeMaskActive(feePins) ? feePins : ALL_FEE_PINS);
+  if (!rowPinsFee(row)) return null;
+  if (core) row.level = 'core';
+  return row;
+}
+
 /**
  * The part of a structure's gross the rows match, read per side: a core row may pin
- * a side, so each side's SOL counts when a row accepts that side. The budget a row
- * may pin is known only on a structure whose trades all carry one, so there a
- * pinned row counts; on a structure with several budgets only unpinned rows do.
+ * a side, so each side's SOL counts when a row accepts that side. Each listed budget
+ * is read with its own buy/sell split, so a row pinned to it counts exactly its
+ * share; the rest of the gross (trades with no fee reading, budgets past the clip)
+ * counts only for unpinned rows. A result cached before the per-budget split falls
+ * back to the one budget of a single-budget structure.
  */
 function coveredGross(rows: readonly IxPatternRow[], s: FlowDiscoveryStructure): number {
   const sides = s.buy_sol + s.sell_sol;
   if (sides <= 0) return anyRowMatchesTrade(rows, s.ix_labels, {}) ? s.gross_sol : 0;
-  const budget = feeSpreadBand(s) === 'single' ? (dominantFeeVariant(s) ?? {}) : {};
+  const variants = s.fee_variants ?? [];
+  const split = variants.length > 0 && variants.every((v) => v.buy_sol != null && v.sell_sol != null);
+  const parts: [budget: Partial<FlowDiscoveryFeeVariant>, buy: number, sell: number][] = [];
+  if (split) {
+    let buyRest = s.buy_sol;
+    let sellRest = s.sell_sol;
+    for (const v of variants) {
+      parts.push([v, v.buy_sol ?? 0, v.sell_sol ?? 0]);
+      buyRest -= v.buy_sol ?? 0;
+      sellRest -= v.sell_sol ?? 0;
+    }
+    parts.push([{}, Math.max(0, buyRest), Math.max(0, sellRest)]);
+  } else {
+    const budget = feeSpreadBand(s) === 'single' ? (dominantFeeVariant(s) ?? {}) : {};
+    parts.push([budget, s.buy_sol, s.sell_sol]);
+  }
   let matched = 0;
-  if (s.buy_sol > 0 && anyRowMatchesTrade(rows, s.ix_labels, { ...budget, side: 'buy' })) matched += s.buy_sol;
-  if (s.sell_sol > 0 && anyRowMatchesTrade(rows, s.ix_labels, { ...budget, side: 'sell' })) matched += s.sell_sol;
+  for (const [budget, buy, sell] of parts) {
+    if (buy > 0 && anyRowMatchesTrade(rows, s.ix_labels, { ...budget, side: 'buy' })) matched += buy;
+    if (sell > 0 && anyRowMatchesTrade(rows, s.ix_labels, { ...budget, side: 'sell' })) matched += sell;
+  }
   return (s.gross_sol * matched) / sides;
 }
 
@@ -498,6 +541,18 @@ export function FlowDiscoveryPage() {
     [draftPatterns, rowFor],
   );
   const structureState = useCallback((s: FlowDiscoveryStructure) => stateOf(s.ix_labels), [stateOf]);
+  /** A budget reads `on` through its own pinned row or the shape's broad row - never
+   *  through a sibling budget's row, which is what makes each one separately checkable. */
+  const budgetStateOf = useCallback(
+    (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant): BudgetState => {
+      const row = budgetRow(s.ix_labels, isCoreStage, v, feePins);
+      if (!row) return 'none';
+      const key = patternRowKey(row);
+      if (draftPatterns.some((r) => patternRowKey(r) === key)) return 'on';
+      return rowFamilyState(draftPatterns, row) === 'broad' ? 'broad' : 'off';
+    },
+    [isCoreStage, feePins, draftPatterns],
+  );
   const flowIx = useMemo(() => {
     if (!selectedGroup) return null;
     let volumeGross = 0;
@@ -876,6 +931,18 @@ export function FlowDiscoveryPage() {
       setApplyOk(null);
     },
     [rowFor],
+  );
+
+  /** A Budget-cell check: the shape pinned to that one budget. Under a broad row it
+   *  narrows the shape to this budget, the same rule a pinned trades-table click follows. */
+  const toggleBudget = useCallback(
+    (labels: string[], v: FlowDiscoveryFeeVariant) => {
+      const row = budgetRow(labels, isCoreStage, v, feePins);
+      if (!row) return;
+      setDraftPatterns((prev) => togglePatternRow(prev, row));
+      setApplyOk(null);
+    },
+    [isCoreStage, feePins],
   );
 
   /** A preview-table badge click. The value already carries the grain and, on an
@@ -1490,6 +1557,8 @@ export function FlowDiscoveryPage() {
                   liftDefined={liftDefined}
                   previewKeys={previewKeys}
                   onToggle={toggleStructure}
+                  budgetStateOf={budgetStateOf}
+                  onToggleBudget={toggleBudget}
                   onFilteredRowsChange={handleFilteredStructures}
                 />
               </div>

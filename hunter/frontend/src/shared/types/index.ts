@@ -490,6 +490,10 @@ export interface FlowDiscoveryFeeVariant {
   priority_lamports: number | null;
   n_trades: number;
   gross_sol: number;
+  /** The buy and sell sides of `gross_sol`. Absent on a result cached before the
+   *  split. */
+  buy_sol?: number;
+  sell_sol?: number;
 }
 
 /** One ranked ix-structure from a flow-discovery group. */

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
 import { parseNumericPredicate } from 'components/table/numericFilter';
@@ -7,7 +7,6 @@ import { Badge } from 'components/ui/Badge';
 import { Checkbox } from 'components/ui/Checkbox';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import {
-  dominantFeeVariant,
   feeConcentration,
   feeSpreadBand,
   feeVariantTitle,
@@ -22,7 +21,7 @@ import {
 import { signalGradeClass } from 'lib/signedTone';
 import { tagLabel } from 'lib/flow/tapeClassify';
 import { DISCOVERY_COL_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
-import type { FlowDiscoveryStructure } from 'types';
+import type { FlowDiscoveryFeeVariant, FlowDiscoveryStructure } from 'types';
 
 import {
   firstSlotPurity,
@@ -51,6 +50,104 @@ function StateCheckbox({ state, onChange, title }: { state: RankedState; onChang
     if (ref.current) ref.current.indeterminate = state === 'part';
   }, [state]);
   return <Checkbox ref={ref} checked={state === 'on'} onChange={onChange} title={title} />;
+}
+
+/** How the draft holds one budget of a row: `on` = its pinned row is listed,
+ *  `broad` = the shape's unpinned row is (covering every budget), `off` = neither,
+ *  `none` = the fee-pin fields on pick nothing this budget carries, so a check
+ *  would stage the bare shape. */
+export type BudgetState = 'on' | 'broad' | 'off' | 'none';
+
+/** The Budget cell: the head budget, and behind the arrow every budget as its own
+ *  checkable line. Expansion is per cell, so it survives a re-sort. */
+function BudgetCell({
+  s,
+  budgetStateOf,
+  onToggleBudget,
+  tag,
+}: {
+  s: FlowDiscoveryStructure;
+  budgetStateOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => BudgetState;
+  onToggleBudget: (labels: string[], v: FlowDiscoveryFeeVariant) => void;
+  tag: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const variants = s.fee_variants ?? [];
+  const top = variants[0];
+  if (!top) {
+    // No variant at all: either the result predates the field, or every trade
+    // of this build carries no reading. Both mean "nothing to pin", and the
+    // unknown count is what tells them apart.
+    return (
+      <span className="text-text-dim/50" title={feeVariantTitle(s)}>
+        {s.fee_unknown_trades ? 'unknown' : '—'}
+      </span>
+    );
+  }
+  const n = s.fee_variant_count ?? variants.length;
+  const staged = variants.filter((v) => budgetStateOf(s, v) === 'on').length;
+  const known = variants.reduce((sum, v) => sum + v.n_trades, 0);
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-1 whitespace-nowrap hover:text-text"
+        title={`${feeVariantTitle(s)}\n\nClick to ${open ? 'hide' : 'list'} every budget with its own check.`}
+      >
+        <span className="text-text-dim/60">{open ? '▾' : '▸'}</span>
+        <span className={n === 1 ? 'text-text' : 'text-text-dim'}>{formatFeeVariant(top)}</span>
+        {n > 1 && <span className="text-text-dim/60">+{n - 1}</span>}
+        {staged > 0 && (
+          <Badge variant="info" size="sm">
+            {staged} pinned
+          </Badge>
+        )}
+      </button>
+      {open && (
+        <div className="flex flex-col gap-0.5 text-left text-[11px]">
+          {variants.map((v) => {
+            const state = budgetStateOf(s, v);
+            const pct = known > 0 ? ((v.n_trades / known) * 100).toFixed(0) : '0';
+            return (
+              <label
+                key={`${v.cu_limit}|${v.cu_price}|${v.tip_lamports}`}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Checkbox
+                  checked={state === 'on' || state === 'broad'}
+                  disabled={state === 'none'}
+                  onChange={() => onToggleBudget(s.ix_labels, v)}
+                  title={
+                    state === 'none'
+                      ? 'The fee-pin fields on pick nothing this budget carries - turn on a field it has'
+                      : state === 'broad'
+                        ? `In ${tag} through the whole-shape row (any budget). Click to narrow the shape to this budget only.`
+                        : state === 'on'
+                          ? `In ${tag} pinned to this budget. Click to remove it; other budgets stay.`
+                          : `Add this shape to ${tag} pinned to this budget only.`
+                  }
+                />
+                <span className="text-text">{formatFeeVariant(v)}</span>
+                <span className="text-text-dim">
+                  {v.n_trades.toLocaleString()} tr · {pct}% · {fmt(v.gross_sol)}◎
+                </span>
+              </label>
+            );
+          })}
+          {n > variants.length && (
+            <span className="text-text-dim/60">… {n - variants.length} more, stage from the trades table</span>
+          )}
+          {(s.fee_unknown_trades ?? 0) > 0 && (
+            <span className="text-text-dim/60">
+              {(s.fee_unknown_trades ?? 0).toLocaleString()} trades with no fee reading
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Stable structure identity — same key the draft/preview sets use. */
@@ -89,9 +186,20 @@ function buildStructureColumns(opts: {
   suggestionByStructure: Map<string, StructureSuggestion>;
   liftDefined: boolean;
   onToggle: (labels: string[]) => void;
+  budgetStateOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => BudgetState;
+  onToggleBudget: (labels: string[], v: FlowDiscoveryFeeVariant) => void;
   tagName: string | null;
 }): ColumnDef<FlowDiscoveryStructure>[] {
-  const { stateOf, contagionByStructure, suggestionByStructure, liftDefined, onToggle, tagName } = opts;
+  const {
+    stateOf,
+    contagionByStructure,
+    suggestionByStructure,
+    liftDefined,
+    onToggle,
+    budgetStateOf,
+    onToggleBudget,
+    tagName,
+  } = opts;
   const tag = tagName ? tagLabel(tagName) : 'the tag';
 
   return [
@@ -200,28 +308,9 @@ function buildStructureColumns(opts: {
       key: 'budget',
       label: 'Budget',
       tooltip: helpText(DISCOVERY_COL_HELP.budget),
-      render: (s) => {
-        const top = dominantFeeVariant(s);
-        if (!top) {
-          // No variant at all: either the result predates the field, or every trade
-          // of this build carries no reading. Both mean "nothing to pin", and the
-          // unknown count is what tells them apart.
-          return (
-            <span className="text-text-dim/50" title={feeVariantTitle(s)}>
-              {s.fee_unknown_trades ? 'unknown' : '—'}
-            </span>
-          );
-        }
-        const n = s.fee_variant_count ?? 1;
-        return (
-          <span className="whitespace-nowrap" title={feeVariantTitle(s)}>
-            <span className={n === 1 ? 'text-text' : 'text-text-dim'}>
-              {formatFeeVariant(top)}
-            </span>
-            {n > 1 && <span className="ml-1 text-text-dim/60">+{n - 1}</span>}
-          </span>
-        );
-      },
+      render: (s) => (
+        <BudgetCell s={s} budgetStateOf={budgetStateOf} onToggleBudget={onToggleBudget} tag={tag} />
+      ),
       // Rank by how concentrated the build's budget is, not by the budget itself: a
       // single triple covering every trade is the pinnable row, and that is the
       // question this column exists to answer.
@@ -235,10 +324,7 @@ function buildStructureColumns(opts: {
       filterOptionValue: (s) => feeSpreadBand(s),
       filterTitle:
         'one budget = a compiled-in preset, safe to pin; 5+ = a fee oracle, where pinning any single value fires once and never again; not captured = no fee reading on any trade of this build yet',
-      searchValue: (s) => {
-        const top = dominantFeeVariant(s);
-        return top ? formatFeeVariant(top) : '';
-      },
+      searchValue: (s) => (s.fee_variants ?? []).map(formatFeeVariant).join(' | '),
     },
     {
       key: 'side',
@@ -454,6 +540,8 @@ export function StructureTable({
   liftDefined,
   previewKeys,
   onToggle,
+  budgetStateOf,
+  onToggleBudget,
   onFilteredRowsChange,
   tagName = null,
 }: {
@@ -469,6 +557,10 @@ export function StructureTable({
    *  outlined so the button's effect is visible BEFORE it's pressed. */
   previewKeys?: ReadonlySet<string>;
   onToggle: (labels: string[]) => void;
+  /** How the draft holds one budget of a row - the Budget cell's per-budget checks. */
+  budgetStateOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => BudgetState;
+  /** Stage or unstage the shape pinned to one budget. */
+  onToggleBudget: (labels: string[], v: FlowDiscoveryFeeVariant) => void;
   /** Every row surviving the search + column filters. Pagination is off, so this
    *  is exactly what is on screen — which is what lets the page's stage/unstage
    *  buttons act on "what you are looking at". Pass a stable (useCallback)
@@ -485,9 +577,20 @@ export function StructureTable({
         suggestionByStructure,
         liftDefined,
         onToggle,
+        budgetStateOf,
+        onToggleBudget,
         tagName,
       }),
-    [stateOf, contagionByStructure, suggestionByStructure, liftDefined, onToggle, tagName],
+    [
+      stateOf,
+      contagionByStructure,
+      suggestionByStructure,
+      liftDefined,
+      onToggle,
+      budgetStateOf,
+      onToggleBudget,
+      tagName,
+    ],
   );
   const rowClassName = useCallback(
     (s: FlowDiscoveryStructure) => {

@@ -126,6 +126,13 @@ pub struct FeeVariant {
     pub priority_lamports: Option<u64>,
     pub n_trades: u64,
     pub gross_sol: f64,
+    /// The buy and sell sides of [`Self::gross_sol`], so a row pinned to this budget
+    /// and one side can be credited its exact share. `0` on a result cached before
+    /// the split.
+    #[serde(default)]
+    pub buy_sol: f64,
+    #[serde(default)]
+    pub sell_sol: f64,
 }
 
 /// How many fee variants a structure reports. A build sent with hundreds of
@@ -376,10 +383,10 @@ fn score_group(
         first_slot_gross: f64,
         first_slot_trades: u64,
         slots: Vec<u64>,
-        /// trade count + gross per distinct fee budget; the empty budget is counted
-        /// separately in `fee_unknown` rather than becoming a variant of its own,
-        /// because "not captured" is not a budget anyone can pin.
-        by_fee: HashMap<FeeKeys, (u64, f64)>,
+        /// trade count + buy SOL + sell SOL per distinct fee budget; the empty budget
+        /// is counted separately in `fee_unknown` rather than becoming a variant of
+        /// its own, because "not captured" is not a budget anyone can pin.
+        by_fee: HashMap<FeeKeys, (u64, f64, f64)>,
         fee_unknown: u64,
     }
 
@@ -435,9 +442,9 @@ fn score_group(
                 if t.flow.fee.is_empty() {
                     acc.fee_unknown += 1;
                 } else {
-                    let e = acc.by_fee.entry(t.flow.fee).or_insert((0, 0.0));
+                    let e = acc.by_fee.entry(t.flow.fee).or_insert((0, 0.0, 0.0));
                     e.0 += 1;
-                    e.1 += g;
+                    if t.is_buy { e.1 += g; } else { e.2 += g; }
                 }
                 *acc.gross_by_token.entry(ti).or_insert(0.0) += g;
                 *acc.net_by_token.entry(ti).or_insert(0.0) += signed;
@@ -540,13 +547,15 @@ fn score_group(
         let mut fee_variants: Vec<FeeVariant> = acc
             .by_fee
             .into_iter()
-            .map(|(f, (n_trades, gross_sol))| FeeVariant {
+            .map(|(f, (n_trades, buy_sol, sell_sol))| FeeVariant {
                 cu_limit: f.cu_limit(),
                 cu_price: f.cu_price(),
                 tip_lamports: f.tip_lamports(),
                 priority_lamports: f.priority_lamports(),
                 n_trades,
-                gross_sol,
+                gross_sol: buy_sol + sell_sol,
+                buy_sol,
+                sell_sol,
             })
             .collect();
         // Most-traded first: the question a reader asks of this list is "does one

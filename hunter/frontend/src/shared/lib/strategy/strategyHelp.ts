@@ -570,6 +570,7 @@ export const DISCOVERY_COL_HELP = {
     body: [
       'The compute budget the sender declared, as distinct (cu_limit, cu_price, tip) triples.',
       'The cell shows the most-traded one and, when there is more than one, how many exist.',
+      'The list is clipped to the 8 most-traded; the rest are reachable from the trades table.',
       '',
       'THIS is what decides whether a budget is identity or noise. One triple covering nearly',
       'every trade is a preset compiled into the operator’s client — pin it and the entry gets',
@@ -579,6 +580,10 @@ export const DISCOVERY_COL_HELP = {
       '',
       'cu_limit is usually a preset and pins well. A tip is an auction bid and almost never does.',
       'cu_price is the one to check the count on before trusting.',
+      '',
+      'The arrow opens every budget as its own line with its own check: that stages this shape',
+      'pinned to that budget (the fee-pin fields when any are on, else all three), separate',
+      'from the row check, which stages the shape on any budget.',
       '',
       '"unknown" counts trades carrying no fee reading at all — everything older than the',
       'forward-only fee capture. A build that is all-unknown cannot be pinned yet, however',
