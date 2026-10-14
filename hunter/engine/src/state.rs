@@ -14,7 +14,6 @@ use crate::event::{IntentId, LoadedRule, ManualExit, Mint, PositionId, RuleId, T
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::identity::IdentityHash;
 use crate::grouping::TokenFingerprint;
-use crate::metrics::burst_slot::TemplatePatterns;
 use crate::metrics::buffers::Buffers;
 use crate::metrics::tags::config::{compile_tags, CompiledTag, TagPatterns};
 use crate::metrics::tags::TagKey;
@@ -149,8 +148,6 @@ struct TagNeed {
     /// Read trade by trade: open a `TagState` with these windows.
     trade: bool,
     windows: Vec<WindowSpec>,
-    /// Read at the template level (slot / wave).
-    template: Option<TemplatePatterns>,
 }
 
 /// Everything a coin's track folds under the loaded rules: the union of every rule's
@@ -183,16 +180,12 @@ impl TrackRequirements {
                     patterns: tag.patterns.clone(),
                     trade: false,
                     windows: Vec::new(),
-                    template: None,
                 });
                 need.trade |= read.trade;
                 for w in &read.windows {
                     if !need.windows.contains(w) {
                         need.windows.push(*w);
                     }
-                }
-                if read.template {
-                    need.template = tag.patterns.templates();
                 }
             }
         }
@@ -208,15 +201,12 @@ impl TrackRequirements {
             if need.trade {
                 track.ensure_tag(fp, key, &need.patterns, &need.windows);
             }
-            if let Some(t) = &need.template {
-                track.ensure_template_tag(fp, key, t);
-            }
         }
     }
 
     /// Whether `self` asks a track for anything `before` did not: a window, an anchor
-    /// or a larger anchor cap, a map, the slot state, or a tag (new, redefined, or with
-    /// a new window). A track built under `before` has not folded that from birth.
+    /// or a larger anchor cap, a map, or a tag (new, redefined, or with a new window).
+    /// A track built under `before` has not folded that from birth.
     pub fn adds_to(&self, before: &TrackRequirements) -> bool {
         let (b, was) = (&self.buffers, &before.buffers);
         let new_window = [
@@ -237,7 +227,6 @@ impl TrackRequirements {
                 old.patterns != need.patterns
                     || (need.trade && !old.trade)
                     || need.windows.iter().any(|w| !old.windows.contains(w))
-                    || (need.template.is_some() && old.template != need.template)
             }
         });
         new_window
@@ -245,7 +234,6 @@ impl TrackRequirements {
             || new_tag
             || (b.print_wallet && !was.print_wallet)
             || (b.holder_book && !was.holder_book)
-            || (b.slot_state && !was.slot_state)
     }
 }
 

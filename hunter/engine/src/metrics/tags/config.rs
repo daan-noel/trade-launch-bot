@@ -34,7 +34,6 @@ use serde_json::{json, Map, Value};
 
 use super::{check_name, TagKey, BUILTIN};
 use crate::hash::HashedSet;
-use crate::metrics::burst_slot::TemplatePatterns;
 use crate::metrics::fee::IxShapeRows;
 use crate::metrics::template_grain::{grain_id_hash, program_id_hash};
 use crate::metrics::trade_keys::{marker_mask, wallet_hash, MARKERS, ROUTER_MARKERS};
@@ -58,14 +57,6 @@ pub struct TagPatterns {
 }
 
 impl TagPatterns {
-    /// The ix-template view of this tag — what the slot and wave families read. Only
-    /// `ix_template` and `program` mean anything at that level; `None` when the tag
-    /// has neither.
-    pub fn templates(&self) -> Option<TemplatePatterns> {
-        (!self.templates.is_empty() || !self.programs.is_empty())
-            .then(|| TemplatePatterns::new(self.templates.clone()).with_programs(self.programs.clone()))
-    }
-
     /// Whether a marker rule qualifies these bits.
     pub fn marks(&self, bits: u16) -> bool {
         (self.contains != 0 && bits & self.contains != 0) || (self.lacks != 0 && bits & self.lacks == 0)
@@ -96,21 +87,9 @@ pub struct TagFieldSpec {
 }
 
 pub const TAG_FIELDS: &[TagFieldSpec] = &[
-    TagFieldSpec { key: "program", kind: "match", value_type: "program[]", title: "Program",
-        summary: "The transaction's main program (its first instruction past compute budget, token, ATA, memo and the System transfer, nonce and account creates) is one of these. Catches every build a tool ships.",
-        example: "\"program\": [\"Axiom Trade\"] : every Axiom trade, whatever its instruction list." },
     TagFieldSpec { key: "ix_shape", kind: "match", value_type: "ix_shape[]", title: "Ix shape",
         summary: "Each row is an ix structure or an ix core. An ix structure (level exact, the default) is the transaction's whole instruction list, in order, repeats counted. An ix core (level core) is that list without compute budget, System, token-account, memo and Lighthouse instructions, with pump.fun's Buy / Sell / Create variants merged, so one row matches every variant that keeps the core. Either may pin the fee preset (cu_limit, cu_price, tip_lamports). A core row may also pin the side and its extras (marks CL CP N L M S C W, T<transfers> A<account opens>).",
         example: "[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"] with cu_price 1000; {\"labels\": [\"Pump.Fun: Sell\"], \"level\": \"core\", \"side\": \"sell\", \"cu_price\": 167000}." },
-    TagFieldSpec { key: "ix_template", kind: "match", value_type: "ix_template[]", title: "Ix template",
-        summary: "The transaction's coarse template (program|CU|ATA|N|S|F) is one of these. The only matcher, with program, the slot and wave families can read.",
-        example: "\"Axiom Trade|CU|ATA|1|0|0\"." },
-    TagFieldSpec { key: "ix_contains", kind: "match", value_type: "marker[]", title: "Contains marker",
-        summary: "The instruction list contains one of these markers (a mechanism or a retail router).",
-        example: "[\"CreateAccountWithSeed\"] : throwaway-account machines." },
-    TagFieldSpec { key: "ix_lacks", kind: "match", value_type: "marker[]", title: "Lacks marker",
-        summary: "The instruction list contains NONE of these markers: everything except them.",
-        example: "[\"Axiom Trade\", \"Photon\"] : every trade that did not come through those routers." },
     TagFieldSpec { key: "wallet", kind: "match", value_type: "wallet[]", title: "Wallet",
         summary: "The wallet the venue credited is one of these addresses.",
         example: "[\"7xKX...\"] : a wallet to copy." },
@@ -282,42 +261,23 @@ pub fn tag_names(doc: &Value) -> Vec<String> {
 }
 
 /// Warning text when a rule reads a tag its fingerprint does not define (every such read
-/// is `NaN`, so the condition never holds), or reads a tag at the ix-template level
-/// (`m_slot`, `m_wave`, `m_crowd.unique_ix_templates`) that has no `ix_template` or
-/// `program` matcher. Said at save time, where the author can still act on it.
+/// is `NaN`, so the condition never holds). Said at save time, where the author can
+/// still act on it.
 pub fn rule_tag_warning(params: &crate::rule_params::RuleParams, doc: &Value) -> Option<String> {
-    use crate::metrics::registry::TagLevel;
     let defined = compile_tags(doc);
     let mut missing: Vec<&str> = Vec::new();
-    let mut not_template: Vec<&str> = Vec::new();
     for r in params.metric_refs() {
         let Some(t) = r.tag.filter(|t| !t.is_builtin()) else { continue };
-        match defined.iter().find(|d| d.key == t.key) {
-            None if !missing.contains(&t.name) => missing.push(t.name),
-            Some(d)
-                if r.metric.spec().tag_level == TagLevel::Template
-                    && d.patterns.templates().is_none()
-                    && !not_template.contains(&t.name) =>
-            {
-                not_template.push(t.name);
-            }
-            _ => {}
+        if defined.iter().all(|d| d.key != t.key) && !missing.contains(&t.name) {
+            missing.push(t.name);
         }
     }
-    let mut parts = Vec::new();
-    if !missing.is_empty() {
-        parts.push(format!(
+    (!missing.is_empty()).then(|| {
+        format!(
             "the rule reads tag {} but its fingerprint does not define it - those conditions read nothing and never hold",
             missing.join(", ")
-        ));
-    }
-    if !not_template.is_empty() {
-        parts.push(format!(
-            "tag {} is read by a slot/wave metric but has no ix_template or program matcher - those conditions read nothing",
-            not_template.join(", ")
-        ));
-    }
-    (!parts.is_empty()).then(|| parts.join("; "))
+        )
+    })
 }
 
 /// Warning text when a tag pins a fee preset on an `ix_shape`.
@@ -369,10 +329,10 @@ mod tests {
         assert_eq!(tags.len(), 2);
         let v = tags.iter().find(|t| t.name == "volume").unwrap();
         assert!(v.patterns.sticky && v.patterns.creator);
-        assert!(v.patterns.templates().is_some());
+        assert!(!v.patterns.programs.is_empty() && !v.patterns.templates.is_empty());
         let d = tags.iter().find(|t| t.name == "dump").unwrap();
         assert_eq!(d.patterns.side, Some(Side::Sell));
-        assert!(d.patterns.templates().is_none());
+        assert!(d.patterns.programs.is_empty() && d.patterns.templates.is_empty());
     }
 
     #[test]

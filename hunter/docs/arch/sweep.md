@@ -201,8 +201,8 @@ chance, not real edge). Partial-sell semantics:
 ### Tagged axes and the run's tags
 
 When an axis reads wallet identity or ix labels (`Metric::needs_wallet_identity` /
-`needs_ix_labels`: any tagged read, `m_holdings`, `m_print`, `m_slot` / `m_wave`, and the
-wallet- or shape-keyed `m_crowd` reads), the corpus loads with `Selection.with_flow`: it
+`needs_ix_labels`: any tagged read, `m_holdings`, and the shape-keyed `m_crowd` reads),
+the corpus loads with `Selection.with_flow`: it
 reads the trade `ix_labels` + `wallet` columns and resolves each row's
 `projection::FlowKeys` (ix shape, wallet, marker bits, template, program and build
 hashes) **at the row decode**, through the engine's `trade_keys` hashers, then drops the

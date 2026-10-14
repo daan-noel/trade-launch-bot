@@ -282,11 +282,6 @@ fn register(track: &mut TokenTrack, rule: &CompiledRule, ctx: &ReplayCtx<'_>) {
             if read.trade {
                 track.ensure_tag(t.fingerprint, read.key, &tag.patterns, &read.windows);
             }
-            if read.template {
-                if let Some(tp) = tag.patterns.templates() {
-                    track.ensure_template_tag(t.fingerprint, read.key, &tp);
-                }
-            }
         }
         if let Some(h) = t.creator_wallet_hash {
             track.seed_creator(h);
@@ -420,11 +415,6 @@ pub fn replay_series(
             let Some(tag) = t.tags.iter().find(|x| x.key == read.key) else { continue };
             if read.trade {
                 series.ensure_tag(t.fingerprint, read.key, &tag.patterns, &read.windows);
-            }
-            if read.template {
-                if let Some(tp) = tag.patterns.templates() {
-                    series.ensure_template_tag(t.fingerprint, read.key, &tp);
-                }
             }
         }
         if let Some(h) = t.creator_wallet_hash {

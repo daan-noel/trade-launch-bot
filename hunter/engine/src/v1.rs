@@ -8,8 +8,8 @@
 //!
 //! * **A v1 metric** is a (group, metric, window) triple: it becomes one
 //!   `m_family.metric @tag [span]` condition ([`map_metric`]). The fingerprint lists
-//!   become tags: `m_flow_ix` = `volume`, `m_dump_ix` = `dump`, `m_copy` = `targets`,
-//!   `m_burst_slot` = `working`.
+//!   become tags: `m_flow_ix` = `volume`, `m_dump_ix` = `dump`, `m_copy` = `targets`.
+//!   `m_burst_slot` and `m_burst_wave` have no v2 metric: conversion refuses them.
 //! * **Exit clauses** become `always` lines, in order, after the TP/SL shortcuts.
 //! * **`arm_above_pct` on a lone trailing clause** gates it at each evaluation: the line
 //!   also carries `m_position.pnl_pct >= X`.
@@ -41,7 +41,6 @@ use crate::metrics::WindowSpec;
 pub const TAG_VOLUME: &str = "volume";
 pub const TAG_DUMP: &str = "dump";
 pub const TAG_TARGETS: &str = "targets";
-pub const TAG_WORKING: &str = "working";
 
 /// Whether a params document is v1: any v1 root key, or nothing of v2's.
 pub fn is_v1_params(v: &Value) -> bool {
@@ -125,40 +124,6 @@ fn map_metric(group: &str, metric: &str) -> Option<(&'static str, Option<&'stati
         }
         ("m_dump_ix" | "m_dump_ix_window", "dump_sell") => t("m_flow.sell_sol", TAG_DUMP),
         ("m_dump_ix" | "m_dump_ix_window", "dump_sell_count") => t("m_flow.sell_tx_count", TAG_DUMP),
-        ("m_burst_slot", m) => match m {
-            "this_member" => u("m_slot.this_joined"),
-            "this_working" => t("m_slot.this_has_tag", TAG_WORKING),
-            "same_buy_count" => u("m_slot.same_template_buy_count"),
-            "same_buy_sol" => u("m_slot.same_template_buy_sol"),
-            "same_wallet_count" => u("m_slot.same_template_wallet_count"),
-            "member_template_count" => u("m_slot.template_count"),
-            "working_buy_count" => t("m_slot.buy_count", TAG_WORKING),
-            "working_buy_sol" => t("m_slot.buy_sol", TAG_WORKING),
-            "working_wallet_count" => t("m_slot.wallet_count", TAG_WORKING),
-            "working_template_count" => t("m_slot.template_count", TAG_WORKING),
-            "working_templates_seen" => t("m_crowd.unique_ix_templates", TAG_WORKING),
-            "working_buy_share" => t("m_slot.buy_share_pct", TAG_WORKING),
-            "has_new" => t("m_slot.has_new_wallet", TAG_WORKING),
-            "has_unknown" => u("m_slot.has_unknown_wallet"),
-            "packed" => u("m_slot.packed"),
-            "pre_slot_liquidity" => u("m_slot.liquidity_before_sol"),
-            "pre_print_trail" => u("m_slot.trail_before_pct"),
-            _ => None,
-        },
-        ("m_burst_wave", m) => match m {
-            "this_member" => u("m_wave.this_joined"),
-            "wallet_count" => u("m_wave.wallet_count"),
-            "buy_sol" => u("m_wave.buy_sol"),
-            "gap_slots" => u("m_wave.gap_slots"),
-            "all_new" => u("m_wave.all_new_wallets"),
-            "has_unknown" => u("m_wave.has_unknown_wallet"),
-            "working_buy_count" => t("m_wave.buy_count", TAG_WORKING),
-            "this_working" => t("m_wave.this_has_tag", TAG_WORKING),
-            "this_tip" => u("m_wave.this_tip_lamports"),
-            "hole" => u("m_wave.has_tx_gap"),
-            "tip_seen" => u("m_wave.tip_band_seen"),
-            _ => None,
-        },
         ("m_position", m) => match m {
             "retrace" => u("m_position.retrace_pct"),
             "bounce" => u("m_position.bounce_pct"),
@@ -171,10 +136,6 @@ fn map_metric(group: &str, metric: &str) -> Option<(&'static str, Option<&'stati
     }
 }
 
-/// v1 entry metrics that ended the coin on failure ("leftover"), now `final_filters`.
-const LEFTOVER: [(&str, &str); 3] =
-    [("m_burst_slot", "working_templates_seen"), ("m_burst_wave", "hole"), ("m_burst_wave", "tip_seen")];
-
 /// A v1 condition read: the v2 condition, plus the v1 facts the clause walk needs.
 #[derive(Debug, Clone)]
 struct Read {
@@ -186,8 +147,6 @@ struct Read {
     since_armed: bool,
     /// `arm_above_pct` on a trailing (retrace / bounce) metric.
     arm_above: Option<f64>,
-    /// `(group, metric)` — for the leftover split and error messages.
-    v1: (String, String),
 }
 
 fn size_param(g: &Map<String, Value>, sec: &str, slot: &str, print: &str) -> Result<Option<(f64, &'static str)>, String> {
@@ -262,10 +221,9 @@ fn side_reads(side: &Value) -> Result<Vec<Read>, String> {
                 if STRICT.contains(&metric.as_str()) {
                     continue;
                 }
-                let v1 = (group.clone(), metric.clone());
                 if group == "m_position" && metric == "armed" {
                     let x = latch_value(expr).ok_or("an `armed` condition must be `= 0` or `= 1`")?;
-                    out.push(Read { cond: None, latch: Some(x), since_armed: false, arm_above: None, v1 });
+                    out.push(Read { cond: None, latch: Some(x), since_armed: false, arm_above: None });
                     continue;
                 }
                 let since_armed = group == "m_position" && metric == "since_armed";
@@ -296,7 +254,7 @@ fn side_reads(side: &Value) -> Result<Vec<Read>, String> {
                 }
                 c.insert("is".into(), expr.clone());
                 let trailing = group == "m_position" && matches!(metric.as_str(), "retrace" | "bounce");
-                out.push(Read { cond: Some(c), latch: None, since_armed, arm_above: arm_above.filter(|_| trailing), v1 });
+                out.push(Read { cond: Some(c), latch: None, since_armed, arm_above: arm_above.filter(|_| trailing) });
             }
         }
     }
@@ -349,15 +307,11 @@ pub fn convert_params(v1: &Value) -> Result<Value, String> {
     // ── enter ──
     let mut enter = Map::new();
     let mut filters = Vec::new();
-    let mut final_filters = Vec::new();
+    let final_filters = Vec::new();
     if let Some(e) = o.get("entry") {
         for r in side_reads(e)? {
             let c = Value::Object(r.cond.ok_or("`armed` cannot gate an entry")?);
-            if LEFTOVER.contains(&(r.v1.0.as_str(), r.v1.1.as_str())) {
-                final_filters.push(c);
-            } else {
-                filters.push(c);
-            }
+            filters.push(c);
         }
     }
     let event = match o.get("entry_event") {
@@ -681,31 +635,6 @@ pub fn convert_metric_config(cfg: &Value) -> Result<Value, String> {
     }
     if let Some(c) = o.get("m_copy").and_then(Value::as_object) {
         tags.insert(TAG_TARGETS.into(), json!({ "match": { "wallet": c.get("target_wallets").cloned().unwrap_or(json!([])) } }));
-    }
-    if let Some(b) = o.get("m_burst_slot").and_then(Value::as_object) {
-        let mut templates = Vec::new();
-        let mut programs = Vec::new();
-        for k in ["working_templates", "working_programs"] {
-            for v in b.get(k).and_then(Value::as_array).into_iter().flatten() {
-                if let Some(s) = v.as_str().filter(|s| !s.is_empty()) {
-                    if s.contains('|') {
-                        templates.push(json!(s));
-                    } else {
-                        programs.push(json!(s));
-                    }
-                }
-            }
-        }
-        let mut m = Map::new();
-        if !templates.is_empty() {
-            m.insert("ix_template".into(), Value::Array(templates));
-        }
-        if !programs.is_empty() {
-            m.insert("program".into(), Value::Array(programs));
-        }
-        if !m.is_empty() {
-            tags.insert(TAG_WORKING.into(), json!({ "match": m }));
-        }
     }
     let doc = Value::Object(tags);
     crate::metrics::tags::config::validate_tags(&doc)?;

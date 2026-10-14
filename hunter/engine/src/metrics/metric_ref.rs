@@ -89,10 +89,10 @@ impl MetricRef {
                         super::tags::BUILTIN.join("` or `")
                     ))
                 }
-                TagLevel::Trade | TagLevel::Template if t.is_builtin() => {
+                TagLevel::Trade if t.is_builtin() => {
                     return Err(format!("{path}: `{}` is a wallet class, not a fingerprint tag", t.name))
                 }
-                TagLevel::Template | TagLevel::WalletClass if t.negated => {
+                TagLevel::WalletClass if t.negated => {
                     return Err(format!("{path} reads the tagged trades only; `@!{}` has no meaning here", t.name))
                 }
                 _ => {}
@@ -143,23 +143,21 @@ impl MetricRef {
 }
 
 /// Every read of `spec` a chart draws, each one a reference the rule grammar accepts:
-/// untagged, and each tag it can take — every name in `trade_tags` or
-/// `template_tags` (by the metric's [`TagLevel`]) with its negation, or the built-in
-/// wallet classes — over each span it accepts: the life, each of `windows`, each nested
+/// untagged, and each tag it can take — every name in `trade_tags` with its negation,
+/// or the built-in wallet classes — over each span it accepts: the life, each of
+/// `windows`, each nested
 /// pair of `windows` for a sliced metric (same unit, slice narrower: an equal one
 /// always reads 100 %; the slice takes the span's lag, as [`Span::parse`] gives it),
 /// and since age 0 plus each of `ages` (seconds) for a since-age metric.
 pub fn chart_reads(
     spec: &super::registry::MetricSpec,
     trade_tags: &[&str],
-    template_tags: &[&str],
     windows: &[super::WindowSpec],
     ages: &[f64],
 ) -> Vec<MetricRef> {
     let mut tags: Vec<Option<TagRef>> = vec![None];
     let names: Vec<&str> = match spec.tag_level {
         TagLevel::Trade => trade_tags.to_vec(),
-        TagLevel::Template => template_tags.to_vec(),
         TagLevel::WalletClass => super::tags::BUILTIN.to_vec(),
     };
     if spec.tags != TagUse::None {
@@ -247,7 +245,7 @@ mod tests {
             (json!({ "metric": "m_holdings.profit_sol", "tag": "volume", "span": "10s" }), "whole life"),
             (json!({ "metric": "m_holdings.bag_share_pct", "tag": "volume" }), "wallet class"),
             (json!({ "metric": "m_flow.buy_sol", "tag": "bundled" }), "not a fingerprint tag"),
-            (json!({ "metric": "m_slot.buy_count", "tag": "!working" }), "no meaning"),
+            (json!({ "metric": "m_holdings.bag_share_pct", "tag": "!bundled" }), "no meaning"),
             (json!({ "metric": "m_flow.slice_sol_share_pct", "span": "30s" }), "needs a slice"),
             (json!({ "metric": "m_crowd.unique_wallets" }), "needs a window"),
             (json!({ "metric": "m_flow.buys" }), "unknown metric"),
@@ -263,7 +261,7 @@ mod tests {
         use super::super::WindowSpec;
         let w = [WindowSpec::secs(10.0), WindowSpec::secs(30.0)];
         let labels = |m: Metric| -> Vec<String> {
-            chart_reads(metric_spec(m), &["volume"], &["working"], &w, &[60.0]).iter().map(MetricRef::label).collect()
+            chart_reads(metric_spec(m), &["volume"], &w, &[60.0]).iter().map(MetricRef::label).collect()
         };
         assert_eq!(labels(Metric::AgeSec), vec!["m_state.age_sec"]);
         let buy = labels(Metric::BuySol);
@@ -275,15 +273,14 @@ mod tests {
         // A lagged span pairs with its slice at the span's lag: the column is the rule's
         // own read, and the unlagged and lagged slice windows give ONE column.
         let lagged = [WindowSpec::parse("30s@2").unwrap(), WindowSpec::secs(2.0), WindowSpec::parse("2s@2").unwrap()];
-        let sliced: Vec<String> = chart_reads(metric_spec(Metric::SliceSolSharePct), &[], &[], &lagged, &[])
+        let sliced: Vec<String> = chart_reads(metric_spec(Metric::SliceSolSharePct), &[], &lagged, &[])
             .iter()
             .map(MetricRef::label)
             .collect();
         assert_eq!(sliced, vec!["m_flow.slice_sol_share_pct [30s@2, slice 2s]"]);
         let parsed = MetricRef::from_json(json!({ "metric": "m_flow.slice_sol_share_pct", "span": "30s@2", "slice": "2s" }).as_object().unwrap()).unwrap();
-        assert_eq!(chart_reads(metric_spec(Metric::SliceSolSharePct), &[], &[], &lagged, &[])[0], parsed);
+        assert_eq!(chart_reads(metric_spec(Metric::SliceSolSharePct), &[], &lagged, &[])[0], parsed);
         assert!(labels(Metric::BagSharePct).iter().all(|l| l.contains("@bundled") || l.contains("@public_app")));
-        assert!(labels(Metric::SlotBuyCount).iter().all(|l| !l.contains("volume") && !l.contains("!working")));
     }
 
     #[test]

@@ -9,7 +9,6 @@
 //! Phase-1.8 determinism test locks down (track ≡ series, byte-for-byte).
 
 use super::buffers::Buffers;
-use super::burst_slot::TemplatePatterns;
 use super::tags::config::TagPatterns;
 use super::tags::TagKey;
 use super::track::TokenTrack;
@@ -151,11 +150,6 @@ impl MetricSeries {
     /// tagged column reads `NaN` without it.
     pub fn ensure_tag(&mut self, fp: FingerprintId, key: TagKey, patterns: &TagPatterns, windows: &[super::WindowSpec]) {
         self.track.ensure_tag(fp, key, patterns, windows);
-    }
-
-    /// Register one tag's template view (slot / wave columns).
-    pub fn ensure_template_tag(&mut self, fp: FingerprintId, key: TagKey, patterns: &TemplatePatterns) {
-        self.track.ensure_template_tag(fp, key, patterns);
     }
 
     /// Seed the creator wallet hash on every tag state.

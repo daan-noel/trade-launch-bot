@@ -1,12 +1,11 @@
 //! `TokenTrack` — all the metric state one coin carries, and the router every read
 //! goes through.
 //!
-//! * One copy each of the coin-level states (`m_state`, lifetime price and flow, the
-//!   wave), shared by every rule armed on the coin.
+//! * One copy each of the coin-level states (`m_state`, lifetime price and flow),
+//!   shared by every rule armed on the coin.
 //! * Trailing windows deduped by span, one buffer family per subject (flow, price,
 //!   crowd, ix shapes) so a rule pays only for the buffers its metrics read.
-//! * One [`TagState`] per (fingerprint, tag) a loaded rule reads, and one
-//!   [`TemplatePatterns`] per (fingerprint, tag) a slot or wave metric reads.
+//! * One [`TagState`] per (fingerprint, tag) a loaded rule reads.
 //!
 //! Two fold entry points, matching the engine's events: [`on_trade`] and [`on_tick`].
 //! Reads go through [`value`] with a [`MetricRef`] (metric + tag + span) and the
@@ -22,8 +21,6 @@ use std::collections::BTreeMap;
 use crate::fingerprint::FingerprintId;
 
 use super::build_window::BuildWindowState;
-use super::burst_slot::{BurstSlotState, TemplatePatterns};
-use super::burst_wave::BurstWaveState;
 use super::crowd_after_age::{AgeAnchor, CrowdAfterAgeState};
 use super::crowd_window::CrowdWindowState;
 use super::flow_lifetime::FlowLifetimeState;
@@ -72,12 +69,6 @@ pub struct TokenTrack {
     holder_book: Option<HolderBookState>,
     /// One state per (fingerprint, tag) a loaded rule reads at the trade level.
     tags: BTreeMap<(FingerprintId, TagKey), TagState>,
-    /// One template view per (fingerprint, tag) a slot or wave metric reads.
-    template_tags: BTreeMap<(FingerprintId, TagKey), TemplatePatterns>,
-    /// This slot's buy prefix (`m_slot`, `m_crowd.unique_ix_templates`). `None` unless read.
-    slot_state: Option<BurstSlotState>,
-    /// The consecutive-slot buy wave (`m_wave`). Always folded.
-    burst_wave: BurstWaveState,
     /// Creator wallet hash from `TokenCreated`, applied to every tag state.
     creator_wallet_hash: Option<u64>,
     /// Last observed *priced* SOL depth (`vsol`), for price impact only — not a metric,
@@ -108,9 +99,6 @@ impl TokenTrack {
             print_wallet: None,
             holder_book: None,
             tags: BTreeMap::new(),
-            template_tags: BTreeMap::new(),
-            slot_state: None,
-            burst_wave: BurstWaveState::default(),
             creator_wallet_hash: None,
             priced_reserves: f64::NAN,
             last_print_wallet: None,
@@ -161,11 +149,6 @@ impl TokenTrack {
         self.holder_book.get_or_insert_with(HolderBookState::default);
     }
 
-    /// Open this slot's buy prefix (`m_slot`, `m_crowd.unique_ix_templates`).
-    pub fn ensure_slot_state(&mut self) {
-        self.slot_state.get_or_insert_with(BurstSlotState::default);
-    }
-
     /// Register one trade-level tag of one fingerprint with the windows its rules read.
     ///
     /// Re-registering **adopts the new definition**: a reload happens because the
@@ -187,11 +170,6 @@ impl TokenTrack {
         }
     }
 
-    /// Register one tag's template view for the slot and wave families.
-    pub fn ensure_template_tag(&mut self, fp: FingerprintId, key: TagKey, patterns: &TemplatePatterns) {
-        self.template_tags.insert((fp, key), patterns.clone());
-    }
-
     /// Seed the creator wallet on every tag state.
     pub fn seed_creator(&mut self, hash: u64) {
         self.creator_wallet_hash = Some(hash);
@@ -200,23 +178,10 @@ impl TokenTrack {
         }
     }
 
-    /// Seed the coin's create slot so that slot is not a fireable wave.
-    pub fn seed_creation_slot(&mut self, slot: u64) {
-        self.burst_wave.seed_creation_slot(slot);
-    }
-
     // ── Folds ────────────────────────────────────────────────────────────────
 
     /// Fold one trade into every state.
     pub fn on_trade(&mut self, t: TradeLite) {
-        // The slot prefix reads the trail and the previous slot's liquidity BEFORE
-        // this print is folded.
-        let pre_trail = self.price_lifetime.trail();
-        let prev_liq = self.state.liquidity();
-        if let Some(s) = self.slot_state.as_mut() {
-            s.on_trade(&t, pre_trail, prev_liq);
-        }
-        self.burst_wave.on_trade(&t);
         self.state.on_trade(t.reserve_sol, t.on_curve);
         self.priced_reserves = t.priced_reserve_sol;
         // The slot cursor only moves forward: a regressed feed row must not rewind
@@ -292,10 +257,6 @@ impl TokenTrack {
         for tag in self.tags.values_mut() {
             tag.on_tick(now, cur);
         }
-        if let Some(s) = self.slot_state.as_mut() {
-            s.on_tick();
-        }
-        self.burst_wave.on_tick();
         self.last_print_wallet = None;
     }
 
@@ -393,20 +354,11 @@ impl TokenTrack {
                     .since_age
                     .and_then(|a| self.crowd_after_age.get(&a))
                     .map_or(f64::NAN, |s| s.value(m)),
-                Metric::UniqueIxTemplates => self.slot_read(r, fp),
                 _ => f64::NAN,
             },
             Family::Print => match m {
                 Metric::SoldBagPct | Metric::FlatBefore => self.tag_print(r, fp),
                 _ => self.print_wallet.as_ref().map_or(f64::NAN, |p| p.value(m)),
-            },
-            Family::Slot => self.slot_read(r, fp),
-            Family::Wave => match r.tag {
-                None => self.burst_wave.value(m, None),
-                Some(t) => match fp.and_then(|fp| self.template_tags.get(&(fp, t.key))) {
-                    Some(p) => self.burst_wave.value(m, Some(p)),
-                    None => f64::NAN,
-                },
             },
             Family::Position => f64::NAN,
         }
@@ -417,19 +369,6 @@ impl TokenTrack {
     fn tag_print(&self, r: MetricRef, fp: Option<FingerprintId>) -> f64 {
         let Some(t) = r.tag else { return f64::NAN };
         fp.and_then(|fp| self.tags.get(&(fp, t.key))).map_or(f64::NAN, |st| st.print_bag(r.metric, t.negated))
-    }
-
-    /// A slot-prefix read: untagged, or through the tag's template view. A tagged read
-    /// whose tag has no template view reads `NaN`, never the untagged number.
-    fn slot_read(&self, r: MetricRef, fp: Option<FingerprintId>) -> f64 {
-        let Some(s) = self.slot_state.as_ref() else { return f64::NAN };
-        match r.tag {
-            None => s.value(r.metric, None),
-            Some(t) => match fp.and_then(|fp| self.template_tags.get(&(fp, t.key))) {
-                Some(p) => s.value(r.metric, Some(p)),
-                None => f64::NAN,
-            },
-        }
     }
 
     /// The two slice reads: the span's buffer is the reference, the slice's the

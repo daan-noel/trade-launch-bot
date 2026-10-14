@@ -46,8 +46,6 @@ use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid};
 use hunter_engine::metrics::position::{position_value, PositionCtx};
 use hunter_engine::metrics::registry::METRICS;
-#[cfg(test)]
-use hunter_engine::metrics::registry::TagLevel;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::tags::config::{compile_tags, CompiledTag};
 use hunter_engine::metrics::trade_keys::wallet_hash;
@@ -293,12 +291,10 @@ fn parse_ages(raw: Option<&str>) -> Vec<f64> {
 /// the tagged ones only when a fingerprint supplies the tags.
 fn coin_reads(windows: &[WindowSpec], ages: &[f64], tags: Option<&TagCtx>) -> Vec<SeriesColumn> {
     let trade: Vec<&str> = tags.map(|c| c.tags.iter().map(|t| t.name).collect()).unwrap_or_default();
-    let template: Vec<&str> =
-        tags.map(|c| c.tags.iter().filter(|t| t.patterns.templates().is_some()).map(|t| t.name).collect()).unwrap_or_default();
     METRICS
         .iter()
         .filter(|m| m.family != Family::Position)
-        .flat_map(|m| chart_reads(m, &trade, &template, windows, ages))
+        .flat_map(|m| chart_reads(m, &trade, windows, ages))
         .filter_map(|r| {
             if r.is_fingerprint_scoped() {
                 tags.map(|c| SeriesColumn::tagged(r, c.fp_id))
@@ -371,7 +367,7 @@ fn build_series(
 fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64) -> Vec<SeriesOut> {
     let n = series.n_rows();
     let reads: Vec<MetricRef> =
-        METRICS.iter().filter(|m| m.family == Family::Position).flat_map(|m| chart_reads(m, &[], &[], &[], &[])).collect();
+        METRICS.iter().filter(|m| m.family == Family::Position).flat_map(|m| chart_reads(m, &[], &[], &[])).collect();
     let mut cols: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(n); reads.len()];
     let mut ctx = PositionCtx::at_fill(entry_price, entered_at);
     for i in 0..n {
@@ -528,8 +524,6 @@ mod tests {
         for m in METRICS {
             assert!(paths.contains(&m.path().as_str()), "{} has no column", m.path());
         }
-        let tagged_template = METRICS.iter().any(|m| m.tag_level == TagLevel::Template);
-        assert!(tagged_template, "the template tag fixture has something to cover");
     }
 
     #[test]

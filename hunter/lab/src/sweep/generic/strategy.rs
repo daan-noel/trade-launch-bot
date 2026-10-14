@@ -664,11 +664,6 @@ pub(crate) fn register_tags(series: &mut MetricSeries, tags: &[CompiledTag]) {
         if read.trade {
             series.ensure_tag(fp, key, &tag.patterns, &read.windows);
         }
-        if read.template {
-            if let Some(tp) = tag.patterns.templates() {
-                series.ensure_template_tag(fp, key, &tp);
-            }
-        }
     }
 }
 

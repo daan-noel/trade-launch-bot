@@ -336,8 +336,8 @@ pub enum Event {
     /// `identity` is the `(name, symbol)` key the duplicate-identity guard matches
     /// on ([`crate::identity::token_identity_hash`]); `None` when either half is
     /// blank or the producer has no metadata for the mint.
-    /// `creation_slot` seeds `m_burst_wave` so the create slot is not a fireable
-    /// wave; `None` on old logs (gap is then measured from the first mem buy).
+    /// `creation_slot` is the create slot the first-slot stand-in is applied
+    /// against; `None` on old logs.
     TokenCreated {
         mint: Mint,
         fp: Box<TokenFingerprint>,

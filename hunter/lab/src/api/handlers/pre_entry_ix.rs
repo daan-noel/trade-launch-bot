@@ -182,8 +182,8 @@ enum Matcher {
     /// matched-unit readout. Two rows of one shape under different groups keep the
     /// first group seen — the shape is what matched, and the label is a readout.
     Exact { builds: IxShapeRows, groups: HashMap<u64, String> },
-    /// Grain ids and bare program names — the one list, two spellings that
-    /// `m_burst_slot` reads (`Axiom Trade|CU|ATA|F` vs `Axiom Trade`).
+    /// Grain ids and bare program names on an old templates set. A new set does
+    /// not write this kind.
     Templates { grains: HashSet<String>, programs: HashSet<String> },
 }
 
@@ -626,6 +626,9 @@ mod tests {
             cu_limit: Some(300_000),
             cu_price: None,
             tip_lamports: None,
+            level: None,
+            side: None,
+            marks: None,
         }];
         let m = Matcher::build(&body).unwrap();
         assert!(m.pins_fee());

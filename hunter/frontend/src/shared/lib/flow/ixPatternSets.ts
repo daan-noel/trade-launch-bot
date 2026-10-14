@@ -16,7 +16,7 @@
  */
 
 import { patternKeysFrom, type FlowSide, type FlowTag } from 'lib/flow/classifyFlow';
-import { isProgramWorkingId, parseGrainIds } from 'lib/strategy/templateGrain';
+import { parseGrainIds } from 'lib/strategy/templateGrain';
 import {
   FEE_FIELDS,
   feeMatchesTrade,
@@ -31,10 +31,14 @@ import {
 export type IxPatternSetKind = 'exact' | 'templates';
 
 export interface IxPattern extends IxPatternFee {
-  /** Subset label; `null` ⇒ ungrouped. Display + narrowing only. Exact sets. */
+  /** Subset label; `null` ⇒ ungrouped. Display + narrowing only. */
   group: string | null;
-  /** EXACT ordered instruction labels, verbatim from `trades.ix_labels`. */
+  /** Ordered instruction labels. A core row stores the reduced core. */
   ix_labels: string[];
+  /** `core` is an ix core row. Absent is an exact ix structure. */
+  level?: 'core';
+  side?: 'buy' | 'sell';
+  marks?: string;
 }
 
 export interface IxPatternSet {
@@ -86,18 +90,13 @@ export function lensTag(
   enabled: ReadonlySet<string> | null,
   opts: { sticky: boolean; side: FlowSide | null },
 ): FlowTag | null {
-  const { patterns, templates } = narrowedSetPayload(set, enabled);
+  if (kindOf(set) === 'templates') return null;
+  const { patterns } = narrowedSetPayload(set, enabled);
   const rows = patterns.map(toPatternRow);
-  const grains = templates.filter((g) => !isProgramWorkingId(g));
-  const programs = templates.filter(isProgramWorkingId);
-  if (rows.length + grains.length + programs.length === 0) return null;
+  if (rows.length === 0) return null;
   return {
     name: set.name,
-    match: {
-      ...(rows.length > 0 ? { ix_shape: rows } : {}),
-      ...(grains.length > 0 ? { ix_template: grains } : {}),
-      ...(programs.length > 0 ? { program: programs } : {}),
-    },
+    match: { ix_shape: rows },
     side: opts.side,
     sticky: opts.sticky,
   };
@@ -105,6 +104,9 @@ export function lensTag(
 
 export function toPatternRow(p: IxPattern): IxPatternRow {
   const row: IxPatternRow = { labels: [...p.ix_labels] };
+  if (p.level === 'core') row.level = 'core';
+  if (p.side === 'buy' || p.side === 'sell') row.side = p.side;
+  if (p.marks) row.marks = p.marks;
   for (const f of FEE_FIELDS) {
     if (p[f] != null) row[f] = p[f];
   }
@@ -113,6 +115,9 @@ export function toPatternRow(p: IxPattern): IxPatternRow {
 
 export function fromPatternRow(row: IxPatternRow, group: string | null): IxPattern {
   const p: IxPattern = { group, ix_labels: [...row.labels] };
+  if (row.level === 'core') p.level = 'core';
+  if (row.side) p.side = row.side;
+  if (row.marks != null) p.marks = row.marks;
   for (const f of FEE_FIELDS) {
     if (row[f] != null) p[f] = row[f];
   }

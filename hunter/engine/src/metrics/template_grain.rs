@@ -112,8 +112,7 @@ pub fn program_id_hash(id: &str) -> u64 {
 }
 
 /// True when any label is a pump.fun create (`Pump.Fun: Create` /
-/// `CreateIdempotent`). Those prints update first-on-mint but do not join
-/// the `m_burst_slot` member prefix.
+/// `CreateIdempotent`).
 pub fn is_launch(labels: &[impl AsRef<str>]) -> bool {
     labels
         .iter()

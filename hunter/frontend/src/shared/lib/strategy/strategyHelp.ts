@@ -492,10 +492,10 @@ export const DISCOVERY_FIELD_HELP = {
   draftPatterns: {
     title: 'Draft for a tag',
     body: [
-      'Exact shapes: checked structures become the tag’s ix_shape entries (exact ix_labels, any fee budget). Checking Vol on a shape that already has pins widens those pins to the catch-all.',
+      'The badge writes exact ix structures or ix cores, both as ix_shape rows. Checked rows in the table are that grain: exact structures, or ix cores ranked over every trade.',
       'On the preview trades table, the pin checkboxes (cu_limit / cu_price / tip) copy those fields from the clicked tx. A pin click on a catch-all of that shape narrows it to that pin — the two never sit together, because the catch-all already matches every budget.',
-      'An ix-only row is a wildcard: Vol stays checked on every trade of that shape. A pin-only row lights only the trades that match that pin.',
-      'Templates: a grain (program|CU|ATA|N|S|F) goes under ix_template; a bare program name goes under program and matches every grain of that router. Launch (create) shapes are skipped. No fee pins and no wallet contagion. Templates need a saved fingerprint — pick one to Update.',
+      'An ix-only row is a wildcard: Vol stays checked on every trade that row matches. A pin-only row lights only the trades that match that pin. A core row matches every exact structure that keeps that core.',
+      'The volume bar uses the same match as the preview chart, so a core row counts every exact structure it matches.',
       'Apply writes the draft into the chosen tag on the target fingerprint; every other tag and matcher is kept.',
       '',
       'Rules on this fingerprint then read the split: m_flow.buy_sol @volume is the SOL bought by trades carrying the tag, m_flow.buy_sol @!volume by the rest.',

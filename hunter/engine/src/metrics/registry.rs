@@ -59,8 +59,6 @@ pub enum Family {
     Holdings,
     Crowd,
     Print,
-    Slot,
-    Wave,
     Position,
 }
 
@@ -110,7 +108,7 @@ pub const FAMILIES: &[FamilySpec] = &[
         id: Family::Crowd,
         name: "m_crowd",
         title: "Who shows up",
-        summary: "How many different wallets, ix shapes or ix templates are trading.",
+        summary: "How many different wallets or ix shapes are trading.",
         example: "m_crowd.unique_wallets [30s] >= 10 : 10 or more different wallets traded in the last 30 s.",
     },
     FamilySpec {
@@ -119,20 +117,6 @@ pub const FAMILIES: &[FamilySpec] = &[
         title: "This print",
         summary: "Facts about the print being read right now. Empty (NaN) on a clock tick.",
         example: "m_print.since_buy_sec <= 5 : the wallet behind this print last bought this coin 5 s ago or less.",
-    },
-    FamilySpec {
-        id: Family::Slot,
-        name: "m_slot",
-        title: "This slot's buys",
-        summary: "The buys landed so far in the current slot: bundles and packs of the same ix template.",
-        example: "m_slot.buy_count @working >= 3 : 3 or more buys in this slot came from a working template.",
-    },
-    FamilySpec {
-        id: Family::Wave,
-        name: "m_wave",
-        title: "This buy wave",
-        summary: "The run of back-to-back slots with buys that this print belongs to.",
-        example: "m_wave.wallet_count >= 2 : at least 2 different wallets bought in this wave.",
     },
     FamilySpec {
         id: Family::Position,
@@ -194,41 +178,12 @@ pub enum Metric {
     UniqueWallets,
     TradesPerWallet,
     UniqueIxShapes,
-    UniqueIxTemplates,
     BuyerCount,
     BuyerIsNew,
     // m_print
     SinceBuySec,
     SoldBagPct,
     FlatBefore,
-    // m_slot
-    SlotThisJoined,
-    SlotThisHasTag,
-    SlotSameTemplateBuyCount,
-    SlotSameTemplateBuySol,
-    SlotSameTemplateWalletCount,
-    SlotTemplateCount,
-    SlotBuyCount,
-    SlotBuySol,
-    SlotWalletCount,
-    SlotBuySharePct,
-    SlotHasNewWallet,
-    SlotHasUnknownWallet,
-    SlotPacked,
-    SlotLiquidityBeforeSol,
-    SlotTrailBeforePct,
-    // m_wave
-    WaveThisJoined,
-    WaveThisHasTag,
-    WaveWalletCount,
-    WaveBuySol,
-    WaveBuyCount,
-    WaveGapSlots,
-    WaveAllNewWallets,
-    WaveHasUnknownWallet,
-    WaveThisTipLamports,
-    WaveHasTxGap,
-    WaveTipBandSeen,
     // m_position
     PnlPct,
     HeldSec,
@@ -254,10 +209,6 @@ pub enum TagUse {
 pub enum TagLevel {
     /// A fingerprint tag judged trade by trade (any matcher).
     Trade,
-    /// A fingerprint tag judged by ix template: only `ix_template` and `program`
-    /// matchers mean anything to it (the slot and wave families, which keep one
-    /// buffer per coin and apply the tag when they are read).
-    Template,
     /// A built-in wallet class (`bundled`, `public_app`), judged at the wallet's first buy.
     WalletClass,
 }
@@ -344,7 +295,7 @@ const fn m(
 use Family as F;
 use Metric as M;
 use SpanUse as S;
-use TagLevel::{Template as TT, Trade as TR, WalletClass as WC};
+use TagLevel::{Trade as TR, WalletClass as WC};
 use TagUse::{None as NT, Optional as OT, Required as RT};
 use Unit as U;
 
@@ -462,10 +413,6 @@ pub const METRICS: &[MetricSpec] = &[
       "Different ix shapes that traded (setup, teardown and memo instructions ignored).",
       "m_crowd.unique_ix_shapes [30s] >= 4 : prints came from 4+ different tools.",
       "", NT, TR, S::WINDOW, false, 0.5, 272),
-    m(M::UniqueIxTemplates, F::Crowd, "unique_ix_templates", "different ix templates seen", U::Count,
-      "Different ix templates of this tag seen among the coin's curve buys, this print included.",
-      "m_crowd.unique_ix_templates @working >= 4 : 4+ working templates have bought this coin.",
-      "", RT, TT, S::LIFE, true, 0.5, 276),
     m(M::BuyerCount, F::Crowd, "buyer_count", "new buyers", U::Count,
       "Different wallets, the creator excluded, that bought since the span's start age.",
       "m_crowd.buyer_count [age60s] >= 5 : 5+ new wallets bought after the coin was a minute old.",
@@ -489,112 +436,6 @@ pub const METRICS: &[MetricSpec] = &[
       "m_print.flat_before @targets = 1 : a target wallet held nothing before this print.",
       "0 when the wallet already held, or the print's wallet does not carry the tag. NaN on a tick. A negated tag reads 0.",
       RT, TR, S::LIFE, false, 0.5, 256),
-    // ── m_slot ──
-    m(M::SlotThisJoined, F::Slot, "this_joined", "this print joined the slot's buys", U::Flag,
-      "1 when this print just joined the slot's buy group: a curve buy with an ix template, not the create.",
-      "m_slot.this_joined = 1 : decide on a buy print, not on a sell or a tick.",
-      "", NT, TT, S::LIFE, false, 0.5, 68),
-    m(M::SlotThisHasTag, F::Slot, "this_has_tag", "this print's template carries the tag", U::Flag,
-      "1 when this print's ix template carries the tag.",
-      "m_slot.this_has_tag @working = 1 : this buy came from a working template.",
-      "0 when the print has no ix labels.", RT, TT, S::LIFE, false, 0.5, 70),
-    m(M::SlotSameTemplateBuyCount, F::Slot, "same_template_buy_count", "buys in this slot with this print's template", U::Count,
-      "Buys so far in this slot with the same ix template as this print.",
-      "m_slot.same_template_buy_count >= 3 : 3 buys of one template landed together.",
-      "", NT, TT, S::LIFE, false, 0.5, 72),
-    m(M::SlotSameTemplateBuySol, F::Slot, "same_template_buy_sol", "SOL bought in this slot with this print's template", U::Sol,
-      "SOL bought so far in this slot by buys with the same ix template as this print.",
-      "m_slot.same_template_buy_sol >= 2 : one template put 2 SOL in this slot.",
-      "", NT, TT, S::LIFE, false, 0.1, 74),
-    m(M::SlotSameTemplateWalletCount, F::Slot, "same_template_wallet_count", "wallets in this slot with this print's template", U::Count,
-      "Different wallets among this slot's buys with the same ix template as this print.",
-      "m_slot.same_template_wallet_count >= 3 : 3 wallets bought with one template in this slot.",
-      "", NT, TT, S::LIFE, false, 0.5, 76),
-    m(M::SlotTemplateCount, F::Slot, "template_count", "templates in this slot", U::Count,
-      "Different ix templates among this slot's buys (with a tag: only the tag's templates).",
-      "m_slot.template_count @working >= 2 : two different working templates bought in this slot.",
-      "", OT, TT, S::LIFE, false, 0.5, 78),
-    m(M::SlotBuyCount, F::Slot, "buy_count", "buys in this slot", U::Count,
-      "Buys so far in this slot whose ix template carries the tag.",
-      "m_slot.buy_count @working >= 3 : 3 working-template buys in this slot.",
-      "", RT, TT, S::LIFE, false, 0.5, 80),
-    m(M::SlotBuySol, F::Slot, "buy_sol", "SOL bought in this slot", U::Sol,
-      "SOL bought so far in this slot by buys whose ix template carries the tag.",
-      "m_slot.buy_sol @working >= 1 : working templates put 1 SOL in this slot.",
-      "", RT, TT, S::LIFE, false, 0.1, 82),
-    m(M::SlotWalletCount, F::Slot, "wallet_count", "wallets in this slot", U::Count,
-      "Different wallets among this slot's buys whose ix template carries the tag.",
-      "m_slot.wallet_count @working >= 2 : two wallets bought with working templates in this slot.",
-      "", RT, TT, S::LIFE, false, 0.5, 84),
-    m(M::SlotBuySharePct, F::Slot, "buy_share_pct", "share of this slot's buys", U::Percent,
-      "Share of this slot's buys whose ix template carries the tag.",
-      "m_slot.buy_share_pct @working = 100 : every buy in this slot is a working template.",
-      "NaN before the slot's first buy.", RT, TT, S::LIFE, false, 0.5, 86),
-    m(M::SlotHasNewWallet, F::Slot, "has_new_wallet", "a first-time buyer is in this slot", U::Flag,
-      "1 when a wallet among this slot's tagged buys is buying this coin for the first time.",
-      "m_slot.has_new_wallet @working = 1 : at least one fresh wallet in the pack.",
-      "", RT, TT, S::LIFE, false, 0.5, 88),
-    m(M::SlotHasUnknownWallet, F::Slot, "has_unknown_wallet", "a buy in this slot has no wallet on record", U::Flag,
-      "1 when a buy in this slot has no wallet on record.",
-      "m_slot.has_unknown_wallet = 0 : every buyer in the slot is known.",
-      "", NT, TT, S::LIFE, false, 0.5, 90),
-    m(M::SlotPacked, F::Slot, "packed", "this slot's buys sit back to back", U::Flag,
-      "1 when this slot's buys sit in back-to-back positions in the block, 0 when another transaction sits between them.",
-      "m_slot.packed = 1 : the buys were bundled.",
-      "NaN when a buy has no block position.", NT, TT, S::LIFE, false, 0.5, 92),
-    m(M::SlotLiquidityBeforeSol, F::Slot, "liquidity_before_sol", "real SOL in the pool before this slot", U::Sol,
-      "Real SOL in the pool at the last print of an earlier slot: the depth before this slot's buys.",
-      "m_slot.liquidity_before_sol <= 10 : the pool was shallow when this slot started.",
-      "NaN until an earlier slot has a print.", NT, TT, S::LIFE, false, 0.1, 94),
-    m(M::SlotTrailBeforePct, F::Slot, "trail_before_pct", "price below its high before this print", U::Percent,
-      "How far below its all-time high the price was before this print.",
-      "m_slot.trail_before_pct >= 30 : this print lands in a 30 % dip.",
-      SPOT, NT, TT, S::LIFE, false, 1.0, 96),
-    // ── m_wave ──
-    m(M::WaveThisJoined, F::Wave, "this_joined", "this print joined the wave", U::Flag,
-      "1 when this print just joined the current wave: a curve buy with an ix template, not the create.",
-      "m_wave.this_joined = 1 : decide on a wave buy.",
-      "", NT, TT, S::LIFE, false, 0.5, 300),
-    m(M::WaveThisHasTag, F::Wave, "this_has_tag", "this print joined the wave with a tagged template", U::Flag,
-      "1 when this print just joined the wave and its ix template carries the tag.",
-      "m_wave.this_has_tag @working = 1 : a working template joined the wave.",
-      "NaN when the fingerprint has no such tag.", RT, TT, S::LIFE, false, 0.5, 302),
-    m(M::WaveWalletCount, F::Wave, "wallet_count", "wallets in this wave", U::Count,
-      "Different wallets among this wave's buys.",
-      "m_wave.wallet_count >= 2 : the second wallet just joined.",
-      "", NT, TT, S::LIFE, false, 0.5, 304),
-    m(M::WaveBuySol, F::Wave, "buy_sol", "SOL bought in this wave", U::Sol,
-      "SOL bought in this wave so far.",
-      "m_wave.buy_sol >= 1 : the wave has put 1 SOL in.",
-      "", NT, TT, S::LIFE, false, 0.1, 306),
-    m(M::WaveBuyCount, F::Wave, "buy_count", "buys in this wave", U::Count,
-      "Buys in this wave whose ix template carries the tag.",
-      "m_wave.buy_count @working >= 2 : two working-template buys in this wave.",
-      "NaN when the wave cannot fire (the create slot, or no gap before it).", RT, TT, S::LIFE, false, 0.5, 308),
-    m(M::WaveGapSlots, F::Wave, "gap_slots", "empty slots before this wave", U::Count,
-      "Empty slots (no buys) before this wave started.",
-      "m_wave.gap_slots >= 10 : the wave broke 10 quiet slots.",
-      "NaN on the create slot, with no proven gap, or after a slot regression.", NT, TT, S::LIFE, false, 0.5, 310),
-    m(M::WaveAllNewWallets, F::Wave, "all_new_wallets", "every wallet in this wave is a first-time buyer", U::Flag,
-      "1 when every wallet in this wave is buying this coin for the first time.",
-      "m_wave.all_new_wallets = 1 : a wave of fresh wallets.",
-      "NaN on an empty wave.", NT, TT, S::LIFE, false, 0.5, 312),
-    m(M::WaveHasUnknownWallet, F::Wave, "has_unknown_wallet", "a buy in this wave has no wallet on record", U::Flag,
-      "1 when a buy in this wave has no wallet on record.",
-      "m_wave.has_unknown_wallet = 0 : every buyer in the wave is known.",
-      "", NT, TT, S::LIFE, false, 0.5, 314),
-    m(M::WaveThisTipLamports, F::Wave, "this_tip_lamports", "tip this print paid", U::Lamports,
-      "The tip this print's transaction paid.",
-      "m_wave.this_tip_lamports >= 1000000 : this buyer tipped 0.001 SOL or more.",
-      "NaN when the fee was not captured; a real 0 reads 0.", NT, TT, S::LIFE, false, 0.5, 316),
-    m(M::WaveHasTxGap, F::Wave, "has_tx_gap", "another transaction sits before this buy", U::Flag,
-      "1 when this buy's block position is more than one after the wave's previous buy: another transaction sits between them.",
-      "m_wave.has_tx_gap = 0 : this buy sits right behind the last one.",
-      "0 for the wave's first buy.", NT, TT, S::LIFE, false, 0.5, 318),
-    m(M::WaveTipBandSeen, F::Wave, "tip_band_seen", "an earlier buy in this wave tipped in this print's band", U::Flag,
-      "1 when an earlier buy in this wave paid a tip in the same band as this print (none, 0, <0.0001, <0.001, more).",
-      "m_wave.tip_band_seen = 0 : this buyer tips differently from the rest of the wave.",
-      "", NT, TT, S::LIFE, false, 0.5, 320),
     // ── m_position ──
     m(M::PnlPct, F::Position, "pnl_pct", "our profit", U::Percent,
       "Our profit against our buy price, in percent.",
@@ -652,26 +493,14 @@ impl Metric {
     /// or `sticky`).
     pub fn needs_wallet_identity(self, tagged: bool) -> bool {
         tagged
-            || matches!(self.family(), Family::Wave | Family::Holdings | Family::Print)
-            || matches!(
-                self,
-                M::UniqueWallets
-                    | M::TradesPerWallet
-                    | M::BuyerCount
-                    | M::BuyerIsNew
-                    | M::SlotSameTemplateWalletCount
-                    | M::SlotWalletCount
-                    | M::SlotHasNewWallet
-                    | M::SlotHasUnknownWallet
-            )
+            || matches!(self.family(), Family::Holdings | Family::Print)
+            || matches!(self, M::UniqueWallets | M::TradesPerWallet | M::BuyerCount | M::BuyerIsNew)
     }
 
     /// Whether the value depends on the trade's instruction labels (full hash, markers
     /// or template). Offline the lake leaves `ix_labels` out unless asked.
     pub fn needs_ix_labels(self, tagged: bool) -> bool {
-        tagged
-            || matches!(self.family(), Family::Slot | Family::Wave | Family::Holdings)
-            || matches!(self, M::UniqueIxShapes | M::UniqueIxTemplates)
+        tagged || matches!(self.family(), Family::Holdings) || matches!(self, M::UniqueIxShapes)
     }
 }
 
@@ -709,7 +538,7 @@ pub const RULE_PARTS: &[PartSpec] = &[
         example: "m_state.liquidity_sol >= 14 : only when the pool holds 14+ SOL." },
     PartSpec { key: "enter.final_filters", title: "Give Up",
         summary: "Checked on a try that would otherwise buy. A miss stops this coin.",
-        example: "m_crowd.unique_ix_templates @working >= 4 : give up on coins with fewer than 4 working templates." },
+        example: "m_state.age_sec >= 90 : give up once the coin is 90 s old." },
     PartSpec { key: "enter.lock", title: "Tries",
         summary: "How many tries this rule gets on one coin. Any Print: a try on every trade and every clock tick where On is true. Once Per Coin: one try, the first trade where On is true; a clock tick is never a try; a failed Only If stops the coin. Once Per Slot: one try per block, the first moment On is true.",
         example: "Once Per Coin, On is age >= 1 s: the first trade at 1 s is the only try. If Only If fails, this coin is finished." },
@@ -793,7 +622,6 @@ fn tag_use_str(t: TagUse) -> &'static str {
 fn tag_level_str(t: TagLevel) -> &'static str {
     match t {
         TagLevel::Trade => "trade",
-        TagLevel::Template => "template",
         TagLevel::WalletClass => "wallet_class",
     }
 }

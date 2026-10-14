@@ -4,14 +4,14 @@ import { FeePinToggles } from 'components/tokens/FeePinToggles';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
-import { HOST_SHAPES_TAG, type IxPatternTarget, type StageMatcher, type TagStage } from 'hooks/useIxPatternTarget';
+import { HOST_SHAPES_TAG, STAGE_MATCHER_TITLE, type IxPatternTarget, type StageMatcher, type TagStage } from 'hooks/useIxPatternTarget';
 import { tagLabel } from 'lib/flow/tapeClassify';
 import { tagField, useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
 import { TAG_NAME_RE } from 'lib/strategy/tagsDoc';
 
 /** A matcher's registry title and summary, for a switch or a caption. */
-function matcherTitle(reg: StrategyRegistry | undefined, m: StageMatcher): string {
-  return tagField(reg, m)?.title ?? m;
+function matcherTitle(_reg: StrategyRegistry | undefined, m: StageMatcher): string {
+  return STAGE_MATCHER_TITLE[m];
 }
 
 /**
@@ -41,7 +41,7 @@ export function TagStageControls({ stage, disabled = false }: { stage: TagStage;
           options={options}
         />
       )}
-      {stage.matcher === 'ix_shape' && (
+      {(stage.matcher === 'ix_shape' || stage.matcher === 'ix_core') && (
         <FeePinToggles mask={stage.feePins} onChange={stage.setFeePins} disabled={disabled} />
       )}
       {stage.saving && <span className="text-[11px] text-text-dim">Saving...</span>}

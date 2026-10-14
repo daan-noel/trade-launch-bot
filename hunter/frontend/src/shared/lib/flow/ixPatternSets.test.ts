@@ -140,8 +140,7 @@ describe('kind + keys', () => {
       new Set(['Axiom Trade|CU', 'Photon']),
       opts,
     );
-    expect(tmpl?.match).toEqual({ ix_template: ['Axiom Trade|CU'], program: ['Photon'] });
-    expect(tmpl).toMatchObject({ name: 's', sticky: true, side: 'buy' });
+    expect(tmpl).toBeNull();
     const exact = lensTag(
       { name: 'e', kind: 'exact', patterns: [p('g', 'A'), { ...p(null, 'B'), cu_limit: 5 }], working_templates: [] },
       null,

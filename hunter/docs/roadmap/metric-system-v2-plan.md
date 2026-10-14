@@ -40,9 +40,10 @@ Unit suffix is the last word: `_sol`, `_tokens`, `_count` (prints), `_tx_count`
 | m_holdings | what a tag's trades hold and made | required | - | profit_sol (tagged_pnl), bag_share_pct (public_app_share, bundled_share) |
 | m_crowd | who shows up | - | window, since age | unique_wallets, trades_per_wallet, unique_ix_shapes (unique_builds), non_creator_buyers, buyer_is_new (this_buyer_is_new) |
 | m_print | the print being read | - | - | since_buy_sec (since_buy) |
-| m_slot | this slot's same-slot bundle | optional (`@working`) | - | today's m_burst_slot quantities, `working_` dropped: `buy_count @working` |
-| m_wave | the current buy wave | optional (`@working`) | - | today's m_burst_wave quantities |
 | m_position | our trade | - | - | pnl_pct, held_sec, retrace_pct, bounce_pct, room_taken_pct, stage_sec |
+
+A same-slot pack and a buy wave are not families. Their unit was the ix template, and an
+ix core is a different reduction, so the registry does not carry them.
 
 A quantity declares which tags and spans it accepts; the parser rejects any other. Adding
 tag or span support to a quantity is a registry change plus its compute arm, nothing else.
@@ -91,15 +92,16 @@ config and serve `m_holdings.bag_share_pct` only: `bundled` (first buy in a slot
 >= 3 wallets first bought with one ix shape) and `public_app` (first buy through an app with
 > 100 buyers the day before). Tag names are `[a-z0-9_]{1,24}`.
 
-`m_slot` / `m_wave` read a tag at the ix-template level (today's working list), so a tag
-used there may carry only `ix_template` and `program` matchers.
+A tag's instruction list is exact ix structures and ix cores. `program`, `ix_template`,
+`ix_contains` and `ix_lacks` still parse on a document that already has them, and a save
+drops them.
 
 | today | v2 |
 | --- | --- |
 | `m_flow_ix` { ix_patterns, tagged_ix_markers, untagged_ix_markers, tagged_programs, creator_is_tagged, wallet_contagion, creation_slot_buyers } | tag `volume` { ix_shape, ix_contains, ix_lacks, program, creator, sticky; `volume_cluster` is dropped, a tag names trades on an explicit axis; creation_slot_buyers "excluded" is refused, as v2 has no "neither" half } |
 | `m_dump_ix` { ix_patterns, creator_is_listed } | tag `dump` { ix_shape, creator, side: sell } |
 | `m_copy` { target_wallets } | tag `targets` { wallet } |
-| `m_burst_slot` { working_templates } | tag `working` { ix_template, program } |
+| `m_burst_slot` / `m_burst_wave` | no v2 metric; conversion refuses the conditions, and writes no `working` tag |
 | axis `prior_identity_launches` | axis `name_reuse_count` |
 
 The DB column `fingerprints.metric_config` is renamed `tags`.

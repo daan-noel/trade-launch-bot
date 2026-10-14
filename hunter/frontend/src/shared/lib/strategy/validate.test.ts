@@ -173,7 +173,7 @@ describe('a read', () => {
     expect(checkRef(reg, { metric: 'm_flow.buy_tx_count' })).toMatch(/needs a tag/);
     expect(checkRef(reg, { metric: 'm_state.age_sec', tag: 'volume' })).toMatch(/takes no tag/);
     expect(checkRef(reg, { metric: 'm_holdings.bag_share_pct', tag: 'volume' })).toMatch(/wallet class/);
-    expect(checkRef(reg, { metric: 'm_slot.buy_count', tag: '!working' })).toMatch(/tagged trades only/);
+    expect(checkRef(reg, { metric: 'm_holdings.bag_share_pct', tag: '!bundled' })).toMatch(/tagged trades only/);
     expect(checkRef(reg, { metric: 'm_crowd.buyer_count' })).toMatch(/since-age span/);
     expect(checkRef(reg, { metric: 'm_flow.slice_sol_share_pct', span: '30s' })).toMatch(/needs a slice/);
     expect(checkRef(reg, { metric: 'm_flow.buy_sol', tag: '!volume', span: '10s' })).toBeNull();
@@ -204,14 +204,14 @@ describe('tags', () => {
       dump: { match: { ix_shape: [['Pump.Fun: Sell']], wallet: [] }, side: 'sell' },
     };
     const out = tagsToJson(tagsFromJson(doc));
-    expect(out.volume).toEqual(doc.volume);
+    expect(out.volume).toEqual({ match: { creator: true }, sticky: true });
     expect(out.dump).toEqual({ match: { ix_shape: [['Pump.Fun: Sell']] }, side: 'sell' });
   });
 
   it('adds to a tag through the one writer, keeping the rest', () => {
-    const doc = withTagListValue({ volume: { match: { creator: true }, sticky: true } }, 'volume', 'program', 'Axiom Trade');
-    expect(doc).toEqual({ volume: { match: { program: ['Axiom Trade'], creator: true }, sticky: true } });
-    expect(withTagListValue(doc, 'targets', 'wallet', 'w1')).toMatchObject({ targets: { match: { wallet: ['w1'] } } });
+    const doc = withTagListValue({ volume: { match: { creator: true }, sticky: true } }, 'volume', 'wallet', 'w1');
+    expect(doc).toEqual({ volume: { match: { wallet: ['w1'], creator: true }, sticky: true } });
+    expect(withTagListValue(doc, 'targets', 'wallet', 'w2')).toMatchObject({ targets: { match: { wallet: ['w2'] } } });
   });
 
   it('refuses a blank ix row instead of saving an empty match', () => {
@@ -231,13 +231,16 @@ describe('tags', () => {
         Volume: { match: { creator: true } },
         bundled: { match: { creator: true } },
         empty: { match: {} },
-        t: { match: { ix_template: ['Axiom Trade'] } },
-        m: { match: { ix_contains: ['Nope'] } },
       }),
       reg,
     ).join('\n');
-    for (const want of ['a-z', 'built-in', 'no matcher', 'not a template', 'unknown ix marker']) {
+    for (const want of ['a-z', 'built-in', 'no matcher']) {
       expect(errs).toContain(want);
     }
+  });
+
+  it('drops a retired matcher on save', () => {
+    const tags = tagsFromJson({ volume: { match: { program: ['Axiom Trade'], creator: true }, sticky: true } });
+    expect(tagsToJson(tags)).toEqual({ volume: { match: { creator: true }, sticky: true } });
   });
 });

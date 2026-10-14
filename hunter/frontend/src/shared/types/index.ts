@@ -567,6 +567,8 @@ export interface FlowDiscoveryGroup {
    *  runs were already read. */
   lift_defined?: boolean;
   structures: FlowDiscoveryStructure[];
+  /** Trades grouped by ix core. Absent on a run cached before cores were scored. */
+  cores?: FlowDiscoveryStructure[];
   /** Ranked (desc gross_sol) member-token roster, capped server-side. */
   tokens: FlowDiscoveryTokenGross[];
 }

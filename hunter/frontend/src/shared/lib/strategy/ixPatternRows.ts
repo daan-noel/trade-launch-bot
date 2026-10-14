@@ -326,6 +326,12 @@ export function togglePatternRow(
   const labels = row.labels.map((l) => l.trim()).filter(Boolean);
   if (labels.length === 0) return patterns.map(cloneRow);
   const next: IxPatternRow = { ...cloneRow(row), labels };
+  if (rowIsCore(next)) {
+    const key = patternRowKey(next);
+    return patterns.some((p) => patternRowKey(p) === key)
+      ? patterns.filter((p) => patternRowKey(p) !== key).map(cloneRow)
+      : [...patterns.map(cloneRow), next];
+  }
   const shape = patternKey(labels);
   const ofShape = patterns.filter((p) => !rowIsCore(p) && patternKey(p.labels) === shape);
 

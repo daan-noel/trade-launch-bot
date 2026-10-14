@@ -37,6 +37,11 @@ export interface TagMatch {
 
 export type MatcherKey = keyof TagMatch;
 
+/** Matchers a stored tag may still carry from the old list. A save drops them:
+ *  a tag's instruction list is exact ix structures and ix cores (`ix_shape`). */
+export const RETIRED_MATCHERS = ['program', 'ix_template', 'ix_contains', 'ix_lacks'] as const;
+export type RetiredMatcher = (typeof RETIRED_MATCHERS)[number];
+
 /** The list matchers (each a list of strings), for generic add/remove. */
 export const STRING_LIST_MATCHERS = ['program', 'ix_template', 'ix_contains', 'ix_lacks', 'wallet'] as const;
 export type StringListMatcher = (typeof STRING_LIST_MATCHERS)[number];
@@ -130,6 +135,7 @@ export function tagsToJson(tags: TagDef[]): Obj {
     if (usedMatchers(t).length === 0) continue;
     const match: Obj = {};
     for (const k of STRING_LIST_MATCHERS) {
+      if ((RETIRED_MATCHERS as readonly string[]).includes(k)) continue;
       const list = (t.match[k] ?? []).map((s) => s.trim()).filter(Boolean);
       if (list.length) match[k] = [...new Set(list)];
     }
@@ -149,10 +155,9 @@ export function tagNames(doc: unknown): string[] {
   return isObj(doc) ? Object.keys(doc) : [];
 }
 
-/** Whether the slot / wave families and `m_crowd.unique_ix_templates` can read the
- *  tag: only its `ix_template` and `program` matchers count at that level. */
-export function hasTemplateView(t: TagDef): boolean {
-  return matcherUsed(t.match, 'ix_template') || matcherUsed(t.match, 'program');
+/** Retired matchers still on the loaded tag. The next save drops them. */
+export function retiredMatchers(t: TagDef): RetiredMatcher[] {
+  return RETIRED_MATCHERS.filter((k) => matcherUsed(t.match, k));
 }
 
 /** `program X, Y or ix template Z or the creator`: what a tag matches, in words. */
@@ -186,7 +191,6 @@ export function tagSentence(t: TagDef): string {
 export function validateTags(tags: TagDef[], reg: StrategyRegistry | undefined): string[] {
   const errors: string[] = [];
   const builtin = reg?.tags.builtin.map((b) => b.name) ?? [];
-  const markers = new Set(reg?.tags.markers.map((m) => m.name) ?? []);
   const seen = new Set<string>();
   for (const t of tags) {
     const at = `Tag \`${t.name || '(no name)'}\``;
@@ -196,16 +200,6 @@ export function validateTags(tags: TagDef[], reg: StrategyRegistry | undefined):
     seen.add(t.name);
     const bare = unclassifiableTagError(t);
     if (bare) errors.push(bare);
-    for (const s of t.match.ix_template ?? []) {
-      if (s.trim() && !s.includes('|')) {
-        errors.push(`${at}: \`${s}\` is not a template (program|CU|ATA|N|S|F); a bare program name goes under Program`);
-      }
-    }
-    for (const k of ['ix_contains', 'ix_lacks'] as const) {
-      for (const s of t.match[k] ?? []) {
-        if (markers.size && !markers.has(s)) errors.push(`${at}: unknown ix marker \`${s}\``);
-      }
-    }
     for (const r of t.match.ix_shape ?? []) {
       if (r.cu_limit != null && r.cu_limit > MAX_TX_COMPUTE_UNITS) {
         errors.push(`${at}: cu_limit ${r.cu_limit} exceeds the ${MAX_TX_COMPUTE_UNITS} compute units a transaction may request`);

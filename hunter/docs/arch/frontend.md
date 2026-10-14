@@ -744,18 +744,18 @@ next load (no per-metric frontend work).
   count body over a `hashHue` ribbon of the **contents**, since neither axis is its
   count. The tooltip carries the sequences and a click copies them as JSON.
 **Tags, not pattern lists.** A fingerprint's trade lists live in `tags`
-(`TagsEditor`): one named tag, matchers `ix_shape`, `ix_template`, `program`,
-`ix_contains`, `ix_lacks`, `wallet` and `creator`. Rules read `@name` and `@!name`.
-The trades-table badge (`IxPatternBar` over `useIxPatternTarget`) writes one of
-`ix_shape`, `ix_template`, `program` or `wallet` on the chart's tag, and the caption
-names that tag. `FeePinToggles` (`cu_limit`, `cu_price`, `tip`) are sticky modifiers
-for the next `ix_shape` click: all off writes the ix list only; checking `cu_limit`
-then clicking a trade writes that trade's limit onto the row. A sweep chart that has
-no live fingerprint passes the run's stored tag as `flowFrozen` and classifies with
-every matcher; nothing on that chart writes. A trader-analysis lens set is its own
-list, chosen at create: `exact` (ix rows plus fee pins) or `templates` (grain ids).
-The set picker is the switch. Copying a set writes it onto a fingerprint tag
-(`ix_shape`, or `ix_template` / `program` for grains).
+(`TagsEditor`): one named tag, matchers `ix_shape` (an exact ix structure or an ix
+core), `wallet` and `creator`, plus `side` and `sticky`. Rules read `@name` and
+`@!name`. A saved leftover of `program`, `ix_template`, `ix_contains` or `ix_lacks`
+is shown and dropped on the next save. The trades-table badge (`IxPatternBar` over
+`useIxPatternTarget`) writes an exact ix structure, an ix core, or a wallet on the
+chart's tag, and the caption names that tag. Both ix choices are `ix_shape` rows.
+`FeePinToggles` (`cu_limit`, `cu_price`, `tip`) are sticky modifiers for the next ix
+click: all off writes the ix list only; checking `cu_limit` then clicking a trade
+writes that trade's limit onto the row. A sweep chart that has no live fingerprint
+passes the run's stored tag as `flowFrozen` and classifies with every matcher;
+nothing on that chart writes. A trader-analysis lens set holds exact and core
+`ix_shape` rows. Copying a set writes those rows onto a fingerprint tag.
 
 **Every fingerprint-scoped list is one table.** `FP_CONFIG_LISTS`
 (`FingerprintParamsSummary`) is the tags entry: its chip, its column, its search
@@ -1165,11 +1165,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `useTraderFlowLens.ts`).** The picker is labeled **Target IX**. The trades panel's badge stays **Target IXs**. The page's tokens belong to no cohort, so there is no fingerprint to read
   lists off and the charts' vol/non-vol overlay has nothing to classify with. The lens is
   the second owner of that same fact: a named `ix_pattern_sets` row (lab-only table, CRUD at
-  `/api/ix-pattern-sets`) whose **kind** is insert-only — `exact` (ordered `ix_labels` plus
-  optional fee pins) or `templates` (working-template grain ids). The set picker is the
-  switch. A new set (its name, and Template or Exact structure) opens from the new-set
-  button. Charts, the Vol column, and badge clicks all follow the selected set's kind via
-  `classifyOptsForTape` (`exact` → `'tagged'` / labels+fees, `templates` → `'working'` / grain).
+  `/api/ix-pattern-sets`) whose rows are exact ix structures and ix cores. A new set
+  opens from the new-set button. Charts, the Vol column, and badge clicks follow the
+  selected set: a badge writes an exact row or a core row.
   Keys ride the existing `flowPatternKeys` prop path; the classifier options, fee pins, and the
   badge write target ride `context/FlowLensContext`, which the page provides and
   `TokenPriceChart` / `TokenTradeChart` / `BarTradesPanel` consume — absent everywhere else, where the
@@ -1177,11 +1175,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   judged by its own labels or grain, no forward wallet tagging) and **excludes the studied wallet**, because
   it answers "which structures surround this moment", not "who is in the volume crew". A badge under
   a lens writes to the pattern set, never a fingerprint; the one path into the engine is the explicit
-  **Copy to fingerprint** (exact rows onto the tag's `ix_shape`, grains onto
-  `ix_template` or `program`). Paste on an exact set accepts a `{ "patterns": [...] }` study file, a
+  **Copy to fingerprint** (the set's `ix_shape` rows). Paste on a set accepts a `{ "patterns": [...] }` study file, a
   `[{ tool, ix_labels, cu_limit? }]` list, bare label arrays, or one JSON array per line, and reports
-  accepted / duplicate / skipped counts (`lib/flow/ixPatternSets.ts`). Paste on a templates set accepts
-  grain ids (JSON string array or one per line) and rejects ix_labels payloads. **Show JSON** opens that
+  accepted / duplicate / skipped counts (`lib/flow/ixPatternSets.ts`). **Show JSON** opens that
   same box prefilled with the stored set (one serializer with `Copy JSON`, and the text parses back), so
   the box is the viewer and the editor both. Narrowing chips say
   which of the set classifies right now — group names on an exact set, one chip per grain on a

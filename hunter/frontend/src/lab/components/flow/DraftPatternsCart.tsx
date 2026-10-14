@@ -11,58 +11,39 @@ import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { CheckIcon, CloseIcon, EditIcon, LinkIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
-import type { StageMatcher } from 'hooks/useIxPatternTarget';
+import { STAGE_MATCHER_TITLE, type StageMatcher } from 'hooks/useIxPatternTarget';
 import type { FlowTag } from 'lib/flow/classifyFlow';
 import { flowTagOf, tagLabel } from 'lib/flow/tapeClassify';
 import {
   formatFeePins,
   patternRowKey,
+  rowIsCore,
   rowPinsFee,
   serializeIxPatternRows,
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
-import { tagField, useStrategyRegistry } from 'lib/strategy/registry';
+import { useStrategyRegistry } from 'lib/strategy/registry';
 import { DISCOVERY_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import { TAG_NAME_RE, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
-import { isProgramWorkingId, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
+import { TAG_NAME_RE, withTagShape } from 'lib/strategy/tagsDoc';
 import type { Fingerprint } from 'lib/strategy/types';
 
-/** The matchers the cart stages: the exact ix shape, or the template vocabulary
- *  (grain ids under `ix_template`, bare program names under `program`). */
+/** The grains a discovery check writes. Both are `ix_shape` rows. */
 export type CartMatcher = Exclude<StageMatcher, 'wallet'>;
 
-export const CART_MATCHERS: readonly CartMatcher[] = ['ix_shape', 'ix_template', 'program'];
+export const CART_MATCHERS: readonly CartMatcher[] = ['ix_shape', 'ix_core'];
 
 /**
- * `doc` with tag `name`'s staged matcher(s) set to the draft - `rows` for `ix_shape`,
- * `ids` for `ix_template` (grains) and `program` (bare names) - every other matcher,
- * option and tag kept. Adds before it removes, so a tag whose list is swapped whole
- * never passes through "no matcher" and loses its options. Every step goes through
- * `withTagShape` / `withTagListValue`, the tags document's one writer.
+ * `doc` with tag `name`'s `ix_shape` set to `rows` — exact structures and ix cores
+ * together — every other matcher, option and tag kept. Adds before it removes, so
+ * a list swapped whole never passes through "no matcher".
  */
-export function withTagDraft(
-  doc: unknown,
-  name: string,
-  rows: readonly IxPatternRow[] | null,
-  ids: readonly string[] | null,
-): Record<string, unknown> {
+export function withTagDraft(doc: unknown, name: string, rows: readonly IxPatternRow[]): Record<string, unknown> {
   const saved = flowTagOf(doc, name);
   let out: unknown = doc;
-  if (rows) {
-    for (const r of rows) out = withTagShape(out, name, r);
-    const keep = new Set(rows.map(patternRowKey));
-    for (const r of saved?.match.ix_shape ?? []) {
-      if (!keep.has(patternRowKey(r))) out = withTagShape(out, name, r, true);
-    }
-  }
-  if (ids) {
-    for (const k of ['ix_template', 'program'] as const) {
-      const want = ids.filter((id) => (k === 'program') === isProgramWorkingId(id));
-      for (const v of want) out = withTagListValue(out, name, k, v);
-      for (const v of saved?.match[k] ?? []) {
-        if (!want.includes(v)) out = withTagListValue(out, name, k, v, true);
-      }
-    }
+  for (const r of rows) out = withTagShape(out, name, r);
+  const keep = new Set(rows.map(patternRowKey));
+  for (const r of saved?.match.ix_shape ?? []) {
+    if (!keep.has(patternRowKey(r))) out = withTagShape(out, name, r, true);
   }
   return (out ?? {}) as Record<string, unknown>;
 }
@@ -77,9 +58,6 @@ export function DraftPatternsCart({
   draftPatterns,
   onChange,
   currentPatterns,
-  draftWorking,
-  onWorkingChange,
-  currentWorking,
   targetFp,
   tagName,
   onTagNameChange,
@@ -93,20 +71,15 @@ export function DraftPatternsCart({
   onChange: (patterns: IxPatternRow[]) => void;
   /** The tag's saved `ix_shape`. */
   currentPatterns: IxPatternRow[];
-  /** Draft grain ids / program names. */
-  draftWorking: string[];
-  onWorkingChange: (ids: string[]) => void;
-  /** The tag's saved `ix_template` + `program`. */
-  currentWorking: string[];
   targetFp: Fingerprint | null;
   /** The tag Apply writes into (`@tagName`). */
   tagName: string;
   /** Switching reseeds the draft from that tag - the page owns that. */
   onTagNameChange: (name: string) => void;
-  /** Which matcher a check writes. `ix_template` / `program` share one draft. */
+  /** Which grain a ranked-table check writes. */
   matcher: CartMatcher;
   onMatcherChange: (m: CartMatcher) => void;
-  /** The tag as Apply would save it - saved options, draft matcher. */
+  /** The tag as Apply would save it. */
   previewTag: FlowTag;
   applying: boolean;
   onApply: () => void;
@@ -114,31 +87,23 @@ export function DraftPatternsCart({
   const [rawEdit, setRawEdit] = useState(false);
   const [newTag, setNewTag] = useState<string | null>(null);
   const { data: reg } = useStrategyRegistry();
-  const title = (k: string) => tagField(reg, k)?.title ?? k;
   const builtin = reg?.tags.builtin.map((b) => b.name) ?? [];
 
-  const isTemplate = matcher !== 'ix_shape';
   const draftNorm = serializeIxPatternRows(draftPatterns);
   const savedNorm = serializeIxPatternRows(currentPatterns);
-  const stagedCount = isTemplate ? draftWorking.length : draftNorm.length;
-  const dirty = isTemplate
-    ? JSON.stringify([...draftWorking].sort()) !== JSON.stringify([...currentWorking].sort())
-    : JSON.stringify(draftNorm) !== JSON.stringify(savedNorm);
+  const stagedCount = draftNorm.length;
+  const dirty = JSON.stringify(draftNorm) !== JSON.stringify(savedNorm);
   const tagNames = Object.keys(targetFp?.tags ?? {});
   const names = tagNames.includes(tagName) ? tagNames : [...tagNames, tagName];
-  const writes = isTemplate
-    ? `${tagLabel(tagName)} (${title('ix_template')} / ${title('program')})`
-    : `${tagLabel(tagName)} (${title('ix_shape')})`;
+  const writes = `${tagLabel(tagName)} (${STAGE_MATCHER_TITLE[matcher]})`;
 
   const applyLabel = applying
     ? 'Applying…'
-    : isTemplate && !targetFp
-      ? 'Pick a fingerprint to save templates'
-      : targetFp
-        ? `Save ${writes} on "${targetFp.name}"`
-        : `Create & bind fingerprint with ${writes}`;
+    : targetFp
+      ? `Save ${writes} on "${targetFp.name}"`
+      : `Create & bind fingerprint with ${writes}`;
 
-  const applyDisabled = applying || (isTemplate && !targetFp) || (!targetFp && stagedCount === 0);
+  const applyDisabled = applying || (!targetFp && stagedCount === 0);
   const newOk = newTag !== null && TAG_NAME_RE.test(newTag) && !builtin.includes(newTag);
 
   return (
@@ -193,8 +158,11 @@ export function DraftPatternsCart({
             onChange={onMatcherChange}
             options={CART_MATCHERS.map((m) => ({
               value: m,
-              label: title(m),
-              title: tagField(reg, m)?.summary ?? m,
+              label: STAGE_MATCHER_TITLE[m],
+              title:
+                m === 'ix_core'
+                  ? 'One ix core: the list without compute budget, System, token-account, memo and Lighthouse, pump verbs merged'
+                  : 'One exact ix structure: the whole instruction list, in order',
             }))}
           />
           <Badge variant={stagedCount > 0 ? 'accent' : 'neutral'} size="sm" pill>
@@ -202,7 +170,7 @@ export function DraftPatternsCart({
           </Badge>
           {targetFp && (
             <span className="text-[10px] text-text-dim">
-              {isTemplate ? currentWorking.length : savedNorm.length} saved
+              {savedNorm.length} saved
             </span>
           )}
           {dirty && (
@@ -218,18 +186,16 @@ export function DraftPatternsCart({
               size="xs"
               className="text-red hover:text-red"
               onClick={() => {
-                if (!window.confirm(isTemplate ? 'Clear all staged templates?' : clearPrompt(draftPatterns))) return;
-                if (isTemplate) onWorkingChange([]);
-                else onChange([]);
+                if (!window.confirm(clearPrompt(draftPatterns))) return;
+                onChange([]);
               }}
-              title={isTemplate ? 'Delete all staged templates' : 'Delete all staged shapes'}
+              title="Delete all staged rows"
             >
               <TrashIcon className="h-3 w-3" />
               Delete all
             </Button>
           )}
-          {!isTemplate && (
-            <Button
+          <Button
               variant="link"
               size="xs"
               onClick={() => setRawEdit((v) => !v)}
@@ -238,40 +204,10 @@ export function DraftPatternsCart({
               <EditIcon className="h-3 w-3" />
               {rawEdit ? 'Done editing' : 'Edit raw'}
             </Button>
-          )}
         </span>
       </div>
 
-      {isTemplate ? (
-        stagedCount === 0 ? (
-          <EmptyState
-            compact
-            message={
-              <>
-                No templates staged. Check rows in the ranked table: each shape maps to its{' '}
-                {matcher === 'program' ? 'program' : 'program|CU|ATA|N|S|F grain'}.
-              </>
-            }
-          />
-        ) : (
-          <div className="flex flex-wrap gap-1">
-            {draftWorking.map((id) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => onWorkingChange(toggleWorkingTemplate(draftWorking, id))}
-                className="inline-flex items-center gap-1 rounded border border-green/40 bg-green/10 px-1.5 py-0.5 font-mono text-[10px] text-text-hi hover:border-red/50 hover:bg-red/10"
-                title={`Remove from the draft (${title(isProgramWorkingId(id) ? 'program' : 'ix_template')})`}
-              >
-                {id}
-                <span aria-hidden className="text-text-dim/60">
-                  ×
-                </span>
-              </button>
-            ))}
-          </div>
-        )
-      ) : rawEdit ? (
+      {rawEdit ? (
         <IxPatternRowsEditor rows={draftPatterns} onChange={onChange} />
       ) : stagedCount === 0 ? (
         <EmptyState
@@ -306,6 +242,11 @@ export function DraftPatternsCart({
                       <span className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-[10px] text-text-mid">{label}</span>
                     </Fragment>
                   ))}
+                  {rowIsCore(p) && (
+                    <span className="shrink-0 rounded bg-accent/15 px-1 font-mono text-[9px] text-accent" title="ix core">
+                      core
+                    </span>
+                  )}
                   {rowPinsFee(p) && (
                     <span
                       className="shrink-0 rounded bg-accent/15 px-1 font-mono text-[9px] text-accent"

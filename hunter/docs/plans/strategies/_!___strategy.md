@@ -1075,7 +1075,7 @@ The one section that names files, tables and engine vocabulary. Delete it to por
 
 | rule term | engine |
 | --- | --- |
-| event on a machine run | a fingerprint tag (`ix_shape` exact ordered build, or `ix_template` / `program`) read `@tag [1sl]`, or `m_slot.* @working` |
+| event on a machine run | a fingerprint tag (`ix_shape`, an exact structure or an ix core) read `@tag [1sl]` |
 | silence before it | `m_flow.* [30sl@1]`: a lagged slot span, so the quiet span cannot read the burst |
 | door on launch machinery | fingerprint axes (`max_cost`, `init_buy`, launch `ix_labels`) or the wildcard fingerprint |
 | permissions | `m_state.age_sec`, `m_state.liquidity_sol` (real reserve = `vsol - 30`), `m_price.trail_pct [span]` |

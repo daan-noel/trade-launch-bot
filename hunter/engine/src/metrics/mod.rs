@@ -10,10 +10,8 @@
 //! | `m_price`    | the chart                                | [`price_lifetime`], [`price_window`] |
 //! | `m_flow`     | money moving (all trades, or one tag's)  | [`flow_lifetime`], [`flow_window`], [`flow_slice`], [`tags`] |
 //! | `m_holdings` | what a tag holds and made                | [`tags`], [`holder_book`] |
-//! | `m_crowd`    | who shows up                             | [`crowd_window`], [`build_window`], [`crowd_after_age`], [`burst_slot`] |
+//! | `m_crowd`    | who shows up                             | [`crowd_window`], [`build_window`], [`crowd_after_age`] |
 //! | `m_print`    | the print being read                     | [`print_wallet`] |
-//! | `m_slot`     | this slot's buys                         | [`burst_slot`] |
-//! | `m_wave`     | this buy wave                            | [`burst_wave`] |
 //! | `m_position` | our trade                                | [`position`] |
 //!
 //! [`registry`] is the single source of truth for every name, unit, definition,
@@ -22,8 +20,6 @@
 
 pub mod buffers;
 pub mod build_window;
-pub mod burst_slot;
-pub mod burst_wave;
 pub mod crowd_after_age;
 pub mod crowd_window;
 pub mod distinct_window;
@@ -204,8 +200,7 @@ pub struct TradeLite {
     pub leg_index: u8,
     /// Position of this trade's transaction within its block. `0` is the first
     /// transaction in the block — a real and common index — so missing is
-    /// [`None`], never `0`. Packed (`m_burst_slot.packed`) is `NaN` when any buy
-    /// in the current-slot prefix arrives without one.
+    /// [`None`], never `0`.
     #[serde(default)]
     pub tx_index: Option<u32>,
     /// FNV-1a of this trade's build-template grain (`program|CU|ATA|N|S|F`).

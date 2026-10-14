@@ -1024,16 +1024,6 @@ mod flow_column_needs {
         assert!(!rule_needs_flow(&sol_only), "a SOL-only window must not pay for flow");
     }
 
-    /// `m_wave` reads wallets and ix templates; without them the event reads 0 forever.
-    #[test]
-    fn a_wave_event_forces_the_flow_columns() {
-        let wave = rule_with(serde_json::json!({ "enter": { "event": [
-            cond("m_wave.this_joined", None, "=", 1.0),
-            cond("m_wave.wallet_count", None, ">=", 2.0)
-        ] } }));
-        assert!(rule_needs_flow(&wave), "m_wave needs wallet + template grain");
-    }
-
     /// A tag read needs the ix labels and wallets on every side of the rule — the
     /// entry, and a sell line alone.
     #[test]

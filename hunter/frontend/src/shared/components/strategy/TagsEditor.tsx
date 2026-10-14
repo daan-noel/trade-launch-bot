@@ -18,10 +18,10 @@ import { freshName } from 'lib/strategy/ruleDoc';
 import {
   emptyTag,
   feePinWarning,
-  hasTemplateView,
+  RETIRED_MATCHERS,
+  retiredMatchers,
   TAG_NAME_RE,
   unclassifiableTagError,
-  usedMatchers,
   type MatcherKey,
   tagSentence,
   type TagDef,
@@ -33,8 +33,8 @@ function B({ children }: { children: ReactNode }) {
   return <strong className="font-semibold text-text">{children}</strong>;
 }
 
-/** Matchers that read this trade's instruction list. */
-const LIST_MATCHERS: readonly MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks'];
+/** The instruction list: exact ix structures and ix cores, both stored as `ix_shape`. */
+const LIST_MATCHERS: readonly MatcherKey[] = ['ix_shape'];
 /** Matchers that read who sent the trade. */
 const WHO_MATCHERS: readonly MatcherKey[] = ['wallet', 'creator'];
 /** What the volume pattern stores. Everything else on a volume tag stays visible, not dropped. */
@@ -161,7 +161,9 @@ function startValue(k: MatcherKey): Partial<TagMatch> {
 function matcherGroups(unused: TagFieldSpec[]): { label: string; fields: TagFieldSpec[] }[] {
   const list = unused.filter((f) => LIST_MATCHERS.includes(f.key as MatcherKey));
   const who = unused.filter((f) => WHO_MATCHERS.includes(f.key as MatcherKey));
-  const rest = unused.filter((f) => !list.includes(f) && !who.includes(f));
+  const rest = unused.filter(
+    (f) => !list.includes(f) && !who.includes(f) && !(RETIRED_MATCHERS as readonly string[]).includes(f.key),
+  );
   return [
     { label: "This trade's list", fields: list },
     { label: 'Who', fields: who },
@@ -251,6 +253,16 @@ function SideAndSticky({
         </span>
       </label>
     </div>
+  );
+}
+
+function RetiredNote({ tag }: { tag: TagDef }) {
+  const retired = retiredMatchers(tag);
+  if (retired.length === 0) return null;
+  return (
+    <p className="text-[11px] leading-snug text-warning">
+      Saving drops {retired.join(', ')}. A tag's instruction list is exact ix structures and ix cores.
+    </p>
   );
 }
 
@@ -363,6 +375,7 @@ function VolumePatternCard({
       )}
       {bare && <p className="text-[11px] text-red">{bare}</p>}
       <SideAndSticky tag={tag} onChange={onChange} reg={reg} disabled={disabled} />
+      <RetiredNote tag={tag} />
       <p className="text-[11px] text-text-dim/80">{tagSentence(tag)}</p>
     </div>
   );
@@ -444,12 +457,8 @@ function TagCard({
         onPick={(k) => onChange({ ...tag, match: { ...tag.match, ...startValue(k) } })}
       />
       <SideAndSticky tag={tag} onChange={onChange} reg={reg} disabled={disabled} />
+      <RetiredNote tag={tag} />
       <p className="text-[11px] text-text-dim/80">{tagSentence(tag)}</p>
-      {usedMatchers(tag).length > 0 && !hasTemplateView(tag) && (
-        <p className="text-[11px] text-text-dim/60">
-          Slot and wave metrics (m_slot, m_wave, m_crowd.unique_ix_templates) read a tag through its Program and Ix template matchers only; this tag has neither, so those read nothing for it.
-        </p>
-      )}
     </div>
   );
 }

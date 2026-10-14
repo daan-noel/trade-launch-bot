@@ -66,6 +66,13 @@ pub struct IxPattern {
     pub cu_price: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tip_lamports: Option<i64>,
+    /// `Some("core")` is an ix core row. Absent is an exact ix structure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marks: Option<String>,
 }
 
 impl IxPattern {
@@ -122,12 +129,19 @@ fn labels_key(labels: &[String]) -> String {
 
 fn row_key(labels: &[String], p: &IxPattern) -> String {
     format!(
-        "{}\u{2}{}|{}|{}",
+        "{}\u{2}{}|{}|{}\u{2}{}|{}|{}",
         labels_key(labels),
         p.cu_limit.map(|n| n.to_string()).unwrap_or_default(),
         p.cu_price.map(|n| n.to_string()).unwrap_or_default(),
         p.tip_lamports.map(|n| n.to_string()).unwrap_or_default(),
+        p.level.as_deref().unwrap_or("exact"),
+        p.side.as_deref().unwrap_or(""),
+        p.marks.as_deref().unwrap_or(""),
     )
+}
+
+fn shape_key(labels: &[String], p: &IxPattern) -> String {
+    format!("{}\u{2}{}", p.level.as_deref().unwrap_or("exact"), labels_key(labels))
 }
 
 /// Drop blank labels/sequences and exact duplicates, keeping first-seen order.
@@ -148,6 +162,21 @@ pub fn sanitize_patterns(patterns: Vec<IxPattern>) -> Vec<IxPattern> {
         if labels.is_empty() {
             continue;
         }
+        let level = match p.level.as_deref().map(str::trim) {
+            Some("core") => Some("core".to_string()),
+            _ => None,
+        };
+        let is_core = level.is_some();
+        let side = match p.side.as_deref() {
+            Some("buy") if is_core => Some("buy".to_string()),
+            Some("sell") if is_core => Some("sell".to_string()),
+            _ => None,
+        };
+        let marks = if is_core {
+            p.marks.map(|m| m.trim().to_string()).filter(|m| !m.is_empty())
+        } else {
+            None
+        };
         let cleaned = IxPattern {
             group: p
                 .group
@@ -157,6 +186,9 @@ pub fn sanitize_patterns(patterns: Vec<IxPattern>) -> Vec<IxPattern> {
             cu_limit: IxPattern::clean_fee(p.cu_limit),
             cu_price: IxPattern::clean_fee(p.cu_price),
             tip_lamports: IxPattern::clean_fee(p.tip_lamports),
+            level,
+            side,
+            marks,
         };
         if !seen.insert(row_key(&labels, &cleaned)) {
             continue;
@@ -172,7 +204,7 @@ fn collapse_catchall_vs_pins(patterns: Vec<IxPattern>) -> Vec<IxPattern> {
     let mut has_wild: std::collections::HashSet<String> = std::collections::HashSet::new();
     for p in &patterns {
         if !p.pins_fee() {
-            has_wild.insert(labels_key(&p.ix_labels));
+            has_wild.insert(shape_key(&p.ix_labels, p));
         }
     }
     if has_wild.is_empty() {
@@ -182,7 +214,7 @@ fn collapse_catchall_vs_pins(patterns: Vec<IxPattern>) -> Vec<IxPattern> {
     patterns
         .into_iter()
         .filter(|p| {
-            let k = labels_key(&p.ix_labels);
+            let k = shape_key(&p.ix_labels, p);
             if !has_wild.contains(&k) {
                 return true;
             }

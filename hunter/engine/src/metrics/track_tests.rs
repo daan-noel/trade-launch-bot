@@ -44,9 +44,6 @@ fn add_tag(
     let tags = compile_tags(&json!({ name: def }));
     let t = &tags[0];
     track.ensure_tag(fp, t.key, &t.patterns, windows);
-    if let Some(tp) = t.patterns.templates() {
-        track.ensure_template_tag(fp, t.key, &tp);
-    }
     t.key
 }
 
@@ -244,32 +241,6 @@ fn a_reload_adopts_an_edited_tag_on_a_live_coin() {
     track.on_trade(TradeLite { ix_hash: Some(bot), wallet_hash: 12, ..buy(2.0, 1.0, 10.0, 2.0) });
     assert_eq!(track.value(tagged(Metric::BuySol, "volume"), Some(id), ts(2.0)), 2.0);
     assert_eq!(track.value(tagged(Metric::BuySol, "!volume"), Some(id), ts(2.0)), 1.0);
-}
-
-/// A slot metric reads untagged without a tag, and NaN with a tag the fingerprint has
-/// no template view for — never the untagged number under a tag's name.
-#[test]
-fn slot_reads_untagged_or_through_a_template_tag() {
-    use crate::metrics::template_grain::grain_id_hash;
-    let mut track = TokenTrack::new(ts(0.0));
-    track.ensure_slot_state();
-    let id = fp(1);
-    add_tag(&mut track, id, "working", json!({ "match": { "ix_template": ["A|CU|F"] } }), &[]);
-    for (w, tmpl) in [(1, grain_id_hash("A|CU|F")), (2, grain_id_hash("B|CU|F"))] {
-        track.on_trade(TradeLite {
-            slot: 10,
-            template_hash: Some(tmpl),
-            wallet_hash: w,
-            on_curve: true,
-            ..buy(1.0, 1.0, 10.0, 0.0)
-        });
-    }
-    let now = ts(0.0);
-    assert_eq!(track.value(life(Metric::SlotTemplateCount), None, now), 2.0);
-    assert_eq!(track.value(tagged(Metric::SlotTemplateCount, "working"), Some(id), now), 1.0);
-    assert_eq!(track.value(tagged(Metric::SlotBuyCount, "working"), Some(id), now), 1.0);
-    assert!(track.value(tagged(Metric::SlotBuyCount, "other"), Some(id), now).is_nan());
-    assert!(track.value(tagged(Metric::SlotTemplateCount, "other"), Some(id), now).is_nan());
 }
 
 /// **Cross-implementation parity.** Three real token tapes from the lake, replayed

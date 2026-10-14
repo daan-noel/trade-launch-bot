@@ -4,16 +4,17 @@ import type { FlowTag } from 'lib/flow/classifyFlow';
 import { flowPatternKeysFromTags, flowPatternKeysOf, rowsFromKeys } from 'lib/flow/flowPatternKeys';
 import { defaultTagName, flowTagOf, shapeTag, type FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { ixLabelsActions } from 'lib/ixLabels';
+import { coreLabels, coreMarks, coreMarksText } from 'lib/strategy/ixCore';
 import {
   formatFeePins,
   patternRowKey,
   rowFromTrade,
+  rowIsCore,
   type IxPatternFeeMask,
   type IxPatternFeeSource,
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
 import { tagNames, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
-import { templateGrain, templateProgram } from 'lib/strategy/templateGrain';
 import type { Fingerprint } from 'lib/strategy/types';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
@@ -24,26 +25,50 @@ import {
 
 // ── What a click writes ──────────────────────────────────────────────────────
 
-/** The tag matchers a trade click can write: the trade's exact ix shape, its ix
- *  template, its program, or its wallet. */
-export type StageMatcher = 'ix_shape' | 'ix_template' | 'program' | 'wallet';
+/** What a trade click writes onto a tag: the exact ix structure, the ix core, or
+ *  the wallet. Both ix choices are `ix_shape` rows; a core row carries `level: core`. */
+export type StageMatcher = 'ix_shape' | 'ix_core' | 'wallet';
 
-export const STAGE_MATCHERS: readonly StageMatcher[] = ['ix_shape', 'ix_template', 'program', 'wallet'];
+export const STAGE_MATCHERS: readonly StageMatcher[] = ['ix_shape', 'ix_core', 'wallet'];
+
+/** Titles for the two ix choices. They are one stored matcher (`ix_shape`) at two levels. */
+export const STAGE_MATCHER_TITLE: Record<StageMatcher, string> = {
+  ix_shape: 'Ix structure',
+  ix_core: 'Ix core',
+  wallet: 'Wallet',
+};
 
 /** The trade fields a click reads. */
 export interface StageTrade extends IxPatternFeeSource {
   instruction_labels?: readonly string[] | null;
   wallet_address?: string | null;
+  trade_type?: 'buy' | 'sell' | null;
 }
 
-/** The one value a click on a trade writes under a matcher. */
+/** The one value a click on a trade writes. An ix click carries the row; a wallet
+ *  click carries the address. */
 export type StageValue =
-  | { matcher: 'ix_shape'; row: IxPatternRow }
-  | { matcher: 'ix_template' | 'program' | 'wallet'; value: string };
+  | { matcher: 'ix_shape' | 'ix_core'; row: IxPatternRow }
+  | { matcher: 'wallet'; value: string };
 
-/** The value a click on `t` writes under `matcher` - its labels plus the pinned fee
- *  fields, its template, its program or its wallet. `null` = nothing to write (no
- *  labels captured, or no wallet). */
+/** The ix core row a click writes: the reduced labels, this trade's side, and the
+ *  extras the reduction dropped, plus whichever fee fields the mask copied. */
+export function coreRowFromTrade(
+  labels: readonly string[],
+  t: StageTrade,
+  feePins?: IxPatternFeeMask | null,
+): IxPatternRow | null {
+  const core = coreLabels(labels);
+  if (core.length === 0) return null;
+  const row = rowFromTrade(core, t, feePins);
+  row.level = 'core';
+  if (t.trade_type === 'buy' || t.trade_type === 'sell') row.side = t.trade_type;
+  row.marks = coreMarksText(coreMarks(labels));
+  return row;
+}
+
+/** The value a click on `t` writes under `matcher`. `null` = nothing to write (no
+ *  labels left, or no wallet). */
 export function stageValueOf(
   matcher: StageMatcher,
   t: StageTrade,
@@ -55,24 +80,26 @@ export function stageValueOf(
       return t.wallet_address ? { matcher, value: t.wallet_address } : null;
     case 'ix_shape':
       return labels.length > 0 ? { matcher, row: rowFromTrade(labels, t, feePins) } : null;
-    case 'ix_template':
-      return labels.length > 0 ? { matcher, value: templateGrain(labels) } : null;
-    case 'program':
-      return labels.length > 0 ? { matcher, value: templateProgram(labels) } : null;
+    case 'ix_core': {
+      const row = coreRowFromTrade(labels, t, feePins);
+      return row ? { matcher, row } : null;
+    }
   }
 }
 
 /** A value in words, for a tooltip: the shape's actions (and pins), the template,
  *  the program or the wallet. */
 export function stageValueText(v: StageValue): string {
-  if (v.matcher !== 'ix_shape') return v.value;
+  if (v.matcher === 'wallet') return v.value;
   const pins = formatFeePins(v.row);
-  return `${ixLabelsActions([...v.row.labels])}${pins ? ` (${pins})` : ''}`;
+  const level = v.matcher === 'ix_core' ? 'core ' : '';
+  return `${level}${ixLabelsActions([...v.row.labels])}${pins ? ` (${pins})` : ''}`;
 }
 
-/** Identity of a value under its matcher (a shape keys with its exact pins). */
+/** Identity of a value. An ix row keys with its level, side, marks and fee pins,
+ *  so the same click removes the row it added. */
 export function stageValueKey(v: StageValue): string {
-  return `${v.matcher}|${v.matcher === 'ix_shape' ? patternRowKey(v.row) : v.value}`;
+  return v.matcher === 'wallet' ? `wallet|${v.value}` : `${v.matcher}|${patternRowKey(v.row)}`;
 }
 
 /** Every value a tag lists, keyed by {@link stageValueKey} - built once per tag, so
@@ -80,10 +107,10 @@ export function stageValueKey(v: StageValue): string {
 export function listedKeysOf(tag: FlowTag | null): ReadonlySet<string> {
   const out = new Set<string>();
   if (!tag) return out;
-  for (const row of tag.match.ix_shape ?? []) out.add(stageValueKey({ matcher: 'ix_shape', row }));
-  for (const matcher of ['ix_template', 'program', 'wallet'] as const) {
-    for (const value of tag.match[matcher] ?? []) out.add(stageValueKey({ matcher, value }));
+  for (const row of tag.match.ix_shape ?? []) {
+    out.add(stageValueKey({ matcher: rowIsCore(row) ? 'ix_core' : 'ix_shape', row }));
   }
+  for (const value of tag.match.wallet ?? []) out.add(stageValueKey({ matcher: 'wallet', value }));
   return out;
 }
 
@@ -91,9 +118,9 @@ export function listedKeysOf(tag: FlowTag | null): ReadonlySet<string> {
  *  "add to tag" click makes, through the tags document's one writer. A missing tag
  *  is created. */
 export function withStageValue(doc: unknown, name: string, v: StageValue, remove: boolean): Record<string, unknown> {
-  return v.matcher === 'ix_shape'
-    ? withTagShape(doc, name, v.row, remove)
-    : withTagListValue(doc, name, v.matcher, v.value, remove);
+  return v.matcher === 'wallet'
+    ? withTagListValue(doc, name, 'wallet', v.value, remove)
+    : withTagShape(doc, name, v.row, remove);
 }
 
 /**
@@ -113,7 +140,7 @@ export interface TagStage {
   /** Where the tag lives - a fingerprint name, a lens set, the draft - named in
    *  every click tooltip, since a fingerprint click is an immediate save. */
   ownerName: string | null;
-  /** Fee fields an `ix_shape` click copies from the tx. All off = the shape alone. */
+  /** Fee fields an ix click copies from the tx. All off = the row alone. */
   feePins: IxPatternFeeMask;
   setFeePins: (mask: IxPatternFeeMask) => void;
   /** Whether the value is on the list (the badge reads pressed). */

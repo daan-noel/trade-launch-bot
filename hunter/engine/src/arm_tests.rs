@@ -81,7 +81,7 @@ fn each_condition_registers_on_its_own_buffer_alone() {
     assert_eq!(b.crowd_windows.as_slice(), &[WindowSpec::secs(20.0)]);
     assert_eq!(b.price_windows.as_slice(), &[WindowSpec::secs(30.0)]);
     assert_eq!(b.tags.len(), 1);
-    assert!(b.tags[0].trade && !b.tags[0].template);
+    assert!(b.tags[0].trade);
     assert_eq!(b.tags[0].windows.as_slice(), &[WindowSpec::secs(40.0)]);
     assert!(!b.needs_slot);
 }
@@ -93,18 +93,6 @@ fn a_sliced_span_registers_both_axes_and_widens_the_horizon() {
     ] } }));
     assert_eq!(r.buffers.flow_windows.len(), 2);
     assert!(r.clock_horizons.max_window_secs >= 60.0);
-}
-
-#[test]
-fn slot_and_wave_reads_open_the_slot_state_and_the_template_tag() {
-    let r = compile(json!({ "enter": {
-        "event": [{ "metric": "m_wave.buy_count", "tag": "working", "is": [{ "operator": "=", "value": 2.0 }] }],
-        "final_filters": [{ "metric": "m_crowd.unique_ix_templates", "tag": "working", "is": [{ "operator": ">=", "value": 4.0 }] }]
-    } }));
-    assert!(r.buffers.slot_state, "unique_ix_templates reads the slot state");
-    assert!(r.buffers.needs_slot, "the wave needs the slot column");
-    assert_eq!(r.buffers.tags.len(), 1);
-    assert!(r.buffers.tags[0].template && !r.buffers.tags[0].trade);
 }
 
 #[test]

@@ -78,14 +78,11 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             state.reload(&rules, &fps);
         }
 
-        Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity, creation_slot } => {
+        Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity, creation_slot: _ } => {
             if state.tokens.contains_key(&mint) {
                 return fx; // duplicate creation — idempotent
             }
             let mut track = state.new_track(at);
-            if let Some(slot) = creation_slot.filter(|&s| s > 0) {
-                track.seed_creation_slot(slot);
-            }
             let mut tf = *fp;
             if let Some(h) = creator_wallet_hash {
                 track.seed_creator(h);
@@ -1135,7 +1132,7 @@ fn facts_tf(state: &EngineState, facts: &HydrateFacts, now: Ts) -> TokenFingerpr
 }
 
 /// Replace `token`'s track with one folded from `history` (every trade to fold, chain
-/// order), the way the live path built it: creation slot and creator seeded first, the
+/// order), the way the live path built it: the creator seeded first, the
 /// first-slot stand-in applied before the first print past the creation slot, each buy
 /// stamped with its build-breadth class when it printed on `now`'s UTC day (the loaded
 /// table's day), and every held position's peak and trough folded from its entry on.
@@ -1143,9 +1140,6 @@ fn rebuild_track(state: &EngineState, token: &mut TokenState, facts: &HydrateFac
     token.track = state.new_track(token.created_at);
     token.last_meaningful_at = None;
     token.last_trade_at = None;
-    if let Some(slot) = facts.creation_slot.filter(|&s| s > 0) {
-        token.track.seed_creation_slot(slot);
-    }
     if let Some(h) = facts.creator_wallet_hash {
         token.track.seed_creator(h);
     }

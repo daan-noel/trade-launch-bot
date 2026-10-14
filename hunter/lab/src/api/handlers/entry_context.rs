@@ -36,7 +36,7 @@ use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::registry::Metric;
 use hunter_engine::metrics::tags::config::{compile_tags, validate_tags, TagPatterns};
 use hunter_engine::metrics::tags::state::TagState;
-use hunter_engine::metrics::template_grain::grain;
+use hunter_engine::metrics::trade_keys::core_labels;
 use hunter_engine::metrics::trade_keys::{wallet_hash, LabelKeys};
 use hunter_engine::metrics::{Cursor, Side, TradeLite, WindowSpec, WindowUnit, NOMINAL_SLOT_SECS};
 use trading_core::config::constants::lamports_to_sol;
@@ -286,7 +286,7 @@ pub struct NearestTag {
     /// Its own tape position: where [`seat_behind`] stands to read what it showed.
     pub slot: i64,
     pub tx_index: i32,
-    /// Its template grain (`program|CU|ATA|N|S|F`): the sort and search key.
+    /// Its ix core, labels joined by ` > `. Empty when the print has no core.
     pub key: String,
     /// Its exact ordered ix labels, for the Matched cell's abbreviation line.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1154,7 +1154,14 @@ fn fold_signaled(
             lag_secs: (entry_ms - at_ms) as f64 / 1000.0,
             slot,
             tx_index: tx,
-            key: grain(&labels),
+            key: {
+                let core = core_labels(&labels);
+                if core.is_empty() {
+                    "(no core)".to_string()
+                } else {
+                    core.join(" > ")
+                }
+            },
             labels,
         }
     });
@@ -2086,8 +2093,8 @@ mod tests {
         assert_eq!(e.probe.hits, 4);
         let n = e.probe.nearest.as_ref().unwrap();
         assert_eq!((n.lag_slots, n.lag_tx, n.lag_secs), (6, None, 8.0));
-        // Matched reads the template grain, whatever the breakdown vocabulary.
-        assert_eq!(n.key, "Unknown (6Vo3245e)|CU");
+        // Matched reads the ix core: compute budget is dropped, the buy label stays.
+        assert_eq!(n.key, SIX);
         assert_eq!(
             n.labels,
             vec![

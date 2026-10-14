@@ -19,8 +19,6 @@ pub struct TagRead {
     pub name: &'static str,
     /// Read trade by trade (`m_flow`, `m_holdings.profit_sol`): opens a `TagState`.
     pub trade: bool,
-    /// Read at the template level (`m_slot`, `m_wave`, `m_crowd.unique_ix_templates`).
-    pub template: bool,
     /// Windows read on the trade-level state.
     pub windows: SmallVec<[WindowSpec; 2]>,
 }
@@ -37,9 +35,8 @@ pub struct Buffers {
     pub tags: SmallVec<[TagRead; 2]>,
     pub print_wallet: bool,
     pub holder_book: bool,
-    pub slot_state: bool,
-    /// A read counts in slots or reads the slot / wave families: a loader must supply
-    /// the slot column, or those readings never move.
+    /// A read counts in slots: a loader must supply the slot column, or those readings
+    /// never move.
     pub needs_slot: bool,
 }
 
@@ -53,7 +50,7 @@ impl Buffers {
     /// Add one read. `anchor_cap` is how many wallets a since-age buyer set must hold
     /// for the read to stay exact.
     pub fn absorb(&mut self, r: MetricRef, anchor_cap: u32) {
-        self.needs_slot |= r.span.needs_slot() || matches!(r.metric.family(), Family::Slot | Family::Wave);
+        self.needs_slot |= r.span.needs_slot();
         match r.metric.family() {
             Family::Flow | Family::Holdings if r.is_fingerprint_scoped() => {
                 let t = r.tag.expect("fingerprint-scoped");
@@ -93,7 +90,6 @@ impl Buffers {
                         }
                     }
                 }
-                Metric::UniqueIxTemplates => self.template_read(r),
                 _ => {}
             },
             Family::Print => match r.metric {
@@ -106,12 +102,6 @@ impl Buffers {
                 }
                 _ => self.print_wallet = true,
             },
-            Family::Slot => self.template_read(r),
-            Family::Wave => {
-                if r.tag.is_some() {
-                    self.template_read(r);
-                }
-            }
             Family::State | Family::Position => {}
         }
     }
@@ -147,14 +137,12 @@ impl Buffers {
         for t in &other.tags {
             let e = self.tag_entry(t.key, t.name);
             e.trade |= t.trade;
-            e.template |= t.template;
             for &w in &t.windows {
                 push(&mut e.windows, w);
             }
         }
         self.print_wallet |= other.print_wallet;
         self.holder_book |= other.holder_book;
-        self.slot_state |= other.slot_state;
         self.needs_slot |= other.needs_slot;
     }
 
@@ -182,27 +170,16 @@ impl Buffers {
         if self.holder_book {
             track.ensure_holder_book();
         }
-        if self.slot_state {
-            track.ensure_slot_state();
-        }
     }
 
     fn tag_entry(&mut self, key: TagKey, name: &'static str) -> &mut TagRead {
         match self.tags.iter().position(|x| x.key == key) {
             Some(i) => &mut self.tags[i],
             None => {
-                self.tags.push(TagRead { key, name, trade: false, template: false, windows: SmallVec::new() });
+                self.tags.push(TagRead { key, name, trade: false, windows: SmallVec::new() });
                 self.tags.last_mut().expect("pushed")
             }
         }
     }
 
-    fn template_read(&mut self, r: MetricRef) {
-        if r.metric.family() != Family::Wave {
-            self.slot_state = true;
-        }
-        if let Some(t) = r.tag {
-            self.tag_entry(t.key, t.name).template = true;
-        }
-    }
 }

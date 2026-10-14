@@ -7,7 +7,6 @@ import {
   keysForSet,
   kindOf,
   lensTag,
-  matcherForKind,
   mutedPatternForClick,
   patternGroups,
   toggleExactPattern,
@@ -20,7 +19,6 @@ import {
 import type { FlowSide } from 'lib/flow/classifyFlow';
 import type { FlowLensValue } from 'context/FlowLensContext';
 import type { StageMatcher, StageValue } from 'hooks/useIxPatternTarget';
-import { toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import { patternRowKey, type IxPatternFeeMask } from 'lib/strategy/ixPatternRows';
 import {
   useCreateIxPatternSetMutation,
@@ -184,13 +182,8 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     [set, enabledUnits, prefs.contagion, prefs.side],
   );
 
-  // A templates set holds grain ids and bare program names: a click writes either.
-  const [templateMatcher, setTemplateMatcher] = useState<StageMatcher>('ix_template');
-  const matcher: StageMatcher = kind === 'templates' ? templateMatcher : matcherForKind(kind);
-  const matchers = useMemo<StageMatcher[]>(
-    () => (kind === 'templates' ? ['ix_template', 'program'] : ['ix_shape']),
-    [kind],
-  );
+  const [matcher, setMatcher] = useState<StageMatcher>('ix_shape');
+  const matchers = useMemo<StageMatcher[]>(() => ['ix_shape', 'ix_core'], []);
 
   const excludeWallets = useMemo(
     () => (prefs.excludeSelf && wallet ? new Set([wallet]) : null),
@@ -226,11 +219,6 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
       }
     },
     [set, writeBody, updateSetMut],
-  );
-
-  const mutedGrains = useMemo(
-    () => (set && kind === 'templates' ? (prefs.mutedBySet?.[set.id] ?? []) : []),
-    [set, kind, prefs.mutedBySet],
   );
 
   /** Mute / un-mute ONE grain. Ids the set no longer carries are dropped on every
@@ -287,25 +275,21 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
   const listed = useCallback(
     (v: StageValue) => {
       if (!set) return false;
-      if (v.matcher === 'ix_shape') {
-        const key = patternRowKey(v.row);
-        return set.patterns.some((p) => patternRowKey(toPatternRow(p)) === key);
-      }
-      return set.working_templates.includes(v.value);
+      if (v.matcher === 'wallet' || kind === 'templates') return false;
+      const key = patternRowKey(v.row);
+      return set.patterns.some((p) => patternRowKey(toPatternRow(p)) === key);
     },
-    [set],
+    [set, kind],
   );
 
   /** Stored, but narrowed out by the chips. */
   const muted = useCallback(
     (v: StageValue) => {
       if (!set) return false;
-      if (v.matcher === 'ix_shape') {
-        return mutedPatternForClick(set.patterns, enabledUnits, v.row.labels, v.row) != null;
-      }
-      return mutedGrains.includes(v.value) && set.working_templates.includes(v.value);
+      if (v.matcher === 'wallet' || kind === 'templates') return false;
+      return mutedPatternForClick(set.patterns, enabledUnits, v.row.labels, v.row) != null;
     },
-    [set, enabledUnits, mutedGrains],
+    [set, kind, enabledUnits],
   );
 
   /**
@@ -320,19 +304,7 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
    */
   const toggle = useCallback(
     (v: StageValue) => {
-      if (!set) return;
-      if (v.matcher !== 'ix_shape') {
-        const id = v.value;
-        const wasMuted = mutedGrains.includes(id);
-        if (wasMuted && set.working_templates.includes(id)) {
-          setGrainMuted(id, false);
-          return;
-        }
-        // A mute left over from an earlier removal would swallow the add.
-        if (wasMuted) setGrainMuted(id, false);
-        void writeSet({ working_templates: toggleWorkingTemplate(set.working_templates, id) });
-        return;
-      }
+      if (!set || kind === 'templates' || v.matcher === 'wallet') return;
       const hidden = mutedPatternForClick(set.patterns, enabledUnits, v.row.labels, v.row);
       if (hidden) {
         toggleUnit(hidden.group ?? UNGROUPED);
@@ -340,7 +312,7 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
       }
       void writeSet({ patterns: toggleExactPattern(set.patterns, v.row.labels, v.row, activeGroup) });
     },
-    [set, writeSet, activeGroup, mutedGrains, setGrainMuted, enabledUnits, toggleUnit],
+    [set, kind, writeSet, activeGroup, enabledUnits, toggleUnit],
   );
 
   const setFeePins = useCallback(
@@ -357,7 +329,7 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
             tagName: set.name,
             matcher,
             matchers,
-            setMatcher: setTemplateMatcher,
+            setMatcher,
             ownerName: null,
             kind,
             patterns: set.patterns,

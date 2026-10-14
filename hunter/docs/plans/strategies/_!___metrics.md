@@ -34,7 +34,7 @@ metric, whose trades, over what stretch.
   no suffix is a 0/1 flag.
 - **The tag** picks whose trades (section 3). **The span** picks the stretch (section 2).
 - **Each metric declares what it accepts**: `TagUse` (none / optional / required),
-  `TagLevel` (trade / template / wallet class) and `SpanUse` (life / window / since age /
+  `TagLevel` (trade / wallet class) and `SpanUse` (life / window / since age /
   slice). `MetricRef::check` refuses anything else with a reason naming the fix. There are
   no parallel per-basis or per-tag metrics: `buy_sol [10s]`, `buy_sol [20sl]` and
   `buy_sol @!volume [5p]` are one metric read three ways.
@@ -51,15 +51,14 @@ metric, whose trades, over what stretch.
 | `m_price` | the chart | `price_lifetime`, `price_window` |
 | `m_flow` | money moving, all trades or one tag's | `flow_lifetime`, `flow_window`, `flow_slice`, `tags::state` |
 | `m_holdings` | what a tag or wallet class holds | `tags::state` (`profit_sol`, `bag_sold_pct`), `holder_book` (`bag_share_pct`) |
-| `m_crowd` | who shows up | `crowd_window`, `build_window`, `crowd_after_age`, `burst_slot` |
+| `m_crowd` | who shows up | `crowd_window`, `build_window`, `crowd_after_age` |
 | `m_print` | the print being read | `print_wallet` (`since_buy_sec`); `tags::state` (`sold_bag_pct`, `flat_before`, copy page only) |
-| `m_slot` | this slot's buys | `burst_slot` |
-| `m_wave` | this buy wave | `burst_wave` |
 | `m_position` | our trade | `position` (read from `PositionCtx`, never the coin) |
 
 Modules are under `engine/src/metrics/`. The v1 group names (`m_flow_ix`,
-`m_flow_window`, `m_burst_slot`, ...) map to these references in `v1::map_metric`
-([`v1.rs`](../../../engine/src/v1.rs)), the one old-to-new table (section 9).
+`m_flow_window`, ...) map to these references in `v1::map_metric`
+([`v1.rs`](../../../engine/src/v1.rs)). `m_burst_slot` and `m_burst_wave` have no v2
+metric: conversion refuses them.
 
 ## 2. Spans
 
@@ -131,9 +130,10 @@ compiled once per reload (`compile_tags` into `EngineState::fp_tags`), never per
 `TagState::fold_tagged`, one verdict per trade, in this order:
 
 1. Off the tag's `side` (absent = both), the trade cannot carry it.
-2. It carries the tag when ANY stateless matcher holds (`program`, `ix_shape`,
-   `ix_template`, `ix_contains`, `ix_lacks`, `wallet`, `creator`) or its
-   wallet is in the sticky set.
+2. It carries the tag when ANY stateless matcher holds (`ix_shape`, an exact row or
+   an ix core, `wallet`, `creator`) or its wallet is in the sticky set. A document
+   saved earlier may still name `program`, `ix_template`, `ix_contains` or `ix_lacks`;
+   parse still accepts those, and the next save drops them.
 3. Else the trade is the rest.
 
 A tag has no creation-slot matcher: a creation-slot buyer is the rest unless another
@@ -169,26 +169,11 @@ kept: an edit moves a live coin's future, never its past.
   core level are refused. The engine, the chart's `ixCore.ts` and the owner split assert one
   set of vectors, `engine/fixtures/ix_core_parity.json`; the levels a list is built at are
   the owner split's ([_!___owner-split.md](_!___owner-split.md), "Match levels").
-- **`program` catches every build a tool compiles.** The head program
-  (`template_grain::program_owned`: the first instruction past compute budget, system,
-  token, associated-token and memo) keeps its name across builds; one crew program
-  ships ~25 sequences and keeps adding more, which an exact list books as the rest until
-  someone adds them.
-- **`ix_contains` / `ix_lacks` are mechanisms, not snapshots.** A marker is one bit the
-  producer sets from a fixed vocabulary (`trade_keys::MARKERS`, served in the registry):
-  machinery (`AdvanceNonceAccount`, `CreateAccountWithSeed`, `System Program: Transfer`,
-  `Pump.Fun: Create`, `Memo Program`) and retail routers (`Axiom Trade`, `Photon`,
-  `Bloom Router`, `Trojan Trade`, `Terminal`). Matching is substring containment per label,
-  and an unknown marker is an error, never an empty mask. `CreateAccountWithSeed` stays true
-  of every future throwaway-account build, where a list cannot: 531 distinct sequences carry
-  it on the 08-01..08-21 tape.
-- **The two marker matchers judge an unmarked build oppositely.** `ix_contains` tags what it
-  names and leaves the rest unjudged; `ix_lacks` tags everything without a router, so
-  `@!tag` is exactly the router-built trades. Say the one the rule means: on the 8dtx tape
-  the same fires read +0.99 % a trade under `ix_contains: [CreateAccountWithSeed]` and
-  +6.86 % under `ix_lacks: [<routers>]`, because the 8,566 fires the first admits and the
-  second rejects average -0.68 %. `ix_lacks` fails closed: a loader that drops `ix_labels`
-  tags every trade, so an `@!tag` gate fires nothing rather than everything.
+- **`program`, `ix_template`, `ix_contains` and `ix_lacks` are not writers.** A tag's
+  instruction list is exact structures and ix cores. Parse still accepts the four old
+  keys so an unsaved fingerprint classifies, and the editor drops them on the next save.
+  An ix core is the reduction that covers a tool's variants; a program name or a marker
+  bit is a different reduction and is not rewritten into a core row.
 - **Fee pins sit beside the hash, never in it.** An `ix_shape` entry may pin `cu_limit`,
   `cu_price`, `tip_lamports`; an absent field is a wildcard, and a pinned field never
   matches an absent reading, so a pinned entry matches nothing recorded before fee capture
@@ -221,11 +206,7 @@ rules read it.
 ### Levels and built-ins
 
 - **Trade level** (`m_flow`, `m_holdings.profit_sol`, `m_holdings.bag_sold_pct`): one `TagState` per (fingerprint,
-  tag), any matcher.
-- **Template level** (`m_slot`, `m_wave`, `m_crowd.unique_ix_templates`): the slot and wave
-  keep one buffer per coin and apply the tag when read, through its ix-template view
-  (`TagPatterns::templates`), so only `ix_template` and `program` mean anything there, and
-  `@!tag` is refused. A tag with neither reads `NaN`; rule save warns (`rule_tag_warning`).
+  tag). A tag's instruction list is exact ix structures and ix cores.
 - **Wallet classes** `@bundled` / `@public_app` (`m_holdings.bag_share_pct` only) need no
   config and may not be a fingerprint tag's name. The book is exact per wallet
   (`TradeLite::token_amount`, every leg, floored at zero); a print without an amount breaks
@@ -273,14 +254,13 @@ coin's early trades or a pre-V0 lake day null-fills `ix_labels` / `wallet`.
 [`TokenTrack`](../../../engine/src/metrics/track.rs) is all the metric state one coin
 carries and the router every read goes through (`TokenTrack::value`):
 
-- one copy each of the coin-level states (`m_state`, lifetime price and flow, the wave),
+- one copy each of the coin-level states (`m_state`, lifetime price and flow),
   shared by every rule armed on the coin;
 - trailing windows deduped by span, **one buffer family per subject** (flow, price, crowd
   wallets, ix shapes), so a rule pays only for the buffers its reads touch;
-- one `TagState` per (fingerprint, tag) a loaded rule reads at the trade level, one
-  template view per (fingerprint, tag) a slot or wave metric reads;
-- opt-in maps opened only while a loaded rule reads them: the print wallet map, the holder
-  book, the slot prefix.
+- one `TagState` per (fingerprint, tag) a loaded rule reads;
+- opt-in maps opened only while a loaded rule reads them: the print wallet map and the
+  holder book.
 
 **Registration is one walk.** [`Buffers::absorb`](../../../engine/src/metrics/buffers.rs)
 maps each `MetricRef` to the buffer it needs. The rule compiler, the engine's per-coin
@@ -332,12 +312,11 @@ tick arm shows only as retained state.
 | situation | reads |
 | --- | --- |
 | a tag the rule's fingerprint does not define | `NaN`; rule save warns (`rule_tag_warning`) |
-| a template-level read of a tag with no `ix_template` / `program` | `NaN`; save warns |
 | `m_position.*` before a fill | `NaN` |
 | `m_print.*` on a tick | `NaN` (a rule on it never fires on a tick) |
 | empty span for a ratio (`buy_share_pct`, `trades_per_wallet`, `slice_*`, `tag_share_pct`) | `NaN`; a `0` would pass `<= X` on a dead tape |
 | `profit_sol` before a print with a reserve pair, or after a tagged print without a token amount | `NaN` |
-| a trade with no labels | no `program`, `ix_shape`, `ix_template` match; `ix_lacks` tags it |
+| a trade with no labels | no `ix_shape` match |
 | a trade with no fee reading | matches no entry that pins a fee field |
 | creator unseeded (no `tokens` row / `creator_wallet`) | `creator` matches nothing |
 | pre-V0 sealed lake days (NULL `ix_labels`) | the rest at runtime; excluded from discovery score denominators |

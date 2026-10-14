@@ -55,10 +55,9 @@ fn fingerprint_groups_become_tags_and_metrics_read_them() {
 }
 
 #[test]
-fn leftover_metrics_become_final_filters() {
-    let out = v2(json!({ "entry": { "m_burst_slot": { "working_templates_seen": ge(4.0), "this_member": [{ "operator": "=", "value": 1.0 }] } } }));
-    assert_eq!(out["enter"]["final_filters"][0]["metric"], "m_crowd.unique_ix_templates");
-    assert_eq!(out["enter"]["filters"][0]["metric"], "m_slot.this_joined");
+fn a_slot_or_wave_metric_has_no_v2_form() {
+    let err = convert_params(&json!({ "entry": { "m_burst_slot": { "this_member": [{ "operator": "=", "value": 1.0 }] } } })).unwrap_err();
+    assert!(err.contains("no v2 metric"), "{err}");
 }
 
 #[test]
@@ -151,8 +150,7 @@ fn a_flow_classifier_becomes_the_volume_tag() {
     assert_eq!(tags["dump"]["side"], "sell");
     assert_eq!(tags["dump"]["match"]["creator"], true);
     assert_eq!(tags["targets"]["match"]["wallet"][0], "W");
-    assert_eq!(tags["working"]["match"]["ix_template"][0], "Axiom Trade|CU|ATA|F");
-    assert_eq!(tags["working"]["match"]["program"][0], "Photon");
+    assert!(tags.get("working").is_none(), "a template list is not a tag");
     // A classifier that tags nothing stays a valid tag that matches nothing.
     let none = convert_metric_config(&json!({ "m_flow_ix": { "creator_is_tagged": false, "wallet_contagion": false } })).unwrap();
     assert_eq!(none["volume"]["match"]["ix_shape"], json!([]));

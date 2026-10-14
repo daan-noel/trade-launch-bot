@@ -59,7 +59,7 @@ fn probe_fp() -> Fingerprint {
             "volume": { "match": { "ix_shape": [VOL_LABELS], "creator": true }, "sticky": true },
             "dump": { "match": { "ix_shape": [NONVOL_LABELS] } },
             "targets": { "match": { "wallet": COPY_TARGETS } },
-            "working": { "match": { "program": ["Pump.Fun"] } }
+            "working": { "match": { "ix_shape": [["Pump.Fun: Buy"]] } }
         }),
     }
 }
@@ -73,7 +73,6 @@ fn variants(m: &MetricSpec) -> Vec<Map<String, Value>> {
     if m.tags != TagUse::None {
         match m.tag_level {
             TagLevel::Trade => tags.extend([Some("volume"), Some("!volume"), Some("dump"), Some("targets")]),
-            TagLevel::Template => tags.push(Some("working")),
             TagLevel::WalletClass => tags.extend([Some("bundled"), Some("public_app")]),
         }
     }

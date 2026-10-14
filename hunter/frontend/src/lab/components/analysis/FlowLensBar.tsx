@@ -29,8 +29,8 @@ import {
 } from 'lib/flow/ixPatternSets';
 import { patternRowKey } from 'lib/strategy/ixPatternRows';
 import { tagField, useStrategyRegistry } from 'lib/strategy/registry';
-import { isProgramWorkingId, toggleWorkingTemplate } from 'lib/strategy/templateGrain';
-import { tagNames, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
+import { toggleWorkingTemplate } from 'lib/strategy/templateGrain';
+import { tagNames, withTagShape } from 'lib/strategy/tagsDoc';
 import { defaultTagName, tagLabel } from 'lib/flow/tapeClassify';
 import { useUiToggle } from 'hooks/useUiPrefs';
 import { apiErrorMessage } from 'store/apiSlice';
@@ -47,14 +47,9 @@ const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
 
 const KIND_OPTIONS: { value: IxPatternSetKind; label: string; title: string }[] = [
   {
-    value: 'templates',
-    label: 'Template',
-    title: 'Grain ids (program|CU|ATA|N|S|F) and program names: a tag\'s ix template / program matchers',
-  },
-  {
     value: 'exact',
-    label: 'Exact structure',
-    title: 'Full ix_labels sequences, optional fee pins: a tag\'s exact ix shape matcher',
+    label: 'Ix rows',
+    title: 'Exact ix structures and ix cores. A badge click picks which, and both are ix_shape rows.',
   },
 ];
 
@@ -99,7 +94,7 @@ export function FlowLensBar({
   const [pasteText, setPasteText] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
-  const [newKind, setNewKind] = useState<IxPatternSetKind>('templates');
+  const [newKind, setNewKind] = useState<IxPatternSetKind>('exact');
   const [copied, setCopied] = useState(false);
 
   const { set, sets, units, enabledUnits, keys } = lens;
@@ -710,16 +705,10 @@ function PromoteControls({
     : `${tagLabel(tag)} (${title('ix_shape')})`;
 
   const copy = async () => {
-    if (!target) return;
+    if (!target || isTemplates) return;
     setStatus(null);
     let tags: unknown = target.tags;
-    if (isTemplates) {
-      for (const id of set.working_templates) {
-        tags = withTagListValue(tags, tag, isProgramWorkingId(id) ? 'program' : 'ix_template', id);
-      }
-    } else {
-      for (const p of set.patterns) tags = withTagShape(tags, tag, toPatternRow(p));
-    }
+    for (const p of set.patterns) tags = withTagShape(tags, tag, toPatternRow(p));
     try {
       await updateFingerprint({
         id: target.id,

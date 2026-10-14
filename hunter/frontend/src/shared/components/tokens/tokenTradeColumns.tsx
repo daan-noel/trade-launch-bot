@@ -13,7 +13,7 @@ import { formatIxLabelsText } from 'lib/ixLabels';
 import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeFees';
 import { tagLabel } from 'lib/flow/tapeClassify';
 import { formatFeePins } from 'lib/strategy/ixPatternRows';
-import { stageValueOf, stageValueText, type TagStage } from 'hooks/useIxPatternTarget';
+import { STAGE_MATCHER_TITLE, stageValueOf, stageValueText, type TagStage } from 'hooks/useIxPatternTarget';
 // Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
 // colors come along without dragging the charting library into this chunk.
 import { LENS_COLORS } from 'components/token-price-chart/constants';
@@ -186,7 +186,7 @@ export function tokenTradeColumns(
   if (tagName) {
     const on = tagLabel(tagName);
     const off = tagLabel(tagName, true);
-    const writes = stage ? `${tagLabel(stage.tagName)} (${title(stage.matcher)})` : null;
+    const writes = stage ? `${tagLabel(stage.tagName)} (${STAGE_MATCHER_TITLE[stage.matcher]})` : null;
     const owner = stage?.ownerName ? ` on "${stage.ownerName}"` : '';
     leading.push({
       key: 'flow_tag',
@@ -195,7 +195,7 @@ export function tokenTradeColumns(
         `Which half of ${on} the chart put this trade on: ${on} or ${off} (the rest), ` +
         `classified over the coin's full history; "via" names the matcher that held.` +
         (stage && writes
-          ? ` Clicking adds this trade's ${title(stage.matcher)} to ${writes}${owner}, or removes it when listed.`
+          ? ` Clicking adds this trade's ${STAGE_MATCHER_TITLE[stage.matcher].toLowerCase()} to ${writes}${owner}, or removes it when listed.`
           : ''),
       render: (t) => {
         const reason = reasons?.get(t.id) ?? null;
@@ -208,7 +208,7 @@ export function tokenTradeColumns(
         const value = stage ? stageValueOf(stage.matcher, t, stage.feePins) : null;
         const listed = !!stage && value != null && stage.listed(value);
         const muted = !!stage && value != null && !listed && !!stage.muted?.(value);
-        const pins = value?.matcher === 'ix_shape' ? formatFeePins(value.row) : '';
+        const pins = value && value.matcher !== 'wallet' ? formatFeePins(value.row) : '';
         const clickTitle = !value
           ? ''
           : muted

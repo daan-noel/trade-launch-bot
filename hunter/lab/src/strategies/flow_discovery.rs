@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use hunter_engine::metrics::fee::FeeKeys;
-use hunter_engine::metrics::trade_keys::ix_hash;
+use hunter_engine::metrics::trade_keys::{core_hash, core_labels, ix_hash};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -201,6 +201,10 @@ pub struct DiscoveryGroup {
     #[serde(default = "default_lift_defined")]
     pub lift_defined: bool,
     pub structures: Vec<StructureScore>,
+    /// The same trades grouped by ix core (`core_hash`), capped the same way.
+    /// Empty on a result cached before cores were scored.
+    #[serde(default)]
+    pub cores: Vec<StructureScore>,
     /// Ranked (desc gross_sol) member-token roster, capped at
     /// `MAX_TOKENS_PER_GROUP` — drives the per-token preview picker.
     pub tokens: Vec<TokenGross>,
@@ -267,6 +271,7 @@ pub fn score_corpus(
 ) -> Result<DiscoveryResult, Cancelled> {
     // Window-wide denominators for lift (after filters, before group split).
     let mut window_gross_by_struct: HashMap<u64, f64> = HashMap::new();
+    let mut window_gross_by_core: HashMap<u64, f64> = HashMap::new();
     let mut window_gross_total = 0.0_f64;
     let mut labels_by_hash: HashMap<u64, Vec<String>> = HashMap::new();
 
@@ -279,9 +284,14 @@ pub fn score_corpus(
                 continue;
             };
             let h = ix_hash(&labels);
-            labels_by_hash.entry(h).or_insert_with(|| labels);
+            labels_by_hash.entry(h).or_insert_with(|| labels.clone());
             let g = t.amount_sol.abs();
             *window_gross_by_struct.entry(h).or_insert(0.0) += g;
+            if !core_labels(&labels).is_empty() {
+                if let Some(ch) = core_hash(&labels) {
+                    *window_gross_by_core.entry(ch).or_insert(0.0) += g;
+                }
+            }
             window_gross_total += g;
         }
     }
@@ -309,6 +319,7 @@ pub fn score_corpus(
             lift_defined,
             window_gross_total,
             &window_gross_by_struct,
+            &window_gross_by_core,
             &labels_by_hash,
         );
         groups.push(g);
@@ -343,6 +354,7 @@ fn score_group(
     lift_defined: bool,
     window_gross_total: f64,
     window_gross_by_struct: &HashMap<u64, f64>,
+    window_gross_by_core: &HashMap<u64, f64>,
     labels_by_hash: &HashMap<u64, Vec<String>>,
 ) -> DiscoveryGroup {
     #[derive(Default)]
@@ -372,6 +384,8 @@ fn score_group(
     }
 
     let mut by_struct: HashMap<u64, Acc> = HashMap::new();
+    let mut by_core: HashMap<u64, Acc> = HashMap::new();
+    let mut core_labels_of: HashMap<u64, Vec<String>> = HashMap::new();
     let mut group_gross_total = 0.0_f64;
     let mut n_trades_scored = 0_u64;
     let mut token_gross: HashMap<usize, f64> = HashMap::new();
@@ -396,41 +410,46 @@ fn score_group(
             };
             let h = ix_hash(&labels);
             let g = t.amount_sol.abs();
-            let acc = by_struct.entry(h).or_default();
-            acc.gross += g;
-            if t.is_buy {
-                acc.buy += g;
-            } else {
-                acc.sell += g;
+            let core = core_labels(&labels);
+            let core_h = (!core.is_empty()).then(|| core_hash(&labels)).flatten();
+            if let Some(ch) = core_h {
+                core_labels_of.entry(ch).or_insert_with(|| core.iter().map(|s| (*s).to_string()).collect());
             }
-            acc.n_trades += 1;
             n_trades_scored += 1;
             group_gross_total += g;
             if creation_slot == Some(t.slot) {
-                acc.first_slot_gross += g;
-                acc.first_slot_trades += 1;
-                *token_first_slot_gross
-                    .entry(ti)
-                    .or_default()
-                    .entry(h)
-                    .or_insert(0.0) += g;
+                *token_first_slot_gross.entry(ti).or_default().entry(h).or_insert(0.0) += g;
             }
-            acc.slots.push(t.slot);
-            if t.flow.fee.is_empty() {
-                acc.fee_unknown += 1;
-            } else {
-                let e = acc.by_fee.entry(t.flow.fee).or_insert((0, 0.0));
-                e.0 += 1;
-                e.1 += g;
-            }
-            *acc.gross_by_token.entry(ti).or_insert(0.0) += g;
             let signed = if t.is_buy { g } else { -g };
-            *acc.net_by_token.entry(ti).or_insert(0.0) += signed;
-            if let Some(w) = t.wallet.as_deref() {
-                let wh = hunter_engine::metrics::trade_keys::wallet_hash(w);
-                acc.wallets.insert(wh);
-                acc.wallets_by_token.entry(ti).or_default().insert(wh);
-                *acc.gross_by_wallet.entry(wh).or_insert(0.0) += g;
+            let wh = t.wallet.as_deref().map(hunter_engine::metrics::trade_keys::wallet_hash);
+            let in_create = creation_slot == Some(t.slot);
+            let bump = |acc: &mut Acc| {
+                acc.gross += g;
+                if t.is_buy { acc.buy += g; } else { acc.sell += g; }
+                acc.n_trades += 1;
+                if in_create {
+                    acc.first_slot_gross += g;
+                    acc.first_slot_trades += 1;
+                }
+                acc.slots.push(t.slot);
+                if t.flow.fee.is_empty() {
+                    acc.fee_unknown += 1;
+                } else {
+                    let e = acc.by_fee.entry(t.flow.fee).or_insert((0, 0.0));
+                    e.0 += 1;
+                    e.1 += g;
+                }
+                *acc.gross_by_token.entry(ti).or_insert(0.0) += g;
+                *acc.net_by_token.entry(ti).or_insert(0.0) += signed;
+                if let Some(wh) = wh {
+                    acc.wallets.insert(wh);
+                    acc.wallets_by_token.entry(ti).or_default().insert(wh);
+                    *acc.gross_by_wallet.entry(wh).or_insert(0.0) += g;
+                }
+            };
+            bump(by_struct.entry(h).or_default());
+            if let Some(ch) = core_h {
+                bump(by_core.entry(ch).or_default());
             }
             *token_gross.entry(ti).or_insert(0.0) += g;
             *token_trades.entry(ti).or_insert(0) += 1;
@@ -438,10 +457,11 @@ fn score_group(
     }
 
     let n_tokens = idxs.len();
-    let mut structures: Vec<StructureScore> = Vec::with_capacity(by_struct.len());
+    let rank = |by: HashMap<u64, Acc>, labels_of: &HashMap<u64, Vec<String>>, window_by: &HashMap<u64, f64>| {
+    let mut structures: Vec<StructureScore> = Vec::with_capacity(by.len());
 
-    for (h, acc) in by_struct {
-        let Some(labels) = labels_by_hash.get(&h).cloned() else {
+    for (h, acc) in by {
+        let Some(labels) = labels_of.get(&h).cloned() else {
             continue;
         };
         let volume_share = if group_gross_total > 0.0 {
@@ -484,7 +504,7 @@ fn score_group(
             0.0
         };
         let share_w = if window_gross_total > 0.0 {
-            window_gross_by_struct.get(&h).copied().unwrap_or(0.0) / window_gross_total
+            window_by.get(&h).copied().unwrap_or(0.0) / window_gross_total
         } else {
             0.0
         };
@@ -577,6 +597,10 @@ fn score_group(
             })
     });
     structures.truncate(cfg.max_structures_per_group);
+    structures
+    };
+    let structures = rank(by_struct, labels_by_hash, window_gross_by_struct);
+    let cores = rank(by_core, &core_labels_of, window_gross_by_core);
 
     // "Nothing here stands out" is only sayable against a real baseline — an
     // undefined lift means the run has no out-of-group comparison, not that the
@@ -629,6 +653,7 @@ fn score_group(
         ambiguity,
         lift_defined,
         structures,
+        cores,
         tokens,
     }
 }
