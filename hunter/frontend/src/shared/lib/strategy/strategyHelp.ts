@@ -83,6 +83,16 @@ export const RULE_FIELD_HELP = {
       'Locked after create — unlock the padlock to flip paper↔real. That only affects future buys; open positions keep their original mode. Sizing/caps stay editable while live; the fingerprint and the conditions lock once active.',
     ].join('\n'),
   },
+  wallet: {
+    title: 'Signing wallet',
+    body: [
+      'The wallet that signs the next real entry.',
+      '',
+      'Primary means whichever wallet is primary when the entry fires. A named wallet stays on this rule until you change it.',
+      '',
+      'A paper rule does not sign. Open positions keep the wallet that paid for them. Unlock the padlock to change the assignment.',
+    ].join('\n'),
+  },
   paperFill: {
     title: 'Paper fill',
     body: [

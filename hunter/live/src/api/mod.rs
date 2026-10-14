@@ -148,6 +148,24 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategy-rules/{id}",
                 web::delete().to(handlers::strategies::engine::delete_rule),
             )
+            .route("/wallets", web::get().to(handlers::wallets::list))
+            .route("/wallets", web::post().to(handlers::wallets::create))
+            .route("/wallets/import", web::post().to(handlers::wallets::import))
+            .route("/wallets/assignments", web::get().to(handlers::wallets::assignments))
+            .route("/wallets/move", web::post().to(handlers::wallets::begin_move))
+            .route("/wallets/move/resume", web::post().to(handlers::wallets::resume_move))
+            .route(
+                "/wallets/{pubkey}/primary",
+                web::post().to(handlers::wallets::set_primary),
+            )
+            .route(
+                "/wallets/{pubkey}/nonces",
+                web::post().to(handlers::wallets::provision),
+            )
+            .route(
+                "/wallets/rules/{id}",
+                web::put().to(handlers::wallets::assign_rule),
+            )
             // Token sync
             .route("/token/sync", web::post().to(handlers::tokens::sync_token))
             .route(

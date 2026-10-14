@@ -1,0 +1,405 @@
+//! Move one wallet onto another, then archive the source.
+//!
+//! Order: stop new entries, wait until nothing is in flight, move bags, hand
+//! nonce authority across, sweep SOL, verify. Each step is safe to run again.
+
+use std::str::FromStr;
+use std::sync::Arc;
+
+use anyhow::{bail, Context, Result};
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::system_instruction;
+use solana_sdk::transaction::Transaction;
+use spl_associated_token_account::{
+    get_associated_token_address_with_program_id,
+    instruction::create_associated_token_account_idempotent,
+};
+use sqlx::PgPool;
+
+use trading_core::models::trader_wallet::WalletMove;
+use trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo;
+
+use super::runtime::WalletRuntime;
+
+const FEE_RESERVE: u64 = 10_000;
+const INFLIGHT: &[&str] = &[
+    "BuySubmitted",
+    "ExitPending",
+    "ExitUnconfirmed",
+    "ExitStuck",
+];
+
+pub async fn start(
+    pool: &PgPool,
+    runtime: &WalletRuntime,
+    from: &str,
+    to: &str,
+) -> Result<WalletMove> {
+    if !runtime.can_manage_keys() {
+        bail!("wallet keystore is not configured");
+    }
+    if from == to {
+        bail!("source and destination are the same wallet");
+    }
+    let repo = TraderWalletRepo::new(pool.clone());
+    if repo.open_move().await?.is_some() {
+        bail!("a move is already in progress");
+    }
+    let records = repo.records().await?;
+    let source = records
+        .iter()
+        .find(|r| r.pubkey == from)
+        .context("source wallet is not registered")?;
+    let dest = records
+        .iter()
+        .find(|r| r.pubkey == to)
+        .context("destination wallet is not registered")?;
+    if source.status != "active" {
+        bail!("source is not active");
+    }
+    if dest.status != "active" {
+        bail!("destination is not active");
+    }
+    require_loaded(runtime, from)?;
+    require_loaded(runtime, to)?;
+    repo.insert_move(from, to).await?;
+    resume(pool, runtime).await
+}
+
+pub async fn resume(pool: &PgPool, runtime: &WalletRuntime) -> Result<WalletMove> {
+    let repo = TraderWalletRepo::new(pool.clone());
+    let Some(mv) = repo.open_move().await? else {
+        bail!("no move is in progress");
+    };
+    if let Err(e) = advance(pool, runtime, &mv).await {
+        let step = repo
+            .open_move()
+            .await
+            .ok()
+            .flatten()
+            .map(|row| row.step)
+            .unwrap_or_else(|| mv.step.clone());
+        let _ = repo
+            .set_move_step(mv.id, &step, Some(&e.to_string()), false)
+            .await;
+        return Err(e);
+    }
+    match repo.open_move().await? {
+        Some(mv) => Ok(mv),
+        None => repo
+            .get_move(mv.id)
+            .await?
+            .context("move row missing"),
+    }
+}
+
+fn require_loaded(runtime: &WalletRuntime, pubkey: &str) -> Result<()> {
+    match runtime.signer(pubkey) {
+        Some(key) if key.pubkey().to_string() == pubkey => Ok(()),
+        _ => bail!("wallet {pubkey} is not loaded"),
+    }
+}
+
+async fn advance(pool: &PgPool, runtime: &WalletRuntime, mv: &WalletMove) -> Result<()> {
+    let repo = TraderWalletRepo::new(pool.clone());
+    let mut step = mv.step.clone();
+    loop {
+        match step.as_str() {
+            "quiesce" => {
+                quiesce(pool, runtime, &mv.from_wallet, &mv.to_wallet).await?;
+                step = "inflight".into();
+                repo.set_move_step(mv.id, &step, None, false).await?;
+            }
+            "inflight" => {
+                let open = repo.open_positions(&mv.from_wallet).await?;
+                if open.iter().any(|p| INFLIGHT.contains(&p.status.as_str())) {
+                    repo.set_move_step(
+                        mv.id,
+                        "inflight",
+                        Some("waiting for in-flight entries and sells"),
+                        false,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                step = "bags".into();
+                repo.set_move_step(mv.id, &step, None, false).await?;
+            }
+            "bags" => {
+                runtime.freeze.freeze(&mv.from_wallet);
+                let moved = move_tokens(runtime, &repo, &mv.from_wallet, &mv.to_wallet).await;
+                runtime.freeze.thaw(&mv.from_wallet);
+                moved?;
+                step = "nonces".into();
+                repo.set_move_step(mv.id, &step, None, false).await?;
+            }
+            "nonces" => {
+                move_nonces(runtime, &repo, &mv.from_wallet, &mv.to_wallet).await?;
+                step = "sol".into();
+                repo.set_move_step(mv.id, &step, None, false).await?;
+            }
+            "sol" => {
+                sweep_sol(runtime, &mv.from_wallet, &mv.to_wallet).await?;
+                step = "verify".into();
+                repo.set_move_step(mv.id, &step, None, false).await?;
+            }
+            "verify" => {
+                verify(&repo, &mv.from_wallet).await?;
+                repo.set_status(&mv.from_wallet, "archived").await?;
+                repo.set_move_step(mv.id, "done", None, true).await?;
+                return Ok(());
+            }
+            "done" => return Ok(()),
+            other => bail!("unknown move step {other}"),
+        }
+    }
+}
+
+async fn quiesce(pool: &PgPool, runtime: &WalletRuntime, from: &str, to: &str) -> Result<()> {
+    let repo = TraderWalletRepo::new(pool.clone());
+    let source_primary = repo
+        .records()
+        .await?
+        .into_iter()
+        .any(|r| r.pubkey == from && r.is_primary);
+    repo.set_status(from, "draining").await?;
+    repo.retarget_rules(from, to).await?;
+    if source_primary {
+        repo.set_primary(to).await?;
+    }
+    runtime.reload_directory(pool).await?;
+    Ok(())
+}
+
+async fn move_tokens(
+    runtime: &WalletRuntime,
+    repo: &TraderWalletRepo,
+    from: &str,
+    to: &str,
+) -> Result<()> {
+    let source = runtime.trader(from).context("source trader")?;
+    let holdings = source.get_all_token_accounts().await?;
+    let positions = repo.open_positions(from).await?;
+    let dest = Pubkey::from_str(to)?;
+    let source_key = runtime.signer(from).context("source key")?;
+    for holding in &holdings {
+        if holding.amount == 0 {
+            continue;
+        }
+        let program = Pubkey::from_str(&holding.token_program_id)?;
+        let mint = Pubkey::from_str(&holding.mint)?;
+        let source_account = Pubkey::from_str(&holding.token_account)?;
+        let dest_account = get_associated_token_address_with_program_id(&dest, &mint, &program);
+        send(
+            runtime,
+            &source_key,
+            vec![
+                create_associated_token_account_idempotent(
+                    &source_key.pubkey(),
+                    &dest,
+                    &mint,
+                    &program,
+                ),
+                token_transfer(
+                    &program,
+                    &mint,
+                    &source_account,
+                    &dest_account,
+                    &source_key.pubkey(),
+                    holding.amount,
+                    holding.decimals,
+                )?,
+            ],
+            &[],
+        )
+        .await?;
+        close_if_empty(runtime, &source_key, &program, &source_account, &dest).await?;
+    }
+    let dest_ata_for = |mint: &str, program: &str| -> Result<String> {
+        let mint = Pubkey::from_str(mint)?;
+        let program = Pubkey::from_str(program).unwrap_or_else(|_| spl_token::id());
+        Ok(get_associated_token_address_with_program_id(&dest, &mint, &program).to_string())
+    };
+    for position in positions {
+        let program = position
+            .token_program_id
+            .clone()
+            .unwrap_or_else(|| spl_token::id().to_string());
+        let account = dest_ata_for(&position.mint_address, &program)?;
+        repo.repoint_position(position.id, to, &account).await?;
+    }
+    Ok(())
+}
+
+fn token_transfer(
+    program: &Pubkey,
+    mint: &Pubkey,
+    source: &Pubkey,
+    dest: &Pubkey,
+    owner: &Pubkey,
+    amount: u64,
+    decimals: u8,
+) -> Result<solana_sdk::instruction::Instruction> {
+    if *program == spl_token_2022::id() {
+        spl_token_2022::instruction::transfer_checked(
+            program, source, mint, dest, owner, &[], amount, decimals,
+        )
+        .context("token-2022 transfer")
+    } else {
+        spl_token::instruction::transfer_checked(
+            program, source, mint, dest, owner, &[], amount, decimals,
+        )
+        .context("token transfer")
+    }
+}
+
+async fn close_if_empty(
+    runtime: &WalletRuntime,
+    owner: &Arc<Keypair>,
+    program: &Pubkey,
+    account: &Pubkey,
+    dest: &Pubkey,
+) -> Result<()> {
+    let ix = if *program == spl_token_2022::id() {
+        spl_token_2022::instruction::close_account(program, account, dest, &owner.pubkey(), &[])
+    } else {
+        spl_token::instruction::close_account(program, account, dest, &owner.pubkey(), &[])
+    };
+    let ix = match ix {
+        Ok(ix) => ix,
+        Err(_) => return Ok(()),
+    };
+    // A non-empty account rejects the close. The tokens already moved, so a
+    // failure here only leaves rent behind for a later sweep.
+    let _ = send(runtime, owner, vec![ix], &[]).await;
+    Ok(())
+}
+
+async fn move_nonces(
+    runtime: &WalletRuntime,
+    repo: &TraderWalletRepo,
+    from: &str,
+    to: &str,
+) -> Result<()> {
+    let source = runtime.signer(from).context("source key")?;
+    let dest = Pubkey::from_str(to)?;
+    let nonces = repo.nonces_for(from).await?;
+    for nonce in &nonces {
+        let nonce_pk = Pubkey::from_str(&nonce.pubkey)?;
+        send(
+            runtime,
+            &source,
+            vec![system_instruction::authorize_nonce_account(
+                &nonce_pk,
+                &source.pubkey(),
+                &dest,
+            )],
+            &[],
+        )
+        .await?;
+        repo.set_nonce_authority(&nonce.pubkey, to).await?;
+    }
+    let parsed = repo
+        .nonces_for(to)
+        .await?
+        .into_iter()
+        .map(|n| n.pubkey.parse())
+        .collect::<Result<Vec<Pubkey>, _>>()?;
+    runtime.rebuild(to, parsed).await?;
+    Ok(())
+}
+
+async fn sweep_sol(runtime: &WalletRuntime, from: &str, to: &str) -> Result<()> {
+    let trader = runtime.trader(from).context("source trader")?;
+    let balance = trader.get_sol_balance().await?;
+    if balance <= FEE_RESERVE {
+        return Ok(());
+    }
+    let source = runtime.signer(from).context("source key")?;
+    let dest = Pubkey::from_str(to)?;
+    send(
+        runtime,
+        &source,
+        vec![system_instruction::transfer(
+            &source.pubkey(),
+            &dest,
+            balance - FEE_RESERVE,
+        )],
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn verify(repo: &TraderWalletRepo, from: &str) -> Result<()> {
+    let open = repo.open_positions(from).await?;
+    if !open.is_empty() {
+        bail!("{} open positions still name the source", open.len());
+    }
+    let nonces = repo.nonces_for(from).await?;
+    if !nonces.is_empty() {
+        bail!("{} nonce accounts still name the source", nonces.len());
+    }
+    Ok(())
+}
+
+pub async fn provision_nonces(
+    pool: &PgPool,
+    runtime: &WalletRuntime,
+    wallet: &str,
+    count: u8,
+) -> Result<u8> {
+    if !runtime.can_manage_keys() {
+        bail!("wallet keystore is not configured");
+    }
+    if count == 0 || count > 16 {
+        bail!("nonce count must be 1 to 16");
+    }
+    require_loaded(runtime, wallet)?;
+    let owner = runtime.signer(wallet).context("wallet key")?;
+    let rpc = RpcClient::new(runtime.rpc_url().to_string());
+    let rent = rpc.get_minimum_balance_for_rent_exemption(80).await?;
+    let repo = TraderWalletRepo::new(pool.clone());
+    let mut made = 0u8;
+    for _ in 0..count {
+        let nonce = Keypair::new();
+        let ixs = system_instruction::create_nonce_account(
+            &owner.pubkey(),
+            &nonce.pubkey(),
+            &owner.pubkey(),
+            rent,
+        );
+        send(runtime, &owner, ixs, &[&nonce]).await?;
+        repo.insert_nonce(&nonce.pubkey().to_string(), wallet).await?;
+        made += 1;
+    }
+    let nonces = repo
+        .nonces_for(wallet)
+        .await?
+        .into_iter()
+        .map(|n| n.pubkey.parse())
+        .collect::<Result<Vec<Pubkey>, _>>()?;
+    runtime.rebuild(wallet, nonces).await?;
+    Ok(made)
+}
+
+async fn send(
+    runtime: &WalletRuntime,
+    payer: &Arc<Keypair>,
+    ixs: Vec<solana_sdk::instruction::Instruction>,
+    extra: &[&Keypair],
+) -> Result<String> {
+    let rpc = RpcClient::new(runtime.rpc_url().to_string());
+    let blockhash = rpc.get_latest_blockhash().await?;
+    let mut signers: Vec<&Keypair> = Vec::with_capacity(1 + extra.len());
+    signers.push(payer.as_ref());
+    signers.extend_from_slice(extra);
+    let tx = Transaction::new_signed_with_payer(&ixs, Some(&payer.pubkey()), &signers, blockhash);
+    let sig = rpc
+        .send_and_confirm_transaction(&tx)
+        .await
+        .context("send")?;
+    Ok(sig.to_string())
+}

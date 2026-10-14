@@ -36,6 +36,8 @@ export interface RuleEditorDraft {
   params: Record<string, unknown>;
   /** Presentational labels; the server canonicalizes them on save. */
   tags: string[];
+  /** Live only. `null` is the primary at entry time. Absent means this save does not touch the assignment. */
+  wallet?: string | null;
 }
 
 export interface RuleEditorProps {
@@ -52,6 +54,10 @@ export interface RuleEditorProps {
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
   /** Copy board: the picker is the copy readings, and a sell can mirror his bag. */
   scope?: 'metric' | 'copy';
+  /** Live only. Active wallets the next real entry may sign with. Absent on lab. */
+  wallets?: { pubkey: string; name: string }[];
+  /** Current assignment. `null` means the primary at entry time. */
+  initialWallet?: string | null;
 }
 
 /** Wrapper that waits for the registry (the editor renders entirely from it). */
@@ -85,6 +91,8 @@ function RuleEditorInner({
   renderDryRun,
   registry: fullRegistry,
   scope = 'metric',
+  wallets,
+  initialWallet = null,
 }: RuleEditorProps & { registry: StrategyRegistry }) {
   const registry = scope === 'copy' ? copyEditorRegistry(fullRegistry) : fullRegistry;
   const [ruleName, setRuleName] = useState(initial?.rule_name ?? '');
@@ -109,6 +117,8 @@ function RuleEditorInner({
   const [jsonText, setJsonText] = useState(() => JSON.stringify(storedParams(firstDoc), null, 2));
   const [jsonError, setJsonError] = useState<string | null>(loadError);
   const [modeUnlocked, setModeUnlocked] = useState(false);
+  const [wallet, setWallet] = useState(initialWallet ?? '');
+  const [walletUnlocked, setWalletUnlocked] = useState(false);
 
   // A live rule's conditions are locked; sizing and caps stay editable. Open positions
   // keep their snapshotted trade mode, so flipping mode only affects future buys.
@@ -124,6 +134,18 @@ function RuleEditorInner({
       return;
     }
     setModeUnlocked(true);
+  };
+  const walletCanLock = Boolean(initial?.id) && mode === 'real';
+  const walletLocked = walletCanLock && !walletUnlocked;
+  const toggleWalletLock = () => {
+    if (walletUnlocked) {
+      setWalletUnlocked(false);
+      return;
+    }
+    if (!window.confirm('Unlock the wallet? The next real entry for this rule signs with it. Open positions keep the wallet that bought them.')) {
+      return;
+    }
+    setWalletUnlocked(true);
   };
 
   const patch = (f: (d: RuleDoc) => RuleDoc) => setDoc((d) => f(d));
@@ -167,6 +189,7 @@ function RuleEditorInner({
         max_total_tokens: maxTotal ?? 0,
         params: storedParams(doc),
         tags: labels,
+        ...(wallets && mode === 'real' ? { wallet: wallet || null } : {}),
       }
     : null;
 
@@ -221,6 +244,39 @@ function RuleEditorInner({
                 </LabelTip>
               )}
             </div>
+            {wallets && (
+              <div className="flex w-44 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
+                <LabelTip tip={RULE_FIELD_HELP.wallet}>Wallet</LabelTip>
+                <div className="flex items-center gap-1">
+                  <Select
+                    fieldSize="sm"
+                    className="w-32"
+                    value={mode === 'paper' ? '' : wallet}
+                    disabled={mode !== 'real' || walletLocked}
+                    onChange={(e) => setWallet(e.target.value)}
+                  >
+                    <option value="">primary</option>
+                    {wallets.map((w) => (
+                      <option key={w.pubkey} value={w.pubkey}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </Select>
+                  {walletCanLock && (
+                    <IconButton
+                      variant="ghost"
+                      size="sm"
+                      active={walletUnlocked}
+                      onClick={toggleWalletLock}
+                      title={walletUnlocked ? 'Lock wallet' : 'Unlock wallet'}
+                      aria-label={walletUnlocked ? 'Lock wallet' : 'Unlock wallet'}
+                    >
+                      {walletUnlocked ? <UnlockIcon /> : <LockIcon />}
+                    </IconButton>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           <div className="flex min-w-0 flex-col gap-1 text-[11px] text-text-dim">
             <LabelTip tip={RULE_FIELD_HELP.tags}>Labels</LabelTip>

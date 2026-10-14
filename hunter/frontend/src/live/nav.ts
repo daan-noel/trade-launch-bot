@@ -38,6 +38,7 @@ export const liveNav: NavConfig = {
     { kind: 'item', to: '/console', label: 'Console' },
     { kind: 'item', to: '/portfolio', label: 'Portfolio' },
     { kind: 'item', to: '/wallet', label: 'Wallet' },
+    { kind: 'item', to: '/wallets', label: 'Wallets' },
     { kind: 'item', to: '/profiles', label: 'Profiles' },
     { kind: 'item', to: '/settings', label: 'Settings' },
   ],

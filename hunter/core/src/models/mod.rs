@@ -8,6 +8,7 @@ pub mod strategy;
 pub mod strategy_arm;
 pub mod token;
 pub mod token_info;
+pub mod trader_wallet;
 pub mod token_sync_state;
 pub mod trade;
 pub mod wallet;

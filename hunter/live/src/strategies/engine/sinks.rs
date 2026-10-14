@@ -68,6 +68,7 @@ use trading_core::storage::repositories::trade_repo::TradeRepo;
 
 use crate::ingest::HeldPoolGate;
 use crate::trader::PumpFunTrader;
+use crate::wallets::WalletRuntime;
 
 use super::arm_ledger::ArmLedger;
 use super::run_config::RunConfigSig;
@@ -231,6 +232,8 @@ pub struct Sink {
     held_pools: Option<HeldPoolGate>,
     /// The real trading wallet address (position owner for real mode).
     wallet: String,
+    /// Rule → pubkey, and the primary. Read when a real entry is stamped.
+    wallets: Arc<WalletRuntime>,
     /// Per-rule info, refreshed on reload. Holds **active** rules plus the drain
     /// set (paused rules still carrying open positions), so a draining rule's
     /// transitions still resolve a mode/name.
@@ -273,6 +276,7 @@ impl Sink {
         ledger: ArmLedger,
         fill_sigs: FillSigStore,
         wallet: String,
+        wallets: Arc<WalletRuntime>,
         trader: Option<Arc<PumpFunTrader>>,
         held_pools: Option<HeldPoolGate>,
     ) -> Self {
@@ -286,6 +290,7 @@ impl Sink {
             ledger,
             fill_sigs,
             trader,
+            wallets,
             held_pools,
             wallet,
             rules: HashMap::new(),
@@ -696,7 +701,14 @@ impl Sink {
 
         let mode_str = mode_str(info.mode);
         let wallet = match info.mode {
-            TradeMode::Real => self.wallet.clone(),
+            TradeMode::Real => {
+                let resolved = self.wallets.directory.resolve(delta.rule.0);
+                if resolved.is_empty() {
+                    self.wallet.clone()
+                } else {
+                    resolved
+                }
+            }
             TradeMode::Paper => PAPER_WALLET.to_string(),
         };
         let mut pos = StrategyPosition::new(
@@ -705,7 +717,7 @@ impl Sink {
             delta.rule.0,
             mode_str.to_string(),
             mint.clone(),
-            wallet,
+            wallet.clone(),
         );
         pos.token_program_id = token_program_id.clone();
         pos.status = "BuySubmitted".to_string();
@@ -744,6 +756,11 @@ impl Sink {
                 reverted_buy_fee_sol: 0.0,
                 target_snapshot: None,
                 cashback_enabled: cashback,
+                wallet: if info.mode == TradeMode::Real {
+                    wallet.clone()
+                } else {
+                    String::new()
+                },
                 inflight_intent: None,
             },
         );
@@ -1535,6 +1552,7 @@ mod copy_watch_is_not_published {
             ArmLedger::disabled(),
             FillSigStore::new(),
             "wallet".to_string(),
+            Arc::new(crate::wallets::WalletRuntime::offline()),
             None,
             None,
         );

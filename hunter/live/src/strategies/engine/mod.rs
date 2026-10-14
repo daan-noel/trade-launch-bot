@@ -524,6 +524,9 @@ pub struct PositionMeta {
     /// from the worst-case entry fill). Consumed by the sink on `Holding`.
     pub target_snapshot: Option<TargetSnapshot>,
     pub cashback_enabled: bool,
+    /// Pubkey that bought this position. Empty on a paper row. The exit signs
+    /// with this wallet, not with whatever is primary now.
+    pub wallet: String,
     /// The intent currently in flight for this position (entry or exit). The exit
     /// reaper uses it to emit `FillFailed` back into the engine when a sell task
     /// dies but the process is still up.
@@ -870,6 +873,7 @@ mod registry_tests {
             reverted_buy_fee_sol: 0.0,
             target_snapshot: None,
             cashback_enabled: false,
+            wallet: String::new(),
             inflight_intent: None,
         }
     }

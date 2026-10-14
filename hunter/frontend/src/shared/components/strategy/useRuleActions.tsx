@@ -21,6 +21,12 @@ export interface UseRuleActionsOptions {
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
   /** Copy board: the editor offers the copy readings and stamps `copy: true`. */
   board?: 'rules' | 'copy';
+  /** Live only. Active wallets for the editor dropdown. Lab omits this. */
+  wallets?: { pubkey: string; name: string }[];
+  /** Live only. The wallet a rule names, or null for the primary. */
+  walletFor?: (ruleId: string) => string | null;
+  /** Live only. Writes `rule_wallets` after the rule row saves. Lab never calls it. */
+  assignWallet?: (ruleId: string, wallet: string | null) => Promise<void>;
 }
 
 export interface RuleActions {
@@ -47,7 +53,13 @@ export interface RuleActions {
  * duplicating the mutation wiring. Execute-column actions (activate/pause/stop,
  * simulate) stay on each host page — they differ by app.
  */
-export function useRuleActions({ renderDryRun, board = 'rules' }: UseRuleActionsOptions = {}): RuleActions {
+export function useRuleActions({
+  renderDryRun,
+  board = 'rules',
+  wallets,
+  walletFor,
+  assignWallet,
+}: UseRuleActionsOptions = {}): RuleActions {
   const [createRule, { isLoading: creating }] = useCreateStrategyRuleMutation();
   const [updateRule, { isLoading: updating }] = useUpdateStrategyRuleMutation();
   const [deleteRule] = useDeleteStrategyRuleMutation();
@@ -67,21 +79,31 @@ export function useRuleActions({ renderDryRun, board = 'rules' }: UseRuleActions
       return;
     }
     try {
-      if (editingId) {
-        await updateRule({
-          id: editingId,
-          body: {
+      const saved = editingId
+        ? await updateRule({
+            id: editingId,
+            body: {
+              rule_name: draft.rule_name,
+              trade_mode: draft.trade_mode,
+              buy_amount_lamports: draft.buy_amount_lamports,
+              max_concurrent_tokens: draft.max_concurrent_tokens,
+              max_total_tokens: draft.max_total_tokens,
+              params: draft.params,
+              tags: draft.tags,
+            },
+          }).unwrap()
+        : await createRule({
             rule_name: draft.rule_name,
+            fingerprint_id: draft.fingerprint_id,
             trade_mode: draft.trade_mode,
             buy_amount_lamports: draft.buy_amount_lamports,
             max_concurrent_tokens: draft.max_concurrent_tokens,
             max_total_tokens: draft.max_total_tokens,
             params: draft.params,
             tags: draft.tags,
-          },
-        }).unwrap();
-      } else {
-        await createRule(draft).unwrap();
+          }).unwrap();
+      if (assignWallet && Object.prototype.hasOwnProperty.call(draft, 'wallet')) {
+        await assignWallet(saved.id, draft.wallet ?? null);
       }
       setEditing(null);
     } catch (e) {
@@ -123,6 +145,10 @@ export function useRuleActions({ renderDryRun, board = 'rules' }: UseRuleActions
           error={err}
           renderDryRun={renderDryRun}
           scope={board === 'copy' ? 'copy' : 'metric'}
+          wallets={wallets}
+          initialWallet={
+            editing && editing !== 'new' && editing.id && walletFor ? walletFor(editing.id) : null
+          }
         />
       )}
     </Modal>

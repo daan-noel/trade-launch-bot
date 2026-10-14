@@ -84,6 +84,7 @@ pub struct EngineDeps {
     pub trade_repo: TradeRepo,
     pub token_cache: Arc<TokenCache>,
     pub trader: Arc<PumpFunTrader>,
+    pub wallets: Arc<crate::wallets::WalletRuntime>,
     pub trade_signals: Arc<TradeSignals>,
     pub sse_tx: broadcast::Sender<SseEvent>,
     pub settings: watch::Receiver<AppSettings>,
@@ -167,6 +168,7 @@ async fn run_loop(
         trade_repo,
         token_cache,
         trader,
+        wallets,
         trade_signals,
         sse_tx,
         mut settings,
@@ -231,6 +233,7 @@ async fn run_loop(
         arm_ledger,
         fill_sigs.clone(),
         wallet.clone(),
+        wallets.clone(),
         Some(trader.clone()),
         Some(held_pools),
     );
@@ -250,6 +253,7 @@ async fn run_loop(
         buy_journal,
         registry: registry.clone(),
         engine_fill_tx: Some(fill_tx.clone()),
+        wallets: wallets.clone(),
         ping_stamps: ping_stamps.clone(),
     };
 
@@ -336,6 +340,7 @@ async fn run_loop(
         strategy_repo: strategy_repo.clone(),
         trade_repo: trade_repo.clone(),
         trader: trader.clone(),
+        wallets: wallets.clone(),
         token_cache: token_cache.clone(),
         trade_signals: trade_signals.clone(),
         inflight: inflight.clone(),
@@ -778,9 +783,21 @@ fn dispatch_buy(
                 fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
                 return;
             }
+            let signing_wallet = {
+                let resolved = real_deps.wallets.directory.resolve(rule.0);
+                if resolved.is_empty() {
+                    real_deps.trader.wallet_pubkey()
+                } else {
+                    resolved
+                }
+            };
+            let signing_trader = real_deps
+                .wallets
+                .trader(&signing_wallet)
+                .unwrap_or_else(|| real_deps.trader.clone());
             if let Some(max_sol) = settings.borrow().max_committed_sol {
                 let ceiling = sol_to_lamports(max_sol).max(0) as u64;
-                let committed = real_deps.trader.committed_lamports();
+                let committed = signing_trader.committed_lamports();
                 if committed.saturating_add(lamports) > ceiling {
                     warn!(
                         mint = %mint_s, lamports, committed, ceiling,
@@ -831,6 +848,7 @@ fn dispatch_buy(
                 token_account: meta.token_account.clone(),
                 ping_stamp,
                 decided_at: Utc::now(),
+                wallet: signing_wallet,
             };
             tokio::spawn(super::exec_real::run_entry(real_deps.clone(), order));
         }
@@ -899,6 +917,11 @@ fn dispatch_sell(
                 slippage_bps: sell_slippage(settings),
                 empties_bag,
                 decided_at: Some(Utc::now()),
+                wallet: if meta.wallet.is_empty() {
+                    real_deps.trader.wallet_pubkey()
+                } else {
+                    meta.wallet.clone()
+                },
             };
             tokio::spawn(super::exec_real::run_exit(real_deps.clone(), order));
         }

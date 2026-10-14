@@ -13,6 +13,7 @@ use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use crate::ingest::HeldPoolGate;
 use crate::strategies::engine::{ArmedRegistry, EngineHandle, InFlightGuards, PositionRegistry};
 use crate::trader::PumpFunTrader;
+use crate::wallets::WalletRuntime;
 
 use ingest_pumpfun::slot_anchor::SlotAnchor;
 
@@ -30,6 +31,9 @@ const MAX_CONCURRENT_SYNCS: usize = 4;
 pub struct DeployState {
     pub core: Arc<CoreState>,
     pub trader: Arc<PumpFunTrader>,
+    /// Every loaded trading wallet. `trader` is the primary, kept for the
+    /// single-wallet call sites. Fills look a pubkey up here.
+    pub wallets: Arc<WalletRuntime>,
     /// The unified `strategy_positions`/`strategy_runs`/`strategy_rules` repo the
     /// position-read handlers page over. The generic engine owns the *lifecycle*
     /// (rule CRUD, arming, closes); this is just the durable read/write surface the
@@ -82,6 +86,7 @@ impl DeployState {
     pub fn new(
         core: Arc<CoreState>,
         trader: Arc<PumpFunTrader>,
+        wallets: Arc<WalletRuntime>,
         strategy_repo: StrategyRepo,
         engine: EngineHandle,
         positions: PositionRegistry,
@@ -99,6 +104,7 @@ impl DeployState {
         Self {
             core,
             trader,
+            wallets,
             strategy_repo,
             engine,
             positions,

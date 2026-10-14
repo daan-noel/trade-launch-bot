@@ -120,6 +120,10 @@ export interface RulesViewProps {
   }) => ReactNode;
   /** Copy lists copy rules and edits them in the same builder, over the copy readings. */
   board?: 'rules' | 'copy';
+  /** Live only. Active wallets the rule editor may assign. Lab omits this. */
+  wallets?: { pubkey: string; name: string }[];
+  walletFor?: (ruleId: string) => string | null;
+  assignWallet?: (ruleId: string, wallet: string | null) => Promise<void>;
 }
 
 /** "This rule was edited while its current run was still scoring."
@@ -165,13 +169,16 @@ export function RulesView({
   onScoreScopeChange,
   renderAnalyze,
   board = 'rules',
+  wallets,
+  walletFor,
+  assignWallet,
 }: RulesViewProps) {
   const copyBoard = board === 'copy';
   const dispatch = useDispatch();
   const { data: fps = [] } = useGetFingerprintsQuery();
   const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
 
-  const actions = useRuleActions({ renderDryRun, board });
+  const actions = useRuleActions({ renderDryRun, board, wallets, walletFor, assignWallet });
   // Cross-box rule sync (workstation lab <-> EC2 live). Lives beside the board
   // rather than inside the editor: a bundle is a SET of rules, and the diff it
   // previews spans the fingerprints they share.

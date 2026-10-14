@@ -16,14 +16,16 @@ use anyhow::Context;
 /// [`trading_core::config::FeeTuning`] in new code.
 pub use trading_core::config::FeeTuning as TraderFeeTuning;
 
-/// Secrets and endpoints only the live trading path needs. Every field here is
-/// **required** — a live bin with no wallet key or no Sender endpoint can't
-/// trade, so a missing value is a hard boot failure, not a silent default.
+/// Secrets and endpoints only the live trading path needs. Sender URLs are
+/// always required. The env wallet key and its nonce list are required when
+/// `WALLET_KEYSTORE` is unset; with a keystore they are the fallback for an
+/// empty registry, and probe mode still needs the key.
 #[derive(Debug, Clone)]
 pub struct TradingSecrets {
-    /// base58 trader wallet secret key. Never logged.
-    pub wallet_private_key: String,
-    /// Durable-nonce account pubkeys (parsed by the caller).
+    /// base58 trader wallet secret key. Never logged. Absent when the keystore
+    /// is set and this process has no env key.
+    pub wallet_private_key: Option<String>,
+    /// Durable-nonce account pubkeys for the env key (parsed by the caller).
     pub nonce_accounts: Vec<String>,
     /// One or more Helius Sender endpoints. The signed tx is fanned out to all of
     /// them concurrently (same signature → on-chain dedup, tip paid once), so a
@@ -36,9 +38,28 @@ impl TradingSecrets {
     /// Load the live-only trading credentials from the environment. Call
     /// `dotenvy::dotenv()` (or load [`trading_core::config::Settings`]) first.
     pub fn from_env() -> anyhow::Result<Self> {
+        let keystore = std::env::var("WALLET_KEYSTORE")
+            .ok()
+            .filter(|dir| !dir.trim().is_empty());
+        let wallet_private_key = match std::env::var("WALLET_PRIVATE_KEY") {
+            Ok(key) if !key.trim().is_empty() => Some(key),
+            _ if keystore.is_some() => None,
+            _ => anyhow::bail!("Missing required env var: WALLET_PRIVATE_KEY"),
+        };
+        let nonce_accounts = if wallet_private_key.is_some() {
+            match std::env::var("NONCE_ACCOUNTS") {
+                Ok(value) if !value.trim().is_empty() => parse_required_list("NONCE_ACCOUNTS")?,
+                _ if keystore.is_none() => {
+                    anyhow::bail!("Missing required env var: NONCE_ACCOUNTS")
+                }
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
         Ok(Self {
-            wallet_private_key: required("WALLET_PRIVATE_KEY")?,
-            nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
+            wallet_private_key,
+            nonce_accounts,
             helius_sender_urls: sender_urls()?,
         })
     }

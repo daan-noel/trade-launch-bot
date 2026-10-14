@@ -513,8 +513,89 @@ export const liveApi = baseApi.injectEndpoints({
       query: () => ({ url: '/api/system/reload-caches', method: 'POST' }),
       invalidatesTags: ['Settings', 'StrategyRule', 'WalletHoldings', 'Cashback'],
     }),
+    getTraderWallets: builder.query<TraderWalletBook, void>({
+      query: () => '/api/wallets',
+      providesTags: ['TraderWallet'],
+    }),
+    getWalletAssignments: builder.query<WalletAssignment[], void>({
+      query: () => '/api/wallets/assignments',
+      providesTags: ['TraderWallet'],
+    }),
+    createTraderWallet: builder.mutation<{ pubkey: string; name: string }, { name: string }>({
+      query: (body) => ({ url: '/api/wallets', method: 'POST', body }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    importTraderWallet: builder.mutation<{ pubkey: string; name: string }, { name: string; private_key: string }>({
+      query: (body) => ({ url: '/api/wallets/import', method: 'POST', body }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    setPrimaryWallet: builder.mutation<{ pubkey: string }, string>({
+      query: (pubkey) => ({ url: `/api/wallets/${pubkey}/primary`, method: 'POST' }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    provisionNonces: builder.mutation<{ created: number }, { pubkey: string; count: number }>({
+      query: ({ pubkey, count }) => ({
+        url: `/api/wallets/${pubkey}/nonces`,
+        method: 'POST',
+        body: { count },
+      }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    beginWalletMove: builder.mutation<WalletMove, { from: string; to: string }>({
+      query: (body) => ({ url: '/api/wallets/move', method: 'POST', body }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    resumeWalletMove: builder.mutation<WalletMove, void>({
+      query: () => ({ url: '/api/wallets/move/resume', method: 'POST' }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    assignRuleWallet: builder.mutation<
+      { rule_id: string; wallet: string | null },
+      { ruleId: string; wallet: string | null }
+    >({
+      query: ({ ruleId, wallet }) => ({
+        url: `/api/wallets/rules/${ruleId}`,
+        method: 'PUT',
+        body: { wallet },
+      }),
+      invalidatesTags: ['TraderWallet'],
+    }),
   }),
 });
+
+export interface TraderWalletRow {
+  pubkey: string;
+  name: string;
+  status: 'active' | 'draining' | 'archived' | string;
+  is_primary: boolean;
+  nonce_count: number;
+  rule_count: number;
+  open_positions: number;
+  sol: number | null;
+  key_loaded: boolean;
+  created_at: string;
+  archived_at: string | null;
+}
+
+export interface WalletMove {
+  id: string;
+  from_wallet: string;
+  to_wallet: string;
+  step: string;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface TraderWalletBook {
+  wallets: TraderWalletRow[];
+  move: WalletMove | null;
+}
+
+export interface WalletAssignment {
+  rule_id: string;
+  wallet: string;
+}
 
 export const {
   useGetPortfolioHoldingsQuery,
@@ -542,4 +623,13 @@ export const {
   useGetCurveSourceQuery,
   useSetCurveSourceMutation,
   useReloadCachesMutation,
+  useGetTraderWalletsQuery,
+  useGetWalletAssignmentsQuery,
+  useCreateTraderWalletMutation,
+  useImportTraderWalletMutation,
+  useSetPrimaryWalletMutation,
+  useProvisionNoncesMutation,
+  useBeginWalletMoveMutation,
+  useResumeWalletMoveMutation,
+  useAssignRuleWalletMutation,
 } = liveApi;

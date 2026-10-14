@@ -1081,59 +1081,64 @@ async fn run() -> anyhow::Result<()> {
         "Configuration loaded"
     );
 
-    // The trader takes an `Arc<dyn Signer>` (HSM/remote-signer-ready) and parsed
-    // nonce pubkeys; fee/tip knobs come from env (see `FeeTuning`).
-    let signer: Arc<dyn solana_sdk::signature::Signer + Send + Sync> = Arc::new(
-        parse_wallet_keypair(&secrets.wallet_private_key)
-            .context("Failed to parse trader wallet private key")?,
-    );
+    // The env key is optional once WALLET_KEYSTORE is set. Probe and an empty
+    // registry still need it. Fee/tip knobs come from env (see `FeeTuning`).
     let nonce_accounts = secrets
         .nonce_accounts
         .iter()
         .map(|s| s.parse::<solana_sdk::pubkey::Pubkey>())
         .collect::<Result<Vec<_>, _>>()
         .context("Failed to parse NONCE_ACCOUNTS as pubkeys")?;
-    let mut trader_config = TraderConfig::new(
-        settings.helius_rpc_url.clone(),
-        secrets.helius_sender_urls.clone(),
-        signer,
-        nonce_accounts.clone(),
-    );
-    trader_config.jito.min_sol = fee_tuning.jito_min_tip_sol;
-    trader_config.jito.max_sol = fee_tuning.jito_max_tip_sol;
-    trader_config.jito.percentile = fee_tuning.jito_tip_percentile;
-    trader_config.compute.price_micro_lamports = fee_tuning.cu_price_micro_lamports;
-    // RPC-reduction tuning: the LaserStream push hooks below keep the blockhash
-    // cache ~400 ms fresh and re-arm nonce slots at feed speed, so the executor's
-    // pollers are demoted to stall fallbacks. 10 s watchdog tick (fetches only
-    // when the feed stalls); 30 s max-age stays well inside the ~60 s hash
-    // validity window; the 2 s first-delay lets the nonce push win before the
-    // fallback poll spends reads.
-    trader_config.cache.blockhash_refresh_ms = 10_000;
-    trader_config.cache.blockhash_max_age_ms = 30_000;
-    trader_config.nonce.refresh_first_delay_ms = 2_000;
-    // A selective rule buys minutes apart and the Sender drops an idle socket
-    // after 10 s, so without the pinger every buy pays DNS + TCP on the send.
-    trader_config.sender.keep_warm_ms = Some(SENDER_KEEP_WARM_MS);
-    let trader_config = Arc::new(trader_config);
+    let env_trader = if let Some(key) = secrets.wallet_private_key.as_deref() {
+        let signer: Arc<dyn solana_sdk::signature::Signer + Send + Sync> =
+            Arc::new(parse_wallet_keypair(key).context("Failed to parse trader wallet private key")?);
+        let mut trader_config = TraderConfig::new(
+            settings.helius_rpc_url.clone(),
+            secrets.helius_sender_urls.clone(),
+            signer,
+            nonce_accounts.clone(),
+        );
+        trader_config.jito.min_sol = fee_tuning.jito_min_tip_sol;
+        trader_config.jito.max_sol = fee_tuning.jito_max_tip_sol;
+        trader_config.jito.percentile = fee_tuning.jito_tip_percentile;
+        trader_config.compute.price_micro_lamports = fee_tuning.cu_price_micro_lamports;
+        // RPC-reduction tuning: the LaserStream push hooks below keep the blockhash
+        // cache ~400 ms fresh and re-arm nonce slots at feed speed, so the executor's
+        // pollers are demoted to stall fallbacks. 10 s watchdog tick (fetches only
+        // when the feed stalls); 30 s max-age stays well inside the ~60 s hash
+        // validity window; the 2 s first-delay lets the nonce push win before the
+        // fallback poll spends reads.
+        trader_config.cache.blockhash_refresh_ms = 10_000;
+        trader_config.cache.blockhash_max_age_ms = 30_000;
+        trader_config.nonce.refresh_first_delay_ms = 2_000;
+        // A selective rule buys minutes apart and the Sender drops an idle socket
+        // after 10 s, so without the pinger every buy pays DNS + TCP on the send.
+        trader_config.sender.keep_warm_ms = Some(SENDER_KEEP_WARM_MS);
+        let trader_config = Arc::new(trader_config);
 
-    // A failed init is degraded, never fatal: it leaves `global_account` unset, and
-    // every buy/sell/claim path bails at that "Not initialized" guard before it reads
-    // rent — so trading fail-closes on its own. Killing the process instead takes the
-    // DB pools, ingest and the whole HTTP surface down with it, which turns one bad
-    // Helius reply into a dark box: the read-only pages serve Postgres and need no
-    // trader at all. Boot on, trade never.
-    let mut trader = PumpFunTrader::new(trader_config);
-    if let Err(e) = trader.initialize().await {
-        error!("Trader init failed — NO-TRADE mode, trading stays fail-closed: {e:#}");
-    }
-    let trader = Arc::new(trader);
+        // A failed init is degraded, never fatal: it leaves `global_account` unset, and
+        // every buy/sell/claim path bails at that "Not initialized" guard before it reads
+        // rent, so trading fail-closes on its own. Killing the process instead takes the
+        // DB pools, ingest and the whole HTTP surface down with it, which turns one bad
+        // Helius reply into a dark box: the read-only pages serve Postgres and need no
+        // trader at all. Boot on, trade never.
+        let mut trader = PumpFunTrader::new(trader_config);
+        if let Err(e) = trader.initialize().await {
+            error!("Trader init failed — NO-TRADE mode, trading stays fail-closed: {e:#}");
+        }
+        Some(Arc::new(trader))
+    } else {
+        None
+    };
 
     // Probe mode: `cargo run -p hunter-live -- probe <subcommand>` runs a
     // one-shot, no-/low-SOL validation of the latency changes against live infra,
     // then exits before touching the DB / ingest / HTTP server. See `run_probe`.
     if std::env::args().nth(1).as_deref() == Some("probe") {
-        return run_probe(&trader, std::env::args().skip(2).collect()).await;
+        let trader = env_trader
+            .as_ref()
+            .context("probe needs WALLET_PRIVATE_KEY")?;
+        return run_probe(trader, std::env::args().skip(2).collect()).await;
     }
 
     // Database — connect the three workload-isolated pools and run migrations. `db`
@@ -1145,6 +1150,35 @@ async fn run() -> anyhow::Result<()> {
         api: api_db,
         batch: batch_db,
     } = trading_core::storage::postgres::connect(&settings).await?;
+
+    let wallet_factory = live::wallets::TraderFactory {
+        rpc_url: settings.helius_rpc_url.clone(),
+        sender_urls: secrets.helius_sender_urls.clone(),
+        fees: fee_tuning.clone(),
+    };
+    let wallets = match live::wallets::load_keystore(&db, wallet_factory.clone()).await? {
+        Some(runtime) => {
+            if runtime.is_empty() {
+                let trader = env_trader.clone().context(
+                    "WALLET_KEYSTORE has no active wallet and WALLET_PRIVATE_KEY is unset",
+                )?;
+                runtime.adopt_legacy(trader.wallet_pubkey(), trader, nonce_accounts.clone());
+            }
+            Arc::new(runtime)
+        }
+        None => {
+            let trader = env_trader.clone().context(
+                "WALLET_KEYSTORE is unset and WALLET_PRIVATE_KEY is missing",
+            )?;
+            Arc::new(live::wallets::WalletRuntime::legacy(
+                trader.wallet_pubkey(),
+                trader,
+                nonce_accounts.clone(),
+                wallet_factory,
+            ))
+        }
+    };
+    let trader = wallets.primary_trader();
 
     // Boot wallet-balance sweep (buy-in-flight recovery): list
     // the wallet's on-chain token accounts once and flag any balance no open
@@ -1244,16 +1278,12 @@ async fn run() -> anyhow::Result<()> {
     let push_hooks = {
         let bh_trader = trader.clone();
         let feed_lag = Arc::new(ingest::feed_lag::FeedLagGauge::new());
-        let nonce_trader = trader.clone();
-        let balance_trader = trader.clone();
-        // The bot wallet's own account is watched alongside the nonce accounts so its
-        // SOL balance tracks at feed speed: a pushed `lamports`
-        // refreshes the affordability cache, so the steady-state `getBalance` poll below
-        // becomes a slow safety fallback instead of the primary source.
-        let watched_wallet = trader.wallet_pubkey();
-        let mut watch_accounts: Vec<String> =
-            nonce_accounts.iter().map(|pk| pk.to_string()).collect();
-        watch_accounts.push(watched_wallet.clone());
+        // Every loaded wallet and its nonce accounts are watched so each SOL
+        // balance tracks at feed speed: a pushed `lamports` refreshes that
+        // wallet's affordability cache, so the steady-state `getBalance` poll
+        // below stays a slow safety fallback.
+        let watch_accounts = wallets.watch_accounts();
+        let account_book = wallets.clone();
         ingest_pumpfun::PushHooks {
             watch_accounts,
             on_block_meta: Some(Box::new(move |slot, blockhash, block_time| {
@@ -1266,15 +1296,7 @@ async fn run() -> anyhow::Result<()> {
                 feed_lag.observe(slot, block_time);
             })),
             on_account: Some(Box::new(move |slot, pubkey, lamports, data| {
-                // The wallet is a System account — its balance rides in `lamports`,
-                // not `data`; refresh the affordability cache and stop (no nonce parse).
-                if watched_wallet == pubkey {
-                    balance_trader.update_balance_lamports_cache(lamports);
-                    return;
-                }
-                if let Ok(pk) = pubkey.parse::<solana_sdk::pubkey::Pubkey>() {
-                    nonce_trader.on_nonce_account_update(&pk, data, slot);
-                }
+                account_book.on_account(pubkey, lamports, data, slot);
             })),
         }
     };
@@ -1401,6 +1423,7 @@ async fn run() -> anyhow::Result<()> {
         trade_repo: trading_core::storage::repositories::trade_repo::TradeRepo::new(db.clone()),
         token_cache: token_cache.clone(),
         trader: trader.clone(),
+        wallets: wallets.clone(),
         trade_signals: trade_signals.clone(),
         sse_tx: sse_tx.clone(),
         settings: settings_tx.subscribe(),
@@ -1448,6 +1471,7 @@ async fn run() -> anyhow::Result<()> {
     let deploy_state = Arc::new(state::deploy_state::DeployState::new(
         core_state.clone(),
         trader.clone(),
+        wallets.clone(),
         trading_core::storage::repositories::strategy_repo::StrategyRepo::new(db.clone()),
         engine_handle,
         engine_positions.clone(),

@@ -19,6 +19,7 @@ const HomePage = lazy(() => import('@live/pages/home/LiveHomePage').then((m) => 
 const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
 const SyncTokenPage = lazy(() => import('@live/pages/tokens/SyncTokenPage').then((m) => ({ default: m.SyncTokenPage })));
 const MyWalletPage = lazy(() => import('@live/pages/profiles/MyWalletPage').then((m) => ({ default: m.MyWalletPage })));
+const WalletsPage = lazy(() => import('@live/pages/wallets/WalletsPage').then((m) => ({ default: m.WalletsPage })));
 const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) => ({ default: m.ProfilesPage })));
 const SettingsPage = lazy(() =>
   import('@live/pages/settings/LiveSettingsPage').then((m) => ({ default: m.LiveSettingsPage })),
@@ -94,6 +95,7 @@ export default function App() {
               <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
               <Route path="strategies/guide" element={<GuidePage />} />
               <Route path="wallet" element={<MyWalletPage />} />
+              <Route path="wallets" element={<WalletsPage />} />
               <Route path="profiles" element={<ProfilesPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />

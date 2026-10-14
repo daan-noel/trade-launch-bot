@@ -68,6 +68,16 @@ async-trait = "0.1"
 
 # Solana (needed by strategies and trader)
 solana-sdk = "1.17.27"
+solana-client = "1.17.27"
+spl-token = "=4.0.0"
+spl-associated-token-account = "2.2"
+spl-token-2022 = "=1.0.0"
+
+# Wallet keystore (envelope files; the passphrase never leaves the environment)
+aes-gcm = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+rand = { workspace = true }
 
 # Encoding (strategies use these for tx construction)
 bs58 = "0.5"

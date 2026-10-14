@@ -3,6 +3,7 @@ import { useSelector } from 'react-redux';
 import { RulesView } from 'components/strategy/RulesView';
 import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
 import { LazyLivePositionInspectModal } from '@live/components/strategy/LazyLivePositionInspectModal';
+import { useLiveRuleWallets } from '@live/hooks/useLiveRuleWallets';
 import { useRuleScoresRealtime } from '@live/hooks/useRuleScoresRealtime';
 import { selectOpenByRule, selectRuleOpenCounts } from '@live/slices/liveStatusSlice';
 import type { StrategyRule } from 'lib/strategy/types';
@@ -15,6 +16,7 @@ export function CopyPage() {
   const ruleLiveCounts = useSelector(selectRuleOpenCounts);
   useRuleScoresRealtime();
   const [scoreScope, setScoreScope] = useState<'current' | 'all'>('current');
+  const walletAssign = useLiveRuleWallets();
 
   return (
     <RulesView
@@ -23,6 +25,9 @@ export function CopyPage() {
       scoreScope={scoreScope}
       onScoreScopeChange={setScoreScope}
       ruleLiveCounts={ruleLiveCounts}
+      wallets={walletAssign.wallets}
+      walletFor={walletAssign.walletFor}
+      assignWallet={walletAssign.assignWallet}
       renderAnalyze={({ ruleId, rule, clear }) => (
         <LiveCopyEvidence
           key={ruleId}

@@ -3043,6 +3043,7 @@ version = "0.1.0"
 dependencies = [
  "actix-cors",
  "actix-web",
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
@@ -3058,11 +3059,17 @@ dependencies = [
  "hunter-engine",
  "ingest-laserstream",
  "ingest-pumpfun",
+ "rand 0.8.6",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "smallvec",
+ "solana-client",
  "solana-sdk",
+ "spl-associated-token-account",
+ "spl-token",
+ "spl-token-2022",
  "sqlx",
  "tokio",
  "tokio-stream",
@@ -3070,6 +3077,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

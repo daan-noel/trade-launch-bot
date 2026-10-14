@@ -232,6 +232,9 @@ pub struct RealExecDeps {
     /// Orphan sells use a private fill_tx for their own outcome, so they pass the
     /// loop channel here separately.
     pub engine_fill_tx: Option<mpsc::Sender<Event>>,
+    /// Loaded wallets. The entry and the exit swap `trader` to the position's
+    /// pubkey before they sign.
+    pub wallets: Arc<crate::wallets::WalletRuntime>,
     /// Transport→ping stamps keyed by mint — L0 latency. Always populated for the
     /// create lane; for the trade lane only under `LATENCY_TRACE`.
     pub ping_stamps: Arc<dashmap::DashMap<String, PingStamp>>,
@@ -268,6 +271,8 @@ pub struct BuyOrder {
     pub ping_stamp: Option<PingStamp>,
     /// Wall clock when `dispatch_buy` spawned this submit (post-`reduce`).
     pub decided_at: chrono::DateTime<chrono::Utc>,
+    /// Pubkey that signs this buy. Empty means the process primary.
+    pub wallet: String,
 }
 
 /// Everything a sell submit needs, resolved by the loop from the position meta.
@@ -289,11 +294,27 @@ pub struct SellOrder {
     /// "latency" is the age of the bag, not a reaction time. Twin of
     /// [`BuyOrder::decided_at`], and the start of `exit_latency`.
     pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Pubkey that holds the bag. Empty means the process primary.
+    pub wallet: String,
 }
 
 /// Submit a real buy, then confirm the fill off the feed (RPC watchdog fallback),
 /// emitting the definitive `FillConfirmed`/`FillFailed` back to the engine.
-pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
+pub async fn run_entry(mut deps: RealExecDeps, order: BuyOrder) {
+    if let Some(trader) = deps.wallets.trader(order.wallet.as_str()) {
+        deps.trader = trader;
+    } else if !order.wallet.is_empty() && order.wallet != deps.trader.wallet_pubkey() {
+        warn!(wallet = %order.wallet, mint = %order.mint, "real buy: wallet is not loaded");
+        let _ = deps
+            .fill_tx
+            .send(Event::FillFailed {
+                intent: order.intent,
+                reason: FillFailReason::Fatal,
+                at: Some(Utc::now()),
+            })
+            .await;
+        return;
+    }
     let Some(_guard) = deps.inflight.try_begin_entry(order.pg_id) else {
         // Another attempt for this position owns the send. It emits for ITS
         // intent, which the engine has already superseded with this one — so a
@@ -1068,7 +1089,19 @@ fn exit_still_current(registry: &PositionRegistry, order: &SellOrder) -> bool {
 
 /// Submit a real sell (escalating tip across attempts), confirm by summing the
 /// position's OWN sell legs vs the held amount, and emit the definitive outcome.
-pub async fn run_exit(deps: RealExecDeps, mut order: SellOrder) {
+pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
+    deps.wallets.freeze.wait(&order.wallet).await;
+    if let Ok(Some(pos)) = deps.strategy_repo.find_position(order.pg_id).await {
+        if !pos.wallet.is_empty() && pos.wallet != "paper" {
+            order.wallet = pos.wallet;
+        }
+        if pos.token_account.is_some() {
+            order.token_account = pos.token_account;
+        }
+    }
+    if let Some(trader) = deps.wallets.trader(order.wallet.as_str()) {
+        deps.trader = trader;
+    }
     let Some(_guard) = deps.inflight.try_begin_exit(order.pg_id) else {
         warn!(pg = %order.pg_id, mint = %order.mint, "real sell: exit guard held — skipping");
         return;

@@ -48,6 +48,7 @@ pub struct OrphanExitDeps {
     /// in the live registry (no extra sell).
     pub fill_tx: mpsc::Sender<Event>,
     pub settings: watch::Receiver<AppSettings>,
+    pub wallets: Arc<crate::wallets::WalletRuntime>,
 }
 
 /// Outcome of [`spawn_orphan_sell`].
@@ -117,6 +118,7 @@ pub fn spawn_orphan_sell(
         // No rule decided this one — an orphan sweep reacts to a stranded bag, so
         // stamping `now` would log the sweep's own scheduling as exit latency.
         decided_at: None,
+        wallet: position.wallet.clone(),
     };
 
     let (fill_tx, mut fill_rx) = mpsc::channel::<Event>(4);
@@ -135,6 +137,7 @@ pub fn spawn_orphan_sell(
         buy_journal: SubmittedBuyJournal::new(),
         registry: deps.registry.clone(),
         engine_fill_tx: Some(deps.fill_tx.clone()),
+        wallets: deps.wallets.clone(),
         ping_stamps: Arc::new(dashmap::DashMap::new()),
     };
 
@@ -651,6 +654,7 @@ pub fn adopt_holding_into_engine(
             reverted_buy_fee_sol: 0.0,
             target_snapshot: None,
             cashback_enabled: false,
+            wallet: pos.wallet.clone(),
             inflight_intent: None,
         },
     );
@@ -794,6 +798,7 @@ pub fn adopt_buy_submitted_into_engine(
             reverted_buy_fee_sol: pos.reverted_fee_sol(),
             target_snapshot: None,
             cashback_enabled: false,
+            wallet: pos.wallet.clone(),
             inflight_intent: Some(intent),
         },
     );

@@ -51,6 +51,7 @@ export const baseApi = createApi({
     'TokenBatch',
     'Fingerprint',
     'StrategyRule',
+    'TraderWallet',
     // Per-position fill ledger, keyed by position id. Needs its own tag because a
     // scale-out leg lands mid-view: with `keepUnusedDataFor: 300` +
     // `refetchOnMountOrArgChange: false`, an untagged entry would serve the

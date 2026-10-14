@@ -15,3 +15,4 @@ pub mod services;
 pub mod state;
 pub mod strategies;
 pub mod trader;
+pub mod wallets;

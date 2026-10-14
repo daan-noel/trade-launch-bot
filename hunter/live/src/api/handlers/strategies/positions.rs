@@ -737,6 +737,7 @@ fn orphan_deps_from_state(
         registry: app_state.positions.clone(),
         fill_tx: app_state.engine_fill_tx.clone(),
         settings: app_state.settings.subscribe(),
+        wallets: app_state.wallets.clone(),
     }
 }
 
@@ -747,6 +748,7 @@ fn reaper_deps_from_state(
         strategy_repo: app_state.strategy_repo.clone(),
         trade_repo: app_state.trade_repo(),
         trader: app_state.trader.clone(),
+        wallets: app_state.wallets.clone(),
         token_cache: app_state.token_cache.clone(),
         trade_signals: app_state.trade_signals.clone(),
         inflight: app_state.inflight.clone(),

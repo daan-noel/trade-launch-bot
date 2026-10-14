@@ -15,6 +15,7 @@ pub mod settings_repo;
 pub mod strategy_repo;
 pub mod token_info_repo;
 pub mod token_repo;
+pub mod trader_wallet_repo;
 pub mod trade_repo;
 pub mod volume_wallet_repo;
 pub mod wallet_dict_repo;
