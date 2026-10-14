@@ -261,13 +261,13 @@ try {
   $ruleIdSql = "SELECT id::text AS id FROM strategy_rules"
 
   Write-Host "Reading wallet rows ..."
-  $srcWallets = Get-CsvRows $src $walletSql
-  $dstWallets = Get-CsvRows $dst $walletSql
-  $srcNonces = Get-CsvRows $src $nonceSql
-  $srcMoves = Get-CsvRows $src $moveSql
-  $dstMoves = Get-CsvRows $dst $moveSql
-  $srcAssign = Get-CsvRows $src $ruleSql
-  $dstAssign = Get-CsvRows $dst $ruleSql
+  $srcWallets = @(Get-CsvRows $src $walletSql)
+  $dstWallets = @(Get-CsvRows $dst $walletSql)
+  $srcNonces = @(Get-CsvRows $src $nonceSql)
+  $srcMoves = @(Get-CsvRows $src $moveSql)
+  $dstMoves = @(Get-CsvRows $dst $moveSql)
+  $srcAssign = @(Get-CsvRows $src $ruleSql)
+  $dstAssign = @(Get-CsvRows $dst $ruleSql)
   $srcRuleIds = @(Get-CsvRows $src $ruleIdSql | ForEach-Object { $_.id })
   $dstRuleIds = @(Get-CsvRows $dst $ruleIdSql | ForEach-Object { $_.id })
 
@@ -378,7 +378,7 @@ ON CONFLICT (id) DO NOTHING;
   Invoke-Psql $dst $sql.ToString() | Out-Null
 
   Write-Host "Checking $dstLabel ..."
-  $after = Get-CsvRows $dst $walletSql
+  $after = @(Get-CsvRows $dst $walletSql)
   $primaries = @($after | Where-Object { (Test-True $_.is_primary) -and $_.status -ne 'archived' })
   if ($primaries.Count -ne 1) { Write-Warning "$dstLabel has $($primaries.Count) active primary wallets; set one on its Wallets page." }
   $filesNow = if ($toServer) {
