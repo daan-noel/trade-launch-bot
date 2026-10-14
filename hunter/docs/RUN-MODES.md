@@ -104,7 +104,7 @@ Compose **overrides** `HOST`/`PORT`/`DATABASE_URL` to point the bins at the
 `postgres` service, so you mainly need real secrets + config:
 
 - `HELIUS_API_KEY`, `HELIUS_RPC_URL`, `HELIUS_LASERSTREAM_URL` (regional, nearest box), `HELIUS_FAST_SENDER_URL`
-- `WALLET_KEYSTORE`, `WALLET_KEK` (every signing key is a keystore file; set `WALLET_PRIVATE_KEY` + `NONCE_ACCOUNTS` once to register a key, then empty them)
+- `WALLET_KEYSTORE`, `WALLET_KEK` (every signing key is a keystore file; wallets are imported on the Wallets page or copied with `wallet-sync.ps1`)
 - `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`
 - `API_AUTH_TOKEN` — **fail-closed**; the backend refuses to start without it, and
   nginx injects it as the upstream `Authorization: Bearer` for proxied `/api`.

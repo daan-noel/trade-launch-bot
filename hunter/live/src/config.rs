@@ -16,16 +16,10 @@ use anyhow::Context;
 /// [`trading_core::config::FeeTuning`] in new code.
 pub use trading_core::config::FeeTuning as TraderFeeTuning;
 
-/// Secrets and endpoints only the live trading path needs. Sender URLs are
-/// always required. Every signing key lives in the keystore; the env key is
-/// read only to register it there once (`wallets::register_env_key`).
+/// Secrets and endpoints only the live trading path needs. Every signing key
+/// is a keystore file (`WALLET_KEYSTORE` + `WALLET_KEK`, read by `wallets`).
 #[derive(Debug, Clone)]
 pub struct TradingSecrets {
-    /// base58 wallet secret key to register into the keystore at boot. Never
-    /// logged, never signed with directly.
-    pub wallet_private_key: Option<String>,
-    /// Nonce account pubkeys attached to that key when it is registered.
-    pub nonce_accounts: Vec<String>,
     /// One or more Helius Sender endpoints. The signed tx is fanned out to all of
     /// them concurrently (same signature → on-chain dedup, tip paid once), so a
     /// slow/down endpoint can't gate the send. A single entry behaves exactly
@@ -37,16 +31,7 @@ impl TradingSecrets {
     /// Load the live-only trading credentials from the environment. Call
     /// `dotenvy::dotenv()` (or load [`trading_core::config::Settings`]) first.
     pub fn from_env() -> anyhow::Result<Self> {
-        let wallet_private_key = std::env::var("WALLET_PRIVATE_KEY").ok().filter(|key| !key.trim().is_empty());
-        let nonce_accounts = match std::env::var("NONCE_ACCOUNTS") {
-            Ok(value) if wallet_private_key.is_some() && !value.trim().is_empty() => {
-                parse_required_list("NONCE_ACCOUNTS")?
-            }
-            _ => Vec::new(),
-        };
         Ok(Self {
-            wallet_private_key,
-            nonce_accounts,
             helius_sender_urls: sender_urls()?,
         })
     }
@@ -70,21 +55,6 @@ fn sender_urls() -> anyhow::Result<Vec<String>> {
     Ok(vec![required("HELIUS_FAST_SENDER_URL").context(
         "at least one Helius Sender endpoint (HELIUS_FAST_SENDER_URLS or HELIUS_FAST_SENDER_URL) is required",
     )?])
-}
-
-fn parse_required_list(key: &str) -> anyhow::Result<Vec<String>> {
-    let value = required(key)?;
-    let items = value
-        .split(',')
-        .map(|item| item.trim().to_string())
-        .filter(|item| !item.is_empty())
-        .collect::<Vec<_>>();
-
-    if items.is_empty() {
-        anyhow::bail!("{key} must contain at least one value");
-    }
-
-    Ok(items)
 }
 
 fn required(key: &str) -> anyhow::Result<String> {

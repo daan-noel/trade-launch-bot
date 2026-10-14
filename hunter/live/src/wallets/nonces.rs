@@ -1,5 +1,5 @@
 //! Nonce accounts for a registered wallet: create new ones, attach ones it
-//! already owns, find them on chain, and register the env key with its nonces.
+//! already owns, and find them on chain.
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -18,10 +18,8 @@ use trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo;
 
 use crate::trader::check_nonce_account;
 
-use super::keystore::{self, key_ref_for, write_keypair, Kek};
 use super::mover::{require_loaded, send};
-use super::ops::free_name;
-use super::runtime::{keystore_env, WalletRuntime};
+use super::runtime::WalletRuntime;
 
 /// One `getMultipleAccounts` reads at most 100 accounts; a wallet never needs more.
 const MAX_ATTACH: usize = 32;
@@ -195,72 +193,6 @@ pub async fn attach_nonces(
         sync_trader(runtime, &repo, wallet).await?;
     }
     Ok(report)
-}
-
-/// Write the env key into the keystore and the registry, and attach the
-/// `NONCE_ACCOUNTS` the chain confirms it owns. Runs once per boot while
-/// `WALLET_PRIVATE_KEY` is set; a second run changes nothing. A row that
-/// already exists keeps its name and status; it becomes primary only when no
-/// active row is, as a new one does. An archived one stays archived. The process never signs with the env key directly.
-pub async fn register_env_key(pool: &PgPool, rpc_url: &str, signer: &Keypair, nonces: &[Pubkey]) -> Result<()> {
-    let (dir, kek) = keystore_env()?;
-    let repo = TraderWalletRepo::new(pool.clone());
-    let pubkey = signer.pubkey().to_string();
-    let records = repo.records().await?;
-    let name = match records.iter().find(|r| r.pubkey == pubkey) {
-        Some(r) if r.status == "archived" => {
-            tracing::warn!(wallet = %pubkey, "WALLET_PRIVATE_KEY is an archived wallet; it stays archived");
-            return Ok(());
-        }
-        Some(r) => {
-            // A row synced from the other box can arrive before its file.
-            ensure_key_file(&dir, &r.key_ref, signer, &kek)?;
-            // The env key signed as the primary; it stays primary when no row is.
-            if !records.iter().any(|r| r.is_primary && r.status != "archived") && repo.set_primary(&pubkey).await? {
-                let _ = repo.log_activity(&pubkey, "set_primary", serde_json::json!({}), &[]).await;
-            }
-            r.name.clone()
-        }
-        None => {
-            let name = free_name(&records, "main");
-            let key_ref = key_ref_for(&pubkey);
-            ensure_key_file(&dir, &key_ref, signer, &kek)?;
-            let primary = !records.iter().any(|r| r.is_primary && r.status != "archived");
-            repo.insert(&pubkey, &name, &key_ref, primary).await?;
-            let _ = repo.log_activity(&pubkey, "registered_env", serde_json::json!({ "name": name }), &[]).await;
-            name
-        }
-    };
-    if !nonces.is_empty() {
-        let rpc = RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
-        let registered = registered_nonces(&repo, &pubkey).await?;
-        let (_, owned) = check_accounts(&rpc, &signer.pubkey(), nonces).await?;
-        let new: Vec<&Pubkey> = owned.iter().filter(|pk| !registered.contains(pk)).collect();
-        for pk in &new {
-            repo.insert_nonce(&pk.to_string(), &pubkey).await?;
-        }
-        if !new.is_empty() {
-            let _ = repo
-                .log_activity(&pubkey, "nonces_attached", serde_json::json!({ "attached": new.len() }), &[])
-                .await;
-        }
-    }
-    tracing::warn!(
-        wallet = %pubkey, name = %name,
-        "WALLET_PRIVATE_KEY is registered in the keystore; remove WALLET_PRIVATE_KEY and NONCE_ACCOUNTS from .env"
-    );
-    Ok(())
-}
-
-/// The key file for `signer`, written only when it is absent. A file that
-/// exists and holds another key, or does not decrypt, is never replaced.
-fn ensure_key_file(dir: &std::path::Path, key_ref: &str, signer: &Keypair, kek: &Kek) -> Result<()> {
-    match keystore::read_keypair(dir, key_ref, kek) {
-        Ok(kp) if kp.pubkey() == signer.pubkey() => Ok(()),
-        Ok(_) => bail!("keystore file {key_ref} holds another key"),
-        Err(_) if !dir.join(key_ref).exists() => write_keypair(dir, key_ref, &signer.to_bytes(), kek),
-        Err(e) => Err(e.context(format!("keystore file {key_ref} exists and does not decrypt"))),
-    }
 }
 
 /// What the chain says about a wallet right now.
@@ -437,7 +369,9 @@ async fn sync_trader(runtime: &WalletRuntime, repo: &TraderWalletRepo, wallet: &
         .map(|n| n.pubkey.parse())
         .collect::<Result<Vec<Pubkey>, _>>()?;
     let running: HashSet<Pubkey> = runtime.nonces(wallet).unwrap_or_default().into_iter().collect();
-    if running == nonces.iter().copied().collect::<HashSet<_>>() && runtime.init_error(wallet).is_none() {
+    let same = running == nonces.iter().copied().collect::<HashSet<_>>();
+    // Zero nonces always fails the init again, so a rebuild there only spends RPC.
+    if same && (runtime.init_error(wallet).is_none() || nonces.is_empty()) {
         return Ok(());
     }
     runtime.rebuild(wallet, nonces).await

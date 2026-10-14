@@ -8,13 +8,13 @@ Lab has no keys and no Wallets page. A lab save of a rule does not write the wal
 
 Every key hunter-live signs with is an envelope file under `WALLET_KEYSTORE` (`<pubkey>.enc`, AES-256-GCM, the same shape Forge uses). `WALLET_KEK` is the one passphrase, set in each machine's `.env` by hand and never copied by a script. Both are required at boot. Postgres stores the pubkey, the name, the status (`active`, `draining`, `archived`), and `key_ref` (the filename only). The key is never in Postgres, an API response, or a log. A write never replaces an existing file. Rows from before pubkey filenames keep their `<name>.enc` file; `key_ref` names whichever file it is.
 
-A name is a label: 1 to 32 characters, trimmed, no control characters, unique ignoring case (`trader_wallets_name_ci`). Rename changes the label only. Create, import, rename, and env registration all check it through `ops::name_error`.
+A name is a label: 1 to 32 characters, trimmed, no control characters, unique ignoring case (`trader_wallets_name_ci`). Rename changes the label only. Create, import, and rename all check it through `ops::name_error`.
 
-An active or draining wallet whose file is missing, does not decrypt, or names another pubkey is kept as that wallet's load error (shown on the page) and signs nothing; every other wallet loads. Boot stops only when no wallet loads at all. Archived wallets are not decrypted.
+An active or draining wallet whose file is missing, does not decrypt, or names another pubkey is kept as that wallet's load error (shown on the page) and signs nothing; every other wallet loads. Archived wallets are not decrypted.
 
-## The env wallet
+## No wallet in `.env`
 
-`WALLET_PRIVATE_KEY` is never signed with. While it is set, boot writes it into the keystore and the registry (`wallets::register_env_key`) and attaches the `NONCE_ACCOUNTS` the chain confirms it owns. A new row is named `main` (or the next free `main N`) and is primary only when no active row is. A row that already exists keeps its name and status, and becomes primary only when no active row is; an archived one stays archived; a missing key file is written from the env key. A second boot changes nothing. Boot logs `WALLET_PRIVATE_KEY is registered in the keystore` at warn; empty both variables after that. An empty registry is started the same way.
+No private key or nonce list is read from the environment. With no wallet loaded (a fresh box, or every key failing) the process still boots: ingest, paper trading and the pages run, the process trader is an inert one that is never initialized and signs nothing, every real entry fails closed, and the Wallets page says so. Creating or importing the first wallet makes it primary and it signs the next entry. The single-wallet pages built on the boot trader read the inert one until the next restart.
 
 `probe` signs with one keystore wallet: `--wallet <name|pubkey>`, or the primary. It decrypts that wallet only and exits before ingest and HTTP.
 

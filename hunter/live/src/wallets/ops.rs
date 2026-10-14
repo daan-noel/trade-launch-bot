@@ -25,7 +25,7 @@ const ARCHIVE_DUST_LAMPORTS: u64 = 1_000_000;
 pub const NAME_RULE: &str = "name must be 1 to 32 characters, with no leading or trailing space";
 
 /// Why `name` cannot label a wallet (other than `except`), or `None`. The one
-/// name check behind create, import, rename and env registration.
+/// name check behind create, import and rename.
 pub fn name_error(records: &[TraderWalletRecord], name: &str, except: Option<&str>) -> Option<String> {
     if !valid_name(name) {
         return Some(NAME_RULE.to_string());
@@ -34,14 +34,6 @@ pub fn name_error(records: &[TraderWalletRecord], name: &str, except: Option<&st
         .iter()
         .find(|r| Some(r.pubkey.as_str()) != except && same_name(&r.name, name))
         .map(|r| format!("a wallet named {} already exists", r.name))
-}
-
-/// `base`, or `base 2`, `base 3`... whichever no wallet uses yet.
-pub fn free_name(records: &[TraderWalletRecord], base: &str) -> String {
-    (1..)
-        .map(|n| if n == 1 { base.to_string() } else { format!("{base} {n}") })
-        .find(|name| name_error(records, name, None).is_none())
-        .expect("an unbounded range always has a free name")
 }
 
 async fn record(repo: &TraderWalletRepo, pubkey: &str) -> Result<TraderWalletRecord> {
@@ -215,12 +207,5 @@ mod tests {
         assert!(name_error(&rows, "Desk", Some("A")).is_some());
         assert!(name_error(&rows, " x", None).is_some());
         assert!(name_error(&rows, "Main Sniper", None).is_none());
-    }
-
-    #[test]
-    fn the_free_name_skips_every_taken_one() {
-        let rows = vec![row("A", "main"), row("B", "Main 2")];
-        assert_eq!(free_name(&rows, "main"), "main 3");
-        assert_eq!(free_name(&[], "main"), "main");
     }
 }

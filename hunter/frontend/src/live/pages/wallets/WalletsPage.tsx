@@ -141,6 +141,11 @@ export function WalletsPage() {
         <StatTile label="Move" value={move ? STEP_LABEL[move.step] ?? move.step : 'none'} size="md" />
       </div>
 
+      {data && live.length === 0 && (
+        <InlineAlert variant="error">
+          No wallet on this box. Real entries do not buy until you create or import one.
+        </InlineAlert>
+      )}
       {data?.primary_missing && (
         <InlineAlert variant="error">
           No primary wallet is set. Rules without their own wallet do not buy until you set one.

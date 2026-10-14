@@ -38,6 +38,13 @@ pub struct TraderFactory {
 }
 
 impl TraderFactory {
+    /// A trader on a throwaway key that is never initialized, so every buy,
+    /// sell and claim bails at its "Not initialized" guard. It stands in for
+    /// the process trader while no wallet is loaded; it makes no RPC call.
+    fn inert(&self) -> Arc<PumpFunTrader> {
+        Arc::new(PumpFunTrader::new(Arc::new(self.config(Arc::new(Keypair::new()), Vec::new()))))
+    }
+
     fn config(&self, signer: Arc<dyn Signer + Send + Sync>, nonces: Vec<Pubkey>) -> TraderConfig {
         let mut cfg = TraderConfig::new(
             self.rpc_url.clone(),
@@ -87,6 +94,8 @@ pub struct WalletRuntime {
     load_errors: RwLock<HashMap<String, String>>,
     /// Registry rows that are archived.
     archived: RwLock<HashSet<String>>,
+    /// The process trader while no wallet is loaded. Signs nothing.
+    inert: Arc<PumpFunTrader>,
     pub directory: Arc<WalletDirectory>,
     pub freeze: Arc<WalletFreeze>,
     factory: TraderFactory,
@@ -105,6 +114,7 @@ impl WalletRuntime {
             slots: RwLock::new(HashMap::new()),
             primary: RwLock::new(String::new()),
             load_errors: RwLock::new(HashMap::new()),
+            inert: factory.inert(),
             archived: RwLock::new(HashSet::new()),
             directory: Arc::new(WalletDirectory::default()),
             freeze: Arc::new(WalletFreeze::new()),
@@ -188,12 +198,16 @@ impl WalletRuntime {
     }
 
     /// The process trader the single-wallet pages are built with at boot: the
-    /// primary, else any loaded wallet. Entries never fall back to it; with no
-    /// primary named, an entry on a rule without a wallet fails closed.
+    /// primary, else any loaded wallet, else an inert trader that signs
+    /// nothing. Entries never fall back to it; with no primary named, an entry
+    /// on a rule without a wallet fails closed.
     pub fn primary_trader(&self) -> Arc<PumpFunTrader> {
         let pubkey = self.primary_pubkey();
-        self.trader(&pubkey)
-            .unwrap_or_else(|| self.slots.read().expect("wallets").values().next().unwrap().trader.clone())
+        if let Some(trader) = self.trader(&pubkey) {
+            return trader;
+        }
+        let slots = self.slots.read().expect("wallets");
+        slots.values().next().map_or_else(|| self.inert.clone(), |s| s.trader.clone())
     }
 
     pub fn trader(&self, pubkey: &str) -> Option<Arc<PumpFunTrader>> {
@@ -454,19 +468,19 @@ async fn record_nonces(repo: &TraderWalletRepo, pubkey: &str) -> Result<Vec<Pubk
 }
 
 /// Load every active and draining wallet. A wallet whose key does not load
-/// is shown with its error and signs nothing; boot stops only when no wallet
-/// loaded at all. The primary is the row that claims it, or none.
+/// is shown with its error and signs nothing. With no wallet loaded the
+/// process still boots: ingest, paper trading and the pages run, and every
+/// real entry fails closed until a wallet is imported or created.
 pub async fn load_keystore(pool: &PgPool, factory: TraderFactory) -> Result<WalletRuntime> {
     let (dir, kek) = keystore_env()?;
     let runtime = WalletRuntime::empty(factory, Some(dir), Some(kek));
     runtime.reload(pool).await?;
     if runtime.is_empty() {
-        let errors = runtime.load_errors.read().expect("wallets").clone();
-        if errors.is_empty() {
-            bail!("the wallet registry has no active wallet; set WALLET_PRIVATE_KEY once to register one");
-        }
-        let detail: Vec<String> = errors.into_iter().map(|(pubkey, e)| format!("{pubkey}: {e}")).collect();
-        bail!("no wallet key loaded: {}", detail.join("; "));
+        let errors = runtime.load_errors.read().expect("wallets").len();
+        tracing::error!(
+            unloaded = errors,
+            "no wallet is loaded; real entries fail closed until one is imported or created on the Wallets page"
+        );
     }
     Ok(runtime)
 }

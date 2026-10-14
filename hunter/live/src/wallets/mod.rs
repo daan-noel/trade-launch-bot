@@ -18,8 +18,7 @@ pub use mover::{
     start as start_move, MovePreview,
 };
 pub use nonces::{
-    attach_nonces, list_nonces, provision_nonces, register_env_key, sync_new, sync_wallet, AttachReport, NonceView,
-    SyncReport,
+    attach_nonces, list_nonces, provision_nonces, sync_new, sync_wallet, AttachReport, NonceView, SyncReport,
 };
 pub use ops::{archive, name_error, rename, restore, send_sol};
 pub use readiness::Readiness;

@@ -10,7 +10,6 @@ use config::constants;
 
 use anyhow::Context;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -23,14 +22,6 @@ use actix_web::{web, App, HttpServer};
 use http_auth::{require_bearer_auth, ApiAuth};
 
 use live::trader::PumpFunTrader;
-
-fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
-    let bytes = bs58::decode(base58_key)
-        .into_vec()
-        .context("Failed to decode WALLET_PRIVATE_KEY as base58")?;
-    Keypair::from_bytes(&bytes)
-        .context("Failed to construct Keypair from WALLET_PRIVATE_KEY bytes")
-}
 
 /// One-shot, no-/low-SOL probes for the tx-latency changes. Runs after the
 /// trader is initialized (so the tip cache and nonce slots are warm) and exits
@@ -1056,14 +1047,8 @@ async fn run() -> anyhow::Result<()> {
         "Configuration loaded"
     );
 
-    // Fee/tip knobs come from env (see `FeeTuning`). Every signing key lives in
-    // the keystore; `WALLET_PRIVATE_KEY` is only registered into it below.
-    let nonce_accounts = secrets
-        .nonce_accounts
-        .iter()
-        .map(|s| s.parse::<solana_sdk::pubkey::Pubkey>())
-        .collect::<Result<Vec<_>, _>>()
-        .context("Failed to parse NONCE_ACCOUNTS as pubkeys")?;
+    // Fee/tip knobs come from env (see `FeeTuning`). Every signing key is a
+    // keystore file, loaded below.
     let wallet_factory = live::wallets::TraderFactory {
         rpc_url: settings.helius_rpc_url.clone(),
         sender_urls: secrets.helius_sender_urls.clone(),
@@ -1079,15 +1064,6 @@ async fn run() -> anyhow::Result<()> {
         api: api_db,
         batch: batch_db,
     } = trading_core::storage::postgres::connect(&settings).await?;
-
-    // An env key is written into the keystore and the registry once, with its
-    // nonce accounts. A failure is logged and boot goes on with the registry.
-    if let Some(key) = secrets.wallet_private_key.as_deref() {
-        let signer = parse_wallet_keypair(key).context("Failed to parse WALLET_PRIVATE_KEY")?;
-        if let Err(e) = live::wallets::register_env_key(&db, &settings.helius_rpc_url, &signer, &nonce_accounts).await {
-            tracing::error!("WALLET_PRIVATE_KEY was not registered: {e:#}");
-        }
-    }
 
     // Probe mode: `cargo run -p hunter-live -- probe <subcommand>` runs a
     // one-shot, no-/low-SOL validation of the latency changes against live infra,
@@ -1107,7 +1083,8 @@ async fn run() -> anyhow::Result<()> {
     }
 
     // Every active wallet signs with its own key. One whose key does not load
-    // is shown with its error and signs nothing; the rest run.
+    // is shown with its error and signs nothing; the rest run. With none
+    // loaded the box still boots and every real entry fails closed.
     let wallets = Arc::new(live::wallets::load_keystore(&db, wallet_factory.clone()).await?);
     let trader = wallets.primary_trader();
     // An open wallet move keeps advancing on its own, including one a restart interrupted.
@@ -1144,20 +1121,24 @@ async fn run() -> anyhow::Result<()> {
     // before the first snipe (the feed may not have pushed a wallet update yet); then
     // every 10 min, skipping the RPC when the push already refreshed within the window
     // (same freshness gate as the blockhash watchdog).
+    // Every loaded wallet, read again each tick so an imported or synced
+    // wallet is covered without a restart.
     {
-        let trader = trader.clone();
+        let wallets = wallets.clone();
         tokio::spawn(async move {
             const BALANCE_POLL_SECS: u64 = 600;
             let mut first = true;
             loop {
-                if first
-                    || !trader.balance_cache_is_fresher_than(std::time::Duration::from_secs(
-                        BALANCE_POLL_SECS,
-                    ))
-                {
+                for trader in wallets.loaded_traders() {
+                    if !first
+                        && trader.balance_cache_is_fresher_than(std::time::Duration::from_secs(BALANCE_POLL_SECS))
+                    {
+                        continue;
+                    }
                     match trader.get_sol_balance().await {
                         Ok(lamports) => trader.update_balance_lamports_cache(lamports),
                         Err(e) => warn!(
+                            wallet = %trader.wallet_pubkey(),
                             "SOL balance safety poll failed (guard stays on last cached value): {e}"
                         ),
                     }
