@@ -224,8 +224,9 @@ pub struct Fill {
 /// `TokenCreated`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LaunchBuildStat {
-    /// FNV-1a of the build's ordered creation `ix_labels`.
-    pub build_hash: u64,
+    /// FNV-1a of the build's ordered creation `ix_labels` (`trade_keys::ix_hash`).
+    /// Not [`BuildBreadth::build_hash`], which is the recipe hash.
+    pub ix_hash: u64,
     /// Tokens of this build created on the previous UTC day.
     pub launches: u32,
     /// Of those, how many became runners (curve peak reserve at or above the

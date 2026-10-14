@@ -6,6 +6,7 @@ import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { LabTokenInspect } from '@lab/components/strategy/LabTokenInspect';
 import type { MetricPanesRuleOverride } from '@lab/components/strategy/MetricPanes';
 import { labTokenInspectModalTitle } from '@lab/components/strategy/LabTokenInspectModalTitle';
+import type { FrozenFlowTag } from 'lib/flow/tapeClassify';
 
 /**
  * Run-result token inspect (sweep combos + simulate positions) — chart with the
@@ -19,7 +20,7 @@ export function LabTokenInspectModal({
   titleSuffix = 'Token inspect',
   ruleOverride = null,
   flowPatternKeys = null,
-  flowReadOnly = false,
+  flowFrozen = null,
   eventMarkers = null,
   onClose,
 }: {
@@ -30,8 +31,8 @@ export function LabTokenInspectModal({
   /** Explicit overlay keys (e.g. sweep run `ix_patterns`); when omitted,
    *  resolved from `ruleOverride.fingerprintId` inside LabTokenInspect. */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
-  flowReadOnly?: boolean;
+  /** A stored run's frozen tag — classified with whole, never edited (see `BarTradesPanel`). */
+  flowFrozen?: FrozenFlowTag | null;
   /** Precomputed fill markers to draw instead of the single `target`'s — used to
    *  overlay **all re-entry episodes** of the token on one chart. Falls back to the
    *  single-target markers when null/absent. */
@@ -74,7 +75,7 @@ export function LabTokenInspectModal({
         extraEventMarkers={extraEventMarkers}
         ruleOverride={ruleOverride}
         flowPatternKeys={flowPatternKeys}
-        flowReadOnly={flowReadOnly}
+        flowFrozen={flowFrozen}
         positionEntry={positionEntry}
         exitReason={target.exitLabel ?? null}
       />

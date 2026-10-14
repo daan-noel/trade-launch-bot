@@ -160,7 +160,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
         Event::LaunchBuildStatsReloaded { stats } => {
             // Creation-time input only: nothing about a tracked token changes, so no
             // cross-epoch bump and nothing to unsettle.
-            state.launch_build_stats = stats.iter().map(|s| (s.build_hash, *s)).collect();
+            state.launch_build_stats = stats.iter().map(|s| (s.ix_hash, *s)).collect();
         }
 
         Event::BuildBreadthReloaded { breadth } => {

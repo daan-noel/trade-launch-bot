@@ -20,7 +20,7 @@ import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
 import { useTokenHighlight, type TokenHighlight } from 'components/tokens/useTokenHighlight';
 import { useIxPatternTarget, type TagTape } from 'hooks/useIxPatternTarget';
 import { tradeFlowReasons } from 'lib/flow/flowChartData';
-import { classifyOptsForTag } from 'lib/flow/tapeClassify';
+import { classifyOptsForTag, type FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
@@ -87,8 +87,9 @@ interface TokenTradeChartProps {
   /** The host's fingerprint: its tag is what the overlay and badges classify with,
    *  and the row an "add to tag" click writes (see `BarTradesPanel`). */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen shapes - display only (see `BarTradesPanel`). */
-  flowReadOnly?: boolean;
+  /** A stored run's frozen tag: classified with whole, never edited (see
+   *  `BarTradesPanel`). */
+  flowFrozen?: FrozenFlowTag | null;
   /**
    * Staging tape (Flow Discovery). The overlay and badges read its draft tag and
    * clicks write the draft instead of a fingerprint. The cart owns Apply.
@@ -135,7 +136,7 @@ export function TokenTradeChart({
   onVisibleTimeRangeChange,
   flowPatternKeys = null,
   flowFingerprintId = null,
-  flowReadOnly = false,
+  flowFrozen = null,
   tape = null,
   timeBands = null,
   timeBandCoverage = null,
@@ -284,7 +285,8 @@ export function TokenTradeChart({
   const persistTarget = useIxPatternTarget({
     fingerprintId: flowFingerprintId,
     savedKeys: flowPatternKeys,
-    enabled: !flowReadOnly && !lens && !tape,
+    frozen: flowFrozen,
+    enabled: !lens && !tape,
   });
   const flowTag = tape ? tape.tag : lens ? lens.tag : persistTarget.tag;
   const excludeWallets = lens?.excludeWallets ?? null;
@@ -360,7 +362,7 @@ export function TokenTradeChart({
         highlightWallet={highlightWallet}
         flowPatternKeys={flowPatternKeys}
         flowFingerprintId={flowFingerprintId}
-        flowReadOnly={flowReadOnly}
+        flowFrozen={flowFrozen}
         patternTarget={persistTarget}
         tape={tape}
         flowReasons={flowReasons}

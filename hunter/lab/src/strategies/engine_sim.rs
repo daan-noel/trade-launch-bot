@@ -830,7 +830,7 @@ async fn load_door_days(
         match repo.load_or_compute_day(day).await {
             Ok(rows) => {
                 let stats = LaunchBuildRepo::to_engine(&rows);
-                by_day.insert(day, stats.iter().map(|s| (s.build_hash, *s)).collect());
+                by_day.insert(day, stats.iter().map(|s| (s.ix_hash, *s)).collect());
                 ordered.push((day, Arc::from(stats)));
             }
             // Loud and not fatal: a door rule then fails closed for that day, which

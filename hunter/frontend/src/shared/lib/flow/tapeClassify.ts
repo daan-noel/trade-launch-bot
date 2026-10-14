@@ -30,6 +30,18 @@ export function tagLabel(name: string, negated = false): string {
   return `@${negated ? '!' : ''}${name}`;
 }
 
+/** A stored run's frozen tag: a chart classifies with it whole (every matcher and
+ *  option, as the run's numbers were computed) and nothing edits it. `tag` is
+ *  `null` when the run stored no such tag. */
+export interface FrozenFlowTag {
+  tag: FlowTag | null;
+}
+
+/** The default tag of a stored run's `tags` document, frozen. */
+export function frozenFlowTag(doc: unknown): FrozenFlowTag {
+  return { tag: flowTagOf(doc, defaultTagName(doc)) };
+}
+
 /** Whether the tag can classify anything: at least one matcher in use. */
 export function tagClassifies(tag: FlowTag | null | undefined): tag is FlowTag {
   return !!tag && usedMatchers({ ...tag, id: '' }).length > 0;

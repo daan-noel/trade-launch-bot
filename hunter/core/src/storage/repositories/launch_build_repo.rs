@@ -134,9 +134,9 @@ impl LaunchBuildRepo {
     pub fn to_engine(rows: &[LaunchBuildDayStat]) -> Vec<LaunchBuildStat> {
         rows.iter()
             .filter_map(|r| {
-                let build_hash = ix_hash_from_labels_value(&r.ix_labels)?;
+                let ix_hash = ix_hash_from_labels_value(&r.ix_labels)?;
                 Some(LaunchBuildStat {
-                    build_hash,
+                    ix_hash,
                     launches: r.launches.max(0) as u32,
                     runners: r.runners.max(0) as u32,
                 })
@@ -169,7 +169,7 @@ mod tests {
         let out = LaunchBuildRepo::to_engine(&rows);
         assert_eq!(out.len(), 1);
         assert_eq!(
-            out[0].build_hash,
+            out[0].ix_hash,
             hunter_engine::metrics::trade_keys::ix_hash(&["Pump.Fun: Create_v2", "Pump.Fun: Buy"])
         );
         assert_eq!(out[0].runner_bps(), 1250);

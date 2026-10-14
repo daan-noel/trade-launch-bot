@@ -111,9 +111,26 @@ pub fn core_labels<S: AsRef<str>>(labels: &[S]) -> Vec<&str> {
 
 /// [`ix_hash`] of the [core](core_labels); `None` when labels are absent (the same
 /// sentinel as [`ix_hash_opt`]). A build of extras only has an empty core, which is
-/// a real core with its own hash.
+/// a real core with its own hash. Hashes the kept labels as it reads them, so the
+/// live path does not build the [`core_labels`] list.
 pub fn core_hash(labels: &[impl AsRef<str>]) -> Option<u64> {
-    (!labels.is_empty()).then(|| ix_hash(&core_labels(labels)))
+    if labels.is_empty() {
+        return None;
+    }
+    let mut h = FNV_OFFSET;
+    let mut first = true;
+    for lab in labels {
+        let l = lab.as_ref();
+        if is_core_extra(l) {
+            continue;
+        }
+        if !first {
+            h = fnv1a_byte(h, 0x1f);
+        }
+        first = false;
+        h = fnv1a_bytes(h, core_verb(l).as_bytes());
+    }
+    Some(h)
 }
 
 /// The extras of a build, packed: presence flags in bits 0-7 ([`CORE_MARK_FLAGS`]),

@@ -5,6 +5,7 @@ import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { Accordion } from 'components/ui/Accordion';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
 import { useFlowPatternSource } from 'hooks/useFlowPatternKeys';
+import type { FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { ACCORDION_IDS } from 'lib/storage';
 import type { MetricConditionLanes } from 'lib/strategy/metricPanes';
 import type { TokenDetailRecord } from 'types';
@@ -35,7 +36,7 @@ export function LabTokenInspect({
   /** Explicit pattern keys; when omitted, resolved from `ruleOverride.fingerprintId`. */
   flowPatternKeys: flowPatternKeysProp = null,
   flowFingerprintId: flowFingerprintIdProp = null,
-  flowReadOnly = false,
+  flowFrozen = null,
   /** `inspect` = graphs on the right, values under chart (modal). `page` = all stacked. */
   metricLayout = 'inspect',
 }: {
@@ -56,8 +57,8 @@ export function LabTokenInspect({
   /** Fingerprint the keys came from — the Tagged-badge write target. Like
    *  {@link flowPatternKeys}, falls back to `ruleOverride.fingerprintId`. */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
-  flowReadOnly?: boolean;
+  /** A stored run's frozen tag — classified with whole, never edited (see `BarTradesPanel`). */
+  flowFrozen?: FrozenFlowTag | null;
   metricLayout?: 'page' | 'inspect';
 }) {
   const [crosshairTimeSec, setCrosshairTimeSec] = useState<number | null>(null);
@@ -126,7 +127,7 @@ export function LabTokenInspect({
       onVisibleTimeRangeChange={setVisibleTimeRange}
       flowPatternKeys={flowPatternKeys}
       flowFingerprintId={flowFingerprintId}
-      flowReadOnly={flowReadOnly}
+      flowFrozen={flowFrozen}
       timeBands={conditionBands?.lanes ?? null}
       timeBandCoverage={conditionBands?.coverage ?? null}
       valueLane={conditionBands?.valueLane ?? null}

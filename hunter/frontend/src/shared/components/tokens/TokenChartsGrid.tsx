@@ -4,6 +4,7 @@ import { useGetTokenDetailQuery } from 'store/sharedEndpoints';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import type { ChartEventMarker } from 'components/token-price-chart';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import type { FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { cn } from 'lib/cn';
 
 /** Per-row chart overlay — the entry/exit markers a caller wants drawn on that
@@ -116,8 +117,8 @@ interface TokenChartCardProps<R> {
   /** Grid-wide fingerprint for {@link flowPatternKeys} - the tag and the "add to
    *  tag" write target when every card shares one (see `BarTradesPanel`). */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen shapes - display only (see `BarTradesPanel`). */
-  flowReadOnly?: boolean;
+  /** A stored run's frozen tag - classified with whole, never edited (see `BarTradesPanel`). */
+  flowFrozen?: FrozenFlowTag | null;
   /** Resolves this card's own pattern source (called as a hook); wins over the
    *  grid-wide props whenever it resolves a fingerprint or a set. */
   useFlowSource: FlowPatternSourceHook<R>;
@@ -139,7 +140,7 @@ function TokenChartCard<R>({
   eventMarkersOverride,
   flowPatternKeys,
   flowFingerprintId,
-  flowReadOnly,
+  flowFrozen,
   useFlowSource,
   extra,
   selected,
@@ -207,7 +208,7 @@ function TokenChartCard<R>({
           tableId={chartTableId}
           flowPatternKeys={rowFlowSource.keys ?? flowPatternKeys}
           flowFingerprintId={rowFlowSource.fingerprintId ?? flowFingerprintId}
-          flowReadOnly={flowReadOnly}
+          flowFrozen={flowFrozen}
         />
       </div>
     </div>
@@ -269,8 +270,8 @@ export interface TokenChartsGridProps<R> {
   /** Fingerprint {@link flowPatternKeys} came from - the tag and the "add to tag"
    *  write target for every card (see `BarTradesPanel`). */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen shapes - display only (see `BarTradesPanel`). */
-  flowReadOnly?: boolean;
+  /** A stored run's frozen tag - classified with whole, never edited (see `BarTradesPanel`). */
+  flowFrozen?: FrozenFlowTag | null;
   /** Per-card pattern source for a grid whose rows span fingerprints — see
    *  {@link FlowPatternSourceHook}. Wins over the grid-wide props per card. */
   useRowFlowPatternSource?: FlowPatternSourceHook<R>;
@@ -295,7 +296,7 @@ export function TokenChartsGrid<R>({
   useMintGroupOverlay,
   flowPatternKeys,
   flowFingerprintId,
-  flowReadOnly,
+  flowFrozen,
   useRowFlowPatternSource,
 }: TokenChartsGridProps<R>) {
   const useOverlay = (useRowOverlay ?? useNoRowOverlay) as ChartOverlayHook<R>;
@@ -348,7 +349,7 @@ export function TokenChartsGrid<R>({
                 eventMarkersOverride={eventMarkersOverride}
                 flowPatternKeys={flowPatternKeys}
                 flowFingerprintId={flowFingerprintId}
-                flowReadOnly={flowReadOnly}
+                flowFrozen={flowFrozen}
                 useFlowSource={useFlowSource}
                 extra={renderChartCardExtra?.(rep, groupRows)}
                 selected={selected}
@@ -383,7 +384,7 @@ export function TokenChartsGrid<R>({
               useOverlay={useOverlay}
               flowPatternKeys={flowPatternKeys}
               flowFingerprintId={flowFingerprintId}
-              flowReadOnly={flowReadOnly}
+              flowFrozen={flowFrozen}
               useFlowSource={useFlowSource}
               extra={renderChartCardExtra?.(row)}
               selected={selected}

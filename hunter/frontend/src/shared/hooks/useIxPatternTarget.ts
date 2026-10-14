@@ -1,8 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
 
 import type { FlowTag } from 'lib/flow/classifyFlow';
-import { flowPatternKeysFromTags, rowsFromKeys } from 'lib/flow/flowPatternKeys';
-import { defaultTagName, flowTagOf, shapeTag } from 'lib/flow/tapeClassify';
+import { flowPatternKeysFromTags, flowPatternKeysOf, rowsFromKeys } from 'lib/flow/flowPatternKeys';
+import { defaultTagName, flowTagOf, shapeTag, type FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { ixLabelsActions } from 'lib/ixLabels';
 import {
   formatFeePins,
@@ -183,16 +183,18 @@ export const HOST_SHAPES_TAG = 'shapes';
 /**
  * The tag a chart classifies with.
  *
- * A loaded fingerprint row uses that row's tag. A chosen id whose row is not
- * in hand classifies nothing. Only a host with no id falls back to an ad-hoc
- * tag of its `ix_shape` rows.
+ * A stored run's frozen tag wins outright. A loaded fingerprint row uses that
+ * row's tag. A chosen id whose row is not in hand classifies nothing. Only a host
+ * with no id falls back to an ad-hoc tag of its `ix_shape` rows.
  */
 export function flowClassifyTag(input: {
+  frozen?: FrozenFlowTag | null;
   target: { tags: unknown } | null;
   targetId: string | null;
   tagName: string;
   savedRows: readonly IxPatternRow[];
 }): FlowTag | null {
+  if (input.frozen) return input.frozen.tag;
   if (input.target) return flowTagOf(input.target.tags, input.tagName);
   if (input.targetId) return null;
   return input.savedRows.length > 0 ? shapeTag(HOST_SHAPES_TAG, input.savedRows) : null;
@@ -243,19 +245,25 @@ export interface IxPatternTarget extends TagStage {
  *                      chosen. A known id whose row is not loaded yet classifies
  *                      nothing: the key set carries only the `ix_shape` rows and
  *                      drops every other matcher.
- * @param enabled       `false` on a read-only host, which skips the fetches
+ * @param frozen        a stored run's frozen tag: classified with whole, never
+ *                      written, and no fingerprint is fetched or matched
+ * @param enabled       `false` on a host whose stage lives elsewhere (a lens, a
+ *                      tape), which skips the fetches
  */
 export function useIxPatternTarget({
   fingerprintId = null,
   savedKeys = null,
+  frozen = null,
   enabled = true,
 }: {
   fingerprintId?: string | null;
   savedKeys?: ReadonlySet<string> | null;
+  frozen?: FrozenFlowTag | null;
   enabled?: boolean;
 } = {}): IxPatternTarget {
-  const { data: fingerprints = [] } = useGetFingerprintsQuery(undefined, { skip: !enabled });
-  const { data: rules = [] } = useGetStrategyRulesQuery(undefined, { skip: !enabled });
+  const fetches = enabled && !frozen;
+  const { data: fingerprints = [] } = useGetFingerprintsQuery(undefined, { skip: !fetches });
+  const { data: rules = [] } = useGetStrategyRulesQuery(undefined, { skip: !fetches });
   const [updateFingerprint, { isLoading: saving }] = useUpdateFingerprintMutation();
 
   const [pickedId, setPickedId] = useState<string | null>(null);
@@ -285,17 +293,18 @@ export function useIxPatternTarget({
   const tagName = pickedTag ?? defaultTagName(target?.tags);
 
   const tag = useMemo(
-    () => flowClassifyTag({ target, targetId, tagName, savedRows }),
-    [target, targetId, tagName, savedRows],
+    () => flowClassifyTag({ frozen, target, targetId, tagName, savedRows }),
+    [frozen, target, targetId, tagName, savedRows],
   );
 
   const keys = useMemo(() => {
+    if (frozen) return flowPatternKeysOf(frozen.tag?.match.ix_shape);
     if (target) return flowPatternKeysFromTags(target.tags, tagName);
     // Same gate as `flowClassifyTag`: a known row that has not loaded yet must
     // not hand its rows-only key set down as if it were the tag.
     if (targetId) return null;
     return savedKeys ?? null;
-  }, [target, targetId, tagName, savedKeys]);
+  }, [frozen, target, targetId, tagName, savedKeys]);
 
   const activeRuleCount = useMemo(
     () => (targetId ? rules.filter((r) => r.fingerprint_id === targetId && r.is_active).length : 0),

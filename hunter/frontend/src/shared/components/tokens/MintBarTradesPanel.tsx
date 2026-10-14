@@ -5,7 +5,7 @@ import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
 import { useFlowReasons } from 'hooks/useFlowReasons';
 import type { IxPatternTarget } from 'hooks/useIxPatternTarget';
 import { useProfileWallets } from 'hooks/useProfileWallets';
-import { classifyOptsForTag } from 'lib/flow/tapeClassify';
+import { classifyOptsForTag, type FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { useGetTokenDetailQuery, useGetTokenTradesQuery } from 'store/apiSlice';
 import type { ChartEventMarker } from 'components/token-price-chart/types';
 import type { TradeRecord } from 'types';
@@ -29,7 +29,7 @@ export function MintBarTradesPanel({
   eventMarkers = null,
   flowPatternKeys = null,
   flowFingerprintId = null,
-  flowReadOnly = false,
+  flowFrozen = null,
   highlight = null,
   patternTarget = null,
   className,
@@ -42,8 +42,8 @@ export function MintBarTradesPanel({
   /** Fingerprint the keys came from — the Tagged badge's write target
    *  (see {@link BarTradesPanel}). */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen patterns — display only (see {@link BarTradesPanel}). */
-  flowReadOnly?: boolean;
+  /** A stored run's frozen tag — classified with whole, never edited (see {@link BarTradesPanel}). */
+  flowFrozen?: FrozenFlowTag | null;
   highlight?: TokenHighlight | null;
   /** Host-owned tape so the overlay above classifies the same list. */
   patternTarget?: IxPatternTarget | null;
@@ -85,7 +85,7 @@ export function MintBarTradesPanel({
       myWalletAddresses={mine}
       flowPatternKeys={flowPatternKeys}
       flowFingerprintId={flowFingerprintId}
-      flowReadOnly={flowReadOnly}
+      flowFrozen={flowFrozen}
       patternTarget={patternTarget}
       flowReasons={flowReasons}
       highlight={highlight}

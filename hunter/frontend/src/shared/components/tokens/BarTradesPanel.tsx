@@ -17,7 +17,7 @@ import {
 import { useFlowLensContext, type FlowLensTarget } from 'context/FlowLensContext';
 import { formatTimestampMs } from 'utils/date';
 import type { FlowReason } from 'lib/flow/classifyFlow';
-import { tagLabel } from 'lib/flow/tapeClassify';
+import { tagLabel, type FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { tagField, useStrategyRegistry } from 'lib/strategy/registry';
 import type {
   ChartBarSelection,
@@ -75,8 +75,8 @@ export interface BarTradesPanelProps {
   /** The host's fingerprint - the row an "add to tag" click writes to. Pass it
    *  wherever the host knows one: without it the panel can only guess its target. */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen shapes - display only, never edited from here. */
-  flowReadOnly?: boolean;
+  /** A stored run's frozen tag - classified with whole, never edited from here. */
+  flowFrozen?: FrozenFlowTag | null;
   /** Host-owned target (TokenTradeChart / Floor). When passed, this panel does not
    *  create its own `useIxPatternTarget`, so the lines above and the badges here
    *  cannot disagree about which tag is picked. */
@@ -141,7 +141,7 @@ export function BarTradesPanel({
   highlightWallet = null,
   flowPatternKeys = null,
   flowFingerprintId = null,
-  flowReadOnly = false,
+  flowFrozen = null,
   patternTarget: patternTargetProp = null,
   tape = null,
   flowReasons = null,
@@ -173,7 +173,7 @@ export function BarTradesPanel({
   // clicks land in `ix_pattern_sets`, never on a fingerprint, so nothing a study
   // toggles can change what a live rule reads.
   const lens = useFlowLensContext();
-  const lensTarget = flowReadOnly ? null : (lens?.target ?? null);
+  const lensTarget = flowFrozen ? null : (lens?.target ?? null);
 
   // Without a lens or a tape, a click edits the fingerprint's tag directly, so the
   // badge, the chart lines and the engine always read the same row. A host that
@@ -181,10 +181,11 @@ export function BarTradesPanel({
   const createdTarget = useIxPatternTarget({
     fingerprintId: flowFingerprintId,
     savedKeys: flowPatternKeys,
-    enabled: !flowReadOnly && !lensTarget && !tape && !patternTargetProp,
+    frozen: flowFrozen,
+    enabled: !lensTarget && !tape && !patternTargetProp,
   });
   const patternTarget = patternTargetProp ?? createdTarget;
-  const stage: TagStage | null = flowReadOnly ? null : (lensTarget ?? tape ?? patternTarget);
+  const stage: TagStage | null = flowFrozen ? null : (lensTarget ?? tape ?? patternTarget);
   // The tag the reasons were computed against - the lines above read the same one.
   // A stage with nothing classifying yet still names its tag, so the first click
   // that fills it has a column to land in.
@@ -359,7 +360,7 @@ export function BarTradesPanel({
             <span className="text-[11px] text-text-dim">into the draft: Apply saves it</span>
           </span>
         ) : (
-          <IxPatternBar target={patternTarget} readOnly={flowReadOnly} />
+          <IxPatternBar target={patternTarget} readOnly={flowFrozen != null} />
         )}
       </div>
       {highlight && <LensChips highlight={highlight} />}

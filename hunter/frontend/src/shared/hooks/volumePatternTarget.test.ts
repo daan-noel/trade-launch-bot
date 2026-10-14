@@ -117,6 +117,19 @@ describe('flowClassifyTag', () => {
     ).toBeNull();
   });
 
+  it('a frozen run tag wins over the loaded fingerprint and the shape fallback', () => {
+    const tag = flowClassifyTag({
+      frozen: { tag: { name: 'volume', match: { wallet: ['a'], creator: true }, side: null, sticky: true } },
+      target: { tags: volume },
+      targetId: 'fp',
+      tagName: 'volume',
+      savedRows: [{ labels: ['Buy'] }],
+    });
+    expect(tag?.match.wallet).toEqual(['a']);
+    expect(tag?.match.ix_shape).toBeUndefined();
+    expect(tag?.sticky).toBe(true);
+  });
+
   it('keeps an ix_shape-only tag for a host with no fingerprint id', () => {
     const tag = flowClassifyTag({
       target: null,

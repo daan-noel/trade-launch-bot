@@ -39,6 +39,7 @@ import {
 import type { PositionChartPoint } from 'lib/strategy/positionChartPoints';
 import { cn } from 'lib/cn';
 import { flowPatternKeysFromTags } from 'lib/flow/flowPatternKeys';
+import { frozenFlowTag } from 'lib/flow/tapeClassify';
 import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
@@ -857,6 +858,7 @@ function ComboTokenResults({
 }) {
   const { timezone } = useTimezone();
   const flowPatternKeys = useMemo(() => flowPatternKeysFromTags(runTags), [runTags]);
+  const flowFrozen = useMemo(() => frozenFlowTag(runTags), [runTags]);
   const query = useGetComboTokenResultsQuery({ strategyId, runId, groupId, comboId });
   // Stable identities: RTK keeps `query.data` referentially equal across renders, so
   // memoizing keeps `rows`/`visible` from churning — otherwise the filtered-rows
@@ -1115,7 +1117,7 @@ function ComboTokenResults({
         // tags, which are a snapshot rather than a live fingerprint
         // row — so they are readable here but not editable, or a Tagged-badge click
         // would silently retarget some unrelated fingerprint.
-        flowReadOnly
+        flowFrozen={flowFrozen}
         useRowOverlay={comboRowOverlay}
         chartsGroupByMint
         // `rowsForTable` is this combo's FULL (already client-loaded) row set, not
@@ -1160,7 +1162,7 @@ function ComboTokenResults({
           target={comboTarget(selectedRow)}
           titleSuffix="Sweep inspect"
           flowPatternKeys={flowPatternKeys}
-          flowReadOnly
+          flowFrozen={flowFrozen}
           ruleOverride={
             comboParams
               ? {

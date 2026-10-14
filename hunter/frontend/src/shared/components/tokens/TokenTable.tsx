@@ -11,6 +11,7 @@ import type {
   MintGroupOverlayHook,
   RowChartOverlay,
 } from './TokenChartsGrid';
+import type { FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { cn } from 'lib/cn';
 import { getTableCharts, setTableCharts } from 'lib/storage';
 
@@ -115,8 +116,8 @@ interface TokenTableCommon<R> {
    *  with and the "add to tag" write target (see `BarTradesPanel`). Pass it whenever
    *  the cohort has one. */
   flowFingerprintId?: string | null;
-  /** A stored run's frozen shapes - display only (see `BarTradesPanel`). */
-  flowReadOnly?: boolean;
+  /** A stored run's frozen tag - classified with whole, never edited (see `BarTradesPanel`). */
+  flowFrozen?: FrozenFlowTag | null;
   /** Per-card pattern source for a table whose rows span fingerprints (Console
    *  History mixes rules). Called as a hook per card — see
    *  {@link FlowPatternSourceHook}. Wins over the table-wide props per card. */
@@ -199,7 +200,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
     useMintChartGroupOverlay,
     flowPatternKeys,
     flowFingerprintId,
-    flowReadOnly,
+    flowFrozen,
     useRowChartFlowPatternSource,
   } = props;
   const mintOf = mintAddressOf;
@@ -287,7 +288,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
           useMintGroupOverlay={useMintChartGroupOverlay}
           flowPatternKeys={flowPatternKeys}
           flowFingerprintId={flowFingerprintId}
-          flowReadOnly={flowReadOnly}
+          flowFrozen={flowFrozen}
           useRowFlowPatternSource={useRowChartFlowPatternSource}
         />
       )}

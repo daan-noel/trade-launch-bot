@@ -280,12 +280,86 @@ fn row_side(obj: &serde_json::Map<String, Value>) -> Option<Option<Side>> {
     }
 }
 
-fn row_marks(obj: &serde_json::Map<String, Value>) -> Option<Option<u32>> {
-    match obj.get("marks") {
-        None | Some(Value::Null) => Some(None),
-        Some(Value::String(s)) => core_marks_from_text(s).ok().map(Some),
-        Some(_) => None,
+/// One compiled `ix_shape` row. `Skip` is a legal empty label list: it validates
+/// and adds nothing.
+enum ShapeRow<'a> {
+    Skip,
+    Exact { labels: Vec<&'a str>, fee: FeeSpec },
+    Core { labels: Vec<&'a str>, side: Option<Side>, marks: Option<u32>, fee: FeeSpec },
+}
+
+/// The one reading of an `ix_shape` row. The error is the tail [`IxShapeRows::validate`]
+/// appends to `{key}[{i}]`. [`IxShapeRows::parse`] treats any error as unusable.
+fn shape_row(row: &Value) -> Result<ShapeRow<'_>, String> {
+    match row {
+        Value::Array(labels) => {
+            let seq = label_strs(labels)?;
+            if seq.is_empty() {
+                return Ok(ShapeRow::Skip);
+            }
+            Ok(ShapeRow::Exact { labels: seq, fee: FeeSpec::wildcard() })
+        }
+        Value::Object(obj) => {
+            let labels = match obj.get("labels") {
+                None => return Err(" carries no labels".into()),
+                Some(Value::Array(l)) => l,
+                Some(_) => return Err(".labels must be an array of strings".into()),
+            };
+            let level = row_level(obj).ok_or(".level must be \"exact\" or \"core\"")?;
+            let core = level == "core";
+            for f in ["side", "marks"] {
+                if !core && obj.get(f).is_some_and(|v| !v.is_null()) {
+                    return Err(format!(".{f} needs \"level\": \"core\""));
+                }
+            }
+            let side = row_side(obj).ok_or(".side must be \"buy\" or \"sell\"")?;
+            let marks = match obj.get("marks") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(m)) => Some(core_marks_from_text(m).map_err(|e| format!(".marks: {e}"))?),
+                Some(_) => return Err(".marks must be a text like \"CL CP T1 A1\"".into()),
+            };
+            for f in ["cu_limit", "cu_price", "tip_lamports"] {
+                match obj.get(f) {
+                    None | Some(Value::Null) => {}
+                    Some(v) if v.as_u64().is_some() => {}
+                    Some(_) => return Err(format!(".{f} must be a non-negative integer")),
+                }
+            }
+            // The chain rejects a request above the per-transaction ceiling, so a
+            // value beyond it can never match a landed trade.
+            if let Some(v) = obj.get("cu_limit").and_then(Value::as_u64) {
+                if v > MAX_TX_COMPUTE_UNITS {
+                    return Err(format!(
+                        ".cu_limit {v} exceeds the {MAX_TX_COMPUTE_UNITS} \
+                         compute units a transaction may request - no landed \
+                         transaction can carry it"
+                    ));
+                }
+            }
+            let fee = FeeSpec::from_row(obj).ok_or(".cu_limit must be a non-negative integer")?;
+            let seq = label_strs(labels)?;
+            if seq.is_empty() {
+                return Ok(ShapeRow::Skip);
+            }
+            if core {
+                Ok(ShapeRow::Core { labels: seq, side, marks, fee })
+            } else {
+                Ok(ShapeRow::Exact { labels: seq, fee })
+            }
+        }
+        _ => Err(" must be an array of strings or an object with labels".into()),
     }
+}
+
+fn label_strs(labels: &[Value]) -> Result<Vec<&str>, String> {
+    let mut seq = Vec::with_capacity(labels.len());
+    for (j, lab) in labels.iter().enumerate() {
+        match lab.as_str() {
+            Some(s) => seq.push(s),
+            None => return Err(format!("[{j}] must be a string")),
+        }
+    }
+    Ok(seq)
 }
 
 impl IxShapeRows {
@@ -313,35 +387,19 @@ impl IxShapeRows {
     ///
     /// `None` on any shape error, matching the surrounding parsers: an unusable
     /// config leaves the group unconfigured (metrics read `NaN`) rather than
-    /// silently compiling to a shorter list.
+    /// silently compiling to a shorter list. The same [`shape_row`] [`validate`]
+    /// reports, so a row that saves also compiles.
     pub fn parse(rows: &[Value]) -> Option<Self> {
         let mut out = Self::default();
         for row in rows {
-            let (labels, spec, core) = match row {
-                Value::Array(labels) => (labels, FeeSpec::wildcard(), None),
-                Value::Object(obj) => {
-                    let core = match row_level(obj)? {
-                        "core" => Some((row_side(obj)?, row_marks(obj)?)),
-                        _ => None,
-                    };
-                    (obj.get("labels")?.as_array()?, FeeSpec::from_row(obj)?, core)
-                }
-                _ => return None,
-            };
-            let mut seq: Vec<&str> = Vec::with_capacity(labels.len());
-            for l in labels {
-                seq.push(l.as_str()?);
-            }
-            if seq.is_empty() {
-                continue;
-            }
-            match core {
-                None => out.insert(ix_hash(&seq), spec),
+            match shape_row(row).ok()? {
+                ShapeRow::Skip => {}
+                ShapeRow::Exact { labels, fee } => out.insert(ix_hash(&labels), fee),
                 // The row's labels may be any variant of the build or the core itself:
                 // both reduce to one core.
-                Some((side, marks)) => {
-                    let specs = out.by_core.entry(core_hash(&seq)?).or_default();
-                    let row = CoreSpec { side, marks, fee: spec };
+                ShapeRow::Core { labels, side, marks, fee } => {
+                    let specs = out.by_core.entry(core_hash(&labels)?).or_default();
+                    let row = CoreSpec { side, marks, fee };
                     if !specs.contains(&row) {
                         specs.push(row);
                     }
@@ -353,70 +411,11 @@ impl IxShapeRows {
 
     /// Shape errors in an `ix_shape` array, reported against `key` (e.g.
     /// `tags.volume.match.ix_shape`) so the message names the field that was edited.
+    /// The same [`shape_row`] [`parse`] compiles, so a row cannot pass here and then
+    /// be dropped when rules load.
     pub fn validate(rows: &[Value], key: &str) -> Result<(), String> {
         for (i, row) in rows.iter().enumerate() {
-            let labels = match row {
-                Value::Array(labels) => labels,
-                Value::Object(obj) => {
-                    let Some(l) = obj.get("labels") else {
-                        return Err(format!("{key}[{i}] carries no labels"));
-                    };
-                    let Some(l) = l.as_array() else {
-                        return Err(format!("{key}[{i}].labels must be an array of strings"));
-                    };
-                    if row_level(obj).is_none() {
-                        return Err(format!("{key}[{i}].level must be \"exact\" or \"core\""));
-                    }
-                    let core = row_level(obj) == Some("core");
-                    for f in ["side", "marks"] {
-                        if !core && obj.get(f).is_some_and(|v| !v.is_null()) {
-                            return Err(format!("{key}[{i}].{f} needs \"level\": \"core\""));
-                        }
-                    }
-                    if row_side(obj).is_none() {
-                        return Err(format!("{key}[{i}].side must be \"buy\" or \"sell\""));
-                    }
-                    if let Some(Value::String(m)) = obj.get("marks") {
-                        core_marks_from_text(m).map_err(|e| format!("{key}[{i}].marks: {e}"))?;
-                    } else if obj.get("marks").is_some_and(|v| !v.is_null()) {
-                        return Err(format!("{key}[{i}].marks must be a text like \"CL CP T1 A1\""));
-                    }
-                    for f in ["cu_limit", "cu_price", "tip_lamports"] {
-                        match obj.get(f) {
-                            None | Some(Value::Null) => {}
-                            Some(v) if v.as_u64().is_some() => {}
-                            Some(_) => {
-                                return Err(format!(
-                                    "{key}[{i}].{f} must be a non-negative integer"
-                                ))
-                            }
-                        }
-                    }
-                    // The chain rejects a request above the per-transaction ceiling,
-                    // so a value beyond it can never match a landed trade — a filter
-                    // that is empty by arithmetic rather than by intent.
-                    if let Some(v) = obj.get("cu_limit").and_then(Value::as_u64) {
-                        if v > MAX_TX_COMPUTE_UNITS {
-                            return Err(format!(
-                                "{key}[{i}].cu_limit {v} exceeds the {MAX_TX_COMPUTE_UNITS} \
-                                 compute units a transaction may request - no landed \
-                                 transaction can carry it"
-                            ));
-                        }
-                    }
-                    l
-                }
-                _ => {
-                    return Err(format!(
-                        "{key}[{i}] must be an array of strings or an object with labels"
-                    ))
-                }
-            };
-            for (j, lab) in labels.iter().enumerate() {
-                if !lab.is_string() {
-                    return Err(format!("{key}[{i}][{j}] must be a string"));
-                }
-            }
+            shape_row(row).map_err(|e| format!("{key}[{i}]{e}"))?;
         }
         Ok(())
     }
@@ -701,6 +700,14 @@ mod tests {
     fn a_cu_limit_past_the_field_width_is_rejected_rather_than_truncated() {
         assert!(IxShapeRows::parse(&[json!({ "labels": DUMP, "cu_limit": 4_294_967_296u64 })])
             .is_none());
+    }
+
+    #[test]
+    fn a_row_validate_rejects_does_not_parse() {
+        let rows = json!([{ "labels": ["Pump.Fun: Sell"], "side": "sell" }]);
+        let arr = rows.as_array().unwrap();
+        assert!(IxShapeRows::validate(arr, "k").unwrap_err().contains("level"));
+        assert!(IxShapeRows::parse(arr).is_none());
     }
 
     #[test]

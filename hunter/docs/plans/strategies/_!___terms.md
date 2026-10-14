@@ -54,7 +54,8 @@ a fixed formula, each sell moves it back down. Nothing else sets the price.
 | term | meaning |
 | --- | --- |
 | **ix structure** | The ordered instruction list of a buy or sell transaction. Order and repeats count. It is how a print was sent, and it identifies the software that sent it. |
-| **core ix structure** | An ix structure with token-account create/close and memo dropped, then hashed. The key when counting distinct ix structures, unless a row says otherwise. The engine computes it as `build_hash` (`engine/src/metrics/trade_keys.rs`), the studies as `build_core` (`toolkit/lake_export.py`), and the two partition every label sequence identically. Both layers carry it in a column named `build`, and [_!___metrics.md](_!___metrics.md) names it a **recipe**: three spellings, one key. The payer is not in it. |
+| **core ix structure** | An ix structure with token-account create, close and memo dropped, then hashed. The key when counting distinct ix structures, unless a row says otherwise. The engine computes it as `build_hash` (`engine/src/metrics/trade_keys.rs`), the studies as `build_core` (`toolkit/lake_export.py`), and the two partition every label sequence identically. Both layers carry it in a column named `build`, and [_!___metrics.md](_!___metrics.md) names it a **recipe**. The payer is not in it. It is not an **ix core**. |
+| **ix core** | The owner-split reduction of an ix structure: the labels without compute budget, System, token, ATA, memo and Lighthouse, with the pump Buy, Sell and Create verbs merged. The engine hashes it as `core_hash` and packs the dropped extras as `core_marks` (`trade_keys`). A core `ix_shape` row matches every variant that keeps this core. Not the recipe above. |
 | **machine** | The software that sent a print, named by its ix structure and never by its wallet - a router puts many traders behind one wallet, so the wallet is not an identity. Used two ways, and a count says which: loosely, the software (the instruction names and their order); strictly, the **core ix structure plus the fee_payer**, which separates two operators running the same software. A count of independent machines uses the strict key. |
 | **creation ix structure** | The instruction list of the transaction that creates the coin. It always holds a Create, so it never equals a trade ix structure. |
 | **creation fingerprint** | A creation ix structure plus optional launch params (creator's first buy, first-slot buy, max cost, priority/tip fee, CU limit). Coins that share one form a **launch group**. |
@@ -198,7 +199,8 @@ meets all of them, so each is recorded here rather than banned. Prose prefers th
 
 | the word here | also written | where the other spelling comes from |
 | --- | --- | --- |
-| **core ix structure** | recipe, build, `build_hash`, `build_core` | the engine's metric name and both layers' column name |
+| **core ix structure** | recipe, build, `build_hash`, `build_core` | the count of distinct ix structures. Not `core_hash` |
+| **ix core** | `core_hash`, `core_labels`, `core_marks` | the owner split's match level |
 | **operator structure** | professional build, pro, `is_pro` | the launch-door studies |
 | **machine** | - | defined above: the software, or strictly that structure plus its fee_payer |
 | **creation ix structure** | creation build | the creation-side studies and the client gate |
