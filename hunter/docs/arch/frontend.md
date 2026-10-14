@@ -544,7 +544,7 @@ metric conditions*, and the whole UI renders from ONE payload
 (`GET /api/meta/strategy-registry`) so a metric added in Rust appears everywhere on the
 next load (no per-metric frontend work).
 
-`TagsEditor` is the fingerprint's tag list. Volume is its own button, and the name stays `volume`. That card edits the stored volume pattern (instruction lists, wallets that come back, the creator flag) and shows its workflow: on each print, then label the tape, then write the next fingerprint. Any other tag, including `dump`, is a matcher list added with the tag button. Its add-matcher menu is two groups, this trade's list and who sent it.
+`TagsEditor` is the fingerprint's tag list. Volume is its own button, and the name stays `volume`. That card edits the stored volume pattern (instruction lists, wallets that come back, the creator flag) and shows its workflow: on each print, then label the tape, then write the next fingerprint. The wallet list is replaced from addresses that still trade this dev's recent launches. Any other tag, including `dump`, is a matcher list added with the tag button. Its add-matcher menu is two groups, this trade's list and who sent it.
 
 - `lib/strategy/registry.ts` — types mirroring the registry payload (`operators`,
   `groups[]` → metrics w/ unit/eq-tolerance/monotonic + strict params) + the cached

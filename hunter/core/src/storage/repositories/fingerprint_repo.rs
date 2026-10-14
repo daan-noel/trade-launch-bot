@@ -156,6 +156,74 @@ impl FingerprintRepo {
         Ok(fps)
     }
 
+    /// Append one instruction list to `tags.volume.match.ix_shape` when that exact
+    /// list is not already stored, including as the `labels` of a fee-pinned row.
+    /// One statement, so a wallet replace on the other key cannot lose the list.
+    /// A fingerprint with no volume tag is left as it is. Returns whether a row changed.
+    pub async fn append_volume_shape(&self, id: Uuid, labels: &[String]) -> anyhow::Result<bool> {
+        if labels.is_empty() {
+            return Ok(false);
+        }
+        let shape = serde_json::Value::Array(
+            labels.iter().cloned().map(serde_json::Value::String).collect(),
+        );
+        let res = sqlx::query(
+            r#"
+            UPDATE fingerprints
+            SET tags = jsonb_set(
+                    tags,
+                    '{volume,match,ix_shape}',
+                    COALESCE(tags #> '{volume,match,ix_shape}', '[]'::jsonb)
+                        || jsonb_build_array($2::jsonb)
+                ),
+                updated_at = now()
+            WHERE id = $1
+              AND tags ? 'volume'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(
+                    COALESCE(tags #> '{volume,match,ix_shape}', '[]'::jsonb)
+                ) AS e
+                WHERE e = $2::jsonb
+                   OR (jsonb_typeof(e) = 'object' AND e -> 'labels' = $2::jsonb)
+              )
+            "#,
+        )
+        .bind(id)
+        .bind(shape)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Replace `tags.volume.match.wallet` with `wallets`. One statement, so an
+    /// instruction-list append on the other key cannot put the old addresses back.
+    /// Returns whether the stored list changed. A fingerprint with no volume tag
+    /// is left as it is.
+    pub async fn replace_volume_wallets(
+        &self,
+        id: Uuid,
+        wallets: &[String],
+    ) -> anyhow::Result<bool> {
+        let body = serde_json::json!(wallets);
+        let res = sqlx::query(
+            r#"
+            UPDATE fingerprints
+            SET tags = jsonb_set(tags, '{volume,match,wallet}', $2::jsonb),
+                updated_at = now()
+            WHERE id = $1
+              AND tags ? 'volume'
+              AND COALESCE(tags #> '{volume,match,wallet}', '[]'::jsonb)
+                  IS DISTINCT FROM $2::jsonb
+            "#,
+        )
+        .bind(id)
+        .bind(body)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Delete a fingerprint. Fails (FK) while any `strategy_rules` row still
     /// references it — delete or retarget the rules first.
     pub async fn delete(&self, id: Uuid) -> anyhow::Result<()> {

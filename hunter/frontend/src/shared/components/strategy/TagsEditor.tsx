@@ -3,7 +3,7 @@
 // it) and `@!name` (the rest). Every matcher and option is explained from the
 // registry's one definition.
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import { Button } from 'components/ui/Button';
 import { IconButton } from 'components/ui/IconButton';
@@ -28,6 +28,10 @@ import {
   type TagMatch,
 } from 'lib/strategy/tagsDoc';
 import { IxPatternRowsEditor } from './IxPatternsEditor';
+
+function B({ children }: { children: ReactNode }) {
+  return <strong className="font-semibold text-text">{children}</strong>;
+}
 
 /** Matchers that read this trade's instruction list. */
 const LIST_MATCHERS: readonly MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks'];
@@ -295,15 +299,17 @@ function VolumePatternCard({
         </IconButton>
       </div>
       <p className="text-[12px] leading-snug text-text-dim">
-        Volume pattern. You edit what is already stored. The steps below are the workflow for <code className="text-text">@volume</code> only. Dump stays a matcher list.
+        Volume pattern. You edit what is already stored. These steps are for <code className="text-text">@volume</code> only. Dump stays a matcher list.
       </p>
 
       <section className="flex flex-col gap-2 rounded border border-white/10 p-2">
         <h4 className="text-[12px] font-semibold text-text">Before this coin</h4>
-        <p className="text-[11px] leading-snug text-text-dim">Stored on this fingerprint. A rotating wallet is not stored here.</p>
+        <p className="text-[11px] leading-snug text-text-dim">Already stored. A wallet the dev used a few times and then dropped is not here.</p>
         <div className="flex flex-col gap-1">
           <span className="text-[11px] font-semibold text-text">Lists</span>
-          <span className="text-[11px] text-text-dim">Instruction lists saved from earlier coins. A wallet that uses one is owner. The wallet is not saved.</span>
+          <span className="text-[11px] leading-snug text-text-dim">
+            <B>Instruction lists</B> from earlier coins. A trade that uses a saved list is <B>owner</B>. The wallet address is not saved.
+          </span>
           <IxPatternRowsEditor rows={tag.match.ix_shape ?? []} onChange={(ix_shape) => setMatch({ ...tag.match, ix_shape })} disabled={disabled} />
           {pinWarning && (
             <p className="rounded-md border border-warning/40 bg-warning/10 px-2.5 py-2 text-[12px] leading-snug text-warning">{pinWarning}</p>
@@ -311,7 +317,13 @@ function VolumePatternCard({
         </div>
         <div className="flex flex-col gap-1">
           <span className="text-[11px] font-semibold text-text">Wallets that come back</span>
-          <span className="text-[11px] text-text-dim">Same slot after 20 coins, below zero on 2 coins, never sells, stays in the group.</span>
+          <div className="flex flex-col gap-1 text-[11px] leading-snug text-text-dim">
+            <p>The list is <B>replaced</B> each time it is written. An address stays only if it still passes, and it traded one of this dev's <B>recent launches</B>. Recent is the stretch where 90% of these wallets come back. An older address comes off.</p>
+            <p><B>Same slot.</B> Two buys in the same instant. One size is exactly <B>double</B> the other. The smaller wallet sells that bag about <B>60 seconds</B> later. Saved after <B>20 coins</B>.</p>
+            <p><B>Below zero.</B> The wallet sold tokens it never bought, so the bag goes negative. Saved after <B>2 coins</B>.</p>
+            <p><B>Never sells.</B> The wallet buys and does not take profit. <B>10 coins</B>, <B>20 buys</B>, and <B>no sell</B> anywhere.</p>
+            <p><B>Stays in the group.</B> The wallet lives on this dev's launches. <B>3 coins</B> here, and <B>80%</B> of its coins are this dev.</p>
+          </div>
           <LinesInput value={tag.match.wallet ?? []} disabled={disabled} split={/[\s,]+/} placeholder="one wallet per line" onChange={(wallet) => setMatch({ ...tag.match, wallet })} />
         </div>
         <label className="flex items-start gap-1.5 text-[12px] text-text-mid">
@@ -324,35 +336,35 @@ function VolumePatternCard({
           />
           <span>
             Creator
-            <span className="mt-0.5 block text-[11px] text-text-dim">The flag is on. The creator's address is not stored.</span>
+            <span className="mt-0.5 block text-[11px] leading-snug text-text-dim">The flag is on. The <B>creator</B> address is not stored. The wallet that creates the coin is owner on that coin.</span>
           </span>
         </label>
       </section>
 
       <section className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[12px] leading-snug text-text-dim">
         <h4 className="text-[12px] font-semibold text-text">On live</h4>
-        <p>Each print. A yes stops. Sticky looks forward.</p>
+        <p>Each new trade. The first yes wins. <B>Sticky</B> covers later trades of that wallet. A trade already printed stays as it was.</p>
         <ol className="list-decimal space-y-1 pl-4">
-          <li>Creator, a saved wallet, or sticky already on. Owner from this trade on. Its other lists are not saved.</li>
-          <li>This trade's list is a saved list. Owner. Sticky starts. The wallet is not saved.</li>
-          <li>Otherwise Label the tape runs.</li>
+          <li><B>Creator</B>, a <B>saved wallet</B>, or <B>sticky</B> already on. Owner from this trade on. Its other lists are not saved.</li>
+          <li>This trade's <B>instruction list</B> is a saved list. Owner. Sticky starts. The wallet is not saved.</li>
+          <li>Otherwise <B>label the tape</B> runs on this print.</li>
         </ol>
       </section>
 
       <section className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[12px] leading-snug text-text-dim">
         <h4 className="text-[12px] font-semibold text-text">Label the tape</h4>
-        <p>This coin, on the print, when the loaded pattern missed. A yes stops. A list on that same trade is still written.</p>
+        <p>The stored pattern missed. A yes stops. A list on that same trade can still be saved. The wallet is not.</p>
         <ol className="list-decimal space-y-1 pl-4">
-          <li>Outsider. Sniper, Rise stops, Sold into, Timer, Wide service, Service payer, One wallet, Used once. Save nothing.</li>
-          <li>Owner on this coin. Sticky starts. The wallet is not saved. A plain list in a pack is not saved.</li>
-          <li>A list. Private list, Many wallets, Dominates, Mostly here. Those trades are owner. The list is queued. The wallet is not saved.</li>
-          <li>No match. Outsider. The next trade is judged again.</li>
+          <li><B>Outsider.</B> A <B>sniper</B>, a <B>rise that stops</B>, <B>sold into</B>, a <B>timer</B>, a <B>wide service</B>, a <B>service payer</B>, <B>one wallet</B>, or <B>used once</B>. Nothing is saved.</li>
+          <li><B>Owner on this coin.</B> Sticky starts. The wallet is not saved. A plain list inside a pack is not saved.</li>
+          <li><B>A list.</B> <B>Private list</B>, <B>many wallets</B>, <B>dominates</B>, <B>mostly here</B>. Those trades are owner. The list is queued. The wallet is not saved.</li>
+          <li>No match. <B>Outsider.</B> The next trade is judged again.</li>
         </ol>
       </section>
 
       <section className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[12px] leading-snug text-text-dim">
         <h4 className="text-[12px] font-semibold text-text">Write the next fingerprint</h4>
-        <p>Off the print. A list the print queues is appended to the lists above, then the fingerprint reloads. A this-coin wallet is not written. Wallets that come back, and the gate for Kept template, On a timer, and Fee payer, are the next counter.</p>
+        <p>Off the print. A queued <B>list</B> is added to the lists above, then the fingerprint reloads. A wallet that is owner only on this coin is not written. The <B>wallet list</B> is written again from addresses that still pass on <B>recent launches</B>. Old addresses come off.</p>
       </section>
 
       {extra.length > 0 && (

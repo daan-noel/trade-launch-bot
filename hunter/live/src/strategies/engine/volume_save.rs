@@ -3,7 +3,8 @@
 //! The loop only sends `(fingerprint, ix hash)`. This task appends the label text,
 //! when the ingest still has it, onto `tags.volume.match.ix_shape`, then asks the
 //! loop to reload. A reload keeps the sticky set. A this-coin wallet is not written.
-//! Wallets that come back, and the gate, are a later counter.
+//! Wallets that come back are replaced by [`super::volume_wallets`], on the batch
+//! pool, not on this print.
 
 use std::collections::BTreeMap;
 
@@ -53,27 +54,22 @@ pub fn spawn(
 }
 
 async fn append_lists(repo: &FingerprintRepo, id: Uuid, hashes: &[u64]) -> anyhow::Result<bool> {
-    let Some(mut fp) = repo.find(id).await? else {
-        return Ok(false);
-    };
     let mut grew = false;
     for &hash in hashes {
         let Some(labels) = ix_labels::labels(hash) else {
             continue;
         };
-        if append_shape(&mut fp.tags, &labels) {
+        if repo.append_volume_shape(id, &labels).await? {
             grew = true;
         }
-    }
-    if grew {
-        repo.update(&fp).await?;
     }
     Ok(grew)
 }
 
-/// Append one instruction list to `tags.volume.match.ix_shape` when it is not already there.
-/// Returns whether the document changed. A fingerprint with no volume tag is left as it is.
-pub(crate) fn append_shape(tags: &mut serde_json::Value, labels: &[String]) -> bool {
+/// The in-memory form of [`FingerprintRepo::append_volume_shape`]. The writer is the
+/// SQL statement; this is what the tests judge.
+#[cfg(test)]
+fn append_shape(tags: &mut serde_json::Value, labels: &[String]) -> bool {
     if labels.is_empty() {
         return false;
     }
@@ -104,6 +100,7 @@ pub(crate) fn append_shape(tags: &mut serde_json::Value, labels: &[String]) -> b
     true
 }
 
+#[cfg(test)]
 fn same_labels(row: &serde_json::Value, labels: &[String]) -> bool {
     let Some(existing) = row_labels(row) else {
         return false;
@@ -111,6 +108,7 @@ fn same_labels(row: &serde_json::Value, labels: &[String]) -> bool {
     existing.len() == labels.len() && existing.iter().zip(labels).all(|(a, b)| a == b)
 }
 
+#[cfg(test)]
 fn row_labels(row: &serde_json::Value) -> Option<Vec<&str>> {
     let arr = match row {
         serde_json::Value::Array(a) => a,

@@ -41,6 +41,7 @@ pub mod run_config;
 pub mod sell_backfill;
 pub mod sinks;
 pub mod volume_save;
+pub mod volume_wallets;
 
 use std::sync::Arc;
 use std::time::Duration;

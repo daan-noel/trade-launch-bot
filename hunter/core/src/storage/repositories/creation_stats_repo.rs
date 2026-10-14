@@ -494,7 +494,7 @@ pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
 ///
 /// A criterion-less fingerprint mirrors the matcher's own guard (it never matches
 /// "everything") with a single `FALSE`.
-fn fingerprint_scope_clauses(fp: &Fingerprint, ti_alias: &str) -> Vec<String> {
+pub(crate) fn fingerprint_scope_clauses(fp: &Fingerprint, ti_alias: &str) -> Vec<String> {
     if !fp.has_any_criterion() {
         return vec!["FALSE".to_string()];
     }
