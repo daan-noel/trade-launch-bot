@@ -164,14 +164,10 @@ millions of rows — purely to feed `ix_hash`.
 
 Now:
 
-* `trade_keys::ix_hash_from_labels_json` walks the stored JSON array in place. It
-  handles only the shape the writers emit (a flat array of unescaped strings) and
-  **falls back to `serde_json`** on any escape or anything unexpected, so its result
-  is by construction whatever `ix_hash_opt(&parsed)` would have returned, including
-  "unparseable => `None`" (no label matcher holds). Locked by
-  `json_scanner_matches_the_normalized_hash`.
-* `projection::FlowKeys { ix_hash, wallet_hash }` is resolved once at the row decode
-  (`lake/duck.rs`, `project_pg_tail`), so the fold is a pure field move.
+* `projection::FlowKeys { labels, wallet_hash, fee }` is resolved once at the row
+  decode (`lake/duck.rs`, `project_pg_tail`): one JSON parse per row, then
+  `trade_keys::LabelKeys` derives every label key from it. Unparseable labels leave
+  every key absent, so no label matcher holds. The fold is a pure field move.
 * `Selection::with_flow_text` gates the **raw** strings. Flow *discovery* is the only
   consumer that reports label text / groups by wallet address; every other tag
   consumer classifies from the hashes. So a flow sweep/simulate row is now *smaller*

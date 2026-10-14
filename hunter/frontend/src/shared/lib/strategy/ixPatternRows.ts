@@ -1,21 +1,20 @@
 import { coreKey, coreMarks, coreMarksFromText } from './ixCore';
 
 /**
- * One `ix_patterns` row as it is STORED — an ordered label sequence, optionally
- * pinned to the fee budget the sending client compiles.
+ * One `ix_shape` row as it is STORED — an ordered label sequence, optionally
+ * pinned to the fee budget the sending client compiles. The twin of the engine's
+ * `IxShapeRows::parse`.
  *
- * The stored array holds two row shapes and both are current:
+ * The stored array holds three row shapes:
  *
- * * `["A","B"]` — a bare label sequence, matching any budget. Every list written
- *   before fee capture is entirely this form.
- * * `{"labels":["A","B"],"cu_limit":300000}` — the same shape narrowed to one
+ * * `["A","B"]` — a bare label sequence: an exact row, matching any budget.
+ * * `{"labels":["A","B"],"cu_limit":300000}` — an exact row narrowed to one
  *   client's preset. Only the fields present are pinned.
+ * * `{"labels":["A","B"],"level":"core","side":"sell","marks":"CP T0 A0"}` — a core
+ *   row: every variant of the build that keeps the labels' core.
  *
- * Nearly every surface in the app wants only the labels (the chart's flow
- * classification, the lens, the fingerprint chips, the sweep axes), so the readers
- * in `registry` keep handing those callers `string[][]`. This module is for the jobs
- * that need the whole row: authoring a pin, toggling one from a trade, and **not
- * destroying one** on a save from a surface that cannot edit it.
+ * This module is for the jobs that need the whole row: authoring a pin, toggling
+ * one from a trade, and matching a trade against the rows.
  */
 
 /** The three fields a row may pin. Absent = wildcard on that field. */
@@ -378,35 +377,4 @@ export function removeUnpinnedPatterns(
 ): IxPatternRow[] {
   const drop = new Set(labelsList.map((l) => patternKey([...l])));
   return patterns.filter((r) => rowIsCore(r) || rowPinsFee(r) || !drop.has(patternKey(r.labels))).map(cloneRow);
-}
-
-/**
- * Re-attach the pins `prev` carried to a list of plain label sequences.
- *
- * This is what keeps a labels-only surface from silently deleting a budget: the
- * fingerprint form, the flow lens and the sweep config all edit `string[][]`, and
- * without this any save from any of them would rewrite a pinned row as a bare one
- * — widening a rule's fire set with nothing on screen to say so. Discovery's cart
- * edits whole rows, so it writes them outright rather than through this.
- *
- * Keyed by the label sequence, because that is the only thing a labels-only surface
- * can have preserved. A shape the surface deleted loses its pin with it (correct —
- * the row is gone); a shape it added arrives unpinned (correct — it is new).
- *
- * A shape carrying SEVERAL pinned rows keeps all of them, expanding to one row per
- * pin. That is what a preset menu looks like, and collapsing it to the first pin
- * would quietly narrow the list.
- */
-export function withPreservedFees(patterns: string[][], prev: unknown): IxPatternRow[] {
-  const byShape = new Map<string, IxPatternRow[]>();
-  for (const row of parseIxPatternRows(prev)) {
-    // A core row is a level, not a sequence: a labels-only surface keeps it whole.
-    if (!rowPinsFee(row) && !rowIsCore(row)) continue;
-    const key = patternKey(row.labels);
-    byShape.set(key, [...(byShape.get(key) ?? []), row]);
-  }
-  return patterns.flatMap((labels) => {
-    const pinned = byShape.get(patternKey(labels));
-    return pinned && pinned.length > 0 ? pinned : [{ labels }];
-  });
 }

@@ -22,6 +22,8 @@ One lab command, workstation only (DuckDB over the lake; never on the EC2 box):
      (the gap that covers 90 % of returns, counted up to the build's last coin).
    - `match.creator: true`, `sticky: true`.
    - Nothing else: no `program`, `ix_template`, `ix_contains` or `ix_lacks` on `volume`.
+   - A hand edit made since the last build (a chart click, the Flow Discovery cart) is
+     dropped with the rest of the old tag.
 
 ## Constraints the build must keep
 

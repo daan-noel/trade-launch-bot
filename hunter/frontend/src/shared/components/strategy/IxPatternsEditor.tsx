@@ -15,29 +15,16 @@ import {
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
 
-export interface IxPatternsEditorProps {
-  /** Ordered label sequences — one row per volume-side ix structure. */
-  patterns: string[][];
-  onChange: (patterns: string[][]) => void;
-  disabled?: boolean;
-}
-
 export interface IxPatternRowsEditorProps {
   rows: IxPatternRow[];
   onChange: (rows: IxPatternRow[]) => void;
   disabled?: boolean;
-  /** Whether a row may pin a fee budget. Off for the surfaces that configure a RUN
-   *  rather than a fingerprint (a sweep compiles label sequences only), so those do
-   *  not show a control whose value they cannot store. */
-  pinnable?: boolean;
 }
 
 /** One wording for every "delete all patterns" confirm (editor + discovery cart). */
-export function clearPrompt(patterns: string[][] | IxPatternRow[]): string {
-  const n = patterns.filter((p) =>
-    Array.isArray(p) ? p.length > 0 : p.labels.length > 0,
-  ).length;
-  return `Delete all ${n} volume_ix_pattern${n === 1 ? '' : 's'}? Flow metrics stay NaN until you add one back.`;
+export function clearPrompt(rows: IxPatternRow[]): string {
+  const n = rows.filter((r) => r.labels.length > 0).length;
+  return `Delete all ${n} ix_shape row${n === 1 ? '' : 's'}? No trade then matches by its ix list.`;
 }
 
 /** Above this many rows the list gets a filter box — below it, scanning beats typing. */
@@ -45,9 +32,9 @@ const FILTER_THRESHOLD = 6;
 
 
 /**
- * Editor for a tag's `ix_shape` matcher: each row is an exact ordered ix-label
- * sequence (same vocabulary as fingerprint `ix_labels`), optionally pinned to a fee
- * preset.
+ * Editor for a tag's `ix_shape` matcher: each row is an ordered ix-label sequence
+ * (same vocabulary as fingerprint `ix_labels`) matched exactly or, at `level: core`,
+ * by its build core, optionally pinned to a fee preset.
  *
  * **One line per pattern, one open editor at a time.** A pattern is a 6-10 label
  * sequence and a real fingerprint carries 50-150 of them, so a textarea per row is
@@ -60,29 +47,7 @@ const FILTER_THRESHOLD = 6;
  * so unmounting one discards whatever is half-typed in it the moment a filter
  * keystroke stops matching it.
  */
-export function IxPatternsEditor({ patterns, onChange, disabled }: IxPatternsEditorProps) {
-  // A labels-only surface. Rows are rebuilt from labels each render, so this shape
-  // cannot express a pin and does not offer one — the pins a fingerprint already
-  // carries are preserved on save by `withPreservedFees`, not by this component.
-  const rows = useMemo(() => patterns.map((labels) => ({ labels })), [patterns]);
-  return (
-    <IxPatternRowsEditor
-      rows={rows}
-      disabled={disabled}
-      pinnable={false}
-      onChange={(next) => onChange(next.map((r) => r.labels))}
-    />
-  );
-}
-
-/** The editor proper — whole rows, so a row can carry the fee budget it pins.
- *  {@link IxPatternsEditor} is this with the pin control off. */
-export function IxPatternRowsEditor({
-  rows: patterns,
-  onChange,
-  disabled,
-  pinnable = true,
-}: IxPatternRowsEditorProps) {
+export function IxPatternRowsEditor({ rows: patterns, onChange, disabled }: IxPatternRowsEditorProps) {
   const [open, setOpen] = useState<number | null>(null);
   const [query, setQuery] = useState('');
 
@@ -162,7 +127,7 @@ export function IxPatternRowsEditor({
 
       {patterns.length === 0 ? (
         <p className="text-[10px] text-text-dim/70">
-          No patterns — flow metrics stay NaN until you add at least one structure.
+          No ix_shape rows - no trade matches by its ix list.
         </p>
       ) : (
         <ul className="flex max-h-96 flex-col gap-1 overflow-y-auto pr-1">
@@ -171,7 +136,6 @@ export function IxPatternRowsEditor({
               key={i}
               index={i}
               row={p}
-              pinnable={pinnable}
               disabled={disabled}
               expanded={open === i}
               hidden={!matches[i]}
@@ -376,7 +340,6 @@ function pinTitle(row: IxPatternRow): string {
 function PatternRow({
   index,
   row,
-  pinnable,
   disabled,
   expanded,
   hidden,
@@ -386,7 +349,6 @@ function PatternRow({
 }: {
   index: number;
   row: IxPatternRow;
-  pinnable: boolean;
   disabled?: boolean;
   expanded: boolean;
   hidden: boolean;
@@ -477,7 +439,7 @@ function PatternRow({
           error={parsed.error}
           placeholder={'[\n  "Pump.Fun: Buy"\n]'}
         />
-        {pinnable && <FeePins row={row} disabled={disabled} onChange={onCommit} />}
+        <FeePins row={row} disabled={disabled} onChange={onCommit} />
       </div>
     </li>
   );

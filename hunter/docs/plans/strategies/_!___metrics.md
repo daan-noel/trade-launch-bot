@@ -495,10 +495,10 @@ the failure looks like a strict gate.
 
 ## 11. The hashers are one set
 
-[`trade_keys`](../../../engine/src/metrics/trade_keys.rs) (`ix_hash`, `ix_hash_opt`,
-`build_hash`, `wallet_hash`, `marker_bits`, `ix_hash_from_labels_json`) is the only place a
-trade's identity is hashed. Every adapter (live producer, lake replay, event log, readout)
-calls it, and tags compile their lists to hash sets at reload. No interner, so replay parity
+[`trade_keys`](../../../engine/src/metrics/trade_keys.rs) (`ix_hash`, `build_hash`,
+`core_hash`, `core_marks`, `marker_bits`, `wallet_hash`) is the only place a trade's identity
+is hashed. Every adapter (live producer, lake replay, event log, readout) takes a trade's
+label keys from the one `LabelKeys::of`, and tags compile their lists to hash sets at reload. No interner, so replay parity
 holds by construction. `build_hash` (the ix-shape key of `m_crowd.unique_ix_shapes`) drops
 account setup, teardown and memos; it partitions label sequences exactly like the toolkit's
 `lake_export.build_core` (`build_hash_partitions_like_the_study_build_core`, and its

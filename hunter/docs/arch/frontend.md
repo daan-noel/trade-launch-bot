@@ -670,29 +670,15 @@ next load (no per-metric frontend work).
   Buy chain, and Sell chain.   On the Rules, Copy, and Simulate tables, hovering that Chain
   cell for 1 second opens the In words reading. A fingerprint's Used-by rules
   open that same reading on a 1 second hover. Sweep tables keep the full line chips (`ruleParamsCell`),
-  `FingerprintPicker`/`FingerprintForm` (registry-driven
-  `metric_config` section + `IxPatternsEditor` for `m_flow_ix.ix_patterns` — **one
-  line per pattern**, the sequence rendered short (`AdvanceNonceAccount ›
-  SetComputeUnitLimit › …`, program halves dropped) and truncated, with **one row
-  open at a time**; a capped scrolling list, a label filter past 6 rows, and a
-  **Delete all** confirming via the shared `clearPrompt` the flow-discovery cart also
-  uses. Rows stay mounted while collapsed or filtered out, because a row holds the
-  draft text that has not parsed yet. `WorkingTemplatesEditor` is the chip list for
-  `m_burst_slot.working_templates` — a `|` id is a grain, a bare name is a
-  program; empty drops the group so burst metrics read NaN. All three groups
-  chain through one writer on save. `FlowClassifierEditor` renders the WHOLE
-  `m_flow_ix` key from the group's declared `fingerprint_config`: the pattern rows, a
-  marker picker over the served `ix_markers` vocabulary with a tagged/untagged side
-  toggle, and the two wallet rules — so a field or a marker added in Rust appears with
-  its own definition as the tooltip and no frontend change. Reads and writes go
-  through `flowClassifierFromConfig` / `metricConfigWithFlowClassifier`, the **one**
-  writer of the key: a PUT replaces the row, so a writer that rebuilds `m_flow_ix` from
-  a subset of its fields lands as a full write. Clearing the pattern rows drops the
-  group **unless the row is a marker classifier**, which legitimately carries no
-  patterns — dropping it there deleted the whole classifier on every save from a
-  pattern-only surface. A second `IxPatternsEditor` below it edits
-  `m_dump_ix.ix_patterns`, the separate build list `dump_sell` / `dump_sell_count`
-  read, through that group's own writer). Each numeric axis is ONE
+  `FingerprintPicker`/`FingerprintForm` (the fingerprint's `tags` in `TagsEditor`, one
+  card per tag, every matcher explained from the registry's `TagFieldSpec`. A tag's
+  `ix_shape` rows edit in `IxPatternRowsEditor` — **one line per row**, the sequence
+  rendered short (`AdvanceNonceAccount › SetComputeUnitLimit › …`, program halves
+  dropped) and truncated, with **one row open at a time**, where a row sets its level
+  (exact or core) and its fee pins; a capped scrolling list, a label filter past 6
+  rows, and a **Delete all** confirming via the shared `clearPrompt` the
+  flow-discovery cart also uses. Rows stay mounted while collapsed or filtered out,
+  because a row holds the draft text that has not parsed yet). Each numeric axis is ONE
   `AxisConditionInput`, a condition expression (`3`, `1..5`, `>=2`, `!=3`,
   `<=2 | >=7`) read through `fingerprintGrammar`, the TS mirror of the Rust
   grammar, echoed as the predicate it parsed to and snapped to the canonical

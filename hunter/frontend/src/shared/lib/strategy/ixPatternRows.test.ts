@@ -18,7 +18,6 @@ import {
   rowPinsFee,
   serializeIxPatternRow,
   togglePatternRow,
-  withPreservedFees,
 } from './ixPatternRows';
 
 const DUMP = ['Pump.Fun: Sell', 'Token Program: CloseAccount'];
@@ -86,40 +85,7 @@ describe('serializeIxPatternRow', () => {
   });
 });
 
-describe('withPreservedFees', () => {
-  const prev = [
-    { labels: DUMP, cu_limit: 300_000 },
-    ['Pump.Fun: Buy'],
-  ];
-
-  it('re-attaches a pin to the shape it belonged to', () => {
-    expect(withPreservedFees([DUMP], prev)).toEqual([{ labels: DUMP, cu_limit: 300_000 }]);
-  });
-
-  it('leaves a newly added shape unpinned', () => {
-    expect(withPreservedFees([['Pump.Fun: Create']], prev)).toEqual([
-      { labels: ['Pump.Fun: Create'] },
-    ]);
-  });
-
-  it('drops the pin with the shape when the shape is removed', () => {
-    expect(withPreservedFees([['Pump.Fun: Buy']], prev)).toEqual([{ labels: ['Pump.Fun: Buy'] }]);
-  });
-
-  /** A shape with several pins is a preset MENU; collapsing it to one would quietly
-   *  narrow the list. */
-  it('keeps every pin on a shape that carries more than one', () => {
-    const menu = [
-      { labels: DUMP, cu_limit: 300_000 },
-      { labels: DUMP, cu_limit: 200_000 },
-    ];
-    expect(withPreservedFees([DUMP], menu)).toEqual(menu);
-  });
-});
-
-/** The regression this whole module exists to prevent: the fingerprint form, the
- *  flow lens and the sweep config all edit LABELS, and a save from any of them must
- *  not widen a pinned entry back to ix-only. Discovery writes whole rows. */
+/** A save must not widen a pinned entry back to ix-only. */
 describe('a tag keeps its ix shape rows whole', () => {
   it('keeps a pin through a read and a write', () => {
     const doc = withTagShape({}, 'dump', { labels: DUMP, cu_limit: 300_000, cu_price: 3_333_333 });
@@ -309,8 +275,7 @@ describe('core-level rows', () => {
     expect(rowMatchesTrade(core, ['Compute Budget: SetComputeUnitLimit', 'Compute Budget: SetComputeUnitPrice', 'Pump.Fun: Sell'], { ...t, side: 'buy' })).toBe(false);
   });
 
-  it('survives a save from a labels-only surface and the exact-row staging helpers', () => {
-    expect(withPreservedFees([['Pump.Fun: Sell']], [serializeIxPatternRow(core)])).toEqual([core]);
+  it('survives the exact-row staging helpers', () => {
     expect(removeUnpinnedPatterns([core], [['Pump.Fun: Sell']])).toEqual([core]);
     expect(togglePatternRow([core], { labels: ['Pump.Fun: Sell'] })).toEqual([core, { labels: ['Pump.Fun: Sell'] }]);
   });

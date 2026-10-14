@@ -342,20 +342,9 @@ impl IngestConsumer {
         };
         // Hash from the event labels before nulling the cache projection — keeps
         // flow-split metrics correct while avoiding hash work under DashMap.
-        let (ix_hash, wallet_hash, marker_bits, template_hash, program_hash, build_hash, core_hash, core_marks, is_launch) = {
-            use hunter_engine::metrics::trade_keys::{build_hash, core_hash, core_marks, ix_hash_opt, marker_bits, wallet_hash};
-            use hunter_engine::metrics::template_grain::{grain_hash, is_launch, program_hash};
-            (
-                ix_hash_opt(&e.instruction_labels),
-                wallet_hash(&wallet),
-                marker_bits(&e.instruction_labels),
-                grain_hash(&e.instruction_labels),
-                program_hash(&e.instruction_labels),
-                build_hash(&e.instruction_labels),
-                core_hash(&e.instruction_labels),
-                core_marks(&e.instruction_labels),
-                is_launch(&e.instruction_labels),
-            )
+        let (wallet_hash, label_keys) = {
+            use hunter_engine::metrics::trade_keys::{wallet_hash, LabelKeys};
+            (wallet_hash(&wallet), LabelKeys::of(&e.instruction_labels))
         };
         core_trade.instruction_labels = Value::Null;
 
@@ -378,18 +367,7 @@ impl IngestConsumer {
                 }
                 // `add_trade_hashed` marks the mint unsaved. The 30 s flush writes
                 // `tokens_info`; this path does not enqueue that write.
-                token_state.add_trade_hashed(
-                    core_trade,
-                    ix_hash,
-                    wallet_hash,
-                    marker_bits,
-                    template_hash,
-                    program_hash,
-                    build_hash,
-                    core_hash,
-                    core_marks,
-                    is_launch,
-                );
+                token_state.add_trade_hashed(core_trade, wallet_hash, label_keys);
                 if is_amm && !token_state.amm_pool_prewarmed {
                     token_state.token.token_program_id.clone()
                 } else {

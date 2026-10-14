@@ -295,6 +295,23 @@ impl Default for TradeLite {
     }
 }
 
+impl TradeLite {
+    /// This trade with every label-derived key set from `k`.
+    pub fn with_label_keys(self, k: trade_keys::LabelKeys) -> Self {
+        Self {
+            ix_hash: k.ix_hash,
+            marker_bits: k.marker_bits,
+            template_hash: k.template_hash,
+            program_hash: k.program_hash,
+            build_hash: k.build_hash,
+            core_hash: k.core_hash,
+            core_marks: k.core_marks,
+            is_launch: k.is_launch,
+            ..self
+        }
+    }
+}
+
 // ── Window spans: a size, a lag, and the unit both are counted in ────────────
 
 /// What a dynamic group's window counts in.

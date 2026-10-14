@@ -46,12 +46,7 @@ use hunter_engine::metrics::evaluator::{condition_expr_to_value, ConditionExpr};
 use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::holder_book::{public_recipes, stamp_by_day};
 use hunter_engine::metrics::tags::config::{compile_tags, CompiledTag};
-use hunter_engine::metrics::template_grain::{
-    grain_hash_from_labels_value, program_hash_from_labels_value,
-};
-use hunter_engine::metrics::trade_keys::{
-    ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash,
-};
+use hunter_engine::metrics::trade_keys::{wallet_hash, LabelKeys};
 use hunter_engine::metrics::{metric_spec, MetricRef, Side, TradeLite};
 use hunter_engine::readout::{
     replay_readout, replay_series, ConditionRead, ConditionSeries, LineRead, ReadPart,
@@ -718,8 +713,12 @@ async fn replay_for_position(
 /// the canonical `price_per_token`, REAL reserves (absent ⇒ `NaN`, which reads as
 /// "alive" rather than dead), the PRICED reserve for impact, and the flow hashes.
 fn trade_lite(t: &Trade) -> TradeLite {
-    let (core_hash, core_marks) =
-        hunter_engine::metrics::trade_keys::core_keys_from_labels_value(&t.instruction_labels);
+    // The ONE shape-complete reader of `trades.ix_labels`, the same one the live
+    // `CachedTrade` uses, so both persisted shapes (bare array and
+    // `{"instructions":[…]}`) key alike. A local reader that only accepts the bare
+    // array books every object-shaped row as organic, silently, and the whole flow
+    // split downstream of it goes with it.
+    let k = LabelKeys::from_labels_value(&t.instruction_labels);
     TradeLite {
         side: if t.trade_type == TradeType::Buy {
             Side::Buy
@@ -731,14 +730,9 @@ fn trade_lite(t: &Trade) -> TradeLite {
         reserve_sol: t.real_reserve_sol.unwrap_or(f64::NAN),
         priced_reserve_sol: t.reserve_sol.unwrap_or(f64::NAN),
         at: t.block_time,
-        // The ONE shape-complete reader of `trades.ix_labels` — the same
-        // `normalize_labels` + hash the live `CachedTrade` uses, so both persisted
-        // shapes (bare array and `{"instructions":[…]}`) hash alike. A local reader
-        // that only accepts the bare array books every object-shaped row as organic,
-        // silently, and the whole flow split downstream of it goes with it.
-        ix_hash: ix_hash_from_labels_value(&t.instruction_labels),
+        ix_hash: k.ix_hash,
         slot: t.slot,
-        marker_bits: marker_bits_from_labels_value(&t.instruction_labels),
+        marker_bits: k.marker_bits,
         wallet_hash: wallet_hash(&t.wallet_address),
         // Which instruction of its transaction this is. A bundle selling several
         // wallets' bags emits one trade per leg, all carrying the same `ix_labels`,
@@ -746,16 +740,12 @@ fn trade_lite(t: &Trade) -> TradeLite {
         // only ever compared against 0, and a tx never carries 255 legs.
         leg_index: t.leg_index.min(u8::MAX as u32) as u8,
         tx_index: Some(t.tx_index as u32),
-        template_hash: grain_hash_from_labels_value(&t.instruction_labels),
-        program_hash: program_hash_from_labels_value(&t.instruction_labels),
-        build_hash: hunter_engine::metrics::trade_keys::build_hash_from_labels_value(
-            &t.instruction_labels,
-        ),
-        core_hash,
-        core_marks,
-        is_launch: hunter_engine::metrics::template_grain::is_launch_from_labels_value(
-            &t.instruction_labels,
-        ),
+        template_hash: k.template_hash,
+        program_hash: k.program_hash,
+        build_hash: k.build_hash,
+        core_hash: k.core_hash,
+        core_marks: k.core_marks,
+        is_launch: k.is_launch,
         on_curve: t.venue != "amm",
         // The stored budget, three integers off the same row. `None` on every trade
         // older than core migration `0013`, so a replay over that history classifies

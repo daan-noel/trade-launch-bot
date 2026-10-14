@@ -1,9 +1,11 @@
 //! What identifies a trade, as the engine compares it: the hash of its ordered
-//! instruction labels ([`ix_hash`]), its build recipe ([`build_hash`]), its structural
-//! markers ([`marker_bits`]) and its wallet ([`wallet_hash`]).
+//! instruction labels ([`ix_hash`]), its build recipe ([`build_hash`]), its build core
+//! ([`core_hash`], [`core_marks`]), its structural markers ([`marker_bits`]) and its
+//! wallet ([`wallet_hash`]).
 //!
 //! The producers (live ingest, the lab's lake reader, the readout) compute these once
-//! per trade from the strings, which only they hold; the engine compares integers.
+//! per trade from the strings, which only they hold, all through [`LabelKeys::of`];
+//! the engine compares integers.
 
 use serde_json::Value;
 
@@ -188,10 +190,46 @@ pub fn core_marks_from_text(text: &str) -> Result<u32, String> {
     Ok(marks)
 }
 
-/// [`core_hash`] and [`core_marks`] over labels decoded into a [`Value`].
-pub fn core_keys_from_labels_value(labels: &Value) -> (Option<u64>, u32) {
-    let l = normalize_labels(labels);
-    (core_hash(&l), core_marks(&l))
+// ── Every label key at once ──────────────────────────────────────────────────
+
+/// Every key a trade's instruction labels yield. Each producer derives a trade's
+/// label keys through [`LabelKeys::of`], so one computation serves every adapter. An
+/// adapter that builds its `TradeLite` from `Default` sets them with
+/// [`TradeLite::with_label_keys`](crate::metrics::TradeLite::with_label_keys), which
+/// leaves no key at its default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LabelKeys {
+    pub ix_hash: Option<u64>,
+    pub marker_bits: u16,
+    pub template_hash: Option<u64>,
+    pub program_hash: Option<u64>,
+    pub build_hash: Option<u64>,
+    pub core_hash: Option<u64>,
+    pub core_marks: u32,
+    pub is_launch: bool,
+}
+
+impl LabelKeys {
+    /// Every key of one ordered label list. Empty labels are the "not captured"
+    /// state: every hash `None`, no markers, no marks, not a launch.
+    pub fn of(labels: &[impl AsRef<str>]) -> Self {
+        Self {
+            ix_hash: ix_hash_opt(labels),
+            marker_bits: marker_bits(labels),
+            template_hash: template_grain::grain_hash(labels),
+            program_hash: template_grain::program_hash(labels),
+            build_hash: build_hash(labels),
+            core_hash: core_hash(labels),
+            core_marks: core_marks(labels),
+            is_launch: template_grain::is_launch(labels),
+        }
+    }
+
+    /// [`of`](Self::of) over labels decoded into a [`Value`], through
+    /// [`normalize_labels`] so both persisted shapes read alike.
+    pub fn from_labels_value(labels: &Value) -> Self {
+        Self::of(&normalize_labels(labels))
+    }
 }
 
 /// Programs every sender's transaction carries around the trade, whatever app sent
@@ -268,14 +306,6 @@ pub fn marker_bits(labels: &[impl AsRef<str>]) -> u16 {
     bits
 }
 
-/// [`marker_bits`] over labels in their stored JSON form. Goes through
-/// [`normalize_labels`] so both persisted shapes (bare array and
-/// `{"instructions": [...]}`) read alike, for the same reason
-/// [`ix_hash_from_labels_value`] does.
-pub fn marker_bits_from_labels_value(labels: &Value) -> u16 {
-    marker_bits(&normalize_labels(labels))
-}
-
 /// Compile a configured list of marker names into a mask. Errors on an unknown
 /// name rather than ignoring it — a typo that silently matches nothing would make
 /// a cleanliness gate pass on bot traffic.
@@ -304,30 +334,6 @@ pub fn ix_hash_opt(labels: &[impl AsRef<str>]) -> Option<u64> {
     }
 }
 
-/// [`ix_hash_opt`] over labels still in their stored **JSON** form, without
-/// allocating on the hot shape.
-///
-/// Turning each row back into a `Vec<String>` just to feed [`ix_hash`] costs a
-/// `serde_json` parse plus one heap allocation per label, **per trade**, on corpora
-/// of millions of rows — so the offline paths must not: this walks the common
-/// bare-array form in place.
-///
-/// Exactness is not traded away: the scanner handles only the shape the writers
-/// emit most (a flat array of unescaped strings) and **falls back to
-/// [`ix_hash_from_labels_value`]** the moment it meets an escape, the object
-/// wrapper, or anything unexpected — so the result is by construction whatever the
-/// shape-complete reader would have returned, including the "unparseable ⇒ `None`
-/// ⇒ organic" behaviour. Locked by `json_scanner_matches_the_normalized_hash`.
-pub fn ix_hash_from_labels_json(json: &str) -> Option<u64> {
-    match scan_labels_json(json.as_bytes()) {
-        Some(h) => h,
-        None => {
-            let value: Value = serde_json::from_str(json).ok()?;
-            ix_hash_from_labels_value(&value)
-        }
-    }
-}
-
 /// [`ix_hash_opt`] over labels already decoded into a [`Value`] — the shape a
 /// Postgres `trades.ix_labels` / `tokens.ix_labels` row arrives in.
 ///
@@ -339,62 +345,6 @@ pub fn ix_hash_from_labels_json(json: &str) -> Option<u64> {
 /// `storage::ix_labels_sql` exists to prevent on the SQL side.
 pub fn ix_hash_from_labels_value(labels: &Value) -> Option<u64> {
     ix_hash_opt(&normalize_labels(labels))
-}
-
-/// In-place hash of a JSON array of unescaped strings.
-///
-/// `Some(result)` = decided (`result` is [`ix_hash_opt`]'s answer); `None` = this
-/// scanner cannot answer exactly (escape, nested value, malformed input) and the
-/// caller must fall back to a real parse.
-fn scan_labels_json(b: &[u8]) -> Option<Option<u64>> {
-    let mut i = 0usize;
-    let skip_ws = |i: &mut usize| {
-        while matches!(b.get(*i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            *i += 1;
-        }
-    };
-    skip_ws(&mut i);
-    if b.get(i) != Some(&b'[') {
-        return None;
-    }
-    i += 1;
-    let mut h = FNV_OFFSET;
-    let mut n = 0usize;
-    loop {
-        skip_ws(&mut i);
-        match b.get(i) {
-            Some(b']') => {
-                i += 1;
-                skip_ws(&mut i);
-                // Trailing garbage after the array ⇒ not a shape we own.
-                return (i == b.len()).then_some((n > 0).then_some(h));
-            }
-            Some(b'"') => {}
-            _ => return None,
-        }
-        i += 1; // past the opening quote
-        if n > 0 {
-            h = fnv1a_byte(h, 0x1f);
-        }
-        let start = i;
-        loop {
-            match b.get(i) {
-                Some(b'"') => break,
-                // An escape changes the decoded bytes — only a real parse is exact.
-                Some(b'\\') | None => return None,
-                Some(_) => i += 1,
-            }
-        }
-        h = fnv1a_bytes(h, &b[start..i]);
-        i += 1; // past the closing quote
-        n += 1;
-        skip_ws(&mut i);
-        match b.get(i) {
-            Some(b',') => i += 1,
-            Some(b']') => {}
-            _ => return None,
-        }
-    }
 }
 
 /// Stable hash of a wallet address string (base58 or the lake's `unknown:{id}`
@@ -467,79 +417,28 @@ mod tests {
         );
     }
 
-    /// The in-place JSON scanner must agree with "decode, normalize, then hash" on
-    /// every input — the happy shapes the writers emit, the degenerate ones, the
-    /// object wrapper, and the escaped / malformed ones where it is required to fall
-    /// back rather than guess. This is the whole safety argument for skipping the
-    /// per-trade `serde_json` parse.
-    #[test]
-    fn json_scanner_matches_the_normalized_hash() {
-        let cases = [
-            r#"["Pump.Fun: Create","Pump.Fun: Buy"]"#,
-            r#"["Pump.Fun: Buy"]"#,
-            r#"[ "a" , "b" , "c" ]"#,
-            r#"["a","b"]"#,
-            r#"["ab","c"]"#,   // separator sensitivity
-            r#"["a","bc"]"#,
-            r#"[""]"#,         // one empty label != empty array
-            r#"["",""]"#,
-            "[]",              // empty array ⇒ None (missing labels)
-            "[ ]",
-            r#"["with \"quote\""]"#,   // escape ⇒ fallback path
-            r#"["tab\there"]"#,
-            r#"["unicode é"]"#,
-            r#"["émoji ✨ raw"]"#,     // multi-byte but unescaped ⇒ fast path
-            // Object wrapper — the second persisted shape (see `ix_labels_sql`).
-            r#"{"instructions":["Pump.Fun: Create","Pump.Fun: Buy"]}"#,
-            r#"{ "instructions" : [ "a" , "b" ] }"#,
-            r#"{"instructions":[]}"#,
-            r#"{"instructions":null}"#,
-            r#"{"other":["a"]}"#,
-            "{}",
-            "null",            // unparseable ⇒ None
-            "not json",
-            "[1,2]",           // wrong element type ⇒ None
-            r#"["unterminated"#,
-            r#"["a"] trailing"#,
-            "",
-        ];
-        for case in cases {
-            let value: Value = serde_json::from_str(case).unwrap_or(Value::Null);
-            assert_eq!(
-                ix_hash_from_labels_json(case),
-                ix_hash_opt(&normalize_labels(&value)),
-                "scanner disagreed on {case:?}"
-            );
-        }
-        // And it really does produce the SSOT hash on the shape that matters.
-        assert_eq!(
-            ix_hash_from_labels_json(r#"["Pump.Fun: Create","Pump.Fun: Buy"]"#),
-            Some(ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"])),
-        );
-    }
-
     /// The two persisted `ix_labels` shapes are the SAME label sequence, so they
-    /// must hash to the same volume-pattern identity — whichever entry point a
-    /// caller reaches them through (stored text or a decoded `Value`).
+    /// must yield the same keys, every one of them.
     ///
     /// A reader that understands only the bare array books every object-shaped row
     /// as organic, which is silent: "no labels" is a legal state, so the flow split
     /// just quietly under-counts volume and over-counts organic.
     #[test]
-    fn both_persisted_label_shapes_hash_alike() {
-        let want = Some(ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"]));
-        let bare = json!(["Pump.Fun: Create", "Pump.Fun: Buy"]);
-        let wrapped = json!({ "instructions": ["Pump.Fun: Create", "Pump.Fun: Buy"] });
+    fn both_persisted_label_shapes_key_alike() {
+        let labels = ["System Program: CreateAccountWithSeed", "Pump.Fun: Create", "Pump.Fun: Buy"];
+        let want = LabelKeys::of(&labels);
+        assert_eq!(want.ix_hash, Some(ix_hash(&labels)));
+        assert_eq!(want.marker_bits, marker_bits(&labels));
+        assert_eq!(want.core_hash, core_hash(&labels));
+        assert!(want.is_launch);
 
-        assert_eq!(ix_hash_from_labels_value(&bare), want);
-        assert_eq!(ix_hash_from_labels_value(&wrapped), want);
-        assert_eq!(ix_hash_from_labels_json(&bare.to_string()), want);
-        assert_eq!(ix_hash_from_labels_json(&wrapped.to_string()), want);
+        assert_eq!(LabelKeys::from_labels_value(&json!(labels)), want);
+        assert_eq!(LabelKeys::from_labels_value(&json!({ "instructions": labels })), want);
 
-        // Absent / empty stays the missing sentinel in both shapes.
-        assert_eq!(ix_hash_from_labels_value(&json!([])), None);
-        assert_eq!(ix_hash_from_labels_value(&json!({ "instructions": [] })), None);
-        assert_eq!(ix_hash_from_labels_value(&Value::Null), None);
+        // Absent / empty stays the missing state in both shapes.
+        for absent in [json!([]), json!({ "instructions": [] }), Value::Null] {
+            assert_eq!(LabelKeys::from_labels_value(&absent), LabelKeys::default());
+        }
     }
 
     #[test]
@@ -622,18 +521,4 @@ mod tests {
         let e = marker_mask(&["CreateAcountWithSeed"]).unwrap_err();
         assert!(e.contains("unknown ix marker"), "{e}");
     }
-
-    /// Both persisted label shapes must yield the same bits, for the same reason
-    /// `ix_hash_from_labels_value` is shape-complete.
-    #[test]
-    fn marker_bits_read_both_persisted_label_shapes() {
-        let bare = serde_json::json!(["System Program: CreateAccountWithSeed", "Pump.Fun: Buy"]);
-        let wrapped = serde_json::json!({
-            "instructions": ["System Program: CreateAccountWithSeed", "Pump.Fun: Buy"]
-        });
-        let seed = marker_mask(&["CreateAccountWithSeed"]).unwrap();
-        assert_eq!(marker_bits_from_labels_value(&bare), seed);
-        assert_eq!(marker_bits_from_labels_value(&wrapped), seed);
-    }
-
 }

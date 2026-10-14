@@ -11,7 +11,6 @@ import {
   lensTag,
   matcherForKind,
   toggleExactPattern,
-  toggleIxPattern,
   UNGROUPED,
   type IxPattern,
 } from './ixPatternSets';
@@ -113,13 +112,13 @@ describe('mutedPatternForClick', () => {
   });
 });
 
-describe('toggleIxPattern', () => {
+describe('toggleExactPattern groups', () => {
   it('removes an existing sequence whatever group it is filed under', () => {
-    expect(toggleIxPattern([p('Axiom', 'A'), p(null, 'B')], ['A'], 'other')).toEqual([p(null, 'B')]);
+    expect(toggleExactPattern([p('Axiom', 'A'), p(null, 'B')], ['A'], undefined, 'other')).toEqual([p(null, 'B')]);
   });
 
   it('appends a new sequence under the active group', () => {
-    expect(toggleIxPattern([p(null, 'A')], ['B'], 'Axiom')).toEqual([
+    expect(toggleExactPattern([p(null, 'A')], ['B'], undefined, 'Axiom')).toEqual([
       p(null, 'A'),
       p('Axiom', 'B'),
     ]);

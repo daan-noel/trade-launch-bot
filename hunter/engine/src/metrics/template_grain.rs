@@ -7,9 +7,6 @@
 //!
 //! Guard-tested against the SQL in `ixg-new-money.sql` / `ixg-combined-money.sql`.
 
-use serde_json::Value;
-
-use crate::grouping::normalize_labels;
 use crate::hash::fnv1a;
 
 /// Head = first non-boilerplate label. Boilerplate is compute-budget, ATA, token
@@ -114,31 +111,6 @@ pub fn program_id_hash(id: &str) -> u64 {
     fnv1a(id.as_bytes())
 }
 
-/// [`program_hash`] over labels already decoded into a [`Value`].
-pub fn program_hash_from_labels_value(labels: &Value) -> Option<u64> {
-    program_hash(&normalize_labels(labels))
-}
-
-/// [`program_hash`] over stored JSON text.
-pub fn program_hash_from_labels_json(json: &str) -> Option<u64> {
-    let value: Value = serde_json::from_str(json).ok()?;
-    program_hash_from_labels_value(&value)
-}
-
-/// [`grain_hash`] over labels already decoded into a [`Value`] — both persisted
-/// shapes, via [`normalize_labels`].
-pub fn grain_hash_from_labels_value(labels: &Value) -> Option<u64> {
-    grain_hash(&normalize_labels(labels))
-}
-
-/// [`grain_hash`] over stored JSON text. Falls back to a real parse when the
-/// scanner-friendly shape does not apply — same contract as
-/// [`ix_hash_from_labels_json`](super::trade_keys::ix_hash_from_labels_json).
-pub fn grain_hash_from_labels_json(json: &str) -> Option<u64> {
-    let value: Value = serde_json::from_str(json).ok()?;
-    grain_hash_from_labels_value(&value)
-}
-
 /// True when any label is a pump.fun create (`Pump.Fun: Create` /
 /// `CreateIdempotent`). Those prints update first-on-mint but do not join
 /// the `m_burst_slot` member prefix.
@@ -146,16 +118,6 @@ pub fn is_launch(labels: &[impl AsRef<str>]) -> bool {
     labels
         .iter()
         .any(|l| l.as_ref().starts_with("Pump.Fun: Create"))
-}
-
-pub fn is_launch_from_labels_value(labels: &Value) -> bool {
-    is_launch(&normalize_labels(labels))
-}
-
-pub fn is_launch_from_labels_json(json: &str) -> bool {
-    serde_json::from_str::<Value>(json)
-        .ok()
-        .is_some_and(|v| is_launch_from_labels_value(&v))
 }
 
 /// True when the creation tx's labels include an Associated Token instruction.

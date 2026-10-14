@@ -4,20 +4,27 @@
 //! {
 //!   "volume": {
 //!     "match": {
+//!       "ix_shape": [["A","B"], {"labels": ["A","C"], "cu_price": 1000},
+//!                    {"labels": ["Pump.Fun: Sell"], "level": "core", "side": "sell", "marks": "CL CP T0 A0"}],
+//!       "wallet":   ["7xk..."],
+//!       "creator":  true
+//!     },
+//!     "sticky": true
+//!   },
+//!   "working": {
+//!     "match": {
 //!       "program":     ["Unknown (9ddjzq...)"],
-//!       "ix_shape":    [["A","B"], {"labels": ["A","C"], "cu_price": 1000},
-//!                       {"labels": ["Pump.Fun: Sell"], "level": "core", "side": "sell", "marks": "CL CP T0 A0"}],
 //!       "ix_template": ["Axiom Trade|CU|ATA|1|0|0"],
 //!       "ix_contains": ["Axiom Trade"],
-//!       "ix_lacks":    ["Photon"],
-//!       "wallet":      ["7xk..."],
-//!       "creator":     true
+//!       "ix_lacks":    ["Photon"]
 //!     },
-//!     "side": "sell",
-//!     "sticky": true
+//!     "side": "buy"
 //!   }
 //! }
 //! ```
+//!
+//! `volume` is the form the owner split's build writes. A hand edit to it holds until
+//! the next build replaces the tag whole.
 //!
 //! A trade carries the tag when ANY `match` entry holds (on the tag's `side` only).
 //! Validated in full on save ([`validate_tags`]) and compiled once per rules reload
@@ -90,7 +97,7 @@ pub struct TagFieldSpec {
 
 pub const TAG_FIELDS: &[TagFieldSpec] = &[
     TagFieldSpec { key: "program", kind: "match", value_type: "program[]", title: "Program",
-        summary: "The transaction's main program (its first instruction past compute budget, system, token, ATA and memo) is one of these. Catches every build a tool ships.",
+        summary: "The transaction's main program (its first instruction past compute budget, token, ATA, memo and the System transfer, nonce and account creates) is one of these. Catches every build a tool ships.",
         example: "\"program\": [\"Axiom Trade\"] : every Axiom trade, whatever its instruction list." },
     TagFieldSpec { key: "ix_shape", kind: "match", value_type: "ix_shape[]", title: "Ix shape",
         summary: "Each row is an ix structure or an ix core. An ix structure (level exact, the default) is the transaction's whole instruction list, in order, repeats counted. An ix core (level core) is that list without compute budget, System, token-account, memo and Lighthouse instructions, with pump.fun's Buy / Sell / Create variants merged, so one row matches every variant that keeps the core. Either may pin the fee preset (cu_limit, cu_price, tip_lamports). A core row may also pin the side and its extras (marks CL CP N L M S C W, T<transfers> A<account opens>).",

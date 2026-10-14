@@ -36,12 +36,8 @@ use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::registry::Metric;
 use hunter_engine::metrics::tags::config::{compile_tags, validate_tags, TagPatterns};
 use hunter_engine::metrics::tags::state::TagState;
-use hunter_engine::metrics::template_grain::{
-    grain, grain_hash_from_labels_value, program_hash_from_labels_value,
-};
-use hunter_engine::metrics::trade_keys::{
-    ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash,
-};
+use hunter_engine::metrics::template_grain::grain;
+use hunter_engine::metrics::trade_keys::{wallet_hash, LabelKeys};
 use hunter_engine::metrics::{Cursor, Side, TradeLite, WindowSpec, WindowUnit, NOMINAL_SLOT_SECS};
 use trading_core::config::constants::lamports_to_sol;
 use trading_core::state::core_state::CoreState;
@@ -403,24 +399,21 @@ fn compile_target(def: &serde_json::Value) -> Result<TagPatterns, String> {
 // ── Fold ────────────────────────────────────────────────────────────────────
 
 /// One stored leg as the engine's `TradeLite`, with the fields a tag reads. The
-/// hashes come from the same label readers `rule_readout::trade_lite` uses.
+/// label keys come from [`LabelKeys`], as on every other producer.
 fn trade_lite(p: &TapePrint) -> TradeLite {
     let labels = p.ix_labels.as_ref().unwrap_or(&serde_json::Value::Null);
     TradeLite {
         side: if p.is_buy { Side::Buy } else { Side::Sell },
         sol: lamports_to_sol(p.amount_lamports),
         at: p.block_time,
-        ix_hash: ix_hash_from_labels_value(labels),
         wallet_hash: wallet_hash(&p.wallet_address),
         slot: u64::try_from(p.slot).unwrap_or(0),
-        marker_bits: marker_bits_from_labels_value(labels),
         leg_index: u8::try_from(p.leg_index.max(0)).unwrap_or(u8::MAX),
         tx_index: u32::try_from(p.tx_index).ok(),
-        template_hash: grain_hash_from_labels_value(labels),
-        program_hash: program_hash_from_labels_value(labels),
         fee: fee_keys(p),
         ..TradeLite::default()
     }
+    .with_label_keys(LabelKeys::from_labels_value(labels))
 }
 
 fn fee_keys(p: &TapePrint) -> FeeKeys {
@@ -2040,6 +2033,20 @@ mod tests {
     fn six_tag() -> TagPatterns {
         compile_target(&serde_json::json!({ "match": { "program": ["Unknown (6Vo3245e)"] } }))
             .unwrap()
+    }
+
+    /// A core row matches here as it does in the engine: every variant of its build,
+    /// on its pinned side. Guards the print's core keys, which a tag reads.
+    #[test]
+    fn a_core_row_tags_every_variant_of_its_build() {
+        let tag = compile_target(&serde_json::json!({
+            "match": { "ix_shape": [{ "labels": ["Pump.Fun: Buy"], "level": "core", "side": "buy" }] }
+        }))
+        .unwrap();
+        let mut st = TagState::new(tag);
+        let mut tagged = |p: TapePrint| st.on_trade(&trade_lite(&p), Cursor::default());
+        assert!(tagged(print(1, 0, 0, "Pump.Fun: BuyV2", true, 1.0, "a")));
+        assert!(!tagged(print(1, 1, 0, "Pump.Fun: Sell", false, 1.0, "b")));
     }
 
     /// `ceil(curve_sol * 1.0125 * (1 + slippage))`, the cap he stores on a `Buy`.

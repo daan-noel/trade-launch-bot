@@ -5,6 +5,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use hunter_engine::metrics::fee::FeeKeys;
+use hunter_engine::metrics::trade_keys::LabelKeys;
 use tracing::{info, warn};
 
 use crate::config::constants::{
@@ -118,40 +119,28 @@ impl CachedTrade {
     /// stays a plain field copy — no `From` impl, since the wallet can't be resolved
     /// without the token-local interner).
     pub fn from_trade(t: &Trade, wallet: u32) -> Self {
-        use hunter_engine::grouping::normalize_labels;
-        use hunter_engine::metrics::trade_keys::{ix_hash_opt, wallet_hash};
-        let labels = normalize_labels(&t.instruction_labels);
+        use hunter_engine::metrics::trade_keys::wallet_hash;
         Self::from_trade_hashes(
             t,
             wallet,
-            ix_hash_opt(&labels),
             wallet_hash(&t.wallet_address),
-            hunter_engine::metrics::trade_keys::marker_bits(&labels),
-            hunter_engine::metrics::template_grain::grain_hash(&labels),
-            hunter_engine::metrics::template_grain::program_hash(&labels),
-            hunter_engine::metrics::trade_keys::build_hash(&labels),
-            hunter_engine::metrics::trade_keys::core_hash(&labels),
-            hunter_engine::metrics::trade_keys::core_marks(&labels),
-            hunter_engine::metrics::template_grain::is_launch(&labels),
+            LabelKeys::from_labels_value(&t.instruction_labels),
         )
     }
 
     /// Like [`from_trade`] but with hashes precomputed outside the DashMap guard
     /// (ingest hot path). Avoids normalize/hash work while holding the mint shard.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_trade_hashes(
-        t: &Trade,
-        wallet: u32,
-        ix_hash: Option<u64>,
-        wallet_hash: u64,
-        marker_bits: u16,
-        template_hash: Option<u64>,
-        program_hash: Option<u64>,
-        build_hash: Option<u64>,
-        core_hash: Option<u64>,
-        core_marks: u32,
-        is_launch: bool,
-    ) -> Self {
+    pub fn from_trade_hashes(t: &Trade, wallet: u32, wallet_hash: u64, keys: LabelKeys) -> Self {
+        let LabelKeys {
+            ix_hash,
+            marker_bits,
+            template_hash,
+            program_hash,
+            build_hash,
+            core_hash,
+            core_marks,
+            is_launch,
+        } = keys;
         Self {
             wallet,
             is_buy: matches!(t.trade_type, TradeType::Buy),
@@ -520,37 +509,11 @@ impl TokenState {
 
     /// Hot-path variant: hashes prepared outside the DashMap guard; only interning
     /// + aggregates + append run under the mint lock.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_trade_hashed(
-        &mut self,
-        trade: Trade,
-        ix_hash: Option<u64>,
-        wallet_hash: u64,
-        marker_bits: u16,
-        template_hash: Option<u64>,
-        program_hash: Option<u64>,
-        build_hash: Option<u64>,
-        core_hash: Option<u64>,
-        core_marks: u32,
-        is_launch: bool,
-    ) {
+    pub fn add_trade_hashed(&mut self, trade: Trade, wallet_hash: u64, keys: LabelKeys) {
         self.metrics_unsaved = true;
         self.apply_aggregates(&trade);
         let wallet = self.interner.intern(&trade.wallet_address);
-        let cached =
-            CachedTrade::from_trade_hashes(
-                &trade,
-                wallet,
-                ix_hash,
-                wallet_hash,
-                marker_bits,
-                template_hash,
-                program_hash,
-                build_hash,
-                core_hash,
-                core_marks,
-                is_launch,
-            );
+        let cached = CachedTrade::from_trade_hashes(&trade, wallet, wallet_hash, keys);
         self.push_trade_capped(cached);
     }
 

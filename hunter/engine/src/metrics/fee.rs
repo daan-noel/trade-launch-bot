@@ -17,7 +17,7 @@
 //! or its source does not carry the column. A pinned criterion must FAIL against
 //! `None` rather than pass, both for `>=` and `<=`; see [`FeeSpec`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -289,22 +289,6 @@ fn row_marks(obj: &serde_json::Map<String, Value>) -> Option<Option<u32>> {
 }
 
 impl IxShapeRows {
-    /// Shapes with no fee criterion — what every list was before fee capture.
-    pub fn from_hashes(hashes: BTreeSet<u64>) -> Self {
-        Self { by_shape: hashes.into_iter().map(|h| (h, vec![FeeSpec::wildcard()])).collect(), by_core: BTreeMap::new() }
-    }
-
-    /// Compile ordered label sequences, all fee-wildcard.
-    pub fn from_label_sequences(patterns: &[Vec<String>]) -> Self {
-        let mut out = Self::default();
-        for p in patterns {
-            if !p.is_empty() {
-                out.insert(ix_hash(p), FeeSpec::wildcard());
-            }
-        }
-        out
-    }
-
     fn insert(&mut self, hash: u64, spec: FeeSpec) {
         let specs = self.by_shape.entry(hash).or_default();
         // A wildcard subsumes every criterion on its shape: once an ix-only entry is
@@ -318,13 +302,14 @@ impl IxShapeRows {
         }
     }
 
-    /// Parse an `ix_patterns` array. Rows come in two forms and both are current:
+    /// Parse an `ix_shape` array. Rows come in three forms:
     ///
-    /// * `["A","B"]` — a bare label array, fee-wildcard. Every list stored before
-    ///   fee capture is entirely this form and compiles to exactly what it always
-    ///   did.
-    /// * `{"labels":["A","B"],"cu_limit":300000}` — the same shape pinned to a
+    /// * `["A","B"]` — a bare label array: an exact row, fee-wildcard.
+    /// * `{"labels":["A","B"],"cu_limit":300000}` — an exact row pinned to a
     ///   budget. Only the fields present are pinned.
+    /// * `{"labels":["A","B"],"level":"core","side":"sell","marks":"CP T0 A0"}` — a
+    ///   core row: every variant of the build that keeps the labels' core, with
+    ///   optional side, marks and fee pins.
     ///
     /// `None` on any shape error, matching the surrounding parsers: an unusable
     /// config leaves the group unconfigured (metrics read `NaN`) rather than
@@ -366,8 +351,8 @@ impl IxShapeRows {
         Some(out)
     }
 
-    /// Shape errors in an `ix_patterns` array, reported against `key` (e.g.
-    /// `m_dump_ix.ix_patterns`) so the message names the field that was edited.
+    /// Shape errors in an `ix_shape` array, reported against `key` (e.g.
+    /// `tags.volume.match.ix_shape`) so the message names the field that was edited.
     pub fn validate(rows: &[Value], key: &str) -> Result<(), String> {
         for (i, row) in rows.iter().enumerate() {
             let labels = match row {
@@ -469,11 +454,6 @@ impl IxShapeRows {
 
     pub fn is_empty(&self) -> bool {
         self.by_shape.is_empty() && self.by_core.is_empty()
-    }
-
-    /// Number of distinct ix shapes on the list.
-    pub fn len(&self) -> usize {
-        self.by_shape.len()
     }
 }
 
@@ -604,7 +584,7 @@ mod tests {
             ["Pump.Fun: Buy"],
             { "labels": DUMP, "cu_limit": 300_000, "cu_price": 3_333_333 },
         ]));
-        assert_eq!(p.len(), 2);
+        assert_eq!(p.by_shape.len(), 2);
         assert!(p.pins_fee());
 
         // The ix-only entry takes any budget, including none at all.
@@ -670,7 +650,7 @@ mod tests {
             { "labels": DUMP, "cu_limit": 300_000 },
             { "labels": DUMP, "cu_limit": 200_000 },
         ]));
-        assert_eq!(p.len(), 1, "one shape, however many criteria");
+        assert_eq!(p.by_shape.len(), 1, "one shape, however many criteria");
         assert!(p.matches(Some(shape()), FeeKeys::new(Some(300_000), None, None)));
         assert!(p.matches(Some(shape()), FeeKeys::new(Some(200_000), None, None)));
         assert!(!p.matches(Some(shape()), FeeKeys::new(Some(100_000), None, None)));

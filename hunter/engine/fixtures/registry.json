@@ -1572,7 +1572,7 @@
         "example": "\"program\": [\"Axiom Trade\"] : every Axiom trade, whatever its instruction list.",
         "key": "program",
         "kind": "match",
-        "summary": "The transaction's main program (its first instruction past compute budget, system, token, ATA and memo) is one of these. Catches every build a tool ships.",
+        "summary": "The transaction's main program (its first instruction past compute budget, token, ATA, memo and the System transfer, nonce and account creates) is one of these. Catches every build a tool ships.",
         "title": "Program",
         "value_type": "program[]"
       },

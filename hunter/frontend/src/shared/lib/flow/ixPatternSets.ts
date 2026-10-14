@@ -143,7 +143,7 @@ function pickedPatterns(
 /**
  * Classification keys for the enabled groups only — how the lens narrows to one
  * launch client without touching the stored set. `null` ⇒ every group.
- * Keys are labels-only (fee match uses {@link patternRowsForGroups}).
+ * Keys are labels-only.
  */
 export function patternKeysForGroups(
   patterns: readonly IxPattern[],
@@ -151,15 +151,6 @@ export function patternKeysForGroups(
 ): ReadonlySet<string> | null {
   const keys = patternKeysFrom(pickedPatterns(patterns, enabled).map((p) => p.ix_labels));
   return keys.size > 0 ? keys : null;
-}
-
-/** Whole rows for overlay match (an unpinned row is a fee wildcard). */
-export function patternRowsForGroups(
-  patterns: readonly IxPattern[],
-  enabled: ReadonlySet<string> | null,
-): IxPatternRow[] | null {
-  const rows = pickedPatterns(patterns, enabled).map(toPatternRow);
-  return rows.length > 0 ? rows : null;
 }
 
 /**
@@ -261,16 +252,6 @@ export function toggleExactPattern(
     return fromPatternRow(row, group);
   });
 }
-
-/** Add/remove one ordered sequence as an unpinned row. */
-export function toggleIxPattern(
-  patterns: readonly IxPattern[],
-  labels: readonly string[],
-  group: string | null,
-): IxPattern[] {
-  return toggleExactPattern(patterns, labels, undefined, group);
-}
-
 export interface PatternParseResult {
   patterns: IxPattern[];
   /** Sequences kept (post-dedupe). */
@@ -500,10 +481,4 @@ export function formatPatternsJson(patterns: readonly IxPattern[]): string {
     null,
     2,
   );
-}
-
-/** Bare label arrays — groups and pins drop. Prefer {@link toPatternRow} when
- *  promoting into a fingerprint so fees survive. */
-export function toIxPatterns(patterns: readonly IxPattern[]): string[][] {
-  return patterns.map((p) => [...p.ix_labels]);
 }

@@ -15,14 +15,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use hunter_engine::metrics::trade_keys::{
-    build_hash_from_labels_value, core_keys_from_labels_value, ix_hash_from_labels_json,
-    ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash,
-};
-use hunter_engine::metrics::template_grain::{
-    grain_hash_from_labels_json, grain_hash_from_labels_value, is_launch_from_labels_json,
-    is_launch_from_labels_value, program_hash_from_labels_json, program_hash_from_labels_value,
-};
+use hunter_engine::metrics::trade_keys::{wallet_hash, LabelKeys};
 use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::{Side, TradeLite};
 
@@ -99,29 +92,15 @@ pub struct CorpusTrade {
 /// run**. Hashing at the row decode keeps the fold allocation-free and shrinks a
 /// flow row: 24 B of scalars replace two pointers into ~85 B of heap.
 ///
-/// Both fields keep the "absent ⇒ organic" contract: `ix_hash: None` (missing or
-/// unparseable labels) and `wallet_hash: 0` (no wallet column) classify volume-side
-/// only via contagion or the creator seed.
+/// Both fields keep the "absent ⇒ organic" contract: missing or unparseable labels
+/// leave every label key at its absent value, so the row matches no ix matcher, and
+/// `wallet_hash: 0` (no wallet column) matches no wallet list.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FlowKeys {
-    pub ix_hash: Option<u64>,
+    /// Every key of the row's labels, the live producer's twin, resolved at load so
+    /// the fold does no string work.
+    pub labels: LabelKeys,
     pub wallet_hash: u64,
-    /// Structural markers of the row's labels - the offline twin of the live
-    /// producer's, resolved at load beside `ix_hash` so the fold does no string work.
-    pub marker_bits: u16,
-    /// FNV-1a of the build-template grain; `None` when labels are missing.
-    pub template_hash: Option<u64>,
-    /// FNV-1a of the program name; `None` when labels are missing.
-    pub program_hash: Option<u64>,
-    /// FNV-1a of the build recipe (`flow_ix::build_hash`); `None` when labels are
-    /// missing.
-    pub build_hash: Option<u64>,
-    /// FNV-1a of the build core and the packed extras (`trade_keys::core_hash` /
-    /// `core_marks`); `None` / `0` when labels are missing.
-    pub core_hash: Option<u64>,
-    pub core_marks: u32,
-    /// `Pump.Fun: Create*` present on the labels.
-    pub is_launch: bool,
     /// The transaction's declared fee budget, carried beside `ix_hash` because the
     /// two are read together: a build list entry may pin a compute budget, and the
     /// classifier needs both halves or it silently matches on the shape alone.
@@ -138,17 +117,9 @@ impl FlowKeys {
     /// is always the bare-array form.
     pub fn from_stored(ix_labels: Option<&str>, wallet: Option<&str>) -> Self {
         let parsed = ix_labels.and_then(|j| serde_json::from_str::<Value>(j).ok());
-        let (core_hash, core_marks) = parsed.as_ref().map(core_keys_from_labels_value).unwrap_or((None, 0));
         Self {
-            ix_hash: ix_labels.and_then(ix_hash_from_labels_json),
+            labels: parsed.as_ref().map(LabelKeys::from_labels_value).unwrap_or_default(),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
-            marker_bits: parsed.as_ref().map(marker_bits_from_labels_value).unwrap_or(0),
-            build_hash: parsed.as_ref().and_then(build_hash_from_labels_value),
-            core_hash,
-            core_marks,
-            template_hash: ix_labels.and_then(grain_hash_from_labels_json),
-            program_hash: ix_labels.and_then(program_hash_from_labels_json),
-            is_launch: ix_labels.is_some_and(is_launch_from_labels_json),
             fee: FeeKeys::default(),
         }
     }
@@ -165,17 +136,9 @@ impl FlowKeys {
     /// Postgres `Trade` shape, which (unlike the lake's export) still carries
     /// **either** persisted shape, so it must go through the shape-complete reader.
     pub fn from_value(ix_labels: &Value, wallet: Option<&str>, fee: FeeKeys) -> Self {
-        let (core_hash, core_marks) = core_keys_from_labels_value(ix_labels);
         Self {
-            ix_hash: ix_hash_from_labels_value(ix_labels),
+            labels: LabelKeys::from_labels_value(ix_labels),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
-            marker_bits: marker_bits_from_labels_value(ix_labels),
-            template_hash: grain_hash_from_labels_value(ix_labels),
-            program_hash: program_hash_from_labels_value(ix_labels),
-            build_hash: build_hash_from_labels_value(ix_labels),
-            core_hash,
-            core_marks,
-            is_launch: is_launch_from_labels_value(ix_labels),
             fee,
         }
     }
@@ -258,22 +221,22 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
         // priced one — see `TradeLite::priced_reserve_sol`.
         priced_reserve_sol: ct.reserve_sol.unwrap_or(f64::NAN),
         at: ct.block_time,
-        ix_hash: ct.flow.ix_hash,
+        ix_hash: ct.flow.labels.ix_hash,
         wallet_hash: ct.flow.wallet_hash,
         slot: ct.slot,
-        marker_bits: ct.flow.marker_bits,
+        marker_bits: ct.flow.labels.marker_bits,
         // Which instruction of its transaction this is. A bundle selling several
         // wallets' bags emits one trade per leg, all carrying the same `ix_labels`,
         // so `m_dump_ix`'s transaction count reads leg 0 only. Saturates: the byte is
         // only ever compared against 0, and a tx never carries 255 legs.
         leg_index: ct.leg_index.min(u8::MAX as u32) as u8,
         tx_index: Some(ct.tx_index),
-        template_hash: ct.flow.template_hash,
-        program_hash: ct.flow.program_hash,
-        build_hash: ct.flow.build_hash,
-        core_hash: ct.flow.core_hash,
-        core_marks: ct.flow.core_marks,
-        is_launch: ct.flow.is_launch,
+        template_hash: ct.flow.labels.template_hash,
+        program_hash: ct.flow.labels.program_hash,
+        build_hash: ct.flow.labels.build_hash,
+        core_hash: ct.flow.labels.core_hash,
+        core_marks: ct.flow.labels.core_marks,
+        is_launch: ct.flow.labels.is_launch,
         on_curve: ct.on_curve,
         fee: ct.flow.fee,
         // Raw token units, what `m_holder_book` keeps each wallet's bag in. The
@@ -580,12 +543,12 @@ mod tests {
         wrapped.instruction_labels = serde_json::json!({ "instructions": labels });
 
         let rows = project_pg_tail(&[bare, wrapped], true);
-        assert_eq!(rows[0].flow.ix_hash, Some(want), "bare array");
-        assert_eq!(rows[1].flow.ix_hash, Some(want), "object wrapper");
+        assert_eq!(rows[0].flow.labels.ix_hash, Some(want), "bare array");
+        assert_eq!(rows[1].flow.labels.ix_hash, Some(want), "object wrapper");
 
         // A row with genuinely no labels still reports the missing sentinel.
         let mut none = curve_trade(1.0, 1_000_000, 44.89, 900_000);
         none.instruction_labels = serde_json::Value::Null;
-        assert_eq!(project_pg_tail(&[none], true)[0].flow.ix_hash, None);
+        assert_eq!(project_pg_tail(&[none], true)[0].flow.labels.ix_hash, None);
     }
 }

@@ -12,7 +12,7 @@ Names in the tables are short on purpose. Each one is spelled out in [Terms](#te
 
 ## At a glance
 
-Two times. [Build](#build) runs once, offline, over the launch group's coins: Mark, Grow and Check label every trade, and the passing rows and the wallets that come back are stored on the fingerprint. [While a rule runs](#while-a-rule-runs) only reads that stored tag. Nothing writes it while rules run. A stored row does not store the wallet, and a stored wallet does not add its other lists. The build command is open work: [owner-split-builder.md](../../roadmap/owner-split-builder.md).
+Two times. [Build](#build) runs once, offline, over the launch group's coins: Mark, Grow and Check label every trade, and the passing rows and the wallets that come back are stored on the fingerprint. [While a rule runs](#while-a-rule-runs) only reads that stored tag. Nothing writes it while rules run. A stored row does not store the wallet, and a stored wallet does not add its other lists. A hand edit (a chart click, the Flow Discovery cart, the tags editor) changes the stored tag at the next rules reload and lasts until the next build replaces the tag whole. The build command is open work: [owner-split-builder.md](../../roadmap/owner-split-builder.md).
 
 The pictures restate the rules below in one place. A number here and a number in a rule table are the same number; the table is the definition.
 
@@ -646,7 +646,7 @@ Each row above uses these names. **Why** is why the dev behaves that way. **Expl
 
 **Recent window.** The build's clock for a stored wallet. Count this launch group's own coins, newest first, up to the build's last coin. The width is the gap within which 90% of wallets that come back do come back. A gap of half of those returns drops an address that is about to trade again. A gap that covers nearly every return keeps addresses the dev has finished with. An address is stored when it passes its test and its latest trade on the group is inside that width. A running rule never moves the window.
 
-**Stored and sticky.** Stored is on the fingerprint, written once by the build: rows, wallets, the creator flag. Sticky is this coin only: a wallet with one owner trade here, from that trade on. Sticky is never written back.
+**Stored and sticky.** Stored is on the fingerprint, written by the build: rows, wallets, the creator flag. A hand edit to the stored tag lasts until the next build replaces it. Sticky is this coin only: a wallet with one owner trade here, from that trade on. Sticky is never written back.
 
 **Ix structure.** The exact instruction list of one transaction, in order. Order and repeats count. `AdvanceNonceAccount`, `Axiom Trade: ix#05`, `Axiom Trade: ix#00`, `Transfer` is one ix structure. A different order is a different ix structure.
 

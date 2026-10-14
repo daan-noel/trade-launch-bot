@@ -28,6 +28,7 @@ use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::buffers::Buffers;
 use hunter_engine::metrics::tags::config::compile_tags;
 use hunter_engine::metrics::template_grain;
+use hunter_engine::metrics::trade_keys::LabelKeys;
 use hunter_engine::metrics::track::TokenTrack;
 use hunter_engine::metrics::{Metric, MetricRef, Side, Span, TradeLite, WindowSpec, WindowUnit};
 use sqlx::postgres::PgPoolOptions;
@@ -306,6 +307,7 @@ async fn the_prefix_reads_what_the_sql_prefix_read() {
                 .ok()
                 .flatten()
                 .unwrap_or(0) as i64;
+            let keys = LabelKeys::from_labels_value(&labels);
 
             track.on_trade(TradeLite {
                 side: if is_buy { Side::Buy } else { Side::Sell },
@@ -317,8 +319,8 @@ async fn the_prefix_reads_what_the_sql_prefix_read() {
                 slot: slot as u64,
                 tx_index: Some(tx_index as u32),
                 wallet_hash: wallet as u64,
-                template_hash: template_grain::grain_hash_from_labels_value(&labels),
-                is_launch: template_grain::is_launch_from_labels_value(&labels),
+                template_hash: keys.template_hash,
+                is_launch: keys.is_launch,
                 on_curve: true,
                 leg_index: t.get::<i16, _>("leg_index").max(0) as u8,
                 ..Default::default()
