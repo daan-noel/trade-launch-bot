@@ -34,8 +34,11 @@ import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
   useGetTokenDetailQuery,
+  useGetTokenTradesQuery,
   useUpdateFingerprintMutation,
 } from 'store/sharedEndpoints';
+import { useTokenHighlight } from 'components/tokens/useTokenHighlight';
+import type { TradeRecord } from 'types';
 import { fingerprintsHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { STAGE_MATCHERS, type StageMatcher, type StageValue, type TagTape } from 'hooks/useIxPatternTarget';
 import {
@@ -55,7 +58,12 @@ import {
   suggestStructure,
   type StructureSuggestion,
 } from '@lab/components/flow/flowDiscoverySuggest';
-import { StructureTable, type BudgetState, type RankedState } from '@lab/components/flow/StructureTable';
+import {
+  StructureTable,
+  type BudgetState,
+  type RankedLens,
+  type RankedState,
+} from '@lab/components/flow/StructureTable';
 import { TokenPreviewPanel } from '@lab/components/flow/TokenPreviewPanel';
 import { defaultTagName, flowTagOf, shapeTag, tagLabel, withDraftMatch } from 'lib/flow/tapeClassify';
 import {
@@ -72,7 +80,7 @@ import {
   type IxPatternFeeMask,
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
-import { coreLabels } from 'lib/strategy/ixCore';
+import { coreKey, coreLabels } from 'lib/strategy/ixCore';
 import { dominantFeeVariant, feeSpreadBand } from 'lib/feeVariants';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, buildFieldFilters } from '@lab/components/sweep/fingerprintFilters';
@@ -278,6 +286,12 @@ function stagedRow(
 /** Every fee field: what a budget check pins when no fee-pin field is on. */
 const ALL_FEE_PINS: IxPatternFeeMask = { cu_limit: true, cu_price: true, tip_lamports: true };
 
+/** What a budget line copies off its budget: the given pin fields when any are on,
+ *  else every field - picking one budget means that budget. */
+const budgetMask = (pins: IxPatternFeeMask): IxPatternFeeMask => (feeMaskActive(pins) ? pins : ALL_FEE_PINS);
+
+const EMPTY_PREVIEW_TRADES: TradeRecord[] = [];
+
 /**
  * The row a budget check writes: the shape (or its core) pinned to that one budget,
  * through the fee-pin fields when any are on, else through every field it carries.
@@ -290,7 +304,7 @@ function budgetRow(
   v: FlowDiscoveryFeeVariant,
   feePins: IxPatternFeeMask,
 ): IxPatternRow | null {
-  const row = rowFromTrade(core ? coreLabels(labels) : labels, v, feeMaskActive(feePins) ? feePins : ALL_FEE_PINS);
+  const row = rowFromTrade(core ? coreLabels(labels) : labels, v, budgetMask(feePins));
   if (!rowPinsFee(row)) return null;
   if (core) row.level = 'core';
   return row;
@@ -471,6 +485,14 @@ export function FlowDiscoveryPage() {
   const { data: previewDetail } = useGetTokenDetailQuery(selectedTokenMint ?? '', {
     skip: !selectedTokenMint,
   });
+  // The preview chart's highlight, owned here so the ranked table and the chart's
+  // trades table arm one set of lenses. Same query key as the chart's own, so the
+  // trades come off the RTK cache, not a second request.
+  const { data: previewTrades } = useGetTokenTradesQuery(selectedTokenMint ?? '', {
+    skip: !selectedTokenMint,
+  });
+  const highlight = useTokenHighlight(previewTrades ?? EMPTY_PREVIEW_TRADES, selectedTokenMint ?? '');
+  const { toggleStructure: toggleLens, structureColor: lensColor, items: lensItems, pinMask: lensPinMask } = highlight;
 
   const selectedGroup: FlowDiscoveryGroup | null =
     result?.groups[selectedGroupIdx] ?? null;
@@ -945,6 +967,26 @@ export function FlowDiscoveryPage() {
     [isCoreStage, feePins],
   );
 
+  /** The ranked table's side of the preview highlight. A row arms at the table's
+   *  grain (exact shape, or core on the core table); a row is lit by any armed
+   *  structure lens over it, whichever table armed it. */
+  const rankedLens = useMemo<RankedLens>(() => {
+    const level = isCoreStage ? ('core' as const) : undefined;
+    const sameRow = (item: { labels: readonly string[] | null; level?: 'core' }, s: FlowDiscoveryStructure) =>
+      !!item.labels &&
+      (isCoreStage || item.level === 'core'
+        ? coreKey(item.labels) === coreKey(s.ix_labels)
+        : JSON.stringify(item.labels) === JSON.stringify(s.ix_labels));
+    return {
+      enabled: !!selectedTokenMint,
+      toggle: (s) => toggleLens(s.ix_labels, null, { level }),
+      colorOf: (s) => lensColor(s.ix_labels, null, { level }),
+      toggleBudget: (s, v) => toggleLens(s.ix_labels, v, { level, mask: budgetMask(lensPinMask) }),
+      budgetColorOf: (s, v) => lensColor(s.ix_labels, v, { level, mask: budgetMask(lensPinMask) }),
+      rowColors: (s) => lensItems.filter((i) => i.kind === 'structure' && sameRow(i, s)).map((i) => i.color),
+    };
+  }, [isCoreStage, selectedTokenMint, toggleLens, lensColor, lensPinMask, lensItems]);
+
   /** A preview-table badge click. The value already carries the grain and, on an
    *  ix row, the pinned fee fields. */
   const toggleTrade = useCallback((v: StageValue) => {
@@ -1381,6 +1423,7 @@ export function FlowDiscoveryPage() {
                     onSelect={setSelectedTokenMint}
                     detail={previewDetail}
                     tape={previewTape}
+                    highlight={highlight}
                   />
                 )}
 
@@ -1559,6 +1602,7 @@ export function FlowDiscoveryPage() {
                   onToggle={toggleStructure}
                   budgetStateOf={budgetStateOf}
                   onToggleBudget={toggleBudget}
+                  lens={rankedLens}
                   onFilteredRowsChange={handleFilteredStructures}
                 />
               </div>

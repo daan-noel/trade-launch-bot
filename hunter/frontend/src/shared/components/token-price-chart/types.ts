@@ -134,6 +134,10 @@ export interface ChartLensItem {
   key: string;
   /** A structure's fee pins; absent = the structure alone, any budget. */
   pins?: ChartLensPins;
+  /** `core`: the structure matches by its ix core (`lib/strategy/ixCore`), any
+   *  extras, any side - the grain an unpinned `level: "core"` row matches at.
+   *  Absent = the exact ordered sequence. */
+  level?: 'core';
   /** Lane, wash and chip color — `LENS_COLORS[kind][slot]`, fixed while armed. */
   color: string;
   /** Short name for the lane row: an abbreviated address or ix sequence. */

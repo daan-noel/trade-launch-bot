@@ -203,3 +203,33 @@ describe('pinned structure lens', () => {
           }
   });
 });
+
+describe('core structure lens', () => {
+  const full = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy', 'Memo Program: Memo'];
+  const bare = ['Pump.Fun: Buy'];
+  const other = ['Pump.Fun: Sell'];
+  const core = (pins?: ChartLensPins) => ({
+    kind: 'structure' as const,
+    level: 'core' as const,
+    key: structureLensKey(full, pins, 'core'),
+    ...(pins ? { pins } : {}),
+  });
+
+  it('keys apart from every exact key, and the same from full or core labels', () => {
+    expect(structureLensKey(full, null, 'core')).not.toBe(structureLensKey(full));
+    expect(structureLensKey(full, null, 'core')).toBe(structureLensKey(bare, null, 'core'));
+  });
+
+  // Same guard as the exact lens: the chart's core match equals an unpinned-side,
+  // unmarked core row's `rowMatchesTrade`, pins and all.
+  it('agrees with a core rowMatchesTrade across shapes and pins', () => {
+    for (const labels of [full, bare, other])
+      for (const pin of [undefined, 7])
+        for (const reading of [null, 7, 9]) {
+          const pins: ChartLensPins | undefined = pin != null ? { cu_limit: pin } : undefined;
+          const row: IxPatternRow = { labels: full, level: 'core', ...(pins ?? {}) };
+          const tr = trade({ slot: 1, instruction_labels: labels, cu_limit: reading });
+          expect(lensItemMatches(core(pins), tr)).toBe(rowMatchesTrade(row, labels, tr));
+        }
+  });
+});

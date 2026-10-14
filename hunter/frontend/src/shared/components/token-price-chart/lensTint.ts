@@ -1,3 +1,5 @@
+import { coreLabels } from 'lib/strategy/ixCore';
+
 import {
   MIN_CHART_SOL,
   chartValueForTrade,
@@ -131,19 +133,26 @@ export const LENS_PIN_FIELDS = ['cu_limit', 'cu_price', 'tip_lamports'] as const
 
 /** A structure lens item's key: the ordered labels as `JSON.stringify` builds
  *  them (inlined so this folder stays portable), then the pins when there
- *  are any — `["A","B"]|cu_limit=300000`. Unpinned it is the bare pattern key. */
-export function structureLensKey(labels: readonly string[], pins?: ChartLensPins | null): string {
-  const base = JSON.stringify(labels);
+ *  are any — `["A","B"]|cu_limit=300000`. Unpinned it is the bare pattern key.
+ *  A core lens keys as `core:` plus the core's labels (`coreLabels`, idempotent,
+ *  so full or core labels give one key), never colliding with an exact key. */
+export function structureLensKey(
+  labels: readonly string[],
+  pins?: ChartLensPins | null,
+  level?: 'core' | null,
+): string {
+  const base = level === 'core' ? `core:${JSON.stringify(coreLabels(labels))}` : JSON.stringify(labels);
   const set = LENS_PIN_FIELDS.filter((f) => pins?.[f] != null);
   return set.length > 0 ? `${base}|${set.map((f) => `${f}=${pins![f]}`).join(',')}` : base;
 }
 
-/** Does `trade` belong to this lens item? Structure identity is ordered, exact and
- *  whole-sequence; a set/subset match here would silently mean something else than
- *  it does everywhere else in the app. A pin needs the trade's reading to equal it,
- *  and a missing reading never satisfies one: the engine's `FeeSpec::matches`. */
+/** Does `trade` belong to this lens item? Structure identity is ordered and
+ *  whole-sequence - exact, or by its core on a core lens; a set/subset match here
+ *  would silently mean something else than it does everywhere else in the app. A
+ *  pin needs the trade's reading to equal it, and a missing reading never
+ *  satisfies one: the engine's `FeeSpec::matches`. */
 export function lensItemMatches(
-  item: Pick<ChartLensItem, 'kind' | 'key' | 'pins'>,
+  item: Pick<ChartLensItem, 'kind' | 'key' | 'pins' | 'level'>,
   trade: ChartTrade,
 ): boolean {
   if (item.kind === 'wallet') return trade.wallet_address === item.key;
@@ -156,7 +165,7 @@ export function lensItemMatches(
     if (v == null) return false;
     read[f] = v;
   }
-  return structureLensKey(labels, read) === item.key;
+  return structureLensKey(labels, read, item.level) === item.key;
 }
 
 /** A matched trade's SOL size as the chart prints it under a wash: 3 decimals

@@ -4,6 +4,7 @@ import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Input } from 'components/ui/Input';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import type { ChartTapeStaging } from 'components/tokens/chartTapeStaging';
+import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
 import type { FlowDiscoveryTokenGross, TokenDetailRecord } from 'types';
 
 function fmt(n: number, digits = 1): string {
@@ -26,12 +27,15 @@ export function TokenPreviewPanel({
   onSelect,
   detail,
   tape,
+  highlight = null,
 }: {
   tokens: FlowDiscoveryTokenGross[];
   selectedMint: string | null;
   onSelect: (mint: string) => void;
   detail: TokenDetailRecord | null | undefined;
   tape: ChartTapeStaging;
+  /** The page-owned highlight, shared with the ranked table; default the chart's own. */
+  highlight?: TokenHighlight | null;
 }) {
   const [mintQuery, setMintQuery] = useState('');
   const filteredTokens = useMemo(() => {
@@ -101,6 +105,7 @@ export function TokenPreviewPanel({
               <LazyTokenTradeChart
                 detail={detail}
                 tape={tape}
+                highlight={highlight}
                 tableId="flow_preview_trades"
               />
             ) : (

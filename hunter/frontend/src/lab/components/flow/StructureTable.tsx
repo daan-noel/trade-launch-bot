@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
+import { LENS_COLORS } from 'components/token-price-chart/constants';
+import { LensButton } from 'components/tokens/LensControls';
 import { parseNumericPredicate } from 'components/table/numericFilter';
 import type { ColumnDef } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
@@ -52,6 +54,26 @@ function StateCheckbox({ state, onChange, title }: { state: RankedState; onChang
   return <Checkbox ref={ref} checked={state === 'on'} onChange={onChange} title={title} />;
 }
 
+/** The preview chart's highlight as the ranked table arms it - the same lenses the
+ *  chart's trades table arms (`useTokenHighlight`, owned by the page), so either
+ *  table lights the other's rows and the chart washes both. */
+export interface RankedLens {
+  /** A token is previewed, so there is a chart to wash. */
+  enabled: boolean;
+  /** Arm or disarm the row's shape (its core on the core table), any budget. */
+  toggle: (s: FlowDiscoveryStructure) => void;
+  /** The color the row's own lens washes in, `null` = not armed. */
+  colorOf: (s: FlowDiscoveryStructure) => string | null;
+  /** Arm or disarm the row's shape pinned to one budget. */
+  toggleBudget: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => void;
+  budgetColorOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => string | null;
+  /** Colors of every armed structure lens that covers this row - its own, a
+   *  budget's, one armed from the trades table, or a core over an exact row. */
+  rowColors: (s: FlowDiscoveryStructure) => string[];
+}
+
+const LENS_OFF_TITLE = 'Pick a token in the preview first - the highlight washes its chart';
+
 /** How the draft holds one budget of a row: `on` = its pinned row is listed,
  *  `broad` = the shape's unpinned row is (covering every budget), `off` = neither,
  *  `none` = the fee-pin fields on pick nothing this budget carries, so a check
@@ -64,11 +86,13 @@ function BudgetCell({
   s,
   budgetStateOf,
   onToggleBudget,
+  lens,
   tag,
 }: {
   s: FlowDiscoveryStructure;
   budgetStateOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => BudgetState;
   onToggleBudget: (labels: string[], v: FlowDiscoveryFeeVariant) => void;
+  lens: RankedLens | null;
   tag: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -110,11 +134,26 @@ function BudgetCell({
           {variants.map((v) => {
             const state = budgetStateOf(s, v);
             const pct = known > 0 ? ((v.n_trades / known) * 100).toFixed(0) : '0';
+            const lensColor = lens?.budgetColorOf(s, v) ?? null;
             return (
               <label
                 key={`${v.cu_limit}|${v.cu_price}|${v.tip_lamports}`}
                 className="inline-flex items-center gap-1.5 whitespace-nowrap"
               >
+                {lens && (
+                  <LensButton
+                    armed={lensColor != null}
+                    color={lensColor ?? LENS_COLORS.structure[0]}
+                    title={
+                      !lens.enabled
+                        ? LENS_OFF_TITLE
+                        : lensColor != null
+                          ? 'Stop highlighting this budget'
+                          : 'Highlight every candle and trade of this shape on this budget (the highlight pin fields when any are on, else all three)'
+                    }
+                    onClick={() => lens.enabled && lens.toggleBudget(s, v)}
+                  />
+                )}
                 <Checkbox
                   checked={state === 'on' || state === 'broad'}
                   disabled={state === 'none'}
@@ -188,6 +227,7 @@ function buildStructureColumns(opts: {
   onToggle: (labels: string[]) => void;
   budgetStateOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => BudgetState;
   onToggleBudget: (labels: string[], v: FlowDiscoveryFeeVariant) => void;
+  lens: RankedLens | null;
   tagName: string | null;
 }): ColumnDef<FlowDiscoveryStructure>[] {
   const {
@@ -198,6 +238,7 @@ function buildStructureColumns(opts: {
     onToggle,
     budgetStateOf,
     onToggleBudget,
+    lens,
     tagName,
   } = opts;
   const tag = tagName ? tagLabel(tagName) : 'the tag';
@@ -295,7 +336,27 @@ function buildStructureColumns(opts: {
       key: 'structure',
       label: 'Structure',
       tooltip: helpText(DISCOVERY_COL_HELP.structure),
-      render: (s) => <IxLabelsDisplay labels={s.ix_labels} copyJson />,
+      render: (s) => {
+        if (!lens) return <IxLabelsDisplay labels={s.ix_labels} copyJson />;
+        const own = lens.colorOf(s);
+        return (
+          <span className="flex items-start gap-1">
+            <LensButton
+              armed={own != null}
+              color={own ?? LENS_COLORS.structure[0]}
+              title={
+                !lens.enabled
+                  ? LENS_OFF_TITLE
+                  : own != null
+                    ? 'Stop highlighting this ix structure'
+                    : 'Highlight every candle and trade with this structure, any budget'
+              }
+              onClick={() => lens.enabled && lens.toggle(s)}
+            />
+            <IxLabelsDisplay labels={s.ix_labels} copyJson />
+          </span>
+        );
+      },
       searchValue: (s) => formatIxLabelsText(s.ix_labels),
       // The SAME grammar the fingerprint table's ix_labels column filters with, so
       // a shape copied out of one table selects its row in the other: a JSON array
@@ -309,7 +370,7 @@ function buildStructureColumns(opts: {
       label: 'Budget',
       tooltip: helpText(DISCOVERY_COL_HELP.budget),
       render: (s) => (
-        <BudgetCell s={s} budgetStateOf={budgetStateOf} onToggleBudget={onToggleBudget} tag={tag} />
+        <BudgetCell s={s} budgetStateOf={budgetStateOf} onToggleBudget={onToggleBudget} lens={lens} tag={tag} />
       ),
       // Rank by how concentrated the build's budget is, not by the budget itself: a
       // single triple covering every trade is the pinnable row, and that is the
@@ -542,6 +603,7 @@ export function StructureTable({
   onToggle,
   budgetStateOf,
   onToggleBudget,
+  lens = null,
   onFilteredRowsChange,
   tagName = null,
 }: {
@@ -561,6 +623,8 @@ export function StructureTable({
   budgetStateOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => BudgetState;
   /** Stage or unstage the shape pinned to one budget. */
   onToggleBudget: (labels: string[], v: FlowDiscoveryFeeVariant) => void;
+  /** The preview chart's highlight; absent = no lens buttons. Pass a memoized one. */
+  lens?: RankedLens | null;
   /** Every row surviving the search + column filters. Pagination is off, so this
    *  is exactly what is on screen — which is what lets the page's stage/unstage
    *  buttons act on "what you are looking at". Pass a stable (useCallback)
@@ -579,6 +643,7 @@ export function StructureTable({
         onToggle,
         budgetStateOf,
         onToggleBudget,
+        lens,
         tagName,
       }),
     [
@@ -589,17 +654,28 @@ export function StructureTable({
       onToggle,
       budgetStateOf,
       onToggleBudget,
+      lens,
       tagName,
     ],
   );
+  // A lensed row washes in its lens color, the trades table's convention
+  // (`--row-lens`), so a structure armed in either table reads as one pick here.
   const rowClassName = useCallback(
     (s: FlowDiscoveryStructure) => {
       const key = structureRowKey(s);
       if (previewKeys?.has(key)) return 'bg-accent/12 outline outline-1 outline-accent/50';
+      if (lens && lens.rowColors(s).length > 0) return 'bg-(--row-lens)/16 hover:bg-(--row-lens)/24';
       return stateOf(s) === 'on' ? 'bg-accent/8' : undefined;
     },
-    [previewKeys, stateOf],
+    [previewKeys, stateOf, lens],
   );
+  const rowStyle = useMemo(() => {
+    if (!lens) return undefined;
+    return (s: FlowDiscoveryStructure): CSSProperties | undefined => {
+      const colors = lens.rowColors(s);
+      return colors.length > 0 ? ({ '--row-lens': colors[0] } as CSSProperties) : undefined;
+    };
+  }, [lens]);
 
   return (
     <DataTable
@@ -607,6 +683,7 @@ export function StructureTable({
       rows={structures}
       rowKey={structureRowKey}
       rowClassName={rowClassName}
+      rowStyle={rowStyle}
       tableId={TABLE_ID}
       searchable
       searchPlaceholder="Search structures…"

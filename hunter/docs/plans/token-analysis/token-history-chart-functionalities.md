@@ -359,6 +359,21 @@ and lane label carry the pins (`CL → B · cu 300,000 @ 1,000`). The mask is th
 not the tag stage's, so arming a highlight never changes what a tag click writes. The Entry
 Context breakdown arms its structures unpinned: a breakdown row has no single reading to copy.
 
+**A structure lens can match by core.** `level: 'core'` on the item matches every trade whose
+ix core (`lib/strategy/ixCore.coreLabels`) equals the lens', any extras and any side, the grain
+an unpinned `level: "core"` row matches at; the key is `structureLensKey(labels, pins, 'core')`
+(`core:` prefix, never equal to an exact key) and the chip reads `core …`. The guard test holds
+it equal to a core `rowMatchesTrade`.
+
+**Flow Discovery shares one highlight between its two tables.** The page owns
+`useTokenHighlight` for the previewed token and hands it to the preview chart, so the chart's
+trades table and the Ranked ix structures table arm and read one item set. A ranked row arms
+its shape at the table's grain (exact, or core on the core table), unpinned; an expanded budget
+line arms the shape pinned to that budget (the highlight pin fields when any are on, else all
+three). A ranked row washes in the color of any armed structure lens over it, whichever table
+armed it (a core lens lights every exact row of that core), and a trades-table row washes for a
+lens armed in the ranked table the same way.
+
 The chip strip renders even with **no candle selected**, which is the only reason the panel
 draws at all in that state: the control that disarms a lens must not hide behind the table it
 is washing.
