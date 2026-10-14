@@ -17,6 +17,7 @@ import {
   parseIxPatternRows,
   patternRowKey,
   serializeIxPatternRows,
+  togglePatternRow,
   type IxPatternRow,
 } from './ixPatternRows';
 import type { StrategyRegistry } from './registry';
@@ -249,7 +250,10 @@ export function withTagListValue(doc: unknown, name: string, k: StringListMatche
   return tagsToJson(tags.filter((x) => usedMatchers(x).length > 0 || x.name !== name || !remove));
 }
 
-/** The document with one ix shape added to (or taken from) tag `name`. */
+/** The document with one ix shape added to (or taken from) tag `name`. An add keeps
+ *  the list's per-family invariant ({@link togglePatternRow}): a broad row replaces
+ *  narrow rows of its family, a narrow row replaces the broad one. A remove takes
+ *  exactly that row. */
 export function withTagShape(doc: unknown, name: string, row: IxPatternRow, remove = false): Obj {
   const tags = tagsFromJson(doc);
   let t = tags.find((x) => x.name === name);
@@ -263,6 +267,6 @@ export function withTagShape(doc: unknown, name: string, row: IxPatternRow, remo
     ? rows.filter((r) => patternRowKey(r) !== key)
     : rows.some((r) => patternRowKey(r) === key)
       ? rows
-      : [...rows, row];
+      : togglePatternRow(rows, row);
   return tagsToJson(tags.filter((x) => usedMatchers(x).length > 0 || x.name !== name || !remove));
 }

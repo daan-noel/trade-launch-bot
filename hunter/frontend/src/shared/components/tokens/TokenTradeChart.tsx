@@ -15,7 +15,7 @@ import {
   type ProfileWalletInfo,
 } from 'components/token-price-chart';
 import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
-import { useFlowLensContext } from 'context/FlowLensContext';
+import { useActiveFlowLens } from 'context/FlowLensContext';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
 import { useTokenHighlight, type TokenHighlight } from 'components/tokens/useTokenHighlight';
 import { useIxPatternTarget, type TagTape } from 'hooks/useIxPatternTarget';
@@ -281,7 +281,7 @@ export function TokenTradeChart({
   // The tag the lines and the badges classify with: the staging draft, else the
   // page's lens, else the host fingerprint's picked tag. Classified over the FULL
   // history, not the selection - a sticky wallet is forward-only - with the lens' exclusions, the same pass the lines draw from.
-  const lens = useFlowLensContext();
+  const lens = useActiveFlowLens();
   const persistTarget = useIxPatternTarget({
     fingerprintId: flowFingerprintId,
     savedKeys: flowPatternKeys,

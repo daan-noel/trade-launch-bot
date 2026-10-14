@@ -97,10 +97,12 @@ even see and leaves the badge unchanged.
 - **Templates** — un-mutes the grain. An add also clears any leftover mute for
   that id, which would otherwise swallow it.
 - **Exact** — un-mutes the whole GROUP the stored pattern sits in, since that is
-  the unit there. `mutedPatternForClick` decides: nothing ENABLED may carry the
-  shape (otherwise the badge is on and the click means remove), and the muted row
-  must provably accept this click — unpinned, or its pins equal the pins the click
-  carries. Unprovable ⇒ the ordinary write, never a guess.
+  the unit there. `mutedRowForClick` decides: nothing ENABLED may carry the
+  row's family (exact shape or core, `rowFamilyKey`; otherwise the badge is on and the
+  click means remove), and the muted row must provably accept this click — unpinned,
+  or its pins (and a core row's side and marks) equal the click's. Unprovable ⇒ the
+  ordinary write, never a guess. The write is `togglePatternInSet`: a core click stores
+  a core row, with its side and marks.
 
 The badge says which click it is: the lens' stage (`TagStage`, `useIxPatternTarget.ts`)
 answers `listed` and `muted` separately, so a value that is off only because its unit is

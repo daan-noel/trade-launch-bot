@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
 import { parseNumericPredicate } from 'components/table/numericFilter';
@@ -36,6 +36,23 @@ import {
   type StructureSuggestion,
 } from './flowDiscoverySuggest';
 
+/** How the draft holds a ranked row: `on` = that row or its family's broad row is
+ *  listed, `part` = only other narrow rows of its family are, `off` = none. */
+export type RankedState = 'on' | 'part' | 'off';
+
+const STATE_FILTER: Record<RankedState, string> = { on: 'staged', part: 'part', off: 'open' };
+const STATE_SORT: Record<RankedState, number> = { on: 2, part: 1, off: 0 };
+
+/** A checkbox with the third, partly-staged state. `indeterminate` is a DOM
+ *  property with no attribute, so it is set on the element. */
+function StateCheckbox({ state, onChange, title }: { state: RankedState; onChange: () => void; title: string }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = state === 'part';
+  }, [state]);
+  return <Checkbox ref={ref} checked={state === 'on'} onChange={onChange} title={title} />;
+}
+
 /** Stable structure identity — same key the draft/preview sets use. */
 const structureRowKey = (s: FlowDiscoveryStructure) => JSON.stringify(s.ix_labels);
 
@@ -67,38 +84,48 @@ function suggestOptionValue(sug: StructureSuggestion | undefined): string {
  *  `contagionByStructure` are per-render (selection + checked-structure
  *  dependent), so this is rebuilt via `useMemo` rather than module-level. */
 function buildStructureColumns(opts: {
-  draftKeys: ReadonlySet<string>;
-  volKey: (s: FlowDiscoveryStructure) => string;
+  stateOf: (s: FlowDiscoveryStructure) => RankedState;
   contagionByStructure: Map<string, number | null>;
   suggestionByStructure: Map<string, StructureSuggestion>;
   liftDefined: boolean;
   onToggle: (labels: string[]) => void;
   tagName: string | null;
 }): ColumnDef<FlowDiscoveryStructure>[] {
-  const { draftKeys, volKey, contagionByStructure, suggestionByStructure, liftDefined, onToggle, tagName } =
-    opts;
+  const { stateOf, contagionByStructure, suggestionByStructure, liftDefined, onToggle, tagName } = opts;
+  const tag = tagName ? tagLabel(tagName) : 'the tag';
 
   return [
     {
       key: 'vol',
       label: tagName ? tagLabel(tagName) : 'Vol',
       tooltip: helpText(DISCOVERY_COL_HELP.vol),
-      render: (s) => (
-        <Checkbox
-          checked={draftKeys.has(volKey(s))}
-          onChange={() => onToggle(s.ix_labels)}
-        />
-      ),
+      render: (s) => {
+        const state = stateOf(s);
+        return (
+          <StateCheckbox
+            state={state}
+            onChange={() => onToggle(s.ix_labels)}
+            title={
+              state === 'part'
+                ? `Only narrower rows of this shape are in ${tag} (fee, side or marks pins). Click to widen to the whole shape.`
+                : state === 'on'
+                  ? `In ${tag}. Click to remove.`
+                  : `Add to ${tag}.`
+            }
+          />
+        );
+      },
       // Draft state is a slice of the table, not only a click target: filter to the
       // open rows to work through what is left, or to the staged ones to review
       // what a bulk button just added.
       filterOptions: [
         { value: 'staged', label: 'staged' },
+        { value: 'part', label: 'partly staged' },
         { value: 'open', label: 'not staged' },
       ],
-      filterOptionValue: (s) => (draftKeys.has(volKey(s)) ? 'staged' : 'open'),
-      filterTitle: `Show only the rows already in the draft for ${tagName ? tagLabel(tagName) : 'the tag'}, or only the ones still open`,
-      sortValue: (s) => (draftKeys.has(volKey(s)) ? 1 : 0),
+      filterOptionValue: (s) => STATE_FILTER[stateOf(s)],
+      filterTitle: `Show only the rows already in the draft for ${tag}, the ones only narrower rows cover, or the ones still open`,
+      sortValue: (s) => STATE_SORT[stateOf(s)],
       searchValue: () => '',
     },
     {
@@ -421,8 +448,7 @@ function buildStructureColumns(opts: {
  *  selection/checked-pattern changes, not on every `FlowDiscoveryPage` render. */
 export function StructureTable({
   structures,
-  draftKeys,
-  volKey = structureRowKey,
+  stateOf,
   contagionByStructure,
   suggestionByStructure,
   liftDefined,
@@ -432,11 +458,8 @@ export function StructureTable({
   tagName = null,
 }: {
   structures: FlowDiscoveryStructure[];
-  /** Membership the check column tests - exact-shape keys, or grain ids / program
-   *  names on a template stage. */
-  draftKeys: ReadonlySet<string>;
-  /** How a ranked row maps into {@link draftKeys}. Default = exact ix_labels. */
-  volKey?: (s: FlowDiscoveryStructure) => string;
+  /** How the draft holds each row - the check column's three states. */
+  stateOf: (s: FlowDiscoveryStructure) => RankedState;
   contagionByStructure: Map<string, number | null>;
   suggestionByStructure: Map<string, StructureSuggestion>;
   /** The group's `lift_defined` — false ⇒ lift is 1.00 by construction, render
@@ -454,28 +477,25 @@ export function StructureTable({
   /** The tag a check stages into, naming the check column (`@volume`). */
   tagName?: string | null;
 }) {
-  const draftKeysSig = [...draftKeys].join('|');
   const columns = useMemo(
     () =>
       buildStructureColumns({
-        draftKeys,
-        volKey,
+        stateOf,
         contagionByStructure,
         suggestionByStructure,
         liftDefined,
         onToggle,
         tagName,
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- draftKeysSig/contagion/suggestion maps are the real identities
-    [draftKeysSig, volKey, contagionByStructure, suggestionByStructure, liftDefined, onToggle, tagName],
+    [stateOf, contagionByStructure, suggestionByStructure, liftDefined, onToggle, tagName],
   );
   const rowClassName = useCallback(
     (s: FlowDiscoveryStructure) => {
       const key = structureRowKey(s);
       if (previewKeys?.has(key)) return 'bg-accent/12 outline outline-1 outline-accent/50';
-      return draftKeys.has(volKey(s)) ? 'bg-accent/8' : undefined;
+      return stateOf(s) === 'on' ? 'bg-accent/8' : undefined;
     },
-    [previewKeys, draftKeys, volKey],
+    [previewKeys, stateOf],
   );
 
   return (

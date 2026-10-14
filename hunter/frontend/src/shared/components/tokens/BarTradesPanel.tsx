@@ -14,7 +14,7 @@ import {
   type TagStage,
   type TagTape,
 } from 'hooks/useIxPatternTarget';
-import { useFlowLensContext, type FlowLensTarget } from 'context/FlowLensContext';
+import { useActiveFlowLens, type FlowLensTarget } from 'context/FlowLensContext';
 import { formatTimestampMs } from 'utils/date';
 import type { FlowReason } from 'lib/flow/classifyFlow';
 import { tagLabel, type FrozenFlowTag } from 'lib/flow/tapeClassify';
@@ -169,10 +169,10 @@ export function BarTradesPanel({
   }, [fingerprints, flowFingerprintId]);
 
   // A page-wide flow lens (Trader Analysis) OWNS the set on pages with no
-  // fingerprint behind their tokens. When one is provided it is the write target:
+  // fingerprint behind their tokens. When one has a set picked it is the write target:
   // clicks land in `ix_pattern_sets`, never on a fingerprint, so nothing a study
   // toggles can change what a live rule reads.
-  const lens = useFlowLensContext();
+  const lens = useActiveFlowLens();
   const lensTarget = flowFrozen ? null : (lens?.target ?? null);
 
   // Without a lens or a tape, a click edits the fingerprint's tag directly, so the

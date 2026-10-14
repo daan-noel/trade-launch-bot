@@ -278,22 +278,46 @@ export function formatFeePins(row: IxPatternFee): string {
 }
 
 /**
- * Per ix-labels sequence the list holds either one catch-all or one-or-more
- * pins — never both. A catch-all already matches every budget of that shape, so
- * a pin beside it cannot narrow anything (the engine drops it at compile).
- *
- * Replaces every row of `shape` with `insert`, sitting where the first of that
- * shape was. Empty `insert` deletes the shape. Other shapes keep their order.
+ * The family a row belongs to: an exact row by its whole sequence, a core row by
+ * its core. Per family the list holds either one broad row or one-or-more narrow
+ * rows - never both. A broad row already matches everything a narrow row of its
+ * family does, so a narrow row beside it cannot narrow anything.
  */
-function spliceShape(
+export function rowFamilyKey(row: IxPatternRow): string {
+  return `${rowIsCore(row) ? 'core' : 'exact'}|${patternKey(row.labels)}`;
+}
+
+/** Whether a row narrows its family: a fee pin, or a side or marks pin on a core row. */
+export function rowNarrows(row: IxPatternRow): boolean {
+  return rowPinsFee(row) || (rowIsCore(row) && (row.side != null || row.marks != null));
+}
+
+/** How a list holds `row`'s family: `broad` = its broad row is listed, `narrow` =
+ *  only narrow rows of it are, `none` = nothing of it is. */
+export type RowFamilyState = 'broad' | 'narrow' | 'none';
+
+export function rowFamilyState(patterns: readonly IxPatternRow[], row: IxPatternRow): RowFamilyState {
+  const fam = rowFamilyKey(row);
+  let narrow = false;
+  for (const p of patterns) {
+    if (rowFamilyKey(p) !== fam) continue;
+    if (!rowNarrows(p)) return 'broad';
+    narrow = true;
+  }
+  return narrow ? 'narrow' : 'none';
+}
+
+/** Replaces every row of family `fam` with `insert`, sitting where the first of
+ *  that family was. Empty `insert` deletes the family. Other rows keep their order. */
+function spliceFamily(
   patterns: readonly IxPatternRow[],
-  shape: string,
+  fam: string,
   insert: readonly IxPatternRow[],
 ): IxPatternRow[] {
   const out: IxPatternRow[] = [];
   let placed = false;
   for (const p of patterns) {
-    if (rowIsCore(p) || patternKey(p.labels) !== shape) {
+    if (rowFamilyKey(p) !== fam) {
       out.push(cloneRow(p));
       continue;
     }
@@ -309,13 +333,14 @@ function spliceShape(
 }
 
 /**
- * Stage or unstage one row, keeping the per-shape invariant.
+ * Stage or unstage one row, keeping the per-family invariant ({@link rowFamilyKey}).
+ * Exact rows and core rows follow the same rule; narrow = {@link rowNarrows}.
  *
- * * Pins off, no catch-all → widen (drop pins of this shape, one catch-all).
- * * Pins off, catch-all present → remove the catch-all.
- * * Pins on, catch-all present → narrow (drop the catch-all, keep this pin).
- * * Pins on, this exact pin present → remove that pin (other pins of the shape stay).
- * * Pins on, other pins of the shape → add this pin (OR of budgets).
+ * * Broad, no broad row listed → widen (drop narrow rows of the family, one broad row).
+ * * Broad, broad row listed → remove it.
+ * * Narrow, broad row listed → narrow (drop the broad row, keep this one).
+ * * Narrow, this row listed → remove it (other narrow rows of the family stay).
+ * * Narrow, other narrow rows listed → add this one (OR).
  *
  * Empty labels are ignored.
  */
@@ -326,61 +351,49 @@ export function togglePatternRow(
   const labels = row.labels.map((l) => l.trim()).filter(Boolean);
   if (labels.length === 0) return patterns.map(cloneRow);
   const next: IxPatternRow = { ...cloneRow(row), labels };
-  if (rowIsCore(next)) {
-    const key = patternRowKey(next);
-    return patterns.some((p) => patternRowKey(p) === key)
-      ? patterns.filter((p) => patternRowKey(p) !== key).map(cloneRow)
-      : [...patterns.map(cloneRow), next];
-  }
-  const shape = patternKey(labels);
-  const ofShape = patterns.filter((p) => !rowIsCore(p) && patternKey(p.labels) === shape);
+  const fam = rowFamilyKey(next);
+  const ofFam = patterns.filter((p) => rowFamilyKey(p) === fam);
 
-  if (!rowPinsFee(next)) {
-    const hasWild = ofShape.some((p) => !rowPinsFee(p));
-    if (hasWild) {
-      return spliceShape(
-        patterns,
-        shape,
-        ofShape.filter((p) => rowPinsFee(p)),
-      );
-    }
-    return spliceShape(patterns, shape, [{ labels }]);
+  if (!rowNarrows(next)) {
+    if (ofFam.some((p) => !rowNarrows(p))) return spliceFamily(patterns, fam, ofFam.filter(rowNarrows));
+    return spliceFamily(patterns, fam, [next]);
   }
 
-  const exactKey = patternRowKey(next);
-  if (ofShape.some((p) => patternRowKey(p) === exactKey)) {
-    return spliceShape(
+  const key = patternRowKey(next);
+  if (ofFam.some((p) => patternRowKey(p) === key)) {
+    return spliceFamily(
       patterns,
-      shape,
-      ofShape.filter((p) => rowPinsFee(p) && patternRowKey(p) !== exactKey),
+      fam,
+      ofFam.filter((p) => rowNarrows(p) && patternRowKey(p) !== key),
     );
   }
-  return spliceShape(patterns, shape, [...ofShape.filter((p) => rowPinsFee(p)), next]);
+  return spliceFamily(patterns, fam, [...ofFam.filter(rowNarrows), next]);
 }
 
-/** Stage each labels sequence as a catch-all. A shape that already has a
- *  catch-all is skipped; a shape that only has pins is widened (pins dropped). */
-export function addUnpinnedPatterns(
+/** Stage each row unless the list already carries it: skipped when that row or
+ *  its family's broad row is listed, otherwise one {@link togglePatternRow} add (a
+ *  broad row widens a family that holds only narrow rows). */
+export function addPatternRows(
   patterns: readonly IxPatternRow[],
-  labelsList: readonly (readonly string[])[],
+  rows: readonly IxPatternRow[],
 ): IxPatternRow[] {
   let next = patterns.map(cloneRow);
-  for (const labels of labelsList) {
-    const cleaned = labels.map((l) => l.trim()).filter(Boolean);
-    if (cleaned.length === 0) continue;
-    const shape = patternKey(cleaned);
-    if (next.some((r) => !rowIsCore(r) && patternKey(r.labels) === shape && !rowPinsFee(r))) continue;
-    next = spliceShape(next, shape, [{ labels: cleaned }]);
+  for (const row of rows) {
+    const cleaned = { ...row, labels: row.labels.map((l) => l.trim()).filter(Boolean) };
+    if (cleaned.labels.length === 0) continue;
+    const key = patternRowKey(cleaned);
+    if (rowFamilyState(next, cleaned) === 'broad' || next.some((r) => patternRowKey(r) === key)) continue;
+    next = togglePatternRow(next, cleaned);
   }
   return next;
 }
 
-/** Drop unpinned rows whose labels are in `labelsList`. Pinned rows of those
- *  shapes stay — unstaging a catch-all does not delete a fee-narrowed entry. */
-export function removeUnpinnedPatterns(
+/** Drop exactly these rows. Other rows of their families stay - unstaging a broad
+ *  row does not delete a narrow one. */
+export function removePatternRows(
   patterns: readonly IxPatternRow[],
-  labelsList: readonly (readonly string[])[],
+  rows: readonly IxPatternRow[],
 ): IxPatternRow[] {
-  const drop = new Set(labelsList.map((l) => patternKey([...l])));
-  return patterns.filter((r) => rowIsCore(r) || rowPinsFee(r) || !drop.has(patternKey(r.labels))).map(cloneRow);
+  const drop = new Set(rows.map(patternRowKey));
+  return patterns.filter((r) => !drop.has(patternRowKey(r))).map(cloneRow);
 }

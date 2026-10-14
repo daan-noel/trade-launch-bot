@@ -11,6 +11,7 @@ import {
   lensTag,
   matcherForKind,
   toggleExactPattern,
+  togglePatternInSet,
   UNGROUPED,
   type IxPattern,
 } from './ixPatternSets';
@@ -207,5 +208,21 @@ describe('toggleExactPattern fees', () => {
   it('narrows a catch-all to a pin of the same shape', () => {
     const next = toggleExactPattern([p('Axiom', 'A')], ['A'], { cu_limit: 300000 }, 'Axiom');
     expect(next).toEqual([{ group: 'Axiom', ix_labels: ['A'], cu_limit: 300000 }]);
+  });
+});
+
+describe('togglePatternInSet core rows', () => {
+  /** A lens click under the ix core matcher stores a core row, never an exact row of
+   *  the core labels (which would match nothing). */
+  it('keeps level, side and marks, and joins the family group', () => {
+    const core = { labels: ['Pump.Fun: SELL'], level: 'core' as const, side: 'sell' as const, marks: 'CL CP T0 A0' };
+    const set: IxPattern[] = [{ group: 'Axiom', ix_labels: ['Pump.Fun: SELL'], level: 'core' }];
+    expect(togglePatternInSet(set, core, null)).toEqual([
+      { group: 'Axiom', ix_labels: ['Pump.Fun: SELL'], level: 'core', side: 'sell', marks: 'CL CP T0 A0' },
+    ]);
+    expect(togglePatternInSet([p(null, 'Pump.Fun: SELL')], core, 'GMGN')).toEqual([
+      p(null, 'Pump.Fun: SELL'),
+      { group: 'GMGN', ix_labels: ['Pump.Fun: SELL'], level: 'core', side: 'sell', marks: 'CL CP T0 A0' },
+    ]);
   });
 });

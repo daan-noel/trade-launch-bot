@@ -40,7 +40,18 @@ const FlowLensContext = createContext<FlowLensValue | null>(null);
 
 export const FlowLensProvider = FlowLensContext.Provider;
 
-/** The active lens, or `null` where no page provides one. */
+/** The page's lens, or `null` where no page provides one. */
 export function useFlowLensContext(): FlowLensValue | null {
   return useContext(FlowLensContext);
+}
+
+/**
+ * The lens when it owns the charts: a set is picked. With none picked the lens
+ * classifies nothing and writes nowhere, so the chart stack falls back to the host
+ * fingerprint's tag exactly as on a page without a lens - a fingerprint picker, every
+ * matcher (wallet included), and badge clicks that save that fingerprint.
+ */
+export function useActiveFlowLens(): FlowLensValue | null {
+  const lens = useContext(FlowLensContext);
+  return lens?.target ? lens : null;
 }

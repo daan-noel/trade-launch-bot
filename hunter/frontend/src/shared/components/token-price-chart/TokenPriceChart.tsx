@@ -27,7 +27,7 @@ import {
 } from 'lib/flow/flowChartData';
 import { classifyOptsForTag } from 'lib/flow/tapeClassify';
 import { tagSentence } from 'lib/strategy/tagsDoc';
-import { useFlowLensContext } from 'context/FlowLensContext';
+import { useActiveFlowLens } from 'context/FlowLensContext';
 import {
   barsShape,
   captureChartViewport,
@@ -677,7 +677,7 @@ export function TokenPriceChart({
   // A page-wide flow lens (Trader Analysis) adds its excluded wallets (the studied
   // trader). The tag itself - fingerprint tag, lens set or staging draft - is the
   // host's to pick and arrives as `flowTag`.
-  const lens = useFlowLensContext();
+  const lens = useActiveFlowLens();
   const flowExcludeWallets = lens?.excludeWallets ?? null;
   const classifyOpts = useMemo(
     () => classifyOptsForTag(flowTag, creatorWallet, flowExcludeWallets),

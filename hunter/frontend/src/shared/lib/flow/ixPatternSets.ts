@@ -20,8 +20,8 @@ import { parseGrainIds } from 'lib/strategy/templateGrain';
 import {
   FEE_FIELDS,
   feeMatchesTrade,
-  patternKey,
   patternRowKey,
+  rowFamilyKey,
   togglePatternRow,
   type IxPatternFee,
   type IxPatternRow,
@@ -216,11 +216,28 @@ export function mutedPatternForClick(
   labels: readonly string[],
   fee?: IxPatternFee,
 ): IxPattern | null {
+  return mutedRowForClick(patterns, enabled, { ...fee, labels: [...labels] });
+}
+
+/** {@link mutedPatternForClick} for any row: same family ({@link rowFamilyKey}), and
+ *  on a core row the stored side and marks accept the click's too. */
+export function mutedRowForClick(
+  patterns: readonly IxPattern[],
+  enabled: ReadonlySet<string> | null,
+  row: IxPatternRow,
+): IxPattern | null {
   if (!enabled) return null;
-  const shape = patternKey(labels);
-  const sameShape = patterns.filter((p) => patternKey(p.ix_labels) === shape);
-  if (sameShape.some((p) => enabled.has(p.group ?? UNGROUPED))) return null;
-  return sameShape.find((p) => feeMatchesTrade(p, fee ?? {})) ?? null;
+  const fam = rowFamilyKey(row);
+  const sameFamily = patterns.filter((p) => rowFamilyKey(toPatternRow(p)) === fam);
+  if (sameFamily.some((p) => enabled.has(p.group ?? UNGROUPED))) return null;
+  return (
+    sameFamily.find(
+      (p) =>
+        feeMatchesTrade(p, row) &&
+        (p.side == null || p.side === row.side) &&
+        (p.marks == null || p.marks === row.marks),
+    ) ?? null
+  );
 }
 
 /** Add/remove one exact row (labels + optional pins), keeping groups. */
@@ -230,31 +247,40 @@ export function toggleExactPattern(
   fee: IxPatternFee | undefined,
   activeGroup: string | null,
 ): IxPattern[] {
-  const rows = patterns.map(toPatternRow);
-  const nextRow: IxPatternRow = { labels: [...labels] };
+  const row: IxPatternRow = { labels: [...labels] };
   if (fee) {
     for (const f of FEE_FIELDS) {
-      if (fee[f] != null) nextRow[f] = fee[f];
+      if (fee[f] != null) row[f] = fee[f];
     }
   }
-  const next = togglePatternRow(rows, nextRow);
+  return togglePatternInSet(patterns, row, activeGroup);
+}
+
+/** Add/remove one row - exact or core, pins and all - keeping groups: a row already
+ *  stored keeps its group, a new one joins its family's group, else `activeGroup`. */
+export function togglePatternInSet(
+  patterns: readonly IxPattern[],
+  row: IxPatternRow,
+  activeGroup: string | null,
+): IxPattern[] {
+  const next = togglePatternRow(patterns.map(toPatternRow), row);
   const groupByRowKey = new Map(
     patterns.map((p) => [patternRowKey(toPatternRow(p)), p.group] as const),
   );
-  const groupByShape = new Map<string, string | null>();
+  const groupByFamily = new Map<string, string | null>();
   for (const p of patterns) {
-    const k = patternKey(p.ix_labels);
-    if (!groupByShape.has(k)) groupByShape.set(k, p.group);
+    const k = rowFamilyKey(toPatternRow(p));
+    if (!groupByFamily.has(k)) groupByFamily.set(k, p.group);
   }
-  return next.map((row) => {
-    const rowKey = patternRowKey(row);
-    const shape = patternKey(row.labels);
+  return next.map((r) => {
+    const rowKey = patternRowKey(r);
+    const fam = rowFamilyKey(r);
     const group = groupByRowKey.has(rowKey)
       ? (groupByRowKey.get(rowKey) ?? null)
-      : groupByShape.has(shape)
-        ? (groupByShape.get(shape) ?? null)
+      : groupByFamily.has(fam)
+        ? (groupByFamily.get(fam) ?? null)
         : activeGroup;
-    return fromPatternRow(row, group);
+    return fromPatternRow(r, group);
   });
 }
 export interface PatternParseResult {

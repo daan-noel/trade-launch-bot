@@ -12,6 +12,7 @@ import { LensButton, LensSpacer } from 'components/tokens/LensControls';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeFees';
 import { tagLabel } from 'lib/flow/tapeClassify';
+import { coreLabels, coreMarks, coreMarksText } from 'lib/strategy/ixCore';
 import { formatFeePins } from 'lib/strategy/ixPatternRows';
 import { STAGE_MATCHER_TITLE, stageValueOf, stageValueText, type TagStage } from 'hooks/useIxPatternTarget';
 // Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
@@ -256,11 +257,17 @@ export function tokenTradeColumns(
     });
   }
 
+  // The column reads in the grain a badge click writes: under the ix core matcher it
+  // shows the core and its marks - the row the click stages - with the whole
+  // structure on hover.
+  const coreView = stage?.matcher === 'ix_core';
   leading.push({
     key: 'ix_structure',
-    label: 'ix_labels',
+    label: coreView ? 'ix core' : 'ix_labels',
     tooltip:
-      'Ordered instruction-label structure of this trade - what the exact ix shape matcher reads. ' +
+      (coreView
+        ? 'The ix core of this trade - its labels without compute budget, System, token-account, memo and Lighthouse, pump verbs merged - and the marks of what the reduction dropped: what the ix core matcher reads. Hover a cell for the whole structure. '
+        : 'Ordered instruction-label structure of this trade - what the exact ix shape matcher reads. ') +
       (onLensStructure
         ? 'Click the target to wash every candle this exact ordered structure appeared in. ' +
           'View-only: unlike the tag badge, it saves nothing and no rule reads it.'
@@ -290,17 +297,29 @@ export function tokenTradeColumns(
               it fills the rest of the column instead of shrinking to its own text,
               which is what keeps the scroll edge of a tall structure lined up with
               every other row's. */}
-          <IxLabelsDisplay
-            labels={labels}
-            empty="—"
-            copyJson
-            maxHeight="4.5rem"
-            className="flex-1"
-          />
+          {coreView && labels.length > 0 ? (
+            <span className="flex flex-1 flex-col gap-0.5" title={formatIxLabelsText(labels)}>
+              <IxLabelsDisplay labels={coreLabels(labels)} empty="—" copyJson maxHeight="4.5rem" />
+              <span className="font-mono text-[9px] text-text-dim">{coreMarksText(coreMarks(labels))}</span>
+            </span>
+          ) : (
+            <IxLabelsDisplay
+              labels={labels}
+              empty="—"
+              copyJson
+              maxHeight="4.5rem"
+              className="flex-1"
+            />
+          )}
         </span>
       );
     },
-    searchValue: (t) => formatIxLabelsText(t.instruction_labels ?? []),
+    searchValue: (t) => {
+      const labels = t.instruction_labels ?? [];
+      return coreView
+        ? `${formatIxLabelsText(coreLabels(labels))} ${coreMarksText(coreMarks(labels))}`
+        : formatIxLabelsText(labels);
+    },
   });
 
   return [

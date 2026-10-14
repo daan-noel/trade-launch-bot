@@ -11,6 +11,8 @@ import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { CheckIcon, CloseIcon, EditIcon, LinkIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { FeePinToggles } from 'components/tokens/FeePinToggles';
 import { STAGE_MATCHER_TITLE, type StageMatcher } from 'hooks/useIxPatternTarget';
 import type { FlowTag } from 'lib/flow/classifyFlow';
 import { flowTagOf, tagLabel } from 'lib/flow/tapeClassify';
@@ -20,11 +22,12 @@ import {
   rowIsCore,
   rowPinsFee,
   serializeIxPatternRows,
+  type IxPatternFeeMask,
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
 import { useStrategyRegistry } from 'lib/strategy/registry';
 import { DISCOVERY_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import { TAG_NAME_RE, withTagShape } from 'lib/strategy/tagsDoc';
+import { TAG_NAME_RE, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
 import type { Fingerprint } from 'lib/strategy/types';
 
 /** The grains a discovery check writes. Both are `ix_shape` rows. */
@@ -34,16 +37,26 @@ export const CART_MATCHERS: readonly CartMatcher[] = ['ix_shape', 'ix_core'];
 
 /**
  * `doc` with tag `name`'s `ix_shape` set to `rows` — exact structures and ix cores
- * together — every other matcher, option and tag kept. Adds before it removes, so
- * a list swapped whole never passes through "no matcher".
+ * together — and its `wallet` list to `wallets`, every other matcher, option and tag
+ * kept. Adds before it removes, so a list swapped whole never passes through "no
+ * matcher".
  */
-export function withTagDraft(doc: unknown, name: string, rows: readonly IxPatternRow[]): Record<string, unknown> {
+export function withTagDraft(
+  doc: unknown,
+  name: string,
+  rows: readonly IxPatternRow[],
+  wallets: readonly string[] = [],
+): Record<string, unknown> {
   const saved = flowTagOf(doc, name);
   let out: unknown = doc;
   for (const r of rows) out = withTagShape(out, name, r);
+  for (const w of wallets) out = withTagListValue(out, name, 'wallet', w);
   const keep = new Set(rows.map(patternRowKey));
   for (const r of saved?.match.ix_shape ?? []) {
     if (!keep.has(patternRowKey(r))) out = withTagShape(out, name, r, true);
+  }
+  for (const w of saved?.match.wallet ?? []) {
+    if (!wallets.includes(w)) out = withTagListValue(out, name, 'wallet', w, true);
   }
   return (out ?? {}) as Record<string, unknown>;
 }
@@ -58,11 +71,16 @@ export function DraftPatternsCart({
   draftPatterns,
   onChange,
   currentPatterns,
+  draftWallets,
+  onWalletsChange,
+  currentWallets,
   targetFp,
   tagName,
   onTagNameChange,
   matcher,
   onMatcherChange,
+  feePins,
+  onFeePinsChange,
   previewTag,
   applying,
   onApply,
@@ -71,6 +89,11 @@ export function DraftPatternsCart({
   onChange: (patterns: IxPatternRow[]) => void;
   /** The tag's saved `ix_shape`. */
   currentPatterns: IxPatternRow[];
+  /** Staged `wallet` list - a trades-table click under the wallet matcher. */
+  draftWallets: string[];
+  onWalletsChange: (wallets: string[]) => void;
+  /** The tag's saved `wallet` list. */
+  currentWallets: string[];
   targetFp: Fingerprint | null;
   /** The tag Apply writes into (`@tagName`). */
   tagName: string;
@@ -79,6 +102,9 @@ export function DraftPatternsCart({
   /** Which grain a ranked-table check writes. */
   matcher: CartMatcher;
   onMatcherChange: (m: CartMatcher) => void;
+  /** Fee fields a check copies: off a ranked row's one budget, or off a clicked tx. */
+  feePins: IxPatternFeeMask;
+  onFeePinsChange: (mask: IxPatternFeeMask) => void;
   /** The tag as Apply would save it. */
   previewTag: FlowTag;
   applying: boolean;
@@ -91,8 +117,11 @@ export function DraftPatternsCart({
 
   const draftNorm = serializeIxPatternRows(draftPatterns);
   const savedNorm = serializeIxPatternRows(currentPatterns);
-  const stagedCount = draftNorm.length;
-  const dirty = JSON.stringify(draftNorm) !== JSON.stringify(savedNorm);
+  const stagedCount = draftNorm.length + draftWallets.length;
+  const savedCount = savedNorm.length + currentWallets.length;
+  const dirty =
+    JSON.stringify(draftNorm) !== JSON.stringify(savedNorm) ||
+    JSON.stringify([...draftWallets].sort()) !== JSON.stringify([...currentWallets].sort());
   const tagNames = Object.keys(targetFp?.tags ?? {});
   const names = tagNames.includes(tagName) ? tagNames : [...tagNames, tagName];
   const writes = `${tagLabel(tagName)} (${STAGE_MATCHER_TITLE[matcher]})`;
@@ -165,12 +194,17 @@ export function DraftPatternsCart({
                   : 'One exact ix structure: the whole instruction list, in order',
             }))}
           />
+          <FeePinToggles
+            mask={feePins}
+            onChange={onFeePinsChange}
+            onto="a ranked row with one budget, or a clicked tx"
+          />
           <Badge variant={stagedCount > 0 ? 'accent' : 'neutral'} size="sm" pill>
             {stagedCount} staged
           </Badge>
           {targetFp && (
             <span className="text-[10px] text-text-dim">
-              {savedNorm.length} saved
+              {savedCount} saved
             </span>
           )}
           {dirty && (
@@ -188,6 +222,7 @@ export function DraftPatternsCart({
               onClick={() => {
                 if (!window.confirm(clearPrompt(draftPatterns))) return;
                 onChange([]);
+                onWalletsChange([]);
               }}
               title="Delete all staged rows"
             >
@@ -212,7 +247,7 @@ export function DraftPatternsCart({
       ) : stagedCount === 0 ? (
         <EmptyState
           compact
-          message={<>No shapes staged. Check rows in the ranked table below.</>}
+          message={<>Nothing staged. Check rows in the ranked table below, or click trades in the preview.</>}
           action={
             <button
               type="button"
@@ -269,6 +304,24 @@ export function DraftPatternsCart({
               </li>
             );
           })}
+          {draftWallets.map((w) => (
+            <li key={w} className="flex items-center gap-2 rounded border border-white/8 bg-white/3 px-2 py-1.5">
+              <span className="shrink-0 rounded bg-white/6 px-1 font-mono text-[9px] text-text-dim">wallet</span>
+              <span className="min-w-0 flex-1">
+                <AddressDisplay address={w} kind="account" />
+              </span>
+              <IconButton
+                variant="danger"
+                size="sm"
+                type="button"
+                onClick={() => onWalletsChange(draftWallets.filter((x) => x !== w))}
+                title="Remove wallet"
+                aria-label="Remove wallet"
+              >
+                <CloseIcon />
+              </IconButton>
+            </li>
+          ))}
         </ul>
       )}
 

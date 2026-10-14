@@ -7,9 +7,9 @@ import {
   keysForSet,
   kindOf,
   lensTag,
-  mutedPatternForClick,
+  mutedRowForClick,
   patternGroups,
-  toggleExactPattern,
+  togglePatternInSet,
   toPatternRow,
   UNGROUPED,
   type IxPattern,
@@ -287,7 +287,7 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     (v: StageValue) => {
       if (!set) return false;
       if (v.matcher === 'wallet' || kind === 'templates') return false;
-      return mutedPatternForClick(set.patterns, enabledUnits, v.row.labels, v.row) != null;
+      return mutedRowForClick(set.patterns, enabledUnits, v.row) != null;
     },
     [set, kind, enabledUnits],
   );
@@ -305,12 +305,12 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
   const toggle = useCallback(
     (v: StageValue) => {
       if (!set || kind === 'templates' || v.matcher === 'wallet') return;
-      const hidden = mutedPatternForClick(set.patterns, enabledUnits, v.row.labels, v.row);
+      const hidden = mutedRowForClick(set.patterns, enabledUnits, v.row);
       if (hidden) {
         toggleUnit(hidden.group ?? UNGROUPED);
         return;
       }
-      void writeSet({ patterns: toggleExactPattern(set.patterns, v.row.labels, v.row, activeGroup) });
+      void writeSet({ patterns: togglePatternInSet(set.patterns, v.row, activeGroup) });
     },
     [set, kind, writeSet, activeGroup, enabledUnits, toggleUnit],
   );

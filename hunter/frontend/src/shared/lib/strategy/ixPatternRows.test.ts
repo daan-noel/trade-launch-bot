@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { tagsFromJson, tagsToJson, withTagShape } from './tagsDoc';
 import {
-  addUnpinnedPatterns,
+  addPatternRows,
   anyRowMatchesTrade,
   feeFromTrade,
   feeMaskActive,
@@ -12,9 +12,11 @@ import {
   parseIxPatternRows,
   patternKey,
   patternRowKey,
-  removeUnpinnedPatterns,
+  removePatternRows,
+  rowFamilyState,
   rowFromTrade,
   rowMatchesTrade,
+  rowNarrows,
   rowPinsFee,
   serializeIxPatternRow,
   togglePatternRow,
@@ -102,6 +104,16 @@ describe('a tag keeps its ix shape rows whole', () => {
     expect(tagsFromJson(doc)[0].match.ix_shape).toEqual([{ labels: DUMP, cu_limit: 300_000 }, { labels: ['Pump.Fun: Buy'] }]);
   });
 
+  /** A chart click and a draft Apply write through here, so both keep one broad row
+   *  or narrow rows per family. */
+  it('narrows and widens a family on add', () => {
+    let doc = withTagShape({}, 'dump', { labels: DUMP });
+    doc = withTagShape(doc, 'dump', { labels: DUMP, cu_limit: 300_000 });
+    expect(tagsFromJson(doc)[0].match.ix_shape).toEqual([{ labels: DUMP, cu_limit: 300_000 }]);
+    doc = withTagShape(doc, 'dump', { labels: DUMP });
+    expect(tagsFromJson(doc)[0].match.ix_shape).toEqual([{ labels: DUMP }]);
+  });
+
   /** An unpinned row stays the bare array it always was: `tags` is row identity. */
   it('writes an unpinned row as a bare array', () => {
     const doc = withTagShape({}, 'volume', { labels: DUMP });
@@ -187,19 +199,23 @@ describe('togglePatternRow', () => {
   });
 });
 
-describe('addUnpinnedPatterns / removeUnpinnedPatterns', () => {
+describe('addPatternRows / removePatternRows', () => {
   const pinned = { labels: DUMP, cu_limit: 300_000 };
 
   it('widens pins of a shape to a catch-all', () => {
-    expect(addUnpinnedPatterns([pinned], [DUMP])).toEqual([{ labels: DUMP }]);
+    expect(addPatternRows([pinned], [{ labels: DUMP }])).toEqual([{ labels: DUMP }]);
   });
 
   it('does not duplicate an unpinned row already in the list', () => {
-    expect(addUnpinnedPatterns([{ labels: DUMP }], [DUMP])).toEqual([{ labels: DUMP }]);
+    expect(addPatternRows([{ labels: DUMP }], [{ labels: DUMP }])).toEqual([{ labels: DUMP }]);
+  });
+
+  it('skips a pin whose catch-all is already listed', () => {
+    expect(addPatternRows([{ labels: DUMP }], [pinned])).toEqual([{ labels: DUMP }]);
   });
 
   it('unstages the catch-all and keeps the pin', () => {
-    expect(removeUnpinnedPatterns([pinned, { labels: DUMP }], [DUMP])).toEqual([pinned]);
+    expect(removePatternRows([pinned, { labels: DUMP }], [{ labels: DUMP }])).toEqual([pinned]);
   });
 });
 
@@ -275,8 +291,21 @@ describe('core-level rows', () => {
     expect(rowMatchesTrade(core, ['Compute Budget: SetComputeUnitLimit', 'Compute Budget: SetComputeUnitPrice', 'Pump.Fun: Sell'], { ...t, side: 'buy' })).toBe(false);
   });
 
-  it('survives the exact-row staging helpers', () => {
-    expect(removeUnpinnedPatterns([core], [['Pump.Fun: Sell']])).toEqual([core]);
+  it('is its own family, apart from the exact row of the same labels', () => {
+    expect(removePatternRows([core], [{ labels: ['Pump.Fun: Sell'] }])).toEqual([core]);
     expect(togglePatternRow([core], { labels: ['Pump.Fun: Sell'] })).toEqual([core, { labels: ['Pump.Fun: Sell'] }]);
+  });
+
+  it('keeps one broad core or narrow cores, as exact rows do', () => {
+    const broad = { labels: ['Pump.Fun: Sell'], level: 'core' as const };
+    const sideOnly = { labels: ['Pump.Fun: Sell'], level: 'core' as const, side: 'sell' as const };
+    expect(rowNarrows(broad)).toBe(false);
+    expect(rowNarrows(sideOnly)).toBe(true);
+    expect(togglePatternRow([core, sideOnly], broad)).toEqual([broad]);
+    expect(togglePatternRow([broad], core)).toEqual([core]);
+    expect(togglePatternRow([core], sideOnly)).toEqual([core, sideOnly]);
+    expect(rowFamilyState([core], broad)).toBe('narrow');
+    expect(rowFamilyState([broad], core)).toBe('broad');
+    expect(rowFamilyState([{ labels: ['Pump.Fun: Sell'] }], broad)).toBe('none');
   });
 });

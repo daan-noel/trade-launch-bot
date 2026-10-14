@@ -224,8 +224,10 @@ invalidates the `Fingerprint` cache tag, so the chart lines, the metric panes an
 badge all redraw from the row that was just written; the engine picks it up on its next
 rules reload. `withStageValue` (`hooks/useIxPatternTarget.ts`, through the tags
 document's writers `withTagShape` / `withTagListValue` in `lib/strategy/tagsDoc.ts`) is
-the ONE write every add-to-tag click makes; Flow Discovery's draft tape stages into its
-own draft instead, saved by Apply.
+the ONE write every add-to-tag click makes; an ix add keeps the list's per-family rule
+(`togglePatternRow`: one broad row or narrow rows per exact shape or core). Flow
+Discovery's draft tape stages into its own draft instead (ix rows and wallets, same
+rule), saved by Apply.
 
 **Which row it writes to is `useIxPatternTarget`, and it is never guessed while a fact
 is available.** `resolveIxPatternTarget` ranks: an explicit pick from the bar's select,

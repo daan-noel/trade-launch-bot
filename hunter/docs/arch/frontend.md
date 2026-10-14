@@ -752,7 +752,14 @@ is shown and dropped on the next save. The trades-table badge (`IxPatternBar` ov
 chart's tag, and the caption names that tag. Both ix choices are `ix_shape` rows.
 `FeePinToggles` (`cu_limit`, `cu_price`, `tip`) are sticky modifiers for the next ix
 click: all off writes the ix list only; checking `cu_limit` then clicking a trade
-writes that trade's limit onto the row. A sweep chart that has no live fingerprint
+writes that trade's limit onto the row. **One list rule everywhere**
+(`togglePatternRow`, `lib/strategy/ixPatternRows.ts`): per family - an exact row by its
+sequence, a core row by its core (`rowFamilyKey`) - the list holds one broad row or
+narrow rows (`rowNarrows`: fee pins, or a core row's side / marks), never both. A broad
+add widens the family, a narrow add replaces the broad row. The fingerprint click
+(`withTagShape`), the Flow Discovery draft and the lens set (`togglePatternInSet`) all
+write through it. Under the ix core matcher the trades table's ix column shows the core
+and its marks, the row a click writes, with the whole structure on hover. A sweep chart that has no live fingerprint
 passes the run's stored tag as `flowFrozen` and classifies with every matcher;
 nothing on that chart writes. A trader-analysis lens set holds exact and core
 `ix_shape` rows. Copying a set writes those rows onto a fingerprint tag.
@@ -775,11 +782,16 @@ not show is a difference the page cannot express. `tags` is part of
   (tagged = exact labels + fee wildcard + contagion; dump = labels + fee wildcard, no
   contagion; working = `templateGrain`, no contagion, no fee pins). `useFlowPatternSource`
   stays the engine's tagged snapshot for metric panes — it is not the live overlay.
-  The ranked table's Vol checkbox stages an unpinned
-  catch-all (or a grain id on working); the preview trades strip carries the same `FeePinToggles` as chart
-  trades tables (hidden on working). A pin click on a catch-all of that shape narrows it to that tx's
-  budget rather than adding a second row. Vol checked state on the preview is
-  wildcard matching against the whole draft.
+  The ranked table's Vol checkbox and every bulk button write one row per ranked row
+  (`stagedRow`): the exact shape, or the ix core (any side, any marks). With fee pins on
+  (`FeePinToggles` in the draft panel, shared with the preview trades strip) and a ranked
+  row whose trades all carry one budget, the row is pinned to that budget; a row with
+  several budgets stays unpinned. The checkbox has three states: checked (that row or
+  its family's broad row is staged), half (only other narrow rows of the family are -
+  a click widens) and empty. The preview strip also offers the wallet matcher: the
+  draft holds the tag's `wallet` list beside its `ix_shape` rows, and Apply (or a bind
+  followed by one update) writes both. The cover bar counts each side's SOL when a row
+  accepts that side, and a pinned row only on a structure with one budget.
   Apply writes whole rows (`IxPatternRow[]`) through
   `metricConfigWithList` for tagged/dump, or grain ids through
   `metricConfigWithWorkingTemplates` for working; bind accepts the mixed stored shape and the list
@@ -1171,7 +1183,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   Keys ride the existing `flowPatternKeys` prop path; the classifier options, fee pins, and the
   badge write target ride `context/FlowLensContext`, which the page provides and
   `TokenPriceChart` / `TokenTradeChart` / `BarTradesPanel` consume — absent everywhere else, where the
-  chart stack classifies exactly as the engine does. A lens defaults to **contagion off** (each trade
+  chart stack classifies exactly as the engine does. The chart stack reads the lens only
+  while a set is picked (`useActiveFlowLens`); with none it falls back to the fingerprint
+  picker as on every other chart, wallet matcher included. A lens defaults to **contagion off** (each trade
   judged by its own labels or grain, no forward wallet tagging) and **excludes the studied wallet**, because
   it answers "which structures surround this moment", not "who is in the volume crew". A badge under
   a lens writes to the pattern set, never a fingerprint; the one path into the engine is the explicit
