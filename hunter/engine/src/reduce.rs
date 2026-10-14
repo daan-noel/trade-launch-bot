@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use smallvec::SmallVec;
 
-use crate::arm::{ArmState, ClockHorizons, CompiledRule, EnteredCtx, EntryBlockers, EntryVerdict, HeldAction};
+use crate::arm::{ArmState, ClockHorizons, CompiledRule, EnteredCtx, EntryBlockers, EntryVerdict, HeldAction, OwedSell};
 use crate::cap::Cap;
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS};
 use crate::event::{
@@ -280,7 +280,9 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             token.unsettle();
             match token.arms.get(&rule_id).cloned() {
-                Some(ArmState::EntryPending { intent: pend, position, followed, .. }) if pend == intent => {
+                Some(ArmState::EntryPending { intent: pend, position, followed, stage: owed_stage, owed, .. })
+                    if pend == intent =>
+                {
                     // Peak/trough start at the fill: before any run-up
                     // `retrace` measures the drop from entry (a soft stop);
                     // before any dip `bounce` equals `pnl`. `room_taken` reads the
@@ -288,6 +290,8 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     // print itself (the replay confirms right after folding it).
                     // The followed wallet was remembered at the buy decision, not
                     // at this fill: later prints have already replaced it on the track.
+                    // A target sell latched while this buy was in flight is applied
+                    // here, in the same step: that print is already gone.
                     let mut entered = EnteredCtx::at_fill(
                         position,
                         fill.price,
@@ -295,7 +299,6 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         token.track.current_priced_reserves(),
                     );
                     entered.followed = followed;
-                    token.arms.insert(rule_id, ArmState::Entered(entered));
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
                         rule: rule_id,
@@ -307,6 +310,48 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         stage: Some(0),
                         stage_since: None,
                     }));
+                    if let Some(owed) = owed {
+                        // Holding is recorded first so the sell sizes off the bag this
+                        // fill just bought. A partial moves to the stage the latched
+                        // sells ended in; a full close does not.
+                        let (portion, then_stage, reported_stage) = match owed.bps {
+                            None => (Portion::All, None, None),
+                            Some(bps) => {
+                                (Portion::BpsOfRemaining(bps), (owed_stage != 0).then_some(owed_stage), Some(entered.stage))
+                            }
+                        };
+                        let sell = state.next_intent(rule_id, mint.clone());
+                        token.arms.insert(
+                            rule_id,
+                            ArmState::ExitPending {
+                                intent: sell.clone(),
+                                reason: owed.reason,
+                                attempts: 1,
+                                portion,
+                                held: entered,
+                                then_stage,
+                            },
+                        );
+                        fx.push(Effect::PositionUpdate(PositionDelta {
+                            position,
+                            rule: rule_id,
+                            mint: mint.clone(),
+                            status: PositionStatus::ExitPending,
+                            fill: None,
+                            reason: Some(owed.reason),
+                            intent: Some(sell.clone()),
+                            stage: reported_stage,
+                            stage_since: None,
+                        }));
+                        fx.push(Effect::SubmitSell {
+                            intent: sell,
+                            position,
+                            reason: owed.reason,
+                            portion,
+                        });
+                    } else {
+                        token.arms.insert(rule_id, ArmState::Entered(entered));
+                    }
                 }
                 Some(ArmState::ExitPending {
                     intent: pend,
@@ -376,7 +421,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             token.unsettle();
             match token.arms.get(&rule_id).cloned() {
-                Some(ArmState::EntryPending { intent: pend, position, attempts, lamports, followed })
+                Some(ArmState::EntryPending { intent: pend, position, attempts, lamports, followed, stage, owed })
                     if pend == intent =>
                 {
                     // Retry size: frozen at submit on the arm; `0` (a boot-adopted
@@ -420,7 +465,10 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     let attempts_left = reason != FillFailReason::Fatal
                         && attempts < MAX_ENTRY_ATTEMPTS
                         && retry_lamports > 0;
-                    let retry = attempts_left && requalifies;
+                    // He already sold the whole bag this buy was copying. Filling
+                    // a retry would only sell it straight back.
+                    let dumped = owed.is_some_and(|o| o.bps.is_none());
+                    let retry = attempts_left && requalifies && !dumped;
                     if retry {
                         let next = state.next_intent(rule_id, mint.clone());
                         token.arms.insert(
@@ -431,6 +479,8 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                                 attempts: attempts + 1,
                                 lamports: retry_lamports,
                                 followed,
+                                stage,
+                                owed,
                             },
                         );
                         fx.push(Effect::SubmitBuy {
@@ -589,7 +639,15 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             token.unsettle();
             token.arms.insert(
                 rule,
-                ArmState::EntryPending { intent: intent.clone(), position, attempts: 1, lamports, followed: None },
+                ArmState::EntryPending {
+                    intent: intent.clone(),
+                    position,
+                    attempts: 1,
+                    lamports,
+                    followed: None,
+                    stage: 0,
+                    owed: None,
+                },
             );
             // A manual episode is never *blocked* by the copycat guard (the
             // operator's call always wins — manual already bypasses entry
@@ -763,6 +821,9 @@ enum ArmDecision {
     /// end the episode. A later slot does not become the first fire.
     Exhaust,
     Exit(ExitReason),
+    /// A print sell landed while the buy is in flight. Remember it; do not send
+    /// a sell until the fill holds a bag.
+    NoteInflight(HeldAction),
     /// Partial sell. `of_remaining` sizes `sell_bps` off the tokens still held;
     /// otherwise off the first bag. The fill restores Entered in
     /// `then_stage`.
@@ -1305,6 +1366,17 @@ fn decide_arm(
                 }
             }
         }
+        ArmState::EntryPending { followed, stage, owed, .. } => {
+            // A tick clears the print reading, and a rule with no print exit has
+            // nothing here that the fill will not still see.
+            if !on_print || !c.print_exit || owed.is_some_and(|o| o.bps.is_none()) {
+                return ArmDecision::None;
+            }
+            match c.inflight_sell(&token.track, *stage, *followed, now) {
+                Some(action) => ArmDecision::NoteInflight(action),
+                None => ArmDecision::None,
+            }
+        }
         // Pending / in-flight / terminal arms make no sweep decision.
         _ => ArmDecision::None,
     }
@@ -1420,6 +1492,8 @@ fn apply_decision(
                     attempts: 1,
                     lamports: buy_lamports,
                     followed,
+                    stage: 0,
+                    owed: None,
                 },
             );
             fx.push(Effect::SubmitBuy {
@@ -1439,6 +1513,11 @@ fn apply_decision(
                 stage: None,
                 stage_since: None,
             }));
+        }
+        ArmDecision::NoteInflight(action) => {
+            if let Some(ArmState::EntryPending { owed, stage, .. }) = token.arms.get_mut(&rule_id) {
+                note_inflight(owed, stage, action);
+            }
         }
         ArmDecision::Exit(reason) => {
             let Some(ArmState::Entered(held)) = token.arms.get(&rule_id).cloned() else {
@@ -1528,6 +1607,41 @@ fn apply_decision(
                 stage_since: None,
             }));
         }
+    }
+}
+
+/// Fold one in-flight print sell into the share owed when the buy fills.
+///
+/// `of_bag` percents compound against what is still unsold, the same way each
+/// print would have sold a share of the bag we did not hold yet. A reading of
+/// the whole bag, or a sum that reaches it, closes it.
+fn note_inflight(owed: &mut Option<OwedSell>, stage: &mut u8, action: HeldAction) {
+    let HeldAction::Sell { reason, bps, of_bag, then_stage } = action else { return };
+    let Some(add) = bps else {
+        *owed = Some(OwedSell { reason, bps: None });
+        return;
+    };
+    let prev = match owed.map(|o| o.bps) {
+        Some(None) => return,
+        Some(Some(b)) => u32::from(b),
+        None => 0,
+    };
+    let next = if of_bag {
+        let rem = 10_000 - prev;
+        prev + rem * u32::from(add) / 10_000
+    } else {
+        prev.saturating_add(u32::from(add))
+    };
+    if next == 0 {
+        return;
+    }
+    if next >= 10_000 {
+        *owed = Some(OwedSell { reason, bps: None });
+        return;
+    }
+    *owed = Some(OwedSell { reason, bps: Some(next as u16) });
+    if let Some(next_stage) = then_stage {
+        *stage = next_stage;
     }
 }
 

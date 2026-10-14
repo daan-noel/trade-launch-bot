@@ -420,6 +420,9 @@ pub struct CompiledRule {
     /// A held copy position exits on print lines only when the print is the
     /// wallet its buy remembered. Price lines and a dead coin still act.
     pub follow_bought: bool,
+    /// A held line sells on this print (`m_print`, or a `[1p]` span). The
+    /// in-flight buy reads those lines; a rule without one skips that walk.
+    pub(crate) print_exit: bool,
 }
 
 /// How a line that sells with no label names itself: its first live metric condition,
@@ -605,6 +608,12 @@ impl CompiledRule {
         if stages.is_empty() {
             stages.push(CompiledStage { name: "main", ends: None, on: Vec::new(), at_end: Vec::new(), then: None });
         }
+        // One bool so an in-flight buy that cannot sell on a print does not walk
+        // its lines on every trade of that coin.
+        let print_exit = always
+            .iter()
+            .chain(stages.iter().flat_map(|s| s.on.iter()))
+            .any(|l| l.reads_print && l.sell.is_some());
         // Every metric condition anywhere: buffers + clock horizons.
         let mut buffers = Buffers::default();
         let mut clock_horizons = ClockHorizons::default();
@@ -673,6 +682,7 @@ impl CompiledRule {
             priority: p.priority,
             entry_enabled: rule.entry_enabled,
             follow_bought: p.follow == CopyFollow::Bought,
+            print_exit,
         }
     }
 
@@ -884,6 +894,42 @@ impl CompiledRule {
         self.held_line_bound(reads, pos, stage, now, None)
     }
 
+    /// The print sell an in-flight buy would take if the bag were already held
+    /// in `stage`. Price lines and deadlines are not read: they are still there
+    /// after the fill. A print reading is not.
+    ///
+    /// `followed` is the wallet the buy is copying, when the rule follows that
+    /// wallet alone.
+    pub(crate) fn inflight_sell<R: CoinReads + ?Sized>(
+        &self,
+        reads: &R,
+        stage: u8,
+        followed: Option<u64>,
+        now: Ts,
+    ) -> Option<HeldAction> {
+        let bound = self.follow_bought.then_some(followed);
+        let acts = |l: &&CompiledLine| {
+            if !l.reads_print {
+                return false;
+            }
+            if let Some(want) = bound {
+                if reads.print_wallet() != want {
+                    return false;
+                }
+            }
+            !l.idle_in(stage) && self.line_holds(l, reads, None, now)
+        };
+        let line = self
+            .always
+            .iter()
+            .chain(self.stages.get(usize::from(stage)).into_iter().flat_map(|s| s.on.iter()))
+            .find(acts)?;
+        match Self::act(line, reads, None, now) {
+            sell @ HeldAction::Sell { .. } => Some(sell),
+            _ => None,
+        }
+    }
+
     /// `bound` is `Some(wallet)` when this position copies one wallet: a print
     /// line holds only when the print is that wallet. `None` inside means the
     /// buy never recorded a wallet, so a print line does not fire. Price lines
@@ -995,6 +1041,17 @@ pub struct EnteredCtx {
     pub followed: Option<u64>,
 }
 
+/// A target sell that printed while the copy buy was still in flight.
+///
+/// `m_print.sold_bag_pct` is only the last print, and the next print replaces
+/// it, so the share is kept here and sold when the fill lands. `bps` is of the
+/// bag that fill holds. `None` closes it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OwedSell {
+    pub reason: ExitReason,
+    pub bps: Option<u16>,
+}
+
 impl EnteredCtx {
     /// A fresh fill: peak and trough at the fill price, the first stage starting now.
     pub fn at_fill(position: PositionId, fill_price: f64, at: Ts, entry_priced_reserve: f64) -> Self {
@@ -1040,7 +1097,17 @@ pub enum ArmState {
     Armed,
     /// A buy is in flight; the position row exists. `lamports` is the submitted size,
     /// frozen so retries resize identically (`0` ⇒ the rule's configured amount).
-    EntryPending { intent: IntentId, position: PositionId, attempts: u32, lamports: u64, followed: Option<u64> },
+    /// `stage` is the stage a latched print sell is read in (`0` until a partial
+    /// names the next). `owed` is that sell, applied when the fill lands.
+    EntryPending {
+        intent: IntentId,
+        position: PositionId,
+        attempts: u32,
+        lamports: u64,
+        followed: Option<u64>,
+        stage: u8,
+        owed: Option<OwedSell>,
+    },
     /// Entry filled; the position is held and walking its stages.
     Entered(EnteredCtx),
     /// A sell is in flight, closing (a portion of) the bag for `reason`. `held` is the

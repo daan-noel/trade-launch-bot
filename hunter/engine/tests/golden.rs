@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
-use hunter_engine::arm::CompiledRule;
+use hunter_engine::arm::{ArmState, CompiledRule};
 use hunter_engine::event::{
     ArmedStateTag, DisarmReason, Effect, Event, ExitReason, Fill, FillFailReason, LoadedRule, Mint,
     Portion, PositionId, PositionStatus, RuleId, TradeMode,
@@ -2337,4 +2337,150 @@ fn the_lifetime_cap_counts_the_live_run() {
 
     s.seed_run_entries(rid(1), 0);
     assert_eq!(s.counters[&rid(1)].total, 1, "a seed never lowers the count");
+}
+
+// ── Copy: a sell while the buy is in flight ──────────────────────────────────
+
+fn copy_rule() -> LoadedRule {
+    rule(1, 1, json!({
+        "copy": true,
+        "follow": "bought",
+        "enter": { "event": [
+            { "metric": "m_flow.buy_sol", "tag": "targets", "span": "1p", "is": [{ "operator": ">=", "value": 0.04 }] }
+        ]},
+        "stages": [
+            { "name": "a", "on": [{ "if": [{ "metric": "m_print.sold_bag_pct", "tag": "targets", "is": [{ "operator": ">", "value": 0 }] }], "sell": "his sell", "sell_of": "bag", "go": "b" }] },
+            { "name": "b", "on": [{ "if": [{ "metric": "m_print.sold_bag_pct", "tag": "targets", "is": [{ "operator": ">", "value": 0 }] }], "sell": "his sell", "sell_of": "bag", "go": "a" }] }
+        ]
+    }))
+}
+
+fn copy_fp() -> Fingerprint {
+    Fingerprint {
+        id: fid(1),
+        wildcard: true,
+        criteria: Criteria::new(),
+        tags: json!({ "targets": { "match": { "wallet": ["leader", "other"] } } }),
+    }
+}
+
+fn leg(side: Side, tokens: f64, who: &str, at: f64) -> TradeLite {
+    TradeLite {
+        side,
+        sol: 0.1,
+        price: 1.0,
+        reserve_sol: 40.0,
+        priced_reserve_sol: 70.0,
+        token_amount: tokens,
+        wallet_hash: hunter_engine::metrics::trade_keys::wallet_hash(who),
+        at: ts(at),
+        slot: 7,
+        ..Default::default()
+    }
+}
+
+/// Arm the copy rule and submit the buy on the leader's opening print.
+fn copy_bought(s: &mut EngineState) -> (Mint, hunter_engine::event::IntentId) {
+    let m = Mint::from("tokCopy");
+    reduce(s, reload(vec![copy_rule()], vec![copy_fp()]));
+    let fx = reduce(s, Event::TokenCreated {
+        mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None,
+    });
+    assert!(buys(&fx).is_empty(), "the buy waits for his print");
+    let fx = reduce(s, Event::Trade { mint: m.clone(), trade: leg(Side::Buy, 1_000.0, "leader", 1.0) });
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)]);
+    (m, buy_intent(&fx))
+}
+
+/// He sells out before our fill, and a later print wipes that reading. The fill
+/// still sells the whole bag.
+#[test]
+fn a_target_sell_while_the_buy_is_in_flight_sells_on_the_fill() {
+    let mut s = EngineState::new();
+    let (m, entry) = copy_bought(&mut s);
+
+    // The other target buys, then sells out. That print would mirror under
+    // `follow: all`. It must not, because this position follows the leader.
+    assert!(sells(&reduce(&mut s, Event::Trade { mint: m.clone(), trade: leg(Side::Buy, 1_000.0, "other", 1.2) })).is_empty());
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: leg(Side::Sell, 1_000.0, "other", 1.3) });
+    assert!(sells(&fx).is_empty(), "the other wallet's sell is not the one we followed");
+    assert!(
+        matches!(s.tokens[&m].arms.get(&rid(1)), Some(ArmState::EntryPending { owed: None, .. })),
+        "his sell is not remembered"
+    );
+
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: leg(Side::Sell, 1_000.0, "leader", 1.4) });
+    assert!(sells(&fx).is_empty(), "we hold nothing yet, so the sell waits for the fill");
+    let dumped = match s.tokens[&m].arms.get(&rid(1)) {
+        Some(ArmState::EntryPending { owed: Some(o), .. }) => o.bps.is_none(),
+        _ => false,
+    };
+    assert!(dumped, "he sold the whole bag");
+
+    // His sell is no longer the last print.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: leg(Side::Buy, 50.0, "other", 1.6) });
+    assert!(sells(&fx).is_empty());
+
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 2.0) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::Holding, PositionStatus::ExitPending]);
+    assert_eq!(sell_portions(&fx), vec![Portion::All]);
+    assert_eq!(sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![ExitReason::Line("his sell")]);
+}
+
+/// Two partials before the fill compound into one share of the bag we are about
+/// to hold, and a tick in between does not drop them.
+#[test]
+fn partial_sells_before_the_fill_compound_into_one_portion() {
+    let mut s = EngineState::new();
+    let (m, entry) = copy_bought(&mut s);
+
+    // 400 of 1000, then 180 of the 600 left: 58 % of the bag he held at our buy.
+    assert!(sells(&reduce(&mut s, Event::Trade { mint: m.clone(), trade: leg(Side::Sell, 400.0, "leader", 1.2) })).is_empty());
+    assert!(sells(&reduce(&mut s, Event::Tick { now: ts(1.3) })).is_empty());
+    assert!(sells(&reduce(&mut s, Event::Trade { mint: m.clone(), trade: leg(Side::Sell, 180.0, "leader", 1.5) })).is_empty());
+
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 2.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::BpsOfRemaining(5800)]);
+    assert_eq!(sells(&fx)[0].1, ExitReason::Line("his sell"));
+}
+
+/// A sell after the fill still mirrors that print. The in-flight latch is not
+/// involved.
+#[test]
+fn a_target_sell_after_the_fill_still_mirrors_his_percent() {
+    let mut s = EngineState::new();
+    let (m, entry) = copy_bought(&mut s);
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 1.1) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::Holding]);
+    assert!(sells(&fx).is_empty());
+
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: leg(Side::Sell, 300.0, "leader", 2.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::BpsOfRemaining(3000)]);
+}
+
+/// He dumped while the buy was in flight. A failed buy does not retry, even
+/// when the failure carries no clock that could fail the entry gate.
+#[test]
+fn a_full_dump_before_the_fill_does_not_retry_the_buy() {
+    let mut s = EngineState::new();
+    let (m, entry) = copy_bought(&mut s);
+    reduce(&mut s, Event::Trade { mint: m.clone(), trade: leg(Side::Sell, 1_000.0, "leader", 1.4) });
+
+    let fx = reduce(&mut s, Event::FillFailed { intent: entry, reason: FillFailReason::Reverted, at: None });
+    assert!(buys(&fx).is_empty(), "he is already out");
+    assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
+}
+
+/// A partial latched before a failed attempt rides the retry, and the retry's
+/// fill sells that share.
+#[test]
+fn a_partial_latched_before_a_failed_buy_sells_on_the_retry_fill() {
+    let mut s = EngineState::new();
+    let (m, entry) = copy_bought(&mut s);
+    reduce(&mut s, Event::Trade { mint: m, trade: leg(Side::Sell, 400.0, "leader", 1.4) });
+
+    let fx = reduce(&mut s, Event::FillFailed { intent: entry, reason: FillFailReason::Reverted, at: None });
+    assert_eq!(buys(&fx).len(), 1, "he still holds most of the bag");
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: buy_intent(&fx), fill: fill(1.0, 2.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::BpsOfRemaining(4000)]);
 }

@@ -117,7 +117,11 @@ only for that wallet. A price line and a dead coin still act on our own pile.
 `all`, and a document that omits `follow`, lets any target wallet's print sell
 the one pile. `each` is refused: one pile per wallet needs a second position
 on the coin. One position per coin remains, so another target's buy does not
-add a second pile. The builder edits pool state, price, flow, and position, plus the copy readings
+add a second pile. A print exit that lands while the buy is still in flight is
+kept on the arm and sold when the fill confirms: the print reading does not
+survive the next print, so it cannot be re-read at the fill. Several of his
+sells before the fill become one portion of the bag the fill holds. A sell
+that empties him also refuses the buy retry. The builder edits pool state, price, flow, and position, plus the copy readings
 (`m_print.flat_before`, `m_print.sold_bag_pct`). The enter gate is
 `m_flow.buy_sol @targets [1p]`; a sell
 line may say `sell_of: "bag"`, which sells that print's percent of the tokens we

@@ -69,7 +69,9 @@
   condition is part of the rule a save and a bundle export keep. `follow: "bought"`
   sizes that percent from the wallet whose buy opened the position; another
   target's sell does not. `follow` absent, or `"all"`, sizes it from whichever
-  target printed.
+  target printed. A sell that prints while the buy is still in flight is kept
+  on the arm and applied at the fill. The stage pair above is for sells after
+  the bag is held.
 - **`always` lines close regardless of stage.** `stop_loss`, `take_profit` and every
   authored `always` line are read before the stage's own lines, and `Dead`, `Migrated` and
   `Manual` close all. That is the catastrophe path: a stub in a rug must not wait for its

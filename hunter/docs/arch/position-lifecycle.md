@@ -51,6 +51,8 @@ Engine (`hunter/engine/src/reduce.rs`), unchanged shape except the split:
   from `decide_arm`'s `Armed` branch, which a retry never passes through. This is
   why `Event::FillFailed` carries `at` at all (it was the one event with no clock;
   `None` = a pre-`at` JSONL line, replayed unqualified).
+  A full copy sell already latched on that in-flight buy refuses the retry: the
+  fill would be sold straight back out.
   Failing the re-check terminates the entry exactly like attempt exhaustion —
   safe, because `FillFailReason::Reverted` is only ever emitted on a **proven**
   non-fill (`exec_real`'s `EntryOutcome::Retry` needs a confirmed on-chain revert;

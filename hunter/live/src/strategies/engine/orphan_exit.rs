@@ -766,6 +766,8 @@ pub fn adopt_buy_submitted_into_engine(
             attempts: 1,
             lamports: 0,
             followed: pos.followed_wallet(),
+            stage: 0,
+            owed: None,
         },
     );
 
