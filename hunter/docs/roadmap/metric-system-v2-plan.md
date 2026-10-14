@@ -74,8 +74,7 @@ is the table in `engine/src/metrics/v1_map.rs` (the migration's source, section 
         "ix_contains": ["Axiom"],
         "ix_lacks":    ["Photon"],
         "wallet":      ["7xk..."],
-        "creator":     true,
-        "cluster":     {"min_prints": 3, "sol_tol_pct": 10}
+        "creator":     true
       },
       "side":    "sell",
       "sticky":  true
@@ -84,9 +83,8 @@ is the table in `engine/src/metrics/v1_map.rs` (the migration's source, section 
 }
 ```
 
-A trade carries the tag when **any** `match` entry holds, on the given `side` only. The
-matchers are read in a fixed order and `cluster` last, because a cluster counts every trade
-it reads into its slot group (today's classifier order). `sticky`: a wallet that carried
+A trade carries the tag when **any** `match` entry holds, on the given `side` only.
+`sticky`: a wallet that carried
 the tag once carries it for the rest of the coin. A creation-slot buyer is the rest unless
 a matcher names it. Built-in tags need no
 config and serve `m_holdings.bag_share_pct` only: `bundled` (first buy in a slot where
@@ -98,7 +96,7 @@ used there may carry only `ix_template` and `program` matchers.
 
 | today | v2 |
 | --- | --- |
-| `m_flow_ix` { ix_patterns, tagged_ix_markers, untagged_ix_markers, tagged_programs, volume_cluster, creator_is_tagged, wallet_contagion, creation_slot_buyers } | tag `volume` { ix_shape, ix_contains, ix_lacks, program, cluster, creator, sticky; creation_slot_buyers "excluded" is refused, as v2 has no "neither" half } |
+| `m_flow_ix` { ix_patterns, tagged_ix_markers, untagged_ix_markers, tagged_programs, creator_is_tagged, wallet_contagion, creation_slot_buyers } | tag `volume` { ix_shape, ix_contains, ix_lacks, program, creator, sticky; `volume_cluster` is dropped, a tag names trades on an explicit axis; creation_slot_buyers "excluded" is refused, as v2 has no "neither" half } |
 | `m_dump_ix` { ix_patterns, creator_is_listed } | tag `dump` { ix_shape, creator, side: sell } |
 | `m_copy` { target_wallets } | tag `targets` { wallet } |
 | `m_burst_slot` { working_templates } | tag `working` { ix_template, program } |
@@ -199,7 +197,7 @@ rule part that the registry does not say.
   resolved at rule load to dense indices; no name lookup after load.
 - One `TagState` per (fingerprint, tag) replaces the three per-fingerprint states (flow,
   dump, copy): lifetime totals for both halves (SOL, prints, transactions per side), one
-  window buffer per span, the sticky set, cluster groups and the holdings bag. Same number
+  window buffer per span, the sticky set and the holdings bag. Same number
   of states per token as today, so the per-trade cost does not grow. The working list stays
   a read-time template set on the token's one slot state.
 - Each quantity declares the spans and tags it accepts, and the parser rejects the rest.

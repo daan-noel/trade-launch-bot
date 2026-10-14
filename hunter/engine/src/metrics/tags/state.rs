@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, VecDeque};
 use super::config::TagPatterns;
 use super::volume_walk::{Verdict, VolumeWalk};
 use crate::hash::{HashedMap, HashedSet};
-use crate::metrics::fee::FeeKeys;
 use crate::metrics::flow_window::push_sorted;
 use crate::metrics::registry::Metric;
 use crate::metrics::{Cursor, Side, TradeLite, Ts, WindowKey, WindowSpec};
@@ -244,15 +243,6 @@ impl TagWindow {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ClusterGroup {
-    ix_hash: Option<u64>,
-    side: Side,
-    fee: FeeKeys,
-    first_sol: f64,
-    close: u32,
-}
-
 /// Per-(coin, fingerprint, tag) state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TagState {
@@ -268,9 +258,6 @@ pub struct TagState {
     creator_wallet_hash: Option<u64>,
     lifetime: SplitTotals,
     windows: BTreeMap<WindowKey, TagWindow>,
-    /// Cluster groups of the slot being folded; cleared when the slot moves.
-    cluster_slot: u64,
-    cluster_groups: Vec<ClusterGroup>,
     /// Each half's bag in token units, signed (buys in, sells out) — `profit_sol`.
     tagged_tokens: f64,
     rest_tokens: f64,
@@ -301,8 +288,6 @@ impl TagState {
             creator_wallet_hash: None,
             lifetime: SplitTotals::default(),
             windows: BTreeMap::new(),
-            cluster_slot: 0,
-            cluster_groups: Vec::new(),
             tagged_tokens: 0.0,
             rest_tokens: 0.0,
             last_vsol: f64::NAN,
@@ -512,9 +497,7 @@ impl TagState {
         liquidation - (half.buy_sol - half.sell_sol)
     }
 
-    /// Whether a trade folds on the tagged half: the matchers, then the cluster rule
-    /// (which counts the trade into its slot group, so it runs once per trade and only
-    /// here, and only when nothing else qualified it).
+    /// Whether a trade folds on the tagged half.
     fn fold_tagged(&mut self, t: &TradeLite) -> bool {
         let on_side = self.patterns.side.is_none_or(|s| s == t.side);
         if !on_side {
@@ -524,7 +507,7 @@ impl TagState {
             .walk
             .as_ref()
             .is_some_and(|w| w.beside(t, &self.sticky_wallets));
-        let matched = self.matches(t) || self.cluster_hit(t);
+        let matched = self.matches(t);
         let Some(w) = self.walk.as_mut() else {
             return matched;
         };
@@ -542,9 +525,7 @@ impl TagState {
         v.owner
     }
 
-    /// Whether this trade would carry the tag on its matchers alone (the cluster rule
-    /// counts trades into its groups, so it is left out of a question that must not
-    /// change state).
+    /// Whether this trade would carry the tag. Does not change state.
     #[cfg(test)]
     pub(crate) fn carries(&self, t: &TradeLite) -> bool {
         self.patterns.side.is_none_or(|s| s == t.side) && self.matches(t)
@@ -561,39 +542,6 @@ impl TagState {
             || t.program_hash.is_some_and(|h| p.programs.contains(&h))
             || t.template_hash.is_some_and(|h| p.templates.contains(&h))
             || (t.wallet_hash != 0 && p.wallets.contains(&t.wallet_hash))
-    }
-
-    /// Count this trade into its slot's cluster group; `true` once it is at least the
-    /// `min_prints`-th close member.
-    fn cluster_hit(&mut self, t: &TradeLite) -> bool {
-        let Some(c) = self.patterns.cluster else { return false };
-        if t.slot != self.cluster_slot {
-            self.cluster_groups.clear();
-            self.cluster_slot = t.slot;
-        }
-        let idx = match self
-            .cluster_groups
-            .iter()
-            .position(|g| g.ix_hash == t.ix_hash && g.side == t.side && g.fee == t.fee)
-        {
-            Some(i) => i,
-            None => {
-                self.cluster_groups.push(ClusterGroup {
-                    ix_hash: t.ix_hash,
-                    side: t.side,
-                    fee: t.fee,
-                    first_sol: t.sol,
-                    close: 0,
-                });
-                self.cluster_groups.len() - 1
-            }
-        };
-        let g = &mut self.cluster_groups[idx];
-        let close = (t.sol - g.first_sol).abs() <= f64::from(c.sol_tol_pct) / 100.0 * g.first_sol;
-        if close {
-            g.close += 1;
-        }
-        close && g.close >= c.min_prints
     }
 
     /// How many entries one window retains. Test-only: reads are corrected at both

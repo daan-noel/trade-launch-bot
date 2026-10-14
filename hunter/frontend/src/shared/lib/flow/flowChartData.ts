@@ -29,7 +29,6 @@ export function toFlowTrade(t: ChartTrade): FlowTradeLite {
     sol: t.amount_sol ?? 0,
     ix_labels: t.instruction_labels,
     side: t.trade_type,
-    slot: t.slot ?? null,
     cu_limit: t.cu_limit,
     cu_price: t.cu_price,
     tip_lamports: t.tip_lamports,

@@ -60,7 +60,7 @@ unchanged.
 - **`excludeWallets`** (lens default: the studied wallet). A trader must not classify
   itself, or the lines describe the subject instead of its surroundings. Analysis only:
   the engine has no such option. An excluded wallet always reads as the rest and never
-  moves sticky, cluster or creation-slot state.
+  moves the sticky set.
 - **`side`** (lens default **both**). A shape or grain carries no direction: an
   aggregator's structure is byte-identical on the buy and on the sell that unwinds it, so
   one key matches both legs and an unnarrowed line sums two opposite events. The readings

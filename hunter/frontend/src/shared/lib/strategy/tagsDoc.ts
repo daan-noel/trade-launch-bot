@@ -2,8 +2,7 @@
 // two, `@name` (the trades that carry it) and `@!name` (the rest). The frontend mirror
 // of `hunter_engine::metrics::tags::config`:
 //
-//   { "volume": { "match": { "program": [...], "creator": true,
-//                            "cluster": {"min_prints": 3, "sol_tol_pct": 10} },
+//   { "volume": { "match": { "program": [...], "creator": true },
 //                 "side": "sell", "sticky": true } }
 //
 // A trade carries the tag when ANY `match` entry holds, on the tag's `side` only.
@@ -25,11 +24,6 @@ import type { StrategyRegistry } from './registry';
 /** Tag names: `[a-z0-9_]`, 1 to 24 characters (engine `tags::check_name`). */
 export const TAG_NAME_RE = /^[a-z0-9_]{1,24}$/;
 
-export interface Cluster {
-  min_prints: number;
-  sol_tol_pct: number;
-}
-
 /** The matchers a tag may use. An absent key is not used. */
 export interface TagMatch {
   program?: string[];
@@ -39,7 +33,6 @@ export interface TagMatch {
   ix_lacks?: string[];
   wallet?: string[];
   creator?: boolean;
-  cluster?: Cluster;
 }
 
 export type MatcherKey = keyof TagMatch;
@@ -81,12 +74,6 @@ export function tagsFromJson(doc: unknown): TagDef[] {
     for (const k of STRING_LIST_MATCHERS) if (m[k] !== undefined) match[k] = strings(m[k]);
     if (m.ix_shape !== undefined) match.ix_shape = parseIxPatternRows(m.ix_shape);
     if (typeof m.creator === 'boolean') match.creator = m.creator;
-    if (isObj(m.cluster)) {
-      match.cluster = {
-        min_prints: Number(m.cluster.min_prints),
-        sol_tol_pct: Number(m.cluster.sol_tol_pct),
-      };
-    }
     return {
       id: newId(),
       name,
@@ -107,7 +94,7 @@ function shapeCounts(rows: readonly IxPatternRow[]): boolean {
 }
 
 /** Whether a matcher is in use. A list counts only when a value survives the save
- *  (blank strings and blank ix rows are dropped). `creator: true` and a cluster count. */
+ *  (blank strings and blank ix rows are dropped). `creator: true` counts. */
 export function matcherUsed(m: TagMatch, k: MatcherKey): boolean {
   const v = m[k];
   if (v === undefined) return false;
@@ -129,9 +116,9 @@ export function unclassifiableTagError(t: TagDef): string | null {
   return `${at} has no matcher, so no trade could carry it`;
 }
 
-/** The matchers a tag uses, in the classifier's fixed order (cluster last). */
+/** The matchers a tag uses, in the classifier's fixed order. */
 export function usedMatchers(t: TagDef): MatcherKey[] {
-  const order: MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks', 'wallet', 'creator', 'cluster'];
+  const order: MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks', 'wallet', 'creator'];
   return order.filter((k) => matcherUsed(t.match, k));
 }
 
@@ -149,7 +136,6 @@ export function tagsToJson(tags: TagDef[]): Obj {
     const shapes = serializeIxPatternRows(t.match.ix_shape ?? []);
     if (shapes.length) match.ix_shape = shapes;
     if (t.match.creator) match.creator = true;
-    if (t.match.cluster) match.cluster = { ...t.match.cluster };
     const def: Obj = { match };
     if (t.side) def.side = t.side;
     if (t.sticky) def.sticky = true;
@@ -189,7 +175,6 @@ export function tagSentence(t: TagDef): string {
   const wallets = (m.wallet ?? []).map((s) => s.trim()).filter(Boolean);
   if (wallets.length) parts.push(`${wallets.length} wallet${wallets.length === 1 ? '' : 's'}`);
   if (m.creator) parts.push('the creator');
-  if (m.cluster) parts.push(`a same-slot cluster of ${m.cluster.min_prints}+ prints within ${m.cluster.sol_tol_pct} % SOL`);
   const opts: string[] = [];
   if (t.side) opts.push(`${t.side}s only`);
   if (t.sticky) opts.push('sticky per wallet');
@@ -224,15 +209,6 @@ export function validateTags(tags: TagDef[], reg: StrategyRegistry | undefined):
     for (const r of t.match.ix_shape ?? []) {
       if (r.cu_limit != null && r.cu_limit > MAX_TX_COMPUTE_UNITS) {
         errors.push(`${at}: cu_limit ${r.cu_limit} exceeds the ${MAX_TX_COMPUTE_UNITS} compute units a transaction may request`);
-      }
-    }
-    const c = t.match.cluster;
-    if (c) {
-      if (!(Number.isInteger(c.min_prints) && c.min_prints >= 2)) {
-        errors.push(`${at}: a cluster needs at least 2 prints (one trade is not a cluster)`);
-      }
-      if (!(Number.isInteger(c.sol_tol_pct) && c.sol_tol_pct >= 0 && c.sol_tol_pct <= 100)) {
-        errors.push(`${at}: the cluster's SOL tolerance is a whole percent from 0 to 100`);
       }
     }
   }

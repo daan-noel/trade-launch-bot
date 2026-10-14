@@ -82,7 +82,7 @@ export interface TagFieldSpec {
   key: string;
   kind: 'match' | 'option';
   /** `program[]`, `ix_shape[]`, `ix_template[]`, `marker[]`, `wallet[]`, `bool`,
-   *  `cluster`, `side`. */
+   *  `side`. */
   value_type: string;
   title: string;
   summary: string;

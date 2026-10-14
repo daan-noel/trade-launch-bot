@@ -31,7 +31,7 @@ export interface ChartTrade {
   wallet_address?: string;
   /** Ordered instruction labels - read by the tag classifier (`lib/flow/classifyFlow`). */
   instruction_labels?: string[] | null;
-  /** Per-tx compute budget - read by a fee-pinned `ix_shape` entry and the cluster matcher. */
+  /** Per-tx compute budget - read by a fee-pinned `ix_shape` entry. */
   cu_limit?: number | null;
   cu_price?: number | null;
   tip_lamports?: number | null;

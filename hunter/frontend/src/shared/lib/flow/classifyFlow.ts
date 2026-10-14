@@ -7,13 +7,12 @@
  *  One trade, one verdict, in the engine's order:
  *
  *  1. On the tag's `side` (absent = both), the trade carries the tag when ANY matcher
- *     holds - program, ix_shape, ix_template, ix_contains, ix_lacks, wallet, creator,
- *     then the sticky set, then `cluster` LAST (it counts the trade into its slot
- *     group, so it runs only when nothing else qualified it).
+ *     holds - program, ix_shape, ix_template, ix_contains, ix_lacks, wallet, creator -
+ *     or its wallet is in the sticky set.
  *  2. Else the trade is the rest (`@!tag`).
  *
  *  Trades must be the coin's FULL history in canonical order (slot -> tx_index ->
- *  leg_index): sticky and cluster are forward-only state. */
+ *  leg_index): the sticky set is forward-only state. */
 
 import { anyRowMatchesTrade, type IxPatternRow } from 'lib/strategy/ixPatternRows';
 import type { MatcherKey, TagDef } from 'lib/strategy/tagsDoc';
@@ -31,13 +30,9 @@ export interface FlowTradeLite {
   /** Read as a magnitude, whatever sign convention the caller uses. */
   sol: number;
   ix_labels: readonly string[] | null | undefined;
-  /** Which leg this is. A trade without one is off-side under a sided tag and forms
-   *  its own cluster groups. */
+  /** Which leg this is. A trade without one is off-side under a sided tag. */
   side?: FlowSide | null;
-  /** The trade's slot. Read by `cluster` (groups per slot); absent reads as slot 0. */
-  slot?: number | null;
-  /** The fee budget this tx declared: read by fee-pinned ix shapes and by the
-   *  cluster's group identity. Absent = not captured. */
+  /** The fee budget this tx declared: read by a fee-pinned ix shape. Absent = not captured. */
   cu_limit?: number | null;
   cu_price?: number | null;
   tip_lamports?: number | null;
@@ -48,7 +43,7 @@ export interface FlowClassifyOptions {
   /** The coin's creator wallet - the `creator` matcher's subject. */
   creatorWallet?: string | null;
   /** Analysis-only (a flow lens): wallets that always read as the rest and never
-   *  move sticky or cluster state - the studied trader itself, so a
+   *  join the sticky set - the studied trader itself, so a
    *  lens does not classify its own subject. The engine has no such option. */
   excludeWallets?: ReadonlySet<string> | null;
 }
@@ -74,14 +69,6 @@ export interface FlowClassified {
   taggedSol: number;
   /** SOL on the rest; 0 otherwise. */
   untaggedSol: number;
-}
-
-interface ClusterGroup {
-  ix: string | null;
-  side: FlowSide | null;
-  fee: string;
-  firstSol: number;
-  close: number;
 }
 
 /** A tag compiled once per classification pass, never per trade. */
@@ -137,8 +124,6 @@ function matchReason(
   return null;
 }
 
-const feeKey = (t: FlowTradeLite) => `${t.cu_limit ?? ''}|${t.cu_price ?? ''}|${t.tip_lamports ?? ''}`;
-
 /** Classify `trades` (canonical order) against one tag. */
 export function classifyFlowTrades<T extends FlowTradeLite>(
   trades: readonly T[],
@@ -148,31 +133,9 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
   const c = compile(tag);
   const creatorWallet = opts.creatorWallet ?? null;
   const excluded = opts.excludeWallets ?? null;
-  const cluster = tag.match.cluster ?? null;
   const sticky = tag.sticky ? new Set<string>() : null;
   // Engine `set_creator`: under creator + sticky the creator starts in the set.
   if (sticky && c.creator && creatorWallet) sticky.add(creatorWallet);
-  let clusterSlot = 0;
-  let groups: ClusterGroup[] = [];
-
-  const clusterHit = (t: FlowTradeLite, labels: readonly string[], sol: number, slot: number) => {
-    if (!cluster) return false;
-    if (slot !== clusterSlot) {
-      groups = [];
-      clusterSlot = slot;
-    }
-    const ix = labels.length > 0 ? JSON.stringify(labels) : null;
-    const side = t.side ?? null;
-    const fee = feeKey(t);
-    let g = groups.find((x) => x.ix === ix && x.side === side && x.fee === fee);
-    if (!g) {
-      g = { ix, side, fee, firstSol: sol, close: 0 };
-      groups.push(g);
-    }
-    const close = Math.abs(sol - g.firstSol) <= (cluster.sol_tol_pct / 100) * g.firstSol;
-    if (close) g.close += 1;
-    return close && g.close >= cluster.min_prints;
-  };
 
   const out: (T & FlowClassified)[] = [];
   const push = (t: T, half: FlowHalf, reason: FlowReason | null, sol: number) =>
@@ -188,7 +151,6 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
   for (const t of trades) {
     const sol = Math.abs(t.sol);
     const labels = t.ix_labels ?? [];
-    const slot = t.slot ?? 0;
     if (excluded?.has(t.wallet_address)) {
       push(t, 'rest', null, sol);
       continue;
@@ -200,8 +162,7 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
     }
 
     const onSide = tag.side == null || tag.side === t.side;
-    let reason: FlowReason | null = onSide ? matchReason(c, t, labels, creatorWallet, sticky) : null;
-    if (onSide && reason === null && clusterHit(t, labels, sol, slot)) reason = 'cluster';
+    const reason: FlowReason | null = onSide ? matchReason(c, t, labels, creatorWallet, sticky) : null;
     if (reason !== null) {
       sticky?.add(t.wallet_address);
       push(t, 'tagged', reason, sol);

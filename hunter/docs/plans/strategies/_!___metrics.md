@@ -133,8 +133,7 @@ compiled once per reload (`compile_tags` into `EngineState::fp_tags`), never per
 1. Off the tag's `side` (absent = both), the trade cannot carry it.
 2. It carries the tag when ANY stateless matcher holds (`program`, `ix_shape`,
    `ix_template`, `ix_contains`, `ix_lacks`, `wallet`, `creator`) or its
-   wallet is in the sticky set; else `cluster`, checked last because it counts every trade
-   it reads into its slot group.
+   wallet is in the sticky set.
 3. Else the trade is the rest.
 
 A tag has no creation-slot matcher: a creation-slot buyer is the rest unless another
@@ -206,9 +205,6 @@ kept: an edit moves a live coin's future, never its past.
   T5). A sell-side list (`dump`) never wants `sticky`: every later sell of a wallet that
   once sold a listed build would count. A `volume` tag converted from v1 carries both,
   because v1 defaulted them on.
-- **`cluster`** tags a trade once it is the `min_prints`-th print in one slot with the same
-  ix shape, side and fee preset, its SOL within `sol_tol_pct` of the group's first. Read as
-  trades land, so the first `min_prints - 1` members stay the rest.
 
 **Tags overlap freely.** A sell may carry `@volume` and `@dump` at once: two classifiers
 agreeing on one transaction, not one trade counted twice. Nothing sums across tags, so read
@@ -377,7 +373,7 @@ looks like a strategy result rather than a load error. The answer lives on the r
 - `Buffers::needs_slot`: a slot span, or the slot / wave families. Without the column
   `TradeLite::slot = 0` and every slot window is frozen.
 - **Fold order is part of the answer.** Canonical order is slot -> tx_index -> leg; a
-  loader ordering by timestamp gives print windows, clusters, sticky sets and the creation
+  loader ordering by timestamp gives print windows, sticky sets and the creation
   slot a different history from live (95 % of the money sits in same-slot pairs ~0.5 ms
   apart).
 - The creator seed (section 3) and the fingerprint axes' primed tallies (section 10).
@@ -441,7 +437,7 @@ registry (`RULE_PARTS`). What matters to a metric:
 | a metric | a `Metric` variant in family order + its `METRICS` row (name ending in its unit, phrase, summary, example with a number, note, tags, tag level, spans, monotonic, `=` band, hue); the compute arm in its family's module, routed by `TokenTrack::value`; a `Buffers::absorb` arm if it needs a buffer; `needs_wallet_identity` / `needs_ix_labels`; a `ClockHorizons` field if it moves on a tick; regenerate `fixtures/registry.json` | `metric_order_matches_the_enum`, `every_name_ends_in_its_unit`, `every_metric_is_explained_with_an_example`, `registry_fixture_is_current`, `every_metric_is_live_reachable` |
 | a buffer (a new windowed state) | a `TokenTrack` field with `ensure_*`, arms in both `on_trade` and `on_tick`, a list on `Buffers` (+ `union`, `ensure_on`) and in `TrackRequirements::adds_to` | the O(1) and brute-force equivalence tests of its module |
 | a family | a `Family` variant + `FAMILIES` row, a compute module | the exhaustive matches in `TokenTrack::value` and `Buffers::absorb` (compile-time) |
-| a tag matcher or option | a `TAG_FIELDS` row, a `parse_tag` arm, a `TagPatterns` field, the check in `TagState::matches` (stateless) or `fold_half` (stateful, like `cluster`), and the mirror in `classifyFlow.ts` + `tagsDoc.ts` | `the_documented_vocabulary_is_the_parsed_one`, the shared `flow_ix_parity.json` fixture |
+| a tag matcher or option | a `TAG_FIELDS` row, a `parse_tag` arm, a `TagPatterns` field, the check in `TagState::matches`, and the mirror in `classifyFlow.ts` + `tagsDoc.ts` | `the_documented_vocabulary_is_the_parsed_one`, the shared `flow_ix_parity.json` fixture |
 | a span kind | `Span` / `SpanUse` / `span_kinds_json`, `check_allowed`, `Buffers::absorb`, `ClockHorizons::absorb_req`, `chart_reads` | `every_metric_is_live_reachable` (its span list), `spans_round_trip` |
 | a fingerprint axis | one `AxisDef` + one reader arm ([fingerprint-ranges.md](fingerprint-ranges.md)) | the axis registry's guards |
 

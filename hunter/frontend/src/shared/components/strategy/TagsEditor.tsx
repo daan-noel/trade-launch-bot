@@ -36,7 +36,7 @@ function B({ children }: { children: ReactNode }) {
 /** Matchers that read this trade's instruction list. */
 const LIST_MATCHERS: readonly MatcherKey[] = ['program', 'ix_shape', 'ix_template', 'ix_contains', 'ix_lacks'];
 /** Matchers that read who sent the trade. */
-const WHO_MATCHERS: readonly MatcherKey[] = ['wallet', 'creator', 'cluster'];
+const WHO_MATCHERS: readonly MatcherKey[] = ['wallet', 'creator'];
 /** What the volume pattern stores. Everything else on a volume tag stays visible, not dropped. */
 const VOLUME_STORED: readonly MatcherKey[] = ['ix_shape', 'wallet', 'creator'];
 
@@ -146,18 +146,6 @@ function MatcherEditor({
     }
     case 'creator':
       return <p className="text-[11px] text-text-dim">Every trade by the coin's creator.</p>;
-    case 'cluster': {
-      const c = match.cluster ?? { min_prints: 3, sol_tol_pct: 10 };
-      return (
-        <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-dim">
-          the
-          <Input fieldSize="sm" numeric integer className="w-14" numericValue={c.min_prints} disabled={disabled} onNumericChange={(n) => onChange({ ...match, cluster: { ...c, min_prints: n ?? NaN } })} />
-          th or later print in one slot with the same ix shape, side and fees, its SOL within
-          <Input fieldSize="sm" numeric integer unit="%" className="w-16" numericValue={c.sol_tol_pct} disabled={disabled} onNumericChange={(n) => onChange({ ...match, cluster: { ...c, sol_tol_pct: n ?? NaN } })} />
-          of the first
-        </div>
-      );
-    }
   }
 }
 
@@ -165,8 +153,6 @@ function startValue(k: MatcherKey): Partial<TagMatch> {
   switch (k) {
     case 'creator':
       return { creator: true };
-    case 'cluster':
-      return { cluster: { min_prints: 3, sol_tol_pct: 10 } };
     default:
       return { [k]: [] };
   }

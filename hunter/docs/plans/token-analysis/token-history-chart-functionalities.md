@@ -245,8 +245,8 @@ Three further rules the surface exists to enforce:
 
 - **The badge says why.** The verdict comes from the same classification the lines draw
   from (`tradeFlowReasons`, `useFlowReasons`), run over the host's **full** history - a
-  `sticky` wallet, a `cluster` and the creation slot are forward-only, so a single bar's
-  rows cannot reconstruct them - and the cell appends `via <matcher>`, the registry's
+  `sticky` wallet is forward-only, so a single bar's
+  rows cannot reconstruct it - and the cell appends `via <matcher>`, the registry's
   name for the matcher that held (`via creator`). Without that marker a click that "does nothing" (the row already
   carries the tag through another matcher) looks like a bug; a listed value reads
   `listed`.

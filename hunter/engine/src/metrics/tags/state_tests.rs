@@ -4,7 +4,6 @@
 
 use super::config::compile_tags;
 use super::state::*;
-use crate::metrics::fee::FeeKeys;
 use crate::metrics::registry::Metric;
 use crate::metrics::template_grain::program_id_hash;
 use crate::metrics::trade_keys::{core_hash, core_marks, ix_hash, ix_hash_opt, marker_mask, wallet_hash};
@@ -373,30 +372,6 @@ fn crew_trade(side: Side, sol: f64, wallet: &str, slot: u64) -> TradeLite {
         token_amount: sol * 1e6,
         ..trade(side, sol, Some(ix_hash(&["Axiom Trade: ix#00"])), wallet_hash(wallet), 0.0)
     }
-}
-
-/// The 3rd close member of a slot group is the first tagged; a size outside the
-/// tolerance of the FIRST member neither counts nor tags; a new slot starts empty;
-/// another fee preset is another group.
-#[test]
-fn a_cluster_tags_from_the_nth_close_member() {
-    let mut st = tag(json!({ "match": { "cluster": { "min_prints": 3, "sol_tol_pct": 10 } } }));
-    let lift = |st: &TagState| st.value(Metric::BuySol, false, LIFE, ts(0.0), c(0));
-    let fold = |st: &mut TagState, sol: f64, w: &str, slot: u64| {
-        let before = lift(st);
-        st.on_trade(&crew_trade(Side::Buy, sol, w, slot), c(slot));
-        lift(st) > before
-    };
-    assert!(!fold(&mut st, 1.00, "a", 7));
-    assert!(!fold(&mut st, 1.05, "b", 7));
-    assert!(!fold(&mut st, 2.00, "c", 7), "outside 10 % of the first");
-    assert!(fold(&mut st, 0.95, "d", 7), "the third close member");
-    assert!(!fold(&mut st, 1.00, "e", 8), "a new slot starts empty");
-    let mut t = crew_trade(Side::Buy, 1.0, "f", 8);
-    t.fee = FeeKeys::new(Some(200_000), None, None);
-    let before = lift(&st);
-    st.on_trade(&t, c(8));
-    assert_eq!(lift(&st), before, "another fee preset is another group");
 }
 
 /// A creation-slot buyer is the rest unless a matcher names it, like any other trade.

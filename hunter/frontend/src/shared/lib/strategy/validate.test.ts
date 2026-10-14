@@ -200,7 +200,7 @@ describe('sentences', () => {
 describe('tags', () => {
   it('round-trips and drops matchers that classify nothing', () => {
     const doc = {
-      volume: { match: { program: ['Axiom Trade'], creator: true, cluster: { min_prints: 3, sol_tol_pct: 10 } }, sticky: true },
+      volume: { match: { program: ['Axiom Trade'], creator: true }, sticky: true },
       dump: { match: { ix_shape: [['Pump.Fun: Sell']], wallet: [] }, side: 'sell' },
     };
     const out = tagsToJson(tagsFromJson(doc));
@@ -232,12 +232,11 @@ describe('tags', () => {
         bundled: { match: { creator: true } },
         empty: { match: {} },
         t: { match: { ix_template: ['Axiom Trade'] } },
-        c: { match: { cluster: { min_prints: 1, sol_tol_pct: 5 } } },
         m: { match: { ix_contains: ['Nope'] } },
       }),
       reg,
     ).join('\n');
-    for (const want of ['a-z', 'built-in', 'no matcher', 'not a template', 'at least 2', 'unknown ix marker']) {
+    for (const want of ['a-z', 'built-in', 'no matcher', 'not a template', 'unknown ix marker']) {
       expect(errs).toContain(want);
     }
   });

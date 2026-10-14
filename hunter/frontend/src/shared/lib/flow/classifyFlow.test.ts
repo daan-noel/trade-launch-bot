@@ -131,39 +131,10 @@ describe('classifyFlowTrades: matchers', () => {
   });
 });
 
-describe('classifyFlowTrades: cluster', () => {
-  const crew = ['Axiom Trade: ix#00'];
-  it('tags from the Nth close member (a_cluster_tags_from_the_nth_close_member)', () => {
-    const t = tag({ cluster: { min_prints: 3, sol_tol_pct: 10 } });
-    const out = classifyFlowTrades(
-      [
-        tr('a', 1.0, crew, { slot: 7 }),
-        tr('b', 1.05, crew, { slot: 7 }),
-        tr('c', 2.0, crew, { slot: 7 }),
-        tr('d', 0.95, crew, { slot: 7 }),
-        tr('e', 1.0, crew, { slot: 8 }),
-        tr('f', 1.0, crew, { slot: 8, cu_limit: 200_000 }),
-      ],
-      { tag: t },
-    );
-    expect(out.map((x) => x.isTagged)).toEqual([false, false, false, true, false, false]);
-    expect(out[3].reason).toBe('cluster');
-  });
-
-  it('runs last: a trade another matcher takes does not count into its group', () => {
-    const t = tag({ wallet: ['w'], cluster: { min_prints: 2, sol_tol_pct: 0 } });
-    const out = classifyFlowTrades(
-      [tr('w', 1, crew, { slot: 1 }), tr('x', 1, crew, { slot: 1 }), tr('y', 1, crew, { slot: 1 })],
-      { tag: t },
-    );
-    expect(out.map((x) => x.reason)).toEqual(['wallet', null, 'cluster']);
-  });
-});
-
 describe('classifyFlowTrades: creation slot', () => {
   it('a creation-slot buyer is the rest unless a matcher names it (creation_slot_buyers_are_the_rest)', () => {
     const out = classifyFlowTrades(
-      [tr('dev', 0.5, CREATE_BUY, { slot: 100 }), tr('bundle', 2, ['Pump.Fun: Buy'], { slot: 100 })],
+      [tr('dev', 0.5, CREATE_BUY), tr('bundle', 2, ['Pump.Fun: Buy'])],
       { tag: tag({ creator: true }), creatorWallet: 'dev' },
     );
     expect(out.map((x) => x.half)).toEqual(['tagged', 'rest']);

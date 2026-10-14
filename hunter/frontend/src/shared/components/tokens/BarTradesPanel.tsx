@@ -84,8 +84,8 @@ export interface BarTradesPanelProps {
   /** A staging tape (Flow Discovery): badges write the draft, not a fingerprint. */
   tape?: TagTape | null;
   /** The verdict per trade id over the host's FULL trade history
-   *  (`tradeFlowReasons`) - sticky, cluster and the creation slot are forward-only,
-   *  so a bar's rows alone cannot reconstruct them. */
+   *  (`tradeFlowReasons`) - a sticky wallet is forward-only, so a bar's rows
+   *  alone cannot reconstruct it. */
   flowReasons?: ReadonlyMap<string, FlowReason> | null;
   /** The token's two ephemeral highlight lenses (`useTokenHighlight`). Wires the
    *  per-row target buttons, paints matched rows, and renders the armed chips.

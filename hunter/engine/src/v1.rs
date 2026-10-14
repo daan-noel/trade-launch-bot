@@ -644,9 +644,7 @@ pub fn convert_metric_config(cfg: &Value) -> Result<Value, String> {
         if let Some(p) = f.get("tagged_programs") {
             m.insert("program".into(), p.clone());
         }
-        if let Some(c) = f.get("volume_cluster") {
-            m.insert("cluster".into(), c.clone());
-        }
+        // `volume_cluster` is dropped. A tag names trades on an explicit axis.
         if let Some(x) = f.get("tagged_ix_markers") {
             m.insert("ix_contains".into(), x.clone());
         }

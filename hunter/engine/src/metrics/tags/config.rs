@@ -11,8 +11,7 @@
 //!       "ix_contains": ["Axiom Trade"],
 //!       "ix_lacks":    ["Photon"],
 //!       "wallet":      ["7xk..."],
-//!       "creator":     true,
-//!       "cluster":     {"min_prints": 3, "sol_tol_pct": 10}
+//!       "creator":     true
 //!     },
 //!     "side": "sell",
 //!     "sticky": true
@@ -34,19 +33,6 @@ use crate::metrics::template_grain::{grain_id_hash, program_id_hash};
 use crate::metrics::trade_keys::{marker_mask, wallet_hash, MARKERS, ROUTER_MARKERS};
 use crate::metrics::Side;
 
-/// The volume-cluster matcher: a trade qualifies once it is the `min_prints`-th trade
-/// of its slot carrying the same ix shape, side, compute-unit limit, compute-unit price
-/// and tip, with SOL within `sol_tol_pct` percent of the group's FIRST trade.
-///
-/// Many identical transactions landing at once is one machine making volume; one person
-/// buying is not. Read as trades land: the first `min_prints - 1` members stay
-/// untagged, because nothing has shown them to be a cluster yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cluster {
-    pub min_prints: u32,
-    pub sol_tol_pct: u32,
-}
-
 /// One tag, compiled.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TagPatterns {
@@ -59,7 +45,6 @@ pub struct TagPatterns {
     pub lacks: u16,
     pub wallets: HashedSet,
     pub creator: bool,
-    pub cluster: Option<Cluster>,
     /// Only trades on this side can carry the tag.
     pub side: Option<Side>,
     pub sticky: bool,
@@ -98,7 +83,7 @@ pub struct TagFieldSpec {
     /// `"match"` or `"option"`.
     pub kind: &'static str,
     /// Value shape the editor renders: `program[]`, `ix_shape[]`, `ix_template[]`,
-    /// `marker[]`, `wallet[]`, `bool`, `cluster`, `side`.
+    /// `marker[]`, `wallet[]`, `bool`, `side`.
     pub value_type: &'static str,
     pub title: &'static str,
     pub summary: &'static str,
@@ -127,9 +112,6 @@ pub const TAG_FIELDS: &[TagFieldSpec] = &[
     TagFieldSpec { key: "creator", kind: "match", value_type: "bool", title: "Creator",
         summary: "The trader is the coin's creator.",
         example: "true : the dev's own buys and sells." },
-    TagFieldSpec { key: "cluster", kind: "match", value_type: "cluster", title: "Same-slot cluster",
-        summary: "The trade is the Nth or later print in one slot with the same ix shape, side and fees, its SOL within P % of the first. Checked last.",
-        example: "{\"min_prints\": 3, \"sol_tol_pct\": 10} : the 3rd of three matching 0.5 SOL buys in one slot." },
     TagFieldSpec { key: "side", kind: "option", value_type: "side", title: "Side",
         summary: "Only buys, or only sells, can carry the tag. Absent = both.",
         example: "\"sell\" : a dump list judges sells only." },
@@ -153,7 +135,7 @@ pub fn tags_json() -> Value {
         .collect();
     json!({
         "summary": "A tag is a named trade list. It splits every coin's trades in two: @name = the trades that carry it, @!name = the rest.",
-        "example": "volume = program 9ddjzq or a 3-print cluster or the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
+        "example": "volume = program 9ddjzq or the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
         "fields": fields,
         "markers": markers,
         "builtin": [
@@ -176,27 +158,6 @@ fn strings<'a>(v: &'a Value, at: &str) -> Result<Vec<&'a str>, String> {
         out.push(s);
     }
     Ok(out)
-}
-
-fn parse_cluster(v: &Value, at: &str) -> Result<Cluster, String> {
-    let obj = v.as_object().ok_or_else(|| format!("{at} must be {{min_prints, sol_tol_pct}}"))?;
-    let int = |k: &str| -> Result<u32, String> {
-        obj.get(k)
-            .and_then(Value::as_u64)
-            .and_then(|n| u32::try_from(n).ok())
-            .ok_or_else(|| format!("{at}.{k} must be a non-negative integer"))
-    };
-    let c = Cluster { min_prints: int("min_prints")?, sol_tol_pct: int("sol_tol_pct")? };
-    if c.min_prints < 2 {
-        return Err(format!("{at}.min_prints must be at least 2 (one trade is not a cluster)"));
-    }
-    if c.sol_tol_pct > 100 {
-        return Err(format!("{at}.sol_tol_pct must be at most 100"));
-    }
-    if let Some(k) = obj.keys().find(|k| !matches!(k.as_str(), "min_prints" | "sol_tol_pct")) {
-        return Err(format!("{at}: unknown key `{k}`"));
-    }
-    Ok(c)
 }
 
 fn parse_bool(v: &Value, at: &str) -> Result<bool, String> {
@@ -260,10 +221,9 @@ fn parse_tag(name: &str, def: &Value) -> Result<TagPatterns, String> {
                 }
             }
             "creator" => p.creator = parse_bool(v, &here)?,
-            "cluster" => p.cluster = Some(parse_cluster(v, &here)?),
             other => {
                 return Err(format!(
-                    "{at}.match: unknown matcher `{other}` (known: program, ix_shape, ix_template, ix_contains, ix_lacks, wallet, creator, cluster)"
+                    "{at}.match: unknown matcher `{other}` (known: program, ix_shape, ix_template, ix_contains, ix_lacks, wallet, creator)"
                 ))
             }
         }
@@ -394,8 +354,7 @@ mod tests {
                     "ix_template": ["Axiom Trade|CU|ATA|1|0|0"],
                     "ix_contains": ["Axiom Trade"],
                     "wallet": ["w1"],
-                    "creator": true,
-                    "cluster": {"min_prints": 3, "sol_tol_pct": 10}
+                    "creator": true
                 },
                 "sticky": true
             },
@@ -406,7 +365,6 @@ mod tests {
         assert_eq!(tags.len(), 2);
         let v = tags.iter().find(|t| t.name == "volume").unwrap();
         assert!(v.patterns.sticky && v.patterns.creator && v.patterns.volume_walk);
-        assert_eq!(v.patterns.cluster, Some(Cluster { min_prints: 3, sol_tol_pct: 10 }));
         assert!(v.patterns.templates().is_some());
         let d = tags.iter().find(|t| t.name == "dump").unwrap();
         assert_eq!(d.patterns.side, Some(Side::Sell));
@@ -423,7 +381,7 @@ mod tests {
             (json!({"v": {"match": {"creator": "yes"}}}), "tags.v.match.creator"),
             (json!({"v": {"match": {"ix_contains": ["Nope"]}}}), "unknown ix marker"),
             (json!({"v": {"match": {"ix_template": ["Axiom Trade"]}}}), "under `program`"),
-            (json!({"v": {"match": {"cluster": {"min_prints": 1, "sol_tol_pct": 5}}}}), "at least 2"),
+            (json!({"v": {"match": {"cluster": {"min_prints": 3, "sol_tol_pct": 10}}}}), "unknown matcher"),
             (json!({"v": {"match": {"creator": true}, "side": "both"}}), "\"buy\" or \"sell\""),
             (json!({"v": {"match": {"creator": true}, "contagion": true}}), "unknown key"),
             (json!({"v": {"match": {"creator": true}, "exclude_creation_slot": true}}), "unknown key"),
@@ -439,7 +397,7 @@ mod tests {
     fn the_documented_vocabulary_is_the_parsed_one() {
         let doc = tags_json();
         let keys: Vec<&str> = doc["fields"].as_array().unwrap().iter().map(|f| f["key"].as_str().unwrap()).collect();
-        for k in ["program", "ix_shape", "ix_template", "ix_contains", "ix_lacks", "wallet", "creator", "cluster"] {
+        for k in ["program", "ix_shape", "ix_template", "ix_contains", "ix_lacks", "wallet", "creator"] {
             assert!(keys.contains(&k), "matcher {k} undocumented");
         }
         for k in ["side", "sticky"] {

@@ -147,6 +147,7 @@ fn a_flow_classifier_becomes_the_volume_tag() {
     .unwrap();
     assert_eq!(tags["volume"]["sticky"], true);
     assert_eq!(tags["volume"]["match"]["creator"], true);
+    assert!(tags["volume"]["match"].get("cluster").is_none(), "volume_cluster is not a tag matcher");
     assert_eq!(tags["dump"]["side"], "sell");
     assert_eq!(tags["dump"]["match"]["creator"], true);
     assert_eq!(tags["targets"]["match"]["wallet"][0], "W");

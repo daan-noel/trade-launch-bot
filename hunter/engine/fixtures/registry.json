@@ -1566,7 +1566,7 @@
         "summary": "Wallets whose first buy went through an app with 100+ buyers the day before."
       }
     ],
-    "example": "volume = program 9ddjzq or a 3-print cluster or the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
+    "example": "volume = program 9ddjzq or the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
     "fields": [
       {
         "example": "\"program\": [\"Axiom Trade\"] : every Axiom trade, whatever its instruction list.",
@@ -1623,14 +1623,6 @@
         "summary": "The trader is the coin's creator.",
         "title": "Creator",
         "value_type": "bool"
-      },
-      {
-        "example": "{\"min_prints\": 3, \"sol_tol_pct\": 10} : the 3rd of three matching 0.5 SOL buys in one slot.",
-        "key": "cluster",
-        "kind": "match",
-        "summary": "The trade is the Nth or later print in one slot with the same ix shape, side and fees, its SOL within P % of the first. Checked last.",
-        "title": "Same-slot cluster",
-        "value_type": "cluster"
       },
       {
         "example": "\"sell\" : a dump list judges sells only.",
