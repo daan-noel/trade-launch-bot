@@ -1,9 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
 
 import type { FlowTag } from 'lib/flow/classifyFlow';
-import { flowPatternKeysFromTags } from 'lib/flow/flowPatternKeys';
+import { flowPatternKeysFromTags, rowsFromKeys } from 'lib/flow/flowPatternKeys';
 import { defaultTagName, flowTagOf, shapeTag } from 'lib/flow/tapeClassify';
-import { patternKey, patternsFromKeys } from 'lib/flow/volumePatterns';
 import { ixLabelsActions } from 'lib/ixLabels';
 import {
   formatFeePins,
@@ -138,11 +137,11 @@ export interface TagTape extends TagStage {
 /** Stable empty result for the skipped match pass. */
 const NO_MATCHES: Fingerprint[] = [];
 
-/** Same-membership test on two shape sets (order inside a shape counts). */
-function sameShapeSet(a: readonly (readonly string[])[], b: readonly (readonly string[])[]): boolean {
+/** Same-membership test on two row sets, each row keyed whole ({@link patternRowKey}). */
+function sameRowSet(a: readonly IxPatternRow[], b: readonly IxPatternRow[]): boolean {
   if (a.length !== b.length) return false;
-  const bKeys = new Set(b.map(patternKey));
-  return a.every((p) => bKeys.has(patternKey(p)));
+  const bKeys = new Set(b.map(patternRowKey));
+  return a.every((r) => bKeys.has(patternRowKey(r)));
 }
 
 export interface IxPatternTargetChoice {
@@ -186,22 +185,17 @@ export const HOST_SHAPES_TAG = 'shapes';
  *
  * A loaded fingerprint row uses that row's tag. A chosen id whose row is not
  * in hand classifies nothing. Only a host with no id falls back to an ad-hoc
- * tag of its exact ix-shape labels.
+ * tag of its `ix_shape` rows.
  */
 export function flowClassifyTag(input: {
   target: { tags: unknown } | null;
   targetId: string | null;
   tagName: string;
-  savedShapes: readonly (readonly string[])[];
+  savedRows: readonly IxPatternRow[];
 }): FlowTag | null {
   if (input.target) return flowTagOf(input.target.tags, input.tagName);
   if (input.targetId) return null;
-  return input.savedShapes.length > 0
-    ? shapeTag(
-        HOST_SHAPES_TAG,
-        input.savedShapes.map((labels) => ({ labels: [...labels] })),
-      )
-    : null;
+  return input.savedRows.length > 0 ? shapeTag(HOST_SHAPES_TAG, input.savedRows) : null;
 }
 
 export interface IxPatternTarget extends TagStage {
@@ -218,9 +212,9 @@ export interface IxPatternTarget extends TagStage {
   setTagName: (name: string) => void;
   /** The tag the chart classifies with: the loaded row's tag. A chosen id whose
    *  row is not loaded classifies nothing. With no id, an ad-hoc tag of the
-   *  host's exact shapes. `null` also means a new tag before its first click. */
+   *  host's `ix_shape` rows. `null` also means a new tag before its first click. */
   tag: FlowTag | null;
-  /** `tag`'s exact shapes as keys, for a host that still hands keys down. */
+  /** `tag`'s `ix_shape` rows as keys, for a host that still hands keys down. */
   keys: ReadonlySet<string> | null;
   /** Active rules bound to the target - a write changes what they all read. */
   activeRuleCount: number;
@@ -247,8 +241,8 @@ export interface IxPatternTarget extends TagStage {
  * @param savedKeys     the host's key set; matched against only without an id, and
  *                      classified with as an ad-hoc shape tag only when no id is
  *                      chosen. A known id whose row is not loaded yet classifies
- *                      nothing: the key set is exact ix-shape labels and drops
- *                      pins, core rows, and every other matcher.
+ *                      nothing: the key set carries only the `ix_shape` rows and
+ *                      drops every other matcher.
  * @param enabled       `false` on a read-only host, which skips the fetches
  */
 export function useIxPatternTarget({
@@ -270,17 +264,15 @@ export function useIxPatternTarget({
   const [feePins, setFeePins] = useState<IxPatternFeeMask>({});
   const [error, setError] = useState<string | null>(null);
 
-  const savedShapes = useMemo(() => patternsFromKeys(savedKeys), [savedKeys]);
+  const savedRows = useMemo(() => rowsFromKeys(savedKeys), [savedKeys]);
 
   const needsMatch = pickedId == null && !fingerprintId;
   const matches = useMemo(
     () =>
       needsMatch
-        ? fingerprints.filter((f) =>
-            sameShapeSet(flowTagOf(f.tags, defaultTagName(f.tags))?.match.ix_shape?.map((r) => r.labels) ?? [], savedShapes),
-          )
+        ? fingerprints.filter((f) => sameRowSet(flowTagOf(f.tags, defaultTagName(f.tags))?.match.ix_shape ?? [], savedRows))
         : NO_MATCHES,
-    [needsMatch, fingerprints, savedShapes],
+    [needsMatch, fingerprints, savedRows],
   );
 
   const { targetId, inferred, offHost } = resolveIxPatternTarget({
@@ -293,14 +285,14 @@ export function useIxPatternTarget({
   const tagName = pickedTag ?? defaultTagName(target?.tags);
 
   const tag = useMemo(
-    () => flowClassifyTag({ target, targetId, tagName, savedShapes }),
-    [target, targetId, tagName, savedShapes],
+    () => flowClassifyTag({ target, targetId, tagName, savedRows }),
+    [target, targetId, tagName, savedRows],
   );
 
   const keys = useMemo(() => {
     if (target) return flowPatternKeysFromTags(target.tags, tagName);
     // Same gate as `flowClassifyTag`: a known row that has not loaded yet must
-    // not hand its label-only key set down as if it were the tag.
+    // not hand its rows-only key set down as if it were the tag.
     if (targetId) return null;
     return savedKeys ?? null;
   }, [target, targetId, tagName, savedKeys]);

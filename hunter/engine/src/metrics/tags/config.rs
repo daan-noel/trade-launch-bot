@@ -28,7 +28,7 @@ use serde_json::{json, Map, Value};
 use super::{check_name, TagKey, BUILTIN};
 use crate::hash::HashedSet;
 use crate::metrics::burst_slot::TemplatePatterns;
-use crate::metrics::fee::BuildPatterns;
+use crate::metrics::fee::IxShapeRows;
 use crate::metrics::template_grain::{grain_id_hash, program_id_hash};
 use crate::metrics::trade_keys::{marker_mask, wallet_hash, MARKERS, ROUTER_MARKERS};
 use crate::metrics::Side;
@@ -36,7 +36,7 @@ use crate::metrics::Side;
 /// One tag, compiled.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TagPatterns {
-    pub builds: BuildPatterns,
+    pub shapes: IxShapeRows,
     pub programs: HashedSet,
     pub templates: HashedSet,
     /// `ix_contains`: a trade whose marker bits intersect this qualifies.
@@ -48,8 +48,6 @@ pub struct TagPatterns {
     /// Only trades on this side can carry the tag.
     pub side: Option<Side>,
     pub sticky: bool,
-    /// The tag named `volume`. The live label runs only for this tag.
-    pub volume_walk: bool,
 }
 
 impl TagPatterns {
@@ -95,7 +93,7 @@ pub const TAG_FIELDS: &[TagFieldSpec] = &[
         summary: "The transaction's main program (its first instruction past compute budget, system, token, ATA and memo) is one of these. Catches every build a tool ships.",
         example: "\"program\": [\"Axiom Trade\"] : every Axiom trade, whatever its instruction list." },
     TagFieldSpec { key: "ix_shape", kind: "match", value_type: "ix_shape[]", title: "Ix shape",
-        summary: "The transaction's ordered instruction list is one of these, optionally pinned to its fee preset (CU limit, CU price, tip). A row with level core matches every variant of the build that keeps its core (the list without compute budget, System, token-account, memo and Lighthouse instructions, pump.fun's Buy / Sell / Create variants merged), optionally pinned to a side and to its extras (marks CL CP N L M S C W, T<transfers> A<account opens>).",
+        summary: "Each row is an ix structure or an ix core. An ix structure (level exact, the default) is the transaction's whole instruction list, in order, repeats counted. An ix core (level core) is that list without compute budget, System, token-account, memo and Lighthouse instructions, with pump.fun's Buy / Sell / Create variants merged, so one row matches every variant that keeps the core. Either may pin the fee preset (cu_limit, cu_price, tip_lamports). A core row may also pin the side and its extras (marks CL CP N L M S C W, T<transfers> A<account opens>).",
         example: "[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"] with cu_price 1000; {\"labels\": [\"Pump.Fun: Sell\"], \"level\": \"core\", \"side\": \"sell\", \"cu_price\": 167000}." },
     TagFieldSpec { key: "ix_template", kind: "match", value_type: "ix_template[]", title: "Ix template",
         summary: "The transaction's coarse template (program|CU|ATA|N|S|F) is one of these. The only matcher, with program, the slot and wave families can read.",
@@ -135,7 +133,7 @@ pub fn tags_json() -> Value {
         .collect();
     json!({
         "summary": "A tag is a named trade list. It splits every coin's trades in two: @name = the trades that carry it, @!name = the rest.",
-        "example": "volume = program 9ddjzq or the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
+        "example": "volume = the owner split's ix structures and ix cores, its wallets and the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
         "fields": fields,
         "markers": markers,
         "builtin": [
@@ -184,7 +182,6 @@ fn parse_tag(name: &str, def: &Value) -> Result<TagPatterns, String> {
             other => return Err(format!("{at}: unknown key `{other}` (expected match, side, sticky)")),
         }
     }
-    p.volume_walk = name == crate::v1::TAG_VOLUME;
     let m = obj
         .get("match")
         .and_then(Value::as_object)
@@ -202,8 +199,8 @@ fn parse_tag(name: &str, def: &Value) -> Result<TagPatterns, String> {
             }
             "ix_shape" => {
                 let rows = v.as_array().ok_or_else(|| format!("{here} must be an array"))?;
-                BuildPatterns::validate(rows, &here)?;
-                p.builds = BuildPatterns::parse(rows).ok_or_else(|| format!("{here} is malformed"))?;
+                IxShapeRows::validate(rows, &here)?;
+                p.shapes = IxShapeRows::parse(rows).ok_or_else(|| format!("{here} is malformed"))?;
             }
             "ix_template" => {
                 for s in strings(v, &here)? {
@@ -324,7 +321,7 @@ pub fn rule_tag_warning(params: &crate::rule_params::RuleParams, doc: &Value) ->
 pub fn fee_pin_warning(doc: &Value) -> Option<String> {
     let pinned: Vec<String> = compile_tags(doc)
         .into_iter()
-        .filter(|t| t.patterns.builds.pins_fee())
+        .filter(|t| t.patterns.shapes.pins_fee())
         .map(|t| t.name.to_string())
         .collect();
     if pinned.is_empty() {
@@ -364,11 +361,10 @@ mod tests {
         let tags = compile_tags(&doc);
         assert_eq!(tags.len(), 2);
         let v = tags.iter().find(|t| t.name == "volume").unwrap();
-        assert!(v.patterns.sticky && v.patterns.creator && v.patterns.volume_walk);
+        assert!(v.patterns.sticky && v.patterns.creator);
         assert!(v.patterns.templates().is_some());
         let d = tags.iter().find(|t| t.name == "dump").unwrap();
         assert_eq!(d.patterns.side, Some(Side::Sell));
-        assert!(!d.patterns.volume_walk);
         assert!(d.patterns.templates().is_none());
     }
 

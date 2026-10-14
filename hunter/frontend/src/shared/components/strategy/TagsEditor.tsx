@@ -285,16 +285,15 @@ function VolumePatternCard({
         </IconButton>
       </div>
       <p className="text-[12px] leading-snug text-text-dim">
-        Volume pattern. You edit what is already stored. These steps are for <code className="text-text">@volume</code> only. Dump stays a matcher list.
+        Volume pattern. The owner split builds it once from the launch group's coins. Nothing writes it while a rule runs. Dump stays a matcher list.
       </p>
 
       <section className="flex flex-col gap-2 rounded border border-white/10 p-2">
-        <h4 className="text-[12px] font-semibold text-text">Before this coin</h4>
-        <p className="text-[11px] leading-snug text-text-dim">Already stored. A wallet the dev used a few times and then dropped is not here.</p>
+        <h4 className="text-[12px] font-semibold text-text">Stored</h4>
         <div className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold text-text">Lists</span>
+          <span className="text-[11px] font-semibold text-text">Ix structures and ix cores</span>
           <span className="text-[11px] leading-snug text-text-dim">
-            <B>Instruction lists</B> from earlier coins. A trade that uses a saved list is <B>owner</B>. The wallet address is not saved.
+            An <B>ix structure</B> is a transaction's whole instruction list, in order. An <B>ix core</B> is that list without compute budget, System, token-account, memo and Lighthouse instructions, so one row catches every variant the dev rotates. A trade on a stored row is <B>owner</B>.
           </span>
           <IxPatternRowsEditor rows={tag.match.ix_shape ?? []} onChange={(ix_shape) => setMatch({ ...tag.match, ix_shape })} disabled={disabled} />
           {pinWarning && (
@@ -304,7 +303,7 @@ function VolumePatternCard({
         <div className="flex flex-col gap-1">
           <span className="text-[11px] font-semibold text-text">Wallets that come back</span>
           <div className="flex flex-col gap-1 text-[11px] leading-snug text-text-dim">
-            <p>The list is <B>replaced</B> each time it is written. An address stays only if it still passes, and it traded one of this dev's <B>recent launches</B>. Recent is the stretch where 90% of these wallets come back. An older address comes off.</p>
+            <p>Chosen when the list is built. An address is stored only if it passes one test below and traded one of this dev's <B>recent launches</B>. Recent is the stretch where 90% of these wallets come back.</p>
             <p><B>Same slot.</B> Two buys in the same instant. One size is exactly <B>double</B> the other. The smaller wallet sells that bag about <B>60 seconds</B> later. Saved after <B>20 coins</B>.</p>
             <p><B>Below zero.</B> The wallet sold tokens it never bought, so the bag goes negative. Saved after <B>2 coins</B>.</p>
             <p><B>Never sells.</B> The wallet buys and does not take profit. <B>10 coins</B>, <B>20 buys</B>, and <B>no sell</B> anywhere.</p>
@@ -328,29 +327,8 @@ function VolumePatternCard({
       </section>
 
       <section className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[12px] leading-snug text-text-dim">
-        <h4 className="text-[12px] font-semibold text-text">On live</h4>
-        <p>Each new trade. The first yes wins. <B>Sticky</B> covers later trades of that wallet. A trade already printed stays as it was.</p>
-        <ol className="list-decimal space-y-1 pl-4">
-          <li><B>Creator</B>, a <B>saved wallet</B>, or <B>sticky</B> already on. Owner from this trade on. Its other lists are not saved.</li>
-          <li>This trade's <B>instruction list</B> is a saved list. Owner. Sticky starts. The wallet is not saved.</li>
-          <li>Otherwise <B>label the tape</B> runs on this print.</li>
-        </ol>
-      </section>
-
-      <section className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[12px] leading-snug text-text-dim">
-        <h4 className="text-[12px] font-semibold text-text">Label the tape</h4>
-        <p>The stored pattern missed. A yes stops. A list on that same trade can still be saved. The wallet is not.</p>
-        <ol className="list-decimal space-y-1 pl-4">
-          <li><B>Outsider.</B> A <B>sniper</B>, a <B>rise that stops</B>, <B>sold into</B>, a <B>timer</B>, a <B>wide service</B>, a <B>service payer</B>, <B>one wallet</B>, or <B>used once</B>. Nothing is saved.</li>
-          <li><B>Owner on this coin.</B> Sticky starts. The wallet is not saved. A plain list inside a pack is not saved.</li>
-          <li><B>A list.</B> <B>Private list</B>, <B>many wallets</B>, <B>dominates</B>, <B>mostly here</B>. Those trades are owner. The list is queued. The wallet is not saved.</li>
-          <li>No match. <B>Outsider.</B> The next trade is judged again.</li>
-        </ol>
-      </section>
-
-      <section className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[12px] leading-snug text-text-dim">
-        <h4 className="text-[12px] font-semibold text-text">Write the next fingerprint</h4>
-        <p>Off the print. A queued <B>list</B> is added to the lists above, then the fingerprint reloads. A wallet that is owner only on this coin is not written. The <B>wallet list</B> is written again from addresses that still pass on <B>recent launches</B>. Old addresses come off.</p>
+        <h4 className="text-[12px] font-semibold text-text">While a rule runs</h4>
+        <p>A trade is <B>owner</B> when it uses a stored row, comes from a stored wallet or the creator, or comes from a wallet that is already <B>sticky</B> on this coin. Every other trade is <B>outsider</B>. A trade already printed stays as it was. Nothing is written.</p>
       </section>
 
       {extra.length > 0 && (

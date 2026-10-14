@@ -101,8 +101,8 @@ fn core_verb(label: &str) -> &str {
 /// A build's core: its labels without the [extras](is_core_extra), in order, with
 /// pump.fun's verb variants merged. A dev who rotates small variants of one build
 /// (a memo added, the compute-budget pair swapped, `BuyV2` for `Buy`, a nonce) keeps
-/// one core. The offline twin is the owner split's `core_labels`
-/// (`_!___owner-split.md`, "Match levels").
+/// one core. The owner split defines it (`_!___owner-split.md`, "Match levels"); the
+/// chart's twin is `ixCore.ts`.
 pub fn core_labels<S: AsRef<str>>(labels: &[S]) -> Vec<&str> {
     labels.iter().map(AsRef::as_ref).filter(|l| !is_core_extra(l)).map(core_verb).collect()
 }
@@ -409,8 +409,8 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
-    /// The shared core vectors (twins: the chart's `ixCore.test.ts`, the owner split's
-    /// `core_labels` / `marks_of`): every implementation reduces a build alike.
+    /// The shared core vectors (twin: the chart's `ixCore.test.ts`): every
+    /// implementation reduces a build alike.
     #[test]
     fn the_shared_core_fixture() {
         #[derive(serde::Deserialize)]

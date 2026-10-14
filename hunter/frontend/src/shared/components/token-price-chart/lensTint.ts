@@ -129,8 +129,8 @@ export function lensItemId(item: Pick<ChartLensItem, 'kind' | 'key'>): string {
 /** The fields a structure lens may pin, in key order. */
 export const LENS_PIN_FIELDS = ['cu_limit', 'cu_price', 'tip_lamports'] as const;
 
-/** A structure lens item's key: the ordered labels as `volumePatterns.patternKey`
- *  builds them (inlined so this folder stays portable), then the pins when there
+/** A structure lens item's key: the ordered labels as `JSON.stringify` builds
+ *  them (inlined so this folder stays portable), then the pins when there
  *  are any — `["A","B"]|cu_limit=300000`. Unpinned it is the bare pattern key. */
 export function structureLensKey(labels: readonly string[], pins?: ChartLensPins | null): string {
   const base = JSON.stringify(labels);

@@ -98,7 +98,7 @@ describe('flowClassifyTag', () => {
       target: { tags: volume },
       targetId: 'fp',
       tagName: 'volume',
-      savedShapes: [['Buy']],
+      savedRows: [{ labels: ['Buy'] }],
     });
     expect(tag?.name).toBe('volume');
     expect(tag?.match.program).toEqual(['Axiom Trade']);
@@ -112,17 +112,17 @@ describe('flowClassifyTag', () => {
         target: null,
         targetId: 'fp',
         tagName: 'volume',
-        savedShapes: [['Buy']],
+        savedRows: [{ labels: ['Buy'] }],
       }),
     ).toBeNull();
   });
 
-  it('keeps the label-only tag for a host with no fingerprint id', () => {
+  it('keeps an ix_shape-only tag for a host with no fingerprint id', () => {
     const tag = flowClassifyTag({
       target: null,
       targetId: null,
       tagName: 'volume',
-      savedShapes: [['Buy']],
+      savedRows: [{ labels: ['Buy'] }],
     });
     expect(tag?.name).toBe('shapes');
     expect(tag?.match.ix_shape).toEqual([{ labels: ['Buy'] }]);

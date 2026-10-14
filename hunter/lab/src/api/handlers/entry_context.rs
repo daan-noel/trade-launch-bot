@@ -1099,7 +1099,7 @@ fn fold_signaled(
 
     let window = read_window(&states[state_of(SCOPE_WINDOW)], win, anchor.block_time);
     let control = read_window(&states[state_of(SCOPE_CONTROL)], ctl, anchor.block_time);
-    let unknown_reason = (patterns.builds.pins_fee() && window_prints > 0 && !window_has_fee)
+    let unknown_reason = (patterns.shapes.pins_fee() && window_prints > 0 && !window_has_fee)
         .then_some(UnknownReason::NoFeeReadings);
     let (reserve, reserve_call) = reserve_hit(anchor, prints, opts);
     let reserve_key = reserve.map(|p| group_key(p).0);

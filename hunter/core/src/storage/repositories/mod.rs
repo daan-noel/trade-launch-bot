@@ -17,7 +17,6 @@ pub mod token_info_repo;
 pub mod token_repo;
 pub mod trader_wallet_repo;
 pub mod trade_repo;
-pub mod volume_wallet_repo;
 pub mod wallet_dict_repo;
 // There are no per-strategy repos: every strategy reads and writes through the one
 // `strategy_repo` over `strategy_rules`/`strategy_runs`/`strategy_positions`.

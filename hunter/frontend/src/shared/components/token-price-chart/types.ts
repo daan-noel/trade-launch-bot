@@ -128,9 +128,9 @@ export interface ChartLensPins {
 export interface ChartLensItem {
   kind: ChartLensKind;
   /** The wallet address, or for a structure `structureLensKey(labels, pins)`:
-   *  `JSON.stringify(ordered instruction_labels)` — the same identity
-   *  `lib/flow/volumePatterns.patternKey` builds — plus the pins when there are
-   *  any. Ordered and exact: never a set match. */
+   *  `JSON.stringify(ordered instruction_labels)` — the same identity an
+   *  unpinned `ix_shape` row keys as — plus the pins when there are any.
+   *  Ordered and exact: never a set match. */
   key: string;
   /** A structure's fee pins; absent = the structure alone, any budget. */
   pins?: ChartLensPins;

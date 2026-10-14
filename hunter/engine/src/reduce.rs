@@ -219,12 +219,6 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let mut tokens = std::mem::take(&mut state.tokens);
             if let Some(token) = tokens.get_mut(&mint) {
                 fold_trade(token, trade);
-                for (fingerprint, ix_hash) in token.track.take_volume_saves() {
-                    fx.push(Effect::SaveVolumeList {
-                        fingerprint,
-                        ix_hash,
-                    });
-                }
                 evaluate_token(state, token, &mint, trade.at, true, &mut fx);
                 if !token.is_active() {
                     tokens.remove(&mint);

@@ -107,7 +107,7 @@ export function chip(
  * rule-tag chips use (no second hash) and makes the difference visible without
  * widening the chip. It is a *hint*: two contents can land on neighboring hues,
  * so identity stays in the tooltip and, on text-only surfaces, in
- * `ixLabelsCountTail` / `ixPatternsActions`.
+ * `ixLabelsCountTail` / `ixLabelsActions`.
  */
 function ContentsChip({
   text,

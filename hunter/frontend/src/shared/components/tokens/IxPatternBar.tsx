@@ -51,7 +51,7 @@ export function TagStageControls({ stage, disabled = false }: { stage: TagStage;
 }
 
 /** Said wherever the lines read the host's bare key set instead of a fingerprint tag. */
-const HOST_SHAPES_NOTE = `${tagLabel(HOST_SHAPES_TAG)} = the host's exact ix shapes only, not a fingerprint tag (no program, marker, wallet, creator, side or sticky).`;
+const HOST_SHAPES_NOTE = `${tagLabel(HOST_SHAPES_TAG)} = the host's ix_shape rows only, not a fingerprint tag (no program, marker, wallet, creator, side or sticky).`;
 
 /** Not a legal tag name, so it cannot collide with one. */
 const NEW_TAG = '-new';

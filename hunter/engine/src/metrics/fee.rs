@@ -152,7 +152,7 @@ impl<'de> Deserialize<'de> for FeeKeys {
     }
 }
 
-// -- The build list: an ix shape, optionally pinned to a fee budget ----------
+// -- The ix_shape rows: an ix structure or an ix core, optionally pinned to a fee budget
 
 /// The most compute units one Solana transaction may request. A `cu_limit` above
 /// this is rejected by the chain, so no landed transaction carries one.
@@ -211,7 +211,7 @@ impl FeeSpec {
 
     /// Read one object row's fee fields. `None` = a field is present but is not a
     /// non-negative integer of the right width; the caller turns that into its own
-    /// message via [`BuildPatterns::validate`].
+    /// message via [`IxShapeRows::validate`].
     fn from_row(obj: &serde_json::Map<String, Value>) -> Option<Self> {
         let field = |k: &str| -> Option<Option<u64>> {
             match obj.get(k) {
@@ -227,20 +227,22 @@ impl FeeSpec {
     }
 }
 
-/// A list of build identities: ix shapes, each carrying the fee criteria that
-/// qualify it.
+/// The rows of an `ix_shape` matcher. Each row is an **ix structure** (`"level":
+/// "exact"`, the default: the whole ordered instruction list) or an **ix core**
+/// (`"level": "core"`, see [`core_labels`](super::trade_keys::core_labels)), each
+/// carrying the criteria that qualify it.
 ///
-/// Keyed by `ix_hash` because the shape is the one field every entry has, so a
-/// lookup is one map probe plus a walk of that shape's criteria — almost always a
-/// single wildcard. The fee fields are deliberately **not** folded into the hash:
+/// Exact rows are keyed by `ix_hash`, so a lookup is one map probe plus a walk of
+/// that structure's criteria — almost always a single wildcard. The fee fields are
+/// deliberately **not** folded into the hash:
 /// `ix_hash` is stored identity (in `metric_config`, in sweep results, in every
 /// derived rule), so hashing a budget into it would fork one shape into one identity
 /// per distinct budget AND put every stored hash on the far side of a one-way break.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BuildPatterns {
+pub struct IxShapeRows {
     by_shape: BTreeMap<u64, Vec<FeeSpec>>,
-    /// Core-level rows (`"level": "core"`), keyed by [`core_hash`]: one row matches
-    /// every variant of a build that keeps its core.
+    /// Ix core rows, keyed by [`core_hash`]: one row matches every ix structure that
+    /// keeps that core.
     by_core: BTreeMap<u64, Vec<CoreSpec>>,
 }
 
@@ -286,7 +288,7 @@ fn row_marks(obj: &serde_json::Map<String, Value>) -> Option<Option<u32>> {
     }
 }
 
-impl BuildPatterns {
+impl IxShapeRows {
     /// Shapes with no fee criterion — what every list was before fee capture.
     pub fn from_hashes(hashes: BTreeSet<u64>) -> Self {
         Self { by_shape: hashes.into_iter().map(|h| (h, vec![FeeSpec::wildcard()])).collect(), by_core: BTreeMap::new() }
@@ -489,8 +491,8 @@ mod tests {
             { "labels": ["Pump.Fun: Sell"], "level": "core", "side": "sell", "cu_price": 167000 },
             { "labels": ["Compute Budget: SetComputeUnitPrice", "Pump.Fun: Buy"], "level": "core", "marks": "CP T0 A0" },
         ]);
-        assert!(BuildPatterns::validate(rows.as_array().unwrap(), "k").is_ok());
-        let b = BuildPatterns::parse(rows.as_array().unwrap()).expect("parses");
+        assert!(IxShapeRows::validate(rows.as_array().unwrap(), "k").is_ok());
+        let b = IxShapeRows::parse(rows.as_array().unwrap()).expect("parses");
         let fee = |p| FeeKeys::new(None, Some(p), None);
         let hit = |labels: &[&str], side, f| b.matches_core(core_hash(labels), side, core_marks(labels), f);
         // Every sell variant, any extras, at the pinned price.
@@ -514,9 +516,9 @@ mod tests {
             (serde_json::json!([{ "labels": ["A"], "level": "core", "side": "both" }]), "side must be"),
             (serde_json::json!([{ "labels": ["A"], "level": "core", "marks": "CU" }]), "unknown core mark"),
         ] {
-            let err = BuildPatterns::validate(row.as_array().unwrap(), "k").unwrap_err();
+            let err = IxShapeRows::validate(row.as_array().unwrap(), "k").unwrap_err();
             assert!(err.contains(want), "{err}");
-            assert!(BuildPatterns::parse(row.as_array().unwrap()).is_none() || want.contains("needs"));
+            assert!(IxShapeRows::parse(row.as_array().unwrap()).is_none() || want.contains("needs"));
         }
     }
 
@@ -591,8 +593,8 @@ mod tests {
         ix_hash(DUMP)
     }
 
-    fn parse(rows: serde_json::Value) -> BuildPatterns {
-        BuildPatterns::parse(rows.as_array().unwrap()).expect("parses")
+    fn parse(rows: serde_json::Value) -> IxShapeRows {
+        IxShapeRows::parse(rows.as_array().unwrap()).expect("parses")
     }
 
     /// The whole point of per-entry optional fields: one list holds both kinds.
@@ -707,24 +709,24 @@ mod tests {
 
     #[test]
     fn a_row_that_is_neither_a_label_array_nor_an_object_is_rejected() {
-        assert!(BuildPatterns::parse(&[json!("Pump.Fun: Sell")]).is_none());
-        assert!(BuildPatterns::parse(&[json!({ "cu_limit": 1 })]).is_none());
-        assert!(BuildPatterns::parse(&[json!({ "labels": DUMP, "cu_limit": "300000" })]).is_none());
-        assert!(BuildPatterns::parse(&[json!({ "labels": DUMP, "cu_limit": -1 })]).is_none());
+        assert!(IxShapeRows::parse(&[json!("Pump.Fun: Sell")]).is_none());
+        assert!(IxShapeRows::parse(&[json!({ "cu_limit": 1 })]).is_none());
+        assert!(IxShapeRows::parse(&[json!({ "labels": DUMP, "cu_limit": "300000" })]).is_none());
+        assert!(IxShapeRows::parse(&[json!({ "labels": DUMP, "cu_limit": -1 })]).is_none());
     }
 
     /// A `cu_limit` wider than the chain's own field is a corrupt number, not a big
     /// budget, and must not truncate into a value that matches something.
     #[test]
     fn a_cu_limit_past_the_field_width_is_rejected_rather_than_truncated() {
-        assert!(BuildPatterns::parse(&[json!({ "labels": DUMP, "cu_limit": 4_294_967_296u64 })])
+        assert!(IxShapeRows::parse(&[json!({ "labels": DUMP, "cu_limit": 4_294_967_296u64 })])
             .is_none());
     }
 
     #[test]
     fn validate_names_the_field_that_is_wrong() {
         let ok = json!([DUMP, { "labels": DUMP, "cu_price": 1 }]);
-        assert!(BuildPatterns::validate(ok.as_array().unwrap(), "k").is_ok());
+        assert!(IxShapeRows::validate(ok.as_array().unwrap(), "k").is_ok());
 
         let cases = [
             (json!([{ "cu_limit": 1 }]), "carries no labels"),
@@ -733,7 +735,7 @@ mod tests {
             (json!(["a"]), "must be an array of strings or an object"),
         ];
         for (rows, want) in cases {
-            let err = BuildPatterns::validate(rows.as_array().unwrap(), "k").unwrap_err();
+            let err = IxShapeRows::validate(rows.as_array().unwrap(), "k").unwrap_err();
             assert!(err.contains(want), "{err} should mention {want}");
         }
     }
@@ -744,11 +746,11 @@ mod tests {
     #[test]
     fn a_cu_limit_above_the_chain_ceiling_is_a_config_error() {
         let rows = json!([{ "labels": DUMP, "cu_limit": 3_000_000 }]);
-        let err = BuildPatterns::validate(rows.as_array().unwrap(), "k").unwrap_err();
+        let err = IxShapeRows::validate(rows.as_array().unwrap(), "k").unwrap_err();
         assert!(err.contains("1400000"), "{err}");
 
         let ok = json!([{ "labels": DUMP, "cu_limit": MAX_TX_COMPUTE_UNITS }]);
-        assert!(BuildPatterns::validate(ok.as_array().unwrap(), "k").is_ok());
+        assert!(IxShapeRows::validate(ok.as_array().unwrap(), "k").is_ok());
     }
 
     #[test]

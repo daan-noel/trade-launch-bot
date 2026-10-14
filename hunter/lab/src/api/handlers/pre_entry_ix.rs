@@ -6,7 +6,7 @@
 //! test one. This read answers the same question per row, with a control window
 //! beside it, so the answer carries its own denominator.
 //!
-//! Matching runs on the ENGINE's classifiers — [`BuildPatterns`] for an exact
+//! Matching runs on the ENGINE's classifiers — [`IxShapeRows`] for an exact
 //! set (fee pins and all), [`template_grain`] for a templates set. A second
 //! spelling here would let the filter fire on a set the charts classify
 //! differently, which is the one thing that would make the two surfaces lie
@@ -23,7 +23,7 @@ use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use hunter_engine::metrics::fee::{BuildPatterns, FeeKeys};
+use hunter_engine::metrics::fee::{IxShapeRows, FeeKeys};
 use hunter_engine::metrics::trade_keys::ix_hash_from_labels_value;
 use hunter_engine::metrics::template_grain::{program_owned, grain};
 use hunter_engine::grouping::normalize_labels;
@@ -181,7 +181,7 @@ enum Matcher {
     /// Exact ordered `ix_labels` + fee pins, plus `ix_hash → group` for the
     /// matched-unit readout. Two rows of one shape under different groups keep the
     /// first group seen — the shape is what matched, and the label is a readout.
-    Exact { builds: BuildPatterns, groups: HashMap<u64, String> },
+    Exact { builds: IxShapeRows, groups: HashMap<u64, String> },
     /// Grain ids and bare program names — the one list, two spellings that
     /// `m_burst_slot` reads (`Axiom Trade|CU|ATA|F` vs `Axiom Trade`).
     Templates { grains: HashSet<String>, programs: HashSet<String> },
@@ -214,7 +214,7 @@ impl Matcher {
                         .or_insert_with(|| p.group.clone().unwrap_or_else(|| "ungrouped".into()));
                     rows.push(serde_json::Value::Object(obj));
                 }
-                let builds = BuildPatterns::parse(&rows)
+                let builds = IxShapeRows::parse(&rows)
                     .ok_or_else(|| "patterns are not a valid ix_patterns list".to_string())?;
                 if builds.is_empty() {
                     return Err("the set classifies with nothing — no patterns".into());

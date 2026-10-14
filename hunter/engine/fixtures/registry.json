@@ -1566,7 +1566,7 @@
         "summary": "Wallets whose first buy went through an app with 100+ buyers the day before."
       }
     ],
-    "example": "volume = program 9ddjzq or the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
+    "example": "volume = the owner split's ix structures and ix cores, its wallets and the creator, sticky. Then m_flow.buy_sol @!volume = what outsiders bought.",
     "fields": [
       {
         "example": "\"program\": [\"Axiom Trade\"] : every Axiom trade, whatever its instruction list.",
@@ -1580,7 +1580,7 @@
         "example": "[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"] with cu_price 1000; {\"labels\": [\"Pump.Fun: Sell\"], \"level\": \"core\", \"side\": \"sell\", \"cu_price\": 167000}.",
         "key": "ix_shape",
         "kind": "match",
-        "summary": "The transaction's ordered instruction list is one of these, optionally pinned to its fee preset (CU limit, CU price, tip). A row with level core matches every variant of the build that keeps its core (the list without compute budget, System, token-account, memo and Lighthouse instructions, pump.fun's Buy / Sell / Create variants merged), optionally pinned to a side and to its extras (marks CL CP N L M S C W, T<transfers> A<account opens>).",
+        "summary": "Each row is an ix structure or an ix core. An ix structure (level exact, the default) is the transaction's whole instruction list, in order, repeats counted. An ix core (level core) is that list without compute budget, System, token-account, memo and Lighthouse instructions, with pump.fun's Buy / Sell / Create variants merged, so one row matches every variant that keeps the core. Either may pin the fee preset (cu_limit, cu_price, tip_lamports). A core row may also pin the side and its extras (marks CL CP N L M S C W, T<transfers> A<account opens>).",
         "title": "Ix shape",
         "value_type": "ix_shape[]"
       },

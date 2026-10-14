@@ -491,12 +491,6 @@ pub enum Effect {
     /// start so a restart resumes the same stage on the same clock. A move that a
     /// partial sell's fill makes rides that fill's [`PositionDelta`] instead.
     StageMoved(StageMove),
-    /// A volume-tag list the live label queued. The adapter appends the label text
-    /// to that fingerprint off the decision loop. Prime and replay drop it.
-    SaveVolumeList {
-        fingerprint: FingerprintId,
-        ix_hash: u64,
-    },
 }
 
 /// One stage move of a held position: the new stage and the instant it began.

@@ -544,7 +544,7 @@ metric conditions*, and the whole UI renders from ONE payload
 (`GET /api/meta/strategy-registry`) so a metric added in Rust appears everywhere on the
 next load (no per-metric frontend work).
 
-`TagsEditor` is the fingerprint's tag list. Volume is its own button, and the name stays `volume`. That card edits the stored volume pattern (instruction lists, wallets that come back, the creator flag). The Guide button beside Tags opens the volume workflow (`VolumeGuide.tsx`): before this coin, on each trade, label the tape, then write the next fingerprint. Green is written for the next coin. Red stays off. The wallet list is replaced from addresses that still trade this dev's recent launches. Any other tag, including `dump`, is a matcher list added with the tag button. Its add-matcher menu is two groups, this trade's list and who sent it. The rule editor Guide opens a picture of how one rule runs on one coin (`StrategyGuide.tsx`): watch, buy, keep looking, sell, then buy again. Green buys. Red stops the coin. The metric list stays below that picture.
+`TagsEditor` is the fingerprint's tag list. Volume is its own button, and the name stays `volume`. That card edits the stored volume pattern (ix structure and ix core rows, wallets that come back, the creator flag). The owner split builds that pattern once; a running rule only reads it, and nothing writes it while rules run. The Guide button beside Tags opens the volume workflow (`VolumeGuide.tsx`): built once, then read while a rule runs. Green is stored. Red is left off. Any other tag, including `dump`, is a matcher list added with the tag button. Its add-matcher menu is two groups, this trade's list and who sent it. The rule editor Guide opens a picture of how one rule runs on one coin (`StrategyGuide.tsx`): watch, buy, keep looking, sell, then buy again. Green buys. Red stops the coin. The metric list stays below that picture.
 
 - `lib/strategy/registry.ts` — types mirroring the registry payload (`operators`,
   `groups[]` → metrics w/ unit/eq-tolerance/monotonic + strict params) + the cached
@@ -1005,9 +1005,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     per half independently. A grid and its rows' inspect modals read the same hook, so a card
     and its modal cannot disagree. Omit/empty is not a blank chart — the overlay falls back to
     a creator-vs-rest split and only goes dark on a token with no creator wallet either.
-    Clicking a Tagged badge **persists**: `useVolumePatternTarget` writes that row's ordered
-    `instruction_labels` (`lib/flow/volumePatterns.togglePattern`, shared with Flow Discovery)
-    straight into the target fingerprint's `metric_config`, and the engine picks it up on its
+    Clicking a Tagged badge **persists**: `useIxPatternTarget` writes that row's ordered
+    `instruction_labels` (`lib/strategy/tagsDoc.withTagShape`)
+    straight into the target fingerprint's `tags`, and the engine picks it up on its
     next rules reload. There is no staging copy — it would be a second answer to "what counts
     as volume". `useFlowReasons` supplies the contagion-aware `via creator` / `via wallet`
     marker so the structural badge and the lines stop disagreeing silently. `flowReadOnly` opts

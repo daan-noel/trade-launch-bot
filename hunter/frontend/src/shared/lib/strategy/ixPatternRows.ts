@@ -27,7 +27,7 @@ export interface IxPatternFee {
 
 /** A stored `ix_patterns` row, fee and all.
  *
- *  `level: 'core'` (engine `BuildPatterns`, `"level": "core"`) matches every variant
+ *  `level: 'core'` (engine `IxShapeRows`, `"level": "core"`) matches every variant
  *  of the build that keeps its core ([coreLabels]) instead of the exact sequence; it
  *  may also pin the side and the extras (`marks`, engine `core_marks_text`). An exact
  *  row carries neither. */

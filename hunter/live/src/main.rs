@@ -1448,14 +1448,6 @@ async fn run() -> anyhow::Result<()> {
         engine_handle.clone(),
         core_state.batch_db.clone(),
     ));
-    // Replaces each volume tag's wallet list from the launch group. Off the
-    // decision loop, on the batch pool. Instruction lists stay on volume_save.
-    tokio::spawn(strategies::engine::volume_wallets::run(
-        engine_handle.clone(),
-        sse_tx.clone(),
-        core_state.batch_db.clone(),
-        fingerprint_repo.clone(),
-    ));
     // Deletes the `trades` legs of blocks the chain abandoned (ingest reads at
     // `processed`). Off the hot path, on the batch pool, against the public RPC.
     if let Some(sweep) = trading_core::services::dead_slot_sweep::DeadSlotSweep::new(

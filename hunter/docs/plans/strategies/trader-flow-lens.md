@@ -171,7 +171,7 @@ distinction the structural-precision-without-money results turn on.
 
 Matching runs on the engine's own classifiers, never a second spelling:
 `template_grain::grain` (and the program name) against a templates set,
-`trade_keys::ix_hash` + `BuildPatterns` with the set's fee pins against an exact one.
+`trade_keys::ix_hash` + `IxShapeRows` with the set's fee pins against an exact one.
 The probe reads the NARROWED key set (what the charts classify with), so the chips move
 the filter and the overlay together.
 
