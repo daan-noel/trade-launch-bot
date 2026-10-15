@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use hunter_engine::event::{Event, Fill, FillFailReason, IntentId};
@@ -1090,7 +1090,6 @@ fn exit_still_current(registry: &PositionRegistry, order: &SellOrder) -> bool {
 /// Submit a real sell (escalating tip across attempts), confirm by summing the
 /// position's OWN sell legs vs the held amount, and emit the definitive outcome.
 pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
-    deps.wallets.freeze.wait(&order.wallet).await;
     if let Ok(Some(pos)) = deps.strategy_repo.find_position(order.pg_id).await {
         if !pos.wallet.is_empty() && pos.wallet != "paper" {
             order.wallet = pos.wallet;
@@ -1099,9 +1098,26 @@ pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
             order.token_account = pos.token_account;
         }
     }
-    if let Some(trader) = deps.wallets.trader(order.wallet.as_str()) {
-        deps.trader = trader;
-    }
+    // Only the wallet that bought the bag can sell it. Another key's sell fails
+    // on chain and burns a fee and a nonce each attempt, so a wallet not loaded
+    // here sends nothing: the engine retries, then parks it `ExitStuck` for the
+    // reaper, which sells once Refresh loads the key.
+    let (wallet, trader) = deps.wallets.for_position(&order.wallet, &deps.trader);
+    let Some(trader) = trader else {
+        error!(pg = %order.pg_id, mint = %order.mint, wallet = %wallet,
+            "real sell: wallet {wallet} is not loaded on this box, not signing; the position stays open");
+        let _ = deps
+            .fill_tx
+            .send(Event::FillFailed {
+                intent: order.intent,
+                reason: FillFailReason::Reverted,
+                at: Some(Utc::now()),
+            })
+            .await;
+        return;
+    };
+    deps.trader = trader;
+    deps.wallets.freeze.wait(&wallet).await;
     let Some(_guard) = deps.inflight.try_begin_exit(order.pg_id) else {
         warn!(pg = %order.pg_id, mint = %order.mint, "real sell: exit guard held — skipping");
         return;

@@ -20,7 +20,7 @@ No private key or nonce list is read from the environment. With no wallet loaded
 
 ## Readiness
 
-Each loaded wallet reports one state, the first missing piece in the order it is fixed: `no_key` (not loaded here, or the key does not match; the load error says why), `needs_nonces`, `init_failed` (the trader's `initialize` error is kept and shown), `needs_sol` (cached balance under `LOW_SOL_LAMPORTS`, 0.01 SOL), `ready`. `needs_sol` still signs; the per-buy balance floor decides each entry. Assigning a rule to, setting as primary, or manually buying with a wallet that cannot sign is refused. A rule whose wallet is not loaded on this box fails its entry; it never buys with another wallet. The balance floor reads the wallet that pays.
+Each loaded wallet reports one state, the first missing piece in the order it is fixed: `no_key` (not loaded here, or the key does not match; the load error says why), `needs_nonces`, `init_failed` (the trader's `initialize` error is kept and shown), `needs_sol` (cached balance under `LOW_SOL_LAMPORTS`, 0.01 SOL), `ready`. `needs_sol` still signs; the per-buy balance floor decides each entry. Assigning a rule to, setting as primary, or manually buying with a wallet that cannot sign is refused. A rule whose wallet is not loaded on this box fails its entry; it never buys with another wallet. A position whose wallet is not loaded here is never signed or closed; it waits for the wallet. Its sell goes `ExitStuck` with nothing sent, the reaper skips it, Re-sell and Verify answer `409 wallet X is not loaded on this box`, and the next pass after a Refresh that loads the key sells it. The balance floor reads the wallet that pays.
 
 ## Nonces
 

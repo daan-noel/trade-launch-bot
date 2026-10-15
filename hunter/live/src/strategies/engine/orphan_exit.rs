@@ -60,6 +60,9 @@ pub enum OrphanStart {
     Busy,
     /// Position has nothing to sell (zero tokens).
     NothingToSell,
+    /// The wallet that bought the bag is not loaded on this box; nothing was
+    /// sent. It sells once Refresh loads the key.
+    WalletNotLoaded,
 }
 
 /// Spawn a direct `run_exit` for a PG row that is not (or may not be) in the live
@@ -81,6 +84,12 @@ pub fn spawn_orphan_sell(
     }
     if deps.inflight.exit_held(position.id) || deps.inflight.exit_mint_held(&position.mint_address) {
         return OrphanStart::Busy;
+    }
+    // Siblings share this position's bag only under the wallet that bought it,
+    // and only that wallet's key can sell it.
+    let (wallet, trader) = deps.wallets.for_position(&position.wallet, &deps.trader);
+    if trader.is_none() {
+        return OrphanStart::WalletNotLoaded;
     }
     let Some(pg_guard) = deps.inflight.try_begin_exit(position.id) else {
         return OrphanStart::Busy;
@@ -145,8 +154,6 @@ pub fn spawn_orphan_sell(
     let trade_repo = deps.trade_repo.clone();
     let registry = deps.registry.clone();
     let engine_fill_tx = deps.fill_tx.clone();
-    // Siblings share this position's bag only under the wallet that bought it.
-    let (wallet, _) = deps.wallets.for_position(&position.wallet, &deps.trader);
     let exit_reason = position
         .exit_reason
         .clone()
@@ -522,6 +529,11 @@ pub async fn reconcile_externally_cleared_holdings(deps: &OrphanExitDeps) {
             // The mint was found cleared under SOME wallet. Each row is cleared
             // only when the wallet that bought it holds none.
             let (wallet, trader) = deps.wallets.for_position(&pos.wallet, &deps.trader);
+            // Its key is not loaded here: the heal below would decode the sell
+            // as another wallet's. Wait for the wallet.
+            let Some(trader) = trader else {
+                continue;
+            };
             let net = deps
                 .trade_repo
                 .net_token_amount_by_wallet_and_mint(&wallet, &mint)

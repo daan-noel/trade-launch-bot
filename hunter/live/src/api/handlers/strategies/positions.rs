@@ -436,7 +436,10 @@ pub async fn close_position(
 
             // Bag already gone (Trade sell / sibling) — book closed, no sell RPC.
             // Read under the wallet that bought it: another wallet's net is not this bag.
-            let (wallet, trader) = app_state.wallets.for_position(&pos.wallet, &app_state.trader);
+            let (wallet, Some(trader)) = app_state.wallets.for_position(&pos.wallet, &app_state.trader)
+            else {
+                return wallet_not_loaded(&pos.wallet);
+            };
             if let Ok(net) = app_state
                 .trade_repo()
                 .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
@@ -465,6 +468,7 @@ pub async fn close_position(
             // landed, this one finds nothing to sell and the row books cleared.
             // `dump` forces no-floor slippage so a near-drained pool still clears.
             let deps = orphan_deps_from_state(&app_state);
+            let pos_wallet = pos.wallet.clone();
             match orphan_exit::spawn_orphan_sell(&deps, pos, "Manual", dump) {
                 OrphanStart::Started => {
                     HttpResponse::Accepted().json(serde_json::json!({ "closing": true }))
@@ -475,6 +479,7 @@ pub async fn close_position(
                 OrphanStart::NothingToSell => HttpResponse::Conflict().json(serde_json::json!({
                     "error": "Position has zero token amount to sell"
                 })),
+                OrphanStart::WalletNotLoaded => wallet_not_loaded(&pos_wallet),
             }
         }
 
@@ -482,6 +487,14 @@ pub async fn close_position(
             "error": format!("Unknown action '{other}' (retry | dump | writeoff | verify)")
         })),
     }
+}
+
+/// 409 for an action that needs the buying wallet's key on a box that has not
+/// loaded it. Fix the key file and press Refresh; the action then runs.
+fn wallet_not_loaded(wallet: &str) -> HttpResponse {
+    HttpResponse::Conflict().json(serde_json::json!({
+        "error": format!("wallet {wallet} is not loaded on this box")
+    }))
 }
 
 /// `?action=verify` — resolve a row on demand without selling.
@@ -499,7 +512,10 @@ async fn verify_position(
 
     match pos.status.as_str() {
         "ExitUnconfirmed" => {
-            let (wallet, trader) = app_state.wallets.for_position(&pos.wallet, &app_state.trader);
+            let (wallet, Some(trader)) = app_state.wallets.for_position(&pos.wallet, &app_state.trader)
+            else {
+                return wallet_not_loaded(&pos.wallet);
+            };
             let net = match app_state
                 .trade_repo()
                 .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)

@@ -103,11 +103,12 @@ pub struct ReaperDeps {
 impl ReaperDeps {
     /// The pubkey the row was bought with, and the trader that can see that
     /// wallet's nonce pool, token accounts, and SOL earmark. A paper sentinel
-    /// or a missing load falls back to the process primary.
+    /// falls back to the process primary; a wallet not loaded here has no
+    /// trader, and every pass that needs one leaves the row for a later tick.
     fn wallet_and_trader(
         &self,
         position: &StrategyPosition,
-    ) -> (String, Arc<PumpFunTrader>) {
+    ) -> (String, Option<Arc<PumpFunTrader>>) {
         self.wallets.for_position(&position.wallet, &self.trader)
     }
 
@@ -236,7 +237,7 @@ async fn resolve_buy_submitted_inner(
             let token_account = position
                 .token_account
                 .clone()
-                .or_else(|| trader.cached_token_account(&position.mint_address));
+                .or_else(|| trader.as_ref()?.cached_token_account(&position.mint_address));
             // What the buy took from the wallet — the same booking `exec_real` makes.
             let paid_sol = exec_real::booked_wallet_sol(&legs, &position.mint_address, "buy");
             match deps
@@ -318,6 +319,11 @@ async fn resolve_buy_submitted_inner(
     if !check_sigs {
         return BuyResolution::Wait;
     }
+    // Proving the sigs dead needs the buying wallet's trader. Not loaded here:
+    // wait for it, never drop.
+    let Some(trader) = trader else {
+        return BuyResolution::Wait;
+    };
     let mut all_reverted = true;
     for sig in &position.submitted_buy_signatures {
         let status = trader.signature_state(sig).await;
@@ -372,7 +378,9 @@ async fn resolve_never_broadcast(
         return BuyResolution::Wait;
     }
 
-    let (wallet, trader) = deps.wallet_and_trader(position);
+    let (wallet, Some(trader)) = deps.wallet_and_trader(position) else {
+        return BuyResolution::Wait;
+    };
     for sig in &position.submitted_buy_signatures {
         match trader.burn_nonce_tx(sig).await {
             NonceTxState::Dead => {}
@@ -422,9 +430,9 @@ async fn drop_buy_submitted(
 ) -> BuyResolution {
     match deps.strategy_repo.delete_position(position.id).await {
         Ok(()) => {
-            deps.wallet_and_trader(position)
-                .1
-                .release_sol_for_position(&position.id.to_string());
+            if let Some(trader) = deps.wallet_and_trader(position).1 {
+                trader.release_sol_for_position(&position.id.to_string());
+            }
             info!(
                 position_id = %position.id,
                 mint = %position.mint_address,
@@ -576,7 +584,7 @@ async fn redrive_orphaned_exit_pending(deps: &ReaperDeps) {
 
         match orphan_exit::spawn_orphan_sell(&orphan, position, "Recovery", false) {
             OrphanStart::Started => {}
-            OrphanStart::Busy | OrphanStart::NothingToSell => {}
+            OrphanStart::Busy | OrphanStart::NothingToSell | OrphanStart::WalletNotLoaded => {}
         }
     }
 }
@@ -607,7 +615,9 @@ async fn heal_exit_pending_cleared(deps: &ReaperDeps) {
         if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&pos.mint_address) {
             continue;
         }
-        let (wallet, trader) = deps.wallet_and_trader(&pos);
+        let (wallet, Some(trader)) = deps.wallet_and_trader(&pos) else {
+            continue;
+        };
         let fill =
             orphan_exit::fill_from_latest_sell(&deps.trade_repo, &trader, &wallet, &pos).await;
         if orphan_exit::book_cleared_or_park(&orphan, &pos, fill).await.is_ok() {
@@ -658,9 +668,11 @@ async fn redrive_exit_stuck(deps: &ReaperDeps, backoff: &mut HashMap<Uuid, u8>) 
                 // auto-written-off.
                 park_or_recover(deps, &position, "ExitStuck").await;
             }
-            OrphanStart::Busy => {}
+            OrphanStart::Busy | OrphanStart::WalletNotLoaded => {}
             OrphanStart::NothingToSell => {
-                let (wallet, trader) = deps.wallet_and_trader(&position);
+                let (wallet, Some(trader)) = deps.wallet_and_trader(&position) else {
+                    continue;
+                };
                 let fill = orphan_exit::fill_from_latest_sell(
                     &deps.trade_repo,
                     &trader,
@@ -693,9 +705,12 @@ async fn reconcile_bag_onchain(deps: &ReaperDeps, position: &StrategyPosition) -
     if !deps.onchain_bag_check {
         return OnChainBag::Unchanged;
     }
-    let accounts = match deps
-        .wallet_and_trader(position)
-        .1
+    // Another wallet's token accounts are not this bag: reading them would see
+    // zero and book a held bag cleared. Not loaded here, nothing is learned.
+    let Some(trader) = deps.wallet_and_trader(position).1 else {
+        return OnChainBag::Unchanged;
+    };
+    let accounts = match trader
         .get_all_token_accounts_for_mint(&position.mint_address)
         .await
     {
@@ -759,7 +774,9 @@ async fn park_or_recover(deps: &ReaperDeps, position: &StrategyPosition, status:
     match reconcile_bag_onchain(deps, position).await {
         OnChainBag::Cleared => {
             let orphan = deps.orphan_deps();
-            let (wallet, trader) = deps.wallet_and_trader(position);
+            let (wallet, Some(trader)) = deps.wallet_and_trader(position) else {
+                return;
+            };
             // `fill_from_latest_sell` heals the feed from this row's exit
             // signatures before it answers. The bag being gone is the proof
             // that a sell landed, so "PG has no sell leg" here means the feed
@@ -840,7 +857,9 @@ async fn redrive_exit_unconfirmed(deps: &ReaperDeps, backoff: &mut HashMap<Uuid,
         // exit, so there is no tx that could land behind our back and a resend is
         // safe. Any recorded sig must be proven dead first.
         let sigs = position.exit_tx_sigs();
-        let (_, trader) = deps.wallet_and_trader(&position);
+        let (_, Some(trader)) = deps.wallet_and_trader(&position) else {
+            continue;
+        };
         let mut all_dead = true;
         for sig in &sigs {
             match trader.burn_nonce_tx(sig).await {
@@ -867,9 +886,11 @@ async fn redrive_exit_unconfirmed(deps: &ReaperDeps, backoff: &mut HashMap<Uuid,
                 // forever on a dead pool, and never auto-write-off.
                 park_or_recover(deps, &position, "ExitUnconfirmed").await;
             }
-            OrphanStart::Busy => {}
+            OrphanStart::Busy | OrphanStart::WalletNotLoaded => {}
             OrphanStart::NothingToSell => {
-                let (wallet, trader) = deps.wallet_and_trader(&position);
+                let (wallet, Some(trader)) = deps.wallet_and_trader(&position) else {
+                    continue;
+                };
                 let fill = orphan_exit::fill_from_latest_sell(
                     &deps.trade_repo,
                     &trader,
@@ -907,7 +928,9 @@ async fn heal_cleared_by_status(deps: &ReaperDeps, status: &str) {
         if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&pos.mint_address) {
             continue;
         }
-        let (wallet, trader) = deps.wallet_and_trader(&pos);
+        let (wallet, Some(trader)) = deps.wallet_and_trader(&pos) else {
+            continue;
+        };
         let fill =
             orphan_exit::fill_from_latest_sell(&deps.trade_repo, &trader, &wallet, &pos).await;
         if orphan_exit::book_cleared_or_park(&orphan, &pos, fill).await.is_ok() {

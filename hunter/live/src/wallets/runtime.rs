@@ -272,20 +272,20 @@ impl WalletRuntime {
         Readiness::of(facts.as_ref(), lamports)
     }
 
-    /// The pubkey a position was bought with and the trader that sees that
-    /// wallet's bag. A paper sentinel or an empty field means `fallback`'s wallet;
-    /// a wallet not loaded here keeps its pubkey (the `trades` net is still that
-    /// wallet's) and signs nothing new.
+    /// The pubkey a position was bought with and the trader that signs for and
+    /// reads that wallet's bag. A paper sentinel or an empty field means
+    /// `fallback`'s wallet. A wallet not loaded here keeps its pubkey (the
+    /// `trades` net is still that wallet's) and has no trader: nothing signs for
+    /// it or reads its token accounts until it loads.
     pub fn for_position(
         &self,
         recorded: &str,
         fallback: &Arc<PumpFunTrader>,
-    ) -> (String, Arc<PumpFunTrader>) {
+    ) -> (String, Option<Arc<PumpFunTrader>>) {
         if recorded.is_empty() || recorded == "paper" {
-            return (fallback.wallet_pubkey(), fallback.clone());
+            return (fallback.wallet_pubkey(), Some(fallback.clone()));
         }
-        let trader = self.trader(recorded).unwrap_or_else(|| fallback.clone());
-        (recorded.to_string(), trader)
+        (recorded.to_string(), self.trader(recorded))
     }
 
     /// A pushed account update: a wallet balance, or a nonce account one of the
@@ -512,4 +512,53 @@ pub async fn load_one(pool: &PgPool, factory: TraderFactory, wanted: Option<&str
         bail!("wallet {} trader init failed: {e}", record.name);
     }
     Ok(trader)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runtime() -> WalletRuntime {
+        let factory = TraderFactory {
+            rpc_url: "http://127.0.0.1:1".into(),
+            sender_urls: Vec::new(),
+            fees: FeeTuning::defaults(),
+        };
+        WalletRuntime::empty(factory, None, None)
+    }
+
+    /// A position whose wallet is not loaded gets no trader, never the
+    /// fallback: the fallback's key would sign a sell that cannot move this
+    /// bag, and its token accounts would read the bag as gone.
+    #[tokio::test]
+    async fn unloaded_position_wallet_gets_no_trader() {
+        let rt = runtime();
+        let fallback = rt.factory.inert();
+        let absent = Pubkey::new_unique().to_string();
+
+        let (wallet, trader) = rt.for_position(&absent, &fallback);
+        assert_eq!(wallet, absent);
+        assert!(trader.is_none());
+
+        for sentinel in ["", "paper"] {
+            let (wallet, trader) = rt.for_position(sentinel, &fallback);
+            assert_eq!(wallet, fallback.wallet_pubkey());
+            assert!(trader.is_some_and(|t| Arc::ptr_eq(&t, &fallback)));
+        }
+
+        let loaded = rt.factory.inert();
+        let pubkey = loaded.wallet_pubkey();
+        rt.slots.write().unwrap().insert(
+            pubkey.clone(),
+            Slot {
+                name: "w".into(),
+                trader: loaded.clone(),
+                signer: Arc::new(Keypair::new()),
+                nonces: Vec::new(),
+                init_error: None,
+            },
+        );
+        let (_, trader) = rt.for_position(&pubkey, &fallback);
+        assert!(trader.is_some_and(|t| Arc::ptr_eq(&t, &loaded)));
+    }
 }
