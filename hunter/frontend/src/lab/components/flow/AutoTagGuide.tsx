@@ -50,6 +50,7 @@ export function AutoTagWorkflow({ params }: { params: OwnerSplitParams | null })
   const readRow = levelRow(READ_LEVEL, EXAMPLE);
   const ownerPct = params ? `${params.row_min_owner_pct}%` : 'the run’s share';
   const minTrades = params ? `${params.row_min_trades}` : 'the run’s count';
+  const recentDays = params ? `${params.recent_window_days}` : 'a few';
 
   return (
     <div className="flex flex-col gap-4 pb-2">
@@ -186,7 +187,26 @@ export function AutoTagWorkflow({ params }: { params: OwnerSplitParams | null })
             <strong className="text-[12px] text-text">Wallets</strong>
             <span className="text-[11px] text-text-dim">
               Only wallets that come back: a sell with no buy or a transfer pair on {params ? `${params.comes_back_min_coins}+` : 'enough'} coins,
-              or a never-seller, whose latest coin is inside the recent window
+              or a never-seller. Creation-slot wallets are never saved: they are new on the next coin.
+            </span>
+          </Card>
+          <Card>
+            <strong className="text-[12px] text-text">Recent window: {recentDays} days</strong>
+            <span className="text-[11px] text-text-mid">
+              A wallet is saved only when its latest trade on the group is {recentDays} days or less before the
+              group&rsquo;s last trade. A wallet quiet for longer is likely retired.
+            </span>
+            <div className="flex flex-col gap-1">
+              <span className="text-[11px] text-text-dim">Group&rsquo;s last trade: 10-14</span>
+              <div className="flex flex-wrap gap-1">
+                <Chip tone="keep">Wallet A, last trade 10-12: 2 days, saved</Chip>
+                <Chip tone="drop">Wallet B, last trade 10-08: 6 days, left off</Chip>
+              </div>
+            </div>
+            <span className="text-[11px] text-text-dim">
+              Why: measured on the lake (owner-split Appendix B), 4 days keeps 93-94% of the wallets that trade the
+              group again. Counting in coins kept only 44-69%, since one group launches 10 coins a day and another 500. A
+              saved wallet that never returns costs nothing; it only matches no trade.
             </span>
           </Card>
         </Pass>

@@ -141,7 +141,7 @@ INPUT
 |   Same slot (20 coins), Below zero (2 coins), Same amount (2 coins),          |
 |   Never sells, Stays in group                                                 |
 |   and latest trade on the group inside the recent window                      |
-|   (the gap that covers 90% of returns, counted to the build's last coin)      |
+|   (4 days before the group's last trade)                                      |
 |   never stored: a this-coin wallet, a birth-bundle wallet, a proxy            |
 +-------------------------------------------------------------------------------+
         |
@@ -209,7 +209,7 @@ A hand edit, not the Build. On the `volume` tag, Flow Discovery runs Build steps
 
 1. A toggle labels its wallets' trades **owner** on the coins it marks them on. The create transaction's wallets are owner on their coin whatever is toggled.
 2. The rows: every ix structure an owner trade used, at the seven [match levels](#match-levels). A level passes at **90%** owner SOL across the group and **10** trades. The fewest passing rows that cover every owner trade they can are staged, the most owner SOL first. A level that pins a fee field is read only on trades that carry it.
-3. The wallets: Below zero or Same amount on **2** group coins, or a never-seller, with the latest group coin inside the [recent window](#terms), counted in group coins newest first.
+3. The wallets: Below zero or Same amount on **2** group coins, or a never-seller, with its latest trade on the group inside the [recent window](#terms): **4** days or less before the group's last trade.
 4. Staged rows and wallets join the draft; one auto-tag added that the new stage drops leaves it; one the user unticks stays out; one added by hand stays. Apply saves the rows, the wallets, sticky and creator.
 
 The sniper counts read the lake per coin, over the day up to that coin's create. Never sells reads the 7 days ending at the run's last trade. When that read fails, Creation slot and Never sells are off and snipers stay in Instant buy and Bundle, with a notice. The tooltips quote the thresholds the run applied and each rule's evidence ([Appendix B](#auto-tag-thresholds)).
@@ -668,6 +668,7 @@ Lake 09-30 .. 10-13 (133,512 finished coins, 20+ trades). A value is chosen on c
 | Below zero, Same amount | 2 coins | trades again on later coins | 21% at 1 coin, 54% at 2, 64% at 3, 75% at 10 | measured |
 | Same amount, Matching holder | 0.1% | matches on the same coin against matches on a random coin | at 0.1% 1% of the matches are luck; widening to 0.5% adds matches about half of them luck | measured |
 | Never sells | 10 coins, 20 buys, 7 days | still no sell on later coins | 80% or more from 20 buys; 47-63% under it; 3 and 7 days alike | measured |
+| Recent window | 4 days before the group's last trade | a kept wallet trades the group again (146-172 groups of 30+ coins; split 10-08, confirm 10-11) | 4 days keeps 93% / 94% of returning wallets, 3 days 89%. Counted in coins, 200 coins keeps 46%; the 90%-gap count in coins keeps 44-69%. 39-46% of candidates return within a week | measured |
 
 "Sells in the creator's slot" favours early sellers, since the creator often sells early. It ranks creation-slot thresholds against each other, never proves a transfer wallet. The cash-out check ([Checks](#checks)) cannot grade a creation-slot rule: a sniper flips within seconds and passes it.
 
@@ -687,7 +688,7 @@ Each row above uses these names. **Why** is why the dev behaves that way. **Expl
 
 **Token bag.** Buys minus sells for one wallet on one coin. A transfer is not a trade, so it leaves the bag unchanged. A sell of tokens that arrived by transfer takes the bag below zero.
 
-**Recent window.** The build's clock for a stored wallet. Count this launch group's own coins, newest first, up to the build's last coin. The width is the gap within which 90% of wallets that come back do come back. A gap of half of those returns drops an address that is about to trade again. A gap that covers nearly every return keeps addresses the dev has finished with. An address is stored when it passes its test and its latest trade on the group is inside that width. A running rule never moves the window.
+**Recent window.** The build's clock for a stored wallet: the **4** days before the launch group's last trade. An address is stored when it passes its test and its latest trade on the group is inside that window. It is counted in days, not coins: one group launches 10 coins a day and another 500, so a coin count is a different stretch of time in each. 4 days is the smallest window that keeps 90% of the wallets that trade the group again ([Appendix B](#auto-tag-thresholds)). A stored address that never returns matches no trade, so the window leans to keeping. A running rule never moves the window.
 
 **Stored and sticky.** Stored is on the fingerprint, written by the build: rows, wallets, the creator flag. A hand edit to the stored tag lasts until the next build replaces it. Sticky is this coin only: a wallet with one owner trade here, from that trade on. Sticky is never written back.
 

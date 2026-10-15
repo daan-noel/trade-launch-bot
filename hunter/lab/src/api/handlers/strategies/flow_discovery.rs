@@ -307,6 +307,41 @@ pub async fn lens_hits(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct BudgetsBody {
+    pub run_id: Uuid,
+    pub group_key: serde_json::Value,
+    /// The ranked row's `ix_labels`: the exact shape, or its core labels when `core`.
+    pub ix_labels: Vec<String>,
+    #[serde(default)]
+    pub core: bool,
+}
+
+/// `POST /api/strategies/flow-discovery/budgets` — every fee budget one ranked row of
+/// a group traded on (`all_fee_variants`), the list the GET payload clips at
+/// `MAX_FEE_VARIANTS`. Read off the run's corpus, like the lens hits.
+pub async fn budgets(
+    state: web::Data<Arc<LocalState>>,
+    body: web::Json<BudgetsBody>,
+) -> impl Responder {
+    let b = body.into_inner();
+    let (tokens, idxs, _) = match group_corpus(&state, b.run_id, &b.group_key).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let read = tokio::task::spawn_blocking(move || {
+        crate::strategies::flow_discovery::all_fee_variants(&tokens, &idxs, &b.ix_labels, b.core)
+    })
+    .await;
+    match read {
+        Ok((fee_variants, fee_unknown_trades)) => HttpResponse::Ok().json(serde_json::json!({
+            "fee_variants": fee_variants,
+            "fee_unknown_trades": fee_unknown_trades,
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "error": format!("budgets failed: {e}") })),
+    }
+}
+
 /// A group's member coins in the run's corpus: the corpus `tokens`, each member's
 /// index into them, and the corpus's owner-split market facts.
 type RunCorpus = (Arc<Vec<CorpusToken>>, Vec<usize>, Option<Arc<MarketFacts>>);

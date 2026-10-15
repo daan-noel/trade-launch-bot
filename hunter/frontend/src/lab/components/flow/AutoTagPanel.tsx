@@ -84,8 +84,8 @@ export function AutoTagPanel({
   draftRowKeys,
   draftWallets,
   lens,
-  onPickRow,
-  onPickWallet,
+  onPickRows,
+  onPickWallets,
 }: {
   tagName: string;
   /** The run's thresholds; `null` on a run cached before the rules existed. */
@@ -100,8 +100,9 @@ export function AutoTagPanel({
   draftWallets: ReadonlySet<string>;
   /** The preview chart's highlight; absent = no lens buttons. Pass a memoized one. */
   lens?: AutoTagLens | null;
-  onPickRow: (row: IxPatternRow, on: boolean) => void;
-  onPickWallet: (wallet: string, on: boolean) => void;
+  /** Ticks (`on`) or unticks staged rows - one from a checkbox, all from the toggle. */
+  onPickRows: (rows: readonly IxPatternRow[], on: boolean) => void;
+  onPickWallets: (wallets: readonly string[], on: boolean) => void;
 }) {
   const [family, setFamily] = useState<AutoTagFamilyId>('creation_slot');
   const [allWallets, setAllWallets] = useState(false);
@@ -124,6 +125,18 @@ export function AutoTagPanel({
   const coin = tokenMint ? stage?.by_mint[tokenMint] : undefined;
   const wallets = stage?.wallets ?? [];
   const shownWallets = allWallets ? wallets : wallets.slice(0, WALLETS_SHOWN);
+  // What the select-all toggle acts on: every row and savable wallet with a checkbox.
+  const pickRows = (stage?.rows ?? []).flatMap((r) => parseIxPatternRow(r.row) ?? []);
+  const pickWallets = wallets.filter((w) => w.reason == null).map((w) => w.wallet);
+  const pickCount = pickRows.length + pickWallets.length;
+  const allPicked =
+    pickCount > 0 &&
+    pickRows.every((r) => draftRowKeys.has(patternRowKey(r))) &&
+    pickWallets.every((w) => draftWallets.has(w));
+  const pickAll = (on: boolean) => {
+    onPickRows(pickRows, on);
+    onPickWallets(pickWallets, on);
+  };
 
   return (
     <div className="rounded-lg border border-warning/30 bg-warning/4 p-3">
@@ -142,6 +155,24 @@ export function AutoTagPanel({
           options={AUTO_TAG_FAMILIES.map((f) => ({ value: f.id, label: f.label, title: f.help }))}
         />
         {loading && <SpinnerIcon className="h-3.5 w-3.5 text-text-dim" />}
+        <button
+          type="button"
+          aria-pressed={allPicked}
+          disabled={pickCount === 0}
+          onClick={() => pickAll(!allPicked)}
+          title={
+            allPicked
+              ? 'Untick every row and wallet below: Apply saves none of them.'
+              : 'Tick every row and wallet below into the draft.'
+          }
+          className={cn(
+            'ml-auto inline-flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold transition',
+            'disabled:cursor-not-allowed disabled:opacity-40',
+            allPicked ? 'border-warning bg-warning/20 text-warning' : 'border-white/15 text-text-mid hover:border-warning/50 hover:text-text',
+          )}
+        >
+          {allPicked ? 'Unselect all' : 'Select all'}
+        </button>
       </div>
       <p className="mb-2 text-[11px] leading-snug text-text-dim">{fam.help}</p>
 
@@ -226,7 +257,7 @@ export function AutoTagPanel({
                       type="checkbox"
                       className="accent-accent"
                       checked={draftRowKeys.has(k)}
-                      onChange={(e) => onPickRow(row, e.target.checked)}
+                      onChange={(e) => onPickRows([row], e.target.checked)}
                       title="In the draft. Untick to keep it out."
                     />
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -285,8 +316,7 @@ export function AutoTagPanel({
                 body={
                   params
                     ? `Only wallets that come back are saved: Sell with no buy or Transfer pair on ${params.comes_back_min_coins}+ coins of the group, or a never-seller. ` +
-                      `A wallet is saved when its latest coin is inside the recent window: the newest ${stage.recent_window_coins} of ${stage.group_coins} coins, ` +
-                      `the gap within which ${params.recent_window_pct}% of the group's returning wallets come back. Creation-slot wallets are never saved: they are new on the next coin.`
+                      `A wallet is saved when its latest trade on the group is ${stage.recent_window_days} days or less before the group's last trade (the recent window); a wallet quiet for longer is likely retired. Creation-slot wallets are never saved: they are new on the next coin.`
                     : ''
                 }
               />
@@ -330,7 +360,7 @@ export function AutoTagPanel({
                       type="checkbox"
                       className="accent-accent"
                       checked={draftWallets.has(w.wallet)}
-                      onChange={(e) => onPickWallet(w.wallet, e.target.checked)}
+                      onChange={(e) => onPickWallets([w.wallet], e.target.checked)}
                       title="In the draft. Untick to keep it out."
                     />
                   )}
@@ -338,7 +368,7 @@ export function AutoTagPanel({
                     <AddressDisplay address={w.wallet} kind="account" />
                   </span>
                   <span className="shrink-0 text-[10px] text-text-dim">
-                    {w.reason ?? `${w.rules.join(', ')} · ${w.coins} coins · last ${w.coins_since} back`}
+                    {w.reason ?? `${w.rules.join(', ')} · ${w.coins} coins · last trade ${w.days_since.toFixed(1)} d before the group's last`}
                   </span>
                 </li>
                 );

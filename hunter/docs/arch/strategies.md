@@ -635,6 +635,9 @@ trade**, so simulate and live resolve at the same point.
   **`strategies/lens_hits.rs`** counts, per group coin, the trades each highlighted
   lens item matches (an `ix_shape` row through `IxShapeRows`, or a credited wallet),
   behind `POST /api/strategies/flow-discovery/lens-hits` on the same corpus path.
+  `flow_discovery::all_fee_variants` lists every fee budget of one ranked row (exact
+  shape or core) unclipped - the ranked payload keeps only `MAX_FEE_VARIANTS` - behind
+  `POST /api/strategies/flow-discovery/budgets`, same corpus path.
 - **`sweep/generic/`** — the precompute-then-scan grouped sweep. `GenericSweepStrategy`
   implements the existing `sweep::strategy::Strategy` trait (so partition / two-phase
   pool / `GroupSink` persistence / refine / `ComboAgg` and the whole

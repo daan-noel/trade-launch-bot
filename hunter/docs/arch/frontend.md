@@ -797,6 +797,11 @@ not show is a difference the page cannot express. `tags` is part of
   draft holds the tag's `wallet` list beside its `ix_shape` rows, and Apply (or a bind
   followed by one update) writes both. The cover bar counts each side's SOL when a row
   accepts that side, and a pinned row only on a structure with one budget.
+  The Budget cell shows the head budget and the count; a click opens `BudgetDrawer`, a
+  side panel with no backdrop (ranked table and chart stay live, Esc closes) holding
+  every budget of that row in a `DataTable` - sort, search, column filters, a lens and a
+  stage check per budget, and Stage / Unstage filtered. It opens on the row's clipped
+  `fee_variants` and swaps to the full list from `flow-discovery/budgets`.
   Apply writes whole rows (`IxPatternRow[]`) through
   `metricConfigWithList` for tagged/dump, or grain ids through
   `metricConfigWithWorkingTemplates` for working; bind accepts the mixed stored shape and the list

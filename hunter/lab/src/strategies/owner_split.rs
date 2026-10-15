@@ -103,8 +103,9 @@ pub struct OwnerSplitParams {
     /// Row test: owner share of a row's SOL across the group, and its trade floor.
     pub row_min_owner_pct: f64,
     pub row_min_trades: u64,
-    /// Recent window: the share of returning wallets whose return gap it covers.
-    pub recent_window_pct: f64,
+    /// Recent window: a stored wallet's latest group trade is this many days or less
+    /// before the group's last trade.
+    pub recent_window_days: i64,
     /// The never-sells window read, or `None` when the facts were unavailable.
     pub market_from: Option<DateTime<Utc>>,
     pub market_to: Option<DateTime<Utc>>,
@@ -112,7 +113,7 @@ pub struct OwnerSplitParams {
 
 impl OwnerSplitParams {
     pub fn new(facts: Option<&MarketFacts>) -> Self {
-        use super::owner_stage::{RECENT_WINDOW_SHARE, ROW_MIN_OWNER_SHARE, ROW_MIN_TRADES};
+        use super::owner_stage::{RECENT_WINDOW_DAYS, ROW_MIN_OWNER_SHARE, ROW_MIN_TRADES};
         Self {
             instant_buy_ms: INSTANT_BUY_MS,
             bundle_gap_ms: BUNDLE_GAP_MS,
@@ -128,7 +129,7 @@ impl OwnerSplitParams {
             never_sells_window_days: NEVER_SELLS_WINDOW_DAYS,
             row_min_owner_pct: ROW_MIN_OWNER_SHARE * 100.0,
             row_min_trades: ROW_MIN_TRADES,
-            recent_window_pct: RECENT_WINDOW_SHARE * 100.0,
+            recent_window_days: RECENT_WINDOW_DAYS,
             market_from: facts.map(|f| f.hold_from),
             market_to: facts.map(|f| f.to),
         }

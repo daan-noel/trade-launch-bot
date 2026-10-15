@@ -30,8 +30,8 @@ describe('stagedPicks', () => {
     const stage = {
       rows: [{ row: A, level: 1, trades: 20, coins: 2, sol: 5, owner_sol: 5, owner_pct: 100, reason: null }],
       wallets: [
-        { wallet: 'in', rules: ['below_zero'], coins: 2, coins_since: 0, reason: null },
-        { wallet: 'old', rules: ['below_zero'], coins: 2, coins_since: 9, reason: 'too old' },
+        { wallet: 'in', rules: ['below_zero'], coins: 2, days_since: 0, reason: null },
+        { wallet: 'old', rules: ['below_zero'], coins: 2, days_since: 6, reason: 'too old' },
       ],
     } as unknown as OwnerStage;
     const picks = stagedPicks(stage);

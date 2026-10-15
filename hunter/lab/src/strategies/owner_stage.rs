@@ -13,11 +13,12 @@
 //!   matches.
 //! - **Wallets.** Only a wallet that comes back is staged: Below zero or Transfer pair
 //!   on [`COMES_BACK_MIN_COINS`] group coins, or a never-seller. It is staged when its
-//!   latest group coin is inside the recent window: the newest coins within which
-//!   [`RECENT_WINDOW_SHARE`] of the group's returning wallets come back.
+//!   latest trade on the group is inside the recent window: the
+//!   [`RECENT_WINDOW_DAYS`] before the group's last trade.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use chrono::{DateTime, Duration, Utc};
 use hunter_engine::metrics::trade_keys::{core_labels, core_marks_text};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -31,8 +32,11 @@ use crate::sweep::projection::CorpusTrade;
 pub const ROW_MIN_OWNER_SHARE: f64 = 0.9;
 /// ...over at least this many trades.
 pub const ROW_MIN_TRADES: u64 = 10;
-/// The recent window covers the return gap of this share of returning wallets.
-pub const RECENT_WINDOW_SHARE: f64 = 0.9;
+/// The recent window: a wallet is stored when its latest trade on the group is this
+/// many days or less before the group's last trade. The smallest window that keeps
+/// 90% of the wallets that trade the group again (`_!___owner-split.md` Appendix B,
+/// "Recent window").
+pub const RECENT_WINDOW_DAYS: i64 = 4;
 /// Failing rows shown with their reason, the most owner SOL first.
 const FAILING_ROWS_SHOWN: usize = 8;
 
@@ -67,8 +71,8 @@ pub struct StagedWallet {
     pub rules: Vec<OwnerRule>,
     /// Group coins a rule marks it on.
     pub coins: usize,
-    /// How many group coins are newer than its latest one (0 = it trades the newest).
-    pub coins_since: usize,
+    /// Days from its latest trade on the group to the group's last trade.
+    pub days_since: f64,
     /// Why it is not staged; `None` on a staged wallet.
     pub reason: Option<String>,
 }
@@ -88,8 +92,8 @@ pub struct OwnerStage {
     pub wallets: Vec<StagedWallet>,
     /// Wallets a one-coin rule marks on fewer than [`COMES_BACK_MIN_COINS`] coins.
     pub one_coin_wallets: usize,
-    /// The recent window, in group coins newest first.
-    pub recent_window_coins: usize,
+    /// The recent window in days, ending at the group's last trade.
+    pub recent_window_days: i64,
     /// Per coin: (owner trades, trades).
     pub by_mint: BTreeMap<String, (u64, u64)>,
 }
@@ -172,23 +176,6 @@ fn row_json(key: &RowKey, labels: &[String]) -> Value {
     Value::Object(m)
 }
 
-/// The recent window, in coins: the [`RECENT_WINDOW_SHARE`] quantile of the gaps
-/// (in group coins) between a wallet's consecutive coins, over every wallet on 2+
-/// coins. `ranks` maps each wallet to its coins' ranks, 0 = newest. No returning
-/// wallet means no evidence to drop anyone: the whole group.
-fn recent_window(ranks: &HashMap<&str, BTreeSet<usize>>, n_coins: usize) -> usize {
-    let mut gaps: Vec<usize> = ranks
-        .values()
-        .flat_map(|r| r.iter().zip(r.iter().skip(1)).map(|(a, b)| b - a).collect::<Vec<_>>())
-        .collect();
-    if gaps.is_empty() {
-        return n_coins;
-    }
-    gaps.sort_unstable();
-    let i = ((gaps.len() as f64 * RECENT_WINDOW_SHARE).ceil() as usize).clamp(1, gaps.len()) - 1;
-    gaps[i].max(1)
-}
-
 /// Stage the group's coins `idxs` of `tokens` under the toggled `rules`, from each
 /// coin's marks `marks` (keyed like `idxs`).
 pub fn stage(
@@ -197,13 +184,14 @@ pub fn stage(
     marks: &HashMap<usize, OwnerMarks>,
     rules: &BTreeSet<OwnerRule>,
 ) -> OwnerStage {
-    let mut out = OwnerStage { group_coins: idxs.len(), ..Default::default() };
-
-    // Coin ranks, newest first, and every wallet's coins.
-    let mut order: Vec<usize> = idxs.to_vec();
-    order.sort_by(|a, b| tokens[*b].created_at.cmp(&tokens[*a].created_at));
-    let rank: HashMap<usize, usize> = order.iter().enumerate().map(|(r, &ti)| (ti, r)).collect();
-    let mut wallet_ranks: HashMap<&str, BTreeSet<usize>> = HashMap::new();
+    let mut out = OwnerStage {
+        group_coins: idxs.len(),
+        recent_window_days: RECENT_WINDOW_DAYS,
+        ..Default::default()
+    };
+    // Every wallet's latest trade on the group, and the group's last trade.
+    let mut wallet_last: HashMap<&str, DateTime<Utc>> = HashMap::new();
+    let mut group_last: Option<DateTime<Utc>> = None;
 
     let mut aggs: HashMap<RowKey, RowAgg> = HashMap::new();
     let mut owner_id: u32 = 0;
@@ -229,8 +217,10 @@ pub fn stage(
             let sol = t.amount_sol.abs();
             let w = t.wallet.as_deref();
             if let Some(w) = w {
-                wallet_ranks.entry(w).or_default().insert(rank[&ti]);
+                let last = wallet_last.entry(w).or_insert(t.block_time);
+                *last = (*last).max(t.block_time);
             }
+            group_last = Some(group_last.map_or(t.block_time, |g| g.max(t.block_time)));
             let owner = w.is_some_and(|w| owners.contains(w));
             coin_all += 1;
             out.total_trades += 1;
@@ -302,8 +292,6 @@ pub fn stage(
         .collect();
 
     // Wallets that come back, inside the recent window.
-    let window = recent_window(&wallet_ranks, idxs.len());
-    out.recent_window_coins = window;
     let mut found: BTreeMap<&str, (BTreeSet<OwnerRule>, usize)> = BTreeMap::new();
     for r in rules.iter().filter(|r| matches!(r, OwnerRule::BelowZero | OwnerRule::TransferPair | OwnerRule::NeverSells)) {
         let mut coins: HashMap<&str, usize> = HashMap::new();
@@ -326,10 +314,15 @@ pub fn stage(
     out.wallets = found
         .into_iter()
         .map(|(w, (rules, coins))| {
-            let since = wallet_ranks.get(w).and_then(|r| r.first().copied()).unwrap_or(usize::MAX);
-            let reason = (since >= window)
-                .then(|| format!("latest trade {since} coins back; the recent window is the newest {window}"));
-            StagedWallet { wallet: w.to_string(), rules: rules.into_iter().collect(), coins, coins_since: since, reason }
+            let since = match (group_last, wallet_last.get(w)) {
+                (Some(g), Some(&l)) => (g - l).num_milliseconds() as f64 / 86_400_000.0,
+                _ => f64::INFINITY,
+            };
+            let inside = group_last.zip(wallet_last.get(w)).is_some_and(|(g, &l)| g - l <= Duration::days(RECENT_WINDOW_DAYS));
+            let reason = (!inside).then(|| {
+                format!("latest trade {since:.1} days before the group's last; the recent window is {RECENT_WINDOW_DAYS} days")
+            });
+            StagedWallet { wallet: w.to_string(), rules: rules.into_iter().collect(), coins, days_since: since, reason }
         })
         .collect();
     out
@@ -434,19 +427,24 @@ mod tests {
 
     #[test]
     fn a_wallet_is_staged_only_when_it_comes_back_inside_the_window() {
-        // `w` sells tokens it never bought on two coins; `once` on one.
+        // `w` sells tokens it never bought on two coins; `once` on one. Coin `ci`
+        // trades `i` days before the newest.
         let short = |w: &str, slot: u64| tr(w, PUBLIC, false, 1.0, slot, 0);
         let mut coins: Vec<CorpusToken> = Vec::new();
         for i in 0..6 {
-            let mut c = coin(&format!("c{i}"), i * 100);
+            let mut c = coin(&format!("c{i}"), i * 86_400);
             let extra = match i {
                 0 => vec![short("w", 50)],
                 1 => vec![short("w", 50), short("once", 51)],
                 5 => vec![short("old", 50)],
-                4 => vec![short("old", 50)],
+                4 => vec![short("old", 49)],
                 _ => vec![],
             };
-            Arc::make_mut(&mut c.trades).extend(extra);
+            let trades = Arc::make_mut(&mut c.trades);
+            trades.extend(extra);
+            for t in trades.iter_mut() {
+                t.block_time -= Duration::days(i);
+            }
             coins.push(c);
         }
         let idxs: Vec<usize> = (0..coins.len()).collect();
@@ -455,10 +453,10 @@ mod tests {
         let w = st.wallets.iter().find(|x| x.wallet == "w").expect("w comes back");
         assert!(w.reason.is_none());
         assert_eq!(st.one_coin_wallets, 1);
-        // `old` returns one coin apart but last traded 4 coins back: outside a
-        // window of 1 coin.
-        assert_eq!(st.recent_window_coins, 1);
+        // `old` comes back on two coins, but its latest trade is 4 days and a bit
+        // before the group's last: outside the 4-day window.
+        assert_eq!(st.recent_window_days, 4);
         let old = st.wallets.iter().find(|x| x.wallet == "old").expect("old is listed");
-        assert!(old.reason.is_some());
+        assert!(old.reason.is_some() && old.days_since > 4.0);
     }
 }

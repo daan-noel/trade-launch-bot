@@ -24,6 +24,7 @@ import {
   IxLabelsChip,
 } from 'components/strategy/FingerprintParamsSummary';
 import { LabelTip } from 'components/strategy/LabelTip';
+import { cn } from 'lib/cn';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
 import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
@@ -58,8 +59,10 @@ import {
   suggestStructure,
   type StructureSuggestion,
 } from '@lab/components/flow/flowDiscoverySuggest';
+import { BudgetDrawer } from '@lab/components/flow/BudgetDrawer';
 import {
   StructureTable,
+  structureRowKey,
   type BudgetState,
   type RankedLens,
   type RankedState,
@@ -597,6 +600,18 @@ export function FlowDiscoveryPage() {
     [draftPatterns, rowFor],
   );
   const structureState = useCallback((s: FlowDiscoveryStructure) => stateOf(s.ix_labels), [stateOf]);
+  /** The ranked row whose budget drawer is open, by `structureRowKey`. A row the
+   *  ranked list no longer holds (another group, run or stage) closes it. */
+  const [budgetsKey, setBudgetsKey] = useState<string | null>(null);
+  const budgetsRow = useMemo(
+    () => (budgetsKey == null ? null : (rankedStructures.find((s) => structureRowKey(s) === budgetsKey) ?? null)),
+    [budgetsKey, rankedStructures],
+  );
+  const openBudgets = useCallback(
+    (s: FlowDiscoveryStructure) => setBudgetsKey((k) => (k === structureRowKey(s) ? null : structureRowKey(s))),
+    [],
+  );
+  const closeBudgets = useCallback(() => setBudgetsKey(null), []);
   /** A budget reads `on` through its own pinned row or the shape's broad row - never
    *  through a sibling budget's row, which is what makes each one separately checkable. */
   const budgetStateOf = useCallback(
@@ -675,17 +690,18 @@ export function FlowDiscoveryPage() {
     }
     return map;
   }, [rankedStructures, liftDefined, selectedGroup]);
+  /** Every suggested row of the group — what the auto-select toggle unstages. */
+  const suggestedAll = useMemo(() => {
+    if (!selectedGroup) return [] as FlowDiscoveryStructure[];
+    return rankedStructures.filter((s) => suggestionByStructure.get(JSON.stringify(s.ix_labels))?.suggested);
+  }, [rankedStructures, suggestionByStructure]);
   /** Suggested rows not yet in the draft — drives the auto-select button. */
-  const suggestedUnchecked = useMemo(() => {
-    if (!selectedGroup) return [] as string[][];
-    return rankedStructures
-      .filter((s) => {
-        const key = JSON.stringify(s.ix_labels);
-        if (!suggestionByStructure.get(key)?.suggested) return false;
-        return structureState(s) !== 'on';
-      })
-      .map((s) => s.ix_labels);
-  }, [rankedStructures, suggestionByStructure, structureState]);
+  const suggestedUnchecked = useMemo(
+    () => suggestedAll.filter((s) => structureState(s) !== 'on').map((s) => s.ix_labels),
+    [suggestedAll, structureState],
+  );
+  /** Every suggested row is staged: the toggle is on and a click unstages them. */
+  const suggestedAllOn = suggestedAll.length > 0 && suggestedUnchecked.length === 0;
 
   /** How many ranked rows traded in a matched token's creation slot (the badge). */
   const firstSlotCount = useMemo(
@@ -758,9 +774,18 @@ export function FlowDiscoveryPage() {
     setApplyOk(null);
   }
 
-  function autoSelectSuggested() {
-    if (suggestedUnchecked.length === 0) return;
-    stageLabels(suggestedUnchecked);
+  function unstageLabels(labelSets: readonly (readonly string[])[]) {
+    // A row reads `on` through itself or through its family's broad row, so both
+    // go; other narrow rows of the family stay.
+    const rows = labelSets.flatMap((labels) => [rowFor(labels), stagedRow(labels, isCoreStage)]);
+    setDraftPatterns((prev) => removePatternRows(prev, rows));
+    setApplyOk(null);
+  }
+
+  /** Stages every suggested row, or unstages them all once every one is staged. */
+  function toggleSuggested() {
+    if (suggestedAllOn) unstageLabels(suggestedAll.map((s) => s.ix_labels));
+    else if (suggestedUnchecked.length > 0) stageLabels(suggestedUnchecked);
   }
 
   function stageFiltered() {
@@ -770,11 +795,7 @@ export function FlowDiscoveryPage() {
 
   function unstageFiltered() {
     if (filteredStaged.length === 0) return;
-    // A row reads `on` through itself or through its family's broad row, so both
-    // go; other narrow rows of the family stay.
-    const rows = filteredStaged.flatMap((labels) => [rowFor(labels), stagedRow(labels, isCoreStage)]);
-    setDraftPatterns((prev) => removePatternRows(prev, rows));
-    setApplyOk(null);
+    unstageLabels(filteredStaged);
   }
 
   /** Rows a hovered/focused bulk-select acts on — outlined in the table so the
@@ -1515,16 +1536,24 @@ export function FlowDiscoveryPage() {
                   draftRowKeys={draftRowKeys}
                   draftWallets={draftWalletSet}
                   lens={autoTagLens}
-                  onPickRow={(row, on) => {
-                    const out = pickAutoRow(draftPatterns, autoStage.current, row, on);
-                    autoStage.current = out.auto;
-                    setDraftPatterns(out.rows);
+                  onPickRows={(rows, on) => {
+                    let draft: IxPatternRow[] = draftPatterns;
+                    for (const row of rows) {
+                      const out = pickAutoRow(draft, autoStage.current, row, on);
+                      autoStage.current = out.auto;
+                      draft = out.rows;
+                    }
+                    setDraftPatterns(draft);
                     setApplyOk(null);
                   }}
-                  onPickWallet={(w, on) => {
-                    const out = pickAutoWallet(draftWallets, autoStage.current, w, on);
-                    autoStage.current = out.auto;
-                    setDraftWallets(out.wallets);
+                  onPickWallets={(ws, on) => {
+                    let draft: string[] = draftWallets;
+                    for (const w of ws) {
+                      const out = pickAutoWallet(draft, autoStage.current, w, on);
+                      autoStage.current = out.auto;
+                      draft = out.wallets;
+                    }
+                    setDraftWallets(draft);
                     setApplyOk(null);
                   }}
                 />
@@ -1581,11 +1610,19 @@ export function FlowDiscoveryPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      disabled={suggestedUnchecked.length === 0}
-                      onClick={autoSelectSuggested}
-                      {...previewProps(suggestedUnchecked)}
-                      className="inline-flex items-center gap-1 rounded border border-warning/40 px-2 py-1 text-[11px] font-semibold text-warning transition hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-40"
-                      title="Add every auto-suggested structure to the draft ix_patterns"
+                      aria-pressed={suggestedAllOn}
+                      disabled={suggestedAll.length === 0}
+                      onClick={toggleSuggested}
+                      {...previewProps(suggestedAllOn ? suggestedAll.map((s) => s.ix_labels) : suggestedUnchecked)}
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-semibold text-warning transition hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-40',
+                        suggestedAllOn ? 'border-warning bg-warning/20' : 'border-warning/40',
+                      )}
+                      title={
+                        suggestedAllOn
+                          ? `All ${suggestedAll.length} suggested structure(s) are staged. Click to take them out of the draft ix_patterns.`
+                          : 'Add every auto-suggested structure to the draft ix_patterns. Click again once all are staged to take them out.'
+                      }
                     >
                       <CheckIcon className="h-3.5 w-3.5" />
                       Auto-select suggested
@@ -1636,10 +1673,26 @@ export function FlowDiscoveryPage() {
                   previewKeys={previewKeys}
                   onToggle={toggleStructure}
                   budgetStateOf={budgetStateOf}
-                  onToggleBudget={toggleBudget}
+                  onOpenBudgets={openBudgets}
+                  openBudgetsKey={budgetsRow ? budgetsKey : null}
                   lens={rankedLens}
                   onFilteredRowsChange={handleFilteredStructures}
                 />
+                {budgetsRow && (
+                  <BudgetDrawer
+                    s={budgetsRow}
+                    source={
+                      result?.run_id && selectedGroup
+                        ? { runId: result.run_id, groupKey: selectedGroup.group_key, core: isCoreStage }
+                        : null
+                    }
+                    budgetStateOf={budgetStateOf}
+                    onToggleBudget={toggleBudget}
+                    lens={rankedLens}
+                    tag={tagLabel(stageTag)}
+                    onClose={closeBudgets}
+                  />
+                )}
               </div>
             </div>
           )}

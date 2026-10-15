@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
 import { LENS_COLORS } from 'components/token-price-chart/constants';
@@ -76,22 +76,19 @@ export interface RankedLens {
  *  would stage the bare shape. */
 export type BudgetState = 'on' | 'broad' | 'off' | 'none';
 
-/** The Budget cell: the head budget, and behind the arrow every budget as its own
- *  checkable line. Expansion is per cell, so it survives a re-sort. */
+/** The Budget cell: the head budget and how many more. A click opens the row's
+ *  budget drawer (`BudgetDrawer`), where every budget is its own checkable line. */
 function BudgetCell({
   s,
   budgetStateOf,
-  onToggleBudget,
-  lens,
-  tag,
+  onOpen,
+  open,
 }: {
   s: FlowDiscoveryStructure;
   budgetStateOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => BudgetState;
-  onToggleBudget: (labels: string[], v: FlowDiscoveryFeeVariant) => void;
-  lens: RankedLens | null;
-  tag: string;
+  onOpen: (s: FlowDiscoveryStructure) => void;
+  open: boolean;
 }) {
-  const [open, setOpen] = useState(false);
   const variants = s.fee_variants ?? [];
   const top = variants[0];
   if (!top) {
@@ -105,86 +102,30 @@ function BudgetCell({
     );
   }
   const n = s.fee_variant_count ?? variants.length;
+  // Counted over the head budgets the row carries; the drawer counts all of them.
   const staged = variants.filter((v) => budgetStateOf(s, v) === 'on').length;
-  const known = variants.reduce((sum, v) => sum + v.n_trades, 0);
   return (
-    <div className="flex flex-col items-start gap-1">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="inline-flex items-center gap-1 whitespace-nowrap hover:text-text"
-        title={`${feeVariantTitle(s)}\n\nClick to ${open ? 'hide' : 'list'} every budget with its own check.`}
-      >
-        <span className="text-text-dim/60">{open ? '▾' : '▸'}</span>
-        <span className={n === 1 ? 'text-text' : 'text-text-dim'}>{formatFeeVariant(top)}</span>
-        {n > 1 && <span className="text-text-dim/60">+{n - 1}</span>}
-        {staged > 0 && (
-          <Badge variant="info" size="sm">
-            {staged} pinned
-          </Badge>
-        )}
-      </button>
-      {open && (
-        <div className="flex flex-col gap-0.5 text-left text-[11px]">
-          {variants.map((v) => {
-            const state = budgetStateOf(s, v);
-            const pct = known > 0 ? ((v.n_trades / known) * 100).toFixed(0) : '0';
-            const lensColor = lens?.budgetColorOf(s, v) ?? null;
-            return (
-              <label
-                key={`${v.cu_limit}|${v.cu_price}|${v.tip_lamports}`}
-                className="inline-flex items-center gap-1.5 whitespace-nowrap"
-              >
-                {lens && (
-                  <LensButton
-                    armed={lensColor != null}
-                    color={lensColor ?? LENS_COLORS.structure[0]}
-                    title={
-                      lensColor != null
-                          ? 'Stop highlighting this budget'
-                          : 'Highlight every candle and trade of this shape on this budget (the highlight pin fields when any are on, else all three)'
-                    }
-                    onClick={() => lens.toggleBudget(s, v)}
-                  />
-                )}
-                <Checkbox
-                  checked={state === 'on' || state === 'broad'}
-                  disabled={state === 'none'}
-                  onChange={() => onToggleBudget(s.ix_labels, v)}
-                  title={
-                    state === 'none'
-                      ? 'The fee-pin fields on pick nothing this budget carries - turn on a field it has'
-                      : state === 'broad'
-                        ? `In ${tag} through the whole-shape row (any budget). Click to narrow the shape to this budget only.`
-                        : state === 'on'
-                          ? `In ${tag} pinned to this budget. Click to remove it; other budgets stay.`
-                          : `Add this shape to ${tag} pinned to this budget only.`
-                  }
-                />
-                <span className="text-text">{formatFeeVariant(v)}</span>
-                <span className="text-text-dim">
-                  {v.n_trades.toLocaleString()} tr · {pct}% · {fmt(v.gross_sol)}◎
-                </span>
-              </label>
-            );
-          })}
-          {n > variants.length && (
-            <span className="text-text-dim/60">… {n - variants.length} more, stage from the trades table</span>
-          )}
-          {(s.fee_unknown_trades ?? 0) > 0 && (
-            <span className="text-text-dim/60">
-              {(s.fee_unknown_trades ?? 0).toLocaleString()} trades with no fee reading
-            </span>
-          )}
-        </div>
+    <button
+      type="button"
+      onClick={() => onOpen(s)}
+      aria-expanded={open}
+      className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-1 hover:text-text ${open ? 'bg-accent/15 outline outline-1 outline-accent/50' : ''}`}
+      title={`${feeVariantTitle(s)}\n\nClick to open every budget in a table: sort, search, highlight and stage each one.`}
+    >
+      <span className={n === 1 ? 'text-text' : 'text-text-dim'}>{formatFeeVariant(top)}</span>
+      {n > 1 && <span className="text-text-dim/60">+{n - 1}</span>}
+      {staged > 0 && (
+        <Badge variant="info" size="sm">
+          {staged} pinned
+        </Badge>
       )}
-    </div>
+      <span className="text-text-dim/60">›</span>
+    </button>
   );
 }
 
 /** Stable structure identity — same key the draft/preview sets use. */
-const structureRowKey = (s: FlowDiscoveryStructure) => JSON.stringify(s.ix_labels);
+export const structureRowKey = (s: FlowDiscoveryStructure) => JSON.stringify(s.ix_labels);
 
 /** Column visibility + sort/page-size prefs and pins persist under this id. */
 const TABLE_ID = 'flow-structures';
@@ -220,7 +161,8 @@ function buildStructureColumns(opts: {
   liftDefined: boolean;
   onToggle: (labels: string[]) => void;
   budgetStateOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => BudgetState;
-  onToggleBudget: (labels: string[], v: FlowDiscoveryFeeVariant) => void;
+  onOpenBudgets: (s: FlowDiscoveryStructure) => void;
+  openBudgetsKey: string | null;
   lens: RankedLens | null;
   tagName: string | null;
 }): ColumnDef<FlowDiscoveryStructure>[] {
@@ -231,7 +173,8 @@ function buildStructureColumns(opts: {
     liftDefined,
     onToggle,
     budgetStateOf,
-    onToggleBudget,
+    onOpenBudgets,
+    openBudgetsKey,
     lens,
     tagName,
   } = opts;
@@ -363,7 +306,7 @@ function buildStructureColumns(opts: {
       label: 'Budget',
       tooltip: helpText(DISCOVERY_COL_HELP.budget),
       render: (s) => (
-        <BudgetCell s={s} budgetStateOf={budgetStateOf} onToggleBudget={onToggleBudget} lens={lens} tag={tag} />
+        <BudgetCell s={s} budgetStateOf={budgetStateOf} onOpen={onOpenBudgets} open={openBudgetsKey === structureRowKey(s)} />
       ),
       // Rank by how concentrated the build's budget is, not by the budget itself: a
       // single triple covering every trade is the pinnable row, and that is the
@@ -595,7 +538,8 @@ export function StructureTable({
   previewKeys,
   onToggle,
   budgetStateOf,
-  onToggleBudget,
+  onOpenBudgets,
+  openBudgetsKey,
   lens = null,
   onFilteredRowsChange,
   tagName = null,
@@ -612,10 +556,12 @@ export function StructureTable({
    *  outlined so the button's effect is visible BEFORE it's pressed. */
   previewKeys?: ReadonlySet<string>;
   onToggle: (labels: string[]) => void;
-  /** How the draft holds one budget of a row - the Budget cell's per-budget checks. */
+  /** How the draft holds one budget of a row - the Budget cell's pinned count. */
   budgetStateOf: (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) => BudgetState;
-  /** Stage or unstage the shape pinned to one budget. */
-  onToggleBudget: (labels: string[], v: FlowDiscoveryFeeVariant) => void;
+  /** Open the row's budget drawer. */
+  onOpenBudgets: (s: FlowDiscoveryStructure) => void;
+  /** `structureRowKey` of the row whose drawer is open, outlining its cell. */
+  openBudgetsKey: string | null;
   /** The preview chart's highlight; absent = no lens buttons. Pass a memoized one. */
   lens?: RankedLens | null;
   /** Every row surviving the search + column filters. Pagination is off, so this
@@ -635,7 +581,8 @@ export function StructureTable({
         liftDefined,
         onToggle,
         budgetStateOf,
-        onToggleBudget,
+        onOpenBudgets,
+        openBudgetsKey,
         lens,
         tagName,
       }),
@@ -646,7 +593,8 @@ export function StructureTable({
       liftDefined,
       onToggle,
       budgetStateOf,
-      onToggleBudget,
+      onOpenBudgets,
+      openBudgetsKey,
       lens,
       tagName,
     ],

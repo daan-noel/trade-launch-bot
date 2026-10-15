@@ -16,6 +16,7 @@ use crate::strategies::owner_split::{self, MarketFacts, OwnerMarks, OwnerSplitPa
 use crate::sweep::corpus::{Corpus, CorpusToken, Selection};
 use crate::sweep::grouped_engine::partition;
 use crate::sweep::grouping::{GroupKey, GroupPlan};
+use crate::sweep::projection::CorpusTrade;
 
 /// A ranked structure or core is returned only on at least this many trades in its
 /// group: the floor that keeps one-off dust shapes off the wire and out of the table.
@@ -89,7 +90,8 @@ pub struct StructureScore {
     #[serde(default)]
     pub first_slot_trades: Option<u64>,
     /// The distinct fee budgets this build was sent with, most-traded first and
-    /// clipped to [`MAX_FEE_VARIANTS`] (`fee_variant_count` carries the true total).
+    /// clipped to [`MAX_FEE_VARIANTS`] (`fee_variant_count` carries the true total,
+    /// [`all_fee_variants`] every budget).
     ///
     /// This is the field that decides whether a budget is identity or noise. One
     /// variant covering nearly every trade is a compiled-in preset and pins well;
@@ -375,6 +377,72 @@ pub fn score_corpus(
     })
 }
 
+/// Trade count, buy SOL and sell SOL per distinct fee budget.
+type FeeTally = HashMap<FeeKeys, (u64, f64, f64)>;
+
+/// One budget's tally on `t` (trade gross `g`); a trade with no fee reading is not
+/// a budget and returns `false`.
+fn tally_fee(by_fee: &mut FeeTally, t: &CorpusTrade, g: f64) -> bool {
+    if t.flow.fee.is_empty() {
+        return false;
+    }
+    let e = by_fee.entry(t.flow.fee).or_insert((0, 0.0, 0.0));
+    e.0 += 1;
+    if t.is_buy { e.1 += g; } else { e.2 += g; }
+    true
+}
+
+/// Every budget of a tally, most-traded first: the question a reader asks of this
+/// list is "does one budget cover the build", which is answered by the head of it.
+fn ranked_fee_variants(by_fee: FeeTally) -> Vec<FeeVariant> {
+    let mut out: Vec<FeeVariant> = by_fee
+        .into_iter()
+        .map(|(f, (n_trades, buy_sol, sell_sol))| FeeVariant {
+            cu_limit: f.cu_limit(),
+            cu_price: f.cu_price(),
+            tip_lamports: f.tip_lamports(),
+            priority_lamports: f.priority_lamports(),
+            n_trades,
+            gross_sol: buy_sol + sell_sol,
+            buy_sol,
+            sell_sol,
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.n_trades
+            .cmp(&a.n_trades)
+            .then_with(|| b.gross_sol.partial_cmp(&a.gross_sol).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    out
+}
+
+/// Every budget one ranked row of a group traded on, unclipped - the full list
+/// behind [`StructureScore::fee_variants`], read the way [`score_corpus`] tallies
+/// it. `labels` is the row's `ix_labels`: the exact shape, or its core labels when
+/// `core`. Returns the budgets and the row's trades with no fee reading.
+pub fn all_fee_variants(tokens: &[CorpusToken], idxs: &[usize], labels: &[String], core: bool) -> (Vec<FeeVariant>, u64) {
+    let want = ix_hash(labels);
+    let mut by_fee = FeeTally::new();
+    let mut unknown = 0_u64;
+    for &ti in idxs {
+        for t in tokens[ti].trades.iter() {
+            let Some(trade_labels) = parse_trade_ix_labels(t.ix_labels.as_deref()) else {
+                continue;
+            };
+            let hit = if core {
+                let c = core_labels(&trade_labels);
+                !c.is_empty() && c.iter().copied().eq(labels.iter().map(String::as_str))
+            } else {
+                ix_hash(&trade_labels) == want
+            };
+            if hit && !tally_fee(&mut by_fee, t, t.amount_sol.abs()) {
+                unknown += 1;
+            }
+        }
+    }
+    (ranked_fee_variants(by_fee), unknown)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cancelled;
 
@@ -416,7 +484,7 @@ fn score_group(
         /// trade count + buy SOL + sell SOL per distinct fee budget; the empty budget
         /// is counted separately in `fee_unknown` rather than becoming a variant of
         /// its own, because "not captured" is not a budget anyone can pin.
-        by_fee: HashMap<FeeKeys, (u64, f64, f64)>,
+        by_fee: FeeTally,
         fee_unknown: u64,
     }
 
@@ -469,12 +537,8 @@ fn score_group(
                     acc.first_slot_trades += 1;
                 }
                 acc.slots.push(t.slot);
-                if t.flow.fee.is_empty() {
+                if !tally_fee(&mut acc.by_fee, t, g) {
                     acc.fee_unknown += 1;
-                } else {
-                    let e = acc.by_fee.entry(t.flow.fee).or_insert((0, 0.0, 0.0));
-                    e.0 += 1;
-                    if t.is_buy { e.1 += g; } else { e.2 += g; }
                 }
                 *acc.gross_by_token.entry(ti).or_insert(0.0) += g;
                 *acc.net_by_token.entry(ti).or_insert(0.0) += signed;
@@ -577,27 +641,7 @@ fn score_group(
         });
 
         let fee_variant_count = acc.by_fee.len() as u32;
-        let mut fee_variants: Vec<FeeVariant> = acc
-            .by_fee
-            .into_iter()
-            .map(|(f, (n_trades, buy_sol, sell_sol))| FeeVariant {
-                cu_limit: f.cu_limit(),
-                cu_price: f.cu_price(),
-                tip_lamports: f.tip_lamports(),
-                priority_lamports: f.priority_lamports(),
-                n_trades,
-                gross_sol: buy_sol + sell_sol,
-                buy_sol,
-                sell_sol,
-            })
-            .collect();
-        // Most-traded first: the question a reader asks of this list is "does one
-        // budget cover the build", which is answered by the head of it.
-        fee_variants.sort_by(|a, b| {
-            b.n_trades
-                .cmp(&a.n_trades)
-                .then_with(|| b.gross_sol.partial_cmp(&a.gross_sol).unwrap_or(std::cmp::Ordering::Equal))
-        });
+        let mut fee_variants = ranked_fee_variants(acc.by_fee);
         fee_variants.truncate(MAX_FEE_VARIANTS);
 
         structures.push(StructureScore {
@@ -1375,5 +1419,46 @@ mod tests {
         let g = &result.groups[0];
         // The 5 SOL unlabeled trade must not appear as a structure or inflate gross
         assert!(g.structures.iter().all(|s| s.gross_sol < 1.0));
+    }
+
+    /// The ranked row clips its budgets; `all_fee_variants` reads back every one,
+    /// for the exact shape and for its core.
+    #[test]
+    fn all_fee_variants_lists_the_budgets_the_row_clips() {
+        const SHAPE: &[&str] = &["Compute Budget: SetComputeUnitLimit", "Pump.Fun: Buy"];
+        const OTHER: &[&str] = &["Pump.Fun: Buy"];
+        let n_budgets = MAX_FEE_VARIANTS as u64 + 4;
+        let priced = |labels: &[&str], price: Option<u64>, slot: u64| {
+            let mut t = trade(labels, "w", 1.0, true, slot);
+            t.flow.fee = price.map_or_else(FeeKeys::default, |p| FeeKeys::new(Some(200_000), Some(p), None));
+            t
+        };
+        let mut a: Vec<CorpusTrade> = (0..n_budgets).map(|p| priced(SHAPE, Some(1_000 + p), p)).collect();
+        a.push(priced(SHAPE, None, 50));
+        a.push(priced(OTHER, Some(9), 51));
+        let tokens = vec![
+            tok("a", 200_000, a),
+            tok("b", 200_000, vec![priced(SHAPE, Some(1_000), 60)]),
+            tok("c", 200_000, vec![priced(SHAPE, Some(1_000), 61)]),
+        ];
+        let corpus = Corpus { tokens, hash: "f".into(), has_fingerprints: true, candidates_capped: false };
+        let cfg = DiscoveryConfig { min_tokens: 1, ..DiscoveryConfig::default() };
+        let result = score_corpus(&corpus, &cfg, None).unwrap();
+        let shape: Vec<String> = SHAPE.iter().map(|s| (*s).to_string()).collect();
+        let row = result.groups[0].structures.iter().find(|s| s.ix_labels == shape).unwrap();
+        assert_eq!(row.fee_variants.len(), MAX_FEE_VARIANTS);
+        assert_eq!(u64::from(row.fee_variant_count), n_budgets);
+
+        let (all, unknown) = all_fee_variants(&corpus.tokens, &[0, 1, 2], &shape, false);
+        assert_eq!(all.len() as u64, n_budgets);
+        assert_eq!(unknown, 1);
+        assert_eq!(all[0].cu_price, Some(1_000));
+        assert_eq!(all[0].n_trades, 3, "most-traded first");
+        assert_eq!(all.iter().map(|v| v.n_trades).sum::<u64>() + unknown, row.n_trades);
+
+        // The core folds both shapes, so it carries OTHER's budget too.
+        let core: Vec<String> = core_labels(SHAPE).iter().map(|s| (*s).to_string()).collect();
+        let (all_core, _) = all_fee_variants(&corpus.tokens, &[0, 1, 2], &core, true);
+        assert_eq!(all_core.len() as u64, n_budgets + 1);
     }
 }

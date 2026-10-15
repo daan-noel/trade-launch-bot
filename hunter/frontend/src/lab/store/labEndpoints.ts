@@ -21,6 +21,7 @@ import type {
   OwnerStage,
   FlowLensHitItem,
   FlowLensHits,
+  FlowDiscoveryBudgets,
 } from 'types';
 import type { IxPatternSet, IxPatternSetDraft } from 'lib/flow/ixPatternSets';
 import type {
@@ -485,6 +486,18 @@ export const labApi = baseApi.injectEndpoints({
         body,
       }),
     }),
+    // Every budget one ranked row traded on: the Budget drawer's table. The GET
+    // payload clips `fee_variants`; this reads the run's cached corpus.
+    getFlowBudgets: builder.query<
+      FlowDiscoveryBudgets,
+      { run_id: string; group_key: Record<string, unknown>; ix_labels: string[]; core: boolean }
+    >({
+      query: (body) => ({
+        url: '/api/strategies/flow-discovery/budgets',
+        method: 'POST',
+        body,
+      }),
+    }),
     // Promote-style bind: find-or-create fingerprint from group_key + patch patterns.
     bindFlowDiscovery: builder.mutation<
       Fingerprint,
@@ -606,6 +619,7 @@ export const {
   useBindFlowDiscoveryMutation,
   useGetOwnerStageQuery,
   useGetFlowLensHitsQuery,
+  useGetFlowBudgetsQuery,
   useGetIxPatternSetsQuery,
   useCreateIxPatternSetMutation,
   useUpdateIxPatternSetMutation,

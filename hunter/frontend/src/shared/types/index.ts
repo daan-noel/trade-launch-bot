@@ -589,7 +589,8 @@ export interface OwnerSplitParams {
   never_sells_window_days: number;
   row_min_owner_pct: number;
   row_min_trades: number;
-  recent_window_pct: number;
+  /** A stored wallet's latest group trade is this many days or less before the group's last trade. */
+  recent_window_days: number;
   /** `null` when the lake market read failed: creation slot and never sells are off. */
   market_from: string | null;
   market_to: string | null;
@@ -622,8 +623,8 @@ export interface OwnerStagedWallet {
   wallet: string;
   rules: OwnerRuleId[];
   coins: number;
-  /** Group coins newer than its latest one; 0 = it trades the newest. */
-  coins_since: number;
+  /** Days from its latest trade on the group to the group's last trade. */
+  days_since: number;
   reason: string | null;
 }
 
@@ -639,6 +640,13 @@ export interface FlowLensHits {
   by_mint: Record<string, Record<string, number>>;
 }
 
+/** `POST /api/strategies/flow-discovery/budgets` response: every budget one ranked row
+ *  traded on, most-traded first - the list `fee_variants` clips. */
+export interface FlowDiscoveryBudgets {
+  fee_variants: FlowDiscoveryFeeVariant[];
+  fee_unknown_trades: number;
+}
+
 /** `POST /api/strategies/flow-discovery/owner-stage` response (backend `OwnerStage`). */
 export interface OwnerStage {
   group_coins: number;
@@ -651,7 +659,8 @@ export interface OwnerStage {
   failing_rows: OwnerStagedRow[];
   wallets: OwnerStagedWallet[];
   one_coin_wallets: number;
-  recent_window_coins: number;
+  /** The recent window in days, ending at the group's last trade. */
+  recent_window_days: number;
   /** Per coin: [owner trades, trades]. */
   by_mint: Record<string, [number, number]>;
 }

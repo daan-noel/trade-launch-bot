@@ -304,6 +304,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 web::post().to(handlers::strategies::flow_discovery::lens_hits),
             )
             .route(
+                "/strategies/flow-discovery/budgets",
+                web::post().to(handlers::strategies::flow_discovery::budgets),
+            )
+            .route(
                 "/strategies/flow-discovery/last",
                 web::get().to(handlers::strategies::flow_discovery::get_last_flow_discovery),
             )
