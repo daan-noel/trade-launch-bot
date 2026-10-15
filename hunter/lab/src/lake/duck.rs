@@ -36,7 +36,9 @@ use crate::sweep::corpus::{
 use crate::sweep::grouping::TokenFingerprint;
 use hunter_engine::metrics::fee::FeeKeys;
 
-use crate::strategies::owner_split::{MarketFacts, MarketQuery, NEVER_SELLS_MIN_BUYS, NEVER_SELLS_MIN_COINS};
+use crate::strategies::owner_split::{
+    MarketFacts, MarketQuery, Opener, NEVER_SELLS_MIN_BUYS, NEVER_SELLS_MIN_COINS, SNIPER_WINDOW_DAYS,
+};
 use crate::sweep::projection::{CorpusTrade, FlowKeys};
 use crate::sweep::corpus::CorpusToken;
 
@@ -183,29 +185,44 @@ impl LakeSource {
     fn owner_market_facts_sync(&self, q: &MarketQuery) -> Result<MarketFacts> {
         let (session, trades_lit, tokens_lit) = self.connect()?;
         let conn = &session.conn;
-        stage_wallets(conn, "cand_open", &q.openers)?;
+        stage_openers(conn, &q.openers)?;
         stage_wallets(conn, "cand_hold", &q.holders)?;
-        let (from, to) = (q.from.timestamp_micros(), q.to.timestamp_micros());
-        let dt_from = (q.from.date_naive() - chrono::Duration::days(PARTITION_FLOOR_SLACK_DAYS)).format("%Y-%m-%d");
-        let dt_to = q.to.date_naive().format("%Y-%m-%d");
-        let window = format!(
-            "FROM read_parquet({trades_lit}, hive_partitioning=true, union_by_name=true) t              WHERE t.dt >= '{dt_from}' AND t.dt <= '{dt_to}' AND t.block_time >= ? AND t.block_time < ?"
-        );
-        // Openings: buys in a coin's creation slot outside its create, by wallets not
-        // in the create. Creation slot = the coin's first traded slot and the create =
-        // that slot's first buy, the same stand-ins `owner_split::Birth` reads. Only
-        // coins born in the window, whose first trade is then in it too.
-        let open_sql = format!(
-            "WITH born AS (SELECT mint FROM read_parquet({tokens_lit}) WHERE created_at >= ? AND created_at < ?),              tr AS (SELECT t.mint, t.wallet, t.is_buy, t.slot, t.tx_index, t.leg_index {window}                     AND t.mint IN (SELECT mint FROM born)),              s0 AS (SELECT mint, min(slot) AS slot FROM tr GROUP BY mint),              op AS (SELECT tr.* FROM tr JOIN s0 ON tr.mint = s0.mint AND tr.slot = s0.slot),              cr AS (SELECT mint,                            arg_min(tx_index, tx_index::BIGINT * 1000000 + leg_index) AS ctx,                            arg_min(wallet, tx_index::BIGINT * 1000000 + leg_index) AS creator                     FROM op WHERE is_buy GROUP BY mint),              cw AS (SELECT DISTINCT op.mint, op.wallet FROM op JOIN cr ON op.mint = cr.mint AND op.tx_index = cr.ctx)              SELECT op.wallet, count(DISTINCT op.mint), count(DISTINCT cr.creator)              FROM op JOIN cr ON op.mint = cr.mint              WHERE op.is_buy AND op.tx_index <> cr.ctx                AND op.wallet IN (SELECT wallet FROM cand_open)                AND NOT EXISTS (SELECT 1 FROM cw WHERE cw.mint = op.mint AND cw.wallet = op.wallet)              GROUP BY op.wallet"
-        );
-        let mut stmt = conn.prepare(&open_sql)?;
-        let openings = stmt
-            .query_map(duckdb::params![from, to, from, to], |r| {
-                Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)? as u32, r.get::<_, i64>(2)? as u32)))
-            })?
-            .collect::<duckdb::Result<HashMap<_, _>>>()?;
+        let day = |t: chrono::DateTime<chrono::Utc>| (t.date_naive() - chrono::Duration::days(PARTITION_FLOOR_SLACK_DAYS)).format("%Y-%m-%d");
+        let window = |dt_from: &dyn std::fmt::Display, dt_to: &dyn std::fmt::Display| {
+            format!(
+                "FROM read_parquet({trades_lit}, hive_partitioning=true, union_by_name=true) t              WHERE t.dt >= '{dt_from}' AND t.dt <= '{dt_to}' AND t.block_time >= ? AND t.block_time < ?"
+            )
+        };
+        let sniper_span = chrono::Duration::days(SNIPER_WINDOW_DAYS);
+        let openings = match (q.openers.iter().map(|o| o.born).min(), q.openers.iter().map(|o| o.born).max()) {
+            (Some(lo), Some(hi)) => {
+                let (from, to) = ((lo - sniper_span).timestamp_micros(), hi.timestamp_micros() + 1);
+                let w = window(&day(lo - sniper_span), &hi.date_naive().format("%Y-%m-%d"));
+                // Every creation-slot opening by a candidate wallet, market-wide, over
+                // the span the candidates' windows cover: a buy in a coin's creation
+                // slot outside its create, by a wallet not in the create. Creation
+                // slot = the coin's first traded slot and the create = that slot's
+                // first buy, the same stand-ins `owner_split::Birth` reads. Each
+                // candidate then counts the openings in the day up to its own coin's
+                // create, and those from its coin's create list (`fp_ix_labels`).
+                let open_sql = format!(
+                    "WITH born AS (SELECT mint, fp_ix_labels AS fam FROM read_parquet({tokens_lit}) WHERE created_at >= ? AND created_at < ?),                      tr AS (SELECT t.mint, t.wallet, t.is_buy, t.slot, t.tx_index, t.leg_index, t.block_time {w}                             AND t.mint IN (SELECT mint FROM born)),                      s0 AS (SELECT mint, min(slot) AS slot FROM tr GROUP BY mint),                      op AS (SELECT tr.* FROM tr JOIN s0 ON tr.mint = s0.mint AND tr.slot = s0.slot),                      cr AS (SELECT mint,                                    arg_min(tx_index, tx_index::BIGINT * 1000000 + leg_index) AS ctx,                                    arg_min(wallet, tx_index::BIGINT * 1000000 + leg_index) AS creator,                                    arg_min(block_time, tx_index::BIGINT * 1000000 + leg_index) AS cbt                             FROM op WHERE is_buy GROUP BY mint),                      cw AS (SELECT DISTINCT op.mint, op.wallet FROM op JOIN cr ON op.mint = cr.mint AND op.tx_index = cr.ctx),                      ev AS (SELECT DISTINCT op.wallet, op.mint, cr.creator, cr.cbt, born.fam                             FROM op JOIN cr ON op.mint = cr.mint JOIN born ON born.mint = op.mint                             WHERE op.is_buy AND op.tx_index <> cr.ctx                               AND op.wallet IN (SELECT wallet FROM cand_open)                               AND NOT EXISTS (SELECT 1 FROM cw WHERE cw.mint = op.mint AND cw.wallet = op.wallet)),                      c AS (SELECT o.mint, o.wallet, o.born, b.fp_ix_labels AS fam FROM cand_open o LEFT JOIN read_parquet({tokens_lit}) b ON b.mint = o.mint)                      SELECT c.mint, c.wallet, count(DISTINCT ev.mint), count(DISTINCT ev.creator),                             count(DISTINCT ev.mint) FILTER (WHERE ev.fam = c.fam)                      FROM c JOIN ev ON ev.wallet = c.wallet AND ev.cbt >= c.born - ? AND ev.cbt <= c.born                      GROUP BY c.mint, c.wallet"
+                );
+                let mut stmt = conn.prepare(&open_sql)?;
+                stmt.query_map(duckdb::params![from, to, from, to, sniper_span.num_microseconds().unwrap_or(i64::MAX)], |r| {
+                    Ok((
+                        (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                        (r.get::<_, i64>(2)? as u32, r.get::<_, i64>(3)? as u32, r.get::<_, i64>(4)? as u32),
+                    ))
+                })?
+                .collect::<duckdb::Result<HashMap<_, _>>>()?
+            }
+            _ => HashMap::new(),
+        };
+        let (from, to) = (q.hold_from.timestamp_micros(), q.to.timestamp_micros());
+        let w = window(&day(q.hold_from), &q.to.date_naive().format("%Y-%m-%d"));
         let hold_sql = format!(
-            "SELECT t.wallet {window} AND t.wallet IN (SELECT wallet FROM cand_hold)              GROUP BY t.wallet              HAVING count(*) FILTER (WHERE NOT t.is_buy) = 0                 AND count(DISTINCT t.mint) >= ? AND count(*) >= ?"
+            "SELECT t.wallet {w} AND t.wallet IN (SELECT wallet FROM cand_hold)              GROUP BY t.wallet              HAVING count(*) FILTER (WHERE NOT t.is_buy) = 0                 AND count(DISTINCT t.mint) >= ? AND count(*) >= ?"
         );
         let mut stmt = conn.prepare(&hold_sql)?;
         let never_sellers = stmt
@@ -221,7 +238,7 @@ impl LakeSource {
             never_sellers = never_sellers.len(),
             "owner split: market facts read from the lake"
         );
-        Ok(MarketFacts { from: q.from, to: q.to, openings, never_sellers })
+        Ok(MarketFacts { hold_from: q.hold_from, to: q.to, openings, never_sellers })
     }
 
     /// Synchronous DuckDB corpus assembly (Parquet scan + per-mint windowing +
@@ -629,6 +646,18 @@ fn stage_mints<'a>(conn: &Connection, mints: impl Iterator<Item = &'a str>) -> R
 }
 
 /// (Re)create temp table `table (wallet VARCHAR)` holding `wallets`.
+/// Stage the owner-split sniper candidates as `cand_open (mint, wallet, born)`, the
+/// create time in microseconds.
+fn stage_openers(conn: &Connection, openers: &[Opener]) -> Result<()> {
+    conn.execute_batch("CREATE OR REPLACE TEMP TABLE cand_open (mint VARCHAR, wallet VARCHAR, born BIGINT);")?;
+    let mut app = conn.appender("cand_open").context("DuckDB appender for cand_open")?;
+    for o in openers {
+        app.append_row(duckdb::params![o.mint, o.wallet, o.born.timestamp_micros()])?;
+    }
+    app.flush()?;
+    Ok(())
+}
+
 fn stage_wallets(conn: &Connection, table: &str, wallets: &[String]) -> Result<()> {
     conn.execute_batch(&format!("CREATE OR REPLACE TEMP TABLE {table} (wallet VARCHAR);"))?;
     let mut app = conn.appender(table).with_context(|| format!("DuckDB appender for {table}"))?;

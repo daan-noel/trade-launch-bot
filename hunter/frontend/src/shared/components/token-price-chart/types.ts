@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { FlowTag } from 'lib/flow/classifyFlow';
+import type { IxPatternRow } from 'lib/strategy/ixPatternRows';
 import type { FlowLineVisibility } from './flowLineVisibility';
 import type { LensMatch } from './lensTint';
 import type { UTCTimestamp } from 'lightweight-charts';
@@ -112,32 +113,18 @@ export interface ChartEventMarker {
   role?: 'fill' | 'signal';
 }
 
-/** What a highlight lens item points at: one wallet, or one exact ix structure. */
+/** What a highlight lens item points at: one wallet, or one `ix_shape` row. */
 export type ChartLensKind = 'wallet' | 'structure';
 
 /** One armed highlight target. */
-/** Fee fields a structure lens pins: absent = any value, set = the trade's reading
- *  must equal it. The chart-side twin of `lib/strategy/ixPatternRows.IxPatternFee`
- *  (a guard test keeps the two matchers equal). */
-export interface ChartLensPins {
-  cu_limit?: number;
-  cu_price?: number;
-  tip_lamports?: number;
-}
-
 export interface ChartLensItem {
   kind: ChartLensKind;
-  /** The wallet address, or for a structure `structureLensKey(labels, pins)`:
-   *  `JSON.stringify(ordered instruction_labels)` — the same identity an
-   *  unpinned `ix_shape` row keys as — plus the pins when there are any.
-   *  Ordered and exact: never a set match. */
+  /** The wallet address, or for a structure `patternRowKey(row)`: the identity
+   *  the row has on a tag's list. */
   key: string;
-  /** A structure's fee pins; absent = the structure alone, any budget. */
-  pins?: ChartLensPins;
-  /** `core`: the structure matches by its ix core (`lib/strategy/ixCore`), any
-   *  extras, any side - the grain an unpinned `level: "core"` row matches at.
-   *  Absent = the exact ordered sequence. */
-  level?: 'core';
+  /** A structure's row - exact or core, side, marks and fee pins - matched with
+   *  `rowMatchesTrade`, so a lens lights exactly what the row would on a tag. */
+  row?: IxPatternRow;
   /** Lane, wash and chip color — `LENS_COLORS[kind][slot]`, fixed while armed. */
   color: string;
   /** Short name for the lane row: an abbreviated address or ix sequence. */

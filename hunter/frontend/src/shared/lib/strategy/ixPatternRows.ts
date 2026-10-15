@@ -254,6 +254,29 @@ export function rowMatchesTrade(
   return feeMatchesTrade(row, t);
 }
 
+/** Whether one trade can match both rows: the test a listed row (a ranked shape, a
+ *  budget, a staged row) is lit by under an armed one, so an arm lights its broader
+ *  and its narrower rows alike. Two exact rows share a sequence; an exact row and a
+ *  core row share the core and the core's marks; two core rows share the core and
+ *  every side and marks both pin. A field both pin must hold one value. An exact
+ *  row's side is open. */
+export function rowsOverlap(a: IxPatternRow, b: IxPatternRow): boolean {
+  for (const f of FEE_FIELDS) {
+    if (a[f] != null && b[f] != null && a[f] !== b[f]) return false;
+  }
+  const ka = labelKeys(a.labels);
+  const kb = labelKeys(b.labels);
+  if (!rowIsCore(a) && !rowIsCore(b)) return ka.exact === kb.exact;
+  if (ka.core !== kb.core) return false;
+  if (a.side && b.side && a.side !== b.side) return false;
+  // An exact row's marks are its labels'; a core row's are its pin, or open.
+  const marks = (r: IxPatternRow, k: LabelKeys) =>
+    rowIsCore(r) ? (r.marks != null ? coreMarksFromText(r.marks) : null) : k.marks;
+  const ma = marks(a, ka);
+  const mb = marks(b, kb);
+  return ma == null || mb == null || ma === mb;
+}
+
 /** Whether any stored row accepts this trade — the engine's list match.
  *
  *  An unpinned row of this shape matches regardless of the trade's fee fields,

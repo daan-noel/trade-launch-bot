@@ -782,7 +782,12 @@ not show is a difference the page cannot express. `tags` is part of
   (tagged = exact labels + fee wildcard + contagion; dump = labels + fee wildcard, no
   contagion; working = `templateGrain`, no contagion, no fee pins). `useFlowPatternSource`
   stays the engine's tagged snapshot for metric panes — it is not the live overlay.
-  The ranked table's Vol checkbox and every bulk button write one row per ranked row
+  The preview's highlight is keyed by the group, so it survives picking another token.
+  While it is armed, `TokenPreviewPanel` asks `lens-hits` which coins carry each item
+  (`tokenLensHits.ts`): one chip per item (its color, coins carrying it) filters the list
+  to coins carrying every chip switched on (Matching; with no chip on, any item), All
+  shows every coin; each card shows a dot per item it carries, and coins carrying more
+  items sort first. The ranked table's Vol checkbox and every bulk button write one row per ranked row
   (`stagedRow`): the exact shape, or the ix core (any side, any marks). With fee pins on
   (`FeePinToggles` in the draft panel, shared with the preview trades strip) and a ranked
   row whose trades all carry one budget, the row is pinned to that budget; a row with
@@ -798,12 +803,15 @@ not show is a difference the page cannot express. `tags` is part of
   (`tagged`/`dump`). *Auto-select suggested* is the one bulk-select, paired with the
   `Auto` column (bot-likelihood composite). While the stage tag is `volume`, the
   `AutoTagPanel` sits below the cart: the owner-split rules in two family tabs
-  (Creation slot, Transfers), a This token / Group scope switch, and one toggle per
-  rule showing on / some / off with its wallet count. A toggle adds or removes its
-  rule's wallets in the draft's `wallet` list (`autoTagRules.ts`, which keeps a wallet
-  another rule that is on still marks). Every family and toggle carries a tooltip that
-  quotes the thresholds the run applied (`DiscoveryResult.owner_split`); a toggle the
-  run cannot serve is disabled with the reason. The cart's Sticky and Creator
+  (Creation slot, Transfers), one toggle per rule with its evidence badge (measured /
+  weak / unproven) and its reach (coins, trades). The toggles feed
+  `useGetOwnerStageQuery`; the panel lists the rows and wallets the stage picks, with
+  the ones left out greyed beside their reason, and the owner trades and SOL the
+  toggles label. `syncAutoStage` (`autoTagRules.ts`) moves each new stage into the
+  draft: a picked item joins, an auto-tag item the new stage drops leaves, an unticked
+  item stays out, a hand-added item stays. Every family, toggle and list carries a
+  tooltip that quotes the thresholds the run applied (`DiscoveryResult.owner_split`);
+  a toggle the run cannot serve is disabled with the reason. The cart's Sticky and Creator
   checkboxes stage the tag's switches, explained by their registry fields, and Apply
   saves them with the lists. Rules and gaps: `plans/strategies/_!___owner-split.md`.
   `StructureTable` runs the shared `DataTable` with its search, per-column filter row,

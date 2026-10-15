@@ -344,6 +344,7 @@ function buildStructureColumns(opts: {
             <LensButton
               armed={own != null}
               color={own ?? LENS_COLORS.structure[0]}
+              litBy={lens.rowColors(s)[0] ?? null}
               title={
                 !lens.enabled
                   ? LENS_OFF_TITLE

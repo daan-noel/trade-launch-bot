@@ -205,6 +205,7 @@ export function BarTradesPanel({
   const lensWalletColor = highlight?.walletColor ?? null;
   const lensStructureColor = highlight?.structureColor ?? null;
   const lensColorsOf = highlight?.colorsOf ?? null;
+  const lensStructureColorsOf = highlight?.structureColorsOf ?? null;
   const lensActive = highlight?.active ?? false;
 
   const tagFieldTitle = useMemo(
@@ -218,6 +219,7 @@ export function BarTradesPanel({
         lensWalletColor,
         onLensStructure,
         lensStructureColor,
+        lensStructureColorsOf,
         flowTagName,
         flowReasons,
         stage,
@@ -236,6 +238,7 @@ export function BarTradesPanel({
       onLensStructure,
       lensWalletColor,
       lensStructureColor,
+      lensStructureColorsOf,
       trackedWallets,
       mineWallets,
       copyTargetWallets,

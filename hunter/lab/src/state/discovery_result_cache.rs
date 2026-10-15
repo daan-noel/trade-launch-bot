@@ -144,6 +144,8 @@ mod tests {
             ix_labels_filter: Some(vec!["Pump.Fun: Create_v2".into(), "Pump.Fun: Buy".into()]),
             fingerprint_id: None,
             owner_split: None,
+            group_members: Default::default(),
+            selection: None,
         };
         cache.store(run_id, result).await;
         assert!(cache.get(run_id).await.is_some());

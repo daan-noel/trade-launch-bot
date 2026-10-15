@@ -15,6 +15,7 @@ import { tagLabel } from 'lib/flow/tapeClassify';
 import { coreLabels, coreMarks, coreMarksText } from 'lib/strategy/ixCore';
 import { formatFeePins } from 'lib/strategy/ixPatternRows';
 import { STAGE_MATCHER_TITLE, stageValueOf, stageValueText, type TagStage } from 'hooks/useIxPatternTarget';
+import type { StructureLensOpts } from 'components/tokens/useTokenHighlight';
 // Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
 // colors come along without dragging the charting library into this chunk.
 import { LENS_COLORS } from 'components/token-price-chart/constants';
@@ -56,10 +57,14 @@ export interface TokenTradeColumnsOpts {
    * reads - asking "where else did this shape appear" must never change how a live
    * rule classifies.
    */
-  onLensStructure?: ((labels: readonly string[], from: TradeRecord) => void) | null;
-  /** The color the structure a click on this row would toggle washes in (labels
-   *  plus the highlight's pins off this row), `null` = not armed. */
-  lensStructureColor?: ((labels: readonly string[], from: TradeRecord) => string | null) | null;
+  onLensStructure?: ((labels: readonly string[], from: TradeRecord, opts?: StructureLensOpts) => void) | null;
+  /** The color the row a click on this trade would toggle washes in (its labels,
+   *  or its core under the ix core view, plus the highlight's pins off this trade),
+   *  `null` = not armed. */
+  lensStructureColor?: ((labels: readonly string[], from: TradeRecord, opts?: StructureLensOpts) => string | null) | null;
+  /** Colors of every armed structure lens matching this trade: lights the icon when
+   *  another surface's row (a core, a staged row) washes it. */
+  lensStructureColorsOf?: ((t: TradeRecord) => string[]) | null;
   /** Tracked profile wallets that are not the user's own (`is_tracked`, not `mine`). */
   trackedWallets?: ReadonlySet<string> | null;
   /** The user's own profile wallets (`profile_type === 'mine'`). */
@@ -178,6 +183,7 @@ export function tokenTradeColumns(
   const lensWalletColor = opts?.lensWalletColor ?? null;
   const onLensStructure = opts?.onLensStructure ?? null;
   const lensStructureColor = opts?.lensStructureColor ?? null;
+  const lensStructureColorsOf = opts?.lensStructureColorsOf ?? null;
   const trackedWallets = opts?.trackedWallets ?? null;
   const mineWallets = opts?.mineWallets ?? null;
   const copyTargetWallets = opts?.copyTargetWallets ?? null;
@@ -261,6 +267,7 @@ export function tokenTradeColumns(
   // shows the core and its marks - the row the click stages - with the whole
   // structure on hover.
   const coreView = stage?.matcher === 'ix_core';
+  const lensOpts: StructureLensOpts | undefined = coreView ? { level: 'core' } : undefined;
   leading.push({
     key: 'ix_structure',
     label: coreView ? 'ix core' : 'ix_labels',
@@ -269,13 +276,13 @@ export function tokenTradeColumns(
         ? 'The ix core of this trade - its labels without compute budget, System, token-account, memo and Lighthouse, pump verbs merged - and the marks of what the reduction dropped: what the ix core matcher reads. Hover a cell for the whole structure. '
         : 'Ordered instruction-label structure of this trade - what the exact ix shape matcher reads. ') +
       (onLensStructure
-        ? 'Click the target to wash every candle this exact ordered structure appeared in. ' +
+        ? `Click the target to wash every candle ${coreView ? 'this ix core, side and marks' : 'this exact ordered structure'} appeared in - the row a badge click would list. ` +
           'View-only: unlike the tag badge, it saves nothing and no rule reads it.'
         : ''),
     render: (t) => {
       const labels = t.instruction_labels ?? [];
       const armedColor =
-        labels.length > 0 ? (lensStructureColor?.(labels, t) ?? null) : null;
+        labels.length > 0 ? (lensStructureColor?.(labels, t, lensOpts) ?? null) : null;
       return (
         <span className="flex items-start gap-1">
           {onLensStructure &&
@@ -283,12 +290,13 @@ export function tokenTradeColumns(
               <LensButton
                 armed={armedColor != null}
                 color={armedColor ?? LENS_COLORS.structure[0]}
+                litBy={lensStructureColorsOf?.(t)[0] ?? null}
                 title={
                   armedColor != null
-                    ? 'Stop highlighting this ix structure'
-                    : 'Highlight every candle and row with this exact ordered structure'
+                    ? `Stop highlighting this ${coreView ? 'ix core' : 'ix structure'}`
+                    : `Highlight every candle and row with this ${coreView ? 'ix core, side and marks' : 'exact ordered structure'}`
                 }
-                onClick={() => onLensStructure(labels, t)}
+                onClick={() => onLensStructure(labels, t, lensOpts)}
               />
             ) : (
               <LensSpacer />

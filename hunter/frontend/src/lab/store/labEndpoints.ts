@@ -17,6 +17,10 @@ import type {
   SimulatedSummary,
   TraderTokenRow,
   FlowDiscoveryResult,
+  OwnerRuleId,
+  OwnerStage,
+  FlowLensHitItem,
+  FlowLensHits,
 } from 'types';
 import type { IxPatternSet, IxPatternSetDraft } from 'lib/flow/ixPatternSets';
 import type {
@@ -456,6 +460,31 @@ export const labApi = baseApi.injectEndpoints({
     getLastFlowDiscovery: builder.query<FlowDiscoveryResult, void>({
       query: () => '/api/strategies/flow-discovery/last',
     }),
+    // What the owner split stores for one group under the toggled rules: the rows
+    // that pass, the wallets that come back, each rule's reach. Read off the run's
+    // cached corpus; a 409 means another run replaced it.
+    getOwnerStage: builder.query<
+      OwnerStage,
+      { run_id: string; group_key: Record<string, unknown>; rules: OwnerRuleId[] }
+    >({
+      query: (body) => ({
+        url: '/api/strategies/flow-discovery/owner-stage',
+        method: 'POST',
+        body,
+      }),
+    }),
+    // Which of one group's coins carry each highlighted lens item: the token list's
+    // chips and dots. Read off the run's cached corpus, like the owner stage.
+    getFlowLensHits: builder.query<
+      FlowLensHits,
+      { run_id: string; group_key: Record<string, unknown>; items: FlowLensHitItem[] }
+    >({
+      query: (body) => ({
+        url: '/api/strategies/flow-discovery/lens-hits',
+        method: 'POST',
+        body,
+      }),
+    }),
     // Promote-style bind: find-or-create fingerprint from group_key + patch patterns.
     bindFlowDiscovery: builder.mutation<
       Fingerprint,
@@ -575,6 +604,8 @@ export const {
   useLazyGetFlowDiscoveryQuery,
   useGetLastFlowDiscoveryQuery,
   useBindFlowDiscoveryMutation,
+  useGetOwnerStageQuery,
+  useGetFlowLensHitsQuery,
   useGetIxPatternSetsQuery,
   useCreateIxPatternSetMutation,
   useUpdateIxPatternSetMutation,

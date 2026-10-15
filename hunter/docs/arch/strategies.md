@@ -627,6 +627,14 @@ trade**, so simulate and live resolve at the same point.
   runs the owner-split creation-slot and transfer rules over the same corpus and ships
   their wallets per coin and per group; its sniper and never-sells facts are one lake
   read (`LakeSource::owner_market_facts`), cached beside the corpus.
+  **`strategies/owner_stage.rs`** turns the toggled rules' labels into what the tag
+  stores (rows at the seven match levels, wallets that come back), behind
+  `POST /api/strategies/flow-discovery/owner-stage`. The run's result is on disk but
+  its corpus is RAM-only (the idle reaper drops it after 10 min), so the stage reloads
+  the run's recorded `Selection` from the lake on a miss, under the discovery job slot.
+  **`strategies/lens_hits.rs`** counts, per group coin, the trades each highlighted
+  lens item matches (an `ix_shape` row through `IxShapeRows`, or a credited wallet),
+  behind `POST /api/strategies/flow-discovery/lens-hits` on the same corpus path.
 - **`sweep/generic/`** — the precompute-then-scan grouped sweep. `GenericSweepStrategy`
   implements the existing `sweep::strategy::Strategy` trait (so partition / two-phase
   pool / `GroupSink` persistence / refine / `ComboAgg` and the whole

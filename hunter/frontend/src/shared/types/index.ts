@@ -572,23 +572,88 @@ export type OwnerRuleId =
 /** Wallets per rule, sorted. A missing rule was not run; `[]` is a real zero. */
 export type OwnerMarks = Partial<Record<OwnerRuleId, string[]>>;
 
-/** The thresholds and market window a run's owner-split marks were computed with
- *  (backend `OwnerSplitParams`). The tooltips quote these numbers. */
+/** The thresholds a run's owner-split marks were computed with (backend
+ *  `OwnerSplitParams`). The tooltips quote these numbers. */
 export interface OwnerSplitParams {
   instant_buy_ms: number;
   bundle_gap_ms: number;
   sniper_min_coins: number;
   sniper_min_creators: number;
-  sniper_max_group_pct: number;
+  sniper_max_family_pct: number;
+  sniper_window_days: number;
   below_zero_min_pct: number;
-  below_zero_group_coins: number;
+  comes_back_min_coins: number;
   transfer_match_pct: number;
   never_sells_min_coins: number;
   never_sells_min_buys: number;
-  market_window_days: number;
+  never_sells_window_days: number;
+  row_min_owner_pct: number;
+  row_min_trades: number;
+  recent_window_pct: number;
   /** `null` when the lake market read failed: creation slot and never sells are off. */
   market_from: string | null;
   market_to: string | null;
+}
+
+/** One toggle's reach on its own (backend `owner_stage::RuleReach`). */
+export interface OwnerRuleReach {
+  coins: number;
+  trades: number;
+  sol: number;
+}
+
+/** A candidate `ix_shape` row of the owner-split stage (backend `StagedRow`). */
+export interface OwnerStagedRow {
+  /** The `match.ix_shape` entry Apply writes. */
+  row: unknown;
+  /** 1 (core, side) .. 7 (exact list and budget). */
+  level: number;
+  trades: number;
+  coins: number;
+  sol: number;
+  owner_sol: number;
+  owner_pct: number;
+  /** Why it is not staged; `null` on a staged row. */
+  reason: string | null;
+}
+
+/** A candidate wallet of the owner-split stage (backend `StagedWallet`). */
+export interface OwnerStagedWallet {
+  wallet: string;
+  rules: OwnerRuleId[];
+  coins: number;
+  /** Group coins newer than its latest one; 0 = it trades the newest. */
+  coins_since: number;
+  reason: string | null;
+}
+
+/** One highlighted lens item sent to `flow-discovery/lens-hits` (backend `LensItem`);
+ *  `id` is the page's `lensItemId`, `row` one `match.ix_shape` entry. */
+export type FlowLensHitItem =
+  | { kind: 'wallet'; id: string; wallet: string }
+  | { kind: 'structure'; id: string; row: string[] | Record<string, unknown> };
+
+/** `POST /api/strategies/flow-discovery/lens-hits` response: per group coin with a
+ *  hit, lens item id -> trades it matches. A coin or item with no hit is absent. */
+export interface FlowLensHits {
+  by_mint: Record<string, Record<string, number>>;
+}
+
+/** `POST /api/strategies/flow-discovery/owner-stage` response (backend `OwnerStage`). */
+export interface OwnerStage {
+  group_coins: number;
+  total_trades: number;
+  total_sol: number;
+  owner_trades: number;
+  owner_sol: number;
+  reach: Partial<Record<OwnerRuleId, OwnerRuleReach>>;
+  rows: OwnerStagedRow[];
+  failing_rows: OwnerStagedRow[];
+  wallets: OwnerStagedWallet[];
+  one_coin_wallets: number;
+  recent_window_coins: number;
+  /** Per coin: [owner trades, trades]. */
+  by_mint: Record<string, [number, number]>;
 }
 
 /** One fingerprint group in a flow-discovery result. */

@@ -15,12 +15,13 @@ use crate::api::handlers::strategies::grouped_sweep::{
 };
 use crate::lake::duck::LakeSource;
 use crate::models::ingest::SseEvent;
-use crate::state::local_state::{LocalState, SweepCorpusCache};
+use crate::state::local_state::{HeavyJob, LocalState, SweepCorpusCache};
 use crate::strategies::flow_discovery::{
-    score_corpus, Cancelled, DiscoveryConfig, DEFAULT_MIN_TOKENS,
+    score_corpus, Cancelled, DiscoveryConfig, DiscoveryResult, DEFAULT_MIN_TOKENS,
 };
-use crate::strategies::owner_split;
-use crate::sweep::corpus::{Corpus, CorpusSource, Selection};
+use crate::strategies::lens_hits;
+use crate::strategies::owner_split::{self, MarketFacts};
+use crate::sweep::corpus::{Corpus, CorpusSource, CorpusToken, Selection};
 use crate::sweep::grouping::{GroupField, GroupPlan, PartitionSpec};
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::strategies::fingerprint_axes::fp_to_engine;
@@ -245,6 +246,164 @@ fn with_tag_shapes(doc: &serde_json::Value, b: &BindFlowDiscoveryBody) -> Result
     m.as_object_mut().ok_or("that tag's `match` is not an object")?.insert("ix_shape".into(), serde_json::json!(b.ix_patterns));
     hunter_engine::metrics::tags::config::validate_tags(&doc)?;
     Ok(doc)
+}
+
+#[derive(serde::Deserialize)]
+pub struct OwnerStageBody {
+    pub run_id: Uuid,
+    pub group_key: serde_json::Value,
+    /// The toggled owner-split rules.
+    #[serde(default)]
+    pub rules: Vec<owner_split::OwnerRule>,
+}
+
+/// `POST /api/strategies/flow-discovery/owner-stage` — what the owner split stores
+/// for one group under the toggled rules (`owner_stage::stage`): the rows that pass,
+/// the wallets that come back, and each rule's reach. Reads the run's own corpus from
+/// the corpus cache, reloading it from the lake when the cache no longer holds it.
+pub async fn owner_stage(
+    state: web::Data<Arc<LocalState>>,
+    body: web::Json<OwnerStageBody>,
+) -> impl Responder {
+    let b = body.into_inner();
+    let (tokens, idxs, facts) = match group_corpus(&state, b.run_id, &b.group_key).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let rules: std::collections::BTreeSet<_> = b.rules.into_iter().collect();
+    let staged = tokio::task::spawn_blocking(move || {
+        let marks = owner_split::group_marks(&tokens, &idxs, facts.as_deref()).by_token;
+        crate::strategies::owner_stage::stage(&tokens, &idxs, &marks, &rules)
+    })
+    .await;
+    match staged {
+        Ok(st) => HttpResponse::Ok().json(st),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "error": format!("owner stage failed: {e}") })),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct LensHitsBody {
+    pub run_id: Uuid,
+    pub group_key: serde_json::Value,
+    pub items: Vec<lens_hits::LensItem>,
+}
+
+/// `POST /api/strategies/flow-discovery/lens-hits` — which of one group's coins carry
+/// each highlighted lens item, and on how many trades (`lens_hits::hits`).
+pub async fn lens_hits(
+    state: web::Data<Arc<LocalState>>,
+    body: web::Json<LensHitsBody>,
+) -> impl Responder {
+    let b = body.into_inner();
+    let (tokens, idxs, _) = match group_corpus(&state, b.run_id, &b.group_key).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    match tokio::task::spawn_blocking(move || lens_hits::hits(&tokens, &idxs, &b.items)).await {
+        Ok(Ok(by_mint)) => HttpResponse::Ok().json(serde_json::json!({ "by_mint": by_mint })),
+        Ok(Err(e)) => HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "error": format!("lens hits failed: {e}") })),
+    }
+}
+
+/// A group's member coins in the run's corpus: the corpus `tokens`, each member's
+/// index into them, and the corpus's owner-split market facts.
+type RunCorpus = (Arc<Vec<CorpusToken>>, Vec<usize>, Option<Arc<MarketFacts>>);
+
+/// The members of `group_key` in run `run_id`, out of the run's corpus.
+async fn group_corpus(state: &LocalState, run_id: Uuid, group_key: &serde_json::Value) -> Result<RunCorpus, HttpResponse> {
+    let Some(result) = state.discovery_result.get(run_id).await else {
+        return Err(HttpResponse::NotFound().json(serde_json::json!({ "error": "no discovery result for that run_id" })));
+    };
+    let Some(members) = result.group_members.get(&group_key.to_string()) else {
+        return Err(HttpResponse::Conflict().json(serde_json::json!({
+            "error": "this run has no member list for that group; run discovery again"
+        })));
+    };
+    run_corpus(state, &result, members).await
+}
+
+/// `members` out of the run's corpus. The corpus cache is RAM-only and the idle
+/// reaper, a restart, or another run's load drops it while the result stays on disk,
+/// so a miss reloads the run's own selection from the lake.
+async fn run_corpus(state: &LocalState, result: &DiscoveryResult, members: &[String]) -> Result<RunCorpus, HttpResponse> {
+    if let Some(hit) = cached_members(state, members).await {
+        return Ok(hit);
+    }
+    let Some(sel) = &result.selection else {
+        // A result stored before runs recorded their selection.
+        return Err(HttpResponse::Conflict().json(serde_json::json!({
+            "error": "the run's trades left the cache; run discovery again"
+        })));
+    };
+    reload_corpus(state, sel).await?;
+    cached_members(state, members).await.ok_or_else(|| {
+        HttpResponse::Conflict().json(serde_json::json!({
+            "error": "the lake no longer holds this run's coins; run discovery again"
+        }))
+    })
+}
+
+/// `members` in the cached corpus, or `None` when the cache is empty or holds a
+/// corpus missing any of them.
+async fn cached_members(state: &LocalState, members: &[String]) -> Option<RunCorpus> {
+    let cache = state.sweep_corpus_cache.read().await;
+    let c = cache.as_ref()?;
+    let at: std::collections::HashMap<&str, usize> =
+        c.tokens.iter().enumerate().map(|(i, t)| (t.mint.as_str(), i)).collect();
+    let idxs = members.iter().map(|m| at.get(m.as_str()).copied()).collect::<Option<Vec<_>>>()?;
+    c.touch();
+    Some((c.tokens.clone(), idxs, c.owner_facts()))
+}
+
+/// Load `sel` into the corpus cache with its owner-split market facts, as a discovery
+/// run leaves it. Holds the cache's write lock across the load, so a concurrent stage
+/// request waits for this load instead of starting its own, and claims the discovery
+/// slot, so the load never overlaps a sweep or a run.
+async fn reload_corpus(state: &LocalState, sel: &Selection) -> Result<(), HttpResponse> {
+    let src = LakeSource::new(crate::lake::lake_root());
+    let hash = src.selection_hash(sel);
+    let mut cache = state.sweep_corpus_cache.write().await;
+    if cache.as_ref().is_some_and(|c| c.corpus_hash == hash) {
+        return Ok(());
+    }
+    state
+        .claim_heavy(HeavyJob::Discovery)
+        .map_err(|msg| HttpResponse::Conflict().json(serde_json::json!({ "error": msg })))?;
+    let _claim = ReleaseOnDrop(state.discovery_running.clone());
+    // Evict before loading: the entry holds a whole corpus.
+    *cache = None;
+    let corpus = src.load(sel).await.map_err(|e| {
+        tracing::error!("flow-discovery owner stage: corpus reload failed: {e}");
+        HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
+    })?;
+    let facts = match owner_split::market_query(&corpus.tokens) {
+        None => None,
+        Some(q) => match src.owner_market_facts(q).await {
+            Ok(f) => Some(Arc::new(f)),
+            Err(e) => {
+                tracing::warn!("flow-discovery owner stage: owner-split market facts failed: {e}");
+                None
+            }
+        },
+    };
+    let c = SweepCorpusCache::new(corpus.hash, Arc::new(corpus.tokens), corpus.candidates_capped);
+    if let Some(f) = facts {
+        c.set_owner_facts(f);
+    }
+    tracing::info!(tokens = c.tokens.len(), "flow-discovery owner stage: reloaded the run's corpus");
+    *cache = Some(c);
+    Ok(())
+}
+
+/// Releases a claimed heavy-job flag on every exit path.
+struct ReleaseOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 // ── Job ──────────────────────────────────────────────────────────────────────
@@ -552,7 +711,7 @@ async fn run_flow_discovery_job(
                 tracing::warn!("flow-discovery: owner-split market facts failed: {e}");
                 let _ = state.sse_tx.send(SseEvent::FlowDiscoveryNotice {
                     run_id,
-                    message: format!("Creation slot and Never sells are off for this run: the lake market read failed ({e})."),
+                    message: format!("Creation slot and Never sells are off for this run, and snipers stay in Instant buy and Bundle: the lake market read failed ({e})."),
                 });
                 None
             }
@@ -602,6 +761,7 @@ async fn run_flow_discovery_job(
             // selection is ours to record.
             discovery.ix_labels_filter = applied_ix_labels_filter;
             discovery.fingerprint_id = scope_fingerprint_id;
+            discovery.selection = Some(sel);
             store_result(&state, run_id, discovery).await;
         }
         Ok(Err(Cancelled)) => {

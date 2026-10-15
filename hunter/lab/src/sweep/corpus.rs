@@ -123,7 +123,7 @@ impl Corpus {
 /// Which slice of a token's lifetime the per-mint cap keeps when the token has more
 /// than `per_mint_cap` lifetime trades. Only matters for high-volume tokens past the
 /// cap; below it the whole history loads either way.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum TradeWindow {
     /// Keep the **earliest** `per_mint_cap` trades — the launch window the entry
     /// logic (`find_scalp_entry`) decides on. The correct default for a historical
@@ -140,8 +140,8 @@ pub enum TradeWindow {
 
 /// Explicit population scope — never "load everything". A loader clips to
 /// `token_cap` and/or `created_after`, logging which bound bit so the run never
-/// silently truncates.
-#[derive(Clone, Debug)]
+/// silently truncates. Serializable so a stored run can reload its own corpus.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Selection {
     /// Explicit mint list; when `None`, the source picks the newest tokens.
     pub mints: Option<Vec<String>>,

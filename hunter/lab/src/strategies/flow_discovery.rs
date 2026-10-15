@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::strategies::owner_split::{self, MarketFacts, OwnerMarks, OwnerSplitParams};
-use crate::sweep::corpus::{Corpus, CorpusToken};
+use crate::sweep::corpus::{Corpus, CorpusToken, Selection};
 use crate::sweep::grouped_engine::partition;
 use crate::sweep::grouping::{GroupKey, GroupPlan};
 
@@ -267,6 +267,16 @@ pub struct DiscoveryResult {
     /// The owner-split thresholds and market window the marks were computed with.
     #[serde(default)]
     pub owner_split: Option<OwnerSplitParams>,
+    /// Every member coin of each group, keyed by the group key's JSON text. The
+    /// group's own `tokens` stop at `MAX_TOKENS_PER_GROUP`; the owner-split stage
+    /// (`owner_stage`) reads the whole group. Kept off the GET payload.
+    #[serde(default)]
+    pub group_members: BTreeMap<String, Vec<String>>,
+    /// The lake selection the run loaded, so the owner-split stage reloads the run's
+    /// own corpus once the corpus cache has dropped it. `None` on a result stored
+    /// before the field existed. Kept off the GET payload.
+    #[serde(default)]
+    pub selection: Option<Selection>,
 }
 
 /// See [`DiscoveryGroup::lift_defined`] — a pre-field cached result is read as
@@ -322,6 +332,7 @@ pub fn score_corpus(
 
     let parts = partition(corpus, &cfg.plan);
     let mut groups: Vec<DiscoveryGroup> = Vec::new();
+    let mut members: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for (key, idxs) in parts {
         if idxs.len() < cfg.min_tokens {
@@ -346,6 +357,7 @@ pub fn score_corpus(
             &window_gross_by_core,
             &labels_by_hash,
         );
+        members.insert(g.group_key.to_string(), idxs.iter().map(|&ti| corpus.tokens[ti].mint.clone()).collect());
         groups.push(g);
     }
 
@@ -360,6 +372,8 @@ pub fn score_corpus(
         ix_labels_filter: None,
         fingerprint_id: None,
         owner_split: Some(OwnerSplitParams::new(cfg.facts.as_deref())),
+        group_members: members,
+        selection: None,
     })
 }
 

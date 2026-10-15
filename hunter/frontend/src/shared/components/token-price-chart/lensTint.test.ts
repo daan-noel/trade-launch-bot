@@ -1,15 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { aggregateTradesToBars, aggregateTradesToBarsBySlot } from './chartBars';
-import { FEE_FIELDS, rowMatchesTrade, type IxPatternRow } from 'lib/strategy/ixPatternRows';
-import {
-  LENS_PIN_FIELDS,
-  buildLensMatch,
-  formatLensSol,
-  lensItemMatches,
-  structureLensKey,
-} from './lensTint';
-import type { ChartLensPins, ChartTrade } from './types';
+import { patternRowKey, type IxPatternRow } from 'lib/strategy/ixPatternRows';
+import { buildLensMatch, formatLensSol, lensItemMatches } from './lensTint';
+import type { ChartTrade } from './types';
 
 /**
  * The tint's whole claim is "the thing you picked traded in THAT candle". It can
@@ -34,6 +28,7 @@ function trade(p: Partial<ChartTrade> & { slot: number }): ChartTrade {
 }
 
 const identity = (v: number) => v;
+const structure = (row: IxPatternRow) => ({ kind: 'structure' as const, key: patternRowKey(row), row });
 const bySlot = (trades: ChartTrade[]) =>
   aggregateTradesToBarsBySlot(trades, identity, 'price');
 
@@ -115,8 +110,7 @@ describe('buildLensMatch', () => {
       trade({ slot: 12, instruction_labels: ['Create', 'Buy', 'Transfer'] }),
       trade({ slot: 13, instruction_labels: null }),
     ];
-    const key = JSON.stringify(['Create', 'Buy']);
-    const item = { kind: 'structure' as const, key };
+    const item = structure({ labels: ['Create', 'Buy'] });
     const m = buildLensMatch(trades, bySlot(trades), 'slot', 1, 'price', (t) =>
       lensItemMatches(item, t),
     );
@@ -156,80 +150,26 @@ describe('formatLensSol', () => {
   });
 });
 
-describe('pinned structure lens', () => {
-  const labels = ['ComputeBudget:SetLimit', 'Pump:Buy'];
-  const pinned = (pins?: ChartLensPins) => ({
-    kind: 'structure' as const,
-    key: structureLensKey(labels, pins),
-    ...(pins ? { pins } : {}),
-  });
-
-  it('keys an unpinned structure as the bare pattern key', () => {
-    expect(structureLensKey(labels)).toBe(JSON.stringify(labels));
-    expect(structureLensKey(labels, {})).toBe(JSON.stringify(labels));
-    expect(structureLensKey(labels, { cu_price: 1000, cu_limit: 300_000 })).toBe(
-      `${JSON.stringify(labels)}|cu_limit=300000,cu_price=1000`,
-    );
-  });
+describe('structure lens', () => {
+  const full = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy', 'Memo Program: Memo'];
+  const t = (p: Partial<ChartTrade>) => trade({ slot: 1, instruction_labels: full, ...p });
 
   it('needs every pinned reading to equal its pin, and ignores the rest', () => {
-    const item = pinned({ cu_limit: 300_000 });
-    const t = (p: Partial<ChartTrade>) => trade({ slot: 1, instruction_labels: labels, ...p });
+    const item = structure({ labels: full, cu_limit: 300_000 });
     expect(lensItemMatches(item, t({ cu_limit: 300_000, cu_price: 5 }))).toBe(true);
     expect(lensItemMatches(item, t({ cu_limit: 200_000 }))).toBe(false);
     // A missing reading never satisfies a pin.
     expect(lensItemMatches(item, t({ cu_limit: null }))).toBe(false);
     // Unpinned: any budget.
-    expect(lensItemMatches(pinned(), t({ cu_limit: 200_000 }))).toBe(true);
+    expect(lensItemMatches(structure({ labels: full }), t({ cu_limit: 200_000 }))).toBe(true);
   });
 
-  // The chart folder inlines the engine's fee match to stay portable; this keeps
-  // the copy equal to `ixPatternRows.rowMatchesTrade`.
-  it('agrees with rowMatchesTrade on every pin/reading combination', () => {
-    expect([...LENS_PIN_FIELDS]).toEqual([...FEE_FIELDS]);
-    const readings = [null, 0, 7];
-    const pinsOf = [undefined, 0, 7];
-    for (const cuLimit of pinsOf)
-      for (const tip of pinsOf)
-        for (const rl of readings)
-          for (const rt of readings) {
-            const pins: ChartLensPins = {};
-            if (cuLimit != null) pins.cu_limit = cuLimit;
-            if (tip != null) pins.tip_lamports = tip;
-            const row: IxPatternRow = { labels, ...pins };
-            const tr = trade({ slot: 1, instruction_labels: labels, cu_limit: rl, tip_lamports: rt });
-            const item = pinned(Object.keys(pins).length > 0 ? pins : undefined);
-            expect(lensItemMatches(item, tr)).toBe(rowMatchesTrade(row, labels, tr));
-          }
-  });
-});
-
-describe('core structure lens', () => {
-  const full = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy', 'Memo Program: Memo'];
-  const bare = ['Pump.Fun: Buy'];
-  const other = ['Pump.Fun: Sell'];
-  const core = (pins?: ChartLensPins) => ({
-    kind: 'structure' as const,
-    level: 'core' as const,
-    key: structureLensKey(full, pins, 'core'),
-    ...(pins ? { pins } : {}),
-  });
-
-  it('keys apart from every exact key, and the same from full or core labels', () => {
-    expect(structureLensKey(full, null, 'core')).not.toBe(structureLensKey(full));
-    expect(structureLensKey(full, null, 'core')).toBe(structureLensKey(bare, null, 'core'));
-  });
-
-  // Same guard as the exact lens: the chart's core match equals an unpinned-side,
-  // unmarked core row's `rowMatchesTrade`, pins and all.
-  it('agrees with a core rowMatchesTrade across shapes and pins', () => {
-    for (const labels of [full, bare, other])
-      for (const pin of [undefined, 7])
-        for (const reading of [null, 7, 9]) {
-          const pins: ChartLensPins | undefined = pin != null ? { cu_limit: pin } : undefined;
-          const row: IxPatternRow = { labels: full, level: 'core', ...(pins ?? {}) };
-          const tr = trade({ slot: 1, instruction_labels: labels, cu_limit: reading });
-          expect(lensItemMatches(core(pins), tr)).toBe(rowMatchesTrade(row, labels, tr));
-        }
+  it('matches a core row by its core, and its side when pinned', () => {
+    const core = structure({ labels: ['Pump.Fun: BUY'], level: 'core' });
+    const buy = structure({ labels: ['Pump.Fun: BUY'], level: 'core', side: 'buy' });
+    expect(lensItemMatches(core, t({}))).toBe(true);
+    expect(lensItemMatches(core, t({ instruction_labels: ['Pump.Fun: Buy'] }))).toBe(true);
+    expect(lensItemMatches(buy, t({ trade_type: 'sell' }))).toBe(false);
+    expect(lensItemMatches(core, t({ instruction_labels: ['Pump.Fun: Sell'] }))).toBe(false);
   });
 });

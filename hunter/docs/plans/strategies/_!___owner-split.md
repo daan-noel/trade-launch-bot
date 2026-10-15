@@ -39,11 +39,12 @@ INPUT
 | BIRTH   Instant buy ........ buy 15 ms or less after the create   owner       |
 |         Creation slot ...... later buy in that slot, wallet                   |
 |                              under the sniper counts              owner       |
-|         Creation-slot ...... 2+ wallets, buys 100 ms or less                  |
+|         Creation-slot ...... 2+ wallets, buys 10 ms or less                   |
 |           bundle             apart, in that slot                  owner       |
 |         Bought twice ....... one wallet, 2+ buys in that slot     owner       |
-|         Sniper ............. 20+ coins, 10+ creators, 20% or                  |
-|                              less in the group, two weeks         OUTSIDER    |
+|         Sniper ............. 40+ coins, 20+ creators, 50% or                  |
+|                              less from this create list, the                  |
+|                              day before the create                OUTSIDER    |
 |         Rise continues ..... big early buy, creator buys again    owner       |
 |         Rise stops ......... big early buy the creator sells into OUTSIDER    |
 | BUNDLE  Several sells ...... 2+ Pump.fun sells in one tx          owner       |
@@ -68,8 +69,10 @@ INPUT
 |                              by more than 1% of the sell          owner       |
 |                              -> on 2+ coins the wallet comes back             |
 |         Same amount ........ A buys X and never sells, B sells                |
-|                              X (0.5%) and never bought            owner       |
-|         Never sells ........ 10+ coins, 20+ buys, no sell         owner       |
+|                              X (0.1%) and never bought            owner       |
+|                              -> on 2+ coins both wallets come back            |
+|         Never sells ........ 10+ coins, 20+ buys, no sell,        owner       |
+|                              7 days                                           |
 |                              -> the wallet comes back                         |
 |         Matching holder .... the one wallet holding the                       |
 |                              missing amount                       owner       |
@@ -135,7 +138,8 @@ INPUT
         v
 +-------------------------------------------------------------------------------+
 | STEP 5. CHOOSE THE WALLETS: only wallets that come back                       |
-|   Same slot (20 coins), Below zero (2 coins), Never sells, Stays in group     |
+|   Same slot (20 coins), Below zero (2 coins), Same amount (2 coins),          |
+|   Never sells, Stays in group                                                 |
 |   and latest trade on the group inside the recent window                      |
 |   (the gap that covers 90% of returns, counted to the build's last coin)      |
 |   never stored: a this-coin wallet, a birth-bundle wallet, a proxy            |
@@ -191,23 +195,24 @@ A stored tag ages; a rebuild reruns the Build offline.
 
 ### Flow Discovery auto-tag
 
-A hand edit, not the Build. On the `volume` tag, Flow Discovery runs the [Birth](#birth) and [Hidden](#hidden) rules over the run's coins (`lab/src/strategies/owner_split.rs`, the thresholds below as its constants) and offers one toggle per rule, in two tabs:
+A hand edit, not the Build. On the `volume` tag, Flow Discovery runs Build steps 4 and 5 over one group from toggled [Birth](#birth) and [Hidden](#hidden) rules (`lab/src/strategies/owner_split.rs` marks, `lab/src/strategies/owner_stage.rs` stage, `POST /api/strategies/flow-discovery/owner-stage`):
 
-| Tab | Toggle | Marks |
-| --- | --- | --- |
-| Creation slot | Instant buy | Instant buy |
-| Creation slot | Creation slot | Creation slot, snipers left out |
-| Creation slot | Bundle | Creation-slot bundle |
-| Creation slot | Bought twice | Bought twice |
-| Transfers | Below zero | Below zero; the group scope keeps only wallets on **2** or more coins |
-| Transfers | Transfer pair | Same amount and Matching holder, both wallets |
-| Transfers | Never sells | Never sells |
+| Tab | Toggle | Marks owner | Threshold evidence |
+| --- | --- | --- | --- |
+| Creation slot | Instant buy | Instant buy, snipers out | weak |
+| Creation slot | Creation slot | Creation slot, snipers out | weak |
+| Creation slot | Bundle | Creation-slot bundle, snipers out | weak |
+| Creation slot | Bought twice | Bought twice | unproven |
+| Transfers | Sell with no buy | Below zero | measured |
+| Transfers | Transfer pair | Same amount and Matching holder | measured |
+| Transfers | Buy, never sells | Never sells | measured |
 
-- A toggle adds its rule's wallets to the draft's `match.wallet` list, and a second click takes them out. A wallet another toggle that is on also marks stays. Apply saves the list with the sticky and creator switches.
-- **This token** takes the picked coin's marks, **Group** every coin's. A this-coin mark lands in the stored wallet list on purpose: the user chooses to store it, and a toggle takes it out again.
-- The sniper counts and Never sells read the market over the **14** days ending at the run's last trade. When that lake read fails, the Creation slot and Never sells toggles are off for the run, with a notice.
-- The tooltips quote the thresholds the run applied, sent with the result.
-- **Gap:** the [recent window](#terms) is not applied. A toggle stores a wallet whatever the date of its latest trade on the group.
+1. A toggle labels its wallets' trades **owner** on the coins it marks them on. The create transaction's wallets are owner on their coin whatever is toggled.
+2. The rows: every ix structure an owner trade used, at the seven [match levels](#match-levels). A level passes at **90%** owner SOL across the group and **10** trades. The fewest passing rows that cover every owner trade they can are staged, the most owner SOL first. A level that pins a fee field is read only on trades that carry it.
+3. The wallets: Below zero or Same amount on **2** group coins, or a never-seller, with the latest group coin inside the [recent window](#terms), counted in group coins newest first.
+4. Staged rows and wallets join the draft; one auto-tag added that the new stage drops leaves it; one the user unticks stays out; one added by hand stays. Apply saves the rows, the wallets, sticky and creator.
+
+The sniper counts read the lake per coin, over the day up to that coin's create. Never sells reads the 7 days ending at the run's last trade. When that read fails, Creation slot and Never sells are off and snipers stay in Instant buy and Bundle, with a notice. The tooltips quote the thresholds the run applied and each rule's evidence ([Appendix B](#auto-tag-thresholds)).
 
 ## 1. Mark
 
@@ -229,10 +234,10 @@ In the first seconds the dev buys their own coin. A real buyer is either too lat
 | Rule | Side | Why | Explanation | Example |
 | --- | --- | --- | --- | --- |
 | Instant buy | **owner** | A real buyer cannot see the coin 15 ms after it is created. That buy is the dev. | A buy within **15 ms** of the create is **owner**. Size and **ix structure** are ignored. | A buy lands 10 ms after the create, in the creation slot, through a public `Pump.Fun: BUY`. That buy and that wallet are **owner** on this coin. |
-| Creation slot | **owner** | Apps show the coin only after the creation slot. A buy inside that slot is the dev filling the launch. | A later buy in the creation slot is **owner** when the wallet is under the sniper counts in the next row. | A buy lands later in the same slot as the create. The wallet has opened 6 coins in two weeks. The buy is **owner**. |
-| Creation-slot bundle | **owner** | The dev packs the first buys with the create so a stranger cannot land between them. | Two or more wallets buy in the creation slot, and each buy lands within **100 ms** of another buy in that pack. Every wallet in the pack is **owner** on this coin. Sticky covers the rest of each wallet here. The wallets are not stored. The **ix structures** are not stored. | On DL744, seven buys land within 84 ms in the creation slot, on five ix structures. All seven wallets are **owner**. |
+| Creation slot | **owner** | Apps show the coin only after the creation slot. A buy inside that slot is the dev filling the launch. | A later buy in the creation slot is **owner** when the wallet is under the sniper counts in the Sniper row. | A buy lands later in the same slot as the create. The wallet has opened 6 coins in the day before. The buy is **owner**. |
+| Creation-slot bundle | **owner** | The dev packs the first buys with the create so a stranger cannot land between them. | Two or more wallets buy in the creation slot, and each buy lands within **10 ms** of another buy in that pack. Every wallet in the pack is **owner** on this coin, except a sniper. Sticky covers the rest of each wallet here. The wallets are not stored. The **ix structures** are not stored. | Seven buys land in the creation slot, each 2-8 ms from the one before, on five ix structures. All seven wallets are **owner**. |
 | Bought twice | **owner** | A sniper fires once at the open. A second buy in that same slot is the dev. | The same wallet buys more than once in the creation slot. That wallet is **owner** on this coin, and sticky covers the rest of its trades here. The wallet is not stored. A wallet that buys many times after the creation slot stays unmatched here. | A wallet sends two buys in the creation slot. Both buys and that wallet are **owner**. 8dtx and omego buy many times after the creation slot, so those later buys stay unmatched here. |
-| Sniper | **outsider** | This bot opens many launches from many creators. It hunts the market. It is not running this coin. | A bot that buys the opening of **20** or more coins, from **10** or more creators, with at most **20%** of them in this **launch group**, over two weeks, is **outsider**. A buy inside a creation-slot bundle, and a second buy in the creation slot, stay out of this row. | A bot buys the creation slot of 40 coins in two weeks, from 15 creators. Only 2 of those coins are this launch group. Those single buys stay **outsider**. |
+| Sniper | **outsider** | This bot opens many launches from many creators. It hunts the market. It is not running this coin. | A bot that buys the opening of **40** or more coins, from **20** or more creators, with at most **50%** of them from this coin's create list, in the **1** day up to this coin's create, is **outsider**: in Instant buy, Creation slot and Creation-slot bundle alike. A second buy in the creation slot stays out of this row. | A bot buys the creation slot of 60 coins in the day before, from 35 creators. Only 3 of those coins share this coin's create list. Its single buy stays **outsider**, inside a bundle too. |
 | Rise continues | **owner** | The dev plants a big early buy that looks like a sniper, then keeps buying. A real buy that large is the profit the dev sells into. | A big buy in the first seconds after the creation slot is **owner** when the creator buys again after it. The **ix structure** is ignored. | On DdTt, slot 453178755, 1.5 s after the create, two buys of 1.66 SOL and 1.48 SOL use `AdvanceNonceAccount`, `Axiom Trade: ix#05`, `Axiom Trade: ix#00`, `Transfer`. The creator buys again after them and the coin rises to 78.6 SOL. Those buys are **owner**. |
 | Rise stops | **outsider** | The dev sells into a big early buy and the rise ends. That buyer was real money. | A big buy the creator sells into is **outsider**. | A 2 SOL buy lands 2 s after the create. The creator sells into it and the rise ends. That buy is **outsider**. |
 
@@ -288,9 +293,9 @@ The dev moves tokens from one wallet to another with no buy and no sell. The **t
 | Rule | Side | Why | Explanation | Example |
 | --- | --- | --- | --- | --- |
 | Below zero | **owner** | The dev sent tokens to this wallet off the tape, then this wallet sold them. | A sell that takes the token bag below zero, by more than **1%** of the sell, is **owner** on that coin. The same sell on **2** coins marks the wallet on its other coins. The address is stored when its latest trade on this launch group is inside the [recent window](#terms). | A wallet sells 1,000 tokens and bought none on the tape. The bag goes to -200. The wallet is **owner** here. The same gap on a second coin marks it on the other coins it trades. |
-| Same amount | **owner** | The dev buys in one wallet and sells from another. Each wallet shows only one side. | One wallet buys tokens and never sells them. Another wallet sells that same amount, within **0.5%**, and bought none of it. Both wallets are **owner** on this coin, and sticky covers the rest of each wallet here. The wallets are not stored. Any count is enough. The buy may carry an Approve, and the sell may carry a TransferChecked of those tokens. The **ix structures** are not stored. | On 4FYn, `5qsuh` buys 15,429,758,455,861 tokens at 15:25:12.333 and never sells. `Fzwbh` sells that exact amount at 15:25:12.850 and never bought. Both wallets are stored on 4FYn. The same pair repeats 33 s later for 7,634,011,728,159 tokens. On GbkC, Azcvj buys 6,612,357,687,012 tokens in the creation slot and never sells. 2Bjxx sells that exact amount 0.47 s later and never bought. The sell carries TransferChecked. Both wallets are stored. On 5hkAo, `9nH7` buys 80,778,309,479,650 tokens at 23:35:55.976 and never sells. `D3op` sells that exact amount at 23:35:56.544 and never bought. The sell carries TransferChecked. Both wallets are stored. Five smaller pairs on 5hkAo do the same. |
-| Never sells | **owner** | This wallet's job is to create demand. It buys and never takes profit. | A wallet with **10** or more coins, **20** or more buys, and no sell anywhere is **owner** on every coin it buys. The address is stored when its latest trade on this launch group is inside the [recent window](#terms). | A wallet buys 12 coins, 25 buys, and has no sell on any coin. It is **owner** on all 12. |
-| Matching holder | **owner** | The wallet still holding the missing tokens is the one that sent them. | A wallet sells tokens it never bought, so the bag goes below zero. Exactly one other wallet on this coin holds that same amount, within **0.5%**. That holder is **owner** too. | B sells 1,000 tokens and bought none. A still holds 1,000. No other wallet holds about 1,000. A sent the tokens to B with no trade. A is **owner**. |
+| Same amount | **owner** | The dev buys in one wallet and sells from another. Each wallet shows only one side. | One wallet buys tokens and never sells them. Another wallet sells that same amount, within **0.1%**, and bought none of it. Both wallets are **owner** on this coin, and sticky covers the rest of each wallet here. A pair seen on **2** coins comes back: both addresses are stored when the latest trade on this launch group is inside the [recent window](#terms). One coin is enough to mark. The buy may carry an Approve, and the sell may carry a TransferChecked of those tokens. The **ix structures** are not stored. | On 4FYn, `5qsuh` buys 15,429,758,455,861 tokens at 15:25:12.333 and never sells. `Fzwbh` sells that exact amount at 15:25:12.850 and never bought. Both wallets are stored on 4FYn. The same pair repeats 33 s later for 7,634,011,728,159 tokens. On GbkC, Azcvj buys 6,612,357,687,012 tokens in the creation slot and never sells. 2Bjxx sells that exact amount 0.47 s later and never bought. The sell carries TransferChecked. Both wallets are stored. On 5hkAo, `9nH7` buys 80,778,309,479,650 tokens at 23:35:55.976 and never sells. `D3op` sells that exact amount at 23:35:56.544 and never bought. The sell carries TransferChecked. Both wallets are stored. Five smaller pairs on 5hkAo do the same. |
+| Never sells | **owner** | This wallet's job is to create demand. It buys and never takes profit. | A wallet with **10** or more coins, **20** or more buys, and no sell anywhere in **7** days is **owner** on every coin it buys. The address is stored when its latest trade on this launch group is inside the [recent window](#terms). | A wallet buys 12 coins, 25 buys, and has no sell on any coin. It is **owner** on all 12. |
+| Matching holder | **owner** | The wallet still holding the missing tokens is the one that sent them. | A wallet sells tokens it never bought, so the bag goes below zero. Exactly one other wallet on this coin holds that same amount, within **0.1%**. That holder is **owner** too. | B sells 1,000 tokens and bought none. A still holds 1,000. No other wallet holds about 1,000. A sent the tokens to B with no trade. A is **owner**. |
 | Bag balances | **outsider** | This seller bought the tokens on the tape. There is no hidden send to find. | The seller bought these tokens on this coin, then sold them. The bag ends at zero or above. The seller stays **outsider**. | B buys 1,000 tokens here and sells 1,000. The bag ends at 0. B stays **outsider**. |
 
 ### Loyal
@@ -301,7 +306,7 @@ The dev's wallets trade this launch group and little else. Brand-new wallets tha
 | --- | --- | --- | --- | --- |
 | Stays in group | **owner** | A real trader's coins are spread across the market. This wallet lives on this dev's launches. | **3** or more launch-group coins, and **80%** or more of the wallet's coins are in the **launch group**. The wallet is **owner** on every coin it trades. The address is stored when its latest trade on this launch group is inside the [recent window](#terms). | A wallet trades 8 coins and 7 are this launch group. It is **owner** on all 8. The 8th coin is outside the launch group, and it is still **owner** because this wallet is. |
 | Fresh cash-out | **owner** | The dev cashes out through new wallets in one moment, then abandons them. | A fresh wallet has traded **4** coins or fewer in the whole market. **3** or more of them each sell their whole bag in the **same slot**, then never buy this coin again. They are **owner**, and so are their earlier buys here. | Three wallets have each traded only 3 coins ever. In one slot, each sells every token it holds on this coin, and none buys this coin again. All three are **owner**, including the buys they made here before that sell. |
-| Wide service | **outsider** | A hired service works many devs, so its coins are spread out and its wallets are old. | A volume service that trades many devs' coins is too wide for the 80% test, and its wallets are above the fresh-wallet count. Loyal leaves it **outsider**. | A volume service trades hundreds of creators. Its share of this launch group is far under 80%, and its wallets have traded far more than 4 coins. Loyal leaves those trades **outsider**. |
+| Wide service | **owner** | A hired volume service is fake demand the dev paid for. It works many devs, so Loyal cannot see it. | A volume service is too wide for the 80% test, and its wallets are above the fresh-wallet count, so Loyal does not mark it. [Hidden](#hidden) does: its buy wallet never sells, its sell wallet sells what it never bought, and the amounts pair. It is **owner** on every coin it trades. | Wallet A buys, and wallet B sells the same amount 0.85 s later, on about 2,900 coins in two weeks. Loyal leaves it; Same amount and Never sells mark it **owner**. |
 
 ### Victim
 
@@ -649,6 +654,24 @@ On the whole market, 09-26 (28,819 coins created):
 | creation-slot money | creators buy 80,861 SOL; other transactions in the creation slot 77,772 SOL (55,787 buys on 15,627 coins) |
 | snipers in it | buyers on more than 50 coins that day make 34,135 of those buys (33,707 SOL, median 0.62 SOL); buyers on 50 or fewer make 21,724 (44,132 SOL, median 1.3-1.4 SOL) |
 | payers | 234,149 trades paid by another account; three service payers pay on 3,405-4,999 coins each; 3,678 payers pay for 6-20 wallets on a median of 1 coin (one operator each) |
+
+### Auto-tag thresholds
+
+Lake 09-30 .. 10-13 (133,512 finished coins, 20+ trades). A value is chosen on coins born before 10-08 and holds on the coins born after. No sign proves a wallet is the owner, so each threshold is graded by a sign against other wallets on the same coins.
+
+| Rule | Value | Sign | Fit / confirm | Evidence |
+| --- | --- | --- | --- | --- |
+| Instant buy | 15 ms | sells in the creator's slot | 0-15 ms buys 5.0-8.7x other wallets; 20 ms and later 1.6-2.9x | weak |
+| Creation-slot bundle | 10 ms | sells in the creator's slot | the 10 ms packs 4.6x / 4.9x; each widening past 10 ms adds buyers at 1.6-2.3x. 96% of creation-slot buyers sit in a 100 ms pack | weak |
+| Sniper | 40 coins, 20 creators, 50% of the create list, 1 day | sells in the creator's slot | called sniper 1.40x / 2.55x, called owner 4.45x / 6.04x; a 1-day look-back separates as well as 7 days | weak |
+| Below zero | 1% of the sell | shortfall sizes | 92% of below-zero sells are short by the whole sell; any cut from 0.01% to 20% moves the count under 1% | measured |
+| Below zero, Same amount | 2 coins | trades again on later coins | 21% at 1 coin, 54% at 2, 64% at 3, 75% at 10 | measured |
+| Same amount, Matching holder | 0.1% | matches on the same coin against matches on a random coin | at 0.1% 1% of the matches are luck; widening to 0.5% adds matches about half of them luck | measured |
+| Never sells | 10 coins, 20 buys, 7 days | still no sell on later coins | 80% or more from 20 buys; 47-63% under it; 3 and 7 days alike | measured |
+
+"Sells in the creator's slot" favours early sellers, since the creator often sells early. It ranks creation-slot thresholds against each other, never proves a transfer wallet. The cash-out check ([Checks](#checks)) cannot grade a creation-slot rule: a sniper flips within seconds and passes it.
+
+The transfer rules mostly mark one machine: a fixed pair of wallets, A buys and B sells the same amount 0.85 s later (median), each pair on about 2,900 coins in two weeks; 78% of the matched pairs. It is fake volume, so it is **owner** ([Wide service](#loyal)).
 
 ## Terms
 

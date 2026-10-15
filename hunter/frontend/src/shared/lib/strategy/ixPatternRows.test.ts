@@ -18,8 +18,10 @@ import {
   rowMatchesTrade,
   rowNarrows,
   rowPinsFee,
+  rowsOverlap,
   serializeIxPatternRow,
   togglePatternRow,
+  type IxPatternRow,
 } from './ixPatternRows';
 
 const DUMP = ['Pump.Fun: Sell', 'Token Program: CloseAccount'];
@@ -307,5 +309,31 @@ describe('core-level rows', () => {
     expect(rowFamilyState([core], broad)).toBe('narrow');
     expect(rowFamilyState([broad], core)).toBe('broad');
     expect(rowFamilyState([{ labels: ['Pump.Fun: Sell'] }], broad)).toBe('none');
+  });
+});
+
+describe('rowsOverlap', () => {
+  const FULL = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Sell', 'Token Program: CloseAccount'];
+  const exact: IxPatternRow = { labels: FULL };
+  const core: IxPatternRow = { labels: ['Pump.Fun: SELL'], level: 'core' };
+
+  it('lights an arm on its broader and its narrower rows alike', () => {
+    const pinned: IxPatternRow = { labels: FULL, cu_limit: 300_000 };
+    expect(rowsOverlap(core, exact)).toBe(true);
+    expect(rowsOverlap(exact, core)).toBe(true);
+    expect(rowsOverlap(pinned, exact)).toBe(true);
+    expect(rowsOverlap(exact, pinned)).toBe(true);
+  });
+
+  it('keeps apart rows no trade can match both of', () => {
+    expect(rowsOverlap({ labels: FULL, cu_limit: 1 }, { labels: FULL, cu_limit: 2 })).toBe(false);
+    expect(rowsOverlap(exact, { labels: ['Pump.Fun: Sell'] })).toBe(false);
+    expect(rowsOverlap({ ...core, side: 'buy' }, { ...core, side: 'sell' })).toBe(false);
+    expect(rowsOverlap({ labels: ['Pump.Fun: BUY'], level: 'core' }, exact)).toBe(false);
+  });
+
+  it("reads an exact row's marks off its labels against a core row's pin", () => {
+    expect(rowsOverlap({ ...core, marks: 'CL C T0 A0' }, exact)).toBe(true);
+    expect(rowsOverlap({ ...core, marks: 'CP T0 A0' }, exact)).toBe(false);
   });
 });

@@ -22,12 +22,12 @@ import { formatFeePins } from 'lib/strategy/ixPatternRows';
 /** Target glyph for a highlight-lens toggle — reads as "find this everywhere". */
 function LensIcon() {
   return (
-    <svg viewBox="0 0 16 16" fill="none" aria-hidden className="size-3">
-      <circle cx="8" cy="8" r="3.25" stroke="currentColor" strokeWidth="1.4" />
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden className="size-full">
+      <circle cx="8" cy="8" r="3.25" stroke="currentColor" strokeWidth="2" />
       <path
         d="M8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2"
         stroke="currentColor"
-        strokeWidth="1.4"
+        strokeWidth="2"
         strokeLinecap="round"
       />
     </svg>
@@ -37,7 +37,7 @@ function LensIcon() {
 /** The glyph's box. A button and its spacer MUST share it: a row that renders one
  *  and a row that renders neither would start their content at different x, which
  *  reads as a ragged column. */
-const LENS_SLOT = 'block size-3 shrink-0 p-px';
+const LENS_SLOT = 'block size-4 shrink-0 p-0.5';
 
 /** Holds the slot open on a row that has nothing to arm (no labels captured). */
 export function LensSpacer() {
@@ -47,23 +47,28 @@ export function LensSpacer() {
 /**
  * The one control that arms a highlight lens. Lit while its target is the armed
  * one, so a row can say "this is what the chart is washing" without a legend.
+ * `litBy` is the color of another armed item that already washes this target:
+ * the icon shows it, ringed and unpressed, and a click still arms its own target.
  */
 export function LensButton({
   armed,
   color,
   title,
   onClick,
+  litBy = null,
 }: {
   armed: boolean;
   color: string;
   title: string;
   onClick: () => void;
+  litBy?: string | null;
 }) {
+  const lit = !armed && litBy != null;
   return (
     <button
       type="button"
       aria-pressed={armed}
-      title={title}
+      title={lit ? `Lit by another armed highlight. ${title}` : title}
       onClick={(e) => {
         // Several hosts make the row itself selectable; arming a lens must not
         // also move the table's selection.
@@ -73,9 +78,14 @@ export function LensButton({
       className={cn(
         LENS_SLOT,
         'rounded transition focus:outline-none focus-visible:ring-1 focus-visible:ring-primary',
-        armed ? 'opacity-100' : 'opacity-30 hover:opacity-90',
+        // Armed: filled and ringed. Lit by another item: ringed only. Idle: dim.
+        armed
+          ? 'bg-current/25 ring-1 ring-current'
+          : lit
+            ? 'ring-1 ring-current'
+            : 'text-text-mid opacity-60 hover:text-text hover:opacity-100',
       )}
-      style={{ color: armed ? color : undefined }}
+      style={{ color: armed ? color : lit ? litBy : undefined }}
     >
       <LensIcon />
     </button>
@@ -205,20 +215,22 @@ export function LensChips({ highlight }: { highlight: TokenHighlight }) {
             />
           );
         }
-        const text = item.labels ? ixLabelsActions([...item.labels]) : '';
-        const pins = item.pins ? formatFeePins(item.pins) : '';
+        const row = item.row;
+        const core = row?.level === 'core';
+        const text = row ? `${core ? 'core ' : ''}${ixLabelsActions([...row.labels])}` : '';
+        const narrow = row ? [row.side, row.marks, formatFeePins(row)].filter(Boolean).join(' ') : '';
         return (
           <LensChip
             key={lensItemId(item)}
             color={item.color}
-            label={`${text || 'ix structure'}${pins ? ` · ${pins}` : ''}`}
+            label={`${text || 'ix structure'}${narrow ? ` · ${narrow}` : ''}`}
             title={
-              `${text}${pins ? `
-pinned: ${pins}` : ''}
+              `${text}${narrow ? `
+pinned: ${narrow}` : ''}
 
-Every candle carrying this EXACT ordered structure` +
-              (pins ? ' with these fee readings' : ', any CU and fee,') +
-              ` is marked in its lane row, in this color. View-only — no fingerprint or rule reads it.`
+Every candle carrying ${core ? 'this ix core, any extras the pins leave open,' : 'this EXACT ordered structure'}` +
+              (row && formatFeePins(row) ? ' with these fee readings' : ', any CU and fee,') +
+              ` is marked in its lane row, in this color - the trades this row would match on a tag. View-only: no fingerprint or rule reads it.`
             }
             match={match}
             onClear={() => remove(item)}

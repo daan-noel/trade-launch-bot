@@ -348,31 +348,35 @@ feature: asking *where else did this shape appear* must not change how a live ru
 flow. The identity is shared, though — both match on `patternKey`, ordered and exact, so "the
 same structure" means one thing across the app.
 
-**A structure lens can pin the fee budget.** The chip strip's `highlight pin` toggles
+**A structure lens is an `ix_shape` row.** A structure item carries an `IxPatternRow` (exact or
+core, side, marks, fee pins), keys as `patternRowKey(row)` and matches with
+`ixPatternRows.rowMatchesTrade`, the tags' own matcher, so a lens lights exactly the trades the row
+would on a tag. Every surface arms through `useTokenHighlight.toggleRow` with the row its own tag
+click writes; `toggleStructure(labels, trade, opts)` builds that row from a click
+(`structureLensRow`).
+
+**A trades-table click pins what the strip says.** The chip strip's `highlight pin` toggles
 (`FeePinToggles`: cu_limit, cu_price, tip; persisted in `UiToggles.lensPins`) pick which of the
-clicked trade's readings a trades-table click copies onto the lens. All off = the structure
-alone, any CU and fee. A pin needs the trade's reading to equal it and a missing reading never
-satisfies one, the engine's `FeeSpec::matches` (`lensItemMatches`, guarded equal to
-`ixPatternRows.rowMatchesTrade`). The key is `structureLensKey(labels, pins)`, so the same
-structure armed under two presets is two items, each with its own color and lane row; the chip
-and lane label carry the pins (`CL → B · cu 300,000 @ 1,000`). The mask is the highlight's own,
+clicked trade's readings a click copies onto the row. All off = the structure alone, any CU and
+fee. A pin needs the trade's reading to equal it and a missing reading never satisfies one, the
+engine's `FeeSpec::matches`. The same structure armed under two presets is two items, each with
+its own color and lane row; the chip and lane label carry the pins (`CL → B · cu 300,000 @ 1,000`).
+Under the ix core view (stage matcher `ix_core`) a click arms the trade's core with its side and
+marks, the row the badge would list, and the chip reads `core …`. The mask is the highlight's own,
 not the tag stage's, so arming a highlight never changes what a tag click writes. The Entry
 Context breakdown arms its structures unpinned: a breakdown row has no single reading to copy.
 
-**A structure lens can match by core.** `level: 'core'` on the item matches every trade whose
-ix core (`lib/strategy/ixCore.coreLabels`) equals the lens', any extras and any side, the grain
-an unpinned `level: "core"` row matches at; the key is `structureLensKey(labels, pins, 'core')`
-(`core:` prefix, never equal to an exact key) and the chip reads `core …`. The guard test holds
-it equal to a core `rowMatchesTrade`.
-
-**Flow Discovery shares one highlight between its two tables.** The page owns
-`useTokenHighlight` for the previewed token and hands it to the preview chart, so the chart's
-trades table and the Ranked ix structures table arm and read one item set. A ranked row arms
-its shape at the table's grain (exact, or core on the core table), unpinned; an expanded budget
-line arms the shape pinned to that budget (the highlight pin fields when any are on, else all
-three). A ranked row washes in the color of any armed structure lens over it, whichever table
-armed it (a core lens lights every exact row of that core), and a trades-table row washes for a
-lens armed in the ranked table the same way.
+**Flow Discovery shares one highlight across the chart, the trades table, the Ranked ix
+structures table and the auto-tag list.** The page owns `useTokenHighlight` for the previewed
+token and hands it to all four. A ranked row arms the row its check writes (the shape, or its
+core on the core table, unpinned); an expanded budget line arms the row its budget check writes
+(the highlight pin fields when any are on, else all three). An auto-tag staged or failing row
+arms its own stored row; a staged wallet arms the wallet lens. A listed row (ranked or auto-tag)
+washes in the color of every armed row it shares a trade with (`ixPatternRows.rowsOverlap`), so an
+arm lights its broader and its narrower rows alike, whichever surface armed it; the chart and the
+trades table wash the trades `rowMatchesTrade` accepts. A lens icon is pressed when its own row is armed, and
+ringed in the washing color, unpressed, when another armed row already lights its target; a click
+still arms its own row.
 
 The chip strip renders even with **no candle selected**, which is the only reason the panel
 draws at all in that state: the control that disarms a lens must not hide behind the table it

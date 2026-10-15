@@ -65,9 +65,18 @@ import {
   type RankedState,
 } from '@lab/components/flow/StructureTable';
 import { TokenPreviewPanel } from '@lab/components/flow/TokenPreviewPanel';
+import { lensHitItems } from '@lab/components/flow/tokenLensHits';
 import { DEFAULT_TAG, defaultTagName, flowTagOf, shapeTag, tagLabel, withDraftMatch } from 'lib/flow/tapeClassify';
 import { isOwnerSplitTag, tagSwitches, type TagSwitches } from 'lib/strategy/tagsDoc';
-import { AutoTagPanel } from '@lab/components/flow/AutoTagPanel';
+import { AutoTagPanel, type AutoTagLens } from '@lab/components/flow/AutoTagPanel';
+import {
+  EMPTY_AUTO_STAGE,
+  pickAutoRow,
+  pickAutoWallet,
+  stagedPicks,
+  syncAutoStage,
+  type AutoStage,
+} from '@lab/components/flow/autoTagRules';
 import {
   addPatternRows,
   anyRowMatchesTrade,
@@ -82,7 +91,7 @@ import {
   type IxPatternFeeMask,
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
-import { coreKey, coreLabels } from 'lib/strategy/ixCore';
+import { coreLabels } from 'lib/strategy/ixCore';
 import { dominantFeeVariant, feeSpreadBand } from 'lib/feeVariants';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, buildFieldFilters } from '@lab/components/sweep/fingerprintFilters';
@@ -101,6 +110,8 @@ import {
 import {
   useBindFlowDiscoveryMutation,
   useGetLastFlowDiscoveryQuery,
+  useGetFlowLensHitsQuery,
+  useGetOwnerStageQuery,
   useLazyGetFlowDiscoveryQuery,
   useStartFlowDiscoveryMutation,
   type FlowDiscoveryStartArgs,
@@ -110,6 +121,7 @@ import type {
   FlowDiscoveryGroup,
   FlowDiscoveryResult,
   FlowDiscoveryStructure,
+  OwnerRuleId,
 } from 'types';
 import {
   findFingerprintForGroupKey,
@@ -501,8 +513,20 @@ export function FlowDiscoveryPage() {
   const { data: previewTrades } = useGetTokenTradesQuery(selectedTokenMint ?? '', {
     skip: !selectedTokenMint,
   });
-  const highlight = useTokenHighlight(previewTrades ?? EMPTY_PREVIEW_TRADES, selectedTokenMint ?? '');
-  const { toggleStructure: toggleLens, structureColor: lensColor, items: lensItems, pinMask: lensPinMask } = highlight;
+  // Keyed by the group, not the token: the list is browsed under one highlight, and
+  // its chips and dots say which coins carry it.
+  const highlight = useTokenHighlight(
+    previewTrades ?? EMPTY_PREVIEW_TRADES,
+    `${result?.run_id ?? ''}|${selectedGroupIdx}`,
+  );
+  const {
+    toggleRow: toggleLensRow,
+    rowColor: lensRowColor,
+    overlapColors: lensOverlapColors,
+    toggleWallet: toggleLensWallet,
+    walletColor: lensWalletColor,
+    pinMask: lensPinMask,
+  } = highlight;
 
   const selectedGroup: FlowDiscoveryGroup | null =
     result?.groups[selectedGroupIdx] ?? null;
@@ -815,6 +839,56 @@ export function FlowDiscoveryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- group/run/seed are the SSOTs
   }, [selectedGroupIdx, result?.run_id, seedFingerprintId]);
 
+  // ── Auto-tag: the owner-split toggles and the stage they produce ──────────
+  /** The owner-split rules switched on. */
+  const [autoRules, setAutoRules] = useState<Set<OwnerRuleId>>(() => new Set());
+  /** What auto-tag put in the draft and what the user took out (`syncAutoStage`). */
+  const autoStage = useRef<AutoStage>(EMPTY_AUTO_STAGE);
+  const draftNow = useRef({ rows: draftPatterns, wallets: draftWallets });
+  useEffect(() => {
+    draftNow.current = { rows: draftPatterns, wallets: draftWallets };
+  }, [draftPatterns, draftWallets]);
+  const ownerTag = isOwnerSplitTag(stageTag);
+  // A new group, run, target or tag starts the toggles over.
+  useEffect(() => {
+    autoStage.current = EMPTY_AUTO_STAGE;
+    setAutoRules(new Set());
+  }, [selectedGroupIdx, result?.run_id, targetFpId, stageTag]);
+  const ownerStageQ = useGetOwnerStageQuery(
+    {
+      run_id: result?.run_id ?? '',
+      group_key: selectedGroup?.group_key ?? {},
+      rules: [...autoRules].sort(),
+    },
+    { skip: !ownerTag || !result?.run_id || !selectedGroup || !result.owner_split },
+  );
+  const ownerStage = ownerStageQ.currentData ?? null;
+  // Each new stage moves the draft: newly picked items join, auto-tag items the new
+  // stage drops leave, unticked and hand-added items stay as they are.
+  useEffect(() => {
+    if (!ownerStage) return;
+    const out = syncAutoStage(draftNow.current, autoStage.current, stagedPicks(ownerStage));
+    autoStage.current = out.auto;
+    setDraftPatterns(out.rows);
+    setDraftWallets(out.wallets);
+  }, [ownerStage]);
+  const ownerStageError = ownerStageQ.error
+    ? ((ownerStageQ.error as { data?: { error?: string } }).data?.error ?? 'The owner-split stage failed.')
+    : null;
+  // Which group coins carry each armed highlight item: the token list's chips and dots.
+  const lensItemsBody = useMemo(() => lensHitItems(highlight.items), [highlight.items]);
+  const lensHitsQ = useGetFlowLensHitsQuery(
+    {
+      run_id: result?.run_id ?? '',
+      group_key: selectedGroup?.group_key ?? {},
+      items: lensItemsBody,
+    },
+    { skip: !result?.run_id || !selectedGroup || lensItemsBody.length === 0 },
+  );
+  const lensHitsError = lensHitsQ.error ? apiErrorMessage(lensHitsQ.error) : null;
+  const draftRowKeys = useMemo(() => new Set(draftPatterns.map(patternRowKey)), [draftPatterns]);
+  const draftWalletSet = useMemo(() => new Set(draftWallets), [draftWallets]);
+
   // The fingerprint list is fetched in parallel with the run, so the seed above
   // routinely runs with an empty list and stages nothing — and since the group
   // list preselects index 0, re-clicking that group is a no-op that never
@@ -925,25 +999,37 @@ export function FlowDiscoveryPage() {
     [isCoreStage, feePins],
   );
 
-  /** The ranked table's side of the preview highlight. A row arms at the table's
-   *  grain (exact shape, or core on the core table); a row is lit by any armed
-   *  structure lens over it, whichever table armed it. */
+  /** The ranked table's side of the preview highlight. A row arms the row its check
+   *  writes (the shape, or its core on the core table), a budget the row its budget
+   *  check writes; a row is lit by every armed row it shares a trade with,
+   *  whichever surface armed it. */
   const rankedLens = useMemo<RankedLens>(() => {
-    const level = isCoreStage ? ('core' as const) : undefined;
-    const sameRow = (item: { labels: readonly string[] | null; level?: 'core' }, s: FlowDiscoveryStructure) =>
-      !!item.labels &&
-      (isCoreStage || item.level === 'core'
-        ? coreKey(item.labels) === coreKey(s.ix_labels)
-        : JSON.stringify(item.labels) === JSON.stringify(s.ix_labels));
+    const rowOf = (s: FlowDiscoveryStructure) => stagedRow(s.ix_labels, isCoreStage);
+    const budgetOf = (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) =>
+      budgetRow(s.ix_labels, isCoreStage, v, lensPinMask) ?? rowOf(s);
     return {
       enabled: !!selectedTokenMint,
-      toggle: (s) => toggleLens(s.ix_labels, null, { level }),
-      colorOf: (s) => lensColor(s.ix_labels, null, { level }),
-      toggleBudget: (s, v) => toggleLens(s.ix_labels, v, { level, mask: budgetMask(lensPinMask) }),
-      budgetColorOf: (s, v) => lensColor(s.ix_labels, v, { level, mask: budgetMask(lensPinMask) }),
-      rowColors: (s) => lensItems.filter((i) => i.kind === 'structure' && sameRow(i, s)).map((i) => i.color),
+      toggle: (s) => toggleLensRow(rowOf(s)),
+      colorOf: (s) => lensRowColor(rowOf(s)),
+      toggleBudget: (s, v) => toggleLensRow(budgetOf(s, v)),
+      budgetColorOf: (s, v) => lensRowColor(budgetOf(s, v)),
+      rowColors: (s) => lensOverlapColors(rowOf(s)),
     };
-  }, [isCoreStage, selectedTokenMint, toggleLens, lensColor, lensPinMask, lensItems]);
+  }, [isCoreStage, selectedTokenMint, toggleLensRow, lensRowColor, lensOverlapColors, lensPinMask]);
+
+  /** The auto-tag list's side of the same highlight: a staged row arms itself, a
+   *  staged wallet arms the wallet lens. */
+  const autoTagLens = useMemo<AutoTagLens>(
+    () => ({
+      enabled: !!selectedTokenMint,
+      toggleRow: toggleLensRow,
+      rowColor: lensRowColor,
+      rowColors: lensOverlapColors,
+      toggleWallet: toggleLensWallet,
+      walletColor: lensWalletColor,
+    }),
+    [selectedTokenMint, toggleLensRow, lensRowColor, lensOverlapColors, toggleLensWallet, lensWalletColor],
+  );
 
   /** A preview-table badge click. The value already carries the grain and, on an
    *  ix row, the pinned fee fields. */
@@ -1380,6 +1466,9 @@ export function FlowDiscoveryPage() {
                     detail={previewDetail}
                     tape={previewTape}
                     highlight={highlight}
+                    lensHits={lensHitsQ.currentData?.by_mint ?? null}
+                    lensHitsLoading={lensHitsQ.isFetching}
+                    lensHitsError={lensHitsError}
                   />
                 )}
 
@@ -1415,12 +1504,25 @@ export function FlowDiscoveryPage() {
                 <AutoTagPanel
                   tagName={stageTag}
                   params={result?.owner_split ?? null}
-                  groupMarks={selectedGroup.owner_marks ?? null}
-                  tokenMarks={selectedTokenRow?.owner_marks ?? null}
+                  stage={ownerStage}
+                  loading={ownerStageQ.isFetching}
+                  error={ownerStageError}
+                  rules={autoRules}
+                  onRulesChange={setAutoRules}
                   tokenMint={selectedTokenMint}
-                  wallets={draftWallets}
-                  onWalletsChange={(ws) => {
-                    setDraftWallets(ws);
+                  draftRowKeys={draftRowKeys}
+                  draftWallets={draftWalletSet}
+                  lens={autoTagLens}
+                  onPickRow={(row, on) => {
+                    const out = pickAutoRow(draftPatterns, autoStage.current, row, on);
+                    autoStage.current = out.auto;
+                    setDraftPatterns(out.rows);
+                    setApplyOk(null);
+                  }}
+                  onPickWallet={(w, on) => {
+                    const out = pickAutoWallet(draftWallets, autoStage.current, w, on);
+                    autoStage.current = out.auto;
+                    setDraftWallets(out.wallets);
                     setApplyOk(null);
                   }}
                 />

@@ -1,18 +1,21 @@
 import { useCallback, useMemo, useState } from 'react';
 import { abbreviateIxLabels } from 'lib/ixLabels';
+import { coreLabels } from 'lib/strategy/ixCore';
 import {
-  feeFromTrade,
   formatFeePins,
+  patternRowKey,
+  rowsOverlap,
+  rowFromTrade,
   type IxPatternFeeMask,
-  type IxPatternFeeSource,
+  type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
+import { coreRowFromTrade, type StageTrade } from 'hooks/useIxPatternTarget';
 import { useUiToggle } from 'hooks/useUiPrefs';
 import { LENS_COLORS } from 'components/token-price-chart/constants';
 import {
   EMPTY_LENS_MATCH,
   lensItemId,
   lensItemMatches,
-  structureLensKey,
   type LensMatch,
 } from 'components/token-price-chart/lensTint';
 import type {
@@ -20,7 +23,6 @@ import type {
   ChartLensItem,
   ChartLensKind,
   ChartLensMatches,
-  ChartLensPins,
   ChartLensSizeLabels,
 } from 'components/token-price-chart/types';
 import type { TradeRecord } from 'types';
@@ -28,29 +30,33 @@ import type { TradeRecord } from 'types';
 const EMPTY_MATCHES: ChartLensMatches = new Map();
 const NO_PINS: IxPatternFeeMask = {};
 
-/** The copied fee fields as chart pins; `null` when none was copied. */
-function lensPins(fee: ReturnType<typeof feeFromTrade> | null): ChartLensPins | null {
-  if (!fee) return null;
-  const pins: ChartLensPins = {};
-  if (fee.cu_limit != null) pins.cu_limit = fee.cu_limit;
-  if (fee.cu_price != null) pins.cu_price = fee.cu_price;
-  if (fee.tip_lamports != null) pins.tip_lamports = fee.tip_lamports;
-  return Object.keys(pins).length > 0 ? pins : null;
-}
-
-/** How a structure click arms: `level: 'core'` matches by the ix core; `mask`
- *  replaces the hook's own `pinMask` for this click (a budget line pins its whole
- *  budget when no pin field is on). */
+/** How a structure click arms: `level: 'core'` arms the ix core - pinned to the
+ *  clicked trade's side and marks when `from` is a trade, the grain a core tag
+ *  click writes; `mask` replaces the hook's own `pinMask` for this click. */
 export interface StructureLensOpts {
   level?: 'core';
   mask?: IxPatternFeeMask;
 }
 
-/** One armed target, as the chips and table rows need it. */
-export interface TokenHighlightItem extends ChartLensItem {
-  /** A structure's ordered labels, for a chip that has to name it; `null` on a wallet. */
-  labels: readonly string[] | null;
+/** The row a structure click arms: the labels (or their core) plus the fee fields
+ *  the mask copies off `from`. A core row off a trade also pins its side and marks. */
+export function structureLensRow(
+  labels: readonly string[],
+  from: StageTrade | null | undefined,
+  mask: IxPatternFeeMask | null | undefined,
+  level?: 'core',
+): IxPatternRow | null {
+  if (level !== 'core') return rowFromTrade(labels, from ?? {}, from ? mask : null);
+  if (from?.trade_type) return coreRowFromTrade(labels, from, mask);
+  const core = coreLabels(labels);
+  if (core.length === 0) return null;
+  const row = rowFromTrade(core, from ?? {}, from ? mask : null);
+  row.level = 'core';
+  return row;
 }
+
+/** One armed target, as the chips and table rows need it. */
+export type TokenHighlightItem = ChartLensItem;
 
 export interface TokenHighlight {
   /** Spread onto `TokenPriceChart` alongside `onHighlightLensMatch`. */
@@ -61,25 +67,26 @@ export interface TokenHighlight {
   active: boolean;
   /** Add a wallet; passing an armed one removes it; `null` removes every wallet. */
   toggleWallet: (address: string | null) => void;
-  /** Add an ordered ix structure, pinned to the fee fields `pinMask` (or
-   *  `opts.mask`) copies off `from` (the clicked trade or budget; absent = the
-   *  structure alone), matched by its core under `opts.level: 'core'`; the same
-   *  armed item removes it; `null` removes every structure. */
-  toggleStructure: (
-    labels: readonly string[] | null,
-    from?: IxPatternFeeSource | null,
-    opts?: StructureLensOpts,
-  ) => void;
+  /** Arm an `ix_shape` row; the same row armed removes it; `null` removes every
+   *  structure. Every surface arms through this, with the row its tag click writes. */
+  toggleRow: (row: IxPatternRow | null) => void;
+  /** The color `row` washes in when it is armed itself, else `null`. */
+  rowColor: (row: IxPatternRow | null | undefined) => string | null;
+  /** Colors of every armed row that shares a trade with `row` (`rowsOverlap`), arming order:
+   *  what lights a listed row, whichever surface armed it. */
+  overlapColors: (row: IxPatternRow | null | undefined) => string[];
+  /** `toggleRow` of {@link structureLensRow}`(labels, from, pinMask or opts.mask,
+   *  opts.level)`: a click on a trade or a bare label list. */
+  toggleStructure: (labels: readonly string[] | null, from?: StageTrade | null, opts?: StructureLensOpts) => void;
   /** Remove one armed item. */
   remove: (item: Pick<ChartLensItem, 'kind' | 'key'>) => void;
   clear: () => void;
   /** The color an armed wallet washes in, or `null` when it isn't armed. */
   walletColor: (address: string | null | undefined) => string | null;
-  /** The color the structure `toggleStructure(labels, from, opts)` would toggle
-   *  washes in, or `null` when it isn't armed. */
+  /** `rowColor` of the row `toggleStructure(labels, from, opts)` would toggle. */
   structureColor: (
     labels: readonly string[] | null | undefined,
-    from?: IxPatternFeeSource | null,
+    from?: StageTrade | null,
     opts?: StructureLensOpts,
   ) => string | null;
   /** Which fee fields a structure click copies off its trade (`FeePinToggles`).
@@ -101,6 +108,8 @@ export interface TokenHighlight {
   setSizeLabels: (mode: ChartLensSizeLabels) => void;
   /** Colors of every armed item this trade matches, arming order; empty when none. */
   colorsOf: (trade: TradeRecord) => string[];
+  /** `colorsOf` over the structure items only: what lights a trade's ix icon. */
+  structureColorsOf: (trade: TradeRecord) => string[];
 }
 
 /**
@@ -112,9 +121,7 @@ function toggleItem(
   cur: readonly TokenHighlightItem[],
   kind: ChartLensKind,
   key: string,
-  labels: readonly string[] | null,
-  pins: ChartLensPins | null = null,
-  level?: 'core',
+  row: IxPatternRow | null,
 ): TokenHighlightItem[] {
   if (cur.some((i) => i.kind === kind && i.key === key)) {
     return cur.filter((i) => !(i.kind === kind && i.key === key));
@@ -125,13 +132,13 @@ function toggleItem(
   if (sameKind.length >= palette.length) next = next.filter((i) => i !== sameKind[0]);
   const used = new Set(next.filter((i) => i.kind === kind).map((i) => i.color));
   const color = palette.find((c) => !used.has(c)) ?? palette[0];
-  const pinText = pins ? formatFeePins(pins) : '';
-  const label = labels
-    ? `${level === 'core' ? 'core ' : ''}${abbreviateIxLabels(labels)}${pinText ? ` · ${pinText}` : ''}`
+  const narrow = row ? [row.side, formatFeePins(row)].filter(Boolean).join(' ') : '';
+  const label = row
+    ? `${row.level === 'core' ? 'core ' : ''}${abbreviateIxLabels(row.labels)}${narrow ? ` · ${narrow}` : ''}`
     : key.length > 12
       ? `${key.slice(0, 4)}…${key.slice(-4)}`
       : key;
-  next.push({ kind, key, color, label, labels, ...(pins ? { pins } : {}), ...(level ? { level } : {}) });
+  next.push({ kind, key, color, label, ...(row ? { row } : {}) });
   return next;
 }
 
@@ -174,27 +181,26 @@ export function useTokenHighlight(
     );
   }, []);
 
-  // What a structure click would arm: the labels plus the fee fields the mask
-  // copies off the clicked trade. One function for the toggle and the color, so a
-  // row's button is lit exactly when its click would disarm.
+  const toggleRow = useCallback((row: IxPatternRow | null) => {
+    if (!row || row.labels.length === 0) {
+      setItems((cur) => cur.filter((i) => i.kind !== 'structure'));
+      return;
+    }
+    setItems((cur) => toggleItem(cur, 'structure', patternRowKey(row), row));
+  }, []);
+
+  // What a structure click would arm. One function for the toggle and the color,
+  // so a button is lit exactly when its click would disarm.
   const structureTarget = useCallback(
-    (labels: readonly string[], from?: IxPatternFeeSource | null, opts?: StructureLensOpts) => {
-      const pins = lensPins(from ? feeFromTrade(from, opts?.mask ?? pinMask) : null);
-      return { key: structureLensKey(labels, pins, opts?.level), pins };
-    },
+    (labels: readonly string[] | null | undefined, from?: StageTrade | null, opts?: StructureLensOpts) =>
+      labels && labels.length > 0 ? structureLensRow(labels, from, opts?.mask ?? pinMask, opts?.level) : null,
     [pinMask],
   );
 
   const toggleStructure = useCallback(
-    (labels: readonly string[] | null, from?: IxPatternFeeSource | null, opts?: StructureLensOpts) => {
-      if (!labels || labels.length === 0) {
-        setItems((cur) => cur.filter((i) => i.kind !== 'structure'));
-        return;
-      }
-      const { key, pins } = structureTarget(labels, from, opts);
-      setItems((cur) => toggleItem(cur, 'structure', key, labels, pins, opts?.level));
-    },
-    [structureTarget],
+    (labels: readonly string[] | null, from?: StageTrade | null, opts?: StructureLensOpts) =>
+      toggleRow(structureTarget(labels, from, opts)),
+    [toggleRow, structureTarget],
   );
 
   const remove = useCallback((item: Pick<ChartLensItem, 'kind' | 'key'>) => {
@@ -218,16 +224,28 @@ export function useTokenHighlight(
       address ? (colorByKey.get(lensItemId({ kind: 'wallet', key: address })) ?? null) : null,
     [colorByKey],
   );
+  const rowColor = useCallback(
+    (row: IxPatternRow | null | undefined) =>
+      row ? (colorByKey.get(lensItemId({ kind: 'structure', key: patternRowKey(row) })) ?? null) : null,
+    [colorByKey],
+  );
+  const overlapColors = useCallback(
+    (row: IxPatternRow | null | undefined) =>
+      row ? items.filter((i) => i.row && rowsOverlap(i.row, row)).map((i) => i.color) : [],
+    [items],
+  );
   const structureColor = useCallback(
-    (labels: readonly string[] | null | undefined, from?: IxPatternFeeSource | null, opts?: StructureLensOpts) =>
-      labels && labels.length > 0
-        ? (colorByKey.get(lensItemId({ kind: 'structure', key: structureTarget(labels, from, opts).key })) ?? null)
-        : null,
-    [colorByKey, structureTarget],
+    (labels: readonly string[] | null | undefined, from?: StageTrade | null, opts?: StructureLensOpts) =>
+      rowColor(structureTarget(labels, from, opts)),
+    [rowColor, structureTarget],
   );
 
   const colorsOf = useCallback(
     (t: TradeRecord) => items.filter((i) => lensItemMatches(i, t)).map((i) => i.color),
+    [items],
+  );
+  const structureColorsOf = useCallback(
+    (t: TradeRecord) => items.filter((i) => i.kind === 'structure' && lensItemMatches(i, t)).map((i) => i.color),
     [items],
   );
 
@@ -241,6 +259,9 @@ export function useTokenHighlight(
     items,
     active: items.length > 0,
     toggleWallet,
+    toggleRow,
+    rowColor,
+    overlapColors,
     toggleStructure,
     remove,
     clear,
@@ -254,6 +275,7 @@ export function useTokenHighlight(
     pinMask,
     setPinMask,
     colorsOf,
+    structureColorsOf,
   };
 }
 

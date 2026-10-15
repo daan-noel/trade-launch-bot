@@ -513,10 +513,17 @@ rules the page stands on:
 - **Owner-split marks.** `TokenGross.owner_marks` / `DiscoveryGroup.owner_marks` carry
   each rule's wallets per coin and per group (`strategies/owner_split.rs`), and
   `DiscoveryResult.owner_split` the thresholds the run applied. Two rules need the
-  market beyond the run's coins: one lake read (`LakeSource::owner_market_facts`, the
-  14 days ending at the run's last trade, about 30 s) behind a `market` progress phase,
-  cached with the corpus so a re-run over the same selection skips it. A failed read
-  sends a notice and leaves those two rules out of the marks.
+  market beyond the run's coins: one lake read (`LakeSource::owner_market_facts`: each
+  creation-slot opener counted over the day up to its coin's create, never-sellers over
+  the 7 days ending at the run's last trade) behind a `market` progress phase, cached
+  with the corpus so a re-run over the same selection skips it. A failed read sends a
+  notice and leaves those two rules out of the marks.
+- **Owner-split stage.** `POST /api/strategies/flow-discovery/owner-stage` takes a run,
+  a group key and the toggled rules, and answers what the tag stores
+  (`strategies/owner_stage.rs`): the rows that pass the 90% owner / 10-trade test and
+  the wallets that come back inside the recent window. It reads the whole group
+  (`DiscoveryResult.group_members`, kept off the GET payload) from the cached corpus; a
+  corpus another run replaced answers `409`.
 - **Per-token launch set.** The group aggregate cannot say what was in THIS coin's launch:
   it sums every member's creation slot, is cut at `max_structures_per_group` (64), and only
   scores trade rows. `TokenGross.first_slot_ix_labels` carries every distinct shape that
