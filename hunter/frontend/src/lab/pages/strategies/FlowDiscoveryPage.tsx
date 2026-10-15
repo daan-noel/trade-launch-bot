@@ -68,7 +68,6 @@ import {
   type RankedState,
 } from '@lab/components/flow/StructureTable';
 import { TokenPreviewPanel } from '@lab/components/flow/TokenPreviewPanel';
-import { lensHitItems } from '@lab/components/flow/tokenLensHits';
 import { DEFAULT_TAG, defaultTagName, flowTagOf, shapeTag, tagLabel, withDraftMatch } from 'lib/flow/tapeClassify';
 import { isOwnerSplitTag, tagSwitches, type TagSwitches } from 'lib/strategy/tagsDoc';
 import { AutoTagPanel, type AutoTagLens } from '@lab/components/flow/AutoTagPanel';
@@ -113,7 +112,6 @@ import {
 import {
   useBindFlowDiscoveryMutation,
   useGetLastFlowDiscoveryQuery,
-  useGetFlowLensHitsQuery,
   useGetOwnerStageQuery,
   useLazyGetFlowDiscoveryQuery,
   useStartFlowDiscoveryMutation,
@@ -896,17 +894,6 @@ export function FlowDiscoveryPage() {
   const ownerStageError = ownerStageQ.error
     ? ((ownerStageQ.error as { data?: { error?: string } }).data?.error ?? 'The owner-split stage failed.')
     : null;
-  // Which group coins carry each armed highlight item: the token list's chips and dots.
-  const lensItemsBody = useMemo(() => lensHitItems(highlight.items), [highlight.items]);
-  const lensHitsQ = useGetFlowLensHitsQuery(
-    {
-      run_id: result?.run_id ?? '',
-      group_key: selectedGroup?.group_key ?? {},
-      items: lensItemsBody,
-    },
-    { skip: !result?.run_id || !selectedGroup || lensItemsBody.length === 0 },
-  );
-  const lensHitsError = lensHitsQ.error ? apiErrorMessage(lensHitsQ.error) : null;
   const draftRowKeys = useMemo(() => new Set(draftPatterns.map(patternRowKey)), [draftPatterns]);
   const draftWalletSet = useMemo(() => new Set(draftWallets), [draftWallets]);
 
@@ -1489,9 +1476,8 @@ export function FlowDiscoveryPage() {
                     detail={previewDetail}
                     tape={previewTape}
                     highlight={highlight}
-                    lensHits={lensItemsBody.length > 0 ? (lensHitsQ.data?.by_mint ?? null) : null}
-                    lensHitsLoading={lensHitsQ.isFetching}
-                    lensHitsError={lensHitsError}
+                    runId={result?.run_id ?? null}
+                    groupKey={selectedGroup.group_key}
                   />
                 )}
 

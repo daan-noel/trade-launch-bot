@@ -319,6 +319,13 @@ interface DataTableProps<R> {
    * Works in both client and server mode.
    */
   resetKey?: string | number;
+  /**
+   * Repaints every row when it changes, without re-running search, filters or
+   * sort. For cell state that lives outside `rows` (a highlight's colors): keep
+   * `columns` stable, read that state through a ref in `render`, and pass its
+   * identity here - a new `columns` would recompute the whole result set.
+   */
+  paintKey?: unknown;
   /** Optional extra className(s) applied to each data row's `<tr>`. Useful for
    *  per-row highlights (e.g. marking entry/exit trades). */
   rowClassName?: (row: R) => string | undefined;
@@ -405,6 +412,7 @@ export function DataTable<R>({
   onQueryChange,
   loading = false,
   resetKey,
+  paintKey,
   rowClassName,
   rowStyle,
   cellGroupClassName,
@@ -1335,6 +1343,7 @@ export function DataTable<R>({
                     rowStyle={stableRowStyle}
                     cellGroupClassName={stableCellGroupClassName}
                     valueTints={valueTints}
+                    paintKey={paintKey}
                     pinningEnabled
                     pinned
                     pinnedLast={i === pinnedDisplay.length - 1}
@@ -1374,6 +1383,7 @@ export function DataTable<R>({
                       rowStyle={stableRowStyle}
                       cellGroupClassName={stableCellGroupClassName}
                       valueTints={valueTints}
+                      paintKey={paintKey}
                       pinningEnabled={pinningEnabled}
                       onTogglePin={pinningEnabled ? togglePin : undefined}
                     />
@@ -1425,6 +1435,8 @@ interface TableRowProps<R> {
    *  are off. Identity is stable while the page + columns are unchanged, so it
    *  doesn't defeat this row's `memo`. */
   valueTints?: Map<string, string> | null;
+  /** The table's `paintKey`: unread here, a change only defeats this row's `memo`. */
+  paintKey?: unknown;
   /** Pinning is active for this table → the `#` cell shows a pin toggle on hover. */
   pinningEnabled?: boolean;
   /** This row is currently pinned (rendered in the section above the page). */

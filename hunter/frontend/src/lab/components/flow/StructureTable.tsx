@@ -572,6 +572,25 @@ export function StructureTable({
   /** The tag a check stages into, naming the check column (`@volume`). */
   tagName?: string | null;
 }) {
+  // A highlight toggle only repaints: the columns read the live lens through a ref
+  // and `paintKey` repaints the rows, so arming a lens never re-runs the table's
+  // search and sort - nor re-emits `onFilteredRowsChange` into the page.
+  const lensRef = useRef(lens);
+  lensRef.current = lens;
+  const hasLens = lens != null;
+  const stableLens = useMemo<RankedLens | null>(
+    () =>
+      hasLens
+        ? {
+            toggle: (s) => lensRef.current?.toggle(s),
+            colorOf: (s) => lensRef.current?.colorOf(s) ?? null,
+            toggleBudget: (s, v) => lensRef.current?.toggleBudget(s, v),
+            budgetColorOf: (s, v) => lensRef.current?.budgetColorOf(s, v) ?? null,
+            rowColors: (s) => lensRef.current?.rowColors(s) ?? [],
+          }
+        : null,
+    [hasLens],
+  );
   const columns = useMemo(
     () =>
       buildStructureColumns({
@@ -583,7 +602,7 @@ export function StructureTable({
         budgetStateOf,
         onOpenBudgets,
         openBudgetsKey,
-        lens,
+        lens: stableLens,
         tagName,
       }),
     [
@@ -595,7 +614,7 @@ export function StructureTable({
       budgetStateOf,
       onOpenBudgets,
       openBudgetsKey,
-      lens,
+      stableLens,
       tagName,
     ],
   );
@@ -625,6 +644,7 @@ export function StructureTable({
       rowKey={structureRowKey}
       rowClassName={rowClassName}
       rowStyle={rowStyle}
+      paintKey={lens}
       tableId={TABLE_ID}
       searchable
       searchPlaceholder="Search structures…"

@@ -1,4 +1,4 @@
-import { useMemo, useState, type UIEvent } from 'react';
+import { useDeferredValue, useMemo, useState, type UIEvent } from 'react';
 
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Input } from 'components/ui/Input';
@@ -6,8 +6,10 @@ import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import type { ChartTapeStaging } from 'components/tokens/chartTapeStaging';
 import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
 import { lensItemId } from 'components/token-price-chart/lensTint';
+import { useGetFlowLensHitsQuery } from '@lab/store/labEndpoints';
+import { apiErrorMessage } from 'store/baseApi';
 import type { FlowDiscoveryTokenGross, TokenDetailRecord } from 'types';
-import { lensRoster, tokenLensHits, type LensHitsByMint } from './tokenLensHits';
+import { lensHitItems, lensRoster, tokenLensHits } from './tokenLensHits';
 
 /** Cards drawn at first, and added each time the list is scrolled near its end:
  *  a group can hold thousands of tokens. */
@@ -25,9 +27,11 @@ function fmt(n: number, digits = 1): string {
  *  classifier), which is exactly what picking a token and reading the chart
  *  below gives you instead.
  *
- *  While a highlight is armed, `lensHits` says which coins carry each item: a
- *  chip per item filters the list to coins carrying every chip switched on, and
- *  each card shows a dot per item it carries, in the item's wash color.
+ *  While a highlight is armed, `flow-discovery/lens-hits` says which coins carry
+ *  each item: a chip per item filters the list to coins carrying every chip
+ *  switched on, and each card shows a dot per item it carries, in the item's wash
+ *  color. The query lives here, not on the page, so its answer repaints only this
+ *  panel; the list reads the deferred items, so a toggle paints its button first.
  *
  *  The preview is {@link LazyTokenTradeChart}: overlay, badges and highlight
  *  follow the cart's selected list via {@link ChartTapeStaging}. */
@@ -38,9 +42,8 @@ export function TokenPreviewPanel({
   detail,
   tape,
   highlight = null,
-  lensHits = null,
-  lensHitsLoading = false,
-  lensHitsError = null,
+  runId,
+  groupKey,
 }: {
   tokens: FlowDiscoveryTokenGross[];
   selectedMint: string | null;
@@ -49,18 +52,26 @@ export function TokenPreviewPanel({
   tape: ChartTapeStaging;
   /** The page-owned highlight, shared with the ranked table; default the chart's own. */
   highlight?: TokenHighlight | null;
-  /** Which coins carry each armed highlight item (`flow-discovery/lens-hits`). */
-  lensHits?: LensHitsByMint | null;
-  lensHitsLoading?: boolean;
-  lensHitsError?: string | null;
+  /** The run and group `tokens` belong to: what the lens-hits read is scoped to. */
+  runId: string | null;
+  groupKey: Record<string, unknown>;
 }) {
   const [mintQuery, setMintQuery] = useState('');
   /** Chips switched on, by `lensItemId`; a coin must carry every one. */
   const [required, setRequired] = useState<ReadonlySet<string>>(() => new Set());
   const [matchingOnly, setMatchingOnly] = useState(true);
 
-  const items = useMemo(() => highlight?.items ?? [], [highlight?.items]);
-  const hits = items.length > 0 ? lensHits : null;
+  const liveItems = highlight?.items;
+  const items = useDeferredValue(useMemo(() => liveItems ?? [], [liveItems]));
+  // Which group coins carry each armed item: the chips and dots.
+  const lensItemsBody = useMemo(() => lensHitItems(items), [items]);
+  const lensHitsQ = useGetFlowLensHitsQuery(
+    { run_id: runId ?? '', group_key: groupKey, items: lensItemsBody },
+    { skip: !runId || lensItemsBody.length === 0 },
+  );
+  const lensHitsLoading = lensHitsQ.isFetching;
+  const lensHitsError = lensHitsQ.error ? apiErrorMessage(lensHitsQ.error) : null;
+  const hits = items.length > 0 ? (lensHitsQ.data?.by_mint ?? null) : null;
   // A disarmed item's chip is gone, so it stops filtering.
   const requiredNow = useMemo(() => {
     const ids = new Set(items.map(lensItemId));

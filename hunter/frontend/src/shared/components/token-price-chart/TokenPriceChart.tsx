@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createChart,
   createSeriesMarkers,
@@ -821,29 +821,40 @@ export function TokenPriceChart({
   // `onHighlightLensMatch` hands the same numbers back out so
   // a host's chips can never quote a different count from the tint.
   // Wallets first, then structures, each in arming order — the lane's row order.
-  const lensItems = useMemo(() => {
-    const items = highlightLens?.items ?? EMPTY_LENS_ITEMS;
-    return [
-      ...items.filter((i) => i.kind === 'wallet'),
-      ...items.filter((i) => i.kind !== 'wallet'),
-    ];
-  }, [highlightLens?.items]);
+  // Deferred: a toggle paints the host's button first, and the washes follow in a
+  // render the next click can interrupt.
+  const armedItems = useDeferredValue(highlightLens?.items ?? EMPTY_LENS_ITEMS);
+  const lensItems = useMemo(
+    () => [
+      ...armedItems.filter((i) => i.kind === 'wallet'),
+      ...armedItems.filter((i) => i.kind !== 'wallet'),
+    ],
+    [armedItems],
+  );
   const lensSizeLabels = highlightLens?.sizeLabels ?? 'buys';
 
   // One pass per armed item, keyed by `lensItemId` — the map the chips, the washes
-  // and the lane hover all read.
+  // and the lane hover all read. An item's pass is kept until the bars change, so
+  // arming one more item scans the trades for that item alone.
+  const lensMatchCache = useMemo(
+    () => new Map<string, LensMatch>(),
+    [sortedTrades, bars, groupMode, intervalSec, metric],
+  );
   const lensMatches = useMemo<ChartLensMatches>(() => {
     const out = new Map<string, LensMatch>();
     for (const item of lensItems) {
-      out.set(
-        lensItemId(item),
-        buildLensMatch(sortedTrades, bars, groupMode, intervalSec, metric, (t) =>
+      const id = lensItemId(item);
+      let m = lensMatchCache.get(id);
+      if (!m) {
+        m = buildLensMatch(sortedTrades, bars, groupMode, intervalSec, metric, (t) =>
           lensItemMatches(item, t),
-        ),
-      );
+        );
+        lensMatchCache.set(id, m);
+      }
+      out.set(id, m);
     }
     return out;
-  }, [lensItems, sortedTrades, bars, groupMode, intervalSec, metric]);
+  }, [lensItems, lensMatchCache, sortedTrades, bars, groupMode, intervalSec, metric]);
 
   // The lane's rows mirrored onto the range slider, in the lane's order.
   const sliderMarks = useMemo(

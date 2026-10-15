@@ -784,7 +784,8 @@ not show is a difference the page cannot express. `tags` is part of
   stays the engine's tagged snapshot for metric panes — it is not the live overlay.
   The preview's highlight is keyed by the group, so it survives picking another token.
   While it is armed, `TokenPreviewPanel` asks `lens-hits` which coins carry each item
-  (`tokenLensHits.ts`): one chip per item (its color, coins carrying it) filters the list
+  (`tokenLensHits.ts`; the query lives in the panel, so its answer repaints only the
+  panel): one chip per item (its color, coins carrying it) filters the list
   to coins carrying every chip switched on (Matching; with no chip on, any item), All
   shows every coin; each card shows a dot per item it carries, and coins carrying more
   items sort first. The ranked table's Vol checkbox and every bulk button write one row per ranked row
@@ -826,7 +827,12 @@ not show is a difference the page cannot express. `tags` is part of
   `StructureTable` runs the shared `DataTable` with its search, per-column filter row,
   Columns panel and pins on (`tableId` `flow-structures`), opening sorted by `Auto`;
   pagination stays off so "filtered" and "on screen" are the same set, and the backend's
-  `MIN_STRUCTURE_TRADES` floor (3 trades group-wide) keeps the list to real rows. The
+  `MIN_STRUCTURE_TRADES` floor (3 trades group-wide) keeps the list to real rows. Its
+  columns stay stable across highlight toggles (the lens is read through a ref and
+  `DataTable`'s `paintKey` repaints the rows), so arming a lens never re-runs the
+  table's search and sort or re-emits the filtered rows into the page. The
+  chart and the token list read the armed items through `useDeferredValue`, and the
+  chart keeps each item's match until its bars change. The
   token list carries every group member and draws its cards 200 at a time as it scrolls. Four columns
   filter on *state* rather than a number — `Vol` (staged / not staged), `Auto`
   (suggested / eligible / gated), `Side` and `Launch%` (the keywords `launch` / `none`
