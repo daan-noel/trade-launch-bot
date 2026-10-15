@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 
+import type { RuleWalletOption } from 'components/strategy/RuleEditor';
 import type { RuleWalletCell } from 'components/strategy/RulesView';
 import type { StrategyRule } from 'lib/strategy/types';
 import {
@@ -7,7 +8,35 @@ import {
   useGetTraderWalletsQuery,
   useGetWalletAssignmentsQuery,
   walletCanSign,
+  type TraderWalletRow,
 } from '@live/store/liveEndpoints';
+import { READINESS_LABEL, READINESS_VARIANT, solText } from '@live/pages/wallets/walletFormat';
+
+/** Primary first, then wallets that sign, low SOL, and the ones that cannot. */
+function walletRank(w: TraderWalletRow): number {
+  if (w.is_primary) return 0;
+  if (w.readiness === 'ready') return 1;
+  return walletCanSign(w.readiness) ? 2 : 3;
+}
+
+function walletOption(w: TraderWalletRow): RuleWalletOption {
+  const canSign = walletCanSign(w.readiness);
+  const sol = w.sol == null ? '? SOL' : `${solText(w.sol, 3)} SOL`;
+  const warn = w.readiness === 'ready' ? '' : ` · ${canSign ? 'low SOL' : 'cannot sign'}`;
+  return {
+    pubkey: w.pubkey,
+    name: w.name,
+    label: `${w.name}${w.is_primary ? ' ★ pinned' : ''} · ${sol}${warn}`,
+    isPrimary: w.is_primary,
+    canSign,
+    status: {
+      variant: READINESS_VARIANT[w.readiness],
+      label: READINESS_LABEL[w.readiness],
+      title: w.init_error ?? w.readiness_reason,
+    },
+    detail: `${sol} · ${w.nonce_count} nonce${w.nonce_count === 1 ? '' : 's'}`,
+  };
+}
 
 /**
  * Wallets a rule may be assigned and the rule assignment writer. Lab never
@@ -27,11 +56,9 @@ export function useLiveRuleWallets() {
     const assigned = new Set(byRule.values());
     return (book?.wallets ?? [])
       .filter((w) => w.status === 'active')
-      .filter((w) => walletCanSign(w.readiness) || assigned.has(w.pubkey))
-      .map((w) => ({
-        pubkey: w.pubkey,
-        name: walletCanSign(w.readiness) ? w.name : `${w.name} (cannot sign)`,
-      }));
+      .filter((w) => w.is_primary || walletCanSign(w.readiness) || assigned.has(w.pubkey))
+      .sort((a, b) => walletRank(a) - walletRank(b) || a.name.localeCompare(b.name))
+      .map(walletOption);
   }, [book, byRule]);
   const primary = useMemo(() => (book?.wallets ?? []).find((w) => w.is_primary) ?? null, [book]);
   const byPubkey = useMemo(

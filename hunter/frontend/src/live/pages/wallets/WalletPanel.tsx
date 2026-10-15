@@ -69,10 +69,8 @@ export function WalletPanel({
       onClose={onClose}
       title={
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-[15px] font-bold text-text">
-            {wallet.is_primary ? '★ ' : ''}
-            {wallet.name}
-          </h2>
+          <h2 className="text-[15px] font-bold text-text">{wallet.name}</h2>
+          {wallet.is_primary && <Badge variant="primary">★ primary</Badge>}
           <Badge variant={READINESS_VARIANT[wallet.readiness]}>{READINESS_LABEL[wallet.readiness]}</Badge>
           <span className="font-mono text-[11px] text-text-dim">{wallet.pubkey}</span>
           <Button size="xs" variant="ghost" onClick={() => void navigator.clipboard.writeText(wallet.pubkey)}>
@@ -277,7 +275,11 @@ function Fact({ label, value, tone = 'text-text' }: { label: string; value: stri
   );
 }
 
-/** Every real rule, checked when this wallet signs it. Unchecking returns it to the primary. */
+/**
+ * Every enabled real rule, plus any rule already on this wallet (so the tab lists
+ * what `rule_count` counts), checked when this wallet signs it. Unchecking
+ * returns it to the primary.
+ */
 function RulesTab({ wallet, wallets, run }: { wallet: TraderWalletRow; wallets: TraderWalletRow[]; run: Run }) {
   const { data: rules = [] } = useGetStrategyRulesQuery();
   const { data: assignments = [] } = useGetWalletAssignmentsQuery();
@@ -285,7 +287,7 @@ function RulesTab({ wallet, wallets, run }: { wallet: TraderWalletRow; wallets: 
   const byRule = useMemo(() => new Map(assignments.map((a) => [a.rule_id, a.wallet])), [assignments]);
   const nameOf = useMemo(() => new Map(wallets.map((w) => [w.pubkey, w.name])), [wallets]);
   const real = rules
-    .filter((r) => r.trade_mode === 'real' && r.is_enabled)
+    .filter((r) => (r.trade_mode === 'real' && r.is_enabled) || byRule.get(r.id) === wallet.pubkey)
     .sort((a, b) => a.rule_name.localeCompare(b.rule_name));
   const canSign = walletCanSign(wallet.readiness) && wallet.status === 'active';
 

@@ -45,7 +45,7 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   **History** and **Arms** sections (both collapsible, and collapsed means NO fetch —
   the body unmounts, since each pays for a server page plus an aggregate);
   redirects from `/floor`, `/trade`, `/ops`, `/positions`, `/live-trading`,
-  `/strategies/armed`, `/strategies/monitor`, query preserved) · **Portfolio** (`/portfolio`) · **Wallet** (`?wallet=` picks which wallet; absent = the primary) · **Wallets** (`/wallets`, live only: readiness per wallet, the env-wallet banner, In use / Idle / Archived tabs, a per-wallet panel for rules, nonces, and activity, send SOL, rename, archive, restore, and the server-driven move with its preview). Rules Evidence is
+  `/strategies/armed`, `/strategies/monitor`, query preserved) · **Portfolio** (`/portfolio`) · **Wallet** (`?wallet=` picks which wallet; absent = the primary) · **Wallets** (`/wallets`, live only: readiness per wallet, the env-wallet banner, In use / Idle / Archived tabs, the primary row marked with a `primary` rail and badge, a per-wallet panel for rules, nonces, and activity, send SOL, rename, archive, restore, and the server-driven move with its preview). Rules Evidence is
   `/strategies/rules/:ruleId`. Lab flattens single-child groups (Tokens, Trader Analysis
   are leaf links). Metric panes are not a peer nav item — they live in lab Tokens detail
   (`/strategies/metric-panes` redirects to `/tokens?mint=`). Simulate is the second tab of

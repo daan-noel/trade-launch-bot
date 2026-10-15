@@ -37,7 +37,7 @@ import { RuleModeFilter } from './RuleModeFilter';
 import { RuleSyncModal } from './RuleSyncModal';
 import { RuleTagFilter } from './RuleTagFilter';
 import { useRuleActions } from './useRuleActions';
-import type { RuleEditorDraft } from './RuleEditor';
+import type { RuleEditorDraft, RuleWalletOption } from './RuleEditor';
 import { useModeFilter } from 'hooks/useModeFilter';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { useTagFilter } from 'hooks/useTagFilter';
@@ -121,7 +121,7 @@ export interface RulesViewProps {
   /** Copy lists copy rules and edits them in the same builder, over the copy readings. */
   board?: 'rules' | 'copy';
   /** Live only. Active wallets the rule editor may assign. Lab omits this. */
-  wallets?: { pubkey: string; name: string }[];
+  wallets?: RuleWalletOption[];
   walletFor?: (ruleId: string) => string | null;
   assignWallet?: (ruleId: string, wallet: string | null) => Promise<void>;
   /** Live only. The wallet a real rule's next entry signs with, for the Wallet column. */

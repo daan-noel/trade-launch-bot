@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 
+import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { IconButton } from 'components/ui/IconButton';
@@ -40,6 +41,20 @@ export interface RuleEditorDraft {
   wallet?: string | null;
 }
 
+/** One wallet the rule editor offers. The live host formats it; lab never builds one. */
+export interface RuleWalletOption {
+  pubkey: string;
+  name: string;
+  /** The option text: name, SOL, and what stops it signing. */
+  label: string;
+  isPrimary: boolean;
+  canSign: boolean;
+  /** Readiness badge, the same one the Wallets page shows. */
+  status: { variant: BadgeVariant; label: string; title: string };
+  /** SOL and nonce count, shown under the select. */
+  detail: string;
+}
+
 export interface RuleEditorProps {
   /** Existing rule to edit; omit to create. */
   initial?: StrategyRule;
@@ -55,7 +70,7 @@ export interface RuleEditorProps {
   /** Copy board: the picker is the copy readings, and a sell can mirror his bag. */
   scope?: 'metric' | 'copy';
   /** Live only. Active wallets the next real entry may sign with. Absent on lab. */
-  wallets?: { pubkey: string; name: string }[];
+  wallets?: RuleWalletOption[];
   /** Current assignment. `null` means the primary at entry time. */
   initialWallet?: string | null;
 }
@@ -135,6 +150,9 @@ function RuleEditorInner({
     }
     setModeUnlocked(true);
   };
+  const primaryWallet = wallets?.find((w) => w.isPrimary) ?? null;
+  /** The wallet the next real entry signs with: the chosen one, else the primary. */
+  const signingWallet = wallet ? (wallets?.find((w) => w.pubkey === wallet) ?? null) : primaryWallet;
   const walletCanLock = Boolean(initial?.id) && mode === 'real';
   const walletLocked = walletCanLock && !walletUnlocked;
   const toggleWalletLock = () => {
@@ -245,20 +263,24 @@ function RuleEditorInner({
               )}
             </div>
             {wallets && (
-              <div className="flex w-44 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
+              <div className="flex w-60 shrink-0 flex-col gap-1 text-[11px] text-text-dim">
                 <LabelTip tip={RULE_FIELD_HELP.wallet}>Wallet</LabelTip>
                 <div className="flex items-center gap-1">
                   <Select
                     fieldSize="sm"
-                    className="w-32"
+                    className="min-w-0 flex-1"
                     value={mode === 'paper' ? '' : wallet}
                     disabled={mode !== 'real' || walletLocked}
                     onChange={(e) => setWallet(e.target.value)}
                   >
-                    <option value="">primary</option>
+                    <option value="">{primaryWallet ? `★ primary → ${primaryWallet.name}` : 'primary (none set)'}</option>
                     {wallets.map((w) => (
-                      <option key={w.pubkey} value={w.pubkey}>
-                        {w.name}
+                      <option
+                        key={w.pubkey}
+                        value={w.pubkey}
+                        disabled={!w.canSign && w.pubkey !== initialWallet}
+                      >
+                        {w.label}
                       </option>
                     ))}
                   </Select>
@@ -275,6 +297,15 @@ function RuleEditorInner({
                     </IconButton>
                   )}
                 </div>
+                {mode === 'real' && signingWallet && (
+                  <div className="flex min-w-0 items-center gap-1.5 text-[10px] leading-tight">
+                    <Badge variant={signingWallet.status.variant} title={signingWallet.status.title}>
+                      {signingWallet.status.label}
+                    </Badge>
+                    {signingWallet.isPrimary && <Badge variant="primary">★ primary</Badge>}
+                    <span className="truncate font-mono tabular-nums">{signingWallet.detail}</span>
+                  </div>
+                )}
               </div>
             )}
           </div>

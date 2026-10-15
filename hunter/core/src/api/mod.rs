@@ -29,6 +29,10 @@ pub fn query_error_config() -> web::QueryConfig {
     })
 }
 
+/// A profile-tracked wallet by UUID. Shares `/api/wallets/` with live's
+/// trader-wallet routes, so the segment only takes UUID characters.
+const WALLET_ID_PATH: &str = "/api/wallets/{id:[0-9a-fA-F-]+}";
+
 /// Register the mode-agnostic **core** routes shared by every backend bin:
 /// SSE stream, settings/price, profiles/wallets/tags, the token list, token reads,
 /// creation stats and batch. Deploy and local bins compose this with their own route configs
@@ -77,12 +81,29 @@ pub fn configure_core_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/profiles/{id}/tags", web::put().to(handlers::system::update_profile_tags))
         // Wallets
         .route("/api/profiles/{id}/wallets", web::post().to(handlers::system::create_wallet))
-        .route("/api/wallets/{id}", web::get().to(handlers::system::get_wallet))
-        .route("/api/wallets/{id}", web::put().to(handlers::system::update_wallet))
-        .route("/api/wallets/{id}", web::delete().to(handlers::system::delete_wallet))
+        // `{id}` is a UUID, held to hex + dashes so live's literal two-segment
+        // `/api/wallets/<word>` paths (e.g. `assignments`) are never captured here.
+        .route(WALLET_ID_PATH, web::get().to(handlers::system::get_wallet))
+        .route(WALLET_ID_PATH, web::put().to(handlers::system::update_wallet))
+        .route(WALLET_ID_PATH, web::delete().to(handlers::system::delete_wallet))
         // Tags
         .route("/api/tags", web::get().to(handlers::system::list_tags))
         .route("/api/tags", web::post().to(handlers::system::create_tag))
         .route("/api/tags/{id}", web::put().to(handlers::system::update_tag))
         .route("/api/tags/{id}", web::delete().to(handlers::system::delete_tag));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WALLET_ID_PATH;
+    use actix_web::dev::ResourceDef;
+
+    #[test]
+    fn wallet_id_path_leaves_live_wallet_words_alone() {
+        let def = ResourceDef::new(WALLET_ID_PATH);
+        assert!(def.is_match("/api/wallets/0b5f8a52-3c1e-4d7a-9e2f-6a1b2c3d4e5f"));
+        for word in ["assignments", "import", "sync", "move"] {
+            assert!(!def.is_match(&format!("/api/wallets/{word}")), "{word} captured");
+        }
+    }
 }

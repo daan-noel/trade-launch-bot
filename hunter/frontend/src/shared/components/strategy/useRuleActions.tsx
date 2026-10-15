@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 
 import { Modal } from 'components/ui/Modal';
-import { RuleEditor, type RuleEditorDraft } from './RuleEditor';
+import { RuleEditor, type RuleEditorDraft, type RuleWalletOption } from './RuleEditor';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useCreateStrategyRuleMutation,
@@ -22,7 +22,7 @@ export interface UseRuleActionsOptions {
   /** Copy board: the editor offers the copy readings and stamps `copy: true`. */
   board?: 'rules' | 'copy';
   /** Live only. Active wallets for the editor dropdown. Lab omits this. */
-  wallets?: { pubkey: string; name: string }[];
+  wallets?: RuleWalletOption[];
   /** Live only. The wallet a rule names, or null for the primary. */
   walletFor?: (ruleId: string) => string | null;
   /** Live only. Writes `rule_wallets` after the rule row saves. Lab never calls it. */

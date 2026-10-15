@@ -197,13 +197,15 @@ export function WalletsPage() {
             {shown.map((w) => (
               <tr
                 key={w.pubkey}
-                className="cursor-pointer border-b border-white/5 hover:bg-white/3"
+                className={`cursor-pointer border-b border-white/5 ${
+                  w.is_primary ? 'bg-primary/6 hover:bg-primary/10' : 'hover:bg-white/3'
+                }`}
                 onClick={() => setOpenKey(w.pubkey)}
               >
-                <td className="px-3 py-2">
-                  <div className="font-medium text-text">
-                    {w.is_primary ? '★ ' : ''}
+                <td className={`px-3 py-2 ${w.is_primary ? 'shadow-[inset_3px_0_0_0_var(--color-primary)]' : ''}`}>
+                  <div className="flex items-center gap-1.5 font-medium text-text">
                     {w.name}
+                    {w.is_primary && <Badge variant="primary">★ primary</Badge>}
                   </div>
                   <div className="font-mono text-[11px] text-text-dim" title={w.pubkey}>
                     {shortKey(w.pubkey)}
