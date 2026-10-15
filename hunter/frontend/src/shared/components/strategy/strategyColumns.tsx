@@ -9,7 +9,7 @@ import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone'
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge, type BadgeSize, type BadgeVariant } from 'components/ui/Badge';
 import { ModeBadge } from 'components/strategy/ModeBadge';
-import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
+import { coreTokenColumns, withDefaultVisibility } from 'components/tokens/sharedTokenColumns';
 import {
   exitReasonLabel,
   exitReasonSearchText,
@@ -308,37 +308,10 @@ const EXIT_TOOLTIPS: Partial<Record<LegField, string>> = {
   tx: 'Real: our (last) sell transaction. Paper / simulated: the feed print the modeled fill was priced against.',
 };
 
-/**
- * Bespoke Positions columns that default to HIDDEN (the enrichment columns are
- * governed separately by `APPENDED_HIDDEN_KEYS`). The evidence table is read as
- * a PnL ledger: price + SOL per leg, PnL, and state up front, with the leg
- * *timestamps* (Created / Target / Entry / Exit time, Holding) opt-in — the run
- * order already carries the sequence, and dropping five time columns is what
- * keeps the row readable without a horizontal scroll. Per-leg Tokens and Tx stay
- * opt-in, as does the *target* leg's size (it never filled — only the entry and
- * exit SOL are real). `positionColumns` has one consumer (Rule → Evidence), so
- * this is its default rather than a `defaultCols` map.
- */
-const POSITION_HIDDEN_KEYS = new Set([
-  'name',
-  'created',
-  'target_tokens',
-  'target_sol',
-  'target_time',
-  'target_tx',
-  'entry_tokens',
-  'entry_time',
-  'entry_tx',
-  'exit_tokens',
-  'exit_time',
-  'exit_tx',
-  'holding',
-]);
-
 // Price/amount cells read the unit + USD rate from context themselves (see
 // priceCells), so these column arrays are referentially stable across a rate
 // tick: only the rate-aware cells re-render, not the whole table.
-export const positionColumns: ColumnDef<RulePositionRecord>[] = (
+export const positionColumns: ColumnDef<RulePositionRecord>[] = withDefaultVisibility(
   [
   {
     key: 'run_seq',
@@ -501,30 +474,9 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = (
         .join(' '),
   },
 ] as ColumnDef<RulePositionRecord>[]
-).map((c) => (POSITION_HIDDEN_KEYS.has(c.key) ? { ...c, defaultVisible: false } : c));
+);
 
-/**
- * Dry-run / sim trades columns that default to HIDDEN. Same philosophy as
- * `POSITION_HIDDEN_KEYS`: price + time per leg stay visible; the per-leg Tokens,
- * Size and Tx are opt-in. (The sim exit leg carries no Tokens/Size columns to
- * begin with — see the `legColumns('exit', …)` note.) `ath_price` is NOT hidden
- * here: on a sim row it is the exit-quality yardstick — how much of the run the
- * exit rule actually captured — which is the whole point of reading the table.
- * Both `simColumns` tables (Simulate, Dry-run) want it, so it lives here rather
- * than in a per-call-site `defaultCols` map.
- */
-const SIM_HIDDEN_KEYS = new Set([
-  'name',
-  'target_tokens',
-  'target_sol',
-  'target_tx',
-  'entry_tokens',
-  'entry_sol',
-  'entry_tx',
-  'exit_tx',
-]);
-
-export const simColumns: ColumnDef<SimulatedTokenResult>[] = (
+export const simColumns: ColumnDef<SimulatedTokenResult>[] = withDefaultVisibility(
   [
   {
     key: 'symbol',
@@ -661,7 +613,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = (
   // Trade count comes from the shared "Token Trades" enrichment column
   // (`trade_count`), appended by `TokenTable` — the sim carries no copy of it.
 ] as ColumnDef<SimulatedTokenResult>[]
-).map((c) => (SIM_HIDDEN_KEYS.has(c.key) ? { ...c, defaultVisible: false } : c));
+);
 
 // `*_KEYS` are the column keys each table already renders, so `TokenTable` skips
 // them when appending the shared token-info set. Derived straight from the column

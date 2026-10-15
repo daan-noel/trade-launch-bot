@@ -5,7 +5,7 @@ import { DateCell } from 'components/table/DateCell';
 import { ageClass, formatAge, formatDecimalTrim, ratioClass } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { u64Num } from 'lib/u64Wire';
-import { tokenInfoColumnMap } from './sharedTokenColumns';
+import { tokenInfoColumnMap, withDefaultVisibility } from './sharedTokenColumns';
 
 /**
  * Token creation as epoch-ms. Prefers the field the RTK transform pre-parsed
@@ -61,35 +61,6 @@ const TOKEN_COL_WIDTH: Record<string, string> = {
   mayhem_mode: '66px',
   cashback: '72px',
 };
-
-/**
- * Tokens-page columns that default to HIDDEN. The page lays out every column
- * (it ignores `APPENDED_HIDDEN_KEYS`), so its default visibility is specced here
- * directly — keeps the initial view to the fields watched most often.
- *
- * Shared by every `tokenColumns()` table (All Tokens, Trader Analysis, the
- * creation-stats drilldown, fingerprint matches) — they all want the same
- * layout, so this stays the single default rather than four `defaultCols` maps.
- * `cu_price` is deliberately NOT here: it reads as a launch-client tell next to
- * `cu_limit`, so it is up front on the token tables (the appended token-info set
- * still hides it on strategy tables, where the row is about the position).
- */
-const TOKENS_HIDDEN_KEYS = new Set([
-  'name',
-  'creator',
-  'create_tx',
-  'created',
-  'lifetime',
-  'last_synced',
-  'ath_timestamp',
-  'ath_fep_ratio',
-  'current_fep_ratio',
-  'market_cap',
-  'volume',
-  'init_supply',
-  'token_amount',
-  'min_tokens_out',
-]);
 
 export function tokenColumns(): ColumnDef<TokenRecord>[] {
   const info = tokenInfoColumnMap();
@@ -275,7 +246,5 @@ export function tokenColumns(): ColumnDef<TokenRecord>[] {
     c('cashback'),
   ];
 
-  return cols.map((col) =>
-    TOKENS_HIDDEN_KEYS.has(col.key) ? { ...col, defaultVisible: false } : col,
-  );
+  return withDefaultVisibility(cols);
 }

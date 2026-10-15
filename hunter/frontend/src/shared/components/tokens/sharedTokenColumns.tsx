@@ -129,7 +129,7 @@ const FLAG_FILTER_OPTIONS = [
 // The columns carry the render/sort/search/filter *logic* (the facts that must
 // not drift). Per-view presentation — column width, order, and `defaultVisible`
 // — is applied by the consumer, since those legitimately differ (the Tokens page
-// shows every column and owns its widths; strategy tables default most hidden).
+// owns its widths; default visibility is the one `DEFAULT_VISIBLE_KEYS` set).
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -458,23 +458,44 @@ function tokenInfoColumns(): ColumnDef<any>[] {
 }
 
 /**
- * Enrichment columns that default to HIDDEN in strategy result tables (the
- * appended set). Everything else in {@link tokenInfoColumns} defaults visible.
- * The Tokens page ignores this — it shows every column by default.
+ * The ONE default-visible column set for every token table (All Tokens, position,
+ * sim and the appended token-info set). A column is shown by default only when its
+ * key is here; every other column is hidden. Keys a table does not have are inert.
+ * `reason` is the sim table's Exit Reason.
  */
-const APPENDED_HIDDEN_KEYS = new Set([
-  'creator',
-  'create_tx',
-  'last_synced',
-  'ath_timestamp',
-  'market_cap',
-  'volume',
-  'init_supply',
-  'token_amount',
-  'min_tokens_out',
+const DEFAULT_VISIBLE_KEYS: ReadonlySet<string> = new Set([
+  'mint_address',
+  'symbol',
+  'target_price',
+  'entry_price',
+  'entry_sol',
+  'exit_price',
+  'exit_sol',
+  'pnl_pct',
+  'pnl_sol',
+  'status',
+  'exit_reason',
+  'reason',
+  'trade_count',
+  'current_price',
+  'ath_price',
+  'first_slot_buy',
+  'first_slot_sell',
+  'max_cost_lamports',
+  'spendable_lamports_in',
+  'cu_limit',
   'cu_price',
-  'ix_labels',
+  'ix_count',
+  'migrated',
+  'dead',
+  'mayhem_mode',
+  'cashback',
 ]);
+
+/** Stamp `defaultVisible` on every column from {@link DEFAULT_VISIBLE_KEYS}. */
+export function withDefaultVisibility<T>(cols: ColumnDef<T>[]): ColumnDef<T>[] {
+  return cols.map((c) => ({ ...c, defaultVisible: DEFAULT_VISIBLE_KEYS.has(c.key) }));
+}
 
 /**
  * The shared token-info columns keyed by column key, so the Tokens page can
@@ -534,7 +555,7 @@ export function coreTokenColumns(existingKeys?: Set<string>): ColumnDef<any>[] {
 
 /**
  * Return token-info columns to append to a strategy result table. Each column's
- * `defaultVisible` flag (overlaid from {@link APPENDED_HIDDEN_KEYS}) controls its
+ * `defaultVisible` flag (from {@link DEFAULT_VISIBLE_KEYS}) controls its
  * initial show/hide state. Columns whose key is already in `existingKeys` are
  * filtered out to avoid duplicates.
  *
@@ -544,9 +565,7 @@ export function coreTokenColumns(existingKeys?: Set<string>): ColumnDef<any>[] {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function appendedTokenColumns(existingKeys: Set<string>): ColumnDef<any>[] {
-  return tokenInfoColumns()
-    .filter((c) => !existingKeys.has(c.key))
-    .map((c) => ({ ...c, defaultVisible: !APPENDED_HIDDEN_KEYS.has(c.key) }));
+  return withDefaultVisibility(tokenInfoColumns().filter((c) => !existingKeys.has(c.key)));
 }
 
 /**

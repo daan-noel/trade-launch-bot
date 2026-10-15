@@ -175,14 +175,6 @@ function comboTarget(r: ComboTokenResult): InspectTarget {
 const comboRowOverlay = markerRowOverlay(comboTarget);
 
 /**
- * Combo-tokens deviation from the appended token-info defaults. Each row is one
- * simulated position, so `token_amount` is the size the combo actually took —
- * the check that a headline PnL isn't riding a bag too small to matter — where
- * the shared set treats it as token background and hides it.
- */
-const COMBO_TOKENS_DEFAULT_COLS = { token_amount: true } as const;
-
-/**
  * Aggregate the combo's per-token rows into the summary tiles, via the **shared**
  * run-summary renderer — the same builder the Simulate page and the live/paper
  * positions card use, so all three show the same metrics under the same labels in
@@ -1151,7 +1143,6 @@ function ComboTokenResults({
         sameValueTints
         defaultSort={{ col: 'pnl_sol', dir: 'desc' }}
         tableId="generic_combo_tokens"
-        defaultCols={COMBO_TOKENS_DEFAULT_COLS}
         resetKey={`${comboId}_${showNotFired}`}
         loading={query.isFetching}
         emptyMessage="No token results for this combo."

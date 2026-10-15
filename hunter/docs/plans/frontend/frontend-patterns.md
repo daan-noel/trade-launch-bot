@@ -69,19 +69,13 @@ decider `defaultVisibleFor` in `DataTable.tsx`:
 | Tier | Where | Use for |
 | --- | --- | --- |
 | 1. `defaultVisible` on the column | the column def | the column's intrinsic default |
-| 2. Shared hidden-key set overlay | `TOKENS_HIDDEN_KEYS`, `SIM_HIDDEN_KEYS`, `POSITION_HIDDEN_KEYS`, `APPENDED_HIDDEN_KEYS` | a whole column *array*'s layout, when **every** table built from it agrees |
-| 3. `defaultCols={{ [key]: shown }}` prop | the call site | one table's deviation, when tables sharing an array **disagree** |
+| 2. Shared visible-key set | `DEFAULT_VISIBLE_KEYS` in `sharedTokenColumns.tsx`, stamped by `withDefaultVisibility` on `tokenColumns`, `positionColumns`, `simColumns` and the appended token-info set | every token table: a column starts visible only when its key is in the set |
+| 3. `defaultCols={{ [key]: shown }}` prop | the call site | one table's deviation, when tables sharing an array **disagree** (the compact live review tables use `COMPACT_TOKEN_DEFAULT_COLS`) |
 
-Several tables are built from one shared array (`simColumns` feeds Simulate **and**
-Dry-run; `appendedTokenColumns` feeds every `TokenTable`), so tier 2 alone cannot express
-per-table layout — `initial_buy` is up front on Dry-run but not Simulate, `cu_price` on the
-sim tables but not Evidence/Sweep/Wallet, `token_amount` on Evidence/Sweep-combo but not
-the token lists. Tier 3 is the escape hatch: keep the shared array at ONE default and state
-only the deviation at the call site, so a shared-array edit never silently re-lays-out a
-table that never asked for it. Tier 3 applies to a table's own columns and its appended
-token-info columns alike, and is the fallback for a column added *later* too (a new column
-absent from `mt:table.knownCols` re-resolves through all three tiers — see `loadVisibleCols`).
-Never copy the same `defaultCols` map to several call sites; if they agree, it belongs in tier 2.
+Tier 3 applies to a table's own columns and its appended token-info columns alike, and is
+the fallback for a column added *later* too (a new column absent from `mt:table.knownCols`
+re-resolves through all three tiers — see `loadVisibleCols`). Never copy the same
+`defaultCols` map to several call sites; if they agree, it belongs in tier 2.
 
 **Charts-grid default** follows the same shape: `TokenTable`'s per-`tableId` charts toggle
 (`mt:tablecharts:<tableId>`) starts from the call site's `chartsDefaultOn` (default off,

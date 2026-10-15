@@ -107,7 +107,7 @@ nested object → display-only.
 
 `sharedTokenColumns.tsx::tokenInfoColumns()` defines the ~26 enrichment columns **once**
 (render/sort/search/filter logic). Consumers: `appendedTokenColumns(existingKeys)`
-(overlays `defaultVisible` from `APPENDED_HIDDEN_KEYS`, drops owned keys) and the Tokens
+(stamps `defaultVisible` from `DEFAULT_VISIBLE_KEYS`, drops owned keys) and the Tokens
 page's `tokenColumns.tsx` (pulls each shared column by key via `tokenInfoColumnMap()`,
 adding only presentation + Tokens-only columns). `numericColKeys`/`tokenNumericColKeys`
 derive the numeric-filter key set (base columns + appended token-info numerics).

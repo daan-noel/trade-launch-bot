@@ -1428,8 +1428,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   The sim's exit leg still omits Tokens/Size because the sim result payload carries no `exit_token_amount`.
 - **One token-info column SSOT (`tokenInfoColumns()` in `sharedTokenColumns.tsx`).** The ~26 enrichment
   columns are defined **once** (render/sort/search/filter logic); both consumers derive from it —
-  `appendedTokenColumns(existingKeys)` (strategy columns, and wallet via `TokenTable`) overlays `defaultVisible` via
-  `APPENDED_HIDDEN_KEYS`, and the Tokens page (`tokenColumns.tsx`) pulls each column by key through
+  `appendedTokenColumns(existingKeys)` (strategy columns, and wallet via `TokenTable`) stamps `defaultVisible` via
+  `withDefaultVisibility` (the one `DEFAULT_VISIBLE_KEYS` set), and the Tokens page (`tokenColumns.tsx`) pulls each column by key through
   `tokenInfoColumnMap()`, adding only its own presentation (order + `TOKEN_COL_WIDTH` widths) and
   Tokens-only columns (identity/`token_age`/`lifetime`/fep-ratios). Per-view `defaultVisible`/width/order
   legitimately differ; the render/sort/filter facts don't. The matched tables must not hand-roll

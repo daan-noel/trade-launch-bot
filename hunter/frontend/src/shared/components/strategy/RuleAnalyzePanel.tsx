@@ -54,14 +54,6 @@ import { signedToneClass } from 'lib/signedTone';
 
 const STRATEGY_SEG = 'generic';
 const POS_NUMERIC = numericColKeys(positionColumns);
-/**
- * Evidence-table deviation from the appended token-info defaults. The row is a
- * closed position, so the token's `token_amount` is the size actually held —
- * the sanity check against `entry_sol`/`exit_sol` — rather than the background
- * fact it is on a token list, where the shared set hides it.
- */
-const EVIDENCE_DEFAULT_COLS = { token_amount: true } as const;
-
 /** Transitions that move a chart point: an entry fill (or scale-out leg), a close,
  *  or an exit parked open. `BuySubmitted` has no entry price to plot and
  *  `ExitPending` moves nothing, so those two reload the table page only. */
@@ -824,7 +816,6 @@ export function RuleAnalyzePanel({
           : {})}
         resetKey={`${ruleId}_${scopeKey(scope)}`}
         tableId="rule-evidence"
-        defaultCols={EVIDENCE_DEFAULT_COLS}
         emptyMessage={
           scope.kind === 'all'
             ? scope.mode

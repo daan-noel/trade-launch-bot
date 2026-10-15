@@ -212,15 +212,6 @@ const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
 const simRowOverlay = markerRowOverlay(inspectFromSim);
 
-/**
- * Simulate-only deviations from the shared column defaults (`simColumns` +
- * appended token info). The rule's own buy size is fixed and shown in the rule
- * header, so the token's `initial_buy` is noise here — but Dry-run, which reads
- * the same `simColumns`, keeps it. `cu_price` earns its place on both sim tables
- * (a launch-client tell next to `cu_limit`), where the appended set hides it.
- */
-const SIM_POSITION_DEFAULT_COLS = { initial_buy: false, cu_price: true } as const;
-
 /** Wall-clock `YYYY-MM-DDTHH:mm` (picker wire) -> UTC ISO, same convention as
  *  the grouped-sweep "Created range" control — `since`/`until` bound the same
  *  token creation-time window server-side (`collect_matching_tokens`). */
@@ -1144,7 +1135,6 @@ function RuleSimPositionsPanel({
             loading={simTableLoading}
             resetKey={`${rule.id}_${showNotFired}`}
             tableId="simulate-positions"
-            defaultCols={SIM_POSITION_DEFAULT_COLS}
             pinnable
             emptyMessage={
               showNotFired

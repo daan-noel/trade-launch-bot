@@ -44,15 +44,6 @@ const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
 const simRowOverlay = markerRowOverlay(inspectFromSim);
 
 /**
- * Dry-run deviation from the shared column defaults. `cu_price` is a launch-
- * client tell next to `cu_limit`, so both sim tables surface it where the
- * appended token-info set hides it. Unlike Simulate, a dry-run is still being
- * tuned against an unfixed buy size, so the token's `initial_buy` stays up
- * front (i.e. it is NOT overridden here).
- */
-const DRYRUN_DEFAULT_COLS = { cu_price: true } as const;
-
-/**
  * Per-token detail for a finished dry-run (Tier 2): the exact `/result` +
  * `/result/time-summary` endpoints the Simulate page reads for saved rules, but
  * keyed by the inline draft's `run_id`. Renders trades (`simColumns`) with the
@@ -284,7 +275,6 @@ export function DryRunDetail({
             loading={loading}
             resetKey={`${runId}_${showNotFired}`}
             tableId="dryrun-positions"
-            defaultCols={DRYRUN_DEFAULT_COLS}
             emptyMessage={
               showNotFired
                 ? 'No tokens in this dry-run result.'
