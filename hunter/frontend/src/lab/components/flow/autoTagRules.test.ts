@@ -6,6 +6,8 @@ import type { OwnerStage } from 'types';
 import {
   AUTO_TAG_RULES,
   EMPTY_AUTO_STAGE,
+  levelRow,
+  MATCH_LEVELS,
   pickAutoRow,
   pickAutoWallet,
   stagedPicks,
@@ -69,5 +71,37 @@ describe('syncAutoStage', () => {
     const first = syncAutoStage({ rows: [A], wallets: [] }, EMPTY_AUTO_STAGE, { rows: [A], wallets: [] });
     const second = syncAutoStage(first, first.auto, { rows: [], wallets: [] });
     expect(second.rows.map(patternRowKey)).toEqual([patternRowKey(A)]);
+  });
+});
+
+describe('levelRow', () => {
+  const LABELS = [
+    'Compute Budget: SetComputeUnitLimit',
+    'Compute Budget: SetComputeUnitPrice',
+    'Associated Token: CreateIdempotent',
+    'Pump.Fun: BuyExactSolIn',
+    'System Program: Transfer',
+  ];
+  const t = { labels: LABELS, side: 'buy' as const, cu_limit: 200_000, cu_price: 20_000, tip_lamports: 5_000 };
+  const core = { labels: ['Pump.Fun: BUY'], level: 'core' as const, side: 'buy' as const };
+
+  it('writes the row owner_stage stores at each level', () => {
+    expect(MATCH_LEVELS).toHaveLength(7);
+    expect(levelRow(1, t)).toEqual(core);
+    expect(levelRow(2, t)).toEqual({ ...core, marks: 'CL CP T1 A1' });
+    expect(levelRow(3, t)).toEqual({ ...core, cu_price: 20_000 });
+    expect(levelRow(4, t)).toEqual({ ...core, tip_lamports: 5_000 });
+    expect(levelRow(5, t)).toEqual({ ...core, cu_price: 20_000, tip_lamports: 5_000 });
+    expect(levelRow(6, t)).toEqual({ ...core, marks: 'CL CP T1 A1', cu_price: 20_000, tip_lamports: 5_000 });
+    expect(levelRow(7, t)).toEqual({ labels: LABELS, cu_limit: 200_000, cu_price: 20_000, tip_lamports: 5_000 });
+  });
+
+  it('skips a level pinning a fee the trade has no reading for', () => {
+    const noPrice = { ...t, cu_price: null };
+    expect(levelRow(3, noPrice)).toBeNull();
+    expect(levelRow(5, noPrice)).toBeNull();
+    expect(levelRow(7, noPrice)).toBeNull();
+    expect(levelRow(4, noPrice)).not.toBeNull();
+    expect(levelRow(8, t)).toBeNull();
   });
 });

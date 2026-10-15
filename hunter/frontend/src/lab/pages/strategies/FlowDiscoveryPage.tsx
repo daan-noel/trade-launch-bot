@@ -1008,27 +1008,25 @@ export function FlowDiscoveryPage() {
     const budgetOf = (s: FlowDiscoveryStructure, v: FlowDiscoveryFeeVariant) =>
       budgetRow(s.ix_labels, isCoreStage, v, lensPinMask) ?? rowOf(s);
     return {
-      enabled: !!selectedTokenMint,
       toggle: (s) => toggleLensRow(rowOf(s)),
       colorOf: (s) => lensRowColor(rowOf(s)),
       toggleBudget: (s, v) => toggleLensRow(budgetOf(s, v)),
       budgetColorOf: (s, v) => lensRowColor(budgetOf(s, v)),
       rowColors: (s) => lensOverlapColors(rowOf(s)),
     };
-  }, [isCoreStage, selectedTokenMint, toggleLensRow, lensRowColor, lensOverlapColors, lensPinMask]);
+  }, [isCoreStage, toggleLensRow, lensRowColor, lensOverlapColors, lensPinMask]);
 
   /** The auto-tag list's side of the same highlight: a staged row arms itself, a
    *  staged wallet arms the wallet lens. */
   const autoTagLens = useMemo<AutoTagLens>(
     () => ({
-      enabled: !!selectedTokenMint,
       toggleRow: toggleLensRow,
       rowColor: lensRowColor,
       rowColors: lensOverlapColors,
       toggleWallet: toggleLensWallet,
       walletColor: lensWalletColor,
     }),
-    [selectedTokenMint, toggleLensRow, lensRowColor, lensOverlapColors, toggleLensWallet, lensWalletColor],
+    [toggleLensRow, lensRowColor, lensOverlapColors, toggleLensWallet, lensWalletColor],
   );
 
   /** A preview-table badge click. The value already carries the grain and, on an
@@ -1319,7 +1317,11 @@ export function FlowDiscoveryPage() {
                     <button
                       key={i}
                       type="button"
-                      onClick={() => setSelectedGroupIdx(i)}
+                      onClick={() => {
+                        // A token of another group has no card in this group's list.
+                        if (i !== selectedGroupIdx) setSelectedTokenMint(null);
+                        setSelectedGroupIdx(i);
+                      }}
                       className={`rounded border px-2 py-1.5 text-left text-xs transition ${i === selectedGroupIdx
                           ? 'border-accent/50 bg-accent/10 text-text'
                           : isFingerprint
@@ -1466,7 +1468,7 @@ export function FlowDiscoveryPage() {
                     detail={previewDetail}
                     tape={previewTape}
                     highlight={highlight}
-                    lensHits={lensHitsQ.currentData?.by_mint ?? null}
+                    lensHits={lensItemsBody.length > 0 ? (lensHitsQ.data?.by_mint ?? null) : null}
                     lensHitsLoading={lensHitsQ.isFetching}
                     lensHitsError={lensHitsError}
                   />

@@ -1,4 +1,4 @@
-import { coreKey, coreMarks, coreMarksFromText } from './ixCore';
+import { CORE_MARK_FLAGS, coreKey, coreMarks, coreMarksFromText, coreMarksText } from './ixCore';
 
 /**
  * One `ix_shape` row as it is STORED — an ordered label sequence, optionally
@@ -39,6 +39,16 @@ export interface IxPatternRow extends IxPatternFee {
 
 export const FEE_FIELDS = ['cu_limit', 'cu_price', 'tip_lamports'] as const;
 export type IxPatternFeeField = (typeof FEE_FIELDS)[number];
+
+/** What each fee field pins, worded for the author choosing whether to pin it. */
+export const FEE_FIELD_HELP: Record<IxPatternFeeField, string> = {
+  cu_limit:
+    'Requested compute units, e.g. 300000. Usually a preset compiled into the sending client, so this is the field that pins well. Max 1400000 - the chain rejects a larger request, so a bigger number here matches nothing.',
+  cu_price:
+    'Micro-lamports per compute unit, e.g. 3333333. Check the Budget column first: many clients recompute this per transaction from a fee oracle, and pinning such a value matches the one transaction you copied it from and then never fires again.',
+  tip_lamports:
+    'Lamports sent to a known tip account. A tip is an auction bid, so it is almost never stable enough to pin - leave it blank unless you have seen it hold.',
+};
 
 /** Sticky modifiers on a trades table: which of this tx's fee fields a click
  *  copies onto the staged row. All-false (the default) stages the ix structure
@@ -143,9 +153,11 @@ export function patternKey(labels: readonly string[]): string {
  *  array — the same string {@link patternKey} produces — so a structure-only
  *  click and a labels-only key still agree. A pinned row keys as the object
  *  form, so `{labels, cu_limit: 300000}` is a different list entry from the
- *  bare sequence. */
+ *  bare sequence. Marks key by their canonical text: the engine reads `"CP CL T1"`
+ *  and `"CL CP T1"` as one pin, so they are one row. */
 export function patternRowKey(row: IxPatternRow): string {
-  return JSON.stringify(serializeIxPatternRow(row));
+  const m = row.marks != null ? coreMarksFromText(row.marks) : null;
+  return JSON.stringify(serializeIxPatternRow(m != null ? { ...row, marks: coreMarksText(m) } : row));
 }
 
 function cloneRow(row: IxPatternRow): IxPatternRow {
@@ -254,27 +266,68 @@ export function rowMatchesTrade(
   return feeMatchesTrade(row, t);
 }
 
+/** The mark a trade must carry to have a reading for each fee field ({@link feeFitsMarks}). */
+export const FEE_FIELD_MARK: Record<IxPatternFeeField, string> = {
+  cu_limit: 'CL',
+  cu_price: 'CP',
+  tip_lamports: 'T1+',
+};
+
+const markBit = (name: string) => 1 << CORE_MARK_FLAGS.findIndex(([n]) => n === name);
+const MARK_CL = markBit(FEE_FIELD_MARK.cu_limit);
+const MARK_CP = markBit(FEE_FIELD_MARK.cu_price);
+
+/** Whether a trade with these marks can carry a reading for every field `fee` pins.
+ *  Ingest (`FeeBudget`) reads each field off its own top-level instruction, so a
+ *  CU limit needs `CL`, a CU price needs `CP`, and a tip reading - `0` included -
+ *  needs one System transfer (`T1`+). A trade with no reading never meets a pin. */
+function feeFitsMarks(fee: IxPatternFee, marks: number): boolean {
+  if (fee.cu_limit != null && (marks & MARK_CL) === 0) return false;
+  if (fee.cu_price != null && (marks & MARK_CP) === 0) return false;
+  if (fee.tip_lamports != null && ((marks >> 8) & 0xff) === 0) return false;
+  return true;
+}
+
+/** The marks every trade a row matches carries: an exact row's are its labels', a
+ *  core row's are its pin; `null` = open. */
+function rowMarks(row: IxPatternRow): number | null {
+  if (!rowIsCore(row)) return labelKeys(row.labels).marks;
+  return row.marks != null ? coreMarksFromText(row.marks) : null;
+}
+
+/** Whether any trade can match the row: an exact row or a marks-pinned core row whose
+ *  marks lack the instruction a fee pin reads (`cu_price` on a build with no `CP`)
+ *  matches nothing. */
+export function rowCanMatch(row: IxPatternRow): boolean {
+  const m = rowMarks(row);
+  return m == null || feeFitsMarks(row, m);
+}
+
 /** Whether one trade can match both rows: the test a listed row (a ranked shape, a
  *  budget, a staged row) is lit by under an armed one, so an arm lights its broader
  *  and its narrower rows alike. Two exact rows share a sequence; an exact row and a
  *  core row share the core and the core's marks; two core rows share the core and
- *  every side and marks both pin. A field both pin must hold one value. An exact
- *  row's side is open. */
+ *  every side and marks both pin. A field both pin must hold one value, and the
+ *  shared trade carries both rows' fee pins, so the marks either row fixes must
+ *  carry the instruction of every one of them ({@link feeFitsMarks}). An exact row's
+ *  side is open. */
 export function rowsOverlap(a: IxPatternRow, b: IxPatternRow): boolean {
   for (const f of FEE_FIELDS) {
     if (a[f] != null && b[f] != null && a[f] !== b[f]) return false;
   }
   const ka = labelKeys(a.labels);
   const kb = labelKeys(b.labels);
-  if (!rowIsCore(a) && !rowIsCore(b)) return ka.exact === kb.exact;
-  if (ka.core !== kb.core) return false;
-  if (a.side && b.side && a.side !== b.side) return false;
-  // An exact row's marks are its labels'; a core row's are its pin, or open.
-  const marks = (r: IxPatternRow, k: LabelKeys) =>
-    rowIsCore(r) ? (r.marks != null ? coreMarksFromText(r.marks) : null) : k.marks;
-  const ma = marks(a, ka);
-  const mb = marks(b, kb);
-  return ma == null || mb == null || ma === mb;
+  if (!rowIsCore(a) && !rowIsCore(b)) {
+    if (ka.exact !== kb.exact) return false;
+  } else {
+    if (ka.core !== kb.core) return false;
+    if (a.side && b.side && a.side !== b.side) return false;
+  }
+  const ma = rowMarks(a);
+  const mb = rowMarks(b);
+  if (ma != null && mb != null && ma !== mb) return false;
+  const m = ma ?? mb;
+  return m == null || (feeFitsMarks(a, m) && feeFitsMarks(b, m));
 }
 
 /** Whether any stored row accepts this trade — the engine's list match.

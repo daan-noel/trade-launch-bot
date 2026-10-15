@@ -8,8 +8,10 @@ import { SpinnerIcon } from 'components/ui/icons';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
 import { cn } from 'lib/cn';
 import { tagLabel } from 'lib/flow/tapeClassify';
-import { formatFeePins, parseIxPatternRow, patternRowKey, type IxPatternRow } from 'lib/strategy/ixPatternRows';
-import type { OwnerRuleId, OwnerSplitParams, OwnerStage, OwnerStagedRow } from 'types';
+import { parseIxPatternRow, patternRowKey, type IxPatternRow } from 'lib/strategy/ixPatternRows';
+import type { OwnerRuleId, OwnerSplitParams, OwnerStage } from 'types';
+import { AutoTagGuideButton } from './AutoTagGuide';
+import { RowPins } from './AutoTagRowPins';
 import {
   AUTO_TAG_FAMILIES,
   EVIDENCE_HELP,
@@ -22,10 +24,7 @@ import {
 const WALLETS_SHOWN = 60;
 
 const PANEL_HELP =
-  'Auto-tag fills the owner-split tag from the owner-split rules (_!___owner-split.md). ' +
-  'Turn a rule on to label its wallets’ trades owner. From those labels the stage below picks what to save: ' +
-  'the ix rows that are mostly owner money, and the wallets that come back on later coins. ' +
-  'Picked items join the draft; untick one to keep it out. Nothing is saved until Apply.';
+  'Turn a rule on to label its wallets’ trades owner; the list below is what Apply would save. Guide shows the whole workflow.';
 
 const EVIDENCE_CLASS: Record<Evidence, string> = {
   measured: 'bg-green/15 text-green',
@@ -38,8 +37,6 @@ const fmtSol = (n: number) => (n >= 100 ? n.toFixed(0) : n.toFixed(1));
 /** The preview chart's highlight as the auto-tag list arms it - the same lenses the
  *  trades table and the ranked table arm (`useTokenHighlight`, owned by the page). */
 export interface AutoTagLens {
-  /** A token is picked in the preview; the lens washes its chart. */
-  enabled: boolean;
   toggleRow: (row: IxPatternRow) => void;
   /** The row's own lens color, `null` = not armed. */
   rowColor: (row: IxPatternRow) => string | null;
@@ -49,18 +46,9 @@ export interface AutoTagLens {
   walletColor: (wallet: string) => string | null;
 }
 
-const LENS_OFF_TITLE = 'Pick a token in the preview first - the highlight washes its chart';
-
 /** A lit item washes in its first lens color, the trades table's `--row-lens`. */
 const lensWash = (colors: readonly string[]): { className?: string; style?: CSSProperties } =>
   colors.length > 0 ? { className: 'bg-(--row-lens)/16', style: { '--row-lens': colors[0] } as CSSProperties } : {};
-
-function rowLevel(r: OwnerStagedRow, row: IxPatternRow | null): string {
-  if (!row) return `level ${r.level}`;
-  if (r.level === 7) return 'exact';
-  const pins = [row.side, row.marks, formatFeePins(row)].filter(Boolean).join(' ');
-  return `core L${r.level}${pins ? ` ${pins}` : ''}`;
-}
 
 /** A staged row's lens button: arms the row itself, the trades it would match on the tag. */
 function RowLens({ lens, row }: { lens: AutoTagLens; row: IxPatternRow }) {
@@ -71,13 +59,11 @@ function RowLens({ lens, row }: { lens: AutoTagLens; row: IxPatternRow }) {
       color={own ?? LENS_COLORS.structure[0]}
       litBy={lens.rowColors(row)[0] ?? null}
       title={
-        !lens.enabled
-          ? LENS_OFF_TITLE
-          : own != null
+        own != null
             ? 'Stop highlighting this row'
             : 'Highlight every candle and trade this row matches on the preview'
       }
-      onClick={() => lens.enabled && lens.toggleRow(row)}
+      onClick={() => lens.toggleRow(row)}
     />
   );
 }
@@ -146,6 +132,7 @@ export function AutoTagPanel({
           Auto-tag {tagLabel(tagName)}
           <InfoTooltip title="Auto-tag" body={PANEL_HELP} />
         </span>
+        <AutoTagGuideButton params={params} />
         <ToggleGroup
           size="sm"
           tone="neutral"
@@ -222,7 +209,7 @@ export function AutoTagPanel({
                 }
               />
             </p>
-            <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto pr-1">
+            <ul className="flex max-h-72 flex-col gap-1 overflow-y-auto pr-1">
               {stage.rows.map((r) => {
                 const row = parseIxPatternRow(r.row);
                 if (!row) return null;
@@ -242,13 +229,27 @@ export function AutoTagPanel({
                       onChange={(e) => onPickRow(row, e.target.checked)}
                       title="In the draft. Untick to keep it out."
                     />
-                    <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-text-mid" title={row.labels.join(' › ')}>
-                      {row.labels.join(' › ')}
-                    </span>
-                    <span className="shrink-0 rounded bg-accent/15 px-1 font-mono text-[9px] text-accent">{rowLevel(r, row)}</span>
-                    <span className="shrink-0 font-mono text-[10px] text-text-dim">
-                      {r.owner_pct.toFixed(0)}% &middot; {r.trades} tr &middot; {r.coins} coins
-                    </span>
+                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-text-mid" title={row.labels.join(' › ')}>
+                          {row.labels.join(' › ')}
+                        </span>
+                        <span className="shrink-0 font-mono text-[10px] text-text-dim">
+                          <span className="cursor-help" title="Owner share: the part of this row's SOL across the group that is owner.">
+                            <b className="text-text">{r.owner_pct.toFixed(0)}%</b> owner
+                          </span>
+                          {' · '}
+                          <span className="cursor-help" title="Trades across the group this row matches.">
+                            {r.trades} tr
+                          </span>
+                          {' · '}
+                          <span className="cursor-help" title="Coins of the group this row matches a trade on.">
+                            {r.coins} coins
+                          </span>
+                        </span>
+                      </div>
+                      <RowPins level={r.level} row={row} />
+                    </div>
                   </li>
                 );
               })}
@@ -315,13 +316,11 @@ export function AutoTagPanel({
                       armed={own != null}
                       color={own ?? LENS_COLORS.wallet[0]}
                       title={
-                        !lens.enabled
-                          ? LENS_OFF_TITLE
-                          : own != null
+                        own != null
                             ? 'Stop highlighting this wallet'
                             : "Highlight this wallet's candles and trades on the preview"
                       }
-                      onClick={() => lens.enabled && lens.toggleWallet(w.wallet)}
+                      onClick={() => lens.toggleWallet(w.wallet)}
                     />
                   )}
                   {w.reason ? (

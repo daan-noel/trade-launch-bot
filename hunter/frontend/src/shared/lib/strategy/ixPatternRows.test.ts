@@ -13,6 +13,7 @@ import {
   patternKey,
   patternRowKey,
   removePatternRows,
+  rowCanMatch,
   rowFamilyState,
   rowFromTrade,
   rowMatchesTrade,
@@ -335,5 +336,58 @@ describe('rowsOverlap', () => {
   it("reads an exact row's marks off its labels against a core row's pin", () => {
     expect(rowsOverlap({ ...core, marks: 'CL C T0 A0' }, exact)).toBe(true);
     expect(rowsOverlap({ ...core, marks: 'CP T0 A0' }, exact)).toBe(false);
+  });
+
+  it('keeps a fee pin off marks that lack the instruction it reads', () => {
+    const buy = { labels: ['Pump.Fun: BUY'], level: 'core' as const, side: 'buy' as const };
+    const t0 = { ...buy, marks: 'T0 A1' };
+    const priced = { ...buy, cu_price: 20_000, tip_lamports: 5_000 };
+    const anyBuy = buy;
+    const lT1 = { ...buy, marks: 'L T1 A1' };
+    const lT0 = { ...buy, marks: 'L T0 A1' };
+    expect(rowsOverlap(t0, priced)).toBe(false);
+    expect(rowsOverlap(priced, t0)).toBe(false);
+    expect(rowsOverlap(t0, anyBuy)).toBe(true);
+    expect(rowsOverlap(priced, anyBuy)).toBe(true);
+    expect(rowsOverlap(priced, lT1)).toBe(false);
+    expect(rowsOverlap(priced, lT0)).toBe(false);
+    expect(rowsOverlap(lT1, lT0)).toBe(false);
+    expect(rowsOverlap(priced, { ...buy, marks: 'CP T1 A1' })).toBe(true);
+    expect(rowsOverlap(priced, { ...buy, marks: 'CP T0 A1' })).toBe(false);
+  });
+
+  it('reads a CU limit and a CU price each off its own mark', () => {
+    const buy = { labels: ['Pump.Fun: BUY'], level: 'core' as const };
+    const limitOnly = { ...buy, marks: 'CL T0 A1' };
+    const priceOnly = { ...buy, marks: 'CP T0 A1' };
+    expect(rowsOverlap(limitOnly, { ...buy, cu_limit: 200_000 })).toBe(true);
+    expect(rowsOverlap(limitOnly, { ...buy, cu_price: 20_000 })).toBe(false);
+    expect(rowsOverlap(priceOnly, { ...buy, cu_price: 20_000 })).toBe(true);
+    expect(rowsOverlap(priceOnly, { ...buy, cu_limit: 200_000 })).toBe(false);
+  });
+
+  it('pins on one exact row hold against its own labels', () => {
+    expect(rowsOverlap({ labels: FULL, cu_price: 1 }, exact)).toBe(false);
+    expect(rowsOverlap({ labels: FULL, cu_price: 1 }, core)).toBe(false);
+  });
+});
+
+describe('rowCanMatch', () => {
+  it('refuses a pin whose instruction the marks lack', () => {
+    const FULL = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Sell'];
+    expect(rowCanMatch({ labels: FULL, cu_limit: 300_000 })).toBe(true);
+    expect(rowCanMatch({ labels: FULL, cu_price: 1 })).toBe(false);
+    expect(rowCanMatch({ labels: FULL, tip_lamports: 0 })).toBe(false);
+    expect(rowCanMatch({ labels: ['Pump.Fun: SELL'], level: 'core', cu_price: 1 })).toBe(true);
+    expect(rowCanMatch({ labels: ['Pump.Fun: SELL'], level: 'core', marks: 'CL T1 A0', tip_lamports: 0 })).toBe(true);
+    expect(rowCanMatch({ labels: ['Pump.Fun: SELL'], level: 'core', marks: 'CL T0 A0', cu_price: 1 })).toBe(false);
+  });
+});
+
+describe('patternRowKey', () => {
+  it('keys marks by their meaning, not their token order', () => {
+    const row = { labels: ['Pump.Fun: SELL'], level: 'core' as const };
+    expect(patternRowKey({ ...row, marks: 'CP CL T1 A0' })).toBe(patternRowKey({ ...row, marks: 'CL CP T1 A0' }));
+    expect(patternRowKey({ ...row, marks: 'CL T1' })).toBe(patternRowKey({ ...row, marks: 'CL T1 A0' }));
   });
 });

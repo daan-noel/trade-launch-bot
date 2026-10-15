@@ -58,8 +58,6 @@ function StateCheckbox({ state, onChange, title }: { state: RankedState; onChang
  *  chart's trades table arms (`useTokenHighlight`, owned by the page), so either
  *  table lights the other's rows and the chart washes both. */
 export interface RankedLens {
-  /** A token is previewed, so there is a chart to wash. */
-  enabled: boolean;
   /** Arm or disarm the row's shape (its core on the core table), any budget. */
   toggle: (s: FlowDiscoveryStructure) => void;
   /** The color the row's own lens washes in, `null` = not armed. */
@@ -71,8 +69,6 @@ export interface RankedLens {
    *  budget's, one armed from the trades table, or a core over an exact row. */
   rowColors: (s: FlowDiscoveryStructure) => string[];
 }
-
-const LENS_OFF_TITLE = 'Pick a token in the preview first - the highlight washes its chart';
 
 /** How the draft holds one budget of a row: `on` = its pinned row is listed,
  *  `broad` = the shape's unpinned row is (covering every budget), `off` = neither,
@@ -145,13 +141,11 @@ function BudgetCell({
                     armed={lensColor != null}
                     color={lensColor ?? LENS_COLORS.structure[0]}
                     title={
-                      !lens.enabled
-                        ? LENS_OFF_TITLE
-                        : lensColor != null
+                      lensColor != null
                           ? 'Stop highlighting this budget'
                           : 'Highlight every candle and trade of this shape on this budget (the highlight pin fields when any are on, else all three)'
                     }
-                    onClick={() => lens.enabled && lens.toggleBudget(s, v)}
+                    onClick={() => lens.toggleBudget(s, v)}
                   />
                 )}
                 <Checkbox
@@ -346,13 +340,11 @@ function buildStructureColumns(opts: {
               color={own ?? LENS_COLORS.structure[0]}
               litBy={lens.rowColors(s)[0] ?? null}
               title={
-                !lens.enabled
-                  ? LENS_OFF_TITLE
-                  : own != null
+                own != null
                     ? 'Stop highlighting this ix structure'
                     : 'Highlight every candle and trade with this structure, any budget'
               }
-              onClick={() => lens.enabled && lens.toggle(s)}
+              onClick={() => lens.toggle(s)}
             />
             <IxLabelsDisplay labels={s.ix_labels} copyJson />
           </span>
@@ -696,9 +688,9 @@ export function StructureTable({
       // arrives in, which is the server's own rank.
       defaultSort={{ col: 'suggested', dir: 'desc' }}
       selectable={false}
-      // The backend truncates each group to MAX_STRUCTURES_PER_GROUP, so the whole
-      // group fits on one page — which is what lets "filtered" and "on screen" be
-      // the same set for the stage/unstage-filtered buttons.
+      // Unpaginated: `onFilteredRowsChange` reports the rows on screen, and the
+      // stage/unstage-filtered buttons must act on every row the filters keep. The
+      // backend's trade floor (MIN_STRUCTURE_TRADES) is what keeps the list short.
       paginate={false}
       emptyMessage="No structure matches these filters."
       onFilteredRowsChange={onFilteredRowsChange}

@@ -811,13 +811,18 @@ not show is a difference the page cannot express. `tags` is part of
   draft: a picked item joins, an auto-tag item the new stage drops leaves, an unticked
   item stays out, a hand-added item stays. Every family, toggle and list carries a
   tooltip that quotes the thresholds the run applied (`DiscoveryResult.owner_split`);
-  a toggle the run cannot serve is disabled with the reason. The cart's Sticky and Creator
+  a toggle the run cannot serve is disabled with the reason. The panel's Guide
+  (`AutoTagGuide.tsx`) draws the workflow - mark owners, read a trade as structure,
+  core and marks, the seven match levels (`MATCH_LEVELS`, one example trade through
+  `levelRow`), the owner test, the pick, Apply - from the run's params and the list's
+  own `RowPins`, so it cannot say something the list does not. The cart's Sticky and Creator
   checkboxes stage the tag's switches, explained by their registry fields, and Apply
   saves them with the lists. Rules and gaps: `plans/strategies/_!___owner-split.md`.
   `StructureTable` runs the shared `DataTable` with its search, per-column filter row,
   Columns panel and pins on (`tableId` `flow-structures`), opening sorted by `Auto`;
-  the backend's `MAX_STRUCTURES_PER_GROUP` truncation keeps a group to one page, so
-  pagination stays off and "filtered" and "on screen" are the same set. Four columns
+  pagination stays off so "filtered" and "on screen" are the same set, and the backend's
+  `MIN_STRUCTURE_TRADES` floor (3 trades group-wide) keeps the list to real rows. The
+  token list carries every group member and draws its cards 200 at a time as it scrolls. Four columns
   filter on *state* rather than a number — `Vol` (staged / not staged), `Auto`
   (suggested / eligible / gated), `Side` and `Launch%` (the keywords `launch` / `none`
   for creation-slot **presence**, any other text delegated to the shared numeric

@@ -525,7 +525,7 @@ rules the page stands on:
   (`DiscoveryResult.group_members`, kept off the GET payload) from the cached corpus; a
   corpus another run replaced answers `409`.
 - **Per-token launch set.** The group aggregate cannot say what was in THIS coin's launch:
-  it sums every member's creation slot, is cut at `max_structures_per_group` (64), and only
+  it sums every member's creation slot, drops a shape under `min_structure_trades` (3), and only
   scores trade rows. `TokenGross.first_slot_ix_labels` carries every distinct shape that
   traded in that coin's creation slot, uncapped and unfloored, ranked by first-slot gross.
 - **Unknown is not zero.** `first_slot_trades` / `first_slot_ix_labels` are `Option` on the

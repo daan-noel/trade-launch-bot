@@ -94,7 +94,7 @@ export function firstSlotPurity(s: FlowDiscoveryStructure): number | null {
  *
  *  Even without the floor this stays the GROUP-wide answer: `first_slot_trades`
  *  is summed over every member token, and the row must have survived the
- *  server-side rank + `max_structures_per_group` truncation to be here at all.
+ *  server-side `min_structure_trades` floor to be here at all.
  *  For one token's actual bundle use `TokenGross.first_slot_ix_labels`. */
 export function isFirstSlotPresent(s: FlowDiscoveryStructure): boolean {
   const trades = s.first_slot_trades;

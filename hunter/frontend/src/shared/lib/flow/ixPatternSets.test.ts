@@ -4,6 +4,7 @@ import {
   keysForSet,
   kindOf,
   mutedPatternForClick,
+  mutedRowForClick,
   parsePastedGrains,
   parsePastedPatterns,
   patternGroups,
@@ -110,6 +111,16 @@ describe('mutedPatternForClick', () => {
     expect(mutedPatternForClick(pinned, new Set(['GMGN']), ['A'], { cu_limit: 300000 })).toEqual(
       pinned[0],
     );
+  });
+
+  it('reads a core row\'s marks by meaning, not token order', () => {
+    const core: IxPattern[] = [
+      { group: 'Axiom', ix_labels: ['Pump.Fun: SELL'], level: 'core', side: 'sell', marks: 'CP CL T1 A0' },
+    ];
+    const click = { labels: ['Pump.Fun: SELL'], level: 'core' as const, side: 'sell' as const };
+    expect(mutedRowForClick(core, new Set(['GMGN']), { ...click, marks: 'CL CP T1 A0' })).toEqual(core[0]);
+    expect(mutedRowForClick(core, new Set(['GMGN']), { ...click, marks: 'CL T1 A0' })).toBeNull();
+    expect(mutedRowForClick(core, new Set(['GMGN']), click)).toBeNull();
   });
 });
 

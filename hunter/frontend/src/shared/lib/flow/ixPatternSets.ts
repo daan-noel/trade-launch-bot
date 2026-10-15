@@ -17,6 +17,7 @@
 
 import { patternKeysFrom, type FlowSide, type FlowTag } from 'lib/flow/classifyFlow';
 import { parseGrainIds } from 'lib/strategy/templateGrain';
+import { coreMarksFromText } from 'lib/strategy/ixCore';
 import {
   FEE_FIELDS,
   feeMatchesTrade,
@@ -235,7 +236,7 @@ export function mutedRowForClick(
       (p) =>
         feeMatchesTrade(p, row) &&
         (p.side == null || p.side === row.side) &&
-        (p.marks == null || p.marks === row.marks),
+        (p.marks == null || (row.marks != null && coreMarksFromText(p.marks) === coreMarksFromText(row.marks))),
     ) ?? null
   );
 }

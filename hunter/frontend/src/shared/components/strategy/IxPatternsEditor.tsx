@@ -9,7 +9,9 @@ import { formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
 import { coreMarksFromText } from 'lib/strategy/ixCore';
 import { IxAbbrevLine } from 'components/ui/IxLabelsDisplay';
 import {
+  FEE_FIELD_HELP,
   MAX_TX_COMPUTE_UNITS,
+  rowCanMatch,
   rowPinsFee,
   type IxPatternFeeField,
   type IxPatternRow,
@@ -166,27 +168,9 @@ const FEE_INPUTS: {
   placeholder: string;
   title: string;
 }[] = [
-  {
-    field: 'cu_limit',
-    label: 'cu_limit',
-    placeholder: 'any',
-    title:
-      'Requested compute units, e.g. 300000. Usually a preset compiled into the sending client, so this is the field that pins well. Max 1400000 — the chain rejects a larger request, so a bigger number here matches nothing.',
-  },
-  {
-    field: 'cu_price',
-    label: 'cu_price',
-    placeholder: 'any',
-    title:
-      'Micro-lamports per compute unit, e.g. 3333333. Check the Budget column first: many clients recompute this per transaction from a fee oracle, and pinning such a value matches the one transaction you copied it from and then never fires again.',
-  },
-  {
-    field: 'tip_lamports',
-    label: 'tip',
-    placeholder: 'any',
-    title:
-      'Lamports sent to a known tip account. A tip is an auction bid, so it is almost never stable enough to pin — leave it blank unless you have seen it hold.',
-  },
+  { field: 'cu_limit', label: 'cu_limit', placeholder: 'any', title: FEE_FIELD_HELP.cu_limit },
+  { field: 'cu_price', label: 'cu_price', placeholder: 'any', title: FEE_FIELD_HELP.cu_price },
+  { field: 'tip_lamports', label: 'tip', placeholder: 'any', title: FEE_FIELD_HELP.tip_lamports },
 ];
 
 /** Per-row fee pins. Blank = that field is a wildcard, which is what every row is
@@ -320,6 +304,12 @@ function FeePins({
         <span className="text-[9px] text-danger">
           over the {MAX_TX_COMPUTE_UNITS.toLocaleString()} CU a transaction may request — no
           landed trade carries this
+        </span>
+      )}
+      {!marksBad && !rowCanMatch(row) && (
+        <span className="text-[9px] text-danger">
+          no trade carries this: a cu_limit pin needs CL, a cu_price pin CP, a tip pin a System
+          transfer (T1+), and {core ? 'the marks pin' : 'this ix list'} lacks one
         </span>
       )}
       {!rowPinsFee(row) && (

@@ -17,10 +17,9 @@ use crate::sweep::corpus::{Corpus, CorpusToken, Selection};
 use crate::sweep::grouped_engine::partition;
 use crate::sweep::grouping::{GroupKey, GroupPlan};
 
-/// Cap ranked structures returned per group (wire + UI).
-pub const MAX_STRUCTURES_PER_GROUP: usize = 64;
-/// Cap ranked per-token roster returned per group (wire + UI token picker).
-pub const MAX_TOKENS_PER_GROUP: usize = 500;
+/// A ranked structure or core is returned only on at least this many trades in its
+/// group: the floor that keeps one-off dust shapes off the wire and out of the table.
+pub const MIN_STRUCTURE_TRADES: u64 = 3;
 /// `group_lift` below this ⇒ ambiguity warning (plan §7.1).
 pub const LIFT_AMBIGUOUS: f64 = 1.25;
 /// Per-token gross floor for "meaningful volume" in cross-token recurrence.
@@ -37,7 +36,7 @@ pub struct DiscoveryConfig {
     pub min_tokens: usize,
     pub min_structure_sol: f64,
     pub lift_ambiguous: f64,
-    pub max_structures_per_group: usize,
+    pub min_structure_trades: u64,
     /// The lake's market facts for the owner-split rules; `None` leaves the two rules
     /// that need them (creation slot, never sells) out of the marks.
     pub facts: Option<Arc<MarketFacts>>,
@@ -50,7 +49,7 @@ impl Default for DiscoveryConfig {
             min_tokens: DEFAULT_MIN_TOKENS,
             min_structure_sol: MIN_STRUCTURE_SOL,
             lift_ambiguous: LIFT_AMBIGUOUS,
-            max_structures_per_group: MAX_STRUCTURES_PER_GROUP,
+            min_structure_trades: MIN_STRUCTURE_TRADES,
             facts: None,
         }
     }
@@ -173,7 +172,7 @@ pub struct TokenGross {
     /// Deliberately not derived from [`DiscoveryGroup::structures`], which is the
     /// wrong instrument for "what was in this token's launch bundle" in three
     /// ways: it aggregates first-slot presence over *every* member token, it is
-    /// ranked by lift/volume and truncated to `max_structures_per_group`, and its
+    /// floored at `min_structure_trades` trades group-wide, and its
     /// readers apply a group-wide dust floor. A launch shape that is rare and
     /// small — exactly what a bundler's tail looks like — loses on all three. This
     /// list is per token, uncapped, and unfloored: presence in the creation slot
@@ -222,8 +221,7 @@ pub struct DiscoveryGroup {
     /// Empty on a result cached before cores were scored.
     #[serde(default)]
     pub cores: Vec<StructureScore>,
-    /// Ranked (desc gross_sol) member-token roster, capped at
-    /// `MAX_TOKENS_PER_GROUP` — drives the per-token preview picker.
+    /// Every member token, ranked desc gross_sol — drives the per-token preview picker.
     pub tokens: Vec<TokenGross>,
     /// The wallets each owner-split rule marks across the whole group, every coin
     /// (not only the roster). `None` on a result cached before the rules ran.
@@ -267,9 +265,9 @@ pub struct DiscoveryResult {
     /// The owner-split thresholds and market window the marks were computed with.
     #[serde(default)]
     pub owner_split: Option<OwnerSplitParams>,
-    /// Every member coin of each group, keyed by the group key's JSON text. The
-    /// group's own `tokens` stop at `MAX_TOKENS_PER_GROUP`; the owner-split stage
-    /// (`owner_stage`) reads the whole group. Kept off the GET payload.
+    /// Every member coin of each group, keyed by the group key's JSON text: what the
+    /// owner-split stage and the lens hits reload the group's trades by. Kept off the
+    /// GET payload.
     #[serde(default)]
     pub group_members: BTreeMap<String, Vec<String>>,
     /// The lake selection the run loaded, so the owner-split stage reloads the run's
@@ -500,6 +498,9 @@ fn score_group(
     let mut structures: Vec<StructureScore> = Vec::with_capacity(by.len());
 
     for (h, acc) in by {
+        if acc.n_trades < cfg.min_structure_trades {
+            continue;
+        }
         let Some(labels) = labels_of.get(&h).cloned() else {
             continue;
         };
@@ -637,7 +638,6 @@ fn score_group(
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
     });
-    structures.truncate(cfg.max_structures_per_group);
     structures
     };
     let structures = rank(by_struct, labels_by_hash, window_gross_by_struct);
@@ -688,7 +688,6 @@ fn score_group(
             .partial_cmp(&a.gross_sol)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    tokens.truncate(MAX_TOKENS_PER_GROUP);
 
     DiscoveryGroup {
         group_key: key.to_json(),
@@ -898,7 +897,7 @@ mod tests {
 
     /// The per-token launch set is per TOKEN, and survives both of the losses that
     /// make the group-wide `first_slot_trades` unusable for "what was in THIS
-    /// token's bundle": the rank truncation, and dust size.
+    /// token's bundle": the trade floor, and dust size.
     #[test]
     fn per_token_launch_set_is_uncapped_and_per_token() {
         let tokens = vec![
@@ -940,17 +939,16 @@ mod tests {
             has_fingerprints: true,
             candidates_capped: false,
         };
-        // One structure row survives ranking — the group-wide list is now blind to
-        // the dust shape, exactly as the 64-row cap is blind on a real run.
+        // One structure row passes the trade floor — the group-wide list is blind to
+        // the one-trade dust shape, as the floor is on a real run.
         let cfg = DiscoveryConfig {
             plan: GroupPlan::distinct(&[crate::sweep::grouping::GroupField::CuLimit]),
             min_tokens: 3,
-            max_structures_per_group: 1,
             ..DiscoveryConfig::default()
         };
         let result = score_corpus(&corpus, &cfg, None).unwrap();
         let g = &result.groups[0];
-        assert_eq!(g.structures.len(), 1, "rank cap applied");
+        assert_eq!(g.structures.len(), 1, "trade floor applied");
         assert!(
             !g.structures
                 .iter()

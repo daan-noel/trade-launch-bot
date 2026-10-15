@@ -42,6 +42,36 @@ export const CORE_MARK_FLAGS: readonly (readonly [string, (l: string) => boolean
   ['W', (l) => l.endsWith(': SyncNative')],
 ];
 
+/** What each `coreMarksText` flag says about the transaction. */
+export const CORE_MARK_HELP: Record<string, string> = {
+  CL: 'sets a compute-unit limit',
+  CP: 'sets a compute-unit price (priority fee)',
+  N: 'advances a durable nonce',
+  L: 'carries a Lighthouse assertion',
+  M: 'carries a memo',
+  S: 'creates a System account',
+  C: 'closes a token account',
+  W: 'syncs wrapped SOL',
+};
+
+/** What each `coreMarksText` count counts: `T<n>`, `A<n>`. */
+export const CORE_MARK_COUNT_HELP: Record<'T' | 'A', string> = {
+  T: 'System transfer(s)',
+  A: 'token account open(s)',
+};
+
+/** One line per token of a `coreMarksText` string: what that mark means. */
+export function coreMarksHelp(text: string): string[] {
+  return text
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((tok) => {
+      const m = /^([TA])(\d+)$/.exec(tok);
+      if (m) return `${tok}: ${m[2]} ${CORE_MARK_COUNT_HELP[m[1] as 'T' | 'A']}`;
+      return `${tok}: ${CORE_MARK_HELP[tok] ?? 'unknown mark'}`;
+    });
+}
+
 /** Engine `core_marks`: presence flags in bits 0-7, the System transfer count in
  *  bits 8-15 and the account-open count in bits 16-23 (each capped at 255). */
 export function coreMarks(labels: readonly string[]): number {

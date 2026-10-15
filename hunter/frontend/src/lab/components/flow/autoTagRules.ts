@@ -8,7 +8,8 @@
  * auto-tag".
  */
 
-import { parseIxPatternRow, patternRowKey, type IxPatternRow } from 'lib/strategy/ixPatternRows';
+import { coreLabels, coreMarks, coreMarksText } from 'lib/strategy/ixCore';
+import { parseIxPatternRow, patternRowKey, type IxPatternFee, type IxPatternRow } from 'lib/strategy/ixPatternRows';
 import type { OwnerRuleId, OwnerSplitParams, OwnerStage } from 'types';
 
 export type AutoTagFamilyId = 'creation_slot' | 'transfers';
@@ -126,6 +127,58 @@ export const AUTO_TAG_FAMILIES: readonly AutoTagFamily[] = [
 ];
 
 export const AUTO_TAG_RULES: readonly AutoTagRule[] = AUTO_TAG_FAMILIES.flatMap((f) => f.rules);
+
+/** A field a match level pins on top of the ix list. */
+export type MatchPin = 'side' | 'marks' | 'cu_limit' | 'cu_price' | 'tip_lamports';
+
+export interface MatchLevel {
+  /** `exact` = the whole ix list in order; `core` = the core of it. */
+  list: 'core' | 'exact';
+  pins: readonly MatchPin[];
+  /** What the level pins, in words. */
+  help: string;
+}
+
+/** The seven match levels, index = level - 1, loosest first (owner_stage `row_keys`).
+ *  A level that pins a fee field is read only on trades that carry it. */
+export const MATCH_LEVELS: readonly MatchLevel[] = [
+  { list: 'core', pins: ['side'], help: 'the core ix list and the side' },
+  { list: 'core', pins: ['side', 'marks'], help: 'the core ix list, the side and the marks' },
+  { list: 'core', pins: ['side', 'cu_price'], help: 'the core ix list, the side and the CU price' },
+  { list: 'core', pins: ['side', 'tip_lamports'], help: 'the core ix list, the side and the tip' },
+  { list: 'core', pins: ['side', 'cu_price', 'tip_lamports'], help: 'the core ix list, the side, the CU price and the tip' },
+  {
+    list: 'core',
+    pins: ['side', 'marks', 'cu_price', 'tip_lamports'],
+    help: 'the core ix list, the side, the marks, the CU price and the tip',
+  },
+  { list: 'exact', pins: ['cu_limit', 'cu_price', 'tip_lamports'], help: 'the exact ix list with the CU limit, CU price and tip' },
+];
+
+/** The level that stores an exact row; every lower level stores a core row. */
+export const EXACT_LEVEL = MATCH_LEVELS.length;
+
+/** One trade as a match level reads it. */
+export interface LevelTrade extends IxPatternFee {
+  labels: readonly string[];
+  side: 'buy' | 'sell';
+}
+
+/** The row `level` stores for this trade, as owner_stage `row_json` writes it; `null`
+ *  when the level pins a fee field the trade carries no reading for. */
+export function levelRow(level: number, t: LevelTrade): IxPatternRow | null {
+  const spec = MATCH_LEVELS[level - 1];
+  if (!spec) return null;
+  const row: IxPatternRow =
+    spec.list === 'exact' ? { labels: [...t.labels] } : { labels: coreLabels(t.labels), level: 'core' };
+  for (const pin of spec.pins) {
+    if (pin === 'side') row.side = t.side;
+    else if (pin === 'marks') row.marks = coreMarksText(coreMarks(t.labels));
+    else if (t[pin] == null) return null;
+    else row[pin] = t[pin];
+  }
+  return row;
+}
 
 /** What the stage says to save: the passing rows and the passing wallets. */
 export function stagedPicks(stage: OwnerStage | null | undefined): { rows: IxPatternRow[]; wallets: string[] } {

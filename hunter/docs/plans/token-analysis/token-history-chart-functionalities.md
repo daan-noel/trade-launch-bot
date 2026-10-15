@@ -373,7 +373,10 @@ core on the core table, unpinned); an expanded budget line arms the row its budg
 (the highlight pin fields when any are on, else all three). An auto-tag staged or failing row
 arms its own stored row; a staged wallet arms the wallet lens. A listed row (ranked or auto-tag)
 washes in the color of every armed row it shares a trade with (`ixPatternRows.rowsOverlap`), so an
-arm lights its broader and its narrower rows alike, whichever surface armed it; the chart and the
+arm lights its broader and its narrower rows alike, whichever surface armed it. A shared trade
+carries both rows' fee pins, and ingest reads each fee off its own instruction, so the marks either
+row fixes must hold `CL` for a CU-limit pin, `CP` for a CU-price pin and `T1`+ for a tip pin: a
+`T0 A1` row never lights under a `@ 20,000 tip 5,000` arm. The chart and the
 trades table wash the trades `rowMatchesTrade` accepts. A lens icon is pressed when its own row is armed, and
 ringed in the washing color, unpressed, when another armed row already lights its target; a click
 still arms its own row.

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type UIEvent } from 'react';
 
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Input } from 'components/ui/Input';
@@ -8,6 +8,10 @@ import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
 import { lensItemId } from 'components/token-price-chart/lensTint';
 import type { FlowDiscoveryTokenGross, TokenDetailRecord } from 'types';
 import { lensRoster, tokenLensHits, type LensHitsByMint } from './tokenLensHits';
+
+/** Cards drawn at first, and added each time the list is scrolled near its end:
+ *  a group can hold thousands of tokens. */
+const CARD_PAGE = 200;
 
 function fmt(n: number, digits = 1): string {
   if (!Number.isFinite(n)) return '—';
@@ -68,6 +72,19 @@ export function TokenPreviewPanel({
     const searched = q ? tokens.filter((t) => t.mint_address.toLowerCase().includes(q)) : tokens;
     return lensRoster(searched, items, hits, requiredNow, matchingOnly);
   }, [tokens, mintQuery, items, hits, requiredNow, matchingOnly]);
+  // A new list starts back at one page of cards.
+  const [shown, setShown] = useState(CARD_PAGE);
+  const [shownFor, setShownFor] = useState(filteredTokens);
+  if (shownFor !== filteredTokens) {
+    setShownFor(filteredTokens);
+    setShown(CARD_PAGE);
+  }
+  const onListScroll = (e: UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (shown < filteredTokens.length && el.scrollTop + el.clientHeight > el.scrollHeight - 300) {
+      setShown((n) => n + CARD_PAGE);
+    }
+  };
 
   /** Roster coins carrying each item, by `lensItemId`. */
   const chipCounts = useMemo(() => {
@@ -164,11 +181,11 @@ export function TokenPreviewPanel({
           />
           {/* Absolute so the roster fills the chart's height without setting it. */}
           <div className="relative min-h-0 flex-1">
-          <div className="absolute inset-0 flex flex-col gap-1 overflow-y-auto pr-1">
+          <div className="absolute inset-0 flex flex-col gap-1 overflow-y-auto pr-1" onScroll={onListScroll}>
             {filteredTokens.length === 0 && (
               <p className="px-2 py-1 text-[10px] text-text-dim">{emptyText}</p>
             )}
-            {filteredTokens.map((t) => {
+            {filteredTokens.slice(0, shown).map((t) => {
               const carried = tokenLensHits(t.mint_address, items, hits);
               return (
             <div

@@ -993,28 +993,6 @@ export function TokenPriceChart({
 
   const showChart = Boolean(id) && !loading && !error && trades.length > 0 && bars.length > 0;
 
-  // `style`/`bars` are deps because a series rebuild hands us a FRESH plugin with
-  // no tints — without them an armed lens silently blanks on a line/candle flip.
-  useEffect(() => {
-    if (!showChart) return;
-    const rows = lensItems.map((item) => ({
-      label: item.label,
-      color: item.color,
-      track: LENS_TRACK_COLORS[item.kind],
-      tints: lensMatches.get(lensItemId(item))?.tint ?? [],
-    }));
-    const layers = rows.filter((r) => r.tints.length > 0);
-    barTintPrimRef.current?.setTints(
-      layers.length === 0 ? EMPTY_BAR_TINTS : { layers, laneRows: rows.length },
-    );
-    // Every armed item keeps its row, matched or not: an empty row says "never
-    // appeared on this token", which a missing row cannot.
-    lensLanePrimRef.current?.setState(
-      rows.length === 0 ? EMPTY_LENS_LANE : { rows, sizeLabels: lensSizeLabels },
-    );
-    // The chart-rebuild keys too: a rebuilt chart hands over fresh plugins with no state.
-  }, [lensItems, lensMatches, lensSizeLabels, showChart, style, bars, groupingKey, priceUnit, chartTimezone]);
-
   // The lane's strip is reserved under the candles through the price scale's
   // bottom margin, so no candle or flow line is ever drawn beneath a row. Read off
   // the pane's real height a frame later — a condition-value pane added in the
@@ -1562,6 +1540,30 @@ export function TokenPriceChart({
       });
     }
   }, [bars, style, showChart, groupingKey, priceUnit, highlightBarKey, snapshotVisibleViewport]);
+
+  // Declared AFTER the series effect above, which creates the tint and lane plugins:
+  // effects run in declaration order, so declared before it this one ran against null
+  // refs on a chart's first paint and an armed lens stayed blank until it changed.
+  // Every key the series is rebuilt on is a dep, because a rebuild hands over fresh
+  // plugins with no state.
+  useEffect(() => {
+    if (!showChart) return;
+    const rows = lensItems.map((item) => ({
+      label: item.label,
+      color: item.color,
+      track: LENS_TRACK_COLORS[item.kind],
+      tints: lensMatches.get(lensItemId(item))?.tint ?? [],
+    }));
+    const layers = rows.filter((r) => r.tints.length > 0);
+    barTintPrimRef.current?.setTints(
+      layers.length === 0 ? EMPTY_BAR_TINTS : { layers, laneRows: rows.length },
+    );
+    // Every armed item keeps its row, matched or not: an empty row says "never
+    // appeared on this token", which a missing row cannot.
+    lensLanePrimRef.current?.setState(
+      rows.length === 0 ? EMPTY_LENS_LANE : { rows, sizeLabels: lensSizeLabels },
+    );
+  }, [lensItems, lensMatches, lensSizeLabels, showChart, style, bars, groupingKey, priceUnit, chartTimezone, highlightBarKey]);
 
   // `@tag` / `@!tag` cumulative overlay, on the candles' own price axis. No tag
   // that classifies ⇒ no lines, and the toolbar toggle says why.
