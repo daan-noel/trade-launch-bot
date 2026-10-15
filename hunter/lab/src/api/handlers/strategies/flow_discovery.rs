@@ -19,6 +19,7 @@ use crate::state::local_state::{LocalState, SweepCorpusCache};
 use crate::strategies::flow_discovery::{
     score_corpus, Cancelled, DiscoveryConfig, DEFAULT_MIN_TOKENS,
 };
+use crate::strategies::owner_split;
 use crate::sweep::corpus::{Corpus, CorpusSource, Selection};
 use crate::sweep::grouping::{GroupField, GroupPlan, PartitionSpec};
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
@@ -148,6 +149,7 @@ pub async fn get_flow_discovery(
             "partition": result.plan.0,
             "ix_labels_filter": result.ix_labels_filter,
             "fingerprint_id": result.fingerprint_id,
+            "owner_split": result.owner_split,
         })),
         None => HttpResponse::NotFound().json(serde_json::json!({
             "error": "no discovery result for that run_id (still running, expired, or unknown)"
@@ -168,6 +170,7 @@ pub async fn get_last_flow_discovery(state: web::Data<Arc<LocalState>>) -> impl 
             "partition": result.plan.0,
             "ix_labels_filter": result.ix_labels_filter,
             "fingerprint_id": result.fingerprint_id,
+            "owner_split": result.owner_split,
         })),
         None => HttpResponse::NotFound().json(serde_json::json!({
             "error": "no cached discovery result"
@@ -373,15 +376,19 @@ async fn run_flow_discovery_job(
     // On a miss we evict *before* loading: the entry holds a whole corpus, and
     // overwriting only after the load would peak at two of them.
     let expected_hash = src.selection_hash(&sel);
+    let mut cached_facts = None;
     let cached = {
         let mut cache = state.sweep_corpus_cache.write().await;
         match cache.as_ref() {
-            Some(c) if c.corpus_hash == expected_hash => Some(Corpus {
-                tokens: (*c.tokens).clone(),
-                hash: c.corpus_hash.clone(),
-                has_fingerprints: true,
-                candidates_capped: c.candidates_capped,
-            }),
+            Some(c) if c.corpus_hash == expected_hash => {
+                cached_facts = c.owner_facts();
+                Some(Corpus {
+                    tokens: (*c.tokens).clone(),
+                    hash: c.corpus_hash.clone(),
+                    has_fingerprints: true,
+                    candidates_capped: c.candidates_capped,
+                })
+            }
             Some(_) => {
                 *cache = None;
                 None
@@ -455,6 +462,11 @@ async fn run_flow_discovery_job(
         });
     }
 
+    // The owner-split market question, asked of the UNFILTERED selection: the facts
+    // are cached with this corpus, and a later run over it with other field filters
+    // must find every wallet it needs among them.
+    let market_q = if cached_facts.is_some() { None } else { owner_split::market_query(&corpus.tokens) };
+
     if b.fingerprint_id.is_none() {
         // Exact-set ix_labels filter (token-level fingerprint labels).
         if let Some(want) = b
@@ -516,6 +528,37 @@ async fn run_flow_discovery_job(
         total: n,
     });
 
+    // The owner-split rules' market facts: one lake read over the window ending at
+    // the run's last trade. A failure costs only the two rules that need them.
+    let _ = state.sse_tx.send(SseEvent::FlowDiscoveryProgress {
+        run_id,
+        phase: "market".into(),
+        processed: 0,
+        total: n,
+    });
+    let facts = match (cached_facts, market_q) {
+        (Some(f), _) => Some(f),
+        (None, None) => None,
+        (None, Some(q)) => match src.owner_market_facts(q).await {
+            Ok(f) => {
+                let f = Arc::new(f);
+                let cache = state.sweep_corpus_cache.read().await;
+                if let Some(c) = cache.as_ref().filter(|c| c.corpus_hash == corpus.hash) {
+                    c.set_owner_facts(f.clone());
+                }
+                Some(f)
+            }
+            Err(e) => {
+                tracing::warn!("flow-discovery: owner-split market facts failed: {e}");
+                let _ = state.sse_tx.send(SseEvent::FlowDiscoveryNotice {
+                    run_id,
+                    message: format!("Creation slot and Never sells are off for this run: the lake market read failed ({e})."),
+                });
+                None
+            }
+        },
+    };
+
     let cfg = DiscoveryConfig {
         plan: {
             let mut specs = b.partition.clone();
@@ -527,6 +570,7 @@ async fn run_flow_discovery_job(
             )
         },
         min_tokens: b.min_tokens.max(1),
+        facts,
         ..DiscoveryConfig::default()
     };
 

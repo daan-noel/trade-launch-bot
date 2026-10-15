@@ -61,13 +61,26 @@ export interface TagDef {
 let nextId = 0;
 const newId = () => `t${(nextId += 1)}`;
 
+/** The owner-split tag. The owner split builds its list (rows, wallets that come
+ *  back, the creator flag) and its wallets stay sticky on a coin
+ *  (`_!___owner-split.md`); Flow Discovery's auto-tag rules write into it. Every
+ *  other tag, `dump` included, is a plain matcher list. */
+export const OWNER_SPLIT_TAG = 'volume';
+
+export function isOwnerSplitTag(name: string): boolean {
+  return name === OWNER_SPLIT_TAG;
+}
+
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v);
 const strings = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
+/** A new tag. The owner-split tag starts as the owner split writes it: the creator
+ *  on and sticky. A plain list starts with nothing. */
 export function emptyTag(name: string): TagDef {
-  return { id: newId(), name, match: {}, side: null, sticky: false };
+  const owner = isOwnerSplitTag(name);
+  return { id: newId(), name, match: owner ? { creator: true } : {}, side: null, sticky: owner };
 }
 
 /** Read a stored `tags` document. Unknown keys are dropped; the backend refuses them. */
@@ -248,6 +261,34 @@ export function withTagListValue(doc: unknown, name: string, k: StringListMatche
   const list = t.match[k] ?? [];
   t.match[k] = remove ? list.filter((v) => v !== value) : list.includes(value) ? list : [...list, value];
   return tagsToJson(tags.filter((x) => usedMatchers(x).length > 0 || x.name !== name || !remove));
+}
+
+/** A tag's two switches: later trades of a matched wallet carry it (`sticky`), and
+ *  the coin's creator carries it (`creator`). */
+export interface TagSwitches {
+  sticky: boolean;
+  creator: boolean;
+}
+
+/** The switches of `t`, or a new tag's when `t` is absent. */
+export function tagSwitches(t: Pick<TagDef, 'name' | 'match' | 'sticky'> | null | undefined, name: string): TagSwitches {
+  const base = t ?? emptyTag(name);
+  return { sticky: base.sticky, creator: base.match.creator === true };
+}
+
+/** The document with tag `name`'s switches set. A missing tag is created. A tag
+ *  left with no matcher is dropped, as every save drops one. */
+export function withTagSwitches(doc: unknown, name: string, sw: TagSwitches): Obj {
+  const tags = tagsFromJson(doc);
+  let t = tags.find((x) => x.name === name);
+  if (!t) {
+    t = emptyTag(name);
+    tags.push(t);
+  }
+  t.sticky = sw.sticky;
+  if (sw.creator) t.match.creator = true;
+  else delete t.match.creator;
+  return tagsToJson(tags);
 }
 
 /** The document with one ix shape added to (or taken from) tag `name`. An add keeps

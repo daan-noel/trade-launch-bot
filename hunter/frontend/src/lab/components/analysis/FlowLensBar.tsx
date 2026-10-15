@@ -32,6 +32,7 @@ import { tagField, useStrategyRegistry } from 'lib/strategy/registry';
 import { toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import { tagNames, withTagShape } from 'lib/strategy/tagsDoc';
 import { defaultTagName, tagLabel } from 'lib/flow/tapeClassify';
+import { TagNameOptions } from 'components/strategy/TagKind';
 import { useUiToggle } from 'hooks/useUiPrefs';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
@@ -755,12 +756,7 @@ function PromoteControls({
           className="max-w-40 font-mono"
           title="The fingerprint tag the Target IXs entries are added to"
         >
-          {(names.includes(tag) ? names : [...names, tag]).map((t) => (
-            <option key={t} value={t}>
-              {tagLabel(t)}
-              {names.includes(t) ? '' : ' (new)'}
-            </option>
-          ))}
+          <TagNameOptions names={names.includes(tag) ? names : [...names, tag]} known={names} />
         </Select>
       )}
       <Button

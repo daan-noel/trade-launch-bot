@@ -63,7 +63,7 @@ export const SUGGEST_MIN_TOKENS = 2;
 // these are identity claims about the launch itself:
 //   * `firstSlotPurity` — the Launch% column: how much of the shape landed at
 //     launch. Informational ranking/sorting only.
-//   * `isFirstSlotPresent` — the bulk-select predicate: did the shape trade in
+//   * `isFirstSlotPresent` — the table's `launch` filter: did the shape trade in
 //     the creation slot AT ALL. The launch bundle is the set of shapes that
 //     appear in that slot, and a bundler shape that also trades later is still
 //     bundler tooling — so this is presence, not purity.
@@ -79,7 +79,7 @@ export function firstSlotPurity(s: FlowDiscoveryStructure): number | null {
   return clamp01(fs / s.gross_sol);
 }
 
-/** Launch tooling: traded in at least one matched token's creation slot.
+/** Traded in at least one matched token's creation slot (the `launch` filter).
  *  `first_slot_trades == null` is *unknown* (a result cached before the backend
  *  field existed), never 0 — such a row is excluded rather than guessed at.
  *

@@ -259,7 +259,7 @@ The fences above bound a run's **peak**. They say nothing about what the lab hol
 
 | Cache | Held | Reclaimed by |
 | --- | --- | --- |
-| `LocalState::sweep_corpus_cache` | one whole loaded corpus (trades + fingerprints) written at the end of every sweep / flow-discovery, so drilling into a combo skips the Parquet read and `attach_fingerprints` | idle reaper, after 10 min with no read **or** under host pressure |
+| `LocalState::sweep_corpus_cache` | one whole loaded corpus (trades + fingerprints) written at the end of every sweep / flow-discovery, so drilling into a combo skips the Parquet read and `attach_fingerprints`; it also keeps the owner-split market facts a flow-discovery run read for that corpus | idle reaper, after 10 min with no read **or** under host pressure |
 | `LocalState::analysis_cache` | fingerprint-scoped candidate scans + lake histories, 60 min TTL | idle reaper, every pass (`AnalysisCache::gc`) |
 
 `hunter/lab/src/state/idle_reaper.rs` runs a 60 s pass and is gated on `LocalState::is_idle()` — no

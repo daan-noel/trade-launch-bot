@@ -516,7 +516,7 @@ export interface FlowDiscoveryStructure {
    *  NOT 0% (see the Rust `StructureScore` doc). */
   first_slot_gross_sol?: number | null;
   /** Trade count behind `first_slot_gross_sol`, and the input to
-   *  `isFirstSlotPresent` (the *Launch shapes · group* predicate: `> 0`). Same
+   *  `isFirstSlotPresent` (the ranked table's `launch` filter: `> 0`). Same
    *  unknown-vs-zero contract — `null` selects nothing rather than guessing. */
   first_slot_trades?: number | null;
   /** The distinct fee budgets this build was sent with, most-traded first and
@@ -548,11 +548,47 @@ export interface FlowDiscoveryTokenGross {
   /** **Every** distinct ix shape that traded in THIS token's creation slot,
    *  ranked by first-slot gross desc — uncapped and unfloored, unlike the
    *  group-wide `structures` list (which is ranked, truncated server-side, and
-   *  read through a dust floor). Drives the per-token *Select launch shapes*.
+   *  read through a dust floor). Counted on the per-token launch badge.
    *
    *  `null`/absent on a result cached before the backend computed it: **unknown**,
    *  not "this token had no launch bundle" — `[]` is that real zero. */
   first_slot_ix_labels?: string[][] | null;
+  /** The wallets each owner-split rule marks on THIS coin. Absent on a result cached
+   *  before the rules ran; a rule missing from the map was not run. */
+  owner_marks?: OwnerMarks | null;
+}
+
+/** An owner-split rule Flow Discovery offers as an auto-tag toggle (backend
+ *  `owner_split::OwnerRule`). */
+export type OwnerRuleId =
+  | 'instant_buy'
+  | 'creation_slot'
+  | 'slot_bundle'
+  | 'bought_twice'
+  | 'below_zero'
+  | 'transfer_pair'
+  | 'never_sells';
+
+/** Wallets per rule, sorted. A missing rule was not run; `[]` is a real zero. */
+export type OwnerMarks = Partial<Record<OwnerRuleId, string[]>>;
+
+/** The thresholds and market window a run's owner-split marks were computed with
+ *  (backend `OwnerSplitParams`). The tooltips quote these numbers. */
+export interface OwnerSplitParams {
+  instant_buy_ms: number;
+  bundle_gap_ms: number;
+  sniper_min_coins: number;
+  sniper_min_creators: number;
+  sniper_max_group_pct: number;
+  below_zero_min_pct: number;
+  below_zero_group_coins: number;
+  transfer_match_pct: number;
+  never_sells_min_coins: number;
+  never_sells_min_buys: number;
+  market_window_days: number;
+  /** `null` when the lake market read failed: creation slot and never sells are off. */
+  market_from: string | null;
+  market_to: string | null;
 }
 
 /** One fingerprint group in a flow-discovery result. */
@@ -575,6 +611,8 @@ export interface FlowDiscoveryGroup {
   cores?: FlowDiscoveryStructure[];
   /** Ranked (desc gross_sol) member-token roster, capped server-side. */
   tokens: FlowDiscoveryTokenGross[];
+  /** The wallets each owner-split rule marks across every coin of the group. */
+  owner_marks?: OwnerMarks | null;
 }
 
 /** `GET /api/strategies/flow-discovery/{run_id}` response. */
@@ -588,6 +626,8 @@ export interface FlowDiscoveryResult {
   /** Saved fingerprint the corpus was scoped to, or `null` when unscoped. Every
    *  group is a sub-slice of it, so it is the authoritative attribution. */
   fingerprint_id?: string | null;
+  /** Absent on a result cached before the owner-split rules ran. */
+  owner_split?: OwnerSplitParams | null;
 }
 
 /** The live (real) strategy managing a held mint — the Holdings bot badge and the

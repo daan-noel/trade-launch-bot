@@ -623,7 +623,10 @@ trade**, so simulate and live resolve at the same point.
   dry-run classifies with the rule's fingerprint `tags`.
 - **`strategies/flow_discovery.rs`** + **`api/handlers/strategies/flow_discovery.rs`** —
   lab-only job: score trade ix-structures per fingerprint group -> bind them into a
-  fingerprint tag (mutual `409` with a grouped sweep).
+  fingerprint tag (mutual `409` with a grouped sweep). **`strategies/owner_split.rs`**
+  runs the owner-split creation-slot and transfer rules over the same corpus and ships
+  their wallets per coin and per group; its sniper and never-sells facts are one lake
+  read (`LakeSource::owner_market_facts`), cached beside the corpus.
 - **`sweep/generic/`** — the precompute-then-scan grouped sweep. `GenericSweepStrategy`
   implements the existing `sweep::strategy::Strategy` trait (so partition / two-phase
   pool / `GroupSink` persistence / refine / `ComboAgg` and the whole

@@ -9,6 +9,7 @@ pub mod admission;
 pub mod candidate_cache;
 pub mod engine_sim;
 pub mod flow_discovery;
+pub mod owner_split;
 pub mod replay;
 pub mod replay_inspect;
 pub mod sim_fetch;

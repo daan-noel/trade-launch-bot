@@ -2,11 +2,13 @@ import { Fragment, useState } from 'react';
 
 import { clearPrompt, IxPatternRowsEditor } from 'components/strategy/IxPatternsEditor';
 import { LabelTip } from 'components/strategy/LabelTip';
+import { TagKindBadge, TagNameOptions } from 'components/strategy/TagKind';
 import { tagSentence } from 'lib/strategy/tagsDoc';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { EmptyState } from 'components/ui/EmptyState';
 import { IconButton } from 'components/ui/IconButton';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { CheckIcon, CloseIcon, EditIcon, LinkIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
@@ -25,9 +27,15 @@ import {
   type IxPatternFeeMask,
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
-import { useStrategyRegistry } from 'lib/strategy/registry';
+import { tagField, tagFieldTip, useStrategyRegistry } from 'lib/strategy/registry';
 import { DISCOVERY_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import { TAG_NAME_RE, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
+import {
+  TAG_NAME_RE,
+  withTagListValue,
+  withTagShape,
+  withTagSwitches,
+  type TagSwitches,
+} from 'lib/strategy/tagsDoc';
 import type { Fingerprint } from 'lib/strategy/types';
 
 /** The grains a discovery check writes. Both are `ix_shape` rows. */
@@ -37,8 +45,8 @@ export const CART_MATCHERS: readonly CartMatcher[] = ['ix_shape', 'ix_core'];
 
 /**
  * `doc` with tag `name`'s `ix_shape` set to `rows` — exact structures and ix cores
- * together — and its `wallet` list to `wallets`, every other matcher, option and tag
- * kept. Adds before it removes, so a list swapped whole never passes through "no
+ * together — its `wallet` list to `wallets`, and (when given) its sticky and creator
+ * switches, every other matcher, option and tag kept. Adds before it removes, so a list swapped whole never passes through "no
  * matcher".
  */
 export function withTagDraft(
@@ -46,6 +54,7 @@ export function withTagDraft(
   name: string,
   rows: readonly IxPatternRow[],
   wallets: readonly string[] = [],
+  switches?: TagSwitches,
 ): Record<string, unknown> {
   const saved = flowTagOf(doc, name);
   let out: unknown = doc;
@@ -58,10 +67,14 @@ export function withTagDraft(
   for (const w of saved?.match.wallet ?? []) {
     if (!wallets.includes(w)) out = withTagListValue(out, name, 'wallet', w, true);
   }
+  if (switches) out = withTagSwitches(out, name, switches);
   return (out ?? {}) as Record<string, unknown>;
 }
 
 const NEW_TAG = '-new';
+
+/** The tag switches the cart edits, each explained by its registry field. */
+const SWITCH_KEYS: readonly (keyof TagSwitches)[] = ['sticky', 'creator'];
 
 /** Staging "cart" for one fingerprint tag: an accent-elevated panel that reads as the
  *  page's deliverable. Checked rows from the ranked table land here as chips; Apply
@@ -81,6 +94,9 @@ export function DraftPatternsCart({
   onMatcherChange,
   feePins,
   onFeePinsChange,
+  switches,
+  savedSwitches,
+  onSwitchesChange,
   previewTag,
   applying,
   onApply,
@@ -105,6 +121,10 @@ export function DraftPatternsCart({
   /** Fee fields a check copies: off a ranked row's one budget, or off a clicked tx. */
   feePins: IxPatternFeeMask;
   onFeePinsChange: (mask: IxPatternFeeMask) => void;
+  /** The tag's sticky and creator switches as staged, and as saved. */
+  switches: TagSwitches;
+  savedSwitches: TagSwitches;
+  onSwitchesChange: (sw: TagSwitches) => void;
   /** The tag as Apply would save it. */
   previewTag: FlowTag;
   applying: boolean;
@@ -121,7 +141,9 @@ export function DraftPatternsCart({
   const savedCount = savedNorm.length + currentWallets.length;
   const dirty =
     JSON.stringify(draftNorm) !== JSON.stringify(savedNorm) ||
-    JSON.stringify([...draftWallets].sort()) !== JSON.stringify([...currentWallets].sort());
+    JSON.stringify([...draftWallets].sort()) !== JSON.stringify([...currentWallets].sort()) ||
+    switches.sticky !== savedSwitches.sticky ||
+    switches.creator !== savedSwitches.creator;
   const tagNames = Object.keys(targetFp?.tags ?? {});
   const names = tagNames.includes(tagName) ? tagNames : [...tagNames, tagName];
   const writes = `${tagLabel(tagName)} (${STAGE_MATCHER_TITLE[matcher]})`;
@@ -170,15 +192,26 @@ export function DraftPatternsCart({
               title="The fingerprint tag Apply writes into"
               onChange={(e) => (e.target.value === NEW_TAG ? setNewTag('') : onTagNameChange(e.target.value))}
             >
-              {names.map((n) => (
-                <option key={n} value={n}>
-                  {tagLabel(n)}
-                  {tagNames.includes(n) ? '' : ' (new)'}
-                </option>
-              ))}
+              <TagNameOptions names={names} known={tagNames} />
               <option value={NEW_TAG}>new tag...</option>
             </Select>
           )}
+          <TagKindBadge name={tagName} />
+          {SWITCH_KEYS.map((k) => {
+            const f = tagField(reg, k);
+            return (
+              <label key={k} className="inline-flex items-center gap-1 text-[11px] text-text-mid">
+                <input
+                  type="checkbox"
+                  className="accent-accent"
+                  checked={switches[k]}
+                  onChange={(e) => onSwitchesChange({ ...switches, [k]: e.target.checked })}
+                />
+                {f?.title ?? k}
+                <InfoTooltip title={f?.title} body={tagFieldTip(f)} />
+              </label>
+            );
+          })}
           <ToggleGroup
             size="sm"
             tone="neutral"
@@ -326,8 +359,8 @@ export function DraftPatternsCart({
       )}
 
       <p className="mt-2 rounded border border-white/8 bg-white/3 px-2 py-1.5 text-[11px] text-text-dim">
-        After Apply: {tagSentence({ ...previewTag, id: '' })} Side, sticky and the creation-slot option are the
-        tag&rsquo;s own; edit them on the fingerprint.
+        After Apply: {tagSentence({ ...previewTag, id: '' })} Side is the tag&rsquo;s own; edit it on the
+        fingerprint.
       </p>
 
       <Button

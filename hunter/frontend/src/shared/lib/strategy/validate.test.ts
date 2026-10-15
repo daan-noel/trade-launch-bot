@@ -221,7 +221,7 @@ describe('tags', () => {
     volume.match = { ix_shape: [{ labels: ['Pump.Fun: Buy'] }] };
     expect(validateTags([dump, volume], reg).join('\n')).toMatch(/dump.*instruction label/);
     expect(tagsToJson([dump, volume])).toEqual({
-      volume: { match: { ix_shape: [['Pump.Fun: Buy']] } },
+      volume: { match: { ix_shape: [['Pump.Fun: Buy']] }, sticky: true },
     });
   });
 

@@ -544,7 +544,7 @@ metric conditions*, and the whole UI renders from ONE payload
 (`GET /api/meta/strategy-registry`) so a metric added in Rust appears everywhere on the
 next load (no per-metric frontend work).
 
-`TagsEditor` is the fingerprint's tag list. Volume is its own button, and the name stays `volume`. That card edits the stored volume pattern (ix structure and ix core rows, wallets that come back, the creator flag). The owner split builds that pattern once; a running rule only reads it, and nothing writes it while rules run. The Guide button beside Tags opens the volume workflow (`VolumeGuide.tsx`): built once, then read while a rule runs. Green is stored. Red is left off. Any other tag, including `dump`, is a matcher list added with the tag button. Its add-matcher menu is two groups, this trade's list and who sent it. The rule editor Guide opens a picture of how one rule runs on one coin (`StrategyGuide.tsx`): watch, buy, keep looking, sell, then buy again. Green buys. Red stops the coin. The metric list stays below that picture.
+`TagsEditor` is the fingerprint's tag list. Volume is its own button, and the name stays `volume`. Every tag picker splits tags in two kinds (`TagKind.tsx`): `volume` is the **owner split**, listed first with a warning-colour badge and edge; every other tag is a **plain list**. `isOwnerSplitTag` is the one test. That card edits the stored volume pattern (ix structure and ix core rows, wallets that come back, the creator flag). The owner split builds that pattern once; a running rule only reads it, and nothing writes it while rules run. The Guide button beside Tags opens the volume workflow (`VolumeGuide.tsx`): built once, then read while a rule runs. Green is stored. Red is left off. Any other tag, including `dump`, is a matcher list added with the tag button. Its add-matcher menu is two groups, this trade's list and who sent it. The rule editor Guide opens a picture of how one rule runs on one coin (`StrategyGuide.tsx`): watch, buy, keep looking, sell, then buy again. Green buys. Red stops the coin. The metric list stays below that picture.
 
 - `lib/strategy/registry.ts` — types mirroring the registry payload (`operators`,
   `groups[]` → metrics w/ unit/eq-tolerance/monotonic + strict params) + the cached
@@ -795,14 +795,17 @@ not show is a difference the page cannot express. `tags` is part of
   Apply writes whole rows (`IxPatternRow[]`) through
   `metricConfigWithList` for tagged/dump, or grain ids through
   `metricConfigWithWorkingTemplates` for working; bind accepts the mixed stored shape and the list
-  (`tagged`/`dump`). Three independent bulk-selects, each paired with what
-  explains it: *Auto-select suggested* (`Auto` column — bot-likelihood composite),
-  *Launch shapes · group* (`Launch%` column shows creation-slot **purity**, but the
-  button takes every table row *present* in some member token's creation slot) and
-  *Launch shapes · this token* (only while a token is picked in `TokenPreviewPanel` —
-  applies that token's own `first_slot_ix_labels`, which bypasses the table entirely:
-  uncapped, unfloored, per token). See `plans/strategies/_!___metrics.md` for why
-  the group answer cannot stand in for the per-token one.
+  (`tagged`/`dump`). *Auto-select suggested* is the one bulk-select, paired with the
+  `Auto` column (bot-likelihood composite). While the stage tag is `volume`, the
+  `AutoTagPanel` sits below the cart: the owner-split rules in two family tabs
+  (Creation slot, Transfers), a This token / Group scope switch, and one toggle per
+  rule showing on / some / off with its wallet count. A toggle adds or removes its
+  rule's wallets in the draft's `wallet` list (`autoTagRules.ts`, which keeps a wallet
+  another rule that is on still marks). Every family and toggle carries a tooltip that
+  quotes the thresholds the run applied (`DiscoveryResult.owner_split`); a toggle the
+  run cannot serve is disabled with the reason. The cart's Sticky and Creator
+  checkboxes stage the tag's switches, explained by their registry fields, and Apply
+  saves them with the lists. Rules and gaps: `plans/strategies/_!___owner-split.md`.
   `StructureTable` runs the shared `DataTable` with its search, per-column filter row,
   Columns panel and pins on (`tableId` `flow-structures`), opening sorted by `Auto`;
   the backend's `MAX_STRUCTURES_PER_GROUP` truncation keeps a group to one page, so

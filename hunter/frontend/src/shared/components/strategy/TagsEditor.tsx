@@ -13,11 +13,13 @@ import { Select } from 'components/ui/Select';
 import { CloseIcon, PlusIcon } from 'components/ui/icons';
 import { cn } from 'lib/cn';
 import { rowPinsFee } from 'lib/strategy/ixPatternRows';
-import { ixMarkers, tagField, type StrategyRegistry, type TagFieldSpec } from 'lib/strategy/registry';
+import { ixMarkers, tagField, tagFieldTip, type StrategyRegistry, type TagFieldSpec } from 'lib/strategy/registry';
 import { freshName } from 'lib/strategy/ruleDoc';
 import {
   emptyTag,
   feePinWarning,
+  isOwnerSplitTag,
+  OWNER_SPLIT_TAG,
   RETIRED_MATCHERS,
   retiredMatchers,
   TAG_NAME_RE,
@@ -28,6 +30,7 @@ import {
   type TagMatch,
 } from 'lib/strategy/tagsDoc';
 import { IxPatternRowsEditor } from './IxPatternsEditor';
+import { OWNER_SPLIT_TAG_TIP, PLAIN_TAG_TIP } from './TagKind';
 
 function B({ children }: { children: ReactNode }) {
   return <strong className="font-semibold text-text">{children}</strong>;
@@ -59,10 +62,6 @@ function tagTabStatus(tag: TagDef): { tone: 'bad' | 'warn' | 'ok'; label: string
 }
 
 const TAB_DOT = { bad: 'bg-red', warn: 'bg-warning', ok: 'bg-green' } as const;
-
-function fieldTip(f: TagFieldSpec | undefined): string {
-  return f ? `${f.summary}\n\nExample: ${f.example}` : '';
-}
 
 /** One line per value; blanks dropped. */
 function LinesInput({
@@ -221,7 +220,7 @@ function SideAndSticky({
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1">
           {tagField(reg, 'side')?.title ?? 'Side'}
-          <InfoTooltip body={fieldTip(tagField(reg, 'side'))} />
+          <InfoTooltip body={tagFieldTip(tagField(reg, 'side'))} />
         </span>
         {SIDES.map((opt) => (
           <Button
@@ -247,7 +246,7 @@ function SideAndSticky({
         <span>
           <span className="inline-flex items-center gap-1 text-text-mid">
             {tagField(reg, 'sticky')?.title ?? 'Sticky'}
-            <InfoTooltip body={fieldTip(tagField(reg, 'sticky'))} />
+            <InfoTooltip body={tagFieldTip(tagField(reg, 'sticky'))} />
           </span>
           <span className="mt-0.5 block text-text-dim">{tagField(reg, 'sticky')?.summary}</span>
         </span>
@@ -425,7 +424,7 @@ function TagCard({
             {i > 0 && <span className="text-[10px] font-semibold uppercase tracking-wide text-accent">or</span>}
             <div className="flex items-center gap-1 text-[11px] text-text">
               <span className="font-semibold">{f?.title ?? k}</span>
-              {f && <InfoTooltip title={f.title} body={fieldTip(f)} />}
+              {f && <InfoTooltip title={f.title} body={tagFieldTip(f)} />}
               <span className="min-w-0 flex-1 truncate text-text-dim">{f?.summary}</span>
               <IconButton
                 variant="ghost"
@@ -483,11 +482,9 @@ export function TagsEditor({
     onChange([...tags, next]);
     setActiveId(next.id);
   };
-  const hasVolume = tags.some((t) => t.name === 'volume');
+  const hasVolume = tags.some((t) => isOwnerSplitTag(t.name));
   const addVolume = () => {
-    const next = emptyTag('volume');
-    next.sticky = true;
-    next.match = { creator: true };
+    const next = emptyTag(OWNER_SPLIT_TAG);
     onChange([...tags, next]);
     setActiveId(next.id);
   };
@@ -501,23 +498,30 @@ export function TagsEditor({
         The volume tag stores the volume pattern. Open it for the workflow. Any other tag, including dump, is a matcher list.
       </p>
       <div className="flex items-end gap-1 overflow-x-auto">
-        {tags.map((t) => {
+        {/* The owner-split tag leads, marked, so its kind reads at a glance. */}
+        {[...tags.filter((t) => isOwnerSplitTag(t.name)), ...tags.filter((t) => !isOwnerSplitTag(t.name))].map((t) => {
           const status = tagTabStatus(t);
           const on = t.id === active?.id;
+          const owner = isOwnerSplitTag(t.name);
           return (
             <button
               key={t.id}
               type="button"
               aria-pressed={on}
               onClick={() => setActiveId(t.id)}
+              title={owner ? OWNER_SPLIT_TAG_TIP : PLAIN_TAG_TIP}
               className={cn(
                 'flex shrink-0 flex-col items-start rounded-md border px-2.5 py-1 text-left',
+                owner && 'border-l-2 border-l-warning',
                 on ? 'border-accent bg-accent/10' : 'border-white/10 hover:border-white/20',
               )}
             >
               <span className="flex items-center gap-1.5 font-mono text-[12px] text-text">
                 <span className={cn('size-1.5 rounded-full', TAB_DOT[status.tone])} />
                 {t.name || '(no name)'}
+                <span className={cn('font-sans text-[9px] uppercase tracking-wide', owner ? 'text-warning' : 'text-text-dim/70')}>
+                  {owner ? 'owner split' : 'plain list'}
+                </span>
               </span>
               <span className={cn('text-[11px]', status.tone === 'bad' ? 'text-red' : status.tone === 'warn' ? 'text-warning' : 'text-text-dim')}>
                 {status.label}
@@ -540,7 +544,7 @@ export function TagsEditor({
         </p>
       )}
       {active && activeIndex >= 0 && (
-        active.name === 'volume' ? (
+        isOwnerSplitTag(active.name) ? (
           <VolumePatternCard
             key={active.id}
             tag={active}

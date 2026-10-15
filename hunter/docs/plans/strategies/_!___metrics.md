@@ -505,14 +505,18 @@ rules the page stands on:
   `SUGGEST_MIN_TOKENS`, and lift when defined; `suggestExplain` shows every family.
 - **Launch presence is not launch purity.** `first_slot_gross_sol / gross_sol` (Launch%)
   is purity, for sorting; `first_slot_trades > 0` (`isFirstSlotPresent`) is presence, the
-  *Launch shapes* button's test, with no dust floor and no lift gate (presence is an
-  identity claim). An `ix_shape` matcher has no slot predicate, so a checked shape that also
-  trades organically tags that tail too, and `sticky` then sweeps those wallets' other
-  trades in: the button is a proposal; read Launch% and uncheck mixed rows.
-- **The button gates on the corpus, not the draft.** The draft re-seeds from the target
-  tag on every run (`seedFromFingerprint`), so a re-run over a new window can have an empty
-  diff and a full launch set; `disabled` reads the whole set, the click adds the unchecked
-  ones, the hover outlines the full set.
+  table's `launch` filter. An `ix_shape` matcher has no slot predicate, so a checked shape
+  that also trades organically tags that tail too, and `sticky` then sweeps those wallets'
+  other trades in. No button stages creation-slot shapes: the creation-slot rules mark
+  wallets, through the owner-split auto-tag
+  ([_!___owner-split.md](_!___owner-split.md#flow-discovery-auto-tag)).
+- **Owner-split marks.** `TokenGross.owner_marks` / `DiscoveryGroup.owner_marks` carry
+  each rule's wallets per coin and per group (`strategies/owner_split.rs`), and
+  `DiscoveryResult.owner_split` the thresholds the run applied. Two rules need the
+  market beyond the run's coins: one lake read (`LakeSource::owner_market_facts`, the
+  14 days ending at the run's last trade, about 30 s) behind a `market` progress phase,
+  cached with the corpus so a re-run over the same selection skips it. A failed read
+  sends a notice and leaves those two rules out of the marks.
 - **Per-token launch set.** The group aggregate cannot say what was in THIS coin's launch:
   it sums every member's creation slot, is cut at `max_structures_per_group` (64), and only
   scores trade rows. `TokenGross.first_slot_ix_labels` carries every distinct shape that

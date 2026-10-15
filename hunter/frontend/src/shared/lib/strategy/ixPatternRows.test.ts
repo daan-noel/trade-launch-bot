@@ -117,7 +117,7 @@ describe('a tag keeps its ix shape rows whole', () => {
   /** An unpinned row stays the bare array it always was: `tags` is row identity. */
   it('writes an unpinned row as a bare array', () => {
     const doc = withTagShape({}, 'volume', { labels: DUMP });
-    expect(doc).toEqual({ volume: { match: { ix_shape: [DUMP] } } });
+    expect(doc).toEqual({ volume: { match: { ix_shape: [DUMP], creator: true }, sticky: true } });
   });
 });
 

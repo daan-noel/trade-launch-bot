@@ -7,13 +7,18 @@
  */
 
 import type { IxPatternRow } from 'lib/strategy/ixPatternRows';
-import { tagNames, tagsFromJson, usedMatchers, type TagMatch } from 'lib/strategy/tagsDoc';
+import { OWNER_SPLIT_TAG, isOwnerSplitTag, tagNames, tagsFromJson, usedMatchers, type TagMatch } from 'lib/strategy/tagsDoc';
 import type { FlowClassifyOptions, FlowTag } from './classifyFlow';
 
 /** The tag a surface reads when nothing picked one: `volume` when the document
  *  defines it (the name v1's flow list converts to), else its first tag, else
  *  `volume` (a click then creates it). */
-export const DEFAULT_TAG = 'volume';
+export const DEFAULT_TAG = OWNER_SPLIT_TAG;
+
+/** Tag names for a picker: the owner-split tag first, the plain lists after. */
+export function orderTagNames(names: readonly string[]): string[] {
+  return [...names.filter(isOwnerSplitTag), ...names.filter((n) => !isOwnerSplitTag(n))];
+}
 
 export function defaultTagName(doc: unknown): string {
   const names = tagNames(doc);

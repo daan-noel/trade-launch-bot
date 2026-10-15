@@ -65,7 +65,9 @@ import {
   type RankedState,
 } from '@lab/components/flow/StructureTable';
 import { TokenPreviewPanel } from '@lab/components/flow/TokenPreviewPanel';
-import { defaultTagName, flowTagOf, shapeTag, tagLabel, withDraftMatch } from 'lib/flow/tapeClassify';
+import { DEFAULT_TAG, defaultTagName, flowTagOf, shapeTag, tagLabel, withDraftMatch } from 'lib/flow/tapeClassify';
+import { isOwnerSplitTag, tagSwitches, type TagSwitches } from 'lib/strategy/tagsDoc';
+import { AutoTagPanel } from '@lab/components/flow/AutoTagPanel';
 import {
   addPatternRows,
   anyRowMatchesTrade,
@@ -448,8 +450,12 @@ export function FlowDiscoveryPage() {
   /** Apply target — null ⇒ promote-style create/bind from the group key. */
   const [targetFpId, setTargetFpId] = useState<string | null>(seedFingerprintId);
   const [draftPatterns, setDraftPatterns] = useState<IxPatternRow[]>([]);
-  /** The draft tag's `wallet` list - a trades-table click under the wallet matcher. */
+  /** The draft tag's `wallet` list - a trades-table click under the wallet matcher,
+   *  or an auto-tag rule. */
   const [draftWallets, setDraftWallets] = useState<string[]>([]);
+  /** The draft tag's sticky and creator switches, seeded from the saved tag (a new
+   *  tag takes `emptyTag`'s: on for the owner-split tag). */
+  const [draftSwitches, setDraftSwitches] = useState<TagSwitches>(() => tagSwitches(null, DEFAULT_TAG));
   /** Sticky fee-field modifiers: what a trades-table click copies off its tx, and
    *  what a ranked check copies off its row's one budget. */
   const [feePins, setFeePins] = useState<IxPatternFeeMask>({});
@@ -476,11 +482,15 @@ export function FlowDiscoveryPage() {
   /** The tag exactly as Apply would save it. The preview chart classifies with this. */
   const previewTag = useMemo(
     () =>
-      withDraftMatch(savedStageTag ?? shapeTag(stageTag, []), {
-        ix_shape: draftPatterns,
-        wallet: draftWallets,
-      }),
-    [savedStageTag, stageTag, draftPatterns, draftWallets],
+      withDraftMatch(
+        { ...(savedStageTag ?? shapeTag(stageTag, [])), sticky: draftSwitches.sticky },
+        {
+          ix_shape: draftPatterns,
+          wallet: draftWallets,
+          creator: draftSwitches.creator || undefined,
+        },
+      ),
+    [savedStageTag, stageTag, draftPatterns, draftWallets, draftSwitches],
   );
   const { data: previewDetail } = useGetTokenDetailQuery(selectedTokenMint ?? '', {
     skip: !selectedTokenMint,
@@ -653,33 +663,11 @@ export function FlowDiscoveryPage() {
       .map((s) => s.ix_labels);
   }, [rankedStructures, suggestionByStructure, structureState]);
 
-  /** Every row that traded in a matched token's creation slot — a property of THIS
-   *  corpus alone, deliberately not differenced against the draft. Independent of
-   *  the composite above: a shape present in the launch bundle is bundler tooling
-   *  by identity, whether or not it also trips the bot signals (and whether or not
-   *  it trades later — see `isFirstSlotPresent`). The creation shape is covered by
-   *  the same test.
-   *
-   *  The launch auto-select gates on THIS, not on the unchecked diff below, because
-   *  the two answer different questions and only this one is about the run: the
-   *  draft is re-seeded from the target fingerprint's SAVED patterns on every run
-   *  (`seedFromFingerprint`), so once a launch set has been applied, a re-run over a
-   *  new window re-stages it and the diff is empty — even though the new corpus is
-   *  full of launch shapes. Disabling on the diff made "this window has no launch
-   *  shapes" and "you already saved these" the same dead button, which also killed
-   *  the hover preview (a `disabled` button fires no mouse events), removing the one
-   *  affordance that could tell them apart. Clicking with an empty diff is a
-   *  deliberate no-op. */
-  const firstSlotAll = useMemo(() => {
-    if (!selectedGroup) return [] as string[][];
-    return selectedGroup.structures.filter(isFirstSlotPresent).map((s) => s.ix_labels);
-  }, [selectedGroup]);
-  /** Of those, the ones the click would actually add. */
-  const firstSlotUnchecked = useMemo(() => {
-    return firstSlotAll.filter(
-      (labels) => stateOf(labels) !== 'on',
-    );
-  }, [firstSlotAll, stateOf]);
+  /** How many ranked rows traded in a matched token's creation slot (the badge). */
+  const firstSlotCount = useMemo(
+    () => (selectedGroup ? selectedGroup.structures.filter(isFirstSlotPresent).length : 0),
+    [selectedGroup],
+  );
   /** No row in the group carries a first-slot count — the run predates the backend
    *  field, so presence is *unknown* for every shape rather than false. Reported, so
    *  an unscored run can't read as "this window had no launch bundle". */
@@ -691,38 +679,17 @@ export function FlowDiscoveryPage() {
     [selectedGroup],
   );
 
-  // ── the per-token launch set ──────────────────────────────────────────────
-  // `firstSlotAll` above answers "which ranked structures appeared in SOME member
-  // token's creation slot" — three lossy steps away from "what was in this
-  // token's launch bundle": it aggregates over the whole group, it only ever sees
-  // the rows that survived the server-side rank + `max_structures_per_group`
-  // truncation, and a rare small bundler shape loses that ranking by
-  // construction. The backend therefore ships each roster token its OWN
-  // creation-slot shape list, uncapped and unfloored, and this button applies
-  // exactly that.
   /** Roster row for the token being previewed, or null when none is picked. */
   const selectedTokenRow = useMemo(
     () => selectedGroup?.tokens.find((t) => t.mint_address === selectedTokenMint) ?? null,
     [selectedGroup, selectedTokenMint],
   );
-  /** Every shape in the previewed token's creation slot. */
-  const tokenLaunchAll = useMemo(
-    () => selectedTokenRow?.first_slot_ix_labels ?? [],
-    [selectedTokenRow],
-  );
-  /** Of those, the ones the click would actually add. */
-  const tokenLaunchUnchecked = useMemo(() => {
-    return tokenLaunchAll.filter(
-      (labels) => stateOf(labels) !== 'on',
-    );
-  }, [tokenLaunchAll, stateOf]);
-  /** The run predates the per-token field — the list is *unknown*, not empty. */
-  const tokenLaunchUnscored = !!selectedTokenRow && selectedTokenRow.first_slot_ix_labels == null;
+  /** Shapes in the previewed token's creation slot; `null` = the run predates the field. */
+  const tokenLaunchShapes = selectedTokenRow?.first_slot_ix_labels ?? null;
 
   // ── the filtered set ──────────────────────────────────────────────────────
   // What the table currently shows, after its search + per-column filters. The
-  // three buttons above read the GROUP (and the per-token one reads the token's
-  // own bundle); this pair reads the table instead, so any slice you can express
+  // suggested button reads the GROUP; this pair reads the table instead, so any slice you can express
   // in the filter row — side, launch presence, `Lift >3`, still-open — is also a
   // thing you can stage in one click.
   const [emittedFiltered, setEmittedFiltered] = useState<FlowDiscoveryStructure[]>([]);
@@ -772,16 +739,6 @@ export function FlowDiscoveryPage() {
     stageLabels(suggestedUnchecked);
   }
 
-  function autoSelectFirstSlot() {
-    if (firstSlotUnchecked.length === 0) return;
-    stageLabels(firstSlotUnchecked);
-  }
-
-  function autoSelectTokenLaunch() {
-    if (tokenLaunchUnchecked.length === 0) return;
-    stageLabels(tokenLaunchUnchecked);
-  }
-
   function stageFiltered() {
     if (filteredUnstaged.length === 0) return;
     stageLabels(filteredUnstaged);
@@ -797,10 +754,9 @@ export function FlowDiscoveryPage() {
   }
 
   /** Rows a hovered/focused bulk-select acts on — outlined in the table so the
-   *  effect is visible before the click, not discovered after it. The launch button
-   *  passes its FULL set, not its unchecked diff: when everything is already staged
-   *  the outline is the only way to see which rows the button is talking about, and
-   *  re-adding a staged row is a no-op anyway. */
+   *  effect is visible before the click, not discovered after it. The filtered
+   *  buttons pass their FULL set: when everything is already staged the outline is
+   *  the only way to see which rows the button is talking about. */
   const [previewPatterns, setPreviewPatterns] = useState<string[][] | null>(null);
   const previewKeys = useMemo(
     () => new Set((previewPatterns ?? []).map((p) => JSON.stringify(isCoreStage ? coreLabels(p) : p))),
@@ -815,12 +771,14 @@ export function FlowDiscoveryPage() {
   const autoMatchedFp = selectedGroup ? resolveGroupFp(selectedGroup.group_key) : null;
   const currentPatterns = savedStageTag?.match.ix_shape ?? [];
   const currentWallets = savedStageTag?.match.wallet ?? [];
+  const savedSwitches = useMemo(() => tagSwitches(savedStageTag, stageTag), [savedStageTag, stageTag]);
 
   /** Load tag `name` of `fp` as saved into the draft. */
   const seedDraft = useCallback((fp: Fingerprint | null, name: string) => {
     const t = flowTagOf(fp?.tags, name);
     setDraftPatterns(t?.match.ix_shape ?? []);
     setDraftWallets(t?.match.wallet ?? []);
+    setDraftSwitches(tagSwitches(t, name));
     setApplyOk(null);
   }, []);
 
@@ -1029,7 +987,7 @@ export function FlowDiscoveryPage() {
             // match-everything row into a criterion-less one.
             criteria: targetFp.criteria,
             wildcard: targetFp.wildcard,
-            tags: withTagDraft(targetFp.tags, stageTag, draftPatterns, draftWallets),
+            tags: withTagDraft(targetFp.tags, stageTag, draftPatterns, draftWallets, draftSwitches),
           },
         }).unwrap();
         setApplyOk(`Saved ${stageWrites} on "${targetFp.name}".`);
@@ -1053,19 +1011,17 @@ export function FlowDiscoveryPage() {
         name: fingerprintNameFromGroupKey(boundKey),
       };
       let fp = await bindFp(body).unwrap();
-      // Bind writes the ix rows only; the wallets follow in one update of the row
-      // it just created.
-      if (draftWallets.length > 0) {
-        fp = await updateFp({
-          id: fp.id,
-          body: {
-            name: fp.name,
-            criteria: fp.criteria,
-            wildcard: fp.wildcard,
-            tags: withTagDraft(fp.tags, stageTag, draftPatterns, draftWallets),
-          },
-        }).unwrap();
-      }
+      // Bind writes the ix rows only; the wallets and the switches follow in one
+      // update of the row it just created.
+      fp = await updateFp({
+        id: fp.id,
+        body: {
+          name: fp.name,
+          criteria: fp.criteria,
+          wildcard: fp.wildcard,
+          tags: withTagDraft(fp.tags, stageTag, draftPatterns, draftWallets, draftSwitches),
+        },
+      }).unwrap();
       setTargetFpId(fp.id);
       setApplyOk(`Bound fingerprint "${fp.name}" with ${stageWrites}.`);
     } catch (e) {
@@ -1443,10 +1399,32 @@ export function FlowDiscoveryPage() {
                 onMatcherChange={pickMatcher}
                 feePins={feePins}
                 onFeePinsChange={setFeePins}
+                switches={draftSwitches}
+                savedSwitches={savedSwitches}
+                onSwitchesChange={(sw) => {
+                  setDraftSwitches(sw);
+                  setApplyOk(null);
+                }}
                 previewTag={previewTag}
                 applying={applying}
                 onApply={handleApply}
               />
+
+              {/* Auto-tag belongs to the owner-split tag only; a plain list has none. */}
+              {isOwnerSplitTag(stageTag) && (
+                <AutoTagPanel
+                  tagName={stageTag}
+                  params={result?.owner_split ?? null}
+                  groupMarks={selectedGroup.owner_marks ?? null}
+                  tokenMarks={selectedTokenRow?.owner_marks ?? null}
+                  tokenMint={selectedTokenMint}
+                  wallets={draftWallets}
+                  onWalletsChange={(ws) => {
+                    setDraftWallets(ws);
+                    setApplyOk(null);
+                  }}
+                />
+              )}
 
               {selectedGroup.n_trades_scored === 0 && (
                 <InlineAlert variant="warning">
@@ -1467,7 +1445,7 @@ export function FlowDiscoveryPage() {
                       <Badge
                         variant="neutral"
                         size="sm"
-                        title="The table filters are hiding rows — the two filtered buttons act on the shown ones only, the three group buttons still read the whole group"
+                        title="The table filters are hiding rows — the two filtered buttons act on the shown ones only; Auto-select suggested still reads the whole group"
                       >
                         {filteredStructures.length} of {selectedGroup.structures.length} shown
                       </Badge>
@@ -1477,22 +1455,19 @@ export function FlowDiscoveryPage() {
                         {suggestedUnchecked.length} suggested
                       </Badge>
                     )}
-                    {firstSlotAll.length > 0 && (
-                      <Badge variant="info" size="sm">
-                        {firstSlotAll.length} at launch
-                        {firstSlotUnchecked.length === 0
-                          ? ' · all staged'
-                          : ` · ${firstSlotUnchecked.length} new`}
+                    {firstSlotCount > 0 && (
+                      <Badge variant="info" size="sm" title="Ranked rows that traded in a matched token's creation slot (the Launch filter)">
+                        {firstSlotCount} at launch
                       </Badge>
                     )}
-                    {firstSlotAll.length === 0 && firstSlotUnscored && (
+                    {firstSlotCount === 0 && firstSlotUnscored && (
                       <Badge variant="neutral" size="sm">
                         launch presence unscored
                       </Badge>
                     )}
-                    {selectedTokenRow && !tokenLaunchUnscored && (
-                      <Badge variant="info" size="sm">
-                        {tokenLaunchAll.length} in this token&apos;s slot
+                    {selectedTokenRow && tokenLaunchShapes && (
+                      <Badge variant="info" size="sm" title="Distinct ix structures in the previewed token's creation slot">
+                        {tokenLaunchShapes.length} in this token&apos;s slot
                         {selectedTokenRow.first_slot != null
                           ? ` (${selectedTokenRow.first_slot})`
                           : ''}
@@ -1500,50 +1475,6 @@ export function FlowDiscoveryPage() {
                     )}
                   </span>
                   <div className="flex flex-wrap items-center gap-2">
-                    {selectedTokenRow && (
-                      <button
-                        type="button"
-                        disabled={tokenLaunchAll.length === 0}
-                        onClick={autoSelectTokenLaunch}
-                        {...previewProps(tokenLaunchAll)}
-                        className="inline-flex items-center gap-1 rounded border border-info/40 px-2 py-1 text-[11px] font-semibold text-info transition hover:bg-info/10 disabled:cursor-not-allowed disabled:opacity-40"
-                        title={
-                          tokenLaunchAll.length === 0
-                            ? tokenLaunchUnscored
-                              ? 'This run predates the per-token launch set, so the creation-slot shapes of the previewed token are unknown. Re-run discovery.'
-                              : 'No trade in the creation slot of the previewed token carried ix_labels'
-                            : `Add every ix shape that traded in the creation slot of the previewed token${
-                                selectedTokenRow.first_slot != null
-                                  ? ` (slot ${selectedTokenRow.first_slot})`
-                                  : ''
-                              } — ${tokenLaunchAll.length} shape(s), ${
-                                tokenLaunchUnchecked.length
-                              } not yet staged. Uncapped and unfloored: unlike the group button this is not read off the ranked table, so a shape too small or too low-ranked to appear as a row above is still added (the hover outline can only mark the ones that do have a row).`
-                        }
-                      >
-                        <CheckIcon className="h-3.5 w-3.5" />
-                        Launch shapes · this token
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      disabled={firstSlotAll.length === 0}
-                      onClick={autoSelectFirstSlot}
-                      {...previewProps(firstSlotAll)}
-                      className="inline-flex items-center gap-1 rounded border border-info/40 px-2 py-1 text-[11px] font-semibold text-info transition hover:bg-info/10 disabled:cursor-not-allowed disabled:opacity-40"
-                      title={
-                        firstSlotAll.length === 0
-                          ? firstSlotUnscored
-                            ? 'No structure in this group carries a first-slot count — the run predates the backend field, so launch presence is unknown. Re-run discovery.'
-                            : "No structure in this group traded in a matched token's creation slot"
-                          : firstSlotUnchecked.length === 0
-                            ? `All ${firstSlotAll.length} launch shapes are already staged (hover outlines them) — the draft is re-seeded from the target fingerprint's saved patterns on every run`
-                            : `Add the ${firstSlotUnchecked.length} not-yet-staged structure(s) that appear in ANY matched token's creation slot — the launch bundle, create instruction included — to the draft ix_patterns. Group-wide and read off the ranked table above, so it can miss a shape that fell outside the server-side row cap; for one token's exact bundle, pick it in the preview and use the per-token button.`
-                      }
-                    >
-                      <CheckIcon className="h-3.5 w-3.5" />
-                      Launch shapes · group
-                    </button>
                     <button
                       type="button"
                       disabled={suggestedUnchecked.length === 0}

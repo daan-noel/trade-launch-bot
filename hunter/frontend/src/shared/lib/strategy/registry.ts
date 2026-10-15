@@ -165,6 +165,13 @@ export function tagField(reg: StrategyRegistry | undefined, key: string): TagFie
   return reg?.tags.fields.find((f) => f.key === key);
 }
 
+/** Tooltip text for a tag field: summary, then its example. */
+export function tagFieldTip(f: TagFieldSpec | undefined): string {
+  return f ? `${f.summary}
+
+Example: ${f.example}` : '';
+}
+
 /** The marker vocabulary, routers last so the two kinds read as two blocks. */
 export function ixMarkers(reg: StrategyRegistry | undefined): IxMarkerSpec[] {
   return [...(reg?.tags.markers ?? [])].sort((a, b) => Number(a.router) - Number(b.router));

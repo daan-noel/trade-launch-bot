@@ -11,6 +11,7 @@ use super::job_progress::ProgressCell;
 use super::analysis_cache::AnalysisCache;
 use super::discovery_result_cache::DiscoveryResultCache;
 use super::sim_results::SimResults;
+use crate::strategies::owner_split::MarketFacts;
 use crate::sweep::corpus::CorpusToken;
 
 /// Option A: the fully-loaded corpus (trades + fingerprints) from the most recent
@@ -24,6 +25,9 @@ pub struct SweepCorpusCache {
     pub tokens: Arc<Vec<CorpusToken>>,
     /// See [`crate::sweep::corpus::Corpus::candidates_capped`].
     pub candidates_capped: bool,
+    /// The owner-split market facts read for this corpus (Flow Discovery), kept so a
+    /// re-run over the same selection skips the lake read. Set once, after the read.
+    owner_facts: Mutex<Option<Arc<MarketFacts>>>,
     /// When this corpus was last written or read, for the idle reaper
     /// ([`crate::state::idle_reaper`]). `Mutex` rather than a plain field because
     /// a *read* must record the touch, and reads hold only `RwLock::read`.
@@ -40,7 +44,19 @@ impl SweepCorpusCache {
             corpus_hash,
             tokens,
             candidates_capped,
+            owner_facts: Mutex::new(None),
             touched: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// The owner-split market facts already read for this corpus.
+    pub fn owner_facts(&self) -> Option<Arc<MarketFacts>> {
+        self.owner_facts.lock().ok().and_then(|f| f.clone())
+    }
+
+    pub fn set_owner_facts(&self, facts: Arc<MarketFacts>) {
+        if let Ok(mut f) = self.owner_facts.lock() {
+            *f = Some(facts);
         }
     }
 

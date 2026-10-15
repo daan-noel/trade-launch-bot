@@ -8,6 +8,7 @@ import { HOST_SHAPES_TAG, STAGE_MATCHER_TITLE, type IxPatternTarget, type StageM
 import { tagLabel } from 'lib/flow/tapeClassify';
 import { tagField, useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
 import { TAG_NAME_RE } from 'lib/strategy/tagsDoc';
+import { TagKindBadge, TagNameOptions } from 'components/strategy/TagKind';
 
 /** A matcher's registry title and summary, for a switch or a caption. */
 function matcherTitle(_reg: StrategyRegistry | undefined, m: StageMatcher): string {
@@ -87,21 +88,19 @@ function TagPicker({ target }: { target: IxPatternTarget }) {
   }
   const names = target.tagNames.includes(target.tagName) ? target.tagNames : [...target.tagNames, target.tagName];
   return (
-    <Select
-      fieldSize="sm"
-      value={target.tagName}
-      onChange={(e) => (e.target.value === NEW_TAG ? setDraft('') : target.setTagName(e.target.value))}
-      title="The tag a click writes and the chart classifies with"
-      className="max-w-40 font-mono"
-    >
-      {names.map((n) => (
-        <option key={n} value={n}>
-          {tagLabel(n)}
-          {target.tagNames.includes(n) ? '' : ' (new)'}
-        </option>
-      ))}
-      <option value={NEW_TAG}>new tag...</option>
-    </Select>
+    <span className="inline-flex items-center gap-1">
+      <Select
+        fieldSize="sm"
+        value={target.tagName}
+        onChange={(e) => (e.target.value === NEW_TAG ? setDraft('') : target.setTagName(e.target.value))}
+        title="The tag a click writes and the chart classifies with"
+        className="max-w-40 font-mono"
+      >
+        <TagNameOptions names={names} known={target.tagNames} />
+        <option value={NEW_TAG}>new tag...</option>
+      </Select>
+      <TagKindBadge name={target.tagName} />
+    </span>
   );
 }
 

@@ -5,12 +5,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::trade_keys::{core_hash, core_labels, ix_hash};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::strategies::owner_split::{self, MarketFacts, OwnerMarks, OwnerSplitParams};
 use crate::sweep::corpus::{Corpus, CorpusToken};
 use crate::sweep::grouped_engine::partition;
 use crate::sweep::grouping::{GroupKey, GroupPlan};
@@ -36,6 +38,9 @@ pub struct DiscoveryConfig {
     pub min_structure_sol: f64,
     pub lift_ambiguous: f64,
     pub max_structures_per_group: usize,
+    /// The lake's market facts for the owner-split rules; `None` leaves the two rules
+    /// that need them (creation slot, never sells) out of the marks.
+    pub facts: Option<Arc<MarketFacts>>,
 }
 
 impl Default for DiscoveryConfig {
@@ -46,6 +51,7 @@ impl Default for DiscoveryConfig {
             min_structure_sol: MIN_STRUCTURE_SOL,
             lift_ambiguous: LIFT_AMBIGUOUS,
             max_structures_per_group: MAX_STRUCTURES_PER_GROUP,
+            facts: None,
         }
     }
 }
@@ -182,6 +188,10 @@ pub struct TokenGross {
     /// [`StructureScore::first_slot_trades`].
     #[serde(default)]
     pub first_slot_ix_labels: Option<Vec<Vec<String>>>,
+    /// The wallets each owner-split rule marks on THIS coin
+    /// ([`owner_split::group_marks`]). `None` on a result cached before the rules ran.
+    #[serde(default)]
+    pub owner_marks: Option<OwnerMarks>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -215,6 +225,10 @@ pub struct DiscoveryGroup {
     /// Ranked (desc gross_sol) member-token roster, capped at
     /// `MAX_TOKENS_PER_GROUP` — drives the per-token preview picker.
     pub tokens: Vec<TokenGross>,
+    /// The wallets each owner-split rule marks across the whole group, every coin
+    /// (not only the roster). `None` on a result cached before the rules ran.
+    #[serde(default)]
+    pub owner_marks: Option<OwnerMarks>,
 }
 
 /// A scored discovery run: its groups **plus the corpus identity that produced
@@ -250,6 +264,9 @@ pub struct DiscoveryResult {
     /// unscoped run. Authoritative attribution for every group in the run.
     #[serde(default)]
     pub fingerprint_id: Option<uuid::Uuid>,
+    /// The owner-split thresholds and market window the marks were computed with.
+    #[serde(default)]
+    pub owner_split: Option<OwnerSplitParams>,
 }
 
 /// See [`DiscoveryGroup::lift_defined`] — a pre-field cached result is read as
@@ -342,6 +359,7 @@ pub fn score_corpus(
         plan: cfg.plan.clone(),
         ix_labels_filter: None,
         fingerprint_id: None,
+        owner_split: Some(OwnerSplitParams::new(cfg.facts.as_deref())),
     })
 }
 
@@ -620,6 +638,8 @@ fn score_group(
             .map(|s| s.group_lift < cfg.lift_ambiguous)
             .unwrap_or(false);
 
+    let mut marks = owner_split::group_marks(&corpus.tokens, idxs, cfg.facts.as_deref());
+
     let mut tokens: Vec<TokenGross> = token_gross
         .into_iter()
         .map(|(ti, gross_sol)| {
@@ -645,6 +665,7 @@ fn score_group(
                 n_trades: token_trades.get(&ti).copied().unwrap_or(0),
                 first_slot: token_first_slot.get(&ti).copied(),
                 first_slot_ix_labels: Some(shapes.into_iter().map(|(_, l)| l).collect()),
+                owner_marks: marks.by_token.remove(&ti),
             }
         })
         .collect();
@@ -664,6 +685,7 @@ fn score_group(
         structures,
         cores,
         tokens,
+        owner_marks: Some(marks.group),
     }
 }
 

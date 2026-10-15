@@ -189,6 +189,26 @@ Sticky lives in memory, for this coin only.
 A stored tag ages; a rebuild reruns the Build offline.
 ```
 
+### Flow Discovery auto-tag
+
+A hand edit, not the Build. On the `volume` tag, Flow Discovery runs the [Birth](#birth) and [Hidden](#hidden) rules over the run's coins (`lab/src/strategies/owner_split.rs`, the thresholds below as its constants) and offers one toggle per rule, in two tabs:
+
+| Tab | Toggle | Marks |
+| --- | --- | --- |
+| Creation slot | Instant buy | Instant buy |
+| Creation slot | Creation slot | Creation slot, snipers left out |
+| Creation slot | Bundle | Creation-slot bundle |
+| Creation slot | Bought twice | Bought twice |
+| Transfers | Below zero | Below zero; the group scope keeps only wallets on **2** or more coins |
+| Transfers | Transfer pair | Same amount and Matching holder, both wallets |
+| Transfers | Never sells | Never sells |
+
+- A toggle adds its rule's wallets to the draft's `match.wallet` list, and a second click takes them out. A wallet another toggle that is on also marks stays. Apply saves the list with the sticky and creator switches.
+- **This token** takes the picked coin's marks, **Group** every coin's. A this-coin mark lands in the stored wallet list on purpose: the user chooses to store it, and a toggle takes it out again.
+- The sniper counts and Never sells read the market over the **14** days ending at the run's last trade. When that lake read fails, the Creation slot and Never sells toggles are off for the run, with a notice.
+- The tooltips quote the thresholds the run applied, sent with the result.
+- **Gap:** the [recent window](#terms) is not applied. A toggle stores a wallet whatever the date of its latest trade on the group.
+
 ## 1. Mark
 
 This is the [Build](#build). Every coin has ended, so the dump is on the tape. A this-coin rule marks the wallet owner on that coin and does not store it. A row that passes [Match levels](#match-levels), or a wallet that comes back, is stored. No owner wallet is known at the start.
