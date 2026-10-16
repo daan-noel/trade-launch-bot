@@ -82,6 +82,11 @@ const SELL_CONFIRM_WINDOW: Duration = Duration::from_secs(5);
 const SELL_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 /// Extended poll when sell status is Succeeded/Pending (never re-send).
 const SELL_UNCONFIRMED_EXTENDED: Duration = Duration::from_secs(20);
+/// Wait before each rent-reclaim close attempt. The first gives the preflight
+/// RPC node time to see the sell the feed already showed; a failed attempt is a
+/// simulation failure, so a retry costs one RPC call and no fee.
+const RECLAIM_CLOSE_DELAYS: [Duration; 3] =
+    [Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4)];
 /// Longest a sibling's sell queues on the mint lock: the holding exit's own worst
 /// case, every attempt's send and confirm window plus the extended poll.
 const EXIT_MINT_WAIT: Duration = Duration::from_secs(
@@ -1565,15 +1570,27 @@ async fn finish_cleared_sell(
     // Fire-and-forget rent reclaim — the close this fill already booked the fee of.
     // The account this position funded, not the per-mint cache: two buys on one
     // mint fund two accounts, and the cache holds only the last one.
+    // The feed shows our sell before the RPC node that preflights the close has
+    // it: the close then simulates against the still-funded account (SPL 0xb)
+    // or a blockhash the node has not seen yet. Wait, and retry on that lag.
     if reclaims {
         let trader = deps.trader.clone();
         let mint = order.mint.clone();
         let account = order.token_account.clone();
         tokio::spawn(async move {
-            if let Err(err) = trader.close_token_account(&mint, account.as_deref()).await {
+            let mut last_err = None;
+            for delay in RECLAIM_CLOSE_DELAYS {
+                tokio::time::sleep(delay).await;
+                match trader.close_token_account(&mint, account.as_deref()).await {
+                    Ok(()) => return,
+                    Err(err) => last_err = Some(err),
+                }
+            }
+            if let Some(err) = last_err {
                 tracing::warn!(
                     mint = %mint,
                     account = account.as_deref().unwrap_or("-"),
+                    attempts = RECLAIM_CLOSE_DELAYS.len(),
                     "rent-reclaim close failed: {err}"
                 );
             }

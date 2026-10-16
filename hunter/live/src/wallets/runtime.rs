@@ -222,6 +222,23 @@ impl WalletRuntime {
         rows.into_iter().map(|(_, s)| s.trader.clone()).collect()
     }
 
+    /// Run `f` on every loaded wallet's trader, under the read lock and without
+    /// allocating. The per-trade feed hooks fan out through this, so `f` must
+    /// not block or touch the wallet registry.
+    pub fn for_each_trader(&self, mut f: impl FnMut(&Arc<PumpFunTrader>)) {
+        for slot in self.slots.read().expect("wallets").values() {
+            f(&slot.trader);
+        }
+    }
+
+    /// Release `position_id`'s SOL earmark on whichever trader holds it. The
+    /// earmark lives on the trader of the wallet that signed the buy, and a
+    /// release through any other trader is a silent no-op that strands that
+    /// wallet's `max_committed_sol` budget until restart.
+    pub fn release_commitment(&self, position_id: &str) {
+        self.for_each_trader(|trader| trader.release_sol_for_position(position_id));
+    }
+
     pub fn signer(&self, pubkey: &str) -> Option<Arc<Keypair>> {
         self.slots.read().expect("wallets").get(pubkey).map(|s| s.signer.clone())
     }
@@ -560,5 +577,41 @@ mod tests {
         );
         let (_, trader) = rt.for_position(&pubkey, &fallback);
         assert!(trader.is_some_and(|t| Arc::ptr_eq(&t, &loaded)));
+    }
+
+    fn load_inert(rt: &WalletRuntime, name: &str) -> Arc<PumpFunTrader> {
+        let trader = rt.factory.inert();
+        rt.slots.write().unwrap().insert(
+            trader.wallet_pubkey(),
+            Slot {
+                name: name.into(),
+                trader: trader.clone(),
+                signer: Arc::new(Keypair::new()),
+                nonces: Vec::new(),
+                init_error: None,
+            },
+        );
+        trader
+    }
+
+    /// A buy signed by a non-primary wallet earmarks SOL on THAT wallet's
+    /// trader. Releasing through the primary alone is a no-op, and six such
+    /// leaks pinned a wallet at its `max_committed_sol` ceiling for good.
+    #[tokio::test]
+    async fn release_commitment_frees_the_signing_wallets_earmark() {
+        let rt = runtime();
+        let primary = load_inert(&rt, "primary");
+        let other = load_inert(&rt, "other");
+        let pg_id = uuid::Uuid::new_v4().to_string();
+
+        other.commit_sol_for_position(pg_id.clone(), 50_000_000);
+        primary.release_sol_for_position(&pg_id);
+        assert_eq!(other.committed_lamports(), 50_000_000, "the primary cannot release it");
+
+        rt.release_commitment(&pg_id);
+        assert_eq!(other.committed_lamports(), 0);
+        assert_eq!(primary.committed_lamports(), 0);
+        rt.release_commitment(&pg_id);
+        assert_eq!(other.committed_lamports(), 0, "idempotent");
     }
 }

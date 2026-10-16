@@ -7,7 +7,9 @@
 //! only crate that depends on BOTH the executor and the DB — carries them across
 //! the boundary the executor (a standalone drop-in) can't cross itself:
 //!   - [`spawn_persist_loop`]: background task upserting newly cached pools.
-//!   - [`seed_from_db`]: boot-time re-seed of the trader cache for held mints.
+//!   - [`seed_from_db`]: boot-time re-seed of every loaded trader's cache for
+//!     held mints. The persist loop reads the primary alone: the feed harvest
+//!     fans out to every trader, so the primary sees every pool any of them does.
 //!
 //! Neither path touches the hot ingest/exit loops.
 
@@ -19,6 +21,8 @@ use pump_trader::{AmmPoolFacts, PumpFunTrader};
 use sqlx::PgPool;
 use tracing::{debug, error, info};
 use trading_core::storage::repositories::amm_pool_facts_repo::{AmmPoolFactRow, AmmPoolFactsRepo};
+
+use crate::wallets::WalletRuntime;
 
 /// How often the persist loop scans the trader cache for newly learned pools. A
 /// new pool appears only when a migrated token is first traded/harvested, so a
@@ -66,10 +70,11 @@ fn from_row(r: AmmPoolFactRow) -> (String, AmmPoolFacts) {
     )
 }
 
-/// Re-seed the trader's pool-facts cache for `mints` from the DB (boot path).
-/// Zero RPC. Returns how many entries were seeded. Never fails boot — a DB error
-/// just means the cache fills from live events / the cold path instead.
-pub async fn seed_from_db(trader: &PumpFunTrader, pool: &PgPool, mints: &[String]) -> usize {
+/// Re-seed every loaded wallet's pool-facts cache for `mints` from the DB (boot
+/// path) — any of them may hold one of these bags. Zero RPC. Returns how many
+/// entries were seeded. Never fails boot — a DB error just means the cache fills
+/// from live events / the cold path instead.
+pub async fn seed_from_db(wallets: &WalletRuntime, pool: &PgPool, mints: &[String]) -> usize {
     if mints.is_empty() {
         return 0;
     }
@@ -84,9 +89,11 @@ pub async fn seed_from_db(trader: &PumpFunTrader, pool: &PgPool, mints: &[String
     let mut seeded = 0usize;
     for row in rows {
         let (mint, facts) = from_row(row);
-        if trader.seed_amm_pool_facts(&mint, &facts) {
-            seeded += 1;
-        }
+        wallets.for_each_trader(|trader| {
+            if trader.seed_amm_pool_facts(&mint, &facts) {
+                seeded += 1;
+            }
+        });
     }
     if seeded > 0 {
         info!(seeded, "seeded AMM pool facts from DB (zero RPC)");

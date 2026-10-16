@@ -122,8 +122,11 @@ this queue. A create, trade, or migration sets `TokenState::metrics_unsaved`.
 the mark again. Eviction, and turning Mayhem tracking off, write every leaving
 mint and remove it only after that write succeeds. The live token list is
 patched from the trade stream; the 90 s page poll is the reader this interval
-follows. Own-wallet trades also call `TradeSignals::observe_own_leg` before the
-durable enqueue so buy/sell confirm can resolve without waiting on DbWriter.
+follows. Every trade also calls `TradeSignals::observe_own_leg` before the
+durable enqueue so buy/sell confirm can resolve without waiting on DbWriter. It is
+a no-op unless a confirm waits on that `(wallet, mint)`, so it covers every loaded
+wallet with no wallet filter; gating it on one wallet leaves every other wallet's
+confirm on the 500 ms Postgres fallback.
 See `@plans/ingest/backpressure-watchdog.md`.
 
 **Liveness watchdog:** `db_writer.rs` stamps `DbHeartbeat` at the end of a `flush()` **only when it persisted ≥1 row** (`any_ok`) — an all-failed flush leaves it stale. A dedicated OS thread (via `watchdog::spawn_watchdog`) force-exits (`exit(1)`) when live mode is on AND no successful write landed within `watchdog_stall_timeout_secs`. It does **not** gate on DB-queue depth: that proxy misses upstream stalls, because a dead transport drains the queue empty — the healthiest-looking reading there is. `live + stale` alone catches both a wedged downstream and a dead upstream. The heartbeat must stay a measure of *work completed*, never of the flush loop iterating.

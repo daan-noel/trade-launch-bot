@@ -1193,7 +1193,9 @@ async fn run() -> anyhow::Result<()> {
     // feed speed (the executor's post-send poll becomes a stall fallback). Both
     // callbacks are cheap parses running on the transport task.
     let push_hooks = {
-        let bh_trader = trader.clone();
+        // Every loaded wallet's trader signs off its own blockhash cache; one the
+        // feed never fills falls back to polling `getLatestBlockhash`.
+        let bh_wallets = wallets.clone();
         let feed_lag = Arc::new(ingest::feed_lag::FeedLagGauge::new());
         // Every loaded wallet and its nonce accounts are watched so each SOL
         // balance tracks at feed speed: a pushed `lamports` refreshes that
@@ -1209,7 +1211,7 @@ async fn run() -> anyhow::Result<()> {
             watch_accounts,
             on_block_meta: Some(Box::new(move |slot, blockhash, block_time| {
                 if let Ok(hash) = blockhash.parse::<solana_sdk::hash::Hash>() {
-                    bh_trader.set_cached_blockhash(hash, slot);
+                    bh_wallets.for_each_trader(|t| t.set_cached_blockhash(hash, slot));
                 }
                 // Block metas are the ONLY frame carrying the chain's own clock, so
                 // this is the one place feed lag is observable — every downstream
@@ -1236,10 +1238,9 @@ async fn run() -> anyhow::Result<()> {
         sse_tx.clone(),
         settings_tx.subscribe(),
         live_rx,
-        Arc::new(trader::TraderHookBridge(trader.clone())),
+        Arc::new(trader::TraderHookBridge(wallets.clone())),
         trade_signals.clone(),
         push_hooks,
-        trader.wallet_pubkey(),
         boot_gate.clone(),
     ).await;
     let pool_index = ingest_result.pool_index;
@@ -1258,7 +1259,7 @@ async fn run() -> anyhow::Result<()> {
         let db = db.clone();
         let token_cache = token_cache.clone();
         let held_pools = held_pools.clone();
-        let trader = trader.clone();
+        let wallets = wallets.clone();
         tokio::spawn(async move {
             let started = std::time::Instant::now();
             match seed::seed_token_cache(&db, token_cache).await {
@@ -1272,7 +1273,7 @@ async fn run() -> anyhow::Result<()> {
                     // boot skips the cold RPC swap-layout read. Facts absent from
                     // the store fall back to the deterministic pool_v2 cold probe.
                     services::amm_pool_facts::seed_from_db(
-                        &trader,
+                        &wallets,
                         &db,
                         &outcome.held_migrated_mints,
                     )

@@ -91,7 +91,7 @@ pub async fn reload_all(state: &DeployState) -> ReloadCachesResponse {
             state
                 .held_pools
                 .track_migrated_many(&outcome.held_migrated_mints);
-            amm_pool_facts::seed_from_db(&state.trader, &state.db, &outcome.held_migrated_mints)
+            amm_pool_facts::seed_from_db(&state.wallets, &state.db, &outcome.held_migrated_mints)
                 .await;
             steps.push(step_ok(
                 "token_cache",

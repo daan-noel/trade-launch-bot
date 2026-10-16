@@ -94,7 +94,6 @@ pub async fn spawn_ingest(
     trader: Arc<dyn TraderHook>,
     trade_signals: Arc<TradeSignals>,
     push_hooks: PushHooks,
-    trading_wallet: String,
     // Set by the engine loop once startup finishes — the watchdog only polices
     // the steady state (see `BootGate`).
     boot_gate: BootGate,
@@ -155,7 +154,6 @@ pub async fn spawn_ingest(
         trade_signals.clone(),
         handle.clone(),
         held_pools.clone(),
-        trading_wallet,
         trading_core::storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone()),
     );
 

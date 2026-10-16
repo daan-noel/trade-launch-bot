@@ -102,8 +102,6 @@ pub struct IngestConsumer {
     trade_signals: Arc<TradeSignals>,
     ingest_handle: Arc<IngestHandle>,
     held_pools: HeldPoolGate,
-    /// Real trading wallet — used to early-observe own legs for fill confirm.
-    trading_wallet: String,
     /// Final `tokens_info` write when Mayhem tracking is switched off and those
     /// mints leave the cache. The periodic flush uses its own repo.
     info_repo: TokenInfoRepo,
@@ -124,7 +122,6 @@ impl IngestConsumer {
         trade_signals: Arc<TradeSignals>,
         ingest_handle: Arc<IngestHandle>,
         held_pools: HeldPoolGate,
-        trading_wallet: String,
         info_repo: TokenInfoRepo,
     ) -> (Self, Arc<ShedCounters>) {
         let shed = Arc::new(ShedCounters::default());
@@ -141,7 +138,6 @@ impl IngestConsumer {
                 trade_signals,
                 ingest_handle,
                 held_pools,
-                trading_wallet,
                 info_repo,
                 shed: shed.clone(),
             },
@@ -411,24 +407,24 @@ impl IngestConsumer {
         );
 
         // Own-wallet preview + early wake *before* durable enqueue so buy/sell
-        // confirm can resolve without waiting on DbWriter commit.
-        if wallet == self.trading_wallet {
-            self.trade_signals.observe_own_leg(
-                &wallet,
-                &mint,
-                &e.signature,
-                e.tokens,
-                e.sol,
-                e.block_time,
-                e.slot,
-                e.payer_net_lamports,
-                e.reserves
-                    .virtual_sol
-                    .zip(e.reserves.virtual_token)
-                    .filter(|(_, tok)| *tok > 0)
-                    .map(|(sol, tok)| sol / tok as f64),
-            );
-        }
+        // confirm can resolve without waiting on DbWriter commit. Every wallet
+        // that signs is "own": the call is a no-op unless a confirm is waiting on
+        // this exact `(wallet, mint)`, which only our in-flight orders register.
+        self.trade_signals.observe_own_leg(
+            &wallet,
+            &mint,
+            &e.signature,
+            e.tokens,
+            e.sol,
+            e.block_time,
+            e.slot,
+            e.payer_net_lamports,
+            e.reserves
+                .virtual_sol
+                .zip(e.reserves.virtual_token)
+                .filter(|(_, tok)| *tok > 0)
+                .map(|(sol, tok)| sol / tok as f64),
+        );
 
         // ── Durable sinks (non-blocking; defer under backpressure) ─────────────
         self.enqueue_db_durable(DbWriteOp::Trade(db_trade));

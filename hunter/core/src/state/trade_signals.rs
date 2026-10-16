@@ -124,7 +124,11 @@ impl TradeSignals {
     }
 
     /// Whether anyone is waiting on `(wallet, mint)` (buy/sell confirm in flight).
+    /// Ingest asks this for every trade, so nothing in flight is one `is_empty`.
     pub fn has_waiter(&self, wallet: &str, mint: &str) -> bool {
+        if self.wallets.is_empty() {
+            return false;
+        }
         self.wallets
             .get(wallet)
             .and_then(|m| m.get(mint).map(|s| s.waiters > 0))

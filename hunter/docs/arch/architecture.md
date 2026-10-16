@@ -118,7 +118,10 @@ spawn(helius_laserstream_url, helius_api_key, pump_program_id, db, token_cache,
 (`live/src/ingest/watchdog.rs`), the pool-subscription refresh, and the queue-depth logger — all
 owned by the ingest module, not caller-driven. Chunk lifecycle is declarative (TimescaleDB
 retention/compression policies), so nothing here maintains partitions. The deploy bin bridges
-its `PumpFunTrader` to `TraderHook` via `trader::TraderHookBridge`. See [@arch/ingest.md](@arch/ingest.md).
+`TraderHook` to every loaded wallet's `PumpFunTrader` via `trader::TraderHookBridge`
+(`WalletRuntime::for_each_trader`), and the block-meta push feeds each one's
+blockhash cache the same way: each trader owns its caches, so one the feed skips
+reads them over RPC. See [@arch/ingest.md](@arch/ingest.md).
 
 ## Strategy layering — one engine, three layers
 

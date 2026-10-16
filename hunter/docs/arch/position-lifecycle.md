@@ -233,7 +233,8 @@ buy override, so one position can never split its bag across two accounts.
 
 Sharing one account across sibling positions is the *intended* shape (each sells its
 own `token_amount`; `has_other_open_position_on_mint` gates the rent-reclaim close so
-neither closes it under the other), and a buy with nothing recorded reaches for it via
+neither closes it under the other; the close waits 1 s and retries twice, because the
+feed shows our sell before the preflight RPC node does), and a buy with nothing recorded reaches for it via
 `find_reusable_token_account` — but only after `cached_token_account` proves the mint
 has been traded in-process, so a fresh-mint snipe never pays the query. Best-effort:
 a cold cache after restart just draws a new seeded account, which stays correctly

@@ -226,7 +226,8 @@ pub struct Sink {
     /// batching writer. Never awaits — see `engine::arm_ledger`.
     ledger: ArmLedger,
     fill_sigs: FillSigStore,
-    /// Real trader — used to release SOL commitments on terminal unentered exits.
+    /// Process trader — releases SOL commitments when no wallet is loaded; a
+    /// loaded wallet's earmark is released through `wallets` (see `release_sol`).
     trader: Option<Arc<PumpFunTrader>>,
     /// Retains LaserStream AMM pool subs for unsettled real positions.
     held_pools: Option<HeldPoolGate>,
@@ -1014,6 +1015,18 @@ impl Sink {
         true
     }
 
+    /// Release a position's SOL earmark on the trader that holds it: the signing
+    /// wallet's, which is not the process trader for a rule on a non-primary
+    /// wallet. The process trader covers the offline runtime (no wallets
+    /// loaded). Both are idempotent no-ops for an id they do not hold.
+    fn release_sol(&self, pg_id: uuid::Uuid) {
+        let id = pg_id.to_string();
+        self.wallets.release_commitment(&id);
+        if let Some(trader) = &self.trader {
+            trader.release_sol_for_position(&id);
+        }
+    }
+
     /// The buy never filled (entry exhausted / fatal) — terminal `EntryFailed`.
     /// Deliberately stamps NO hypothetical exit price (there was never a
     /// position; the row is excluded from per-position PnL). Its reverted buys'
@@ -1028,9 +1041,7 @@ impl Sink {
         // Freeing the SOL commitment is in-memory and must not wait on PG — a
         // stop force-fails every EntryPending arm at once and each one holds
         // budget until this runs.
-        if let Some(trader) = &self.trader {
-            trader.release_sol_for_position(&meta.pg_id.to_string());
-        }
+        self.release_sol(meta.pg_id);
         let prev = self.pending_pg.remove(&meta.pg_id);
         let repo = self.repo.clone();
         let release = self.held_pool_release(&meta);
@@ -1064,9 +1075,7 @@ impl Sink {
         let Some(meta) = self.registry.get(delta.position) else {
             return false;
         };
-        if let Some(trader) = &self.trader {
-            trader.release_sol_for_position(&meta.pg_id.to_string());
-        }
+        self.release_sol(meta.pg_id);
         // Sells the executor actually submitted before giving up. Without these the
         // row lands in the attention lane with `exit_tx_signatures = []`, and neither
         // a manual Verify nor the reaper can tell "landed late" from "never landed".
