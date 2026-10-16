@@ -84,6 +84,7 @@ export function useRuleActions({
             id: editingId,
             body: {
               rule_name: draft.rule_name,
+              fingerprint_id: draft.fingerprint_id,
               trade_mode: draft.trade_mode,
               buy_amount_lamports: draft.buy_amount_lamports,
               max_concurrent_tokens: draft.max_concurrent_tokens,

@@ -740,8 +740,10 @@ These surfaces are strategy-agnostic and unchanged by the retirement:
    `dense_ticks` disables the whole thing if you need to bisect.
 6. **ONE serialized decision loop** — every `reduce` happens in `decision_loop.rs`;
    no mint sharding, no interleaved position transitions.
-7. **Live-rule edit guard** — `fingerprint_id` is frozen post-create (PUT
-   ignores it); `trade_mode` is editable via PUT but the editor locks it
+7. **Live-rule edit guard** — `fingerprint_id` changes only through
+   `rules::apply_fingerprint_change` (PUT): the rule must be idle, have no unclosed
+   position, and the new fingerprint must exist (a bundle import still refuses it);
+   `trade_mode` is editable via PUT but the editor locks it
    behind an unlock control. The rule's params lock in the UI while the rule
    is active. Entry dispatch + sells both route off the position's
    snapshotted `trade_mode`, never a mid-retry rule flip. That lock is also what

@@ -316,7 +316,19 @@ pub async fn update_rule(
     let Ok(Some(mut rule)) = app_state.rule_repo.find(id).await else {
         return HttpResponse::NotFound().json(json!({"error": "rule not found"}));
     };
-    apply_rule_update(&mut rule, &body);
+    if let Err(e) = apply_rule_update(&mut rule, &body) {
+        return rule_error(e, "update rule");
+    }
+    if let Err(e) = rules::apply_fingerprint_change(
+        &app_state.rule_repo,
+        &app_state.fingerprint_repo,
+        &mut rule,
+        &body,
+    )
+    .await
+    {
+        return rule_error(e, "update rule");
+    }
     match rules::save_with_fp_check(&app_state.rule_repo, &app_state.fingerprint_repo, &mut rule)
         .await
     {

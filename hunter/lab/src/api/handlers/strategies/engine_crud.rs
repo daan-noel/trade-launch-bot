@@ -276,7 +276,14 @@ pub async fn update_rule(
     let Ok(Some(mut rule)) = repo.find(path.into_inner()).await else {
         return HttpResponse::NotFound().json(serde_json::json!({ "error": "rule not found" }));
     };
-    apply_rule_update(&mut rule, &body);
+    if let Err(e) = apply_rule_update(&mut rule, &body) {
+        return rule_err(e, "update rule");
+    }
+    if let Err(e) =
+        rules::apply_fingerprint_change(&repo, &fp_repo(&app_state), &mut rule, &body).await
+    {
+        return rule_err(e, "update rule");
+    }
     match rules::save_with_fp_check(&repo, &fp_repo(&app_state), &mut rule).await {
         Ok(warning) => {
             // Drop the durable last-sim when trading config changed (`sim_key`).

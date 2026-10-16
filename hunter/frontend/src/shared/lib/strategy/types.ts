@@ -230,6 +230,7 @@ export type UpdateRuleBody = Partial<
   Pick<
     CreateRuleBody,
     | 'rule_name'
+    | 'fingerprint_id'
     | 'trade_mode'
     | 'buy_amount_lamports'
     | 'max_concurrent_tokens'

@@ -714,7 +714,8 @@ pub async fn apply_bundle(
                 // refuses `is_active` / `is_enabled` / `fingerprint_id` outright —
                 // between them, nothing about how this box RUNS the rule can ride
                 // in on a bundle. This is the arming guarantee in the module docs.
-                rules::apply_rule_update(&mut rule, &rule_patch(item));
+                rules::apply_rule_update(&mut rule, &rule_patch(item))
+                    .map_err(rule_error_to_anyhow)?;
                 rules::save(rule_repo, &mut rule)
                     .await
                     .map_err(rule_error_to_anyhow)?;

@@ -127,6 +127,20 @@ impl RuleRepo {
         Ok(())
     }
 
+    /// True while any position of `rule_id` is not terminally closed (`End` /
+    /// `EntryFailed`, see `StrategyPosition::is_closed`): its exit still reads the
+    /// rule's fingerprint, so the fingerprint may not change underneath it.
+    pub async fn has_unclosed_positions(&self, rule_id: Uuid) -> anyhow::Result<bool> {
+        let open: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM strategy_positions \
+             WHERE rule_id = $1 AND status NOT IN ('End', 'EntryFailed'))",
+        )
+        .bind(rule_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(open)
+    }
+
     pub async fn find(&self, id: Uuid) -> anyhow::Result<Option<StrategyRule>> {
         let row = sqlx::query_as::<_, StrategyRuleDbRow>(&format!(
             "SELECT {RULE_COLS} FROM strategy_rules WHERE id = $1"

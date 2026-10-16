@@ -162,35 +162,106 @@ fn tags_from_json(body: &Value) -> Option<Vec<String>> {
 
 /// Overlay the mutable fields of a PUT body onto a loaded rule — SSOT for the
 /// patch shape (shared by live + lab). `fingerprint_id`, `is_active`, and
-/// `is_enabled` are intentionally not patchable here (fingerprint frozen
-/// post-create; active/enabled only via the lifecycle endpoints). `trade_mode`
+/// `is_enabled` are intentionally not patchable here (fingerprint only through
+/// [`apply_fingerprint_change`], which guards it; active/enabled only via the
+/// lifecycle endpoints). `trade_mode`
 /// is patchable — the editor gates it behind an unlock; open positions keep
 /// their snapshotted mode so an in-flight entry retry cannot flip paper↔real.
-pub fn apply_rule_update(rule: &mut StrategyRule, body: &Value) {
-    if let Some(v) = body.get("rule_name").and_then(|v| v.as_str()) {
-        rule.rule_name = v.to_string();
+///
+/// A field that is present but unreadable (wrong type, non-numeric string) is a
+/// 400 naming the field, never skipped: an edit must not vanish behind a 200.
+/// Absent = leave alone. Nothing is applied on error.
+pub fn apply_rule_update(rule: &mut StrategyRule, body: &Value) -> Result<(), RuleError> {
+    let bad = |key: &str, want: &str| RuleError::Invalid(format!("{key} must be {want}"));
+    let text = |key: &str| match body.get(key) {
+        None => Ok(None),
+        Some(v) => v.as_str().map(|s| Some(s.to_string())).ok_or_else(|| bad(key, "a string")),
+    };
+    let int = |key: &str| match body.get(key) {
+        None => Ok(None),
+        Some(_) => opt_i64(body, key).map(Some).ok_or_else(|| bad(key, "an integer")),
+    };
+    let rule_name = text("rule_name")?;
+    let trade_mode = text("trade_mode")?;
+    let buy = int("buy_amount_lamports")?;
+    let concurrent = int("max_concurrent_tokens")?;
+    let total = int("max_total_tokens")?;
+    // Absent ⇒ leave tags alone (patch semantics); `[]` ⇒ clear them. `save`
+    // re-normalizes, so a hand-rolled PUT can't store a non-canonical array.
+    let tags = match body.get("tags") {
+        None => None,
+        Some(v) => Some(
+            v.as_array()
+                .and_then(|a| {
+                    a.iter().map(|t| t.as_str().map(str::to_string)).collect::<Option<Vec<String>>>()
+                })
+                .ok_or_else(|| bad("tags", "an array of strings"))?,
+        ),
+    };
+    if let Some(v) = rule_name {
+        rule.rule_name = v;
     }
-    if let Some(v) = body.get("trade_mode").and_then(|v| v.as_str()) {
-        rule.trade_mode = v.to_string();
+    if let Some(v) = trade_mode {
+        rule.trade_mode = v;
     }
-    if let Some(v) = opt_i64(body, "buy_amount_lamports") {
+    if let Some(v) = buy {
         rule.buy_amount_lamports = v;
     }
-    if let Some(v) = opt_i64(body, "max_concurrent_tokens") {
+    if let Some(v) = concurrent {
         rule.max_concurrent_tokens = v;
     }
-    if let Some(v) = opt_i64(body, "max_total_tokens") {
+    if let Some(v) = total {
         rule.max_total_tokens = v;
     }
     if let Some(v) = body.get("params").cloned() {
         rule.params = v;
     }
-    // Absent ⇒ leave tags alone (patch semantics); `[]` ⇒ clear them. `save`
-    // re-normalizes, so a hand-rolled PUT can't store a non-canonical array.
-    if let Some(tags) = tags_from_json(body) {
+    if let Some(tags) = tags {
         rule.tags = normalize_tags(&tags);
     }
     rule.updated_at = Utc::now();
+    Ok(())
+}
+
+/// Apply a `fingerprint_id` in a PUT body — the one door for re-pointing a rule
+/// (shared by live + lab; [`apply_rule_update`] never touches it). Absent or equal
+/// to the current one is a no-op. A change needs an idle rule with no unclosed
+/// position (an exit still reads the fingerprint it entered under) and an existing
+/// fingerprint. Call before [`save`], which re-runs the duplicate gate on the new id.
+pub async fn apply_fingerprint_change(
+    repo: &RuleRepo,
+    fp_repo: &FingerprintRepo,
+    rule: &mut StrategyRule,
+    body: &Value,
+) -> Result<(), RuleError> {
+    let raw = match body.get("fingerprint_id") {
+        None => return Ok(()),
+        Some(v) => v
+            .as_str()
+            .ok_or_else(|| RuleError::Invalid("fingerprint_id must be a uuid string".into()))?,
+    };
+    let new_id = Uuid::parse_str(raw)
+        .map_err(|_| RuleError::Invalid("fingerprint_id must be a uuid".into()))?;
+    if new_id == rule.fingerprint_id {
+        return Ok(());
+    }
+    if rule.is_active {
+        return Err(RuleError::Invalid(
+            "pause the rule before changing its fingerprint".into(),
+        ));
+    }
+    if repo.has_unclosed_positions(rule.id).await.map_err(RuleError::Repo)? {
+        return Err(RuleError::Invalid(
+            "the rule has open positions; close them before changing its fingerprint".into(),
+        ));
+    }
+    match fp_repo.find(new_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(RuleError::Invalid("fingerprint not found".into())),
+        Err(e) => return Err(RuleError::Repo(e)),
+    }
+    rule.fingerprint_id = new_id;
+    Ok(())
 }
 
 /// Validate the typed-column knobs shared by create and edit. `tags` are
@@ -497,7 +568,8 @@ mod generic_tests {
                 "rule_name": "renamed",
                 "buy_amount_lamports": 2_000_000_000_i64,
             }),
-        );
+        )
+        .unwrap();
         assert_eq!(rule.trade_mode, "real");
         assert_eq!(rule.rule_name, "renamed");
         assert_eq!(rule.buy_amount_lamports, 2_000_000_000);
@@ -629,16 +701,35 @@ mod generic_tests {
     #[test]
     fn apply_rule_update_tag_patch_semantics() {
         let mut rule = build_rule(&generic_draft(valid_params())).expect("valid");
-        apply_rule_update(&mut rule, &json!({ "tags": ["Fam:Scalper"] }));
+        apply_rule_update(&mut rule, &json!({ "tags": ["Fam:Scalper"] })).unwrap();
         assert_eq!(rule.tags, tags(&["fam:scalper"]));
 
         // Absent key ⇒ untouched (a rename must not wipe tags).
-        apply_rule_update(&mut rule, &json!({ "rule_name": "renamed" }));
+        apply_rule_update(&mut rule, &json!({ "rule_name": "renamed" })).unwrap();
         assert_eq!(rule.tags, tags(&["fam:scalper"]));
 
         // Explicit empty array ⇒ cleared.
-        apply_rule_update(&mut rule, &json!({ "tags": [] }));
+        apply_rule_update(&mut rule, &json!({ "tags": [] })).unwrap();
         assert!(rule.tags.is_empty());
+    }
+
+    #[test]
+    fn apply_rule_update_rejects_unreadable_fields() {
+        let mut rule = build_rule(&generic_draft(valid_params())).expect("valid");
+        let name = rule.rule_name.clone();
+        for body in [
+            json!({ "buy_amount_lamports": "abc" }),
+            json!({ "max_total_tokens": null }),
+            json!({ "trade_mode": 7 }),
+            json!({ "tags": ["ok", 7] }),
+            // a readable field beside a bad one is not half-applied
+            json!({ "rule_name": "renamed", "max_concurrent_tokens": {} }),
+        ] {
+            assert!(matches!(apply_rule_update(&mut rule, &body), Err(RuleError::Invalid(_))), "{body}");
+            assert_eq!(rule.rule_name, name, "{body}");
+        }
+        apply_rule_update(&mut rule, &json!({ "buy_amount_lamports": "5" })).unwrap();
+        assert_eq!(rule.buy_amount_lamports, 5);
     }
 
     #[test]

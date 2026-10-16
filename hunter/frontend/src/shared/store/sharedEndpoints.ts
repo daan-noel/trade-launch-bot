@@ -345,7 +345,8 @@ export const sharedApi = baseApi.injectEndpoints({
     }),
     updateStrategyRule: builder.mutation<StrategyRule, { id: string; body: UpdateRuleBody }>({
       query: ({ id, body }) => ({ url: `/api/strategy-rules/${id}`, method: 'PUT', body }),
-      invalidatesTags: ['StrategyRule'],
+      // A re-pointed fingerprint moves the used-by count of both ends.
+      invalidatesTags: ['StrategyRule', 'Fingerprint'],
     }),
     deleteStrategyRule: builder.mutation<void, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}`, method: 'DELETE' }),
