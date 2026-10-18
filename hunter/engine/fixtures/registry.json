@@ -855,6 +855,12 @@
       "title": "Size as % of pool"
     },
     {
+      "example": "65 : accept up to 2.86x the quoted price, enough for a launch snipe filling behind its bundle (~2.7x).",
+      "key": "enter.slippage_pct",
+      "summary": "Real buys only. The buy reverts if it would get more than this percent fewer tokens than quoted at send (pays more than 1 / (1 - pct/100) times the quoted price). Blank: the Settings buy slippage. Paper and simulate never revert, so set it to cover the fill the rule's study priced.",
+      "title": "Buy slippage %"
+    },
+    {
       "example": "cashout = profit_sol @volume >= 1.18, or (profit_sol @volume >= 0.71 and buy_sol @!volume [3s] >= 1).",
       "key": "signals",
       "summary": "Named conditions, written once and used by name in any condition: a buy gate or a line. A signal holds when any of its groups holds (every condition of that group). The gate or line adds that case's own metrics beside the name.",

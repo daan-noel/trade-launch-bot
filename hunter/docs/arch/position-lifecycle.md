@@ -101,9 +101,14 @@ has already been shown to be wrong: an empty wallet with no sell row means the s
 landed and the feed missed it. Asking it for the proceeds anyway returns nothing, and a
 zero-proceeds `End` is a permanent −100% stamped on a position that may have won.
 
-Two rules close that:
+Three rules close that:
 
-- **Heal the feed, don't price around it.** `fill_from_latest_sell` first re-fetches the
+- **A row is paid by its own sells.** A row with recorded `exit_tx_signatures` is closed
+  only from those signatures (`landed_fill_of_own_sigs`); none landed ⇒ park. The wallet's
+  latest sell on the mint can belong to a sibling position (same wallet, same mint), and
+  booking it credits this row with proceeds it never received. A row with no signatures
+  (an operator or external clear) takes the wallet's latest sell.
+- **Heal the feed, don't price around it.** `landed_fill_of_own_sigs` re-fetches the
   row's own `exit_tx_signatures` (`sell_backfill::heal_missing_sell_legs`: one batched
   `getTransaction` → `rpc_to_protobuf` → the ONE ingest decoder → `trades`). Repairing
   `trades` fixes the bag net, the sibling close and the token's chart in the same write,

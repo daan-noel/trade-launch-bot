@@ -384,8 +384,9 @@ pub async fn book_externally_cleared_pg(
     Ok(())
 }
 
-/// Resolve a Manual/Recovery fill from the wallet's latest sell on the mint (PG),
-/// healing the feed from the row's own exit signatures first when it has to.
+/// Resolve a Manual/Recovery fill. A row with recorded exit signatures is closed
+/// only by those sells; a row with none (an operator or external clear) takes the
+/// wallet's latest sell on the mint (PG), healing the feed first when it has to.
 ///
 /// `None` when no sell leg for this bag exists anywhere — the caller must NOT
 /// substitute a zero (see [`book_cleared_or_park`]). Previously this returned a
@@ -397,6 +398,13 @@ pub async fn fill_from_latest_sell(
     wallet: &str,
     pos: &StrategyPosition,
 ) -> Option<Fill> {
+    // A row that sent sells is paid by THOSE sells. The wallet's latest sell on the
+    // mint can be a sibling position's (same wallet, same mint): booking it would
+    // credit this row with proceeds it never received. No landed own sell ⇒ `None`
+    // (the caller parks), never a sibling's fill.
+    if !pos.exit_tx_sigs().is_empty() {
+        return landed_fill_of_own_sigs(trade_repo, trader, wallet, pos).await;
+    }
     let mut last_sell = trade_repo
         .find_latest_by_wallet_mint_type(wallet, &pos.mint_address, TradeType::Sell)
         .await
@@ -488,10 +496,11 @@ pub async fn landed_fill_of_own_sigs(
             .flatten()
             .filter(|l| l.token_amount > 0);
         if let Some(l) = legs {
-            if l.token_amount >= remaining {
+            if own_sells_cover_remainder(l.token_amount, pos.sold_token_amount, remaining) {
+                let sol = exec_real::booked_wallet_sol(&l, &pos.mint_address, "sell");
                 return Some(Fill {
                     price: l.price_per_token(),
-                    sol: exec_real::booked_wallet_sol(&l, &pos.mint_address, "sell"),
+                    sol: unbooked_sell_sol(sol, pos.exit_sol_total),
                     token_amount: remaining,
                     at: l.last_block_time,
                 });
@@ -499,6 +508,20 @@ pub async fn landed_fill_of_own_sigs(
         }
     }
     None
+}
+
+/// Whether a row's own landed sells cleared its remainder. `exit_tx_signatures` also
+/// names the scale-out legs already booked (`sold`), so only the tokens those legs did
+/// not book can count: earlier legs alone never close the rest of the bag.
+fn own_sells_cover_remainder(own_sold: u64, booked: u64, remaining: u64) -> bool {
+    own_sold.saturating_sub(booked) >= remaining
+}
+
+/// What a row's own sells paid that its booked legs have not: all of its sells' SOL
+/// less the proceeds already booked. A booked leg was charged its reverted-attempt fees
+/// on booking, so the remainder carries those few lamports back. Never below zero.
+fn unbooked_sell_sol(own_sells_sol: f64, booked_sol: f64) -> f64 {
+    (own_sells_sol - booked_sol).max(0.0)
 }
 
 /// `sol` for `sold` tokens, scaled to `tokens` of them. 0 when nothing was sold.
@@ -888,7 +911,24 @@ pub fn adopt_buy_submitted_into_engine(
 
 #[cfg(test)]
 mod tests {
-    use super::pro_rata_sol;
+    use super::{own_sells_cover_remainder, pro_rata_sol, unbooked_sell_sol};
+
+    /// Bought 100, a scale-out leg sold 60 and is booked, the final sell of 40 reverted:
+    /// the booked leg must not close the remaining 40.
+    #[test]
+    fn booked_scale_out_legs_never_close_the_remainder() {
+        assert!(!own_sells_cover_remainder(60, 60, 40));
+        assert!(own_sells_cover_remainder(100, 60, 40), "the final sell landed");
+        assert!(own_sells_cover_remainder(40, 0, 40), "no scale-out: one sell clears it");
+        assert!(!own_sells_cover_remainder(0, 0, 40));
+    }
+
+    /// The final leg is paid what the booked legs were not.
+    #[test]
+    fn the_final_leg_takes_only_the_unbooked_proceeds() {
+        assert!((unbooked_sell_sol(0.10, 0.06) - 0.04).abs() < 1e-15);
+        assert_eq!(unbooked_sell_sol(0.05, 0.06), 0.0);
+    }
 
     /// A sell that cleared two rows' tokens pays each its share per token.
     #[test]

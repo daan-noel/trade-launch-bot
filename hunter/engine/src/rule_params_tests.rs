@@ -71,6 +71,19 @@ fn off_items_round_trip_and_are_not_read() {
     assert_eq!(p.metric_refs().len(), 2, "the parked condition and line are not read");
 }
 
+/// The per-rule buy slippage survives a save/load and does not make a rule gate its buy:
+/// it is an execution setting, never a condition.
+#[test]
+fn entry_slippage_round_trips_without_gating_the_buy() {
+    let v = json!({ "enter": { "slippage_pct": 65.0 } });
+    let p = RuleParams::parse(&v).unwrap();
+    assert_eq!(p.enter.slippage_pct, Some(65.0));
+    assert_eq!(p.to_value(), v);
+    assert!(p.enter_on_arm());
+    let blank = RuleParams::parse(&json!({ "enter": { "slippage_pct": null } })).unwrap();
+    assert_eq!(blank.enter.slippage_pct, None);
+}
+
 #[test]
 fn an_empty_rule_buys_on_arming() {
     let p = RuleParams::parse(&json!({})).unwrap();
@@ -86,6 +99,8 @@ fn every_mistake_names_where_it_is() {
         (json!({ "enter": { "filters": [c("m_position.pnl_pct", ">", 1.0)] } }), "before the buy"),
         (json!({ "enter": { "lock": "token" } }), "needs an enter.event"),
         (json!({ "enter": { "size_pct_of_pool": 20.0 } }), "size_pct_of_pool"),
+        (json!({ "enter": { "slippage_pct": 0.0 } }), "enter.slippage_pct"),
+        (json!({ "enter": { "slippage_pct": 95.0 } }), "enter.slippage_pct"),
         (json!({ "always": [{ "sell": "x" }] }), "no condition"),
         (json!({ "always": [{ "if": [c("m_state.age_sec", ">", 1.0)] }] }), "does nothing"),
         (json!({ "always": [{ "if": [c("m_state.age_sec", ">", 1.0)], "go": "nowhere" }] }), "no stage named `nowhere`"),

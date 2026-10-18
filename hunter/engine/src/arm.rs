@@ -386,6 +386,9 @@ pub struct CompiledRule {
     pub copy: bool,
     /// Percent-of-pool sizing, resolved per entry (the pool is only known then).
     pub size_pct_of_pool: Option<f64>,
+    /// `enter.slippage_pct`: the real buy's revert floor. Read by the live dispatch only;
+    /// the fold never reverts.
+    pub slippage_pct: Option<f64>,
     /// Both caps arrive already decoded ([`Cap`]).
     pub concurrent_cap: Cap,
     pub max_total: Cap,
@@ -662,6 +665,7 @@ impl CompiledRule {
             trade_mode: rule.trade_mode,
             buy_amount_lamports: rule.buy_amount_lamports,
             size_pct_of_pool: p.enter.size_pct_of_pool,
+            slippage_pct: p.enter.slippage_pct,
             concurrent_cap: rule.concurrent_cap(),
             max_total: rule.total_cap(),
             take_profit: p.take_profit,

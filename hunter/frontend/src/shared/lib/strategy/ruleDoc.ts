@@ -3,7 +3,7 @@
 //
 //   enter    the buy: `event` (the print that triggers it), `filters` (must also hold,
 //            else keep watching), `final_filters` (else give up the coin), `lock`,
-//            `size_pct_of_pool`
+//            `size_pct_of_pool`, `slippage_pct` (real buy revert floor)
 //   signals  named conditions, written once, used by name in any condition
 //   always   sell lines checked first, in every stage
 //   stages   the steps after the buy, each with its own lines and an optional deadline
@@ -24,6 +24,8 @@ export const MAX_SELL_PCT = 99;
 
 /** Largest buy as a percent of the pool (engine `MAX_SIZE_PCT_OF_POOL`). */
 export const MAX_SIZE_PCT_OF_POOL = 10;
+/** Largest per-rule buy slippage, percent (engine `MAX_ENTRY_SLIPPAGE_PCT`). */
+export const MAX_ENTRY_SLIPPAGE_PCT = 90;
 
 /** Most stages a rule may have (engine `MAX_STAGES`). */
 export const MAX_STAGES = 32;
@@ -102,6 +104,8 @@ export interface Enter {
   final_filters: Cond[];
   lock: EntryLock | null;
   size_pct_of_pool: number | null;
+  /** Real buys only: percent fewer tokens than quoted before the buy reverts. `null` = Settings. */
+  slippage_pct: number | null;
 }
 
 export interface ReEntry {
@@ -137,7 +141,7 @@ export function newId(): string {
 
 export function emptyRuleDoc(): RuleDoc {
   return {
-    enter: { event: [], filters: [], final_filters: [], lock: null, size_pct_of_pool: null },
+    enter: { event: [], filters: [], final_filters: [], lock: null, size_pct_of_pool: null, slippage_pct: null },
     take_profit: null,
     stop_loss: null,
     signals: [],
@@ -266,6 +270,7 @@ export function ruleDocFromJson(raw: unknown): RuleDoc {
       final_filters: condsFromJson(e.final_filters),
       lock,
       size_pct_of_pool: numOrNull(e.size_pct_of_pool),
+      slippage_pct: numOrNull(e.slippage_pct),
     },
     take_profit: numOrNull(o.take_profit),
     stop_loss: numOrNull(o.stop_loss),
@@ -330,6 +335,7 @@ export function ruleDocToJson(d: RuleDoc): Obj {
   if (d.enter.final_filters.length) enter.final_filters = d.enter.final_filters.map(condToJson);
   if (d.enter.lock) enter.lock = d.enter.lock;
   if (d.enter.size_pct_of_pool != null) enter.size_pct_of_pool = d.enter.size_pct_of_pool;
+  if (d.enter.slippage_pct != null) enter.slippage_pct = d.enter.slippage_pct;
   if (Object.keys(enter).length) root.enter = enter;
   if (d.take_profit != null) root.take_profit = d.take_profit;
   if (d.stop_loss != null) root.stop_loss = d.stop_loss;

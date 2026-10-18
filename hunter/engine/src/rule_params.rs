@@ -8,7 +8,8 @@
 //!     "filters":       [cond],          // must also hold; if one fails, keep watching
 //!     "final_filters": [cond],          // checked on that print; if one fails, give up the coin
 //!     "lock":          "token",         // or "slot": one chance per coin / per slot
-//!     "size_pct_of_pool": 1.5           // buy this % of the pool's SOL instead of the fixed amount
+//!     "size_pct_of_pool": 1.5,          // buy this % of the pool's SOL instead of the fixed amount
+//!     "slippage_pct": 65                // real buy: accept up to 65 % fewer tokens than quoted
 //!   },
 //!   "take_profit": 100,                 // shortcut: always-line on m_position.pnl_pct
 //!   "stop_loss":   30,
@@ -46,6 +47,10 @@ use crate::metrics::{metric_spec, MetricRef};
 /// real money: this multiplies a live pool balance into a buy size, so an authoring slip
 /// has to stay survivable. Our own impact is `buy / vsol` exactly.
 pub const MAX_SIZE_PCT_OF_POOL: f64 = 10.0;
+
+/// Ceiling on [`Enter::slippage_pct`]. 90 % fewer tokens than quoted is a fill at 10x the
+/// quoted price - past that the floor protects nothing.
+pub const MAX_ENTRY_SLIPPAGE_PCT: f64 = 90.0;
 
 /// The rule format this engine reads and writes: `2` = the v2 document (`enter`,
 /// `signals`, `always`, `stages`). Anything that stores a result computed from a rule
@@ -232,6 +237,12 @@ pub struct Enter {
     pub final_filters: Vec<Cond>,
     pub lock: Option<EntryLock>,
     pub size_pct_of_pool: Option<f64>,
+    /// Real buys only: the buy reverts when it would get more than this percent fewer
+    /// tokens than quoted at send, i.e. when it would pay more than `1 / (1 - pct/100)`
+    /// times the quoted price. `None` = the Settings buy slippage. Paper and simulate
+    /// never revert, so this is how a real rule accepts the fill its study priced
+    /// (a launch snipe behind its bundle fills at about 2.7x the trigger price).
+    pub slippage_pct: Option<f64>,
 }
 
 /// Re-entry: after a normal sell (a line, TP or SL — never Dead / Manual / Migrated),
@@ -416,13 +427,18 @@ fn parse_stage(v: &Value, at: &str, bag: bool) -> Result<Stage, String> {
 fn parse_enter(v: Option<&Value>) -> Result<Enter, String> {
     let Some(v) = v else { return Ok(Enter::default()) };
     let o = obj(v, "enter")?;
-    unknown_keys(o, &["event", "filters", "final_filters", "lock", "size_pct_of_pool"], "enter")?;
+    unknown_keys(o, &["event", "filters", "final_filters", "lock", "size_pct_of_pool", "slippage_pct"], "enter")?;
     Ok(Enter {
         event: parse_conds(o.get("event"), "enter.event")?,
         filters: parse_conds(o.get("filters"), "enter.filters")?,
         final_filters: parse_conds(o.get("final_filters"), "enter.final_filters")?,
         lock: o.get("lock").filter(|v| !v.is_null()).map(EntryLock::parse).transpose()?,
         size_pct_of_pool: o.get("size_pct_of_pool").map(|v| num(v, "enter.size_pct_of_pool")).transpose()?,
+        slippage_pct: o
+            .get("slippage_pct")
+            .filter(|v| !v.is_null())
+            .map(|v| num(v, "enter.slippage_pct"))
+            .transpose()?,
     })
 }
 
@@ -536,6 +552,7 @@ impl RuleParams {
             ("take_profit", self.take_profit, 0.0, f64::INFINITY),
             ("stop_loss", self.stop_loss, 0.0, f64::INFINITY),
             ("enter.size_pct_of_pool", self.enter.size_pct_of_pool, 0.0, MAX_SIZE_PCT_OF_POOL),
+            ("enter.slippage_pct", self.enter.slippage_pct, 0.0, MAX_ENTRY_SLIPPAGE_PCT),
         ] {
             if let Some(x) = v {
                 if !(x > lo && x <= hi) {
@@ -732,6 +749,9 @@ impl RuleParams {
         }
         if let Some(p) = e.size_pct_of_pool {
             enter.insert("size_pct_of_pool".into(), json!(p));
+        }
+        if let Some(s) = e.slippage_pct {
+            enter.insert("slippage_pct".into(), json!(s));
         }
         if !enter.is_empty() {
             root.insert("enter".into(), Value::Object(enter));

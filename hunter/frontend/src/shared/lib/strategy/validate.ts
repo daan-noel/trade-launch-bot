@@ -11,6 +11,7 @@ import { checkRef } from './metricRef';
 import { findMetric, type StrategyRegistry } from './registry';
 import {
   MAX_SELL_PCT,
+  MAX_ENTRY_SLIPPAGE_PCT,
   MAX_SIZE_PCT_OF_POOL,
   MAX_STAGES,
   type Cond,
@@ -90,6 +91,7 @@ export function validateRuleDoc(
     ['Take profit', d.take_profit, Infinity],
     ['Stop loss', d.stop_loss, Infinity],
     ['Size as % of pool', d.enter.size_pct_of_pool, MAX_SIZE_PCT_OF_POOL],
+    ['Buy slippage %', d.enter.slippage_pct, MAX_ENTRY_SLIPPAGE_PCT],
   ] as const) {
     if (v != null && !(Number.isFinite(v) && v > 0 && v <= hi)) {
       errors.push(`${label} must be above 0${Number.isFinite(hi) ? ` and at most ${hi}` : ''}`);

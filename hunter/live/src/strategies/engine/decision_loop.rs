@@ -871,7 +871,8 @@ fn dispatch_buy(
                     )
                 })
                 .unwrap_or_default();
-            let slippage_bps = buy_slippage(settings);
+            let slippage_bps = rule_buy_slippage(state.rules.get(&rule).and_then(|c| c.slippage_pct))
+                .or_else(|| buy_slippage(settings));
             // Capture the trigger print BEFORE the submit — this is the last moment
             // the deciding trade is identifiable. The sink pairs it with the
             // confirmed fill's slot to give `entry_slot - target_slot` (mig 0004),
@@ -1307,6 +1308,13 @@ async fn boot_recover(
     }
 }
 
+/// A rule's own `enter.slippage_pct` as basis points. Bounded at parse
+/// (`MAX_ENTRY_SLIPPAGE_PCT`), so it is not capped again by the Settings ceiling: a
+/// launch snipe that fills behind its bundle needs more than that ceiling allows.
+fn rule_buy_slippage(pct: Option<f64>) -> Option<u64> {
+    pct.map(|p| (p * 100.0).round() as u64)
+}
+
 fn buy_slippage(settings: &watch::Receiver<AppSettings>) -> Option<u64> {
     resolve_buy_slippage_bps(settings.borrow().buy_slippage_bps, None)
 }
@@ -1330,6 +1338,15 @@ mod tests {
     use trading_core::models::trade::{Trade, TradeType};
     use trading_core::state::token_cache::{TokenCache, TokenState};
     use uuid::Uuid;
+
+    /// A rule's slippage reaches the order as written, past the Settings ceiling
+    /// (5000 bps); no rule value leaves the Settings fallback in charge.
+    #[test]
+    fn rule_buy_slippage_is_basis_points_past_the_settings_ceiling() {
+        assert_eq!(super::rule_buy_slippage(Some(65.0)), Some(6_500));
+        assert_eq!(super::rule_buy_slippage(Some(12.5)), Some(1_250));
+        assert_eq!(super::rule_buy_slippage(None), None);
+    }
 
     use super::prime_drained;
     use crate::strategies::engine::orphan_exit::adopt_holding_into_engine;

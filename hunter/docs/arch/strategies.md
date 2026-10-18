@@ -86,7 +86,13 @@ would otherwise buy (a failure ends the coin for this rule, `EntryVerdict::Exhau
 `enter.lock: "token"` gives the coin one decision, on the first PRINT that makes the
 event true (a tick never is one, `evaluate_token`'s `on_print`); `"slot"` gives one per
 slot, and a filter failure spends that slot. `enter.size_pct_of_pool` sizes the buy as a
-percent of the pool's SOL, resolved in `reduce` at the entry instant. **The pre-entry
+percent of the pool's SOL, resolved in `reduce` at the entry instant.
+`enter.slippage_pct` is the real buy's revert floor (`dispatch_buy`; the Settings buy
+slippage when blank, bounded by `MAX_ENTRY_SLIPPAGE_PCT`, not by the Settings ceiling).
+The fold never reverts, so paper and simulate fill where real reverts: a rule whose study
+prices its entry behind a same-slot burst (a launch snipe fills at about 2.7x the trigger
+price) needs a floor that covers that fill, or real books fewer entries than the study.
+**The pre-entry
 veto** (`sell_line_holding_before_entry`): the rule never buys while an `always` sell line
 or a first-stage sell line already holds. Position metrics read `NaN` before the buy, so
 a line on our position never vetoes.

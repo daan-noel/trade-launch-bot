@@ -390,6 +390,16 @@ export function RuleChain({
           onChange={(n) => setEnter({ size_pct_of_pool: n })}
           disabled={locked}
         />
+        <NumberField
+          reg={registry}
+          part="enter.slippage_pct"
+          label="Buy slippage %"
+          unit="%"
+          placeholder="settings"
+          value={doc.enter.slippage_pct}
+          onChange={(n) => setEnter({ slippage_pct: n })}
+          disabled={locked}
+        />
       </div>
 
       <div className="flex flex-col gap-2">
