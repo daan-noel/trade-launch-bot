@@ -784,6 +784,7 @@ fn reaper_deps_from_state(
         inflight: app_state.inflight.clone(),
         registry: app_state.positions.clone(),
         fill_tx: app_state.engine_fill_tx.clone(),
+        fill_sigs: None,
         settings: app_state.settings.subscribe(),
         sse_tx: app_state.sse_tx.clone(),
         onchain_bag_check: crate::strategies::engine::reapers::onchain_bag_check_from_env(),

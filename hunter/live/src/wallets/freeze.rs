@@ -28,6 +28,10 @@ impl WalletFreeze {
         self.notify.notify_waiters();
     }
 
+    pub fn is_frozen(&self, wallet: &str) -> bool {
+        self.frozen.lock().expect("wallet freeze").contains(wallet)
+    }
+
     pub async fn wait(&self, wallet: &str) {
         loop {
             let notified = self.notify.notified();

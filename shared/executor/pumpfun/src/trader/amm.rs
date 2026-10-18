@@ -259,6 +259,8 @@ impl PumpFunTrader {
             // reads — don't hold the slot `in_use` across that RPC. The block below
             // always falls through to `schedule_nonce_refresh`.
             let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
+            // Frees the slot even when the caller's timeout drops this future mid-send.
+            let refresh = executor_core::NonceRefreshOnDrop::new(self, Some(nonce_pubkey));
             let result: Result<Option<String>> = async {
                 let tx = self.build_nonce_tx(
                     ixs,
@@ -293,7 +295,7 @@ impl PumpFunTrader {
             }
             .await;
 
-            self.schedule_nonce_refresh(nonce_pubkey);
+            drop(refresh);
 
             if let Err(TradeError::Reverted { custom }) = &result {
                 if !healed

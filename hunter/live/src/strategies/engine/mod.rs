@@ -151,7 +151,13 @@ impl InFlightGuards {
     }
 }
 
-/// Drop `mint`'s lock once only the map references it: no guard, no waiter.
+/// Key of the exit lock. A token account belongs to ONE wallet, so only exits from the
+/// same wallet on a mint can race for it; two wallets' exits on one mint must not queue.
+pub fn exit_lock_key(wallet: &str, mint: &str) -> String {
+    format!("{wallet}:{mint}")
+}
+
+/// Drop the lock once only the map references it: no guard, no waiter.
 /// `remove_if` decides under the shard lock that `exit_mint_lock` clones under,
 /// so a waiter that already holds a clone keeps the entry alive.
 fn prune_exit_mint(locks: &ExitMintLocks, mint: &str) {
@@ -626,7 +632,8 @@ impl PositionRegistry {
     }
 
     /// The token account a live position on this mint already holds, ignoring
-    /// `exclude_pg` (the buying position itself).
+    /// `exclude_pg` (the buying position itself). A token account belongs to ONE wallet:
+    /// a sibling under another wallet never matches.
     ///
     /// The in-memory twin of `StrategyRepo::find_reusable_token_account`: both
     /// answer "does a non-terminal position on this (wallet, mint) already have an
@@ -635,12 +642,20 @@ impl PositionRegistry {
     /// round trip off the send path — that query runs on a re-buy into a mint we
     /// already hold, ~a quarter of real entries. The PG read stays as the fallback
     /// for a row this process does not hold.
-    pub fn sibling_token_account(&self, mint: &str, exclude_pg: Uuid) -> Option<String> {
+    pub fn sibling_token_account(
+        &self,
+        wallet: &str,
+        mint: &str,
+        exclude_pg: Uuid,
+    ) -> Option<String> {
         self.by_id
             .iter()
             .find(|e| {
                 let m = e.value();
-                m.mint == mint && m.pg_id != exclude_pg && m.token_account.is_some()
+                m.wallet == wallet
+                    && m.mint == mint
+                    && m.pg_id != exclude_pg
+                    && m.token_account.is_some()
             })
             .and_then(|e| e.value().token_account.clone())
     }
@@ -849,6 +864,17 @@ mod exit_mint_lock_tests {
         assert!(guards.exit_mints.is_empty(), "pruned once the holder releases");
         assert!(!guards.exit_mint_held("M"));
     }
+
+    /// Two wallets' exits on one mint never share an account, so they never queue.
+    #[test]
+    fn exits_on_one_mint_lock_per_wallet() {
+        let guards = InFlightGuards::new();
+        let a = guards.try_begin_exit_mint(&exit_lock_key("A", "M")).expect("A free");
+        assert!(guards.try_begin_exit_mint(&exit_lock_key("B", "M")).is_some(), "B is not behind A");
+        assert!(guards.try_begin_exit_mint(&exit_lock_key("A", "M")).is_none(), "A's own sibling queues");
+        assert!(!guards.exit_mint_held(&exit_lock_key("B", "OTHER")));
+        drop(a);
+    }
 }
 
 #[cfg(test)]
@@ -874,7 +900,7 @@ mod registry_tests {
             reverted_buy_fee_sol: 0.0,
             target_snapshot: None,
             cashback_enabled: false,
-            wallet: String::new(),
+            wallet: "A".into(),
             inflight_intent: None,
         }
     }
@@ -889,18 +915,51 @@ mod registry_tests {
         let reg = PositionRegistry::new();
         let (me, sibling, other_mint) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
         reg.upsert(PositionId(1), meta(me, "MINT", None));
-        assert_eq!(reg.sibling_token_account("MINT", me), None, "nothing else holds it yet");
+        assert_eq!(reg.sibling_token_account("A", "MINT", me), None, "nothing else holds it yet");
 
         reg.upsert(PositionId(2), meta(sibling, "MINT", Some("ACCT")));
-        assert_eq!(reg.sibling_token_account("MINT", me).as_deref(), Some("ACCT"));
+        assert_eq!(reg.sibling_token_account("A", "MINT", me).as_deref(), Some("ACCT"));
         // The buyer never resolves to itself.
-        assert_eq!(reg.sibling_token_account("MINT", sibling), None);
+        assert_eq!(reg.sibling_token_account("A", "MINT", sibling), None);
         // Another mint's account is never reused.
         reg.upsert(PositionId(3), meta(other_mint, "OTHER", Some("OTHER_ACCT")));
-        assert_eq!(reg.sibling_token_account("MINT", sibling), None);
+        assert_eq!(reg.sibling_token_account("A", "MINT", sibling), None);
 
         // A settled sibling leaves the registry, so its account stops being offered.
         reg.remove(PositionId(2));
-        assert_eq!(reg.sibling_token_account("MINT", me), None);
+        assert_eq!(reg.sibling_token_account("A", "MINT", me), None);
+    }
+
+    /// A Stop must skip a real buy that is sent and not yet filled: failing the arm
+    /// would orphan the tokens when the buy lands.
+    #[test]
+    fn a_real_buy_in_flight_is_not_stoppable() {
+        use super::decision_loop::real_buy_in_flight;
+        let reg = PositionRegistry::new();
+        let mut m = meta(Uuid::new_v4(), "MINT", None);
+        m.inflight_intent = Some(hunter_engine::event::IntentId {
+            rule: RuleId(Uuid::nil()),
+            mint: hunter_engine::event::Mint::from("MINT"),
+            seq: 1,
+        });
+        reg.upsert(PositionId(1), m.clone());
+        assert!(real_buy_in_flight(&reg, PositionId(1)), "sent, no fill yet");
+        m.entry_token_amount = Some(5);
+        reg.upsert(PositionId(1), m);
+        assert!(!real_buy_in_flight(&reg, PositionId(1)), "filled: an ordinary position");
+    }
+
+    /// A token account is owned by one wallet. Wallet B's account on a mint is never
+    /// offered to a wallet A re-buy: the tokens would land in B's account and A's
+    /// sell would revert "owner does not match".
+    #[test]
+    fn a_sibling_account_never_crosses_wallets() {
+        let reg = PositionRegistry::new();
+        let (a_buy, b_pos) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut b = meta(b_pos, "MINT", Some("B_ACCT"));
+        b.wallet = "B".into();
+        reg.upsert(PositionId(1), b);
+        assert_eq!(reg.sibling_token_account("A", "MINT", a_buy), None);
+        assert_eq!(reg.sibling_token_account("B", "MINT", a_buy).as_deref(), Some("B_ACCT"));
     }
 }

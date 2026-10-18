@@ -37,8 +37,7 @@ use tracing::{debug, info, warn};
 /// the FIRST endpoint that accepts the tx; the losers keep running in the
 /// background, so without a cap a black-holed endpoint would leak its task for
 /// the process lifetime. 10s comfortably exceeds a healthy sender RTT while still
-/// reaping a wedged connection. (The single-endpoint path is awaited directly and
-/// isn't bounded here — its caller already wraps the send in a timeout.)
+/// reaping a wedged connection. The single-endpoint path is bounded by the same cap.
 const FANOUT_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Gaps between background rebroadcasts ([`Engine::send_transaction_rebroadcast`]),
@@ -502,7 +501,20 @@ impl Engine {
         // Single endpoint: await directly — no spawn/channel overhead, identical
         // to the pre-fan-out hot path.
         if urls.len() == 1 {
-            return post_tx_bytes(&self.http, &urls[0], raw).await.inspect_err(|e| {
+            // Bounded like a fan-out leg: an unbounded await here outlived the
+            // caller's own send timeout, which then dropped a signed tx's bookkeeping.
+            let sent = tokio::time::timeout(
+                FANOUT_SEND_TIMEOUT,
+                post_tx_bytes(&self.http, &urls[0], raw),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(TradeError::Other(format!(
+                    "sender {} timed out after {FANOUT_SEND_TIMEOUT:?}",
+                    urls[0]
+                )))
+            });
+            return sent.inspect_err(|e| {
                 warn!("tx NOT submitted — sole sender {} rejected it: {e}", urls[0]);
             });
         }

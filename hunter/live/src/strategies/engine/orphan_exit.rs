@@ -82,19 +82,20 @@ pub fn spawn_orphan_sell(
     if token_amount == 0 {
         return OrphanStart::NothingToSell;
     }
-    if deps.inflight.exit_held(position.id) || deps.inflight.exit_mint_held(&position.mint_address) {
-        return OrphanStart::Busy;
-    }
     // Siblings share this position's bag only under the wallet that bought it,
     // and only that wallet's key can sell it.
     let (wallet, trader) = deps.wallets.for_position(&position.wallet, &deps.trader);
+    let lock_key = super::exit_lock_key(&wallet, &position.mint_address);
+    if deps.inflight.exit_held(position.id) || deps.inflight.exit_mint_held(&lock_key) {
+        return OrphanStart::Busy;
+    }
     if trader.is_none() {
         return OrphanStart::WalletNotLoaded;
     }
     let Some(pg_guard) = deps.inflight.try_begin_exit(position.id) else {
         return OrphanStart::Busy;
     };
-    let Some(mint_guard) = deps.inflight.try_begin_exit_mint(&position.mint_address) else {
+    let Some(mint_guard) = deps.inflight.try_begin_exit_mint(&lock_key) else {
         drop(pg_guard);
         return OrphanStart::Busy;
     };
@@ -168,9 +169,23 @@ pub fn spawn_orphan_sell(
         "orphan_exit: spawning direct sell"
     );
 
+    let sell_trader = trader.clone();
     tokio::spawn(async move {
         let _pg_guard = pg_guard;
         let _mint_guard = mint_guard;
+        // A sell this row already sent may have landed with the feed missing it. Selling
+        // again would sell from the (possibly shared) account: a sibling's tokens.
+        if let Some(trader) = sell_trader.as_ref() {
+            if let Some(fill) = landed_fill_of_own_sigs(&trade_repo, trader, &wallet, &position).await {
+                info!(position_id = %pg_id, "orphan_exit: the row's own sell already landed — booking, not reselling");
+                if let Some(engine_id) = registry.engine_id(pg_id) {
+                    let _ = engine_fill_tx.send(Event::ExternallyCleared { position: engine_id, fill }).await;
+                } else if let Err(e) = book_externally_cleared_pg(&repo, pg_id, fill, &exit_reason).await {
+                    warn!(position_id = %pg_id, "orphan_exit: book landed sell failed: {e}");
+                }
+                return;
+            }
+        }
         exec_real::run_exit(real_deps, order).await;
         match fill_rx.recv().await {
             Some(Event::FillConfirmed { fill, .. }) => {
@@ -440,6 +455,50 @@ pub async fn wallet_fill_from_sell(
         None => (sell.price_per_token, sell.amount_sol, sell.token_amount),
     };
     Fill { price, sol: pro_rata_sol(sol, token_amount, sold), token_amount, at: sell.block_time }
+}
+
+/// The close fill when this row's OWN recorded sell signatures already cover its
+/// remaining tokens - `None` when it has none or they did not land. The wallet-wide
+/// token net cannot say this: a sibling's tokens in the same account keep it above
+/// zero. One batched `getTransaction` heals the feed only when the row has
+/// signatures and the feed shows no leg for them.
+pub async fn landed_fill_of_own_sigs(
+    trade_repo: &TradeRepo,
+    trader: &Arc<PumpFunTrader>,
+    wallet: &str,
+    pos: &StrategyPosition,
+) -> Option<Fill> {
+    let sigs = pos.exit_tx_sigs();
+    let remaining = pos.remaining_token_amount();
+    if sigs.is_empty() || remaining == 0 {
+        return None;
+    }
+    for heal in [false, true] {
+        if heal
+            && super::sell_backfill::heal_missing_sell_legs(trader, trade_repo, &pos.mint_address, &sigs)
+                .await
+                == 0
+        {
+            return None;
+        }
+        let legs = trade_repo
+            .sum_legs_by_signatures(wallet, &pos.mint_address, &sigs, TradeType::Sell, pos.created_at)
+            .await
+            .ok()
+            .flatten()
+            .filter(|l| l.token_amount > 0);
+        if let Some(l) = legs {
+            if l.token_amount >= remaining {
+                return Some(Fill {
+                    price: l.price_per_token(),
+                    sol: exec_real::booked_wallet_sol(&l, &pos.mint_address, "sell"),
+                    token_amount: remaining,
+                    at: l.last_block_time,
+                });
+            }
+        }
+    }
+    None
 }
 
 /// `sol` for `sold` tokens, scaled to `tokens` of them. 0 when nothing was sold.

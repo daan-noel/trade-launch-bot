@@ -526,3 +526,27 @@ impl Engine {
         Ok(out)
     }
 }
+
+/// Frees a trade's nonce slot (`schedule_nonce_refresh`) when dropped, so a send
+/// the caller cancels (a timeout drops the future mid-send) or abandons with `?`
+/// still re-arms the slot. Without it the slot stays `in_use` for the life of the
+/// process and a handful of timed-out sends empty the pool. `drop(guard)` frees it
+/// at an exact point; a `None` nonce (recent-blockhash anchor) does nothing.
+pub struct NonceRefreshOnDrop<'a> {
+    engine: &'a Engine,
+    nonce: Option<Pubkey>,
+}
+
+impl<'a> NonceRefreshOnDrop<'a> {
+    pub fn new(engine: &'a Engine, nonce: Option<Pubkey>) -> Self {
+        Self { engine, nonce }
+    }
+}
+
+impl Drop for NonceRefreshOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(nonce) = self.nonce.take() {
+            self.engine.schedule_nonce_refresh(nonce);
+        }
+    }
+}

@@ -1792,12 +1792,11 @@ impl StrategyRepo {
                 exit_time = $23,
                 exit_tx_signatures = $24,
                 exit_slot = $25,
-                submitted_buy_signatures = $26,
-                status = $27,
-                exit_reason = $28,
-                origin = $29,
-                manual_exit = $30,
-                extra = $31,
+                status = $26,
+                exit_reason = $27,
+                origin = $28,
+                manual_exit = $29,
+                extra = $30,
                 updated_at = now()
             WHERE id = $1
             "#,
@@ -1827,7 +1826,6 @@ impl StrategyRepo {
         .bind(p.exit_time)
         .bind(Json(&p.exit_tx_signatures))
         .bind(p.exit_slot.map(|v| v as i64))
-        .bind(&p.submitted_buy_signatures)
         .bind(&p.status)
         .bind(p.exit_reason.as_ref())
         .bind(&p.origin)
@@ -3027,7 +3025,7 @@ impl StrategyRepo {
              SET status = 'BuySubmitted', \
                  submitted_buy_signatures = array_append(submitted_buy_signatures, $2), \
                  updated_at = now() \
-             WHERE id = $1 AND entry_price IS NULL \
+             WHERE id = $1 AND entry_price IS NULL AND status = 'BuySubmitted' \
              RETURNING {POSITION_COLS}"
         ))
         .bind(id)
@@ -3237,11 +3235,13 @@ impl StrategyRepo {
                               / (sold_token_amount + $2)::float8 \
                          ELSE $5 END, \
                      exit_time = $6, \
-                     exit_reason = COALESCE($7, exit_reason), \
+                     exit_reason = CASE WHEN $7 = 'Manual' \
+                         THEN COALESCE(exit_reason, $7) \
+                         ELSE COALESCE($7, exit_reason) END, \
                      exit_slot = COALESCE($8, exit_slot), \
                      status = 'End', \
                      updated_at = now() \
-                 WHERE id = $1 \
+                 WHERE id = $1 AND status <> 'End' \
                  RETURNING {POSITION_COLS}"
             ))
             .bind(id)
@@ -3252,7 +3252,7 @@ impl StrategyRepo {
             .bind(at)
             .bind(reason)
             .bind(exit_slot.map(|v| v as i64))
-            .fetch_one(&mut *db_tx)
+            .fetch_optional(&mut *db_tx)
             .await?
         } else {
             sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
@@ -3274,11 +3274,40 @@ impl StrategyRepo {
             .bind(next_stage)
             .bind(exit_slot.map(|v| v as i64))
             .bind(stage_since)
-            .fetch_one(&mut *db_tx)
+            .fetch_optional(&mut *db_tx)
             .await?
+        };
+        // The row already ended (a heal, sibling close or reaper got there first):
+        // this write would double the sold tokens and SOL, so undo the ledger leg
+        // appended above and report the row as it stands.
+        let Some(row) = row else {
+            db_tx.rollback().await?;
+            return self
+                .find_position(id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("position {id} missing"));
         };
         db_tx.commit().await?;
         Ok(StrategyPosition::from(row))
+    }
+
+    /// Record one sell signature the moment it is sent, before its fill is known.
+    /// A restart or a reaper can then check the signature on chain instead of
+    /// reselling a bag whose first sell landed. Unions like `record_sell_fill`.
+    pub async fn append_exit_sig(&self, id: Uuid, sig: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE strategy_positions SET \
+                 exit_tx_signatures = CASE WHEN exit_tx_signatures ? $2 \
+                     THEN exit_tx_signatures \
+                     ELSE exit_tx_signatures || to_jsonb($2::text) END, \
+                 updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(sig)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Persist a stage move that sold nothing (a `go` line, or a stage deadline
@@ -3781,6 +3810,24 @@ impl StrategyRepo {
         Ok(acct)
     }
 
+    /// Whether any open real position under ANY wallet, other than `exclude_id`, is on
+    /// this mint. The pool price feed is one subscription per mint shared by every
+    /// wallet, so its release asks this, not the per-wallet question.
+    pub async fn has_other_open_real_position_on_mint_any_wallet(
+        &self,
+        mint: &str,
+        exclude_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (                  SELECT 1 FROM strategy_positions                  WHERE mint_address = $1 AND mode = 'real' AND id <> $2                    AND status IN ('BuySubmitted','Holding','ExitPending',                                  'ExitStuck','ExitUnconfirmed')              )",
+        )
+        .bind(mint)
+        .bind(exclude_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
     /// True if any OTHER position (excluding `exclude_id`) on this `(wallet, mint)` in
     /// `mode` is still unsettled — `BuySubmitted`/`Holding`/`ExitPending`/
     /// `ExitStuck`/`ExitUnconfirmed` — i.e. may still hold tokens in the SHARED
@@ -4213,7 +4260,8 @@ mod position_col_guard {
     /// aggregates (mig 0018) join that set — `record_sell_fill` is the ONE writer.
     #[test]
     fn writer_owned_columns_never_enter_the_full_row_write() {
-        const OWNED: [&str; 6] = [
+        const OWNED: [&str; 7] = [
+            "submitted_buy_signatures",
             "exit_redrive_count",
             "exit_parked",
             "last_entry_error",

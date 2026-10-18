@@ -413,6 +413,8 @@ impl PumpFunTrader {
                 let anchor_started = Instant::now();
                 let (tx, nonce_to_refresh) = self.build_trade_tx(ixs, signer, anchor).await?;
                 stages.anchor_ms = anchor_started.elapsed().as_millis() as u64;
+                // Frees the slot even when the caller's timeout drops this future mid-send.
+                let refresh = executor_core::NonceRefreshOnDrop::new(self, nonce_to_refresh);
                 let sent: Result<String> = async {
                     // Write-ahead persist: the signature is fixed the
                     // instant we sign — before any network round-trip — so hand it to
@@ -442,6 +444,13 @@ impl PumpFunTrader {
                     } else {
                         self.send_transaction(&tx).await?
                     };
+                    // A durable-nonce buy that never lands stays executable until its
+                    // nonce advances. Record the anchor so recovery can PROVE it dead
+                    // (`burn_nonce_tx`); without it the stuck-buy cleanup answers Unknown
+                    // forever and the row holds its slot and SOL earmark.
+                    if let Some(nonce_pubkey) = nonce_to_refresh {
+                        self.note_nonce_tx(&sig, nonce_pubkey, tx.message.recent_blockhash);
+                    }
                     send_ms.store(
                         send_started.elapsed().as_millis() as u64,
                         AtomicOrdering::Relaxed,
@@ -467,9 +476,7 @@ impl PumpFunTrader {
                 .await;
                 stages.send_ms = send_ms.load(AtomicOrdering::Relaxed);
 
-                if let Some(nonce_pubkey) = nonce_to_refresh {
-                    self.schedule_nonce_refresh(nonce_pubkey);
-                }
+                drop(refresh);
 
                 if let Err(TradeError::Reverted { custom }) = &sent {
                     if !healed

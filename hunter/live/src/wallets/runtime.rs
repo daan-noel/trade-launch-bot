@@ -443,12 +443,17 @@ impl WalletRuntime {
     }
 
     pub async fn rebuild(&self, pubkey: &str, nonces: Vec<Pubkey>) -> Result<()> {
-        let (signer, name) = {
+        let (signer, name, old) = {
             let slots = self.slots.read().expect("wallets");
             let slot = slots.get(pubkey).context("wallet is not loaded")?;
-            (slot.signer.clone(), slot.name.clone())
+            (slot.signer.clone(), slot.name.clone(), slot.trader.clone())
         };
         let (trader, init_error) = self.factory.build(signer.clone(), nonces.clone()).await;
+        // The SOL earmarks of this wallet's open positions live on the trader. A fresh
+        // trader starts at zero, so carry them over or `max_committed_sol` forgets them.
+        for entry in old.position_commitments.iter() {
+            trader.commit_sol_for_position(entry.key().clone(), *entry.value());
+        }
         self.slots.write().expect("wallets").insert(
             pubkey.to_string(),
             Slot {

@@ -12,7 +12,9 @@ use super::{PumpFunTrader, TokenPDAs};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol;
 use crate::types::TokenProgram;
-use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, TxAnchor};
+use executor_core::{
+    classify_swap_revert, NonceRefreshOnDrop, SwapDirection, SwapRetryDecision, SwapRoute, TxAnchor,
+};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -410,6 +412,8 @@ impl PumpFunTrader {
             // hold is exactly the case a blockhash can't cover.
             let (tx, nonce_to_refresh) =
                 self.build_trade_tx(ixs, signer, TxAnchor::Standard).await?;
+            // Frees the slot even when the caller's timeout drops this future mid-send.
+            let refresh = NonceRefreshOnDrop::new(self, nonce_to_refresh);
             info!("🔁 Sell — token: {}", token_mint);
 
             let res: Result<Option<String>> = async {
@@ -450,9 +454,7 @@ impl PumpFunTrader {
             }
             .await;
 
-            if let Some(nonce_pubkey) = nonce_to_refresh {
-                self.schedule_nonce_refresh(nonce_pubkey);
-            }
+            drop(refresh);
 
             if let Err(TradeError::Reverted { custom }) = &res {
                 if !healed

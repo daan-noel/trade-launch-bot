@@ -41,7 +41,7 @@ pub fn onchain_bag_check_from_env() -> bool {
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
 }
-use trading_core::models::trade::TradeRow;
+use trading_core::models::trade::{TradeRow, TradeType};
 use trading_core::state::token_cache::{mark_quote, TokenCache};
 use trading_core::strategies::kernel::{sell_value_proceeds, CostModel};
 use trading_core::state::trade_signals::TradeSignals;
@@ -81,6 +81,10 @@ pub struct ReaperDeps {
     pub inflight: InFlightGuards,
     pub registry: PositionRegistry,
     pub fill_tx: mpsc::Sender<Event>,
+    /// The sink's fill-signature side-channel. An adopted buy parks its signature
+    /// and account here so the sink books the entry once, with its real signature.
+    /// `None` for the HTTP-side reaper, which does not share the sink's store.
+    pub fill_sigs: Option<super::FillSigStore>,
     pub settings: watch::Receiver<AppSettings>,
     /// SSE hub — used to push the `needs_review` flag on a stale BuySubmitted.
     /// Logging it alone leaves the stale row invisible to the UI.
@@ -238,6 +242,45 @@ async fn resolve_buy_submitted_inner(
                 .token_account
                 .clone()
                 .or_else(|| trader.as_ref()?.cached_token_account(&position.mint_address));
+            // The engine still owns this buy (boot adoption re-registers it): hand the
+            // fill over and let the sink book the entry ONCE. Writing it here as well
+            // made the sink write it again with an empty signature and no slot, plus a
+            // second buy leg in the ledger.
+            let engine_intent = deps
+                .registry
+                .engine_id(position.id)
+                .and_then(|id| deps.registry.get(id))
+                .and_then(|meta| meta.inflight_intent);
+            if let (Some(store), Some(intent)) = (deps.fill_sigs.as_ref(), engine_intent.clone()) {
+                let paid_sol = exec_real::booked_wallet_sol(&legs, &position.mint_address, "buy");
+                store.put(
+                    intent.clone(),
+                    super::FillSigs {
+                        sigs: vec![sig.clone()],
+                        token_account,
+                        slot: legs.first_slot,
+                        print: None,
+                    },
+                );
+                let _ = deps
+                    .fill_tx
+                    .send(Event::FillConfirmed {
+                        intent,
+                        fill: Fill {
+                            price: legs.entry_price(),
+                            sol: paid_sol,
+                            token_amount: legs.token_amount,
+                            at: legs.last_block_time,
+                        },
+                    })
+                    .await;
+                info!(
+                    position_id = %position.id,
+                    mint = %position.mint_address,
+                    "reaper: adopted BuySubmitted fill → engine"
+                );
+                return BuyResolution::Adopted;
+            }
             // What the buy took from the wallet — the same booking `exec_real` makes.
             let paid_sol = exec_real::booked_wallet_sol(&legs, &position.mint_address, "buy");
             match deps
@@ -263,23 +306,19 @@ async fn resolve_buy_submitted_inner(
                         mint = %position.mint_address,
                         "reaper: adopted BuySubmitted fill → Holding"
                     );
-                    if let Some(engine_id) = deps.registry.engine_id(position.id) {
-                        if let Some(meta) = deps.registry.get(engine_id) {
-                            if let Some(intent) = meta.inflight_intent {
-                                let _ = deps
-                                    .fill_tx
-                                    .send(Event::FillConfirmed {
-                                        intent,
-                                        fill: Fill {
-                                            price: legs.entry_price(),
-                                            sol: paid_sol,
-                                            token_amount: legs.token_amount,
-                                            at: legs.last_block_time,
-                                        },
-                                    })
-                                    .await;
-                            }
-                        }
+                    if let Some(intent) = engine_intent {
+                        let _ = deps
+                            .fill_tx
+                            .send(Event::FillConfirmed {
+                                intent,
+                                fill: Fill {
+                                    price: legs.entry_price(),
+                                    sol: paid_sol,
+                                    token_amount: legs.token_amount,
+                                    at: legs.last_block_time,
+                                },
+                            })
+                            .await;
                     }
                     return BuyResolution::Adopted;
                 }
@@ -304,6 +343,24 @@ async fn resolve_buy_submitted_inner(
     if position.submitted_buy_signatures.is_empty() {
         let age = Utc::now().signed_duration_since(position.updated_at);
         if age <= chrono::Duration::from_std(UNENTERED_STALE).unwrap_or_default() {
+            return BuyResolution::Wait;
+        }
+        // No signature is not proof of no transaction: the write-ahead is best-effort.
+        // A buy by this wallet on this mint since the row was created means it landed,
+        // so dropping the row would strand its tokens. Keep it for the operator.
+        let landed = deps
+            .trade_repo
+            .find_latest_by_wallet_mint_type(&wallet, &position.mint_address, TradeType::Buy)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|t| t.block_time >= position.created_at);
+        if landed {
+            warn!(
+                position_id = %position.id,
+                mint = %position.mint_address,
+                "reaper: BuySubmitted has no signature but the wallet bought this mint since — not dropping"
+            );
             return BuyResolution::Wait;
         }
         warn!(
@@ -555,7 +612,7 @@ async fn redrive_orphaned_exit_pending(deps: &ReaperDeps) {
         if position.entry_price.is_none() {
             continue;
         }
-        if deps.inflight.exit_held(position.id) || deps.inflight.exit_mint_held(&position.mint_address)
+        if deps.inflight.exit_held(position.id) || deps.inflight.exit_mint_held(&super::exit_lock_key(&position.wallet, &position.mint_address))
         {
             continue;
         }
@@ -612,7 +669,7 @@ async fn heal_exit_pending_cleared(deps: &ReaperDeps) {
     for pos in cleared {
         // Skip a position whose exit is actively in flight in THIS process — its
         // own confirm loop will book the close; don't race a book-close under it.
-        if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&pos.mint_address) {
+        if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&super::exit_lock_key(&pos.wallet, &pos.mint_address)) {
             continue;
         }
         let (wallet, Some(trader)) = deps.wallet_and_trader(&pos) else {
@@ -653,7 +710,7 @@ async fn redrive_exit_stuck(deps: &ReaperDeps, backoff: &mut HashMap<Uuid, u8>) 
                 continue;
             }
         }
-        if deps.inflight.exit_held(position.id) || deps.inflight.exit_mint_held(&position.mint_address)
+        if deps.inflight.exit_held(position.id) || deps.inflight.exit_mint_held(&super::exit_lock_key(&position.wallet, &position.mint_address))
         {
             continue;
         }
@@ -848,7 +905,7 @@ async fn redrive_exit_unconfirmed(deps: &ReaperDeps, backoff: &mut HashMap<Uuid,
             }
         }
         if deps.inflight.exit_held(position.id)
-            || deps.inflight.exit_mint_held(&position.mint_address)
+            || deps.inflight.exit_mint_held(&super::exit_lock_key(&position.wallet, &position.mint_address))
         {
             continue;
         }
@@ -925,7 +982,7 @@ async fn heal_cleared_by_status(deps: &ReaperDeps, status: &str) {
     let orphan = deps.orphan_deps();
     let mut n = 0u32;
     for pos in cleared {
-        if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&pos.mint_address) {
+        if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&super::exit_lock_key(&pos.wallet, &pos.mint_address)) {
             continue;
         }
         let (wallet, Some(trader)) = deps.wallet_and_trader(&pos) else {

@@ -650,7 +650,7 @@ async fn resolve_sibling_account(
     exclude_pg: uuid::Uuid,
 ) -> Option<String> {
     deps.trader.cached_token_account(mint)?;
-    if let Some(acct) = deps.registry.sibling_token_account(mint, exclude_pg) {
+    if let Some(acct) = deps.registry.sibling_token_account(wallet, mint, exclude_pg) {
         info!(mint = %mint, account = %acct, "re-buying into the account a live sibling holds");
         return Some(acct);
     }
@@ -1095,13 +1095,22 @@ fn exit_still_current(registry: &PositionRegistry, order: &SellOrder) -> bool {
 /// Submit a real sell (escalating tip across attempts), confirm by summing the
 /// position's OWN sell legs vs the held amount, and emit the definitive outcome.
 pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
-    if let Ok(Some(pos)) = deps.strategy_repo.find_position(order.pg_id).await {
-        if !pos.wallet.is_empty() && pos.wallet != "paper" {
-            order.wallet = pos.wallet;
+    // A wallet move re-points the row while it holds the freeze. Read the row, wait out
+    // the wallet's freeze, and read it again: signing from the row read BEFORE the wait
+    // sells from the old wallet's emptied account.
+    for _ in 0..2 {
+        if let Ok(Some(pos)) = deps.strategy_repo.find_position(order.pg_id).await {
+            if !pos.wallet.is_empty() && pos.wallet != "paper" {
+                order.wallet = pos.wallet;
+            }
+            if pos.token_account.is_some() {
+                order.token_account = pos.token_account;
+            }
         }
-        if pos.token_account.is_some() {
-            order.token_account = pos.token_account;
+        if !deps.wallets.freeze.is_frozen(&order.wallet) {
+            break;
         }
+        deps.wallets.freeze.wait(&order.wallet).await;
     }
     // Only the wallet that bought the bag can sell it. Another key's sell fails
     // on chain and burns a fee and a nonce each attempt, so a wallet not loaded
@@ -1122,19 +1131,19 @@ pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
         return;
     };
     deps.trader = trader;
-    deps.wallets.freeze.wait(&wallet).await;
     let Some(_guard) = deps.inflight.try_begin_exit(order.pg_id) else {
         warn!(pg = %order.pg_id, mint = %order.mint, "real sell: exit guard held — skipping");
         return;
     };
     // One sell per mint (shared ATA): a sibling's exit queues behind the one in
     // flight and sends the moment it finishes.
-    let _mint_guard = match deps.inflight.try_begin_exit_mint(&order.mint) {
+    let lock_key = super::exit_lock_key(&wallet, &order.mint);
+    let _mint_guard = match deps.inflight.try_begin_exit_mint(&lock_key) {
         Some(guard) => guard,
         None => {
             let Some(guard) = deps
                 .inflight
-                .begin_exit_mint(&order.mint, EXIT_MINT_WAIT)
+                .begin_exit_mint(&lock_key, EXIT_MINT_WAIT)
                 .await
             else {
                 // Nothing was sent, so a retry is safe: the engine re-decides it.
@@ -1240,6 +1249,15 @@ pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
         let sig = match submit {
             Ok(Some(sig)) => {
                 sell_sigs.push(sig.clone());
+                // Write-ahead, off the exit path: the row names this sell from here
+                // on, so a restart or a reaper checks it on chain instead of selling
+                // the bag a second time (from a shared account that is a sibling's).
+                let (repo, pg_id, sig_bg) = (deps.strategy_repo.clone(), order.pg_id, sig.clone());
+                tokio::spawn(async move {
+                    if let Err(e) = repo.append_exit_sig(pg_id, &sig_bg).await {
+                        warn!(pg = %pg_id, "append_exit_sig failed: {e}");
+                    }
+                });
                 Some(sig)
             }
             Ok(None) => None,

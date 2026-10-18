@@ -202,8 +202,33 @@ exit is bounded by `exec_paper::FILL_WAIT` (2 s) and retries fire immediately.
 
 ### 2.1 Why a stranded bag needs more than "retry"
 
-Three invariants. Each has produced stranded **real** bags when violated, and each is
+Each invariant here has produced stranded **real** bags when violated, and each is
 closed at its source — none is defensive-programming filler.
+
+**A token account belongs to one wallet.** Every reuse lookup matches `(wallet, mint)`:
+`PositionRegistry::sibling_token_account` and `find_reusable_token_account`. A retried buy
+keeps the wallet the row was inserted with (`PositionMeta::wallet`), never a fresh
+`directory.resolve`, so a reassignment or primary change mid-ladder cannot move the retry
+to another wallet. The exit lock is `(wallet, mint)` (`exit_lock_key`): only exits from one
+wallet can race for an account.
+
+**A sell signature is on the row the moment it is sent** (`append_exit_sig`). Before an
+orphan sell, `landed_fill_of_own_sigs` sums the row's OWN recorded signatures from `trades`
+(one `getTransaction` heal when the feed shows none); when they cover the remaining
+tokens the row books that fill and sends nothing. The wallet-wide token net cannot say
+this: a sibling's tokens in the same account keep it above zero.
+
+**A send the caller cancels still frees its nonce slot** (`NonceRefreshOnDrop`), and buys
+record their nonce (`note_nonce_tx`) so the stuck-buy reaper can prove a never-landed buy
+dead. The single-endpoint send is bounded by `FANOUT_SEND_TIMEOUT`.
+
+**Stop / Stop All skip a real buy that is sent and unfilled** (`real_buy_in_flight`): failing
+the arm would orphan the tokens when the buy lands.
+
+**The SOL earmark is rebuilt** at boot from the adopted real `Holding` rows and carried
+across `WalletRuntime::rebuild`.
+
+Three further invariants:
 
 **A durable-nonce sell never expires.** If it doesn't land, `schedule_nonce_refresh`
 re-arms the slot with the *same* hash, so it stays executable indefinitely. Blind

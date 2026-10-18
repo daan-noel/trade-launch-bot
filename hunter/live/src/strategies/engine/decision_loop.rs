@@ -324,6 +324,19 @@ async fn run_loop(
     // Snapshot the settings first — a `watch::Ref` must never be held across an await.
     let boot_settings = settings.borrow().clone();
     let _ = super::boot::adopt_from_db(&strategy_repo, &mut state, &registry, &boot_settings).await;
+    // The SOL earmark lives in memory. Without this a restart reads zero committed
+    // while the adopted bags are still open, and `max_committed_sol` lets a whole new
+    // budget on top of them.
+    for position in registry.positions_for_mode(TradeMode::Real) {
+        let Some(meta) = registry.get(position) else { continue };
+        let Some(entry_sol) = meta.entry_sol else { continue };
+        if let Some(trader) = wallets.trader(&meta.wallet) {
+            trader.commit_sol_for_position(
+                meta.pg_id.to_string(),
+                trading_core::config::constants::sol_to_lamports(entry_sol).max(0) as u64,
+            );
+        }
+    }
 
     // Recovery reaper (buy adopt/drop + exit redrive + cleared Holding + ExitStuck
     // bag + stale ExitPending bag-check). Immediate first tick, then every 60 s.
@@ -337,6 +350,7 @@ async fn run_loop(
         inflight: inflight.clone(),
         registry: registry.clone(),
         fill_tx: fill_tx.clone(),
+        fill_sigs: Some(fill_sigs.clone()),
         settings: settings.clone(),
         sse_tx: sse_tx.clone(),
         // Opt-in: this is the reaper's only Helius spend. Off unless asked for.
@@ -678,6 +692,27 @@ fn stamp_ping(
     );
 }
 
+/// [`fail_entry`] that also writes the cause to the row's `last_entry_error`. The
+/// row is inserted by a spawned write, so the cause retries until the row exists.
+/// Without it an `EntryFailed` row from a pre-send guard carries no explanation.
+fn fail_entry_why(
+    real_deps: &super::exec_real::RealExecDeps,
+    pg_id: uuid::Uuid,
+    intent: IntentId,
+    cause: String,
+) {
+    fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
+    let repo = real_deps.strategy_repo.clone();
+    tokio::spawn(async move {
+        for _ in 0..20 {
+            match repo.note_last_entry_error(pg_id, &cause).await {
+                Ok(false) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                _ => return,
+            }
+        }
+    });
+}
+
 fn fail_entry(fill_tx: &mpsc::Sender<Event>, intent: IntentId, reason: FillFailReason) {
     let tx = fill_tx.clone();
     tokio::spawn(async move {
@@ -697,6 +732,16 @@ fn fail_entry(fill_tx: &mpsc::Sender<Event>, intent: IntentId, reason: FillFailR
 /// books `ExitStuck` and the row surfaces for attention instead of vanishing.
 fn fail_exit(fill_tx: &mpsc::Sender<Event>, intent: IntentId, reason: FillFailReason) {
     fail_entry(fill_tx, intent, reason);
+}
+
+/// A real buy that has been sent and has no fill yet. A Stop closes positions, but this
+/// one cannot be closed: the engine would book it `EntryFailed` while the buy lands, and
+/// the fill then arrives for an arm that no longer exists, leaving tokens with no
+/// position. It lands as a normal Holding; stopping the rule only disarms new entries.
+pub(super) fn real_buy_in_flight(registry: &PositionRegistry, position: PositionId) -> bool {
+    registry.get(position).is_some_and(|m| {
+        m.trade_mode == TradeMode::Real && m.entry_token_amount.is_none() && m.inflight_intent.is_some()
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -763,15 +808,24 @@ fn dispatch_buy(
             // A rule without a wallet signs with the primary. With none named the
             // entry fails closed; it never borrows another wallet. The offline
             // runtime (no wallets loaded) keeps the process trader.
+            // The wallet is fixed when the row is inserted (`meta.wallet`). A retry after
+            // a revert keeps it: re-resolving here would let a reassignment, a primary
+            // change or a directory reload move the retry to another wallet, and the
+            // fill would book under the wallet the row names while the tokens sit in
+            // the other one.
             let signing_wallet = {
-                let resolved = real_deps.wallets.directory.resolve(rule.0);
+                let resolved = if meta.wallet.is_empty() {
+                    real_deps.wallets.directory.resolve(rule.0)
+                } else {
+                    meta.wallet.clone()
+                };
                 if !resolved.is_empty() {
                     resolved
                 } else if real_deps.wallets.is_empty() {
                     real_deps.trader.wallet_pubkey()
                 } else {
                     error!(mint = %mint_s, rule = %rule.0, "real buy: no primary wallet is set; set one on the Wallets page");
-                    fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
+                    fail_entry_why(real_deps, meta.pg_id, intent, "no primary wallet is set".into());
                     return;
                 }
             };
@@ -783,14 +837,14 @@ fn dispatch_buy(
                 None if real_deps.wallets.is_empty() => real_deps.trader.clone(),
                 None => {
                     warn!(mint = %mint_s, wallet = %signing_wallet, "real buy: wallet is not loaded");
-                    fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
+                    fail_entry_why(real_deps, meta.pg_id, intent, format!("wallet {signing_wallet} is not loaded"));
                     return;
                 }
             };
             // The floor reads the wallet that pays, not the primary.
             if !signing_trader.can_commit_buy(lamports) {
                 warn!(mint = %mint_s, lamports, wallet = %signing_wallet, "real buy blocked by SOL balance-floor guard");
-                fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
+                fail_entry_why(real_deps, meta.pg_id, intent, "blocked by the SOL balance-floor guard".into());
                 return;
             }
             if let Some(max_sol) = settings.borrow().max_committed_sol {
@@ -801,7 +855,7 @@ fn dispatch_buy(
                         mint = %mint_s, lamports, committed, ceiling,
                         "real buy blocked by max_committed_sol guard"
                     );
-                    fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
+                    fail_entry_why(real_deps, meta.pg_id, intent, "blocked by the max_committed_sol guard".into());
                     return;
                 }
             }
@@ -985,6 +1039,7 @@ async fn handle_command(
             }
             positions.sort_unstable();
             positions.dedup();
+            positions.retain(|p| !real_buy_in_flight(registry, *p));
             info!(rule = %rule_id, positions = positions.len(), "engine: stop rule — closing open positions");
             EventBatch::many(
                 positions
@@ -1015,6 +1070,7 @@ async fn handle_command(
                         })
                     }
                 })
+                .filter(|position| !real_buy_in_flight(registry, *position))
                 .collect();
             info!(?mode, positions = positions.len(), "engine: stop-all — closing open positions");
             EventBatch::many(

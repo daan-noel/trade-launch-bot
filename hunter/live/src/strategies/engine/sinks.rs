@@ -188,20 +188,20 @@ pub struct StagedManual {
 struct HeldPoolRelease {
     gate: Option<HeldPoolGate>,
     repo: StrategyRepo,
-    wallet: String,
     mint: String,
     exclude_id: uuid::Uuid,
 }
 
 impl HeldPoolRelease {
-    /// Release only once no *other* open real position still needs the pool feed.
+    /// Release only once no *other* open real position, under ANY wallet, still needs
+    /// the pool feed (it is one subscription per mint, shared by every wallet).
     /// A failed check keeps the subscription — an extra sub costs bandwidth, a
     /// missing one costs a sell.
     async fn run(self) {
         let Some(gate) = self.gate else { return };
         match self
             .repo
-            .has_other_open_position_on_mint(&self.wallet, &self.mint, "real", self.exclude_id)
+            .has_other_open_real_position_on_mint_any_wallet(&self.mint, self.exclude_id)
             .await
         {
             Ok(true) => {}
@@ -1185,7 +1185,6 @@ impl Sink {
         HeldPoolRelease {
             gate,
             repo: self.repo.clone(),
-            wallet: self.wallet.clone(),
             mint: meta.mint.clone(),
             exclude_id: meta.pg_id,
         }

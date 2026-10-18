@@ -165,9 +165,9 @@ pub async fn recover(
     let (open_mints, open_accounts) = state.strategy_repo.open_real_rent_guards(&wallet).await?;
     let classified = classify_rent(&accounts, &open_mints, &open_accounts);
 
-    let (close, skipped_close) = skip_inflight(state, classified.close);
+    let (close, skipped_close) = skip_inflight(state, &wallet, classified.close);
     let (burn, skipped_burn) = if burn_dust {
-        skip_inflight(state, classified.burn)
+        skip_inflight(state, &wallet, classified.burn)
     } else {
         (Vec::new(), 0)
     };
@@ -248,12 +248,15 @@ pub async fn status(state: &DeployState, trader: &PumpFunTrader) -> anyhow::Resu
 
 fn skip_inflight(
     state: &DeployState,
+    wallet: &str,
     accounts: Vec<OwnedTokenAccount>,
 ) -> (Vec<OwnedTokenAccount>, u32) {
     let mut kept = Vec::with_capacity(accounts.len());
     let mut skipped = 0u32;
     for account in accounts {
-        if state.inflight.exit_mint_held(&account.mint.to_string()) {
+        if state
+            .inflight
+            .exit_mint_held(&crate::strategies::engine::exit_lock_key(wallet, &account.mint.to_string())) {
             skipped = skipped.saturating_add(1);
         } else {
             kept.push(account);
