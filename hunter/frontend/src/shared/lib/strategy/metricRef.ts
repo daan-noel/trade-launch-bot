@@ -28,12 +28,15 @@ export interface MetricRef {
 
 /** Prefix of a since-age span: `age60s`. */
 const AGE_PREFIX = 'age';
+/** The since-migration span. */
+const AMM_TEXT = 'amm';
 
 /** A span, parsed. */
 export type SpanModel =
   | { kind: 'life' }
   | { kind: 'window'; window: WindowSpec; slice: WindowSpec | null }
-  | { kind: 'since_age'; secs: number };
+  | { kind: 'since_age'; secs: number }
+  | { kind: 'since_amm' };
 
 /** Parse a `span` / `slice` pair. Returns the error text on a malformed pair, worded
  *  like the engine's. */
@@ -42,7 +45,9 @@ export function parseSpan(span?: string, slice?: string): SpanModel | string {
   const sl = slice?.trim() ?? '';
   let out: SpanModel = { kind: 'life' };
   if (s) {
-    if (s.startsWith(AGE_PREFIX)) {
+    if (s === AMM_TEXT) {
+      out = { kind: 'since_amm' };
+    } else if (s.startsWith(AGE_PREFIX)) {
       const rest = s.slice(AGE_PREFIX.length);
       const secs = rest.endsWith('s') ? Number(rest.slice(0, -1).trim()) : NaN;
       if (rest.slice(0, -1).trim() === '' || !Number.isFinite(secs) || secs < 0) {
@@ -52,7 +57,7 @@ export function parseSpan(span?: string, slice?: string): SpanModel | string {
     } else {
       const w = parseWindowSpec(s);
       if (!w) {
-        return `span \`${s}\`: expected \`10s\` (seconds), \`20sl\` (slots), \`5p\` (prints), \`10s@2\` (lagged) or \`age60s\``;
+        return `span \`${s}\`: expected \`10s\` (seconds), \`20sl\` (slots), \`5p\` (prints), \`10s@2\` (lagged), \`age60s\` or \`amm\``;
       }
       out = { kind: 'window', window: w, slice: null };
     }
@@ -80,6 +85,8 @@ export function spanKeys(m: SpanModel): Pick<MetricRef, 'span' | 'slice'> {
       return {};
     case 'since_age':
       return { span: `${AGE_PREFIX}${formatMetricThreshold(m.secs)}s` };
+    case 'since_amm':
+      return { span: AMM_TEXT };
     case 'window':
       return m.slice
         ? { span: formatWindowSpec(m.window), slice: formatWindowSpec({ ...m.slice, lag: 0 }) }
@@ -177,6 +184,7 @@ function checkSpan(spec: MetricSpec, m: SpanModel): string | null {
   const u = spec.spans;
   const path = spec.path;
   if (m.kind === 'since_age') return u.since_age ? null : `${path} does not take a since-age span`;
+  if (m.kind === 'since_amm') return u.since_amm ? null : `${path} does not take the since-migration span`;
   if (m.kind === 'life') {
     if (u.life) return null;
     return u.since_age

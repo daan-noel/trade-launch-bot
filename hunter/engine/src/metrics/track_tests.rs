@@ -66,6 +66,20 @@ fn routes_each_family() {
 }
 
 #[test]
+fn the_amm_span_reads_the_price_path_from_the_first_amm_print() {
+    let mut track = TokenTrack::new(ts(0.0));
+    let amm = |m| MetricRef::life(m).with_span(Span::since_amm());
+    track.on_trade(buy(1.0, 1.0, 40.0, 1.0));
+    track.on_trade(buy(1.0, 4.0, 85.0, 2.0));
+    assert!(track.value(amm(Metric::RisePct), None, ts(2.0)).is_nan(), "nothing to read while on the curve");
+    track.on_trade(TradeLite { on_curve: false, ..buy(1.0, 2.0, 85.0, 3.0) });
+    track.on_trade(TradeLite { on_curve: false, ..buy(1.0, 3.0, 86.0, 4.0) });
+    assert_eq!(track.value(amm(Metric::RisePct), None, ts(4.0)), 50.0, "above the AMM low 2, not the curve low 1");
+    assert!((track.value(amm(Metric::TrailPct), None, ts(4.0)) - 0.0).abs() < 1e-12, "the AMM high is 3, not the curve high 4");
+    assert_eq!(track.value(life(Metric::RisePct), None, ts(4.0)), 200.0, "the life read keeps the curve low");
+}
+
+#[test]
 fn lifetime_flow_survives_window_decay() {
     let mut track = TokenTrack::new(ts(0.0));
     track.ensure_window(WindowSpec::secs(10.0));

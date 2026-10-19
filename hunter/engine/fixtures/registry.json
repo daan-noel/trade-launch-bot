@@ -13,6 +13,7 @@
       "spans": {
         "life": true,
         "since_age": false,
+        "since_amm": false,
         "slice": false,
         "window": false
       },
@@ -34,6 +35,7 @@
       "spans": {
         "life": true,
         "since_age": false,
+        "since_amm": false,
         "slice": false,
         "window": false
       },
@@ -60,6 +62,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -81,6 +84,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -102,6 +106,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -131,6 +136,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": true,
             "slice": false,
             "window": true
           },
@@ -152,6 +158,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": true,
             "slice": false,
             "window": true
           },
@@ -173,6 +180,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -202,6 +210,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -223,6 +232,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -244,6 +254,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -265,6 +276,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -286,6 +298,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -307,6 +320,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -328,6 +342,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -349,6 +364,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -370,6 +386,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -391,6 +408,7 @@
           "spans": {
             "life": false,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -412,6 +430,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -433,6 +452,7 @@
           "spans": {
             "life": false,
             "since_age": false,
+            "since_amm": false,
             "slice": true,
             "window": true
           },
@@ -454,6 +474,7 @@
           "spans": {
             "life": false,
             "since_age": false,
+            "since_amm": false,
             "slice": true,
             "window": true
           },
@@ -483,6 +504,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -504,6 +526,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -525,6 +548,7 @@
           "spans": {
             "life": false,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -554,6 +578,7 @@
           "spans": {
             "life": false,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -575,6 +600,7 @@
           "spans": {
             "life": false,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -596,6 +622,7 @@
           "spans": {
             "life": false,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": true
           },
@@ -617,6 +644,7 @@
           "spans": {
             "life": false,
             "since_age": true,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -638,6 +666,7 @@
           "spans": {
             "life": false,
             "since_age": true,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -667,6 +696,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -696,6 +726,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -717,6 +748,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -738,6 +770,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -759,6 +792,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -780,6 +814,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -801,6 +836,7 @@
           "spans": {
             "life": true,
             "since_age": false,
+            "since_amm": false,
             "slice": false,
             "window": false
           },
@@ -969,6 +1005,13 @@
       "summary": "From coin age N seconds until now.",
       "text": "age60s",
       "title": "Since age"
+    },
+    {
+      "example": "m_price.rise_pct [amm] >= 300 : the price is 300 % above its low since the coin migrated.",
+      "key": "since_amm",
+      "summary": "From the coin's first AMM trade until now. Reads nothing while the coin is on the curve.",
+      "text": "amm",
+      "title": "Since migration"
     },
     {
       "example": "m_flow.slice_sol_share_pct [30s, slice 2s] >= 50 : half of 30 s of SOL moved in the last 2 s.",

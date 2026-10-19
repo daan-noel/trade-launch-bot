@@ -148,7 +148,8 @@ impl MetricRef {
 /// `windows`, each nested
 /// pair of `windows` for a sliced metric (same unit, slice narrower: an equal one
 /// always reads 100 %; the slice takes the span's lag, as [`Span::parse`] gives it),
-/// and since age 0 plus each of `ages` (seconds) for a since-age metric.
+/// since age 0 plus each of `ages` (seconds) for a since-age metric, and since migration
+/// for a metric that takes it.
 pub fn chart_reads(
     spec: &super::registry::MetricSpec,
     trade_tags: &[&str],
@@ -183,6 +184,9 @@ pub fn chart_reads(
         }
     } else if spec.spans.window {
         spans.extend(windows.iter().map(|&w| Span::window(w)));
+    }
+    if spec.spans.since_amm {
+        spans.push(Span::since_amm());
     }
     if spec.spans.since_age {
         for a in std::iter::once(0.0).chain(ages.iter().copied()).filter(|a| a.is_finite() && *a >= 0.0) {

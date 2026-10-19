@@ -75,6 +75,7 @@ export function spanPhrase(spec: MetricSpec | undefined, r: Pick<MetricRef, 'spa
   const m = parseSpan(r.span, r.slice);
   if (typeof m === 'string') return ` [${r.span ?? ''}]`;
   if (m.kind === 'life') return spec?.spans.window ? " over the coin's life" : '';
+  if (m.kind === 'since_amm') return ' since migration';
   if (m.kind === 'since_age') return m.secs === 0 ? ' since creation' : ` since age ${formatMetricThreshold(m.secs)} s`;
   const w = m.window;
   const size = formatMetricThreshold(w.size);

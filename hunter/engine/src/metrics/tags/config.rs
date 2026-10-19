@@ -11,17 +11,16 @@
 //!     },
 //!     "sticky": true
 //!   },
-//!   "working": {
-//!     "match": {
-//!       "program":     ["Unknown (9ddjzq...)"],
-//!       "ix_template": ["Axiom Trade|CU|ATA|1|0|0"],
-//!       "ix_contains": ["Axiom Trade"],
-//!       "ix_lacks":    ["Photon"]
-//!     },
+//!   "buyers": {
+//!     "match": {"ix_shape": [["A","B"]], "creator": false},
 //!     "side": "buy"
 //!   }
 //! }
 //! ```
+//!
+//! A document saved earlier may still name `program`, `ix_template`, `ix_contains` or
+//! `ix_lacks`: parse accepts them, the registry does not document them, and the next
+//! save drops them.
 //!
 //! `volume` is the form the owner split's build writes. A hand edit to it holds until
 //! the next build replaces the tag whole.
@@ -360,8 +359,12 @@ mod tests {
     fn the_documented_vocabulary_is_the_parsed_one() {
         let doc = tags_json();
         let keys: Vec<&str> = doc["fields"].as_array().unwrap().iter().map(|f| f["key"].as_str().unwrap()).collect();
-        for k in ["program", "ix_shape", "ix_template", "ix_contains", "ix_lacks", "wallet", "creator"] {
+        for k in ["ix_shape", "wallet", "creator"] {
             assert!(keys.contains(&k), "matcher {k} undocumented");
+        }
+        // Older saved documents still parse these; the editor never offers them.
+        for k in ["program", "ix_template", "ix_contains", "ix_lacks"] {
+            assert!(!keys.contains(&k), "legacy matcher {k} is documented as a writer");
         }
         for k in ["side", "sticky"] {
             assert!(keys.contains(&k), "option {k} undocumented");

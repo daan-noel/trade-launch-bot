@@ -450,6 +450,7 @@ function tagOptions(ctx: CondContext, spec: MetricSpec): { value: string; label:
 function spanAllowed(spec: MetricSpec, m: SpanModel): boolean {
   if (m.kind === 'life') return spec.spans.life;
   if (m.kind === 'since_age') return spec.spans.since_age;
+  if (m.kind === 'since_amm') return spec.spans.since_amm;
   return spec.spans.window && spec.spans.slice === !!m.slice;
 }
 

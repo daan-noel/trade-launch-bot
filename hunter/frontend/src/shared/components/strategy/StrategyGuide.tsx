@@ -196,6 +196,7 @@ function accepts(m: MetricSpec): string {
     m.spans.life && 'life',
     m.spans.window && (m.spans.slice ? 'window + slice' : 'window'),
     m.spans.since_age && 'since age',
+    m.spans.since_amm && 'since migration',
   ].filter(Boolean);
   return `${m.unit} · ${tag} · ${spans.join(', ')}${m.position ? ' · sell lines only' : ''}`;
 }

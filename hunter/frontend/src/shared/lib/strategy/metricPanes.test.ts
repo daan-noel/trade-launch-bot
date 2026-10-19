@@ -32,7 +32,7 @@ function spec(path: string, unit: MetricUnit, eq_tolerance = 0): MetricSpec {
     note: '',
     tags: 'optional',
     tag_level: 'trade',
-    spans: { life: true, window: true, since_age: false, slice: false },
+    spans: { life: true, window: true, since_age: false, since_amm: false, slice: false },
     monotonic: false,
     eq_tolerance,
     hue: 200,

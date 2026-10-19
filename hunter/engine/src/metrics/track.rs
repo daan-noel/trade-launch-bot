@@ -50,6 +50,9 @@ pub struct TokenTrack {
     n_prints: u64,
     state: StateMetrics,
     price_lifetime: PriceLifetimeState,
+    /// The same price path from the coin's first AMM trade (`m_price.* [amm]`). `None`
+    /// while the coin is on the curve. O(1), so it is kept for every coin.
+    price_amm: Option<PriceLifetimeState>,
     flow_lifetime: FlowLifetimeState,
     /// Untagged flow windows (`m_flow.* [span]`), deduped by span.
     windows: BTreeMap<WindowKey, WindowState>,
@@ -90,6 +93,7 @@ impl TokenTrack {
             n_prints: 0,
             state: StateMetrics::default(),
             price_lifetime: PriceLifetimeState::new(created_at),
+            price_amm: None,
             flow_lifetime: FlowLifetimeState::default(),
             windows: BTreeMap::new(),
             price_windows: BTreeMap::new(),
@@ -190,6 +194,9 @@ impl TokenTrack {
         self.n_prints += 1;
         self.last_print_wallet = Some(t.wallet_hash);
         self.price_lifetime.on_trade(t.price, t.at);
+        if !t.on_curve {
+            self.price_amm.get_or_insert_with(|| PriceLifetimeState::new(t.at)).on_trade(t.price, t.at);
+        }
         self.flow_lifetime.on_trade(t.side, t.sol);
         let cur = self.cursor();
         let at = cur.at_trade(&t);
@@ -316,6 +323,7 @@ impl TokenTrack {
         let window_read = |spec: Option<WindowSpec>| spec.map(|s| (s, s.now_pos(now, cur)));
         match m.family() {
             Family::State => self.state.value(m, self.created_at, now),
+            Family::Price if r.span.since_amm => self.price_amm.as_ref().map_or(f64::NAN, |p| p.value(m, now)),
             Family::Price => match window_read(r.span.window) {
                 None => self.price_lifetime.value(m, now),
                 Some((s, pos)) => self.price_windows.get(&s.key()).map_or(f64::NAN, |w| w.value(m, pos)),

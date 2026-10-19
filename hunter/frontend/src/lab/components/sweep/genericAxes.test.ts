@@ -25,7 +25,7 @@ function metric(path: string, over: Partial<MetricSpec> = {}): MetricSpec {
     note: '',
     tags: 'none',
     tag_level: 'trade',
-    spans: { life: true, window: false, since_age: false, slice: false },
+    spans: { life: true, window: false, since_age: false, since_amm: false, slice: false },
     monotonic: false,
     eq_tolerance: 0.1,
     hue: 0,
@@ -46,10 +46,10 @@ const REG: StrategyRegistry = {
       summary: '',
       example: '',
       metrics: [
-        metric('m_flow.buy_sol', { tags: 'optional', spans: { life: true, window: true, since_age: false, slice: false } }),
+        metric('m_flow.buy_sol', { tags: 'optional', spans: { life: true, window: true, since_age: false, since_amm: false, slice: false } }),
         metric('m_flow.slice_trade_share_pct', {
           unit: 'percent',
-          spans: { life: false, window: true, since_age: false, slice: true },
+          spans: { life: false, window: true, since_age: false, since_amm: false, slice: true },
         }),
       ],
     },

@@ -26,6 +26,8 @@ export interface SpanUse {
   life: boolean;
   window: boolean;
   since_age: boolean;
+  /** From the coin's first AMM trade (`amm`). */
+  since_amm: boolean;
   /** A trailing window with a nested `slice` beside it (required when true). */
   slice: boolean;
 }
@@ -66,7 +68,7 @@ export interface FamilySpec {
   metrics: MetricSpec[];
 }
 
-/** One span kind (`life`, `sec`, `slot`, `print`, `lag`, `since_age`, `slice`). */
+/** One span kind (`life`, `sec`, `slot`, `print`, `lag`, `since_age`, `since_amm`, `slice`). */
 export interface SpanKindSpec {
   key: string;
   /** How it is written, e.g. `10s`. Empty for life. */

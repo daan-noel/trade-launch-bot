@@ -18,6 +18,12 @@ describe('span spellings', () => {
     expect(spanSpells(reg, spec).span.map((s) => s.face)).toEqual(['age60s', 'age0s']);
   });
 
+  it('offers amm beside the windows for a price extreme', () => {
+    const spec = findMetric(reg, 'm_price.rise_pct')!;
+    expect(spanSpells(reg, spec).span.map((s) => s.face)).toEqual(['(empty)', '10s', '20sl', '5p', '10s@2', 'amm']);
+    expect(spanReading(spec, { span: 'amm' }).text).toBe('since migration');
+  });
+
   it('offers a slice in each unit beside the window', () => {
     const spec = findMetric(reg, 'm_flow.slice_sol_share_pct')!;
     const spells = spanSpells(reg, spec);

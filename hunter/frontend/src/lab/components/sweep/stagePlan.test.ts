@@ -13,7 +13,7 @@ function metric(path: string, position: boolean): MetricSpec {
     note: '',
     tags: 'none',
     tag_level: 'trade',
-    spans: { life: true, window: false, since_age: false, slice: false },
+    spans: { life: true, window: false, since_age: false, since_amm: false, slice: false },
     monotonic: false,
     eq_tolerance: 0.1,
     hue: 0,

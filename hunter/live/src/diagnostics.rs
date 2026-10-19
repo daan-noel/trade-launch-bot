@@ -513,10 +513,17 @@ pub async fn run_sync_mints(settings: &config::Settings, mints: Vec<String>) -> 
     use trading_core::config::constants::PUMP_FUN_PROGRAM_ID;
 
     let incremental = mints.iter().any(|a| a == "--incremental");
-    let mints: Vec<String> = mints.into_iter().filter(|a| a != "--incremental").collect();
+    let amm_window_slots = arg_val(&mints, "--amm-slots").and_then(|s| s.parse::<u64>().ok());
+    let slots_at = mints.iter().position(|a| a == "--amm-slots");
+    let mints: Vec<String> = mints
+        .into_iter()
+        .enumerate()
+        .filter(|(i, a)| a != "--incremental" && slots_at.is_none_or(|p| *i != p && *i != p + 1))
+        .map(|(_, a)| a)
+        .collect();
     if mints.is_empty() {
         return Err(anyhow!(
-            "sync-mints [--incremental] <mint> ... — Fetch All unless --incremental, which skips curve txs already saved"
+            "sync-mints [--incremental] [--amm-slots N] <mint> ... — Fetch All unless --incremental, which skips curve txs already saved; --amm-slots keeps the AMM pass to the pool's first N slots"
         ));
     }
     if settings.helius_rpc_url.trim().is_empty() {
@@ -542,6 +549,7 @@ pub async fn run_sync_mints(settings: &config::Settings, mints: Vec<String>) -> 
             include_post_migrate: true,
             incremental,
             verified_bonding_curve: None,
+            amm_window_slots,
         };
         let (tx, mut rx) = mpsc::channel(256);
         let printer = tokio::spawn(async move {

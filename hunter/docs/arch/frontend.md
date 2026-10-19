@@ -638,7 +638,7 @@ next load (no per-metric frontend work).
   named in its own hue. A span stays a text box. A menu beside it lists the
   spellings that metric accepts (`(empty)` whole life, `10s`, `20sl`, `5p`,
   `10s@2`; a slice metric adds `2s`, `4sl`, `2p`; a since-age metric uses
-  `age60s` and `age0s`), and the words beside the box say what the current text
+  `age60s` and `age0s`; a price extreme adds `amm`, since migration), and the words beside the box say what the current text
   means. A field with a unit is only as wide as its value, so Then sell is one
   row: the percent of the first bag, the reason, and the stage it goes to. Name
   and mode share a row, labels sit under that row, and watch sits beside that

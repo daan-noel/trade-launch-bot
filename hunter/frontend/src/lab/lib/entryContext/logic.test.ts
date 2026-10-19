@@ -93,16 +93,16 @@ describe('entryLogic', () => {
     const t = { minHits: 1, minSol: 0 };
     const verdictOf = (e: EntryRow) => entryVerdict(e, t);
     const withProbe = entryColumns(30, (m) => m, verdictOf, 25);
-    const filters = { entry_sol: '>2', pe_hits: '>=1', tx_share: '>50', sig_tx_share: '>0', buy_tx: '>=10' };
+    const filters = { entry_sol: '>2', pe_hits: '>=1', tx_share: '>50', rsv_tx_share: '>0', buy_tx: '>=10' };
     const logic = entryLogic(filters, withProbe, verdictOf, 'all');
     expect(Object.fromEntries(logic.conditions.map((x) => [x.key, x.needsIxs]))).toEqual({
       entry_sol: false,
       pe_hits: true,
       tx_share: true,
-      sig_tx_share: false,
+      rsv_tx_share: false,
       buy_tx: false,
     });
-    // Neither has an ix signal (no breakdown rows), so IX tx % fails both, and that
+    // Neither has a reserve signal (no breakdown rows), so Signal tx % fails both, and that
     // filter applies to every row: it does not depend on the selected IXs.
     expect([a, c].map(logic.idea)).toEqual([false, false]);
     expect([a, c].map(logic.anyIx)).toEqual([false, false]);

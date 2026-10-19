@@ -90,6 +90,9 @@ fn variants(m: &MetricSpec) -> Vec<Map<String, Value>> {
     if m.spans.since_age {
         spans.push((Some("age0s"), None));
     }
+    if m.spans.since_amm {
+        spans.push((Some("amm"), None));
+    }
     let mut out = Vec::new();
     for tag in &tags {
         for (span, slice) in &spans {
@@ -282,6 +285,17 @@ fn confirm_entry(state: &mut EngineState, mint: &Mint, mut fx: Vec<Effect>) {
             Event::Trade {
                 mint: mint.clone(),
                 trade: trade(Side::Buy, 1.0, 2.0, 44.0, 6.0, 110, false, WALLETS[0]),
+            },
+        );
+    }
+    // Then the coin migrates: two AMM prints, so a since-migration read has a low and a
+    // high of its own. After the fill, so the buy saw the curve.
+    for (side, price, at, slot) in [(Side::Buy, 1.6, 6.1, 111u64), (Side::Sell, 1.55, 6.2, 111)] {
+        reduce(
+            state,
+            Event::Trade {
+                mint: mint.clone(),
+                trade: TradeLite { on_curve: false, ..trade(side, 0.2, price, 85.0, at, slot, false, WALLETS[4]) },
             },
         );
     }

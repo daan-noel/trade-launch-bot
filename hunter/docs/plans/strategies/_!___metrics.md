@@ -106,7 +106,7 @@ On a print basis `slice_trade_share_pct` is the constant `100 * slice / span`; o
 twin carries information there.
 
 **One grammar.** `WindowSpec::label` / `WindowSpec::parse` spell a window everywhere:
-`30s`, `30sl@1`, `20p`. A bare number is seconds. `Span::parse` adds `age60s` and the slice;
+`30s`, `30sl@1`, `20p`. A bare number is seconds. `Span::parse` adds `age60s`, `amm` and the slice;
 `Span::bracket` renders `[30s, slice 2s]`. A persisted label, a chart column, a
 `?windows=` query and a sweep axis all round-trip through it.
 
@@ -116,6 +116,12 @@ Its buyer set is capped at one more than the largest threshold any loaded condit
 under that anchor (`arm::anchor_cap`, computed at compile), so every operator stays exact
 and a hot coin costs a handful of entries. Pair `buyer_count [age60s] = 5` with
 `buyer_is_new [age60s] = 1` to fire once, on the arrival print.
+
+**Since migration is an anchor too.** `amm` reads from the coin's first AMM print until now, and
+nothing while the coin is on the curve: `m_price.rise_pct [amm] >= 300` is the price 300 % above
+its low since migration, which the curve's life read cannot say (its low is the launch). A metric
+opts in through `SpanUse::since_amm`; today the two price extremes (`rise_pct`, `trail_pct`) do,
+kept as one O(1) price path per coin from its first AMM print.
 
 ## 3. Tags
 

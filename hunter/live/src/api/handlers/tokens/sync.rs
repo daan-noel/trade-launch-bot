@@ -86,6 +86,7 @@ pub async fn sync_token(
         include_post_migrate: body.include_post_migrate,
         incremental: body.incremental,
         verified_bonding_curve: Some(bonding_curve),
+        amm_window_slots: None,
     };
 
     // Dedup: reject a second sync of the same mint while one is in flight (two
@@ -175,6 +176,7 @@ pub async fn preview_sync(
         incremental: body.incremental,
         // Preview derives + verifies the curve itself; no pre-verified value.
         verified_bonding_curve: None,
+        amm_window_slots: None,
     };
 
     match token_sync::preview_sync(ctx, req).await {

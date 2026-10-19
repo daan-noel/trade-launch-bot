@@ -129,6 +129,10 @@ pub struct TokenSyncRequest {
     /// handler always guards first. `None` ⇒ `run_token_sync` runs the full
     /// preflight itself.
     pub verified_bonding_curve: Option<String>,
+    /// Bounds the AMM pass to the pool's first N slots: it pages archival gTFA
+    /// oldest-first (also when `incremental`) and stops past that slot. `None` ⇒
+    /// the whole pool history.
+    pub amm_window_slots: Option<u64>,
 }
 
 /// Page cap for the sync preview. Bounds RPC cost when enumerating full history
@@ -526,6 +530,7 @@ pub async fn run_token_sync(
             &decoder,
             &mint,
             req.incremental,
+            req.amm_window_slots,
             prev_amm_sig.as_deref(),
             prev_amm_slot,
             last_synced_at,
@@ -850,6 +855,7 @@ async fn sync_amm_trades(
     decoder: &HeliusDecoder,
     mint: &str,
     incremental: bool,
+    window_slots: Option<u64>,
     prev_amm_sig: Option<&str>,
     prev_amm_slot: Option<i64>,
     last_synced_at: Option<chrono::DateTime<Utc>>,
@@ -907,13 +913,23 @@ async fn sync_amm_trades(
     // Full backfill streams archival gTFA pages, decoding + flushing every
     // `FLUSH_BACKFILL_ROWS` so the raw-tx frames don't accumulate over the whole
     // pool history (the curve path's streaming, applied to the AMM venue).
-    let (newest_amm_sig, newest_amm_slot) = if !incremental {
+    // A bounded window always takes this path: oldest-first pages are what make
+    // "the pool's first N slots" a prefix to stop at.
+    let (newest_amm_sig, newest_amm_slot) = if !incremental || window_slots.is_some() {
         send_progress(progress_tx, "processing", 0, 0, "Decoding AMM trades").await?;
         let mut cursor: Option<String> = None;
         let mut newest_sig: Option<String> = None;
         let mut newest_slot: Option<i64> = None;
+        let mut window_end: Option<u64> = None;
         loop {
-            let (page, next) = gtfa_fetch_page(rpc, &pool, cursor.as_deref()).await?;
+            let (mut page, mut next) = gtfa_fetch_page(rpc, &pool, cursor.as_deref()).await?;
+            if let Some(w) = window_slots {
+                let end = *window_end.get_or_insert_with(|| page.first().map_or(0, |t| t.slot) + w);
+                if page.last().is_some_and(|t| t.slot > end) {
+                    page.retain(|t| t.slot <= end);
+                    next = None;
+                }
+            }
             if let Some((sig, slot)) = page_watermark(&page) {
                 newest_sig = Some(sig);
                 newest_slot = Some(slot as i64);

@@ -159,7 +159,7 @@ describe('a read', () => {
   });
 
   it('parses and writes spans back to the same text', () => {
-    for (const [span, slice] of [['10s'], ['20sl'], ['5p'], ['10s@2'], ['age60s'], ['30sl@1', '4sl']] as const) {
+    for (const [span, slice] of [['10s'], ['20sl'], ['5p'], ['10s@2'], ['age60s'], ['amm'], ['30sl@1', '4sl']] as const) {
       const m = parseSpan(span, slice);
       expect(typeof m).not.toBe('string');
       if (typeof m !== 'string') expect(spanKeys(m)).toEqual(slice ? { span, slice } : { span });
@@ -169,6 +169,8 @@ describe('a read', () => {
   });
 
   it('checks tags and spans against what the metric accepts', () => {
+    expect(checkRef(reg, { metric: 'm_price.rise_pct', span: 'amm' })).toBeNull();
+    expect(checkRef(reg, { metric: 'm_flow.buy_sol', span: 'amm' })).toMatch(/since-migration/);
     expect(checkRef(reg, { metric: 'm_state.age_sec', span: '10s' })).toMatch(/takes no window/);
     expect(checkRef(reg, { metric: 'm_flow.buy_tx_count' })).toMatch(/needs a tag/);
     expect(checkRef(reg, { metric: 'm_state.age_sec', tag: 'volume' })).toMatch(/takes no tag/);

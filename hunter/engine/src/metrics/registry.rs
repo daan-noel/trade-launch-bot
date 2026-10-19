@@ -219,17 +219,21 @@ pub struct SpanUse {
     pub life: bool,
     pub window: bool,
     pub since_age: bool,
+    /// From the coin's first AMM trade (`amm`).
+    pub since_amm: bool,
     /// Requires a `slice` beside its window (the two `slice_*` metrics).
     pub slice: bool,
 }
 
 impl SpanUse {
     /// Only the coin's life (or: the metric has no span at all).
-    pub const LIFE: Self = Self { life: true, window: false, since_age: false, slice: false };
-    pub const LIFE_OR_WINDOW: Self = Self { life: true, window: true, since_age: false, slice: false };
-    pub const WINDOW: Self = Self { life: false, window: true, since_age: false, slice: false };
-    pub const SINCE_AGE: Self = Self { life: false, window: false, since_age: true, slice: false };
-    pub const SLICED_WINDOW: Self = Self { life: false, window: true, since_age: false, slice: true };
+    pub const LIFE: Self = Self { life: true, window: false, since_age: false, since_amm: false, slice: false };
+    pub const LIFE_OR_WINDOW: Self = Self { window: true, ..Self::LIFE };
+    /// Life, a window, or since migration (the price extremes).
+    pub const LIFE_WINDOW_OR_AMM: Self = Self { window: true, since_amm: true, ..Self::LIFE };
+    pub const WINDOW: Self = Self { life: false, window: true, ..Self::LIFE };
+    pub const SINCE_AGE: Self = Self { life: false, since_age: true, ..Self::LIFE };
+    pub const SLICED_WINDOW: Self = Self { life: false, window: true, slice: true, ..Self::LIFE };
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -322,11 +326,11 @@ pub const METRICS: &[MetricSpec] = &[
     m(M::RisePct, F::Price, "rise_pct", "price above its low", U::Percent,
       "How far the price is above its low, in percent.",
       "m_price.rise_pct [30s] >= 50 : the price is 50 % above its low of the last 30 s.",
-      SPOT, NT, TR, S::LIFE_OR_WINDOW, false, 1.0, 42),
+      SPOT, NT, TR, S::LIFE_WINDOW_OR_AMM, false, 1.0, 42),
     m(M::TrailPct, F::Price, "trail_pct", "price below its high", U::Percent,
       "How far the price is below its high, in percent.",
       "m_price.trail_pct >= 30 : the price is 30 % below the coin's all-time high.",
-      SPOT, NT, TR, S::LIFE_OR_WINDOW, false, 1.0, 46),
+      SPOT, NT, TR, S::LIFE_WINDOW_OR_AMM, false, 1.0, 46),
     m(M::StallSec, F::Price, "stall_sec", "time since the last all-time high", U::Seconds,
       "Seconds since the price last set a new all-time high.",
       "m_price.stall_sec >= 60 : no new high for a minute.",
@@ -605,6 +609,7 @@ fn metric_json(m: &MetricSpec) -> Value {
             "life": m.spans.life,
             "window": m.spans.window,
             "since_age": m.spans.since_age,
+            "since_amm": m.spans.since_amm,
             "slice": m.spans.slice,
         },
         "monotonic": m.monotonic,

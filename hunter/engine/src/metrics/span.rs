@@ -9,6 +9,7 @@
 //! | `"5p"`        | the last 5 prints of this coin (`1p` = the print read now)|
 //! | `"10s@2"`     | the same 10 s, ending 2 s ago                             |
 //! | `"age60s"`    | from coin age 60 s until now                              |
+//! | `"amm"`       | from the coin's first AMM trade until now                 |
 //!
 //! Two metrics (`slice_*_share_pct`) also take a `slice`: a shorter window nested in the
 //! span, same unit, same lag (`"span": "30s", "slice": "2s"`).
@@ -24,6 +25,8 @@ use super::{WindowSpec, WindowUnit};
 
 /// Prefix of a since-age span: `age60s`.
 const AGE_PREFIX: &str = "age";
+/// The since-migration span: `amm`.
+const AMM_TEXT: &str = "amm";
 
 /// Which stretch a read covers. [`Span::LIFE`] is the default (no span written).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -34,14 +37,16 @@ pub struct Span {
     pub slice: Option<WindowSpec>,
     /// A since-age anchor (`age60s`).
     pub since_age: Option<AgeAnchor>,
+    /// From the coin's first AMM trade (`amm`).
+    pub since_amm: bool,
 }
 
 impl Span {
     /// The coin's whole life.
-    pub const LIFE: Self = Self { window: None, slice: None, since_age: None };
+    pub const LIFE: Self = Self { window: None, slice: None, since_age: None, since_amm: false };
 
     pub fn window(spec: WindowSpec) -> Self {
-        Self { window: Some(spec), slice: None, since_age: None }
+        Self { window: Some(spec), ..Self::LIFE }
     }
 
     /// A wall-clock window ending now.
@@ -50,15 +55,20 @@ impl Span {
     }
 
     pub fn sliced(window: WindowSpec, slice: WindowSpec) -> Self {
-        Self { window: Some(window), slice: Some(slice), since_age: None }
+        Self { window: Some(window), slice: Some(slice), ..Self::LIFE }
     }
 
     pub fn since_age(anchor: AgeAnchor) -> Self {
-        Self { window: None, slice: None, since_age: Some(anchor) }
+        Self { since_age: Some(anchor), ..Self::LIFE }
+    }
+
+    /// From the coin's first AMM trade until now.
+    pub fn since_amm() -> Self {
+        Self { since_amm: true, ..Self::LIFE }
     }
 
     pub fn is_life(self) -> bool {
-        self.window.is_none() && self.since_age.is_none()
+        self.window.is_none() && self.since_age.is_none() && !self.since_amm
     }
 
     /// A trailing window on either axis.
@@ -76,7 +86,9 @@ impl Span {
     pub fn parse(span: Option<&str>, slice: Option<&str>) -> Result<Self, String> {
         let mut out = Self::LIFE;
         if let Some(s) = span.map(str::trim).filter(|s| !s.is_empty()) {
-            if let Some(rest) = s.strip_prefix(AGE_PREFIX) {
+            if s == AMM_TEXT {
+                out.since_amm = true;
+            } else if let Some(rest) = s.strip_prefix(AGE_PREFIX) {
                 let secs = rest
                     .strip_suffix('s')
                     .and_then(|n| n.trim().parse::<f64>().ok())
@@ -85,7 +97,7 @@ impl Span {
                 out.since_age = Some(AgeAnchor::secs(secs));
             } else {
                 out.window = Some(WindowSpec::parse(s).ok_or_else(|| {
-                    format!("span `{s}`: expected `10s` (seconds), `20sl` (slots), `5p` (prints), `10s@2` (lagged) or `age60s`")
+                    format!("span `{s}`: expected `10s` (seconds), `20sl` (slots), `5p` (prints), `10s@2` (lagged), `age60s` or `amm`")
                 })?);
             }
         }
@@ -111,6 +123,9 @@ impl Span {
         if let Some(w) = self.window {
             return Some(w.label());
         }
+        if self.since_amm {
+            return Some(AMM_TEXT.to_string());
+        }
         self.since_age
             .map(|a| format!("{AGE_PREFIX}{}s", crate::event::format_metric_threshold(a.secs_f64())))
     }
@@ -134,6 +149,9 @@ impl Span {
     pub fn check_allowed(self, spec: &MetricSpec) -> Result<(), String> {
         let u = spec.spans;
         let path = spec.path();
+        if self.since_amm {
+            return if u.since_amm { Ok(()) } else { Err(format!("{path} does not take the since-migration span")) };
+        }
         if self.since_age.is_some() {
             return if u.since_age {
                 Ok(())
@@ -176,6 +194,9 @@ pub fn span_kinds_json() -> Value {
         { "key": "since_age", "text": "age60s", "title": "Since age",
           "summary": "From coin age N seconds until now.",
           "example": "m_crowd.buyer_count [age60s] >= 5 : 5+ new wallets bought after the coin was a minute old." },
+        { "key": "since_amm", "text": "amm", "title": "Since migration",
+          "summary": "From the coin's first AMM trade until now. Reads nothing while the coin is on the curve.",
+          "example": "m_price.rise_pct [amm] >= 300 : the price is 300 % above its low since the coin migrated." },
         { "key": "slice", "text": "slice 2s", "title": "Slice",
           "summary": "A shorter window nested in the span, same unit, for the two slice_*_share_pct metrics.",
           "example": "m_flow.slice_sol_share_pct [30s, slice 2s] >= 50 : half of 30 s of SOL moved in the last 2 s." },
@@ -196,6 +217,7 @@ mod tests {
             (Some("10s@2"), None),
             (Some("age60s"), None),
             (Some("age0s"), None),
+            (Some("amm"), None),
             (Some("30s"), Some("2s")),
             (Some("30sl@1"), Some("4sl")),
         ] {

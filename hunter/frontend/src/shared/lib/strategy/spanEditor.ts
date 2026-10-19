@@ -30,6 +30,7 @@ const MEANING: Record<string, string> = {
   lag: 'ending earlier',
   since_age: 'from that age until now',
   age0: 'since creation',
+  since_amm: 'since migration',
 };
 
 const SLICE_SPELLS: SpanSpell[] = [
@@ -69,6 +70,10 @@ export function spanSpells(reg: StrategyRegistry | undefined, spec: MetricSpec):
     });
     span.push({ key: 'age0', write: 'age0s', face: 'age0s', label: MEANING.age0, detail: 'age0s counts from creation.', target: 'span' });
   }
+  if (spec.spans.since_amm) {
+    const text = spanKind(reg, 'since_amm')?.text || 'amm';
+    span.push({ key: 'since_amm', write: text, face: text, label: MEANING.since_amm, detail: detailOf(reg, 'since_amm'), target: 'span' });
+  }
   const slice = spec.spans.slice
     ? SLICE_SPELLS.map((s) => ({ ...s, detail: detailOf(reg, 'slice') }))
     : [];
@@ -80,6 +85,7 @@ export function spanReading(spec: MetricSpec, r: Pick<MetricRef, 'span' | 'slice
   const m = parseSpan(r.span, r.slice);
   if (typeof m === 'string') return { bad: true, text: m };
   if (m.kind === 'since_age' && !spec.spans.since_age) return { bad: true, text: 'this metric does not take since-age' };
+  if (m.kind === 'since_amm' && !spec.spans.since_amm) return { bad: true, text: 'this metric does not take since-migration' };
   if (m.kind === 'life') {
     if (!spec.spans.life) return { bad: true, text: spec.spans.since_age ? 'write age60s, or age0s for since creation' : 'write a window, e.g. 10s' };
   }
@@ -106,7 +112,7 @@ export function applySpanSpell(spec: MetricSpec, r: MetricRef, spell: SpanSpell)
     return { span, slice: spell.write };
   }
   if (!spell.write) return {};
-  if (spell.key === 'since_age' || spell.key === 'age0') return { span: spell.write };
+  if (spell.key === 'since_age' || spell.key === 'age0' || spell.key === 'since_amm') return { span: spell.write };
   if (!spec.spans.slice) return { span: spell.write };
   const w = parseWindowSpec(spell.write);
   if (!w) return { span: spell.write };
