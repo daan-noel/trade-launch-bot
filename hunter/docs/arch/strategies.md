@@ -775,6 +775,7 @@ carried onto `LoadedRule::entry_enabled`, the same flag the arm gate reads, so
 | Any OTHER edit lands while active | the run is **kept and stamped**: `ensure_run` diffs the new [`RunConfigSig`](#a-run-says-what-config-it-is-running-under) against the cached one and appends `{at, changed[]}` to `strategy_runs.config_edits` |
 | The activation caught nothing | the empty run is **deleted**, not kept — no empty "Run #N" in front of the real bag, and the `run_seq` is freed |
 | A straggler of a finalized run settles | `reroll_draining_run` re-rolls that run's metrics (a run closed mid-drain has provisional numbers) |
+| The cached run's row is deleted under a running process (hand-emptied `strategy_runs`) | the position insert fails on `strategy_positions_run_id_fkey`; the insert task re-creates the row under the **same id** (`StrategyRepo::restore_run`, next `run_seq`) and retries once, so the cache and the registry's `run_id` stay valid |
 | Boot | `close_orphan_runs` finalizes runs left `Running` by a deactivation this process never witnessed; `load_draining_runs` rebuilds the re-roll set |
 
 Every deactivation path (pause, disable, per-rule Stop, Stop All, delete) already

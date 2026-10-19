@@ -1283,6 +1283,50 @@ impl StrategyRepo {
         Ok(())
     }
 
+    /// Re-create a run row under the id the engine already holds for it, after the
+    /// row was deleted out from under a running process (a hand-emptied
+    /// `strategy_runs`). The engine caches run ids and never re-reads them, so
+    /// without this every later position of the rule fails its FK and exists only
+    /// on-chain. `run_seq` is taken in the same statement (`run.run_seq` is
+    /// ignored); a row that already exists is left alone.
+    pub async fn restore_run(&self, run: &StrategyRun) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO strategy_runs
+                (id, strategy_id, rule_id, mode, run_seq, status, params_snapshot,
+                 max_total_tokens, config_hash, config_edits, started_at, finished_at)
+            SELECT $1, $2, $3, $4,
+                   COALESCE((SELECT MAX(run_seq) FROM strategy_runs
+                             WHERE rule_id IS NOT DISTINCT FROM $3 AND mode = $4), 0) + 1,
+                   $5, $6, $7, $8, $9, $10, $11
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(run.id)
+        .bind(&run.strategy_id)
+        .bind(run.rule_id)
+        .bind(&run.mode)
+        .bind(&run.status)
+        .bind(Json(&run.params_snapshot))
+        .bind(run.max_total_tokens)
+        .bind(&run.config_hash)
+        .bind(Json(&run.config_edits))
+        .bind(run.started_at)
+        .bind(run.finished_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Whether `e` is [`Self::insert_position`] failing because its `run_id` names
+    /// no run — the case [`Self::restore_run`] heals.
+    pub fn is_missing_run(e: &anyhow::Error) -> bool {
+        e.downcast_ref::<sqlx::Error>()
+            .and_then(|e| e.as_database_error())
+            .and_then(|d| d.constraint())
+            == Some("strategy_positions_run_id_fkey")
+    }
+
     /// Next monotonic `run_seq` for `(rule_id, mode)` — `MAX + 1`, starting at 1.
     pub async fn next_run_seq(&self, rule_id: Uuid, mode: &str) -> anyhow::Result<i64> {
         let seq: i64 = sqlx::query_scalar(

@@ -772,9 +772,25 @@ impl Sink {
         self.retain_held_pool(&mint, info.mode);
         let repo = self.repo.clone();
         let pg_id = pos.id;
+        let rule_id = staged.is_none().then_some(delta.rule.0);
         let handle = tokio::spawn(async move {
-            if let Err(e) = repo.insert_position(&pos).await {
+            let Err(e) = repo.insert_position(&pos).await else { return };
+            if !StrategyRepo::is_missing_run(&e) {
                 warn!(mint = %mint, pg = %pg_id, "engine sink: insert_position failed: {e}");
+                return;
+            }
+            // The cached run row is gone (tables emptied under a running process):
+            // put it back under the same id so the cache, the registry's `run_id`
+            // and this row all stay valid, then retry once.
+            warn!(mint = %mint, pg = %pg_id, run = %run_id, "engine sink: run row missing — restoring it");
+            let config = rule_id.map(|_| info.config);
+            let run = run_row(run_id, rule_id, info.mode, info.params, info.max_total, config, 0);
+            let retried = match repo.restore_run(&run).await {
+                Ok(()) => repo.insert_position(&pos).await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = retried {
+                warn!(mint = %mint, pg = %pg_id, "engine sink: insert_position failed after run restore: {e}");
             }
         });
         self.pending_pg.insert(pg_id, handle);
@@ -1309,20 +1325,15 @@ impl Sink {
             }
         }
         let seq = self.repo.next_run_seq(rule.0, mode).await?;
-        let run = StrategyRun {
-            id: uuid::Uuid::new_v4(),
-            strategy_id: GENERIC_STRATEGY_ID.to_string(),
-            rule_id: Some(rule.0),
-            mode: mode.to_string(),
-            run_seq: seq,
-            status: "Running".to_string(),
-            params_snapshot: info.params.clone(),
-            max_total_tokens: info.max_total,
-            config_hash: Some(info.config.hash_hex()),
-            config_edits: serde_json::json!([]),
-            started_at: Utc::now(),
-            finished_at: None,
-        };
+        let run = run_row(
+            uuid::Uuid::new_v4(),
+            Some(rule.0),
+            info.mode,
+            info.params.clone(),
+            info.max_total,
+            Some(info.config),
+            seq,
+        );
         self.repo.insert_run(&run).await?;
         self.run_cache.insert(
             rule,
@@ -1424,6 +1435,34 @@ impl Sink {
             sold_bps,
             scale_stage,
         });
+    }
+}
+
+/// A fresh `Running` run row. `rule_id = None` is the manual run, which has no
+/// config to hash (see `StrategyRepo::ensure_manual_run`).
+fn run_row(
+    id: uuid::Uuid,
+    rule_id: Option<uuid::Uuid>,
+    mode: TradeMode,
+    params: serde_json::Value,
+    max_total: Option<i64>,
+    config: Option<RunConfigSig>,
+    run_seq: i64,
+) -> StrategyRun {
+    StrategyRun {
+        id,
+        strategy_id: if rule_id.is_some() { GENERIC_STRATEGY_ID } else { MANUAL_STRATEGY_ID }
+            .to_string(),
+        rule_id,
+        mode: mode_str(mode).to_string(),
+        run_seq,
+        status: "Running".to_string(),
+        params_snapshot: params,
+        max_total_tokens: max_total,
+        config_hash: config.map(|c| c.hash_hex()),
+        config_edits: serde_json::json!([]),
+        started_at: Utc::now(),
+        finished_at: None,
     }
 }
 

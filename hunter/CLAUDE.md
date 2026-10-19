@@ -73,6 +73,10 @@ evidence section only for a number a rule, a law or an open line stands on. A st
 script is local scratch - track it only when a rule or a gate needs it re-run, by
 naming it in the root `.gitignore`.
 
+**Deriving a rule for one fingerprint?** Follow
+[fingerprint-rule-workflow.md](docs/plans/strategies/fingerprint-rule-workflow.md): the operator's
+payoff and the outsiders first, a threshold per stage cell, every line with a story, eval read once.
+
 **Studying a wallet?** Follow [_!___derive.md](docs/plans/strategies/_!___derive.md).
 The instrument set is the 26 solo traders, node by node
 ([solo-traders.md](docs/plans/strategies/solo-traders.md)). A trader names a decision; he
