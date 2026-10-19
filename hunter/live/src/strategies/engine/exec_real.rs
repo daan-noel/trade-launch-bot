@@ -47,6 +47,13 @@ use super::{FillSigStore, FillSigs, InFlightGuards, PositionRegistry, SubmittedB
 /// How long to wait for the entry fill on the feed before the RPC watchdog fires
 /// (buffers the feed's index lag — mirrors the old 12 × 1 s window).
 const ENTRY_FEED_WINDOW: Duration = Duration::from_secs(12);
+/// How long a buy may stay unseen on the feed before its signature status is read
+/// once. A reverted buy leaves no leg, so without this look the revert surfaces only
+/// after the whole [`ENTRY_FEED_WINDOW`]; a fill is normally on the feed well inside it.
+const ENTRY_EARLY_STATUS: Duration = Duration::from_millis(1500);
+/// A create-lane snipe is graded at the creation print. A retry sent later than this
+/// after its first buy is signed is a different trade, so it is dropped, not sent.
+const SNIPE_RETRY_MAX_AGE: Duration = Duration::from_secs(5);
 /// Bound on the write-ahead `mark_buy_submitted` PG persist inside the nonce
 /// slot (audit M2). The in-memory [`SubmittedBuyJournal`] is set synchronously
 /// first, so a slow/wedged DB never holds the send — recovery for this process
@@ -109,6 +116,20 @@ enum SilentSendOutcome {
     RefreshCreatorThenResend,
     WaitThenSettle,
     GiveUp,
+}
+
+/// Whether a create-lane snipe's retry is too late to still be the graded trade:
+/// `lane` is the ping lane that triggered the entry, `first_signed_at` the instant its
+/// first buy was signed. Other lanes retry as before.
+fn snipe_retry_expired(
+    lane: Option<&str>,
+    first_signed_at: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    lane == Some("create")
+        && (now - first_signed_at)
+            .to_std()
+            .is_ok_and(|age| age > SNIPE_RETRY_MAX_AGE)
 }
 
 fn classify_silent_send<E>(status: &Result<SigStatus, E>) -> SilentSendOutcome {
@@ -355,6 +376,32 @@ pub async fn run_entry(mut deps: RealExecDeps, order: BuyOrder) {
         let known_account = order.token_account.clone();
         emit_entry_filled(&deps, &order, legs.0, known_account, legs.1).await;
         return;
+    }
+
+    // A create-lane snipe retried long after its first buy is no longer the trade the
+    // rule was graded on (the first buy's revert is read within ENTRY_EARLY_STATUS, so
+    // a retry this late means the first attempt hung). Fatal: no resend, no fee.
+    if let Some((first_signed_at, _)) = deps.buy_journal.signed(order.pg_id) {
+        let lane = order.ping_stamp.map(|s| s.lane);
+        if snipe_retry_expired(lane, first_signed_at, Utc::now()) {
+            deps.trader
+                .release_sol_for_position(&order.pg_id.to_string());
+            note_entry_error(
+                &deps,
+                &order,
+                "snipe retry dropped: too long after the first buy",
+            )
+            .await;
+            let _ = deps
+                .fill_tx
+                .send(Event::FillFailed {
+                    intent: order.intent,
+                    reason: FillFailReason::Fatal,
+                    at: Some(Utc::now()),
+                })
+                .await;
+            return;
+        }
     }
 
     // Entry migration gate (option a): the snipe is CURVE-ONLY, so a token that has
@@ -908,10 +955,25 @@ async fn confirm_entry(
     window: Duration,
 ) -> EntryOutcome {
     let mint = order.mint.as_str();
+    let early = window.min(ENTRY_EARLY_STATUS);
     if let Some(legs) =
-        poll_feed_buy(deps, wallet, mint, sig, order.decided_at, guard, window).await
+        poll_feed_buy(deps, wallet, mint, sig, order.decided_at, guard, early).await
     {
         return EntryOutcome::Filled(legs);
+    }
+    // One early status read: a revert is final, so it ends the wait here; anything
+    // else (pending, landed, unreadable) keeps polling the feed for the rest of the
+    // window, as before.
+    let mut early_revert = None;
+    if window > early {
+        let status = deps.trader.signature_state_detailed(sig).await;
+        if matches!(status, Ok(SigStatus::Reverted { .. })) {
+            early_revert = Some(status);
+        } else if let Some(legs) =
+            poll_feed_buy(deps, wallet, mint, sig, order.decided_at, guard, window - early).await
+        {
+            return EntryOutcome::Filled(legs);
+        }
     }
     // Race (option a): the token migrated during the buy window. The feed poll above
     // saw no own-leg over the full window, and a curve snipe into a completed curve
@@ -931,7 +993,10 @@ async fn confirm_entry(
             "token migrated during the buy window (a curve-only snipe cannot fill)",
         ));
     }
-    let status = deps.trader.signature_state_detailed(sig).await;
+    let status = match early_revert {
+        Some(status) => status,
+        None => deps.trader.signature_state_detailed(sig).await,
+    };
     if matches!(status, Ok(SigStatus::Reverted { .. })) {
         let fee = note_reverted_fee(
             &deps.strategy_repo,
@@ -1859,6 +1924,25 @@ mod tests {
         .await;
         assert!(legs.is_some());
         assert_eq!(queries.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn snipe_retry_expires_only_on_the_create_lane_past_the_cap() {
+        let t0 = Utc::now();
+        let at = |ms: i64| t0 + chrono::Duration::milliseconds(ms);
+        let cap = SNIPE_RETRY_MAX_AGE.as_millis() as i64;
+        assert!(!snipe_retry_expired(Some("create"), t0, at(1_700)));
+        assert!(!snipe_retry_expired(Some("create"), t0, at(cap)));
+        assert!(snipe_retry_expired(Some("create"), t0, at(cap + 1)));
+        assert!(!snipe_retry_expired(Some("trade"), t0, at(60_000)));
+        assert!(!snipe_retry_expired(None, t0, at(60_000)));
+        assert!(!snipe_retry_expired(Some("create"), at(500), t0), "a clock step back never expires");
+    }
+
+    #[test]
+    fn early_status_look_sits_inside_the_feed_window() {
+        assert!(ENTRY_EARLY_STATUS < ENTRY_FEED_WINDOW);
+        assert!(ENTRY_EARLY_STATUS < SNIPE_RETRY_MAX_AGE);
     }
 
     #[test]

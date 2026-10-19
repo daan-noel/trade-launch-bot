@@ -298,6 +298,18 @@ pulling container logs.
 | revert with no Anchor code | `reverted on-chain, no Anchor code (account / funds error)` |
 | 2006 stale creator | refreshed-and-retrying, `the buy already used the chain creator`, or `the creator re-read failed` |
 | migrated during the buy window | `token migrated during the buy window (…)` |
+| create-lane snipe retry later than `SNIPE_RETRY_MAX_AGE` (5 s) after its first buy was signed | `snipe retry dropped: too long after the first buy` (Fatal, no resend) |
+
+A reverted buy leaves no leg on the feed, so `confirm_entry` reads the signature status once
+at `ENTRY_EARLY_STATUS` (1.5 s) when no own leg has appeared. A revert ends the wait there and
+the engine retries at once; any other status keeps polling the feed for the rest of the
+12 s `ENTRY_FEED_WINDOW`. One RPC call per buy still unseen at 1.5 s.
+
+A create snipe decides on the coin's first print, and its transaction lands behind the
+operator's same-slot burst. Fill price over trigger price is up to 2.6x on the 5ix 400K
+fingerprint, so the default 25 % buy floor reverts 6042 on those coins. The floor that fits
+such a rule is its own `enter.slippage_pct`, sized from the fill/trigger ratio of the rule's
+paper positions (`entry_price / target_price`).
 
 Semantics: **"the most recent buy attempt that did not fill"**, whatever the row's
 final status — not an `EntryFailed`-only field, and never cleared on success. A
