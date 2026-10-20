@@ -247,3 +247,15 @@ pub const AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET: usize = 48;
 pub const AMM_CONFIG_FEE_RECIPIENTS_OFFSET: usize = 57;
 pub const AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET: usize = 313;
 pub const AMM_CONFIG_MIN_LEN: usize = 417;
+
+/// Byte offsets into PumpSwap's pfee `FeeConfig` account (PDA `["fee_config",
+/// PUMP_SWAP]` under [`FEE_PROGRAM`]). Layout: discriminator(8) bump(u8)
+/// admin(32) flat_fees(3 x u64) fee_tiers(Vec: u32 len, then per tier a u128
+/// `market_cap_lamports_threshold` + lp/protocol/creator fee bps as 3 x u64)
+/// stable_fee_tiers(Vec, same shape; non-SOL quotes).
+pub const FEE_CONFIG_FEE_TIERS_OFFSET: usize = 65;
+pub const FEE_CONFIG_TIER_LEN: usize = 40;
+
+/// `supply` (u64) in an SPL mint: mint_authority COption<Pubkey>(36) comes first.
+/// Same offset for Token and Token-2022.
+pub const SPL_MINT_SUPPLY_OFFSET: usize = 36;

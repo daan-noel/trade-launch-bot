@@ -111,6 +111,43 @@ pub(crate) fn apply_curve_buy(
     (vt.saturating_sub(tokens_out), vq.saturating_add(net))
 }
 
+/// One PumpSwap fee tier from the pfee `FeeConfig`: the fees a pool pays once
+/// its market cap (lamports) reaches `market_cap_threshold_lamports`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AmmFeeTier {
+    pub market_cap_threshold_lamports: u128,
+    pub lp_fee_bps: u64,
+    pub protocol_fee_bps: u64,
+    pub creator_fee_bps: u64,
+}
+
+/// The total fee (bps) a canonical PumpSwap pool charges, from the pfee tier
+/// table, mirroring the fee program: market cap = `quote_res x base_supply /
+/// base_res` in lamports; a cap below the first threshold takes the first
+/// tier, otherwise the highest tier whose threshold it reaches. The creator
+/// share is dropped for a pool with no coin creator. `None` when there are no
+/// tiers or no base reserve.
+pub(crate) fn amm_tier_fee_bps(
+    tiers: &[AmmFeeTier],
+    base_res: u128,
+    quote_res: u128,
+    base_supply: u64,
+    has_coin_creator: bool,
+) -> Option<u64> {
+    let first = tiers.first()?;
+    if base_res == 0 {
+        return None;
+    }
+    let market_cap = quote_res.saturating_mul(u128::from(base_supply)) / base_res;
+    let tier = tiers
+        .iter()
+        .rev()
+        .find(|t| market_cap >= t.market_cap_threshold_lamports)
+        .unwrap_or(first);
+    let creator = if has_coin_creator { tier.creator_fee_bps } else { 0 };
+    Some(tier.lp_fee_bps.saturating_add(tier.protocol_fee_bps).saturating_add(creator))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{curve_buy_min_out, curve_sell_min_out, fresh_curve_reserves};

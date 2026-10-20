@@ -46,7 +46,8 @@ use live::trader::PumpFunTrader;
 ///                                                against live state (zero SOL)
 ///   probe simulate-amm-buy <mint> <sol> [slippage_bps]
 ///                                              — simulate a real PumpSwap AMM buy
-///                                                of a migrated token (zero SOL)
+///                                                of a migrated token (zero SOL);
+///                                                bps defaults to the AMM default
 ///   probe simulate-amm-sell <mint> [amount] [slippage_bps]
 ///                                              [--holder <pubkey>|--largest-holder]
 ///                                              — simulate a real PumpSwap AMM sell
@@ -221,9 +222,11 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
                 .context("usage: probe simulate-amm-buy <mint> <sol> [slippage_bps]")?
                 .parse()
                 .context("sol must be a float")?;
+            // No bps given = the configured AMM default, as `sim-matrix` uses; an
+            // explicit `0` still asks for an exact-base-out buy with no haircut.
             let slippage_bps: Option<u64> = match positional.get(1) {
                 Some(s) => Some(s.parse().context("slippage_bps must be a u64")?),
-                None => None,
+                None => Some(trader.config.slippage.amm_default_bps),
             };
             // Resolve the token's SPL program (legacy/2022) on-chain — same source
             // the live AMM buy uses. Warn (don't block) if the mint isn't migrated:
@@ -235,6 +238,11 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             println!(
                 "Simulating AMM BUY — {sol} SOL, token_program={}, slippage_bps: {slippage_bps:?}",
                 routing.token_program_id
+            );
+            let (fee_bps, mcap) = trader.probe_amm_fee(mint, &routing.token_program_id).await?;
+            println!(
+                "  sized on fee {fee_bps} bps at market cap {:.1} SOL                  (compare the pfee `Program return` below: lp/protocol/creator u64 LE)",
+                mcap as f64 / LPS
             );
             let outcome = trader
                 .simulate_amm_buy(mint, &routing.token_program_id, sol, None, slippage_bps)

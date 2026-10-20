@@ -38,7 +38,7 @@ use spl_associated_token_account::{
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 // Anchor instruction discriminators (from pump_amm.json). We use the original
 // `buy` (exact base out, max quote in); `buy_exact_quote_in` would also work.
@@ -348,16 +348,16 @@ impl PumpFunTrader {
         // Guard the real spend (NaN/∞, non-positive, oversized, or rounds-to-zero)
         // before building the swap — the AMM public entry, mirroring the curve path.
         let spendable = self.buy_lamports_checked(sol_amount)?;
-        let fee_bps = self.amm_fee_bps(token_mint, &cfg);
+        let fee_bps = self
+            .amm_fee_bps(token_mint, &cfg, &pool, base_res, quote_res)
+            .await;
         // A garbage/misread global-config (fee >= 100%) is no fee at all — bail
         // rather than size a real spend on it.
         if fee_bps >= BPS_DENOM {
             bail!("amm buy: fee_bps {fee_bps} >= 100% (bad global_config)");
         }
 
-        // A buy's fees sit on top of the pool's constant-product amount, so the
-        // budget buys `spendable / (1 + fee)` of pool quote.
-        let quote_net = (spendable as u128).saturating_mul(BPS_DENOM) / (BPS_DENOM + fee_bps);
+        let quote_net = amm_buy_quote_net(spendable, fee_bps);
         let base_out = cp_amount_out(quote_net, quote_res, base_res);
         // Exact-base-out buy: request slightly fewer tokens than the budget
         // buys (the slippage haircut) so the actual cost stays under the
@@ -444,7 +444,9 @@ impl PumpFunTrader {
         )?;
         let (base_res, quote_res) = self.amm_reserves_cached(token_mint, &pool).await?;
 
-        let fee_bps = self.amm_fee_bps(token_mint, &cfg);
+        let fee_bps = self
+            .amm_fee_bps(token_mint, &cfg, &pool, base_res, quote_res)
+            .await;
         // A >= 100% fee would wrap the slippage denominator in release — bail
         // instead; `saturating_sub` guards the caller-supplied slip.
         if fee_bps >= BPS_DENOM {
@@ -949,11 +951,12 @@ impl PumpFunTrader {
     /// nothing else warms this entry.) Only the very first call per process
     /// fetches inline.
     async fn amm_config(&self) -> Result<AmmGlobalConfig> {
-        if let Some((c, fetched)) = *self
+        let cached = self
             .amm_global_config
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-        {
+            .clone();
+        if let Some((c, fetched)) = cached {
             if fetched.elapsed() >= AMM_CONFIG_MAX_AGE {
                 self.spawn_amm_config_refresh();
             }
@@ -961,11 +964,12 @@ impl PumpFunTrader {
         }
 
         // Cold (first call this process) — fetch inline.
-        let cfg = fetch_amm_config(&self.rpc, &self.amm_global_config_pda).await?;
+        let cfg =
+            fetch_amm_config(&self.rpc, &self.amm_global_config_pda, &self.amm_fee_config).await?;
         *self
             .amm_global_config
             .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some((cfg, Instant::now()));
+            .unwrap_or_else(|p| p.into_inner()) = Some((cfg.clone(), Instant::now()));
         Ok(cfg)
     }
 
@@ -983,23 +987,80 @@ impl PumpFunTrader {
         }
         let rpc = self.rpc.clone();
         let pda = self.amm_global_config_pda;
+        let fee_pda = self.amm_fee_config;
         let cache = self.amm_global_config.clone();
         let inflight = self.amm_config_refresh_inflight.clone();
         tokio::spawn(async move {
-            if let Ok(cfg) = fetch_amm_config(&rpc, &pda).await {
+            if let Ok(cfg) = fetch_amm_config(&rpc, &pda, &fee_pda).await {
                 *cache.lock().unwrap_or_else(|p| p.into_inner()) = Some((cfg, Instant::now()));
             }
             inflight.store(false, Ordering::Release);
         });
     }
 
-    /// The fee (bps) a swap of `mint` is sized on. PumpSwap tiers its fee by market
-    /// cap, so the fee the pool charged on its latest observed swap (fed with the
-    /// reserves) is the pool's own; the global config's flat fees only stand in
-    /// for a pool no feed has seen.
-    fn amm_fee_bps(&self, mint: &str, cfg: &AmmGlobalConfig) -> u128 {
-        let flat = cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps;
-        u128::from(self.reserve_cache.amm_fee_bps(mint).unwrap_or(flat))
+    /// The fee (bps) a swap of `mint` is sized on. The fee the pool charged on its
+    /// latest observed swap (fed with the reserves) comes first. A pool no feed
+    /// has seen is charged from the pfee tier table at its market cap
+    /// ([`crate::price::amm_tier_fee_bps`], the fee program's own rule), which
+    /// needs the base supply: cached by every on-chain reserve read, else one
+    /// mint read the first time. The global config's flat fees stand in only
+    /// when the tiers or the supply are unavailable.
+    async fn amm_fee_bps(
+        &self,
+        mint: &str,
+        cfg: &AmmGlobalConfig,
+        pool: &AmmPoolInfo,
+        base_res: u128,
+        quote_res: u128,
+    ) -> u128 {
+        if let Some(observed) = self.reserve_cache.amm_fee_bps(mint) {
+            return u128::from(observed);
+        }
+        let flat = u128::from(cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps);
+        if cfg.fee_tiers.is_empty() {
+            return flat;
+        }
+        let supply = match self.amm_base_supply(mint, &pool.base_mint).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("amm fee: base supply read failed for {mint} ({e}); sizing on the flat fee");
+                return flat;
+            }
+        };
+        crate::price::amm_tier_fee_bps(
+            &cfg.fee_tiers,
+            base_res,
+            quote_res,
+            supply,
+            pool.coin_creator != Pubkey::default(),
+        )
+        .map_or(flat, u128::from)
+    }
+
+    /// What an AMM swap of `mint` is sized on right now: `(fee_bps,
+    /// market_cap_lamports)` through the same reads as a live buy. For the
+    /// probe's cross-check against the fee program's own return.
+    #[cfg(feature = "probe")]
+    pub async fn probe_amm_fee(&self, mint: &str, base_token_program_id: &str) -> Result<(u128, u128)> {
+        let (pool, cfg) = tokio::try_join!(
+            self.amm_pool_info(mint, None, base_token_program_id),
+            self.amm_config(),
+        )?;
+        let (base_res, quote_res) = self.amm_reserves_cached(mint, &pool).await?;
+        let fee = self.amm_fee_bps(mint, &cfg, &pool, base_res, quote_res).await;
+        let supply = self.amm_base_supply(mint, &pool.base_mint).await?;
+        Ok((fee, quote_res.saturating_mul(u128::from(supply)) / base_res.max(1)))
+    }
+
+    /// The base mint's supply (raw units): the per-mint cache, else one mint read.
+    async fn amm_base_supply(&self, mint: &str, base_mint: &Pubkey) -> Result<u64> {
+        if let Some(s) = self.amm_base_supply.get(mint) {
+            return Ok(*s);
+        }
+        let account = self.rpc.get_account(base_mint).await.context("read base mint")?;
+        let supply = read_u64(&account.data, protocol::SPL_MINT_SUPPLY_OFFSET)?;
+        self.amm_base_supply.insert(mint.to_string(), supply);
+        Ok(supply)
     }
 
     /// The reserves the pool prices with, `(base vault, quote vault + the pool's
@@ -1015,10 +1076,12 @@ impl PumpFunTrader {
                 pool.pool,
                 pool.pool_base_token_account,
                 pool.pool_quote_token_account,
+                pool.base_mint,
             ])
             .await
             .context("read pool reserves")?;
-        let [pool_acc, base, quote]: [Option<_>; 3] = accounts.try_into().map_err(|_| {
+        let [pool_acc, base, quote, base_mint]: [Option<_>; 4] =
+            accounts.try_into().map_err(|_| {
             TradeError::Other("getMultipleAccounts returned an unexpected count".into())
         })?;
         let pool_acc = pool_acc.context("pool account not found")?;
@@ -1028,6 +1091,14 @@ impl PumpFunTrader {
         let quote_vault = read_u64(&quote.data, 64)? as u128;
         if base_res == 0 || quote_vault == 0 {
             bail!("PumpSwap pool has zero reserves");
+        }
+        // The supply rides the same request, so the fee tier never costs a read
+        // of its own after an on-chain reserve read.
+        if let Some(supply) = base_mint
+            .as_ref()
+            .and_then(|m| read_u64(&m.data, protocol::SPL_MINT_SUPPLY_OFFSET).ok())
+        {
+            self.amm_base_supply.insert(pool.base_mint.to_string(), supply);
         }
         Ok((
             base_res,
@@ -1452,11 +1523,17 @@ fn extract_swap_layout(
 async fn fetch_amm_config(
     rpc: &solana_client::nonblocking::rpc_client::RpcClient,
     pda: &Pubkey,
+    fee_config_pda: &Pubkey,
 ) -> Result<AmmGlobalConfig> {
-    let account = rpc
-        .get_account(pda)
+    // GlobalConfig and the pfee FeeConfig in one request.
+    let accounts = rpc
+        .get_multiple_accounts(&[*pda, *fee_config_pda])
         .await
-        .context("Failed to fetch PumpSwap global_config")?;
+        .context("Failed to fetch PumpSwap global_config + fee_config")?;
+    let [global, fee_config]: [Option<_>; 2] = accounts.try_into().map_err(|_| {
+        TradeError::Other("getMultipleAccounts returned an unexpected count".into())
+    })?;
+    let account = global.context("PumpSwap global_config not found")?;
     let data = &account.data;
     if data.len() < AMM_CONFIG_MIN_LEN {
         bail!("PumpSwap global_config too short: {} bytes", data.len());
@@ -1479,12 +1556,50 @@ async fn fetch_amm_config(
         bail!("No protocol fee recipient in PumpSwap global_config");
     }
 
+    // A missing or malformed FeeConfig leaves the flat fees in charge rather
+    // than failing every AMM trade on a fee-table read.
+    let fee_tiers = match fee_config.map(|a| decode_fee_tiers(&a.data)) {
+        Some(Ok(tiers)) => tiers,
+        Some(Err(e)) => {
+            warn!("PumpSwap fee_config undecodable ({e}); sizing on the flat fees");
+            Vec::new()
+        }
+        None => {
+            warn!("PumpSwap fee_config not found; sizing on the flat fees");
+            Vec::new()
+        }
+    };
+
     Ok(AmmGlobalConfig {
         lp_fee_bps,
         protocol_fee_bps,
         coin_creator_fee_bps,
         protocol_fee_recipient,
+        fee_tiers: fee_tiers.into(),
     })
+}
+
+/// The `fee_tiers` vector of a pfee `FeeConfig` account (layout at
+/// [`protocol::FEE_CONFIG_FEE_TIERS_OFFSET`]), thresholds ascending as stored.
+fn decode_fee_tiers(data: &[u8]) -> Result<Vec<crate::price::AmmFeeTier>> {
+    let off = protocol::FEE_CONFIG_FEE_TIERS_OFFSET;
+    let len_bytes = data
+        .get(off..off + 4)
+        .context("fee_config too short for the fee_tiers length")?;
+    let n = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+    let mut tiers = Vec::with_capacity(n.min(64));
+    for i in 0..n {
+        let at = off + 4 + i * protocol::FEE_CONFIG_TIER_LEN;
+        let lo = read_u64(data, at)?;
+        let hi = read_u64(data, at + 8)?;
+        tiers.push(crate::price::AmmFeeTier {
+            market_cap_threshold_lamports: u128::from(lo) | (u128::from(hi) << 64),
+            lp_fee_bps: read_u64(data, at + 16)?,
+            protocol_fee_bps: read_u64(data, at + 24)?,
+            creator_fee_bps: read_u64(data, at + 32)?,
+        });
+    }
+    Ok(tiers)
 }
 
 /// Minimal JSON-RPC POST against a full RPC node.
@@ -1518,6 +1633,22 @@ fn cp_amount_out(amount_in: u128, reserve_in: u128, reserve_out: u128) -> u128 {
         return 0;
     }
     reserve_out.saturating_mul(amount_in) / reserve_in.saturating_add(amount_in)
+}
+
+/// Lamports the program rounds UP when it charges a buy's fees: lp, protocol and
+/// creator shares are each a ceiling on the constant-product quote.
+const AMM_BUY_FEE_ROUNDING_LAMPORTS: u128 = 3;
+
+/// The pool quote a buy budget of `spendable` lamports pays for at `fee_bps`.
+/// The fees sit on top of the constant-product amount, so the budget less the
+/// fee-share rounding buys `(spendable - rounding) / (1 + fee)`; without that
+/// allowance a zero-haircut buy lands up to 3 lamports over `max_quote_amount_in`
+/// and reverts 6004.
+fn amm_buy_quote_net(spendable: u64, fee_bps: u128) -> u128 {
+    u128::from(spendable)
+        .saturating_sub(AMM_BUY_FEE_ROUNDING_LAMPORTS)
+        .saturating_mul(BPS_DENOM)
+        / (BPS_DENOM + fee_bps)
 }
 
 /// The `base_amount_out` an exact-base-out AMM buy requests: the expected
@@ -1640,6 +1771,7 @@ mod tests {
             protocol_fee_bps: 5,
             coin_creator_fee_bps: 5,
             protocol_fee_recipient: Pubkey::new_unique(),
+            fee_tiers: Vec::new().into(),
         }
     }
 
@@ -2091,5 +2223,100 @@ mod tests {
             size > TX_LIMIT,
             "expected cashback AMM buy + nonce > {TX_LIMIT}, got {size} B"
         );
+    }
+}
+
+#[cfg(test)]
+mod fee_tier_tests {
+    use super::{amm_buy_base_amount_out, amm_buy_quote_net, cp_amount_out, decode_fee_tiers, BPS_DENOM};
+    use crate::price::amm_tier_fee_bps;
+    use base64::Engine as _;
+
+    /// The PumpSwap pfee `FeeConfig` account as read at slot 459127884.
+    fn fixture() -> Vec<u8> {
+        let b64 = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/pump_amm_fee_config.b64"));
+        base64::engine::general_purpose::STANDARD.decode(b64.trim()).unwrap()
+    }
+
+    const SOL: u128 = 1_000_000_000;
+    /// A pump mint's supply: 1 B tokens at 6 decimals.
+    const SUPPLY: u64 = 1_000_000_000_000_000;
+
+    #[test]
+    fn the_real_fee_config_decodes_to_its_tier_table() {
+        let tiers = decode_fee_tiers(&fixture()).unwrap();
+        assert_eq!(tiers.len(), 25);
+        assert_eq!(tiers[0].market_cap_threshold_lamports, 0);
+        assert_eq!((tiers[0].lp_fee_bps, tiers[0].protocol_fee_bps, tiers[0].creator_fee_bps), (2, 93, 30));
+        assert_eq!(tiers[1].market_cap_threshold_lamports, 420 * SOL);
+        assert_eq!((tiers[1].lp_fee_bps, tiers[1].protocol_fee_bps, tiers[1].creator_fee_bps), (20, 5, 95));
+        assert_eq!(tiers[24].market_cap_threshold_lamports, 98_240 * SOL);
+        assert!(tiers.windows(2).all(|w| w[0].market_cap_threshold_lamports < w[1].market_cap_threshold_lamports));
+    }
+
+    #[test]
+    fn a_short_fee_config_is_an_error_not_a_panic() {
+        assert!(decode_fee_tiers(&fixture()[..100]).is_err());
+        assert!(decode_fee_tiers(&[0u8; 10]).is_err());
+    }
+
+    /// Market cap = quote x supply / base; the tier is picked at its threshold.
+    #[test]
+    fn the_tier_is_chosen_at_the_market_cap_boundaries() {
+        let tiers = decode_fee_tiers(&fixture()).unwrap();
+        let base = 250_000_000_000_000u128; // a quarter of the supply in the pool
+        let fee_at = |mcap_sol: u128| {
+            // quote such that quote x SUPPLY / base == mcap exactly
+            let quote = mcap_sol * SOL * base / u128::from(SUPPLY);
+            amm_tier_fee_bps(&tiers, base, quote, SUPPLY, true).unwrap()
+        };
+        assert_eq!(fee_at(80), 125);
+        assert_eq!(fee_at(419), 125);
+        assert_eq!(fee_at(420), 120);
+        assert_eq!(fee_at(1_469), 120);
+        assert_eq!(fee_at(1_470), 115);
+        assert_eq!(fee_at(98_240), 30);
+        assert_eq!(fee_at(1_000_000), 30);
+        // No coin creator: the creator share is not charged.
+        let quote = 80 * SOL * base / u128::from(SUPPLY);
+        assert_eq!(amm_tier_fee_bps(&tiers, base, quote, SUPPLY, false), Some(95));
+        assert_eq!(amm_tier_fee_bps(&[], base, quote, SUPPLY, true), None);
+        assert_eq!(amm_tier_fee_bps(&tiers, 0, quote, SUPPLY, true), None);
+    }
+
+    /// The pump AMM `buy` (exact base out) charge: the constant-product quote in,
+    /// rounded up, plus each fee share rounded up on it.
+    fn on_chain_buy_cost(base_out: u128, base_res: u128, quote_res: u128, fees: (u128, u128, u128)) -> u128 {
+        let ceil = |n: u128, d: u128| n.div_ceil(d);
+        let quote_in = ceil(quote_res * base_out, base_res - base_out);
+        quote_in + ceil(quote_in * fees.0, BPS_DENOM) + ceil(quote_in * fees.1, BPS_DENOM) + ceil(quote_in * fees.2, BPS_DENOM)
+    }
+
+    fn sized_base_out(spendable: u128, fee_bps: u128, base_res: u128, quote_res: u128, slip: Option<u64>) -> u128 {
+        let quote_net = amm_buy_quote_net(spendable as u64, fee_bps);
+        u128::from(amm_buy_base_amount_out(cp_amount_out(quote_net, quote_res, base_res), slip))
+    }
+
+    /// The probe's failure, reproduced: sized on the flat 30 bps a 125 bps pool
+    /// costs ~0.95 % over the budget (6004); sized on the tier it fits, even with
+    /// no slippage haircut at all.
+    #[test]
+    fn a_tier_sized_buy_stays_inside_its_budget() {
+        let tiers = decode_fee_tiers(&fixture()).unwrap();
+        let spendable = 10_000_000u128; // 0.01 SOL
+        for &(base_res, quote_sol) in &[(250_000_000_000_000u128, 80u128), (600_000_000_000_000, 30), (100_000_000_000_000, 200)] {
+            let quote_res = quote_sol * SOL;
+            let fee = u128::from(amm_tier_fee_bps(&tiers, base_res, quote_res, SUPPLY, true).unwrap());
+            let t = tiers.iter().rev().find(|t| quote_res * u128::from(SUPPLY) / base_res >= t.market_cap_threshold_lamports).unwrap();
+            let shares = (u128::from(t.lp_fee_bps), u128::from(t.protocol_fee_bps), u128::from(t.creator_fee_bps));
+            for slip in [None, Some(0), Some(500)] {
+                let out = sized_base_out(spendable, fee, base_res, quote_res, slip);
+                assert!(on_chain_buy_cost(out, base_res, quote_res, shares) <= spendable, "fee {fee} slip {slip:?}");
+            }
+            if fee > 30 {
+                let flat_out = sized_base_out(spendable, 30, base_res, quote_res, None);
+                assert!(on_chain_buy_cost(flat_out, base_res, quote_res, shares) > spendable);
+            }
+        }
     }
 }

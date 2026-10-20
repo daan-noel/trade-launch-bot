@@ -141,13 +141,17 @@ pub(crate) struct AmmPoolInfo {
 }
 
 /// Cached PumpSwap `GlobalConfig` facts: fee rates (bps) and a chosen protocol
-/// fee recipient. Fetched once and reused for slippage math + account building.
-#[derive(Debug, Clone, Copy)]
+/// fee recipient, plus the pfee `FeeConfig` market-cap fee tiers. Fetched in one
+/// batched read and reused for slippage math + account building.
+#[derive(Debug, Clone)]
 pub(crate) struct AmmGlobalConfig {
     pub lp_fee_bps: u64,
     pub protocol_fee_bps: u64,
     pub coin_creator_fee_bps: u64,
     pub protocol_fee_recipient: Pubkey,
+    /// The pfee tier table a canonical pool's fee is charged from; empty when
+    /// the `FeeConfig` read failed, and then the flat fees above stand in.
+    pub fee_tiers: Arc<[crate::price::AmmFeeTier]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +201,10 @@ pub struct PumpFunTrader {
     /// Per-mint mutex serializing the `amm_pool_info` cold path so concurrent
     /// sellers don't each fire `getSignaturesForAddress` + `getTransaction`.
     pub(crate) amm_pool_cold_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Base-mint supply per migrated mint (raw units), the market-cap input of
+    /// the fee tier. Filled by every on-chain pool read; a pump mint's supply
+    /// only shrinks by a burn, which moves the cap by the burned share.
+    pub(crate) amm_base_supply: Arc<DashMap<String, u64>>,
     // GlobalConfig + the instant it was fetched. Governance-mutable fee bps mean
     // a stale cache would silently loosen slippage protection forever; the fetch
     // instant lets `amm_config` refresh past a max-age.
@@ -323,6 +331,7 @@ impl PumpFunTrader {
             amm_user_volume_accumulator,
             amm_pool_cache: Arc::new(DashMap::new()),
             amm_pool_cold_locks: Arc::new(DashMap::new()),
+            amm_base_supply: Arc::new(DashMap::new()),
             amm_global_config: Arc::new(std::sync::Mutex::new(None)),
             amm_config_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             user_token_accounts: Arc::new(DashMap::new()),
