@@ -6,7 +6,7 @@ Lab has no keys and no Wallets page. A lab save of a rule does not write the wal
 
 ## Where a key lives
 
-Every key hunter-live signs with is an envelope file under `WALLET_KEYSTORE` (`<pubkey>.enc`, AES-256-GCM, the same shape Forge uses). `WALLET_KEK` is the one passphrase, set in each machine's `.env` by hand and never copied by a script. Both are required at boot. Postgres stores the pubkey, the name, the status (`active`, `draining`, `archived`), and `key_ref` (the filename only). The key is never in Postgres, an API response, or a log. A write never replaces an existing file. Rows from before pubkey filenames keep their `<name>.enc` file; `key_ref` names whichever file it is.
+Every key hunter-live signs with is an envelope file under `WALLET_KEYSTORE` (`<pubkey>.enc`, AES-256-GCM, the same shape Forge uses). `WALLET_KEK` is the one passphrase, set in each machine's `.env` by hand and never copied by a script. Both are required at boot. Postgres stores the pubkey, the name, the status (`active`, `draining`, `archived`), the paused flag, and `key_ref` (the filename only). The key is never in Postgres or a log, and only one API response carries it: Reveal (below). A write never replaces an existing file. Rows from before pubkey filenames keep their `<name>.enc` file; `key_ref` names whichever file it is.
 
 A name is a label: 1 to 32 characters, trimmed, no control characters, unique ignoring case (`trader_wallets_name_ci`). Rename changes the label only. Create, import, and rename all check it through `ops::name_error`.
 
@@ -20,7 +20,7 @@ No private key or nonce list is read from the environment. With no wallet loaded
 
 ## Readiness
 
-Each loaded wallet reports one state, the first missing piece in the order it is fixed: `no_key` (not loaded here, or the key does not match; the load error says why), `needs_nonces`, `init_failed` (the trader's `initialize` error is kept and shown), `needs_sol` (cached balance under `LOW_SOL_LAMPORTS`, 0.01 SOL), `ready`. `needs_sol` still signs; the per-buy balance floor decides each entry. Assigning a rule to, setting as primary, or manually buying with a wallet that cannot sign is refused. A rule whose wallet is not loaded on this box fails its entry; it never buys with another wallet. A position whose wallet is not loaded here is never signed or closed; it waits for the wallet. Its sell goes `ExitStuck` with nothing sent, the reaper skips it, Re-sell and Verify answer `409 wallet X is not loaded on this box`, and the next pass after a Refresh that loads the key sells it. The balance floor reads the wallet that pays.
+Each loaded wallet reports one state, the first missing piece in the order it is fixed: `no_key` (not loaded here, or the key does not match; the load error says why), `needs_nonces`, `init_failed` (the trader's `initialize` error is kept and shown), `needs_sol` (cached balance under `LOW_SOL_LAMPORTS`, 0.01 SOL), `ready`. `needs_sol` still signs; the per-buy balance floor decides each entry. Assigning a rule to, setting as primary, or manually buying with a wallet that cannot sign is refused. Paused is not a readiness state: a paused wallet can sign and still takes no entry (Page actions). A rule whose wallet is not loaded on this box fails its entry; it never buys with another wallet. A position whose wallet is not loaded here is never signed or closed; it waits for the wallet. Its sell goes `ExitStuck` with nothing sent, the reaper skips it, Re-sell and Verify answer `409 wallet X is not loaded on this box`, and the next pass after a Refresh that loads the key sells it. The balance floor reads the wallet that pays.
 
 ## Nonces
 
@@ -45,6 +45,11 @@ Holdings, the holdings summary, wallet tokens, rent status and recover, cashback
 ## Page actions
 
 - Send SOL to another registered wallet, or to an outside address with the source name typed. SOL committed to a buy in flight and a fee reserve stay.
+- Fund pays up to 16 registered wallets from one, in one transaction (`POST /api/wallets/fund`), against the same spendable figure as Send.
+- Sweep sends each picked wallet's spendable SOL above a keep amount to one registered wallet, one transaction per wallet (`POST /api/wallets/sweep`). A wallet with open positions keeps at least 0.01 SOL for its sells. A failed wallet is that wallet's entry in the reply; the rest still sweep.
+- Pause (`PUT /api/wallets/{pubkey}/paused`) stops new entries on a wallet: an entry that resolves to it fails closed with `wallet X is paused`, the same way as an unloaded wallet. Exits, Re-sell, Verify and the reapers never read the flag. The flag lives in `trader_wallets.paused` and `WalletDirectory`, is re-read by Refresh, and is per box: wallet-sync does not copy it.
+- Reveal (`POST /api/wallets/{pubkey}/reveal`) returns the secret key, base58 and as a byte array, decrypted from the key file, so an archived or unloaded wallet reveals too. The body carries `WALLET_KEK` typed again: the bearer token is added by the proxy, so it does not prove who is at the page. Five wrong passphrases lock every reveal for 15 minutes. Each reveal and each refusal is a `wallet_activity` row; the reply is `Cache-Control: no-store`, and the page keeps the key in the dialog's state for at most a minute.
+- Holdings lists the wallet's token bags (`GET /api/portfolio/holdings?wallet=`), read when the tab opens, with Sell all from that wallet. The full table is My Wallet with `?wallet=`.
 - Rename changes the label; the key file keeps its filename.
 - Archive needs an active wallet that is not primary, named by no rule, with no open position, no nonce account, no token, and SOL at or under 0.001. Anything else is moved instead. The trader is unloaded.
 - Restore loads the file again and returns the row to active, never primary.

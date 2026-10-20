@@ -343,11 +343,12 @@ impl WalletRuntime {
         let repo = TraderWalletRepo::new(pool.clone());
         let rows = repo.assignments().await?;
         self.directory.replace_assignments(rows);
+        let records = repo.records().await?;
+        self.directory
+            .replace_paused(records.iter().filter(|r| r.paused).map(|r| r.pubkey.clone()).collect());
         // Only a row names the primary. None named leaves it empty, and an
         // entry on a rule without a wallet then fails closed.
-        let primary = repo
-            .records()
-            .await?
+        let primary = records
             .into_iter()
             .find(|r| r.is_primary && r.status != "archived")
             .map(|r| r.pubkey)

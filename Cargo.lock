@@ -3050,6 +3050,7 @@ dependencies = [
  "bincode",
  "bs58 0.5.1",
  "chrono",
+ "constant_time_eq",
  "dashmap 4.0.2",
  "dotenvy",
  "executor-pumpfun",

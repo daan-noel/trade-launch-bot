@@ -228,8 +228,9 @@ export const liveApi = baseApi.injectEndpoints({
     // enrichment, composed server-side by the portfolio service). Expensive, so
     // cached like the token list; a trade refresh invalidates the WalletHoldings
     // tag rather than re-fetching the whole wallet eagerly.
-    getPortfolioHoldings: builder.query<WalletHolding[], void>({
-      query: () => '/api/portfolio/holdings',
+    // `wallet` absent = the primary; the Wallets page reads one wallet's bags.
+    getPortfolioHoldings: builder.query<WalletHolding[], string | void>({
+      query: (wallet) => `/api/portfolio/holdings${walletQs(wallet)}`,
       providesTags: ['WalletHoldings'],
     }),
     // The execution costs every PnL figure is net of. Fetched once and kept: it
@@ -625,14 +626,52 @@ export const liveApi = baseApi.injectEndpoints({
       }),
       invalidatesTags: ['TraderWallet'],
     }),
+    // The secret key, behind a re-typed `WALLET_KEK`. The caller keeps it in
+    // component state only and resets the mutation, so it never stays in the store.
+    revealWalletKey: builder.mutation<
+      { secret_base58: string; secret_bytes: number[] },
+      { pubkey: string; passphrase: string }
+    >({
+      query: ({ pubkey, passphrase }) => ({
+        url: `/api/wallets/${pubkey}/reveal`,
+        method: 'POST',
+        body: { passphrase },
+      }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    setWalletPaused: builder.mutation<{ paused: boolean }, { pubkey: string; paused: boolean }>({
+      query: ({ pubkey, paused }) => ({ url: `/api/wallets/${pubkey}/paused`, method: 'PUT', body: { paused } }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    fundWallets: builder.mutation<
+      { signature: string },
+      { from: string; targets: { to: string; sol: number }[] }
+    >({
+      query: (body) => ({ url: '/api/wallets/fund', method: 'POST', body }),
+      invalidatesTags: ['TraderWallet'],
+    }),
+    sweepWallets: builder.mutation<WalletSweepResult[], { wallets: string[]; to: string; keep_sol: number }>({
+      query: (body) => ({ url: '/api/wallets/sweep', method: 'POST', body }),
+      invalidatesTags: ['TraderWallet'],
+    }),
   }),
 });
+
+/** One wallet's sweep: `lamports` sent with `signature`, nothing to send, or `error`. */
+export interface WalletSweepResult {
+  wallet: string;
+  lamports: number;
+  signature: string | null;
+  error: string | null;
+}
 
 export interface TraderWalletRow {
   pubkey: string;
   name: string;
   status: 'active' | 'draining' | 'archived' | string;
   is_primary: boolean;
+  /** Takes no new entry; its open positions still exit. */
+  paused: boolean;
   nonce_count: number;
   rule_count: number;
   open_positions: number;
@@ -766,4 +805,8 @@ export const {
   useArchiveWalletMutation,
   useRestoreWalletMutation,
   useRestartWalletMutation,
+  useRevealWalletKeyMutation,
+  useSetWalletPausedMutation,
+  useFundWalletsMutation,
+  useSweepWalletsMutation,
 } = liveApi;

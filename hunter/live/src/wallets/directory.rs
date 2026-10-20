@@ -1,7 +1,7 @@
 //! Which pubkey signs the next entry. The position keeps the pubkey it was
 //! bought with; this map is read only when an entry fires.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 use uuid::Uuid;
 
@@ -9,6 +9,8 @@ use uuid::Uuid;
 struct State {
     primary: String,
     by_rule: HashMap<Uuid, String>,
+    /// Wallets that take no new entry. Exits never read this.
+    paused: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -39,6 +41,23 @@ impl WalletDirectory {
                 guard.by_rule.remove(&rule);
             }
         }
+    }
+
+    pub fn replace_paused(&self, paused: HashSet<String>) {
+        self.inner.write().expect("wallet directory").paused = paused;
+    }
+
+    pub fn set_paused(&self, pubkey: &str, paused: bool) {
+        let mut guard = self.inner.write().expect("wallet directory");
+        if paused {
+            guard.paused.insert(pubkey.to_string());
+        } else {
+            guard.paused.remove(pubkey);
+        }
+    }
+
+    pub fn is_paused(&self, pubkey: &str) -> bool {
+        self.inner.read().expect("wallet directory").paused.contains(pubkey)
     }
 
     /// The pubkey an entry on `rule` signs with. Empty when no wallet is loaded.

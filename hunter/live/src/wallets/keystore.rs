@@ -35,6 +35,11 @@ impl Kek {
         key.copy_from_slice(&digest);
         Self { key }
     }
+
+    /// Whether `passphrase` is the one this KEK was derived from.
+    pub fn matches(&self, passphrase: &str) -> bool {
+        constant_time_eq::constant_time_eq(&Self::from_passphrase(passphrase).key, &self.key)
+    }
 }
 
 /// A wallet name is a label only; the key file is named by pubkey. Trimmed,
@@ -178,6 +183,14 @@ mod tests {
         let back = read_keypair(&dir, "main.enc", &kek).unwrap();
         assert_eq!(kp.pubkey(), back.pubkey());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_kek_matches_only_its_own_passphrase() {
+        let kek = Kek::from_passphrase("test-passphrase");
+        assert!(kek.matches("test-passphrase"));
+        assert!(!kek.matches("test-passphrase "));
+        assert!(!kek.matches(""));
     }
 
     #[test]

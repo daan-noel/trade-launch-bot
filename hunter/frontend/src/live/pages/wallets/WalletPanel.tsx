@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -14,17 +15,22 @@ import {
   useAttachNoncesMutation,
   useGetWalletActivityQuery,
   useGetWalletAssignmentsQuery,
+  useGetPortfolioHoldingsQuery,
   useGetWalletNoncesQuery,
   useProvisionNoncesMutation,
   useRenameWalletMutation,
   useRestartWalletMutation,
   useRestoreWalletMutation,
+  useSellTokenMutation,
   useSetPrimaryWalletMutation,
+  useSetWalletPausedMutation,
   useSyncWalletMutation,
   walletCanSign,
   type TraderWalletRow,
 } from '@live/store/liveEndpoints';
+import { isCashHolding } from 'lib/assetKind';
 
+import { RevealKeyDialog } from './WalletDialogs';
 import {
   activityText,
   READINESS_LABEL,
@@ -33,9 +39,9 @@ import {
   solText,
 } from './walletFormat';
 
-type PanelTab = 'overview' | 'rules' | 'nonces' | 'activity';
+type PanelTab = 'overview' | 'holdings' | 'rules' | 'nonces' | 'activity';
 
-/** One wallet: what it needs, which rules it signs, its nonces, what was done to it. */
+/** One wallet: what it needs, what it holds, which rules it signs, its nonces, what was done to it. */
 export function WalletPanel({
   wallet,
   wallets,
@@ -72,6 +78,7 @@ export function WalletPanel({
           <h2 className="text-[15px] font-bold text-text">{wallet.name}</h2>
           {wallet.is_primary && <Badge variant="primary">★ primary</Badge>}
           <Badge variant={READINESS_VARIANT[wallet.readiness]}>{READINESS_LABEL[wallet.readiness]}</Badge>
+          {wallet.paused && <Badge variant="warning">paused</Badge>}
           <span className="font-mono text-[11px] text-text-dim">{wallet.pubkey}</span>
           <Button size="xs" variant="ghost" onClick={() => void navigator.clipboard.writeText(wallet.pubkey)}>
             Copy
@@ -83,12 +90,16 @@ export function WalletPanel({
       <Tabs value={tab} onValueChange={(v) => setTab(v as PanelTab)}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="holdings">Holdings ({wallet.open_positions})</TabsTrigger>
           <TabsTrigger value="rules">Rules ({wallet.rule_count})</TabsTrigger>
           <TabsTrigger value="nonces">Nonces ({wallet.nonce_count})</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
         <TabsPanel value="overview">
           <Overview wallet={wallet} moveOpen={moveOpen} run={run} onMove={onMove} onSend={onSend} onNonces={() => setTab('nonces')} />
+        </TabsPanel>
+        <TabsPanel value="holdings">
+          {tab === 'holdings' && <HoldingsTab wallet={wallet} run={run} />}
         </TabsPanel>
         <TabsPanel value="rules">
           <RulesTab wallet={wallet} wallets={wallets} run={run} />
@@ -136,6 +147,8 @@ function Overview({
   const [rename, renameState] = useRenameWalletMutation();
   const [archive, archiveState] = useArchiveWalletMutation();
   const [restore, restoreState] = useRestoreWalletMutation();
+  const [setPaused, pauseState] = useSetWalletPausedMutation();
+  const [revealing, setRevealing] = useState(false);
   const [name, setName] = useState(wallet.name);
   const active = wallet.status === 'active';
   const archived = wallet.status === 'archived';
@@ -153,6 +166,10 @@ function Overview({
           tone={wallet.pnl_24h_sol > 0 ? 'text-green' : wallet.pnl_24h_sol < 0 ? 'text-red' : 'text-text'}
         />
       </div>
+
+      {wallet.paused && (
+        <InlineAlert variant="warning">Paused: this wallet takes no new entry. Its open positions still exit.</InlineAlert>
+      )}
 
       {!archived && (
         <section>
@@ -220,6 +237,20 @@ function Overview({
               Move everything...
             </Button>
           )}
+          {!archived && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={pauseState.isLoading}
+              title={wallet.paused ? 'Take new entries again' : 'Stop new entries; open positions still exit'}
+              onClick={() => run(() => setPaused({ pubkey: wallet.pubkey, paused: !wallet.paused }).unwrap())}
+            >
+              {wallet.paused ? 'Resume entries' : 'Pause entries'}
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setRevealing(true)}>
+            Reveal private key...
+          </Button>
           {active && !wallet.is_primary && wallet.rule_count === 0 && (
             <Button
               size="sm"
@@ -262,6 +293,104 @@ function Overview({
           </div>
         )}
       </section>
+      {revealing && <RevealKeyDialog wallet={wallet} onClose={() => setRevealing(false)} />}
+    </div>
+  );
+}
+
+/**
+ * The wallet's token bags, read from the chain when the tab opens. Sell sends
+ * the whole balance from this wallet; the full table lives on My Wallet.
+ */
+function HoldingsTab({ wallet, run }: { wallet: TraderWalletRow; run: Run }) {
+  const loaded = wallet.status === 'active' && wallet.key_loaded;
+  const { data = [], isFetching, error, refetch } = useGetPortfolioHoldingsQuery(wallet.pubkey, { skip: !loaded });
+  const [sell, sellState] = useSellTokenMutation();
+  const [selling, setSelling] = useState<string | null>(null);
+  const bags = data.filter((h) => !isCashHolding(h) && h.amount > 0);
+  const totalSol = bags.reduce((s, h) => s + (h.value_sol ?? 0), 0);
+
+  if (!loaded) return <p className="text-[12px] text-text-dim">The key is not loaded on this box, so its bags are not read.</p>;
+
+  const doSell = (mint: string, tokenAccount: string, label: string, managed: string | null) => {
+    const note = managed ? ` It is a position of ${managed}; selling closes it.` : '';
+    if (!window.confirm(`Sell all ${label} from ${wallet.name}?${note}`)) return;
+    setSelling(mint);
+    void run(async () => {
+      try {
+        await sell({ mint_address: mint, token_account: tokenAccount, wallet: wallet.pubkey }).unwrap();
+        refetch();
+      } finally {
+        setSelling(null);
+      }
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-2 text-[12px]">
+      <div className="flex items-center gap-2">
+        <span className="text-text-dim">
+          {bags.length} bag(s), {solText(totalSol)} SOL marked
+        </span>
+        <Button size="xs" variant="ghost" disabled={isFetching} onClick={() => refetch()}>
+          {isFetching ? 'Reading...' : 'Refresh'}
+        </Button>
+        <Link className="ml-auto text-primary hover:underline" to={`/wallet?wallet=${encodeURIComponent(wallet.pubkey)}`}>
+          Open in My Wallet
+        </Link>
+      </div>
+      {error && <InlineAlert variant="error">{apiErrorMessage(error) ?? 'Could not read holdings'}</InlineAlert>}
+      {bags.length === 0 && !isFetching ? (
+        <p className="text-text-dim">No token balance.</p>
+      ) : (
+        <table className="w-full text-left">
+          <thead className="text-[11px] text-text-dim">
+            <tr className="border-b border-white/10">
+              <th className="py-1 font-medium">Token</th>
+              <th className="py-1 font-medium">Held by</th>
+              <th className="py-1 text-right font-medium">Value SOL</th>
+              <th className="py-1 text-right font-medium">PnL SOL</th>
+              <th className="py-1" />
+            </tr>
+          </thead>
+          <tbody>
+            {bags.map((h) => {
+              const label = h.symbol || shortKey(h.mint_address);
+              const managed = h.managed_by ? (h.managed_by.rule_name ?? 'a rule') : null;
+              const pnl = h.unrealized_pnl_sol;
+              return (
+                <tr key={h.mint_address} className="border-b border-white/5">
+                  <td className="py-1">
+                    <span className="text-text">{label}</span>{' '}
+                    <span className="font-mono text-[11px] text-text-dim">{shortKey(h.mint_address)}</span>
+                  </td>
+                  <td className="py-1 text-text-dim">
+                    {h.managed_by ? `${managed} (${h.managed_by.status})` : 'no position'}
+                  </td>
+                  <td className="py-1 text-right font-mono tabular-nums">{solText(h.value_sol)}</td>
+                  <td
+                    className={`py-1 text-right font-mono tabular-nums ${
+                      pnl == null ? 'text-text-dim' : pnl > 0 ? 'text-green' : pnl < 0 ? 'text-red' : ''
+                    }`}
+                  >
+                    {pnl == null ? '-' : `${pnl > 0 ? '+' : ''}${solText(pnl)}`}
+                  </td>
+                  <td className="py-1 text-right">
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      disabled={sellState.isLoading}
+                      onClick={() => doSell(h.mint_address, h.token_account, label, managed)}
+                    >
+                      {selling === h.mint_address ? 'Selling...' : 'Sell all'}
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

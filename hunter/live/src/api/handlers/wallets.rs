@@ -1,5 +1,5 @@
 //! Wallet registry. Responses carry pubkeys and names. The private key is
-//! encrypted on import and is not returned.
+//! encrypted on import; only `reveal_key` returns it, behind `WALLET_KEK`.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -76,6 +76,38 @@ pub struct PreviewQuery {
     pub from: String,
 }
 
+#[derive(Deserialize)]
+pub struct RevealBody {
+    /// `WALLET_KEK`, typed again on the page.
+    pub passphrase: String,
+}
+
+#[derive(Deserialize)]
+pub struct PauseBody {
+    pub paused: bool,
+}
+
+#[derive(Deserialize)]
+pub struct FundTarget {
+    pub to: String,
+    pub sol: f64,
+}
+
+#[derive(Deserialize)]
+pub struct FundBody {
+    pub from: String,
+    pub targets: Vec<FundTarget>,
+}
+
+#[derive(Deserialize)]
+pub struct SweepBody {
+    pub wallets: Vec<String>,
+    pub to: String,
+    /// SOL each swept wallet keeps.
+    #[serde(default)]
+    pub keep_sol: f64,
+}
+
 pub async fn list(state: web::Data<Arc<DeployState>>) -> impl Responder {
     let repo = TraderWalletRepo::new(state.db.clone());
     let wallets = match repo.list().await {
@@ -96,6 +128,7 @@ pub async fn list(state: web::Data<Arc<DeployState>>) -> impl Responder {
             "rule_count": wallet.rule_count,
             "open_positions": wallet.open_positions,
             "pnl_24h_sol": lamports_to_sol(wallet.pnl_24h_lamports),
+            "paused": wallet.paused,
             "sol": lamports.map(|l| lamports_to_sol(l as i64)),
             "key_loaded": state.wallets.signer(&wallet.pubkey).map(|k| k.pubkey().to_string()) == Some(wallet.pubkey.clone()),
             "readiness": readiness,
@@ -421,6 +454,57 @@ pub async fn send_sol(
     let from = path.into_inner();
     match wallets::send_sol(&state.db, &state.wallets, &from, &body.to, lamports as u64, body.external).await {
         Ok(signature) => HttpResponse::Ok().json(serde_json::json!({ "signature": signature })),
+        Err(e) => HttpResponse::BadRequest().json(err(format!("{e:#}"))),
+    }
+}
+
+/// The wallet's secret key, after the page re-types `WALLET_KEK`. Never cached.
+pub async fn reveal_key(
+    state: web::Data<Arc<DeployState>>,
+    path: web::Path<String>,
+    body: web::Json<RevealBody>,
+) -> impl Responder {
+    match wallets::reveal_key(&state.db, &state.wallets, &path.into_inner(), &body.passphrase).await {
+        Ok(key) => HttpResponse::Ok()
+            .insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"))
+            .json(serde_json::json!({ "secret_base58": *key.base58, "secret_bytes": *key.bytes })),
+        Err(e) => HttpResponse::BadRequest().json(err(format!("{e:#}"))),
+    }
+}
+
+pub async fn set_paused(
+    state: web::Data<Arc<DeployState>>,
+    path: web::Path<String>,
+    body: web::Json<PauseBody>,
+) -> impl Responder {
+    match wallets::set_paused(&state.db, &state.wallets, &path.into_inner(), body.paused).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "paused": body.paused })),
+        Err(e) => HttpResponse::BadRequest().json(err(format!("{e:#}"))),
+    }
+}
+
+pub async fn fund(state: web::Data<Arc<DeployState>>, body: web::Json<FundBody>) -> impl Responder {
+    let mut targets = Vec::with_capacity(body.targets.len());
+    for t in &body.targets {
+        let lamports = sol_to_lamports(t.sol);
+        if !t.sol.is_finite() || lamports <= 0 {
+            return HttpResponse::BadRequest().json(err("every amount must be above zero"));
+        }
+        targets.push((t.to.clone(), lamports as u64));
+    }
+    match wallets::fund(&state.db, &state.wallets, &body.from, &targets).await {
+        Ok(signature) => HttpResponse::Ok().json(serde_json::json!({ "signature": signature })),
+        Err(e) => HttpResponse::BadRequest().json(err(format!("{e:#}"))),
+    }
+}
+
+pub async fn sweep(state: web::Data<Arc<DeployState>>, body: web::Json<SweepBody>) -> impl Responder {
+    if !body.keep_sol.is_finite() || body.keep_sol < 0.0 {
+        return HttpResponse::BadRequest().json(err("keep must be zero or more"));
+    }
+    let keep = sol_to_lamports(body.keep_sol) as u64;
+    match wallets::sweep(&state.db, &state.wallets, &body.wallets, &body.to, keep).await {
+        Ok(rows) => HttpResponse::Ok().json(rows),
         Err(e) => HttpResponse::BadRequest().json(err(format!("{e:#}"))),
     }
 }

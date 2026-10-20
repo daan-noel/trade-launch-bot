@@ -20,6 +20,6 @@ pub use mover::{
 pub use nonces::{
     attach_nonces, list_nonces, provision_nonces, sync_new, sync_wallet, AttachReport, NonceView, SyncReport,
 };
-pub use ops::{archive, name_error, rename, restore, send_sol};
+pub use ops::{archive, fund, name_error, rename, restore, reveal_key, send_sol, set_paused, sweep, SweepResult};
 pub use readiness::Readiness;
 pub use runtime::{load_keystore, load_one, TraderFactory, WalletRuntime};

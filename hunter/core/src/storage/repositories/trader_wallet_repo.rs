@@ -22,6 +22,7 @@ struct WalletRow {
     name: String,
     status: String,
     is_primary: bool,
+    paused: bool,
     created_at: DateTime<Utc>,
     archived_at: Option<DateTime<Utc>>,
     nonce_count: i64,
@@ -37,6 +38,7 @@ struct RecordRow {
     status: String,
     key_ref: String,
     is_primary: bool,
+    paused: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -89,7 +91,7 @@ impl TraderWalletRepo {
 
     pub async fn list(&self) -> sqlx::Result<Vec<TraderWallet>> {
         let rows = sqlx::query_as::<_, WalletRow>(&format!(
-            "SELECT w.pubkey, w.name, w.status, w.is_primary, w.created_at, w.archived_at, \
+            "SELECT w.pubkey, w.name, w.status, w.is_primary, w.paused, w.created_at, w.archived_at, \
                     (SELECT count(*) FROM trader_nonces n WHERE n.authority = w.pubkey AND n.status = 'live') AS nonce_count, \
                     (SELECT count(*) FROM rule_wallets r WHERE r.wallet = w.pubkey) AS rule_count, \
                     (SELECT count(*) FROM strategy_positions p \
@@ -109,6 +111,7 @@ impl TraderWalletRepo {
             name: r.name,
             status: r.status,
             is_primary: r.is_primary,
+            paused: r.paused,
             created_at: r.created_at,
             archived_at: r.archived_at,
             nonce_count: r.nonce_count,
@@ -198,7 +201,7 @@ impl TraderWalletRepo {
 
     pub async fn records(&self) -> sqlx::Result<Vec<TraderWalletRecord>> {
         let rows = sqlx::query_as::<_, RecordRow>(
-            "SELECT pubkey, name, status, key_ref, is_primary FROM trader_wallets",
+            "SELECT pubkey, name, status, key_ref, is_primary, paused FROM trader_wallets",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -210,8 +213,19 @@ impl TraderWalletRepo {
                 status: r.status,
                 key_ref: r.key_ref,
                 is_primary: r.is_primary,
+                paused: r.paused,
             })
             .collect())
+    }
+
+    pub async fn set_paused(&self, pubkey: &str, paused: bool) -> sqlx::Result<bool> {
+        let n = sqlx::query("UPDATE trader_wallets SET paused = $2 WHERE pubkey = $1 AND status <> 'archived'")
+            .bind(pubkey)
+            .bind(paused)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(n == 1)
     }
 
     pub async fn insert(

@@ -11,6 +11,8 @@ pub struct TraderWallet {
     pub name: String,
     pub status: String,
     pub is_primary: bool,
+    /// Takes no new entry; its open positions still exit.
+    pub paused: bool,
     pub created_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
     pub nonce_count: i64,
@@ -47,6 +49,7 @@ pub struct TraderWalletRecord {
     pub status: String,
     pub key_ref: String,
     pub is_primary: bool,
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -75,6 +75,14 @@ export function activityText(kind: string, detail: Record<string, unknown>): str
       return 'Archived';
     case 'restored':
       return 'Restored';
+    case 'paused':
+      return 'Paused: no new entries';
+    case 'resumed':
+      return 'Resumed entries';
+    case 'key_revealed':
+      return 'Private key revealed';
+    case 'key_reveal_refused':
+      return 'Key reveal refused: wrong passphrase';
     case 'restarted':
       return detail.init_error ? `Restart failed: ${String(detail.init_error)}` : 'Restarted';
     default:

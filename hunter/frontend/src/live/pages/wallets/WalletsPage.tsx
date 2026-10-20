@@ -20,7 +20,7 @@ import {
   type WalletMove,
 } from '@live/store/liveEndpoints';
 
-import { MoveDialog, SendSolDialog } from './WalletDialogs';
+import { FundDialog, MoveDialog, SendSolDialog, SweepDialog } from './WalletDialogs';
 import { WalletPanel } from './WalletPanel';
 import {
   READINESS_LABEL,
@@ -61,6 +61,7 @@ export function WalletsPage() {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [moving, setMoving] = useState<string | null>(null);
   const [sending, setSending] = useState<string | null>(null);
+  const [bulk, setBulk] = useState<'fund' | 'sweep' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [resumeMove, resumeState] = useResumeWalletMoveMutation();
   const [syncAll, syncState] = useSyncAllWalletsMutation();
@@ -113,6 +114,12 @@ export function WalletsPage() {
           <div className="flex gap-2">
             <Button size="sm" variant="ghost" onClick={refresh} disabled={syncState.isLoading}>
               {syncState.isLoading ? 'Reading chain...' : 'Refresh'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setBulk('fund')} disabled={live.length < 2}>
+              Fund...
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setBulk('sweep')} disabled={live.length < 2}>
+              Sweep...
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setAdding('import')}>
               Import
@@ -219,6 +226,11 @@ export function WalletsPage() {
                   ) : (
                     <Badge variant="neutral">{w.status}</Badge>
                   )}
+                  {w.paused && (
+                    <Badge variant="warning" className="ml-1" title="No new entries; open positions still exit">
+                      paused
+                    </Badge>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums">{solText(w.sol)}</td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums">{w.nonce_count}</td>
@@ -269,6 +281,8 @@ export function WalletsPage() {
       )}
       {movingRow && <MoveDialog source={movingRow} wallets={wallets} onClose={() => setMoving(null)} />}
       {sendingRow && <SendSolDialog source={sendingRow} wallets={wallets} onClose={() => setSending(null)} />}
+      {bulk === 'fund' && <FundDialog wallets={wallets} onClose={() => setBulk(null)} />}
+      {bulk === 'sweep' && <SweepDialog wallets={wallets} onClose={() => setBulk(null)} />}
     </div>
   );
 }

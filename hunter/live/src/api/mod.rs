@@ -164,6 +164,10 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             .route("/wallets/{pubkey}/archive", web::post().to(handlers::wallets::archive))
             .route("/wallets/{pubkey}/restart", web::post().to(handlers::wallets::restart))
             .route("/wallets/{pubkey}/restore", web::post().to(handlers::wallets::restore))
+            .route("/wallets/{pubkey}/reveal", web::post().to(handlers::wallets::reveal_key))
+            .route("/wallets/{pubkey}/paused", web::put().to(handlers::wallets::set_paused))
+            .route("/wallets/fund", web::post().to(handlers::wallets::fund))
+            .route("/wallets/sweep", web::post().to(handlers::wallets::sweep))
             .route(
                 "/wallets/{pubkey}/primary",
                 web::post().to(handlers::wallets::set_primary),

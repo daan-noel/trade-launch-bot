@@ -78,6 +78,7 @@ aes-gcm = { workspace = true }
 sha2 = { workspace = true }
 zeroize = { workspace = true }
 rand = { workspace = true }
+constant_time_eq = "0.4"
 
 # Encoding (strategies use these for tx construction)
 bs58 = "0.5"

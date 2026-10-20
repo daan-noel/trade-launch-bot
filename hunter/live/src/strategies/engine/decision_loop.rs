@@ -829,6 +829,12 @@ fn dispatch_buy(
                     return;
                 }
             };
+            // A paused wallet takes no new entry; its open positions still exit.
+            if real_deps.wallets.directory.is_paused(&signing_wallet) {
+                warn!(mint = %mint_s, wallet = %signing_wallet, "real buy: wallet is paused");
+                fail_entry_why(real_deps, meta.pg_id, intent, format!("wallet {signing_wallet} is paused"));
+                return;
+            }
             // A rule names a wallet this box cannot sign for: refuse rather than
             // spend another wallet's SOL under that wallet's name. The offline
             // runtime (no wallets loaded) keeps the process trader.
