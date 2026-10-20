@@ -22,7 +22,7 @@ async fn tmp_holders() {
     }))
     .expect("body");
     let t = Instant::now();
-    let r = read_entry_context(&repo, wallet, &body).await.expect("read");
+    let r = read_entry_context(&repo, wallet, &Default::default(), &body).await.expect("read");
     eprintln!("{} entries in {:.1}s", r.entries.len(), t.elapsed().as_secs_f64());
     let with = r.entries.iter().filter(|e| e.holders.is_some()).count();
     eprintln!("with a holder read: {with}");

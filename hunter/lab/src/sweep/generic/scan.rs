@@ -591,6 +591,7 @@ pub(crate) fn apply_step(
                     leg.sell_bps = bps;
                     held.legs.push(leg);
                     held.sold_bps += bps;
+                    held.pos.sold_pct = f64::from(held.sold_bps) / 100.0;
                     if let Some(s) = l.go {
                         held.stage = s;
                         held.pos.stage_since = filled_at;

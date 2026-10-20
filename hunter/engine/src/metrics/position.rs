@@ -17,6 +17,7 @@
 //! * `room_taken_pct` — percent of the entry's room to the graduation wall covered:
 //!   `(price - entry) / (wall - entry) · 100`, `wall = entry · (115 / vsol at fill)²`.
 //! * `stage_sec` — seconds since the rule entered its current stage.
+//! * `sold_pct` — percent of our first buy's tokens that part sells have sold.
 //!
 //! Before entry there is no context, so a position metric reads `NaN` (which satisfies
 //! nothing) — why the pre-entry veto needs no special case.
@@ -48,6 +49,9 @@ pub struct PositionCtx {
     /// (`room_taken_pct` reference). `NaN` when unknown, and `room_taken_pct` then reads
     /// `NaN`.
     pub entry_priced_reserve: f64,
+    /// Percent of the first buy's tokens part sells have sold (`sold_pct`), `0` until the
+    /// first part sell fills.
+    pub sold_pct: f64,
 }
 
 impl PositionCtx {
@@ -61,6 +65,7 @@ impl PositionCtx {
             entered_at,
             stage_since: entered_at,
             entry_priced_reserve: f64::NAN,
+            sold_pct: 0.0,
         }
     }
 
@@ -151,6 +156,7 @@ pub fn position_value(id: Metric, ctx: &PositionCtx, price: f64, now: Ts) -> f64
         Metric::HeldSec => ctx.held(now),
         Metric::RoomTakenPct => ctx.room_taken(price),
         Metric::StageSec => ctx.stage_sec(now),
+        Metric::SoldPct => ctx.sold_pct,
         _ => f64::NAN,
     }
 }
@@ -173,6 +179,7 @@ mod tests {
             entered_at: ts(entered),
             stage_since: ts(entered),
             entry_priced_reserve: f64::NAN,
+            sold_pct: 0.0,
         }
     }
 
@@ -271,6 +278,7 @@ mod tests {
         assert_eq!(position_value(Metric::HeldSec, &c, 1.6, ts(5.0)), 5.0);
         let staged = PositionCtx { stage_since: ts(3.0), ..c };
         assert_eq!(position_value(Metric::StageSec, &staged, 1.6, ts(5.0)), 2.0);
+        assert_eq!(position_value(Metric::SoldPct, &PositionCtx { sold_pct: 35.0, ..c }, 1.6, ts(5.0)), 35.0);
         let deep = c.with_entry_priced_reserve(57.5);
         assert!((position_value(Metric::RoomTakenPct, &deep, 2.2, ts(5.0)) - 40.0).abs() < 1e-9);
         // A token-scoped id is not a position metric → NaN.

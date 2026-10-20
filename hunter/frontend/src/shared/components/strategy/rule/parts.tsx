@@ -60,6 +60,9 @@ export function Lead({ word }: { word: string }) {
   );
 }
 
+/** What a cell's part sell reads to stop itself. */
+const SOLD_PCT = 'm_position.sold_pct';
+
 /** A new condition: the first metric the context allows, no value yet. */
 function newMetricCond(ctx: CondContext): Cond {
   const first = ctx.reg.families.flatMap((f) => f.metrics).find((m) => !(ctx.beforeBuy && m.position) && m.tags !== 'required');
@@ -145,7 +148,7 @@ export function LineEditor({
   /** An at-deadline line: no condition means "always, at the deadline". */
   checkpoint?: boolean;
   index: number;
-  /** A stage-tree cell line: sells everything, never moves (no part sell, no go). */
+  /** A stage-tree cell line: never moves (no go); a part sell stops itself on `m_position.sold_pct`. */
   cell?: boolean;
 }) {
   const sellOn = line.sell != null;
@@ -198,17 +201,34 @@ export function LineEditor({
                       his %
                     </label>
                   )}
-                  {!line.sell?.ofBag && !cell && (
+                  {!line.sell?.ofBag && (
                     <Input
                       fieldSize="sm"
                       className="w-16"
                       numeric
                       unit="%"
                       placeholder="all"
-                      title={`Blank sells everything left. A percent sells that share of the first buy's bag (at most ${MAX_SELL_PCT}) and the line must also go to another stage.`}
+                      title={
+                        cell
+                          ? `Blank sells everything left. A percent sells that share of the first buy's bag (at most ${MAX_SELL_PCT}); the line must then also read m_position.sold_pct < that percent, so it sells once.`
+                          : `Blank sells everything left. A percent sells that share of the first buy's bag (at most ${MAX_SELL_PCT}) and the line must also go to another stage.`
+                      }
                       numericValue={line.sell?.pct ?? null}
                       disabled={ctx.disabled}
-                      onNumericChange={(n) => onChange({ ...line, sell: { label: line.sell?.label ?? '', pct: n, ofBag: false } })}
+                      onNumericChange={(n) => {
+                        const sell = { label: line.sell?.label ?? '', pct: n, ofBag: false };
+                        if (!cell || n == null) return onChange({ ...line, sell });
+                        // A cell's part sell stops itself on what is already sold: add that
+                        // bound, in view and editable, and keep a bound we added in step.
+                        const was = line.sell?.pct;
+                        const ours = (c: Cond) =>
+                          c.kind === 'metric' && c.ref.metric === SOLD_PCT && c.is.length === 1 && c.is[0].length === 1 && c.is[0][0].operator === '<' && c.is[0][0].value === was;
+                        const bounded = line.if.some((c) => c.kind === 'metric' && c.ref.metric === SOLD_PCT);
+                        const conds = bounded
+                          ? line.if.map((c) => (ours(c) && c.kind === 'metric' ? { ...c, is: [[{ operator: '<' as const, value: n }]] } : c))
+                          : [...line.if, metricCond({ metric: SOLD_PCT }, [[{ operator: '<', value: n }]])];
+                        onChange({ ...line, if: conds, sell });
+                      }}
                     />
                   )}
                   <span className="whitespace-nowrap">

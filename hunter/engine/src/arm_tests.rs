@@ -595,3 +595,27 @@ fn a_tree_buys_only_in_its_entry_cells_and_vetoes_on_the_current_cell() {
     let hot = track(&[(35.0, 1.0)]);
     assert_eq!(any.sell_line_holding_before_entry(&hot, at(1.0)), Some(ExitReason::Line("burst")), "the cell's own sell vetoes the buy");
 }
+
+#[test]
+fn a_cell_part_sell_acts_once_then_its_sold_pct_bound_stops_it() {
+    let r = tree_rule(json!({ "cells": [
+        { "phase": "*", "situation": "hot", "on": [
+            { "if": [c("m_state.liquidity_sol", ">=", 30.0), c("m_position.sold_pct", "<", 50.0)], "sell": "half", "sell_pct": 50.0 },
+            { "if": [c("m_state.liquidity_sol", ">=", 40.0)], "sell": "rest" }
+        ] }
+    ] }));
+    let hot = track(&[(35.0, 1.0)]);
+    let fresh = held(1.0, 1.0, 1.0, 0, 0.0);
+    assert_eq!(
+        r.held_step(&hot, &fresh, at(1.0)),
+        HeldAction::Sell { reason: ExitReason::Line("half"), bps: Some(5000), of_bag: false, then_stage: None }
+    );
+    // The half filled: the same cell on the next print sells nothing more.
+    let half_sold = EnteredCtx { sold_bps: 5000, ..fresh };
+    assert_eq!(r.held_step(&hot, &half_sold, at(1.0)), HeldAction::None);
+    let hotter = track(&[(35.0, 1.0), (45.0, 2.0)]);
+    assert_eq!(
+        r.held_step(&hotter, &half_sold, at(2.0)),
+        HeldAction::Sell { reason: ExitReason::Line("rest"), bps: None, of_bag: false, then_stage: None }
+    );
+}

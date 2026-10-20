@@ -528,6 +528,34 @@ fn parse_tree(root: &Map<String, Value>) -> Result<Option<Tree>, String> {
     Ok(Some(Tree { phases, situations, cells }))
 }
 
+/// A cell has no stage move to end a part sell, so the line must stop itself: its
+/// `m_position.sold_pct` bounds (one AND arm each) leave a range no wider than the sell.
+/// Once that sell fills, `sold_pct` has moved past the range and the line no longer holds.
+fn part_sell_stops(l: &Line, pct: f64) -> bool {
+    use crate::metrics::evaluator::Operator;
+    let (mut lo, mut lo_strict, mut hi, mut hi_strict) = (0.0_f64, false, f64::INFINITY, true);
+    for c in &l.when {
+        let Cond::Metric { r, is, off: false } = c else { continue };
+        // An OR of arms bounds nothing on its own.
+        let ([arm], crate::metrics::Metric::SoldPct) = (is.as_slice(), r.metric) else { continue };
+        for x in arm {
+            match x.operator {
+                Operator::Gt | Operator::Gte if x.value > lo || (x.value == lo && x.operator == Operator::Gt) => {
+                    (lo, lo_strict) = (x.value, x.operator == Operator::Gt);
+                }
+                Operator::Lt | Operator::Lte if x.value < hi || (x.value == hi && x.operator == Operator::Lt) => {
+                    (hi, hi_strict) = (x.value, x.operator == Operator::Lt);
+                }
+                _ => {}
+            }
+        }
+    }
+    // It fires at a sold share s in the range and leaves s + pct, past the top unless the
+    // range is wider than pct (equal width is still closed off by a strict end).
+    let width = hi - lo;
+    width < pct || (width == pct && (lo_strict || hi_strict))
+}
+
 fn parse_enter_cells(v: Option<&Value>) -> Result<Vec<CellRef>, String> {
     let Some(v) = v else { return Ok(Vec::new()) };
     arr(v, "enter.cells")?
@@ -898,10 +926,20 @@ impl RuleParams {
                 if l.go.is_some() {
                     return Err(format!("{at}: a cell has no `go`, the coin moves by its phase and situation"));
                 }
-                if l.sell.is_some_and(|s| s.pct.is_some()) {
-                    return Err(format!("{at}: a part sell in a cell would sell again on the next print"));
+                let Some(pct) = l.sell.and_then(|s| s.pct) else {
+                    check_line(l, &at, true)?;
+                    continue;
+                };
+                if !(pct > 0.0 && pct <= MAX_SELL_PCT) {
+                    return Err(format!("{at}.sell_pct must be above 0 and at most {MAX_SELL_PCT}"));
                 }
-                check_line(l, &at, true)?;
+                if !part_sell_stops(l, pct) {
+                    return Err(format!(
+                        "{at}: a part sell in a cell sells again on the next print unless it stops itself: bound m_position.sold_pct to a range no wider than the sell (sell 50 % with m_position.sold_pct < 50)"
+                    ));
+                }
+                // The range stops it, not a `go`: check the rest of the line as a whole sell.
+                check_line(&Line { sell: l.sell.map(|s| Sell { pct: None, ..s }), ..l.clone() }, &at, true)?;
             }
         }
         for p in &t.phases {

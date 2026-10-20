@@ -268,9 +268,19 @@ function checkTree(
     covered.add(key(c.phase, c.situation));
     c.on.forEach((l, li) => {
       const lAt = `${at}, line ${li + 1}`;
+      const pct = l.sell?.pct;
       if (l.go) errors.push(`${lAt}: a cell has no go, the coin moves by its phase and situation`);
-      else if (l.sell && (l.sell.pct != null || l.sell.ofBag)) errors.push(`${lAt}: a part sell in a cell would sell again on the next print`);
-      else checkLine(l, lAt, true);
+      else if (l.sell?.ofBag) errors.push(`${lAt}: a cell sells a percent of our first buy, not of a wallet's bag`);
+      else if (pct == null) checkLine(l, lAt, true);
+      else if (!(Number.isFinite(pct) && pct > 0 && pct <= MAX_SELL_PCT)) errors.push(`${lAt}: the sell percent must be above 0 and at most ${MAX_SELL_PCT}`);
+      else if (!partSellStops(l, pct)) {
+        errors.push(
+          `${lAt}: a part sell in a cell sells again on the next print unless it stops itself: add m_position.sold_pct < X with X no more than the sell (sell 50 % if sold_pct < 50)`,
+        );
+      } else {
+        // The sold_pct range stops it, not a go: check the rest as a whole sell.
+        checkLine({ ...l, sell: { ...l.sell!, pct: null } }, lAt, true);
+      }
     });
   }
   for (const p of phaseNames) {
@@ -281,6 +291,31 @@ function checkTree(
     }
   }
   d.enter.cells.forEach(([p, s], i) => nameOk(p, s, `Buy in cells, ${i + 1}`));
+}
+
+/** Port of the engine's `part_sell_stops`: a cell's part sell stops itself when its
+ *  `m_position.sold_pct` bounds (one AND arm each) leave a range no wider than the sell,
+ *  so once it fills `sold_pct` is past the range. */
+export function partSellStops(l: Line, pct: number): boolean {
+  let lo = 0;
+  let loStrict = false;
+  let hi = Infinity;
+  let hiStrict = true;
+  for (const c of l.if) {
+    if (c.kind !== 'metric' || c.off || c.ref.metric !== 'm_position.sold_pct' || c.is.length !== 1) continue;
+    for (const x of c.is[0]) {
+      if ((x.operator === '>' || x.operator === '>=') && (x.value > lo || (x.value === lo && x.operator === '>'))) {
+        lo = x.value;
+        loStrict = x.operator === '>';
+      }
+      if ((x.operator === '<' || x.operator === '<=') && (x.value < hi || (x.value === hi && x.operator === '<'))) {
+        hi = x.value;
+        hiStrict = x.operator === '<';
+      }
+    }
+  }
+  const width = hi - lo;
+  return width < pct || (width === pct && (loStrict || hiStrict));
 }
 
 /**

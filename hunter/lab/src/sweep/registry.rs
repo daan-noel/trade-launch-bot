@@ -621,6 +621,8 @@ pub async fn run_grouped(
     pricing: Pricing,
     // The run's tags document (`None` = the axes read no tag).
     tags: Option<Value>,
+    // Our trader wallets: no tag marks their trades.
+    own_wallets: &hunter_engine::hash::HashedSet,
     // Pass-2 candidate stage plans + top_k (`None` = no Pass 2). Each top-K combo per
     // group is re-scored under every plan here plus its own exit — see
     // `GenericSweepStrategy::post_group_rescore`.
@@ -633,7 +635,7 @@ pub async fn run_grouped(
         "generic" => {
             sweep_generic(
                 axes_json, method, refine, corpus, group_plan, min_tokens, floor, max_combos,
-                pricing, tags, scale_out_pass2, coarse_observer, observer, sink,
+                pricing, tags, own_wallets, scale_out_pass2, coarse_observer, observer, sink,
             )
             .await
         }
@@ -679,6 +681,7 @@ async fn sweep_generic(
     max_combos: Option<usize>,
     pricing: Pricing,
     tags: Option<Value>,
+    own_wallets: &hunter_engine::hash::HashedSet,
     scale_out_pass2: Option<(Vec<Vec<hunter_engine::rule_params::Stage>>, usize)>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
@@ -692,7 +695,7 @@ async fn sweep_generic(
         .context("invalid generic axes request")?;
     let model = AxesModel::resolve(&req).map_err(|e| anyhow!("axes: {e}"))?;
 
-    let compiled_tags = compile_run_tags(&model, tags.as_ref())?;
+    let compiled_tags = compile_run_tags(&model, tags.as_ref(), own_wallets)?;
 
     // Grid guard: reject an explosive full grid before doing any sweep work. A full
     // grid runs exactly as chosen (capped by `cap` = the caller's Max combos/group);
@@ -855,9 +858,10 @@ pub fn simulate_one_combo(
     pricing: Pricing,
     as_of: chrono::DateTime<chrono::Utc>,
     tags: Option<&Value>,
+    own_wallets: &hunter_engine::hash::HashedSet,
 ) -> Result<Vec<ComboTokenResult>> {
     match strategy_id {
-        "generic" => simulate_generic_one_combo(tokens, params_json, pricing, as_of, tags),
+        "generic" => simulate_generic_one_combo(tokens, params_json, pricing, as_of, tags, own_wallets),
         other => bail!(
             "strategy '{other}' has no single-combo simulation (supported: {:?})",
             strategy_ids()
@@ -894,6 +898,7 @@ fn exit_reason_string(o: &crate::sweep::strategy::TokenOutcome) -> String {
 pub(crate) fn compile_run_tags(
     model: &AxesModel,
     tags: Option<&Value>,
+    own_wallets: &hunter_engine::hash::HashedSet,
 ) -> Result<Vec<hunter_engine::metrics::tags::config::CompiledTag>> {
     use hunter_engine::metrics::tags::config::{compile_tags, tag_names, validate_tags};
     let defined = tags.map(tag_names).unwrap_or_default();
@@ -903,8 +908,7 @@ pub(crate) fn compile_run_tags(
     match tags {
         Some(doc) => {
             validate_tags(doc).map_err(|e| anyhow!("tags: {e}"))?;
-            // A sweep's tags are the run's own document; own wallets are not excluded here yet.
-            Ok(compile_tags(doc, &Default::default()))
+            Ok(compile_tags(doc, own_wallets))
         }
         None => Ok(Vec::new()),
     }
@@ -934,6 +938,7 @@ fn simulate_generic_one_combo(
     pricing: Pricing,
     as_of: chrono::DateTime<chrono::Utc>,
     tags: Option<&Value>,
+    own_wallets: &hunter_engine::hash::HashedSet,
 ) -> Result<Vec<ComboTokenResult>> {
     use hunter_engine::arm::CompiledRule;
     use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
@@ -962,7 +967,7 @@ fn simulate_generic_one_combo(
     let compiled = CompiledRule::compile(&loaded);
     let columns = columns_for(&compiled);
     let grid = sparse_grid_for(&compiled);
-    let compiled_tags = tags.map(|d| hunter_engine::metrics::tags::config::compile_tags(d, &Default::default())).unwrap_or_default();
+    let compiled_tags = tags.map(|d| hunter_engine::metrics::tags::config::compile_tags(d, own_wallets)).unwrap_or_default();
     // The frozen-tail resolve (D1) anchored on THIS drill-in's token set, so a row's
     // exit matches the sweep aggregate the user clicked (parity plan Task 1 / B7).
     let tail_horizon = frozen_tail_horizon(as_of, tokens);
@@ -1002,6 +1007,32 @@ mod tests {
     use super::*;
 
     const GB: u64 = 1024 * 1024 * 1024;
+
+    /// A run's tags compile with our own wallets excluded: no tag marks their trades.
+    #[test]
+    fn a_run_tag_never_marks_our_own_wallet() {
+        use crate::sweep::generic::axes::{AxesModel, AxesRequest};
+        let tp = crate::sweep::generic::axes::AxisSpec {
+            kind: "take_profit".to_string(),
+            side: None,
+            metric: None,
+            tag: None,
+            span: None,
+            slice: None,
+            operator: None,
+            values: vec![Some(20.0)],
+        };
+        let model = AxesModel::resolve(&AxesRequest { axes: vec![tp] }).expect("axes resolve");
+        let doc = serde_json::json!({ "t": { "match": { "wallet": ["ours", "theirs"] } } });
+        let own = hunter_engine::metrics::tags::config::own_wallet_set(["ours"]);
+        let with = |own: &hunter_engine::hash::HashedSet| {
+            let tags = compile_run_tags(&model, Some(&doc), own).unwrap();
+            let p = &tags[0].patterns;
+            (p.own_wallets.len(), tags.len())
+        };
+        assert_eq!(with(&own), (1, 1), "our wallet is carried into the tag's exclusion set");
+        assert_eq!(with(&Default::default()).0, 0);
+    }
 
     #[test]
     fn usable_without_baseline_is_live_reading() {

@@ -1203,6 +1203,7 @@ impl EnteredCtx {
             entered_at: self.entered_at,
             stage_since: self.stage_since,
             entry_priced_reserve: self.entry_priced_reserve,
+            sold_pct: f64::from(self.sold_bps) / 100.0,
         }
     }
 }

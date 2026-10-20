@@ -32,6 +32,7 @@ use super::entry_holders::{holders_at, HolderAsk, HolderRead};
 use crate::lake;
 use crate::state::entry_scan_cache;
 use hunter_engine::grouping::normalize_labels;
+use hunter_engine::hash::HashedSet;
 use hunter_engine::metrics::fee::FeeKeys;
 use hunter_engine::metrics::registry::Metric;
 use hunter_engine::metrics::tags::config::{compile_tags, validate_tags, TagPatterns};
@@ -41,6 +42,7 @@ use hunter_engine::metrics::trade_keys::{wallet_hash, LabelKeys};
 use hunter_engine::metrics::{Cursor, Side, TradeLite, WindowSpec, WindowUnit, NOMINAL_SLOT_SECS};
 use trading_core::config::constants::lamports_to_sol;
 use trading_core::state::core_state::CoreState;
+use trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo;
 use trading_core::storage::repositories::trade_repo::{
     MintSpan, SlotWindow, TapePrint, TradeRepo, WalletBuyTx,
 };
@@ -375,8 +377,9 @@ pub struct EntryContextResponse {
 /// Compile the target tag with the engine's parser, refusing matchers that need the
 /// coin's history before the window: this read folds the window alone, so the
 /// creator would classify from nothing. `sticky` is accepted
-/// and scoped to each read's own span (see [`fold_entry`]).
-fn compile_target(def: &serde_json::Value) -> Result<TagPatterns, String> {
+/// and scoped to each read's own span (see [`fold_entry`]). `own` is our trader wallets:
+/// no tag marks their trades, as in the engine.
+fn compile_target(def: &serde_json::Value, own: &HashedSet) -> Result<TagPatterns, String> {
     let doc = serde_json::json!({ "target": def });
     validate_tags(&doc)?;
     if def
@@ -389,8 +392,7 @@ fn compile_target(def: &serde_json::Value) -> Result<TagPatterns, String> {
                 .into(),
         );
     }
-    // An ad hoc read target, not a fingerprint tag: it may name our own wallets on purpose.
-    compile_tags(&doc, &Default::default())
+    compile_tags(&doc, own)
         .into_iter()
         .next()
         .map(|t| t.patterns)
@@ -1364,9 +1366,10 @@ pub enum EntryContextError {
 /// The target, or none: with no matcher every print folds on the rest half.
 fn compile_optional(
     tag: Option<&serde_json::Value>,
+    own: &HashedSet,
 ) -> Result<(TagPatterns, bool), EntryContextError> {
     match tag {
-        Some(def) => compile_target(def)
+        Some(def) => compile_target(def, own)
             .map(|p| (p, true))
             .map_err(EntryContextError::Bad),
         None => Ok((TagPatterns::default(), false)),
@@ -1379,6 +1382,7 @@ fn compile_optional(
 pub async fn read_entry_range(
     repo: &TradeRepo,
     wallet: &str,
+    own: &HashedSet,
     body: &EntryRangeBody,
 ) -> Result<EntryRangeResponse, EntryContextError> {
     if body.to < body.from {
@@ -1398,7 +1402,7 @@ pub async fn read_entry_range(
         )));
     }
     check_signal(body.slots_before)?;
-    let (patterns, targeted) = compile_optional(body.tag.as_ref())?;
+    let (patterns, targeted) = compile_optional(body.tag.as_ref(), own)?;
 
     let anchor = WalletBuyTx {
         mint_address: body.mint.clone(),
@@ -1489,11 +1493,12 @@ async fn prints_by_mint(
 pub async fn read_entry_context(
     repo: &TradeRepo,
     wallet: &str,
+    own: &HashedSet,
     body: &EntryContextBody,
 ) -> Result<EntryContextResponse, EntryContextError> {
     check_body(body)?;
     let (w, pw) = (body.window_secs, body.probe_slots);
-    let (patterns, targeted) = compile_optional(body.tag.as_ref())?;
+    let (patterns, targeted) = compile_optional(body.tag.as_ref(), own)?;
 
     let mut anchors = repo
         .wallet_buy_txs(wallet, body.from, body.to, MAX_ENTRIES + 1)
@@ -1773,12 +1778,13 @@ impl<'a> ScanMint<'a> {
 pub async fn read_entry_scan(
     repo: &TradeRepo,
     wallet: &str,
+    own: &HashedSet,
     body: &EntryScanBody,
 ) -> Result<EntryScanResponse, EntryContextError> {
     let b = &body.base;
     check_body(b)?;
     let (w, pw) = (b.window_secs, b.probe_slots);
-    let (patterns, targeted) = compile_optional(b.tag.as_ref())?;
+    let (patterns, targeted) = compile_optional(b.tag.as_ref(), own)?;
     if !targeted {
         return Err(EntryContextError::Bad(
             "pick a pattern set: the scan anchors on its buys".into(),
@@ -1877,6 +1883,14 @@ pub async fn read_entry_scan(
 
 // ── Handler ─────────────────────────────────────────────────────────────────
 
+/// Our trader wallets, for the target tag: no tag marks their trades.
+async fn own_wallets(state: &CoreState) -> Result<HashedSet, HttpResponse> {
+    TraderWalletRepo::new(state.db.clone()).own_wallet_set().await.map_err(|e| {
+        tracing::error!("entry context: own wallets lookup failed: {e}");
+        HttpResponse::InternalServerError().json(serde_json::json!({ "error": "database error" }))
+    })
+}
+
 /// `POST /api/wallets/{wallet}/entry-context`.
 pub async fn entry_context(
     state: web::Data<Arc<CoreState>>,
@@ -1887,7 +1901,11 @@ pub async fn entry_context(
     // The batch pool: the API pool's 8 s statement ceiling cancels this read on a
     // busy wallet.
     let repo = TradeRepo::new(state.batch_db.clone());
-    match read_entry_context(&repo, &wallet, &body).await {
+    let own = match own_wallets(&state).await {
+        Ok(own) => own,
+        Err(r) => return r,
+    };
+    match read_entry_context(&repo, &wallet, &own, &body).await {
         Ok(r) => HttpResponse::Ok().json(r),
         Err(EntryContextError::Bad(msg)) => {
             HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
@@ -1908,7 +1926,11 @@ pub async fn entry_context_range(
 ) -> impl Responder {
     let wallet = path.into_inner();
     let repo = TradeRepo::new(state.batch_db.clone());
-    match read_entry_range(&repo, &wallet, &body).await {
+    let own = match own_wallets(&state).await {
+        Ok(own) => own,
+        Err(r) => return r,
+    };
+    match read_entry_range(&repo, &wallet, &own, &body).await {
         Ok(r) => HttpResponse::Ok().json(r),
         Err(EntryContextError::Bad(msg)) => {
             HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
@@ -1954,7 +1976,11 @@ pub async fn entry_context_scan(
         }
     }
     let repo = TradeRepo::new(state.batch_db.clone());
-    match read_entry_scan(&repo, &wallet, &body)
+    let own = match own_wallets(&state).await {
+        Ok(own) => own,
+        Err(r) => return r,
+    };
+    match read_entry_scan(&repo, &wallet, &own, &body)
         .await
         .map(|r| serde_json::to_vec(&r))
     {
@@ -2038,9 +2064,29 @@ mod tests {
         }
     }
 
+    fn compile_target(def: &serde_json::Value) -> Result<TagPatterns, String> {
+        super::compile_target(def, &HashedSet::default())
+    }
+
     fn six_tag() -> TagPatterns {
         compile_target(&serde_json::json!({ "match": { "program": ["Unknown (6Vo3245e)"] } }))
             .unwrap()
+    }
+
+    /// Our own trader wallets never carry the target tag, as in the engine: the same
+    /// 6Vo print is tagged for an outsider and not for us.
+    #[test]
+    fn our_own_wallet_never_carries_the_target_tag() {
+        let own = hunter_engine::metrics::tags::config::own_wallet_set(["ours"]);
+        let tag = super::compile_target(
+            &serde_json::json!({ "match": { "program": ["Unknown (6Vo3245e)"] } }),
+            &own,
+        )
+        .unwrap();
+        let mut st = TagState::new(tag);
+        let mut tagged = |p: TapePrint| st.on_trade(&trade_lite(&p), Cursor::default());
+        assert!(tagged(print(1, 0, 0, SIX, true, 1.0, "theirs")));
+        assert!(!tagged(print(2, 0, 1, SIX, true, 1.0, "ours")));
     }
 
     /// A core row matches here as it does in the engine: every variant of its build,

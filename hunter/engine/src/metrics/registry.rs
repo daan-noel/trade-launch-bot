@@ -192,6 +192,7 @@ pub enum Metric {
     BouncePct,
     RoomTakenPct,
     StageSec,
+    SoldPct,
 }
 
 /// Which tags a metric accepts.
@@ -470,6 +471,10 @@ pub const METRICS: &[MetricSpec] = &[
       "Seconds since the rule entered its current stage.",
       "m_position.stage_sec <= 30 : still in the first 30 s of this stage.",
       "", NT, TR, S::LIFE, false, 0.5, 32),
+    m(M::SoldPct, F::Position, "sold_pct", "share of our first buy sold", U::Percent,
+      "How much of our first buy's tokens our part sells have sold, in percent. 0 until the first part sell fills; it changes only when one fills.",
+      "m_position.sold_pct < 50 : we still hold more than half of our first buy.",
+      "", NT, TR, S::LIFE, false, 0.5, 36),
 ];
 
 pub fn metric_spec(id: Metric) -> &'static MetricSpec {
@@ -573,7 +578,7 @@ pub const RULE_PARTS: &[PartSpec] = &[
         summary: "What is happening now, checked top to bottom on every print and tick; the first whose when holds is the coin's situation. The last has no when and catches the rest.",
         example: "burst when outsiders buy 0.5 SOL in 1 s, else leaving, else pump." },
     PartSpec { key: "cells", title: "Cells",
-        summary: "Lines for phase x situation cells; * covers every phase or situation. A cell runs the lines of the one most specific entry covering it, after Always, on the same print that put the coin there. A cell has no go and no part sell.",
+        summary: "Lines for phase x situation cells; * covers every phase or situation. A cell runs the lines of the one most specific entry covering it, after Always, on the same print that put the coin there. A cell has no go. A part sell must stop itself: an m_position.sold_pct range no wider than the sell (sell 50 % if sold_pct < 50).",
         example: "* x burst: sell. climb x burst: sell only on 1.5 SOL." },
     PartSpec { key: "enter.cells", title: "Buy in cells",
         summary: "Stage tree only: the phase x situation cells a buy may start in. Elsewhere the buy waits, like a filter that fails.",
@@ -693,7 +698,7 @@ mod tests {
         for (i, s) in METRICS.iter().enumerate() {
             assert_eq!(s.id as usize, i, "METRICS[{i}] is {:?}", s.id);
         }
-        assert_eq!(METRICS.len(), Metric::StageSec as usize + 1);
+        assert_eq!(METRICS.len(), Metric::SoldPct as usize + 1);
     }
 
     #[test]

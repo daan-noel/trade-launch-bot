@@ -287,6 +287,22 @@ fn a_stage_tree_round_trips() {
     assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
 }
 
+/// A part sell in a cell stops itself when its `sold_pct` range is no wider than the sell.
+#[test]
+fn a_cell_part_sell_needs_a_sold_pct_range_no_wider_than_the_sell() {
+    let with = |conds: Vec<Value>, pct: f64| {
+        let mut v = tree_doc();
+        v["cells"] = json!([{ "phase": "*", "situation": "hot", "on": [{ "if": conds, "sell": "half", "sell_pct": pct }] }]);
+        RuleParams::parse(&v)
+    };
+    let hot = || c("m_state.liquidity_sol", ">=", 30.0);
+    assert!(with(vec![hot(), c("m_position.sold_pct", "<", 50.0)], 50.0).is_ok());
+    assert!(with(vec![hot(), c("m_position.sold_pct", ">=", 50.0), c("m_position.sold_pct", "<", 75.0)], 25.0).is_ok());
+    assert!(with(vec![hot(), c("m_position.sold_pct", "<=", 50.0)], 50.0).is_err(), "at 50 % it would sell again");
+    assert!(with(vec![hot(), c("m_position.sold_pct", "<", 50.0)], 30.0).is_err(), "a second 30 % fits under 50");
+    assert!(with(vec![hot()], 50.0).is_err());
+}
+
 #[test]
 fn a_stage_tree_refuses_what_could_not_run_as_written() {
     let refused = |patch: Value, needle: &str| {
@@ -306,6 +322,7 @@ fn a_stage_tree_refuses_what_could_not_run_as_written() {
         { "phase": "*", "situation": "hot", "on": [{ "if": [c("m_state.age_sec", ">=", 9.0)], "sell": "b" }] }
     ] }), "covered by both");
     refused(json!({ "cells": [{ "phase": "*", "situation": "hot", "on": [{ "if": [c("m_state.age_sec", ">=", 9.0)], "sell": "a", "sell_pct": 50.0 }] }] }), "part sell");
+    refused(json!({ "cells": [{ "phase": "*", "situation": "hot", "on": [{ "if": [c("m_state.age_sec", ">=", 9.0), c("m_position.sold_pct", "<", 60.0)], "sell": "a", "sell_pct": 50.0 }] }] }), "part sell");
     refused(json!({ "cells": [{ "phase": "nope", "situation": "hot", "on": [] }] }), "no phase `nope`");
     refused(json!({ "stages": [{ "name": "a" }] }), "not both");
     let mut no_tree = tree_doc();

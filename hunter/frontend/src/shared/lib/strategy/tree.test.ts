@@ -96,7 +96,21 @@ describe('tree validation mirrors the engine', () => {
     const go = errorsOf((d) => (d.tree!.cells[0].on[0].go = 'x'));
     expect(go.join()).toMatch(/a cell has no go/);
     const part = errorsOf((d) => (d.tree!.cells[0].on[0].sell = { label: 'b', pct: 50 }));
-    expect(part.join()).toMatch(/would sell again/);
+    expect(part.join()).toMatch(/sells again on the next print unless it stops itself/);
+  });
+
+  it('accepts a part sell whose sold_pct range is no wider than the sell, as the engine does', () => {
+    const sold = (op: '<' | '<=' | '>=', value: number) => metricCond({ metric: 'm_position.sold_pct' }, [[{ operator: op, value }]]);
+    const half = (conds: ReturnType<typeof sold>[], pct: number) =>
+      errorsOf((d) => {
+        const l = d.tree!.cells[0].on[0];
+        l.if = [...l.if, ...conds];
+        l.sell = { label: 'half', pct };
+      });
+    expect(half([sold('<', 50)], 50)).toEqual([]);
+    expect(half([sold('>=', 50), sold('<', 75)], 25)).toEqual([]);
+    expect(half([sold('<=', 50)], 50).join()).toMatch(/unless it stops itself/);
+    expect(half([sold('<', 50)], 30).join()).toMatch(/unless it stops itself/);
   });
 
   it('refuses a cell two wide entries cover without its own', () => {

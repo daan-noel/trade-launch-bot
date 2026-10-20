@@ -30,7 +30,7 @@ async fn a_real_wallet_reads_every_buy_and_its_window() {
     .expect("body");
 
     let t = Instant::now();
-    let r = read_entry_context(&repo, &wallet, &body).await.expect("read");
+    let r = read_entry_context(&repo, &wallet, &Default::default(), &body).await.expect("read");
     let secs = t.elapsed().as_secs_f64();
     let with_buys = r.entries.iter().filter(|e| e.window.buy_tx > 0).count();
     eprintln!(
@@ -76,7 +76,7 @@ async fn a_real_wallet_reads_every_buy_and_its_window() {
     }))
     .expect("range body");
     let t = Instant::now();
-    let rr = read_entry_range(&repo, &wallet, &range).await.expect("range read");
+    let rr = read_entry_range(&repo, &wallet, &Default::default(), &range).await.expect("range read");
     eprintln!(
         "range read: {} buys ({} tagged) vs the entry's {} ({:.2}s)",
         rr.read.window.buy_tx,
@@ -95,7 +95,7 @@ async fn a_real_wallet_reads_every_buy_and_its_window() {
     }))
     .expect("scan body");
     let t = Instant::now();
-    let sr = read_entry_scan(&repo, &wallet, &scan).await.expect("scan");
+    let sr = read_entry_scan(&repo, &wallet, &Default::default(), &scan).await.expect("scan");
     let bytes = serde_json::to_vec(&sr).expect("json").len();
     let followed = sr.moments.iter().filter(|m| m.next_buy_secs.is_some()).count();
     eprintln!(

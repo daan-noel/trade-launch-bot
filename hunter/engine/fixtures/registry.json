@@ -866,6 +866,28 @@
           "tag_level": "trade",
           "tags": "none",
           "unit": "seconds"
+        },
+        {
+          "eq_tolerance": 0.5,
+          "example": "m_position.sold_pct < 50 : we still hold more than half of our first buy.",
+          "hue": 36,
+          "monotonic": false,
+          "name": "sold_pct",
+          "note": "",
+          "path": "m_position.sold_pct",
+          "phrase": "share of our first buy sold",
+          "position": true,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "since_amm": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "How much of our first buy's tokens our part sells have sold, in percent. 0 until the first part sell fills; it changes only when one fills.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "percent"
         }
       ],
       "name": "m_position",
@@ -951,7 +973,7 @@
     {
       "example": "* x burst: sell. climb x burst: sell only on 1.5 SOL.",
       "key": "cells",
-      "summary": "Lines for phase x situation cells; * covers every phase or situation. A cell runs the lines of the one most specific entry covering it, after Always, on the same print that put the coin there. A cell has no go and no part sell.",
+      "summary": "Lines for phase x situation cells; * covers every phase or situation. A cell runs the lines of the one most specific entry covering it, after Always, on the same print that put the coin there. A cell has no go. A part sell must stop itself: an m_position.sold_pct range no wider than the sell (sell 50 % if sold_pct < 50).",
       "title": "Cells"
     },
     {

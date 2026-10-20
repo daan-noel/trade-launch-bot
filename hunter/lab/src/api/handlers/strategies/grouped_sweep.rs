@@ -1276,7 +1276,11 @@ async fn run_grouped_sweep_job(
         group_mints: group_mints_map,
     });
 
-    let result = registry::run_grouped(
+    let own_wallets = trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo::new(state.db.clone())
+        .own_wallet_set()
+        .await;
+    let result = match &own_wallets {
+        Ok(own_wallets) => registry::run_grouped(
         &b.strategy_id,
         b.axes.clone(),
         method,
@@ -1292,12 +1296,15 @@ async fn run_grouped_sweep_job(
             cost: b.cost_model.model(),
         },
         b.tags.clone(),
+        own_wallets,
         scale_out_pass2.clone(),
         coarse_observer,
         observer,
         sink,
     )
-    .await;
+    .await,
+        Err(e) => Err(anyhow::anyhow!("own wallets lookup failed: {e}")),
+    };
 
     // The sweep is done — the sink dropped, so the writer drains and returns how
     // many groups actually persisted (the partial count on cancel/error) plus
@@ -2402,8 +2409,18 @@ pub async fn list_token_results(
     // it drills into, and deadness is judged against this (parity plan B7).
     let run_as_of = run.created_at;
     let tags = run.tags.clone();
+    let own_wallets = match trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo::new(state.db.clone())
+        .own_wallet_set()
+        .await
+    {
+        Ok(set) => set,
+        Err(e) => {
+            tracing::error!("token-results own wallets lookup failed: {e}");
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "own wallets lookup failed"}));
+        }
+    };
     let result = tokio::task::spawn_blocking(move || {
-        registry::simulate_one_combo(&strategy_id, &tokens, &params_json, pricing, run_as_of, tags.as_ref())
+        registry::simulate_one_combo(&strategy_id, &tokens, &params_json, pricing, run_as_of, tags.as_ref(), &own_wallets)
     })
     .await;
 
