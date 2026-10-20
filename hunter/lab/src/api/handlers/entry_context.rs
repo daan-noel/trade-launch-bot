@@ -389,7 +389,8 @@ fn compile_target(def: &serde_json::Value) -> Result<TagPatterns, String> {
                 .into(),
         );
     }
-    compile_tags(&doc)
+    // An ad hoc read target, not a fingerprint tag: it may name our own wallets on purpose.
+    compile_tags(&doc, &Default::default())
         .into_iter()
         .next()
         .map(|t| t.patterns)

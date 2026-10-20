@@ -35,7 +35,7 @@ fn trade(side: Side, sol: f64, ix: Option<u64>, wallet: u64, secs: f64) -> Trade
 
 /// One tag from a definition document.
 fn tag(def: Value) -> TagState {
-    let tags = compile_tags(&json!({ "t": def }));
+    let tags = compile_tags(&json!({ "t": def }), &Default::default());
     TagState::new(tags.into_iter().next().expect("tag compiles").patterns)
 }
 
@@ -65,6 +65,24 @@ fn shape_sticky_creator_and_missing_ix() {
     assert!(st.carries(&trade(Side::Sell, 1.0, None, w, 2.0)), "sticky wallet, any shape");
     assert!(!st.carries(&trade(Side::Buy, 1.0, None, wallet_hash("normie"), 3.0)), "no labels");
     assert!(!st.carries(&trade(Side::Buy, 1.0, Some(ix_hash(&["Pump.Fun: Buy"])), wallet_hash("n2"), 4.0)));
+}
+
+/// Our own trader wallet shares the launch tools' ix shapes; no matcher, the sticky set
+/// or the wallet list ever tags it, so its trades fold on the outsider half.
+#[test]
+fn own_wallet_is_never_tagged() {
+    use super::config::own_wallet_set;
+    let shape = ix_hash(&["nonce", "Pump.Fun: BuyExactSolIn"]);
+    let ours = wallet_hash("OurWallet");
+    let def = json!({ "t": { "match": { "ix_shape": shapes(&[&["nonce", "Pump.Fun: BuyExactSolIn"]]), "wallet": ["OurWallet"] }, "sticky": true } });
+    let own = own_wallet_set(["OurWallet"]);
+    let mut st = TagState::new(compile_tags(&def, &own).into_iter().next().expect("tag compiles").patterns);
+    let buy = trade(Side::Buy, 0.05, Some(shape), ours, 0.0);
+    assert!(!st.carries(&buy), "matched shape and listed wallet, still ours");
+    st.on_trade(&buy, c(0));
+    assert!(!st.carries(&trade(Side::Sell, 0.05, None, ours, 1.0)), "never joined the sticky set");
+    assert_eq!(read(&st, Metric::BuySol, true, LIFE, ts(1.0), c(0)), 0.05, "folds on the outsider half");
+    assert!(st.carries(&trade(Side::Buy, 1.0, Some(shape), wallet_hash("owner"), 2.0)), "the owner still carries it");
 }
 
 #[test]
@@ -413,7 +431,7 @@ fn profit_is_bag_value_minus_net_sol_in() {
 fn an_edited_definition_moves_the_future_not_the_past() {
     let mut st = tag(json!({ "match": { "wallet": ["A"] } }));
     st.on_trade(&trade(Side::Buy, 1.0, None, wallet_hash("A"), 0.0), c(0));
-    let edited = compile_tags(&json!({ "t": { "match": { "wallet": ["B"] } } }));
+    let edited = compile_tags(&json!({ "t": { "match": { "wallet": ["B"] } } }), &Default::default());
     st.set_patterns(&edited[0].patterns);
     st.on_trade(&trade(Side::Buy, 2.0, None, wallet_hash("B"), 1.0), c(0));
     st.on_trade(&trade(Side::Buy, 4.0, None, wallet_hash("A"), 2.0), c(0));

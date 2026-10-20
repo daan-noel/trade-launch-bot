@@ -1189,6 +1189,10 @@ async fn reload_rules(
         })
         .collect();
     let engine_fps: Vec<EngineFingerprint> = fps.iter().map(convert::fp_to_engine).collect();
+    let own_wallets = trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo::new(strategy_repo.pool().clone())
+        .own_wallet_set()
+        .await
+        .map_err(|e| format!("own wallets: {e}"))?;
 
     sink.set_rules(&loaded, &names, &engine_fps);
     // End the runs of rules that just stopped being active, THEN warm the ones
@@ -1211,7 +1215,7 @@ async fn reload_rules(
         .collect();
     let _ = reduce(
         state,
-        Event::RulesReloaded { rules: loaded.into(), fps: engine_fps.into() },
+        Event::RulesReloaded { rules: loaded.into(), fps: engine_fps.into(), own_wallets: Arc::new(own_wallets) },
     );
     prime_identity_launches(strategy_repo, state, &identity_builds).await;
     Ok(())
@@ -1391,7 +1395,7 @@ mod tests {
             entry_enabled: true,
         };
         let mut state = EngineState::new();
-        reduce(&mut state, Event::RulesReloaded { rules: Arc::from(vec![rule.clone()]), fps: Arc::from(vec![fp]) });
+        reduce(&mut state, Event::RulesReloaded { rules: Arc::from(vec![rule.clone()]), fps: Arc::from(vec![fp]), own_wallets: Default::default() });
         let mut pos = StrategyPosition::new(Uuid::new_v4(), "generic".into(), rule.id.0, "paper".into(), MINT.into(), "paper".into());
         pos.status = "Holding".into();
         pos.entry_price = Some(1e-7);

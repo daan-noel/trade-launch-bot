@@ -67,7 +67,7 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
     };
     let mut s = EngineState::new();
     s.dense_ticks = dense;
-    reduce(&mut s, Event::RulesReloaded { rules: Arc::from(vec![rule]), fps: Arc::from(vec![fp]) });
+    reduce(&mut s, Event::RulesReloaded { rules: Arc::from(vec![rule]), fps: Arc::from(vec![fp]), own_wallets: Default::default() });
     for i in 0..n_tokens {
         let mint = Mint::from(format!("mint{i:040}"));
         reduce(

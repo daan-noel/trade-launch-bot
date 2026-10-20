@@ -428,7 +428,7 @@ fn a_bag_mirror_sells_his_percent_of_what_we_still_hold() {
     assert!(r.buffers.tags.iter().any(|t| t.trade && t.key == TagKey::of("targets")));
     assert!(!r.buffers.print_wallet, "the bag lives on the tag, not the all-wallet map");
 
-    let tags = compile_tags(&json!({ "targets": { "match": { "wallet": ["ksi"] } } }));
+    let tags = compile_tags(&json!({ "targets": { "match": { "wallet": ["ksi"] } } }), &Default::default());
     let mut track = TokenTrack::new(t0());
     track.ensure_tag(FingerprintId(Uuid::from_u128(2)), tags[0].key, &tags[0].patterns, &[]);
 
@@ -483,7 +483,7 @@ fn follow_bought_sells_only_the_wallet_that_opened_the_position() {
     }));
     assert!(dump.always[0].reads_print, "the dump exit is this print");
 
-    let tags = compile_tags(&json!({ "targets": { "match": { "wallet": ["a", "b"] } } }));
+    let tags = compile_tags(&json!({ "targets": { "match": { "wallet": ["a", "b"] } } }), &Default::default());
     let mut track = TokenTrack::new(t0());
     track.ensure_tag(FingerprintId(Uuid::from_u128(2)), tags[0].key, &tags[0].patterns, &[]);
     let a = wallet_hash("a");

@@ -26,6 +26,8 @@
 //! the next build replaces the tag whole.
 //!
 //! A trade carries the tag when ANY `match` entry holds (on the tag's `side` only).
+//! A trade by one of our own trader wallets never carries a tag: they reach the curve
+//! through the same ix shapes as launch tools, and a tag means someone else's trades.
 //! Validated in full on save ([`validate_tags`]) and compiled once per rules reload
 //! ([`compile_tags`]), never per event.
 
@@ -53,6 +55,10 @@ pub struct TagPatterns {
     /// Only trades on this side can carry the tag.
     pub side: Option<Side>,
     pub sticky: bool,
+    /// Our own trader wallets ([`own_wallet_set`]). A trade by one never carries the
+    /// tag, whatever else matches it. Not part of the document: [`compile_tags`]
+    /// stamps the same set into every tag.
+    pub own_wallets: HashedSet,
 }
 
 impl TagPatterns {
@@ -234,18 +240,24 @@ pub fn validate_tags(doc: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// The hashed form of our own trader wallets, for [`compile_tags`].
+pub fn own_wallet_set<'a>(pubkeys: impl IntoIterator<Item = &'a str>) -> HashedSet {
+    pubkeys.into_iter().map(|k| wallet_hash(k.trim())).collect()
+}
+
 /// Compile a validated `tags` document. A tag that fails to parse is left out (its
 /// metrics then read `NaN`, which satisfies nothing): `validate_tags` refuses such a
 /// document at save, so this only guards a row written around the validator.
-pub fn compile_tags(doc: &Value) -> Vec<CompiledTag> {
+///
+/// `own` is our trader wallets ([`own_wallet_set`]): no tag ever marks their trades.
+pub fn compile_tags(doc: &Value, own: &HashedSet) -> Vec<CompiledTag> {
     let Ok(Some(map)) = tag_map(doc) else { return Vec::new() };
     map.iter()
         .filter(|(name, _)| check_name(name).is_ok() && !BUILTIN.contains(&name.as_str()))
         .filter_map(|(name, def)| {
-            parse_tag(name, def).ok().map(|patterns| CompiledTag {
-                key: TagKey::of(name),
-                name: crate::intern::intern(name),
-                patterns,
+            parse_tag(name, def).ok().map(|mut patterns| {
+                patterns.own_wallets = own.clone();
+                CompiledTag { key: TagKey::of(name), name: crate::intern::intern(name), patterns }
             })
         })
         .collect()
@@ -263,7 +275,7 @@ pub fn tag_names(doc: &Value) -> Vec<String> {
 /// is `NaN`, so the condition never holds). Said at save time, where the author can
 /// still act on it.
 pub fn rule_tag_warning(params: &crate::rule_params::RuleParams, doc: &Value) -> Option<String> {
-    let defined = compile_tags(doc);
+    let defined = compile_tags(doc, &HashedSet::default());
     let mut missing: Vec<&str> = Vec::new();
     for r in params.metric_refs() {
         let Some(t) = r.tag.filter(|t| !t.is_builtin()) else { continue };
@@ -285,7 +297,7 @@ pub fn rule_tag_warning(params: &crate::rule_params::RuleParams, doc: &Value) ->
 /// and a rule written against one looks exactly like a rule whose coins went quiet.
 /// Said once, at save time, where the author can still act on it.
 pub fn fee_pin_warning(doc: &Value) -> Option<String> {
-    let pinned: Vec<String> = compile_tags(doc)
+    let pinned: Vec<String> = compile_tags(doc, &HashedSet::default())
         .into_iter()
         .filter(|t| t.patterns.shapes.pins_fee())
         .map(|t| t.name.to_string())
@@ -324,7 +336,7 @@ mod tests {
             "dump": {"match": {"ix_shape": [["S"]]}, "side": "sell"}
         });
         validate_tags(&doc).unwrap();
-        let tags = compile_tags(&doc);
+        let tags = compile_tags(&doc, &HashedSet::default());
         assert_eq!(tags.len(), 2);
         let v = tags.iter().find(|t| t.name == "volume").unwrap();
         assert!(v.patterns.sticky && v.patterns.creator);

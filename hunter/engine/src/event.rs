@@ -383,8 +383,10 @@ pub enum Event {
     Migrated { mint: Mint, at: Ts },
     /// The active rule set (and the fingerprints they reference) changed. Parsed
     /// once at load; the engine recompiles per-rule metric requests + derived
-    /// bounds here, never per event.
-    RulesReloaded { rules: Arc<[LoadedRule]>, fps: Arc<[Fingerprint]> },
+    /// bounds here, never per event. `own_wallets` is our trader wallets, hashed
+    /// ([`own_wallet_set`](crate::metrics::tags::config::own_wallet_set)): no
+    /// fingerprint tag marks their trades.
+    RulesReloaded { rules: Arc<[LoadedRule]>, fps: Arc<[Fingerprint]>, own_wallets: Arc<crate::hash::HashedSet> },
     /// The launch-build stats the two `build_prev_day_*` fingerprint axes are
     /// stamped from changed (a new UTC day computed, or a boot load). Replaces the
     /// whole map; tokens already tracked keep the stamp they were born under.

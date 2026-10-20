@@ -69,7 +69,7 @@ fn cu_token() -> Box<TokenFingerprint> {
 }
 
 fn reload(rules: Vec<LoadedRule>, fps: Vec<Fingerprint>) -> Event {
-    Event::RulesReloaded { rules: Arc::from(rules), fps: Arc::from(fps) }
+    Event::RulesReloaded { rules: Arc::from(rules), fps: Arc::from(fps), own_wallets: Default::default() }
 }
 
 fn trade(sol: f64, price: f64, reserve: f64, at: f64) -> TradeLite {

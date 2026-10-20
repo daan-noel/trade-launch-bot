@@ -41,7 +41,7 @@ fn add_tag(
     def: serde_json::Value,
     windows: &[WindowSpec],
 ) -> TagKey {
-    let tags = compile_tags(&json!({ name: def }));
+    let tags = compile_tags(&json!({ name: def }), &Default::default());
     let t = &tags[0];
     track.ensure_tag(fp, t.key, &t.patterns, windows);
     t.key

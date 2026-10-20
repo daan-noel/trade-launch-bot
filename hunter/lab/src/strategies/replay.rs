@@ -213,6 +213,8 @@ pub struct ReplayConfig {
     /// (another max_cost, another CU price) is only known from here. Empty means the
     /// axis counts corpus tokens only.
     pub identity_launches: Arc<[IdentityLaunchRow]>,
+    /// Our trader wallets, hashed: no fingerprint tag marks their trades.
+    pub own_wallets: Arc<hunter_engine::hash::HashedSet>,
 }
 
 /// One primed creation: `(creation build ix hash, identity, created_at, mint hash)`.
@@ -230,6 +232,7 @@ impl Default for ReplayConfig {
             identity_launches: Arc::from(Vec::new()),
             launch_build_stats: Arc::from(Vec::new()),
             build_breadth: Arc::from(Vec::new()),
+            own_wallets: Arc::default(),
         }
     }
 }
@@ -356,7 +359,7 @@ impl Replay {
         );
         reduce(
             &mut state,
-            Event::RulesReloaded { rules: rules.to_vec().into(), fps: fps.to_vec().into() },
+            Event::RulesReloaded { rules: rules.to_vec().into(), fps: fps.to_vec().into(), own_wallets: cfg.own_wallets.clone() },
         );
         Self {
             state,

@@ -561,8 +561,9 @@ impl EngineState {
     /// **Narrows `fps` to the fingerprints the rules name**, and compiles each one's
     /// tags here rather than per coin — see [`fps`](Self::fps) and
     /// [`fp_tags`](Self::fp_tags). Decision-neutral: a dropped fingerprint has no rule to
-    /// arm, so its match answer was never read.
-    pub fn reload(&mut self, rules: &[LoadedRule], fps: &[Fingerprint]) {
+    /// arm, so its match answer was never read. `own` is our trader wallets: no tag
+    /// marks their trades.
+    pub fn reload(&mut self, rules: &[LoadedRule], fps: &[Fingerprint], own: &crate::hash::HashedSet) {
         // A rule switched back on, or moved to the other trade mode, starts a new run
         // (the live sink closes the old one), and `max_total` counts one run's
         // entries: its lifetime count starts over. `open` still counts the positions
@@ -585,7 +586,7 @@ impl EngineState {
         self.fp_tags = self
             .fps
             .iter()
-            .map(|f| (f.id, compile_tags(&f.tags)))
+            .map(|f| (f.id, compile_tags(&f.tags, own)))
             .filter(|(_, t)| !t.is_empty())
             .collect();
         self.identity_builds = self
@@ -739,7 +740,7 @@ mod tests {
     fn reload_keeps_only_what_the_rules_read() {
         let (named, unnamed, bare) = (fp(1), fp(2), Fingerprint::empty(fp_id(3)));
         let mut state = EngineState::new();
-        state.reload(&[rule_on(named.id, reads_volume())], &[named.clone(), unnamed.clone(), bare]);
+        state.reload(&[rule_on(named.id, reads_volume())], &[named.clone(), unnamed.clone(), bare], &Default::default());
         assert_eq!(state.fps.iter().map(|f| f.id).collect::<Vec<_>>(), vec![named.id]);
         assert_eq!(state.fp_tags.keys().copied().collect::<Vec<_>>(), vec![named.id]);
 
@@ -757,7 +758,7 @@ mod tests {
         let named = fp(1);
         let mut state = EngineState::new();
         let plain = json!({ "enter": { "filters": [{ "metric": "m_state.age_sec", "is": [{ "operator": ">=", "value": 1.0 }] }] } });
-        state.reload(&[rule_on(named.id, plain)], std::slice::from_ref(&named));
+        state.reload(&[rule_on(named.id, plain)], std::slice::from_ref(&named), &Default::default());
         let track = state.new_track(ts());
         assert!(!track.has_tag(named.id, TagKey::of("volume")));
     }
@@ -768,7 +769,7 @@ mod tests {
         let mut plain = fp(1);
         plain.tags = json!({});
         let mut state = EngineState::new();
-        state.reload(&[rule_on(plain.id, reads_volume())], std::slice::from_ref(&plain));
+        state.reload(&[rule_on(plain.id, reads_volume())], std::slice::from_ref(&plain), &Default::default());
         let mut track = state.new_track(ts());
         track.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, at: ts(), ..Default::default() });
         assert!(track.value(rest_buy(), Some(plain.id), ts()).is_nan());
@@ -781,9 +782,9 @@ mod tests {
         let mut all = vec![named.clone()];
         all.extend((10..40).map(fp));
         let mut wide = EngineState::new();
-        wide.reload(&[rule_on(named.id, reads_volume())], &all);
+        wide.reload(&[rule_on(named.id, reads_volume())], &all, &Default::default());
         let mut narrow = EngineState::new();
-        narrow.reload(&[rule_on(named.id, reads_volume())], std::slice::from_ref(&named));
+        narrow.reload(&[rule_on(named.id, reads_volume())], std::slice::from_ref(&named), &Default::default());
         let tf = TokenFingerprint { cu_limit: Some(200_001), ..Default::default() };
         let hits = |st: &EngineState| {
             crate::fingerprint::match_all(&st.fps, &tf, crate::fingerprint::MatchPhase::Full)
@@ -800,12 +801,12 @@ mod tests {
     fn a_new_tag_window_adds_to_the_requirements() {
         let named = fp(1);
         let mut state = EngineState::new();
-        state.reload(&[rule_on(named.id, reads_volume())], std::slice::from_ref(&named));
+        state.reload(&[rule_on(named.id, reads_volume())], std::slice::from_ref(&named), &Default::default());
         let before = state.track_requirements();
         let windowed = json!({ "enter": { "filters": [
             { "metric": "m_flow.buy_sol", "tag": "!volume", "span": "10s", "is": [{ "operator": ">=", "value": 0.0 }] }
         ] } });
-        state.reload(&[rule_on(named.id, windowed)], std::slice::from_ref(&named));
+        state.reload(&[rule_on(named.id, windowed)], std::slice::from_ref(&named), &Default::default());
         assert!(state.track_requirements().adds_to(&before));
         assert!(!before.adds_to(&before));
     }

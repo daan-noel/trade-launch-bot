@@ -491,8 +491,15 @@ async fn load_tag_ctx(
     if rule.buffers.tags.is_empty() {
         return TagCtx::default();
     }
+    let own = trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo::new(app_state.db.clone())
+        .own_wallet_set()
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("readout replay: own wallets load failed: {e}");
+            Default::default()
+        });
     let tags = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
-        Ok(Some(fp)) => compile_tags(&fp_to_engine(&fp).tags),
+        Ok(Some(fp)) => compile_tags(&fp_to_engine(&fp).tags, &own),
         Ok(None) => Vec::new(),
         Err(e) => {
             tracing::warn!(fp = %fingerprint_id.0, "readout replay: fingerprint load failed: {e}");

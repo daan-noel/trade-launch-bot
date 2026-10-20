@@ -320,7 +320,7 @@ fn live_reading(m: &MetricSpec, cond: &Map<String, Value>) -> f64 {
             }]),
         },
     );
-    reduce(&mut state, Event::RulesReloaded { rules: Arc::from(vec![rule]), fps: Arc::from(vec![probe_fp()]) });
+    reduce(&mut state, Event::RulesReloaded { rules: Arc::from(vec![rule]), fps: Arc::from(vec![probe_fp()]), own_wallets: Default::default() });
     let fx = drive(&mut state, &mint);
     confirm_entry(&mut state, &mint, fx);
 

@@ -525,6 +525,12 @@ async fn run_engine_backtest(
         anyhow::bail!("simulation cancelled");
     }
 
+    let own_wallets = Arc::new(
+        trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo::new(app_state.db.clone())
+            .own_wallet_set()
+            .await
+            .map_err(|e| anyhow!("load own trader wallets: {e}"))?,
+    );
     let loaded = target.loaded.clone();
     let buy_amount_sol = target.buy_amount_sol;
     let progress2 = progress.clone();
@@ -550,6 +556,7 @@ async fn run_engine_backtest(
                     identity_launches,
                     launch_build_stats,
                     build_breadth,
+                    own_wallets,
                     ..Default::default()
                 },
             );

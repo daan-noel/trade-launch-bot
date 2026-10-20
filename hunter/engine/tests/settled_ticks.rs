@@ -144,7 +144,7 @@ fn engine(dense: bool) -> EngineState {
     s.dense_ticks = dense;
     reduce(
         &mut s,
-        Event::RulesReloaded { rules: Arc::from(rules()), fps: Arc::from(vec![cu_fp(1)]) },
+        Event::RulesReloaded { rules: Arc::from(rules()), fps: Arc::from(vec![cu_fp(1)]), own_wallets: Default::default() },
     );
     s
 }
@@ -366,7 +366,7 @@ fn a_freed_cap_slot_wakes_a_settled_token() {
     let mut s = EngineState::new();
     reduce(
         &mut s,
-        Event::RulesReloaded { rules: Arc::from(vec![rule]), fps: Arc::from(vec![cu_fp(1)]) },
+        Event::RulesReloaded { rules: Arc::from(vec![rule]), fps: Arc::from(vec![cu_fp(1)]), own_wallets: Default::default() },
     );
     let create = |m: &str, at: f64| Event::TokenCreated {
         mint: Mint::from(m),

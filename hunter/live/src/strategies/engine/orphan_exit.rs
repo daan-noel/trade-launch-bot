@@ -991,7 +991,7 @@ mod tests {
 
         fn loaded() -> EngineState {
             let mut s = EngineState::new();
-            reduce(&mut s, Event::RulesReloaded { rules: Arc::from(vec![rule()]), fps: Arc::from(vec![fp()]) });
+            reduce(&mut s, Event::RulesReloaded { rules: Arc::from(vec![rule()]), fps: Arc::from(vec![fp()]), own_wallets: Default::default() });
             s
         }
 
@@ -1084,7 +1084,7 @@ mod tests {
 
         fn dev_loaded() -> EngineState {
             let mut s = EngineState::new();
-            reduce(&mut s, Event::RulesReloaded { rules: Arc::from(vec![dev_rule()]), fps: Arc::from(vec![dev_fp()]) });
+            reduce(&mut s, Event::RulesReloaded { rules: Arc::from(vec![dev_rule()]), fps: Arc::from(vec![dev_fp()]), own_wallets: Default::default() });
             s
         }
 

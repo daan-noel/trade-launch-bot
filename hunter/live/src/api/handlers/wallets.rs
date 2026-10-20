@@ -208,6 +208,8 @@ pub async fn create(state: web::Data<Arc<DeployState>>, body: web::Json<CreateBo
         .wallets
         .insert_loaded(pubkey.clone(), body.name.clone(), Arc::new(keypair), Vec::new(), primary)
         .await;
+    // A new own wallet: the engine's tags must stop marking its trades.
+    state.engine.schedule_reload(state.sse_tx.clone());
     HttpResponse::Ok().json(serde_json::json!({ "pubkey": pubkey, "name": body.name }))
 }
 
@@ -257,6 +259,7 @@ pub async fn import(state: web::Data<Arc<DeployState>>, body: web::Json<ImportBo
         .wallets
         .insert_loaded(pubkey.clone(), body.name.clone(), Arc::new(keypair), nonces, primary)
         .await;
+    state.engine.schedule_reload(state.sse_tx.clone());
     if let Ok(report) = &sync {
         trader.update_balance_lamports_cache(report.sol_lamports);
     }
@@ -410,6 +413,7 @@ pub async fn sync_all(state: web::Data<Arc<DeployState>>) -> impl Responder {
     if let Err(e) = state.wallets.reload(&state.db).await {
         return HttpResponse::InternalServerError().json(err(format!("reload wallets: {e:#}")));
     }
+    state.engine.schedule_reload(state.sse_tx.clone());
     let repo = TraderWalletRepo::new(state.db.clone());
     let records = match repo.records().await {
         Ok(rows) => rows,

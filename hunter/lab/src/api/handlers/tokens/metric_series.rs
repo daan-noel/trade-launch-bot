@@ -53,6 +53,7 @@ use hunter_engine::metrics::{chart_reads, family_spec, Family, MetricRef, Ts, Wi
 
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::token_repo::TokenRepo;
+use trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo;
 use trading_core::strategies::fingerprint_axes::fp_to_engine;
 
 use crate::state::local_state::LocalState;
@@ -242,7 +243,11 @@ async fn resolve_tag_ctx(state: &LocalState, fingerprint_id: Option<&str>) -> Re
         return Err(HttpResponse::NotFound().json(serde_json::json!({ "error": "fingerprint not found" })));
     };
     let engine_fp = fp_to_engine(&fp);
-    let tags = compile_tags(&engine_fp.tags);
+    let own = TraderWalletRepo::new(state.core.db.clone()).own_wallet_set().await.map_err(|e| {
+        tracing::error!("metric-series own wallets lookup failed: {e}");
+        HttpResponse::InternalServerError().json(serde_json::json!({ "error": "own wallets lookup failed" }))
+    })?;
+    let tags = compile_tags(&engine_fp.tags, &own);
     // A fingerprint with no tags adds no column: same as no id.
     Ok((!tags.is_empty()).then_some(TagCtx { fp_id: engine_fp.id, tags }))
 }
@@ -484,7 +489,7 @@ mod tests {
 
     fn volume_ctx() -> TagCtx {
         let doc = serde_json::json!({ "volume": { "match": { "ix_shape": [["Pump.Fun: Create", "Pump.Fun: Buy"]], "creator": true } } });
-        TagCtx { fp_id: FingerprintId(Uuid::new_v4()), tags: compile_tags(&doc) }
+        TagCtx { fp_id: FingerprintId(Uuid::new_v4()), tags: compile_tags(&doc, &Default::default()) }
     }
 
     /// The creator seed: with `creator: true` the dev's buy carries the tag with no
@@ -516,7 +521,7 @@ mod tests {
         let trades = [corpus_trade(5.0, "dev", None, 0), corpus_trade(3.0, "normie", None, 1)];
         let grid = SparseGrid::for_windows(&[10.0, 30.0]);
         let mut ctx = volume_ctx();
-        ctx.tags.extend(compile_tags(&serde_json::json!({ "working": { "match": { "ix_template": ["Pump.Fun|200000|0|1|0|0"] } } })));
+        ctx.tags.extend(compile_tags(&serde_json::json!({ "working": { "match": { "ix_template": ["Pump.Fun|200000|0|1|0|0"] } } }), &Default::default()));
         // Two spans, so the two-window reads have a nested pair.
         let w = [WindowSpec::secs(30.0), WindowSpec::secs(10.0)];
         let out = build_series("mint", &trades, coin_reads(&w, &[], Some(&ctx)), &grid, Some(&ctx), Some(wallet_hash("dev")), Some((ts(0), 1.0)));

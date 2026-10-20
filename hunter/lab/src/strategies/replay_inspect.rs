@@ -66,6 +66,8 @@ pub struct InspectConfig {
     pub synthetic_ticks: bool,
     /// Stop recording once this many steps are dumped (`truncated` flags it).
     pub max_steps: usize,
+    /// Our trader wallets, hashed: no fingerprint tag marks their trades.
+    pub own_wallets: std::sync::Arc<hunter_engine::hash::HashedSet>,
 }
 
 /// Resolve the log directory from the request (`None`/empty ⇒ `EVENT_LOG_DIR` env,
@@ -246,7 +248,7 @@ impl<'a> Inspector<'a> {
         let mut state = EngineState::new();
         reduce(
             &mut state,
-            Event::RulesReloaded { rules: rules.to_vec().into(), fps: fps.to_vec().into() },
+            Event::RulesReloaded { rules: rules.to_vec().into(), fps: fps.to_vec().into(), own_wallets: cfg.own_wallets.clone() },
         );
         Self {
             state,
@@ -515,6 +517,7 @@ mod tests {
             until: None,
             synthetic_ticks: true,
             max_steps: DEFAULT_MAX_STEPS,
+            own_wallets: Default::default(),
         }
     }
 

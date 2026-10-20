@@ -466,9 +466,13 @@ impl TagState {
         self.patterns.side.is_none_or(|s| s == t.side) && self.matches(t)
     }
 
-    /// Whether any stateless matcher (or the sticky set) qualifies the trade.
+    /// Whether any stateless matcher (or the sticky set) qualifies the trade. Our own
+    /// wallets never qualify, so they never join the sticky set either.
     fn matches(&self, t: &TradeLite) -> bool {
         let p = &self.patterns;
+        if t.wallet_hash != 0 && p.own_wallets.contains(&t.wallet_hash) {
+            return false;
+        }
         p.marks(t.marker_bits)
             || (p.creator && self.creator_wallet_hash == Some(t.wallet_hash))
             || (p.sticky && self.sticky_wallets.contains(&t.wallet_hash))

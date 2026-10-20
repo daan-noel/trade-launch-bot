@@ -286,7 +286,7 @@ fn assert_parity_under(
     if let Some(doc) = &tags {
         fp.tags = doc.clone();
     }
-    let compiled_tags = tags.as_ref().map(compile_tags).unwrap_or_default();
+    let compiled_tags = tags.as_ref().map(|d| compile_tags(d, &Default::default())).unwrap_or_default();
     let pricing = pricing_for(fill_model);
     let cost = pricing.cost;
 
@@ -1573,7 +1573,7 @@ fn sweep_ignores_exclusivity_but_the_engine_enforces_it() {
         let mut state = EngineState::new();
         reduce(
             &mut state,
-            Event::RulesReloaded { rules: rules.into(), fps: vec![fp.clone()].into() },
+            Event::RulesReloaded { rules: rules.into(), fps: vec![fp.clone()].into(), own_wallets: Default::default() },
         );
         let fx = reduce(
             &mut state,
@@ -1649,6 +1649,7 @@ fn sweep_ignores_the_copycat_guard_but_the_engine_enforces_it() {
             Event::RulesReloaded {
                 rules: vec![rule.clone()].into(),
                 fps: vec![fp.clone()].into(),
+                own_wallets: Default::default(),
             },
         );
         let mut bought = Vec::new();

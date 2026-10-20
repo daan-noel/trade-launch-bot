@@ -172,7 +172,7 @@ fn random_streams_preserve_invariants_and_never_panic() {
     for seed in 1..40u64 {
         let mut rng = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
         let mut s = EngineState::new();
-        reduce(&mut s, Event::RulesReloaded { rules: Arc::from(rules()), fps: Arc::from(fps()) });
+        reduce(&mut s, Event::RulesReloaded { rules: Arc::from(rules()), fps: Arc::from(fps()), own_wallets: Default::default() });
 
         let mints: Vec<Mint> = (0..4).map(|i| Mint::from(format!("tok{i}"))).collect();
         // Intents the engine has handed us but we have not yet resolved.

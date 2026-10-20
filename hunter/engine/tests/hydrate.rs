@@ -70,7 +70,7 @@ fn rule(id: u128, params: serde_json::Value) -> LoadedRule {
 }
 
 fn reload(state: &mut EngineState, rules: Vec<LoadedRule>) {
-    let _ = reduce(state, Event::RulesReloaded { rules: Arc::from(rules), fps: Arc::from(vec![fp()]) });
+    let _ = reduce(state, Event::RulesReloaded { rules: Arc::from(rules), fps: Arc::from(vec![fp()]), own_wallets: Default::default() });
 }
 
 fn create(state: &mut EngineState, mint: &Mint) {

@@ -289,7 +289,7 @@ mod tests {
     }
 
     fn reload(state: &mut EngineState, rules: Vec<LoadedRule>) {
-        let _ = reduce(state, Event::RulesReloaded { rules: StdArc::from(rules), fps: StdArc::from(vec![fp()]) });
+        let _ = reduce(state, Event::RulesReloaded { rules: StdArc::from(rules), fps: StdArc::from(vec![fp()]), own_wallets: Default::default() });
     }
 
     /// A cached token born `born_ago` s back with three buyers, none of them the creator.

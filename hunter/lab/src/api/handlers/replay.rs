@@ -105,6 +105,16 @@ pub async fn inspect_replay(
         })
         .collect();
     let fps: Vec<EngineFingerprint> = fp_rows.iter().map(fp_to_engine).collect();
+    let own_wallets = match trading_core::storage::repositories::trader_wallet_repo::TraderWalletRepo::new(state.db.clone())
+        .own_wallet_set()
+        .await
+    {
+        Ok(set) => Arc::new(set),
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": format!("load own wallets failed: {e}") }));
+        }
+    };
 
     let cfg = InspectConfig {
         mint: req.mint,
@@ -112,6 +122,7 @@ pub async fn inspect_replay(
         until: req.until,
         synthetic_ticks: req.synthetic_ticks,
         max_steps: req.max_steps.unwrap_or(DEFAULT_MAX_STEPS).max(1),
+        own_wallets,
     };
     let dir = replay_inspect::resolve_dir(req.dir.as_deref());
     let dir_str = dir.display().to_string();

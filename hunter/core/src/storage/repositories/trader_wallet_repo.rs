@@ -89,6 +89,13 @@ impl TraderWalletRepo {
         Self { pool }
     }
 
+    /// Every trader wallet ever registered, archived ones too (their trades stay in
+    /// history), hashed for `compile_tags`: no fingerprint tag marks our own trades.
+    pub async fn own_wallet_set(&self) -> sqlx::Result<hunter_engine::hash::HashedSet> {
+        let keys: Vec<String> = sqlx::query_scalar("SELECT pubkey FROM trader_wallets").fetch_all(&self.pool).await?;
+        Ok(hunter_engine::metrics::tags::config::own_wallet_set(keys.iter().map(String::as_str)))
+    }
+
     pub async fn list(&self) -> sqlx::Result<Vec<TraderWallet>> {
         let rows = sqlx::query_as::<_, WalletRow>(&format!(
             "SELECT w.pubkey, w.name, w.status, w.is_primary, w.paused, w.created_at, w.archived_at, \

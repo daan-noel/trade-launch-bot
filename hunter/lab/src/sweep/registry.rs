@@ -903,7 +903,8 @@ pub(crate) fn compile_run_tags(
     match tags {
         Some(doc) => {
             validate_tags(doc).map_err(|e| anyhow!("tags: {e}"))?;
-            Ok(compile_tags(doc))
+            // A sweep's tags are the run's own document; own wallets are not excluded here yet.
+            Ok(compile_tags(doc, &Default::default()))
         }
         None => Ok(Vec::new()),
     }
@@ -961,7 +962,7 @@ fn simulate_generic_one_combo(
     let compiled = CompiledRule::compile(&loaded);
     let columns = columns_for(&compiled);
     let grid = sparse_grid_for(&compiled);
-    let compiled_tags = tags.map(hunter_engine::metrics::tags::config::compile_tags).unwrap_or_default();
+    let compiled_tags = tags.map(|d| hunter_engine::metrics::tags::config::compile_tags(d, &Default::default())).unwrap_or_default();
     // The frozen-tail resolve (D1) anchored on THIS drill-in's token set, so a row's
     // exit matches the sweep aggregate the user clicked (parity plan Task 1 / B7).
     let tail_horizon = frozen_tail_horizon(as_of, tokens);

@@ -51,7 +51,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
         state.all_settled_at = None;
     }
     match event {
-        Event::RulesReloaded { rules, fps } => {
+        Event::RulesReloaded { rules, fps, own_wallets } => {
             let incoming: std::collections::HashMap<_, _> =
                 rules.iter().map(|r| (r.id, r.entry_enabled)).collect();
             for (mint, token) in state.tokens.iter_mut() {
@@ -75,7 +75,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     fx.push(armed(mint, rid, ArmedStateTag::Disarmed(DisarmReason::Paused)));
                 }
             }
-            state.reload(&rules, &fps);
+            state.reload(&rules, &fps, &own_wallets);
         }
 
         Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity, creation_slot: _ } => {
